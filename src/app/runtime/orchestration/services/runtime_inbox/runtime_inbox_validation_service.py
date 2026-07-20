@@ -17,17 +17,16 @@ from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
-from src.app.runtime.capability_catalog import (
-    get_workline_capability_definition,
-)
 from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
+from src.app.runtime.workline_plugins.registry import (
+    get_workline_capability_definition,
+)
 from src.app.workline.diagnostic_support import _record_diagnostic
-from src.app.workline.domain.plugin_manifest import EventCategory
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import string_value
 
@@ -61,17 +60,17 @@ def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
 def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
     """从插件 manifest.events 提取 ENTRY_DEVICE 入口事件类型, 缺省时保留 SMT 入口."""
     plugin_key = string_value(getattr(workline, "plugin_key", None)) if workline is not None else ""
-    definition = get_workline_capability_definition(plugin_key)
+    contract_version = string_value(getattr(workline, "contract_version", None)) if workline is not None else ""
+    definition = get_workline_capability_definition(plugin_key, contract_version)
     if definition is None:
         return frozenset({"SCAN_COMPLETED"})
-    events = getattr(definition.manifest, "events", None)
+    events = definition.schema.events
     if events is None:
         return frozenset({"SCAN_COMPLETED"})
     return frozenset(
         event_type
         for event in events
-        if getattr(getattr(event, "category", None), "value", getattr(event, "category", None))
-        == EventCategory.ENTRY_DEVICE.value
+        if getattr(getattr(event, "category", None), "value", getattr(event, "category", None)) == "ENTRY_DEVICE"
         for event_type in (getattr(event, "event", None),)
         if isinstance(event_type, str) and event_type
     )

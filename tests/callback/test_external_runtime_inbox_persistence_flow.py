@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -12,26 +11,12 @@ from sqlalchemy import select
 from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorService
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
 )
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
-    RuntimeInboxOrchestratorDelegate,
-)
 from src.app.workline.models import LineType, WorkLine
-
-
-@asynccontextmanager
-async def _noop_lock(_lock_key: str):
-    """集成测试只替换基础设施锁，processor/orchestrator 保持生产实现。"""
-    yield
-
-
-def _production_orchestrator_factory(**_kwargs) -> OrchestratorService:
-    return OrchestratorService(lock_provider=_noop_lock)
 
 
 @pytest.mark.asyncio
@@ -108,12 +93,7 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
     assert claims[0]["kind"] == "EXTERNAL_HTTP"
     assert claims[0]["payload_json"] == payload
 
-    result = await RuntimeInboxProcessorBridge(
-        processor_service=RuntimeInboxOrchestratorDelegate(
-            orchestrator_factory=_production_orchestrator_factory,
-        ),
-        inbox_service=inbox_service,
-    ).process_claimed(db_session, claim=claims[0])
+    result = await RuntimeInboxProcessorBridge(inbox_service=inbox_service).process_claimed(db_session, claim=claims[0])
 
     assert result["processed"] == 1
     assert result["success"] == 1

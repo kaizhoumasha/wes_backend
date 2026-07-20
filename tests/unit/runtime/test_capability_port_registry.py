@@ -27,6 +27,14 @@ class _FakeMasterDataPort:
 
 
 class _FakeInventoryQueryPort:
+    async def query_inventory(self, material_code, *, warehouse_code=None):
+        return []
+
+    def query_empty_bins(self, warehouse_code, *, zone_code=None):
+        return []
+
+
+class _LegacySyncInventoryQueryPort:
     def query_inventory(self, material_code, *, warehouse_code=None):
         return []
 
@@ -86,6 +94,14 @@ def test_registry_get_unregistered_raises():
     """获取未注册 port 抛 KeyError。"""
     registry = CapabilityPortRegistry()
     with pytest.raises(KeyError, match="未注册"):
+        registry.get(WmsInventoryQueryPort)
+
+
+def test_registry_rejects_legacy_sync_implementation_for_async_protocol_method():
+    registry = CapabilityPortRegistry()
+    registry.register(WmsInventoryQueryPort, _LegacySyncInventoryQueryPort)
+
+    with pytest.raises(TypeError, match="async Port contract"):
         registry.get(WmsInventoryQueryPort)
 
 

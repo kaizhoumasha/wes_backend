@@ -3,13 +3,13 @@ from enum import Enum
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from src.app.runtime.capability_catalog import get_workline_contract_version
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.services.device_command_gateway import (
     _DeviceCommandGovernanceError,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
     _enforce_device_command_governance,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
 )
+from src.app.runtime.workline_plugins.registry import get_workline_contract_version
 from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS, EXTERNAL_HTTP_DECISION_TYPE
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.trace_context import TraceContext

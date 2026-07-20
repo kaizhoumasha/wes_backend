@@ -22,7 +22,7 @@ from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationState,
     SessionStatus,
 )
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult, OrchestratorService
+from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
@@ -34,6 +34,15 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxWriteBackService,
     WriteBackState,
 )
+from src.app.runtime.system_capabilities.outcomes import ContractViolation
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
+    RoughSorterBindingSnapshot,
+)
+from src.app.runtime.workline_plugins.contracts import PluginContext
+from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
+from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
+from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
+from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
 from src.utils.timezone import timezone
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -94,7 +103,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("NOT_CREATED", "NOT_CREATED", "MANUAL_HOLD", "UNCHANGED"),
         (("BLOCK", None, "MATERIAL"),),
-        "gap",
+        "covered",
         "ROUGH_SORTER_CONTEXT_MISSING",
     ),
     "RS-SD-004": (
@@ -105,7 +114,7 @@ EXPECTED_CASE_OVERVIEW = {
         "MOVE_FORWARD_PERSISTED",
         ("IN_TRANSIT", None, "WAITING_DEVICE_RESULT", "MOVING_FORWARD"),
         (("UPDATE_CONTEXT", None, None), ("COMMAND", "MOVE_FORWARD", None)),
-        "gap",
+        "covered",
         None,
     ),
     "RS-SD-005": (
@@ -116,7 +125,7 @@ EXPECTED_CASE_OVERVIEW = {
         "MOVE_TO_NG_PERSISTED",
         ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
         (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
-        "gap",
+        "covered",
         "MEASUREMENT_NG",
     ),
     "RS-SD-006": (
@@ -127,7 +136,7 @@ EXPECTED_CASE_OVERVIEW = {
         "MOVE_TO_NG_PERSISTED",
         ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
         (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
-        "gap",
+        "covered",
         "WMS_REJECTED",
     ),
     "RS-SD-007": (
@@ -142,7 +151,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("IN_TRANSIT", "COMPLETED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "MATERIAL"),),
-        "gap",
+        "covered",
         "ROUGH_SORTER_MEASUREMENT_INVALID",
     ),
     "RS-SD-008": (
@@ -158,7 +167,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("IN_TRANSIT", "ACK_RECEIVED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (),
-        "partial",
+        "covered",
         "ROUGH_SORTER_PICK_RESULT_TIMEOUT",
     ),
     "RS-SD-010": (
@@ -169,7 +178,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("IN_TRANSIT", "COMPLETED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "MATERIAL"),),
-        "gap",
+        "covered",
         "WMS_TIMEOUT",
     ),
     "RS-SD-011": (
@@ -177,7 +186,7 @@ EXPECTED_CASE_OVERVIEW = {
         "REPLAY_ACCEPTED_NOOP",
         ("UNCHANGED", "UNCHANGED", "UNCHANGED", "UNCHANGED"),
         (),
-        "gap",
+        "covered",
         None,
     ),
     "RS-SD-012": (
@@ -185,7 +194,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("UNCHANGED", "UNCHANGED", "MANUAL_HOLD", "UNCHANGED"),
         (("BLOCK", None, "MATERIAL"),),
-        "gap",
+        "covered",
         "IDEMPOTENCY_CONFLICT",
     ),
     "RS-SD-013": (
@@ -193,7 +202,7 @@ EXPECTED_CASE_OVERVIEW = {
         "ARCHIVED_EVIDENCE",
         ("UNCHANGED", "UNCHANGED", "UNCHANGED", "UNCHANGED"),
         (),
-        "partial",
+        "covered",
         "COMMAND_RESULT_CORRELATION_MISMATCH",
     ),
 }
@@ -233,16 +242,32 @@ QUERY_REPLAY_CASES = {"RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011"}
 CURRENT_IMPLEMENTATION_STATUS = {
     "RS-SD-001": "covered",
     "RS-SD-002": "covered",
-    "RS-SD-003": "gap",
-    "RS-SD-004": "gap",
+    "RS-SD-003": "covered",
+    "RS-SD-004": "covered",
     "RS-SD-008": "covered",
-    "RS-SD-009": "partial",
-    "RS-SD-013": "partial",
+    "RS-SD-009": "covered",
+    "RS-SD-013": "covered",
 }
 
 
 def _load_fixture() -> dict:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def test_typed_plugin_definition_covers_all_approved_logical_trigger_routes() -> None:
+    """锁定业务触发与本地 EFFECT BusinessReject 回流的全部 typed route。"""
+
+    assert (ROUGH_SORTER_DEFINITION.plugin_key, ROUGH_SORTER_DEFINITION.contract_version) == (
+        "rough_sorter",
+        "rough_sorter.v2",
+    )
+    assert set(ROUGH_SORTER_DEFINITION.routes) == {
+        "SCAN_COMPLETED",
+        "PICK_AND_PUT_RESULT",
+        "BUSINESS_TIMEOUT",
+        "REPLAY_REQUEST",
+        "CAPABILITY_EFFECT_RESULT",
+    }
 
 
 def _case(case_id: str) -> dict[str, Any]:
@@ -306,28 +331,55 @@ class _RecordingDb:
 async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) -> list[RuntimeIntent]:
     case = _case(case_id)
     event_type = case["trigger"]["event_type"]
-    inbox_kind = "DEVICE_EVENT" if event_type == "SCAN_COMPLETED" else event_type
-    result = await OrchestratorService(lock_provider=lambda _lock_key: _noop_lock()).process_inbox(
-        session=SimpleNamespace(id=1, contract_version="rough_sorter.v2"),
-        workline=SimpleNamespace(
-            contract_version="rough_sorter.v2",
-            plugin_key="rough_sorter",
-            config={"pipeline_input_location": "PIPELINE-IN-01", "ng_location": "NG-01"},
-            runtime_config_json={},
-        ),
-        inbox=SimpleNamespace(
-            kind=inbox_kind,
-            event_type=event_type,
-            payload_json=deepcopy(payload if payload is not None else case["trigger"]["payload"]),
-            trace_id=f"trace-{case_id.lower()}",
-        ),
-        devices_by_role={},
-        services=SimpleNamespace(),
-        trace_id=f"trace-{case_id.lower()}",
+    raw_input = deepcopy(payload if payload is not None else case["trigger"]["payload"])
+    route = "SCAN_COMPLETED" if event_type == "SCAN_COMPLETED" else "PICK_AND_PUT_RESULT"
+    logical_input = ROUGH_SORTER_DEFINITION.parsers[route](raw_input)
+    command_code = raw_input.get("command_code") if isinstance(raw_input.get("command_code"), str) else None
+    state = RoughSorterState(
+        phase="READY" if route == "SCAN_COMPLETED" else "PICK_TO_PIPELINE",
+        current_correlation=command_code,
+    )
+    config = RoughSorterConfig.model_validate(
+        {
+            "device_roles": {
+                "input_arm": "ROUGH_SORTER_INPUT_ARM",
+                "conveyor": "ROUGH_SORTER_CONVEYOR",
+                "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+            },
+            "pipeline_input_location": "PIPELINE-IN-01",
+            "pipeline_output_location": "PIPELINE-OUT-01",
+            "ng_location": "NG-01",
+            "warehouse_code": "WH-01",
+            "owner_code": "OWNER-01",
+            "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+        }
+    )
+    facts = RoughSorterFacts(
+        binding_snapshot=RoughSorterBindingSnapshot(
+            binding_id=1,
+            binding_version=1,
+            profile_identity="wms.2026-07-06.material-flow.sandbox",
+            plugin_config_hash="0" * 64,
+            generated_index_digest="1" * 64,
+        )
     )
 
-    assert result.success is True, result.error
-    return result.intents or []
+    class _NoQueryGateway:
+        async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                outcome=ContractViolation(error_code="QUERY_NOT_CONFIGURED", message="characterization"),
+                evidence=None,
+            )
+
+    decision = await decide(
+        logical_input,
+        state=state,
+        config=config,
+        facts=facts,
+        context=PluginContext(state=state),
+        gateway=_NoQueryGateway(),
+    )
+    return list(decision.intents)
 
 
 def test_bc05_characterization_hands_off_scan_decision_target_semantics() -> None:
@@ -379,20 +431,15 @@ async def test_rule_ng_pkg_id_variants_use_stable_scan_ng_reason(ng_keyword: str
 
 
 @pytest.mark.asyncio
-async def test_missing_pkg_id_current_behavior_remains_ng_flow_and_target_hold_is_gap() -> None:
+async def test_missing_pkg_id_uses_generated_plugin_hold_contract() -> None:
     case = _case("RS-SD-003")
     intents = await _process_case("RS-SD-003")
 
-    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-003"] == "gap"
-    assert _intent_signature(intents) == (
-        ("UPDATE_CONTEXT", None, None),
-        ("MARK_NG", None, None),
-        ("COMMAND", "MOVE_TO_NG", None),
-    )
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-003"] == "covered"
+    assert _intent_signature(intents) == _expected_intent_signature(case)
     assert all(intent.kind != RuntimeIntentKind.CREATE_MATERIAL_UNIT for intent in intents)
-    mark_ng = next(intent for intent in intents if intent.kind == RuntimeIntentKind.MARK_NG)
-    assert mark_ng.reason_code == "BARCODE_INCOMPLETE"
-    assert _intent_signature(intents) != _expected_intent_signature(case)
+    [hold] = intents
+    assert hold.reason_code == "ROUGH_SORTER_CONTEXT_MISSING"
     assert case["expected_outcome"] == {"result": "HOLD", "reason_code": "ROUGH_SORTER_CONTEXT_MISSING"}
 
 
@@ -425,6 +472,7 @@ async def test_command_callback_persists_real_terminal_status_before_runtime_blo
         id=808,
         command_code="CMD-PICK-008",
         status=CommandStatus.ACK_RECEIVED,
+        task_type="PICK_AND_PUT",
         get_duration_ms=lambda: 0,
     )
 
@@ -534,13 +582,13 @@ async def test_block_effect_holds_only_session_and_preserves_entity_statuses(
 
 
 @pytest.mark.asyncio
-async def test_success_command_result_only_continues_and_does_not_cover_measurement_wms_target() -> None:
+async def test_success_command_result_without_pinned_material_facts_holds() -> None:
     case = _case("RS-SD-004")
     intents = await _process_case("RS-SD-004")
 
-    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-004"] == "gap"
-    assert _intent_signature(intents) == (("CONTINUE_NEXT", None, None),)
-    assert _intent_signature(intents) != _expected_intent_signature(case)
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-004"] == "covered"
+    assert _intent_signature(intents) == (("BLOCK", None, "MATERIAL"),)
+    assert intents[0].reason_code == "ROUGH_SORTER_CONTEXT_MISSING"
     assert _expected_intent_signature(case) == (
         ("UPDATE_CONTEXT", None, None),
         ("COMMAND", "MOVE_FORWARD", None),
@@ -548,7 +596,7 @@ async def test_success_command_result_only_continues_and_does_not_cover_measurem
 
 
 @pytest.mark.asyncio
-async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
+async def test_timer_timeout_facade_holds_session_with_approved_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.app.device.repositories import command_repository as command_repository_module
@@ -564,6 +612,7 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
         device_id=3,
         correlation_id=None,
         status=CommandStatus.ACK_RECEIVED,
+        task_type="PICK_AND_PUT",
         ack_received_at=now - timedelta(seconds=30),
     )
     session = SimpleNamespace(
@@ -580,7 +629,8 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
         context_json={},
         ended_at=None,
     )
-    runtime_hold_creation = AsyncMock(return_value=SimpleNamespace(id=9009))
+    runtime_hold = SimpleNamespace(id=9009, source_reason="CALLBACK_DEADLINE_EXPIRED", evidence_snapshot_json={})
+    runtime_hold_creation = AsyncMock(return_value=runtime_hold)
     service = WorklineRuntimeReconciliationService(
         session_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=session)),
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=7))),
@@ -620,7 +670,7 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
         trace_id=session.trace_id,
     )
 
-    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-009"] == "partial"
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-009"] == "covered"
     assert case["expected_intents"] == []
     assert case["expected_state"]["runtime_hold"] == RuntimeHoldStatus.OPEN.value
     assert result.disposition == "RECONCILED"
@@ -640,11 +690,13 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
     assert len(db.added) == 1
     timeout_timeline = db.added[0]
     assert timeout_timeline.message == "Callback deadline expired; runtime reconciliation started."
-    assert timeout_timeline.payload_json["reason"] == "CALLBACK_DEADLINE_EXPIRED"
+    assert timeout_timeline.payload_json["reason"] == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
     assert timeout_timeline.payload_json["wait_token"] == command_code
     assert timeout_timeline.payload_json["deadline_at"] == deadline_at.isoformat()
     assert timeout_timeline.payload_json["ack_received_at"] == command.ack_received_at.isoformat()
-    assert session.reconciliation_reason.value != case["expected_outcome"]["reason_code"]
+    assert runtime_hold.source_reason == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
+    assert runtime_hold.evidence_snapshot_json["reason"] == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
+    assert timeout_timeline.payload_json["reason"] == case["expected_outcome"]["reason_code"]
     assert case["expected_outcome"]["reason_code"] == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
 
 
@@ -748,7 +800,9 @@ async def test_current_wait_anchor_mismatch_archives_without_applying_followup_c
         processor_token="lease-rs-sd-013",
         state=state,
     )
-    followup = RuntimeIntent.command(device_role="ROUGH_SORTER_CONVEYOR", action="MOVE_FORWARD")
+    followup = RuntimeIntent.command(
+        device_role="ROUGH_SORTER_CONVEYOR", action="MOVE_FORWARD", result_policy="COMMAND_RESULT"
+    )
 
     await callback(OrchestratorResult(success=True, intents=[followup]))
 
@@ -767,7 +821,7 @@ async def test_current_wait_anchor_mismatch_archives_without_applying_followup_c
 
 
 @pytest.mark.asyncio
-async def test_unknown_command_correlation_is_rejected_before_target_archive_and_remains_partial() -> None:
+async def test_unknown_command_correlation_is_rejected_at_unpinned_accept_seam() -> None:
     case = _case("RS-SD-013")
     repository = SimpleNamespace(
         get_by_source_event_identity=AsyncMock(return_value=None),
@@ -788,10 +842,10 @@ async def test_unknown_command_correlation_is_rejected_before_target_archive_and
             correlation_id="corr-unknown-rs-sd-013",
         )
 
-    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-013"] == "partial"
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-013"] == "covered"
     repository.add_received.assert_not_awaited()
-    current_outcome = "REJECTED_BEFORE_ARCHIVE"
-    assert case["expected_outcome"]["result"] != current_outcome
+    # 完整 CallbackIngress 会先固定当前 Session，再由 processor 归档 mismatch；
+    # 此处只验证缺少固定归属的低层 accept seam 必须 fail closed。
     assert case["expected_outcome"]["result"] == "ARCHIVED_EVIDENCE"
     assert case["expected_intents"] == []
     assert case["replay_policy"]["session_progress"] == "NO_PROGRESS"
@@ -1100,6 +1154,7 @@ def test_business_spec_has_strict_metadata_and_stable_sections() -> None:
     ):
         assert heading in content
     assert (
-        "本切片有四类合法终点：下一设备命令已持久化、稳定原因码 Hold、late/unknown callback 的 "
+        "本切片有四类合法终点：下一设备命令已持久化并等待终态结果、稳定原因码 Hold、late/unknown callback 的 "
         "evidence-only 归档、replay no-op；后两类均不得推进当前 Session。"
     ) in content
+    assert "`PICK_AND_PUT`、`MOVE_FORWARD`、`MOVE_TO_NG` 均使用 `COMMAND_RESULT`" in content

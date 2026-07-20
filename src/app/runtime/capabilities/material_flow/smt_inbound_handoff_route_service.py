@@ -16,10 +16,10 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound im
     COMMAND_SOURCE_PICK,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
+from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -330,22 +330,25 @@ def _source_boundary_by_position(boundaries: list[object]) -> dict[str, object]:
 
 
 def _resolve_boundary_selection(workline: object, route_config: dict[str, Any]) -> _BoundaryResolutionResult:
-    definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
-    manifest = getattr(definition, "manifest", None)
-    if manifest is None:
+    definition = get_workline_capability_definition(
+        getattr(workline, "plugin_key", None),
+        getattr(workline, "contract_version", None),
+    )
+    schema = getattr(definition, "schema", None)
+    if schema is None:
         return _BoundaryResolutionResult(
             failure_code=SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID,
             evidence={"manifest_contract_version": None},
         )
 
-    contract_version = getattr(manifest, "contract_version", None)
+    contract_version = getattr(definition, "contract_version", None)
     source_boundaries = _matching_boundaries(
-        manifest,
+        schema,
         business_demand_type="SORTING_INBOUND_SOURCE",
         rack_kind="SINGLE_LAYER",
     )
     target_boundaries = _matching_boundaries(
-        manifest,
+        schema,
         business_demand_type="SORTING_INBOUND_TARGET",
         rack_kind="FIVE_LAYER",
     )
@@ -427,9 +430,12 @@ async def _real_ecs_status_probe(db: AsyncSession, *, workline: object, route: o
 
 
 def _source_pick_device_role(workline: object) -> str | None:
-    definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
-    manifest = getattr(definition, "manifest", None)
-    for command in getattr(manifest, "commands", ()) or ():
+    definition = get_workline_capability_definition(
+        getattr(workline, "plugin_key", None),
+        getattr(workline, "contract_version", None),
+    )
+    schema = getattr(definition, "schema", None)
+    for command in getattr(schema, "commands", ()) or ():
         if getattr(command, "command", None) == COMMAND_SOURCE_PICK:
             target_role = getattr(command, "target_device_role", None)
             return str(target_role) if target_role else None

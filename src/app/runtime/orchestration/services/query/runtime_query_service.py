@@ -23,7 +23,6 @@ from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
 from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
 from src.app.runtime.capabilities.material_flow.station_lease_service import station_lease_service
-from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.runtime.orchestration.models import (
     MaterialUnit,
@@ -81,6 +80,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,
 )
+from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.app.sys.models import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
 from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
@@ -1701,11 +1701,14 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     @staticmethod
     def _single_layer_boundary_positions(workline: WorkLine) -> list[str]:
-        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(
+            getattr(workline, "plugin_key", None),
+            getattr(workline, "contract_version", None),
+        )
         if definition is None:
             return []
         position_codes: list[str] = []
-        for boundary in getattr(definition.manifest, "resource_boundaries", ()):
+        for boundary in definition.schema.resource_boundaries:
             if getattr(boundary, "rack_kind", None) == "SINGLE_LAYER":
                 position_code = str(getattr(boundary, "rack_position_code", "") or "").strip()
                 if position_code and position_code not in position_codes:
@@ -1714,12 +1717,15 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     @staticmethod
     def _manifest_position_metadata_by_code(workline: WorkLine) -> dict[str, dict[str, str]]:
-        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(
+            getattr(workline, "plugin_key", None),
+            getattr(workline, "contract_version", None),
+        )
         if definition is None:
             return {}
 
         metadata_by_code: dict[str, dict[str, str]] = {}
-        for position in getattr(definition.manifest, "rack_positions", ()):
+        for position in definition.schema.rack_positions:
             position_code = str(getattr(position, "code", "") or "").strip()
             if not position_code:
                 continue

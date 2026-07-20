@@ -6,17 +6,19 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, field_validator
-from sqlalchemy import JSON, Column, Text, text
+from sqlalchemy import JSON, Column, ForeignKey, Integer, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
-from src.app.runtime.capability_catalog import WorklineCapabilityDefinition, get_workline_capability_definition
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
+
+if TYPE_CHECKING:
+    from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
 
 
 class LineType(str, Enum):
@@ -159,12 +161,40 @@ class WorkLine(
         description="最近一次 START Trace ID",
     )
     is_active: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")}, description="是否启用")
+    active_plugin_binding_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "wes_biz.workline_plugin_bindings.id",
+                name="fk_work_lines_active_plugin_binding",
+                use_alter=True,
+            ),
+            index=True,
+        ),
+        description="当前 immutable 插件 binding ID",
+    )
+    active_plugin_binding_version: int | None = Field(default=None, ge=1, description="当前插件 binding 版本")
+    active_plugin_config_hash: str | None = Field(default=None, max_length=64, description="当前 typed config 摘要")
+    active_plugin_index_digest: str | None = Field(default=None, max_length=64, description="当前插件生成索引摘要")
+    active_plugin_provider_requirements_json: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="当前 binding 的 provider profile 要求快照",
+    )
+    active_plugin_port_requirements_json: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="当前 binding 的 Port.method 要求快照",
+    )
 
     @property
-    def plugin_definition(self) -> WorklineCapabilityDefinition | None:
+    def plugin_definition(self) -> "WorklinePluginDefinition | None":
         """按 plugin_key 解析运行能力定义。"""
 
-        return get_workline_capability_definition(self.plugin_key)
+        from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
+
+        return get_workline_capability_definition(self.plugin_key, self.contract_version)
 
     @property
     def plugin_class(self) -> type[Any] | None:
@@ -442,3 +472,19 @@ class WorkLineStateTransitionRequest(BaseModel):
     """作业线启停请求。"""
 
     version: int = Field(description="WorkLine 乐观锁版本号")
+
+
+class WorkLineActivationRequest(WorkLineStateTransitionRequest):
+    """作业线激活请求，携带 immutable binding 审批原因。"""
+
+    reason: str | None = Field(default=None, min_length=1, max_length=500, description="人工状态切换原因")
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("状态切换原因不能为空")
+        return normalized

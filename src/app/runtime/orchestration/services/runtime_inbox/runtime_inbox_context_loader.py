@@ -7,7 +7,13 @@ from typing import Any, TypedDict
 from src.app.runtime.orchestration.events_bridge import RESERVED_RUNTIME_EVENTS
 from src.app.workline.constants import EXTERNAL_HTTP_INBOX_KIND
 from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
+from src.app.workline.services.plugin_binding_service import (
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.app.workline.utils import payload_dict
+from src.core.conf import settings
+from src.utils.timezone import timezone
 from src.utils.value_normalization import canonical_event_type, optional_int, optional_str, resolve_entity_id
 
 
@@ -178,6 +184,36 @@ async def _assert_workline_accepting_runtime_event(
     return True
 
 
+async def _assert_platform_plugin_binding_admitted(
+    db: Any,
+    *,
+    workline: Any | None,
+    session: Any | None,
+    devices_by_role: dict[str, list[Any]],
+) -> None:
+    """每次 inbox/retry 都重查历史 pin 的撤权、有效期、环境与 kill switch。"""
+
+    if workline is None or session is None:
+        return
+    binding_id = getattr(session, "plugin_binding_id", None)
+    active_binding_id = getattr(workline, "active_plugin_binding_id", None)
+    if not isinstance(binding_id, int) and not isinstance(active_binding_id, int):
+        # 迁移期 legacy WorkLine 从未生成 binding，继续沿用原执行路径。
+        return
+    if not isinstance(binding_id, int):
+        from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
+
+        raise PluginBindingAdmissionError("平台 Session 缺少 immutable binding pin")
+    binding = await workline_plugin_binding_service.get_pinned(db, binding_id=binding_id)
+    workline_plugin_binding_service.assert_pinned_identity(binding=binding, workline=workline, session=session)
+    workline_plugin_binding_service.assert_execution_admitted(
+        binding,
+        environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
+        now=timezone.now_utc(),
+    )
+    workline_plugin_binding_service.assert_device_snapshot(binding, devices_by_role=devices_by_role)
+
+
 async def load_related_entities(
     db: Any,
     inbox: Any,
@@ -234,6 +270,12 @@ async def load_related_entities(
             inbox.workline_session_id = resolved_session_id
     if device is None and session is not None:
         device = _resolve_effect_source_device(inbox, session, devices_by_role)
+    await _assert_platform_plugin_binding_admitted(
+        db,
+        workline=workline,
+        session=session,
+        devices_by_role=devices_by_role,
+    )
     return {
         "session": session,
         "workline": workline,

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class WriteBackDisposition(str, Enum):
@@ -21,6 +22,7 @@ class RuntimeIntentEffectResult:
     """Small neutral result shared by runtime effects, write-back, and processor."""
 
     disposition: WriteBackDisposition = WriteBackDisposition.PROCESSED
+    business_reject_evidence: dict[str, Any] | None = None
 
     @classmethod
     def processed(cls) -> RuntimeIntentEffectResult:
@@ -29,6 +31,13 @@ class RuntimeIntentEffectResult:
     @classmethod
     def resource_retry(cls) -> RuntimeIntentEffectResult:
         return cls(disposition=WriteBackDisposition.RESOURCE_RETRY)
+
+    @classmethod
+    def business_rejected(cls, evidence: dict[str, Any]) -> RuntimeIntentEffectResult:
+        return cls(
+            disposition=WriteBackDisposition.PROCESSED,
+            business_reject_evidence=dict(evidence),
+        )
 
 
 __all__ = ["RuntimeIntentEffectResult", "WriteBackDisposition"]

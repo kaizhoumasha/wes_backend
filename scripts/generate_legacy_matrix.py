@@ -187,6 +187,86 @@ ACTIVE_FOUNDATION_PATHS = frozenset(
     }
 )
 
+# Task 9 起由最终扩展平台直接承载的实现与测试，不是待删除的 legacy 入口。
+ACTIVE_PLATFORM_PREFIXES = (
+    "tests/workline_plugins/rough_sorter/",
+    "tests/workline_runtime/extensions/",
+    "tests/workline_runtime/system_capabilities/",
+)
+ACTIVE_PLATFORM_PATHS = frozenset(
+    {
+        "src/app/workline/models/plugin_binding.py",
+        "src/app/workline/repositories/plugin_binding_repository.py",
+        "src/app/workline/services/plugin_binding_service.py",
+        "tests/workline_plugins/test_conformance_contract.py",
+        "tests/workline_runtime/test_workline_session_repository_versioning.py",
+    }
+)
+ACTIVE_PLATFORM_SYMBOLS = frozenset(
+    {
+        ("src/app/workline/services/device_command_gateway.py", "StaleRuntimeDeviceCommandAdmission"),
+        ("src/app/workline/services/device_command_gateway.py", "prepare_runtime_device_command_effect"),
+        (
+            "tests/workline_runtime/test_runtime_intent_effect_applier.py",
+            "test_system_capability_intent_uses_one_generic_effect_service_branch",
+        ),
+        (
+            "tests/workline_runtime/test_runtime_intent_effect_applier.py",
+            "test_stale_material_effect_short_circuits_following_device_effects",
+        ),
+    }
+)
+ACTIVE_PLATFORM_FORBIDDEN_IMPORTS = frozenset()
+
+
+def _active_import_base(relative_path: Path, node: ast.ImportFrom) -> str:
+    if node.level == 0:
+        return node.module or ""
+    module_parts = list(relative_path.with_suffix("").parts)
+    if module_parts:
+        module_parts.pop()
+    ascend = node.level - 1
+    prefix = module_parts[: len(module_parts) - ascend] if ascend <= len(module_parts) else []
+    if node.module:
+        prefix.extend(node.module.split("."))
+    return ".".join(prefix)
+
+
+def find_active_platform_legacy_imports(
+    *,
+    repo_root: Path = REPO_ROOT,
+    prefixes: tuple[str, ...] = ACTIVE_PLATFORM_PREFIXES,
+) -> list[str]:
+    """ACTIVE_PLATFORM_PREFIXES 只排除目标态入口，不得隐藏旧路由 import。"""
+
+    violations: list[str] = []
+    for prefix in prefixes:
+        root = repo_root / prefix
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+            except SyntaxError:  # noqa: S112 - 语法错误由 architecture scanner 按所属 rule 报告
+                continue
+            relative = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                modules: list[str] = []
+                if isinstance(node, ast.Import):
+                    modules.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    base = _active_import_base(relative, node)
+                    modules.append(base)
+                    modules.extend(f"{base}.{alias.name}" for alias in node.names if alias.name != "*")
+                if any(
+                    module == forbidden or module.startswith(f"{forbidden}.")
+                    for module in modules
+                    for forbidden in ACTIVE_PLATFORM_FORBIDDEN_IMPORTS
+                ):
+                    violations.append(f"{relative.as_posix()}:{node.lineno}")
+    return violations
+
+
 GUARDRAIL_SEED_SYMBOLS = {
     "src/workline_runtime/services.py": "build_workline_runtime_services",
 }
@@ -196,7 +276,7 @@ GUARDRAIL_SEED_SYMBOLS = {
 BUSINESS_SEMANTICS_RULES = [
     # 旧 plugin 框架（优先于 runtime，避免路径含 runtime 误判）
     (
-        r"plugin_base|plugin_context|plugin_manifest|plugin_sdk|plugin_next|null_plugin|"
+        r"plugin_base|plugin_context|plugin_sdk|plugin_next|null_plugin|"
         r"plugincontext|worklineplugin|pluginnotfound",
         "旧 plugin 框架，目标删除",
     ),
@@ -462,7 +542,7 @@ def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, 
         (
             ("WorkLine 配置",),
             "tests/contracts/workline/test_start_admission_contract.py;"
-            "tests/workline_runtime/test_plugin_manifest_and_topology.py",
+            "tests/workline_plugins/rough_sorter/test_conformance.py",
         ),
         (("技术残留",), "tests/characterization/workline_legacy/test_business_semantics_characterization.py"),
     ]
@@ -505,6 +585,28 @@ def _append_capability_implementation_import_seed_paths(seed_paths: list[SeedPat
                 _capability_implementation_import_business_semantics(line),
                 "phase2",
                 "MEDIUM",
+            )
+        )
+
+
+def _append_runtime_extension_guardrail_seed_paths(seed_paths: list[SeedPath]) -> None:
+    """逐文件登记 Task 10 前仍需清理的旧路由与编排分支。"""
+
+    allowlist = REPO_ROOT / "scripts" / "architecture-guardrails.allowlist"
+    for row in allowlist.read_text(encoding="utf-8").splitlines():
+        if not row.startswith(("LEGACY_CAPABILITY_ROUTING_IMPORT|", "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION|")):
+            continue
+        rule, path, _reason, _expires_at, _entry_id, phase = row.split("|")
+        owner = path.split("/")[2] if path.startswith("src/app/") else "runtime"
+        etype = "service" if "/services/" in path else "runtime_helper"
+        seed_paths.append(
+            (
+                path,
+                owner,
+                etype,
+                f"Task 10 待清理扩展平台残留 ({rule} seed)",
+                phase,
+                "HIGH" if rule == "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" else "MEDIUM",
             )
         )
 
@@ -578,9 +680,19 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
     for path, owner, etype, bs, phase, risk in seed_paths:
         sym = GUARDRAIL_SEED_SYMBOLS.get(path)
         if sym is None:
-            sym = (
-                "<file>#CAPABILITY_IMPLEMENTATION_IMPORT" if "CAPABILITY_IMPLEMENTATION_IMPORT seed" in bs else "<file>"
+            guardrail_rule = next(
+                (
+                    rule
+                    for rule in (
+                        "CAPABILITY_IMPLEMENTATION_IMPORT",
+                        "LEGACY_CAPABILITY_ROUTING_IMPORT",
+                        "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+                    )
+                    if f"{rule} seed" in bs
+                ),
+                None,
             )
+            sym = f"<file>#{guardrail_rule}" if guardrail_rule else "<file>"
         eid = f"legacy:{path}:{sym}"
         if eid in seen:
             continue
@@ -609,6 +721,11 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
 
 
 def parse_entries() -> list[Entry]:
+    active_legacy_imports = find_active_platform_legacy_imports()
+    if active_legacy_imports:
+        joined = ", ".join(active_legacy_imports)
+        raise RuntimeError(f"active extension platform imports legacy capability routing: {joined}")
+
     entries: list[Entry] = []
     seen: set[str] = set()
 
@@ -616,7 +733,14 @@ def parse_entries() -> list[Entry]:
         rel = str(Path(path).relative_to(REPO_ROOT)) if Path(path).is_absolute() else path
         sym = symbol or "<file>"
         eid = f"legacy:{rel}:{sym}"
-        if rel in ACTIVE_FOUNDATION_PATHS or eid in seen or (rel, sym) in SHIM_INTERNAL_SYMBOLS:
+        if (
+            rel in ACTIVE_FOUNDATION_PATHS
+            or rel in ACTIVE_PLATFORM_PATHS
+            or rel.startswith(ACTIVE_PLATFORM_PREFIXES)
+            or (rel, sym) in ACTIVE_PLATFORM_SYMBOLS
+            or eid in seen
+            or (rel, sym) in SHIM_INTERNAL_SYMBOLS
+        ):
             return
         seen.add(eid)
         bs, p4 = classify_business_semantics(sym, rel)
@@ -920,6 +1044,7 @@ def parse_entries() -> list[Entry]:
     ]
 
     _append_capability_implementation_import_seed_paths(seed_paths)
+    _append_runtime_extension_guardrail_seed_paths(seed_paths)
     seed_paths.extend(
         [
             (

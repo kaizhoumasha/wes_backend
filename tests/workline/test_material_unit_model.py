@@ -16,7 +16,7 @@ from sqlmodel import SQLModel, select
 
 from src.app.runtime.orchestration.models import MaterialUnit, MaterialUnitStatus
 from src.app.runtime.orchestration.models.session import WorklineSession
-from src.app.workline.domain.plugin_manifest import StateMachineTransition
+from src.app.runtime.workline_plugins.schema import StateMachineTransition
 from src.database.sqlite_schema import configure_sqlite_schemas
 
 

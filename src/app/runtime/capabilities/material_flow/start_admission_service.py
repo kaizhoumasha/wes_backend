@@ -12,7 +12,6 @@ import httpx
 
 from src.app.device.repositories import device_repository
 from src.app.device.services.device_context_service import device_context_service
-from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.runtime.orchestration.repositories.session_repository import workline_session_repository
 from src.app.runtime.orchestration.repository_wiring import workline_repository
@@ -20,6 +19,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
+from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.services.workline_service import WorkLineService, workline_service
@@ -317,10 +317,13 @@ class WorkLineStartAdmissionService:
         return None
 
     def _resolve_command_target_devices(self, workline: Any, devices: list[Any]) -> list[Any]:
-        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(
+            getattr(workline, "plugin_key", None),
+            getattr(workline, "contract_version", None),
+        )
         if definition is None:
             return []
-        target_map = WorkLineService._command_target_device_map(definition.manifest, devices)
+        target_map = WorkLineService._command_target_device_map(definition.schema, devices)
         return [target_map[device_id][0] for device_id in sorted(target_map)]
 
     def _build_status_targets(self, devices: list[Any]) -> list[StartAdmissionStatusTarget]:

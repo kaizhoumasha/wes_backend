@@ -15,15 +15,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
-from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-    SORTING_CONTEXT_SCHEMA_VERSION,
-)
 from src.app.runtime.capabilities.material_flow.runtime_identity import RECONCILIATION_RUNTIME_SOURCE
-from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.material_target_resolver import resolve_destination_device
 from src.app.runtime.orchestration.models.session import SessionStatus
@@ -35,11 +29,14 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
+from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
+from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_str, optional_int, resolve_required_pk, string_value
 
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_INTENT_KINDS = {
+    RuntimeIntentKind.SYSTEM_CAPABILITY,
     RuntimeIntentKind.UPDATE_CONTEXT,
     RuntimeIntentKind.MARK_NG,
     RuntimeIntentKind.COMMAND,
@@ -75,8 +72,6 @@ _FULFILLMENT_EXTERNAL_TARGET_CODES = frozenset(
 )
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
 _STATION_DISPATCH_LEASE_UNAVAILABLE = "station dispatch lease is not available"
-_SMT_SOURCE_PICK_COMMAND = "SORTING_SOURCE_PICK"
-_SMT_TERMINAL_RESULT_MARKER_KEY = "smt_inbound_handoff_terminal_result"
 _RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID = "RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID"
 
 
@@ -109,31 +104,12 @@ def _is_command_producing_intent(intent: RuntimeIntent) -> bool:
         RuntimeIntentKind.RACK_OPERATION_REQUEST,
         RuntimeIntentKind.BIN_OPERATION_REQUEST,
         RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST,
-    } or (intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action is not None)
-
-
-def _command_producing_intent_to_command_intent(intent: RuntimeIntent) -> RuntimeIntent:
-    if intent.kind == RuntimeIntentKind.COMMAND:
-        return intent
-
-    if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action is not None:
-        return RuntimeIntent.command(
-            action=intent.action,
-            device_role=intent.device_role,
-            payload=dict(intent.payload_json),
-            destination=intent.destination or Destination.next(),
-            target_device_id=intent.target_device_id,
-            timeout_seconds=intent.timeout_seconds,
-        )
-
-    raise ValueError(f"RuntimeIntent is not command-producing: {intent.kind.value}")
+    }
 
 
 def _validate_command_destination(intent: RuntimeIntent) -> None:
     if intent.kind != RuntimeIntentKind.COMMAND:
         raise ValueError(f"Expected COMMAND intent, got {intent.kind.value}")
-    if intent.action is None:
-        raise ValueError("COMMAND intent requires action")
 
     destination = intent.destination
     if destination is None:
@@ -162,8 +138,8 @@ def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
         if _is_command_producing_intent(intent):
             command_producing_count += 1
             command_producing_seen = True
-            if intent.kind in {RuntimeIntentKind.COMMAND, RuntimeIntentKind.CONTINUE_NEXT}:
-                _validate_command_destination(_command_producing_intent_to_command_intent(intent))
+            if intent.kind == RuntimeIntentKind.COMMAND:
+                _validate_command_destination(intent)
 
         if intent.kind in _TERMINAL_INTENT_KINDS and index != len(intents) - 1:
             raise ValueError("terminal RuntimeIntent must be final intent")
@@ -176,8 +152,15 @@ def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
 
 def _runtime_route_roles(ctx: Any) -> dict[str, str]:
     workline = ctx["workline"]
+    binding = ctx.get("plugin_binding")
+    approved_plugin_config = getattr(binding, "typed_config_json", None) if binding is not None else None
+    config_sources = (
+        (approved_plugin_config,)
+        if binding is not None
+        else (getattr(workline, "runtime_config_json", None), getattr(workline, "config", None))
+    )
     route_roles: dict[str, str] = {}
-    for source in (getattr(workline, "runtime_config_json", None), getattr(workline, "config", None)):
+    for source in config_sources:
         if not isinstance(source, Mapping):
             continue
         source_map = cast("Mapping[str, Any]", source)
@@ -426,70 +409,6 @@ def _state_value(value: Any) -> str:
     return string_value(raw, "")
 
 
-def _ctx_plugin_key(ctx: Mapping[str, Any]) -> str | None:
-    for source_name in ("session", "workline"):
-        plugin_key = string_value(getattr(ctx.get(source_name), "plugin_key", None), "")
-        if plugin_key:
-            return plugin_key
-    return None
-
-
-def _material_unit_status_transition_targets(
-    ctx: Mapping[str, Any], *, from_state: str
-) -> tuple[str, tuple[str, ...]] | None:
-    plugin_key = _ctx_plugin_key(ctx)
-    definition = get_workline_capability_definition(plugin_key)
-    if definition is None:
-        return None
-
-    try:
-        manifest = getattr(definition, "manifest", None)
-    except (ImportError, AttributeError, TypeError, ValueError):
-        logger.debug(
-            "skip material unit status transition warning because plugin manifest is unavailable: plugin_key=%s",
-            plugin_key,
-            exc_info=True,
-        )
-        return None
-    for state_machine in getattr(manifest, "state_machines", ()) or ():
-        state_owner = getattr(state_machine, "state_owner", None)
-        if getattr(state_owner, "model", None) != "MaterialUnit" or getattr(state_owner, "field", None) != "status":
-            continue
-        for transition in getattr(state_machine, "transitions", ()) or ():
-            if _state_value(getattr(transition, "from_state", None)) == from_state:
-                return plugin_key or "", tuple(_state_value(state) for state in getattr(transition, "to_states", ()))
-    return None
-
-
-def _warn_material_unit_status_transition_if_outside_manifest(
-    ctx: Mapping[str, Any],
-    material_unit: Any,
-    *,
-    from_state: str,
-    to_state: str,
-) -> None:
-    transition_contract = _material_unit_status_transition_targets(ctx, from_state=from_state)
-    if transition_contract is None:
-        return
-
-    plugin_key, allowed_to_states = transition_contract
-    if to_state in allowed_to_states:
-        return
-
-    material_unit_id = getattr(material_unit, "id", None)
-    pkg_code = string_value(getattr(material_unit, "pkg_code", None), "")
-    logger.warning(
-        "material unit status transition is outside manifest contract "
-        "object_type=REEL object_id=%s from_state=%s to_state=%s pkg_code=%s plugin_key=%s suggestion=%s",
-        material_unit_id,
-        from_state,
-        to_state,
-        pkg_code,
-        plugin_key,
-        "check whether the plugin is missing a transition or the manifest transitions contract lacks this from->to move",
-    )
-
-
 def _apply_material_unit_status_write(
     ctx: Mapping[str, Any],
     material_unit: Any,
@@ -497,19 +416,13 @@ def _apply_material_unit_status_write(
     from_state: str | None,
     to_status: Any,
 ) -> None:
+    _ = ctx
     to_state = _state_value(to_status)
-    if from_state is not None:
-        _warn_material_unit_status_transition_if_outside_manifest(
-            ctx,
-            material_unit,
-            from_state=from_state,
-            to_state=to_state,
-        )
-        if to_state == "RECONCILING" and from_state and from_state != "RECONCILING":
-            try:
-                material_unit.reconciliation_from_state = type(to_status)(from_state)
-            except (TypeError, ValueError):
-                material_unit.reconciliation_from_state = from_state
+    if from_state is not None and to_state == "RECONCILING" and from_state != "RECONCILING":
+        try:
+            material_unit.reconciliation_from_state = type(to_status)(from_state)
+        except (TypeError, ValueError):
+            material_unit.reconciliation_from_state = from_state
 
     material_unit.status = to_state
 
@@ -600,192 +513,12 @@ def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
         destination = Destination.role(intent.device_role)
 
     source_device = ctx["source_device"]
-    if source_device is None:
-        raise ValueError("Cannot resolve command target without source device")
     return resolve_destination_device(
         destination=destination,
         source_device=source_device,
         devices=_all_devices(ctx["devices_by_role"]),
         route_roles=_runtime_route_roles(ctx),
     )
-
-
-def _positive_int_payload(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int) and value > 0:
-        return value
-    if isinstance(value, str) and value.isdigit():
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    return None
-
-
-def _source_pick_command_correlation(intent: RuntimeIntent) -> dict[str, int] | None:
-    if intent.action != _SMT_SOURCE_PICK_COMMAND:
-        return None
-    payload = intent.payload_json
-    handoff_demand_id = _positive_int_payload(payload.get("handoff_demand_id"))
-    source_item_id = _positive_int_payload(payload.get("handoff_source_item_id"))
-    claim_attempt_no = _positive_int_payload(payload.get("claim_attempt_no"))
-    source_pick_inbox_id = _positive_int_payload(payload.get("source_pick_inbox_id"))
-    if None in {handoff_demand_id, source_item_id, claim_attempt_no, source_pick_inbox_id}:
-        return None
-    return {
-        "handoff_demand_id": cast("int", handoff_demand_id),
-        "source_item_id": cast("int", source_item_id),
-        "claim_attempt_no": cast("int", claim_attempt_no),
-        "source_pick_inbox_id": cast("int", source_pick_inbox_id),
-    }
-
-
-async def _record_source_pick_command_correlation(
-    ctx: Any,
-    intent: RuntimeIntent,
-    *,
-    command: Any,
-    command_outbox: Any,
-) -> None:
-    correlation = _source_pick_command_correlation(intent)
-    if correlation is None:
-        return
-
-    from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service
-
-    _ = await smt_inbound_handoff_service.record_source_pick_command_correlation(
-        ctx["db"],
-        command_id=resolve_required_pk(command, "source_pick_command"),
-        command_code=string_value(getattr(command, "command_code", None), ""),
-        dispatch_key=string_value(getattr(command_outbox, "dispatch_key", None), ""),
-        trace_id=string_value(ctx.get("trace_id"), ""),
-        **correlation,
-    )
-
-
-def _source_pick_success_command_id(ctx: Any) -> int | None:
-    return optional_int(getattr(ctx["inbox"], "command_id", None)) or optional_int(
-        ctx.get("awaiting_device_command_pk")
-    )
-
-
-def _has_smt_handoff_source_pick_evidence(ctx: Any, *, command_id: int | None) -> bool:
-    if _smt_handoff_source_item_id(ctx) is not None:
-        return True
-    return command_id is not None
-
-
-async def _record_source_pick_success(ctx: Any, *, command_id: int | None = None) -> None:
-    if not _has_smt_handoff_source_pick_evidence(ctx, command_id=command_id):
-        return
-
-    from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service
-
-    try:
-        _ = await smt_inbound_handoff_service.record_source_pick_success(
-            ctx["db"],
-            session=ctx["session"],
-            command_id=command_id,
-            trace_id=string_value(ctx.get("trace_id"), ""),
-        )
-    except ValueError as exc:
-        if "source pick success 缺少 source_item_id" in str(exc):
-            return
-        raise
-
-
-def _terminal_command_id(ctx: Any) -> int | None:
-    return optional_int(getattr(ctx["inbox"], "command_id", None)) or optional_int(
-        ctx.get("awaiting_device_command_pk")
-    )
-
-
-def _target_terminal_evidence(ctx: Any) -> dict[str, Any]:
-    return {
-        "target_command_payload": dict(getattr(ctx["inbox"], "payload_json", None) or {}),
-    }
-
-
-def _is_smt_sorting_inbound_session(ctx: Any) -> bool:
-    plugin_keys = {
-        string_value(getattr(ctx.get("workline"), "plugin_key", None), ""),
-        string_value(getattr(ctx.get("session"), "plugin_key", None), ""),
-        string_value(ctx.get("plugin_key"), ""),
-    }
-    if SMT_SORTING_INBOUND_PLUGIN_KEY in plugin_keys:
-        return True
-    context_json = getattr(ctx["session"], "context_json", None)
-    if not isinstance(context_json, Mapping):
-        return False
-    sorting = context_json.get("sorting")
-    return (
-        isinstance(sorting, Mapping)
-        and optional_int(sorting.get("context_schema_version")) == SORTING_CONTEXT_SCHEMA_VERSION
-    )
-
-
-def _smt_handoff_source_item_id(ctx: Any) -> int | None:
-    context_json = getattr(ctx["session"], "context_json", None)
-    if not isinstance(context_json, Mapping):
-        return None
-    sorting = context_json.get("sorting")
-    if not isinstance(sorting, Mapping):
-        return None
-    source_pick_request = sorting.get("source_pick_request")
-    if not isinstance(source_pick_request, Mapping):
-        return None
-    return optional_int(source_pick_request.get("handoff_source_item_id"))
-
-
-def _can_record_smt_target_terminal_result(ctx: Any) -> bool:
-    return _is_smt_sorting_inbound_session(ctx) and _smt_handoff_source_item_id(ctx) is not None
-
-
-def _consume_terminal_result_marker(ctx: Any) -> dict[str, Any] | None:
-    session = ctx["session"]
-    context_json = getattr(session, "context_json", None)
-    if not isinstance(context_json, Mapping):
-        return None
-    marker = context_json.get(_SMT_TERMINAL_RESULT_MARKER_KEY)
-    if not isinstance(marker, Mapping):
-        return None
-
-    updated_context = dict(context_json)
-    updated_context.pop(_SMT_TERMINAL_RESULT_MARKER_KEY, None)
-    session.context_json = updated_context
-    ctx["session_ctx"] = dict(updated_context)
-    return dict(cast("Mapping[str, Any]", marker))
-
-
-def _terminal_marker_evidence(marker: Mapping[str, Any]) -> dict[str, Any]:
-    evidence = marker.get("terminal_evidence")
-    return dict(cast("Mapping[str, Any]", evidence)) if isinstance(evidence, Mapping) else {}
-
-
-async def _record_source_item_terminal_result(
-    ctx: Any,
-    *,
-    terminal_status: str,
-    command_id: int | None,
-    terminal_evidence: Mapping[str, Any] | None,
-) -> Any:
-    from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service
-
-    result = await smt_inbound_handoff_service.record_source_item_terminal_result(
-        ctx["db"],
-        session=ctx["session"],
-        terminal_status=terminal_status,
-        command_id=command_id,
-        trace_id=string_value(ctx.get("trace_id"), ""),
-        terminal_evidence=dict(terminal_evidence or {}),
-    )
-    if bool(getattr(result, "advanced", False)):
-        current_demand_id = optional_int(getattr(result, "current_demand_id", None))
-        await smt_inbound_handoff_service.claim_next_source_item(
-            ctx["db"],
-            trace_id=string_value(ctx.get("trace_id"), ""),
-            demand_id=current_demand_id,
-        )
-    return result
 
 
 class RuntimeIntentEffectApplier:
@@ -796,11 +529,15 @@ class RuntimeIntentEffectApplier:
         handling_operation_service: Any | None = None,
         resource_projection_service: Any | None = None,
         bin_cell_reservation_service: Any | None = None,
+        system_capability_effect_service: Any | None = None,
+        material_unit_mutation_service: Any | None = None,
     ) -> None:
         self._rack_operation_service = rack_operation_service
         self._handling_operation_service = handling_operation_service
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
+        self._system_capability_effect_service = system_capability_effect_service
+        self._material_unit_mutation_service = material_unit_mutation_service
 
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> RuntimeIntentEffectResult:  # noqa: PLR0912
         _validate_runtime_intents(intents)
@@ -813,10 +550,6 @@ class RuntimeIntentEffectApplier:
             return RuntimeIntentEffectResult.processed()
 
         terminal_state = SimpleNamespace(
-            pending_source_pick_success=False,
-            pending_source_pick_success_command_id=None,
-            pending_target_terminal_success=False,
-            pending_target_terminal_command_id=None,
             skip_next_material_unit_intent=False,
         )
         for intent in intents:
@@ -827,8 +560,45 @@ class RuntimeIntentEffectApplier:
             if terminal_state.skip_next_material_unit_intent and not skip_material_unit_intent:
                 terminal_state.skip_next_material_unit_intent = False
 
+            if intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY:
+                service = self._system_capability_effect_service
+                if service is None:
+                    from src.app.runtime.orchestration.services.intent import system_capability_effect_service
+
+                    service = system_capability_effect_service
+                result = await service.apply(ctx, intent)
+                ctx.setdefault("system_capability_outcomes", []).append(result)
+                from src.app.runtime.system_capabilities.outcomes import (
+                    BusinessReject,
+                    ContractViolation,
+                    RetryableFailure,
+                )
+
+                if isinstance(result.outcome, RetryableFailure):
+                    raise RuntimeError(f"system capability retryable failure: {result.outcome.error_code}")
+                if isinstance(result.outcome, ContractViolation):
+                    raise ValueError(f"system capability contract violation: {result.outcome.error_code}")
+                if isinstance(result.outcome, BusinessReject):
+                    evidence = getattr(result, "evidence", None)
+                    if hasattr(evidence, "model_dump"):
+                        evidence_payload = evidence.model_dump(mode="json")
+                    else:
+                        evidence_payload = {
+                            "capability_key": str(intent.capability_key),
+                            "contract_version": str(intent.contract_version),
+                            "operation_key": str(intent.operation_key),
+                            "idempotency_key": str(intent.idempotency_key or intent.operation_key),
+                            "payload_hash": str(intent.payload_hash),
+                            "outcome_kind": result.outcome.kind,
+                            "outcome_code": result.outcome.reason_code,
+                            "outcome": result.outcome.model_dump(mode="json"),
+                            "occurred_at_ms": int(timezone.now_utc().timestamp() * 1000),
+                        }
+                    return RuntimeIntentEffectResult.business_rejected(evidence_payload)
+                continue
+
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:
-                await self._apply_update_context(ctx, intent, workline_effects, terminal_state)
+                await self._apply_update_context(ctx, intent, workline_effects)
                 continue
 
             if intent.kind == RuntimeIntentKind.MARK_NG:
@@ -863,12 +633,6 @@ class RuntimeIntentEffectApplier:
                     await self._apply_resource_reconciliation_hold(ctx, result)
                     return RuntimeIntentEffectResult.processed()
                 terminal_state.skip_next_material_unit_intent = _is_duplicate_result(result)
-                if str(intent.action) == "MATERIAL_UNMOUNTED":
-                    terminal_state.pending_source_pick_success = True
-                    terminal_state.pending_source_pick_success_command_id = _source_pick_success_command_id(ctx)
-                if str(intent.action) == "MATERIAL_MOUNTED" and _can_record_smt_target_terminal_result(ctx):
-                    terminal_state.pending_target_terminal_success = True
-                    terminal_state.pending_target_terminal_command_id = _terminal_command_id(ctx)
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
@@ -898,23 +662,6 @@ class RuntimeIntentEffectApplier:
             if intent.kind == RuntimeIntentKind.COMPLETE:
                 _merge_context_patch(ctx, intent.context_patch)
                 workline_effects._apply_context_patch(ctx)
-                if terminal_state.pending_target_terminal_success:
-                    await _record_source_item_terminal_result(
-                        ctx,
-                        terminal_status="SORTED",
-                        command_id=terminal_state.pending_target_terminal_command_id,
-                        terminal_evidence=_target_terminal_evidence(ctx),
-                    )
-                    terminal_state.pending_target_terminal_success = False
-                    terminal_state.pending_target_terminal_command_id = None
-                terminal_marker = _consume_terminal_result_marker(ctx)
-                if terminal_marker is not None:
-                    await _record_source_item_terminal_result(
-                        ctx,
-                        terminal_status=string_value(terminal_marker.get("terminal_status"), ""),
-                        command_id=optional_int(terminal_marker.get("command_id")) or _terminal_command_id(ctx),
-                        terminal_evidence=_terminal_marker_evidence(terminal_marker),
-                    )
                 workline_effects._clear_session_failure(ctx["session"])
                 ctx["orch_result"].complete = True
                 _ = await workline_effects._apply_completion_transition(ctx)
@@ -938,121 +685,20 @@ class RuntimeIntentEffectApplier:
         return RuntimeIntentEffectResult.processed()
 
     async def _apply_create_material_unit(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
+        service = self._material_unit_mutation_service
+        if service is None:
+            from src.app.runtime.orchestration.services import material_unit_mutation_service
 
-        session = ctx["session"]
-        db = ctx["db"]
-        pkg_code = string_value(intent.payload_json.get("pkg_code"), "")
-        material_identity_key = string_value(intent.payload_json.get("material_identity_key"), "")
-        six_in_one = dict(cast("Mapping[str, Any]", intent.payload_json.get("six_in_one") or {}))
-        status = MaterialUnitStatus(string_value(intent.payload_json.get("status"), ""))
-        current_session_id = resolve_required_pk(session, "session")
-        flush = getattr(db, "flush", None)
-
-        async def get_material_unit_by_pkg_code() -> Any | None:
-            # with_for_update 锁住已存在料盘行直到事务结束，消除复用路径的 TOCTOU 窗口：
-            # 并发事务同时读到同一 material_unit 后盲目覆盖 current_session_id。
-            # SQLite 静默忽略 FOR UPDATE；Postgres 行锁串行化所有权转移。
-            result = await db.execute(
-                select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1).with_for_update()
-            )
-            material_units = list(result.scalars().all())
-            if len(material_units) > 1:
-                raise ValueError(f"multiple material units found for pkg_code: {pkg_code}")
-            return material_units[0] if material_units else None
-
-        material_unit = await get_material_unit_by_pkg_code()
-        status_from_state = _state_value(getattr(material_unit, "status", None)) if material_unit is not None else None
-        if material_unit is not None:
-            # 复用已存在的料盘实体（跨 Session handoff 的正常路径）。
-            # 若该实体仍被另一个非终态 Session 持有，说明出现跨线并发或重复 claim，
-            # 拒绝静默窃取所有权，避免双 Session 指向同一料盘造成状态分裂。
-            await _reject_reuse_when_owned_by_active_session(db, material_unit, current_session_id=current_session_id)
-        if material_unit is None:
-            begin_nested = getattr(db, "begin_nested", None)
-            if callable(begin_nested):
-                try:
-                    # 唯一索引竞争回滚到 savepoint，避免污染外层事务。
-                    async with cast("Any", begin_nested)():
-                        material_unit = MaterialUnit(
-                            pkg_code=pkg_code,
-                            material_identity_key=material_identity_key,
-                            six_in_one=six_in_one,
-                            status=status,
-                            current_session_id=current_session_id,
-                        )
-                        db.add(material_unit)
-                        if flush is not None:
-                            await flush()
-                except IntegrityError:
-                    material_unit = await get_material_unit_by_pkg_code()
-                    if material_unit is None:
-                        raise
-                    await _reject_reuse_when_owned_by_active_session(
-                        db, material_unit, current_session_id=current_session_id
-                    )
-                    status_from_state = _state_value(getattr(material_unit, "status", None))
-            else:
-                material_unit = MaterialUnit(
-                    pkg_code=pkg_code,
-                    material_identity_key=material_identity_key,
-                    six_in_one=six_in_one,
-                    status=status,
-                    current_session_id=current_session_id,
-                )
-                db.add(material_unit)
-
-        material_unit.material_identity_key = material_identity_key
-        # six_in_one 合并而非覆盖：保留已有字段（如粗分机扫码的完整六合一码），
-        # 仅用本次 payload 的非空值更新，避免 SMT 接管时用瘦构造 dict 丢数据。
-        merged_six_in_one = {
-            **dict(material_unit.six_in_one or {}),
-            **{key: value for key, value in six_in_one.items() if value is not None},
-        }
-        material_unit.six_in_one = merged_six_in_one
-        if "current_location" in intent.payload_json:
-            material_unit.current_location = intent.payload_json.get("current_location")
-        _apply_material_unit_status_write(ctx, material_unit, from_state=status_from_state, to_status=status)
-        material_unit.current_session_id = current_session_id
-        if flush is not None:
-            await flush()
-        session.current_material_unit_id = resolve_required_pk(material_unit, "material_unit")
+            service = material_unit_mutation_service
+        await service.create(ctx, intent.payload_json)
 
     async def _apply_update_material_unit_status(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
+        service = self._material_unit_mutation_service
+        if service is None:
+            from src.app.runtime.orchestration.services import material_unit_mutation_service
 
-        material_unit_id = optional_int(intent.payload_json.get("material_unit_id"))
-        if material_unit_id is None:
-            raise ValueError(
-                f"UPDATE_MATERIAL_UNIT_STATUS intent requires valid integer material_unit_id, "
-                f"got: {intent.payload_json.get('material_unit_id')!r}"
-            )
-        material_unit = await ctx["db"].get(MaterialUnit, material_unit_id)
-        if material_unit is None:
-            raise ValueError(f"material unit not found: {material_unit_id}")
-
-        session = ctx["session"]
-        current_session_id = resolve_required_pk(session, "session")
-        if intent.payload_json.get("clear_session_reference") is True and (
-            getattr(material_unit, "current_session_id", None) != current_session_id
-            or getattr(session, "current_material_unit_id", None) != material_unit_id
-        ):
-            return
-
-        from_status = _state_value(getattr(material_unit, "status", None))
-        to_status = MaterialUnitStatus(string_value(intent.payload_json.get("status"), ""))
-        _apply_material_unit_status_write(ctx, material_unit, from_state=from_status, to_status=to_status)
-        if "current_location" in intent.payload_json:
-            material_unit.current_location = intent.payload_json.get("current_location")
-        material_unit.current_session_id = current_session_id
-        if intent.payload_json.get("clear_session_reference") is True:
-            # 同批次清理登记在 ctx；同时持久化到 session.context_json，
-            # 以便 NG 冲突进 MANUAL_HOLD 后跨 inbox 批次恢复到 COMPLETE 时仍能清理。
-            cleanup_ids = ctx.setdefault("_runtime_material_unit_cleanup_ids", set())
-            cleanup_ids.add(material_unit_id)
-            _persist_pending_cleanup_ids(session, set(cleanup_ids))
-            return
-        session.current_material_unit_id = material_unit_id
+            service = material_unit_mutation_service
+        await service.update_status(ctx, intent.payload_json)
 
     async def _apply_current_material_unit_reconciliation_status(self, ctx: Any) -> None:
         from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
@@ -1113,31 +759,9 @@ class RuntimeIntentEffectApplier:
         ctx: Any,
         intent: RuntimeIntent,
         workline_effects: Any,
-        terminal_state: SimpleNamespace,
     ) -> None:
         _merge_context_patch(ctx, intent.context_patch)
         workline_effects._apply_context_patch(ctx)
-        if terminal_state.pending_source_pick_success:
-            await _record_source_pick_success(ctx, command_id=terminal_state.pending_source_pick_success_command_id)
-            terminal_state.pending_source_pick_success = False
-            terminal_state.pending_source_pick_success_command_id = None
-        if terminal_state.pending_target_terminal_success:
-            await _record_source_item_terminal_result(
-                ctx,
-                terminal_status="SORTED",
-                command_id=terminal_state.pending_target_terminal_command_id,
-                terminal_evidence=_target_terminal_evidence(ctx),
-            )
-            terminal_state.pending_target_terminal_success = False
-            terminal_state.pending_target_terminal_command_id = None
-        terminal_marker = _consume_terminal_result_marker(ctx)
-        if terminal_marker is not None:
-            await _record_source_item_terminal_result(
-                ctx,
-                terminal_status=string_value(terminal_marker.get("terminal_status"), ""),
-                command_id=optional_int(terminal_marker.get("command_id")) or _terminal_command_id(ctx),
-                terminal_evidence=_terminal_marker_evidence(terminal_marker),
-            )
 
     async def _apply_noop_completion(self, ctx: Any) -> None:
         from src.app.runtime.orchestration.models.timeline import (
@@ -1265,7 +889,6 @@ class RuntimeIntentEffectApplier:
 
         command_outbox = workline_effects._build_command_outbox_model(ctx, command=command, device_code=device_code)
         ctx["db"].add(command_outbox)
-        await _record_source_pick_command_correlation(ctx, intent, command=command, command_outbox=command_outbox)
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.DISPATCH_PREPARE,
@@ -1808,7 +1431,12 @@ class RuntimeIntentEffectApplier:
             or coerce_optional_str(getattr(session, "plugin_key", None))
             or coerce_optional_str(payload_json.get("plugin_key"))
         )
-        plugin_definition = get_workline_capability_definition(plugin_key)
+        contract_version = (
+            coerce_optional_str(getattr(session, "contract_version", None))
+            or coerce_optional_str(getattr(workline, "contract_version", None))
+            or coerce_optional_str(payload_json.get("contract_version"))
+        )
+        plugin_definition = get_workline_capability_definition(plugin_key, contract_version)
         if plugin_definition is None:
             return await self._reject_resource_wait_subject_contract(
                 ctx,
@@ -1817,10 +1445,10 @@ class RuntimeIntentEffectApplier:
                 subject_key=subject_key,
                 projection_type=projection_type,
                 plugin_key=plugin_key,
-                contract_error="RESOURCE_WAIT manifest is missing or unknown",
+                contract_error="RESOURCE_WAIT schema is missing or unknown",
             )
         try:
-            plugin_definition.manifest.validate_resource_wait_subject(
+            plugin_definition.schema.validate_resource_wait_subject(
                 subject_type=subject_type,
                 projection_type=projection_type,
             )
@@ -1982,7 +1610,7 @@ class RuntimeIntentEffectApplier:
             error_code=ErrorCode.RESOURCE_WAIT,
             context=context,
             message=evidence.message,
-            operator_action="检查 RESOURCE_WAIT subject 是否已声明在插件 manifest 中",
+            operator_action="检查 RESOURCE_WAIT subject/projection 是否成对声明在插件 schema 中",
         )
         _ = await workline_diagnostic_service.record_event(
             ctx["db"],
@@ -2142,10 +1770,7 @@ class RuntimeIntentEffectApplier:
     async def _apply_continue_next(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.workline.services import write_back_service as workline_effects
 
-        if intent.action:
-            await self._apply_command(ctx, _command_producing_intent_to_command_intent(intent))
-            return
-
+        _ = intent
         session = ctx["session"]
         workline_effects.workline_session_lifecycle_service.running(session)
         workline_effects._clear_session_wait(session)

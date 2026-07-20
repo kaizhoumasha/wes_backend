@@ -298,7 +298,19 @@ TEST_ROUGH_SORTER_SEED = TestWorklineSeed(
     zone_name="开发库",
     plugin_key=ROUGH_SORTER_PLUGIN_KEY,
     contract_version=ROUGH_SORTER_CONTRACT_VERSION,
-    config={"seed_source": "local-dev"},
+    config={
+        "device_roles": {
+            "input_arm": ROLE_INPUT_ARM,
+            "conveyor": ROLE_CONVEYOR,
+            "output_arm": ROLE_OUTPUT_ARM,
+        },
+        "pipeline_input_location": "PIPELINE-IN-01",
+        "pipeline_output_location": "PIPELINE-OUT-01",
+        "ng_location": "NG-01",
+        "warehouse_code": "WH-01",
+        "owner_code": "OWNER-01",
+        "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+    },
     runtime_config_json={
         "run_mode": WorkLineRunMode.AUTO.value,
         "sandbox_enabled": False,
@@ -337,6 +349,7 @@ TEST_SMT_SORTING_INBOUND_SEED = TestWorklineSeed(
     description="本地开发环境自动同步的 SMT 分拣入库基础作业线",
     devices=TEST_SMT_SORTING_INBOUND_DEVICES,
     rack_positions=TEST_SMT_SORTING_INBOUND_RACK_POSITIONS,
+    is_active=False,
 )
 
 TEST_WORKLINE_SEEDS: tuple[TestWorklineSeed, ...] = (

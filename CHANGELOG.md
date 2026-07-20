@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0.0] - 2026-07-20
+
+### Added
+- 新增 WorkLine 插件与系统能力平台：以静态生成索引注册 typed Plugin、QUERY/EFFECT capability、不可变 binding 和 Session/Execution pin，支持按 provider profile 与 Port 方法最小授权运行。
+- 新增粗分机类型化决策插件、WMS 库存准入能力和 13 个扫码决策场景，覆盖物料流转、设备命令、NG、Hold、超时与确定性 replay。
+- 新增 RuntimeInbox 三阶段插件尝试、意图账本、effect claim 与 evidence/replay 管道，并增加两份运行时/插件 binding 数据库迁移。
+- 新增 PostgreSQL 集成、E2E、性能预算和架构门禁测试，覆盖并发 pin、attempt stale snapshot、outbox result、callback、录制 replay 与会话锚点。
+
+### Changed
+- RuntimeInbox、callback、设备命令和 WorkLine 服务统一接入平台化运行时边界；运行中的 Session 固定 binding、profile、生成索引和执行关联，避免配置漂移影响既有作业。
+- 粗分机 WMS 准入、系统能力副作用和插件调度改为基于声明合同、权威事实和事务性账本执行，生产路由只使用生成索引。
+- 架构账本、迁移矩阵、业务合同与测试拓扑同步到扩展平台目标态，明确 legacy 入口已退出生产路径。
+
+### Fixed
+- 修复 provider profile 被硬编码、Port 方法过度授权、插件 binding 切换并发、设备命令占用和 callback 幂等关联问题。
+- 修复新建平台 Session 首条 Inbox 缺失 execution/correlation 锚点，以及业务键交叉并发导致 advisory lock 死锁的问题。
+- 收紧 replay、结果关联、失败终态、意图转换与 effect 授权校验，避免迟到回调、旧快照或未声明能力覆盖权威运行状态。
+
+### Removed
+- 删除旧 runtime catalog/dispatcher、手写 plugin manifest/YAML 及相关兼容生产入口，改由平台定义与生成索引承载。
+
 ## [0.17.1.0] - 2026-07-16
 
 ### Added

@@ -12,6 +12,7 @@ Inbound normalizer 不挂到通用 RuntimeCapabilityContext 上。
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -38,11 +39,21 @@ class CapabilityPortRegistry:
     def __init__(self) -> None:
         self._factories: dict[str, Callable[..., Any]] = {}
         self._instances: dict[str, Any] = {}
+        self._cache_instance: dict[str, bool] = {}
 
-    def register(self, port_protocol: type[Any], factory: Callable[..., Any]) -> None:
+    def register(
+        self,
+        port_protocol: type[Any],
+        factory: Callable[..., Any],
+        *,
+        cache_instance: bool = False,
+    ) -> None:
         """注册 port protocol + factory。
 
         H2 type guard: 拒绝 inbound normalizer 类型注册。
+
+        默认不在 registry 缓存实例，避免把绑定 AsyncSession 的 service
+        泄漏到下一个 Inbox attempt。需要复用的纯 client 必须显式选择缓存。
         """
         port_name = port_protocol.__name__
         if port_name in _INBOUND_NORMALIZER_TYPE_NAMES:
@@ -51,15 +62,31 @@ class CapabilityPortRegistry:
                 "inbound normalizer 不属于业务 capability (主计划 §3.5 I3 + H2)"
             )
         self._factories[port_name] = factory
+        self._cache_instance[port_name] = cache_instance
+        self._instances.pop(port_name, None)
 
     def get(self, port_protocol: type[Any]) -> Any:
         """获取 port 实例 (按需构造, 不暴露 implementation type)。"""
         port_name = port_protocol.__name__
         if port_name not in self._factories:
             raise KeyError(f"port {port_name} 未注册; 可用: {list(self._factories)}")
+        if not self._cache_instance.get(port_name, False):
+            return _validate_async_protocol_contract(port_protocol, self._factories[port_name]())
         if port_name not in self._instances:
-            self._instances[port_name] = self._factories[port_name]()
+            self._instances[port_name] = _validate_async_protocol_contract(
+                port_protocol,
+                self._factories[port_name](),
+            )
         return self._instances[port_name]
+
+    def fork_attempt(self) -> CapabilityPortRegistry:
+        """复制 factory 声明但不复制实例，形成 attempt-scoped registry。"""
+
+        registry = CapabilityPortRegistry()
+        for port_name, factory in self._factories.items():
+            registry._factories[port_name] = factory
+            registry._cache_instance[port_name] = False
+        return registry
 
     def list_registered(self) -> list[str]:
         """返回已注册 port 名称列表。"""
@@ -68,6 +95,18 @@ class CapabilityPortRegistry:
     def is_registered(self, port_protocol: type[Any]) -> bool:
         """检查 port 是否已注册。"""
         return port_protocol.__name__ in self._factories
+
+
+def _validate_async_protocol_contract(port_protocol: type[Any], instance: Any) -> Any:
+    """异步 Protocol 方法必须由 async implementation 实现，阻断旧同步 fake。"""
+
+    for method_name, protocol_method in vars(port_protocol).items():
+        if method_name.startswith("_") or not inspect.iscoroutinefunction(protocol_method):
+            continue
+        implementation = getattr(instance, method_name, None)
+        if not inspect.iscoroutinefunction(implementation):
+            raise TypeError(f"{port_protocol.__name__}.{method_name} requires async Port contract implementation")
+    return instance
 
 
 class RuntimeCapabilityContext:
@@ -92,6 +131,8 @@ class RuntimeCapabilityContext:
         self._registry = registry
         self._allowed_query_capabilities = _normalize_capability_set(allowed_query_capabilities)
         self._allowed_effect_capabilities = _normalize_capability_set(allowed_effect_capabilities)
+        # Context 本身按 attempt 创建；只在该 attempt 内复用 Port proxy。
+        self._attempt_ports: dict[tuple[str, str], Any] = {}
 
     @classmethod
     def from_provider_profile(cls, registry: CapabilityPortRegistry, profile: Any) -> RuntimeCapabilityContext:
@@ -111,23 +152,36 @@ class RuntimeCapabilityContext:
         """获取 effect port (出站副作用, 必须先写 RuntimeIntentLog)。"""
         return self._get_restricted_port(port_protocol, direction="effect")
 
+    def require_query_ports(self, port_protocols: Iterable[type[Any]]) -> None:
+        """Fail-fast 校验 Definition 声明的所有 query Port。"""
+
+        for port_protocol in port_protocols:
+            self.get_query_port(port_protocol)
+
     def _get_restricted_port(self, port_protocol: type[Any], *, direction: str) -> Any:
+        port_name = port_protocol.__name__
+        cache_key = (direction, port_name)
+        if cache_key in self._attempt_ports:
+            return self._attempt_ports[cache_key]
         allowed = self._allowed_query_capabilities if direction == "query" else self._allowed_effect_capabilities
         if allowed is None:
-            return self._registry.get(port_protocol)
-        port_name = port_protocol.__name__
+            port = self._registry.get(port_protocol)
+            self._attempt_ports[cache_key] = port
+            return port
         allowed_methods = frozenset(
             capability.split(".", maxsplit=1)[1] for capability in allowed if capability.startswith(f"{port_name}.")
         )
         if not allowed_methods:
             raise PermissionError(f"provider 未声明 {direction} capability: {port_name}")
         port = self._registry.get(port_protocol)
-        return _RestrictedCapabilityPort(
+        restricted_port = _RestrictedCapabilityPort(
             port,
             port_name=port_name,
             allowed_methods=allowed_methods,
             direction=direction,
         )
+        self._attempt_ports[cache_key] = restricted_port
+        return restricted_port
 
 
 def _normalize_capability_set(capabilities: Iterable[str] | None) -> frozenset[str] | None:

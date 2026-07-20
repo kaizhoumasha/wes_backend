@@ -317,6 +317,7 @@ class CallbackOrchestrationService:
             device_code=callback.device_code,
             device_service=device_service,
         )
+        callback_session = await self._load_command_session(db, existing_command) if is_workline_callback else None
 
         runtime_inbox_result = await self._runtime_inbox_writer.write_result_callback(
             db,
@@ -327,6 +328,11 @@ class CallbackOrchestrationService:
             trace_id=inherited_trace_id,
             event_id=trace.event_id,
             causation_id=trace.causation_id,
+            workline_id=getattr(existing_command, "workline_id", None),
+            device_id=getattr(existing_command, "device_id", None),
+            command_id=getattr(existing_command, "id", None),
+            # 已知 Workline 指令统一进入 processor：当前 awaiting command 正常推进，
+            # 已不再 awaiting 的旧指令由 SessionResolver 归属后写入迟到归档证据。
             processing_required=is_workline_callback,
         )
         if not runtime_inbox_result.created:
@@ -364,7 +370,7 @@ class CallbackOrchestrationService:
                 callback=callback,
                 device_service=device_service,
             )
-            session = await self._load_command_session(db, command)
+            session = callback_session
             runtime_inbox_record = getattr(runtime_inbox_result, "record", None)
             if session is not None and runtime_inbox_record is not None:
                 await self._append_command_acked_timeline(

@@ -25,11 +25,13 @@ from typing import TYPE_CHECKING, Any, cast
 from loguru import logger
 from sqlalchemy import text
 
+from src.app.runtime.normalization.normalizers import normalize_inbox_input
 from src.app.runtime.orchestration.lock_bridge import RedisDistributedLock
 from src.app.runtime.orchestration.orchestrator_bridge import (
     OrchestratorResult,
     OrchestratorService,
 )
+from src.app.runtime.workline_plugins.legacy_compatibility import legacy_runtime_intents
 from src.app.workline.constants import INBOX_PROCESS_TIMEOUT_SECONDS
 from src.database.redis_client import get_redis
 
@@ -93,9 +95,11 @@ class RuntimeInboxOrchestratorDelegate:
         self,
         *,
         orchestrator_factory: Callable[..., OrchestratorService] | None = None,
+        intent_producer: Callable[[Any, Any, str], list[Any]] | None = None,
         timeout_seconds: float = INBOX_PROCESS_TIMEOUT_SECONDS,
     ) -> None:
         self._orchestrator_factory = orchestrator_factory or OrchestratorService
+        self._intent_producer = intent_producer
         self._timeout_seconds = float(timeout_seconds)
 
     async def process(
@@ -125,7 +129,10 @@ class RuntimeInboxOrchestratorDelegate:
         Returns:
             OrchestratorResult.
         """
-        orchestrator = self._orchestrator_factory(lock_provider=_build_orchestrator_lock_provider(db))
+        orchestrator = self._orchestrator_factory(
+            lock_provider=_build_orchestrator_lock_provider(db),
+            intent_producer=self._intent_producer,
+        )
         return await asyncio.wait_for(
             orchestrator.process_inbox(
                 session=session,
@@ -140,7 +147,36 @@ class RuntimeInboxOrchestratorDelegate:
         )
 
 
+def _legacy_unbound_intent_producer(inbox: Any, workline: Any, trace_id: str) -> list[Any]:
+    """在 Workline Plugin 边界内完成迁移期输入标准化与业务映射。"""
+
+    normalized_input = normalize_inbox_input(
+        inbox,
+        trace_id=trace_id,
+        plugin_key=getattr(workline, "plugin_key", None),
+        contract_version=getattr(workline, "contract_version", None),
+    )
+    return legacy_runtime_intents(normalized_input, inbox=inbox, workline=workline, trace_id=trace_id)
+
+
+class LegacyUnboundSessionProcessor(RuntimeInboxOrchestratorDelegate):
+    """仅处理通过精确 identity gate 的未绑定迁移会话。"""
+
+    def __init__(
+        self,
+        *,
+        orchestrator_factory: Callable[..., OrchestratorService] | None = None,
+        timeout_seconds: float = INBOX_PROCESS_TIMEOUT_SECONDS,
+    ) -> None:
+        super().__init__(
+            orchestrator_factory=orchestrator_factory,
+            intent_producer=_legacy_unbound_intent_producer,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 __all__ = [
+    "LegacyUnboundSessionProcessor",
     "RuntimeInboxOrchestratorDelegate",
     "_build_orchestrator_lock_provider",
 ]

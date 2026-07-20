@@ -781,6 +781,16 @@ class RuntimeInboxService:
             return None
         return await self.repository.resolve_unique_correlation_id_by_trace(db, trace_id=trace_id)
 
+    async def _resolve_correlation_context_by_trace(
+        self,
+        db: AsyncSession,
+        *,
+        trace_id: str | None,
+    ) -> tuple[str, int | None] | None:
+        if not isinstance(trace_id, str) or not trace_id:
+            return None
+        return await self.repository.resolve_unique_correlation_context_by_trace(db, trace_id=trace_id)
+
     async def _require_existing_correlation_id(self, db: AsyncSession, *, correlation_id: str) -> str:
         """验证显式 correlation_id 已持久化，避免把 FK 错误推迟到 flush。"""
 
@@ -901,19 +911,24 @@ class RuntimeInboxService:
         *,
         command_code: str,
         source_event_id: str,
+        source_provider_code: str | None = None,
+        source_event_type: str | None = None,
         device_code: str | None = None,
         workline_id: int | None = None,
         device_id: int | None = None,
         command_id: int | None = None,
+        correlation_id: str | None = None,
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
         payload_json: dict[str, Any] | None = None,
+        processing_required: bool = True,
         auto_commit: bool = False,
     ) -> RuntimeInboxAcceptResult:
         """接收 command result 写入 RuntimeInbox (kind=COMMAND_RESULT).
 
-        - provider_code: 有 device_code 走 "DEVICE_RESULT", 缺省走 "RUNTIME"。
+        - source identity: callback 可显式保留既有 provider/event type；其他调用按 device_code
+          推导 provider_code，并固定使用 "COMMAND_RESULT"。
         - source_event_id: 调用方必须提供唯一结果事件身份，不接受别名或合成回退。
         - 稳定 source identity 同 hash ACK、异 hash 冲突。
         """
@@ -923,13 +938,41 @@ class RuntimeInboxService:
         if not isinstance(source_event_id, str) or not source_event_id.strip():
             raise ValueError("command result requires source_event_id")
 
-        provider_code = "DEVICE_RESULT" if device_code else "RUNTIME"
+        provider_code = source_provider_code or ("DEVICE_RESULT" if device_code else "RUNTIME")
+        event_type = source_event_type or "COMMAND_RESULT"
 
         canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
+        from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
+
+        command_correlation_id = await device_command_gateway.resolve_runtime_correlation_id(
+            db,
+            command_code=command_code,
+            command_id=command_id,
+        )
+        command_context = (
+            await self.repository.resolve_correlation_context_by_id(db, correlation_id=command_correlation_id)
+            if command_correlation_id is not None
+            else None
+        )
+        if command_context is not None:
+            # 命令创建时固定的执行归属是权威来源；设备可缺失、替换或复用请求 trace。
+            correlation_id, execution_session_id = command_context
+        else:
+            correlation_context = await self._resolve_correlation_context_by_trace(db, trace_id=trace_id)
+            resolved_correlation_id = correlation_context[0] if correlation_context is not None else None
+            execution_session_id = correlation_context[1] if correlation_context is not None else None
+            if correlation_id is None:
+                correlation_id = resolved_correlation_id
+            elif resolved_correlation_id is not None and resolved_correlation_id != correlation_id:
+                if correlation_id.startswith("system-capability:"):
+                    # 兼容修复前把 capability 幂等键写入 DeviceCommand.correlation_id 的存量命令。
+                    correlation_id = resolved_correlation_id
+                else:
+                    raise RuntimeInboxCorrelationUnavailable(correlation_id=correlation_id)
         result = await self.accept_received(
             db,
             provider_code=provider_code,
-            event_type="COMMAND_RESULT",
+            event_type=event_type,
             source_event_id=source_event_id.strip(),
             payload_hash=_canonical_payload_hash(canonical_payload),
             kind="COMMAND_RESULT",
@@ -941,6 +984,9 @@ class RuntimeInboxService:
             workline_id=workline_id,
             device_id=device_id,
             command_id=command_id,
+            execution_session_id=execution_session_id,
+            correlation_id=correlation_id,
+            processing_required=processing_required,
         )
         if auto_commit:
             _ = await db.commit()
@@ -985,6 +1031,13 @@ class RuntimeInboxService:
         if existing is not None:
             return RuntimeInboxAcceptResult(record=existing, created=False)
 
+        correlation_id: str | None = None
+        correlation_context = await self._resolve_correlation_context_by_trace(db, trace_id=trace_id)
+        if correlation_context is not None:
+            correlation_id, resolved_execution_session_id = correlation_context
+            if execution_session_id is None:
+                execution_session_id = resolved_execution_session_id
+
         payload_data = {
             "session_id": session_id,
             "workline_id": workline_id,
@@ -1003,6 +1056,7 @@ class RuntimeInboxService:
             "kind": "TIMER_TIMEOUT",
             "workline_session_id": session_id,
             "execution_session_id": execution_session_id,
+            "correlation_id": correlation_id,
             "workline_id": workline_id,
             "device_id": device_id,
             "command_id": command_id,

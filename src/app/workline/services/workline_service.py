@@ -9,11 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models import parse_device_capabilities
 from src.app.device.repositories import device_repository
-from src.app.runtime.capability_catalog import (
-    get_workline_capability_definition,
-    get_workline_contract_version,
-    list_workline_capability_definitions,
-    validate_workline_capability_assignment,
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
@@ -24,6 +22,12 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.orchestration.topology_bridge import WorklineTopologyView
+from src.app.runtime.workline_plugins.registry import (
+    get_workline_capability_definition,
+    get_workline_contract_version,
+    list_workline_capability_definitions,
+    validate_workline_capability_assignment,
+)
 from src.app.workline.domain.run_mode import (
     is_sandbox_allowed_environment,
     is_simulation_run_mode,
@@ -55,6 +59,11 @@ from src.app.workline.models.workline import (
     TopologySpec,
 )
 from src.app.workline.repositories import WorkLineRepository
+from src.app.workline.services.plugin_binding_service import (
+    PluginBindingAdmissionError,
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.conf import settings
@@ -76,6 +85,18 @@ _ACTIVE_CONFIGURATION_FIELDS = frozenset(
         "run_mode",
         "line_type",
     }
+)
+_ACTIVE_IMMEDIATE_RUNTIME_FIELDS = frozenset(
+    {"line_code", "line_type", "plugin_key", "contract_version", "run_mode", "runtime_config_json"}
+)
+_LEGACY_COMPATIBLE_PLUGIN_IDENTITIES = frozenset(
+    {(SMT_SORTING_INBOUND_PLUGIN_KEY, SMT_SORTING_INBOUND_CONTRACT_VERSION)}
+)
+_LEGACY_SMT_CONFIGURATION_SCHEMA = SimpleNamespace(
+    devices=[DeviceRequirement(role="SORTING_SOURCE_ARM", min_count=1, max_count=1)],
+    events=[],
+    commands=[CommandBinding(command="SORTING_SOURCE_PICK", target_device_role="SORTING_SOURCE_ARM")],
+    rack_positions=[],
 )
 
 
@@ -102,6 +123,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         runtime_status_projection_service: WorkLineRuntimeStatusProjectionService = (
             workline_runtime_status_projection_service
         ),
+        plugin_binding_service: WorklinePluginBindingService = workline_plugin_binding_service,
     ) -> None:
         super().__init__(
             repository,
@@ -112,6 +134,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             list_cache_expire=cache_settings.WORKLINE_LIST.expire,
         )
         self.runtime_status_projection_service = runtime_status_projection_service
+        self.plugin_binding_service = plugin_binding_service
 
     @staticmethod
     def _resolve_plugin_key(data: dict[str, Any], current: WorkLine | None = None) -> str | None:
@@ -268,76 +291,74 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def list_plugin_options(self) -> list[WorkLinePluginOption]:
         """从运行能力目录导出作业线能力/契约版本选项。"""
 
-        options: list[WorkLinePluginOption] = []
+        versions_by_plugin: dict[str, set[str]] = {}
         for definition in list_workline_capability_definitions():
-            manifest = definition.manifest
-            plugin_key = definition.capability_key
+            versions_by_plugin.setdefault(definition.plugin_key, set()).add(definition.contract_version)
+
+        options: list[WorkLinePluginOption] = []
+        for plugin_key in sorted(versions_by_plugin):
+            contract_versions = sorted(versions_by_plugin[plugin_key])
             options.append(
                 WorkLinePluginOption(
                     plugin_key=plugin_key,
                     label=plugin_key,
-                    contract_versions=[manifest.contract_version],
-                    default_contract_version=manifest.contract_version,
+                    contract_versions=contract_versions,
+                    default_contract_version=contract_versions[-1],
                 )
             )
         return options
 
-    def get_plugin_manifest_summary(
+    def get_plugin_definition_summary(
         self,
         plugin_key: str,
         contract_version: str | None = None,
     ) -> WorkLinePluginManifestSummary | None:
-        """返回单个工作线能力 manifest 摘要。"""
+        """返回 Definition schema 与 binding 可组合的工作线插件摘要。"""
 
-        definition = get_workline_capability_definition(plugin_key)
+        definition = get_workline_capability_definition(plugin_key, contract_version)
         if definition is None:
             return None
 
-        manifest = definition.manifest
-        if contract_version and manifest.contract_version != contract_version:
-            return None
+        schema = definition.schema
 
-        plugin_key = definition.capability_key
+        plugin_key = definition.plugin_key
         return WorkLinePluginManifestSummary(
             plugin_key=plugin_key,
-            contract_version=manifest.contract_version,
+            contract_version=definition.contract_version,
             devices=[
                 self._build_device_requirement_summary(device)
-                for device in self._manifest_sequence(manifest, plugin_key, "devices")
+                for device in self._manifest_sequence(schema, plugin_key, "devices")
             ],
             rack_positions=[
                 self._build_rack_position_summary(rack_position)
-                for rack_position in self._manifest_sequence(manifest, plugin_key, "rack_positions")
+                for rack_position in self._manifest_sequence(schema, plugin_key, "rack_positions")
             ],
-            topology=self._build_topology_summary(self._manifest_attr(manifest, plugin_key, "topology")),
+            topology=self._build_topology_summary(self._manifest_attr(schema, plugin_key, "topology")),
             events=[
                 self._build_event_binding_summary(event)
-                for event in self._manifest_sequence(manifest, plugin_key, "events")
+                for event in self._manifest_sequence(schema, plugin_key, "events")
             ],
             commands=[
                 self._build_command_binding_summary(command)
-                for command in self._manifest_sequence(manifest, plugin_key, "commands")
+                for command in self._manifest_sequence(schema, plugin_key, "commands")
             ],
             resource_boundaries=[
                 self._build_resource_boundary_summary(boundary)
-                for boundary in self._manifest_sequence(manifest, plugin_key, "resource_boundaries")
+                for boundary in self._manifest_sequence(schema, plugin_key, "resource_boundaries")
             ],
             session_subject=self._build_session_subject_summary(
-                getattr(manifest, "session_subject", None),
+                schema.session_subject,
             ),
             state_machines=[
-                self._build_state_machine_summary(state_machine)
-                for state_machine in getattr(manifest, "state_machines", ())
+                self._build_state_machine_summary(state_machine) for state_machine in schema.state_machines
             ],
-            pipeline_queues=[
-                self._build_pipeline_queue_summary(queue) for queue in getattr(manifest, "pipeline_queues", ())
-            ],
+            pipeline_queues=[self._build_pipeline_queue_summary(queue) for queue in schema.pipeline_queues],
         )
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
         """创建工作线时仅校验插件标识，拓扑校验留到设备已关联后。"""
         self._reject_active_state_write(data)
-        self._validate_plugin_key(data.get("plugin_key"))
+        self._validate_plugin_key(data.get("plugin_key"), data.get("contract_version"))
         self._validate_plugin_contract_version(data)
         self._validate_run_mode(data)
         self._validate_runtime_config(data)
@@ -365,9 +386,15 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         if current is None:
             raise ValueError(f"WorkLine 不存在: {id}")
 
-        self._reject_active_configuration_update(current, data)
-        self._validate_plugin_key(data.get("plugin_key"))
-        self._validate_plugin_contract_version(data, current=current)
+        await self._reject_active_configuration_update(db, current, data)
+        plugin_identity_changed = (
+            "plugin_key" in data and data.get("plugin_key") != getattr(current, "plugin_key", None)
+        ) or ("contract_version" in data and data.get("contract_version") != getattr(current, "contract_version", None))
+        if plugin_identity_changed:
+            plugin_key = self._resolve_plugin_key(data, current)
+            contract_version = data.get("contract_version", getattr(current, "contract_version", None))
+            self._validate_plugin_key(plugin_key, contract_version)
+            self._validate_plugin_contract_version(data, current=current)
         self._validate_run_mode(data, current=current)
         self._validate_runtime_config(data, current=current)
         self._apply_runtime_defaults(data, current=current)
@@ -434,6 +461,31 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         devices = await device_repository.get_by_work_line_id(db, workline_id)
         rack_positions = await self._list_rack_positions(db, workline)
         checks = self._build_configuration_checks(workline, devices, rack_positions)
+        if self.plugin_binding_service.manages(workline):
+            try:
+                self.plugin_binding_service.validate_activation_configuration(
+                    workline=workline,
+                    environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
+                    devices=devices,
+                )
+            except PluginBindingAdmissionError:
+                checks.append(
+                    self._check(
+                        "PLUGIN_BINDING_ADMISSION",
+                        _FAIL,
+                        _BLOCKER,
+                        {"message": "插件 typed config、设备或外部合同准入失败"},
+                    )
+                )
+            else:
+                checks.append(
+                    self._check(
+                        "PLUGIN_BINDING_ADMISSION",
+                        _OK,
+                        "INFO",
+                        {"message": "插件 typed binding 准入通过"},
+                    )
+                )
         can_activate = self._can_activate(checks)
         return WorkLineConfigurationStatus(
             workline_id=workline_id,
@@ -449,10 +501,14 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         *,
         version: int,
         cache: object | None = None,
+        actor: str = "system",
+        reason: str = "workline-activation",
+        environment: str | None = None,
     ) -> WorkLine | None:
         """通过配置预检后启用 WorkLine。"""
 
-        current = await self.repo.get_for_update(db, workline_id)
+        await self.repo.acquire_plugin_pin_exclusive(db, workline_id)
+        current = await self.repo.get_for_update(db, workline_id, populate_existing=True)
         if current is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
         self._assert_version(current, workline_id, version)
@@ -467,11 +523,64 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 detail={"checks": [check.model_dump() for check in checks]},
             )
         projection_created = await self._ensure_default_runtime_status_projection(db, current)
-        if current.is_active:
+        binding_managed = self.plugin_binding_service.manages(current)
+        if current.is_active and not binding_managed:
             if projection_created:
                 await self._commit_mutation(db)
             return current
+        if binding_managed:
+            if getattr(current, "active_plugin_binding_id", None) is None:
+                workload = await self.repo.get_unfinished_workload_summary(db, workline_id)
+                if workload["count"] > 0:
+                    raise BusinessException(
+                        message="存在未完成 legacy 运行负载，不能首次启用平台插件绑定",
+                        code="4001",
+                        detail={"reason_code": "LEGACY_RUNTIME_WORKLOAD_PRESENT"},
+                    )
+            binding_environment = environment or WorklinePluginBindingService.resolve_runtime_environment(
+                settings.APP_ENV
+            )
+            try:
+                binding = await self.plugin_binding_service.activate(
+                    db,
+                    workline=current,
+                    expected_workline_version=version,
+                    actor=actor,
+                    reason=reason,
+                    environment=binding_environment,
+                    devices=devices,
+                )
+            except PluginBindingAdmissionError as exc:
+                raise BusinessException(
+                    message="插件绑定准入失败，请检查配置、设备和外部合同",
+                    code="4001",
+                    detail={"reason_code": "PLUGIN_BINDING_ADMISSION_FAILED"},
+                ) from exc
+            update_data = self._binding_pin_update(binding, version=version)
+            if not current.is_active:
+                update_data["is_active"] = True
+            updated = await self.repo.update(db, workline_id, update_data)
+            await self._commit_mutation(db)
+            if cache:
+                await self.invalidate_cache(cache, workline_id, invalidate_list=True)
+            return updated
         return await self._set_active_state(db, workline_id, is_active=True, version=version, cache=cache)
+
+    @staticmethod
+    def _binding_pin_update(binding: Any, *, version: int) -> dict[str, Any]:
+        provider_requirements = [
+            f"{profile['provider_code']}@{profile['contract_version']}#{profile['environment']}"
+            for profile in getattr(binding, "provider_profile_snapshot_json", ())
+        ]
+        return {
+            "active_plugin_binding_id": binding.id,
+            "active_plugin_binding_version": binding.binding_version,
+            "active_plugin_config_hash": binding.typed_config_hash,
+            "active_plugin_index_digest": binding.generated_index_digest,
+            "active_plugin_provider_requirements_json": provider_requirements,
+            "active_plugin_port_requirements_json": list(binding.port_requirements_json),
+            "version": version,
+        }
 
     async def deactivate(
         self,
@@ -483,6 +592,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     ) -> WorkLine | None:
         """停用 WorkLine；存在未完成运行负载时拒绝。"""
 
+        await self.repo.acquire_plugin_pin_exclusive(db, workline_id)
         current = await self.repo.get_for_update(db, workline_id)
         if current is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
@@ -543,14 +653,49 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 detail={"fields": ["is_active"]},
             )
 
-    @staticmethod
-    def _reject_active_configuration_update(workline: WorkLine, data: dict[str, Any]) -> None:
+    async def _reject_active_configuration_update(
+        self,
+        db: AsyncSession,
+        workline: WorkLine,
+        data: dict[str, Any],
+    ) -> None:
         if not bool(getattr(workline, "is_active", False)):
             return
-        submitted_fields = sorted(_ACTIVE_CONFIGURATION_FIELDS.intersection(data))
+        submitted_fields = set(_ACTIVE_IMMEDIATE_RUNTIME_FIELDS.intersection(data))
+        active_binding_id = getattr(workline, "active_plugin_binding_id", None)
+        binding = None
+        if "config" in data and isinstance(active_binding_id, int):
+            try:
+                binding = await self.plugin_binding_service.get_pinned(db, binding_id=active_binding_id)
+            except PluginBindingAdmissionError:
+                binding = None
+        expected_binding_identity = (
+            getattr(workline, "id", None),
+            getattr(workline, "plugin_key", None),
+            getattr(workline, "contract_version", None),
+            active_binding_id,
+            getattr(workline, "active_plugin_binding_version", None),
+            getattr(workline, "active_plugin_config_hash", None),
+            getattr(workline, "active_plugin_index_digest", None),
+        )
+        actual_binding_identity = (
+            getattr(binding, "workline_id", None),
+            getattr(binding, "plugin_key", None),
+            getattr(binding, "contract_version", None),
+            getattr(binding, "id", None),
+            getattr(binding, "binding_version", None),
+            getattr(binding, "typed_config_hash", None),
+            getattr(binding, "generated_index_digest", None),
+        )
+        has_active_binding_snapshot = binding is not None and actual_binding_identity == expected_binding_identity
+        if "config" in data and not has_active_binding_snapshot:
+            # 平台插件从 immutable binding 读取已批准 config，活动态可编辑下一版草稿；
+            # legacy 工作线没有 binding 快照，必须阻止草稿直接成为实时配置。
+            submitted_fields.add("config")
+        submitted_fields = sorted(submitted_fields)
         if submitted_fields:
             raise BusinessException(
-                message="已启用作业线下不能修改插件、合同或运行配置，请先停用作业线",
+                message="已启用作业线下不能修改实时运行字段，请先停用作业线",
                 detail={
                     "workline_id": getattr(workline, "id", None),
                     "fields": submitted_fields,
@@ -583,7 +728,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     ) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
         plugin_key = self._resolve_plugin_key({}, workline)
-        definition = get_workline_capability_definition(plugin_key)
+        definition = get_workline_capability_definition(plugin_key, getattr(workline, "contract_version", None))
         if plugin_key is None:
             return [
                 self._check(
@@ -594,6 +739,27 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 )
             ]
         if definition is None:
+            if (plugin_key, getattr(workline, "contract_version", None)) in _LEGACY_COMPATIBLE_PLUGIN_IDENTITIES:
+                # SMT 尚未进入 generated index；迁移期仍由隔离的未绑定 Session
+                # 兼容 processor 承载。仍需校验其实际支持的首盘取盘设备与通信配置，
+                # 避免 legacy 身份绕过普通激活准入。
+                checks = [
+                    self._check(
+                        "PLUGIN_CONFIGURED",
+                        _OK,
+                        "WARNING",
+                        {"plugin_key": plugin_key, "message": "迁移期 legacy 插件兼容模式"},
+                    )
+                ]
+                checks.append(self._run_mode_check(workline))
+                topology = WorklineTopologyView.from_devices(devices)
+                checks.extend(self._role_requirement_checks(_LEGACY_SMT_CONFIGURATION_SCHEMA, topology))
+                checks.extend(self._command_target_checks(_LEGACY_SMT_CONFIGURATION_SCHEMA, topology))
+                checks.extend(self._command_target_capability_config_checks(_LEGACY_SMT_CONFIGURATION_SCHEMA, devices))
+                checks.extend(
+                    self._command_target_communication_checks(workline, _LEGACY_SMT_CONFIGURATION_SCHEMA, devices)
+                )
+                return checks
             return [
                 self._check(
                     "PLUGIN_CONFIGURED",
@@ -603,9 +769,9 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 )
             ]
 
-        manifest = definition.manifest
+        manifest = definition.schema
         checks.append(self._check("PLUGIN_CONFIGURED", _OK, "INFO", {"plugin_key": plugin_key}))
-        expected_contract_version = manifest.contract_version
+        expected_contract_version = definition.contract_version
         checks.append(
             self._check(
                 "CONTRACT_VERSION_CURRENT",
@@ -934,16 +1100,17 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return path if path.startswith("/") else f"/{path}"
 
     @staticmethod
-    def _validate_plugin_key(plugin_key: object) -> None:
+    def _validate_plugin_key(plugin_key: object, contract_version: object = None) -> None:
         if not isinstance(plugin_key, str) or not plugin_key:
             return
-        definition = get_workline_capability_definition(plugin_key)
+        resolved_version = contract_version if isinstance(contract_version, str) and contract_version else None
+        definition = get_workline_capability_definition(plugin_key, resolved_version)
         if definition is None:
             from src.core.exceptions import BadRequestException
 
             raise BadRequestException(message=f"不支持的工作线插件: {plugin_key}")
         try:
-            _ = definition.manifest
+            _ = definition.schema
         except (TypeError, ValueError) as exc:
             from src.core.exceptions import BadRequestException
 
@@ -958,11 +1125,11 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             return
 
         plugin_key = WorkLineService._resolve_plugin_key(data, current)
-        resolved = get_workline_contract_version(plugin_key)
-        if isinstance(resolved, str) and resolved and contract_version != resolved:
+        resolved = get_workline_contract_version(plugin_key, contract_version)
+        if resolved is None:
             from src.core.exceptions import BadRequestException
 
-            raise BadRequestException(message=f"插件 {plugin_key} 的契约版本必须为 {resolved}")
+            raise BadRequestException(message=f"插件 {plugin_key} 不支持契约版本 {contract_version}")
 
     @staticmethod
     def _validate_run_mode(data: dict[str, Any], current: WorkLine | None = None) -> None:

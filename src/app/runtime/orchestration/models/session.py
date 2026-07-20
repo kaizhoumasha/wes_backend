@@ -12,14 +12,15 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Index, String, Text, text
+from sqlalchemy import JSON, Column, Index, String, Text, event, text
 from sqlalchemy import Enum as SQLAEnum
+from sqlalchemy.orm import attributes, declared_attr
 from sqlmodel import Field, Relationship
 
 # WorklineSession.workline 的 primaryjoin 用字符串引用 WorkLine;
 # 运行时导入确保独立导入 session 时 SQLAlchemy class registry 已注册目标模型。
 from src.app.workline.models.workline import WorkLine  # noqa: TC001
-from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins import BaseMixin, DataTableMixin, OptimisticLockMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -164,6 +165,21 @@ class WorklineSessionBase(BaseMixin):
         max_length=50,
         description="执行时绑定的协议版本",
     )
+    plugin_binding_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.workline_plugin_bindings.id",
+        index=True,
+        description="执行时固定的插件 binding ID",
+    )
+    plugin_binding_version: int | None = Field(default=None, ge=1, description="执行时固定的 binding 版本")
+    plugin_config_hash: str | None = Field(default=None, max_length=64, description="执行时固定的 typed config 摘要")
+    plugin_index_digest: str | None = Field(default=None, max_length=64, description="执行时固定的生成索引摘要")
+    plugin_state_json: dict[str, object] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="插件 typed state JSON 快照；禁止恢复历史字符串状态",
+    )
+    plugin_state_version: int = Field(default=0, ge=0, description="插件 state 乐观版本")
     started_at: datetime | None = Field(
         default=None,
         index=True,
@@ -337,6 +353,7 @@ class WorklineSessionBase(BaseMixin):
 class WorklineSession(
     WorklineSessionBase,
     DataTableMixin,
+    OptimisticLockMixin,
     table=True,
 ):
     """
@@ -380,6 +397,16 @@ class WorklineSession(
         {"schema": SchemaType.BIZ.value},
     )
 
+    @declared_attr.directive
+    def __mapper_args__(cls) -> dict[str, object]:  # noqa: N805
+        """所有 ORM UPDATE 均自动 CAS 并递增版本，覆盖共享 Mixin 的手工增量策略。"""
+
+        table = cast("Any", cls).__table__
+        return {
+            "version_id_col": table.c.version,
+            "version_id_generator": lambda version: 0 if version is None else version + 1,
+        }
+
     # 关系定义
     workline: "WorkLine" = Relationship(
         back_populates=None,
@@ -389,6 +416,15 @@ class WorklineSession(
             "primaryjoin": "WorklineSession.workline_id == WorkLine.id",
         },
     )
+
+
+@event.listens_for(WorklineSession, "after_update")
+def _sync_generated_workline_session_version(_mapper: Any, _connection: Any, target: WorklineSession) -> None:
+    """把 mapper 生成的 DB 版本同步回 SQLModel 继承字段的内存值。"""
+
+    history = attributes.get_history(target, "version")
+    previous = history.deleted[0] if history.deleted else target.version
+    attributes.set_committed_value(target, "version", int(previous) + 1)
 
 
 # ==================== 自动生成的 Schema ====================

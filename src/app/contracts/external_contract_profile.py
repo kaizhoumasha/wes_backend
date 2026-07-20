@@ -1,8 +1,7 @@
 """ExternalContractProfile 生产路径 — @yagni: 全量联调前为占位合同。
 
-当前状态: 被 capability_dispatcher 和 runtime_capability_catalog 引用，
-但所有 WMS/ECS provider 使用默认 profile。当前里程碑的粗分机/分拣机流程
-不需要动态合同切换能力。
+当前状态: 由 external_contract_profile_catalog 统一读取，所有 WMS/ECS provider
+使用默认 profile。当前里程碑的粗分机/分拣机流程不需要动态合同切换能力。
 
 激活条件: 多 provider 并行联调或 WMS/ECS 合同版本差异需要运行时切换。
 
@@ -16,7 +15,7 @@
   capability implementation import boundaries。
 - 三个 typed DTO 共享同一包, 避免 InboundNormalizerProfile 与 RuntimeCapabilityProfile
   分散在不同域导致 capability dependency type guard 难以统一维护
-- security_profile 占位: external-callback-auth-spec.md 完整落地时填充 HMAC canonical
+- sandbox/staging 的 security_profile 可保留占位；production 必须固定密钥标识和签名算法
 """
 
 from __future__ import annotations
@@ -75,7 +74,7 @@ class ExternalContractProfile(BaseModel):
     工厂方法校验:
     - query 只能列 query port method
     - effect 只能列 effect port method
-    - environment=production 时, security_profile 必填 (当前占位暂时允许)
+    - environment=production 时, security_profile 必须固定密钥标识和签名算法
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -129,11 +128,30 @@ class ExternalContractProfile(BaseModel):
     security_profile: SecurityProfile = Field(default_factory=SecurityProfile)
     notes: str | None = Field(default=None, max_length=2000)
 
+    @property
+    def identity(self) -> str:
+        """返回 Definition 可引用、且不携带 profile 实例的稳定身份。"""
+
+        return f"{self.provider_code.strip().lower()}.{self.contract_version}.{self.environment}"
+
     @model_validator(mode="after")
     def _effect_timeout_required_after(self) -> ExternalContractProfile:
         """effect 非空时 effect_timeout_seconds 必填 (model_validator 访问完整实例)。"""
         if self.runtime_capabilities_effect and self.timeout_retry_effect_timeout_seconds is None:
             raise ValueError("effect_timeout_seconds 必填当 runtime_capabilities_effect 非空")
+        return self
+
+    @model_validator(mode="after")
+    def _production_security_required_after(self) -> ExternalContractProfile:
+        """生产入站 callback profile 不允许沿用无认证材料的 sandbox 占位配置。"""
+        has_inbound_callbacks = bool(self.inbound_normalizers_event or self.inbound_normalizers_result)
+        if self.environment != "production" or not has_inbound_callbacks:
+            return self
+        security = self.security_profile
+        if not (security.secret_kid or "").strip() or security.signature_algo is None:
+            raise ValueError(
+                "production external contract profile 的 security_profile 必须固定 secret_kid 和 signature_algo"
+            )
         return self
 
     @field_validator("runtime_capabilities_query")

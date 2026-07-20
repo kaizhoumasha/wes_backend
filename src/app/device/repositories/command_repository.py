@@ -37,6 +37,31 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
+    async def get_runtime_correlation_id(
+        self,
+        db: AsyncSession,
+        *,
+        command_code: str,
+        command_id: int | None,
+    ) -> str | None:
+        """读取命令创建时固定的 runtime correlation，不暴露设备 ORM。"""
+
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = select(columns.correlation_id).where(columns.command_code == command_code)
+        if command_id is not None:
+            statement = statement.where(columns.id == command_id)
+        value = await db.scalar(statement.limit(1))
+        return str(value) if value is not None else None
+
+    @staticmethod
+    async def add_runtime_effect(db: AsyncSession, command: DeviceCommand, outbox: object) -> None:
+        """在调用方外层事务中持久化命令与 Outbox，只 flush。"""
+
+        db.add(command)
+        await db.flush()
+        db.add(outbox)
+        await db.flush()
+
     async def get_pending_commands(
         self,
         db: AsyncSession,
@@ -130,6 +155,33 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
             statement = statement.where(columns.id != exclude_command_id)
 
         statement = statement.order_by(columns.created_at.desc(), columns.id.desc()).limit(limit)
+        result = await db.execute(statement)
+        return list(result.scalars().all())
+
+    async def get_unfinished_commands_for_device(
+        self,
+        db: AsyncSession,
+        device_id: int,
+        *,
+        limit: int = 1,
+    ) -> list[DeviceCommand]:
+        """获取设备尚未闭环的指令，用于新指令的原子准入检查。
+
+        与 ``get_active_commands_for_device`` 不同，这里必须包含 PENDING：
+        PENDING 虽不代表硬件已进入 RUNNING，但已占用该设备的命令槽位。
+        """
+
+        unfinished_statuses = [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = (
+            select(DeviceCommand)
+            .where(
+                columns.device_id == device_id,
+                columns.status.in_(unfinished_statuses),
+            )
+            .order_by(columns.created_at.desc(), columns.id.desc())
+            .limit(limit)
+        )
         result = await db.execute(statement)
         return list(result.scalars().all())
 

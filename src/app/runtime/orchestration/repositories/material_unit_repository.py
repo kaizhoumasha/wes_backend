@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from src.app.runtime.orchestration.material_fact_version import material_unit_fact_version
 from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialUnitFactSnapshot:
+    """Stage1 可安全携出 Repository 的最小料盘事实快照。"""
+
+    material_unit_id: int
+    fact_version: int | None
 
 
 class MaterialUnitRepository(BaseRepository[MaterialUnit]):
@@ -25,6 +35,61 @@ class MaterialUnitRepository(BaseRepository[MaterialUnit]):
         columns = cast("Any", MaterialUnit).__table__.c
         result = await db.execute(select(MaterialUnit).where(columns.pkg_code == pkg_code).limit(1))
         return result.scalar_one_or_none()
+
+    async def get_by_pkg_code_for_update(self, db: AsyncSession, pkg_code: str) -> MaterialUnit | None:
+        """锁定已存在料盘直到外层事务结束，避免并发 Session 静默窃取所有权。"""
+
+        columns = cast("Any", MaterialUnit).__table__.c
+        result = await db.execute(select(MaterialUnit).where(columns.pkg_code == pkg_code).limit(1).with_for_update())
+        return result.scalar_one_or_none()
+
+    async def get_by_id_for_update(self, db: AsyncSession, material_unit_id: int) -> MaterialUnit | None:
+        """锁定指定料盘，保证 fact version 校验与写入原子。"""
+
+        columns = cast("Any", MaterialUnit).__table__.c
+        result = await db.execute(select(MaterialUnit).where(columns.id == material_unit_id).limit(1).with_for_update())
+        return result.scalar_one_or_none()
+
+    async def get_fact_snapshot(self, db: AsyncSession, material_unit_id: int) -> MaterialUnitFactSnapshot | None:
+        """只读加载料盘事实版本，禁止 Service 直接访问 MaterialUnit 表。"""
+
+        columns = cast("Any", MaterialUnit).__table__.c
+        result = await db.execute(select(MaterialUnit).where(columns.id == material_unit_id).limit(1))
+        material_unit = result.scalar_one_or_none()
+        if material_unit is None:
+            return None
+        return MaterialUnitFactSnapshot(
+            material_unit_id=int(material_unit.id),
+            fact_version=material_unit_fact_version(material_unit),
+        )
+
+    async def get_plugin_fact_payload(self, db: AsyncSession, material_unit_id: int) -> dict[str, Any] | None:
+        """为无 DB 插件决策返回 MaterialUnit 的只读业务事实，不暴露 ORM。"""
+
+        columns = cast("Any", MaterialUnit).__table__.c
+        row = (
+            await db.execute(
+                select(columns.pkg_code, columns.material_identity_key, columns.six_in_one)
+                .where(columns.id == material_unit_id)
+                .limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        return {
+            "pkg_code": str(row.pkg_code),
+            "material_identity_key": str(row.material_identity_key),
+            "six_in_one": dict(row.six_in_one or {}),
+        }
+
+    @staticmethod
+    async def add_and_flush(db: AsyncSession, material_unit: MaterialUnit) -> None:
+        db.add(material_unit)
+        await db.flush()
+
+    @staticmethod
+    async def flush(db: AsyncSession) -> None:
+        await db.flush()
 
     async def update_current_location_by_pkg_code(
         self,
@@ -46,4 +111,4 @@ class MaterialUnitRepository(BaseRepository[MaterialUnit]):
 material_unit_repository = MaterialUnitRepository()
 
 
-__all__ = ["MaterialUnitRepository", "material_unit_repository"]
+__all__ = ["MaterialUnitFactSnapshot", "MaterialUnitRepository", "material_unit_repository"]

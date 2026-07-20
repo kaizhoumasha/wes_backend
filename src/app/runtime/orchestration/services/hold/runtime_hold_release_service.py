@@ -14,10 +14,6 @@ from src.app.device.models.command import CommandResult, CommandStatus, DeviceCo
 from src.app.device.models.device import Device
 from src.app.device.repositories import device_command_repository
 from src.app.device.services.device_service import DeviceService
-from src.app.runtime.capability_catalog import (
-    list_workline_ng_reasons,
-    resolve_workline_material_identity,
-)
 from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReasonSource,
@@ -37,6 +33,10 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import r
 from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
+)
+from src.app.runtime.workline_plugins.registry import (
+    list_workline_ng_reasons,
+    resolve_workline_material_identity,
 )
 from src.app.sys.repositories import system_outbox_repository
 from src.utils.timezone import timezone
@@ -481,7 +481,7 @@ class RuntimeHoldReleaseService:
     def _resolve_ng_reason(self, hold: RuntimeHold, ng_reason: Any) -> NgReasonDefinition:
         from src.app.runtime.capabilities.material_flow.contracts.ng_reason import build_ng_reason_catalog
 
-        plugin_reasons = list_workline_ng_reasons(hold.plugin_key)
+        plugin_reasons = list_workline_ng_reasons(hold.plugin_key, contract_version=hold.contract_version)
         catalog = build_ng_reason_catalog(plugin_reasons)
         reason = catalog.by_code.get(ng_reason.code)
         if reason is None or reason.source.value != ng_reason.source:
@@ -602,7 +602,11 @@ class RuntimeHoldReleaseService:
                 "hold_id": hold.id,
             },
         )
-        return resolve_workline_material_identity(hold.plugin_key, input_value)
+        return resolve_workline_material_identity(
+            hold.plugin_key,
+            input_value,
+            contract_version=hold.contract_version,
+        )
 
     def _write_release_facts(
         self,

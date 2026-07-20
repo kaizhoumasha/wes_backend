@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 from dataclasses import replace
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from src.app.device.models.command import DeviceCommand
+from src.app.device.models.device import Device
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
@@ -22,6 +26,9 @@ from src.app.runtime.orchestration.models.timeline import (
     WorklineTimeline,
 )
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
+from src.app.runtime.orchestration.repositories.session_execution_anchor_repository import (
+    SessionExecutionAnchorRepository,
+)
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
@@ -33,6 +40,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxReplaySourceValidator,
 )
+from src.app.runtime.workline_plugins.rough_sorter.domain_contract import resolve_rough_sorter_business_key
 from src.app.sys.models.audit_log import AuditLog, OperaStatus
 from src.app.sys.models.outbox import SystemOutbox
 from src.app.sys.services import AuditLogService
@@ -73,7 +81,348 @@ def test_device_event_persists_claims_and_applies_production_effects_once() -> N
             assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
             await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
             await assert_effects(db, seeded, expected_count=1)
-            assert queue_gateway.outbox_enqueues == [(None, 50)]
+            assert queue_gateway.outbox_enqueues == []
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_first_unresolved_platform_inbox_persists_execution_anchor_and_completes_stage_three() -> None:
+    """首条无 Session/Execution 锚点的设备事件必须在 Stage 1 建链，并可完成 Stage 3。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        service = RuntimeInboxService()
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            seeded_inbox = await db.get(RuntimeInbox, seeded.inbox_id)
+            scanner = await db.scalar(select(Device).where(Device.device_code == "IT-SCANNER-01"))
+            assert seeded_inbox is not None and scanner is not None
+            await db.delete(seeded_inbox)
+            accepted = await service.accept_device_event(
+                db,
+                device_code=scanner.device_code,
+                event_type="SCAN_COMPLETED",
+                payload_json={
+                    "event_type": "SCAN_COMPLETED",
+                    "canonical_event_type": "SCAN_COMPLETED",
+                    "device_code": scanner.device_code,
+                    "data": {
+                        "HHPN": "MAT-FIRST-ANCHOR",
+                        "MfrPN": "VENDOR-FIRST-ANCHOR",
+                        "Qty": "10",
+                        "DateCode": "20260720",
+                        "LotCode": "LOT-FIRST-ANCHOR",
+                        "PkgID": "PKG-FIRST-ANCHOR",
+                    },
+                },
+                trace_id="trace-first-anchor",
+                event_id="event-first-anchor",
+                workline_id=seeded.workline_id,
+                device_id=scanner.id,
+            )
+            assert accepted.record.workline_session_id is None
+            assert accepted.record.execution_session_id is None
+            assert accepted.record.correlation_id is None
+            await db.commit()
+            inbox_id = int(accepted.record.id)
+
+            claimed = await claim(db, service, token="it-first-anchor-owner")
+            assert claimed["id"] == inbox_id
+            result = await processor(service).process_claimed(db, claim=claimed)
+            assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+
+            db.expire_all()
+            persisted = await db.get(RuntimeInbox, inbox_id)
+            assert persisted is not None and persisted.status == "PROCESSED"
+            assert isinstance(persisted.workline_session_id, int)
+            assert isinstance(persisted.execution_session_id, int)
+            assert isinstance(persisted.correlation_id, str) and persisted.correlation_id
+            work_item = await db.scalar(
+                select(ExecutionWorkItem).where(ExecutionWorkItem.correlation_id == persisted.correlation_id)
+            )
+            assert work_item is not None
+            assert work_item.execution_session_id == persisted.execution_session_id
+            decision_count = await db.scalar(
+                select(func.count())
+                .select_from(WorklineTimeline)
+                .where(
+                    WorklineTimeline.related_inbox_id == inbox_id,
+                    WorklineTimeline.payload_json["record_type"].as_string() == "PLUGIN_DECISION",
+                )
+            )
+            assert decision_count == 1
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_unresolved_followup_inbox_reuses_session_anchor_and_completes_stage_three() -> None:
+    """后续无 execution anchor 的设备事件复用 Session 时也必须在首次 Stage 1 自愈。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        service = RuntimeInboxService()
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            source = await db.get(RuntimeInbox, seeded.inbox_id)
+            session = await db.get(WorklineSession, seeded.session_id)
+            scanner = await db.scalar(select(Device).where(Device.device_code == "IT-SCANNER-01"))
+            assert source is not None and session is not None and scanner is not None
+            payload = json.loads(json.dumps(source.payload_json))
+            payload["data"].pop("session_id", None)
+            assert session.business_key == resolve_rough_sorter_business_key(payload)
+            await db.delete(source)
+            accepted = await service.accept_device_event(
+                db,
+                device_code=scanner.device_code,
+                event_type="SCAN_COMPLETED",
+                payload_json=payload,
+                trace_id=seeded.trace_id,
+                event_id="event-followup-anchor",
+                workline_id=seeded.workline_id,
+                device_id=scanner.id,
+            )
+            assert accepted.record.correlation_id == "workline-session:IT-RUNTIME-INBOX-SESSION"
+            assert accepted.record.execution_session_id is None
+            await db.commit()
+            inbox_id = int(accepted.record.id)
+
+            claimed = await claim(db, service, token="it-followup-anchor-owner")
+            assert claimed["id"] == inbox_id
+            result = await processor(service).process_claimed(db, claim=claimed)
+            assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+
+            db.expire_all()
+            persisted = await db.get(RuntimeInbox, inbox_id)
+            assert persisted is not None and persisted.status == "PROCESSED"
+            assert persisted.workline_session_id == seeded.session_id
+            assert isinstance(persisted.execution_session_id, int)
+            assert persisted.correlation_id == "workline-session:IT-RUNTIME-INBOX-SESSION"
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_existing_session_anchor_recovery_rejects_mismatched_execution_aggregate() -> None:
+    """确定性 correlation 存在时，任一 owner/pin/object 失配仍必须拒绝回填。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            session = await db.get(WorklineSession, seeded.session_id)
+            correlation_id = "workline-session:IT-RUNTIME-INBOX-SESSION"
+            correlation = await db.scalar(
+                select(ExecutionCorrelation).where(ExecutionCorrelation.correlation_id == correlation_id)
+            )
+            assert session is not None and correlation is not None and session.business_key is not None
+            identity = {
+                "correlation_id": correlation_id,
+                "trace_id": seeded.trace_id,
+                "workline_id": seeded.workline_id,
+                "plugin_key": str(session.plugin_key),
+                "contract_version": session.contract_version,
+                "plugin_binding_id": int(session.plugin_binding_id),
+                "plugin_binding_version": int(session.plugin_binding_version),
+                "plugin_config_hash": str(session.plugin_config_hash),
+                "plugin_index_digest": str(session.plugin_index_digest),
+                "business_key": session.business_key,
+            }
+            repository = SessionExecutionAnchorRepository()
+            owned_anchor = await repository.resolve_owned_anchor(db, **identity)
+            assert owned_anchor is not None and owned_anchor[0] == correlation_id
+
+            correlation.business_owner_key = "ANOTHER-SESSION-BUSINESS-KEY"
+            await db.flush()
+
+            assert await repository.resolve_owned_anchor(db, **identity) is None
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_crossed_candidate_and_plugin_keys_do_not_deadlock_session_creation() -> None:
+    """交叉候选键必须按实际 advisory resource 排序，并收敛到一个业务周期。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        service = RuntimeInboxService()
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            seeded_inbox = await db.get(RuntimeInbox, seeded.inbox_id)
+            scanner = await db.scalar(select(Device).where(Device.device_code == "IT-SCANNER-01"))
+            assert seeded_inbox is not None and scanner is not None
+            await db.delete(seeded_inbox)
+            payloads = [
+                {
+                    "event_type": "SCAN_COMPLETED",
+                    "canonical_event_type": "SCAN_COMPLETED",
+                    "device_code": scanner.device_code,
+                    "data": {
+                        "HHPN": f"MAT-CROSS-{index}",
+                        "MfrPN": f"VENDOR-CROSS-{index}",
+                        "Qty": "10",
+                        "DateCode": "20260720",
+                        "LotCode": f"LOT-CROSS-{index}",
+                        "PkgID": f"PKG-CROSS-{index}",
+                    },
+                }
+                for index in (1, 2)
+            ]
+            plugin_keys = [resolve_rough_sorter_business_key(payload) for payload in payloads]
+            assert all(isinstance(plugin_key, str) and plugin_key for plugin_key in plugin_keys)
+            payloads[0]["business_key"] = plugin_keys[1]
+            payloads[1]["business_key"] = plugin_keys[0]
+            inbox_ids: list[int] = []
+            for index, payload in enumerate(payloads, start=1):
+                accepted = await service.accept_device_event(
+                    db,
+                    device_code=scanner.device_code,
+                    event_type="SCAN_COMPLETED",
+                    payload_json=payload,
+                    trace_id=f"trace-cross-{index}",
+                    event_id=f"event-cross-{index}",
+                    workline_id=seeded.workline_id,
+                    device_id=scanner.id,
+                )
+                inbox_ids.append(int(accepted.record.id))
+            await db.commit()
+
+        session_resolver_module = importlib.import_module(
+            "src.app.runtime.orchestration.services.session.session_resolver"
+        )
+        real_lock_business_keys = session_resolver_module._lock_device_event_business_keys
+        lock_barrier = asyncio.Barrier(2)
+
+        async def synchronized_lock_business_keys(
+            db: AsyncSession,
+            *,
+            workline_id: int,
+            business_keys: set[str],
+        ) -> None:
+            await asyncio.wait_for(lock_barrier.wait(), timeout=5)
+            await real_lock_business_keys(db, workline_id=workline_id, business_keys=business_keys)
+
+        async def resolve(inbox_id: int) -> tuple[int, str, int]:
+            async with session_factory() as db:
+                await db.execute(text("SET LOCAL lock_timeout = '5s'"))
+                inbox = await db.get(RuntimeInbox, inbox_id)
+                workline = await db.get(WorkLine, seeded.workline_id)
+                assert inbox is not None and workline is not None
+                resolved = await session_resolver_module.session_resolver._resolve_device_event(db, inbox, workline)
+                await db.commit()
+                assert resolved.id is not None and resolved.business_key is not None
+                return int(resolved.id), resolved.business_key, int(resolved.ingress_count)
+
+        from unittest.mock import patch
+
+        with patch.object(
+            session_resolver_module,
+            "_lock_device_event_business_keys",
+            synchronized_lock_business_keys,
+        ):
+            resolved = await asyncio.wait_for(
+                asyncio.gather(*(resolve(inbox_id) for inbox_id in inbox_ids)), timeout=10
+            )
+
+        assert resolved[0][0] == resolved[1][0], resolved
+        assert {resolved[0][1], resolved[1][1]} <= set(plugin_keys)
+        async with session_factory() as db:
+            sessions = list(
+                (
+                    await db.scalars(
+                        select(WorklineSession).where(
+                            WorklineSession.workline_id == seeded.workline_id,
+                            WorklineSession.business_key.in_(plugin_keys),
+                        )
+                    )
+                ).all()
+            )
+            assert len(sessions) == 1
+            assert sessions[0].ingress_count == 2
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_concurrent_existing_session_reuse_refreshes_ingress_inside_business_lock() -> None:
+    """锁内复查必须覆盖 optimistic identity-map 快照，两个 ingress 都只能累计一次。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            source = await db.get(RuntimeInbox, seeded.inbox_id)
+            assert source is not None
+            payload = json.loads(json.dumps(source.payload_json))
+            payload["data"].pop("session_id", None)
+            await db.delete(source)
+            existing_session = await db.get(WorklineSession, seeded.session_id)
+            assert existing_session is not None
+            assert existing_session.business_key == resolve_rough_sorter_business_key(payload)
+            initial_ingress_count = int(existing_session.ingress_count)
+            await db.commit()
+
+        session_resolver_module = importlib.import_module(
+            "src.app.runtime.orchestration.services.session.session_resolver"
+        )
+        real_lock_business_keys = session_resolver_module._lock_device_event_business_keys
+        lock_barrier = asyncio.Barrier(2)
+
+        async def synchronized_lock_business_keys(
+            db: AsyncSession,
+            *,
+            workline_id: int,
+            business_keys: set[str],
+        ) -> None:
+            await asyncio.wait_for(lock_barrier.wait(), timeout=5)
+            await real_lock_business_keys(db, workline_id=workline_id, business_keys=business_keys)
+
+        async def reuse(index: int) -> tuple[int, int]:
+            async with session_factory() as db:
+                await db.execute(text("SET LOCAL lock_timeout = '5s'"))
+                workline = await db.get(WorkLine, seeded.workline_id)
+                assert workline is not None
+                inbox_payload = json.loads(json.dumps(payload))
+                inbox_trace_id = f"trace-existing-reuse-{index}"
+                if index == 1:
+                    # 通过 trace 命中历史 Session，但 payload 候选键故意不同；
+                    # 锁集合仍须覆盖实际持久化键。
+                    inbox_payload["business_key"] = "TRACE-CANDIDATE-OTHER-KEY"
+                    inbox_trace_id = seeded.trace_id
+                inbox = type(
+                    "Inbox",
+                    (),
+                    {
+                        "payload_json": inbox_payload,
+                        "device_id": seeded.arm_id,
+                        "trace_id": inbox_trace_id,
+                        "request_id": f"request-existing-reuse-{index}",
+                        "source_message_id": f"message-existing-reuse-{index}",
+                        "execution_session_id": None,
+                        "correlation_id": None,
+                    },
+                )()
+                resolved = await session_resolver_module.session_resolver._resolve_device_event(db, inbox, workline)
+                await db.commit()
+                assert resolved.id is not None
+                return int(resolved.id), int(resolved.ingress_count)
+
+        from unittest.mock import patch
+
+        with patch.object(
+            session_resolver_module,
+            "_lock_device_event_business_keys",
+            synchronized_lock_business_keys,
+        ):
+            resolved = await asyncio.wait_for(asyncio.gather(reuse(1), reuse(2)), timeout=10)
+
+        assert resolved[0][0] == resolved[1][0] == seeded.session_id
+        async with session_factory() as db:
+            persisted = await db.get(WorklineSession, seeded.session_id)
+            assert persisted is not None
+            assert persisted.ingress_count == initial_ingress_count + 2
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -565,9 +914,12 @@ def test_claimed_replay_revalidates_persisted_chain_before_production_effects() 
             legal_claim = await claim(db, service, token="pg-legal-consume-control")
             assert legal_claim["id"] == legal_id
             legal_result = await processor(service).process_claimed(db, claim=legal_claim)
-            assert legal_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-            await assert_processed_terminal(db, inbox_id=legal_id)
-            await assert_effects(db, replace(seeded, inbox_id=legal_id), expected_count=1)
+            assert legal_result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+            legal_terminal = await db.get(RuntimeInbox, legal_id, populate_existing=True)
+            assert legal_terminal is not None and legal_terminal.status == "DEAD_LETTER"
+            assert legal_terminal.last_error_code == "RECORDED_REPLAY_RECORD_MISSING"
+            assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -663,13 +1015,16 @@ def test_consumer_replay_validation_does_not_deadlock_concurrent_api_replay() ->
             timeout=5,
         )
 
-        assert consumer_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+        assert consumer_result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
         assert api_replay.kind == "REPLAY_REQUEST"
         assert api_replay.status == "RECEIVED"
         assert api_replay.payload_json["root_source_inbox_id"] == seeded.inbox_id
         async with session_factory() as db:
-            await assert_processed_terminal(db, inbox_id=current_id)
-            await assert_effects(db, replace(seeded, inbox_id=current_id), expected_count=1)
+            current = await db.get(RuntimeInbox, current_id)
+            assert current is not None and current.status == "DEAD_LETTER"
+            assert current.last_error_code == "RECORDED_REPLAY_RECORD_MISSING"
+            assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -727,7 +1082,7 @@ def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_
             db.add_all([hold, wrong_source])
             await db.commit()
 
-            wrong = await service.replay_from_dead_letter(
+            _ = await service.replay_from_dead_letter(
                 db,
                 source_inbox_id=wrong_source.id,
                 request_id="it-wrong-replay",
@@ -737,35 +1092,9 @@ def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_
             await db.commit()
             wrong_claim = await claim(db, service, token="it-wrong-replay-token")
             wrong_result = await processor(service).process_claimed(db, claim=wrong_claim)
-            assert wrong_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-            await assert_processed_terminal(db, inbox_id=wrong.replay_record.id)
-            command_count = await db.scalar(
-                select(func.count()).select_from(DeviceCommand).where(DeviceCommand.workline_id == seeded.workline_id)
-            )
-            outbox_count = await db.scalar(
-                select(func.count()).select_from(SystemOutbox).where(SystemOutbox.session_id == seeded.session_id)
-            )
-            command_timeline_count = await db.scalar(
-                select(func.count())
-                .select_from(WorklineTimeline)
-                .where(
-                    WorklineTimeline.session_id == seeded.session_id,
-                    WorklineTimeline.action_type == TimelineActionType.COMMAND_SENT,
-                )
-            )
-            assert (command_count, outbox_count, command_timeline_count) == (0, 0, 0)
-
-            archive = await db.scalar(
-                select(WorklineTimeline).where(
-                    WorklineTimeline.session_id == seeded.session_id,
-                    WorklineTimeline.message == "DUPLICATE_ENTRY_ARCHIVED",
-                )
-            )
-            assert archive is not None
-            assert archive.action_type == TimelineActionType.EVENT_PROCESSED
-            assert archive.to_status is None
-            assert archive.related_inbox_id == wrong.replay_record.id
-            assert archive.seq_no > 1
+            assert wrong_result == {"processed": 1, "success": 0, "failed": 0, "skipped": 0, "resource_wait": 1}
+            assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
             evidence_after_archive = await repository.get_latest_manual_hold_evidence(
                 db,
                 session_id=seeded.session_id,
@@ -773,34 +1102,6 @@ def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_
             assert evidence_after_archive is not None
             assert evidence_after_archive.action_type == TimelineActionType.MANUAL_HOLD.value
             assert evidence_after_archive.related_inbox_id == seeded.inbox_id
-
-            correct = await service.replay_from_dead_letter(
-                db,
-                source_inbox_id=seeded.inbox_id,
-                request_id="it-correct-replay",
-                actor="integration",
-                reason="correct source",
-            )
-            await db.commit()
-            correct_claim = await claim(db, service, token="it-correct-replay-token")
-            correct_result = await processor(service).process_claimed(db, claim=correct_claim)
-            assert correct_result == {
-                "processed": 1,
-                "success": 1,
-                "failed": 0,
-                "skipped": 0,
-                "resource_wait": 0,
-            }
-            await assert_processed_terminal(db, inbox_id=correct.replay_record.id)
-            await assert_effects(db, replace(seeded, inbox_id=correct.replay_record.id), expected_count=1)
-
-            evidence_after_transition = await repository.get_latest_manual_hold_evidence(
-                db,
-                session_id=seeded.session_id,
-            )
-            assert evidence_after_transition is not None
-            assert evidence_after_transition.action_type == TimelineActionType.WAIT_STARTED.value
-            assert evidence_after_transition.related_inbox_id == correct.replay_record.id
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

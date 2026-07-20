@@ -26,6 +26,7 @@ from src.app.device.repositories.command_repository import (
     DeviceCommandRepository,
     device_command_repository,
 )
+from src.app.device.repositories.device_repository import DeviceRepository, device_repository
 from src.core.base_service import BaseService
 from src.core.exceptions import NotFoundException
 from src.core.logger import logger
@@ -40,6 +41,10 @@ class DeviceCallbackResultOutcome:
 
     command: DeviceCommand
     late_callback_recorded: bool = False
+
+
+class StaleDeviceCommandPrecondition(ValueError):
+    """锁定后的设备事实与已准入前置条件不一致。"""
 
 
 def _device_command_result_trace_id(command: object, callback: CommandCallbackResult) -> str | None:
@@ -90,19 +95,24 @@ def _emit_device_command_result_observability(command: object, callback: Command
 
 
 class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
-    """设备指令服务（纯 CRUD 层）
+    """设备指令服务。
 
-    只负责数据访问操作，不包含业务逻辑。
-    业务逻辑（SDAF 流程）在 Celery 任务层实现。
+    常规 CRUD 与发送流程保持原有职责；Runtime 副作用入口只在外层事务中
+    锁定并校验权威设备事实，然后准备 DeviceCommand 与 Outbox，不执行外部 I/O。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        repository: DeviceCommandRepository = device_command_repository,
+        device_repository: DeviceRepository = device_repository,
+    ) -> None:
         """初始化服务"""
         super().__init__(
-            device_command_repository,
+            repository,
             enable_cache=True,
             cache_prefix="app:device:command",
         )
+        self.device_repository = device_repository
         # HTTP 客户端配置
         self.http_timeout = 10.0  # 10 秒超时
         self.max_retries = 3
@@ -112,6 +122,21 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         await self.invalidate_cache(get_cache(), command_id, invalidate_list=invalidate_list)
 
     # ==================== CRUD 操作 ====================
+
+    async def get_runtime_correlation_id(
+        self,
+        db: AsyncSession,
+        *,
+        command_code: str,
+        command_id: int | None,
+    ) -> str | None:
+        """返回命令创建时固定的 runtime correlation。"""
+
+        return await self.repo.get_runtime_correlation_id(
+            db,
+            command_code=command_code,
+            command_id=command_id,
+        )
 
     async def create_command(
         self,
@@ -152,6 +177,121 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             logger.info(f"创建指令: {command_code} -> {task_type}")
 
         return command
+
+    async def prepare_runtime_effect(
+        self,
+        db: AsyncSession,
+        *,
+        request: Any,
+        target_device_id: int | None,
+        target_device_code: str | None,
+        expected_workline_id: int,
+        expected_fact_version: str,
+        expected_available: bool,
+        session: Any,
+        workline: Any,
+        idempotency_key: str,
+        execution_correlation_id: str,
+        trace_id: str | None,
+    ) -> tuple[DeviceCommand, Any]:
+        """在 Runtime 外层事务内原子准备 DeviceCommand + Outbox，只 flush。"""
+
+        if getattr(request, "result_policy", None) != "COMMAND_RESULT":
+            raise ValueError("runtime device command result_policy must be COMMAND_RESULT")
+        if not isinstance(execution_correlation_id, str) or not execution_correlation_id:
+            raise ValueError("runtime device command requires execution_correlation_id")
+
+        from hashlib import sha256
+
+        from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
+
+        target_device = await self.device_repository.get_runtime_effect_target_for_update(
+            db,
+            target_device_id=target_device_id,
+            target_device_code=target_device_code,
+            expected_workline_id=expected_workline_id,
+        )
+        if target_device is None:
+            raise StaleDeviceCommandPrecondition("device target no longer exists")
+        if getattr(target_device, "work_line_id", None) != expected_workline_id:
+            raise StaleDeviceCommandPrecondition("device target is outside the runtime workline")
+        actual_version = getattr(target_device, "version", None)
+        actual_fact_version = (
+            f"device:v{actual_version}"
+            if isinstance(actual_version, int) and not isinstance(actual_version, bool) and actual_version >= 0
+            else "device:v-1"
+        )
+        status = getattr(target_device, "device_status", None)
+        actual_available = (
+            getattr(target_device, "is_active", None) is True
+            and str(getattr(status, "value", status)) == "IDLE"
+            and getattr(target_device, "maintenance_mode", None) is False
+            and getattr(target_device, "current_command_id", None) is None
+        )
+        if actual_fact_version != expected_fact_version or actual_available != expected_available:
+            raise StaleDeviceCommandPrecondition("device fact changed")
+        if not actual_available:
+            raise StaleDeviceCommandPrecondition("device is unavailable for command write")
+
+        device_id = getattr(target_device, "id", None)
+        device_code = getattr(target_device, "device_code", None)
+        if not isinstance(device_id, int) or not isinstance(device_code, str) or not device_code:
+            raise ValueError("runtime device command requires a pinned target device")
+        # 设备行锁把“检查未闭环命令 + 创建新命令”串行化；PENDING 尚未改变
+        # Device 运行态，但已经占用唯一命令槽，不能允许另一个 attempt 越过准入。
+        unfinished_commands = await self.repo.get_unfinished_commands_for_device(db, device_id, limit=1)
+        if unfinished_commands:
+            raise StaleDeviceCommandPrecondition("device already has an unfinished command")
+        requested_code = getattr(request, "command_code", None)
+        command_code = requested_code or f"SC-{sha256(idempotency_key.encode('utf-8')).hexdigest()[:32]}"
+        command = DeviceCommand(
+            command_code=command_code,
+            device_id=device_id,
+            task_type=str(request.action),
+            priority=int(request.priority),
+            timeout_ms=int(request.timeout_ms),
+            params=dict(request.payload),
+            trace_id=trace_id,
+            correlation_id=execution_correlation_id,
+            workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
+            plugin_key=getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
+            contract_version=getattr(session, "contract_version", None),
+            status=CommandStatus.PENDING,
+        )
+        outbox = SystemOutbox(
+            session_id=getattr(session, "id", None),
+            workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
+            device_id=device_id,
+            operation_domain="DEVICE",
+            operation_key=idempotency_key,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            dispatch_key=f"device-command:{command_code}",
+            target_type=SystemOutboxTargetType.DEVICE,
+            target_code=device_code,
+            payload_json={
+                "command_code": command_code,
+                "device_code": device_code,
+                "task_type": str(request.action),
+                "priority": int(request.priority),
+                "timeout": int(request.timeout_ms),
+                "params": dict(request.payload),
+                "trace_id": trace_id,
+            },
+            trace_id=trace_id,
+        )
+        await self.repo.add_runtime_effect(db, command, outbox)
+        from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
+
+        # queued/dispatched/ACK 均不是完成；匹配 command_code 的终态 Callback 才能推进状态。
+        timeout_seconds = max(1, (int(request.timeout_ms) + 999) // 1000)
+        workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="COMMAND_RESULT",
+            occurred_at=timezone.now_for_db(),
+            awaiting_device_command_code=command_code,
+            deadline_seconds=timeout_seconds,
+        )
+        return command, outbox
 
     async def send_command(
         self,

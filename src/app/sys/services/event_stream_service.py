@@ -69,6 +69,14 @@ def defer_sse_event(db: Any, event_type: str, payload: dict[str, Any]) -> None:
         events.append((event_type, payload))
 
 
+def discard_deferred_sse_events(db: Any) -> None:
+    """丢弃当前事务暂存的 SSE；数据库回滚不会自动清理 ``session.info``。"""
+
+    info = _get_session_info(db)
+    if info is not None:
+        info.pop(DEFERRED_SSE_EVENTS_KEY, None)
+
+
 async def publish_deferred_sse_events(db: Any) -> None:
     """发布并清空当前 session 中已登记的提交后 SSE 事件。"""
 

@@ -15,7 +15,6 @@ from src.app.runtime.capabilities.material_flow.contracts.material_identity impo
     MaterialIdentityInput,
     MaterialIdentityResolutionStatus,
 )
-from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldStatus, RuntimeHoldType
 from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationReason,
@@ -24,6 +23,7 @@ from src.app.runtime.orchestration.models.session import (
     WorklineSession,
 )
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.database.db import close_db, get_db_context, init_db
 
 if TYPE_CHECKING:
@@ -105,10 +105,12 @@ def _evidence_snapshot(session: WorklineSession, reason: str) -> dict[str, Any]:
 
 
 def _material_identity_missing(session: WorklineSession, evidence: dict[str, Any]) -> bool:
-    definition = get_workline_capability_definition(session.plugin_key)
+    definition = get_workline_capability_definition(session.plugin_key, session.contract_version)
     if definition is None:
         return True
-    identity = definition.manifest.resolve_material_identity(
+    if definition.material_identity_resolver is None:
+        return True
+    identity = definition.material_identity_resolver(
         MaterialIdentityInput(
             session_context=_as_dict(session.context_json),
             source_payload=evidence,

@@ -19,12 +19,22 @@ class FakeDeviceRepo:
         self.devices = {device.id: device for device in devices}
         self.devices_by_code = {device.device_code: device for device in devices}
         self.update_calls: list[tuple[int, dict[str, Any]]] = []
+        self.delete_calls: list[int] = []
+        self.topology_identity_overrides: dict[int, tuple[int | None, bool] | None] = {}
 
     async def get_by_id(self, _db: object, device_id: int) -> SimpleNamespace | None:
         return self.devices.get(device_id)
 
     async def get_by_device_code(self, _db: object, device_code: str) -> SimpleNamespace | None:
         return self.devices_by_code.get(device_code)
+
+    async def get_topology_identity(self, _db: object, device_id: int) -> tuple[int | None, bool] | None:
+        if device_id in self.topology_identity_overrides:
+            return self.topology_identity_overrides[device_id]
+        device = self.devices.get(device_id)
+        if device is None:
+            return None
+        return getattr(device, "work_line_id", None), bool(getattr(device, "is_deleted", False))
 
     async def update(self, _db: object, device_id: int, data: dict[str, Any]) -> SimpleNamespace | None:
         self.update_calls.append((device_id, dict(data)))
@@ -34,6 +44,10 @@ class FakeDeviceRepo:
         for key, value in data.items():
             setattr(device, key, value)
         return device
+
+    async def delete(self, _db: object, device_id: int) -> bool:
+        self.delete_calls.append(device_id)
+        return self.devices.pop(device_id, None) is not None
 
     async def get_heartbeat_stale_devices(
         self,
@@ -688,6 +702,10 @@ class FakeWorkLineRepo:
         self.worklines = {workline.id: workline for workline in worklines}
         self.get_by_id_calls: list[int] = []
         self.get_for_update_calls: list[int] = []
+        self.exclusive_lock_calls: list[int] = []
+
+    async def acquire_plugin_pin_exclusive(self, _db: object, workline_id: int) -> None:
+        self.exclusive_lock_calls.append(workline_id)
 
     async def get_by_id(self, _db: object, workline_id: int) -> SimpleNamespace | None:
         self.get_by_id_calls.append(workline_id)
@@ -699,7 +717,17 @@ class FakeWorkLineRepo:
 
 
 @pytest.mark.asyncio
-async def test_plain_update_rejects_topology_changes_when_workline_is_active() -> None:
+@pytest.mark.parametrize(
+    "topology_data",
+    [
+        {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1},
+        {"device_code": "ARM01-RENAMED", "version": 1},
+        {"vendor_type": "OTHER", "version": 1},
+    ],
+)
+async def test_plain_update_rejects_topology_changes_when_workline_is_active(
+    topology_data: dict[str, object],
+) -> None:
     device = SimpleNamespace(
         id=7,
         device_code="ARM01",
@@ -718,7 +746,7 @@ async def test_plain_update_rejects_topology_changes_when_workline_is_active() -
     db = SimpleNamespace(commit=AsyncMock())
 
     with pytest.raises(BusinessException, match="已启用作业线"):
-        await service.update(cast("Any", db), 7, {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1})
+        await service.update(cast("Any", db), 7, topology_data)
 
 
 @pytest.mark.asyncio
@@ -744,7 +772,63 @@ async def test_plain_update_locks_workline_before_topology_guard() -> None:
     with pytest.raises(BusinessException, match="已启用作业线"):
         await service.update(cast("Any", db), 7, {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1})
 
+    assert workline_repo.exclusive_lock_calls == [3]
     assert workline_repo.get_for_update_calls == [3]
+
+
+@pytest.mark.asyncio
+async def test_plain_delete_rejects_removing_device_from_active_workline() -> None:
+    device = SimpleNamespace(
+        id=7,
+        device_code="ARM01",
+        work_line_id=3,
+        device_role="ROUGH_SORTER_INPUT_ARM",
+        capabilities_json={},
+        device_status=DeviceStatus.IDLE,
+        current_command_id=None,
+        error_code=None,
+        maintenance_mode=False,
+    )
+    workline_repo = FakeWorkLineRepo(SimpleNamespace(id=3, is_active=True))
+    service = _service(FakeDeviceRepo(device))
+    service.workline_repo = workline_repo  # type: ignore[attr-defined]
+    db = SimpleNamespace(commit=AsyncMock())
+
+    with pytest.raises(BusinessException, match="已启用作业线"):
+        await service.delete(cast("Any", db), 7)
+
+    assert workline_repo.exclusive_lock_calls == [3]
+
+
+@pytest.mark.asyncio
+async def test_plain_delete_rejects_when_device_moves_after_initial_read() -> None:
+    device = SimpleNamespace(
+        id=7,
+        device_code="ARM01",
+        work_line_id=3,
+        device_role="ROUGH_SORTER_INPUT_ARM",
+        capabilities_json={},
+        device_status=DeviceStatus.IDLE,
+        current_command_id=None,
+        error_code=None,
+        maintenance_mode=False,
+        is_deleted=False,
+    )
+    device_repo = FakeDeviceRepo(device)
+    device_repo.topology_identity_overrides[7] = (4, False)
+    workline_repo = FakeWorkLineRepo(
+        SimpleNamespace(id=3, is_active=False),
+        SimpleNamespace(id=4, is_active=False),
+    )
+    service = _service(device_repo)
+    service.workline_repo = workline_repo  # type: ignore[attr-defined]
+    db = SimpleNamespace(commit=AsyncMock())
+
+    with pytest.raises(BusinessException, match="拓扑已并发变更"):
+        await service.delete(cast("Any", db), 7)
+
+    assert workline_repo.exclusive_lock_calls == [3]
+    assert device_repo.delete_calls == []
 
 
 @pytest.mark.asyncio

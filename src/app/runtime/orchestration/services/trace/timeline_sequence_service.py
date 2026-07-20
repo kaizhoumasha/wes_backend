@@ -2,25 +2,9 @@
 
 from __future__ import annotations
 
-from inspect import isawaitable
-from typing import Any, cast
+from typing import Any
 
-from sqlalchemy import func, select, text
-
-from src.app.runtime.orchestration.models.timeline import WorklineTimeline
-
-
-def _dialect_name(db: Any) -> str | None:
-    get_bind = getattr(db, "get_bind", None)
-    bind = get_bind() if callable(get_bind) else getattr(db, "bind", None)
-    if isawaitable(bind):
-        close = getattr(bind, "close", None)
-        if callable(close):
-            _ = close()
-        return None
-    dialect = getattr(bind, "dialect", None)
-    name = getattr(dialect, "name", None)
-    return name if isinstance(name, str) else None
+from src.app.runtime.orchestration.repositories.timeline_sequence_repository import timeline_sequence_repository
 
 
 async def allocate_timeline_seq_no(db: Any, *, session_id: int) -> int:
@@ -30,16 +14,7 @@ async def allocate_timeline_seq_no(db: Any, *, session_id: int) -> int:
     非 PostgreSQL 测试/本地内存数据库跳过 advisory lock，但保留同一查询路径。
     """
 
-    if _dialect_name(db) == "postgresql":
-        await db.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
-            {"lock_key": f"workline_timeline:{session_id}"},
-        )
-
-    columns = cast("Any", WorklineTimeline).__table__.c
-    result = await db.execute(select(func.max(columns.seq_no)).where(columns.session_id == session_id))
-    max_seq_no = result.scalar_one_or_none()
-    return (max_seq_no or 0) + 1
+    return (await timeline_sequence_repository.allocate_many(db, session_id=session_id, count=1))[0]
 
 
 async def add_timeline_with_sequence(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:

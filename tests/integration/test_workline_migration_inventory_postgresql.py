@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -18,11 +20,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from scripts import workline_migration_inventory as inventory_cli
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
-from src.app.runtime.capability_catalog import list_workline_capability_definitions
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold, RuntimeHoldStatus, RuntimeHoldType
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
+from src.app.runtime.workline_plugins.registry import list_workline_capability_definitions
 from src.app.sys.models.outbox import (
     SystemOutbox,
     SystemOutboxDispatchType,
@@ -33,9 +40,11 @@ from src.app.workline.models import (
     WorkLine,
     WorklineMigrationInventoryIssueCode,
     WorklineMigrationInventorySeverity,
+    WorklinePluginBinding,
     WorklineRuntimeReferenceType,
 )
 from src.app.workline.models.workline import LineType
+from src.app.workline.repositories import workline_plugin_binding_repository
 from src.app.workline.services import WorklineMigrationInventoryService
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
@@ -95,13 +104,154 @@ async def _with_database(scenario: Callable[[str, async_sessionmaker[AsyncSessio
             await engine.dispose()
 
 
+@pytest.mark.integration
+def test_plugin_binding_revision_roundtrip_and_database_constraints() -> None:
+    """真实 PostgreSQL 锁定 upgrade/downgrade/upgrade 与关键数据库合同。"""
+
+    async def scenario() -> None:
+        async with temporary_database(environ=_integration_environment()) as (_database, database_url):
+            run_alembic("upgrade", "e0d58415afc9", database_url=database_url)
+            run_alembic("upgrade", "fa15ba0aef65", database_url=database_url)
+            engine = create_async_engine(database_url)
+            try:
+                async with engine.connect() as connection:
+                    columns = set(
+                        (
+                            await connection.execute(
+                                text(
+                                    "SELECT column_name FROM information_schema.columns "
+                                    "WHERE table_schema = 'wes_biz' AND table_name = 'workline_plugin_bindings'"
+                                )
+                            )
+                        ).scalars()
+                    )
+                    assert {
+                        "typed_config_json",
+                        "generated_index_digest",
+                        "is_enabled",
+                        "is_revoked",
+                        "revoked_reason",
+                    } <= columns
+                    assert (
+                        await connection.scalar(
+                            text(
+                                "SELECT COUNT(*) FROM pg_constraint "
+                                "WHERE conname IN ('uq_workline_plugin_binding_identity', "
+                                "'fk_execution_sessions_plugin_binding', 'fk_execution_work_items_plugin_binding')"
+                            )
+                        )
+                        == 3
+                    )
+                    assert (
+                        await connection.scalar(
+                            text(
+                                "SELECT COUNT(*) FROM pg_constraint "
+                                "WHERE conname LIKE 'ck_%_plugin_binding_version_positive' "
+                                "OR conname LIKE 'ck_%_plugin_state_version_non_negative'"
+                            )
+                        )
+                        == 6
+                    )
+                    assert (
+                        await connection.scalar(
+                            text(
+                                "SELECT column_default FROM information_schema.columns "
+                                "WHERE table_schema = 'wes_biz' AND table_name = 'workline_plugin_bindings' "
+                                "AND column_name = 'is_revoked'"
+                            )
+                        )
+                        == "false"
+                    )
+            finally:
+                await engine.dispose()
+
+            run_alembic("downgrade", "e0d58415afc9", database_url=database_url)
+            engine = create_async_engine(database_url)
+            try:
+                async with engine.connect() as connection:
+                    assert (
+                        await connection.scalar(text("SELECT to_regclass('wes_biz.workline_plugin_bindings')")) is None
+                    )
+            finally:
+                await engine.dispose()
+            run_alembic("upgrade", "fa15ba0aef65", database_url=database_url)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_plugin_binding_revision_reports_legacy_intent_duplicates_before_constraint() -> None:
+    """旧 ledger 身份重复时必须给出可修复清单，而不是在建约束时返回匿名冲突。"""
+
+    async def scenario() -> None:
+        async with temporary_database(environ=_integration_environment()) as (_database, database_url):
+            run_alembic("upgrade", "e0d58415afc9", database_url=database_url)
+            engine = create_async_engine(database_url)
+            try:
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            "INSERT INTO wes_runtime.execution_sessions "
+                            "(id, workline_id, manifest_version, state) VALUES "
+                            "(900001, 700001, 'legacy-v1', 'ACTIVE')"
+                        )
+                    )
+                    await connection.execute(
+                        text(
+                            "INSERT INTO wes_runtime.execution_correlations "
+                            "(id, correlation_id, execution_session_id, trace_id) VALUES "
+                            "(900001, 'legacy-duplicate-correlation', 900001, 'legacy-duplicate-trace')"
+                        )
+                    )
+                    await connection.execute(
+                        text(
+                            "INSERT INTO wes_runtime.runtime_intent_logs "
+                            "(id, execution_session_id, correlation_id, provider_code, target_domain, target_action, "
+                            "idempotency_key, request_hash, dispatch_status, attempt_count) "
+                            "SELECT 910000 + group_no * 10 + duplicate_no, 900001, "
+                            "'legacy-duplicate-correlation', 'legacy-provider', 'device', 'dispatch', "
+                            "'group-key-' || group_no, 'group-hash-' || group_no || '-' || duplicate_no, "
+                            "'PENDING', 0 FROM generate_series(1, 21) AS group_no "
+                            "CROSS JOIN generate_series(1, 2) AS duplicate_no"
+                        )
+                    )
+                    await connection.execute(
+                        text(
+                            "INSERT INTO wes_runtime.runtime_intent_logs "
+                            "(id, execution_session_id, correlation_id, provider_code, target_domain, target_action, "
+                            "idempotency_key, request_hash, dispatch_status, attempt_count) "
+                            "SELECT 900000 + sequence_no, 900001, 'legacy-duplicate-correlation', "
+                            "'legacy-provider', 'device', 'dispatch', 'duplicate-key', "
+                            "'hash-' || sequence_no, 'PENDING', 0 FROM generate_series(1, 25) AS sequence_no"
+                        )
+                    )
+            finally:
+                await engine.dispose()
+
+            with pytest.raises(subprocess.CalledProcessError) as exc_info:
+                run_alembic("upgrade", "fa15ba0aef65", database_url=database_url)
+
+            diagnostics = f"{exc_info.value.stdout}\n{exc_info.value.stderr}"
+            assert "LEGACY_INTENT_DUPLICATE_IDENTITY" in diagnostics
+            assert "legacy-provider" in diagnostics
+            assert "duplicate-key" in diagnostics
+            assert "count=25" in diagnostics
+            assert "ids_sample={900001,900002,900003,900004,900005,900006,900007,900008,900009,900010}" in diagnostics
+            assert "truncated=true" in diagnostics
+            assert "900011" not in diagnostics
+            assert "duplicate_group_count=22" in diagnostics
+            assert "groups_truncated=true" in diagnostics
+
+    asyncio.run(scenario())
+
+
 async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     definition = list_workline_capability_definitions()[0]
     foundation = WorkLine(
         line_code="IT-INVENTORY-FOUNDATION",
         line_name="Inventory Foundation",
         line_type=LineType.AUTO,
-        plugin_key=definition.capability_key,
+        plugin_key=definition.plugin_key,
         contract_version=definition.contract_version,
         is_active=True,
     )
@@ -109,12 +259,79 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
         line_code="IT-INVENTORY-LINKED",
         line_name="Inventory Linked",
         line_type=LineType.AUTO,
-        plugin_key=definition.capability_key,
+        plugin_key=definition.plugin_key,
         contract_version=definition.contract_version,
         is_active=True,
     )
     db.add_all([foundation, linked])
     await db.flush()
+    binding = WorklinePluginBinding(
+        workline_id=foundation.id,
+        plugin_key=definition.plugin_key,
+        contract_version=definition.contract_version,
+        binding_version=1,
+        typed_config_json={},
+        typed_config_hash="a" * 64,
+        provider_profile_snapshot_json=[],
+        port_requirements_json=["InventoryPort.query"],
+        device_snapshot_json=[],
+        generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+        environment="production",
+        activated_at=datetime(2026, 7, 17, 8),
+        activated_by="integration-test",
+        activated_reason="inventory-contract",
+    )
+    db.add(binding)
+    await db.flush()
+    foundation.active_plugin_binding_id = binding.id
+    foundation.active_plugin_binding_version = binding.binding_version
+    foundation.active_plugin_config_hash = binding.typed_config_hash
+    foundation.active_plugin_index_digest = binding.generated_index_digest
+    foundation.active_plugin_provider_requirements_json = ["WMS@v1"]
+    foundation.active_plugin_port_requirements_json = list(binding.port_requirements_json)
+    execution_session = ExecutionSession(
+        workline_id=foundation.id,
+        plugin_key=binding.plugin_key,
+        manifest_version=binding.contract_version,
+        plugin_binding_id=binding.id,
+        plugin_binding_version=binding.binding_version,
+        plugin_config_hash=binding.typed_config_hash,
+        plugin_index_digest=binding.generated_index_digest,
+    )
+    db.add(execution_session)
+    await db.flush()
+    correlation = ExecutionCorrelation(
+        correlation_id="IT-INVENTORY-FOUNDATION-CORRELATION",
+        execution_session_id=execution_session.id,
+        trace_id="IT-INVENTORY-FOUNDATION-TRACE",
+    )
+    db.add(correlation)
+    await db.flush()
+    db.add_all(
+        [
+            ExecutionWorkItem(
+                execution_session_id=execution_session.id,
+                correlation_id=correlation.correlation_id,
+                plugin_key=binding.plugin_key,
+                plugin_binding_id=binding.id,
+                plugin_binding_version=binding.binding_version,
+                plugin_config_hash=binding.typed_config_hash,
+                plugin_index_digest=binding.generated_index_digest,
+                object_type="material",
+                object_key="IT-MATERIAL-1",
+                current_step="INGRESS",
+            ),
+            RuntimeIntentLog(
+                execution_session_id=execution_session.id,
+                correlation_id=correlation.correlation_id,
+                provider_code="WMS",
+                target_domain="wms_integration",
+                target_action="query",
+                idempotency_key="IT-INVENTORY-INTENT-1",
+                request_hash="c" * 64,
+            ),
+        ]
+    )
     device = Device(
         device_code="IT-INVENTORY-DEVICE",
         device_name="Inventory Device",
@@ -277,7 +494,10 @@ class _ObservingRepository:
 
 
 async def _build_via_cli(database_url: str, repository: _ObservingRepository | None = None) -> Any:
-    service = WorklineMigrationInventoryService(repository=repository or _ObservingRepository())
+    service = WorklineMigrationInventoryService(
+        repository=repository or _ObservingRepository(),
+        extension_reference_repository=workline_plugin_binding_repository,
+    )
     with (
         patch.object(inventory_cli, "settings", SimpleNamespace(DATABASE_URL=database_url, APP_ENV="test")),
         patch.object(inventory_cli, "workline_migration_inventory_service", service),
@@ -324,6 +544,18 @@ def test_postgresql_status_matrix_samples_transaction_and_no_write_contract() ->
 
         assert foundation.foundation_ready is True
         assert foundation.runtime_references.total == 0
+        assert foundation.active_plugin_binding_version == 1
+        assert foundation.active_plugin_config_hash == "a" * 64
+        assert foundation.active_plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
+        assert foundation.provider_requirements == ("WMS@v1",)
+        assert foundation.port_requirements == ("InventoryPort.query",)
+        assert tuple(reference.type.value for reference in foundation.runtime_extension_references) == (
+            "INTENT",
+            "WORK_ITEM",
+        )
+        assert {reference.plugin_key for reference in foundation.runtime_extension_references} == {
+            foundation.plugin_key
+        }
         assert linked.runtime_references.model_dump(exclude={"sample"}) == {
             "sessions": len(SESSION_ACTIVE),
             "commands": len(COMMAND_ACTIVE),

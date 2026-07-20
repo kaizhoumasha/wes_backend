@@ -194,6 +194,30 @@ def test_aware_utc_datetime_has_iso_json_representation() -> None:
     assert report.model_dump(mode="json")["generated_at"] == "2026-07-15T08:30:00Z"
 
 
+def test_workline_item_exposes_binding_index_and_provider_port_requirements() -> None:
+    item = WorklineMigrationInventoryItem(
+        workline_id=1,
+        line_code="LINE-01",
+        is_active=True,
+        plugin_key="rough_sorter",
+        configured_contract_version="v1",
+        catalog_contract_version="v1",
+        run_mode="AUTO",
+        active_plugin_binding_id=9,
+        active_plugin_binding_version=3,
+        active_plugin_config_hash="b" * 64,
+        active_plugin_index_digest="c" * 64,
+        provider_requirements=("WMS@v1",),
+        port_requirements=("InventoryPort.query",),
+        runtime_references=WorklineRuntimeReferenceSummary(**_valid_reference_summary_payload()),
+        foundation_ready=True,
+    )
+
+    assert item.active_plugin_binding_id == 9
+    assert item.provider_requirements == ("WMS@v1",)
+    assert item.port_requirements == ("InventoryPort.query",)
+
+
 def test_schema_version_is_defaulted_and_cannot_be_overridden() -> None:
     payload = _valid_report_payload()
     payload["schema_version"] = "workline-migration-inventory-foundation.v2"

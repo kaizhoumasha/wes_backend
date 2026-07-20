@@ -49,6 +49,49 @@ class DeviceRepository(BaseRepository[Device]):
         )
         return result.scalar_one_or_none()
 
+    async def get_topology_identity(
+        self,
+        db: AsyncSession,
+        device_id: int,
+    ) -> tuple[int | None, bool] | None:
+        """绕过 ORM identity map 读取最新归属与删除态，供 advisory 锁后并发复核。"""
+
+        columns = cast("Any", Device).__table__.c
+        result = await db.execute(select(columns.work_line_id, columns.is_deleted).where(columns.id == device_id))
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return row.work_line_id, bool(row.is_deleted)
+
+    async def get_runtime_effect_target_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        target_device_id: int | None,
+        target_device_code: str | None,
+        expected_workline_id: int,
+    ) -> Device | None:
+        """按固定身份锁定 Runtime 副作用目标；调用方事务负责提交或回滚。"""
+
+        if (target_device_id is None) == (target_device_code is None):
+            raise ValueError("runtime device target requires exactly one identity")
+        columns = cast("Any", Device).__table__.c
+        identity_clause = (
+            columns.id == target_device_id
+            if target_device_id is not None
+            else columns.device_code == target_device_code
+        )
+        result = await db.execute(
+            select(Device)
+            .where(
+                identity_clause,
+                columns.work_line_id == expected_workline_id,
+                columns.is_deleted.is_(False),
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_work_line_id(
         self,
         db: AsyncSession,
@@ -66,6 +109,29 @@ class DeviceRepository(BaseRepository[Device]):
                 Device.role_index.asc(),  # type: ignore[arg-type]
                 Device.id.asc(),  # type: ignore[arg-type]
             )
+        )
+        return list(result.scalars().all())
+
+    async def get_by_work_line_id_for_update(
+        self,
+        db: AsyncSession,
+        work_line_id: int,
+    ) -> list[Device]:
+        """锁定作业线设备事实，防止运行态版本在决策校验后、事务提交前漂移。"""
+
+        result = await db.execute(
+            select(Device)
+            .where(
+                Device.work_line_id == work_line_id,  # type: ignore[arg-type]
+                Device.is_deleted.is_(False),  # type: ignore[arg-type]
+            )
+            .order_by(
+                Device.sort_order.asc(),  # type: ignore[arg-type]
+                Device.role_index.asc(),  # type: ignore[arg-type]
+                Device.id.asc(),  # type: ignore[arg-type]
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
         )
         return list(result.scalars().all())
 

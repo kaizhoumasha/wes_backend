@@ -91,6 +91,10 @@ pytest tests/resilience/
 pytest tests/integration/
 pytest tests/load/
 pytest tests/mock/
+
+# Workline 扩展真实 PostgreSQL 性能预算（必须显式配置安全的 integration admin/test URL）
+INTEGRATION_DATABASE_URL='postgresql+asyncpg://.../postgres' \
+  pytest tests/integration/workline_capabilities/test_runtime_extension_performance_budget_postgresql.py -q -s
 ```
 
 ### 推荐使用方式

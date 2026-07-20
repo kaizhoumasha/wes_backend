@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.runtime.capabilities.material_flow.contracts.six_in_one import SixInOne
-from src.app.runtime.capability_catalog import classify_workline_result, resolve_workline_business_key
 from src.app.runtime.normalization.classifiers.result_classifier import (
     classify_result,
     classify_result_category,
@@ -22,6 +21,7 @@ from src.app.runtime.normalization.contracts import (
     NormalizedDeviceEvent,
     NormalizedExternalCallback,
 )
+from src.app.runtime.workline_plugins.registry import classify_workline_result, resolve_workline_business_key
 from src.app.workline.utils import non_empty_str, payload_dict
 
 _ERROR_CODE_FIELDS = ("error_code", "code")
@@ -90,9 +90,14 @@ def _resolve_device_event_business_key(
     data: dict[str, Any],
     *,
     plugin_key: str | None = None,
+    contract_version: str | None = None,
 ) -> str | None:
     try:
-        plugin_business_key = resolve_workline_business_key(plugin_key, payload)
+        plugin_business_key = resolve_workline_business_key(
+            plugin_key,
+            payload,
+            contract_version=contract_version,
+        )
     except (TypeError, ValueError):
         plugin_business_key = None
     if plugin_business_key:
@@ -122,7 +127,14 @@ def _require_canonical_event_type(inbox: Any) -> str:
     return event_type
 
 
-def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: str, plugin_key: str | None) -> Any:
+def _normalize_internal_event(
+    inbox: Any,
+    payload: dict[str, Any],
+    *,
+    trace_id: str,
+    plugin_key: str | None,
+    contract_version: str | None,
+) -> Any:
     source_event_type = non_empty_str(payload.get("event_type"))
     canonical_event_type = _require_canonical_event_type(inbox)
     if source_event_type is None:
@@ -132,14 +144,26 @@ def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: 
     if not isinstance(data_value, dict):
         raise TypeError("INTERNAL_EVENT payload data must be an object")
 
-    if not non_empty_str(payload.get("event_id")):
+    event_id = non_empty_str(getattr(inbox, "event_id", None)) or non_empty_str(payload.get("event_id"))
+    causation_id = non_empty_str(getattr(inbox, "causation_id", None)) or non_empty_str(payload.get("causation_id"))
+    if event_id is None:
         raise ValueError("INTERNAL_EVENT payload missing event_id")
-    if not non_empty_str(payload.get("causation_id")):
+    if causation_id is None:
         raise ValueError("INTERNAL_EVENT payload missing causation_id")
     resolved_trace_id = _resolve_trace_id(inbox, payload, trace_id=trace_id)
     if not resolved_trace_id:
         raise ValueError("INTERNAL_EVENT payload missing trace_id")
 
+    # INTERNAL_EVENT 的规范元数据属于 RuntimeInbox 列；标准化输出补成完整
+    # envelope，避免业务 handler 误依赖生产者重复写入 payload。
+    normalized_payload = dict(payload)
+    normalized_payload.update(
+        {
+            "event_id": event_id,
+            "causation_id": causation_id,
+            "trace_id": resolved_trace_id,
+        }
+    )
     data = payload_dict(data_value)
     for field_name in ("handoff_demand_id", "handoff_source_item_id", "claim_attempt_no"):
         value = data.get(field_name)
@@ -150,27 +174,48 @@ def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: 
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,
         device_code=non_empty_str(payload.get("device_code")),
-        business_key=_resolve_device_event_business_key(payload, data, plugin_key=plugin_key),
+        business_key=_resolve_device_event_business_key(
+            payload,
+            data,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+        ),
         trace_id=resolved_trace_id,
         event_time=payload.get("timestamp"),
-        payload=payload,
+        payload=normalized_payload,
         data=data,
         attributes=payload_dict(payload.get("attributes")),
     )
 
 
-def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | None = None) -> Any:
+def normalize_inbox_input(
+    inbox: Any,
+    *,
+    trace_id: str = "",
+    plugin_key: str | None = None,
+    contract_version: str | None = None,
+) -> Any:
     """按 inbox 类型构建标准化输入模型。"""
 
     payload = payload_dict(getattr(inbox, "payload_json", None))
     kind = _infer_kind(getattr(inbox, "kind", None), payload)
     if _is_internal_event(kind, payload):
-        return _normalize_internal_event(inbox, payload, trace_id=trace_id, plugin_key=plugin_key)
+        return _normalize_internal_event(
+            inbox,
+            payload,
+            trace_id=trace_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+        )
 
     if kind == "COMMAND_RESULT":
         source_result = str(payload.get("result") or "UNKNOWN")
         error_detail = _normalized_error_detail(payload)
-        plugin_classification = classify_workline_result(plugin_key, payload)
+        plugin_classification = classify_workline_result(
+            plugin_key,
+            payload,
+            contract_version=contract_version,
+        )
         result_classification = normalize_result_classification(plugin_classification) or classify_result_category(
             source_result,
             error_detail=error_detail,
@@ -208,7 +253,12 @@ def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | N
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,
         device_code=non_empty_str(payload.get("device_code")),
-        business_key=_resolve_device_event_business_key(payload, data, plugin_key=plugin_key),
+        business_key=_resolve_device_event_business_key(
+            payload,
+            data,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+        ),
         trace_id=_resolve_trace_id(inbox, payload, trace_id=trace_id),
         event_time=payload.get("timestamp"),
         payload=payload,

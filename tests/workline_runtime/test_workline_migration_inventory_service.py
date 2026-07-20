@@ -13,6 +13,7 @@ import pytest
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.runtime.orchestration import repository_wiring
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.workline.models import WorkLine
 from src.app.workline.services import (
     WorklineMigrationInventoryInvariantError,
@@ -68,7 +69,21 @@ def _workline(
         plugin_key=plugin,
         contract_version=version,
         run_mode=run_mode,
+        active_plugin_binding_id=None,
+        active_plugin_binding_version=None,
+        active_plugin_config_hash=None,
+        active_plugin_index_digest=None,
+        active_plugin_provider_requirements_json=[],
+        active_plugin_port_requirements_json=[],
     )
+
+
+def _pin_current(source: SimpleNamespace) -> SimpleNamespace:
+    source.active_plugin_binding_id = source.id + 100
+    source.active_plugin_binding_version = 1
+    source.active_plugin_config_hash = "a" * 64
+    source.active_plugin_index_digest = WORKLINE_PLUGIN_INDEX_DIGEST
+    return source
 
 
 def _summary(
@@ -84,11 +99,17 @@ def _definition(key: str = "known", version: str = "current") -> SimpleNamespace
     return SimpleNamespace(capability_key=key, contract_version=version)
 
 
-def _profile(provider_code: str = "WMS", *, query: list[str] | None = None) -> ExternalContractProfile:
+def _profile(
+    provider_code: str = "WMS",
+    *,
+    query: list[str] | None = None,
+    version: str = "v1",
+    environment: str = "sandbox",
+) -> ExternalContractProfile:
     return ExternalContractProfile(
         provider_code=provider_code,
-        contract_version="v1",
-        environment="sandbox",
+        contract_version=version,
+        environment=environment,
         runtime_capabilities_query=query or ["WmsMasterDataPort.get_material"],
         runtime_capabilities_effect=["WmsFulfillmentPort.confirm_inbound"],
         inbound_normalizers_event=["SECRET_EVENT"],
@@ -97,6 +118,9 @@ def _profile(provider_code: str = "WMS", *, query: list[str] | None = None) -> E
         timeout_retry_retry_backoff_seconds=[1, 2],
         fixture_set_path="tests/fixtures/secret",
         fixture_set_required_cases=["success"],
+        security_profile=(
+            {"secret_kid": "test-production-kid", "signature_algo": "HS256"} if environment == "production" else {}
+        ),
     )
 
 
@@ -121,7 +145,7 @@ def _service(
 @pytest.mark.parametrize(
     ("active", "plugin", "version", "references", "expected_codes", "foundation_ready"),
     [
-        (True, "known", "current", 0, (), True),
+        (True, "known", "current", 0, ("ACTIVE_PLUGIN_BINDING_INCOMPLETE",), False),
         (
             True,
             None,
@@ -130,7 +154,7 @@ def _service(
             ("ACTIVE_WITHOUT_CONTRACT_VERSION", "ACTIVE_WITHOUT_PLUGIN"),
             False,
         ),
-        (False, "unknown", "v1", 0, ("UNKNOWN_PLUGIN",), False),
+        (False, "unknown", "v1", 0, ("UNKNOWN_PLUGIN",), True),
         (True, "unknown", "current", 0, ("UNKNOWN_PLUGIN",), False),
         (True, "known", "old", 0, ("CONTRACT_VERSION_MISMATCH",), False),
         (
@@ -163,7 +187,8 @@ async def test_inventory_classification_case_table(
     assert tuple(issue.code.value for issue in item.issues) == expected_codes
     assert item.foundation_ready is foundation_ready
     assert report.foundation_ready is foundation_ready
-    assert all(issue.severity.value == "BLOCKER" for issue in item.issues)
+    expected_severity = "WARNING" if not active and expected_codes == ("UNKNOWN_PLUGIN",) else "BLOCKER"
+    assert all(issue.severity.value == expected_severity for issue in item.issues)
     assert repo.get_list_calls == [{"limit": 101, "offset": 0, "order_by_raw": [WorkLine.line_code, WorkLine.id]}]
 
 
@@ -177,6 +202,7 @@ async def test_workline_fields_are_normalized_before_catalog_lookup_and_classifi
         version=" current ",
         run_mode=" AUTO ",
     )
+    _pin_current(source)
 
     report = await _service(FakeRepository([source])).build_report(object(), environment="production")
 
@@ -187,6 +213,134 @@ async def test_workline_fields_are_normalized_before_catalog_lookup_and_classifi
     assert item.catalog_contract_version == "current"
     assert item.run_mode == "AUTO"
     assert item.issues == ()
+
+
+@pytest.mark.asyncio
+async def test_inventory_digest_includes_binding_index_and_per_workline_requirements() -> None:
+    source = _workline(1, "LINE-01", active=True, plugin="known", version="current")
+    source.active_plugin_binding_id = 11
+    source.active_plugin_binding_version = 2
+    source.active_plugin_config_hash = "a" * 64
+    source.active_plugin_index_digest = "b" * 64
+    source.active_plugin_provider_requirements_json = ["WMS@v1"]
+    source.active_plugin_port_requirements_json = ["InventoryPort.query"]
+
+    first = await _service(FakeRepository([source])).build_report(object(), environment="production")
+    source.active_plugin_port_requirements_json = ["InventoryPort.query", "EcsPort.dispatch"]
+    second = await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+    assert first.worklines[0].active_plugin_binding_id == 11
+    assert first.worklines[0].provider_requirements == ("WMS@v1",)
+    assert first.inventory_digest != second.inventory_digest
+
+
+@pytest.mark.asyncio
+async def test_active_generated_plugin_with_complete_current_binding_is_foundation_ready() -> None:
+    source = _workline(1, "LINE-01", active=True, plugin="known", version="current")
+    source.active_plugin_binding_id = 11
+    source.active_plugin_binding_version = 2
+    source.active_plugin_config_hash = "a" * 64
+    source.active_plugin_index_digest = WORKLINE_PLUGIN_INDEX_DIGEST
+
+    report = await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+    assert report.worklines[0].issues == ()
+    assert report.worklines[0].foundation_ready is True
+    assert report.foundation_ready is True
+
+
+@pytest.mark.asyncio
+async def test_active_generated_plugin_with_stale_index_digest_blocks_foundation() -> None:
+    source = _workline(1, "LINE-01", active=True, plugin="known", version="current")
+    source.active_plugin_binding_id = 11
+    source.active_plugin_binding_version = 2
+    source.active_plugin_config_hash = "a" * 64
+    source.active_plugin_index_digest = ("0" if WORKLINE_PLUGIN_INDEX_DIGEST[0] != "0" else "1") + (
+        WORKLINE_PLUGIN_INDEX_DIGEST[1:]
+    )
+
+    report = await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+    assert tuple(issue.code.value for issue in report.worklines[0].issues) == ("ACTIVE_PLUGIN_INDEX_DIGEST_MISMATCH",)
+    assert report.worklines[0].foundation_ready is False
+    assert report.foundation_ready is False
+
+
+@pytest.mark.asyncio
+async def test_inventory_includes_sorted_workitem_and_intent_binding_index_references() -> None:
+    class ExtensionRepository:
+        async def list_runtime_extension_references_by_workline_ids(
+            self, _db: object, workline_ids: tuple[int, ...]
+        ) -> dict[int, list[dict[str, object]]]:
+            references = [
+                {
+                    "type": "WORK_ITEM",
+                    "reference": "work-item:2",
+                    "plugin_key": "known",
+                    "plugin_binding_id": 7,
+                    "plugin_binding_version": 1,
+                    "plugin_config_hash": "a" * 64,
+                    "plugin_index_digest": "b" * 64,
+                },
+                {
+                    "type": "INTENT",
+                    "reference": "intent:1",
+                    "plugin_key": None,
+                    "plugin_binding_id": 7,
+                    "plugin_binding_version": 1,
+                    "plugin_config_hash": "a" * 64,
+                    "plugin_index_digest": "b" * 64,
+                },
+            ]
+            return {workline_id: list(references) for workline_id in workline_ids}
+
+    service = WorklineMigrationInventoryService(
+        repository=FakeRepository([_workline(1, "LINE-01", plugin="known", version="current")]),
+        capability_definitions_loader=lambda: [_definition()],
+        provider_profile_loader=list,
+        extension_reference_repository=ExtensionRepository(),
+        clock=lambda: NOW,
+    )
+
+    report = await service.build_report(object(), environment="production")
+
+    assert tuple(reference.type.value for reference in report.worklines[0].runtime_extension_references) == (
+        "INTENT",
+        "WORK_ITEM",
+    )
+
+
+@pytest.mark.asyncio
+async def test_inventory_loads_extension_references_in_one_batch_for_all_worklines() -> None:
+    class ExtensionRepository:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, ...]] = []
+
+        async def list_runtime_extension_references_by_workline_ids(
+            self,
+            _db: object,
+            workline_ids: tuple[int, ...],
+        ) -> dict[int, list[dict[str, object]]]:
+            self.calls.append(workline_ids)
+            return {workline_id: [] for workline_id in workline_ids}
+
+    extension_repository = ExtensionRepository()
+    service = WorklineMigrationInventoryService(
+        repository=FakeRepository(
+            [
+                _workline(2, "LINE-02", plugin="known", version="current"),
+                _workline(1, "LINE-01", plugin="known", version="current"),
+            ]
+        ),
+        capability_definitions_loader=lambda: [_definition()],
+        provider_profile_loader=list,
+        extension_reference_repository=extension_repository,
+        clock=lambda: NOW,
+    )
+
+    await service.build_report(object(), environment="production")
+
+    assert extension_repository.calls == [(1, 2)]
 
 
 @pytest.mark.asyncio
@@ -253,7 +407,7 @@ async def test_known_plugin_without_version_is_contract_mismatch_even_when_inact
 
 @pytest.mark.asyncio
 async def test_capability_catalog_fields_are_normalized_before_lookup() -> None:
-    source = _workline(1, "LINE", active=True, plugin="known", version="current")
+    source = _pin_current(_workline(1, "LINE", active=True, plugin="known", version="current"))
 
     report = await _service(
         FakeRepository([source]),
@@ -263,6 +417,42 @@ async def test_capability_catalog_fields_are_normalized_before_lookup() -> None:
     item = report.worklines[0]
     assert item.catalog_contract_version == "current"
     assert item.issues == ()
+
+
+@pytest.mark.asyncio
+async def test_capability_catalog_resolves_coexisting_versions_by_exact_identity() -> None:
+    worklines = [
+        _pin_current(_workline(1, "LINE-V2", active=True, plugin="known", version="v2")),
+        _pin_current(_workline(2, "LINE-V3", active=True, plugin="known", version="v3")),
+    ]
+
+    report = await _service(
+        FakeRepository(worklines),
+        definitions=[_definition("known", "v3"), _definition("known", "v2")],
+    ).build_report(object(), environment="production")
+
+    assert [
+        (item.plugin_key, item.configured_contract_version, item.catalog_contract_version) for item in report.worklines
+    ] == [
+        ("known", "v2", "v2"),
+        ("known", "v3", "v3"),
+    ]
+    assert report.issues == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["unknown", None])
+async def test_capability_catalog_known_key_without_exact_version_fails_closed(version: str | None) -> None:
+    source = _workline(1, "LINE", plugin="known", version=version)
+
+    report = await _service(
+        FakeRepository([source]),
+        definitions=[_definition("known", "v2"), _definition("known", "v3")],
+    ).build_report(object(), environment="production")
+
+    item = report.worklines[0]
+    assert item.catalog_contract_version is None
+    assert [issue.code.value for issue in item.issues] == ["CONTRACT_VERSION_MISMATCH"]
 
 
 @pytest.mark.asyncio
@@ -535,6 +725,27 @@ async def test_provider_profile_is_filtered_and_capabilities_are_sorted() -> Non
         "runtime_capabilities_query",
         "runtime_capabilities_effect",
     }
+
+
+@pytest.mark.asyncio
+async def test_provider_catalog_allows_same_code_across_version_and_environment_and_sorts_by_triple() -> None:
+    profiles = [
+        _profile("WMS", version="v2", environment="production"),
+        _profile("WMS", version="v1", environment="production"),
+        _profile("WMS", version="v1", environment="sandbox"),
+    ]
+
+    report = await _service(FakeRepository(), profiles=list(reversed(profiles))).build_report(
+        object(), environment="production"
+    )
+
+    assert [
+        (item.provider_code, item.contract_version, item.environment) for item in report.provider_profile_catalog
+    ] == [
+        ("WMS", "v1", "production"),
+        ("WMS", "v1", "sandbox"),
+        ("WMS", "v2", "production"),
+    ]
 
 
 @pytest.mark.asyncio

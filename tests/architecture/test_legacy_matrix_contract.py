@@ -24,6 +24,12 @@ EXPECTED_ACTIVE_FOUNDATION_PATHS = frozenset(
     }
 )
 
+EXPECTED_ACTIVE_PLATFORM_PREFIXES = (
+    "tests/workline_plugins/rough_sorter/",
+    "tests/workline_runtime/extensions/",
+    "tests/workline_runtime/system_capabilities/",
+)
+
 
 def _entry_by_id(entry_id: str):
     entries = parse_entries()
@@ -42,8 +48,33 @@ def test_active_inventory_foundation_is_not_legacy_cleanup_scope():
     """当前迁移清单基础能力不得被误登记为待迁移或待删除入口。"""
     assert generate_legacy_matrix.ACTIVE_FOUNDATION_PATHS == EXPECTED_ACTIVE_FOUNDATION_PATHS
 
-    parsed_paths = {entry.relative_path for entry in parse_entries()}
+    parsed_paths = {entry.relative_path for entry in parse_entries() if entry.notes != "guardrail_seed_scope"}
     assert parsed_paths.isdisjoint(EXPECTED_ACTIVE_FOUNDATION_PATHS)
+
+
+def test_active_extension_platform_is_not_legacy_cleanup_scope():
+    assert generate_legacy_matrix.ACTIVE_PLATFORM_PREFIXES == EXPECTED_ACTIVE_PLATFORM_PREFIXES
+
+    entries = parse_entries()
+    assert not any(entry.relative_path.startswith(EXPECTED_ACTIVE_PLATFORM_PREFIXES) for entry in entries)
+    assert not any(entry.symbol_or_route == "TestRoughSorterConformance" for entry in entries)
+    assert not any(
+        entry.relative_path in generate_legacy_matrix.ACTIVE_PLATFORM_PATHS and entry.notes != "guardrail_seed_scope"
+        for entry in entries
+    )
+
+
+def test_runtime_extension_allowlist_uses_per_file_legacy_entries():
+    entries = {entry.entry_id for entry in parse_entries()}
+    allowlist = (REPO_ROOT / "scripts" / "architecture-guardrails.allowlist").read_text(encoding="utf-8")
+
+    for row in allowlist.splitlines():
+        if not row.startswith(("LEGACY_CAPABILITY_ROUTING_IMPORT|", "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION|")):
+            continue
+        rule, path, _reason, _expires_at, legacy_entry_id, _drop_phase = row.split("|")
+        expected = f"legacy:{path}:<file>#{rule}"
+        assert legacy_entry_id == expected
+        assert expected in entries
 
 
 def test_rebuild_or_move_entries_have_target_and_blocking_tests():

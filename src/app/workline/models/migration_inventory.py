@@ -31,6 +31,8 @@ class WorklineMigrationInventoryIssueCode(str, Enum):
     ACTIVE_WITHOUT_CONTRACT_VERSION = "ACTIVE_WITHOUT_CONTRACT_VERSION"
     UNKNOWN_PLUGIN = "UNKNOWN_PLUGIN"
     CONTRACT_VERSION_MISMATCH = "CONTRACT_VERSION_MISMATCH"
+    ACTIVE_PLUGIN_BINDING_INCOMPLETE = "ACTIVE_PLUGIN_BINDING_INCOMPLETE"
+    ACTIVE_PLUGIN_INDEX_DIGEST_MISMATCH = "ACTIVE_PLUGIN_INDEX_DIGEST_MISMATCH"
     RUNTIME_REFERENCES_PRESENT = "RUNTIME_REFERENCES_PRESENT"
 
 
@@ -42,6 +44,8 @@ class WorklineRuntimeReferenceType(str, Enum):
     OUTBOX = "OUTBOX"
     INBOX = "INBOX"
     RUNTIME_HOLD = "RUNTIME_HOLD"
+    WORK_ITEM = "WORK_ITEM"
+    INTENT = "INTENT"
 
 
 class WorklineRuntimeReferenceSample(_FrozenInventoryModel):
@@ -64,6 +68,18 @@ class WorklineRuntimeReferenceSummary(_FrozenInventoryModel):
     sample: WorklineRuntimeReferenceSample | None = None
 
 
+class WorklineRuntimeExtensionReference(_FrozenInventoryModel):
+    """WorkItem/Intent 对插件 binding 与生成索引的只读引用。"""
+
+    type: Literal[WorklineRuntimeReferenceType.WORK_ITEM, WorklineRuntimeReferenceType.INTENT]
+    reference: _NonBlankString
+    plugin_key: _NonBlankString | None = None
+    plugin_binding_id: int | None = None
+    plugin_binding_version: int | None = None
+    plugin_config_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    plugin_index_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
 class WorklineMigrationInventoryIssue(_FrozenInventoryModel):
     """迁移清单问题。"""
 
@@ -84,6 +100,13 @@ class WorklineMigrationInventoryItem(_FrozenInventoryModel):
     configured_contract_version: _NonBlankString | None
     catalog_contract_version: _NonBlankString | None
     run_mode: _NonBlankString
+    active_plugin_binding_id: int | None = None
+    active_plugin_binding_version: int | None = None
+    active_plugin_config_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    active_plugin_index_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    provider_requirements: tuple[_NonBlankString, ...] = ()
+    port_requirements: tuple[_NonBlankString, ...] = ()
+    runtime_extension_references: tuple[WorklineRuntimeExtensionReference, ...] = ()
     runtime_references: WorklineRuntimeReferenceSummary
     foundation_ready: bool
     issues: tuple[WorklineMigrationInventoryIssue, ...] = ()
