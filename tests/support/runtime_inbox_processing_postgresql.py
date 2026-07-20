@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
-from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -27,13 +26,13 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import PROFILE_IDENTITY
-from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.sys.models import SystemOutbox
-from src.app.workline.models.plugin_binding import WorklinePluginBinding
 from src.app.workline.models.workline import LineType, WorkLine
-from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
+from src.app.workline.services.plugin_binding_service import (
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.core.conf import settings
-from src.utils.timezone import timezone
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
 if TYPE_CHECKING:
@@ -48,6 +47,7 @@ class SeededScanFlow:
     arm_id: int
     conveyor_id: int
     trace_id: str
+    device_fact_versions: tuple[tuple[str, int, int], ...]
 
 
 @dataclass(slots=True)
@@ -81,7 +81,6 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         "owner_code": "OWNER-IT",
         "provider_profile": PROFILE_IDENTITY,
     }
-    config_hash = sha256_digest(typed_config)
     workline = WorkLine(
         line_code="IT-RUNTIME-INBOX-SCAN",
         line_name="RuntimeInbox Production Flow",
@@ -93,31 +92,6 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
     )
     db.add(workline)
     await db.flush()
-    binding = WorklinePluginBinding(
-        workline_id=workline.id,
-        plugin_key="rough_sorter",
-        contract_version="rough_sorter.v2",
-        binding_version=1,
-        typed_config_json=typed_config,
-        typed_config_hash=config_hash,
-        provider_profile_snapshot_json=[{"profile_identity": PROFILE_IDENTITY}],
-        port_requirements_json=["InventoryPort.query"],
-        device_snapshot_json=[],
-        generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
-        environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
-        activated_at=timezone.now_for_db(),
-        activated_by="integration-test",
-        activated_reason="PostgreSQL runtime processing evidence",
-    )
-    db.add(binding)
-    await db.flush()
-    workline.active_plugin_binding_id = binding.id
-    workline.active_plugin_binding_version = binding.binding_version
-    workline.active_plugin_config_hash = config_hash
-    workline.active_plugin_index_digest = binding.generated_index_digest
-    workline.active_plugin_provider_requirements_json = [PROFILE_IDENTITY]
-    workline.active_plugin_port_requirements_json = list(binding.port_requirements_json)
-    await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
     scanner = Device(
         device_code="IT-SCANNER-01",
         device_name="Integration Scanner",
@@ -142,8 +116,35 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         device_status=DeviceStatus.IDLE,
         version=1,
     )
-    db.add_all([scanner, arm, conveyor])
+    output_arm = Device(
+        device_code="IT-OUTPUT-ARM-01",
+        device_name="Integration Output Arm",
+        work_line_id=workline.id,
+        device_role="ROUGH_SORTER_OUTPUT_ARM",
+        device_status=DeviceStatus.IDLE,
+        version=1,
+    )
+    db.add_all([scanner, arm, conveyor, output_arm])
     await db.flush()
+    environment = WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV)
+    # 复用生产激活链路生成 immutable profile/Port/device 快照，避免 heavy fixture 再次漂移。
+    binding = await workline_plugin_binding_service.activate(
+        db,
+        workline=workline,
+        expected_workline_version=workline.version,
+        actor="integration-test",
+        reason="PostgreSQL runtime processing evidence",
+        environment=environment,
+        devices=[scanner, arm, conveyor, output_arm],
+    )
+    workline.active_plugin_binding_id = binding.id
+    workline.active_plugin_binding_version = binding.binding_version
+    workline.active_plugin_config_hash = binding.typed_config_hash
+    workline.active_plugin_index_digest = binding.generated_index_digest
+    workline.active_plugin_provider_requirements_json = [PROFILE_IDENTITY]
+    workline.active_plugin_port_requirements_json = list(binding.port_requirements_json)
+    await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
+    config_hash = binding.typed_config_hash
     session = WorklineSession(
         session_code="IT-RUNTIME-INBOX-SESSION",
         workline_id=workline.id,
@@ -226,6 +227,12 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         arm_id=int(arm.id),
         conveyor_id=int(conveyor.id),
         trace_id=trace_id,
+        device_fact_versions=tuple(
+            sorted(
+                (str(device.device_role), int(device.id), int(device.version))
+                for device in (scanner, arm, conveyor, output_arm)
+            )
+        ),
     )
 
 
@@ -291,7 +298,9 @@ async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_c
         assert command is not None and command.device_id == seeded.arm_id
         assert session.status == SessionStatus.WAITING_DEVICE_RESULT
         assert session.awaiting_device_command_code == command.command_code
-        assert session.plugin_state_version == total_decision_count
+        # Recorded replay 会追加审计 decision，但 preserve_plugin_state 不推进状态版本。
+        assert session.plugin_state_version == expected_count
+        assert total_decision_count >= expected_count
         assert session.plugin_state_json["phase"] == "PICK_TO_PIPELINE"
     else:
         assert session.status == SessionStatus.RUNNING

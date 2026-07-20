@@ -63,6 +63,7 @@ async def _seed_pinned_attempt(session_factory, *, token: str):  # type: ignore[
             binding_version=session.plugin_binding_version,
             plugin_config_hash=session.plugin_config_hash,
             index_digest=session.plugin_index_digest,
+            device_fact_versions=seeded.device_fact_versions,
         )
     return seeded, snapshot, service
 

@@ -28,6 +28,7 @@ from src.app.runtime.orchestration.models.session import SessionStatus, Workline
 from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.registry import list_workline_capability_definitions
 from src.app.sys.models.outbox import (
     SystemOutbox,
@@ -197,6 +198,13 @@ def test_plugin_binding_revision_reports_legacy_intent_duplicates_before_constra
                     )
                     await connection.execute(
                         text(
+                            "INSERT INTO wes_runtime.execution_correlations "
+                            "(id, correlation_id, execution_session_id, trace_id) VALUES "
+                            "(900001, 'legacy-duplicate-correlation', 900001, 'legacy-duplicate-trace')"
+                        )
+                    )
+                    await connection.execute(
+                        text(
                             "INSERT INTO wes_runtime.runtime_intent_logs "
                             "(id, execution_session_id, correlation_id, provider_code, target_domain, target_action, "
                             "idempotency_key, request_hash, dispatch_status, attempt_count) "
@@ -205,13 +213,6 @@ def test_plugin_binding_revision_reports_legacy_intent_duplicates_before_constra
                             "'group-key-' || group_no, 'group-hash-' || group_no || '-' || duplicate_no, "
                             "'PENDING', 0 FROM generate_series(1, 21) AS group_no "
                             "CROSS JOIN generate_series(1, 2) AS duplicate_no"
-                        )
-                    )
-                    await connection.execute(
-                        text(
-                            "INSERT INTO wes_runtime.execution_correlations "
-                            "(id, correlation_id, execution_session_id, trace_id) VALUES "
-                            "(900001, 'legacy-duplicate-correlation', 900001, 'legacy-duplicate-trace')"
                         )
                     )
                     await connection.execute(
@@ -274,7 +275,7 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
         provider_profile_snapshot_json=[],
         port_requirements_json=["InventoryPort.query"],
         device_snapshot_json=[],
-        generated_index_digest="b" * 64,
+        generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
         environment="production",
         activated_at=datetime(2026, 7, 17, 8),
         activated_by="integration-test",
@@ -545,7 +546,7 @@ def test_postgresql_status_matrix_samples_transaction_and_no_write_contract() ->
         assert foundation.runtime_references.total == 0
         assert foundation.active_plugin_binding_version == 1
         assert foundation.active_plugin_config_hash == "a" * 64
-        assert foundation.active_plugin_index_digest == "b" * 64
+        assert foundation.active_plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
         assert foundation.provider_requirements == ("WMS@v1",)
         assert foundation.port_requirements == ("InventoryPort.query",)
         assert tuple(reference.type.value for reference in foundation.runtime_extension_references) == (

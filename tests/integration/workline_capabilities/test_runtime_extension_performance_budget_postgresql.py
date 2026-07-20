@@ -16,7 +16,7 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from src.app.callback.services.callback_ingress_service import CallbackIngressService
-from src.app.device.models.command import DeviceCommand
+from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.orchestration.models.session import WorklineSession
@@ -227,10 +227,19 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
             workline = await db.get(WorkLine, seeded.workline_id)
             device = await db.get(Device, seeded.arm_id)
             assert session is not None and workline is not None and device is not None
+            source_command = await db.scalar(
+                select(DeviceCommand).where(
+                    DeviceCommand.workline_id == seeded.workline_id,
+                    DeviceCommand.device_id == seeded.arm_id,
+                )
+            )
+            assert source_command is not None
+            source_command.status = CommandStatus.COMPLETED
+            await db.commit()
             device_service = DeviceCommandService()
             for index in range(MEASURED_SAMPLE_COUNT + 1):
                 started = time.perf_counter()
-                await device_service.prepare_runtime_effect(
+                prepared_command, _outbox = await device_service.prepare_runtime_effect(
                     db,
                     session=session,
                     workline=workline,
@@ -251,6 +260,9 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
                 )
                 await db.commit()
                 outbox_samples.append(time.perf_counter() - started)
+                # 清理动作位于计时窗口外，下一样本仍遵守设备唯一未完成命令门禁。
+                prepared_command.status = CommandStatus.COMPLETED
+                await db.commit()
             assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == MEASURED_SAMPLE_COUNT + 2
 
     await with_temporary_runtime_database(scenario)

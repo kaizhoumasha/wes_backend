@@ -136,7 +136,12 @@ def test_local_effect_and_ledger_commit_atomically_without_handler_transaction_o
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
-def _snapshot(claimed: dict[str, object], session: WorklineSession) -> AttemptSnapshot:
+def _snapshot(
+    claimed: dict[str, object],
+    session: WorklineSession,
+    *,
+    device_fact_versions: tuple[tuple[str, int, int], ...],
+) -> AttemptSnapshot:
     return AttemptSnapshot(
         processor_token=str(claimed["processor_token"]),
         session_version=session.version,
@@ -147,6 +152,7 @@ def _snapshot(claimed: dict[str, object], session: WorklineSession) -> AttemptSn
         binding_version=session.plugin_binding_version,
         plugin_config_hash=session.plugin_config_hash,
         index_digest=session.plugin_index_digest,
+        device_fact_versions=device_fact_versions,
     )
 
 
@@ -160,7 +166,7 @@ def test_domain_write_then_exception_rolls_back_entire_plugin_attempt(monkeypatc
             claimed = await claim(db, service, token="effect-exception-owner")
             session = await db.get(WorklineSession, seeded.session_id)
             assert session is not None
-            snapshot = _snapshot(claimed, session)
+            snapshot = _snapshot(claimed, session, device_fact_versions=seeded.device_fact_versions)
             ctx = await _effect_context(db)
             intent = _hold_intent(ctx, operation="exception-after-domain-write")
 

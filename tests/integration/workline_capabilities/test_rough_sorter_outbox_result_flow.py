@@ -102,7 +102,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             assert session is not None and command is not None
             assert session.status == "WAITING_DEVICE_RESULT"
             assert session.awaiting_device_command_code == command.command_code
-            assert command.correlation_id is not None and command.correlation_id.startswith("system-capability:")
+            assert command.correlation_id == "it-runtime-inbox-correlation"
             material_unit = await db.get(MaterialUnit, session.current_material_unit_id)
             assert material_unit is not None
             material_unit.six_in_one = {
@@ -142,7 +142,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             assert response["code"] == "1000"
             callback = await db.scalar(
                 select(RuntimeInbox).where(
-                    RuntimeInbox.provider_code == "DEVICE_RESULT",
+                    RuntimeInbox.provider_code == "ECS",
                     RuntimeInbox.source_event_id == "it-device-result-1",
                 )
             )
