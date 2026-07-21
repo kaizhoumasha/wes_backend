@@ -160,17 +160,162 @@ def _contains_legacy_identity(text: str, identity: str, relative_path: str) -> b
     return _contains_exact_identity(text, identity)
 
 
-def _contains_operation_name(text: str, operation_name: str) -> bool:
+def _looks_like_wms_contract_name(name: str) -> bool:
+    normalized = name.lstrip("_")
+    if normalized.startswith("Wms"):
+        return True
+    port_suffixes = {
+        legacy_identity.split(".", 1)[0].removeprefix("Wms")
+        for legacy_identity in LEGACY_IDENTITY_TARGETS
+        if legacy_identity.startswith("Wms")
+    }
+    return any(normalized.endswith(port_suffix) for port_suffix in port_suffixes)
+
+
+def _expression_references_wms_contract(node: ast.AST | None, contract_names: set[str]) -> bool:
+    if node is None:
+        return False
+    return any(
+        (isinstance(child, ast.Name) and child.id in contract_names)
+        or (isinstance(child, ast.Attribute) and child.attr in contract_names)
+        or (
+            isinstance(child, ast.Constant)
+            and isinstance(child.value, str)
+            and (child.value == "WMS" or child.value.startswith(("WMS_", "wms.")))
+        )
+        for child in ast.walk(node)
+    )
+
+
+def _assignment_target_names(node: ast.Assign | ast.AnnAssign) -> set[str]:
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    return {target.id for target in targets if isinstance(target, ast.Name)}
+
+
+def _wms_contract_names(tree: ast.AST) -> set[str]:
+    contract_names = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+        if _looks_like_wms_contract_name(alias.name.rsplit(".", 1)[-1])
+    }
+    contract_names.update(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and _looks_like_wms_contract_name(node.name)
+    )
+    contract_names.update(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and _expression_references_wms_contract(node.returns, contract_names)
+    )
+
+    changed = True
+    while changed:
+        changed = False
+        for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+            if _call_path(call).rsplit(".", 1)[-1] != "register" or len(call.args) < 2:
+                continue
+            if not _expression_references_wms_contract(call.args[0], contract_names):
+                continue
+            registered_names = {node.id for node in ast.walk(call.args[1]) if isinstance(node, ast.Name)}
+            if new_names := registered_names - contract_names:
+                contract_names.update(new_names)
+                changed = True
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+                continue
+            if not (
+                _expression_references_wms_contract(node.value, contract_names)
+                or (
+                    isinstance(node, ast.AnnAssign)
+                    and _expression_references_wms_contract(node.annotation, contract_names)
+                )
+            ):
+                continue
+            if new_names := _assignment_target_names(node) - contract_names:
+                contract_names.update(new_names)
+                changed = True
+    return contract_names
+
+
+def _operation_constants(node: ast.AST) -> set[str]:
+    return {
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and child.value in TEST_OPERATION_TARGETS
+    }
+
+
+def _loop_contract_operations(node: ast.For, contract_names: set[str], bindings: dict[str, set[str]]) -> set[str]:
+    if not isinstance(node.target, ast.Name):
+        return set()
+    if isinstance(node.iter, ast.Name):
+        operations = bindings.get(node.iter.id, set())
+    else:
+        operations = _operation_constants(node.iter)
+    if not operations:
+        return set()
+    for call in (child for child in ast.walk(node) if isinstance(child, ast.Call) and len(child.args) >= 2):
+        if _call_path(call).rsplit(".", 1)[-1] not in {"getattr", "hasattr", "setattr"}:
+            continue
+        if not _expression_references_wms_contract(call.args[0], contract_names):
+            continue
+        if isinstance(call.args[1], ast.Name) and call.args[1].id == node.target.id:
+            return operations
+    return set()
+
+
+def _discover_test_operation_names(text: str) -> set[str]:
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return _contains_exact_identity(text, operation_name)
-    return any(
-        (isinstance(node, ast.Name) and node.id == operation_name)
-        or (isinstance(node, ast.Attribute) and node.attr == operation_name)
-        or _constant_string(node) == operation_name
+        return set()
+
+    contract_names = _wms_contract_names(tree)
+    discovered: set[str] = set()
+
+    for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+        if class_node.name not in contract_names:
+            continue
+        discovered.update(
+            method.name
+            for method in class_node.body
+            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name in TEST_OPERATION_TARGETS
+        )
+
+    for attribute in (node for node in ast.walk(tree) if isinstance(node, ast.Attribute)):
+        if attribute.attr in TEST_OPERATION_TARGETS and _expression_references_wms_contract(
+            attribute.value, contract_names
+        ):
+            discovered.add(attribute.attr)
+
+    bindings = {
+        target_name: _operation_constants(node.value)
         for node in ast.walk(tree)
-    )
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None
+        for target_name in _assignment_target_names(node)
+        if _operation_constants(node.value)
+    }
+    for loop in (node for node in ast.walk(tree) if isinstance(node, ast.For)):
+        discovered.update(_loop_contract_operations(loop, contract_names, bindings))
+
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        call_name = _call_path(call).rsplit(".", 1)[-1]
+        if (
+            call_name in {"getattr", "hasattr", "setattr"}
+            and len(call.args) >= 2
+            and _expression_references_wms_contract(call.args[0], contract_names)
+        ):
+            operation_name = _constant_string(call.args[1])
+            if operation_name in TEST_OPERATION_TARGETS:
+                discovered.add(operation_name)
+        if _expression_references_wms_contract(call, contract_names):
+            discovered.update(_operation_constants(call))
+    return discovered
 
 
 def _without_full_identities(text: str) -> str:
@@ -224,9 +369,8 @@ def _discover_references() -> set[tuple[str, str, str, str]]:
                     discovered.add((category, relative_path, legacy_identity, target_identity))
             if category == "test":
                 residual_text = _without_full_identities(text)
-                for operation_name, target_identity in TEST_OPERATION_TARGETS.items():
-                    if _contains_operation_name(residual_text, operation_name):
-                        discovered.add((category, relative_path, operation_name, target_identity))
+                for operation_name in _discover_test_operation_names(residual_text):
+                    discovered.add((category, relative_path, operation_name, TEST_OPERATION_TARGETS[operation_name]))
     return discovered
 
 
@@ -556,6 +700,45 @@ def test_reference_scanner_distinguishes_capability_package_from_preview_sibling
             "wms.inventory.query_inventory@v1",
         )
     }
+
+
+def test_test_scanner_rejects_bare_operation_names_without_wms_contract_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """非 WMS 方法、同名 helper/参数与无关字符串不得进入 operation 清点。"""
+    test_root = tmp_path / "tests"
+    test_root.mkdir()
+    (test_root / "test_unrelated_operations.py").write_text(
+        """from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
+
+
+class AnalyticsClient:
+    def query_inventory(self):
+        return None
+
+
+def confirm_inbound():
+    return None
+
+
+def passthrough(notify_pkg_binding):
+    return notify_pkg_binding
+
+
+analytics = AnalyticsClient()
+analytics.query_inventory()
+confirm_inbound()
+UNRELATED_EVENT = "full_box_exchange"
+""",
+        encoding="utf-8",
+    )
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(module, "SOURCE_PATHS", ())
+    monkeypatch.setattr(module, "TEST_PATHS", ("tests",))
+    monkeypatch.setattr(module, "DOCUMENTATION_PATHS", ())
+
+    assert _discover_references() == set()
 
 
 def test_metric_scanner_recognizes_all_supported_operation_identity_forms(
