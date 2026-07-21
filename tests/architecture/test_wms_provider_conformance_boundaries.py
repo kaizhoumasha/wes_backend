@@ -11,6 +11,7 @@ from tests.mock import wms_scripted_provider
 from tests.support.wms_provider_replay import QueryInventoryReplayFactory
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DESIGN_PATH = REPO_ROOT / "docs/superpowers/specs/2026-07-21-northbound-capability-extraction-design.md"
 
 
 def test_pure_runner_has_no_network_credential_or_persistence_import_capability() -> None:
@@ -45,6 +46,17 @@ def test_staging_entry_requires_a_deployment_sealed_executor_without_caller_veri
     assert hasattr(provider_conformance, "compose_query_inventory_staging_conformance_executor")
     assert not hasattr(provider_conformance, "issue_staging_conformance_executor_attestation")
     assert not hasattr(provider_conformance, "Ed25519StagingConformanceAttestationVerifier")
+
+
+def test_conformance_attestation_documents_its_process_trust_boundary() -> None:
+    design = DESIGN_PATH.read_text(encoding="utf-8")
+
+    assert "同进程代码与部署环境均为 trusted" in design
+    assert "任意同进程代码执行视为进程完全失陷" in design
+    assert "不在 conformance attestation 威胁模型内" in design
+    assert "在该信任边界内" in design
+    assert "任意调用方无法伪造" not in design
+    assert "不可伪造的 conformance attestation" not in design
 
 
 def test_simulator_is_test_only_in_process_and_does_not_copy_production_lifecycle() -> None:

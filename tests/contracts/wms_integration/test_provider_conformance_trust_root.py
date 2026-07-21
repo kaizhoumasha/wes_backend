@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import inspect
+import os
+from base64 import urlsafe_b64encode
 from datetime import UTC, datetime
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from src.app.runtime.system_capabilities.wms import provider_conformance
+from src.app.runtime.system_capabilities.wms import conformance_trust_root, provider_conformance
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILES
 
 STAGING_PROFILE = WMS_PROVIDER_PROFILES["wms.2026-07-06.material-flow.staging"]
@@ -62,13 +65,17 @@ def _matching_observations():
 
 @pytest.fixture
 def trusted_execution(monkeypatch):
-    """显式安装测试 trust root，并只经受控 composition factory 取得 executor。"""
+    """在隔离 reload 前配置部署环境，不猴补丁生产 registry。"""
 
     signer = _DeploymentSigner(key_id="staging-deployment-v1")
-    registry = provider_conformance.StagingConformanceTrustRootRegistry.from_public_keys(
-        {signer.key_id: signer.public_key_bytes}
+    encoded_public_key = urlsafe_b64encode(signer.public_key_bytes).rstrip(b"=").decode("ascii")
+    original_environment = os.environ.get(conformance_trust_root.WMS_STAGING_CONFORMANCE_TRUST_ROOTS_ENV)
+    monkeypatch.setenv(
+        conformance_trust_root.WMS_STAGING_CONFORMANCE_TRUST_ROOTS_ENV,
+        f'{{"{signer.key_id}":"{encoded_public_key}"}}',
     )
-    monkeypatch.setattr(provider_conformance, "_DEPLOYMENT_TRUST_ROOT_REGISTRY", registry)
+    importlib.reload(conformance_trust_root)
+    importlib.reload(provider_conformance)
     calls: list[str] = []
     delegate = _DeploymentExecutionDelegate(observations=_matching_observations(), calls=calls)
     executor = provider_conformance.compose_query_inventory_staging_conformance_executor(
@@ -79,7 +86,14 @@ def trusted_execution(monkeypatch):
         signer=signer,
         execution_delegate=delegate,
     )
-    return signer, executor, calls
+    yield signer, executor, calls
+
+    if original_environment is None:
+        monkeypatch.delenv(conformance_trust_root.WMS_STAGING_CONFORMANCE_TRUST_ROOTS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(conformance_trust_root.WMS_STAGING_CONFORMANCE_TRUST_ROOTS_ENV, original_environment)
+    importlib.reload(conformance_trust_root)
+    importlib.reload(provider_conformance)
 
 
 @pytest.mark.asyncio
@@ -106,7 +120,61 @@ async def test_live_runner_uses_deployment_trust_root_and_sealed_executor_capabi
     assert "private_key" not in serialized
 
 
-def test_attestation_can_only_be_issued_by_the_controlled_composition_factory() -> None:
+@pytest.mark.asyncio
+async def test_import_time_trust_root_is_immune_to_module_attribute_rebinding(
+    trusted_execution,
+    monkeypatch,
+) -> None:
+    """compose/run/report verify 只使用 import 时冻结的部署 root。"""
+
+    signer, _, calls = trusted_execution
+    empty_registry = provider_conformance.StagingConformanceTrustRootRegistry.from_public_keys({})
+    monkeypatch.setattr(provider_conformance, "_DEPLOYMENT_TRUST_ROOT_REGISTRY", empty_registry, raising=False)
+    monkeypatch.setattr(provider_conformance, "WMS_STAGING_CONFORMANCE_TRUST_ROOTS", empty_registry)
+    monkeypatch.setattr(conformance_trust_root, "WMS_STAGING_CONFORMANCE_TRUST_ROOTS", empty_registry)
+    monkeypatch.setenv(conformance_trust_root.WMS_STAGING_CONFORMANCE_TRUST_ROOTS_ENV, "{}")
+
+    delegate = _DeploymentExecutionDelegate(observations=_matching_observations(), calls=calls)
+    rebound_executor = provider_conformance.compose_query_inventory_staging_conformance_executor(
+        profile=STAGING_PROFILE,
+        endpoint_identity="wms-staging-query-secondary",
+        internal_revision="deploy-r43",
+        composition_identity="wes-staging-query-composition-v2",
+        signer=signer,
+        execution_delegate=delegate,
+    )
+    report = await provider_conformance.run_query_inventory_staging_live_conformance(
+        profile=STAGING_PROFILE,
+        executor=rebound_executor,
+        fixture_digest=FIXTURE_DIGEST,
+        generated_at=GENERATED_AT,
+    )
+
+    assert provider_conformance.verify_wms_conformance_report(report.model_dump(mode="json")) == report
+
+
+def test_public_entrypoints_do_not_expose_raw_creator_or_resolver_through_closure_reflection() -> None:
+    """只约束公开 API 形状；同进程任意代码执行不属于本证明的攻击模型。"""
+
+    exposed: list[str] = []
+    for entrypoint in (
+        provider_conformance.compose_query_inventory_staging_conformance_executor,
+        provider_conformance.run_query_inventory_staging_live_conformance,
+        provider_conformance.verify_wms_conformance_report,
+    ):
+        function = getattr(entrypoint, "__func__", entrypoint)
+        for cell in function.__closure__ or ():
+            candidate = cell.cell_contents
+            name = getattr(candidate, "__name__", type(candidate).__name__).lower()
+            if callable(candidate) and any(
+                marker in name for marker in ("capability", "controlled", "creator", "resolver")
+            ):
+                exposed.append(name)
+
+    assert exposed == []
+
+
+def test_public_api_exposes_deployment_composition_without_a_raw_attestation_issuer() -> None:
     assert hasattr(provider_conformance, "compose_query_inventory_staging_conformance_executor")
     assert not hasattr(provider_conformance, "issue_staging_conformance_executor_attestation")
     assert "issue_staging_conformance_executor_attestation" not in provider_conformance.__all__
@@ -184,8 +252,8 @@ async def test_live_runner_rejects_attestation_and_digest_reuse_on_a_caller_exec
 
 
 @pytest.mark.asyncio
-async def test_persisted_attestation_cannot_be_attached_through_any_module_private_creator(trusted_execution) -> None:
-    """合法报告落盘后，模块也不能暴露可把其 attestation 绑定到伪 delegate 的私有 creator。"""
+async def test_public_module_api_has_no_private_attestation_rebinding_creator(trusted_execution) -> None:
+    """公开模块 API 不提供把落盘 attestation 绑定到其它 delegate 的 helper。"""
 
     _, sealed_executor, calls = trusted_execution
     report = await provider_conformance.run_query_inventory_staging_live_conformance(

@@ -273,6 +273,12 @@ Conformance 使用两级门禁：CI 中真实 adapter 对 canonical scripted HTT
 
 模拟 Provider 以最小 adapter/HTTP stub 起步，提供命名故障点与确定性 callback 调度。生产构建产物不包含模拟器；生产启动发现模拟器注册立即失败；binding admission 也拒绝 simulator profile。
 
+#### Conformance attestation 信任边界
+
+Conformance attestation 的可信性以同进程代码与部署环境均为 trusted 为前提。部署进程在模块导入时一次读取并冻结 Ed25519 trust root；composition、live runner 与持久化报告验证器在该信任边界内完成部署签发和验证，运行期间的模块属性重绑定不能更换已冻结的 root。
+
+Python 同一进程内的任意恶意代码可以通过 reflection、`object.__new__` 或读取环境与内存绕过语言级 private/closure 约束，因此任意同进程代码执行视为进程完全失陷，不在 conformance attestation 威胁模型内。private、closure、sealed executor 和弱引用 registry 只用于收紧公开 API 与误用面，不作为抵抗已取得同进程执行能力攻击者的安全隔离，也不作“不可伪造”保证。
+
 ## 7. Error & Rescue Registry
 
 | Method/codepath | Named error/outcome | Rescue action | Consumer/operator sees | Test |

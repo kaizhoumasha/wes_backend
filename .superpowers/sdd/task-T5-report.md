@@ -159,18 +159,18 @@ T5 已实现并通过本任务目标门禁。交付只覆盖 Provider quality：
 
 ## 最终审批修复追加
 
-### 部署 trust root 与 sealed composition capability
+### 部署 trust root 与 composition capability
 
-- runner 与持久化报告 verifier 已移除所有 caller-owned verifier 参数；两者只读取模块启动时固定的部署 trust-root registry。
+- runner 与持久化报告 verifier 已移除所有 caller-owned verifier 参数；两者使用模块导入时从部署环境一次读取并冻结的 trust-root registry。
 - 新增最小不可变 `StagingConformanceTrustRootRegistry`，生产从环境变量
   `WMS_STAGING_CONFORMANCE_TRUST_ROOTS` 加载 `key identity -> Ed25519 public key(base64url)` JSON；未配置时保持空 registry，
-  staging composition/report 验证 fail closed。测试通过显式 fixture 替换模块私有部署 registry，不向生产入口增加注入参数。
+  staging composition/report 验证 fail closed。测试在设置导入环境后隔离 reload trust-root/provider 模块，不猴补丁生产 registry，
+  也不向生产入口增加注入参数。
 - 公开 attestation issuer 已删除；签发逻辑只存在于
-  `compose_query_inventory_staging_conformance_executor` 受控 composition factory 内，且 factory 在返回 executor 前用部署
+  `compose_query_inventory_staging_conformance_executor` 部署 composition 入口内，且 composition 在返回 executor 前用冻结的部署
   trust root 复验签名。
-- factory 在闭包内创建 capability，并用 weak identity registry 将 capability 绑定到 factory 产生的具体 executor 对象。executor
-  不暴露 attestation 或 composition digest；调用方自建对象、挂合法 attestation/digest、裸 callback，以及 `copy.copy`
-  复制 sealed executor 均无法解析 capability，且在第一题执行前 fail closed。
+- composition 使用 weak identity registry 将 capability 绑定到具体 executor 对象。公开入口会拒绝自建对象、挂载落盘
+  attestation/digest 的对象、裸 callback 和 `copy.copy` 副本；这是信任边界内的 API 误用防护，不是对任意同进程恶意代码的隔离保证。
 
 ### runtime-neutral replay support
 
@@ -200,24 +200,23 @@ T5 已实现并通过本任务目标门禁。交付只覆盖 Provider quality：
 7. `ruff format --check`、`ruff check`、Bandit、348 项 runtime contracts、11 项 process naming、import-linter、
    architecture guardrails 与 test topology 均由 quality profile 验证通过；`git diff --check` 通过。
 
-## 最终 capability 伪造修复追加
+## 最终 capability 公开 API 修复追加
 
-### 模块私有 creator 封闭
+### 模块 creator/resolver 暴露面收紧
 
 - 删除模块级 `_build_controlled_executor_boundary`、`_create_controlled_staging_executor` 与
-  `_resolve_controlled_staging_executor`。原始签发、capability 创建、weak identity 注册和 resolve 逻辑现在只存在于共享安装闭包；
-  安装完成后立即从模块命名空间删除安装函数。
+  `_resolve_controlled_staging_executor`。签发、capability 创建、weak identity 注册和 resolve 不再作为模块级 raw helper 暴露。
 - 外部仅保留 `compose_query_inventory_staging_conformance_executor` 公开 composition 入口。该入口仍先复验 canonical
-  staging profile、部署 trust root 与 Ed25519 签名，之后才在闭包内创建 capability 和 sealed executor。
-- live runner 与公开 compose 共享同一闭包 registry；调用方不能从模块属性取得 creator/resolver，也不能把已持久化报告中的合法
-  attestation 重新绑定到伪 delegate。合法 compose → run → 持久化报告复验路径保持不变。
+  staging profile、部署 trust root 与 Ed25519 签名，之后才在 import-time boundary 中登记 capability 和 executor。
+- live runner 与公开 compose 使用同一 import-time boundary；公开模块属性不提供 raw creator/resolver，合法 compose → run →
+  持久化报告复验路径保持不变。该约束只描述公开 API 形状，不把 private/closure 当作同进程安全隔离。
 
 ### TDD 与回归
 
-1. RED：新增回归先生成并持久化合法 staging report，再枚举模块 private creator，并用
+1. RED：新增回归先生成并持久化合法 staging report，再枚举模块暴露的 private creator，并用
    `_create_controlled_staging_executor` 把合法 attestation 挂到伪 delegate；现状成功执行全部题目，测试以
    `accepted_forgery=['_create_controlled_staging_executor']` 按预期失败。
-2. GREEN：将签发、注册与 resolve 封入共享闭包并删除安装期模块属性后，单项回归通过；完整 trust-root 合同 `10 passed`，
+2. GREEN：移除模块级 raw creator/resolver 后，单项回归通过；完整 trust-root 合同 `10 passed`，
    同时保留合法 composition、caller executor、copy executor、裸 callback 与 caller-owned revision 防护。
 
 ### 影响分析与验证
@@ -234,3 +233,39 @@ T5 已实现并通过本任务目标门禁。交付只覆盖 Provider quality：
   `tests/support/rough_sorter_inventory_admission.py`），本轮未修改 inventory/generated 文件。
 - `./scripts/git-quality-gate.sh --profile quality` 通过：Ruff、Bandit、348 项 runtime contracts、11 项 process naming、
   import-linter、architecture guardrails 与 test topology 全部通过；`git diff --check` 通过。
+
+## 最终 trust boundary 审计整改追加
+
+### import-time trust root
+
+- 部署 trust root 继续由 `WMS_STAGING_CONFORMANCE_TRUST_ROOTS` 在模块导入阶段读取；composition、live runner 与持久化报告
+  verifier 现在绑定同一个 import-time boundary 实例及其中的不可变 registry。
+- 运行期间重绑 provider/trust-root 模块属性或修改环境变量，不会替换该 boundary 已持有的 root。测试 trust root 通过先设置部署环境、
+  再隔离 reload 两个模块安装，不再猴补丁全局 registry。
+- 合法 compose → run → report verify 路径保持，未改 replay support；纯 replay 仍不导入 runtime 或外部 effect 能力。
+
+### 明确威胁模型与公开 API
+
+- 架构设计明确：attestation 可信性依赖同进程代码与部署环境均受信；任意同进程恶意代码执行视为进程完全失陷，不属于本
+  conformance attestation 威胁模型。
+- private、closure、sealed executor 与 weak registry 只约束公开 API 和误用面，不再描述为抵抗 reflection、`object.__new__`、
+  环境或内存读取的安全隔离，也不再作“不可伪造”保证。
+- 新增 closure reflection 回归，公开 compose/run/report verifier 不暴露可直接调用的 raw capability creator/resolver；该回归只验证
+  API 形状，不声称可抵抗任意同进程执行。
+
+### 本轮 TDD、影响分析与验证
+
+1. RED：trust-root/architecture 定向组合出现 `3 failed, 15 passed`，分别证明模块 registry 重绑定会替换验签 root、公开 compose
+   closure 暴露 capability/executor creator，以及架构文档缺少进程信任边界。
+2. GREEN：import-time boundary、隔离 reload fixture、closure reflection 与架构约定落地后，定向组合 `18 passed`。
+3. GitNexus 写前 impact：`_verify_deployment_attestation` 为 HIGH，3 个直接调用，仅影响 compose/run 两条 staging conformance
+   流程；`verify_wms_conformance_report` 为 MEDIUM；安装边界与测试 fixture 为 LOW。无 API、数据库或业务编排外溢，已获得继续
+   实施授权。
+4. T5 contracts/architecture/topology 定向组合：`60 passed`；WMS integration contracts：`117 passed`；显式 mock simulator：
+   `2 passed`；默认收集审计：`3549 tests collected`。
+5. `uv run ruff format --check .`、`uv run ruff check .`、`git diff --check` 与
+   `./scripts/git-quality-gate.sh --profile quality` 全部通过；Bandit 0 issue、348 项 runtime contracts、11 项 process naming、
+   import-linter、architecture guardrails 与 test topology 均通过。
+6. staged GitNexus detect：`5 files / 49 symbols / 7 affected processes`，汇总风险 HIGH；7 条均为本次
+   compose/run → canonical profile/signature/digest-render 内部链路，无 API、数据库或业务编排外溢。暂存范围不包含用户已有的
+   `AGENTS.md`、`CLAUDE.md` 改动。

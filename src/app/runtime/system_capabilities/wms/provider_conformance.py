@@ -8,7 +8,7 @@ import json
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from datetime import datetime  # noqa: TC003 - Pydantic 运行时解析报告字段类型。
 from enum import Enum
-from typing import Annotated, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 from weakref import WeakKeyDictionary
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
@@ -24,6 +24,9 @@ from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract 
 from src.app.runtime.system_capabilities.wms.operation_index_builder import WmsOperationIndexBuilder
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILES
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 CaseId = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_]*$")]
 ConformanceCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Z][A-Z0-9_]*$")]
@@ -31,7 +34,6 @@ Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 SigningKeyId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9._-]{0,79}$")]
 Ed25519Signature = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{86}$")]
 WMS_PROVIDER_CONFORMANCE_SUITE_VERSION = "wms-provider-conformance.v1"
-_DEPLOYMENT_TRUST_ROOT_REGISTRY = WMS_STAGING_CONFORMANCE_TRUST_ROOTS
 
 
 class ConformanceOutcomeKind(str, Enum):
@@ -264,7 +266,7 @@ class WmsConformanceReport(BaseModel):
 
 
 class StagingQueryConformanceExecutor(Protocol):
-    """受控 staging composition factory 返回的 sealed executor 合同。"""
+    """部署 composition 返回的 staging executor 合同。"""
 
     async def execute(self, case: ConformanceCaseExpectation) -> ConformanceObservation: ...
 
@@ -338,7 +340,13 @@ def _build_wms_conformance_report(
     return WmsConformanceReport.model_validate({**payload, "report_digest": _digest(payload)})
 
 
-def verify_wms_conformance_report(payload: dict[str, object]) -> WmsConformanceReport:
+def _verify_wms_conformance_report(
+    payload: dict[str, object],
+    *,
+    verify_deployment_attestation: Callable[
+        [StagingConformanceExecutorAttestation], StagingConformanceExecutorAttestation
+    ],
+) -> WmsConformanceReport:
     """从持久化 JSON 重建，并对固定题库、profile 环境和每题判定重新验算。"""
 
     report = WmsConformanceReport.model_validate(payload)
@@ -356,7 +364,7 @@ def verify_wms_conformance_report(payload: dict[str, object]) -> WmsConformanceR
     if report.target is ConformanceTarget.STAGING_LIVE:
         if report.staging_attestation is None:
             raise ValueError("STAGING_LIVE report verification requires a signed attestation")
-        verified_attestation = _verify_deployment_attestation(report.staging_attestation)
+        verified_attestation = verify_deployment_attestation(report.staging_attestation)
         _validate_attestation_claims(profile=canonical_profile, attestation=verified_attestation)
         if report.endpoint_revision != derive_staging_endpoint_revision(verified_attestation):
             raise ValueError("conformance report endpoint revision is not derived from its trusted attestation")
@@ -390,20 +398,6 @@ def derive_staging_endpoint_revision(attestation: StagingConformanceExecutorAtte
             "profile_revision": validated.profile_revision,
         }
     )
-
-
-def _verify_deployment_attestation(
-    attestation: StagingConformanceExecutorAttestation,
-) -> StagingConformanceExecutorAttestation:
-    if not isinstance(attestation, StagingConformanceExecutorAttestation):
-        raise TypeError("STAGING_LIVE target requires a signed executor attestation")
-    validated = StagingConformanceExecutorAttestation.model_validate(attestation.model_dump(mode="json"))
-    _DEPLOYMENT_TRUST_ROOT_REGISTRY.verify_signature(
-        signing_key_id=validated.signing_key_id,
-        payload=_attestation_signing_payload(validated),
-        signature=_decode_signature(validated.signature),
-    )
-    return validated
 
 
 def _validate_execution_environment(
@@ -522,38 +516,57 @@ def _decode_signature(signature: str) -> bytes:
     return urlsafe_b64decode(signature + "==")
 
 
-def _install_staging_composition_boundary():
-    """安装唯一公开 compose/run 入口，并把 capability 注册与签发逻辑封闭在共享闭包内。"""
+class _StagingConformanceBoundary:
+    """绑定 import-time trust root 的进程内 composition、runner 与报告复验边界。"""
 
-    factory_seal = object()
-    executor_capabilities = WeakKeyDictionary()
+    __slots__ = ("_executor_capabilities", "_executor_type", "_factory_seal", "_trust_root_registry")
 
-    class _CompositionCapability:
-        __slots__ = ("attestation", "execution_delegate")
+    def __init__(self, *, trust_root_registry: StagingConformanceTrustRootRegistry) -> None:
+        self._trust_root_registry = trust_root_registry
+        self._factory_seal = object()
+        self._executor_capabilities = WeakKeyDictionary()
+        boundary = self
 
-        def __init__(
-            self,
-            *,
-            attestation: StagingConformanceExecutorAttestation,
-            execution_delegate: StagingQueryConformanceExecutor,
-        ) -> None:
-            self.attestation = attestation
-            self.execution_delegate = execution_delegate
+        class _ControlledStagingQueryConformanceExecutor:
+            __slots__ = ("__weakref__",)
 
-    class _ControlledStagingQueryConformanceExecutor:
-        __slots__ = ("__weakref__",)
+            def __init__(self, *, seal: object) -> None:
+                if seal is not boundary._factory_seal:
+                    raise TypeError(
+                        "staging conformance executor must be created by the controlled composition factory"
+                    )
 
-        def __init__(self, *, seal: object) -> None:
-            if seal is not factory_seal:
-                raise TypeError("staging conformance executor must be created by the controlled composition factory")
+            async def execute(self, case: ConformanceCaseExpectation) -> ConformanceObservation:
+                _, execution_delegate = boundary._resolve_capability(self)
+                return await execution_delegate.execute(case)
 
-        async def execute(self, case: ConformanceCaseExpectation) -> ConformanceObservation:
-            capability = executor_capabilities.get(self)
-            if capability is None:
-                raise TypeError("STAGING_LIVE executor must come from the controlled composition factory")
-            return await capability.execution_delegate.execute(case)
+        self._executor_type = _ControlledStagingQueryConformanceExecutor
 
-    def compose_query_inventory_staging_conformance_executor(
+    def _verify_attestation(
+        self,
+        attestation: StagingConformanceExecutorAttestation,
+    ) -> StagingConformanceExecutorAttestation:
+        if not isinstance(attestation, StagingConformanceExecutorAttestation):
+            raise TypeError("STAGING_LIVE target requires a signed executor attestation")
+        validated = StagingConformanceExecutorAttestation.model_validate(attestation.model_dump(mode="json"))
+        self._trust_root_registry.verify_signature(
+            signing_key_id=validated.signing_key_id,
+            payload=_attestation_signing_payload(validated),
+            signature=_decode_signature(validated.signature),
+        )
+        return validated
+
+    def _resolve_capability(
+        self,
+        executor: StagingQueryConformanceExecutor,
+    ) -> tuple[StagingConformanceExecutorAttestation, StagingQueryConformanceExecutor]:
+        capability = self._executor_capabilities.get(executor)
+        if capability is None:
+            raise TypeError("STAGING_LIVE executor must come from the controlled composition factory")
+        return capability
+
+    def compose(
+        self,
         *,
         profile: WmsProviderProfile,
         endpoint_identity: str,
@@ -562,7 +575,7 @@ def _install_staging_composition_boundary():
         signer: StagingConformanceAttestationSigner,
         execution_delegate: StagingQueryConformanceExecutor,
     ) -> StagingQueryConformanceExecutor:
-        """由部署 signer、固定 trust root 与执行 delegate 组合 sealed staging executor。"""
+        """在已声明的进程信任边界内组合 staging executor。"""
 
         execute = getattr(execution_delegate, "execute", None)
         if not callable(execute):
@@ -596,31 +609,26 @@ def _install_staging_composition_boundary():
         attestation = StagingConformanceExecutorAttestation.model_validate(
             {**payload, "signature": urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")}
         )
-        verified_attestation = _verify_deployment_attestation(attestation)
-        capability = _CompositionCapability(
-            attestation=verified_attestation,
-            execution_delegate=execution_delegate,
-        )
-        executor = _ControlledStagingQueryConformanceExecutor(seal=factory_seal)
-        executor_capabilities[executor] = capability
+        verified_attestation = self._verify_attestation(attestation)
+        executor = self._executor_type(seal=self._factory_seal)
+        self._executor_capabilities[executor] = (verified_attestation, execution_delegate)
         return executor
 
-    async def run_query_inventory_staging_live_conformance(
+    async def run(
+        self,
         *,
         profile: WmsProviderProfile,
         executor: StagingQueryConformanceExecutor,
         fixture_digest: str,
         generated_at: datetime,
     ) -> WmsConformanceReport:
-        """显式 staging 入口；完整复验 canonical profile 与签名 composition 后才执行。"""
+        """显式 staging 入口；复验 canonical profile 与部署签名后才执行。"""
 
         canonical_profile = _validate_execution_environment(target=ConformanceTarget.STAGING_LIVE, profile=profile)
-        if type(executor) is not _ControlledStagingQueryConformanceExecutor:
+        if type(executor) is not self._executor_type:
             raise TypeError("STAGING_LIVE executor must come from the controlled composition factory")
-        capability = executor_capabilities.get(executor)
-        if capability is None:
-            raise TypeError("STAGING_LIVE executor must come from the controlled composition factory")
-        validated_attestation = _verify_deployment_attestation(capability.attestation)
+        attestation, _ = self._resolve_capability(executor)
+        validated_attestation = self._verify_attestation(attestation)
         _validate_attestation_claims(profile=canonical_profile, attestation=validated_attestation)
 
         observations = tuple([await executor.execute(case) for case in QUERY_INVENTORY_CONFORMANCE_CASES])
@@ -635,17 +643,19 @@ def _install_staging_composition_boundary():
             generated_at=generated_at,
         )
 
-    return (
-        compose_query_inventory_staging_conformance_executor,
-        run_query_inventory_staging_live_conformance,
-    )
+    def verify_report(self, payload: dict[str, object]) -> WmsConformanceReport:
+        """用 import-time trust root 复验持久化 conformance 报告。"""
+
+        return _verify_wms_conformance_report(payload, verify_deployment_attestation=self._verify_attestation)
 
 
-(
-    compose_query_inventory_staging_conformance_executor,
-    run_query_inventory_staging_live_conformance,
-) = _install_staging_composition_boundary()
-del _install_staging_composition_boundary
+_staging_conformance_boundary = _StagingConformanceBoundary(
+    trust_root_registry=WMS_STAGING_CONFORMANCE_TRUST_ROOTS,
+)
+compose_query_inventory_staging_conformance_executor = _staging_conformance_boundary.compose
+run_query_inventory_staging_live_conformance = _staging_conformance_boundary.run
+verify_wms_conformance_report = _staging_conformance_boundary.verify_report
+del _StagingConformanceBoundary, _staging_conformance_boundary
 
 
 QUERY_INVENTORY_CONFORMANCE_SUITE_DIGEST = _digest(
