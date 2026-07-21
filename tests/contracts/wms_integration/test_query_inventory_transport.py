@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.runtime.system_capabilities.wms.contracts import WmsPaginationContract
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
+from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
 from src.app.wms_integration.models import WmsCallEvidence
 from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationRequest
@@ -25,6 +26,7 @@ from src.app.wms_integration.ports.query_outcome import (
 )
 from src.app.wms_integration.services import WmsCircuitBreakerService, wms_call_evidence_service
 from src.app.wms_integration.services.query_transport import (
+    WmsBoundQueryEndpoint,
     WmsCallEvidenceQueryWriter,
     WmsQueryCallPermit,
     WmsQueryTransportExecutor,
@@ -66,6 +68,11 @@ class CircuitOpenEvidenceWriter(RecordingEvidenceWriter):
         )
 
 
+class StaticCredentialProvider:
+    def resolve(self, _credential_reference: str) -> bytes:
+        return b"query-transport-test-secret"
+
+
 class ChunkStream(httpx.AsyncByteStream):
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = chunks
@@ -89,12 +96,17 @@ def _adapter(
             "pagination": pagination or CONTRACT.pagination,
         }
     )
+    binding = resolve_wms_operation_binding(
+        profile_identity="wms.2026-07-06.material-flow.production",
+        operation_identity=CONTRACT.identity,
+    ).model_copy(update={"operation": contract})
     executor = WmsQueryTransportExecutor(
-        base_url="https://wms.test",
+        endpoint=WmsBoundQueryEndpoint(binding=binding, base_url="https://wms.test"),
         transport=httpx.MockTransport(handler),
         evidence_writer=evidence_writer or RecordingEvidenceWriter(),
+        credential_provider=StaticCredentialProvider(),
     )
-    return InventoryQueryOperationAdapter(executor=executor, contract=contract)
+    return InventoryQueryOperationAdapter(executor=executor)
 
 
 @pytest.mark.asyncio
@@ -103,12 +115,7 @@ async def test_explicit_empty_inventory_is_success_with_evidence() -> None:
         return httpx.Response(200, json={"items": []})
 
     evidence_writer = RecordingEvidenceWriter()
-    executor = WmsQueryTransportExecutor(
-        base_url="https://wms.test",
-        transport=httpx.MockTransport(handler),
-        evidence_writer=evidence_writer,
-    )
-    adapter = InventoryQueryOperationAdapter(executor=executor, contract=CONTRACT)
+    adapter = _adapter(handler, evidence_writer=evidence_writer)
 
     outcome = await adapter.execute(InventoryQueryOperationRequest(material_code="MAT-001"))
 
@@ -153,7 +160,11 @@ async def test_http_failures_use_closed_named_outcomes(
         return httpx.Response(
             status_code,
             headers={"retry-after": "3"},
-            json={"reason_code": "INSUFFICIENT_STOCK", "message": "rejected"},
+            json={
+                "classification": "BUSINESS_REJECT",
+                "reason_code": "INSUFFICIENT_STOCK",
+                "message": "rejected",
+            },
         )
 
     outcome = await _adapter(handler).execute(InventoryQueryOperationRequest(material_code="MAT-001"))
@@ -394,15 +405,22 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
         return httpx.Response(200, json={"items": [], "source_version": "WMS-42"})
 
     executor = WmsQueryTransportExecutor(
-        base_url="https://wms.test",
+        endpoint=WmsBoundQueryEndpoint(
+            binding=resolve_wms_operation_binding(
+                profile_identity="wms.2026-07-06.material-flow.production",
+                operation_identity=CONTRACT.identity,
+            ),
+            base_url="https://wms.test",
+        ),
         transport=httpx.MockTransport(handler),
         evidence_writer=WmsCallEvidenceQueryWriter(
             session_factory=session_factory,
             evidence_service=wms_call_evidence_service,
             breaker_service=WmsCircuitBreakerService(),
         ),
+        credential_provider=StaticCredentialProvider(),
     )
-    outcome = await InventoryQueryOperationAdapter(executor=executor, contract=CONTRACT).execute(
+    outcome = await InventoryQueryOperationAdapter(executor=executor).execute(
         InventoryQueryOperationRequest(material_code="MAT-001")
     )
 

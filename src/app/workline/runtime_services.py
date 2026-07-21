@@ -13,6 +13,7 @@ Repository 或 SQL。未注入的能力必须由插件自身使用确定性领�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from src.app.runtime.orchestration.sandbox_catalog_bridge import query_sandbox_wms_inventory_rows
@@ -127,7 +128,7 @@ class WorklineRuntimeServices:
     active_rack_snapshot_provider: ActiveRackSnapshotProvider | None = None
     rack_operation_status_provider: RackOperationStatusProvider | None = None
     station_lease_status_provider: StationLeaseStatusProvider | None = None
-    inventory_query_port_factory: Callable[[], InventoryQueryOperationPort] | None = None
+    inventory_query_port_factory: Callable[[Any], Callable[[], InventoryQueryOperationPort]] | None = None
 
 
 def build_workline_runtime_services(
@@ -163,7 +164,8 @@ def build_workline_runtime_services(
     if db is not None:
         from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
 
-        inventory_query_port_factory = build_inventory_query_port_factory(
+        inventory_query_port_factory = partial(
+            build_inventory_query_port_factory,
             simulation=(
                 is_simulation_run_mode(getattr(workline, "run_mode", None))
                 or is_simulation_run_mode(getattr(session, "run_mode", None))

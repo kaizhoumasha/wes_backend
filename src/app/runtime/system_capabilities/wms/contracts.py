@@ -65,7 +65,11 @@ class WmsTransportBudget(BaseModel):
     max_rows: int | None = Field(default=None, gt=0)
     max_chunk_bytes: int = Field(default=262_144, gt=0)
     max_compression_ratio: float = Field(default=20.0, gt=1, allow_inf_nan=False)
-    allowed_content_encodings: tuple[Literal["identity", "gzip"], ...] = ("identity", "gzip")
+    allowed_content_encodings: tuple[Literal["identity", "gzip", "deflate"], ...] = (
+        "identity",
+        "gzip",
+        "deflate",
+    )
     max_json_depth: int = Field(default=12, ge=1, le=64)
     max_field_length: int = Field(default=16_384, ge=1)
 

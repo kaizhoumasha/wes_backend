@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
-from src.app.wms_integration.models import QueryInventoryRequest, QueryInventoryResponse, WmsInventoryItem
+from src.app.wms_integration.models import LegacyInventoryItem, LegacyInventoryRequest, LegacyInventoryResponse
 from src.app.wms_integration.services.exceptions import WmsBusinessRejectedError, WmsIntegrationError
 from src.app.workline.domain.material_identity import (
     MaterialIdentity,
@@ -145,7 +145,7 @@ def _measurement_is_ng(data: dict[str, Any]) -> bool:
     )
 
 
-def _wms_item_matches(item: WmsInventoryItem, *, sku: str, lot_no: str) -> bool:
+def _wms_item_matches(item: LegacyInventoryItem, *, sku: str, lot_no: str) -> bool:
     return item.sku == sku and item.lot_no == lot_no
 
 
@@ -625,14 +625,14 @@ class RoughSorterPlugin(WorklinePlugin):
         )
 
     @staticmethod
-    def _wms_query_request(ctx: PluginContext, rough_context: RoughSorterContext) -> QueryInventoryRequest | None:
+    def _wms_query_request(ctx: PluginContext, rough_context: RoughSorterContext) -> LegacyInventoryRequest | None:
         sku = _non_empty_str(rough_context.six_in_one.get("HHPN"))
         lot_no = _non_empty_str(rough_context.six_in_one.get("LotCode"))
         pkg_id = _non_empty_str(rough_context.six_in_one.get("PkgID"))
         business_key = rough_context.business_key or pkg_id
         if not sku or not lot_no or not business_key:
             return None
-        return QueryInventoryRequest(
+        return LegacyInventoryRequest(
             request_id=f"rough-sorter:inventory:{business_key}",
             trace_id=_non_empty_str(getattr(ctx, "trace_id", None)),
             sku=sku,
@@ -649,7 +649,7 @@ class RoughSorterPlugin(WorklinePlugin):
         measurement: dict[str, Any],
         *,
         source_location: str | None = None,
-    ) -> tuple[QueryInventoryRequest, list[WmsInventoryItem]] | list[RuntimeIntent]:
+    ) -> tuple[LegacyInventoryRequest, list[LegacyInventoryItem]] | list[RuntimeIntent]:
         request = self._wms_query_request(ctx, rough_context)
         if request is None:
             return self._block(
@@ -696,7 +696,7 @@ class RoughSorterPlugin(WorklinePlugin):
                 },
             )
 
-        if not isinstance(response, QueryInventoryResponse):
+        if not isinstance(response, LegacyInventoryResponse):
             return self._block(
                 "WMS_RESPONSE_INVALID",
                 "WMS 库存查询返回无法解析，粗分机暂停当前物料",

@@ -100,7 +100,7 @@ parent: docs/architecture/target-state-contract.md
 | Provider adapter/models | 每个 operation 的外部协议 DTO、唯一 ACL 映射、分页与错误翻译 | material-flow policy、Plugin 决策、共享 transport 重实现 |
 | WMS shared transport executor | 无 operation 分支的 HTTP、预算、breaker、evidence 与共享 outcome | 领域 DTO 映射、operation switch、公开 family-level Port 方法 |
 
-Provider transport inventory DTO 与 Port/domain inventory snapshot 必须使用不同名称，保持 ACL 分层且消除当前两个 `WmsInventoryItem` 同名歧义。数量从 Provider DTO 映射到领域 snapshot 后全程使用 `Decimal`，禁止 `Decimal → float → Decimal` 往返；Provider 缺失字段保持 `None` 或返回命名合同错误，禁止用空字符串、`UNKNOWN` 等值伪造事实。
+Provider transport inventory DTO 与 Port/domain inventory snapshot 必须使用不同名称，保持 ACL 分层且消除旧 provider/domain inventory item 的同名歧义。数量从 Provider DTO 映射到领域 snapshot 后全程使用 `Decimal`，禁止 `Decimal → float → Decimal` 往返；Provider 缺失字段保持 `None` 或返回命名合同错误，禁止用空字符串、`UNKNOWN` 等值伪造事实。
 
 删除当前 `WmsTypedPortService` 的 family-level 公开 operation 方法与 `operation_name` 特殊分支。共享 transport executor 只执行 `WmsOperationContract` 已确定的 HTTP、预算、breaker、evidence 和 transport outcome；每个 operation adapter 单独拥有领域合同 ↔ Provider DTO 映射。不得复制 per-operation HTTP/evidence/breaker service。
 

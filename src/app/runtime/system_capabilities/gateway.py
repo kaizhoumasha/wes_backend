@@ -212,25 +212,25 @@ class SystemCapabilityGateway:
         definition: SystemCapabilityDefinition,
         request: BaseModel,
     ) -> GatewayQueryResult:
-        try:
-            ports = tuple(self._context.get_query_port(port) for port in definition.required_ports)
-            handler = definition.handler_factory(*ports)
-        except Exception:
-            outcome = RetryableFailure(error_code="UNKNOWN", message="system capability query failed")
+        ports = tuple(self._context.get_query_port(port) for port in definition.required_ports)
+        handler = definition.handler_factory(*ports)
+        child = asyncio.create_task(handler(request))
+        self._tracked_children.add(child)
+        child.add_done_callback(self._consume_child)
+        done, _ = await asyncio.wait({child}, timeout=definition.timeout_seconds)
+        if child not in done:
+            child.cancel()
+            outcome = RetryableFailure(error_code="TIMEOUT", message="system capability query timed out")
         else:
-            child = asyncio.create_task(handler(request))
-            self._tracked_children.add(child)
-            child.add_done_callback(self._consume_child)
-            done, _ = await asyncio.wait({child}, timeout=definition.timeout_seconds)
-            if child not in done:
-                child.cancel()
-                outcome = RetryableFailure(error_code="TIMEOUT", message="system capability query timed out")
+            try:
+                raw_outcome = child.result()
+            except PermissionError:
+                outcome = ContractViolation(
+                    error_code="CAPABILITY_PORT_ACCESS_DENIED",
+                    message="capability attempted an undeclared Port method",
+                )
             else:
-                try:
-                    raw_outcome = child.result()
-                    outcome = _normalize_outcome(raw_outcome, output_model=definition.output_model)
-                except Exception:
-                    outcome = RetryableFailure(error_code="UNKNOWN", message="system capability query failed")
+                outcome = _normalize_outcome(raw_outcome, output_model=definition.output_model)
         if _canonical_bytes(_bounded_output_value(outcome)) > self._limits.max_output_bytes:
             return self._violation("QUERY_OUTPUT_LIMIT_EXCEEDED", "canonical query output size limit exceeded")
         return self._attach_evidence(definition, request, outcome)

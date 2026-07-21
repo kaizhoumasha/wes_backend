@@ -14,7 +14,6 @@ from src.app.wms_integration.ports.query_inventory_operation import (
 )
 
 if TYPE_CHECKING:
-    from src.app.runtime.system_capabilities.wms.contracts import WmsOperationContract
     from src.app.wms_integration.ports.query_outcome import WmsQueryOutcome
     from src.app.wms_integration.services.query_transport import WmsQueryTransportExecutor
 
@@ -70,9 +69,8 @@ def map_provider_query_inventory_response(raw_response: Any) -> InventoryQueryOp
 class InventoryQueryOperationAdapter:
     """inventory operation 的唯一 Provider request/response DTO 映射边界。"""
 
-    def __init__(self, *, executor: WmsQueryTransportExecutor, contract: WmsOperationContract) -> None:
+    def __init__(self, *, executor: WmsQueryTransportExecutor) -> None:
         self._executor = executor
-        self._contract = contract
 
     async def execute(
         self,
@@ -85,7 +83,6 @@ class InventoryQueryOperationAdapter:
             "lot_no": request.lot_no,
         }
         return await self._executor.execute(
-            contract=self._contract,
             request=request,
             provider_payload={key: value for key, value in provider_payload.items() if value is not None},
             map_success=map_provider_query_inventory_response,

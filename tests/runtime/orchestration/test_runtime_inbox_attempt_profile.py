@@ -21,7 +21,7 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityDefinition,
     SystemCapabilityMode,
 )
-from src.app.runtime.system_capabilities.outcomes import RetryableFailure, Success
+from src.app.runtime.system_capabilities.outcomes import ContractViolation, RetryableFailure, Success
 from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 from src.app.runtime.workline_plugins.contracts import PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import PinnedPluginSnapshot, PluginDispatchRequest
@@ -142,7 +142,10 @@ def test_attempt_runtime_registers_typed_inventory_factory_without_caching_insta
 
     _configure_attempt_runtime_ports(
         runtime,
-        services=SimpleNamespace(inventory_query_port_factory=_InventoryPort),
+        services=SimpleNamespace(
+            inventory_query_port_factory=lambda *, provider_profile: _InventoryPort,
+        ),
+        provider_profile=_profile(),
     )
 
     assert registry.get(InventoryQueryOperationPort) is not registry.get(InventoryQueryOperationPort)
@@ -280,7 +283,8 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
             allowed = await gateway.execute("inventory.allowed", "v1", {"value": 7})
             blocked = await gateway.execute("inventory.blocked", "v1", {"value": 7})
             assert isinstance(allowed.outcome, Success)
-            assert isinstance(blocked.outcome, RetryableFailure)
+            assert isinstance(blocked.outcome, ContractViolation)
+            assert blocked.outcome.error_code == "CAPABILITY_PORT_ACCESS_DENIED"
             return PluginDecision(intents=(), next_state=_PluginState(), outcome_code="DONE")
 
     class Repository:
@@ -349,8 +353,9 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
     async def build_dispatch_request(*_args: object, **_kwargs: object) -> PluginDispatchRequest:
         return dispatch_request
 
-    def configure_ports(runtime: object, *, services: object) -> None:
+    def configure_ports(runtime: object, *, services: object, provider_profile: ExternalContractProfile) -> None:
         _ = services
+        assert provider_profile.identity == profile.identity
         runtime.port_registry.register(InventoryQueryOperationPort, _InventoryPort)
 
     monkeypatch.setattr(workline_plugin_binding_service, "get_pinned", AsyncMock(return_value=binding))

@@ -748,7 +748,7 @@ class RuntimeInboxProcessorBridge:
         *,
         runtime: RuntimeInboxAttemptRuntime,
         snapshot: PinnedPluginSnapshot,
-    ) -> None:
+    ) -> Any:
         """用 immutable binding 的 profile/Port snapshot 收窄本次 attempt。"""
 
         from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
@@ -778,6 +778,7 @@ class RuntimeInboxProcessorBridge:
             provider_profile=provider_profile,
         )
         await runtime.replace_with(replacement)
+        return provider_profile
 
     async def claim_and_process_batch(
         self,
@@ -931,7 +932,6 @@ class RuntimeInboxProcessorBridge:
             ):
                 # Recorded replay 复用已持久化 decision/evidence；必须先于源事件的
                 # TIMER/late callback 路由，避免重放再次触发 provider 或新 EFFECT。
-                _configure_attempt_runtime_ports(attempt_runtime, services=services)
                 return await self._process_platform_plugin_attempt(
                     db,
                     inbox=inbox,
@@ -940,6 +940,7 @@ class RuntimeInboxProcessorBridge:
                     resolved_event_type=resolved_event_type,
                     processor_token=processor_token,
                     attempt_runtime=attempt_runtime,
+                    services=services,
                     devices_by_role=devices_by_role,
                 )
 
@@ -1129,7 +1130,6 @@ class RuntimeInboxProcessorBridge:
                 return result
 
             if isinstance(getattr(session, "plugin_binding_id", None), int):
-                _configure_attempt_runtime_ports(attempt_runtime, services=services)
                 return await self._process_platform_plugin_attempt(
                     db,
                     inbox=inbox,
@@ -1138,6 +1138,7 @@ class RuntimeInboxProcessorBridge:
                     resolved_event_type=resolved_event_type,
                     processor_token=processor_token,
                     attempt_runtime=attempt_runtime,
+                    services=services,
                     devices_by_role=devices_by_role,
                 )
 
@@ -1400,6 +1401,7 @@ class RuntimeInboxProcessorBridge:
         resolved_event_type: str,
         processor_token: str,
         attempt_runtime: RuntimeInboxAttemptRuntime,
+        services: Any = None,
         devices_by_role: dict[str, list[Any]] | None = None,
     ) -> ProcessResult:
         """平台插件三阶段：固定快照 → 无 DB 决策 → 锁后原子写回。"""
@@ -1431,10 +1433,15 @@ class RuntimeInboxProcessorBridge:
                 workline=workline,
                 snapshot=snapshot,
             )
-            await self._pin_attempt_runtime_to_dispatch_snapshot(
+            provider_profile = await self._pin_attempt_runtime_to_dispatch_snapshot(
                 db,
                 runtime=attempt_runtime,
                 snapshot=dispatch_request.snapshot,
+            )
+            _configure_attempt_runtime_ports(
+                attempt_runtime,
+                services=services,
+                provider_profile=provider_profile,
             )
         context = PluginAttemptContext(
             attempt_id=processor_token,
@@ -1737,17 +1744,22 @@ def _first_plugin_fact(*sources: dict[str, Any], names: tuple[str, ...]) -> str 
     return None
 
 
-def _configure_attempt_runtime_ports(attempt_runtime: RuntimeInboxAttemptRuntime, *, services: Any) -> None:
+def _configure_attempt_runtime_ports(
+    attempt_runtime: RuntimeInboxAttemptRuntime,
+    *,
+    services: Any,
+    provider_profile: Any,
+) -> None:
     """把当前 Inbox 的 typed operation factory 注册为 attempt-scoped QUERY Port。"""
 
-    factory = getattr(services, "inventory_query_port_factory", None)
-    if factory is None:
+    factory_builder = getattr(services, "inventory_query_port_factory", None)
+    if factory_builder is None:
         return
     from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 
     attempt_runtime.port_registry.register(
         InventoryQueryOperationPort,
-        factory,
+        factory_builder(provider_profile=provider_profile),
     )
 
 

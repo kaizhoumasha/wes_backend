@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import zlib
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from urllib.parse import urljoin
 from uuid import uuid4
@@ -14,6 +17,12 @@ import httpx
 from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError
 
+from src.app.runtime.system_capabilities.wms.contracts import (
+    OutboundAuthScheme,
+    WmsOperationMode,
+    WmsProviderOperationBinding,
+    WmsTransportBudget,
+)
 from src.app.wms_integration.models import WmsEvidenceStatus
 from src.app.wms_integration.ports.query_outcome import (
     QueryBusinessReject,
@@ -44,6 +53,41 @@ class _QueryBudgetViolation(Exception):
 
 class _MalformedProviderResponse(Exception):
     pass
+
+
+class _ContentEncodingFailure(Exception):
+    pass
+
+
+class _CredentialResolutionFailure(Exception):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class WmsBoundQueryEndpoint:
+    """Attempt pin 的 Provider operation binding 与部署 origin 的组合。"""
+
+    binding: WmsProviderOperationBinding
+    base_url: str
+
+    def __post_init__(self) -> None:
+        if self.binding.operation.mode is not WmsOperationMode.QUERY:
+            raise ValueError("query endpoint requires a QUERY operation binding")
+        parsed = httpx.URL(self.base_url)
+        if parsed.scheme not in {"http", "https"} or parsed.host is None:
+            raise ValueError("WMS provider base URL must be an absolute HTTP URL")
+        if self.binding.profile.environment == "production" and parsed.scheme != "https":
+            raise ValueError("production WMS provider endpoint requires HTTPS")
+
+    @property
+    def url(self) -> str:
+        return urljoin(self.base_url.rstrip("/") + "/", self.binding.operation.endpoint_path.lstrip("/"))
+
+
+class WmsCredentialProvider(Protocol):
+    """只以版本化 reference 解析密钥材料；调用者不得持久化返回值。"""
+
+    def resolve(self, credential_reference: str) -> bytes: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,22 +202,32 @@ class WmsQueryTransportExecutor:
     def __init__(
         self,
         *,
-        base_url: str,
+        endpoint: WmsBoundQueryEndpoint,
         transport: httpx.AsyncBaseTransport | None,
         evidence_writer: WmsQueryEvidenceWriter,
+        credential_provider: WmsCredentialProvider,
+        now: Callable[[], datetime] | None = None,
+        nonce_factory: Callable[[], str] | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/") + "/"
+        self._endpoint = endpoint
         self._transport = transport
         self._evidence_writer = evidence_writer
+        self._credential_provider = credential_provider
+        self._now = now or (lambda: datetime.now(UTC))
+        self._nonce_factory = nonce_factory or (lambda: uuid4().hex)
+
+    @property
+    def binding(self) -> WmsProviderOperationBinding:
+        return self._endpoint.binding
 
     async def execute(
         self,
         *,
-        contract: WmsOperationContract,
         request: BaseModel,
         provider_payload: Mapping[str, object],
         map_success: Callable[[Any], QueryResultT],
     ) -> WmsQueryOutcome[QueryResultT]:
+        contract = self.binding.operation
         permit = WmsQueryCallPermit(allowed=False, reason="BREAKER_STATE_UNAVAILABLE")
         try:
             permit = await self._evidence_writer.before_call(
@@ -195,7 +249,6 @@ class WmsQueryTransportExecutor:
                 )
             async with asyncio.timeout(contract.budget.timeout_seconds):
                 outcome = await self._execute_with_deadline(
-                    contract=contract,
                     provider_payload=provider_payload,
                     map_success=map_success,
                 )
@@ -213,6 +266,16 @@ class WmsQueryTransportExecutor:
             )
         except _QueryBudgetViolation as exc:
             outcome = QueryContractFailure(reason_code=exc.reason_code, message=exc.message)
+        except _ContentEncodingFailure:
+            outcome = QueryContractFailure(
+                reason_code="WMS_CONTENT_ENCODING_INVALID",
+                message="WMS QUERY response content encoding is malformed",
+            )
+        except _CredentialResolutionFailure:
+            outcome = QueryContractFailure(
+                reason_code="WMS_CREDENTIAL_UNAVAILABLE",
+                message="WMS QUERY credential could not be resolved",
+            )
         except (json.JSONDecodeError, UnicodeDecodeError, ValidationError, _MalformedProviderResponse, ValueError):
             outcome = QueryContractFailure(
                 reason_code="WMS_MALFORMED_RESPONSE",
@@ -235,15 +298,14 @@ class WmsQueryTransportExecutor:
     async def _execute_with_deadline(
         self,
         *,
-        contract: WmsOperationContract,
         provider_payload: Mapping[str, object],
         map_success: Callable[[Any], QueryResultT],
     ) -> WmsQueryOutcome[QueryResultT]:
+        contract = self.binding.operation
         pagination = contract.pagination
         if pagination is None:
             raise _MalformedProviderResponse("QUERY contract is missing pagination semantics")
 
-        url = urljoin(self._base_url, contract.endpoint_path.lstrip("/"))
         cursor: str | None = None
         seen_cursors: set[str] = set()
         aggregate_payload: dict[str, Any] | None = None
@@ -251,26 +313,47 @@ class WmsQueryTransportExecutor:
         cumulative_decoded_bytes = 0
         cumulative_rows = 0
 
-        async with httpx.AsyncClient(transport=self._transport, trust_env=False) as client:
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            trust_env=False,
+            timeout=contract.budget.timeout_seconds,
+        ) as client:
             for _page_number in range(1, pagination.max_pages + 1):
                 page_payload = dict(provider_payload)
                 if cursor is not None:
                     page_payload[pagination.request_cursor_field] = cursor
-                request_kwargs = (
-                    {"params": page_payload} if contract.http_method.value == "GET" else {"json": page_payload}
-                )
-                async with client.stream(
+                outbound_request = client.build_request(
                     contract.http_method.value,
-                    url,
-                    timeout=contract.budget.timeout_seconds,
-                    **request_kwargs,
-                ) as response:
+                    self._endpoint.url,
+                    **({"params": page_payload} if contract.http_method.value == "GET" else {"json": page_payload}),
+                )
+                self._authenticate(outbound_request)
+                response = await client.send(outbound_request, stream=True)
+                try:
                     raw_body, cumulative_wire_bytes = await _read_bounded_wire_body(
                         response,
                         max_chunk_bytes=contract.budget.max_chunk_bytes,
                         max_wire_bytes=contract.budget.max_wire_bytes,
                         cumulative_wire_bytes=cumulative_wire_bytes,
                     )
+                    status_failure = _classify_http_failure(response.status_code, None, response.headers)
+                    if status_failure is not None and (
+                        response.status_code in {401, 403, 408, 429} or not (400 <= response.status_code < 500)
+                    ):
+                        return status_failure
+                    if 400 <= response.status_code < 500:
+                        payload = _parse_optional_failure_body(
+                            raw_body,
+                            content_encoding=response.headers.get("content-encoding", "identity"),
+                            budget=contract.budget,
+                        )
+                        return _classify_http_failure(
+                            response.status_code, payload, response.headers
+                        ) or QueryTechnicalFailure(
+                            reason_code="WMS_PROVIDER_CLIENT_ERROR",
+                            message="WMS QUERY provider returned a client error",
+                            retryable=False,
+                        )
                     decoded_body = _decode_bounded_body(
                         raw_body,
                         content_encoding=response.headers.get("content-encoding", "identity"),
@@ -284,10 +367,8 @@ class WmsQueryTransportExecutor:
                         max_depth=contract.budget.max_json_depth,
                         max_field_length=contract.budget.max_field_length,
                     )
-
-                failure = _classify_http_failure(response.status_code, parsed, response.headers)
-                if failure is not None:
-                    return failure
+                finally:
+                    await response.aclose()
                 if not isinstance(parsed, dict):
                     raise _MalformedProviderResponse("successful QUERY response must be an object")
                 page_rows = parsed.get(pagination.response_items_field)
@@ -321,6 +402,42 @@ class WmsQueryTransportExecutor:
                 seen_cursors.add(cursor)
 
         raise _QueryBudgetViolation("WMS_PAGE_BUDGET_EXCEEDED", "WMS QUERY page budget exceeded")
+
+    def _authenticate(self, request: httpx.Request) -> None:
+        auth = self.binding.outbound_auth
+        if auth.scheme is not OutboundAuthScheme.HMAC_SHA256 or auth.credential_reference is None:
+            raise _CredentialResolutionFailure
+        try:
+            secret = self._credential_provider.resolve(auth.credential_reference)
+        except Exception as exc:
+            raise _CredentialResolutionFailure from exc
+        if not isinstance(secret, bytes) or not secret:
+            raise _CredentialResolutionFailure
+        timestamp = str(int(self._now().timestamp()))
+        nonce = self._nonce_factory()
+        if not isinstance(nonce, str) or not nonce:
+            raise _CredentialResolutionFailure
+        body_hash = hashlib.sha256(request.content).hexdigest()
+        canonical = "\n".join(
+            (
+                request.method,
+                request.url.raw_path.decode("ascii"),
+                timestamp,
+                nonce,
+                body_hash,
+            )
+        )
+        signature = hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+        request.headers.update(
+            {
+                "X-WMS-Credential-Reference": auth.credential_reference,
+                "X-WMS-Signature-Algorithm": auth.scheme.value,
+                "X-WMS-Timestamp": timestamp,
+                "X-WMS-Nonce": nonce,
+                "X-WMS-Content-SHA256": body_hash,
+                "X-WMS-Signature": signature,
+            }
+        )
 
     async def _record_evidence(
         self,
@@ -411,11 +528,17 @@ def _decode_bounded_body(
     if encoding == "identity":
         decoded = raw_body
     else:
-        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
-        decoded = decoder.decompress(raw_body, max_decoded_bytes + 1)
-        if decoder.unconsumed_tail or len(decoded) > max_decoded_bytes:
-            raise _QueryBudgetViolation("WMS_DECODED_BUDGET_EXCEEDED", "WMS QUERY decoded budget exceeded")
-        decoded += decoder.flush(max_decoded_bytes - len(decoded) + 1)
+        window_bits = 16 + zlib.MAX_WBITS if encoding == "gzip" else zlib.MAX_WBITS
+        decoder = zlib.decompressobj(window_bits)
+        try:
+            decoded = decoder.decompress(raw_body, max_decoded_bytes + 1)
+            if decoder.unconsumed_tail or len(decoded) > max_decoded_bytes:
+                raise _QueryBudgetViolation("WMS_DECODED_BUDGET_EXCEEDED", "WMS QUERY decoded budget exceeded")
+            decoded += decoder.flush(max_decoded_bytes - len(decoded) + 1)
+        except zlib.error as exc:
+            raise _ContentEncodingFailure from exc
+        if not decoder.eof or decoder.unused_data:
+            raise _ContentEncodingFailure
     if len(decoded) > max_decoded_bytes:
         raise _QueryBudgetViolation("WMS_DECODED_BUDGET_EXCEEDED", "WMS QUERY decoded budget exceeded")
     if raw_body and len(decoded) / len(raw_body) > max_compression_ratio:
@@ -466,30 +589,95 @@ def _validate_json_structure(value: Any, *, max_depth: int, max_field_length: in
             )
 
 
-def _classify_http_failure(
+def _classify_http_failure(  # noqa: PLR0911 - HTTP 状态封闭矩阵保持逐分支可审计。
     status_code: int,
     payload: Any,
     headers: Mapping[str, str],
 ) -> QueryBusinessReject | QueryTechnicalFailure | None:
     if 200 <= status_code < 300:
         return None
+    if status_code == 408:
+        return QueryTechnicalFailure(
+            reason_code="WMS_PROVIDER_TIMEOUT",
+            message="WMS QUERY provider timed out the request",
+            retryable=True,
+        )
     if status_code == 429:
         return QueryTechnicalFailure(
             reason_code="WMS_RATE_LIMITED",
-            message=_payload_text(payload, "message", "WMS rate limited the QUERY request"),
+            message="WMS rate limited the QUERY request",
             retryable=True,
             retry_after_seconds=_parse_retry_after(headers.get("retry-after")),
         )
+    if status_code == 401:
+        return QueryTechnicalFailure(
+            reason_code="WMS_AUTHENTICATION_FAILED",
+            message="WMS QUERY authentication failed",
+            retryable=False,
+        )
+    if status_code == 403:
+        return QueryTechnicalFailure(
+            reason_code="WMS_AUTHORIZATION_FAILED",
+            message="WMS QUERY authorization failed",
+            retryable=False,
+        )
     if 400 <= status_code < 500:
-        return QueryBusinessReject(
-            reason_code=_payload_text(payload, "reason_code", "WMS_BUSINESS_REJECTED"),
-            message=_payload_text(payload, "message", "WMS rejected the QUERY request"),
+        if isinstance(payload, dict) and payload.get("classification") == "BUSINESS_REJECT":
+            reason_code = _payload_text(payload, "reason_code", "")
+            if reason_code:
+                return QueryBusinessReject(
+                    reason_code=reason_code,
+                    message=_payload_text(payload, "message", "WMS rejected the QUERY request"),
+                )
+        return QueryTechnicalFailure(
+            reason_code="WMS_PROVIDER_CLIENT_ERROR",
+            message="WMS QUERY provider returned a client error",
+            retryable=False,
+        )
+    if status_code >= 500:
+        return QueryTechnicalFailure(
+            reason_code="WMS_UNAVAILABLE",
+            message="WMS QUERY service unavailable",
+            retryable=True,
         )
     return QueryTechnicalFailure(
-        reason_code="WMS_UNAVAILABLE",
-        message=_payload_text(payload, "message", "WMS QUERY service unavailable"),
-        retryable=True,
+        reason_code="WMS_UNEXPECTED_HTTP_STATUS",
+        message="WMS QUERY provider returned an unexpected HTTP status",
+        retryable=False,
     )
+
+
+def _parse_optional_failure_body(
+    raw_body: bytes,
+    *,
+    content_encoding: str,
+    budget: WmsTransportBudget,
+) -> Any | None:
+    """4xx body 仅用于识别显式业务拒绝；任何解析失败都保持 technical。"""
+
+    if not raw_body:
+        return None
+    try:
+        decoded = _decode_bounded_body(
+            raw_body,
+            content_encoding=content_encoding,
+            allowed_content_encodings=budget.allowed_content_encodings,
+            max_decoded_bytes=budget.max_decoded_bytes,
+            max_compression_ratio=budget.max_compression_ratio,
+        )
+        return _parse_bounded_json(
+            decoded,
+            max_depth=budget.max_json_depth,
+            max_field_length=budget.max_field_length,
+        )
+    except (
+        _ContentEncodingFailure,
+        _MalformedProviderResponse,
+        _QueryBudgetViolation,
+        UnicodeDecodeError,
+        ValueError,
+    ):
+        return None
 
 
 def _payload_text(payload: Any, key: str, default: str) -> str:
@@ -537,7 +725,9 @@ def _outcome_snapshot(outcome: object) -> dict[str, Any]:
 
 
 __all__ = [
+    "WmsBoundQueryEndpoint",
     "WmsCallEvidenceQueryWriter",
+    "WmsCredentialProvider",
     "WmsQueryCallPermit",
     "WmsQueryEvidenceWriter",
     "WmsQueryTransportExecutor",

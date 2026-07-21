@@ -51,12 +51,6 @@ class WmsEndpointConfig:
     """
 
     _DEFAULT_PATHS: ClassVar[dict[WmsOperationName, tuple[str, str, str, WmsHttpMethod]]] = {
-        "query_inventory": (
-            "WMS_INVENTORY",
-            "WMS_SYNC_QUERY_INVENTORY_PATH",
-            "/inventory/query",
-            "GET",
-        ),
         "reserve_inventory": (
             "WMS_INVENTORY",
             "WMS_SYNC_RESERVE_INVENTORY_PATH",

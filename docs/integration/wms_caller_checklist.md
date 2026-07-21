@@ -32,7 +32,7 @@
 
 | 字段 | 来源 | 说明 |
 | --- | --- | --- |
-| `operation_name` | typed exception | WMS 操作名，例如 `query_inventory`、`reserve_inventory` |
+| `operation_name` | typed exception | WMS 稳定 operation，例如 `wms.inventory.query_inventory@v1`、`reserve_inventory` |
 | `evidence_key` | typed exception | WMS evidence 幂等键；允许为空时仍要显式传递 |
 | `reason_code` | typed exception | 标准原因码，例如 `WMS_TIMEOUT`、`WMS_CIRCUIT_OPEN` |
 | `http_status` | typed exception | HTTP 状态码；timeout/network/circuit open 可为空 |
