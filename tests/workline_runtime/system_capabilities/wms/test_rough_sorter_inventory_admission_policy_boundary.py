@@ -154,3 +154,79 @@ async def test_profile_mismatch_is_policy_hold_without_query_io(monkeypatch: pyt
     assert captured[0].query_snapshot is None
     assert isinstance(outcome, ContractViolation)
     assert outcome.error_code == "WMS_PROFILE_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_handler_records_actual_query_owner_in_policy_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = []
+
+    def policy_spy(policy_input):
+        captured.append(policy_input)
+        return real_policy(policy_input)
+
+    monkeypatch.setattr(handler_module, "decide_rough_sorter_inventory_admission", policy_spy)
+    port = _Port(QuerySuccess(SUCCESS_RESULT, evidence_key="ev-success"))
+
+    outcome = await RoughSorterInventoryAdmissionHandler(port)(_request())
+
+    assert port.requests[0].owner_code == "OWNER-A"
+    assert captured[0].owner_code == "OWNER-A"
+    assert outcome.payload.admission_decision.provenance.source.query_owner_code == "OWNER-A"
+
+
+@pytest.mark.asyncio
+async def test_temporary_admit_runtime_outcome_carries_complete_policy_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = []
+
+    def policy_spy(policy_input):
+        captured.append(policy_input)
+        return real_policy(policy_input)
+
+    monkeypatch.setattr(handler_module, "decide_rough_sorter_inventory_admission", policy_spy)
+
+    outcome = await RoughSorterInventoryAdmissionHandler(
+        _Port(QuerySuccess(SUCCESS_RESULT, evidence_key="ev-success"))
+    )(_request())
+
+    expected_decision = real_policy(captured[0])
+    assert isinstance(outcome, Success)
+    assert outcome.payload.admission_decision == expected_decision
+    assert outcome.payload.admission_decision.model_dump(mode="json") == {
+        "decision": "ADMIT",
+        "reason_code": "WMS_ADMITTED",
+        "evidence": {
+            "material_code": "MAT-001",
+            "lot_no": "LOT-2026-07",
+            "warehouse_code": "WH-A",
+            "matched_item_count": 1,
+            "available_quantity": "2.25",
+        },
+        "provenance": {
+            "policy_version": "rough-sorter-inventory-admission.v1",
+            "source": {
+                "operation_identity": OPERATION_IDENTITY,
+                "outcome_kind": "SUCCESS",
+                "query_owner_code": "OWNER-A",
+                "evidence_key": "ev-success",
+                "source_version": "WMS-42",
+                "reason_code": None,
+                "message": None,
+                "retryable": None,
+                "retry_after_seconds": None,
+            },
+            "binding": {
+                "binding_id": 9,
+                "binding_version": 2,
+                "profile_identity": "wms.2026-07-06.material-flow.sandbox",
+                "plugin_config_hash": "a" * 64,
+                "generated_index_digest": "b" * 64,
+            },
+            "supported_profile_identities": [
+                "wms.2026-07-06.material-flow.production",
+                "wms.2026-07-06.material-flow.sandbox",
+                "wms.2026-07-06.material-flow.staging",
+            ],
+        },
+    }

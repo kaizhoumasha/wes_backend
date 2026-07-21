@@ -76,6 +76,7 @@ def _policy_input(
         material_code=request.hhpn,
         lot_no=request.lot_code,
         warehouse_code=request.warehouse_code,
+        owner_code=request.owner_code,
         binding_snapshot=request.binding_snapshot,
         supported_profile_identities=tuple(sorted(SUPPORTED_PROFILE_IDENTITIES)),
         source_operation=OPERATION_IDENTITY,

@@ -70,6 +70,7 @@ def _policy_input(
         material_code="MAT-001",
         lot_no="LOT-2026-07",
         warehouse_code="WH-A",
+        owner_code="OWNER-A",
         binding_snapshot=binding or _binding(),
         supported_profile_identities=frozenset(
             {
@@ -94,6 +95,12 @@ OTHER_LOT = InventoryAuthorityItem(
     available_quantity=Decimal("3"),
     warehouse_code="WH-A",
     lot_no="LOT-OTHER",
+)
+OTHER_WAREHOUSE = InventoryAuthorityItem(
+    material_code="MAT-001",
+    available_quantity=Decimal("5"),
+    warehouse_code="WH-B",
+    lot_no="LOT-2026-07",
 )
 
 
@@ -248,6 +255,27 @@ def test_missing_source_version_is_not_fabricated_in_serialized_provenance() -> 
     payload = decision.model_dump(mode="json")
     assert payload["decision"] == "HOLD"
     assert payload["provenance"]["source"]["source_version"] is None
+
+
+def test_success_snapshot_without_evidence_key_is_held() -> None:
+    decision = decide_rough_sorter_inventory_admission(
+        _policy_input(query_snapshot=_query_snapshot(items=(MATCH,), evidence_key=None))
+    )
+
+    assert decision.decision == "HOLD"
+    assert decision.reason_code == "WMS_EVIDENCE_MISSING"
+    assert decision.provenance.source.evidence_key is None
+
+
+def test_cross_warehouse_item_is_rejected_without_claiming_it_as_matching_evidence() -> None:
+    decision = decide_rough_sorter_inventory_admission(
+        _policy_input(query_snapshot=_query_snapshot(items=(OTHER_WAREHOUSE,)))
+    )
+
+    assert decision.decision == "REJECT"
+    assert decision.reason_code == "WMS_REJECTED"
+    assert decision.evidence.matched_item_count == 0
+    assert decision.evidence.available_quantity == Decimal(0)
 
 
 def test_policy_module_has_no_async_or_io_boundary_calls() -> None:

@@ -64,6 +64,7 @@ class RoughSorterInventoryAdmissionPolicyInput(BaseModel):
     material_code: StableString = Field(max_length=120)
     lot_no: StableString = Field(max_length=120)
     warehouse_code: StableString = Field(max_length=120)
+    owner_code: StableString = Field(max_length=120)
     binding_snapshot: RoughSorterBindingSnapshot
     supported_profile_identities: tuple[StableString, ...] = Field(min_length=1)
     source_operation: StableString
@@ -96,6 +97,7 @@ class RoughSorterInventorySourceProvenance(BaseModel):
 
     operation_identity: StableString
     outcome_kind: Literal["MISSING"] | RoughSorterInventoryQueryOutcomeKind
+    query_owner_code: StableString
     evidence_key: StableString | None = None
     source_version: StableString | None = None
     reason_code: StableString | None = None

@@ -30,6 +30,7 @@ def to_runtime_outcome(decision: RoughSorterInventoryAdmissionDecision) -> objec
                 matched_item_count=evidence.matched_item_count,
                 available_quantity=evidence.available_quantity,
                 source_version=cast("str", source.source_version),
+                admission_decision=decision,
             )
         )
     if decision.decision == "REJECT":

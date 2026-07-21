@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (  # noqa: TC001 - Pydantic 运行时需要具体类型。
     RoughSorterBindingSnapshot,
+    RoughSorterInventoryAdmissionDecision,
 )
 
 PROFILE_FAMILY = "wms.2026-07-06.material-flow"
@@ -35,7 +36,7 @@ class RoughSorterInventoryAdmissionInput(BaseModel):
 
 
 class RoughSorterInventoryAdmissionOutput(BaseModel):
-    """命中库存的最小、可审计成功摘要。"""
+    """T7 删除专用 capability 前，携带完整 decision 的可审计成功摘要。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -46,6 +47,7 @@ class RoughSorterInventoryAdmissionOutput(BaseModel):
     matched_item_count: int = Field(gt=0)
     available_quantity: Decimal = Field(ge=0, allow_inf_nan=False)
     source_version: str = Field(min_length=1)
+    admission_decision: RoughSorterInventoryAdmissionDecision
 
 
 __all__ = [

@@ -19,6 +19,7 @@ REASON_WMS_ADMITTED = "WMS_ADMITTED"
 REASON_WMS_REJECTED = "WMS_REJECTED"
 REASON_WMS_OUTCOME_INVALID = "WMS_OUTCOME_INVALID"
 REASON_WMS_PROFILE_MISMATCH = "WMS_PROFILE_MISMATCH"
+REASON_WMS_EVIDENCE_MISSING = "WMS_EVIDENCE_MISSING"
 REASON_WMS_SOURCE_VERSION_MISSING = "WMS_SOURCE_VERSION_MISSING"
 REASON_WMS_TECHNICAL_FAILURE = "WMS_TECHNICAL_FAILURE"
 REASON_WMS_CONTRACT_FAILURE = "WMS_CONTRACT_FAILURE"
@@ -35,7 +36,9 @@ def decide_rough_sorter_inventory_admission(  # noqa: PLR0911 - 封闭输入逐�
         tuple(
             item
             for item in result.items
-            if item.material_code == policy_input.material_code and item.lot_no == policy_input.lot_no
+            if item.material_code == policy_input.material_code
+            and item.lot_no == policy_input.lot_no
+            and item.warehouse_code == policy_input.warehouse_code
         )
         if result is not None
         else ()
@@ -51,6 +54,7 @@ def decide_rough_sorter_inventory_admission(  # noqa: PLR0911 - 封闭输入逐�
         source=RoughSorterInventorySourceProvenance(
             operation_identity=policy_input.source_operation,
             outcome_kind=query.outcome_kind if query is not None else "MISSING",
+            query_owner_code=policy_input.owner_code,
             evidence_key=query.evidence_key if query is not None else None,
             source_version=result.source_version if result is not None else None,
             reason_code=query.reason_code if query is not None else None,
@@ -85,6 +89,8 @@ def decide_rough_sorter_inventory_admission(  # noqa: PLR0911 - 封闭输入逐�
         )
     if result is None:
         return _decision("HOLD", REASON_WMS_OUTCOME_INVALID, evidence=evidence, provenance=provenance)
+    if query.evidence_key is None:
+        return _decision("HOLD", REASON_WMS_EVIDENCE_MISSING, evidence=evidence, provenance=provenance)
     if result.source_version is None:
         return _decision("HOLD", REASON_WMS_SOURCE_VERSION_MISSING, evidence=evidence, provenance=provenance)
     if not matches:

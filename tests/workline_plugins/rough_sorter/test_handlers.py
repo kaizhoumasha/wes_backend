@@ -17,9 +17,6 @@ from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.runtime_intent import BlockScope
 from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterInventoryAdmissionOutput,
-)
 from src.app.runtime.workline_plugins.contracts import PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import (
     HandlerRegistration,
@@ -39,6 +36,7 @@ from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     parse_scan_completed,
 )
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
+from tests.support.rough_sorter_inventory_admission import admitted_inventory_output
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
@@ -212,13 +210,10 @@ class _Gateway:
         admission = self.discriminator.get("wms_admission")
         if admission == "ADMIT":
             outcome = Success(
-                payload=RoughSorterInventoryAdmissionOutput(
-                    accepted=True,
+                payload=admitted_inventory_output(
                     material_code="HH-001",
-                    batch_no="LOT-01",
+                    lot_no="LOT-01",
                     warehouse_code="WH-01",
-                    matched_item_count=1,
-                    available_quantity=1,
                     source_version="fixture-v1",
                 )
             )

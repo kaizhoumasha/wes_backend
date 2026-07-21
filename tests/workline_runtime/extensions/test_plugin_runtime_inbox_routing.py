@@ -34,6 +34,7 @@ from src.app.runtime.workline_plugins.dispatcher import PluginDispatchRequest
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
+from tests.support.rough_sorter_inventory_admission import admitted_inventory_output
 
 
 @pytest.mark.parametrize(
@@ -1053,11 +1054,6 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
 async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from decimal import Decimal
-
-    from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-        RoughSorterInventoryAdmissionOutput,
-    )
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
     config = {
@@ -1156,13 +1152,10 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
             self.calls += 1
             return GatewayQueryResult(
                 outcome=Success(
-                    payload=RoughSorterInventoryAdmissionOutput(
-                        accepted=True,
+                    payload=admitted_inventory_output(
                         material_code="MAT-1",
-                        batch_no="LOT-1",
+                        lot_no="LOT-1",
                         warehouse_code="WH-01",
-                        matched_item_count=1,
-                        available_quantity=Decimal("1"),
                         source_version="v1",
                     )
                 ),
