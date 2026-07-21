@@ -8,6 +8,7 @@ from src.app.runtime.system_capabilities.wms.contracts import (  # noqa: TC001 -
     WmsOperationContract,
 )
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
+from src.app.runtime.system_capabilities.wms.provider_conformance import QUERY_INVENTORY_CONFORMANCE_CASES
 
 
 class OperationConformanceRequirement(BaseModel):
@@ -36,17 +37,7 @@ class WmsConformanceManifest(BaseModel):
         return self
 
 
-_CORE_QUERY_CASES = (
-    "success",
-    "empty",
-    "reject",
-    "timeout",
-    "unavailable",
-    "malformed",
-    "pagination",
-    "precision",
-    "rate_limit",
-)
+_CORE_QUERY_CASES = tuple(case.case_id for case in QUERY_INVENTORY_CONFORMANCE_CASES)
 _CORE_EFFECT_CASES = (
     "success",
     "reject",
