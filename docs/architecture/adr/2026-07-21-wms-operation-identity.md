@@ -19,7 +19,7 @@ operation identity 是跨 Plugin、Runtime、System Capability、catalog、Provi
 稳定身份。identity 采用 `<domain>.<bounded-operation>@<contract-version>`；它表达领域语义，不携带 endpoint、HTTP method、
 credential、工作线、环境或 Provider 名称。handler、Port 方法与 Provider endpoint 均可演进，但不得借此创建第二个 operation identity。
 
-本次清点锁定四个真实消费者；没有真实消费者就不预建空壳：
+本次清点锁定四个真实 operation；没有真实 operation 就不预建空壳：
 
 | Operation identity | 模式 | 现存遗留身份 | 后续合同所有者 | 删除门禁 |
 | --- | --- | --- | --- | --- |
