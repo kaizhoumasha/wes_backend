@@ -573,3 +573,21 @@ def test_runtime_models_pin_same_binding_identity_and_json_state() -> None:
         )
     assert "plugin_state_json" in WorklineSessionBase.model_fields
     assert "plugin_state_json" in ExecutionSession.model_fields
+
+
+@pytest.mark.parametrize(("plugin_key", "contract_version"), [(None, "v1"), ("rough_sorter", None)])
+def test_binding_activation_rejects_incomplete_plugin_identity(plugin_key: object, contract_version: object) -> None:
+    workline = SimpleNamespace(id=7, plugin_key=plugin_key, contract_version=contract_version, config={})
+
+    with pytest.raises(PluginBindingAdmissionError, match="plugin identity 缺失"):
+        service(FakeRepository()).validate_activation_configuration(
+            workline=workline,
+            environment="production",
+            devices=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_missing_pinned_binding_is_rejected() -> None:
+    with pytest.raises(PluginBindingAdmissionError, match="pinned binding 不存在: 9"):
+        await service(FakeRepository()).get_pinned(object(), binding_id=9)

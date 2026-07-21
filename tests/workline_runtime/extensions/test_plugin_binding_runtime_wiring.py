@@ -121,6 +121,25 @@ class RuntimeRepository:
         return execution_session, work_item
 
 
+@pytest.mark.asyncio
+async def test_runtime_session_pin_rejects_missing_resolved_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    binding_service = WorklinePluginBindingService(
+        repository=BindingRepository(),
+        runtime_repository=RuntimeRepository(),
+        plugin_index={("platform-test", "v1"): DEFINITION},
+        capability_index={},
+        plugin_index_digest="b" * 64,
+    )
+
+    async def _missing_binding(_db: object, *, binding_id: int) -> None:
+        assert binding_id == 8
+
+    monkeypatch.setattr(binding_service, "get_pinned", _missing_binding)
+
+    with pytest.raises(PluginBindingAdmissionError, match="pinned binding 不存在"):
+        await binding_service.pin_new_runtime_session(object(), workline=_workline(), session=SimpleNamespace())
+
+
 class ExecutionAnchorRepository:
     async def resolve_owned_anchor(
         self,
