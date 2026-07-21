@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import csv
 import re
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_PATH = REPO_ROOT / "docs" / "architecture" / "northbound-wms-operation-inventory.csv"
@@ -44,6 +49,23 @@ SOURCE_PATHS = (
 )
 TEST_PATHS = ("tests",)
 DOCUMENTATION_PATHS = ("docs/architecture", "docs/contracts")
+METRIC_OWNER_PATHS = (
+    "src/app/runtime/orchestration/observability.py",
+    "src/app/runtime/orchestration/services",
+    "src/app/wms_integration",
+    "src/app/callback/services",
+    "src/app/device/services",
+    "src/celery_app/tasks",
+)
+METRIC_SIGNAL_MARKERS = (
+    "RuntimeObservabilitySignal(",
+    "emit_metric(",
+    "observability_emit",
+    "runtime_observability_registry.emit(",
+    '"metric"',
+    '"metric+',
+)
+STRUCTURED_OPERATION_LABELS = ("operation_identity", "operation_name", "operation_kind")
 
 
 def _read_inventory() -> list[dict[str, str]]:
@@ -71,8 +93,36 @@ def _category_for_source(relative_path: str) -> str:
     return "caller"
 
 
-def _discover_references() -> set[tuple[str, str, str]]:
-    discovered: set[tuple[str, str, str]] = set()
+def _contains_exact_identity(text: str, identity: str) -> bool:
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(identity)}(?![A-Za-z0-9_])", text) is not None
+
+
+def _without_full_identities(text: str) -> str:
+    full_identities = (*LEGACY_IDENTITY_TARGETS, *LEGACY_IDENTITY_TARGETS.values())
+    for identity in sorted(set(full_identities), key=len, reverse=True):
+        text = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(identity)}(?![A-Za-z0-9_])", "", text)
+    return text
+
+
+def _discover_split_port_method_references(text: str) -> set[tuple[str, str]]:
+    discovered: set[tuple[str, str]] = set()
+    port_methods = {
+        tuple(legacy_identity.rsplit(".", 1)): target_identity
+        for legacy_identity, target_identity in LEGACY_IDENTITY_TARGETS.items()
+        if legacy_identity.startswith("Wms") and "." in legacy_identity
+    }
+    for line in text.splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        code_identities = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", line))
+        for (port_name, method_name), target_identity in port_methods.items():
+            if {port_name, method_name} <= code_identities:
+                discovered.add((f"{port_name}.{method_name}", target_identity))
+    return discovered
+
+
+def _discover_references() -> set[tuple[str, str, str, str]]:
+    discovered: set[tuple[str, str, str, str]] = set()
     path_groups = (
         (SOURCE_PATHS, None),
         (TEST_PATHS, "test"),
@@ -87,15 +137,44 @@ def _discover_references() -> set[tuple[str, str, str]]:
             relative_path = path.relative_to(REPO_ROOT).as_posix()
             category = fixed_category or _category_for_source(relative_path)
             for legacy_identity, target_identity in LEGACY_IDENTITY_TARGETS.items():
-                if legacy_identity in text or (
+                if _contains_exact_identity(text, legacy_identity) or (
                     legacy_identity == "rough_sorter_inventory_admission"
                     and "src/app/runtime/system_capabilities/wms/rough_sorter_inventory_admission/" in relative_path
                 ):
-                    discovered.add((category, relative_path, target_identity))
+                    discovered.add((category, relative_path, legacy_identity, target_identity))
+            if category == "documentation":
+                for legacy_identity, target_identity in _discover_split_port_method_references(text):
+                    discovered.add((category, relative_path, legacy_identity, target_identity))
             if category == "test":
+                residual_text = _without_full_identities(text)
                 for operation_name, target_identity in TEST_OPERATION_TARGETS.items():
-                    if operation_name in text:
-                        discovered.add((category, relative_path, target_identity))
+                    if _contains_exact_identity(residual_text, operation_name):
+                        discovered.add((category, relative_path, operation_name, target_identity))
+    return discovered
+
+
+def _discover_metric_references() -> set[tuple[str, str, str, str]]:
+    discovered: set[tuple[str, str, str, str]] = set()
+    for path in _iter_python_files(METRIC_OWNER_PATHS):
+        text = path.read_text(encoding="utf-8")
+        if not any(marker in text for marker in METRIC_SIGNAL_MARKERS):
+            continue
+        relative_path = path.relative_to(REPO_ROOT).as_posix()
+        for legacy_identity, target_identity in LEGACY_IDENTITY_TARGETS.items():
+            if _contains_exact_identity(text, legacy_identity):
+                discovered.add(("metric", relative_path, legacy_identity, target_identity))
+        for target_identity in set(LEGACY_IDENTITY_TARGETS.values()):
+            if _contains_exact_identity(text, target_identity):
+                discovered.add(("metric", relative_path, target_identity, target_identity))
+
+        residual_text = _without_full_identities(text)
+        has_structured_label = any(
+            re.search(rf"[\"']{label}[\"']\s*:", residual_text) for label in STRUCTURED_OPERATION_LABELS
+        )
+        if has_structured_label:
+            for operation_name, target_identity in TEST_OPERATION_TARGETS.items():
+                if _contains_exact_identity(residual_text, operation_name):
+                    discovered.add(("metric", relative_path, operation_name, target_identity))
     return discovered
 
 
@@ -106,13 +185,101 @@ def _iter_markdown_files(relative_paths: tuple[str, ...]) -> list[Path]:
     return sorted(set(files))
 
 
+def test_reference_scanner_preserves_legacy_identity_and_parses_split_port_method_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Port 与方法分列时仍按完整 legacy identity 清点，且不能命中词片段。"""
+    document_path = tmp_path / "docs" / "architecture" / "port-table.md"
+    document_path.parent.mkdir(parents=True)
+    document_path.write_text(
+        """| Port | 关键方法 |
+| --- | --- |
+| `WmsInventoryQueryPort` | `query_inventory` / `query_inventory_cache` |
+| `WmsFulfillmentPort` | `full_box_exchange` / `notify_pkg_binding` |
+| `WmsInventoryQueryPortability` | `query_inventory_preview` |
+""",
+        encoding="utf-8",
+    )
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(module, "SOURCE_PATHS", ())
+    monkeypatch.setattr(module, "TEST_PATHS", ())
+    monkeypatch.setattr(module, "DOCUMENTATION_PATHS", ("docs/architecture",))
+
+    assert _discover_references() == {
+        (
+            "documentation",
+            "docs/architecture/port-table.md",
+            "WmsInventoryQueryPort.query_inventory",
+            "wms.inventory.query_inventory@v1",
+        ),
+        (
+            "documentation",
+            "docs/architecture/port-table.md",
+            "WmsFulfillmentPort.full_box_exchange",
+            "wms.fulfillment.full_box_exchange@v1",
+        ),
+        (
+            "documentation",
+            "docs/architecture/port-table.md",
+            "WmsFulfillmentPort.notify_pkg_binding",
+            "wms.fulfillment.notify_pkg_binding@v1",
+        ),
+    }
+
+
+def test_metric_scanner_recognizes_all_supported_operation_identity_forms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """指标 owner 中 legacy、目标 identity 与结构化 label 都必须进入双向清点。"""
+    metric_root = tmp_path / "src" / "app" / "runtime" / "orchestration"
+    metric_root.mkdir(parents=True)
+    (metric_root / "legacy_metric.py").write_text(
+        'WMS_OPERATION_COUNTER = {"kind": "metric", "operation": "WmsInventoryQueryPort.query_inventory"}\n',
+        encoding="utf-8",
+    )
+    (metric_root / "target_metric.py").write_text(
+        'emit_metric("wms.operation", {"operation_identity": "wms.inventory.confirm_inbound@v1"})\n',
+        encoding="utf-8",
+    )
+    (metric_root / "label_metric.py").write_text(
+        'emit_metric("wms.operation", {"operation_name": "notify_pkg_binding"})\n'
+        'emit_metric("wms.operation.preview", {"operation_name": "notify_pkg_binding_preview"})\n',
+        encoding="utf-8",
+    )
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(module, "METRIC_OWNER_PATHS", ("src/app/runtime/orchestration",))
+
+    assert _discover_metric_references() == {
+        (
+            "metric",
+            "src/app/runtime/orchestration/legacy_metric.py",
+            "WmsInventoryQueryPort.query_inventory",
+            "wms.inventory.query_inventory@v1",
+        ),
+        (
+            "metric",
+            "src/app/runtime/orchestration/target_metric.py",
+            "wms.inventory.confirm_inbound@v1",
+            "wms.inventory.confirm_inbound@v1",
+        ),
+        (
+            "metric",
+            "src/app/runtime/orchestration/label_metric.py",
+            "notify_pkg_binding",
+            "wms.fulfillment.notify_pkg_binding@v1",
+        ),
+    }
+
+
 def test_inventory_covers_every_discovered_legacy_reference() -> None:
     """真实扫描结果与清点表必须双向对应，禁止漏项或无来源静态罗列。"""
     rows = _read_inventory()
     inventoried = {
-        (row["category"], row["source_path"], row["target_operation_identity"])
+        (row["category"], row["source_path"], row["legacy_identity"], row["target_operation_identity"])
         for row in rows
-        if not row["source_path"].startswith("<missing:")
+        if row["category"] != "metric" and not row["source_path"].startswith("<missing:")
     }
     discovered = _discover_references()
 
@@ -137,20 +304,26 @@ def test_inventory_has_complete_categories_identities_and_dispositions() -> None
 
 
 def test_missing_operation_metrics_are_explicit_inventory_gaps() -> None:
-    """现状无 operation 级指标时必须逐 operation 登记缺口，不能误报为已覆盖。"""
+    """真实 operation 指标与清点表按来源双向对应，其余 operation 显式登记缺口。"""
     metric_rows = [row for row in _read_inventory() if row["category"] == "metric"]
-    assert {row["target_operation_identity"] for row in metric_rows} == set(LEGACY_IDENTITY_TARGETS.values())
-    assert all(row["source_path"] == "<missing:operation_metric>" for row in metric_rows)
-    assert all(row["disposition"] == "REWRITE" for row in metric_rows)
+    real_rows = {
+        (row["category"], row["source_path"], row["legacy_identity"], row["target_operation_identity"])
+        for row in metric_rows
+        if not row["source_path"].startswith("<missing:")
+    }
+    discovered = _discover_metric_references()
+    assert discovered == real_rows, (
+        f"指标清点表与真实 operation 指标不一致；漏项={sorted(discovered - real_rows)}；"
+        f"无来源项={sorted(real_rows - discovered)}"
+    )
 
-    production_text = "\n".join(path.read_text(encoding="utf-8") for path in _iter_python_files(SOURCE_PATHS))
-    metric_lines = [
-        line
-        for line in production_text.splitlines()
-        if re.search(r"metric|counter|histogram|gauge", line, re.IGNORECASE)
-        and any(identity in line for identity in LEGACY_IDENTITY_TARGETS)
-    ]
-    assert metric_lines == []
+    discovered_targets = {target_identity for _, _, _, target_identity in discovered}
+    missing_rows = [row for row in metric_rows if row["source_path"] == "<missing:operation_metric>"]
+    assert {row["target_operation_identity"] for row in missing_rows} == (
+        set(LEGACY_IDENTITY_TARGETS.values()) - discovered_targets
+    )
+    assert all(row["legacy_identity"] == "<absent>" for row in missing_rows)
+    assert all(row["disposition"] == "REWRITE" for row in metric_rows)
 
 
 def test_adr_and_inventory_share_the_same_stable_operation_identities() -> None:
