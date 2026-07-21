@@ -5,6 +5,7 @@ from typing import Any, Protocol, cast
 PROCESS_RUNTIME_INBOX_TASK = "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch"
 DISPATCH_SYSTEM_OUTBOX_TASK = "src.celery_app.tasks.sys.dispatch_system_outbox_batch"
 PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE = "src.celery_app.tasks.{target_code}.process_signal"
+PROCESS_QUERY_SHADOW_COMPARISON_TASK = "src.celery_app.tasks.workline.process_query_shadow_comparison"
 
 
 class TaskQueueGateway(Protocol):
@@ -15,6 +16,8 @@ class TaskQueueGateway(Protocol):
     def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None: ...
 
     def enqueue_internal_signal(self, target_code: str, payload: dict[str, Any]) -> None: ...
+
+    def enqueue_query_shadow_comparison(self, payload: dict[str, Any]) -> None: ...
 
 
 class CeleryTaskQueueGateway:
@@ -39,12 +42,16 @@ class CeleryTaskQueueGateway:
             kwargs={"payload": payload},
         )
 
+    def enqueue_query_shadow_comparison(self, payload: dict[str, Any]) -> None:
+        self._send_task(PROCESS_QUERY_SHADOW_COMPARISON_TASK, kwargs={"payload": payload})
+
 
 task_queue_gateway = CeleryTaskQueueGateway()
 
 __all__ = [
     "DISPATCH_SYSTEM_OUTBOX_TASK",
     "PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE",
+    "PROCESS_QUERY_SHADOW_COMPARISON_TASK",
     "PROCESS_RUNTIME_INBOX_TASK",
     "CeleryTaskQueueGateway",
     "TaskQueueGateway",
