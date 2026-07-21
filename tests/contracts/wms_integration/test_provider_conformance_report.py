@@ -15,10 +15,7 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
     ConformanceTarget,
-    StagingConformanceExecutorAttestation,
-    build_staging_conformance_executor_attestation,
     build_wms_conformance_report,
-    run_query_inventory_staging_live_conformance,
     verify_wms_conformance_report,
 )
 
@@ -26,29 +23,7 @@ SANDBOX_PROFILE = WMS_PROVIDER_PROFILES["wms.2026-07-06.material-flow.sandbox"]
 STAGING_PROFILE = WMS_PROVIDER_PROFILES["wms.2026-07-06.material-flow.staging"]
 PRODUCTION_PROFILE = WMS_PROVIDER_PROFILES["wms.2026-07-06.material-flow.production"]
 FIXTURE_DIGEST = "a" * 64
-ENDPOINT_REVISION_DIGEST = "e" * 64
 GENERATED_AT = datetime(2026, 7, 21, 8, 0, tzinfo=UTC)
-
-
-class _AttestedStagingExecutor:
-    """测试 wrapper 记录调用；production attestation 与 executor 本身不持有可变执行记录。"""
-
-    __slots__ = ("_calls", "_observations", "attestation")
-
-    def __init__(
-        self,
-        *,
-        attestation: StagingConformanceExecutorAttestation,
-        observations: dict[str, ConformanceObservation],
-        calls: list[str],
-    ) -> None:
-        self.attestation = attestation
-        self._observations = observations
-        self._calls = calls
-
-    async def execute(self, case):
-        self._calls.append(case.case_id)
-        return self._observations[case.case_id]
 
 
 def _matching_observations() -> tuple[ConformanceObservation, ...]:
@@ -104,46 +79,30 @@ def test_manifest_query_requirement_is_the_single_complete_question_bank() -> No
         (ConformanceTarget.SIMULATOR, PRODUCTION_PROFILE),
         (ConformanceTarget.REPLAY, PRODUCTION_PROFILE),
         (ConformanceTarget.CI_ADAPTER, STAGING_PROFILE),
-        (ConformanceTarget.STAGING_LIVE, SANDBOX_PROFILE),
-        (ConformanceTarget.STAGING_LIVE, PRODUCTION_PROFILE),
     ],
 )
 def test_runner_fails_closed_before_non_staging_can_select_live_or_production_profile(target, profile) -> None:
-    with pytest.raises(ValueError, match="environment"):
+    with pytest.raises(ValueError, match="canonical author-time sandbox profile"):
         build_wms_conformance_report(
             cases=QUERY_INVENTORY_CONFORMANCE_CASES,
             observations=_matching_observations(),
             target=target,
             profile=profile,
             fixture_digest=FIXTURE_DIGEST,
-            endpoint_revision="staging-r42" if target is ConformanceTarget.STAGING_LIVE else None,
             generated_at=GENERATED_AT,
         )
 
 
 def test_staging_live_report_is_explicit_immutable_deterministic_and_verifiable() -> None:
-    kwargs = {
-        "cases": QUERY_INVENTORY_CONFORMANCE_CASES,
-        "observations": _matching_observations(),
-        "target": ConformanceTarget.STAGING_LIVE,
-        "profile": STAGING_PROFILE,
-        "fixture_digest": FIXTURE_DIGEST,
-        "endpoint_revision": ENDPOINT_REVISION_DIGEST,
-        "generated_at": GENERATED_AT,
-    }
-
-    first = build_wms_conformance_report(**kwargs)
-    second = build_wms_conformance_report(**kwargs)
-
-    assert first == second
-    assert first.passed is True
-    assert first.profile_identity == STAGING_PROFILE.identity.identity
-    assert first.endpoint_revision == ENDPOINT_REVISION_DIGEST
-    assert verify_wms_conformance_report(first.model_dump(mode="json")) == first
-    with pytest.raises(ValidationError):
-        first.report_digest = "b" * 64
-    with pytest.raises(ValidationError, match="digest"):
-        verify_wms_conformance_report({**first.model_dump(mode="json"), "report_digest": "b" * 64})
+    with pytest.raises(ValueError, match="attested live runner"):
+        build_wms_conformance_report(
+            cases=QUERY_INVENTORY_CONFORMANCE_CASES,
+            observations=_matching_observations(),
+            target=ConformanceTarget.STAGING_LIVE,
+            profile=STAGING_PROFILE,
+            fixture_digest=FIXTURE_DIGEST,
+            generated_at=GENERATED_AT,
+        )
 
 
 @pytest.mark.parametrize(
@@ -154,19 +113,21 @@ def test_staging_live_report_is_explicit_immutable_deterministic_and_verifiable(
         "api_key=0123456789",
         "Bearer 0123456789",
         "authorization-token",
+        "0" * 64,
     ),
 )
 def test_endpoint_revision_requires_an_opaque_digest(endpoint_revision: str) -> None:
-    with pytest.raises((ValueError, ValidationError), match=r"endpoint revision|endpoint_revision"):
-        build_wms_conformance_report(
-            cases=QUERY_INVENTORY_CONFORMANCE_CASES,
-            observations=_matching_observations(),
-            target=ConformanceTarget.STAGING_LIVE,
-            profile=STAGING_PROFILE,
-            fixture_digest=FIXTURE_DIGEST,
-            endpoint_revision=endpoint_revision,
-            generated_at=GENERATED_AT,
-        )
+    kwargs = {
+        "cases": QUERY_INVENTORY_CONFORMANCE_CASES,
+        "observations": _matching_observations(),
+        "target": ConformanceTarget.REPLAY,
+        "profile": SANDBOX_PROFILE,
+        "fixture_digest": FIXTURE_DIGEST,
+        "endpoint_revision": endpoint_revision,
+        "generated_at": GENERATED_AT,
+    }
+    with pytest.raises(TypeError, match="endpoint_revision"):
+        build_wms_conformance_report(**kwargs)
 
 
 def test_report_verify_rejects_a_resigned_noncanonical_suite_digest() -> None:
@@ -176,7 +137,6 @@ def test_report_verify_rejects_a_resigned_noncanonical_suite_digest() -> None:
         target=ConformanceTarget.REPLAY,
         profile=SANDBOX_PROFILE,
         fixture_digest=FIXTURE_DIGEST,
-        endpoint_revision=None,
         generated_at=GENERATED_AT,
     )
     payload = report.model_dump(mode="json")
@@ -194,7 +154,6 @@ def test_report_verify_rejects_resigned_case_identity_order_or_count_drift(mutat
         target=ConformanceTarget.REPLAY,
         profile=SANDBOX_PROFILE,
         fixture_digest=FIXTURE_DIGEST,
-        endpoint_revision=None,
         generated_at=GENERATED_AT,
     )
     payload = report.model_dump(mode="json")
@@ -218,7 +177,6 @@ def test_report_verify_rejects_a_resigned_incorrect_case_verdict() -> None:
         target=ConformanceTarget.REPLAY,
         profile=SANDBOX_PROFILE,
         fixture_digest=FIXTURE_DIGEST,
-        endpoint_revision=None,
         generated_at=GENERATED_AT,
     )
     payload = report.model_dump(mode="json")
@@ -237,14 +195,13 @@ def test_report_verify_rejects_a_resigned_illegal_target_profile_environment() -
         target=ConformanceTarget.REPLAY,
         profile=SANDBOX_PROFILE,
         fixture_digest=FIXTURE_DIGEST,
-        endpoint_revision=None,
         generated_at=GENERATED_AT,
     )
     payload = report.model_dump(mode="json")
     payload["target"] = ConformanceTarget.STAGING_LIVE.value
-    payload["endpoint_revision"] = ENDPOINT_REVISION_DIGEST
+    payload["endpoint_revision"] = "e" * 64
 
-    with pytest.raises(ValueError, match="environment"):
+    with pytest.raises(ValueError, match="canonical author-time staging profile"):
         verify_wms_conformance_report(_resign_report_payload(payload))
 
 
@@ -255,7 +212,6 @@ def test_report_schema_cannot_serialize_secrets_credentials_or_headers() -> None
         target=ConformanceTarget.REPLAY,
         profile=SANDBOX_PROFILE,
         fixture_digest=FIXTURE_DIGEST,
-        endpoint_revision=None,
         generated_at=GENERATED_AT,
     )
     serialized = report.model_dump_json().lower()
@@ -300,7 +256,6 @@ def test_report_rejects_missing_duplicate_or_unknown_case_observations() -> None
                 target=ConformanceTarget.REPLAY,
                 profile=SANDBOX_PROFILE,
                 fixture_digest=FIXTURE_DIGEST,
-                endpoint_revision=None,
                 generated_at=GENERATED_AT,
             )
 
@@ -313,102 +268,5 @@ def test_report_builder_rejects_provider_attempt_to_override_or_shrink_core_bank
             target=ConformanceTarget.REPLAY,
             profile=SANDBOX_PROFILE,
             fixture_digest=FIXTURE_DIGEST,
-            endpoint_revision=None,
             generated_at=GENERATED_AT,
         )
-
-
-@pytest.mark.asyncio
-async def test_explicit_staging_entry_fails_closed_before_executor_and_runs_the_fixed_bank() -> None:
-    observations = {item.case_id: item for item in _matching_observations()}
-    calls: list[str] = []
-    endpoint_identity_digest = "d" * 64
-    attestation = build_staging_conformance_executor_attestation(
-        profile=STAGING_PROFILE,
-        endpoint_identity_digest=endpoint_identity_digest,
-        endpoint_revision=ENDPOINT_REVISION_DIGEST,
-    )
-    executor = _AttestedStagingExecutor(
-        attestation=attestation,
-        observations=observations,
-        calls=calls,
-    )
-
-    with pytest.raises(ValueError, match="staging environment"):
-        await run_query_inventory_staging_live_conformance(
-            profile=PRODUCTION_PROFILE,
-            executor=executor,
-            fixture_digest=FIXTURE_DIGEST,
-            endpoint_identity_digest=endpoint_identity_digest,
-            endpoint_revision=ENDPOINT_REVISION_DIGEST,
-            generated_at=GENERATED_AT,
-        )
-    assert calls == []
-
-    for invalid_revision in (" ", "release-42", "sk-live-0123456789", "api_key=0123456789", "Bearer token"):
-        with pytest.raises(ValueError, match="endpoint revision"):
-            await run_query_inventory_staging_live_conformance(
-                profile=STAGING_PROFILE,
-                executor=executor,
-                fixture_digest=FIXTURE_DIGEST,
-                endpoint_identity_digest=endpoint_identity_digest,
-                endpoint_revision=invalid_revision,
-                generated_at=GENERATED_AT,
-            )
-        assert calls == []
-
-    profile_without_query = STAGING_PROFILE.model_copy(update={"bindings": (), "callbacks": ()})
-    with pytest.raises(ValueError, match="query_inventory binding"):
-        await run_query_inventory_staging_live_conformance(
-            profile=profile_without_query,
-            executor=executor,
-            fixture_digest=FIXTURE_DIGEST,
-            endpoint_identity_digest=endpoint_identity_digest,
-            endpoint_revision=ENDPOINT_REVISION_DIGEST,
-            generated_at=GENERATED_AT,
-        )
-    assert calls == []
-
-    for mismatch in (
-        {"endpoint_identity_digest": "c" * 64, "endpoint_revision": ENDPOINT_REVISION_DIGEST},
-        {"endpoint_identity_digest": endpoint_identity_digest, "endpoint_revision": "f" * 64},
-    ):
-        with pytest.raises(ValueError, match="attestation mismatch"):
-            await run_query_inventory_staging_live_conformance(
-                profile=STAGING_PROFILE,
-                executor=executor,
-                fixture_digest=FIXTURE_DIGEST,
-                generated_at=GENERATED_AT,
-                **mismatch,
-            )
-        assert calls == []
-
-    tampered_attestation = attestation.model_copy(update={"binding_revision": "b" * 64})
-    tampered_executor = _AttestedStagingExecutor(
-        attestation=tampered_attestation,
-        observations=observations,
-        calls=calls,
-    )
-    with pytest.raises(ValueError, match="attestation digest"):
-        await run_query_inventory_staging_live_conformance(
-            profile=STAGING_PROFILE,
-            executor=tampered_executor,
-            fixture_digest=FIXTURE_DIGEST,
-            endpoint_identity_digest=endpoint_identity_digest,
-            endpoint_revision=ENDPOINT_REVISION_DIGEST,
-            generated_at=GENERATED_AT,
-        )
-    assert calls == []
-
-    report = await run_query_inventory_staging_live_conformance(
-        profile=STAGING_PROFILE,
-        executor=executor,
-        fixture_digest=FIXTURE_DIGEST,
-        endpoint_identity_digest=endpoint_identity_digest,
-        endpoint_revision=ENDPOINT_REVISION_DIGEST,
-        generated_at=GENERATED_AT,
-    )
-
-    assert report.passed is True
-    assert "endpoint_identity_digest" not in report.model_dump(mode="json")
-    assert calls == [case.case_id for case in QUERY_INVENTORY_CONFORMANCE_CASES]

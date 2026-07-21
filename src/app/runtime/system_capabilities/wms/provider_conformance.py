@@ -5,30 +5,28 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import re
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from datetime import datetime  # noqa: TC003 - Pydantic 运行时解析报告字段类型。
 from enum import Enum
-from typing import TYPE_CHECKING, Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
+from src.app.runtime.system_capabilities.wms.contracts import WmsProviderProfile
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import (
     CONTRACT as QUERY_INVENTORY_CONTRACT,
 )
 from src.app.runtime.system_capabilities.wms.operation_index_builder import WmsOperationIndexBuilder
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILES
 
-if TYPE_CHECKING:
-    from src.app.runtime.system_capabilities.wms.contracts import WmsProviderProfile
-
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 CaseId = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_]*$")]
 ConformanceCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Z][A-Z0-9_]*$")]
-EndpointRevision = Annotated[
-    str,
-    StringConstraints(pattern=r"^[0-9a-f]{64}$"),
-]
 Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+SigningKeyId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9._-]{0,79}$")]
+Ed25519Signature = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{86}$")]
 WMS_PROVIDER_CONFORMANCE_SUITE_VERSION = "wms-provider-conformance.v1"
 
 
@@ -199,6 +197,76 @@ class ConformanceCaseResult(BaseModel):
     failure_evidence_digest: Sha256Digest | None = None
 
 
+class StagingConformanceExecutorAttestation(BaseModel):
+    """由部署受控 signer 签发的冻结执行声明；只携带不可逆 identity/revision 摘要。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["wms-staging-conformance-attestation.v2"] = "wms-staging-conformance-attestation.v2"
+    signing_key_id: SigningKeyId
+    profile_identity: StableText = Field(max_length=300)
+    profile_revision: Sha256Digest
+    binding_identity: Literal["wms.inventory.query_inventory@v1"] = QUERY_INVENTORY_CONTRACT.identity
+    binding_revision: Sha256Digest
+    endpoint_identity_digest: Sha256Digest
+    internal_revision_digest: Sha256Digest
+    composition_identity_digest: Sha256Digest
+    signature: Ed25519Signature
+
+
+class StagingConformanceAttestationSigner(Protocol):
+    """部署受控 signer 的最小端口；runner 不持有该能力。"""
+
+    @property
+    def key_id(self) -> str: ...
+
+    def sign(self, payload: bytes) -> bytes: ...
+
+
+class StagingConformanceAttestationVerifier(Protocol):
+    """runner 只依赖受信公钥 verifier。"""
+
+    def verify(
+        self,
+        attestation: StagingConformanceExecutorAttestation,
+    ) -> StagingConformanceExecutorAttestation: ...
+
+
+class Ed25519StagingConformanceAttestationVerifier:
+    """使用部署配置的 Ed25519 公钥集合验证 attestation。"""
+
+    __slots__ = ("_trusted_public_keys",)
+
+    def __init__(self, *, trusted_public_keys: dict[str, bytes]) -> None:
+        if not trusted_public_keys:
+            raise ValueError("staging attestation verifier requires at least one trusted public key")
+        parsed: dict[str, Ed25519PublicKey] = {}
+        for key_id, public_key_bytes in trusted_public_keys.items():
+            if not key_id or not isinstance(public_key_bytes, bytes):
+                raise ValueError("staging attestation verifier received an invalid trusted public key")
+            try:
+                parsed[key_id] = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+            except ValueError as exc:
+                raise ValueError("staging attestation verifier received an invalid trusted public key") from exc
+        self._trusted_public_keys = parsed
+
+    def verify(
+        self,
+        attestation: StagingConformanceExecutorAttestation,
+    ) -> StagingConformanceExecutorAttestation:
+        if not isinstance(attestation, StagingConformanceExecutorAttestation):
+            raise TypeError("STAGING_LIVE target requires a signed executor attestation")
+        validated = StagingConformanceExecutorAttestation.model_validate(attestation.model_dump(mode="json"))
+        public_key = self._trusted_public_keys.get(validated.signing_key_id)
+        if public_key is None:
+            raise ValueError("staging attestation does not use a trusted signing key")
+        try:
+            public_key.verify(_decode_signature(validated.signature), _attestation_signing_payload(validated))
+        except (InvalidSignature, ValueError) as exc:
+            raise ValueError("staging conformance executor attestation signature mismatch") from exc
+        return validated
+
+
 class WmsConformanceReport(BaseModel):
     """可重算摘要的不可变 conformance 报告。"""
 
@@ -211,7 +279,8 @@ class WmsConformanceReport(BaseModel):
     profile_digest: Sha256Digest
     target: ConformanceTarget
     fixture_digest: Sha256Digest
-    endpoint_revision: EndpointRevision | None = None
+    endpoint_revision: Sha256Digest | None = None
+    staging_attestation: StagingConformanceExecutorAttestation | None = None
     generated_at: datetime
     cases: tuple[ConformanceCaseResult, ...]
     passed: bool
@@ -234,33 +303,14 @@ class WmsConformanceReport(BaseModel):
         return self
 
 
-class StagingConformanceExecutorAttestation(BaseModel):
-    """由部署 composition 生成的冻结执行身份，只携带不可逆 revision/endpoint 摘要。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_version: Literal["wms-staging-conformance-attestation.v1"] = "wms-staging-conformance-attestation.v1"
-    profile_identity: StableText = Field(max_length=300)
-    profile_revision: Sha256Digest
-    binding_identity: Literal["wms.inventory.query_inventory@v1"] = QUERY_INVENTORY_CONTRACT.identity
-    binding_revision: Sha256Digest
-    endpoint_identity_digest: Sha256Digest
-    endpoint_revision: EndpointRevision
-    attestation_digest: Sha256Digest
-
-    @model_validator(mode="after")
-    def verify_integrity(self) -> StagingConformanceExecutorAttestation:
-        expected = _digest(self.model_dump(mode="json", exclude={"attestation_digest"}))
-        if not hmac.compare_digest(self.attestation_digest, expected):
-            raise ValueError("staging conformance executor attestation digest mismatch")
-        return self
-
-
 class StagingQueryConformanceExecutor(Protocol):
     """受控 staging composition 暴露的具名 executor 合同。"""
 
     @property
     def attestation(self) -> StagingConformanceExecutorAttestation: ...
+
+    @property
+    def composition_identity_digest(self) -> str: ...
 
     async def execute(self, case: ConformanceCaseExpectation) -> ConformanceObservation: ...
 
@@ -272,14 +322,45 @@ def build_wms_conformance_report(
     target: ConformanceTarget,
     profile: WmsProviderProfile,
     fixture_digest: str,
-    endpoint_revision: str | None,
     generated_at: datetime,
 ) -> WmsConformanceReport:
-    """纯比较固定题库与脱敏观察；自身没有 endpoint/credential/I/O 能力。"""
+    """构建 sandbox/CI/replay 报告；staging 报告只能由验签后的 live runner 生成。"""
+
+    if target is ConformanceTarget.STAGING_LIVE:
+        raise ValueError("STAGING_LIVE report must be built by the attested live runner")
+    return _build_wms_conformance_report(
+        cases=cases,
+        observations=observations,
+        target=target,
+        profile=profile,
+        fixture_digest=fixture_digest,
+        endpoint_revision=None,
+        staging_attestation=None,
+        generated_at=generated_at,
+    )
+
+
+def _build_wms_conformance_report(
+    *,
+    cases: tuple[ConformanceCaseExpectation, ...],
+    observations: tuple[ConformanceObservation, ...],
+    target: ConformanceTarget,
+    profile: WmsProviderProfile,
+    fixture_digest: str,
+    endpoint_revision: str | None,
+    staging_attestation: StagingConformanceExecutorAttestation | None,
+    generated_at: datetime,
+) -> WmsConformanceReport:
+    """纯比较固定题库与脱敏观察；调用方不能自行提供 live revision。"""
 
     if cases != QUERY_INVENTORY_CONFORMANCE_CASES:
         raise ValueError("WMS QUERY conformance core question bank cannot be overridden")
-    _validate_execution_environment(target=target, profile=profile, endpoint_revision=endpoint_revision)
+    canonical_profile = _validate_execution_environment(target=target, profile=profile)
+    if target is ConformanceTarget.STAGING_LIVE:
+        if staging_attestation is None or endpoint_revision != derive_staging_endpoint_revision(staging_attestation):
+            raise ValueError("STAGING_LIVE report requires a verified attestation-derived endpoint revision")
+    elif endpoint_revision is not None or staging_attestation is not None:
+        raise ValueError("non-staging conformance cannot carry staging attestation or endpoint revision")
     expected_ids = tuple(case.case_id for case in cases)
     observed_by_id = {observation.case_id: observation for observation in observations}
     if len(observed_by_id) != len(observations) or set(observed_by_id) != set(expected_ids):
@@ -290,11 +371,12 @@ def build_wms_conformance_report(
         "schema_version": "wms-conformance-report.v1",
         "suite_version": WMS_PROVIDER_CONFORMANCE_SUITE_VERSION,
         "suite_digest": QUERY_INVENTORY_CONFORMANCE_SUITE_DIGEST,
-        "profile_identity": profile.identity.identity,
-        "profile_digest": _profile_digest(profile),
+        "profile_identity": canonical_profile.identity.identity,
+        "profile_digest": _profile_digest(canonical_profile),
         "target": target.value,
         "fixture_digest": fixture_digest,
         "endpoint_revision": endpoint_revision,
+        "staging_attestation": staging_attestation.model_dump(mode="json") if staging_attestation else None,
         "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
         "cases": [result.model_dump(mode="json") for result in results],
         "passed": all(result.passed for result in results),
@@ -302,7 +384,11 @@ def build_wms_conformance_report(
     return WmsConformanceReport.model_validate({**payload, "report_digest": _digest(payload)})
 
 
-def verify_wms_conformance_report(payload: dict[str, object]) -> WmsConformanceReport:
+def verify_wms_conformance_report(
+    payload: dict[str, object],
+    *,
+    staging_attestation_verifier: Ed25519StagingConformanceAttestationVerifier | None = None,
+) -> WmsConformanceReport:
     """从持久化 JSON 重建，并对固定题库、profile 环境和每题判定重新验算。"""
 
     report = WmsConformanceReport.model_validate(payload)
@@ -316,11 +402,18 @@ def verify_wms_conformance_report(payload: dict[str, object]) -> WmsConformanceR
     profile = WMS_PROVIDER_PROFILES.get(report.profile_identity)
     if profile is None or not hmac.compare_digest(report.profile_digest, _profile_digest(profile)):
         raise ValueError("conformance report profile identity or digest mismatch")
-    _validate_execution_environment(
-        target=report.target,
-        profile=profile,
-        endpoint_revision=report.endpoint_revision,
-    )
+    canonical_profile = _validate_execution_environment(target=report.target, profile=profile)
+    if report.target is ConformanceTarget.STAGING_LIVE:
+        if type(staging_attestation_verifier) is not Ed25519StagingConformanceAttestationVerifier:
+            raise TypeError("STAGING_LIVE report requires the deployment Ed25519 public-key verifier")
+        if report.staging_attestation is None:
+            raise ValueError("STAGING_LIVE report verification requires a trusted attestation verifier")
+        verified_attestation = staging_attestation_verifier.verify(report.staging_attestation)
+        _validate_attestation_claims(profile=canonical_profile, attestation=verified_attestation)
+        if report.endpoint_revision != derive_staging_endpoint_revision(verified_attestation):
+            raise ValueError("conformance report endpoint revision is not derived from its trusted attestation")
+    elif report.endpoint_revision is not None or report.staging_attestation is not None:
+        raise ValueError("non-staging conformance report cannot carry staging identity")
 
     for expected, result in zip(QUERY_INVENTORY_CONFORMANCE_CASES, report.cases, strict=True):
         observed = ConformanceObservation(
@@ -337,66 +430,94 @@ def verify_wms_conformance_report(payload: dict[str, object]) -> WmsConformanceR
     return report
 
 
-def build_staging_conformance_executor_attestation(
+def issue_staging_conformance_executor_attestation(
     *,
     profile: WmsProviderProfile,
-    endpoint_identity_digest: str,
-    endpoint_revision: str,
+    endpoint_identity: str,
+    internal_revision: str,
+    composition_identity: str,
+    signer: StagingConformanceAttestationSigner,
 ) -> StagingConformanceExecutorAttestation:
-    """将已验证 staging profile/binding 与部署 endpoint 摘要冻结为 executor 身份。"""
+    """由部署受控 signer 签发 canonical staging composition 声明。"""
 
-    _validate_execution_environment(
-        target=ConformanceTarget.STAGING_LIVE,
-        profile=profile,
-        endpoint_revision=endpoint_revision,
-    )
-    if not re.fullmatch(r"[0-9a-f]{64}", endpoint_identity_digest):
-        raise ValueError("staging conformance executor requires an opaque endpoint identity digest")
+    canonical_profile = _validate_execution_environment(target=ConformanceTarget.STAGING_LIVE, profile=profile)
+    for name, value in (
+        ("endpoint identity", endpoint_identity),
+        ("internal revision", internal_revision),
+        ("composition identity", composition_identity),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"staging conformance attestation requires a non-empty {name}")
+    key_id = getattr(signer, "key_id", None)
+    sign = getattr(signer, "sign", None)
+    if not isinstance(key_id, str) or not callable(sign):
+        raise TypeError("staging conformance attestation requires a deployment-controlled signer")
     payload = {
-        "schema_version": "wms-staging-conformance-attestation.v1",
-        "profile_identity": profile.identity.identity,
-        "profile_revision": _profile_digest(profile),
+        "schema_version": "wms-staging-conformance-attestation.v2",
+        "signing_key_id": key_id,
+        "profile_identity": canonical_profile.identity.identity,
+        "profile_revision": _profile_digest(canonical_profile),
         "binding_identity": QUERY_INVENTORY_CONTRACT.identity,
-        "binding_revision": _query_binding_revision(profile),
-        "endpoint_identity_digest": endpoint_identity_digest,
-        "endpoint_revision": endpoint_revision,
+        "binding_revision": _query_binding_revision(canonical_profile),
+        "endpoint_identity_digest": _digest(endpoint_identity.strip()),
+        "internal_revision_digest": _digest(internal_revision.strip()),
+        "composition_identity_digest": _digest(composition_identity.strip()),
     }
-    return StagingConformanceExecutorAttestation.model_validate({**payload, "attestation_digest": _digest(payload)})
+    signature = sign(_canonical_json_bytes(payload))
+    if not isinstance(signature, bytes) or len(signature) != 64:
+        raise ValueError("staging conformance signer must return an Ed25519 signature")
+    return StagingConformanceExecutorAttestation.model_validate(
+        {**payload, "signature": urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")}
+    )
+
+
+def derive_staging_endpoint_revision(attestation: StagingConformanceExecutorAttestation) -> str:
+    """从签名声明中的 endpoint identity 与内部 revision 派生报告 revision。"""
+
+    validated = StagingConformanceExecutorAttestation.model_validate(attestation.model_dump(mode="json"))
+    return _digest(
+        {
+            "binding_revision": validated.binding_revision,
+            "endpoint_identity_digest": validated.endpoint_identity_digest,
+            "internal_revision_digest": validated.internal_revision_digest,
+            "profile_revision": validated.profile_revision,
+        }
+    )
 
 
 async def run_query_inventory_staging_live_conformance(
     *,
     profile: WmsProviderProfile,
     executor: StagingQueryConformanceExecutor,
+    attestation_verifier: Ed25519StagingConformanceAttestationVerifier,
     fixture_digest: str,
-    endpoint_identity_digest: str,
-    endpoint_revision: str,
     generated_at: datetime,
 ) -> WmsConformanceReport:
-    """显式 staging 入口；验证具名 executor attestation 后才执行固定题库。"""
+    """显式 staging 入口；完整复验 canonical profile 与签名 composition 后才执行。"""
 
-    expected_attestation = build_staging_conformance_executor_attestation(
-        profile=profile,
-        endpoint_identity_digest=endpoint_identity_digest,
-        endpoint_revision=endpoint_revision,
-    )
+    canonical_profile = _validate_execution_environment(target=ConformanceTarget.STAGING_LIVE, profile=profile)
     supplied_attestation = getattr(executor, "attestation", None)
     if not isinstance(supplied_attestation, StagingConformanceExecutorAttestation):
         raise TypeError("STAGING_LIVE target requires an attested executor")
-    validated_attestation = StagingConformanceExecutorAttestation.model_validate(
-        supplied_attestation.model_dump(mode="json")
-    )
-    if validated_attestation != expected_attestation:
-        raise ValueError("staging conformance executor attestation mismatch")
+    composition_identity_digest = getattr(executor, "composition_identity_digest", None)
+    if not isinstance(composition_identity_digest, str):
+        raise TypeError("STAGING_LIVE target requires an executor from a controlled composition")
+    if type(attestation_verifier) is not Ed25519StagingConformanceAttestationVerifier:
+        raise TypeError("STAGING_LIVE target requires the deployment Ed25519 public-key verifier")
+    validated_attestation = attestation_verifier.verify(supplied_attestation)
+    _validate_attestation_claims(profile=canonical_profile, attestation=validated_attestation)
+    if not hmac.compare_digest(composition_identity_digest, validated_attestation.composition_identity_digest):
+        raise ValueError("staging conformance executor does not match the signed controlled composition")
 
     observations = tuple([await executor.execute(case) for case in QUERY_INVENTORY_CONFORMANCE_CASES])
-    return build_wms_conformance_report(
+    return _build_wms_conformance_report(
         cases=QUERY_INVENTORY_CONFORMANCE_CASES,
         observations=observations,
         target=ConformanceTarget.STAGING_LIVE,
-        profile=profile,
+        profile=canonical_profile,
         fixture_digest=fixture_digest,
-        endpoint_revision=endpoint_revision,
+        endpoint_revision=derive_staging_endpoint_revision(validated_attestation),
+        staging_attestation=validated_attestation,
         generated_at=generated_at,
     )
 
@@ -405,22 +526,45 @@ def _validate_execution_environment(
     *,
     target: ConformanceTarget,
     profile: WmsProviderProfile,
-    endpoint_revision: str | None,
-) -> None:
+) -> WmsProviderProfile:
+    expected_environment = "staging" if target is ConformanceTarget.STAGING_LIVE else "sandbox"
+    return _require_canonical_author_time_profile(profile=profile, expected_environment=expected_environment)
+
+
+def _require_canonical_author_time_profile(
+    *,
+    profile: WmsProviderProfile,
+    expected_environment: Literal["sandbox", "staging"],
+) -> WmsProviderProfile:
+    try:
+        validated = WmsProviderProfile.model_validate(profile.model_dump(mode="python"))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError(f"conformance requires the canonical author-time {expected_environment} profile") from exc
+    canonical = WMS_PROVIDER_PROFILES.get(validated.identity.identity)
+    if canonical is None or canonical.identity.environment != expected_environment or validated != canonical:
+        raise ValueError(f"conformance requires the canonical author-time {expected_environment} profile")
     query_bindings = tuple(
-        binding for binding in profile.bindings if binding.operation.identity == QUERY_INVENTORY_CONTRACT.identity
+        binding for binding in canonical.bindings if binding.operation.identity == QUERY_INVENTORY_CONTRACT.identity
     )
     if len(query_bindings) != 1 or query_bindings[0].operation != QUERY_INVENTORY_CONTRACT:
-        raise ValueError("conformance profile requires exactly one canonical query_inventory binding")
-    environment = profile.identity.environment
-    if target is ConformanceTarget.STAGING_LIVE:
-        if environment != "staging":
-            raise ValueError("STAGING_LIVE target requires an explicit staging environment")
-        if not isinstance(endpoint_revision, str) or not re.fullmatch(r"[0-9a-f]{64}", endpoint_revision):
-            raise ValueError("STAGING_LIVE target requires an explicit endpoint revision")
-        return
-    if environment != "sandbox" or endpoint_revision is not None:
-        raise ValueError("non-staging conformance requires a sandbox environment without endpoint revision")
+        raise ValueError("canonical author-time profile requires exactly one canonical query_inventory binding")
+    return canonical
+
+
+def _validate_attestation_claims(
+    *,
+    profile: WmsProviderProfile,
+    attestation: StagingConformanceExecutorAttestation,
+) -> None:
+    expected = {
+        "profile_identity": profile.identity.identity,
+        "profile_revision": _profile_digest(profile),
+        "binding_identity": QUERY_INVENTORY_CONTRACT.identity,
+        "binding_revision": _query_binding_revision(profile),
+    }
+    actual = {name: getattr(attestation, name) for name in expected}
+    if actual != expected:
+        raise ValueError("staging conformance attestation does not match the canonical profile or binding")
 
 
 def _evaluate_case(
@@ -478,8 +622,20 @@ def _query_binding_revision(profile: WmsProviderProfile) -> str:
 
 
 def _digest(payload: object) -> str:
+    return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+
+
+def _canonical_json_bytes(payload: object) -> bytes:
     canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return canonical.encode("utf-8")
+
+
+def _attestation_signing_payload(attestation: StagingConformanceExecutorAttestation) -> bytes:
+    return _canonical_json_bytes(attestation.model_dump(mode="json", exclude={"signature"}))
+
+
+def _decode_signature(signature: str) -> bytes:
+    return urlsafe_b64decode(signature + "==")
 
 
 QUERY_INVENTORY_CONFORMANCE_SUITE_DIGEST = _digest(
@@ -496,11 +652,15 @@ __all__ = [
     "ConformanceObservation",
     "ConformanceOutcomeKind",
     "ConformanceTarget",
+    "Ed25519StagingConformanceAttestationVerifier",
+    "StagingConformanceAttestationSigner",
+    "StagingConformanceAttestationVerifier",
     "StagingConformanceExecutorAttestation",
     "StagingQueryConformanceExecutor",
     "WmsConformanceReport",
-    "build_staging_conformance_executor_attestation",
     "build_wms_conformance_report",
+    "derive_staging_endpoint_revision",
+    "issue_staging_conformance_executor_attestation",
     "run_query_inventory_staging_live_conformance",
     "verify_wms_conformance_report",
 ]

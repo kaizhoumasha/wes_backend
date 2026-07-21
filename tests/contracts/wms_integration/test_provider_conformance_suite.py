@@ -14,11 +14,14 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
     ConformanceObservation,
     build_wms_conformance_report,
 )
-from tests.support import wms_provider_conformance as conformance_support
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
-    QueryInventoryReplayFactory,
+    RecordingConformanceTarget,
     build_query_inventory_conformance_targets,
+)
+from tests.support.wms_provider_replay import (
+    QUERY_INVENTORY_REPLAY_FIXTURE,
+    QueryInventoryReplayFactory,
 )
 
 SANDBOX_PROFILE = WMS_PROVIDER_PROFILES["wms.2026-07-06.material-flow.sandbox"]
@@ -39,8 +42,7 @@ async def test_every_target_runs_the_same_core_question_bank_without_override(ta
         observations=observations,
         target=target_factory.target,
         profile=SANDBOX_PROFILE,
-        fixture_digest=QUERY_INVENTORY_SCRIPT_FIXTURE.digest,
-        endpoint_revision=None,
+        fixture_digest=target_factory.asset_digest,
         generated_at=GENERATED_AT,
     )
 
@@ -69,7 +71,7 @@ async def test_replay_factory_is_pure_and_deterministic() -> None:
 
 @pytest.mark.asyncio
 async def test_replay_uses_an_independent_fixed_asset_instead_of_current_question_bank_expectations() -> None:
-    replay_fixture = getattr(conformance_support, "QUERY_INVENTORY_REPLAY_FIXTURE", None)
+    replay_fixture = QUERY_INVENTORY_REPLAY_FIXTURE
 
     assert replay_fixture is not None
     assert replay_fixture.digest != QUERY_INVENTORY_SCRIPT_FIXTURE.digest
@@ -94,7 +96,7 @@ async def test_replay_uses_an_independent_fixed_asset_instead_of_current_questio
 
 @pytest.mark.asyncio
 async def test_execution_recording_belongs_to_the_test_wrapper_not_the_replay_factory() -> None:
-    wrapper_type = getattr(conformance_support, "RecordingConformanceTarget", None)
+    wrapper_type = RecordingConformanceTarget
     factory = QueryInventoryReplayFactory()
 
     assert wrapper_type is not None

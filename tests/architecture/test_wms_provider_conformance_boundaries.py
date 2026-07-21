@@ -8,7 +8,7 @@ from pathlib import Path
 
 from src.app.runtime.system_capabilities.wms import provider_conformance
 from tests.mock import wms_scripted_provider
-from tests.support.wms_provider_conformance import QueryInventoryReplayFactory
+from tests.support.wms_provider_replay import QueryInventoryReplayFactory
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,8 +37,10 @@ def test_staging_entry_requires_an_attested_executor_instead_of_a_bare_callback(
 
     assert "executor" in parameters
     assert "execute" not in parameters
+    assert "endpoint_revision" not in parameters
     assert hasattr(provider_conformance, "StagingConformanceExecutorAttestation")
-    assert hasattr(provider_conformance, "build_staging_conformance_executor_attestation")
+    assert hasattr(provider_conformance, "issue_staging_conformance_executor_attestation")
+    assert hasattr(provider_conformance, "Ed25519StagingConformanceAttestationVerifier")
 
 
 def test_simulator_is_test_only_in_process_and_does_not_copy_production_lifecycle() -> None:

@@ -111,3 +111,48 @@ T5 已实现并通过本任务目标门禁。交付只覆盖 Provider quality：
 - WMS integration contracts：`105 passed`；T5 目标 contracts：`34 passed`；显式 mock simulator：`2 passed`；T5 architecture + topology：`11 passed`。
 - 默认收集审计：`3534 tests collected`；`ruff format --check`、`ruff check`、Bandit、import-linter、architecture guardrails、runtime contract guardrails 与 test topology 均由 quality profile 验证通过。
 - 本轮未运行或修改 generated operation index，不处理既有 generated index drift。
+
+## 最终复审修复追加
+
+### canonical staging composition 复验
+
+- live runner 在读取 attestation 和执行第一题前，重新通过 `WmsProviderProfile.model_validate` 触发完整组合校验，并按完整 identity 从 author-time `WMS_PROVIDER_PROFILES` registry 解析 canonical staging profile。
+- runner 要求重建后的完整 profile 与 registry 中 canonical profile 深度相等；不仅校验外层 environment，也覆盖全部 bindings、callbacks、operation contract 与 auth composition。
+- 使用 production profile 的 bindings 再通过 `model_copy` 伪造 staging 外层 identity、或在 staging profile 上删减 binding，都会在 attestation/execute 前 fail closed。
+
+### 部署签发与公钥可信根
+
+- `StagingConformanceExecutorAttestation` 升级为 Ed25519 签名声明，不再携带调用方可重算的自声明 checksum。
+- 部署受控 signer 签发的声明绑定 canonical profile revision、canonical query binding revision、endpoint identity digest、内部 revision digest、composition identity digest 与 signing key identity。
+- runner 与报告验证器只接受 concrete `Ed25519StagingConformanceAttestationVerifier`，由部署 composition 注入受信公钥；未知签发 key、自签 attestation、伪造 signature、调用方自定义“永远通过” verifier 和裸 callback 均在执行前 fail closed。
+- executor 必须同时提供签名 attestation 与匹配的 composition identity digest；runner 验签、复核 canonical claims 并比较 executor composition 后才调用 `execute`。
+- 报告只携带签名声明中的不可逆摘要、公钥签名和 key identity，不携带 endpoint 原文、内部 revision 原文、composition identity 原文、credential、header 或私钥材料。部署私钥的生成、存储和轮换仍由部署系统负责，本仓库不提供或保存私钥。
+
+### endpoint revision 内部派生
+
+- 公共报告构建器与 live runner 均移除 `endpoint_revision` 调用参数；合法 64 位十六进制字符串也不能作为 caller-owned revision 注入。
+- staging 报告 revision 只由已验签 attestation 中的 endpoint identity digest、内部 revision digest、profile revision 与 binding revision做 canonical hash 派生。
+- staging 报告包含签名 attestation；持久化报告复验必须再次使用部署 Ed25519 公钥 verifier，并重新派生、比较 endpoint revision。
+
+### replay 纯 test-support 与独立 asset pin
+
+- replay asset model、record/fixture loader、T3 outcome reconstruction、observation projection、无状态 factory 与 replay report verifier 已拆到独立 `tests/support/wms_provider_replay.py`。
+- architecture guard 解析该模块 AST，禁止导入 `httpx`、query transport、credential、adapter composition 或 runtime factory，并验证 replay 模型、loader、reconstruction、factory 均由该纯模块定义。
+- loader 同时校验固定 record ID/顺序、asset 自摘要，以及代码侧独立 pin `4584ece449cdcfa69f6a46ac4315b3f11a285f3f832a82bc04685c21ac22bf52`；即使篡改 asset 后同步重算内嵌 digest，也无法绕过代码 pin。
+- adapter/simulator 报告继续携带 scripted fixture digest；REPLAY factory 单独暴露实际 replay asset digest，REPLAY 报告携带该 digest，并由纯 replay verifier 对代码 pin 复验。
+
+### 最终复审 TDD 记录
+
+1. RED：可信签名、公钥 verifier、完整 canonical profile 复验、受控 composition 与 caller-owned revision 拒绝共 `6 failed`；GREEN 后新增伪 verifier 攻击用例，先确认 `DID NOT RAISE`，再收紧为 concrete Ed25519 verifier。
+2. RED：纯 replay 模块、loader pin/order 与 report provenance 共 `4 failed`；GREEN 后 replay 模块 ownership、AST import guard、重排 asset、篡改后重算内嵌 digest、实际 asset report digest 均通过。
+3. 既有 T5 tests 随公共 API 收紧先出现旧 attestation import collection error；迁移到签名 runner、移除 caller-owned revision 并改用 replay 实际 asset digest 后，T5 定向组合 `48 passed`。
+
+### 最终复审影响分析与验证
+
+- GitNexus 在目标 worktree 重建为 `43,007 nodes / 72,000 edges / 300 flows` 后完成既有符号 impact：`build_wms_conformance_report` 与 `verify_wms_conformance_report` 为 MEDIUM，其余 staging/replay 符号为 LOW；无 HIGH/CRITICAL、无 execution flow 受影响。
+- GitNexus 全工作区 detect 为 LOW、`0 affected process`；提交前另对仅暂存 T5 文件执行 staged detect。
+- WMS integration contracts：`112 passed`；T5 contracts/architecture 组合：`48 passed`；显式 mock simulator：`2 passed`；T5 architecture + topology：`13 passed`。
+- 默认收集审计：`3543 tests collected`；`ruff format --check .`、`ruff check .`、`git diff --check` 全部通过。
+- `./scripts/git-quality-gate.sh --profile quality` 通过：Bandit 0 issue、348 项 runtime contracts、11 项 process naming、import-linter、architecture guardrails 与 test topology 全部通过。
+- 扩大运行的 northbound/WMS architecture 组合为 `52 passed, 1 failed`；唯一失败是既有 inventory 清点仍记录旧测试路径，而当前发现路径已迁移到 `tests/support/rough_sorter_inventory_admission.py`。本轮未修改相关 inventory/generated 文件，按最终复审范围留给独立任务处理。
+- 本轮没有运行或修改 WMS generated operation index，也没有新增独立服务、容器、DSL、HTTP client 或第二 transport lifecycle。
