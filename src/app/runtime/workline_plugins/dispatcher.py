@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
@@ -34,19 +35,8 @@ class AttemptSystemCapabilityGateway(Protocol):
     ) -> GatewayQueryResult: ...
 
 
-class PluginHandler(Protocol):
-    """所有 route handler 的固定调用参数；禁止 kwargs service locator。"""
-
-    async def __call__(
-        self,
-        logical_input: BaseModel,
-        *,
-        state: BaseModel,
-        config: BaseModel,
-        facts: BaseModel,
-        context: PluginContext[BaseModel],
-        gateway: AttemptSystemCapabilityGateway,
-    ) -> PluginDecision[BaseModel]: ...
+# 静态 registry 存放不同插件的异构 handler；具体输入/状态模型在 dispatch 前已由 definition 校验。
+type PluginHandler = Callable[..., Awaitable[PluginDecision[Any]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,8 +160,8 @@ class WorklinePluginDispatcher:
             return _violation("PLUGIN_IDENTITY_UNKNOWN", "plugin identity is not present in generated index")
         if request.logical_route not in definition.routes:
             return _violation("PLUGIN_ROUTE_UNKNOWN", "logical route is not declared by plugin")
-        candidates = self._handler_registry.get((*identity, request.logical_route), ())
-        if not candidates:
+        candidates = self._handler_registry.get((*identity, request.logical_route))
+        if candidates is None or len(candidates) == 0:
             return _violation("PLUGIN_HANDLER_MISSING", "logical route has no static handler")
         if len(candidates) > 1:
             return _violation("PLUGIN_HANDLER_AMBIGUOUS", "logical route has multiple static handlers")

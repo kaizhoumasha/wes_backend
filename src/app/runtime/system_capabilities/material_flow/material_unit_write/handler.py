@@ -40,10 +40,19 @@ class MaterialUnitWriteHandler:
             )
         return Success(
             payload=MaterialUnitWriteOutput(
-                material_unit_id=int(material_unit.id),
+                material_unit_id=_persisted_material_unit_id(material_unit),
                 status=str(getattr(getattr(material_unit, "status", None), "value", material_unit.status)),
             )
         )
+
+
+def _persisted_material_unit_id(material_unit: object) -> int:
+    """成功 outcome 只能携带已持久化料盘身份。"""
+
+    material_unit_id = getattr(material_unit, "id", None)
+    if not isinstance(material_unit_id, int):
+        raise TypeError("material unit write returned an unpersisted material unit")
+    return material_unit_id
 
 
 __all__ = ["MaterialUnitWriteHandler"]

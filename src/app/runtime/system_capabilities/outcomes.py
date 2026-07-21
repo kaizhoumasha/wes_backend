@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from math import isfinite
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import (
     AfterValidator,
@@ -118,10 +118,10 @@ def parse_outcome[T](
     try:
         return TypeAdapter(outcome_type).validate_python(data)
     except ValidationError as exc:
-        validation_errors = [
+        validation_errors: list[dict[str, JsonValue]] = [
             {
                 "type": str(error["type"]),
-                "loc": list(error["loc"]),
+                "loc": [str(item) for item in error["loc"]],
                 "message": str(error["msg"]),
             }
             for error in exc.errors(include_url=False, include_context=False, include_input=False)
@@ -129,7 +129,7 @@ def parse_outcome[T](
         return ContractViolation(
             error_code="INVALID_OUTCOME_CONTRACT",
             message="outcome does not satisfy its declared contract",
-            details={"validation_errors": validation_errors},
+            details=cast("_FiniteJsonDetails", {"validation_errors": validation_errors}),
         )
 
 

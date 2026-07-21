@@ -58,8 +58,10 @@ class MaterialUnitRepository(BaseRepository[MaterialUnit]):
         material_unit = result.scalar_one_or_none()
         if material_unit is None:
             return None
+        if not isinstance(material_unit.id, int):
+            return None
         return MaterialUnitFactSnapshot(
-            material_unit_id=int(material_unit.id),
+            material_unit_id=material_unit.id,
             fact_version=material_unit_fact_version(material_unit),
         )
 

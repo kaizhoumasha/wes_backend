@@ -157,6 +157,14 @@ class SystemCapabilityIntentService:
         binding_id = getattr(session, "plugin_binding_id", None)
         binding_version = getattr(session, "plugin_binding_version", None)
         session_digest = getattr(session, "plugin_index_digest", None)
+        if (
+            not isinstance(plugin_key, str)
+            or not isinstance(plugin_contract_version, str)
+            or not isinstance(binding_id, int)
+            or not isinstance(binding_version, int)
+            or not isinstance(session_digest, str)
+        ):
+            raise PermissionError("system capability locked plugin pin is incomplete")
         expected_pin = (plugin_key, binding_id, binding_version, session_digest)
         work_item_pin = (
             getattr(work_item, "plugin_key", None),
@@ -202,8 +210,8 @@ class SystemCapabilityIntentService:
             "execution_work_item_id": execution_work_item_id,
             "plugin_key": str(plugin_key),
             "plugin_contract_version": str(plugin_contract_version),
-            "binding_id": int(binding_id),
-            "binding_version": int(binding_version),
+            "binding_id": binding_id,
+            "binding_version": binding_version,
         }
 
     @staticmethod

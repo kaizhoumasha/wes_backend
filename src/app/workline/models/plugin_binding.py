@@ -15,7 +15,7 @@ from src.database.schema_conf import SchemaType
 class WorklinePluginBinding(BaseMixin, table=True):
     """一次激活审批生成一行；历史行只允许追加停用证据。"""
 
-    __tablename__: ClassVar[Literal["workline_plugin_bindings"]] = "workline_plugin_bindings"
+    __tablename__: ClassVar[Literal["workline_plugin_bindings"]] = "workline_plugin_bindings"  # pyright: ignore[reportIncompatibleVariableOverride]  # SQLModel runtime metadata.
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         UniqueConstraint(

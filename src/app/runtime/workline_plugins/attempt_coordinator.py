@@ -89,13 +89,17 @@ def bound_attempt_write_set(
 ) -> AttemptWriteSet:
     """在 hash/timeline/ledger 之前执行统一 canonical UTF-8 边界校验。"""
 
+    state_value: dict[str, Any] = {}
+    recorded_anchor_value: Any | None = None
+    recorded_decision_value: dict[str, Any] | None = None
+    preserve_plugin_state = False
+    exceeded = True
     try:
         state_value = _json_value(write_set.next_state)
         if not isinstance(state_value, dict):
             raise TypeError("plugin next state must be an object")
         intent_values = tuple(_json_value(intent) for intent in write_set.intents)
         intent_sizes = tuple(_canonical_bytes(value) for value in intent_values)
-        recorded_decision_value = None
         recorded_state_value = None
         recorded_intent_values: tuple[Any, ...] = ()
         if write_set.recorded_decision is not None:

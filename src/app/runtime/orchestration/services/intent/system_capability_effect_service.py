@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -143,7 +144,9 @@ class SystemCapabilityEffectService:
         if isinstance(outcome, Success):
             flush = getattr(ctx["db"], "flush", None)
             if callable(flush):
-                await flush()
+                flush_result = flush()
+                if isawaitable(flush_result):
+                    await flush_result
         evidence = self._build_evidence(intent=intent, prepared=prepared, outcome=outcome)
         await self._intent_service.record_outcome(ctx, prepared=prepared, evidence=evidence)
         return SystemCapabilityEffectResult(
