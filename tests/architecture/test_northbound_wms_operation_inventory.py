@@ -134,6 +134,10 @@ def _contains_versioned_identity(text: str, identity: str) -> bool:
     return any(_node_contains_version_pair(node, capability_key, contract_version) for node in ast.walk(tree))
 
 
+def _is_package_or_submodule(imported_module: str, package_module: str) -> bool:
+    return imported_module == package_module or imported_module.startswith(f"{package_module}.")
+
+
 def _contains_legacy_identity(text: str, identity: str, relative_path: str) -> bool:
     if identity == "wms.rough_sorter_inventory_admission@v1":
         if _contains_versioned_identity(text, identity):
@@ -146,8 +150,11 @@ def _contains_legacy_identity(text: str, identity: str, relative_path: str) -> b
         except SyntaxError:
             return False
         return any(
-            (isinstance(node, ast.ImportFrom) and (node.module or "").startswith(module_path))
-            or (isinstance(node, ast.Import) and any(imported.name.startswith(module_path) for imported in node.names))
+            (isinstance(node, ast.ImportFrom) and _is_package_or_submodule(node.module or "", module_path))
+            or (
+                isinstance(node, ast.Import)
+                and any(_is_package_or_submodule(imported.name, module_path) for imported in node.names)
+            )
             for node in ast.walk(tree)
         )
     return _contains_exact_identity(text, identity)
@@ -277,6 +284,101 @@ def _function_reaches(graph: dict[str, set[str]], source: str, target: str) -> b
     return False
 
 
+def _method_parameters(method: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    parameters = [*method.args.posonlyargs, *method.args.args, *method.args.kwonlyargs]
+    return [parameter.arg for parameter in parameters if parameter.arg not in {"self", "cls"}]
+
+
+def _expression_uses_name(node: ast.AST, names: set[str]) -> bool:
+    return any(isinstance(child, ast.Name) and child.id in names for child in ast.walk(node))
+
+
+def _tainted_local_names(method: ast.FunctionDef | ast.AsyncFunctionDef, initial_names: set[str]) -> set[str]:
+    tainted = set(initial_names)
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(method):
+            if isinstance(node, ast.Assign) and _expression_uses_name(node.value, tainted):
+                targets = [target for target in node.targets if isinstance(target, ast.Name)]
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and node.value is not None
+                and isinstance(node.target, ast.Name)
+                and _expression_uses_name(node.value, tainted)
+            ):
+                targets = [node.target]
+            else:
+                continue
+            for target in targets:
+                if target.id not in tainted:
+                    tainted.add(target.id)
+                    changed = True
+    return tainted
+
+
+def _resolved_endpoint_names(execute_method: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    resolved: set[str] = set()
+    for node in ast.walk(execute_method):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        if not isinstance(node.value, ast.Call) or _call_path(node.value).rsplit(".", 1)[-1] != "resolve":
+            continue
+        if not any(isinstance(argument, ast.Name) and argument.id == "operation_name" for argument in node.value.args):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        resolved.update(target.id for target in targets if isinstance(target, ast.Name))
+    return resolved
+
+
+def _class_has_execute_endpoint_metric_flow(methods: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> bool:
+    methods_by_name = {method.name: method for method in methods}
+    execute_method = methods_by_name.get("_execute")
+    if execute_method is None:
+        return False
+    endpoint_names = _resolved_endpoint_names(execute_method)
+    if not endpoint_names:
+        return False
+
+    incoming_taint = {"_execute": endpoint_names}
+    pending = ["_execute"]
+    while pending:
+        method_name = pending.pop()
+        method = methods_by_name[method_name]
+        local_taint = _tainted_local_names(method, incoming_taint[method_name])
+        for call in (node for node in ast.walk(method) if isinstance(node, ast.Call)):
+            if _is_metric_call(call) and any(
+                isinstance(label_node, ast.Attribute)
+                and label_node.attr == "operation_name"
+                and isinstance(label_node.value, ast.Name)
+                and label_node.value.id in local_taint
+                for label_node in _metric_label_nodes(call)
+            ):
+                return True
+
+            called_method_name = _call_path(call).rsplit(".", 1)[-1]
+            called_method = methods_by_name.get(called_method_name)
+            if called_method is None:
+                continue
+            parameters = _method_parameters(called_method)
+            passed_taint = {
+                parameter
+                for parameter, argument in zip(parameters, call.args, strict=False)
+                if _expression_uses_name(argument, local_taint)
+            }
+            passed_taint.update(
+                keyword.arg
+                for keyword in call.keywords
+                if keyword.arg in parameters and _expression_uses_name(keyword.value, local_taint)
+            )
+            previous_taint = incoming_taint.setdefault(called_method_name, set())
+            new_taint = passed_taint - previous_taint
+            if new_taint:
+                previous_taint.update(new_taint)
+                pending.append(called_method_name)
+    return False
+
+
 def _dynamic_metric_operations(tree: ast.AST) -> set[str]:
     discovered: set[str] = set()
     for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
@@ -293,6 +395,8 @@ def _dynamic_metric_operations(tree: ast.AST) -> set[str]:
             )
         }
         if not any(_function_reaches(graph, "_execute", method_name) for method_name in metric_methods):
+            continue
+        if not _class_has_execute_endpoint_metric_flow(methods):
             continue
         discovered.update(
             operation_name
@@ -422,6 +526,38 @@ def test_reference_scanner_requires_full_versioned_identity_and_syntax_boundarie
         )
 
 
+def test_reference_scanner_distinguishes_capability_package_from_preview_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """版本化 capability 只归属精确 package 及其子模块，不归属同前缀兄弟模块。"""
+    source_root = tmp_path / "src" / "app" / "runtime" / "system_capabilities"
+    source_root.mkdir(parents=True)
+    (source_root / "real_consumer.py").write_text(
+        "from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission import DEFINITION\n"
+        "import src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.handler\n",
+        encoding="utf-8",
+    )
+    (source_root / "preview_consumer.py").write_text(
+        "from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission_preview import PREVIEW\n"
+        "import src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission_preview.handler\n",
+        encoding="utf-8",
+    )
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(module, "SOURCE_PATHS", ("src/app/runtime/system_capabilities",))
+    monkeypatch.setattr(module, "TEST_PATHS", ())
+    monkeypatch.setattr(module, "DOCUMENTATION_PATHS", ())
+
+    assert _discover_references() == {
+        (
+            "caller",
+            "src/app/runtime/system_capabilities/real_consumer.py",
+            "wms.rough_sorter_inventory_admission@v1",
+            "wms.inventory.query_inventory@v1",
+        )
+    }
+
+
 def test_metric_scanner_recognizes_all_supported_operation_identity_forms(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -508,6 +644,33 @@ class UnrelatedOperation:
             "wms.inventory.query_inventory@v1",
         ),
     }
+
+
+def test_metric_scanner_rejects_reachable_operation_name_from_unrelated_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """无关对象的 operation_name 不得归属给 _execute operation。"""
+    metric_root = tmp_path / "src" / "app" / "runtime" / "orchestration"
+    metric_root.mkdir(parents=True)
+    (metric_root / "unrelated_dynamic_metric.py").write_text(
+        """class DynamicMetric:
+    async def query_inventory(self, request):
+        return await self._execute("query_inventory", request)
+
+    async def _execute(self, operation_name, request):
+        endpoint = self.resolve(operation_name)
+        self._emit_failure(endpoint, self.unrelated_context)
+
+    def _emit_failure(self, endpoint, unrelated_context):
+        emit_metric("wms.failure", {"operation_kind": unrelated_context.operation_name})
+""",
+        encoding="utf-8",
+    )
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(module, "METRIC_OWNER_PATHS", ("src/app/runtime/orchestration",))
+
+    assert _discover_metric_references() == set()
 
 
 def test_inventory_covers_every_discovered_legacy_reference() -> None:
