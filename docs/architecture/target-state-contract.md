@@ -147,7 +147,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | RCS 调度仍由 WMS 统一调度 | `WmsFulfillmentPort`——WES 生成搬运需求并提交 WMS；WMS 调 RCS，结果经 WMS 回传 |
 | PDA 仅对接 WMS | `WmsEventPort` / `WmsDocumentPort`——WES 不做 PDA API |
 | 自动化设备只通过 WES 接入 | `device` 域——WMS 不直连设备 |
-| WES 不同步基础数据 | `WmsMasterDataPort` / `WmsInventoryQueryPort`——按需查询，可短 TTL 缓存 |
+| WES 不同步基础数据 | `WmsMasterDataPort` / `InventoryQueryOperationPort`——按需查询；库存禁止跨请求缓存 |
 | WMS 是库存唯一真实源 | Authority Matrix——库存事务必须以 WMS 提交成功为准 |
 | 外部输入统一进入 callback | callback → `RuntimeInbox`——只校验、落原始日志、ACK、写 inbox，不直接改 session |
 
@@ -158,7 +158,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 - QueryPort（只读）/ EffectPort（出站副作用，必须先写 `RuntimeIntentLog`）/ InboundEventPort（只写 `RuntimeInbox`）三类注入边界严格分离
 
 **7 个目标 WMS port**（主计划 §5.1，字段留 Phase 1 `wms-integration-ports-spec.md`）：
-`WmsMasterDataPort` / `WmsDocumentPort` / `WmsInventoryQueryPort` / `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `WmsEventPort` / `WmsReconciliationQueryPort`。
+`WmsMasterDataPort` / `WmsDocumentPort` / `InventoryQueryOperationPort` / `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `WmsEventPort` / `WmsReconciliationQueryPort`。
 
 ## 7. 不做清单（来源主计划 §2.3）
 

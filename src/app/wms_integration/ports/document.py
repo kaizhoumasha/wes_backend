@@ -1,7 +1,7 @@
 """WmsDocumentPort — @deferred to 全量联调。
 
 本 Port 定义 WMS 单据查询能力合同。当前里程碑的粗分机/分拣机流程
-通过 WmsMasterDataPort + WmsInventoryQueryPort 满足物料校验需求，
+通过 WmsMasterDataPort + InventoryQueryOperationPort 满足物料校验需求，
 不需要独立的单据查询 Port。
 
 激活条件: WMS 全量集成或业务需求明确需要 GRN/工单查询。

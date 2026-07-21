@@ -115,11 +115,11 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | PDA 仅对接 WMS | §1.2 | `WmsEventPort` / `WmsDocumentPort` | WES 不做 PDA API；PDA 结果通过 WMS 事件或单据查询进入 |
 | 自动化设备只通过 WES 接入 | §1.2 | `device` 域 | WMS 不直连设备；设备 EVENT/COMMAND/RESULT 归 WES |
 | 标签打印按设备类型分流 | §1.2 | `device` 域 + `WmsDocumentPort` | 自动打印设备由 WES 下发；人工打印由 WMS 获取模板后回执 |
-| WES 不同步基础数据 | §1.4 / §2 | `WmsMasterDataPort` / `WmsInventoryQueryPort` | 物料、区域、地码、货架、料箱、GRN、库存均按需查询，可短 TTL 缓存 |
+| WES 不同步基础数据 | §1.4 / §2 | `WmsMasterDataPort` / typed inventory operation | 物料、区域、地码、货架、料箱、GRN、库存均按需查询；库存 QUERY 禁止跨请求缓存 |
 | WMS 是库存唯一真实源 | §1.4 / §10.1 | Authority Matrix | 库存事务必须以 WMS 提交成功为准，WES 只维护作业期投影 |
 | 外部输入统一进入 callback | §1.3 / §3 / §5 | `callback` → `RuntimeInbox` | WMS/RCS/ECS/device 回调 API 只校验、落原始日志、ACK、写 inbox，不直接改 session |
 | WMS 事件必须幂等 | §3.4 / §10.1 | `idempotency_keys` | `request_id` 映射为 `source_event_id` / `idempotency_key` |
-| WMS 调用超时与缓存策略 | §2.6 / §10.2 | `wms_integration` adapter | WMS 调用 10s 超时、指数退避、短 TTL 缓存、熔断告警 |
+| WMS 调用超时与资源预算 | §2.6 / §10.2 | `wms_integration` adapter | WMS 调用总 deadline、指数退避、wire/decoded/结构预算、熔断告警；inventory 禁止跨请求缓存 |
 
 **接口口径调整**：旧文档中的 `WorklineInbox` 对应目标态 `RuntimeInbox`；旧 `WorklineOrchestrator` 对应目标态 `runtime/orchestration`；旧 plugin 决策对应目标态 runtime capability + EffectPort。
 
@@ -140,7 +140,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 类型 | 允许能力 | 约束 |
 | --- | --- | --- |
-| QueryPort | `WmsMasterDataPort` / `WmsDocumentPort` / `WmsInventoryQueryPort` / `WmsReconciliationQueryPort` 只读查询 | 用于作业决策前的外部事实查询、WMS 权威事实拉取和 drift 检测；响应必须带 `scope/authority/source/evidence_at/source_version`；允许短 TTL 缓存，不产生外部状态变更，不写 `RuntimeIntentLog` |
+| QueryPort | `WmsMasterDataPort` / `WmsDocumentPort` / typed inventory operation / `WmsReconciliationQueryPort` 只读查询 | 用于作业决策前的外部事实查询、WMS 权威事实拉取和 drift 检测；响应必须带 `scope/authority/source/evidence_at/source_version`；库存 QUERY 禁止跨请求缓存，不产生外部状态变更，不写 `RuntimeIntentLog` |
 | EffectPort | `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `DeviceCommandPort` | 所有会改变外部状态、触发履约或确认事件的出站动作必须先写 `RuntimeIntentLog`，再经 EffectPort dispatch；必须有幂等、evidence、timeline 和 callback 闭环。RCS/AGV/CTU 直连若被 §10.5 触发，也只能隐藏在 fulfillment provider 实现内，不新增 capability 可见端口 |
 | InboundEventPort | `WmsEventPort` / `DeviceEventPort` | 只负责外部 callback/event 的 normalizer、原始归档和 typed evidence 生成；必须写 `RuntimeInbox`，不得经 `RuntimeIntentLog` dispatch；不得注入 `RuntimeCapabilityContext` 给业务 capability 调用 |
 
@@ -181,7 +181,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
                                 │            wms_integration (ACL)               │
                                 │  ┌──────────────────────────────────────┐  │
                                 │  │  WmsMasterDataPort    WmsDocumentPort │  │
-                                │  │  WmsInventoryQueryPort WmsInventoryTxPort │
+                                │  │  InventoryQueryOperation WmsInventoryTxPort │
                                 │  │  WmsFulfillmentPort  WmsReconciliationQueryPort │
                                 │  └──────────────────────────────────────┘  │
                                 │  InboundEventPort: WmsEventPort -> Inbox     │
@@ -284,4 +284,3 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 > **状态所有权图**：详见 §13.8 域间引用关系 ASCII 图（单一真源）；§3.3 已给出 runtime/orchestration 内部聚合视图。
 
 ---
-

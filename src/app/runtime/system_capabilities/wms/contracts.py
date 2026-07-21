@@ -63,12 +63,32 @@ class WmsTransportBudget(BaseModel):
     max_wire_bytes: int = Field(gt=0)
     max_decoded_bytes: int = Field(gt=0)
     max_rows: int | None = Field(default=None, gt=0)
+    max_chunk_bytes: int = Field(default=262_144, gt=0)
+    max_compression_ratio: float = Field(default=20.0, gt=1, allow_inf_nan=False)
+    allowed_content_encodings: tuple[Literal["identity", "gzip"], ...] = ("identity", "gzip")
+    max_json_depth: int = Field(default=12, ge=1, le=64)
+    max_field_length: int = Field(default=16_384, ge=1)
 
     @model_validator(mode="after")
     def decoded_budget_covers_wire_budget(self) -> WmsTransportBudget:
         if self.max_decoded_bytes < self.max_wire_bytes:
             raise ValueError("max_decoded_bytes must be greater than or equal to max_wire_bytes")
+        if self.max_chunk_bytes > self.max_wire_bytes:
+            raise ValueError("max_chunk_bytes must be less than or equal to max_wire_bytes")
+        if not self.allowed_content_encodings:
+            raise ValueError("allowed_content_encodings must not be empty")
         return self
+
+
+class WmsPaginationContract(BaseModel):
+    """Provider cursor pagination 的通用字段合同。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_cursor_field: StableText = Field(max_length=80)
+    response_cursor_field: StableText = Field(max_length=80)
+    response_items_field: StableText = Field(max_length=80)
+    max_pages: int = Field(ge=1, le=10_000)
 
 
 class WmsRetryPolicy(BaseModel):
@@ -103,6 +123,7 @@ class WmsOperationContract(BaseModel):
     budget: WmsTransportBudget
     retry_policy: WmsRetryPolicy
     outbound_auth_scheme: OutboundAuthScheme
+    pagination: WmsPaginationContract | None = None
 
     @model_validator(mode="after")
     def enforce_contract_ownership(self) -> WmsOperationContract:
@@ -111,8 +132,12 @@ class WmsOperationContract(BaseModel):
                 raise ValueError("operation request/result model must be owned by wms_integration.ports")
         if self.mode is WmsOperationMode.QUERY and self.budget.max_rows is None:
             raise ValueError("QUERY operation requires max_rows budget")
+        if self.mode is WmsOperationMode.QUERY and self.pagination is None:
+            raise ValueError("QUERY operation requires pagination contract")
         if self.mode is WmsOperationMode.EFFECT and self.budget.max_rows is not None:
             raise ValueError("EFFECT operation must not declare query row budget")
+        if self.mode is WmsOperationMode.EFFECT and self.pagination is not None:
+            raise ValueError("EFFECT operation must not declare pagination contract")
         if self.outbound_auth_scheme is OutboundAuthScheme.NONE:
             raise ValueError("production-capable operation contract cannot require outbound auth NONE")
         return self
@@ -214,6 +239,7 @@ __all__ = [
     "WmsHttpMethod",
     "WmsOperationContract",
     "WmsOperationMode",
+    "WmsPaginationContract",
     "WmsProviderOperationBinding",
     "WmsProviderProfile",
     "WmsRetryPolicy",

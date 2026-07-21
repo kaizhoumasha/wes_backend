@@ -8,13 +8,13 @@
 
 ### 5.1 wms_integration 能力面 Port 详细
 
-`wms_integration` 是 WMS 能力面 port 的统一入口。可复用现有 `wms_integration` 中已验证的 ACL 能力，但允许破坏性整理包结构、import 路径和 API。现有 `WmsInventoryPort` 必须破坏性拆分为只读 `WmsInventoryQueryPort` 和事务型 `WmsInventoryTransactionPort`。
+`wms_integration` 是 WMS 能力面 port 的统一入口。可复用现有 `wms_integration` 中已验证的 ACL 能力，但允许破坏性整理包结构、import 路径和 API。库存查询使用 operation-scoped typed Port，库存副作用使用 `WmsInventoryTransactionPort`。
 
 | Port | 职责 | 现状 | 关键方法 |
 | --- | --- | --- | --- |
 | `WmsMasterDataPort` | 查询/校验货架、料箱、库位、物料、区域、地码等元数据 | **新增** | `get_material` / `list_materials` / `get_zone` / `list_locations` / `get_rack` / `get_bin` / `validate_rack_bin` |
 | `WmsDocumentPort` | 只读查询 GRN、入库单、出库单、批次单、波次、业务任务快照 | **新增** | `get_grn` / `list_grn_packages` / `get_inbound_order` / `get_outbound_order` / `get_batch_order` / `get_task_snapshot` |
-| `WmsInventoryQueryPort` | 查询库存、箱位、货架占用、可用容器等外部事实 | **由现有 `WmsInventoryPort` 只读能力迁出** | `query_inventory` / `query_empty_bins` |
+| `InventoryQueryOperationPort` | 查询库存 authority snapshot | operation-scoped typed QUERY | `execute` |
 | `WmsInventoryTransactionPort` | 库存预留、释放、转移确认等会改变 WMS 事务状态的能力 | **由现有 `WmsInventoryPort` mutation 能力迁出** | `reserve_inventory` / `release_reservation` / `confirm_transfer` |
 | `WmsFulfillmentPort` | 请求外部系统执行搬运、补给、移出、换面、投箱、取箱和满箱交换 | **新增** | `request_rack_supply` / `request_rack_transport` / `change_rack_face` / `full_box_exchange` / `notify_pkg_binding` / `move_bin_to_conveyor_entry` / `move_bin_from_conveyor_exit` |
 | `WmsEventPort` | 接收 WMS 状态变化、RCS 结果、任务结果、异常通知 | **新增**（部分实现于 callback_normalizer） | `WMS_GRN_RECEIVED` / `WMS_PALLET_ARRIVED` / `WMS_RACK_ARRIVED` / `WMS_TRANSPORT_COMPLETED` / `WMS_EXCHANGE_COMPLETED` |
@@ -32,7 +32,7 @@
 | `GET /api/wms/zones` / `GET /api/wms/locations?zone=...` | `WmsMasterDataPort` | 区域/地码用于设备归属、资源边界和履约目标校验 |
 | `GET /api/wms/racks/{id}` / `GET /api/wms/bins/{id}` / `GET /api/wms/racks?type=...` | `WmsMasterDataPort` | 货架/料箱主数据与状态按需引用，不复制为 WES 主数据 |
 | `GET /api/wms/grn/{id}` / `GET /api/wms/grn/{id}/packages` | `WmsDocumentPort` | GRN 与料盘归属用于作业上下文和 PKG 校验 |
-| `GET /api/wms/inventory/query` | `WmsInventoryQueryPort` | 库存查询实时透传 WMS；WES 只可短 TTL 缓存 |
+| inventory QUERY runtime | `InventoryQueryOperationPort` | 每次 execution 查询一次 WMS；禁止跨请求缓存 |
 | `POST /api/wes/rack-supply-request` / `POST /api/wes/transport-request` | `WmsFulfillmentPort` | WES 生成搬运需求；WMS 统一调度 RCS |
 | `POST /api/wms/kitting/pkg-binding` | `WmsFulfillmentPort` | WES 作业结果通知 WMS；属于出站 effect，必须走 `RuntimeIntentLog` + EffectPort，不允许进入只读 `WmsDocumentPort` |
 | `POST /api/wms/inventory/reserve` / `DELETE /api/wms/inventory/reserve/{id}` / `POST /api/wms/inventory/transfer` | `WmsInventoryTransactionPort` | 库存预留、释放、转移确认必须以 WMS 事务结果为准；必须走 `RuntimeIntentLog` + EffectPort，不允许作为查询能力直调 |
@@ -298,4 +298,3 @@ idempotency_keys:
 - 域内 Model 由 ModelFactory 派生 Schema
 
 ---
-

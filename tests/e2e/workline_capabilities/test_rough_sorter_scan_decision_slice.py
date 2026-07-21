@@ -27,8 +27,12 @@ from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.sys.models import SystemOutbox
-from src.app.wms_integration.adapters.inventory_query_port_adapter import WmsInventoryQueryPortAdapter
-from src.app.wms_integration.ports.inventory_query import WmsInventoryItem
+from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
+from src.app.wms_integration.ports.query_inventory_operation import (
+    InventoryAuthorityItem,
+    InventoryQueryOperationResult,
+)
+from src.app.wms_integration.ports.query_outcome import QueryBusinessReject, QuerySuccess, QueryTechnicalFailure
 from src.utils.timezone import timezone
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
@@ -240,24 +244,29 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
     provider_calls = 0
     provider_mode = case.get("trigger", {}).get("decision_discriminator", {}).get("wms_admission")
 
-    async def query_inventory(_adapter, material_code: str, *, warehouse_code: str | None = None):  # type: ignore[no-untyped-def]
+    async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
         nonlocal provider_calls
         provider_calls += 1
         if provider_mode == "TIMEOUT":
-            raise TimeoutError("fixture timeout")
+            return QueryTechnicalFailure("WMS_PROVIDER_TIMEOUT", "fixture timeout", True)
         if provider_mode == "REJECT":
-            return []
-        return [
-            WmsInventoryItem(
-                material_code=material_code,
-                warehouse_code=warehouse_code or "WH-IT",
-                storage_location_code="A-01",
-                quantity=10,
-                batch_no="LOT-IT-001",
+            return QueryBusinessReject("WMS_REJECTED", "fixture rejected")
+        return QuerySuccess(
+            InventoryQueryOperationResult(
+                items=(
+                    InventoryAuthorityItem(
+                        material_code=request.material_code,
+                        warehouse_code=request.warehouse_code or "WH-IT",
+                        storage_location_code="A-01",
+                        available_quantity=10,
+                        lot_no="LOT-IT-001",
+                    ),
+                ),
+                source_version="WMS-IT-1",
             )
-        ]
+        )
 
-    monkeypatch.setattr(WmsInventoryQueryPortAdapter, "query_inventory", query_inventory)
+    monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
 
     async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
         return None

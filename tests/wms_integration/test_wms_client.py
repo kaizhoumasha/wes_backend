@@ -12,8 +12,6 @@ from src.app.wms_integration.models import (
     ConfirmInboundResponse,
     ConfirmOutboundRequest,
     ConfirmOutboundResponse,
-    QueryInventoryRequest,
-    QueryInventoryResponse,
     ReleaseReservationRequest,
     ReleaseReservationResponse,
     ReserveInventoryRequest,
@@ -100,96 +98,6 @@ async def _get_breaker_state(
 
 
 @pytest.mark.asyncio
-async def test_wms_client_endpoint_config_uses_explicit_timeout_and_operation_paths(
-    db_engine,
-) -> None:
-    captured: list[dict[str, Any]] = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(
-            {
-                "method": request.method,
-                "path": request.url.path,
-                "query": dict(request.url.params),
-                "content": request.content,
-            }
-        )
-        return httpx.Response(
-            200,
-            json={
-                "items": [
-                    {
-                        "sku": "SKU-1",
-                        "warehouse_code": "WH-1",
-                        "available_qty": "5",
-                        "total_qty": "7",
-                        "reserved_qty": "2",
-                    }
-                ],
-                "request_id": "REQ-Q1",
-            },
-        )
-
-    service = _service(db_engine, httpx.MockTransport(handler))
-    response = await service.query_inventory(
-        QueryInventoryRequest(request_id="REQ-Q1", trace_id="TRACE-Q1", sku="SKU-1", warehouse_code="WH-1")
-    )
-
-    endpoint = _endpoint_config().resolve("query_inventory")
-    timeout = endpoint.timeout.to_httpx_timeout()
-    evidence = await _get_evidence(db_engine, "ev:query_inventory:REQ-Q1")
-
-    assert response.items[0].available_qty == 5
-    assert captured == [
-        {
-            "method": "GET",
-            "path": "/api/inventory/query",
-            "query": {
-                "request_id": "REQ-Q1",
-                "trace_id": "TRACE-Q1",
-                "material_id": "SKU-1",
-                "warehouse_code": "WH-1",
-            },
-            "content": b"",
-        }
-    ]
-    assert endpoint.http_method == "GET"
-    assert timeout.connect == 1.1
-    assert timeout.read == 2.2
-    assert timeout.write == 3.3
-    assert timeout.pool == 4.4
-    assert evidence is not None
-    assert evidence.evidence_key == "ev:query_inventory:REQ-Q1"
-    assert evidence.status == "SUCCEEDED"
-    assert evidence.http_status == 200
-    assert evidence.target_code == "WMS_INVENTORY"
-
-
-@pytest.mark.asyncio
-async def test_wms_typed_port_default_evidence_key_is_stable_call_key(
-    db_engine,
-) -> None:
-    async def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "items": [{"sku": "SKU-1", "available_qty": "5"}],
-                "request_id": "REQ-DEFAULT-KEY",
-            },
-        )
-
-    service = _service(db_engine, httpx.MockTransport(handler), use_default_evidence_key=True)
-
-    response = await service.query_inventory(QueryInventoryRequest(request_id="REQ-DEFAULT-KEY", sku="SKU-1"))
-    evidence = await _get_evidence(db_engine, "sync:query_inventory:REQ-DEFAULT-KEY")
-
-    assert response.items[0].available_qty == 5
-    assert evidence is not None
-    assert evidence.evidence_key == "sync:query_inventory:REQ-DEFAULT-KEY"
-    assert evidence.status == "SUCCEEDED"
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
         "method_name",
@@ -199,16 +107,6 @@ async def test_wms_typed_port_default_evidence_key_is_stable_call_key(
         "expected_path",
     ),
     [
-        (
-            "query_inventory",
-            QueryInventoryRequest(request_id="REQ-QUERY", sku="SKU-1"),
-            {
-                "request_id": "REQ-QUERY",
-                "items": [{"sku": "SKU-1", "available_qty": "1"}],
-            },
-            QueryInventoryResponse,
-            "/api/inventory/query",
-        ),
         (
             "reserve_inventory",
             ReserveInventoryRequest(request_id="REQ-RESERVE", reservation_key="RSV-1", sku="SKU-1", qty="1"),
@@ -239,7 +137,7 @@ async def test_wms_typed_port_default_evidence_key_is_stable_call_key(
         ),
     ],
 )
-async def test_wms_typed_ports_cover_all_five_operations(
+async def test_wms_typed_ports_cover_all_effect_operations(
     db_engine,
     method_name: str,
     port_request,
@@ -264,24 +162,15 @@ async def test_wms_typed_ports_cover_all_five_operations(
     response = await getattr(service, method_name)(port_request)
 
     evidence = await _get_evidence(db_engine, f"ev:{method_name}:{port_request.request_id}")
-    expected_method = {
-        "query_inventory": "GET",
-        "release_reservation": "DELETE",
-    }.get(method_name, "POST")
+    expected_method = {"release_reservation": "DELETE"}.get(method_name, "POST")
     assert isinstance(response, response_type)
     assert captured_requests[0]["method"] == expected_method
     assert captured_requests[0]["path"] == expected_path
-    if expected_method == "GET":
+    assert captured_requests[0]["query"] == {}
+    if expected_method == "DELETE":
         assert captured_requests[0]["content"] == b""
-        assert captured_requests[0]["query"]["request_id"] == port_request.request_id
-        assert captured_requests[0]["query"]["material_id"] == port_request.sku
-        assert "sku" not in captured_requests[0]["query"]
     else:
-        assert captured_requests[0]["query"] == {}
-        if expected_method == "DELETE":
-            assert captured_requests[0]["content"] == b""
-        else:
-            assert json.loads(captured_requests[0]["content"].decode())["request_id"] == port_request.request_id
+        assert json.loads(captured_requests[0]["content"].decode())["request_id"] == port_request.request_id
     assert evidence is not None
     assert evidence.status == "SUCCEEDED"
     assert evidence.operation_name == method_name
@@ -372,41 +261,6 @@ async def test_wms_error_4xx_counts_as_breaker_success_in_half_open(db_engine) -
 
 
 @pytest.mark.asyncio
-async def test_wms_error_timeout_records_evidence_and_breaker_failure(
-    db_engine,
-) -> None:
-    async def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ReadTimeout("read timeout", request=request)
-
-    service = _service(
-        db_engine,
-        httpx.MockTransport(handler),
-        breaker_service=WmsCircuitBreakerService(failure_threshold=1, retry_after_seconds=60),
-    )
-
-    with pytest.raises(WmsTimeoutError) as exc_info:
-        await service.query_inventory(QueryInventoryRequest(request_id="REQ-TIMEOUT", sku="SKU-1"))
-
-    error = exc_info.value
-    evidence = await _get_evidence(db_engine, "ev:query_inventory:REQ-TIMEOUT")
-    breaker_state = await _get_breaker_state(
-        db_engine,
-        target_code="WMS_INVENTORY",
-        operation_name="query_inventory",
-    )
-
-    assert error.evidence_key == "ev:query_inventory:REQ-TIMEOUT"
-    assert error.reason_code == "WMS_TIMEOUT"
-    assert error.retryable is True
-    assert evidence is not None
-    assert evidence.retryable is True
-    assert evidence.reason_code == "WMS_TIMEOUT"
-    assert breaker_state is not None
-    assert breaker_state.state == WmsCircuitBreakerStatus.OPEN
-    assert breaker_state.last_evidence_key == "ev:query_inventory:REQ-TIMEOUT"
-
-
-@pytest.mark.asyncio
 async def test_wms_error_5xx_records_unavailable_and_breaker_failure(db_engine) -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, json={"reason_code": "WMS_DOWN", "message": "WMS unavailable"})
@@ -461,14 +315,20 @@ async def test_wms_5xx_breaker_transition_observability_uses_request_trace(db_en
     )
 
     with pytest.raises(WmsUnavailableError):
-        await service.query_inventory(
-            QueryInventoryRequest(request_id="REQ-OBS", trace_id="trace-wms-obs", sku="SKU-1")
+        await service.reserve_inventory(
+            ReserveInventoryRequest(
+                request_id="REQ-OBS",
+                trace_id="trace-wms-obs",
+                reservation_key="RSV-OBS",
+                sku="SKU-1",
+                qty="1",
+            )
         )
 
     assert len(emitted) == 1
     assert emitted[0].attributes["trace_id"] == "trace-wms-obs"
     assert emitted[0].attributes["provider_code"] == "WMS_INVENTORY"
-    assert emitted[0].attributes["operation_kind"] == "query_inventory"
+    assert emitted[0].attributes["operation_kind"] == "reserve_inventory"
     assert emitted[0].attributes["breaker_state"] == "OPEN"
 
 
@@ -626,38 +486,6 @@ async def test_wms_success_persistence_failure_raises_non_retryable_typed_error(
 
 
 @pytest.mark.asyncio
-async def test_wms_2xx_invalid_json_records_parse_error_and_breaker_failure(
-    db_engine,
-) -> None:
-    async def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"not-json")
-
-    service = _service(
-        db_engine,
-        httpx.MockTransport(handler),
-        breaker_service=WmsCircuitBreakerService(failure_threshold=1, retry_after_seconds=60),
-    )
-
-    with pytest.raises(WmsUnavailableError) as exc_info:
-        await service.query_inventory(QueryInventoryRequest(request_id="REQ-2XX-NONJSON", sku="SKU-1"))
-
-    error = exc_info.value
-    evidence = await _get_evidence(db_engine, "ev:query_inventory:REQ-2XX-NONJSON")
-    breaker_state = await _get_breaker_state(
-        db_engine,
-        target_code="WMS_INVENTORY",
-        operation_name="query_inventory",
-    )
-
-    assert error.reason_code == "WMS_RESPONSE_PARSE_ERROR"
-    assert error.retryable is True
-    assert evidence is not None
-    assert evidence.reason_code == "WMS_RESPONSE_PARSE_ERROR"
-    assert breaker_state is not None
-    assert breaker_state.state == WmsCircuitBreakerStatus.OPEN
-
-
-@pytest.mark.asyncio
 async def test_wms_4xx_invalid_json_uses_default_business_reason_without_breaker_failure(
     db_engine,
 ) -> None:
@@ -728,60 +556,6 @@ async def test_wms_5xx_invalid_json_uses_default_unavailable_reason_and_breaker_
     assert error.retryable is True
     assert evidence is not None
     assert evidence.reason_code == "WMS_UNAVAILABLE"
-    assert breaker_state is not None
-    assert breaker_state.state == WmsCircuitBreakerStatus.OPEN
-
-
-@pytest.mark.asyncio
-async def test_wms_2xx_data_list_unwraps_to_inventory_items(db_engine) -> None:
-    async def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "request_id": "REQ-DATA-LIST",
-                "data": [{"sku": "SKU-1", "available_qty": "5"}],
-            },
-        )
-
-    service = _service(db_engine, httpx.MockTransport(handler))
-
-    response = await service.query_inventory(QueryInventoryRequest(request_id="REQ-DATA-LIST", sku="SKU-1"))
-    evidence = await _get_evidence(db_engine, "ev:query_inventory:REQ-DATA-LIST")
-
-    assert len(response.items) == 1
-    assert response.items[0].sku == "SKU-1"
-    assert response.items[0].available_qty == 5
-    assert response.request_id == "REQ-DATA-LIST"
-    assert evidence is not None
-    assert evidence.status == "SUCCEEDED"
-
-
-@pytest.mark.asyncio
-async def test_wms_2xx_json_list_records_parse_error_and_breaker_failure(
-    db_engine,
-) -> None:
-    async def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[{"sku": "SKU-1", "available_qty": "5"}])
-
-    service = _service(
-        db_engine,
-        httpx.MockTransport(handler),
-        breaker_service=WmsCircuitBreakerService(failure_threshold=1, retry_after_seconds=60),
-    )
-
-    with pytest.raises(WmsUnavailableError) as exc_info:
-        await service.query_inventory(QueryInventoryRequest(request_id="REQ-2XX-LIST", sku="SKU-1"))
-
-    evidence = await _get_evidence(db_engine, "ev:query_inventory:REQ-2XX-LIST")
-    breaker_state = await _get_breaker_state(
-        db_engine,
-        target_code="WMS_INVENTORY",
-        operation_name="query_inventory",
-    )
-
-    assert exc_info.value.reason_code == "WMS_RESPONSE_PARSE_ERROR"
-    assert evidence is not None
-    assert evidence.reason_code == "WMS_RESPONSE_PARSE_ERROR"
     assert breaker_state is not None
     assert breaker_state.state == WmsCircuitBreakerStatus.OPEN
 

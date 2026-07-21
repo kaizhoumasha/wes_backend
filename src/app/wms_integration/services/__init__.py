@@ -1,11 +1,5 @@
 """WMS 对接辅助域 Service 导出。"""
 
-from .cache import (
-    WMS_QUERY_CACHE_TTL_SECONDS,
-    WmsQueryCacheService,
-    build_query_inventory_cache_key,
-    clamp_query_cache_ttl_seconds,
-)
 from .callback_normalizer import (
     WmsExecutionCallbackNormalizer,
     wms_execution_callback_normalizer,
@@ -45,6 +39,12 @@ from .fulfillment_lifecycle import (
     wms_fulfillment_lifecycle_service,
 )
 from .http_client import WmsHttpClient, WmsHttpResult, wms_http_client
+from .query_transport import (
+    WmsCallEvidenceQueryWriter,
+    WmsQueryCallPermit,
+    WmsQueryEvidenceWriter,
+    WmsQueryTransportExecutor,
+)
 from .redaction import REDACTED_VALUE, canonical_sha256, redact_sensitive
 from .service_locator import wms_typed_port_service
 from .transport_contract import (
@@ -59,8 +59,8 @@ __all__ = [
     "DEFAULT_RACK_OPERATION_ENDPOINT",
     "DEFAULT_WMS_SYNC_BASE_URL",
     "REDACTED_VALUE",
-    "WMS_QUERY_CACHE_TTL_SECONDS",
     "WmsBusinessRejectedError",
+    "WmsCallEvidenceQueryWriter",
     "WmsCallEvidenceService",
     "WmsCircuitBreakerDecision",
     "WmsCircuitBreakerService",
@@ -81,15 +81,15 @@ __all__ = [
     "WmsHttpTimeoutConfig",
     "WmsIntegrationError",
     "WmsOperationEndpoint",
-    "WmsQueryCacheService",
+    "WmsQueryCallPermit",
+    "WmsQueryEvidenceWriter",
+    "WmsQueryTransportExecutor",
     "WmsSessionFactory",
     "WmsTimeoutError",
     "WmsTransportContractService",
     "WmsTypedPortService",
     "WmsUnavailableError",
-    "build_query_inventory_cache_key",
     "canonical_sha256",
-    "clamp_query_cache_ttl_seconds",
     "redact_sensitive",
     "register_inbound_normalizers",
     "wms_call_evidence_service",

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from decimal import Decimal  # noqa: TC003 - Pydantic 运行时需要 Decimal。
-from typing import Annotated, Protocol
+from typing import TYPE_CHECKING, Annotated, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.ports.query_outcome import WmsQueryOutcome
 
 OPERATION_IDENTITY = "wms.inventory.query_inventory@v1"
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -50,7 +53,10 @@ class InventoryQueryOperationResult(BaseModel):
 class InventoryQueryOperationPort(Protocol):
     """按单个 operation 暴露的稳定查询 Port。"""
 
-    async def execute(self, request: InventoryQueryOperationRequest) -> InventoryQueryOperationResult: ...
+    async def execute(
+        self,
+        request: InventoryQueryOperationRequest,
+    ) -> WmsQueryOutcome[InventoryQueryOperationResult]: ...
 
 
 __all__ = [

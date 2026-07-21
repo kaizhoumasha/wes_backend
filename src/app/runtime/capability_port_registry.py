@@ -113,7 +113,7 @@ class RuntimeCapabilityContext:
     """Runtime capability 注入上下文 (主计划 §3.5 + §9.2)。
 
     capability 只能拿到:
-    - query_ports: 只读事实查询 port (WmsMasterDataPort / WmsInventoryQueryPort)
+    - query_ports: 只读事实查询 port (WmsMasterDataPort / typed operation query port)
     - effect_ports: 出站副作用 port (WmsFulfillmentPort / WmsInventoryTransactionPort)
 
     capability 不能拿到:

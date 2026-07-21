@@ -13,8 +13,12 @@ from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.sys.models import SystemOutbox
 from src.app.sys.services import AuditLogService
-from src.app.wms_integration.adapters.inventory_query_port_adapter import WmsInventoryQueryPortAdapter
-from src.app.wms_integration.ports.inventory_query import WmsInventoryItem
+from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
+from src.app.wms_integration.ports.query_inventory_operation import (
+    InventoryAuthorityItem,
+    InventoryQueryOperationResult,
+)
+from src.app.wms_integration.ports.query_outcome import QuerySuccess
 from tests.integration.workline_capabilities.test_rough_sorter_outbox_result_flow import _process_seeded_scan
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
@@ -30,20 +34,25 @@ def test_recorded_replay_of_successful_query_never_calls_provider_or_creates_eff
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         provider_calls = 0
 
-        async def query_inventory(_adapter, material_code: str, *, warehouse_code: str | None = None):  # type: ignore[no-untyped-def]
+        async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
             nonlocal provider_calls
             provider_calls += 1
-            return [
-                WmsInventoryItem(
-                    material_code=material_code,
-                    warehouse_code=warehouse_code or "WH-IT",
-                    storage_location_code="A-01",
-                    quantity=10,
-                    batch_no="LOT-IT-001",
+            return QuerySuccess(
+                InventoryQueryOperationResult(
+                    items=(
+                        InventoryAuthorityItem(
+                            material_code=request.material_code,
+                            warehouse_code=request.warehouse_code or "WH-IT",
+                            storage_location_code="A-01",
+                            available_quantity=10,
+                            lot_no="LOT-IT-001",
+                        ),
+                    ),
+                    source_version="WMS-IT-1",
                 )
-            ]
+            )
 
-        monkeypatch.setattr(WmsInventoryQueryPortAdapter, "query_inventory", query_inventory)
+        monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
         service = RuntimeInboxService(audit_service=AuditLogService())
 
         async with session_factory() as db:

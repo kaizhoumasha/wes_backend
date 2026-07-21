@@ -53,11 +53,6 @@ class TimeoutRetry(BaseModel):
         description="effect port 存在时必填",
     )
     retry_backoff_seconds: list[int] = Field(min_length=1, description="递增短退避数组")
-    cache_ttl_seconds: int | None = Field(
-        default=None,
-        ge=0,
-        description="query cache 存在时必填；0 表示禁用",
-    )
 
     @field_validator("retry_backoff_seconds")
     @classmethod

@@ -112,7 +112,6 @@ class ExternalContractProfile(BaseModel):
         min_length=1,
         description="递增短退避数组",
     )
-    cache_ttl_seconds: int = Field(default=30, ge=0, description="query cache TTL; 0=禁用")
     fixture_set_path: str = Field(
         min_length=1,
         description="tests/fixtures/external_contracts/<provider>/<profile>",

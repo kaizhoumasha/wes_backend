@@ -26,7 +26,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | # | 事实类型 | 权威系统 | WES 角色 | WES 写入 | C3 authority |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 库存数量、批次、有效期 | WMS | 引用 + 作业期快照 | 只读 evidence + 短暂快照缓存（TTL 30s） | `authority=WMS, source_version=必填` |
+| 1 | 库存数量、批次、有效期 | WMS | 引用 + 单次执行快照 | 只读 evidence；禁止跨请求缓存 | `authority=WMS, source_version=必填` |
 | 2 | 入库单 / 出库单 / 批次单 / 波次 / 业务任务 | WMS | 外部引用 + 执行上下文 | 不复制为 WES 单据主档 | `authority=WMS, source_version=必填` |
 | 3 | 设备到位信号（光电、接近开关、扫码） | ECS/device | 接收 + 转换 | evidence + transition events | `authority=ECS` |
 | 4 | 设备业务命令结果（机械臂取放、滚筒线动作） | ECS/device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 | `authority=ECS` |
@@ -44,7 +44,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 数据需求 | 读哪里 | 不该读哪里 |
 | --- | --- | --- |
-| 库存可用量 | `WmsInventoryQueryPort`（短 TTL 缓存） | WES active projection 冒充全局库存 |
+| 库存可用量 | `InventoryQueryOperationPort`（每次执行读取一次） | WES active projection 或跨请求缓存冒充全局库存 |
 | GRN/入库单详情 | `WmsDocumentPort` | 复制为 WES 单据主档 |
 | 物料主数据 | `WmsMasterDataPort` | WES 自建物料主数据 |
 | 货架/料箱/库位状态 | `WmsMasterDataPort`（主数据）+ WES active projection（作业期占用） | 把作业期投影当主数据写回 |
@@ -78,18 +78,18 @@ WES 内部域（workline / runtime / handling / resource / material / device）*
 | 步骤 | 事实类型 | 权威 | WES 动作 |
 | --- | --- | --- | --- |
 | 扫码到位 | 事实 3（设备到位信号） | ECS/device | `device` 域接收 callback → RuntimeInbox → evidence |
-| WMS 校验物料 | 事实 1（库存）/ 事实 8（物料主数据） | WMS | `WmsMasterDataPort.get_material` + `WmsInventoryQueryPort.query_inventory`（带 source_version） |
+| WMS 校验物料 | 事实 1（库存）/ 事实 8（物料主数据） | WMS | `WmsMasterDataPort.get_material` + `wms.inventory.query_inventory@v1`（带 source_version） |
 | 建料盘实体 | 事实 11（WES 作业期根实体） | WES | material 域写 material_units（WES 自有） |
 | 箱格分配 | 事实 10（WES 投影） | WES | resource 域写 BinCellOccupancy（作业期投影） |
 | PKG 绑定通知 WMS | 事实 2（业务任务） | WMS | `WmsFulfillmentPort.notify_pkg_binding`（经 RuntimeIntentLog） |
 
 ### 4.2 反例 1：影子 WMS（事实 1 违规）
 
-❌ **错误**：WES active projection 缓存了库存数据（TTL 过期未刷新），业务逻辑读缓存值做分配决策，WMS 库存实际已变。
+❌ **错误**：WES active projection 或跨请求缓存保存了库存数据，业务逻辑读取旧值做分配决策，WMS 库存实际已变。
 
 ✅ **正确**：
-- 缓存必须带 `authority=WMS, source, evidence_at, source_version`（C3）
-- TTL 过期必须重新 `WmsInventoryQueryPort.query_inventory`
+- 每次 execution 只查询一次 WMS，并让 policy 与 evidence 共用同一 typed authority snapshot
+- evidence 必须带 `authority=WMS, source, evidence_at, source_version`（C3）；写入失败时查询 fail closed
 - WMS effect 失败不允许抹掉本地物理位置事实（主计划 §5.1 物理事实与 WMS 业务确认顺序）
 
 ### 4.3 反例 2：WES 直连 RCS（事实 7 违规）

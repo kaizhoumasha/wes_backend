@@ -5,6 +5,7 @@ from src.app.runtime.system_capabilities.wms.contracts import (
     WmsHttpMethod,
     WmsOperationContract,
     WmsOperationMode,
+    WmsPaginationContract,
     WmsRetryPolicy,
     WmsTransportBudget,
 )
@@ -30,6 +31,12 @@ CONTRACT = WmsOperationContract(
     ),
     retry_policy=WmsRetryPolicy(max_attempts=3, backoff_seconds=(1, 2)),
     outbound_auth_scheme=OutboundAuthScheme.HMAC_SHA256,
+    pagination=WmsPaginationContract(
+        request_cursor_field="cursor",
+        response_cursor_field="next_cursor",
+        response_items_field="items",
+        max_pages=100,
+    ),
 )
 
 __all__ = ["CONTRACT"]

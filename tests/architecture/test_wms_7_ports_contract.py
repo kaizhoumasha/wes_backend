@@ -184,13 +184,13 @@ def test_wms_reconciliation_query_data_classes_are_pydantic():
 
 def test_all_seven_wms_ports_present():
     """7/7 WMS ports 已落地 (主计划 §5.1)。"""
-    from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
     from src.app.wms_integration.ports.inventory_transaction import WmsInventoryTransactionPort
     from src.app.wms_integration.ports.master_data import WmsMasterDataPort
+    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 
     all_ports = [
         WmsMasterDataPort,
-        WmsInventoryQueryPort,
+        InventoryQueryOperationPort,
         WmsInventoryTransactionPort,
         WmsDocumentPort,
         WmsFulfillmentPort,

@@ -37,7 +37,6 @@ def _wms_profile() -> ExternalContractProfile:
         timeout_retry_query_timeout_seconds=10,
         timeout_retry_effect_timeout_seconds=30,
         timeout_retry_retry_backoff_seconds=[1, 2, 4],
-        cache_ttl_seconds=30,
         fixture_set_path="tests/fixtures/external_contracts/wms/default",
         fixture_set_required_cases=sorted(REQUIRED_CASES),
     )

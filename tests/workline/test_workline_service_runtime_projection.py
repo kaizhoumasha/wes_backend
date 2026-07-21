@@ -557,7 +557,7 @@ async def test_real_rough_sorter_activation_pins_profile_port_and_generated_inde
     assert result.active_plugin_binding_version == 1
     assert result.active_plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
     assert result.active_plugin_provider_requirements_json == ["WMS@2026-07-06.material-flow#sandbox"]
-    assert result.active_plugin_port_requirements_json == ["WmsInventoryQueryPort.query_inventory"]
+    assert result.active_plugin_port_requirements_json == ["InventoryQueryOperationPort.execute"]
     assert {entry["device_code"] for entry in binding_repository.created[0]["device_snapshot_json"]} == {
         "RS-IN-01",
         "RS-CONVEYOR-01",

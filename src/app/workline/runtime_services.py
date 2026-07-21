@@ -19,11 +19,11 @@ from src.app.runtime.orchestration.sandbox_catalog_bridge import query_sandbox_w
 from src.app.workline.domain.run_mode import is_simulation_run_mode
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from src.app.resource.models import RackKind
     from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
-    from src.app.wms_integration.models import QueryInventoryRequest, QueryInventoryResponse
+    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 
 
 @runtime_checkable
@@ -81,15 +81,6 @@ class StationLeaseStatusProvider(Protocol):
         ...
 
 
-@runtime_checkable
-class WmsInventoryClient(Protocol):
-    """WMS 库存查询接口。"""
-
-    def query_inventory(self, request: QueryInventoryRequest) -> Awaitable[QueryInventoryResponse]:
-        """按物料查询 WMS 库存。"""
-        ...
-
-
 class BoundRackOperationStatusProvider:
     """绑定当前 DB 会话的 operation 状态读取器。"""
 
@@ -128,27 +119,6 @@ class BoundStationLeaseStatusProvider:
         )
 
 
-class SandboxWmsInventoryClient:
-    """SIMULATION 运行模式下的确定性 WMS 库存查询替身。"""
-
-    async def query_inventory(self, request: QueryInventoryRequest) -> QueryInventoryResponse:
-        from src.app.wms_integration.models import QueryInventoryResponse, WmsInventoryItem
-
-        rows = query_sandbox_wms_inventory_rows(
-            sku=request.sku,
-            lot_no=request.lot_no,
-            warehouse_code=request.warehouse_code,
-            owner_code=request.owner_code,
-        )
-        items = [WmsInventoryItem.model_validate(row) for row in rows]
-        return QueryInventoryResponse(
-            request_id=request.request_id,
-            reason_code="SANDBOX_WMS_INVENTORY",
-            message="SANDBOX WMS 库存校验通过" if items else "SANDBOX WMS 未匹配到库存",
-            items=items,
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class WorklineRuntimeServices:
     """插件运行时可访问的领域服务集合。"""
@@ -157,7 +127,7 @@ class WorklineRuntimeServices:
     active_rack_snapshot_provider: ActiveRackSnapshotProvider | None = None
     rack_operation_status_provider: RackOperationStatusProvider | None = None
     station_lease_status_provider: StationLeaseStatusProvider | None = None
-    wms_inventory_client: WmsInventoryClient | None = None
+    inventory_query_port_factory: Callable[[], InventoryQueryOperationPort] | None = None
 
 
 def build_workline_runtime_services(
@@ -189,23 +159,24 @@ def build_workline_runtime_services(
             service=station_lease_service,
         )
 
-    wms_inventory_client = None
-    if db is not None and (
-        is_simulation_run_mode(getattr(workline, "run_mode", None))
-        or is_simulation_run_mode(getattr(session, "run_mode", None))
-    ):
-        wms_inventory_client = SandboxWmsInventoryClient()
-    elif db is not None:
-        from src.app.wms_integration.services import wms_typed_port_service
+    inventory_query_port_factory = None
+    if db is not None:
+        from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
 
-        wms_inventory_client = wms_typed_port_service
+        inventory_query_port_factory = build_inventory_query_port_factory(
+            simulation=(
+                is_simulation_run_mode(getattr(workline, "run_mode", None))
+                or is_simulation_run_mode(getattr(session, "run_mode", None))
+            ),
+            sandbox_rows_provider=query_sandbox_wms_inventory_rows,
+        )
 
     return WorklineRuntimeServices(
         bin_allocator=smt_rack_bin_scheduling_service,
         active_rack_snapshot_provider=active_rack_snapshot_provider,
         rack_operation_status_provider=rack_operation_status_provider,
         station_lease_status_provider=station_lease_status_provider,
-        wms_inventory_client=wms_inventory_client,
+        inventory_query_port_factory=inventory_query_port_factory,
     )
 
 
@@ -215,9 +186,7 @@ __all__ = [
     "BoundRackOperationStatusProvider",
     "BoundStationLeaseStatusProvider",
     "RackOperationStatusProvider",
-    "SandboxWmsInventoryClient",
     "StationLeaseStatusProvider",
-    "WmsInventoryClient",
     "WorklineRuntimeServices",
     "build_workline_runtime_services",
 ]

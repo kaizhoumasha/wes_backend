@@ -90,7 +90,7 @@ WMS_MATERIAL_FLOW_SANDBOX_PROFILE = ExternalContractProfile(
     contract_version="2026-07-06.material-flow",
     environment="sandbox",
     runtime_capabilities_query=[
-        "WmsInventoryQueryPort.query_inventory",
+        "InventoryQueryOperationPort.execute",
         "WmsMasterDataPort.get_material",
     ],
     runtime_capabilities_effect=[
@@ -115,7 +115,7 @@ WMS_MATERIAL_FLOW_PRODUCTION_PROFILE = ExternalContractProfile(
     contract_version="2026-07-06.material-flow",
     environment="production",
     runtime_capabilities_query=[
-        "WmsInventoryQueryPort.query_inventory",
+        "InventoryQueryOperationPort.execute",
         "WmsMasterDataPort.get_material",
     ],
     runtime_capabilities_effect=[

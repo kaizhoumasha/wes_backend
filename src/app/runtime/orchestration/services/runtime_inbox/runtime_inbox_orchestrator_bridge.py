@@ -1738,20 +1738,16 @@ def _first_plugin_fact(*sources: dict[str, Any], names: tuple[str, ...]) -> str 
 
 
 def _configure_attempt_runtime_ports(attempt_runtime: RuntimeInboxAttemptRuntime, *, services: Any) -> None:
-    """把当前 Inbox 的 typed client 包装为 attempt-scoped QUERY Port。"""
+    """把当前 Inbox 的 typed operation factory 注册为 attempt-scoped QUERY Port。"""
 
-    client = getattr(services, "wms_inventory_client", None)
-    if client is None:
+    factory = getattr(services, "inventory_query_port_factory", None)
+    if factory is None:
         return
-    from src.app.wms_integration.adapters import build_wms_inventory_query_port_factory
-    from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
+    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 
     attempt_runtime.port_registry.register(
-        WmsInventoryQueryPort,
-        build_wms_inventory_query_port_factory(
-            client,
-            request_id_factory=lambda: f"plugin-query-{attempt_runtime.attempt_id}",
-        ),
+        InventoryQueryOperationPort,
+        factory,
     )
 
 

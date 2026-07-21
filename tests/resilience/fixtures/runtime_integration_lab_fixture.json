@@ -43,7 +43,6 @@
         2,
         4
       ],
-      "cache_ttl_seconds": 30,
       "fixture_set_path": "tests/fixtures/external_contracts/wms/default",
       "fixture_set_required_cases": [
         "success",
@@ -79,7 +78,6 @@
         1,
         2
       ],
-      "cache_ttl_seconds": 1,
       "fixture_set_path": "tests/fixtures/external_contracts/ecs/default",
       "fixture_set_required_cases": [
         "success",

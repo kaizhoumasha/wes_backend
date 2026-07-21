@@ -23,7 +23,7 @@ credential、工作线、环境或 Provider 名称。handler、Port 方法与 Pr
 
 | Operation identity | 模式 | 现存遗留身份 | 后续合同所有者 | 删除门禁 |
 | --- | --- | --- | --- | --- |
-| `wms.inventory.query_inventory@v1` | QUERY | `wms.rough_sorter_inventory_admission@v1` 与 `WmsInventoryQueryPort.query_inventory` | inventory query typed contract | T7 通用查询与纯 policy 接线后删除专用 capability |
+| `wms.inventory.query_inventory@v1` | QUERY | `InventoryQueryOperationPort.execute` | inventory query typed contract | 通用 transport 与 typed authority snapshot 已接线；纯 policy 后续独立迁移 |
 | `wms.inventory.confirm_inbound@v1` | EFFECT | `WmsInventoryTransactionPort.confirm_inbound` | inventory transaction typed contract | T9 typed EFFECT 与 reconciliation 闭合后删除字符串路径 |
 | `wms.fulfillment.notify_pkg_binding@v1` | EFFECT | `WmsFulfillmentPort.notify_pkg_binding` | fulfillment typed contract | T10 callback reducer 闭合后删除字符串路径 |
 | `wms.fulfillment.full_box_exchange@v1` | EFFECT | `WmsFulfillmentPort.full_box_exchange` | fulfillment typed contract | T12 独立迁移任务闭合后删除字符串路径 |

@@ -221,7 +221,7 @@ async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required
     assert [profile["provider_code"] for profile in binding.provider_profile_snapshot_json] == ["WMS"]
     assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-06.material-flow"
     assert binding.provider_profile_snapshot_json[0]["environment"] == "sandbox"
-    assert binding.port_requirements_json == ["WmsInventoryQueryPort.query_inventory"]
+    assert binding.port_requirements_json == ["InventoryQueryOperationPort.execute"]
 
 
 @pytest.mark.asyncio

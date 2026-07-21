@@ -13,8 +13,6 @@ from src.app.wms_integration.models import (
     ConfirmInboundResponse,
     ConfirmOutboundRequest,
     ConfirmOutboundResponse,
-    QueryInventoryRequest,
-    QueryInventoryResponse,
     ReleaseReservationRequest,
     ReleaseReservationResponse,
     ReserveInventoryRequest,
@@ -22,10 +20,6 @@ from src.app.wms_integration.models import (
     WmsEvidenceStatus,
     WmsOperationName,
     WmsPortRequest,
-)
-from src.app.wms_integration.services.cache import (
-    WMS_QUERY_CACHE_TTL_SECONDS,
-    WmsQueryCacheService,
 )
 from src.app.wms_integration.services.circuit_breaker_service import (
     WmsCircuitBreakerDecision,
@@ -92,8 +86,6 @@ class WmsTypedPortService:
         breaker_service: WmsCircuitBreakerService | None = None,
         evidence_key_factory: EvidenceKeyFactory | None = None,
         observability_emit: WmsTypedPortObservabilityEmit | None = None,
-        cache: Any | None = None,
-        query_cache_ttl_seconds: int = WMS_QUERY_CACHE_TTL_SECONDS,
     ) -> None:
         self.session_factory = session_factory
         self.endpoint_config = endpoint_config or wms_endpoint_config
@@ -102,18 +94,6 @@ class WmsTypedPortService:
         self.breaker_service = breaker_service or wms_circuit_breaker_service
         self.evidence_key_factory = evidence_key_factory or _default_evidence_key
         self._observability_emit = observability_emit
-        self.query_cache = WmsQueryCacheService(cache, ttl_seconds=query_cache_ttl_seconds)
-
-    async def query_inventory(self, request: QueryInventoryRequest) -> QueryInventoryResponse:
-        """查询 WMS 库存；只允许 read-only 端口使用短缓存。"""
-
-        cached_response = await self.query_cache.get_query_inventory(request)
-        if cached_response is not None:
-            return cached_response
-
-        response = await self._execute("query_inventory", request, QueryInventoryResponse)
-        _ = await self.query_cache.set_query_inventory(request, response)
-        return response
 
     async def reserve_inventory(self, request: ReserveInventoryRequest) -> ReserveInventoryResponse:
         return await self._execute("reserve_inventory", request, ReserveInventoryResponse)
@@ -135,10 +115,7 @@ class WmsTypedPortService:
     ) -> ResponseT:
         endpoint = self.endpoint_config.resolve(operation_name)
         evidence_key = self.evidence_key_factory(operation_name, request.request_id)
-        request_payload = _build_wms_request_payload(
-            operation_name,
-            request.model_dump(mode="json", exclude_none=True),
-        )
+        request_payload = request.model_dump(mode="json", exclude_none=True)
         started_at = timezone.now_for_db()
 
         decision = await self._before_call(endpoint, trace_id=request.trace_id)
@@ -554,15 +531,6 @@ class WmsTypedPortService:
 
 def _default_evidence_key(operation_name: WmsOperationName, request_id: str) -> str:
     return f"sync:{operation_name}:{request_id}"
-
-
-def _build_wms_request_payload(operation_name: WmsOperationName, request_payload: dict[str, Any]) -> dict[str, Any]:
-    if operation_name != "query_inventory" or "sku" not in request_payload:
-        return request_payload
-    return {
-        **{key: value for key, value in request_payload.items() if key != "sku"},
-        "material_id": request_payload["sku"],
-    }
 
 
 def _endpoint_with_path_params(

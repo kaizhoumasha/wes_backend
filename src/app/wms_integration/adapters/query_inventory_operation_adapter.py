@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from decimal import Decimal  # noqa: TC003 - Pydantic 运行时需要 Decimal。
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.app.wms_integration.ports.query_inventory_operation import (
     InventoryAuthorityItem,
+    InventoryQueryOperationRequest,
     InventoryQueryOperationResult,
 )
+
+if TYPE_CHECKING:
+    from src.app.runtime.system_capabilities.wms.contracts import WmsOperationContract
+    from src.app.wms_integration.ports.query_outcome import WmsQueryOutcome
+    from src.app.wms_integration.services.query_transport import WmsQueryTransportExecutor
 
 
 class ProviderInventoryItemDTO(BaseModel):
@@ -61,7 +67,33 @@ def map_provider_query_inventory_response(raw_response: Any) -> InventoryQueryOp
     )
 
 
+class InventoryQueryOperationAdapter:
+    """inventory operation 的唯一 Provider request/response DTO 映射边界。"""
+
+    def __init__(self, *, executor: WmsQueryTransportExecutor, contract: WmsOperationContract) -> None:
+        self._executor = executor
+        self._contract = contract
+
+    async def execute(
+        self,
+        request: InventoryQueryOperationRequest,
+    ) -> WmsQueryOutcome[InventoryQueryOperationResult]:
+        provider_payload = {
+            "material_id": request.material_code,
+            "warehouse_code": request.warehouse_code,
+            "owner_code": request.owner_code,
+            "lot_no": request.lot_no,
+        }
+        return await self._executor.execute(
+            contract=self._contract,
+            request=request,
+            provider_payload={key: value for key, value in provider_payload.items() if value is not None},
+            map_success=map_provider_query_inventory_response,
+        )
+
+
 __all__ = [
+    "InventoryQueryOperationAdapter",
     "ProviderInventoryItemDTO",
     "ProviderQueryInventoryResponseDTO",
     "map_provider_query_inventory_response",
