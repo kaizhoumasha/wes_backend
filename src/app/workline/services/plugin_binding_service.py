@@ -170,7 +170,11 @@ class WorklinePluginBindingService:
         workline_id = getattr(workline, "id", None)
         if not isinstance(workline_id, int):
             raise PluginBindingAdmissionError("workline id 缺失")
-        identity = (getattr(workline, "plugin_key", None), getattr(workline, "contract_version", None))
+        plugin_key = getattr(workline, "plugin_key", None)
+        contract_version = getattr(workline, "contract_version", None)
+        if not isinstance(plugin_key, str) or not isinstance(contract_version, str):
+            raise PluginBindingAdmissionError("plugin identity 缺失")
+        identity = (plugin_key, contract_version)
         definition = self.plugin_index.get(identity)
         if definition is None:
             raise PluginBindingAdmissionError(f"plugin definition 未生成或版本不匹配: {identity}")
@@ -369,7 +373,10 @@ class WorklinePluginBindingService:
         binding_id = getattr(workline, "active_plugin_binding_id", None)
         if not isinstance(binding_id, int):
             raise PluginBindingAdmissionError("平台插件尚未激活 immutable binding")
-        binding = binding or await self.get_pinned(db, binding_id=binding_id)
+        if binding is None:
+            binding = await self.get_pinned(db, binding_id=binding_id)
+        if binding is None:
+            raise PluginBindingAdmissionError("pinned binding 不存在")
         if getattr(binding, "id", None) != binding_id:
             raise PluginBindingAdmissionError("预解析 binding 与 WorkLine active pin 不一致")
         active_identity = (

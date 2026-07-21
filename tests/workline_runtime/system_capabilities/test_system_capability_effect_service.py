@@ -165,6 +165,11 @@ class _Db:
         self.rollback_count += 1
 
 
+class _SynchronousFlushDb(_Db):
+    def flush(self) -> None:
+        self.flush_count += 1
+
+
 class _MutationDb(_Db):
     def __init__(self) -> None:
         super().__init__()
@@ -252,6 +257,32 @@ async def test_local_transactional_effect_flushes_without_owning_commit_or_rollb
     assert db.flush_count == 1
     assert db.commit_count == 0
     assert db.rollback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_local_transactional_effect_accepts_synchronous_flush() -> None:
+    _RecordingHandler.calls.clear()
+    db = _SynchronousFlushDb()
+
+    result = await _service(_definition(), _EffectRepository(ClaimResult.NEW)).apply(_ctx(db), _intent())
+
+    assert isinstance(result.outcome, Success)
+    assert db.flush_count == 1
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["plugin_key", "contract_version", "plugin_binding_id", "plugin_binding_version", "plugin_index_digest"],
+)
+def test_effect_intent_rejects_incomplete_locked_plugin_pin(field_name: str) -> None:
+    definition = _definition()
+    ctx = _ctx()
+    setattr(ctx["session"], field_name, None)
+
+    with pytest.raises(PermissionError, match="locked plugin pin is incomplete"):
+        _service(definition, _EffectRepository(ClaimResult.NEW))._intent_service._validate_execution_identity(
+            ctx, _intent(), definition=definition
+        )
 
 
 @pytest.mark.asyncio

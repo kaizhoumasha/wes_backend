@@ -660,6 +660,28 @@ async def test_malformed_sample_fails_closed(sample: dict[str, Any]) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_active", ["true", 1])
+async def test_inventory_rejects_non_boolean_workline_active_flag(invalid_active: object) -> None:
+    source = _workline(1, "LINE")
+    source.is_active = invalid_active
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError, match="is_active 必须为 bool"):
+        await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+async def test_inventory_rejects_unhashable_runtime_sample_type() -> None:
+    sample = {"type": ["session"], "session_code": "S-1", "status": "OPEN"}
+    repo = FakeRepository(
+        [_workline(1, "LINE")],
+        {1: _summary(count=1, sample=sample, by_type={**ZERO_BY_TYPE, "sessions": 1})},
+    )
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError, match=r"summary\.sample\.type 未知"):
+        await _service(repo).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
 async def test_sample_status_accepts_string_enum_value() -> None:
     by_type = {**ZERO_BY_TYPE, "sessions": 1}
     sample = {"type": "session", "session_code": "S-1", "status": FakeStatus.OPEN}

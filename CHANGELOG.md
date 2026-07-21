@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1.0] - 2026-07-21
+
+### Fixed
+- 修复 WorkLine 插件 dispatcher 对显式空 handler 候选的诊断分类，统一返回稳定的缺失处理错误码。
+- 收紧插件运行时的持久化身份、binding pin、迁移清单输入与同步 flush 类型边界，新增对应 fail-closed 回归测试。
+
 ## [0.18.0.0] - 2026-07-20
 
 ### Added

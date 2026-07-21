@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.orm import noload
 from sqlmodel import select
@@ -78,7 +78,7 @@ class PluginAttemptRepository:
         session = await db.scalar(
             select(WorklineSession)
             .where(WorklineSession.id == session_id)
-            .options(noload(WorklineSession.workline))
+            .options(noload(cast("Any", WorklineSession.workline)))
             .execution_options(populate_existing=True)
             .with_for_update()
         )
@@ -201,10 +201,12 @@ class PluginAttemptRepository:
         """
 
         session = locked.session
+        session_id = _require_persisted_id(session.id, field_name="session.id")
+        inbox_id = _require_persisted_id(getattr(locked.inbox, "id", None), field_name="inbox.id")
         seq_nos = iter(
             await self._timeline_sequence_repository.allocate_many(
                 db,
-                session_id=int(session.id),
+                session_id=session_id,
                 count=len(write_set.evidence) + 1,
                 lock_already_held=False,
             )
@@ -214,7 +216,7 @@ class PluginAttemptRepository:
                 raise TypeError("plugin attempt evidence must be QueryEvidence")
             db.add(
                 WorklineTimeline(
-                    session_id=int(session.id),
+                    session_id=session_id,
                     workline_id=workline_id,
                     trace_id=trace_id,
                     seq_no=next(seq_nos),
@@ -229,7 +231,7 @@ class PluginAttemptRepository:
                         "record_type": "SYSTEM_CAPABILITY_EVIDENCE",
                         "evidence": evidence.payload(),
                     },
-                    related_inbox_id=int(locked.inbox.id),
+                    related_inbox_id=inbox_id,
                 )
             )
 
@@ -247,7 +249,7 @@ class PluginAttemptRepository:
             _json_value(write_set.recorded_attempt_anchor)
             if write_set.recorded_attempt_anchor is not None
             else {
-                "source_inbox_id": int(locked.inbox.id),
+                "source_inbox_id": inbox_id,
                 "session_version": snapshot.session_version,
                 "session_status": snapshot.session_status,
                 "logical_idempotency_key": _logical_idempotency_key(locked),
@@ -270,7 +272,7 @@ class PluginAttemptRepository:
         }
         db.add(
             WorklineTimeline(
-                session_id=int(session.id),
+                session_id=session_id,
                 workline_id=workline_id,
                 trace_id=trace_id,
                 seq_no=next(seq_nos),
@@ -300,6 +302,14 @@ def _json_value(value: Any) -> Any:
         return [_json_value(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _json_value(item) for key, item in value.items()}
+    return value
+
+
+def _require_persisted_id(value: Any, *, field_name: str) -> int:
+    """拒绝未 flush 的 ORM 行，避免把 None 当作权威身份写入 timeline。"""
+
+    if not isinstance(value, int):
+        raise TypeError(f"plugin attempt requires persisted {field_name}")
     return value
 
 

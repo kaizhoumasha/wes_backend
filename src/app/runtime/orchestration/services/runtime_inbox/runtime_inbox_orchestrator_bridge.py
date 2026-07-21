@@ -122,6 +122,8 @@ from src.utils.value_normalization import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition
@@ -688,7 +690,7 @@ class RuntimeInboxProcessorBridge:
         processor_token: str,
         *,
         base_registry: CapabilityPortRegistry | None = None,
-        definitions: dict[tuple[str, str], SystemCapabilityDefinition] | None = None,
+        definitions: Mapping[tuple[str, str], SystemCapabilityDefinition] | None = None,
         allowed_capabilities: frozenset[tuple[str, str]] | None = None,
         admission_profile: str | None = None,
         provider_profile: Any | None = None,
@@ -705,7 +707,7 @@ class RuntimeInboxProcessorBridge:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 
             definitions = SYSTEM_CAPABILITY_INDEX
-        resolved_definitions = dict(definitions)
+        resolved_definitions: dict[tuple[str, str], SystemCapabilityDefinition] = dict(definitions)
         pinned_profile_identity = optional_str(getattr(provider_profile, "identity", None))
         if (
             admission_profile is not None
@@ -1697,15 +1699,17 @@ async def _replay_digest_matches_source(  # noqa: PLR0911 - 每个 identity/anch
         db,
         source_inbox_id=source_inbox_id,
     )
-    decision_rows = [
-        row
-        for row in recorded_rows
-        if isinstance(getattr(row, "payload_json", None), dict)
-        and row.payload_json.get("record_type") == "PLUGIN_DECISION"
-    ]
+    decision_rows = []
+    for row in recorded_rows:
+        payload_json = getattr(row, "payload_json", None)
+        if isinstance(payload_json, dict) and payload_json.get("record_type") == "PLUGIN_DECISION":
+            decision_rows.append(row)
     if len(decision_rows) != 1:
         return False
-    attempt_anchor = decision_rows[0].payload_json.get("attempt_anchor")
+    decision_payload = getattr(decision_rows[0], "payload_json", None)
+    if not isinstance(decision_payload, dict):
+        return False
+    attempt_anchor = decision_payload.get("attempt_anchor")
     source_key = (
         optional_str(attempt_anchor.get("logical_idempotency_key")) if isinstance(attempt_anchor, dict) else None
     )

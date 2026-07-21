@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast, overload
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -33,7 +33,17 @@ def validate_key_version(value: str, *, field_name: str) -> str:
     return value
 
 
+@overload
+def stable_sort[T](values: Iterable[T], *, key: None = None) -> tuple[T, ...]: ...
+
+
+@overload
+def stable_sort[T](values: Iterable[T], *, key: Callable[[T], Any]) -> tuple[T, ...]: ...
+
+
 def stable_sort[T](values: Iterable[T], *, key: Callable[[T], Any] | None = None) -> tuple[T, ...]:
     """将声明集合转成稳定排序的不可变 tuple。"""
 
+    if key is None:
+        return cast("tuple[T, ...]", tuple(sorted(cast("Iterable[Any]", values))))
     return tuple(sorted(values, key=key))

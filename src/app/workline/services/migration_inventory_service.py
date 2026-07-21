@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -49,7 +49,14 @@ class WorklineMigrationInventoryInvariantError(RuntimeError):
 
 
 class _InventoryRepository(Protocol):
-    async def get_list(self, db: AsyncSession, **kwargs: Any) -> tuple[int, list[Any]]: ...
+    async def get_list(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        offset: int,
+        order_by_raw: list[Any],
+    ) -> tuple[int, Sequence[Any]]: ...
 
     async def get_unfinished_workload_summary(self, db: AsyncSession, workline_id: int) -> dict[str, Any]: ...
 
@@ -235,6 +242,8 @@ class WorklineMigrationInventoryService:
         workline_id = WorklineMigrationInventoryService._strict_source_int(source, "id")
         line_code = WorklineMigrationInventoryService._required_source_string(source, "line_code", workline_id)
         is_active = getattr(source, "is_active", _MISSING)
+        if not isinstance(is_active, bool):
+            raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} is_active 必须为 bool")
         plugin_key = WorklineMigrationInventoryService._optional_source_string(source, "plugin_key", workline_id)
         configured_version = WorklineMigrationInventoryService._optional_source_string(
             source, "contract_version", workline_id
@@ -414,7 +423,7 @@ class WorklineMigrationInventoryService:
             "inbox": (WorklineRuntimeReferenceType.INBOX, "inbox_id", "inboxes"),
             "runtime_hold": (WorklineRuntimeReferenceType.RUNTIME_HOLD, "count", "runtime_holds"),
         }
-        definition = definitions.get(sample_type)
+        definition = definitions.get(sample_type) if isinstance(sample_type, str) else None
         if definition is None:
             raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} summary.sample.type 未知")
         reference_type, reference_field, count_field = definition

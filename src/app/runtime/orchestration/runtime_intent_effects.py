@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from pydantic import BaseModel
 from sqlmodel import select
 
 from src.app.runtime.capabilities.material_flow.runtime_identity import RECONCILIATION_RUNTIME_SOURCE
@@ -580,7 +581,7 @@ class RuntimeIntentEffectApplier:
                     raise ValueError(f"system capability contract violation: {result.outcome.error_code}")
                 if isinstance(result.outcome, BusinessReject):
                     evidence = getattr(result, "evidence", None)
-                    if hasattr(evidence, "model_dump"):
+                    if isinstance(evidence, BaseModel):
                         evidence_payload = evidence.model_dump(mode="json")
                     else:
                         evidence_payload = {
