@@ -59,6 +59,14 @@ METRIC_OWNER_PATHS = (
     "src/celery_app/tasks",
 )
 STRUCTURED_OPERATION_LABELS = ("operation", "operation_identity", "operation_name", "operation_kind")
+OPERATION_CONTRACT_FIELDS = {
+    *STRUCTURED_OPERATION_LABELS,
+    "method",
+    "method_name",
+    "methods",
+    "required_methods",
+    "supported_methods",
+}
 IDENTITY_SYNTAX_CHARS = r"A-Za-z0-9_.@:-"
 VERSIONED_CAPABILITY_MODULES = {
     "wms.rough_sorter_inventory_admission@v1": (
@@ -181,7 +189,7 @@ def _expression_references_wms_contract(node: ast.AST | None, contract_names: se
         or (
             isinstance(child, ast.Constant)
             and isinstance(child.value, str)
-            and (child.value == "WMS" or child.value.startswith(("WMS_", "wms.")))
+            and (child.value in contract_names or child.value == "WMS" or child.value.startswith(("WMS_", "wms.")))
         )
         for child in ast.walk(node)
     )
@@ -269,6 +277,64 @@ def _loop_contract_operations(node: ast.For, contract_names: set[str], bindings:
     return set()
 
 
+def _function_parameter_contract_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, contract_names: set[str]
+) -> set[str]:
+    parameters = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+    parameters.extend(parameter for parameter in (function.args.vararg, function.args.kwarg) if parameter is not None)
+    return {
+        parameter.arg
+        for parameter in parameters
+        if _expression_references_wms_contract(parameter.annotation, contract_names)
+    }
+
+
+def _function_body_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    nodes: list[ast.AST] = []
+    pending = list(function.body)
+    while pending:
+        node = pending.pop()
+        nodes.append(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return nodes
+
+
+def _contract_field_operation_names(call: ast.Call) -> set[str]:
+    discovered = {
+        operation_name
+        for keyword in call.keywords
+        if keyword.arg in OPERATION_CONTRACT_FIELDS
+        for operation_name in _operation_constants(keyword.value)
+    }
+    for node in ast.walk(call):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values, strict=True):
+            if _constant_string(key) in OPERATION_CONTRACT_FIELDS:
+                discovered.update(_operation_constants(value))
+    return discovered
+
+
+def _matching_port_operation_names(call: ast.Call) -> set[str]:
+    discovered: set[str] = set()
+    operation_names = _operation_constants(call)
+    for legacy_identity in LEGACY_IDENTITY_TARGETS:
+        if not legacy_identity.startswith("Wms") or "." not in legacy_identity:
+            continue
+        port_name, operation_name = legacy_identity.rsplit(".", 1)
+        if operation_name in operation_names and _expression_references_wms_contract(call, {port_name}):
+            discovered.add(operation_name)
+    return discovered
+
+
+def _contract_call_operation_names(call: ast.Call, contract_names: set[str]) -> set[str]:
+    if not _expression_references_wms_contract(call, contract_names):
+        return set()
+    return _contract_field_operation_names(call) | _matching_port_operation_names(call)
+
+
 def _discover_test_operation_names(text: str) -> set[str]:
     try:
         tree = ast.parse(text)
@@ -293,6 +359,18 @@ def _discover_test_operation_names(text: str) -> set[str]:
         ):
             discovered.add(attribute.attr)
 
+    for function in (node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+        parameter_contract_names = _function_parameter_contract_names(function, contract_names)
+        if not parameter_contract_names:
+            continue
+        discovered.update(
+            attribute.attr
+            for attribute in _function_body_nodes(function)
+            if isinstance(attribute, ast.Attribute)
+            and attribute.attr in TEST_OPERATION_TARGETS
+            and _expression_references_wms_contract(attribute.value, parameter_contract_names)
+        )
+
     bindings = {
         target_name: _operation_constants(node.value)
         for node in ast.walk(tree)
@@ -313,8 +391,7 @@ def _discover_test_operation_names(text: str) -> set[str]:
             operation_name = _constant_string(call.args[1])
             if operation_name in TEST_OPERATION_TARGETS:
                 discovered.add(operation_name)
-        if _expression_references_wms_contract(call, contract_names):
-            discovered.update(_operation_constants(call))
+        discovered.update(_contract_call_operation_names(call, contract_names))
     return discovered
 
 
@@ -705,7 +782,7 @@ def test_reference_scanner_distinguishes_capability_package_from_preview_sibling
 def test_test_scanner_rejects_bare_operation_names_without_wms_contract_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """非 WMS 方法、同名 helper/参数与无关字符串不得进入 operation 清点。"""
+    """非 WMS 方法、同名 helper/参数与无关调用字段不得进入 operation 清点。"""
     test_root = tmp_path / "tests"
     test_root.mkdir()
     (test_root / "test_unrelated_operations.py").write_text(
@@ -725,10 +802,15 @@ def passthrough(notify_pkg_binding):
     return notify_pkg_binding
 
 
+def assert_contract(port_type, **metadata):
+    return port_type, metadata
+
+
 analytics = AnalyticsClient()
 analytics.query_inventory()
 confirm_inbound()
 UNRELATED_EVENT = "full_box_exchange"
+assert_contract(WmsInventoryQueryPort, excluded="full_box_exchange")
 """,
         encoding="utf-8",
     )
@@ -739,6 +821,45 @@ UNRELATED_EVENT = "full_box_exchange"
     monkeypatch.setattr(module, "DOCUMENTATION_PATHS", ())
 
     assert _discover_references() == set()
+
+
+def test_test_scanner_propagates_wms_port_parameter_annotation_within_its_function(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WMS Port 参数注解只传播给本函数 receiver，不污染同名无关参数。"""
+    test_root = tmp_path / "tests"
+    test_root.mkdir()
+    (test_root / "test_port_annotations.py").write_text(
+        """from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
+
+
+class AnalyticsPort:
+    pass
+
+
+def test_query(port: WmsInventoryQueryPort):
+    port.query_inventory()
+
+
+def test_unrelated(port: AnalyticsPort):
+    port.full_box_exchange()
+""",
+        encoding="utf-8",
+    )
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(module, "SOURCE_PATHS", ())
+    monkeypatch.setattr(module, "TEST_PATHS", ("tests",))
+    monkeypatch.setattr(module, "DOCUMENTATION_PATHS", ())
+
+    assert _discover_references() == {
+        (
+            "test",
+            "tests/test_port_annotations.py",
+            "query_inventory",
+            "wms.inventory.query_inventory@v1",
+        )
+    }
 
 
 def test_metric_scanner_recognizes_all_supported_operation_identity_forms(
