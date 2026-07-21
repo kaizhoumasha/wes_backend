@@ -156,3 +156,46 @@ T5 已实现并通过本任务目标门禁。交付只覆盖 Provider quality：
 - `./scripts/git-quality-gate.sh --profile quality` 通过：Bandit 0 issue、348 项 runtime contracts、11 项 process naming、import-linter、architecture guardrails 与 test topology 全部通过。
 - 扩大运行的 northbound/WMS architecture 组合为 `52 passed, 1 failed`；唯一失败是既有 inventory 清点仍记录旧测试路径，而当前发现路径已迁移到 `tests/support/rough_sorter_inventory_admission.py`。本轮未修改相关 inventory/generated 文件，按最终复审范围留给独立任务处理。
 - 本轮没有运行或修改 WMS generated operation index，也没有新增独立服务、容器、DSL、HTTP client 或第二 transport lifecycle。
+
+## 最终审批修复追加
+
+### 部署 trust root 与 sealed composition capability
+
+- runner 与持久化报告 verifier 已移除所有 caller-owned verifier 参数；两者只读取模块启动时固定的部署 trust-root registry。
+- 新增最小不可变 `StagingConformanceTrustRootRegistry`，生产从环境变量
+  `WMS_STAGING_CONFORMANCE_TRUST_ROOTS` 加载 `key identity -> Ed25519 public key(base64url)` JSON；未配置时保持空 registry，
+  staging composition/report 验证 fail closed。测试通过显式 fixture 替换模块私有部署 registry，不向生产入口增加注入参数。
+- 公开 attestation issuer 已删除；签发逻辑只存在于
+  `compose_query_inventory_staging_conformance_executor` 受控 composition factory 内，且 factory 在返回 executor 前用部署
+  trust root 复验签名。
+- factory 在闭包内创建 capability，并用 weak identity registry 将 capability 绑定到 factory 产生的具体 executor 对象。executor
+  不暴露 attestation 或 composition digest；调用方自建对象、挂合法 attestation/digest、裸 callback，以及 `copy.copy`
+  复制 sealed executor 均无法解析 capability，且在第一题执行前 fail closed。
+
+### runtime-neutral replay support
+
+- `tests/support/wms_provider_replay.py` 已移除全部 `src.app` 导入；固定 case identity、asset/record、纯 outcome DTO、纯
+  observation DTO、重建/投影和无状态 replay factory 均由该 test-support 模块自有。
+- replay factory 只返回 runtime-neutral 冻结 observation；`tests/support/wms_provider_conformance.py` 的外层 adapter 才把它转换为
+  runtime `ConformanceObservation`，并在外层完成 runtime report 与 replay asset provenance 验证。
+- architecture guard 现禁止纯 replay 模块的全部 `src.app` import，并显式禁止 runtime、HTTP、transport、credential、adapter
+  composition 能力；纯模块不再传递 runtime report/verifier 能力。
+
+### 最终审批 TDD、影响分析与验证
+
+1. RED：trust-root/replay 边界组合收集 `15` 项，出现 `5 failed, 5 errors`，分别暴露 caller verifier、公开 issuer、可挂
+   attestation/digest executor，以及 replay `src.app` 导入；最小实现后定向组合 GREEN。
+2. RED：新增 copied executor 攻击用例，现有 private-slot executor 出现 `DID NOT RAISE`；改为 factory weak identity registry
+   后单项 GREEN，最终定向组合 `26 passed`。
+3. GitNexus 在目标 worktree 重建到 HEAD 后使用同版本 CLI 完成 impact；`verify_wms_conformance_report` 和旧 verifier 为
+   MEDIUM，其余 staging/replay 符号为 LOW，均为 `0 affected process`，无 HIGH/CRITICAL。MCP 读取器仍因 LadybugDB
+   存储版本不兼容返回 UNKNOWN，未将工具故障解释为低风险。
+4. staged detect 汇总为 HIGH：`9 files / 99 symbols / 10 affected processes`。10 条均是本次 staging conformance 内部
+   `compose/run -> canonical profile / signature verification / digest-render` 链路，无 API、数据库或其它业务编排外溢；
+   已向用户说明该汇总风险并获得继续提交授权。
+5. WMS integration contracts：`114 passed`；显式 mock simulator：`2 passed`；默认收集审计：`3544 tests collected`。
+6. 扩大 northbound/WMS architecture：`52 passed, 1 failed`；唯一失败仍是任务明确排除的既有 inventory 测试路径漂移
+   （旧 `tests/workline_plugins/rough_sorter/test_conformance.py` 对当前
+   `tests/support/rough_sorter_inventory_admission.py`），本轮未修改 inventory/generated 文件。
+7. `ruff format --check`、`ruff check`、Bandit、348 项 runtime contracts、11 项 process naming、import-linter、
+   architecture guardrails 与 test topology 均由 quality profile 验证通过；`git diff --check` 通过。

@@ -32,15 +32,19 @@ def test_pure_runner_has_no_network_credential_or_persistence_import_capability(
         assert parameters.isdisjoint({"base_url", "endpoint", "headers", "credential", "secret", "transport"})
 
 
-def test_staging_entry_requires_an_attested_executor_instead_of_a_bare_callback() -> None:
+def test_staging_entry_requires_a_deployment_sealed_executor_without_caller_verifier() -> None:
     parameters = set(inspect.signature(provider_conformance.run_query_inventory_staging_live_conformance).parameters)
+    verifier_parameters = set(inspect.signature(provider_conformance.verify_wms_conformance_report).parameters)
 
     assert "executor" in parameters
     assert "execute" not in parameters
     assert "endpoint_revision" not in parameters
+    assert "attestation_verifier" not in parameters
+    assert "staging_attestation_verifier" not in verifier_parameters
     assert hasattr(provider_conformance, "StagingConformanceExecutorAttestation")
-    assert hasattr(provider_conformance, "issue_staging_conformance_executor_attestation")
-    assert hasattr(provider_conformance, "Ed25519StagingConformanceAttestationVerifier")
+    assert hasattr(provider_conformance, "compose_query_inventory_staging_conformance_executor")
+    assert not hasattr(provider_conformance, "issue_staging_conformance_executor_attestation")
+    assert not hasattr(provider_conformance, "Ed25519StagingConformanceAttestationVerifier")
 
 
 def test_simulator_is_test_only_in_process_and_does_not_copy_production_lifecycle() -> None:

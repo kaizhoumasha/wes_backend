@@ -1,7 +1,8 @@
-"""WMS staging conformance 的可信签发、canonical composition 与 revision 边界。"""
+"""WMS staging conformance 的部署 trust root、sealed composition 与 revision 边界。"""
 
 from __future__ import annotations
 
+import copy
 import inspect
 from datetime import UTC, datetime
 
@@ -38,12 +39,12 @@ class _DeploymentSigner:
         return self._private_key.sign(payload)
 
 
-class _ControlledExecutor:
-    __slots__ = ("_calls", "_observations", "attestation", "composition_identity_digest")
+class _DeploymentExecutionDelegate:
+    """由受控 composition factory 包装的真实执行 delegate。"""
 
-    def __init__(self, *, attestation, observations, calls: list[str]) -> None:
-        self.attestation = attestation
-        self.composition_identity_digest = attestation.composition_identity_digest
+    __slots__ = ("_calls", "_observations")
+
+    def __init__(self, *, observations, calls: list[str]) -> None:
         self._observations = observations
         self._calls = calls
 
@@ -59,45 +60,45 @@ def _matching_observations():
     }
 
 
-def _trusted_execution():
+@pytest.fixture
+def trusted_execution(monkeypatch):
+    """显式安装测试 trust root，并只经受控 composition factory 取得 executor。"""
+
     signer = _DeploymentSigner(key_id="staging-deployment-v1")
-    verifier = provider_conformance.Ed25519StagingConformanceAttestationVerifier(
-        trusted_public_keys={signer.key_id: signer.public_key_bytes}
+    registry = provider_conformance.StagingConformanceTrustRootRegistry.from_public_keys(
+        {signer.key_id: signer.public_key_bytes}
     )
-    attestation = provider_conformance.issue_staging_conformance_executor_attestation(
+    monkeypatch.setattr(provider_conformance, "_DEPLOYMENT_TRUST_ROOT_REGISTRY", registry)
+    calls: list[str] = []
+    delegate = _DeploymentExecutionDelegate(observations=_matching_observations(), calls=calls)
+    executor = provider_conformance.compose_query_inventory_staging_conformance_executor(
         profile=STAGING_PROFILE,
         endpoint_identity="wms-staging-query-primary",
         internal_revision="deploy-r42",
         composition_identity="wes-staging-query-composition-v1",
         signer=signer,
+        execution_delegate=delegate,
     )
-    calls: list[str] = []
-    executor = _ControlledExecutor(attestation=attestation, observations=_matching_observations(), calls=calls)
-    return signer, verifier, attestation, executor, calls
+    return signer, executor, calls
 
 
 @pytest.mark.asyncio
-async def test_live_runner_verifies_deployment_signature_and_derives_report_revision() -> None:
-    _, verifier, attestation, executor, calls = _trusted_execution()
+async def test_live_runner_uses_deployment_trust_root_and_sealed_executor_capability(trusted_execution) -> None:
+    _, executor, calls = trusted_execution
 
     report = await provider_conformance.run_query_inventory_staging_live_conformance(
         profile=STAGING_PROFILE,
         executor=executor,
-        attestation_verifier=verifier,
         fixture_digest=FIXTURE_DIGEST,
         generated_at=GENERATED_AT,
     )
 
     assert calls == [case.case_id for case in provider_conformance.QUERY_INVENTORY_CONFORMANCE_CASES]
-    assert report.endpoint_revision == provider_conformance.derive_staging_endpoint_revision(attestation)
-    assert report.staging_attestation == attestation
-    assert (
-        provider_conformance.verify_wms_conformance_report(
-            report.model_dump(mode="json"),
-            staging_attestation_verifier=verifier,
-        )
-        == report
-    )
+    assert report.staging_attestation is not None
+    assert report.endpoint_revision == provider_conformance.derive_staging_endpoint_revision(report.staging_attestation)
+    assert provider_conformance.verify_wms_conformance_report(report.model_dump(mode="json")) == report
+    assert not hasattr(executor, "attestation")
+    assert not hasattr(executor, "composition_identity_digest")
     serialized = report.model_dump_json().lower()
     assert "wms-staging-query-primary" not in serialized
     assert "deploy-r42" not in serialized
@@ -105,58 +106,40 @@ async def test_live_runner_verifies_deployment_signature_and_derives_report_revi
     assert "private_key" not in serialized
 
 
-@pytest.mark.asyncio
-async def test_live_runner_rejects_self_signed_attestation_before_execute() -> None:
-    _, trusted_verifier, _, _, _ = _trusted_execution()
+def test_attestation_can_only_be_issued_by_the_controlled_composition_factory() -> None:
+    assert hasattr(provider_conformance, "compose_query_inventory_staging_conformance_executor")
+    assert not hasattr(provider_conformance, "issue_staging_conformance_executor_attestation")
+    assert "issue_staging_conformance_executor_attestation" not in provider_conformance.__all__
+
+
+def test_controlled_composition_rejects_an_untrusted_signer_before_executor_creation(trusted_execution) -> None:
+    _, _, calls = trusted_execution
     rogue_signer = _DeploymentSigner(key_id="rogue-deployment-v1")
-    rogue_attestation = provider_conformance.issue_staging_conformance_executor_attestation(
-        profile=STAGING_PROFILE,
-        endpoint_identity="wms-staging-query-primary",
-        internal_revision="deploy-r42",
-        composition_identity="rogue-composition-v1",
-        signer=rogue_signer,
-    )
-    calls: list[str] = []
-    executor = _ControlledExecutor(
-        attestation=rogue_attestation,
-        observations=_matching_observations(),
-        calls=calls,
-    )
+    delegate = _DeploymentExecutionDelegate(observations=_matching_observations(), calls=calls)
 
-    with pytest.raises(ValueError, match=r"trusted signing key|signature"):
-        await provider_conformance.run_query_inventory_staging_live_conformance(
+    with pytest.raises(ValueError, match="trusted signing key"):
+        provider_conformance.compose_query_inventory_staging_conformance_executor(
             profile=STAGING_PROFILE,
-            executor=executor,
-            attestation_verifier=trusted_verifier,
-            fixture_digest=FIXTURE_DIGEST,
-            generated_at=GENERATED_AT,
+            endpoint_identity="wms-staging-query-primary",
+            internal_revision="deploy-r42",
+            composition_identity="rogue-composition-v1",
+            signer=rogue_signer,
+            execution_delegate=delegate,
         )
     assert calls == []
 
 
-@pytest.mark.asyncio
-async def test_live_runner_rejects_a_caller_defined_verifier_that_skips_public_key_verification() -> None:
-    _, _, attestation, executor, calls = _trusted_execution()
+def test_runner_and_report_verifier_do_not_accept_a_caller_owned_verifier() -> None:
+    runner_parameters = inspect.signature(provider_conformance.run_query_inventory_staging_live_conformance).parameters
+    verifier_parameters = inspect.signature(provider_conformance.verify_wms_conformance_report).parameters
 
-    class _CallerDefinedVerifier:
-        def verify(self, supplied_attestation):
-            return supplied_attestation
-
-    with pytest.raises(TypeError, match="Ed25519 public-key verifier"):
-        await provider_conformance.run_query_inventory_staging_live_conformance(
-            profile=STAGING_PROFILE,
-            executor=executor,
-            attestation_verifier=_CallerDefinedVerifier(),
-            fixture_digest=FIXTURE_DIGEST,
-            generated_at=GENERATED_AT,
-        )
-    assert executor.attestation == attestation
-    assert calls == []
+    assert "attestation_verifier" not in runner_parameters
+    assert "staging_attestation_verifier" not in verifier_parameters
 
 
 @pytest.mark.asyncio
-async def test_live_runner_revalidates_complete_author_time_profile_before_attestation_or_execute() -> None:
-    _, verifier, _, executor, calls = _trusted_execution()
+async def test_live_runner_revalidates_complete_author_time_profile_before_execute(trusted_execution) -> None:
+    _, executor, calls = trusted_execution
     outer_identity_spoof = PRODUCTION_PROFILE.model_copy(update={"identity": STAGING_PROFILE.identity})
     incomplete_staging = STAGING_PROFILE.model_copy(update={"bindings": STAGING_PROFILE.bindings[:1]})
 
@@ -165,7 +148,6 @@ async def test_live_runner_revalidates_complete_author_time_profile_before_attes
             await provider_conformance.run_query_inventory_staging_live_conformance(
                 profile=profile,
                 executor=executor,
-                attestation_verifier=verifier,
                 fixture_digest=FIXTURE_DIGEST,
                 generated_at=GENERATED_AT,
             )
@@ -173,15 +155,43 @@ async def test_live_runner_revalidates_complete_author_time_profile_before_attes
 
 
 @pytest.mark.asyncio
-async def test_live_runner_rejects_executor_not_matching_signed_composition() -> None:
-    _, verifier, _, executor, calls = _trusted_execution()
-    executor.composition_identity_digest = "f" * 64
+async def test_live_runner_rejects_attestation_and_digest_reuse_on_a_caller_executor(trusted_execution) -> None:
+    _, sealed_executor, calls = trusted_execution
+    report = await provider_conformance.run_query_inventory_staging_live_conformance(
+        profile=STAGING_PROFILE,
+        executor=sealed_executor,
+        fixture_digest=FIXTURE_DIGEST,
+        generated_at=GENERATED_AT,
+    )
+    calls.clear()
 
-    with pytest.raises(ValueError, match="controlled composition"):
+    class _CallerExecutor:
+        attestation = report.staging_attestation
+        composition_identity_digest = report.staging_attestation.composition_identity_digest
+
+        async def execute(self, case):
+            calls.append(case.case_id)
+            return _matching_observations()[case.case_id]
+
+    with pytest.raises(TypeError, match="controlled composition factory"):
         await provider_conformance.run_query_inventory_staging_live_conformance(
             profile=STAGING_PROFILE,
-            executor=executor,
-            attestation_verifier=verifier,
+            executor=_CallerExecutor(),
+            fixture_digest=FIXTURE_DIGEST,
+            generated_at=GENERATED_AT,
+        )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_runner_rejects_a_copied_executor_without_factory_identity(trusted_execution) -> None:
+    _, sealed_executor, calls = trusted_execution
+    copied_executor = copy.copy(sealed_executor)
+
+    with pytest.raises(TypeError, match="controlled composition factory"):
+        await provider_conformance.run_query_inventory_staging_live_conformance(
+            profile=STAGING_PROFILE,
+            executor=copied_executor,
             fixture_digest=FIXTURE_DIGEST,
             generated_at=GENERATED_AT,
         )
@@ -208,18 +218,17 @@ def test_endpoint_revision_cannot_be_supplied_as_a_caller_owned_opaque_hex() -> 
 
 
 @pytest.mark.asyncio
-async def test_live_runner_rejects_bare_callback_without_attested_composition() -> None:
-    _, verifier, _, _, calls = _trusted_execution()
+async def test_live_runner_rejects_bare_callback_without_controlled_composition(trusted_execution) -> None:
+    _, _, calls = trusted_execution
 
     async def bare_callback(case):
         calls.append(case.case_id)
         return _matching_observations()[case.case_id]
 
-    with pytest.raises(TypeError, match=r"attested executor|controlled composition"):
+    with pytest.raises(TypeError, match="controlled composition factory"):
         await provider_conformance.run_query_inventory_staging_live_conformance(
             profile=STAGING_PROFILE,
             executor=bare_callback,
-            attestation_verifier=verifier,
             fixture_digest=FIXTURE_DIGEST,
             generated_at=GENERATED_AT,
         )

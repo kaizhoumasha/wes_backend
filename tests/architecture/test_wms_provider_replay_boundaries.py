@@ -24,10 +24,13 @@ def test_replay_support_is_an_independent_pure_module() -> None:
     forbidden_fragments = {
         "httpx",
         "credential",
+        "runtime",
         "runtime_factory",
+        "transport",
         "query_transport",
         "wms_integration.adapters",
     }
+    assert all(not imported_module.startswith("src.app") for imported_module in imported_modules)
     assert all(
         fragment not in imported_module for imported_module in imported_modules for fragment in forbidden_fragments
     )
@@ -42,7 +45,7 @@ def test_replay_support_is_an_independent_pure_module() -> None:
     )
 
 
-def test_replay_models_loader_reconstruction_and_factory_are_owned_by_pure_module() -> None:
+def test_replay_models_loader_reconstruction_projection_and_factory_are_owned_by_pure_module() -> None:
     replay_support = importlib.import_module("tests.support.wms_provider_replay")
 
     for name in (
@@ -51,8 +54,8 @@ def test_replay_models_loader_reconstruction_and_factory_are_owned_by_pure_modul
         "QueryInventoryReplayFixture",
         "load_query_inventory_replay_fixture",
         "reconstruct_query_inventory_outcome",
+        "observe_query_inventory_outcome",
         "QueryInventoryReplayFactory",
-        "verify_query_inventory_replay_report",
     ):
         symbol = getattr(replay_support, name)
         assert symbol.__module__ == replay_support.__name__
@@ -63,5 +66,6 @@ def test_replay_models_loader_reconstruction_and_factory_are_owned_by_pure_modul
         "QueryInventoryReplayFactory",
         "load_query_inventory_replay_fixture",
         "reconstruct_query_inventory_outcome",
-        "verify_query_inventory_replay_report",
+        "observe_query_inventory_outcome",
     }
+    assert not hasattr(replay_support, "verify_query_inventory_replay_report")

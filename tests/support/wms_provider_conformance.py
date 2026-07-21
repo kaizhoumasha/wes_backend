@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated
 
@@ -16,18 +17,32 @@ from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
+    ConformanceOutcomeKind,
     ConformanceTarget,
+    WmsConformanceReport,
+    verify_wms_conformance_report,
 )
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
 from src.app.wms_integration.ports.query_inventory_operation import (
     InventoryQueryOperationRequest,
+    InventoryQueryOperationResult,
+)
+from src.app.wms_integration.ports.query_outcome import (
+    QueryBusinessReject,
+    QueryContractFailure,
+    QuerySuccess,
+    QueryTechnicalFailure,
+    WmsQueryOutcome,
 )
 from src.app.wms_integration.services.query_transport import (
     WmsBoundQueryEndpoint,
     WmsQueryCallPermit,
     WmsQueryTransportExecutor,
 )
-from tests.support.wms_provider_replay import QueryInventoryReplayFactory, observe_query_inventory_outcome
+from tests.support.wms_provider_replay import (
+    QUERY_INVENTORY_REPLAY_ASSET_DIGEST,
+    QueryInventoryReplayFactory,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -173,6 +188,19 @@ class QueryInventorySimulatorFactory:
         return await _execute_adapter_case(case, handler=provider.handle)
 
 
+class QueryInventoryReplayConformanceFactory:
+    """把纯 replay DTO 投影到外层 runtime conformance contract。"""
+
+    name = "canonical-replay"
+    target = ConformanceTarget.REPLAY
+    asset_digest = QUERY_INVENTORY_REPLAY_ASSET_DIGEST
+    __slots__ = ()
+
+    async def execute(self, case: ScriptedQueryCase) -> ConformanceObservation:
+        replay_observation = await QueryInventoryReplayFactory().execute(case)
+        return ConformanceObservation.model_validate(replay_observation.model_dump(mode="json"))
+
+
 class RecordingConformanceTarget:
     """仅供共同试卷记录执行顺序；被测 factory 保持无状态。"""
 
@@ -209,7 +237,7 @@ def build_query_inventory_conformance_targets():
     return (
         RecordingConformanceTarget(QueryInventoryAdapterFactory()),
         RecordingConformanceTarget(QueryInventorySimulatorFactory()),
-        RecordingConformanceTarget(QueryInventoryReplayFactory()),
+        RecordingConformanceTarget(QueryInventoryReplayConformanceFactory()),
     )
 
 
@@ -239,12 +267,79 @@ async def _execute_adapter_case(case: ScriptedQueryCase, *, handler) -> Conforma
     return observe_query_inventory_outcome(outcome, case_id=case.case_id)
 
 
+def observe_query_inventory_outcome(
+    outcome: WmsQueryOutcome[InventoryQueryOperationResult],
+    *,
+    case_id: str,
+) -> ConformanceObservation:
+    """外层 adapter 把 T3 outcome 投影为 runtime conformance observation。"""
+
+    if isinstance(outcome, QuerySuccess):
+        return ConformanceObservation(
+            case_id=case_id,
+            outcome_kind=ConformanceOutcomeKind.SUCCESS,
+            evidence_recorded=outcome.evidence_key is not None,
+            semantic_marker=_success_marker(outcome.value),
+        )
+    if isinstance(outcome, QueryBusinessReject):
+        return ConformanceObservation(
+            case_id=case_id,
+            outcome_kind=ConformanceOutcomeKind.BUSINESS_REJECT,
+            reason_code=outcome.reason_code,
+            evidence_recorded=outcome.evidence_key is not None,
+            semantic_marker="BUSINESS_REJECT",
+        )
+    if isinstance(outcome, QueryTechnicalFailure):
+        return ConformanceObservation(
+            case_id=case_id,
+            outcome_kind=ConformanceOutcomeKind.TECHNICAL_FAILURE,
+            reason_code=outcome.reason_code,
+            retryable=outcome.retryable,
+            retry_after_seconds=outcome.retry_after_seconds,
+            evidence_recorded=outcome.evidence_key is not None,
+            semantic_marker="TECHNICAL_FAILURE",
+        )
+    if not isinstance(outcome, QueryContractFailure):
+        raise TypeError("query inventory adapter returned an unsupported outcome")
+    return ConformanceObservation(
+        case_id=case_id,
+        outcome_kind=ConformanceOutcomeKind.CONTRACT_FAILURE,
+        reason_code=outcome.reason_code,
+        evidence_recorded=outcome.evidence_key is not None,
+        semantic_marker="CONTRACT_FAILURE",
+    )
+
+
+def verify_query_inventory_replay_report(payload: dict[str, object]) -> WmsConformanceReport:
+    """在外层验证 runtime 报告来自当前代码 pin 的 replay asset。"""
+
+    report = verify_wms_conformance_report(payload)
+    if report.target is not ConformanceTarget.REPLAY:
+        raise ValueError("query inventory replay verifier requires a REPLAY report")
+    if not hmac.compare_digest(report.fixture_digest, QUERY_INVENTORY_REPLAY_ASSET_DIGEST):
+        raise ValueError("query inventory replay report asset digest mismatch")
+    return report
+
+
+def _success_marker(result: InventoryQueryOperationResult) -> str:
+    if not result.items:
+        return "EMPTY"
+    if len(result.items) == 2:
+        return "TWO_ITEMS"
+    if result.items[0].available_quantity == Decimal("9007199254740993.125"):
+        return "DECIMAL_EXACT"
+    return "ONE_ITEM"
+
+
 __all__ = [
     "QUERY_INVENTORY_SCRIPT_FIXTURE",
     "QueryInventoryAdapterFactory",
+    "QueryInventoryReplayConformanceFactory",
     "QueryInventoryScriptFixture",
     "QueryInventorySimulatorFactory",
     "RecordingConformanceTarget",
     "ScriptedQueryCase",
     "build_query_inventory_conformance_targets",
+    "observe_query_inventory_outcome",
+    "verify_query_inventory_replay_report",
 ]

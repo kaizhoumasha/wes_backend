@@ -16,6 +16,7 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
     ConformanceTarget,
     build_wms_conformance_report,
 )
+from tests.support.wms_provider_conformance import verify_query_inventory_replay_report
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ASSET_PATH = REPO_ROOT / "tests/fixtures/wms_provider_conformance/query_inventory_replay.v1.json"
@@ -80,7 +81,7 @@ async def test_replay_report_carries_and_verifies_the_actual_asset_digest() -> N
     )
 
     assert report.fixture_digest == replay_support.QUERY_INVENTORY_REPLAY_ASSET_DIGEST
-    assert replay_support.verify_query_inventory_replay_report(report.model_dump(mode="json")) == report
+    assert verify_query_inventory_replay_report(report.model_dump(mode="json")) == report
 
     scripted_digest_payload = report.model_dump(mode="json")
     scripted_digest_payload["fixture_digest"] = "a" * 64
@@ -88,4 +89,4 @@ async def test_replay_report_carries_and_verifies_the_actual_asset_digest() -> N
     canonical = json.dumps(without_report_digest, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     scripted_digest_payload["report_digest"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     with pytest.raises(ValueError, match=r"replay.*asset digest"):
-        replay_support.verify_query_inventory_replay_report(scripted_digest_payload)
+        verify_query_inventory_replay_report(scripted_digest_payload)
