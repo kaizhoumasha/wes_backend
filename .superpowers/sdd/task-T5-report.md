@@ -199,3 +199,38 @@ T5 已实现并通过本任务目标门禁。交付只覆盖 Provider quality：
    `tests/support/rough_sorter_inventory_admission.py`），本轮未修改 inventory/generated 文件。
 7. `ruff format --check`、`ruff check`、Bandit、348 项 runtime contracts、11 项 process naming、import-linter、
    architecture guardrails 与 test topology 均由 quality profile 验证通过；`git diff --check` 通过。
+
+## 最终 capability 伪造修复追加
+
+### 模块私有 creator 封闭
+
+- 删除模块级 `_build_controlled_executor_boundary`、`_create_controlled_staging_executor` 与
+  `_resolve_controlled_staging_executor`。原始签发、capability 创建、weak identity 注册和 resolve 逻辑现在只存在于共享安装闭包；
+  安装完成后立即从模块命名空间删除安装函数。
+- 外部仅保留 `compose_query_inventory_staging_conformance_executor` 公开 composition 入口。该入口仍先复验 canonical
+  staging profile、部署 trust root 与 Ed25519 签名，之后才在闭包内创建 capability 和 sealed executor。
+- live runner 与公开 compose 共享同一闭包 registry；调用方不能从模块属性取得 creator/resolver，也不能把已持久化报告中的合法
+  attestation 重新绑定到伪 delegate。合法 compose → run → 持久化报告复验路径保持不变。
+
+### TDD 与回归
+
+1. RED：新增回归先生成并持久化合法 staging report，再枚举模块 private creator，并用
+   `_create_controlled_staging_executor` 把合法 attestation 挂到伪 delegate；现状成功执行全部题目，测试以
+   `accepted_forgery=['_create_controlled_staging_executor']` 按预期失败。
+2. GREEN：将签发、注册与 resolve 封入共享闭包并删除安装期模块属性后，单项回归通过；完整 trust-root 合同 `10 passed`，
+   同时保留合法 composition、caller executor、copy executor、裸 callback 与 caller-owned revision 防护。
+
+### 影响分析与验证
+
+- 写前 GitNexus CLI impact：boundary builder 为 LOW（1 个模块内直接调用、0 execution flow）；公开 compose 与 live runner
+  均为 LOW（0 个直接依赖、0 flow），无 HIGH/CRITICAL。MCP 读取器仍因 LadybugDB 存储版本不兼容返回 UNKNOWN，未将其
+  解释为低风险。
+- staged detect：`2 files / 12 symbols / 10 affected processes`，汇总风险 HIGH；10 条均为本次 staging conformance 内部
+  `compose/run → canonical profile / signature verification / digest-render` 链路，无 API、数据库或其它业务编排外溢。
+- T5 target contracts/architecture/topology：`55 passed`；WMS integration contracts：`115 passed`；显式 mock simulator：
+  `2 passed`；默认收集审计：`3546 tests collected`。
+- 扩大 northbound/WMS architecture：`28 passed, 1 failed`；唯一失败仍为任务明确排除的既有 inventory 测试路径漂移
+  （旧 `tests/workline_plugins/rough_sorter/test_conformance.py` 对当前
+  `tests/support/rough_sorter_inventory_admission.py`），本轮未修改 inventory/generated 文件。
+- `./scripts/git-quality-gate.sh --profile quality` 通过：Ruff、Bandit、348 项 runtime contracts、11 项 process naming、
+  import-linter、architecture guardrails 与 test topology 全部通过；`git diff --check` 通过。

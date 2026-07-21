@@ -184,6 +184,63 @@ async def test_live_runner_rejects_attestation_and_digest_reuse_on_a_caller_exec
 
 
 @pytest.mark.asyncio
+async def test_persisted_attestation_cannot_be_attached_through_any_module_private_creator(trusted_execution) -> None:
+    """合法报告落盘后，模块也不能暴露可把其 attestation 绑定到伪 delegate 的私有 creator。"""
+
+    _, sealed_executor, calls = trusted_execution
+    report = await provider_conformance.run_query_inventory_staging_live_conformance(
+        profile=STAGING_PROFILE,
+        executor=sealed_executor,
+        fixture_digest=FIXTURE_DIGEST,
+        generated_at=GENERATED_AT,
+    )
+    persisted_report = provider_conformance.verify_wms_conformance_report(report.model_dump(mode="json"))
+    calls.clear()
+    fake_delegate = _DeploymentExecutionDelegate(observations=_matching_observations(), calls=calls)
+
+    private_creators = {
+        name: candidate
+        for name, candidate in vars(provider_conformance).items()
+        if name.startswith("_")
+        and callable(candidate)
+        and (
+            "controlled_executor" in name
+            or "composition_boundary" in name
+            or (
+                "staging" in name
+                and "executor" in name
+                and any(marker in name for marker in ("compose", "create", "issue", "mint", "register"))
+            )
+        )
+    }
+    accepted_forgery: list[str] = []
+    for name, creator in private_creators.items():
+        parameters = inspect.signature(creator).parameters
+        if {"attestation", "execution_delegate"}.issubset(parameters):
+            forged_executor = creator(
+                attestation=persisted_report.staging_attestation,
+                execution_delegate=fake_delegate,
+            )
+            try:
+                await provider_conformance.run_query_inventory_staging_live_conformance(
+                    profile=STAGING_PROFILE,
+                    executor=forged_executor,
+                    fixture_digest=FIXTURE_DIGEST,
+                    generated_at=GENERATED_AT,
+                )
+            except TypeError:
+                rejected = True
+            else:
+                rejected = False
+            if not rejected:
+                accepted_forgery.append(name)
+
+    assert accepted_forgery == []
+    assert private_creators == {}
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_live_runner_rejects_a_copied_executor_without_factory_identity(trusted_execution) -> None:
     _, sealed_executor, calls = trusted_execution
     copied_executor = copy.copy(sealed_executor)
