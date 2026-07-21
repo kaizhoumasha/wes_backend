@@ -5,7 +5,7 @@ from types import MappingProxyType
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 
 WMS_OPERATION_IDENTITIES = tuple(binding.operation.identity for binding in WMS_PROVIDER_PROFILE.bindings)
-WMS_OPERATION_INDEX_DIGEST = "3782ce41aee2041d88328816b23fa29338259b3484dbe3cae6234705afd639e1"
+WMS_OPERATION_INDEX_DIGEST = "d4b9edc3b8e3d7e3b0b849203e92e42385a0f39ee24a645cb0d41fc1f65c74dc"
 WMS_OPERATION_INDEX = MappingProxyType(
     {binding.operation.identity: binding.operation for binding in WMS_PROVIDER_PROFILE.bindings}
 )
