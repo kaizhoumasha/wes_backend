@@ -43,7 +43,7 @@ class InventoryQueryOperationResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    items: tuple[InventoryAuthorityItem, ...] = ()
+    items: tuple[InventoryAuthorityItem, ...]
     source_version: StableText | None = Field(default=None, max_length=120)
 
 

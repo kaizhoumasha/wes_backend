@@ -4,8 +4,6 @@ from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract 
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
 from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationRequest
 
-REQUEST_MODEL_MODULE = ConfirmInboundOperationRequest.__module__
-
 
 class ConfirmInboundDispatchGateway:
     """构造入库确认 EXTERNAL_HTTP 包络，不执行外部 I/O。"""
@@ -33,4 +31,4 @@ class ConfirmInboundDispatchGateway:
         )
 
 
-__all__ = ["REQUEST_MODEL_MODULE", "ConfirmInboundDispatchGateway"]
+__all__ = ["ConfirmInboundDispatchGateway"]

@@ -99,3 +99,27 @@ uv run pytest \
 - 本任务只冻结 EFFECT request→`DispatchEnvelope` 的纯映射；未写 SystemOutbox、dispatch attempt、canonical payload bytes、typed transport result、reducer、reconciliation 或 callback 热路径，这些属于 T8+。
 - manifest 已声明统一 conformance required cases，但 operation 级 scripted fixtures、真实 adapter 完整试卷与 staging live report 属于 T5/T6，不在 T2 实现。
 - `DispatchEnvelope` 目前只支持 `payload_json`；canonical payload bytes 是后续 T8a 的跨 outbox 变更，本任务没有提前修改该高扩散合同。
+
+## 评审修复（2026-07-21）
+
+本轮只修复 T2 评审发现，没有迁移 T3+ QUERY/EFFECT 路径，也没有新增兼容 alias、字符串 dispatch 或双运行层：
+
+- `ProviderQueryInventoryResponseDTO.items` 与 `InventoryQueryOperationResult.items` 改为必填；缺失字段判为 malformed，显式 `[]` 仍归一化为合法空 tuple。
+- `WmsProviderProfile` 先校验每个绑定 EFFECT 恰有一个 callback、拒绝重复，再要求 callback 引用 binding 中同一对象或完整相等的 `WmsOperationContract`；仅 identity 相同但 transport contract 不同会被拒绝。
+- `WmsRetryPolicy.backoff_seconds` 的每个元素均为有限正数，明确拒绝 NaN、`+inf`、`-inf`，并继续受 `max_attempts <= 10` 与元素数量约束。
+- 删除三个 EFFECT gateway 的测试专用 `REQUEST_MODEL_MODULE` 字符串入口；合同测试直接参数化 gateway/request 类型。
+
+### TDD 证据
+
+- RED：新增评审回归测试后运行 typed Foundation 合同，结果 `6 failed, 11 passed`；失败分别证明两个 `items` 缺失、重复 callback、同 identity 错配 contract、NaN/+inf 尚未被拒绝。
+- GREEN：最小实现后同一文件 `17 passed`；typed Foundation + T2 架构边界 `22 passed`。
+- 扩大合同/架构回归：WMS integration、System Capability 与相关 WMS 架构测试 `175 passed`。
+
+### 验证与影响分析
+
+- GitNexus impact：Provider DTO、领域 query result、profile validator 与 gateway 测试为 LOW；`WmsRetryPolicy`、`WmsProviderProfile` 为 MEDIUM（各 7 个直接 import、0 条 execution flow）；无 HIGH/CRITICAL。
+- GitNexus detect changes（all）：7 个文件、15 个符号、0 条 execution flow，风险 LOW；gateway 仅删除模块常量，未映射为函数/类符号变更。
+- generated index check：`count=4`，digest 保持 `3782ce41aee2041d88328816b23fa29338259b3484dbe3cae6234705afd639e1`。
+- 测试拓扑：`6 passed`；默认收集审计：`3481 tests collected`。
+- `./scripts/git-quality-gate.sh --profile quality`：通过；Ruff、Bandit、runtime contract guardrails、process naming、import-linter、架构门禁与测试拓扑均通过。
+- `git diff --check`：通过。

@@ -4,8 +4,6 @@ from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.cont
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
 from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationRequest
 
-REQUEST_MODEL_MODULE = NotifyPackageBindingOperationRequest.__module__
-
 
 class NotifyPackageBindingDispatchGateway:
     """构造料盘绑定 EXTERNAL_HTTP 包络，不执行外部 I/O。"""
@@ -29,4 +27,4 @@ class NotifyPackageBindingDispatchGateway:
         )
 
 
-__all__ = ["REQUEST_MODEL_MODULE", "NotifyPackageBindingDispatchGateway"]
+__all__ = ["NotifyPackageBindingDispatchGateway"]

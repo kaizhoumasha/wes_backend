@@ -10,6 +10,28 @@ from types import MappingProxyType
 import pytest
 from pydantic import ValidationError
 
+from src.app.runtime.system_capabilities.wms.contracts import (
+    InboundCallbackContract,
+    WmsProviderProfile,
+    WmsRetryPolicy,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.gateway import (
+    FullBoxExchangeDispatchGateway,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.gateway import (
+    NotifyPackageBindingDispatchGateway,
+)
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.gateway import ConfirmInboundDispatchGateway
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
+from src.app.wms_integration.adapters.query_inventory_operation_adapter import (
+    ProviderQueryInventoryResponseDTO,
+    map_provider_query_inventory_response,
+)
+from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationRequest
+from src.app.wms_integration.ports.full_box_exchange_operation import FullBoxExchangeOperationRequest
+from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationRequest
+from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationResult
+
 
 def _load(module_name: str):
     assert importlib.util.find_spec(module_name) is not None, f"缺少 T2 合同模块: {module_name}"
@@ -49,9 +71,7 @@ def test_four_real_operations_are_independent_decimal_contracts() -> None:
 
 
 def test_provider_query_mapping_preserves_missing_facts_and_decimal_precision() -> None:
-    adapter = _load("src.app.wms_integration.adapters.query_inventory_operation_adapter")
-
-    result = adapter.map_provider_query_inventory_response(
+    result = map_provider_query_inventory_response(
         {
             "items": [
                 {
@@ -70,13 +90,25 @@ def test_provider_query_mapping_preserves_missing_facts_and_decimal_precision() 
     assert result.source_version is None
 
 
+@pytest.mark.parametrize("response_model", [ProviderQueryInventoryResponseDTO, InventoryQueryOperationResult])
+def test_query_response_items_are_required(response_model: type) -> None:
+    with pytest.raises(ValidationError, match="items"):
+        response_model.model_validate({})
+
+
+@pytest.mark.parametrize("response_model", [ProviderQueryInventoryResponseDTO, InventoryQueryOperationResult])
+def test_query_response_accepts_explicit_empty_items(response_model: type) -> None:
+    response = response_model.model_validate({"items": []})
+
+    assert response.items == ()
+
+
 @pytest.mark.parametrize(
-    ("module_name", "gateway_name", "request_name", "request_kwargs", "expected_payload"),
+    ("gateway_type", "request_type", "request_kwargs", "expected_payload"),
     [
         (
-            "src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.gateway",
-            "ConfirmInboundDispatchGateway",
-            "ConfirmInboundOperationRequest",
+            ConfirmInboundDispatchGateway,
+            ConfirmInboundOperationRequest,
             {
                 "dispatch_key": "inbound:001",
                 "inbound_key": "IN-001",
@@ -87,9 +119,8 @@ def test_provider_query_mapping_preserves_missing_facts_and_decimal_precision() 
             {"inbound_key": "IN-001", "material_code": "MAT-001", "quantity": "1.250"},
         ),
         (
-            "src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.gateway",
-            "NotifyPackageBindingDispatchGateway",
-            "NotifyPackageBindingOperationRequest",
+            NotifyPackageBindingDispatchGateway,
+            NotifyPackageBindingOperationRequest,
             {
                 "dispatch_key": "binding:001",
                 "package_id": "PKG-001",
@@ -99,9 +130,8 @@ def test_provider_query_mapping_preserves_missing_facts_and_decimal_precision() 
             {"package_id": "PKG-001", "pallet_id": "PLT-001", "station_code": "ST-A"},
         ),
         (
-            "src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.gateway",
-            "FullBoxExchangeDispatchGateway",
-            "FullBoxExchangeOperationRequest",
+            FullBoxExchangeDispatchGateway,
+            FullBoxExchangeOperationRequest,
             {
                 "dispatch_key": "exchange:001",
                 "rack_id": "RACK-001",
@@ -113,17 +143,18 @@ def test_provider_query_mapping_preserves_missing_facts_and_decimal_precision() 
     ],
 )
 def test_each_effect_gateway_maps_typed_request_to_dispatch_envelope_once(
-    module_name: str,
-    gateway_name: str,
-    request_name: str,
+    gateway_type: type[
+        ConfirmInboundDispatchGateway | NotifyPackageBindingDispatchGateway | FullBoxExchangeDispatchGateway
+    ],
+    request_type: type[
+        ConfirmInboundOperationRequest | NotifyPackageBindingOperationRequest | FullBoxExchangeOperationRequest
+    ],
     request_kwargs: dict[str, object],
     expected_payload: dict[str, object],
 ) -> None:
-    gateway_module = _load(module_name)
-    request_module = _load(gateway_module.REQUEST_MODEL_MODULE)
-    request = getattr(request_module, request_name)(**request_kwargs)
+    request = request_type(**request_kwargs)
 
-    envelope = getattr(gateway_module, gateway_name)().build_envelope(request)
+    envelope = gateway_type().build_envelope(request)
 
     assert envelope.dispatch_key == request.dispatch_key
     assert envelope.dispatch_type.value == "EXTERNAL_HTTP"
@@ -131,6 +162,57 @@ def test_each_effect_gateway_maps_typed_request_to_dispatch_envelope_once(
     assert envelope.payload_json == expected_payload
     assert "UNKNOWN" not in repr(envelope.payload_json)
     assert "" not in envelope.payload_json.values()
+
+
+def test_provider_profile_rejects_duplicate_callback_for_effect() -> None:
+    with pytest.raises(ValidationError, match="exactly one callback"):
+        WmsProviderProfile(
+            identity=WMS_PROVIDER_PROFILE.identity,
+            bindings=WMS_PROVIDER_PROFILE.bindings,
+            callbacks=(*WMS_PROVIDER_PROFILE.callbacks, WMS_PROVIDER_PROFILE.callbacks[0]),
+        )
+
+
+def test_provider_profile_rejects_callback_with_different_operation_contract() -> None:
+    callback = WMS_PROVIDER_PROFILE.callbacks[0]
+    different_operation = callback.operation.model_copy(update={"target_code": "WMS_INBOUND_CONFIRM_ALTERNATE"})
+    different_callback = InboundCallbackContract(
+        operation=different_operation,
+        callback_type=callback.callback_type,
+        payload_model=callback.payload_model,
+    )
+
+    with pytest.raises(ValidationError, match="bound EFFECT operation contract"):
+        WmsProviderProfile(
+            identity=WMS_PROVIDER_PROFILE.identity,
+            bindings=WMS_PROVIDER_PROFILE.bindings,
+            callbacks=(different_callback, *WMS_PROVIDER_PROFILE.callbacks[1:]),
+        )
+
+
+def test_provider_profile_accepts_callback_with_equal_operation_contract() -> None:
+    callback = WMS_PROVIDER_PROFILE.callbacks[0]
+    equal_operation = callback.operation.model_copy()
+    equal_callback = InboundCallbackContract(
+        operation=equal_operation,
+        callback_type=callback.callback_type,
+        payload_model=callback.payload_model,
+    )
+
+    profile = WmsProviderProfile(
+        identity=WMS_PROVIDER_PROFILE.identity,
+        bindings=WMS_PROVIDER_PROFILE.bindings,
+        callbacks=(equal_callback, *WMS_PROVIDER_PROFILE.callbacks[1:]),
+    )
+
+    assert equal_operation is not WMS_PROVIDER_PROFILE.bindings[1].operation
+    assert profile.callbacks[0].operation == WMS_PROVIDER_PROFILE.bindings[1].operation
+
+
+@pytest.mark.parametrize("backoff", [float("nan"), float("inf"), float("-inf")])
+def test_retry_policy_rejects_non_finite_backoff(backoff: float) -> None:
+    with pytest.raises(ValidationError, match="backoff_seconds"):
+        WmsRetryPolicy(max_attempts=2, backoff_seconds=(backoff,))
 
 
 def test_runtime_profile_is_identity_only_and_production_rejects_none_auth() -> None:

@@ -4,8 +4,6 @@ from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contr
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
 from src.app.wms_integration.ports.full_box_exchange_operation import FullBoxExchangeOperationRequest
 
-REQUEST_MODEL_MODULE = FullBoxExchangeOperationRequest.__module__
-
 
 class FullBoxExchangeDispatchGateway:
     """构造满箱交换 EXTERNAL_HTTP 包络，不执行外部 I/O。"""
@@ -29,4 +27,4 @@ class FullBoxExchangeDispatchGateway:
         )
 
 
-__all__ = ["REQUEST_MODEL_MODULE", "FullBoxExchangeDispatchGateway"]
+__all__ = ["FullBoxExchangeDispatchGateway"]

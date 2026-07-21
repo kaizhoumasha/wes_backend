@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 OperationIdentity = Annotated[str, StringConstraints(pattern=r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")]
+FinitePositiveSeconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 _CREDENTIAL_REFERENCE_RE = re.compile(r"^[a-z][a-z0-9+.-]*://[^@\s]+@v[1-9][0-9]*$")
 
 
@@ -76,7 +77,7 @@ class WmsRetryPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_attempts: int = Field(ge=1, le=10)
-    backoff_seconds: tuple[float, ...] = ()
+    backoff_seconds: tuple[FinitePositiveSeconds, ...] = ()
 
     @model_validator(mode="after")
     def backoff_matches_attempt_budget(self) -> WmsRetryPolicy:
@@ -189,10 +190,19 @@ class WmsProviderProfile(BaseModel):
         if len(operation_identities) != len(set(operation_identities)):
             raise ValueError("provider profile contains duplicate operation identity")
         bound_effects = {
-            binding.operation.identity for binding in self.bindings if binding.operation.mode is WmsOperationMode.EFFECT
+            binding.operation.identity: binding.operation
+            for binding in self.bindings
+            if binding.operation.mode is WmsOperationMode.EFFECT
         }
-        if {callback.operation.identity for callback in self.callbacks} != bound_effects:
+        callback_identities = tuple(callback.operation.identity for callback in self.callbacks)
+        if len(callback_identities) != len(set(callback_identities)) or set(callback_identities) != set(bound_effects):
             raise ValueError("every bound EFFECT must declare exactly one callback contract")
+        if any(
+            callback.operation is not bound_effects[callback.operation.identity]
+            and callback.operation != bound_effects[callback.operation.identity]
+            for callback in self.callbacks
+        ):
+            raise ValueError("callback must reference the bound EFFECT operation contract")
         return self
 
 

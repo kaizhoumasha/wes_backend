@@ -34,7 +34,7 @@ class ProviderQueryInventoryResponseDTO(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    items: tuple[ProviderInventoryItemDTO, ...] = ()
+    items: tuple[ProviderInventoryItemDTO, ...]
     source_version: str | None = Field(default=None, max_length=120)
 
 
