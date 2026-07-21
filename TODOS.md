@@ -109,11 +109,13 @@
 
 **Context:** Celery Worker 单异步运行时改造会新增按 role/PID/run-id 结构化的 PostgreSQL `application_name`、连接预算门禁和 pool timeout 配置；这些信号应并入同一运营面，而不是再建一套数据库专用看板。
 
+2026-07-21 边界更新：北向 WMS capability 的 operation/profile SLO、指标、告警和 Runbook 已由 `docs/superpowers/specs/2026-07-21-northbound-capability-extraction-design.md` 纳入当前交付。本 TODO 不重复实现该领域能力，只在其稳定后把现成信号聚合到跨 Runtime、Device、Database 的统一运营面。
+
 **Scope:**
 - RuntimeInbox backlog、dead-letter、RESOURCE_WAIT、Outbox BLOCKED_RESOURCE
 - DeviceCommand ACK age、dispatch deadline、ECS status probe 失败、设备 ERROR/OFFLINE/MAINTENANCE
 - Reconciliation active 数、MTTR、reason、late callback、manual resolve
-- WMS breaker OPEN/HALF_OPEN/CLOSED、timeout/5xx/business reject、evidence 写入失败
+- 聚合北向能力设计已交付的 WMS breaker、timeout/5xx/business reject、evidence/UNKNOWN/readiness 信号，不在本 TODO 重建指标、告警或 Runbook
 - Safety incident / ESTOP evidence / shared-device 影响范围
 - Database pool checkout wait/timeout、按 `application_name` 的连接预算占用、`idle in transaction` 数量
 - 数据库告警与 Runbook：例如 `idle in transaction > 0` 持续 2 分钟、pool timeout 或预算占用接近上限
