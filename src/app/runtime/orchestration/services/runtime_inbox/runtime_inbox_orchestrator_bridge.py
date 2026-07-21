@@ -1559,7 +1559,7 @@ async def _build_plugin_dispatch_request(
     """在 Stage 1 固定 binding/config/facts，Stage 2 只消费 immutable request。"""
 
     _ = workline
-    from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
+    from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
         RoughSorterBindingSnapshot,
     )
     from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts

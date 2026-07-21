@@ -6,9 +6,11 @@ from decimal import Decimal
 
 import pytest
 
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
+    RoughSorterBindingSnapshot,
+)
 from src.app.runtime.system_capabilities import BusinessReject, ContractViolation, RetryableFailure, Success
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterBindingSnapshot,
     RoughSorterInventoryAdmissionInput,
 )
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import DEFINITION

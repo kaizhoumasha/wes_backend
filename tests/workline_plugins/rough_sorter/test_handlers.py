@@ -10,12 +10,14 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
+    RoughSorterBindingSnapshot,
+)
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.runtime_intent import BlockScope
 from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterBindingSnapshot,
     RoughSorterInventoryAdmissionOutput,
 )
 from src.app.runtime.workline_plugins.contracts import PluginDecision

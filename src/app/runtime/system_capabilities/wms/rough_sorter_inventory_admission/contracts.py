@@ -7,28 +7,16 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (  # noqa: TC001 - Pydantic 运行时需要具体类型。
+    RoughSorterBindingSnapshot,
+)
+
 PROFILE_FAMILY = "wms.2026-07-06.material-flow"
 PROFILE_IDENTITY = f"{PROFILE_FAMILY}.sandbox"
 SUPPORTED_PROFILE_IDENTITIES = frozenset(
     f"{PROFILE_FAMILY}.{environment}" for environment in ("sandbox", "staging", "production")
 )
 StableString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-StableHash = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
-]
-
-
-class RoughSorterBindingSnapshot(BaseModel):
-    """QUERY 输入固定的不可变插件 binding 摘要。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    binding_id: int = Field(gt=0)
-    binding_version: int = Field(gt=0)
-    profile_identity: StableString
-    plugin_config_hash: StableHash
-    generated_index_digest: StableHash
 
 
 class RoughSorterInventoryAdmissionInput(BaseModel):
@@ -64,7 +52,6 @@ __all__ = [
     "PROFILE_FAMILY",
     "PROFILE_IDENTITY",
     "SUPPORTED_PROFILE_IDENTITIES",
-    "RoughSorterBindingSnapshot",
     "RoughSorterInventoryAdmissionInput",
     "RoughSorterInventoryAdmissionOutput",
 ]

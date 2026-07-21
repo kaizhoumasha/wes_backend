@@ -22,10 +22,12 @@ from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
     build_pick_and_put_payload,
     normalize_six_in_one_payload,
 )
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (  # noqa: TC001 - Pydantic 运行时需要具体类型。
+    RoughSorterBindingSnapshot,
+)
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterBindingSnapshot,
     RoughSorterInventoryAdmissionInput,
 )
 from src.app.runtime.workline_plugins.contracts import PluginContext, PluginDecision
