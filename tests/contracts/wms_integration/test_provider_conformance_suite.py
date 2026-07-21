@@ -11,8 +11,10 @@ from pydantic import ValidationError
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
+    ConformanceObservation,
     build_wms_conformance_report,
 )
+from tests.support import wms_provider_conformance as conformance_support
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
     QueryInventoryReplayFactory,
@@ -63,6 +65,47 @@ async def test_replay_factory_is_pure_and_deterministic() -> None:
     assert "credential" not in source
     assert "httpx" not in source
     assert "runtime_factory" not in source
+
+
+@pytest.mark.asyncio
+async def test_replay_uses_an_independent_fixed_asset_instead_of_current_question_bank_expectations() -> None:
+    replay_fixture = getattr(conformance_support, "QUERY_INVENTORY_REPLAY_FIXTURE", None)
+
+    assert replay_fixture is not None
+    assert replay_fixture.digest != QUERY_INVENTORY_SCRIPT_FIXTURE.digest
+    assert replay_fixture.verify() is True
+
+    success = next(case for case in QUERY_INVENTORY_SCRIPT_FIXTURE.cases if case.case_id == "success")
+    contradictory_case = success.model_copy(
+        update={
+            "recorded_observation": ConformanceObservation(
+                case_id="success",
+                outcome_kind="SUCCESS",
+                evidence_recorded=True,
+                semantic_marker="EMPTY",
+            )
+        }
+    )
+    observation = await QueryInventoryReplayFactory().execute(contradictory_case)
+
+    assert observation.semantic_marker == "ONE_ITEM"
+    assert "recorded_observation" not in inspect.getsource(QueryInventoryReplayFactory)
+
+
+@pytest.mark.asyncio
+async def test_execution_recording_belongs_to_the_test_wrapper_not_the_replay_factory() -> None:
+    wrapper_type = getattr(conformance_support, "RecordingConformanceTarget", None)
+    factory = QueryInventoryReplayFactory()
+
+    assert wrapper_type is not None
+    assert not hasattr(factory, "executed_case_ids")
+    assert not hasattr(factory, "__dict__")
+
+    wrapper = wrapper_type(factory)
+    case = QUERY_INVENTORY_SCRIPT_FIXTURE.cases[0]
+    await wrapper.execute(case)
+
+    assert wrapper.executed_case_ids == (case.case_id,)
 
 
 def test_script_fixture_is_frozen_verifiable_and_has_no_secret_or_header_schema() -> None:

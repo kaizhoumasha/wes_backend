@@ -7,7 +7,8 @@ import hmac
 import json
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, Annotated
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
@@ -98,6 +99,67 @@ class QueryInventoryScriptFixture(BaseModel):
         return hmac.compare_digest(self.digest, _fixture_digest(self.cases))
 
 
+class ReplayInventoryItem(BaseModel):
+    """固定 replay asset 中重建 T3 success outcome 所需的最小领域事实。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    material_code: str
+    available_quantity: Decimal
+
+
+class QueryInventoryReplayRecord(BaseModel):
+    """独立 replay asset 的冻结 outcome record，不引用当前题库 expectation。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    case_id: str
+    outcome_kind: ConformanceOutcomeKind
+    reason_code: str | None
+    retryable: bool | None
+    retry_after_seconds: float | None
+    evidence_recorded: bool
+    items: tuple[ReplayInventoryItem, ...]
+
+    @model_validator(mode="after")
+    def validate_recorded_outcome(self) -> QueryInventoryReplayRecord:
+        if self.outcome_kind is ConformanceOutcomeKind.SUCCESS:
+            if self.reason_code is not None or self.retryable is not None:
+                raise ValueError("replay success cannot carry failure classification")
+        elif self.outcome_kind is ConformanceOutcomeKind.TECHNICAL_FAILURE:
+            if self.reason_code is None or self.retryable is None or self.items:
+                raise ValueError("replay technical failure requires classification without items")
+        elif self.reason_code is None or self.retryable is not None or self.items:
+            raise ValueError("replay business/contract failure requires reason without items")
+        if self.retry_after_seconds is not None and not (
+            self.outcome_kind is ConformanceOutcomeKind.TECHNICAL_FAILURE and self.retryable
+        ):
+            raise ValueError("replay retry_after_seconds requires retryable technical failure")
+        return self
+
+
+class QueryInventoryReplayFixture(BaseModel):
+    """独立于当前 conformance 题库的固定 replay asset 与内容摘要。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["wms-query-inventory-replay.v1"]
+    records: tuple[QueryInventoryReplayRecord, ...]
+    digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def verify_asset(self) -> QueryInventoryReplayFixture:
+        case_ids = tuple(record.case_id for record in self.records)
+        if len(case_ids) != len(set(case_ids)):
+            raise ValueError("query inventory replay asset contains duplicate case identity")
+        if not self.verify():
+            raise ValueError("query inventory replay asset digest mismatch")
+        return self
+
+    def verify(self) -> bool:
+        return hmac.compare_digest(self.digest, _replay_fixture_digest(self))
+
+
 def _observation_from_expectation(case) -> ConformanceObservation:
     return ConformanceObservation.model_validate(case.model_dump(mode="json"))
 
@@ -112,6 +174,26 @@ def _fixture_digest(cases: tuple[ScriptedQueryCase, ...]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _replay_fixture_digest(fixture: QueryInventoryReplayFixture) -> str:
+    canonical = json.dumps(
+        {
+            "schema_version": fixture.schema_version,
+            "records": [record.model_dump(mode="json") for record in fixture.records],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _load_replay_fixture() -> QueryInventoryReplayFixture:
+    asset_path = (
+        Path(__file__).resolve().parents[1] / "fixtures/wms_provider_conformance/query_inventory_replay.v1.json"
+    )
+    return QueryInventoryReplayFixture.model_validate_json(asset_path.read_text(encoding="utf-8"))
+
+
 _SCRIPTED_CASES = tuple(
     ScriptedQueryCase(
         case_id=case.case_id,
@@ -124,6 +206,7 @@ QUERY_INVENTORY_SCRIPT_FIXTURE = QueryInventoryScriptFixture(
     cases=_SCRIPTED_CASES,
     digest=_fixture_digest(_SCRIPTED_CASES),
 )
+QUERY_INVENTORY_REPLAY_FIXTURE = _load_replay_fixture()
 
 
 class _RecordingEvidenceWriter:
@@ -157,18 +240,11 @@ class QueryInventoryAdapterFactory:
 
     name = "real-adapter"
     target = ConformanceTarget.CI_ADAPTER
-
-    def __init__(self) -> None:
-        self._executed_case_ids: list[str] = []
-
-    @property
-    def executed_case_ids(self) -> tuple[str, ...]:
-        return tuple(self._executed_case_ids)
+    __slots__ = ()
 
     async def execute(self, case: ScriptedQueryCase) -> ConformanceObservation:
         from tests.mock.wms_scripted_provider import scripted_query_inventory_response
 
-        self._executed_case_ids.append(case.case_id)
         return await _execute_adapter_case(
             case,
             handler=lambda request: scripted_query_inventory_response(case, request),
@@ -180,18 +256,11 @@ class QueryInventorySimulatorFactory:
 
     name = "in-process-simulator"
     target = ConformanceTarget.SIMULATOR
-
-    def __init__(self) -> None:
-        self._executed_case_ids: list[str] = []
-
-    @property
-    def executed_case_ids(self) -> tuple[str, ...]:
-        return tuple(self._executed_case_ids)
+    __slots__ = ()
 
     async def execute(self, case: ScriptedQueryCase) -> ConformanceObservation:
         from tests.mock.wms_scripted_provider import ScriptedWmsQueryInventoryProvider
 
-        self._executed_case_ids.append(case.case_id)
         provider = ScriptedWmsQueryInventoryProvider(case)
         return await _execute_adapter_case(case, handler=provider.handle)
 
@@ -201,9 +270,34 @@ class QueryInventoryReplayFactory:
 
     name = "canonical-replay"
     target = ConformanceTarget.REPLAY
+    __slots__ = ()
 
-    def __init__(self) -> None:
+    async def execute(self, case: ScriptedQueryCase) -> ConformanceObservation:
+        record = next(
+            (record for record in QUERY_INVENTORY_REPLAY_FIXTURE.records if record.case_id == case.case_id),
+            None,
+        )
+        if record is None:
+            raise AssertionError(f"missing canonical replay record: {case.case_id}")
+        return _observe_query_outcome(_recorded_outcome(record), case_id=record.case_id)
+
+
+class RecordingConformanceTarget:
+    """仅供共同试卷记录执行顺序；被测 factory 保持无状态。"""
+
+    __slots__ = ("_delegate", "_executed_case_ids")
+
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
         self._executed_case_ids: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return self._delegate.name
+
+    @property
+    def target(self) -> ConformanceTarget:
+        return self._delegate.target
 
     @property
     def executed_case_ids(self) -> tuple[str, ...]:
@@ -211,16 +305,16 @@ class QueryInventoryReplayFactory:
 
     async def execute(self, case: ScriptedQueryCase) -> ConformanceObservation:
         self._executed_case_ids.append(case.case_id)
-        return _observe_query_outcome(_recorded_outcome(case), case_id=case.case_id)
+        return await self._delegate.execute(case)
 
 
 def build_query_inventory_conformance_targets():
     """返回固定三个执行面；Provider 不可删题或替换题库。"""
 
     return (
-        QueryInventoryAdapterFactory(),
-        QueryInventorySimulatorFactory(),
-        QueryInventoryReplayFactory(),
+        RecordingConformanceTarget(QueryInventoryAdapterFactory()),
+        RecordingConformanceTarget(QueryInventorySimulatorFactory()),
+        RecordingConformanceTarget(QueryInventoryReplayFactory()),
     )
 
 
@@ -250,47 +344,40 @@ async def _execute_adapter_case(case: ScriptedQueryCase, *, handler) -> Conforma
     return _observe_query_outcome(outcome, case_id=case.case_id)
 
 
-def _recorded_outcome(case: ScriptedQueryCase) -> WmsQueryOutcome[InventoryQueryOperationResult]:
-    observation = case.recorded_observation
-    evidence_key = "replay:evidence" if observation.evidence_recorded else None
-    if observation.outcome_kind is ConformanceOutcomeKind.SUCCESS:
-        return QuerySuccess(value=_recorded_success(case), evidence_key=evidence_key)
-    if observation.outcome_kind is ConformanceOutcomeKind.BUSINESS_REJECT:
+def _recorded_outcome(record: QueryInventoryReplayRecord) -> WmsQueryOutcome[InventoryQueryOperationResult]:
+    evidence_key = "replay:evidence" if record.evidence_recorded else None
+    if record.outcome_kind is ConformanceOutcomeKind.SUCCESS:
+        return QuerySuccess(value=_recorded_success(record), evidence_key=evidence_key)
+    if record.outcome_kind is ConformanceOutcomeKind.BUSINESS_REJECT:
         return QueryBusinessReject(
-            reason_code=observation.reason_code or "",
+            reason_code=record.reason_code or "",
             message="recorded business reject",
             evidence_key=evidence_key,
         )
-    if observation.outcome_kind is ConformanceOutcomeKind.TECHNICAL_FAILURE:
+    if record.outcome_kind is ConformanceOutcomeKind.TECHNICAL_FAILURE:
         return QueryTechnicalFailure(
-            reason_code=observation.reason_code or "",
+            reason_code=record.reason_code or "",
             message="recorded technical failure",
-            retryable=bool(observation.retryable),
-            retry_after_seconds=observation.retry_after_seconds,
+            retryable=bool(record.retryable),
+            retry_after_seconds=record.retry_after_seconds,
             evidence_key=evidence_key,
         )
     return QueryContractFailure(
-        reason_code=observation.reason_code or "",
+        reason_code=record.reason_code or "",
         message="recorded contract failure",
         evidence_key=evidence_key,
     )
 
 
-def _recorded_success(case: ScriptedQueryCase) -> InventoryQueryOperationResult:
-    if case.scenario is QueryConformanceScenario.EMPTY:
-        return InventoryQueryOperationResult(items=())
-    if case.scenario is QueryConformanceScenario.PAGINATION:
-        return InventoryQueryOperationResult(
-            items=(
-                InventoryAuthorityItem(material_code="MAT-001", available_quantity=Decimal("1")),
-                InventoryAuthorityItem(material_code="MAT-002", available_quantity=Decimal("2")),
-            )
-        )
-    quantity = (
-        Decimal("9007199254740993.125") if case.scenario is QueryConformanceScenario.PRECISION else Decimal("7.25")
-    )
+def _recorded_success(record: QueryInventoryReplayRecord) -> InventoryQueryOperationResult:
     return InventoryQueryOperationResult(
-        items=(InventoryAuthorityItem(material_code="MAT-001", available_quantity=quantity),)
+        items=tuple(
+            InventoryAuthorityItem(
+                material_code=item.material_code,
+                available_quantity=item.available_quantity,
+            )
+            for item in record.items
+        )
     )
 
 
@@ -345,11 +432,16 @@ def _success_marker(result: InventoryQueryOperationResult) -> str:
 
 
 __all__ = [
+    "QUERY_INVENTORY_REPLAY_FIXTURE",
     "QUERY_INVENTORY_SCRIPT_FIXTURE",
     "QueryInventoryAdapterFactory",
     "QueryInventoryReplayFactory",
+    "QueryInventoryReplayFixture",
+    "QueryInventoryReplayRecord",
     "QueryInventoryScriptFixture",
     "QueryInventorySimulatorFactory",
+    "RecordingConformanceTarget",
+    "ReplayInventoryItem",
     "ScriptedQueryCase",
     "build_query_inventory_conformance_targets",
 ]

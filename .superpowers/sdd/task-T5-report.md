@@ -75,3 +75,39 @@ T5 已实现并通过本任务目标门禁。交付只覆盖 Provider quality：
 
 - `uv run python scripts/generate_wms_operation_index.py --check` 报告既有 generated index 漂移：HEAD 文件 digest 为 `3782ce41...`，当前 T2/T3 catalog 派生为 `d4b9edc3...`。追溯显示 T3 提交修改了 query operation contract，但 `generated_operation_index.py` 自 T2 后未更新；T5 没有改任何 operation contract，因此未把该基座修正混入本提交。
 - staging live 入口只负责在执行前验证 staging profile/revision/canonical binding，并接受外部注入的受控 live executor；本任务未创建 Provider 专用真实 endpoint/credential composition。该组合必须由部署侧显式提供，runner 自身仍无生产 endpoint/credential 能力。
+
+## 审查修复追加
+
+### staging executor 身份与 fail-closed
+
+- live 入口不再接受无身份 callback，改为只接受实现 `StagingQueryConformanceExecutor` 的具名 executor。
+- 部署 composition 必须提供冻结 `StagingConformanceExecutorAttestation`；证明绑定 staging profile identity/profile revision、canonical query binding identity/binding revision、endpoint identity digest 与 endpoint revision。
+- runner 在执行第一题前重新派生并逐字段比对 attestation；production profile、缺 canonical binding、endpoint/revision 不匹配、attestation 篡改或无 attestation executor 均 fail closed。
+- attestation 只携带 SHA-256 摘要；报告只保留 endpoint revision digest，不保存 endpoint identity、URL、credential reference 或 secret。
+
+### 报告验证与 revision 收紧
+
+- `endpoint_revision` 收紧为 64 位小写 SHA-256 opaque digest；普通 release token、URL、`sk-*`、`api_key=*`、Bearer/authorization 形态都在执行前拒绝。
+- `verify_wms_conformance_report` 除报告自摘要外，还校验固定核心 suite digest、完整 case ID/顺序/数量、author-time profile digest、target/profile 环境组合，并逐题重算 `passed` 与 failure evidence digest。
+- 合同测试覆盖“篡改后重新计算 report digest”的攻击面，证明自洽 hash 不能绕过固定题库、case verdict 或环境门禁。
+
+### 独立 replay asset 与无状态 factory
+
+- replay 改为读取独立冻结资产 `tests/fixtures/wms_provider_conformance/query_inventory_replay.v1.json`，固定 digest 为 `4584ece449cdcfa69f6a46ac4315b3f11a285f3f832a82bc04685c21ac22bf52`。
+- replay record 自身携带重建 T3 outcome 所需的最小领域事实，不再从当前 conformance expectation 或 scripted case 的 `recorded_observation` 复制结果。
+- adapter/simulator/replay factory 均不保存执行可变状态；执行顺序记录移入 `RecordingConformanceTarget` 测试 wrapper。
+
+### 审查修复 TDD 记录
+
+1. RED：新增 opaque revision 与重新签名报告篡改用例，`26` 项中 `8` 项按预期失败；GREEN：固定 suite/profile/environment/逐题复核与严格 digest 后 `26 passed`。
+2. RED：architecture 门禁证明 staging 入口仍暴露裸 `execute` callback；GREEN：改为 attested executor 签名并通过门禁。
+3. RED：独立 replay asset 与 wrapper 记录用例 `2 failed`，分别暴露 asset 缺失和 factory 持有可变记录；GREEN：独立资产、T3 outcome 重建与无状态 factory 后 suite `8 passed`。
+
+### 审查修复影响分析与验证
+
+- GitNexus：`build_wms_conformance_report` 为 MEDIUM（7 个直接调用、0 条 execution flow）；报告模型、verify、staging entry、环境/profile 校验与 replay/factory 均为 LOW（最多 4 个直接依赖、0 条 execution flow），无 HIGH/CRITICAL 风险。
+- MCP 读取器仍与本机 LadybugDB 索引版本不兼容；已在目标 worktree 完整重建索引，并使用同版本 GitNexus CLI 完成 query/context/impact。
+- staged detect：`7 files / 44 symbols / 0 affected process`，最终风险 LOW；暂存范围不包含用户已有的 `AGENTS.md`、`CLAUDE.md` 改动。
+- WMS integration contracts：`105 passed`；T5 目标 contracts：`34 passed`；显式 mock simulator：`2 passed`；T5 architecture + topology：`11 passed`。
+- 默认收集审计：`3534 tests collected`；`ruff format --check`、`ruff check`、Bandit、import-linter、architecture guardrails、runtime contract guardrails 与 test topology 均由 quality profile 验证通过。
+- 本轮未运行或修改 generated operation index，不处理既有 generated index drift。

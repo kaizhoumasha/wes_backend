@@ -32,6 +32,15 @@ def test_pure_runner_has_no_network_credential_or_persistence_import_capability(
         assert parameters.isdisjoint({"base_url", "endpoint", "headers", "credential", "secret", "transport"})
 
 
+def test_staging_entry_requires_an_attested_executor_instead_of_a_bare_callback() -> None:
+    parameters = set(inspect.signature(provider_conformance.run_query_inventory_staging_live_conformance).parameters)
+
+    assert "executor" in parameters
+    assert "execute" not in parameters
+    assert hasattr(provider_conformance, "StagingConformanceExecutorAttestation")
+    assert hasattr(provider_conformance, "build_staging_conformance_executor_attestation")
+
+
 def test_simulator_is_test_only_in_process_and_does_not_copy_production_lifecycle() -> None:
     simulator_path = Path(wms_scripted_provider.__file__).resolve()
     source = simulator_path.read_text(encoding="utf-8")
