@@ -48,9 +48,9 @@ def _compiled_status_values(statement: Any) -> set[SystemOutboxStatus]:
 
 
 @pytest.mark.asyncio
-async def test_cancel_active_by_session_treats_blocked_resource_as_active() -> None:
+async def test_cancel_active_by_session_treats_retry_wait_as_active() -> None:
     blocked_outbox = SimpleNamespace(
-        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        status=SystemOutboxStatus.RETRY_WAIT,
         last_error=None,
         finished_at=None,
     )
@@ -63,7 +63,7 @@ async def test_cancel_active_by_session_treats_blocked_resource_as_active() -> N
     )
 
     assert db.statement is not None
-    assert SystemOutboxStatus.BLOCKED_RESOURCE in _compiled_status_values(db.statement)
+    assert SystemOutboxStatus.RETRY_WAIT in _compiled_status_values(db.statement)
     assert count == 1
     assert blocked_outbox.status == SystemOutboxStatus.CANCELLED
     assert blocked_outbox.last_error == "MANUAL_CANCEL_REQUESTED"

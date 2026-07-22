@@ -51,7 +51,9 @@ class FakeSystemOutboxRepository:
                 and message.next_retry_at is not None
                 and message.next_retry_at <= now
             )
-            if message.id == outbox_id and (message.status == SystemOutboxStatus.NEW or stale_dispatching):
+            if message.id == outbox_id and (
+                message.status in {SystemOutboxStatus.NEW, SystemOutboxStatus.RETRY_WAIT} or stale_dispatching
+            ):
                 message.status = SystemOutboxStatus.DISPATCHING
                 message.next_retry_at = now + timedelta(minutes=5)
                 return message
@@ -69,7 +71,7 @@ class FakeSystemOutboxRepository:
         self.mark_failed_calls.append((outbox_id, error, max_retries))
         for message in self.messages:
             if message.id == outbox_id:
-                message.status = SystemOutboxStatus.NEW
+                message.status = SystemOutboxStatus.RETRY_WAIT
                 message.last_error = error
                 return message
         return None
@@ -98,7 +100,7 @@ class FakeSystemOutboxRepository:
             return None
         for message in self.messages:
             if message.id == outbox_id:
-                message.status = SystemOutboxStatus.BLOCKED_RESOURCE
+                message.status = SystemOutboxStatus.RETRY_WAIT
                 message.blocked_reason = reason
                 message.blocked_device_id = blocked_device_id
                 message.blocked_workline_id = blocked_workline_id
@@ -170,7 +172,7 @@ async def test_system_outbox_dispatcher_marks_failed_when_external_http_fails() 
 
     assert result == {"dispatched": 1, "success": 0, "failed": 1, "skipped": 0}
     assert repo.mark_failed_calls == [(2, "Dispatch failed", 3)]
-    assert message.status == SystemOutboxStatus.NEW
+    assert message.status == SystemOutboxStatus.RETRY_WAIT
     assert message.last_error == "Dispatch failed"
 
 
@@ -303,7 +305,7 @@ async def test_system_outbox_dispatcher_parks_device_command_resource_wait() -> 
             "detail": {"device_code": "ARM01", "last_probe_result": "BUSY"},
         }
     ]
-    assert message.status == SystemOutboxStatus.BLOCKED_RESOURCE
+    assert message.status == SystemOutboxStatus.RETRY_WAIT
     assert message.blocked_reason == "DEVICE_BUSY"
 
 

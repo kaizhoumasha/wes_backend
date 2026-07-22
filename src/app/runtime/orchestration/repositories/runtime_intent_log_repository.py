@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.system_capability_effect_claim import (
     SystemCapabilityClaimResult,
     SystemCapabilityIdempotencyConflict,
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot
+    from src.app.sys.models.outbox import SystemOutbox
 
 
 _DEVICE_INTENTS = frozenset({RuntimeIntentKind.COMMAND, RuntimeIntentKind.DEVICE_EVENT})
@@ -81,6 +82,20 @@ class RuntimeIntentLogRepository:
     def add_prepared(self, db: Any, prepared: PreparedRuntimeIntentLog) -> None:
         db.add(prepared.model)
 
+    async def add_proposed_pair(
+        self,
+        db: Any,
+        *,
+        intent_log: RuntimeIntentLog,
+        outbox: SystemOutbox,
+    ) -> None:
+        """在调用方事务中原子加入 1:1 RuntimeIntentLog/SystemOutbox。"""
+
+        if intent_log.dispatch_key != outbox.dispatch_key:
+            raise ValueError("RuntimeIntentLog/SystemOutbox dispatch_key 必须一致")
+        db.add_all((intent_log, outbox))
+        await db.flush()
+
     async def claim_or_match(self, db: Any, **values: Any) -> SystemCapabilityClaimResult:
         """在唯一 RuntimeIntentLog ledger 上执行 provisional claim。"""
 
@@ -118,9 +133,8 @@ class RuntimeIntentLogRepository:
             "fact_version": values["fact_version"],
             "payload_hash": values["payload_hash"],
             "completion_mode": values["completion_mode"],
-            "dispatch_status": "PENDING",
-            "effect_status": "PROVISIONAL",
-            "attempt_count": 1,
+            "dispatch_key": values.get("dispatch_key") or values["idempotency_key"],
+            "effect_status": RuntimeIntentStatus.PROPOSED,
             "outcome_json": {},
             "outcome_history_json": [],
             "effect_updated_at_ms": updated_at_ms,
@@ -147,10 +161,13 @@ class RuntimeIntentLogRepository:
                 incoming_request_hash=values["request_hash"],
                 correlation_id=row.correlation_id,
             )
-        if row.effect_status == "SUCCEEDED":
+        if row.effect_status in {
+            RuntimeIntentStatus.COMPLETED,
+            RuntimeIntentStatus.REJECTED,
+            RuntimeIntentStatus.TECHNICAL_FAILED,
+        }:
             return SystemCapabilityClaimResult.MATCH
-        row.effect_status = "PROVISIONAL"
-        row.attempt_count += 1
+        row.effect_status = RuntimeIntentStatus.PROPOSED
         row.outcome_kind = None
         row.outcome_code = None
         row.outcome_json = {}
@@ -173,10 +190,10 @@ class RuntimeIntentLogRepository:
         row.outcome_json = serialized
         row.outcome_history_json = [*list(row.outcome_history_json or []), serialized]
         row.effect_status = {
-            "success": "SUCCEEDED",
-            "business_reject": "BUSINESS_REJECT",
-            "retryable_failure": "RETRYABLE_FAILURE",
-            "contract_violation": "CONTRACT_VIOLATION",
+            "success": RuntimeIntentStatus.COMPLETED,
+            "business_reject": RuntimeIntentStatus.REJECTED,
+            "retryable_failure": RuntimeIntentStatus.TECHNICAL_FAILED,
+            "contract_violation": RuntimeIntentStatus.TECHNICAL_FAILED,
         }[evidence.outcome_kind]
         row.effect_updated_at_ms = evidence.occurred_at_ms
         await db.flush()
@@ -188,7 +205,7 @@ class RuntimeIntentLogRepository:
             operation_kind=claim["operation_kind"],
             idempotency_key=claim["idempotency_key"],
         )
-        if row is None or row.effect_status != "SUCCEEDED" or row.outcome_kind != "success":
+        if row is None or row.effect_status != RuntimeIntentStatus.COMPLETED or row.outcome_kind != "success":
             return None
         return dict(row.outcome_json)
 
@@ -258,6 +275,7 @@ class RuntimeIntentLogRepository:
             target_action=_bounded_identity(intent.action or intent.kind.value, limit=120),
             idempotency_key=idempotency_key,
             request_hash=request_hash,
+            dispatch_key=_bounded_identity(intent.dispatch_key or idempotency_key, limit=240),
             plugin_key=_definition_part(snapshot.definition_identity, 0),
             plugin_contract_version=_definition_part(snapshot.definition_identity, 1),
             capability_key=intent.capability_key,
@@ -271,7 +289,6 @@ class RuntimeIntentLogRepository:
             fact_version=str(intent.fact_version) if intent.fact_version is not None else None,
             payload_hash=intent.payload_hash,
             completion_mode=_completion_mode(intent),
-            dispatch_status="PENDING",
         )
         return PreparedRuntimeIntentLog(
             claim={

@@ -15,8 +15,5 @@ def test_station_claim_active_status_accepts_system_outbox_status_enum() -> None
 
     assert _is_active_station_claim_outbox(SimpleNamespace(status=SystemOutboxStatus.NEW, finished_at=None)) is True
     assert (
-        _is_active_station_claim_outbox(
-            SimpleNamespace(status=SystemOutboxStatus.BLOCKED_RESOURCE, finished_at=object())
-        )
-        is True
+        _is_active_station_claim_outbox(SimpleNamespace(status=SystemOutboxStatus.RETRY_WAIT, finished_at=None)) is True
     )

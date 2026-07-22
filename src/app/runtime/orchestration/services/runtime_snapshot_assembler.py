@@ -82,7 +82,8 @@ class RuntimeSnapshotAssembler:
             "target_domain": getattr(item, "target_domain", None),
             "target_action": getattr(item, "target_action", None),
             "idempotency_key": getattr(item, "idempotency_key", None),
-            "dispatch_status": getattr(item, "dispatch_status", None),
+            "dispatch_key": getattr(item, "dispatch_key", None),
+            "effect_status": getattr(item, "effect_status", None),
         }
 
     def _correlation_item(self, item: Any | None) -> dict[str, Any] | None:

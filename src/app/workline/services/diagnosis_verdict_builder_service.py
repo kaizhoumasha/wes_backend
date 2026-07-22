@@ -342,7 +342,7 @@ class DiagnosisVerdictBuilder:
             (
                 item
                 for item in getattr(result, "outboxes", [])
-                if optional_enum_str(getattr(item, "status", None)) == "BLOCKED_RESOURCE"
+                if optional_enum_str(getattr(item, "status", None)) == "RETRY_WAIT"
                 and coerce_optional_str(getattr(item, "blocked_reason", None)) == "DEVICE_STATUS_PRECHECK_WAIT"
             ),
             None,
@@ -354,7 +354,7 @@ class DiagnosisVerdictBuilder:
             (
                 item
                 for item in getattr(result, "outboxes", [])
-                if optional_enum_str(getattr(item, "status", None)) == "BLOCKED_RESOURCE"
+                if optional_enum_str(getattr(item, "status", None)) == "RETRY_WAIT"
                 and coerce_optional_str(getattr(item, "blocked_reason", None)) == "WORKLINE_STOPPED_WAITING_START"
             ),
             None,

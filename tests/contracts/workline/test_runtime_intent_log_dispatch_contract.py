@@ -1,7 +1,6 @@
-"""BC-XX RuntimeIntentLog dispatch/replay 行为契约。
+"""BC-XX 幂等 claim/replay 行为契约。
 
-验收: RuntimeIntentLog dispatch_status 5 态状态机正确推进;
-       request_hash 不一致时拒绝 dispatch (主计划 §5.4 H5)。
+验收: request_hash 不一致时拒绝 dispatch (主计划 §5.4 H5)。
 mock 仅允许 `src/app/runtime/orchestration/` 内的 skeleton 实体。
 """
 

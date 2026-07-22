@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode, SystemCapabilityMode
 from src.app.runtime.system_capabilities.device.device_command_write.definition import DEFINITION as DEVICE_DEFINITION
 from src.app.runtime.system_capabilities.device.device_command_write.handler import DeviceCommandWriteHandler
@@ -193,7 +193,9 @@ def test_runtime_intent_log_is_the_only_effect_ledger() -> None:
     columns = RuntimeIntentLog.__table__.c
     assert columns.provider_code.nullable is False
     assert columns.request_hash.nullable is False
-    assert columns.effect_status.nullable is True
+    assert columns.dispatch_key.nullable is False
+    assert columns.effect_status.nullable is False
+    assert columns.effect_status.default.arg is RuntimeIntentStatus.PROPOSED
     assert columns.outcome_json.nullable is False
     assert columns.outcome_history_json.nullable is False
     unique_columns = {
@@ -202,6 +204,10 @@ def test_runtime_intent_log_is_the_only_effect_ledger() -> None:
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("provider_code", "operation_kind", "idempotency_key") in unique_columns
+    unique_indexes = {
+        tuple(column.name for column in index.columns) for index in RuntimeIntentLog.__table__.indexes if index.unique
+    }
+    assert ("dispatch_key",) in unique_indexes
 
 
 def test_plugin_binding_migration_extends_runtime_intent_log_without_second_effect_ledger() -> None:

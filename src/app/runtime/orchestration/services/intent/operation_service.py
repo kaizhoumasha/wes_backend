@@ -261,8 +261,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         runtime_hold_id = runtime_hold.id if runtime_hold is not None else None
         is_actionable = (
             is_current_action
-            and enum_str(outbox.status)
-            not in {SystemOutboxStatus.BLOCKED_RESOURCE.value, SystemOutboxStatus.FAILED.value}
+            and enum_str(outbox.status) not in {SystemOutboxStatus.RETRY_WAIT.value, SystemOutboxStatus.FAILED.value}
             and status in {SystemOutboxStatus.SENT.value, "ACKED"}
         )
         failure_summary = self._build_projection_failure_summary(outbox=outbox, command=command, hold=runtime_hold)
@@ -322,7 +321,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         outbox_status = enum_str(outbox.status)
         command_status = enum_str(command.status) if command is not None else None
         failure_outbox_statuses = {
-            SystemOutboxStatus.BLOCKED_RESOURCE.value,
+            SystemOutboxStatus.RETRY_WAIT.value,
             SystemOutboxStatus.FAILED.value,
             SystemOutboxStatus.CANCELLED.value,
         }

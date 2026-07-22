@@ -26,13 +26,20 @@ from src.database.schema_conf import SchemaType
 
 
 class SystemOutboxStatus(str, Enum):
-    """系统级发件箱状态。"""
+    """唯一 transport 状态。
+
+    NEW -> DISPATCHING -+-> SENT
+                        +-> RETRY_WAIT -> DISPATCHING
+                        +-> FAILED / UNKNOWN / CANCELLED
+    UNKNOWN 是不可自动重试的送达歧义，不代表业务成功或失败。
+    """
 
     NEW = "NEW"
     DISPATCHING = "DISPATCHING"
+    RETRY_WAIT = "RETRY_WAIT"
     SENT = "SENT"
-    BLOCKED_RESOURCE = "BLOCKED_RESOURCE"
     FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
     CANCELLED = "CANCELLED"
 
 
@@ -184,8 +191,8 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
             "blocked_device_id",
             "target_code",
             "created_at",
-            postgresql_where=text("status = 'BLOCKED_RESOURCE' AND dispatch_type = 'DEVICE_COMMAND'"),
-            sqlite_where=text("status = 'BLOCKED_RESOURCE' AND dispatch_type = 'DEVICE_COMMAND'"),
+            postgresql_where=text("status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND'"),
+            sqlite_where=text("status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND'"),
         ),
         Index("ix_system_outbox_retention", "status", "finished_at"),
         Index(

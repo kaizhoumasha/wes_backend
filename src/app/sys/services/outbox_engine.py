@@ -32,10 +32,10 @@ class SystemOutboxEngine:
 
     派发流水线：
 
-        NEW -> DISPATCHING --send ok--> SENT
-          |        |
-          |        +--send fail--> NEW(backoff) / FAILED
-          +--blocked by runtime/safety/device--> BLOCKED_RESOURCE
+        NEW/RETRY_WAIT -> DISPATCHING --send ok--> SENT
+                |              |
+                |              +--clearly unsent--> RETRY_WAIT / FAILED
+                +--blocked by runtime/safety/device--> RETRY_WAIT
 
     Engine 保证 at-least-once 派发；exactly-once 由 dispatch_key/request_id
     在下游硬件系统和 callback 幂等共同完成。

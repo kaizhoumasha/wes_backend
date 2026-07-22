@@ -230,6 +230,7 @@ async def test_idempotency_guard_does_not_autoflush_unrelated_pending_rows(db_se
         target_action="dispatch",
         idempotency_key="WES-DEVICE_DISPATCH-pending",
         request_hash="sha256-pending",
+        dispatch_key="WES-DEVICE_DISPATCH-pending",
     )
     db_session.add(pending_intent)
 

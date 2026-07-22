@@ -1178,7 +1178,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(
             select(SystemOutbox).where(
-                columns.status == SystemOutboxStatus.BLOCKED_RESOURCE,
+                columns.status == SystemOutboxStatus.RETRY_WAIT,
                 or_(
                     columns.blocked_device_id.in_(device_ids),
                     columns.target_code.in_([item.device_code for item in devices]),

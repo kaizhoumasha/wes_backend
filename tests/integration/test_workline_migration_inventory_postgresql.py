@@ -68,9 +68,14 @@ COMMAND_TERMINAL = (CommandStatus.COMPLETED, CommandStatus.FAILED, CommandStatus
 OUTBOX_ACTIVE = (
     SystemOutboxStatus.NEW,
     SystemOutboxStatus.DISPATCHING,
-    SystemOutboxStatus.BLOCKED_RESOURCE,
+    SystemOutboxStatus.RETRY_WAIT,
 )
-OUTBOX_TERMINAL = (SystemOutboxStatus.SENT, SystemOutboxStatus.FAILED, SystemOutboxStatus.CANCELLED)
+OUTBOX_TERMINAL = (
+    SystemOutboxStatus.SENT,
+    SystemOutboxStatus.FAILED,
+    SystemOutboxStatus.UNKNOWN,
+    SystemOutboxStatus.CANCELLED,
+)
 INBOX_ACTIVE = ("RECEIVED", "PROCESSING", "FAILED")
 INBOX_TERMINAL = ("PROCESSED", "DEAD_LETTER")
 HOLD_ACTIVE = (RuntimeHoldStatus.OPEN, RuntimeHoldStatus.IN_PROGRESS, RuntimeHoldStatus.REOPENED)
@@ -329,6 +334,7 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
                 target_action="query",
                 idempotency_key="IT-INVENTORY-INTENT-1",
                 request_hash="c" * 64,
+                dispatch_key="IT-INVENTORY-INTENT-1",
             ),
         ]
     )

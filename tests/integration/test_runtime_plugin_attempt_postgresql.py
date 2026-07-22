@@ -181,7 +181,8 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             assert timeline_count == 1
             assert ledger is not None
             assert ledger.idempotency_key == f"plugin-attempt:binding:{snapshot.binding_id}:1:inbox:1:intent:0"
-            assert ledger.dispatch_status == "PENDING"
+            assert ledger.effect_status == "PROPOSED"
+            assert ledger.dispatch_key == ledger.idempotency_key
             assert len(ledger.request_hash) == 64
 
     asyncio.run(with_temporary_runtime_database(scenario))

@@ -55,7 +55,7 @@ def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation()
         target_action="dispatch_command",
         idempotency_key="WES-DEVICE-001",
         request_hash="sha256-001",
-        dispatch_status="PENDING",
+        dispatch_key="device-command:001",
     )
     timeline = RuntimeTimeline(
         id=601,
@@ -83,5 +83,6 @@ def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation()
     assert snapshot["timeline"][0]["event_type"] == "INBOX_RECEIVED"
     assert snapshot["inbox"][0]["status"] == "RECEIVED"
     assert snapshot["hold"][0]["scope_key"] == "wi-001"
-    assert snapshot["pending_intent"][0]["dispatch_status"] == "PENDING"
+    assert snapshot["pending_intent"][0]["effect_status"] == "PROPOSED"
+    assert snapshot["pending_intent"][0]["dispatch_key"] == "device-command:001"
     assert snapshot["correlation"]["correlation_id"] == "corr-001"

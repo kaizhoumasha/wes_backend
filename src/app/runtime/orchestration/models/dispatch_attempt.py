@@ -16,11 +16,16 @@ from src.database.schema_conf import SchemaType
 
 
 class DispatchAttemptStatus(str, Enum):
-    """派发尝试状态。"""
+    """单次 transport attempt 状态。
+
+    DISPATCHING -> SENT / FAILED / UNKNOWN / CANCELLED
+    UNKNOWN 终止本次 attempt；后续 reconciliation 不覆盖该 evidence。
+    """
 
     DISPATCHING = "DISPATCHING"
     SENT = "SENT"
     FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
     CANCELLED = "CANCELLED"
 
 

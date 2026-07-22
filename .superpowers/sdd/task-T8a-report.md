@@ -1,0 +1,64 @@
+# T8a 实施报告：EFFECT 双账本最终状态合同
+
+## 状态与边界
+
+T8a 已完成。`RuntimeIntentLog`、`SystemOutbox` 与 `WorklineDispatchAttempt` 已直接收敛到设计稿第 5.4
+节的最终状态集合；旧 `dispatch_status`、RuntimeIntentLog transport attempt/retry/last-error 字段、
+`BLOCKED_RESOURCE` 和重复 `OutboxStatus` 已从 active model/code 删除。没有兼容 alias、旧状态 mapping、
+旧数据搬迁或跨 schema FK。
+
+本任务只冻结枚举、转移矩阵、reducer event schema 与双账本持久化边界；没有提前实现 T8b canonical
+bytes、T8c typed sender、T8d reducer 生命周期或 T8e lease/fencing。
+
+## 实现结果
+
+- `RuntimeIntentStatus` 固定为 `PROPOSED/ACCEPTED/COMPLETED/REJECTED/TECHNICAL_FAILED/UNKNOWN/RECONCILING`；
+  RuntimeIntentLog 只保留语义状态、不可变请求/快照与 outcome evidence。
+- `SystemOutboxStatus` 固定为 `NEW/DISPATCHING/RETRY_WAIT/SENT/FAILED/UNKNOWN/CANCELLED`；资源等待和明确未发送
+  的有界重试统一使用非终态 `RETRY_WAIT`，`UNKNOWN` 不进入自动领取条件。
+- `DispatchAttemptStatus` 增加终态 `UNKNOWN`，最终集合为
+  `DISPATCHING/SENT/FAILED/UNKNOWN/CANCELLED`。
+- 新增封闭 reducer event 枚举、严格 frozen event schema 以及三张只读转移矩阵；终态无 outgoing edge，
+  reconciliation resolution 仅允许 `COMPLETED/REJECTED`。
+- RuntimeIntentLog 与 SystemOutbox 两侧各自对 `dispatch_key` 建唯一约束；repository 提供同一调用方事务中
+  一次加入一条 intent + 一条 outbox 并仅 `flush` 的 1:1 基础操作，不提交事务，也不猜测关联。
+- runtime snapshot 改为投影 `dispatch_key/effect_status`，删除旧 dispatch 状态投影；既有 claim/outcome 路径
+  直接写 final semantic enum。
+- Alembic generator 生成 revision `8fb4b595a85c`：直接删除旧列、重建 final check constraints/partial index、
+  新增 dispatch key 唯一索引；upgrade 无 `UPDATE`/`INSERT` 和状态转换。
+
+## TDD 记录
+
+1. RED：final contract 模块不存在，6 个 enum/matrix/event/1:1 合同测试失败；实现最小合同后 6 个 GREEN。
+2. RED：既有 outbox、snapshot、intent repository 消费者仍引用旧状态，定向回归 6 failed / 17 passed；
+   硬切换消费者并删除旧 dispatch 状态测试后 27 passed。
+3. RED：schema-only migration contract 找不到目标 revision；用 Alembic generator 创建并实现 revision 后 GREEN。
+4. 扩大回归发现旧 effect ledger 合同仍要求 nullable `effect_status`；更新为 non-null final enum、默认
+   `PROPOSED` 与 dispatch key unique 合同后 GREEN。
+
+## GitNexus
+
+- 变更前所有被修改函数、类和方法均完成 upstream impact analysis。
+- `RuntimeIntentLog`、`SystemOutbox` 及 `_load_blocked_outbox_projection` 为 HIGH；其中 query projection 只替换
+  enum token，不改变查询形状。其余 repository/service/test 符号为 LOW/MEDIUM。
+- 提交前 staged detect changes 报告 HIGH：32 个任务文件、15 条受影响流程，集中于 outbox dispatch/资源等待与
+  runtime blocked projection；相关 workline/sys/contracts 扩大回归和 quality gate 已覆盖。工作树原有未暂存
+  `AGENTS.md/CLAUDE.md` 未进入检测 scope，也不会进入本提交。
+
+## 验证
+
+- final contract、schema、Outbox、RuntimeIntentLog、snapshot 与 idempotency 定向回归：`41 passed`。
+- workline runtime、sys、system capability/workline contracts 与 test topology 扩大回归：最终 `917 passed`。
+- 默认测试收集：`3594 tests collected`。
+- Alembic：`heads` 为 `8fb4b595a85c`；`upgrade 8db8cbba582c:head --sql` 成功渲染 final check constraints、
+  unique index 与 `RETRY_WAIT` partial index。
+- `ruff format --check .`、`ruff check .`、`git diff --check` 通过。
+- `./scripts/git-quality-gate.sh --profile quality` 通过：Bandit 0 issue、348 runtime contracts、11 process
+  naming、import-linter、enforced architecture guardrails 与 test topology 全部通过。
+
+## Concern / Blocker
+
+- 本机 `localhost:5432/5433` 均无可用 PostgreSQL，因此未执行真实数据库 upgrade/downgrade；已完成 Alembic
+  PostgreSQL offline SQL 渲染和 schema contract 测试。集成环境需在干净数据库执行该 revision；若存在旧行，
+  non-null `dispatch_key/effect_status` 或已删除状态会使 upgrade 失败，这是“未发布系统、不迁移旧数据”的预期硬门禁。
+- T8a 仅提供同事务 1:1 repository primitive；具体 typed EFFECT handler 的创建接线属于后续 T8f/T8g。

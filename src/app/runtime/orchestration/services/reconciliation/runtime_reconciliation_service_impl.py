@@ -546,7 +546,7 @@ class WorklineRuntimeReconciliationService:
         outbox: SystemOutbox,
         reason: str,
     ) -> SystemOutbox | None:
-        """WorkLine RECONCILING 时，将尚未 ACK 的 outbox 暂停为 BLOCKED_RESOURCE。"""
+        """WorkLine RECONCILING 时，将尚未 ACK 的 outbox 暂停为 RETRY_WAIT。"""
 
         workline_id = outbox.workline_id
         if workline_id is None:

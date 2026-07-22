@@ -149,7 +149,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 [
                     SystemOutboxStatus.NEW.value,
                     SystemOutboxStatus.DISPATCHING.value,
-                    SystemOutboxStatus.BLOCKED_RESOURCE.value,
+                    SystemOutboxStatus.RETRY_WAIT.value,
                 ]
             ),
         )
