@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -158,6 +158,40 @@ def test_bounded_pure_evaluator_emits_only_references_hashes_and_controlled_diff
         draft.model_copy(update={"divergence_diff": {"payload": ["secret", "secret"]}}).model_validate(
             draft.model_copy(update={"divergence_diff": {"payload": ["secret", "secret"]}}).model_dump()
         )
+
+
+def test_shadow_persistence_payloads_serialize_timestamps_as_naive_utc() -> None:
+    from src.app.runtime.system_capabilities.shadow_readiness import (
+        QueryShadowReadinessApproval,
+        QueryShadowReadinessPolicy,
+        ReadinessApprovalDecision,
+        build_query_shadow_readiness_report,
+    )
+
+    utc_plus_eight = timezone(timedelta(hours=8))
+    expected = _expected("0" * 64, datetime(2026, 7, 22, 8, 0, tzinfo=utc_plus_eight))
+    comparison = _draft(expected)
+    report = build_query_shadow_readiness_report(
+        provider_profile_identity=expected.provider_profile_identity,
+        operation_identity=expected.operation_identity,
+        expected_samples=[expected],
+        comparisons=[comparison],
+        generated_at=datetime(2026, 7, 23, 8, 0, tzinfo=utc_plus_eight),
+        policy=QueryShadowReadinessPolicy(min_window_days=0, min_eligible_samples=1),
+    )
+    approval = QueryShadowReadinessApproval(
+        report_id=report.report_id,
+        decision=ReadinessApprovalDecision.GO,
+        approved_by="migration-owner",
+        approved_at=datetime(2026, 7, 23, 8, 1, tzinfo=utc_plus_eight),
+    )
+
+    assert comparison.task_payload()["observed_at"] == "2026-07-22T00:00:00"
+    serialized_report = report.model_dump(mode="json")
+    assert serialized_report["generated_at"] == "2026-07-23T00:00:00"
+    assert serialized_report["window_started_at"] == "2026-07-22T00:00:00"
+    assert serialized_report["window_ended_at"] == "2026-07-22T00:00:00"
+    assert approval.model_dump(mode="json")["approved_at"] == "2026-07-23T00:01:00"
 
 
 def test_bounded_pure_evaluator_failures_are_explicit_without_changing_production_decision() -> None:

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from datetime import datetime  # noqa: TC003  # Pydantic runtime validation 需要具体类型
+from datetime import UTC, datetime  # Pydantic runtime validation 需要具体类型
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_serializer, field_validator, model_validator
 
 from src.app.runtime.extension_identity import canonical_json, sha256_digest
 
@@ -78,11 +78,16 @@ class QueryShadowExpected(BaseModel):
     input_hash: str = Field(pattern=_SHA256_PATTERN)
     output_hash: str = Field(pattern=_SHA256_PATTERN)
 
-    @model_validator(mode="after")
-    def require_aware_timestamp(self) -> QueryShadowExpected:
-        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
-            raise ValueError("shadow expected observed_at must be timezone-aware")
-        return self
+    @field_validator("observed_at")
+    @classmethod
+    def normalize_observed_at(cls, value: datetime) -> datetime:
+        """内存中统一为 aware UTC；持久化序列化统一为 naive UTC。"""
+
+        return _as_aware_utc(value)
+
+    @field_serializer("observed_at", when_used="json")
+    def serialize_observed_at(self, value: datetime) -> str:
+        return _serialize_naive_utc(value)
 
 
 def build_query_shadow_expected(
@@ -189,7 +194,7 @@ class QueryShadowComparisonDraft(BaseModel):
             "evidence_ref": expected.evidence_ref,
             "provider_profile_identity": expected.provider_profile_identity,
             "operation_identity": expected.operation_identity,
-            "observed_at": expected.observed_at.isoformat(),
+            "observed_at": _serialize_naive_utc(expected.observed_at),
             "input_hash": expected.input_hash,
             "output_hash": expected.output_hash,
             "versions": expected.versions.model_dump(mode="json"),
@@ -333,6 +338,15 @@ class QueryShadowReadinessReport(BaseModel):
     evidence_refs: tuple[str, ...]
     verdict: ReadinessVerdict
 
+    @field_validator("generated_at", "window_started_at", "window_ended_at")
+    @classmethod
+    def normalize_report_timestamp(cls, value: datetime | None) -> datetime | None:
+        return _as_aware_utc(value) if value is not None else None
+
+    @field_serializer("generated_at", "window_started_at", "window_ended_at", when_used="json")
+    def serialize_report_timestamp(self, value: datetime | None) -> str | None:
+        return _serialize_naive_utc(value) if value is not None else None
+
 
 class QueryShadowReadinessApproval(BaseModel):
     """审批记录仅引用 immutable report ID，不复制报告内容。"""
@@ -343,6 +357,15 @@ class QueryShadowReadinessApproval(BaseModel):
     decision: ReadinessApprovalDecision
     approved_by: str = Field(min_length=1, max_length=120)
     approved_at: datetime
+
+    @field_validator("approved_at")
+    @classmethod
+    def normalize_approved_at(cls, value: datetime) -> datetime:
+        return _as_aware_utc(value)
+
+    @field_serializer("approved_at", when_used="json")
+    def serialize_approved_at(self, value: datetime) -> str:
+        return _serialize_naive_utc(value)
 
 
 class ReadinessGateError(RuntimeError):
@@ -527,6 +550,20 @@ def require_approved_readiness_report(
 def _append_once(values: list[str], value: str) -> None:
     if value not in values:
         values.append(value)
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    """将持久化读取的 naive UTC 或外部 aware 时间统一为内存 aware UTC。"""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _serialize_naive_utc(value: datetime) -> str:
+    """shadow 持久化 payload 只序列化无偏移的 UTC 时间。"""
+
+    return _as_aware_utc(value).replace(tzinfo=None).isoformat()
 
 
 def _decision_diff(legacy: ShadowDecision, candidate: ShadowDecision) -> dict[str, list[str]]:

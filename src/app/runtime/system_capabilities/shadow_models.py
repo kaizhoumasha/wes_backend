@@ -38,7 +38,7 @@ class QueryShadowComparison(BaseMixin, table=True):
         {"schema": SchemaType.RUNTIME.value, "postgresql_partition_by": "RANGE (observed_at)"},
     )
 
-    observed_at: datetime = Field(primary_key=True, sa_type=DateTime(timezone=True))
+    observed_at: datetime = Field(primary_key=True, sa_type=DateTime(timezone=False))
     comparison_key: str = Field(primary_key=True, min_length=64, max_length=64)
     comparison_status: str = Field(min_length=1, max_length=20)
     evidence_ref: str = Field(min_length=1, max_length=240)
@@ -75,7 +75,7 @@ class QueryShadowReadinessReportRecord(BaseMixin, table=True):
     __table_args__ = ({"schema": SchemaType.RUNTIME.value},)
 
     report_id: str = Field(primary_key=True, min_length=64, max_length=64)
-    generated_at: datetime = Field(sa_type=DateTime(timezone=True))
+    generated_at: datetime = Field(sa_type=DateTime(timezone=False))
     provider_profile_identity: str = Field(min_length=1, max_length=240)
     operation_identity: str = Field(min_length=1, max_length=240)
     verdict: str = Field(min_length=1, max_length=50)
@@ -91,7 +91,7 @@ class QueryShadowReadinessApprovalRecord(BaseMixin, table=True):
     report_id: str = Field(primary_key=True, min_length=64, max_length=64)
     decision: str = Field(min_length=1, max_length=20)
     approved_by: str = Field(min_length=1, max_length=120)
-    approved_at: datetime = Field(sa_type=DateTime(timezone=True))
+    approved_at: datetime = Field(sa_type=DateTime(timezone=False))
 
 
 __all__ = [

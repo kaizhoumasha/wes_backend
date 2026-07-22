@@ -140,8 +140,8 @@ async def test_cross_month_store_missing_partition_retention_drop_and_immutable_
                 text(
                     f"CREATE TABLE wes_runtime.{expired_partition_name} "
                     "PARTITION OF wes_runtime.query_shadow_comparisons "
-                    f"FOR VALUES FROM ('{expired_month:%Y-%m-%d} 00:00:00+00') "
-                    f"TO ('{_shift_month(expired_month, 1):%Y-%m-%d} 00:00:00+00')"
+                    f"FOR VALUES FROM ('{expired_month:%Y-%m-%d} 00:00:00') "
+                    f"TO ('{_shift_month(expired_month, 1):%Y-%m-%d} 00:00:00')"
                 )
             )
         lock_connection = await engine.connect()

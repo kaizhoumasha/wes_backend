@@ -26,7 +26,7 @@ def upgrade() -> None:
         sa.text(
             """
             CREATE TABLE wes_runtime.query_shadow_comparisons (
-                observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                observed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
                 comparison_key VARCHAR(64) NOT NULL,
                 comparison_status VARCHAR(20) NOT NULL,
                 evidence_ref VARCHAR(240) NOT NULL,
@@ -85,8 +85,8 @@ def upgrade() -> None:
                         'PARTITION OF wes_runtime.query_shadow_comparisons '
                         'FOR VALUES FROM (%L) TO (%L)',
                         partition_name,
-                        partition_start::text || ' 00:00:00+00',
-                        partition_end::text || ' 00:00:00+00'
+                        partition_start::text || ' 00:00:00',
+                        partition_end::text || ' 00:00:00'
                     );
                 END LOOP;
             END
@@ -115,7 +115,7 @@ def upgrade() -> None:
     op.create_table(
         "query_shadow_readiness_reports",
         sa.Column("report_id", sa.String(length=64), nullable=False),
-        sa.Column("generated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("generated_at", sa.DateTime(timezone=False), nullable=False),
         sa.Column("provider_profile_identity", sa.String(length=240), nullable=False),
         sa.Column("operation_identity", sa.String(length=240), nullable=False),
         sa.Column("verdict", sa.String(length=50), nullable=False),
@@ -128,7 +128,7 @@ def upgrade() -> None:
         sa.Column("report_id", sa.String(length=64), nullable=False),
         sa.Column("decision", sa.String(length=20), nullable=False),
         sa.Column("approved_by", sa.String(length=120), nullable=False),
-        sa.Column("approved_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("approved_at", sa.DateTime(timezone=False), nullable=False),
         sa.ForeignKeyConstraint(
             ["report_id"],
             ["wes_runtime.query_shadow_readiness_reports.report_id"],

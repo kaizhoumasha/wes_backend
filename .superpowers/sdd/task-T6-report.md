@@ -182,3 +182,47 @@ rough-sorter、RuntimeIntent 或 SystemOutbox。
 - 额外运行全量 `tests/architecture` 时，发现 `d3575958` 基线已存在的 cleanup matrix 漂移：T4 的 6 个
   material-flow 测试条目未进入 CSV。该问题与 T6 diff 无关，本任务未改动该矩阵；T6 定向 architecture 与
   quality profile 的 enforced architecture guardrail 均通过。
+
+## Timezone P1 最终修复追加（2026-07-22）
+
+### naive UTC 持久化合同
+
+- comparison `observed_at`、readiness report `generated_at` 与 approval `approved_at` 的 SQLModel 列统一改为
+  `DateTime(timezone=False)`；未发布的 Alembic revision `8db8cbba582c` 同步使用
+  `TIMESTAMP WITHOUT TIME ZONE`，不新增旧数据迁移。
+- shadow 领域对象在内存中规范为 aware UTC，进入 task payload、durable evidence 子对象、readiness report JSON
+  和 approval JSON 时统一序列化为无 offset 的 naive UTC ISO；从 naive 持久化内容恢复时按 UTC 解释，避免受
+  进程本地时区影响。
+- `_for_db()` 明确承担 aware/naive 输入到 naive UTC 数据库值的规范化；expected JSON cast、expected/comparison
+  window bind 与 Python 防御过滤共享同一 naive UTC 边界，不再把 naive 参数写入 TIMESTAMPTZ。
+- 分区计划、partition bound SQL、跨月命名和 90 天 retention cutoff 全部使用 naive UTC；migration 动态
+  current+3 分区仍以数据库 UTC 月份计算，partition bound 不再携带 `+00`。
+
+### TDD 与影响分析
+
+- RED：新增 schema、query binding、分区跨时区月界和 task/report/approval serialization 回归，首次运行
+  `4 failed, 15 passed`，分别暴露 aware 分区边界、三个 `timezone=True` 列、expected TIMESTAMPTZ cast 和
+  带 `+08:00` 的持久化序列化。
+- GREEN：最小实现后相同组合 `19 passed`；schema 回归同时禁止 migration 中出现
+  `TIMESTAMP WITH TIME ZONE`、`TIMESTAMPTZ` 或 `DateTime(timezone=True)`，binding 回归验证 `+08:00` 窗口转为
+  naive UTC 参数并跨月落入正确 UTC 分区。
+- GitNexus MCP 先因索引未包含 T6 符号返回 UNKNOWN；刷新本 worktree 索引后，MCP 又受 LadybugDB 存储版本
+  v42/v40 不匹配阻塞，遂使用同一刷新索引的 CLI impact。最高风险为 MEDIUM：`QueryShadowExpected`、
+  `QueryShadowReadinessReport`、`QueryShadowReadinessApproval` 各 7 个直接/38 个总影响符号，`_for_db` 为
+  5 个直接/9 个总影响符号；其余修改符号均 LOW，未命中 execution flow。
+
+### 验证与剩余限制
+
+- T6 目标、system-capability runtime/contracts、database 与定向 architecture/topology：`199 passed`。
+- workline runtime、runtime orchestration、workline plugins、system-capability contracts、T6 database 与
+  architecture：`1347 passed`，仅 5 条既有 datetime deprecation warning。
+- 默认收集 `3586 tests collected`；全仓 `ruff format --check .`（981 files）、`ruff check .`、
+  `git diff --check`、生产模块/migration `py_compile` 和 Alembic head `8db8cbba582c` 均通过。
+- `./scripts/git-quality-gate.sh --profile quality` 完整通过，包括 Bandit 0 issue、348 runtime contracts、
+  11 process naming、import-linter、enforced architecture guardrails 与 test topology。
+- 提交前 GitNexus MCP `detect_changes(staged)` 同样受 LadybugDB v42/v40 不匹配阻塞；CLI
+  `detect-changes --scope staged` 检出本任务 9 个文件、49 个图谱符号、0 条受影响 execution flow，综合风险 LOW。
+  `AGENTS.md` / `CLAUDE.md` 的既有未暂存改动未进入本提交。
+- 真实 PostgreSQL T6 文件 3 项均已执行，但环境未配置 `INTEGRATION_DATABASE_URL`，全部在建库和 DDL 前以
+  `HeavyHarnessError: missing_url` 停止；因此真实 PostgreSQL 的无时区分区、并发 upsert 与 immutable trigger
+  行为仍明确标记为未验证。

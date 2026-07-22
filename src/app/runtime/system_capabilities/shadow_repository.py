@@ -84,13 +84,11 @@ class QueryShadowReadinessRepository:
     ) -> list[QueryShadowExpected]:
         # Timeline 行可能在 observed evidence 之后才提交，尤其会跨过月界；expected、comparison
         # 与 readiness 必须统一按 immutable shadow_expected.observed_at 查询和排序。
-        _for_db(observed_from)
-        _for_db(observed_until)
-        observed_from_utc = observed_from.astimezone(UTC)
-        observed_until_utc = observed_until.astimezone(UTC)
+        observed_from_utc = _for_db(observed_from)
+        observed_until_utc = _for_db(observed_until)
         expected_observed_at = cast(
             WorklineTimeline.payload_json["evidence"]["shadow_expected"]["observed_at"].as_string(),
-            DateTime(timezone=True),
+            DateTime(timezone=False),
         )
         result = await db.execute(
             select(WorklineTimeline)
@@ -113,7 +111,7 @@ class QueryShadowReadinessRepository:
                 continue
             item = QueryShadowExpected.model_validate(raw_expected)
             if (
-                observed_from_utc <= item.observed_at.astimezone(UTC) < observed_until_utc
+                observed_from_utc <= _for_db(item.observed_at) < observed_until_utc
                 and item.provider_profile_identity == provider_profile_identity
                 and item.operation_identity == operation_identity
             ):
@@ -296,13 +294,14 @@ def _draft_from_row(row: QueryShadowComparison) -> QueryShadowComparisonDraft:
 
 
 def _partition_name(observed_at: datetime) -> str:
-    aware = observed_at if observed_at.tzinfo is not None else observed_at.replace(tzinfo=UTC)
-    return f"query_shadow_comparisons_{aware.astimezone(UTC):%Y_%m}"
+    return f"query_shadow_comparisons_{_for_db(observed_at):%Y_%m}"
 
 
 def _for_db(value: datetime) -> datetime:
+    """将 shadow 时间规范化为数据库使用的 naive UTC。"""
+
     if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("QUERY shadow timestamp must be timezone-aware")
+        return value.replace(tzinfo=None)
     return value.astimezone(UTC).replace(tzinfo=None)
 
 

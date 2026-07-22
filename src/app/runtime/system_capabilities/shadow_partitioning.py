@@ -23,8 +23,8 @@ class QueryShadowPartition:
         return (
             f"CREATE TABLE IF NOT EXISTS wes_runtime.{self.name} "
             "PARTITION OF wes_runtime.query_shadow_comparisons "
-            f"FOR VALUES FROM ('{self.starts_at:%Y-%m-%d 00:00:00+00}') "
-            f"TO ('{self.ends_at:%Y-%m-%d 00:00:00+00}')"
+            f"FOR VALUES FROM ('{self.starts_at:%Y-%m-%d 00:00:00}') "
+            f"TO ('{self.ends_at:%Y-%m-%d 00:00:00}')"
         )
 
 
@@ -89,14 +89,14 @@ class QueryShadowPartitionMaintainer:
                 "WHERE namespace.nspname = 'wes_runtime' AND parent.relname = 'query_shadow_comparisons'"
             )
         )
-        cutoff = now.astimezone(UTC) - timedelta(days=self._retention_days)
+        cutoff = _as_naive_utc(now) - timedelta(days=self._retention_days)
         dropped: list[str] = []
         for row in rows.all():
             name = str(row[0])
             match = _PARTITION_NAME.fullmatch(name)
             if match is None:
                 continue
-            start = datetime(int(match.group(1)), int(match.group(2)), 1, tzinfo=UTC)
+            start = datetime(int(match.group(1)), int(match.group(2)), 1, tzinfo=UTC).replace(tzinfo=None)
             if _next_month(start) > cutoff:
                 continue
             await db.execute(text(f"SET LOCAL lock_timeout = '{self._lock_timeout_seconds}s'"))  # type: ignore[attr-defined]
@@ -110,16 +110,22 @@ class QueryShadowPartitionMaintainer:
 
 
 def _month_start(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("partition clock must be timezone-aware")
-    utc = value.astimezone(UTC)
-    return datetime(utc.year, utc.month, 1, tzinfo=UTC)
+    utc = _as_naive_utc(value)
+    return datetime(utc.year, utc.month, 1, tzinfo=UTC).replace(tzinfo=None)
 
 
 def _next_month(value: datetime) -> datetime:
     if value.month == 12:
-        return datetime(value.year + 1, 1, 1, tzinfo=UTC)
-    return datetime(value.year, value.month + 1, 1, tzinfo=UTC)
+        return datetime(value.year + 1, 1, 1, tzinfo=UTC).replace(tzinfo=None)
+    return datetime(value.year, value.month + 1, 1, tzinfo=UTC).replace(tzinfo=None)
+
+
+def _as_naive_utc(value: datetime) -> datetime:
+    """分区键与保留期计算统一使用数据库语义的 naive UTC。"""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=None)
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 __all__ = [
