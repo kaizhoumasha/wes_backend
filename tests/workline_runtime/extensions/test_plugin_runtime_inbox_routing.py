@@ -34,7 +34,11 @@ from src.app.runtime.workline_plugins.dispatcher import PluginDispatchRequest
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from tests.support.rough_sorter_inventory_admission import admitted_inventory_output
+from src.app.wms_integration.ports.query_inventory_operation import (
+    InventoryAuthorityItem,
+    InventoryQueryOperationRequest,
+    InventoryQueryOperationResult,
+)
 
 
 @pytest.mark.parametrize(
@@ -1134,7 +1138,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
         object(), inbox=inbox, session=session, workline=SimpleNamespace(id=3), snapshot=snapshot
     )
     evidence = QueryEvidence(
-        capability_key="wms.rough_sorter_inventory_admission",
+        capability_key="wms.inventory.query_inventory",
         contract_version="v1",
         input_hash="a" * 64,
         output_hash="b" * 64,
@@ -1150,14 +1154,21 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     class Gateway:
         calls = 0
 
-        async def execute(self, *_args: object) -> GatewayQueryResult:
+        async def execute(self, _capability_key: str, _contract_version: str, input_data: object) -> GatewayQueryResult:
             self.calls += 1
+            assert isinstance(input_data, InventoryQueryOperationRequest)
             return GatewayQueryResult(
                 outcome=Success(
-                    payload=admitted_inventory_output(
-                        material_code="MAT-1",
-                        lot_no="LOT-1",
-                        warehouse_code="WH-01",
+                    payload=InventoryQueryOperationResult(
+                        items=(
+                            InventoryAuthorityItem(
+                                material_code=input_data.material_code,
+                                available_quantity=1,
+                                lot_no=input_data.lot_no,
+                                warehouse_code=input_data.warehouse_code,
+                                owner_code=input_data.owner_code,
+                            ),
+                        ),
                         source_version="v1",
                     )
                 ),

@@ -11,7 +11,7 @@ from src.app.runtime.system_capabilities.material_flow.material_unit_write.defin
 from src.app.runtime.system_capabilities.runtime.session_hold.definition import (
     DEFINITION as _DEFINITION_2,
 )
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import (
+from src.app.runtime.system_capabilities.wms.inventory.query_inventory.definition import (
     DEFINITION as _DEFINITION_3,
 )
 
@@ -19,15 +19,15 @@ SYSTEM_CAPABILITY_IDENTITIES = (
     ("device.device_command_write", "v1"),
     ("material_flow.material_unit_write", "v1"),
     ("runtime.session_hold", "v1"),
-    ("wms.rough_sorter_inventory_admission", "v1"),
+    ("wms.inventory.query_inventory", "v1"),
 )
-SYSTEM_CAPABILITY_INDEX_DIGEST = "0965b5c5017e1631eab260954b1ddd8256fed0ed37609456bd2c63dfd03d4be4"
+SYSTEM_CAPABILITY_INDEX_DIGEST = "fcdbb59c028484377070430928580391e0adcf43db326edd0320de3f2e3d5833"
 SYSTEM_CAPABILITY_INDEX = MappingProxyType(
     {
         ("device.device_command_write", "v1"): _DEFINITION_0,
         ("material_flow.material_unit_write", "v1"): _DEFINITION_1,
         ("runtime.session_hold", "v1"): _DEFINITION_2,
-        ("wms.rough_sorter_inventory_admission", "v1"): _DEFINITION_3,
+        ("wms.inventory.query_inventory", "v1"): _DEFINITION_3,
     }
 )
 

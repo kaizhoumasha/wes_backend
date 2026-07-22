@@ -36,7 +36,11 @@ from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     parse_scan_completed,
 )
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from tests.support.rough_sorter_inventory_admission import admitted_inventory_output
+from src.app.wms_integration.ports.query_inventory_operation import (
+    InventoryAuthorityItem,
+    InventoryQueryOperationRequest,
+    InventoryQueryOperationResult,
+)
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
@@ -204,16 +208,21 @@ class _Gateway:
         self.calls = 0
 
     async def execute(self, capability_key: str, contract_version: str, input_data: object) -> GatewayQueryResult:
-        assert (capability_key, contract_version) == ("wms.rough_sorter_inventory_admission", "v1")
-        assert input_data is not None
+        assert (capability_key, contract_version) == ("wms.inventory.query_inventory", "v1")
+        assert isinstance(input_data, InventoryQueryOperationRequest)
         self.calls += 1
         admission = self.discriminator.get("wms_admission")
         if admission == "ADMIT":
             outcome = Success(
-                payload=admitted_inventory_output(
-                    material_code="HH-001",
-                    lot_no="LOT-01",
-                    warehouse_code="WH-01",
+                payload=InventoryQueryOperationResult(
+                    items=(
+                        InventoryAuthorityItem(
+                            material_code=input_data.material_code,
+                            lot_no=input_data.lot_no,
+                            warehouse_code=input_data.warehouse_code,
+                            available_quantity="1",
+                        ),
+                    ),
                     source_version="fixture-v1",
                 )
             )

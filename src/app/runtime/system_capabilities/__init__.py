@@ -4,6 +4,10 @@ from .definition import EffectCompletionMode, SystemCapabilityDefinition, System
 from .evidence import QueryEvidence
 from .gateway import AttemptCloseReport, GatewayLimits, GatewayQueryResult, SystemCapabilityGateway
 from .outcomes import BusinessReject, ContractViolation, RetryableFailure, Success, parse_outcome
+from .query_inventory_cutover import (
+    QueryInventoryCutoverReadinessService,
+    query_inventory_cutover_readiness_service,
+)
 from .replay import (
     RecordedReplayEnvelope,
     RecordedReplayResolution,
@@ -25,6 +29,7 @@ __all__ = [
     "GatewayLimits",
     "GatewayQueryResult",
     "QueryEvidence",
+    "QueryInventoryCutoverReadinessService",
     "QueryShadowComparisonService",
     "QueryShadowReadinessService",
     "RecordedReplayEnvelope",
@@ -36,6 +41,7 @@ __all__ = [
     "SystemCapabilityMode",
     "TimelineRecordedReplayService",
     "parse_outcome",
+    "query_inventory_cutover_readiness_service",
     "query_shadow_comparison_service",
     "query_shadow_readiness_service",
     "resolve_recorded_replay",

@@ -828,7 +828,7 @@ def test_generated_indexes_are_complete_read_only_and_cold_start_safe() -> None:
         ("device.device_command_write", "v1"),
         ("material_flow.material_unit_write", "v1"),
         ("runtime.session_hold", "v1"),
-        ("wms.rough_sorter_inventory_admission", "v1"),
+        ("wms.inventory.query_inventory", "v1"),
     )
     assert plugin_index.WORKLINE_PLUGIN_IDENTITIES == (("rough_sorter", "rough_sorter.v2"),)
     assert tuple(plugin_index.WORKLINE_PLUGIN_INDEX) == (("rough_sorter", "rough_sorter.v2"),)

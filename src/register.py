@@ -31,6 +31,17 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     try:
         logger.info("Initializing application resources...")
         await init_db()
+
+        # production cutover 没有 fallback；启动前必须从 append-only DB 记录
+        # 验证同一 READY+GO report。
+        from src.app.runtime.system_capabilities.query_inventory_cutover import (
+            query_inventory_cutover_readiness_service,
+        )
+        from src.database.db import get_db_context
+
+        async with get_db_context() as db:
+            await query_inventory_cutover_readiness_service.require_ready(db, app_env=settings.APP_ENV)
+
         await init_redis()
 
         # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）

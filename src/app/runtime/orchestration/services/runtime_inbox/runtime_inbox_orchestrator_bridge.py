@@ -720,14 +720,12 @@ class RuntimeInboxProcessorBridge:
         if admission_profile is None and pinned_profile_identity is not None:
             admission_profile = pinned_profile_identity
         elif admission_profile is None:
-            from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-                PROFILE_FAMILY,
-            )
+            from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_MATERIAL_FLOW_CONTRACT_VERSION
             from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
             from src.core.conf import settings
 
             environment = WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV)
-            admission_profile = f"{PROFILE_FAMILY}.{environment}"
+            admission_profile = f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.{environment}"
         gateway = SystemCapabilityGateway(
             attempt_id=processor_token,
             definitions=resolved_definitions,

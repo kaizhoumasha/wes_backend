@@ -445,6 +445,9 @@ pipeline {
                             $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api alembic upgrade head
                             MIGRATION_APPLIED=true
 
+                            echo -e "${GREEN}🚦 校验 inventory QUERY READY+GO 切换授权...${NC}"
+                            $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api python scripts/check_query_inventory_cutover_readiness.py
+
                             echo -e "${GREEN}⚙️  启动新容器...${NC}"
                             $COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES} || {
                                 echo -e "${RED}❌ 容器启动失败${NC}"

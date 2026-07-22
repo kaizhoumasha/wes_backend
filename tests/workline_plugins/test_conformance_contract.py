@@ -92,7 +92,7 @@ def test_conformance_rejects_unknown_generated_converter_output() -> None:
 
 
 def test_conformance_rejects_query_capability_converter_output_as_effect() -> None:
-    identity = ("wms.rough_sorter_inventory_admission", "v1")
+    identity = ("wms.inventory.query_inventory", "v1")
 
     with pytest.raises(AssertionError, match="必须绑定 EFFECT"):
         assert_system_capability_effect_contract(

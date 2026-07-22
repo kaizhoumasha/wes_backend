@@ -34,7 +34,6 @@ TEST_OPERATION_TARGETS = {
 REQUIRED_CATEGORIES = {
     "caller",
     "binding",
-    "generated_index",
     "test",
     "metric",
     "documentation",
@@ -994,7 +993,7 @@ def test_inventory_covers_every_discovered_legacy_reference() -> None:
 
 
 def test_inventory_has_complete_categories_identities_and_dispositions() -> None:
-    """六类条目、目标 identity、owner 与删除门禁必须完整。"""
+    """现存遗留类别、目标 identity、owner 与删除门禁必须完整。"""
     rows = _read_inventory()
     assert {row["category"] for row in rows} == REQUIRED_CATEGORIES
     assert {row["target_operation_identity"] for row in rows} == set(LEGACY_IDENTITY_TARGETS.values())
