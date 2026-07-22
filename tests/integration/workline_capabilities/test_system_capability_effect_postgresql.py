@@ -17,7 +17,7 @@ from src.app.runtime.orchestration.models.session import SessionStatus, Workline
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
     SystemCapabilityEffectService,
 )
@@ -132,7 +132,7 @@ def test_local_effect_and_ledger_commit_atomically_without_handler_transaction_o
             session = await verify_db.scalar(select(WorklineSession))
             ledger = await verify_db.scalar(select(RuntimeIntentLog))
             assert session is not None and session.status == SessionStatus.MANUAL_HOLD
-            assert ledger is not None and ledger.effect_status == "SUCCEEDED"
+            assert ledger is not None and ledger.effect_status is RuntimeIntentStatus.COMPLETED
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

@@ -109,7 +109,9 @@ class SystemCapabilityEffectService:
                     outcome=outcome,
                     completion_mode=definition.completion_mode,
                     durably_accepted=definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC,
-                    remote_completed=definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL,
+                    # 已通过校验的 terminal success evidence 表示远端完成；这与
+                    # OUTBOX_ASYNC 的 PROPOSED/no-evidence durable acceptance 不同。
+                    remote_completed=True,
                     idempotent_replay=True,
                     evidence=evidence,
                 )

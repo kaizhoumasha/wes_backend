@@ -475,6 +475,7 @@ async def test_match_replays_persisted_typed_success_for_real_effect_definitions
 
     assert result.outcome == Success(payload=expected)
     assert result.idempotent_replay is True
+    assert result.remote_completed is True
     assert result.evidence is not None
     assert result.evidence.outcome == {"kind": "success", "payload": payload}
 

@@ -123,3 +123,18 @@ bytes、T8c typed sender、T8d reducer 生命周期或 T8e lease/fencing。
 - RED：新增“首次异步接受、第二次 MATCH”服务回归与真实 repository 的既有 `PROPOSED` claim 回归；修复前分别
   得到 `PERSISTED_OUTCOME_INVALID` 和错误的 `NEW`。
 - GREEN：effect service、RuntimeIntentLog repository、effect state 与 intent contract 定向回归 `99 passed`。
+
+## P1/P2 最终复审修复（2026-07-22）
+
+- MATCH 命中经过完整 typed 校验的 terminal success evidence 时，`remote_completed=True` 不再依赖
+  `OUTBOX_ASYNC/LOCAL_TRANSACTIONAL` 的首次执行模式。它表示 evidence 已证明远端完成；只有
+  `PROPOSED` 且无 evidence 的 durable acceptance 重放保持 `remote_completed=False`。
+- PostgreSQL integration EFFECT ledger 断言已从已移除的 `SUCCEEDED` 改为 final enum
+  `RuntimeIntentStatus.COMPLETED`；同文件及相邻 workline capability integration 测试未发现其他
+  RuntimeIntentLog 的旧 `SUCCEEDED` 枚举。
+
+### 最终复审验证
+
+- EFFECT/repository/state/intent contract 定向回归：`99 passed`。
+- PostgreSQL integration 文件：`4 tests collected`；已尝试实际运行，但本机未设置 PostgreSQL integration URL，
+  全部在 `missing_url` 环境预检失败，未进入业务断言。
