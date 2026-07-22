@@ -153,6 +153,31 @@ async def test_external_http_evidence_persistence_failure_overrides_uncertain_st
 
 
 @pytest.mark.asyncio
+async def test_stale_external_http_claim_explicitly_clears_retry_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outbox = SimpleNamespace(
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        status=SystemOutboxStatus.DISPATCHING,
+        attempt_count=0,
+        next_retry_at=timezone.now_for_db() - timedelta(seconds=1),
+        sent_at=None,
+        last_error=None,
+        finished_at=None,
+    )
+    db = _CapturingDb([outbox])
+    repository = SystemOutboxRepository()
+    # 单独验证 claim fence 自己拥有 retry 终态，不依赖通用 block 清理器的附带行为。
+    monkeypatch.setattr(repository, "_clear_block", lambda _outbox: None)
+
+    claimed = await repository.mark_as_dispatching(db, 91)  # type: ignore[arg-type]
+
+    assert claimed is None
+    assert outbox.status is SystemOutboxStatus.UNKNOWN
+    assert outbox.next_retry_at is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("dispatch_type", "target_type", "target_code"),
     [

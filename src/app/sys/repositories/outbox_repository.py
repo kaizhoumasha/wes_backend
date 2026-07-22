@@ -227,6 +227,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                 "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED: delivery evidence unavailable; automatic replay fenced"
             )
             outbox.sent_at = None
+            outbox.next_retry_at = None
             outbox.finished_at = now
             await db.flush()
             return None

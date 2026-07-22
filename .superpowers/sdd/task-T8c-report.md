@@ -40,6 +40,8 @@ snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIn
 - `mark_as_dispatching` 是 sender 前的最后一道领取 fence：过期的 EXTERNAL_HTTP `DISPATCHING` lease 先转为
   `UNKNOWN` 并记录 `STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED`，随后返回未领取；DEVICE_COMMAND 与
   INTERNAL_SIGNAL 继续沿用原 stale lease reclaim 语义。
+- stale HTTP claim fence 显式写入 `next_retry_at = None`，不依赖通用 block 清理器的附带行为，与
+  `mark_as_unknown` 的不可重试终态字段保持一致。
 - 若该 UNKNOWN flush/commit 仍失败，当前 worker 会在 sender 前退出；下一 worker 继续执行相同 fence，绝不会把旧
   EXTERNAL_HTTP lease 直接重发。
 - generic 与 workline 失败注入回归均验证 sender 只调用一次；真实 Repository 双 worker 回归进一步覆盖“隔离恢复
@@ -59,8 +61,8 @@ snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIn
 ## 验证结果
 
 - P1/P2 定向回归：typed 不变量、Repository 终态覆盖、generic/workline 证据失败及双 worker lease 场景全部通过。
-- outbox/transport/attempt 相关回归：`81 passed`。
-- 测试拓扑守卫：`6 passed`；显式 collect-only：`3662 tests collected`。
+- outbox/transport/attempt 相关回归：`82 passed`。
+- 测试拓扑守卫：`6 passed`；显式 collect-only：`3663 tests collected`。
 - T8c typed result、双 dispatcher、attempt evidence 与 EFFECT 相关回归：`74 passed`。
 - T8c 最终核心复验（含 SANDBOX evidence）：`24 passed`。
 - PostgreSQL typed attempt evidence 集成测试：`1 passed`。
@@ -93,5 +95,12 @@ HIGH/CRITICAL，非 HTTP reclaim 语义由 DEVICE_COMMAND、INTERNAL_SIGNAL 双�
 
 末轮 staged `gitnexus_detect_changes` 覆盖 7 个文件、5 个已索引符号、1 个 affected process，汇总风险为 MEDIUM；
 变更边界与预期一致，仅涉及 transport 不变量、SystemOutbox claim fence、相应测试和本报告。
+
+P3 显式 retry 时钟清理的写前 impact 为 LOW（1 个直接调用方、1 条受影响流程）；定向测试隔离通用清理器副作用，
+验证 claim fence 自身拥有 `UNKNOWN` 的 `next_retry_at = None` 不变量。
+
+P3 staged `gitnexus_detect_changes` 覆盖 3 个文件、2 个已索引符号、1 个 affected process，汇总风险为 MEDIUM；
+GitNexus 将单行仓储 hunk 映射到相邻的 `claim_blocked_resource_wait_for_dispatch`，staged diff 复核确认实际变更只位于
+`mark_as_dispatching` 的 stale EXTERNAL_HTTP claim fence，提交边界与预期一致。
 
 提交范围只包含 T8c 计划、实现、迁移、测试与本报告，不包含用户维护的 `AGENTS.md`、`CLAUDE.md`。
