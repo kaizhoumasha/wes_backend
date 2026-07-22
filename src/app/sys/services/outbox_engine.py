@@ -18,6 +18,7 @@ from src.app.sys.models import SystemOutboxDispatchType
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
 from src.core.logger import logger
+from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
 if TYPE_CHECKING:
@@ -63,6 +64,7 @@ class SystemOutboxEngine:
         device_command_dispatcher: Callable[[Any, Any], Awaitable[bool]] | None = None,
         dispatch_attempt_service: Any | None = None,
         external_http_recovery_context_factory: Callable[[], Any] | None = None,
+        effect_transport_bridge: Any | None = None,
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
@@ -71,6 +73,7 @@ class SystemOutboxEngine:
         self.device_command_dispatcher = device_command_dispatcher or _dispatch_device_command
         self.dispatch_attempt_service = dispatch_attempt_service
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
+        self.effect_transport_bridge = effect_transport_bridge
 
     async def dispatch(self, db: Any, limit: int = 50) -> DispatchResult:
         result: DispatchResult = {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
@@ -156,6 +159,13 @@ class SystemOutboxEngine:
                         outbox_finalization=outbox_finalization,
                         auto_commit=False,
                     )
+                    await self._record_effect_transport_result(
+                        db,
+                        outbox=claimed,
+                        dispatch_attempt=dispatch_attempt,
+                        result=dispatch_result,
+                        updated=updated,
+                    )
                     await _commit_if_supported(db)
                 except Exception as evidence_error:
                     updated = await recover_external_http_evidence_failure_unknown(
@@ -218,6 +228,34 @@ class SystemOutboxEngine:
 
             self.external_http_recovery_context_factory = get_db_context
         return self.external_http_recovery_context_factory
+
+    def _resolve_effect_transport_bridge(self) -> Any:
+        if self.effect_transport_bridge is None:
+            from src.app.runtime.orchestration.effect_bridges import effect_transport_bridge
+
+            self.effect_transport_bridge = effect_transport_bridge
+        return self.effect_transport_bridge
+
+    async def _record_effect_transport_result(
+        self,
+        db: Any,
+        *,
+        outbox: Any,
+        dispatch_attempt: Any,
+        result: ExternalHttpTransportResult,
+        updated: Any | None,
+    ) -> None:
+        if updated is None:
+            return
+        attempt_no = int(getattr(dispatch_attempt, "attempt_no", None) or 1)
+        await self._resolve_effect_transport_bridge().record_result(
+            db,
+            dispatch_key=str(outbox.dispatch_key),
+            attempt_no=attempt_no,
+            result=result,
+            retry_exhausted=enum_value(getattr(updated, "status", None)) == "FAILED",
+            occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+        )
 
     async def _finalize_external_http_result(
         self,

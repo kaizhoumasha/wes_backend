@@ -29,6 +29,7 @@ from .dispatch_attempt_repository import (
     WorklineDispatchAttemptRepository,
     workline_dispatch_attempt_repository,
 )
+from .effect_reducer_repository import EffectReducerRepository, effect_reducer_repository
 from .material_unit_repository import (
     MaterialUnitRepository,
     material_unit_repository,
@@ -88,6 +89,7 @@ from .workline_runtime_status_projection_repository import (
 __all__ = [
     "ConveyorQueueMembershipRepository",
     "DeviceRuntimeProjectionRepository",
+    "EffectReducerRepository",
     "IdempotencyKeyRepository",
     "MaterialUnitRepository",
     "ObjectTransitionEventRepository",
@@ -111,6 +113,7 @@ __all__ = [
     "WorklineSessionRepository",
     "conveyor_queue_membership_repository",
     "device_runtime_projection_repository",
+    "effect_reducer_repository",
     "idempotency_key_repository",
     "material_unit_repository",
     "object_transition_event_repository",

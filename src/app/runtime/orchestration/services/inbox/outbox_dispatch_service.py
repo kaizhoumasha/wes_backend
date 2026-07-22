@@ -447,8 +447,14 @@ async def _remember_blocked_head_device_scope(
 class OutboxDispatchService:
     MAX_RETRIES = 3
 
-    def __init__(self, *, external_http_recovery_context_factory: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        external_http_recovery_context_factory: Any | None = None,
+        effect_transport_bridge: Any | None = None,
+    ) -> None:
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
+        self.effect_transport_bridge = effect_transport_bridge
 
     def _resolve_external_http_recovery_context_factory(self) -> Any:
         if self.external_http_recovery_context_factory is None:
@@ -457,11 +463,19 @@ class OutboxDispatchService:
             self.external_http_recovery_context_factory = get_db_context
         return self.external_http_recovery_context_factory
 
+    def _resolve_effect_transport_bridge(self) -> Any:
+        if self.effect_transport_bridge is None:
+            from src.app.runtime.orchestration.effect_bridges import effect_transport_bridge
+
+            self.effect_transport_bridge = effect_transport_bridge
+        return self.effect_transport_bridge
+
     async def _finalize_external_http_result(
         self,
         db: Any,
         *,
         outbox_repo: Any,
+        outbox: Any | None = None,
         outbox_id: int,
         dispatch_attempt: Any,
         attempt_service: Any,
@@ -488,6 +502,17 @@ class OutboxDispatchService:
             outbox_finalization=outbox_finalization,
             auto_commit=False,
         )
+        if updated is not None and outbox is not None:
+            from src.utils.timezone import timezone
+
+            await self._resolve_effect_transport_bridge().record_result(
+                db,
+                dispatch_key=str(outbox.dispatch_key),
+                attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
+                result=result,
+                retry_exhausted=enum_value(getattr(updated, "status", None)) == "FAILED",
+                occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+            )
         return updated
 
     async def _prepare_claimed_blocked_head_dispatch(
@@ -899,6 +924,7 @@ class OutboxDispatchService:
                         updated = await self._finalize_external_http_result(
                             db,
                             outbox_repo=outbox_repo,
+                            outbox=outbox,
                             outbox_id=outbox_pk,
                             dispatch_attempt=dispatch_attempt,
                             attempt_service=workline_dispatch_attempt_service,

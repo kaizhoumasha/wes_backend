@@ -11,6 +11,13 @@ from src.app.runtime.orchestration.services.device_runtime_projection_writer_ser
     DeviceRuntimeProjectionWriterService,
     device_runtime_projection_writer_service,
 )
+from src.app.runtime.orchestration.services.effect_reducer_service import (
+    EffectIntentNotFound,
+    EffectReducer,
+    EffectReductionResult,
+    InvalidReconciliationEvent,
+    effect_reducer,
+)
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
     IdempotencyConflict,
@@ -51,8 +58,12 @@ __all__ = [
     "ConveyorQueueMembershipWriterService",
     "ConveyorQueueWriteBlocked",
     "DeviceRuntimeProjectionWriterService",
+    "EffectIntentNotFound",
+    "EffectReducer",
+    "EffectReductionResult",
     "IdempotencyConflict",
     "IdempotencyGuard",
+    "InvalidReconciliationEvent",
     "MaterialUnitMutationService",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
@@ -63,6 +74,7 @@ __all__ = [
     "WorkLineRuntimeStatusSnapshot",
     "conveyor_queue_membership_writer_service",
     "device_runtime_projection_writer_service",
+    "effect_reducer",
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",

@@ -253,7 +253,10 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
     async def recovery_context():
         yield recovery_db
 
-    service = OutboxDispatchService(external_http_recovery_context_factory=recovery_context)
+    service = OutboxDispatchService(
+        external_http_recovery_context_factory=recovery_context,
+        effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
+    )
     dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
     attempt_module = import_module("src.app.runtime.orchestration.services.inbox.dispatch_attempt_service")
     event_stream_module = import_module("src.app.sys.services.event_stream_service")

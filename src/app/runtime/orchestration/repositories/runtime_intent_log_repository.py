@@ -11,7 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from src.app.runtime.orchestration.effect_state_contract import transition_runtime_intent
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.system_capability_effect_claim import (
@@ -188,30 +187,6 @@ class RuntimeIntentLogRepository:
         # 唯一约束冲突表示同一 immutable request 已有权威 ledger；包括
         # OUTBOX_ASYNC 的 PROPOSED 双账本，调用方必须重放既有状态，不能再次执行 handler。
         return SystemCapabilityClaimResult.MATCH
-
-    async def record_outcome(self, db: Any, *, claim: dict[str, Any], evidence: Any) -> None:
-        row = await self._get_effect_for_update(
-            db,
-            provider_code=claim["provider_code"],
-            operation_kind=claim["operation_kind"],
-            idempotency_key=claim["idempotency_key"],
-        )
-        if row is None:
-            raise RuntimeError("runtime intent provisional effect claim is missing")
-        target_status = {
-            "success": RuntimeIntentStatus.COMPLETED,
-            "business_reject": RuntimeIntentStatus.REJECTED,
-            "retryable_failure": RuntimeIntentStatus.TECHNICAL_FAILED,
-            "contract_violation": RuntimeIntentStatus.TECHNICAL_FAILED,
-        }[evidence.outcome_kind]
-        transition_runtime_intent(row, target_status)
-        serialized = evidence.model_dump(mode="json")
-        row.outcome_kind = evidence.outcome_kind
-        row.outcome_code = evidence.outcome_code
-        row.outcome_json = serialized
-        row.outcome_history_json = [*list(row.outcome_history_json or []), serialized]
-        row.effect_updated_at_ms = evidence.occurred_at_ms
-        await db.flush()
 
     async def get_success_evidence(self, db: Any, *, claim: dict[str, Any]) -> dict[str, object] | None:
         row = await self._get_effect_for_update(

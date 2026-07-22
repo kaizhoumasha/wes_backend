@@ -134,7 +134,7 @@ class FakeSystemOutboxRepository:
 
 class FakeDispatchAttemptService:
     def __init__(self) -> None:
-        self.attempt = SimpleNamespace(status="DISPATCHING")
+        self.attempt = SimpleNamespace(status="DISPATCHING", attempt_no=1)
         self.created: list[Any] = []
         self.finalized: list[dict[str, Any]] = []
 
@@ -147,6 +147,11 @@ class FakeDispatchAttemptService:
         assert kwargs["auto_commit"] is False
         self.finalized.append(kwargs)
         return kwargs["attempt"]
+
+
+class NoopEffectTransportBridge:
+    async def record_result(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
 
 
 async def _no_workline_messages(_db: Any, _limit: int) -> dict[str, int]:
@@ -189,6 +194,7 @@ async def test_system_outbox_dispatcher_sends_external_http_and_marks_sent() -> 
         outbox_repository=repo,
         external_http_sender=sender,
         dispatch_attempt_service=FakeDispatchAttemptService(),
+        effect_transport_bridge=NoopEffectTransportBridge(),
         workline_domain_dispatcher=_no_workline_messages,
     )
 
@@ -222,6 +228,7 @@ async def test_system_outbox_dispatcher_marks_failed_when_external_http_fails() 
         outbox_repository=repo,
         external_http_sender=sender,
         dispatch_attempt_service=FakeDispatchAttemptService(),
+        effect_transport_bridge=NoopEffectTransportBridge(),
         workline_domain_dispatcher=_no_workline_messages,
     )
 
@@ -231,6 +238,35 @@ async def test_system_outbox_dispatcher_marks_failed_when_external_http_fails() 
     assert repo.mark_failed_calls == [(2, "connection refused", 3)]
     assert message.status == SystemOutboxStatus.RETRY_WAIT
     assert message.last_error == "connection refused"
+
+
+@pytest.mark.asyncio
+async def test_system_outbox_dispatcher_bridges_persisted_transport_evidence_to_effect_reducer() -> None:
+    message = _outbox(id=22, dispatch_key="effect-dispatch-22")
+    repo = FakeSystemOutboxRepository([message])
+    sender_result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+    effect_bridge = SimpleNamespace(record_result=AsyncMock())
+    db = SimpleNamespace(commit=AsyncMock())
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        external_http_sender=AsyncMock(return_value=sender_result),
+        dispatch_attempt_service=FakeDispatchAttemptService(),
+        effect_transport_bridge=effect_bridge,
+        workline_domain_dispatcher=_no_workline_messages,
+    )
+
+    result = await dispatcher.dispatch(db, limit=10)
+
+    assert result["success"] == 1
+    effect_bridge.record_result.assert_awaited_once()
+    call = effect_bridge.record_result.await_args
+    assert call.kwargs["dispatch_key"] == "effect-dispatch-22"
+    assert call.kwargs["attempt_no"] == 1
+    assert call.kwargs["result"] is sender_result
+    assert call.kwargs["retry_exhausted"] is False
 
 
 @pytest.mark.asyncio

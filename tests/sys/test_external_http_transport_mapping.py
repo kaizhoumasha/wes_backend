@@ -152,6 +152,7 @@ async def _dispatch(
         external_http_sender=sender,
         dispatch_attempt_service=attempt_service,
         workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
     )
     stats = await engine.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)
     return stats, repository, attempt_service, sender
@@ -231,6 +232,7 @@ async def test_ambiguous_result_enters_unknown_and_is_not_dispatched_again() -> 
         external_http_sender=sender,
         dispatch_attempt_service=attempt_service,
         workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
     )
     db = SimpleNamespace(commit=AsyncMock())
 

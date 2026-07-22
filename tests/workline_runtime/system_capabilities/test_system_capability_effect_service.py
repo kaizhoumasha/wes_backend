@@ -162,6 +162,19 @@ class _StatefulEffectRepository(_EffectRepository):
         self.status = "SUCCEEDED" if evidence.outcome_kind == "success" else "BUSINESS_REJECT"
 
 
+class _EffectReducer:
+    def __init__(self, repository: _EffectRepository) -> None:
+        self.repository = repository
+
+    async def reduce(self, db: object, event: object, **_kwargs: Any) -> None:
+        event_data = event  # 保留 typed event 属性，模拟唯一 reducer 对 fake ledger 的写入。
+        evidence = SimpleNamespace(
+            **event_data.evidence_json,
+            model_dump=lambda **_dump_kwargs: dict(event_data.evidence_json),
+        )
+        await self.repository.record_outcome(db, evidence=evidence)
+
+
 class _AsyncAcceptedReplayRepository(_EffectRepository):
     """模拟同一 OUTBOX_ASYNC effect 的第二次 claim 命中已有 PROPOSED ledger。"""
 
@@ -267,6 +280,7 @@ def _service(definition: SystemCapabilityDefinition, repository: _EffectReposito
         plugin_definitions={("test_plugin", "v1"): plugin_definition},
         plugin_index_digest="d" * 64,
         effect_repository=repository,
+        effect_reducer=_EffectReducer(repository),
     )
     return SystemCapabilityEffectService(intent_service=intent_service)
 

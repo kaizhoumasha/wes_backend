@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from src.app.runtime.orchestration.effect_bridges import EffectCallbackBridge, EffectCallbackOutcome
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
@@ -70,7 +71,15 @@ async def test_production_repository_preserves_rejected_terminal_on_same_claim(d
     claim = _claim()
 
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
-    await repository.record_outcome(db_session, claim=claim, evidence=_evidence("business_reject", occurred_at_ms=1100))
+    await EffectCallbackBridge().record(
+        db_session,
+        dispatch_key=str(claim["dispatch_key"]),
+        outcome=EffectCallbackOutcome.REJECTED,
+        occurred_at_ms=1100,
+        source_event_id="local-effect:business-reject",
+        reason_code="STALE_PRECONDITION",
+        evidence_json=_evidence("business_reject", occurred_at_ms=1100).model_dump(),
+    )
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.MATCH
 
     persisted = await repository.get_success_evidence(db_session, claim=claim)

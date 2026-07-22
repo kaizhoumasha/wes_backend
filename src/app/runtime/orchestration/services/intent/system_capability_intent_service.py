@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError
 
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.effect_state_contract import EffectReducerEvent, EffectReducerEventType
 from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
@@ -46,6 +47,7 @@ class SystemCapabilityIntentService:
         plugin_definitions: Mapping[tuple[str, str], Any] | None = None,
         plugin_index_digest: str | None = None,
         effect_repository: Any | None = None,
+        effect_reducer: Any | None = None,
     ) -> None:
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
@@ -67,6 +69,10 @@ class SystemCapabilityIntentService:
 
             effect_repository = runtime_intent_log_repository
         self._effect_repository = effect_repository
+        if effect_reducer is None:
+            from src.app.runtime.orchestration.services.effect_reducer_service import effect_reducer
+
+        self._effect_reducer = effect_reducer
         self._plugin_definitions = dict(plugin_definitions)
         self._plugin_index_digest = plugin_index_digest
 
@@ -149,7 +155,28 @@ class SystemCapabilityIntentService:
     async def record_outcome(
         self, ctx: Mapping[str, Any], *, prepared: PreparedSystemCapabilityIntent, evidence: Any
     ) -> None:
-        await self._effect_repository.record_outcome(ctx["db"], claim=prepared.claim, evidence=evidence)
+        event_type = {
+            "success": EffectReducerEventType.CALLBACK_COMPLETED,
+            "business_reject": EffectReducerEventType.CALLBACK_REJECTED,
+            "retryable_failure": EffectReducerEventType.TRANSPORT_NOT_SENT,
+            "contract_violation": EffectReducerEventType.TRANSPORT_NOT_SENT,
+        }[evidence.outcome_kind]
+        clearly_not_applied = event_type is EffectReducerEventType.TRANSPORT_NOT_SENT
+        await self._effect_reducer.reduce(
+            ctx["db"],
+            EffectReducerEvent(
+                event_type=event_type,
+                dispatch_key=str(prepared.claim["dispatch_key"]),
+                occurred_at_ms=evidence.occurred_at_ms,
+                source_event_id=(
+                    f"local-effect:{prepared.claim['dispatch_key']}:{evidence.outcome_kind}:{evidence.occurred_at_ms}"
+                ),
+                attempt_no=1 if clearly_not_applied else None,
+                retry_exhausted=clearly_not_applied,
+                reason_code=evidence.outcome_code,
+                evidence_json=evidence.model_dump(mode="json"),
+            ),
+        )
 
     async def get_success_evidence(
         self, ctx: Mapping[str, Any], *, prepared: PreparedSystemCapabilityIntent
