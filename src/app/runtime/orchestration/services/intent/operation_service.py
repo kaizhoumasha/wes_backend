@@ -1313,6 +1313,8 @@ def _transition_sandbox_outbox_to_sent(outbox: Any) -> None:
     if enum_str(outbox.status) == SystemOutboxStatus.NEW.value:
         transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
     transition_system_outbox(outbox, SystemOutboxStatus.SENT)
+    # owner token 作为历史审计证据保留；离开 DISPATCHING 后只清理活跃租约期限。
+    outbox.lease_expires_at = None
 
 
 workline_operation_service = WorklineOperationService()

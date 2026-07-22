@@ -21,6 +21,7 @@ from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, R
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import (
     workline_dispatch_attempt_service,
 )
+from src.app.runtime.orchestration.services.intent.operation_service import _transition_sandbox_outbox_to_sent
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.dispatch_concurrency import DispatchPolicyRegistry, FairDispatchScheduler
 from src.app.sys.external_http_transport import ExternalHttpTransportPhase, ExternalHttpTransportResult
@@ -223,6 +224,28 @@ async def test_callback_closes_dispatching_lease_shape_on_postgresql(integration
     await integration_db_session.flush()
 
     assert closed is outbox
+    assert enum_value(outbox.status) == SystemOutboxStatus.SENT.value
+    assert outbox.lease_expires_at is None
+    assert outbox.lease_owner_token == owner
+
+
+@pytest.mark.asyncio
+async def test_sandbox_transition_closes_dispatching_lease_shape_on_postgresql(
+    integration_db_session: AsyncSession,
+) -> None:
+    owner = f"sandbox-callback-owner:{uuid4().hex}"
+    outbox = _external_http_outbox(
+        dispatch_key=f"sandbox-callback-lease-shape:{uuid4().hex}",
+        status=SystemOutboxStatus.DISPATCHING,
+        lease_owner_token=owner,
+        lease_expires_at=timezone.now_for_db() + timedelta(minutes=5),
+    )
+    integration_db_session.add(outbox)
+    await integration_db_session.flush()
+
+    _transition_sandbox_outbox_to_sent(outbox)
+    await integration_db_session.flush()
+
     assert enum_value(outbox.status) == SystemOutboxStatus.SENT.value
     assert outbox.lease_expires_at is None
     assert outbox.lease_owner_token == owner

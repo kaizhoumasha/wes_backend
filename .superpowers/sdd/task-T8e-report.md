@@ -125,3 +125,18 @@ savepoint 回滚。完整 `quality` profile 再次通过：Ruff、Bandit、348 �
 import-linter、architecture guardrails 与测试拓扑均无新增违规。刷新 worktree 索引后的 staged GitNexus detect 为
 `12 files / 54 symbols / 0 affected processes / LOW`；内置 MCP 因 LadybugDB 存储版本不兼容不可读，使用同一
 worktree 与 staged scope 的 GitNexus CLI 完成等价检测。
+
+### Sandbox callback/ACK lease-shape 补充
+
+后续复审发现 `operation_service` 的 sandbox 同步收口 helper 在 `DISPATCHING → SENT` 后未清理
+`lease_expires_at`，真实 callback/ACK 提交会违反 T8e 新增的数据库 CHECK。全文件审计确认 sandbox external
+callback 与 device ACK 两条路径都汇合到该 helper，且没有其它离开 `DISPATCHING` 的状态转换旁路。helper 现于
+合法状态转换后清理 expiry，并继续保留 owner token 作为审计证据。
+
+写前 GitNexus impact 为 LOW：2 个直接调用方、2 条 affected processes、3 个 upstream symbols。两条真实 service
+调用定向回归携带有效 lease，RED 均精确失败于 expiry 未清，修复后转绿；另以真实 PostgreSQL 对持久化
+`DISPATCHING` outbox 执行同一 sandbox transition 并再次 flush，确认 `SENT + expiry=NULL` 满足 CHECK。相关快速
+回归 `40 passed`，该 PostgreSQL 文件 `8 passed`，测试拓扑 `6 passed`，显式收集 `3761 tests collected`；完整
+`quality` profile 通过 Ruff、Bandit、348 项 runtime contract guardrails、import-linter 与 architecture guardrails。
+刷新索引后的 staged GitNexus detect 为 `5 files / 4 symbols / 0 affected processes / LOW`，变更边界仅包含共享
+sandbox transition、两条真实调用回归、PostgreSQL CHECK 回归与本报告。
