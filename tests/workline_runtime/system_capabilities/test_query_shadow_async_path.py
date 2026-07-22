@@ -450,6 +450,70 @@ async def test_expected_reader_derives_authority_only_from_durable_query_evidenc
     assert samples == [expected]
 
 
+@pytest.mark.asyncio
+async def test_expected_reader_uses_embedded_observed_at_across_month_commit_boundary() -> None:
+    from src.app.runtime.system_capabilities.shadow_repository import QueryShadowReadinessRepository
+
+    july_expected = _draft().expected.model_copy(
+        update={
+            "comparison_key": "1" * 64,
+            "evidence_ref": "query-evidence:" + "1" * 64,
+            "observed_at": datetime(2026, 7, 31, 23, 59, tzinfo=UTC),
+        }
+    )
+    august_expected = july_expected.model_copy(
+        update={
+            "comparison_key": "2" * 64,
+            "evidence_ref": "query-evidence:" + "2" * 64,
+            "observed_at": datetime(2026, 8, 1, tzinfo=UTC),
+        }
+    )
+    rows = [
+        # 月末 observed evidence 在次月才持久化；查询窗口仍必须按 embedded observed_at 归属 7 月。
+        SimpleNamespace(
+            occurred_at=datetime(2026, 8, 1, 0, 5),
+            payload_json={
+                "record_type": "SYSTEM_CAPABILITY_EVIDENCE",
+                "evidence": {"shadow_expected": july_expected.model_dump(mode="json")},
+            },
+        ),
+        SimpleNamespace(
+            occurred_at=datetime(2026, 8, 1, 0, 6),
+            payload_json={
+                "record_type": "SYSTEM_CAPABILITY_EVIDENCE",
+                "evidence": {"shadow_expected": august_expected.model_dump(mode="json")},
+            },
+        ),
+    ]
+    statements: list[object] = []
+
+    class Scalars:
+        def all(self) -> list[object]:
+            return rows
+
+    class Result:
+        def scalars(self) -> Scalars:
+            return Scalars()
+
+    class Db:
+        async def execute(self, statement: object, *_args: object, **_kwargs: object) -> Result:
+            statements.append(statement)
+            return Result()
+
+    samples = await QueryShadowReadinessRepository().list_expected(
+        Db(),
+        provider_profile_identity=july_expected.provider_profile_identity,
+        operation_identity=july_expected.operation_identity,
+        observed_from=datetime(2026, 7, 1, tzinfo=UTC),
+        observed_until=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    where_sql = str(statements[0]).partition("WHERE")[2]
+    assert "workline_timelines.occurred_at" not in where_sql
+    assert "payload_json" in where_sql
+    assert samples == [july_expected]
+
+
 def test_celery_tasks_include_comparison_consumer_and_partition_maintainer() -> None:
     from src.celery_app.config import beat_schedule
     from src.celery_app.tasks.workline import maintain_query_shadow_partitions, process_query_shadow_comparison

@@ -353,3 +353,32 @@ def test_durably_marked_comparison_conflict_invalidates_current_window() -> None
 
     assert report.verdict is ReadinessVerdict.INVALID
     assert "COMPARISON_CONFLICT" in report.reset_reasons
+
+
+def test_ineligible_version_change_resets_window_before_eligibility_filter() -> None:
+    from src.app.runtime.system_capabilities.shadow_readiness import (
+        QueryShadowReadinessPolicy,
+        ReadinessVerdict,
+        build_query_shadow_readiness_report,
+    )
+
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    expected = [
+        _expected("a" * 64, start, candidate="policy.v2"),
+        _expected("b" * 64, start + timedelta(days=1), candidate="policy.v3", eligible=False),
+        _expected("c" * 64, start + timedelta(days=7), candidate="policy.v2"),
+    ]
+    report = build_query_shadow_readiness_report(
+        provider_profile_identity=expected[0].provider_profile_identity,
+        operation_identity=expected[0].operation_identity,
+        expected_samples=expected,
+        comparisons=[_draft(expected[0]), _draft(expected[2])],
+        generated_at=start + timedelta(days=8),
+        policy=QueryShadowReadinessPolicy(min_window_days=7, min_eligible_samples=2),
+    )
+
+    assert report.verdict is ReadinessVerdict.NOT_READY
+    assert report.window_started_at == start + timedelta(days=7)
+    assert report.eligible_samples == 1
+    assert report.excluded_samples == 1
+    assert "VERSION_CHANGED" in report.reset_reasons

@@ -67,7 +67,8 @@ def test_comparison_storage_is_reference_only_and_does_not_implement_first_migra
         )
     )
 
-    assert all(name in model_text for name in ("evidence_ref", "replay_ref", "input_hash", "output_hash"))
+    assert all(name in model_text for name in ("evidence_ref", "input_hash", "output_hash"))
+    assert "replay_ref" not in model_text
     assert not any(
         forbidden in model_text for forbidden in ("request_payload", "response_payload", "authority_snapshot")
     )

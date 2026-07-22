@@ -1845,8 +1845,14 @@ def _write_set_from_recorded_replay(
         )
     ):
         return _invalid_recorded_write_set(fallback_state)
+    replayed_evidence = tuple(
+        # 历史 evidence 继续保留审计价值，但 replay 不得为已完成的源 attempt 再生成 expected，
+        # 也不得重新执行 shadow policy 或 effect。
+        evidence.model_copy(update={"shadow_expected": None})
+        for evidence in resolution.evidence
+    )
     return AttemptWriteSet(
-        evidence=resolution.evidence,
+        evidence=replayed_evidence,
         # Recorded replay 复用已审计的 decision/evidence，但不把历史状态
         # 覆盖到可能已经继续推进的当前 Session。
         next_state={},

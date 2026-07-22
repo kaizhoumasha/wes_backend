@@ -30,7 +30,6 @@ def upgrade() -> None:
                 comparison_key VARCHAR(64) NOT NULL,
                 comparison_status VARCHAR(20) NOT NULL,
                 evidence_ref VARCHAR(240) NOT NULL,
-                replay_ref VARCHAR(240),
                 trace_id VARCHAR(120),
                 provider_profile_identity VARCHAR(240) NOT NULL,
                 operation_identity VARCHAR(240) NOT NULL,

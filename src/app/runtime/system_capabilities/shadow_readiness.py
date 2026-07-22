@@ -381,13 +381,17 @@ def build_query_shadow_readiness_report(
     current_conflict = False
     reset_reasons: list[str] = []
     for expected in filtered:
-        if not expected.shadow_eligible:
-            excluded += 1
-            continue
         if active_versions is not None and expected.versions != active_versions:
             _append_once(reset_reasons, "VERSION_CHANGED")
             segment.clear()
+            current_gap = 0
+            current_evaluator_failure = False
+            current_duplicate = False
+            current_conflict = False
         active_versions = expected.versions
+        if not expected.shadow_eligible:
+            excluded += 1
+            continue
         if comparison_counts[expected.comparison_key] > 1:
             _append_once(reset_reasons, "DUPLICATE_COMPARISON")
             segment.clear()

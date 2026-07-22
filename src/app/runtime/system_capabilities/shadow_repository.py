@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, not_, select, text
+from sqlalchemy import DateTime, and_, cast, not_, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
-from src.app.runtime.orchestration.models.timeline import WorklineTimeline
+from src.app.runtime.orchestration.models.timeline import TimelineActionType, WorklineTimeline
 from src.app.runtime.system_capabilities.shadow_models import (
     QueryShadowComparison,
     QueryShadowReadinessApprovalRecord,
@@ -82,13 +82,25 @@ class QueryShadowReadinessRepository:
         observed_from: datetime,
         observed_until: datetime,
     ) -> list[QueryShadowExpected]:
+        # Timeline 行可能在 observed evidence 之后才提交，尤其会跨过月界；expected、comparison
+        # 与 readiness 必须统一按 immutable shadow_expected.observed_at 查询和排序。
+        _for_db(observed_from)
+        _for_db(observed_until)
+        observed_from_utc = observed_from.astimezone(UTC)
+        observed_until_utc = observed_until.astimezone(UTC)
+        expected_observed_at = cast(
+            WorklineTimeline.payload_json["evidence"]["shadow_expected"]["observed_at"].as_string(),
+            DateTime(timezone=True),
+        )
         result = await db.execute(
             select(WorklineTimeline)
             .where(
-                WorklineTimeline.occurred_at >= _for_db(observed_from),
-                WorklineTimeline.occurred_at < _for_db(observed_until),
+                WorklineTimeline.action_type == TimelineActionType.DECISION_MADE,
+                WorklineTimeline.payload_json["record_type"].as_string() == "SYSTEM_CAPABILITY_EVIDENCE",
+                expected_observed_at >= observed_from_utc,
+                expected_observed_at < observed_until_utc,
             )
-            .order_by(WorklineTimeline.occurred_at.asc(), WorklineTimeline.id.asc())
+            .order_by(expected_observed_at.asc(), WorklineTimeline.id.asc())
         )
         expected: list[QueryShadowExpected] = []
         for timeline in result.scalars().all():
@@ -101,7 +113,8 @@ class QueryShadowReadinessRepository:
                 continue
             item = QueryShadowExpected.model_validate(raw_expected)
             if (
-                item.provider_profile_identity == provider_profile_identity
+                observed_from_utc <= item.observed_at.astimezone(UTC) < observed_until_utc
+                and item.provider_profile_identity == provider_profile_identity
                 and item.operation_identity == operation_identity
             ):
                 expected.append(item)

@@ -42,7 +42,6 @@ class QueryShadowComparison(BaseMixin, table=True):
     comparison_key: str = Field(primary_key=True, min_length=64, max_length=64)
     comparison_status: str = Field(min_length=1, max_length=20)
     evidence_ref: str = Field(min_length=1, max_length=240)
-    replay_ref: str | None = Field(default=None, max_length=240)
     trace_id: str | None = Field(default=None, max_length=120)
     provider_profile_identity: str = Field(min_length=1, max_length=240)
     operation_identity: str = Field(min_length=1, max_length=240)

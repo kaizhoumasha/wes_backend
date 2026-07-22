@@ -10,6 +10,14 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from src.app.runtime.orchestration.models.timeline import (
+    TimelineActionType,
+    TimelineActorType,
+    TimelineStage,
+    TimelineStatus,
+    WorklineTimeline,
+)
+from src.app.runtime.system_capabilities.evidence import QueryEvidence
 from src.app.runtime.system_capabilities.shadow_partitioning import QueryShadowPartitionMaintainer
 from src.app.runtime.system_capabilities.shadow_readiness import (
     BoundedQueryShadowEvaluator,
@@ -27,6 +35,7 @@ from src.app.runtime.system_capabilities.shadow_repository import (
     QueryShadowReadinessRepository,
 )
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
+from tests.support.runtime_inbox_processing_postgresql import seed_scan_flow
 
 
 def _month_start(value: datetime) -> datetime:
@@ -246,4 +255,115 @@ async def test_concurrent_exact_duplicate_is_idempotent_but_divergent_duplicate_
         )
         assert report.verdict is ReadinessVerdict.INVALID
         assert "COMPARISON_CONFLICT" in report.reset_reasons
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_month_end_expected_committed_next_month_uses_observed_time_for_readiness_window() -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "head", database_url=database_url)
+        engine = create_async_engine(database_url)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        current_month = _month_start(datetime.now(UTC))
+        next_month = _shift_month(current_month, 1)
+        current_payload = _task_payload(
+            attempt_id="month-end-observed",
+            observed_at=next_month - timedelta(minutes=1),
+        )
+        next_payload = _task_payload(
+            attempt_id="next-month-observed",
+            observed_at=next_month,
+        )
+
+        def expected_from(payload: dict[str, object]) -> QueryShadowExpected:
+            return QueryShadowExpected(
+                shadow_eligible=True,
+                comparison_key=str(payload["comparison_key"]),
+                provider_profile_identity=str(payload["provider_profile_identity"]),
+                operation_identity=str(payload["operation_identity"]),
+                versions=ShadowVersionSet.model_validate(payload["versions"]),
+                observed_at=datetime.fromisoformat(str(payload["observed_at"])),
+                evidence_ref=str(payload["evidence_ref"]),
+                input_hash=str(payload["input_hash"]),
+                output_hash=str(payload["output_hash"]),
+            )
+
+        current_expected = expected_from(current_payload)
+        next_expected = expected_from(next_payload)
+
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            timeline_commit_time = (next_month + timedelta(minutes=5)).replace(tzinfo=None)
+            evidence_rows: list[WorklineTimeline] = []
+            for seq_no, expected in ((901, current_expected), (902, next_expected)):
+                evidence = QueryEvidence(
+                    capability_key="wms.inventory.query_inventory",
+                    contract_version="v1",
+                    input_hash=expected.input_hash,
+                    output_hash=expected.output_hash,
+                    authority="WMS",
+                    source="material-flow",
+                    evidence_at=expected.observed_at,
+                    source_version=f"inventory-{seq_no}",
+                    admission_snapshot={"profile": expected.provider_profile_identity},
+                    summary={"outcome": {"kind": "success"}},
+                    shadow_expected=expected,
+                )
+                evidence_rows.append(
+                    WorklineTimeline(
+                        session_id=seeded.session_id,
+                        workline_id=seeded.workline_id,
+                        trace_id=seeded.trace_id,
+                        seq_no=seq_no,
+                        occurred_at=timeline_commit_time,
+                        stage=TimelineStage.DECISION,
+                        action_type=TimelineActionType.DECISION_MADE,
+                        actor_type=TimelineActorType.ORCHESTRATOR,
+                        actor_code="system-capability-gateway",
+                        status=TimelineStatus.SUCCESS,
+                        message="System Capability QUERY evidence",
+                        payload_json={
+                            "record_type": "SYSTEM_CAPABILITY_EVIDENCE",
+                            "evidence": evidence.payload(),
+                        },
+                        related_inbox_id=seeded.inbox_id,
+                    )
+                )
+            db.add_all(evidence_rows)
+            await db.commit()
+
+            comparison_repository = QueryShadowComparisonRepository()
+            await comparison_repository.append_from_task(db, payload=current_payload)
+            await comparison_repository.append_from_task(db, payload=next_payload)
+            await db.commit()
+
+            readiness_repository = QueryShadowReadinessRepository()
+            expected_samples = await readiness_repository.list_expected(
+                db,
+                provider_profile_identity=current_expected.provider_profile_identity,
+                operation_identity=current_expected.operation_identity,
+                observed_from=current_month,
+                observed_until=next_month,
+            )
+            comparisons = await readiness_repository.list_comparisons(
+                db,
+                provider_profile_identity=current_expected.provider_profile_identity,
+                operation_identity=current_expected.operation_identity,
+                observed_from=current_month,
+                observed_until=next_month,
+            )
+
+        report = build_query_shadow_readiness_report(
+            provider_profile_identity=current_expected.provider_profile_identity,
+            operation_identity=current_expected.operation_identity,
+            expected_samples=expected_samples,
+            comparisons=comparisons,
+            generated_at=next_month + timedelta(minutes=10),
+            policy=QueryShadowReadinessPolicy(min_window_days=0, min_eligible_samples=1),
+        )
+
+        assert expected_samples == [current_expected]
+        assert [item.expected for item in comparisons] == [current_expected]
+        assert report.verdict is ReadinessVerdict.READY
+        assert report.evidence_refs == (current_expected.evidence_ref,)
         await engine.dispose()

@@ -19,7 +19,7 @@ rough-sorter、RuntimeIntent 或 SystemOutbox。
 - 数据库 commit 成功后才调用现有 `TaskQueueGateway` enqueue；commit 失败绝不 enqueue。enqueue 失败仅告警，
   不反转已提交生产动作，readiness 由 expected/stored gap 立即失效。
 - consumer 只接受固定字段的引用式任务；comparison 不复制 request/response/authority snapshot，只保存
-  evidence/replay reference、hash、版本、决策摘要、受控 diff 和两类 latency。
+  evidence reference、hash、版本、决策摘要、受控 diff 和两类 latency。
 - consumer 在 insert 前用 `to_regclass` 检查目标月分区；缺失分区显式失败并由 Celery 重试，不存在
   default partition。
 
@@ -133,3 +133,52 @@ rough-sorter、RuntimeIntent 或 SystemOutbox。
 - 真实 PostgreSQL 评审用例共 2 项，当前环境因未配置 `INTEGRATION_DATABASE_URL` 均在任何建库/DDL 前以
   `HeavyHarnessError: missing_url` 停止；因此动态分区、并发 upsert 与 trigger 的真实 PostgreSQL 行为仍未验证，
   不能以单元测试或 SQL 文本合同替代该结论。
+
+## 最终评审修复追加（2026-07-22）
+
+### 统一 observed 时间轴
+
+- expected 查询不再使用重新持久化 Timeline 的 `occurred_at`；Repository 在 PostgreSQL 查询和 Python
+  防御过滤中都使用 `shadow_expected.observed_at`，并按该字段排序。comparison 分区/查询与 readiness window
+  因此共享同一 UTC 时间轴。
+- 新增月末 observed、次月 Timeline commit 的单元与真实 PostgreSQL 回归：7 月窗口只读取 7 月 expected/
+  comparison，排除 8 月样本，避免样本被忽略或错误生成 READY 报告。
+
+### eligibility 前的版本重置
+
+- readiness evaluator 在检查 `shadow_eligible` 之前检测并记录版本集合变化。`A eligible → B ineligible →
+  A eligible` 会跨两次版本边界清空连续窗口并记录 `VERSION_CHANGED`，最终窗口只包含最后一个 A 样本，不能借用
+  第一个 A 样本达到 READY。
+
+### recorded replay 与 shadow 一一对应
+
+- recorded replay 仍恢复并持久化历史 QUERY evidence 供审计，但在生成 replay write-set 时确定性清除每条
+  evidence 的 `shadow_expected`；不重跑 policy、不生成 comparison，也不重新执行历史 EFFECT。
+- 因 replay write-set 不再声明新的 eligible expected，强制的一一对应校验不会把合法 replay 降级为
+  `PLUGIN_WRITE_SET_LIMIT_EXCEEDED` Hold。新增回归同时验证 replay 的 bounded write-set 保持合法。
+- 选择“重放不生成新 expected”的最小语义后，`replay_ref` 没有生产写入场景，已从 SQLModel、Alembic DDL 与
+  architecture contract 中删除，不保留无效兼容列。
+
+### TDD、影响分析与验证
+
+- RED：新增 4 项回归后确认全部按预期失败，分别暴露 ineligible version 被跳过、Timeline `occurred_at`
+  跨月错轴、recorded replay 保留历史 expected 导致 write-set Hold，以及无生产者的 `replay_ref` 列。
+  最小实现后相同组合 `4 passed`。
+- GitNexus：`list_expected` LOW；`build_query_shadow_readiness_report` MEDIUM（7 个直接调用点）；
+  `QueryShadowComparison` LOW（BaseMixin 动态边界使结果为 lower-bound）；`_write_set_from_recorded_replay` HIGH
+  （8 个直接、32 个三层影响点）。HIGH 风险按持续授权继续，并由完整 runtime/replay 回归覆盖。
+- T6 target/contracts/database/architecture/topology：`195 passed`；runtime orchestration、workline plugin、
+  system-capability contract 与类型边界：`957 passed`，仅 5 条既有 deprecation warning；相关组合另为
+  `192 passed`。默认收集为 `3582 tests collected`。
+- 全仓 `ruff format --check .`（981 files）、`ruff check .`、`git diff --check`、生产模块/migration `py_compile`
+  与 Alembic head `8db8cbba582c` 均通过；`./scripts/git-quality-gate.sh --profile quality` 完整通过，包括
+  Bandit 0 issue、348 runtime contracts、11 process naming、import-linter、enforced architecture guardrails 与
+  test topology。
+- 提交前 GitNexus CLI `detect-changes --scope staged` 检出本任务 12 个文件、9 个图谱符号、0 条受影响 execution
+  flow，综合风险为 LOW；`AGENTS.md` / `CLAUDE.md` 的既有未暂存改动未进入本提交。
+- 真实 PostgreSQL 文件现有 3 项用例（含新增月末/次月 commit 回归）均已执行，但当前环境未配置
+  `INTEGRATION_DATABASE_URL`，全部在任何建库/DDL 前以 `HeavyHarnessError: missing_url` 停止；真实 PostgreSQL
+  行为仍明确标记为未验证。
+- 额外运行全量 `tests/architecture` 时，发现 `d3575958` 基线已存在的 cleanup matrix 漂移：T4 的 6 个
+  material-flow 测试条目未进入 CSV。该问题与 T6 diff 无关，本任务未改动该矩阵；T6 定向 architecture 与
+  quality profile 的 enforced architecture guardrail 均通过。

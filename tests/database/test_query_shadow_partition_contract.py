@@ -83,3 +83,13 @@ def test_comparison_model_has_no_full_payload_copy_columns() -> None:
 
     assert {"comparison_key", "evidence_ref", "input_hash", "output_hash", "divergence_diff"} <= columns
     assert not ({"payload", "request_payload", "response_payload", "authority_snapshot"} & columns)
+
+
+def test_comparison_store_does_not_declare_unused_recorded_replay_reference() -> None:
+    from src.app.runtime.system_capabilities.shadow_models import QueryShadowComparison
+
+    root = Path(__file__).resolve().parents[2]
+    migration = next((root / "migrations/versions").glob("*query_shadow_readiness*.py"))
+
+    assert "replay_ref" not in QueryShadowComparison.__table__.columns
+    assert "replay_ref" not in migration.read_text(encoding="utf-8")
