@@ -52,6 +52,62 @@ class WorklineDispatchAttemptBase(BaseMixin):
     )
     target_type: str | None = Field(default=None, max_length=100, index=True, description="目标类型")
     target_code: str | None = Field(default=None, max_length=200, index=True, description="目标编码")
+    transport_outcome: str | None = Field(
+        default=None,
+        index=True,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                "NOT_SENT",
+                "ACCEPTED",
+                "AMBIGUOUS",
+                name="workline_dispatch_attempt_transport_outcome",
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="EXTERNAL_HTTP transport 结果",
+    )
+    transport_phase: str | None = Field(
+        default=None,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                "PREPARING",
+                "CONNECTING",
+                "SENDING",
+                "AWAITING_RESPONSE",
+                "RESPONSE_RECEIVED",
+                "SANDBOX",
+                name="workline_dispatch_attempt_transport_phase",
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="EXTERNAL_HTTP transport 观测阶段",
+    )
+    protocol_result: str | None = Field(
+        default=None,
+        index=True,
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                "NOT_AVAILABLE",
+                "ACCEPTED",
+                "REJECTED",
+                "UNKNOWN",
+                name="workline_dispatch_attempt_protocol_result",
+                native_enum=False,
+                create_constraint=True,
+                length=50,
+            ),
+        ),
+        description="EXTERNAL_HTTP 协议层结果",
+    )
+    safe_to_retry: bool | None = Field(default=None, description="明确未发送时是否允许自动重试")
+    http_status_code: int | None = Field(default=None, ge=100, le=599, description="HTTP 响应状态码")
     started_at: datetime = Field(index=True, description="开始时间")
     finalized_at: datetime | None = Field(default=None, index=True, description="完成时间")
     error_message: str | None = Field(default=None, sa_column=Column(Text), description="失败原因")

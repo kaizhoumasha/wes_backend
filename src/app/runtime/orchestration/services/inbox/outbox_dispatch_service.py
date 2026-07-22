@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 from inspect import isawaitable
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
+
+if TYPE_CHECKING:
+    from src.app.sys.external_http_transport import ExternalHttpTransportResult
 
 from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.services.device_command_gateway import (
@@ -438,6 +443,39 @@ async def _remember_blocked_head_device_scope(
 class OutboxDispatchService:
     MAX_RETRIES = 3
 
+    async def _finalize_external_http_result(
+        self,
+        db: Any,
+        *,
+        outbox_repo: Any,
+        outbox_id: int,
+        dispatch_attempt: Any,
+        attempt_service: Any,
+        result: ExternalHttpTransportResult,
+    ) -> Any | None:
+        """按唯一 typed transport result 同步终结 outbox 与 attempt。"""
+        from src.app.sys.external_http_transport import ExternalHttpTransportOutcome
+
+        error = result.error_message or result.error_code or result.outcome.value
+        if result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
+            updated = await outbox_repo.mark_as_sent(db, outbox_id)
+        elif result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
+            updated = await outbox_repo.mark_as_unknown(db, outbox_id, error)
+        elif result.safe_to_retry:
+            updated = await outbox_repo.mark_as_failed(db, outbox_id, error, self.MAX_RETRIES)
+        else:
+            updated = await outbox_repo.mark_as_terminal_failure(db, outbox_id, error)
+
+        outbox_finalization = "fenced" if updated is None else enum_value(getattr(updated, "status", None)).lower()
+        _ = await attempt_service.finalize_external_http_attempt_record(
+            db,
+            attempt=dispatch_attempt,
+            result=result,
+            outbox_finalization=outbox_finalization,
+            auto_commit=False,
+        )
+        return updated
+
     async def _prepare_claimed_blocked_head_dispatch(
         self,
         db: Any,
@@ -834,8 +872,45 @@ class OutboxDispatchService:
                         continue
                     await db.commit()
                 # 派发消息
-                success = await self._dispatch_single(db, outbox)
-                if success:
+                dispatch_result = await self._dispatch_single(db, outbox)
+                from src.app.sys.external_http_transport import (
+                    ExternalHttpTransportOutcome,
+                    ExternalHttpTransportResult,
+                )
+
+                if isinstance(dispatch_result, ExternalHttpTransportResult):
+                    if dispatch_attempt is None:
+                        raise RuntimeError("EXTERNAL_HTTP 派发缺少 attempt 证据")
+                    updated = await self._finalize_external_http_result(
+                        db,
+                        outbox_repo=outbox_repo,
+                        outbox_id=outbox_pk,
+                        dispatch_attempt=dispatch_attempt,
+                        attempt_service=workline_dispatch_attempt_service,
+                        result=dispatch_result,
+                    )
+                    await db.commit()
+                    if updated is None:
+                        result["skipped"] += 1
+                        logger.warning(
+                            f"Outbox {outbox_pk} EXTERNAL_HTTP 终态更新被 fencing 拒绝，保留 attempt 证据 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                    elif dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
+                        result["success"] += 1
+                        logger.info(
+                            f"Outbox {outbox_pk} EXTERNAL_HTTP transport 已送达 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                    else:
+                        result["failed"] += 1
+                        logger.warning(
+                            f"Outbox {outbox_pk} EXTERNAL_HTTP transport={dispatch_result.outcome.value}，禁止非安全重放 "
+                            f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
+                        )
+                    result["dispatched"] += 1
+                    continue
+                if dispatch_result:
                     sent_outbox = await outbox_repo.mark_as_sent(db, outbox_pk)
                     if dispatch_attempt is not None:
                         _ = await workline_dispatch_attempt_service.finalize_attempt_record(
@@ -1031,7 +1106,7 @@ class OutboxDispatchService:
         await publish_deferred_sse_events(db)
         return result
 
-    async def _dispatch_single(self, db: Any, outbox: Any) -> bool:
+    async def _dispatch_single(self, db: Any, outbox: Any) -> bool | ExternalHttpTransportResult:
         """派发单个 Outbox 消息
         Args:
             db: 数据库会话
@@ -1067,7 +1142,7 @@ class OutboxDispatchService:
         run_mode = await _resolve_outbox_run_mode(db, outbox)
         return is_simulation_run_mode(run_mode)
 
-    async def _dispatch_sandbox(self, db: Any, outbox: Any) -> bool:
+    async def _dispatch_sandbox(self, db: Any, outbox: Any) -> bool | ExternalHttpTransportResult:
         """派发到沙箱工作台。
         沙箱不改写 payload；Outbox 标记 SENT 后，由调试人员按原 callback/result 协议手工回传。
         对设备命令，SENT 已代表硬件侧待完成任务，必须同步占用设备运行态，避免沙箱假并发。
@@ -1082,13 +1157,21 @@ class OutboxDispatchService:
                 return False
             payload = payload_dict(getattr(outbox, "payload_json", None))
             logger.info(f"沙箱设备指令参数: {_build_device_command_log_envelope(outbox, payload)}")
+        elif outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
+            from src.app.sys.external_http_transport import ExternalHttpTransportResult
+
+            logger.info(
+                "Outbox 沙箱派发完成，等待调试人员手工回调 "
+                f"({_outbox_trace_log_suffix(outbox)}, session_id={getattr(outbox, 'session_id', None)})"
+            )
+            return ExternalHttpTransportResult.sandbox_accepted()
         logger.info(
             "Outbox 沙箱派发完成，等待调试人员手工回调 "
             f"({_outbox_trace_log_suffix(outbox)}, session_id={getattr(outbox, 'session_id', None)})"
         )
         return True
 
-    async def _dispatch_external_http(self, outbox: Any) -> bool:
+    async def _dispatch_external_http(self, outbox: Any) -> ExternalHttpTransportResult:
         """派发外部 HTTP 决策（如过站回传）。"""
         from src.app.sys.services.outbox_delivery import dispatch_external_http
         from src.app.sys.services.outbox_engine import _send_external_http, endpoint_registry

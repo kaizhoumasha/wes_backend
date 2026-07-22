@@ -18,6 +18,7 @@ from src.app.runtime.orchestration.repositories.dispatch_attempt_repository impo
     WorklineDispatchAttemptRepository,
     workline_dispatch_attempt_repository,
 )
+from src.app.sys.external_http_transport import ExternalHttpTransportOutcome, ExternalHttpTransportResult
 from src.app.workline.trace_context import TraceContext
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
@@ -165,6 +166,39 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
             response=response,
             error_message=error_message,
         )
+        if auto_commit:
+            await self._commit_mutation(db)
+        return attempt
+
+    async def finalize_external_http_attempt_record(
+        self,
+        db: Any,
+        *,
+        attempt: WorklineDispatchAttempt,
+        result: ExternalHttpTransportResult,
+        outbox_finalization: str,
+        auto_commit: bool = True,
+    ) -> WorklineDispatchAttempt:
+        """以 typed transport result 终结 EXTERNAL_HTTP attempt 并固化原始证据。"""
+
+        status_by_outcome = {
+            ExternalHttpTransportOutcome.NOT_SENT: DispatchAttemptStatus.FAILED,
+            ExternalHttpTransportOutcome.ACCEPTED: DispatchAttemptStatus.SENT,
+            ExternalHttpTransportOutcome.AMBIGUOUS: DispatchAttemptStatus.UNKNOWN,
+        }
+        transition_dispatch_attempt(attempt, status_by_outcome[result.outcome])
+        attempt.transport_outcome = result.outcome.value
+        attempt.transport_phase = result.phase.value
+        attempt.protocol_result = result.protocol_result.value
+        attempt.safe_to_retry = result.safe_to_retry
+        attempt.http_status_code = result.http_status_code
+        attempt.finalized_at = timezone.now_for_db()
+        attempt.error_message = result.error_message
+        attempt.response_json = {
+            "transport": result.evidence_json(),
+            "outbox_finalization": outbox_finalization,
+        }
+        await _flush_if_supported(db)
         if auto_commit:
             await self._commit_mutation(db)
         return attempt

@@ -9,6 +9,11 @@ import pytest
 
 from src.app.runtime.orchestration.services.device_command_gateway import _DeviceCommandGovernanceError
 from src.app.sys.canonical_dispatch import CanonicalPayload, ExternalHttpDispatchRequest
+from src.app.sys.external_http_transport import (
+    ExternalHttpProtocolResult,
+    ExternalHttpTransportPhase,
+    ExternalHttpTransportResult,
+)
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.sys.services import SystemOutboxEngine as SystemOutboxDispatcher
 
@@ -77,6 +82,22 @@ class FakeSystemOutboxRepository:
                 return message
         return None
 
+    async def mark_as_unknown(self, _db: Any, outbox_id: int, error: str) -> Any | None:
+        for message in self.messages:
+            if message.id == outbox_id and message.status == SystemOutboxStatus.DISPATCHING:
+                message.status = SystemOutboxStatus.UNKNOWN
+                message.last_error = error
+                return message
+        return None
+
+    async def mark_as_terminal_failure(self, _db: Any, outbox_id: int, error: str) -> Any | None:
+        for message in self.messages:
+            if message.id == outbox_id and message.status == SystemOutboxStatus.DISPATCHING:
+                message.status = SystemOutboxStatus.FAILED
+                message.last_error = error
+                return message
+        return None
+
     async def mark_as_blocked_by_device_busy(
         self,
         _db: Any,
@@ -111,6 +132,23 @@ class FakeSystemOutboxRepository:
         return None
 
 
+class FakeDispatchAttemptService:
+    def __init__(self) -> None:
+        self.attempt = SimpleNamespace(status="DISPATCHING")
+        self.created: list[Any] = []
+        self.finalized: list[dict[str, Any]] = []
+
+    async def create_attempt(self, _db: Any, *, outbox: Any, auto_commit: bool) -> Any:
+        assert auto_commit is False
+        self.created.append(outbox)
+        return self.attempt
+
+    async def finalize_external_http_attempt_record(self, _db: Any, **kwargs: Any) -> Any:
+        assert kwargs["auto_commit"] is False
+        self.finalized.append(kwargs)
+        return kwargs["attempt"]
+
+
 async def _no_workline_messages(_db: Any, _limit: int) -> dict[str, int]:
     return {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
 
@@ -140,11 +178,17 @@ def _outbox(**overrides: Any) -> SimpleNamespace:
 async def test_system_outbox_dispatcher_sends_external_http_and_marks_sent() -> None:
     message = _outbox()
     repo = FakeSystemOutboxRepository([message])
-    sender = AsyncMock(return_value=True)
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
         external_http_sender=sender,
+        dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
     )
 
@@ -165,20 +209,28 @@ async def test_system_outbox_dispatcher_sends_external_http_and_marks_sent() -> 
 async def test_system_outbox_dispatcher_marks_failed_when_external_http_fails() -> None:
     message = _outbox(id=2)
     repo = FakeSystemOutboxRepository([message])
-    sender = AsyncMock(return_value=False)
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.not_sent(
+            phase=ExternalHttpTransportPhase.CONNECTING,
+            safe_to_retry=True,
+            error_code="CONNECT_ERROR",
+            error_message="connection refused",
+        )
+    )
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
         external_http_sender=sender,
+        dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
     )
 
     result = await dispatcher.dispatch(db, limit=10)
 
     assert result == {"dispatched": 1, "success": 0, "failed": 1, "skipped": 0}
-    assert repo.mark_failed_calls == [(2, "Dispatch failed", 3)]
+    assert repo.mark_failed_calls == [(2, "connection refused", 3)]
     assert message.status == SystemOutboxStatus.RETRY_WAIT
-    assert message.last_error == "Dispatch failed"
+    assert message.last_error == "connection refused"
 
 
 @pytest.mark.asyncio
@@ -189,11 +241,17 @@ async def test_system_outbox_dispatcher_reclaims_stale_dispatching_message() -> 
         next_retry_at=datetime(2026, 5, 22, 7, 59, 0),
     )
     repo = FakeSystemOutboxRepository([message])
-    sender = AsyncMock(return_value=True)
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=200,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
         external_http_sender=sender,
+        dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
     )
 
@@ -230,7 +288,12 @@ async def test_system_outbox_dispatcher_delegates_workline_domain_to_workline_go
 async def test_system_outbox_dispatcher_excludes_rack_domain_from_generic_http_dispatch() -> None:
     message = _outbox(id=5, operation_domain="RACK", target_code="WMS_RCS_RACK_OPERATION")
     repo = FakeSystemOutboxRepository([message])
-    sender = AsyncMock(return_value=True)
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=200,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,

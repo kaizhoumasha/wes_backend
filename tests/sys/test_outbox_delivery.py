@@ -4,6 +4,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.app.sys.canonical_dispatch import CanonicalPayload, EndpointDefinition, ExternalHttpDispatchRequest
+from src.app.sys.external_http_transport import (
+    ExternalHttpProtocolResult,
+    ExternalHttpTransportOutcome,
+    ExternalHttpTransportPhase,
+    ExternalHttpTransportResult,
+)
 from src.app.sys.services.outbox_delivery import dispatch_external_http, dispatch_internal_signal
 
 
@@ -39,10 +45,15 @@ async def test_dispatch_external_http_success() -> None:
     registry = MagicMock()
     registry.resolve.return_value = EndpointDefinition(code="TEST_ENDPOINT", url="http://test/api")
 
-    sender = AsyncMock(return_value=True)
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
 
     result = await dispatch_external_http(outbox, registry, sender)
-    assert result is True
+    assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
     request = sender.await_args.args[0]
     assert isinstance(request, ExternalHttpDispatchRequest)
     assert request.endpoint.url == "http://test/api"
@@ -57,7 +68,8 @@ async def test_dispatch_external_http_registry_failure() -> None:
     sender = AsyncMock()
 
     result = await dispatch_external_http(outbox, registry, sender)
-    assert result is False
+    assert result.outcome is ExternalHttpTransportOutcome.NOT_SENT
+    assert result.safe_to_retry is False
     sender.assert_not_awaited()
 
 
@@ -76,10 +88,17 @@ async def test_dispatch_external_http_sender_failure() -> None:
     registry = MagicMock()
     registry.resolve.return_value = EndpointDefinition(code="TEST_ENDPOINT", url="http://test/api")
 
-    sender = AsyncMock(return_value=False)
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.not_sent(
+            phase=ExternalHttpTransportPhase.CONNECTING,
+            safe_to_retry=True,
+            error_code="CONNECT_ERROR",
+        )
+    )
 
     result = await dispatch_external_http(outbox, registry, sender)
-    assert result is False
+    assert result.outcome is ExternalHttpTransportOutcome.NOT_SENT
+    assert result.safe_to_retry is True
     request = sender.await_args.args[0]
     assert isinstance(request, ExternalHttpDispatchRequest)
     assert request.body == canonical.body

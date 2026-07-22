@@ -376,6 +376,52 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         await db.flush()
         return outbox
 
+    async def mark_as_unknown(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        error: str,
+    ) -> SystemOutbox | None:
+        """将送达结果不确定的 attempt 终止为 UNKNOWN，禁止自动重试。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+        if outbox is None or outbox.status != SystemOutboxStatus.DISPATCHING:
+            return None
+
+        outbox.attempt_count += 1
+        self._clear_block(outbox)
+        transition_system_outbox(outbox, SystemOutboxStatus.UNKNOWN)
+        outbox.last_error = error
+        outbox.next_retry_at = None
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
+    async def mark_as_terminal_failure(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        error: str,
+    ) -> SystemOutbox | None:
+        """将不可重试且明确未发送的 attempt 终止为 FAILED。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+        if outbox is None or outbox.status != SystemOutboxStatus.DISPATCHING:
+            return None
+
+        outbox.attempt_count += 1
+        self._clear_block(outbox)
+        transition_system_outbox(outbox, SystemOutboxStatus.FAILED)
+        outbox.last_error = error
+        outbox.next_retry_at = None
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
     async def mark_as_blocked_by_workline_estop(self, db: AsyncSession, outbox_id: int) -> SystemOutbox | None:
         return await self._block_or_fail(
             db,

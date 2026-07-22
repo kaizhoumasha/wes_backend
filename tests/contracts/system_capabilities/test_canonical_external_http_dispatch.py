@@ -12,6 +12,12 @@ import httpx
 import pytest
 
 from src.app.sys.canonical_dispatch import CanonicalPayload, ExternalHttpDispatchRequest
+from src.app.sys.external_http_transport import (
+    ExternalHttpProtocolResult,
+    ExternalHttpTransportOutcome,
+    ExternalHttpTransportPhase,
+    ExternalHttpTransportResult,
+)
 from src.app.sys.models import (
     DispatchEnvelope,
     SystemOutboxCreate,
@@ -124,7 +130,7 @@ def test_non_http_create_schema_does_not_require_canonical_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_external_http_retry_uses_frozen_bytes_without_reading_payload_json() -> None:
+async def test_repeated_external_http_attempts_use_frozen_bytes_without_reading_payload_json() -> None:
     canonical = CanonicalPayload.from_projection({"request_id": "REQ-001", "quantity": "1.2300"})
 
     class ProjectionMustNotBeRead:
@@ -138,15 +144,22 @@ async def test_external_http_retry_uses_frozen_bytes_without_reading_payload_jso
 
     requests: list[ExternalHttpDispatchRequest] = []
 
-    async def sender(request: ExternalHttpDispatchRequest) -> bool:
+    async def sender(request: ExternalHttpDispatchRequest) -> ExternalHttpTransportResult:
         requests.append(request)
-        return False
+        return ExternalHttpTransportResult.not_sent(
+            phase=ExternalHttpTransportPhase.CONNECTING,
+            safe_to_retry=True,
+            error_code="CONNECT_ERROR",
+        )
 
     registry = EndpointRegistry({"WMS_INBOUND": "https://wms.example/inbound"})
     outbox = ProjectionMustNotBeRead()
 
-    assert await dispatch_external_http(outbox, registry, sender) is False
-    assert await dispatch_external_http(outbox, registry, sender) is False
+    first = await dispatch_external_http(outbox, registry, sender)
+    second = await dispatch_external_http(outbox, registry, sender)
+
+    assert first.outcome is ExternalHttpTransportOutcome.NOT_SENT
+    assert second.outcome is ExternalHttpTransportOutcome.NOT_SENT
     assert [request.body for request in requests] == [canonical.body, canonical.body]
     assert [request.payload_hash for request in requests] == [canonical.sha256, canonical.sha256]
 
@@ -194,7 +207,10 @@ async def test_default_http_sender_posts_the_exact_frozen_body(monkeypatch: pyte
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
 
-    assert await _send_external_http(request) is True
+    result = await _send_external_http(request)
+
+    assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
+    assert result.protocol_result is ExternalHttpProtocolResult.ACCEPTED
     assert calls == [
         {
             "url": "https://wms.example/inbound",
