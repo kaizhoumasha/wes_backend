@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
+from src.app.sys.dispatch_concurrency import DispatchBucketKey
 from src.app.sys.models.outbox import (
     DispatchEnvelope,
     SystemOutbox,
@@ -19,6 +20,7 @@ from src.app.sys.models.outbox import (
     SystemOutboxTargetType,
     SystemOutboxUpdate,
 )
+from src.app.workline.services.write_back_service import _build_external_http_outbox_model
 
 
 def _create_payload() -> dict[str, object]:
@@ -133,6 +135,45 @@ def test_dispatch_attempt_mirrors_finite_outbox_lease() -> None:
     assert "ck_workline_dispatch_attempts_ck_workline_dispatch_attempt_lease_expiry" in {
         constraint.name for constraint in table.constraints
     }
+
+
+def test_plugin_external_http_targets_share_one_controlled_bucket_identity() -> None:
+    """受控 endpoint code 不得把请求值扩散成高基数限流桶。"""
+
+    ctx = {"session": type("Session", (), {"id": 17, "workline_id": None})()}
+    target_codes = (
+        "WMS_RCS_RACK_OPERATION",
+        "WMS_RCS_BIN_OPERATION",
+        "WMS_RCS_FULL_BOX_EXCHANGE",
+    )
+
+    outboxes = [
+        _build_external_http_outbox_model(
+            ctx,  # type: ignore[arg-type]
+            dispatch_key=f"plugin-controlled-bucket:{index}",
+            target_code=target_code,
+            payload_json={"request_id": index},
+        )
+        for index, target_code in enumerate(target_codes)
+    ]
+
+    assert {DispatchBucketKey(outbox.provider_profile_identity, outbox.operation_identity) for outbox in outboxes} == {
+        DispatchBucketKey("workline.plugin-runtime.v1", "workline.external-http.v1")
+    }
+
+
+def test_plugin_external_http_target_must_exist_in_frozen_endpoint_catalog() -> None:
+    """任意插件请求值都不能创建新 bucket，未授权 target 在 author-time fail closed。"""
+
+    ctx = {"session": type("Session", (), {"id": 17, "workline_id": None})()}
+    for index in range(100):
+        with pytest.raises(ValueError, match="endpoint is not registered"):
+            _build_external_http_outbox_model(
+                ctx,  # type: ignore[arg-type]
+                dispatch_key=f"plugin-unauthorized-target:{index}",
+                target_code=f"PLUGIN_FREE_TARGET_{index}",
+                payload_json={"request_id": index},
+            )
 
 
 def test_t8e_migration_is_generator_revision_without_business_data_migration() -> None:

@@ -348,7 +348,7 @@ async def test_expired_external_http_lease_is_quarantined_without_reclaim(db_ses
         operation_domains=("WMS_INVENTORY",),
     )
 
-    assert fenced == 1
+    assert len(fenced) == 1
     await db_session.refresh(outbox)
     assert getattr(outbox.status, "value", outbox.status) == SystemOutboxStatus.UNKNOWN.value
     assert outbox.lease_owner_token == "worker-old:http-expired"

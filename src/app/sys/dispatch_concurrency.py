@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -124,13 +124,30 @@ class DispatchPolicyRegistry:
 class FairDispatchScheduler:
     """按活跃桶轮转，并把跨 worker 预算串行化留给 Repository。"""
 
-    def __init__(self, *, repository: Any, policy_registry: DispatchPolicyRegistry, worker_identity: str) -> None:
+    def __init__(
+        self,
+        *,
+        repository: Any,
+        policy_registry: DispatchPolicyRegistry,
+        worker_identity: str,
+        expired_http_lease_loss_service: Any | None = None,
+    ) -> None:
         if not isinstance(worker_identity, str) or not worker_identity.strip():
             raise ValueError("worker_identity must be a non-empty string")
         self._repository = repository
         self._policy_registry = policy_registry
         self._worker_identity = worker_identity.strip()
+        self._expired_http_lease_loss_service = expired_http_lease_loss_service
         self._cursor = 0
+
+    def _resolve_expired_http_lease_loss_service(self) -> Any:
+        if self._expired_http_lease_loss_service is None:
+            from src.app.runtime.orchestration.services.inbox.external_http_lease_loss_service import (
+                external_http_lease_loss_service,
+            )
+
+            self._expired_http_lease_loss_service = external_http_lease_loss_service
+        return self._expired_http_lease_loss_service
 
     async def claim(
         self,
@@ -151,7 +168,12 @@ class FairDispatchScheduler:
             "exclude_operation_domains": exclude_operation_domains,
         }
         expired_http_lease_count = int(
-            await self._repository.fence_expired_external_http_leases(db, **query_scope) or 0
+            await self._resolve_expired_http_lease_loss_service().fence_expired_leases(
+                db,
+                outbox_repository=self._repository,
+                **query_scope,
+            )
+            or 0
         )
         keys = tuple(
             await self._repository.list_dispatch_bucket_keys(
@@ -160,7 +182,10 @@ class FairDispatchScheduler:
             )
         )
         if not keys:
-            return DispatchClaimBatch(claims=(), metrics=self._empty_metrics())
+            return DispatchClaimBatch(
+                claims=(),
+                metrics=replace(self._empty_metrics(), lease_loss_count=expired_http_lease_count),
+            )
 
         ordered = keys[self._cursor :] + keys[: self._cursor]
         self._cursor = (self._cursor + 1) % len(keys)

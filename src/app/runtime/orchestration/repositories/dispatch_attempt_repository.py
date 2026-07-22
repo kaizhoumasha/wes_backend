@@ -5,7 +5,7 @@ from typing import Any, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
+from src.app.runtime.orchestration.models.dispatch_attempt import DispatchAttemptStatus, WorklineDispatchAttempt
 from src.database.base_repository import BaseRepository
 
 
@@ -32,6 +32,29 @@ class WorklineDispatchAttemptRepository(BaseRepository[WorklineDispatchAttempt])
             .order_by(columns.attempt_no.asc(), columns.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def get_expired_dispatching_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        outbox_id: int,
+        lease_token: str,
+        now: Any,
+    ) -> WorklineDispatchAttempt | None:
+        """锁定与过期 outbox fence 一致的活动 attempt。"""
+
+        columns = cast("Any", WorklineDispatchAttempt).__table__.c
+        result = await db.execute(
+            select(WorklineDispatchAttempt)
+            .where(
+                columns.outbox_id == outbox_id,
+                columns.lease_token == lease_token,
+                columns.status == DispatchAttemptStatus.DISPATCHING,
+                columns.lease_expires_at <= now,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
 
 
 workline_dispatch_attempt_repository = WorklineDispatchAttemptRepository()

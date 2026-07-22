@@ -101,25 +101,27 @@ async def test_resource_wait_rejects_uncontrolled_retry_reason_before_loading_ro
         )
 
 
+def test_shared_retry_wait_transition_releases_dispatch_lease_expiry() -> None:
+    outbox = SimpleNamespace(
+        status=SystemOutboxStatus.DISPATCHING,
+        lease_owner_token="resource-wait-owner",
+        lease_expires_at=timezone.now_for_db() + timedelta(minutes=5),
+    )
+
+    SystemOutboxRepository._transition_to_retry_wait(outbox)  # type: ignore[arg-type]
+
+    assert outbox.status is SystemOutboxStatus.RETRY_WAIT
+    assert outbox.lease_expires_at is None
+    assert outbox.lease_owner_token == "resource-wait-owner"
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "initial_status",
-    [
-        SystemOutboxStatus.DISPATCHING,
-        SystemOutboxStatus.RETRY_WAIT,
-        SystemOutboxStatus.SENT,
-        SystemOutboxStatus.FAILED,
-        SystemOutboxStatus.UNKNOWN,
-    ],
-)
-async def test_external_http_evidence_persistence_failure_overrides_uncertain_state_to_unknown(
-    initial_status: SystemOutboxStatus,
-) -> None:
-    """证据事务结果不确定时，即使原终态可能已提交，也必须保守收口为 UNKNOWN。"""
+async def test_external_http_evidence_persistence_failure_fences_current_unexpired_owner_to_unknown() -> None:
+    """仅当前有效 lease owner 可在独立事务中保守收口 UNKNOWN。"""
 
     outbox = SimpleNamespace(
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
-        status=initial_status,
+        status=SystemOutboxStatus.DISPATCHING,
         attempt_count=2,
         next_retry_at=timezone.now_for_db(),
         sent_at=timezone.now_for_db(),
@@ -148,12 +150,63 @@ async def test_external_http_evidence_persistence_failure_overrides_uncertain_st
 
     assert updated is outbox
     assert outbox.status is SystemOutboxStatus.UNKNOWN
-    assert outbox.attempt_count == (3 if initial_status is SystemOutboxStatus.DISPATCHING else 2)
+    assert outbox.attempt_count == 3
     assert outbox.next_retry_at is None
     assert outbox.sent_at is None
     assert outbox.finished_at is not None
     assert outbox.last_error == "EXTERNAL_HTTP_EVIDENCE_PERSISTENCE_FAILED outcome=ACCEPTED"
     assert outbox.blocked_reason is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "stored_owner", "lease_delta", "existing_error"),
+    [
+        (SystemOutboxStatus.DISPATCHING, "evidence-owner-91", timedelta(seconds=-1), "EXPIRED_OWNER"),
+        (SystemOutboxStatus.UNKNOWN, "evidence-owner-91", None, "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED"),
+        (SystemOutboxStatus.DISPATCHING, "replacement-owner-92", timedelta(minutes=5), "NEW_OWNER_ACTIVE"),
+    ],
+)
+async def test_external_http_evidence_persistence_failure_rejects_lost_fence_without_overwriting_evidence(
+    status: SystemOutboxStatus,
+    stored_owner: str,
+    lease_delta: timedelta | None,
+    existing_error: str,
+) -> None:
+    """过期、已收口或异主 lease 都必须保持现有证据不变。"""
+
+    now = timezone.now_for_db()
+    outbox = SimpleNamespace(
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        status=status,
+        attempt_count=4,
+        next_retry_at=None,
+        sent_at=None,
+        last_error=existing_error,
+        finished_at=now if status is SystemOutboxStatus.UNKNOWN else None,
+        blocked_by_runtime_hold_id=None,
+        blocked_by_reconciliation_session_id=None,
+        blocked_device_id=None,
+        blocked_workline_id=None,
+        blocked_reason=None,
+        blocked_at=None,
+        last_blocked_check_at=None,
+        blocked_check_count=0,
+        blocked_detail_json={"fence": existing_error},
+        lease_owner_token=stored_owner,
+        lease_expires_at=now + lease_delta if lease_delta is not None else None,
+    )
+    before = vars(outbox).copy()
+
+    updated = await SystemOutboxRepository().mark_evidence_persistence_unknown(
+        _CapturingDb([outbox]),  # type: ignore[arg-type]
+        91,
+        "LATE_RECOVERY_MUST_NOT_OVERWRITE",
+        lease_owner_token="evidence-owner-91",
+    )
+
+    assert updated is None
+    assert vars(outbox) == before
 
 
 @pytest.mark.asyncio

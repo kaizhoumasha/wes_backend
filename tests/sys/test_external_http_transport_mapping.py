@@ -417,7 +417,7 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
     second = await engine.dispatch(db_session, limit=1)
     await db_session.refresh(outbox)
 
-    assert fenced == 1
+    assert len(fenced) == 1
     assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
     assert sender.await_count == 1
     assert outbox.status is SystemOutboxStatus.UNKNOWN

@@ -504,8 +504,10 @@ def _build_external_http_outbox_model(
     """将 external decision 投影为 Outbox 模型。"""
     from src.app.sys.canonical_dispatch import CanonicalPayload
     from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
+    from src.app.sys.services.endpoint_registry import endpoint_registry
 
     session = ctx["session"]
+    endpoint = endpoint_registry.resolve(target_code)
     canonical = CanonicalPayload.from_projection(payload_json)
     return SystemOutbox(
         session_id=session.id,
@@ -513,9 +515,9 @@ def _build_external_http_outbox_model(
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=dispatch_key,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code=target_code,
+        target_code=endpoint.code,
         provider_profile_identity="workline.plugin-runtime.v1",
-        operation_identity=f"workline.external-http:{target_code}",
+        operation_identity="workline.external-http.v1",
         payload_json=payload_json,
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,

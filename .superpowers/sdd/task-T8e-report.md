@@ -35,8 +35,9 @@ brainstorming 选择“显式调度列 + PostgreSQL 桶事务锁 + 单行 SKIP L
 - `WorklineDispatchAttempt` 复用 outbox owner token，并冻结相同 `lease_expires_at`；新 owner 创建 attempt 时取消旧
   DISPATCHING attempt，旧 token 或过期 token 的 finalize 抛出 `OUTBOX_LEASE_LOST`。
 - 非 HTTP 过期 lease 可被新 owner 原子领取；EXTERNAL_HTTP 过期 lease 按 T8c 收口 `UNKNOWN`，绝不自动重发。
-- outbox `SENT/FAILED/RETRY_WAIT/UNKNOWN/CANCELLED`、资源等待及 attempt 终态写回都要求
-  `status=DISPATCHING + matching owner + unexpired lease`；evidence 隔离恢复也要求原 owner，不能覆盖新 owner。
+- worker 驱动的 outbox `SENT/FAILED/RETRY_WAIT/UNKNOWN`、资源等待及 attempt 终态写回都要求
+  `status=DISPATCHING + matching owner + unexpired lease`；evidence 隔离恢复同样要求有效期，不能覆盖过期 lease、
+  scheduler 已写入的 UNKNOWN 证据或新 owner。
 - claim 候选使用 `MATERIALIZED` CTE 固定本事务唯一候选。真实 PostgreSQL RED 曾证明普通
   `UPDATE ... id IN (SELECT ... LIMIT 1 FOR UPDATE SKIP LOCKED)` 在自更新扫描中会重求值并更新多行；物化 CTE
   消除了该陷阱，合同测试锁定 `AS MATERIALIZED`。
@@ -47,8 +48,8 @@ brainstorming 选择“显式调度列 + PostgreSQL 桶事务锁 + 单行 SKIP L
 - canonical WMS profile 使用 `wms.2026-07-06.material-flow.production` 与 typed operation contract identity。
 - legacy handling/rack transport 使用 `wms.legacy-transport.production` 与各自 typed operation identity。
 - device command 使用 `ecs.device-command.v1 + device.command`。
-- plugin runtime 使用 `workline.plugin-runtime.v1 + workline.external-http:{target_code}`；identity 在 author-time 由显式
-  target code 生成，不从 outbox JSON 读取。
+- plugin runtime 使用 `workline.plugin-runtime.v1 + workline.external-http.v1` 固定低基数桶；`target_code` 在
+  author-time 必须通过冻结 `EndpointRegistry`，仅作为受控路由 code 持久化，不能参与桶 identity。
 - `SystemOutboxUpdate` 排除 identity/lease；model update hook 与 Repository `update` 同时拒绝绕过专用状态方法修改
   dispatch key、调度 identity、冻结 bytes/hash 或 lease。
 
@@ -77,7 +78,7 @@ brainstorming 选择“显式调度列 + PostgreSQL 桶事务锁 + 单行 SKIP L
 - 真实 Docker PostgreSQL：`21 passed`，覆盖 SKIP LOCKED 双 session、单行 claim、outbox/attempt lease steal
   fencing、公平桶、durable backlog、跨 dispatcher 全桶并发预算、canonical bytes/attempt evidence 与 migration
   inventory。
-- 测试拓扑守卫：`6 passed`；显式 collect-only：`3758 tests collected`。
+- 测试拓扑守卫：`6 passed`；复审新增合同后显式 collect-only：`3760 tests collected`。
 - 定向 Ruff format/check 与 `git diff --check` 通过。
 - `./scripts/git-quality-gate.sh --profile quality` 通过：Ruff、Bandit、348 项 runtime contract guardrails、
   import-linter、architecture guardrails 与测试拓扑全部通过。
@@ -96,3 +97,31 @@ contract guardrails、architecture/import 门禁与完整 quality profile 已覆
 
 提交范围只包含 T8e 计划、实现、generator migration、测试与本报告，明确排除用户维护的 `AGENTS.md`、
 `CLAUDE.md`。
+
+## P1 复审整改
+
+复审后的四组缺口已按同一 lease/evidence 合同收敛：
+
+- `mark_evidence_persistence_unknown` 查询与内存态二次校验同时要求 `EXTERNAL_HTTP + DISPATCHING + matching owner +
+  lease_expires_at > now`。过期同 token、已收口 UNKNOWN 与异主恢复均返回 `None`，不清理现有 unknown evidence，
+  也不降级到普通失败路径；有效 owner 的独立恢复仍可收口 UNKNOWN。
+- plugin external decision 在创建 outbox 前调用 `EndpointRegistry.resolve`，未注册的自由 `target_code` author-time
+  fail closed；三个已注册 WMS endpoint 与任意请求数量始终共享固定的 plugin runtime bucket，不能绕过 concurrency、
+  rate 或 pause。
+- callback `DISPATCHING → SENT`、按 WorkLine/session 的 `DISPATCHING → CANCELLED`，以及共享 block/park
+  `DISPATCHING → RETRY_WAIT` helper 均清理 `lease_expires_at`，满足数据库 lease-shape CHECK；最近一次
+  `lease_owner_token` 继续保留为审计证据。
+- 过期 EXTERNAL_HTTP lease 不再停在 outbox-only metric。Repository 在行锁内返回不可变 fence 快照，
+  `ExternalHttpLeaseLossService` 在同一 savepoint 将 outbox 与匹配 attempt 收口 UNKNOWN，并复用
+  `EffectTransportBridge` 写入 `TRANSPORT_AMBIGUOUS + RECONCILIATION_OPENED`。绑定的 `RuntimeIntentLog` 最终进入
+  `RECONCILING`，对应 `ReconciliationCase` 为 OPEN；任一 attempt/reducer/bridge 步骤失败都会回滚整个 closure
+  savepoint，禁止出现 outbox 已 UNKNOWN 而语义证据缺失。
+
+复审写前 GitNexus impact 无 HIGH/CRITICAL：状态方法、plugin outbox builder、fence 与共享 retry helper 为 LOW；
+`FairDispatchScheduler` 和 `WorklineDispatchAttemptRepository` 类为 MEDIUM。新增 RED 精确复现三类越 fence 恢复、
+高基数 bucket/未授权 target、lease-shape flush 与 lease-loss 证据断链；GREEN 后相关快速回归 `143 passed`，
+Docker PostgreSQL `13 passed`（其中本轮新增/扩展文件 `7 passed`），覆盖真实 CHECK、attempt、intent/case 与
+savepoint 回滚。完整 `quality` profile 再次通过：Ruff、Bandit、348 项 runtime contract guardrails、
+import-linter、architecture guardrails 与测试拓扑均无新增违规。刷新 worktree 索引后的 staged GitNexus detect 为
+`12 files / 54 symbols / 0 affected processes / LOW`；内置 MCP 因 LadybugDB 存储版本不兼容不可读，使用同一
+worktree 与 staged scope 的 GitNexus CLI 完成等价检测。
