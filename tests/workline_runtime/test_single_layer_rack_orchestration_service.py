@@ -17,3 +17,10 @@ def test_station_claim_active_status_accepts_system_outbox_status_enum() -> None
     assert (
         _is_active_station_claim_outbox(SimpleNamespace(status=SystemOutboxStatus.RETRY_WAIT, finished_at=None)) is True
     )
+
+
+def test_station_claim_does_not_treat_finished_retry_wait_as_active() -> None:
+    assert (
+        _is_active_station_claim_outbox(SimpleNamespace(status=SystemOutboxStatus.RETRY_WAIT, finished_at=object()))
+        is False
+    )

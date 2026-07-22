@@ -11,6 +11,7 @@ import pytest
 
 from src.app.reconciliation.manager import ReconciliationManager, ReconciliationRegistrationResult
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
+from src.app.sys.models import SystemOutboxStatus
 from src.utils.timezone import timezone
 
 
@@ -202,6 +203,7 @@ async def test_dispatch_ack_exhausted_registers_reconciliation_idempotency_befor
     assert call["conflict"].owner_id == "553"
     assert call["conflict"].conflict_kind == "COMMAND_ACK_EXHAUSTED"
     assert call["conflict"].evidence_refs == ["outbox:862", "command:881"]
+    assert outbox.status is SystemOutboxStatus.SENT
 
     audit = session.context_json["runtime_reconciliation_registration"]
     assert audit["claim_result"] == "NEW"

@@ -16,7 +16,7 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from sqlalchemy import JSON, BigInteger, Column, ForeignKey, Index, Text, text
+from sqlalchemy import JSON, BigInteger, Column, ForeignKey, Index, Text, and_, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -57,6 +57,37 @@ class SystemOutboxTargetType(str, Enum):
     DEVICE = "DEVICE"
     HTTP_ENDPOINT = "HTTP_ENDPOINT"
     INTERNAL_SERVICE = "INTERNAL_SERVICE"
+
+
+SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS = frozenset({"DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT"})
+
+
+def is_system_outbox_resource_wait(outbox: Any) -> bool:
+    """仅把带完整受控元数据的设备等待识别为 BLOCKED_RESOURCE。"""
+
+    status = getattr(outbox, "status", None)
+    dispatch_type = getattr(outbox, "dispatch_type", None)
+    status_value = status.value if isinstance(status, Enum) else status
+    dispatch_type_value = dispatch_type.value if isinstance(dispatch_type, Enum) else dispatch_type
+    return (
+        status_value == SystemOutboxStatus.RETRY_WAIT.value
+        and dispatch_type_value == SystemOutboxDispatchType.DEVICE_COMMAND.value
+        and getattr(outbox, "blocked_reason", None) in SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS
+        and getattr(outbox, "blocked_at", None) is not None
+        and getattr(outbox, "finished_at", None) is None
+    )
+
+
+def system_outbox_resource_wait_clause(columns: Any) -> Any:
+    """生成与内存谓词等价的 SQL 过滤条件。"""
+
+    return and_(
+        columns.status == SystemOutboxStatus.RETRY_WAIT,
+        columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
+        columns.blocked_reason.in_(SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS),
+        columns.blocked_at.is_not(None),
+        columns.finished_at.is_(None),
+    )
 
 
 class OperationCompletionPolicy(str, Enum):
@@ -191,8 +222,16 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
             "blocked_device_id",
             "target_code",
             "created_at",
-            postgresql_where=text("status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND'"),
-            sqlite_where=text("status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND'"),
+            postgresql_where=text(
+                "status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND' "
+                "AND blocked_reason IN ('DEVICE_BUSY', 'DEVICE_STATUS_PRECHECK_WAIT') "
+                "AND blocked_at IS NOT NULL AND finished_at IS NULL"
+            ),
+            sqlite_where=text(
+                "status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND' "
+                "AND blocked_reason IN ('DEVICE_BUSY', 'DEVICE_STATUS_PRECHECK_WAIT') "
+                "AND blocked_at IS NOT NULL AND finished_at IS NULL"
+            ),
         ),
         Index("ix_system_outbox_retention", "status", "finished_at"),
         Index(
@@ -213,11 +252,14 @@ class SystemOutboxCreate(ModelFactory(SystemOutboxBase).for_create()):
     """系统级发件箱创建 Schema。"""
 
 
-class SystemOutboxUpdate(ModelFactory(SystemOutboxBase).for_update()):
+class SystemOutboxUpdate(ModelFactory(SystemOutboxBase).for_update(exclude=("dispatch_key",))):
     """系统级发件箱更新 Schema。"""
+
+    dispatch_key: ClassVar[str]
 
 
 __all__ = [
+    "SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS",
     "DispatchEnvelope",
     "OperationCompletionPolicy",
     "SystemOutbox",
@@ -227,4 +269,6 @@ __all__ = [
     "SystemOutboxStatus",
     "SystemOutboxTargetType",
     "SystemOutboxUpdate",
+    "is_system_outbox_resource_wait",
+    "system_outbox_resource_wait_clause",
 ]

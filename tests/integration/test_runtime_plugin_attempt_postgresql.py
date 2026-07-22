@@ -126,11 +126,13 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             capability_key="device.device_command_write",
             contract_version="v1",
             operation_key="operation-1",
+            dispatch_key="device-command:CMD-INTEGRATION-OPERATION-1",
             payload={
                 "target_device_id": seeded.arm_id,
                 "action": "PICK_AND_PUT",
                 "payload": {"target": "A-01"},
                 "timeout_ms": 30_000,
+                "command_code": "CMD-INTEGRATION-OPERATION-1",
                 "result_policy": "COMMAND_RESULT",
             },
             precondition={"expected_available": True},
@@ -182,7 +184,7 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             assert ledger is not None
             assert ledger.idempotency_key == f"plugin-attempt:binding:{snapshot.binding_id}:1:inbox:1:intent:0"
             assert ledger.effect_status == "PROPOSED"
-            assert ledger.dispatch_key == ledger.idempotency_key
+            assert ledger.dispatch_key == "device-command:CMD-INTEGRATION-OPERATION-1"
             assert len(ledger.request_hash) == 64
 
     asyncio.run(with_temporary_runtime_database(scenario))

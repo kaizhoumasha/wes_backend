@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import Enum
 from types import MappingProxyType
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -119,6 +119,72 @@ _ATTEMPT_EVENTS = frozenset(
 )
 _RECONCILIATION_TERMINALS = frozenset({RuntimeIntentStatus.COMPLETED, RuntimeIntentStatus.REJECTED})
 
+_StatusT = TypeVar("_StatusT", bound=Enum)
+
+
+class InvalidEffectTransition(ValueError):
+    """状态写入不属于已冻结 transition matrix。"""
+
+
+def _transition(
+    subject: Any,
+    *,
+    attribute: str,
+    target: _StatusT,
+    status_type: type[_StatusT],
+    transitions: Any,
+    ledger_name: str,
+) -> None:
+    current_value = getattr(subject, attribute, None)
+    try:
+        current = status_type(current_value) if current_value is not None else None
+        normalized_target = status_type(target)
+    except (TypeError, ValueError) as exc:
+        raise InvalidEffectTransition(f"{ledger_name} 包含未知状态: {current_value!r} -> {target!r}") from exc
+    if normalized_target not in transitions.get(current, frozenset()):
+        current_label = current.value if current is not None else "None"
+        raise InvalidEffectTransition(f"{ledger_name} 非法状态转移: {current_label} -> {normalized_target.value}")
+    setattr(subject, attribute, normalized_target)
+
+
+def transition_runtime_intent(subject: Any, target: RuntimeIntentStatus) -> None:
+    """按冻结矩阵写入 RuntimeIntentLog.effect_status。"""
+
+    _transition(
+        subject,
+        attribute="effect_status",
+        target=target,
+        status_type=RuntimeIntentStatus,
+        transitions=RUNTIME_INTENT_TRANSITIONS,
+        ledger_name="RuntimeIntentLog",
+    )
+
+
+def transition_system_outbox(subject: Any, target: SystemOutboxStatus) -> None:
+    """按冻结矩阵写入 SystemOutbox.status。"""
+
+    _transition(
+        subject,
+        attribute="status",
+        target=target,
+        status_type=SystemOutboxStatus,
+        transitions=SYSTEM_OUTBOX_TRANSITIONS,
+        ledger_name="SystemOutbox",
+    )
+
+
+def transition_dispatch_attempt(subject: Any, target: DispatchAttemptStatus) -> None:
+    """按冻结矩阵写入 DispatchAttempt.status。"""
+
+    _transition(
+        subject,
+        attribute="status",
+        target=target,
+        status_type=DispatchAttemptStatus,
+        transitions=DISPATCH_ATTEMPT_TRANSITIONS,
+        ledger_name="DispatchAttempt",
+    )
+
 
 class EffectReducerEvent(BaseModel):
     """Reducer 输入；冻结事实，不在 Schema 内执行状态归并。"""
@@ -158,4 +224,8 @@ __all__ = [
     "SYSTEM_OUTBOX_TRANSITIONS",
     "EffectReducerEvent",
     "EffectReducerEventType",
+    "InvalidEffectTransition",
+    "transition_dispatch_attempt",
+    "transition_runtime_intent",
+    "transition_system_outbox",
 ]

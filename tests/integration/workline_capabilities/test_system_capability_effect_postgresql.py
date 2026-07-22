@@ -94,6 +94,7 @@ def _hold_intent(ctx: Mapping[str, object], *, operation: str = "hold-1", reason
         capability_key="runtime.session_hold",
         contract_version="v1",
         operation_key=operation,
+        dispatch_key=f"system-capability:runtime.session_hold:{operation}",
         payload={"failure_domain": "PLUGIN", "reason_code": reason, "message": "integration review"},
         precondition={"expected_status": SessionStatus.RUNNING.value},
         fact_version=f"session:{session.version}",  # type: ignore[attr-defined]

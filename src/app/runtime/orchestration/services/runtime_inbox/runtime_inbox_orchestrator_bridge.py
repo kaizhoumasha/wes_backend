@@ -219,6 +219,7 @@ def _system_capability_intents(
             converted.append(intent)
             continue
         capability_key: str
+        dispatch_key: str
         payload: dict[str, Any]
         precondition: dict[str, Any]
         fact_version: str | int
@@ -239,6 +240,7 @@ def _system_capability_intents(
             capability_key = "device.device_command_write"
             target_device_id, target_device_version = _pinned_command_target(context.snapshot, intent)
             command_code = f"SC-{sha256_digest({'binding': context.snapshot.binding_identity, 'operation': f'inbox:{context.inbox_id}:{index}:command'})[:32]}"
+            dispatch_key = f"device-command:{command_code}"
             payload = {
                 "device_role": None,
                 "target_device_id": target_device_id,
@@ -282,11 +284,15 @@ def _system_capability_intents(
             fact_version = f"session:{context.snapshot.session_version}"
         else:
             raise ValueError(f"unsupported plugin effect intent: {intent.kind.value}")
+        operation_key = f"inbox:{context.inbox_id}:{index}:{intent.kind.value.lower()}"
+        if intent.kind is not RuntimeIntentKind.COMMAND:
+            dispatch_key = f"system-capability:{capability_key}:{operation_key}"
         converted.append(
             RuntimeIntent.system_capability(
                 capability_key=capability_key,
                 contract_version="v1",
-                operation_key=f"inbox:{context.inbox_id}:{index}:{intent.kind.value.lower()}",
+                operation_key=operation_key,
+                dispatch_key=dispatch_key,
                 payload=payload,
                 precondition=precondition,
                 fact_version=fact_version,
@@ -1938,6 +1944,7 @@ def _recorded_live_hold_intent_is_valid(
             capability_key="runtime.session_hold",
             contract_version="v1",
             operation_key=intent.operation_key or "",
+            dispatch_key=intent.dispatch_key or "",
             payload=payload,
             precondition=precondition,
             fact_version=intent.fact_version,

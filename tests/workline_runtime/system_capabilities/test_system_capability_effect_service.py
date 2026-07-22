@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
 from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
     SystemCapabilityEffectService,
@@ -104,6 +105,7 @@ class _EffectRepository:
         self.success_evidence = success_evidence
         self.calls: list[dict[str, Any]] = []
         self.outcomes: list[object] = []
+        self.intent_log = SimpleNamespace(effect_status=RuntimeIntentStatus.PROPOSED, dispatch_key=None)
 
     async def claim_or_match(self, _db: object, **kwargs: Any) -> ClaimResult:
         self.calls.append(kwargs)
@@ -113,6 +115,10 @@ class _EffectRepository:
 
     async def record_outcome(self, _db: object, **kwargs: Any) -> None:
         self.outcomes.append(kwargs["evidence"])
+
+    async def get_claimed_intent(self, _db: object, *, claim: dict[str, Any]) -> object:
+        self.intent_log.dispatch_key = claim["dispatch_key"]
+        return self.intent_log
 
     async def get_success_evidence(self, _db: object, **_kwargs: Any) -> object | None:
         return self.success_evidence
@@ -178,6 +184,9 @@ class _MutationDb(_Db):
     def add(self, value: object) -> None:
         self.added.append(value)
 
+    def add_all(self, values: tuple[object, ...]) -> None:
+        self.added.extend(values)
+
     async def flush(self) -> None:
         self.flush_count += 1
         for index, value in enumerate(self.added, start=1):
@@ -190,6 +199,7 @@ def _intent(value: str = "A") -> RuntimeIntent:
         capability_key="test.effect",
         contract_version="v1",
         operation_key="operation-1",
+        dispatch_key="system-capability:test.effect:operation-1",
         payload=_Input(value=value),
         precondition={"expected": 3},
         fact_version="fact:3",
@@ -323,6 +333,7 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
     assert "session:31" in claim["idempotency_key"]
     assert "work-item:41" in claim["idempotency_key"]
     assert claim["idempotency_key"].endswith(":operation-1")
+    assert claim["dispatch_key"] == "system-capability:test.effect:operation-1"
 
 
 @pytest.mark.asyncio
@@ -373,6 +384,7 @@ async def test_match_replays_persisted_typed_success_for_real_effect_definitions
         capability_key=definition.capability_key,
         contract_version=definition.contract_version,
         operation_key="real-operation-1",
+        dispatch_key=f"system-capability:{definition.capability_key}:real-operation-1",
         payload=input_payload,
         precondition=precondition,
         fact_version=fact_version,
@@ -435,6 +447,7 @@ def _material_intent(*, precondition: dict[str, object], fact_version: object) -
         capability_key=MATERIAL_DEFINITION.capability_key,
         contract_version=MATERIAL_DEFINITION.contract_version,
         operation_key="scan:PKG-STRICT:create",
+        dispatch_key="system-capability:material:create:PKG-STRICT",
         payload={
             "operation": "CREATE",
             "pkg_code": "PKG-STRICT",
@@ -548,6 +561,7 @@ def _session_hold_intent(*, expected_status: object, fact_version: object) -> Ru
         capability_key=HOLD_DEFINITION.capability_key,
         contract_version=HOLD_DEFINITION.contract_version,
         operation_key="session:hold:review",
+        dispatch_key="system-capability:session:hold:review",
         payload={"reason_code": "REVIEW", "message": "manual review"},
         precondition={"expected_status": expected_status},
         fact_version=fact_version,  # type: ignore[arg-type]
@@ -633,7 +647,13 @@ def _device_intent(*, expected_available: object, fact_version: object) -> Runti
         capability_key=DEVICE_DEFINITION.capability_key,
         contract_version=DEVICE_DEFINITION.contract_version,
         operation_key="device:71:dispatch",
-        payload={"target_device_id": 71, "action": "PICK_AND_PUT", "result_policy": "COMMAND_RESULT"},
+        dispatch_key="device-command:CMD-71-EFFECT",
+        payload={
+            "target_device_id": 71,
+            "action": "PICK_AND_PUT",
+            "command_code": "CMD-71-EFFECT",
+            "result_policy": "COMMAND_RESULT",
+        },
         precondition={"expected_available": expected_available},
         fact_version=fact_version,  # type: ignore[arg-type]
         timeout_seconds=5,
@@ -706,7 +726,8 @@ async def test_device_matching_typed_admission_creates_one_command_and_outbox(mo
         current_command_id=None,
     )
 
-    result = await _service(DEVICE_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
+    effect_repository = _EffectRepository(ClaimResult.NEW)
+    result = await _service(DEVICE_DEFINITION, effect_repository).apply(
         ctx, _device_intent(expected_available=True, fact_version="device:v2")
     )
 
@@ -716,6 +737,7 @@ async def test_device_matching_typed_admission_creates_one_command_and_outbox(mo
     assert calls[0]["target_device_id"] == 71
     assert calls[0]["admission"].fact_version == "device:v2"  # type: ignore[union-attr]
     assert calls[0]["expected_workline_id"] == 3
+    assert calls[0]["intent_log"] is effect_repository.intent_log
 
 
 @pytest.mark.asyncio
@@ -1006,6 +1028,10 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
         current_wait_timeout_seconds=None,
         awaiting_device_command_code=None,
     )
+    intent_log = SimpleNamespace(
+        effect_status=RuntimeIntentStatus.PROPOSED,
+        dispatch_key="device-command:CMD-RUNTIME-EFFECT",
+    )
     command, outbox = await DeviceCommandService(
         repository=_CommandRepository(),
         device_repository=_DeviceRepository(),
@@ -1016,7 +1042,7 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
             priority=5,
             timeout_ms=30000,
             payload={"business_key": "PKG-1"},
-            command_code=None,
+            command_code="CMD-RUNTIME-EFFECT",
             result_policy="COMMAND_RESULT",
         ),
         target_device_id=71,
@@ -1029,6 +1055,7 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
         idempotency_key="system-capability:device.device_command_write@v1:session:31:work-item:41:pick-1",
         execution_correlation_id="corr-device-effect",
         trace_id="trace-device-effect",
+        intent_log=intent_log,
     )
 
     assert isinstance(command, DeviceCommand)
@@ -1038,6 +1065,7 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
     assert getattr(outbox.status, "value", outbox.status) == "NEW"
     assert session.current_wait_type == "COMMAND_RESULT"
     assert session.awaiting_device_command_code == command.command_code
+    assert db.added == [command, intent_log, outbox]
     assert db.commit_count == 0
     assert db.rollback_count == 0
 
@@ -1113,6 +1141,10 @@ async def test_runtime_device_command_service_rejects_fire_and_forget_model_bypa
             idempotency_key="system-capability:device.device_command_write@v1:session:31:move-1",
             execution_correlation_id="corr-fire-and-forget",
             trace_id="trace-fire-and-forget",
+            intent_log=SimpleNamespace(
+                effect_status=RuntimeIntentStatus.PROPOSED,
+                dispatch_key="device-command:CMD-FIRE-AND-FORGET",
+            ),
         )
 
 

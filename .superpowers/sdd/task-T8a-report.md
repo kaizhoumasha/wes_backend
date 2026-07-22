@@ -41,7 +41,8 @@ bytes、T8c typed sender、T8d reducer 生命周期或 T8e lease/fencing。
 - 变更前所有被修改函数、类和方法均完成 upstream impact analysis。
 - `RuntimeIntentLog`、`SystemOutbox` 及 `_load_blocked_outbox_projection` 为 HIGH；其中 query projection 只替换
   enum token，不改变查询形状。其余 repository/service/test 符号为 LOW/MEDIUM。
-- 提交前 staged detect changes 报告 HIGH：32 个任务文件、15 条受影响流程，集中于 outbox dispatch/资源等待与
+- 提交前以当前 worktree 绝对路径执行 staged detect changes 报告 HIGH：41 个任务文件、191 个变更符号、
+  15 条受影响流程，集中于 outbox dispatch/资源等待与
   runtime blocked projection；相关 workline/sys/contracts 扩大回归和 quality gate 已覆盖。工作树原有未暂存
   `AGENTS.md/CLAUDE.md` 未进入检测 scope，也不会进入本提交。
 
@@ -62,3 +63,30 @@ bytes、T8c typed sender、T8d reducer 生命周期或 T8e lease/fencing。
   PostgreSQL offline SQL 渲染和 schema contract 测试。集成环境需在干净数据库执行该 revision；若存在旧行，
   non-null `dispatch_key/effect_status` 或已删除状态会使 upgrade 失败，这是“未发布系统、不迁移旧数据”的预期硬门禁。
 - T8a 仅提供同事务 1:1 repository primitive；具体 typed EFFECT handler 的创建接线属于后续 T8f/T8g。
+
+## Review finding 修复补充（2026-07-22）
+
+- 将 final transition matrix 接入 RuntimeIntentLog、SystemOutbox 与 WorklineDispatchAttempt 的生产写路径；非法跳转、
+  同状态重写和终态覆盖现在都会在写入 evidence 或时间戳前拒绝。该接线没有引入 T8d reducer 生命周期。
+- `RETRY_WAIT` 仅在 `DEVICE_COMMAND` 且 reason 为 `DEVICE_BUSY` 或 `DEVICE_STATUS_PRECHECK_WAIT`、
+  `blocked_at` 非空且 `finished_at` 为空时被识别为受控资源等待。普通退避会清空 blocked metadata，rack、station、
+  query、diagnosis 与 migration partial index 使用同一谓词，已删除 `finished_at` 例外。
+- SYSTEM_CAPABILITY intent 不再由通用 attempt ledger 提前落单；production device-command 路径携带已 claim 的
+  RuntimeIntentLog，并通过 `add_proposed_pair` 在调用方事务内同时加入 command、intent 与 outbox。两侧要求相同且显式的
+  `dispatch_key`，不再从 idempotency key 推断，也没有新增 sender。
+- `dispatch_key` 已在 RuntimeIntent schema 设为必填，并在 RuntimeIntentLog claim 与 SystemOutbox update 两处执行不可变
+  校验；更新 schema 也不再暴露该字段。
+
+### 补充验证
+
+- `uv run pytest tests/workline_runtime tests/sys tests/rack tests/contracts/system_capabilities tests/unit/runtime/orchestration tests/runtime/orchestration -q`：
+  `1415 passed`。
+- test topology：`6 passed`；默认收集：`3604 tests collected`。
+- `./scripts/git-quality-gate.sh --profile quality` 再次通过；`git diff --check` 和新增 forbidden-write 搜索通过。
+- 三份受影响的 PostgreSQL integration 文件可正常收集，共 `10 tests collected`。已显式尝试执行全部 10 个用例，
+  但环境未配置 `INTEGRATION_DATABASE_URL`，均在 `missing_url` 预检处停止，未进入业务断言。
+
+### 更新后的边界说明
+
+- production device-command EFFECT 的双账本 1:1 接线已属于本次 review 修复，不再留待后续任务；typed sender、
+  reducer lifecycle、lease/fencing 仍保持在 T8a 范围之外。

@@ -71,6 +71,27 @@ async def test_cancel_active_by_session_treats_retry_wait_as_active() -> None:
 
 
 @pytest.mark.asyncio
+async def test_repository_rejects_dispatch_key_updates_before_loading_row() -> None:
+    with pytest.raises(ValueError, match=r"dispatch_key.*不可变"):
+        await SystemOutboxRepository().update(  # type: ignore[arg-type]
+            SimpleNamespace(),
+            7,
+            {"dispatch_key": "replacement"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_resource_wait_rejects_uncontrolled_retry_reason_before_loading_row() -> None:
+    with pytest.raises(ValueError, match="不受控"):
+        await SystemOutboxRepository().block_for_resource_wait(  # type: ignore[arg-type]
+            SimpleNamespace(),
+            7,
+            reason="HTTP_503_BACKOFF",
+            blocked_device_id=9,
+        )
+
+
+@pytest.mark.asyncio
 async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_workline_session(
     db_session: Any,
 ) -> None:

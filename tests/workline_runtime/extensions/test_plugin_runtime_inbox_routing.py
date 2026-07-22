@@ -659,6 +659,7 @@ def test_recorded_live_hold_rejects_tampered_system_capability_identity_or_shape
         capability_key="runtime.session_hold",
         contract_version="v1",
         operation_key="inbox:91:0:block",
+        dispatch_key="system-capability:runtime.session_hold:inbox-91-0-block",
         payload={
             "failure_domain": "WORKLINE",
             "reason_code": "WMS_REJECTED",

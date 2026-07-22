@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, exists, func, or_, select
 
-from src.app.sys.models.outbox import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus
+from src.app.runtime.orchestration.effect_state_contract import transition_system_outbox
+from src.app.sys.models.outbox import (
+    SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS,
+    SystemOutbox,
+    SystemOutboxDispatchType,
+    SystemOutboxStatus,
+    system_outbox_resource_wait_clause,
+)
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
@@ -25,10 +32,17 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
 
     DISPATCH_LEASE_SECONDS = 300
     RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS = 2
-    DEVICE_RESOURCE_WAIT_REASONS = ("DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT")
+    DEVICE_RESOURCE_WAIT_REASONS = tuple(sorted(SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS))
 
     def __init__(self) -> None:
         super().__init__(SystemOutbox)
+
+    async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> SystemOutbox | None:
+        """拒绝绕过专用状态方法改写稳定派发身份。"""
+
+        if "dispatch_key" in data:
+            raise ValueError("SystemOutbox.dispatch_key 持久化后不可变")
+        return await super().update(db, id, data)
 
     async def get_by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> SystemOutbox | None:
         columns = cast("Any", SystemOutbox).__table__.c
@@ -178,9 +192,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             select(SystemOutbox)
             .outerjoin(current_device, self._device_resolution_join_condition(columns, current_device))
             .where(
-                columns.status == SystemOutboxStatus.RETRY_WAIT,
-                columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
-                columns.blocked_reason.in_(self.DEVICE_RESOURCE_WAIT_REASONS),
+                system_outbox_resource_wait_clause(columns),
                 or_(columns.last_blocked_check_at.is_(None), columns.last_blocked_check_at <= probe_cutoff),
                 ~earlier_active_device_outbox_exists,
                 *domain_predicates,
@@ -206,7 +218,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         if outbox.status not in {SystemOutboxStatus.NEW, SystemOutboxStatus.RETRY_WAIT} and not stale_dispatching:
             return None
 
-        outbox.status = SystemOutboxStatus.DISPATCHING
+        if outbox.status != SystemOutboxStatus.DISPATCHING:
+            transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
         outbox.next_retry_at = now + timedelta(seconds=self.DISPATCH_LEASE_SECONDS)
         await db.flush()
         return outbox
@@ -264,10 +277,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             .outerjoin(current_device, self._device_resolution_join_condition(columns, current_device))
             .where(
                 columns.id == outbox_id,
-                columns.status == SystemOutboxStatus.RETRY_WAIT,
-                columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
+                system_outbox_resource_wait_clause(columns),
                 columns.blocked_reason == expected_reason,
-                columns.blocked_reason.in_(self.DEVICE_RESOURCE_WAIT_REASONS),
                 or_(columns.last_blocked_check_at.is_(None), columns.last_blocked_check_at <= probe_cutoff),
                 ~earlier_active_device_outbox_exists,
                 *domain_predicates,
@@ -278,7 +289,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         if outbox is None:
             return None
 
-        outbox.status = SystemOutboxStatus.DISPATCHING
+        transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
         self._clear_block(outbox)
         outbox.next_retry_at = now + timedelta(seconds=self.DISPATCH_LEASE_SECONDS)
         await db.flush()
@@ -294,7 +305,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             or getattr(outbox, "finished_at", None) is not None
         ):
             return None
-        outbox.status = SystemOutboxStatus.SENT
+        transition_system_outbox(outbox, SystemOutboxStatus.SENT)
         outbox.sent_at = timezone.now_for_db()
         outbox.next_retry_at = None
         outbox.last_error = None
@@ -324,7 +335,10 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox = result.scalar_one_or_none()
         if outbox is None:
             return None
-        outbox.status = SystemOutboxStatus.SENT
+        if outbox.status == SystemOutboxStatus.NEW:
+            transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
+        if outbox.status == SystemOutboxStatus.DISPATCHING:
+            transition_system_outbox(outbox, SystemOutboxStatus.SENT)
         outbox.sent_at = outbox.sent_at or timezone.now_for_db()
         outbox.next_retry_at = None
         outbox.last_error = None
@@ -348,13 +362,14 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             return None
 
         outbox.attempt_count += 1
+        self._clear_block(outbox)
         outbox.last_error = error
         if outbox.attempt_count > max_retries:
-            outbox.status = SystemOutboxStatus.FAILED
+            transition_system_outbox(outbox, SystemOutboxStatus.FAILED)
             outbox.next_retry_at = None
             outbox.finished_at = timezone.now_for_db()
         else:
-            outbox.status = SystemOutboxStatus.RETRY_WAIT
+            transition_system_outbox(outbox, SystemOutboxStatus.RETRY_WAIT)
             outbox.next_retry_at = timezone.now_for_db() + timedelta(seconds=2 ** (outbox.attempt_count - 1))
         await db.flush()
         return outbox
@@ -363,7 +378,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         return await self._block_or_fail(
             db,
             outbox_id,
-            status=SystemOutboxStatus.FAILED,
+            status=SystemOutboxStatus.CANCELLED,
             reason="BLOCKED_BY_WORKLINE_ESTOP",
         )
 
@@ -380,7 +395,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox = await self._get_active_for_block(db, outbox_id)
         if outbox is None:
             return None
-        outbox.status = SystemOutboxStatus.RETRY_WAIT
+        self._transition_to_retry_wait(outbox)
         outbox.blocked_by_reconciliation_session_id = owner_session_id
         outbox.blocked_device_id = blocked_device_id
         outbox.blocked_workline_id = blocked_workline_id or outbox.workline_id
@@ -401,7 +416,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox = await self._get_active_for_block(db, outbox_id)
         if outbox is None:
             return None
-        outbox.status = SystemOutboxStatus.RETRY_WAIT
+        self._transition_to_retry_wait(outbox)
         outbox.blocked_by_runtime_hold_id = None
         outbox.blocked_by_reconciliation_session_id = None
         outbox.blocked_workline_id = blocked_workline_id or outbox.workline_id
@@ -426,7 +441,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox = await self._get_active_for_block(db, outbox_id)
         if outbox is None:
             return None
-        outbox.status = SystemOutboxStatus.RETRY_WAIT
+        self._transition_to_retry_wait(outbox)
         outbox.blocked_by_runtime_hold_id = runtime_hold_id
         outbox.blocked_by_reconciliation_session_id = owner_session_id
         outbox.blocked_device_id = blocked_device_id
@@ -496,6 +511,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         last_error: str | None = None,
         detail: dict[str, Any] | None = None,
     ) -> SystemOutbox | None:
+        if reason not in self.DEVICE_RESOURCE_WAIT_REASONS:
+            raise ValueError(f"不受控的设备资源等待原因: {reason}")
         outbox = await self._get_active_for_resource_wait(db, outbox_id, reason=reason)
         if outbox is None:
             return None
@@ -508,7 +525,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             and outbox.last_blocked_check_at > now - timedelta(seconds=self.RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS)
         ):
             return None
-        outbox.status = SystemOutboxStatus.RETRY_WAIT
+        if outbox.status != SystemOutboxStatus.RETRY_WAIT:
+            self._transition_to_retry_wait(outbox)
         outbox.blocked_by_reconciliation_session_id = None
         outbox.blocked_device_id = blocked_device_id
         outbox.blocked_workline_id = blocked_workline_id or outbox.workline_id
@@ -584,10 +602,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                 columns.workline_id == workline_id,
                 columns.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP,
                 columns.status.in_(active_statuses),
-                or_(
-                    columns.finished_at.is_(None),
-                    columns.status == SystemOutboxStatus.RETRY_WAIT,
-                ),
+                columns.finished_at.is_(None),
                 or_(
                     payload["station"]["position_code"].as_string() == position_code,
                     payload["position_code"].as_string() == position_code,
@@ -620,8 +635,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         result = await db.execute(
             select(SystemOutbox)
             .where(
-                columns.status == SystemOutboxStatus.RETRY_WAIT,
-                columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
+                system_outbox_resource_wait_clause(columns),
                 columns.blocked_reason == "DEVICE_BUSY",
                 *domain_predicates,
             )
@@ -645,7 +659,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outboxes = list(result.scalars().all())
         now = timezone.now_for_db()
         for outbox in outboxes:
-            outbox.status = SystemOutboxStatus.CANCELLED
+            transition_system_outbox(outbox, SystemOutboxStatus.CANCELLED)
             outbox.last_error = "CANCELLED_BY_ESTOP"
             outbox.finished_at = now
             outbox.payload_json = {
@@ -669,7 +683,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outboxes = list(result.scalars().all())
         now = timezone.now_for_db()
         for outbox in outboxes:
-            outbox.status = SystemOutboxStatus.CANCELLED
+            transition_system_outbox(outbox, SystemOutboxStatus.CANCELLED)
             outbox.last_error = reason
             outbox.finished_at = now
         return len(outboxes)
@@ -924,7 +938,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox = await self._get_active_for_block(db, outbox_id)
         if outbox is None:
             return None
-        outbox.status = status
+        transition_system_outbox(outbox, status)
         outbox.last_error = reason
         outbox.next_retry_at = None
         outbox.finished_at = timezone.now_for_db()
@@ -978,8 +992,15 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
     def _release_blocked_outbox(outbox: SystemOutbox) -> None:
         outbox.attempt_count = 0
         SystemOutboxRepository._clear_block(outbox)
-        outbox.status = SystemOutboxStatus.RETRY_WAIT
         outbox.next_retry_at = timezone.now_for_db()
+
+    @staticmethod
+    def _transition_to_retry_wait(outbox: SystemOutbox) -> None:
+        """把未发送 outbox 经由合法 ATTEMPT_STARTED 边进入 RETRY_WAIT。"""
+
+        if outbox.status == SystemOutboxStatus.NEW:
+            transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
+        transition_system_outbox(outbox, SystemOutboxStatus.RETRY_WAIT)
 
     @staticmethod
     def _clear_block(outbox: SystemOutbox) -> None:

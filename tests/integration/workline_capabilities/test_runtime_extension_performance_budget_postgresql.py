@@ -22,6 +22,7 @@ from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
 )
@@ -235,7 +236,9 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
             session = await db.get(WorklineSession, seeded.session_id)
             workline = await db.get(WorkLine, seeded.workline_id)
             device = await db.get(Device, seeded.arm_id)
-            assert session is not None and workline is not None and device is not None
+            source_inbox = await db.get(RuntimeInbox, seeded.inbox_id)
+            assert session is not None and workline is not None and device is not None and source_inbox is not None
+            assert source_inbox.execution_session_id is not None
             source_command = await db.scalar(
                 select(DeviceCommand).where(
                     DeviceCommand.workline_id == seeded.workline_id,
@@ -247,6 +250,19 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
             await db.commit()
             device_service = DeviceCommandService()
             for index in range(MEASURED_SAMPLE_COUNT + 1):
+                command_code = f"CMD-PERF-EFFECT-{index}"
+                dispatch_key = f"device-command:{command_code}"
+                intent_log = RuntimeIntentLog(
+                    execution_session_id=source_inbox.execution_session_id,
+                    correlation_id="workline-session:IT-RUNTIME-INBOX-SESSION",
+                    provider_code="RUNTIME",
+                    operation_kind="system_capability_effect",
+                    target_domain="device",
+                    target_action="performance_sample",
+                    idempotency_key=f"perf-outbox-{index}",
+                    request_hash=f"{index:064x}",
+                    dispatch_key=dispatch_key,
+                )
                 started = time.perf_counter()
                 prepared_command, _outbox = await device_service.prepare_runtime_effect(
                     db,
@@ -256,6 +272,7 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
                         target_device_id=seeded.arm_id,
                         action="PICK_AND_PUT",
                         payload={"sample": index},
+                        command_code=command_code,
                         result_policy="COMMAND_RESULT",
                     ),
                     target_device_id=seeded.arm_id,
@@ -266,6 +283,7 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
                     idempotency_key=f"perf-outbox-{index}",
                     execution_correlation_id="workline-session:IT-RUNTIME-INBOX-SESSION",
                     trace_id=seeded.trace_id,
+                    intent_log=intent_log,
                 )
                 await db.commit()
                 outbox_samples.append(time.perf_counter() - started)

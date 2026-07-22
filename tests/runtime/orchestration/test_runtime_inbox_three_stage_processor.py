@@ -24,10 +24,7 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound im
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.app.runtime.orchestration.effect_result import (
-    RuntimeIntentEffectResult,
-    WriteBackDisposition,
-)
+from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult, WriteBackDisposition
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
     TimelineActorType,
@@ -1317,6 +1314,7 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
     common = {
         "contract_version": "v1",
         "operation_key": f"inbox:91:{capability_key}",
+        "dispatch_key": f"effect:{capability_key}:inbox-91",
         "timeout_seconds": 5,
         "creator_authority": "WORKLINE_PLUGIN",
         "authorization_policy": "PLUGIN_DECLARED_CAPABILITY",
@@ -1611,6 +1609,7 @@ async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None
         capability_key="device.device_command_write",
         contract_version="v1",
         operation_key="inbox:91:device-command",
+        dispatch_key="device-command:CMD-INBOX-91",
         payload={"target_device_id": 31, "action": "MOVE", "payload": {}, "timeout_ms": 1000},
         precondition={"expected_available": True},
         fact_version="device:v1",

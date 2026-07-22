@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.runtime.orchestration.effect_state_contract import transition_dispatch_attempt
 from src.app.runtime.orchestration.models.dispatch_attempt import (
     DispatchAttemptStatus,
     WorklineDispatchAttempt,
@@ -41,7 +42,10 @@ async def _finalize_attempt(
     response: dict[str, Any] | None = None,
     error_message: str | None = None,
 ) -> WorklineDispatchAttempt:
-    attempt.status = DispatchAttemptStatus.SENT.value if success else DispatchAttemptStatus.FAILED.value
+    transition_dispatch_attempt(
+        attempt,
+        DispatchAttemptStatus.SENT if success else DispatchAttemptStatus.FAILED,
+    )
     attempt.finalized_at = timezone.now_for_db()
     attempt.response_json = response or {}
     attempt.error_message = None if success else error_message

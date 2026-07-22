@@ -52,6 +52,7 @@ def _typed_intent(capability_key: str, contract_version: str) -> RuntimeIntent:
         capability_key=capability_key,
         contract_version=contract_version,
         operation_key="conformance:platform:1",
+        dispatch_key=f"system-capability:{capability_key}:conformance-platform-1",
         payload={"fixture": True},
         precondition={"expected": "fixture-v1"},
         fact_version="fixture-v1",

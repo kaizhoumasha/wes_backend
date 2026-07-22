@@ -117,7 +117,7 @@ class RuntimeIntent(BaseModel):
     device_role: str | None = None
     target_device_id: int | None = None
     action: str | None = None
-    dispatch_key: str | None = None
+    dispatch_key: str | None = Field(default=None, min_length=1, max_length=240)
     target_code: str | None = None
     source_system: str | None = None
     idempotency_key: str | None = None
@@ -156,6 +156,7 @@ class RuntimeIntent(BaseModel):
         capability_key: str,
         contract_version: str,
         operation_key: str,
+        dispatch_key: str,
         payload: BaseModel | dict[str, Any],
         precondition: BaseModel | dict[str, Any],
         fact_version: str | int,
@@ -176,6 +177,7 @@ class RuntimeIntent(BaseModel):
             capability_key=capability_key,
             contract_version=contract_version,
             operation_key=operation_key,
+            dispatch_key=dispatch_key,
             payload_json=payload_json,
             payload_hash=sha256_digest(payload_json),
             precondition_json=dump(precondition),
@@ -636,6 +638,7 @@ class RuntimeIntent(BaseModel):
             "capability_key",
             "contract_version",
             "operation_key",
+            "dispatch_key",
             "creator_authority",
             "authorization_policy",
         ):
@@ -663,7 +666,6 @@ class RuntimeIntent(BaseModel):
             "device_role": self.device_role,
             "target_device_id": self.target_device_id,
             "action": self.action,
-            "dispatch_key": self.dispatch_key,
             "target_code": self.target_code,
             "source_system": self.source_system,
             "idempotency_key": self.idempotency_key,

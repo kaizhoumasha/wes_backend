@@ -591,7 +591,7 @@ def _is_active_station_claim_outbox(outbox: SystemOutbox) -> bool:
     status = coerce_optional_str(enum_value(getattr(outbox, "status", None)))
     if status not in _ACTIVE_STATION_CLAIM_STATUSES:
         return False
-    return getattr(outbox, "finished_at", None) is None or status == SystemOutboxStatus.RETRY_WAIT.value
+    return getattr(outbox, "finished_at", None) is None
 
 
 def _station_position_from_payload(payload_json: Mapping[str, Any] | None) -> str | None:

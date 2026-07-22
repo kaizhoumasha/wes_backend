@@ -88,6 +88,20 @@ async def test_production_repository_claim_is_rolled_back_with_outer_transaction
     claim = _claim()
 
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+    row = await repository.get_claimed_intent(db_session, claim=claim)
+    assert row is not None
+    assert row.plugin_key == "rough_sorter"
+    assert row.plugin_contract_version == "v1"
+    assert row.capability_key == "runtime.session_hold"
+    assert row.capability_contract_version == "v1"
+    assert row.operation_identity == "hold-1"
+    assert row.target_domain == "runtime"
+    assert row.payload_hash == "a" * 64
+    assert row.completion_mode == "LOCAL_TRANSACTIONAL"
+    assert row.creator_authority == "WORKLINE_PLUGIN"
+    assert row.authorization_policy == "PLUGIN_DECLARED_CAPABILITY"
+    assert row.binding_snapshot_json == {"binding_id": 9, "binding_version": 1}
+    assert row.provider_snapshot_json == {"provider_code": "RUNTIME", "profile": "runtime"}
     await db_session.rollback()
 
     result = await db_session.execute(
@@ -95,3 +109,24 @@ async def test_production_repository_claim_is_rolled_back_with_outer_transaction
     )
     assert result.scalar_one_or_none() is None
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+
+@pytest.mark.asyncio
+async def test_production_repository_requires_explicit_dispatch_key(db_session) -> None:
+    claim = _claim()
+    claim.pop("dispatch_key")
+
+    with pytest.raises(ValueError, match="dispatch_key"):
+        await RuntimeIntentLogRepository().claim_or_match(db_session, **claim)
+
+
+@pytest.mark.asyncio
+async def test_production_repository_rejects_dispatch_key_change_on_matching_identity(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+    changed = {**claim, "dispatch_key": "effect-dispatch-replacement"}
+    with pytest.raises(ValueError, match=r"dispatch_key.*不可变"):
+        await repository.claim_or_match(db_session, **changed)
+    await db_session.rollback()

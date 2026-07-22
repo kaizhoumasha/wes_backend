@@ -59,7 +59,6 @@ from src.app.runtime.orchestration.services.trace.timeline_sequence_service impo
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
-from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
@@ -398,7 +397,7 @@ class WorklineRuntimeReconciliationService:
             outbox=outbox,
             command=command,
         )
-        outbox.status = SystemOutboxStatus.FAILED
+        # SENT 已是 transport 终态；ACK 耗尽只登记对账证据，不回写覆盖 transport 事实。
         outbox.last_error = error_message
         outbox.next_retry_at = None
         outbox.finished_at = now

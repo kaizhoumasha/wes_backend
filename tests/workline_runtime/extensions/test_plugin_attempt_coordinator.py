@@ -1568,6 +1568,7 @@ def test_runtime_intent_owner_builds_stable_ledger_rows_bound_to_attempt_pins() 
         kind=RuntimeIntentKind.COMMAND,
         action="MOVE",
         idempotency_key="operation-1",
+        dispatch_key="device-command:operation-1",
         payload_json={"target": "A-01"},
         result_policy="COMMAND_RESULT",
     )
@@ -1586,6 +1587,7 @@ def test_runtime_intent_owner_builds_stable_ledger_rows_bound_to_attempt_pins() 
     assert first.target_domain == "device"
     assert first.target_action == "MOVE"
     assert first.idempotency_key == "plugin-attempt:binding:17:4:operation-1"
+    assert first.dispatch_key == "device-command:operation-1"
     assert len(first.request_hash) == 64
     assert (first.idempotency_key, first.request_hash) == (second.idempotency_key, second.request_hash)
     assert first_db.rows == [first]

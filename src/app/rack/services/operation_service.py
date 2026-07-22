@@ -1082,12 +1082,10 @@ def _ensure_existing_outbox_active(outbox: SystemOutbox) -> None:
     if isinstance(status, str):
         active_values = {item.value for item in active_statuses}
         status_is_active = status in active_values
-        status_is_blocked = status == SystemOutboxStatus.RETRY_WAIT.value
     else:
         status_is_active = status in active_statuses
-        status_is_blocked = status == SystemOutboxStatus.RETRY_WAIT
 
-    if not status_is_active or (getattr(outbox, "finished_at", None) is not None and not status_is_blocked):
+    if not status_is_active or getattr(outbox, "finished_at", None) is not None:
         raise ValueError("existing rack operation outbox is no longer active")
 
 

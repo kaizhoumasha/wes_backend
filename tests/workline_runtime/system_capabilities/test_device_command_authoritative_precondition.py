@@ -13,6 +13,7 @@ from src.app.device.services.device_command_service import (
     DeviceCommandService,
     StaleDeviceCommandPrecondition,
 )
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 
 
 class _ScalarResult:
@@ -57,7 +58,7 @@ class _RecordingCommandRepository(DeviceCommandRepository):
         super().__init__()
         self.events = events
         self.unfinished_commands = unfinished_commands or []
-        self.effects: list[tuple[object, object]] = []
+        self.effects: list[tuple[object, object, object]] = []
 
     async def get_unfinished_commands_for_device(
         self,
@@ -70,9 +71,15 @@ class _RecordingCommandRepository(DeviceCommandRepository):
         assert device_id == 71
         return self.unfinished_commands[:limit]
 
-    async def add_runtime_effect(self, _db: object, command: object, outbox: object) -> None:
+    async def add_runtime_effect(
+        self,
+        _db: object,
+        command: object,
+        intent_log: object,
+        outbox: object,
+    ) -> None:
         self.events.append("write")
-        self.effects.append((command, outbox))
+        self.effects.append((command, intent_log, outbox))
 
 
 def _locked_device(**overrides: object) -> SimpleNamespace:
@@ -114,7 +121,7 @@ async def _prepare(
     return await service.prepare_runtime_effect(
         SimpleNamespace(),
         request=SimpleNamespace(
-            command_code=None,
+            command_code="CMD-71-AUTHORITY",
             action="PICK_AND_PUT",
             priority=5,
             timeout_ms=30000,
@@ -131,6 +138,10 @@ async def _prepare(
         idempotency_key="device:71:dispatch",
         execution_correlation_id="corr-device-71-dispatch",
         trace_id="trace-1",
+        intent_log=SimpleNamespace(
+            effect_status=RuntimeIntentStatus.PROPOSED,
+            dispatch_key="device-command:CMD-71-AUTHORITY",
+        ),
     )
 
 
@@ -213,7 +224,10 @@ async def test_locked_authoritative_match_writes_command_and_outbox_once_after_l
     command, outbox = await _prepare(service)
 
     assert events == ["lock", "check-unfinished", "write"]
-    assert command_repository.effects == [(command, outbox)]
+    [(written_command, intent_log, written_outbox)] = command_repository.effects
+    assert written_command is command
+    assert written_outbox is outbox
+    assert intent_log.dispatch_key == outbox.dispatch_key
     assert command.device_id == 71
     assert outbox.target_code == "ROBOT-71"
 

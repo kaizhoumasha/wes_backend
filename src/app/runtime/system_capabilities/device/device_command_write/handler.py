@@ -36,6 +36,7 @@ class DeviceCommandWriteHandler:
                 expected_workline_id=expected_workline_id,
                 admission=admission,
                 execution=execution,
+                intent_log=execution.intent_log,  # type: ignore[attr-defined]
             )
         except StaleRuntimeDeviceCommandAdmission:
             return BusinessReject(reason_code="STALE_PRECONDITION", message="device fact changed")

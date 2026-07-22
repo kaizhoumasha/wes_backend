@@ -113,7 +113,11 @@ def upgrade() -> None:
             "created_at",
         ],
         schema=BIZ_SCHEMA,
-        postgresql_where=sa.text("status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND'"),
+        postgresql_where=sa.text(
+            "status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND' "
+            "AND blocked_reason IN ('DEVICE_BUSY', 'DEVICE_STATUS_PRECHECK_WAIT') "
+            "AND blocked_at IS NOT NULL AND finished_at IS NULL"
+        ),
     )
 
     op.create_check_constraint(

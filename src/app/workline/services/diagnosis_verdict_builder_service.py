@@ -9,6 +9,7 @@ from src.app.runtime.orchestration.models.runtime import (
     DiagnosisEvidenceHealthResponse,
     DiagnosisVerdictResponse,
 )
+from src.app.sys.models import is_system_outbox_resource_wait
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import coerce_optional_str, optional_enum_str
 
@@ -339,12 +340,7 @@ class DiagnosisVerdictBuilder:
     @staticmethod
     def _resource_wait_outbox(result: Any) -> Any | None:
         return next(
-            (
-                item
-                for item in getattr(result, "outboxes", [])
-                if optional_enum_str(getattr(item, "status", None)) == "RETRY_WAIT"
-                and coerce_optional_str(getattr(item, "blocked_reason", None)) == "DEVICE_STATUS_PRECHECK_WAIT"
-            ),
+            (item for item in getattr(result, "outboxes", []) if is_system_outbox_resource_wait(item)),
             None,
         )
 

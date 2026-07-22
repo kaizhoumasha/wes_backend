@@ -193,6 +193,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         idempotency_key: str,
         execution_correlation_id: str,
         trace_id: str | None,
+        intent_log: Any,
     ) -> tuple[DeviceCommand, Any]:
         """在 Runtime 外层事务内原子准备 DeviceCommand + Outbox，只 flush。"""
 
@@ -200,6 +201,8 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             raise ValueError("runtime device command result_policy must be COMMAND_RESULT")
         if not isinstance(execution_correlation_id, str) or not execution_correlation_id:
             raise ValueError("runtime device command requires execution_correlation_id")
+        if intent_log is None:
+            raise ValueError("runtime device command requires claimed RuntimeIntentLog")
 
         from hashlib import sha256
 
@@ -279,7 +282,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             },
             trace_id=trace_id,
         )
-        await self.repo.add_runtime_effect(db, command, outbox)
+        if getattr(intent_log, "dispatch_key", None) != outbox.dispatch_key:
+            raise ValueError("RuntimeIntentLog/SystemOutbox dispatch_key 必须一致")
+        await self.repo.add_runtime_effect(db, command, intent_log, outbox)
         from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 
         # queued/dispatched/ACK 均不是完成；匹配 command_code 的终态 Callback 才能推进状态。

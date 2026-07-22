@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,6 +15,10 @@ try:
         SYSTEM_OUTBOX_TRANSITIONS,
         EffectReducerEvent,
         EffectReducerEventType,
+        InvalidEffectTransition,
+        transition_dispatch_attempt,
+        transition_runtime_intent,
+        transition_system_outbox,
     )
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 except ImportError as exc:
@@ -28,6 +33,7 @@ from src.app.sys.models.outbox import (
     SystemOutboxDispatchType,
     SystemOutboxStatus,
     SystemOutboxTargetType,
+    SystemOutboxUpdate,
 )
 
 
@@ -192,6 +198,35 @@ def test_effect_reducer_event_schema_is_closed_and_supports_reconciliation_resol
             dispatch_key="dispatch-1",
             occurred_at_ms=1000,
         )
+
+
+def test_transition_guard_accepts_matrix_edges_and_rejects_terminal_or_skipped_overwrites() -> None:
+    _require_effect_state_contract()
+    intent = SimpleNamespace(effect_status=RuntimeIntentStatus.PROPOSED)
+    outbox = SimpleNamespace(status=SystemOutboxStatus.NEW)
+    attempt = SimpleNamespace(status=DispatchAttemptStatus.DISPATCHING)
+
+    transition_runtime_intent(intent, RuntimeIntentStatus.ACCEPTED)
+    transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
+    transition_dispatch_attempt(attempt, DispatchAttemptStatus.SENT)
+
+    assert intent.effect_status is RuntimeIntentStatus.ACCEPTED
+    assert outbox.status is SystemOutboxStatus.DISPATCHING
+    assert attempt.status is DispatchAttemptStatus.SENT
+
+    with pytest.raises(InvalidEffectTransition, match="SystemOutbox"):
+        transition_system_outbox(SimpleNamespace(status=SystemOutboxStatus.NEW), SystemOutboxStatus.SENT)
+    with pytest.raises(InvalidEffectTransition, match="RuntimeIntentLog"):
+        transition_runtime_intent(
+            SimpleNamespace(effect_status=RuntimeIntentStatus.COMPLETED),
+            RuntimeIntentStatus.PROPOSED,
+        )
+    with pytest.raises(InvalidEffectTransition, match="DispatchAttempt"):
+        transition_dispatch_attempt(attempt, DispatchAttemptStatus.FAILED)
+
+
+def test_dispatch_key_is_excluded_from_update_schema() -> None:
+    assert "dispatch_key" not in SystemOutboxUpdate.model_fields
 
 
 def test_runtime_intent_log_owns_semantic_state_only_and_dispatch_keys_are_unique_on_both_ledgers() -> None:

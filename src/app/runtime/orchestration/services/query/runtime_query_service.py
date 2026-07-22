@@ -81,7 +81,11 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
-from src.app.sys.models import SystemOutbox, SystemOutboxStatus
+from src.app.sys.models import (
+    SystemOutbox,
+    is_system_outbox_resource_wait,
+    system_outbox_resource_wait_clause,
+)
 from src.app.workline.models import WorkLine
 from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
 from src.app.workline.utils import ensure_dict
@@ -1178,7 +1182,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(
             select(SystemOutbox).where(
-                columns.status == SystemOutboxStatus.RETRY_WAIT,
+                system_outbox_resource_wait_clause(columns),
                 or_(
                     columns.blocked_device_id.in_(device_ids),
                     columns.target_code.in_([item.device_code for item in devices]),
@@ -1189,6 +1193,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
         command_codes_by_device_id: dict[int, set[str]] = defaultdict(set)
         head_by_device_id: dict[int, Any] = {}
         for outbox in result.scalars().all():
+            # 测试替身或脏历史数据也必须经过与 SQL 等价的合同防线。
+            if not is_system_outbox_resource_wait(outbox):
+                continue
             device_id = outbox.blocked_device_id
             if device_id is None:
                 target_identity = by_code.get(outbox.target_code)

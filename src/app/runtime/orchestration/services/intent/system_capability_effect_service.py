@@ -26,6 +26,7 @@ from .system_capability_intent_service import SystemCapabilityIntentService, sys
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+    from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 
 type EffectOutcome = Success[Any] | BusinessReject | RetryableFailure | ContractViolation
 
@@ -38,6 +39,7 @@ class SystemCapabilityExecution:
     intent: RuntimeIntent
     admission: BaseModel
     idempotency_key: str
+    intent_log: RuntimeIntentLog | None
 
     @property
     def db(self) -> Any:
@@ -124,6 +126,7 @@ class SystemCapabilityEffectService:
             intent=intent,
             admission=prepared.admission,
             idempotency_key=prepared.idempotency_key,
+            intent_log=prepared.intent_log,
         )
         try:
             handler = definition.handler_factory()

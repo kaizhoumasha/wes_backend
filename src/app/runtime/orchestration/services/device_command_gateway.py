@@ -1072,6 +1072,7 @@ async def prepare_runtime_device_command_effect(
     expected_workline_id: int,
     admission: DeviceCommandWriteAdmission,
     execution: object,
+    intent_log: object,
 ) -> tuple[object, object]:
     """通过既有 device/runtime 桥接边界准备命令与 Outbox，不执行外部 I/O。"""
 
@@ -1098,6 +1099,7 @@ async def prepare_runtime_device_command_effect(
             idempotency_key=execution.idempotency_key,  # type: ignore[attr-defined]
             execution_correlation_id=execution_correlation_id,
             trace_id=ctx.get("trace_id"),
+            intent_log=intent_log,
         )
     except StaleDeviceCommandPrecondition as exc:
         raise StaleRuntimeDeviceCommandAdmission("device fact changed") from exc

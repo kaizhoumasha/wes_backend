@@ -20,6 +20,7 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
     from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
 
 
@@ -32,6 +33,7 @@ class PreparedSystemCapabilityIntent:
     payload_hash: str
     claim_result: SystemCapabilityClaimResult | Any
     claim: dict[str, Any]
+    intent_log: RuntimeIntentLog | None
 
 
 class SystemCapabilityIntentService:
@@ -80,6 +82,8 @@ class SystemCapabilityIntentService:
             raise ValueError("system capability is not present in generated index")
         if definition.mode is not SystemCapabilityMode.EFFECT:
             raise ValueError("SYSTEM_CAPABILITY intent requires EFFECT definition")
+        if not isinstance(intent.dispatch_key, str) or not intent.dispatch_key:
+            raise ValueError("SYSTEM_CAPABILITY effect requires explicit dispatch_key")
         validate_system_capability_operation_key(intent.operation_key)
         execution_identity = self._validate_execution_identity(ctx, intent, definition=definition)
         if intent.payload_hash != sha256_digest(intent.payload_json):
@@ -120,9 +124,15 @@ class SystemCapabilityIntentService:
             "fact_version": str(intent.fact_version),
             "payload_hash": str(intent.payload_hash),
             "completion_mode": definition.completion_mode.value,
+            "dispatch_key": intent.dispatch_key,
             "updated_at_ms": int(timezone.now_utc().timestamp() * 1000),
         }
         claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
+        intent_log = None
+        if definition.completion_mode.value == "OUTBOX_ASYNC" and getattr(claim_result, "value", claim_result) == "NEW":
+            intent_log = await self._effect_repository.get_claimed_intent(ctx["db"], claim=claim)
+            if intent_log is None:
+                raise RuntimeError("OUTBOX_ASYNC effect claim row is missing")
         return PreparedSystemCapabilityIntent(
             definition=definition,
             request=request,
@@ -131,6 +141,7 @@ class SystemCapabilityIntentService:
             payload_hash=str(intent.payload_hash),
             claim_result=claim_result,
             claim=claim,
+            intent_log=intent_log,
         )
 
     async def record_outcome(

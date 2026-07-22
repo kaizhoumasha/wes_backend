@@ -197,6 +197,7 @@ async def test_plugin_attempt_lock_loads_effect_execution_identity() -> None:
                 capability_key="test.effect",
                 contract_version="v1",
                 operation_key="operation-real-1",
+                dispatch_key="system-capability:test.effect:operation-real-1",
                 payload=_RepoChainEffectInput(value="A"),
                 precondition={"expected": 1},
                 fact_version="fact:1",

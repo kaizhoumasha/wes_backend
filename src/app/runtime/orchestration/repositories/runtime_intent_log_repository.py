@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from src.app.runtime.orchestration.effect_state_contract import transition_runtime_intent
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.system_capability_effect_claim import (
@@ -67,6 +68,10 @@ class RuntimeIntentLogRepository:
             if not isinstance(value, RuntimeIntent):
                 raise TypeError("plugin attempt intents must be RuntimeIntent")
             validated_intent = RuntimeIntent.model_validate(value.model_dump(mode="python"))
+            # SYSTEM_CAPABILITY 由 effect service 自己 claim 唯一权威 ledger；
+            # 此处若再预写会形成同一 effect 的第二条 RuntimeIntentLog。
+            if validated_intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY:
+                continue
             prepared.append(
                 self._build_prepared(
                     validated_intent,
@@ -91,8 +96,16 @@ class RuntimeIntentLogRepository:
     ) -> None:
         """在调用方事务中原子加入 1:1 RuntimeIntentLog/SystemOutbox。"""
 
+        if not intent_log.dispatch_key or not outbox.dispatch_key:
+            raise ValueError("RuntimeIntentLog/SystemOutbox 必须显式提供 dispatch_key")
         if intent_log.dispatch_key != outbox.dispatch_key:
             raise ValueError("RuntimeIntentLog/SystemOutbox dispatch_key 必须一致")
+        if intent_log.effect_status != RuntimeIntentStatus.PROPOSED:
+            raise ValueError("RuntimeIntentLog 必须以 PROPOSED 状态加入 EFFECT 双账本")
+        from src.app.sys.models.outbox import SystemOutboxStatus
+
+        if outbox.status != SystemOutboxStatus.NEW:
+            raise ValueError("SystemOutbox 必须以 NEW 状态加入 EFFECT 双账本")
         db.add_all((intent_log, outbox))
         await db.flush()
 
@@ -109,6 +122,9 @@ class RuntimeIntentLogRepository:
         insert_fn = sqlite_insert if dialect_name == "sqlite" else postgresql_insert
         if dialect_name not in {"sqlite", "postgresql"}:
             raise NotImplementedError(f"runtime intent effect claim 暂不支持数据库方言: {dialect_name}")
+        dispatch_key = values.get("dispatch_key")
+        if not isinstance(dispatch_key, str) or not dispatch_key:
+            raise ValueError("runtime intent effect claim 必须显式提供 dispatch_key")
         updated_at_ms = values["updated_at_ms"]
         insert_values = {
             "execution_session_id": values["execution_session_id"],
@@ -133,7 +149,7 @@ class RuntimeIntentLogRepository:
             "fact_version": values["fact_version"],
             "payload_hash": values["payload_hash"],
             "completion_mode": values["completion_mode"],
-            "dispatch_key": values.get("dispatch_key") or values["idempotency_key"],
+            "dispatch_key": dispatch_key,
             "effect_status": RuntimeIntentStatus.PROPOSED,
             "outcome_json": {},
             "outcome_history_json": [],
@@ -161,19 +177,20 @@ class RuntimeIntentLogRepository:
                 incoming_request_hash=values["request_hash"],
                 correlation_id=row.correlation_id,
             )
+        if row.dispatch_key != dispatch_key:
+            raise ValueError("RuntimeIntentLog.dispatch_key 持久化后不可变")
         if row.effect_status in {
             RuntimeIntentStatus.COMPLETED,
             RuntimeIntentStatus.REJECTED,
             RuntimeIntentStatus.TECHNICAL_FAILED,
         }:
             return SystemCapabilityClaimResult.MATCH
-        row.effect_status = RuntimeIntentStatus.PROPOSED
-        row.outcome_kind = None
-        row.outcome_code = None
-        row.outcome_json = {}
-        row.effect_updated_at_ms = insert_values["effect_updated_at_ms"]
-        await db.flush()
-        return SystemCapabilityClaimResult.NEW
+        # 非终态重复 claim 保留已有单调进展，调用方只能等待或读取既有证据。
+        return (
+            SystemCapabilityClaimResult.NEW
+            if row.effect_status == RuntimeIntentStatus.PROPOSED
+            else SystemCapabilityClaimResult.MATCH
+        )
 
     async def record_outcome(self, db: Any, *, claim: dict[str, Any], evidence: Any) -> None:
         row = await self._get_effect_for_update(
@@ -184,17 +201,18 @@ class RuntimeIntentLogRepository:
         )
         if row is None:
             raise RuntimeError("runtime intent provisional effect claim is missing")
-        serialized = evidence.model_dump(mode="json")
-        row.outcome_kind = evidence.outcome_kind
-        row.outcome_code = evidence.outcome_code
-        row.outcome_json = serialized
-        row.outcome_history_json = [*list(row.outcome_history_json or []), serialized]
-        row.effect_status = {
+        target_status = {
             "success": RuntimeIntentStatus.COMPLETED,
             "business_reject": RuntimeIntentStatus.REJECTED,
             "retryable_failure": RuntimeIntentStatus.TECHNICAL_FAILED,
             "contract_violation": RuntimeIntentStatus.TECHNICAL_FAILED,
         }[evidence.outcome_kind]
+        transition_runtime_intent(row, target_status)
+        serialized = evidence.model_dump(mode="json")
+        row.outcome_kind = evidence.outcome_kind
+        row.outcome_code = evidence.outcome_code
+        row.outcome_json = serialized
+        row.outcome_history_json = [*list(row.outcome_history_json or []), serialized]
         row.effect_updated_at_ms = evidence.occurred_at_ms
         await db.flush()
 
@@ -208,6 +226,16 @@ class RuntimeIntentLogRepository:
         if row is None or row.effect_status != RuntimeIntentStatus.COMPLETED or row.outcome_kind != "success":
             return None
         return dict(row.outcome_json)
+
+    async def get_claimed_intent(self, db: Any, *, claim: dict[str, Any]) -> RuntimeIntentLog | None:
+        """锁定并返回刚 claim 的权威 RuntimeIntentLog，供同事务双账本写入。"""
+
+        return await self._get_effect_for_update(
+            db,
+            provider_code=claim["provider_code"],
+            operation_kind=claim["operation_kind"],
+            idempotency_key=claim["idempotency_key"],
+        )
 
     async def list_redecision_evidence(
         self, db: Any, *, execution_session_id: int, execution_work_item_id: int
@@ -255,6 +283,8 @@ class RuntimeIntentLogRepository:
         correlation_id: str,
         snapshot: AttemptSnapshot,
     ) -> PreparedRuntimeIntentLog:
+        if not intent.dispatch_key:
+            raise ValueError("plugin intent ledger requires explicit dispatch_key")
         operation_key = intent.idempotency_key or f"inbox:{inbox_id}:intent:{ordinal}"
         raw_idempotency_key = f"plugin-attempt:{snapshot.binding_identity}:{operation_key}"
         idempotency_key = _bounded_identity(raw_idempotency_key, limit=160)
@@ -275,7 +305,7 @@ class RuntimeIntentLogRepository:
             target_action=_bounded_identity(intent.action or intent.kind.value, limit=120),
             idempotency_key=idempotency_key,
             request_hash=request_hash,
-            dispatch_key=_bounded_identity(intent.dispatch_key or idempotency_key, limit=240),
+            dispatch_key=_bounded_identity(intent.dispatch_key, limit=240),
             plugin_key=_definition_part(snapshot.definition_identity, 0),
             plugin_contract_version=_definition_part(snapshot.definition_identity, 1),
             capability_key=intent.capability_key,
