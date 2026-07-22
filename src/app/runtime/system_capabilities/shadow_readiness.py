@@ -28,6 +28,13 @@ class ShadowDifferenceClass(StrEnum):
     EVALUATOR_ERROR = "EVALUATOR_ERROR"
 
 
+class ShadowComparisonStatus(StrEnum):
+    """持久化 comparison 的完整性状态；冲突一旦出现不得恢复。"""
+
+    STORED = "STORED"
+    CONFLICT = "CONFLICT"
+
+
 class ReadinessVerdict(StrEnum):
     READY = "READY"
     NOT_READY = "NOT_READY"
@@ -42,7 +49,7 @@ class ReadinessApprovalDecision(StrEnum):
 class ShadowVersionSet(BaseModel):
     """任何成员变化都必须重置连续观察窗口。"""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     legacy_policy_version: str = Field(min_length=1, max_length=100)
     candidate_policy_version: str = Field(min_length=1, max_length=100)
@@ -59,7 +66,7 @@ class ShadowVersionSet(BaseModel):
 class QueryShadowExpected(BaseModel):
     """只允许作为 durable QUERY evidence 子对象持久化的 expected 权威。"""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     shadow_eligible: bool
     comparison_key: str = Field(pattern=_SHA256_PATTERN)
@@ -119,7 +126,7 @@ def build_query_shadow_expected(
 class ShadowDecision(BaseModel):
     """policy 的最小、脱敏、可比较投影。"""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     action: str = Field(min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=120)
@@ -129,7 +136,7 @@ class ShadowDecision(BaseModel):
 class QueryShadowEvaluationLimits(BaseModel):
     """主路径纯比较器的 canonical CPU/input 边界。"""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_decision_bytes: int = Field(default=2 * 1024, gt=0, le=64 * 1024)
     max_diff_entries: int = Field(default=3, gt=0, le=3)
@@ -139,9 +146,10 @@ class QueryShadowEvaluationLimits(BaseModel):
 class QueryShadowComparisonDraft(BaseModel):
     """可进入 task queue 的引用式 comparison；不含原请求/authority payload。"""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     expected: QueryShadowExpected
+    comparison_status: ShadowComparisonStatus
     legacy_decision: ShadowDecision | None
     candidate_decision: ShadowDecision | None
     difference_class: ShadowDifferenceClass
@@ -227,6 +235,7 @@ class BoundedQueryShadowEvaluator:
         if error_code is not None:
             return QueryShadowComparisonDraft(
                 expected=expected,
+                comparison_status=ShadowComparisonStatus.STORED,
                 legacy_decision=legacy_decision,
                 candidate_decision=None,
                 difference_class=ShadowDifferenceClass.EVALUATOR_ERROR,
@@ -240,6 +249,7 @@ class BoundedQueryShadowEvaluator:
         if len(diff) > self._limits.max_diff_entries:
             return QueryShadowComparisonDraft(
                 expected=expected,
+                comparison_status=ShadowComparisonStatus.STORED,
                 legacy_decision=legacy_decision,
                 candidate_decision=None,
                 difference_class=ShadowDifferenceClass.EVALUATOR_ERROR,
@@ -252,6 +262,7 @@ class BoundedQueryShadowEvaluator:
         difference_class = _difference_class(diff)
         return QueryShadowComparisonDraft(
             expected=expected,
+            comparison_status=ShadowComparisonStatus.STORED,
             legacy_decision=legacy_decision,
             candidate_decision=candidate_decision,
             difference_class=difference_class,
@@ -286,7 +297,7 @@ class BoundedQueryShadowEvaluator:
 
 
 class QueryShadowReadinessPolicy(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     min_window_days: int = Field(default=7, ge=0)
     min_eligible_samples: int = Field(default=1_000, gt=0)
@@ -297,7 +308,7 @@ class QueryShadowReadinessPolicy(BaseModel):
 class QueryShadowReadinessReport(BaseModel):
     """content-addressed 不可变报告；唯一审批依据是 report_id。"""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     report_id: str = Field(pattern=_SHA256_PATTERN)
     contract_version: str
@@ -326,7 +337,7 @@ class QueryShadowReadinessReport(BaseModel):
 class QueryShadowReadinessApproval(BaseModel):
     """审批记录仅引用 immutable report ID，不复制报告内容。"""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     report_id: str = Field(pattern=_SHA256_PATTERN)
     decision: ReadinessApprovalDecision
@@ -367,6 +378,7 @@ def build_query_shadow_readiness_report(
     current_gap = 0
     current_evaluator_failure = False
     current_duplicate = False
+    current_conflict = False
     reset_reasons: list[str] = []
     for expected in filtered:
         if not expected.shadow_eligible:
@@ -382,6 +394,7 @@ def build_query_shadow_readiness_report(
             current_gap = 0
             current_evaluator_failure = False
             current_duplicate = True
+            current_conflict = False
             continue
         comparison = stored.get(expected.comparison_key)
         if comparison is None:
@@ -390,6 +403,7 @@ def build_query_shadow_readiness_report(
             current_gap = 1
             current_evaluator_failure = False
             current_duplicate = False
+            current_conflict = False
             continue
         if comparison.expected != expected:
             _append_once(reset_reasons, "EXPECTED_STORED_MISMATCH")
@@ -397,6 +411,15 @@ def build_query_shadow_readiness_report(
             current_gap = 1
             current_evaluator_failure = False
             current_duplicate = False
+            current_conflict = False
+            continue
+        if comparison.comparison_status is ShadowComparisonStatus.CONFLICT:
+            _append_once(reset_reasons, "COMPARISON_CONFLICT")
+            segment.clear()
+            current_gap = 0
+            current_evaluator_failure = False
+            current_duplicate = False
+            current_conflict = True
             continue
         if comparison.difference_class is ShadowDifferenceClass.EVALUATOR_ERROR:
             _append_once(reset_reasons, "EVALUATOR_ERROR")
@@ -404,11 +427,13 @@ def build_query_shadow_readiness_report(
             current_gap = 0
             current_evaluator_failure = True
             current_duplicate = False
+            current_conflict = False
             continue
         if not segment:
             current_gap = 0
             current_evaluator_failure = False
             current_duplicate = False
+            current_conflict = False
         segment.append((expected, comparison))
 
     legacy_p99 = _p99([item.legacy_policy_duration_ns for _, item in segment])
@@ -431,7 +456,7 @@ def build_query_shadow_readiness_report(
     for _, item in segment:
         differences[item.difference_class.value] += 1
     unexplained = sum(count for name, count in differences.items() if name != ShadowDifferenceClass.MATCH.value)
-    if current_gap or current_evaluator_failure or current_duplicate:
+    if current_gap or current_evaluator_failure or current_duplicate or current_conflict:
         verdict = ReadinessVerdict.INVALID
     elif (
         len(segment) >= active_policy.min_eligible_samples
@@ -558,6 +583,7 @@ __all__ = [
     "ReadinessApprovalDecision",
     "ReadinessGateError",
     "ReadinessVerdict",
+    "ShadowComparisonStatus",
     "ShadowDecision",
     "ShadowDifferenceClass",
     "ShadowVersionSet",

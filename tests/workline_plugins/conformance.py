@@ -207,7 +207,7 @@ class PluginConformanceSuite:
         assert isinstance(result, PluginDecision)
         limits = PluginWriteSetLimits()
         accepted = bound_attempt_write_set(
-            AttemptWriteSet(evidence=(), next_state=result.next_state, intents=result.intents),
+            AttemptWriteSet(evidence=(), next_state=result.next_state, intents=result.intents, shadow_comparisons=()),
             limits=limits,
             fallback_state={},
         )
@@ -222,14 +222,14 @@ class PluginConformanceSuite:
             )
         oversized_state = {"value": "界" * (limits.max_next_state_bytes + 1)}
         state_rejected = bound_attempt_write_set(
-            AttemptWriteSet(evidence=(), next_state=oversized_state, intents=()),
+            AttemptWriteSet(evidence=(), next_state=oversized_state, intents=(), shadow_comparisons=()),
             limits=limits,
             fallback_state={},
         )
         assert state_rejected.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
         oversized_evidence = {"value": "界" * (limits.max_write_set_bytes + 1)}
         evidence_rejected = bound_attempt_write_set(
-            AttemptWriteSet(evidence=(oversized_evidence,), next_state={}, intents=()),
+            AttemptWriteSet(evidence=(oversized_evidence,), next_state={}, intents=(), shadow_comparisons=()),
             limits=limits,
             fallback_state={},
         )

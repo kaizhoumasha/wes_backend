@@ -66,6 +66,16 @@ def test_migration_declares_partitioned_reference_only_store_and_immutable_repor
     assert not any(token in text for token in ("request_payload", "response_payload", "authority_snapshot"))
 
 
+def test_migration_precreates_execution_month_and_future_three_months_dynamically() -> None:
+    root = Path(__file__).resolve().parents[2]
+    migration = next((root / "migrations/versions").glob("*query_shadow_readiness*.py"))
+    text = migration.read_text(encoding="utf-8")
+
+    assert "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'" in text
+    assert "FOR month_offset IN 0..3 LOOP" in text
+    assert not any(f"query_shadow_comparisons_2026_{month:02d}" in text for month in range(1, 13))
+
+
 def test_comparison_model_has_no_full_payload_copy_columns() -> None:
     from src.app.runtime.system_capabilities.shadow_models import QueryShadowComparison
 

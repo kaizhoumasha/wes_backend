@@ -200,6 +200,7 @@ def test_domain_write_then_exception_rolls_back_entire_plugin_attempt(monkeypatc
                         next_state={"phase": "READY"},
                         intents=(intent,),
                         outcome_code="HOLD",
+                        shadow_comparisons=(),
                     ),
                     workline=ctx["workline"],
                 )

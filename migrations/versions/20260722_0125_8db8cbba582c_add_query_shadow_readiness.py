@@ -28,6 +28,7 @@ def upgrade() -> None:
             CREATE TABLE wes_runtime.query_shadow_comparisons (
                 observed_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 comparison_key VARCHAR(64) NOT NULL,
+                comparison_status VARCHAR(20) NOT NULL,
                 evidence_ref VARCHAR(240) NOT NULL,
                 replay_ref VARCHAR(240),
                 trace_id VARCHAR(120),
@@ -55,6 +56,7 @@ def upgrade() -> None:
                 candidate_policy_duration_ns BIGINT NOT NULL,
                 query_end_to_end_duration_ms DOUBLE PRECISION NOT NULL,
                 PRIMARY KEY (observed_at, comparison_key),
+                CHECK (comparison_status IN ('STORED', 'CONFLICT')),
                 CHECK (legacy_policy_duration_ns >= 0),
                 CHECK (candidate_policy_duration_ns >= 0),
                 CHECK (query_end_to_end_duration_ms >= 0)
@@ -62,19 +64,37 @@ def upgrade() -> None:
             """
         )
     )
-    for name, starts_at, ends_at in (
-        ("query_shadow_comparisons_2026_07", "2026-07-01", "2026-08-01"),
-        ("query_shadow_comparisons_2026_08", "2026-08-01", "2026-09-01"),
-        ("query_shadow_comparisons_2026_09", "2026-09-01", "2026-10-01"),
-        ("query_shadow_comparisons_2026_10", "2026-10-01", "2026-11-01"),
-    ):
-        op.execute(
-            sa.text(
-                f"CREATE TABLE wes_runtime.{name} "
-                "PARTITION OF wes_runtime.query_shadow_comparisons "
-                f"FOR VALUES FROM ('{starts_at} 00:00:00+00') TO ('{ends_at} 00:00:00+00')"
-            )
+    op.execute(
+        sa.text(
+            """
+            DO $$
+            DECLARE
+                month_offset INTEGER;
+                partition_start DATE;
+                partition_end DATE;
+                partition_name TEXT;
+            BEGIN
+                FOR month_offset IN 0..3 LOOP
+                    partition_start := (
+                        date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+                        + make_interval(months => month_offset)
+                    )::date;
+                    partition_end := (partition_start + INTERVAL '1 month')::date;
+                    partition_name := 'query_shadow_comparisons_' || to_char(partition_start, 'YYYY_MM');
+                    EXECUTE format(
+                        'CREATE TABLE wes_runtime.%I '
+                        'PARTITION OF wes_runtime.query_shadow_comparisons '
+                        'FOR VALUES FROM (%L) TO (%L)',
+                        partition_name,
+                        partition_start::text || ' 00:00:00+00',
+                        partition_end::text || ' 00:00:00+00'
+                    );
+                END LOOP;
+            END
+            $$
+            """
         )
+    )
     op.create_index(
         "ix_query_shadow_comparisons_profile_observed",
         "query_shadow_comparisons",

@@ -102,7 +102,7 @@ def test_stale_plugin_state_version_cannot_write_evidence_state_intents_or_termi
                 session_id=seeded.session_id,
                 workline_id=seeded.workline_id,
                 trace_id=seeded.trace_id,
-                write_set=AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=()),
+                write_set=AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), shadow_comparisons=()),
             )
             assert disposition is WriteDisposition.SAFE_RETRY
             inbox = await writeback_db.get(RuntimeInbox, seeded.inbox_id)
@@ -146,6 +146,7 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             next_state={"step": 2},
             intents=(intent,),
             outcome_code="ROUTE_A",
+            shadow_comparisons=(),
         )
         assert isinstance(replay_write_set.intents[0], RuntimeIntent)
         async with session_factory() as db:
@@ -219,6 +220,7 @@ def test_intent_ledger_failure_rolls_back_decision_state_ledger_and_terminal() -
                         next_state={"step": 2},
                         intents=(intent,),
                         outcome_code="ROUTE_A",
+                        shadow_comparisons=(),
                     ),
                 )
 
@@ -373,6 +375,7 @@ def test_plugin_writeback_and_reconciliation_session_first_writer_do_not_deadloc
                         next_state={"step": 2},
                         intents=(),
                         outcome_code="ROUTE_A",
+                        shadow_comparisons=(),
                     ),
                 )
                 await db.commit()

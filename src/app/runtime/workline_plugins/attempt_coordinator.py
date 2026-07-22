@@ -47,12 +47,12 @@ class AttemptWriteSet:
     evidence: tuple[Any, ...]
     next_state: Any
     intents: tuple[Any, ...]
+    shadow_comparisons: tuple[Any, ...]
     outcome_code: str = "UNSPECIFIED"
     hold_reason: str | None = None
     recorded_attempt_anchor: Any | None = None
     recorded_decision: dict[str, Any] | None = None
     preserve_plugin_state: bool = False
-    shadow_comparisons: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +249,7 @@ class UnavailablePluginAttemptRunner:
             evidence=(),
             next_state=context.plugin_state,
             intents=(),
+            shadow_comparisons=(),
             outcome_code="HOLD",
             hold_reason="PLUGIN_ATTEMPT_RUNNER_UNAVAILABLE",
         )

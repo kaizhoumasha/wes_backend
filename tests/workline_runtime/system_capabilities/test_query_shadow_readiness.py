@@ -43,6 +43,7 @@ def _expected(
 def _draft(expected, *, difference_class: str = "MATCH", policy_ns: int = 1_000, query_ms: float = 10.0):
     from src.app.runtime.system_capabilities.shadow_readiness import (
         QueryShadowComparisonDraft,
+        ShadowComparisonStatus,
         ShadowDecision,
         ShadowDifferenceClass,
     )
@@ -57,6 +58,7 @@ def _draft(expected, *, difference_class: str = "MATCH", policy_ns: int = 1_000,
         evaluator_error_code = "SHADOW_POLICY_EVALUATION_FAILED"
     return QueryShadowComparisonDraft(
         expected=expected,
+        comparison_status=ShadowComparisonStatus.STORED,
         legacy_decision=legacy,
         candidate_decision=candidate,
         difference_class=ShadowDifferenceClass(difference_class),
@@ -327,3 +329,27 @@ def test_duplicate_stored_comparison_invalidates_current_window() -> None:
 
     assert report.verdict is ReadinessVerdict.INVALID
     assert "DUPLICATE_COMPARISON" in report.reset_reasons
+
+
+def test_durably_marked_comparison_conflict_invalidates_current_window() -> None:
+    from src.app.runtime.system_capabilities.shadow_readiness import (
+        QueryShadowReadinessPolicy,
+        ReadinessVerdict,
+        ShadowComparisonStatus,
+        build_query_shadow_readiness_report,
+    )
+
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    expected = _expected("f" * 64, start)
+    conflict = _draft(expected).model_copy(update={"comparison_status": ShadowComparisonStatus.CONFLICT})
+    report = build_query_shadow_readiness_report(
+        provider_profile_identity=expected.provider_profile_identity,
+        operation_identity=expected.operation_identity,
+        expected_samples=[expected],
+        comparisons=[conflict],
+        generated_at=start + timedelta(days=1),
+        policy=QueryShadowReadinessPolicy(min_window_days=0, min_eligible_samples=1),
+    )
+
+    assert report.verdict is ReadinessVerdict.INVALID
+    assert "COMPARISON_CONFLICT" in report.reset_reasons

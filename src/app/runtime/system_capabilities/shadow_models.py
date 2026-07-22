@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Any, ClassVar
 
-from sqlalchemy import Column, DateTime, Index
+from sqlalchemy import CheckConstraint, Column, DateTime, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -18,6 +18,10 @@ class QueryShadowComparison(BaseMixin, table=True):
 
     __tablename__: ClassVar[str] = "query_shadow_comparisons"  # pyright: ignore[reportIncompatibleVariableOverride]
     __table_args__ = (
+        CheckConstraint(
+            "comparison_status IN ('STORED', 'CONFLICT')",
+            name="ck_query_shadow_comparisons_status",
+        ),
         Index(
             "ix_query_shadow_comparisons_profile_observed",
             "provider_profile_identity",
@@ -36,6 +40,7 @@ class QueryShadowComparison(BaseMixin, table=True):
 
     observed_at: datetime = Field(primary_key=True, sa_type=DateTime(timezone=True))
     comparison_key: str = Field(primary_key=True, min_length=64, max_length=64)
+    comparison_status: str = Field(min_length=1, max_length=20)
     evidence_ref: str = Field(min_length=1, max_length=240)
     replay_ref: str | None = Field(default=None, max_length=240)
     trace_id: str | None = Field(default=None, max_length=120)

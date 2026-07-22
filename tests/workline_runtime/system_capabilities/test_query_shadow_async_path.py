@@ -10,6 +10,7 @@ def _draft():
     from src.app.runtime.system_capabilities.shadow_readiness import (
         QueryShadowComparisonDraft,
         QueryShadowExpected,
+        ShadowComparisonStatus,
         ShadowDecision,
         ShadowDifferenceClass,
         ShadowVersionSet,
@@ -36,6 +37,7 @@ def _draft():
     decision = ShadowDecision(action="ADMIT", reason="WMS_ADMITTED", error_class="NONE")
     return QueryShadowComparisonDraft(
         expected=expected,
+        comparison_status=ShadowComparisonStatus.STORED,
         legacy_decision=decision,
         candidate_decision=decision,
         difference_class=ShadowDifferenceClass.MATCH,
@@ -62,6 +64,25 @@ def _evidence_for_draft(draft):
         summary={"outcome": {"kind": "success"}},
         shadow_expected=draft.expected,
     )
+
+
+def test_attempt_write_set_requires_explicit_shadow_comparison_contract() -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
+
+    with pytest.raises(TypeError, match="shadow_comparisons"):
+        AttemptWriteSet(evidence=(), next_state={}, intents=())  # type: ignore[call-arg]
+
+
+def test_all_nested_shadow_task_models_forbid_extra_fields() -> None:
+    from src.app.runtime.system_capabilities.shadow_readiness import (
+        QueryShadowComparisonDraft,
+        QueryShadowExpected,
+        ShadowDecision,
+        ShadowVersionSet,
+    )
+
+    for model in (ShadowVersionSet, QueryShadowExpected, ShadowDecision, QueryShadowComparisonDraft):
+        assert model.model_config.get("extra") == "forbid"
 
 
 @pytest.mark.asyncio
@@ -339,6 +360,51 @@ async def test_comparison_consumer_rejects_missing_month_partition_before_insert
     tampered = mismatch.task_payload()
     with pytest.raises(ValueError, match="classification"):
         await QueryShadowComparisonRepository().append_from_task(db, payload=tampered)
+
+
+@pytest.mark.asyncio
+async def test_comparison_consumer_rejects_nested_task_payload_smuggling_before_database_access() -> None:
+    from src.app.runtime.system_capabilities.shadow_repository import QueryShadowComparisonRepository
+
+    class Db:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("nested payload must be rejected before partition lookup")
+
+    base = _draft().task_payload()
+    payloads = (
+        {**base, "versions": {**base["versions"], "authority_snapshot": {"secret": True}}},
+        {**base, "legacy_decision": {**base["legacy_decision"], "request_payload": {"secret": True}}},
+        {**base, "candidate_decision": {**base["candidate_decision"], "response_payload": {"secret": True}}},
+    )
+
+    for payload in payloads:
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            await QueryShadowComparisonRepository().append_from_task(Db(), payload=payload)
+
+
+@pytest.mark.asyncio
+async def test_comparison_store_uses_atomic_conflict_marker_instead_of_silent_do_nothing() -> None:
+    from src.app.runtime.system_capabilities.shadow_repository import QueryShadowComparisonRepository
+
+    statements: list[object] = []
+
+    class Result:
+        def scalar_one_or_none(self) -> str:
+            return "wes_runtime.query_shadow_comparisons_2026_07"
+
+    class Db:
+        async def execute(self, statement: object, *_args: object, **_kwargs: object) -> Result:
+            statements.append(statement)
+            return Result()
+
+    await QueryShadowComparisonRepository().append_from_task(Db(), payload=_draft().task_payload())
+
+    insert_sql = str(statements[-1])
+    assert "DO NOTHING" not in insert_sql
+    assert "DO UPDATE SET comparison_status" in insert_sql
+    assert "WHERE NOT" in insert_sql
+    for field in ("input_hash", "output_hash", "candidate_action", "difference_class", "divergence_diff"):
+        assert f"{field} IS NOT DISTINCT FROM excluded.{field}" in insert_sql
 
 
 @pytest.mark.asyncio

@@ -218,6 +218,7 @@ async def test_generated_runner_dispatches_once_and_records_query_evidence() -> 
         source_version="v1",
         admission_snapshot={"profile": "test"},
         summary={"outcome": {"type": "Success"}},
+        shadow_expected=None,
     )
 
     class Gateway:
@@ -1143,6 +1144,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
         source_version="v1",
         admission_snapshot={"profile": "runtime"},
         summary={"outcome": {"type": "Success"}},
+        shadow_expected=None,
     )
 
     class Gateway:

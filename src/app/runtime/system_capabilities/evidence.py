@@ -16,7 +16,7 @@ from src.app.runtime.system_capabilities.shadow_readiness import (  # noqa: TC00
 class QueryEvidence(BaseModel):
     """写入既有 DECISION_MADE timeline payload 的脱敏查询证据。"""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     capability_key: str = Field(min_length=1)
     contract_version: str = Field(min_length=1)
@@ -28,7 +28,7 @@ class QueryEvidence(BaseModel):
     source_version: str = Field(min_length=1)
     admission_snapshot: dict[str, JsonValue]
     summary: dict[str, JsonValue]
-    shadow_expected: QueryShadowExpected | None = None
+    shadow_expected: QueryShadowExpected | None
 
     @field_validator("evidence_at")
     @classmethod
@@ -55,7 +55,7 @@ class QueryEvidence(BaseModel):
     def payload(self) -> dict[str, Any]:
         """返回可直接持久化的 canonical timeline payload。"""
 
-        return self.model_dump(mode="json", exclude_none=True)
+        return self.model_dump(mode="json")
 
     def to_timeline_record(self) -> dict[str, Any]:
         """映射到既有 DECISION_MADE，而不新增 timeline action 类型。"""

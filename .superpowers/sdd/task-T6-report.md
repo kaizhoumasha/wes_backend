@@ -87,3 +87,49 @@ rough-sorter、RuntimeIntent 或 SystemOutbox。
   `HeavyHarnessError: missing_url` 拒绝，因此这 1 项需要在显式安全的本地 PostgreSQL test/admin URL 下补跑。
 - offline Alembic 全链 SQL 生成被既有早期 migration 的 runtime inspector 阻塞；本次 revision 本身已通过
   Python 编译、文本合同测试和 Alembic head 校验，真实 DDL 仍以上述 PostgreSQL heavy test 为最终补验项。
+
+## 评审修复追加（2026-07-22）
+
+### 零兼容合同收口
+
+- `QueryEvidence.shadow_expected` 与 `AttemptWriteSet.shadow_comparisons` 均改为无默认值的必填字段；所有生产与
+  测试构造点显式传入实际值或空值，不保留 alias、兼容默认值或 `exclude_none` 分支。
+- evidence payload 会稳定序列化 `shadow_expected: null`，缺字段输入则直接由 Pydantic 拒绝。
+- shadow/readiness 的所有嵌套任务模型统一使用 `extra="forbid"`，版本、决策、限制、expected、comparison 与
+  readiness 模型均拒绝未知字段，consumer 在数据库访问前阻断字段走私。
+
+### 冲突语义与动态分区
+
+- comparison 新增持久化状态 `STORED` / `CONFLICT`。同一 `(observed_at, comparison_key)` 只有所有持久化语义
+  字段完全一致时才视为幂等重复；decision、diff、hash、版本、耗时或 reference 任一不同，都会通过单条条件
+  upsert 原子地、不可逆地标记为 `CONFLICT`。
+- readiness 遇到 conflict 会产生 `COMPARISON_CONFLICT`，清空此前连续窗口并返回 `INVALID`；并发与重复输入
+  的单元/真实 PostgreSQL 用例覆盖了完全一致幂等、决策差异、diff 差异和 hash 差异。
+- Alembic DDL 在执行时以数据库 UTC 当前月动态预建 current+3 分区，不再硬编码 2026 年月份；仍不创建 default
+  partition，Beat maintainer 继续负责后续滚动预建与保留期清理。
+- 本次修复仍保持 reference-only payload，没有引入 T7/T8 范围或生产查询切换能力。
+
+### 评审修复 TDD 与影响分析
+
+- 先新增 7 项针对性断言并确认全部按预期 RED：两个必填字段、嵌套 extra 禁止、任务走私、原子冲突、冲突
+  readiness 失效和动态分区；完成最小实现后同一组合 7 项 GREEN。
+- GitNexus 复核：`AttemptWriteSet` 为 HIGH（22 个直接、71 个总影响符号），`bound_attempt_write_set` 为
+  CRITICAL（13 个直接、22 个总影响符号、2 条 `commit_plugin_attempt` flow）；`QueryEvidence` 与主要
+  shadow/readiness 模型为 MEDIUM。风险扩散已由 runtime orchestration、workline plugin、system-capability
+  contract 和三阶段 processor 回归覆盖。
+
+### 评审修复验证
+
+- 定向 contract/runtime/database/architecture：`36 passed`。
+- workline extensions、runtime orchestration、plugin、system-capability contract 与类型边界：`957 passed`，
+  仅 5 条既有 deprecation warning。
+- 超长文件收口后的三阶段 processor：`114 passed`；测试拓扑：`6 passed`；默认收集：`3578 tests collected`。
+- Alembic head 为 `8db8cbba582c`；revision 与新增生产模块 `py_compile` 通过；全仓 `ruff format --check .`、
+  `ruff check .`、`git diff --check` 均通过。
+- `./scripts/git-quality-gate.sh --profile quality` 完整通过，包括 Bandit 0 issue、348 runtime contracts、
+  process naming、import-linter、architecture guardrails 与 test topology。
+- 提交前 GitNexus CLI `detect-changes --scope staged` 检出 25 个文件、124 个符号、0 条受影响 execution flow，
+  综合风险为 LOW；MCP 因本地 LadybugDB 存储版本不匹配不可用，检测使用本工作树刚刷新的同一索引完成。
+- 真实 PostgreSQL 评审用例共 2 项，当前环境因未配置 `INTEGRATION_DATABASE_URL` 均在任何建库/DDL 前以
+  `HeavyHarnessError: missing_url` 停止；因此动态分区、并发 upsert 与 trigger 的真实 PostgreSQL 行为仍未验证，
+  不能以单元测试或 SQL 文本合同替代该结论。

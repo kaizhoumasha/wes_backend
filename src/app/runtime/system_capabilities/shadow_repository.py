@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, not_, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
@@ -19,6 +19,7 @@ from src.app.runtime.system_capabilities.shadow_readiness import (
     QueryShadowExpected,
     QueryShadowReadinessApproval,
     QueryShadowReadinessReport,
+    ShadowComparisonStatus,
     ShadowDecision,
     ShadowDifferenceClass,
     ShadowVersionSet,
@@ -50,10 +51,20 @@ class QueryShadowComparisonRepository:
             raise QueryShadowPartitionMissing(f"QUERY shadow target partition missing: {partition_name}")
         row = _comparison_row(draft, trace_id=trace_id)
         values = {column.name: getattr(row, column.name) for column in QueryShadowComparison.__table__.columns}
-        statement = (
-            postgresql_insert(QueryShadowComparison)
-            .values(**values)
-            .on_conflict_do_nothing(index_elements=["observed_at", "comparison_key"])
+        insert_statement = postgresql_insert(QueryShadowComparison).values(**values)
+        exact_duplicate = and_(
+            *(
+                QueryShadowComparison.__table__.c[column_name].is_not_distinct_from(
+                    insert_statement.excluded[column_name]
+                )
+                for column_name in values
+                if column_name != "comparison_status"
+            )
+        )
+        statement = insert_statement.on_conflict_do_update(
+            index_elements=["observed_at", "comparison_key"],
+            set_={"comparison_status": ShadowComparisonStatus.CONFLICT.value},
+            where=not_(exact_duplicate),
         )
         await db.execute(statement)
         return row
@@ -179,6 +190,7 @@ def _draft_from_task(payload: dict[str, Any]) -> QueryShadowComparisonDraft:
     candidate = payload.get("candidate_decision")
     return QueryShadowComparisonDraft(
         expected=expected,
+        comparison_status=ShadowComparisonStatus.STORED,
         legacy_decision=ShadowDecision.model_validate(legacy) if isinstance(legacy, dict) else None,
         candidate_decision=ShadowDecision.model_validate(candidate) if isinstance(candidate, dict) else None,
         difference_class=payload.get("difference_class"),
@@ -196,6 +208,7 @@ def _comparison_row(draft: QueryShadowComparisonDraft, *, trace_id: str | None) 
     return QueryShadowComparison(
         observed_at=_for_db(expected.observed_at),
         comparison_key=expected.comparison_key,
+        comparison_status=ShadowComparisonStatus.STORED.value,
         evidence_ref=expected.evidence_ref,
         trace_id=trace_id,
         provider_profile_identity=expected.provider_profile_identity,
@@ -257,6 +270,7 @@ def _draft_from_row(row: QueryShadowComparison) -> QueryShadowComparisonDraft:
     )
     return QueryShadowComparisonDraft(
         expected=expected,
+        comparison_status=ShadowComparisonStatus(row.comparison_status),
         legacy_decision=legacy,
         candidate_decision=candidate,
         difference_class=ShadowDifferenceClass(row.difference_class),
