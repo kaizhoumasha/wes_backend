@@ -63,7 +63,7 @@ SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS = frozenset({"DEVICE_BUSY", "DEVICE_STATUS_P
 
 
 def is_system_outbox_resource_wait(outbox: Any) -> bool:
-    """仅把带完整受控元数据的设备等待识别为 BLOCKED_RESOURCE。"""
+    """仅把带完整受控元数据的设备等待识别为受控资源等待投影。"""
 
     status = getattr(outbox, "status", None)
     dispatch_type = getattr(outbox, "dispatch_type", None)

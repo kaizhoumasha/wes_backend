@@ -150,8 +150,13 @@ class SystemCapabilityEffectService:
                 flush_result = flush()
                 if isawaitable(flush_result):
                     await flush_result
-        evidence = self._build_evidence(intent=intent, prepared=prepared, outcome=outcome)
-        await self._intent_service.record_outcome(ctx, prepared=prepared, evidence=evidence)
+        # OUTBOX_ASYNC 只证明同事务的 RuntimeIntentLog/SystemOutbox 已 durable accepted；
+        # 不能把入队、transport SENT 或本次可重试错误写成 capability 终态。
+        # 终态只由后续 transport/callback/reconciliation evidence 的 reducer 推进。
+        evidence = None
+        if definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL:
+            evidence = self._build_evidence(intent=intent, prepared=prepared, outcome=outcome)
+            await self._intent_service.record_outcome(ctx, prepared=prepared, evidence=evidence)
         return SystemCapabilityEffectResult(
             outcome=outcome,
             completion_mode=definition.completion_mode,

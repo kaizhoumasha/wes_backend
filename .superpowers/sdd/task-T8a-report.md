@@ -90,3 +90,19 @@ bytes、T8c typed sender、T8d reducer 生命周期或 T8e lease/fencing。
 
 - production device-command EFFECT 的双账本 1:1 接线已属于本次 review 修复，不再留待后续任务；typed sender、
   reducer lifecycle、lease/fencing 仍保持在 T8a 范围之外。
+
+## P1 异步终态修复（2026-07-22）
+
+- `OUTBOX_ASYNC` handler 的同步返回现在只表示 `RuntimeIntentLog + SystemOutbox(NEW)` 已同事务 durable accepted；
+  不再调用 `record_outcome`，因此不会把入队成功写为 `COMPLETED`，也不会把当次可重试错误写为
+  `TECHNICAL_FAILED`。RuntimeIntentLog 保持 `PROPOSED`，仅后续 transport/callback/reconciliation evidence 可推进语义终态。
+- `SystemCapabilityEffectResult.evidence` 在 `OUTBOX_ASYNC` 路径保持为空，避免把同步 Success/RetryableFailure 当成可持久化
+  完成 evidence；`LOCAL_TRANSACTIONAL` 维持原有 outcome 写入行为。
+- `outbox.py` 的旧 `BLOCKED_RESOURCE` 注释已改为“受控资源等待投影”，与当前无该状态枚举的合同一致。
+
+### P1 TDD / 验证
+
+- RED：新增 OUTBOX_ASYNC 成功与可重试失败两例，均断言无 outcome 写入、无 result evidence、intent 仍为 `PROPOSED`；
+  修复前两例均因无条件 `record_outcome` 失败。
+- GREEN：system capability effect service `48 passed`；其关联 RuntimeIntentLog/effect-state/outbox repository 回归 `16 passed`。
+- 扩大相关域回归 `1416 passed`；`./scripts/git-quality-gate.sh --profile quality` 通过。

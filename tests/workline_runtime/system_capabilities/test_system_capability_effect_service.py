@@ -114,7 +114,14 @@ class _EffectRepository:
         return self.result
 
     async def record_outcome(self, _db: object, **kwargs: Any) -> None:
-        self.outcomes.append(kwargs["evidence"])
+        evidence = kwargs["evidence"]
+        self.outcomes.append(evidence)
+        self.intent_log.effect_status = {
+            "success": RuntimeIntentStatus.COMPLETED,
+            "business_reject": RuntimeIntentStatus.REJECTED,
+            "retryable_failure": RuntimeIntentStatus.TECHNICAL_FAILED,
+            "contract_violation": RuntimeIntentStatus.TECHNICAL_FAILED,
+        }[evidence.outcome_kind]
 
     async def get_claimed_intent(self, _db: object, *, claim: dict[str, Any]) -> object:
         self.intent_log.dispatch_key = claim["dispatch_key"]
@@ -296,13 +303,31 @@ def test_effect_intent_rejects_incomplete_locked_plugin_pin(field_name: str) -> 
 
 
 @pytest.mark.asyncio
-async def test_outbox_async_success_means_durably_accepted_not_remote_completed() -> None:
+async def test_outbox_async_success_keeps_intent_proposed_until_followup_evidence() -> None:
     definition = _definition(completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
-    result = await _service(definition, _EffectRepository(ClaimResult.NEW)).apply(_ctx(), _intent())
+    repository = _EffectRepository(ClaimResult.NEW)
+    result = await _service(definition, repository).apply(_ctx(), _intent())
 
     assert isinstance(result.outcome, Success)
     assert result.durably_accepted is True
     assert result.remote_completed is False
+    assert result.evidence is None
+    assert repository.outcomes == []
+    assert repository.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+
+
+@pytest.mark.asyncio
+async def test_outbox_async_retryable_failure_does_not_finalize_intent() -> None:
+    definition = _definition(_FailingHandler, completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _EffectRepository(ClaimResult.NEW)
+
+    result = await _service(definition, repository).apply(_ctx(), _intent())
+
+    assert isinstance(result.outcome, RetryableFailure)
+    assert result.retryable is True
+    assert result.evidence is None
+    assert repository.outcomes == []
+    assert repository.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
 
 
 @pytest.mark.asyncio
