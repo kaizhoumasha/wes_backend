@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.app.sys.canonical_dispatch import CanonicalPayload, EndpointDefinition, ExternalHttpDispatchRequest
 from src.app.sys.services.outbox_delivery import dispatch_external_http, dispatch_internal_signal
 
 
@@ -25,15 +26,27 @@ class _FakeTaskQueueGateway:
 
 @pytest.mark.asyncio
 async def test_dispatch_external_http_success() -> None:
-    outbox = type("Outbox", (), {"target_code": "TEST_ENDPOINT", "payload_json": {"k": "v"}})()
+    canonical = CanonicalPayload.from_projection({"k": "v"})
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "target_code": "TEST_ENDPOINT",
+            "canonical_payload_bytes": canonical.body,
+            "payload_hash": canonical.sha256,
+        },
+    )()
     registry = MagicMock()
-    registry.resolve.return_value = type("Endpoint", (), {"url": "http://test/api"})()
+    registry.resolve.return_value = EndpointDefinition(code="TEST_ENDPOINT", url="http://test/api")
 
     sender = AsyncMock(return_value=True)
 
     result = await dispatch_external_http(outbox, registry, sender)
     assert result is True
-    sender.assert_awaited_once_with("http://test/api", {"k": "v"})
+    request = sender.await_args.args[0]
+    assert isinstance(request, ExternalHttpDispatchRequest)
+    assert request.endpoint.url == "http://test/api"
+    assert request.body == canonical.body
 
 
 @pytest.mark.asyncio
@@ -50,15 +63,26 @@ async def test_dispatch_external_http_registry_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_external_http_sender_failure() -> None:
-    outbox = type("Outbox", (), {"target_code": "TEST_ENDPOINT", "payload_json": {"k": "v"}})()
+    canonical = CanonicalPayload.from_projection({"k": "v"})
+    outbox = type(
+        "Outbox",
+        (),
+        {
+            "target_code": "TEST_ENDPOINT",
+            "canonical_payload_bytes": canonical.body,
+            "payload_hash": canonical.sha256,
+        },
+    )()
     registry = MagicMock()
-    registry.resolve.return_value = type("Endpoint", (), {"url": "http://test/api"})()
+    registry.resolve.return_value = EndpointDefinition(code="TEST_ENDPOINT", url="http://test/api")
 
     sender = AsyncMock(return_value=False)
 
     result = await dispatch_external_http(outbox, registry, sender)
     assert result is False
-    sender.assert_awaited_once_with("http://test/api", {"k": "v"})
+    request = sender.await_args.args[0]
+    assert isinstance(request, ExternalHttpDispatchRequest)
+    assert request.body == canonical.body
 
 
 @pytest.mark.asyncio

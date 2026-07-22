@@ -6,13 +6,14 @@ from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from typing import Any, TypedDict
 
+from src.app.sys.canonical_dispatch import ExternalHttpDispatchRequest
 from src.app.sys.models import SystemOutboxDispatchType
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
 from src.core.logger import logger
 from src.utils.value_normalization import enum_value
 
-ExternalHttpSender = Callable[[str, dict[str, Any]], Awaitable[bool]]
+ExternalHttpSender = Callable[[ExternalHttpDispatchRequest], Awaitable[bool]]
 DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
 WORKLINE_OPERATION_DOMAIN = "WORKLINE"
 RACK_OPERATION_DOMAIN = "RACK"
@@ -154,12 +155,19 @@ class SystemOutboxEngine:
         return False
 
 
-async def _send_external_http(url: str, payload_json: dict[str, Any]) -> bool:
+async def _send_external_http(request: ExternalHttpDispatchRequest) -> bool:
     import httpx
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, json=payload_json)
+            response = await client.post(
+                request.endpoint.url,
+                content=request.body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-WES-Content-SHA256": request.payload_hash,
+                },
+            )
             return 200 <= response.status_code < 300
     except Exception as exc:
         logger.error(f"SystemOutbox 外部 HTTP 派发失败: {exc}")

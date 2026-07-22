@@ -147,6 +147,8 @@ class WorklineStationLeaseService:
             target_type=envelope.target_type,
             target_code=envelope.target_code,
             payload_json=payload_json,
+            canonical_payload_bytes=envelope.canonical_payload_bytes,
+            payload_hash=envelope.payload_hash,
             trace_id=envelope.trace_id,
         )
         db.add(outbox)
@@ -288,11 +290,14 @@ class WorklineStationLeaseService:
         payload = dict(payload_json or {})
         station = payload.get("station")
         station_payload = dict(station) if isinstance(station, dict) else {}
-        station_payload.setdefault("workline_code", workline_code)
-        station_payload["position_code"] = position_code
-        payload["station"] = station_payload
-        payload.setdefault("workline_code", workline_code)
-        payload["position_code"] = position_code
+        if station_payload.get("workline_code") != workline_code:
+            raise ValueError("station dispatch canonical payload must freeze station.workline_code in gateway")
+        if station_payload.get("position_code") != position_code:
+            raise ValueError("station dispatch canonical payload must freeze station.position_code in gateway")
+        if payload.get("workline_code") != workline_code:
+            raise ValueError("station dispatch canonical payload must freeze workline_code in gateway")
+        if payload.get("position_code") != position_code:
+            raise ValueError("station dispatch canonical payload must freeze position_code in gateway")
         return payload
 
 

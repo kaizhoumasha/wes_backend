@@ -9,6 +9,7 @@ from src.app.device.models.command import DeviceCommand
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.models.outbox import (
     SystemOutbox,
@@ -106,6 +107,7 @@ async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_worklin
     )
     db_session.add(session)
     await db_session.flush()
+    canonical = CanonicalPayload.from_projection({})
     outbox = SystemOutbox(
         session_id=session.id,
         workline_id=901,
@@ -114,6 +116,8 @@ async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_worklin
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code="TEST",
         payload_json={},
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
         status=SystemOutboxStatus.SENT,
     )
     inbox = RuntimeInbox(

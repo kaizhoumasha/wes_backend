@@ -21,6 +21,7 @@ from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service i
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import (
     DispatchEnvelope,
     SystemOutbox,
@@ -400,12 +401,15 @@ class SingleLayerRackOrchestrationService:
             operation_key=operation_key,
             operation_type=str(rack_operation_request["operation_type"]),
         )
+        canonical = CanonicalPayload.from_projection(payload_json)
         return DispatchEnvelope(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=str(rack_operation_request["target_code"]),
             payload_json=payload_json,
+            canonical_payload_bytes=canonical.body,
+            payload_hash=canonical.sha256,
             operation_domain="RACK",
             operation_key=operation_key,
             workline_id=workline_id,
@@ -479,6 +483,7 @@ class SingleLayerRackOrchestrationService:
         station = payload.get("station")
         station_payload = dict(station) if isinstance(station, Mapping) else {}
         station_payload.setdefault("position_code", str(operation_payload.get("station_code") or ""))
+        station_payload.setdefault("workline_code", operation_payload.get("workline_code"))
         payload["station"] = station_payload
         _ = payload.setdefault("station_code", operation_payload.get("station_code"))
         return payload
@@ -578,6 +583,10 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
         raise ValueError("existing station dispatch outbox session_id differs from request")
     if outbox.workline_id != envelope.workline_id:
         raise ValueError("existing station dispatch outbox workline_id differs from request")
+    if outbox.canonical_payload_bytes != envelope.canonical_payload_bytes:
+        raise ValueError("existing station dispatch outbox canonical_payload_bytes differs from request")
+    if outbox.payload_hash != envelope.payload_hash:
+        raise ValueError("existing station dispatch outbox payload_hash differs from request")
     if not _is_active_station_claim_outbox(outbox):
         raise ValueError("existing station dispatch outbox is not active")
 

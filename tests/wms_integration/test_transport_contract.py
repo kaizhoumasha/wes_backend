@@ -62,6 +62,8 @@ def test_transport_contract_builds_rack_task_envelope_without_behavior_drift() -
         },
         "trace_id": "trace-rack-001",
         "actions": {"priority": 8, "action": "ALLOCATE_AND_MOVE_RACK"},
+        "station": {"workline_code": "WL-SMT-01", "position_code": "DST-01"},
+        "position_code": "DST-01",
     }
 
 
@@ -113,13 +115,13 @@ def test_transport_contract_builds_full_box_handling_payload_without_behavior_dr
         sequence_no=1,
         is_full_box_exchange=True,
     )
-    payload = envelope["payload_json"]
+    payload = envelope.payload_json
 
-    assert envelope["dispatch_key"] == "handling:full-box:release-001:move:1"
-    assert envelope["target_code"] == "WMS_RCS_FULL_BOX_EXCHANGE"
-    assert payload["request_id"] == envelope["dispatch_key"]
-    assert payload["dispatch_key"] == envelope["dispatch_key"]
-    assert payload["exchange_request_code"] == envelope["dispatch_key"]
+    assert envelope.dispatch_key == "handling:full-box:release-001:move:1"
+    assert envelope.target_code == "WMS_RCS_FULL_BOX_EXCHANGE"
+    assert payload["request_id"] == envelope.dispatch_key
+    assert payload["dispatch_key"] == envelope.dispatch_key
+    assert payload["exchange_request_code"] == envelope.dispatch_key
     assert payload["callback_type"] == "WMS_FULL_BOX_EXCHANGE_RESULT"
     assert payload["request_type"] == "FULL_BIN_EXCHANGE"
     assert payload["rack_id"] == "RACK-001"
@@ -150,10 +152,10 @@ def test_transport_contract_builds_bin_move_payload_and_drops_none_values() -> N
         sequence_no=3,
         is_full_box_exchange=False,
     )
-    payload = envelope["payload_json"]
+    payload = envelope.payload_json
 
-    assert envelope["dispatch_key"] == "handling:bin-op-001:move:3"
-    assert envelope["target_code"] == "WMS_RCS_BIN_OPERATION"
+    assert envelope.dispatch_key == "handling:bin-op-001:move:3"
+    assert envelope.target_code == "WMS_RCS_BIN_OPERATION"
     assert payload["callback_type"] == "WMS_TRANSPORT_COMPLETED"
     assert payload["request_type"] == "BIN_MOVE"
     assert "bin_code" not in payload

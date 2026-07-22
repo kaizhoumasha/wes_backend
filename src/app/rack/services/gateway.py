@@ -41,6 +41,7 @@ class WmsRcsRackGateway:
         actions_json: Mapping[str, Any] | None = None,
         request_json: Mapping[str, Any] | None = None,
         target_code: str | None = None,
+        dispatch_key: str | None = None,
     ) -> DispatchEnvelope:
         return self._contract_service.build_rack_task_envelope(
             operation_key=operation_key,
@@ -59,6 +60,7 @@ class WmsRcsRackGateway:
             actions_json=actions_json,
             request_json=request_json,
             target_code=target_code,
+            dispatch_key=dispatch_key,
         )
 
 

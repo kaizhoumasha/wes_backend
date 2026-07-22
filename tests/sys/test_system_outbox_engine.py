@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.app.runtime.orchestration.services.device_command_gateway import _DeviceCommandGovernanceError
+from src.app.sys.canonical_dispatch import CanonicalPayload, ExternalHttpDispatchRequest
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.sys.services import SystemOutboxEngine as SystemOutboxDispatcher
 
@@ -115,6 +116,7 @@ async def _no_workline_messages(_db: Any, _limit: int) -> dict[str, int]:
 
 
 def _outbox(**overrides: Any) -> SimpleNamespace:
+    canonical = CanonicalPayload.from_projection({"operation_key": "bin-operation:trace-001"})
     values = {
         "id": 1,
         "dispatch_key": "handling:bin-operation:trace-001:move:1",
@@ -122,6 +124,8 @@ def _outbox(**overrides: Any) -> SimpleNamespace:
         "target_type": SystemOutboxTargetType.HTTP_ENDPOINT,
         "target_code": "WMS_RCS_BIN_OPERATION",
         "payload_json": {"operation_key": "bin-operation:trace-001"},
+        "canonical_payload_bytes": canonical.body,
+        "payload_hash": canonical.sha256,
         "status": SystemOutboxStatus.NEW,
         "attempt_count": 0,
         "next_retry_at": None,
@@ -147,9 +151,10 @@ async def test_system_outbox_dispatcher_sends_external_http_and_marks_sent() -> 
     result = await dispatcher.dispatch(db, limit=10)
 
     assert result == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
-    sender.assert_awaited_once_with(
-        "http://wms-rcs/api/wes/transport-request", {"operation_key": "bin-operation:trace-001"}
-    )
+    request = sender.await_args.args[0]
+    assert isinstance(request, ExternalHttpDispatchRequest)
+    assert request.endpoint.url == "http://wms-rcs/api/wes/transport-request"
+    assert request.body == message.canonical_payload_bytes
     assert repo.mark_dispatching_calls == [1]
     assert repo.mark_sent_calls == [1]
     assert message.status == SystemOutboxStatus.SENT

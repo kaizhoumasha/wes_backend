@@ -3,20 +3,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from src.app.sys.canonical_dispatch import EndpointDefinition
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
-
-
-@dataclass(frozen=True)
-class EndpointDefinition:
-    """允许 SystemOutbox 派发的 HTTP endpoint。"""
-
-    code: str
-    url: str
 
 
 class EndpointRegistry:

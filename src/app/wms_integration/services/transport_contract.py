@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
 from src.utils.value_normalization import require_text
 
@@ -106,16 +107,17 @@ class WmsTransportContractService:
         actions_json: Mapping[str, Any] | None = None,
         request_json: Mapping[str, Any] | None = None,
         target_code: str | None = None,
+        dispatch_key: str | None = None,
     ) -> DispatchEnvelope:
         normalized_task_type = _rack_task_type(task_type)
-        dispatch_key = f"rack-operation:{operation_key}:{sequence_no}:{normalized_task_type}"
+        resolved_dispatch_key = dispatch_key or f"rack-operation:{operation_key}:{sequence_no}:{normalized_task_type}"
         actions = dict(actions_json or {})
         actions.setdefault("action", normalized_task_type)
 
         payload = {
             **dict(request_json or {}),
-            "request_id": dispatch_key,
-            "dispatch_key": dispatch_key,
+            "request_id": resolved_dispatch_key,
+            "dispatch_key": resolved_dispatch_key,
             "callback_type": _rack_callback_type(normalized_task_type),
             "operation_key": operation_key,
             "operation_type": operation_type,
@@ -135,12 +137,27 @@ class WmsTransportContractService:
             "trace_id": trace_id,
             "actions": actions,
         }
+        station_position_code = _rack_station_position_code(
+            task_type=normalized_task_type,
+            rack_kind=rack_kind,
+            source_position_code=source_position_code,
+            target_position_code=target_position_code,
+        )
+        if station_position_code is not None:
+            payload["station"] = {
+                "workline_code": workline_code,
+                "position_code": station_position_code,
+            }
+            payload["position_code"] = station_position_code
+        canonical = CanonicalPayload.from_projection(payload)
         return DispatchEnvelope(
-            dispatch_key=dispatch_key,
+            dispatch_key=resolved_dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=target_code or DEFAULT_RACK_OPERATION_ENDPOINT,
             payload_json=payload,
+            canonical_payload_bytes=canonical.body,
+            payload_hash=canonical.sha256,
             operation_domain="RACK",
             operation_key=operation_key,
             workline_id=workline_id,
@@ -155,54 +172,65 @@ class WmsTransportContractService:
         move: Any,
         sequence_no: int,
         is_full_box_exchange: bool,
-    ) -> dict[str, Any]:
+    ) -> DispatchEnvelope:
         dispatch_key = f"handling:{operation.operation_key}:move:{sequence_no}"
         operation_type = str(getattr(operation, "operation_type", "") or "")
         target_code = _handling_target_code(is_full_box_exchange)
         metadata = _metadata_dict(move)
         request_type = _handling_request_type(is_full_box_exchange)
-        return {
-            "dispatch_key": dispatch_key,
-            "target_code": target_code,
-            "payload_json": _drop_none(
-                {
-                    "request_id": dispatch_key,
-                    "dispatch_key": dispatch_key,
-                    "exchange_request_code": dispatch_key,
-                    "callback_type": _handling_callback_type(is_full_box_exchange),
-                    "request_type": request_type,
-                    "operation_key": operation.operation_key,
-                    "operation_type": operation_type,
-                    "sequence_no": sequence_no,
-                    "trace_id": getattr(operation, "trace_id", None),
-                    "workline_code": getattr(operation, "workline_code", None),
-                    "material_session_id": getattr(operation, "material_session_id", None),
-                    "object_type": move.object_type,
-                    "bin_code": getattr(move, "bin_code", None),
-                    "placeholder_key": getattr(move, "placeholder_key", None),
-                    "candidate_authorized_bin_ids": getattr(move, "candidate_authorized_bin_ids", None),
-                    "rack_id": getattr(move, "rack_code", None) or metadata.get("rack_id"),
-                    "rack_type": metadata.get("rack_type"),
-                    "rack_slot_code": getattr(move, "rack_slot_code", None) or metadata.get("rack_slot_code"),
-                    "from_location": move.source_code,
-                    "to_location": move.target_code,
-                    "priority": metadata.get("priority"),
-                    "target_code": target_code,
-                    "source": {
-                        "type": move.source_type,
-                        "code": move.source_code,
-                    },
-                    "target": {
-                        "type": move.target_type,
-                        "code": move.target_code,
-                    },
-                    "carrier": {
-                        "type": getattr(move, "carrier_type", None),
-                        "code": getattr(move, "carrier_code", None),
-                    },
-                }
-            ),
-        }
+        payload_json = _drop_none(
+            {
+                "request_id": dispatch_key,
+                "dispatch_key": dispatch_key,
+                "exchange_request_code": dispatch_key,
+                "callback_type": _handling_callback_type(is_full_box_exchange),
+                "request_type": request_type,
+                "operation_key": operation.operation_key,
+                "operation_type": operation_type,
+                "sequence_no": sequence_no,
+                "trace_id": getattr(operation, "trace_id", None),
+                "workline_code": getattr(operation, "workline_code", None),
+                "material_session_id": getattr(operation, "material_session_id", None),
+                "object_type": move.object_type,
+                "bin_code": getattr(move, "bin_code", None),
+                "placeholder_key": getattr(move, "placeholder_key", None),
+                "candidate_authorized_bin_ids": getattr(move, "candidate_authorized_bin_ids", None),
+                "rack_id": getattr(move, "rack_code", None) or metadata.get("rack_id"),
+                "rack_type": metadata.get("rack_type"),
+                "rack_slot_code": getattr(move, "rack_slot_code", None) or metadata.get("rack_slot_code"),
+                "from_location": move.source_code,
+                "to_location": move.target_code,
+                "priority": metadata.get("priority"),
+                "target_code": target_code,
+                "source": {
+                    "type": move.source_type,
+                    "code": move.source_code,
+                },
+                "target": {
+                    "type": move.target_type,
+                    "code": move.target_code,
+                },
+                "carrier": {
+                    "type": getattr(move, "carrier_type", None),
+                    "code": getattr(move, "carrier_code", None),
+                },
+            }
+        )
+        canonical = CanonicalPayload.from_projection(payload_json)
+        return DispatchEnvelope(
+            dispatch_key=dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code=target_code,
+            payload_json=payload_json,
+            canonical_payload_bytes=canonical.body,
+            payload_hash=canonical.sha256,
+            operation_domain="HANDLING",
+            operation_key=str(operation.operation_key),
+            workline_id=getattr(operation, "workline_id", None),
+            session_id=getattr(operation, "material_session_id", None),
+            trace_id=getattr(operation, "trace_id", None),
+        )
 
 
 def _rack_task_type(value: str) -> str:
@@ -210,6 +238,22 @@ def _rack_task_type(value: str) -> str:
     if normalized not in _RACK_TASK_TYPES:
         raise ValueError(f"不支持的 rack task 类型: {value}")
     return normalized
+
+
+def _rack_station_position_code(
+    *,
+    task_type: str,
+    rack_kind: str | None,
+    source_position_code: str | None,
+    target_position_code: str | None,
+) -> str | None:
+    if str(getattr(rack_kind, "value", rack_kind) or "").upper() != SINGLE_LAYER_RACK_KIND:
+        return None
+    if task_type == "MOVE_RACK":
+        return source_position_code
+    if task_type == "ALLOCATE_AND_MOVE_RACK":
+        return target_position_code
+    return None
 
 
 def _rack_callback_type(task_type: str) -> str:

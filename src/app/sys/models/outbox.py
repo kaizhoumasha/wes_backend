@@ -16,10 +16,25 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from sqlalchemy import JSON, BigInteger, Column, ForeignKey, Index, Text, and_, text
+from pydantic import model_validator
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    Column,
+    ForeignKey,
+    Index,
+    LargeBinary,
+    Text,
+    and_,
+    event,
+    inspect,
+    text,
+)
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -108,11 +123,26 @@ class DispatchEnvelope:
     target_code: str
     payload_json: dict[str, Any]
     operation_domain: str
+    canonical_payload_bytes: bytes | None = None
+    payload_hash: str | None = None
     operation_key: str | None = None
     workline_id: int | None = None
     session_id: int | None = None
     device_id: int | None = None
     trace_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
+            return
+        if self.canonical_payload_bytes is None:
+            raise ValueError("EXTERNAL_HTTP DispatchEnvelope requires canonical_payload_bytes")
+        if self.payload_hash is None:
+            raise ValueError("EXTERNAL_HTTP DispatchEnvelope requires payload_hash")
+        canonical = CanonicalPayload.from_persisted(
+            canonical_payload_bytes=self.canonical_payload_bytes,
+            payload_hash=self.payload_hash,
+        )
+        canonical.validate_projection(self.payload_json)
 
 
 class SystemOutboxBase(BaseMixin):
@@ -156,7 +186,26 @@ class SystemOutboxBase(BaseMixin):
         description="目标类型",
     )
     target_code: str = Field(min_length=1, max_length=240, index=True, description="目标逻辑编码")
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="派发负载")
+    payload_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="仅用于查询的派发负载投影，不得作为 EXTERNAL_HTTP 发送输入",
+    )
+    canonical_payload_bytes: bytes | None = Field(
+        default=None,
+        sa_column=Column(
+            LargeBinary,
+            nullable=True,
+            comment="EXTERNAL_HTTP 唯一权威的冻结 canonical 请求体",
+        ),
+        description="EXTERNAL_HTTP 唯一权威的冻结 canonical 请求体",
+    )
+    payload_hash: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        description="canonical_payload_bytes 的 SHA-256",
+    )
     status: SystemOutboxStatus = Field(
         default=SystemOutboxStatus.NEW,
         index=True,
@@ -207,6 +256,12 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
     __tablename__: ClassVar[Literal["system_outbox"]] = "system_outbox"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
+        CheckConstraint(
+            "dispatch_type != 'EXTERNAL_HTTP' OR "
+            "(canonical_payload_bytes IS NOT NULL AND length(canonical_payload_bytes) > 0 "
+            "AND payload_hash IS NOT NULL AND length(payload_hash) = 64)",
+            name="ck_system_outbox_external_http_canonical_payload",
+        ),
         Index("ux_system_outbox_dispatch_key", "dispatch_key", unique=True),
         Index("ix_system_outbox_status_retry_created", "status", "next_retry_at", "created_at"),
         Index("ix_system_outbox_domain_operation", "operation_domain", "operation_key"),
@@ -247,15 +302,63 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
         {"schema": SchemaType.BIZ.value},
     )
 
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
+        _validate_system_outbox_canonical_payload(self)
+
 
 class SystemOutboxCreate(ModelFactory(SystemOutboxBase).for_create()):
     """系统级发件箱创建 Schema。"""
 
+    @model_validator(mode="after")
+    def validate_external_http_canonical_payload(self) -> SystemOutboxCreate:
+        _validate_system_outbox_canonical_payload(self)
+        return self
 
-class SystemOutboxUpdate(ModelFactory(SystemOutboxBase).for_update(exclude=("dispatch_key",))):
+
+class SystemOutboxUpdate(
+    ModelFactory(SystemOutboxBase).for_update(
+        exclude=("dispatch_key", "payload_json", "canonical_payload_bytes", "payload_hash")
+    )
+):
     """系统级发件箱更新 Schema。"""
 
     dispatch_key: ClassVar[str]
+    payload_json: ClassVar[dict[str, Any]]
+    canonical_payload_bytes: ClassVar[bytes]
+    payload_hash: ClassVar[str]
+
+
+def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
+    dispatch_type = getattr(outbox, "dispatch_type", None)
+    dispatch_type_value = dispatch_type.value if isinstance(dispatch_type, Enum) else dispatch_type
+    if dispatch_type_value != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
+        return
+    canonical_payload_bytes = getattr(outbox, "canonical_payload_bytes", None)
+    payload_hash = getattr(outbox, "payload_hash", None)
+    if canonical_payload_bytes is None:
+        raise ValueError("EXTERNAL_HTTP SystemOutbox requires canonical_payload_bytes")
+    if payload_hash is None:
+        raise ValueError("EXTERNAL_HTTP SystemOutbox requires payload_hash")
+    canonical = CanonicalPayload.from_persisted(
+        canonical_payload_bytes=canonical_payload_bytes,
+        payload_hash=payload_hash,
+    )
+    canonical.validate_projection(getattr(outbox, "payload_json", None))
+
+
+@event.listens_for(SystemOutbox, "before_update")
+def _prevent_external_http_payload_update(_mapper: Any, _connection: Any, outbox: SystemOutbox) -> None:
+    """EXTERNAL_HTTP 的原始 bytes、hash 和查询投影一经持久化均不可改写。"""
+
+    dispatch_type = getattr(outbox, "dispatch_type", None)
+    dispatch_type_value = dispatch_type.value if isinstance(dispatch_type, Enum) else dispatch_type
+    if dispatch_type_value != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
+        return
+    state = inspect(outbox)
+    immutable_fields = ("payload_json", "canonical_payload_bytes", "payload_hash")
+    if any(state.attrs[field_name].history.has_changes() for field_name in immutable_fields):
+        raise ValueError("EXTERNAL_HTTP SystemOutbox canonical payload persisted fields are immutable")
 
 
 __all__ = [

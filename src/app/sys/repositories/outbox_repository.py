@@ -38,10 +38,12 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         super().__init__(SystemOutbox)
 
     async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> SystemOutbox | None:
-        """拒绝绕过专用状态方法改写稳定派发身份。"""
+        """拒绝绕过专用状态方法改写稳定派发身份或冻结请求体。"""
 
-        if "dispatch_key" in data:
-            raise ValueError("SystemOutbox.dispatch_key 持久化后不可变")
+        immutable_fields = {"dispatch_key", "payload_json", "canonical_payload_bytes", "payload_hash"}
+        attempted_fields = immutable_fields.intersection(data)
+        if attempted_fields:
+            raise ValueError(f"SystemOutbox {', '.join(sorted(attempted_fields))} 持久化后不可变")
         return await super().update(db, id, data)
 
     async def get_by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> SystemOutbox | None:
@@ -660,12 +662,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         now = timezone.now_for_db()
         for outbox in outboxes:
             transition_system_outbox(outbox, SystemOutboxStatus.CANCELLED)
-            outbox.last_error = "CANCELLED_BY_ESTOP"
+            outbox.last_error = f"CANCELLED_BY_ESTOP:incident_id={incident_id}"
             outbox.finished_at = now
-            outbox.payload_json = {
-                **(outbox.payload_json or {}),
-                "cancelled_by_safety_incident_id": incident_id,
-            }
         return len(outboxes)
 
     async def cancel_active_by_session(self, db: AsyncSession, *, session_id: int, reason: str) -> int:

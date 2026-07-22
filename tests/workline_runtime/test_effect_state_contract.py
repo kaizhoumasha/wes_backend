@@ -28,6 +28,7 @@ else:
 
 from src.app.runtime.orchestration.models.dispatch_attempt import DispatchAttemptStatus
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models.outbox import (
     SystemOutbox,
     SystemOutboxDispatchType,
@@ -270,11 +271,16 @@ def _intent_log(dispatch_key: str) -> RuntimeIntentLog:
 
 
 def _outbox(dispatch_key: str) -> SystemOutbox:
+    projection = {"request_id": dispatch_key}
+    canonical = CanonicalPayload.from_projection(projection)
     return SystemOutbox(
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=dispatch_key,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code="WMS",
+        payload_json=projection,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
     )
 
 

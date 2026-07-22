@@ -1,10 +1,11 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from src.app.sys.canonical_dispatch import ExternalHttpDispatchRequest
 from src.core.logger import logger
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 
-ExternalHttpSender = Callable[[str, dict[str, Any]], Awaitable[bool]]
+ExternalHttpSender = Callable[[ExternalHttpDispatchRequest], Awaitable[bool]]
 ALLOWED_INTERNAL_SIGNALS = frozenset({"core", "handling", "sys", "workline"})
 
 
@@ -15,11 +16,15 @@ def _payload_dict(value: Any) -> dict[str, Any]:
 async def dispatch_external_http(outbox: Any, endpoint_registry: Any, http_sender: ExternalHttpSender) -> bool:
     try:
         endpoint = endpoint_registry.resolve(str(getattr(outbox, "target_code", "") or ""))
+        request = ExternalHttpDispatchRequest.from_persisted(
+            endpoint=endpoint,
+            canonical_payload_bytes=getattr(outbox, "canonical_payload_bytes", None),
+            payload_hash=getattr(outbox, "payload_hash", None),
+        )
     except ValueError as exc:
         logger.warning(str(exc))
         return False
-    payload = _payload_dict(getattr(outbox, "payload_json", None))
-    return await http_sender(endpoint.url, payload)
+    return await http_sender(request)
 
 
 async def dispatch_internal_signal(outbox: Any, queue_gateway: TaskQueueGateway = task_queue_gateway) -> bool:

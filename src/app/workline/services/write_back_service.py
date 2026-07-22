@@ -502,9 +502,11 @@ def _build_external_http_outbox_model(
     payload_json: dict[str, Any],
 ) -> Any:
     """将 external decision 投影为 Outbox 模型。"""
+    from src.app.sys.canonical_dispatch import CanonicalPayload
     from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
 
     session = ctx["session"]
+    canonical = CanonicalPayload.from_projection(payload_json)
     return SystemOutbox(
         session_id=session.id,
         workline_id=session.workline_id,
@@ -513,6 +515,8 @@ def _build_external_http_outbox_model(
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code=target_code,
         payload_json=payload_json,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
     )
 
 
