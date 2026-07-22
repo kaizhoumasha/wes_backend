@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from src.app.sys.external_http_evidence import recover_external_http_evidence_failure_unknown
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpSender,
@@ -61,6 +62,7 @@ class SystemOutboxEngine:
         workline_domain_dispatcher: DomainDispatcher | None = None,
         device_command_dispatcher: Callable[[Any, Any], Awaitable[bool]] | None = None,
         dispatch_attempt_service: Any | None = None,
+        external_http_recovery_context_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
@@ -68,6 +70,7 @@ class SystemOutboxEngine:
         self.workline_domain_dispatcher = workline_domain_dispatcher or _dispatch_workline_domain
         self.device_command_dispatcher = device_command_dispatcher or _dispatch_device_command
         self.dispatch_attempt_service = dispatch_attempt_service
+        self.external_http_recovery_context_factory = external_http_recovery_context_factory
 
     async def dispatch(self, db: Any, limit: int = 50) -> DispatchResult:
         result: DispatchResult = {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
@@ -135,30 +138,43 @@ class SystemOutboxEngine:
                 result["dispatched"] += 1
                 continue
             if isinstance(dispatch_result, ExternalHttpTransportResult):
-                updated = await self._finalize_external_http_result(
-                    db,
-                    outbox_id=outbox_id,
-                    result=dispatch_result,
-                )
-                if dispatch_attempt is None:
-                    raise RuntimeError("EXTERNAL_HTTP 派发缺少 attempt 证据")
-                outbox_finalization = (
-                    "fenced" if updated is None else enum_value(getattr(updated, "status", None)).lower()
-                )
-                _ = await self._resolve_dispatch_attempt_service().finalize_external_http_attempt_record(
-                    db,
-                    attempt=dispatch_attempt,
-                    result=dispatch_result,
-                    outbox_finalization=outbox_finalization,
-                    auto_commit=False,
-                )
-                await _commit_if_supported(db)
-                if updated is None:
-                    result["skipped"] += 1
-                elif dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
-                    result["success"] += 1
-                else:
+                try:
+                    updated = await self._finalize_external_http_result(
+                        db,
+                        outbox_id=outbox_id,
+                        result=dispatch_result,
+                    )
+                    if dispatch_attempt is None:
+                        raise RuntimeError("EXTERNAL_HTTP 派发缺少 attempt 证据")
+                    outbox_finalization = (
+                        "fenced" if updated is None else enum_value(getattr(updated, "status", None)).lower()
+                    )
+                    _ = await self._resolve_dispatch_attempt_service().finalize_external_http_attempt_record(
+                        db,
+                        attempt=dispatch_attempt,
+                        result=dispatch_result,
+                        outbox_finalization=outbox_finalization,
+                        auto_commit=False,
+                    )
+                    await _commit_if_supported(db)
+                except Exception as evidence_error:
+                    updated = await recover_external_http_evidence_failure_unknown(
+                        db,
+                        outbox_repository=self.outbox_repository,
+                        outbox_id=outbox_id,
+                        result=dispatch_result,
+                        cause=evidence_error,
+                        recovery_context_factory=self._resolve_external_http_recovery_context_factory(),
+                    )
+                    logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
+                else:
+                    if updated is None:
+                        result["skipped"] += 1
+                    elif dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
+                        result["success"] += 1
+                    else:
+                        result["failed"] += 1
             elif dispatch_result:
                 sent = await self.outbox_repository.mark_as_sent(db, outbox_id)
                 await _commit_if_supported(db)
@@ -195,6 +211,13 @@ class SystemOutboxEngine:
 
             self.dispatch_attempt_service = workline_dispatch_attempt_service
         return self.dispatch_attempt_service
+
+    def _resolve_external_http_recovery_context_factory(self) -> Callable[[], Any]:
+        if self.external_http_recovery_context_factory is None:
+            from src.database.db import get_db_context
+
+            self.external_http_recovery_context_factory = get_db_context
+        return self.external_http_recovery_context_factory
 
     async def _finalize_external_http_result(
         self,

@@ -51,6 +51,40 @@ def test_transport_result_is_frozen_and_rejects_retryable_non_not_sent_outcome()
         )
 
 
+@pytest.mark.parametrize(
+    ("phase", "protocol_result", "http_status_code"),
+    [
+        (
+            ExternalHttpTransportPhase.CONNECTING,
+            ExternalHttpProtocolResult.REJECTED,
+            409,
+        ),
+        (
+            ExternalHttpTransportPhase.AWAITING_RESPONSE,
+            ExternalHttpProtocolResult.UNKNOWN,
+            None,
+        ),
+        (
+            ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+            ExternalHttpProtocolResult.NOT_AVAILABLE,
+            503,
+        ),
+    ],
+)
+def test_ambiguous_result_rejects_contradictory_phase_protocol_and_http_evidence(
+    phase: ExternalHttpTransportPhase,
+    protocol_result: ExternalHttpProtocolResult,
+    http_status_code: int | None,
+) -> None:
+    with pytest.raises(ValueError, match="AMBIGUOUS"):
+        ExternalHttpTransportResult.ambiguous(
+            phase=phase,
+            protocol_result=protocol_result,
+            http_status_code=http_status_code,
+            error_code="CONTRADICTORY_EVIDENCE",
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status_code", "outcome", "protocol_result"),

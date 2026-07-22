@@ -5,7 +5,8 @@
 T8c 已完成。所有 `EXTERNAL_HTTP` sender 已收敛到唯一封闭 typed result，不再存在 bool sender 合同或兼容
 fallback。transport 明确区分 `NOT_SENT`、`ACCEPTED` 与 `AMBIGUOUS`，并同时记录 phase、HTTP/协议结果、
 安全重试结论和错误摘要。通用 `SystemOutboxEngine` 与 workline dispatcher 使用相同终态规则，所有外部 HTTP
-attempt 都会保存 typed evidence。
+attempt 都会保存 typed evidence。若 typed result 的 outbox/attempt 证据或提交失败，两条 dispatcher 会回滚原事务，
+再以独立短事务强制收口 `UNKNOWN`，避免已产生或可能产生的外部副作用被自动重放。
 
 本任务没有实现 capability semantic reducer、callback/reconciliation 生命周期、lease/fencing 新协议、credential
 snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIntentLog` 语义状态。
@@ -24,6 +25,20 @@ snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIn
   `RETRY_WAIT`；非法 URL、endpoint/canonical 准备失败是不可重试 `NOT_SENT`，直接进入 `FAILED`。
 - sender 返回非 typed 对象时 fail closed 为 `AMBIGUOUS`，没有 bool fallback。
 - EXTERNAL_HTTP 沙箱出口返回 `ACCEPTED + SANDBOX + protocol NOT_AVAILABLE`，不伪造 HTTP 状态码。
+- `AMBIGUOUS + RESPONSE_RECEIVED` 只能携带 `protocol UNKNOWN`；其它 AMBIGUOUS phase 必须是
+  `protocol NOT_AVAILABLE` 且不得携带 HTTP 状态码，矛盾证据在构造时即被拒绝。
+
+## 证据持久化失败收口
+
+- typed result 的 outbox 终态、attempt evidence 与 commit 保持原子写入；任一步骤抛错都会先回滚当前会话。
+- 回滚后通过独立数据库会话锁定原 outbox，并用专用 Repository 方法强制写入 `UNKNOWN`、清除 retry/block 信息，
+  同时保存不含请求正文的最小错误证据。
+- 专用恢复允许覆盖 `DISPATCHING/RETRY_WAIT/SENT/FAILED/UNKNOWN`：原 commit 可能已在数据库端成功，仅是客户端
+  未收到确认，因此常规状态边不足以表达这类提交歧义。
+- 隔离恢复本身失败时抛出 `ExternalHttpEvidenceRecoveryError`；workline dispatcher 显式让该异常穿透，绝不落入
+  通用 `mark_as_failed` 路径。
+- generic 与 workline 失败注入回归均验证 sender 只调用一次；恢复成功后第二轮不再领取，恢复失败则向上报错且
+  不创建可重试状态。
 
 ## Attempt evidence 与迁移
 
@@ -38,11 +53,13 @@ snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIn
 
 ## 验证结果
 
+- P1/P2 定向回归：typed 不变量、Repository 终态覆盖、generic/workline 证据失败场景全部通过。
+- outbox/transport/attempt 相关回归：`76 passed`。
+- 测试拓扑守卫：`6 passed`；显式 collect-only：`3657 tests collected`。
 - T8c typed result、双 dispatcher、attempt evidence 与 EFFECT 相关回归：`74 passed`。
 - T8c 最终核心复验（含 SANDBOX evidence）：`24 passed`。
 - PostgreSQL typed attempt evidence 集成测试：`1 passed`。
 - `tests/sys` 加 dispatcher observability：`30 passed`。
-- 测试拓扑守卫：`6 passed`；显式 collect-only：`3643 tests collected`。
 - `./scripts/git-quality-gate.sh --profile quality`：通过（Ruff format/check、Bandit、runtime guardrails、
   import-linter、architecture guardrails、测试拓扑均通过）。
 - 默认快速全集：`3635 passed, 5 skipped, 3 failed`。3 个失败与 T8b 已记录基线完全一致：cleanup matrix CSV、
@@ -52,11 +69,17 @@ snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIn
 ## 影响分析与提交边界
 
 GitNexus 对 `WorklineDispatchAttemptBase/WorklineDispatchAttempt` 报告 MEDIUM，直接依赖分别为 7/6；
-`SystemOutboxRepository` 与 `dispatch_external_http` 为 MEDIUM；dispatcher、attempt service 与其方法为 LOW。
+`SystemOutboxRepository` 与 `dispatch_external_http` 为 MEDIUM。本轮 P1/P2 修复中，`SystemOutboxRepository` 为
+MEDIUM（72 个上游影响、6 个直接调用方），`SystemOutboxEngine` 与 generic/workline dispatch 路径为 LOW。
+dispatcher、attempt service 与其方法为 LOW。
 新建的 transport 类型尚未进入索引，impact 查询返回 UNKNOWN/0；逐符号写前分析没有 HIGH/CRITICAL。
 
 提交前 staged `gitnexus_detect_changes` 覆盖 19 个文件、72 个 changed symbols、9 个 affected processes，汇总风险为
 HIGH；风险来自共享 workline/SystemOutbox `dispatch` 流程的跨社区影响面。设备分支语义未改，受影响 dispatcher、
 安全检查与设备解析路径已由全量回归、相关 74 项回归和 quality profile 覆盖。
+
+本轮 P1/P2 修复的 staged 检测覆盖 10 个文件、23 个已索引符号、9 个 affected processes，汇总风险同样为 HIGH；
+原因仍是 generic/workline 两个共享 `dispatch` 入口的跨社区传播。实际实现只在 typed EXTERNAL_HTTP 分支增加证据
+失败收口，设备分支未改；相关 76 项回归、348 项 runtime contract guardrails 与完整 quality profile 均通过。
 
 提交范围只包含 T8c 计划、实现、迁移、测试与本报告，不包含用户维护的 `AGENTS.md`、`CLAUDE.md`。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -87,12 +88,24 @@ class _Repository:
         self.outbox.last_error = error
         return self.outbox
 
+    async def mark_evidence_persistence_unknown(
+        self,
+        _db: Any,
+        _outbox_id: int,
+        error: str,
+    ) -> SimpleNamespace:
+        self.unknown_calls += 1
+        self.outbox.status = SystemOutboxStatus.UNKNOWN
+        self.outbox.last_error = error
+        return self.outbox
+
 
 class _AttemptService:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_finalize: bool = False) -> None:
         self.attempt = SimpleNamespace(status="DISPATCHING")
         self.created: list[SimpleNamespace] = []
         self.finalized: list[dict[str, Any]] = []
+        self.fail_finalize = fail_finalize
 
     async def create_attempt(self, _db: Any, *, outbox: SimpleNamespace, auto_commit: bool) -> SimpleNamespace:
         assert auto_commit is False
@@ -102,6 +115,8 @@ class _AttemptService:
     async def finalize_external_http_attempt_record(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
         assert kwargs["auto_commit"] is False
         self.finalized.append(kwargs)
+        if self.fail_finalize:
+            raise RuntimeError("attempt evidence unavailable")
         return kwargs["attempt"]
 
 
@@ -213,3 +228,66 @@ async def test_ambiguous_result_enters_unknown_and_is_not_dispatched_again() -> 
     assert sender.await_count == 1
     assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
     assert attempt_service.finalized[0]["outbox_finalization"] == "unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transport_result",
+    [
+        ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        ),
+        ExternalHttpTransportResult.ambiguous(
+            phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
+            error_code="READ_TIMEOUT",
+        ),
+        ExternalHttpTransportResult.not_sent(
+            phase=ExternalHttpTransportPhase.CONNECTING,
+            safe_to_retry=True,
+            error_code="CONNECT_ERROR",
+        ),
+    ],
+)
+async def test_generic_attempt_evidence_failure_fail_closes_unknown_without_second_send(
+    transport_result: ExternalHttpTransportResult,
+) -> None:
+    outbox = _outbox()
+    repository = _Repository(outbox)
+    attempt_service = _AttemptService(fail_finalize=True)
+    sender = AsyncMock(return_value=transport_result)
+    current_db = SimpleNamespace(
+        commit=AsyncMock(),
+        rollback=AsyncMock(side_effect=lambda: setattr(outbox, "status", SystemOutboxStatus.DISPATCHING)),
+    )
+    recovery_db = SimpleNamespace(commit=AsyncMock())
+
+    @asynccontextmanager
+    async def recovery_context():
+        yield recovery_db
+
+    engine = SystemOutboxEngine(
+        outbox_repository=repository,  # type: ignore[arg-type]
+        external_http_sender=sender,
+        dispatch_attempt_service=attempt_service,
+        external_http_recovery_context_factory=recovery_context,
+        workline_domain_dispatcher=_no_workline_messages,
+    )
+
+    first = await engine.dispatch(current_db, limit=1)
+    second = await engine.dispatch(current_db, limit=1)
+
+    assert first == {"dispatched": 1, "success": 0, "failed": 1, "skipped": 0}
+    assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
+    assert outbox.status is SystemOutboxStatus.UNKNOWN
+    assert outbox.next_retry_at is None
+    assert "EXTERNAL_HTTP_EVIDENCE_PERSISTENCE_FAILED" in outbox.last_error
+    assert transport_result.outcome.value in outbox.last_error
+    # NOT_SENT 的 RETRY_WAIT 写入发生在随后回滚的原事务内；隔离恢复不得再次走重试路径。
+    expected_rolled_back_retry_call = int(
+        transport_result.outcome is ExternalHttpTransportOutcome.NOT_SENT and transport_result.safe_to_retry
+    )
+    assert repository.retry_calls == expected_rolled_back_retry_call
+    assert sender.await_count == 1
+    current_db.rollback.assert_awaited_once()
+    recovery_db.commit.assert_awaited_once()

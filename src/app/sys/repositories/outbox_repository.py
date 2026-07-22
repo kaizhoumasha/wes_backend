@@ -399,6 +399,36 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         await db.flush()
         return outbox
 
+    async def mark_evidence_persistence_unknown(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        error: str,
+    ) -> SystemOutbox | None:
+        """证据事务结果不确定时，以独立事务强制收口 EXTERNAL_HTTP 为 UNKNOWN。
+
+        原事务的 commit 可能已在数据库端成功，仅是客户端未收到确认。因此这里不能依赖
+        常规状态边，也不能把 SENT/FAILED/RETRY_WAIT 重新开放为可派发状态。
+        """
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        outbox = result.scalar_one_or_none()
+        if outbox is None or outbox.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
+            return None
+
+        if outbox.status == SystemOutboxStatus.DISPATCHING:
+            outbox.attempt_count += 1
+        self._clear_block(outbox)
+        # 证据提交本身存在歧义，必须覆盖原事务可能已写入的任何终态。
+        outbox.status = SystemOutboxStatus.UNKNOWN
+        outbox.last_error = error
+        outbox.sent_at = None
+        outbox.next_retry_at = None
+        outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
     async def mark_as_terminal_failure(
         self,
         db: AsyncSession,

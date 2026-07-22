@@ -13,6 +13,10 @@ from src.app.runtime.orchestration.services.device_command_gateway import (
     _mark_device_command_failed_if_dispatch_exhausted,
     _mark_outbox_blocked_by_workline_state,
 )
+from src.app.sys.external_http_evidence import (
+    ExternalHttpEvidenceRecoveryError,
+    recover_external_http_evidence_failure_unknown,
+)
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.domain.run_mode import is_simulation_run_mode
 from src.app.workline.outbox_dispatch_support import (
@@ -442,6 +446,16 @@ async def _remember_blocked_head_device_scope(
 
 class OutboxDispatchService:
     MAX_RETRIES = 3
+
+    def __init__(self, *, external_http_recovery_context_factory: Any | None = None) -> None:
+        self.external_http_recovery_context_factory = external_http_recovery_context_factory
+
+    def _resolve_external_http_recovery_context_factory(self) -> Any:
+        if self.external_http_recovery_context_factory is None:
+            from src.database.db import get_db_context
+
+            self.external_http_recovery_context_factory = get_db_context
+        return self.external_http_recovery_context_factory
 
     async def _finalize_external_http_result(
         self,
@@ -879,17 +893,31 @@ class OutboxDispatchService:
                 )
 
                 if isinstance(dispatch_result, ExternalHttpTransportResult):
-                    if dispatch_attempt is None:
-                        raise RuntimeError("EXTERNAL_HTTP 派发缺少 attempt 证据")
-                    updated = await self._finalize_external_http_result(
-                        db,
-                        outbox_repo=outbox_repo,
-                        outbox_id=outbox_pk,
-                        dispatch_attempt=dispatch_attempt,
-                        attempt_service=workline_dispatch_attempt_service,
-                        result=dispatch_result,
-                    )
-                    await db.commit()
+                    try:
+                        if dispatch_attempt is None:
+                            raise RuntimeError("EXTERNAL_HTTP 派发缺少 attempt 证据")
+                        updated = await self._finalize_external_http_result(
+                            db,
+                            outbox_repo=outbox_repo,
+                            outbox_id=outbox_pk,
+                            dispatch_attempt=dispatch_attempt,
+                            attempt_service=workline_dispatch_attempt_service,
+                            result=dispatch_result,
+                        )
+                        await db.commit()
+                    except Exception as evidence_error:
+                        _ = await recover_external_http_evidence_failure_unknown(
+                            db,
+                            outbox_repository=outbox_repo,
+                            outbox_id=outbox_pk,
+                            result=dispatch_result,
+                            cause=evidence_error,
+                            recovery_context_factory=self._resolve_external_http_recovery_context_factory(),
+                        )
+                        logger.exception(f"Outbox {outbox_pk} 证据落库失败，已隔离收口为 UNKNOWN")
+                        result["failed"] += 1
+                        result["dispatched"] += 1
+                        continue
                     if updated is None:
                         result["skipped"] += 1
                         logger.warning(
@@ -987,6 +1015,9 @@ class OutboxDispatchService:
                     result["failed"] += 1
                     logger.warning(f"Outbox {outbox_pk} 派发失败 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
                 result["dispatched"] += 1
+            except ExternalHttpEvidenceRecoveryError:
+                # UNKNOWN 隔离恢复失败时必须向上抛出，禁止落入通用 mark_as_failed 自动重试路径。
+                raise
             except _DeviceCommandGovernanceError as e:
                 outbox_pk = resolve_entity_id(outbox)
                 if e.code in _DEVICE_RESOURCE_WAIT_CODES:

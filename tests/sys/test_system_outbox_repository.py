@@ -17,6 +17,7 @@ from src.app.sys.models.outbox import (
     SystemOutboxTargetType,
 )
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository
+from src.utils.timezone import timezone
 
 
 class _FakeResult:
@@ -29,6 +30,9 @@ class _FakeResult:
     def all(self) -> list[Any]:
         return self._outboxes
 
+    def scalar_one_or_none(self) -> Any | None:
+        return self._outboxes[0] if self._outboxes else None
+
 
 class _CapturingDb:
     def __init__(self, outboxes: list[Any]) -> None:
@@ -38,6 +42,9 @@ class _CapturingDb:
     async def execute(self, statement: Any) -> _FakeResult:
         self.statement = statement
         return _FakeResult(self.outboxes)
+
+    async def flush(self) -> None:
+        return None
 
 
 def _compiled_status_values(statement: Any) -> set[SystemOutboxStatus]:
@@ -90,6 +97,58 @@ async def test_resource_wait_rejects_uncontrolled_retry_reason_before_loading_ro
             reason="HTTP_503_BACKOFF",
             blocked_device_id=9,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_status",
+    [
+        SystemOutboxStatus.DISPATCHING,
+        SystemOutboxStatus.RETRY_WAIT,
+        SystemOutboxStatus.SENT,
+        SystemOutboxStatus.FAILED,
+        SystemOutboxStatus.UNKNOWN,
+    ],
+)
+async def test_external_http_evidence_persistence_failure_overrides_uncertain_state_to_unknown(
+    initial_status: SystemOutboxStatus,
+) -> None:
+    """证据事务结果不确定时，即使原终态可能已提交，也必须保守收口为 UNKNOWN。"""
+
+    outbox = SimpleNamespace(
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        status=initial_status,
+        attempt_count=2,
+        next_retry_at=timezone.now_for_db(),
+        sent_at=timezone.now_for_db(),
+        last_error=None,
+        finished_at=None,
+        blocked_by_runtime_hold_id=1,
+        blocked_by_reconciliation_session_id=2,
+        blocked_device_id=3,
+        blocked_workline_id=4,
+        blocked_reason="DEVICE_BUSY",
+        blocked_at=timezone.now_for_db(),
+        last_blocked_check_at=timezone.now_for_db(),
+        blocked_check_count=1,
+        blocked_detail_json={"reason": "busy"},
+    )
+    db = _CapturingDb([outbox])
+
+    updated = await SystemOutboxRepository().mark_evidence_persistence_unknown(
+        db,  # type: ignore[arg-type]
+        91,
+        "EXTERNAL_HTTP_EVIDENCE_PERSISTENCE_FAILED outcome=ACCEPTED",
+    )
+
+    assert updated is outbox
+    assert outbox.status is SystemOutboxStatus.UNKNOWN
+    assert outbox.attempt_count == (3 if initial_status is SystemOutboxStatus.DISPATCHING else 2)
+    assert outbox.next_retry_at is None
+    assert outbox.sent_at is None
+    assert outbox.finished_at is not None
+    assert outbox.last_error == "EXTERNAL_HTTP_EVIDENCE_PERSISTENCE_FAILED outcome=ACCEPTED"
+    assert outbox.blocked_reason is None
 
 
 @pytest.mark.asyncio

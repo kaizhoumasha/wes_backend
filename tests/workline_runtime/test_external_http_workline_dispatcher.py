@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from importlib import import_module
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import OutboxDispatchService
+from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.external_http_evidence import ExternalHttpEvidenceRecoveryError
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportOutcome,
@@ -133,3 +138,153 @@ async def test_external_http_sandbox_returns_typed_accepted_result() -> None:
     assert result.phase is ExternalHttpTransportPhase.SANDBOX
     assert result.protocol_result is ExternalHttpProtocolResult.NOT_AVAILABLE
     assert result.http_status_code is None
+
+
+class _DispatchRepository(_Repository):
+    def __init__(self, outbox: SimpleNamespace) -> None:
+        super().__init__()
+        self.outbox = outbox
+        self.retry_calls = 0
+
+    async def get_pending_messages(self, _db: Any, **_kwargs: Any) -> list[SimpleNamespace]:
+        if self.outbox.status in {SystemOutboxStatus.NEW, SystemOutboxStatus.RETRY_WAIT}:
+            return [self.outbox]
+        return []
+
+    async def mark_as_dispatching(self, _db: Any, _outbox_id: int) -> SimpleNamespace | None:
+        if self.outbox.status not in {SystemOutboxStatus.NEW, SystemOutboxStatus.RETRY_WAIT}:
+            return None
+        self.outbox.status = SystemOutboxStatus.DISPATCHING
+        return self.outbox
+
+    async def mark_as_failed(self, _db: Any, _outbox_id: int, error: str, _max_retries: int) -> SimpleNamespace:
+        self.retry_calls += 1
+        self.outbox.status = SystemOutboxStatus.RETRY_WAIT
+        self.outbox.last_error = error
+        return self.outbox
+
+    async def mark_evidence_persistence_unknown(
+        self,
+        _db: Any,
+        _outbox_id: int,
+        error: str,
+    ) -> SimpleNamespace:
+        self.calls.append("evidence_unknown")
+        self.outbox.status = SystemOutboxStatus.UNKNOWN
+        self.outbox.next_retry_at = None
+        self.outbox.last_error = error
+        return self.outbox
+
+
+class _DispatchAttemptService(_AttemptService):
+    def __init__(self, *, missing_attempt: bool = False) -> None:
+        super().__init__()
+        self.attempt = SimpleNamespace(status="DISPATCHING")
+        self.missing_attempt = missing_attempt
+
+    async def create_attempt(self, _db: Any, **_kwargs: Any) -> SimpleNamespace | None:
+        return None if self.missing_attempt else self.attempt
+
+    async def finalize_attempt_record(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        return kwargs["attempt"]
+
+
+class _CommitFailsAfterSendDatabase:
+    def __init__(self, outbox: SimpleNamespace, *, fail_commit_number: int | None = 3) -> None:
+        self.outbox = outbox
+        self.fail_commit_number = fail_commit_number
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    async def commit(self) -> None:
+        self.commit_count += 1
+        if self.commit_count == self.fail_commit_number:
+            raise RuntimeError("typed evidence commit unavailable")
+
+    async def rollback(self) -> None:
+        self.rollback_count += 1
+        self.outbox.status = SystemOutboxStatus.DISPATCHING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("missing_attempt", "recovery_fails"),
+    [(False, False), (False, True), (True, False)],
+    ids=["commit_recovered", "commit_recovery_failed", "attempt_missing_recovered"],
+)
+async def test_workline_evidence_persistence_failure_never_reopens_sendable_state(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_attempt: bool,
+    recovery_fails: bool,
+) -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-WORKLINE-EVIDENCE-FAIL"})
+    outbox = SimpleNamespace(
+        id=91,
+        dispatch_key="workline-evidence-fail-91",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        target_type="HTTP_ENDPOINT",
+        target_code="WMS_TEST",
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        payload_json={"request_id": "REQ-WORKLINE-EVIDENCE-FAIL"},
+        status=SystemOutboxStatus.NEW,
+        attempt_count=0,
+        next_retry_at=None,
+        last_error=None,
+        operation_domain="WORKLINE",
+        workline_id=None,
+        session_id=None,
+        device_id=None,
+    )
+    repository = _DispatchRepository(outbox)
+    attempt_service = _DispatchAttemptService(missing_attempt=missing_attempt)
+    current_db = _CommitFailsAfterSendDatabase(outbox, fail_commit_number=None if missing_attempt else 3)
+    recovery_db = SimpleNamespace(
+        commit=AsyncMock(side_effect=RuntimeError("isolated recovery unavailable") if recovery_fails else None)
+    )
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
+
+    @asynccontextmanager
+    async def recovery_context():
+        yield recovery_db
+
+    service = OutboxDispatchService(external_http_recovery_context_factory=recovery_context)
+    dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
+    attempt_module = import_module("src.app.runtime.orchestration.services.inbox.dispatch_attempt_service")
+    event_stream_module = import_module("src.app.sys.services.event_stream_service")
+    monkeypatch.setattr(service, "_dispatch_blocked_resource_heads", AsyncMock(return_value=(set(), set())))
+    monkeypatch.setattr(service, "_should_dispatch_to_sandbox", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_dispatch_external_http", sender)
+    monkeypatch.setattr(dispatch_module, "_repair_orphaned_device_busy_dispatches", AsyncMock(return_value=0))
+    monkeypatch.setattr(dispatch_module, "_repair_self_blocked_device_busy_dispatches", AsyncMock(return_value=0))
+    monkeypatch.setattr(dispatch_module, "_record_diagnostic", AsyncMock())
+    monkeypatch.setattr(dispatch_module, "_mark_device_command_failed_if_dispatch_exhausted", AsyncMock())
+    monkeypatch.setattr("src.app.sys.repositories.SystemOutboxRepository", lambda: repository)
+    monkeypatch.setattr(attempt_module, "workline_dispatch_attempt_service", attempt_service)
+    monkeypatch.setattr(event_stream_module, "publish_deferred_sse_events", AsyncMock())
+
+    if recovery_fails:
+        with pytest.raises(ExternalHttpEvidenceRecoveryError):
+            await service.dispatch(current_db, limit=1)
+        assert repository.retry_calls == 0
+        assert sender.await_count == 1
+        assert current_db.rollback_count == 1
+        recovery_db.commit.assert_awaited_once()
+        return
+
+    first = await service.dispatch(current_db, limit=1)
+    second = await service.dispatch(current_db, limit=1)
+
+    assert first == {"dispatched": 1, "success": 0, "failed": 1, "skipped": 0}
+    assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
+    assert outbox.status is SystemOutboxStatus.UNKNOWN
+    assert "EXTERNAL_HTTP_EVIDENCE_PERSISTENCE_FAILED" in outbox.last_error
+    assert repository.retry_calls == 0
+    assert sender.await_count == 1
+    assert current_db.rollback_count == 1
+    recovery_db.commit.assert_awaited_once()
