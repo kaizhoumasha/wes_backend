@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -11,6 +11,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.dispatch_concurrency import (
+    DispatchBucketKey,
+    DispatchBucketPolicy,
+    DispatchClaimBatch,
+    DispatchClaimMetrics,
+    DispatchLeaseClaim,
+)
 from src.app.sys.external_http_evidence import ExternalHttpEvidenceRecoveryError
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
@@ -41,7 +48,29 @@ def _outbox() -> SimpleNamespace:
         last_error=None,
         finished_at=None,
         operation_domain="HANDLING",
+        lease_owner_token="test-owner:1",
+        lease_expires_at=datetime(2027, 1, 1),
     )
+
+
+def _scheduler(outbox: Any) -> SimpleNamespace:
+    outbox.status = SystemOutboxStatus.DISPATCHING
+    claim = DispatchLeaseClaim(
+        outbox=outbox,
+        bucket=DispatchBucketKey("test.profile", "test.operation"),
+        lease_owner_token=str(outbox.lease_owner_token),
+        lease_expires_at=outbox.lease_expires_at,
+        policy=DispatchBucketPolicy(),
+    )
+    first_batch = DispatchClaimBatch(
+        claims=(claim,),
+        metrics=DispatchClaimMetrics(1, 1, 0, 0, (), (), ()),
+    )
+    empty_batch = DispatchClaimBatch(
+        claims=(),
+        metrics=DispatchClaimMetrics(0, 0, 0, None, (), (), ()),
+    )
+    return SimpleNamespace(claim=AsyncMock(side_effect=[first_batch, empty_batch]))
 
 
 class _Repository:
@@ -63,7 +92,8 @@ class _Repository:
         self.outbox.status = SystemOutboxStatus.DISPATCHING
         return self.outbox
 
-    async def mark_as_sent(self, _db: Any, _outbox_id: int) -> SimpleNamespace:
+    async def mark_as_sent(self, _db: Any, _outbox_id: int, *, lease_owner_token: str) -> SimpleNamespace:
+        assert lease_owner_token == self.outbox.lease_owner_token
         self.sent_calls += 1
         self.outbox.status = SystemOutboxStatus.SENT
         return self.outbox
@@ -74,19 +104,28 @@ class _Repository:
         _outbox_id: int,
         error: str,
         _max_retries: int,
+        *,
+        lease_owner_token: str,
     ) -> SimpleNamespace:
+        assert lease_owner_token == self.outbox.lease_owner_token
         self.retry_calls += 1
         self.outbox.status = SystemOutboxStatus.RETRY_WAIT
         self.outbox.last_error = error
         return self.outbox
 
-    async def mark_as_unknown(self, _db: Any, _outbox_id: int, error: str) -> SimpleNamespace:
+    async def mark_as_unknown(
+        self, _db: Any, _outbox_id: int, error: str, *, lease_owner_token: str
+    ) -> SimpleNamespace:
+        assert lease_owner_token == self.outbox.lease_owner_token
         self.unknown_calls += 1
         self.outbox.status = SystemOutboxStatus.UNKNOWN
         self.outbox.last_error = error
         return self.outbox
 
-    async def mark_as_terminal_failure(self, _db: Any, _outbox_id: int, error: str) -> SimpleNamespace:
+    async def mark_as_terminal_failure(
+        self, _db: Any, _outbox_id: int, error: str, *, lease_owner_token: str
+    ) -> SimpleNamespace:
+        assert lease_owner_token == self.outbox.lease_owner_token
         self.terminal_failure_calls += 1
         self.outbox.status = SystemOutboxStatus.FAILED
         self.outbox.last_error = error
@@ -97,7 +136,10 @@ class _Repository:
         _db: Any,
         _outbox_id: int,
         error: str,
+        *,
+        lease_owner_token: str,
     ) -> SimpleNamespace:
+        assert lease_owner_token == self.outbox.lease_owner_token
         self.unknown_calls += 1
         self.outbox.status = SystemOutboxStatus.UNKNOWN
         self.outbox.last_error = error
@@ -149,6 +191,7 @@ async def _dispatch(
     sender = AsyncMock(return_value=result)
     engine = SystemOutboxEngine(
         outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
         dispatch_attempt_service=attempt_service,
         workline_domain_dispatcher=_no_workline_messages,
@@ -175,6 +218,7 @@ async def test_accepted_explicit_protocol_reject_is_transport_sent_without_retry
     assert attempt_service.finalized == [
         {
             "attempt": attempt_service.attempt,
+            "lease_owner_token": "test-owner:1",
             "result": transport_result,
             "outbox_finalization": "sent",
             "auto_commit": False,
@@ -229,6 +273,7 @@ async def test_ambiguous_result_enters_unknown_and_is_not_dispatched_again() -> 
     sender = AsyncMock(return_value=result)
     engine = SystemOutboxEngine(
         outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
         dispatch_attempt_service=attempt_service,
         workline_domain_dispatcher=_no_workline_messages,
@@ -286,6 +331,7 @@ async def test_generic_attempt_evidence_failure_fail_closes_unknown_without_seco
 
     engine = SystemOutboxEngine(
         outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
         dispatch_attempt_service=attempt_service,
         external_http_recovery_context_factory=recovery_context,
@@ -322,6 +368,8 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
         dispatch_key="external-http-recovery-fail-lease",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code="WMS_RCS_BIN_OPERATION",
+        provider_profile_identity="wms.legacy-transport.production",
+        operation_identity="wms.transport.handling@v1",
         payload_json={"request_id": "REQ-RECOVERY-FAIL-LEASE"},
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,
@@ -329,6 +377,10 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
     db_session.add(outbox)
     await db_session.commit()
     await db_session.refresh(outbox)
+    outbox.status = SystemOutboxStatus.DISPATCHING
+    outbox.lease_owner_token = "test-owner:recovery-failure"
+    outbox.lease_expires_at = timezone.now_for_db() + timedelta(minutes=5)
+    await db_session.commit()
     sender = AsyncMock(
         return_value=ExternalHttpTransportResult.accepted(
             http_status_code=202,
@@ -340,8 +392,10 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
     async def unavailable_recovery_context():
         yield SimpleNamespace(commit=AsyncMock())
 
+    repository = SystemOutboxRepository()
     engine = SystemOutboxEngine(
-        outbox_repository=SystemOutboxRepository(),
+        outbox_repository=repository,
+        dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
         dispatch_attempt_service=_FailOnceAttemptService(),
         external_http_recovery_context_factory=unavailable_recovery_context,
@@ -353,13 +407,18 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
     await db_session.refresh(outbox)
     assert outbox.status is SystemOutboxStatus.DISPATCHING
 
-    outbox.next_retry_at = timezone.now_for_db() - timedelta(seconds=1)
+    outbox.lease_expires_at = timezone.now_for_db() - timedelta(seconds=1)
     await db_session.commit()
 
+    fenced = await repository.fence_expired_external_http_leases(
+        db_session,
+        now=timezone.now_for_db(),
+    )
     second = await engine.dispatch(db_session, limit=1)
     await db_session.refresh(outbox)
 
-    assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 1}
+    assert fenced == 1
+    assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
     assert sender.await_count == 1
     assert outbox.status is SystemOutboxStatus.UNKNOWN
     assert outbox.next_retry_at is None

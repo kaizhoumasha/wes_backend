@@ -1,6 +1,7 @@
 """料盘绑定领域 request 到现有 DispatchEnvelope 的唯一映射。"""
 
 from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import CONTRACT
+from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_PRODUCTION_PROFILE_IDENTITY
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
 from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationRequest
@@ -21,6 +22,8 @@ class NotifyPackageBindingDispatchGateway:
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=CONTRACT.target_code,
+            provider_profile_identity=WMS_PRODUCTION_PROFILE_IDENTITY,
+            operation_identity=CONTRACT.identity,
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,

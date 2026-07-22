@@ -30,6 +30,8 @@ async def test_external_http_canonical_bytes_round_trip_exactly(integration_db_s
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="WMS_RCS_BIN_OPERATION",
+            provider_profile_identity="wms.legacy-transport.production",
+            operation_identity="wms.transport.handling@v1",
             payload_json=projection,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,

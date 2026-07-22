@@ -6,7 +6,7 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Text
+from sqlalchemy import JSON, CheckConstraint, Column, Index, Text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -36,6 +36,7 @@ class WorklineDispatchAttemptBase(BaseMixin):
     dispatch_key: str = Field(max_length=200, index=True, description="派发键")
     attempt_no: int = Field(index=True, description="同一 outbox 的尝试序号")
     lease_token: str = Field(max_length=240, unique=True, index=True, description="派发租约 token")
+    lease_expires_at: datetime = Field(description="该 attempt 继承的有限派发 lease 截止时间")
     status: DispatchAttemptStatus = Field(
         default=DispatchAttemptStatus.DISPATCHING,
         index=True,
@@ -120,6 +121,19 @@ class WorklineDispatchAttempt(WorklineDispatchAttemptBase, DataTableMixin, table
 
     __tablename__: ClassVar[str] = "workline_dispatch_attempts"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        CheckConstraint(
+            "length(lease_token) > 0 AND lease_expires_at IS NOT NULL",
+            name="ck_workline_dispatch_attempt_lease_expiry",
+        ),
+        Index(
+            "ix_workline_dispatch_attempt_outbox_lease",
+            "outbox_id",
+            "lease_token",
+            "status",
+        ),
+        {"schema": SchemaType.BIZ.value},
+    )
 
 
 class WorklineDispatchAttemptCreate(ModelFactory(WorklineDispatchAttemptBase).for_create()):

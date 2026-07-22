@@ -371,13 +371,18 @@ def _command(seed: SeededInventory, status: CommandStatus, index: int) -> Device
 
 
 def _outbox(seed: SeededInventory, status: SystemOutboxStatus, index: int) -> SystemOutbox:
+    dispatching = status is SystemOutboxStatus.DISPATCHING
     return SystemOutbox(
         workline_id=seed.linked_workline_id,
         dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
         dispatch_key=f"it-inv-outbox-{status.value}-{index}",
         target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
         target_code="inventory-test",
+        provider_profile_identity="test.inventory.v1",
+        operation_identity="test.inventory.internal-signal",
         status=status,
+        lease_owner_token=f"inventory-test-owner:{index}" if dispatching else None,
+        lease_expires_at=datetime(2099, 1, 1) if dispatching else None,
     )
 
 

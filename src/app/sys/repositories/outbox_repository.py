@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select, update
 
 from src.app.runtime.orchestration.effect_state_contract import transition_system_outbox
+from src.app.sys.dispatch_concurrency import DispatchBucketKey, DispatchBucketState
 from src.app.sys.models.outbox import (
     SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS,
     SystemOutbox,
@@ -40,7 +41,16 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
     async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> SystemOutbox | None:
         """拒绝绕过专用状态方法改写稳定派发身份或冻结请求体。"""
 
-        immutable_fields = {"dispatch_key", "payload_json", "canonical_payload_bytes", "payload_hash"}
+        immutable_fields = {
+            "dispatch_key",
+            "provider_profile_identity",
+            "operation_identity",
+            "payload_json",
+            "canonical_payload_bytes",
+            "payload_hash",
+            "lease_owner_token",
+            "lease_expires_at",
+        }
         attempted_fields = immutable_fields.intersection(data)
         if attempted_fields:
             raise ValueError(f"SystemOutbox {', '.join(sorted(attempted_fields))} 持久化后不可变")
@@ -55,6 +65,325 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(select(SystemOutbox).where(columns.dispatch_key == dispatch_key).with_for_update())
         return result.scalar_one_or_none()
+
+    async def fence_expired_external_http_leases(
+        self,
+        db: AsyncSession,
+        *,
+        now: Any,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+        limit: int = 100,
+    ) -> int:
+        """将过期 HTTP lease 批量收口 UNKNOWN，禁止 scheduler 自动重发。"""
+
+        if limit <= 0:
+            return 0
+        table = cast("Any", SystemOutbox).__table__
+        columns = table.c
+        candidate = table.alias("expired_external_http_lease")
+        cc = candidate.c
+        candidate_ids = (
+            select(cc.id)
+            .select_from(candidate)
+            .where(
+                cc.status == SystemOutboxStatus.DISPATCHING,
+                cc.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP,
+                cc.lease_expires_at.is_not(None),
+                cc.lease_expires_at <= now,
+                *self._operation_domain_predicates(
+                    cc,
+                    operation_domains=operation_domains,
+                    exclude_operation_domains=exclude_operation_domains,
+                ),
+            )
+            .order_by(cc.lease_expires_at, cc.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        result = await db.execute(
+            update(SystemOutbox)
+            .where(columns.id.in_(candidate_ids))
+            .values(
+                status=SystemOutboxStatus.UNKNOWN,
+                attempt_count=columns.attempt_count + 1,
+                last_error=(
+                    "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED: delivery evidence unavailable; automatic replay fenced"
+                ),
+                sent_at=None,
+                next_retry_at=None,
+                lease_expires_at=None,
+                finished_at=now,
+                blocked_by_reconciliation_session_id=None,
+                blocked_by_runtime_hold_id=None,
+                blocked_device_id=None,
+                blocked_workline_id=None,
+                blocked_reason=None,
+                blocked_at=None,
+                last_blocked_check_at=None,
+                blocked_check_count=0,
+                blocked_detail_json={},
+            )
+            .returning(columns.id)
+            .execution_options(synchronize_session=False)
+        )
+        return len(result.scalars().all())
+
+    async def list_dispatch_bucket_keys(
+        self,
+        db: AsyncSession,
+        *,
+        now: Any,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+    ) -> tuple[DispatchBucketKey, ...]:
+        """只按显式调度列返回当前有 durable backlog 的活跃桶。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(
+            select(columns.provider_profile_identity, columns.operation_identity)
+            .where(
+                self._dispatch_claimable_clause(columns, now=now, retry_budget=None),
+                *self._operation_domain_predicates(
+                    columns,
+                    operation_domains=operation_domains,
+                    exclude_operation_domains=exclude_operation_domains,
+                ),
+            )
+            .group_by(columns.provider_profile_identity, columns.operation_identity)
+            .order_by(columns.provider_profile_identity, columns.operation_identity)
+        )
+        return tuple(DispatchBucketKey(str(row[0]), str(row[1])) for row in result.all())
+
+    async def try_lock_dispatch_bucket(self, db: AsyncSession, *, bucket: DispatchBucketKey) -> bool:
+        """用 PostgreSQL transaction advisory lock 串行化单桶预算核算。"""
+
+        bind = db.get_bind()
+        if bind.dialect.name != "postgresql":
+            raise NotImplementedError("SystemOutbox fair bucket claim requires PostgreSQL")
+        lock_identity = f"system-outbox\x1f{bucket.provider_profile_identity}\x1f{bucket.operation_identity}"
+        locked = await db.scalar(select(func.pg_try_advisory_xact_lock(func.hashtextextended(lock_identity, 0))))
+        return bool(locked)
+
+    async def get_dispatch_bucket_state(
+        self,
+        db: AsyncSession,
+        *,
+        bucket: DispatchBucketKey,
+        now: Any,
+        rate_window_seconds: int = 60,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+    ) -> DispatchBucketState:
+        """从索引列与 attempt ledger 汇总 backlog/rate/lease/UNKNOWN SLI。"""
+
+        from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        attempt_columns = cast("Any", WorklineDispatchAttempt).__table__.c
+        bucket_identity_filters = (
+            columns.provider_profile_identity == bucket.provider_profile_identity,
+            columns.operation_identity == bucket.operation_identity,
+        )
+        scoped_bucket_filters = (
+            *bucket_identity_filters,
+            *self._operation_domain_predicates(
+                columns,
+                operation_domains=operation_domains,
+                exclude_operation_domains=exclude_operation_domains,
+            ),
+        )
+        claimable = self._dispatch_claimable_clause(columns, now=now, retry_budget=None)
+        backlog_count = await db.scalar(
+            select(func.count()).select_from(SystemOutbox).where(*scoped_bucket_filters, claimable)
+        )
+        active_lease_count = await db.scalar(
+            select(func.count())
+            .select_from(SystemOutbox)
+            .where(
+                *bucket_identity_filters,
+                columns.status == SystemOutboxStatus.DISPATCHING,
+                columns.lease_expires_at > now,
+            )
+        )
+        expired_lease_count = await db.scalar(
+            select(func.count())
+            .select_from(SystemOutbox)
+            .where(
+                *scoped_bucket_filters,
+                columns.status == SystemOutboxStatus.DISPATCHING,
+                columns.lease_expires_at.is_not(None),
+                columns.lease_expires_at <= now,
+            )
+        )
+        unknown_count = await db.scalar(
+            select(func.count())
+            .select_from(SystemOutbox)
+            .where(*scoped_bucket_filters, columns.status == SystemOutboxStatus.UNKNOWN)
+        )
+        oldest_created_at = await db.scalar(
+            select(func.min(columns.created_at)).select_from(SystemOutbox).where(*scoped_bucket_filters, claimable)
+        )
+        recent_attempt_count = await db.scalar(
+            select(func.count())
+            .select_from(WorklineDispatchAttempt)
+            .join(SystemOutbox, attempt_columns.outbox_id == columns.id)
+            .where(
+                *bucket_identity_filters,
+                attempt_columns.started_at >= now - timedelta(seconds=rate_window_seconds),
+            )
+        )
+        return DispatchBucketState(
+            key=bucket,
+            backlog_count=int(backlog_count or 0),
+            active_lease_count=int(active_lease_count or 0),
+            recent_attempt_count=int(recent_attempt_count or 0),
+            oldest_created_at=oldest_created_at,
+            unknown_count=int(unknown_count or 0),
+            expired_lease_count=int(expired_lease_count or 0),
+        )
+
+    def build_claim_next_in_bucket_statement(
+        self,
+        *,
+        bucket: DispatchBucketKey,
+        lease_owner_token: str,
+        lease_seconds: int,
+        retry_budget: int,
+        now: Any,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+    ) -> Any:
+        """构建单桶原子 claim；候选选择只读取可索引的 typed columns。"""
+
+        table = cast("Any", SystemOutbox).__table__
+        columns = table.c
+        candidate = table.alias("dispatch_claim_candidate")
+        cc = candidate.c
+        current_device = self._device_resolution_alias("dispatch_claim_candidate_device")
+        older_outbox = table.alias("older_dispatch_claim_device_outbox")
+        older_device = self._device_resolution_alias("older_dispatch_claim_device")
+        candidate_from = candidate.outerjoin(
+            current_device,
+            self._device_resolution_join_condition(cc, current_device),
+        )
+        older_device_from = older_outbox.outerjoin(
+            older_device,
+            self._device_resolution_join_condition(older_outbox.c, older_device),
+        )
+        earlier_active_device_outbox_exists = exists(
+            select(1)
+            .select_from(older_device_from)
+            .where(
+                older_outbox.c.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
+                older_outbox.c.status.in_(
+                    [
+                        SystemOutboxStatus.NEW,
+                        SystemOutboxStatus.DISPATCHING,
+                        SystemOutboxStatus.RETRY_WAIT,
+                    ]
+                ),
+                self._same_physical_device_predicate(
+                    current_columns=cc,
+                    current_device=current_device,
+                    other_columns=older_outbox.c,
+                    other_device=older_device,
+                ),
+                or_(
+                    older_outbox.c.created_at < cc.created_at,
+                    and_(older_outbox.c.created_at == cc.created_at, older_outbox.c.id < cc.id),
+                ),
+            )
+        )
+        candidate_ids = (
+            select(cc.id)
+            .select_from(candidate_from)
+            .where(
+                cc.provider_profile_identity == bucket.provider_profile_identity,
+                cc.operation_identity == bucket.operation_identity,
+                self._dispatch_claimable_clause(cc, now=now, retry_budget=retry_budget),
+                or_(
+                    cc.dispatch_type != SystemOutboxDispatchType.DEVICE_COMMAND,
+                    ~earlier_active_device_outbox_exists,
+                ),
+                *self._operation_domain_predicates(
+                    cc,
+                    operation_domains=operation_domains,
+                    exclude_operation_domains=exclude_operation_domains,
+                ),
+            )
+            .order_by(cc.created_at, cc.id)
+            .limit(1)
+            .with_for_update(skip_locked=True, of=candidate)
+            # PostgreSQL 的自更新语句可能为每个外层行重求值 SKIP LOCKED 子查询；
+            # MATERIALIZED 固定本次事务唯一候选，避免 LIMIT 1 仍更新整桶。
+            .cte("dispatch_claim_candidate_ids")
+            .prefix_with("MATERIALIZED")
+        )
+        return (
+            update(SystemOutbox)
+            .where(columns.id == candidate_ids.c.id)
+            .values(
+                status=SystemOutboxStatus.DISPATCHING,
+                lease_owner_token=lease_owner_token,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+                next_retry_at=None,
+                finished_at=None,
+            )
+            .returning(SystemOutbox)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def claim_next_in_bucket(
+        self,
+        db: AsyncSession,
+        *,
+        bucket: DispatchBucketKey,
+        lease_owner_token: str,
+        lease_seconds: int,
+        retry_budget: int,
+        now: Any,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+    ) -> SystemOutbox | None:
+        """在已持有 bucket transaction lock 时领取一条消息。"""
+
+        result = await db.execute(
+            self.build_claim_next_in_bucket_statement(
+                bucket=bucket,
+                lease_owner_token=lease_owner_token,
+                lease_seconds=lease_seconds,
+                retry_budget=retry_budget,
+                now=now,
+                operation_domains=operation_domains,
+                exclude_operation_domains=exclude_operation_domains,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _dispatch_claimable_clause(columns: Any, *, now: Any, retry_budget: int | None) -> Any:
+        retry_budget_clause = True if retry_budget is None else columns.attempt_count <= retry_budget
+        return and_(
+            retry_budget_clause,
+            or_(
+                and_(
+                    columns.status == SystemOutboxStatus.NEW,
+                    or_(columns.next_retry_at.is_(None), columns.next_retry_at <= now),
+                ),
+                and_(
+                    columns.status == SystemOutboxStatus.RETRY_WAIT,
+                    columns.next_retry_at.is_not(None),
+                    columns.next_retry_at <= now,
+                ),
+                and_(
+                    columns.status == SystemOutboxStatus.DISPATCHING,
+                    columns.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP,
+                    columns.lease_expires_at.is_not(None),
+                    columns.lease_expires_at <= now,
+                ),
+            ),
+        )
 
     async def get_pending_messages(
         self,
@@ -204,7 +533,16 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         )
         return list(result.scalars().all())
 
-    async def mark_as_dispatching(self, db: AsyncSession, outbox_id: int) -> SystemOutbox | None:
+    async def mark_as_dispatching(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        lease_owner_token: str,
+        lease_seconds: int = DISPATCH_LEASE_SECONDS,
+    ) -> SystemOutbox | None:
+        """显式 owner 领取单条 outbox；dispatcher 批量路径统一使用 fair scheduler。"""
+
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
         outbox = result.scalar_one_or_none()
@@ -214,8 +552,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         now = timezone.now_for_db()
         stale_dispatching = (
             outbox.status == SystemOutboxStatus.DISPATCHING
-            and outbox.next_retry_at is not None
-            and outbox.next_retry_at <= now
+            and outbox.lease_expires_at is not None
+            and outbox.lease_expires_at <= now
         )
         if stale_dispatching and outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
             # HTTP 请求在 worker 失联前可能已经越过本地边界；
@@ -228,6 +566,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             )
             outbox.sent_at = None
             outbox.next_retry_at = None
+            outbox.lease_expires_at = None
             outbox.finished_at = now
             await db.flush()
             return None
@@ -236,7 +575,9 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
 
         if outbox.status != SystemOutboxStatus.DISPATCHING:
             transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
-        outbox.next_retry_at = now + timedelta(seconds=self.DISPATCH_LEASE_SECONDS)
+        outbox.next_retry_at = None
+        outbox.lease_owner_token = lease_owner_token
+        outbox.lease_expires_at = now + timedelta(seconds=lease_seconds)
         await db.flush()
         return outbox
 
@@ -249,6 +590,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         min_probe_interval_seconds: int = 2,
         operation_domains: Sequence[str] | None = None,
         exclude_operation_domains: Sequence[str] | None = None,
+        lease_owner_token: str,
+        lease_seconds: int,
     ) -> SystemOutbox | None:
         columns = cast("Any", SystemOutbox).__table__.c
         current_device = self._device_resolution_alias("claim_blocked_outbox_device")
@@ -307,23 +650,37 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
 
         transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
         self._clear_block(outbox)
-        outbox.next_retry_at = now + timedelta(seconds=self.DISPATCH_LEASE_SECONDS)
+        outbox.lease_owner_token = lease_owner_token
+        outbox.lease_expires_at = now + timedelta(seconds=lease_seconds)
         await db.flush()
         return outbox
 
-    async def mark_as_sent(self, db: AsyncSession, outbox_id: int) -> SystemOutbox | None:
+    async def mark_as_sent(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        lease_owner_token: str,
+    ) -> SystemOutbox | None:
         columns = cast("Any", SystemOutbox).__table__.c
-        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        now = timezone.now_for_db()
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.id == outbox_id,
+                columns.status == SystemOutboxStatus.DISPATCHING,
+                columns.lease_owner_token == lease_owner_token,
+                columns.lease_expires_at > now,
+            )
+            .with_for_update()
+        )
         outbox = result.scalar_one_or_none()
-        if (
-            outbox is None
-            or outbox.status != SystemOutboxStatus.DISPATCHING
-            or getattr(outbox, "finished_at", None) is not None
-        ):
+        if outbox is None or getattr(outbox, "finished_at", None) is not None:
             return None
         transition_system_outbox(outbox, SystemOutboxStatus.SENT)
-        outbox.sent_at = timezone.now_for_db()
+        outbox.sent_at = now
         outbox.next_retry_at = None
+        outbox.lease_expires_at = None
         outbox.last_error = None
         await db.flush()
         return outbox
@@ -368,13 +725,23 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox_id: int,
         error: str,
         max_retries: int = 3,
+        *,
+        lease_owner_token: str,
     ) -> SystemOutbox | None:
         columns = cast("Any", SystemOutbox).__table__.c
-        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        now = timezone.now_for_db()
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.id == outbox_id,
+                columns.status == SystemOutboxStatus.DISPATCHING,
+                columns.lease_owner_token == lease_owner_token,
+                columns.lease_expires_at > now,
+            )
+            .with_for_update()
+        )
         outbox = result.scalar_one_or_none()
         if outbox is None:
-            return None
-        if outbox.status != SystemOutboxStatus.DISPATCHING:
             return None
 
         outbox.attempt_count += 1
@@ -383,10 +750,11 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         if outbox.attempt_count > max_retries:
             transition_system_outbox(outbox, SystemOutboxStatus.FAILED)
             outbox.next_retry_at = None
-            outbox.finished_at = timezone.now_for_db()
+            outbox.finished_at = now
         else:
             transition_system_outbox(outbox, SystemOutboxStatus.RETRY_WAIT)
-            outbox.next_retry_at = timezone.now_for_db() + timedelta(seconds=2 ** (outbox.attempt_count - 1))
+            outbox.next_retry_at = now + timedelta(seconds=2 ** (outbox.attempt_count - 1))
+        outbox.lease_expires_at = None
         await db.flush()
         return outbox
 
@@ -395,11 +763,23 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         db: AsyncSession,
         outbox_id: int,
         error: str,
+        *,
+        lease_owner_token: str,
     ) -> SystemOutbox | None:
         """将送达结果不确定的 attempt 终止为 UNKNOWN，禁止自动重试。"""
 
         columns = cast("Any", SystemOutbox).__table__.c
-        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        now = timezone.now_for_db()
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.id == outbox_id,
+                columns.status == SystemOutboxStatus.DISPATCHING,
+                columns.lease_owner_token == lease_owner_token,
+                columns.lease_expires_at > now,
+            )
+            .with_for_update()
+        )
         outbox = result.scalar_one_or_none()
         if outbox is None or outbox.status != SystemOutboxStatus.DISPATCHING:
             return None
@@ -409,7 +789,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         transition_system_outbox(outbox, SystemOutboxStatus.UNKNOWN)
         outbox.last_error = error
         outbox.next_retry_at = None
-        outbox.finished_at = timezone.now_for_db()
+        outbox.lease_expires_at = None
+        outbox.finished_at = now
         await db.flush()
         return outbox
 
@@ -418,6 +799,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         db: AsyncSession,
         outbox_id: int,
         error: str,
+        *,
+        lease_owner_token: str,
     ) -> SystemOutbox | None:
         """证据事务结果不确定时，以独立事务强制收口 EXTERNAL_HTTP 为 UNKNOWN。
 
@@ -426,7 +809,14 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         """
 
         columns = cast("Any", SystemOutbox).__table__.c
-        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.id == outbox_id,
+                columns.lease_owner_token == lease_owner_token,
+            )
+            .with_for_update()
+        )
         outbox = result.scalar_one_or_none()
         if outbox is None or outbox.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
             return None
@@ -439,6 +829,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.last_error = error
         outbox.sent_at = None
         outbox.next_retry_at = None
+        outbox.lease_expires_at = None
         outbox.finished_at = timezone.now_for_db()
         await db.flush()
         return outbox
@@ -448,11 +839,23 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         db: AsyncSession,
         outbox_id: int,
         error: str,
+        *,
+        lease_owner_token: str,
     ) -> SystemOutbox | None:
         """将不可重试且明确未发送的 attempt 终止为 FAILED。"""
 
         columns = cast("Any", SystemOutbox).__table__.c
-        result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
+        now = timezone.now_for_db()
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.id == outbox_id,
+                columns.status == SystemOutboxStatus.DISPATCHING,
+                columns.lease_owner_token == lease_owner_token,
+                columns.lease_expires_at > now,
+            )
+            .with_for_update()
+        )
         outbox = result.scalar_one_or_none()
         if outbox is None or outbox.status != SystemOutboxStatus.DISPATCHING:
             return None
@@ -462,16 +865,24 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         transition_system_outbox(outbox, SystemOutboxStatus.FAILED)
         outbox.last_error = error
         outbox.next_retry_at = None
-        outbox.finished_at = timezone.now_for_db()
+        outbox.lease_expires_at = None
+        outbox.finished_at = now
         await db.flush()
         return outbox
 
-    async def mark_as_blocked_by_workline_estop(self, db: AsyncSession, outbox_id: int) -> SystemOutbox | None:
+    async def mark_as_blocked_by_workline_estop(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        lease_owner_token: str | None = None,
+    ) -> SystemOutbox | None:
         return await self._block_or_fail(
             db,
             outbox_id,
             status=SystemOutboxStatus.CANCELLED,
             reason="BLOCKED_BY_WORKLINE_ESTOP",
+            lease_owner_token=lease_owner_token,
         )
 
     async def mark_as_blocked_by_workline_state(
@@ -483,8 +894,9 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         reason: str,
         blocked_device_id: int | None = None,
         blocked_workline_id: int | None = None,
+        lease_owner_token: str | None = None,
     ) -> SystemOutbox | None:
-        outbox = await self._get_active_for_block(db, outbox_id)
+        outbox = await self._get_active_for_block(db, outbox_id, lease_owner_token=lease_owner_token)
         if outbox is None:
             return None
         self._transition_to_retry_wait(outbox)
@@ -494,6 +906,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.blocked_reason = reason
         outbox.last_error = reason
         outbox.next_retry_at = None
+        outbox.lease_expires_at = None
         outbox.finished_at = None
         await db.flush()
         return outbox
@@ -504,8 +917,9 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox_id: int,
         *,
         blocked_workline_id: int | None = None,
+        lease_owner_token: str | None = None,
     ) -> SystemOutbox | None:
-        outbox = await self._get_active_for_block(db, outbox_id)
+        outbox = await self._get_active_for_block(db, outbox_id, lease_owner_token=lease_owner_token)
         if outbox is None:
             return None
         self._transition_to_retry_wait(outbox)
@@ -515,6 +929,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.blocked_reason = "WORKLINE_STOPPED_WAITING_START"
         outbox.last_error = "WORKLINE_STOPPED_WAITING_START"
         outbox.next_retry_at = None
+        outbox.lease_expires_at = None
         outbox.finished_at = None
         await db.flush()
         return outbox
@@ -529,8 +944,9 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         owner_session_id: int | None = None,
         blocked_device_id: int | None = None,
         blocked_workline_id: int | None = None,
+        lease_owner_token: str | None = None,
     ) -> SystemOutbox | None:
-        outbox = await self._get_active_for_block(db, outbox_id)
+        outbox = await self._get_active_for_block(db, outbox_id, lease_owner_token=lease_owner_token)
         if outbox is None:
             return None
         self._transition_to_retry_wait(outbox)
@@ -541,6 +957,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.blocked_reason = reason
         outbox.last_error = reason
         outbox.next_retry_at = None
+        outbox.lease_expires_at = None
         outbox.finished_at = None
         await db.flush()
         return outbox
@@ -555,6 +972,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         reason: str = "DEVICE_BUSY",
         last_error: str | None = None,
         detail: dict[str, Any] | None = None,
+        lease_owner_token: str | None = None,
     ) -> SystemOutbox | None:
         return await self.block_for_resource_wait(
             db,
@@ -564,6 +982,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             blocked_workline_id=blocked_workline_id,
             last_error=last_error,
             detail=detail,
+            lease_owner_token=lease_owner_token,
         )
 
     async def update_resource_wait_detail(
@@ -602,10 +1021,16 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         blocked_workline_id: int | None = None,
         last_error: str | None = None,
         detail: dict[str, Any] | None = None,
+        lease_owner_token: str | None = None,
     ) -> SystemOutbox | None:
         if reason not in self.DEVICE_RESOURCE_WAIT_REASONS:
             raise ValueError(f"不受控的设备资源等待原因: {reason}")
-        outbox = await self._get_active_for_resource_wait(db, outbox_id, reason=reason)
+        outbox = await self._get_active_for_resource_wait(
+            db,
+            outbox_id,
+            reason=reason,
+            lease_owner_token=lease_owner_token,
+        )
         if outbox is None:
             return None
         now = timezone.now_for_db()
@@ -625,6 +1050,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.blocked_reason = reason
         outbox.last_error = last_error or reason
         outbox.next_retry_at = None
+        outbox.lease_expires_at = None
         outbox.finished_at = None
         if outbox.blocked_at is None:
             outbox.blocked_at = now
@@ -1022,26 +1448,42 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         *,
         status: SystemOutboxStatus,
         reason: str,
+        lease_owner_token: str | None,
     ) -> SystemOutbox | None:
-        outbox = await self._get_active_for_block(db, outbox_id)
+        outbox = await self._get_active_for_block(db, outbox_id, lease_owner_token=lease_owner_token)
         if outbox is None:
             return None
         transition_system_outbox(outbox, status)
         outbox.last_error = reason
         outbox.next_retry_at = None
+        outbox.lease_expires_at = None
         outbox.finished_at = timezone.now_for_db()
         await db.flush()
         return outbox
 
-    async def _get_active_for_block(self, db: AsyncSession, outbox_id: int) -> SystemOutbox | None:
+    async def _get_active_for_block(
+        self,
+        db: AsyncSession,
+        outbox_id: int,
+        *,
+        lease_owner_token: str | None,
+    ) -> SystemOutbox | None:
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
         outbox = result.scalar_one_or_none()
         if outbox is None:
             return None
-        if outbox.status not in {SystemOutboxStatus.NEW, SystemOutboxStatus.DISPATCHING}:
-            return None
-        return outbox
+        if outbox.status == SystemOutboxStatus.NEW and lease_owner_token is None:
+            return outbox
+        if (
+            outbox.status == SystemOutboxStatus.DISPATCHING
+            and isinstance(lease_owner_token, str)
+            and outbox.lease_owner_token == lease_owner_token
+            and outbox.lease_expires_at is not None
+            and outbox.lease_expires_at > timezone.now_for_db()
+        ):
+            return outbox
+        return None
 
     async def _get_active_for_resource_wait(
         self,
@@ -1049,13 +1491,22 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox_id: int,
         *,
         reason: str,
+        lease_owner_token: str | None,
     ) -> SystemOutbox | None:
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
         outbox = result.scalar_one_or_none()
         if outbox is None:
             return None
-        if outbox.status in {SystemOutboxStatus.NEW, SystemOutboxStatus.DISPATCHING}:
+        if outbox.status == SystemOutboxStatus.NEW and lease_owner_token is None:
+            return outbox
+        if (
+            outbox.status == SystemOutboxStatus.DISPATCHING
+            and isinstance(lease_owner_token, str)
+            and outbox.lease_owner_token == lease_owner_token
+            and outbox.lease_expires_at is not None
+            and outbox.lease_expires_at > timezone.now_for_db()
+        ):
             return outbox
         if (
             outbox.status == SystemOutboxStatus.RETRY_WAIT

@@ -9,6 +9,13 @@ import pytest
 
 from src.app.runtime.orchestration.services.device_command_gateway import _DeviceCommandGovernanceError
 from src.app.sys.canonical_dispatch import CanonicalPayload, ExternalHttpDispatchRequest
+from src.app.sys.dispatch_concurrency import (
+    DispatchBucketKey,
+    DispatchBucketPolicy,
+    DispatchClaimBatch,
+    DispatchClaimMetrics,
+    DispatchLeaseClaim,
+)
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportPhase,
@@ -65,7 +72,8 @@ class FakeSystemOutboxRepository:
                 return message
         return None
 
-    async def mark_as_sent(self, _db: Any, outbox_id: int) -> Any | None:
+    async def mark_as_sent(self, _db: Any, outbox_id: int, *, lease_owner_token: str) -> Any | None:
+        assert lease_owner_token
         self.mark_sent_calls.append(outbox_id)
         for message in self.messages:
             if message.id == outbox_id and message.status == SystemOutboxStatus.DISPATCHING:
@@ -73,7 +81,16 @@ class FakeSystemOutboxRepository:
                 return message
         return None
 
-    async def mark_as_failed(self, _db: Any, outbox_id: int, error: str, max_retries: int = 3) -> Any | None:
+    async def mark_as_failed(
+        self,
+        _db: Any,
+        outbox_id: int,
+        error: str,
+        max_retries: int = 3,
+        *,
+        lease_owner_token: str,
+    ) -> Any | None:
+        assert lease_owner_token
         self.mark_failed_calls.append((outbox_id, error, max_retries))
         for message in self.messages:
             if message.id == outbox_id:
@@ -82,7 +99,8 @@ class FakeSystemOutboxRepository:
                 return message
         return None
 
-    async def mark_as_unknown(self, _db: Any, outbox_id: int, error: str) -> Any | None:
+    async def mark_as_unknown(self, _db: Any, outbox_id: int, error: str, *, lease_owner_token: str) -> Any | None:
+        assert lease_owner_token
         for message in self.messages:
             if message.id == outbox_id and message.status == SystemOutboxStatus.DISPATCHING:
                 message.status = SystemOutboxStatus.UNKNOWN
@@ -90,7 +108,10 @@ class FakeSystemOutboxRepository:
                 return message
         return None
 
-    async def mark_as_terminal_failure(self, _db: Any, outbox_id: int, error: str) -> Any | None:
+    async def mark_as_terminal_failure(
+        self, _db: Any, outbox_id: int, error: str, *, lease_owner_token: str
+    ) -> Any | None:
+        assert lease_owner_token
         for message in self.messages:
             if message.id == outbox_id and message.status == SystemOutboxStatus.DISPATCHING:
                 message.status = SystemOutboxStatus.FAILED
@@ -108,7 +129,9 @@ class FakeSystemOutboxRepository:
         reason: str = "DEVICE_BUSY",
         last_error: str | None = None,
         detail: dict[str, Any] | None = None,
+        lease_owner_token: str | None = None,
     ) -> Any | None:
+        assert lease_owner_token
         call = {
             "outbox_id": outbox_id,
             "blocked_device_id": blocked_device_id,
@@ -116,6 +139,7 @@ class FakeSystemOutboxRepository:
             "reason": reason,
             "last_error": last_error,
             "detail": dict(detail or {}),
+            "lease_owner_token": lease_owner_token,
         }
         self.blocked_resource_calls.append(call)
         if self.block_resource_wait_returns_none:
@@ -147,6 +171,56 @@ class FakeDispatchAttemptService:
         assert kwargs["auto_commit"] is False
         self.finalized.append(kwargs)
         return kwargs["attempt"]
+
+    async def finalize_attempt_record(self, _db: Any, **kwargs: Any) -> Any:
+        assert kwargs["auto_commit"] is False
+        self.finalized.append(kwargs)
+        return kwargs["attempt"]
+
+
+class FakeFairDispatchScheduler:
+    def __init__(self, repository: FakeSystemOutboxRepository) -> None:
+        self.repository = repository
+        self.claim_calls: list[dict[str, Any]] = []
+
+    async def claim(self, _db: Any, **kwargs: Any) -> DispatchClaimBatch:
+        self.claim_calls.append(dict(kwargs))
+        excluded_domains = tuple(kwargs.get("exclude_operation_domains") or ())
+        messages = [
+            message
+            for message in self.repository.messages
+            if (
+                message.status in {SystemOutboxStatus.NEW, SystemOutboxStatus.RETRY_WAIT}
+                or (
+                    message.status == SystemOutboxStatus.DISPATCHING
+                    and message.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP
+                    and getattr(message, "lease_expires_at", None) is not None
+                    and message.lease_expires_at <= datetime(2026, 5, 22, 8, 0, 0)
+                )
+            )
+            and getattr(message, "operation_domain", None) not in excluded_domains
+        ][: int(kwargs["limit"])]
+        policy = DispatchBucketPolicy()
+        claims = []
+        for message in messages:
+            owner = f"test-owner:{message.id}"
+            expires_at = datetime(2026, 5, 22, 8, 5, 0)
+            message.status = SystemOutboxStatus.DISPATCHING
+            message.lease_owner_token = owner
+            message.lease_expires_at = expires_at
+            claims.append(
+                DispatchLeaseClaim(
+                    outbox=message,
+                    bucket=DispatchBucketKey("test.profile", "test.operation"),
+                    lease_owner_token=owner,
+                    lease_expires_at=expires_at,
+                    policy=policy,
+                )
+            )
+        return DispatchClaimBatch(
+            claims=tuple(claims),
+            metrics=DispatchClaimMetrics(0, len(claims), 0, None, (), (), ()),
+        )
 
 
 class NoopEffectTransportBridge:
@@ -192,6 +266,7 @@ async def test_system_outbox_dispatcher_sends_external_http_and_marks_sent() -> 
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
         external_http_sender=sender,
         dispatch_attempt_service=FakeDispatchAttemptService(),
         effect_transport_bridge=NoopEffectTransportBridge(),
@@ -205,10 +280,42 @@ async def test_system_outbox_dispatcher_sends_external_http_and_marks_sent() -> 
     assert isinstance(request, ExternalHttpDispatchRequest)
     assert request.endpoint.url == "http://wms-rcs/api/wes/transport-request"
     assert request.body == message.canonical_payload_bytes
-    assert repo.mark_dispatching_calls == [1]
+    assert repo.mark_dispatching_calls == []
     assert repo.mark_sent_calls == [1]
     assert message.status == SystemOutboxStatus.SENT
     assert db.commit.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_system_outbox_dispatcher_persists_full_claim_batch_attempts_before_first_send() -> None:
+    messages = [
+        _outbox(id=31, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
+        _outbox(id=32, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
+    ]
+    repo = FakeSystemOutboxRepository(messages)
+    events: list[str] = []
+
+    class AttemptService(FakeDispatchAttemptService):
+        async def create_attempt(self, db: Any, *, outbox: Any, auto_commit: bool) -> Any:
+            events.append(f"attempt:{outbox.id}")
+            return await super().create_attempt(db, outbox=outbox, auto_commit=auto_commit)
+
+    async def device_sender(_db: Any, outbox: Any) -> bool:
+        events.append(f"send:{outbox.id}")
+        return True
+
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
+        dispatch_attempt_service=AttemptService(),
+        workline_domain_dispatcher=_no_workline_messages,
+        device_command_dispatcher=device_sender,
+    )
+
+    result = await dispatcher.dispatch(SimpleNamespace(commit=AsyncMock()), limit=10)
+
+    assert result == {"dispatched": 2, "success": 2, "failed": 0, "skipped": 0}
+    assert events[:2] == ["attempt:31", "attempt:32"]
 
 
 @pytest.mark.asyncio
@@ -226,6 +333,7 @@ async def test_system_outbox_dispatcher_marks_failed_when_external_http_fails() 
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
         external_http_sender=sender,
         dispatch_attempt_service=FakeDispatchAttemptService(),
         effect_transport_bridge=NoopEffectTransportBridge(),
@@ -252,6 +360,7 @@ async def test_system_outbox_dispatcher_bridges_persisted_transport_evidence_to_
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
         external_http_sender=AsyncMock(return_value=sender_result),
         dispatch_attempt_service=FakeDispatchAttemptService(),
         effect_transport_bridge=effect_bridge,
@@ -277,13 +386,15 @@ async def test_system_outbox_dispatcher_reclaims_stale_non_http_dispatching_mess
         target_type=SystemOutboxTargetType.DEVICE,
         target_code="DEVICE-LEASE-3",
         status=SystemOutboxStatus.DISPATCHING,
-        next_retry_at=datetime(2026, 5, 22, 7, 59, 0),
+        lease_owner_token="old-owner",
+        lease_expires_at=datetime(2026, 5, 22, 7, 59, 0),
     )
     repo = FakeSystemOutboxRepository([message])
     device_sender = AsyncMock(return_value=True)
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
         device_command_dispatcher=device_sender,
         dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
@@ -293,7 +404,7 @@ async def test_system_outbox_dispatcher_reclaims_stale_non_http_dispatching_mess
 
     assert result == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
     device_sender.assert_awaited_once_with(db, message)
-    assert repo.mark_dispatching_calls == [3]
+    assert repo.mark_dispatching_calls == []
     assert message.status == SystemOutboxStatus.SENT
 
 
@@ -309,6 +420,7 @@ async def test_system_outbox_dispatcher_delegates_workline_domain_to_workline_go
 
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
         workline_domain_dispatcher=fake_workline_dispatcher,
     )
 
@@ -329,8 +441,10 @@ async def test_system_outbox_dispatcher_excludes_rack_domain_from_generic_http_d
         )
     )
     db = SimpleNamespace(commit=AsyncMock())
+    scheduler = FakeFairDispatchScheduler(repo)
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=scheduler,
         external_http_sender=sender,
         workline_domain_dispatcher=_no_workline_messages,
     )
@@ -338,7 +452,7 @@ async def test_system_outbox_dispatcher_excludes_rack_domain_from_generic_http_d
     result = await dispatcher.dispatch(db, limit=10)
 
     assert result == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-    assert repo.pending_filters[-1]["exclude_operation_domains"] == ("WORKLINE", "RACK")
+    assert scheduler.claim_calls[-1]["exclude_operation_domains"] == ("WORKLINE", "RACK")
     sender.assert_not_awaited()
     assert repo.mark_dispatching_calls == []
 
@@ -356,6 +470,8 @@ async def test_system_outbox_dispatcher_delegates_device_command_to_device_gatew
 
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
+        dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
         device_command_dispatcher=fake_device_dispatcher,
     )
@@ -389,6 +505,8 @@ async def test_system_outbox_dispatcher_parks_device_command_resource_wait() -> 
 
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
+        dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
         device_command_dispatcher=fake_device_dispatcher,
     )
@@ -405,6 +523,7 @@ async def test_system_outbox_dispatcher_parks_device_command_resource_wait() -> 
             "reason": "DEVICE_BUSY",
             "last_error": "设备 ARM01 实时状态忙，拒绝命令派发",
             "detail": {"device_code": "ARM01", "last_probe_result": "BUSY"},
+            "lease_owner_token": "test-owner:6",
         }
     ]
     assert message.status == SystemOutboxStatus.RETRY_WAIT
@@ -422,6 +541,8 @@ async def test_system_outbox_dispatcher_reraises_non_resource_wait_runtime_error
 
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
+        dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
         device_command_dispatcher=fake_device_dispatcher,
     )
@@ -452,6 +573,8 @@ async def test_system_outbox_dispatcher_counts_resource_wait_fencing_as_skipped(
 
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
+        dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
         device_command_dispatcher=fake_device_dispatcher,
     )

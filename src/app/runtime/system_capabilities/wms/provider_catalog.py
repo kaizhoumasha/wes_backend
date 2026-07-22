@@ -30,8 +30,7 @@ from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract 
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import (
     CONTRACT as QUERY_INVENTORY_CONTRACT,
 )
-
-WMS_MATERIAL_FLOW_CONTRACT_VERSION = "2026-07-06.material-flow"
+from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_MATERIAL_FLOW_CONTRACT_VERSION
 
 
 def _binding(profile, outbound_auth, operation):

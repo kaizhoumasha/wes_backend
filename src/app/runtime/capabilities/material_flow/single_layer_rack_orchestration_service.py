@@ -407,6 +407,8 @@ class SingleLayerRackOrchestrationService:
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=str(rack_operation_request["target_code"]),
+            provider_profile_identity="wms.legacy-transport.production",
+            operation_identity="wms.transport.rack@v1",
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,

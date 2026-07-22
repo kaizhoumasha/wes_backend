@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,7 @@ from src.app.runtime.orchestration.models.dispatch_attempt import (
     WorklineDispatchAttempt,
 )
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import (
+    OutboxLeaseLost,
     workline_dispatch_attempt_service,
 )
 from src.app.sys.external_http_transport import (
@@ -20,6 +22,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
+from src.utils.timezone import timezone
 
 
 def test_dispatch_attempt_model_exposes_typed_external_http_evidence_columns() -> None:
@@ -74,12 +77,17 @@ async def test_finalize_external_http_attempt_record_persists_typed_evidence(
     expected_status: DispatchAttemptStatus,
     outbox_finalization: str,
 ) -> None:
-    attempt = SimpleNamespace(status=DispatchAttemptStatus.DISPATCHING)
+    attempt = SimpleNamespace(
+        status=DispatchAttemptStatus.DISPATCHING,
+        lease_token="attempt-owner",
+        lease_expires_at=timezone.now_for_db() + timedelta(minutes=5),
+    )
     db = SimpleNamespace(flush=AsyncMock(), commit=AsyncMock())
 
     finalized = await workline_dispatch_attempt_service.finalize_external_http_attempt_record(
         db,
         attempt=attempt,
+        lease_owner_token="attempt-owner",
         result=transport_result,
         outbox_finalization=outbox_finalization,
     )
@@ -109,10 +117,11 @@ async def test_finalize_external_http_attempt_rejects_second_terminal_write() ->
         error_code="READ_TIMEOUT",
     )
 
-    with pytest.raises(ValueError, match="非法状态转移"):
+    with pytest.raises(OutboxLeaseLost, match="OUTBOX_LEASE_LOST"):
         await workline_dispatch_attempt_service.finalize_external_http_attempt_record(
             db,
             attempt=attempt,
+            lease_owner_token="attempt-owner",
             result=result,
             outbox_finalization="unknown",
         )

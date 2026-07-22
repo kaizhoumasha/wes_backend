@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 from importlib import import_module
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,13 @@ import pytest
 
 from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import OutboxDispatchService
 from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.dispatch_concurrency import (
+    DispatchBucketKey,
+    DispatchBucketPolicy,
+    DispatchClaimBatch,
+    DispatchClaimMetrics,
+    DispatchLeaseClaim,
+)
 from src.app.sys.external_http_evidence import ExternalHttpEvidenceRecoveryError
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
@@ -27,22 +35,38 @@ class _Repository:
         self.outbox = SimpleNamespace(id=1, status=SystemOutboxStatus.DISPATCHING)
         self.calls: list[str] = []
 
-    async def mark_as_sent(self, _db: Any, _outbox_id: int) -> SimpleNamespace:
+    async def mark_as_sent(self, _db: Any, _outbox_id: int, *, lease_owner_token: str) -> SimpleNamespace:
+        assert lease_owner_token
         self.calls.append("sent")
         self.outbox.status = SystemOutboxStatus.SENT
         return self.outbox
 
-    async def mark_as_failed(self, _db: Any, _outbox_id: int, _error: str, _max_retries: int) -> SimpleNamespace:
+    async def mark_as_failed(
+        self,
+        _db: Any,
+        _outbox_id: int,
+        _error: str,
+        _max_retries: int,
+        *,
+        lease_owner_token: str,
+    ) -> SimpleNamespace:
+        assert lease_owner_token
         self.calls.append("retry_wait")
         self.outbox.status = SystemOutboxStatus.RETRY_WAIT
         return self.outbox
 
-    async def mark_as_unknown(self, _db: Any, _outbox_id: int, _error: str) -> SimpleNamespace:
+    async def mark_as_unknown(
+        self, _db: Any, _outbox_id: int, _error: str, *, lease_owner_token: str
+    ) -> SimpleNamespace:
+        assert lease_owner_token
         self.calls.append("unknown")
         self.outbox.status = SystemOutboxStatus.UNKNOWN
         return self.outbox
 
-    async def mark_as_terminal_failure(self, _db: Any, _outbox_id: int, _error: str) -> SimpleNamespace:
+    async def mark_as_terminal_failure(
+        self, _db: Any, _outbox_id: int, _error: str, *, lease_owner_token: str
+    ) -> SimpleNamespace:
+        assert lease_owner_token
         self.calls.append("failed")
         self.outbox.status = SystemOutboxStatus.FAILED
         return self.outbox
@@ -109,6 +133,8 @@ async def test_workline_dispatcher_uses_same_typed_result_mapping_and_attempt_ev
         dispatch_attempt=attempt,
         attempt_service=attempt_service,
         result=transport_result,
+        lease_owner_token="owner-1",
+        retry_budget=3,
     )
 
     assert updated is repository.outbox
@@ -116,6 +142,7 @@ async def test_workline_dispatcher_uses_same_typed_result_mapping_and_attempt_ev
     assert attempt_service.finalized == [
         {
             "attempt": attempt,
+            "lease_owner_token": "owner-1",
             "result": transport_result,
             "outbox_finalization": expected_finalization,
             "auto_commit": False,
@@ -157,7 +184,16 @@ class _DispatchRepository(_Repository):
         self.outbox.status = SystemOutboxStatus.DISPATCHING
         return self.outbox
 
-    async def mark_as_failed(self, _db: Any, _outbox_id: int, error: str, _max_retries: int) -> SimpleNamespace:
+    async def mark_as_failed(
+        self,
+        _db: Any,
+        _outbox_id: int,
+        error: str,
+        _max_retries: int,
+        *,
+        lease_owner_token: str,
+    ) -> SimpleNamespace:
+        assert lease_owner_token == self.outbox.lease_owner_token
         self.retry_calls += 1
         self.outbox.status = SystemOutboxStatus.RETRY_WAIT
         self.outbox.last_error = error
@@ -168,7 +204,10 @@ class _DispatchRepository(_Repository):
         _db: Any,
         _outbox_id: int,
         error: str,
+        *,
+        lease_owner_token: str,
     ) -> SimpleNamespace:
+        assert lease_owner_token == self.outbox.lease_owner_token
         self.calls.append("evidence_unknown")
         self.outbox.status = SystemOutboxStatus.UNKNOWN
         self.outbox.next_retry_at = None
@@ -235,10 +274,14 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
         workline_id=None,
         session_id=None,
         device_id=None,
+        provider_profile_identity="wms.profile-test",
+        operation_identity="wms.effect-test@v1",
+        lease_owner_token="owner-workline-91",
+        lease_expires_at=datetime(2027, 1, 1),
     )
     repository = _DispatchRepository(outbox)
     attempt_service = _DispatchAttemptService(missing_attempt=missing_attempt)
-    current_db = _CommitFailsAfterSendDatabase(outbox, fail_commit_number=None if missing_attempt else 3)
+    current_db = _CommitFailsAfterSendDatabase(outbox, fail_commit_number=None if missing_attempt else 2)
     recovery_db = SimpleNamespace(
         commit=AsyncMock(side_effect=RuntimeError("isolated recovery unavailable") if recovery_fails else None)
     )
@@ -253,12 +296,37 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
     async def recovery_context():
         yield recovery_db
 
+    outbox.status = SystemOutboxStatus.DISPATCHING
+    claim = DispatchLeaseClaim(
+        outbox=outbox,
+        bucket=DispatchBucketKey(outbox.provider_profile_identity, outbox.operation_identity),
+        lease_owner_token=outbox.lease_owner_token,
+        lease_expires_at=outbox.lease_expires_at,
+        policy=DispatchBucketPolicy(),
+    )
+    scheduler = SimpleNamespace(
+        claim=AsyncMock(
+            side_effect=[
+                DispatchClaimBatch(
+                    claims=(claim,),
+                    metrics=DispatchClaimMetrics(1, 1, 0, 0, (), (), ()),
+                ),
+                DispatchClaimBatch(
+                    claims=(),
+                    metrics=DispatchClaimMetrics(0, 0, 0, None, (), (), ()),
+                ),
+            ]
+        )
+    )
+
     service = OutboxDispatchService(
         external_http_recovery_context_factory=recovery_context,
         effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
+        outbox_repository=repository,
+        dispatch_scheduler=scheduler,
+        dispatch_attempt_service=attempt_service,
     )
     dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
-    attempt_module = import_module("src.app.runtime.orchestration.services.inbox.dispatch_attempt_service")
     event_stream_module = import_module("src.app.sys.services.event_stream_service")
     monkeypatch.setattr(service, "_dispatch_blocked_resource_heads", AsyncMock(return_value=(set(), set())))
     monkeypatch.setattr(service, "_should_dispatch_to_sandbox", AsyncMock(return_value=False))
@@ -267,8 +335,6 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
     monkeypatch.setattr(dispatch_module, "_repair_self_blocked_device_busy_dispatches", AsyncMock(return_value=0))
     monkeypatch.setattr(dispatch_module, "_record_diagnostic", AsyncMock())
     monkeypatch.setattr(dispatch_module, "_mark_device_command_failed_if_dispatch_exhausted", AsyncMock())
-    monkeypatch.setattr("src.app.sys.repositories.SystemOutboxRepository", lambda: repository)
-    monkeypatch.setattr(attempt_module, "workline_dispatch_attempt_service", attempt_service)
     monkeypatch.setattr(event_stream_module, "publish_deferred_sse_events", AsyncMock())
 
     if recovery_fails:

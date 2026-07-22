@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from inspect import isawaitable
+from socket import gethostname
 from typing import TYPE_CHECKING, Any, TypedDict
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from src.app.sys.external_http_transport import ExternalHttpTransportResult
@@ -12,6 +14,11 @@ from src.app.runtime.orchestration.services.device_command_gateway import (
     _DeviceCommandGovernanceError,
     _mark_device_command_failed_if_dispatch_exhausted,
     _mark_outbox_blocked_by_workline_state,
+)
+from src.app.sys.dispatch_concurrency import (
+    DispatchBucketKey,
+    FairDispatchScheduler,
+    dispatch_policy_registry,
 )
 from src.app.sys.external_http_evidence import (
     ExternalHttpEvidenceRecoveryError,
@@ -50,7 +57,7 @@ class DispatchResult(TypedDict):
 
 
 def _count_workline_safety_block_result(result: DispatchResult, block_state: str) -> None:
-    if block_state == "blocked_resource":
+    if block_state in {"blocked_resource", "fenced"}:
         result["skipped"] += 1
     else:
         result["failed"] += 1
@@ -145,6 +152,7 @@ async def _block_outbox_for_workline_safety(
     dispatch_attempt: Any | None = None,
     attempt_service: Any | None = None,
     final_guard: bool = False,
+    lease_owner_token: str | None = None,
 ) -> str:
     await _record_diagnostic(
         db,
@@ -154,21 +162,23 @@ async def _block_outbox_for_workline_safety(
         message=str(safety_error),
         extra=_outbox_trace_extra(outbox, trace=trace),
     )
-    if dispatch_attempt is not None and attempt_service is not None:
-        _ = await attempt_service.finalize_attempt_record(
-            db,
-            attempt=dispatch_attempt,
-            success=False,
-            error_message=str(safety_error),
-            auto_commit=False,
-        )
     block_state = await _mark_outbox_blocked_by_workline_state(
         db,
         outbox_repo=outbox_repo,
         outbox=outbox,
         outbox_id=outbox_id,
         safety_error=safety_error,
+        lease_owner_token=lease_owner_token,
     )
+    if block_state != "fenced" and dispatch_attempt is not None and attempt_service is not None:
+        _ = await attempt_service.finalize_attempt_record(
+            db,
+            attempt=dispatch_attempt,
+            lease_owner_token=lease_owner_token,
+            success=False,
+            error_message=str(safety_error),
+            auto_commit=False,
+        )
     await db.commit()
     guard_label = "最终安全状态" if final_guard else "安全状态"
     logger.warning(
@@ -283,6 +293,7 @@ async def _block_outbox_for_device_resource_wait(
     governance_error: _DeviceCommandGovernanceError,
     dispatch_attempt: Any | None = None,
     attempt_service: Any | None = None,
+    lease_owner_token: str | None = None,
 ) -> bool:
     """目标设备接纳条件暂不满足时，暂停 outbox 并等待 ECS probe 重新放行。"""
     if governance_error.code not in _DEVICE_RESOURCE_WAIT_CODES:
@@ -298,15 +309,6 @@ async def _block_outbox_for_device_resource_wait(
                     "diagnostic_key": existing_detail.get("diagnostic_key"),
                 }
             )
-    if dispatch_attempt is not None and attempt_service is not None:
-        _ = await attempt_service.finalize_attempt_record(
-            db,
-            attempt=dispatch_attempt,
-            success=False,
-            error_message=governance_error.message,
-            response={"result": "blocked_resource", "reason": governance_error.code, "detail": detail},
-            auto_commit=False,
-        )
     blocked_outbox = await outbox_repo.mark_as_blocked_by_device_busy(
         db,
         outbox_id,
@@ -315,6 +317,7 @@ async def _block_outbox_for_device_resource_wait(
         reason=governance_error.code,
         last_error=governance_error.message,
         detail=detail,
+        lease_owner_token=lease_owner_token,
     )
     if blocked_outbox is None:
         await db.commit()
@@ -322,6 +325,16 @@ async def _block_outbox_for_device_resource_wait(
             f"Outbox {outbox_id} 因设备资源等待暂停时被 fencing 拒绝，保留当前状态 ({_outbox_trace_log_suffix(outbox)})"
         )
         return False
+    if dispatch_attempt is not None and attempt_service is not None:
+        _ = await attempt_service.finalize_attempt_record(
+            db,
+            attempt=dispatch_attempt,
+            lease_owner_token=lease_owner_token,
+            success=False,
+            error_message=governance_error.message,
+            response={"result": "blocked_resource", "reason": governance_error.code, "detail": detail},
+            auto_commit=False,
+        )
     await _escalate_status_precheck_wait_if_needed(
         db,
         outbox_repo=outbox_repo,
@@ -398,6 +411,7 @@ async def _repair_orphaned_device_busy_dispatches(db: Any, *, outbox_repo: Any, 
             blocked_workline_id=getattr(outbox, "workline_id", None),
             reason="DEVICE_BUSY",
             last_error=error_message,
+            lease_owner_token=getattr(latest_attempt, "lease_token", None),
         )
         if blocked is None:
             continue
@@ -452,9 +466,23 @@ class OutboxDispatchService:
         *,
         external_http_recovery_context_factory: Any | None = None,
         effect_transport_bridge: Any | None = None,
+        outbox_repository: Any | None = None,
+        dispatch_scheduler: Any | None = None,
+        dispatch_attempt_service: Any | None = None,
     ) -> None:
+        if outbox_repository is None:
+            from src.app.sys.repositories import system_outbox_repository
+
+            outbox_repository = system_outbox_repository
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
         self.effect_transport_bridge = effect_transport_bridge
+        self.outbox_repository = outbox_repository
+        self.dispatch_attempt_service = dispatch_attempt_service
+        self.dispatch_scheduler = dispatch_scheduler or FairDispatchScheduler(
+            repository=outbox_repository,
+            policy_registry=dispatch_policy_registry,
+            worker_identity=f"workline-outbox:{gethostname()}:{uuid4().hex}",
+        )
 
     def _resolve_external_http_recovery_context_factory(self) -> Any:
         if self.external_http_recovery_context_factory is None:
@@ -480,24 +508,45 @@ class OutboxDispatchService:
         dispatch_attempt: Any,
         attempt_service: Any,
         result: ExternalHttpTransportResult,
+        lease_owner_token: str,
+        retry_budget: int,
     ) -> Any | None:
         """按唯一 typed transport result 同步终结 outbox 与 attempt。"""
         from src.app.sys.external_http_transport import ExternalHttpTransportOutcome
 
         error = result.error_message or result.error_code or result.outcome.value
         if result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
-            updated = await outbox_repo.mark_as_sent(db, outbox_id)
+            updated = await outbox_repo.mark_as_sent(db, outbox_id, lease_owner_token=lease_owner_token)
         elif result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
-            updated = await outbox_repo.mark_as_unknown(db, outbox_id, error)
+            updated = await outbox_repo.mark_as_unknown(
+                db,
+                outbox_id,
+                error,
+                lease_owner_token=lease_owner_token,
+            )
         elif result.safe_to_retry:
-            updated = await outbox_repo.mark_as_failed(db, outbox_id, error, self.MAX_RETRIES)
+            updated = await outbox_repo.mark_as_failed(
+                db,
+                outbox_id,
+                error,
+                retry_budget,
+                lease_owner_token=lease_owner_token,
+            )
         else:
-            updated = await outbox_repo.mark_as_terminal_failure(db, outbox_id, error)
+            updated = await outbox_repo.mark_as_terminal_failure(
+                db,
+                outbox_id,
+                error,
+                lease_owner_token=lease_owner_token,
+            )
 
-        outbox_finalization = "fenced" if updated is None else enum_value(getattr(updated, "status", None)).lower()
+        if updated is None:
+            return None
+        outbox_finalization = enum_value(getattr(updated, "status", None)).lower()
         _ = await attempt_service.finalize_external_http_attempt_record(
             db,
             attempt=dispatch_attempt,
+            lease_owner_token=lease_owner_token,
             result=result,
             outbox_finalization=outbox_finalization,
             auto_commit=False,
@@ -525,6 +574,7 @@ class OutboxDispatchService:
         attempt_service: Any,
         safety_service: Any,
         result: DispatchResult,
+        lease_owner_token: str,
     ) -> tuple[Any, bool]:
         """blocked 队首 claim 后创建 attempt，并在 POST 前执行 WorkLine final guard。"""
 
@@ -550,6 +600,7 @@ class OutboxDispatchService:
                 dispatch_attempt=dispatch_attempt,
                 attempt_service=attempt_service,
                 final_guard=True,
+                lease_owner_token=lease_owner_token,
             )
             _count_workline_safety_block_result(result, block_state)
             return dispatch_attempt, True
@@ -599,7 +650,7 @@ class OutboxDispatchService:
             )
         return True
 
-    async def _dispatch_blocked_resource_heads(
+    async def _dispatch_blocked_resource_heads(  # noqa: PLR0912
         self,
         db: Any,
         *,
@@ -613,6 +664,7 @@ class OutboxDispatchService:
         )
         from src.app.workline.services.safety_service import workline_safety_service
 
+        attempt_service = self.dispatch_attempt_service or workline_dispatch_attempt_service
         processed_device_ids: set[Any] = set()
         processed_target_codes: set[str] = set()
         getter = getattr(outbox_repo, "get_probeable_blocked_device_heads", None)
@@ -644,18 +696,30 @@ class OutboxDispatchService:
             blocked_reason = string_value(getattr(outbox, "blocked_reason", None), default="DEVICE_BUSY")
             claimed: Any | None = None
             dispatch_attempt: Any | None = None
+            lease_owner_token: str | None = None
+            bucket = DispatchBucketKey(
+                string_value(getattr(outbox, "provider_profile_identity", None)),
+                string_value(getattr(outbox, "operation_identity", None)),
+            )
+            if dispatch_policy_registry.is_paused(bucket):
+                result["skipped"] += 1
+                continue
+            policy = dispatch_policy_registry.policy_for(bucket)
             try:
                 ready = await self._probe_blocked_resource_head_ready(db, outbox)
                 if not ready:
                     result["skipped"] += 1
                     result["dispatched"] += 1
                     continue
+                lease_owner_token = f"outbox-lease:workline-blocked:{uuid4().hex}"
                 claimed = await outbox_repo.claim_blocked_resource_wait_for_dispatch(
                     db,
                     outbox_id,
                     blocked_reason,
                     min_probe_interval_seconds=RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS,
                     operation_domains=("WORKLINE", "RACK"),
+                    lease_owner_token=lease_owner_token,
+                    lease_seconds=policy.lease_seconds,
                 )
                 if claimed is None:
                     await db.commit()
@@ -668,19 +732,25 @@ class OutboxDispatchService:
                     outbox_repo=outbox_repo,
                     claimed=claimed,
                     outbox_id=outbox_id,
-                    attempt_service=workline_dispatch_attempt_service,
+                    attempt_service=attempt_service,
                     safety_service=workline_safety_service,
                     result=result,
+                    lease_owner_token=lease_owner_token,
                 )
                 if blocked_by_safety:
                     continue
                 success = await self._dispatch_single(db, claimed)
                 if success:
-                    sent_outbox = await outbox_repo.mark_as_sent(db, outbox_id)
-                    if dispatch_attempt is not None:
-                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                    sent_outbox = await outbox_repo.mark_as_sent(
+                        db,
+                        outbox_id,
+                        lease_owner_token=lease_owner_token,
+                    )
+                    if dispatch_attempt is not None and sent_outbox is not None:
+                        _ = await attempt_service.finalize_attempt_record(
                             db,
                             attempt=dispatch_attempt,
+                            lease_owner_token=lease_owner_token,
                             success=True,
                             response={
                                 "result": "sent",
@@ -699,12 +769,14 @@ class OutboxDispatchService:
                     db,
                     outbox_id,
                     string_value(getattr(claimed, "_dispatch_failure_reason", None), default="Dispatch failed"),
-                    self.MAX_RETRIES,
+                    policy.retry_budget,
+                    lease_owner_token=lease_owner_token,
                 )
-                if dispatch_attempt is not None:
-                    _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                if dispatch_attempt is not None and failed_outbox is not None:
+                    _ = await attempt_service.finalize_attempt_record(
                         db,
                         attempt=dispatch_attempt,
+                        lease_owner_token=lease_owner_token,
                         success=False,
                         error_message=string_value(
                             getattr(claimed, "_dispatch_failure_reason", None),
@@ -724,7 +796,8 @@ class OutboxDispatchService:
                         outbox_id=outbox_id,
                         governance_error=e,
                         dispatch_attempt=dispatch_attempt,
-                        attempt_service=workline_dispatch_attempt_service,
+                        attempt_service=attempt_service,
+                        lease_owner_token=lease_owner_token,
                     )
                     result["skipped"] += 1
                     result["dispatched"] += 1
@@ -732,16 +805,23 @@ class OutboxDispatchService:
                 logger.warning(
                     f"blocked outbox {outbox_id} ECS probe 治理拒绝: {e.message} ({_outbox_trace_log_suffix(outbox)})"
                 )
-                if dispatch_attempt is not None:
-                    _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                failed_outbox = await outbox_repo.mark_as_failed(
+                    db,
+                    outbox_id,
+                    e.message,
+                    policy.retry_budget,
+                    lease_owner_token=lease_owner_token,
+                )
+                if dispatch_attempt is not None and failed_outbox is not None:
+                    _ = await attempt_service.finalize_attempt_record(
                         db,
                         attempt=dispatch_attempt,
+                        lease_owner_token=lease_owner_token,
                         success=False,
                         error_message=e.message,
                         response={"result": "failed", "reason": e.code},
                         auto_commit=False,
                     )
-                _ = await outbox_repo.mark_as_failed(db, outbox_id, e.message, self.MAX_RETRIES)
                 await db.commit()
                 result["failed"] += 1
                 result["dispatched"] += 1
@@ -770,18 +850,25 @@ class OutboxDispatchService:
                     result["skipped"] += 1
                     result["dispatched"] += 1
                     continue
-                if dispatch_attempt is not None:
+                failed_outbox = await outbox_repo.mark_as_failed(
+                    db,
+                    outbox_id,
+                    str(e),
+                    policy.retry_budget,
+                    lease_owner_token=lease_owner_token,
+                )
+                if dispatch_attempt is not None and failed_outbox is not None:
                     try:
-                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                        _ = await attempt_service.finalize_attempt_record(
                             db,
                             attempt=dispatch_attempt,
+                            lease_owner_token=lease_owner_token,
                             success=False,
                             error_message=str(e),
                             auto_commit=False,
                         )
                     except Exception as attempt_error:
                         logger.warning(f"blocked outbox {outbox_id} 派发尝试账本补记失败: {attempt_error}")
-                failed_outbox = await outbox_repo.mark_as_failed(db, outbox_id, str(e), self.MAX_RETRIES)
                 await db.commit()
                 result["failed" if failed_outbox is not None else "skipped"] += 1
                 result["dispatched"] += 1
@@ -798,7 +885,6 @@ class OutboxDispatchService:
         from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import (
             workline_dispatch_attempt_service,
         )
-        from src.app.sys.repositories import SystemOutboxRepository
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked, workline_safety_service
 
         result: DispatchResult = {
@@ -807,11 +893,11 @@ class OutboxDispatchService:
             "failed": 0,
             "skipped": 0,
         }
-        # 获取待派发消息
-        outbox_repo = SystemOutboxRepository()
+        outbox_repo = self.outbox_repository
+        attempt_service = self.dispatch_attempt_service or workline_dispatch_attempt_service
         _ = await _repair_orphaned_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
         _ = await _repair_self_blocked_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
-        processed_blocked_device_ids, processed_blocked_target_codes = await self._dispatch_blocked_resource_heads(
+        _processed_blocked_device_ids, _processed_blocked_target_codes = await self._dispatch_blocked_resource_heads(
             db,
             outbox_repo=outbox_repo,
             limit=limit,
@@ -824,28 +910,37 @@ class OutboxDispatchService:
 
             await publish_deferred_sse_events(db)
             return result
-        messages = await outbox_repo.get_pending_messages(
-            db, limit=remaining_limit, operation_domains=("WORKLINE", "RACK")
+        claim_batch = await self.dispatch_scheduler.claim(
+            db,
+            limit=remaining_limit,
+            operation_domains=("WORKLINE", "RACK"),
         )
-        device_repo_for_skip: Any | None = None
-        for outbox in messages:
-            device_id = getattr(outbox, "device_id", None)
-            target_code = string_value(getattr(outbox, "target_code", None))
-            if device_id is None and target_code and processed_blocked_device_ids:
-                if device_repo_for_skip is None:
-                    from src.app.device.repositories.device_repository import device_repository
+        logger.info(
+            "Workline SystemOutbox claim metrics: "
+            f"backlog={claim_batch.metrics.backlog_count}, active={claim_batch.metrics.active_lease_count}, "
+            f"unknown={claim_batch.metrics.unknown_count}, oldest_age={claim_batch.metrics.oldest_queue_age_seconds}, "
+            f"rate_limited={len(claim_batch.metrics.rate_limited_buckets)}, "
+            f"paused={len(claim_batch.metrics.paused_buckets)}, "
+            f"contended={len(claim_batch.metrics.lease_contended_buckets)}, "
+            f"lease_loss={claim_batch.metrics.lease_loss_count}"
+        )
+        attempts_by_outbox_id: dict[int, Any] = {}
+        for claim in claim_batch.claims:
+            outbox_id = resolve_required_pk(claim.outbox, "outbox", "id", "outbox_id")
+            attempts_by_outbox_id[outbox_id] = await attempt_service.create_attempt(
+                db,
+                outbox=claim.outbox,
+                auto_commit=False,
+            )
+        await db.commit()
 
-                    device_repo_for_skip = device_repository
-                device = await device_repo_for_skip.get_by_device_code(db, target_code)
-                device_id = resolve_entity_id(device)
-            if (
-                device_id is not None and device_id in processed_blocked_device_ids
-            ) or target_code in processed_blocked_target_codes:
-                result["skipped"] += 1
-                continue
+        for claim in claim_batch.claims:
+            outbox = claim.outbox
+            lease_owner_token = claim.lease_owner_token
+            retry_budget = claim.policy.retry_budget
             outbox_pk_text = str(getattr(outbox, "id", "unknown"))
             trace = TraceContext.from_runtime(outbox=outbox)
-            dispatch_attempt: Any | None = None
+            dispatch_attempt: Any | None = attempts_by_outbox_id.get(resolve_entity_id(outbox))
             try:
                 outbox_pk = resolve_required_pk(outbox, "outbox", "id", "outbox_id")
                 outbox_workline_id = getattr(outbox, "workline_id", None)
@@ -860,38 +955,12 @@ class OutboxDispatchService:
                             outbox_id=outbox_pk,
                             safety_error=safety_error,
                             trace=trace,
+                            dispatch_attempt=dispatch_attempt,
+                            attempt_service=attempt_service,
+                            lease_owner_token=lease_owner_token,
                         )
                         _count_workline_safety_block_result(result, block_state)
                         continue
-                # 尝试标记为派发中（并发控制）。前置 WorkLine 锁已释放前按统一锁序完成。
-                updated = await outbox_repo.mark_as_dispatching(db, outbox_pk)
-                if updated is None:
-                    await db.commit()
-                    # 已被其他 worker 处理
-                    result["skipped"] += 1
-                    continue
-                await db.commit()
-                if outbox_workline_id is not None:
-                    try:
-                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
-                    except WorkLineSafetyBlocked as safety_error:
-                        block_state = await _block_outbox_for_workline_safety(
-                            db,
-                            outbox_repo=outbox_repo,
-                            outbox=outbox,
-                            outbox_id=outbox_pk,
-                            safety_error=safety_error,
-                            trace=trace,
-                        )
-                        _count_workline_safety_block_result(result, block_state)
-                        continue
-                    await db.commit()
-                dispatch_attempt = await workline_dispatch_attempt_service.create_attempt(
-                    db,
-                    outbox=outbox,
-                    auto_commit=False,
-                )
-                await db.commit()
                 if outbox_workline_id is not None:
                     try:
                         await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
@@ -904,8 +973,27 @@ class OutboxDispatchService:
                             safety_error=safety_error,
                             trace=trace,
                             dispatch_attempt=dispatch_attempt,
-                            attempt_service=workline_dispatch_attempt_service,
+                            attempt_service=attempt_service,
+                            lease_owner_token=lease_owner_token,
+                        )
+                        _count_workline_safety_block_result(result, block_state)
+                        continue
+                    await db.commit()
+                if outbox_workline_id is not None:
+                    try:
+                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
+                    except WorkLineSafetyBlocked as safety_error:
+                        block_state = await _block_outbox_for_workline_safety(
+                            db,
+                            outbox_repo=outbox_repo,
+                            outbox=outbox,
+                            outbox_id=outbox_pk,
+                            safety_error=safety_error,
+                            trace=trace,
+                            dispatch_attempt=dispatch_attempt,
+                            attempt_service=attempt_service,
                             final_guard=True,
+                            lease_owner_token=lease_owner_token,
                         )
                         _count_workline_safety_block_result(result, block_state)
                         continue
@@ -927,8 +1015,10 @@ class OutboxDispatchService:
                             outbox=outbox,
                             outbox_id=outbox_pk,
                             dispatch_attempt=dispatch_attempt,
-                            attempt_service=workline_dispatch_attempt_service,
+                            attempt_service=attempt_service,
                             result=dispatch_result,
+                            lease_owner_token=lease_owner_token,
+                            retry_budget=retry_budget,
                         )
                         await db.commit()
                     except Exception as evidence_error:
@@ -936,6 +1026,7 @@ class OutboxDispatchService:
                             db,
                             outbox_repository=outbox_repo,
                             outbox_id=outbox_pk,
+                            lease_owner_token=lease_owner_token,
                             result=dispatch_result,
                             cause=evidence_error,
                             recovery_context_factory=self._resolve_external_http_recovery_context_factory(),
@@ -965,11 +1056,16 @@ class OutboxDispatchService:
                     result["dispatched"] += 1
                     continue
                 if dispatch_result:
-                    sent_outbox = await outbox_repo.mark_as_sent(db, outbox_pk)
-                    if dispatch_attempt is not None:
-                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                    sent_outbox = await outbox_repo.mark_as_sent(
+                        db,
+                        outbox_pk,
+                        lease_owner_token=lease_owner_token,
+                    )
+                    if dispatch_attempt is not None and sent_outbox is not None:
+                        _ = await attempt_service.finalize_attempt_record(
                             db,
                             attempt=dispatch_attempt,
+                            lease_owner_token=lease_owner_token,
                             success=True,
                             response={
                                 "result": "sent",
@@ -1000,12 +1096,14 @@ class OutboxDispatchService:
                         db,
                         outbox_pk,
                         failure_reason,
-                        self.MAX_RETRIES,
+                        retry_budget,
+                        lease_owner_token=lease_owner_token,
                     )
-                    if dispatch_attempt is not None:
-                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
+                    if dispatch_attempt is not None and failed_outbox is not None:
+                        _ = await attempt_service.finalize_attempt_record(
                             db,
                             attempt=dispatch_attempt,
+                            lease_owner_token=lease_owner_token,
                             success=False,
                             error_message=failure_reason,
                             auto_commit=False,
@@ -1060,7 +1158,8 @@ class OutboxDispatchService:
                                 outbox_id=outbox_pk,
                                 governance_error=e,
                                 dispatch_attempt=dispatch_attempt,
-                                attempt_service=workline_dispatch_attempt_service,
+                                attempt_service=attempt_service,
+                                lease_owner_token=lease_owner_token,
                             )
                         else:
                             await db.commit()
@@ -1076,25 +1175,28 @@ class OutboxDispatchService:
                     f"Outbox {outbox_pk_text} 命令治理拒绝: {e.message} "
                     f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
                 )
-                if dispatch_attempt is not None:
-                    try:
-                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
-                            db,
-                            attempt=dispatch_attempt,
-                            success=False,
-                            error_message=e.message,
-                            response={"result": "failed", "reason": e.code},
-                            auto_commit=False,
-                        )
-                    except Exception as attempt_error:
-                        logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
+                failed_outbox = None
                 if outbox_pk is not None:
-                    _ = await outbox_repo.mark_as_failed(
+                    failed_outbox = await outbox_repo.mark_as_failed(
                         db,
                         outbox_pk,
                         e.message,
-                        self.MAX_RETRIES,
+                        retry_budget,
+                        lease_owner_token=lease_owner_token,
                     )
+                    if dispatch_attempt is not None and failed_outbox is not None:
+                        try:
+                            _ = await attempt_service.finalize_attempt_record(
+                                db,
+                                attempt=dispatch_attempt,
+                                lease_owner_token=lease_owner_token,
+                                success=False,
+                                error_message=e.message,
+                                response={"result": "failed", "reason": e.code},
+                                auto_commit=False,
+                            )
+                        except Exception as attempt_error:
+                            logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
                     await _record_diagnostic(
                         db,
                         inbox=None,
@@ -1108,17 +1210,6 @@ class OutboxDispatchService:
                 result["dispatched"] += 1
             except Exception as e:
                 logger.exception(f"Outbox {outbox_pk_text} 派发异常 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
-                if dispatch_attempt is not None:
-                    try:
-                        _ = await workline_dispatch_attempt_service.finalize_attempt_record(
-                            db,
-                            attempt=dispatch_attempt,
-                            success=False,
-                            error_message=str(e),
-                            auto_commit=False,
-                        )
-                    except Exception as attempt_error:
-                        logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
                 try:
                     outbox_pk = resolve_entity_id(outbox)
                     if outbox_pk is not None:
@@ -1126,7 +1217,8 @@ class OutboxDispatchService:
                             db,
                             outbox_pk,
                             str(e),
-                            self.MAX_RETRIES,
+                            retry_budget,
+                            lease_owner_token=lease_owner_token,
                         )
                         if failed_outbox is None:
                             await db.commit()
@@ -1137,6 +1229,18 @@ class OutboxDispatchService:
                             )
                             result["dispatched"] += 1
                             continue
+                        if dispatch_attempt is not None:
+                            try:
+                                _ = await attempt_service.finalize_attempt_record(
+                                    db,
+                                    attempt=dispatch_attempt,
+                                    lease_owner_token=lease_owner_token,
+                                    success=False,
+                                    error_message=str(e),
+                                    auto_commit=False,
+                                )
+                            except Exception as attempt_error:
+                                logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
                         await _record_diagnostic(
                             db,
                             inbox=None,

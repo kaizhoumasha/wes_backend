@@ -1,0 +1,6 @@
+"""WMS northbound 调度身份常量，避免 gateway 与 Provider catalog 循环依赖。"""
+
+WMS_MATERIAL_FLOW_CONTRACT_VERSION = "2026-07-06.material-flow"
+WMS_PRODUCTION_PROFILE_IDENTITY = f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.production"
+
+__all__ = ["WMS_MATERIAL_FLOW_CONTRACT_VERSION", "WMS_PRODUCTION_PROFILE_IDENTITY"]

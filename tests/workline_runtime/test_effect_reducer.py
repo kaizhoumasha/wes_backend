@@ -533,18 +533,22 @@ async def test_workline_transport_finalization_records_reducer_event_before_comm
         http_status_code=202,
         protocol_result=ExternalHttpProtocolResult.ACCEPTED,
     )
+    db = _Db()
 
     finalized = await service._finalize_external_http_result(
-        _Db(),
+        db,
         outbox_repo=outbox_repository,
         outbox=outbox,
         outbox_id=1,
         dispatch_attempt=attempt,
         attempt_service=attempt_service,
         result=result,
+        lease_owner_token="worker-1",
+        retry_budget=3,
     )
 
     assert finalized is updated
+    outbox_repository.mark_as_sent.assert_awaited_once_with(db, 1, lease_owner_token="worker-1")
     bridge.record_result.assert_awaited_once()
     call = bridge.record_result.await_args
     assert call.kwargs["dispatch_key"] == "dispatch-1"

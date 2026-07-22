@@ -514,6 +514,8 @@ def _build_external_http_outbox_model(
         dispatch_key=dispatch_key,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code=target_code,
+        provider_profile_identity="workline.plugin-runtime.v1",
+        operation_identity=f"workline.external-http:{target_code}",
         payload_json=payload_json,
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,
@@ -532,6 +534,8 @@ def _build_command_outbox_model(ctx: EffectApplyContext, *, command: Any, device
         dispatch_key=f"device-command:{command.command_code}",
         target_type=SystemOutboxTargetType.DEVICE,
         target_code=device_code,
+        provider_profile_identity="ecs.device-command.v1",
+        operation_identity="device.command",
         payload_json=_build_outbox_payload(command, device_code=device_code),
     )
 

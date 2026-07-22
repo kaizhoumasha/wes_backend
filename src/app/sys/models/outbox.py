@@ -121,6 +121,8 @@ class DispatchEnvelope:
     dispatch_type: SystemOutboxDispatchType
     target_type: SystemOutboxTargetType
     target_code: str
+    provider_profile_identity: str
+    operation_identity: str
     payload_json: dict[str, Any]
     operation_domain: str
     canonical_payload_bytes: bytes | None = None
@@ -186,6 +188,16 @@ class SystemOutboxBase(BaseMixin):
         description="目标类型",
     )
     target_code: str = Field(min_length=1, max_length=240, index=True, description="目标逻辑编码")
+    provider_profile_identity: str = Field(
+        min_length=1,
+        max_length=240,
+        description="不可变 Provider profile 调度身份",
+    )
+    operation_identity: str = Field(
+        min_length=1,
+        max_length=240,
+        description="不可变 operation 调度身份",
+    )
     payload_json: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON),
@@ -213,7 +225,13 @@ class SystemOutboxBase(BaseMixin):
         description="派发状态",
     )
     attempt_count: int = Field(default=0, ge=0, description="尝试次数")
-    next_retry_at: datetime | None = Field(default=None, index=True, description="下次重试时间或派发租约截止时间")
+    next_retry_at: datetime | None = Field(default=None, index=True, description="下次重试时间")
+    lease_owner_token: str | None = Field(
+        default=None,
+        max_length=240,
+        description="当前或最近一次派发 lease owner token",
+    )
+    lease_expires_at: datetime | None = Field(default=None, description="当前 DISPATCHING lease 截止时间")
     last_error: str | None = Field(default=None, sa_column=Column(Text), description="最后错误")
     sent_at: datetime | None = Field(default=None, description="发送时间")
     finished_at: datetime | None = Field(default=None, index=True, description="结束时间")
@@ -262,8 +280,28 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
             "AND payload_hash IS NOT NULL AND length(payload_hash) = 64)",
             name="ck_system_outbox_external_http_canonical_payload",
         ),
+        CheckConstraint(
+            "(status != 'DISPATCHING' OR (lease_owner_token IS NOT NULL AND lease_expires_at IS NOT NULL)) "
+            "AND (status = 'DISPATCHING' OR lease_expires_at IS NULL)",
+            name="ck_system_outbox_dispatch_lease_shape",
+        ),
         Index("ux_system_outbox_dispatch_key", "dispatch_key", unique=True),
         Index("ix_system_outbox_status_retry_created", "status", "next_retry_at", "created_at"),
+        Index(
+            "ix_system_outbox_dispatch_bucket_claim",
+            "provider_profile_identity",
+            "operation_identity",
+            "status",
+            "next_retry_at",
+            "created_at",
+        ),
+        Index(
+            "ix_system_outbox_active_lease",
+            "provider_profile_identity",
+            "operation_identity",
+            "status",
+            "lease_expires_at",
+        ),
         Index("ix_system_outbox_domain_operation", "operation_domain", "operation_key"),
         Index("ix_system_outbox_context_status", "workline_id", "session_id", "status"),
         Index("ix_system_outbox_blocked_release", "blocked_reason", "blocked_device_id", "blocked_workline_id"),
@@ -318,7 +356,16 @@ class SystemOutboxCreate(ModelFactory(SystemOutboxBase).for_create()):
 
 class SystemOutboxUpdate(
     ModelFactory(SystemOutboxBase).for_update(
-        exclude=("dispatch_key", "payload_json", "canonical_payload_bytes", "payload_hash")
+        exclude=(
+            "dispatch_key",
+            "provider_profile_identity",
+            "operation_identity",
+            "payload_json",
+            "canonical_payload_bytes",
+            "payload_hash",
+            "lease_owner_token",
+            "lease_expires_at",
+        )
     )
 ):
     """系统级发件箱更新 Schema。"""
@@ -327,6 +374,10 @@ class SystemOutboxUpdate(
     payload_json: ClassVar[dict[str, Any]]
     canonical_payload_bytes: ClassVar[bytes]
     payload_hash: ClassVar[str]
+    provider_profile_identity: ClassVar[str]
+    operation_identity: ClassVar[str]
+    lease_owner_token: ClassVar[str]
+    lease_expires_at: ClassVar[datetime]
 
 
 def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
@@ -349,13 +400,16 @@ def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
 
 @event.listens_for(SystemOutbox, "before_update")
 def _prevent_external_http_payload_update(_mapper: Any, _connection: Any, outbox: SystemOutbox) -> None:
-    """EXTERNAL_HTTP 的原始 bytes、hash 和查询投影一经持久化均不可改写。"""
+    """调度 identity 与 EXTERNAL_HTTP canonical payload 一经持久化均不可改写。"""
 
+    state = inspect(outbox)
+    scheduling_fields = ("provider_profile_identity", "operation_identity")
+    if any(state.attrs[field_name].history.has_changes() for field_name in scheduling_fields):
+        raise ValueError("SystemOutbox scheduling identity persisted fields are immutable")
     dispatch_type = getattr(outbox, "dispatch_type", None)
     dispatch_type_value = dispatch_type.value if isinstance(dispatch_type, Enum) else dispatch_type
     if dispatch_type_value != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
         return
-    state = inspect(outbox)
     immutable_fields = ("payload_json", "canonical_payload_bytes", "payload_hash")
     if any(state.attrs[field_name].history.has_changes() for field_name in immutable_fields):
         raise ValueError("EXTERNAL_HTTP SystemOutbox canonical payload persisted fields are immutable")

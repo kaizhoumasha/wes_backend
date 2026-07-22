@@ -146,6 +146,8 @@ class WorklineStationLeaseService:
             dispatch_key=envelope.dispatch_key,
             target_type=envelope.target_type,
             target_code=envelope.target_code,
+            provider_profile_identity=envelope.provider_profile_identity,
+            operation_identity=envelope.operation_identity,
             payload_json=payload_json,
             canonical_payload_bytes=envelope.canonical_payload_bytes,
             payload_hash=envelope.payload_hash,

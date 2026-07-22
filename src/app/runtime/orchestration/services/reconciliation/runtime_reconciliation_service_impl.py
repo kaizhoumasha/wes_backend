@@ -544,6 +544,7 @@ class WorklineRuntimeReconciliationService:
         *,
         outbox: SystemOutbox,
         reason: str,
+        lease_owner_token: str | None = None,
     ) -> SystemOutbox | None:
         """WorkLine RECONCILING 时，将尚未 ACK 的 outbox 暂停为 RETRY_WAIT。"""
 
@@ -577,6 +578,7 @@ class WorklineRuntimeReconciliationService:
                 reason=reason,
                 blocked_device_id=getattr(owner, "reconciliation_device_id", None),
                 blocked_workline_id=workline_id,
+                lease_owner_token=lease_owner_token,
             )
         return await self.system_outbox_repository.mark_as_blocked_by_workline_state(
             db,
@@ -585,6 +587,7 @@ class WorklineRuntimeReconciliationService:
             reason=reason,
             blocked_device_id=getattr(owner, "reconciliation_device_id", None),
             blocked_workline_id=workline_id,
+            lease_owner_token=lease_owner_token,
         )
 
     async def record_late_callback_if_pending(

@@ -278,6 +278,8 @@ def _outbox(dispatch_key: str) -> SystemOutbox:
         dispatch_key=dispatch_key,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code="WMS",
+        provider_profile_identity="wms.profile-test",
+        operation_identity="wms.effect-test@v1",
         payload_json=projection,
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,

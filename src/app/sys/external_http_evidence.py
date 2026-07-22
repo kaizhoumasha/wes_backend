@@ -37,6 +37,7 @@ async def recover_external_http_evidence_failure_unknown(
     *,
     outbox_repository: Any,
     outbox_id: int,
+    lease_owner_token: str,
     result: ExternalHttpTransportResult,
     cause: BaseException,
     recovery_context_factory: Any,
@@ -59,6 +60,7 @@ async def recover_external_http_evidence_failure_unknown(
                 recovery_db,
                 outbox_id,
                 evidence_error,
+                lease_owner_token=lease_owner_token,
             )
             if updated is None:
                 raise RuntimeError(f"SystemOutbox {outbox_id} 无法隔离收口为 UNKNOWN")

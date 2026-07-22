@@ -37,6 +37,8 @@ def _external_envelope(**overrides: Any) -> DispatchEnvelope:
         "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP,
         "target_type": SystemOutboxTargetType.HTTP_ENDPOINT,
         "target_code": "WMS_INBOUND",
+        "provider_profile_identity": "wms.profile-test",
+        "operation_identity": "wms.inventory.confirm@v1",
         "payload_json": projection,
         "canonical_payload_bytes": canonical.body,
         "payload_hash": canonical.sha256,
@@ -94,6 +96,8 @@ def test_non_http_envelope_does_not_require_canonical_payload() -> None:
         dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         target_type=SystemOutboxTargetType.DEVICE,
         target_code="ECS-001",
+        provider_profile_identity="ecs.device-command.v1",
+        operation_identity="device.command",
         payload_json={"command": "MOVE"},
         operation_domain="DEVICE",
     )
@@ -110,6 +114,8 @@ def test_external_http_create_schema_fails_closed_without_canonical_payload() ->
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="WMS_INBOUND",
+            provider_profile_identity="wms.profile-test",
+            operation_identity="wms.inventory.confirm@v1",
             payload_json={"request_id": "REQ-001"},
             operation_domain="WMS_INVENTORY",
         )
@@ -121,6 +127,8 @@ def test_non_http_create_schema_does_not_require_canonical_payload() -> None:
         dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
         target_type=SystemOutboxTargetType.DEVICE,
         target_code="ECS-001",
+        provider_profile_identity="ecs.device-command.v1",
+        operation_identity="device.command",
         payload_json={"command": "MOVE"},
         operation_domain="DEVICE",
     )

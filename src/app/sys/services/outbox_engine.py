@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
+from socket import gethostname
 from typing import TYPE_CHECKING, Any, TypedDict
+from uuid import uuid4
 
+from src.app.sys.dispatch_concurrency import FairDispatchScheduler, dispatch_policy_registry
 from src.app.sys.external_http_evidence import recover_external_http_evidence_failure_unknown
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
@@ -65,6 +68,7 @@ class SystemOutboxEngine:
         dispatch_attempt_service: Any | None = None,
         external_http_recovery_context_factory: Callable[[], Any] | None = None,
         effect_transport_bridge: Any | None = None,
+        dispatch_scheduler: Any | None = None,
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
@@ -74,8 +78,13 @@ class SystemOutboxEngine:
         self.dispatch_attempt_service = dispatch_attempt_service
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
         self.effect_transport_bridge = effect_transport_bridge
+        self.dispatch_scheduler = dispatch_scheduler or FairDispatchScheduler(
+            repository=outbox_repository,
+            policy_registry=dispatch_policy_registry,
+            worker_identity=f"system-outbox:{gethostname()}:{uuid4().hex}",
+        )
 
-    async def dispatch(self, db: Any, limit: int = 50) -> DispatchResult:
+    async def dispatch(self, db: Any, limit: int = 50) -> DispatchResult:  # noqa: PLR0912
         result: DispatchResult = {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
 
         if limit <= 0:
@@ -91,38 +100,47 @@ class SystemOutboxEngine:
             await _commit_if_supported(db)
             return result
 
-        messages = await self.outbox_repository.get_pending_messages(
+        claim_batch = await self.dispatch_scheduler.claim(
             db,
             limit=remaining_limit,
             exclude_operation_domains=(WORKLINE_OPERATION_DOMAIN, RACK_OPERATION_DOMAIN),
         )
+        logger.info(
+            "SystemOutbox claim metrics: "
+            f"backlog={claim_batch.metrics.backlog_count}, active={claim_batch.metrics.active_lease_count}, "
+            f"unknown={claim_batch.metrics.unknown_count}, oldest_age={claim_batch.metrics.oldest_queue_age_seconds}, "
+            f"rate_limited={len(claim_batch.metrics.rate_limited_buckets)}, "
+            f"paused={len(claim_batch.metrics.paused_buckets)}, "
+            f"contended={len(claim_batch.metrics.lease_contended_buckets)}, "
+            f"lease_loss={claim_batch.metrics.lease_loss_count}"
+        )
 
-        for outbox in messages:
+        attempt_service = self._resolve_dispatch_attempt_service()
+        attempts_by_outbox_id: dict[int, Any] = {}
+        for claim in claim_batch.claims:
+            outbox_id = getattr(claim.outbox, "id", None)
+            if not isinstance(outbox_id, int):
+                continue
+            attempts_by_outbox_id[outbox_id] = await attempt_service.create_attempt(
+                db,
+                outbox=claim.outbox,
+                auto_commit=False,
+            )
+        # claim 与整批 attempt 同事务持久化；释放 bucket advisory lock 后，
+        # 其它 worker 才能看到完整速率占用。
+        await _commit_if_supported(db)
+
+        for claim in claim_batch.claims:
+            outbox = claim.outbox
             outbox_id = getattr(outbox, "id", None)
             if not isinstance(outbox_id, int):
                 result["skipped"] += 1
                 continue
 
-            claimed = await self.outbox_repository.mark_as_dispatching(db, outbox_id)
-            if claimed is None:
-                await _commit_if_supported(db)
-                result["skipped"] += 1
-                continue
-            await _commit_if_supported(db)
-
-            dispatch_attempt: Any | None = None
-            dispatch_type = enum_value(getattr(claimed, "dispatch_type", None))
-            if dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
-                attempt_service = self._resolve_dispatch_attempt_service()
-                dispatch_attempt = await attempt_service.create_attempt(
-                    db,
-                    outbox=claimed,
-                    auto_commit=False,
-                )
-                await _commit_if_supported(db)
+            dispatch_attempt = attempts_by_outbox_id[outbox_id]
 
             try:
-                dispatch_result = await self.dispatch_single(db, claimed)
+                dispatch_result = await self.dispatch_single(db, outbox)
             except RuntimeError as exc:
                 error_code = getattr(exc, "code", None)
                 if error_code not in DEVICE_RESOURCE_WAIT_CODES:
@@ -131,10 +149,20 @@ class SystemOutboxEngine:
                     db,
                     outbox_id,
                     blocked_device_id=getattr(exc, "device_id", None),
-                    blocked_workline_id=getattr(claimed, "workline_id", None),
+                    blocked_workline_id=getattr(outbox, "workline_id", None),
                     reason=error_code,
                     last_error=getattr(exc, "message", str(exc)),
                     detail=dict(getattr(exc, "detail", {}) or {}),
+                    lease_owner_token=claim.lease_owner_token,
+                )
+                _ = await attempt_service.finalize_attempt_record(
+                    db,
+                    attempt=dispatch_attempt,
+                    lease_owner_token=claim.lease_owner_token,
+                    success=False,
+                    error_message=getattr(exc, "message", str(exc)),
+                    response={"result": "blocked", "reason": error_code},
+                    auto_commit=False,
                 )
                 await _commit_if_supported(db)
                 result["skipped"] += 1
@@ -146,22 +174,26 @@ class SystemOutboxEngine:
                         db,
                         outbox_id=outbox_id,
                         result=dispatch_result,
+                        lease_owner_token=claim.lease_owner_token,
+                        retry_budget=claim.policy.retry_budget,
                     )
-                    if dispatch_attempt is None:
-                        raise RuntimeError("EXTERNAL_HTTP 派发缺少 attempt 证据")
-                    outbox_finalization = (
-                        "fenced" if updated is None else enum_value(getattr(updated, "status", None)).lower()
-                    )
-                    _ = await self._resolve_dispatch_attempt_service().finalize_external_http_attempt_record(
+                    if updated is None:
+                        result["skipped"] += 1
+                        result["dispatched"] += 1
+                        await _commit_if_supported(db)
+                        continue
+                    outbox_finalization = enum_value(getattr(updated, "status", None)).lower()
+                    _ = await attempt_service.finalize_external_http_attempt_record(
                         db,
                         attempt=dispatch_attempt,
+                        lease_owner_token=claim.lease_owner_token,
                         result=dispatch_result,
                         outbox_finalization=outbox_finalization,
                         auto_commit=False,
                     )
                     await self._record_effect_transport_result(
                         db,
-                        outbox=claimed,
+                        outbox=outbox,
                         dispatch_attempt=dispatch_attempt,
                         result=dispatch_result,
                         updated=updated,
@@ -172,6 +204,7 @@ class SystemOutboxEngine:
                         db,
                         outbox_repository=self.outbox_repository,
                         outbox_id=outbox_id,
+                        lease_owner_token=claim.lease_owner_token,
                         result=dispatch_result,
                         cause=evidence_error,
                         recovery_context_factory=self._resolve_external_http_recovery_context_factory(),
@@ -179,28 +212,52 @@ class SystemOutboxEngine:
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
                 else:
-                    if updated is None:
-                        result["skipped"] += 1
-                    elif dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
+                    if dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
                         result["success"] += 1
                     else:
                         result["failed"] += 1
             elif dispatch_result:
-                sent = await self.outbox_repository.mark_as_sent(db, outbox_id)
+                sent = await self.outbox_repository.mark_as_sent(
+                    db,
+                    outbox_id,
+                    lease_owner_token=claim.lease_owner_token,
+                )
+                if sent is not None:
+                    _ = await attempt_service.finalize_attempt_record(
+                        db,
+                        attempt=dispatch_attempt,
+                        lease_owner_token=claim.lease_owner_token,
+                        success=True,
+                        response={"result": "sent", "outbox_finalization": "sent"},
+                        auto_commit=False,
+                    )
                 await _commit_if_supported(db)
                 if sent is None:
                     result["skipped"] += 1
                 else:
                     result["success"] += 1
             else:
-                _ = await self.outbox_repository.mark_as_failed(
+                failed = await self.outbox_repository.mark_as_failed(
                     db,
                     outbox_id,
                     "Dispatch failed",
-                    self.MAX_RETRIES,
+                    claim.policy.retry_budget,
+                    lease_owner_token=claim.lease_owner_token,
                 )
+                if failed is not None:
+                    _ = await attempt_service.finalize_attempt_record(
+                        db,
+                        attempt=dispatch_attempt,
+                        lease_owner_token=claim.lease_owner_token,
+                        success=False,
+                        error_message="Dispatch failed",
+                        auto_commit=False,
+                    )
                 await _commit_if_supported(db)
-                result["failed"] += 1
+                if failed is None:
+                    result["skipped"] += 1
+                else:
+                    result["failed"] += 1
             result["dispatched"] += 1
 
         # 如果还有剩余额度，且 Workline 之前已经跑满了分配给它的额度，
@@ -263,15 +320,37 @@ class SystemOutboxEngine:
         *,
         outbox_id: int,
         result: ExternalHttpTransportResult,
+        lease_owner_token: str,
+        retry_budget: int,
     ) -> Any | None:
         error = result.error_message or result.error_code or result.outcome.value
         if result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
-            return await self.outbox_repository.mark_as_sent(db, outbox_id)
+            return await self.outbox_repository.mark_as_sent(
+                db,
+                outbox_id,
+                lease_owner_token=lease_owner_token,
+            )
         if result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
-            return await self.outbox_repository.mark_as_unknown(db, outbox_id, error)
+            return await self.outbox_repository.mark_as_unknown(
+                db,
+                outbox_id,
+                error,
+                lease_owner_token=lease_owner_token,
+            )
         if result.safe_to_retry:
-            return await self.outbox_repository.mark_as_failed(db, outbox_id, error, self.MAX_RETRIES)
-        return await self.outbox_repository.mark_as_terminal_failure(db, outbox_id, error)
+            return await self.outbox_repository.mark_as_failed(
+                db,
+                outbox_id,
+                error,
+                retry_budget,
+                lease_owner_token=lease_owner_token,
+            )
+        return await self.outbox_repository.mark_as_terminal_failure(
+            db,
+            outbox_id,
+            error,
+            lease_owner_token=lease_owner_token,
+        )
 
     async def dispatch_single(self, db: Any, outbox: Any) -> bool | ExternalHttpTransportResult:
         from src.app.sys.services.outbox_delivery import dispatch_external_http, dispatch_internal_signal

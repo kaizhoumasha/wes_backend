@@ -271,6 +271,8 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             dispatch_key=f"device-command:{command_code}",
             target_type=SystemOutboxTargetType.DEVICE,
             target_code=device_code,
+            provider_profile_identity="ecs.device-command.v1",
+            operation_identity="device.command",
             payload_json={
                 "command_code": command_code,
                 "device_code": device_code,

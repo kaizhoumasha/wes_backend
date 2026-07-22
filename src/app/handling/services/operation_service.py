@@ -172,6 +172,8 @@ class HandlingOperationService:
                     "dispatch_key": require_text(envelope.dispatch_key, "dispatch_key"),
                     "target_type": SystemOutboxTargetType.HTTP_ENDPOINT.value,
                     "target_code": require_text(envelope.target_code, "target_code"),
+                    "provider_profile_identity": envelope.provider_profile_identity,
+                    "operation_identity": envelope.operation_identity,
                     "payload_json": _mapping(envelope.payload_json, "payload_json"),
                     "canonical_payload_bytes": envelope.canonical_payload_bytes,
                     "payload_hash": envelope.payload_hash,

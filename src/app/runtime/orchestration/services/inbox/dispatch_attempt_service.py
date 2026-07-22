@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import uuid
+from datetime import datetime
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
@@ -22,7 +22,13 @@ from src.app.sys.external_http_transport import ExternalHttpTransportOutcome, Ex
 from src.app.workline.trace_context import TraceContext
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
-from src.utils.value_normalization import optional_enum_str
+from src.utils.value_normalization import enum_value, optional_enum_str
+
+
+class OutboxLeaseLost(RuntimeError):
+    """attempt owner token 不再持有有效 SystemOutbox lease。"""
+
+    code = "OUTBOX_LEASE_LOST"
 
 
 async def _flush_if_supported(db: Any) -> None:
@@ -39,10 +45,12 @@ async def _finalize_attempt(
     db: Any,
     *,
     attempt: WorklineDispatchAttempt,
+    lease_owner_token: str,
     success: bool,
     response: dict[str, Any] | None = None,
     error_message: str | None = None,
 ) -> WorklineDispatchAttempt:
+    _assert_attempt_lease_current(attempt, lease_owner_token=lease_owner_token)
     transition_dispatch_attempt(
         attempt,
         DispatchAttemptStatus.SENT if success else DispatchAttemptStatus.FAILED,
@@ -52,6 +60,20 @@ async def _finalize_attempt(
     attempt.error_message = None if success else error_message
     await _flush_if_supported(db)
     return attempt
+
+
+def _assert_attempt_lease_current(attempt: WorklineDispatchAttempt, *, lease_owner_token: str) -> None:
+    expires_at = getattr(attempt, "lease_expires_at", None)
+    if (
+        enum_value(getattr(attempt, "status", None)) != DispatchAttemptStatus.DISPATCHING.value
+        or getattr(attempt, "lease_token", None) != lease_owner_token
+        or not isinstance(expires_at, datetime)
+        or expires_at <= timezone.now_for_db()
+    ):
+        raise OutboxLeaseLost(
+            f"OUTBOX_LEASE_LOST: outbox_id={getattr(attempt, 'outbox_id', None)}, "
+            f"attempt_no={getattr(attempt, 'attempt_no', None)}"
+        )
 
 
 async def _next_attempt_no(
@@ -91,14 +113,36 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
         if not isinstance(outbox_id, int):
             raise TypeError("创建派发尝试需要有效 outbox_id")
 
+        lease_owner_token = getattr(outbox, "lease_owner_token", None)
+        lease_expires_at = getattr(outbox, "lease_expires_at", None)
+        if (
+            enum_value(getattr(outbox, "status", None)) != "DISPATCHING"
+            or not isinstance(lease_owner_token, str)
+            or not lease_owner_token
+            or not isinstance(lease_expires_at, datetime)
+            or lease_expires_at <= timezone.now_for_db()
+        ):
+            raise OutboxLeaseLost(f"OUTBOX_LEASE_LOST: outbox_id={outbox_id} 没有有效 owner lease")
+
+        existing_attempts = await self.repo.get_by_outbox_id(db, outbox_id)
+        for existing in existing_attempts:
+            if enum_value(getattr(existing, "status", None)) != DispatchAttemptStatus.DISPATCHING.value:
+                continue
+            if getattr(existing, "lease_token", None) == lease_owner_token:
+                return existing
+            transition_dispatch_attempt(existing, DispatchAttemptStatus.CANCELLED)
+            existing.finalized_at = timezone.now_for_db()
+            existing.error_message = "OUTBOX_LEASE_REPLACED"
+            existing.response_json = {"lease_loss": True, "replacement_owner": lease_owner_token}
+
         attempt_no = await _next_attempt_no(db, repository=self.repo, outbox_id=outbox_id, outbox=outbox)
-        lease_token = f"dispatch-attempt:{outbox_id}:{attempt_no}:{uuid.uuid4().hex}"
         trace = TraceContext.from_runtime(outbox=outbox)
         data = {
             "outbox_id": outbox_id,
             "dispatch_key": str(getattr(outbox, "dispatch_key", "")),
             "attempt_no": attempt_no,
-            "lease_token": lease_token,
+            "lease_token": lease_owner_token,
+            "lease_expires_at": lease_expires_at,
             "status": DispatchAttemptStatus.DISPATCHING.value,
             "target_type": optional_enum_str(getattr(outbox, "target_type", None)),
             "target_code": getattr(outbox, "target_code", None),
@@ -139,6 +183,7 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
         attempt = await _finalize_attempt(
             db,
             attempt=attempt,
+            lease_owner_token=lease_token,
             success=success,
             response=response,
             error_message=error_message,
@@ -152,6 +197,7 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
         db: Any,
         *,
         attempt: WorklineDispatchAttempt,
+        lease_owner_token: str,
         success: bool,
         response: dict[str, Any] | None = None,
         error_message: str | None = None,
@@ -162,6 +208,7 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
         attempt = await _finalize_attempt(
             db,
             attempt=attempt,
+            lease_owner_token=lease_owner_token,
             success=success,
             response=response,
             error_message=error_message,
@@ -175,12 +222,14 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
         db: Any,
         *,
         attempt: WorklineDispatchAttempt,
+        lease_owner_token: str,
         result: ExternalHttpTransportResult,
         outbox_finalization: str,
         auto_commit: bool = True,
     ) -> WorklineDispatchAttempt:
         """以 typed transport result 终结 EXTERNAL_HTTP attempt 并固化原始证据。"""
 
+        _assert_attempt_lease_current(attempt, lease_owner_token=lease_owner_token)
         status_by_outcome = {
             ExternalHttpTransportOutcome.NOT_SENT: DispatchAttemptStatus.FAILED,
             ExternalHttpTransportOutcome.ACCEPTED: DispatchAttemptStatus.SENT,
@@ -207,4 +256,4 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
 workline_dispatch_attempt_service = WorklineDispatchAttemptService()
 
 
-__all__ = ["WorklineDispatchAttemptService", "workline_dispatch_attempt_service"]
+__all__ = ["OutboxLeaseLost", "WorklineDispatchAttemptService", "workline_dispatch_attempt_service"]

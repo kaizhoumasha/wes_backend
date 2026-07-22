@@ -56,6 +56,8 @@ def _external_outbox(**values: Any) -> SystemOutbox:
     values["payload_json"] = dict(envelope.payload_json)
     values["canonical_payload_bytes"] = envelope.canonical_payload_bytes
     values["payload_hash"] = envelope.payload_hash
+    values["provider_profile_identity"] = envelope.provider_profile_identity
+    values["operation_identity"] = envelope.operation_identity
     return SystemOutbox(**values)
 
 

@@ -11,6 +11,7 @@ from src.app.runtime.orchestration.models.session import RunMode, SessionStatus,
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.dispatch_concurrency import DispatchBucketKey
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.models.outbox import (
     SystemOutbox,
@@ -133,6 +134,8 @@ async def test_external_http_evidence_persistence_failure_overrides_uncertain_st
         last_blocked_check_at=timezone.now_for_db(),
         blocked_check_count=1,
         blocked_detail_json={"reason": "busy"},
+        lease_owner_token="evidence-owner-91",
+        lease_expires_at=timezone.now_for_db() + timedelta(minutes=5),
     )
     db = _CapturingDb([outbox])
 
@@ -140,6 +143,7 @@ async def test_external_http_evidence_persistence_failure_overrides_uncertain_st
         db,  # type: ignore[arg-type]
         91,
         "EXTERNAL_HTTP_EVIDENCE_PERSISTENCE_FAILED outcome=ACCEPTED",
+        lease_owner_token="evidence-owner-91",
     )
 
     assert updated is outbox
@@ -160,7 +164,9 @@ async def test_stale_external_http_claim_explicitly_clears_retry_schedule(
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         status=SystemOutboxStatus.DISPATCHING,
         attempt_count=0,
-        next_retry_at=timezone.now_for_db() - timedelta(seconds=1),
+        next_retry_at=None,
+        lease_owner_token="expired-http-owner",
+        lease_expires_at=timezone.now_for_db() - timedelta(seconds=1),
         sent_at=None,
         last_error=None,
         finished_at=None,
@@ -170,7 +176,11 @@ async def test_stale_external_http_claim_explicitly_clears_retry_schedule(
     # 单独验证 claim fence 自己拥有 retry 终态，不依赖通用 block 清理器的附带行为。
     monkeypatch.setattr(repository, "_clear_block", lambda _outbox: None)
 
-    claimed = await repository.mark_as_dispatching(db, 91)  # type: ignore[arg-type]
+    claimed = await repository.mark_as_dispatching(  # type: ignore[arg-type]
+        db,
+        91,
+        lease_owner_token="replacement-owner",
+    )
 
     assert claimed is None
     assert outbox.status is SystemOutboxStatus.UNKNOWN
@@ -191,27 +201,38 @@ async def test_non_http_stale_dispatching_lease_remains_reclaimable(
     target_type: SystemOutboxTargetType,
     target_code: str,
 ) -> None:
+    now = timezone.now_for_db()
     outbox = SystemOutbox(
         operation_domain="HANDLING",
         dispatch_type=dispatch_type,
         dispatch_key=f"non-http-stale-lease-{dispatch_type.value}",
         target_type=target_type,
         target_code=target_code,
+        provider_profile_identity="test.non-http.v1",
+        operation_identity=f"test.{dispatch_type.value.lower()}",
         payload_json={},
         status=SystemOutboxStatus.DISPATCHING,
-        next_retry_at=timezone.now_for_db() - timedelta(seconds=1),
+        lease_owner_token="expired-owner",
+        lease_expires_at=now - timedelta(seconds=1),
     )
     db_session.add(outbox)
     await db_session.commit()
     await db_session.refresh(outbox)
 
-    pending = await SystemOutboxRepository().get_pending_messages(db_session, limit=10)
-    claimed = await SystemOutboxRepository().mark_as_dispatching(db_session, outbox.id)
+    claimed = await SystemOutboxRepository().claim_next_in_bucket(
+        db_session,
+        bucket=DispatchBucketKey("test.non-http.v1", f"test.{dispatch_type.value.lower()}"),
+        lease_owner_token="replacement-owner",
+        lease_seconds=300,
+        retry_budget=3,
+        now=now,
+    )
+    await db_session.refresh(outbox)
 
-    assert [item.id for item in pending] == [outbox.id]
-    assert claimed is outbox
+    assert claimed.id == outbox.id
     assert outbox.status is SystemOutboxStatus.DISPATCHING
-    assert outbox.next_retry_at > timezone.now_for_db()
+    assert outbox.lease_owner_token == "replacement-owner"
+    assert outbox.lease_expires_at == now + timedelta(seconds=300)
 
 
 @pytest.mark.asyncio
@@ -237,6 +258,8 @@ async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_worklin
         dispatch_key="sandbox-runtime-inbox-dispatch-1",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code="TEST",
+        provider_profile_identity="test.sandbox.v1",
+        operation_identity="test.sandbox.external-http",
         payload_json={},
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,

@@ -498,6 +498,7 @@ async def _mark_outbox_blocked_by_workline_state(
     outbox: Any,
     outbox_id: int,
     safety_error: Exception,
+    lease_owner_token: str | None = None,
 ) -> str:
     """按运行态阻断 outbox；RECONCILING 和 STOPPED 进入 parked，ESTOP 保持本地失败。"""
 
@@ -507,19 +508,28 @@ async def _mark_outbox_blocked_by_workline_state(
             workline_runtime_reconciliation_service,
         )
 
-        _ = await workline_runtime_reconciliation_service.park_outbox_for_reconciliation(
+        updated = await workline_runtime_reconciliation_service.park_outbox_for_reconciliation(
             db,
             outbox=outbox,
             reason="CALLBACK_DEADLINE_EXPIRED",
+            lease_owner_token=lease_owner_token,
         )
-        return "blocked_resource"
+        return "blocked_resource" if updated is not None else "fenced"
 
     if "WORKLINE_STOPPED" in reason:
-        _ = await outbox_repo.mark_as_blocked_by_workline_stopped(db, outbox_id)
-        return "blocked_resource"
+        updated = await outbox_repo.mark_as_blocked_by_workline_stopped(
+            db,
+            outbox_id,
+            lease_owner_token=lease_owner_token,
+        )
+        return "blocked_resource" if updated is not None else "fenced"
 
-    _ = await outbox_repo.mark_as_blocked_by_workline_estop(db, outbox_id)
-    return "failed"
+    updated = await outbox_repo.mark_as_blocked_by_workline_estop(
+        db,
+        outbox_id,
+        lease_owner_token=lease_owner_token,
+    )
+    return "failed" if updated is not None else "fenced"
 
 
 def _is_same_session_current_command(*, outbox: Any, command: Any | None, device: Any | None) -> bool:
