@@ -129,7 +129,9 @@ class SystemCapabilityIntentService:
         }
         claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
         intent_log = None
-        if definition.completion_mode.value == "OUTBOX_ASYNC" and getattr(claim_result, "value", claim_result) == "NEW":
+        if definition.completion_mode.value == "OUTBOX_ASYNC":
+            # 无论首次 claim 还是幂等命中，都锁定读取 RuntimeIntentLog。PROPOSED
+            # 与 SystemOutbox 的 1:1 双账本由同一事务写入，避免跨层直接查询 outbox。
             intent_log = await self._effect_repository.get_claimed_intent(ctx["db"], claim=claim)
             if intent_log is None:
                 raise RuntimeError("OUTBOX_ASYNC effect claim row is missing")

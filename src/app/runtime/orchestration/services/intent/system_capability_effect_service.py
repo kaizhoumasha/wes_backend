@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.exc import DBAPIError
 
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
 from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode
@@ -102,23 +103,36 @@ class SystemCapabilityEffectService:
         definition = prepared.definition
         if prepared.claim_result is ClaimResult.MATCH or getattr(prepared.claim_result, "value", None) == "MATCH":
             replay = await self._replay_success(ctx, intent=intent, prepared=prepared)
-            if replay is None:
+            if replay is not None:
+                outcome, evidence = replay
                 return SystemCapabilityEffectResult(
-                    outcome=ContractViolation(
-                        error_code="PERSISTED_OUTCOME_INVALID",
-                        message="persisted success evidence failed closed",
-                    ),
+                    outcome=outcome,
                     completion_mode=definition.completion_mode,
+                    durably_accepted=definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC,
+                    remote_completed=definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL,
+                    idempotent_replay=True,
+                    evidence=evidence,
+                )
+            if (
+                definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
+                and prepared.intent_log is not None
+                and prepared.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+            ):
+                # PROPOSED 双账本已 durable accepted，但尚无远端完成 evidence；只重放
+                # 接受语义，不伪造 remote payload/evidence，也不再次执行 handler。
+                return SystemCapabilityEffectResult(
+                    outcome=Success(payload=None),
+                    completion_mode=definition.completion_mode,
+                    durably_accepted=True,
                     idempotent_replay=True,
                 )
-            outcome, evidence = replay
             return SystemCapabilityEffectResult(
-                outcome=outcome,
+                outcome=ContractViolation(
+                    error_code="PERSISTED_OUTCOME_INVALID",
+                    message="persisted success evidence failed closed",
+                ),
                 completion_mode=definition.completion_mode,
-                durably_accepted=definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC,
-                remote_completed=definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL,
                 idempotent_replay=True,
-                evidence=evidence,
             )
 
         execution = SystemCapabilityExecution(

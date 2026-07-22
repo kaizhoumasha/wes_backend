@@ -162,6 +162,19 @@ class _StatefulEffectRepository(_EffectRepository):
         self.status = "SUCCEEDED" if evidence.outcome_kind == "success" else "BUSINESS_REJECT"
 
 
+class _AsyncAcceptedReplayRepository(_EffectRepository):
+    """模拟同一 OUTBOX_ASYNC effect 的第二次 claim 命中已有 PROPOSED ledger。"""
+
+    def __init__(self) -> None:
+        super().__init__(ClaimResult.NEW)
+        self._claim_count = 0
+
+    async def claim_or_match(self, _db: object, **kwargs: Any) -> ClaimResult:
+        self.calls.append(kwargs)
+        self._claim_count += 1
+        return ClaimResult.NEW if self._claim_count == 1 else ClaimResult.MATCH
+
+
 class _Db:
     def __init__(self) -> None:
         self.flush_count = 0
@@ -312,6 +325,28 @@ async def test_outbox_async_success_keeps_intent_proposed_until_followup_evidenc
     assert result.durably_accepted is True
     assert result.remote_completed is False
     assert result.evidence is None
+    assert repository.outcomes == []
+    assert repository.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+
+
+@pytest.mark.asyncio
+async def test_outbox_async_match_replays_durable_acceptance_without_handler_or_evidence() -> None:
+    definition = _definition(completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _AsyncAcceptedReplayRepository()
+    _RecordingHandler.calls.clear()
+    service = _service(definition, repository)
+
+    first = await service.apply(_ctx(), _intent())
+    replay = await service.apply(_ctx(), _intent())
+
+    assert isinstance(first.outcome, Success)
+    assert isinstance(replay.outcome, Success)
+    assert replay.outcome.payload is None
+    assert replay.durably_accepted is True
+    assert replay.remote_completed is False
+    assert replay.idempotent_replay is True
+    assert replay.evidence is None
+    assert len(_RecordingHandler.calls) == 1
     assert repository.outcomes == []
     assert repository.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
 

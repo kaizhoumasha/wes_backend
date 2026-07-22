@@ -106,3 +106,20 @@ bytes、T8c typed sender、T8d reducer 生命周期或 T8e lease/fencing。
   修复前两例均因无条件 `record_outcome` 失败。
 - GREEN：system capability effect service `48 passed`；其关联 RuntimeIntentLog/effect-state/outbox repository 回归 `16 passed`。
 - 扩大相关域回归 `1416 passed`；`./scripts/git-quality-gate.sh --profile quality` 通过。
+
+## P1 异步接受重放修复（2026-07-22）
+
+- 同一不可变 EFFECT request 已存在 `RuntimeIntentLog` 时，repository 统一返回 `MATCH`；既有
+  `PROPOSED` 不再被误报为 `NEW`，因此不会二次执行 handler。
+- `OUTBOX_ASYNC` 的首次和命中 claim 均通过 `FOR UPDATE` 读取权威 `RuntimeIntentLog`。该行的
+  `PROPOSED` 与 `SystemOutbox(NEW)` 是同一事务写入的 1:1 双账本；本修复不跨层读取 outbox，也不实现
+  T8d reducer。
+- 当命中 `PROPOSED` 且尚无成功 evidence 时，结果只重放“durable accepted”：`Success(payload=None)`、
+  `durably_accepted=True`、`remote_completed=False`、`evidence=None`。这不是远端结果，不能伪造
+  payload/evidence 或推进语义终态；如已有合法成功 evidence，仍按既有 typed success 重放。
+
+### P1 重放 TDD / 验证
+
+- RED：新增“首次异步接受、第二次 MATCH”服务回归与真实 repository 的既有 `PROPOSED` claim 回归；修复前分别
+  得到 `PERSISTED_OUTCOME_INVALID` 和错误的 `NEW`。
+- GREEN：effect service、RuntimeIntentLog repository、effect state 与 intent contract 定向回归 `99 passed`。

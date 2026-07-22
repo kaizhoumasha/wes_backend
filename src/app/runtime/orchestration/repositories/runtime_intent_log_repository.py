@@ -185,12 +185,9 @@ class RuntimeIntentLogRepository:
             RuntimeIntentStatus.TECHNICAL_FAILED,
         }:
             return SystemCapabilityClaimResult.MATCH
-        # 非终态重复 claim 保留已有单调进展，调用方只能等待或读取既有证据。
-        return (
-            SystemCapabilityClaimResult.NEW
-            if row.effect_status == RuntimeIntentStatus.PROPOSED
-            else SystemCapabilityClaimResult.MATCH
-        )
+        # 唯一约束冲突表示同一 immutable request 已有权威 ledger；包括
+        # OUTBOX_ASYNC 的 PROPOSED 双账本，调用方必须重放既有状态，不能再次执行 handler。
+        return SystemCapabilityClaimResult.MATCH
 
     async def record_outcome(self, db: Any, *, claim: dict[str, Any], evidence: Any) -> None:
         row = await self._get_effect_for_update(

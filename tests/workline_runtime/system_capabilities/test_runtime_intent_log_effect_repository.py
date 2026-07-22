@@ -83,6 +83,24 @@ async def test_production_repository_preserves_rejected_terminal_on_same_claim(d
 
 
 @pytest.mark.asyncio
+async def test_production_repository_matches_existing_proposed_claim_and_locks_it(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+    proposed = await repository.get_claimed_intent(db_session, claim=claim)
+    assert proposed is not None
+    assert proposed.effect_status is RuntimeIntentStatus.PROPOSED
+
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.MATCH
+    replay = await repository.get_claimed_intent(db_session, claim=claim)
+    assert replay is not None
+    assert replay.id == proposed.id
+    assert replay.dispatch_key == claim["dispatch_key"]
+    assert replay.effect_status is RuntimeIntentStatus.PROPOSED
+
+
+@pytest.mark.asyncio
 async def test_production_repository_claim_is_rolled_back_with_outer_transaction(db_session) -> None:
     repository = RuntimeIntentLogRepository()
     claim = _claim()
