@@ -25,8 +25,8 @@ snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIn
   `RETRY_WAIT`；非法 URL、endpoint/canonical 准备失败是不可重试 `NOT_SENT`，直接进入 `FAILED`。
 - sender 返回非 typed 对象时 fail closed 为 `AMBIGUOUS`，没有 bool fallback。
 - EXTERNAL_HTTP 沙箱出口返回 `ACCEPTED + SANDBOX + protocol NOT_AVAILABLE`，不伪造 HTTP 状态码。
-- `AMBIGUOUS + RESPONSE_RECEIVED` 只能携带 `protocol UNKNOWN`；其它 AMBIGUOUS phase 必须是
-  `protocol NOT_AVAILABLE` 且不得携带 HTTP 状态码，矛盾证据在构造时即被拒绝。
+- `AMBIGUOUS + RESPONSE_RECEIVED` 必须携带 `protocol UNKNOWN` 和非空 HTTP 状态码；响应前 AMBIGUOUS phase
+  必须是 `protocol NOT_AVAILABLE` 且不得携带 HTTP 状态码。`SANDBOX + AMBIGUOUS` 没有实际语义，构造时直接拒绝。
 
 ## 证据持久化失败收口
 
@@ -37,8 +37,13 @@ snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIn
   未收到确认，因此常规状态边不足以表达这类提交歧义。
 - 隔离恢复本身失败时抛出 `ExternalHttpEvidenceRecoveryError`；workline dispatcher 显式让该异常穿透，绝不落入
   通用 `mark_as_failed` 路径。
-- generic 与 workline 失败注入回归均验证 sender 只调用一次；恢复成功后第二轮不再领取，恢复失败则向上报错且
-  不创建可重试状态。
+- `mark_as_dispatching` 是 sender 前的最后一道领取 fence：过期的 EXTERNAL_HTTP `DISPATCHING` lease 先转为
+  `UNKNOWN` 并记录 `STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED`，随后返回未领取；DEVICE_COMMAND 与
+  INTERNAL_SIGNAL 继续沿用原 stale lease reclaim 语义。
+- 若该 UNKNOWN flush/commit 仍失败，当前 worker 会在 sender 前退出；下一 worker 继续执行相同 fence，绝不会把旧
+  EXTERNAL_HTTP lease 直接重发。
+- generic 与 workline 失败注入回归均验证 sender 只调用一次；真实 Repository 双 worker 回归进一步覆盖“隔离恢复
+  失败 → lease 过期 → 下一 worker scan/claim”，第二次 sender 调用保持为零。
 
 ## Attempt evidence 与迁移
 
@@ -53,9 +58,9 @@ snapshot、WMS 专用 dispatcher 或旧数据迁移；也没有写入 `RuntimeIn
 
 ## 验证结果
 
-- P1/P2 定向回归：typed 不变量、Repository 终态覆盖、generic/workline 证据失败场景全部通过。
-- outbox/transport/attempt 相关回归：`76 passed`。
-- 测试拓扑守卫：`6 passed`；显式 collect-only：`3657 tests collected`。
+- P1/P2 定向回归：typed 不变量、Repository 终态覆盖、generic/workline 证据失败及双 worker lease 场景全部通过。
+- outbox/transport/attempt 相关回归：`81 passed`。
+- 测试拓扑守卫：`6 passed`；显式 collect-only：`3662 tests collected`。
 - T8c typed result、双 dispatcher、attempt evidence 与 EFFECT 相关回归：`74 passed`。
 - T8c 最终核心复验（含 SANDBOX evidence）：`24 passed`。
 - PostgreSQL typed attempt evidence 集成测试：`1 passed`。
@@ -81,5 +86,12 @@ HIGH；风险来自共享 workline/SystemOutbox `dispatch` 流程的跨社区影
 本轮 P1/P2 修复的 staged 检测覆盖 10 个文件、23 个已索引符号、9 个 affected processes，汇总风险同样为 HIGH；
 原因仍是 generic/workline 两个共享 `dispatch` 入口的跨社区传播。实际实现只在 typed EXTERNAL_HTTP 分支增加证据
 失败收口，设备分支未改；相关 76 项回归、348 项 runtime contract guardrails 与完整 quality profile 均通过。
+
+本轮领取侧补强的写前 impact：`mark_as_dispatching` 为 LOW（1 个直接调用方、1 条受影响流程）；现有 stale lease
+回归测试为 LOW；新提交后尚未重建索引的 `ExternalHttpTransportResult/__post_init__` 为 UNKNOWN/0。无
+HIGH/CRITICAL，非 HTTP reclaim 语义由 DEVICE_COMMAND、INTERNAL_SIGNAL 双参数回归覆盖。
+
+末轮 staged `gitnexus_detect_changes` 覆盖 7 个文件、5 个已索引符号、1 个 affected process，汇总风险为 MEDIUM；
+变更边界与预期一致，仅涉及 transport 不变量、SystemOutbox claim fence、相应测试和本报告。
 
 提交范围只包含 T8c 计划、实现、迁移、测试与本报告，不包含用户维护的 `AGENTS.md`、`CLAUDE.md`。

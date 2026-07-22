@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -10,14 +11,17 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.external_http_evidence import ExternalHttpEvidenceRecoveryError
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportOutcome,
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
-from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
+from src.app.sys.repositories import SystemOutboxRepository
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
+from src.utils.timezone import timezone
 
 
 def _outbox() -> SimpleNamespace:
@@ -118,6 +122,18 @@ class _AttemptService:
         if self.fail_finalize:
             raise RuntimeError("attempt evidence unavailable")
         return kwargs["attempt"]
+
+
+class _FailOnceAttemptService(_AttemptService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_remaining = 1
+
+    async def finalize_external_http_attempt_record(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise RuntimeError("attempt evidence unavailable")
+        return await super().finalize_external_http_attempt_record(_db, **kwargs)
 
 
 async def _no_workline_messages(_db: Any, _limit: int) -> dict[str, int]:
@@ -291,3 +307,59 @@ async def test_generic_attempt_evidence_failure_fail_closes_unknown_without_seco
     assert sender.await_count == 1
     current_db.rollback.assert_awaited_once()
     recovery_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovery_failure_then_expired_external_http_lease_never_sends_twice(db_session: Any) -> None:
+    """首 worker 的 UNKNOWN 恢复失败后，下一 worker 只能收口旧 lease，不能重发 HTTP。"""
+
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-RECOVERY-FAIL-LEASE"})
+    outbox = SystemOutbox(
+        operation_domain="HANDLING",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="external-http-recovery-fail-lease",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="WMS_RCS_BIN_OPERATION",
+        payload_json={"request_id": "REQ-RECOVERY-FAIL-LEASE"},
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+    await db_session.refresh(outbox)
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
+
+    @asynccontextmanager
+    async def unavailable_recovery_context():
+        yield SimpleNamespace(commit=AsyncMock())
+
+    engine = SystemOutboxEngine(
+        outbox_repository=SystemOutboxRepository(),
+        external_http_sender=sender,
+        dispatch_attempt_service=_FailOnceAttemptService(),
+        external_http_recovery_context_factory=unavailable_recovery_context,
+        workline_domain_dispatcher=_no_workline_messages,
+    )
+
+    with pytest.raises(ExternalHttpEvidenceRecoveryError):
+        await engine.dispatch(db_session, limit=1)
+    await db_session.refresh(outbox)
+    assert outbox.status is SystemOutboxStatus.DISPATCHING
+
+    outbox.next_retry_at = timezone.now_for_db() - timedelta(seconds=1)
+    await db_session.commit()
+
+    second = await engine.dispatch(db_session, limit=1)
+    await db_session.refresh(outbox)
+
+    assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 1}
+    assert sender.await_count == 1
+    assert outbox.status is SystemOutboxStatus.UNKNOWN
+    assert outbox.next_retry_at is None
+    assert outbox.finished_at is not None
+    assert "STALE_EXTERNAL_HTTP_DISPATCH_LEASE" in outbox.last_error

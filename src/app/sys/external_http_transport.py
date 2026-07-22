@@ -76,16 +76,23 @@ class ExternalHttpTransportResult:
             else:
                 raise ValueError("ACCEPTED requires RESPONSE_RECEIVED or SANDBOX phase")
         if self.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
-            if self.phase is ExternalHttpTransportPhase.RESPONSE_RECEIVED:
-                if self.protocol_result is not ExternalHttpProtocolResult.UNKNOWN:
-                    raise ValueError("RESPONSE_RECEIVED AMBIGUOUS requires UNKNOWN protocol_result")
-            else:
-                if self.protocol_result is not ExternalHttpProtocolResult.NOT_AVAILABLE:
-                    raise ValueError("pre-response AMBIGUOUS requires NOT_AVAILABLE protocol_result")
-                if self.http_status_code is not None:
-                    raise ValueError("pre-response AMBIGUOUS cannot carry http_status_code")
+            self._validate_ambiguous_evidence()
         if self.http_status_code is not None and not 100 <= self.http_status_code <= 599:
             raise ValueError("http_status_code must be between 100 and 599")
+
+    def _validate_ambiguous_evidence(self) -> None:
+        if self.phase is ExternalHttpTransportPhase.SANDBOX:
+            raise ValueError("SANDBOX cannot produce AMBIGUOUS transport result")
+        if self.phase is ExternalHttpTransportPhase.RESPONSE_RECEIVED:
+            if self.protocol_result is not ExternalHttpProtocolResult.UNKNOWN:
+                raise ValueError("RESPONSE_RECEIVED AMBIGUOUS requires UNKNOWN protocol_result")
+            if self.http_status_code is None:
+                raise ValueError("RESPONSE_RECEIVED AMBIGUOUS requires http_status_code")
+            return
+        if self.protocol_result is not ExternalHttpProtocolResult.NOT_AVAILABLE:
+            raise ValueError("pre-response AMBIGUOUS requires NOT_AVAILABLE protocol_result")
+        if self.http_status_code is not None:
+            raise ValueError("pre-response AMBIGUOUS cannot carry http_status_code")
 
     @classmethod
     def not_sent(

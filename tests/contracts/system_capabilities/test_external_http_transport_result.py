@@ -69,6 +69,16 @@ def test_transport_result_is_frozen_and_rejects_retryable_non_not_sent_outcome()
             ExternalHttpProtocolResult.NOT_AVAILABLE,
             503,
         ),
+        (
+            ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+            ExternalHttpProtocolResult.UNKNOWN,
+            None,
+        ),
+        (
+            ExternalHttpTransportPhase.SANDBOX,
+            ExternalHttpProtocolResult.NOT_AVAILABLE,
+            None,
+        ),
     ],
 )
 def test_ambiguous_result_rejects_contradictory_phase_protocol_and_http_evidence(

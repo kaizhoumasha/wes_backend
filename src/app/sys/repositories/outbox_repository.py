@@ -217,6 +217,19 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             and outbox.next_retry_at is not None
             and outbox.next_retry_at <= now
         )
+        if stale_dispatching and outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
+            # HTTP 请求在 worker 失联前可能已经越过本地边界；
+            # 过期 lease 只能保守收口，绝不能直接重放。
+            outbox.attempt_count += 1
+            self._clear_block(outbox)
+            transition_system_outbox(outbox, SystemOutboxStatus.UNKNOWN)
+            outbox.last_error = (
+                "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED: delivery evidence unavailable; automatic replay fenced"
+            )
+            outbox.sent_at = None
+            outbox.finished_at = now
+            await db.flush()
+            return None
         if outbox.status not in {SystemOutboxStatus.NEW, SystemOutboxStatus.RETRY_WAIT} and not stale_dispatching:
             return None
 

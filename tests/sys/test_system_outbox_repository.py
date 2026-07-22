@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -149,6 +150,43 @@ async def test_external_http_evidence_persistence_failure_overrides_uncertain_st
     assert outbox.finished_at is not None
     assert outbox.last_error == "EXTERNAL_HTTP_EVIDENCE_PERSISTENCE_FAILED outcome=ACCEPTED"
     assert outbox.blocked_reason is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dispatch_type", "target_type", "target_code"),
+    [
+        (SystemOutboxDispatchType.DEVICE_COMMAND, SystemOutboxTargetType.DEVICE, "DEVICE-LEASE-1"),
+        (SystemOutboxDispatchType.INTERNAL_SIGNAL, SystemOutboxTargetType.INTERNAL_SERVICE, "core"),
+    ],
+)
+async def test_non_http_stale_dispatching_lease_remains_reclaimable(
+    db_session: Any,
+    dispatch_type: SystemOutboxDispatchType,
+    target_type: SystemOutboxTargetType,
+    target_code: str,
+) -> None:
+    outbox = SystemOutbox(
+        operation_domain="HANDLING",
+        dispatch_type=dispatch_type,
+        dispatch_key=f"non-http-stale-lease-{dispatch_type.value}",
+        target_type=target_type,
+        target_code=target_code,
+        payload_json={},
+        status=SystemOutboxStatus.DISPATCHING,
+        next_retry_at=timezone.now_for_db() - timedelta(seconds=1),
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+    await db_session.refresh(outbox)
+
+    pending = await SystemOutboxRepository().get_pending_messages(db_session, limit=10)
+    claimed = await SystemOutboxRepository().mark_as_dispatching(db_session, outbox.id)
+
+    assert [item.id for item in pending] == [outbox.id]
+    assert claimed is outbox
+    assert outbox.status is SystemOutboxStatus.DISPATCHING
+    assert outbox.next_retry_at > timezone.now_for_db()
 
 
 @pytest.mark.asyncio

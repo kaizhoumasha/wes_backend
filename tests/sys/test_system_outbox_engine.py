@@ -234,23 +234,21 @@ async def test_system_outbox_dispatcher_marks_failed_when_external_http_fails() 
 
 
 @pytest.mark.asyncio
-async def test_system_outbox_dispatcher_reclaims_stale_dispatching_message() -> None:
+async def test_system_outbox_dispatcher_reclaims_stale_non_http_dispatching_message() -> None:
     message = _outbox(
         id=3,
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="DEVICE-LEASE-3",
         status=SystemOutboxStatus.DISPATCHING,
         next_retry_at=datetime(2026, 5, 22, 7, 59, 0),
     )
     repo = FakeSystemOutboxRepository([message])
-    sender = AsyncMock(
-        return_value=ExternalHttpTransportResult.accepted(
-            http_status_code=200,
-            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
-        )
-    )
+    device_sender = AsyncMock(return_value=True)
     db = SimpleNamespace(commit=AsyncMock())
     dispatcher = SystemOutboxDispatcher(
         outbox_repository=repo,
-        external_http_sender=sender,
+        device_command_dispatcher=device_sender,
         dispatch_attempt_service=FakeDispatchAttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
     )
@@ -258,7 +256,7 @@ async def test_system_outbox_dispatcher_reclaims_stale_dispatching_message() -> 
     result = await dispatcher.dispatch(db, limit=10)
 
     assert result == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
-    sender.assert_awaited_once()
+    device_sender.assert_awaited_once_with(db, message)
     assert repo.mark_dispatching_calls == [3]
     assert message.status == SystemOutboxStatus.SENT
 
