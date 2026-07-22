@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
 from src.app.runtime.system_capabilities.query_inventory_cutover import (
     QUERY_INVENTORY_PRODUCTION_PROFILE,
+    QueryInventoryCutoverReadinessRepository,
     QueryInventoryCutoverReadinessService,
 )
 from src.app.runtime.system_capabilities.shadow_readiness import (
@@ -68,6 +70,106 @@ def _ready_authorization() -> tuple[object, QueryShadowReadinessApproval]:
         approved_at=observed_at,
     )
     return report, approval
+
+
+class _ScalarResult:
+    def __init__(self, value: object | None) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> object | None:
+        return self._value
+
+
+class _Database:
+    def __init__(self, *rows: object | None) -> None:
+        self._rows = iter(rows)
+
+    async def execute(self, _statement: object) -> _ScalarResult:
+        return _ScalarResult(next(self._rows))
+
+
+def _persisted_rows(*, report_json: dict[str, object], generated_at: object) -> tuple[object, object]:
+    report, approval = _ready_authorization()
+    return (
+        SimpleNamespace(
+            report_id=report.report_id,
+            generated_at=generated_at,
+            provider_profile_identity=report.provider_profile_identity,
+            operation_identity=report.operation_identity,
+            verdict=report.verdict.value,
+            report_json=report_json,
+        ),
+        SimpleNamespace(
+            report_id=approval.report_id,
+            decision=approval.decision.value,
+            approved_by=approval.approved_by,
+            approved_at=approval.approved_at.replace(tzinfo=None),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_repository_accepts_only_normalized_generated_at_for_latest_db_row() -> None:
+    report, _approval = _ready_authorization()
+    report_json = report.model_dump(mode="json")
+    report_json["generated_at"] = "2026-07-22T08:00:00+08:00"
+    rows = _persisted_rows(report_json=report_json, generated_at=datetime(2026, 7, 22))
+
+    authorization = await QueryInventoryCutoverReadinessRepository().load_latest_authorization(
+        _Database(*rows),
+        provider_profile_identity=QUERY_INVENTORY_PRODUCTION_PROFILE,
+        operation_identity=OPERATION_IDENTITY,
+    )
+
+    assert authorization is not None
+    assert authorization[0].generated_at == datetime(2026, 7, 22, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_repository_rejects_report_json_generated_at_that_differs_from_selected_db_row() -> None:
+    report, _approval = _ready_authorization()
+    report_json = report.model_dump(mode="json")
+    rows = _persisted_rows(report_json=report_json, generated_at=datetime(2026, 7, 22, 0, 0, 1))
+
+    with pytest.raises(ReadinessGateError, match="generated_at"):
+        await QueryInventoryCutoverReadinessRepository().load_latest_authorization(
+            _Database(*rows),
+            provider_profile_identity=QUERY_INVENTORY_PRODUCTION_PROFILE,
+            operation_identity=OPERATION_IDENTITY,
+        )
+
+
+@pytest.mark.parametrize("generated_at", [None, "not-a-timestamp"])
+@pytest.mark.asyncio
+async def test_repository_rejects_missing_or_malformed_report_json_generated_at(generated_at: object) -> None:
+    report, _approval = _ready_authorization()
+    report_json = report.model_dump(mode="json")
+    if generated_at is None:
+        report_json.pop("generated_at")
+    else:
+        report_json["generated_at"] = generated_at
+    rows = _persisted_rows(report_json=report_json, generated_at=datetime(2026, 7, 22))
+
+    with pytest.raises(ReadinessGateError, match="metadata"):
+        await QueryInventoryCutoverReadinessRepository().load_latest_authorization(
+            _Database(*rows),
+            provider_profile_identity=QUERY_INVENTORY_PRODUCTION_PROFILE,
+            operation_identity=OPERATION_IDENTITY,
+        )
+
+
+@pytest.mark.parametrize("generated_at", [None, "not-a-timestamp"])
+@pytest.mark.asyncio
+async def test_repository_rejects_missing_or_malformed_db_generated_at(generated_at: object) -> None:
+    report, _approval = _ready_authorization()
+    rows = _persisted_rows(report_json=report.model_dump(mode="json"), generated_at=generated_at)
+
+    with pytest.raises(ReadinessGateError, match="metadata"):
+        await QueryInventoryCutoverReadinessRepository().load_latest_authorization(
+            _Database(*rows),
+            provider_profile_identity=QUERY_INVENTORY_PRODUCTION_PROFILE,
+            operation_identity=OPERATION_IDENTITY,
+        )
 
 
 class _Repository:

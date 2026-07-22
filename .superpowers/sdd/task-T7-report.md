@@ -76,3 +76,23 @@ production startup/release 配置为 fail closed，绝不以测试报告或假�
   之前启动与发布会按设计失败。
 - dev/test 会跳过 production readiness 查询，仅用于开发和验证；这不是旧 capability fallback，所有环境都只包含
   通用 query/policy 执行路径。
+
+## Review follow-up（2026-07-22）
+
+- 修复 cutover repository 对最新报告的完整性校验：查询仍以数据库列 `generated_at DESC, report_id DESC`
+  选择最新行，加载 immutable `report_json` 后把 DB naive UTC / aware timestamp 统一归一化为 aware UTC，并要求
+  `report_json.generated_at` 与所选 DB 行时间完全一致。不匹配、JSON 时间缺失/非法、DB 时间缺失/非法均以
+  `ReadinessGateError` fail closed。
+- TDD RED 明确复现了三个缺口：DB/JSON 时间不匹配仍被接受；缺失或非法 JSON 时间泄漏 Pydantic
+  `ValidationError`；非法 DB 时间没有稳定门禁错误。GREEN 后补充时区等价通过、时间不匹配拒绝及两侧 malformed
+  metadata 合同。
+- 本地 API startup 路径保持 `init_db -> DB-backed READY+GO gate -> init_redis -> serving`；production 拒绝时不会
+  初始化 Redis 或进入 serving，dev/test 仍不声明 production 授权。没有增加 fallback、alias 或双运行路径。
+- 范围按本机 Docker 开发调试约束收窄：未修改 `Jenkinsfile`，也未保留 Jenkins/GitLab 测试改动或执行其发布验证。
+- GitNexus 影响分析：`QueryInventoryCutoverReadinessRepository.load_latest_authorization` 为 LOW，0 个图谱调用方、
+  0 条执行流程；测试符号同为 LOW。提交前 staged detect changes 为 MEDIUM：3 个文件、14 个图谱符号，仅影响
+  `Register_init -> Canonical_json` startup 流程中的 `require_ready` 步骤，符合本次本地 API gate 修复范围。
+- 验证：repository、API startup、architecture、test topology 与 generated index 共 `88 passed`；默认收集
+  `3589 tests`；`ruff format --check`、`ruff check`、`git diff --check` 通过；
+  `./scripts/git-quality-gate.sh --profile quality` 通过（Bandit 0 issue、348 runtime contracts、11 process naming、
+  import-linter、enforced architecture guardrails、test topology 全部通过）。
