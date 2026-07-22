@@ -15,6 +15,7 @@ from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
+from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
@@ -277,6 +278,12 @@ def test_same_operation_hash_replays_success_and_different_hash_conflicts() -> N
             assert isinstance(conflict.outcome, ContractViolation)
             assert conflict.outcome.error_code == "IDEMPOTENCY_CONFLICT"
             assert await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 1
-            await db.rollback()
+            intent_log = await db.scalar(select(RuntimeIntentLog))
+            case = await db.scalar(select(ReconciliationCase))
+            assert intent_log is not None and intent_log.effect_status is RuntimeIntentStatus.COMPLETED
+            assert case is not None and case.status is ReconciliationCaseStatus.OPEN
+            assert case.dispatch_key == intent_log.dispatch_key
+            assert case.evidence_history_json[-1]["event_type"] == "IDEMPOTENCY_CONFLICT"
+            await db.commit()
 
     asyncio.run(with_temporary_runtime_database(scenario))

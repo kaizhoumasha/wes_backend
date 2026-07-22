@@ -16,13 +16,18 @@ from src.app.runtime.orchestration.runtime_intent import (
     validate_system_capability_operation_key,
 )
 from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition, SystemCapabilityMode
+from src.core.logger import logger
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
-    from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
+    from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
+    from src.app.runtime.orchestration.system_capability_effect_claim import (
+        SystemCapabilityClaimResult,
+        SystemCapabilityIdempotencyConflict,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +53,7 @@ class SystemCapabilityIntentService:
         plugin_index_digest: str | None = None,
         effect_repository: Any | None = None,
         effect_reducer: Any | None = None,
+        effect_reconciliation_bridge: Any | None = None,
     ) -> None:
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
@@ -73,6 +79,10 @@ class SystemCapabilityIntentService:
             from src.app.runtime.orchestration.services.effect_reducer_service import effect_reducer
 
         self._effect_reducer = effect_reducer
+        if effect_reconciliation_bridge is None:
+            from src.app.runtime.orchestration.effect_bridges import effect_reconciliation_bridge
+
+        self._effect_reconciliation_bridge = effect_reconciliation_bridge
         self._plugin_definitions = dict(plugin_definitions)
         self._plugin_index_digest = plugin_index_digest
 
@@ -177,6 +187,60 @@ class SystemCapabilityIntentService:
                 evidence_json=evidence.model_dump(mode="json"),
             ),
         )
+
+    async def record_idempotency_conflict(
+        self,
+        ctx: Mapping[str, Any],
+        *,
+        conflict: IdempotencyConflict | SystemCapabilityIdempotencyConflict,
+    ) -> bool:
+        """锁定冲突 identity 的权威 intent，并在当前事务写入 reconciliation evidence。"""
+
+        identity = {
+            "provider_code": conflict.provider_code,
+            "operation_kind": conflict.operation_kind,
+            "idempotency_key": conflict.idempotency_key,
+        }
+        authoritative = await self._effect_repository.get_conflicted_intent_for_update(ctx["db"], **identity)
+        dispatch_key = getattr(authoritative, "dispatch_key", None)
+        intent_id = getattr(authoritative, "id", None)
+        if (
+            authoritative is None
+            or not isinstance(dispatch_key, str)
+            or not dispatch_key
+            or not isinstance(intent_id, int)
+        ):
+            # 不能从 incoming payload/correlation 猜测关联；缺失权威行时保留 409 fail-closed，
+            # 同时输出稳定诊断码，让未落 reconciliation evidence 的异常可观测。
+            logger.error(
+                "IDEMPOTENCY_CONFLICT_AUTHORITY_MISSING "
+                f"provider={identity['provider_code']} operation={identity['operation_kind']} "
+                f"idempotency_key={identity['idempotency_key']}"
+            )
+            return False
+
+        evidence_json = {
+            **identity,
+            "existing_request_hash": conflict.existing_request_hash,
+            "incoming_request_hash": conflict.incoming_request_hash,
+            "authoritative_intent_id": intent_id,
+        }
+        source_material = "|".join(
+            (
+                identity["provider_code"],
+                identity["operation_kind"],
+                identity["idempotency_key"],
+                str(conflict.incoming_request_hash or "missing"),
+            )
+        )
+        await self._effect_reconciliation_bridge.record_idempotency_conflict(
+            ctx["db"],
+            dispatch_key=dispatch_key,
+            occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+            source_event_id=f"idempotency-conflict:{sha256(source_material.encode('utf-8')).hexdigest()}",
+            evidence_json=evidence_json,
+        )
+        return True
 
     async def get_success_evidence(
         self, ctx: Mapping[str, Any], *, prepared: PreparedSystemCapabilityIntent

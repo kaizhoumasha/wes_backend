@@ -209,6 +209,23 @@ class RuntimeIntentLogRepository:
             idempotency_key=claim["idempotency_key"],
         )
 
+    async def get_conflicted_intent_for_update(
+        self,
+        db: Any,
+        *,
+        provider_code: str,
+        operation_kind: str,
+        idempotency_key: str,
+    ) -> RuntimeIntentLog | None:
+        """只按冲突携带的稳定 identity 锁定既有权威 intent。"""
+
+        return await self._get_effect_for_update(
+            db,
+            provider_code=provider_code,
+            operation_kind=operation_kind,
+            idempotency_key=idempotency_key,
+        )
+
     async def list_redecision_evidence(
         self, db: Any, *, execution_session_id: int, execution_work_item_id: int
     ) -> tuple[dict[str, object], ...]:

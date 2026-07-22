@@ -83,7 +83,8 @@ class SystemCapabilityEffectService:
     async def apply(self, ctx: dict[str, Any], intent: RuntimeIntent) -> SystemCapabilityEffectResult:
         try:
             prepared = await self._intent_service.prepare_and_claim(ctx, intent)
-        except (IdempotencyConflict, SystemCapabilityIdempotencyConflict):
+        except (IdempotencyConflict, SystemCapabilityIdempotencyConflict) as conflict:
+            await self._intent_service.record_idempotency_conflict(ctx, conflict=conflict)
             return SystemCapabilityEffectResult(
                 outcome=ContractViolation(
                     error_code="IDEMPOTENCY_CONFLICT",

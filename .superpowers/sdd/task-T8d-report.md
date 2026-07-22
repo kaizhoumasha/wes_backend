@@ -87,3 +87,29 @@ result 的 outbox/attempt evidence 持久化后增加 reducer bridge，DEVICE_CO
 语义未改；247 项相关回归、Docker PostgreSQL、348 项 runtime guardrails 与完整 quality profile 已覆盖该风险。
 
 提交范围只包含 T8d 实现、generator migration、测试与本报告，不包含用户维护的 `AGENTS.md`、`CLAUDE.md`。
+
+## P1 复审修复：幂等冲突进入对账闭环
+
+复审确认真实 `SystemCapabilityEffectService.apply` 在捕获 `IdempotencyConflict` 或
+`SystemCapabilityIdempotencyConflict` 后直接返回 409，原有 `record_idempotency_conflict` bridge 没有调用方。
+修复后 catch 路径只使用异常携带的 `provider_code + operation_kind + idempotency_key` 稳定 identity，通过
+Repository `FOR UPDATE` 锁定既有 `RuntimeIntentLog`，再使用该行持久化的 `dispatch_key` 在同一事务调用
+reconciliation bridge。evidence 记录冲突双方 request hash 和权威 intent id；不读取 incoming payload 或
+correlation 推断关联。bridge 将冲突归一化为 `IDEMPOTENCY_CONFLICT` event，由 reducer 创建或更新 OPEN
+`ReconciliationCase`，同时保持既有 intent 状态不变。
+
+权威 intent 缺失或缺少合法 id/dispatch key 时不猜测归属、不写错误 case，输出稳定诊断码
+`IDEMPOTENCY_CONFLICT_AUTHORITY_MISSING`，并继续返回 fail-closed `IDEMPOTENCY_CONFLICT` 合同错误；数据库或
+bridge 持久化异常不会被吞掉。
+
+- 写前 GitNexus impact：`SystemCapabilityEffectService.apply` 为 HIGH（28 个直接/总上游、2 个模块），测试 helper
+  `_service` 为 HIGH（27 个直接上游）；`RuntimeIntentLogRepository` 为 MEDIUM（7 个直接、75 个总上游），
+  `SystemCapabilityIntentService.__init__` 为 LOW。HIGH 风险已在编辑前报告，并按本轮复审授权继续。
+- TDD 首轮 RED：真实 service catch、Repository 权威查询与 bridge 合同共 `46 failed, 79 passed`；最小实现后
+  `125 passed`。
+- 扩大 EFFECT/outbox 回归：`251 passed`；修正测试装饰器后再次定向验证真实 service：`51 passed`。
+- Docker PostgreSQL 真实 service 冲突与 reducer/case 场景：`5 passed`；测试拓扑守卫：`6 passed`；显式
+  collect-only：`3738 tests collected`。
+- `./scripts/git-quality-gate.sh --profile quality`、定向 Ruff format/check 与 `git diff --check` 均通过。
+- 最终 staged `gitnexus_detect_changes` 覆盖 8 个文件、55 个已索引 symbols、0 条 affected processes，汇总风险为
+  LOW；提交边界仅包含本轮冲突对账接线、合同/集成测试及本报告。

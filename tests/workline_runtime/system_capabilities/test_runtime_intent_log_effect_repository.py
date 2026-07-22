@@ -10,7 +10,10 @@ from sqlalchemy import select
 from src.app.runtime.orchestration.effect_bridges import EffectCallbackBridge, EffectCallbackOutcome
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
-from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
+from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityClaimResult,
+    SystemCapabilityIdempotencyConflict,
+)
 
 
 def _claim() -> dict[str, object]:
@@ -157,3 +160,24 @@ async def test_production_repository_rejects_dispatch_key_change_on_matching_ide
     with pytest.raises(ValueError, match=r"dispatch_key.*不可变"):
         await repository.claim_or_match(db_session, **changed)
     await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_production_repository_locks_conflicted_intent_by_stable_identity(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+    with pytest.raises(SystemCapabilityIdempotencyConflict) as exc_info:
+        await repository.claim_or_match(db_session, **{**claim, "request_hash": "b" * 64})
+
+    conflict = exc_info.value
+    authoritative = await repository.get_conflicted_intent_for_update(
+        db_session,
+        provider_code=conflict.provider_code,
+        operation_kind=conflict.operation_kind,
+        idempotency_key=conflict.idempotency_key,
+    )
+    assert authoritative is not None
+    assert authoritative.dispatch_key == claim["dispatch_key"]
+    assert authoritative.request_hash == "a" * 64

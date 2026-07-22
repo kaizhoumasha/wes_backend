@@ -18,6 +18,7 @@ from src.app.runtime.orchestration.services.intent.system_capability_effect_serv
 from src.app.runtime.orchestration.services.intent.system_capability_intent_service import (
     SystemCapabilityIntentService,
 )
+from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -105,7 +106,13 @@ class _EffectRepository:
         self.success_evidence = success_evidence
         self.calls: list[dict[str, Any]] = []
         self.outcomes: list[object] = []
-        self.intent_log = SimpleNamespace(effect_status=RuntimeIntentStatus.PROPOSED, dispatch_key=None)
+        self.conflict_lookups: list[dict[str, str]] = []
+        self.conflict_intent: object | None = SimpleNamespace(
+            id=17,
+            effect_status=RuntimeIntentStatus.PROPOSED,
+            dispatch_key="authoritative-effect-dispatch",
+        )
+        self.intent_log = SimpleNamespace(id=17, effect_status=RuntimeIntentStatus.PROPOSED, dispatch_key=None)
 
     async def claim_or_match(self, _db: object, **kwargs: Any) -> ClaimResult:
         self.calls.append(kwargs)
@@ -126,6 +133,10 @@ class _EffectRepository:
     async def get_claimed_intent(self, _db: object, *, claim: dict[str, Any]) -> object:
         self.intent_log.dispatch_key = claim["dispatch_key"]
         return self.intent_log
+
+    async def get_conflicted_intent_for_update(self, _db: object, **identity: str) -> object | None:
+        self.conflict_lookups.append(identity)
+        return self.conflict_intent
 
     async def get_success_evidence(self, _db: object, **_kwargs: Any) -> object | None:
         return self.success_evidence
@@ -173,6 +184,14 @@ class _EffectReducer:
             model_dump=lambda **_dump_kwargs: dict(event_data.evidence_json),
         )
         await self.repository.record_outcome(db, evidence=evidence)
+
+
+class _ReconciliationBridge:
+    def __init__(self) -> None:
+        self.conflicts: list[dict[str, Any]] = []
+
+    async def record_idempotency_conflict(self, _db: object, **kwargs: Any) -> None:
+        self.conflicts.append(kwargs)
 
 
 class _AsyncAcceptedReplayRepository(_EffectRepository):
@@ -269,7 +288,12 @@ def _ctx(db: _Db | None = None) -> dict[str, object]:
     }
 
 
-def _service(definition: SystemCapabilityDefinition, repository: _EffectRepository) -> SystemCapabilityEffectService:
+def _service(
+    definition: SystemCapabilityDefinition,
+    repository: _EffectRepository,
+    *,
+    reconciliation_bridge: _ReconciliationBridge | None = None,
+) -> SystemCapabilityEffectService:
     plugin_definition = SimpleNamespace(
         plugin_key="test_plugin",
         contract_version="v1",
@@ -281,6 +305,7 @@ def _service(definition: SystemCapabilityDefinition, repository: _EffectReposito
         plugin_index_digest="d" * 64,
         effect_repository=repository,
         effect_reducer=_EffectReducer(repository),
+        effect_reconciliation_bridge=reconciliation_bridge or _ReconciliationBridge(),
     )
     return SystemCapabilityEffectService(intent_service=intent_service)
 
@@ -855,18 +880,85 @@ async def test_session_and_device_malformed_admission_remain_contract_violations
 
 
 @pytest.mark.asyncio
-async def test_same_final_key_with_different_hash_fails_closed() -> None:
-    conflict = IdempotencyConflict(
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        IdempotencyConflict(
+            provider_code="RUNTIME",
+            operation_kind="system_capability_effect",
+            idempotency_key="stable-key",
+            existing_request_hash="a" * 64,
+            incoming_request_hash="b" * 64,
+            correlation_id="untrusted-correlation",
+        ),
+        SystemCapabilityIdempotencyConflict(
+            provider_code="RUNTIME",
+            operation_kind="system_capability_effect",
+            idempotency_key="stable-key",
+            existing_request_hash="a" * 64,
+            incoming_request_hash="b" * 64,
+            correlation_id="untrusted-correlation",
+        ),
+    ],
+)
+async def test_idempotency_conflict_uses_authoritative_intent_and_records_open_case_event(
+    conflict: IdempotencyConflict | SystemCapabilityIdempotencyConflict,
+) -> None:
+    repository = _EffectRepository(conflict)
+    bridge = _ReconciliationBridge()
+    result = await _service(_definition(), repository, reconciliation_bridge=bridge).apply(_ctx(), _intent("B"))
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "IDEMPOTENCY_CONFLICT"
+    assert repository.conflict_lookups == [
+        {
+            "provider_code": "RUNTIME",
+            "operation_kind": "system_capability_effect",
+            "idempotency_key": "stable-key",
+        }
+    ]
+    assert len(bridge.conflicts) == 1
+    recorded = bridge.conflicts[0]
+    assert recorded["dispatch_key"] == "authoritative-effect-dispatch"
+    assert recorded["evidence_json"] == {
+        "provider_code": "RUNTIME",
+        "operation_kind": "system_capability_effect",
+        "idempotency_key": "stable-key",
+        "existing_request_hash": "a" * 64,
+        "incoming_request_hash": "b" * 64,
+        "authoritative_intent_id": 17,
+    }
+    assert "correlation_id" not in recorded["evidence_json"]
+
+
+@pytest.mark.asyncio
+async def test_idempotency_conflict_without_authoritative_intent_is_observable_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conflict = SystemCapabilityIdempotencyConflict(
         provider_code="RUNTIME",
         operation_kind="system_capability_effect",
         idempotency_key="stable-key",
         existing_request_hash="a" * 64,
         incoming_request_hash="b" * 64,
     )
-    result = await _service(_definition(), _EffectRepository(conflict)).apply(_ctx(), _intent("B"))
+    repository = _EffectRepository(conflict)
+    repository.conflict_intent = None
+    bridge = _ReconciliationBridge()
+    errors: list[str] = []
+    intent_service_module = __import__(
+        "src.app.runtime.orchestration.services.intent.system_capability_intent_service",
+        fromlist=["logger"],
+    )
+    monkeypatch.setattr(intent_service_module, "logger", SimpleNamespace(error=errors.append), raising=False)
+
+    result = await _service(_definition(), repository, reconciliation_bridge=bridge).apply(_ctx(), _intent("B"))
 
     assert isinstance(result.outcome, ContractViolation)
     assert result.outcome.error_code == "IDEMPOTENCY_CONFLICT"
+    assert bridge.conflicts == []
+    assert len(errors) == 1
+    assert "IDEMPOTENCY_CONFLICT_AUTHORITY_MISSING" in errors[0]
 
 
 @pytest.mark.asyncio

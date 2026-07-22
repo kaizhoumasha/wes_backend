@@ -431,6 +431,27 @@ async def test_callback_and_reconciliation_bridges_accept_only_typed_semantic_ev
     assert reducer.events[-1].resolution is RuntimeIntentStatus.REJECTED
 
 
+@pytest.mark.asyncio
+async def test_reconciliation_bridge_maps_idempotency_conflict_to_closed_reducer_event() -> None:
+    _require_t8d()
+    reducer = _RecordingReducer()
+
+    await EffectReconciliationBridge(reducer=reducer).record_idempotency_conflict(
+        _Db(),
+        dispatch_key="authoritative-dispatch",
+        occurred_at_ms=1700,
+        source_event_id="idempotency-conflict:stable",
+        evidence_json={"idempotency_key": "stable-key", "incoming_request_hash": "b" * 64},
+    )
+
+    assert len(reducer.events) == 1
+    event = reducer.events[0]
+    assert event.event_type is EffectReducerEventType.IDEMPOTENCY_CONFLICT
+    assert event.dispatch_key == "authoritative-dispatch"
+    assert event.reason_code == "IDEMPOTENCY_CONFLICT"
+    assert reducer.require_intent == [True]
+
+
 def test_transport_outcome_enum_remains_the_t8c_closed_set() -> None:
     assert {item.value for item in ExternalHttpTransportOutcome} == {"NOT_SENT", "ACCEPTED", "AMBIGUOUS"}
 
