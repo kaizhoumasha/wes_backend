@@ -9,8 +9,6 @@ from urllib.parse import quote
 from pydantic import BaseModel, ValidationError
 
 from src.app.wms_integration.models import (
-    ConfirmInboundRequest,
-    ConfirmInboundResponse,
     ConfirmOutboundRequest,
     ConfirmOutboundResponse,
     ReleaseReservationRequest,
@@ -100,9 +98,6 @@ class WmsTypedPortService:
 
     async def release_reservation(self, request: ReleaseReservationRequest) -> ReleaseReservationResponse:
         return await self._execute("release_reservation", request, ReleaseReservationResponse)
-
-    async def confirm_inbound(self, request: ConfirmInboundRequest) -> ConfirmInboundResponse:
-        return await self._execute("confirm_inbound", request, ConfirmInboundResponse)
 
     async def confirm_outbound(self, request: ConfirmOutboundRequest) -> ConfirmOutboundResponse:
         return await self._execute("confirm_outbound", request, ConfirmOutboundResponse)

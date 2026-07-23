@@ -16,7 +16,7 @@ RUNTIME_EVIDENCE_CAPABILITIES = ["sorter_inbound", "smt_ng_wms_reconciliation"]
 RUNTIME_EVIDENCE_EFFECT_PATH = [
     "RuntimeIntentLog",
     "WmsFulfillmentPort.notify_pkg_binding",
-    "WmsInventoryTransactionPort.confirm_inbound",
+    "wms.inventory.confirm_inbound@v1",
 ]
 RUNTIME_EVIDENCE_CALLBACK_PATH = ["RuntimeInbox"]
 RUNTIME_EVIDENCE_SERVICE_BEHAVIOR_INVARIANT = ["provider-contract"]

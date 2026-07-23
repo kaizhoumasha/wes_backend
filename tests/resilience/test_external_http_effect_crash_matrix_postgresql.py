@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -17,7 +18,16 @@ from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.models.dispatch_attempt import DispatchAttemptStatus, WorklineDispatchAttempt
 from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
+from src.app.runtime.orchestration.services.confirm_inbound_effect_preparation_service import (
+    ConfirmInboundEffectPreparationService,
+)
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import WorklineDispatchAttemptService
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.effect_adapter import (
+    ConfirmInboundEffectAdapter,
+)
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.gateway import (
+    ConfirmInboundDispatchGateway,
+)
 from src.app.sys.dispatch_concurrency import (
     DispatchBucketPolicy,
     DispatchPolicyRegistry,
@@ -26,7 +36,12 @@ from src.app.sys.dispatch_concurrency import (
 from src.app.sys.external_http_transport import ExternalHttpProtocolResult, ExternalHttpTransportResult
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.sys.repositories import SystemOutboxRepository
+from src.app.sys.services.endpoint_registry import EndpointRegistry
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
+from src.app.wms_integration.ports.confirm_inbound_operation import (
+    OPERATION_IDENTITY,
+    ConfirmInboundOperationRequest,
+)
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 from tests.support.external_http import StaticTestCredentialProvider, frozen_outbox_namespace
@@ -83,6 +98,13 @@ class _RecordingAcceptedSender:
         )
 
 
+class _TestCredentialProvider:
+    """heavy test 只验证 frozen reference 被读取，不接触真实 secret provider。"""
+
+    def resolve(self, _credential_reference: str) -> bytes:
+        return b"confirm-inbound-resilience-test-secret"
+
+
 @dataclass(frozen=True, slots=True)
 class _SeededEffect:
     outbox_id: int
@@ -98,12 +120,13 @@ def _engine(
     sender: Callable[[Any], Awaitable[ExternalHttpTransportResult]],
     worker_identity: str,
     fault_hook: Any | None = None,
+    credential_provider: Any | None = None,
 ) -> SystemOutboxEngine:
     repository = SystemOutboxRepository()
     return SystemOutboxEngine(
         outbox_repository=repository,
         external_http_sender=sender,
-        credential_provider=StaticTestCredentialProvider(),
+        credential_provider=credential_provider or StaticTestCredentialProvider(),
         workline_domain_dispatcher=_no_workline_messages,
         dispatch_attempt_service=WorklineDispatchAttemptService(),
         dispatch_scheduler=FairDispatchScheduler(
@@ -169,6 +192,60 @@ async def _seed_effect(db: AsyncSession, *, suffix: str) -> _SeededEffect:
     db.add_all([intent, outbox])
     await db.commit()
     assert outbox.id is not None
+    return _SeededEffect(outbox_id=int(outbox.id), dispatch_key=dispatch_key)
+
+
+async def _seed_confirm_inbound_effect(db: AsyncSession, *, suffix: str) -> _SeededEffect:
+    """通过 T9 adapter 写入真实 frozen outbox，而不是复制 dispatcher 数据形状。"""
+
+    dispatch_key = f"wms-confirm-inbound:WMS:{suffix}"
+    execution_session = ExecutionSession(workline_id=992, manifest_version="v1", state="RUNNING")
+    db.add(execution_session)
+    await db.flush()
+    assert execution_session.id is not None
+    correlation = ExecutionCorrelation(
+        correlation_id=f"confirm-inbound-resilience-correlation:{suffix}",
+        execution_session_id=execution_session.id,
+        trace_id=f"confirm-inbound-resilience-trace:{suffix}",
+    )
+    db.add(correlation)
+    await db.flush()
+    intent = RuntimeIntentLog(
+        execution_session_id=execution_session.id,
+        correlation_id=correlation.correlation_id,
+        provider_code="RUNTIME",
+        operation_kind="system_capability_effect",
+        target_domain="wms",
+        target_action=suffix,
+        idempotency_key=f"confirm-inbound-resilience:{suffix}",
+        request_hash="b" * 64,
+        dispatch_key=dispatch_key,
+        capability_key="wms.inventory.confirm_inbound",
+        capability_contract_version="v1",
+        operation_identity=suffix,
+        completion_mode="OUTBOX_ASYNC",
+    )
+    request = ConfirmInboundOperationRequest(
+        dispatch_key=dispatch_key,
+        inbound_key=suffix,
+        material_code="MAT-RESILIENCE-001",
+        quantity=Decimal("1"),
+        warehouse_code="WH-RESILIENCE",
+        trace_id=correlation.trace_id,
+    )
+    adapter = ConfirmInboundEffectAdapter(
+        gateway=ConfirmInboundDispatchGateway(
+            registry=EndpointRegistry({"WMS_INBOUND_CONFIRM": "https://wms.example/api/wes/inventory/confirm-inbound"})
+        )
+    )
+    outbox = await ConfirmInboundEffectPreparationService().prepare(
+        db,
+        request=request,
+        intent_log=intent,
+        adapter=adapter,
+    )
+    await db.commit()
+    assert outbox.id is not None and outbox.operation_identity == OPERATION_IDENTITY
     return _SeededEffect(outbox_id=int(outbox.id), dispatch_key=dispatch_key)
 
 
@@ -275,6 +352,48 @@ def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql(
             expected_send_count = 0 if point in _CRASH_POINTS_BEFORE_SEND else 1
             assert sender.calls == expected_send_count, point
             assert hook.observed[-1] == point
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_confirm_inbound_after_send_crash_enters_unknown_without_blind_resend_on_postgresql() -> None:
+    """T9 frozen outbox 发送后崩溃只能进入 UNKNOWN/RECONCILING，禁止盲重发。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession],
+        _queue_gateway: Any,
+    ) -> None:
+        suffix = f"after-send-{uuid4().hex}"
+        async with session_factory() as seed_db:
+            seeded = await _seed_confirm_inbound_effect(seed_db, suffix=suffix)
+
+        sender = _RecordingAcceptedSender()
+        crashed_worker = _engine(
+            sender=sender,
+            worker_identity=f"confirm-inbound-crashed:{suffix}",
+            fault_hook=_CrashAtPoint("AFTER_SEND"),
+            credential_provider=_TestCredentialProvider(),
+        )
+        with pytest.raises(_SimulatedWorkerCrash, match="AFTER_SEND"):
+            async with session_factory() as crashed_db:
+                await crashed_worker.dispatch(crashed_db, limit=1)
+
+        async with session_factory() as expire_db:
+            await _expire_claimed_lease(expire_db, outbox_id=seeded.outbox_id)
+
+        restarted_worker = _engine(
+            sender=sender,
+            worker_identity=f"confirm-inbound-restarted:{suffix}",
+            credential_provider=_TestCredentialProvider(),
+        )
+        async with session_factory() as restarted_db:
+            second = await restarted_worker.dispatch(restarted_db, limit=1)
+            assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
+            await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
+            outbox = await restarted_db.get(SystemOutbox, seeded.outbox_id)
+            assert outbox is not None and outbox.operation_identity == OPERATION_IDENTITY
+
+        assert sender.calls == 1
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

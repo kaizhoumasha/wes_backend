@@ -264,7 +264,7 @@ def _intent_log(dispatch_key: str) -> RuntimeIntentLog:
         provider_code="WMS",
         operation_kind="system_capability_effect",
         target_domain="wms_integration",
-        target_action="notify_pkg_binding",
+        target_action="wms.inventory.confirm_inbound@v1",
         idempotency_key="effect-1",
         request_hash="a" * 64,
         dispatch_key=dispatch_key,

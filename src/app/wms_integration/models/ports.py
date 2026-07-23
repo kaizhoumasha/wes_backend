@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field
 WmsOperationName = Literal[
     "reserve_inventory",
     "release_reservation",
-    "confirm_inbound",
     "confirm_outbound",
 ]
 
@@ -66,24 +65,6 @@ class ReleaseReservationResponse(WmsPortResponse):
     released: bool = Field(description="WMS 是否完成释放")
 
 
-class ConfirmInboundRequest(WmsPortRequest):
-    """确认 WMS 入库。"""
-
-    inbound_key: str = Field(min_length=1, max_length=120, description="入库业务键")
-    sku: str = Field(min_length=1, max_length=120, description="物料编码")
-    qty: Decimal = Field(gt=0, description="入库数量")
-    warehouse_code: str | None = Field(default=None, max_length=120, description="仓库编码")
-    owner_code: str | None = Field(default=None, max_length=120, description="货主编码")
-    lot_no: str | None = Field(default=None, max_length=120, description="批次号")
-
-
-class ConfirmInboundResponse(WmsPortResponse):
-    """WMS 入库确认结果。"""
-
-    inbound_key: str = Field(min_length=1, max_length=120, description="入库业务键")
-    confirmed: bool = Field(description="WMS 是否确认入库")
-
-
 class ConfirmOutboundRequest(WmsPortRequest):
     """确认 WMS 出库。"""
 
@@ -103,8 +84,6 @@ class ConfirmOutboundResponse(WmsPortResponse):
 
 
 __all__ = [
-    "ConfirmInboundRequest",
-    "ConfirmInboundResponse",
     "ConfirmOutboundRequest",
     "ConfirmOutboundResponse",
     "ReleaseReservationRequest",

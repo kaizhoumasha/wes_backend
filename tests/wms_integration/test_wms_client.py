@@ -8,8 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.wms_integration.models import (
-    ConfirmInboundRequest,
-    ConfirmInboundResponse,
     ConfirmOutboundRequest,
     ConfirmOutboundResponse,
     ReleaseReservationRequest,
@@ -122,13 +120,6 @@ async def _get_breaker_state(
             "/api/inventory/reserve/RSV-1",
         ),
         (
-            "confirm_inbound",
-            ConfirmInboundRequest(request_id="REQ-IN", inbound_key="IN-1", sku="SKU-1", qty="1"),
-            {"request_id": "REQ-IN", "inbound_key": "IN-1", "confirmed": True},
-            ConfirmInboundResponse,
-            "/api/inbound/confirm",
-        ),
-        (
             "confirm_outbound",
             ConfirmOutboundRequest(request_id="REQ-OUT", outbound_key="OUT-1", sku="SKU-1", qty="1"),
             {"request_id": "REQ-OUT", "outbound_key": "OUT-1", "confirmed": True},
@@ -137,7 +128,7 @@ async def _get_breaker_state(
         ),
     ],
 )
-async def test_wms_typed_ports_cover_all_effect_operations(
+async def test_wms_typed_ports_cover_remaining_legacy_effect_operations(
     db_engine,
     method_name: str,
     port_request,
@@ -540,16 +531,21 @@ async def test_wms_5xx_invalid_json_uses_default_unavailable_reason_and_breaker_
     )
 
     with pytest.raises(WmsUnavailableError) as exc_info:
-        await service.confirm_inbound(
-            ConfirmInboundRequest(request_id="REQ-5XX-NONJSON", inbound_key="IN-5XX", sku="SKU-1", qty="1")
+        await service.confirm_outbound(
+            ConfirmOutboundRequest(
+                request_id="REQ-5XX-NONJSON",
+                outbound_key="OUT-5XX",
+                sku="SKU-1",
+                qty="1",
+            )
         )
 
     error = exc_info.value
-    evidence = await _get_evidence(db_engine, "ev:confirm_inbound:REQ-5XX-NONJSON")
+    evidence = await _get_evidence(db_engine, "ev:confirm_outbound:REQ-5XX-NONJSON")
     breaker_state = await _get_breaker_state(
         db_engine,
-        target_code="WMS_INBOUND",
-        operation_name="confirm_inbound",
+        target_code="WMS_OUTBOUND",
+        operation_name="confirm_outbound",
     )
 
     assert error.reason_code == "WMS_UNAVAILABLE"

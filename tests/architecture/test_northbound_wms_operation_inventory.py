@@ -21,16 +21,15 @@ GUARD_PATH = Path(__file__).resolve()
 LEGACY_IDENTITY_TARGETS = {
     "WmsInventoryQueryPort.query_inventory": "wms.inventory.query_inventory@v1",
     "wms.rough_sorter_inventory_admission@v1": "wms.inventory.query_inventory@v1",
-    "WmsInventoryTransactionPort.confirm_inbound": "wms.inventory.confirm_inbound@v1",
     "WmsFulfillmentPort.notify_pkg_binding": "wms.fulfillment.notify_pkg_binding@v1",
     "WmsFulfillmentPort.full_box_exchange": "wms.fulfillment.full_box_exchange@v1",
 }
 TEST_OPERATION_TARGETS = {
     "query_inventory": "wms.inventory.query_inventory@v1",
-    "confirm_inbound": "wms.inventory.confirm_inbound@v1",
     "notify_pkg_binding": "wms.fulfillment.notify_pkg_binding@v1",
     "full_box_exchange": "wms.fulfillment.full_box_exchange@v1",
 }
+COMPLETED_OPERATION_IDENTITIES = {"wms.inventory.confirm_inbound@v1"}
 REQUIRED_CATEGORIES = {
     "caller",
     "binding",
@@ -872,7 +871,7 @@ def test_metric_scanner_recognizes_all_supported_operation_identity_forms(
         encoding="utf-8",
     )
     (metric_root / "target_metric.py").write_text(
-        'emit_metric("wms.operation", {"operation_identity": "wms.inventory.confirm_inbound@v1"})\n',
+        'emit_metric("wms.operation", {"operation_identity": "wms.inventory.query_inventory@v1"})\n',
         encoding="utf-8",
     )
     (metric_root / "label_metric.py").write_text(
@@ -884,9 +883,6 @@ def test_metric_scanner_recognizes_all_supported_operation_identity_forms(
         """class DynamicMetric:
     async def query_inventory(self, request):
         return await self._execute("query_inventory", request)
-
-    async def confirm_inbound(self, request):
-        return await self._execute("confirm_inbound", request)
 
     async def _execute(self, operation_name, request):
         endpoint = self.resolve(operation_name)
@@ -925,20 +921,14 @@ class UnrelatedOperation:
         (
             "metric",
             "src/app/runtime/orchestration/target_metric.py",
-            "wms.inventory.confirm_inbound@v1",
-            "wms.inventory.confirm_inbound@v1",
+            "wms.inventory.query_inventory@v1",
+            "wms.inventory.query_inventory@v1",
         ),
         (
             "metric",
             "src/app/runtime/orchestration/label_metric.py",
             "notify_pkg_binding",
             "wms.fulfillment.notify_pkg_binding@v1",
-        ),
-        (
-            "metric",
-            "src/app/runtime/orchestration/dynamic_metric.py",
-            "confirm_inbound",
-            "wms.inventory.confirm_inbound@v1",
         ),
         (
             "metric",
@@ -993,10 +983,11 @@ def test_inventory_covers_every_discovered_legacy_reference() -> None:
 
 
 def test_inventory_has_complete_categories_identities_and_dispositions() -> None:
-    """现存遗留类别、目标 identity、owner 与删除门禁必须完整。"""
+    """未完成迁移的遗留类别、目标 identity、owner 与删除门禁必须完整。"""
     rows = _read_inventory()
     assert {row["category"] for row in rows} == REQUIRED_CATEGORIES
     assert {row["target_operation_identity"] for row in rows} == set(LEGACY_IDENTITY_TARGETS.values())
+    assert COMPLETED_OPERATION_IDENTITIES.isdisjoint({row["target_operation_identity"] for row in rows})
     assert all(row["disposition"] in VALID_DISPOSITIONS for row in rows)
     assert all(row["owner"] and row["removal_gate"] for row in rows)
     assert len({row["entry_id"] for row in rows}) == len(rows)
@@ -1030,12 +1021,12 @@ def test_missing_operation_metrics_are_explicit_inventory_gaps() -> None:
 
 
 def test_adr_and_inventory_share_the_same_stable_operation_identities() -> None:
-    """ADR 决策出的稳定 identity 必须与清点表目标集合完全一致。"""
+    """ADR 保留完整决策历史，清点表仅保留未完成迁移的目标 identity。"""
     inventory_identities = {row["target_operation_identity"] for row in _read_inventory()}
     adr_text = ADR_PATH.read_text(encoding="utf-8")
     adr_identities = set(re.findall(r"^\| `([^`]+@v1)` \|", adr_text, flags=re.MULTILINE))
 
-    assert adr_identities == inventory_identities
+    assert adr_identities == inventory_identities | COMPLETED_OPERATION_IDENTITIES
     assert "本次清点锁定四个真实 operation" in adr_text
     assert "四个真实消费者" not in adr_text
     for required_boundary in ("typed contract", "catalog", "Provider", "删除门禁", "不预建空壳", "不保留兼容"):

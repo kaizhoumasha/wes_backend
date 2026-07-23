@@ -20,7 +20,7 @@ CONTRACT = WmsOperationContract(
     mode=WmsOperationMode.EFFECT,
     request_model=ConfirmInboundOperationRequest,
     result_model=ConfirmInboundOperationResult,
-    endpoint_path="/inbound/confirm",
+    endpoint_path="/inventory/confirm-inbound",
     target_code="WMS_INBOUND_CONFIRM",
     http_method=WmsHttpMethod.POST,
     budget=WmsTransportBudget(timeout_seconds=30, max_wire_bytes=262_144, max_decoded_bytes=262_144),

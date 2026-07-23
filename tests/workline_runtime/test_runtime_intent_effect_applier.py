@@ -251,6 +251,8 @@ async def test_rough_sorter_reservation_intent_uses_bin_cell_claim_contract() ->
             "warehouse_code": "WH-A",
             "source_event_id": "ecs-scan-executable-001",
             "source_version": "ecs.v1",
+            "plugin_binding_id": 23,
+            "plugin_binding_version": 5,
         }
     )
     reservation_service = _RecordingReservationService()
@@ -297,6 +299,8 @@ async def test_runtime_location_event_fact_records_runtime_location_without_reso
             "warehouse_code": "WH-A",
             "source_event_id": "ecs-location-001",
             "source_version": "ecs.v1",
+            "plugin_binding_id": 23,
+            "plugin_binding_version": 5,
         }
     )
 

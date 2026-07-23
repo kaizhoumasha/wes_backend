@@ -1,7 +1,7 @@
 """WmsInventoryTransactionPort。
 
 主计划 §5.1 7 port 之一: 库存事务 (reserve_inventory / release_reservation /
-confirm_inbound / confirm_outbound / transfer_inventory)。
+confirm_outbound / transfer_inventory)。
 由现有 typed_ports.WmsInventoryPort 拆 transaction 部分。
 
 所有 effect 必先写 RuntimeIntentLog + EffectPort (主计划 §3.5 I3 边界),
@@ -27,7 +27,7 @@ class WmsReservationResult(BaseModel):
 
 
 class WmsTransferResult(BaseModel):
-    """transfer_inventory / confirm_inbound/outbound 返回结果。"""
+    """transfer_inventory / confirm_outbound 返回结果。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -55,15 +55,6 @@ class WmsInventoryTransactionPort(Protocol):
 
     def release_reservation(self, reservation_id: str) -> None:
         """释放库存预留 (不产生新单据)。"""
-        ...
-
-    def confirm_inbound(
-        self,
-        material_code: str,
-        quantity: float,
-        warehouse_code: str,
-    ) -> WmsTransferResult:
-        """确认入库 (产生 GRN 单据)。"""
         ...
 
     def confirm_outbound(

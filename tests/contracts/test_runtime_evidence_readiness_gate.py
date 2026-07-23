@@ -62,7 +62,7 @@ def _runtime_evidence_artifact(*, profile: str, evidence_dir: str | None = None)
         "effect_path": [
             "RuntimeIntentLog",
             "WmsFulfillmentPort.notify_pkg_binding",
-            "WmsInventoryTransactionPort.confirm_inbound",
+            "wms.inventory.confirm_inbound@v1",
         ],
         "callback_path": ["RuntimeInbox"],
         "service_behavior_invariant": ["provider-contract"],
@@ -278,7 +278,7 @@ site/production evidence manifest gate 只改变验收证据要求，不改变 s
         (
             '"""Material-flow sorter inbound preview capability 合同。"""\n'
             '"production_write_path legacy_plugin_entry_used WmsFulfillmentPort.notify_pkg_binding '
-            'WmsInventoryTransactionPort.confirm_inbound"\n'
+            'wms.inventory.confirm_inbound@v1"\n'
         ),
         encoding="utf-8",
     )
@@ -307,7 +307,7 @@ site/production evidence manifest gate 只改变验收证据要求，不改变 s
         (
             '"""Material-flow sorter inbound runtime capability."""\n'
             '"RuntimeIntent WmsFulfillmentPort.notify_pkg_binding '
-            'WmsInventoryTransactionPort.confirm_inbound provider-contract"\n'
+            'wms.inventory.confirm_inbound@v1 provider-contract"\n'
         ),
         encoding="utf-8",
     )
@@ -315,7 +315,7 @@ site/production evidence manifest gate 只改变验收证据要求，不改变 s
         (
             '"""Material-flow sorter inbound runtime capability 合同。"""\n'
             '"RuntimeIntent WmsFulfillmentPort.notify_pkg_binding '
-            'WmsInventoryTransactionPort.confirm_inbound provider-contract"\n'
+            'wms.inventory.confirm_inbound@v1 provider-contract"\n'
         ),
         encoding="utf-8",
     )
@@ -387,7 +387,7 @@ def test_runtime_evidence_readiness_gate_simulator_profile_accepts_provider_cont
   "effect_path": [
     "RuntimeIntentLog",
     "WmsFulfillmentPort.notify_pkg_binding",
-    "WmsInventoryTransactionPort.confirm_inbound"
+    "wms.inventory.confirm_inbound@v1"
   ],
   "callback_path": ["RuntimeInbox"],
   "service_behavior_invariant": ["provider-contract"]

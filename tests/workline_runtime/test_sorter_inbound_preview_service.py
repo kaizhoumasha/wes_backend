@@ -1,10 +1,14 @@
-"""Material-flow sorter inbound preview capability 合同。"""
+"""Material-flow sorter inbound preview capability 合同。
+
+入库确认 preview 只暴露稳定 identity `wms.inventory.confirm_inbound@v1`。
+"""
 
 from __future__ import annotations
 
 from src.app.runtime.capabilities.material_flow.sorter_inbound_preview_service import (
     SorterInboundPreviewService,
 )
+from src.app.wms_integration.ports.confirm_inbound_operation import OPERATION_IDENTITY
 
 
 def test_rough_sorter_preview_keeps_local_fact_and_splits_wms_effect_ports() -> None:
@@ -31,7 +35,7 @@ def test_rough_sorter_preview_keeps_local_fact_and_splits_wms_effect_ports() -> 
     assert preview["preserve_local_physical_fact"] is True
     assert preview["effect_ports"] == {
         "pkg_binding": "WmsFulfillmentPort.notify_pkg_binding",
-        "inventory_transaction": "WmsInventoryTransactionPort.confirm_inbound",
+        "inventory_transaction": OPERATION_IDENTITY,
     }
 
 

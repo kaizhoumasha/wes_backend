@@ -63,12 +63,6 @@ class WmsEndpointConfig:
             "/inventory/reserve/{id}",
             "DELETE",
         ),
-        "confirm_inbound": (
-            "WMS_INBOUND",
-            "WMS_SYNC_CONFIRM_INBOUND_PATH",
-            "/inbound/confirm",
-            "POST",
-        ),
         "confirm_outbound": (
             "WMS_OUTBOUND",
             "WMS_SYNC_CONFIRM_OUTBOUND_PATH",

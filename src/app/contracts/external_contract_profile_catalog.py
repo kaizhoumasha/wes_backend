@@ -95,7 +95,6 @@ WMS_MATERIAL_FLOW_SANDBOX_PROFILE = ExternalContractProfile(
     ],
     runtime_capabilities_effect=[
         "WmsFulfillmentPort.notify_pkg_binding",
-        "WmsInventoryTransactionPort.confirm_inbound",
     ],
     inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
     inbound_normalizers_result=[],
@@ -120,7 +119,6 @@ WMS_MATERIAL_FLOW_PRODUCTION_PROFILE = ExternalContractProfile(
     ],
     runtime_capabilities_effect=[
         "WmsFulfillmentPort.notify_pkg_binding",
-        "WmsInventoryTransactionPort.confirm_inbound",
     ],
     inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
     inbound_normalizers_result=[],

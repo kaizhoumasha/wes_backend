@@ -60,10 +60,12 @@ def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_tra
             },
         )
         inventory_response = client.post(
-            "/api/wms/inbound/confirm",
+            "/api/wes/inventory/confirm-inbound",
             json={
-                "request_id": "mock-sorter-inbound-001",
+                "dispatch_key": "wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
                 "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
+                "material_code": "MAT-CAP001",
+                "quantity": "1",
             },
         )
 
@@ -77,7 +79,11 @@ def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_tra
         "accepted": True,
     }
     assert inventory_response.status_code == 200
-    assert inventory_response.json()["data"]["confirmed"] is True
+    assert inventory_response.json()["data"] == {
+        "dispatch_key": "wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
+        "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
+        "accepted": True,
+    }
 
 
 def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract() -> None:

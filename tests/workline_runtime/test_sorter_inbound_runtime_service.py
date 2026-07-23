@@ -1,4 +1,7 @@
-"""Material-flow sorter inbound runtime capability 合同。"""
+"""Material-flow sorter inbound runtime capability 合同。
+
+入库确认由 `wms.inventory.confirm_inbound@v1` typed EFFECT 承接。
+"""
 
 from __future__ import annotations
 
@@ -37,6 +40,8 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
             "warehouse_code": "WH-A",
             "source_event_id": "ecs-scan-001",
             "source_version": "ecs.v1",
+            "plugin_binding_id": 23,
+            "plugin_binding_version": 5,
         }
     )
 
@@ -51,7 +56,7 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
         RuntimeIntentKind.RESOURCE_RESERVATION,
         RuntimeIntentKind.RESOURCE_FACT,
         RuntimeIntentKind.EXTERNAL_REQUEST,
-        RuntimeIntentKind.EXTERNAL_REQUEST,
+        RuntimeIntentKind.SYSTEM_CAPABILITY,
     ]
     assert intents_by_action["CLAIM_BIN_CELL"].payload_json["pkg_code"] == "PKG-ROUGH-001"
     assert intents_by_action["CLAIM_BIN_CELL"].payload_json["bin_code"] == "BIN-A-01"
@@ -61,11 +66,12 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
     assert intents_by_action["RUNTIME_LOCATION_EVENT"].payload_json["provider_code"] == "WMS-A"
 
     pkg_binding = plan.effect_contracts["WmsFulfillmentPort.notify_pkg_binding"]
-    inventory = plan.effect_contracts["WmsInventoryTransactionPort.confirm_inbound"]
+    inventory = plan.intents[-1]
     assert pkg_binding["dispatch_key"] == "material-flow:rough-runtime-001:pkg-binding"
-    assert inventory["dispatch_key"] == "material-flow:rough-runtime-001:inventory-confirm"
+    assert inventory.dispatch_key == "wms-confirm-inbound:WMS-A:PKG-ROUGH-001"
     assert pkg_binding["payload"]["package_id"] == "PKG-ROUGH-001"
-    assert inventory["payload"]["warehouse_code"] == "WH-A"
+    assert inventory.payload_json["warehouse_code"] == "WH-A"
+    assert inventory.capability_key == "wms.inventory.confirm_inbound"
 
 
 def test_sorter_runtime_blocks_join_gate_failure_as_object_scope_reconciliation() -> None:
@@ -168,6 +174,9 @@ def test_rough_sorter_runtime_rejects_non_positive_quantity() -> None:
                 "material_code": "MAT-A",
                 "quantity": 0,
                 "warehouse_code": "WH-A",
+                "source_version": "ecs.v1",
+                "plugin_binding_id": 23,
+                "plugin_binding_version": 5,
             }
         )
 

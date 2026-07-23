@@ -2,10 +2,12 @@
 
 本服务只构建 WES 自身运行闭环需要的 RuntimeIntent、effect contract 和 evidence。
 外部 provider 的具体实现由部署 wiring 决定，本层只面向稳定 port contract。
+入库确认通过 typed EFFECT `wms.inventory.confirm_inbound@v1` 进入 T8 双账本。
 """
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,9 +17,17 @@ from src.app.runtime.capabilities.material_flow.runtime_identity import (
     SORTER_INBOUND_RUNTIME_SOURCE,
 )
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.effect_contract import (
+    ConfirmInboundEffectAdmission,
+    ConfirmInboundEffectPrecondition,
+)
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.intent_adapter import (
+    confirm_inbound_intent_adapter,
+)
+from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationRequest
 from src.utils.value_normalization import (
+    coerce_optional_int,
     coerce_string_value,
-    positive_quantity,
     positive_timeout_seconds,
     require_text,
     require_text_any,
@@ -70,7 +80,12 @@ class SorterInboundRuntimeService:
         pallet_id = require_text(payload.get("pallet_id"), "pallet_id")
         station_code = require_text(payload.get("station_code"), "station_code")
         material_code = require_text(payload.get("material_code"), "material_code")
-        quantity = positive_quantity(payload.get("quantity"))
+        try:
+            quantity = Decimal(str(payload.get("quantity")))
+            if not quantity.is_finite() or quantity <= 0:
+                raise ValueError("quantity must be positive")
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("quantity must be positive") from exc
         warehouse_code = require_text(payload.get("warehouse_code"), "warehouse_code")
 
         reservation_payload = {
@@ -118,13 +133,29 @@ class SorterInboundRuntimeService:
             "idempotency_key": f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:pkg-binding",
         }
         inventory_payload = {
+            "dispatch_key": f"wms-confirm-inbound:{provider_code}:{object_key}",
+            "inbound_key": object_key,
             "material_code": material_code,
             "quantity": quantity,
             "warehouse_code": warehouse_code,
-            "provider_code": provider_code,
-            "correlation_id": correlation_id,
-            "idempotency_key": f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:inventory-confirm",
+            "owner_code": coerce_string_value(payload.get("owner_code")) or None,
+            "lot_no": coerce_string_value(payload.get("lot_no")) or None,
+            "workline_id": coerce_optional_int(payload.get("workline_id")),
+            "session_id": coerce_optional_int(payload.get("session_id")),
+            "trace_id": coerce_string_value(payload.get("trace_id")) or None,
         }
+        confirm_inbound_request = ConfirmInboundOperationRequest.model_validate(inventory_payload)
+        confirm_inbound_admission = ConfirmInboundEffectAdmission(
+            precondition=ConfirmInboundEffectPrecondition(
+                inbound_key=object_key,
+                local_physical_fact_recorded=True,
+            ),
+            fact_version=require_text(payload.get("source_version"), "source_version"),
+        )
+        plugin_binding_id = coerce_optional_int(payload.get("plugin_binding_id"))
+        plugin_binding_version = coerce_optional_int(payload.get("plugin_binding_version"))
+        if plugin_binding_id is None or plugin_binding_version is None:
+            raise ValueError("plugin_binding_id/plugin_binding_version is required")
 
         return RuntimeCapabilityPlan(
             provider_code=provider_code,
@@ -145,11 +176,11 @@ class SorterInboundRuntimeService:
                     port_method="WmsFulfillmentPort.notify_pkg_binding",
                     payload=pkg_binding_payload,
                 ),
-                _external_effect_intent(
-                    dispatch_key=inventory_payload["idempotency_key"],
-                    target_code="WMS_INVENTORY_TRANSACTION",
-                    port_method="WmsInventoryTransactionPort.confirm_inbound",
-                    payload=inventory_payload,
+                confirm_inbound_intent_adapter.build_intent(
+                    confirm_inbound_request,
+                    admission=confirm_inbound_admission,
+                    binding_id=plugin_binding_id,
+                    binding_version=plugin_binding_version,
                 ),
             ],
             effect_contracts={
@@ -159,14 +190,6 @@ class SorterInboundRuntimeService:
                         "package_id": pkg_code,
                         "pallet_id": pallet_id,
                         "station_code": station_code,
-                    },
-                },
-                "WmsInventoryTransactionPort.confirm_inbound": {
-                    "dispatch_key": inventory_payload["idempotency_key"],
-                    "payload": {
-                        "material_code": material_code,
-                        "quantity": quantity,
-                        "warehouse_code": warehouse_code,
                     },
                 },
             },

@@ -282,20 +282,20 @@ async def test_half_open_success_threshold_closes_breaker(db_session) -> None:
 
     await service.record_failure(
         db_session,
-        target_code="WMS_INBOUND",
-        operation_name="confirm_inbound",
+        target_code="WMS_OUTBOUND",
+        operation_name="confirm_outbound",
         now=now,
     )
     first_probe = await service.before_call(
         db_session,
-        target_code="WMS_INBOUND",
-        operation_name="confirm_inbound",
+        target_code="WMS_OUTBOUND",
+        operation_name="confirm_outbound",
         now=now + timedelta(seconds=31),
     )
     first_success = await service.record_success(
         db_session,
-        target_code="WMS_INBOUND",
-        operation_name="confirm_inbound",
+        target_code="WMS_OUTBOUND",
+        operation_name="confirm_outbound",
         evidence_key="ev-half-success-1",
         probe_generation=first_probe.probe_generation,
         now=now + timedelta(seconds=32),
@@ -306,14 +306,14 @@ async def test_half_open_success_threshold_closes_breaker(db_session) -> None:
 
     second_probe = await service.before_call(
         db_session,
-        target_code="WMS_INBOUND",
-        operation_name="confirm_inbound",
+        target_code="WMS_OUTBOUND",
+        operation_name="confirm_outbound",
         now=now + timedelta(seconds=33),
     )
     second_success = await service.record_success(
         db_session,
-        target_code="WMS_INBOUND",
-        operation_name="confirm_inbound",
+        target_code="WMS_OUTBOUND",
+        operation_name="confirm_outbound",
         evidence_key="ev-half-success-2",
         probe_generation=second_probe.probe_generation,
         now=now + timedelta(seconds=34),

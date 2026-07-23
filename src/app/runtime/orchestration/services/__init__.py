@@ -1,5 +1,9 @@
 """Runtime/orchestration service helpers."""
 
+from src.app.runtime.orchestration.services.confirm_inbound_effect_preparation_service import (
+    ConfirmInboundEffectPreparationService,
+    confirm_inbound_effect_preparation_service,
+)
 from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
     ConveyorQueueMembershipWriteDiagnostics,
     ConveyorQueueMembershipWriteResult,
@@ -53,6 +57,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
 
 __all__ = [
     "ClaimResult",
+    "ConfirmInboundEffectPreparationService",
     "ConveyorQueueMembershipWriteDiagnostics",
     "ConveyorQueueMembershipWriteResult",
     "ConveyorQueueMembershipWriterService",
@@ -72,6 +77,7 @@ __all__ = [
     "StaleSessionPrecondition",
     "WorkLineRuntimeStatusProjectionService",
     "WorkLineRuntimeStatusSnapshot",
+    "confirm_inbound_effect_preparation_service",
     "conveyor_queue_membership_writer_service",
     "device_runtime_projection_writer_service",
     "effect_reducer",

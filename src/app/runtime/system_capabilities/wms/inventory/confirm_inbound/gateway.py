@@ -1,17 +1,33 @@
 """入库确认领域 request 到现有 DispatchEnvelope 的唯一映射。"""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from src.app.runtime.system_capabilities.wms.effect_binding import freeze_wms_effect_binding
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_PRODUCTION_PROFILE_IDENTITY
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
-from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationRequest
+
+if TYPE_CHECKING:
+    from src.app.sys.external_http_binding import FrozenExternalHttpBinding
+    from src.app.sys.services.endpoint_registry import EndpointRegistry
+    from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationRequest
 
 
 class ConfirmInboundDispatchGateway:
     """构造入库确认 EXTERNAL_HTTP 包络，不执行外部 I/O。"""
 
-    def build_envelope(self, request: ConfirmInboundOperationRequest) -> DispatchEnvelope:
+    def __init__(self, *, registry: EndpointRegistry | None = None) -> None:
+        self._registry = registry
+
+    def build_envelope(
+        self,
+        request: ConfirmInboundOperationRequest,
+        *,
+        frozen_binding: FrozenExternalHttpBinding | None = None,
+    ) -> DispatchEnvelope:
         payload = {
             "inbound_key": request.inbound_key,
             "material_code": request.material_code,
@@ -22,11 +38,13 @@ class ConfirmInboundDispatchGateway:
         }
         payload_json = {key: value for key, value in payload.items() if value is not None}
         canonical = CanonicalPayload.from_projection(payload_json)
-        frozen_binding = freeze_wms_effect_binding(
-            profile_identity=WMS_PRODUCTION_PROFILE_IDENTITY,
-            operation_identity=CONTRACT.identity,
-            target_code=CONTRACT.target_code,
-        )
+        if frozen_binding is None:
+            frozen_binding = freeze_wms_effect_binding(
+                profile_identity=WMS_PRODUCTION_PROFILE_IDENTITY,
+                operation_identity=CONTRACT.identity,
+                target_code=CONTRACT.target_code,
+                registry=self._registry,
+            )
         return DispatchEnvelope(
             dispatch_key=request.dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,

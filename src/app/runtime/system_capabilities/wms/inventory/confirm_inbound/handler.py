@@ -1,0 +1,41 @@
+"""`confirm_inbound` OUTBOX_ASYNC System Capability handler。"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from src.app.runtime.system_capabilities.outcomes import Success
+
+from .effect_adapter import confirm_inbound_effect_adapter
+from .effect_contract import ConfirmInboundDispatchAccepted, ConfirmInboundEffectAdmission
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationRequest
+
+
+class ConfirmInboundEffectHandler:
+    """只创建双账本；外部 I/O 由提交后的既有 dispatcher 执行。"""
+
+    async def __call__(self, request: ConfirmInboundOperationRequest, *, execution: object) -> object:
+        from src.app.runtime.orchestration.services.confirm_inbound_effect_preparation_service import (
+            confirm_inbound_effect_preparation_service,
+        )
+
+        admission = execution.admission  # type: ignore[attr-defined]
+        if not isinstance(admission, ConfirmInboundEffectAdmission):
+            raise TypeError("confirm_inbound requires typed admission")
+        if admission.precondition.inbound_key != request.inbound_key:
+            raise ValueError("confirm_inbound admission inbound_key mismatch")
+        intent_log = execution.intent_log  # type: ignore[attr-defined]
+        if intent_log is None:
+            raise RuntimeError("confirm_inbound OUTBOX_ASYNC claim row is missing")
+        outbox = await confirm_inbound_effect_preparation_service.prepare(
+            execution.db,  # type: ignore[attr-defined]
+            request=request,
+            intent_log=intent_log,
+            adapter=confirm_inbound_effect_adapter,
+        )
+        return Success(payload=ConfirmInboundDispatchAccepted(dispatch_key=outbox.dispatch_key))
+
+
+__all__ = ["ConfirmInboundEffectHandler"]

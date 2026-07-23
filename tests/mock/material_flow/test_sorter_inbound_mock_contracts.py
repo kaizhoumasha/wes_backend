@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from src.app.wms_integration.ports.confirm_inbound_operation import OPERATION_IDENTITY
 from tests.mock import wms_mock_server
 
 
@@ -51,7 +52,7 @@ def test_rough_sorter_mock_separates_local_physical_fact_from_wms_sync_failure()
     assert data["next_object_admission_allowed"] is True
     assert data["effect_ports"] == {
         "pkg_binding": "WmsFulfillmentPort.notify_pkg_binding",
-        "inventory_transaction": "WmsInventoryTransactionPort.confirm_inbound",
+        "inventory_transaction": OPERATION_IDENTITY,
     }
 
 

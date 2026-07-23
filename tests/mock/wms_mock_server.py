@@ -1041,7 +1041,7 @@ async def rough_sorter_inbound_preview(payload: dict[str, Any]):
             "legacy_plugin_entry_used": False,
             "effect_ports": {
                 "pkg_binding": "WmsFulfillmentPort.notify_pkg_binding",
-                "inventory_transaction": "WmsInventoryTransactionPort.confirm_inbound",
+                "inventory_transaction": "wms.inventory.confirm_inbound@v1",
             },
         },
     }
@@ -1333,14 +1333,14 @@ async def delete_reservation(reservation_key: str):
     }
 
 
-@app.post("/api/wms/inbound/confirm")
-async def confirm_inbound(payload: dict[str, Any]):
+@app.post("/api/wes/inventory/confirm-inbound")
+async def confirm_inbound_effect(payload: dict[str, Any]):
     return {
         "code": 200,
         "data": {
-            "request_id": payload.get("request_id", ""),
+            "dispatch_key": payload.get("dispatch_key", ""),
             "inbound_key": payload.get("inbound_key", ""),
-            "confirmed": True,
+            "accepted": True,
         },
     }
 
