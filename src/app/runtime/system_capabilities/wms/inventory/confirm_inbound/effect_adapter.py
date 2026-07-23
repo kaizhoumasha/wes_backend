@@ -35,11 +35,19 @@ class ConfirmInboundEffectAdapter:
             dispatch_type=envelope.dispatch_type,
             dispatch_key=envelope.dispatch_key,
             target_type=envelope.target_type,
+            target_code=frozen_binding.target_snapshot.code,
+            provider_profile_identity=frozen_binding.provider_profile_identity,
+            operation_identity=frozen_binding.operation_identity,
+            provider_profile_hash=frozen_binding.provider_profile_hash,
+            binding_revision=frozen_binding.binding_revision,
+            target_snapshot_json=frozen_binding.target_snapshot.as_json(),
+            target_snapshot_hash=frozen_binding.target_snapshot_hash,
+            auth_scheme=frozen_binding.auth_scheme,
+            credential_reference=frozen_binding.credential_reference,
             payload_json=envelope.payload_json,
             canonical_payload_bytes=envelope.canonical_payload_bytes,
             payload_hash=envelope.payload_hash,
             trace_id=envelope.trace_id,
-            **frozen_binding.as_persisted_fields(),
         )
 
 

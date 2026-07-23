@@ -14,6 +14,7 @@ import httpx
 
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding
+from src.app.sys.external_http_credentials import AuditedVersionedCredentialProvider
 from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
 from src.app.wms_integration.services.circuit_breaker_service import wms_circuit_breaker_service
 from src.app.wms_integration.services.endpoint_config import wms_endpoint_config
@@ -171,6 +172,12 @@ def build_inventory_query_port_factory(
         resolved_credential_provider = resolved_credential_provider or EnvironmentWmsCredentialProvider()
     if resolved_credential_provider is None:
         raise ValueError("WMS QUERY credential provider is required")
+    resolved_credential_provider = AuditedVersionedCredentialProvider(
+        resolved_credential_provider,
+        provider_kind="environment"
+        if isinstance(resolved_credential_provider, EnvironmentWmsCredentialProvider)
+        else "custom",
+    )
     endpoint = WmsBoundQueryEndpoint(binding=binding, base_url=resolved_base_url)
 
     def factory() -> InventoryQueryOperationPort:

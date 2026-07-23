@@ -126,6 +126,12 @@ class SystemOutboxEngine:
             f"contended={len(claim_batch.metrics.lease_contended_buckets)}, "
             f"lease_loss={claim_batch.metrics.lease_loss_count}"
         )
+        try:
+            from src.app.runtime.orchestration.operation_observability import emit_dispatch_health_observation
+
+            _ = emit_dispatch_health_observation(claim_batch.metrics)
+        except Exception as exc:  # pragma: no cover - 观测失败不改变 claim/事务边界
+            logger.warning(f"SystemOutbox claim observability emission failed: {type(exc).__name__}")
 
         attempt_service = self._resolve_dispatch_attempt_service()
         attempts_by_outbox_id: dict[int, Any] = {}

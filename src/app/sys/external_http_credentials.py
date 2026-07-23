@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
 
 _REFERENCE_ENV_NAMES = {
@@ -43,6 +43,52 @@ class CredentialRevokedError(CredentialResolutionError):
 
 
 @dataclass(frozen=True, slots=True)
+class CredentialResolutionAudit:
+    """不含 reference、secret 或 header 的凭据解析审计事件。"""
+
+    provider_kind: Literal["environment", "custom"]
+    status: Literal["RESOLVED", "REVOKED", "RESOLUTION_FAILED", "PROVIDER_ERROR"]
+
+
+@dataclass(frozen=True, slots=True)
+class AuditedVersionedCredentialProvider:
+    """以脱敏闭集事件包装任意版本化 credential provider。"""
+
+    provider: VersionedCredentialProvider
+    observer: Callable[[CredentialResolutionAudit], None] | None = None
+    provider_kind: Literal["environment", "custom"] = "custom"
+
+    def resolve(self, credential_reference: str) -> bytes:
+        try:
+            secret = self.provider.resolve(credential_reference)
+        except CredentialRevokedError:
+            self._notify("REVOKED")
+            raise
+        except (CredentialResolutionError, LookupError):
+            self._notify("RESOLUTION_FAILED")
+            raise
+        except Exception:
+            self._notify("PROVIDER_ERROR")
+            raise
+        self._notify("RESOLVED")
+        return secret
+
+    def _notify(
+        self,
+        status: Literal["RESOLVED", "REVOKED", "RESOLUTION_FAILED", "PROVIDER_ERROR"],
+    ) -> None:
+        event = CredentialResolutionAudit(provider_kind=self.provider_kind, status=status)
+        try:
+            if self.observer is None:
+                _emit_credential_resolution_audit(event)
+            else:
+                self.observer(event)
+        except Exception:
+            # 观测后端不可用不得改变 secret provider 的解析结果或错误语义。
+            return
+
+
+@dataclass(frozen=True, slots=True)
 class EnvironmentVersionedCredentialProvider:
     """由 allowlist 将版本化 reference 精确映射到单个环境变量。"""
 
@@ -65,15 +111,27 @@ class EnvironmentVersionedCredentialProvider:
         return secret.encode("utf-8")
 
 
-def build_environment_external_http_credential_provider() -> EnvironmentVersionedCredentialProvider:
+def _emit_credential_resolution_audit(event: CredentialResolutionAudit) -> None:
+    from src.app.runtime.orchestration.operation_observability import emit_credential_resolution_observation
+
+    _ = emit_credential_resolution_observation(
+        provider_kind=event.provider_kind,
+        outcome=event.status,
+    )
+
+
+def build_environment_external_http_credential_provider() -> AuditedVersionedCredentialProvider:
     """从显式 allowlist 与紧急撤销清单构建 effect secret provider。"""
 
     revoked_references = frozenset(
         reference.strip() for reference in os.getenv(_REVOKED_REFERENCES_ENV, "").split(",") if reference.strip()
     )
-    return EnvironmentVersionedCredentialProvider(
-        reference_env_names=_REFERENCE_ENV_NAMES,
-        revoked_references=revoked_references,
+    return AuditedVersionedCredentialProvider(
+        EnvironmentVersionedCredentialProvider(
+            reference_env_names=_REFERENCE_ENV_NAMES,
+            revoked_references=revoked_references,
+        ),
+        provider_kind="environment",
     )
 
 
@@ -81,6 +139,8 @@ external_http_credential_provider = build_environment_external_http_credential_p
 
 
 __all__ = [
+    "AuditedVersionedCredentialProvider",
+    "CredentialResolutionAudit",
     "CredentialResolutionError",
     "CredentialRevokedError",
     "EnvironmentVersionedCredentialProvider",

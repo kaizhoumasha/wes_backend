@@ -19,6 +19,31 @@
 | `device_command.result` | span + metric | `trace_id`, `correlation_id`, `command_code`, `source_event_id` |
 | `wms_breaker.transition` | metric + log event | `trace_id`, `provider_code`, `operation_kind`, `breaker_state` |
 | `wms_evidence.persistence_failure` | metric + log event | `trace_id`, `provider_code`, `operation_kind`, `evidence_key`, `reason_code` |
+| `northbound.dispatch.health` | metric + log event | backlog、active lease、UNKNOWN、oldest age、rate-limit、pause、lease contention/loss 数值 |
+| `northbound.credential.resolve` | metric + log event | `provider_kind`, `outcome`, `sample_count` |
+| `northbound.operation.query_inventory` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
+| `northbound.operation.confirm_inbound` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
+| `northbound.operation.notify_pkg_binding` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
+| `northbound.operation.full_box_exchange` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
+
+## Exact Allow-list 与 Metric Projection
+
+- 所有 signal 都声明 `allowed_attributes`、不可覆盖的固定属性、闭集 label 值和非负有限数值测量；未知 signal、额外属性、固定属性覆盖、非标量、非法枚举、NaN/无穷/负测量均 fail-closed。
+- `payload`、`canonical_payload`、`header`、`Authorization`、`signature`、`secret`、`token`、`password`、`credential_reference` 等字段名禁止进入事件；字符串值中出现 `secret://`、Bearer、签名或 Authorization 痕迹同样拒绝。
+- Span/log 接收完整的已验证属性；metric 只接收 `metric_label_attributes ∪ metric_measurement_attributes`。`trace_id`、`correlation_id`、`evidence_ref`、业务键、bucket、tenant、用户 ID 不得成为 metric label。
+- 所有 metric 固定带 `capability_identity` 与 `policy_version=northbound-observability.v1`。北向 operation metric 只允许以下标签：
+  `capability_identity`、`operation_identity`、`provider_profile_identity`、`outcome`、`policy_version`。
+- `provider_profile_identity` 仅允许三个 authored profile：sandbox、staging、production；`outcome` 仅允许
+  `SUCCESS`、`BUSINESS_REJECT`、`TECHNICAL_FAILURE`、`CONTRACT_FAILURE`、`UNKNOWN`、`RECONCILING`。
+- 北向 operation 数值只包含 `latency_ms`、`sample_count`、`unknown_count`；dispatch health 只包含平台级计数和 age，不携带命中 bucket。
+
+## 北向 Operation SLO 与 Trace
+
+- 可执行目录版本为 `northbound-operation-slo.v1`，覆盖全部四个 authored WMS operation。Provider binding authoring 时缺少目录条目必须阻塞。
+- 统一窗口为 30 天，可用性目标为 99.5%，UNKNOWN 比例上限为 0.1%，open reconciliation age 上限为 900 秒；各 operation 的 p95 延迟目标、burn rate 与告警责任人见
+  [`northbound-operation-slo-catalog.md`](../operations/northbound-operation-slo-catalog.md)。
+- Trace stage 是闭集：`PLUGIN_EXECUTION → QUERY_EVIDENCE → POLICY_DECISION → RUNTIME_INTENT_LOG → DISPATCH_ATTEMPT → CALLBACK → RECONCILIATION`。
+- QUERY 在 typed evidence 落库后发射；EFFECT 在 typed dispatch result 固化后发射。后续 callback/reconciliation 复用既有稳定 correlation/evidence 锚点，禁止从 payload 推导追踪或权限。
 
 ## Attribute Rules
 
@@ -45,7 +70,7 @@
 ## Instrumentation Binding
 
 - `RuntimeObservabilityRegistry.emit()` 是当前 Python 运行时的稳定事件发射入口；所有 adapter 必须先通过 required attributes 校验，再转成实际 metric/log/span。
-- `RuntimeOpenTelemetryBridge` 是 registry observer 到 OpenTelemetry-style exporter 的无依赖桥接层；按 `signal_type` 将同一已验证事件 fan-out 为 span、metric 和 log event，不允许 exporter 绕过 registry 直接消费临时字段。
+- `RuntimeOpenTelemetryBridge` 是 registry observer 到 OpenTelemetry-style exporter 的无依赖桥接层；span/log 使用完整已验证属性，metric 只使用低基数投影，不允许 exporter 绕过 registry 直接消费临时字段。
 - `RuntimeOpenTelemetryHttpExporter` 是生产 backend adapter 接线；FastAPI lifespan 通过 `configure_runtime_open_telemetry_backend()` 按 `WES_RUNTIME_OTEL_ENABLED=true` + `WES_RUNTIME_OTEL_ENDPOINT` 注册命名 observer，重复初始化必须幂等，默认关闭。
 - Callback ingress 在 external normalize allow-list 校验、device result 命令锚点解析、device event 入库 trace 解析完成后发出 `callback.normalize`；观测发射失败不得影响 callback ACK、落库或业务编排。
 - RuntimeInbox Celery worker 聚合本批次 claim 调用，在 claim/reclaim 事务提交后发出 `runtime_inbox.claim_batch` 与 `runtime_inbox.lease_reclaim`；不得从 repository 热路径逐条同步发射。
@@ -55,6 +80,9 @@
 - `DeviceCommandService.handle_callback_result()` 在设备结果被接受并更新命令终态后发出 `device_command.result`；观测发射失败不得回滚或阻塞 callback result 处理。
 - WMS breaker OPEN/HALF_OPEN/CLOSED 状态变化使用 `wms_breaker.transition`；typed port 必须从请求 `trace_id` 透传，不能在缺失 trace 时伪造追踪标识。
 - WMS 成功响应后的本地 evidence/breaker 留痕失败使用 `wms_evidence.persistence_failure`；该事件必须保留原始 `trace_id` 和 `evidence_key`，供系统诊断而非业务 HOLD。
+- `northbound.dispatch.health` 在 claim 扫描事务完成后发射平台级队列/lease/rate-limit 摘要；观测失败不得改变公平调度或 lease/fencing 决策。
+- 北向 QUERY transport 与 EXTERNAL_HTTP outbox delivery 分别在 typed evidence / typed result 固化后发射 operation signal；观测失败不得改变 delivery、retry、UNKNOWN 或 reconciliation 语义。
+- 凭据 Provider 统一由审计 wrapper 包裹，只允许发射闭集 `provider_kind/outcome`；凭据 ref、secret material、header 与异常文本不得进入日志或指标。
 - 具体 backend（Jaeger / Tempo / SkyWalking 等）必须通过 `RuntimeOpenTelemetryBridge` 后方的 HTTP adapter / collector endpoint 挂载，不能新增临时字段替代稳定 attributes。
 
 ## Acceptance Evidence
@@ -72,3 +100,5 @@
 - 禁止只写临时日志字段替代 metric/span/evidence。
 - 禁止把 provider DTO 原始字段名作为稳定 attribute 名。
 - 禁止在安全失败时丢失 `trace_id`、`provider_code` 或 `operation_kind`。
+- 禁止把 payload、tenant、用户、业务单号、trace/correlation/evidence、凭据引用或 bucket 作为 metric label。
+- 禁止为未登记的 operation 绕过 `northbound-operation-slo.v1` 创建 provider binding。

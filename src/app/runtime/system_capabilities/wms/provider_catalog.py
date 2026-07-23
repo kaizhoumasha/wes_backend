@@ -2,6 +2,7 @@
 
 from types import MappingProxyType
 
+from src.app.runtime.orchestration.operation_observability import require_northbound_operation_slo
 from src.app.runtime.system_capabilities.wms.contracts import (
     ExternalContractProfile,
     OutboundAuthProfile,
@@ -41,6 +42,7 @@ from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_re
 
 
 def _binding(profile, outbound_auth, operation):
+    _ = require_northbound_operation_slo(operation.identity)
     return WmsProviderOperationBinding(
         profile=profile,
         operation=operation,

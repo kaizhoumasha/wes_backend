@@ -51,6 +51,7 @@ TEST_PATHS = ("tests",)
 DOCUMENTATION_PATHS = ("docs/architecture", "docs/contracts")
 METRIC_OWNER_PATHS = (
     "src/app/runtime/orchestration/observability.py",
+    "src/app/runtime/orchestration/operation_observability.py",
     "src/app/runtime/orchestration/services",
     "src/app/wms_integration",
     "src/app/callback/services",

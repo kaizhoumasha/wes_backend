@@ -1,9 +1,9 @@
 entry_id,category,source_path,legacy_identity,target_operation_identity,disposition,owner,removal_gate,notes
+NBWMS-041,metric,src/app/runtime/orchestration/operation_observability.py,wms.fulfillment.full_box_exchange@v1,wms.fulfillment.full_box_exchange@v1,REWRITE,observability,T12-full-box-exchange-cutover,T11 已提供低基数 outcome latency UNKNOWN 指标；目标 operation 完成迁移后移出清点
+NBWMS-123,metric,src/app/runtime/orchestration/operation_observability.py,wms.inventory.query_inventory@v1,wms.inventory.query_inventory@v1,REWRITE,observability,T11-operation-observability,T11 已提供通用 QUERY outcome latency 与 evidence trace
 NBWMS-006,binding,<missing:provider_binding>,WmsFulfillmentPort.full_box_exchange,wms.fulfillment.full_box_exchange@v1,REWRITE,external-contract,T12-full-box-exchange-cutover,现状未进入 provider profile 且不得继续使用字符串补洞
 NBWMS-009,caller,src/app/runtime/capabilities/material_flow/sorter_inbound_runtime_service.py,WmsFulfillmentPort.full_box_exchange,wms.fulfillment.full_box_exchange@v1,REWRITE,material-flow,T12-full-box-exchange-cutover,effect_contracts 改为独立 typed EFFECT
 NBWMS-038,test,tests/workline_runtime/test_sorter_inbound_runtime_service.py,WmsFulfillmentPort.full_box_exchange,wms.fulfillment.full_box_exchange@v1,REWRITE,test-runtime,T12-full-box-exchange-cutover,保留业务场景并改验 typed EFFECT
-NBWMS-041,metric,<missing:operation_metric>,<absent>,wms.fulfillment.full_box_exchange@v1,REWRITE,observability,T11-operation-observability,新增低基数 operation outcome latency 与 unknown 指标
-NBWMS-123,metric,<missing:operation_metric>,<absent>,wms.inventory.query_inventory@v1,REWRITE,observability,T11-operation-observability,通用 QUERY outcome 与 latency 指标待统一观测任务补齐
 NBWMS-048,documentation,docs/architecture/sorter-inbound-capability-spec.md,WmsFulfillmentPort.full_box_exchange,wms.fulfillment.full_box_exchange@v1,REWRITE,docs,T12-full-box-exchange-cutover,满箱交换目标态文档改用 operation identity
 NBWMS-054,test,tests/architecture/test_wms_7_ports_contract.py,full_box_exchange,wms.fulfillment.full_box_exchange@v1,REWRITE,test-architecture,T2-operation-contracts,方法签名断言改为独立 typed request 与 result
 NBWMS-059,test,tests/contracts/workline/test_wms_fulfillment_request_contract.py,full_box_exchange,wms.fulfillment.full_box_exchange@v1,REWRITE,test-contracts,T12-full-box-exchange-cutover,移除 family fake port 并改验独立 operation 合同

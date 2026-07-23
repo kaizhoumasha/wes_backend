@@ -152,7 +152,12 @@ def test_runtime_observability_open_telemetry_bridge_exports_signal_kinds() -> N
 
     assert [call[0] for call in exporter.calls] == ["span", "metric", "log"]
     assert {call[1] for call in exporter.calls} == {"callback.normalize"}
-    assert all(call[2]["trace_id"] == "trace-1" for call in exporter.calls)
+    assert all(call[2]["trace_id"] == "trace-1" for call in exporter.calls if call[0] != "metric")
+    assert next(call[2] for call in exporter.calls if call[0] == "metric") == {
+        "capability_identity": "callback.normalize@v1",
+        "policy_version": "northbound-observability.v1",
+        "sample_count": 1,
+    }
 
 
 def test_runtime_open_telemetry_http_exporter_posts_stable_backend_payloads() -> None:

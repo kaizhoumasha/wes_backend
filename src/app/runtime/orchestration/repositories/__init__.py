@@ -34,6 +34,11 @@ from .material_unit_repository import (
     MaterialUnitRepository,
     material_unit_repository,
 )
+from .northbound_operations_repository import (
+    NorthboundOperationHealthRow,
+    NorthboundOperationsRepository,
+    northbound_operations_repository,
+)
 from .object_transition_event_repository import (
     ObjectTransitionEventRepository,
     object_transition_event_repository,
@@ -92,6 +97,8 @@ __all__ = [
     "EffectReducerRepository",
     "IdempotencyKeyRepository",
     "MaterialUnitRepository",
+    "NorthboundOperationHealthRow",
+    "NorthboundOperationsRepository",
     "ObjectTransitionEventRepository",
     "PluginAttemptRepository",
     "PreparedRuntimeIntentLog",
@@ -116,6 +123,7 @@ __all__ = [
     "effect_reducer_repository",
     "idempotency_key_repository",
     "material_unit_repository",
+    "northbound_operations_repository",
     "object_transition_event_repository",
     "plugin_attempt_repository",
     "runtime_hold_repository",

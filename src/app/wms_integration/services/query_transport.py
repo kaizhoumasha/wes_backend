@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import time
 import zlib
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -17,6 +18,10 @@ import httpx
 from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError
 
+from src.app.runtime.orchestration.operation_observability import (
+    NorthboundOutcome,
+    emit_northbound_operation_observation,
+)
 from src.app.runtime.system_capabilities.wms.contracts import (
     OutboundAuthScheme,
     WmsOperationMode,
@@ -31,6 +36,7 @@ from src.app.wms_integration.ports.query_outcome import (
     QueryTechnicalFailure,
     WmsQueryOutcome,
 )
+from src.core.logger import logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -61,6 +67,18 @@ class _ContentEncodingFailure(Exception):
 
 class _CredentialResolutionFailure(Exception):
     pass
+
+
+def _query_observability_outcome(
+    outcome: object,
+) -> NorthboundOutcome:
+    if isinstance(outcome, QuerySuccess):
+        return "SUCCESS"
+    if isinstance(outcome, QueryBusinessReject):
+        return "BUSINESS_REJECT"
+    if isinstance(outcome, QueryTechnicalFailure):
+        return "TECHNICAL_FAILURE"
+    return "CONTRACT_FAILURE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +245,7 @@ class WmsQueryTransportExecutor:
         provider_payload: Mapping[str, object],
         map_success: Callable[[Any], QueryResultT],
     ) -> WmsQueryOutcome[QueryResultT]:
+        started_at = time.perf_counter()
         contract = self.binding.operation
         permit = WmsQueryCallPermit(allowed=False, reason="BREAKER_STATE_UNAVAILABLE")
         try:
@@ -241,11 +260,12 @@ class WmsQueryTransportExecutor:
                     retryable=True,
                     retry_after_seconds=permit.retry_after_seconds,
                 )
-                return await self._record_evidence(
+                return await self._record_and_observe(
                     contract=contract,
                     request=request,
                     outcome=outcome,
                     permit=permit,
+                    started_at=started_at,
                 )
             async with asyncio.timeout(contract.budget.timeout_seconds):
                 outcome = await self._execute_with_deadline(
@@ -288,12 +308,44 @@ class WmsQueryTransportExecutor:
                 reason_code="WMS_UNEXPECTED_TRANSPORT_FAILURE",
                 message="unexpected WMS QUERY transport failure",
             )
-        return await self._record_evidence(
+        return await self._record_and_observe(
+            contract=contract,
+            request=request,
+            outcome=outcome,
+            permit=permit,
+            started_at=started_at,
+        )
+
+    async def _record_and_observe(
+        self,
+        *,
+        contract: WmsOperationContract,
+        request: BaseModel,
+        outcome: WmsQueryOutcome[QueryResultT],
+        permit: WmsQueryCallPermit,
+        started_at: float,
+    ) -> WmsQueryOutcome[QueryResultT]:
+        recorded = await self._record_evidence(
             contract=contract,
             request=request,
             outcome=outcome,
             permit=permit,
         )
+        evidence_ref = getattr(recorded, "evidence_key", None) or "UNAVAILABLE"
+        try:
+            _ = emit_northbound_operation_observation(
+                operation_identity=contract.identity,
+                provider_profile_identity=self.binding.profile.identity,
+                outcome=_query_observability_outcome(recorded),
+                latency_ms=(time.perf_counter() - started_at) * 1_000,
+                trace_id=evidence_ref,
+                correlation_id=evidence_ref,
+                evidence_ref=evidence_ref,
+                stage="QUERY_EVIDENCE",
+            )
+        except Exception as exc:  # pragma: no cover - 观测失败不改变 QUERY 领域 outcome
+            logger.warning(f"WMS QUERY observability emission failed: {type(exc).__name__}")
+        return recorded
 
     async def _execute_with_deadline(
         self,
