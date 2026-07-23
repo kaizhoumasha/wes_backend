@@ -183,8 +183,8 @@ def test_provider_profile_proxy_blocks_undeclared_method_on_declared_port():
         def request_transport(self):
             return "transport"
 
-        def notify_pkg_binding(self):
-            return "binding"
+        def request_rack_supply(self):
+            return "supply"
 
     cap_reg = CapabilityPortRegistry()
     cap_reg.register(WmsFulfillmentPort, FulfillmentPort)
@@ -197,4 +197,4 @@ def test_provider_profile_proxy_blocks_undeclared_method_on_declared_port():
 
     assert effect_port.request_transport() == "transport"
     with pytest.raises(PermissionError, match="未声明 effect capability"):
-        effect_port.notify_pkg_binding()
+        effect_port.request_rack_supply()

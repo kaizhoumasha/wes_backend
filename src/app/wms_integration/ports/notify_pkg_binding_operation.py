@@ -16,6 +16,7 @@ class NotifyPackageBindingOperationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     dispatch_key: StableText = Field(max_length=240)
+    provider_code: StableText = Field(max_length=80)
     package_id: StableText = Field(max_length=120)
     pallet_id: StableText = Field(max_length=120)
     station_code: StableText = Field(max_length=120)

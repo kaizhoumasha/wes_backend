@@ -919,9 +919,9 @@ async def rack_operation(payload: dict[str, Any], background_tasks: BackgroundTa
     }
 
 
-@app.post("/api/wms/fulfillment/pkg-binding", summary="本机 Mock: PKG 绑定通知")
+@app.post("/api/wes/fulfillment/package-binding", summary="本机 Mock: typed PKG 绑定通知")
 async def notify_pkg_binding(payload: dict[str, Any]):
-    """模拟 WmsFulfillmentPort.notify_pkg_binding, 仅供本机开发验收。"""
+    """模拟 `wms.fulfillment.notify_pkg_binding@v1`，仅供本机开发验收。"""
 
     package_id = str(payload.get("package_id") or "")
     pallet_id = str(payload.get("pallet_id") or "")
@@ -1040,7 +1040,7 @@ async def rough_sorter_inbound_preview(payload: dict[str, Any]):
             "next_object_admission_allowed": True,
             "legacy_plugin_entry_used": False,
             "effect_ports": {
-                "pkg_binding": "WmsFulfillmentPort.notify_pkg_binding",
+                "pkg_binding": "wms.fulfillment.notify_pkg_binding@v1",
                 "inventory_transaction": "wms.inventory.confirm_inbound@v1",
             },
         },

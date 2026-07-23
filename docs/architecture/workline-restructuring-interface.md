@@ -16,7 +16,8 @@
 | `WmsDocumentPort` | 只读查询 GRN、入库单、出库单、批次单、波次、业务任务快照 | **新增** | `get_grn` / `list_grn_packages` / `get_inbound_order` / `get_outbound_order` / `get_batch_order` / `get_task_snapshot` |
 | `InventoryQueryOperationPort` | 查询库存 authority snapshot | operation-scoped typed QUERY | `execute` |
 | `WmsInventoryTransactionPort` | 库存预留、释放、转移确认等会改变 WMS 事务状态的能力 | **由现有 `WmsInventoryPort` mutation 能力迁出** | `reserve_inventory` / `release_reservation` / `confirm_transfer` |
-| `WmsFulfillmentPort` | 请求外部系统执行搬运、补给、移出、换面、投箱、取箱和满箱交换 | **新增** | `request_rack_supply` / `request_rack_transport` / `change_rack_face` / `full_box_exchange` / `notify_pkg_binding` / `move_bin_to_conveyor_entry` / `move_bin_from_conveyor_exit` |
+| `WmsFulfillmentPort` | 请求外部系统执行尚未迁移的搬运、补给、移出、换面、投箱、取箱和满箱交换 | **遗留 family Port** | `request_rack_supply` / `request_rack_transport` / `change_rack_face` / `full_box_exchange` / `move_bin_to_conveyor_entry` / `move_bin_from_conveyor_exit` |
+| `wms.fulfillment.notify_pkg_binding@v1` | 通知 WMS 料盘绑定结果 | operation-scoped typed EFFECT | `NotifyPackageBindingOperationRequest` / callback reducer |
 | `WmsEventPort` | 接收 WMS 状态变化、RCS 结果、任务结果、异常通知 | **新增**（部分实现于 callback_normalizer） | `WMS_GRN_RECEIVED` / `WMS_PALLET_ARRIVED` / `WMS_RACK_ARRIVED` / `WMS_TRANSPORT_COMPLETED` / `WMS_EXCHANGE_COMPLETED` |
 | `WmsReconciliationQueryPort` | 只读拉取 WMS 权威事实、版本和 drift snapshot，用于对账 WES 作业期投影 | **新增** | `check_bin_drift` / `check_rack_drift` / `check_workline_drift` / `check_full_drift` |
 

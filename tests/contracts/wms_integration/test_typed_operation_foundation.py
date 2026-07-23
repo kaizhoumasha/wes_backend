@@ -123,6 +123,7 @@ def test_query_response_accepts_explicit_empty_items(response_model: type) -> No
             NotifyPackageBindingOperationRequest,
             {
                 "dispatch_key": "binding:001",
+                "provider_code": "WMS",
                 "package_id": "PKG-001",
                 "pallet_id": "PLT-001",
                 "station_code": "ST-A",

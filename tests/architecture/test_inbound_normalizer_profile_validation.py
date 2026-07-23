@@ -129,7 +129,7 @@ def test_external_contract_profile_runtime_capability_admission():
     with pytest.raises(PermissionError, match="未声明 query capability"):
         profile.ensure_runtime_capability_declared("WmsMasterDataPort.get_warehouse", direction="query")
     with pytest.raises(PermissionError, match="未声明 effect capability"):
-        profile.ensure_runtime_capability_declared("WmsFulfillmentPort.notify_pkg_binding", direction="effect")
+        profile.ensure_runtime_capability_declared("WmsFulfillmentPort.request_rack_supply", direction="effect")
 
 
 def test_external_contract_profile_rejects_port_only_effect_capability():

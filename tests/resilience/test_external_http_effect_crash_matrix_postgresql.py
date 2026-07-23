@@ -22,6 +22,15 @@ from src.app.runtime.orchestration.services.confirm_inbound_effect_preparation_s
     ConfirmInboundEffectPreparationService,
 )
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import WorklineDispatchAttemptService
+from src.app.runtime.orchestration.services.notify_package_binding_effect_preparation_service import (
+    NotifyPackageBindingEffectPreparationService,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_adapter import (
+    NotifyPackageBindingEffectAdapter,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.gateway import (
+    NotifyPackageBindingDispatchGateway,
+)
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.effect_adapter import (
     ConfirmInboundEffectAdapter,
 )
@@ -41,6 +50,12 @@ from src.app.sys.services.outbox_engine import SystemOutboxEngine
 from src.app.wms_integration.ports.confirm_inbound_operation import (
     OPERATION_IDENTITY,
     ConfirmInboundOperationRequest,
+)
+from src.app.wms_integration.ports.notify_pkg_binding_operation import (
+    OPERATION_IDENTITY as NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+)
+from src.app.wms_integration.ports.notify_pkg_binding_operation import (
+    NotifyPackageBindingOperationRequest,
 )
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
@@ -249,6 +264,66 @@ async def _seed_confirm_inbound_effect(db: AsyncSession, *, suffix: str) -> _See
     return _SeededEffect(outbox_id=int(outbox.id), dispatch_key=dispatch_key)
 
 
+async def _seed_notify_package_binding_effect(db: AsyncSession, *, suffix: str) -> _SeededEffect:
+    """通过 T10 adapter 写入真实 frozen outbox，而不是复制 dispatcher 数据形状。"""
+
+    provider_code = "WMS"
+    package_id = f"PKG-{suffix}"
+    pallet_id = f"PALLET-{suffix}"
+    dispatch_key = f"wms-notify-pkg-binding:{provider_code}:{package_id}:{pallet_id}"
+    execution_session = ExecutionSession(workline_id=993, manifest_version="v1", state="RUNNING")
+    db.add(execution_session)
+    await db.flush()
+    assert execution_session.id is not None
+    correlation = ExecutionCorrelation(
+        correlation_id=f"notify-package-binding-resilience-correlation:{suffix}",
+        execution_session_id=execution_session.id,
+        trace_id=f"notify-package-binding-resilience-trace:{suffix}",
+    )
+    db.add(correlation)
+    await db.flush()
+    intent = RuntimeIntentLog(
+        execution_session_id=execution_session.id,
+        correlation_id=correlation.correlation_id,
+        provider_code="RUNTIME",
+        operation_kind="system_capability_effect",
+        target_domain="wms",
+        target_action=suffix,
+        idempotency_key=f"notify-package-binding-resilience:{suffix}",
+        request_hash="c" * 64,
+        dispatch_key=dispatch_key,
+        capability_key="wms.fulfillment.notify_pkg_binding",
+        capability_contract_version="v1",
+        operation_identity=f"{provider_code}:{package_id}:{pallet_id}",
+        completion_mode="OUTBOX_ASYNC",
+    )
+    request = NotifyPackageBindingOperationRequest(
+        dispatch_key=dispatch_key,
+        provider_code=provider_code,
+        package_id=package_id,
+        pallet_id=pallet_id,
+        station_code="STATION-RESILIENCE",
+        trace_id=correlation.trace_id,
+    )
+    adapter = NotifyPackageBindingEffectAdapter(
+        gateway=NotifyPackageBindingDispatchGateway(
+            registry=EndpointRegistry(
+                {"WMS_PACKAGE_BINDING": "https://wms.example/api/wes/fulfillment/package-binding"}
+            )
+        )
+    )
+    outbox = await NotifyPackageBindingEffectPreparationService().prepare(
+        db,
+        request=request,
+        intent_log=intent,
+        adapter=adapter,
+    )
+    await db.commit()
+    assert outbox.id is not None
+    assert outbox.operation_identity == NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
+    return _SeededEffect(outbox_id=int(outbox.id), dispatch_key=dispatch_key)
+
+
 async def _expire_claimed_lease(db: AsyncSession, *, outbox_id: int) -> None:
     expired_at = timezone.now_for_db() - timedelta(seconds=1)
     await db.execute(update(SystemOutbox).where(SystemOutbox.id == outbox_id).values(lease_expires_at=expired_at))
@@ -392,6 +467,49 @@ def test_confirm_inbound_after_send_crash_enters_unknown_without_blind_resend_on
             await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
             outbox = await restarted_db.get(SystemOutbox, seeded.outbox_id)
             assert outbox is not None and outbox.operation_identity == OPERATION_IDENTITY
+
+        assert sender.calls == 1
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_notify_package_binding_after_send_crash_enters_unknown_without_blind_resend_on_postgresql() -> None:
+    """T10 frozen outbox 发送后崩溃只能进入 UNKNOWN/RECONCILING，禁止盲重发。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession],
+        _queue_gateway: Any,
+    ) -> None:
+        suffix = f"notify-after-send-{uuid4().hex}"
+        async with session_factory() as seed_db:
+            seeded = await _seed_notify_package_binding_effect(seed_db, suffix=suffix)
+
+        sender = _RecordingAcceptedSender()
+        crashed_worker = _engine(
+            sender=sender,
+            worker_identity=f"notify-package-binding-crashed:{suffix}",
+            fault_hook=_CrashAtPoint("AFTER_SEND"),
+            credential_provider=_TestCredentialProvider(),
+        )
+        with pytest.raises(_SimulatedWorkerCrash, match="AFTER_SEND"):
+            async with session_factory() as crashed_db:
+                await crashed_worker.dispatch(crashed_db, limit=1)
+
+        async with session_factory() as expire_db:
+            await _expire_claimed_lease(expire_db, outbox_id=seeded.outbox_id)
+
+        restarted_worker = _engine(
+            sender=sender,
+            worker_identity=f"notify-package-binding-restarted:{suffix}",
+            credential_provider=_TestCredentialProvider(),
+        )
+        async with session_factory() as restarted_db:
+            second = await restarted_worker.dispatch(restarted_db, limit=1)
+            assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
+            await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
+            outbox = await restarted_db.get(SystemOutbox, seeded.outbox_id)
+            assert outbox is not None
+            assert outbox.operation_identity == NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
 
         assert sender.calls == 1
 

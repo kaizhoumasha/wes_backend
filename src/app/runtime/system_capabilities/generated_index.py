@@ -11,28 +11,33 @@ from src.app.runtime.system_capabilities.material_flow.material_unit_write.defin
 from src.app.runtime.system_capabilities.runtime.session_hold.definition import (
     DEFINITION as _DEFINITION_2,
 )
-from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.definition import (
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.definition import (
     DEFINITION as _DEFINITION_3,
 )
-from src.app.runtime.system_capabilities.wms.inventory.query_inventory.definition import (
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.definition import (
     DEFINITION as _DEFINITION_4,
+)
+from src.app.runtime.system_capabilities.wms.inventory.query_inventory.definition import (
+    DEFINITION as _DEFINITION_5,
 )
 
 SYSTEM_CAPABILITY_IDENTITIES = (
     ("device.device_command_write", "v1"),
     ("material_flow.material_unit_write", "v1"),
     ("runtime.session_hold", "v1"),
+    ("wms.fulfillment.notify_pkg_binding", "v1"),
     ("wms.inventory.confirm_inbound", "v1"),
     ("wms.inventory.query_inventory", "v1"),
 )
-SYSTEM_CAPABILITY_INDEX_DIGEST = "44871a2f5b463b45b09c01b799c7822de3535bd56d8c4c00aa4cd0b606aece1f"
+SYSTEM_CAPABILITY_INDEX_DIGEST = "71646fe3259ee59dd864df53372a8ec62134ffc560cb5c235a167ef8bb915a72"
 SYSTEM_CAPABILITY_INDEX = MappingProxyType(
     {
         ("device.device_command_write", "v1"): _DEFINITION_0,
         ("material_flow.material_unit_write", "v1"): _DEFINITION_1,
         ("runtime.session_hold", "v1"): _DEFINITION_2,
-        ("wms.inventory.confirm_inbound", "v1"): _DEFINITION_3,
-        ("wms.inventory.query_inventory", "v1"): _DEFINITION_4,
+        ("wms.fulfillment.notify_pkg_binding", "v1"): _DEFINITION_3,
+        ("wms.inventory.confirm_inbound", "v1"): _DEFINITION_4,
+        ("wms.inventory.query_inventory", "v1"): _DEFINITION_5,
     }
 )
 

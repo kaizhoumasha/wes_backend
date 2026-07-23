@@ -3,6 +3,7 @@
 本服务只构建 WES 自身运行闭环需要的 RuntimeIntent、effect contract 和 evidence。
 外部 provider 的具体实现由部署 wiring 决定，本层只面向稳定 port contract。
 入库确认通过 typed EFFECT `wms.inventory.confirm_inbound@v1` 进入 T8 双账本。
+料盘绑定通过 typed EFFECT `wms.fulfillment.notify_pkg_binding@v1` 进入同一双账本。
 """
 
 from __future__ import annotations
@@ -17,6 +18,13 @@ from src.app.runtime.capabilities.material_flow.runtime_identity import (
     SORTER_INBOUND_RUNTIME_SOURCE,
 )
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_contract import (
+    NotifyPackageBindingEffectAdmission,
+    NotifyPackageBindingEffectPrecondition,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.intent_adapter import (
+    notify_package_binding_intent_adapter,
+)
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.effect_contract import (
     ConfirmInboundEffectAdmission,
     ConfirmInboundEffectPrecondition,
@@ -25,6 +33,7 @@ from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.intent_ad
     confirm_inbound_intent_adapter,
 )
 from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationRequest
+from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationRequest
 from src.utils.value_normalization import (
     coerce_optional_int,
     coerce_string_value,
@@ -125,12 +134,14 @@ class SorterInboundRuntimeService:
             "idempotency_key": f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:location-fact",
         }
         pkg_binding_payload = {
+            "dispatch_key": f"wms-notify-pkg-binding:{provider_code}:{pkg_code}:{pallet_id}",
+            "provider_code": provider_code,
             "package_id": pkg_code,
             "pallet_id": pallet_id,
             "station_code": station_code,
-            "provider_code": provider_code,
-            "correlation_id": correlation_id,
-            "idempotency_key": f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:pkg-binding",
+            "workline_id": coerce_optional_int(payload.get("workline_id")),
+            "session_id": coerce_optional_int(payload.get("session_id")),
+            "trace_id": coerce_string_value(payload.get("trace_id")) or None,
         }
         inventory_payload = {
             "dispatch_key": f"wms-confirm-inbound:{provider_code}:{object_key}",
@@ -144,13 +155,23 @@ class SorterInboundRuntimeService:
             "session_id": coerce_optional_int(payload.get("session_id")),
             "trace_id": coerce_string_value(payload.get("trace_id")) or None,
         }
+        fact_version = require_text(payload.get("source_version"), "source_version")
+        package_binding_request = NotifyPackageBindingOperationRequest.model_validate(pkg_binding_payload)
+        package_binding_admission = NotifyPackageBindingEffectAdmission(
+            precondition=NotifyPackageBindingEffectPrecondition(
+                package_id=pkg_code,
+                pallet_id=pallet_id,
+                local_physical_fact_recorded=True,
+            ),
+            fact_version=fact_version,
+        )
         confirm_inbound_request = ConfirmInboundOperationRequest.model_validate(inventory_payload)
         confirm_inbound_admission = ConfirmInboundEffectAdmission(
             precondition=ConfirmInboundEffectPrecondition(
                 inbound_key=object_key,
                 local_physical_fact_recorded=True,
             ),
-            fact_version=require_text(payload.get("source_version"), "source_version"),
+            fact_version=fact_version,
         )
         plugin_binding_id = coerce_optional_int(payload.get("plugin_binding_id"))
         plugin_binding_version = coerce_optional_int(payload.get("plugin_binding_version"))
@@ -170,11 +191,11 @@ class SorterInboundRuntimeService:
                     payload=location_payload,
                     idempotency_key=location_payload["idempotency_key"],
                 ),
-                _external_effect_intent(
-                    dispatch_key=pkg_binding_payload["idempotency_key"],
-                    target_code="WMS_FULFILLMENT",
-                    port_method="WmsFulfillmentPort.notify_pkg_binding",
-                    payload=pkg_binding_payload,
+                notify_package_binding_intent_adapter.build_intent(
+                    package_binding_request,
+                    admission=package_binding_admission,
+                    binding_id=plugin_binding_id,
+                    binding_version=plugin_binding_version,
                 ),
                 confirm_inbound_intent_adapter.build_intent(
                     confirm_inbound_request,
@@ -183,16 +204,7 @@ class SorterInboundRuntimeService:
                     binding_version=plugin_binding_version,
                 ),
             ],
-            effect_contracts={
-                "WmsFulfillmentPort.notify_pkg_binding": {
-                    "dispatch_key": pkg_binding_payload["idempotency_key"],
-                    "payload": {
-                        "package_id": pkg_code,
-                        "pallet_id": pallet_id,
-                        "station_code": station_code,
-                    },
-                },
-            },
+            effect_contracts={},
             evidence={
                 "request_id": request_id,
                 "object_key": object_key,
@@ -324,24 +336,6 @@ class SorterInboundRuntimeService:
                 "sorting_candidate_object_keys": sorting_candidate_object_keys,
             },
         )
-
-
-def _external_effect_intent(
-    *,
-    dispatch_key: str,
-    target_code: str,
-    port_method: str,
-    payload: dict[str, Any],
-) -> RuntimeIntent:
-    effect_payload = dict(payload)
-    effect_payload["port_method"] = port_method
-    return RuntimeIntent.external_request(
-        dispatch_key=dispatch_key,
-        target_code=target_code,
-        source_system=coerce_string_value(payload.get("provider_code")),
-        payload=effect_payload,
-        timeout_seconds=30,
-    )
 
 
 sorter_inbound_runtime_service = SorterInboundRuntimeService()

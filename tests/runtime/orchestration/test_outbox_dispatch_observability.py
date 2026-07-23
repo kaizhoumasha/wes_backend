@@ -24,7 +24,7 @@ async def test_outbox_dispatch_single_emits_runtime_intent_dispatch_observabilit
         id=201,
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="WMS_FULFILLMENT",
+        target_code="WMS_RCS_FULL_BOX_EXCHANGE",
         dispatch_key="wms-fulfillment:REQ-201",
         operation_domain="WORKLINE",
         operation_key="REQ-201",

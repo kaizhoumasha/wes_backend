@@ -1,6 +1,7 @@
 """Material-flow sorter inbound runtime capability 合同。
 
-入库确认由 `wms.inventory.confirm_inbound@v1` typed EFFECT 承接。
+料盘绑定与入库确认分别由 `wms.fulfillment.notify_pkg_binding@v1` 和
+`wms.inventory.confirm_inbound@v1` typed EFFECT 承接。
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
     assert [intent.kind for intent in plan.intents] == [
         RuntimeIntentKind.RESOURCE_RESERVATION,
         RuntimeIntentKind.RESOURCE_FACT,
-        RuntimeIntentKind.EXTERNAL_REQUEST,
+        RuntimeIntentKind.SYSTEM_CAPABILITY,
         RuntimeIntentKind.SYSTEM_CAPABILITY,
     ]
     assert intents_by_action["CLAIM_BIN_CELL"].payload_json["pkg_code"] == "PKG-ROUGH-001"
@@ -65,13 +66,15 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
     assert intents_by_action["RUNTIME_LOCATION_EVENT"].payload_json["business_step"] == "LOCAL_PHYSICAL_FACT"
     assert intents_by_action["RUNTIME_LOCATION_EVENT"].payload_json["provider_code"] == "WMS-A"
 
-    pkg_binding = plan.effect_contracts["WmsFulfillmentPort.notify_pkg_binding"]
+    pkg_binding = plan.intents[-2]
     inventory = plan.intents[-1]
-    assert pkg_binding["dispatch_key"] == "material-flow:rough-runtime-001:pkg-binding"
+    assert pkg_binding.dispatch_key == "wms-notify-pkg-binding:WMS-A:PKG-ROUGH-001:PALLET-A-01"
     assert inventory.dispatch_key == "wms-confirm-inbound:WMS-A:PKG-ROUGH-001"
-    assert pkg_binding["payload"]["package_id"] == "PKG-ROUGH-001"
+    assert pkg_binding.payload_json["package_id"] == "PKG-ROUGH-001"
+    assert pkg_binding.capability_key == "wms.fulfillment.notify_pkg_binding"
     assert inventory.payload_json["warehouse_code"] == "WH-A"
     assert inventory.capability_key == "wms.inventory.confirm_inbound"
+    assert plan.effect_contracts == {}
 
 
 def test_sorter_runtime_blocks_join_gate_failure_as_object_scope_reconciliation() -> None:

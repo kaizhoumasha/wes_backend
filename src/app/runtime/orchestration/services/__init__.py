@@ -35,6 +35,10 @@ from src.app.runtime.orchestration.services.material_unit_mutation_service impor
     StaleMaterialUnitPrecondition,
     material_unit_mutation_service,
 )
+from src.app.runtime.orchestration.services.notify_package_binding_effect_preparation_service import (
+    NotifyPackageBindingEffectPreparationService,
+    notify_package_binding_effect_preparation_service,
+)
 from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
     RuntimeSnapshotAssembler,
     RuntimeSnapshotInput,
@@ -70,6 +74,7 @@ __all__ = [
     "IdempotencyGuard",
     "InvalidReconciliationEvent",
     "MaterialUnitMutationService",
+    "NotifyPackageBindingEffectPreparationService",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
     "SessionHoldMutationService",
@@ -85,6 +90,7 @@ __all__ = [
     "is_wes_internal_key",
     "make_wes_internal_key",
     "material_unit_mutation_service",
+    "notify_package_binding_effect_preparation_service",
     "runtime_snapshot_assembler",
     "session_hold_mutation_service",
     "workline_runtime_status_projection_service",

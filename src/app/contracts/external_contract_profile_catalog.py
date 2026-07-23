@@ -93,9 +93,7 @@ WMS_MATERIAL_FLOW_SANDBOX_PROFILE = ExternalContractProfile(
         "InventoryQueryOperationPort.execute",
         "WmsMasterDataPort.get_material",
     ],
-    runtime_capabilities_effect=[
-        "WmsFulfillmentPort.notify_pkg_binding",
-    ],
+    runtime_capabilities_effect=[],
     inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
     inbound_normalizers_result=[],
     timeout_retry_query_timeout_seconds=10,
@@ -117,9 +115,7 @@ WMS_MATERIAL_FLOW_PRODUCTION_PROFILE = ExternalContractProfile(
         "InventoryQueryOperationPort.execute",
         "WmsMasterDataPort.get_material",
     ],
-    runtime_capabilities_effect=[
-        "WmsFulfillmentPort.notify_pkg_binding",
-    ],
+    runtime_capabilities_effect=[],
     inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
     inbound_normalizers_result=[],
     timeout_retry_query_timeout_seconds=10,

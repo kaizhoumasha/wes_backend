@@ -14,7 +14,6 @@ PLUGIN_EXTERNAL_HTTP_PROFILE = ExternalHttpProviderProfileDefinition(
         ExternalHttpBindingDefinition(
             operation_identity="workline.external-http.v1",
             allowed_target_codes=(
-                "WMS_FULFILLMENT",
                 "WMS_INVENTORY_TRANSACTION",
                 "WMS_RCS_RACK_OPERATION",
                 "WMS_RCS_BIN_OPERATION",

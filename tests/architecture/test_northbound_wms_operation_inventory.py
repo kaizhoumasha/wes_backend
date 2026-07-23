@@ -21,15 +21,16 @@ GUARD_PATH = Path(__file__).resolve()
 LEGACY_IDENTITY_TARGETS = {
     "WmsInventoryQueryPort.query_inventory": "wms.inventory.query_inventory@v1",
     "wms.rough_sorter_inventory_admission@v1": "wms.inventory.query_inventory@v1",
-    "WmsFulfillmentPort.notify_pkg_binding": "wms.fulfillment.notify_pkg_binding@v1",
     "WmsFulfillmentPort.full_box_exchange": "wms.fulfillment.full_box_exchange@v1",
 }
 TEST_OPERATION_TARGETS = {
     "query_inventory": "wms.inventory.query_inventory@v1",
-    "notify_pkg_binding": "wms.fulfillment.notify_pkg_binding@v1",
     "full_box_exchange": "wms.fulfillment.full_box_exchange@v1",
 }
-COMPLETED_OPERATION_IDENTITIES = {"wms.inventory.confirm_inbound@v1"}
+COMPLETED_OPERATION_IDENTITIES = {
+    "wms.fulfillment.notify_pkg_binding@v1",
+    "wms.inventory.confirm_inbound@v1",
+}
 REQUIRED_CATEGORIES = {
     "caller",
     "binding",
@@ -663,7 +664,7 @@ def test_reference_scanner_preserves_legacy_identity_and_parses_split_port_metho
         """| Port | 关键方法 |
 | --- | --- |
 | `WmsInventoryQueryPort` | `query_inventory` / `query_inventory_cache` |
-| `WmsFulfillmentPort` | `full_box_exchange` / `notify_pkg_binding` |
+| `WmsFulfillmentPort` | `full_box_exchange` / `request_rack_supply` |
 | `WmsInventoryQueryPortability` | `query_inventory_preview` |
 """,
         encoding="utf-8",
@@ -686,12 +687,6 @@ def test_reference_scanner_preserves_legacy_identity_and_parses_split_port_metho
             "docs/architecture/port-table.md",
             "WmsFulfillmentPort.full_box_exchange",
             "wms.fulfillment.full_box_exchange@v1",
-        ),
-        (
-            "documentation",
-            "docs/architecture/port-table.md",
-            "WmsFulfillmentPort.notify_pkg_binding",
-            "wms.fulfillment.notify_pkg_binding@v1",
         ),
     }
 
@@ -796,8 +791,8 @@ def confirm_inbound():
     return None
 
 
-def passthrough(notify_pkg_binding):
-    return notify_pkg_binding
+def passthrough(request_rack_supply):
+    return request_rack_supply
 
 
 def assert_contract(port_type, **metadata):
@@ -875,8 +870,8 @@ def test_metric_scanner_recognizes_all_supported_operation_identity_forms(
         encoding="utf-8",
     )
     (metric_root / "label_metric.py").write_text(
-        'emit_metric("wms.operation", {"operation_name": "notify_pkg_binding"})\n'
-        'emit_metric("wms.operation.preview", {"operation_name": "notify_pkg_binding_preview"})\n',
+        'emit_metric("wms.operation", {"operation_name": "full_box_exchange"})\n'
+        'emit_metric("wms.operation.preview", {"operation_name": "full_box_exchange_preview"})\n',
         encoding="utf-8",
     )
     (metric_root / "dynamic_metric.py").write_text(
@@ -927,8 +922,8 @@ class UnrelatedOperation:
         (
             "metric",
             "src/app/runtime/orchestration/label_metric.py",
-            "notify_pkg_binding",
-            "wms.fulfillment.notify_pkg_binding@v1",
+            "full_box_exchange",
+            "wms.fulfillment.full_box_exchange@v1",
         ),
         (
             "metric",

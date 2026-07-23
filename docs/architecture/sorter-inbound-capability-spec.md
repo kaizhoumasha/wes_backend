@@ -135,7 +135,7 @@ Material-flow runtime capability 接入前，旧业务 characterization 只能�
 
 | characterization | 旧能力语义 | 目标合同 |
 | --- | --- | --- |
-| BC-05 | 粗分机正常入库 | 本地投格先写 `RuntimeLocationEvent`，格位预约复用 `WorklineBinCellReservation`；PKG 绑定只走 `WmsFulfillmentPort.notify_pkg_binding`，库存事务只走 `WmsInventoryTransactionPort` |
+| BC-05 | 粗分机正常入库 | 本地投格先写 `RuntimeLocationEvent`，格位预约复用 `WorklineBinCellReservation`；PKG 绑定只走 `wms.fulfillment.notify_pkg_binding@v1`，库存事务只走独立 typed operation |
 | BC-06 | 满箱交换前置分流 | `FULL_BOX_EXCHANGE` 与 `CHANGE_RACK_FACE` 分别进入 `WmsFulfillmentPort`，父子 `ExecutionWorkItem` 保留批次和逐对象收敛状态 |
 | BC-07 | 分拣机入库 | SCAN 授权、NG/RuntimeHold、CellReservation、`RuntimeLocationEvent` 和 WMS 同步按对象级合同串联；未覆盖语义保留 characterization tests，不进入 legacy cleanup |
 
@@ -147,7 +147,7 @@ Material-flow runtime capability 接入前，旧业务 characterization 只能�
 
 Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/material_flow` 与本机 WMS/ECS mock：
 
-- WMS mock 可以表达 `WmsFulfillmentPort.notify_pkg_binding()` 与 `WmsInventoryTransactionPort` 的职责拆分。
+- WMS mock 可以表达 `wms.fulfillment.notify_pkg_binding@v1` 与 `wms.inventory.confirm_inbound@v1` 的职责拆分。
 - ECS mock 可以表达 ACK/RESULT callback 和设备失败/超时场景，但 callback 只能指向 localhost 本机 WES。
 - mock 验收不得注册生产 router、Celery worker、真实 WMS/ECS client 或任何 sorter inbound 生产热路径。
 - 生产热路径仍必须等待 runtime residual gate 与 production closure profile 通过，并保持 callback admission 证据绿灯；mock 通过不等于 material-flow 业务上线完成。
@@ -169,7 +169,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 出料格位分配 → CellReservation | `CellReservation` (♻️ 复用 `WorklineBinCellReservation`，目标语义映射见 `cell-reservation-spec.md` §3) | ♻️ |
 | WMS 补空箱货架 | `WmsFulfillmentPort.request_rack_supply()` → `RuntimeIntentLog` | ✅ |
 | 出料机械臂投格 → 本地位置事实 | `RuntimeLocationEvent` (🆕 目标态位置事实表；实现前需新增，或明确由 `ObjectTransitionEvent` 演进承载并补迁移合同) → `BinCellOccupancy` / `MaterialUnit.location_summary` | 🆕 |
-| WMS PKG 绑定通知 | `RuntimeIntentLog` → `WmsFulfillmentPort.notify_pkg_binding()` | ✅ |
+| WMS PKG 绑定通知 | `RuntimeIntentLog` → `wms.fulfillment.notify_pkg_binding@v1` | ✅ |
 | WMS 库存事务 | `RuntimeIntentLog` → `WmsInventoryTransactionPort` | ✅ |
 | WMS 失败 → WMS_SYNC_PENDING / RECONCILING | `RuntimeHold` + `ReconciliationManager` | ✅ |
 
@@ -197,7 +197,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 换箱/等待目标料箱 | `RuntimeHold` (scope=object, deadline 驱动) | ✅ |
 | 南向机械臂投料 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
 | 本地位置事实 + 格位占用 | `RuntimeLocationEvent` (🆕 目标态位置事实表；实现前需新增，或明确由 `ObjectTransitionEvent` 演进承载并补迁移合同) → `BinCellOccupancy` | 🆕 |
-| WMS PKG 绑定通知 | `RuntimeIntentLog` → `WmsFulfillmentPort.notify_pkg_binding()` | ✅ |
+| WMS PKG 绑定通知 | `RuntimeIntentLog` → `wms.fulfillment.notify_pkg_binding@v1` | ✅ |
 | WMS 库存事务 | `RuntimeIntentLog` → `WmsInventoryTransactionPort` | ✅ |
 
 ## 11. 实时决策延迟预算

@@ -73,7 +73,6 @@ def test_wms_fulfillment_port_method_signatures():
         "full_box_exchange",
         "move_bin_to_conveyor_entry",
         "move_bin_to_conveyor_exit",
-        "notify_pkg_binding",
     ]
     for name in methods:
         assert hasattr(WmsFulfillmentPort, name), f"missing method: {name}"
@@ -90,16 +89,15 @@ def test_wms_fulfillment_port_have_docstrings():
         "full_box_exchange",
         "move_bin_to_conveyor_entry",
         "move_bin_to_conveyor_exit",
-        "notify_pkg_binding",
     ]:
         method = getattr(WmsFulfillmentPort, name)
         assert method.__doc__, f"method {name} needs docstring"
 
 
 def test_wms_fulfillment_data_classes_are_pydantic():
-    from src.app.wms_integration.ports.fulfillment import WmsFulfillmentResult, WmsPalletBindingResult
+    from src.app.wms_integration.ports.fulfillment import WmsFulfillmentResult
 
-    for cls in [WmsFulfillmentResult, WmsPalletBindingResult]:
+    for cls in [WmsFulfillmentResult]:
         assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
         assert cls.__doc__, f"{cls.__name__} needs docstring"
 

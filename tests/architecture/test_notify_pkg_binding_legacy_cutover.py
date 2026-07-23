@@ -1,0 +1,71 @@
+"""`notify_pkg_binding` 遗留链必须随 T10 硬切换归零。"""
+
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CONTRACT_IDENTITY = "wms.fulfillment.notify_pkg_binding@v1"
+
+LEGACY_SOURCE_MARKERS = {
+    Path("src/app/wms_integration/ports/fulfillment.py"): (
+        "class WmsPalletBindingResult(",
+        "def notify_pkg_binding(",
+    ),
+    Path("src/app/contracts/external_contract_profile_catalog.py"): ("WmsFulfillmentPort.notify_pkg_binding",),
+    Path("src/app/runtime/capabilities/material_flow/sorter_inbound_runtime_service.py"): (
+        "WmsFulfillmentPort.notify_pkg_binding",
+        'target_code="WMS_FULFILLMENT"',
+    ),
+    Path("src/app/runtime/capabilities/material_flow/sorter_inbound_preview_service.py"): (
+        "WmsFulfillmentPort.notify_pkg_binding",
+    ),
+    Path("src/app/sys/services/endpoint_registry.py"): (
+        '"WMS_FULFILLMENT":',
+        "WMS_FULFILLMENT_URL",
+    ),
+}
+
+LEGACY_REFERENCE_ROOTS = (
+    Path("src"),
+    Path("scripts"),
+    Path("tests"),
+    Path("docs/architecture"),
+)
+LEGACY_REFERENCE_EXCLUSIONS = {
+    Path("tests/architecture/test_notify_pkg_binding_legacy_cutover.py"),
+    Path("tests/architecture/test_northbound_wms_operation_inventory.py"),
+    Path("docs/architecture/adr/2026-07-21-wms-operation-identity.md"),
+}
+
+
+def test_notify_pkg_binding_legacy_source_contracts_are_deleted() -> None:
+    findings: list[str] = []
+    for relative_path, markers in LEGACY_SOURCE_MARKERS.items():
+        content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        findings.extend(f"{relative_path}: {marker}" for marker in markers if marker in content)
+    assert findings == []
+
+
+def test_notify_pkg_binding_legacy_port_and_target_have_no_active_reference() -> None:
+    findings: list[str] = []
+    for root in LEGACY_REFERENCE_ROOTS:
+        for path in sorted((REPO_ROOT / root).rglob("*")):
+            if not path.is_file() or path.suffix not in {".csv", ".md", ".py", ".sh"}:
+                continue
+            relative_path = path.relative_to(REPO_ROOT)
+            if relative_path in LEGACY_REFERENCE_EXCLUSIONS or "archive" in relative_path.parts:
+                continue
+            content = path.read_text(encoding="utf-8")
+            if "WmsFulfillmentPort.notify_pkg_binding" in content:
+                findings.append(str(relative_path))
+    assert findings == []
+
+
+def test_notify_pkg_binding_t10_inventory_rows_are_zero() -> None:
+    inventory_path = REPO_ROOT / "docs/architecture/northbound-wms-operation-inventory.csv"
+    with inventory_path.open(encoding="utf-8", newline="") as file:
+        rows = tuple(csv.DictReader(file))
+
+    assert [row["entry_id"] for row in rows if row["target_operation_identity"] == CONTRACT_IDENTITY] == []

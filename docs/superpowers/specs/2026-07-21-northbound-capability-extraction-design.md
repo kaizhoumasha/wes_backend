@@ -120,7 +120,7 @@ Intent/outbox 创建时从该 catalog 冻结 profile identity、profile hash、�
 | --- | --- | --- | --- |
 | 粗分机库存准入 | QUERY | `WmsInventoryQueryPort.query_inventory` | 独立 typed query request/result；空库存是 `Success(empty snapshot)` |
 | 粗分机入库确认 | EFFECT | `WmsInventoryTransactionPort.confirm_inbound` | 独立 typed request/result；定义幂等 owner、接受边界、UNKNOWN 与 reconciliation |
-| 粗分机料盘绑定 | EFFECT | `WmsFulfillmentPort.notify_pkg_binding` | 独立 typed request/result；定义 callback correlation、完成边界和乱序归并 |
+| 粗分机料盘绑定 | EFFECT | `wms.fulfillment.notify_pkg_binding@v1` | 独立 typed request/result；定义 callback correlation、完成边界和乱序归并 |
 
 其余真实 operation 由 Phase 0 legacy inventory 列出，逐项建立独立 identity。不得把 query/transaction/fulfillment family 暴露成一个带 discriminator 的万能 capability。
 

@@ -81,7 +81,7 @@ WES 内部域（workline / runtime / handling / resource / material / device）*
 | WMS 校验物料 | 事实 1（库存）/ 事实 8（物料主数据） | WMS | `WmsMasterDataPort.get_material` + `wms.inventory.query_inventory@v1`（带 source_version） |
 | 建料盘实体 | 事实 11（WES 作业期根实体） | WES | material 域写 material_units（WES 自有） |
 | 箱格分配 | 事实 10（WES 投影） | WES | resource 域写 BinCellOccupancy（作业期投影） |
-| PKG 绑定通知 WMS | 事实 2（业务任务） | WMS | `WmsFulfillmentPort.notify_pkg_binding`（经 RuntimeIntentLog） |
+| PKG 绑定通知 WMS | 事实 2（业务任务） | WMS | `wms.fulfillment.notify_pkg_binding@v1` typed EFFECT（经 T8 双账本与 callback reducer） |
 
 ### 4.2 反例 1：影子 WMS（事实 1 违规）
 

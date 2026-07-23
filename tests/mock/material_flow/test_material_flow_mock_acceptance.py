@@ -51,7 +51,7 @@ def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_tra
 
     with TestClient(wms_mock_server.app) as client:
         binding_response = client.post(
-            "/api/wms/fulfillment/pkg-binding",
+            "/api/wes/fulfillment/package-binding",
             json={
                 "request_id": "mock-sorter-binding-001",
                 "package_id": "PKG-CAP001-LOT-A-001",

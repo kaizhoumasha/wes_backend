@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 RUNTIME_EVIDENCE_CAPABILITIES = ["sorter_inbound", "smt_ng_wms_reconciliation"]
 RUNTIME_EVIDENCE_EFFECT_PATH = [
     "RuntimeIntentLog",
-    "WmsFulfillmentPort.notify_pkg_binding",
+    "wms.fulfillment.notify_pkg_binding@v1",
     "wms.inventory.confirm_inbound@v1",
 ]
 RUNTIME_EVIDENCE_CALLBACK_PATH = ["RuntimeInbox"]
