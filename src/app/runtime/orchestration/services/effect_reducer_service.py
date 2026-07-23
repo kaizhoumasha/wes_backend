@@ -31,6 +31,10 @@ class ReconciliationResolutionConflict(InvalidReconciliationEvent):
     """同一人工决议请求身份被复用于不同裁决。"""
 
 
+class ReconciliationEvidenceConflict(InvalidReconciliationEvent):
+    """同一 evidence 身份被复用于不同事实。"""
+
+
 @dataclass(frozen=True, slots=True)
 class EffectReductionResult:
     """单次 reducer 归并结果。"""
@@ -50,10 +54,21 @@ EFFECT_REDUCER_TRANSITION_MATRIX = MappingProxyType(
         EffectReducerEventType.TRANSPORT_ACCEPTED: MappingProxyType(
             {RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.ACCEPTED}
         ),
+        EffectReducerEventType.TRANSPORT_REJECTED: MappingProxyType(
+            {RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.REJECTED}
+        ),
         EffectReducerEventType.TRANSPORT_AMBIGUOUS: MappingProxyType(
             {
                 RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.UNKNOWN,
                 RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.UNKNOWN,
+            }
+        ),
+        EffectReducerEventType.LOCAL_REDECISION_REQUIRED: MappingProxyType({}),
+        EffectReducerEventType.DISPATCH_CANCELLED: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.RECONCILING,
+                RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.RECONCILING,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.RECONCILING,
             }
         ),
         EffectReducerEventType.CALLBACK_ACCEPTED: MappingProxyType(
@@ -84,7 +99,13 @@ EFFECT_REDUCER_TRANSITION_MATRIX = MappingProxyType(
             }
         ),
         EffectReducerEventType.RECONCILIATION_RESOLVED: MappingProxyType({}),
-        EffectReducerEventType.IDEMPOTENCY_CONFLICT: MappingProxyType({}),
+        EffectReducerEventType.IDEMPOTENCY_CONFLICT: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.RECONCILING,
+                RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.RECONCILING,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.RECONCILING,
+            }
+        ),
     }
 )
 
@@ -106,6 +127,7 @@ _CASE_OPENING_EVENTS = frozenset(
     {
         EffectReducerEventType.RECONCILIATION_OPENED,
         EffectReducerEventType.IDEMPOTENCY_CONFLICT,
+        EffectReducerEventType.DISPATCH_CANCELLED,
     }
 )
 
@@ -130,8 +152,36 @@ class EffectReducer:
             return None
         open_case = await self._repository.get_open_case_for_update(db, event.dispatch_key)
         current = RuntimeIntentStatus(intent.effect_status)
-        contradiction = self._is_contradictory_callback(current, event.event_type)
         evidence = self._serialize_evidence(event)
+        if (
+            open_case is not None
+            and event.source_event_id
+            and self._is_case_evidence_replay(
+                open_case,
+                event=event,
+                evidence=evidence,
+            )
+        ):
+            return EffectReductionResult(
+                intent_status=current,
+                case_status=ReconciliationCaseStatus.OPEN,
+                state_changed=False,
+                case_created=False,
+                contradiction=False,
+            )
+        if event.source_event_id and event.event_type is not EffectReducerEventType.RECONCILIATION_RESOLVED:
+            resolved_cases = await self._repository.list_resolved_cases_for_update(db, event.dispatch_key)
+            if any(self._is_case_evidence_replay(case, event=event, evidence=evidence) for case in resolved_cases):
+                return EffectReductionResult(
+                    intent_status=current,
+                    case_status=(
+                        ReconciliationCaseStatus.RESOLVED if open_case is None else ReconciliationCaseStatus.OPEN
+                    ),
+                    state_changed=False,
+                    case_created=False,
+                    contradiction=False,
+                )
+        contradiction = self._is_contradictory_evidence(intent, current=current, event_type=event.event_type)
         case_created = False
 
         if event.event_type is EffectReducerEventType.RECONCILIATION_RESOLVED:
@@ -192,6 +242,30 @@ class EffectReducer:
         return True
 
     @staticmethod
+    def _is_case_evidence_replay(
+        case: ReconciliationCase,
+        *,
+        event: EffectReducerEvent,
+        evidence: dict[str, object],
+    ) -> bool:
+        matching = next(
+            (
+                existing
+                for existing in case.evidence_history_json
+                if existing.get("source_event_id") == event.source_event_id
+                and existing.get("event_type") == event.event_type.value
+            ),
+            None,
+        )
+        if matching is None:
+            return False
+        existing_fact = {key: value for key, value in matching.items() if key != "occurred_at_ms"}
+        replayed_fact = {key: value for key, value in evidence.items() if key != "occurred_at_ms"}
+        if existing_fact != replayed_fact:
+            raise ReconciliationEvidenceConflict("source_event_id cannot be reused with different evidence")
+        return True
+
+    @staticmethod
     def _target_status(
         *,
         current: RuntimeIntentStatus,
@@ -213,17 +287,28 @@ class EffectReducer:
         return EFFECT_REDUCER_TRANSITION_MATRIX[event.event_type].get(current)
 
     @staticmethod
-    def _is_contradictory_callback(
+    def _is_contradictory_evidence(
+        intent: Any,
+        *,
         current: RuntimeIntentStatus,
         event_type: EffectReducerEventType,
     ) -> bool:
-        if event_type not in _CALLBACK_EVENTS:
-            return False
-        if current is RuntimeIntentStatus.TECHNICAL_FAILED:
-            return True
+        if event_type in _CALLBACK_EVENTS:
+            if current is RuntimeIntentStatus.TECHNICAL_FAILED:
+                return True
+            return (current, event_type) in {
+                (RuntimeIntentStatus.COMPLETED, EffectReducerEventType.CALLBACK_REJECTED),
+                (RuntimeIntentStatus.REJECTED, EffectReducerEventType.CALLBACK_COMPLETED),
+            }
+        if current is RuntimeIntentStatus.REJECTED and event_type is EffectReducerEventType.TRANSPORT_ACCEPTED:
+            # 2xx 只证明请求已送达；若终态来自业务 callback 拒绝或人工决议，它与该事实并不冲突。
+            return any(
+                evidence.get("event_type") == EffectReducerEventType.TRANSPORT_REJECTED.value
+                for evidence in (intent.outcome_history_json or ())
+            )
         return (current, event_type) in {
-            (RuntimeIntentStatus.COMPLETED, EffectReducerEventType.CALLBACK_REJECTED),
-            (RuntimeIntentStatus.REJECTED, EffectReducerEventType.CALLBACK_COMPLETED),
+            (RuntimeIntentStatus.ACCEPTED, EffectReducerEventType.TRANSPORT_REJECTED),
+            (RuntimeIntentStatus.COMPLETED, EffectReducerEventType.TRANSPORT_REJECTED),
         }
 
     @staticmethod
@@ -308,6 +393,7 @@ __all__ = [
     "EffectReducer",
     "EffectReductionResult",
     "InvalidReconciliationEvent",
+    "ReconciliationEvidenceConflict",
     "ReconciliationResolutionConflict",
     "effect_reducer",
 ]

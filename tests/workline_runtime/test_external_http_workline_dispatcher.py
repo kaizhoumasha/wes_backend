@@ -41,6 +41,21 @@ class _Repository:
         self.outbox.status = SystemOutboxStatus.SENT
         return self.outbox
 
+    async def mark_as_protocol_rejected(
+        self,
+        _db: Any,
+        _outbox_id: int,
+        error: str,
+        *,
+        lease_owner_token: str,
+    ) -> SimpleNamespace:
+        assert lease_owner_token
+        self.calls.append("sent")
+        self.outbox.status = SystemOutboxStatus.SENT
+        self.outbox.finished_at = datetime(2027, 1, 1)
+        self.outbox.last_error = error
+        return self.outbox
+
     async def mark_as_failed(
         self,
         _db: Any,
@@ -151,6 +166,46 @@ async def test_workline_dispatcher_uses_same_typed_result_mapping_and_attempt_ev
 
 
 @pytest.mark.asyncio
+async def test_workline_dispatcher_appends_late_transport_evidence_after_unknown_fence() -> None:
+    transport_result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+    outbox = SimpleNamespace(
+        id=2,
+        status=SystemOutboxStatus.UNKNOWN,
+        dispatch_key="late-transport-workline-2",
+        dispatch_started_at=datetime(2027, 1, 1),
+    )
+    repository = _Repository()
+    repository.outbox = outbox
+    repository.mark_as_sent = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    repository.get_by_id_for_update = AsyncMock(return_value=outbox)  # type: ignore[attr-defined]
+    attempt_service = _AttemptService()
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    service = OutboxDispatchService(effect_transport_bridge=bridge)
+
+    updated = await service._finalize_external_http_result(
+        object(),
+        outbox_repo=repository,
+        outbox=outbox,
+        outbox_id=2,
+        dispatch_attempt=SimpleNamespace(status="UNKNOWN", attempt_no=3),
+        attempt_service=attempt_service,
+        result=transport_result,
+        lease_owner_token="owner-2",
+        retry_budget=3,
+    )
+
+    assert updated is None
+    assert attempt_service.finalized == []
+    bridge.record_result.assert_awaited_once()
+    assert bridge.record_result.await_args.kwargs["dispatch_key"] == "late-transport-workline-2"
+    assert bridge.record_result.await_args.kwargs["attempt_no"] == 3
+    assert bridge.record_result.await_args.kwargs["result"] is transport_result
+
+
+@pytest.mark.asyncio
 async def test_external_http_sandbox_returns_typed_accepted_result() -> None:
     outbox = SimpleNamespace(
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
@@ -186,6 +241,19 @@ class _DispatchRepository(_Repository):
 
     async def get_by_id_for_update(self, _db: Any, _outbox_id: int) -> SimpleNamespace:
         return self.outbox
+
+    async def begin_physical_dispatch(
+        self,
+        _db: Any,
+        _outbox_id: int,
+        *,
+        lease_owner_token: str,
+        lease_seconds: int,
+    ) -> SimpleNamespace | None:
+        assert lease_seconds > 0
+        if self.outbox.status is SystemOutboxStatus.DISPATCHING and self.outbox.lease_owner_token == lease_owner_token:
+            return self.outbox
+        return None
 
     async def mark_as_failed(
         self,
@@ -237,7 +305,7 @@ class _DispatchAttemptService(_AttemptService):
 
 
 class _CommitFailsAfterSendDatabase:
-    def __init__(self, outbox: SimpleNamespace, *, fail_commit_number: int | None = 3) -> None:
+    def __init__(self, outbox: SimpleNamespace, *, fail_commit_number: int | None = 4) -> None:
         self.outbox = outbox
         self.fail_commit_number = fail_commit_number
         self.commit_count = 0
@@ -289,7 +357,7 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
     )
     repository = _DispatchRepository(outbox)
     attempt_service = _DispatchAttemptService(missing_attempt=missing_attempt)
-    current_db = _CommitFailsAfterSendDatabase(outbox, fail_commit_number=None if missing_attempt else 2)
+    current_db = _CommitFailsAfterSendDatabase(outbox, fail_commit_number=None if missing_attempt else 3)
     recovery_db = SimpleNamespace(
         commit=AsyncMock(side_effect=RuntimeError("isolated recovery unavailable") if recovery_fails else None)
     )
@@ -393,7 +461,7 @@ async def test_workline_dispatcher_emits_ordered_external_http_fault_boundaries(
         next_retry_at=None,
         last_error=None,
         operation_domain="WORKLINE",
-        workline_id=None,
+        workline_id=92,
         session_id=None,
         device_id=None,
         provider_profile_identity="wms.profile-test",
@@ -402,6 +470,14 @@ async def test_workline_dispatcher_emits_ordered_external_http_fault_boundaries(
         lease_expires_at=datetime(2027, 1, 1),
     )
     repository = _DispatchRepository(outbox)
+    db = SimpleNamespace(commit=AsyncMock())
+    begin_physical_dispatch = repository.begin_physical_dispatch
+
+    async def begin_after_final_safety_guard(*args: Any, **kwargs: Any) -> SimpleNamespace | None:
+        assert db.commit.await_count == 1
+        return await begin_physical_dispatch(*args, **kwargs)
+
+    repository.begin_physical_dispatch = begin_after_final_safety_guard  # type: ignore[method-assign]
     attempt_service = _DispatchAttemptService()
     transport_result = ExternalHttpTransportResult.accepted(
         http_status_code=202,
@@ -438,14 +514,16 @@ async def test_workline_dispatcher_emits_ordered_external_http_fault_boundaries(
     )
     dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
     event_stream_module = import_module("src.app.sys.services.event_stream_service")
+    safety_module = import_module("src.app.workline.services.safety_service")
     monkeypatch.setattr(service, "_dispatch_blocked_resource_heads", AsyncMock(return_value=(set(), set())))
     monkeypatch.setattr(service, "_should_dispatch_to_sandbox", AsyncMock(return_value=False))
     monkeypatch.setattr(service, "_dispatch_external_http", sender)
     monkeypatch.setattr(dispatch_module, "_repair_orphaned_device_busy_dispatches", AsyncMock(return_value=0))
     monkeypatch.setattr(dispatch_module, "_repair_self_blocked_device_busy_dispatches", AsyncMock(return_value=0))
     monkeypatch.setattr(event_stream_module, "publish_deferred_sse_events", AsyncMock())
+    monkeypatch.setattr(safety_module.workline_safety_service, "assert_accepting_work", AsyncMock())
 
-    stats = await service.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)
+    stats = await service.dispatch(db, limit=1)
 
     assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
     assert observed == [
@@ -461,3 +539,72 @@ async def test_workline_dispatcher_emits_ordered_external_http_fault_boundaries(
         ("AFTER_REDUCER_EVIDENCE", 92),
         ("AFTER_EVIDENCE_COMMIT", 92),
     ]
+
+
+@pytest.mark.asyncio
+async def test_workline_dispatcher_rechecks_claim_after_commit_before_external_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-CANCELLED-AFTER-CLAIM"})
+    outbox = SimpleNamespace(
+        id=93,
+        dispatch_key="workline-cancelled-after-claim-93",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        target_type="HTTP_ENDPOINT",
+        target_code="WMS_TEST",
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        payload_json={"request_id": "REQ-CANCELLED-AFTER-CLAIM"},
+        status=SystemOutboxStatus.DISPATCHING,
+        attempt_count=0,
+        next_retry_at=None,
+        last_error=None,
+        operation_domain="WORKLINE",
+        workline_id=None,
+        session_id=None,
+        device_id=None,
+        provider_profile_identity="wms.profile-test",
+        operation_identity="wms.effect-test@v1",
+        lease_owner_token="owner-workline-93",
+        lease_expires_at=datetime(2027, 1, 1),
+    )
+    repository = _DispatchRepository(outbox)
+    claim = DispatchLeaseClaim(
+        outbox=outbox,
+        bucket=DispatchBucketKey(outbox.provider_profile_identity, outbox.operation_identity),
+        lease_owner_token=outbox.lease_owner_token,
+        lease_expires_at=outbox.lease_expires_at,
+        policy=DispatchBucketPolicy(),
+    )
+    scheduler = SimpleNamespace(
+        claim=AsyncMock(
+            return_value=DispatchClaimBatch(
+                claims=(claim,),
+                metrics=DispatchClaimMetrics(1, 1, 0, 0, (), (), ()),
+            )
+        )
+    )
+    sender = AsyncMock()
+
+    async def cancel_after_claim(point: object, _current_outbox: Any | None) -> None:
+        if str(point) == "AFTER_CLAIM_COMMIT":
+            outbox.status = SystemOutboxStatus.CANCELLED
+
+    service = OutboxDispatchService(
+        outbox_repository=repository,
+        dispatch_scheduler=scheduler,
+        dispatch_attempt_service=_DispatchAttemptService(),
+        external_http_fault_hook=cancel_after_claim,
+    )
+    dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
+    event_stream_module = import_module("src.app.sys.services.event_stream_service")
+    monkeypatch.setattr(service, "_dispatch_blocked_resource_heads", AsyncMock(return_value=(set(), set())))
+    monkeypatch.setattr(service, "_dispatch_external_http", sender)
+    monkeypatch.setattr(dispatch_module, "_repair_orphaned_device_busy_dispatches", AsyncMock(return_value=0))
+    monkeypatch.setattr(dispatch_module, "_repair_self_blocked_device_busy_dispatches", AsyncMock(return_value=0))
+    monkeypatch.setattr(event_stream_module, "publish_deferred_sse_events", AsyncMock())
+
+    stats = await service.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)
+
+    assert stats == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+    sender.assert_not_awaited()

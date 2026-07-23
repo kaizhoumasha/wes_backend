@@ -18,7 +18,10 @@ from src.app.sys.external_http_dispatch_faults import (
     ExternalHttpDispatchFaultPoint,
     emit_external_http_dispatch_fault,
 )
-from src.app.sys.external_http_evidence import recover_external_http_evidence_failure_unknown
+from src.app.sys.external_http_evidence import (
+    is_late_external_http_result_target,
+    recover_external_http_evidence_failure_unknown,
+)
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpSender,
@@ -161,6 +164,20 @@ class SystemOutboxEngine:
                     ExternalHttpDispatchFaultPoint.AFTER_CLAIM_COMMIT,
                     outbox,
                 )
+            current_outbox = await self.outbox_repository.begin_physical_dispatch(
+                db,
+                outbox_id,
+                lease_owner_token=claim.lease_owner_token,
+                lease_seconds=claim.policy.lease_seconds,
+            )
+            if current_outbox is None:
+                await _commit_if_supported(db)
+                result["skipped"] += 1
+                result["dispatched"] += 1
+                continue
+            outbox = current_outbox
+            # 发送边界必须先持久化并释放行锁，允许同步 callback 在 sender 返回前推进账本。
+            await _commit_if_supported(db)
 
             try:
                 dispatch_result = await self.dispatch_single(db, outbox)
@@ -211,6 +228,16 @@ class SystemOutboxEngine:
                     if updated is None:
                         current = await self.outbox_repository.get_by_id_for_update(db, outbox_id)
                         if enum_value(getattr(current, "status", None)) != SystemOutboxStatus.SENT.value:
+                            if is_late_external_http_result_target(current):
+                                # UNKNOWN 是 cancellation/lease-loss 的保守终态；sender 的晚到结果
+                                # 仅追加到已打开的 reconciliation case，不改写 outbox/attempt。
+                                await self._record_effect_transport_result(
+                                    db,
+                                    outbox=outbox,
+                                    dispatch_attempt=dispatch_attempt,
+                                    result=dispatch_result,
+                                    updated=current,
+                                )
                             result["skipped"] += 1
                             result["dispatched"] += 1
                             await _commit_if_supported(db)
@@ -385,6 +412,13 @@ class SystemOutboxEngine:
     ) -> Any | None:
         error = result.error_message or result.error_code or result.outcome.value
         if result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
+            if result.protocol_result is ExternalHttpProtocolResult.REJECTED:
+                return await self.outbox_repository.mark_as_protocol_rejected(
+                    db,
+                    outbox_id,
+                    error,
+                    lease_owner_token=lease_owner_token,
+                )
             return await self.outbox_repository.mark_as_sent(
                 db,
                 outbox_id,
@@ -442,7 +476,7 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
     import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=False) as client:
             response = await client.request(
                 request.method,
                 request.endpoint.url,

@@ -119,24 +119,42 @@ class SystemCapabilityEffectService:
             if (
                 definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
                 and prepared.intent_log is not None
-                and prepared.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+                and (
+                    prepared.intent_log.effect_status is RuntimeIntentStatus.ACCEPTED
+                    or (
+                        prepared.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+                        and prepared.has_durable_outbox
+                    )
+                )
             ):
-                # PROPOSED 双账本已 durable accepted，但尚无远端完成 evidence；只重放
-                # 接受语义，不伪造 remote payload/evidence，也不再次执行 handler。
+                # 配对 outbox 的 PROPOSED 双账本或 transport ACCEPTED 均已 durable accepted；
+                # 只重放接受语义，不伪造 payload/evidence 或再次执行 handler。
                 return SystemCapabilityEffectResult(
                     outcome=Success(payload=None),
                     completion_mode=definition.completion_mode,
                     durably_accepted=True,
                     idempotent_replay=True,
                 )
-            return SystemCapabilityEffectResult(
-                outcome=ContractViolation(
-                    error_code="PERSISTED_OUTCOME_INVALID",
-                    message="persisted success evidence failed closed",
-                ),
-                completion_mode=definition.completion_mode,
-                idempotent_replay=True,
+            provisional_without_outbox = (
+                definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
+                and prepared.intent_log is not None
+                and prepared.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+                and not prepared.has_durable_outbox
             )
+            local_redecision = (
+                definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL
+                and prepared.intent_log is not None
+                and prepared.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+            )
+            if not provisional_without_outbox and not local_redecision:
+                return SystemCapabilityEffectResult(
+                    outcome=ContractViolation(
+                        error_code="PERSISTED_OUTCOME_INVALID",
+                        message="persisted success evidence failed closed",
+                    ),
+                    completion_mode=definition.completion_mode,
+                    idempotent_replay=True,
+                )
 
         execution = SystemCapabilityExecution(
             ctx=ctx,

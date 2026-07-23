@@ -271,7 +271,7 @@ async def test_workline_cancel_closes_dispatching_lease_shape_on_postgresql(
     )
     await integration_db_session.flush()
 
-    assert cancelled == 1
+    assert len(cancelled) == 1
     assert enum_value(outbox.status) == SystemOutboxStatus.CANCELLED.value
     assert outbox.lease_expires_at is None
     assert outbox.lease_owner_token == owner
@@ -313,7 +313,7 @@ async def test_session_cancel_closes_dispatching_lease_shape_on_postgresql(
     )
     await integration_db_session.flush()
 
-    assert cancelled == 1
+    assert len(cancelled) == 1
     assert enum_value(outbox.status) == SystemOutboxStatus.CANCELLED.value
     assert outbox.lease_expires_at is None
     assert outbox.lease_owner_token == owner

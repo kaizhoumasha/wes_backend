@@ -73,6 +73,29 @@ class FakeSystemOutboxRepository:
                 return message
         return None
 
+    async def begin_physical_dispatch(
+        self,
+        _db: Any,
+        outbox_id: int,
+        *,
+        lease_owner_token: str,
+        lease_seconds: int,
+    ) -> Any | None:
+        assert lease_seconds > 0
+        return next(
+            (
+                message
+                for message in self.messages
+                if message.id == outbox_id
+                and message.status is SystemOutboxStatus.DISPATCHING
+                and message.lease_owner_token == lease_owner_token
+            ),
+            None,
+        )
+
+    async def get_by_id_for_update(self, _db: Any, outbox_id: int) -> Any | None:
+        return next((message for message in self.messages if message.id == outbox_id), None)
+
     async def mark_as_sent(self, _db: Any, outbox_id: int, *, lease_owner_token: str) -> Any | None:
         assert lease_owner_token
         self.mark_sent_calls.append(outbox_id)
@@ -229,6 +252,11 @@ class NoopEffectTransportBridge:
         return None
 
 
+class RecordingEffectTransportBridge:
+    def __init__(self) -> None:
+        self.record_result = AsyncMock()
+
+
 async def _no_workline_messages(_db: Any, _limit: int) -> dict[str, int]:
     return {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
 
@@ -300,6 +328,39 @@ async def test_system_outbox_dispatcher_sends_external_http_and_marks_sent() -> 
 
 
 @pytest.mark.asyncio
+async def test_system_outbox_dispatcher_appends_late_transport_evidence_after_unknown_fence() -> None:
+    message = _outbox(id=11)
+    repo = FakeSystemOutboxRepository([message])
+    bridge = RecordingEffectTransportBridge()
+    transport_result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+
+    async def sender(_request: ExternalHttpDispatchRequest) -> ExternalHttpTransportResult:
+        message.status = SystemOutboxStatus.UNKNOWN
+        message.dispatch_started_at = datetime(2026, 5, 22, 8, 1, 0)
+        return transport_result
+
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
+        external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
+        dispatch_attempt_service=FakeDispatchAttemptService(),
+        effect_transport_bridge=bridge,
+        workline_domain_dispatcher=_no_workline_messages,
+    )
+
+    result = await dispatcher.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)
+
+    assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+    bridge.record_result.assert_awaited_once()
+    assert bridge.record_result.await_args.kwargs["dispatch_key"] == message.dispatch_key
+    assert bridge.record_result.await_args.kwargs["result"] is transport_result
+
+
+@pytest.mark.asyncio
 async def test_system_outbox_dispatcher_persists_full_claim_batch_attempts_before_first_send() -> None:
     messages = [
         _outbox(id=31, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
@@ -329,6 +390,35 @@ async def test_system_outbox_dispatcher_persists_full_claim_batch_attempts_befor
 
     assert result == {"dispatched": 2, "success": 2, "failed": 0, "skipped": 0}
     assert events[:2] == ["attempt:31", "attempt:32"]
+
+
+@pytest.mark.asyncio
+async def test_system_outbox_dispatcher_rechecks_claim_before_each_physical_send() -> None:
+    messages = [
+        _outbox(id=41, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
+        _outbox(id=42, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
+    ]
+    repo = FakeSystemOutboxRepository(messages)
+    sent_ids: list[int] = []
+
+    async def device_sender(_db: Any, outbox: Any) -> bool:
+        sent_ids.append(outbox.id)
+        if outbox.id == 41:
+            messages[1].status = SystemOutboxStatus.CANCELLED
+        return True
+
+    dispatcher = SystemOutboxDispatcher(
+        outbox_repository=repo,
+        dispatch_scheduler=FakeFairDispatchScheduler(repo),
+        dispatch_attempt_service=FakeDispatchAttemptService(),
+        workline_domain_dispatcher=_no_workline_messages,
+        device_command_dispatcher=device_sender,
+    )
+
+    result = await dispatcher.dispatch(SimpleNamespace(commit=AsyncMock()), limit=10)
+
+    assert sent_ids == [41]
+    assert result == {"dispatched": 2, "success": 1, "failed": 0, "skipped": 1}
 
 
 @pytest.mark.asyncio

@@ -231,6 +231,7 @@ async def test_default_http_sender_posts_the_exact_frozen_body(monkeypatch: pyte
         target_url="https://wms.example/inbound",
     )
     calls: list[dict[str, Any]] = []
+    client_options: list[dict[str, Any]] = []
 
     class FakeClient:
         async def __aenter__(self) -> FakeClient:
@@ -243,12 +244,17 @@ async def test_default_http_sender_posts_the_exact_frozen_body(monkeypatch: pyte
             calls.append({"method": method, "url": url, **kwargs})
             return SimpleNamespace(status_code=202)
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    def create_client(**kwargs: Any) -> FakeClient:
+        client_options.append(kwargs)
+        return FakeClient()
+
+    monkeypatch.setattr(httpx, "AsyncClient", create_client)
 
     result = await _send_external_http(request)
 
     assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
     assert result.protocol_result is ExternalHttpProtocolResult.ACCEPTED
+    assert client_options == [{"timeout": request.timeout_seconds, "trust_env": False}]
     assert calls == [
         {
             "method": "POST",

@@ -161,6 +161,7 @@ class WorklineRuntimeReconciliationService:
         session_repository: WorklineSessionRepository | None = None,
         workline_repository: WorkLineRepository | None = None,
         system_outbox_repository: SystemOutboxRepository | None = None,
+        system_outbox_cancellation_service: Any | None = None,
         device_service: DeviceService | None = None,
         runtime_hold_creation_service: Any | None = None,
         runtime_hold_repository: RuntimeHoldRepository | None = None,
@@ -172,6 +173,15 @@ class WorklineRuntimeReconciliationService:
         self.session_repository = session_repository or WorklineSessionRepository()
         self.workline_repository = workline_repository or default_workline_repository
         self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()
+        if system_outbox_cancellation_service is None:
+            from src.app.runtime.orchestration.services.system_outbox_cancellation_service import (
+                SystemOutboxCancellationService,
+            )
+
+            system_outbox_cancellation_service = SystemOutboxCancellationService(
+                repository=self.system_outbox_repository
+            )
+        self.system_outbox_cancellation_service = system_outbox_cancellation_service
         self.device_service = device_service or DeviceService()
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
         self.runtime_hold_repository = runtime_hold_repository or default_runtime_hold_repository
@@ -303,7 +313,7 @@ class WorklineRuntimeReconciliationService:
             _ = await self.device_service.mark_callback_deadline_expired(db, device_id=device_id, auto_commit=False)
 
         if session.id is not None:
-            _ = await self.system_outbox_repository.cancel_active_by_session(
+            _ = await self.system_outbox_cancellation_service.cancel_active_by_session(
                 db,
                 session_id=session.id,
                 reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,

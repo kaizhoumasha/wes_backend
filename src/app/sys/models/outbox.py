@@ -260,6 +260,10 @@ class SystemOutboxBase(BaseMixin):
         description="当前或最近一次派发 lease owner token",
     )
     lease_expires_at: datetime | None = Field(default=None, description="当前 DISPATCHING lease 截止时间")
+    dispatch_started_at: datetime | None = Field(
+        default=None,
+        description="当前 attempt 越过本地物理发送边界的时间；用于区分安全回队与送达歧义",
+    )
     last_error: str | None = Field(default=None, sa_column=Column(Text), description="最后错误")
     sent_at: datetime | None = Field(default=None, description="发送时间")
     finished_at: datetime | None = Field(default=None, index=True, description="结束时间")

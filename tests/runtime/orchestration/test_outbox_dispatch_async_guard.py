@@ -22,6 +22,7 @@ from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import
     OutboxDispatchService,
     _escalate_status_precheck_wait_if_needed,
 )
+from src.app.sys.models.outbox import SystemOutboxStatus
 
 
 def _make_blocked_outbox() -> Any:
@@ -210,3 +211,116 @@ def test_outbox_dispatch_service_dispatch_blocked_resource_heads_tolerates_sync_
     # 早退/异常前能进入函数体 — 不抛 TypeError 即视为防御生效
     assert isinstance(processed_device_ids, set)
     assert isinstance(processed_target_codes, set)
+
+
+@pytest.mark.asyncio
+async def test_blocked_resource_head_rechecks_physical_dispatch_fence_after_commits() -> None:
+    outbox = SimpleNamespace(
+        id=201,
+        blocked_device_id=7,
+        device_id=7,
+        target_code="ECS-7",
+        blocked_reason="DEVICE_BUSY",
+        provider_profile_identity="ecs.device-command.v1",
+        operation_identity="device.command",
+        lease_owner_token=None,
+        status=SystemOutboxStatus.RETRY_WAIT,
+    )
+    claimed = SimpleNamespace(**vars(outbox))
+    claimed.status = SystemOutboxStatus.DISPATCHING
+    repo = SimpleNamespace(
+        get_probeable_blocked_device_heads=AsyncMock(return_value=[outbox]),
+        claim_blocked_resource_wait_for_dispatch=AsyncMock(return_value=claimed),
+        begin_physical_dispatch=AsyncMock(return_value=None),
+    )
+    service = OutboxDispatchService()
+    service._probe_blocked_resource_head_ready = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    service._prepare_claimed_blocked_head_dispatch = AsyncMock(  # type: ignore[method-assign]
+        return_value=(SimpleNamespace(), False)
+    )
+    service._dispatch_single = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    db = SimpleNamespace(commit=AsyncMock())
+    result = {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
+
+    await service._dispatch_blocked_resource_heads(
+        db,
+        outbox_repo=repo,
+        limit=1,
+        result=result,
+    )
+
+    repo.begin_physical_dispatch.assert_awaited_once()
+    service._dispatch_single.assert_not_awaited()
+    assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
+
+
+@pytest.mark.asyncio
+async def test_blocked_resource_claim_and_attempt_are_committed_atomically() -> None:
+    outbox = SimpleNamespace(
+        id=202,
+        blocked_device_id=8,
+        device_id=8,
+        target_code="ECS-8",
+        blocked_reason="DEVICE_BUSY",
+        provider_profile_identity="ecs.device-command.v1",
+        operation_identity="device.command",
+        lease_owner_token=None,
+        status=SystemOutboxStatus.RETRY_WAIT,
+    )
+    claimed = SimpleNamespace(**vars(outbox))
+    claimed.status = SystemOutboxStatus.DISPATCHING
+    repo = SimpleNamespace(
+        get_probeable_blocked_device_heads=AsyncMock(return_value=[outbox]),
+        claim_blocked_resource_wait_for_dispatch=AsyncMock(return_value=claimed),
+        begin_physical_dispatch=AsyncMock(return_value=None),
+    )
+    db = SimpleNamespace(commit=AsyncMock())
+
+    async def prepare_claimed(*_args: object, **_kwargs: object) -> tuple[SimpleNamespace, bool]:
+        assert db.commit.await_count == 0
+        await db.commit()
+        return SimpleNamespace(), False
+
+    service = OutboxDispatchService()
+    service._probe_blocked_resource_head_ready = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    service._prepare_claimed_blocked_head_dispatch = AsyncMock(side_effect=prepare_claimed)  # type: ignore[method-assign]
+    service._dispatch_single = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    result = {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
+
+    await service._dispatch_blocked_resource_heads(
+        db,
+        outbox_repo=repo,
+        limit=1,
+        result=result,
+    )
+
+    service._prepare_claimed_blocked_head_dispatch.assert_awaited_once()
+    repo.begin_physical_dispatch.assert_awaited_once()
+    service._dispatch_single.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_blocked_resource_final_safety_guard_keeps_transaction_open_for_send_boundary() -> None:
+    db = SimpleNamespace(commit=AsyncMock())
+    claimed = SimpleNamespace(id=203, workline_id=9)
+    attempt = SimpleNamespace()
+    attempt_service = SimpleNamespace(create_attempt=AsyncMock(return_value=attempt))
+    safety_service = SimpleNamespace(assert_accepting_work=AsyncMock())
+
+    prepared_attempt, blocked = await OutboxDispatchService()._prepare_claimed_blocked_head_dispatch(
+        db,
+        outbox_repo=SimpleNamespace(),
+        claimed=claimed,
+        outbox_id=203,
+        attempt_service=attempt_service,
+        safety_service=safety_service,
+        result={"dispatched": 0, "success": 0, "failed": 0, "skipped": 0},
+        lease_owner_token="blocked-owner-203",
+    )
+
+    assert prepared_attempt is attempt
+    assert blocked is False
+    # claim + attempt 先提交；final safety guard 的 WorkLine 行锁由 caller
+    # 持有到 begin_physical_dispatch 后再一并提交。
+    db.commit.assert_awaited_once()
+    safety_service.assert_accepting_work.assert_awaited_once_with(db, workline_id=9)

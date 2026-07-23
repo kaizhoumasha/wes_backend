@@ -265,24 +265,125 @@ async def test_finished_wms_outbox_recovers_expired_orphan_attempt_with_real_rep
 @pytest.mark.asyncio
 async def test_cancel_active_by_session_treats_retry_wait_as_active() -> None:
     blocked_outbox = SimpleNamespace(
+        id=77,
+        dispatch_key="retry-wait-dispatch",
         status=SystemOutboxStatus.RETRY_WAIT,
         last_error=None,
         finished_at=None,
     )
     db = _CapturingDb([blocked_outbox])
 
-    count = await SystemOutboxRepository().cancel_active_by_session(
+    cancelled = await SystemOutboxRepository().cancel_active_by_session(
         db,
         session_id=7001,
         reason="MANUAL_CANCEL_REQUESTED",
     )
 
     assert db.statement is not None
+    assert db.statement.get_execution_options()["populate_existing"] is True
     assert SystemOutboxStatus.RETRY_WAIT in _compiled_status_values(db.statement)
-    assert count == 1
+    assert len(cancelled) == 1
+    assert cancelled[0].dispatch_key == "retry-wait-dispatch"
+    assert cancelled[0].previous_status is SystemOutboxStatus.RETRY_WAIT
     assert blocked_outbox.status == SystemOutboxStatus.CANCELLED
     assert blocked_outbox.last_error == "MANUAL_CANCEL_REQUESTED"
     assert blocked_outbox.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_active_by_session_seals_unfinished_sent_effect_without_rewriting_transport_status() -> None:
+    sent_outbox = SimpleNamespace(
+        id=78,
+        dispatch_key="sent-awaiting-callback",
+        status=SystemOutboxStatus.SENT,
+        lease_owner_token="completed-sender",
+        lease_expires_at=None,
+        last_error=None,
+        finished_at=None,
+    )
+    db = _CapturingDb([sent_outbox])
+
+    cancelled = await SystemOutboxRepository().cancel_active_by_session(
+        db,
+        session_id=7002,
+        reason="SESSION_CANCELLED",
+    )
+
+    assert db.statement is not None
+    assert SystemOutboxStatus.SENT in _compiled_status_values(db.statement)
+    assert len(cancelled) == 1
+    assert cancelled[0].previous_status is SystemOutboxStatus.SENT
+    assert sent_outbox.status is SystemOutboxStatus.SENT
+    assert sent_outbox.last_error == "SESSION_CANCELLED"
+    assert sent_outbox.finished_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dispatch_started", "expected_outbox_status", "expected_attempt_status"),
+    [
+        (False, SystemOutboxStatus.CANCELLED, DispatchAttemptStatus.CANCELLED),
+        (True, SystemOutboxStatus.UNKNOWN, DispatchAttemptStatus.UNKNOWN),
+    ],
+)
+async def test_cancel_active_by_session_finalizes_dispatching_attempt_in_same_transaction(
+    db_session: Any,
+    dispatch_started: bool,
+    expected_outbox_status: SystemOutboxStatus,
+    expected_attempt_status: DispatchAttemptStatus,
+) -> None:
+    now = timezone.now_for_db()
+    payload = {"event_type": "SESSION_CANCELLED"}
+    canonical = CanonicalPayload.from_projection(payload)
+    binding = frozen_external_http_binding(
+        target_code="WMS",
+        provider_profile_identity="test.cancel-attempt.v1",
+        operation_identity="test.cancel_attempt@v1",
+    )
+    outbox = SystemOutbox(
+        **binding.as_persisted_fields(),
+        session_id=7002,
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="cancel-dispatching-attempt",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json=payload,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        status=SystemOutboxStatus.DISPATCHING,
+        lease_owner_token="cancel-owner",
+        lease_expires_at=now + timedelta(minutes=5),
+        dispatch_started_at=now if dispatch_started else None,
+    )
+    db_session.add(outbox)
+    await db_session.flush()
+    attempt = WorklineDispatchAttempt(
+        outbox_id=outbox.id,
+        dispatch_key=outbox.dispatch_key,
+        attempt_no=1,
+        lease_token="cancel-owner",
+        lease_expires_at=now + timedelta(minutes=5),
+        status=DispatchAttemptStatus.DISPATCHING,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT.value,
+        target_code="WMS",
+        started_at=now,
+    )
+    db_session.add(attempt)
+    await db_session.flush()
+
+    cancelled = await SystemOutboxRepository().cancel_active_by_session(
+        db_session,
+        session_id=7002,
+        reason="SESSION_CANCELLED",
+    )
+    await db_session.flush()
+    await db_session.refresh(attempt)
+
+    assert len(cancelled) == 1
+    await db_session.refresh(outbox)
+    assert outbox.status is expected_outbox_status
+    assert attempt.status is expected_attempt_status
+    assert attempt.finalized_at is not None
+    assert attempt.error_message == "SESSION_CANCELLED"
 
 
 @pytest.mark.asyncio

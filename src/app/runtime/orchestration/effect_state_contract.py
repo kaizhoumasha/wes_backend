@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import json
 from enum import Enum
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Any, TypeVar
 
@@ -23,7 +25,10 @@ class EffectReducerEventType(str, Enum):
     ATTEMPT_STARTED = "ATTEMPT_STARTED"
     TRANSPORT_NOT_SENT = "TRANSPORT_NOT_SENT"
     TRANSPORT_ACCEPTED = "TRANSPORT_ACCEPTED"
+    TRANSPORT_REJECTED = "TRANSPORT_REJECTED"
     TRANSPORT_AMBIGUOUS = "TRANSPORT_AMBIGUOUS"
+    LOCAL_REDECISION_REQUIRED = "LOCAL_REDECISION_REQUIRED"
+    DISPATCH_CANCELLED = "DISPATCH_CANCELLED"
     CALLBACK_ACCEPTED = "CALLBACK_ACCEPTED"
     CALLBACK_COMPLETED = "CALLBACK_COMPLETED"
     CALLBACK_REJECTED = "CALLBACK_REJECTED"
@@ -114,6 +119,7 @@ _ATTEMPT_EVENTS = frozenset(
         EffectReducerEventType.ATTEMPT_STARTED,
         EffectReducerEventType.TRANSPORT_NOT_SENT,
         EffectReducerEventType.TRANSPORT_ACCEPTED,
+        EffectReducerEventType.TRANSPORT_REJECTED,
         EffectReducerEventType.TRANSPORT_AMBIGUOUS,
     }
 )
@@ -186,6 +192,21 @@ def transition_dispatch_attempt(subject: Any, target: DispatchAttemptStatus) -> 
     )
 
 
+def generated_effect_source_event_id(namespace: str, *identity_parts: object) -> str:
+    """为内部生成的 reducer evidence 构造有界、稳定且无拼接歧义的身份。"""
+
+    normalized_namespace = namespace.strip()
+    if not normalized_namespace or len(normalized_namespace) > 120:
+        raise ValueError("effect source event namespace must contain 1..120 characters")
+    material = json.dumps(
+        [normalized_namespace, *identity_parts],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return f"{normalized_namespace}:{sha256(material.encode('utf-8')).hexdigest()}"
+
+
 class EffectReducerEvent(BaseModel):
     """Reducer 输入；冻结事实，不在 Schema 内执行状态归并。"""
 
@@ -225,6 +246,7 @@ __all__ = [
     "EffectReducerEvent",
     "EffectReducerEventType",
     "InvalidEffectTransition",
+    "generated_effect_source_event_id",
     "transition_dispatch_attempt",
     "transition_runtime_intent",
     "transition_system_outbox",

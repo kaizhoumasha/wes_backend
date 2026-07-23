@@ -101,9 +101,16 @@ def _definition(
 
 
 class _EffectRepository:
-    def __init__(self, result: ClaimResult | BaseException, *, success_evidence: object | None = None) -> None:
+    def __init__(
+        self,
+        result: ClaimResult | BaseException,
+        *,
+        success_evidence: object | None = None,
+        claimed_outbox_exists: bool = True,
+    ) -> None:
         self.result = result
         self.success_evidence = success_evidence
+        self.claimed_outbox_exists = claimed_outbox_exists
         self.calls: list[dict[str, Any]] = []
         self.outcomes: list[object] = []
         self.conflict_lookups: list[dict[str, str]] = []
@@ -133,6 +140,10 @@ class _EffectRepository:
     async def get_claimed_intent(self, _db: object, *, claim: dict[str, Any]) -> object:
         self.intent_log.dispatch_key = claim["dispatch_key"]
         return self.intent_log
+
+    async def has_claimed_outbox(self, _db: object, *, claim: dict[str, Any]) -> bool:
+        _ = claim
+        return self.claimed_outbox_exists
 
     async def get_conflicted_intent_for_update(self, _db: object, **identity: str) -> object | None:
         self.conflict_lookups.append(identity)
@@ -391,6 +402,44 @@ async def test_outbox_async_match_replays_durable_acceptance_without_handler_or_
 
 
 @pytest.mark.asyncio
+async def test_outbox_async_match_replays_transport_accepted_intent_without_handler_or_evidence() -> None:
+    definition = _definition(completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _EffectRepository(ClaimResult.MATCH)
+    repository.intent_log.effect_status = RuntimeIntentStatus.ACCEPTED
+    _RecordingHandler.calls.clear()
+
+    replay = await _service(definition, repository).apply(_ctx(), _intent())
+
+    assert isinstance(replay.outcome, Success)
+    assert replay.outcome.payload is None
+    assert replay.durably_accepted is True
+    assert replay.remote_completed is False
+    assert replay.idempotent_replay is True
+    assert replay.evidence is None
+    assert _RecordingHandler.calls == []
+    assert repository.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_outbox_async_proposed_without_outbox_reexecutes_handler_instead_of_replaying_acceptance() -> None:
+    definition = _definition(_StaleHandler, completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _AsyncAcceptedReplayRepository()
+    repository.claimed_outbox_exists = False
+    _StaleHandler.calls = 0
+    _StaleHandler.stale = True
+    service = _service(definition, repository)
+
+    first = await service.apply(_ctx(), _intent())
+    replay = await service.apply(_ctx(), _intent())
+
+    assert isinstance(first.outcome, BusinessReject)
+    assert isinstance(replay.outcome, BusinessReject)
+    assert replay.durably_accepted is False
+    assert replay.idempotent_replay is False
+    assert _StaleHandler.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_outbox_async_retryable_failure_does_not_finalize_intent() -> None:
     definition = _definition(_FailingHandler, completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
     repository = _EffectRepository(ClaimResult.NEW)
@@ -535,6 +584,7 @@ async def test_match_with_invalid_persisted_success_fails_closed() -> None:
             "occurred_at_ms": 1000,
         },
     )
+    repository.intent_log.effect_status = RuntimeIntentStatus.COMPLETED
 
     result = await _service(_definition(), repository).apply(_ctx(), _intent())
 
@@ -980,6 +1030,20 @@ async def test_stale_precondition_remains_business_reject_for_plugin_redecision(
     assert repository.status == "SUCCEEDED"
     redetermination = await repository.list_redecision_evidence(_ctx()["db"], session_id=31, work_item_id=41)
     assert len(redetermination) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_proposed_match_reexecutes_handler_instead_of_treating_evidence_as_corrupt() -> None:
+    repository = _EffectRepository(ClaimResult.MATCH)
+    repository.intent_log.effect_status = RuntimeIntentStatus.PROPOSED
+    _StaleHandler.calls = 0
+    _StaleHandler.stale = False
+
+    result = await _service(_definition(_StaleHandler), repository).apply(_ctx(), _intent())
+
+    assert isinstance(result.outcome, Success)
+    assert result.idempotent_replay is False
+    assert _StaleHandler.calls == 1
 
 
 @pytest.mark.asyncio

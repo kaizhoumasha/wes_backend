@@ -23,6 +23,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
+from src.app.sys.repositories.outbox_repository import ExpiredExternalHttpLeaseFence
 from src.utils.timezone import timezone
 
 
@@ -172,4 +173,46 @@ async def test_callback_completed_outbox_recovers_orphaned_dispatch_attempt_afte
         "outbox_finished": True,
         "sender_crash_recovery": True,
     }
+    bridge.record_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_expired_http_queue_lease_cancels_attempt_without_ambiguous_effect() -> None:
+    now = timezone.now_for_db()
+    attempt = SimpleNamespace(
+        attempt_no=1,
+        status=DispatchAttemptStatus.DISPATCHING,
+        finalized_at=None,
+        error_message=None,
+        response_json={},
+    )
+    fence = ExpiredExternalHttpLeaseFence(
+        outbox_id=41,
+        dispatch_key="queued-before-send",
+        lease_owner_token="worker-old",
+        lease_expires_at=now - timedelta(seconds=1),
+        attempt_no_hint=1,
+        dispatch_started=False,
+    )
+    outbox_repository = SimpleNamespace(
+        fence_expired_external_http_leases=AsyncMock(return_value=(fence,)),
+    )
+    attempt_repository = SimpleNamespace(
+        get_expired_dispatching_for_update=AsyncMock(return_value=attempt),
+        list_expired_dispatching_for_finished_outboxes_for_update=AsyncMock(return_value=()),
+    )
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    db = SimpleNamespace(flush=AsyncMock())
+    service = ExternalHttpLeaseLossService(
+        outbox_repository=outbox_repository,
+        dispatch_attempt_repository=attempt_repository,
+        effect_transport_bridge=bridge,
+    )
+
+    recovered = await service.fence_expired_leases(db, now=now)
+
+    assert recovered == 1
+    assert attempt.status is DispatchAttemptStatus.CANCELLED
+    assert attempt.error_message == "STALE_EXTERNAL_HTTP_QUEUE_LEASE_EXPIRED"
+    assert attempt.response_json["physical_dispatch_started"] is False
     bridge.record_result.assert_not_awaited()

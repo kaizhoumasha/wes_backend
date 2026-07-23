@@ -121,6 +121,7 @@ def test_effect_reducer_and_reconciliation_constraints_on_postgresql() -> None:
                 resolution=RuntimeIntentStatus.REJECTED,
                 reason_code="REMOTE_REJECTED",
                 evidence_json={"ticket": "PG-CASE-1"},
+                source_event_id="resolution-pg-case-1",
             )
             await db.commit()
             await db.refresh(persisted_intent)
@@ -129,12 +130,33 @@ def test_effect_reducer_and_reconciliation_constraints_on_postgresql() -> None:
             assert open_case.status is ReconciliationCaseStatus.RESOLVED
             assert open_case.resolved_at_ms == 1300
 
+            await callback.record(
+                db,
+                dispatch_key=intent.dispatch_key,
+                outcome=EffectCallbackOutcome.REJECTED,
+                occurred_at_ms=1400,
+                source_event_id="callback-rejected-1",
+                evidence_json={"remote_status": "REJECTED"},
+            )
+            await db.commit()
+            persisted_cases = list(
+                (
+                    await db.execute(
+                        select(ReconciliationCase).where(ReconciliationCase.dispatch_key == intent.dispatch_key)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(persisted_cases) == 1
+            assert persisted_cases[0].status is ReconciliationCaseStatus.RESOLVED
+
             duplicate_open = ReconciliationCase(
                 runtime_intent_log_id=intent.id,
                 dispatch_key=intent.dispatch_key,
                 status=ReconciliationCaseStatus.OPEN,
                 reason_code="FIRST_OPEN",
-                opened_at_ms=1400,
+                opened_at_ms=1500,
             )
             db.add(duplicate_open)
             await db.commit()
@@ -144,7 +166,7 @@ def test_effect_reducer_and_reconciliation_constraints_on_postgresql() -> None:
                     dispatch_key=intent.dispatch_key,
                     status=ReconciliationCaseStatus.OPEN,
                     reason_code="SECOND_OPEN",
-                    opened_at_ms=1500,
+                    opened_at_ms=1600,
                 )
             )
             with pytest.raises(IntegrityError):

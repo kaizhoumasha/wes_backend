@@ -27,6 +27,7 @@ from src.app.sys.external_http_dispatch_faults import (
 )
 from src.app.sys.external_http_evidence import (
     ExternalHttpEvidenceRecoveryError,
+    is_late_external_http_result_target,
     recover_external_http_evidence_failure_unknown,
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
@@ -532,12 +533,23 @@ class OutboxDispatchService:
         retry_budget: int,
     ) -> Any | None:
         """按唯一 typed transport result 同步终结 outbox 与 attempt。"""
-        from src.app.sys.external_http_transport import ExternalHttpTransportOutcome
+        from src.app.sys.external_http_transport import (
+            ExternalHttpProtocolResult,
+            ExternalHttpTransportOutcome,
+        )
 
         error = result.error_message or result.error_code or result.outcome.value
         await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_OUTBOX_EVIDENCE, outbox)
         if result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
-            updated = await outbox_repo.mark_as_sent(db, outbox_id, lease_owner_token=lease_owner_token)
+            if result.protocol_result is ExternalHttpProtocolResult.REJECTED:
+                updated = await outbox_repo.mark_as_protocol_rejected(
+                    db,
+                    outbox_id,
+                    error,
+                    lease_owner_token=lease_owner_token,
+                )
+            else:
+                updated = await outbox_repo.mark_as_sent(db, outbox_id, lease_owner_token=lease_owner_token)
         elif result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
             updated = await outbox_repo.mark_as_unknown(
                 db,
@@ -565,6 +577,21 @@ class OutboxDispatchService:
         if updated is None:
             current = await outbox_repo.get_by_id_for_update(db, outbox_id)
             if enum_value(getattr(current, "status", None)) != "SENT":
+                if is_late_external_http_result_target(current) and outbox is not None:
+                    # UNKNOWN 账本保持不可改写；
+                    # 晚到 typed result 仍须补入 open reconciliation case。
+                    await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_REDUCER_EVIDENCE, outbox)
+                    from src.utils.timezone import timezone
+
+                    await self._resolve_effect_transport_bridge().record_result(
+                        db,
+                        dispatch_key=str(outbox.dispatch_key),
+                        attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
+                        result=result,
+                        retry_exhausted=False,
+                        occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+                    )
+                    await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_REDUCER_EVIDENCE, outbox)
                 return None
             # callback 可在 sender 返回前先把 outbox 收口为 SENT；当前 attempt 仍须同步终结。
             updated = current
@@ -634,7 +661,6 @@ class OutboxDispatchService:
             )
             _count_workline_safety_block_result(result, block_state)
             return dispatch_attempt, True
-        await db.commit()
         return dispatch_attempt, False
 
     async def _probe_blocked_resource_head_ready(self, db: Any, outbox: Any) -> bool:
@@ -756,7 +782,6 @@ class OutboxDispatchService:
                     result["skipped"] += 1
                     result["dispatched"] += 1
                     continue
-                await db.commit()
                 dispatch_attempt, blocked_by_safety = await self._prepare_claimed_blocked_head_dispatch(
                     db,
                     outbox_repo=outbox_repo,
@@ -769,6 +794,19 @@ class OutboxDispatchService:
                 )
                 if blocked_by_safety:
                     continue
+                current_outbox = await outbox_repo.begin_physical_dispatch(
+                    db,
+                    outbox_id,
+                    lease_owner_token=lease_owner_token,
+                    lease_seconds=policy.lease_seconds,
+                )
+                if current_outbox is None:
+                    await db.commit()
+                    result["skipped"] += 1
+                    result["dispatched"] += 1
+                    continue
+                await db.commit()
+                claimed = current_outbox
                 success = await self._dispatch_single(db, claimed)
                 if success:
                     sent_outbox = await outbox_repo.mark_as_sent(
@@ -999,47 +1037,26 @@ class OutboxDispatchService:
                             trace=trace,
                             dispatch_attempt=dispatch_attempt,
                             attempt_service=attempt_service,
-                            lease_owner_token=lease_owner_token,
-                        )
-                        _count_workline_safety_block_result(result, block_state)
-                        continue
-                if outbox_workline_id is not None:
-                    try:
-                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
-                    except WorkLineSafetyBlocked as safety_error:
-                        block_state = await _block_outbox_for_workline_safety(
-                            db,
-                            outbox_repo=outbox_repo,
-                            outbox=outbox,
-                            outbox_id=outbox_pk,
-                            safety_error=safety_error,
-                            trace=trace,
-                            dispatch_attempt=dispatch_attempt,
-                            attempt_service=attempt_service,
-                            lease_owner_token=lease_owner_token,
-                        )
-                        _count_workline_safety_block_result(result, block_state)
-                        continue
-                    await db.commit()
-                if outbox_workline_id is not None:
-                    try:
-                        await workline_safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
-                    except WorkLineSafetyBlocked as safety_error:
-                        block_state = await _block_outbox_for_workline_safety(
-                            db,
-                            outbox_repo=outbox_repo,
-                            outbox=outbox,
-                            outbox_id=outbox_pk,
-                            safety_error=safety_error,
-                            trace=trace,
-                            dispatch_attempt=dispatch_attempt,
-                            attempt_service=attempt_service,
                             final_guard=True,
                             lease_owner_token=lease_owner_token,
                         )
                         _count_workline_safety_block_result(result, block_state)
                         continue
+                current_outbox = await outbox_repo.begin_physical_dispatch(
+                    db,
+                    outbox_pk,
+                    lease_owner_token=lease_owner_token,
+                    lease_seconds=claim.policy.lease_seconds,
+                )
+                if current_outbox is None:
                     await db.commit()
+                    result["skipped"] += 1
+                    result["dispatched"] += 1
+                    continue
+                outbox = current_outbox
+                trace = TraceContext.from_runtime(outbox=outbox)
+                # 释放发送边界事务的行锁，typed callback 可在 sender response 前完成。
+                await db.commit()
                 # 派发消息
                 dispatch_result = await self._dispatch_single(db, outbox)
                 from src.app.sys.external_http_transport import (

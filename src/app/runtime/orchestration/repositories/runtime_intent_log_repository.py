@@ -209,6 +209,31 @@ class RuntimeIntentLogRepository:
             idempotency_key=claim["idempotency_key"],
         )
 
+    async def has_claimed_outbox(self, db: Any, *, claim: dict[str, Any]) -> bool:
+        """确认 provisional intent 已拥有同 dispatch key 的 durable outbox。"""
+
+        from src.app.sys.models.outbox import SystemOutbox
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        from src.app.sys.models.outbox import SystemOutboxStatus
+
+        result = await db.execute(
+            select(columns.id)
+            .where(
+                columns.dispatch_key == claim["dispatch_key"],
+                columns.status.in_(
+                    {
+                        SystemOutboxStatus.NEW,
+                        SystemOutboxStatus.DISPATCHING,
+                        SystemOutboxStatus.RETRY_WAIT,
+                        SystemOutboxStatus.SENT,
+                    }
+                ),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def get_conflicted_intent_for_update(
         self,
         db: Any,

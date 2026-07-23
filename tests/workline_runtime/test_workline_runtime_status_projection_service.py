@@ -54,8 +54,15 @@ class _RuntimeStatusProjectionSpy:
             active_safety_incident_id=None,
         )
 
-    async def assert_accepting_runtime_work(self, _db, *, workline_id, blocked_error=RuntimeError):
-        self.accepting_calls.append((workline_id, blocked_error))
+    async def assert_accepting_runtime_work(
+        self,
+        _db,
+        *,
+        workline_id,
+        blocked_error=RuntimeError,
+        populate_existing=False,
+    ):
+        self.accepting_calls.append((workline_id, blocked_error, populate_existing))
 
     async def project_estopped_active_hold(self, _db, *, workline_id, reason, **kwargs):
         self.estop_calls.append((workline_id, reason, kwargs))
@@ -73,8 +80,8 @@ class _ProjectionRepository:
         self.ensure_calls = []
         self.upsert_calls = []
 
-    async def get_by_workline_id(self, _db, workline_id, *, for_update=False):
-        self.get_calls.append((workline_id, for_update))
+    async def get_by_workline_id(self, _db, workline_id, *, for_update=False, populate_existing=False):
+        self.get_calls.append((workline_id, for_update, populate_existing))
         return self.rows.get(workline_id)
 
     async def list_by_workline_ids(self, _db, workline_ids):
@@ -187,13 +194,18 @@ async def test_projection_snapshot_missing_row_is_explicit_and_read_only():
     repository = _ProjectionRepository()
     projection = WorkLineRuntimeStatusProjectionService(repository=repository)
 
-    snapshot = await projection.runtime_status_snapshot(object(), workline_id=45)
+    snapshot = await projection.runtime_status_snapshot(
+        object(),
+        workline_id=45,
+        populate_existing=True,
+    )
 
     assert snapshot.runtime_status is None
     assert snapshot.source == "runtime/orchestration:missing"
     assert snapshot.active_safety_incident_id is None
     assert repository.ensure_calls == []
     assert repository.upsert_calls == []
+    assert repository.get_calls == [(45, False, True)]
     with pytest.raises(RuntimeError, match="WORKLINE_UNKNOWN"):
         await projection.assert_accepting_runtime_work(object(), workline_id=45)
 
@@ -406,7 +418,7 @@ async def test_safety_estop_uses_compat_projection_service():
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=workline)),
         incident_repository=SimpleNamespace(get_active_for_workline=AsyncMock(return_value=None)),
         session_repository=SimpleNamespace(fail_open_by_workline=AsyncMock(return_value=0)),
-        system_outbox_repository=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
+        system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
         command_repository=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
         device_service=SimpleNamespace(mark_workline_safety_error=AsyncMock(return_value=0)),
         runtime_hold_creation_service=SimpleNamespace(
@@ -448,7 +460,7 @@ async def test_repeated_safety_estop_reuses_active_incident():
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=45))),
         incident_repository=incident_repository,
         session_repository=SimpleNamespace(fail_open_by_workline=AsyncMock(return_value=0)),
-        system_outbox_repository=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
+        system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
         command_repository=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
         device_service=SimpleNamespace(mark_workline_safety_error=AsyncMock(return_value=0)),
         runtime_hold_creation_service=SimpleNamespace(
@@ -479,18 +491,27 @@ async def test_safety_assert_accepting_work_delegates_runtime_projection_service
             assert workline_id == 45
             lock_order.append("shared")
 
-        async def get_for_update(self, _db, workline_id: int):
+        async def get_for_update(self, _db, workline_id: int, *, populate_existing: bool = False):
             assert workline_id == 45
+            assert populate_existing is True
             lock_order.append("row")
             return workline
 
     class Projection(_RuntimeStatusProjectionSpy):
-        async def assert_accepting_runtime_work(self, _db, *, workline_id, blocked_error=RuntimeError):
+        async def assert_accepting_runtime_work(
+            self,
+            _db,
+            *,
+            workline_id,
+            blocked_error=RuntimeError,
+            populate_existing=False,
+        ):
             lock_order.append("projection")
             await super().assert_accepting_runtime_work(
                 _db,
                 workline_id=workline_id,
                 blocked_error=blocked_error,
+                populate_existing=populate_existing,
             )
 
     projection = Projection()
@@ -504,6 +525,7 @@ async def test_safety_assert_accepting_work_delegates_runtime_projection_service
     assert len(projection.accepting_calls) == 1
     assert projection.accepting_calls[0][0] == 45
     assert projection.accepting_calls[0][1].__name__ == "WorkLineSafetyBlocked"
+    assert projection.accepting_calls[0][2] is True
     assert lock_order == ["shared", "row", "projection"]
 
 
@@ -572,7 +594,7 @@ async def test_dispatch_ack_exhausted_uses_projection_without_overwriting_estop(
     service = WorklineRuntimeReconciliationService(
         session_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=session)),
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=workline)),
-        system_outbox_repository=SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0)),
+        system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0)),
         device_service=SimpleNamespace(
             mark_dispatch_ack_exhausted=AsyncMock(return_value=None),
             mark_callback_deadline_expired=AsyncMock(return_value=None),

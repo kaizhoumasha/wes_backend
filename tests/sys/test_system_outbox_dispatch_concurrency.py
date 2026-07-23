@@ -38,8 +38,8 @@ class _Repository:
         self.claims: list[dict[str, Any]] = []
         self.claim_sequence = 0
 
-    async def fence_expired_external_http_leases(self, _db: object, **_kwargs: Any) -> int:
-        return self.expired_http_lease_count
+    async def fence_expired_external_http_leases(self, _db: object, **_kwargs: Any) -> tuple[()]:
+        return ()
 
     async def fence_exhausted_non_http_leases_in_bucket(self, _db: object, **_kwargs: Any) -> tuple[()]:
         return ()
@@ -90,6 +90,10 @@ def _types() -> tuple[Any, Any, Any, Any]:
     )
 
 
+def _no_http_lease_loss_service() -> SimpleNamespace:
+    return SimpleNamespace(fence_expired_leases=AsyncMock(return_value=0))
+
+
 def test_bucket_policy_rejects_unbounded_or_invalid_limits() -> None:
     _key_type, policy_type, _state_type, _registry_type = _types()
 
@@ -123,7 +127,10 @@ async def test_rate_limited_bucket_does_not_starve_another_bucket() -> None:
         policies={limited: policy_type(max_concurrency=2, rate_limit=2, batch_size=2)},
     )
     scheduler = module.FairDispatchScheduler(
-        repository=repository, policy_registry=registry, worker_identity="worker-a"
+        repository=repository,
+        policy_registry=registry,
+        worker_identity="worker-a",
+        expired_http_lease_loss_service=_no_http_lease_loss_service(),
     )
 
     batch = await scheduler.claim(object(), limit=2, now=now)
@@ -184,7 +191,10 @@ async def test_round_robin_cursor_rotates_first_bucket_across_calls() -> None:
     )
     registry = registry_type(default_policy=policy_type(max_concurrency=2, rate_limit=10, batch_size=2))
     scheduler = module.FairDispatchScheduler(
-        repository=repository, policy_registry=registry, worker_identity="worker-b"
+        repository=repository,
+        policy_registry=registry,
+        worker_identity="worker-b",
+        expired_http_lease_loss_service=_no_http_lease_loss_service(),
     )
 
     first_batch = await scheduler.claim(object(), limit=1, now=now)
@@ -223,7 +233,10 @@ async def test_concurrency_batch_pause_and_retry_budget_bound_prefetch() -> None
         paused_buckets={paused_bucket},
     )
     scheduler = module.FairDispatchScheduler(
-        repository=repository, policy_registry=registry, worker_identity="worker-c"
+        repository=repository,
+        policy_registry=registry,
+        worker_identity="worker-c",
+        expired_http_lease_loss_service=_no_http_lease_loss_service(),
     )
 
     batch = await scheduler.claim(object(), limit=50, now=now)
@@ -249,6 +262,7 @@ async def test_bucket_lock_contention_preserves_backlog_and_reports_metric() -> 
         repository=repository,
         policy_registry=registry_type(default_policy=policy_type()),
         worker_identity="worker-d",
+        expired_http_lease_loss_service=_no_http_lease_loss_service(),
     )
 
     batch = await scheduler.claim(object(), limit=4, now=now)
@@ -273,6 +287,9 @@ async def test_claim_metrics_report_expired_http_and_reclaimable_lease_loss() ->
         repository=repository,
         policy_registry=registry_type(default_policy=policy_type()),
         worker_identity="worker-lease-loss",
+        expired_http_lease_loss_service=SimpleNamespace(
+            fence_expired_leases=AsyncMock(return_value=repository.expired_http_lease_count)
+        ),
     )
 
     batch = await scheduler.claim(object(), limit=1, now=now)
@@ -348,6 +365,47 @@ async def test_outbox_terminal_write_requires_matching_unexpired_owner(db_sessio
 
 
 @pytest.mark.asyncio
+async def test_protocol_rejected_outbox_preserves_sent_fact_and_releases_resource_claim(db_session: Any) -> None:
+    repository = SystemOutboxRepository()
+    owner = "worker-a:protocol-rejected"
+    canonical = CanonicalPayload.from_projection({"request_id": "protocol-rejected"})
+    binding = frozen_external_http_binding(
+        target_code="WMS_CONFIRM_INBOUND",
+        provider_profile_identity="wms.profile-a",
+        operation_identity="inventory.confirm",
+    )
+    outbox = SystemOutbox(
+        **binding.as_persisted_fields(),
+        operation_domain="WMS_INVENTORY",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="protocol-rejected",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json={"request_id": "protocol-rejected"},
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        status=SystemOutboxStatus.DISPATCHING,
+        lease_owner_token=owner,
+        lease_expires_at=timezone.now_for_db() + timedelta(minutes=5),
+    )
+    db_session.add(outbox)
+    await db_session.flush()
+
+    updated = await repository.mark_as_protocol_rejected(
+        db_session,
+        outbox.id,
+        "HTTP_REJECTED",
+        lease_owner_token=owner,
+    )
+
+    assert updated is outbox
+    assert getattr(outbox.status, "value", outbox.status) == SystemOutboxStatus.SENT.value
+    assert outbox.sent_at is not None
+    assert outbox.finished_at is not None
+    assert outbox.last_error == "HTTP_REJECTED"
+    assert outbox.lease_expires_at is None
+
+
+@pytest.mark.asyncio
 async def test_expired_owner_is_fenced_even_before_a_new_worker_steals_lease(db_session: Any) -> None:
     repository = SystemOutboxRepository()
     owner = "worker-a:lease-expired"
@@ -381,6 +439,7 @@ async def test_expired_external_http_lease_is_quarantined_without_reclaim(db_ses
         status=SystemOutboxStatus.DISPATCHING,
         lease_owner_token="worker-old:http-expired",
         lease_expires_at=timezone.now_for_db() - timedelta(seconds=1),
+        dispatch_started_at=timezone.now_for_db() - timedelta(minutes=1),
     )
     db_session.add(outbox)
     await db_session.flush()
@@ -398,3 +457,82 @@ async def test_expired_external_http_lease_is_quarantined_without_reclaim(db_ses
     assert outbox.lease_expires_at is None
     assert outbox.next_retry_at is None
     assert "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED" in str(outbox.last_error)
+
+
+@pytest.mark.asyncio
+async def test_expired_external_http_queue_lease_is_safely_requeued_before_send(db_session: Any) -> None:
+    repository = SystemOutboxRepository()
+    canonical = CanonicalPayload.from_projection({"request_id": "http-queued-expired"})
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS_CONFIRM_INBOUND",
+        provider_profile_identity="wms.profile-a",
+        operation_identity="inventory.confirm",
+    )
+    outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
+        operation_domain="WMS_INVENTORY",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="http-queued-expired",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json={"request_id": "http-queued-expired"},
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        status=SystemOutboxStatus.DISPATCHING,
+        lease_owner_token="worker-old:http-queued-expired",
+        lease_expires_at=timezone.now_for_db() - timedelta(seconds=1),
+        dispatch_started_at=None,
+    )
+    db_session.add(outbox)
+    await db_session.flush()
+
+    fenced = await repository.fence_expired_external_http_leases(
+        db_session,
+        now=timezone.now_for_db(),
+        operation_domains=("WMS_INVENTORY",),
+    )
+
+    assert len(fenced) == 1
+    assert fenced[0].dispatch_started is False
+    await db_session.refresh(outbox)
+    assert outbox.status is SystemOutboxStatus.RETRY_WAIT
+    assert outbox.lease_expires_at is None
+    assert outbox.next_retry_at is not None
+    assert outbox.finished_at is None
+    assert "QUEUE_LEASE_EXPIRED" in str(outbox.last_error)
+
+
+@pytest.mark.asyncio
+async def test_begin_physical_dispatch_renews_an_expired_queued_lease(db_session: Any) -> None:
+    from src.app.effect_ledger_status import DispatchAttemptStatus
+    from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
+
+    repository = SystemOutboxRepository()
+    owner = "worker-a:queued-expired"
+    outbox = _leased_outbox(owner=owner, expires_at=timezone.now_for_db() - timedelta(seconds=1))
+    db_session.add(outbox)
+    await db_session.flush()
+    attempt = WorklineDispatchAttempt(
+        outbox_id=outbox.id,
+        dispatch_key=outbox.dispatch_key,
+        attempt_no=1,
+        lease_token=owner,
+        lease_expires_at=outbox.lease_expires_at,
+        status=DispatchAttemptStatus.DISPATCHING,
+        target_type=SystemOutboxTargetType.DEVICE.value,
+        target_code=outbox.target_code,
+        started_at=timezone.now_for_db() - timedelta(minutes=1),
+    )
+    db_session.add(attempt)
+    await db_session.flush()
+
+    started = await repository.begin_physical_dispatch(
+        db_session,
+        outbox.id,
+        lease_owner_token=owner,
+        lease_seconds=30,
+    )
+
+    assert started is outbox
+    assert outbox.dispatch_started_at is not None
+    assert outbox.lease_expires_at > outbox.dispatch_started_at
+    assert attempt.lease_expires_at == outbox.lease_expires_at

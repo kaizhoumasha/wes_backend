@@ -573,9 +573,11 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
     )
     session_id = resolve_entity_id(session)
     if should_cancel_pending_outboxes and session_id is not None:
-        from src.app.sys.repositories import SystemOutboxRepository
+        from src.app.runtime.orchestration.services.system_outbox_cancellation_service import (
+            system_outbox_cancellation_service,
+        )
 
-        _ = await SystemOutboxRepository().cancel_active_by_session(
+        _ = await system_outbox_cancellation_service.cancel_active_by_session(
             ctx["db"],
             session_id=session_id,
             reason=failure.code,

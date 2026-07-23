@@ -140,7 +140,7 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     )
     cancel_outbox = AsyncMock(return_value=0)
     monkeypatch.setattr(
-        workline_runtime_reconciliation_service.system_outbox_repository,
+        workline_runtime_reconciliation_service.system_outbox_cancellation_service,
         "cancel_active_by_session",
         cancel_outbox,
     )

@@ -39,6 +39,7 @@ try:
         EffectIntentNotFound,
         EffectReducer,
         InvalidReconciliationEvent,
+        ReconciliationEvidenceConflict,
     )
 except ImportError as exc:
     _T8D_IMPORT_ERROR: ImportError | None = exc
@@ -118,6 +119,7 @@ def _event(
         EffectReducerEventType.ATTEMPT_STARTED,
         EffectReducerEventType.TRANSPORT_NOT_SENT,
         EffectReducerEventType.TRANSPORT_ACCEPTED,
+        EffectReducerEventType.TRANSPORT_REJECTED,
         EffectReducerEventType.TRANSPORT_AMBIGUOUS,
     }:
         kwargs["attempt_no"] = 1
@@ -137,8 +139,21 @@ def _event(
             RuntimeIntentStatus.TECHNICAL_FAILED,
         ),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_ACCEPTED, False, RuntimeIntentStatus.ACCEPTED),
+        (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_REJECTED, False, RuntimeIntentStatus.REJECTED),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
         (RuntimeIntentStatus.ACCEPTED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
+        (
+            RuntimeIntentStatus.PROPOSED,
+            EffectReducerEventType.LOCAL_REDECISION_REQUIRED,
+            False,
+            RuntimeIntentStatus.PROPOSED,
+        ),
+        (
+            RuntimeIntentStatus.PROPOSED,
+            EffectReducerEventType.DISPATCH_CANCELLED,
+            False,
+            RuntimeIntentStatus.RECONCILING,
+        ),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.CALLBACK_ACCEPTED, False, RuntimeIntentStatus.ACCEPTED),
         (RuntimeIntentStatus.UNKNOWN, EffectReducerEventType.CALLBACK_ACCEPTED, False, RuntimeIntentStatus.ACCEPTED),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.CALLBACK_COMPLETED, False, RuntimeIntentStatus.COMPLETED),
@@ -242,6 +257,72 @@ async def test_callback_before_transport_response_keeps_completed_terminal() -> 
         EffectReducerEventType.CALLBACK_COMPLETED.value,
         EffectReducerEventType.TRANSPORT_ACCEPTED.value,
     ]
+
+
+@pytest.mark.asyncio
+async def test_callback_completed_before_transport_rejected_opens_contradiction_case() -> None:
+    repository = _ReducerRepository()
+    reducer = EffectReducer(repository=repository)
+
+    await reducer.reduce(_Db(), _event(EffectReducerEventType.CALLBACK_COMPLETED))
+    contradiction = await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.TRANSPORT_REJECTED, occurred_at_ms=1001),
+    )
+
+    assert contradiction is not None and contradiction.contradiction is True
+    assert contradiction.case_created is True
+    assert repository.intent.effect_status is RuntimeIntentStatus.COMPLETED
+    assert repository.cases[0].status is ReconciliationCaseStatus.OPEN
+
+
+@pytest.mark.asyncio
+async def test_callback_rejected_before_transport_accepted_is_not_a_contradiction() -> None:
+    repository = _ReducerRepository()
+    reducer = EffectReducer(repository=repository)
+
+    await reducer.reduce(_Db(), _event(EffectReducerEventType.CALLBACK_REJECTED))
+    transport = await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.TRANSPORT_ACCEPTED, occurred_at_ms=1001),
+    )
+
+    assert transport is not None and transport.contradiction is False
+    assert transport.case_created is False
+    assert repository.intent.effect_status is RuntimeIntentStatus.REJECTED
+    assert repository.cases == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cancellation_enters_reconciling_and_opens_case() -> None:
+    repository = _ReducerRepository()
+
+    result = await EffectReducer(repository=repository).reduce(
+        _Db(),
+        _event(EffectReducerEventType.DISPATCH_CANCELLED, reason_code="OUTBOX_CANCELLED"),
+    )
+
+    assert result is not None
+    assert result.intent_status is RuntimeIntentStatus.RECONCILING
+    assert result.case_created is True
+    assert repository.cases[0].status is ReconciliationCaseStatus.OPEN
+
+
+@pytest.mark.asyncio
+async def test_transport_rejected_before_callback_completed_opens_same_contradiction_case() -> None:
+    repository = _ReducerRepository()
+    reducer = EffectReducer(repository=repository)
+
+    await reducer.reduce(_Db(), _event(EffectReducerEventType.TRANSPORT_REJECTED))
+    contradiction = await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.CALLBACK_COMPLETED, occurred_at_ms=1001),
+    )
+
+    assert contradiction is not None and contradiction.contradiction is True
+    assert contradiction.case_created is True
+    assert repository.intent.effect_status is RuntimeIntentStatus.REJECTED
+    assert repository.cases[0].status is ReconciliationCaseStatus.OPEN
 
 
 @pytest.mark.asyncio
@@ -403,6 +484,36 @@ async def test_duplicate_and_contradictory_callbacks_append_evidence_without_ter
 
 
 @pytest.mark.asyncio
+async def test_resolved_contradictory_callback_replay_does_not_reopen_case() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.COMPLETED)
+    reducer = EffectReducer(repository=repository)
+    callback = _event(EffectReducerEventType.CALLBACK_REJECTED, occurred_at_ms=1000).model_copy(
+        update={"source_event_id": "callback-rejected-1"}
+    )
+
+    await reducer.reduce(_Db(), callback)
+    await reducer.reduce(
+        _Db(),
+        _event(
+            EffectReducerEventType.RECONCILIATION_RESOLVED,
+            occurred_at_ms=1100,
+            resolution=RuntimeIntentStatus.COMPLETED,
+            reason_code="KEEP_COMPLETED",
+        ),
+    )
+    case_history_size = len(repository.cases[0].evidence_history_json)
+    intent_history_size = len(repository.intent.outcome_history_json)
+
+    replay = await reducer.reduce(_Db(), callback.model_copy(update={"occurred_at_ms": 1200}))
+
+    assert replay is not None and replay.state_changed is False
+    assert replay.case_status is ReconciliationCaseStatus.RESOLVED
+    assert len(repository.cases) == 1
+    assert len(repository.cases[0].evidence_history_json) == case_history_size
+    assert len(repository.intent.outcome_history_json) == intent_history_size
+
+
+@pytest.mark.asyncio
 async def test_open_case_blocks_ordinary_callback_until_explicit_resolution() -> None:
     _require_t8d()
     repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
@@ -435,6 +546,32 @@ async def test_open_case_blocks_ordinary_callback_until_explicit_resolution() ->
 
 
 @pytest.mark.asyncio
+async def test_open_case_transport_evidence_replay_is_idempotent_and_conflict_is_rejected() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
+    reducer = EffectReducer(repository=repository)
+    await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.RECONCILIATION_OPENED, reason_code="TRANSPORT_AMBIGUOUS"),
+    )
+    transport = _event(EffectReducerEventType.TRANSPORT_AMBIGUOUS, occurred_at_ms=1100).model_copy(
+        update={"source_event_id": "transport:stable", "evidence_json": {"fact": "READ_TIMEOUT"}}
+    )
+
+    await reducer.reduce(_Db(), transport)
+    case_history_size = len(repository.cases[0].evidence_history_json)
+    intent_history_size = len(repository.intent.outcome_history_json)
+    replay = await reducer.reduce(_Db(), transport.model_copy(update={"occurred_at_ms": 1200}))
+
+    assert replay is not None and replay.state_changed is False
+    assert len(repository.cases[0].evidence_history_json) == case_history_size
+    assert len(repository.intent.outcome_history_json) == intent_history_size
+
+    conflicting = transport.model_copy(update={"evidence_json": {"fact": "LEASE_EXPIRED"}})
+    with pytest.raises(ReconciliationEvidenceConflict):
+        await reducer.reduce(_Db(), conflicting)
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_resolution_requires_an_open_case() -> None:
     _require_t8d()
 
@@ -446,6 +583,50 @@ async def test_reconciliation_resolution_requires_an_open_case() -> None:
                 resolution=RuntimeIntentStatus.COMPLETED,
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_idempotency_conflict_enters_reconciling_before_resolution() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.PROPOSED)
+    reducer = EffectReducer(repository=repository)
+
+    opened = await reducer.reduce(_Db(), _event(EffectReducerEventType.IDEMPOTENCY_CONFLICT))
+    resolved = await reducer.reduce(
+        _Db(),
+        _event(
+            EffectReducerEventType.RECONCILIATION_RESOLVED,
+            occurred_at_ms=1200,
+            resolution=RuntimeIntentStatus.REJECTED,
+        ),
+    )
+
+    assert opened is not None and opened.intent_status is RuntimeIntentStatus.RECONCILING
+    assert resolved is not None and resolved.intent_status is RuntimeIntentStatus.REJECTED
+    assert repository.cases[0].status is ReconciliationCaseStatus.RESOLVED
+
+
+@pytest.mark.asyncio
+async def test_resolved_idempotency_conflict_opening_event_replay_does_not_create_new_case() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.PROPOSED)
+    reducer = EffectReducer(repository=repository)
+    conflict = _event(EffectReducerEventType.IDEMPOTENCY_CONFLICT)
+
+    await reducer.reduce(_Db(), conflict)
+    await reducer.reduce(
+        _Db(),
+        _event(
+            EffectReducerEventType.RECONCILIATION_RESOLVED,
+            occurred_at_ms=1200,
+            resolution=RuntimeIntentStatus.REJECTED,
+        ),
+    )
+    replay = await reducer.reduce(_Db(), conflict)
+
+    assert replay is not None
+    assert replay.intent_status is RuntimeIntentStatus.REJECTED
+    assert replay.case_status is ReconciliationCaseStatus.RESOLVED
+    assert replay.case_created is False
+    assert len(repository.cases) == 1
 
 
 @pytest.mark.asyncio
@@ -606,6 +787,15 @@ class _RecordingReducer:
             [EffectReducerEventType.TRANSPORT_ACCEPTED],
         ),
         (
+            ExternalHttpTransportResult.accepted(
+                http_status_code=409,
+                protocol_result=ExternalHttpProtocolResult.REJECTED,
+                error_code="HTTP_REJECTED",
+            ),
+            False,
+            [EffectReducerEventType.TRANSPORT_REJECTED],
+        ),
+        (
             ExternalHttpTransportResult.ambiguous(
                 phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
                 error_code="READ_TIMEOUT",
@@ -639,6 +829,72 @@ async def test_transport_bridge_maps_typed_result_without_marking_sent_as_comple
     assert [event.event_type for event in reducer.events] == expected_events
     assert EffectReducerEventType.CALLBACK_COMPLETED not in expected_events
     assert reducer.require_intent == [False] * len(expected_events)
+
+
+@pytest.mark.asyncio
+async def test_generated_transport_source_event_ids_are_bounded_for_max_dispatch_key() -> None:
+    reducer = _RecordingReducer()
+    dispatch_key = "d" * 240
+
+    await EffectTransportBridge(reducer=reducer).record_result(
+        _Db(),
+        dispatch_key=dispatch_key,
+        attempt_no=1,
+        result=ExternalHttpTransportResult.ambiguous(
+            phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
+            error_code="READ_TIMEOUT",
+        ),
+        retry_exhausted=False,
+        occurred_at_ms=1300,
+    )
+
+    assert len(reducer.events) == 2
+    assert all(event.source_event_id is not None and len(event.source_event_id) <= 240 for event in reducer.events)
+    assert reducer.events[0].source_event_id != reducer.events[1].source_event_id
+
+
+@pytest.mark.asyncio
+async def test_transport_source_event_id_is_evidence_specific_and_replay_stable() -> None:
+    first_reducer = _RecordingReducer()
+    replay_reducer = _RecordingReducer()
+    synthetic = ExternalHttpTransportResult.ambiguous(
+        phase=ExternalHttpTransportPhase.SENDING,
+        error_code="EXTERNAL_HTTP_LEASE_EXPIRED",
+    )
+    late_result = ExternalHttpTransportResult.ambiguous(
+        phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
+        error_code="READ_TIMEOUT",
+    )
+    bridge = EffectTransportBridge(reducer=first_reducer)
+
+    await bridge.record_result(
+        _Db(),
+        dispatch_key="dispatch-1",
+        attempt_no=2,
+        result=synthetic,
+        retry_exhausted=False,
+        occurred_at_ms=1300,
+    )
+    await bridge.record_result(
+        _Db(),
+        dispatch_key="dispatch-1",
+        attempt_no=2,
+        result=late_result,
+        retry_exhausted=False,
+        occurred_at_ms=1400,
+    )
+    await EffectTransportBridge(reducer=replay_reducer).record_result(
+        _Db(),
+        dispatch_key="dispatch-1",
+        attempt_no=2,
+        result=late_result,
+        retry_exhausted=False,
+        occurred_at_ms=1500,
+    )
+
+    assert first_reducer.events[0].source_event_id != first_reducer.events[2].source_event_id
+    assert first_reducer.events[2].source_event_id == replay_reducer.events[0].source_event_id
+    assert first_reducer.events[3].source_event_id == replay_reducer.events[1].source_event_id
 
 
 @pytest.mark.asyncio
@@ -727,7 +983,7 @@ def test_runtime_intent_semantic_status_has_no_writer_outside_the_unique_reducer
     ("outcome_kind", "expected_event"),
     [
         ("success", EffectReducerEventType.CALLBACK_COMPLETED),
-        ("business_reject", EffectReducerEventType.CALLBACK_REJECTED),
+        ("business_reject", EffectReducerEventType.LOCAL_REDECISION_REQUIRED),
         ("retryable_failure", EffectReducerEventType.TRANSPORT_NOT_SENT),
         ("contract_violation", EffectReducerEventType.TRANSPORT_NOT_SENT),
     ],
@@ -765,7 +1021,38 @@ async def test_local_transactional_outcome_also_uses_the_unique_reducer(
     assert [event.event_type for event in reducer.events] == [expected_event]
     if expected_event is EffectReducerEventType.TRANSPORT_NOT_SENT:
         assert reducer.events[0].attempt_no == 1
-        assert reducer.events[0].retry_exhausted is True
+        assert reducer.events[0].retry_exhausted is (outcome_kind == "contract_violation")
+
+
+@pytest.mark.asyncio
+async def test_local_effect_generated_source_event_id_is_bounded_for_max_dispatch_key() -> None:
+    reducer = _RecordingReducer()
+    service = SystemCapabilityIntentService(
+        definitions={},
+        plugin_definitions={},
+        plugin_index_digest="d" * 64,
+        effect_repository=object(),
+        effect_reducer=reducer,
+    )
+    evidence_dict = {
+        "outcome_kind": "success",
+        "outcome_code": "SUCCESS",
+        "occurred_at_ms": 1700,
+    }
+    evidence = SimpleNamespace(
+        **evidence_dict,
+        model_dump=lambda **_kwargs: dict(evidence_dict),
+    )
+
+    await service.record_outcome(
+        {"db": _Db()},
+        prepared=SimpleNamespace(claim={"dispatch_key": "d" * 240}),
+        evidence=evidence,
+    )
+
+    assert len(reducer.events) == 1
+    assert reducer.events[0].source_event_id is not None
+    assert len(reducer.events[0].source_event_id) <= 240
 
 
 @pytest.mark.asyncio
@@ -806,6 +1093,50 @@ async def test_workline_transport_finalization_records_reducer_event_before_comm
     assert call.kwargs["attempt_no"] == 3
     assert call.kwargs["result"] is result
     assert call.kwargs["retry_exhausted"] is False
+
+
+@pytest.mark.asyncio
+async def test_workline_protocol_rejection_finishes_sent_outbox_with_rejection_reason() -> None:
+    from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import OutboxDispatchService
+
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    service = OutboxDispatchService(effect_transport_bridge=bridge)
+    outbox = SimpleNamespace(dispatch_key="dispatch-rejected")
+    updated = SimpleNamespace(status="SENT", finished_at=object(), last_error="HTTP_REJECTED")
+    outbox_repository = SimpleNamespace(
+        mark_as_sent=AsyncMock(),
+        mark_as_protocol_rejected=AsyncMock(return_value=updated),
+    )
+    attempt = SimpleNamespace(attempt_no=3)
+    attempt_service = SimpleNamespace(finalize_external_http_attempt_record=AsyncMock(return_value=attempt))
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=409,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        error_code="HTTP_REJECTED",
+    )
+    db = _Db()
+
+    finalized = await service._finalize_external_http_result(
+        db,
+        outbox_repo=outbox_repository,
+        outbox=outbox,
+        outbox_id=1,
+        dispatch_attempt=attempt,
+        attempt_service=attempt_service,
+        result=result,
+        lease_owner_token="worker-1",
+        retry_budget=3,
+    )
+
+    assert finalized is updated
+    outbox_repository.mark_as_protocol_rejected.assert_awaited_once_with(
+        db,
+        1,
+        "HTTP_REJECTED",
+        lease_owner_token="worker-1",
+    )
+    outbox_repository.mark_as_sent.assert_not_awaited()
+    bridge.record_result.assert_awaited_once()
 
 
 @pytest.mark.asyncio

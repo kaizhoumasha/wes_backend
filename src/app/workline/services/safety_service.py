@@ -14,7 +14,6 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import R
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
-from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.app.workline.repositories.safety_incident_repository import WorklineSafetyIncidentRepository
 from src.core.logger import logger
@@ -122,7 +121,7 @@ class WorkLineSafetyService:
         workline_repository: WorkLineRepository | None = None,
         incident_repository: WorklineSafetyIncidentRepository | None = None,
         session_repository: WorklineSessionRepository | None = None,
-        system_outbox_repository: SystemOutboxRepository | None = None,
+        system_outbox_cancellation_service: Any | None = None,
         command_repository: DeviceCommandRepository | None = None,
         device_service: DeviceService | None = None,
         runtime_hold_creation_service: Any | None = None,
@@ -135,7 +134,13 @@ class WorkLineSafetyService:
         self.workline_repository = workline_repository or default_workline_repository
         self.incident_repository = incident_repository or WorklineSafetyIncidentRepository()
         self.session_repository = session_repository or WorklineSessionRepository()
-        self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()
+        if system_outbox_cancellation_service is None:
+            from src.app.runtime.orchestration.services.system_outbox_cancellation_service import (
+                system_outbox_cancellation_service as default_outbox_cancellation_service,
+            )
+
+            system_outbox_cancellation_service = default_outbox_cancellation_service
+        self.system_outbox_cancellation_service = system_outbox_cancellation_service
         self.command_repository = command_repository or DeviceCommandRepository()
         if device_service is None:
             from src.app.device.services.device_service import DeviceService
@@ -171,13 +176,14 @@ class WorkLineSafetyService:
         # 与 activation/deactivation 统一 advisory → row lock 顺序，避免新 Session
         # 与停用并发时形成 WorkLine 行锁和 plugin-pin advisory 的循环等待。
         await self.workline_repository.acquire_plugin_pin_shared(db, workline_id)
-        workline = await self.workline_repository.get_for_update(db, workline_id)
+        workline = await self.workline_repository.get_for_update(db, workline_id, populate_existing=True)
         if workline is None:
             raise WorkLineSafetyBlocked(f"WORKLINE_NOT_FOUND: workline_id={workline_id}")
         await self.workline_status_projection_service.assert_accepting_runtime_work(
             db,
             workline_id=workline_id,
             blocked_error=WorkLineSafetyBlocked,
+            populate_existing=True,
         )
 
     async def handle_estop(
@@ -230,7 +236,7 @@ class WorkLineSafetyService:
                 workline_id,
                 incident_id=cast("int", incident.id),
             )
-            outbox_count = await self.system_outbox_repository.cancel_active_by_workline(
+            outbox_count = await self.system_outbox_cancellation_service.cancel_active_by_workline(
                 db,
                 workline_id,
                 incident_id=cast("int", incident.id),

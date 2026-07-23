@@ -41,13 +41,16 @@ class WorklineRuntimeStatusProjectionRepository(BaseRepository[WorklineRuntimeSt
         workline_id: int,
         *,
         for_update: bool = False,
+        populate_existing: bool = False,
     ) -> WorklineRuntimeStatusProjection | None:
-        """按 workline_id 读取投影；可选行级锁。"""
+        """按 workline_id 读取投影；可选行级锁或强制刷新 identity map。"""
 
         columns = cast("Any", WorklineRuntimeStatusProjection).__table__.c
         statement = select(WorklineRuntimeStatusProjection).where(columns.workline_id == workline_id)
         if for_update:
             statement = statement.with_for_update()
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 

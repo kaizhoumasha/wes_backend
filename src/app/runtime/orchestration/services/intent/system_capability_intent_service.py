@@ -9,12 +9,17 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError
 
 from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.orchestration.effect_state_contract import EffectReducerEvent, EffectReducerEventType
+from src.app.runtime.orchestration.effect_state_contract import (
+    EffectReducerEvent,
+    EffectReducerEventType,
+    generated_effect_source_event_id,
+)
 from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
     validate_system_capability_operation_key,
 )
+from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
 from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition, SystemCapabilityMode
 from src.core.logger import logger
 from src.utils.timezone import timezone
@@ -24,10 +29,7 @@ if TYPE_CHECKING:
 
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
     from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
-    from src.app.runtime.orchestration.system_capability_effect_claim import (
-        SystemCapabilityClaimResult,
-        SystemCapabilityIdempotencyConflict,
-    )
+    from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +42,7 @@ class PreparedSystemCapabilityIntent:
     claim_result: SystemCapabilityClaimResult | Any
     claim: dict[str, Any]
     intent_log: RuntimeIntentLog | None
+    has_durable_outbox: bool
 
 
 class SystemCapabilityIntentService:
@@ -145,12 +148,16 @@ class SystemCapabilityIntentService:
         }
         claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
         intent_log = None
-        if definition.completion_mode.value == "OUTBOX_ASYNC":
-            # 无论首次 claim 还是幂等命中，都锁定读取 RuntimeIntentLog。PROPOSED
-            # 与 SystemOutbox 的 1:1 双账本由同一事务写入，避免跨层直接查询 outbox。
+        has_durable_outbox = False
+        is_match = getattr(claim_result, "value", claim_result) == SystemCapabilityClaimResult.MATCH.value
+        if definition.completion_mode.value == "OUTBOX_ASYNC" or is_match:
+            # OUTBOX_ASYNC 首次写入需要权威 intent；任意幂等命中也必须读取状态，
+            # 才能区分可重新决策的 LOCAL PROPOSED 与已持久化终态。
             intent_log = await self._effect_repository.get_claimed_intent(ctx["db"], claim=claim)
             if intent_log is None:
-                raise RuntimeError("OUTBOX_ASYNC effect claim row is missing")
+                raise RuntimeError("system capability effect claim row is missing")
+            if definition.completion_mode.value == "OUTBOX_ASYNC" and is_match:
+                has_durable_outbox = await self._effect_repository.has_claimed_outbox(ctx["db"], claim=claim)
         return PreparedSystemCapabilityIntent(
             definition=definition,
             request=request,
@@ -160,6 +167,7 @@ class SystemCapabilityIntentService:
             claim_result=claim_result,
             claim=claim,
             intent_log=intent_log,
+            has_durable_outbox=has_durable_outbox,
         )
 
     async def record_outcome(
@@ -167,22 +175,26 @@ class SystemCapabilityIntentService:
     ) -> None:
         event_type = {
             "success": EffectReducerEventType.CALLBACK_COMPLETED,
-            "business_reject": EffectReducerEventType.CALLBACK_REJECTED,
+            "business_reject": EffectReducerEventType.LOCAL_REDECISION_REQUIRED,
             "retryable_failure": EffectReducerEventType.TRANSPORT_NOT_SENT,
             "contract_violation": EffectReducerEventType.TRANSPORT_NOT_SENT,
         }[evidence.outcome_kind]
         clearly_not_applied = event_type is EffectReducerEventType.TRANSPORT_NOT_SENT
+        retry_exhausted = evidence.outcome_kind == "contract_violation"
         await self._effect_reducer.reduce(
             ctx["db"],
             EffectReducerEvent(
                 event_type=event_type,
                 dispatch_key=str(prepared.claim["dispatch_key"]),
                 occurred_at_ms=evidence.occurred_at_ms,
-                source_event_id=(
-                    f"local-effect:{prepared.claim['dispatch_key']}:{evidence.outcome_kind}:{evidence.occurred_at_ms}"
+                source_event_id=generated_effect_source_event_id(
+                    "local-effect",
+                    prepared.claim["dispatch_key"],
+                    evidence.outcome_kind,
+                    evidence.occurred_at_ms,
                 ),
                 attempt_no=1 if clearly_not_applied else None,
-                retry_exhausted=clearly_not_applied,
+                retry_exhausted=retry_exhausted,
                 reason_code=evidence.outcome_code,
                 evidence_json=evidence.model_dump(mode="json"),
             ),

@@ -17,6 +17,17 @@ class ExternalHttpEvidenceRecoveryError(RuntimeError):
     """证据落库失败后，隔离 UNKNOWN 恢复也失败。"""
 
 
+def is_late_external_http_result_target(outbox: Any) -> bool:
+    """识别已跨越物理发送边界、随后被 fence 为 UNKNOWN 的 outbox。"""
+
+    from src.utils.value_normalization import enum_value
+
+    return (
+        enum_value(getattr(outbox, "status", None)) == "UNKNOWN"
+        and getattr(outbox, "dispatch_started_at", None) is not None
+    )
+
+
 def build_external_http_evidence_failure_error(
     result: ExternalHttpTransportResult,
     cause: BaseException,
@@ -67,10 +78,17 @@ async def recover_external_http_evidence_failure_unknown(
                 enum_value(getattr(current, "status", None)) == "SENT"
                 and getattr(current, "finished_at", None) is not None
             )
+            late_result_target = is_late_external_http_result_target(current)
             if callback_completed:
                 updated = current
                 recovery_result = result
                 outbox_finalization = "sent"
+            elif late_result_target:
+                # cancellation/lease-loss 已封存三本账；恢复事务只补原始 transport
+                # evidence，不能再次改写 UNKNOWN outbox 或终结 UNKNOWN attempt。
+                updated = current
+                recovery_result = result
+                outbox_finalization = "unknown"
             else:
                 from src.app.sys.external_http_transport import (
                     ExternalHttpProtocolResult,
@@ -102,13 +120,14 @@ async def recover_external_http_evidence_failure_unknown(
                 if updated is None:
                     raise RuntimeError(f"SystemOutbox {outbox_id} 无法隔离收口为 UNKNOWN")
                 outbox_finalization = "unknown"
-            await attempt_service.finalize_external_http_attempt(
-                recovery_db,
-                lease_token=lease_owner_token,
-                result=recovery_result,
-                outbox_finalization=outbox_finalization,
-                auto_commit=False,
-            )
+            if not late_result_target:
+                await attempt_service.finalize_external_http_attempt(
+                    recovery_db,
+                    lease_token=lease_owner_token,
+                    result=recovery_result,
+                    outbox_finalization=outbox_finalization,
+                    auto_commit=False,
+                )
             from src.utils.timezone import timezone
 
             await effect_transport_bridge.record_result(
@@ -136,5 +155,6 @@ __all__ = [
     "EVIDENCE_PERSISTENCE_FAILURE_CODE",
     "ExternalHttpEvidenceRecoveryError",
     "build_external_http_evidence_failure_error",
+    "is_late_external_http_result_target",
     "recover_external_http_evidence_failure_unknown",
 ]

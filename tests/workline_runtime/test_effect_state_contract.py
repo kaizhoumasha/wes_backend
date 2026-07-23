@@ -182,24 +182,22 @@ def test_effect_transition_matrices_are_closed_and_terminal_states_have_no_outgo
 
 def test_effect_reducer_event_schema_is_closed_and_supports_reconciliation_resolution() -> None:
     _require_effect_state_contract()
-    assert (
-        frozenset(
-            {
-                EffectReducerEventType.INTENT_PROPOSED,
-                EffectReducerEventType.ATTEMPT_STARTED,
-                EffectReducerEventType.TRANSPORT_NOT_SENT,
-                EffectReducerEventType.TRANSPORT_ACCEPTED,
-                EffectReducerEventType.TRANSPORT_AMBIGUOUS,
-                EffectReducerEventType.CALLBACK_ACCEPTED,
-                EffectReducerEventType.CALLBACK_COMPLETED,
-                EffectReducerEventType.CALLBACK_REJECTED,
-                EffectReducerEventType.RECONCILIATION_OPENED,
-                EffectReducerEventType.RECONCILIATION_RESOLVED,
-                EffectReducerEventType.IDEMPOTENCY_CONFLICT,
-            }
-        )
-        == EFFECT_REDUCER_EVENT_TYPES
-    )
+    assert {event_type.value for event_type in EFFECT_REDUCER_EVENT_TYPES} == {
+        "INTENT_PROPOSED",
+        "ATTEMPT_STARTED",
+        "TRANSPORT_NOT_SENT",
+        "TRANSPORT_ACCEPTED",
+        "TRANSPORT_REJECTED",
+        "TRANSPORT_AMBIGUOUS",
+        "LOCAL_REDECISION_REQUIRED",
+        "DISPATCH_CANCELLED",
+        "CALLBACK_ACCEPTED",
+        "CALLBACK_COMPLETED",
+        "CALLBACK_REJECTED",
+        "RECONCILIATION_OPENED",
+        "RECONCILIATION_RESOLVED",
+        "IDEMPOTENCY_CONFLICT",
+    }
     resolved = EffectReducerEvent(
         event_type=EffectReducerEventType.RECONCILIATION_RESOLVED,
         dispatch_key="dispatch-1",

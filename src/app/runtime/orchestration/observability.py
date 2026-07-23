@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import queue
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from math import isfinite
 from types import MappingProxyType
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +117,83 @@ class RuntimeOpenTelemetryBridge:
             else:
                 raise ValueError(f"unsupported runtime observability signal kind: {signal_kind}")
 
+    def close(self) -> None:
+        close = getattr(self._exporter, "close", None)
+        if callable(close):
+            close()
+
+
+class RuntimeQueuedObservabilityObserver:
+    """用有界后台队列隔离同步 exporter，避免阻塞 async 业务热路径。"""
+
+    def __init__(
+        self,
+        observer: RuntimeObservabilityObserver,
+        *,
+        max_queue_size: int = 1024,
+    ) -> None:
+        if max_queue_size <= 0:
+            raise ValueError("runtime observability queue size must be positive")
+        self._observer = observer
+        self._queue: queue.Queue[RuntimeObservabilityEvent] = queue.Queue(maxsize=max_queue_size)
+        self._stopping = threading.Event()
+        self._state_lock = threading.Lock()
+        self._accepting = True
+        self._dropped_count = 0
+        self._worker = threading.Thread(
+            target=self._run,
+            name="runtime-observability-exporter",
+            daemon=True,
+        )
+        self._worker.start()
+
+    @property
+    def dropped_count(self) -> int:
+        return self._dropped_count
+
+    @property
+    def pending_count(self) -> int:
+        return self._queue.qsize()
+
+    def __call__(self, event: RuntimeObservabilityEvent) -> None:
+        with self._state_lock:
+            if not self._accepting:
+                self._dropped_count += 1
+                return
+            try:
+                self._queue.put_nowait(event)
+            except queue.Full:
+                # 观测不能反压或改变业务结果；队列满时只丢弃观测事件并保留可检查计数。
+                self._dropped_count += 1
+
+    def close(self) -> None:
+        """停止接收后让 daemon worker 排空已有事件并退出。"""
+
+        with self._state_lock:
+            self._accepting = False
+            self._stopping.set()
+        self._queue.join()
+        self._worker.join()
+
+    def _run(self) -> None:
+        while not self._stopping.is_set() or not self._queue.empty():
+            try:
+                event = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                event = None
+            if event is None:
+                continue
+            try:
+                self._observer(event)
+            except Exception:
+                # 生产观测是 best-effort，exporter 故障不能改变 runtime operation 的业务结果。
+                logger.warning("runtime observability exporter failed", exc_info=True)
+            finally:
+                self._queue.task_done()
+        close = getattr(self._observer, "close", None)
+        if callable(close):
+            close()
+
 
 class RuntimeOpenTelemetryHttpExporter:
     """Best-effort HTTP JSON exporter for the production OpenTelemetry backend adapter."""
@@ -135,7 +217,7 @@ class RuntimeOpenTelemetryHttpExporter:
         merged_headers = {"content-type": "application/json"}
         merged_headers.update(dict(headers or {}))
         self._headers = MappingProxyType(merged_headers)
-        self._post_json = post_json or _post_runtime_open_telemetry_json
+        self._post_json = post_json or _RuntimeOpenTelemetryHttpPoster()
 
     def emit_span(self, name: str, attributes: Mapping[str, object]) -> None:
         """Export a span payload."""
@@ -162,6 +244,11 @@ class RuntimeOpenTelemetryHttpExporter:
         }
         self._post_json(self._endpoint, payload, self._headers, self._timeout_seconds)
 
+    def close(self) -> None:
+        close = getattr(self._post_json, "close", None)
+        if callable(close):
+            close()
+
 
 class RuntimeObservabilityRegistry:
     """Registry for stable runtime span/metric/log event contracts."""
@@ -174,6 +261,7 @@ class RuntimeObservabilityRegistry:
     ) -> None:
         self.signals = signals or default_runtime_observability_signals()
         self._observers = {f"anonymous:{index}": observer for index, observer in enumerate(observers or ())}
+        self._observer_lock = threading.Lock()
 
     def validate(  # noqa: PLR0911 - 每个 fail-closed 原因保留独立、稳定诊断码。
         self,
@@ -273,7 +361,23 @@ class RuntimeObservabilityRegistry:
         """Register or replace an observer by key so production backends are idempotent."""
 
         observer_key = key or f"anonymous:{len(self._observers)}"
-        self._observers[observer_key] = observer
+        with self._observer_lock:
+            previous = self._observers.get(observer_key)
+            self._observers[observer_key] = observer
+        close = getattr(previous, "close", None)
+        if callable(close):
+            close()
+
+    def close(self) -> None:
+        """停止接收新观测，排空并关闭所有 exporter；registry 可在下一次 lifespan 重新配置。"""
+
+        with self._observer_lock:
+            observers = tuple(self._observers.values())
+            self._observers.clear()
+        for observer in observers:
+            close = getattr(observer, "close", None)
+            if callable(close):
+                close()
 
     def emit(self, name: str, attributes: dict[str, object]) -> RuntimeObservabilityEvent:
         """Validate and publish a stable observability event to configured adapters."""
@@ -291,7 +395,9 @@ class RuntimeObservabilityRegistry:
             attributes=MappingProxyType(merged_attributes),
             metric_attributes=MappingProxyType({name: merged_attributes[name] for name in metric_attribute_names}),
         )
-        for observer in tuple(self._observers.values()):
+        with self._observer_lock:
+            observers = tuple(self._observers.values())
+        for observer in observers:
             observer(event)
         return event
 
@@ -330,8 +436,9 @@ def configure_runtime_open_telemetry_backend(
         else _env_float("WES_RUNTIME_OTEL_TIMEOUT_SECONDS", default=0.5),
         post_json=post_json,
     )
+    queued_observer = RuntimeQueuedObservabilityObserver(RuntimeOpenTelemetryBridge(exporter))
     (registry or runtime_observability_registry).register_observer(
-        RuntimeOpenTelemetryBridge(exporter),
+        queued_observer,
         key=_RUNTIME_OTEL_OBSERVER_KEY,
     )
     return True
@@ -363,17 +470,31 @@ def _env_float(name: str, *, default: float) -> float:
         return default
 
 
-def _post_runtime_open_telemetry_json(
-    endpoint: str,
-    payload: Mapping[str, object],
-    headers: Mapping[str, str],
-    timeout_seconds: float,
-) -> None:
-    import httpx
+class _RuntimeOpenTelemetryHttpPoster:
+    """后台 worker 专用的持久 HTTP client，复用连接池发送多种 signal。"""
 
-    with httpx.Client(timeout=timeout_seconds, trust_env=False) as client:
-        response = client.post(endpoint, json=dict(payload), headers=dict(headers))
+    def __init__(self) -> None:
+        import httpx
+
+        self._client = httpx.Client(trust_env=False)
+
+    def __call__(
+        self,
+        endpoint: str,
+        payload: Mapping[str, object],
+        headers: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> None:
+        response = self._client.post(
+            endpoint,
+            json=dict(payload),
+            headers=dict(headers),
+            timeout=timeout_seconds,
+        )
         _ = response.raise_for_status()
+
+    def close(self) -> None:
+        self._client.close()
 
 
 _SENSITIVE_ATTRIBUTE_FRAGMENTS = (

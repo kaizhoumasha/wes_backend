@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -64,6 +65,9 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         )
         raise
     finally:
+        from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+        await asyncio.to_thread(runtime_observability_registry.close)
         await close_db()
         await close_redis()
         logger.info("FastAPI 应用关闭")

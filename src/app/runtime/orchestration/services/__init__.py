@@ -58,6 +58,10 @@ from src.app.runtime.orchestration.services.session_hold_mutation_service import
     StaleSessionPrecondition,
     session_hold_mutation_service,
 )
+from src.app.runtime.orchestration.services.system_outbox_cancellation_service import (
+    SystemOutboxCancellationService,
+    system_outbox_cancellation_service,
+)
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusProjectionService,
     WorkLineRuntimeStatusSnapshot,
@@ -92,6 +96,7 @@ __all__ = [
     "SessionHoldMutationService",
     "StaleMaterialUnitPrecondition",
     "StaleSessionPrecondition",
+    "SystemOutboxCancellationService",
     "WorkLineRuntimeStatusProjectionService",
     "WorkLineRuntimeStatusSnapshot",
     "confirm_inbound_effect_preparation_service",
@@ -107,5 +112,6 @@ __all__ = [
     "notify_package_binding_effect_preparation_service",
     "runtime_snapshot_assembler",
     "session_hold_mutation_service",
+    "system_outbox_cancellation_service",
     "workline_runtime_status_projection_service",
 ]

@@ -84,10 +84,6 @@ class ExternalHttpLeaseLossService:
             operation_domains=operation_domains,
             exclude_operation_domains=exclude_operation_domains,
         )
-        # 保持调度器测试 double 的旧式 int 协议；生产 Repository 返回冻结快照。
-        if isinstance(fences, int):
-            return fences
-
         result = ExternalHttpTransportResult.ambiguous(
             phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
             error_code=LEASE_LOSS_ERROR_CODE,
@@ -104,7 +100,18 @@ class ExternalHttpLeaseLossService:
             attempt_no = fence.attempt_no_hint
             if attempt is not None:
                 attempt_no = int(attempt.attempt_no)
-                transition_dispatch_attempt(attempt, DispatchAttemptStatus.UNKNOWN)
+                target = DispatchAttemptStatus.UNKNOWN if fence.dispatch_started else DispatchAttemptStatus.CANCELLED
+                transition_dispatch_attempt(attempt, target)
+                if not fence.dispatch_started:
+                    attempt.finalized_at = now
+                    attempt.error_message = "STALE_EXTERNAL_HTTP_QUEUE_LEASE_EXPIRED"
+                    attempt.response_json = {
+                        "outbox_finalization": "retry_wait",
+                        "lease_loss": True,
+                        "physical_dispatch_started": False,
+                    }
+                    await db.flush()
+                    continue
                 attempt.transport_outcome = result.outcome.value
                 attempt.transport_phase = result.phase.value
                 attempt.protocol_result = result.protocol_result.value
@@ -118,6 +125,8 @@ class ExternalHttpLeaseLossService:
                     "lease_loss": True,
                 }
                 await db.flush()
+            if not fence.dispatch_started:
+                continue
             await self._resolve_effect_transport_bridge().record_result(
                 db,
                 dispatch_key=fence.dispatch_key,

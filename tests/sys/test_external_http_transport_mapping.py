@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.effect_ledger_status import DispatchAttemptStatus
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.dispatch_concurrency import (
     DispatchBucketKey,
@@ -83,6 +85,7 @@ class _Repository:
     def __init__(self, outbox: SimpleNamespace) -> None:
         self.outbox = outbox
         self.sent_calls = 0
+        self.protocol_rejected_calls = 0
         self.retry_calls = 0
         self.unknown_calls = 0
         self.terminal_failure_calls = 0
@@ -91,6 +94,23 @@ class _Repository:
         if self.outbox.status in {SystemOutboxStatus.NEW, SystemOutboxStatus.RETRY_WAIT}:
             return [self.outbox]
         return []
+
+    async def begin_physical_dispatch(
+        self,
+        _db: Any,
+        _outbox_id: int,
+        *,
+        lease_owner_token: str,
+        lease_seconds: int,
+    ) -> SimpleNamespace | None:
+        assert lease_seconds > 0
+        if (
+            self.outbox.status is SystemOutboxStatus.DISPATCHING
+            and self.outbox.lease_owner_token == lease_owner_token
+            and self.outbox.lease_expires_at > timezone.now_for_db()
+        ):
+            return self.outbox
+        return None
 
     async def mark_as_dispatching(self, _db: Any, _outbox_id: int) -> SimpleNamespace | None:
         if self.outbox.status not in {SystemOutboxStatus.NEW, SystemOutboxStatus.RETRY_WAIT}:
@@ -102,6 +122,21 @@ class _Repository:
         assert lease_owner_token == self.outbox.lease_owner_token
         self.sent_calls += 1
         self.outbox.status = SystemOutboxStatus.SENT
+        return self.outbox
+
+    async def mark_as_protocol_rejected(
+        self,
+        _db: Any,
+        _outbox_id: int,
+        error: str,
+        *,
+        lease_owner_token: str,
+    ) -> SimpleNamespace:
+        assert lease_owner_token == self.outbox.lease_owner_token
+        self.protocol_rejected_calls += 1
+        self.outbox.status = SystemOutboxStatus.SENT
+        self.outbox.last_error = error
+        self.outbox.finished_at = datetime(2027, 1, 1)
         return self.outbox
 
     async def mark_as_failed(
@@ -228,7 +263,10 @@ async def test_accepted_explicit_protocol_reject_is_transport_sent_without_retry
 
     assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
     assert repository.outbox.status is SystemOutboxStatus.SENT
-    assert repository.sent_calls == 1
+    assert repository.sent_calls == 0
+    assert repository.protocol_rejected_calls == 1
+    assert repository.outbox.finished_at is not None
+    assert repository.outbox.last_error == "HTTP_REJECTED"
     assert repository.retry_calls == 0
     assert attempt_service.created == [repository.outbox]
     assert attempt_service.finalized == [
@@ -332,6 +370,51 @@ async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -
         outbox_finalization="sent",
         auto_commit=False,
     )
+    assert bridge.record_result.await_args.kwargs["result"] is result
+    recovery_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_late_transport_evidence_recovery_preserves_unknown_ledgers() -> None:
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+    fenced_unknown = SimpleNamespace(
+        status=SystemOutboxStatus.UNKNOWN,
+        dispatch_started_at=timezone.now_for_db(),
+    )
+    repository = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(return_value=fenced_unknown),
+        mark_evidence_persistence_unknown=AsyncMock(),
+    )
+    active_db = SimpleNamespace(rollback=AsyncMock())
+    recovery_db = SimpleNamespace(commit=AsyncMock())
+    attempt_service = SimpleNamespace(finalize_external_http_attempt=AsyncMock())
+    bridge = SimpleNamespace(record_result=AsyncMock())
+
+    @asynccontextmanager
+    async def recovery_context():
+        yield recovery_db
+
+    recovered = await recover_external_http_evidence_failure_unknown(
+        active_db,
+        outbox_repository=repository,
+        outbox_id=2,
+        lease_owner_token="late-result-owner",
+        result=result,
+        cause=RuntimeError("late reducer evidence unavailable"),
+        recovery_context_factory=recovery_context,
+        attempt_service=attempt_service,
+        effect_transport_bridge=bridge,
+        dispatch_key="dispatch-late-result",
+        attempt_no=3,
+    )
+
+    assert recovered is fenced_unknown
+    repository.mark_evidence_persistence_unknown.assert_not_awaited()
+    attempt_service.finalize_external_http_attempt.assert_not_awaited()
+    bridge.record_result.assert_awaited_once()
     assert bridge.record_result.await_args.kwargs["result"] is result
     recovery_db.commit.assert_awaited_once()
 
@@ -503,6 +586,18 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
     outbox.status = SystemOutboxStatus.DISPATCHING
     outbox.lease_owner_token = "test-owner:recovery-failure"
     outbox.lease_expires_at = timezone.now_for_db() + timedelta(minutes=5)
+    dispatch_attempt = WorklineDispatchAttempt(
+        outbox_id=outbox.id,
+        dispatch_key=outbox.dispatch_key,
+        attempt_no=1,
+        lease_token=outbox.lease_owner_token,
+        lease_expires_at=outbox.lease_expires_at,
+        status=DispatchAttemptStatus.DISPATCHING,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT.value,
+        target_code=outbox.target_code,
+        started_at=timezone.now_for_db(),
+    )
+    db_session.add(dispatch_attempt)
     await db_session.commit()
     sender = AsyncMock(
         return_value=ExternalHttpTransportResult.accepted(
@@ -516,12 +611,14 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
         yield SimpleNamespace(commit=AsyncMock())
 
     repository = SystemOutboxRepository()
+    attempt_service = _FailOnceAttemptService()
+    attempt_service.attempt = dispatch_attempt
     engine = SystemOutboxEngine(
         outbox_repository=repository,
         dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
         credential_provider=StaticTestCredentialProvider(),
-        dispatch_attempt_service=_FailOnceAttemptService(),
+        dispatch_attempt_service=attempt_service,
         external_http_recovery_context_factory=unavailable_recovery_context,
         workline_domain_dispatcher=_no_workline_messages,
     )

@@ -5,9 +5,17 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.orchestration.effect_state_contract import EffectReducerEvent, EffectReducerEventType
+from src.app.runtime.orchestration.effect_state_contract import (
+    EffectReducerEvent,
+    EffectReducerEventType,
+    generated_effect_source_event_id,
+)
 from src.app.runtime.orchestration.services.effect_reducer_service import EffectReducer, effect_reducer
-from src.app.sys.external_http_transport import ExternalHttpTransportOutcome, ExternalHttpTransportResult
+from src.app.sys.external_http_transport import (
+    ExternalHttpProtocolResult,
+    ExternalHttpTransportOutcome,
+    ExternalHttpTransportResult,
+)
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
@@ -35,12 +43,23 @@ class EffectTransportBridge:
         retry_exhausted: bool,
         occurred_at_ms: int,
     ) -> tuple[Any, ...]:
-        event_type = {
-            ExternalHttpTransportOutcome.NOT_SENT: EffectReducerEventType.TRANSPORT_NOT_SENT,
-            ExternalHttpTransportOutcome.ACCEPTED: EffectReducerEventType.TRANSPORT_ACCEPTED,
-            ExternalHttpTransportOutcome.AMBIGUOUS: EffectReducerEventType.TRANSPORT_AMBIGUOUS,
-        }[result.outcome]
-        source_event_id = f"transport:{dispatch_key}:{attempt_no}:{result.outcome.value}"
+        if result.protocol_result is ExternalHttpProtocolResult.REJECTED:
+            event_type = EffectReducerEventType.TRANSPORT_REJECTED
+        else:
+            event_type = {
+                ExternalHttpTransportOutcome.NOT_SENT: EffectReducerEventType.TRANSPORT_NOT_SENT,
+                ExternalHttpTransportOutcome.ACCEPTED: EffectReducerEventType.TRANSPORT_ACCEPTED,
+                ExternalHttpTransportOutcome.AMBIGUOUS: EffectReducerEventType.TRANSPORT_AMBIGUOUS,
+            }[result.outcome]
+        transport_evidence = result.evidence_json()
+        source_event_id = generated_effect_source_event_id(
+            "transport",
+            dispatch_key,
+            attempt_no,
+            event_type.value,
+            retry_exhausted,
+            transport_evidence,
+        )
         events = [
             EffectReducerEvent(
                 event_type=event_type,
@@ -50,7 +69,7 @@ class EffectTransportBridge:
                 attempt_no=attempt_no,
                 retry_exhausted=retry_exhausted,
                 reason_code=result.error_code,
-                evidence_json=result.evidence_json(),
+                evidence_json=transport_evidence,
             )
         ]
         if result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
@@ -59,9 +78,15 @@ class EffectTransportBridge:
                     event_type=EffectReducerEventType.RECONCILIATION_OPENED,
                     dispatch_key=dispatch_key,
                     occurred_at_ms=occurred_at_ms,
-                    source_event_id=f"{source_event_id}:reconciliation",
+                    source_event_id=generated_effect_source_event_id(
+                        "transport-reconciliation",
+                        dispatch_key,
+                        attempt_no,
+                        event_type.value,
+                        transport_evidence,
+                    ),
                     reason_code=result.error_code or "TRANSPORT_AMBIGUOUS",
-                    evidence_json=result.evidence_json(),
+                    evidence_json=transport_evidence,
                 )
             )
         return tuple([await self._reducer.reduce(db, event, require_intent=False) for event in events])

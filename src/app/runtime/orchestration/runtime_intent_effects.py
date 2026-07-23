@@ -1685,7 +1685,9 @@ class RuntimeIntentEffectApplier:
     async def _apply_cancel(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.runtime.orchestration.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
         from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
-        from src.app.sys.repositories import SystemOutboxRepository
+        from src.app.runtime.orchestration.services.system_outbox_cancellation_service import (
+            system_outbox_cancellation_service,
+        )
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
@@ -1696,7 +1698,7 @@ class RuntimeIntentEffectApplier:
             session_id=session_id,
             occurred_at=ctx["now"],
         )
-        _ = await SystemOutboxRepository().cancel_active_by_session(
+        _ = await system_outbox_cancellation_service.cancel_active_by_session(
             ctx["db"],
             session_id=session_id,
             reason=intent.reason_code or "SESSION_CANCELLED",

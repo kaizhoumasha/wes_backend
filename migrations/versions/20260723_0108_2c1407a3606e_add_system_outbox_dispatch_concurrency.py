@@ -42,6 +42,11 @@ def upgrade() -> None:
         sa.Column("lease_expires_at", sa.DateTime(), nullable=True),
         schema="wes_biz",
     )
+    op.add_column(
+        "system_outbox",
+        sa.Column("dispatch_started_at", sa.DateTime(), nullable=True),
+        schema="wes_biz",
+    )
     op.create_check_constraint(
         op.f("ck_system_outbox_ck_system_outbox_dispatch_lease_shape"),
         "system_outbox",
@@ -113,6 +118,7 @@ def downgrade() -> None:
         schema="wes_biz",
         type_="check",
     )
+    op.drop_column("system_outbox", "dispatch_started_at", schema="wes_biz")
     op.drop_column("system_outbox", "lease_expires_at", schema="wes_biz")
     op.drop_column("system_outbox", "lease_owner_token", schema="wes_biz")
     op.drop_column("system_outbox", "operation_identity", schema="wes_biz")
