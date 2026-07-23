@@ -82,8 +82,9 @@ PostgreSQL 17 使用独立 `timescale/timescaledb:latest-pg17` 临时容器验�
 仅守卫自身与完成态 inventory 测试允许保存禁词。原 T1 大型迁移扫描器已替换为稳定 CSV schema +
 零行断言，避免把已完成的 typed operation identity/metric 继续误报为待迁移项。
 
-cleanup matrix 通过唯一生成器重建后仍为 606 entries、110 phase4 carriers、0 pending-review；
-closure ledger 的 110 个 carrier 仍全部关闭，无新增 active carrier。矩阵、ledger、closure 定向合同 29 passed。
+cleanup matrix 在 P1 复核中通过唯一生成器重建为 608 entries、112 phase4 carriers、0 pending-review；
+新增的两条 full-box consumer 测试符号按目标态 `test-only + kept-config-only` 规则进入 closure ledger，
+112 个 carrier 全部关闭且仍无 active carrier。矩阵、ledger、closure 定向合同与完整架构回归结果见下方 P1 记录。
 
 ## 回归与质量门禁
 
@@ -120,3 +121,19 @@ HIGH/CRITICAL 均在修改前上报；授权后继续，并以完整默认回归
 最终 unstaged detect 为 LOW：71 files、73 symbols、0 affected processes。该结果包含用户维护中的
 `AGENTS.md`、`CLAUDE.md`。排除两者后的 staged detect 仍为 LOW：83 files、118 symbols、
 0 affected processes；提交明确不包含这两个用户文件。
+
+## P1 复核：cleanup matrix 与 closure 同步
+
+评审发现唯一 generator 对当前 parser surface 识别为 608 条，而已提交 CSV 仍为 606 条，
+缺失项恰为 `test_full_box_exchange_typed_effect_consumer.py` 的两个测试符号。P1 未手补 matrix CSV、
+未新增 allowlist、未放宽 guard；只重跑 `scripts/generate_legacy_matrix.py`，并按生成结果同步审计文档和
+business closure ledger。
+
+- matrix：608 entries、165 tests、338 rebuild、112 phase4 carriers、155 workline_runtime、0 pending-review；
+- closure：112 entries，其中 53 moved、10 test-only-migrated、29 kept-config-only、20 already-removed；
+- 两个 full-box consumer entry 均为现存目标态测试，登记为 `test-only + kept-config-only`。
+- business legacy absence final gate：通过；
+- matrix / absence / closure 定向合同：38 passed；
+- 完整 architecture：376 passed、1 skipped；
+- 完整默认回归：3784 passed、5 skipped、0 failed，耗时 404.57s；
+- `./scripts/git-quality-gate.sh --profile quality`：通过。
