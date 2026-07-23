@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（605 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（606 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -33,11 +33,11 @@ uv run python scripts/generate_legacy_matrix.py
 
 扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。最终扩展平台目录及精确目标态符号从 legacy cleanup 范围排除；Task 10 前仍存在的旧路由 import 与业务编排分支则按生产文件逐项登记独立 seed。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 technical cleanup scope 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；business legacy absence cleanup 后，已迁入 `src/app/runtime/capabilities/material_flow/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
 
-## 3. 汇总（截至 notify_pkg_binding typed EFFECT 收束 @ 2026-07-23）
+## 3. 汇总（截至 T11 受限运维入口收束 @ 2026-07-23）
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **605** |
+| **total_entries** | **606** |
 | phase4_carrier（承载 Phase 4 业务语义） | 110 |
 | pending-review | 0 |
 
@@ -49,7 +49,7 @@ uv run python scripts/generate_legacy_matrix.py
 | domain_object | 60 |
 | test | 163 |
 | model | 44 |
-| api_route | 21 |
+| api_route | 22 |
 | repository | 7 |
 | runtime_helper | 1 |
 
@@ -58,7 +58,7 @@ uv run python scripts/generate_legacy_matrix.py
 | strategy | count |
 | --- | ---: |
 | rebuild | 336 |
-| keep-contract | 252 |
+| keep-contract | 253 |
 | delete | 10 |
 | move | 7 |
 
@@ -66,7 +66,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | drop_phase | count |
 | --- | ---: |
-| phase5-tech | 263 |
+| phase5-tech | 264 |
 | phase2 | 223 |
 | phase4 | 110 |
 | phase1 | 9 |
@@ -75,7 +75,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | current_owner | count |
 | --- | ---: |
-| workline | 417 |
+| workline | 418 |
 | workline_runtime | 153 |
 | workline_plugins | 11 |
 | runtime | 8 |
@@ -171,7 +171,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 ## 7. 按域说明
 
-### 7.1 workline（417 entries）
+### 7.1 workline（418 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
@@ -226,7 +226,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 605 条，strategy 字段非空）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 606 条，strategy 字段非空）
 2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，110 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）

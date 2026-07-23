@@ -133,3 +133,31 @@ PostgreSQL 使用精确命名的独立 `timescale/timescaledb:latest-pg17` 容�
 提交明确排除用户维护中的 `AGENTS.md`、`CLAUDE.md`。最终 staged GitNexus detect 为 MEDIUM，
 识别 31 个 staged files、98 个 changed symbols、5 个 dispatch processes；没有超出 T11 observability/security
 及主任务明确要求的两个 effect adapter AST 门禁收口范围。
+
+## Review P1：cleanup matrix 同步
+
+Architecture review 发现 T11 新增的
+`src/app/workline/v1/runtime_operations.py:route_get_L37` 已进入 `parse_entries()`，而已提交 CSV 仍为 605 条，
+导致 generated matrix contract 的 key 集合不一致。
+
+通过仓库唯一入口 `uv run python scripts/generate_legacy_matrix.py` 重建 CSV，没有手工添加 CSV 行、修改生成器、
+allowlist 或 guard。新 route entry 为：
+
+- `entry_type=api_route`
+- `current_owner=workline`
+- `strategy=keep-contract`
+- `drop_phase=phase5-tech`
+- `risk=LOW`
+- `phase4_carrier=False`
+
+矩阵派生统计同步为 606 entries、22 api routes、253 keep-contract、264 phase5-tech、418 workline entries。
+Phase-4 carrier 仍为 110，新增 route 不属于 business legacy scope，因此
+`business-legacy-absence-ledger.csv/.md` 的 entry 集合与统计无需修改。
+
+P1 验证：
+
+- matrix / absence / ledger / closure 定向合同：33 passed；
+- business legacy absence final gate：通过；
+- 完整 `tests/architecture`：390 passed，1 skipped；
+- 完整 `./scripts/git-quality-gate.sh --profile quality`：通过。
+- staged GitNexus detect：3 files、9 document symbols、0 affected processes、LOW。
