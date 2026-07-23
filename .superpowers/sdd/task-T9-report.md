@@ -105,3 +105,30 @@ GitLab。
 
 最终 staged GitNexus detect 为 `46 files / 54 symbols / 0 affected processes / LOW`；文件与 symbol 均落在预期的
 T9 EFFECT、material-flow consumer、legacy deletion、inventory/docs 和测试范围。
+
+## Review P1：cleanup matrix 同步
+
+完整 architecture review 发现 `legacy-cleanup-matrix.csv` 未随生成器扫描结果刷新。修复前机器真源为 547 条，
+`parse_entries()` 为 599 条，精确差集是 52 条新增、0 条删除：
+
+- 49 条来自 T8 系列已合入的 effect state、dispatcher/lease fencing、reducer、PostgreSQL evidence 与
+  material-flow admission 测试/符号，属于此前累计的生成基线漂移。
+- T9 自身新增 3 条，全部是
+  `tests/workline_runtime/test_confirm_inbound_typed_effect_consumer.py` 的顶层测试：
+  `test_sorter_runtime_emits_one_typed_confirm_inbound_system_capability`、
+  `test_confirm_inbound_dispatch_identity_is_stable_across_request_replay`、
+  `test_sorter_preview_exposes_stable_operation_identity`。
+- T9 其余新增实现属于生成器明确排除的最终 capability 平台路径，或位于 cleanup matrix 非扫描目录；T9 修改的其它
+  `tests/workline_runtime` 文件未新增顶层测试符号，因此没有漏记入口。
+
+按仓库唯一生成入口 `uv run python scripts/generate_legacy_matrix.py` 重建 CSV，并同步 Markdown 的派生汇总：
+599 total、110 phase4 carrier、0 pending-review。没有修改生成器、allowlist 或 guard 规则。针对性契约由修复前
+`2 failed, 19 passed` 转为 `21 passed`；完整 `tests/architecture` 为 `387 passed, 1 skipped`。
+
+首次重跑 quality 随后按设计在 business legacy absence gate 阻断：新增 10 条 phase4 carrier 尚未进入 closure
+ledger。继续按 matrix 派生规则补齐 1 条已迁移 service 审计行和 9 条目标态 runtime test-only 行，并同步
+`business-legacy-absence-ledger.md` 的 110 条汇总；没有放宽 final gate。最终 business absence final gate 与
+matrix/ledger/architecture 定向闭环为 `33 passed`。最终文件状态重新执行完整 `tests/architecture` 为
+`387 passed, 1 skipped`，完整 `./scripts/git-quality-gate.sh --profile quality` 通过。
+
+P1 修复最终 staged GitNexus detect 为 `5 files / 14 document symbols / 0 affected processes / LOW`。
