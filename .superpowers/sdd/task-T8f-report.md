@@ -76,3 +76,32 @@ fail closed，且不会切换到当前配置或最新 key。
 均符合 T8f 预期，没有出现范围外业务迁移。
 
 提交范围仅包含 T8f 实现、generator migration、测试与本报告，明确排除用户维护的 `AGENTS.md`、`CLAUDE.md`。
+
+## P1 复审：PostgreSQL fixture 与 rotation 重入
+
+复审发现两处 P1：PostgreSQL integration fixture 仍在构造旧版 `EXTERNAL_HTTP` outbox，缺少六个冻结字段；rack
+operation 与 single-layer rack orchestration 的同键重入会先读取当前 endpoint registry，再与历史 outbox 比较。
+这会让 profile/credential rotation 后的合法 replay 因当前配置变化而失败，并违反“已存在 outbox 只信任持久化冻结
+快照”的合同。
+
+修复后，rack 请求的 canonical identity 构建与 author-time binding freeze 分离。新 dispatch 仍冻结当前 typed profile；
+同 `dispatch_key` 的既有 dispatch 则只通过 `FrozenExternalHttpBinding.from_persisted` 重建并校验旧 outbox 的六个冻结
+字段，既不读取 endpoint registry，也不重新解析当前 profile。immutable request/payload 变化仍按冲突拒绝。没有放宽
+`SystemOutbox` 模型约束，也没有新增兼容、fallback 或 backfill。
+
+PostgreSQL fixture 改用统一 frozen outbox factory 构造完整快照。对所有同时出现 `SystemOutbox(` 与
+`EXTERNAL_HTTP` 的生产/测试文件做了直接构造审计：生产 authoring 均携带完整 frozen binding；测试中仅严格拒绝
+用例有意构造缺失 shape，其余均通过 typed envelope、真实 freeze 或统一 factory 创建。
+
+本轮写前 GitNexus impact 中 integration fixture helper 为 MEDIUM（6 个直接调用、8 个受影响符号），rack 与
+single-layer replay 相关符号均为 LOW；没有新增 HIGH/CRITICAL 风险。RED 先复现 PostgreSQL fixture 在 seed 前触发
+`EXTERNAL_HTTP SystemOutbox requires frozen target and credential binding`，并证明 rotation replay 会访问 registry；
+GREEN 后同键 replay 在 registry 禁用时成功，immutable request 变化仍冲突。
+
+复审验证结果：rotation 定向 `4 passed`；rack/transport/single-layer `82 passed`；完整相关域 `142 passed`；原始
+Docker PostgreSQL 文件 `8 passed`，相关 PostgreSQL 集合 `16 passed`；测试拓扑守卫 `6 passed`；显式默认收集
+`3780 tests collected`。Ruff、`git diff --check` 与完整 `quality` profile 均通过，quality 包含 Bandit 0 issues、
+348 项 runtime guardrails、11 项 process naming、import-linter、architecture 0 violations 及测试拓扑守卫。
+
+刷新 worktree 索引后的 staged GitNexus detect 为 `9 files / 49 symbols / 5 affected processes / MEDIUM`；受影响流程
+仅涉及 `plan_single_layer_rack_dispatch` 与 `request_operation_tasks` 的既有 rack 派发路径，符合本次复审范围。

@@ -22,7 +22,6 @@ from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service impor
     workline_dispatch_attempt_service,
 )
 from src.app.runtime.orchestration.services.intent.operation_service import _transition_sandbox_outbox_to_sent
-from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.dispatch_concurrency import DispatchPolicyRegistry, FairDispatchScheduler
 from src.app.sys.external_http_transport import ExternalHttpTransportPhase, ExternalHttpTransportResult
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
@@ -30,6 +29,7 @@ from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
+from tests.support.external_http import frozen_outbox_namespace
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,22 +43,26 @@ def _external_http_outbox(
     lease_expires_at: datetime | None = None,
     workline_id: int | None = None,
     session_id: int | None = None,
+    operation_domain: str = "T8E_INTEGRATION",
+    provider_profile_identity: str = "t8e.external-http.profile",
+    operation_identity: str = "t8e.external-http.operation",
 ) -> SystemOutbox:
     projection = {"request_id": dispatch_key}
-    canonical = CanonicalPayload.from_projection(projection)
+    frozen = frozen_outbox_namespace(
+        projection,
+        target_code="WMS_RCS_BIN_OPERATION",
+        target_url="https://wms.example/rack-operation",
+        provider_profile_identity=provider_profile_identity,
+        operation_identity=operation_identity,
+    )
     return SystemOutbox(
+        **vars(frozen),
         session_id=session_id,
         workline_id=workline_id,
-        operation_domain="T8E_INTEGRATION",
+        operation_domain=operation_domain,
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=dispatch_key,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="WMS_RCS_BIN_OPERATION",
-        provider_profile_identity="t8e.external-http.profile",
-        operation_identity="t8e.external-http.operation",
-        payload_json=projection,
-        canonical_payload_bytes=canonical.body,
-        payload_hash=canonical.sha256,
         status=status,
         lease_owner_token=lease_owner_token,
         lease_expires_at=lease_expires_at,
@@ -68,20 +72,12 @@ def _external_http_outbox(
 @pytest.mark.asyncio
 async def test_ambiguous_external_http_attempt_evidence_round_trips(integration_db_session: AsyncSession) -> None:
     dispatch_key = f"typed-transport-attempt:{uuid4().hex}"
-    projection = {"request_id": dispatch_key}
-    canonical = CanonicalPayload.from_projection(projection)
-    outbox = SystemOutbox(
-        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+    outbox = _external_http_outbox(
         dispatch_key=dispatch_key,
-        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="WMS_RCS_BIN_OPERATION",
+        status=SystemOutboxStatus.DISPATCHING,
+        operation_domain="HANDLING",
         provider_profile_identity="wms.legacy-transport.production",
         operation_identity="wms.transport.handling@v1",
-        payload_json=projection,
-        canonical_payload_bytes=canonical.body,
-        payload_hash=canonical.sha256,
-        operation_domain="HANDLING",
-        status=SystemOutboxStatus.DISPATCHING,
         lease_owner_token="integration-attempt-owner",
         lease_expires_at=timezone.now_for_db() + timedelta(minutes=5),
     )

@@ -1888,7 +1888,9 @@ async def test_repeated_replace_operation_rejects_single_supply_with_wrong_seque
 
 
 @pytest.mark.asyncio
-async def test_repeated_replace_operation_rejects_target_code_mismatch() -> None:
+async def test_repeated_replace_operation_rejects_target_code_mismatch_without_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="op-shape-target-code",
@@ -1906,7 +1908,15 @@ async def test_repeated_replace_operation_rejects_target_code_mismatch() -> None
         task_repository=task_repository,
     )
 
-    with pytest.raises(ValueError, match="endpoint is not registered in the authored binding"):
+    def fail_current_target_lookup(_target_code: str) -> None:
+        raise AssertionError("existing operation replay must not resolve the current endpoint registry")
+
+    monkeypatch.setattr(
+        "src.app.sys.services.endpoint_registry.endpoint_registry.resolve",
+        fail_current_target_lookup,
+    )
+
+    with pytest.raises(ValueError, match="task identity differs"):
         await _request_classifier_replacement(
             service,
             FakeDb(),

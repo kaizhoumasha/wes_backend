@@ -41,6 +41,7 @@ from src.app.runtime.capabilities.material_flow.station_lease_service import (
     station_lease_service,
 )
 from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 from src.app.sys.models.outbox import (
     DispatchEnvelope,
     OperationCompletionPolicy,
@@ -141,9 +142,7 @@ class RackOperationService:
         specs = self._normalize_task_specs(
             operation_key=operation_key,
             operation_type=operation_type,
-            workline_id=workline_id,
             workline_code=workline_code,
-            material_session_id=material_session_id,
             target_code=target_code,
             trace_id=trace_id,
             task_specs=task_specs,
@@ -471,9 +470,7 @@ class RackOperationService:
         *,
         operation_key: str,
         operation_type: str,
-        workline_id: int | None,
         workline_code: str | None,
-        material_session_id: int | None,
         trace_id: str,
         target_code: str,
         task_specs: Sequence[Mapping[str, Any] | RackTaskSpec],
@@ -482,9 +479,7 @@ class RackOperationService:
             self._normalize_task_spec(
                 operation_key=operation_key,
                 operation_type=operation_type,
-                workline_id=workline_id,
                 workline_code=workline_code,
-                material_session_id=material_session_id,
                 target_code=target_code,
                 trace_id=trace_id,
                 task_spec=task_spec,
@@ -505,9 +500,7 @@ class RackOperationService:
         *,
         operation_key: str,
         operation_type: str,
-        workline_id: int | None,
         workline_code: str | None,
-        material_session_id: int | None,
         target_code: str,
         trace_id: str,
         task_spec: Mapping[str, Any] | RackTaskSpec,
@@ -537,15 +530,13 @@ class RackOperationService:
 
         raw_request = task_spec.get("request_json")
         request_json = dict(raw_request) if isinstance(raw_request, Mapping) else {}
-        envelope = self.gateway.build_task_envelope(
+        request = self.gateway.build_task_request(
             operation_key=operation_key,
             operation_type=operation_type,
             sequence_no=sequence_no,
             task_type=task_type,
             trace_id=trace_id,
-            workline_id=workline_id,
             workline_code=workline_code,
-            material_session_id=material_session_id,
             rack_code=rack_code,
             rack_kind=rack_kind,
             source_position_code=source_position_code,
@@ -564,13 +555,13 @@ class RackOperationService:
             source_position_code=source_position_code,
             target_position_code=target_position_code,
             target_position_role=target_position_role,
-            dispatch_key=envelope.dispatch_key,
-            target_code=envelope.target_code,
-            request_json=dict(envelope.payload_json),
+            dispatch_key=request.dispatch_key,
+            target_code=request.target_code,
+            request_json=dict(request.payload_json),
             actions_json=actions_json,
             required=required,
-            canonical_payload_bytes=envelope.canonical_payload_bytes,
-            payload_hash=envelope.payload_hash,
+            canonical_payload_bytes=request.canonical_payload_bytes,
+            payload_hash=request.payload_hash,
         )
 
     async def _ensure_capacity_for_task_specs(
@@ -1069,17 +1060,27 @@ def _ensure_existing_outbox_shape(
     spec: RackTaskSpec,
     payload_json: dict[str, Any],
 ) -> None:
-    frozen_binding = freeze_rack_task_binding(spec.target_code)
     if outbox.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
         raise ValueError("existing rack operation outbox dispatch_type differs from request")
     if outbox.target_type != SystemOutboxTargetType.HTTP_ENDPOINT:
         raise ValueError("existing rack operation outbox target_type differs from request")
     if outbox.target_code != spec.target_code:
         raise ValueError("existing rack operation outbox target_code differs from request")
-    expected_frozen_fields = frozen_binding.as_persisted_fields()
-    for field_name, expected_value in expected_frozen_fields.items():
-        if getattr(outbox, field_name, None) != expected_value:
-            raise ValueError(f"existing rack operation outbox {field_name} differs from frozen binding")
+    frozen_binding = FrozenExternalHttpBinding.from_persisted(
+        provider_profile_identity=outbox.provider_profile_identity,
+        provider_profile_hash=outbox.provider_profile_hash,
+        operation_identity=outbox.operation_identity,
+        binding_revision=outbox.binding_revision,
+        target_code=outbox.target_code,
+        target_snapshot_json=outbox.target_snapshot_json,
+        target_snapshot_hash=outbox.target_snapshot_hash,
+        auth_scheme=outbox.auth_scheme,
+        credential_reference=outbox.credential_reference,
+    )
+    if frozen_binding.provider_profile_identity != "wms.legacy-transport.production":
+        raise ValueError("existing rack operation outbox provider profile differs from request")
+    if frozen_binding.operation_identity != "wms.transport.rack@v1":
+        raise ValueError("existing rack operation outbox operation identity differs from request")
     canonical_payload_bytes = getattr(outbox, "canonical_payload_bytes", None)
     payload_hash = getattr(outbox, "payload_hash", None)
     canonical = CanonicalPayload.from_persisted(

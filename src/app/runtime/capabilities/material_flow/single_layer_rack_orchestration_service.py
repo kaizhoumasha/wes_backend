@@ -22,6 +22,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 from src.app.sys.models import (
     DispatchEnvelope,
     SystemOutbox,
@@ -236,21 +237,29 @@ class SingleLayerRackOrchestrationService:
             target_code=target_code,
             trace_id=trace_id,
         )
+        outbox_dispatch_key = self._dispatch_key(rack_operation_request)
+        existing_outbox = await self.outbox_repository.get_by_dispatch_key_for_update(db, outbox_dispatch_key)
+        persisted_binding = _frozen_binding_from_outbox(existing_outbox) if existing_outbox is not None else None
         envelope = self._dispatch_envelope(
             rack_operation_request,
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
+            frozen_binding=persisted_binding,
         )
-        claimed_outbox = await self._claim_station_dispatch_lease(
-            db,
-            workline_id=workline_id,
-            workline_code=workline_code,
-            station_code=station_code,
-            envelope=envelope,
-            allow_active_rack_bound=allow_active_rack_bound,
-            allow_active_operation_key=envelope.operation_key,
-        )
+        if existing_outbox is not None:
+            _ensure_existing_station_claim_outbox_shape(existing_outbox, envelope)
+            claimed_outbox = existing_outbox
+        else:
+            claimed_outbox = await self._claim_station_dispatch_lease(
+                db,
+                workline_id=workline_id,
+                workline_code=workline_code,
+                station_code=station_code,
+                envelope=envelope,
+                allow_active_rack_bound=allow_active_rack_bound,
+                allow_active_operation_key=envelope.operation_key,
+            )
         if claimed_outbox is None:
             current_status = await self.station_lease_service.get_station_lease_status(
                 db,
@@ -384,17 +393,25 @@ class SingleLayerRackOrchestrationService:
         return scoped_tasks
 
     @staticmethod
+    def _dispatch_key(rack_operation_request: Mapping[str, Any]) -> str:
+        payload = dict(rack_operation_request["payload"])
+        operation_key = str(rack_operation_request["operation_key"])
+        task = SingleLayerRackOrchestrationService._first_rack_task(payload)
+        return SingleLayerRackOrchestrationService._rack_task_dispatch_key(task, operation_key=operation_key)
+
+    @staticmethod
     def _dispatch_envelope(
         rack_operation_request: Mapping[str, Any],
         *,
         workline_id: int | None,
         session_id: int | None,
         trace_id: str | None,
+        frozen_binding: FrozenExternalHttpBinding | None = None,
     ) -> DispatchEnvelope:
         payload = dict(rack_operation_request["payload"])
         operation_key = str(rack_operation_request["operation_key"])
         task = SingleLayerRackOrchestrationService._first_rack_task(payload)
-        dispatch_key = SingleLayerRackOrchestrationService._rack_task_dispatch_key(task, operation_key=operation_key)
+        dispatch_key = SingleLayerRackOrchestrationService._dispatch_key(rack_operation_request)
         payload_json = SingleLayerRackOrchestrationService._rack_task_payload(
             payload,
             task,
@@ -414,7 +431,8 @@ class SingleLayerRackOrchestrationService:
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
-            frozen_binding=freeze_legacy_transport_binding(
+            frozen_binding=frozen_binding
+            or freeze_legacy_transport_binding(
                 operation_identity="wms.transport.rack@v1",
                 target_code=target_code,
             ),
@@ -573,9 +591,7 @@ class SingleLayerRackOrchestrationService:
 
 
 def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: DispatchEnvelope) -> None:
-    frozen_binding = envelope.frozen_binding
-    if frozen_binding is None:
-        raise ValueError("station dispatch envelope requires frozen EXTERNAL_HTTP binding")
+    frozen_binding = _frozen_binding_from_outbox(outbox)
     if coerce_optional_str(getattr(outbox.dispatch_type, "value", outbox.dispatch_type)) != coerce_optional_str(
         getattr(envelope.dispatch_type, "value", envelope.dispatch_type)
     ):
@@ -586,9 +602,10 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
         raise ValueError("existing station dispatch outbox target_type differs from request")
     if outbox.target_code != envelope.target_code:
         raise ValueError("existing station dispatch outbox target_code differs from request")
-    for field_name, expected_value in frozen_binding.as_persisted_fields().items():
-        if getattr(outbox, field_name, None) != expected_value:
-            raise ValueError(f"existing station dispatch outbox {field_name} differs from frozen binding")
+    if frozen_binding.provider_profile_identity != envelope.provider_profile_identity:
+        raise ValueError("existing station dispatch outbox provider profile differs from request")
+    if frozen_binding.operation_identity != envelope.operation_identity:
+        raise ValueError("existing station dispatch outbox operation identity differs from request")
     if outbox.operation_domain != envelope.operation_domain:
         raise ValueError("existing station dispatch outbox operation_domain differs from request")
     if outbox.operation_key != envelope.operation_key:
@@ -608,6 +625,22 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
     requested_station = _station_position_from_payload(envelope.payload_json)
     if existing_station != requested_station:
         raise ValueError("existing station dispatch outbox station differs from request")
+
+
+def _frozen_binding_from_outbox(outbox: SystemOutbox) -> FrozenExternalHttpBinding:
+    """只从持久化字段恢复既有派发 binding，不读取当前 endpoint/profile。"""
+
+    return FrozenExternalHttpBinding.from_persisted(
+        provider_profile_identity=outbox.provider_profile_identity,
+        provider_profile_hash=outbox.provider_profile_hash,
+        operation_identity=outbox.operation_identity,
+        binding_revision=outbox.binding_revision,
+        target_code=outbox.target_code,
+        target_snapshot_json=outbox.target_snapshot_json,
+        target_snapshot_hash=outbox.target_snapshot_hash,
+        auth_scheme=outbox.auth_scheme,
+        credential_reference=outbox.credential_reference,
+    )
 
 
 def _is_active_station_claim_outbox(outbox: SystemOutbox) -> bool:

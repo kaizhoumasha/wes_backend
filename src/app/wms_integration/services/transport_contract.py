@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from src.app.sys.canonical_dispatch import CanonicalPayload
@@ -62,6 +63,17 @@ LEGACY_EXTERNAL_HTTP_PROFILE = ExternalHttpProviderProfileDefinition(
         ),
     ),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class WmsRackTaskRequest:
+    """不读取 endpoint registry 的 rack task canonical request。"""
+
+    dispatch_key: str
+    target_code: str
+    payload_json: dict[str, Any]
+    canonical_payload_bytes: bytes
+    payload_hash: str
 
 
 def freeze_legacy_transport_binding(
@@ -133,7 +145,7 @@ class WmsTransportContractService:
             "timeout_seconds": timeout_seconds,
         }
 
-    def build_rack_task_envelope(
+    def build_rack_task_request(
         self,
         *,
         operation_key: str,
@@ -141,9 +153,7 @@ class WmsTransportContractService:
         sequence_no: int,
         task_type: str,
         trace_id: str,
-        workline_id: int | None,
         workline_code: str | None,
-        material_session_id: int | None,
         rack_code: str | None,
         rack_kind: str | None,
         source_position_code: str | None,
@@ -153,7 +163,7 @@ class WmsTransportContractService:
         request_json: Mapping[str, Any] | None = None,
         target_code: str | None = None,
         dispatch_key: str | None = None,
-    ) -> DispatchEnvelope:
+    ) -> WmsRackTaskRequest:
         normalized_task_type = _rack_task_type(task_type)
         resolved_dispatch_key = dispatch_key or f"rack-operation:{operation_key}:{sequence_no}:{normalized_task_type}"
         actions = dict(actions_json or {})
@@ -195,20 +205,66 @@ class WmsTransportContractService:
             }
             payload["position_code"] = station_position_code
         canonical = CanonicalPayload.from_projection(payload)
-        frozen_binding = freeze_legacy_transport_binding(
-            operation_identity="wms.transport.rack@v1",
-            target_code=target_code or DEFAULT_RACK_OPERATION_ENDPOINT,
-        )
-        return DispatchEnvelope(
+        return WmsRackTaskRequest(
             dispatch_key=resolved_dispatch_key,
-            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
-            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=target_code or DEFAULT_RACK_OPERATION_ENDPOINT,
-            provider_profile_identity="wms.legacy-transport.production",
-            operation_identity="wms.transport.rack@v1",
             payload_json=payload,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
+        )
+
+    def build_rack_task_envelope(
+        self,
+        *,
+        operation_key: str,
+        operation_type: str,
+        sequence_no: int,
+        task_type: str,
+        trace_id: str,
+        workline_id: int | None,
+        workline_code: str | None,
+        material_session_id: int | None,
+        rack_code: str | None,
+        rack_kind: str | None,
+        source_position_code: str | None,
+        target_position_code: str | None,
+        target_position_role: str | None,
+        actions_json: Mapping[str, Any] | None = None,
+        request_json: Mapping[str, Any] | None = None,
+        target_code: str | None = None,
+        dispatch_key: str | None = None,
+    ) -> DispatchEnvelope:
+        request = self.build_rack_task_request(
+            operation_key=operation_key,
+            operation_type=operation_type,
+            sequence_no=sequence_no,
+            task_type=task_type,
+            trace_id=trace_id,
+            workline_code=workline_code,
+            rack_code=rack_code,
+            rack_kind=rack_kind,
+            source_position_code=source_position_code,
+            target_position_code=target_position_code,
+            target_position_role=target_position_role,
+            actions_json=actions_json,
+            request_json=request_json,
+            target_code=target_code,
+            dispatch_key=dispatch_key,
+        )
+        frozen_binding = freeze_legacy_transport_binding(
+            operation_identity="wms.transport.rack@v1",
+            target_code=request.target_code,
+        )
+        return DispatchEnvelope(
+            dispatch_key=request.dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code=request.target_code,
+            provider_profile_identity="wms.legacy-transport.production",
+            operation_identity="wms.transport.rack@v1",
+            payload_json=request.payload_json,
+            canonical_payload_bytes=request.canonical_payload_bytes,
+            payload_hash=request.payload_hash,
             frozen_binding=frozen_binding,
             operation_domain="RACK",
             operation_key=operation_key,
@@ -415,6 +471,7 @@ __all__ = [
     "DEFAULT_RACK_OPERATION_ENDPOINT",
     "FULL_BOX_EXCHANGE_ENDPOINT",
     "SINGLE_LAYER_RACK_OPERATION_AUTHORITY_SYSTEM",
+    "WmsRackTaskRequest",
     "WmsTransportContractService",
     "wms_transport_contract_service",
 ]
