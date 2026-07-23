@@ -83,20 +83,21 @@ class FakeGateway:
             "carrier": {"type": move.carrier_type, "code": move.carrier_code},
         }
         canonical = CanonicalPayload.from_projection(payload_json)
+        frozen_binding = freeze_legacy_transport_binding(
+            operation_identity="wms.transport.handling@v1",
+            target_code="WMS_RCS_BIN_OPERATION",
+        )
         return DispatchEnvelope(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code="WMS_RCS_BIN_OPERATION",
-            provider_profile_identity="wms.legacy-transport.production",
+            provider_profile_identity=frozen_binding.provider_profile_identity,
             operation_identity="wms.transport.handling@v1",
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
-            frozen_binding=freeze_legacy_transport_binding(
-                operation_identity="wms.transport.handling@v1",
-                target_code="WMS_RCS_BIN_OPERATION",
-            ),
+            frozen_binding=frozen_binding,
             operation_domain="HANDLING",
             operation_key=operation.operation_key,
         )

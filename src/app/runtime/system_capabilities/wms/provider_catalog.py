@@ -118,6 +118,7 @@ def _typed_wms_endpoint_registry(profile: WmsProviderProfile) -> EndpointRegistr
 def _external_http_effect_profile(profile: WmsProviderProfile) -> ExternalHttpProviderProfileDefinition:
     return ExternalHttpProviderProfileDefinition(
         identity=profile.identity.identity,
+        environment=profile.identity.environment,
         bindings=tuple(
             ExternalHttpBindingDefinition(
                 operation_identity=binding.operation.identity,

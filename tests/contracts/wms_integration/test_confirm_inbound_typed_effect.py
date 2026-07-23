@@ -13,7 +13,6 @@ from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode, SystemCapabilityMode
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.gateway import ConfirmInboundDispatchGateway
-from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_PRODUCTION_PROFILE_IDENTITY
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.services.endpoint_registry import EndpointRegistry
 from src.app.wms_integration.ports.confirm_inbound_operation import (
@@ -142,7 +141,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     assert outbox.dispatch_key == request.dispatch_key
     assert outbox.operation_identity == CONTRACT.identity
     assert outbox.target_snapshot_json["url"] == "https://wms-v1.example/api/wes/inventory/confirm-inbound"
-    assert outbox.provider_profile_identity == WMS_PRODUCTION_PROFILE_IDENTITY
+    assert outbox.provider_profile_identity == "wms.2026-07-06.material-flow.sandbox"
     assert outbox.canonical_payload_bytes == (
         b'{"inbound_key":"PKG-001","lot_no":"LOT-01","material_code":"MAT-001",'
         b'"owner_code":"OWNER-01","quantity":"1.25","warehouse_code":"WH-01"}'

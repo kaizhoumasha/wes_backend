@@ -143,6 +143,7 @@ def build_inventory_query_port_factory(
     )
     writer = evidence_writer or WmsCallEvidenceQueryWriter(
         session_factory=get_db_context,
+        provider_profile_identity=profile_identity,
         evidence_service=wms_call_evidence_service,
         breaker_service=wms_circuit_breaker_service,
     )

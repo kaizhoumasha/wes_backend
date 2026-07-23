@@ -27,6 +27,7 @@ def _outbox() -> SimpleNamespace:
     frozen = freeze_external_http_binding(
         profile=ExternalHttpProviderProfileDefinition(
             identity="wms.effect.production",
+            environment="production",
             bindings=(
                 ExternalHttpBindingDefinition(
                     operation_identity="wms.inventory.confirm_inbound@v1",

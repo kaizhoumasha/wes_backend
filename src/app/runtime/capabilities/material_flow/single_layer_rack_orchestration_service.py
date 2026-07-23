@@ -421,21 +421,21 @@ class SingleLayerRackOrchestrationService:
         )
         canonical = CanonicalPayload.from_projection(payload_json)
         target_code = str(rack_operation_request["target_code"])
+        resolved_binding = frozen_binding or freeze_legacy_transport_binding(
+            operation_identity="wms.transport.rack@v1",
+            target_code=target_code,
+        )
         return DispatchEnvelope(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=target_code,
-            provider_profile_identity="wms.legacy-transport.production",
+            provider_profile_identity=resolved_binding.provider_profile_identity,
             operation_identity="wms.transport.rack@v1",
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
-            frozen_binding=frozen_binding
-            or freeze_legacy_transport_binding(
-                operation_identity="wms.transport.rack@v1",
-                target_code=target_code,
-            ),
+            frozen_binding=resolved_binding,
             operation_domain="RACK",
             operation_key=operation_key,
             workline_id=workline_id,

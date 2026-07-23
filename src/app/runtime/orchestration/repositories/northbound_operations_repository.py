@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
-from sqlalchemy import case, func, select, tuple_
+from sqlalchemy import case, column, func, select, table, tuple_
 
 from src.app.runtime.orchestration.operation_observability import NORTHBOUND_OPERATION_SLO_CATALOG
 from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
@@ -13,7 +13,15 @@ from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.system_capabilities.shadow_models import QueryShadowReadinessReportRecord
 from src.app.sys.models.outbox import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
+from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
+
+_WMS_CALL_EVIDENCE = table(
+    "wms_call_evidence",
+    column("provider_profile_identity"),
+    column("operation_name"),
+    schema=SchemaType.BIZ.value,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,37 +102,49 @@ class NorthboundOperationsRepository:
             .order_by(outbox_columns.provider_profile_identity, outbox_columns.operation_identity)
         )
         aggregate_rows = tuple(result.all())
-        if not aggregate_rows:
-            return ()
-
         keys = tuple((str(row[0]), str(row[1])) for row in aggregate_rows)
-        reconciliation_counts = await self._load_reconciliation_counts(
+        # 同步 QUERY 没有 outbox；平台视图必须允许 readiness 独立贡献 operation identity。
+        # owner/workline 视图仍只使用可归属的 outbox keys，避免泄漏无 workline 归属的全局证据。
+        readiness = await self._load_readiness(
             db,
-            tenant_id=tenant_id,
-            workline_id=workline_id,
-            keys=keys,
+            keys=keys if tenant_id is not None or workline_id is not None else None,
         )
-        readiness = await self._load_readiness(db, keys=keys)
+        evidence_keys = (
+            await self._load_sync_query_evidence_keys(db) if tenant_id is None and workline_id is None else ()
+        )
+        visible_keys = tuple(sorted(set(keys) | set(readiness) | set(evidence_keys)))
+        if not visible_keys:
+            return ()
+        reconciliation_counts = (
+            await self._load_reconciliation_counts(
+                db,
+                tenant_id=tenant_id,
+                workline_id=workline_id,
+                keys=keys,
+            )
+            if keys
+            else {}
+        )
+        aggregates = {(str(row[0]), str(row[1])): row for row in aggregate_rows}
         rows: list[NorthboundOperationHealthRow] = []
-        for row in aggregate_rows:
-            provider_profile_identity = str(row[0])
-            operation_identity = str(row[1])
-            oldest_created_at = row[5]
+        for key in visible_keys:
+            provider_profile_identity, operation_identity = key
+            row = aggregates.get(key)
+            oldest_created_at = row[5] if row is not None else None
             oldest_queue_age_seconds = (
                 max(0, int((now - oldest_created_at).total_seconds())) if oldest_created_at is not None else 0
             )
-            key = (provider_profile_identity, operation_identity)
             rows.append(
                 NorthboundOperationHealthRow(
                     provider_profile_identity=provider_profile_identity,
                     operation_identity=operation_identity,
-                    backlog_count=int(row[2] or 0),
-                    active_lease_count=int(row[3] or 0),
-                    unknown_count=int(row[4] or 0),
+                    backlog_count=int(row[2] or 0) if row is not None else 0,
+                    active_lease_count=int(row[3] or 0) if row is not None else 0,
+                    unknown_count=int(row[4] or 0) if row is not None else 0,
                     oldest_queue_age_seconds=oldest_queue_age_seconds,
                     # 实时 rate-limit 命中由 dispatcher signal 提供；读模型不推导策略。
                     rate_limited_count=0,
-                    lease_loss_count=int(row[6] or 0),
+                    lease_loss_count=int(row[6] or 0) if row is not None else 0,
                     reconciliation_open_count=reconciliation_counts.get(key, 0),
                     readiness=readiness.get(key, "UNKNOWN"),
                 )
@@ -171,9 +191,17 @@ class NorthboundOperationsRepository:
         self,
         db: Any,
         *,
-        keys: tuple[tuple[str, str], ...],
+        keys: tuple[tuple[str, str], ...] | None,
     ) -> dict[tuple[str, str], str]:
         report_columns = cast("Any", QueryShadowReadinessReportRecord).__table__.c
+        filters = [report_columns.operation_identity.in_(tuple(NORTHBOUND_OPERATION_SLO_CATALOG))]
+        if keys is not None:
+            filters.append(
+                tuple_(
+                    report_columns.provider_profile_identity,
+                    report_columns.operation_identity,
+                ).in_(keys)
+            )
         result = await db.execute(
             select(
                 report_columns.provider_profile_identity,
@@ -182,12 +210,7 @@ class NorthboundOperationsRepository:
                 report_columns.generated_at,
                 report_columns.report_id,
             )
-            .where(
-                tuple_(
-                    report_columns.provider_profile_identity,
-                    report_columns.operation_identity,
-                ).in_(keys)
-            )
+            .where(*filters)
             .order_by(
                 report_columns.provider_profile_identity,
                 report_columns.operation_identity,
@@ -200,6 +223,25 @@ class NorthboundOperationsRepository:
             key = (str(row[0]), str(row[1]))
             latest.setdefault(key, str(row[2]))
         return latest
+
+    async def _load_sync_query_evidence_keys(self, db: Any) -> tuple[tuple[str, str], ...]:
+        evidence_columns = _WMS_CALL_EVIDENCE.c
+        result = await db.execute(
+            select(
+                evidence_columns.provider_profile_identity,
+                evidence_columns.operation_name,
+            )
+            .where(
+                evidence_columns.provider_profile_identity.is_not(None),
+                evidence_columns.operation_name.in_(tuple(NORTHBOUND_OPERATION_SLO_CATALOG)),
+            )
+            .distinct()
+            .order_by(
+                evidence_columns.provider_profile_identity,
+                evidence_columns.operation_name,
+            )
+        )
+        return tuple((str(row[0]), str(row[1])) for row in result.all())
 
 
 northbound_operations_repository = NorthboundOperationsRepository()

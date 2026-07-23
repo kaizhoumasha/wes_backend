@@ -22,6 +22,7 @@ from src.app.workline.repositories.plugin_binding_repository import workline_plu
 from src.core.conf import settings
 from src.core.exceptions import OptimisticLockException
 from src.utils.timezone import timezone
+from src.utils.value_normalization import runtime_profile_environment
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -92,9 +93,7 @@ class WorklinePluginBindingService:
 
     @staticmethod
     def resolve_runtime_environment(app_env: object) -> str:
-        return {"production": "production", "prod": "production", "staging": "staging"}.get(
-            str(app_env).lower(), "sandbox"
-        )
+        return runtime_profile_environment(app_env)
 
     async def activate(
         self,

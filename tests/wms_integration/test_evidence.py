@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy.dialects.postgresql import JSONB
 
-from src.app.wms_integration.models import WmsCallEvidence, WmsEvidenceStatus
+from src.app.wms_integration.models import WmsCallEvidence, WmsCallEvidenceArchive, WmsEvidenceStatus
 from src.app.wms_integration.repositories import wms_call_evidence_archive_repository
 from src.app.wms_integration.services import (
     WmsCallEvidenceService,
@@ -51,6 +51,7 @@ async def test_evidence_records_sync_redacted_snapshot_and_hash(db_session) -> N
     evidence = await service.record_sync_call(
         db_session,
         evidence_key="sync:reserve:REQ-001",
+        provider_profile_identity="wms.test.production",
         operation_name="reserve_inventory",
         target_code="WMS_INVENTORY",
         status=WmsEvidenceStatus.SUCCEEDED,
@@ -75,6 +76,7 @@ async def test_evidence_reuses_existing_record_for_same_evidence_key(db_session)
     first = await wms_call_evidence_service.record_sync_call(
         db_session,
         evidence_key="sync:query:REQ-002",
+        provider_profile_identity="wms.test.production",
         operation_name="query_inventory",
         target_code="WMS_INVENTORY",
         status=WmsEvidenceStatus.SUCCEEDED,
@@ -86,6 +88,7 @@ async def test_evidence_reuses_existing_record_for_same_evidence_key(db_session)
     second = await wms_call_evidence_service.record_sync_call(
         db_session,
         evidence_key="sync:query:REQ-002",
+        provider_profile_identity="wms.test.production",
         operation_name="query_inventory",
         target_code="WMS_INVENTORY",
         status=WmsEvidenceStatus.FAILED,
@@ -185,6 +188,7 @@ async def test_sync_evidence_bounds_snapshot_size_and_hashes_persisted_snapshot(
     evidence = await wms_call_evidence_service.record_sync_call(
         db_session,
         evidence_key="sync:reserve:REQ-005",
+        provider_profile_identity="wms.test.production",
         operation_name="reserve_inventory",
         target_code="WMS_INVENTORY",
         status=WmsEvidenceStatus.FAILED,
@@ -215,6 +219,7 @@ def test_evidence_model_declares_required_indexes() -> None:
     assert set(indexes) == {
         "ux_wms_call_evidence_key",
         "ix_wms_call_evidence_trace_request_dispatch",
+        "ix_wms_call_evidence_provider_operation_started",
         "ix_wms_call_evidence_operation_started",
         "ix_wms_call_evidence_status_started",
         "ix_wms_call_evidence_request_snapshot_gin",
@@ -226,11 +231,18 @@ def test_evidence_model_declares_required_indexes() -> None:
         "request_id",
         "dispatch_key",
     )
+    assert indexes["ix_wms_call_evidence_provider_operation_started"] == (
+        "provider_profile_identity",
+        "operation_name",
+        "started_at",
+    )
     assert indexes["ix_wms_call_evidence_operation_started"] == ("operation_name", "started_at")
     assert indexes["ix_wms_call_evidence_status_started"] == ("status", "started_at")
     assert indexes["ix_wms_call_evidence_request_snapshot_gin"] == ("request_snapshot",)
     assert indexes["ix_wms_call_evidence_response_snapshot_gin"] == ("response_snapshot",)
 
+    assert table.c.provider_profile_identity.type.length == 240
+    assert WmsCallEvidenceArchive.__table__.c.provider_profile_identity.type.length == 240
     assert isinstance(table.c.request_snapshot.type, JSONB)
     assert isinstance(table.c.response_snapshot.type, JSONB)
 
@@ -287,6 +299,7 @@ async def test_wms_external_reference_drift_job_classifies_evidence_envelopes(db
     await wms_call_evidence_service.record_sync_call(
         db_session,
         evidence_key="sync:pkg-bound:REQ-DRIFT-001",
+        provider_profile_identity="wms.test.production",
         operation_name="pkg_bound",
         target_code="WMS",
         status=WmsEvidenceStatus.SUCCEEDED,
@@ -329,6 +342,7 @@ async def test_wms_evidence_retention_archives_expired_finished_rows(db_session)
     expired = await wms_call_evidence_service.record_sync_call(
         db_session,
         evidence_key="sync:retention:expired",
+        provider_profile_identity="wms.test.production",
         operation_name="query_inventory",
         target_code="WMS_INVENTORY",
         status=WmsEvidenceStatus.SUCCEEDED,
@@ -340,6 +354,7 @@ async def test_wms_evidence_retention_archives_expired_finished_rows(db_session)
     fresh = await wms_call_evidence_service.record_sync_call(
         db_session,
         evidence_key="sync:retention:fresh",
+        provider_profile_identity="wms.test.production",
         operation_name="query_inventory",
         target_code="WMS_INVENTORY",
         status=WmsEvidenceStatus.SUCCEEDED,
@@ -351,6 +366,7 @@ async def test_wms_evidence_retention_archives_expired_finished_rows(db_session)
     in_flight = await wms_call_evidence_service.record_sync_call(
         db_session,
         evidence_key="sync:retention:in-flight",
+        provider_profile_identity="wms.test.production",
         operation_name="query_inventory",
         target_code="WMS_INVENTORY",
         status=WmsEvidenceStatus.STARTED,

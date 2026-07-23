@@ -141,10 +141,14 @@ class WmsCallEvidenceQueryWriter:
         self,
         *,
         session_factory,
+        provider_profile_identity: str,
         evidence_service: WmsCallEvidenceService,
         breaker_service: WmsCircuitBreakerService,
     ) -> None:
+        if not provider_profile_identity:
+            raise ValueError("provider profile identity is required")
         self._session_factory = session_factory
+        self._provider_profile_identity = provider_profile_identity
         self._evidence_service = evidence_service
         self._breaker_service = breaker_service
 
@@ -186,6 +190,7 @@ class WmsCallEvidenceQueryWriter:
                 evidence = await self._evidence_service.record_sync_call(
                     db,
                     evidence_key=evidence_key,
+                    provider_profile_identity=self._provider_profile_identity,
                     operation_name=operation_identity,
                     target_code=target_code,
                     status=status,

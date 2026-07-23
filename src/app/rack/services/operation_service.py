@@ -25,6 +25,7 @@ from src.app.rack.services.gateway import (
     DEFAULT_RACK_OPERATION_ENDPOINT,
     WmsRcsRackGateway,
     freeze_rack_task_binding,
+    legacy_transport_profile_identity,
     wms_rcs_rack_gateway,
 )
 from src.app.rack.services.task_lifecycle_service import (
@@ -282,6 +283,7 @@ class RackOperationService:
         if station_position_code is not None and workline_id is not None and workline_code is not None:
             try:
                 async with db.begin_nested():
+                    frozen_binding = freeze_rack_task_binding(spec.target_code)
                     outbox = await self.station_lease_service.claim_station_dispatch_lease(
                         db,
                         workline_id=workline_id,
@@ -296,12 +298,12 @@ class RackOperationService:
                             dispatch_key=spec.dispatch_key,
                             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
                             target_code=spec.target_code,
-                            provider_profile_identity="wms.legacy-transport.production",
+                            provider_profile_identity=frozen_binding.provider_profile_identity,
                             operation_identity="wms.transport.rack@v1",
                             payload_json=payload_json,
                             canonical_payload_bytes=spec.canonical_payload_bytes,
                             payload_hash=spec.payload_hash,
-                            frozen_binding=freeze_rack_task_binding(spec.target_code),
+                            frozen_binding=frozen_binding,
                             trace_id=coerce_optional_str(spec.request_json.get("trace_id")),
                         ),
                         allow_active_rack_bound=_allows_active_rack_bound_for_station_claim(
@@ -333,7 +335,7 @@ class RackOperationService:
             dispatch_key=spec.dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=spec.target_code,
-            provider_profile_identity="wms.legacy-transport.production",
+            provider_profile_identity=frozen_binding.provider_profile_identity,
             provider_profile_hash=frozen_binding.provider_profile_hash,
             operation_identity="wms.transport.rack@v1",
             binding_revision=frozen_binding.binding_revision,
@@ -1077,7 +1079,7 @@ def _ensure_existing_outbox_shape(
         auth_scheme=outbox.auth_scheme,
         credential_reference=outbox.credential_reference,
     )
-    if frozen_binding.provider_profile_identity != "wms.legacy-transport.production":
+    if frozen_binding.provider_profile_identity != legacy_transport_profile_identity():
         raise ValueError("existing rack operation outbox provider profile differs from request")
     if frozen_binding.operation_identity != "wms.transport.rack@v1":
         raise ValueError("existing rack operation outbox operation identity differs from request")

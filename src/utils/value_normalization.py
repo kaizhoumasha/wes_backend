@@ -27,6 +27,14 @@ def optional_enum_str(value: Any) -> str | None:
     return enum_str(value)
 
 
+def runtime_profile_environment(app_env: object) -> str:
+    """把应用运行环境收敛为外部 Provider profile environment。"""
+    return {"production": "production", "prod": "production", "staging": "staging"}.get(
+        str(app_env).lower(),
+        "sandbox",
+    )
+
+
 def optional_int(value: Any) -> int | None:
     """仅接受真实 int，bool 不视为 int。"""
     if isinstance(value, bool):

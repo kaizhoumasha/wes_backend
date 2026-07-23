@@ -6,9 +6,10 @@ from typing import TYPE_CHECKING
 
 from src.app.runtime.system_capabilities.wms.effect_binding import freeze_wms_effect_binding
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_PRODUCTION_PROFILE_IDENTITY
+from src.app.runtime.system_capabilities.wms.scheduling_identity import wms_runtime_profile_identity
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
+from src.core.conf import settings
 
 if TYPE_CHECKING:
     from src.app.sys.external_http_binding import FrozenExternalHttpBinding
@@ -38,9 +39,10 @@ class ConfirmInboundDispatchGateway:
         }
         payload_json = {key: value for key, value in payload.items() if value is not None}
         canonical = CanonicalPayload.from_projection(payload_json)
+        profile_identity = wms_runtime_profile_identity(settings.APP_ENV)
         if frozen_binding is None:
             frozen_binding = freeze_wms_effect_binding(
-                profile_identity=WMS_PRODUCTION_PROFILE_IDENTITY,
+                profile_identity=profile_identity,
                 operation_identity=CONTRACT.identity,
                 target_code=CONTRACT.target_code,
                 registry=self._registry,
@@ -50,7 +52,7 @@ class ConfirmInboundDispatchGateway:
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=CONTRACT.target_code,
-            provider_profile_identity=WMS_PRODUCTION_PROFILE_IDENTITY,
+            provider_profile_identity=profile_identity,
             operation_identity=CONTRACT.identity,
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,

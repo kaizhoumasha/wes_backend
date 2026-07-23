@@ -40,6 +40,7 @@ def frozen_external_http_binding(
 ) -> FrozenExternalHttpBinding:
     profile = ExternalHttpProviderProfileDefinition(
         identity=provider_profile_identity,
+        environment="sandbox",
         bindings=(
             ExternalHttpBindingDefinition(
                 operation_identity=operation_identity,

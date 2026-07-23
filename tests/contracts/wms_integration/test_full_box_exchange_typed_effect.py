@@ -14,7 +14,6 @@ from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contr
 from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.gateway import (
     FullBoxExchangeDispatchGateway,
 )
-from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_PRODUCTION_PROFILE_IDENTITY
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.services.endpoint_registry import EndpointRegistry
 from src.app.wms_integration.ports.full_box_exchange_operation import (
@@ -148,7 +147,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     assert outbox.operation_identity == CONTRACT.identity
     assert outbox.operation_key == "WMS:RACK-001:EMPTY-001:FULL-001"
     assert outbox.target_snapshot_json["url"] == ("https://wms-v1.example/api/wes/fulfillment/full-box-exchange")
-    assert outbox.provider_profile_identity == WMS_PRODUCTION_PROFILE_IDENTITY
+    assert outbox.provider_profile_identity == "wms.2026-07-06.material-flow.sandbox"
     assert outbox.canonical_payload_bytes == (
         b'{"empty_box_id":"EMPTY-001","full_box_id":"FULL-001","rack_id":"RACK-001"}'
     )

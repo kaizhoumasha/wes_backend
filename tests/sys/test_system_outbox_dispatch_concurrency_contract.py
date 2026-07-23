@@ -158,7 +158,7 @@ def test_plugin_external_http_targets_share_one_controlled_bucket_identity() -> 
     ]
 
     assert {DispatchBucketKey(outbox.provider_profile_identity, outbox.operation_identity) for outbox in outboxes} == {
-        DispatchBucketKey("workline.plugin-runtime.v1", "workline.external-http.v1")
+        DispatchBucketKey("workline.plugin-runtime.v1.sandbox", "workline.external-http.v1")
     }
 
 

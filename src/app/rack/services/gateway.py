@@ -9,6 +9,7 @@ from src.app.wms_integration.services.transport_contract import (
     WmsRackTaskRequest,
     WmsTransportContractService,
     freeze_legacy_transport_binding,
+    legacy_transport_profile_identity,
     wms_transport_contract_service,
 )
 
@@ -122,5 +123,6 @@ __all__ = [
     "DEFAULT_RACK_OPERATION_ENDPOINT",
     "WmsRcsRackGateway",
     "freeze_rack_task_binding",
+    "legacy_transport_profile_identity",
     "wms_rcs_rack_gateway",
 ]

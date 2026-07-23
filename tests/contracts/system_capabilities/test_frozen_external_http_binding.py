@@ -17,6 +17,7 @@ from src.app.sys.external_http_binding import (
 from src.app.sys.external_http_credentials import (
     CredentialRevokedError,
     EnvironmentVersionedCredentialProvider,
+    build_environment_external_http_credential_provider,
 )
 from src.app.sys.models import (
     DispatchEnvelope,
@@ -26,6 +27,9 @@ from src.app.sys.models import (
     SystemOutboxUpdate,
 )
 from src.app.sys.services.endpoint_registry import EndpointRegistry
+from src.app.wms_integration.services.transport_contract import freeze_legacy_transport_binding
+from src.app.workline.external_http_profile import freeze_plugin_external_http_binding
+from src.core.conf import settings
 
 ROOT = Path(__file__).parents[3]
 
@@ -33,6 +37,7 @@ ROOT = Path(__file__).parents[3]
 def _profile(*, credential_reference: str = "secret://wms/effect-hmac@v1") -> ExternalHttpProviderProfileDefinition:
     return ExternalHttpProviderProfileDefinition(
         identity="wms.effect.production",
+        environment="production",
         bindings=(
             ExternalHttpBindingDefinition(
                 operation_identity="wms.inventory.confirm_inbound@v1",
@@ -117,6 +122,58 @@ def test_persisted_target_snapshot_rejects_hash_or_identity_tampering() -> None:
 def test_credential_reference_must_be_versioned() -> None:
     with pytest.raises(ValueError, match="versioned credential reference"):
         _profile(credential_reference="secret://wms/effect-hmac")
+
+
+def test_production_profile_rejects_plain_http_target_before_freezing() -> None:
+    with pytest.raises(ValueError, match="production EXTERNAL_HTTP endpoint requires HTTPS"):
+        freeze_external_http_binding(
+            profile=_profile(),
+            operation_identity="wms.inventory.confirm_inbound@v1",
+            target_code="WMS_CONFIRM_INBOUND",
+            endpoint_registry=EndpointRegistry({"WMS_CONFIRM_INBOUND": "http://wms/effects/inbound"}),
+        )
+
+
+def test_runtime_profiles_allow_sandbox_http_and_reject_production_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = EndpointRegistry(
+        {
+            "WMS_RCS_RACK_OPERATION": "http://mock-wms.test/rack",
+        }
+    )
+    monkeypatch.setattr(settings, "APP_ENV", "dev")
+
+    plugin_binding = freeze_plugin_external_http_binding(
+        "WMS_RCS_RACK_OPERATION",
+        registry=registry,
+    )
+    legacy_binding = freeze_legacy_transport_binding(
+        operation_identity="wms.transport.rack@v1",
+        target_code="WMS_RCS_RACK_OPERATION",
+        registry=registry,
+    )
+
+    assert plugin_binding.provider_profile_identity == "workline.plugin-runtime.v1.sandbox"
+    assert legacy_binding.provider_profile_identity == "wms.legacy-transport.sandbox"
+    monkeypatch.setenv("WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1", "plugin-sandbox-secret")
+    monkeypatch.setenv("WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1", "legacy-sandbox-secret")
+    credential_provider = build_environment_external_http_credential_provider()
+    assert credential_provider.resolve(plugin_binding.credential_reference) == b"plugin-sandbox-secret"
+    assert credential_provider.resolve(legacy_binding.credential_reference) == b"legacy-sandbox-secret"
+
+    monkeypatch.setattr(settings, "APP_ENV", "prod")
+    with pytest.raises(ValueError, match="production EXTERNAL_HTTP endpoint requires HTTPS"):
+        freeze_plugin_external_http_binding(
+            "WMS_RCS_RACK_OPERATION",
+            registry=registry,
+        )
+    with pytest.raises(ValueError, match="production EXTERNAL_HTTP endpoint requires HTTPS"):
+        freeze_legacy_transport_binding(
+            operation_identity="wms.transport.rack@v1",
+            target_code="WMS_RCS_RACK_OPERATION",
+            registry=registry,
+        )
 
 
 def test_secret_provider_resolves_exact_version_and_revocation_wins(monkeypatch: pytest.MonkeyPatch) -> None:

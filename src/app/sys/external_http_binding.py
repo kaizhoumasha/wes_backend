@@ -71,10 +71,13 @@ class ExternalHttpProviderProfileDefinition:
     """仅含非秘密声明的 EXTERNAL_HTTP Provider profile。"""
 
     identity: str
+    environment: Literal["sandbox", "staging", "production"]
     bindings: tuple[ExternalHttpBindingDefinition, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "identity", _required_text(self.identity, "provider profile identity"))
+        if self.environment not in {"sandbox", "staging", "production"}:
+            raise ValueError("provider profile environment is invalid")
         identities = tuple(binding.operation_identity for binding in self.bindings)
         if not identities or len(identities) != len(set(identities)):
             raise ValueError("provider profile requires unique operation bindings")
@@ -84,6 +87,7 @@ class ExternalHttpProviderProfileDefinition:
         return _sha256_json(
             {
                 "bindings": tuple(binding.canonical_payload() for binding in self.bindings),
+                "environment": self.environment,
                 "identity": self.identity,
             }
         )
@@ -232,6 +236,8 @@ def freeze_external_http_binding(
         http_method=binding.http_method,
         timeout_seconds=binding.timeout_seconds,
     )
+    if profile.environment == "production" and urlparse(target_snapshot.url).scheme != "https":
+        raise ValueError("production EXTERNAL_HTTP endpoint requires HTTPS")
     binding_revision = _sha256_json(
         {
             "binding": binding.canonical_payload(),

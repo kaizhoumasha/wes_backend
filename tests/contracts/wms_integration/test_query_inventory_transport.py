@@ -444,6 +444,7 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
         transport=httpx.MockTransport(handler),
         evidence_writer=WmsCallEvidenceQueryWriter(
             session_factory=session_factory,
+            provider_profile_identity="wms.2026-07-06.material-flow.production",
             evidence_service=wms_call_evidence_service,
             breaker_service=WmsCircuitBreakerService(),
         ),
@@ -459,5 +460,6 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
         result = await db.execute(select(WmsCallEvidence).where(WmsCallEvidence.evidence_key == outcome.evidence_key))
         evidence = result.scalar_one()
     assert evidence.operation_name == CONTRACT.identity
+    assert evidence.provider_profile_identity == "wms.2026-07-06.material-flow.production"
     assert evidence.status == "SUCCEEDED"
     assert evidence.response_snapshot["source_version"] == "WMS-42"

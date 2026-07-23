@@ -113,6 +113,7 @@ def _inventory_query_port_factory_builder(session_factory: Any, http_calls: list
             transport=httpx.MockTransport(handler),
             evidence_writer=WmsCallEvidenceQueryWriter(
                 session_factory=session_factory,
+                provider_profile_identity=provider_profile.identity,
                 evidence_service=WmsCallEvidenceService(),
                 breaker_service=breaker_service,
             ),

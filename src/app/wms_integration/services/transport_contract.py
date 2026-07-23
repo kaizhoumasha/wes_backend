@@ -19,13 +19,12 @@ from src.app.sys.external_http_binding import (
 )
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
 from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
-from src.utils.value_normalization import require_text
+from src.core.conf import settings
+from src.utils.value_normalization import require_text, runtime_profile_environment
 
 DEFAULT_RACK_OPERATION_ENDPOINT = "WMS_RCS_RACK_OPERATION"
 BIN_OPERATION_ENDPOINT = "WMS_RCS_BIN_OPERATION"
 FULL_BOX_EXCHANGE_ENDPOINT = "WMS_RCS_FULL_BOX_EXCHANGE"
-LEGACY_TRANSPORT_PROFILE_IDENTITY = "wms.legacy-transport.production"
-LEGACY_TRANSPORT_CREDENTIAL_REFERENCE = "secret://wms/legacy-transport-production-hmac@v1"
 SINGLE_LAYER_RACK_OPERATION_AUTHORITY_SYSTEM = "WMS"
 SINGLE_LAYER_RACK_KIND = "SINGLE_LAYER"
 
@@ -42,27 +41,37 @@ _FORBIDDEN_DIRECT_DEVICE_FIELDS = frozenset(
     }
 )
 
-LEGACY_EXTERNAL_HTTP_PROFILE = ExternalHttpProviderProfileDefinition(
-    identity=LEGACY_TRANSPORT_PROFILE_IDENTITY,
-    bindings=(
-        ExternalHttpBindingDefinition(
-            operation_identity="wms.transport.rack@v1",
-            allowed_target_codes=(DEFAULT_RACK_OPERATION_ENDPOINT,),
-            http_method="POST",
-            timeout_seconds=30,
-            auth_scheme="HMAC_SHA256",
-            credential_reference=LEGACY_TRANSPORT_CREDENTIAL_REFERENCE,
+
+def legacy_transport_profile_identity() -> str:
+    environment = runtime_profile_environment(settings.APP_ENV)
+    return f"wms.legacy-transport.{environment}"
+
+
+def _legacy_external_http_profile() -> ExternalHttpProviderProfileDefinition:
+    environment = runtime_profile_environment(settings.APP_ENV)
+    credential_reference = f"secret://wms/legacy-transport-{environment}-hmac@v1"
+    return ExternalHttpProviderProfileDefinition(
+        identity=legacy_transport_profile_identity(),
+        environment=environment,
+        bindings=(
+            ExternalHttpBindingDefinition(
+                operation_identity="wms.transport.rack@v1",
+                allowed_target_codes=(DEFAULT_RACK_OPERATION_ENDPOINT,),
+                http_method="POST",
+                timeout_seconds=30,
+                auth_scheme="HMAC_SHA256",
+                credential_reference=credential_reference,
+            ),
+            ExternalHttpBindingDefinition(
+                operation_identity="wms.transport.handling@v1",
+                allowed_target_codes=(BIN_OPERATION_ENDPOINT, FULL_BOX_EXCHANGE_ENDPOINT),
+                http_method="POST",
+                timeout_seconds=30,
+                auth_scheme="HMAC_SHA256",
+                credential_reference=credential_reference,
+            ),
         ),
-        ExternalHttpBindingDefinition(
-            operation_identity="wms.transport.handling@v1",
-            allowed_target_codes=(BIN_OPERATION_ENDPOINT, FULL_BOX_EXCHANGE_ENDPOINT),
-            http_method="POST",
-            timeout_seconds=30,
-            auth_scheme="HMAC_SHA256",
-            credential_reference=LEGACY_TRANSPORT_CREDENTIAL_REFERENCE,
-        ),
-    ),
-)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +92,7 @@ def freeze_legacy_transport_binding(
     registry: EndpointRegistry = endpoint_registry,
 ) -> FrozenExternalHttpBinding:
     return freeze_external_http_binding(
-        profile=LEGACY_EXTERNAL_HTTP_PROFILE,
+        profile=_legacy_external_http_profile(),
         operation_identity=operation_identity,
         target_code=target_code,
         endpoint_registry=registry,
@@ -260,7 +269,7 @@ class WmsTransportContractService:
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=request.target_code,
-            provider_profile_identity="wms.legacy-transport.production",
+            provider_profile_identity=frozen_binding.provider_profile_identity,
             operation_identity="wms.transport.rack@v1",
             payload_json=request.payload_json,
             canonical_payload_bytes=request.canonical_payload_bytes,
@@ -334,7 +343,7 @@ class WmsTransportContractService:
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=target_code,
-            provider_profile_identity="wms.legacy-transport.production",
+            provider_profile_identity=frozen_binding.provider_profile_identity,
             operation_identity="wms.transport.handling@v1",
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
@@ -473,5 +482,7 @@ __all__ = [
     "SINGLE_LAYER_RACK_OPERATION_AUTHORITY_SYSTEM",
     "WmsRackTaskRequest",
     "WmsTransportContractService",
+    "freeze_legacy_transport_binding",
+    "legacy_transport_profile_identity",
     "wms_transport_contract_service",
 ]
