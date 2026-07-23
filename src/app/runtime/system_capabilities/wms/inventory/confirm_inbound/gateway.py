@@ -1,5 +1,6 @@
 """入库确认领域 request 到现有 DispatchEnvelope 的唯一映射。"""
 
+from src.app.runtime.system_capabilities.wms.effect_binding import freeze_wms_effect_binding
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_PRODUCTION_PROFILE_IDENTITY
 from src.app.sys.canonical_dispatch import CanonicalPayload
@@ -21,6 +22,11 @@ class ConfirmInboundDispatchGateway:
         }
         payload_json = {key: value for key, value in payload.items() if value is not None}
         canonical = CanonicalPayload.from_projection(payload_json)
+        frozen_binding = freeze_wms_effect_binding(
+            profile_identity=WMS_PRODUCTION_PROFILE_IDENTITY,
+            operation_identity=CONTRACT.identity,
+            target_code=CONTRACT.target_code,
+        )
         return DispatchEnvelope(
             dispatch_key=request.dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
@@ -31,6 +37,7 @@ class ConfirmInboundDispatchGateway:
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
+            frozen_binding=frozen_binding,
             operation_domain="WMS_INVENTORY",
             operation_key=request.inbound_key,
             workline_id=request.workline_id,

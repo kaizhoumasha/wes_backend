@@ -10,12 +10,21 @@ from copy import deepcopy
 from typing import Any
 
 from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.external_http_binding import (
+    ExternalHttpBindingDefinition,
+    ExternalHttpProviderProfileDefinition,
+    FrozenExternalHttpBinding,
+    freeze_external_http_binding,
+)
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
+from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
 from src.utils.value_normalization import require_text
 
 DEFAULT_RACK_OPERATION_ENDPOINT = "WMS_RCS_RACK_OPERATION"
 BIN_OPERATION_ENDPOINT = "WMS_RCS_BIN_OPERATION"
 FULL_BOX_EXCHANGE_ENDPOINT = "WMS_RCS_FULL_BOX_EXCHANGE"
+LEGACY_TRANSPORT_PROFILE_IDENTITY = "wms.legacy-transport.production"
+LEGACY_TRANSPORT_CREDENTIAL_REFERENCE = "secret://wms/legacy-transport-production-hmac@v1"
 SINGLE_LAYER_RACK_OPERATION_AUTHORITY_SYSTEM = "WMS"
 SINGLE_LAYER_RACK_KIND = "SINGLE_LAYER"
 
@@ -31,6 +40,42 @@ _FORBIDDEN_DIRECT_DEVICE_FIELDS = frozenset(
         "physical_coordinate",
     }
 )
+
+LEGACY_EXTERNAL_HTTP_PROFILE = ExternalHttpProviderProfileDefinition(
+    identity=LEGACY_TRANSPORT_PROFILE_IDENTITY,
+    bindings=(
+        ExternalHttpBindingDefinition(
+            operation_identity="wms.transport.rack@v1",
+            allowed_target_codes=(DEFAULT_RACK_OPERATION_ENDPOINT,),
+            http_method="POST",
+            timeout_seconds=30,
+            auth_scheme="HMAC_SHA256",
+            credential_reference=LEGACY_TRANSPORT_CREDENTIAL_REFERENCE,
+        ),
+        ExternalHttpBindingDefinition(
+            operation_identity="wms.transport.handling@v1",
+            allowed_target_codes=(BIN_OPERATION_ENDPOINT, FULL_BOX_EXCHANGE_ENDPOINT),
+            http_method="POST",
+            timeout_seconds=30,
+            auth_scheme="HMAC_SHA256",
+            credential_reference=LEGACY_TRANSPORT_CREDENTIAL_REFERENCE,
+        ),
+    ),
+)
+
+
+def freeze_legacy_transport_binding(
+    *,
+    operation_identity: str,
+    target_code: str,
+    registry: EndpointRegistry = endpoint_registry,
+) -> FrozenExternalHttpBinding:
+    return freeze_external_http_binding(
+        profile=LEGACY_EXTERNAL_HTTP_PROFILE,
+        operation_identity=operation_identity,
+        target_code=target_code,
+        endpoint_registry=registry,
+    )
 
 
 class WmsTransportContractService:
@@ -150,6 +195,10 @@ class WmsTransportContractService:
             }
             payload["position_code"] = station_position_code
         canonical = CanonicalPayload.from_projection(payload)
+        frozen_binding = freeze_legacy_transport_binding(
+            operation_identity="wms.transport.rack@v1",
+            target_code=target_code or DEFAULT_RACK_OPERATION_ENDPOINT,
+        )
         return DispatchEnvelope(
             dispatch_key=resolved_dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
@@ -160,6 +209,7 @@ class WmsTransportContractService:
             payload_json=payload,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
+            frozen_binding=frozen_binding,
             operation_domain="RACK",
             operation_key=operation_key,
             workline_id=workline_id,
@@ -219,6 +269,10 @@ class WmsTransportContractService:
             }
         )
         canonical = CanonicalPayload.from_projection(payload_json)
+        frozen_binding = freeze_legacy_transport_binding(
+            operation_identity="wms.transport.handling@v1",
+            target_code=target_code,
+        )
         return DispatchEnvelope(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
@@ -229,6 +283,7 @@ class WmsTransportContractService:
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
+            frozen_binding=frozen_binding,
             operation_domain="HANDLING",
             operation_key=str(operation.operation_key),
             workline_id=getattr(operation, "workline_id", None),

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 
-from src.app.sys.canonical_dispatch import CanonicalPayload, EndpointDefinition, ExternalHttpDispatchRequest
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportOutcome,
@@ -18,14 +17,18 @@ from src.app.sys.external_http_transport import (
 )
 from src.app.sys.services.outbox_delivery import dispatch_external_http
 from src.app.sys.services.outbox_engine import _send_external_http
+from tests.support.external_http import (
+    StaticTestCredentialProvider,
+    frozen_outbox_namespace,
+    signed_external_http_request,
+)
+
+if TYPE_CHECKING:
+    from src.app.sys.canonical_dispatch import ExternalHttpDispatchRequest
 
 
 def _request() -> ExternalHttpDispatchRequest:
-    canonical = CanonicalPayload.from_projection({"request_id": "REQ-001"})
-    return ExternalHttpDispatchRequest(
-        endpoint=EndpointDefinition(code="WMS_TEST", url="https://wms.example/effects"),
-        payload=canonical,
-    )
+    return signed_external_http_request({"request_id": "REQ-001"})
 
 
 def test_transport_result_is_frozen_and_rejects_retryable_non_not_sent_outcome() -> None:
@@ -120,8 +123,8 @@ async def test_http_response_classification_is_delivery_certain_and_protocol_awa
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def post(self, url: str, **kwargs: Any) -> SimpleNamespace:
-            calls.append({"url": url, **kwargs})
+        async def request(self, method: str, url: str, **kwargs: Any) -> SimpleNamespace:
+            calls.append({"method": method, "url": url, **kwargs})
             return SimpleNamespace(status_code=status_code)
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
@@ -147,7 +150,7 @@ async def test_connect_error_is_confirmed_not_sent_and_retry_safe(monkeypatch: p
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def post(self, _url: str, **_kwargs: Any) -> SimpleNamespace:
+        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
             raise httpx.ConnectError("connection refused", request=httpx.Request("POST", request.endpoint.url))
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
@@ -183,7 +186,7 @@ async def test_timeout_and_reset_are_ambiguous_and_never_retry_safe(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def post(self, _url: str, **_kwargs: Any) -> SimpleNamespace:
+        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
             raise exception_type("transport interrupted", request=httpx.Request("POST", request.endpoint.url))
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
@@ -220,20 +223,16 @@ async def test_preflight_failure_is_not_sent_but_not_retry_safe() -> None:
 
 @pytest.mark.asyncio
 async def test_non_typed_sender_result_fails_closed_as_ambiguous_contract_violation() -> None:
-    canonical = CanonicalPayload.from_projection({"request_id": "REQ-001"})
-    outbox = SimpleNamespace(
-        target_code="WMS_TEST",
-        canonical_payload_bytes=canonical.body,
-        payload_hash=canonical.sha256,
-    )
-    registry = SimpleNamespace(
-        resolve=lambda _code: EndpointDefinition(code="WMS_TEST", url="https://wms.example/effects")
-    )
+    outbox = frozen_outbox_namespace({"request_id": "REQ-001"})
 
     async def invalid_sender(_request: ExternalHttpDispatchRequest) -> object:
         return object()
 
-    result = await dispatch_external_http(outbox, registry, invalid_sender)  # type: ignore[arg-type]
+    result = await dispatch_external_http(
+        outbox,
+        StaticTestCredentialProvider(),
+        invalid_sender,  # type: ignore[arg-type]
+    )
 
     assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
     assert result.safe_to_retry is False

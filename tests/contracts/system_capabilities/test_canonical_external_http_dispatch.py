@@ -24,14 +24,26 @@ from src.app.sys.models import (
     SystemOutboxDispatchType,
     SystemOutboxTargetType,
 )
-from src.app.sys.services.endpoint_registry import EndpointDefinition, EndpointRegistry
+from src.app.sys.services.endpoint_registry import EndpointDefinition
 from src.app.sys.services.outbox_delivery import dispatch_external_http
 from src.app.sys.services.outbox_engine import _send_external_http
+from tests.support.external_http import (
+    TEST_SECRET,
+    StaticTestCredentialProvider,
+    frozen_external_http_binding,
+    signed_external_http_request,
+)
 
 
 def _external_envelope(**overrides: Any) -> DispatchEnvelope:
     projection = {"quantity": "1.2300", "request_id": "REQ-入库-001"}
     canonical = CanonicalPayload.from_projection(projection)
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS_INBOUND",
+        target_url="https://wms.example/inbound",
+        provider_profile_identity="wms.profile-test",
+        operation_identity="wms.inventory.confirm@v1",
+    )
     values = {
         "dispatch_key": "dispatch-001",
         "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP,
@@ -42,6 +54,7 @@ def _external_envelope(**overrides: Any) -> DispatchEnvelope:
         "payload_json": projection,
         "canonical_payload_bytes": canonical.body,
         "payload_hash": canonical.sha256,
+        "frozen_binding": frozen_binding,
         "operation_domain": "WMS_INVENTORY",
     }
     values.update(overrides)
@@ -56,9 +69,14 @@ def test_canonical_payload_uses_one_frozen_byte_sequence_for_hash_signature_and_
     assert first.sha256 == sha256(first.body).hexdigest()
     assert first.sign_hmac_sha256(b"test-secret") == new_hmac(b"test-secret", first.body, sha256).hexdigest()
 
-    request = ExternalHttpDispatchRequest(
-        endpoint=EndpointDefinition(code="WMS_INBOUND", url="https://wms.example/inbound"),
-        payload=first,
+    binding = frozen_external_http_binding(target_code="WMS_INBOUND", target_url="https://wms.example/inbound")
+    request = ExternalHttpDispatchRequest.from_persisted(
+        binding=binding,
+        canonical_payload_bytes=first.body,
+        payload_hash=first.sha256,
+        secret=TEST_SECRET,
+        timestamp="2026-07-23T00:00:00+00:00",
+        nonce="canonical-test",
     )
     assert request.body is first.body
     assert request.payload_hash == first.sha256
@@ -142,7 +160,6 @@ async def test_repeated_external_http_attempts_use_frozen_bytes_without_reading_
     canonical = CanonicalPayload.from_projection({"request_id": "REQ-001", "quantity": "1.2300"})
 
     class ProjectionMustNotBeRead:
-        target_code = "WMS_INBOUND"
         canonical_payload_bytes = canonical.body
         payload_hash = canonical.sha256
 
@@ -160,11 +177,16 @@ async def test_repeated_external_http_attempts_use_frozen_bytes_without_reading_
             error_code="CONNECT_ERROR",
         )
 
-    registry = EndpointRegistry({"WMS_INBOUND": "https://wms.example/inbound"})
     outbox = ProjectionMustNotBeRead()
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS_INBOUND",
+        target_url="https://wms.example/inbound",
+    )
+    for field_name, value in frozen_binding.as_persisted_fields().items():
+        setattr(outbox, field_name, value)
 
-    first = await dispatch_external_http(outbox, registry, sender)
-    second = await dispatch_external_http(outbox, registry, sender)
+    first = await dispatch_external_http(outbox, StaticTestCredentialProvider(), sender)
+    second = await dispatch_external_http(outbox, StaticTestCredentialProvider(), sender)
 
     assert first.outcome is ExternalHttpTransportOutcome.NOT_SENT
     assert second.outcome is ExternalHttpTransportOutcome.NOT_SENT
@@ -173,11 +195,18 @@ async def test_repeated_external_http_attempts_use_frozen_bytes_without_reading_
 
 
 def test_external_http_request_rejects_persisted_bytes_hash_mismatch() -> None:
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS_INBOUND",
+        target_url="https://wms.example/inbound",
+    )
     with pytest.raises(ValueError, match="payload_hash"):
         ExternalHttpDispatchRequest.from_persisted(
-            endpoint=EndpointDefinition(code="WMS_INBOUND", url="https://wms.example/inbound"),
+            binding=frozen_binding,
             canonical_payload_bytes=b'{"request_id":"REQ-001"}',
             payload_hash="f" * 64,
+            secret=TEST_SECRET,
+            timestamp="2026-07-23T00:00:00+00:00",
+            nonce="mismatch-test",
         )
 
 
@@ -196,9 +225,10 @@ def test_replay_parses_only_the_frozen_canonical_bytes() -> None:
 @pytest.mark.asyncio
 async def test_default_http_sender_posts_the_exact_frozen_body(monkeypatch: pytest.MonkeyPatch) -> None:
     canonical = CanonicalPayload.from_projection({"quantity": "1.2300", "request_id": "REQ-001"})
-    request = ExternalHttpDispatchRequest(
-        endpoint=EndpointDefinition(code="WMS_INBOUND", url="https://wms.example/inbound"),
-        payload=canonical,
+    request = signed_external_http_request(
+        {"quantity": "1.2300", "request_id": "REQ-001"},
+        target_code="WMS_INBOUND",
+        target_url="https://wms.example/inbound",
     )
     calls: list[dict[str, Any]] = []
 
@@ -209,8 +239,8 @@ async def test_default_http_sender_posts_the_exact_frozen_body(monkeypatch: pyte
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def post(self, url: str, **kwargs: Any) -> SimpleNamespace:
-            calls.append({"url": url, **kwargs})
+        async def request(self, method: str, url: str, **kwargs: Any) -> SimpleNamespace:
+            calls.append({"method": method, "url": url, **kwargs})
             return SimpleNamespace(status_code=202)
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
@@ -221,11 +251,9 @@ async def test_default_http_sender_posts_the_exact_frozen_body(monkeypatch: pyte
     assert result.protocol_result is ExternalHttpProtocolResult.ACCEPTED
     assert calls == [
         {
+            "method": "POST",
             "url": "https://wms.example/inbound",
             "content": canonical.body,
-            "headers": {
-                "Content-Type": "application/json",
-                "X-WES-Content-SHA256": canonical.sha256,
-            },
+            "headers": request.headers,
         }
     ]

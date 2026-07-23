@@ -55,8 +55,15 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
 
         immutable_fields = {
             "dispatch_key",
+            "target_code",
             "provider_profile_identity",
+            "provider_profile_hash",
             "operation_identity",
+            "binding_revision",
+            "target_snapshot_json",
+            "target_snapshot_hash",
+            "auth_scheme",
+            "credential_reference",
             "payload_json",
             "canonical_payload_bytes",
             "payload_hash",

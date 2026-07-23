@@ -29,19 +29,22 @@ from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOut
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
 from src.utils.timezone import timezone
+from tests.support.external_http import (
+    StaticTestCredentialProvider,
+    frozen_external_http_binding,
+    frozen_outbox_namespace,
+)
 
 
 def _outbox() -> SimpleNamespace:
-    canonical = CanonicalPayload.from_projection({"request_id": "REQ-001"})
-    return SimpleNamespace(
+    return frozen_outbox_namespace(
+        {"request_id": "REQ-001"},
+        target_code="WMS_RCS_BIN_OPERATION",
+        target_url="http://wms-rcs/api/wes/transport-request",
         id=1,
         dispatch_key="dispatch-001",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="WMS_RCS_BIN_OPERATION",
-        payload_json={"request_id": "REQ-001"},
-        canonical_payload_bytes=canonical.body,
-        payload_hash=canonical.sha256,
         status=SystemOutboxStatus.NEW,
         attempt_count=0,
         next_retry_at=None,
@@ -193,6 +196,7 @@ async def _dispatch(
         outbox_repository=repository,  # type: ignore[arg-type]
         dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
         dispatch_attempt_service=attempt_service,
         workline_domain_dispatcher=_no_workline_messages,
         effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
@@ -275,6 +279,7 @@ async def test_ambiguous_result_enters_unknown_and_is_not_dispatched_again() -> 
         outbox_repository=repository,  # type: ignore[arg-type]
         dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
         dispatch_attempt_service=attempt_service,
         workline_domain_dispatcher=_no_workline_messages,
         effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
@@ -333,6 +338,7 @@ async def test_generic_attempt_evidence_failure_fail_closes_unknown_without_seco
         outbox_repository=repository,  # type: ignore[arg-type]
         dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
         dispatch_attempt_service=attempt_service,
         external_http_recovery_context_factory=recovery_context,
         workline_domain_dispatcher=_no_workline_messages,
@@ -362,14 +368,18 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
     """首 worker 的 UNKNOWN 恢复失败后，下一 worker 只能收口旧 lease，不能重发 HTTP。"""
 
     canonical = CanonicalPayload.from_projection({"request_id": "REQ-RECOVERY-FAIL-LEASE"})
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS_RCS_BIN_OPERATION",
+        target_url="http://wms-rcs/api/wes/transport-request",
+        provider_profile_identity="wms.legacy-transport.production",
+        operation_identity="wms.transport.handling@v1",
+    )
     outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
         operation_domain="HANDLING",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key="external-http-recovery-fail-lease",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="WMS_RCS_BIN_OPERATION",
-        provider_profile_identity="wms.legacy-transport.production",
-        operation_identity="wms.transport.handling@v1",
         payload_json={"request_id": "REQ-RECOVERY-FAIL-LEASE"},
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,
@@ -397,6 +407,7 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
         outbox_repository=repository,
         dispatch_scheduler=_scheduler(outbox),
         external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
         dispatch_attempt_service=_FailOnceAttemptService(),
         external_http_recovery_context_factory=unavailable_recovery_context,
         workline_domain_dispatcher=_no_workline_messages,

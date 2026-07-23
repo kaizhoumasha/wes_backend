@@ -20,6 +20,7 @@ from src.app.sys.models.outbox import (
 )
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository
 from src.utils.timezone import timezone
+from tests.support.external_http import frozen_external_http_binding
 
 
 class _FakeResult:
@@ -304,15 +305,18 @@ async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_worklin
     db_session.add(session)
     await db_session.flush()
     canonical = CanonicalPayload.from_projection({})
+    frozen_binding = frozen_external_http_binding(
+        target_code="TEST",
+        provider_profile_identity="test.sandbox.v1",
+        operation_identity="test.sandbox.external-http",
+    )
     outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
         session_id=session.id,
         workline_id=901,
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key="sandbox-runtime-inbox-dispatch-1",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="TEST",
-        provider_profile_identity="test.sandbox.v1",
-        operation_identity="test.sandbox.external-http",
         payload_json={},
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,

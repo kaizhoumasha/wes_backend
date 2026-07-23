@@ -1,9 +1,9 @@
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.sys.canonical_dispatch import CanonicalPayload, EndpointDefinition, ExternalHttpDispatchRequest
+from src.app.sys.canonical_dispatch import ExternalHttpDispatchRequest
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportOutcome,
@@ -11,6 +11,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportResult,
 )
 from src.app.sys.services.outbox_delivery import dispatch_external_http, dispatch_internal_signal
+from tests.support.external_http import StaticTestCredentialProvider, frozen_outbox_namespace
 
 
 class _FakeTaskQueueGateway:
@@ -32,18 +33,7 @@ class _FakeTaskQueueGateway:
 
 @pytest.mark.asyncio
 async def test_dispatch_external_http_success() -> None:
-    canonical = CanonicalPayload.from_projection({"k": "v"})
-    outbox = type(
-        "Outbox",
-        (),
-        {
-            "target_code": "TEST_ENDPOINT",
-            "canonical_payload_bytes": canonical.body,
-            "payload_hash": canonical.sha256,
-        },
-    )()
-    registry = MagicMock()
-    registry.resolve.return_value = EndpointDefinition(code="TEST_ENDPOINT", url="http://test/api")
+    outbox = frozen_outbox_namespace({"k": "v"}, target_code="TEST_ENDPOINT", target_url="http://test/api")
 
     sender = AsyncMock(
         return_value=ExternalHttpTransportResult.accepted(
@@ -52,22 +42,20 @@ async def test_dispatch_external_http_success() -> None:
         )
     )
 
-    result = await dispatch_external_http(outbox, registry, sender)
+    result = await dispatch_external_http(outbox, StaticTestCredentialProvider(), sender)
     assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
     request = sender.await_args.args[0]
     assert isinstance(request, ExternalHttpDispatchRequest)
     assert request.endpoint.url == "http://test/api"
-    assert request.body == canonical.body
+    assert request.body == outbox.canonical_payload_bytes
 
 
 @pytest.mark.asyncio
 async def test_dispatch_external_http_registry_failure() -> None:
     outbox = type("Outbox", (), {"target_code": "MISSING"})()
-    registry = MagicMock()
-    registry.resolve.side_effect = ValueError("Missing")
     sender = AsyncMock()
 
-    result = await dispatch_external_http(outbox, registry, sender)
+    result = await dispatch_external_http(outbox, StaticTestCredentialProvider(), sender)
     assert result.outcome is ExternalHttpTransportOutcome.NOT_SENT
     assert result.safe_to_retry is False
     sender.assert_not_awaited()
@@ -75,18 +63,7 @@ async def test_dispatch_external_http_registry_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_external_http_sender_failure() -> None:
-    canonical = CanonicalPayload.from_projection({"k": "v"})
-    outbox = type(
-        "Outbox",
-        (),
-        {
-            "target_code": "TEST_ENDPOINT",
-            "canonical_payload_bytes": canonical.body,
-            "payload_hash": canonical.sha256,
-        },
-    )()
-    registry = MagicMock()
-    registry.resolve.return_value = EndpointDefinition(code="TEST_ENDPOINT", url="http://test/api")
+    outbox = frozen_outbox_namespace({"k": "v"}, target_code="TEST_ENDPOINT", target_url="http://test/api")
 
     sender = AsyncMock(
         return_value=ExternalHttpTransportResult.not_sent(
@@ -96,12 +73,12 @@ async def test_dispatch_external_http_sender_failure() -> None:
         )
     )
 
-    result = await dispatch_external_http(outbox, registry, sender)
+    result = await dispatch_external_http(outbox, StaticTestCredentialProvider(), sender)
     assert result.outcome is ExternalHttpTransportOutcome.NOT_SENT
     assert result.safe_to_retry is True
     request = sender.await_args.args[0]
     assert isinstance(request, ExternalHttpDispatchRequest)
-    assert request.body == canonical.body
+    assert request.body == outbox.canonical_payload_bytes
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING, Any, TypedDict
 from uuid import uuid4
 
 from src.app.sys.dispatch_concurrency import FairDispatchScheduler, dispatch_policy_registry
+from src.app.sys.external_http_credentials import (
+    VersionedCredentialProvider,
+    external_http_credential_provider,
+)
 from src.app.sys.external_http_evidence import recover_external_http_evidence_failure_unknown
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
@@ -19,7 +23,6 @@ from src.app.sys.external_http_transport import (
 )
 from src.app.sys.models import SystemOutboxDispatchType
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
-from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
 from src.core.logger import logger
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
@@ -62,7 +65,7 @@ class SystemOutboxEngine:
         *,
         outbox_repository: SystemOutboxRepository = system_outbox_repository,
         external_http_sender: ExternalHttpSender | None = None,
-        endpoint_registry: EndpointRegistry = endpoint_registry,
+        credential_provider: VersionedCredentialProvider = external_http_credential_provider,
         workline_domain_dispatcher: DomainDispatcher | None = None,
         device_command_dispatcher: Callable[[Any, Any], Awaitable[bool]] | None = None,
         dispatch_attempt_service: Any | None = None,
@@ -72,7 +75,7 @@ class SystemOutboxEngine:
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
-        self.endpoint_registry = endpoint_registry
+        self.credential_provider = credential_provider
         self.workline_domain_dispatcher = workline_domain_dispatcher or _dispatch_workline_domain
         self.device_command_dispatcher = device_command_dispatcher or _dispatch_device_command
         self.dispatch_attempt_service = dispatch_attempt_service
@@ -357,7 +360,7 @@ class SystemOutboxEngine:
 
         dispatch_type = enum_value(getattr(outbox, "dispatch_type", None))
         if dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
-            return await dispatch_external_http(outbox, self.endpoint_registry, self.external_http_sender)
+            return await dispatch_external_http(outbox, self.credential_provider, self.external_http_sender)
         if dispatch_type == SystemOutboxDispatchType.INTERNAL_SIGNAL.value:
             return await dispatch_internal_signal(outbox)
         if dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND.value:
@@ -372,14 +375,12 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
     import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
+        async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
+            response = await client.request(
+                request.method,
                 request.endpoint.url,
                 content=request.body,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-WES-Content-SHA256": request.payload_hash,
-                },
+                headers=request.headers,
             )
             status_code = int(response.status_code)
             if 200 <= status_code < 300:
@@ -402,55 +403,55 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                 error_message=f"HTTP {status_code} has ambiguous delivery semantics",
             )
     except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
-        logger.error(f"SystemOutbox 外部 HTTP 请求配置无效: {exc}")
+        logger.error(f"SystemOutbox 外部 HTTP 请求配置无效: {type(exc).__name__}")
         return ExternalHttpTransportResult.not_sent(
             phase=ExternalHttpTransportPhase.PREPARING,
             safe_to_retry=False,
             error_code=type(exc).__name__.upper(),
-            error_message=str(exc),
+            error_message="invalid frozen outbound HTTP target",
         )
     except httpx.ConnectError as exc:
-        logger.error(f"SystemOutbox 外部 HTTP 连接失败: {exc}")
+        logger.error(f"SystemOutbox 外部 HTTP 连接失败: {type(exc).__name__}")
         return ExternalHttpTransportResult.not_sent(
             phase=ExternalHttpTransportPhase.CONNECTING,
             safe_to_retry=True,
             error_code="CONNECT_ERROR",
-            error_message=str(exc),
+            error_message="outbound HTTP connection failed before send",
         )
     except httpx.ConnectTimeout as exc:
-        logger.error(f"SystemOutbox 外部 HTTP 连接超时，送达状态不确定: {exc}")
+        logger.error(f"SystemOutbox 外部 HTTP 连接超时，送达状态不确定: {type(exc).__name__}")
         return ExternalHttpTransportResult.ambiguous(
             phase=ExternalHttpTransportPhase.CONNECTING,
             error_code="CONNECT_TIMEOUT",
-            error_message=str(exc),
+            error_message="outbound HTTP connection timed out",
         )
     except (httpx.WriteTimeout, httpx.WriteError) as exc:
-        logger.error(f"SystemOutbox 外部 HTTP 写入中断，送达状态不确定: {exc}")
+        logger.error(f"SystemOutbox 外部 HTTP 写入中断，送达状态不确定: {type(exc).__name__}")
         return ExternalHttpTransportResult.ambiguous(
             phase=ExternalHttpTransportPhase.SENDING,
             error_code=type(exc).__name__.upper(),
-            error_message=str(exc),
+            error_message="outbound HTTP write was interrupted",
         )
     except (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError) as exc:
-        logger.error(f"SystemOutbox 外部 HTTP 响应中断，送达状态不确定: {exc}")
+        logger.error(f"SystemOutbox 外部 HTTP 响应中断，送达状态不确定: {type(exc).__name__}")
         return ExternalHttpTransportResult.ambiguous(
             phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
             error_code=type(exc).__name__.upper(),
-            error_message=str(exc),
+            error_message="outbound HTTP response was interrupted",
         )
     except httpx.TimeoutException as exc:
-        logger.error(f"SystemOutbox 外部 HTTP 超时，送达状态不确定: {exc}")
+        logger.error(f"SystemOutbox 外部 HTTP 超时，送达状态不确定: {type(exc).__name__}")
         return ExternalHttpTransportResult.ambiguous(
             phase=ExternalHttpTransportPhase.SENDING,
             error_code=type(exc).__name__.upper(),
-            error_message=str(exc),
+            error_message="outbound HTTP transport timed out",
         )
     except Exception as exc:
-        logger.error(f"SystemOutbox 外部 HTTP 派发失败: {exc}")
+        logger.error(f"SystemOutbox 外部 HTTP 派发失败: {type(exc).__name__}")
         return ExternalHttpTransportResult.ambiguous(
             phase=ExternalHttpTransportPhase.SENDING,
             error_code="UNCLASSIFIED_TRANSPORT_ERROR",
-            error_message=str(exc),
+            error_message=f"unclassified outbound HTTP transport error: {type(exc).__name__}",
         )
 
 

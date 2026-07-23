@@ -24,6 +24,7 @@ from src.app.rack.services.completion_policy import (
 from src.app.rack.services.gateway import (
     DEFAULT_RACK_OPERATION_ENDPOINT,
     WmsRcsRackGateway,
+    freeze_rack_task_binding,
     wms_rcs_rack_gateway,
 )
 from src.app.rack.services.task_lifecycle_service import (
@@ -301,6 +302,7 @@ class RackOperationService:
                             payload_json=payload_json,
                             canonical_payload_bytes=spec.canonical_payload_bytes,
                             payload_hash=spec.payload_hash,
+                            frozen_binding=freeze_rack_task_binding(spec.target_code),
                             trace_id=coerce_optional_str(spec.request_json.get("trace_id")),
                         ),
                         allow_active_rack_bound=_allows_active_rack_bound_for_station_claim(
@@ -322,6 +324,7 @@ class RackOperationService:
                 return existing
             return outbox
 
+        frozen_binding = freeze_rack_task_binding(spec.target_code)
         outbox = SystemOutbox(
             session_id=coerce_optional_int(getattr(session, "id", None)),
             workline_id=workline_id,
@@ -332,7 +335,13 @@ class RackOperationService:
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=spec.target_code,
             provider_profile_identity="wms.legacy-transport.production",
+            provider_profile_hash=frozen_binding.provider_profile_hash,
             operation_identity="wms.transport.rack@v1",
+            binding_revision=frozen_binding.binding_revision,
+            target_snapshot_json=frozen_binding.target_snapshot.as_json(),
+            target_snapshot_hash=frozen_binding.target_snapshot_hash,
+            auth_scheme=frozen_binding.auth_scheme,
+            credential_reference=frozen_binding.credential_reference,
             payload_json=payload_json,
             canonical_payload_bytes=spec.canonical_payload_bytes,
             payload_hash=spec.payload_hash,
@@ -1060,12 +1069,17 @@ def _ensure_existing_outbox_shape(
     spec: RackTaskSpec,
     payload_json: dict[str, Any],
 ) -> None:
+    frozen_binding = freeze_rack_task_binding(spec.target_code)
     if outbox.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
         raise ValueError("existing rack operation outbox dispatch_type differs from request")
     if outbox.target_type != SystemOutboxTargetType.HTTP_ENDPOINT:
         raise ValueError("existing rack operation outbox target_type differs from request")
     if outbox.target_code != spec.target_code:
         raise ValueError("existing rack operation outbox target_code differs from request")
+    expected_frozen_fields = frozen_binding.as_persisted_fields()
+    for field_name, expected_value in expected_frozen_fields.items():
+        if getattr(outbox, field_name, None) != expected_value:
+            raise ValueError(f"existing rack operation outbox {field_name} differs from frozen binding")
     canonical_payload_bytes = getattr(outbox, "canonical_payload_bytes", None)
     payload_hash = getattr(outbox, "payload_hash", None)
     canonical = CanonicalPayload.from_persisted(

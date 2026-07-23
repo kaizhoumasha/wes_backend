@@ -31,6 +31,13 @@ from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract 
     CONTRACT as QUERY_INVENTORY_CONTRACT,
 )
 from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_MATERIAL_FLOW_CONTRACT_VERSION
+from src.app.sys.external_http_binding import (
+    ExternalHttpBindingDefinition,
+    ExternalHttpProviderProfileDefinition,
+    FrozenExternalHttpBinding,
+    freeze_external_http_binding,
+)
+from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
 
 
 def _binding(profile, outbound_auth, operation):
@@ -85,6 +92,49 @@ WMS_NORTHBOUND_IDENTITY = WMS_PROVIDER_PROFILE.identity
 WMS_NORTHBOUND_AUTH = WMS_PROVIDER_PROFILE.bindings[0].outbound_auth
 
 
+def _external_http_effect_profile(profile: WmsProviderProfile) -> ExternalHttpProviderProfileDefinition:
+    return ExternalHttpProviderProfileDefinition(
+        identity=profile.identity.identity,
+        bindings=tuple(
+            ExternalHttpBindingDefinition(
+                operation_identity=binding.operation.identity,
+                allowed_target_codes=(binding.operation.target_code,),
+                http_method=binding.operation.http_method.value,
+                timeout_seconds=binding.operation.budget.timeout_seconds,
+                auth_scheme=binding.outbound_auth.scheme.value,
+                credential_reference=str(binding.outbound_auth.credential_reference),
+            )
+            for binding in profile.bindings
+            if binding.operation.mode.value == "EFFECT"
+        ),
+    )
+
+
+WMS_EXTERNAL_HTTP_EFFECT_PROFILES = MappingProxyType(
+    {identity: _external_http_effect_profile(profile) for identity, profile in WMS_PROVIDER_PROFILES.items()}
+)
+
+
+def freeze_wms_effect_binding(
+    *,
+    profile_identity: str,
+    operation_identity: str,
+    target_code: str,
+    registry: EndpointRegistry = endpoint_registry,
+) -> FrozenExternalHttpBinding:
+    """从 WMS typed Provider catalog 冻结单个 EFFECT target/auth binding。"""
+
+    profile = WMS_EXTERNAL_HTTP_EFFECT_PROFILES.get(profile_identity)
+    if profile is None:
+        raise ValueError("WMS EFFECT provider profile is not authored")
+    return freeze_external_http_binding(
+        profile=profile,
+        operation_identity=operation_identity,
+        target_code=target_code,
+        endpoint_registry=registry,
+    )
+
+
 def resolve_wms_operation_binding(
     *,
     profile_identity: str,
@@ -102,10 +152,12 @@ def resolve_wms_operation_binding(
 
 
 __all__ = [
+    "WMS_EXTERNAL_HTTP_EFFECT_PROFILES",
     "WMS_MATERIAL_FLOW_CONTRACT_VERSION",
     "WMS_NORTHBOUND_AUTH",
     "WMS_NORTHBOUND_IDENTITY",
     "WMS_PROVIDER_PROFILE",
     "WMS_PROVIDER_PROFILES",
+    "freeze_wms_effect_binding",
     "resolve_wms_operation_binding",
 ]

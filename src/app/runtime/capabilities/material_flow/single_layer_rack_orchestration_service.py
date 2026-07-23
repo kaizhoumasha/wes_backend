@@ -32,6 +32,7 @@ from src.app.sys.models import (
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, outbox_repository
 from src.app.wms_integration.services.transport_contract import (
     WmsTransportContractService,
+    freeze_legacy_transport_binding,
     wms_transport_contract_service,
 )
 from src.utils.value_normalization import coerce_optional_str, enum_value
@@ -402,16 +403,21 @@ class SingleLayerRackOrchestrationService:
             operation_type=str(rack_operation_request["operation_type"]),
         )
         canonical = CanonicalPayload.from_projection(payload_json)
+        target_code = str(rack_operation_request["target_code"])
         return DispatchEnvelope(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code=str(rack_operation_request["target_code"]),
+            target_code=target_code,
             provider_profile_identity="wms.legacy-transport.production",
             operation_identity="wms.transport.rack@v1",
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
+            frozen_binding=freeze_legacy_transport_binding(
+                operation_identity="wms.transport.rack@v1",
+                target_code=target_code,
+            ),
             operation_domain="RACK",
             operation_key=operation_key,
             workline_id=workline_id,
@@ -567,6 +573,9 @@ class SingleLayerRackOrchestrationService:
 
 
 def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: DispatchEnvelope) -> None:
+    frozen_binding = envelope.frozen_binding
+    if frozen_binding is None:
+        raise ValueError("station dispatch envelope requires frozen EXTERNAL_HTTP binding")
     if coerce_optional_str(getattr(outbox.dispatch_type, "value", outbox.dispatch_type)) != coerce_optional_str(
         getattr(envelope.dispatch_type, "value", envelope.dispatch_type)
     ):
@@ -577,6 +586,9 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
         raise ValueError("existing station dispatch outbox target_type differs from request")
     if outbox.target_code != envelope.target_code:
         raise ValueError("existing station dispatch outbox target_code differs from request")
+    for field_name, expected_value in frozen_binding.as_persisted_fields().items():
+        if getattr(outbox, field_name, None) != expected_value:
+            raise ValueError(f"existing station dispatch outbox {field_name} differs from frozen binding")
     if outbox.operation_domain != envelope.operation_domain:
         raise ValueError("existing station dispatch outbox operation_domain differs from request")
     if outbox.operation_key != envelope.operation_key:

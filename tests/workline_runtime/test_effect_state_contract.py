@@ -36,6 +36,7 @@ from src.app.sys.models.outbox import (
     SystemOutboxTargetType,
     SystemOutboxUpdate,
 )
+from tests.support.external_http import frozen_external_http_binding
 
 
 def _require_effect_state_contract() -> None:
@@ -273,13 +274,16 @@ def _intent_log(dispatch_key: str) -> RuntimeIntentLog:
 def _outbox(dispatch_key: str) -> SystemOutbox:
     projection = {"request_id": dispatch_key}
     canonical = CanonicalPayload.from_projection(projection)
-    return SystemOutbox(
-        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
-        dispatch_key=dispatch_key,
-        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+    frozen_binding = frozen_external_http_binding(
         target_code="WMS",
         provider_profile_identity="wms.profile-test",
         operation_identity="wms.effect-test@v1",
+    )
+    return SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key=dispatch_key,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         payload_json=projection,
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,

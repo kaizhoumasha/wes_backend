@@ -161,6 +161,9 @@ class HandlingOperationService:
             if move is None:
                 raise RuntimeError(f"创建 Handling move 失败: operation_key={operation_key}, sequence_no={sequence_no}")
             envelope = self.gateway.build_ctu_move_envelope(operation=operation, move=move, sequence_no=sequence_no)
+            frozen_binding = envelope.frozen_binding
+            if frozen_binding is None:
+                raise RuntimeError("Handling EXTERNAL_HTTP envelope 缺少冻结 binding")
             outbox = await self.outbox_repository.create(
                 db,
                 {
@@ -173,7 +176,13 @@ class HandlingOperationService:
                     "target_type": SystemOutboxTargetType.HTTP_ENDPOINT.value,
                     "target_code": require_text(envelope.target_code, "target_code"),
                     "provider_profile_identity": envelope.provider_profile_identity,
+                    "provider_profile_hash": frozen_binding.provider_profile_hash,
                     "operation_identity": envelope.operation_identity,
+                    "binding_revision": frozen_binding.binding_revision,
+                    "target_snapshot_json": frozen_binding.target_snapshot.as_json(),
+                    "target_snapshot_hash": frozen_binding.target_snapshot_hash,
+                    "auth_scheme": frozen_binding.auth_scheme,
+                    "credential_reference": frozen_binding.credential_reference,
                     "payload_json": _mapping(envelope.payload_json, "payload_json"),
                     "canonical_payload_bytes": envelope.canonical_payload_bytes,
                     "payload_hash": envelope.payload_hash,

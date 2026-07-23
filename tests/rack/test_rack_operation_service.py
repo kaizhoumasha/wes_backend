@@ -29,7 +29,7 @@ RACK_TRANSPORT_OPERATION_TYPE = "RACK_TRANSPORT"
 CLASSIFIER_WORK_POSITION_CODE = "CLASSIFIER-WORK"
 CLASSIFIER_WORK_POSITION_ROLE = "SMT_CLASSIFIER_SINGLE_RACK_WORK"
 MOVE_OUT_TARGET_POSITION_ROLE = "SMT_EMPTY_RACK_AREA"
-RACK_OPERATION_TARGET_CODE = "WMS-RACK"
+RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
 
 
 def _external_outbox(**values: Any) -> SystemOutbox:
@@ -58,6 +58,9 @@ def _external_outbox(**values: Any) -> SystemOutbox:
     values["payload_hash"] = envelope.payload_hash
     values["provider_profile_identity"] = envelope.provider_profile_identity
     values["operation_identity"] = envelope.operation_identity
+    if envelope.frozen_binding is None:
+        raise AssertionError("rack test envelope must carry frozen binding")
+    values.update(envelope.frozen_binding.as_persisted_fields())
     return SystemOutbox(**values)
 
 
@@ -228,7 +231,7 @@ class FakeRackTaskRepository:
                 target_position_role=values["target_position_role"],
                 actions_json=values["actions_json"],
                 request_json=request_json,
-                target_code=values["target_code"],
+                target_code=RACK_OPERATION_TARGET_CODE,
                 dispatch_key=values["dispatch_key"],
             )
             values["request_json"] = dict(envelope.payload_json)
@@ -657,7 +660,7 @@ async def test_request_operation_tasks_creates_plugin_defined_tasks_without_muta
         operation_type="RACK_TRANSPORT",
         workline=_workline(),
         session=session,
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         trace_id="trace-plugin-owned",
         task_specs=[
             {
@@ -756,7 +759,7 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_before_di
                 target_position_code="TARGET-POSITION",
                 target_position_role=CLASSIFIER_WORK_POSITION_ROLE,
                 dispatch_key="caller-dispatch-key",
-                target_code="CALLER-TARGET",
+                target_code=RACK_OPERATION_TARGET_CODE,
                 request_json={"caller_field": "kept"},
                 actions_json={},
                 required=False,
@@ -767,7 +770,7 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_before_di
     assert [task.sequence_no for task in tasks] == [1]
     call = lifecycle.calls[0]
     assert call["dispatch_key"] == "caller-dispatch-key"
-    assert call["target_code"] == "CALLER-TARGET"
+    assert call["target_code"] == RACK_OPERATION_TARGET_CODE
     assert call["actions_json"]["action"] == RackTaskType.MOVE_RACK.value
     assert call["actions_json"]["required"] is False
     assert call["request_json"]["caller_field"] == "kept"
@@ -1664,7 +1667,7 @@ async def test_repeated_replace_operation_returns_existing_tasks_without_recheck
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, lifecycle, _placements = _service(
         active_placements=[],
@@ -1813,7 +1816,7 @@ async def test_repeated_operation_rejects_missing_non_required_physical_task() -
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, lifecycle, _placements = _service(
         active_placements=[],
@@ -1866,7 +1869,7 @@ async def test_repeated_replace_operation_rejects_single_supply_with_wrong_seque
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, _lifecycle, _placements = _service(
         active_placements=[],
@@ -1895,7 +1898,7 @@ async def test_repeated_replace_operation_rejects_target_code_mismatch() -> None
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, _lifecycle, _placements = _service(
         active_placements=[],
@@ -1903,7 +1906,7 @@ async def test_repeated_replace_operation_rejects_target_code_mismatch() -> None
         task_repository=task_repository,
     )
 
-    with pytest.raises(ValueError, match="task identity differs"):
+    with pytest.raises(ValueError, match="endpoint is not registered in the authored binding"):
         await _request_classifier_replacement(
             service,
             FakeDb(),
@@ -1926,7 +1929,7 @@ async def test_repeated_replace_operation_rejects_move_out_rack_code_mismatch() 
         source_position_code="CLASSIFIER-WORK",
         target_position_code=None,
         target_position_role="SMT_EMPTY_RACK_AREA",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         request_json={
             "operation_key": "op-shape-move-rack",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -1947,7 +1950,7 @@ async def test_repeated_replace_operation_rejects_move_out_rack_code_mismatch() 
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, _lifecycle, _placements = _service(
         active_placements=[],
@@ -1975,7 +1978,7 @@ async def test_repeated_operation_rejects_request_json_payload_drift() -> None:
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         request_json={
             "operation_key": "op-request-json-drift",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2029,7 +2032,7 @@ async def test_repeated_operation_rejects_actions_json_payload_drift() -> None:
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         actions_json={
             "action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
             "required": True,
@@ -2075,7 +2078,7 @@ async def test_repeated_operation_allows_persisted_timeout_evidence() -> None:
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         request_json={
             "operation_key": "op-timeout-evidence",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2124,7 +2127,7 @@ async def test_request_reuses_existing_outbox_when_task_is_missing() -> None:
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key="rack-operation:op-existing-outbox:2:ALLOCATE_AND_MOVE_RACK",
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-existing-outbox",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2364,7 +2367,7 @@ async def test_request_reuses_existing_outbox_after_integrity_error_on_concurren
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-outbox-race",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2418,7 +2421,7 @@ async def test_request_links_ownerless_outbox_after_integrity_error_on_concurren
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-outbox-race-ownerless",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2476,7 +2479,7 @@ async def test_request_rejects_conflicting_outbox_after_integrity_error_on_concu
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-outbox-race-conflict",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2530,7 +2533,7 @@ async def test_request_reuses_existing_outbox_when_only_trace_id_differs() -> No
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-existing-outbox-trace",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2592,7 +2595,7 @@ async def test_request_rejects_dispatched_existing_outbox_when_payload_differs()
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json=dict(existing_payload),
             status=SystemOutboxStatus.SENT,
         )

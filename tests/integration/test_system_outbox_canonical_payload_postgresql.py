@@ -10,6 +10,7 @@ from sqlmodel import select
 
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
+from src.app.wms_integration.services.transport_contract import freeze_legacy_transport_binding
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,15 +24,17 @@ async def test_external_http_canonical_bytes_round_trip_exactly(integration_db_s
         "labels": ["入库", "📦"],
     }
     canonical = CanonicalPayload.from_projection(projection)
+    frozen_binding = freeze_legacy_transport_binding(
+        operation_identity="wms.transport.handling@v1",
+        target_code="WMS_RCS_BIN_OPERATION",
+    )
     dispatch_key = f"canonical-roundtrip:{uuid4().hex}"
     integration_db_session.add(
         SystemOutbox(
+            **frozen_binding.as_persisted_fields(),
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS_RCS_BIN_OPERATION",
-            provider_profile_identity="wms.legacy-transport.production",
-            operation_identity="wms.transport.handling@v1",
             payload_json=projection,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
@@ -49,3 +52,37 @@ async def test_external_http_canonical_bytes_round_trip_exactly(integration_db_s
     assert persisted.canonical_payload_bytes == canonical.body
     assert persisted.payload_hash == canonical.sha256
     assert persisted.payload_json == projection
+    assert persisted.provider_profile_hash == frozen_binding.provider_profile_hash
+    assert persisted.binding_revision == frozen_binding.binding_revision
+    assert persisted.target_snapshot_json == frozen_binding.target_snapshot.as_json()
+    assert persisted.target_snapshot_hash == frozen_binding.target_snapshot_hash
+    assert persisted.auth_scheme == "HMAC_SHA256"
+    assert persisted.credential_reference == frozen_binding.credential_reference
+
+
+@pytest.mark.asyncio
+async def test_external_http_frozen_binding_cannot_change_after_insert(
+    integration_db_session: AsyncSession,
+) -> None:
+    projection = {"request_id": f"IMMUTABLE-{uuid4().hex}"}
+    canonical = CanonicalPayload.from_projection(projection)
+    frozen_binding = freeze_legacy_transport_binding(
+        operation_identity="wms.transport.handling@v1",
+        target_code="WMS_RCS_BIN_OPERATION",
+    )
+    outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key=f"frozen-binding-immutable:{uuid4().hex}",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json=projection,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        operation_domain="HANDLING",
+    )
+    integration_db_session.add(outbox)
+    await integration_db_session.flush()
+
+    outbox.credential_reference = "secret://wms/legacy-transport-production-hmac@v2"
+    with pytest.raises(ValueError, match="scheduling identity persisted fields are immutable"):
+        await integration_db_session.flush()

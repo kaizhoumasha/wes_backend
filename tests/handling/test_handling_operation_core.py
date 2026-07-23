@@ -24,6 +24,7 @@ from src.app.sys.models import (
     SystemOutboxDispatchType,
     SystemOutboxTargetType,
 )
+from src.app.wms_integration.services.transport_contract import freeze_legacy_transport_binding
 
 
 class FakeOperationRepository:
@@ -92,6 +93,10 @@ class FakeGateway:
             payload_json=payload_json,
             canonical_payload_bytes=canonical.body,
             payload_hash=canonical.sha256,
+            frozen_binding=freeze_legacy_transport_binding(
+                operation_identity="wms.transport.handling@v1",
+                target_code="WMS_RCS_BIN_OPERATION",
+            ),
             operation_domain="HANDLING",
             operation_key=operation.operation_key,
         )

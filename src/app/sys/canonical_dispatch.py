@@ -10,8 +10,12 @@ import hashlib
 import hmac
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 
 
 @dataclass(frozen=True)
@@ -102,21 +106,49 @@ class ExternalHttpDispatchRequest:
 
     endpoint: EndpointDefinition
     payload: CanonicalPayload
+    method: Literal["POST"]
+    timeout_seconds: float
+    credential_reference: str
+    auth_scheme: Literal["HMAC_SHA256"]
+    timestamp: str
+    nonce: str
+    _signature: str = field(repr=False)
 
     @classmethod
     def from_persisted(
         cls,
         *,
-        endpoint: EndpointDefinition,
+        binding: FrozenExternalHttpBinding,
         canonical_payload_bytes: bytes,
         payload_hash: str,
+        secret: bytes,
+        timestamp: str,
+        nonce: str,
     ) -> ExternalHttpDispatchRequest:
+        payload = CanonicalPayload.from_persisted(
+            canonical_payload_bytes=canonical_payload_bytes,
+            payload_hash=payload_hash,
+        )
+        if not isinstance(secret, bytes) or not secret:
+            raise ValueError("resolved credential material must be non-empty bytes")
+        timestamp = str(timestamp or "").strip()
+        nonce = str(nonce or "").strip()
+        if not timestamp or "\n" in timestamp or not nonce or "\n" in nonce:
+            raise ValueError("request authentication timestamp and nonce must be non-empty single-line values")
+        target = binding.target_snapshot
+        path = urlparse(target.url).path or "/"
+        signature_payload = f"{target.http_method}\n{path}\n{timestamp}\n{nonce}\n{payload.sha256}".encode()
+        signature = hmac.new(secret, signature_payload, hashlib.sha256).hexdigest()
         return cls(
-            endpoint=endpoint,
-            payload=CanonicalPayload.from_persisted(
-                canonical_payload_bytes=canonical_payload_bytes,
-                payload_hash=payload_hash,
-            ),
+            endpoint=EndpointDefinition(code=target.code, url=target.url),
+            payload=payload,
+            method=target.http_method,
+            timeout_seconds=target.timeout_seconds,
+            credential_reference=binding.credential_reference,
+            auth_scheme=binding.auth_scheme,
+            timestamp=timestamp,
+            nonce=nonce,
+            _signature=signature,
         )
 
     @property
@@ -126,6 +158,20 @@ class ExternalHttpDispatchRequest:
     @property
     def payload_hash(self) -> str:
         return self.payload.sha256
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """返回封闭的认证 header 集；调用方不能注入自由 header mapping。"""
+
+        return {
+            "Content-Type": "application/json",
+            "X-WES-Content-SHA256": self.payload_hash,
+            "X-WES-Credential-Reference": self.credential_reference,
+            "X-WES-Nonce": self.nonce,
+            "X-WES-Signature": self._signature,
+            "X-WES-Signature-Algorithm": self.auth_scheme,
+            "X-WES-Timestamp": self.timestamp,
+        }
 
     def sign_hmac_sha256(self, secret: bytes) -> str:
         return self.payload.sign_hmac_sha256(secret)

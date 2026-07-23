@@ -20,6 +20,7 @@ from src.app.sys.models.outbox import (
 )
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository
 from src.utils.timezone import timezone
+from tests.support.external_http import frozen_external_http_binding
 
 
 def _concurrency_module() -> Any:
@@ -324,14 +325,17 @@ async def test_expired_owner_is_fenced_even_before_a_new_worker_steals_lease(db_
 async def test_expired_external_http_lease_is_quarantined_without_reclaim(db_session: Any) -> None:
     repository = SystemOutboxRepository()
     canonical = CanonicalPayload.from_projection({"request_id": "http-expired"})
-    outbox = SystemOutbox(
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS_CONFIRM_INBOUND",
         provider_profile_identity="wms.profile-a",
         operation_identity="inventory.confirm",
+    )
+    outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
         operation_domain="WMS_INVENTORY",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key="http-expired",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="WMS_CONFIRM_INBOUND",
         payload_json={"request_id": "http-expired"},
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,

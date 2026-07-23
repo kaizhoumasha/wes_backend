@@ -23,6 +23,7 @@ from src.app.sys.external_http_transport import (
 )
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.sys.services import SystemOutboxEngine as SystemOutboxDispatcher
+from tests.support.external_http import StaticTestCredentialProvider, frozen_outbox_namespace
 
 
 class FakeSystemOutboxRepository:
@@ -250,6 +251,17 @@ def _outbox(**overrides: Any) -> SimpleNamespace:
         "operation_domain": None,
     }
     values.update(overrides)
+    if values["dispatch_type"] is SystemOutboxDispatchType.EXTERNAL_HTTP:
+        target_code = values.pop("target_code")
+        projection = values.pop("payload_json")
+        values.pop("canonical_payload_bytes")
+        values.pop("payload_hash")
+        target_url = (
+            "http://wms-rcs/api/wes/transport-request"
+            if target_code == "WMS_RCS_BIN_OPERATION"
+            else "https://wms.example/effects"
+        )
+        return frozen_outbox_namespace(projection, target_code=target_code, target_url=target_url, **values)
     return SimpleNamespace(**values)
 
 
@@ -268,6 +280,7 @@ async def test_system_outbox_dispatcher_sends_external_http_and_marks_sent() -> 
         outbox_repository=repo,
         dispatch_scheduler=FakeFairDispatchScheduler(repo),
         external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
         dispatch_attempt_service=FakeDispatchAttemptService(),
         effect_transport_bridge=NoopEffectTransportBridge(),
         workline_domain_dispatcher=_no_workline_messages,
@@ -335,6 +348,7 @@ async def test_system_outbox_dispatcher_marks_failed_when_external_http_fails() 
         outbox_repository=repo,
         dispatch_scheduler=FakeFairDispatchScheduler(repo),
         external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
         dispatch_attempt_service=FakeDispatchAttemptService(),
         effect_transport_bridge=NoopEffectTransportBridge(),
         workline_domain_dispatcher=_no_workline_messages,
@@ -362,6 +376,7 @@ async def test_system_outbox_dispatcher_bridges_persisted_transport_evidence_to_
         outbox_repository=repo,
         dispatch_scheduler=FakeFairDispatchScheduler(repo),
         external_http_sender=AsyncMock(return_value=sender_result),
+        credential_provider=StaticTestCredentialProvider(),
         dispatch_attempt_service=FakeDispatchAttemptService(),
         effect_transport_bridge=effect_bridge,
         workline_domain_dispatcher=_no_workline_messages,

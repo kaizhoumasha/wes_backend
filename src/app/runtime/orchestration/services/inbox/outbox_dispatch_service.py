@@ -466,6 +466,8 @@ class OutboxDispatchService:
         *,
         external_http_recovery_context_factory: Any | None = None,
         effect_transport_bridge: Any | None = None,
+        credential_provider: Any | None = None,
+        external_http_sender: Any | None = None,
         outbox_repository: Any | None = None,
         dispatch_scheduler: Any | None = None,
         dispatch_attempt_service: Any | None = None,
@@ -476,6 +478,16 @@ class OutboxDispatchService:
             outbox_repository = system_outbox_repository
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
         self.effect_transport_bridge = effect_transport_bridge
+        if credential_provider is None:
+            from src.app.sys.external_http_credentials import external_http_credential_provider
+
+            credential_provider = external_http_credential_provider
+        if external_http_sender is None:
+            from src.app.sys.services.outbox_engine import _send_external_http
+
+            external_http_sender = _send_external_http
+        self.credential_provider = credential_provider
+        self.external_http_sender = external_http_sender
         self.outbox_repository = outbox_repository
         self.dispatch_attempt_service = dispatch_attempt_service
         self.dispatch_scheduler = dispatch_scheduler or FairDispatchScheduler(
@@ -1335,9 +1347,8 @@ class OutboxDispatchService:
     async def _dispatch_external_http(self, outbox: Any) -> ExternalHttpTransportResult:
         """派发外部 HTTP 决策（如过站回传）。"""
         from src.app.sys.services.outbox_delivery import dispatch_external_http
-        from src.app.sys.services.outbox_engine import _send_external_http, endpoint_registry
 
-        return await dispatch_external_http(outbox, endpoint_registry, _send_external_http)
+        return await dispatch_external_http(outbox, self.credential_provider, self.external_http_sender)
 
     async def _dispatch_internal_signal(self, outbox: Any) -> bool:
         """派发内部微服务解耦信号（如释放货位）。"""

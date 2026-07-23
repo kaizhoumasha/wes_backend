@@ -30,6 +30,26 @@ class EndpointRegistry:
 
 def _load_env_endpoints() -> dict[str, str]:
     endpoints = {
+        "WMS_INBOUND_CONFIRM": os.getenv(
+            "WMS_INBOUND_CONFIRM_URL",
+            "http://wms/api/wes/inventory/confirm-inbound",
+        ),
+        "WMS_PACKAGE_BINDING": os.getenv(
+            "WMS_PACKAGE_BINDING_URL",
+            "http://wms/api/wes/fulfillment/package-binding",
+        ),
+        "WMS_FULL_BOX_EXCHANGE": os.getenv(
+            "WMS_FULL_BOX_EXCHANGE_URL",
+            "http://wms/api/wes/fulfillment/full-box-exchange",
+        ),
+        "WMS_FULFILLMENT": os.getenv(
+            "WMS_FULFILLMENT_URL",
+            os.getenv("WMS_PACKAGE_BINDING_URL", "http://wms/api/wes/fulfillment/package-binding"),
+        ),
+        "WMS_INVENTORY_TRANSACTION": os.getenv(
+            "WMS_INVENTORY_TRANSACTION_URL",
+            os.getenv("WMS_INBOUND_CONFIRM_URL", "http://wms/api/wes/inventory/confirm-inbound"),
+        ),
         "WMS_RCS_RACK_OPERATION": os.getenv("WMS_RCS_RACK_OPERATION_URL", "http://wms-rcs/api/wes/rack-operation"),
         "WMS_RCS_BIN_OPERATION": os.getenv("WMS_RCS_BIN_OPERATION_URL", "http://wms-rcs/api/wes/transport-request"),
         "WMS_RCS_FULL_BOX_EXCHANGE": os.getenv(

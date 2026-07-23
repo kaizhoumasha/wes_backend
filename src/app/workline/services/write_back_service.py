@@ -504,10 +504,10 @@ def _build_external_http_outbox_model(
     """将 external decision 投影为 Outbox 模型。"""
     from src.app.sys.canonical_dispatch import CanonicalPayload
     from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
-    from src.app.sys.services.endpoint_registry import endpoint_registry
+    from src.app.workline.external_http_profile import freeze_plugin_external_http_binding
 
     session = ctx["session"]
-    endpoint = endpoint_registry.resolve(target_code)
+    frozen_binding = freeze_plugin_external_http_binding(target_code)
     canonical = CanonicalPayload.from_projection(payload_json)
     return SystemOutbox(
         session_id=session.id,
@@ -515,9 +515,15 @@ def _build_external_http_outbox_model(
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=dispatch_key,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code=endpoint.code,
-        provider_profile_identity="workline.plugin-runtime.v1",
-        operation_identity="workline.external-http.v1",
+        target_code=frozen_binding.target_snapshot.code,
+        provider_profile_identity=frozen_binding.provider_profile_identity,
+        provider_profile_hash=frozen_binding.provider_profile_hash,
+        operation_identity=frozen_binding.operation_identity,
+        binding_revision=frozen_binding.binding_revision,
+        target_snapshot_json=frozen_binding.target_snapshot.as_json(),
+        target_snapshot_hash=frozen_binding.target_snapshot_hash,
+        auth_scheme=frozen_binding.auth_scheme,
+        credential_reference=frozen_binding.credential_reference,
         payload_json=payload_json,
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,
