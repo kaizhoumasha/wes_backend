@@ -85,3 +85,21 @@ T10 定向 integration/resilience 最终 `2 passed, 4 deselected`：
 提交明确排除用户维护中的 `AGENTS.md`、`CLAUDE.md`。最终 staged GitNexus detect 为
 `58 files / 12 indexed symbols / 0 affected processes / LOW`；本地增量图主要识别到历史文档 section，
 生产实现范围同时由逐 symbol 写前 impact、聚焦测试、PostgreSQL 与完整 quality 门禁覆盖。提交 hash 由任务回执记录。
+
+## Review P1：cleanup matrix 同步
+
+architecture review 发现 `legacy-cleanup-matrix.csv` 保留 599 条，而当前 `parse_entries()` 返回 605 条。
+精确差集是 T10 新增的 6 个顶层测试符号：
+
+- `test_notify_pkg_binding_typed_effect_consumer.py` 的 typed consumer、稳定 dispatch identity、preview identity 3 项；
+- `test_notify_pkg_binding_callback_reducer.py` 的 callback-before-response/duplicate、迟到矛盾、timeout-success 3 项。
+
+按仓库唯一生成入口 `uv run python scripts/generate_legacy_matrix.py` 重建 CSV 为 605 条，没有手工编辑 CSV，
+也没有修改生成器、allowlist 或 guard。同步 Markdown 派生摘要后，最终统计为 163 个 test、336 个 rebuild、
+252 个 keep-contract、263 个 phase5-tech、223 个 phase2、153 个 workline_runtime entry。
+
+六项均为 `phase4_carrier=False`，所以 business closure ledger 的 110 条 entry 集合与 disposition 统计不变，
+无需修改 `business-legacy-absence-ledger.csv/.md`。定向 matrix/closure 合同由 `2 failed, 19 passed`
+转为 `29 passed`，final business absence gate 通过；完整 `tests/architecture` 为 `390 passed, 1 skipped`，
+完整 quality profile 通过。P1 staged GitNexus detect 为
+`3 files / 12 document symbols / 0 affected processes / LOW`。
