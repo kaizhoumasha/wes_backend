@@ -357,3 +357,92 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
     assert sender.await_count == 1
     assert current_db.rollback_count == 1
     recovery_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_workline_dispatcher_emits_ordered_external_http_fault_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-WORKLINE-FAULT-BOUNDARIES"})
+    outbox = SimpleNamespace(
+        id=92,
+        dispatch_key="workline-fault-boundaries-92",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        target_type="HTTP_ENDPOINT",
+        target_code="WMS_TEST",
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        payload_json={"request_id": "REQ-WORKLINE-FAULT-BOUNDARIES"},
+        status=SystemOutboxStatus.DISPATCHING,
+        attempt_count=0,
+        next_retry_at=None,
+        last_error=None,
+        operation_domain="WORKLINE",
+        workline_id=None,
+        session_id=None,
+        device_id=None,
+        provider_profile_identity="wms.profile-test",
+        operation_identity="wms.effect-test@v1",
+        lease_owner_token="owner-workline-92",
+        lease_expires_at=datetime(2027, 1, 1),
+    )
+    repository = _DispatchRepository(outbox)
+    attempt_service = _DispatchAttemptService()
+    transport_result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+    sender = AsyncMock(return_value=transport_result)
+    observed: list[tuple[str, int | None]] = []
+
+    async def fault_hook(point: object, current_outbox: Any | None) -> None:
+        observed.append((str(point), getattr(current_outbox, "id", None)))
+
+    claim = DispatchLeaseClaim(
+        outbox=outbox,
+        bucket=DispatchBucketKey(outbox.provider_profile_identity, outbox.operation_identity),
+        lease_owner_token=outbox.lease_owner_token,
+        lease_expires_at=outbox.lease_expires_at,
+        policy=DispatchBucketPolicy(),
+    )
+    scheduler = SimpleNamespace(
+        claim=AsyncMock(
+            return_value=DispatchClaimBatch(
+                claims=(claim,),
+                metrics=DispatchClaimMetrics(1, 1, 0, 0, (), (), ()),
+            )
+        )
+    )
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    service = OutboxDispatchService(
+        effect_transport_bridge=bridge,
+        outbox_repository=repository,
+        dispatch_scheduler=scheduler,
+        dispatch_attempt_service=attempt_service,
+        external_http_fault_hook=fault_hook,
+    )
+    dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
+    event_stream_module = import_module("src.app.sys.services.event_stream_service")
+    monkeypatch.setattr(service, "_dispatch_blocked_resource_heads", AsyncMock(return_value=(set(), set())))
+    monkeypatch.setattr(service, "_should_dispatch_to_sandbox", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_dispatch_external_http", sender)
+    monkeypatch.setattr(dispatch_module, "_repair_orphaned_device_busy_dispatches", AsyncMock(return_value=0))
+    monkeypatch.setattr(dispatch_module, "_repair_self_blocked_device_busy_dispatches", AsyncMock(return_value=0))
+    monkeypatch.setattr(event_stream_module, "publish_deferred_sse_events", AsyncMock())
+
+    stats = await service.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)
+
+    assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
+    assert observed == [
+        ("BEFORE_CLAIM", None),
+        ("AFTER_CLAIM_COMMIT", 92),
+        ("BEFORE_SEND", 92),
+        ("AFTER_SEND", 92),
+        ("BEFORE_OUTBOX_EVIDENCE", 92),
+        ("AFTER_OUTBOX_EVIDENCE", 92),
+        ("BEFORE_ATTEMPT_EVIDENCE", 92),
+        ("AFTER_ATTEMPT_EVIDENCE", 92),
+        ("BEFORE_REDUCER_EVIDENCE", 92),
+        ("AFTER_REDUCER_EVIDENCE", 92),
+        ("AFTER_EVIDENCE_COMMIT", 92),
+    ]

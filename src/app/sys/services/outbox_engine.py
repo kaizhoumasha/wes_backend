@@ -13,6 +13,11 @@ from src.app.sys.external_http_credentials import (
     VersionedCredentialProvider,
     external_http_credential_provider,
 )
+from src.app.sys.external_http_dispatch_faults import (
+    ExternalHttpDispatchFaultHook,
+    ExternalHttpDispatchFaultPoint,
+    emit_external_http_dispatch_fault,
+)
 from src.app.sys.external_http_evidence import recover_external_http_evidence_failure_unknown
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
@@ -72,6 +77,7 @@ class SystemOutboxEngine:
         external_http_recovery_context_factory: Callable[[], Any] | None = None,
         effect_transport_bridge: Any | None = None,
         dispatch_scheduler: Any | None = None,
+        external_http_fault_hook: ExternalHttpDispatchFaultHook | None = None,
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
@@ -81,6 +87,8 @@ class SystemOutboxEngine:
         self.dispatch_attempt_service = dispatch_attempt_service
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
         self.effect_transport_bridge = effect_transport_bridge
+        # 仅通过构造器显式注入；生产 singleton 默认禁用，不提供环境变量或全局开关。
+        self.external_http_fault_hook = external_http_fault_hook
         self.dispatch_scheduler = dispatch_scheduler or FairDispatchScheduler(
             repository=outbox_repository,
             policy_registry=dispatch_policy_registry,
@@ -103,6 +111,7 @@ class SystemOutboxEngine:
             await _commit_if_supported(db)
             return result
 
+        await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_CLAIM)
         claim_batch = await self.dispatch_scheduler.claim(
             db,
             limit=remaining_limit,
@@ -141,6 +150,11 @@ class SystemOutboxEngine:
                 continue
 
             dispatch_attempt = attempts_by_outbox_id[outbox_id]
+            if enum_value(getattr(outbox, "dispatch_type", None)) == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
+                await self._emit_external_http_fault(
+                    ExternalHttpDispatchFaultPoint.AFTER_CLAIM_COMMIT,
+                    outbox,
+                )
 
             try:
                 dispatch_result = await self.dispatch_single(db, outbox)
@@ -173,6 +187,10 @@ class SystemOutboxEngine:
                 continue
             if isinstance(dispatch_result, ExternalHttpTransportResult):
                 try:
+                    await self._emit_external_http_fault(
+                        ExternalHttpDispatchFaultPoint.BEFORE_OUTBOX_EVIDENCE,
+                        outbox,
+                    )
                     updated = await self._finalize_external_http_result(
                         db,
                         outbox_id=outbox_id,
@@ -180,12 +198,20 @@ class SystemOutboxEngine:
                         lease_owner_token=claim.lease_owner_token,
                         retry_budget=claim.policy.retry_budget,
                     )
+                    await self._emit_external_http_fault(
+                        ExternalHttpDispatchFaultPoint.AFTER_OUTBOX_EVIDENCE,
+                        outbox,
+                    )
                     if updated is None:
                         result["skipped"] += 1
                         result["dispatched"] += 1
                         await _commit_if_supported(db)
                         continue
                     outbox_finalization = enum_value(getattr(updated, "status", None)).lower()
+                    await self._emit_external_http_fault(
+                        ExternalHttpDispatchFaultPoint.BEFORE_ATTEMPT_EVIDENCE,
+                        outbox,
+                    )
                     _ = await attempt_service.finalize_external_http_attempt_record(
                         db,
                         attempt=dispatch_attempt,
@@ -194,12 +220,24 @@ class SystemOutboxEngine:
                         outbox_finalization=outbox_finalization,
                         auto_commit=False,
                     )
+                    await self._emit_external_http_fault(
+                        ExternalHttpDispatchFaultPoint.AFTER_ATTEMPT_EVIDENCE,
+                        outbox,
+                    )
+                    await self._emit_external_http_fault(
+                        ExternalHttpDispatchFaultPoint.BEFORE_REDUCER_EVIDENCE,
+                        outbox,
+                    )
                     await self._record_effect_transport_result(
                         db,
                         outbox=outbox,
                         dispatch_attempt=dispatch_attempt,
                         result=dispatch_result,
                         updated=updated,
+                    )
+                    await self._emit_external_http_fault(
+                        ExternalHttpDispatchFaultPoint.AFTER_REDUCER_EVIDENCE,
+                        outbox,
                     )
                     await _commit_if_supported(db)
                 except Exception as evidence_error:
@@ -215,6 +253,10 @@ class SystemOutboxEngine:
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
                 else:
+                    await self._emit_external_http_fault(
+                        ExternalHttpDispatchFaultPoint.AFTER_EVIDENCE_COMMIT,
+                        outbox,
+                    )
                     if dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
                         result["success"] += 1
                     else:
@@ -360,13 +402,23 @@ class SystemOutboxEngine:
 
         dispatch_type = enum_value(getattr(outbox, "dispatch_type", None))
         if dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
-            return await dispatch_external_http(outbox, self.credential_provider, self.external_http_sender)
+            await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_SEND, outbox)
+            result = await dispatch_external_http(outbox, self.credential_provider, self.external_http_sender)
+            await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_SEND, outbox)
+            return result
         if dispatch_type == SystemOutboxDispatchType.INTERNAL_SIGNAL.value:
             return await dispatch_internal_signal(outbox)
         if dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND.value:
             return await self.device_command_dispatcher(db, outbox)
         logger.warning(f"未知的 SystemOutbox 派发类型: {dispatch_type}")
         return False
+
+    async def _emit_external_http_fault(
+        self,
+        point: ExternalHttpDispatchFaultPoint,
+        outbox: Any | None = None,
+    ) -> None:
+        await emit_external_http_dispatch_fault(self.external_http_fault_hook, point, outbox)
 
 
 async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须显式返回唯一分类

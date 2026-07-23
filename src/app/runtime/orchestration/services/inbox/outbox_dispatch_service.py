@@ -20,6 +20,11 @@ from src.app.sys.dispatch_concurrency import (
     FairDispatchScheduler,
     dispatch_policy_registry,
 )
+from src.app.sys.external_http_dispatch_faults import (
+    ExternalHttpDispatchFaultHook,
+    ExternalHttpDispatchFaultPoint,
+    emit_external_http_dispatch_fault,
+)
 from src.app.sys.external_http_evidence import (
     ExternalHttpEvidenceRecoveryError,
     recover_external_http_evidence_failure_unknown,
@@ -471,6 +476,7 @@ class OutboxDispatchService:
         outbox_repository: Any | None = None,
         dispatch_scheduler: Any | None = None,
         dispatch_attempt_service: Any | None = None,
+        external_http_fault_hook: ExternalHttpDispatchFaultHook | None = None,
     ) -> None:
         if outbox_repository is None:
             from src.app.sys.repositories import system_outbox_repository
@@ -490,6 +496,8 @@ class OutboxDispatchService:
         self.external_http_sender = external_http_sender
         self.outbox_repository = outbox_repository
         self.dispatch_attempt_service = dispatch_attempt_service
+        # 仅通过构造器显式注入；生产 singleton 默认禁用，不提供环境变量或全局开关。
+        self.external_http_fault_hook = external_http_fault_hook
         self.dispatch_scheduler = dispatch_scheduler or FairDispatchScheduler(
             repository=outbox_repository,
             policy_registry=dispatch_policy_registry,
@@ -527,6 +535,7 @@ class OutboxDispatchService:
         from src.app.sys.external_http_transport import ExternalHttpTransportOutcome
 
         error = result.error_message or result.error_code or result.outcome.value
+        await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_OUTBOX_EVIDENCE, outbox)
         if result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
             updated = await outbox_repo.mark_as_sent(db, outbox_id, lease_owner_token=lease_owner_token)
         elif result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
@@ -551,10 +560,12 @@ class OutboxDispatchService:
                 error,
                 lease_owner_token=lease_owner_token,
             )
+        await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_OUTBOX_EVIDENCE, outbox)
 
         if updated is None:
             return None
         outbox_finalization = enum_value(getattr(updated, "status", None)).lower()
+        await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_ATTEMPT_EVIDENCE, outbox)
         _ = await attempt_service.finalize_external_http_attempt_record(
             db,
             attempt=dispatch_attempt,
@@ -563,7 +574,9 @@ class OutboxDispatchService:
             outbox_finalization=outbox_finalization,
             auto_commit=False,
         )
+        await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_ATTEMPT_EVIDENCE, outbox)
         if updated is not None and outbox is not None:
+            await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_REDUCER_EVIDENCE, outbox)
             from src.utils.timezone import timezone
 
             await self._resolve_effect_transport_bridge().record_result(
@@ -574,6 +587,7 @@ class OutboxDispatchService:
                 retry_exhausted=enum_value(getattr(updated, "status", None)) == "FAILED",
                 occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
             )
+            await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_REDUCER_EVIDENCE, outbox)
         return updated
 
     async def _prepare_claimed_blocked_head_dispatch(
@@ -922,6 +936,7 @@ class OutboxDispatchService:
 
             await publish_deferred_sse_events(db)
             return result
+        await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_CLAIM)
         claim_batch = await self.dispatch_scheduler.claim(
             db,
             limit=remaining_limit,
@@ -953,6 +968,11 @@ class OutboxDispatchService:
             outbox_pk_text = str(getattr(outbox, "id", "unknown"))
             trace = TraceContext.from_runtime(outbox=outbox)
             dispatch_attempt: Any | None = attempts_by_outbox_id.get(resolve_entity_id(outbox))
+            if enum_value(getattr(outbox, "dispatch_type", None)) == "EXTERNAL_HTTP":
+                await self._emit_external_http_fault(
+                    ExternalHttpDispatchFaultPoint.AFTER_CLAIM_COMMIT,
+                    outbox,
+                )
             try:
                 outbox_pk = resolve_required_pk(outbox, "outbox", "id", "outbox_id")
                 outbox_workline_id = getattr(outbox, "workline_id", None)
@@ -1047,6 +1067,10 @@ class OutboxDispatchService:
                         result["failed"] += 1
                         result["dispatched"] += 1
                         continue
+                    await self._emit_external_http_fault(
+                        ExternalHttpDispatchFaultPoint.AFTER_EVIDENCE_COMMIT,
+                        outbox,
+                    )
                     if updated is None:
                         result["skipped"] += 1
                         logger.warning(
@@ -1297,11 +1321,21 @@ class OutboxDispatchService:
 
             return await device_command_gateway.dispatch(db, outbox)
         if outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
-            return await self._dispatch_external_http(outbox)
+            await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_SEND, outbox)
+            result = await self._dispatch_external_http(outbox)
+            await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_SEND, outbox)
+            return result
         if outbox.dispatch_type == SystemOutboxDispatchType.INTERNAL_SIGNAL:
             return await self._dispatch_internal_signal(outbox)
         logger.warning(f"未知的派发类型: {outbox.dispatch_type}")
         return False
+
+    async def _emit_external_http_fault(
+        self,
+        point: ExternalHttpDispatchFaultPoint,
+        outbox: Any | None = None,
+    ) -> None:
+        await emit_external_http_dispatch_fault(self.external_http_fault_hook, point, outbox)
 
     async def _should_dispatch_to_sandbox(self, db: Any, outbox: Any) -> bool:
         """判断 Outbox 是否应进入沙箱派发出口。"""

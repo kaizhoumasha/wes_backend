@@ -435,3 +435,49 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
     assert outbox.next_retry_at is None
     assert outbox.finished_at is not None
     assert "STALE_EXTERNAL_HTTP_DISPATCH_LEASE" in outbox.last_error
+
+
+@pytest.mark.asyncio
+async def test_generic_dispatcher_emits_ordered_external_http_fault_boundaries() -> None:
+    outbox = _outbox()
+    repository = _Repository(outbox)
+    attempt_service = _AttemptService()
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    observed: list[tuple[str, int | None]] = []
+
+    async def fault_hook(point: object, current_outbox: Any | None) -> None:
+        observed.append((str(point), getattr(current_outbox, "id", None)))
+
+    engine = SystemOutboxEngine(
+        outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
+        external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
+        dispatch_attempt_service=attempt_service,
+        workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=bridge,
+        external_http_fault_hook=fault_hook,
+    )
+
+    stats = await engine.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)
+
+    assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
+    assert observed == [
+        ("BEFORE_CLAIM", None),
+        ("AFTER_CLAIM_COMMIT", 1),
+        ("BEFORE_SEND", 1),
+        ("AFTER_SEND", 1),
+        ("BEFORE_OUTBOX_EVIDENCE", 1),
+        ("AFTER_OUTBOX_EVIDENCE", 1),
+        ("BEFORE_ATTEMPT_EVIDENCE", 1),
+        ("AFTER_ATTEMPT_EVIDENCE", 1),
+        ("BEFORE_REDUCER_EVIDENCE", 1),
+        ("AFTER_REDUCER_EVIDENCE", 1),
+        ("AFTER_EVIDENCE_COMMIT", 1),
+    ]
