@@ -2,7 +2,6 @@
   "case_id": "timeout",
   "provider_code": "WMS",
   "contract_version": "2026-06-25",
-  "expected_port": "WmsFulfillmentPort.request_transport",
   "direction": "effect",
   "raw_request": {
     "transport_request_id": "tr-timeout-001",

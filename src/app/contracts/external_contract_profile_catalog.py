@@ -60,20 +60,6 @@ class ExternalContractProfileCatalog:
             raise LookupError(f"provider profile identity 必须唯一: {identity}")
         return matches[0]
 
-    @staticmethod
-    def assert_ports_declared(
-        profile: ExternalContractProfile, required_port_types: tuple[type[object], ...]
-    ) -> list[str]:
-        declared = sorted((*profile.runtime_capabilities_query, *profile.runtime_capabilities_effect))
-        required_methods: list[str] = []
-        for port_type in required_port_types:
-            prefix = f"{port_type.__name__}."
-            matches = [entry for entry in declared if entry.startswith(prefix)]
-            if not matches:
-                raise LookupError(f"provider profile 未声明 Port: {port_type.__name__}")
-            required_methods.extend(matches)
-        return sorted(set(required_methods))
-
 
 def _canonical_provider_code(provider_code: str) -> str:
     """Provider identity 仅规范首尾空白与大小写；version/environment 保持精确。"""
@@ -89,11 +75,6 @@ WMS_MATERIAL_FLOW_SANDBOX_PROFILE = ExternalContractProfile(
     provider_code="WMS",
     contract_version="2026-07-06.material-flow",
     environment="sandbox",
-    runtime_capabilities_query=[
-        "InventoryQueryOperationPort.execute",
-        "WmsMasterDataPort.get_material",
-    ],
-    runtime_capabilities_effect=[],
     inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
     inbound_normalizers_result=[],
     timeout_retry_query_timeout_seconds=10,
@@ -111,11 +92,6 @@ WMS_MATERIAL_FLOW_PRODUCTION_PROFILE = ExternalContractProfile(
     provider_code="WMS",
     contract_version="2026-07-06.material-flow",
     environment="production",
-    runtime_capabilities_query=[
-        "InventoryQueryOperationPort.execute",
-        "WmsMasterDataPort.get_material",
-    ],
-    runtime_capabilities_effect=[],
     inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
     inbound_normalizers_result=[],
     timeout_retry_query_timeout_seconds=10,

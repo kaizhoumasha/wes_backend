@@ -78,7 +78,6 @@ def test_reconciliation_runtime_merges_duplicate_callback_without_hold() -> None
     assert len(plan.intents) == 1
     assert plan.intents[0].kind == RuntimeIntentKind.RESOURCE_FACT
     assert plan.intents[0].payload_json["dedupe_result"] == "IDEMPOTENT_DUPLICATE"
-    assert plan.effect_contracts == {}
 
 
 def test_reconciliation_runtime_rejects_callback_without_source_event_id() -> None:

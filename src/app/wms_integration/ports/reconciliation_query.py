@@ -11,8 +11,7 @@
 库存作业状态, WMS 维护库存" 一致; drift 由 WES reconciliation 任务消费,
 本端口只提供查询入口。
 
-方法命名: Port.method 格式, 供 ExternalContractProfile.runtime_capabilities_query
-引用。
+方法只定义业务协议；运行准入由 typed system capability identity 承担。
 """
 
 from __future__ import annotations

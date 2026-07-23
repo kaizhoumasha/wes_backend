@@ -16,6 +16,7 @@ class FullBoxExchangeOperationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     dispatch_key: StableText = Field(max_length=240)
+    provider_code: StableText = Field(max_length=60)
     rack_id: StableText = Field(max_length=120)
     empty_box_id: StableText = Field(max_length=120)
     full_box_id: StableText = Field(max_length=120)

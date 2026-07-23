@@ -84,7 +84,6 @@ def profile() -> ExternalContractProfile:
         provider_code="WMS",
         contract_version="v1",
         environment="production",
-        runtime_capabilities_query=["InventoryPort.query"],
         timeout_retry_query_timeout_seconds=3,
         timeout_retry_retry_backoff_seconds=[1],
         fixture_set_path="tests/fixtures/external_contracts/wms/v1",
@@ -221,7 +220,6 @@ async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required
     assert [profile["provider_code"] for profile in binding.provider_profile_snapshot_json] == ["WMS"]
     assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-06.material-flow"
     assert binding.provider_profile_snapshot_json[0]["environment"] == "sandbox"
-    assert binding.port_requirements_json == ["InventoryQueryOperationPort.execute"]
 
 
 @pytest.mark.asyncio
@@ -453,7 +451,6 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
     assert (first.binding_version, second.binding_version) == (1, 2)
     assert first.typed_config_hash == second.typed_config_hash
     assert first.generated_index_digest == "a" * 64
-    assert first.port_requirements_json == ["InventoryPort.query"]
     assert first.provider_profile_snapshot_json[0]["provider_code"] == "WMS"
     assert first.device_snapshot_json == [{"device_code": "PLC-01", "provider_code": "ECS"}]
     assert first.activated_by == "operator-1"

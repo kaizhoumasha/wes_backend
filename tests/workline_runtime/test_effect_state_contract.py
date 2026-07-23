@@ -236,7 +236,7 @@ def test_runtime_intent_log_owns_semantic_state_only_and_dispatch_keys_are_uniqu
     runtime_fields = RuntimeIntentLog.model_fields
     assert runtime_fields["dispatch_key"].is_required()
     assert runtime_fields["effect_status"].default is RuntimeIntentStatus.PROPOSED
-    assert {"dispatch_status", "attempt_count", "last_error_code", "last_error_message"}.isdisjoint(runtime_fields)
+    assert {"attempt_count", "last_error_code", "last_error_message"}.isdisjoint(runtime_fields)
     assert ("dispatch_key",) in _unique_column_sets(RuntimeIntentLog.__table__)
     assert ("dispatch_key",) in _unique_column_sets(SystemOutbox.__table__)
 

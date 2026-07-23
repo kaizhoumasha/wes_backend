@@ -53,12 +53,15 @@ LEGACY_REFERENCE_EXCLUSIONS = {
 def test_confirm_inbound_legacy_source_contracts_are_deleted() -> None:
     findings: list[str] = []
     for relative_path, markers in LEGACY_SOURCE_MARKERS.items():
-        content = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        source_path = REPO_ROOT / relative_path
+        if not source_path.is_file():
+            continue
+        content = source_path.read_text(encoding="utf-8")
         findings.extend(f"{relative_path}: {marker}" for marker in markers if marker in content)
     assert findings == []
 
 
-def test_confirm_inbound_legacy_port_method_has_no_active_reference() -> None:
+def test_confirm_inbound_legacy_string_reference_has_no_active_reference() -> None:
     findings: list[str] = []
     for root in LEGACY_REFERENCE_ROOTS:
         for path in sorted((REPO_ROOT / root).rglob("*")):

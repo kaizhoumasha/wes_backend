@@ -145,7 +145,6 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
     workline.active_plugin_config_hash = binding.typed_config_hash
     workline.active_plugin_index_digest = binding.generated_index_digest
     workline.active_plugin_provider_requirements_json = [PROFILE_IDENTITY]
-    workline.active_plugin_port_requirements_json = list(binding.port_requirements_json)
     await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
     config_hash = binding.typed_config_hash
     payload_json = {

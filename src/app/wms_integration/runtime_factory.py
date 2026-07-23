@@ -13,13 +13,11 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding
+from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding, wms_sync_base_url
 from src.app.sys.external_http_credentials import AuditedVersionedCredentialProvider
 from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
 from src.app.wms_integration.services.circuit_breaker_service import wms_circuit_breaker_service
-from src.app.wms_integration.services.endpoint_config import wms_endpoint_config
 from src.app.wms_integration.services.evidence_service import wms_call_evidence_service
-from src.app.wms_integration.services.http_client import wms_http_client
 from src.app.wms_integration.services.query_transport import (
     WmsBoundQueryEndpoint,
     WmsCallEvidenceQueryWriter,
@@ -167,8 +165,7 @@ def build_inventory_query_port_factory(
             secret=secret,
         )
     else:
-        resolved_base_url = resolved_base_url or wms_endpoint_config.base_url
-        resolved_transport = resolved_transport or wms_http_client.transport
+        resolved_base_url = resolved_base_url or wms_sync_base_url()
         resolved_credential_provider = resolved_credential_provider or EnvironmentWmsCredentialProvider()
     if resolved_credential_provider is None:
         raise ValueError("WMS QUERY credential provider is required")

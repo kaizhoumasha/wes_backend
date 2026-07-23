@@ -605,26 +605,7 @@ def _runtime_profile_from_pinned_binding(binding: Any, *, expected_identity: str
     if len(matched_profiles) != 1:
         raise ValueError("binding provider profile snapshot must match exactly once")
 
-    profile = matched_profiles[0]
-    raw_requirements = getattr(binding, "port_requirements_json", None)
-    if not isinstance(raw_requirements, list) or any(
-        not isinstance(requirement, str) or not requirement for requirement in raw_requirements
-    ):
-        raise ValueError("binding port requirements snapshot is invalid")
-    approved_requirements = frozenset(raw_requirements)
-    declared_requirements = frozenset((*profile.runtime_capabilities_query, *profile.runtime_capabilities_effect))
-    if not approved_requirements.issubset(declared_requirements):
-        raise ValueError("binding port requirements exceed provider profile snapshot")
-    return profile.model_copy(
-        update={
-            "runtime_capabilities_query": [
-                capability for capability in profile.runtime_capabilities_query if capability in approved_requirements
-            ],
-            "runtime_capabilities_effect": [
-                capability for capability in profile.runtime_capabilities_effect if capability in approved_requirements
-            ],
-        }
-    )
+    return matched_profiles[0]
 
 
 class RuntimeInboxProcessorBridge:
@@ -706,11 +687,7 @@ class RuntimeInboxProcessorBridge:
         """新建 attempt-scoped runtime；绝不复用 Port 实例或 QUERY cache。"""
 
         registry = base_registry.fork_attempt() if base_registry is not None else CapabilityPortRegistry()
-        context = (
-            RuntimeCapabilityContext(registry)
-            if provider_profile is None
-            else RuntimeCapabilityContext.from_provider_profile(registry, provider_profile)
-        )
+        context = RuntimeCapabilityContext(registry)
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 

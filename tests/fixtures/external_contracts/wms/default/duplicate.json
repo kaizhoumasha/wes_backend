@@ -2,7 +2,6 @@
   "case_id": "duplicate",
   "provider_code": "WMS",
   "contract_version": "2026-06-25",
-  "expected_port": "WmsEventPort.normalize_event",
   "direction": "event",
   "raw_callback": {
     "event_type": "WMS_TRANSPORT_COMPLETED",

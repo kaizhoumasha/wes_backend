@@ -99,45 +99,6 @@ def test_command_base_extra_forbid_rejects_unknown_field():
     assert "unknown_field" in str(exc_info.value)
 
 
-# ---- 同 key 不同 hash 拒绝 (H4 outbound 最小版本) ----
-
-
-def test_external_contract_profile_query_method_format():
-    """query 元素必须为 'ClassName.method' 格式 (Port.method 合同)。"""
-    from src.app.contracts.external_contract_profile import ExternalContractProfile
-
-    # 合法格式 (snake_case 方法名支持)
-    profile = ExternalContractProfile(
-        provider_code="WMS",
-        contract_version="2026-06-26",
-        environment="sandbox",
-        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
-        timeout_retry_query_timeout_seconds=10,
-        timeout_retry_retry_backoff_seconds=[1, 2, 4],
-        fixture_set_path="tests/fixtures/external_contracts/wms/default",
-        fixture_set_required_cases=["success"],
-    )
-    assert profile.runtime_capabilities_query == ["WmsMasterDataPort.get_material"]
-
-
-def test_external_contract_profile_query_format_rejects_underscore_prefix():
-    """query 元素缺 Port 后缀应拒绝。"""
-    from src.app.contracts.external_contract_profile import ExternalContractProfile
-
-    with pytest.raises(ValidationError) as exc_info:
-        ExternalContractProfile(
-            provider_code="WMS",
-            contract_version="2026-06-26",
-            environment="sandbox",
-            runtime_capabilities_query=["get_material"],
-            timeout_retry_query_timeout_seconds=10,
-            timeout_retry_retry_backoff_seconds=[1],
-            fixture_set_path="tests/fixtures/external_contracts/wms/default",
-            fixture_set_required_cases=["success"],
-        )
-    assert "Port.method" in str(exc_info.value)
-
-
 # ---- 现有 baseline 验证 ----
 
 

@@ -74,7 +74,6 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
     assert pkg_binding.capability_key == "wms.fulfillment.notify_pkg_binding"
     assert inventory.payload_json["warehouse_code"] == "WH-A"
     assert inventory.capability_key == "wms.inventory.confirm_inbound"
-    assert plan.effect_contracts == {}
 
 
 def test_sorter_runtime_blocks_join_gate_failure_as_object_scope_reconciliation() -> None:
@@ -103,7 +102,6 @@ def test_sorter_runtime_blocks_join_gate_failure_as_object_scope_reconciliation(
 
     assert plan.reconciliation_required is True
     assert plan.allowed_next_effect_scope == "OBJECT_ONLY"
-    assert plan.effect_contracts == {}
     assert len(plan.intents) == 1
     assert plan.intents[0].kind == RuntimeIntentKind.BLOCK
     assert plan.intents[0].reason_code == "SORTER_JOIN_GATE_NOT_SATISFIED"
@@ -143,7 +141,6 @@ def test_sorter_runtime_success_records_ready_to_drop_location_fact() -> None:
     )
 
     assert plan.reconciliation_required is False
-    assert plan.effect_contracts == {}
     assert len(plan.intents) == 1
     assert plan.intents[0].kind == RuntimeIntentKind.RESOURCE_FACT
     assert plan.intents[0].action == "RUNTIME_LOCATION_EVENT"
@@ -204,18 +201,26 @@ def test_full_box_exchange_runtime_uses_fulfillment_intent_and_filters_sorting_c
             "full_box_id": "FULL-001",
             "full_box_object_keys": ["PKG-FULL-001"],
             "remaining_object_keys": ["PKG-FULL-001", "PKG-PIECE-001"],
+            "source_version": "rack-state:v1",
+            "plugin_binding_id": 23,
+            "plugin_binding_version": 5,
         }
     )
 
     assert plan.reconciliation_required is False
     assert plan.evidence["sorting_candidate_object_keys"] == ["PKG-PIECE-001"]
     assert len(plan.intents) == 1
-    assert plan.intents[0].kind == RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST
-    assert plan.intents[0].action == "FULL_BOX_EXCHANGE"
-    assert plan.effect_contracts["WmsFulfillmentPort.full_box_exchange"]["payload"] == {
+    assert plan.intents[0].kind == RuntimeIntentKind.SYSTEM_CAPABILITY
+    assert plan.intents[0].capability_key == "wms.fulfillment.full_box_exchange"
+    assert plan.intents[0].payload_json == {
+        "dispatch_key": "wms-full-box-exchange:WMS-A:RACK-001:EMPTY-001:FULL-001",
+        "provider_code": "WMS-A",
         "rack_id": "RACK-001",
         "empty_box_id": "EMPTY-001",
         "full_box_id": "FULL-001",
+        "workline_id": None,
+        "session_id": None,
+        "trace_id": None,
     }
 
 

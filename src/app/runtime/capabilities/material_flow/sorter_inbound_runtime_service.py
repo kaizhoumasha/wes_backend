@@ -4,6 +4,7 @@
 外部 provider 的具体实现由部署 wiring 决定，本层只面向稳定 port contract。
 入库确认通过 typed EFFECT `wms.inventory.confirm_inbound@v1` 进入 T8 双账本。
 料盘绑定通过 typed EFFECT `wms.fulfillment.notify_pkg_binding@v1` 进入同一双账本。
+满箱交换通过 typed EFFECT `wms.fulfillment.full_box_exchange@v1` 进入同一双账本。
 """
 
 from __future__ import annotations
@@ -18,6 +19,13 @@ from src.app.runtime.capabilities.material_flow.runtime_identity import (
     SORTER_INBOUND_RUNTIME_SOURCE,
 )
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
+from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.effect_contract import (
+    FullBoxExchangeEffectAdmission,
+    FullBoxExchangeEffectPrecondition,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.intent_adapter import (
+    full_box_exchange_intent_adapter,
+)
 from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_contract import (
     NotifyPackageBindingEffectAdmission,
     NotifyPackageBindingEffectPrecondition,
@@ -33,11 +41,11 @@ from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.intent_ad
     confirm_inbound_intent_adapter,
 )
 from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationRequest
+from src.app.wms_integration.ports.full_box_exchange_operation import FullBoxExchangeOperationRequest
 from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationRequest
 from src.utils.value_normalization import (
     coerce_optional_int,
     coerce_string_value,
-    positive_timeout_seconds,
     require_text,
     require_text_any,
     string_list,
@@ -68,7 +76,6 @@ class RuntimeCapabilityPlan(BaseModel):
     reconciliation_action: str = "NONE"
     allowed_next_effect_scope: str | None = None
     intents: list[RuntimeIntent] = Field(default_factory=list)
-    effect_contracts: dict[str, dict[str, Any]] = Field(default_factory=dict)
     evidence: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -204,7 +211,6 @@ class SorterInboundRuntimeService:
                     binding_version=plugin_binding_version,
                 ),
             ],
-            effect_contracts={},
             evidence={
                 "request_id": request_id,
                 "object_key": object_key,
@@ -298,40 +304,44 @@ class SorterInboundRuntimeService:
         sorting_candidate_object_keys = [
             object_key for object_key in string_list(payload, "remaining_object_keys") if object_key not in full_box_set
         ]
-        operation_key = f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:full-box-exchange"
+        dispatch_key = f"wms-full-box-exchange:{provider_code}:{rack_code}:{empty_box_id}:{full_box_id}"
+        request = FullBoxExchangeOperationRequest(
+            dispatch_key=dispatch_key,
+            provider_code=provider_code,
+            rack_id=rack_code,
+            empty_box_id=empty_box_id,
+            full_box_id=full_box_id,
+            workline_id=coerce_optional_int(payload.get("workline_id")),
+            session_id=coerce_optional_int(payload.get("session_id")),
+            trace_id=coerce_string_value(payload.get("trace_id")) or None,
+        )
+        admission = FullBoxExchangeEffectAdmission(
+            precondition=FullBoxExchangeEffectPrecondition(
+                rack_id=rack_code,
+                empty_box_id=empty_box_id,
+                full_box_id=full_box_id,
+                local_physical_fact_recorded=True,
+            ),
+            fact_version=require_text(payload.get("source_version"), "source_version"),
+        )
+        binding_id = coerce_optional_int(payload.get("plugin_binding_id"))
+        binding_version = coerce_optional_int(payload.get("plugin_binding_version"))
+        if binding_id is None or binding_version is None:
+            raise ValueError("plugin_binding_id/plugin_binding_version is required")
 
         return RuntimeCapabilityPlan(
             provider_code=provider_code,
             intents=[
-                RuntimeIntent.rack_bin_exchange_request(
-                    operation_type="FULL_BOX_EXCHANGE",
-                    operation_key=operation_key,
-                    rack_code=rack_code,
-                    moves=[
-                        {
-                            "rack_code": rack_code,
-                            "rack_side": coerce_string_value(payload.get("rack_side")),
-                            "empty_box_id": empty_box_id,
-                            "full_box_id": full_box_id,
-                            "correlation_id": correlation_id,
-                            "provider_code": provider_code,
-                        }
-                    ],
-                    timeout_seconds=positive_timeout_seconds(payload.get("timeout_seconds")),
+                full_box_exchange_intent_adapter.build_intent(
+                    request,
+                    admission=admission,
+                    binding_id=binding_id,
+                    binding_version=binding_version,
                 )
             ],
-            effect_contracts={
-                "WmsFulfillmentPort.full_box_exchange": {
-                    "dispatch_key": operation_key,
-                    "payload": {
-                        "rack_id": rack_code,
-                        "empty_box_id": empty_box_id,
-                        "full_box_id": full_box_id,
-                    },
-                }
-            },
             evidence={
                 "request_id": request_id,
+                "correlation_id": correlation_id,
                 "batch_key": f"{rack_code}:{coerce_string_value(payload.get('rack_side'))}",
                 "sorting_candidate_object_keys": sorting_candidate_object_keys,
             },

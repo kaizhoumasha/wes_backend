@@ -124,25 +124,10 @@ class RuntimeCapabilityContext:
     def __init__(
         self,
         registry: CapabilityPortRegistry,
-        *,
-        allowed_query_capabilities: Iterable[str] | None = None,
-        allowed_effect_capabilities: Iterable[str] | None = None,
     ) -> None:
         self._registry = registry
-        self._allowed_query_capabilities = _normalize_capability_set(allowed_query_capabilities)
-        self._allowed_effect_capabilities = _normalize_capability_set(allowed_effect_capabilities)
         # Context 本身按 attempt 创建；只在该 attempt 内复用 Port proxy。
         self._attempt_ports: dict[tuple[str, str], Any] = {}
-
-    @classmethod
-    def from_provider_profile(cls, registry: CapabilityPortRegistry, profile: Any) -> RuntimeCapabilityContext:
-        """按 ExternalContractProfile 创建受限 capability context。"""
-
-        return cls(
-            registry,
-            allowed_query_capabilities=getattr(profile, "runtime_capabilities_query", ()),
-            allowed_effect_capabilities=getattr(profile, "runtime_capabilities_effect", ()),
-        )
 
     def get_query_port(self, port_protocol: type[Any]) -> Any:
         """获取 query port (只读事实查询)。"""
@@ -163,45 +148,6 @@ class RuntimeCapabilityContext:
         cache_key = (direction, port_name)
         if cache_key in self._attempt_ports:
             return self._attempt_ports[cache_key]
-        allowed = self._allowed_query_capabilities if direction == "query" else self._allowed_effect_capabilities
-        if allowed is None:
-            port = self._registry.get(port_protocol)
-            self._attempt_ports[cache_key] = port
-            return port
-        allowed_methods = frozenset(
-            capability.split(".", maxsplit=1)[1] for capability in allowed if capability.startswith(f"{port_name}.")
-        )
-        if not allowed_methods:
-            raise PermissionError(f"provider 未声明 {direction} capability: {port_name}")
         port = self._registry.get(port_protocol)
-        restricted_port = _RestrictedCapabilityPort(
-            port,
-            port_name=port_name,
-            allowed_methods=allowed_methods,
-            direction=direction,
-        )
-        self._attempt_ports[cache_key] = restricted_port
-        return restricted_port
-
-
-def _normalize_capability_set(capabilities: Iterable[str] | None) -> frozenset[str] | None:
-    """None 表示沿用未受 provider profile 限制的旧 wiring；空集合表示显式拒绝全部。"""
-
-    if capabilities is None:
-        return None
-    return frozenset(capability for capability in capabilities if capability)
-
-
-class _RestrictedCapabilityPort:
-    """只暴露 provider profile 已声明的 Port.method。"""
-
-    def __init__(self, target: Any, *, port_name: str, allowed_methods: frozenset[str], direction: str) -> None:
-        self._target = target
-        self._port_name = port_name
-        self._allowed_methods = allowed_methods
-        self._direction = direction
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_") or name not in self._allowed_methods:
-            raise PermissionError(f"provider 未声明 {self._direction} capability: {self._port_name}.{name}")
-        return getattr(self._target, name)
+        self._attempt_ports[cache_key] = port
+        return port

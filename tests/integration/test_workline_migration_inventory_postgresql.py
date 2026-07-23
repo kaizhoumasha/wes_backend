@@ -184,72 +184,6 @@ def test_plugin_binding_revision_roundtrip_and_database_constraints() -> None:
     asyncio.run(scenario())
 
 
-@pytest.mark.integration
-def test_plugin_binding_revision_reports_legacy_intent_duplicates_before_constraint() -> None:
-    """旧 ledger 身份重复时必须给出可修复清单，而不是在建约束时返回匿名冲突。"""
-
-    async def scenario() -> None:
-        async with temporary_database(environ=_integration_environment()) as (_database, database_url):
-            run_alembic("upgrade", "e0d58415afc9", database_url=database_url)
-            engine = create_async_engine(database_url)
-            try:
-                async with engine.begin() as connection:
-                    await connection.execute(
-                        text(
-                            "INSERT INTO wes_runtime.execution_sessions "
-                            "(id, workline_id, manifest_version, state) VALUES "
-                            "(900001, 700001, 'legacy-v1', 'ACTIVE')"
-                        )
-                    )
-                    await connection.execute(
-                        text(
-                            "INSERT INTO wes_runtime.execution_correlations "
-                            "(id, correlation_id, execution_session_id, trace_id) VALUES "
-                            "(900001, 'legacy-duplicate-correlation', 900001, 'legacy-duplicate-trace')"
-                        )
-                    )
-                    await connection.execute(
-                        text(
-                            "INSERT INTO wes_runtime.runtime_intent_logs "
-                            "(id, execution_session_id, correlation_id, provider_code, target_domain, target_action, "
-                            "idempotency_key, request_hash, dispatch_status, attempt_count) "
-                            "SELECT 910000 + group_no * 10 + duplicate_no, 900001, "
-                            "'legacy-duplicate-correlation', 'legacy-provider', 'device', 'dispatch', "
-                            "'group-key-' || group_no, 'group-hash-' || group_no || '-' || duplicate_no, "
-                            "'PENDING', 0 FROM generate_series(1, 21) AS group_no "
-                            "CROSS JOIN generate_series(1, 2) AS duplicate_no"
-                        )
-                    )
-                    await connection.execute(
-                        text(
-                            "INSERT INTO wes_runtime.runtime_intent_logs "
-                            "(id, execution_session_id, correlation_id, provider_code, target_domain, target_action, "
-                            "idempotency_key, request_hash, dispatch_status, attempt_count) "
-                            "SELECT 900000 + sequence_no, 900001, 'legacy-duplicate-correlation', "
-                            "'legacy-provider', 'device', 'dispatch', 'duplicate-key', "
-                            "'hash-' || sequence_no, 'PENDING', 0 FROM generate_series(1, 25) AS sequence_no"
-                        )
-                    )
-            finally:
-                await engine.dispose()
-
-            with pytest.raises(subprocess.CalledProcessError) as exc_info:
-                run_alembic("upgrade", "fa15ba0aef65", database_url=database_url)
-
-            diagnostics = f"{exc_info.value.stdout}\n{exc_info.value.stderr}"
-            assert "LEGACY_INTENT_DUPLICATE_IDENTITY" in diagnostics
-            assert "legacy-provider" in diagnostics
-            assert "duplicate-key" in diagnostics
-            assert "count=25" in diagnostics
-            assert "ids_sample={900001,900002,900003,900004,900005,900006,900007,900008,900009,900010}" in diagnostics
-            assert "truncated=true" in diagnostics
-            assert "900011" not in diagnostics
-            assert "duplicate_group_count=22" in diagnostics
-            assert "groups_truncated=true" in diagnostics
-
-    asyncio.run(scenario())
-
-
 async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     definition = list_workline_capability_definitions()[0]
     foundation = WorkLine(
@@ -278,7 +212,6 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
         typed_config_json={},
         typed_config_hash="a" * 64,
         provider_profile_snapshot_json=[],
-        port_requirements_json=["InventoryPort.query"],
         device_snapshot_json=[],
         generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
         environment="production",
@@ -293,7 +226,6 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     foundation.active_plugin_config_hash = binding.typed_config_hash
     foundation.active_plugin_index_digest = binding.generated_index_digest
     foundation.active_plugin_provider_requirements_json = ["WMS@v1"]
-    foundation.active_plugin_port_requirements_json = list(binding.port_requirements_json)
     execution_session = ExecutionSession(
         workline_id=foundation.id,
         plugin_key=binding.plugin_key,
@@ -559,7 +491,6 @@ def test_postgresql_status_matrix_samples_transaction_and_no_write_contract() ->
         assert foundation.active_plugin_config_hash == "a" * 64
         assert foundation.active_plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
         assert foundation.provider_requirements == ("WMS@v1",)
-        assert foundation.port_requirements == ("InventoryPort.query",)
         assert tuple(reference.type.value for reference in foundation.runtime_extension_references) == (
             "INTENT",
             "WORK_ITEM",

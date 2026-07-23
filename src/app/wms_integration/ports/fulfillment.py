@@ -4,8 +4,7 @@
 所有 effect 必先写 RuntimeIntentLog + EffectPort dispatcher (主计划 §3.5 I3 边界),
 capability 不得在 WMS 履约上下文绕过 Runtime 直接修改 WES 内部状态。
 
-方法命名: Port.method 格式, 供 ExternalContractProfile.runtime_capabilities_effect
-引用。
+方法只定义业务协议；运行准入由 typed system capability identity 承担。
 """
 
 from __future__ import annotations

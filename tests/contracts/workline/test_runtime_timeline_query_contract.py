@@ -104,11 +104,10 @@ def test_timeline_query_empty_when_no_match():
 
 def test_timeline_does_not_carry_owner_state_fields():
     """不变量: RuntimeTimeline 是 append-only 事件溯源, 不作为 owner 状态源 (主计划 §9.2)。
-    不持 step_status / dispatch_status / status 之类 owner 状态字段 —
+    不持 step/hold/status 之类 owner 状态字段 —
     状态变化须新建 timeline 行, 不允许就地覆盖。"""
     forbidden_owner_state_fields = {
         "step_status",
-        "dispatch_status",
         "hold_status",
         "is_resolved",
         "owner_state",

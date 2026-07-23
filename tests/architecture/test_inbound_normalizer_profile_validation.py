@@ -89,8 +89,6 @@ def _profile_with_declared_normalizers() -> ExternalContractProfile:
         provider_code="WMS",
         contract_version="2026-06-25",
         environment="sandbox",
-        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
-        runtime_capabilities_effect=["WmsFulfillmentPort.request_transport"],
         inbound_normalizers_event=["WMS_GRN_RECEIVED"],
         inbound_normalizers_result=["WMS_RACK_TASK_RESULT"],
         timeout_retry_query_timeout_seconds=10,
@@ -117,34 +115,3 @@ def test_external_contract_profile_rejects_undeclared_result_normalizer():
 
     with pytest.raises(PermissionError, match="未声明 result normalizer"):
         profile.ensure_inbound_normalizer_declared("WMS_FULL_BOX_EXCHANGE_RESULT", direction="result")
-
-
-def test_external_contract_profile_runtime_capability_admission():
-    """runtime query/effect capability admission 使用精确 Port.method 合同。"""
-
-    profile = _profile_with_declared_normalizers()
-
-    profile.ensure_runtime_capability_declared("WmsMasterDataPort.get_material", direction="query")
-    profile.ensure_runtime_capability_declared("WmsFulfillmentPort.request_transport", direction="effect")
-    with pytest.raises(PermissionError, match="未声明 query capability"):
-        profile.ensure_runtime_capability_declared("WmsMasterDataPort.get_warehouse", direction="query")
-    with pytest.raises(PermissionError, match="未声明 effect capability"):
-        profile.ensure_runtime_capability_declared("WmsFulfillmentPort.request_rack_supply", direction="effect")
-
-
-def test_external_contract_profile_rejects_port_only_effect_capability():
-    """effect capability 也必须使用 Port.method, 不能只声明 port 名。"""
-
-    with pytest.raises(ValidationError, match="effect 元素必须为"):
-        ExternalContractProfile(
-            provider_code="WMS",
-            contract_version="2026-06-25",
-            environment="sandbox",
-            runtime_capabilities_query=["WmsMasterDataPort.get_material"],
-            runtime_capabilities_effect=["WmsFulfillmentPort"],
-            timeout_retry_query_timeout_seconds=10,
-            timeout_retry_effect_timeout_seconds=30,
-            timeout_retry_retry_backoff_seconds=[1, 2, 4],
-            fixture_set_path="tests/fixtures/external_contracts/wms/default",
-            fixture_set_required_cases=["success"],
-        )

@@ -135,6 +135,7 @@ def test_query_response_accepts_explicit_empty_items(response_model: type) -> No
             FullBoxExchangeOperationRequest,
             {
                 "dispatch_key": "exchange:001",
+                "provider_code": "WMS",
                 "rack_id": "RACK-001",
                 "empty_box_id": "EMPTY-001",
                 "full_box_id": "FULL-001",

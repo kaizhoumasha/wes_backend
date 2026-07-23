@@ -65,11 +65,7 @@ def test_sorter_runtime_emits_one_typed_confirm_inbound_system_capability() -> N
     }
     assert intent.fact_version == "runtime-location:v7"
     assert intent.binding_snapshot == {"binding_id": 23, "binding_version": 5}
-    assert all(
-        value.kind is not RuntimeIntentKind.EXTERNAL_REQUEST or value.target_code != "WMS_INVENTORY_TRANSACTION"
-        for value in plan.intents
-    )
-    assert OPERATION_IDENTITY not in plan.effect_contracts
+    assert all(value.kind is not RuntimeIntentKind.EXTERNAL_REQUEST for value in plan.intents)
 
 
 def test_confirm_inbound_dispatch_identity_is_stable_across_request_replay() -> None:

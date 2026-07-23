@@ -22,6 +22,10 @@ from src.app.runtime.orchestration.services.effect_reducer_service import (
     InvalidReconciliationEvent,
     effect_reducer,
 )
+from src.app.runtime.orchestration.services.full_box_exchange_effect_preparation_service import (
+    FullBoxExchangeEffectPreparationService,
+    full_box_exchange_effect_preparation_service,
+)
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
     IdempotencyConflict,
@@ -70,6 +74,7 @@ __all__ = [
     "EffectIntentNotFound",
     "EffectReducer",
     "EffectReductionResult",
+    "FullBoxExchangeEffectPreparationService",
     "IdempotencyConflict",
     "IdempotencyGuard",
     "InvalidReconciliationEvent",
@@ -86,6 +91,7 @@ __all__ = [
     "conveyor_queue_membership_writer_service",
     "device_runtime_projection_writer_service",
     "effect_reducer",
+    "full_box_exchange_effect_preparation_service",
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",

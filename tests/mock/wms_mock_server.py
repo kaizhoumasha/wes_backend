@@ -952,7 +952,7 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
 
 @app.post("/api/wms/fulfillment/full-box-exchange", summary="本机 Mock: 满箱交换履约")
 async def full_box_exchange(payload: dict[str, Any]):
-    """模拟 WmsFulfillmentPort.full_box_exchange, 不触发生产写路径。"""
+    """模拟满箱交换 typed EFFECT，不触发生产写路径。"""
 
     rack_code = str(payload.get("rack_code") or "")
     rack_side = str(payload.get("rack_side") or "")

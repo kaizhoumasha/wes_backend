@@ -74,7 +74,6 @@ def _workline(
         active_plugin_config_hash=None,
         active_plugin_index_digest=None,
         active_plugin_provider_requirements_json=[],
-        active_plugin_port_requirements_json=[],
     )
 
 
@@ -102,7 +101,6 @@ def _definition(key: str = "known", version: str = "current") -> SimpleNamespace
 def _profile(
     provider_code: str = "WMS",
     *,
-    query: list[str] | None = None,
     version: str = "v1",
     environment: str = "sandbox",
 ) -> ExternalContractProfile:
@@ -110,8 +108,6 @@ def _profile(
         provider_code=provider_code,
         contract_version=version,
         environment=environment,
-        runtime_capabilities_query=query or ["WmsMasterDataPort.get_material"],
-        runtime_capabilities_effect=["WmsFulfillmentPort.confirm_inbound"],
         inbound_normalizers_event=["SECRET_EVENT"],
         timeout_retry_query_timeout_seconds=10,
         timeout_retry_effect_timeout_seconds=30,
@@ -216,17 +212,16 @@ async def test_workline_fields_are_normalized_before_catalog_lookup_and_classifi
 
 
 @pytest.mark.asyncio
-async def test_inventory_digest_includes_binding_index_and_per_workline_requirements() -> None:
+async def test_inventory_digest_includes_binding_index_and_provider_requirements() -> None:
     source = _workline(1, "LINE-01", active=True, plugin="known", version="current")
     source.active_plugin_binding_id = 11
     source.active_plugin_binding_version = 2
     source.active_plugin_config_hash = "a" * 64
     source.active_plugin_index_digest = "b" * 64
     source.active_plugin_provider_requirements_json = ["WMS@v1"]
-    source.active_plugin_port_requirements_json = ["InventoryPort.query"]
 
     first = await _service(FakeRepository([source])).build_report(object(), environment="production")
-    source.active_plugin_port_requirements_json = ["InventoryPort.query", "EcsPort.dispatch"]
+    source.active_plugin_provider_requirements_json = ["WMS@v1", "ECS@v1"]
     second = await _service(FakeRepository([source])).build_report(object(), environment="production")
 
     assert first.worklines[0].active_plugin_binding_id == 11
@@ -726,26 +721,17 @@ async def test_duplicate_catalog_keys_fail_closed(definitions: list[Any], profil
 
 
 @pytest.mark.asyncio
-async def test_provider_profile_is_filtered_and_capabilities_are_sorted() -> None:
-    profile = _profile(
-        "Z-WMS",
-        query=["WmsMasterDataPort.z_query", "WmsMasterDataPort.a_query"],
-    )
+async def test_provider_profile_is_filtered_to_stable_identity_and_sorted() -> None:
+    profile = _profile("Z-WMS")
     report = await _service(FakeRepository(), profiles=[profile, _profile("A-WMS")]).build_report(
         object(), environment="production"
     )
 
     assert [item.provider_code for item in report.provider_profile_catalog] == ["A-WMS", "Z-WMS"]
-    assert report.provider_profile_catalog[1].runtime_capabilities_query == (
-        "WmsMasterDataPort.a_query",
-        "WmsMasterDataPort.z_query",
-    )
     assert set(report.provider_profile_catalog[1].model_dump()) == {
         "provider_code",
         "contract_version",
         "environment",
-        "runtime_capabilities_query",
-        "runtime_capabilities_effect",
     }
 
 
@@ -771,34 +757,6 @@ async def test_provider_catalog_allows_same_code_across_version_and_environment_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("field", "invalid_value"),
-    [
-        ("runtime_capabilities_query", None),
-        ("runtime_capabilities_query", "AnyPort.query"),
-        ("runtime_capabilities_query", {"AnyPort.query": True}),
-        ("runtime_capabilities_query", [1]),
-        ("runtime_capabilities_effect", None),
-        ("runtime_capabilities_effect", "AnyPort.effect"),
-        ("runtime_capabilities_effect", {"AnyPort.effect": True}),
-        ("runtime_capabilities_effect", [object()]),
-    ],
-)
-async def test_provider_capabilities_reject_invalid_container_and_elements(field: str, invalid_value: Any) -> None:
-    profile = SimpleNamespace(
-        provider_code="WMS",
-        contract_version="v1",
-        environment="sandbox",
-        runtime_capabilities_query=["AnyPort.query"],
-        runtime_capabilities_effect=["AnyPort.effect"],
-    )
-    setattr(profile, field, invalid_value)
-
-    with pytest.raises(WorklineMigrationInventoryInvariantError):
-        await _service(FakeRepository(), profiles=[profile]).build_report(object(), environment="production")
-
-
-@pytest.mark.asyncio
 async def test_provider_loader_programming_type_error_propagates_unchanged() -> None:
     expected = TypeError("provider loader bug")
 
@@ -819,33 +777,11 @@ async def test_provider_loader_programming_type_error_propagates_unchanged() -> 
 
 
 @pytest.mark.asyncio
-async def test_provider_attribute_programming_type_error_propagates_unchanged() -> None:
-    expected = TypeError("provider attribute bug")
-
-    class BrokenProfile:
-        provider_code = "WMS"
-        contract_version = "v1"
-        environment = "sandbox"
-        runtime_capabilities_effect: tuple[str, ...] = ()
-
-        @property
-        def runtime_capabilities_query(self) -> list[str]:
-            raise expected
-
-    with pytest.raises(TypeError) as exc_info:
-        await _service(FakeRepository(), profiles=[BrokenProfile()]).build_report(object(), environment="production")
-
-    assert exc_info.value is expected
-
-
-@pytest.mark.asyncio
 async def test_invalid_dynamic_profile_and_workline_fields_become_invariant_errors() -> None:
     invalid_profile = SimpleNamespace(
         provider_code="WMS",
         contract_version="v1",
         environment=" ",
-        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
-        runtime_capabilities_effect=[],
     )
     with pytest.raises(WorklineMigrationInventoryInvariantError):
         await _service(FakeRepository(), profiles=[invalid_profile]).build_report(object(), environment="production")
@@ -854,8 +790,6 @@ async def test_invalid_dynamic_profile_and_workline_fields_become_invariant_erro
         provider_code="MINIMAL",
         contract_version="v1",
         environment="sandbox",
-        runtime_capabilities_query=["AnyPort.query"],
-        runtime_capabilities_effect=[],
     )
     minimal_report = await _service(FakeRepository(), profiles=[minimal_profile]).build_report(
         object(), environment="production"
@@ -932,4 +866,3 @@ async def test_service_builds_tuple_compatible_contracts() -> None:
     assert isinstance(report.issues, tuple)
     assert isinstance(report.provider_profile_catalog, tuple)
     assert isinstance(report.worklines[0].issues, tuple)
-    assert isinstance(report.provider_profile_catalog[0].runtime_capabilities_query, tuple)

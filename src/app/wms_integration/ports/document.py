@@ -11,8 +11,7 @@
 Runtime capability 注入时仅暴露 query port contract。
 capability implementation import boundary 禁止 internal domain import wms_integration 实现。
 
-方法命名: Port.method 格式, 供 ExternalContractProfile.runtime_capabilities_query
-引用。
+方法只定义业务协议；运行准入由 typed system capability identity 承担。
 """
 
 from __future__ import annotations

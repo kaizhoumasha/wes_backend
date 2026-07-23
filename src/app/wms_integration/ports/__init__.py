@@ -13,9 +13,5 @@
 6. WmsEventPort (入站事件 normalizer)
 7. WmsReconciliationQueryPort (对账 drift 查询)
 
-所有 Protocol 已落地，capability 可独立通过 port contract 注入。
-
-端口方法命名: ClassName.method (Port.method 合同), 与
-src/app/contracts/external_contract_profile.py runtime_capabilities_query
-字段格式一致。
+所有 Protocol 已落地，capability 可独立通过 typed contract 注入。
 """

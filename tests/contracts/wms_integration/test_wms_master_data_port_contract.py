@@ -41,7 +41,7 @@ class _FakeWmsMasterDataPort:
 
 
 def test_wms_master_data_port_is_protocol():
-    """WmsMasterDataPort 是 Protocol (Duck typing), capability 注入只拿 Port.method 接口。"""
+    """WmsMasterDataPort 是 Protocol (Duck typing)，capability 只注入 typed 接口。"""
     assert hasattr(WmsMasterDataPort, "get_material")
     assert hasattr(WmsMasterDataPort, "list_materials")
 

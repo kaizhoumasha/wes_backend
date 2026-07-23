@@ -1,7 +1,6 @@
 """作业线迁移清单模型合同测试。"""
 
 from datetime import UTC, datetime
-from operator import setitem
 
 import pytest
 from pydantic import ValidationError
@@ -76,8 +75,6 @@ def _full_report() -> WorklineMigrationInventoryReport:
                 provider_code="wms-default",
                 contract_version="v1",
                 environment="production",
-                runtime_capabilities_query=("WmsMasterDataPort.get_material",),
-                runtime_capabilities_effect=("WmsFulfillmentPort.request_transport",),
             ),
         ),
         issues=(issue,),
@@ -194,7 +191,7 @@ def test_aware_utc_datetime_has_iso_json_representation() -> None:
     assert report.model_dump(mode="json")["generated_at"] == "2026-07-15T08:30:00Z"
 
 
-def test_workline_item_exposes_binding_index_and_provider_port_requirements() -> None:
+def test_workline_item_exposes_binding_index_and_provider_requirements() -> None:
     item = WorklineMigrationInventoryItem(
         workline_id=1,
         line_code="LINE-01",
@@ -208,14 +205,12 @@ def test_workline_item_exposes_binding_index_and_provider_port_requirements() ->
         active_plugin_config_hash="b" * 64,
         active_plugin_index_digest="c" * 64,
         provider_requirements=("WMS@v1",),
-        port_requirements=("InventoryPort.query",),
         runtime_references=WorklineRuntimeReferenceSummary(**_valid_reference_summary_payload()),
         foundation_ready=True,
     )
 
     assert item.active_plugin_binding_id == 9
     assert item.provider_requirements == ("WMS@v1",)
-    assert item.port_requirements == ("InventoryPort.query",)
 
 
 def test_schema_version_is_defaulted_and_cannot_be_overridden() -> None:
@@ -236,8 +231,6 @@ def test_report_json_round_trip_preserves_full_contract() -> None:
     assert isinstance(json_payload["worklines"], list)
     assert isinstance(json_payload["worklines"][0]["issues"], list)
     assert isinstance(json_payload["provider_profile_catalog"], list)
-    assert isinstance(json_payload["provider_profile_catalog"][0]["runtime_capabilities_query"], list)
-    assert isinstance(json_payload["provider_profile_catalog"][0]["runtime_capabilities_effect"], list)
     assert isinstance(json_payload["issues"], list)
 
 
@@ -258,10 +251,6 @@ def test_all_collection_fields_reject_in_place_mutation(through_json_round_trip:
         report.provider_profile_catalog.append(provider)
     with pytest.raises(AttributeError):
         workline.issues.append(workline.issues[0])
-    with pytest.raises(TypeError):
-        setitem(provider.runtime_capabilities_query, 0, "")
-    with pytest.raises(TypeError):
-        setitem(provider.runtime_capabilities_effect, 0, "")
 
 
 @pytest.mark.parametrize(
@@ -302,8 +291,6 @@ def test_all_collection_fields_reject_in_place_mutation(through_json_round_trip:
                 "provider_code": "wms-default",
                 "contract_version": "v1",
                 "environment": "production",
-                "runtime_capabilities_query": [],
-                "runtime_capabilities_effect": [],
             },
             "provider_code",
         ),

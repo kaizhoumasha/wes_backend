@@ -1,7 +1,6 @@
 """7-port contract tests (主计划 §5.1).
 
 每个 WMS port 必须满足:
-- Port.method 命名 (ClassName.method 格式)
 - Protocol 抽象性 (typing.Protocol 子类)
 - 所有方法有 docstring
 - 数据类有 docstring
@@ -10,7 +9,6 @@
 from __future__ import annotations
 
 import inspect
-import re
 from typing import Protocol, get_type_hints
 
 from pydantic import BaseModel
@@ -20,15 +18,13 @@ from src.app.wms_integration.ports.event import InboundEventPort, WmsEventPort
 from src.app.wms_integration.ports.fulfillment import WmsFulfillmentPort
 from src.app.wms_integration.ports.reconciliation_query import WmsReconciliationQueryPort
 
-PORT_METHOD_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*Port\.[a-z_][A-Za-z0-9_]*$")
-
 
 def test_wms_document_port_is_protocol():
     """WmsDocumentPort 必须是 typing.Protocol 子类。"""
     assert issubclass(WmsDocumentPort, Protocol)
 
 
-def test_wms_document_port_method_signatures():
+def test_wms_document_protocol_signatures():
     """WmsDocumentPort 6 方法签名与主计划 §5.1 一致。"""
     methods = ["get_grn", "list_grn_items", "get_pick_order", "get_outbound_order", "get_wave", "get_task_snapshot"]
     for name in methods:
@@ -65,7 +61,7 @@ def test_wms_fulfillment_port_is_protocol():
     assert issubclass(WmsFulfillmentPort, Protocol)
 
 
-def test_wms_fulfillment_port_method_signatures():
+def test_wms_fulfillment_protocol_signatures():
     methods = [
         "request_rack_supply",
         "request_rack_transport",
@@ -158,7 +154,7 @@ def test_wms_reconciliation_query_port_is_protocol():
     assert issubclass(WmsReconciliationQueryPort, Protocol)
 
 
-def test_wms_reconciliation_query_port_method_signatures():
+def test_wms_reconciliation_query_protocol_signatures():
     methods = ["check_bin_drift", "check_rack_drift", "check_full_drift"]
     for name in methods:
         assert hasattr(WmsReconciliationQueryPort, name), f"missing method: {name}"

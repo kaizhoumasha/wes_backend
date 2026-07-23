@@ -8,14 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.runtime.capability_port_registry import (
     CapabilityPortRegistry,
     RuntimeCapabilityContext,
 )
 from src.app.runtime.inbound_normalizer_registry import InboundNormalizerRegistry
-from src.app.wms_integration.ports.fulfillment import WmsFulfillmentPort
-from src.app.wms_integration.ports.master_data import WmsMasterDataPort
 
 
 def _dummy_wms_event_port():
@@ -101,100 +98,3 @@ def test_get_inbound_normalizer_rejects_business_capability_caller():
             WmsEventPort,
             caller_module="src.app.workline.runtime.workline_capability",
         )
-
-
-def test_provider_profile_blocks_undeclared_query_port():
-    """provider profile 未声明的 query port 不得进入 RuntimeCapabilityContext。"""
-
-    cap_reg = CapabilityPortRegistry()
-    cap_reg.register(WmsMasterDataPort, lambda: object())
-    ctx = RuntimeCapabilityContext(
-        cap_reg,
-        allowed_query_capabilities=("WmsDocumentPort.get_grn",),
-    )
-
-    with pytest.raises(PermissionError, match="未声明 query capability"):
-        ctx.get_query_port(WmsMasterDataPort)
-
-
-def test_provider_profile_blocks_undeclared_query_port_before_registry_lookup():
-    """provider profile 未声明时先拒绝 admission, 不暴露 registry 未注册细节。"""
-
-    ctx = RuntimeCapabilityContext(
-        CapabilityPortRegistry(),
-        allowed_query_capabilities=("WmsDocumentPort.get_grn",),
-    )
-
-    with pytest.raises(PermissionError, match="未声明 query capability"):
-        ctx.get_query_port(WmsMasterDataPort)
-
-
-def test_provider_profile_blocks_undeclared_effect_port():
-    """provider profile 未声明的 effect port 不得进入 RuntimeCapabilityContext。"""
-
-    cap_reg = CapabilityPortRegistry()
-    cap_reg.register(WmsFulfillmentPort, lambda: object())
-    ctx = RuntimeCapabilityContext(
-        cap_reg,
-        allowed_effect_capabilities=("WmsInventoryTransactionPort.reserve_inventory",),
-    )
-
-    with pytest.raises(PermissionError, match="未声明 effect capability"):
-        ctx.get_effect_port(WmsFulfillmentPort)
-
-
-def test_provider_profile_allows_declared_ports():
-    """provider profile 已声明的 query/effect port 可以进入 RuntimeCapabilityContext。"""
-
-    class MasterDataPort:
-        def get_material(self):
-            return "material"
-
-    class FulfillmentPort:
-        def request_transport(self):
-            return "transport"
-
-    cap_reg = CapabilityPortRegistry()
-    cap_reg.register(WmsMasterDataPort, MasterDataPort)
-    cap_reg.register(WmsFulfillmentPort, FulfillmentPort)
-    profile = ExternalContractProfile(
-        provider_code="WMS",
-        contract_version="2026-06-25",
-        environment="sandbox",
-        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
-        runtime_capabilities_effect=["WmsFulfillmentPort.request_transport"],
-        timeout_retry_query_timeout_seconds=10,
-        timeout_retry_effect_timeout_seconds=30,
-        timeout_retry_retry_backoff_seconds=[1, 2, 4],
-        fixture_set_path="tests/fixtures/external_contracts/wms/default",
-        fixture_set_required_cases=["success"],
-    )
-
-    ctx = RuntimeCapabilityContext.from_provider_profile(cap_reg, profile)
-
-    assert ctx.get_query_port(WmsMasterDataPort).get_material() == "material"
-    assert ctx.get_effect_port(WmsFulfillmentPort).request_transport() == "transport"
-
-
-def test_provider_profile_proxy_blocks_undeclared_method_on_declared_port():
-    """同一 port 上未声明的方法不能通过 provider-restricted proxy 调用。"""
-
-    class FulfillmentPort:
-        def request_transport(self):
-            return "transport"
-
-        def request_rack_supply(self):
-            return "supply"
-
-    cap_reg = CapabilityPortRegistry()
-    cap_reg.register(WmsFulfillmentPort, FulfillmentPort)
-    ctx = RuntimeCapabilityContext(
-        cap_reg,
-        allowed_effect_capabilities=("WmsFulfillmentPort.request_transport",),
-    )
-
-    effect_port = ctx.get_effect_port(WmsFulfillmentPort)
-
-    assert effect_port.request_transport() == "transport"
-    with pytest.raises(PermissionError, match="未声明 effect capability"):
-        effect_port.request_rack_supply()

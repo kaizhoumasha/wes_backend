@@ -1,5 +1,6 @@
 """WMS Provider profile 与 typed operation 的 author-time 组合真源。"""
 
+import os
 from types import MappingProxyType
 
 from src.app.runtime.orchestration.operation_observability import require_northbound_operation_slo
@@ -38,7 +39,9 @@ from src.app.sys.external_http_binding import (
     FrozenExternalHttpBinding,
     freeze_external_http_binding,
 )
-from src.app.sys.services.endpoint_registry import EndpointRegistry, endpoint_registry
+from src.app.sys.services.endpoint_registry import EndpointRegistry
+
+DEFAULT_WMS_SYNC_BASE_URL = "http://wms/api"
 
 
 def _binding(profile, outbound_auth, operation):
@@ -94,6 +97,23 @@ WMS_NORTHBOUND_IDENTITY = WMS_PROVIDER_PROFILE.identity
 WMS_NORTHBOUND_AUTH = WMS_PROVIDER_PROFILE.bindings[0].outbound_auth
 
 
+def wms_sync_base_url() -> str:
+    """返回 typed WMS operation 共用的唯一同步服务根地址。"""
+
+    return (os.getenv("WMS_SYNC_BASE_URL") or DEFAULT_WMS_SYNC_BASE_URL).rstrip("/")
+
+
+def _typed_wms_endpoint_registry(profile: WmsProviderProfile) -> EndpointRegistry:
+    base_url = wms_sync_base_url()
+    return EndpointRegistry(
+        {
+            binding.operation.target_code: f"{base_url}/{binding.operation.endpoint_path.lstrip('/')}"
+            for binding in profile.bindings
+            if binding.operation.mode.value == "EFFECT"
+        }
+    )
+
+
 def _external_http_effect_profile(profile: WmsProviderProfile) -> ExternalHttpProviderProfileDefinition:
     return ExternalHttpProviderProfileDefinition(
         identity=profile.identity.identity,
@@ -122,18 +142,19 @@ def freeze_wms_effect_binding(
     profile_identity: str,
     operation_identity: str,
     target_code: str,
-    registry: EndpointRegistry = endpoint_registry,
+    registry: EndpointRegistry | None = None,
 ) -> FrozenExternalHttpBinding:
     """从 WMS typed Provider catalog 冻结单个 EFFECT target/auth binding。"""
 
-    profile = WMS_EXTERNAL_HTTP_EFFECT_PROFILES.get(profile_identity)
-    if profile is None:
+    effect_profile = WMS_EXTERNAL_HTTP_EFFECT_PROFILES.get(profile_identity)
+    provider_profile = WMS_PROVIDER_PROFILES.get(profile_identity)
+    if effect_profile is None or provider_profile is None:
         raise ValueError("WMS EFFECT provider profile is not authored")
     return freeze_external_http_binding(
-        profile=profile,
+        profile=effect_profile,
         operation_identity=operation_identity,
         target_code=target_code,
-        endpoint_registry=registry,
+        endpoint_registry=registry or _typed_wms_endpoint_registry(provider_profile),
     )
 
 
@@ -162,4 +183,5 @@ __all__ = [
     "WMS_PROVIDER_PROFILES",
     "freeze_wms_effect_binding",
     "resolve_wms_operation_binding",
+    "wms_sync_base_url",
 ]

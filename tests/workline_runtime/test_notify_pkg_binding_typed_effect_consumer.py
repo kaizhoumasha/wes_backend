@@ -65,7 +65,6 @@ def test_sorter_runtime_emits_one_typed_notify_pkg_binding_system_capability() -
     assert intent.fact_version == "runtime-location:v7"
     assert intent.binding_snapshot == {"binding_id": 23, "binding_version": 5}
     assert all(value.kind is not RuntimeIntentKind.EXTERNAL_REQUEST for value in plan.intents)
-    assert OPERATION_IDENTITY not in plan.effect_contracts
 
 
 def test_notify_pkg_binding_dispatch_identity_is_stable_across_request_replay() -> None:

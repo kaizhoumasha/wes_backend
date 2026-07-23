@@ -286,9 +286,9 @@ def test_legacy_query_dto_endpoint_and_sandbox_lifecycle_are_absent_everywhere()
                     violations.append(f"{path.relative_to(REPO_ROOT)}:{token}")
     assert violations == []
 
-    endpoint_source = (REPO_ROOT / "src/app/wms_integration/services/endpoint_config.py").read_text(encoding="utf-8")
+    endpoint_path = REPO_ROOT / "src/app/wms_integration/services/endpoint_config.py"
+    assert not endpoint_path.exists()
     legacy_query_entry = "query" + "_inventory"
-    assert f'"{legacy_query_entry}"' not in endpoint_source
     assert legacy_query_entry not in get_args(WmsOperationName)
 
 

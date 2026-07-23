@@ -15,7 +15,6 @@ from src.app.wms_integration.ports.query_outcome import (
     WmsQueryOutcome,
 )
 from src.app.wms_integration.services.query_transport import WmsQueryTransportExecutor
-from src.app.wms_integration.services.typed_ports import WmsTypedPortService
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,16 +42,6 @@ def test_query_cache_and_legacy_exception_adapter_are_deleted_without_compatibil
                 if token in text:
                     violations.append(f"{path.relative_to(REPO_ROOT)}:{token}")
     assert violations == []
-
-
-def test_family_typed_service_has_no_query_method_or_inventory_payload_switch() -> None:
-    source = inspect.getsource(WmsTypedPortService)
-
-    forbidden_query_name = "query_inventory"
-    assert not hasattr(WmsTypedPortService, forbidden_query_name)
-    assert "QueryInventory" not in source
-    assert f'"{forbidden_query_name}"' not in source
-    assert "query_cache" not in source
 
 
 def test_query_outcome_is_closed_four_branch_union() -> None:

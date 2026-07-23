@@ -21,13 +21,12 @@ def freeze_wms_effect_binding(
     from src.app.runtime.system_capabilities.wms.provider_catalog import (
         freeze_wms_effect_binding as freeze_from_catalog,
     )
-    from src.app.sys.services.endpoint_registry import endpoint_registry
 
     return freeze_from_catalog(
         profile_identity=profile_identity,
         operation_identity=operation_identity,
         target_code=target_code,
-        registry=registry or endpoint_registry,
+        registry=registry,
     )
 
 

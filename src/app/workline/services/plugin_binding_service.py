@@ -40,7 +40,6 @@ class _PluginBindingActivationPlan:
     definition: Any
     typed_config: dict[str, Any]
     profiles: tuple[Any, ...]
-    port_requirements: tuple[str, ...]
     device_snapshot: tuple[dict[str, Any], ...]
 
 
@@ -146,7 +145,6 @@ class WorklinePluginBindingService:
                 "typed_config_json": plan.typed_config,
                 "typed_config_hash": sha256_digest(plan.typed_config),
                 "provider_profile_snapshot_json": [profile.model_dump(mode="json") for profile in plan.profiles],
-                "port_requirements_json": list(plan.port_requirements),
                 "device_snapshot_json": list(plan.device_snapshot),
                 "generated_index_digest": self.plugin_index_digest,
                 "environment": environment,
@@ -165,7 +163,7 @@ class WorklinePluginBindingService:
         environment: str,
         devices: Sequence[Any],
     ) -> _PluginBindingActivationPlan:
-        """无副作用地校验并规范化 typed config、Provider/Port 与设备角色。"""
+        """无副作用地校验并规范化 typed config、Provider 与设备角色。"""
 
         workline_id = getattr(workline, "id", None)
         if not isinstance(workline_id, int):
@@ -195,7 +193,6 @@ class WorklinePluginBindingService:
             capability for capability in capability_definitions if capability.admission != "runtime"
         )
         profiles: list[Any] = []
-        port_requirements: list[str] = []
         if provider_contract_definitions:
             configured_profile = typed_config.get("provider_profile")
             if not isinstance(configured_profile, str) or not configured_profile:
@@ -214,17 +211,9 @@ class WorklinePluginBindingService:
                 )
                 if unsupported_admissions:
                     raise LookupError("provider profile 与 capability admission 不一致")
-                required_port_types = tuple(
-                    sorted(
-                        {port for capability in provider_contract_definitions for port in capability.required_ports},
-                        key=lambda port: (port.__module__, port.__qualname__),
-                    )
-                )
                 profiles.append(profile)
-                port_requirements.extend(self.profile_catalog.assert_ports_declared(profile, required_port_types))
             except LookupError as exc:
-                raise PluginBindingAdmissionError(f"provider/Port admission failed: {exc}") from exc
-            port_requirements = sorted(set(port_requirements))
+                raise PluginBindingAdmissionError(f"provider admission failed: {exc}") from exc
 
         device_snapshot = self._build_device_snapshot(
             typed_config=typed_config,
@@ -236,7 +225,6 @@ class WorklinePluginBindingService:
             definition=definition,
             typed_config=typed_config,
             profiles=tuple(profiles),
-            port_requirements=tuple(port_requirements),
             device_snapshot=tuple(device_snapshot),
         )
 

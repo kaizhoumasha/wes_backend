@@ -47,13 +47,13 @@ def test_system_capability_definition_stays_transport_agnostic() -> None:
     assert fields.isdisjoint(forbidden)
 
 
-def test_runtime_profile_and_operation_contract_do_not_embed_build_fixtures_or_port_methods() -> None:
+def test_runtime_profile_and_operation_contract_do_not_embed_build_fixtures_or_string_method_lists() -> None:
     contracts = _load("src.app.runtime.system_capabilities.wms.contracts")
     catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
 
     runtime_source = inspect.getsource(contracts.ExternalContractProfile)
     profile_source = inspect.getsource(catalog)
-    forbidden = ("fixture_set", "cache_ttl", "runtime_capabilities_query", "runtime_capabilities_effect", "Port.method")
+    forbidden = ("fixture_set", "cache_ttl")
     assert all(term not in runtime_source for term in forbidden)
     assert all(term not in profile_source for term in forbidden)
 

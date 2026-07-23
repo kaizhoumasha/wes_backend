@@ -350,7 +350,6 @@ def _build_callback_provider_profile(
         provider_code=provider_code,
         contract_version="default",
         environment="sandbox",
-        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
         inbound_normalizers_event=sorted(event_types),
         inbound_normalizers_result=sorted(result_types),
         timeout_retry_query_timeout_seconds=5,
