@@ -9,11 +9,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.effect_state_contract import transition_dispatch_attempt
-from src.app.runtime.orchestration.models.dispatch_attempt import (
-    DispatchAttemptStatus,
-    WorklineDispatchAttempt,
-)
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.runtime.orchestration.repositories.dispatch_attempt_repository import (
     WorklineDispatchAttemptRepository,
     workline_dispatch_attempt_repository,
@@ -58,6 +56,36 @@ async def _finalize_attempt(
     attempt.finalized_at = timezone.now_for_db()
     attempt.response_json = response or {}
     attempt.error_message = None if success else error_message
+    await _flush_if_supported(db)
+    return attempt
+
+
+async def _finalize_external_http_attempt(
+    db: Any,
+    *,
+    attempt: WorklineDispatchAttempt,
+    lease_owner_token: str,
+    result: ExternalHttpTransportResult,
+    outbox_finalization: str,
+) -> WorklineDispatchAttempt:
+    _assert_attempt_lease_current(attempt, lease_owner_token=lease_owner_token)
+    status_by_outcome = {
+        ExternalHttpTransportOutcome.NOT_SENT: DispatchAttemptStatus.FAILED,
+        ExternalHttpTransportOutcome.ACCEPTED: DispatchAttemptStatus.SENT,
+        ExternalHttpTransportOutcome.AMBIGUOUS: DispatchAttemptStatus.UNKNOWN,
+    }
+    transition_dispatch_attempt(attempt, status_by_outcome[result.outcome])
+    attempt.transport_outcome = result.outcome.value
+    attempt.transport_phase = result.phase.value
+    attempt.protocol_result = result.protocol_result.value
+    attempt.safe_to_retry = result.safe_to_retry
+    attempt.http_status_code = result.http_status_code
+    attempt.finalized_at = timezone.now_for_db()
+    attempt.error_message = result.error_message
+    attempt.response_json = {
+        "transport": result.evidence_json(),
+        "outbox_finalization": outbox_finalization,
+    }
     await _flush_if_supported(db)
     return attempt
 
@@ -229,25 +257,38 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
     ) -> WorklineDispatchAttempt:
         """以 typed transport result 终结 EXTERNAL_HTTP attempt 并固化原始证据。"""
 
-        _assert_attempt_lease_current(attempt, lease_owner_token=lease_owner_token)
-        status_by_outcome = {
-            ExternalHttpTransportOutcome.NOT_SENT: DispatchAttemptStatus.FAILED,
-            ExternalHttpTransportOutcome.ACCEPTED: DispatchAttemptStatus.SENT,
-            ExternalHttpTransportOutcome.AMBIGUOUS: DispatchAttemptStatus.UNKNOWN,
-        }
-        transition_dispatch_attempt(attempt, status_by_outcome[result.outcome])
-        attempt.transport_outcome = result.outcome.value
-        attempt.transport_phase = result.phase.value
-        attempt.protocol_result = result.protocol_result.value
-        attempt.safe_to_retry = result.safe_to_retry
-        attempt.http_status_code = result.http_status_code
-        attempt.finalized_at = timezone.now_for_db()
-        attempt.error_message = result.error_message
-        attempt.response_json = {
-            "transport": result.evidence_json(),
-            "outbox_finalization": outbox_finalization,
-        }
-        await _flush_if_supported(db)
+        attempt = await _finalize_external_http_attempt(
+            db,
+            attempt=attempt,
+            lease_owner_token=lease_owner_token,
+            result=result,
+            outbox_finalization=outbox_finalization,
+        )
+        if auto_commit:
+            await self._commit_mutation(db)
+        return attempt
+
+    async def finalize_external_http_attempt(
+        self,
+        db: Any,
+        *,
+        lease_token: str,
+        result: ExternalHttpTransportResult,
+        outbox_finalization: str,
+        auto_commit: bool = True,
+    ) -> WorklineDispatchAttempt:
+        """按 lease token 在独立恢复事务中终结 EXTERNAL_HTTP attempt。"""
+
+        attempt = await self.repo.get_by_lease_token(db, lease_token)
+        if attempt is None:
+            raise ValueError(f"派发尝试不存在: {lease_token}")
+        attempt = await _finalize_external_http_attempt(
+            db,
+            attempt=attempt,
+            lease_owner_token=lease_token,
+            result=result,
+            outbox_finalization=outbox_finalization,
+        )
         if auto_commit:
             await self._commit_mutation(db)
         return attempt

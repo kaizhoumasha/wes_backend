@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.app.callback.utils import JsonDict, resolve_first_str
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_TYPED_EFFECT_CALLBACK_TYPES
 
 WMS_RCS_EXECUTION_PREFIXES = ("WMS_", "RCS_")
 WMS_RCS_SOURCE_SYSTEM_BY_PREFIX = {
@@ -88,6 +89,14 @@ class WmsExecutionCallbackNormalizer:
 
         if callback_type in WMS_RCS_RUNTIME_CAPABILITY_CALLBACK_TYPES:
             _require_payload_fields(payload, (*WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS, "runtime_capability"))
+            _validate_wms_rcs_source_system(payload, callback_type)
+            return
+
+        if callback_type in WMS_TYPED_EFFECT_CALLBACK_TYPES:
+            callback_data = _require_payload_value(payload, "data")
+            if not isinstance(callback_data, dict):
+                raise ValueError("data must be an object")
+            _ = _require_payload_value(callback_data, "dispatch_key")
             _validate_wms_rcs_source_system(payload, callback_type)
             return
 

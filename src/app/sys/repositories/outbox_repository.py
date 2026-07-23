@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 
 from src.app.runtime.orchestration.effect_state_contract import transition_system_outbox
 from src.app.sys.dispatch_concurrency import DispatchBucketKey, DispatchBucketState
@@ -80,9 +80,28 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         result = await db.execute(select(SystemOutbox).where(columns.dispatch_key == dispatch_key))
         return result.scalar_one_or_none()
 
+    async def get_by_id_for_update(self, db: AsyncSession, outbox_id: int) -> SystemOutbox | None:
+        """锁定并强制刷新，避免 callback 事务已提交而 identity map 仍保留旧派发状态。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        statement = (
+            select(SystemOutbox)
+            .where(columns.id == outbox_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
+
     async def get_by_dispatch_key_for_update(self, db: AsyncSession, dispatch_key: str) -> SystemOutbox | None:
         columns = cast("Any", SystemOutbox).__table__.c
-        result = await db.execute(select(SystemOutbox).where(columns.dispatch_key == dispatch_key).with_for_update())
+        statement = (
+            select(SystemOutbox)
+            .where(columns.dispatch_key == dispatch_key)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        result = await db.execute(statement)
         return result.scalar_one_or_none()
 
     async def fence_expired_external_http_leases(
@@ -343,6 +362,16 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             .where(columns.id == candidate_ids.c.id)
             .values(
                 status=SystemOutboxStatus.DISPATCHING,
+                attempt_count=case(
+                    (
+                        and_(
+                            columns.status == SystemOutboxStatus.DISPATCHING,
+                            columns.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP,
+                        ),
+                        columns.attempt_count + 1,
+                    ),
+                    else_=columns.attempt_count,
+                ),
                 lease_owner_token=lease_owner_token,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
                 next_retry_at=None,
@@ -379,9 +408,58 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         )
         return result.scalar_one_or_none()
 
+    async def fence_exhausted_non_http_leases_in_bucket(
+        self,
+        db: AsyncSession,
+        *,
+        bucket: DispatchBucketKey,
+        retry_budget: int,
+        now: Any,
+        operation_domains: Sequence[str] | None = None,
+        exclude_operation_domains: Sequence[str] | None = None,
+        limit: int = 100,
+    ) -> tuple[SystemOutbox, ...]:
+        """锁定并终结单桶内耗尽预算的非 HTTP 过期 lease。"""
+
+        if limit <= 0:
+            return ()
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.provider_profile_identity == bucket.provider_profile_identity,
+                columns.operation_identity == bucket.operation_identity,
+                columns.status == SystemOutboxStatus.DISPATCHING,
+                columns.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP,
+                columns.attempt_count >= retry_budget,
+                columns.lease_expires_at.is_not(None),
+                columns.lease_expires_at <= now,
+                *self._operation_domain_predicates(
+                    columns,
+                    operation_domains=operation_domains,
+                    exclude_operation_domains=exclude_operation_domains,
+                ),
+            )
+            .order_by(columns.lease_expires_at, columns.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        outboxes = tuple(result.scalars().all())
+        for outbox in outboxes:
+            transition_system_outbox(outbox, SystemOutboxStatus.FAILED)
+            self._clear_block(outbox)
+            outbox.last_error = "NON_HTTP_DISPATCH_RETRY_BUDGET_EXHAUSTED"
+            outbox.next_retry_at = None
+            outbox.lease_expires_at = None
+            outbox.finished_at = now
+        if outboxes:
+            await db.flush()
+        return outboxes
+
     @staticmethod
     def _dispatch_claimable_clause(columns: Any, *, now: Any, retry_budget: int | None) -> Any:
         retry_budget_clause = True if retry_budget is None else columns.attempt_count <= retry_budget
+        expired_lease_budget_clause = True if retry_budget is None else columns.attempt_count < retry_budget
         return and_(
             retry_budget_clause,
             or_(
@@ -397,6 +475,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                 and_(
                     columns.status == SystemOutboxStatus.DISPATCHING,
                     columns.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP,
+                    expired_lease_budget_clause,
                     columns.lease_expires_at.is_not(None),
                     columns.lease_expires_at <= now,
                 ),
@@ -714,7 +793,6 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                 columns.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP,
                 columns.status.in_(
                     [
-                        SystemOutboxStatus.NEW,
                         SystemOutboxStatus.DISPATCHING,
                         SystemOutboxStatus.SENT,
                     ]
@@ -726,8 +804,6 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox = result.scalar_one_or_none()
         if outbox is None:
             return None
-        if outbox.status == SystemOutboxStatus.NEW:
-            transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
         if outbox.status == SystemOutboxStatus.DISPATCHING:
             transition_system_outbox(outbox, SystemOutboxStatus.SENT)
         outbox.sent_at = outbox.sent_at or timezone.now_for_db()
@@ -736,6 +812,41 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         outbox.lease_expires_at = None
         outbox.last_error = None
         outbox.finished_at = timezone.now_for_db()
+        await db.flush()
+        return outbox
+
+    async def isolate_for_reconciliation_by_dispatch_key(
+        self,
+        db: AsyncSession,
+        dispatch_key: str,
+        *,
+        reason: str,
+    ) -> SystemOutbox | None:
+        """业务关联冲突时隔离 outbox，禁止继续派发并释放 station lease。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.dispatch_key == dispatch_key,
+                columns.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP,
+            )
+            .with_for_update()
+        )
+        outbox = result.scalar_one_or_none()
+        if outbox is None:
+            return None
+        if outbox.status in {
+            SystemOutboxStatus.NEW,
+            SystemOutboxStatus.RETRY_WAIT,
+            SystemOutboxStatus.DISPATCHING,
+        }:
+            transition_system_outbox(outbox, SystemOutboxStatus.CANCELLED)
+        self._clear_block(outbox)
+        outbox.last_error = reason
+        outbox.next_retry_at = None
+        outbox.lease_expires_at = None
+        outbox.finished_at = outbox.finished_at or timezone.now_for_db()
         await db.flush()
         return outbox
 

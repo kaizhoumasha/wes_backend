@@ -184,6 +184,9 @@ class _DispatchRepository(_Repository):
         self.outbox.status = SystemOutboxStatus.DISPATCHING
         return self.outbox
 
+    async def get_by_id_for_update(self, _db: Any, _outbox_id: int) -> SimpleNamespace:
+        return self.outbox
+
     async def mark_as_failed(
         self,
         _db: Any,
@@ -226,6 +229,11 @@ class _DispatchAttemptService(_AttemptService):
 
     async def finalize_attempt_record(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
         return kwargs["attempt"]
+
+    async def finalize_external_http_attempt(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        self.finalized.append(kwargs)
+        self.attempt.status = "UNKNOWN"
+        return self.attempt
 
 
 class _CommitFailsAfterSendDatabase:
@@ -319,9 +327,10 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
         )
     )
 
+    effect_bridge = SimpleNamespace(record_result=AsyncMock())
     service = OutboxDispatchService(
         external_http_recovery_context_factory=recovery_context,
-        effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
+        effect_transport_bridge=effect_bridge,
         outbox_repository=repository,
         dispatch_scheduler=scheduler,
         dispatch_attempt_service=attempt_service,
@@ -357,6 +366,12 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
     assert sender.await_count == 1
     assert current_db.rollback_count == 1
     recovery_db.commit.assert_awaited_once()
+    assert attempt_service.attempt.status == "UNKNOWN"
+    assert effect_bridge.record_result.await_count == (1 if missing_attempt else 2)
+    assert (
+        effect_bridge.record_result.await_args_list[-1].kwargs["result"].outcome
+        is ExternalHttpTransportOutcome.AMBIGUOUS
+    )
 
 
 @pytest.mark.asyncio

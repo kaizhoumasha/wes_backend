@@ -18,7 +18,10 @@ from src.app.sys.dispatch_concurrency import (
     DispatchClaimMetrics,
     DispatchLeaseClaim,
 )
-from src.app.sys.external_http_evidence import ExternalHttpEvidenceRecoveryError
+from src.app.sys.external_http_evidence import (
+    ExternalHttpEvidenceRecoveryError,
+    recover_external_http_evidence_failure_unknown,
+)
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportOutcome,
@@ -148,6 +151,9 @@ class _Repository:
         self.outbox.last_error = error
         return self.outbox
 
+    async def get_by_id_for_update(self, _db: Any, _outbox_id: int) -> SimpleNamespace:
+        return self.outbox
+
 
 class _AttemptService:
     def __init__(self, *, fail_finalize: bool = False) -> None:
@@ -167,6 +173,12 @@ class _AttemptService:
         if self.fail_finalize:
             raise RuntimeError("attempt evidence unavailable")
         return kwargs["attempt"]
+
+    async def finalize_external_http_attempt(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        assert kwargs["auto_commit"] is False
+        self.finalized.append(kwargs)
+        self.attempt.status = "UNKNOWN"
+        return self.attempt
 
 
 class _FailOnceAttemptService(_AttemptService):
@@ -228,6 +240,100 @@ async def test_accepted_explicit_protocol_reject_is_transport_sent_without_retry
             "auto_commit": False,
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_domain", ["WMS_INVENTORY", "WMS_FULFILLMENT"])
+async def test_generic_callback_winning_transport_race_still_finalizes_attempt(
+    operation_domain: str,
+) -> None:
+    transport_result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+    outbox = _outbox()
+    outbox.operation_domain = operation_domain
+    repository = _Repository(outbox)
+
+    async def callback_wins_mark_as_sent(
+        _db: Any,
+        _outbox_id: int,
+        *,
+        lease_owner_token: str,
+    ) -> None:
+        assert lease_owner_token == outbox.lease_owner_token
+        outbox.status = SystemOutboxStatus.SENT
+        outbox.finished_at = timezone.now_for_db()
+        outbox.lease_expires_at = None
+
+    repository.mark_as_sent = callback_wins_mark_as_sent  # type: ignore[method-assign]
+    attempt_service = _AttemptService()
+    effect_bridge = SimpleNamespace(record_result=AsyncMock())
+    engine = SystemOutboxEngine(
+        outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
+        external_http_sender=AsyncMock(return_value=transport_result),
+        credential_provider=StaticTestCredentialProvider(),
+        dispatch_attempt_service=attempt_service,
+        workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=effect_bridge,
+    )
+
+    stats = await engine.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)
+
+    assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
+    assert attempt_service.finalized[0]["outbox_finalization"] == "sent"
+    effect_bridge.record_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -> None:
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+    callback_completed = SimpleNamespace(
+        status=SystemOutboxStatus.SENT,
+        finished_at=timezone.now_for_db(),
+    )
+    repository = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(return_value=callback_completed),
+        mark_evidence_persistence_unknown=AsyncMock(),
+    )
+    active_db = SimpleNamespace(rollback=AsyncMock())
+    recovery_db = SimpleNamespace(commit=AsyncMock())
+    attempt_service = SimpleNamespace(finalize_external_http_attempt=AsyncMock())
+    bridge = SimpleNamespace(record_result=AsyncMock())
+
+    @asynccontextmanager
+    async def recovery_context():
+        yield recovery_db
+
+    recovered = await recover_external_http_evidence_failure_unknown(
+        active_db,
+        outbox_repository=repository,
+        outbox_id=1,
+        lease_owner_token="callback-race-owner",
+        result=result,
+        cause=RuntimeError("reducer evidence unavailable"),
+        recovery_context_factory=recovery_context,
+        attempt_service=attempt_service,
+        effect_transport_bridge=bridge,
+        dispatch_key="dispatch-callback-race",
+        attempt_no=2,
+    )
+
+    assert recovered is callback_completed
+    repository.mark_evidence_persistence_unknown.assert_not_awaited()
+    attempt_service.finalize_external_http_attempt.assert_awaited_once_with(
+        recovery_db,
+        lease_token="callback-race-owner",
+        result=result,
+        outbox_finalization="sent",
+        auto_commit=False,
+    )
+    assert bridge.record_result.await_args.kwargs["result"] is result
+    recovery_db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -329,6 +435,7 @@ async def test_generic_attempt_evidence_failure_fail_closes_unknown_without_seco
         rollback=AsyncMock(side_effect=lambda: setattr(outbox, "status", SystemOutboxStatus.DISPATCHING)),
     )
     recovery_db = SimpleNamespace(commit=AsyncMock())
+    effect_bridge = SimpleNamespace(record_result=AsyncMock())
 
     @asynccontextmanager
     async def recovery_context():
@@ -342,6 +449,7 @@ async def test_generic_attempt_evidence_failure_fail_closes_unknown_without_seco
         dispatch_attempt_service=attempt_service,
         external_http_recovery_context_factory=recovery_context,
         workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=effect_bridge,
     )
 
     first = await engine.dispatch(current_db, limit=1)
@@ -361,6 +469,11 @@ async def test_generic_attempt_evidence_failure_fail_closes_unknown_without_seco
     assert sender.await_count == 1
     current_db.rollback.assert_awaited_once()
     recovery_db.commit.assert_awaited_once()
+    assert attempt_service.attempt.status == "UNKNOWN"
+    assert attempt_service.finalized[-1]["outbox_finalization"] == "unknown"
+    recovery_result = attempt_service.finalized[-1]["result"]
+    assert recovery_result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
+    effect_bridge.record_result.assert_awaited_once()
 
 
 @pytest.mark.asyncio

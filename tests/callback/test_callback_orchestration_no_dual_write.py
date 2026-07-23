@@ -96,7 +96,11 @@ async def test_process_event_terminalizes_non_workline_event_without_runtime_pro
 @pytest.mark.asyncio
 async def test_process_external_writes_only_runtime_inbox() -> None:
     """process_external 仅持久化 RuntimeInbox。"""
-    runtime_record = SimpleNamespace(id=43, trace_id="trace-external-001")
+    runtime_record = SimpleNamespace(
+        id=43,
+        trace_id="trace-external-001",
+        source_event_id="provider-external-001",
+    )
     writer = SimpleNamespace(
         write_external_callback=AsyncMock(return_value=SimpleNamespace(created=True, record=runtime_record))
     )
@@ -122,4 +126,46 @@ async def test_process_external_writes_only_runtime_inbox() -> None:
     writer.write_external_callback.assert_awaited_once()
     rack_task_service.record_callback_from_external_http.assert_awaited_once()
     handling_operation_service.record_callback_from_external_http.assert_not_awaited()
+    service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_process_external_routes_typed_wms_effect_callback_before_commit() -> None:
+    runtime_record = SimpleNamespace(
+        id=44,
+        trace_id="trace-typed-effect-001",
+        source_event_id="wms-provider-event-001",
+    )
+    writer = SimpleNamespace(
+        write_external_callback=AsyncMock(return_value=SimpleNamespace(created=True, record=runtime_record))
+    )
+    typed_router = SimpleNamespace(route=AsyncMock(return_value=True))
+    service = CallbackOrchestrationService(
+        runtime_inbox_writer=writer,
+        rack_task_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
+    )
+    service._typed_effect_callback_router = typed_router
+    service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
+    payload = {
+        "callback_type": "WMS_INBOUND_CONFIRMED",
+        "source_system": "WMS",
+        "source_event_id": "wms-event-001",
+        "data": {
+            "dispatch_key": "confirm-inbound-001",
+            "inbound_key": "INBOUND-001",
+            "accepted": True,
+        },
+    }
+
+    await service.process_external(
+        SimpleNamespace(),
+        callback_type="WMS_INBOUND_CONFIRMED",
+        payload=payload,
+        request_id="req-typed-effect-001",
+        trace_id="trace-typed-effect-001",
+        enqueue_processing=lambda: None,
+    )
+
+    typed_router.route.assert_awaited_once()
+    assert typed_router.route.await_args.kwargs["source_event_id"] == "wms-provider-event-001"
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()

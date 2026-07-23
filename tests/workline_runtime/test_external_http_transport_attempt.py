@@ -8,13 +8,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.runtime.orchestration.models.dispatch_attempt import (
-    DispatchAttemptStatus,
-    WorklineDispatchAttempt,
-)
+from src.app.effect_ledger_status import DispatchAttemptStatus
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import (
     OutboxLeaseLost,
     workline_dispatch_attempt_service,
+)
+from src.app.runtime.orchestration.services.inbox.external_http_lease_loss_service import (
+    ExternalHttpLeaseLossService,
 )
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
@@ -129,3 +130,46 @@ async def test_finalize_external_http_attempt_rejects_second_terminal_write() ->
     assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
     db.flush.assert_not_awaited()
     db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_callback_completed_outbox_recovers_orphaned_dispatch_attempt_after_sender_crash() -> None:
+    """callback 已提交而 sender 崩溃时，过期 attempt 仍必须有独立恢复路径。"""
+
+    now = timezone.now_for_db()
+    attempt = SimpleNamespace(
+        status=DispatchAttemptStatus.DISPATCHING,
+        lease_expires_at=now - timedelta(seconds=1),
+        finalized_at=None,
+        error_message=None,
+        response_json={},
+    )
+    outbox_repository = SimpleNamespace(
+        fence_expired_external_http_leases=AsyncMock(return_value=()),
+    )
+    attempt_repository = SimpleNamespace(
+        list_expired_dispatching_for_finished_outboxes_for_update=AsyncMock(return_value=(attempt,)),
+    )
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    db = SimpleNamespace(flush=AsyncMock())
+    service = ExternalHttpLeaseLossService(
+        outbox_repository=outbox_repository,
+        dispatch_attempt_repository=attempt_repository,
+        effect_transport_bridge=bridge,
+    )
+
+    recovered = await service.fence_expired_leases(
+        db,
+        now=now,
+        operation_domains=("WMS_INVENTORY", "WMS_FULFILLMENT"),
+    )
+
+    assert recovered == 1
+    assert attempt.status is DispatchAttemptStatus.CANCELLED
+    assert attempt.finalized_at == now
+    assert attempt.error_message == "OUTBOX_FINISHED_BEFORE_TRANSPORT_EVIDENCE"
+    assert attempt.response_json == {
+        "outbox_finished": True,
+        "sender_crash_recovery": True,
+    }
+    bridge.record_result.assert_not_awaited()

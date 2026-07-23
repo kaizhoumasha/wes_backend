@@ -139,8 +139,10 @@ class EffectReconciliationBridge:
         resolution: RuntimeIntentStatus,
         reason_code: str,
         evidence_json: dict[str, Any],
-        source_event_id: str | None = None,
+        source_event_id: str,
     ) -> Any:
+        if not source_event_id.strip():
+            raise ValueError("RECONCILIATION_RESOLVED requires a stable source_event_id")
         return await self._reducer.reduce(
             db,
             EffectReducerEvent(

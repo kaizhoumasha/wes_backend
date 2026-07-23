@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.effect_state_contract import transition_dispatch_attempt
-from src.app.runtime.orchestration.models.dispatch_attempt import DispatchAttemptStatus
 from src.app.runtime.orchestration.repositories.dispatch_attempt_repository import (
     WorklineDispatchAttemptRepository,
     workline_dispatch_attempt_repository,
@@ -126,7 +126,25 @@ class ExternalHttpLeaseLossService:
                 retry_exhausted=False,
                 occurred_at_ms=occurred_at_ms,
             )
-        return len(fences)
+        orphan_attempts = (
+            await self.dispatch_attempt_repository.list_expired_dispatching_for_finished_outboxes_for_update(
+                db,
+                now=now,
+                operation_domains=operation_domains,
+                exclude_operation_domains=exclude_operation_domains,
+            )
+        )
+        for attempt in orphan_attempts:
+            transition_dispatch_attempt(attempt, DispatchAttemptStatus.CANCELLED)
+            attempt.finalized_at = now
+            attempt.error_message = "OUTBOX_FINISHED_BEFORE_TRANSPORT_EVIDENCE"
+            attempt.response_json = {
+                "outbox_finished": True,
+                "sender_crash_recovery": True,
+            }
+        if orphan_attempts:
+            await db.flush()
+        return len(fences) + len(orphan_attempts)
 
 
 external_http_lease_loss_service = ExternalHttpLeaseLossService()

@@ -41,8 +41,12 @@ async def recover_external_http_evidence_failure_unknown(
     result: ExternalHttpTransportResult,
     cause: BaseException,
     recovery_context_factory: Any,
+    attempt_service: Any,
+    effect_transport_bridge: Any,
+    dispatch_key: str,
+    attempt_no: int,
 ) -> Any:
-    """回滚原事务，并用独立短事务把外部副作用收口为 UNKNOWN。"""
+    """回滚原事务，并用独立短事务把 outbox、attempt 与 intent 收口为 UNKNOWN。"""
 
     rollback = getattr(active_db, "rollback", None)
     if callable(rollback):
@@ -56,14 +60,65 @@ async def recover_external_http_evidence_failure_unknown(
     evidence_error = build_external_http_evidence_failure_error(result, cause)
     try:
         async with recovery_context_factory() as recovery_db:
-            updated = await outbox_repository.mark_evidence_persistence_unknown(
-                recovery_db,
-                outbox_id,
-                evidence_error,
-                lease_owner_token=lease_owner_token,
+            from src.utils.value_normalization import enum_value
+
+            current = await outbox_repository.get_by_id_for_update(recovery_db, outbox_id)
+            callback_completed = (
+                enum_value(getattr(current, "status", None)) == "SENT"
+                and getattr(current, "finished_at", None) is not None
             )
-            if updated is None:
-                raise RuntimeError(f"SystemOutbox {outbox_id} 无法隔离收口为 UNKNOWN")
+            if callback_completed:
+                updated = current
+                recovery_result = result
+                outbox_finalization = "sent"
+            else:
+                from src.app.sys.external_http_transport import (
+                    ExternalHttpProtocolResult,
+                    ExternalHttpTransportPhase,
+                    ExternalHttpTransportResult,
+                )
+
+                recovery_result = ExternalHttpTransportResult.ambiguous(
+                    phase=result.phase,
+                    protocol_result=(
+                        ExternalHttpProtocolResult.UNKNOWN
+                        if result.phase is ExternalHttpTransportPhase.RESPONSE_RECEIVED
+                        else ExternalHttpProtocolResult.NOT_AVAILABLE
+                    ),
+                    http_status_code=(
+                        result.http_status_code
+                        if result.phase is ExternalHttpTransportPhase.RESPONSE_RECEIVED
+                        else None
+                    ),
+                    error_code=EVIDENCE_PERSISTENCE_FAILURE_CODE,
+                    error_message=evidence_error,
+                )
+                updated = await outbox_repository.mark_evidence_persistence_unknown(
+                    recovery_db,
+                    outbox_id,
+                    evidence_error,
+                    lease_owner_token=lease_owner_token,
+                )
+                if updated is None:
+                    raise RuntimeError(f"SystemOutbox {outbox_id} 无法隔离收口为 UNKNOWN")
+                outbox_finalization = "unknown"
+            await attempt_service.finalize_external_http_attempt(
+                recovery_db,
+                lease_token=lease_owner_token,
+                result=recovery_result,
+                outbox_finalization=outbox_finalization,
+                auto_commit=False,
+            )
+            from src.utils.timezone import timezone
+
+            await effect_transport_bridge.record_result(
+                recovery_db,
+                dispatch_key=dispatch_key,
+                attempt_no=attempt_no,
+                result=recovery_result,
+                retry_exhausted=False,
+                occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+            )
             commit = getattr(recovery_db, "commit", None)
             if not callable(commit):
                 raise TypeError("隔离恢复数据库会话缺少 commit")

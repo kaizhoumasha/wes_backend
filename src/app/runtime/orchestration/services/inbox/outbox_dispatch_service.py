@@ -563,7 +563,11 @@ class OutboxDispatchService:
         await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_OUTBOX_EVIDENCE, outbox)
 
         if updated is None:
-            return None
+            current = await outbox_repo.get_by_id_for_update(db, outbox_id)
+            if enum_value(getattr(current, "status", None)) != "SENT":
+                return None
+            # callback 可在 sender 返回前先把 outbox 收口为 SENT；当前 attempt 仍须同步终结。
+            updated = current
         outbox_finalization = enum_value(getattr(updated, "status", None)).lower()
         await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_ATTEMPT_EVIDENCE, outbox)
         _ = await attempt_service.finalize_external_http_attempt_record(
@@ -1068,6 +1072,10 @@ class OutboxDispatchService:
                             result=dispatch_result,
                             cause=evidence_error,
                             recovery_context_factory=self._resolve_external_http_recovery_context_factory(),
+                            attempt_service=attempt_service,
+                            effect_transport_bridge=self._resolve_effect_transport_bridge(),
+                            dispatch_key=str(outbox.dispatch_key),
+                            attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
                         )
                         logger.exception(f"Outbox {outbox_pk} 证据落库失败，已隔离收口为 UNKNOWN")
                         result["failed"] += 1

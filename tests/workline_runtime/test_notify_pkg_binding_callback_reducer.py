@@ -54,6 +54,13 @@ class _Repository:
             None,
         )
 
+    async def list_resolved_cases_for_update(self, _db: Any, dispatch_key: str) -> tuple[Any, ...]:
+        return tuple(
+            case
+            for case in reversed(self.cases)
+            if case.dispatch_key == dispatch_key and case.status is ReconciliationCaseStatus.RESOLVED
+        )
+
     def add_case(self, _db: Any, case: Any) -> None:
         self.cases.append(case)
 
@@ -159,6 +166,7 @@ async def test_timeout_then_success_callback_is_resolved_explicitly_without_term
         resolution=RuntimeIntentStatus.COMPLETED,
         reason_code="REMOTE_SUCCESS_CONFIRMED",
         evidence_json={"source_event_id": "callback-after-timeout"},
+        source_event_id="callback-after-timeout",
     )
 
     assert repository.intent.effect_status is RuntimeIntentStatus.COMPLETED

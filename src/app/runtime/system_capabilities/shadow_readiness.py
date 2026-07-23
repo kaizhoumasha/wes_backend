@@ -384,7 +384,7 @@ def build_query_shadow_readiness_report(
     """expected/stored 对账并只计算最后一个无失败的连续版本窗口。"""
 
     active_policy = policy or QueryShadowReadinessPolicy()
-    filtered = sorted(
+    ordered_expected = sorted(
         (
             item
             for item in expected_samples
@@ -393,6 +393,8 @@ def build_query_shadow_readiness_report(
         ),
         key=lambda item: (item.observed_at, item.comparison_key),
     )
+    # Timeline 重放可能重复返回同一 expected；readiness 只能按独立 comparison_key 计样本。
+    filtered = list({item.comparison_key: item for item in ordered_expected}.values())
     comparison_counts = Counter(item.expected.comparison_key for item in comparisons)
     stored = {item.expected.comparison_key: item for item in comparisons}
     segment: list[tuple[QueryShadowExpected, QueryShadowComparisonDraft]] = []

@@ -131,6 +131,7 @@ class FairDispatchScheduler:
         policy_registry: DispatchPolicyRegistry,
         worker_identity: str,
         expired_http_lease_loss_service: Any | None = None,
+        exhausted_non_http_lease_service: Any | None = None,
     ) -> None:
         if not isinstance(worker_identity, str) or not worker_identity.strip():
             raise ValueError("worker_identity must be a non-empty string")
@@ -138,6 +139,7 @@ class FairDispatchScheduler:
         self._policy_registry = policy_registry
         self._worker_identity = worker_identity.strip()
         self._expired_http_lease_loss_service = expired_http_lease_loss_service
+        self._exhausted_non_http_lease_service = exhausted_non_http_lease_service
         self._cursor = 0
 
     def _resolve_expired_http_lease_loss_service(self) -> Any:
@@ -148,6 +150,15 @@ class FairDispatchScheduler:
 
             self._expired_http_lease_loss_service = external_http_lease_loss_service
         return self._expired_http_lease_loss_service
+
+    def _resolve_exhausted_non_http_lease_service(self) -> Any:
+        if self._exhausted_non_http_lease_service is None:
+            from src.app.runtime.orchestration.services.inbox.non_http_lease_exhaustion_service import (
+                non_http_lease_exhaustion_service,
+            )
+
+            self._exhausted_non_http_lease_service = non_http_lease_exhaustion_service
+        return self._exhausted_non_http_lease_service
 
     async def claim(
         self,
@@ -167,7 +178,7 @@ class FairDispatchScheduler:
             "operation_domains": operation_domains,
             "exclude_operation_domains": exclude_operation_domains,
         }
-        expired_http_lease_count = int(
+        recovered_lease_count = int(
             await self._resolve_expired_http_lease_loss_service().fence_expired_leases(
                 db,
                 outbox_repository=self._repository,
@@ -184,7 +195,7 @@ class FairDispatchScheduler:
         if not keys:
             return DispatchClaimBatch(
                 claims=(),
-                metrics=replace(self._empty_metrics(), lease_loss_count=expired_http_lease_count),
+                metrics=replace(self._empty_metrics(), lease_loss_count=recovered_lease_count),
             )
 
         ordered = keys[self._cursor :] + keys[: self._cursor]
@@ -207,6 +218,16 @@ class FairDispatchScheduler:
                 contended.append(bucket)
                 continue
             policy = self._policy_registry.policy_for(bucket)
+            recovered_lease_count += int(
+                await self._resolve_exhausted_non_http_lease_service().fence_exhausted_leases(
+                    db,
+                    repository=self._repository,
+                    bucket=bucket,
+                    retry_budget=policy.retry_budget,
+                    **query_scope,
+                )
+                or 0
+            )
             state = await self._repository.get_dispatch_bucket_state(
                 db,
                 bucket=bucket,
@@ -265,7 +286,7 @@ class FairDispatchScheduler:
                 rate_limited_buckets=tuple(rate_limited),
                 paused_buckets=tuple(paused),
                 lease_contended_buckets=tuple(contended),
-                lease_loss_count=metrics.lease_loss_count + expired_http_lease_count,
+                lease_loss_count=metrics.lease_loss_count + recovered_lease_count,
             ),
         )
 

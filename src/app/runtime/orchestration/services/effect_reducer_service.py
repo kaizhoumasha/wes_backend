@@ -27,6 +27,10 @@ class InvalidReconciliationEvent(ValueError):
     """对账事件与当前 case 生命周期不匹配。"""
 
 
+class ReconciliationResolutionConflict(InvalidReconciliationEvent):
+    """同一人工决议请求身份被复用于不同裁决。"""
+
+
 @dataclass(frozen=True, slots=True)
 class EffectReductionResult:
     """单次 reducer 归并结果。"""
@@ -74,6 +78,7 @@ EFFECT_REDUCER_TRANSITION_MATRIX = MappingProxyType(
         ),
         EffectReducerEventType.RECONCILIATION_OPENED: MappingProxyType(
             {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.RECONCILING,
                 RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.RECONCILING,
                 RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.RECONCILING,
             }
@@ -130,6 +135,17 @@ class EffectReducer:
         case_created = False
 
         if event.event_type is EffectReducerEventType.RECONCILIATION_RESOLVED:
+            resolved_cases = await self._repository.list_resolved_cases_for_update(db, event.dispatch_key)
+            if any(self._is_same_resolution_replay(case, event) for case in resolved_cases):
+                return EffectReductionResult(
+                    intent_status=current,
+                    case_status=(
+                        ReconciliationCaseStatus.RESOLVED if open_case is None else ReconciliationCaseStatus.OPEN
+                    ),
+                    state_changed=False,
+                    case_created=False,
+                    contradiction=False,
+                )
             if open_case is None:
                 raise InvalidReconciliationEvent("RECONCILIATION_RESOLVED requires an OPEN case")
             self._resolve_case(open_case, event=event, evidence=evidence)
@@ -162,6 +178,18 @@ class EffectReducer:
             case_created=case_created,
             contradiction=contradiction,
         )
+
+    @staticmethod
+    def _is_same_resolution_replay(case: ReconciliationCase | None, event: EffectReducerEvent) -> bool:
+        if case is None or not event.source_event_id:
+            return False
+        decision = dict(case.decision_json or {})
+        if not decision.get("source_event_id") or decision.get("source_event_id") != event.source_event_id:
+            return False
+        resolution = event.resolution.value if event.resolution is not None else None
+        if decision.get("resolution") != resolution:
+            raise ReconciliationResolutionConflict("source_event_id cannot be reused with a different resolution")
+        return True
 
     @staticmethod
     def _target_status(
@@ -263,6 +291,7 @@ class EffectReducer:
         cls._append_case_evidence(case, evidence)
         case.status = ReconciliationCaseStatus.RESOLVED
         case.decision_json = {
+            "source_event_id": event.source_event_id,
             "resolution": event.resolution.value if event.resolution is not None else None,
             "reason_code": event.reason_code,
             "evidence": dict(event.evidence_json),
@@ -279,5 +308,6 @@ __all__ = [
     "EffectReducer",
     "EffectReductionResult",
     "InvalidReconciliationEvent",
+    "ReconciliationResolutionConflict",
     "effect_reducer",
 ]

@@ -34,29 +34,12 @@ from sqlalchemy import (
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.effect_ledger_status import SystemOutboxStatus
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
-
-
-class SystemOutboxStatus(str, Enum):
-    """唯一 transport 状态。
-
-    NEW -> DISPATCHING -+-> SENT
-                        +-> RETRY_WAIT -> DISPATCHING
-                        +-> FAILED / UNKNOWN / CANCELLED
-    UNKNOWN 是不可自动重试的送达歧义，不代表业务成功或失败。
-    """
-
-    NEW = "NEW"
-    DISPATCHING = "DISPATCHING"
-    RETRY_WAIT = "RETRY_WAIT"
-    SENT = "SENT"
-    FAILED = "FAILED"
-    UNKNOWN = "UNKNOWN"
-    CANCELLED = "CANCELLED"
 
 
 class SystemOutboxDispatchType(str, Enum):

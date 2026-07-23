@@ -365,6 +365,28 @@ def test_duplicate_stored_comparison_invalidates_current_window() -> None:
     assert "DUPLICATE_COMPARISON" in report.reset_reasons
 
 
+def test_duplicate_expected_comparison_key_counts_as_one_independent_sample() -> None:
+    from src.app.runtime.system_capabilities.shadow_readiness import (
+        QueryShadowReadinessPolicy,
+        ReadinessVerdict,
+        build_query_shadow_readiness_report,
+    )
+
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    expected = _expected("d" * 64, start)
+    report = build_query_shadow_readiness_report(
+        provider_profile_identity=expected.provider_profile_identity,
+        operation_identity=expected.operation_identity,
+        expected_samples=[expected, expected],
+        comparisons=[_draft(expected)],
+        generated_at=start + timedelta(days=1),
+        policy=QueryShadowReadinessPolicy(min_window_days=0, min_eligible_samples=2),
+    )
+
+    assert report.verdict is ReadinessVerdict.NOT_READY
+    assert report.eligible_samples == 1
+
+
 def test_durably_marked_comparison_conflict_invalidates_current_window() -> None:
     from src.app.runtime.system_capabilities.shadow_readiness import (
         QueryShadowReadinessPolicy,

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from importlib import import_module, util
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -39,6 +40,9 @@ class _Repository:
 
     async def fence_expired_external_http_leases(self, _db: object, **_kwargs: Any) -> int:
         return self.expired_http_lease_count
+
+    async def fence_exhausted_non_http_leases_in_bucket(self, _db: object, **_kwargs: Any) -> tuple[()]:
+        return ()
 
     async def list_dispatch_bucket_keys(self, _db: object, **_kwargs: Any) -> tuple[Any, ...]:
         return tuple(sorted(self.states))
@@ -128,6 +132,41 @@ async def test_rate_limited_bucket_does_not_starve_another_bucket() -> None:
     assert batch.metrics.rate_limited_buckets == (limited,)
     assert batch.metrics.backlog_count == 12
     assert batch.metrics.oldest_queue_age_seconds == 30
+
+
+@pytest.mark.asyncio
+async def test_scheduler_recovers_exhausted_non_http_leases_before_claiming_bucket() -> None:
+    module = _concurrency_module()
+    key_type, policy_type, state_type, registry_type = _types()
+    now = datetime(2026, 7, 23, 1, 0, 0)
+    bucket = key_type("device.profile", "device.command")
+    repository = _Repository({bucket: state_type(bucket, 1, 0, 0, now, 0)})
+    recovery_service = SimpleNamespace(
+        fence_expired_leases=AsyncMock(return_value=0),
+    )
+    non_http_recovery_service = SimpleNamespace(fence_exhausted_leases=AsyncMock(return_value=1))
+    scheduler = module.FairDispatchScheduler(
+        repository=repository,
+        policy_registry=registry_type(
+            default_policy=policy_type(max_concurrency=1, rate_limit=10, batch_size=1, retry_budget=3)
+        ),
+        worker_identity="worker-recovery",
+        expired_http_lease_loss_service=recovery_service,
+        exhausted_non_http_lease_service=non_http_recovery_service,
+    )
+
+    batch = await scheduler.claim(object(), limit=1, now=now)
+
+    non_http_recovery_service.fence_exhausted_leases.assert_awaited_once_with(
+        ANY,
+        repository=repository,
+        bucket=bucket,
+        retry_budget=3,
+        now=now,
+        operation_domains=None,
+        exclude_operation_domains=None,
+    )
+    assert batch.metrics.lease_loss_count == 1
 
 
 @pytest.mark.asyncio

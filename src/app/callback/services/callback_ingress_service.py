@@ -52,6 +52,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,
 )
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_TYPED_EFFECT_CALLBACK_TYPES
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
 from src.app.wms_integration.services import callback_normalizer as _wms_callback_normalizer
@@ -176,22 +177,25 @@ _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_SUFFIXES = (
 _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_TYPES = frozenset(
     f"{provider}_{suffix}" for provider in ("WMS", "RCS") for suffix in _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_SUFFIXES
 )
-_EXTERNAL_CALLBACK_WMS_RCS_RUNTIME_TYPES = frozenset(
-    {
-        "WMS_ROUGH_SORTER_INBOUND",
-        "WMS_RACK_TASK_RESULT",
-        "RCS_RACK_TASK_RESULT",
-        "WMS_RACK_TASK_PROGRESS",
-        "RCS_RACK_TASK_PROGRESS",
-        "WMS_RACK_ARRIVED",
-        "RCS_RACK_ARRIVED",
-        "WMS_RACK_EXCHANGE_PROGRESS",
-        "RCS_RACK_EXCHANGE_PROGRESS",
-        "WMS_RACK_EXCHANGE_FAILED",
-        "RCS_RACK_EXCHANGE_FAILED",
-        "WMS_FULL_BOX_EXCHANGE_RESULT",
-        "RCS_FULL_BOX_EXCHANGE_RESULT",
-    }
+_EXTERNAL_CALLBACK_WMS_RCS_RUNTIME_TYPES = (
+    frozenset(
+        {
+            "WMS_ROUGH_SORTER_INBOUND",
+            "WMS_RACK_TASK_RESULT",
+            "RCS_RACK_TASK_RESULT",
+            "WMS_RACK_TASK_PROGRESS",
+            "RCS_RACK_TASK_PROGRESS",
+            "WMS_RACK_ARRIVED",
+            "RCS_RACK_ARRIVED",
+            "WMS_RACK_EXCHANGE_PROGRESS",
+            "RCS_RACK_EXCHANGE_PROGRESS",
+            "WMS_RACK_EXCHANGE_FAILED",
+            "RCS_RACK_EXCHANGE_FAILED",
+            "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "RCS_FULL_BOX_EXCHANGE_RESULT",
+        }
+    )
+    | WMS_TYPED_EFFECT_CALLBACK_TYPES
 )
 _EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES = frozenset(
     {
@@ -227,15 +231,18 @@ _EXTERNAL_CALLBACK_SOURCE_SYSTEMS_BY_CALLBACK_TYPE = {
     "CTU_BIN_MOVE_COMPLETED": frozenset({"CTU"}),
     "CTU_BIN_MOVE_FAILED": frozenset({"CTU"}),
 }
-_EXTERNAL_CALLBACK_RESULT_TYPES = frozenset(
-    {
-        "AGV_TASK_RESULT",
-        "DEVICE_RESULT",
-        "WMS_RACK_TASK_RESULT",
-        "RCS_RACK_TASK_RESULT",
-        "WMS_FULL_BOX_EXCHANGE_RESULT",
-        "RCS_FULL_BOX_EXCHANGE_RESULT",
-    }
+_EXTERNAL_CALLBACK_RESULT_TYPES = (
+    frozenset(
+        {
+            "AGV_TASK_RESULT",
+            "DEVICE_RESULT",
+            "WMS_RACK_TASK_RESULT",
+            "RCS_RACK_TASK_RESULT",
+            "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "RCS_FULL_BOX_EXCHANGE_RESULT",
+        }
+    )
+    | WMS_TYPED_EFFECT_CALLBACK_TYPES
 )
 # H4 拒绝的机器可读原因码: client 可通过 reason_code 字段区分
 # 顶层字段违规 vs 其他 schema 校验失败 (用于埋点和告警)。

@@ -26,7 +26,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
-from src.app.sys.models import SystemOutboxDispatchType
+from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.core.logger import logger
 from src.utils.timezone import timezone
@@ -209,10 +209,15 @@ class SystemOutboxEngine:
                         outbox,
                     )
                     if updated is None:
-                        result["skipped"] += 1
-                        result["dispatched"] += 1
-                        await _commit_if_supported(db)
-                        continue
+                        current = await self.outbox_repository.get_by_id_for_update(db, outbox_id)
+                        if enum_value(getattr(current, "status", None)) != SystemOutboxStatus.SENT.value:
+                            result["skipped"] += 1
+                            result["dispatched"] += 1
+                            await _commit_if_supported(db)
+                            continue
+                        # callback 可先完成 outbox；
+                        # sender 正常返回后仍须闭环当前 attempt 与 reducer 证据。
+                        updated = current
                     outbox_finalization = enum_value(getattr(updated, "status", None)).lower()
                     await self._emit_external_http_fault(
                         ExternalHttpDispatchFaultPoint.BEFORE_ATTEMPT_EVIDENCE,
@@ -255,6 +260,10 @@ class SystemOutboxEngine:
                         result=dispatch_result,
                         cause=evidence_error,
                         recovery_context_factory=self._resolve_external_http_recovery_context_factory(),
+                        attempt_service=attempt_service,
+                        effect_transport_bridge=self._resolve_effect_transport_bridge(),
+                        dispatch_key=str(outbox.dispatch_key),
+                        attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
                     )
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
@@ -477,11 +486,12 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
             error_message="outbound HTTP connection failed before send",
         )
     except httpx.ConnectTimeout as exc:
-        logger.error(f"SystemOutbox 外部 HTTP 连接超时，送达状态不确定: {type(exc).__name__}")
-        return ExternalHttpTransportResult.ambiguous(
+        logger.error(f"SystemOutbox 外部 HTTP 连接超时，请求尚未发送: {type(exc).__name__}")
+        return ExternalHttpTransportResult.not_sent(
             phase=ExternalHttpTransportPhase.CONNECTING,
+            safe_to_retry=True,
             error_code="CONNECT_TIMEOUT",
-            error_message="outbound HTTP connection timed out",
+            error_message="outbound HTTP connection timed out before send",
         )
     except (httpx.WriteTimeout, httpx.WriteError) as exc:
         logger.error(f"SystemOutbox 外部 HTTP 写入中断，送达状态不确定: {type(exc).__name__}")

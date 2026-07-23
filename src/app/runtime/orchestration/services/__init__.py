@@ -15,11 +15,16 @@ from src.app.runtime.orchestration.services.device_runtime_projection_writer_ser
     DeviceRuntimeProjectionWriterService,
     device_runtime_projection_writer_service,
 )
+from src.app.runtime.orchestration.services.effect_reconciliation_resolution_service import (
+    EffectReconciliationResolutionService,
+    effect_reconciliation_resolution_service,
+)
 from src.app.runtime.orchestration.services.effect_reducer_service import (
     EffectIntentNotFound,
     EffectReducer,
     EffectReductionResult,
     InvalidReconciliationEvent,
+    ReconciliationResolutionConflict,
     effect_reducer,
 )
 from src.app.runtime.orchestration.services.full_box_exchange_effect_preparation_service import (
@@ -72,6 +77,7 @@ __all__ = [
     "ConveyorQueueWriteBlocked",
     "DeviceRuntimeProjectionWriterService",
     "EffectIntentNotFound",
+    "EffectReconciliationResolutionService",
     "EffectReducer",
     "EffectReductionResult",
     "FullBoxExchangeEffectPreparationService",
@@ -80,6 +86,7 @@ __all__ = [
     "InvalidReconciliationEvent",
     "MaterialUnitMutationService",
     "NotifyPackageBindingEffectPreparationService",
+    "ReconciliationResolutionConflict",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
     "SessionHoldMutationService",
@@ -90,6 +97,7 @@ __all__ = [
     "confirm_inbound_effect_preparation_service",
     "conveyor_queue_membership_writer_service",
     "device_runtime_projection_writer_service",
+    "effect_reconciliation_resolution_service",
     "effect_reducer",
     "full_box_exchange_effect_preparation_service",
     "idempotency_guard",

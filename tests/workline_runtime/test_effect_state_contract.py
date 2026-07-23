@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,7 +28,7 @@ except ImportError as exc:
 else:
     _CONTRACT_IMPORT_ERROR = None
 
-from src.app.runtime.orchestration.models.dispatch_attempt import DispatchAttemptStatus
+from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models.outbox import (
@@ -45,6 +47,24 @@ def _require_effect_state_contract() -> None:
 
 def _values(enum_type: type) -> set[str]:
     return {str(item.value) for item in enum_type}
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "src.app.runtime.orchestration.effect_state_contract",
+        "src.app.runtime.orchestration.effect_bridges",
+    ],
+)
+def test_effect_contract_modules_import_in_fresh_interpreter(module_name: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", f"import {module_name}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def _unique_column_sets(table: Any) -> set[tuple[str, ...]]:
@@ -101,6 +121,7 @@ def test_effect_transition_matrices_are_closed_and_terminal_states_have_no_outgo
                 RuntimeIntentStatus.REJECTED,
                 RuntimeIntentStatus.TECHNICAL_FAILED,
                 RuntimeIntentStatus.UNKNOWN,
+                RuntimeIntentStatus.RECONCILING,
             }
         ),
         RuntimeIntentStatus.ACCEPTED: frozenset(

@@ -3,30 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003
-from enum import Enum
 from typing import Any, ClassVar, cast
 
 from sqlalchemy import JSON, CheckConstraint, Column, Index, Text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
-
-
-class DispatchAttemptStatus(str, Enum):
-    """单次 transport attempt 状态。
-
-    DISPATCHING -> SENT / FAILED / UNKNOWN / CANCELLED
-    UNKNOWN 终止本次 attempt；后续 reconciliation 不覆盖该 evidence。
-    """
-
-    DISPATCHING = "DISPATCHING"
-    SENT = "SENT"
-    FAILED = "FAILED"
-    UNKNOWN = "UNKNOWN"
-    CANCELLED = "CANCELLED"
 
 
 class WorklineDispatchAttemptBase(BaseMixin):
@@ -141,7 +127,6 @@ class WorklineDispatchAttemptCreate(ModelFactory(WorklineDispatchAttemptBase).fo
 
 
 __all__ = [
-    "DispatchAttemptStatus",
     "WorklineDispatchAttempt",
     "WorklineDispatchAttemptBase",
     "WorklineDispatchAttemptCreate",

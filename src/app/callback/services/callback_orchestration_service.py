@@ -86,11 +86,13 @@ class CallbackOrchestrationService:
         *,
         rack_task_service: Any | None = None,
         handling_operation_service: Any | None = None,
+        typed_effect_callback_router: Any | None = None,
         runtime_inbox_writer: Any = callback_runtime_inbox_writer,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         self._rack_task_service = rack_task_service
         self._handling_operation_service = handling_operation_service
+        self._typed_effect_callback_router = typed_effect_callback_router
         self._runtime_inbox_writer = runtime_inbox_writer
         self._queue_gateway = queue_gateway
 
@@ -523,17 +525,25 @@ class CallbackOrchestrationService:
 
         # RuntimeInbox record 是 external callback 唯一 evidence/trace inbox。
         trace = trace.with_inbox(runtime_inbox_result.record)
-        await self._resolve_rack_task_service().record_callback_from_external_http(
-            db=db,
-            payload_json=payload,
-            trace_id=trace.trace_id,
+        typed_effect_handled = await self._resolve_typed_effect_callback_router().route(
+            db,
+            callback_type=callback_type,
+            payload=payload,
+            occurred_at_ms=_current_timestamp_ms(),
+            source_event_id=runtime_inbox_result.record.source_event_id,
         )
-        if _is_handling_callback(callback_type, payload):
-            await self._resolve_handling_operation_service().record_callback_from_external_http(
+        if not typed_effect_handled:
+            await self._resolve_rack_task_service().record_callback_from_external_http(
                 db=db,
                 payload_json=payload,
                 trace_id=trace.trace_id,
             )
+            if _is_handling_callback(callback_type, payload):
+                await self._resolve_handling_operation_service().record_callback_from_external_http(
+                    db=db,
+                    payload_json=payload,
+                    trace_id=trace.trace_id,
+                )
 
         await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
 
@@ -548,6 +558,15 @@ class CallbackOrchestrationService:
 
             self._rack_task_service = rack_task_lifecycle_service
         return self._rack_task_service
+
+    def _resolve_typed_effect_callback_router(self) -> Any:
+        if self._typed_effect_callback_router is None:
+            from src.app.runtime.orchestration.services.inbox.wms_typed_effect_callback_router import (
+                wms_typed_effect_callback_router,
+            )
+
+            self._typed_effect_callback_router = wms_typed_effect_callback_router
+        return self._typed_effect_callback_router
 
     def _resolve_handling_operation_service(self) -> Any:
         if self._handling_operation_service is None:

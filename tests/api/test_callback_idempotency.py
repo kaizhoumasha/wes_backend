@@ -31,7 +31,10 @@ def _response_data(response: JsonDict) -> JsonDict:
 
 
 def _runtime_accept_result(*, created: bool = True) -> SimpleNamespace:
-    return SimpleNamespace(created=created, record=SimpleNamespace(id=901))
+    return SimpleNamespace(
+        created=created,
+        record=SimpleNamespace(id=901, source_event_id="runtime-inbox-source-event-901"),
+    )
 
 
 def _runtime_snapshot(runtime_status: str | None = "READY") -> WorkLineRuntimeStatusSnapshot:

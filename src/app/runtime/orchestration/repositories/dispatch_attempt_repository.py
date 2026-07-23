@@ -5,7 +5,9 @@ from typing import Any, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.runtime.orchestration.models.dispatch_attempt import DispatchAttemptStatus, WorklineDispatchAttempt
+from src.app.effect_ledger_status import DispatchAttemptStatus
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
+from src.app.sys.models.outbox import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus
 from src.database.base_repository import BaseRepository
 
 
@@ -55,6 +57,47 @@ class WorklineDispatchAttemptRepository(BaseRepository[WorklineDispatchAttempt])
             .with_for_update()
         )
         return result.scalar_one_or_none()
+
+    async def list_expired_dispatching_for_finished_outboxes_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        now: Any,
+        operation_domains: tuple[str, ...] | None = None,
+        exclude_operation_domains: tuple[str, ...] | None = None,
+        limit: int = 100,
+    ) -> tuple[WorklineDispatchAttempt, ...]:
+        """锁定终态 outbox 遗留的过期活动 attempt。"""
+
+        attempt_columns = cast("Any", WorklineDispatchAttempt).__table__.c
+        outbox_columns = cast("Any", SystemOutbox).__table__.c
+        predicates: list[Any] = [
+            attempt_columns.status == DispatchAttemptStatus.DISPATCHING,
+            attempt_columns.lease_expires_at <= now,
+            outbox_columns.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP,
+            outbox_columns.status.in_(
+                [
+                    SystemOutboxStatus.SENT,
+                    SystemOutboxStatus.FAILED,
+                    SystemOutboxStatus.UNKNOWN,
+                    SystemOutboxStatus.CANCELLED,
+                ]
+            ),
+            outbox_columns.finished_at.is_not(None),
+        ]
+        if operation_domains:
+            predicates.append(outbox_columns.operation_domain.in_(operation_domains))
+        if exclude_operation_domains:
+            predicates.append(outbox_columns.operation_domain.not_in(exclude_operation_domains))
+        result = await db.execute(
+            select(WorklineDispatchAttempt)
+            .join(SystemOutbox, outbox_columns.id == attempt_columns.outbox_id)
+            .where(*predicates)
+            .order_by(attempt_columns.lease_expires_at, attempt_columns.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return tuple(result.scalars().all())
 
 
 workline_dispatch_attempt_repository = WorklineDispatchAttemptRepository()

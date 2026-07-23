@@ -31,6 +31,9 @@ class FullBoxExchangeOperationResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     dispatch_key: StableText = Field(max_length=240)
+    rack_id: StableText = Field(max_length=120)
+    empty_box_id: StableText = Field(max_length=120)
+    full_box_id: StableText = Field(max_length=120)
     accepted: bool
     exchange_request_code: StableText | None = Field(default=None, max_length=120)
     reason_code: StableText | None = Field(default=None, max_length=120)

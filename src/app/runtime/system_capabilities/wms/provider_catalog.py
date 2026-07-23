@@ -95,6 +95,7 @@ WMS_PROVIDER_PROFILES = MappingProxyType(
 WMS_PROVIDER_PROFILE = WMS_PROVIDER_PROFILES[f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.production"]
 WMS_NORTHBOUND_IDENTITY = WMS_PROVIDER_PROFILE.identity
 WMS_NORTHBOUND_AUTH = WMS_PROVIDER_PROFILE.bindings[0].outbound_auth
+WMS_TYPED_EFFECT_CALLBACK_TYPES = frozenset(callback.callback_type for callback in WMS_PROVIDER_PROFILE.callbacks)
 
 
 def wms_sync_base_url() -> str:
@@ -181,6 +182,7 @@ __all__ = [
     "WMS_NORTHBOUND_IDENTITY",
     "WMS_PROVIDER_PROFILE",
     "WMS_PROVIDER_PROFILES",
+    "WMS_TYPED_EFFECT_CALLBACK_TYPES",
     "freeze_wms_effect_binding",
     "resolve_wms_operation_binding",
     "wms_sync_base_url",

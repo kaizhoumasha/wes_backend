@@ -179,6 +179,9 @@ async def test_callback_adapter_maps_typed_business_result_only_through_reducer(
     adapter = modules.FullBoxExchangeCallbackAdapter(bridge=bridge)
     result = FullBoxExchangeOperationResult(
         dispatch_key=_request().dispatch_key,
+        rack_id=_request().rack_id,
+        empty_box_id=_request().empty_box_id,
+        full_box_id=_request().full_box_id,
         accepted=accepted,
         exchange_request_code="EXCHANGE-001" if accepted else None,
         reason_code=reason_code,

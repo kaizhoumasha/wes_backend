@@ -32,6 +32,9 @@ try:
         ReconciliationCase,
         ReconciliationCaseStatus,
     )
+    from src.app.runtime.orchestration.services.effect_reconciliation_resolution_service import (
+        EffectReconciliationResolutionService,
+    )
     from src.app.runtime.orchestration.services.effect_reducer_service import (
         EffectIntentNotFound,
         EffectReducer,
@@ -80,6 +83,13 @@ class _ReducerRepository:
                 if case.dispatch_key == dispatch_key and case.status is ReconciliationCaseStatus.OPEN
             ),
             None,
+        )
+
+    async def list_resolved_cases_for_update(self, _db: Any, dispatch_key: str) -> tuple[Any, ...]:
+        return tuple(
+            case
+            for case in reversed(self.cases)
+            if case.dispatch_key == dispatch_key and case.status is ReconciliationCaseStatus.RESOLVED
         )
 
     def add_case(self, _db: Any, case: Any) -> None:
@@ -137,6 +147,12 @@ def _event(
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.CALLBACK_REJECTED, False, RuntimeIntentStatus.REJECTED),
         (RuntimeIntentStatus.ACCEPTED, EffectReducerEventType.CALLBACK_REJECTED, False, RuntimeIntentStatus.REJECTED),
         (RuntimeIntentStatus.UNKNOWN, EffectReducerEventType.CALLBACK_REJECTED, False, RuntimeIntentStatus.REJECTED),
+        (
+            RuntimeIntentStatus.PROPOSED,
+            EffectReducerEventType.RECONCILIATION_OPENED,
+            False,
+            RuntimeIntentStatus.RECONCILING,
+        ),
         (
             RuntimeIntentStatus.ACCEPTED,
             EffectReducerEventType.RECONCILIATION_OPENED,
@@ -229,6 +245,144 @@ async def test_callback_before_transport_response_keeps_completed_terminal() -> 
 
 
 @pytest.mark.asyncio
+async def test_resolution_without_source_event_id_does_not_match_historical_resolution() -> None:
+    _require_t8d()
+    repository = _ReducerRepository(RuntimeIntentStatus.RECONCILING)
+    historical_case = ReconciliationCase(
+        runtime_intent_log_id=17,
+        dispatch_key="dispatch-1",
+        status=ReconciliationCaseStatus.RESOLVED,
+        reason_code="OLD_CASE",
+        evidence_history_json=[],
+        decision_json={"source_event_id": None, "resolution": RuntimeIntentStatus.COMPLETED.value},
+        opened_at_ms=800,
+        resolved_at_ms=900,
+    )
+    open_case = ReconciliationCase(
+        runtime_intent_log_id=17,
+        dispatch_key="dispatch-1",
+        status=ReconciliationCaseStatus.OPEN,
+        reason_code="NEW_CASE",
+        evidence_history_json=[],
+        decision_json={},
+        opened_at_ms=1_000,
+    )
+    repository.cases.extend([historical_case, open_case])
+    event = _event(
+        EffectReducerEventType.RECONCILIATION_RESOLVED,
+        occurred_at_ms=1_100,
+        resolution=RuntimeIntentStatus.COMPLETED,
+    )
+    event = event.model_copy(update={"source_event_id": None})
+
+    result = await EffectReducer(repository=repository).reduce(_Db(), event)
+
+    assert result is not None
+    assert open_case.status is ReconciliationCaseStatus.RESOLVED
+    assert repository.intent.effect_status is RuntimeIntentStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_resolution_request_id_cannot_be_reused_with_a_different_decision() -> None:
+    _require_t8d()
+    repository = _ReducerRepository(RuntimeIntentStatus.RECONCILING)
+    historical_case = ReconciliationCase(
+        runtime_intent_log_id=17,
+        dispatch_key="dispatch-1",
+        status=ReconciliationCaseStatus.RESOLVED,
+        reason_code="OLD_CASE",
+        evidence_history_json=[],
+        decision_json={
+            "source_event_id": "manual-resolution-1",
+            "resolution": RuntimeIntentStatus.COMPLETED.value,
+        },
+        opened_at_ms=800,
+        resolved_at_ms=900,
+    )
+    open_case = ReconciliationCase(
+        runtime_intent_log_id=17,
+        dispatch_key="dispatch-1",
+        status=ReconciliationCaseStatus.OPEN,
+        reason_code="NEW_CASE",
+        evidence_history_json=[],
+        decision_json={},
+        opened_at_ms=1_000,
+    )
+    repository.cases.extend([historical_case, open_case])
+    event = _event(
+        EffectReducerEventType.RECONCILIATION_RESOLVED,
+        occurred_at_ms=1_100,
+        resolution=RuntimeIntentStatus.REJECTED,
+    ).model_copy(update={"source_event_id": "manual-resolution-1"})
+
+    with pytest.raises(InvalidReconciliationEvent, match="different resolution"):
+        await EffectReducer(repository=repository).reduce(_Db(), event)
+
+    assert open_case.status is ReconciliationCaseStatus.OPEN
+    assert repository.intent.effect_status is RuntimeIntentStatus.RECONCILING
+
+
+@pytest.mark.asyncio
+async def test_effect_reconciliation_resolution_service_commits_stable_operator_decision() -> None:
+    _require_t8d()
+    bridge = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                intent_status=RuntimeIntentStatus.COMPLETED,
+                case_status=ReconciliationCaseStatus.RESOLVED,
+                state_changed=True,
+            )
+        )
+    )
+    db = SimpleNamespace(commit=AsyncMock())
+
+    result = await EffectReconciliationResolutionService(reconciliation_bridge=bridge).resolve(
+        db,
+        dispatch_key="dispatch-1",
+        request_id=" resolution-request-1 ",
+        resolution="COMPLETED",
+        operator_note="已核验 WMS 权威记录",
+        operator_id=88,
+    )
+
+    bridge.resolve.assert_awaited_once()
+    assert bridge.resolve.await_args.kwargs["source_event_id"] == "resolution-request-1"
+    assert bridge.resolve.await_args.kwargs["evidence_json"] == {
+        "operator_id": 88,
+        "operator_note": "已核验 WMS 权威记录",
+        "request_id": "resolution-request-1",
+    }
+    db.commit.assert_awaited_once()
+    assert result == {
+        "dispatch_key": "dispatch-1",
+        "resolution": "COMPLETED",
+        "request_id": "resolution-request-1",
+        "intent_status": "COMPLETED",
+        "case_status": "RESOLVED",
+        "state_changed": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_effect_reconciliation_bridge_rejects_blank_resolution_identity() -> None:
+    _require_t8d()
+    reducer = SimpleNamespace(reduce=AsyncMock())
+
+    with pytest.raises(ValueError, match="stable source_event_id"):
+        await EffectReconciliationBridge(reducer=reducer).resolve(
+            SimpleNamespace(),
+            dispatch_key="dispatch-1",
+            occurred_at_ms=1_000,
+            resolution=RuntimeIntentStatus.COMPLETED,
+            reason_code="MANUAL",
+            evidence_json={},
+            source_event_id=" ",
+        )
+
+    reducer.reduce.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_duplicate_and_contradictory_callbacks_append_evidence_without_terminal_overwrite() -> None:
     _require_t8d()
     repository = _ReducerRepository()
@@ -292,6 +446,102 @@ async def test_reconciliation_resolution_requires_an_open_case() -> None:
                 resolution=RuntimeIntentStatus.COMPLETED,
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_resolution_replay_returns_existing_resolution() -> None:
+    _require_t8d()
+    repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
+    reducer = EffectReducer(repository=repository)
+    await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.RECONCILIATION_OPENED, reason_code="TRANSPORT_AMBIGUOUS"),
+    )
+    resolution = _event(
+        EffectReducerEventType.RECONCILIATION_RESOLVED,
+        occurred_at_ms=1200,
+        resolution=RuntimeIntentStatus.COMPLETED,
+        reason_code="REMOTE_CONFIRMED",
+    )
+
+    first = await reducer.reduce(_Db(), resolution)
+    history_size = len(repository.intent.outcome_history_json)
+    replay = await reducer.reduce(_Db(), resolution)
+
+    assert first is not None and replay is not None
+    assert replay.intent_status is RuntimeIntentStatus.COMPLETED
+    assert replay.case_status is ReconciliationCaseStatus.RESOLVED
+    assert replay.state_changed is False
+    assert len(repository.intent.outcome_history_json) == history_size
+
+
+@pytest.mark.asyncio
+async def test_old_reconciliation_resolution_replay_remains_idempotent_after_newer_case() -> None:
+    _require_t8d()
+    repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
+    reducer = EffectReducer(repository=repository)
+    await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.RECONCILIATION_OPENED, occurred_at_ms=1100, reason_code="CASE_A"),
+    )
+    resolution_a = _event(
+        EffectReducerEventType.RECONCILIATION_RESOLVED,
+        occurred_at_ms=1200,
+        resolution=RuntimeIntentStatus.COMPLETED,
+        reason_code="REMOTE_CONFIRMED_A",
+    )
+    await reducer.reduce(_Db(), resolution_a)
+    await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.RECONCILIATION_OPENED, occurred_at_ms=1300, reason_code="CASE_B"),
+    )
+    await reducer.reduce(
+        _Db(),
+        _event(
+            EffectReducerEventType.RECONCILIATION_RESOLVED,
+            occurred_at_ms=1400,
+            resolution=RuntimeIntentStatus.COMPLETED,
+            reason_code="REMOTE_CONFIRMED_B",
+        ),
+    )
+
+    replay = await reducer.reduce(_Db(), resolution_a)
+
+    assert replay is not None
+    assert replay.intent_status is RuntimeIntentStatus.COMPLETED
+    assert replay.case_status is ReconciliationCaseStatus.RESOLVED
+    assert replay.state_changed is False
+
+
+@pytest.mark.asyncio
+async def test_old_resolution_replay_does_not_close_new_open_case() -> None:
+    _require_t8d()
+    repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
+    reducer = EffectReducer(repository=repository)
+    await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.RECONCILIATION_OPENED, occurred_at_ms=1100, reason_code="CASE_A"),
+    )
+    resolution_a = _event(
+        EffectReducerEventType.RECONCILIATION_RESOLVED,
+        occurred_at_ms=1200,
+        resolution=RuntimeIntentStatus.COMPLETED,
+        reason_code="REMOTE_CONFIRMED_A",
+    )
+    await reducer.reduce(_Db(), resolution_a)
+    await reducer.reduce(
+        _Db(),
+        _event(EffectReducerEventType.RECONCILIATION_OPENED, occurred_at_ms=1300, reason_code="CASE_B"),
+    )
+    open_case_b = repository.cases[-1]
+
+    replay = await reducer.reduce(_Db(), resolution_a)
+
+    assert replay is not None
+    assert replay.state_changed is False
+    assert replay.case_status is ReconciliationCaseStatus.OPEN
+    assert open_case_b.status is ReconciliationCaseStatus.OPEN
+    assert open_case_b.decision_json == {}
 
 
 @pytest.mark.asyncio
@@ -420,6 +670,7 @@ async def test_callback_and_reconciliation_bridges_accept_only_typed_semantic_ev
         resolution=RuntimeIntentStatus.REJECTED,
         reason_code="REMOTE_REJECTED",
         evidence_json={"ticket": "CASE-1"},
+        source_event_id="resolution-1",
     )
 
     assert [event.event_type for event in reducer.events] == [
@@ -555,3 +806,42 @@ async def test_workline_transport_finalization_records_reducer_event_before_comm
     assert call.kwargs["attempt_no"] == 3
     assert call.kwargs["result"] is result
     assert call.kwargs["retry_exhausted"] is False
+
+
+@pytest.mark.asyncio
+async def test_callback_winning_transport_race_still_finalizes_current_attempt() -> None:
+    _require_t8d()
+    from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import OutboxDispatchService
+
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    service = OutboxDispatchService(effect_transport_bridge=bridge)
+    outbox = SimpleNamespace(dispatch_key="dispatch-race")
+    callback_completed = SimpleNamespace(status="SENT", dispatch_key="dispatch-race")
+    outbox_repository = SimpleNamespace(
+        mark_as_sent=AsyncMock(return_value=None),
+        get_by_id_for_update=AsyncMock(return_value=callback_completed),
+    )
+    attempt = SimpleNamespace(attempt_no=4)
+    attempt_service = SimpleNamespace(finalize_external_http_attempt_record=AsyncMock(return_value=attempt))
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+    db = _Db()
+
+    finalized = await service._finalize_external_http_result(
+        db,
+        outbox_repo=outbox_repository,
+        outbox=outbox,
+        outbox_id=1,
+        dispatch_attempt=attempt,
+        attempt_service=attempt_service,
+        result=result,
+        lease_owner_token="worker-race",
+        retry_budget=3,
+    )
+
+    assert finalized is callback_completed
+    outbox_repository.get_by_id_for_update.assert_awaited_once_with(db, 1)
+    attempt_service.finalize_external_http_attempt_record.assert_awaited_once()
+    bridge.record_result.assert_awaited_once()

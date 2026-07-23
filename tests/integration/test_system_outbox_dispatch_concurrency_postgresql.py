@@ -9,10 +9,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete
 
-from src.app.runtime.orchestration.models.dispatch_attempt import (
-    DispatchAttemptStatus,
-    WorklineDispatchAttempt,
-)
+from src.app.effect_ledger_status import DispatchAttemptStatus
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import (
     OutboxLeaseLost,
     WorklineDispatchAttemptService,

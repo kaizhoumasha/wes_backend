@@ -16,6 +16,7 @@ from src.app.runtime.capabilities.material_flow.start_admission_service import s
 from src.app.runtime.orchestration.models.operation import (
     ManualOperationRequest,
     ReplayInboxRequest,
+    ResolveEffectReconciliationRequest,
     ResolveRuntimeReconciliationRequest,
     SandboxAckRequest,
     SandboxEventRequest,
@@ -23,6 +24,14 @@ from src.app.runtime.orchestration.models.operation import (
     SandboxResultRequest,
     SandboxTemplatesResponse,
     SandboxWorklineStartRequest,
+)
+from src.app.runtime.orchestration.services.effect_reconciliation_resolution_service import (
+    effect_reconciliation_resolution_service,
+)
+from src.app.runtime.orchestration.services.effect_reducer_service import (
+    EffectIntentNotFound,
+    InvalidReconciliationEvent,
+    ReconciliationResolutionConflict,
 )
 from src.app.runtime.orchestration.services.intent import operation_service
 from src.app.runtime.orchestration.services.runtime_inbox import (
@@ -282,6 +291,47 @@ async def resolve_runtime_reconciliation(
         )
         await publish_deferred_sse_events(db)
     except ValueError as exc:
+        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
+    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=result))
+
+
+@router.post(
+    "/reconciliations/effects/{dispatch_key}/resolve",
+    summary="[biz:workline:resolve-reconciliation] 提交 EFFECT reconciliation 人工决议",
+    response_model=ResponseSchemaModel[dict[str, Any]],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:resolve-reconciliation"))],
+)
+async def resolve_effect_reconciliation(
+    dispatch_key: str,
+    payload: ResolveEffectReconciliationRequest,
+    db: AsyncSessionDep,
+    current_user_id: Annotated[int, Depends(require_auth)],
+    response: Response,
+) -> ResponseSchemaModel[dict[str, Any]]:
+    try:
+        result = await effect_reconciliation_resolution_service.resolve(
+            db,
+            dispatch_key=dispatch_key,
+            request_id=payload.request_id,
+            resolution=payload.resolution,
+            operator_note=payload.operator_note,
+            operator_id=current_user_id,
+        )
+    except ReconciliationResolutionConflict as exc:
+        response.status_code = ResourceErrorCode.CONFLICT.http_status
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=ResourceErrorCode.CONFLICT, message=str(exc)),
+        )
+    except EffectIntentNotFound as exc:
+        response.status_code = ResourceErrorCode.NOT_FOUND.http_status
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
+        )
+    except (InvalidReconciliationEvent, ValueError) as exc:
+        response.status_code = BusinessErrorCode.INVALID_STATE.http_status
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=result))
 

@@ -33,6 +33,19 @@ class EffectReducerRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_resolved_cases_for_update(self, db: Any, dispatch_key: str) -> tuple[ReconciliationCase, ...]:
+        columns = cast("Any", ReconciliationCase).__table__.c
+        result = await db.execute(
+            select(ReconciliationCase)
+            .where(
+                columns.dispatch_key == dispatch_key,
+                columns.status == ReconciliationCaseStatus.RESOLVED,
+            )
+            .order_by(columns.id.desc())
+            .with_for_update()
+        )
+        return tuple(result.scalars().all())
+
     @staticmethod
     def add_case(db: Any, case: ReconciliationCase) -> None:
         db.add(case)

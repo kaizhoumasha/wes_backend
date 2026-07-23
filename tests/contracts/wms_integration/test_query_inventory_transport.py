@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import time
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -187,6 +188,31 @@ async def test_timeout_is_explicit_retryable_technical_failure() -> None:
     assert isinstance(outcome, QueryTechnicalFailure)
     assert outcome.reason_code == "WMS_PROVIDER_TIMEOUT"
     assert outcome.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_retryable_rate_limit_retries_contract_backoff_until_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    backoffs: list[float] = []
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return httpx.Response(429, headers={"retry-after": "1"})
+        return httpx.Response(200, json={"items": []})
+
+    async def record_sleep(seconds: float) -> None:
+        backoffs.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+    outcome = await _adapter(handler).execute(InventoryQueryOperationRequest(material_code="MAT-001"))
+
+    assert isinstance(outcome, QuerySuccess)
+    assert attempts == 3
+    assert backoffs == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -389,12 +415,15 @@ async def test_total_deadline_covers_all_pages() -> None:
         await asyncio.sleep(0.03)
         return httpx.Response(200, json={"items": []})
 
+    started_at = time.perf_counter()
     outcome = await _adapter(handler, budget={"timeout_seconds": 0.01}).execute(
         InventoryQueryOperationRequest(material_code="MAT-001")
     )
+    elapsed = time.perf_counter() - started_at
 
     assert isinstance(outcome, QueryTechnicalFailure)
     assert outcome.reason_code == "WMS_PROVIDER_TIMEOUT"
+    assert elapsed < 0.1
 
 
 @pytest.mark.asyncio

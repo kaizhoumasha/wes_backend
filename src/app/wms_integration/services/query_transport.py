@@ -267,23 +267,38 @@ class WmsQueryTransportExecutor:
                     permit=permit,
                     started_at=started_at,
                 )
-            async with asyncio.timeout(contract.budget.timeout_seconds):
-                outcome = await self._execute_with_deadline(
-                    provider_payload=provider_payload,
-                    map_success=map_success,
+            try:
+                # timeout_seconds 是整次 QUERY（全部 attempts、分页与退避）的总预算。
+                async with asyncio.timeout(contract.budget.timeout_seconds):
+                    for attempt_index in range(contract.retry_policy.max_attempts):
+                        try:
+                            outcome = await self._execute_with_deadline(
+                                provider_payload=provider_payload,
+                                map_success=map_success,
+                            )
+                        except httpx.TimeoutException:
+                            outcome = QueryTechnicalFailure(
+                                reason_code="WMS_PROVIDER_TIMEOUT",
+                                message="WMS QUERY deadline exceeded",
+                                retryable=True,
+                            )
+                        except httpx.RequestError:
+                            outcome = QueryTechnicalFailure(
+                                reason_code="WMS_PROVIDER_UNAVAILABLE",
+                                message="WMS QUERY transport unavailable",
+                                retryable=True,
+                            )
+                        if not isinstance(outcome, QueryTechnicalFailure) or not outcome.retryable:
+                            break
+                        if attempt_index + 1 >= contract.retry_policy.max_attempts:
+                            break
+                        await asyncio.sleep(contract.retry_policy.backoff_seconds[attempt_index])
+            except TimeoutError:
+                outcome = QueryTechnicalFailure(
+                    reason_code="WMS_PROVIDER_TIMEOUT",
+                    message="WMS QUERY deadline exceeded",
+                    retryable=True,
                 )
-        except (TimeoutError, httpx.TimeoutException):
-            outcome = QueryTechnicalFailure(
-                reason_code="WMS_PROVIDER_TIMEOUT",
-                message="WMS QUERY deadline exceeded",
-                retryable=True,
-            )
-        except httpx.RequestError:
-            outcome = QueryTechnicalFailure(
-                reason_code="WMS_PROVIDER_UNAVAILABLE",
-                message="WMS QUERY transport unavailable",
-                retryable=True,
-            )
         except _QueryBudgetViolation as exc:
             outcome = QueryContractFailure(reason_code=exc.reason_code, message=exc.message)
         except _ContentEncodingFailure:

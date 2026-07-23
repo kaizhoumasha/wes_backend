@@ -4,6 +4,8 @@
 operation.py + runtime_hold_api.py 由 caller 具名子模块直接 import。
 """
 
+from src.app.effect_ledger_status import DispatchAttemptStatus
+
 from .bin_cell_reservation import (
     BinCellReservationStatus,
     WorklineBinCellReservation,
@@ -18,12 +20,7 @@ from .diagnostic import (
     WorklineDiagnosticBase,
     WorklineDiagnosticCreate,
 )
-from .dispatch_attempt import (
-    DispatchAttemptStatus,
-    WorklineDispatchAttempt,
-    WorklineDispatchAttemptBase,
-    WorklineDispatchAttemptCreate,
-)
+from .dispatch_attempt import WorklineDispatchAttempt, WorklineDispatchAttemptBase, WorklineDispatchAttemptCreate
 from .material_unit import (
     MaterialUnit,
     MaterialUnitBase,

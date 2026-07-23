@@ -164,10 +164,33 @@ async def test_connect_error_is_confirmed_not_sent_and_retry_safe(monkeypatch: p
 
 
 @pytest.mark.asyncio
+async def test_connect_timeout_is_confirmed_not_sent_and_retry_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request()
+
+    class FakeClient:
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
+            raise httpx.ConnectTimeout("connect timed out", request=httpx.Request("POST", request.endpoint.url))
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+
+    result = await _send_external_http(request)
+
+    assert result.outcome is ExternalHttpTransportOutcome.NOT_SENT
+    assert result.phase is ExternalHttpTransportPhase.CONNECTING
+    assert result.safe_to_retry is True
+    assert result.error_code == "CONNECT_TIMEOUT"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("exception_type", "phase"),
     [
-        (httpx.ConnectTimeout, ExternalHttpTransportPhase.CONNECTING),
         (httpx.WriteError, ExternalHttpTransportPhase.SENDING),
         (httpx.ReadError, ExternalHttpTransportPhase.AWAITING_RESPONSE),
     ],

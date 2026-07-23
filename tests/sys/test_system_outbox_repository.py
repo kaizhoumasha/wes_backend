@@ -3,13 +3,22 @@ from __future__ import annotations
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.app.device.models.command import DeviceCommand
+from src.app.effect_ledger_status import DispatchAttemptStatus
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.services.inbox.external_http_lease_loss_service import (
+    ExternalHttpLeaseLossService,
+)
+from src.app.runtime.orchestration.services.inbox.non_http_lease_exhaustion_service import (
+    NonHttpLeaseExhaustionService,
+)
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.dispatch_concurrency import DispatchBucketKey
 from src.app.sys.models import SystemOutboxStatus
@@ -56,6 +65,201 @@ def _compiled_status_values(statement: Any) -> set[SystemOutboxStatus]:
         if isinstance(value, list):
             values.update(item for item in value if isinstance(item, SystemOutboxStatus))
     return values
+
+
+@pytest.mark.asyncio
+async def test_get_by_id_for_update_forces_refresh_of_callback_completed_state() -> None:
+    callback_completed = SimpleNamespace(status=SystemOutboxStatus.SENT)
+    db = _CapturingDb([callback_completed])
+
+    result = await SystemOutboxRepository().get_by_id_for_update(db, 7)
+
+    assert result is callback_completed
+    assert db.statement is not None
+    assert db.statement.get_execution_options()["populate_existing"] is True
+    assert db.statement._for_update_arg is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_status", [SystemOutboxStatus.DISPATCHING, SystemOutboxStatus.SENT])
+async def test_typed_callback_finishes_external_outbox_idempotently(
+    db_session: Any,
+    initial_status: SystemOutboxStatus,
+) -> None:
+    payload = {"inbound_key": "INBOUND-A"}
+    canonical = CanonicalPayload.from_projection(payload)
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS",
+        provider_profile_identity="test.typed-callback.v1",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+    )
+    outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
+        operation_domain="WORKLINE",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key=f"typed-callback-finish:{initial_status.value}",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json=payload,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        status=initial_status,
+        lease_owner_token="sender-owner",
+        lease_expires_at=(
+            timezone.now_for_db() + timedelta(minutes=5) if initial_status is SystemOutboxStatus.DISPATCHING else None
+        ),
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+
+    repository = SystemOutboxRepository()
+    first = await repository.finish_sent_external_by_dispatch_key(db_session, outbox.dispatch_key)
+    second = await repository.finish_sent_external_by_dispatch_key(db_session, outbox.dispatch_key)
+    await db_session.refresh(outbox)
+
+    assert first is outbox
+    assert second is None
+    assert outbox.status is SystemOutboxStatus.SENT
+    assert outbox.finished_at is not None
+    assert outbox.lease_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_typed_callback_does_not_finish_an_external_outbox_before_dispatch(db_session: Any) -> None:
+    payload = {"inbound_key": "INBOUND-A"}
+    canonical = CanonicalPayload.from_projection(payload)
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS",
+        provider_profile_identity="test.typed-callback.v1",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+    )
+    outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
+        operation_domain="WMS_INVENTORY",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="typed-callback-before-dispatch",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json=payload,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        status=SystemOutboxStatus.NEW,
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+
+    finished = await SystemOutboxRepository().finish_sent_external_by_dispatch_key(db_session, outbox.dispatch_key)
+    await db_session.refresh(outbox)
+
+    assert finished is None
+    assert outbox.status is SystemOutboxStatus.NEW
+    assert outbox.sent_at is None
+    assert outbox.finished_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_status",
+    [SystemOutboxStatus.NEW, SystemOutboxStatus.DISPATCHING, SystemOutboxStatus.SENT],
+)
+async def test_business_identity_mismatch_isolates_external_outbox(
+    db_session: Any,
+    initial_status: SystemOutboxStatus,
+) -> None:
+    now = timezone.now_for_db()
+    payload = {"inbound_key": "INBOUND-A"}
+    canonical = CanonicalPayload.from_projection(payload)
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS",
+        provider_profile_identity="test.typed-callback.v1",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+    )
+    outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
+        operation_domain="WMS_INVENTORY",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key=f"typed-callback-mismatch:{initial_status.value}",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json=payload,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        status=initial_status,
+        sent_at=now if initial_status is SystemOutboxStatus.SENT else None,
+        lease_owner_token="mismatch-sender" if initial_status is SystemOutboxStatus.DISPATCHING else None,
+        lease_expires_at=(now + timedelta(minutes=5) if initial_status is SystemOutboxStatus.DISPATCHING else None),
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+
+    isolated = await SystemOutboxRepository().isolate_for_reconciliation_by_dispatch_key(
+        db_session,
+        outbox.dispatch_key,
+        reason="WMS_CALLBACK_BUSINESS_IDENTITY_MISMATCH",
+    )
+    await db_session.refresh(outbox)
+
+    assert isolated is outbox
+    assert outbox.status is (
+        SystemOutboxStatus.SENT if initial_status is SystemOutboxStatus.SENT else SystemOutboxStatus.CANCELLED
+    )
+    assert outbox.finished_at is not None
+    assert outbox.next_retry_at is None
+    assert outbox.lease_expires_at is None
+    assert outbox.last_error == "WMS_CALLBACK_BUSINESS_IDENTITY_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_finished_wms_outbox_recovers_expired_orphan_attempt_with_real_repositories(
+    db_session: Any,
+) -> None:
+    now = timezone.now_for_db()
+    payload = {"inbound_key": "INBOUND-A"}
+    canonical = CanonicalPayload.from_projection(payload)
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS",
+        provider_profile_identity="test.typed-callback.v1",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+    )
+    outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
+        operation_domain="WMS_INVENTORY",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="typed-callback-orphan-attempt",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json=payload,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        status=SystemOutboxStatus.SENT,
+        lease_owner_token="crashed-sender",
+        sent_at=now,
+        finished_at=now,
+    )
+    db_session.add(outbox)
+    await db_session.flush()
+    attempt = WorklineDispatchAttempt(
+        outbox_id=outbox.id,
+        dispatch_key=outbox.dispatch_key,
+        attempt_no=1,
+        lease_token="crashed-sender",
+        lease_expires_at=now - timedelta(seconds=1),
+        status=DispatchAttemptStatus.DISPATCHING,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT.value,
+        target_code="WMS",
+        started_at=now - timedelta(minutes=5),
+    )
+    db_session.add(attempt)
+    await db_session.commit()
+    bridge = SimpleNamespace(record_result=AsyncMock())
+
+    recovered = await ExternalHttpLeaseLossService(effect_transport_bridge=bridge).fence_expired_leases(
+        db_session,
+        now=now,
+        operation_domains=("WMS_INVENTORY", "WMS_FULFILLMENT"),
+    )
+    await db_session.refresh(attempt)
+
+    assert recovered == 1
+    assert attempt.status is DispatchAttemptStatus.CANCELLED
+    assert attempt.error_message == "OUTBOX_FINISHED_BEFORE_TRANSPORT_EVIDENCE"
+    bridge.record_result.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -266,6 +470,7 @@ async def test_non_http_stale_dispatching_lease_remains_reclaimable(
         operation_identity=f"test.{dispatch_type.value.lower()}",
         payload_json={},
         status=SystemOutboxStatus.DISPATCHING,
+        attempt_count=1,
         lease_owner_token="expired-owner",
         lease_expires_at=now - timedelta(seconds=1),
     )
@@ -285,8 +490,97 @@ async def test_non_http_stale_dispatching_lease_remains_reclaimable(
 
     assert claimed.id == outbox.id
     assert outbox.status is SystemOutboxStatus.DISPATCHING
+    assert outbox.attempt_count == 2
     assert outbox.lease_owner_token == "replacement-owner"
     assert outbox.lease_expires_at == now + timedelta(seconds=300)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_non_http_lease_atomically_finalizes_outbox_and_attempt(db_session: Any) -> None:
+    now = timezone.now_for_db()
+    outbox = SystemOutbox(
+        operation_domain="HANDLING",
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_key="non-http-exhausted-lease",
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="DEVICE-LEASE-EXHAUSTED",
+        provider_profile_identity="test.non-http.v1",
+        operation_identity="test.device_command",
+        payload_json={},
+        status=SystemOutboxStatus.DISPATCHING,
+        attempt_count=3,
+        lease_owner_token="exhausted-owner",
+        lease_expires_at=now - timedelta(seconds=1),
+    )
+    db_session.add(outbox)
+    await db_session.flush()
+    attempt = WorklineDispatchAttempt(
+        outbox_id=outbox.id,
+        dispatch_key=outbox.dispatch_key,
+        attempt_no=3,
+        lease_token="exhausted-owner",
+        lease_expires_at=now - timedelta(seconds=1),
+        status=DispatchAttemptStatus.DISPATCHING,
+        target_type=SystemOutboxTargetType.DEVICE.value,
+        target_code="DEVICE-LEASE-EXHAUSTED",
+        started_at=now - timedelta(minutes=5),
+    )
+    db_session.add(attempt)
+    await db_session.commit()
+
+    recovered = await NonHttpLeaseExhaustionService().fence_exhausted_leases(
+        db_session,
+        repository=SystemOutboxRepository(),
+        bucket=DispatchBucketKey("test.non-http.v1", "test.device_command"),
+        retry_budget=3,
+        now=now,
+    )
+    await db_session.refresh(outbox)
+    await db_session.refresh(attempt)
+
+    assert recovered == 1
+    assert outbox.status is SystemOutboxStatus.FAILED
+    assert outbox.finished_at == now
+    assert outbox.lease_expires_at is None
+    assert outbox.last_error == "NON_HTTP_DISPATCH_RETRY_BUDGET_EXHAUSTED"
+    assert attempt.status is DispatchAttemptStatus.FAILED
+    assert attempt.finalized_at == now
+    assert attempt.error_message == "NON_HTTP_DISPATCH_RETRY_BUDGET_EXHAUSTED"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_non_http_lease_rolls_back_outbox_when_attempt_is_missing(db_session: Any) -> None:
+    now = timezone.now_for_db()
+    outbox = SystemOutbox(
+        operation_domain="HANDLING",
+        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+        dispatch_key="non-http-exhausted-without-attempt",
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="core",
+        provider_profile_identity="test.non-http.v1",
+        operation_identity="test.internal_signal",
+        payload_json={},
+        status=SystemOutboxStatus.DISPATCHING,
+        attempt_count=2,
+        lease_owner_token="missing-attempt-owner",
+        lease_expires_at=now - timedelta(seconds=1),
+    )
+    db_session.add(outbox)
+    await db_session.commit()
+
+    with pytest.raises(RuntimeError, match="active dispatch attempt is missing"):
+        await NonHttpLeaseExhaustionService().fence_exhausted_leases(
+            db_session,
+            repository=SystemOutboxRepository(),
+            bucket=DispatchBucketKey("test.non-http.v1", "test.internal_signal"),
+            retry_budget=2,
+            now=now,
+        )
+    await db_session.refresh(outbox)
+
+    assert outbox.status is SystemOutboxStatus.DISPATCHING
+    assert outbox.finished_at is None
+    assert outbox.lease_expires_at == now - timedelta(seconds=1)
 
 
 @pytest.mark.asyncio

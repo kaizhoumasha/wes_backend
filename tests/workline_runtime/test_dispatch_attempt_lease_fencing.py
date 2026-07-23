@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from src.app.device.models.command import DeviceCommand
-from src.app.runtime.orchestration.models.dispatch_attempt import DispatchAttemptStatus
+from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.services.inbox import dispatch_attempt_service as attempt_service_module
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import WorklineDispatchAttemptService
 from src.app.sys.models.outbox import (

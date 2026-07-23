@@ -12,9 +12,8 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.app.runtime.orchestration.models.dispatch_attempt import DispatchAttemptStatus
+from src.app.effect_ledger_status import DispatchAttemptStatus, SystemOutboxStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
-from src.app.sys.models.outbox import SystemOutboxStatus
 
 
 class EffectReducerEventType(str, Enum):
@@ -45,6 +44,7 @@ RUNTIME_INTENT_TRANSITIONS = MappingProxyType(
                 RuntimeIntentStatus.REJECTED,
                 RuntimeIntentStatus.TECHNICAL_FAILED,
                 RuntimeIntentStatus.UNKNOWN,
+                RuntimeIntentStatus.RECONCILING,
             }
         ),
         RuntimeIntentStatus.ACCEPTED: frozenset(
