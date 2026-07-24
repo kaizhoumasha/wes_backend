@@ -149,7 +149,8 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     assert outbox.target_snapshot_json["url"] == ("https://wms-v1.example/api/wes/fulfillment/full-box-exchange")
     assert outbox.provider_profile_identity == "wms.2026-07-06.material-flow.sandbox"
     assert outbox.canonical_payload_bytes == (
-        b'{"empty_box_id":"EMPTY-001","full_box_id":"FULL-001","rack_id":"RACK-001"}'
+        b'{"dispatch_key":"wms-full-box-exchange:WMS:RACK-001:EMPTY-001:FULL-001","empty_box_id":"EMPTY-001",'
+        b'"full_box_id":"FULL-001","rack_id":"RACK-001"}'
     )
     assert pair_repository.calls == [(db, intent_log, outbox)]
 

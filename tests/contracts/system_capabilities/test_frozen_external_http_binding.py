@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -156,8 +157,8 @@ def test_runtime_profiles_allow_sandbox_http_and_reject_production_http(
 
     assert plugin_binding.provider_profile_identity == "workline.plugin-runtime.v1.sandbox"
     assert legacy_binding.provider_profile_identity == "wms.legacy-transport.sandbox"
-    monkeypatch.setenv("WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1", "plugin-sandbox-secret")
-    monkeypatch.setenv("WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1", "legacy-sandbox-secret")
+    monkeypatch.setattr(settings, "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1", "plugin-sandbox-secret")
+    monkeypatch.setattr(settings, "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1", "legacy-sandbox-secret")
     credential_provider = build_environment_external_http_credential_provider()
     assert credential_provider.resolve(plugin_binding.credential_reference) == b"plugin-sandbox-secret"
     assert credential_provider.resolve(legacy_binding.credential_reference) == b"legacy-sandbox-secret"
@@ -178,9 +179,9 @@ def test_runtime_profiles_allow_sandbox_http_and_reject_production_http(
 
 def test_secret_provider_resolves_exact_version_and_revocation_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     reference = "secret://wms/effect-hmac@v1"
-    monkeypatch.setenv("WMS_EFFECT_HMAC_SECRET_V1", "never-persist-this-secret")
     provider = EnvironmentVersionedCredentialProvider(
         reference_env_names={reference: "WMS_EFFECT_HMAC_SECRET_V1"},
+        settings_source=SimpleNamespace(WMS_EFFECT_HMAC_SECRET_V1="never-persist-this-secret"),
     )
 
     assert provider.resolve(reference) == b"never-persist-this-secret"
@@ -197,15 +198,31 @@ def test_secret_provider_resolves_exact_version_and_revocation_wins(monkeypatch:
 def test_default_environment_provider_reads_explicit_mapping_and_revocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.app.sys.external_http_credentials import build_environment_external_http_credential_provider
+    from src.app.sys import external_http_credentials
 
     reference = "secret://wms/legacy-transport-production-hmac@v1"
-    monkeypatch.setenv("WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1", "resolved-secret")
-    provider = build_environment_external_http_credential_provider()
+    monkeypatch.delenv("WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1", raising=False)
+    monkeypatch.setattr(
+        external_http_credentials,
+        "settings",
+        SimpleNamespace(
+            WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
+            WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES="",
+        ),
+        raising=False,
+    )
+    provider = external_http_credentials.build_environment_external_http_credential_provider()
     assert provider.resolve(reference) == b"resolved-secret"
 
-    monkeypatch.setenv("WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES", reference)
-    revoked_provider = build_environment_external_http_credential_provider()
+    monkeypatch.setattr(
+        external_http_credentials,
+        "settings",
+        SimpleNamespace(
+            WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
+            WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES=reference,
+        ),
+    )
+    revoked_provider = external_http_credentials.build_environment_external_http_credential_provider()
     with pytest.raises(CredentialRevokedError):
         revoked_provider.resolve(reference)
 
@@ -213,7 +230,10 @@ def test_default_environment_provider_reads_explicit_mapping_and_revocation(
 def test_environment_provider_freezes_credential_allowlist() -> None:
     reference = "secret://wms/effect-hmac@v1"
     source = {reference: "WMS_EFFECT_HMAC_SECRET_V1"}
-    provider = EnvironmentVersionedCredentialProvider(reference_env_names=source)
+    provider = EnvironmentVersionedCredentialProvider(
+        reference_env_names=source,
+        settings_source=SimpleNamespace(WMS_EFFECT_HMAC_SECRET_V1="secret"),
+    )
     source[reference] = "ATTACKER_CONTROLLED_ENV"
 
     assert provider.reference_env_names[reference] == "WMS_EFFECT_HMAC_SECRET_V1"

@@ -143,7 +143,8 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     assert outbox.target_snapshot_json["url"] == "https://wms-v1.example/api/wes/inventory/confirm-inbound"
     assert outbox.provider_profile_identity == "wms.2026-07-06.material-flow.sandbox"
     assert outbox.canonical_payload_bytes == (
-        b'{"inbound_key":"PKG-001","lot_no":"LOT-01","material_code":"MAT-001",'
+        b'{"dispatch_key":"wms-confirm-inbound:WMS:PKG-001","inbound_key":"PKG-001","lot_no":"LOT-01",'
+        b'"material_code":"MAT-001",'
         b'"owner_code":"OWNER-01","quantity":"1.25","warehouse_code":"WH-01"}'
     )
     assert pair_repository.calls == [(db, intent_log, outbox)]

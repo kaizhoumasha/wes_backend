@@ -30,6 +30,7 @@ class NotifyPackageBindingDispatchGateway:
         frozen_binding: FrozenExternalHttpBinding | None = None,
     ) -> DispatchEnvelope:
         payload_json = {
+            "dispatch_key": request.dispatch_key,
             "package_id": request.package_id,
             "pallet_id": request.pallet_id,
             "station_code": request.station_code,

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+
+from src.core.conf import settings
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -96,9 +97,10 @@ class AuditedVersionedCredentialProvider:
 
 @dataclass(frozen=True, slots=True)
 class EnvironmentVersionedCredentialProvider:
-    """由 allowlist 将版本化 reference 精确映射到单个环境变量。"""
+    """由 allowlist 将版本化 reference 精确映射到 Settings 字段。"""
 
     reference_env_names: Mapping[str, str]
+    settings_source: Any = field(repr=False)
     revoked_references: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
@@ -111,7 +113,7 @@ class EnvironmentVersionedCredentialProvider:
         env_name = self.reference_env_names.get(credential_reference)
         if env_name is None:
             raise CredentialResolutionError("CREDENTIAL_NOT_CONFIGURED", "credential reference is not configured")
-        secret = os.getenv(env_name)
+        secret = getattr(self.settings_source, env_name, "")
         if secret is None or not secret:
             raise CredentialResolutionError("CREDENTIAL_UNAVAILABLE", "credential material is unavailable")
         return secret.encode("utf-8")
@@ -126,15 +128,21 @@ def _emit_credential_resolution_audit(event: CredentialResolutionAudit) -> None:
     )
 
 
-def build_environment_external_http_credential_provider() -> AuditedVersionedCredentialProvider:
+def build_environment_external_http_credential_provider(
+    *, settings_source: Any | None = None
+) -> AuditedVersionedCredentialProvider:
     """从显式 allowlist 与紧急撤销清单构建 effect secret provider。"""
 
+    active_settings = settings if settings_source is None else settings_source
     revoked_references = frozenset(
-        reference.strip() for reference in os.getenv(_REVOKED_REFERENCES_ENV, "").split(",") if reference.strip()
+        reference.strip()
+        for reference in getattr(active_settings, _REVOKED_REFERENCES_ENV, "").split(",")
+        if reference.strip()
     )
     return AuditedVersionedCredentialProvider(
         EnvironmentVersionedCredentialProvider(
             reference_env_names=EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE,
+            settings_source=active_settings,
             revoked_references=revoked_references,
         ),
         provider_kind="environment",

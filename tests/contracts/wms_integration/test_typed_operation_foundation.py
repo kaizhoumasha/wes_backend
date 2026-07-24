@@ -10,6 +10,7 @@ from types import MappingProxyType
 import pytest
 from pydantic import ValidationError
 
+from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.app.runtime.system_capabilities.wms.contracts import (
     InboundCallbackContract,
     WmsProviderProfile,
@@ -116,7 +117,12 @@ def test_query_response_accepts_explicit_empty_items(response_model: type) -> No
                 "quantity": Decimal("1.250"),
                 "warehouse_code": None,
             },
-            {"inbound_key": "IN-001", "material_code": "MAT-001", "quantity": "1.250"},
+            {
+                "dispatch_key": "inbound:001",
+                "inbound_key": "IN-001",
+                "material_code": "MAT-001",
+                "quantity": "1.250",
+            },
         ),
         (
             NotifyPackageBindingDispatchGateway,
@@ -128,7 +134,12 @@ def test_query_response_accepts_explicit_empty_items(response_model: type) -> No
                 "pallet_id": "PLT-001",
                 "station_code": "ST-A",
             },
-            {"package_id": "PKG-001", "pallet_id": "PLT-001", "station_code": "ST-A"},
+            {
+                "dispatch_key": "binding:001",
+                "package_id": "PKG-001",
+                "pallet_id": "PLT-001",
+                "station_code": "ST-A",
+            },
         ),
         (
             FullBoxExchangeDispatchGateway,
@@ -140,7 +151,12 @@ def test_query_response_accepts_explicit_empty_items(response_model: type) -> No
                 "empty_box_id": "EMPTY-001",
                 "full_box_id": "FULL-001",
             },
-            {"rack_id": "RACK-001", "empty_box_id": "EMPTY-001", "full_box_id": "FULL-001"},
+            {
+                "dispatch_key": "exchange:001",
+                "rack_id": "RACK-001",
+                "empty_box_id": "EMPTY-001",
+                "full_box_id": "FULL-001",
+            },
         ),
     ],
 )
@@ -155,7 +171,7 @@ def test_each_effect_gateway_maps_typed_request_to_dispatch_envelope_once(
     request_kwargs: dict[str, object],
     expected_payload: dict[str, object],
 ) -> None:
-    monkeypatch.setenv("WMS_SYNC_BASE_URL", "http://mock_wms:8011/api/wms")
+    monkeypatch.setattr(provider_catalog.settings, "WMS_SYNC_BASE_URL", "http://mock_wms:8011/api/wms")
     request = request_type(**request_kwargs)
 
     envelope = gateway_type().build_envelope(request)

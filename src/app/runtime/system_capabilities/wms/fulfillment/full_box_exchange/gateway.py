@@ -24,6 +24,7 @@ class FullBoxExchangeDispatchGateway:
 
     def build_envelope(self, request: FullBoxExchangeOperationRequest) -> DispatchEnvelope:
         payload_json = {
+            "dispatch_key": request.dispatch_key,
             "rack_id": request.rack_id,
             "empty_box_id": request.empty_box_id,
             "full_box_id": request.full_box_id,

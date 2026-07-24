@@ -7,11 +7,24 @@ import pytest
 
 from src.app.rack.models import RackTaskType
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxTargetType
+from src.app.sys.services.endpoint_registry import EndpointRegistry
 from src.app.wms_integration.services import DEFAULT_RACK_OPERATION_ENDPOINT, WmsTransportContractService
 
 
+def _transport_service() -> WmsTransportContractService:
+    return WmsTransportContractService(
+        registry=EndpointRegistry(
+            {
+                "WMS_RCS_RACK_OPERATION": "http://wms-rcs/api/wes/rack-operation",
+                "WMS_RCS_BIN_OPERATION": "http://wms-rcs/api/wes/transport-request",
+                "WMS_RCS_FULL_BOX_EXCHANGE": "http://wms-rcs/api/wes/full-box-exchange",
+            }
+        )
+    )
+
+
 def test_transport_contract_builds_rack_task_envelope_without_behavior_drift() -> None:
-    service = WmsTransportContractService()
+    service = _transport_service()
 
     envelope = service.build_rack_task_envelope(
         operation_key="op-001",
@@ -76,7 +89,7 @@ def test_transport_contract_builds_rack_task_envelope_without_behavior_drift() -
     ],
 )
 def test_transport_contract_preserves_rack_callback_types(task_type: str, callback_type: str) -> None:
-    envelope = WmsTransportContractService().build_rack_task_envelope(
+    envelope = _transport_service().build_rack_task_envelope(
         operation_key=f"op-{task_type}",
         operation_type="RACK_TRANSPORT",
         sequence_no=1,
@@ -106,10 +119,10 @@ def test_transport_contract_builds_full_box_handling_payload_without_behavior_dr
     move = _handling_move(
         rack_code="RACK-001",
         rack_slot_code="A",
-        metadata_json={"rack_type": "SINGLE_LAYER", "priority": 8},
+        metadata_json={"rack_release_id": "release-001", "rack_type": "SINGLE_LAYER", "priority": 8},
     )
 
-    envelope = WmsTransportContractService().build_handling_ctu_move_envelope(
+    envelope = _transport_service().build_handling_ctu_move_envelope(
         operation=operation,
         move=move,
         sequence_no=1,
@@ -124,6 +137,7 @@ def test_transport_contract_builds_full_box_handling_payload_without_behavior_dr
     assert payload["exchange_request_code"] == envelope.dispatch_key
     assert payload["callback_type"] == "WMS_FULL_BOX_EXCHANGE_RESULT"
     assert payload["request_type"] == "FULL_BIN_EXCHANGE"
+    assert payload["rack_release_id"] == "release-001"
     assert payload["rack_id"] == "RACK-001"
     assert payload["rack_type"] == "SINGLE_LAYER"
     assert payload["rack_slot_code"] == "A"
@@ -146,7 +160,7 @@ def test_transport_contract_builds_bin_move_payload_and_drops_none_values() -> N
         metadata_json={},
     )
 
-    envelope = WmsTransportContractService().build_handling_ctu_move_envelope(
+    envelope = _transport_service().build_handling_ctu_move_envelope(
         operation=operation,
         move=move,
         sequence_no=3,
@@ -164,7 +178,7 @@ def test_transport_contract_builds_bin_move_payload_and_drops_none_values() -> N
 
 
 def test_transport_contract_builds_single_layer_rack_operation_with_wms_authority() -> None:
-    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+    contract = _transport_service().build_single_layer_rack_operation_request(
         business_demand_key="WMS-DEMAND-001",
         workline_code="WL-SMT-01",
         endpoint_code="SINGLE_LAYER_A",
@@ -209,7 +223,7 @@ def test_transport_contract_builds_single_layer_rack_operation_with_wms_authorit
 
 def test_transport_contract_rejects_non_single_layer_rack_kind_for_single_layer_builder() -> None:
     with pytest.raises(ValueError, match="rack_kind must be SINGLE_LAYER"):
-        WmsTransportContractService().build_single_layer_rack_operation_request(
+        _transport_service().build_single_layer_rack_operation_request(
             business_demand_key="WMS-DEMAND-001",
             workline_code="WL-SMT-01",
             endpoint_code="TARGET_STATION",
@@ -222,7 +236,7 @@ def test_transport_contract_rejects_non_single_layer_rack_kind_for_single_layer_
 
 
 def test_transport_contract_preserves_stable_dispatch_key() -> None:
-    service = WmsTransportContractService()
+    service = _transport_service()
 
     first = service.build_single_layer_rack_operation_request(
         business_demand_key="WMS-DEMAND-001",
@@ -275,7 +289,7 @@ def test_transport_contract_preserves_stable_dispatch_key() -> None:
 
 
 def test_transport_contract_allows_wms_allocated_single_layer_rack_request() -> None:
-    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+    contract = _transport_service().build_single_layer_rack_operation_request(
         business_demand_key="WMS-DEMAND-ALLOCATE-001",
         workline_code="WL-SMT-01",
         endpoint_code="SOURCE_STATION_A",
@@ -292,7 +306,7 @@ def test_transport_contract_allows_wms_allocated_single_layer_rack_request() -> 
 
 
 def test_transport_contract_rejects_direct_device_fields_recursively() -> None:
-    service = WmsTransportContractService()
+    service = _transport_service()
 
     for forbidden_key in ("rcs_url", "rcs_path", "agv_id", "ctu_id", "vehicle_id", "physical_coordinate"):
         with pytest.raises(ValueError, match=forbidden_key):
@@ -312,7 +326,7 @@ def test_transport_contract_rejects_direct_device_fields_recursively() -> None:
 
 
 def test_transport_contract_task_request_json_cannot_override_authority_fields() -> None:
-    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+    contract = _transport_service().build_single_layer_rack_operation_request(
         business_demand_key="WMS-DEMAND-001",
         workline_code="WL-SMT-01",
         endpoint_code="SINGLE_LAYER_A",
@@ -346,7 +360,7 @@ def test_transport_contract_task_request_json_cannot_override_authority_fields()
 
 def test_transport_contract_rejects_url_target_code_case_insensitively() -> None:
     with pytest.raises(ValueError, match="logical endpoint code"):
-        WmsTransportContractService().build_single_layer_rack_operation_request(
+        _transport_service().build_single_layer_rack_operation_request(
             business_demand_key="WMS-DEMAND-001",
             workline_code="WL-SMT-01",
             endpoint_code="SINGLE_LAYER_A",
@@ -364,7 +378,7 @@ def test_transport_contract_deep_copies_payload() -> None:
         "rack_tasks": [_single_layer_supply_task()],
         "station": {"position_code": "SINGLE_LAYER_A"},
     }
-    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+    contract = _transport_service().build_single_layer_rack_operation_request(
         business_demand_key="WMS-DEMAND-001",
         workline_code="WL-SMT-01",
         endpoint_code="SINGLE_LAYER_A",

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from time import monotonic
 from unittest.mock import AsyncMock
@@ -11,6 +12,8 @@ from src.app.runtime.orchestration.sandbox_catalog_bridge import (
     mock_wms_inventory_seed,
     rough_sorter_scan_completed_payload,
 )
+from src.app.wms_integration.services.callback_normalizer import WmsExecutionCallbackNormalizer
+from src.core.api_security import calculate_body_hmac_signature
 from tests.mock import wms_mock_server
 
 
@@ -233,6 +236,199 @@ def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> No
     } == {"1", "2", "7"}
     assert {mount["rack_slot_code"] for mount in callback_payload["bin_mounts"]} == {"A", "B", "C", "D"}
     assert callback_payload["bin_mounts"][0]["bin_code"] == "BIN-001"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "callback_type", "expected_data"),
+    (
+        (
+            "/api/wms/inventory/confirm-inbound",
+            {
+                "dispatch_key": "confirm-inbound-001",
+                "inbound_key": "INBOUND-001",
+                "material_code": "MAT-001",
+                "quantity": "1",
+            },
+            "WMS_INBOUND_CONFIRMED",
+            {
+                "dispatch_key": "confirm-inbound-001",
+                "inbound_key": "INBOUND-001",
+                "accepted": True,
+                "source_version": "mock-wms.v1",
+            },
+        ),
+        (
+            "/api/wms/fulfillment/package-binding",
+            {
+                "dispatch_key": "package-binding-001",
+                "provider_code": "WMS",
+                "package_id": "PKG-001",
+                "pallet_id": "PALLET-001",
+                "station_code": "STATION-001",
+            },
+            "WMS_PACKAGE_BOUND",
+            {
+                "dispatch_key": "package-binding-001",
+                "package_id": "PKG-001",
+                "pallet_id": "PALLET-001",
+                "accepted": True,
+                "source_version": "mock-wms.v1",
+            },
+        ),
+        (
+            "/api/wms/fulfillment/full-box-exchange",
+            {
+                "dispatch_key": "full-box-001",
+                "provider_code": "WMS",
+                "rack_id": "RACK-001",
+                "empty_box_id": "EMPTY-001",
+                "full_box_id": "FULL-001",
+            },
+            "WMS_FULL_BOX_EXCHANGE_COMPLETED",
+            {
+                "dispatch_key": "full-box-001",
+                "rack_id": "RACK-001",
+                "empty_box_id": "EMPTY-001",
+                "full_box_id": "FULL-001",
+                "accepted": True,
+                "exchange_request_code": "full-box-001",
+                "source_version": "mock-wms.v1",
+            },
+        ),
+    ),
+)
+def test_wms_mock_typed_effect_routes_deliver_declared_callback(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    payload: dict[str, object],
+    callback_type: str,
+    expected_data: dict[str, object],
+) -> None:
+    mock_post_callback = AsyncMock(return_value={"delivered": True})
+    monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 200
+    mock_post_callback.assert_awaited_once()
+    callback_payload = mock_post_callback.await_args.args[1]
+    assert callback_payload["callback_type"] == callback_type
+    assert callback_payload["source_system"] == "WMS"
+    assert callback_payload["source_event_id"].startswith("wms-mock:typed-effect:")
+    assert callback_payload["data"] == expected_data
+
+
+@pytest.mark.asyncio
+async def test_wms_mock_callback_sender_uses_authenticated_canonical_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        status_code = 200
+        text = "ok"
+
+    class _Client:
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(self, url: str, *, content: bytes, headers: dict[str, str]) -> _Response:
+            captured.update(url=url, content=content, headers=headers)
+            return _Response()
+
+    monkeypatch.setattr(wms_mock_server, "CALLBACK_API_APP_ID", "app-wms-mock")
+    monkeypatch.setattr(wms_mock_server, "CALLBACK_API_APP_SECRET", "secret-wms-mock")
+    monkeypatch.setattr(wms_mock_server.httpx, "AsyncClient", lambda **_kwargs: _Client())
+    payload = {"callback_type": "WMS_INBOUND_CONFIRMED", "data": {"dispatch_key": "dispatch-001"}}
+
+    result = await wms_mock_server._post_callback(
+        "http://api:8001/api/v1/callback/external",
+        payload,
+    )
+
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert result == {"delivered": True, "status_code": 200, "response_text": "ok"}
+    assert captured["content"] == body
+    assert headers["X-App-ID"] == "app-wms-mock"
+    assert headers["X-Body-SHA256"] == wms_mock_server.hashlib.sha256(body).hexdigest()
+    assert headers["X-Signature"] == calculate_body_hmac_signature(
+        app_secret="secret-wms-mock",
+        method="POST",
+        path="/api/v1/callback/external",
+        timestamp=headers["X-Timestamp"],
+        nonce=headers["X-Nonce"],
+        body_sha256=headers["X-Body-SHA256"],
+        app_id=headers["X-App-ID"],
+    )
+
+
+def test_wms_mock_bin_transport_route_delivers_completion_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_post_callback = AsyncMock(return_value={"delivered": True})
+    monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
+    payload = {
+        "dispatch_key": "handling:bin-op-001:move:1",
+        "callback_type": "WMS_TRANSPORT_COMPLETED",
+        "operation_key": "bin-op-001",
+        "trace_id": "trace-bin-op-001",
+    }
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/wms/transport-request", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["accepted"] is True
+    mock_post_callback.assert_awaited_once()
+    callback_payload = mock_post_callback.await_args.args[1]
+    assert callback_payload["callback_type"] == "WMS_TRANSPORT_COMPLETED"
+    assert callback_payload["dispatch_key"] == payload["dispatch_key"]
+    assert callback_payload["status"] == "SUCCESS"
+    assert set(callback_payload) == {
+        "callback_type",
+        "dispatch_key",
+        "exchange_request_code",
+        "exchange_status",
+        "source_event_id",
+        "source_system",
+        "source_version",
+        "status",
+        "occurred_at",
+        "request_id",
+        "signature",
+        "timestamp",
+        "trace_id",
+        "wms_rcs_task_id",
+    }
+
+
+def test_wms_mock_full_box_route_delivers_legacy_handling_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_post_callback = AsyncMock(return_value={"delivered": True})
+    monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
+    payload = {
+        "dispatch_key": "handling:full-box-001:move:1",
+        "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "operation_key": "full-box-001",
+        "trace_id": "trace-full-box-001",
+        "rack_id": "RACK-001",
+        "rack_release_id": "release-001",
+    }
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/wms/fulfillment/full-box-exchange", json=payload)
+
+    assert response.status_code == 200
+    mock_post_callback.assert_awaited_once()
+    callback_payload = mock_post_callback.await_args.args[1]
+    assert callback_payload["callback_type"] == "WMS_FULL_BOX_EXCHANGE_RESULT"
+    assert callback_payload["dispatch_key"] == payload["dispatch_key"]
+    assert callback_payload["exchange_status"] == "BUSINESS_COMPLETED"
+    assert callback_payload["rack_release_id"] == payload["rack_release_id"]
+    assert "data" not in callback_payload
+    normalized = WmsExecutionCallbackNormalizer().normalize(callback_payload)
+    assert normalized["payload"]["exchange_status"] == "BUSINESS_COMPLETED"
 
 
 def _rack_allocate_payload(

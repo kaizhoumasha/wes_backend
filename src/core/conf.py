@@ -89,6 +89,23 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     runtime_inbox_payload_max_bytes: int = Field(default=1024 * 1024, ge=1)
 
+    # ==================== 北向 Transport 配置 ====================
+
+    WMS_SYNC_BASE_URL: str = ""
+    WMS_RCS_RACK_OPERATION_URL: str = ""
+    WMS_RCS_BIN_OPERATION_URL: str = ""
+    WMS_RCS_FULL_BOX_EXCHANGE_URL: str = ""
+    WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WORKLINE_PLUGIN_RUNTIME_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES: str = ""
+
     # ==================== 日志配置 ====================
 
     LOG_LEVEL: str = "INFO"

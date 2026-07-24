@@ -37,6 +37,7 @@ from src.app.wms_integration.services import (
     WmsCircuitBreakerService,
 )
 from src.app.workline.models.workline import WorkLine
+from src.core.conf import settings
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
     seed_scan_flow,
@@ -132,7 +133,7 @@ async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_
             "src.app.wms_integration.runtime_factory.build_inventory_query_port_factory",
             _inventory_query_port_factory_builder(session_factory, http_calls),
         )
-        monkeypatch.setenv("WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1", "performance-fixture-secret")
+        monkeypatch.setattr(settings, "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1", "performance-fixture-secret")
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
             service = RuntimeInboxService()

@@ -46,21 +46,23 @@ def setup_function() -> None:
     wms_mock_server.reset_mock_wms_state()
 
 
-def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_transaction() -> None:
+def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_transaction(monkeypatch) -> None:
     """PKG binding 走 fulfillment mock，库存事务走 inventory mock。"""
 
+    monkeypatch.setattr(wms_mock_server.httpx, "AsyncClient", _CapturingAsyncClient)
     with TestClient(wms_mock_server.app) as client:
         binding_response = client.post(
-            "/api/wes/fulfillment/package-binding",
+            "/api/wms/fulfillment/package-binding",
             json={
-                "request_id": "mock-sorter-binding-001",
+                "dispatch_key": "mock-sorter-binding-001",
+                "provider_code": "WMS",
                 "package_id": "PKG-CAP001-LOT-A-001",
                 "pallet_id": "PALLET-A",
                 "station_code": "SORTER-STATION-A",
             },
         )
         inventory_response = client.post(
-            "/api/wes/inventory/confirm-inbound",
+            "/api/wms/inventory/confirm-inbound",
             json={
                 "dispatch_key": "wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
                 "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",

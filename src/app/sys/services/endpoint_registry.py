@@ -2,21 +2,40 @@
 
 from __future__ import annotations
 
-import os
-from typing import TYPE_CHECKING
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from src.app.sys.canonical_dispatch import EndpointDefinition
+from src.core.conf import settings
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
+ENDPOINT_SETTING_BY_TARGET_CODE = MappingProxyType(
+    {
+        "WMS_RCS_RACK_OPERATION": "WMS_RCS_RACK_OPERATION_URL",
+        "WMS_RCS_BIN_OPERATION": "WMS_RCS_BIN_OPERATION_URL",
+        "WMS_RCS_FULL_BOX_EXCHANGE": "WMS_RCS_FULL_BOX_EXCHANGE_URL",
+    }
+)
+
+
 class EndpointRegistry:
     """解析逻辑 endpoint code，拒绝未注册目标和裸 URL。"""
 
-    def __init__(self, endpoints: Mapping[str, str] | None = None) -> None:
-        self._endpoints = dict(endpoints or _load_env_endpoints())
+    def __init__(
+        self,
+        endpoints: Mapping[str, str] | None = None,
+        *,
+        settings_source: Any | None = None,
+    ) -> None:
+        self._endpoints = dict(
+            endpoints
+            if endpoints is not None
+            else _load_env_endpoints(settings if settings_source is None else settings_source)
+        )
 
     def resolve(self, target_code: str) -> EndpointDefinition:
         code = _required_target_code(target_code)
@@ -28,14 +47,10 @@ class EndpointRegistry:
         return EndpointDefinition(code=code, url=url)
 
 
-def _load_env_endpoints() -> dict[str, str]:
+def _load_env_endpoints(settings_source: Any) -> dict[str, str]:
     endpoints = {
-        "WMS_RCS_RACK_OPERATION": os.getenv("WMS_RCS_RACK_OPERATION_URL", "http://wms-rcs/api/wes/rack-operation"),
-        "WMS_RCS_BIN_OPERATION": os.getenv("WMS_RCS_BIN_OPERATION_URL", "http://wms-rcs/api/wes/transport-request"),
-        "WMS_RCS_FULL_BOX_EXCHANGE": os.getenv(
-            "WMS_RCS_FULL_BOX_EXCHANGE_URL",
-            os.getenv("WMS_RCS_BIN_OPERATION_URL", "http://wms-rcs/api/wes/transport-request"),
-        ),
+        target_code: getattr(settings_source, setting_name)
+        for target_code, setting_name in ENDPOINT_SETTING_BY_TARGET_CODE.items()
     }
     return {key: value for key, value in endpoints.items() if value and value.strip()}
 
@@ -54,4 +69,4 @@ def _looks_like_url(value: str) -> bool:
 
 endpoint_registry = EndpointRegistry()
 
-__all__ = ["EndpointDefinition", "EndpointRegistry", "endpoint_registry"]
+__all__ = ["ENDPOINT_SETTING_BY_TARGET_CODE", "EndpointDefinition", "EndpointRegistry", "endpoint_registry"]

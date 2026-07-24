@@ -102,6 +102,9 @@ def freeze_legacy_transport_binding(
 class WmsTransportContractService:
     """构造 WMS/RCS 运输类请求合同。"""
 
+    def __init__(self, *, registry: EndpointRegistry = endpoint_registry) -> None:
+        self._registry = registry
+
     def build_single_layer_rack_operation_request(
         self,
         *,
@@ -263,6 +266,7 @@ class WmsTransportContractService:
         frozen_binding = freeze_legacy_transport_binding(
             operation_identity="wms.transport.rack@v1",
             target_code=request.target_code,
+            registry=self._registry,
         )
         return DispatchEnvelope(
             dispatch_key=request.dispatch_key,
@@ -313,6 +317,7 @@ class WmsTransportContractService:
                 "placeholder_key": getattr(move, "placeholder_key", None),
                 "candidate_authorized_bin_ids": getattr(move, "candidate_authorized_bin_ids", None),
                 "rack_id": getattr(move, "rack_code", None) or metadata.get("rack_id"),
+                "rack_release_id": metadata.get("rack_release_id"),
                 "rack_type": metadata.get("rack_type"),
                 "rack_slot_code": getattr(move, "rack_slot_code", None) or metadata.get("rack_slot_code"),
                 "from_location": move.source_code,
@@ -337,6 +342,7 @@ class WmsTransportContractService:
         frozen_binding = freeze_legacy_transport_binding(
             operation_identity="wms.transport.handling@v1",
             target_code=target_code,
+            registry=self._registry,
         )
         return DispatchEnvelope(
             dispatch_key=dispatch_key,

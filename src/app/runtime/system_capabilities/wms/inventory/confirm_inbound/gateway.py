@@ -30,6 +30,7 @@ class ConfirmInboundDispatchGateway:
         frozen_binding: FrozenExternalHttpBinding | None = None,
     ) -> DispatchEnvelope:
         payload = {
+            "dispatch_key": request.dispatch_key,
             "inbound_key": request.inbound_key,
             "material_code": request.material_code,
             "quantity": str(request.quantity),

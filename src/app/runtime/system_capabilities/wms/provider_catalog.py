@@ -1,6 +1,5 @@
 """WMS Provider profile 与 typed operation 的 author-time 组合真源。"""
 
-import os
 from types import MappingProxyType
 
 from src.app.runtime.orchestration.operation_observability import require_northbound_operation_slo
@@ -44,8 +43,9 @@ from src.app.sys.external_http_credentials import (
     CredentialResolutionError,
     build_environment_external_http_credential_provider,
 )
-from src.app.sys.services.endpoint_registry import EndpointRegistry
+from src.app.sys.services.endpoint_registry import ENDPOINT_SETTING_BY_TARGET_CODE, EndpointRegistry
 from src.app.wms_integration.transport_url import validate_wms_base_url
+from src.core.conf import settings
 from src.utils.value_normalization import runtime_profile_environment
 
 
@@ -101,12 +101,17 @@ WMS_PROVIDER_PROFILE = WMS_PROVIDER_PROFILES[f"wms.{WMS_MATERIAL_FLOW_CONTRACT_V
 WMS_NORTHBOUND_IDENTITY = WMS_PROVIDER_PROFILE.identity
 WMS_NORTHBOUND_AUTH = WMS_PROVIDER_PROFILE.bindings[0].outbound_auth
 WMS_TYPED_EFFECT_CALLBACK_TYPES = frozenset(callback.callback_type for callback in WMS_PROVIDER_PROFILE.callbacks)
+_ACTIVE_EXTERNAL_HTTP_CREDENTIAL_REFERENCE_TEMPLATES = (
+    "secret://wms/material-flow-{environment}-hmac@v1",
+    "secret://wms/legacy-transport-{environment}-hmac@v1",
+    "secret://workline/plugin-runtime-{environment}-hmac@v1",
+)
 
 
 def wms_sync_base_url() -> str:
     """返回 typed WMS operation 共用的唯一同步服务根地址。"""
 
-    base_url = (os.getenv("WMS_SYNC_BASE_URL") or "").strip().rstrip("/")
+    base_url = settings.WMS_SYNC_BASE_URL.strip().rstrip("/")
     if not base_url:
         raise ValueError("WMS_SYNC_BASE_URL 必须显式配置")
     return base_url
@@ -121,12 +126,24 @@ def validate_wms_transport_configuration(*, app_env: object) -> None:
     if environment == "production" and parsed.scheme.lower() != "https":
         raise ValueError("production WMS_SYNC_BASE_URL 必须使用 HTTPS")
 
-    credential_reference = f"secret://wms/material-flow-{environment}-hmac@v1"
-    env_name = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[credential_reference]
-    try:
-        build_environment_external_http_credential_provider().resolve(credential_reference)
-    except (CredentialResolutionError, LookupError) as exc:
-        raise ValueError(f"{env_name} 必须为活动 WMS profile 显式配置且未被撤销") from exc
+    endpoint_registry = EndpointRegistry(settings_source=settings)
+    for target_code, setting_name in ENDPOINT_SETTING_BY_TARGET_CODE.items():
+        try:
+            endpoint = endpoint_registry.resolve(target_code)
+            parsed_endpoint = validate_wms_base_url(endpoint.url)
+        except ValueError as exc:
+            raise ValueError(f"{setting_name} 必须为活动运行环境显式配置为合法 HTTP(S) endpoint") from exc
+        if environment == "production" and parsed_endpoint.scheme.lower() != "https":
+            raise ValueError(f"production {setting_name} 必须使用 HTTPS")
+
+    credential_provider = build_environment_external_http_credential_provider(settings_source=settings)
+    for reference_template in _ACTIVE_EXTERNAL_HTTP_CREDENTIAL_REFERENCE_TEMPLATES:
+        credential_reference = reference_template.format(environment=environment)
+        env_name = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[credential_reference]
+        try:
+            credential_provider.resolve(credential_reference)
+        except (CredentialResolutionError, LookupError) as exc:
+            raise ValueError(f"{env_name} 必须为活动运行环境显式配置且未被撤销") from exc
 
 
 def _typed_wms_endpoint_registry(profile: WmsProviderProfile) -> EndpointRegistry:
