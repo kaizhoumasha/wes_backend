@@ -33,4 +33,4 @@ async def test_platform_snapshot_includes_query_operation_without_runtime_rows()
     query_rows = tuple(row for row in rows if row.operation_identity == _QUERY_OPERATION)
     assert len(query_rows) == 1
     assert query_rows[0].provider_profile_identity.endswith(".sandbox")
-    assert query_rows[0].readiness == "UNKNOWN"
+    assert query_rows[0].mode == "QUERY"

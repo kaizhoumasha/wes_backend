@@ -56,6 +56,7 @@ async def test_northbound_operations_route_delegates_only_to_query_service(
         workline_id=7,
     )
     assert response["data"] == snapshot
+    assert "readiness" not in snapshot.model_dump_json()
 
 
 def test_northbound_operational_principal_uses_authenticated_owner_scope() -> None:

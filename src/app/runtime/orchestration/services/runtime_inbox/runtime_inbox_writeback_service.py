@@ -637,17 +637,6 @@ class RuntimeInboxWriteBackService:
         except Exception:
             await db.rollback()
             raise
-        # expected 已随 QUERY evidence 在上面的事务提交。队列只携带引用式 comparison，
-        # enqueue/store 故障不得反转生产动作；readiness 会从 evidence 对账识别缺口并重置窗口。
-        for comparison in write_set.shadow_comparisons:
-            try:
-                self._queue_gateway.enqueue_query_shadow_comparison(comparison.task_payload())
-            except Exception as exc:  # pragma: no cover - 日志 backend/queue 故障不反向破坏主事务
-                logger.error(
-                    "QUERY shadow comparison enqueue 失败，readiness 将由 expected/stored gap 失效: "
-                    f"comparison_key={getattr(getattr(comparison, 'expected', None), 'comparison_key', None)}, "
-                    f"error={type(exc).__name__}"
-                )
         return WriteDisposition.COMMITTED
 
     def build_write_callback(

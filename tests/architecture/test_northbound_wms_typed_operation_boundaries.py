@@ -177,3 +177,35 @@ def test_endpoint_or_secret_rotation_does_not_change_active_provider_identity() 
         catalog.build_active_wms_provider_profile(first).identity
         == catalog.build_active_wms_provider_profile(rotated).identity
     )
+
+
+def test_query_shadow_readiness_platform_is_absent_from_production_source() -> None:
+    capability_root = REPO_ROOT / "src/app/runtime/system_capabilities"
+    removed_modules = (
+        "shadow_models.py",
+        "shadow_partitioning.py",
+        "shadow_readiness.py",
+        "shadow_repository.py",
+        "shadow_service.py",
+    )
+    assert all(not (capability_root / module).exists() for module in removed_modules)
+
+    production_boundaries = (
+        capability_root / "__init__.py",
+        REPO_ROOT / "src/app/runtime/orchestration/repositories/northbound_operations_repository.py",
+        REPO_ROOT / "src/celery_app/tasks/workline.py",
+        REPO_ROOT / "src/celery_app/config.py",
+        REPO_ROOT / "src/core/task_queue_gateway.py",
+        REPO_ROOT / "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_writeback_service.py",
+        REPO_ROOT / "migrations/env.py",
+    )
+    forbidden = (
+        "QueryShadow",
+        "query_shadow_readiness",
+        "process_query_shadow_comparison",
+        "maintain_query_shadow",
+        "enqueue_query_shadow_comparison",
+    )
+    for path in production_boundaries:
+        source = path.read_text(encoding="utf-8")
+        assert all(term not in source for term in forbidden), path.relative_to(REPO_ROOT)

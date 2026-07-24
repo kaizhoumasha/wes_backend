@@ -25,12 +25,13 @@ class NorthboundOperationalPrincipal:
 
 
 class NorthboundOperationHealth(BaseModel):
-    """只暴露低基数 identity 和聚合 SLI，不暴露行级证据或 payload。"""
+    """只暴露低基数 identity、operation mode 和聚合 SLI，不暴露行级证据或 payload。"""
 
     model_config = ConfigDict(extra="forbid", from_attributes=True, frozen=True)
 
     provider_profile_identity: str = Field(min_length=1, max_length=240)
     operation_identity: str = Field(min_length=1, max_length=240)
+    mode: Literal["QUERY", "EFFECT"]
     backlog_count: int = Field(ge=0)
     active_lease_count: int = Field(ge=0)
     unknown_count: int = Field(ge=0)
@@ -38,7 +39,6 @@ class NorthboundOperationHealth(BaseModel):
     rate_limited_count: int = Field(ge=0)
     lease_loss_count: int = Field(ge=0)
     reconciliation_open_count: int = Field(ge=0)
-    readiness: Literal["READY", "NOT_READY", "INVALID", "UNKNOWN"]
 
 
 class NorthboundOperationalSnapshot(BaseModel):

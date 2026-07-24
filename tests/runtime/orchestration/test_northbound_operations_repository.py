@@ -19,43 +19,12 @@ class _Rows:
         return self._rows
 
 
-class _ReadinessOnlyDatabase:
-    async def execute(self, statement) -> _Rows:
-        sql = str(statement)
-        if "query_shadow_readiness_reports" in sql:
-            return _Rows(((_PRODUCTION_PROFILE, _QUERY_OPERATION, "READY", None, "report-1"),))
-        return _Rows(())
-
-
 class _EvidenceOnlyDatabase:
     async def execute(self, statement) -> _Rows:
         sql = str(statement)
         if "wms_call_evidence" in sql:
             return _Rows(((_PRODUCTION_PROFILE, _QUERY_OPERATION),))
         return _Rows(())
-
-
-async def test_platform_snapshot_includes_query_operation_with_readiness_and_no_outbox() -> None:
-    rows = await NorthboundOperationsRepository().load_snapshot(
-        _ReadinessOnlyDatabase(),
-        tenant_id=None,
-        workline_id=None,
-    )
-
-    assert rows == (
-        NorthboundOperationHealthRow(
-            provider_profile_identity=_PRODUCTION_PROFILE,
-            operation_identity=_QUERY_OPERATION,
-            backlog_count=0,
-            active_lease_count=0,
-            unknown_count=0,
-            oldest_queue_age_seconds=0,
-            rate_limited_count=0,
-            lease_loss_count=0,
-            reconciliation_open_count=0,
-            readiness="READY",
-        ),
-    )
 
 
 async def test_platform_snapshot_includes_query_operation_with_evidence_and_no_outbox() -> None:
@@ -68,4 +37,18 @@ async def test_platform_snapshot_includes_query_operation_with_evidence_and_no_o
     assert len(rows) == 1
     assert rows[0].provider_profile_identity == _PRODUCTION_PROFILE
     assert rows[0].operation_identity == _QUERY_OPERATION
-    assert rows[0].readiness == "UNKNOWN"
+    assert rows[0].mode == "QUERY"
+    assert not hasattr(rows[0], "readiness")
+
+
+async def test_platform_snapshot_has_no_shadow_readiness_query() -> None:
+    database = _EvidenceOnlyDatabase()
+
+    await NorthboundOperationsRepository().load_snapshot(
+        database,
+        tenant_id=None,
+        workline_id=None,
+    )
+
+    # 仓储层只读取基础 operation 观测，不再依赖 shadow readiness 平台。
+    assert "readiness" not in NorthboundOperationHealthRow.__dataclass_fields__

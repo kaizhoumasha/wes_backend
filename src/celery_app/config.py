@@ -50,11 +50,6 @@ beat_schedule: dict[str, dict[str, str | float]] = {
         "task": "src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch",
         "schedule": 30.0,
     },
-    # QUERY shadow comparison 月分区预建与 90 天整月清理。
-    "maintain-query-shadow-partitions": {
-        "task": "src.celery_app.tasks.workline.maintain_query_shadow_partitions",
-        "schedule": 3600.0,
-    },
 }
 
 # ============================================
