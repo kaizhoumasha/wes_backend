@@ -87,6 +87,35 @@ async def test_external_http_frozen_binding_cannot_change_after_insert(
     integration_db_session.add(outbox)
     await integration_db_session.flush()
 
+    outbox.credential_reference = "secret://wms/legacy-transport-production-hmac@v2"
+    with pytest.raises(ValueError, match="scheduling identity persisted fields are immutable"):
+        await integration_db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_external_http_idempotency_key_cannot_change_after_insert(
+    integration_db_session: AsyncSession,
+) -> None:
+    projection = {"request_id": f"IMMUTABLE-IDEMPOTENCY-{uuid4().hex}"}
+    canonical = CanonicalPayload.from_projection(projection)
+    frozen_binding = freeze_legacy_transport_binding(
+        operation_identity="wms.transport.handling@v1",
+        target_code="WMS_RCS_BIN_OPERATION",
+    )
+    outbox = SystemOutbox(
+        **frozen_binding.as_persisted_fields(),
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key=f"idempotency-immutable:{uuid4().hex}",
+        idempotency_key=f"intent:{uuid4().hex}",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        payload_json=projection,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        operation_domain="HANDLING",
+    )
+    integration_db_session.add(outbox)
+    await integration_db_session.flush()
+
     outbox.idempotency_key = f"mutated:{uuid4().hex}"
     with pytest.raises(ValueError, match="scheduling identity persisted fields are immutable"):
         await integration_db_session.flush()

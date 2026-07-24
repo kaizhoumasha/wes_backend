@@ -25,6 +25,7 @@ from src.app.wms_integration.ports.effect_status import (
     build_wms_effect_status_binding,
 )
 from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
+from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
     RecordingConformanceTarget,
@@ -58,6 +59,14 @@ EFFECT_STATUS_REPLAY_FIXTURE = {
 class _EffectStatusConformanceCredentialProvider:
     def resolve(self, _credential_reference: str) -> bytes:
         return b"test-only-effect-status-conformance"
+
+
+class _EffectStatusConformanceEvidenceWriter:
+    async def before_call(self, *, operation_identity: str, target_code: str) -> WmsQueryCallPermit:
+        return WmsQueryCallPermit(allowed=True)
+
+    async def record(self, **_kwargs) -> str:
+        return "status:conformance:evidence"
 
 
 @pytest.mark.asyncio
@@ -193,6 +202,7 @@ async def test_unsigned_effect_status_case_replays_the_same_interaction_contract
     adapter = WmsEffectStatusQueryAdapter(
         binding=binding,
         credential_provider=_EffectStatusConformanceCredentialProvider(),
+        evidence_writer=_EffectStatusConformanceEvidenceWriter(),
         transport=httpx.MockTransport(replay),
         jitter=lambda _upper: 0.0,
         initial_backoff_seconds=1.0,

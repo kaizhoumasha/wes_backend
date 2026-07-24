@@ -177,6 +177,7 @@ def build_effect_status_query_port_factory(
     *,
     binding: FrozenWmsEffectStatusBinding,
     credential_provider: WmsCredentialProvider | None = None,
+    evidence_writer: WmsQueryEvidenceWriter | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     initial_backoff_seconds: float,
     max_backoff_seconds: float,
@@ -189,11 +190,18 @@ def build_effect_status_query_port_factory(
             resolved_credential_provider,
             provider_kind="custom",
         )
+    writer = evidence_writer or WmsCallEvidenceQueryWriter(
+        session_factory=get_db_context,
+        provider_profile_identity=binding.provider_profile_identity,
+        evidence_service=wms_call_evidence_service,
+        breaker_service=wms_circuit_breaker_service,
+    )
 
     def factory() -> WmsEffectStatusQueryPort:
         return WmsEffectStatusQueryAdapter(
             binding=binding,
             credential_provider=resolved_credential_provider,
+            evidence_writer=writer,
             transport=transport,
             initial_backoff_seconds=initial_backoff_seconds,
             max_backoff_seconds=max_backoff_seconds,

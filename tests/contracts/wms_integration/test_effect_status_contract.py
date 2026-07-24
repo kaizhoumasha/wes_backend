@@ -6,11 +6,13 @@ import asyncio
 import inspect
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 from pydantic import ValidationError
 
+from src.app.wms_integration import runtime_factory
 from src.app.wms_integration.adapters import effect_status_query_adapter
 from src.app.wms_integration.adapters.effect_status_query_adapter import (
     WmsEffectStatusQueryAdapter,
@@ -31,8 +33,9 @@ from src.app.wms_integration.ports.effect_status import (
 )
 from src.app.wms_integration.ports.full_box_exchange_operation import FullBoxExchangeOperationResult
 from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
-from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QueryTechnicalFailure
+from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
 from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
+from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
 
 CONFIRM_INBOUND = "wms.inventory.confirm_inbound@v1"
 FULL_BOX_EXCHANGE = "wms.fulfillment.full_box_exchange@v1"
@@ -364,9 +367,41 @@ class _CredentialProvider:
         return b"status-test-secret"
 
 
+class _RecordingStatusEvidenceWriter:
+    def __init__(self, *, permit: WmsQueryCallPermit | None = None) -> None:
+        self.permit = permit or WmsQueryCallPermit(allowed=True)
+        self.before_calls: list[tuple[str, str]] = []
+        self.records: list[dict[str, Any]] = []
+
+    async def before_call(self, *, operation_identity: str, target_code: str) -> WmsQueryCallPermit:
+        self.before_calls.append((operation_identity, target_code))
+        return self.permit
+
+    async def record(
+        self,
+        *,
+        operation_identity: str,
+        target_code: str,
+        request_snapshot: dict[str, object],
+        outcome: object,
+        permit: WmsQueryCallPermit,
+    ) -> str:
+        self.records.append(
+            {
+                "operation_identity": operation_identity,
+                "target_code": target_code,
+                "request_snapshot": request_snapshot,
+                "outcome": outcome,
+                "permit": permit,
+            }
+        )
+        return f"status:{operation_identity}:evidence"
+
+
 @pytest.mark.asyncio
 async def test_adapter_uses_only_frozen_query_key_and_returns_typed_snapshot() -> None:
     requests: list[httpx.Request] = []
+    evidence_writer = _RecordingStatusEvidenceWriter()
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -375,6 +410,7 @@ async def test_adapter_uses_only_frozen_query_key_and_returns_typed_snapshot() -
     adapter = WmsEffectStatusQueryAdapter(
         binding=_binding(),
         credential_provider=_CredentialProvider(),
+        evidence_writer=evidence_writer,
         transport=httpx.MockTransport(handler),
         now=lambda: datetime(2026, 7, 24, tzinfo=UTC),
         nonce_factory=lambda: "status-nonce",
@@ -394,11 +430,14 @@ async def test_adapter_uses_only_frozen_query_key_and_returns_typed_snapshot() -
     }
     assert requests[0].headers["X-WMS-Credential-Reference"].endswith("@v1")
     assert requests[0].headers["X-WMS-Signature"]
+    assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")] * 2
+    assert all(isinstance(record["outcome"], QuerySuccess) for record in evidence_writer.records)
 
 
 @pytest.mark.asyncio
 async def test_runtime_factory_builds_adapter_only_from_frozen_status_binding() -> None:
     observed_urls: list[str] = []
+    evidence_writer = _RecordingStatusEvidenceWriter()
 
     async def handler(request: httpx.Request) -> httpx.Response:
         observed_urls.append(str(request.url.copy_with(query=None)))
@@ -407,6 +446,7 @@ async def test_runtime_factory_builds_adapter_only_from_frozen_status_binding() 
     factory = build_effect_status_query_port_factory(
         binding=_binding(),
         credential_provider=_CredentialProvider(),
+        evidence_writer=evidence_writer,
         transport=httpx.MockTransport(handler),
         initial_backoff_seconds=1.0,
         max_backoff_seconds=8.0,
@@ -416,6 +456,114 @@ async def test_runtime_factory_builds_adapter_only_from_frozen_status_binding() 
 
     assert snapshot.state is WmsEffectStatus.COMPLETED
     assert observed_urls == ["https://wms.example/northbound/operations/status"]
+    assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")]
+
+
+def test_runtime_factory_wires_status_query_to_existing_shared_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    binding = _binding()
+    evidence_writer = _RecordingStatusEvidenceWriter()
+    captured: dict[str, object] = {}
+
+    def build_writer(**kwargs):
+        captured.update(kwargs)
+        return evidence_writer
+
+    monkeypatch.setattr(runtime_factory, "WmsCallEvidenceQueryWriter", build_writer)
+
+    factory = build_effect_status_query_port_factory(
+        binding=binding,
+        credential_provider=_CredentialProvider(),
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+
+    assert factory()
+    assert captured["provider_profile_identity"] == binding.provider_profile_identity
+    assert captured["breaker_service"] is runtime_factory.wms_circuit_breaker_service
+
+
+@pytest.mark.asyncio
+async def test_status_breaker_open_fast_fails_without_calling_transport() -> None:
+    transport_calls = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal transport_calls
+        transport_calls += 1
+        return httpx.Response(200, json=_completed_wire())
+
+    evidence_writer = _RecordingStatusEvidenceWriter(
+        permit=WmsQueryCallPermit(
+            allowed=False,
+            reason="OPEN_FAST_FAIL",
+            retry_after_seconds=7,
+        )
+    )
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=evidence_writer,
+        transport=httpx.MockTransport(handler),
+        jitter=lambda _upper: 0.0,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+
+    with pytest.raises(WmsEffectStatusQueryError) as raised:
+        await adapter.query_status(_notify_request())
+
+    assert transport_calls == 0
+    assert isinstance(raised.value.failure, QueryTechnicalFailure)
+    assert raised.value.failure.reason_code == "WMS_CIRCUIT_OPEN"
+    assert raised.value.failure.retry_after_seconds == 7
+    assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")]
+    assert evidence_writer.records[0]["outcome"].reason_code == raised.value.failure.reason_code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "expected_outcome_type", "expected_reason"),
+    [
+        ("success", QuerySuccess, None),
+        ("timeout", QueryTechnicalFailure, "WMS_PROVIDER_TIMEOUT"),
+        ("5xx", QueryTechnicalFailure, "WMS_PROVIDER_UNAVAILABLE"),
+    ],
+)
+async def test_status_query_records_shared_breaker_outcome(
+    scenario: str,
+    expected_outcome_type: type[object],
+    expected_reason: str | None,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if scenario == "timeout":
+            raise httpx.ReadTimeout("status timeout", request=request)
+        if scenario == "5xx":
+            return httpx.Response(503)
+        return httpx.Response(200, json=_completed_wire())
+
+    evidence_writer = _RecordingStatusEvidenceWriter()
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=evidence_writer,
+        transport=httpx.MockTransport(handler),
+        jitter=lambda _upper: 0.0,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+
+    if scenario == "success":
+        snapshot = await adapter.query_status(_notify_request())
+        assert snapshot.state is WmsEffectStatus.COMPLETED
+    else:
+        with pytest.raises(WmsEffectStatusQueryError):
+            await adapter.query_status(_notify_request())
+
+    assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")]
+    assert evidence_writer.records[0]["operation_identity"] == NOTIFY_PACKAGE_BINDING
+    assert evidence_writer.records[0]["target_code"] == "WMS_EFFECT_STATUS"
+    outcome = evidence_writer.records[0]["outcome"]
+    assert isinstance(outcome, expected_outcome_type)
+    assert getattr(outcome, "reason_code", None) == expected_reason
 
 
 @pytest.mark.asyncio
@@ -436,6 +584,7 @@ async def test_adapter_maps_http_failures_without_interpreting_submit_conflicts(
     adapter = WmsEffectStatusQueryAdapter(
         binding=_binding(),
         credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
         transport=httpx.MockTransport(lambda _request: response),
         jitter=lambda _upper: 0.0,
         initial_backoff_seconds=1.0,
@@ -452,7 +601,17 @@ async def test_adapter_maps_http_failures_without_interpreting_submit_conflicts(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("retry_after", "attempt_count", "expected_delay"),
-    [("12", 1, 12.0), ("9" * 309, 2, 2.0), ("invalid", 3, 4.0), (None, 9, 8.0)],
+    [
+        ("12", 1, 8.0),
+        ("+12", 2, 2.0),
+        ("-0", 2, 2.0),
+        (" 12", 2, 2.0),
+        ("99999999", 1, 8.0),
+        ("9" * 309, 2, 2.0),
+        ("Fri, 24 Jul 2026 00:00:06 GMT", 1, 6.0),
+        ("invalid", 3, 4.0),
+        (None, 9, 8.0),
+    ],
 )
 async def test_rate_limit_uses_valid_retry_after_or_bounded_exponential_fallback(
     retry_after: str | None,
@@ -463,7 +622,9 @@ async def test_rate_limit_uses_valid_retry_after_or_bounded_exponential_fallback
     adapter = WmsEffectStatusQueryAdapter(
         binding=_binding(),
         credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
         transport=httpx.MockTransport(lambda _request: httpx.Response(429, headers=headers)),
+        now=lambda: datetime(2026, 7, 24, tzinfo=UTC),
         jitter=lambda _upper: 0.0,
         initial_backoff_seconds=1.0,
         max_backoff_seconds=8.0,
@@ -489,6 +650,7 @@ async def test_default_rate_limit_backoff_adds_bounded_random_jitter(monkeypatch
     adapter = WmsEffectStatusQueryAdapter(
         binding=_binding(),
         credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
         transport=httpx.MockTransport(lambda _request: httpx.Response(429)),
         initial_backoff_seconds=1.0,
         max_backoff_seconds=8.0,
@@ -500,6 +662,21 @@ async def test_default_rate_limit_backoff_adds_bounded_random_jitter(monkeypatch
     assert sampled_bounds == [(0.0, 2.0)]
     assert isinstance(raised.value.failure, QueryTechnicalFailure)
     assert raised.value.failure.retry_after_seconds == 3.0
+
+
+def test_local_backoff_caps_before_exponentiation_for_huge_attempt_count() -> None:
+    jitter_calls: list[float] = []
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
+        jitter=lambda upper: jitter_calls.append(upper) or upper,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+
+    assert adapter._local_backoff(1_000_000) == 8.0
+    assert jitter_calls == []
 
 
 @pytest.mark.asyncio
@@ -515,6 +692,7 @@ async def test_status_timeout_is_one_absolute_deadline_including_stream_read() -
     adapter = WmsEffectStatusQueryAdapter(
         binding=_binding(timeout_seconds=0.01),
         credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
         transport=httpx.MockTransport(lambda _request: httpx.Response(200, stream=SlowBody())),
         jitter=lambda _upper: 0.0,
         initial_backoff_seconds=1.0,
@@ -562,6 +740,7 @@ async def test_repeated_status_queries_do_not_close_the_injected_transport() -> 
     adapter = WmsEffectStatusQueryAdapter(
         binding=_binding(),
         credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
         transport=transport,
         jitter=lambda _upper: 0.0,
         initial_backoff_seconds=1.0,
