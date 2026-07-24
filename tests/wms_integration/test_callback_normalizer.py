@@ -63,6 +63,25 @@ def test_callback_normalizer_rejects_non_rack_wms_callback_without_trace_id() ->
         WmsExecutionCallbackNormalizer().normalize(payload)
 
 
+@pytest.mark.parametrize("invalid_operation_identity", [None, [], {}, 42])
+def test_callback_normalizer_rejects_non_string_effect_hint_operation_identity(
+    invalid_operation_identity: object,
+) -> None:
+    payload = {
+        "callback_type": "WMS_EFFECT_STATUS_HINT",
+        "source_system": "WMS",
+        "trace_id": "trace-wms-hint-001",
+        "data": {
+            "operation_identity": invalid_operation_identity,
+            "idempotency_key": "idem-001",
+            "dispatch_key": "dispatch-001",
+        },
+    }
+
+    with pytest.raises(ValueError, match="operation_identity"):
+        WmsExecutionCallbackNormalizer().normalize(payload)
+
+
 @pytest.mark.parametrize("source_system", ["", None])
 def test_callback_normalizer_rejects_non_rack_wms_callback_without_source_system(
     source_system: str | None,

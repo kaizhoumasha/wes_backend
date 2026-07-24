@@ -11,6 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusRepository
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+from src.app.wms_integration.ports.effect_status import WMS_EFFECT_OPERATION_IDENTITIES
 
 
 @pytest.mark.asyncio
@@ -91,18 +92,25 @@ class _HintDb:
 def _hint_row(
     *,
     status: RuntimeIntentStatus = RuntimeIntentStatus.ACCEPTED,
-    operation_identity: str = "wms.fulfillment.notify_pkg_binding@v1",
+    contract_operation_identity: str = "wms.fulfillment.notify_pkg_binding@v1",
+    business_operation_identity: str = "BUSINESS:PKG-001:PALLET-001",
+    capability_key: str | None = None,
+    capability_contract_version: str | None = None,
+    outbox_operation_identity: str | None = None,
     idempotency_key: str = "idem-001",
     status_check_after: datetime | None = datetime(2026, 7, 24, 12, 5),
 ) -> tuple[Any, Any]:
+    expected_capability_key, expected_contract_version = contract_operation_identity.rsplit("@", maxsplit=1)
     intent = SimpleNamespace(
-        operation_identity=operation_identity,
+        operation_identity=business_operation_identity,
+        capability_key=capability_key or expected_capability_key,
+        capability_contract_version=capability_contract_version or expected_contract_version,
         idempotency_key=idempotency_key,
         effect_status=status,
         status_check_after=status_check_after,
     )
     outbox = SimpleNamespace(
-        operation_identity=operation_identity,
+        operation_identity=outbox_operation_identity or contract_operation_identity,
         idempotency_key=idempotency_key,
         status="SENT",
         attempt_count=3,
@@ -111,9 +119,13 @@ def _hint_row(
 
 
 @pytest.mark.asyncio
-async def test_hint_lock_advances_only_intent_schedule_without_transport_write() -> None:
+@pytest.mark.parametrize("operation_identity", sorted(WMS_EFFECT_OPERATION_IDENTITIES))
+async def test_hint_lock_advances_only_intent_schedule_without_transport_write(operation_identity: str) -> None:
     now = datetime(2026, 7, 24, 12, 0)
-    intent, outbox = _hint_row(status_check_after=now + timedelta(minutes=5))
+    intent, outbox = _hint_row(
+        contract_operation_identity=operation_identity,
+        status_check_after=now + timedelta(minutes=5),
+    )
     db = _HintDb((intent, outbox))
     transport_before = (outbox.status, outbox.attempt_count)
 
@@ -126,6 +138,8 @@ async def test_hint_lock_advances_only_intent_schedule_without_transport_write()
     )
 
     assert outcome == "SCHEDULED"
+    assert intent.operation_identity == "BUSINESS:PKG-001:PALLET-001"
+    assert intent.operation_identity != operation_identity
     assert intent.status_check_after == now
     assert db.flushes == 1
     assert (outbox.status, outbox.attempt_count) == transport_before
@@ -138,7 +152,12 @@ async def test_hint_lock_advances_only_intent_schedule_without_transport_write()
         (None, "NOT_FOUND"),
         (_hint_row(status=RuntimeIntentStatus.COMPLETED), "TERMINAL"),
         (_hint_row(status_check_after=None), "ALREADY_DUE"),
-        (_hint_row(operation_identity="wms.fulfillment.full_box_exchange@v1"), "CORRELATION_MISMATCH"),
+        (_hint_row(capability_key="wms.fulfillment.full_box_exchange"), "CORRELATION_MISMATCH"),
+        (_hint_row(capability_contract_version="v2"), "CORRELATION_MISMATCH"),
+        (
+            _hint_row(outbox_operation_identity="wms.fulfillment.full_box_exchange@v1"),
+            "CORRELATION_MISMATCH",
+        ),
         (_hint_row(idempotency_key="other-idem"), "CORRELATION_MISMATCH"),
     ],
 )

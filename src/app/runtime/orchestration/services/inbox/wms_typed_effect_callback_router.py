@@ -38,13 +38,12 @@ class WmsTypedEffectCallbackRouter:
         if not isinstance(callback_data, dict):
             raise WmsEffectStatusHintValidationError("WMS_EFFECT_STATUS_HINT_SCHEMA_INVALID: data must be an object")
 
-        operation_identity = callback_data.get("operation_identity")
-        if operation_identity not in WMS_EFFECT_OPERATION_IDENTITIES:
-            raise WmsEffectStatusHintValidationError("WMS_EFFECT_STATUS_HINT_OPERATION_UNKNOWN")
         try:
             hint = WMS_EFFECT_STATUS_HINT_CALLBACK.payload_model.model_validate(callback_data)
         except (TypeError, ValueError) as exc:
             raise WmsEffectStatusHintValidationError("WMS_EFFECT_STATUS_HINT_SCHEMA_INVALID") from exc
+        if hint.operation_identity not in WMS_EFFECT_OPERATION_IDENTITIES:
+            raise WmsEffectStatusHintValidationError("WMS_EFFECT_STATUS_HINT_OPERATION_UNKNOWN")
 
         _ = await self._resolve_status_service().request_status_check_hint(
             db,

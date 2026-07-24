@@ -6,9 +6,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from src.app.runtime.orchestration.services.inbox.wms_typed_effect_callback_router import WmsTypedEffectCallbackRouter
 from src.app.runtime.system_capabilities.wms import provider_catalog
+from src.app.runtime.system_capabilities.wms.contracts import InboundCallbackContract, WmsEffectStatusHint
 
 WMS_PROVIDER_PROFILE = provider_catalog.WMS_PROVIDER_PROFILE
 
@@ -63,6 +65,14 @@ def test_provider_registers_one_generic_status_hint_contract() -> None:
     }
 
 
+def test_provider_rejects_arbitrary_callback_type_even_with_generic_hint_model() -> None:
+    with pytest.raises(ValidationError, match="callback_type"):
+        InboundCallbackContract(
+            callback_type="WMS_ARBITRARY_STATUS_HINT",
+            payload_model=WmsEffectStatusHint,
+        )
+
+
 def test_production_ingress_accepts_generic_effect_status_hint() -> None:
     from src.app.callback.services.callback_ingress_service import _normalize_external_callback_payload
 
@@ -82,6 +92,16 @@ def test_production_ingress_rejects_hint_without_required_correlation_field(miss
 
     with pytest.raises(ValueError, match=missing_field):
         _normalize_external_callback_payload(payload)
+
+
+@pytest.mark.parametrize("invalid_operation_identity", [None, [], {}, 42])
+def test_production_ingress_rejects_non_string_hint_operation_identity(
+    invalid_operation_identity: object,
+) -> None:
+    from src.app.callback.services.callback_ingress_service import _normalize_external_callback_payload
+
+    with pytest.raises(ValueError, match="operation_identity"):
+        _normalize_external_callback_payload(_hint_payload(operation_identity=invalid_operation_identity))
 
 
 @pytest.mark.asyncio
@@ -115,6 +135,24 @@ async def test_unknown_operation_is_named_failure_before_status_scheduling() -> 
             SimpleNamespace(),
             callback_type="WMS_EFFECT_STATUS_HINT",
             payload=_hint_payload(operation_identity="wms.inventory.unknown@v1"),
+        )
+
+    assert status_service.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_operation_identity", [None, [], {}, 42])
+async def test_router_names_non_string_operation_identity_as_schema_failure(
+    invalid_operation_identity: object,
+) -> None:
+    status_service = _StatusService()
+    router = WmsTypedEffectCallbackRouter(status_service=status_service)
+
+    with pytest.raises(ValueError, match="WMS_EFFECT_STATUS_HINT_SCHEMA_INVALID"):
+        await router.route(
+            SimpleNamespace(),
+            callback_type="WMS_EFFECT_STATUS_HINT",
+            payload=_hint_payload(operation_identity=invalid_operation_identity),
         )
 
     assert status_service.calls == []

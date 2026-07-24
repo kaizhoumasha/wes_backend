@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_TYPED_EFFECT_CALLBACK_TYPES
+from src.app.runtime.system_capabilities.wms.provider_catalog import (
+    WMS_EFFECT_STATUS_HINT_CALLBACK,
+    WMS_TYPED_EFFECT_CALLBACK_TYPES,
+)
 
 type JsonDict = dict[str, Any]
 
@@ -99,10 +102,7 @@ class WmsExecutionCallbackNormalizer:
             callback_data = _require_payload_value(payload, "data")
             if not isinstance(callback_data, dict):
                 raise ValueError("data must be an object")
-            _require_payload_fields(
-                callback_data,
-                ("operation_identity", "idempotency_key", "dispatch_key"),
-            )
+            _ = WMS_EFFECT_STATUS_HINT_CALLBACK.payload_model.model_validate(callback_data)
             _validate_wms_rcs_source_system(payload, callback_type)
             return
 

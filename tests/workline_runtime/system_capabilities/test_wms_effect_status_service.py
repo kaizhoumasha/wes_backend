@@ -15,6 +15,7 @@ from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.sys.external_http_transport import ExternalHttpProtocolResult, ExternalHttpTransportResult
 from src.app.wms_integration.ports.effect_status import (
     NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+    WMS_EFFECT_OPERATION_IDENTITIES,
     WmsEffectStatus,
     WmsEffectStatusSnapshot,
     build_wms_effect_status_binding,
@@ -756,8 +757,11 @@ class _HintQueue:
 
 
 @pytest.mark.asyncio
-async def test_status_hint_persists_due_time_and_commits_before_immediate_enqueue() -> None:
+@pytest.mark.parametrize("operation_identity", sorted(WMS_EFFECT_OPERATION_IDENTITIES))
+async def test_status_hint_persists_due_time_and_commits_before_immediate_enqueue(operation_identity: str) -> None:
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
+    claim.intent.operation_identity = "BUSINESS:PKG-001:PALLET-001"
+    claim.outbox.operation_identity = operation_identity
     claim.intent.status_check_after = NOW + timedelta(minutes=5)
     db = _Db()
     repository = _HintRepository(claim)
@@ -778,6 +782,7 @@ async def test_status_hint_persists_due_time_and_commits_before_immediate_enqueu
     )
 
     assert result.outcome == "SCHEDULED"
+    assert claim.intent.operation_identity != operation_identity
     assert claim.intent.status_check_after == NOW
     assert db.commits == 1
     assert queue.dispatch_keys == ["dispatch-001"]

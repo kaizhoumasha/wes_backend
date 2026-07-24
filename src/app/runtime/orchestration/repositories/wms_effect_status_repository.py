@@ -65,11 +65,15 @@ class WmsEffectStatusRepository:
             return "NOT_FOUND"
 
         intent, outbox = row
-        intent_operation_identity = getattr(intent, "operation_identity", None)
+        capability_binding = (
+            getattr(intent, "capability_key", None),
+            getattr(intent, "capability_contract_version", None),
+            operation_identity,
+        )
         if (
             operation_identity not in WMS_EFFECT_OPERATION_IDENTITIES
             or getattr(outbox, "operation_identity", None) != operation_identity
-            or (intent_operation_identity is not None and intent_operation_identity != operation_identity)
+            or capability_binding not in _WMS_EFFECT_CAPABILITY_BINDINGS
             or getattr(outbox, "idempotency_key", None) != idempotency_key
             or getattr(intent, "idempotency_key", None) != idempotency_key
         ):

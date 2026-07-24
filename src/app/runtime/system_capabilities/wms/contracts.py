@@ -194,7 +194,7 @@ class InboundCallbackContract(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
-    callback_type: StableText = Field(max_length=120)
+    callback_type: Literal["WMS_EFFECT_STATUS_HINT"]
     payload_model: type[BaseModel]
 
     @model_validator(mode="after")
