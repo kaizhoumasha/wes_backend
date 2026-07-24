@@ -39,6 +39,7 @@ def decide_rough_sorter_inventory_admission(  # noqa: PLR0911 - 封闭输入逐�
             if item.material_code == policy_input.material_code
             and item.lot_no == policy_input.lot_no
             and item.warehouse_code == policy_input.warehouse_code
+            and item.owner_code == policy_input.owner_code
         )
         if result is not None
         else ()

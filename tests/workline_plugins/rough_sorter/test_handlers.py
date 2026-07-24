@@ -220,6 +220,7 @@ class _Gateway:
                             material_code=input_data.material_code,
                             lot_no=input_data.lot_no,
                             warehouse_code=input_data.warehouse_code,
+                            owner_code=input_data.owner_code,
                             available_quantity="1",
                         ),
                     ),

@@ -88,18 +88,34 @@ MATCH = InventoryAuthorityItem(
     material_code="MAT-001",
     available_quantity=Decimal("8.5000000000000000001"),
     warehouse_code="WH-A",
+    owner_code="OWNER-A",
     lot_no="LOT-2026-07",
 )
 OTHER_LOT = InventoryAuthorityItem(
     material_code="MAT-001",
     available_quantity=Decimal("3"),
     warehouse_code="WH-A",
+    owner_code="OWNER-A",
     lot_no="LOT-OTHER",
 )
 OTHER_WAREHOUSE = InventoryAuthorityItem(
     material_code="MAT-001",
     available_quantity=Decimal("5"),
     warehouse_code="WH-B",
+    owner_code="OWNER-A",
+    lot_no="LOT-2026-07",
+)
+OTHER_OWNER = InventoryAuthorityItem(
+    material_code="MAT-001",
+    available_quantity=Decimal("7"),
+    warehouse_code="WH-A",
+    owner_code="OWNER-B",
+    lot_no="LOT-2026-07",
+)
+MISSING_OWNER = InventoryAuthorityItem(
+    material_code="MAT-001",
+    available_quantity=Decimal("6"),
+    warehouse_code="WH-A",
     lot_no="LOT-2026-07",
 )
 
@@ -124,6 +140,20 @@ OTHER_WAREHOUSE = InventoryAuthorityItem(
         (
             "non-matching-authority-snapshot",
             _policy_input(query_snapshot=_query_snapshot(items=(OTHER_LOT,))),
+            "REJECT",
+            "WMS_REJECTED",
+            "WMS-42",
+        ),
+        (
+            "other-owner-authority-snapshot",
+            _policy_input(query_snapshot=_query_snapshot(items=(OTHER_OWNER,))),
+            "REJECT",
+            "WMS_REJECTED",
+            "WMS-42",
+        ),
+        (
+            "missing-owner-authority-snapshot",
+            _policy_input(query_snapshot=_query_snapshot(items=(MISSING_OWNER,))),
             "REJECT",
             "WMS_REJECTED",
             "WMS-42",
