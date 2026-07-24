@@ -21,6 +21,9 @@ FIXTURE_ROOT = ROOT / "tests/fixtures/wms_provider_conformance"
 RELEASE_EVIDENCE = ROOT / "docs/operations/wms-northbound-acceptance-and-cutover.md"
 SLO_CATALOG = ROOT / "docs/operations/northbound-operation-slo-catalog.md"
 RUNBOOK = ROOT / "docs/runbooks/northbound-operation-observability.md"
+INTERACTION_CONTRACT = ROOT / "docs/contracts/wms-northbound-interaction-contract.md"
+OBSERVABILITY_CONTRACT = ROOT / "docs/contracts/observability-contract.md"
+FEASIBILITY_PROBE = ROOT / "scripts/verify_wms_northbound_feasibility.py"
 
 EFFECT_REPLAY_ASSETS = {
     "wms.inventory.confirm_inbound@v1": (
@@ -134,3 +137,36 @@ def test_active_operations_docs_use_submit_status_callback_facts_not_shadow_read
     assert "status query backlog" in content
     assert "callback hint" in content
     assert "不推断 WMS 内部" in content
+
+
+def test_submit_wire_contract_matches_canonical_dispatch_without_binding_wrapper() -> None:
+    contract = INTERACTION_CONTRACT.read_text(encoding="utf-8")
+    probe_source = FEASIBILITY_PROBE.read_text(encoding="utf-8")
+
+    assert "HTTP body 是 operation-specific typed payload 的 canonical JSON" in contract
+    assert "`Idempotency-Key` 和 `X-WES-Operation-Identity` 是 HTTP header" in contract
+    assert "frozen binding 仅为 WES 内部持久化事实，绝不进入 HTTP body、header 或 query" in contract
+    assert "method → path → timestamp → nonce → payload hash → operation identity → idempotency key" in contract
+    assert '"frozen_binding"' not in probe_source
+    assert '"canonical_payload"' not in probe_source
+    assert '"Idempotency-Key"' in probe_source
+    assert '"X-WES-Operation-Identity"' in probe_source
+
+
+def test_observability_docs_distinguish_current_signals_from_target_cutover_evidence() -> None:
+    observability = OBSERVABILITY_CONTRACT.read_text(encoding="utf-8")
+    slo = SLO_CATALOG.read_text(encoding="utf-8")
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    release = RELEASE_EVIDENCE.read_text(encoding="utf-8")
+
+    stable_signals, target_mapping = observability.split("## WMS EFFECT 目标采集口径", maxsplit=1)
+    assert "`wms_effect.submit`" not in stable_signals
+    assert "`wms_effect.status_query`" not in stable_signals
+    assert "`wms_effect.submit`" in target_mapping
+    assert "尚未成为当前 `RuntimeObservabilityRegistry` 的可执行 signal" in target_mapping
+    assert "当前只读 API 不返回这些目标字段" in slo
+    assert "当前已配置告警" in slo
+    assert "目标告警候选" in slo
+    assert "目标口径不是已存在的生产指标" in runbook
+    assert "观测映射与采集验证：`BLOCKED`" in release
+    assert "mock/replay 不能关闭该门禁" in release

@@ -8,6 +8,7 @@ callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使�
 
 - 开发 mock 验证：`PASS`
 - 真实 WMS 联调验收：`PENDING`
+- 观测映射与采集验证：`BLOCKED`
 - 联调测试数据清理：`BLOCKED`
 - 整体切换：`BLOCKED`
 
@@ -18,12 +19,12 @@ callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使�
 
 | 能力 | WMS 交付要求 | WES 验收方式 |
 | --- | --- | --- |
-| EFFECT submit | 接收 `operation_identity + idempotency_key + canonical_payload + frozen_binding`；同键同 fingerprint 幂等重放，同键异 fingerprint 返回稳定冲突码 | 按合同矩阵验证 202、200、409、422、真实 deadline 超时及重复提交 |
+| EFFECT submit | HTTP body 接收 operation-specific typed payload；从 `X-WES-Operation-Identity` 与 `Idempotency-Key` header 读取请求身份，以 `X-WES-Content-SHA256` 比较 fingerprint；不得要求 WES internal frozen binding 上 wire | 按合同矩阵验证 202、200、409、422、真实 deadline 超时、HMAC canonical input 及重复提交 |
 | EFFECT status query | 按 `operation_identity + idempotency_key` 返回五态、单调 `source_version`、稳定拒绝码和 operation-specific typed result | 对三类 EFFECT 逐项回放可见状态、终态、`NOT_FOUND`、429、5xx、超时和响应体上限 |
 | QUERY | 实现 `wms.inventory.query_inventory@v1` 的预算、分页、数值精度、业务拒绝、429 和错误形状 | 执行 QUERY 合同题库并保存规范化结果 |
 | callback hint（可选） | 仅携带关联键，允许 WES 提前发起 status query；不提供终态权威 | 验证接收、拒绝、重复、触发查询以及 enqueue 失败后的 scanner 接管 |
 | 保留与可见性 | 承诺幂等/状态记录保留期、状态可见性 SLA、最大响应体和 submit/status deadline | 验证 `retention >= WES max confirmation age + safety margin` 且 `visibility SLA <= NOT_FOUND grace` |
-| 安全 | 提供 TLS 保护和部署凭据交付流程 | 仅记录认证方式与凭据引用版本；证据中不得出现密钥、完整 header 或未脱敏 body |
+| 安全 | 提供 TLS 保护和部署凭据交付流程；按 method/path/timestamp/nonce/payload hash/operation identity/idempotency key 顺序验 HMAC | 仅记录认证方式与凭据引用版本；证据中不得出现密钥、完整 header 或未脱敏 body |
 
 必须覆盖的 operation：
 
@@ -54,9 +55,9 @@ callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使�
 
 每个验收 case 都必须记录下列字段；失败证据只能保留有界、脱敏后的协议事实。
 
-| Operation | Case ID | Request canonical hash | HTTP/status result | 规范化结果 | 耗时 | 脱敏 evidence ref | 结论 |
-| --- | --- | --- | --- | --- | ---: | --- | --- |
-|  |  |  |  |  |  |  |  |
+| Operation | Case ID | Typed body canonical hash | Operation/key header 校验 | HTTP/status result | 规范化结果 | 耗时 | 脱敏 evidence ref | 结论 |
+| --- | --- | --- | --- | --- | --- | ---: | --- | --- |
+|  |  |  |  |  |  |  |  |  |
 
 最低 case 集合为：首次受理、处理中同键重放、已完成同键重放、同键异 fingerprint、提交真实 deadline
 超时、可见性 SLA 边界、单调状态序列、拒绝、`NOT_FOUND` 宽限期、受控同键重提、已见状态后丢失、
@@ -70,7 +71,25 @@ callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使�
 | WES 确认人 |  |  |  |  |
 | WMS 确认人 |  |  |  |  |
 
-在上述表格为空时，真实 WMS 联调验收只能是 `PENDING`。
+在上述表格为空时，真实 WMS 联调验收只能是 `PENDING`。frozen binding revision 只能作为 WES 内部 evidence
+单独核对，不得出现在发给 WMS 的 request evidence。
+
+## 观测映射与采集门禁
+
+`wms_effect.*` 是本次联调要求的目标采集口径，不是当前生产代码已经发射的 signal。切换前必须把目标口径逐项
+映射到当前可执行真源（operation signal、Outbox/DispatchAttempt、RuntimeIntentLog 状态查询字段、
+callback ingress/调度结果、ReconciliationCase），并用联调采集证据证明计数、延迟、age、退避和告警路由可用。
+
+| 目标口径 | 当前可执行真源 | 联调采集/告警 evidence ref | 结论 |
+| --- | --- | --- | --- |
+| submit accepted/ambiguous/not-sent | DispatchAttempt + bridge 分类 + authored operation signal |  |  |
+| status state/latency/retry/age | RuntimeIntentLog 状态确认字段 + status worker 结果 |  |  |
+| backlog/batch/429/Retry-After/breaker/backoff | status claim/worker、query evidence 与 breaker 状态 |  |  |
+| NOT_FOUND/exhaustion/conflict/open reconciliation | RuntimeIntentLog + ReconciliationCase |  |  |
+| callback hint receive/reject/duplicate/query/enqueue degraded | callback ingress、持久化到期调度与 enqueue/scanner 结果 |  |  |
+
+当前没有这些真实联调采集与告警 evidence，因此观测映射与采集验证保持 `BLOCKED`。mock/replay 不能关闭该门禁，
+也不能据此宣称 `wms_effect.*` 已在生产发射、API 已返回目标字段或新告警已配置。
 
 ## 清理前置条件与记录
 
@@ -83,7 +102,8 @@ callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使�
 2. 停止联调任务及对应 Celery worker，并证明双方没有新的 EFFECT receipt。
 3. 备份必要的脱敏诊断日志，解析 Intent、Outbox、inbox、reconciliation 及历史表的依赖顺序。
 4. WES 与 WMS 数据 owner 共同确认精确删除目标、恢复方法和执行窗口。
-5. 清理后运行空环境 migration、健康检查、配置检查、backlog/worker 检查和一个 QUERY smoke case。
+5. 观测映射与采集门禁通过；清理后运行空环境 migration、健康检查、配置检查、backlog/worker 检查和一个
+   QUERY smoke case。
 
 | 清理事实 | 真实值 |
 | --- | --- |
@@ -99,7 +119,8 @@ callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使�
 ## 整体切换与回退边界
 
 1. 使用唯一 active WMS Provider 配置启动，先保持真实 EFFECT admission 关闭。
-2. 通过健康检查、配置/SLA 不变量、status query backlog/worker 和 QUERY smoke preflight 后记录 GO。
+2. 通过健康检查、配置/SLA 不变量、status query backlog/worker、观测采集/告警映射和 QUERY smoke
+   preflight 后记录 GO。
 3. GO 后才开放真实 EFFECT admission。首个真实 EFFECT 离开 WES 本地边界或结果不明确即越过不可逆点。
 4. 首个真实 EFFECT 前，只有在双方零 receipt 有证据时才允许回退部署和 migration。
 5. 首个真实 EFFECT 后发生故障时，立即关闭新 EFFECT admission；保持 status query、callback hint、租约恢复和

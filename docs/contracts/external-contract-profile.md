@@ -116,6 +116,12 @@ profile，也不能从 HTTP 状态或延迟推断。开发阶段由 mock/replay 
 [`wms-northbound-acceptance-and-cutover.md`](../operations/wms-northbound-acceptance-and-cutover.md)
 完成联调验收。
 
+EFFECT submit 的 wire body 是 operation-specific typed payload；operation identity 和 idempotency key 分别走
+`X-WES-Operation-Identity`、`Idempotency-Key` header。Frozen submit/status binding 是 WES 内部恢复事实，
+不得进入 WMS body/header/query。当前 HMAC 按 method、path、timestamp、nonce、typed body payload hash、
+operation identity、idempotency key 的顺序绑定，具体换行 canonical 以最小交互合同和
+`src/app/sys/canonical_dispatch.py` 为准。
+
 ## 6. fixture schema
 
 | 字段 | 类型 | 必填 | 说明 |

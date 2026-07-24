@@ -40,6 +40,11 @@
 
 `/northbound/test-*` 只供开发 mock 探针使用，绝不属于真实 WMS 生产接口。
 
+Submit wire 与当前 sender 一致：HTTP body 直接是 typed operation payload；
+`X-WES-Operation-Identity` 和 `Idempotency-Key` 是 header。Mock 不接收 `canonical_payload` 外层包络或
+`frozen_binding`；frozen binding 只在 WES 内部保证重试使用原 endpoint/credential revision。本开发 mock 未启用
+HMAC，真实联调必须另行验证 `canonical_dispatch.py` 定义的七项换行 canonical input，不能用本报告自证认证兼容。
+
 ## 黑盒探针证据
 
 运行：`uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`。

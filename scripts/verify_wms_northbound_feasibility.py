@@ -44,21 +44,13 @@ class FeasibilityReport:
         return all(case.passed for case in self.cases)
 
 
-def _payload(*, scenario: str = "success", fingerprint: str = "payload-a") -> dict[str, Any]:
+def _payload(*, fingerprint: str = "payload-a") -> dict[str, Any]:
     return {
-        "scenario": scenario,
-        "fingerprint": fingerprint,
         "dispatch_key": "dispatch-001",
-        "correlation_id": "correlation-001",
-    }
-
-
-def _submit_body(operation_identity: str, idempotency_key: str, canonical_payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "operation_identity": operation_identity,
-        "idempotency_key": idempotency_key,
-        "canonical_payload": canonical_payload,
-        "frozen_binding": "wms-provider-binding-v1",
+        "provider_code": "WMS",
+        "package_id": "package-001",
+        "pallet_id": "pallet-001",
+        "station_code": "station-a" if fingerprint == "payload-a" else "station-b",
     }
 
 
@@ -184,11 +176,22 @@ def _is_snapshot(snapshot: object) -> bool:  # noqa: PLR0911 - 每个 return 对
     result = snapshot["result_payload"]
     return (
         isinstance(result, dict)
-        and set(result) == {"accepted", "dispatch_key", "correlation_id", "source_version"}
+        and set(result)
+        == {
+            "accepted",
+            "bound_at",
+            "dispatch_key",
+            "package_id",
+            "pallet_id",
+            "reason_code",
+            "source_version",
+        }
         and result["accepted"] is True
         and result["dispatch_key"] == "dispatch-001"
-        and result["correlation_id"] == "correlation-001"
-        and result["source_version"] == source_version
+        and result["package_id"] == "package-001"
+        and result["pallet_id"] == "pallet-001"
+        and result["reason_code"] is None
+        and result["source_version"] == str(source_version)
     )
 
 
@@ -258,14 +261,20 @@ async def run_probe(
         fingerprint: str = "payload-a",
         headers: dict[str, str] | None = None,
     ) -> httpx.Response | None:
+        wire_headers = {
+            "Idempotency-Key": key,
+            "X-Probe-Scenario": scenario,
+            "X-WES-Operation-Identity": operation_identity,
+            **(headers or {}),
+        }
         return await _request(
             client,
             "POST",
             "/northbound/operations",
             request_timeout_seconds=request_timeout_seconds,
             max_response_bytes=max_response_bytes,
-            json=_submit_body(operation_identity, key, _payload(scenario=scenario, fingerprint=fingerprint)),
-            headers=headers,
+            json=_payload(fingerprint=fingerprint),
+            headers=wire_headers,
         )
 
     async def status(key: str, *, headers: dict[str, str] | None = None) -> httpx.Response | None:
@@ -399,7 +408,7 @@ async def run_probe(
     controlled_replay = await submit(recovery_key, scenario="recoverable_not_found")
     results.append(
         _result(
-            "controlled_recovery_replay_preserves_frozen_request",
+            "controlled_recovery_replay_preserves_wire_identity",
             _is_snapshot(no_visible_before_recovery)
             and no_visible_before_recovery.get("state") == "NOT_FOUND"
             and recovery_after_grace

@@ -8,19 +8,46 @@
 `operation_identity + idempotency_key`。提交端点为 `POST /northbound/operations`，状态端点为
 `GET /northbound/operations/status`；真实部署可改变路径，但必须保持本合同字段和语义。
 
-提交 body 必须包含：
+HTTP body 是 operation-specific typed payload 的 canonical JSON，即对应
+`ConfirmInboundOperationRequest`、`FullBoxExchangeOperationRequest` 或 `NotifyPackageBindingOperationRequest`
+的原始业务字段；没有 `operation_identity/idempotency_key/canonical_payload/frozen_binding` 外层包络。例如：
 
 ```json
 {
-  "operation_identity": "wms.<domain>.<operation>@v1",
-  "idempotency_key": "opaque-stable-key",
-  "canonical_payload": { "...": "冻结后的业务请求" },
-  "frozen_binding": "部署时冻结的非秘密 Provider binding revision"
+  "dispatch_key": "opaque-dispatch-key",
+  "...": "该 typed operation 冻结的其它业务字段"
 }
 ```
 
-`canonical_payload` 的规范化 fingerprint 是同一幂等键的比较对象。WMS 必须保存其规范化结果，不得因
-JSON 字段顺序、空白或 transport retry 改变比较结论。
+`Idempotency-Key` 和 `X-WES-Operation-Identity` 是 HTTP header。当前 WES sender 还发送
+`Content-Type`、`X-WES-Content-SHA256`、`X-WES-Credential-Reference`、`X-WES-Nonce`、
+`X-WES-Signature`、`X-WES-Signature-Algorithm` 和 `X-WES-Timestamp` 这一封闭 header 集；WMS 不得要求
+把这些传输元数据复制进 typed body。
+
+frozen binding 仅为 WES 内部持久化事实，绝不进入 HTTP body、header 或 query。它冻结 endpoint、credential
+reference、operation identity 和 binding revision，使重试/重启继续构造同一远端请求；WMS 无需理解或保存 WES
+binding revision。
+
+Fingerprint 是 typed body canonical bytes 的 SHA-256，即 `X-WES-Content-SHA256`。Canonical JSON 使用 UTF-8、
+object key 排序、无额外空白且拒绝 NaN/Infinity。WMS 必须按
+`X-WES-Operation-Identity + Idempotency-Key` 定位原请求，并用 fingerprint 比较 body，不得因原始 JSON
+字段顺序、空白、timestamp/nonce 更新或 transport retry 改变结论。
+
+当前 `canonical_dispatch.py` 的 HMAC canonical input 顺序严格为
+method → path → timestamp → nonce → payload hash → operation identity → idempotency key，各字段使用换行符连接：
+
+```text
+POST
+/resolved/path
+<X-WES-Timestamp>
+<X-WES-Nonce>
+<X-WES-Content-SHA256>
+<X-WES-Operation-Identity>
+<Idempotency-Key>
+```
+
+这里的 path 是冻结 endpoint URL 的 path（空 path 归一为 `/`），不含 scheme、host 或 query。任何字段、顺序或
+分隔符变化都会产生不同签名。
 
 ## 2. 提交幂等与冲突
 
@@ -31,9 +58,13 @@ JSON 字段顺序、空白或 transport retry 改变比较结论。
 | 同 key、同 fingerprint，已完成 | 200 | 原业务结果与原 `source_version` | 视为幂等重放 |
 | 同 key、不同 fingerprint | 422 | `IDEMPOTENCY_CONFLICT` | 立即人工对账；绝不是暂时并发重试 |
 
-在保留期内，同一 operation identity、幂等键、canonical payload 和冻结 binding 的再次提交必须始终是原请求的
-幂等重放。普通 transport retry 可据此重放。WES 的唯一一次受控恢复重提还必须同时满足：此前从未观察到任何
-可见状态、`NOT_FOUND` 已持续超过宽限期，并且上述四项请求身份完全未变；若曾观察到任何可见状态，后续出现
+在保留期内，同一 operation identity、幂等键和 fingerprint 的再次提交必须始终是原请求的幂等重放；同一
+operation identity、同一 key 但 fingerprint 不同必须是 `IDEMPOTENCY_CONFLICT`。普通 transport retry 可重用
+相同 typed body bytes、operation identity 和 key；timestamp、nonce 与签名可按本次 HTTP attempt 重建。
+
+WES 的唯一一次受控恢复重提还必须同时满足：此前从未观察到任何可见状态、`NOT_FOUND` 已持续超过宽限期，
+并且 wire 三项身份完全未变；WES 内部还必须继续使用原 frozen binding，不得切换 endpoint/credential revision。
+若曾观察到任何可见状态，后续出现
 `NOT_FOUND` 必须直接进入人工对账，禁止恢复重提。首次提交实际未到达 WMS 时，同键同 payload 的下一次提交必须能
 创建请求；首次已受理但状态暂不可见时，重提不得产生第二份业务效果。
 
@@ -87,7 +118,7 @@ JSON 字段顺序、空白或 transport retry 改变比较结论。
 | 状态序列 | 覆盖 `ACCEPTED`、`PROCESSING`、`COMPLETED` 的单调版本和 typed result。 |
 | 拒绝/未找到 | `REJECTED` 有稳定 reason code；`NOT_FOUND` 的 version/updated_at 为空。 |
 | 已受理暂不可见 | 同键重提后，经公开效果计数/等价观察面证明仅有一份业务效果。 |
-| 受控恢复/已见状态后丢失 | 仅在从未见可见状态且超宽限期时保持四项冻结身份重提一次；已见状态后 `NOT_FOUND` 直接人工对账。 |
+| 受控恢复/已见状态后丢失 | 仅在从未见可见状态且超宽限期时保持 wire 三项身份及 WES 内部 frozen binding 重提一次；已见状态后 `NOT_FOUND` 直接人工对账。 |
 | 保留期边界/响应体上限 | 仅在 `retention_seconds - 1`（非负）验证仍幂等；边界及之后不强制任何过期行为。body 以有界流式分块读取，首个越过上限的分块即关闭并拒绝。 |
 | 429 / 5xx / 状态查询超时 | 分别验证 `Retry-After`、稳定错误形状及 deadline 行为。 |
 

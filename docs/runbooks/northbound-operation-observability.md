@@ -5,15 +5,22 @@
 不要用 tenant、业务单号、payload、trace ID 或凭据引用作为指标标签。以下判断只依据 WES 可见的 HTTP
 响应、deadline、账本、租约和调度事实，不推断 WMS 内部队列、阶段、失败原因或补偿步骤。
 
+本 Runbook 同时列出现有操作面与 Task 9 切换前目标。目标口径不是已存在的生产指标：
+`wms_effect.*` 尚未注册，submit/status/callback 细分尚未由当前只读 API 返回，status backlog/enqueue degraded
+新告警也尚未配置。操作者必须先从当前 authored `northbound.operation.*`、DispatchAttempt、
+RuntimeIntentLog、worker/adapter 结果、callback ingress 和 ReconciliationCase 形成脱敏联调证据；没有映射
+evidence 时不得把下列目标步骤用于 cutover GO。
+
 ## EFFECT 提交与状态总览
 
-1. 先比较 submit accepted/ambiguous/not-sent 数量、延迟与 DispatchAttempt；`not-sent` 才能继续普通
-   transport retry，accepted/ambiguous 必须进入 status query。
-2. 按 operation 查看 status query 五态数量、延迟、重试次数和 age。只有规范化状态快照能推进业务终态；
+1. 从 DispatchAttempt 与 submit bridge 结果复算 accepted/ambiguous/not-sent 数量、延迟；`not-sent` 才能继续
+   普通 transport retry，accepted/ambiguous 必须进入 status query。
+2. 从 RuntimeIntentLog 和 status worker 结果按 operation 复算五态数量、延迟、重试次数和 age。只有规范化状态快照能推进业务终态；
    SystemOutbox/DispatchAttempt 仍只描述 transport。
-3. 同时查看 status query backlog 数量、最大 age、单批领取量/耗时、429、`Retry-After`、circuit-open 和实际
-   退避时长。禁止在限流窗口手工高频重放。
-4. 单独查看 `NOT_FOUND` 超过宽限期、查询耗尽、幂等冲突和 open reconciliation 数量；不能把
+3. 从 claim/worker、query evidence 和 breaker 结果复算 status query backlog 数量、最大 age、单批领取量/耗时、
+   429、`Retry-After`、circuit-open 和实际退避时长。禁止在限流窗口手工高频重放。
+4. 从 RuntimeIntentLog/ReconciliationCase 复算 `NOT_FOUND` 超过宽限期、查询耗尽、幂等冲突和 open
+   reconciliation 数量；不能把
    `NOT_FOUND` 直接解释为 WMS 未处理。
 
 <a id="pause-resume"></a>
@@ -40,7 +47,8 @@
 <a id="status-query-backpressure"></a>
 ## Status query 背压
 
-1. 记录 backlog 数量/最大 age、单批领取量/耗时和 lease reclaim；确认 worker 使用小批量、批内顺序执行。
+1. 从 claim repository/worker evidence 记录 backlog 数量/最大 age、单批领取量/耗时和 lease reclaim；确认
+   worker 使用小批量、批内顺序执行。
 2. 429 必须读取合法 `Retry-After`，实际下一次查询不得早于该下限；无效值按合同失败处理。
 3. timeout/5xx 使用 jittered backoff；circuit-open 时记录 breaker 状态与实际退避，不调用 WMS。
 4. backlog age 持续增长时先关闭新的 EFFECT admission，并保留 status/callback/reconciliation worker；不要增加
@@ -66,7 +74,8 @@
 <a id="callback-diagnostics"></a>
 ## Callback 诊断
 
-1. 查看 callback hint 接收、拒绝、重复、触发查询和 enqueue 降级数量；不要从 payload 授权。
+1. 从 callback ingress、到期调度、enqueue/scanner 结果复算 callback hint 接收、拒绝、重复、触发查询和
+   enqueue 降级数量；不要从 payload 授权。
 2. callback 只允许持久化提前到期并提示查询，重复 hint 保持幂等；它不能提供或覆盖 COMPLETED/REJECTED。
 3. 核对 callback type、operation identity、业务关联键与 RuntimeIntentLog correlation；只描述校验结果，不推断
    WMS 为何发送或未发送 hint。

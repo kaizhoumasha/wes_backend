@@ -68,9 +68,12 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
         if state == "COMPLETED":
             result_payload = {
                 "accepted": True,
+                "bound_at": "2026-07-24T08:00:00+00:00",
                 "dispatch_key": "dispatch-001",
-                "correlation_id": "correlation-001",
-                "source_version": source_version,
+                "package_id": "package-001",
+                "pallet_id": "pallet-001",
+                "reason_code": None,
+                "source_version": str(source_version),
             }
         return _snapshot(state, source_version=source_version, reason_code=reason_code, result_payload=result_payload)
 
@@ -97,12 +100,21 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
 
     @app.post("/northbound/operations")
     async def submit(
-        payload: dict[str, Any], x_first_attempt_dropped: str | None = Header(default=None)
+        payload: dict[str, Any],
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        operation_identity: str = Header(alias="X-WES-Operation-Identity"),
+        x_probe_scenario: str = Header(alias="X-Probe-Scenario"),
+        x_first_attempt_dropped: str | None = Header(default=None),
     ) -> JSONResponse:
-        operation_identity = str(payload["operation_identity"])
-        idempotency_key = str(payload["idempotency_key"])
-        canonical_payload = payload["canonical_payload"]
-        frozen_binding = payload["frozen_binding"]
+        assert set(payload) == {
+            "dispatch_key",
+            "package_id",
+            "pallet_id",
+            "provider_code",
+            "station_code",
+        }
+        assert not {"operation_identity", "idempotency_key", "canonical_payload", "frozen_binding"} & set(payload)
+        canonical_payload = payload
         key = record_key(operation_identity, idempotency_key)
         if x_first_attempt_dropped == "true":
             await asyncio.sleep(0.05)
@@ -112,7 +124,7 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
             records.pop(key)
             record = None
         if record is not None:
-            if record["canonical_payload"] != canonical_payload or record["frozen_binding"] != frozen_binding:
+            if record["canonical_payload"] != canonical_payload:
                 raise HTTPException(status_code=422, detail={"error_code": "IDEMPOTENCY_CONFLICT"})
             if record["scenario"] == "rejected":
                 return JSONResponse(
@@ -124,8 +136,7 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
 
         records[key] = {
             "canonical_payload": canonical_payload,
-            "frozen_binding": frozen_binding,
-            "scenario": canonical_payload.get("scenario", "success"),
+            "scenario": x_probe_scenario,
             "status_reads": 0,
             "created_at": clock["seconds"],
         }
@@ -202,7 +213,7 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
         "rejected_reason_code",
         "not_found_empty_version",
         "first_submit_not_arrived_retry_creates",
-        "controlled_recovery_replay_preserves_frozen_request",
+        "controlled_recovery_replay_preserves_wire_identity",
         "visible_then_not_found_requires_reconciliation",
         "accepted_not_visible_replay_has_one_effect",
         "retention_and_visibility_boundaries",

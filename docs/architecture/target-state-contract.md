@@ -163,8 +163,9 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
   catalog、selector、按 payload 路由、热切换或 fallback。
 - 新 Intent 冻结 active profile 的 submit/status binding；存量 Intent 继续使用同一 WMS Provider 的历史
   binding/credential revision，缺失或撤销时进入人工对账。
-- 三个 EFFECT 使用不可变 `operation_identity + idempotency_key + canonical payload + frozen binding` 提交，
-  并以状态查询快照作为唯一业务完成/拒绝事实；callback 缺失不影响正确性。
+- 三个 EFFECT 的 wire body 仅为 typed canonical payload，operation identity 与 idempotency key 使用闭集 header；
+  frozen binding 只在 WES 内部持久化并保证重试/重启仍使用原 endpoint/credential revision，绝不发送给 WMS。
+  状态查询快照是唯一业务完成/拒绝事实；callback 缺失不影响正确性。
 - WES 只关心 submit、status query、callback hint 交互合同和可观察结果，不建模或推断 WMS 内部队列、流程、
   库存事务和补偿逻辑。
 - 开发阶段使用确定性 mock/replay；真实 WMS 的 Provider/build identity、SLA/保留期、全 operation case evidence
