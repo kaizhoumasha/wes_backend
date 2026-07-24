@@ -77,7 +77,6 @@ def test_query_snapshot_change_discards_decision_without_partial_write() -> None
                     next_state={"phase": "PICK_TO_PIPELINE"},
                     intents=(),
                     outcome_code="PICK_AND_PUT_PERSISTED",
-                    shadow_comparisons=(),
                 ),
             )
             assert disposition is WriteDisposition.SAFE_RETRY
@@ -214,7 +213,6 @@ def test_lost_lease_owner_cannot_commit_plugin_attempt() -> None:
                     next_state={"phase": "PICK_TO_PIPELINE"},
                     intents=(),
                     outcome_code="PICK_AND_PUT_PERSISTED",
-                    shadow_comparisons=(),
                 ),
             )
             assert disposition is WriteDisposition.SAFE_RETRY

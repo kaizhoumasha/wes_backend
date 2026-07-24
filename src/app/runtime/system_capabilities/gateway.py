@@ -268,7 +268,6 @@ class SystemCapabilityGateway:
                 source_version=self._source_version,
                 admission_snapshot=self._admission_snapshot,
                 summary={"outcome": redacted},
-                shadow_expected=None,
             )
             evidence_bytes = len(canonical_json(evidence.model_dump(mode="json")).encode("utf-8"))
         except Exception:

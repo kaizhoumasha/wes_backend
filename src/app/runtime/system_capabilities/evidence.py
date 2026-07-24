@@ -25,8 +25,6 @@ class QueryEvidence(BaseModel):
     source_version: str = Field(min_length=1)
     admission_snapshot: dict[str, JsonValue]
     summary: dict[str, JsonValue]
-    # Task 7 会删除此兼容占位；平台移除后非空 expected 已不再是合法 evidence。
-    shadow_expected: None
 
     @field_validator("evidence_at")
     @classmethod

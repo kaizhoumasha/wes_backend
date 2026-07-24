@@ -83,7 +83,7 @@ from src.utils.timezone import timezone
 def _write_set(**kwargs: Any) -> Any:
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
 
-    return AttemptWriteSet(shadow_comparisons=(), **kwargs)
+    return AttemptWriteSet(**kwargs)
 
 
 class _DeadlineQueryInput(BaseModel):

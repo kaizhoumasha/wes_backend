@@ -32,9 +32,7 @@ async def test_platform_committed_writeback_defers_runtime_sse_event() -> None:
 
     class Runner:
         async def run(self, _context: object) -> AttemptWriteSet:
-            return AttemptWriteSet(
-                evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A", shadow_comparisons=()
-            )
+            return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
         async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
@@ -109,9 +107,7 @@ async def test_platform_terminal_failure_reports_failure_and_defers_runtime_sse_
 
     class Runner:
         async def run(self, _context: object) -> AttemptWriteSet:
-            return AttemptWriteSet(
-                evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A", shadow_comparisons=()
-            )
+            return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
         async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:

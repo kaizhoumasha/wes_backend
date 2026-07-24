@@ -67,7 +67,7 @@ async def test_plugin_attempt_persistence_rejects_unpersisted_authoritative_rows
             workline_id=8,
             trace_id="trace-type-boundary",
             snapshot=AttemptSnapshot(processor_token="lease-1", session_version=1, plugin_state_version=1),
-            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=(), shadow_comparisons=()),
+            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=()),
         )
 
 

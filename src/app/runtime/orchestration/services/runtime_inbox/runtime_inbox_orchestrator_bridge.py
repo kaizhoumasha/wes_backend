@@ -165,7 +165,6 @@ class GeneratedPluginAttemptRunner:
             evidence=tuple(gateway.evidence),
             next_state=_bind_command_correlation(result.next_state, intents),
             intents=intents,
-            shadow_comparisons=(),
             outcome_code=result.outcome_code,
         )
 
@@ -345,7 +344,6 @@ def _plugin_hold_write_set(context: PluginAttemptContext, reason: str) -> Attemp
         evidence=(),
         next_state=context.plugin_state,
         intents=(),
-        shadow_comparisons=(),
         outcome_code="HOLD",
         hold_reason=reason,
     )
@@ -1805,7 +1803,6 @@ def _write_set_from_recorded_replay(
             evidence=(),
             next_state={},
             intents=(),
-            shadow_comparisons=(),
             outcome_code="HOLD",
             hold_reason=resolution.hold_reason or "RECORDED_REPLAY_RECORD_MISSING",
             preserve_plugin_state=True,
@@ -1824,21 +1821,15 @@ def _write_set_from_recorded_replay(
         )
     ):
         return _invalid_recorded_write_set(fallback_state)
-    replayed_evidence = tuple(
-        # 历史 evidence 继续保留审计价值，但 replay 不得为已完成的源 attempt 再生成 expected，
-        # 也不得重新执行 shadow policy 或 effect。
-        evidence.model_copy(update={"shadow_expected": None})
-        for evidence in resolution.evidence
-    )
     return AttemptWriteSet(
-        evidence=replayed_evidence,
+        # Recorded replay 保留历史 evidence 的审计值，但不得重新执行 QUERY 或 effect。
+        evidence=resolution.evidence,
         # Recorded replay 复用已审计的 decision/evidence，但不把历史状态
         # 覆盖到可能已经继续推进的当前 Session。
         next_state={},
         # Recorded replay 只恢复已审计 decision/evidence；原 intent 的
         # EFFECT 已在源 attempt 执行，不得再次产生物理副作用。
         intents=(),
-        shadow_comparisons=(),
         outcome_code=decision.outcome_code,
         hold_reason=decision.hold_reason,
         recorded_attempt_anchor=resolution.attempt_anchor,
@@ -1940,7 +1931,6 @@ def _invalid_recorded_write_set(fallback_state: dict[str, Any]) -> AttemptWriteS
         evidence=(),
         next_state={},
         intents=(),
-        shadow_comparisons=(),
         outcome_code="HOLD",
         hold_reason="RECORDED_REPLAY_RECORD_INVALID",
         preserve_plugin_state=True,
