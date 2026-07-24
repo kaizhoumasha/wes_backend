@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -65,6 +65,18 @@ class _PairRepository:
 
     async def add_proposed_pair(self, db: object, *, intent_log: object, outbox: object) -> None:
         self.calls.append((db, intent_log, outbox))
+
+
+class _EnvelopeMutationAdapter:
+    """模拟 adapter 返回结构合法但关联 identity 被错误替换的包络。"""
+
+    def __init__(self, adapter: object, **mutations: object) -> None:
+        self._adapter = adapter
+        self._mutations = mutations
+
+    def build_envelope(self, request: object, *, idempotency_key: str):
+        envelope = self._adapter.build_envelope(request, idempotency_key=idempotency_key)  # type: ignore[attr-defined]
+        return replace(envelope, **self._mutations)
 
 
 @dataclass(frozen=True)
@@ -207,6 +219,53 @@ async def test_shared_preparation_preserves_typed_operation_and_outbox_invariant
     assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
     assert len(intent_log.status_binding_snapshot_hash) == 64
     assert pair_repository.calls == [(db, intent_log, outbox)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    (
+        ({"idempotency_key": "adapter-replaced-idempotency-key"}, "envelope idempotency_key mismatch"),
+        ({"dispatch_key": "adapter-replaced-dispatch-key"}, "envelope dispatch_key mismatch"),
+    ),
+    ids=("idempotency-key", "dispatch-key"),
+)
+async def test_shared_preparation_rejects_adapter_identity_mutation_without_persistence(
+    case: _OperationCase,
+    mutation: dict[str, str],
+    expected_error: str,
+) -> None:
+    request = case.request_factory()
+    pair_repository = _PairRepository()
+    service = WmsEffectPreparationService(intent_repository=pair_repository)
+    adapter = _EnvelopeMutationAdapter(
+        case.adapter_factory(
+            EndpointRegistry({case.contract.target_code: f"https://wms-v1.example{case.contract.endpoint_path}"})
+        ),
+        **mutation,
+    )
+    intent_log = SimpleNamespace(
+        dispatch_key=request.dispatch_key,
+        idempotency_key=f"intent-{case.name}-001",
+        effect_status="PROPOSED",
+        capability_key=case.contract.identity.removesuffix("@v1"),
+        capability_contract_version="v1",
+        operation_identity=case.operation_key,
+    )
+
+    with pytest.raises(ValueError, match=rf"^{case.name} {expected_error}$"):
+        await service.prepare(
+            object(),
+            operation=case.contract,
+            request=request,
+            intent_log=intent_log,
+            adapter=adapter,
+        )
+
+    assert pair_repository.calls == []
+    assert not hasattr(intent_log, "status_binding_snapshot_json")
+    assert not hasattr(intent_log, "status_binding_snapshot_hash")
 
 
 @pytest.mark.asyncio

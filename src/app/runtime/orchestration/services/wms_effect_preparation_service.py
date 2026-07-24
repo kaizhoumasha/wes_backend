@@ -54,6 +54,10 @@ class WmsEffectPreparationService:
             raise ValueError(f"{operation_name} intent requires persisted idempotency_key")
 
         envelope = adapter.build_envelope(request, idempotency_key=idempotency_key)
+        if envelope.dispatch_key != request.dispatch_key:
+            raise ValueError(f"{operation_name} envelope dispatch_key mismatch")
+        if envelope.idempotency_key != idempotency_key:
+            raise ValueError(f"{operation_name} envelope idempotency_key mismatch")
         if envelope.operation_identity != operation.identity:
             raise ValueError(f"{operation_name} envelope operation identity mismatch")
         if envelope.target_code != operation.target_code:
