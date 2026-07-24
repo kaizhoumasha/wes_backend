@@ -5,6 +5,8 @@
 - WES owner：WES Runtime Team
 - 开发 WMS stub owner：WES Mock WMS Team
 - stub/build version：`task1-dev-mock-v1`
+- WES 确认状态：已确认开发 mock 合同门禁
+- 开发 Mock WMS 确认状态：已确认公开 HTTP stub 行为
 - 依据：[WMS 北向最小交互合同](../contracts/wms-northbound-interaction-contract.md)
 
 ## 范围与限制
@@ -17,14 +19,26 @@
 
 | 参数 | 值 | 门槛 |
 | --- | ---: | --- |
-| WES max confirmation age | 600 秒 | 部署参数 |
-| safety margin | 300 秒 | 部署参数 |
-| WMS retention | 900 秒 | 不小于前两项之和 |
+| WES max confirmation age | 6 秒 | 开发 stub 可控时钟参数 |
+| safety margin | 3 秒 | 开发 stub 可控时钟参数 |
+| WMS retention | 9 秒 | 不小于前两项之和 |
 | WMS visibility SLA | 2 秒 | 不大于 NOT_FOUND grace period |
 | WES NOT_FOUND grace period | 3 秒 | 部署参数 |
-| 最大响应体 | 8192 bytes | 非零且验收记录 |
+| 最大响应体 | 4096 bytes | 以超限 wire body 负测验证 |
 
 认证在开发 stub 中由进程内隔离替代；真实 WMS 必须在 Task 9 明确 TLS/credential 方案，且探针不记录 credential。
+
+## 开发 mock 公开面与 operation 清单
+
+| 项目 | 值 |
+| --- | --- |
+| submit endpoint | `POST /northbound/operations` |
+| status endpoint | `GET /northbound/operations/status` |
+| 公开效果观察面 | `GET /northbound/operations/effects`，仅返回 effect count |
+| 可控时钟（开发 stub） | `POST /northbound/test-clock/advance` |
+| operation | `wms.fulfillment.notify_pkg_binding@v1` |
+
+`/northbound/test-*` 只供开发 mock 探针使用，绝不属于真实 WMS 生产接口。
 
 ## 黑盒探针证据
 
@@ -35,7 +49,7 @@
 | --- | --- |
 | 首次提交、处理中重放、已完成重放、同 key 冲突 | PASS |
 | ACCEPTED → PROCESSING → COMPLETED、typed result、REJECTED、NOT_FOUND | PASS |
-| 首次未到达后重提、已受理暂不可见后重提 | PASS |
-| 保留期/可见性参数、429 Retry-After、5xx、查询超时 | PASS |
+| 首次未到达后重提、受控恢复、已受理暂不可见唯一效果、已见状态后对账 | PASS |
+| 可控时钟下的保留期/可见性边界、最大响应体、429 两种 Retry-After、5xx、查询超时 | PASS |
 
-探针输出只含 HTTP status、稳定错误码、状态和 source version；不含 secret 或完整响应体。
+探针输出只含本地 case 枚举和布尔结果；恶意远端 body 的负测已验证 stdout、stderr 和报告均不含 secret/PII/body。
