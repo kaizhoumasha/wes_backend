@@ -9,18 +9,27 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError
 
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.effect_state_contract import (
+    EffectReducerEvent,
+    EffectReducerEventType,
+    generated_effect_source_event_id,
+)
 from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
     validate_system_capability_operation_key,
 )
+from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
 from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition, SystemCapabilityMode
+from src.core.logger import logger
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
+    from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+    from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
+    from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +41,8 @@ class PreparedSystemCapabilityIntent:
     payload_hash: str
     claim_result: SystemCapabilityClaimResult | Any
     claim: dict[str, Any]
+    intent_log: RuntimeIntentLog | None
+    has_durable_outbox: bool
 
 
 class SystemCapabilityIntentService:
@@ -44,6 +55,8 @@ class SystemCapabilityIntentService:
         plugin_definitions: Mapping[tuple[str, str], Any] | None = None,
         plugin_index_digest: str | None = None,
         effect_repository: Any | None = None,
+        effect_reducer: Any | None = None,
+        effect_reconciliation_bridge: Any | None = None,
     ) -> None:
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
@@ -65,6 +78,14 @@ class SystemCapabilityIntentService:
 
             effect_repository = runtime_intent_log_repository
         self._effect_repository = effect_repository
+        if effect_reducer is None:
+            from src.app.runtime.orchestration.services.effect_reducer_service import effect_reducer
+
+        self._effect_reducer = effect_reducer
+        if effect_reconciliation_bridge is None:
+            from src.app.runtime.orchestration.effect_bridges import effect_reconciliation_bridge
+
+        self._effect_reconciliation_bridge = effect_reconciliation_bridge
         self._plugin_definitions = dict(plugin_definitions)
         self._plugin_index_digest = plugin_index_digest
 
@@ -80,6 +101,8 @@ class SystemCapabilityIntentService:
             raise ValueError("system capability is not present in generated index")
         if definition.mode is not SystemCapabilityMode.EFFECT:
             raise ValueError("SYSTEM_CAPABILITY intent requires EFFECT definition")
+        if not isinstance(intent.dispatch_key, str) or not intent.dispatch_key:
+            raise ValueError("SYSTEM_CAPABILITY effect requires explicit dispatch_key")
         validate_system_capability_operation_key(intent.operation_key)
         execution_identity = self._validate_execution_identity(ctx, intent, definition=definition)
         if intent.payload_hash != sha256_digest(intent.payload_json):
@@ -120,9 +143,21 @@ class SystemCapabilityIntentService:
             "fact_version": str(intent.fact_version),
             "payload_hash": str(intent.payload_hash),
             "completion_mode": definition.completion_mode.value,
+            "dispatch_key": intent.dispatch_key,
             "updated_at_ms": int(timezone.now_utc().timestamp() * 1000),
         }
         claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
+        intent_log = None
+        has_durable_outbox = False
+        is_match = getattr(claim_result, "value", claim_result) == SystemCapabilityClaimResult.MATCH.value
+        if definition.completion_mode.value == "OUTBOX_ASYNC" or is_match:
+            # OUTBOX_ASYNC 首次写入需要权威 intent；任意幂等命中也必须读取状态，
+            # 才能区分可重新决策的 LOCAL PROPOSED 与已持久化终态。
+            intent_log = await self._effect_repository.get_claimed_intent(ctx["db"], claim=claim)
+            if intent_log is None:
+                raise RuntimeError("system capability effect claim row is missing")
+            if definition.completion_mode.value == "OUTBOX_ASYNC" and is_match:
+                has_durable_outbox = await self._effect_repository.has_claimed_outbox(ctx["db"], claim=claim)
         return PreparedSystemCapabilityIntent(
             definition=definition,
             request=request,
@@ -131,12 +166,93 @@ class SystemCapabilityIntentService:
             payload_hash=str(intent.payload_hash),
             claim_result=claim_result,
             claim=claim,
+            intent_log=intent_log,
+            has_durable_outbox=has_durable_outbox,
         )
 
     async def record_outcome(
         self, ctx: Mapping[str, Any], *, prepared: PreparedSystemCapabilityIntent, evidence: Any
     ) -> None:
-        await self._effect_repository.record_outcome(ctx["db"], claim=prepared.claim, evidence=evidence)
+        event_type = {
+            "success": EffectReducerEventType.CALLBACK_COMPLETED,
+            "business_reject": EffectReducerEventType.LOCAL_REDECISION_REQUIRED,
+            "retryable_failure": EffectReducerEventType.TRANSPORT_NOT_SENT,
+            "contract_violation": EffectReducerEventType.TRANSPORT_NOT_SENT,
+        }[evidence.outcome_kind]
+        clearly_not_applied = event_type is EffectReducerEventType.TRANSPORT_NOT_SENT
+        retry_exhausted = evidence.outcome_kind == "contract_violation"
+        await self._effect_reducer.reduce(
+            ctx["db"],
+            EffectReducerEvent(
+                event_type=event_type,
+                dispatch_key=str(prepared.claim["dispatch_key"]),
+                occurred_at_ms=evidence.occurred_at_ms,
+                source_event_id=generated_effect_source_event_id(
+                    "local-effect",
+                    prepared.claim["dispatch_key"],
+                    evidence.outcome_kind,
+                    evidence.occurred_at_ms,
+                ),
+                attempt_no=1 if clearly_not_applied else None,
+                retry_exhausted=retry_exhausted,
+                reason_code=evidence.outcome_code,
+                evidence_json=evidence.model_dump(mode="json"),
+            ),
+        )
+
+    async def record_idempotency_conflict(
+        self,
+        ctx: Mapping[str, Any],
+        *,
+        conflict: IdempotencyConflict | SystemCapabilityIdempotencyConflict,
+    ) -> bool:
+        """锁定冲突 identity 的权威 intent，并在当前事务写入 reconciliation evidence。"""
+
+        identity = {
+            "provider_code": conflict.provider_code,
+            "operation_kind": conflict.operation_kind,
+            "idempotency_key": conflict.idempotency_key,
+        }
+        authoritative = await self._effect_repository.get_conflicted_intent_for_update(ctx["db"], **identity)
+        dispatch_key = getattr(authoritative, "dispatch_key", None)
+        intent_id = getattr(authoritative, "id", None)
+        if (
+            authoritative is None
+            or not isinstance(dispatch_key, str)
+            or not dispatch_key
+            or not isinstance(intent_id, int)
+        ):
+            # 不能从 incoming payload/correlation 猜测关联；缺失权威行时保留 409 fail-closed，
+            # 同时输出稳定诊断码，让未落 reconciliation evidence 的异常可观测。
+            logger.error(
+                "IDEMPOTENCY_CONFLICT_AUTHORITY_MISSING "
+                f"provider={identity['provider_code']} operation={identity['operation_kind']} "
+                f"idempotency_key={identity['idempotency_key']}"
+            )
+            return False
+
+        evidence_json = {
+            **identity,
+            "existing_request_hash": conflict.existing_request_hash,
+            "incoming_request_hash": conflict.incoming_request_hash,
+            "authoritative_intent_id": intent_id,
+        }
+        source_material = "|".join(
+            (
+                identity["provider_code"],
+                identity["operation_kind"],
+                identity["idempotency_key"],
+                str(conflict.incoming_request_hash or "missing"),
+            )
+        )
+        await self._effect_reconciliation_bridge.record_idempotency_conflict(
+            ctx["db"],
+            dispatch_key=dispatch_key,
+            occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+            source_event_id=f"idempotency-conflict:{sha256(source_material.encode('utf-8')).hexdigest()}",
+            evidence_json=evidence_json,
+        )
+        return True
 
     async def get_success_evidence(
         self, ctx: Mapping[str, Any], *, prepared: PreparedSystemCapabilityIntent

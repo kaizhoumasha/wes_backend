@@ -86,6 +86,23 @@ class ResolveRuntimeReconciliationRequest(BaseModel):
     confirmed_at: datetime = Field(description="现场确认时间")
 
 
+class ResolveEffectReconciliationRequest(BaseModel):
+    """人工 EFFECT 对账决议请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=100, description="稳定幂等请求 ID")
+    resolution: str = Field(pattern="^(COMPLETED|REJECTED)$", description="EFFECT 最终决议")
+    operator_note: str = Field(min_length=1, max_length=1000, description="人工核验说明")
+
+    @field_validator("request_id", mode="before")
+    @classmethod
+    def normalize_request_id(cls, value: object) -> object:
+        """规范化人工决议的稳定幂等身份。"""
+
+        return value.strip() if isinstance(value, str) else value
+
+
 class SandboxResultRequest(BaseModel):
     """沙箱 Command Result 模拟请求。"""
 
@@ -125,6 +142,7 @@ class SandboxTemplatesResponse(BaseModel):
 __all__ = [
     "ManualOperationRequest",
     "ReplayInboxRequest",
+    "ResolveEffectReconciliationRequest",
     "ResolveRuntimeReconciliationRequest",
     "SandboxAckRequest",
     "SandboxEventRequest",

@@ -197,6 +197,7 @@ async def test_plugin_attempt_lock_loads_effect_execution_identity() -> None:
                 capability_key="test.effect",
                 contract_version="v1",
                 operation_key="operation-real-1",
+                dispatch_key="system-capability:test.effect:operation-real-1",
                 payload=_RepoChainEffectInput(value="A"),
                 precondition={"expected": 1},
                 fact_version="fact:1",
@@ -335,7 +336,9 @@ async def test_business_reject_rolls_back_attempt_and_emits_typed_internal_resul
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
-        write_set=AttemptWriteSet(evidence=(), next_state={"phase": "MUST_NOT_ADVANCE"}, intents=("i1",)),
+        write_set=AttemptWriteSet(
+            evidence=(), next_state={"phase": "MUST_NOT_ADVANCE"}, intents=("i1",), shadow_comparisons=()
+        ),
     )
 
     expected_disposition = "TERMINAL_FAILURE" if original_route == "CAPABILITY_EFFECT_RESULT" else "COMMITTED"

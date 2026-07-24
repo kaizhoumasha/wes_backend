@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -14,6 +14,7 @@ from src.app.runtime.orchestration.services.intent.operation_service import Work
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxAcceptResult
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.workline.models.workline import WorkLineRunMode
+from src.utils.timezone import timezone
 
 
 class _NestedTransaction:
@@ -97,6 +98,27 @@ async def test_default_external_callback_retry_is_stable_and_records_lifecycle_o
     assert first is second
     assert repo.add_count == 1
     lifecycle.record_callback_from_external_http.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_external_callback_closes_dispatching_lease_shape() -> None:
+    repo = _InboxRepository()
+    service, _lifecycle = _build_service(inbox_repo=repo)
+    outbox = service.outbox_repo.get_by_dispatch_key.return_value
+    outbox.status = SystemOutboxStatus.DISPATCHING
+    outbox.lease_owner_token = "sandbox-external-owner"
+    outbox.lease_expires_at = timezone.now_for_db() + timedelta(minutes=5)
+
+    await service.submit_sandbox_external_callback(
+        _Db(),
+        dispatch_key=outbox.dispatch_key,
+        callback_type="RACK_OPERATION",
+        auto_commit=False,
+    )
+
+    assert outbox.status == SystemOutboxStatus.SENT
+    assert outbox.lease_expires_at is None
+    assert outbox.lease_owner_token == "sandbox-external-owner"
 
 
 @pytest.mark.asyncio

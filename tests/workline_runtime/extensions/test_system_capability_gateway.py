@@ -299,10 +299,8 @@ async def test_query_closes_outcome_contract_timeout_and_unknown_exception() -> 
 
     Handler.result = None
     Handler.error = RuntimeError("provider secret")
-    unknown = await gateway(attempt_id="attempt-4").execute("wms.lookup", "v1", {"value": 1})
-    assert isinstance(unknown.outcome, RetryableFailure)
-    assert unknown.outcome.error_code == "UNKNOWN"
-    assert "provider secret" not in unknown.outcome.message
+    with pytest.raises(RuntimeError, match="provider secret"):
+        await gateway(attempt_id="attempt-4").execute("wms.lookup", "v1", {"value": 1})
 
     Handler.error = None
     Handler.delay = 0.02

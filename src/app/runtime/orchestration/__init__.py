@@ -16,8 +16,8 @@
   runtime capability 最小推进单位)
 - RuntimeInbox status 5 态: RECEIVED -> PROCESSING -> PROCESSED /
   FAILED / DEAD_LETTER
-- RuntimeIntentLog 是 outbox/effect ledger, dispatch_status:
-  PENDING -> DISPATCHING -> DISPATCHED/ACKED/FAILED
+- RuntimeIntentLog 是 capability EFFECT 语义账本，transport 状态只归 SystemOutbox。
+- ReconciliationCase 是 EFFECT UNKNOWN/矛盾 evidence 的独立 OPEN/RESOLVED 裁决对象。
 - InboundEventPort / WmsEventPort / DeviceEventPort / RuntimeInbox consumer
   不在业务 capability 注册表 (capability dependency guardrails)
 
@@ -30,9 +30,10 @@ from src.app.runtime.orchestration.execution_correlation import ExecutionCorrela
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
+from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
 from src.app.runtime.orchestration.workline_runtime_status_projection import (
     WorkLineRuntimeStatus,
@@ -46,9 +47,12 @@ __all__ = [
     "ExecutionSession",
     "ExecutionWorkItem",
     "IdempotencyKey",
+    "ReconciliationCase",
+    "ReconciliationCaseStatus",
     "RuntimeHold",
     "RuntimeInbox",
     "RuntimeIntentLog",
+    "RuntimeIntentStatus",
     "RuntimeTimeline",
     "WorkLineRuntimeStatus",
     "WorklineRuntimeStatusProjection",

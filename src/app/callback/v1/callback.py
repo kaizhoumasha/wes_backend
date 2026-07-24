@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from src.app.callback.models import (
     CallbackEventIngressResponse,
     CallbackExternalIngressResponse,
+    CallbackExternalRequest,
     CallbackHTTPExceptionResponse,
     CallbackResultIngressResponse,
 )
@@ -116,6 +117,16 @@ async def callback_event(
     summary="外部系统回调",
     dependencies=[Depends(RequireAPIPermission("api:callback:event"))],
     description="库位分配、AGV 等外部系统异步回调入口",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": CallbackExternalRequest.model_json_schema(),
+                }
+            },
+        }
+    },
 )
 async def callback_external(
     request: Request,

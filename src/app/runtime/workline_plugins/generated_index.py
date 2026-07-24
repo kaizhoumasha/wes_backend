@@ -6,7 +6,7 @@ from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION 
 from src.app.runtime.workline_plugins.rough_sorter.definition import ROUTE_HANDLERS as _ROUTE_HANDLERS_0
 
 WORKLINE_PLUGIN_IDENTITIES = (("rough_sorter", "rough_sorter.v2"),)
-WORKLINE_PLUGIN_INDEX_DIGEST = "a04bc0ddf34adbb46c7d682d92787e16c729531c244fbf09bbf62e8978416f98"
+WORKLINE_PLUGIN_INDEX_DIGEST = "a64f5e200c7bdbcce698ed25faffbd09b1978092174ffd070cda53ae005c7bee"
 WORKLINE_PLUGIN_INDEX = MappingProxyType(
     {
         ("rough_sorter", "rough_sorter.v2"): _DEFINITION_0,

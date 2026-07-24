@@ -21,6 +21,8 @@ from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service i
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
+from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 from src.app.sys.models import (
     DispatchEnvelope,
     SystemOutbox,
@@ -31,6 +33,7 @@ from src.app.sys.models import (
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, outbox_repository
 from src.app.wms_integration.services.transport_contract import (
     WmsTransportContractService,
+    freeze_legacy_transport_binding,
     wms_transport_contract_service,
 )
 from src.utils.value_normalization import coerce_optional_str, enum_value
@@ -47,7 +50,7 @@ _ACTIVE_STATION_CLAIM_STATUSES = frozenset(
         SystemOutboxStatus.NEW.value,
         SystemOutboxStatus.DISPATCHING.value,
         SystemOutboxStatus.SENT.value,
-        SystemOutboxStatus.BLOCKED_RESOURCE.value,
+        SystemOutboxStatus.RETRY_WAIT.value,
     }
 )
 
@@ -234,21 +237,29 @@ class SingleLayerRackOrchestrationService:
             target_code=target_code,
             trace_id=trace_id,
         )
+        outbox_dispatch_key = self._dispatch_key(rack_operation_request)
+        existing_outbox = await self.outbox_repository.get_by_dispatch_key_for_update(db, outbox_dispatch_key)
+        persisted_binding = _frozen_binding_from_outbox(existing_outbox) if existing_outbox is not None else None
         envelope = self._dispatch_envelope(
             rack_operation_request,
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
+            frozen_binding=persisted_binding,
         )
-        claimed_outbox = await self._claim_station_dispatch_lease(
-            db,
-            workline_id=workline_id,
-            workline_code=workline_code,
-            station_code=station_code,
-            envelope=envelope,
-            allow_active_rack_bound=allow_active_rack_bound,
-            allow_active_operation_key=envelope.operation_key,
-        )
+        if existing_outbox is not None:
+            _ensure_existing_station_claim_outbox_shape(existing_outbox, envelope)
+            claimed_outbox = existing_outbox
+        else:
+            claimed_outbox = await self._claim_station_dispatch_lease(
+                db,
+                workline_id=workline_id,
+                workline_code=workline_code,
+                station_code=station_code,
+                envelope=envelope,
+                allow_active_rack_bound=allow_active_rack_bound,
+                allow_active_operation_key=envelope.operation_key,
+            )
         if claimed_outbox is None:
             current_status = await self.station_lease_service.get_station_lease_status(
                 db,
@@ -382,17 +393,25 @@ class SingleLayerRackOrchestrationService:
         return scoped_tasks
 
     @staticmethod
+    def _dispatch_key(rack_operation_request: Mapping[str, Any]) -> str:
+        payload = dict(rack_operation_request["payload"])
+        operation_key = str(rack_operation_request["operation_key"])
+        task = SingleLayerRackOrchestrationService._first_rack_task(payload)
+        return SingleLayerRackOrchestrationService._rack_task_dispatch_key(task, operation_key=operation_key)
+
+    @staticmethod
     def _dispatch_envelope(
         rack_operation_request: Mapping[str, Any],
         *,
         workline_id: int | None,
         session_id: int | None,
         trace_id: str | None,
+        frozen_binding: FrozenExternalHttpBinding | None = None,
     ) -> DispatchEnvelope:
         payload = dict(rack_operation_request["payload"])
         operation_key = str(rack_operation_request["operation_key"])
         task = SingleLayerRackOrchestrationService._first_rack_task(payload)
-        dispatch_key = SingleLayerRackOrchestrationService._rack_task_dispatch_key(task, operation_key=operation_key)
+        dispatch_key = SingleLayerRackOrchestrationService._dispatch_key(rack_operation_request)
         payload_json = SingleLayerRackOrchestrationService._rack_task_payload(
             payload,
             task,
@@ -400,12 +419,23 @@ class SingleLayerRackOrchestrationService:
             operation_key=operation_key,
             operation_type=str(rack_operation_request["operation_type"]),
         )
+        canonical = CanonicalPayload.from_projection(payload_json)
+        target_code = str(rack_operation_request["target_code"])
+        resolved_binding = frozen_binding or freeze_legacy_transport_binding(
+            operation_identity="wms.transport.rack@v1",
+            target_code=target_code,
+        )
         return DispatchEnvelope(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code=str(rack_operation_request["target_code"]),
+            target_code=target_code,
+            provider_profile_identity=resolved_binding.provider_profile_identity,
+            operation_identity="wms.transport.rack@v1",
             payload_json=payload_json,
+            canonical_payload_bytes=canonical.body,
+            payload_hash=canonical.sha256,
+            frozen_binding=resolved_binding,
             operation_domain="RACK",
             operation_key=operation_key,
             workline_id=workline_id,
@@ -479,6 +509,7 @@ class SingleLayerRackOrchestrationService:
         station = payload.get("station")
         station_payload = dict(station) if isinstance(station, Mapping) else {}
         station_payload.setdefault("position_code", str(operation_payload.get("station_code") or ""))
+        station_payload.setdefault("workline_code", operation_payload.get("workline_code"))
         payload["station"] = station_payload
         _ = payload.setdefault("station_code", operation_payload.get("station_code"))
         return payload
@@ -560,6 +591,7 @@ class SingleLayerRackOrchestrationService:
 
 
 def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: DispatchEnvelope) -> None:
+    frozen_binding = _frozen_binding_from_outbox(outbox)
     if coerce_optional_str(getattr(outbox.dispatch_type, "value", outbox.dispatch_type)) != coerce_optional_str(
         getattr(envelope.dispatch_type, "value", envelope.dispatch_type)
     ):
@@ -570,6 +602,10 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
         raise ValueError("existing station dispatch outbox target_type differs from request")
     if outbox.target_code != envelope.target_code:
         raise ValueError("existing station dispatch outbox target_code differs from request")
+    if frozen_binding.provider_profile_identity != envelope.provider_profile_identity:
+        raise ValueError("existing station dispatch outbox provider profile differs from request")
+    if frozen_binding.operation_identity != envelope.operation_identity:
+        raise ValueError("existing station dispatch outbox operation identity differs from request")
     if outbox.operation_domain != envelope.operation_domain:
         raise ValueError("existing station dispatch outbox operation_domain differs from request")
     if outbox.operation_key != envelope.operation_key:
@@ -578,6 +614,10 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
         raise ValueError("existing station dispatch outbox session_id differs from request")
     if outbox.workline_id != envelope.workline_id:
         raise ValueError("existing station dispatch outbox workline_id differs from request")
+    if outbox.canonical_payload_bytes != envelope.canonical_payload_bytes:
+        raise ValueError("existing station dispatch outbox canonical_payload_bytes differs from request")
+    if outbox.payload_hash != envelope.payload_hash:
+        raise ValueError("existing station dispatch outbox payload_hash differs from request")
     if not _is_active_station_claim_outbox(outbox):
         raise ValueError("existing station dispatch outbox is not active")
 
@@ -587,11 +627,27 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
         raise ValueError("existing station dispatch outbox station differs from request")
 
 
+def _frozen_binding_from_outbox(outbox: SystemOutbox) -> FrozenExternalHttpBinding:
+    """只从持久化字段恢复既有派发 binding，不读取当前 endpoint/profile。"""
+
+    return FrozenExternalHttpBinding.from_persisted(
+        provider_profile_identity=outbox.provider_profile_identity,
+        provider_profile_hash=outbox.provider_profile_hash,
+        operation_identity=outbox.operation_identity,
+        binding_revision=outbox.binding_revision,
+        target_code=outbox.target_code,
+        target_snapshot_json=outbox.target_snapshot_json,
+        target_snapshot_hash=outbox.target_snapshot_hash,
+        auth_scheme=outbox.auth_scheme,
+        credential_reference=outbox.credential_reference,
+    )
+
+
 def _is_active_station_claim_outbox(outbox: SystemOutbox) -> bool:
     status = coerce_optional_str(enum_value(getattr(outbox, "status", None)))
     if status not in _ACTIVE_STATION_CLAIM_STATUSES:
         return False
-    return getattr(outbox, "finished_at", None) is None or status == SystemOutboxStatus.BLOCKED_RESOURCE.value
+    return getattr(outbox, "finished_at", None) is None
 
 
 def _station_position_from_payload(payload_json: Mapping[str, Any] | None) -> str | None:

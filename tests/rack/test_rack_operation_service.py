@@ -29,7 +29,39 @@ RACK_TRANSPORT_OPERATION_TYPE = "RACK_TRANSPORT"
 CLASSIFIER_WORK_POSITION_CODE = "CLASSIFIER-WORK"
 CLASSIFIER_WORK_POSITION_ROLE = "SMT_CLASSIFIER_SINGLE_RACK_WORK"
 MOVE_OUT_TARGET_POSITION_ROLE = "SMT_EMPTY_RACK_AREA"
-RACK_OPERATION_TARGET_CODE = "WMS-RACK"
+RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
+
+
+def _external_outbox(**values: Any) -> SystemOutbox:
+    payload_json = dict(values.pop("payload_json"))
+    envelope = WmsRcsRackGateway().build_task_envelope(
+        operation_key=str(payload_json.get("operation_key") or values.get("operation_key") or ""),
+        operation_type=str(payload_json.get("operation_type") or RACK_TRANSPORT_OPERATION_TYPE),
+        sequence_no=int(payload_json.get("sequence_no") or 1),
+        task_type=str(payload_json.get("task_type") or RackTaskType.ALLOCATE_AND_MOVE_RACK.value),
+        trace_id=str(payload_json.get("trace_id") or ""),
+        workline_id=values.get("workline_id"),
+        workline_code=payload_json.get("workline_code"),
+        material_session_id=values.get("session_id"),
+        rack_code=payload_json.get("rack_code"),
+        rack_kind=payload_json.get("rack_kind"),
+        source_position_code=payload_json.get("source_position_code"),
+        target_position_code=payload_json.get("target_position_code"),
+        target_position_role=payload_json.get("target_position_role"),
+        actions_json=payload_json.get("actions") or {"required": True},
+        request_json=payload_json,
+        target_code=values.get("target_code"),
+        dispatch_key=values.get("dispatch_key"),
+    )
+    values["payload_json"] = dict(envelope.payload_json)
+    values["canonical_payload_bytes"] = envelope.canonical_payload_bytes
+    values["payload_hash"] = envelope.payload_hash
+    values["provider_profile_identity"] = envelope.provider_profile_identity
+    values["operation_identity"] = envelope.operation_identity
+    if envelope.frozen_binding is None:
+        raise AssertionError("rack test envelope must carry frozen binding")
+    values.update(envelope.frozen_binding.as_persisted_fields())
+    return SystemOutbox(**values)
 
 
 class FakeDb:
@@ -171,7 +203,7 @@ class FakeRackTaskRepository:
         if "actions_json" not in provided_keys:
             values["actions_json"] = {"action": values["task_type"].value, "required": True}
         if "request_json" not in provided_keys:
-            values["request_json"] = {
+            request_json = {
                 "operation_key": values["operation_key"],
                 "operation_type": values["operation_type"],
                 "sequence_no": values["sequence_no"],
@@ -183,6 +215,26 @@ class FakeRackTaskRepository:
                 "rack_kind": values["rack_kind"],
                 "rack_code": values["rack_code"],
             }
+            envelope = WmsRcsRackGateway().build_task_envelope(
+                operation_key=values["operation_key"],
+                operation_type=values["operation_type"],
+                sequence_no=values["sequence_no"],
+                task_type=values["task_type"].value,
+                trace_id="",
+                workline_id=None,
+                workline_code=values["workline_code"],
+                material_session_id=None,
+                rack_code=values["rack_code"],
+                rack_kind=values["rack_kind"],
+                source_position_code=values["source_position_code"],
+                target_position_code=values["target_position_code"],
+                target_position_role=values["target_position_role"],
+                actions_json=values["actions_json"],
+                request_json=request_json,
+                target_code=RACK_OPERATION_TARGET_CODE,
+                dispatch_key=values["dispatch_key"],
+            )
+            values["request_json"] = dict(envelope.payload_json)
         task = SimpleNamespace(**values)
         self.tasks.append(task)
         return task
@@ -327,7 +379,7 @@ class FakeStationLeaseService:
         payload_json["station"] = station
         payload_json.setdefault("workline_code", kwargs["workline_code"])
         payload_json["position_code"] = kwargs["position_code"]
-        outbox = SystemOutbox(
+        outbox = _external_outbox(
             session_id=envelope.session_id,
             workline_id=kwargs["workline_id"],
             operation_domain=envelope.operation_domain,
@@ -337,6 +389,8 @@ class FakeStationLeaseService:
             target_type=envelope.target_type,
             target_code=envelope.target_code,
             payload_json=payload_json,
+            canonical_payload_bytes=envelope.canonical_payload_bytes,
+            payload_hash=envelope.payload_hash,
             status=SystemOutboxStatus.NEW,
             trace_id=envelope.trace_id,
         )
@@ -606,7 +660,7 @@ async def test_request_operation_tasks_creates_plugin_defined_tasks_without_muta
         operation_type="RACK_TRANSPORT",
         workline=_workline(),
         session=session,
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         trace_id="trace-plugin-owned",
         task_specs=[
             {
@@ -705,7 +759,7 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_before_di
                 target_position_code="TARGET-POSITION",
                 target_position_role=CLASSIFIER_WORK_POSITION_ROLE,
                 dispatch_key="caller-dispatch-key",
-                target_code="CALLER-TARGET",
+                target_code=RACK_OPERATION_TARGET_CODE,
                 request_json={"caller_field": "kept"},
                 actions_json={},
                 required=False,
@@ -716,7 +770,7 @@ async def test_request_operation_tasks_normalizes_dataclass_task_specs_before_di
     assert [task.sequence_no for task in tasks] == [1]
     call = lifecycle.calls[0]
     assert call["dispatch_key"] == "caller-dispatch-key"
-    assert call["target_code"] == "CALLER-TARGET"
+    assert call["target_code"] == RACK_OPERATION_TARGET_CODE
     assert call["actions_json"]["action"] == RackTaskType.MOVE_RACK.value
     assert call["actions_json"]["required"] is False
     assert call["request_json"]["caller_field"] == "kept"
@@ -1613,7 +1667,7 @@ async def test_repeated_replace_operation_returns_existing_tasks_without_recheck
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, lifecycle, _placements = _service(
         active_placements=[],
@@ -1649,7 +1703,7 @@ async def test_repeated_operation_links_existing_task_outbox_to_current_session(
     )
     system_outbox_repository = FakeOutboxRepository()
     existing_outbox = system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             dispatch_key=existing_task.dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
@@ -1709,7 +1763,7 @@ async def test_repeated_operation_rejects_existing_task_outbox_owned_by_differen
     )
     system_outbox_repository = FakeOutboxRepository()
     system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             dispatch_key=existing_task.dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
@@ -1762,7 +1816,7 @@ async def test_repeated_operation_rejects_missing_non_required_physical_task() -
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, lifecycle, _placements = _service(
         active_placements=[],
@@ -1815,7 +1869,7 @@ async def test_repeated_replace_operation_rejects_single_supply_with_wrong_seque
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, _lifecycle, _placements = _service(
         active_placements=[],
@@ -1834,7 +1888,9 @@ async def test_repeated_replace_operation_rejects_single_supply_with_wrong_seque
 
 
 @pytest.mark.asyncio
-async def test_repeated_replace_operation_rejects_target_code_mismatch() -> None:
+async def test_repeated_replace_operation_rejects_target_code_mismatch_without_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
         operation_key="op-shape-target-code",
@@ -1844,12 +1900,20 @@ async def test_repeated_replace_operation_rejects_target_code_mismatch() -> None
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, _lifecycle, _placements = _service(
         active_placements=[],
         active_count=0,
         task_repository=task_repository,
+    )
+
+    def fail_current_target_lookup(_target_code: str) -> None:
+        raise AssertionError("existing operation replay must not resolve the current endpoint registry")
+
+    monkeypatch.setattr(
+        "src.app.sys.services.endpoint_registry.endpoint_registry.resolve",
+        fail_current_target_lookup,
     )
 
     with pytest.raises(ValueError, match="task identity differs"):
@@ -1875,7 +1939,7 @@ async def test_repeated_replace_operation_rejects_move_out_rack_code_mismatch() 
         source_position_code="CLASSIFIER-WORK",
         target_position_code=None,
         target_position_role="SMT_EMPTY_RACK_AREA",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         request_json={
             "operation_key": "op-shape-move-rack",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -1896,7 +1960,7 @@ async def test_repeated_replace_operation_rejects_move_out_rack_code_mismatch() 
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
     )
     service, _repo, _lifecycle, _placements = _service(
         active_placements=[],
@@ -1924,7 +1988,7 @@ async def test_repeated_operation_rejects_request_json_payload_drift() -> None:
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         request_json={
             "operation_key": "op-request-json-drift",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -1978,7 +2042,7 @@ async def test_repeated_operation_rejects_actions_json_payload_drift() -> None:
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         actions_json={
             "action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
             "required": True,
@@ -2024,7 +2088,7 @@ async def test_repeated_operation_allows_persisted_timeout_evidence() -> None:
         source_position_code=None,
         target_position_code="CLASSIFIER-WORK",
         target_position_role="SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        target_code="WMS-RACK",
+        target_code=RACK_OPERATION_TARGET_CODE,
         request_json={
             "operation_key": "op-timeout-evidence",
             "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2037,6 +2101,11 @@ async def test_repeated_operation_allows_persisted_timeout_evidence() -> None:
             "rack_kind": RackKind.SINGLE_LAYER.value,
             "rack_code": None,
             "timeout_seconds": 300,
+            "station": {
+                "workline_code": "WL-SMT-01",
+                "position_code": CLASSIFIER_WORK_POSITION_CODE,
+            },
+            "position_code": CLASSIFIER_WORK_POSITION_CODE,
         },
     )
     service, _repo, _lifecycle, _placements = _service(
@@ -2061,14 +2130,14 @@ async def test_repeated_operation_allows_persisted_timeout_evidence() -> None:
 async def test_request_reuses_existing_outbox_when_task_is_missing() -> None:
     system_outbox_repository = FakeOutboxRepository()
     existing_outbox = system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             id=88,
             session_id=300,
             workline_id=45,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key="rack-operation:op-existing-outbox:2:ALLOCATE_AND_MOVE_RACK",
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-existing-outbox",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2111,7 +2180,7 @@ async def test_request_links_reused_ownerless_outbox_to_current_session() -> Non
     system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-reused-ownerless:2:ALLOCATE_AND_MOVE_RACK"
     existing_outbox = system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
@@ -2184,7 +2253,7 @@ async def test_request_rejects_reused_finished_outbox() -> None:
     system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-reused-finished:2:ALLOCATE_AND_MOVE_RACK"
     system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
@@ -2243,7 +2312,7 @@ async def test_request_rejects_reused_outbox_owned_by_different_session() -> Non
     system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-reused-conflict:2:ALLOCATE_AND_MOVE_RACK"
     system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             dispatch_key=dispatch_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
@@ -2301,14 +2370,14 @@ async def test_request_reuses_existing_outbox_after_integrity_error_on_concurren
     system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-outbox-race:2:ALLOCATE_AND_MOVE_RACK"
     existing_outbox = system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             id=89,
             session_id=300,
             workline_id=45,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-outbox-race",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2355,14 +2424,14 @@ async def test_request_links_ownerless_outbox_after_integrity_error_on_concurren
     system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-outbox-race-ownerless:2:ALLOCATE_AND_MOVE_RACK"
     existing_outbox = system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             id=89,
             session_id=None,
             workline_id=45,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-outbox-race-ownerless",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2413,14 +2482,14 @@ async def test_request_rejects_conflicting_outbox_after_integrity_error_on_concu
     system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-outbox-race-conflict:2:ALLOCATE_AND_MOVE_RACK"
     system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             id=89,
             session_id=999,
             workline_id=45,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-outbox-race-conflict",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2467,14 +2536,14 @@ async def test_request_reuses_existing_outbox_when_only_trace_id_differs() -> No
     system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-existing-outbox-trace:2:ALLOCATE_AND_MOVE_RACK"
     existing_outbox = system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             id=90,
             session_id=300,
             workline_id=45,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json={
                 "operation_key": "op-existing-outbox-trace",
                 "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
@@ -2529,14 +2598,14 @@ async def test_request_rejects_dispatched_existing_outbox_when_payload_differs()
         "actions": {"action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
     }
     existing_outbox = system_outbox_repository.add_existing(
-        SystemOutbox(
+        _external_outbox(
             id=91,
             session_id=300,
             workline_id=45,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code="WMS-RACK",
+            target_code=RACK_OPERATION_TARGET_CODE,
             payload_json=dict(existing_payload),
             status=SystemOutboxStatus.SENT,
         )
@@ -2547,17 +2616,17 @@ async def test_request_rejects_dispatched_existing_outbox_when_payload_differs()
         system_outbox_repository=system_outbox_repository,
     )
 
-    with pytest.raises(ValueError, match="payload differs after dispatch"):
-        await _request_classifier_replacement(
-            service,
-            FakeDb(),
-            operation_key="op-dispatched-outbox-trace",
-            trace_id="trace-new",
-            include_move_out=False,
-        )
+    tasks = await _request_classifier_replacement(
+        service,
+        FakeDb(),
+        operation_key="op-dispatched-outbox-trace",
+        trace_id="trace-new",
+        include_move_out=False,
+    )
 
-    assert lifecycle.calls == []
-    assert existing_outbox.payload_json == existing_payload
+    assert len(tasks) == 1
+    assert lifecycle.calls[0]["outbox"] is existing_outbox
+    assert existing_outbox.payload_json["trace_id"] == "trace-old"
 
 
 @pytest.mark.asyncio

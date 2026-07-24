@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
 from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
     SystemCapabilityEffectService,
@@ -17,6 +18,7 @@ from src.app.runtime.orchestration.services.intent.system_capability_effect_serv
 from src.app.runtime.orchestration.services.intent.system_capability_intent_service import (
     SystemCapabilityIntentService,
 )
+from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -99,11 +101,25 @@ def _definition(
 
 
 class _EffectRepository:
-    def __init__(self, result: ClaimResult | BaseException, *, success_evidence: object | None = None) -> None:
+    def __init__(
+        self,
+        result: ClaimResult | BaseException,
+        *,
+        success_evidence: object | None = None,
+        claimed_outbox_exists: bool = True,
+    ) -> None:
         self.result = result
         self.success_evidence = success_evidence
+        self.claimed_outbox_exists = claimed_outbox_exists
         self.calls: list[dict[str, Any]] = []
         self.outcomes: list[object] = []
+        self.conflict_lookups: list[dict[str, str]] = []
+        self.conflict_intent: object | None = SimpleNamespace(
+            id=17,
+            effect_status=RuntimeIntentStatus.PROPOSED,
+            dispatch_key="authoritative-effect-dispatch",
+        )
+        self.intent_log = SimpleNamespace(id=17, effect_status=RuntimeIntentStatus.PROPOSED, dispatch_key=None)
 
     async def claim_or_match(self, _db: object, **kwargs: Any) -> ClaimResult:
         self.calls.append(kwargs)
@@ -112,7 +128,26 @@ class _EffectRepository:
         return self.result
 
     async def record_outcome(self, _db: object, **kwargs: Any) -> None:
-        self.outcomes.append(kwargs["evidence"])
+        evidence = kwargs["evidence"]
+        self.outcomes.append(evidence)
+        self.intent_log.effect_status = {
+            "success": RuntimeIntentStatus.COMPLETED,
+            "business_reject": RuntimeIntentStatus.REJECTED,
+            "retryable_failure": RuntimeIntentStatus.TECHNICAL_FAILED,
+            "contract_violation": RuntimeIntentStatus.TECHNICAL_FAILED,
+        }[evidence.outcome_kind]
+
+    async def get_claimed_intent(self, _db: object, *, claim: dict[str, Any]) -> object:
+        self.intent_log.dispatch_key = claim["dispatch_key"]
+        return self.intent_log
+
+    async def has_claimed_outbox(self, _db: object, *, claim: dict[str, Any]) -> bool:
+        _ = claim
+        return self.claimed_outbox_exists
+
+    async def get_conflicted_intent_for_update(self, _db: object, **identity: str) -> object | None:
+        self.conflict_lookups.append(identity)
+        return self.conflict_intent
 
     async def get_success_evidence(self, _db: object, **_kwargs: Any) -> object | None:
         return self.success_evidence
@@ -149,6 +184,40 @@ class _StatefulEffectRepository(_EffectRepository):
         self.status = "SUCCEEDED" if evidence.outcome_kind == "success" else "BUSINESS_REJECT"
 
 
+class _EffectReducer:
+    def __init__(self, repository: _EffectRepository) -> None:
+        self.repository = repository
+
+    async def reduce(self, db: object, event: object, **_kwargs: Any) -> None:
+        event_data = event  # 保留 typed event 属性，模拟唯一 reducer 对 fake ledger 的写入。
+        evidence = SimpleNamespace(
+            **event_data.evidence_json,
+            model_dump=lambda **_dump_kwargs: dict(event_data.evidence_json),
+        )
+        await self.repository.record_outcome(db, evidence=evidence)
+
+
+class _ReconciliationBridge:
+    def __init__(self) -> None:
+        self.conflicts: list[dict[str, Any]] = []
+
+    async def record_idempotency_conflict(self, _db: object, **kwargs: Any) -> None:
+        self.conflicts.append(kwargs)
+
+
+class _AsyncAcceptedReplayRepository(_EffectRepository):
+    """模拟同一 OUTBOX_ASYNC effect 的第二次 claim 命中已有 PROPOSED ledger。"""
+
+    def __init__(self) -> None:
+        super().__init__(ClaimResult.NEW)
+        self._claim_count = 0
+
+    async def claim_or_match(self, _db: object, **kwargs: Any) -> ClaimResult:
+        self.calls.append(kwargs)
+        self._claim_count += 1
+        return ClaimResult.NEW if self._claim_count == 1 else ClaimResult.MATCH
+
+
 class _Db:
     def __init__(self) -> None:
         self.flush_count = 0
@@ -178,6 +247,9 @@ class _MutationDb(_Db):
     def add(self, value: object) -> None:
         self.added.append(value)
 
+    def add_all(self, values: tuple[object, ...]) -> None:
+        self.added.extend(values)
+
     async def flush(self) -> None:
         self.flush_count += 1
         for index, value in enumerate(self.added, start=1):
@@ -190,6 +262,7 @@ def _intent(value: str = "A") -> RuntimeIntent:
         capability_key="test.effect",
         contract_version="v1",
         operation_key="operation-1",
+        dispatch_key="system-capability:test.effect:operation-1",
         payload=_Input(value=value),
         precondition={"expected": 3},
         fact_version="fact:3",
@@ -226,7 +299,12 @@ def _ctx(db: _Db | None = None) -> dict[str, object]:
     }
 
 
-def _service(definition: SystemCapabilityDefinition, repository: _EffectRepository) -> SystemCapabilityEffectService:
+def _service(
+    definition: SystemCapabilityDefinition,
+    repository: _EffectRepository,
+    *,
+    reconciliation_bridge: _ReconciliationBridge | None = None,
+) -> SystemCapabilityEffectService:
     plugin_definition = SimpleNamespace(
         plugin_key="test_plugin",
         contract_version="v1",
@@ -237,6 +315,8 @@ def _service(definition: SystemCapabilityDefinition, repository: _EffectReposito
         plugin_definitions={("test_plugin", "v1"): plugin_definition},
         plugin_index_digest="d" * 64,
         effect_repository=repository,
+        effect_reducer=_EffectReducer(repository),
+        effect_reconciliation_bridge=reconciliation_bridge or _ReconciliationBridge(),
     )
     return SystemCapabilityEffectService(intent_service=intent_service)
 
@@ -286,13 +366,91 @@ def test_effect_intent_rejects_incomplete_locked_plugin_pin(field_name: str) -> 
 
 
 @pytest.mark.asyncio
-async def test_outbox_async_success_means_durably_accepted_not_remote_completed() -> None:
+async def test_outbox_async_success_keeps_intent_proposed_until_followup_evidence() -> None:
     definition = _definition(completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
-    result = await _service(definition, _EffectRepository(ClaimResult.NEW)).apply(_ctx(), _intent())
+    repository = _EffectRepository(ClaimResult.NEW)
+    result = await _service(definition, repository).apply(_ctx(), _intent())
 
     assert isinstance(result.outcome, Success)
     assert result.durably_accepted is True
     assert result.remote_completed is False
+    assert result.evidence is None
+    assert repository.outcomes == []
+    assert repository.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+
+
+@pytest.mark.asyncio
+async def test_outbox_async_match_replays_durable_acceptance_without_handler_or_evidence() -> None:
+    definition = _definition(completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _AsyncAcceptedReplayRepository()
+    _RecordingHandler.calls.clear()
+    service = _service(definition, repository)
+
+    first = await service.apply(_ctx(), _intent())
+    replay = await service.apply(_ctx(), _intent())
+
+    assert isinstance(first.outcome, Success)
+    assert isinstance(replay.outcome, Success)
+    assert replay.outcome.payload is None
+    assert replay.durably_accepted is True
+    assert replay.remote_completed is False
+    assert replay.idempotent_replay is True
+    assert replay.evidence is None
+    assert len(_RecordingHandler.calls) == 1
+    assert repository.outcomes == []
+    assert repository.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+
+
+@pytest.mark.asyncio
+async def test_outbox_async_match_replays_transport_accepted_intent_without_handler_or_evidence() -> None:
+    definition = _definition(completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _EffectRepository(ClaimResult.MATCH)
+    repository.intent_log.effect_status = RuntimeIntentStatus.ACCEPTED
+    _RecordingHandler.calls.clear()
+
+    replay = await _service(definition, repository).apply(_ctx(), _intent())
+
+    assert isinstance(replay.outcome, Success)
+    assert replay.outcome.payload is None
+    assert replay.durably_accepted is True
+    assert replay.remote_completed is False
+    assert replay.idempotent_replay is True
+    assert replay.evidence is None
+    assert _RecordingHandler.calls == []
+    assert repository.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_outbox_async_proposed_without_outbox_reexecutes_handler_instead_of_replaying_acceptance() -> None:
+    definition = _definition(_StaleHandler, completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _AsyncAcceptedReplayRepository()
+    repository.claimed_outbox_exists = False
+    _StaleHandler.calls = 0
+    _StaleHandler.stale = True
+    service = _service(definition, repository)
+
+    first = await service.apply(_ctx(), _intent())
+    replay = await service.apply(_ctx(), _intent())
+
+    assert isinstance(first.outcome, BusinessReject)
+    assert isinstance(replay.outcome, BusinessReject)
+    assert replay.durably_accepted is False
+    assert replay.idempotent_replay is False
+    assert _StaleHandler.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_outbox_async_retryable_failure_does_not_finalize_intent() -> None:
+    definition = _definition(_FailingHandler, completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _EffectRepository(ClaimResult.NEW)
+
+    result = await _service(definition, repository).apply(_ctx(), _intent())
+
+    assert isinstance(result.outcome, RetryableFailure)
+    assert result.retryable is True
+    assert result.evidence is None
+    assert repository.outcomes == []
+    assert repository.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
 
 
 @pytest.mark.asyncio
@@ -323,6 +481,7 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
     assert "session:31" in claim["idempotency_key"]
     assert "work-item:41" in claim["idempotency_key"]
     assert claim["idempotency_key"].endswith(":operation-1")
+    assert claim["dispatch_key"] == "system-capability:test.effect:operation-1"
 
 
 @pytest.mark.asyncio
@@ -373,6 +532,7 @@ async def test_match_replays_persisted_typed_success_for_real_effect_definitions
         capability_key=definition.capability_key,
         contract_version=definition.contract_version,
         operation_key="real-operation-1",
+        dispatch_key=f"system-capability:{definition.capability_key}:real-operation-1",
         payload=input_payload,
         precondition=precondition,
         fact_version=fact_version,
@@ -403,6 +563,7 @@ async def test_match_replays_persisted_typed_success_for_real_effect_definitions
 
     assert result.outcome == Success(payload=expected)
     assert result.idempotent_replay is True
+    assert result.remote_completed is True
     assert result.evidence is not None
     assert result.evidence.outcome == {"kind": "success", "payload": payload}
 
@@ -423,6 +584,7 @@ async def test_match_with_invalid_persisted_success_fails_closed() -> None:
             "occurred_at_ms": 1000,
         },
     )
+    repository.intent_log.effect_status = RuntimeIntentStatus.COMPLETED
 
     result = await _service(_definition(), repository).apply(_ctx(), _intent())
 
@@ -435,6 +597,7 @@ def _material_intent(*, precondition: dict[str, object], fact_version: object) -
         capability_key=MATERIAL_DEFINITION.capability_key,
         contract_version=MATERIAL_DEFINITION.contract_version,
         operation_key="scan:PKG-STRICT:create",
+        dispatch_key="system-capability:material:create:PKG-STRICT",
         payload={
             "operation": "CREATE",
             "pkg_code": "PKG-STRICT",
@@ -548,6 +711,7 @@ def _session_hold_intent(*, expected_status: object, fact_version: object) -> Ru
         capability_key=HOLD_DEFINITION.capability_key,
         contract_version=HOLD_DEFINITION.contract_version,
         operation_key="session:hold:review",
+        dispatch_key="system-capability:session:hold:review",
         payload={"reason_code": "REVIEW", "message": "manual review"},
         precondition={"expected_status": expected_status},
         fact_version=fact_version,  # type: ignore[arg-type]
@@ -633,7 +797,13 @@ def _device_intent(*, expected_available: object, fact_version: object) -> Runti
         capability_key=DEVICE_DEFINITION.capability_key,
         contract_version=DEVICE_DEFINITION.contract_version,
         operation_key="device:71:dispatch",
-        payload={"target_device_id": 71, "action": "PICK_AND_PUT", "result_policy": "COMMAND_RESULT"},
+        dispatch_key="device-command:CMD-71-EFFECT",
+        payload={
+            "target_device_id": 71,
+            "action": "PICK_AND_PUT",
+            "command_code": "CMD-71-EFFECT",
+            "result_policy": "COMMAND_RESULT",
+        },
         precondition={"expected_available": expected_available},
         fact_version=fact_version,  # type: ignore[arg-type]
         timeout_seconds=5,
@@ -706,7 +876,8 @@ async def test_device_matching_typed_admission_creates_one_command_and_outbox(mo
         current_command_id=None,
     )
 
-    result = await _service(DEVICE_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
+    effect_repository = _EffectRepository(ClaimResult.NEW)
+    result = await _service(DEVICE_DEFINITION, effect_repository).apply(
         ctx, _device_intent(expected_available=True, fact_version="device:v2")
     )
 
@@ -716,6 +887,7 @@ async def test_device_matching_typed_admission_creates_one_command_and_outbox(mo
     assert calls[0]["target_device_id"] == 71
     assert calls[0]["admission"].fact_version == "device:v2"  # type: ignore[union-attr]
     assert calls[0]["expected_workline_id"] == 3
+    assert calls[0]["intent_log"] is effect_repository.intent_log
 
 
 @pytest.mark.asyncio
@@ -758,18 +930,85 @@ async def test_session_and_device_malformed_admission_remain_contract_violations
 
 
 @pytest.mark.asyncio
-async def test_same_final_key_with_different_hash_fails_closed() -> None:
-    conflict = IdempotencyConflict(
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        IdempotencyConflict(
+            provider_code="RUNTIME",
+            operation_kind="system_capability_effect",
+            idempotency_key="stable-key",
+            existing_request_hash="a" * 64,
+            incoming_request_hash="b" * 64,
+            correlation_id="untrusted-correlation",
+        ),
+        SystemCapabilityIdempotencyConflict(
+            provider_code="RUNTIME",
+            operation_kind="system_capability_effect",
+            idempotency_key="stable-key",
+            existing_request_hash="a" * 64,
+            incoming_request_hash="b" * 64,
+            correlation_id="untrusted-correlation",
+        ),
+    ],
+)
+async def test_idempotency_conflict_uses_authoritative_intent_and_records_open_case_event(
+    conflict: IdempotencyConflict | SystemCapabilityIdempotencyConflict,
+) -> None:
+    repository = _EffectRepository(conflict)
+    bridge = _ReconciliationBridge()
+    result = await _service(_definition(), repository, reconciliation_bridge=bridge).apply(_ctx(), _intent("B"))
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "IDEMPOTENCY_CONFLICT"
+    assert repository.conflict_lookups == [
+        {
+            "provider_code": "RUNTIME",
+            "operation_kind": "system_capability_effect",
+            "idempotency_key": "stable-key",
+        }
+    ]
+    assert len(bridge.conflicts) == 1
+    recorded = bridge.conflicts[0]
+    assert recorded["dispatch_key"] == "authoritative-effect-dispatch"
+    assert recorded["evidence_json"] == {
+        "provider_code": "RUNTIME",
+        "operation_kind": "system_capability_effect",
+        "idempotency_key": "stable-key",
+        "existing_request_hash": "a" * 64,
+        "incoming_request_hash": "b" * 64,
+        "authoritative_intent_id": 17,
+    }
+    assert "correlation_id" not in recorded["evidence_json"]
+
+
+@pytest.mark.asyncio
+async def test_idempotency_conflict_without_authoritative_intent_is_observable_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conflict = SystemCapabilityIdempotencyConflict(
         provider_code="RUNTIME",
         operation_kind="system_capability_effect",
         idempotency_key="stable-key",
         existing_request_hash="a" * 64,
         incoming_request_hash="b" * 64,
     )
-    result = await _service(_definition(), _EffectRepository(conflict)).apply(_ctx(), _intent("B"))
+    repository = _EffectRepository(conflict)
+    repository.conflict_intent = None
+    bridge = _ReconciliationBridge()
+    errors: list[str] = []
+    intent_service_module = __import__(
+        "src.app.runtime.orchestration.services.intent.system_capability_intent_service",
+        fromlist=["logger"],
+    )
+    monkeypatch.setattr(intent_service_module, "logger", SimpleNamespace(error=errors.append), raising=False)
+
+    result = await _service(_definition(), repository, reconciliation_bridge=bridge).apply(_ctx(), _intent("B"))
 
     assert isinstance(result.outcome, ContractViolation)
     assert result.outcome.error_code == "IDEMPOTENCY_CONFLICT"
+    assert bridge.conflicts == []
+    assert len(errors) == 1
+    assert "IDEMPOTENCY_CONFLICT_AUTHORITY_MISSING" in errors[0]
 
 
 @pytest.mark.asyncio
@@ -791,6 +1030,20 @@ async def test_stale_precondition_remains_business_reject_for_plugin_redecision(
     assert repository.status == "SUCCEEDED"
     redetermination = await repository.list_redecision_evidence(_ctx()["db"], session_id=31, work_item_id=41)
     assert len(redetermination) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_proposed_match_reexecutes_handler_instead_of_treating_evidence_as_corrupt() -> None:
+    repository = _EffectRepository(ClaimResult.MATCH)
+    repository.intent_log.effect_status = RuntimeIntentStatus.PROPOSED
+    _StaleHandler.calls = 0
+    _StaleHandler.stale = False
+
+    result = await _service(_definition(_StaleHandler), repository).apply(_ctx(), _intent())
+
+    assert isinstance(result.outcome, Success)
+    assert result.idempotent_replay is False
+    assert _StaleHandler.calls == 1
 
 
 @pytest.mark.asyncio
@@ -1006,6 +1259,10 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
         current_wait_timeout_seconds=None,
         awaiting_device_command_code=None,
     )
+    intent_log = SimpleNamespace(
+        effect_status=RuntimeIntentStatus.PROPOSED,
+        dispatch_key="device-command:CMD-RUNTIME-EFFECT",
+    )
     command, outbox = await DeviceCommandService(
         repository=_CommandRepository(),
         device_repository=_DeviceRepository(),
@@ -1016,7 +1273,7 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
             priority=5,
             timeout_ms=30000,
             payload={"business_key": "PKG-1"},
-            command_code=None,
+            command_code="CMD-RUNTIME-EFFECT",
             result_policy="COMMAND_RESULT",
         ),
         target_device_id=71,
@@ -1029,6 +1286,7 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
         idempotency_key="system-capability:device.device_command_write@v1:session:31:work-item:41:pick-1",
         execution_correlation_id="corr-device-effect",
         trace_id="trace-device-effect",
+        intent_log=intent_log,
     )
 
     assert isinstance(command, DeviceCommand)
@@ -1038,6 +1296,7 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
     assert getattr(outbox.status, "value", outbox.status) == "NEW"
     assert session.current_wait_type == "COMMAND_RESULT"
     assert session.awaiting_device_command_code == command.command_code
+    assert db.added == [command, intent_log, outbox]
     assert db.commit_count == 0
     assert db.rollback_count == 0
 
@@ -1113,6 +1372,10 @@ async def test_runtime_device_command_service_rejects_fire_and_forget_model_bypa
             idempotency_key="system-capability:device.device_command_write@v1:session:31:move-1",
             execution_correlation_id="corr-fire-and-forget",
             trace_id="trace-fire-and-forget",
+            intent_log=SimpleNamespace(
+                effect_status=RuntimeIntentStatus.PROPOSED,
+                dispatch_key="device-command:CMD-FIRE-AND-FORGET",
+            ),
         )
 
 

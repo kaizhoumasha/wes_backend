@@ -32,12 +32,9 @@ def _wms_profile() -> ExternalContractProfile:
         provider_code="WMS",
         contract_version="2026-06-25",
         environment="sandbox",
-        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
-        runtime_capabilities_effect=["WmsFulfillmentPort.request_transport"],
         timeout_retry_query_timeout_seconds=10,
         timeout_retry_effect_timeout_seconds=30,
         timeout_retry_retry_backoff_seconds=[1, 2, 4],
-        cache_ttl_seconds=30,
         fixture_set_path="tests/fixtures/external_contracts/wms/default",
         fixture_set_required_cases=sorted(REQUIRED_CASES),
     )
@@ -91,7 +88,6 @@ def test_provider_simulator_registry_rejects_provider_mismatch(tmp_path):
                 "case_id": "bad",
                 "provider_code": "ECS",  # 错误: profile 期望 WMS
                 "contract_version": "2026-06-25",
-                "expected_port": "DeviceEventPort.ack",
                 "direction": "event",
                 "expected_typed": {},
             }

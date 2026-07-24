@@ -132,7 +132,10 @@ DEFINITION = WorklinePluginDefinition(
         ("device.device_command_write", "v1"),
         ("material_flow.material_unit_write", "v1"),
         ("runtime.session_hold", "v1"),
-        ("wms.rough_sorter_inventory_admission", "v1"),
+        ("wms.fulfillment.full_box_exchange", "v1"),
+        ("wms.fulfillment.notify_pkg_binding", "v1"),
+        ("wms.inventory.confirm_inbound", "v1"),
+        ("wms.inventory.query_inventory", "v1"),
     ),
     parsers={
         "SCAN_COMPLETED": parse_scan_completed,

@@ -163,12 +163,13 @@ InboundNormalizerProfile 校验失败时抛 ValueError, 包含三类:
 | `WmsWave` | wave_id, status, pick_order_ids, scheduled_at |
 | `WmsTaskSnapshot` | task_id, task_type, status, payload, correlation_id |
 
-### 5.2 WmsFulfillmentPort 数据类（2 个）
+### 5.2 WmsFulfillmentPort 数据类（1 个）
 
 | 数据类 | 字段 |
 |--------|------|
 | `WmsFulfillmentResult` | request_id, accepted, reason, warehouse_code |
-| `WmsPalletBindingResult` | package_id, pallet_id, bound_at, station_code |
+
+> 料盘绑定结果已迁移到 `wms.fulfillment.notify_pkg_binding@v1` 的 operation-scoped typed contract。
 
 ### 5.3 WmsEventPort 数据类（4 normalizer + InboundEventEnvelope 共享）
 

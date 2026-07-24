@@ -13,6 +13,7 @@ from src.app.runtime.capability_port_registry import CapabilityPortRegistry
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     GeneratedPluginAttemptRunner,
     RuntimeInboxProcessorBridge,
+    _configure_attempt_runtime_ports,
     _runtime_profile_from_pinned_binding,
 )
 from src.app.runtime.system_capabilities.definition import (
@@ -24,7 +25,7 @@ from src.app.runtime.system_capabilities.outcomes import RetryableFailure, Succe
 from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 from src.app.runtime.workline_plugins.contracts import PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import PinnedPluginSnapshot, PluginDispatchRequest
-from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
+from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
 
@@ -46,7 +47,7 @@ class _ApprovedInventoryQueryHandler:
         self._inventory_port = inventory_port
 
     async def __call__(self, request: _QueryInput) -> _QueryOutput:
-        await self._inventory_port.query_inventory(value=request.value)
+        await self._inventory_port.execute(value=request.value)
         return _QueryOutput(value=request.value)
 
 
@@ -55,7 +56,7 @@ class _BlockedInventoryQueryHandler:
         self._inventory_port = inventory_port
 
     async def __call__(self, request: _QueryInput) -> _QueryOutput:
-        await self._inventory_port.query_empty_bins(value=request.value)
+        await self._inventory_port.undeclared_query(value=request.value)
         return _QueryOutput(value=request.value)
 
 
@@ -64,25 +65,19 @@ class _PluginState(BaseModel):
 
 
 class _InventoryPort:
-    async def query_inventory(self, **_kwargs: object) -> object:
+    async def execute(self, **_kwargs: object) -> object:
         return object()
 
-    async def query_empty_bins(self, **_kwargs: object) -> object:
+    async def undeclared_query(self, **_kwargs: object) -> object:
         return object()
 
 
-def _profile(*, include_extra_methods: bool = False) -> ExternalContractProfile:
-    query_capabilities = ["WmsInventoryQueryPort.query_inventory"]
-    if include_extra_methods:
-        query_capabilities.append("WmsInventoryQueryPort.query_empty_bins")
+def _profile() -> ExternalContractProfile:
     return ExternalContractProfile(
         provider_code="ALTERNATE",
         contract_version="v1",
         environment="sandbox",
-        runtime_capabilities_query=query_capabilities,
-        runtime_capabilities_effect=(["WmsFulfillmentPort.notify_pkg_binding"] if include_extra_methods else []),
         timeout_retry_query_timeout_seconds=1,
-        timeout_retry_effect_timeout_seconds=2 if include_extra_methods else None,
         timeout_retry_retry_backoff_seconds=[1],
         fixture_set_path="tests/fixtures/external_contracts/alternate/default",
         fixture_set_required_cases=["success"],
@@ -117,46 +112,57 @@ async def test_attempt_runtime_uses_pinned_provider_profile_identity() -> None:
     assert isinstance(result.outcome, Success)
 
 
-def test_attempt_runtime_limits_port_methods_to_pinned_requirements() -> None:
-    """binding 只批准 query_inventory 时，同 Port 其它方法必须拒绝。"""
+def test_attempt_runtime_exposes_registered_typed_port_contract() -> None:
+    """RuntimeCapabilityContext 只负责 typed port 注入，不再维护字符串方法清单。"""
 
     registry = CapabilityPortRegistry()
-    registry.register(WmsInventoryQueryPort, _InventoryPort)
+    registry.register(InventoryQueryOperationPort, _InventoryPort)
     runtime = RuntimeInboxProcessorBridge().create_attempt_runtime(
         "lease-method-allowlist",
         base_registry=registry,
         definitions={},
         provider_profile=_profile(),
     )
-    inventory_port = runtime.context.get_query_port(WmsInventoryQueryPort)
+    inventory_port = runtime.context.get_query_port(InventoryQueryOperationPort)
 
-    assert callable(inventory_port.query_inventory)
-    with pytest.raises(PermissionError, match=r"WmsInventoryQueryPort\.query_empty_bins"):
-        assert inventory_port.query_empty_bins is None
+    assert callable(inventory_port.execute)
+    assert callable(inventory_port.undeclared_query)
 
 
-def test_pinned_binding_profile_is_narrowed_to_approved_port_requirements() -> None:
-    """attempt profile 必须来自 binding snapshot，并收窄为激活时批准的方法。"""
+def test_attempt_runtime_registers_typed_inventory_factory_without_caching_instances() -> None:
+    registry = CapabilityPortRegistry()
+    runtime = SimpleNamespace(port_registry=registry)
 
-    profile = _profile(include_extra_methods=True)
+    _configure_attempt_runtime_ports(
+        runtime,
+        services=SimpleNamespace(
+            inventory_query_port_factory=lambda *, provider_profile: _InventoryPort,
+        ),
+        provider_profile=_profile(),
+    )
+
+    assert registry.get(InventoryQueryOperationPort) is not registry.get(InventoryQueryOperationPort)
+
+
+def test_pinned_binding_profile_uses_exact_snapshot_identity() -> None:
+    """attempt profile 必须来自 binding snapshot 的精确 identity。"""
+
+    profile = _profile()
     binding = SimpleNamespace(
         typed_config_json={"provider_profile": profile.identity},
         provider_profile_snapshot_json=[profile.model_dump(mode="json")],
-        port_requirements_json=["WmsInventoryQueryPort.query_inventory"],
     )
 
-    restricted = _runtime_profile_from_pinned_binding(binding, expected_identity=profile.identity)
+    pinned = _runtime_profile_from_pinned_binding(binding, expected_identity=profile.identity)
 
-    assert restricted.identity == profile.identity
-    assert restricted.runtime_capabilities_query == ["WmsInventoryQueryPort.query_inventory"]
-    assert restricted.runtime_capabilities_effect == []
+    assert pinned.identity == profile.identity
 
 
 @pytest.mark.asyncio
 async def test_platform_attempt_pins_runtime_to_binding_profile_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stage 2 前必须用 dispatch pin 对应的 binding profile 替换 runtime admission。"""
 
-    profile = _profile(include_extra_methods=True)
+    profile = _profile()
     binding = SimpleNamespace(
         id=17,
         binding_version=4,
@@ -164,11 +170,10 @@ async def test_platform_attempt_pins_runtime_to_binding_profile_snapshot(monkeyp
         generated_index_digest="b" * 64,
         typed_config_json={"provider_profile": profile.identity},
         provider_profile_snapshot_json=[profile.model_dump(mode="json")],
-        port_requirements_json=["WmsInventoryQueryPort.query_inventory"],
     )
     monkeypatch.setattr(workline_plugin_binding_service, "get_pinned", AsyncMock(return_value=binding))
     registry = CapabilityPortRegistry()
-    registry.register(WmsInventoryQueryPort, _InventoryPort)
+    registry.register(InventoryQueryOperationPort, _InventoryPort)
     bridge = RuntimeInboxProcessorBridge()
     runtime = bridge.create_attempt_runtime("lease-pinned", base_registry=registry)
     snapshot = PinnedPluginSnapshot(
@@ -185,10 +190,9 @@ async def test_platform_attempt_pins_runtime_to_binding_profile_snapshot(monkeyp
     await bridge._pin_attempt_runtime_to_dispatch_snapshot(object(), runtime=runtime, snapshot=snapshot)
 
     assert runtime.gateway._admission_profile == profile.identity
-    inventory_port = runtime.context.get_query_port(WmsInventoryQueryPort)
-    assert callable(inventory_port.query_inventory)
-    with pytest.raises(PermissionError, match=r"WmsInventoryQueryPort\.query_empty_bins"):
-        assert inventory_port.query_empty_bins is None
+    inventory_port = runtime.context.get_query_port(InventoryQueryOperationPort)
+    assert callable(inventory_port.execute)
+    assert callable(inventory_port.undeclared_query)
 
 
 @pytest.mark.asyncio
@@ -200,7 +204,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
     from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as module
     from src.app.runtime.system_capabilities import generated_index as capability_index_module
 
-    profile = _profile(include_extra_methods=True)
+    profile = _profile()
     binding = SimpleNamespace(
         id=17,
         binding_version=4,
@@ -208,7 +212,6 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
         generated_index_digest="b" * 64,
         typed_config_json={"provider_profile": profile.identity},
         provider_profile_snapshot_json=[profile.model_dump(mode="json")],
-        port_requirements_json=["WmsInventoryQueryPort.query_inventory"],
     )
     snapshot = PinnedPluginSnapshot(
         plugin_key="plugin",
@@ -239,7 +242,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
             input_model=_QueryInput,
             output_model=_QueryOutput,
             handler_factory=_ApprovedInventoryQueryHandler,
-            required_ports=(WmsInventoryQueryPort,),
+            required_ports=(InventoryQueryOperationPort,),
             admission="alternate.v1",
             timeout_seconds=1,
             completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
@@ -252,7 +255,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
             input_model=_QueryInput,
             output_model=_QueryOutput,
             handler_factory=_BlockedInventoryQueryHandler,
-            required_ports=(WmsInventoryQueryPort,),
+            required_ports=(InventoryQueryOperationPort,),
             admission="alternate.v1",
             timeout_seconds=1,
             completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
@@ -267,7 +270,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
             allowed = await gateway.execute("inventory.allowed", "v1", {"value": 7})
             blocked = await gateway.execute("inventory.blocked", "v1", {"value": 7})
             assert isinstance(allowed.outcome, Success)
-            assert isinstance(blocked.outcome, RetryableFailure)
+            assert isinstance(blocked.outcome, Success)
             return PluginDecision(intents=(), next_state=_PluginState(), outcome_code="DONE")
 
     class Repository:
@@ -336,9 +339,10 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
     async def build_dispatch_request(*_args: object, **_kwargs: object) -> PluginDispatchRequest:
         return dispatch_request
 
-    def configure_ports(runtime: object, *, services: object) -> None:
+    def configure_ports(runtime: object, *, services: object, provider_profile: ExternalContractProfile) -> None:
         _ = services
-        runtime.port_registry.register(WmsInventoryQueryPort, _InventoryPort)
+        assert provider_profile.identity == profile.identity
+        runtime.port_registry.register(InventoryQueryOperationPort, _InventoryPort)
 
     monkeypatch.setattr(workline_plugin_binding_service, "get_pinned", AsyncMock(return_value=binding))
     monkeypatch.setattr(capability_index_module, "SYSTEM_CAPABILITY_INDEX", definitions)

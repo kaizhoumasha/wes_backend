@@ -13,17 +13,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import importlib.util
+import json
 import logging
 import math
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 
 # 添加项目根目录到 sys.path
 from pathlib import Path
 from typing import Any, Optional
+from uuid import uuid4
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Request, Response
@@ -57,6 +61,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+CALLBACK_API_APP_ID = os.getenv("API_APP_ID", "")
+CALLBACK_API_APP_SECRET = os.getenv("API_APP_SECRET", "")
 
 
 def _positive_float_env(name: str) -> float | None:
@@ -657,8 +664,32 @@ def _now_ms() -> int:
 
 async def _post_callback(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
+        if not CALLBACK_API_APP_ID or not CALLBACK_API_APP_SECRET:
+            raise RuntimeError("WMS Mock callback API credential is required")
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        timestamp = str(int(time.time()))
+        nonce = uuid4().hex
+        body_sha256 = hashlib.sha256(body).hexdigest()
+        path = httpx.URL(url).path
+        canonical = f"POST\n{path}\n{timestamp}\n{nonce}\n{body_sha256}\n{CALLBACK_API_APP_ID}"
+        signature = hmac.new(
+            CALLBACK_API_APP_SECRET.encode(),
+            canonical.encode(),
+            hashlib.sha256,
+        ).hexdigest()
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(url, json=payload)
+            response = await client.post(
+                url,
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-App-ID": CALLBACK_API_APP_ID,
+                    "X-Timestamp": timestamp,
+                    "X-Nonce": nonce,
+                    "X-Body-SHA256": body_sha256,
+                    "X-Signature": signature,
+                },
+            )
         return {
             "delivered": 200 <= response.status_code < 300,
             "status_code": response.status_code,
@@ -667,6 +698,54 @@ async def _post_callback(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         logger.error("WMS Mock 回调 WES 失败: %s", exc)
         return {"delivered": False, "error": str(exc)}
+
+
+def _typed_effect_callback_payload(
+    *,
+    callback_type: str,
+    request_payload: dict[str, Any],
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    dispatch_key = str(request_payload.get("dispatch_key") or "")
+    source_event_hash = hashlib.sha256(f"{callback_type}:{dispatch_key}".encode()).hexdigest()[:16]
+    return {
+        "callback_type": callback_type,
+        "source_system": "WMS",
+        "source_event_id": f"wms-mock:typed-effect:{source_event_hash}",
+        "trace_id": str(request_payload.get("trace_id") or f"wms-mock:{dispatch_key}"),
+        "data": data,
+    }
+
+
+def _legacy_transport_callback_payload(
+    *,
+    callback_type: str,
+    request_payload: dict[str, Any],
+    exchange_status: str,
+) -> dict[str, Any]:
+    dispatch_key = str(request_payload.get("dispatch_key") or request_payload.get("request_id") or "")
+    source_event_hash = hashlib.sha256(f"{callback_type}:{dispatch_key}".encode()).hexdigest()[:16]
+    timestamp = _now_ms()
+    callback_payload = {
+        "callback_type": callback_type,
+        "dispatch_key": dispatch_key,
+        "exchange_request_code": dispatch_key,
+        "exchange_status": exchange_status,
+        "occurred_at": timestamp,
+        "request_id": dispatch_key,
+        "signature": "mock-signature",
+        "source_event_id": f"wms-mock:transport:{source_event_hash}",
+        "source_system": "WMS",
+        "source_version": "mock-wms.v1",
+        "status": "SUCCESS",
+        "timestamp": timestamp,
+        "trace_id": str(request_payload.get("trace_id") or f"wms-mock:{dispatch_key}"),
+        "wms_rcs_task_id": f"mock-transport:{dispatch_key}",
+    }
+    rack_release_id = request_payload.get("rack_release_id")
+    if rack_release_id is not None:
+        callback_payload["rack_release_id"] = rack_release_id
+    return callback_payload
 
 
 def _rack_operation_callback_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -919,17 +998,46 @@ async def rack_operation(payload: dict[str, Any], background_tasks: BackgroundTa
     }
 
 
-@app.post("/api/wms/fulfillment/pkg-binding", summary="本机 Mock: PKG 绑定通知")
-async def notify_pkg_binding(payload: dict[str, Any]):
-    """模拟 WmsFulfillmentPort.notify_pkg_binding, 仅供本机开发验收。"""
+@app.post("/api/wms/transport-request", summary="接收料箱运输请求并回调 WES")
+async def transport_request(payload: dict[str, Any], background_tasks: BackgroundTasks):
+    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
+    callback_payload = _legacy_transport_callback_payload(
+        callback_type=str(payload.get("callback_type") or "WMS_TRANSPORT_COMPLETED"),
+        request_payload=payload,
+        exchange_status="PHYSICAL_COMPLETED",
+    )
+    background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
+    return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}
 
+
+@app.post("/api/wms/fulfillment/package-binding", summary="本机 Mock: typed PKG 绑定通知")
+async def notify_pkg_binding(payload: dict[str, Any], background_tasks: BackgroundTasks):
+    """模拟 `wms.fulfillment.notify_pkg_binding@v1`，仅供本机开发验收。"""
+
+    dispatch_key = str(payload.get("dispatch_key") or "")
     package_id = str(payload.get("package_id") or "")
     pallet_id = str(payload.get("pallet_id") or "")
     station_code = str(payload.get("station_code") or "")
+    callback_data = {
+        "dispatch_key": dispatch_key,
+        "package_id": package_id,
+        "pallet_id": pallet_id,
+        "accepted": True,
+        "source_version": "mock-wms.v1",
+    }
+    background_tasks.add_task(
+        _post_callback,
+        WES_EXTERNAL_CALLBACK_URL,
+        _typed_effect_callback_payload(
+            callback_type="WMS_PACKAGE_BOUND",
+            request_payload=payload,
+            data=callback_data,
+        ),
+    )
     return {
         "code": 200,
         "data": {
-            "request_id": payload.get("request_id", ""),
+            "request_id": payload.get("request_id") or dispatch_key,
             "binding_key": f"{package_id}:{pallet_id}:{station_code}",
             "package_id": package_id,
             "pallet_id": pallet_id,
@@ -951,9 +1059,39 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
 
 
 @app.post("/api/wms/fulfillment/full-box-exchange", summary="本机 Mock: 满箱交换履约")
-async def full_box_exchange(payload: dict[str, Any]):
-    """模拟 WmsFulfillmentPort.full_box_exchange, 不触发生产写路径。"""
+async def full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks):
+    """模拟满箱交换 typed EFFECT，不触发生产写路径。"""
 
+    dispatch_key = str(payload.get("dispatch_key") or "")
+    requested_callback_type = str(payload.get("callback_type") or "")
+    if dispatch_key and requested_callback_type == "WMS_FULL_BOX_EXCHANGE_RESULT":
+        background_tasks.add_task(
+            _post_callback,
+            WES_EXTERNAL_CALLBACK_URL,
+            _legacy_transport_callback_payload(
+                callback_type=requested_callback_type,
+                request_payload=payload,
+                exchange_status="BUSINESS_COMPLETED",
+            ),
+        )
+    elif dispatch_key:
+        background_tasks.add_task(
+            _post_callback,
+            WES_EXTERNAL_CALLBACK_URL,
+            _typed_effect_callback_payload(
+                callback_type="WMS_FULL_BOX_EXCHANGE_COMPLETED",
+                request_payload=payload,
+                data={
+                    "dispatch_key": dispatch_key,
+                    "rack_id": str(payload.get("rack_id") or ""),
+                    "empty_box_id": str(payload.get("empty_box_id") or ""),
+                    "full_box_id": str(payload.get("full_box_id") or ""),
+                    "accepted": True,
+                    "exchange_request_code": dispatch_key,
+                    "source_version": "mock-wms.v1",
+                },
+            ),
+        )
     rack_code = str(payload.get("rack_code") or "")
     rack_side = str(payload.get("rack_side") or "")
     full_box_object_keys = _string_list(payload, "full_box_object_keys")
@@ -1040,8 +1178,8 @@ async def rough_sorter_inbound_preview(payload: dict[str, Any]):
             "next_object_admission_allowed": True,
             "legacy_plugin_entry_used": False,
             "effect_ports": {
-                "pkg_binding": "WmsFulfillmentPort.notify_pkg_binding",
-                "inventory_transaction": "WmsInventoryTransactionPort.confirm_inbound",
+                "pkg_binding": "wms.fulfillment.notify_pkg_binding@v1",
+                "inventory_transaction": "wms.inventory.confirm_inbound@v1",
             },
         },
     }
@@ -1333,14 +1471,30 @@ async def delete_reservation(reservation_key: str):
     }
 
 
-@app.post("/api/wms/inbound/confirm")
-async def confirm_inbound(payload: dict[str, Any]):
+@app.post("/api/wms/inventory/confirm-inbound")
+async def confirm_inbound_effect(payload: dict[str, Any], background_tasks: BackgroundTasks):
+    dispatch_key = str(payload.get("dispatch_key") or "")
+    inbound_key = str(payload.get("inbound_key") or "")
+    background_tasks.add_task(
+        _post_callback,
+        WES_EXTERNAL_CALLBACK_URL,
+        _typed_effect_callback_payload(
+            callback_type="WMS_INBOUND_CONFIRMED",
+            request_payload=payload,
+            data={
+                "dispatch_key": dispatch_key,
+                "inbound_key": inbound_key,
+                "accepted": True,
+                "source_version": "mock-wms.v1",
+            },
+        ),
+    )
     return {
         "code": 200,
         "data": {
-            "request_id": payload.get("request_id", ""),
-            "inbound_key": payload.get("inbound_key", ""),
-            "confirmed": True,
+            "dispatch_key": dispatch_key,
+            "inbound_key": inbound_key,
+            "accepted": True,
         },
     }
 

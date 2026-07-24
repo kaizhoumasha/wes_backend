@@ -59,7 +59,6 @@ from src.app.runtime.orchestration.services.trace.timeline_sequence_service impo
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
-from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
@@ -162,6 +161,7 @@ class WorklineRuntimeReconciliationService:
         session_repository: WorklineSessionRepository | None = None,
         workline_repository: WorkLineRepository | None = None,
         system_outbox_repository: SystemOutboxRepository | None = None,
+        system_outbox_cancellation_service: Any | None = None,
         device_service: DeviceService | None = None,
         runtime_hold_creation_service: Any | None = None,
         runtime_hold_repository: RuntimeHoldRepository | None = None,
@@ -173,6 +173,15 @@ class WorklineRuntimeReconciliationService:
         self.session_repository = session_repository or WorklineSessionRepository()
         self.workline_repository = workline_repository or default_workline_repository
         self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()
+        if system_outbox_cancellation_service is None:
+            from src.app.runtime.orchestration.services.system_outbox_cancellation_service import (
+                SystemOutboxCancellationService,
+            )
+
+            system_outbox_cancellation_service = SystemOutboxCancellationService(
+                repository=self.system_outbox_repository
+            )
+        self.system_outbox_cancellation_service = system_outbox_cancellation_service
         self.device_service = device_service or DeviceService()
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
         self.runtime_hold_repository = runtime_hold_repository or default_runtime_hold_repository
@@ -304,7 +313,7 @@ class WorklineRuntimeReconciliationService:
             _ = await self.device_service.mark_callback_deadline_expired(db, device_id=device_id, auto_commit=False)
 
         if session.id is not None:
-            _ = await self.system_outbox_repository.cancel_active_by_session(
+            _ = await self.system_outbox_cancellation_service.cancel_active_by_session(
                 db,
                 session_id=session.id,
                 reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
@@ -398,7 +407,7 @@ class WorklineRuntimeReconciliationService:
             outbox=outbox,
             command=command,
         )
-        outbox.status = SystemOutboxStatus.FAILED
+        # SENT 已是 transport 终态；ACK 耗尽只登记对账证据，不回写覆盖 transport 事实。
         outbox.last_error = error_message
         outbox.next_retry_at = None
         outbox.finished_at = now
@@ -545,8 +554,9 @@ class WorklineRuntimeReconciliationService:
         *,
         outbox: SystemOutbox,
         reason: str,
+        lease_owner_token: str | None = None,
     ) -> SystemOutbox | None:
-        """WorkLine RECONCILING 时，将尚未 ACK 的 outbox 暂停为 BLOCKED_RESOURCE。"""
+        """WorkLine RECONCILING 时，将尚未 ACK 的 outbox 暂停为 RETRY_WAIT。"""
 
         workline_id = outbox.workline_id
         if workline_id is None:
@@ -578,6 +588,7 @@ class WorklineRuntimeReconciliationService:
                 reason=reason,
                 blocked_device_id=getattr(owner, "reconciliation_device_id", None),
                 blocked_workline_id=workline_id,
+                lease_owner_token=lease_owner_token,
             )
         return await self.system_outbox_repository.mark_as_blocked_by_workline_state(
             db,
@@ -586,6 +597,7 @@ class WorklineRuntimeReconciliationService:
             reason=reason,
             blocked_device_id=getattr(owner, "reconciliation_device_id", None),
             blocked_workline_id=workline_id,
+            lease_owner_token=lease_owner_token,
         )
 
     async def record_late_callback_if_pending(

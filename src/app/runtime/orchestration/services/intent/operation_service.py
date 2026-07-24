@@ -18,6 +18,7 @@ from src.app.device.repositories import (
     device_command_repository,
     device_repository,
 )
+from src.app.runtime.orchestration.effect_state_contract import transition_system_outbox
 from src.app.runtime.orchestration.models.operation import (
     ResolveRuntimeReconciliationRequest,
     SandboxEventTemplate,
@@ -261,8 +262,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         runtime_hold_id = runtime_hold.id if runtime_hold is not None else None
         is_actionable = (
             is_current_action
-            and enum_str(outbox.status)
-            not in {SystemOutboxStatus.BLOCKED_RESOURCE.value, SystemOutboxStatus.FAILED.value}
+            and enum_str(outbox.status) not in {SystemOutboxStatus.RETRY_WAIT.value, SystemOutboxStatus.FAILED.value}
             and status in {SystemOutboxStatus.SENT.value, "ACKED"}
         )
         failure_summary = self._build_projection_failure_summary(outbox=outbox, command=command, hold=runtime_hold)
@@ -322,7 +322,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         outbox_status = enum_str(outbox.status)
         command_status = enum_str(command.status) if command is not None else None
         failure_outbox_statuses = {
-            SystemOutboxStatus.BLOCKED_RESOURCE.value,
+            SystemOutboxStatus.RETRY_WAIT.value,
             SystemOutboxStatus.FAILED.value,
             SystemOutboxStatus.CANCELLED.value,
         }
@@ -876,7 +876,7 @@ class WorklineOperationService(BaseService[Any, Any]):
                 trace_id=trace_id,
             )
 
-        outbox.status = SystemOutboxStatus.SENT
+        _transition_sandbox_outbox_to_sent(outbox)
         if getattr(outbox, "sent_at", None) is None:
             outbox.sent_at = callback_received_at
         if hasattr(outbox, "next_retry_at"):
@@ -925,7 +925,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             raise ValueError(f"Command 已 ACK，不能重复模拟 ACK: {command_code}")
 
         ack_received_at = timezone.now_for_db()
-        outbox.status = SystemOutboxStatus.SENT
+        _transition_sandbox_outbox_to_sent(outbox)
         if outbox.sent_at is None:
             outbox.sent_at = ack_received_at
         outbox.next_retry_at = None
@@ -1303,6 +1303,18 @@ class WorklineOperationService(BaseService[Any, Any]):
             event_templates=event_templates,
             result_templates=result_templates,
         )
+
+
+def _transition_sandbox_outbox_to_sent(outbox: Any) -> None:
+    """沙箱同步回调仍遵循真实 transport 的合法状态边。"""
+
+    if enum_str(outbox.status) == SystemOutboxStatus.SENT.value:
+        return
+    if enum_str(outbox.status) == SystemOutboxStatus.NEW.value:
+        transition_system_outbox(outbox, SystemOutboxStatus.DISPATCHING)
+    transition_system_outbox(outbox, SystemOutboxStatus.SENT)
+    # owner token 作为历史审计证据保留；离开 DISPATCHING 后只清理活跃租约期限。
+    outbox.lease_expires_at = None
 
 
 workline_operation_service = WorklineOperationService()

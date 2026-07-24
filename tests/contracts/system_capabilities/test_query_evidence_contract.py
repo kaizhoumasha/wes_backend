@@ -20,7 +20,24 @@ def evidence_payload() -> dict[str, object]:
         "source_version": "42",
         "admission_snapshot": {"profile": "provider-contract"},
         "summary": {"found": True},
+        "shadow_expected": None,
     }
+
+
+def test_query_evidence_requires_explicit_shadow_contract_and_serializes_null() -> None:
+    from pydantic import ValidationError
+
+    from src.app.runtime.system_capabilities.evidence import QueryEvidence
+
+    payload = evidence_payload()
+    payload.pop("shadow_expected")
+    with pytest.raises(ValidationError, match="shadow_expected"):
+        QueryEvidence.model_validate(payload)
+
+    payload["shadow_expected"] = None
+    evidence = QueryEvidence.model_validate(payload)
+
+    assert evidence.payload()["shadow_expected"] is None
 
 
 def test_evidence_maps_to_existing_decision_made_timeline_payload() -> None:

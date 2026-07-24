@@ -167,6 +167,7 @@ async def test_system_capability_intent_uses_one_generic_effect_service_branch()
         capability_key="material_flow.material_unit_write",
         contract_version="v1",
         operation_key="scan:PKG-001:create",
+        dispatch_key="system-capability:material:create:PKG-001",
         payload={"operation": "CREATE", "pkg_code": "PKG-001"},
         precondition={"expected_absent": True},
         fact_version="material-unit:v0",
@@ -198,6 +199,7 @@ async def test_stale_material_effect_short_circuits_following_device_effects() -
         capability_key="material_flow.material_unit_write",
         contract_version="v1",
         operation_key="scan:PKG-001:create",
+        dispatch_key="system-capability:material:create:PKG-001",
         payload={"operation": "CREATE", "pkg_code": "PKG-001"},
         precondition={"expected_absent": True},
         fact_version="material-unit:v0",
@@ -207,6 +209,7 @@ async def test_stale_material_effect_short_circuits_following_device_effects() -
         capability_key="device.device_command_write",
         contract_version="v1",
         operation_key="scan:PKG-001:dispatch",
+        dispatch_key="device-command:CMD-PKG-001",
         payload={"target_device_id": 71, "action": "PICK_AND_PUT"},
         precondition={"expected_available": True},
         fact_version="device:v1",
@@ -248,6 +251,8 @@ async def test_rough_sorter_reservation_intent_uses_bin_cell_claim_contract() ->
             "warehouse_code": "WH-A",
             "source_event_id": "ecs-scan-executable-001",
             "source_version": "ecs.v1",
+            "plugin_binding_id": 23,
+            "plugin_binding_version": 5,
         }
     )
     reservation_service = _RecordingReservationService()
@@ -294,6 +299,8 @@ async def test_runtime_location_event_fact_records_runtime_location_without_reso
             "warehouse_code": "WH-A",
             "source_event_id": "ecs-location-001",
             "source_version": "ecs.v1",
+            "plugin_binding_id": 23,
+            "plugin_binding_version": 5,
         }
     )
 

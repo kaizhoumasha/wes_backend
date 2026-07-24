@@ -14,6 +14,9 @@ import pytest
 from src.app.device.models.command import CommandCallbackResult, CommandResult, CommandStatus
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import normalize_six_in_one_payload
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
+    RoughSorterBindingSnapshot,
+)
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldStatus
@@ -35,9 +38,6 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     WriteBackState,
 )
 from src.app.runtime.system_capabilities.outcomes import ContractViolation
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterBindingSnapshot,
-)
 from src.app.runtime.workline_plugins.contracts import PluginContext
 from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
@@ -634,7 +634,7 @@ async def test_timer_timeout_facade_holds_session_with_approved_reason(
     service = WorklineRuntimeReconciliationService(
         session_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=session)),
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=7))),
-        system_outbox_repository=SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0)),
+        system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0)),
         device_service=SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None)),
         runtime_hold_creation_service=SimpleNamespace(create_for_callback_deadline_expired=runtime_hold_creation),
         rack_task_repository=SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=0)),

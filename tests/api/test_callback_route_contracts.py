@@ -42,7 +42,10 @@ def build_request() -> RequestFactory:
 
 
 def _runtime_inbox_writer_stub(*, created: bool = True) -> SimpleNamespace:
-    result = SimpleNamespace(created=created, record=SimpleNamespace(id=901))
+    result = SimpleNamespace(
+        created=created,
+        record=SimpleNamespace(id=901, source_event_id="runtime-inbox-source-event-901"),
+    )
     return SimpleNamespace(
         write_result_callback=AsyncMock(return_value=result),
         write_event_callback=AsyncMock(return_value=result),

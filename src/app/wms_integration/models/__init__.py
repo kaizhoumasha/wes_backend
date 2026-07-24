@@ -3,17 +3,12 @@
 from .circuit_breaker import WmsCircuitBreakerState, WmsCircuitBreakerStatus
 from .evidence import WMS_CALL_EVIDENCE_RETENTION_DAYS, WmsCallEvidence, WmsCallEvidenceArchive, WmsEvidenceStatus
 from .ports import (
-    ConfirmInboundRequest,
-    ConfirmInboundResponse,
     ConfirmOutboundRequest,
     ConfirmOutboundResponse,
-    QueryInventoryRequest,
-    QueryInventoryResponse,
     ReleaseReservationRequest,
     ReleaseReservationResponse,
     ReserveInventoryRequest,
     ReserveInventoryResponse,
-    WmsInventoryItem,
     WmsOperationName,
     WmsPortRequest,
     WmsPortResponse,
@@ -21,12 +16,8 @@ from .ports import (
 
 __all__ = [
     "WMS_CALL_EVIDENCE_RETENTION_DAYS",
-    "ConfirmInboundRequest",
-    "ConfirmInboundResponse",
     "ConfirmOutboundRequest",
     "ConfirmOutboundResponse",
-    "QueryInventoryRequest",
-    "QueryInventoryResponse",
     "ReleaseReservationRequest",
     "ReleaseReservationResponse",
     "ReserveInventoryRequest",
@@ -36,7 +27,6 @@ __all__ = [
     "WmsCircuitBreakerState",
     "WmsCircuitBreakerStatus",
     "WmsEvidenceStatus",
-    "WmsInventoryItem",
     "WmsOperationName",
     "WmsPortRequest",
     "WmsPortResponse",

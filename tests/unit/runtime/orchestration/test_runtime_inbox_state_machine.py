@@ -66,41 +66,9 @@ def test_runtime_intent_log_table_name():
     assert RuntimeIntentLog.__tablename__ == "runtime_intent_logs"
 
 
-def test_runtime_intent_log_default_dispatch_status_pending():
-    """新 intent 默认 PENDING (主计划 §9.2 outbox)。"""
-    log = RuntimeIntentLog(
-        execution_session_id=1,
-        correlation_id="corr-001",
-        provider_code="WMS",
-        target_domain="wms_integration",
-        target_action="request_transport",
-        idempotency_key="WES-FULFILLMENT-abc123",
-        request_hash="sha256-hash",
-    )
-    assert log.dispatch_status == "PENDING"
-    assert log.attempt_count == 0
-
-
-def test_runtime_intent_log_5_dispatch_states():
-    """5 态: PENDING / DISPATCHING / DISPATCHED / ACKED / FAILED。"""
-    valid = {"PENDING", "DISPATCHING", "DISPATCHED", "ACKED", "FAILED"}
-    for state in valid:
-        log = RuntimeIntentLog(
-            execution_session_id=1,
-            correlation_id="corr-001",
-            provider_code="WMS",
-            target_domain="wms_integration",
-            target_action="request_transport",
-            idempotency_key="key",
-            request_hash="hash",
-            dispatch_status=state,
-        )
-        assert log.dispatch_status == state
-
-
 def test_runtime_intent_log_required_fields():
     """必填: execution_session_id / correlation_id / provider_code /
-    target_domain / target_action / idempotency_key / request_hash。"""
+    target_domain / target_action / idempotency_key / request_hash / dispatch_key。"""
     log = RuntimeIntentLog(
         execution_session_id=42,
         correlation_id="corr-x",
@@ -109,6 +77,7 @@ def test_runtime_intent_log_required_fields():
         target_action="dispatch_command",
         idempotency_key="WES-DEVICE-xyz",
         request_hash="sha256-abc",
+        dispatch_key="device-command:xyz",
     )
     assert log.execution_session_id == 42
     assert log.correlation_id == "corr-x"
@@ -117,3 +86,4 @@ def test_runtime_intent_log_required_fields():
     assert log.target_action == "dispatch_command"
     assert log.idempotency_key == "WES-DEVICE-xyz"
     assert log.request_hash == "sha256-abc"
+    assert log.dispatch_key == "device-command:xyz"

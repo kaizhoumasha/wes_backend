@@ -117,6 +117,9 @@ class WorklineStationLeaseService:
 
         if envelope.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
             raise ValueError("station dispatch lease only supports EXTERNAL_HTTP outbox")
+        frozen_binding = envelope.frozen_binding
+        if frozen_binding is None:
+            raise ValueError("station dispatch lease requires frozen EXTERNAL_HTTP binding")
 
         status = await self._build_station_lease_status(
             db,
@@ -146,7 +149,17 @@ class WorklineStationLeaseService:
             dispatch_key=envelope.dispatch_key,
             target_type=envelope.target_type,
             target_code=envelope.target_code,
+            provider_profile_identity=envelope.provider_profile_identity,
+            provider_profile_hash=frozen_binding.provider_profile_hash,
+            operation_identity=envelope.operation_identity,
+            binding_revision=frozen_binding.binding_revision,
+            target_snapshot_json=frozen_binding.target_snapshot.as_json(),
+            target_snapshot_hash=frozen_binding.target_snapshot_hash,
+            auth_scheme=frozen_binding.auth_scheme,
+            credential_reference=frozen_binding.credential_reference,
             payload_json=payload_json,
+            canonical_payload_bytes=envelope.canonical_payload_bytes,
+            payload_hash=envelope.payload_hash,
             trace_id=envelope.trace_id,
         )
         db.add(outbox)
@@ -288,11 +301,14 @@ class WorklineStationLeaseService:
         payload = dict(payload_json or {})
         station = payload.get("station")
         station_payload = dict(station) if isinstance(station, dict) else {}
-        station_payload.setdefault("workline_code", workline_code)
-        station_payload["position_code"] = position_code
-        payload["station"] = station_payload
-        payload.setdefault("workline_code", workline_code)
-        payload["position_code"] = position_code
+        if station_payload.get("workline_code") != workline_code:
+            raise ValueError("station dispatch canonical payload must freeze station.workline_code in gateway")
+        if station_payload.get("position_code") != position_code:
+            raise ValueError("station dispatch canonical payload must freeze station.position_code in gateway")
+        if payload.get("workline_code") != workline_code:
+            raise ValueError("station dispatch canonical payload must freeze workline_code in gateway")
+        if payload.get("position_code") != position_code:
+            raise ValueError("station dispatch canonical payload must freeze position_code in gateway")
         return payload
 
 

@@ -2,7 +2,6 @@
   "case_id": "duplicate",
   "provider_code": "ECS",
   "contract_version": "2026-07-03",
-  "expected_port": "DeviceEventPort.normalize_event",
   "direction": "event",
   "raw_callback": {
     "event_type": "ECS_COMMAND_RESULT",

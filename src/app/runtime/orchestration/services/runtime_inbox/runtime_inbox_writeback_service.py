@@ -66,6 +66,7 @@ from src.app.workline.services.plugin_binding_service import (
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
 from src.app.workline.utils import payload_dict
 from src.core.conf import settings
+from src.core.task_queue_gateway import task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import (
     canonical_event_type,
@@ -399,6 +400,7 @@ class RuntimeInboxWriteBackService:
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
         workline_repository: Any | None = None,
         device_repository: Any | None = None,
+        queue_gateway: Any | None = None,
     ) -> None:
         self._write_back_service = write_back_service
         self._inbox_service = inbox_service
@@ -409,6 +411,7 @@ class RuntimeInboxWriteBackService:
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
         self._workline_repository = workline_repository or default_workline_repository
         self._device_repository = device_repository or default_device_repository
+        self._queue_gateway = queue_gateway or task_queue_gateway
 
     @property
     def write_back_service(self) -> Any:
@@ -634,6 +637,17 @@ class RuntimeInboxWriteBackService:
         except Exception:
             await db.rollback()
             raise
+        # expected 已随 QUERY evidence 在上面的事务提交。队列只携带引用式 comparison，
+        # enqueue/store 故障不得反转生产动作；readiness 会从 evidence 对账识别缺口并重置窗口。
+        for comparison in write_set.shadow_comparisons:
+            try:
+                self._queue_gateway.enqueue_query_shadow_comparison(comparison.task_payload())
+            except Exception as exc:  # pragma: no cover - 日志 backend/queue 故障不反向破坏主事务
+                logger.error(
+                    "QUERY shadow comparison enqueue 失败，readiness 将由 expected/stored gap 失效: "
+                    f"comparison_key={getattr(getattr(comparison, 'expected', None), 'comparison_key', None)}, "
+                    f"error={type(exc).__name__}"
+                )
         return WriteDisposition.COMMITTED
 
     def build_write_callback(

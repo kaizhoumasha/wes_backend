@@ -53,10 +53,20 @@ class WorkLineRuntimeStatusProjectionService:
 
         return await self.repository.ensure_default_result(db, workline_id)
 
-    async def runtime_status_snapshot(self, db: Any, *, workline_id: int) -> WorkLineRuntimeStatusSnapshot:
+    async def runtime_status_snapshot(
+        self,
+        db: Any,
+        *,
+        workline_id: int,
+        populate_existing: bool = False,
+    ) -> WorkLineRuntimeStatusSnapshot:
         """读取 runtime 状态快照；缺失投影不隐式创建。"""
 
-        projection = await self.repository.get_by_workline_id(db, workline_id)
+        projection = await self.repository.get_by_workline_id(
+            db,
+            workline_id,
+            populate_existing=populate_existing,
+        )
         return _snapshot_from_projection(projection)
 
     async def runtime_status_snapshot_map(
@@ -85,10 +95,15 @@ class WorkLineRuntimeStatusProjectionService:
         *,
         workline_id: int,
         blocked_error: type[Exception] = RuntimeError,
+        populate_existing: bool = False,
     ) -> None:
         """校验 runtime/orchestration 投影处于可接收新工作状态。"""
 
-        snapshot = await self.runtime_status_snapshot(db, workline_id=workline_id)
+        snapshot = await self.runtime_status_snapshot(
+            db,
+            workline_id=workline_id,
+            populate_existing=populate_existing,
+        )
         if snapshot.runtime_status == WorkLineRuntimeStatus.READY.value:
             return
         status = snapshot.runtime_status or "UNKNOWN"

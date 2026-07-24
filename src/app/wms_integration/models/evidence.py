@@ -40,6 +40,12 @@ class WmsCallEvidence(DataTableMixin, table=True):
     __table_args__ = (
         Index("ux_wms_call_evidence_key", "evidence_key", unique=True),
         Index("ix_wms_call_evidence_trace_request_dispatch", "trace_id", "request_id", "dispatch_key"),
+        Index(
+            "ix_wms_call_evidence_provider_operation_started",
+            "provider_profile_identity",
+            "operation_name",
+            "started_at",
+        ),
         Index("ix_wms_call_evidence_operation_started", "operation_name", "started_at"),
         Index("ix_wms_call_evidence_status_started", "status", "started_at"),
         Index("ix_wms_call_evidence_request_snapshot_gin", "request_snapshot", postgresql_using="gin"),
@@ -48,6 +54,11 @@ class WmsCallEvidence(DataTableMixin, table=True):
     )
 
     evidence_key: str = Field(min_length=1, max_length=240, description="证据幂等键")
+    provider_profile_identity: str | None = Field(
+        default=None,
+        max_length=240,
+        description="同步 QUERY 的冻结 provider profile identity；异步摘要不适用",
+    )
     operation_name: str = Field(min_length=1, max_length=120, description="WMS 操作名")
     target_code: str | None = Field(default=None, max_length=240, description="WMS/RCS 目标编码")
     status: WmsEvidenceStatus = Field(
@@ -95,6 +106,12 @@ class WmsCallEvidenceArchive(DataTableMixin, table=True):
     __table_args__ = (
         Index("ux_wms_call_evidence_archive_original_id", "original_evidence_id", unique=True),
         Index("ux_wms_call_evidence_archive_key", "evidence_key", unique=True),
+        Index(
+            "ix_wms_call_evidence_archive_provider_operation_started",
+            "provider_profile_identity",
+            "operation_name",
+            "started_at",
+        ),
         Index("ix_wms_call_evidence_archive_operation_started", "operation_name", "started_at"),
         Index("ix_wms_call_evidence_archive_archived", "archived_at"),
         {"schema": SchemaType.BIZ.value},
@@ -102,6 +119,11 @@ class WmsCallEvidenceArchive(DataTableMixin, table=True):
 
     original_evidence_id: int = Field(description="原 wms_call_evidence.id")
     evidence_key: str = Field(min_length=1, max_length=240, description="证据幂等键")
+    provider_profile_identity: str | None = Field(
+        default=None,
+        max_length=240,
+        description="同步 QUERY 的冻结 provider profile identity；异步摘要不适用",
+    )
     operation_name: str = Field(min_length=1, max_length=120, description="WMS 操作名")
     target_code: str | None = Field(default=None, max_length=240, description="WMS/RCS 目标编码")
     status: WmsEvidenceStatus = Field(

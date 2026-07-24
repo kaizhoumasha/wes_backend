@@ -4,8 +4,7 @@
 所有方法 query-only, 不写 WMS 业务, 与 §3.4 Authority Matrix "WMS 是
 库存主数据权威" 一致。
 
-方法命名: Port.method 格式, 供 ExternalContractProfile.runtime_capabilities_query
-引用。
+方法只定义业务协议；运行准入由 typed system capability identity 承担。
 """
 
 from __future__ import annotations

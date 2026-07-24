@@ -194,7 +194,14 @@ def test_runtime_safety_precheck_and_deactivate_share_advisory_before_row_lock()
                 async def acquire_plugin_pin_shared(self, db: AsyncSession, target_id: int) -> None:
                     await workline_repository.acquire_plugin_pin_shared(db, target_id)
 
-                async def get_for_update(self, db: AsyncSession, target_id: int) -> SimpleNamespace:
+                async def get_for_update(
+                    self,
+                    db: AsyncSession,
+                    target_id: int,
+                    *,
+                    populate_existing: bool = False,
+                ) -> SimpleNamespace:
+                    assert populate_existing is True
                     active = await db.scalar(
                         text("SELECT is_active FROM workline_lock_probe WHERE workline_id = :workline_id FOR UPDATE"),
                         {"workline_id": target_id},

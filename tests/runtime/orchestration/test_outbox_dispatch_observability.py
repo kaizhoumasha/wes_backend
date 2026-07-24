@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.sys.external_http_transport import (
+    ExternalHttpProtocolResult,
+    ExternalHttpTransportResult,
+)
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxTargetType
 
 
@@ -20,7 +24,7 @@ async def test_outbox_dispatch_single_emits_runtime_intent_dispatch_observabilit
         id=201,
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="WMS_FULFILLMENT",
+        target_code="WMS_RCS_FULL_BOX_EXCHANGE",
         dispatch_key="wms-fulfillment:REQ-201",
         operation_domain="WORKLINE",
         operation_key="REQ-201",
@@ -35,7 +39,11 @@ async def test_outbox_dispatch_single_emits_runtime_intent_dispatch_observabilit
         },
     )
     service = OutboxDispatchService()
-    monkeypatch.setattr(service, "_dispatch_external_http", AsyncMock(return_value=True))
+    transport_result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+    )
+    monkeypatch.setattr(service, "_dispatch_external_http", AsyncMock(return_value=transport_result))
     emitted: list[tuple[str, dict[str, object]]] = []
 
     def emit(name: str, attributes: dict[str, object]) -> object:
@@ -49,7 +57,7 @@ async def test_outbox_dispatch_single_emits_runtime_intent_dispatch_observabilit
 
     dispatched = await service._dispatch_single(db=object(), outbox=outbox)
 
-    assert dispatched is True
+    assert dispatched is transport_result
     assert emitted == [
         (
             "runtime_intent.dispatch",

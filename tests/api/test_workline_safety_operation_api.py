@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 
@@ -250,6 +250,97 @@ def test_resolve_runtime_reconciliation_route_uses_dedicated_permission() -> Non
 
     assert "biz:workline:resolve-reconciliation" in permissions
     assert "biz:workline:update" not in permissions
+
+
+def test_resolve_effect_reconciliation_route_uses_dedicated_permission() -> None:
+    route = next(
+        route
+        for route in operation_api.router.routes
+        if getattr(route, "path", None) == "/reconciliations/effects/{dispatch_key}/resolve"
+    )
+    permissions = [
+        getattr(getattr(dependency, "dependency", None), "permission_required", None)
+        for dependency in getattr(route, "dependencies", [])
+    ]
+
+    assert "biz:workline:resolve-reconciliation" in permissions
+    assert "biz:workline:update" not in permissions
+
+
+@pytest.mark.asyncio
+async def test_resolve_effect_reconciliation_uses_authenticated_operator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value={
+                "dispatch_key": "dispatch-1",
+                "resolution": "COMPLETED",
+                "request_id": "manual-resolution-1",
+            }
+        )
+    )
+    monkeypatch.setattr(operation_api, "effect_reconciliation_resolution_service", service)
+
+    response = await operation_api.resolve_effect_reconciliation(
+        dispatch_key="dispatch-1",
+        payload=operation_api.ResolveEffectReconciliationRequest(
+            request_id="manual-resolution-1",
+            resolution="COMPLETED",
+            operator_note="WMS 侧已核验完成",
+        ),
+        db=SimpleNamespace(),  # type: ignore[arg-type]
+        current_user_id=88,
+        request=SimpleNamespace(state=SimpleNamespace(is_superuser=False)),  # type: ignore[arg-type]
+        response=operation_api.Response(),
+    )
+
+    service.resolve.assert_awaited_once_with(
+        ANY,
+        dispatch_key="dispatch-1",
+        request_id="manual-resolution-1",
+        resolution="COMPLETED",
+        operator_note="WMS 侧已核验完成",
+        operator_id=88,
+        is_superuser=False,
+    )
+    assert response["code"] == "1000"
+    assert response["data"]["dispatch_key"] == "dispatch-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (operation_api.ReconciliationResolutionConflict("request_id conflict"), 409),
+        (operation_api.EffectIntentNotFound("intent 不存在"), 404),
+        (operation_api.InvalidReconciliationEvent("requires an OPEN case"), 400),
+    ],
+)
+async def test_resolve_effect_reconciliation_maps_domain_errors_to_http_status(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_status: int,
+) -> None:
+    service = SimpleNamespace(resolve=AsyncMock(side_effect=error))
+    monkeypatch.setattr(operation_api, "effect_reconciliation_resolution_service", service)
+    http_response = operation_api.Response()
+
+    body = await operation_api.resolve_effect_reconciliation(
+        dispatch_key="dispatch-1",
+        payload=operation_api.ResolveEffectReconciliationRequest(
+            request_id="manual-resolution-1",
+            resolution="COMPLETED",
+            operator_note="WMS 侧已核验完成",
+        ),
+        db=SimpleNamespace(),  # type: ignore[arg-type]
+        current_user_id=88,
+        request=SimpleNamespace(state=SimpleNamespace(is_superuser=False)),  # type: ignore[arg-type]
+        response=http_response,
+    )
+
+    assert http_response.status_code == expected_status
+    assert body["code"] != "1000"
 
 
 def test_clear_estop_request_does_not_accept_operator_id() -> None:

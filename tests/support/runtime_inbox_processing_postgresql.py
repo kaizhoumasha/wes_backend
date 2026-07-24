@@ -25,7 +25,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import PROFILE_IDENTITY
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_MATERIAL_FLOW_CONTRACT_VERSION
 from src.app.runtime.workline_plugins.rough_sorter.domain_contract import resolve_rough_sorter_business_key
 from src.app.sys.models import SystemOutbox
 from src.app.workline.models.workline import LineType, WorkLine
@@ -38,6 +38,8 @@ from tests.support.runtime_inbox_postgresql import run_alembic, temporary_databa
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+PROFILE_IDENTITY = f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.sandbox"
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,7 +145,6 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
     workline.active_plugin_config_hash = binding.typed_config_hash
     workline.active_plugin_index_digest = binding.generated_index_digest
     workline.active_plugin_provider_requirements_json = [PROFILE_IDENTITY]
-    workline.active_plugin_port_requirements_json = list(binding.port_requirements_json)
     await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
     config_hash = binding.typed_config_hash
     payload_json = {

@@ -12,6 +12,10 @@ from src.app.runtime.orchestration.services.query.material_location_query_servic
     MaterialLocationResult,
     material_location_query_service,
 )
+from src.app.runtime.orchestration.services.query.northbound_operations_query_service import (
+    NorthboundOperationsQueryService,
+    northbound_operations_query_service,
+)
 from src.app.runtime.orchestration.services.query.runtime_query_service import (
     RuntimeQueryService,
     runtime_query_service,
@@ -30,6 +34,7 @@ __all__ = [
     "MaterialLocationEvidence",
     "MaterialLocationQueryService",
     "MaterialLocationResult",
+    "NorthboundOperationsQueryService",
     "RuntimeHoldView",
     "RuntimeQueryService",
     "WorklineActiveObjectConflictState",
@@ -37,6 +42,7 @@ __all__ = [
     "WorklineActiveObjectsResponse",
     "WorklineActiveObjectsService",
     "material_location_query_service",
+    "northbound_operations_query_service",
     "runtime_query_service",
     "workline_active_objects_service",
 ]

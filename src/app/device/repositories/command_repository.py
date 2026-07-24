@@ -54,13 +54,25 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         return str(value) if value is not None else None
 
     @staticmethod
-    async def add_runtime_effect(db: AsyncSession, command: DeviceCommand, outbox: object) -> None:
-        """在调用方外层事务中持久化命令与 Outbox，只 flush。"""
+    async def add_runtime_effect(
+        db: AsyncSession,
+        command: DeviceCommand,
+        intent_log: object,
+        outbox: object,
+    ) -> None:
+        """在调用方外层事务中持久化命令与 EFFECT 双账本，只 flush。"""
 
         db.add(command)
         await db.flush()
-        db.add(outbox)
-        await db.flush()
+        from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import (
+            runtime_intent_log_repository,
+        )
+
+        await runtime_intent_log_repository.add_proposed_pair(
+            db,
+            intent_log=intent_log,  # type: ignore[arg-type]
+            outbox=outbox,  # type: ignore[arg-type]
+        )
 
     async def get_pending_commands(
         self,

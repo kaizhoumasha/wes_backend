@@ -204,12 +204,6 @@ class WorklineMigrationInventoryService:
                 "provider_code": getattr(profile, "provider_code", _MISSING),
                 "contract_version": getattr(profile, "contract_version", _MISSING),
                 "environment": getattr(profile, "environment", _MISSING),
-                "runtime_capabilities_query": WorklineMigrationInventoryService._normalize_provider_capabilities(
-                    profile, "runtime_capabilities_query"
-                ),
-                "runtime_capabilities_effect": WorklineMigrationInventoryService._normalize_provider_capabilities(
-                    profile, "runtime_capabilities_effect"
-                ),
             }
             try:
                 item = WorklineProviderProfileInventoryItem(**source)
@@ -221,16 +215,6 @@ class WorklineMigrationInventoryService:
             provider_identities.add(identity)
             items.append(item)
         return tuple(sorted(items, key=lambda item: (item.provider_code, item.contract_version, item.environment)))
-
-    @staticmethod
-    def _normalize_provider_capabilities(profile: Any, field: str) -> tuple[str, ...]:
-        capabilities = getattr(profile, field, _MISSING)
-        if not isinstance(capabilities, (list, tuple)):
-            raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 必须为 list/tuple")
-        if any(type(capability) is not str or not capability.strip() for capability in capabilities):
-            raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 元素必须为非空字符串")
-        normalized = tuple(capability.strip() for capability in capabilities)
-        return tuple(sorted(normalized))
 
     @staticmethod
     def _build_item(
@@ -254,7 +238,6 @@ class WorklineMigrationInventoryService:
         active_config_hash = getattr(source, "active_plugin_config_hash", None)
         active_index_digest = getattr(source, "active_plugin_index_digest", None)
         provider_requirements_source = getattr(source, "active_plugin_provider_requirements_json", ())
-        port_requirements_source = getattr(source, "active_plugin_port_requirements_json", ())
         if active_binding_id is not None and (type(active_binding_id) is not int or active_binding_id <= 0):
             raise WorklineMigrationInventoryInvariantError(
                 f"WorkLine {workline_id} active_plugin_binding_id 必须为正严格整数或 None"
@@ -277,19 +260,13 @@ class WorklineMigrationInventoryService:
                 raise WorklineMigrationInventoryInvariantError(
                     f"WorkLine {workline_id} {field_name} 必须为 lowercase SHA-256 或 None"
                 )
-        requirements: list[tuple[str, tuple[str, ...]]] = []
-        for field_name, raw_requirements in (
-            ("provider_requirements", provider_requirements_source),
-            ("port_requirements", port_requirements_source),
+        if not isinstance(provider_requirements_source, (list, tuple)) or any(
+            type(value) is not str or not value.strip() for value in provider_requirements_source
         ):
-            if not isinstance(raw_requirements, (list, tuple)) or any(
-                type(value) is not str or not value.strip() for value in raw_requirements
-            ):
-                raise WorklineMigrationInventoryInvariantError(
-                    f"WorkLine {workline_id} {field_name} 必须为非空字符串集合"
-                )
-            requirements.append((field_name, tuple(sorted({value.strip() for value in raw_requirements}))))
-        normalized_requirements = dict(requirements)
+            raise WorklineMigrationInventoryInvariantError(
+                f"WorkLine {workline_id} provider_requirements 必须为非空字符串集合"
+            )
+        provider_requirements = tuple(sorted({value.strip() for value in provider_requirements_source}))
         try:
             extension_references = tuple(
                 sorted(
@@ -354,8 +331,7 @@ class WorklineMigrationInventoryService:
                 active_plugin_binding_version=active_binding_version,
                 active_plugin_config_hash=active_config_hash,
                 active_plugin_index_digest=active_index_digest,
-                provider_requirements=normalized_requirements["provider_requirements"],
-                port_requirements=normalized_requirements["port_requirements"],
+                provider_requirements=provider_requirements,
                 runtime_extension_references=extension_references,
                 runtime_references=runtime_references,
                 foundation_ready=not any(

@@ -165,6 +165,7 @@ class GeneratedPluginAttemptRunner:
             evidence=tuple(gateway.evidence),
             next_state=_bind_command_correlation(result.next_state, intents),
             intents=intents,
+            shadow_comparisons=(),
             outcome_code=result.outcome_code,
         )
 
@@ -218,6 +219,7 @@ def _system_capability_intents(
             converted.append(intent)
             continue
         capability_key: str
+        dispatch_key: str
         payload: dict[str, Any]
         precondition: dict[str, Any]
         fact_version: str | int
@@ -238,6 +240,7 @@ def _system_capability_intents(
             capability_key = "device.device_command_write"
             target_device_id, target_device_version = _pinned_command_target(context.snapshot, intent)
             command_code = f"SC-{sha256_digest({'binding': context.snapshot.binding_identity, 'operation': f'inbox:{context.inbox_id}:{index}:command'})[:32]}"
+            dispatch_key = f"device-command:{command_code}"
             payload = {
                 "device_role": None,
                 "target_device_id": target_device_id,
@@ -281,11 +284,15 @@ def _system_capability_intents(
             fact_version = f"session:{context.snapshot.session_version}"
         else:
             raise ValueError(f"unsupported plugin effect intent: {intent.kind.value}")
+        operation_key = f"inbox:{context.inbox_id}:{index}:{intent.kind.value.lower()}"
+        if intent.kind is not RuntimeIntentKind.COMMAND:
+            dispatch_key = f"system-capability:{capability_key}:{operation_key}"
         converted.append(
             RuntimeIntent.system_capability(
                 capability_key=capability_key,
                 contract_version="v1",
-                operation_key=f"inbox:{context.inbox_id}:{index}:{intent.kind.value.lower()}",
+                operation_key=operation_key,
+                dispatch_key=dispatch_key,
                 payload=payload,
                 precondition=precondition,
                 fact_version=fact_version,
@@ -338,6 +345,7 @@ def _plugin_hold_write_set(context: PluginAttemptContext, reason: str) -> Attemp
         evidence=(),
         next_state=context.plugin_state,
         intents=(),
+        shadow_comparisons=(),
         outcome_code="HOLD",
         hold_reason=reason,
     )
@@ -597,26 +605,7 @@ def _runtime_profile_from_pinned_binding(binding: Any, *, expected_identity: str
     if len(matched_profiles) != 1:
         raise ValueError("binding provider profile snapshot must match exactly once")
 
-    profile = matched_profiles[0]
-    raw_requirements = getattr(binding, "port_requirements_json", None)
-    if not isinstance(raw_requirements, list) or any(
-        not isinstance(requirement, str) or not requirement for requirement in raw_requirements
-    ):
-        raise ValueError("binding port requirements snapshot is invalid")
-    approved_requirements = frozenset(raw_requirements)
-    declared_requirements = frozenset((*profile.runtime_capabilities_query, *profile.runtime_capabilities_effect))
-    if not approved_requirements.issubset(declared_requirements):
-        raise ValueError("binding port requirements exceed provider profile snapshot")
-    return profile.model_copy(
-        update={
-            "runtime_capabilities_query": [
-                capability for capability in profile.runtime_capabilities_query if capability in approved_requirements
-            ],
-            "runtime_capabilities_effect": [
-                capability for capability in profile.runtime_capabilities_effect if capability in approved_requirements
-            ],
-        }
-    )
+    return matched_profiles[0]
 
 
 class RuntimeInboxProcessorBridge:
@@ -698,11 +687,7 @@ class RuntimeInboxProcessorBridge:
         """新建 attempt-scoped runtime；绝不复用 Port 实例或 QUERY cache。"""
 
         registry = base_registry.fork_attempt() if base_registry is not None else CapabilityPortRegistry()
-        context = (
-            RuntimeCapabilityContext(registry)
-            if provider_profile is None
-            else RuntimeCapabilityContext.from_provider_profile(registry, provider_profile)
-        )
+        context = RuntimeCapabilityContext(registry)
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 
@@ -718,14 +703,12 @@ class RuntimeInboxProcessorBridge:
         if admission_profile is None and pinned_profile_identity is not None:
             admission_profile = pinned_profile_identity
         elif admission_profile is None:
-            from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-                PROFILE_FAMILY,
-            )
+            from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_MATERIAL_FLOW_CONTRACT_VERSION
             from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
             from src.core.conf import settings
 
             environment = WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV)
-            admission_profile = f"{PROFILE_FAMILY}.{environment}"
+            admission_profile = f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.{environment}"
         gateway = SystemCapabilityGateway(
             attempt_id=processor_token,
             definitions=resolved_definitions,
@@ -748,7 +731,7 @@ class RuntimeInboxProcessorBridge:
         *,
         runtime: RuntimeInboxAttemptRuntime,
         snapshot: PinnedPluginSnapshot,
-    ) -> None:
+    ) -> Any:
         """用 immutable binding 的 profile/Port snapshot 收窄本次 attempt。"""
 
         from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
@@ -778,6 +761,7 @@ class RuntimeInboxProcessorBridge:
             provider_profile=provider_profile,
         )
         await runtime.replace_with(replacement)
+        return provider_profile
 
     async def claim_and_process_batch(
         self,
@@ -931,7 +915,6 @@ class RuntimeInboxProcessorBridge:
             ):
                 # Recorded replay 复用已持久化 decision/evidence；必须先于源事件的
                 # TIMER/late callback 路由，避免重放再次触发 provider 或新 EFFECT。
-                _configure_attempt_runtime_ports(attempt_runtime, services=services)
                 return await self._process_platform_plugin_attempt(
                     db,
                     inbox=inbox,
@@ -940,6 +923,7 @@ class RuntimeInboxProcessorBridge:
                     resolved_event_type=resolved_event_type,
                     processor_token=processor_token,
                     attempt_runtime=attempt_runtime,
+                    services=services,
                     devices_by_role=devices_by_role,
                 )
 
@@ -1129,7 +1113,6 @@ class RuntimeInboxProcessorBridge:
                 return result
 
             if isinstance(getattr(session, "plugin_binding_id", None), int):
-                _configure_attempt_runtime_ports(attempt_runtime, services=services)
                 return await self._process_platform_plugin_attempt(
                     db,
                     inbox=inbox,
@@ -1138,6 +1121,7 @@ class RuntimeInboxProcessorBridge:
                     resolved_event_type=resolved_event_type,
                     processor_token=processor_token,
                     attempt_runtime=attempt_runtime,
+                    services=services,
                     devices_by_role=devices_by_role,
                 )
 
@@ -1400,6 +1384,7 @@ class RuntimeInboxProcessorBridge:
         resolved_event_type: str,
         processor_token: str,
         attempt_runtime: RuntimeInboxAttemptRuntime,
+        services: Any = None,
         devices_by_role: dict[str, list[Any]] | None = None,
     ) -> ProcessResult:
         """平台插件三阶段：固定快照 → 无 DB 决策 → 锁后原子写回。"""
@@ -1431,10 +1416,15 @@ class RuntimeInboxProcessorBridge:
                 workline=workline,
                 snapshot=snapshot,
             )
-            await self._pin_attempt_runtime_to_dispatch_snapshot(
+            provider_profile = await self._pin_attempt_runtime_to_dispatch_snapshot(
                 db,
                 runtime=attempt_runtime,
                 snapshot=dispatch_request.snapshot,
+            )
+            _configure_attempt_runtime_ports(
+                attempt_runtime,
+                services=services,
+                provider_profile=provider_profile,
             )
         context = PluginAttemptContext(
             attempt_id=processor_token,
@@ -1552,7 +1542,7 @@ async def _build_plugin_dispatch_request(
     """在 Stage 1 固定 binding/config/facts，Stage 2 只消费 immutable request。"""
 
     _ = workline
-    from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
+    from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
         RoughSorterBindingSnapshot,
     )
     from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts
@@ -1737,21 +1727,22 @@ def _first_plugin_fact(*sources: dict[str, Any], names: tuple[str, ...]) -> str 
     return None
 
 
-def _configure_attempt_runtime_ports(attempt_runtime: RuntimeInboxAttemptRuntime, *, services: Any) -> None:
-    """把当前 Inbox 的 typed client 包装为 attempt-scoped QUERY Port。"""
+def _configure_attempt_runtime_ports(
+    attempt_runtime: RuntimeInboxAttemptRuntime,
+    *,
+    services: Any,
+    provider_profile: Any,
+) -> None:
+    """把当前 Inbox 的 typed operation factory 注册为 attempt-scoped QUERY Port。"""
 
-    client = getattr(services, "wms_inventory_client", None)
-    if client is None:
+    factory_builder = getattr(services, "inventory_query_port_factory", None)
+    if factory_builder is None:
         return
-    from src.app.wms_integration.adapters import build_wms_inventory_query_port_factory
-    from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
+    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 
     attempt_runtime.port_registry.register(
-        WmsInventoryQueryPort,
-        build_wms_inventory_query_port_factory(
-            client,
-            request_id_factory=lambda: f"plugin-query-{attempt_runtime.attempt_id}",
-        ),
+        InventoryQueryOperationPort,
+        factory_builder(provider_profile=provider_profile),
     )
 
 
@@ -1816,6 +1807,7 @@ def _write_set_from_recorded_replay(
             evidence=(),
             next_state={},
             intents=(),
+            shadow_comparisons=(),
             outcome_code="HOLD",
             hold_reason=resolution.hold_reason or "RECORDED_REPLAY_RECORD_MISSING",
             preserve_plugin_state=True,
@@ -1834,14 +1826,21 @@ def _write_set_from_recorded_replay(
         )
     ):
         return _invalid_recorded_write_set(fallback_state)
+    replayed_evidence = tuple(
+        # 历史 evidence 继续保留审计价值，但 replay 不得为已完成的源 attempt 再生成 expected，
+        # 也不得重新执行 shadow policy 或 effect。
+        evidence.model_copy(update={"shadow_expected": None})
+        for evidence in resolution.evidence
+    )
     return AttemptWriteSet(
-        evidence=resolution.evidence,
+        evidence=replayed_evidence,
         # Recorded replay 复用已审计的 decision/evidence，但不把历史状态
         # 覆盖到可能已经继续推进的当前 Session。
         next_state={},
         # Recorded replay 只恢复已审计 decision/evidence；原 intent 的
         # EFFECT 已在源 attempt 执行，不得再次产生物理副作用。
         intents=(),
+        shadow_comparisons=(),
         outcome_code=decision.outcome_code,
         hold_reason=decision.hold_reason,
         recorded_attempt_anchor=resolution.attempt_anchor,
@@ -1922,6 +1921,7 @@ def _recorded_live_hold_intent_is_valid(
             capability_key="runtime.session_hold",
             contract_version="v1",
             operation_key=intent.operation_key or "",
+            dispatch_key=intent.dispatch_key or "",
             payload=payload,
             precondition=precondition,
             fact_version=intent.fact_version,
@@ -1942,6 +1942,7 @@ def _invalid_recorded_write_set(fallback_state: dict[str, Any]) -> AttemptWriteS
         evidence=(),
         next_state={},
         intents=(),
+        shadow_comparisons=(),
         outcome_code="HOLD",
         hold_reason="RECORDED_REPLAY_RECORD_INVALID",
         preserve_plugin_state=True,

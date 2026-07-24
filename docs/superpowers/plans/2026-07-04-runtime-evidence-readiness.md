@@ -62,7 +62,7 @@ sorter inbound 与 SMT/NG/WMS reconciliation 后续目标是 production-capable 
 - [x] SMT/NG/WMS reconciliation preview capability：`SmtNgWmsReconciliationPreviewService` 覆盖本机 preview 级冲突矩阵、重复 callback 幂等合并和 RuntimeHold scope-only release，并由 readiness gate 检查存在与非生产边界。
 - [x] Phase2 兼容投影第一步：引入 `WorkLineRuntimeStatusProjectionService`，迁移 LOW 风险写入点。
 - [x] Phase2 兼容投影收尾：单独处理 HIGH 风险 safety estop / dispatch ACK exhausted 写入点。
-- [x] sorter inbound runtime capability builder：`Phase4SorterInboundRuntimeService` 输出 `RuntimeIntent`、`WmsFulfillmentPort.notify_pkg_binding`、`WmsInventoryTransactionPort.confirm_inbound`、CellReservation/RuntimeLocationEvent evidence 与 join gate object-scope reconciliation plan。
+- [x] sorter inbound runtime capability builder：`Phase4SorterInboundRuntimeService` 输出 `RuntimeIntent`、`wms.fulfillment.notify_pkg_binding@v1`、`WmsInventoryTransactionPort.confirm_inbound`、CellReservation/RuntimeLocationEvent evidence 与 join gate object-scope reconciliation plan。
 - [x] SMT/NG/WMS reconciliation runtime capability builder：`SmtNgWmsReconciliationRuntimeService` 输出 RuntimeInbox 上游 callback evidence、重复 callback 幂等合并、WMS reject/source_version drift 等 RuntimeHold plan 与 scope-only release plan。
 - [x] sorter inbound evidence profile gate：site/production manifest 已要求 provider contract、effect dispatch trace、RuntimeIntentLog/DeviceCommand/WMS fulfillment 证据；实际 evidence 文件由 `reports/`、CI 或部署验收产物提供，不进入 git。
 - [x] SMT/NG/WMS reconciliation evidence profile gate：site/production manifest 已要求 provider contract、RuntimeInbox worker trace、RuntimeHold/ReconciliationRecord 证据；实际 evidence 文件由 `reports/`、CI 或部署验收产物提供，不进入 git。

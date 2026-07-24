@@ -15,9 +15,10 @@ from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
+from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
     SystemCapabilityEffectService,
 )
@@ -94,6 +95,7 @@ def _hold_intent(ctx: Mapping[str, object], *, operation: str = "hold-1", reason
         capability_key="runtime.session_hold",
         contract_version="v1",
         operation_key=operation,
+        dispatch_key=f"system-capability:runtime.session_hold:{operation}",
         payload={"failure_domain": "PLUGIN", "reason_code": reason, "message": "integration review"},
         precondition={"expected_status": SessionStatus.RUNNING.value},
         fact_version=f"session:{session.version}",  # type: ignore[attr-defined]
@@ -131,7 +133,7 @@ def test_local_effect_and_ledger_commit_atomically_without_handler_transaction_o
             session = await verify_db.scalar(select(WorklineSession))
             ledger = await verify_db.scalar(select(RuntimeIntentLog))
             assert session is not None and session.status == SessionStatus.MANUAL_HOLD
-            assert ledger is not None and ledger.effect_status == "SUCCEEDED"
+            assert ledger is not None and ledger.effect_status is RuntimeIntentStatus.COMPLETED
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -200,6 +202,7 @@ def test_domain_write_then_exception_rolls_back_entire_plugin_attempt(monkeypatc
                         next_state={"phase": "READY"},
                         intents=(intent,),
                         outcome_code="HOLD",
+                        shadow_comparisons=(),
                     ),
                     workline=ctx["workline"],
                 )
@@ -275,6 +278,12 @@ def test_same_operation_hash_replays_success_and_different_hash_conflicts() -> N
             assert isinstance(conflict.outcome, ContractViolation)
             assert conflict.outcome.error_code == "IDEMPOTENCY_CONFLICT"
             assert await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 1
-            await db.rollback()
+            intent_log = await db.scalar(select(RuntimeIntentLog))
+            case = await db.scalar(select(ReconciliationCase))
+            assert intent_log is not None and intent_log.effect_status is RuntimeIntentStatus.COMPLETED
+            assert case is not None and case.status is ReconciliationCaseStatus.OPEN
+            assert case.dispatch_key == intent_log.dispatch_key
+            assert case.evidence_history_json[-1]["event_type"] == "IDEMPOTENCY_CONFLICT"
+            await db.commit()
 
     asyncio.run(with_temporary_runtime_database(scenario))

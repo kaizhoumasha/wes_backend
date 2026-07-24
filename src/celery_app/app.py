@@ -7,6 +7,7 @@
 from typing import Any, cast
 
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
+from celery.exceptions import WorkerTerminate
 from celery.signals import (  # pyright: ignore[reportMissingTypeStubs]
     beat_init,
     worker_init,
@@ -44,8 +45,18 @@ celery_app = Celery(
 
 @worker_init.connect
 def on_worker_init(*args: Any, **kwargs: Any) -> None:
-    """Worker 主进程只初始化日志，禁止创建可被 fork 继承的异步资源。"""
-    setup_logger()  # 初始化 loguru + 抑制 pidbox/kombu/amqp 噪音
+    """Worker 主进程初始化同步配置门禁，禁止创建可被 fork 继承的异步资源。"""
+    try:
+        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+
+        validate_wms_transport_configuration(app_env=settings.APP_ENV)
+    except Exception as exc:
+        # Celery Signal.send 会吞掉普通 Exception；配置非法时必须阻止主进程进入消费阶段。
+        raise WorkerTerminate("WMS transport configuration rejected") from exc
+    try:
+        setup_logger()  # 初始化 loguru + 抑制 pidbox/kombu/amqp 噪音
+    except Exception as exc:
+        raise WorkerTerminate("worker logging initialization rejected") from exc
 
 
 @worker_process_init.connect

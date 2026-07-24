@@ -182,11 +182,6 @@ class WorkLine(
         sa_column=Column(JSON),
         description="当前 binding 的 provider profile 要求快照",
     )
-    active_plugin_port_requirements_json: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSON),
-        description="当前 binding 的 Port.method 要求快照",
-    )
 
     @property
     def plugin_definition(self) -> "WorklinePluginDefinition | None":

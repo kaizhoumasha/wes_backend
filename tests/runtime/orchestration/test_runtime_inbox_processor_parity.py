@@ -494,8 +494,11 @@ async def _run_case(
                     intents=(),
                     outcome_code="HOLD",
                     hold_reason="simulated failure",
+                    shadow_comparisons=(),
                 )
-            return AttemptWriteSet(evidence=(), next_state={"phase": "READY"}, intents=(), outcome_code="ROUTE_A")
+            return AttemptWriteSet(
+                evidence=(), next_state={"phase": "READY"}, intents=(), outcome_code="ROUTE_A", shadow_comparisons=()
+            )
 
     class _PlatformWriteBack:
         async def commit_plugin_attempt(self, db: object, **kwargs: object) -> WriteDisposition:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date
 
 
@@ -152,7 +153,12 @@ def test_runtime_observability_open_telemetry_bridge_exports_signal_kinds() -> N
 
     assert [call[0] for call in exporter.calls] == ["span", "metric", "log"]
     assert {call[1] for call in exporter.calls} == {"callback.normalize"}
-    assert all(call[2]["trace_id"] == "trace-1" for call in exporter.calls)
+    assert all(call[2]["trace_id"] == "trace-1" for call in exporter.calls if call[0] != "metric")
+    assert next(call[2] for call in exporter.calls if call[0] == "metric") == {
+        "capability_identity": "callback.normalize@v1",
+        "policy_version": "northbound-observability.v1",
+        "sample_count": 1,
+    }
 
 
 def test_runtime_open_telemetry_http_exporter_posts_stable_backend_payloads() -> None:
@@ -190,6 +196,116 @@ def test_runtime_open_telemetry_http_exporter_posts_stable_backend_payloads() ->
     ]
 
 
+def test_runtime_open_telemetry_http_exporter_reuses_one_http_client(monkeypatch) -> None:
+    import httpx
+
+    from src.app.runtime.orchestration.observability import RuntimeOpenTelemetryHttpExporter
+
+    clients = []
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+    class _Client:
+        def __init__(self, **kwargs) -> None:
+            self.init_kwargs = kwargs
+            self.posts = []
+            self.closed = False
+            clients.append(self)
+
+        def post(self, endpoint, **kwargs):
+            self.posts.append((endpoint, kwargs))
+            return _Response()
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    exporter = RuntimeOpenTelemetryHttpExporter(
+        endpoint="https://otel-collector.example/runtime",
+        service_name="wes-backend",
+        environment="prod",
+    )
+
+    exporter.emit_span("callback.normalize", {"trace_id": "trace-1"})
+    exporter.emit_metric("callback.normalize", {"sample_count": 1})
+    exporter.close()
+
+    assert len(clients) == 1
+    assert clients[0].init_kwargs == {"trust_env": False}
+    assert len(clients[0].posts) == 2
+    assert clients[0].closed is True
+
+
+def test_runtime_observability_queue_is_bounded_and_records_drops() -> None:
+    from src.app.runtime.orchestration.observability import (
+        RuntimeObservabilityEvent,
+        RuntimeQueuedObservabilityObserver,
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_observer(_event) -> None:
+        entered.set()
+        assert release.wait(timeout=1)
+
+    observer = RuntimeQueuedObservabilityObserver(blocked_observer, max_queue_size=1)
+    event = RuntimeObservabilityEvent(
+        name="callback.normalize",
+        signal_type="log",
+        attributes={},
+        metric_attributes={},
+    )
+    observer(event)
+    assert entered.wait(timeout=1)
+    observer(event)
+    observer(event)
+
+    assert observer.pending_count == 1
+    assert observer.dropped_count == 1
+    release.set()
+    observer.close()
+
+
+def test_runtime_observability_queue_close_drains_joins_and_rejects_late_events() -> None:
+    from src.app.runtime.orchestration.observability import (
+        RuntimeObservabilityEvent,
+        RuntimeQueuedObservabilityObserver,
+    )
+
+    exported = []
+
+    class _Observer:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __call__(self, event) -> None:
+            exported.append(event)
+
+        def close(self) -> None:
+            self.closed = True
+
+    target = _Observer()
+    observer = RuntimeQueuedObservabilityObserver(target, max_queue_size=1)
+    event = RuntimeObservabilityEvent(
+        name="callback.normalize",
+        signal_type="log",
+        attributes={},
+        metric_attributes={},
+    )
+    observer(event)
+
+    observer.close()
+    observer(event)
+
+    assert exported == [event]
+    assert target.closed is True
+    assert observer.pending_count == 0
+    assert observer.dropped_count == 1
+
+
 def test_configure_runtime_open_telemetry_backend_registers_named_observer_once() -> None:
     from src.app.runtime.orchestration.observability import (
         RuntimeObservabilityRegistry,
@@ -197,9 +313,13 @@ def test_configure_runtime_open_telemetry_backend_registers_named_observer_once(
     )
 
     posts = []
+    posted = threading.Event()
+    caller_thread_id = threading.get_ident()
 
     def post_json(endpoint, payload, headers, timeout_seconds) -> None:
-        posts.append((endpoint, payload["signal_kind"], payload["name"]))
+        posts.append((endpoint, payload["signal_kind"], payload["name"], threading.get_ident()))
+        if len(posts) == 3:
+            posted.set()
 
     registry = RuntimeObservabilityRegistry()
 
@@ -232,11 +352,14 @@ def test_configure_runtime_open_telemetry_backend_registers_named_observer_once(
 
     assert configured is True
     assert configured_again is True
+    assert posted.wait(timeout=1)
     assert posts == [
-        ("https://otel-collector.example/runtime", "span", "callback.normalize"),
-        ("https://otel-collector.example/runtime", "metric", "callback.normalize"),
-        ("https://otel-collector.example/runtime", "log", "callback.normalize"),
+        ("https://otel-collector.example/runtime", "span", "callback.normalize", posts[0][3]),
+        ("https://otel-collector.example/runtime", "metric", "callback.normalize", posts[0][3]),
+        ("https://otel-collector.example/runtime", "log", "callback.normalize", posts[0][3]),
     ]
+    assert posts[0][3] != caller_thread_id
+    registry.close()
 
 
 def test_runtime_toggle_registry_blocks_expired_and_security_bypass_toggles() -> None:

@@ -153,37 +153,16 @@ def validate_authority_metadata(meta: AuthorityMetadata | dict | None) -> tuple[
     return True, None
 
 
-@dataclass
-class WmsQueryCacheEntry:
-    """BC-09 WMS 短缓存条目。"""
-
-    payload: dict[str, Any]
-    authority: AuthorityMetadata
-    cached_at: float
-
-
-def wms_cache_preserves_authority(entry: WmsQueryCacheEntry) -> tuple[bool, str | None]:
-    """cache hit response 仍须含 authority=WMS / source / evidence_at。"""
-    ok, reason = validate_authority_metadata(entry.authority)
-    if not ok:
-        return False, reason
-    if entry.authority.authority != "WMS":
-        return False, "AUTHORITY_NOT_WMS"
-    return True, None
-
-
 __all__ = [
     "COMMAND_LIKE_FIELDS",
     "ActiveOwnership",
     "AdmissionDecision",
     "AuthorityMetadata",
     "HandoffEvidence",
-    "WmsQueryCacheEntry",
     "assert_single_active_ownership",
     "evaluate_start_admission",
     "event_can_advance_correlation",
     "handoff_can_advance",
     "validate_authority_metadata",
     "validate_event_push_response",
-    "wms_cache_preserves_authority",
 ]

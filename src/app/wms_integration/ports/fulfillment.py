@@ -1,11 +1,10 @@
 """WmsFulfillmentPort。
 
-主计划 §5.1 7 port 之一: 履约 (搬运/补给/换面/满箱交换/notify pkg binding)。
+主计划 §5.1 7 port 之一: 履约 (搬运/补给/换面/满箱交换)。
 所有 effect 必先写 RuntimeIntentLog + EffectPort dispatcher (主计划 §3.5 I3 边界),
 capability 不得在 WMS 履约上下文绕过 Runtime 直接修改 WES 内部状态。
 
-方法命名: Port.method 格式, 供 ExternalContractProfile.runtime_capabilities_effect
-引用。
+方法只定义业务协议；运行准入由 typed system capability identity 承担。
 """
 
 from __future__ import annotations
@@ -24,17 +23,6 @@ class WmsFulfillmentResult(BaseModel):
     accepted: bool = Field(description="WMS 是否接受请求")
     reason: str | None = Field(default=None, description="拒绝原因 (accepted=False 时必填)")
     warehouse_code: str = Field(min_length=1, max_length=80, description="仓库编码")
-
-
-class WmsPalletBindingResult(BaseModel):
-    """料盘绑定结果 (notify_pkg_binding 返回)。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    package_id: str = Field(min_length=1, max_length=80, description="料盘 ID")
-    pallet_id: str = Field(min_length=1, max_length=80, description="托盘 ID")
-    bound_at: str = Field(description="绑定时间 ISO 8601")
-    station_code: str = Field(min_length=1, max_length=80, description="绑定工位编码")
 
 
 class WmsFulfillmentPort(Protocol):
@@ -67,8 +55,4 @@ class WmsFulfillmentPort(Protocol):
 
     def move_bin_to_conveyor_exit(self, bin_id: str, conveyor_exit: str) -> WmsFulfillmentResult:
         """请求 WMS 把料箱移到传送带出口。"""
-        ...
-
-    def notify_pkg_binding(self, package_id: str, pallet_id: str, station_code: str) -> WmsPalletBindingResult:
-        """通知 WMS 料盘已绑定托盘 (返回 binding 结果)。"""
         ...

@@ -16,11 +16,29 @@ from src.app.handling.models import (
 )
 from src.app.handling.repositories import HandlingOperationRepository
 from src.app.handling.services import HandlingOperationService, WmsRcsHandlingGateway
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import (
+    DispatchEnvelope,
     OperationCompletionPolicy,
     SystemOutbox,
     SystemOutboxDispatchType,
+    SystemOutboxTargetType,
 )
+from src.app.sys.services.endpoint_registry import EndpointRegistry
+from src.app.wms_integration.services.transport_contract import (
+    WmsTransportContractService,
+    freeze_legacy_transport_binding,
+)
+
+
+def _legacy_endpoint_registry() -> EndpointRegistry:
+    return EndpointRegistry(
+        {
+            "WMS_RCS_RACK_OPERATION": "http://wms-rcs/api/wes/rack-operation",
+            "WMS_RCS_BIN_OPERATION": "http://wms-rcs/api/wes/transport-request",
+            "WMS_RCS_FULL_BOX_EXCHANGE": "http://wms-rcs/api/wes/full-box-exchange",
+        }
+    )
 
 
 class FakeOperationRepository:
@@ -36,6 +54,10 @@ class FakeOperationRepository:
         self.created.append(data)
         self.by_key[operation.operation_key] = operation
         return operation
+
+
+def _handling_gateway() -> WmsRcsHandlingGateway:
+    return WmsRcsHandlingGateway(WmsTransportContractService(registry=_legacy_endpoint_registry()))
 
 
 class FakeMoveRepository:
@@ -69,18 +91,35 @@ class FakeOutboxRepository:
 
 
 class FakeGateway:
-    def build_ctu_move_envelope(self, *, operation: Any, move: Any, sequence_no: int) -> dict[str, Any]:
-        return {
-            "dispatch_key": f"handling:{operation.operation_key}:move:{sequence_no}",
-            "target_code": "WMS_RCS_BIN_OPERATION",
-            "payload_json": {
-                "request_type": "BIN_MOVE",
-                "operation_key": operation.operation_key,
-                "source": {"type": move.source_type, "code": move.source_code},
-                "target": {"type": move.target_type, "code": move.target_code},
-                "carrier": {"type": move.carrier_type, "code": move.carrier_code},
-            },
+    def build_ctu_move_envelope(self, *, operation: Any, move: Any, sequence_no: int) -> DispatchEnvelope:
+        dispatch_key = f"handling:{operation.operation_key}:move:{sequence_no}"
+        payload_json = {
+            "request_type": "BIN_MOVE",
+            "operation_key": operation.operation_key,
+            "source": {"type": move.source_type, "code": move.source_code},
+            "target": {"type": move.target_type, "code": move.target_code},
+            "carrier": {"type": move.carrier_type, "code": move.carrier_code},
         }
+        canonical = CanonicalPayload.from_projection(payload_json)
+        frozen_binding = freeze_legacy_transport_binding(
+            operation_identity="wms.transport.handling@v1",
+            target_code="WMS_RCS_BIN_OPERATION",
+            registry=_legacy_endpoint_registry(),
+        )
+        return DispatchEnvelope(
+            dispatch_key=dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code="WMS_RCS_BIN_OPERATION",
+            provider_profile_identity=frozen_binding.provider_profile_identity,
+            operation_identity="wms.transport.handling@v1",
+            payload_json=payload_json,
+            canonical_payload_bytes=canonical.body,
+            payload_hash=canonical.sha256,
+            frozen_binding=frozen_binding,
+            operation_domain="HANDLING",
+            operation_key=operation.operation_key,
+        )
 
 
 def test_handling_models_are_system_level_contracts() -> None:
@@ -106,10 +145,8 @@ def test_handling_models_are_system_level_contracts() -> None:
     ],
 )
 def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(
-    monkeypatch: pytest.MonkeyPatch,
     operation_type: str,
 ) -> None:
-    monkeypatch.setenv("WMS_RCS_BIN_OPERATION_URL", "http://wms-rcs/api/wes/transport-request")
     operation = SimpleNamespace(
         operation_key="full-box:release-001",
         operation_type=operation_type,
@@ -133,14 +170,14 @@ def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(
         metadata_json={"rack_type": "SINGLE_LAYER", "priority": 8},
     )
 
-    envelope = WmsRcsHandlingGateway().build_ctu_move_envelope(operation=operation, move=move, sequence_no=1)
-    payload = envelope["payload_json"]
+    envelope = _handling_gateway().build_ctu_move_envelope(operation=operation, move=move, sequence_no=1)
+    payload = envelope.payload_json
 
-    assert envelope["target_code"] == "WMS_RCS_FULL_BOX_EXCHANGE"
-    assert envelope["dispatch_key"] == "handling:full-box:release-001:move:1"
-    assert payload["request_id"] == envelope["dispatch_key"]
-    assert payload["dispatch_key"] == envelope["dispatch_key"]
-    assert payload["exchange_request_code"] == envelope["dispatch_key"]
+    assert envelope.target_code == "WMS_RCS_FULL_BOX_EXCHANGE"
+    assert envelope.dispatch_key == "handling:full-box:release-001:move:1"
+    assert payload["request_id"] == envelope.dispatch_key
+    assert payload["dispatch_key"] == envelope.dispatch_key
+    assert payload["exchange_request_code"] == envelope.dispatch_key
     assert payload["callback_type"] == "WMS_FULL_BOX_EXCHANGE_RESULT"
     assert payload["request_type"] == "FULL_BIN_EXCHANGE"
     assert payload["rack_id"] == "RACK-001"
@@ -158,12 +195,10 @@ def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(
     ],
 )
 def test_wms_rcs_gateway_keeps_rack_bin_exchange_on_bin_move_protocol(
-    monkeypatch: pytest.MonkeyPatch,
     operation_type: str,
 ) -> None:
     """RACK_BIN_EXCHANGE 需要 reconciliation，但外部协议形态不是 full-box。"""
 
-    monkeypatch.setenv("WMS_RCS_BIN_OPERATION_URL", "http://wms-rcs/api/wes/transport-request")
     operation = SimpleNamespace(
         operation_key="rack-bin:release-001",
         operation_type=operation_type,
@@ -187,10 +222,10 @@ def test_wms_rcs_gateway_keeps_rack_bin_exchange_on_bin_move_protocol(
         metadata_json={"rack_type": "SINGLE_LAYER", "priority": 8},
     )
 
-    envelope = WmsRcsHandlingGateway().build_ctu_move_envelope(operation=operation, move=move, sequence_no=1)
-    payload = envelope["payload_json"]
+    envelope = _handling_gateway().build_ctu_move_envelope(operation=operation, move=move, sequence_no=1)
+    payload = envelope.payload_json
 
-    assert envelope["target_code"] == "WMS_RCS_BIN_OPERATION"
+    assert envelope.target_code == "WMS_RCS_BIN_OPERATION"
     assert payload["callback_type"] == "WMS_TRANSPORT_COMPLETED"
     assert payload["request_type"] == "BIN_MOVE"
 

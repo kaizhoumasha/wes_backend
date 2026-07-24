@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from src.app.wms_integration.ports.confirm_inbound_operation import OPERATION_IDENTITY as CONFIRM_INBOUND_IDENTITY
+from src.app.wms_integration.ports.notify_pkg_binding_operation import (
+    OPERATION_IDENTITY as NOTIFY_PACKAGE_BINDING_IDENTITY,
+)
 from src.utils.value_normalization import coerce_string_value, string_list
 
 if TYPE_CHECKING:
@@ -82,8 +86,8 @@ class SorterInboundPreviewService:
             "preserve_local_physical_fact": local_physical_completed,
             "next_object_admission_allowed": True,
             "effect_ports": {
-                "pkg_binding": "WmsFulfillmentPort.notify_pkg_binding",
-                "inventory_transaction": "WmsInventoryTransactionPort.confirm_inbound",
+                "pkg_binding": NOTIFY_PACKAGE_BINDING_IDENTITY,
+                "inventory_transaction": CONFIRM_INBOUND_IDENTITY,
             },
         }
 

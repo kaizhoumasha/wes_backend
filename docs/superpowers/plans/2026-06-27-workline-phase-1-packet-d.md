@@ -349,8 +349,9 @@ git commit -m "feat(wms-ports): add WmsDocumentPort protocol + 6 typed data clas
 
 **Interfaces:**
 - Produces:
-  - `WmsFulfillmentPort(Protocol)` — 7 methods: `request_rack_supply` / `request_rack_transport` / `change_rack_face` / `full_box_exchange` / `move_bin_to_conveyor_entry` / `move_bin_to_conveyor_exit` / `notify_pkg_binding`
-  - 2 Pydantic data classes: `WmsFulfillmentResult`, `WmsPalletBindingResult`
+  - `WmsFulfillmentPort(Protocol)` — 6 methods: `request_rack_supply` / `request_rack_transport` / `change_rack_face` / `full_box_exchange` / `move_bin_to_conveyor_entry` / `move_bin_to_conveyor_exit`
+  - 1 Pydantic data class: `WmsFulfillmentResult`
+  - 料盘绑定已硬切到 `wms.fulfillment.notify_pkg_binding@v1`，不再属于 family Port。
 
 - [ ] **Step 1: Append contract tests for fulfillment port**
 
@@ -392,16 +393,15 @@ def test_wms_fulfillment_port_have_docstrings():
         "full_box_exchange",
         "move_bin_to_conveyor_entry",
         "move_bin_to_conveyor_exit",
-        "notify_pkg_binding",
     ]:
         method = getattr(WmsFulfillmentPort, name)
         assert method.__doc__, f"method {name} needs docstring"
 
 
 def test_wms_fulfillment_data_classes_are_pydantic():
-    from src.app.wms_integration.ports.fulfillment import WmsFulfillmentResult, WmsPalletBindingResult
+    from src.app.wms_integration.ports.fulfillment import WmsFulfillmentResult
 
-    for cls in [WmsFulfillmentResult, WmsPalletBindingResult]:
+    for cls in [WmsFulfillmentResult]:
         assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
         assert cls.__doc__, f"{cls.__name__} needs docstring"
 ```
@@ -444,21 +444,10 @@ class WmsFulfillmentResult(BaseModel):
     warehouse_code: str = Field(min_length=1, max_length=80, description="仓库编码")
 
 
-class WmsPalletBindingResult(BaseModel):
-    """料盘绑定结果 (notify_pkg_binding 返回)。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    package_id: str = Field(min_length=1, max_length=80, description="料盘 ID")
-    pallet_id: str = Field(min_length=1, max_length=80, description="托盘 ID")
-    bound_at: str = Field(description="绑定时间 ISO 8601")
-    station_code: str = Field(min_length=1, max_length=80, description="绑定工位编码")
-
-
 class WmsFulfillmentPort(Protocol):
     """WMS 履约 port (Phase 1 CEO-001 #5, Packet D)。
 
-    7 个 effect 方法覆盖 WES → WMS 的出站履约调用。所有 effect 经
+    6 个 effect 方法覆盖 WES → WMS 的出站履约调用。所有 effect 经
     RuntimeIntentLog + EffectPort dispatcher; capability 不得绕过 Runtime
     直接修改 WES 内部状态 (主计划 §3.5 I3)。
     """
@@ -487,9 +476,6 @@ class WmsFulfillmentPort(Protocol):
         """请求 WMS 把料箱移到传送带出口。"""
         ...
 
-    def notify_pkg_binding(self, package_id: str, pallet_id: str, station_code: str) -> WmsPalletBindingResult:
-        """通知 WMS 料盘已绑定托盘 (返回 binding 结果)。"""
-        ...
 ```
 
 - [ ] **Step 4: Run test to verify it passes**

@@ -11,23 +11,38 @@ from src.app.runtime.system_capabilities.material_flow.material_unit_write.defin
 from src.app.runtime.system_capabilities.runtime.session_hold.definition import (
     DEFINITION as _DEFINITION_2,
 )
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import (
+from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.definition import (
     DEFINITION as _DEFINITION_3,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.definition import (
+    DEFINITION as _DEFINITION_4,
+)
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.definition import (
+    DEFINITION as _DEFINITION_5,
+)
+from src.app.runtime.system_capabilities.wms.inventory.query_inventory.definition import (
+    DEFINITION as _DEFINITION_6,
 )
 
 SYSTEM_CAPABILITY_IDENTITIES = (
     ("device.device_command_write", "v1"),
     ("material_flow.material_unit_write", "v1"),
     ("runtime.session_hold", "v1"),
-    ("wms.rough_sorter_inventory_admission", "v1"),
+    ("wms.fulfillment.full_box_exchange", "v1"),
+    ("wms.fulfillment.notify_pkg_binding", "v1"),
+    ("wms.inventory.confirm_inbound", "v1"),
+    ("wms.inventory.query_inventory", "v1"),
 )
-SYSTEM_CAPABILITY_INDEX_DIGEST = "ae43ff2a9aa70d28a57f1dc3a5d48a748fe6f11cf8018090dd633e20114e05f7"
+SYSTEM_CAPABILITY_INDEX_DIGEST = "315c8a40d1afb9ff4f36f09df21d1e145ff145632b53741c23459cd72bdd904c"
 SYSTEM_CAPABILITY_INDEX = MappingProxyType(
     {
         ("device.device_command_write", "v1"): _DEFINITION_0,
         ("material_flow.material_unit_write", "v1"): _DEFINITION_1,
         ("runtime.session_hold", "v1"): _DEFINITION_2,
-        ("wms.rough_sorter_inventory_admission", "v1"): _DEFINITION_3,
+        ("wms.fulfillment.full_box_exchange", "v1"): _DEFINITION_3,
+        ("wms.fulfillment.notify_pkg_binding", "v1"): _DEFINITION_4,
+        ("wms.inventory.confirm_inbound", "v1"): _DEFINITION_5,
+        ("wms.inventory.query_inventory", "v1"): _DEFINITION_6,
     }
 )
 

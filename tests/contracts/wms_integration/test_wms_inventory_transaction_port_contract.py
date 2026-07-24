@@ -33,18 +33,6 @@ class _FakeWmsInventoryTransactionPort:
             raise KeyError(f"reservation_id={reservation_id} 不存在")
         del self.reservations[reservation_id]
 
-    def confirm_inbound(self, material_code: str, quantity: float, warehouse_code: str) -> WmsTransferResult:
-        doc_no = f"GRN-{self.next_doc_id}"
-        self.next_doc_id += 1
-        result = WmsTransferResult(
-            document_no=doc_no,
-            material_code=material_code,
-            quantity=quantity,
-            warehouse_code=warehouse_code,
-        )
-        self.transfers.append(result)
-        return result
-
     def confirm_outbound(self, material_code: str, quantity: float, warehouse_code: str) -> WmsTransferResult:
         doc_no = f"SO-{self.next_doc_id}"
         self.next_doc_id += 1
@@ -80,7 +68,6 @@ def test_wms_inventory_transaction_port_is_protocol():
     """WmsInventoryTransactionPort 是 Protocol。"""
     assert hasattr(WmsInventoryTransactionPort, "reserve_inventory")
     assert hasattr(WmsInventoryTransactionPort, "release_reservation")
-    assert hasattr(WmsInventoryTransactionPort, "confirm_inbound")
     assert hasattr(WmsInventoryTransactionPort, "confirm_outbound")
     assert hasattr(WmsInventoryTransactionPort, "transfer_inventory")
 
@@ -102,16 +89,6 @@ def test_release_reservation_removes_reservation():
     port.release_reservation(rid)
     with pytest.raises(KeyError, match=rid):
         port.release_reservation(rid)
-
-
-def test_confirm_inbound_generates_grn_document():
-    """confirm_inbound 产生 GRN 单据号。"""
-    port: WmsInventoryTransactionPort = _FakeWmsInventoryTransactionPort()
-    result = port.confirm_inbound("M001", 50.0, "WH-A")
-    assert result.document_no.startswith("GRN-")
-    assert result.material_code == "M001"
-    assert result.quantity == 50.0
-    assert result.warehouse_code == "WH-A"
 
 
 def test_confirm_outbound_generates_so_document():

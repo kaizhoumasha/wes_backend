@@ -13,7 +13,7 @@
 - src/app/workline/models/session.py（SessionStatus）
 
 本模块只保留运行时契约层枚举（插件面向的编排契约）：
-FailureDomain, TimelineStage, OutboxStatus, OutboxDispatchType,
+FailureDomain, TimelineStage, OutboxDispatchType,
 ManualOperationType, DecisionType
 
 参考文档：
@@ -98,31 +98,6 @@ class TimelineStage(str, Enum):
     COMPENSATION = "COMPENSATION"
     COMPLETE = "COMPLETE"
     FAIL = "FAIL"
-
-
-class OutboxStatus(str, Enum):
-    """
-    发件箱状态枚举
-
-    定义 SystemOutbox 的派发状态（架构 8.8 节）。
-
-    状态迁移保证副作用的可靠派发。
-
-    属性:
-        NEW: 新创建的 Outbox 记录，等待派发
-        DISPATCHING: 正在派发（已锁定，防止重复派发）
-        SENT: 已发送
-        BLOCKED_RESOURCE: 因运行时资源隔离暂缓派发
-        FAILED: 派发失败（可重试）
-        CANCELLED: 已取消（不再派发）
-    """
-
-    NEW = "NEW"
-    DISPATCHING = "DISPATCHING"
-    SENT = "SENT"
-    BLOCKED_RESOURCE = "BLOCKED_RESOURCE"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
 
 
 class OutboxDispatchType(str, Enum):
@@ -214,6 +189,5 @@ __all__ = [
     "FailureDomain",
     "ManualOperationType",
     "OutboxDispatchType",
-    "OutboxStatus",
     "TimelineStage",
 ]

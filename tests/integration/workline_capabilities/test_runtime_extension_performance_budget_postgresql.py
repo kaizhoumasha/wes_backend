@@ -22,21 +22,24 @@ from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    RuntimeInboxProcessorBridge,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteInput
 from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
 from src.app.sys.models import SystemOutbox
+from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
 from src.app.wms_integration.services import (
+    WmsCallEvidenceQueryWriter,
+    WmsCallEvidenceService,
     WmsCircuitBreakerService,
-    WmsEndpointConfig,
-    WmsHttpClient,
-    WmsHttpTimeoutConfig,
-    WmsTypedPortService,
 )
 from src.app.workline.models.workline import WorkLine
+from src.core.conf import settings
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
-    processor,
     seed_scan_flow,
     with_temporary_runtime_database,
 )
@@ -75,18 +78,19 @@ def _callback_request(payload: dict[str, object]) -> Request:
     )
 
 
-async def _process_one(db: Any, service: RuntimeInboxService, *, token: str) -> dict[str, int]:
+async def _process_one(db: Any, service: RuntimeInboxService, queue_gateway: Any, *, token: str) -> dict[str, int]:
     claimed = await claim(db, service, token=token)
-    return await processor(service).process_claimed(db, claim=claimed)
+    return await RuntimeInboxProcessorBridge(inbox_service=service, queue_gateway=queue_gateway).process_claimed(
+        db, claim=claimed
+    )
 
 
-def _wms_service(session_factory: Any, http_calls: list[httpx.Request]) -> WmsTypedPortService:
+def _inventory_query_port_factory_builder(session_factory: Any, http_calls: list[httpx.Request]):
     async def handler(request: httpx.Request) -> httpx.Response:
         http_calls.append(request)
         return httpx.Response(
             200,
             json={
-                "request_id": request.url.params.get("request_id", "perf-wms"),
                 "items": [
                     {
                         "sku": "MAT-IT-001",
@@ -97,37 +101,45 @@ def _wms_service(session_factory: Any, http_calls: list[httpx.Request]) -> WmsTy
                         "reserved_qty": "0",
                     }
                 ],
+                "source_version": "performance-fixture-v1",
             },
         )
 
-    return WmsTypedPortService(
-        session_factory=session_factory,
-        endpoint_config=WmsEndpointConfig(
-            base_url="http://wms-performance.test/api",
-            timeout=WmsHttpTimeoutConfig(connect=1, read=1, write=1, pool=1),
-        ),
-        http_client=WmsHttpClient(transport=httpx.MockTransport(handler)),
-        breaker_service=WmsCircuitBreakerService(failure_threshold=2, retry_after_seconds=60),
-        cache=None,
-    )
+    def builder(*, provider_profile: Any, simulation: bool, sandbox_rows_provider: Any):
+        breaker_service = WmsCircuitBreakerService(failure_threshold=2, retry_after_seconds=60)
+        return build_inventory_query_port_factory(
+            provider_profile=provider_profile,
+            simulation=simulation,
+            sandbox_rows_provider=sandbox_rows_provider,
+            transport=httpx.MockTransport(handler),
+            evidence_writer=WmsCallEvidenceQueryWriter(
+                session_factory=session_factory,
+                provider_profile_identity=provider_profile.identity,
+                evidence_service=WmsCallEvidenceService(),
+                breaker_service=breaker_service,
+            ),
+        )
+
+    return builder
 
 
 async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_query: bool, sample: int) -> float:
     measured: float | None = None
 
-    async def scenario(session_factory: Any, _queue_gateway: Any) -> None:
+    async def scenario(session_factory: Any, queue_gateway: Any) -> None:
         nonlocal measured
         http_calls: list[httpx.Request] = []
         monkeypatch.setattr(
-            "src.app.wms_integration.services.wms_typed_port_service",
-            _wms_service(session_factory, http_calls),
+            "src.app.wms_integration.runtime_factory.build_inventory_query_port_factory",
+            _inventory_query_port_factory_builder(session_factory, http_calls),
         )
+        monkeypatch.setattr(settings, "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1", "performance-fixture-secret")
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
             service = RuntimeInboxService()
             if not with_wms_query:
                 started = time.perf_counter()
-                result = await _process_one(db, service, token=f"perf-no-query-{sample}")
+                result = await _process_one(db, service, queue_gateway, token=f"perf-no-query-{sample}")
                 measured = time.perf_counter() - started
                 assert result["success"] == 1
                 assert http_calls == []
@@ -142,7 +154,7 @@ async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_
                 assert evidence_count == 0
                 return
 
-            assert (await _process_one(db, service, token=f"perf-query-seed-{sample}"))["success"] == 1
+            assert (await _process_one(db, service, queue_gateway, token=f"perf-query-seed-{sample}"))["success"] == 1
             command = await db.scalar(
                 select(DeviceCommand).where(
                     DeviceCommand.workline_id == seeded.workline_id,
@@ -173,7 +185,7 @@ async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_
             assert callback is not None
 
             started = time.perf_counter()
-            result = await _process_one(db, service, token=f"perf-query-{sample}")
+            result = await _process_one(db, service, queue_gateway, token=f"perf-query-{sample}")
             measured = time.perf_counter() - started
             assert result["success"] == 1
             assert len(http_calls) == 1
@@ -184,7 +196,7 @@ async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_
                 )
             )
             assert evidence is not None
-            assert evidence.payload_json["evidence"]["capability_key"] == "wms.rough_sorter_inventory_admission"
+            assert evidence.payload_json["evidence"]["capability_key"] == "wms.inventory.query_inventory"
             assert evidence.payload_json["evidence"]["contract_version"] == "v1"
 
     await with_temporary_runtime_database(scenario)
@@ -196,11 +208,11 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
     outbox_samples: list[float] = []
     replay_samples: list[float] = []
 
-    async def scenario(session_factory: Any, _queue_gateway: Any) -> None:
+    async def scenario(session_factory: Any, queue_gateway: Any) -> None:
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
             service = RuntimeInboxService()
-            assert (await _process_one(db, service, token="perf-replay-source"))["success"] == 1
+            assert (await _process_one(db, service, queue_gateway, token="perf-replay-source"))["success"] == 1
             decision = await db.scalar(
                 select(WorklineTimeline)
                 .where(
@@ -226,7 +238,9 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
             session = await db.get(WorklineSession, seeded.session_id)
             workline = await db.get(WorkLine, seeded.workline_id)
             device = await db.get(Device, seeded.arm_id)
-            assert session is not None and workline is not None and device is not None
+            source_inbox = await db.get(RuntimeInbox, seeded.inbox_id)
+            assert session is not None and workline is not None and device is not None and source_inbox is not None
+            assert source_inbox.execution_session_id is not None
             source_command = await db.scalar(
                 select(DeviceCommand).where(
                     DeviceCommand.workline_id == seeded.workline_id,
@@ -238,6 +252,19 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
             await db.commit()
             device_service = DeviceCommandService()
             for index in range(MEASURED_SAMPLE_COUNT + 1):
+                command_code = f"CMD-PERF-EFFECT-{index}"
+                dispatch_key = f"device-command:{command_code}"
+                intent_log = RuntimeIntentLog(
+                    execution_session_id=source_inbox.execution_session_id,
+                    correlation_id="workline-session:IT-RUNTIME-INBOX-SESSION",
+                    provider_code="RUNTIME",
+                    operation_kind="system_capability_effect",
+                    target_domain="device",
+                    target_action="performance_sample",
+                    idempotency_key=f"perf-outbox-{index}",
+                    request_hash=f"{index:064x}",
+                    dispatch_key=dispatch_key,
+                )
                 started = time.perf_counter()
                 prepared_command, _outbox = await device_service.prepare_runtime_effect(
                     db,
@@ -247,6 +274,7 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
                         target_device_id=seeded.arm_id,
                         action="PICK_AND_PUT",
                         payload={"sample": index},
+                        command_code=command_code,
                         result_policy="COMMAND_RESULT",
                     ),
                     target_device_id=seeded.arm_id,
@@ -257,6 +285,7 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
                     idempotency_key=f"perf-outbox-{index}",
                     execution_correlation_id="workline-session:IT-RUNTIME-INBOX-SESSION",
                     trace_id=seeded.trace_id,
+                    intent_log=intent_log,
                 )
                 await db.commit()
                 outbox_samples.append(time.perf_counter() - started)

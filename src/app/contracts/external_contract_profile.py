@@ -20,14 +20,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Environment = Literal["sandbox", "staging", "production"]
-Direction = Literal["query", "effect", "event", "result"]
-PORT_METHOD_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*Port\.[a-z_][A-Za-z0-9_]*$")
+Direction = Literal["event", "result"]
 
 
 class SecurityProfile(BaseModel):
@@ -67,14 +65,11 @@ class SecurityProfile(BaseModel):
 class ExternalContractProfile(BaseModel):
     """按 provider_code + contract_version 描述 WMS/ECS provider 外部合同。
 
-    主计划 §3.5.1 + §5.1: 锁定 provider 的 query/effect/normalizer 能力 + 字段映射 +
-    timeout/retry/fixture + 不支持动作; Runtime capability admission 和 callback normalizer
-    必须在合同约束下工作, 不依赖供应商 DTO/SDK。
+    本合同只保留 provider/version/environment identity 与 inbound normalizer
+    元数据；北向 operation、transport 与 auth 由 typed WMS Provider catalog 唯一声明。
 
-    工厂方法校验:
-    - query 只能列 query port method
-    - effect 只能列 effect port method
-    - environment=production 时, security_profile 必须固定密钥标识和签名算法
+    environment=production 且声明入站 callback 时，security_profile 必须固定
+    密钥标识和签名算法。
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -82,14 +77,6 @@ class ExternalContractProfile(BaseModel):
     provider_code: str = Field(min_length=1, max_length=60, description="稳定 provider ID")
     contract_version: str = Field(min_length=1, max_length=60, description="合同版本")
     environment: Environment
-    runtime_capabilities_query: list[str] = Field(
-        min_length=1,
-        description="query port method, e.g. WmsMasterDataPort.get_material",
-    )
-    runtime_capabilities_effect: list[str] = Field(
-        default_factory=list,
-        description="effect port method, e.g. WmsFulfillmentPort.request_transport",
-    )
     inbound_normalizers_event: list[str] = Field(
         default_factory=list,
         description="provider 允许的 event type, e.g. WMS_GRN_RECEIVED",
@@ -112,7 +99,6 @@ class ExternalContractProfile(BaseModel):
         min_length=1,
         description="递增短退避数组",
     )
-    cache_ttl_seconds: int = Field(default=30, ge=0, description="query cache TTL; 0=禁用")
     fixture_set_path: str = Field(
         min_length=1,
         description="tests/fixtures/external_contracts/<provider>/<profile>",
@@ -135,13 +121,6 @@ class ExternalContractProfile(BaseModel):
         return f"{self.provider_code.strip().lower()}.{self.contract_version}.{self.environment}"
 
     @model_validator(mode="after")
-    def _effect_timeout_required_after(self) -> ExternalContractProfile:
-        """effect 非空时 effect_timeout_seconds 必填 (model_validator 访问完整实例)。"""
-        if self.runtime_capabilities_effect and self.timeout_retry_effect_timeout_seconds is None:
-            raise ValueError("effect_timeout_seconds 必填当 runtime_capabilities_effect 非空")
-        return self
-
-    @model_validator(mode="after")
     def _production_security_required_after(self) -> ExternalContractProfile:
         """生产入站 callback profile 不允许沿用无认证材料的 sandbox 占位配置。"""
         has_inbound_callbacks = bool(self.inbound_normalizers_event or self.inbound_normalizers_result)
@@ -153,30 +132,6 @@ class ExternalContractProfile(BaseModel):
                 "production external contract profile 的 security_profile 必须固定 secret_kid 和 signature_algo"
             )
         return self
-
-    @field_validator("runtime_capabilities_query")
-    @classmethod
-    def _query_method_format(cls, v: list[str]) -> list[str]:
-        """query 元素必须匹配 'ClassName.method' 格式 (Port.method 合同)。
-
-        字符类含下划线, 支持 snake_case 方法名 (如 WmsFulfillmentPort.request_transport)。
-        """
-        return _validate_port_method_entries(v, direction="query")
-
-    @field_validator("runtime_capabilities_effect")
-    @classmethod
-    def _effect_method_format(cls, v: list[str]) -> list[str]:
-        """effect 元素必须匹配 'ClassName.method' 格式 (Port.method 合同)。"""
-
-        return _validate_port_method_entries(v, direction="effect")
-
-    def ensure_runtime_capability_declared(self, capability: str, *, direction: Literal["query", "effect"]) -> None:
-        """校验 provider profile 已声明指定 query/effect capability。"""
-
-        declared = self.runtime_capabilities_query if direction == "query" else self.runtime_capabilities_effect
-        if capability in declared:
-            return
-        raise PermissionError(f"provider={self.provider_code} 未声明 {direction} capability: {capability}")
 
     def ensure_inbound_normalizer_declared(
         self,
@@ -215,13 +170,6 @@ class RuntimeCapabilityProfile(BaseModel):
         default_factory=list,
         description="显式禁止注入的 inbound normalizer 类型, e.g. WmsEventPort",
     )
-
-
-def _validate_port_method_entries(entries: list[str], *, direction: Literal["query", "effect"]) -> list[str]:
-    for entry in entries:
-        if not PORT_METHOD_RE.match(entry):
-            raise ValueError(f"{direction} 元素必须为 'ClassName.method' 格式 (Port.method 合同), got: {entry}")
-    return entries
 
 
 class InboundNormalizerProfile(BaseModel):
@@ -301,11 +249,7 @@ class FixtureCase(BaseModel):
     case_id: str = Field(min_length=1)
     provider_code: str = Field(min_length=1)
     contract_version: str = Field(min_length=1)
-    expected_port: str = Field(
-        min_length=1,
-        description="Port.method 格式, 如 WmsFulfillmentPort.request_transport",
-    )
-    direction: Direction  # forward ref, defined below
+    direction: Literal["query", "effect", "event", "result"]
     raw_request: dict | None = None
     raw_response: dict | None = None
     raw_callback: dict | None = None

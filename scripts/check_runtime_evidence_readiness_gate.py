@@ -158,8 +158,8 @@ def validate_mock_readiness(repo_root: Path) -> RuntimeEvidenceReadinessValidati
             RUNTIME_CAPABILITY_FILES[1]: (
                 "production_write_path",
                 "legacy_plugin_entry_used",
-                "WmsFulfillmentPort.notify_pkg_binding",
-                "WmsInventoryTransactionPort.confirm_inbound",
+                "wms.fulfillment.notify_pkg_binding@v1",
+                "wms.inventory.confirm_inbound@v1",
             ),
             RUNTIME_CAPABILITY_FILES[2]: (
                 "LOCAL_MOCK_ONLY",
@@ -175,14 +175,14 @@ def validate_mock_readiness(repo_root: Path) -> RuntimeEvidenceReadinessValidati
             ),
             RUNTIME_CAPABILITY_FILES[4]: (
                 "RuntimeIntent",
-                "WmsFulfillmentPort.notify_pkg_binding",
-                "WmsInventoryTransactionPort.confirm_inbound",
+                "wms.fulfillment.notify_pkg_binding@v1",
+                "wms.inventory.confirm_inbound@v1",
                 "provider-contract",
             ),
             RUNTIME_CAPABILITY_FILES[5]: (
                 "RuntimeIntent",
-                "WmsFulfillmentPort.notify_pkg_binding",
-                "WmsInventoryTransactionPort.confirm_inbound",
+                "wms.fulfillment.notify_pkg_binding@v1",
+                "wms.inventory.confirm_inbound@v1",
                 "provider-contract",
             ),
             RUNTIME_CAPABILITY_FILES[6]: (
@@ -257,8 +257,8 @@ def _basic_runtime_evidence_failure(artifact: Mapping[str, object], *, evidence_
     effect_path = _string_set(artifact.get("effect_path"))
     if not {
         "RuntimeIntentLog",
-        "WmsFulfillmentPort.notify_pkg_binding",
-        "WmsInventoryTransactionPort.confirm_inbound",
+        "wms.fulfillment.notify_pkg_binding@v1",
+        "wms.inventory.confirm_inbound@v1",
     }.issubset(effect_path):
         return "MISSING_RUNTIME_EVIDENCE_EFFECT_PATH"
 

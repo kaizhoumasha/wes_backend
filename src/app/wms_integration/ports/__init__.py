@@ -4,7 +4,7 @@
 
 活跃 (当前里程碑):
 1. WmsMasterDataPort (物料主数据, 包括 area/warehouse/storage_location/equipment)
-2. WmsInventoryQueryPort (库存只读查询)
+2. InventoryQueryOperationPort (库存只读 typed operation 查询)
 3. WmsInventoryTransactionPort (库存事务: reserve/release/confirm/transfer)
 4. WmsFulfillmentPort (履约: 搬运/补给/换面/满箱交换/notify pkg binding)
 
@@ -13,9 +13,5 @@
 6. WmsEventPort (入站事件 normalizer)
 7. WmsReconciliationQueryPort (对账 drift 查询)
 
-所有 Protocol 已落地，capability 可独立通过 port contract 注入。
-
-端口方法命名: ClassName.method (Port.method 合同), 与
-src/app/contracts/external_contract_profile.py runtime_capabilities_query
-字段格式一致。
+所有 Protocol 已落地，capability 可独立通过 typed contract 注入。
 """

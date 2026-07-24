@@ -6,13 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
+    RoughSorterBindingSnapshot,
+)
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
 from src.app.runtime.system_capabilities.outcomes import Success
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterBindingSnapshot,
-    RoughSorterInventoryAdmissionOutput,
-)
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, PluginAttemptContext
 from src.app.runtime.workline_plugins.dispatcher import (
     PinnedPluginSnapshot,
@@ -25,6 +24,11 @@ from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
 from src.app.runtime.workline_plugins.rough_sorter.inputs import parse_scan_completed
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
+from src.app.wms_integration.ports.query_inventory_operation import (
+    InventoryAuthorityItem,
+    InventoryQueryOperationRequest,
+    InventoryQueryOperationResult,
+)
 from tests.workline_plugins.conformance import PluginConformanceFixture, PluginConformanceSuite
 
 
@@ -96,16 +100,19 @@ class _Gateway:
 
     async def execute(self, capability_key: str, contract_version: str, input_data: object) -> GatewayQueryResult:
         self.calls.append((capability_key, contract_version))
-        assert input_data is not None
+        assert isinstance(input_data, InventoryQueryOperationRequest)
         return GatewayQueryResult(
             outcome=Success(
-                payload=RoughSorterInventoryAdmissionOutput(
-                    accepted=True,
-                    material_code="HH-001",
-                    batch_no="LOT-001",
-                    warehouse_code="WH-01",
-                    matched_item_count=1,
-                    available_quantity=1,
+                payload=InventoryQueryOperationResult(
+                    items=(
+                        InventoryAuthorityItem(
+                            material_code=input_data.material_code,
+                            available_quantity=1,
+                            lot_no=input_data.lot_no,
+                            warehouse_code=input_data.warehouse_code,
+                            owner_code=input_data.owner_code,
+                        ),
+                    ),
                     source_version="fixture-v1",
                 )
             ),

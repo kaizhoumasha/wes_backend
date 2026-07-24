@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.exc import DBAPIError
 
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
 from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode
@@ -26,6 +27,7 @@ from .system_capability_intent_service import SystemCapabilityIntentService, sys
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+    from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 
 type EffectOutcome = Success[Any] | BusinessReject | RetryableFailure | ContractViolation
 
@@ -38,6 +40,7 @@ class SystemCapabilityExecution:
     intent: RuntimeIntent
     admission: BaseModel
     idempotency_key: str
+    intent_log: RuntimeIntentLog | None
 
     @property
     def db(self) -> Any:
@@ -80,7 +83,8 @@ class SystemCapabilityEffectService:
     async def apply(self, ctx: dict[str, Any], intent: RuntimeIntent) -> SystemCapabilityEffectResult:
         try:
             prepared = await self._intent_service.prepare_and_claim(ctx, intent)
-        except (IdempotencyConflict, SystemCapabilityIdempotencyConflict):
+        except (IdempotencyConflict, SystemCapabilityIdempotencyConflict) as conflict:
+            await self._intent_service.record_idempotency_conflict(ctx, conflict=conflict)
             return SystemCapabilityEffectResult(
                 outcome=ContractViolation(
                     error_code="IDEMPOTENCY_CONFLICT",
@@ -100,7 +104,49 @@ class SystemCapabilityEffectService:
         definition = prepared.definition
         if prepared.claim_result is ClaimResult.MATCH or getattr(prepared.claim_result, "value", None) == "MATCH":
             replay = await self._replay_success(ctx, intent=intent, prepared=prepared)
-            if replay is None:
+            if replay is not None:
+                outcome, evidence = replay
+                return SystemCapabilityEffectResult(
+                    outcome=outcome,
+                    completion_mode=definition.completion_mode,
+                    durably_accepted=definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC,
+                    # 已通过校验的 terminal success evidence 表示远端完成；这与
+                    # OUTBOX_ASYNC 的 PROPOSED/no-evidence durable acceptance 不同。
+                    remote_completed=True,
+                    idempotent_replay=True,
+                    evidence=evidence,
+                )
+            if (
+                definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
+                and prepared.intent_log is not None
+                and (
+                    prepared.intent_log.effect_status is RuntimeIntentStatus.ACCEPTED
+                    or (
+                        prepared.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+                        and prepared.has_durable_outbox
+                    )
+                )
+            ):
+                # 配对 outbox 的 PROPOSED 双账本或 transport ACCEPTED 均已 durable accepted；
+                # 只重放接受语义，不伪造 payload/evidence 或再次执行 handler。
+                return SystemCapabilityEffectResult(
+                    outcome=Success(payload=None),
+                    completion_mode=definition.completion_mode,
+                    durably_accepted=True,
+                    idempotent_replay=True,
+                )
+            provisional_without_outbox = (
+                definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
+                and prepared.intent_log is not None
+                and prepared.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+                and not prepared.has_durable_outbox
+            )
+            local_redecision = (
+                definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL
+                and prepared.intent_log is not None
+                and prepared.intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+            )
+            if not provisional_without_outbox and not local_redecision:
                 return SystemCapabilityEffectResult(
                     outcome=ContractViolation(
                         error_code="PERSISTED_OUTCOME_INVALID",
@@ -109,21 +155,13 @@ class SystemCapabilityEffectService:
                     completion_mode=definition.completion_mode,
                     idempotent_replay=True,
                 )
-            outcome, evidence = replay
-            return SystemCapabilityEffectResult(
-                outcome=outcome,
-                completion_mode=definition.completion_mode,
-                durably_accepted=definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC,
-                remote_completed=definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL,
-                idempotent_replay=True,
-                evidence=evidence,
-            )
 
         execution = SystemCapabilityExecution(
             ctx=ctx,
             intent=intent,
             admission=prepared.admission,
             idempotency_key=prepared.idempotency_key,
+            intent_log=prepared.intent_log,
         )
         try:
             handler = definition.handler_factory()
@@ -147,8 +185,13 @@ class SystemCapabilityEffectService:
                 flush_result = flush()
                 if isawaitable(flush_result):
                     await flush_result
-        evidence = self._build_evidence(intent=intent, prepared=prepared, outcome=outcome)
-        await self._intent_service.record_outcome(ctx, prepared=prepared, evidence=evidence)
+        # OUTBOX_ASYNC 只证明同事务的 RuntimeIntentLog/SystemOutbox 已 durable accepted；
+        # 不能把入队、transport SENT 或本次可重试错误写成 capability 终态。
+        # 终态只由后续 transport/callback/reconciliation evidence 的 reducer 推进。
+        evidence = None
+        if definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL:
+            evidence = self._build_evidence(intent=intent, prepared=prepared, outcome=outcome)
+            await self._intent_service.record_outcome(ctx, prepared=prepared, evidence=evidence)
         return SystemCapabilityEffectResult(
             outcome=outcome,
             completion_mode=definition.completion_mode,

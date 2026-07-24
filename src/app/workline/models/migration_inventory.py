@@ -105,7 +105,6 @@ class WorklineMigrationInventoryItem(_FrozenInventoryModel):
     active_plugin_config_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     active_plugin_index_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     provider_requirements: tuple[_NonBlankString, ...] = ()
-    port_requirements: tuple[_NonBlankString, ...] = ()
     runtime_extension_references: tuple[WorklineRuntimeExtensionReference, ...] = ()
     runtime_references: WorklineRuntimeReferenceSummary
     foundation_ready: bool
@@ -118,8 +117,6 @@ class WorklineProviderProfileInventoryItem(_FrozenInventoryModel):
     provider_code: _NonBlankString
     contract_version: _NonBlankString
     environment: _NonBlankString
-    runtime_capabilities_query: tuple[_NonBlankString, ...]
-    runtime_capabilities_effect: tuple[_NonBlankString, ...]
 
 
 class WorklineMigrationInventoryReport(_FrozenInventoryModel):

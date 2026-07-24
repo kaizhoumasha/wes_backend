@@ -37,7 +37,22 @@
 
 详见 §5.4。
 
-### 7.5 关键不变量（17 条 / 三级分类）
+### 7.5 北向运维入口与凭据观测
+
+- 只读入口固定为 `GET /api/v1/workline/runtime-operations/northbound`，必须具备专用权限
+  `sys:runtime-operations:view`；API 只调用 Query Service，Service 只调用 Repository。
+- 普通用户的 tenant scope 以认证用户 ID 对齐 `WorkLine.created_by`。指定 `workline_id` 时必须先校验 owner；
+  非 owner 返回拒绝，不执行聚合查询。超级管理员使用显式 `PLATFORM` scope。
+- Repository 只聚合 typed columns 中的 operation/profile、状态、时间和 lease 字段；权限判断不得读取或解析
+  payload、header、trace、credential reference、callback body 或业务键。
+- 允许和拒绝的读取都写审计，审计参数仅包含 decision、scope、tenant/viewer/workline 及固定 API path；
+  不得记录 payload、secret、header、凭据引用或行级 evidence。
+- 凭据解析由 `AuditedVersionedCredentialProvider` 统一包装；日志/指标只允许
+  `provider_kind ∈ {environment, custom}` 与
+  `outcome ∈ {RESOLVED, REVOKED, RESOLUTION_FAILED, PROVIDER_ERROR}`。原始异常信息、secret ref 和 secret material
+  一律不进入观测面。
+
+### 7.6 关键不变量（17 条 / 三级分类）
 
 按强制等级分三档：**核心 5 条**（CI/pre-commit 必须自动检查，违反立即阻塞 PR）、**重要 8 条**（强制门禁检查，违反阻塞 Phase 完成）、**设计 4 条**（评审检查，违反需评审决议）。
 
@@ -80,4 +95,3 @@
 - 设计 4 条由 PR review + ADR 决议管理，违反需重新评审并更新 ADR。
 
 ---
-

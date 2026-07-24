@@ -364,7 +364,9 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
         id=34,
         dispatch_key="device-command:CMD-001",
         dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        status=SystemOutboxStatus.SENT,
+        status=SystemOutboxStatus.DISPATCHING,
+        lease_owner_token="sandbox-ack-owner",
+        lease_expires_at=timezone.now_for_db() + timedelta(minutes=5),
         sent_at=None,
         next_retry_at=None,
         last_error=None,
@@ -414,6 +416,9 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
         )
 
     helper_spy.assert_called_once()
+    assert outbox.status == SystemOutboxStatus.SENT
+    assert outbox.lease_expires_at is None
+    assert outbox.lease_owner_token == "sandbox-ack-owner"
     kwargs = helper_spy.call_args.kwargs
     assert kwargs["command"] is command
     assert kwargs["action"] == "acked"

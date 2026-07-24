@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import importlib
 import inspect
 import os
@@ -392,7 +393,7 @@ def test_eager_task_apply_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPa
         runtime.shutdown()
 
 
-def test_worker_init_is_logger_only_and_leaves_parent_async_resources_empty(
+def test_worker_init_validates_transport_and_leaves_parent_async_resources_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _runtime_module()
@@ -404,12 +405,105 @@ def test_worker_init_is_logger_only_and_leaves_parent_async_resources_empty(
     monkeypatch.setattr(db_module, "engine", None)
     monkeypatch.setattr(db_module, "AsyncSessionLocal", None)
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    validate_transport = MagicMock()
+    monkeypatch.setattr(
+        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
+        validate_transport,
+    )
 
     app_module.on_worker_init()
 
+    validate_transport.assert_called_once_with(app_env=app_module.settings.APP_ENV)
     assert db_module.engine is None
     assert db_module.AsyncSessionLocal is None
     infra.init_db.assert_not_awaited()
+
+
+def test_worker_init_fails_before_consuming_tasks_when_wms_transport_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from celery.exceptions import WorkerTerminate
+    from celery.signals import worker_init
+
+    from src.celery_app import app as app_module
+
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(
+        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
+        MagicMock(side_effect=ValueError("invalid WMS transport")),
+    )
+
+    with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
+        worker_init.send(sender=app_module.celery_app)
+
+
+def test_worker_init_validates_transport_before_logger_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from celery.exceptions import WorkerTerminate
+    from celery.signals import worker_init
+
+    from src.celery_app import app as app_module
+
+    validate_transport = MagicMock(side_effect=ValueError("invalid WMS transport"))
+    setup_logger = MagicMock(side_effect=OSError("log directory unavailable"))
+    monkeypatch.setattr(app_module, "setup_logger", setup_logger)
+    monkeypatch.setattr(
+        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
+        validate_transport,
+    )
+
+    with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
+        worker_init.send(sender=app_module.celery_app)
+
+    validate_transport.assert_called_once_with(app_env=app_module.settings.APP_ENV)
+    setup_logger.assert_not_called()
+
+
+def test_worker_init_fails_closed_when_logger_initialization_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from celery.exceptions import WorkerTerminate
+    from celery.signals import worker_init
+
+    from src.celery_app import app as app_module
+
+    validate_transport = MagicMock()
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock(side_effect=OSError("log directory unavailable")))
+    monkeypatch.setattr(
+        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
+        validate_transport,
+    )
+
+    with pytest.raises(WorkerTerminate, match="worker logging initialization rejected"):
+        worker_init.send(sender=app_module.celery_app)
+
+    validate_transport.assert_called_once_with(app_env=app_module.settings.APP_ENV)
+
+
+def test_worker_init_fails_closed_when_provider_catalog_import_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from celery.exceptions import WorkerTerminate
+    from celery.signals import worker_init
+
+    from src.celery_app import app as app_module
+
+    real_import = builtins.__import__
+
+    def fail_provider_catalog_import(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> Any:
+        if name == "src.app.runtime.system_capabilities.wms.provider_catalog":
+            raise ImportError("provider catalog unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    setup_logger = MagicMock()
+    monkeypatch.setattr(app_module, "setup_logger", setup_logger)
+    monkeypatch.setattr(builtins, "__import__", fail_provider_catalog_import)
+
+    with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
+        worker_init.send(sender=app_module.celery_app)
+
+    setup_logger.assert_not_called()
 
 
 def test_worker_process_signal_initializes_child_before_first_message(monkeypatch: pytest.MonkeyPatch) -> None:

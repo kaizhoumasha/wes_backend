@@ -1,8 +1,15 @@
-"""WMS provider DTO 到稳定 Port contract 的适配层。"""
+"""WMS provider DTO 到稳定 operation contract 的适配层。"""
 
-from .inventory_query_port_adapter import (
-    WmsInventoryQueryPortAdapter,
-    build_wms_inventory_query_port_factory,
+from .query_inventory_operation_adapter import (
+    InventoryQueryOperationAdapter,
+    ProviderInventoryItemDTO,
+    ProviderQueryInventoryResponseDTO,
+    map_provider_query_inventory_response,
 )
 
-__all__ = ["WmsInventoryQueryPortAdapter", "build_wms_inventory_query_port_factory"]
+__all__ = [
+    "InventoryQueryOperationAdapter",
+    "ProviderInventoryItemDTO",
+    "ProviderQueryInventoryResponseDTO",
+    "map_provider_query_inventory_response",
+]

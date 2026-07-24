@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
     RoughSorterBindingSnapshot,
 )
 from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig

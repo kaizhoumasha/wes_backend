@@ -502,17 +502,31 @@ def _build_external_http_outbox_model(
     payload_json: dict[str, Any],
 ) -> Any:
     """将 external decision 投影为 Outbox 模型。"""
+    from src.app.sys.canonical_dispatch import CanonicalPayload
     from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
+    from src.app.workline.external_http_profile import freeze_plugin_external_http_binding
 
     session = ctx["session"]
+    frozen_binding = freeze_plugin_external_http_binding(target_code)
+    canonical = CanonicalPayload.from_projection(payload_json)
     return SystemOutbox(
         session_id=session.id,
         workline_id=session.workline_id,
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=dispatch_key,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code=target_code,
+        target_code=frozen_binding.target_snapshot.code,
+        provider_profile_identity=frozen_binding.provider_profile_identity,
+        provider_profile_hash=frozen_binding.provider_profile_hash,
+        operation_identity=frozen_binding.operation_identity,
+        binding_revision=frozen_binding.binding_revision,
+        target_snapshot_json=frozen_binding.target_snapshot.as_json(),
+        target_snapshot_hash=frozen_binding.target_snapshot_hash,
+        auth_scheme=frozen_binding.auth_scheme,
+        credential_reference=frozen_binding.credential_reference,
         payload_json=payload_json,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
     )
 
 
@@ -528,6 +542,8 @@ def _build_command_outbox_model(ctx: EffectApplyContext, *, command: Any, device
         dispatch_key=f"device-command:{command.command_code}",
         target_type=SystemOutboxTargetType.DEVICE,
         target_code=device_code,
+        provider_profile_identity="ecs.device-command.v1",
+        operation_identity="device.command",
         payload_json=_build_outbox_payload(command, device_code=device_code),
     )
 
@@ -557,9 +573,11 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
     )
     session_id = resolve_entity_id(session)
     if should_cancel_pending_outboxes and session_id is not None:
-        from src.app.sys.repositories import SystemOutboxRepository
+        from src.app.runtime.orchestration.services.system_outbox_cancellation_service import (
+            system_outbox_cancellation_service,
+        )
 
-        _ = await SystemOutboxRepository().cancel_active_by_session(
+        _ = await system_outbox_cancellation_service.cancel_active_by_session(
             ctx["db"],
             session_id=session_id,
             reason=failure.code,

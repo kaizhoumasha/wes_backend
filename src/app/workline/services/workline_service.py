@@ -578,7 +578,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             "active_plugin_config_hash": binding.typed_config_hash,
             "active_plugin_index_digest": binding.generated_index_digest,
             "active_plugin_provider_requirements_json": provider_requirements,
-            "active_plugin_port_requirements_json": list(binding.port_requirements_json),
             "version": version,
         }
 

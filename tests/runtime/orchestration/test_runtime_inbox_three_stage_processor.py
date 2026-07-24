@@ -24,10 +24,7 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound im
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.app.runtime.orchestration.effect_result import (
-    RuntimeIntentEffectResult,
-    WriteBackDisposition,
-)
+from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult, WriteBackDisposition
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
     TimelineActorType,
@@ -81,6 +78,12 @@ from src.utils.timezone import timezone
 # ============================================================
 # Helpers
 # ============================================================
+
+
+def _write_set(**kwargs: Any) -> Any:
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
+
+    return AttemptWriteSet(shadow_comparisons=(), **kwargs)
 
 
 class _DeadlineQueryInput(BaseModel):
@@ -408,7 +411,7 @@ async def test_platform_processor_returns_within_gateway_hard_deadline() -> None
     )
     from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
     from src.app.runtime.system_capabilities.outcomes import RetryableFailure
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
     release = asyncio.Event()
     _ProcessorUncooperativeHandler.release = release
@@ -442,11 +445,11 @@ async def test_platform_processor_returns_within_gateway_hard_deadline() -> None
     )
 
     class Runner:
-        async def run(self, plugin_context: object) -> AttemptWriteSet:
+        async def run(self, plugin_context: object) -> Any:
             result = await plugin_context.runtime.gateway.execute("wms.lookup", "v1", {"value": 1})  # type: ignore[attr-defined]
             assert isinstance(result.outcome, RetryableFailure)
             assert result.outcome.error_code == "TIMEOUT"
-            return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
+            return _write_set(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
 
     class Db:
         async def flush(self) -> None:
@@ -499,7 +502,6 @@ def test_plugin_write_set_bounds_use_canonical_utf8_bytes_at_exact_and_over_one_
     """live/replay 共用同一 write-set 边界，且不会把超限业务值带入 Hold 原因。"""
 
     from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as module
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
 
     bounded = getattr(module, "_bounded_plugin_write_set", None)
     assert bounded is not None
@@ -514,14 +516,14 @@ def test_plugin_write_set_bounds_use_canonical_utf8_bytes_at_exact_and_over_one_
         max_intents=32,
     )
     exact = bounded(
-        AttemptWriteSet(evidence=(), next_state=unicode_state, intents=(), outcome_code="ROUTE_A"),
+        _write_set(evidence=(), next_state=unicode_state, intents=(), outcome_code="ROUTE_A"),
         limits=limits,
     )
     assert exact.hold_reason is None
 
     limits.max_next_state_bytes = state_bytes - 1
     rejected = bounded(
-        AttemptWriteSet(evidence=(), next_state=unicode_state, intents=(), outcome_code="ROUTE_A"),
+        _write_set(evidence=(), next_state=unicode_state, intents=(), outcome_code="ROUTE_A"),
         limits=limits,
     )
     assert rejected.intents == ()
@@ -533,7 +535,6 @@ def test_plugin_write_set_bounds_use_canonical_utf8_bytes_at_exact_and_over_one_
 def test_plugin_write_set_bounds_reject_single_total_count_and_whole_write_set() -> None:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
     from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as module
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
 
     bounded = getattr(module, "_bounded_plugin_write_set", None)
     assert bounded is not None
@@ -549,7 +550,7 @@ def test_plugin_write_set_bounds_reject_single_total_count_and_whole_write_set()
         "max_intents": 32,
     }
     accepted = bounded(
-        AttemptWriteSet(evidence=(), next_state={}, intents=(intent,), outcome_code="ROUTE_A"),
+        _write_set(evidence=(), next_state={}, intents=(intent,), outcome_code="ROUTE_A"),
         limits=SimpleNamespace(**base),
     )
     assert accepted.hold_reason is None
@@ -563,7 +564,7 @@ def test_plugin_write_set_bounds_reject_single_total_count_and_whole_write_set()
         limits_dict = base | override
         intents = (intent, intent) if "max_intents_total_bytes" in override or "max_intents" in override else (intent,)
         rejected = bounded(
-            AttemptWriteSet(evidence=(), next_state={}, intents=intents, outcome_code="ROUTE_A"),
+            _write_set(evidence=(), next_state={}, intents=intents, outcome_code="ROUTE_A"),
             limits=SimpleNamespace(**limits_dict),
         )
         assert rejected.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
@@ -1079,7 +1080,7 @@ async def test_unknown_unbound_plugin_identity_fails_closed_without_legacy_proce
 async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
     events: list[str] = []
     inbox = _make_inbox(
@@ -1122,13 +1123,13 @@ async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_conte
             return inbox
 
     class Runner:
-        async def run(self, context: object) -> AttemptWriteSet:
+        async def run(self, context: object) -> Any:
             assert db.in_transaction is False
             assert not hasattr(context, "db")
             assert not hasattr(context, "session")
             assert not hasattr(context, "repository")
             events.append("query-decision")
-            return AttemptWriteSet(
+            return _write_set(
                 evidence=("evidence",),
                 next_state={"step": 2},
                 intents=(),
@@ -1175,7 +1176,7 @@ async def test_pick_result_callback_guards_dispatcher_before_plugin_writes(
     kind: str,
     correlation: str,
 ) -> None:
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
     calls = {"archive": 0, "runner": 0, "writeback": 0, "terminal": 0}
     callback_code = {"success": "CMD-1", "missing": None, "mismatch": "CMD-OTHER"}[correlation]
@@ -1221,9 +1222,9 @@ async def test_pick_result_callback_guards_dispatcher_before_plugin_writes(
             return True
 
     class Runner:
-        async def run(self, _context: object) -> AttemptWriteSet:
+        async def run(self, _context: object) -> Any:
             calls["runner"] += 1
-            return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
+            return _write_set(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
@@ -1285,7 +1286,6 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
     from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
     from src.app.runtime.system_capabilities.definition import EffectCompletionMode
     from src.app.runtime.system_capabilities.outcomes import Success
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
     from src.app.sys.services.event_stream_service import event_stream_service
 
     events: list[str] = []
@@ -1314,6 +1314,7 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
     common = {
         "contract_version": "v1",
         "operation_key": f"inbox:91:{capability_key}",
+        "dispatch_key": f"effect:{capability_key}:inbox-91",
         "timeout_seconds": 5,
         "creator_authority": "WORKLINE_PLUGIN",
         "authorization_policy": "PLUGIN_DECLARED_CAPABILITY",
@@ -1409,8 +1410,8 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
             )
 
     class Runner:
-        async def run(self, _context: object) -> AttemptWriteSet:
-            return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(intent,), outcome_code="ROUTE_A")
+        async def run(self, _context: object) -> Any:
+            return _write_set(evidence=(), next_state={"step": 2}, intents=(intent,), outcome_code="ROUTE_A")
 
     class InboxService:
         async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
@@ -1470,7 +1471,7 @@ async def test_platform_query_stage_releases_real_async_session_transaction() ->
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -1479,11 +1480,11 @@ async def test_platform_query_stage_releases_real_async_session_transaction() ->
         def __init__(self) -> None:
             self.db: object | None = None
 
-        async def run(self, context: object) -> AttemptWriteSet:
+        async def run(self, context: object) -> Any:
             assert self.db is not None
             assert self.db.in_transaction() is False  # type: ignore[union-attr]
             assert not hasattr(context, "db")
-            return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
+            return _write_set(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
@@ -1530,7 +1531,7 @@ async def test_platform_query_stage_releases_real_async_session_transaction() ->
 @pytest.mark.asyncio
 async def test_platform_stage_one_loads_material_fact_through_repository() -> None:
     from src.app.runtime.orchestration.repositories.material_unit_repository import MaterialUnitFactSnapshot
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
     class Db:
         async def flush(self) -> None:
@@ -1548,11 +1549,11 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
             return MaterialUnitFactSnapshot(material_unit_id=31, fact_version=73)
 
     class Runner:
-        async def run(self, context: object) -> AttemptWriteSet:
+        async def run(self, context: object) -> Any:
             assert context.snapshot.material_unit_id == 31  # type: ignore[union-attr]
             assert context.snapshot.material_unit_version == 73  # type: ignore[union-attr]
             assert context.snapshot.device_fact_versions == (("input_arm", 41, 6),)  # type: ignore[union-attr]
-            return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
+            return _write_set(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
@@ -1590,7 +1591,7 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
 @pytest.mark.asyncio
 async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
     events: list[str] = []
 
@@ -1608,6 +1609,7 @@ async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None
         capability_key="device.device_command_write",
         contract_version="v1",
         operation_key="inbox:91:device-command",
+        dispatch_key="device-command:CMD-INBOX-91",
         payload={"target_device_id": 31, "action": "MOVE", "payload": {}, "timeout_ms": 1000},
         precondition={"expected_available": True},
         fact_version="device:v1",
@@ -1619,8 +1621,8 @@ async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None
     )
 
     class Runner:
-        async def run(self, _context: object) -> AttemptWriteSet:
-            return AttemptWriteSet(evidence=(), next_state={}, intents=(intent,), outcome_code="COMMAND_READY")
+        async def run(self, _context: object) -> Any:
+            return _write_set(evidence=(), next_state={}, intents=(intent,), outcome_code="COMMAND_READY")
 
     class WriteBack:
         async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
@@ -1666,7 +1668,7 @@ async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None
 
 @pytest.mark.asyncio
 async def test_platform_safe_retry_requeues_inbox_with_same_lease() -> None:
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
     calls: list[tuple[str, object]] = []
 
@@ -1678,8 +1680,8 @@ async def test_platform_safe_retry_requeues_inbox_with_same_lease() -> None:
             calls.append(("commit", None))
 
     class Runner:
-        async def run(self, _context: object) -> AttemptWriteSet:
-            return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
+        async def run(self, _context: object) -> Any:
+            return _write_set(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:

@@ -99,7 +99,7 @@ def _ctx(db: Any, correlation: ExecutionCorrelation) -> dict[str, Any]:
 def _fulfillment_intent(*, payload: dict[str, Any]) -> RuntimeIntent:
     return RuntimeIntent.external_request(
         dispatch_key="wms-fulfillment:REQ-501",
-        target_code="WMS_FULFILLMENT",
+        target_code="WMS_RCS_FULL_BOX_EXCHANGE",
         source_system="WMS",
         payload=payload,
         timeout_seconds=30,

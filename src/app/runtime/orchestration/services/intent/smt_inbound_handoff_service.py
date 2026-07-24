@@ -2192,6 +2192,7 @@ class SmtInboundHandoffService:
                     "source_code": f"{demand.single_layer_rack_code}:{slot_code}",
                     "target_type": "FULL_BOX_EXCHANGE_BUFFER",
                     "target_code": "SMT_FULL_BOX_EXCHANGE",
+                    "rack_release_id": demand.rack_release_id,
                     "rack_code": demand.single_layer_rack_code,
                     "rack_slot_code": slot_code,
                     "bin_code": bin_code,

@@ -24,12 +24,6 @@
       "provider_code": "WMS",
       "contract_version": "2026-06-25",
       "environment": "sandbox",
-      "runtime_capabilities_query": [
-        "WmsMasterDataPort.get_material"
-      ],
-      "runtime_capabilities_effect": [
-        "WmsFulfillmentPort.request_transport"
-      ],
       "inbound_normalizers_event": [
         "WMS_TRANSPORT_COMPLETED"
       ],
@@ -43,7 +37,6 @@
         2,
         4
       ],
-      "cache_ttl_seconds": 30,
       "fixture_set_path": "tests/fixtures/external_contracts/wms/default",
       "fixture_set_required_cases": [
         "success",
@@ -60,12 +53,6 @@
       "provider_code": "ECS",
       "contract_version": "2026-07-03",
       "environment": "sandbox",
-      "runtime_capabilities_query": [
-        "DeviceStatusPort.get_status"
-      ],
-      "runtime_capabilities_effect": [
-        "DeviceCommandPort.receive_command"
-      ],
       "inbound_normalizers_event": [
         "ECS_SCAN_COMPLETED",
         "ECS_DEVICE_OFFLINE"
@@ -79,7 +66,6 @@
         1,
         2
       ],
-      "cache_ttl_seconds": 1,
       "fixture_set_path": "tests/fixtures/external_contracts/ecs/default",
       "fixture_set_required_cases": [
         "success",

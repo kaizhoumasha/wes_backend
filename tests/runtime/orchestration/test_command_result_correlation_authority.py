@@ -100,7 +100,11 @@ async def test_device_command_gateway_persists_execution_correlation_separately_
 
     command_service_module = import_module("src.app.device.services.device_command_service")
     monkeypatch.setattr(command_service_module, "device_command_service", DeviceCommandServiceStub())
-    execution = SimpleNamespace(idempotency_key="system-capability:device-command:pick-1")
+    intent_log = SimpleNamespace(dispatch_key="device-command:CMD-CORRELATION")
+    execution = SimpleNamespace(
+        idempotency_key="system-capability:device-command:pick-1",
+        intent_log=intent_log,
+    )
     ctx = {
         "db": object(),
         "session": SimpleNamespace(),
@@ -120,6 +124,7 @@ async def test_device_command_gateway_persists_execution_correlation_separately_
             precondition=SimpleNamespace(expected_available=True),
         ),
         execution=execution,
+        intent_log=intent_log,
     )
 
     assert calls[0]["idempotency_key"] == execution.idempotency_key

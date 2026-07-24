@@ -10,14 +10,13 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
+    RoughSorterBindingSnapshot,
+)
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.runtime_intent import BlockScope
 from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterBindingSnapshot,
-    RoughSorterInventoryAdmissionOutput,
-)
 from src.app.runtime.workline_plugins.contracts import PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import (
     HandlerRegistration,
@@ -37,6 +36,11 @@ from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     parse_scan_completed,
 )
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
+from src.app.wms_integration.ports.query_inventory_operation import (
+    InventoryAuthorityItem,
+    InventoryQueryOperationRequest,
+    InventoryQueryOperationResult,
+)
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
@@ -204,19 +208,22 @@ class _Gateway:
         self.calls = 0
 
     async def execute(self, capability_key: str, contract_version: str, input_data: object) -> GatewayQueryResult:
-        assert (capability_key, contract_version) == ("wms.rough_sorter_inventory_admission", "v1")
-        assert input_data is not None
+        assert (capability_key, contract_version) == ("wms.inventory.query_inventory", "v1")
+        assert isinstance(input_data, InventoryQueryOperationRequest)
         self.calls += 1
         admission = self.discriminator.get("wms_admission")
         if admission == "ADMIT":
             outcome = Success(
-                payload=RoughSorterInventoryAdmissionOutput(
-                    accepted=True,
-                    material_code="HH-001",
-                    batch_no="LOT-01",
-                    warehouse_code="WH-01",
-                    matched_item_count=1,
-                    available_quantity=1,
+                payload=InventoryQueryOperationResult(
+                    items=(
+                        InventoryAuthorityItem(
+                            material_code=input_data.material_code,
+                            lot_no=input_data.lot_no,
+                            warehouse_code=input_data.warehouse_code,
+                            owner_code=input_data.owner_code,
+                            available_quantity="1",
+                        ),
+                    ),
                     source_version="fixture-v1",
                 )
             )

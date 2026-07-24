@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.app.handling.services.completion_policy import is_full_box_exchange_operation_type
 from src.app.wms_integration.services.transport_contract import (
     WmsTransportContractService,
     wms_transport_contract_service,
 )
+
+if TYPE_CHECKING:
+    from src.app.sys.models import DispatchEnvelope
 
 
 class WmsRcsHandlingGateway:
@@ -17,7 +20,7 @@ class WmsRcsHandlingGateway:
     def __init__(self, contract_service: WmsTransportContractService = wms_transport_contract_service) -> None:
         self._contract_service = contract_service
 
-    def build_ctu_move_envelope(self, *, operation: Any, move: Any, sequence_no: int) -> dict[str, Any]:
+    def build_ctu_move_envelope(self, *, operation: Any, move: Any, sequence_no: int) -> DispatchEnvelope:
         return self._contract_service.build_handling_ctu_move_envelope(
             operation=operation,
             move=move,

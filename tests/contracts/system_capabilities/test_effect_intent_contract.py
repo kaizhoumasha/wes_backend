@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode, SystemCapabilityMode
 from src.app.runtime.system_capabilities.device.device_command_write.definition import DEFINITION as DEVICE_DEFINITION
 from src.app.runtime.system_capabilities.device.device_command_write.handler import DeviceCommandWriteHandler
@@ -29,6 +29,7 @@ def _intent(**overrides: object) -> RuntimeIntent:
         "capability_key": "material_flow.material_unit_write",
         "contract_version": "v1",
         "operation_key": "scan:PKG-001:create",
+        "dispatch_key": "system-capability:material:create:PKG-001",
         "payload": {
             "operation": "CREATE",
             "pkg_code": "PKG-001",
@@ -55,6 +56,7 @@ def test_system_capability_factory_pins_typed_payload_hash_and_authority_snapsho
     assert intent.capability_key == "material_flow.material_unit_write"
     assert intent.contract_version == "v1"
     assert intent.operation_key == "scan:PKG-001:create"
+    assert intent.dispatch_key == "system-capability:material:create:PKG-001"
     assert intent.payload_hash == sha256_digest(intent.payload_json)
     assert intent.precondition_json == {"expected_absent": True}
     assert intent.fact_version == "material-unit:v0"
@@ -71,6 +73,7 @@ def test_system_capability_factory_pins_typed_payload_hash_and_authority_snapsho
         ("capability_key", ""),
         ("contract_version", ""),
         ("operation_key", ""),
+        ("dispatch_key", ""),
         ("payload", {}),
         ("fact_version", ""),
         ("timeout_seconds", 0),
@@ -131,7 +134,7 @@ def test_non_system_capability_intents_reject_every_capability_only_field(field:
         )
 
 
-def test_system_capability_intent_log_pins_plugin_capability_and_execution_snapshots() -> None:
+def test_generic_plugin_intent_ledger_skips_system_capability_owned_effect() -> None:
     from types import SimpleNamespace
 
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot
@@ -154,21 +157,9 @@ def test_system_capability_intent_log_pins_plugin_capability_and_execution_snaps
             index_digest="a" * 64,
         ),
         intents=(_intent(),),
-    )[0]
+    )
 
-    log = prepared.model
-    assert log.plugin_key == "rough_sorter"
-    assert log.plugin_contract_version == "rough_sorter.v2"
-    assert log.capability_key == "material_flow.material_unit_write"
-    assert log.capability_contract_version == "v1"
-    assert log.operation_identity == "scan:PKG-001:create"
-    assert log.target_domain == "material_flow"
-    assert log.payload_hash == _intent().payload_hash
-    assert log.completion_mode == "LOCAL_TRANSACTIONAL"
-    assert log.creator_authority == "WORKLINE_PLUGIN"
-    assert log.authorization_policy == "PLUGIN_DECLARED_CAPABILITY"
-    assert log.binding_snapshot_json == {"binding_id": 7, "binding_version": 2}
-    assert log.provider_snapshot_json == {"provider_code": "RUNTIME", "profile": "runtime"}
+    assert prepared == ()
 
 
 def test_three_effect_definitions_have_closed_completion_modes() -> None:
@@ -193,7 +184,9 @@ def test_runtime_intent_log_is_the_only_effect_ledger() -> None:
     columns = RuntimeIntentLog.__table__.c
     assert columns.provider_code.nullable is False
     assert columns.request_hash.nullable is False
-    assert columns.effect_status.nullable is True
+    assert columns.dispatch_key.nullable is False
+    assert columns.effect_status.nullable is False
+    assert columns.effect_status.default.arg is RuntimeIntentStatus.PROPOSED
     assert columns.outcome_json.nullable is False
     assert columns.outcome_history_json.nullable is False
     unique_columns = {
@@ -202,6 +195,10 @@ def test_runtime_intent_log_is_the_only_effect_ledger() -> None:
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("provider_code", "operation_kind", "idempotency_key") in unique_columns
+    unique_indexes = {
+        tuple(column.name for column in index.columns) for index in RuntimeIntentLog.__table__.indexes if index.unique
+    }
+    assert ("dispatch_key",) in unique_indexes
 
 
 def test_plugin_binding_migration_extends_runtime_intent_log_without_second_effect_ledger() -> None:

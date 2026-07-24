@@ -35,7 +35,6 @@ note: |
 | `timeout_retry.query_timeout_seconds` | int | yes | query 超时，必须大于 0 |
 | `timeout_retry.effect_timeout_seconds` | int | conditional | effect port 存在时必填 |
 | `timeout_retry.retry_backoff_seconds` | int[] | yes | 递增短退避数组 |
-| `timeout_retry.cache_ttl_seconds` | int | conditional | query cache 存在时必填；0 表示禁用 |
 | `fixture_set.path` | string | yes | `tests/fixtures/external_contracts/<provider>/<profile>` |
 | `fixture_set.required_cases` | string[] | yes | 至少覆盖 success、reject、timeout、duplicate、missing_event_id 中适用场景 |
 | `unsupported_actions` | string[] | yes | 未支持动作，例如 `direct_rcs_dispatch` |
@@ -51,7 +50,7 @@ environment: sandbox
 runtime_capabilities:
   query:
     - WmsMasterDataPort.get_material
-    - WmsInventoryQueryPort.query_inventory
+    - InventoryQueryOperationPort.execute
   effect:
     - WmsFulfillmentPort.request_transport
 inbound_normalizers:
@@ -67,7 +66,6 @@ timeout_retry:
   query_timeout_seconds: 10
   effect_timeout_seconds: 30
   retry_backoff_seconds: [1, 2, 4]
-  cache_ttl_seconds: 30
 fixture_set:
   path: tests/fixtures/external_contracts/wms/default
   required_cases: [success, reject, timeout, duplicate, missing_event_id]

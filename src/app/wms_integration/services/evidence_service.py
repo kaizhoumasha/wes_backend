@@ -23,6 +23,7 @@ from src.app.wms_integration.repositories import (
 from src.app.wms_integration.services.redaction import bounded_redacted_snapshot, canonical_sha256
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
+from src.utils.value_normalization import require_text
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -85,6 +86,7 @@ class WmsCallEvidenceService(BaseService[WmsCallEvidence, WmsCallEvidenceReposit
         db: AsyncSession,
         *,
         evidence_key: str,
+        provider_profile_identity: str,
         operation_name: str,
         target_code: str | None,
         status: WmsEvidenceStatus,
@@ -107,6 +109,10 @@ class WmsCallEvidenceService(BaseService[WmsCallEvidence, WmsCallEvidenceReposit
             db,
             {
                 "evidence_key": evidence_key,
+                "provider_profile_identity": require_text(
+                    provider_profile_identity,
+                    "provider_profile_identity",
+                ),
                 "operation_name": operation_name,
                 "target_code": target_code,
                 "status": status,
@@ -340,6 +346,7 @@ def _archive_evidence_data(
     return {
         "original_evidence_id": _require_evidence_id(evidence.id),
         "evidence_key": evidence.evidence_key,
+        "provider_profile_identity": evidence.provider_profile_identity,
         "operation_name": evidence.operation_name,
         "target_code": evidence.target_code,
         "status": evidence.status,

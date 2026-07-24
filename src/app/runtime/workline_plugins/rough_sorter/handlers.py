@@ -16,19 +16,28 @@ from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
     REASON_ROUGH_SORTER_CONTEXT_MISSING,
     REASON_ROUGH_SORTER_MEASUREMENT_INVALID,
     REASON_ROUGH_SORTER_PICK_RESULT_TIMEOUT,
-    REASON_WMS_TIMEOUT,
     build_move_forward_payload,
     build_move_to_ng_payload,
     build_pick_and_put_payload,
     normalize_six_in_one_payload,
 )
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
+    RoughSorterBindingSnapshot,
+    RoughSorterInventoryAdmissionPolicyInput,
+    RoughSorterInventoryQueryOutcomeKind,
+    RoughSorterInventoryQuerySnapshot,
+)
+from src.app.runtime.capabilities.material_flow.rough_sorter_inventory_admission_policy import (
+    decide_rough_sorter_inventory_admission,
+)
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterBindingSnapshot,
-    RoughSorterInventoryAdmissionInput,
-)
 from src.app.runtime.workline_plugins.contracts import PluginContext, PluginDecision
+from src.app.wms_integration.ports.query_inventory_operation import (
+    OPERATION_IDENTITY,
+    InventoryQueryOperationRequest,
+    InventoryQueryOperationResult,
+)
 
 from .inputs import (
     BusinessTimeoutInput,
@@ -45,7 +54,7 @@ if TYPE_CHECKING:
 
     from .config import RoughSorterConfig
 
-WMS_QUERY_IDENTITY = ("wms.rough_sorter_inventory_admission", "v1")
+WMS_QUERY_IDENTITY = tuple(OPERATION_IDENTITY.rsplit("@", maxsplit=1))
 MATERIAL_EFFECT = "material_flow.material_unit_write@v1"
 DEVICE_EFFECT = "device.device_command_write@v1"
 HOLD_EFFECT = "runtime.session_hold@v1"
@@ -237,7 +246,7 @@ def _scan_decision(
     return _decision("PICK_AND_PUT_PERSISTED", next_state, intents)
 
 
-async def _pick_result_decision(  # noqa: PLR0911 - 封闭 outcome 分支逐项对应 approved cases。
+async def _pick_result_decision(
     logical_input: PickAndPutResultInput,
     *,
     state: RoughSorterState,
@@ -253,29 +262,37 @@ async def _pick_result_decision(  # noqa: PLR0911 - 封闭 outcome 分支逐项�
     measurement = _measurement(logical_input.data)
     if measurement is None:
         return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_ROUGH_SORTER_MEASUREMENT_INVALID)
-    diameter, thickness = measurement
     measurement_result = str(logical_input.data.get("measurement_result") or "").upper()
     if measurement_result == "NG":
         return _move_to_ng(state, config=config, facts=facts, reason_code="MEASUREMENT_NG")
     if not facts.business_key or not facts.hhpn or not facts.lot_code:
         return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_ROUGH_SORTER_CONTEXT_MISSING)
     try:
-        query = RoughSorterInventoryAdmissionInput(
-            business_key=facts.business_key,
-            hhpn=facts.hhpn,
-            lot_code=facts.lot_code,
+        query = InventoryQueryOperationRequest(
+            material_code=facts.hhpn,
             warehouse_code=config.warehouse_code,
             owner_code=config.owner_code,
-            diameter_mm=diameter,
-            thickness_mm=thickness,
-            binding_snapshot=facts.binding_snapshot,
+            lot_no=facts.lot_code,
         )
     except ValidationError:
         return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_QUERY_CONTRACT_INVALID)
     query_result = await gateway.execute(*WMS_QUERY_IDENTITY, query)
     evidence_ref = _evidence_reference(query_result.evidence)
-    outcome = query_result.outcome
-    if isinstance(outcome, Success) and getattr(outcome.payload, "accepted", False):
+    policy_decision = decide_rough_sorter_inventory_admission(
+        RoughSorterInventoryAdmissionPolicyInput(
+            material_code=facts.hhpn,
+            lot_no=facts.lot_code,
+            warehouse_code=config.warehouse_code,
+            owner_code=config.owner_code,
+            binding_snapshot=facts.binding_snapshot,
+            # Gateway 已按 immutable binding/profile 对通用 Definition 完成 admission；
+            # policy 显式携带该 pin，重放时不读取全局 catalog。
+            supported_profile_identities=(facts.binding_snapshot.profile_identity,),
+            source_operation=OPERATION_IDENTITY,
+            query_snapshot=_inventory_query_snapshot(query_result, evidence_ref=evidence_ref),
+        )
+    )
+    if policy_decision.decision == "ADMIT":
         next_state = state.model_copy(
             update={
                 "phase": "MOVING_FORWARD",
@@ -298,13 +315,63 @@ async def _pick_result_decision(  # noqa: PLR0911 - 封闭 outcome 分支逐项�
             ),
         )
         return _decision("MOVE_FORWARD_PERSISTED", next_state, intents)
+    if policy_decision.decision == "REJECT":
+        return _move_to_ng(
+            state,
+            config=config,
+            facts=facts,
+            reason_code=policy_decision.reason_code,
+            wms_ref=evidence_ref,
+        )
+    return _hold(state, scope=BlockScope.MATERIAL, reason_code=policy_decision.reason_code)
+
+
+def _inventory_query_snapshot(
+    query_result: Any,
+    *,
+    evidence_ref: str | None,
+) -> RoughSorterInventoryQuerySnapshot:
+    """把通用 capability outcome 归一化为 T4 纯 policy 输入。"""
+
+    outcome = query_result.outcome
+    if isinstance(outcome, Success) and isinstance(outcome.payload, InventoryQueryOperationResult):
+        return RoughSorterInventoryQuerySnapshot(
+            outcome_kind=RoughSorterInventoryQueryOutcomeKind.SUCCESS,
+            result=outcome.payload,
+            evidence_key=evidence_ref,
+        )
     if isinstance(outcome, BusinessReject):
-        return _move_to_ng(state, config=config, facts=facts, reason_code="WMS_REJECTED", wms_ref=evidence_ref)
-    if isinstance(outcome, RetryableFailure) and outcome.error_code == "TIMEOUT":
-        return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_WMS_TIMEOUT)
+        return RoughSorterInventoryQuerySnapshot(
+            outcome_kind=RoughSorterInventoryQueryOutcomeKind.BUSINESS_REJECT,
+            evidence_key=evidence_ref,
+            reason_code=outcome.reason_code,
+            message=outcome.message,
+            retryable=False,
+        )
+    if isinstance(outcome, RetryableFailure):
+        return RoughSorterInventoryQuerySnapshot(
+            outcome_kind=RoughSorterInventoryQueryOutcomeKind.TECHNICAL_FAILURE,
+            evidence_key=evidence_ref,
+            reason_code=outcome.error_code,
+            message=outcome.message,
+            retryable=True,
+            retry_after_seconds=outcome.retry_after_seconds,
+        )
     if isinstance(outcome, ContractViolation):
-        return _hold(state, scope=BlockScope.MATERIAL, reason_code=outcome.error_code)
-    return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_WMS_TIMEOUT)
+        kind = outcome.details.get("query_outcome_kind")
+        outcome_kind = (
+            RoughSorterInventoryQueryOutcomeKind.TECHNICAL_FAILURE
+            if kind == "TECHNICAL_FAILURE"
+            else RoughSorterInventoryQueryOutcomeKind.CONTRACT_FAILURE
+        )
+        return RoughSorterInventoryQuerySnapshot(
+            outcome_kind=outcome_kind,
+            evidence_key=evidence_ref,
+            reason_code=outcome.error_code,
+            message=outcome.message,
+            retryable=False,
+        )
+    return RoughSorterInventoryQuerySnapshot(outcome_kind=RoughSorterInventoryQueryOutcomeKind.INVALID)
 
 
 def _measurement(data: dict[str, Any]) -> tuple[Decimal, Decimal] | None:

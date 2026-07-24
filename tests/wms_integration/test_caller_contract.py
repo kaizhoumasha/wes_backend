@@ -145,12 +145,12 @@ def test_caller_contract_maps_business_rejected_to_user_visible_error_without_ru
 def test_caller_contract_maps_evidence_persistence_error_to_system_diagnostic_not_wms_hold() -> None:
     error = WmsEvidencePersistenceError(
         "WMS 已返回成功，但本地 evidence/breaker 成功留痕失败",
-        operation_name="confirm_inbound",
-        evidence_key="ev:confirm_inbound:REQ-PERSIST",
+        operation_name="confirm_outbound",
+        evidence_key="ev:confirm_outbound:REQ-PERSIST",
         http_status=200,
         reason_code="WMS_EVIDENCE_PERSISTENCE_FAILED",
         retryable=False,
-        target_code="WMS_INBOUND",
+        target_code="WMS_OUTBOUND",
     )
 
     result = FakeWmsCaller(error).execute(request_id="REQ-CALLER-PERSIST", trace_id="TRACE-CALLER-PERSIST")
@@ -159,8 +159,8 @@ def test_caller_contract_maps_evidence_persistence_error_to_system_diagnostic_no
     assert result.runtime_hold_required is False
     assert result.user_visible is False
     assert result.evidence == {
-        "operation_name": "confirm_inbound",
-        "evidence_key": "ev:confirm_inbound:REQ-PERSIST",
+        "operation_name": "confirm_outbound",
+        "evidence_key": "ev:confirm_outbound:REQ-PERSIST",
         "reason_code": "WMS_EVIDENCE_PERSISTENCE_FAILED",
         "http_status": 200,
         "trace_id": "TRACE-CALLER-PERSIST",

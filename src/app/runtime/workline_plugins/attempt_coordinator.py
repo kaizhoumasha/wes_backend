@@ -47,6 +47,7 @@ class AttemptWriteSet:
     evidence: tuple[Any, ...]
     next_state: Any
     intents: tuple[Any, ...]
+    shadow_comparisons: tuple[Any, ...]
     outcome_code: str = "UNSPECIFIED"
     hold_reason: str | None = None
     recorded_attempt_anchor: Any | None = None
@@ -126,6 +127,8 @@ def bound_attempt_write_set(
             "hold_reason": write_set.hold_reason,
             "preserve_plugin_state": preserve_plugin_state,
         }
+        if write_set.shadow_comparisons:
+            whole_value["shadow_comparisons"] = [_json_value(item) for item in write_set.shadow_comparisons]
         if recorded_decision_value is not None:
             whole_value["recorded_decision"] = recorded_decision_value
         if recorded_anchor_value is not None:
@@ -143,6 +146,7 @@ def bound_attempt_write_set(
             or any(size > limits.max_intent_bytes for size in recorded_intent_sizes)
             or sum(recorded_intent_sizes) > limits.max_intents_total_bytes
             or _canonical_bytes(whole_value) > limits.max_write_set_bytes
+            or not _shadow_write_set_matches(write_set.evidence, write_set.shadow_comparisons)
         )
     except (RecursionError, TypeError, ValueError):
         exceeded = True
@@ -158,6 +162,7 @@ def bound_attempt_write_set(
             recorded_attempt_anchor=deepcopy(recorded_anchor_value),
             recorded_decision=deepcopy(recorded_decision_value),
             preserve_plugin_state=preserve_plugin_state,
+            shadow_comparisons=deepcopy(write_set.shadow_comparisons),
         )
     return AttemptWriteSet(
         evidence=(),
@@ -166,6 +171,7 @@ def bound_attempt_write_set(
         outcome_code="HOLD",
         hold_reason="PLUGIN_WRITE_SET_LIMIT_EXCEEDED",
         preserve_plugin_state=True,
+        shadow_comparisons=(),
     )
 
 
@@ -188,6 +194,28 @@ def _canonical_bytes(value: Any) -> int:
         allow_nan=False,
     )
     return len(encoded.encode("utf-8"))
+
+
+def _shadow_write_set_matches(evidence: tuple[Any, ...], comparisons: tuple[Any, ...]) -> bool:
+    """eligible expected 与 comparison 必须一一对应，禁止提交 orphan/旁路样本。"""
+
+    expected_by_key: dict[str, Any] = {}
+    for item in evidence:
+        expected = getattr(item, "shadow_expected", None)
+        if expected is None or not bool(getattr(expected, "shadow_eligible", False)):
+            continue
+        key = getattr(expected, "comparison_key", None)
+        if not isinstance(key, str) or key in expected_by_key:
+            return False
+        expected_by_key[key] = expected
+    comparison_by_key: dict[str, Any] = {}
+    for comparison in comparisons:
+        expected = getattr(comparison, "expected", None)
+        key = getattr(expected, "comparison_key", None)
+        if not isinstance(key, str) or key in comparison_by_key:
+            return False
+        comparison_by_key[key] = expected
+    return expected_by_key == comparison_by_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +249,7 @@ class UnavailablePluginAttemptRunner:
             evidence=(),
             next_state=context.plugin_state,
             intents=(),
+            shadow_comparisons=(),
             outcome_code="HOLD",
             hold_reason="PLUGIN_ATTEMPT_RUNNER_UNAVAILABLE",
         )

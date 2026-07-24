@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -30,6 +31,9 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
     try:
         logger.info("Initializing application resources...")
+        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+
+        validate_wms_transport_configuration(app_env=settings.APP_ENV)
         await init_db()
         await init_redis()
 
@@ -53,6 +57,9 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         )
         raise
     finally:
+        from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+        await asyncio.to_thread(runtime_observability_registry.close)
         await close_db()
         await close_redis()
         logger.info("FastAPI 应用关闭")

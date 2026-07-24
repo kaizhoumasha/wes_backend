@@ -24,6 +24,8 @@ from src.app.rack.services.completion_policy import (
 from src.app.rack.services.gateway import (
     DEFAULT_RACK_OPERATION_ENDPOINT,
     WmsRcsRackGateway,
+    freeze_rack_task_binding,
+    legacy_transport_profile_identity,
     wms_rcs_rack_gateway,
 )
 from src.app.rack.services.task_lifecycle_service import (
@@ -39,6 +41,8 @@ from src.app.runtime.capabilities.material_flow.station_lease_service import (
     StationLeaseService,
     station_lease_service,
 )
+from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 from src.app.sys.models.outbox import (
     DispatchEnvelope,
     OperationCompletionPolicy,
@@ -81,6 +85,8 @@ class RackTaskSpec:
     request_json: dict[str, Any]
     actions_json: dict[str, Any]
     required: bool
+    canonical_payload_bytes: bytes | None = None
+    payload_hash: str | None = None
 
 
 class RackOperationService:
@@ -137,9 +143,7 @@ class RackOperationService:
         specs = self._normalize_task_specs(
             operation_key=operation_key,
             operation_type=operation_type,
-            workline_id=workline_id,
             workline_code=workline_code,
-            material_session_id=material_session_id,
             target_code=target_code,
             trace_id=trace_id,
             task_specs=task_specs,
@@ -270,7 +274,7 @@ class RackOperationService:
         if existing is not None:
             _ensure_existing_outbox_active(existing)
             _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
-            await self._prepare_existing_outbox_for_request(db, existing, session=session, payload_json=payload_json)
+            await self._prepare_existing_outbox_for_request(db, existing, session=session)
             return existing
 
         station_position_code = _station_dispatch_position_code(spec)
@@ -279,6 +283,7 @@ class RackOperationService:
         if station_position_code is not None and workline_id is not None and workline_code is not None:
             try:
                 async with db.begin_nested():
+                    frozen_binding = freeze_rack_task_binding(spec.target_code)
                     outbox = await self.station_lease_service.claim_station_dispatch_lease(
                         db,
                         workline_id=workline_id,
@@ -293,7 +298,12 @@ class RackOperationService:
                             dispatch_key=spec.dispatch_key,
                             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
                             target_code=spec.target_code,
+                            provider_profile_identity=frozen_binding.provider_profile_identity,
+                            operation_identity="wms.transport.rack@v1",
                             payload_json=payload_json,
+                            canonical_payload_bytes=spec.canonical_payload_bytes,
+                            payload_hash=spec.payload_hash,
+                            frozen_binding=frozen_binding,
                             trace_id=coerce_optional_str(spec.request_json.get("trace_id")),
                         ),
                         allow_active_rack_bound=_allows_active_rack_bound_for_station_claim(
@@ -311,12 +321,11 @@ class RackOperationService:
                     raise
                 _ensure_existing_outbox_active(existing)
                 _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
-                await self._prepare_existing_outbox_for_request(
-                    db, existing, session=session, payload_json=payload_json
-                )
+                await self._prepare_existing_outbox_for_request(db, existing, session=session)
                 return existing
             return outbox
 
+        frozen_binding = freeze_rack_task_binding(spec.target_code)
         outbox = SystemOutbox(
             session_id=coerce_optional_int(getattr(session, "id", None)),
             workline_id=workline_id,
@@ -326,7 +335,17 @@ class RackOperationService:
             dispatch_key=spec.dispatch_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=spec.target_code,
+            provider_profile_identity=frozen_binding.provider_profile_identity,
+            provider_profile_hash=frozen_binding.provider_profile_hash,
+            operation_identity="wms.transport.rack@v1",
+            binding_revision=frozen_binding.binding_revision,
+            target_snapshot_json=frozen_binding.target_snapshot.as_json(),
+            target_snapshot_hash=frozen_binding.target_snapshot_hash,
+            auth_scheme=frozen_binding.auth_scheme,
+            credential_reference=frozen_binding.credential_reference,
             payload_json=payload_json,
+            canonical_payload_bytes=spec.canonical_payload_bytes,
+            payload_hash=spec.payload_hash,
             status=SystemOutboxStatus.NEW,
             trace_id=coerce_optional_str(spec.request_json.get("trace_id")),
         )
@@ -340,7 +359,7 @@ class RackOperationService:
                 raise
             _ensure_existing_outbox_active(existing)
             _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
-            await self._prepare_existing_outbox_for_request(db, existing, session=session, payload_json=payload_json)
+            await self._prepare_existing_outbox_for_request(db, existing, session=session)
             return existing
         return outbox
 
@@ -368,15 +387,9 @@ class RackOperationService:
         outbox: SystemOutbox,
         *,
         session: Any | None,
-        payload_json: dict[str, Any],
     ) -> None:
         changed = False
         can_patch_existing_outbox = _is_new_outbox(outbox)
-        if outbox.payload_json != payload_json:
-            if not can_patch_existing_outbox:
-                raise ValueError("existing rack operation outbox payload differs after dispatch")
-            outbox.payload_json = payload_json
-            changed = True
 
         session_id = coerce_optional_int(getattr(session, "id", None))
         if session_id is not None:
@@ -459,9 +472,7 @@ class RackOperationService:
         *,
         operation_key: str,
         operation_type: str,
-        workline_id: int | None,
         workline_code: str | None,
-        material_session_id: int | None,
         trace_id: str,
         target_code: str,
         task_specs: Sequence[Mapping[str, Any] | RackTaskSpec],
@@ -470,9 +481,7 @@ class RackOperationService:
             self._normalize_task_spec(
                 operation_key=operation_key,
                 operation_type=operation_type,
-                workline_id=workline_id,
                 workline_code=workline_code,
-                material_session_id=material_session_id,
                 target_code=target_code,
                 trace_id=trace_id,
                 task_spec=task_spec,
@@ -493,9 +502,7 @@ class RackOperationService:
         *,
         operation_key: str,
         operation_type: str,
-        workline_id: int | None,
         workline_code: str | None,
-        material_session_id: int | None,
         target_code: str,
         trace_id: str,
         task_spec: Mapping[str, Any] | RackTaskSpec,
@@ -525,15 +532,13 @@ class RackOperationService:
 
         raw_request = task_spec.get("request_json")
         request_json = dict(raw_request) if isinstance(raw_request, Mapping) else {}
-        envelope = self.gateway.build_task_envelope(
+        request = self.gateway.build_task_request(
             operation_key=operation_key,
             operation_type=operation_type,
             sequence_no=sequence_no,
             task_type=task_type,
             trace_id=trace_id,
-            workline_id=workline_id,
             workline_code=workline_code,
-            material_session_id=material_session_id,
             rack_code=rack_code,
             rack_kind=rack_kind,
             source_position_code=source_position_code,
@@ -542,6 +547,7 @@ class RackOperationService:
             actions_json=actions_json,
             request_json=request_json,
             target_code=spec_target_code,
+            dispatch_key=coerce_optional_str(task_spec.get("dispatch_key")),
         )
         return RackTaskSpec(
             sequence_no=sequence_no,
@@ -551,11 +557,13 @@ class RackOperationService:
             source_position_code=source_position_code,
             target_position_code=target_position_code,
             target_position_role=target_position_role,
-            dispatch_key=coerce_optional_str(task_spec.get("dispatch_key")) or envelope.dispatch_key,
-            target_code=envelope.target_code,
-            request_json=envelope.payload_json,
+            dispatch_key=request.dispatch_key,
+            target_code=request.target_code,
+            request_json=dict(request.payload_json),
             actions_json=actions_json,
             required=required,
+            canonical_payload_bytes=request.canonical_payload_bytes,
+            payload_hash=request.payload_hash,
         )
 
     async def _ensure_capacity_for_task_specs(
@@ -912,6 +920,8 @@ def _ensure_existing_operation_request_consistent(
 
 
 def _ensure_task_spec_contract(spec: RackTaskSpec) -> None:
+    if spec.canonical_payload_bytes is None or spec.payload_hash is None:
+        raise ValueError("rack operation EXTERNAL_HTTP task requires canonical payload")
     if (
         spec.task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value
         and coerce_optional_str(spec.target_position_code) is None
@@ -1008,11 +1018,7 @@ def _target_projection_matches_task(
 
 
 def _outbox_payload(spec: RackTaskSpec) -> dict[str, Any]:
-    return {
-        **spec.request_json,
-        "dispatch_key": spec.dispatch_key,
-        "actions": spec.actions_json,
-    }
+    return dict(spec.request_json)
 
 
 def _station_dispatch_position_code(spec: RackTaskSpec) -> str | None:
@@ -1062,13 +1068,31 @@ def _ensure_existing_outbox_shape(
         raise ValueError("existing rack operation outbox target_type differs from request")
     if outbox.target_code != spec.target_code:
         raise ValueError("existing rack operation outbox target_code differs from request")
-
+    frozen_binding = FrozenExternalHttpBinding.from_persisted(
+        provider_profile_identity=outbox.provider_profile_identity,
+        provider_profile_hash=outbox.provider_profile_hash,
+        operation_identity=outbox.operation_identity,
+        binding_revision=outbox.binding_revision,
+        target_code=outbox.target_code,
+        target_snapshot_json=outbox.target_snapshot_json,
+        target_snapshot_hash=outbox.target_snapshot_hash,
+        auth_scheme=outbox.auth_scheme,
+        credential_reference=outbox.credential_reference,
+    )
+    if frozen_binding.provider_profile_identity != legacy_transport_profile_identity():
+        raise ValueError("existing rack operation outbox provider profile differs from request")
+    if frozen_binding.operation_identity != "wms.transport.rack@v1":
+        raise ValueError("existing rack operation outbox operation identity differs from request")
+    canonical_payload_bytes = getattr(outbox, "canonical_payload_bytes", None)
+    payload_hash = getattr(outbox, "payload_hash", None)
+    canonical = CanonicalPayload.from_persisted(
+        canonical_payload_bytes=canonical_payload_bytes,
+        payload_hash=payload_hash,
+    )
     existing_payload = outbox.payload_json if isinstance(outbox.payload_json, dict) else {}
-    for key, value in payload_json.items():
-        if key in {"trace_id", "request_id", "dispatch_key", "callback_type", "source", "target", "actions"}:
-            continue
-        if existing_payload.get(key) != value:
-            raise ValueError(f"existing rack operation outbox payload {key} differs from request")
+    canonical.validate_projection(existing_payload)
+    if _request_json_for_idempotency(existing_payload) != _request_json_for_idempotency(payload_json):
+        raise ValueError("existing rack operation outbox payload differs after dispatch")
 
 
 def _ensure_existing_outbox_active(outbox: SystemOutbox) -> None:
@@ -1077,17 +1101,15 @@ def _ensure_existing_outbox_active(outbox: SystemOutbox) -> None:
         SystemOutboxStatus.NEW,
         SystemOutboxStatus.DISPATCHING,
         SystemOutboxStatus.SENT,
-        SystemOutboxStatus.BLOCKED_RESOURCE,
+        SystemOutboxStatus.RETRY_WAIT,
     }
     if isinstance(status, str):
         active_values = {item.value for item in active_statuses}
         status_is_active = status in active_values
-        status_is_blocked = status == SystemOutboxStatus.BLOCKED_RESOURCE.value
     else:
         status_is_active = status in active_statuses
-        status_is_blocked = status == SystemOutboxStatus.BLOCKED_RESOURCE
 
-    if not status_is_active or (getattr(outbox, "finished_at", None) is not None and not status_is_blocked):
+    if not status_is_active or getattr(outbox, "finished_at", None) is not None:
         raise ValueError("existing rack operation outbox is no longer active")
 
 

@@ -46,24 +46,28 @@ def setup_function() -> None:
     wms_mock_server.reset_mock_wms_state()
 
 
-def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_transaction() -> None:
+def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_transaction(monkeypatch) -> None:
     """PKG binding 走 fulfillment mock，库存事务走 inventory mock。"""
 
+    monkeypatch.setattr(wms_mock_server.httpx, "AsyncClient", _CapturingAsyncClient)
     with TestClient(wms_mock_server.app) as client:
         binding_response = client.post(
-            "/api/wms/fulfillment/pkg-binding",
+            "/api/wms/fulfillment/package-binding",
             json={
-                "request_id": "mock-sorter-binding-001",
+                "dispatch_key": "mock-sorter-binding-001",
+                "provider_code": "WMS",
                 "package_id": "PKG-CAP001-LOT-A-001",
                 "pallet_id": "PALLET-A",
                 "station_code": "SORTER-STATION-A",
             },
         )
         inventory_response = client.post(
-            "/api/wms/inbound/confirm",
+            "/api/wms/inventory/confirm-inbound",
             json={
-                "request_id": "mock-sorter-inbound-001",
+                "dispatch_key": "wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
                 "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
+                "material_code": "MAT-CAP001",
+                "quantity": "1",
             },
         )
 
@@ -77,7 +81,11 @@ def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_tra
         "accepted": True,
     }
     assert inventory_response.status_code == 200
-    assert inventory_response.json()["data"]["confirmed"] is True
+    assert inventory_response.json()["data"] == {
+        "dispatch_key": "wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
+        "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
+        "accepted": True,
+    }
 
 
 def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract() -> None:

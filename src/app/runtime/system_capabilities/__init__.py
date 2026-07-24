@@ -10,6 +10,12 @@ from .replay import (
     TimelineRecordedReplayService,
     resolve_recorded_replay,
 )
+from .shadow_service import (
+    QueryShadowComparisonService,
+    QueryShadowReadinessService,
+    query_shadow_comparison_service,
+    query_shadow_readiness_service,
+)
 
 __all__ = [
     "AttemptCloseReport",
@@ -19,6 +25,8 @@ __all__ = [
     "GatewayLimits",
     "GatewayQueryResult",
     "QueryEvidence",
+    "QueryShadowComparisonService",
+    "QueryShadowReadinessService",
     "RecordedReplayEnvelope",
     "RecordedReplayResolution",
     "RetryableFailure",
@@ -28,5 +36,7 @@ __all__ = [
     "SystemCapabilityMode",
     "TimelineRecordedReplayService",
     "parse_outcome",
+    "query_shadow_comparison_service",
+    "query_shadow_readiness_service",
     "resolve_recorded_replay",
 ]

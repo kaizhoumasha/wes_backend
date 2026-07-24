@@ -587,7 +587,7 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
 | `ports/` | `master_data.py` | WmsMasterDataPort Protocol + 6 typed data classes（target-state Packet B） | 🔧 架构核心 |
-| | `inventory_query.py` | WmsInventoryQueryPort Protocol + 5 typed data classes（target-state Packet B） | 🔧 架构核心 |
+| | `query_inventory_operation.py` | InventoryQueryOperationPort + Decimal typed authority snapshot | 🔧 架构核心 |
 | | `inventory_transaction.py` | WmsInventoryTransactionPort Protocol + 3 typed data classes（target-state Packet B） | 🔧 架构核心 |
 | | `document.py` | WmsDocumentPort Protocol + 6 typed data classes（target-state packet） | 🔧 架构核心 |
 | | `fulfillment.py` | WmsFulfillmentPort Protocol + 2 typed data classes（target-state packet） | 🔧 架构核心 |
@@ -596,7 +596,7 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 
 #### 🔗 WMS 对接辅助域 (src/app/wms_integration/)
 
-WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合同、回调标准化、短时查询缓存、DB-backed 熔断、脱敏证据留痕和调用方错误合同。该域不提供公开 `/api/v1/wms/...` 代理接口，也不接管库存主账、SystemOutbox 派发或 RuntimeHold 创建。
+WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发合同、回调标准化、DB-backed 熔断、脱敏证据留痕和调用方错误合同。QUERY 禁止跨请求缓存。该域不提供公开 `/api/v1/wms/...` 代理接口，也不接管库存主账、SystemOutbox 派发或 RuntimeHold 创建。
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
@@ -606,13 +606,13 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `repositories/` | `evidence_repository.py` | WMS evidence Repository | 🔧 架构核心 |
 | | `circuit_breaker_repository.py` | WMS circuit breaker state Repository | 🔧 架构核心 |
 | `services/` | `http_client.py` | 同步 WMS HTTP client，暴露 typed exception hierarchy | 🔧 架构核心 |
-| | `typed_ports.py` | 业务域可调用的 WMS typed ports 门面 | 🔧 架构核心 |
+| | `typed_ports.py` | 旧 effect typed ports 门面；不承载 QUERY | 🔧 架构核心 |
+| | `query_transport.py` | 无 operation 分支的 WMS QUERY HTTP、预算、分页与 evidence executor | 🔧 架构核心 |
 | | `fulfillment_lifecycle.py` | Phase 3 WMS fulfillment lifecycle service：基于状态机推进履约状态、保护终态、输出 RuntimeInbox 需求 | 🔧 架构核心 |
 | | `evidence_service.py` | WMS evidence 脱敏、hash 和记录服务 | 🔧 架构核心 |
 | | `circuit_breaker_service.py` | DB-backed WMS 熔断状态转换服务 | 🔧 架构核心 |
 | | `callback_normalizer.py` | WMS/RCS 回调最小包络校验和字段标准化 | 🔧 架构核心 |
 | | `transport_contract.py` | rack/handling WMS/RCS 外部派发 payload 合同辅助 | 🔧 架构核心 |
-| | `cache.py` | WMS read-only 查询短 TTL 缓存封装 | 🔄 常用功能 |
 | | `endpoint_config.py` | WMS endpoint operation path、timeout 和 operation name 配置 | 🔧 架构核心 |
 | | `redaction.py` | WMS request/response 脱敏规则 | 🔧 架构核心 |
 | | `exceptions.py` | WMS typed errors：timeout、5xx、business reject、circuit-open | 🔧 架构核心 |
@@ -672,7 +672,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `resilience/` | 显式运行的弹性/恢复测试（Redis 重连、降级、runtime scenario replay fixture） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
 | `workline_runtime/` | Runtime capability、投影、对账与 material-flow 纯逻辑回归；不同于已删除的 legacy src/workline_runtime package | 🔧 架构核心 |
-| `wms_integration/` | WMS 对接辅助域测试（client、typed ports、evidence、breaker、cache、callback normalizer、caller contract） | 🔧 架构核心 |
+| `wms_integration/` | WMS 对接辅助域测试（typed QUERY transport、client、typed effects、evidence、breaker、callback normalizer、caller contract） | 🔧 架构核心 |
 | `architecture/` | 架构守卫测试（import-linter 合同 + runtime public-surface / boundary guardrail；legacy runtime import 守卫继续作为永久安全网） | 🔧 架构核心 |
 | `runtime/orchestration/` | Runtime orchestration 单元/合同测试（RuntimeInbox persistence、五态 claim、三阶段 processor、SLI） | 🔧 架构核心 |
 | `contracts/` | 跨模块合同测试（workline behavior contract + runtime ops contract 文档存在性） | 🔧 架构核心 |

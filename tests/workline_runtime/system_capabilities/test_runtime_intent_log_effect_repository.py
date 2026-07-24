@@ -7,9 +7,13 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from src.app.runtime.orchestration.effect_bridges import EffectCallbackBridge, EffectCallbackOutcome
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
-from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
+from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityClaimResult,
+    SystemCapabilityIdempotencyConflict,
+)
 
 
 def _claim() -> dict[str, object]:
@@ -18,6 +22,7 @@ def _claim() -> dict[str, object]:
         "operation_kind": "system_capability_effect",
         "idempotency_key": "effect-key-1",
         "request_hash": "a" * 64,
+        "dispatch_key": "effect-dispatch-1",
         "execution_session_id": 21,
         "execution_work_item_id": 41,
         "correlation_id": "corr-1",
@@ -64,25 +69,47 @@ def _evidence(kind: str, *, occurred_at_ms: int) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_production_repository_retries_reject_then_matches_persisted_success(db_session) -> None:
+async def test_production_repository_preserves_rejected_terminal_on_same_claim(db_session) -> None:
     repository = RuntimeIntentLogRepository()
     claim = _claim()
 
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
-    await repository.record_outcome(db_session, claim=claim, evidence=_evidence("business_reject", occurred_at_ms=1100))
-    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
-    await repository.record_outcome(db_session, claim=claim, evidence=_evidence("success", occurred_at_ms=1200))
+    await EffectCallbackBridge().record(
+        db_session,
+        dispatch_key=str(claim["dispatch_key"]),
+        outcome=EffectCallbackOutcome.REJECTED,
+        occurred_at_ms=1100,
+        source_event_id="local-effect:business-reject",
+        reason_code="STALE_PRECONDITION",
+        evidence_json=_evidence("business_reject", occurred_at_ms=1100).model_dump(),
+    )
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.MATCH
 
     persisted = await repository.get_success_evidence(db_session, claim=claim)
-    assert persisted is not None
-    assert persisted["outcome"] == {"kind": "success", "payload": {"held": True, "reason_code": "REVIEW"}}
+    assert persisted is None
     row = (
         await db_session.execute(select(RuntimeIntentLog).where(RuntimeIntentLog.idempotency_key == "effect-key-1"))
     ).scalar_one()
-    assert row.effect_status == "SUCCEEDED"
-    assert row.attempt_count == 2
-    assert [item["outcome_kind"] for item in row.outcome_history_json] == ["business_reject", "success"]
+    assert row.effect_status is RuntimeIntentStatus.REJECTED
+    assert [item["outcome_kind"] for item in row.outcome_history_json] == ["business_reject"]
+
+
+@pytest.mark.asyncio
+async def test_production_repository_matches_existing_proposed_claim_and_locks_it(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+    proposed = await repository.get_claimed_intent(db_session, claim=claim)
+    assert proposed is not None
+    assert proposed.effect_status is RuntimeIntentStatus.PROPOSED
+
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.MATCH
+    replay = await repository.get_claimed_intent(db_session, claim=claim)
+    assert replay is not None
+    assert replay.id == proposed.id
+    assert replay.dispatch_key == claim["dispatch_key"]
+    assert replay.effect_status is RuntimeIntentStatus.PROPOSED
 
 
 @pytest.mark.asyncio
@@ -91,6 +118,20 @@ async def test_production_repository_claim_is_rolled_back_with_outer_transaction
     claim = _claim()
 
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+    row = await repository.get_claimed_intent(db_session, claim=claim)
+    assert row is not None
+    assert row.plugin_key == "rough_sorter"
+    assert row.plugin_contract_version == "v1"
+    assert row.capability_key == "runtime.session_hold"
+    assert row.capability_contract_version == "v1"
+    assert row.operation_identity == "hold-1"
+    assert row.target_domain == "runtime"
+    assert row.payload_hash == "a" * 64
+    assert row.completion_mode == "LOCAL_TRANSACTIONAL"
+    assert row.creator_authority == "WORKLINE_PLUGIN"
+    assert row.authorization_policy == "PLUGIN_DECLARED_CAPABILITY"
+    assert row.binding_snapshot_json == {"binding_id": 9, "binding_version": 1}
+    assert row.provider_snapshot_json == {"provider_code": "RUNTIME", "profile": "runtime"}
     await db_session.rollback()
 
     result = await db_session.execute(
@@ -98,3 +139,45 @@ async def test_production_repository_claim_is_rolled_back_with_outer_transaction
     )
     assert result.scalar_one_or_none() is None
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+
+@pytest.mark.asyncio
+async def test_production_repository_requires_explicit_dispatch_key(db_session) -> None:
+    claim = _claim()
+    claim.pop("dispatch_key")
+
+    with pytest.raises(ValueError, match="dispatch_key"):
+        await RuntimeIntentLogRepository().claim_or_match(db_session, **claim)
+
+
+@pytest.mark.asyncio
+async def test_production_repository_rejects_dispatch_key_change_on_matching_identity(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+    changed = {**claim, "dispatch_key": "effect-dispatch-replacement"}
+    with pytest.raises(ValueError, match=r"dispatch_key.*不可变"):
+        await repository.claim_or_match(db_session, **changed)
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_production_repository_locks_conflicted_intent_by_stable_identity(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+    with pytest.raises(SystemCapabilityIdempotencyConflict) as exc_info:
+        await repository.claim_or_match(db_session, **{**claim, "request_hash": "b" * 64})
+
+    conflict = exc_info.value
+    authoritative = await repository.get_conflicted_intent_for_update(
+        db_session,
+        provider_code=conflict.provider_code,
+        operation_kind=conflict.operation_kind,
+        idempotency_key=conflict.idempotency_key,
+    )
+    assert authoritative is not None
+    assert authoritative.dispatch_key == claim["dispatch_key"]
+    assert authoritative.request_hash == "a" * 64

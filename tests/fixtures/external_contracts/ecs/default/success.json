@@ -2,7 +2,6 @@
   "case_id": "success",
   "provider_code": "ECS",
   "contract_version": "2026-07-03",
-  "expected_port": "DeviceCommandPort.receive_command",
   "direction": "effect",
   "raw_request": {
     "command_code": "CMD-ECS-SUCCESS-001",

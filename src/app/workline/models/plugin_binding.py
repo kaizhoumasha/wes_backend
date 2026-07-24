@@ -36,7 +36,6 @@ class WorklinePluginBinding(BaseMixin, table=True):
     typed_config_json: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
     typed_config_hash: str = Field(min_length=64, max_length=64, index=True)
     provider_profile_snapshot_json: list[dict[str, Any]] = Field(sa_column=Column(JSON), default_factory=list)
-    port_requirements_json: list[str] = Field(sa_column=Column(JSON), default_factory=list)
     device_snapshot_json: list[dict[str, Any]] = Field(sa_column=Column(JSON), default_factory=list)
     generated_index_digest: str = Field(min_length=64, max_length=64)
     environment: str = Field(max_length=30)

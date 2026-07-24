@@ -52,6 +52,7 @@ def _typed_intent(capability_key: str, contract_version: str) -> RuntimeIntent:
         capability_key=capability_key,
         contract_version=contract_version,
         operation_key="conformance:platform:1",
+        dispatch_key=f"system-capability:{capability_key}:conformance-platform-1",
         payload={"fixture": True},
         precondition={"expected": "fixture-v1"},
         fact_version="fixture-v1",
@@ -92,7 +93,7 @@ def test_conformance_rejects_unknown_generated_converter_output() -> None:
 
 
 def test_conformance_rejects_query_capability_converter_output_as_effect() -> None:
-    identity = ("wms.rough_sorter_inventory_admission", "v1")
+    identity = ("wms.inventory.query_inventory", "v1")
 
     with pytest.raises(AssertionError, match="必须绑定 EFFECT"):
         assert_system_capability_effect_contract(
