@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     APP_DEBUG: bool = False
     APP_HOST: str = "0.0.0.0"  # nosec B104 - service must bind all interfaces in container/server deployments
     APP_PORT: int = 8000
+    callback_request_body_max_bytes: int = Field(default=1024 * 1024, ge=1)
     runtime_inbox_payload_max_bytes: int = Field(default=1024 * 1024, ge=1)
 
     # ==================== 北向 Transport 配置 ====================

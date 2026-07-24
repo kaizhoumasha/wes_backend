@@ -1,5 +1,6 @@
 """Callback 入站应用服务."""
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -58,6 +59,7 @@ from src.app.sys.services import audit_log_service
 from src.app.wms_integration.services import callback_normalizer as _wms_callback_normalizer
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.core.client_ip import resolve_client_ip
+from src.core.conf import settings
 from src.core.logger import logger
 from src.core.response import response_builder
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode, ResponseCode, ServerErrorCode
@@ -614,7 +616,31 @@ async def _record_callback_audit_log(
 
 
 async def _read_request_json(request: Request) -> JsonDict:
-    payload = await request.json()
+    if not isinstance(request, Request):
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise TypeError("request body must be an object")
+        return cast("JsonDict", payload)
+
+    max_bytes = settings.callback_request_body_max_bytes
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_bytes = int(content_length)
+        except ValueError:
+            declared_bytes = 0
+        if declared_bytes > max_bytes:
+            raise HTTPException(status_code=413, detail=f"callback payload exceeds {max_bytes} bytes")
+
+    chunks: list[bytes] = []
+    actual_bytes = 0
+    async for chunk in request.stream():
+        actual_bytes += len(chunk)
+        if actual_bytes > max_bytes:
+            raise HTTPException(status_code=413, detail=f"callback payload exceeds {max_bytes} bytes")
+        chunks.append(chunk)
+
+    payload = json.loads(b"".join(chunks))
     if not isinstance(payload, dict):
         raise TypeError("request body must be an object")
     return cast("JsonDict", payload)
@@ -1332,6 +1358,8 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
 
     try:
         callback_data = await _read_request_json(request)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"指令结果回调解析失败: {exc}")
         return await _handle_result_validation_failure(
@@ -1789,6 +1817,8 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
 
     try:
         event_data = await _read_request_json(request)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"设备事件上报解析失败: {exc}")
         return CallbackEventIngressDecision(
@@ -2201,6 +2231,8 @@ async def handle_callback_external(
 
     try:
         callback_data = await _read_request_json(request)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"外部回调解析失败: {exc}")
         return await _handle_external_validation_failure(
