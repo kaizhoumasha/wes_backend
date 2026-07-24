@@ -116,7 +116,7 @@ async def callback_event(
     },
     summary="外部系统回调",
     dependencies=[Depends(RequireAPIPermission("api:callback:event"))],
-    description="库位分配、AGV 等外部系统异步回调入口",
+    description="WMS 状态查询提示、库位分配、AGV 等外部系统异步回调入口",
     openapi_extra={
         "requestBody": {
             "required": True,

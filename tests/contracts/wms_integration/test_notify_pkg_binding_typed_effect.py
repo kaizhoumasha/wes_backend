@@ -23,9 +23,6 @@ from src.app.wms_integration.ports.notify_pkg_binding_operation import (
 
 
 def _t10_modules() -> SimpleNamespace:
-    callback_adapter = import_module(
-        "src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.callback_adapter"
-    )
     preparation_service = import_module(
         "src.app.runtime.orchestration.services.notify_package_binding_effect_preparation_service"
     )
@@ -41,7 +38,6 @@ def _t10_modules() -> SimpleNamespace:
         "src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.intent_adapter"
     )
     return SimpleNamespace(
-        NotifyPackageBindingCallbackAdapter=callback_adapter.NotifyPackageBindingCallbackAdapter,
         NotifyPackageBindingEffectPreparationService=(preparation_service.NotifyPackageBindingEffectPreparationService),
         CAPABILITY_KEY=definition.CAPABILITY_KEY,
         CONTRACT_VERSION=definition.CONTRACT_VERSION,
@@ -183,52 +179,3 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
             ),
             adapter=adapter,
         )
-
-
-class _RecordingCallbackBridge:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    async def record(self, db: object, **values: object) -> object:
-        self.calls.append({"db": db, **values})
-        return SimpleNamespace(effect_status="recorded")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("accepted", "reason_code", "expected_outcome"),
-    [
-        (True, None, "COMPLETED"),
-        (False, "PALLET_LOCKED", "REJECTED"),
-    ],
-)
-async def test_callback_adapter_maps_typed_business_result_only_through_reducer(
-    accepted: bool,
-    reason_code: str | None,
-    expected_outcome: str,
-) -> None:
-    modules = _t10_modules()
-    bridge = _RecordingCallbackBridge()
-    adapter = modules.NotifyPackageBindingCallbackAdapter(bridge=bridge)
-    result = NotifyPackageBindingOperationResult(
-        dispatch_key="wms-notify-pkg-binding:WMS:PKG-001:PALLET-001",
-        package_id="PKG-001",
-        pallet_id="PALLET-001",
-        accepted=accepted,
-        bound_at="2026-07-23T10:00:00Z" if accepted else None,
-        reason_code=reason_code,
-        source_version="wms:v12",
-    )
-
-    reduced = await adapter.record(
-        object(),
-        result=result,
-        occurred_at_ms=123_456,
-        source_event_id="wms-callback:event-1",
-    )
-
-    assert reduced.effect_status == "recorded"
-    assert bridge.calls[0]["dispatch_key"] == result.dispatch_key
-    assert bridge.calls[0]["outcome"].value == expected_outcome
-    assert bridge.calls[0]["reason_code"] == reason_code
-    assert bridge.calls[0]["evidence_json"] == result.model_dump(mode="json")

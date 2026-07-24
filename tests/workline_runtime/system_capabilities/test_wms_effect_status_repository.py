@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusRepository
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 
 
 @pytest.mark.asyncio
@@ -65,3 +66,95 @@ async def test_claim_uses_paired_wms_operation_identity_and_never_filters_corrup
     assert "runtime_intent_logs.capability_contract_version = 'v1'" in compiled
     assert "system_outbox.operation_identity = 'wms.fulfillment.notify_pkg_binding@v1'" in compiled
     assert db.flushes == 1
+
+
+class _HintResult:
+    def __init__(self, row: tuple[Any, Any] | None) -> None:
+        self.row = row
+
+    def one_or_none(self) -> tuple[Any, Any] | None:
+        return self.row
+
+
+class _HintDb:
+    def __init__(self, row: tuple[Any, Any] | None) -> None:
+        self.row = row
+        self.flushes = 0
+
+    async def execute(self, _statement: Any) -> _HintResult:
+        return _HintResult(self.row)
+
+    async def flush(self) -> None:
+        self.flushes += 1
+
+
+def _hint_row(
+    *,
+    status: RuntimeIntentStatus = RuntimeIntentStatus.ACCEPTED,
+    operation_identity: str = "wms.fulfillment.notify_pkg_binding@v1",
+    idempotency_key: str = "idem-001",
+    status_check_after: datetime | None = datetime(2026, 7, 24, 12, 5),
+) -> tuple[Any, Any]:
+    intent = SimpleNamespace(
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+        effect_status=status,
+        status_check_after=status_check_after,
+    )
+    outbox = SimpleNamespace(
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+        status="SENT",
+        attempt_count=3,
+    )
+    return intent, outbox
+
+
+@pytest.mark.asyncio
+async def test_hint_lock_advances_only_intent_schedule_without_transport_write() -> None:
+    now = datetime(2026, 7, 24, 12, 0)
+    intent, outbox = _hint_row(status_check_after=now + timedelta(minutes=5))
+    db = _HintDb((intent, outbox))
+    transport_before = (outbox.status, outbox.attempt_count)
+
+    outcome = await WmsEffectStatusRepository().advance_status_check_after_from_hint(
+        db,
+        operation_identity=outbox.operation_identity,
+        idempotency_key=outbox.idempotency_key,
+        dispatch_key="dispatch-001",
+        now=now,
+    )
+
+    assert outcome == "SCHEDULED"
+    assert intent.status_check_after == now
+    assert db.flushes == 1
+    assert (outbox.status, outbox.attempt_count) == transport_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        (None, "NOT_FOUND"),
+        (_hint_row(status=RuntimeIntentStatus.COMPLETED), "TERMINAL"),
+        (_hint_row(status_check_after=None), "ALREADY_DUE"),
+        (_hint_row(operation_identity="wms.fulfillment.full_box_exchange@v1"), "CORRELATION_MISMATCH"),
+        (_hint_row(idempotency_key="other-idem"), "CORRELATION_MISMATCH"),
+    ],
+)
+async def test_hint_lock_names_missing_mismatch_and_safe_ignore_outcomes(
+    row: tuple[Any, Any] | None,
+    expected: str,
+) -> None:
+    db = _HintDb(row)
+
+    outcome = await WmsEffectStatusRepository().advance_status_check_after_from_hint(
+        db,
+        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+        idempotency_key="idem-001",
+        dispatch_key="dispatch-001",
+        now=datetime(2026, 7, 24, 12, 0),
+    )
+
+    assert outcome == expected
+    assert db.flushes == 0

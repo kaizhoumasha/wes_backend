@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -39,8 +40,10 @@ from src.app.wms_integration.ports.effect_status import (
     WmsEffectStatusSnapshot,
     build_wms_effect_status_binding,
 )
-from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
 from src.core.conf import settings
+from src.core.logger import logger
+from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.effect_bridges import EffectReconciliationBridge
@@ -51,6 +54,34 @@ class WmsEffectStatusCheckResult:
     dispatch_key: str
     outcome: str
     state_changed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class WmsEffectStatusHintResult:
+    """callback hint 的持久化调度结果；不表达业务终态。"""
+
+    dispatch_key: str
+    outcome: str
+
+
+def _emit_status_hint_enqueue_failure(
+    *,
+    operation_identity: str,
+    dispatch_key_hash: str,
+    error_type: str,
+) -> None:
+    """发射命名失败指标；观测失败不能反向改变 callback ACK。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    _ = runtime_observability_registry.emit(
+        "wms_effect_status_hint.enqueue_failed",
+        {
+            "operation_identity": operation_identity,
+            "dispatch_key_hash": dispatch_key_hash,
+            "error_type": error_type,
+        },
+    )
 
 
 def freeze_wms_effect_status_binding(*, intent_log: Any, outbox: Any) -> None:
@@ -84,16 +115,60 @@ class WmsEffectStatusService:
         now: Any | None = None,
         jitter: Any | None = None,
         random_source: Any | None = None,
+        queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         self._repository = repository
         self._reducer = reducer
         self._reconciliation_bridge = reconciliation_bridge
         self._settings = settings_source
-        self._now = now or (lambda: datetime.now(UTC).replace(tzinfo=None))
+        self._now = now or timezone.now_for_db
         source = random_source or random.SystemRandom()
         self._jitter = jitter or (lambda upper: source.uniform(0.0, upper))
         self._port_factory_builder = port_factory_builder or self._default_port_factory_builder
         self._resubmit_dispatcher = resubmit_dispatcher or self._default_resubmit_dispatcher
+        self._queue_gateway = queue_gateway
+
+    async def request_status_check_hint(
+        self,
+        db: Any,
+        *,
+        operation_identity: str,
+        idempotency_key: str,
+        dispatch_key: str,
+    ) -> WmsEffectStatusHintResult:
+        """持久化提前到期后 best-effort 触发即时查询；Beat 始终是恢复面。"""
+
+        outcome = await self._repository.advance_status_check_after_from_hint(
+            db,
+            operation_identity=operation_identity,
+            idempotency_key=idempotency_key,
+            dispatch_key=dispatch_key,
+            now=self._now(),
+        )
+        if outcome in {"NOT_FOUND", "CORRELATION_MISMATCH"}:
+            raise ValueError(f"WMS_EFFECT_STATUS_HINT_{outcome}")
+        if outcome != "SCHEDULED":
+            return WmsEffectStatusHintResult(dispatch_key=dispatch_key, outcome=outcome)
+
+        # 提交是 callback ACK 的持久化边界；之后进程或 broker 故障由 Beat 扫描已到期行恢复。
+        await db.commit()
+        try:
+            self._queue_gateway.enqueue_wms_effect_status(dispatch_key=dispatch_key)
+        except Exception as exc:
+            dispatch_key_hash = sha256(dispatch_key.encode("utf-8")).hexdigest()[:16]
+            error_type = type(exc).__name__
+            with suppress(Exception):
+                _emit_status_hint_enqueue_failure(
+                    operation_identity=operation_identity,
+                    dispatch_key_hash=dispatch_key_hash,
+                    error_type=error_type,
+                )
+            logger.warning(
+                "metric=wms_effect_status_hint_enqueue_failed_total "
+                f"operation_identity={operation_identity} dispatch_key_hash={dispatch_key_hash} "
+                f"error_type={error_type}"
+            )
+        return WmsEffectStatusHintResult(dispatch_key=dispatch_key, outcome=outcome)
 
     async def check_dispatch(self, db: Any, *, dispatch_key: str) -> WmsEffectStatusCheckResult:
         claim = await self._repository.claim_by_dispatch_key(
@@ -176,6 +251,10 @@ class WmsEffectStatusService:
         return tuple(results)
 
     def _default_port_factory_builder(self, binding: FrozenWmsEffectStatusBinding) -> Any:
+        # 延迟加载 transport factory，避免 wms_integration adapters
+        # 初始化时反向加载 orchestration services。
+        from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
+
         return build_effect_status_query_port_factory(
             binding=binding,
             initial_backoff_seconds=float(self._settings.WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS),
@@ -697,6 +776,7 @@ wms_effect_status_service = WmsEffectStatusService()
 
 __all__ = [
     "WmsEffectStatusCheckResult",
+    "WmsEffectStatusHintResult",
     "WmsEffectStatusService",
     "freeze_wms_effect_status_binding",
     "wms_effect_status_service",

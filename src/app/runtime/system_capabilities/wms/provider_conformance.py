@@ -469,7 +469,14 @@ def _evaluate_case(
 def _profile_digest(profile: WmsProviderProfile) -> str:
     operation_index = WmsOperationIndexBuilder.build(profile)
     payload = {
-        "callbacks": tuple((callback.operation.identity, callback.callback_type) for callback in profile.callbacks),
+        "callbacks": tuple(
+            (
+                callback.callback_type,
+                callback.payload_model.__module__,
+                callback.payload_model.__qualname__,
+            )
+            for callback in profile.callbacks
+        ),
         "identity": profile.identity.model_dump(mode="json"),
         "operation_index_digest": operation_index.digest,
         "outbound_auth": tuple(

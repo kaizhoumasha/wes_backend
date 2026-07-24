@@ -5,25 +5,18 @@ from types import MappingProxyType
 from src.app.runtime.orchestration.operation_observability import require_northbound_operation_slo
 from src.app.runtime.system_capabilities.wms.contracts import (
     ExternalContractProfile,
+    InboundCallbackContract,
     OutboundAuthProfile,
     OutboundAuthScheme,
+    WmsEffectStatusHint,
     WmsProviderOperationBinding,
     WmsProviderProfile,
-)
-from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
-    CALLBACK_CONTRACT as FULL_BOX_EXCHANGE_CALLBACK,
 )
 from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
     CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
 )
 from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
-    CALLBACK_CONTRACT as NOTIFY_PACKAGE_BINDING_CALLBACK,
-)
-from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
     CONTRACT as NOTIFY_PACKAGE_BINDING_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
-    CALLBACK_CONTRACT as CONFIRM_INBOUND_CALLBACK,
 )
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
     CONTRACT as CONFIRM_INBOUND_CONTRACT,
@@ -47,6 +40,11 @@ from src.app.sys.services.endpoint_registry import ENDPOINT_SETTING_BY_TARGET_CO
 from src.app.wms_integration.transport_url import validate_wms_base_url
 from src.core.conf import settings
 from src.utils.value_normalization import runtime_profile_environment
+
+WMS_EFFECT_STATUS_HINT_CALLBACK = InboundCallbackContract(
+    callback_type="WMS_EFFECT_STATUS_HINT",
+    payload_model=WmsEffectStatusHint,
+)
 
 
 def _binding(profile, outbound_auth, operation):
@@ -79,11 +77,7 @@ def _profile(environment: str) -> WmsProviderProfile:
                 FULL_BOX_EXCHANGE_CONTRACT,
             )
         ),
-        callbacks=(
-            CONFIRM_INBOUND_CALLBACK,
-            NOTIFY_PACKAGE_BINDING_CALLBACK,
-            FULL_BOX_EXCHANGE_CALLBACK,
-        ),
+        callbacks=(WMS_EFFECT_STATUS_HINT_CALLBACK,),
     )
 
 
@@ -219,6 +213,7 @@ def resolve_wms_operation_binding(
 
 
 __all__ = [
+    "WMS_EFFECT_STATUS_HINT_CALLBACK",
     "WMS_EXTERNAL_HTTP_EFFECT_PROFILES",
     "WMS_MATERIAL_FLOW_CONTRACT_VERSION",
     "WMS_NORTHBOUND_AUTH",

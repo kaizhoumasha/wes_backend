@@ -23,9 +23,6 @@ from src.app.wms_integration.ports.full_box_exchange_operation import (
 
 
 def _modules() -> SimpleNamespace:
-    callback_adapter = import_module(
-        "src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.callback_adapter"
-    )
     preparation_service = import_module(
         "src.app.runtime.orchestration.services.full_box_exchange_effect_preparation_service"
     )
@@ -41,7 +38,6 @@ def _modules() -> SimpleNamespace:
         "src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.intent_adapter"
     )
     return SimpleNamespace(
-        FullBoxExchangeCallbackAdapter=callback_adapter.FullBoxExchangeCallbackAdapter,
         FullBoxExchangeEffectPreparationService=preparation_service.FullBoxExchangeEffectPreparationService,
         CAPABILITY_KEY=definition.CAPABILITY_KEY,
         CONTRACT_VERSION=definition.CONTRACT_VERSION,
@@ -176,49 +172,3 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
             ),
             adapter=adapter,
         )
-
-
-class _RecordingCallbackBridge:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    async def record(self, db: object, **values: object) -> object:
-        self.calls.append({"db": db, **values})
-        return SimpleNamespace(effect_status="recorded")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("accepted", "reason_code", "expected_outcome"),
-    [(True, None, "COMPLETED"), (False, "RACK_LOCKED", "REJECTED")],
-)
-async def test_callback_adapter_maps_typed_business_result_only_through_reducer(
-    accepted: bool,
-    reason_code: str | None,
-    expected_outcome: str,
-) -> None:
-    modules = _modules()
-    bridge = _RecordingCallbackBridge()
-    adapter = modules.FullBoxExchangeCallbackAdapter(bridge=bridge)
-    result = FullBoxExchangeOperationResult(
-        dispatch_key=_request().dispatch_key,
-        rack_id=_request().rack_id,
-        empty_box_id=_request().empty_box_id,
-        full_box_id=_request().full_box_id,
-        accepted=accepted,
-        exchange_request_code="EXCHANGE-001" if accepted else None,
-        reason_code=reason_code,
-        source_version="wms:v12",
-    )
-
-    await adapter.record(
-        object(),
-        result=result,
-        occurred_at_ms=123_456,
-        source_event_id="wms-callback:event-1",
-    )
-
-    assert bridge.calls[0]["dispatch_key"] == result.dispatch_key
-    assert bridge.calls[0]["outcome"].value == expected_outcome
-    assert bridge.calls[0]["reason_code"] == reason_code
-    assert bridge.calls[0]["evidence_json"] == result.model_dump(mode="json")

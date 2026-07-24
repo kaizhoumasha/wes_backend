@@ -41,6 +41,51 @@ class WmsEffectStatusClaim:
 class WmsEffectStatusRepository:
     """只负责 status claim、关联读取与 current-token fencing。"""
 
+    async def advance_status_check_after_from_hint(
+        self,
+        db: Any,
+        *,
+        operation_identity: str,
+        idempotency_key: str,
+        dispatch_key: str,
+        now: datetime,
+    ) -> str:
+        """锁定 callback 关联行，并仅将尚未到期的非终态状态查询提前。"""
+
+        intent_columns = cast("Any", RuntimeIntentLog).__table__.c
+        outbox_columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(
+            select(RuntimeIntentLog, SystemOutbox)
+            .join(SystemOutbox, outbox_columns.dispatch_key == intent_columns.dispatch_key)
+            .where(intent_columns.dispatch_key == dispatch_key)
+            .with_for_update(of=RuntimeIntentLog)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return "NOT_FOUND"
+
+        intent, outbox = row
+        intent_operation_identity = getattr(intent, "operation_identity", None)
+        if (
+            operation_identity not in WMS_EFFECT_OPERATION_IDENTITIES
+            or getattr(outbox, "operation_identity", None) != operation_identity
+            or (intent_operation_identity is not None and intent_operation_identity != operation_identity)
+            or getattr(outbox, "idempotency_key", None) != idempotency_key
+            or getattr(intent, "idempotency_key", None) != idempotency_key
+        ):
+            return "CORRELATION_MISMATCH"
+
+        if getattr(intent, "effect_status", None) not in _CLAIMABLE_INTENT_STATUSES:
+            return "TERMINAL"
+
+        status_check_after = getattr(intent, "status_check_after", None)
+        if status_check_after is None or status_check_after <= now:
+            return "ALREADY_DUE"
+
+        intent.status_check_after = now
+        await db.flush()
+        return "SCHEDULED"
+
     async def claim_by_dispatch_key(
         self,
         db: Any,

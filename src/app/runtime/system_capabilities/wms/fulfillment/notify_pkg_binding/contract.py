@@ -1,7 +1,6 @@
 """料盘绑定通知 author-time operation 声明。"""
 
 from src.app.runtime.system_capabilities.wms.contracts import (
-    InboundCallbackContract,
     OutboundAuthScheme,
     WmsHttpMethod,
     WmsOperationContract,
@@ -28,10 +27,4 @@ CONTRACT = WmsOperationContract(
     outbound_auth_scheme=OutboundAuthScheme.HMAC_SHA256,
     supports_status_query=True,
 )
-CALLBACK_CONTRACT = InboundCallbackContract(
-    operation=CONTRACT,
-    callback_type="WMS_PACKAGE_BOUND",
-    payload_model=NotifyPackageBindingOperationResult,
-)
-
-__all__ = ["CALLBACK_CONTRACT", "CONTRACT"]
+__all__ = ["CONTRACT"]

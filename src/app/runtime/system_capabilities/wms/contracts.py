@@ -190,21 +190,28 @@ class WmsProviderOperationBinding(BaseModel):
 
 
 class InboundCallbackContract(BaseModel):
-    """单个 EFFECT 的独立入站 callback 合同。"""
+    """Provider 可选的通用 EFFECT 状态查询提示合同。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
-    operation: WmsOperationContract
     callback_type: StableText = Field(max_length=120)
     payload_model: type[BaseModel]
 
     @model_validator(mode="after")
     def enforce_effect_callback(self) -> InboundCallbackContract:
-        if self.operation.mode is not WmsOperationMode.EFFECT:
-            raise ValueError("only EFFECT operation may declare callback contract")
-        if self.payload_model is not self.operation.result_model:
-            raise ValueError("callback payload_model must reuse operation result_model")
+        if self.payload_model is not WmsEffectStatusHint:
+            raise ValueError("WMS callback must use the generic EFFECT status hint payload")
         return self
+
+
+class WmsEffectStatusHint(BaseModel):
+    """不携带终态结果、只定位既有 EFFECT 的 callback hint。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_identity: OperationIdentity
+    idempotency_key: StableText = Field(max_length=160)
+    dispatch_key: StableText = Field(max_length=240)
 
 
 class WmsProviderProfile(BaseModel):
@@ -214,7 +221,7 @@ class WmsProviderProfile(BaseModel):
 
     identity: ExternalContractProfile
     bindings: tuple[WmsProviderOperationBinding, ...]
-    callbacks: tuple[InboundCallbackContract, ...]
+    callbacks: tuple[InboundCallbackContract, ...] = ()
 
     @model_validator(mode="after")
     def validate_composition(self) -> WmsProviderProfile:
@@ -223,20 +230,11 @@ class WmsProviderProfile(BaseModel):
         operation_identities = tuple(binding.operation.identity for binding in self.bindings)
         if len(operation_identities) != len(set(operation_identities)):
             raise ValueError("provider profile contains duplicate operation identity")
-        bound_effects = {
-            binding.operation.identity: binding.operation
-            for binding in self.bindings
-            if binding.operation.mode is WmsOperationMode.EFFECT
-        }
-        callback_identities = tuple(callback.operation.identity for callback in self.callbacks)
-        if len(callback_identities) != len(set(callback_identities)) or set(callback_identities) != set(bound_effects):
-            raise ValueError("every bound EFFECT must declare exactly one callback contract")
-        if any(
-            callback.operation is not bound_effects[callback.operation.identity]
-            and callback.operation != bound_effects[callback.operation.identity]
-            for callback in self.callbacks
-        ):
-            raise ValueError("callback must reference the bound EFFECT operation contract")
+        callback_types = tuple(callback.callback_type for callback in self.callbacks)
+        if len(callback_types) != len(set(callback_types)):
+            raise ValueError("provider profile contains duplicate callback type")
+        if len(self.callbacks) > 1:
+            raise ValueError("provider profile may declare at most one generic EFFECT status hint callback")
         return self
 
 
@@ -245,6 +243,7 @@ __all__ = [
     "InboundCallbackContract",
     "OutboundAuthProfile",
     "OutboundAuthScheme",
+    "WmsEffectStatusHint",
     "WmsHttpMethod",
     "WmsOperationContract",
     "WmsOperationMode",

@@ -12,7 +12,6 @@ from pydantic import ValidationError
 
 from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.app.runtime.system_capabilities.wms.contracts import (
-    InboundCallbackContract,
     WmsProviderProfile,
     WmsRetryPolicy,
 )
@@ -186,48 +185,12 @@ def test_each_effect_gateway_maps_typed_request_to_dispatch_envelope_once(
 
 
 def test_provider_profile_rejects_duplicate_callback_for_effect() -> None:
-    with pytest.raises(ValidationError, match="exactly one callback"):
+    with pytest.raises(ValidationError, match="duplicate callback type"):
         WmsProviderProfile(
             identity=WMS_PROVIDER_PROFILE.identity,
             bindings=WMS_PROVIDER_PROFILE.bindings,
             callbacks=(*WMS_PROVIDER_PROFILE.callbacks, WMS_PROVIDER_PROFILE.callbacks[0]),
         )
-
-
-def test_provider_profile_rejects_callback_with_different_operation_contract() -> None:
-    callback = WMS_PROVIDER_PROFILE.callbacks[0]
-    different_operation = callback.operation.model_copy(update={"target_code": "WMS_INBOUND_CONFIRM_ALTERNATE"})
-    different_callback = InboundCallbackContract(
-        operation=different_operation,
-        callback_type=callback.callback_type,
-        payload_model=callback.payload_model,
-    )
-
-    with pytest.raises(ValidationError, match="bound EFFECT operation contract"):
-        WmsProviderProfile(
-            identity=WMS_PROVIDER_PROFILE.identity,
-            bindings=WMS_PROVIDER_PROFILE.bindings,
-            callbacks=(different_callback, *WMS_PROVIDER_PROFILE.callbacks[1:]),
-        )
-
-
-def test_provider_profile_accepts_callback_with_equal_operation_contract() -> None:
-    callback = WMS_PROVIDER_PROFILE.callbacks[0]
-    equal_operation = callback.operation.model_copy()
-    equal_callback = InboundCallbackContract(
-        operation=equal_operation,
-        callback_type=callback.callback_type,
-        payload_model=callback.payload_model,
-    )
-
-    profile = WmsProviderProfile(
-        identity=WMS_PROVIDER_PROFILE.identity,
-        bindings=WMS_PROVIDER_PROFILE.bindings,
-        callbacks=(equal_callback, *WMS_PROVIDER_PROFILE.callbacks[1:]),
-    )
-
-    assert equal_operation is not WMS_PROVIDER_PROFILE.bindings[1].operation
-    assert profile.callbacks[0].operation == WMS_PROVIDER_PROFILE.bindings[1].operation
 
 
 @pytest.mark.parametrize("backoff", [float("nan"), float("inf"), float("-inf")])

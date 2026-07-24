@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -720,3 +722,155 @@ def test_wms_effect_status_repository_and_service_are_exported() -> None:
     assert repositories.wms_effect_status_repository is not None
     assert services.WmsEffectStatusService is WmsEffectStatusService
     assert services.wms_effect_status_service is not None
+
+
+class _HintRepository(_Repository):
+    def __init__(self, claim: Any, *, outcome: str = "SCHEDULED") -> None:
+        super().__init__(claim)
+        self.outcome = outcome
+        self.hint_calls: list[dict[str, Any]] = []
+
+    async def advance_status_check_after_from_hint(self, _db: Any, **kwargs: Any) -> str:
+        self.hint_calls.append(kwargs)
+        if self.outcome == "SCHEDULED":
+            self.claim.intent.status_check_after = kwargs["now"]
+        return self.outcome
+
+    async def claim_due_batch(self, _db: Any, *, now: datetime, **_kwargs: Any) -> tuple[Any, ...]:
+        if self.claim.intent.status_check_after is not None and self.claim.intent.status_check_after <= now:
+            return (self.claim,)
+        return ()
+
+
+class _HintQueue:
+    def __init__(self, db: _Db, *, error: Exception | None = None) -> None:
+        self.db = db
+        self.error = error
+        self.dispatch_keys: list[str] = []
+
+    def enqueue_wms_effect_status(self, *, dispatch_key: str) -> None:
+        assert self.db.commits == 1, "hint 到期时间必须先提交，才能触发即时状态查询"
+        self.dispatch_keys.append(dispatch_key)
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.mark.asyncio
+async def test_status_hint_persists_due_time_and_commits_before_immediate_enqueue() -> None:
+    claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
+    claim.intent.status_check_after = NOW + timedelta(minutes=5)
+    db = _Db()
+    repository = _HintRepository(claim)
+    queue = _HintQueue(db)
+    outbox_before = (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at)
+    service = WmsEffectStatusService(
+        repository=repository,
+        queue_gateway=queue,
+        settings_source=_settings(),
+        now=lambda: NOW,
+    )
+
+    result = await service.request_status_check_hint(
+        db,
+        operation_identity=claim.outbox.operation_identity,
+        idempotency_key=claim.outbox.idempotency_key,
+        dispatch_key=claim.outbox.dispatch_key,
+    )
+
+    assert result.outcome == "SCHEDULED"
+    assert claim.intent.status_check_after == NOW
+    assert db.commits == 1
+    assert queue.dispatch_keys == ["dispatch-001"]
+    assert repository.hint_calls == [
+        {
+            "operation_identity": claim.outbox.operation_identity,
+            "idempotency_key": claim.outbox.idempotency_key,
+            "dispatch_key": claim.outbox.dispatch_key,
+            "now": NOW,
+        }
+    ]
+    assert (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at) == outbox_before
+
+
+@pytest.mark.asyncio
+async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_row_for_beat() -> None:
+    claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
+    claim.intent.status_check_after = NOW + timedelta(minutes=5)
+    db = _Db()
+    repository = _HintRepository(claim)
+    queue = _HintQueue(db, error=RuntimeError("broker secret-token"))
+    intent_before = (claim.intent.effect_status, claim.intent.outcome_kind, dict(claim.intent.outcome_json))
+    outbox_before = (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at)
+    service = WmsEffectStatusService(
+        repository=repository,
+        queue_gateway=queue,
+        settings_source=_settings(),
+        now=lambda: NOW,
+    )
+
+    with patch("src.app.runtime.orchestration.services.wms_effect_status_service.logger.warning") as warning:
+        result = await service.request_status_check_hint(
+            db,
+            operation_identity=claim.outbox.operation_identity,
+            idempotency_key=claim.outbox.idempotency_key,
+            dispatch_key=claim.outbox.dispatch_key,
+        )
+    due_claims = await repository.claim_due_batch(db, now=NOW, lease_seconds=10, limit=10)
+
+    assert result.outcome == "SCHEDULED"
+    assert due_claims == (claim,)
+    assert db.commits == 1
+    assert (claim.intent.effect_status, claim.intent.outcome_kind, claim.intent.outcome_json) == intent_before
+    assert (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at) == outbox_before
+    warning.assert_called_once()
+    warning_text = str(warning.call_args.args[0])
+    assert "wms_effect_status_hint_enqueue_failed_total" in warning_text
+    assert sha256(b"dispatch-001").hexdigest()[:16] in warning_text
+    assert "dispatch-001" not in warning_text
+    assert "secret-token" not in warning_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["ALREADY_DUE", "TERMINAL"])
+async def test_duplicate_or_terminal_hint_is_ignored_without_enqueue(outcome: str) -> None:
+    claim = _claim(status=RuntimeIntentStatus.COMPLETED if outcome == "TERMINAL" else RuntimeIntentStatus.ACCEPTED)
+    db = _Db()
+    repository = _HintRepository(claim, outcome=outcome)
+    queue = _HintQueue(db)
+    service = WmsEffectStatusService(
+        repository=repository,
+        queue_gateway=queue,
+        settings_source=_settings(),
+        now=lambda: NOW,
+    )
+
+    result = await service.request_status_check_hint(
+        db,
+        operation_identity=claim.outbox.operation_identity,
+        idempotency_key=claim.outbox.idempotency_key,
+        dispatch_key=claim.outbox.dispatch_key,
+    )
+
+    assert result.outcome == outcome
+    assert db.commits == 0
+    assert queue.dispatch_keys == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["NOT_FOUND", "CORRELATION_MISMATCH"])
+async def test_unknown_or_mismatched_hint_is_named_failure(outcome: str) -> None:
+    claim = _claim()
+    service = WmsEffectStatusService(
+        repository=_HintRepository(claim, outcome=outcome),
+        queue_gateway=_HintQueue(_Db()),
+        settings_source=_settings(),
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(ValueError, match=f"WMS_EFFECT_STATUS_HINT_{outcome}"):
+        await service.request_status_check_hint(
+            _Db(),
+            operation_identity=claim.outbox.operation_identity,
+            idempotency_key=claim.outbox.idempotency_key,
+            dispatch_key=claim.outbox.dispatch_key,
+        )

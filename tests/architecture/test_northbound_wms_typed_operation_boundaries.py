@@ -94,3 +94,41 @@ def test_every_authored_wms_effect_declares_status_query_capability() -> None:
     assert len(effects) == 3
     assert all(operation.supports_status_query is True for operation in effects)
     assert all(operation.supports_status_query is False for operation in queries)
+
+
+def test_wms_effect_callback_is_optional_generic_hint_without_terminal_adapters() -> None:
+    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+    contracts = _load("src.app.runtime.system_capabilities.wms.contracts")
+
+    profile_without_callback = contracts.WmsProviderProfile(
+        identity=catalog.WMS_PROVIDER_PROFILE.identity,
+        bindings=catalog.WMS_PROVIDER_PROFILE.bindings,
+    )
+    assert profile_without_callback.callbacks == ()
+    assert tuple(callback.callback_type for callback in catalog.WMS_PROVIDER_PROFILE.callbacks) == (
+        "WMS_EFFECT_STATUS_HINT",
+    )
+
+    capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
+    assert list(capability_root.rglob("callback_adapter.py")) == []
+    for operation_path in (
+        capability_root / "inventory/confirm_inbound",
+        capability_root / "fulfillment/notify_pkg_binding",
+        capability_root / "fulfillment/full_box_exchange",
+    ):
+        assert "CALLBACK_CONTRACT" not in (operation_path / "__init__.py").read_text(encoding="utf-8")
+        assert "CALLBACK_CONTRACT" not in (operation_path / "contract.py").read_text(encoding="utf-8")
+
+
+def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> None:
+    router = _load("src.app.runtime.orchestration.services.inbox.wms_typed_effect_callback_router")
+    source = inspect.getsource(router.WmsTypedEffectCallbackRouter)
+
+    forbidden = (
+        "finish_sent_external_by_dispatch_key",
+        "EffectReducerEventType.CALLBACK_COMPLETED",
+        "EffectReducerEventType.CALLBACK_REJECTED",
+        "_callback_adapters",
+        "callback_adapter",
+    )
+    assert all(term not in source for term in forbidden)

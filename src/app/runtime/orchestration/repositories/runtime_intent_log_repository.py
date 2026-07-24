@@ -153,6 +153,9 @@ class RuntimeIntentLogRepository:
             "outcome_json": {},
             "outcome_history_json": [],
             "effect_updated_at_ms": updated_at_ms,
+            # Core INSERT 不会应用 SQLModel default_factory；
+            # 非 WMS intent 以空快照表达“无 status binding”。
+            "status_binding_snapshot_json": {},
         }
         inserted_id = (
             await db.execute(

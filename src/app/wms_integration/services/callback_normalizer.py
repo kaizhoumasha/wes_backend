@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from src.app.callback.utils import JsonDict, resolve_first_str
+from typing import Any
+
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_TYPED_EFFECT_CALLBACK_TYPES
+
+type JsonDict = dict[str, Any]
 
 WMS_RCS_EXECUTION_PREFIXES = ("WMS_", "RCS_")
 WMS_RCS_SOURCE_SYSTEM_BY_PREFIX = {
@@ -96,7 +99,10 @@ class WmsExecutionCallbackNormalizer:
             callback_data = _require_payload_value(payload, "data")
             if not isinstance(callback_data, dict):
                 raise ValueError("data must be an object")
-            _ = _require_payload_value(callback_data, "dispatch_key")
+            _require_payload_fields(
+                callback_data,
+                ("operation_identity", "idempotency_key", "dispatch_key"),
+            )
             _validate_wms_rcs_source_system(payload, callback_type)
             return
 
@@ -111,24 +117,24 @@ class WmsExecutionCallbackNormalizer:
 
             _validate_wms_rcs_source_system(payload, callback_type)
 
-            if callback_type in WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES and not resolve_first_str(
+            if callback_type in WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES and not _resolve_first_str(
                 payload, WMS_RCS_EXECUTION_STATUS_ALIASES
             ):
                 raise ValueError("status is required")
             return
 
-        if not resolve_first_str(payload, WMS_RCS_EXECUTION_STATUS_ALIASES):
+        if not _resolve_first_str(payload, WMS_RCS_EXECUTION_STATUS_ALIASES):
             raise ValueError("status is required")
         _validate_wms_rcs_source_system(payload, callback_type)
 
 
 def _resolve_optional_str(payload: JsonDict, aliases: tuple[str, ...]) -> str | None:
-    value = resolve_first_str(payload, aliases)
+    value = _resolve_first_str(payload, aliases)
     return value or None
 
 
 def _require_first_str(payload: JsonDict, aliases: tuple[str, ...], field_name: str) -> str:
-    value = resolve_first_str(payload, aliases)
+    value = _resolve_first_str(payload, aliases)
     if value:
         return value
     raise ValueError(f"{field_name} is required")
@@ -148,8 +154,16 @@ def _require_payload_fields(payload: JsonDict, field_names: tuple[str, ...]) -> 
         _ = _require_payload_value(payload, field_name)
 
 
+def _resolve_first_str(payload: JsonDict, aliases: tuple[str, ...]) -> str | None:
+    for alias in aliases:
+        value = payload.get(alias)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _validate_wms_rcs_source_system(payload: JsonDict, callback_type: str) -> None:
-    source_system = resolve_first_str(payload, ("source_system",))
+    source_system = _resolve_first_str(payload, ("source_system",))
     if source_system not in {"WMS", "RCS"}:
         raise ValueError("source_system must be WMS or RCS")
     _validate_callback_source_match(callback_type, source_system)
