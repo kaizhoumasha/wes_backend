@@ -135,6 +135,32 @@ def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> No
     assert all(term not in source for term in forbidden)
 
 
+def test_wms_effect_preparation_has_one_shared_production_entry() -> None:
+    services_root = REPO_ROOT / "src/app/runtime/orchestration/services"
+    assert (services_root / "wms_effect_preparation_service.py").exists()
+    assert all(
+        not (services_root / legacy_name).exists()
+        for legacy_name in (
+            "confirm_inbound_effect_preparation_service.py",
+            "full_box_exchange_effect_preparation_service.py",
+            "notify_package_binding_effect_preparation_service.py",
+        )
+    )
+
+    capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
+    for operation_path in (
+        capability_root / "inventory/confirm_inbound",
+        capability_root / "fulfillment/full_box_exchange",
+        capability_root / "fulfillment/notify_pkg_binding",
+    ):
+        handler_source = (operation_path / "handler.py").read_text(encoding="utf-8")
+        adapter_source = (operation_path / "effect_adapter.py").read_text(encoding="utf-8")
+        assert "wms_effect_preparation_service.prepare(" in handler_source
+        assert "operation=CONTRACT" in handler_source
+        assert "def build_envelope(" in adapter_source
+        assert "SystemOutbox(" not in adapter_source
+
+
 def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalog() -> None:
     catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
 

@@ -19,18 +19,21 @@ from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
-from src.app.runtime.orchestration.services.confirm_inbound_effect_preparation_service import (
-    ConfirmInboundEffectPreparationService,
-)
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import WorklineDispatchAttemptService
-from src.app.runtime.orchestration.services.notify_package_binding_effect_preparation_service import (
-    NotifyPackageBindingEffectPreparationService,
+from src.app.runtime.orchestration.services.wms_effect_preparation_service import (
+    WmsEffectPreparationService,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
+    CONTRACT as NOTIFY_PKG_BINDING_CONTRACT,
 )
 from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_adapter import (
     NotifyPackageBindingEffectAdapter,
 )
 from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.gateway import (
     NotifyPackageBindingDispatchGateway,
+)
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
+    CONTRACT as CONFIRM_INBOUND_CONTRACT,
 )
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.effect_adapter import (
     ConfirmInboundEffectAdapter,
@@ -261,8 +264,9 @@ async def _seed_confirm_inbound_effect(db: AsyncSession, *, suffix: str) -> _See
             registry=EndpointRegistry({"WMS_INBOUND_CONFIRM": "https://wms.example/api/wes/inventory/confirm-inbound"})
         )
     )
-    outbox = await ConfirmInboundEffectPreparationService().prepare(
+    outbox = await WmsEffectPreparationService().prepare(
         db,
+        operation=CONFIRM_INBOUND_CONTRACT,
         request=request,
         intent_log=intent,
         adapter=adapter,
@@ -320,8 +324,9 @@ async def _seed_notify_package_binding_effect(db: AsyncSession, *, suffix: str) 
             )
         )
     )
-    outbox = await NotifyPackageBindingEffectPreparationService().prepare(
+    outbox = await WmsEffectPreparationService().prepare(
         db,
+        operation=NOTIFY_PKG_BINDING_CONTRACT,
         request=request,
         intent_log=intent,
         adapter=adapter,

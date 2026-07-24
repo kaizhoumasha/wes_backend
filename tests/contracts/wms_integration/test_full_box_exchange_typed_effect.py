@@ -23,9 +23,7 @@ from src.app.wms_integration.ports.full_box_exchange_operation import (
 
 
 def _modules() -> SimpleNamespace:
-    preparation_service = import_module(
-        "src.app.runtime.orchestration.services.full_box_exchange_effect_preparation_service"
-    )
+    preparation_service = import_module("src.app.runtime.orchestration.services.wms_effect_preparation_service")
     definition = import_module("src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.definition")
     effect_adapter = import_module(
         "src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.effect_adapter"
@@ -38,7 +36,7 @@ def _modules() -> SimpleNamespace:
         "src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.intent_adapter"
     )
     return SimpleNamespace(
-        FullBoxExchangeEffectPreparationService=preparation_service.FullBoxExchangeEffectPreparationService,
+        WmsEffectPreparationService=preparation_service.WmsEffectPreparationService,
         CAPABILITY_KEY=definition.CAPABILITY_KEY,
         CONTRACT_VERSION=definition.CONTRACT_VERSION,
         DEFINITION=definition.DEFINITION,
@@ -142,9 +140,15 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         capability_contract_version="v1",
         operation_identity="WMS:RACK-001:EMPTY-001:FULL-001",
     )
-    service = modules.FullBoxExchangeEffectPreparationService(intent_repository=pair_repository)
+    service = modules.WmsEffectPreparationService(intent_repository=pair_repository)
 
-    outbox = await service.prepare(db, request=request, intent_log=intent_log, adapter=adapter)
+    outbox = await service.prepare(
+        db,
+        operation=CONTRACT,
+        request=request,
+        intent_log=intent_log,
+        adapter=adapter,
+    )
 
     assert outbox.status == SystemOutboxStatus.NEW
     assert outbox.idempotency_key == "intent-full-box-001"
@@ -164,6 +168,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     with pytest.raises(ValueError, match="idempotency_key"):
         await service.prepare(
             db,
+            operation=CONTRACT,
             request=request,
             intent_log=SimpleNamespace(
                 dispatch_key=request.dispatch_key,

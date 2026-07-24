@@ -16,10 +16,11 @@ from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase
 from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusRepository
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.services.effect_reducer_service import EffectReducer
-from src.app.runtime.orchestration.services.notify_package_binding_effect_preparation_service import (
-    NotifyPackageBindingEffectPreparationService,
-)
+from src.app.runtime.orchestration.services.wms_effect_preparation_service import WmsEffectPreparationService
 from src.app.runtime.orchestration.services.wms_effect_status_service import WmsEffectStatusService
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
+    CONTRACT as NOTIFY_PKG_BINDING_CONTRACT,
+)
 from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_adapter import (
     NotifyPackageBindingEffectAdapter,
 )
@@ -80,8 +81,9 @@ async def _seed_status_pair(db, *, suffix: str) -> tuple[NotifyPackageBindingOpe
             registry=EndpointRegistry({"WMS_PACKAGE_BINDING": "https://wms.example/effects/package-binding"})
         )
     )
-    outbox = await NotifyPackageBindingEffectPreparationService().prepare(
+    outbox = await WmsEffectPreparationService().prepare(
         db,
+        operation=NOTIFY_PKG_BINDING_CONTRACT,
         request=request,
         intent_log=intent,
         adapter=adapter,
@@ -211,8 +213,9 @@ def test_status_claim_is_short_reclaimable_and_old_worker_is_fenced() -> None:
                     registry=EndpointRegistry({"WMS_PACKAGE_BINDING": "https://wms.example/effects/package-binding"})
                 )
             )
-            outbox = await NotifyPackageBindingEffectPreparationService().prepare(
+            outbox = await WmsEffectPreparationService().prepare(
                 db,
+                operation=NOTIFY_PKG_BINDING_CONTRACT,
                 request=request,
                 intent_log=intent,
                 adapter=adapter,

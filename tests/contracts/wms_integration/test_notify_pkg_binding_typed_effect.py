@@ -23,9 +23,7 @@ from src.app.wms_integration.ports.notify_pkg_binding_operation import (
 
 
 def _t10_modules() -> SimpleNamespace:
-    preparation_service = import_module(
-        "src.app.runtime.orchestration.services.notify_package_binding_effect_preparation_service"
-    )
+    preparation_service = import_module("src.app.runtime.orchestration.services.wms_effect_preparation_service")
     definition = import_module("src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.definition")
     effect_adapter = import_module(
         "src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_adapter"
@@ -38,7 +36,7 @@ def _t10_modules() -> SimpleNamespace:
         "src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.intent_adapter"
     )
     return SimpleNamespace(
-        NotifyPackageBindingEffectPreparationService=(preparation_service.NotifyPackageBindingEffectPreparationService),
+        WmsEffectPreparationService=preparation_service.WmsEffectPreparationService,
         CAPABILITY_KEY=definition.CAPABILITY_KEY,
         CONTRACT_VERSION=definition.CONTRACT_VERSION,
         DEFINITION=definition.DEFINITION,
@@ -143,10 +141,11 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         capability_contract_version="v1",
         operation_identity="WMS:PKG-001:PALLET-001",
     )
-    service = modules.NotifyPackageBindingEffectPreparationService(intent_repository=pair_repository)
+    service = modules.WmsEffectPreparationService(intent_repository=pair_repository)
 
     outbox = await service.prepare(
         db,
+        operation=CONTRACT,
         request=request,
         intent_log=intent_log,
         adapter=adapter,
@@ -171,6 +170,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     with pytest.raises(ValueError, match="idempotency_key"):
         await service.prepare(
             db,
+            operation=CONTRACT,
             request=request,
             intent_log=SimpleNamespace(
                 dispatch_key=request.dispatch_key,
