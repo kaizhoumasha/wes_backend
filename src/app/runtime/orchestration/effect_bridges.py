@@ -82,7 +82,13 @@ class EffectTransportBridge:
                 evidence_json=transport_evidence,
             )
         ]
-        if result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
+        if (
+            result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
+            and operation_identity not in WMS_EFFECT_OPERATION_IDENTITIES
+        ):
+            # authored WMS EFFECT 已有冻结 status binding 和持久化查询预算：
+            # transport 不明确时保持 UNKNOWN，由 typed status 确认闭环；
+            # 非 WMS EFFECT 仍立即进入人工对账。
             events.append(
                 EffectReducerEvent(
                     event_type=EffectReducerEventType.RECONCILIATION_OPENED,

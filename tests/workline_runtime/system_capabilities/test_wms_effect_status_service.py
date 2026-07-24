@@ -12,7 +12,10 @@ import pytest
 
 from src.app.runtime.orchestration.effect_state_contract import EffectReducerEventType
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
-from src.app.sys.external_http_transport import ExternalHttpProtocolResult, ExternalHttpTransportResult
+from src.app.sys.external_http_transport import (
+    ExternalHttpProtocolResult,
+    ExternalHttpTransportResult,
+)
 from src.app.wms_integration.ports.effect_status import (
     NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
     WMS_EFFECT_OPERATION_IDENTITIES,
@@ -49,6 +52,7 @@ def _settings() -> SimpleNamespace:
         WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS=2.0,
         WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS=30.0,
         WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS=3,
+        WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS=300.0,
         WES_EFFECT_NOT_FOUND_GRACE_SECONDS=60.0,
     )
 
@@ -118,12 +122,16 @@ class _Db:
     def __init__(self) -> None:
         self.commits = 0
         self.rollbacks = 0
+        self.flushes = 0
 
     async def commit(self) -> None:
         self.commits += 1
 
     async def rollback(self) -> None:
         self.rollbacks += 1
+
+    async def flush(self) -> None:
+        self.flushes += 1
 
 
 class _Repository:
@@ -132,11 +140,15 @@ class _Repository:
         self.fence_writeback = fence_writeback
         self.released = 0
         self.reserved = 0
+        self.batch_claimed = False
 
     async def claim_by_dispatch_key(self, _db: Any, **_kwargs: Any) -> Any:
         return self.claim
 
     async def claim_due_batch(self, _db: Any, **_kwargs: Any) -> tuple[Any, ...]:
+        if self.batch_claimed:
+            return ()
+        self.batch_claimed = True
         return (self.claim,)
 
     async def get_claim_for_update(self, _db: Any, **_kwargs: Any) -> Any:

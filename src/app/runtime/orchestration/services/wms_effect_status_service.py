@@ -64,6 +64,9 @@ class WmsEffectStatusHintResult:
     outcome: str
 
 
+_CONFIRMATION_BUDGET_EXHAUSTED = "WMS_STATUS_CONFIRMATION_BUDGET_EXHAUSTED"
+
+
 def _emit_status_hint_enqueue_failure(
     *,
     operation_identity: str,
@@ -206,18 +209,19 @@ class WmsEffectStatusService:
         return await self._apply_snapshot(db, claim=claim, snapshot=snapshot)
 
     async def check_due_batch(self, db: Any, *, limit: int) -> tuple[WmsEffectStatusCheckResult, ...]:
-        claims = await self._repository.claim_due_batch(
-            db,
-            now=self._now(),
-            lease_seconds=float(self._settings.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS),
-            limit=limit,
-        )
-        if not claims:
-            return ()
-        await db.commit()
         results: list[WmsEffectStatusCheckResult] = []
-        # 单任务内保持小批量顺序查询，避免突发并发打满 Provider。
-        for claim in claims:
+        # 每条记录只在其网络调用即将开始时 claim，避免前项 HTTP 占用后排记录的 lease。
+        for _ in range(max(0, limit)):
+            claims = await self._repository.claim_due_batch(
+                db,
+                now=self._now(),
+                lease_seconds=float(self._settings.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS),
+                limit=1,
+            )
+            if not claims:
+                break
+            claim = claims[0]
+            await db.commit()
             try:
                 binding = self._load_binding(claim)
             except (TypeError, ValueError) as exc:
@@ -392,11 +396,16 @@ class WmsEffectStatusService:
         contradictory_terminal = self._is_contradictory_terminal(intent, snapshot=snapshot)
         if not contradictory_terminal:
             intent.status_source_version = snapshot.source_version
-        next_check = (
-            None
-            if snapshot.state in {WmsEffectStatus.COMPLETED, WmsEffectStatus.REJECTED}
-            else self._next_check(intent)
-        )
+        if snapshot.state in {WmsEffectStatus.COMPLETED, WmsEffectStatus.REJECTED}:
+            next_check = None
+        else:
+            next_check = self._next_check_within_confirmation_budget(intent)
+            if next_check is None:
+                return await self._open_confirmation_budget_reconciliation(
+                    db,
+                    claim=current_claim,
+                    evidence=evidence,
+                )
         await self._repository.release_claim(db, claim=current_claim, status_check_after=next_check)
         await db.commit()
         return WmsEffectStatusCheckResult(
@@ -495,9 +504,17 @@ class WmsEffectStatusService:
                 reason_code="WMS_STATUS_VISIBILITY_REGRESSED",
                 evidence=evidence,
             )
+        next_check = self._next_check_within_confirmation_budget(intent)
+        if next_check is None:
+            return await self._open_confirmation_budget_reconciliation(
+                db,
+                claim=claim,
+                evidence=evidence,
+            )
         started_at = intent.status_check_started_at or self._now()
+        current = self._as_db_utc(self._now())
         grace = timedelta(seconds=float(self._settings.WES_EFFECT_NOT_FOUND_GRACE_SECONDS))
-        if self._now() - started_at >= grace:
+        if current - self._as_db_utc(started_at) >= grace:
             if int(intent.status_resubmit_count or 0) != 0:
                 return await self._open_reconciliation(
                     db,
@@ -533,7 +550,7 @@ class WmsEffectStatusService:
                     evidence={**evidence, "error_type": type(exc).__name__},
                 )
             return await self._record_resubmit_result(db, claim=claim, result=result, evidence=evidence)
-        await self._repository.release_claim(db, claim=claim, status_check_after=self._next_check(intent))
+        await self._repository.release_claim(db, claim=claim, status_check_after=next_check)
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=intent.dispatch_key, outcome=WmsEffectStatus.NOT_FOUND.value)
 
@@ -579,26 +596,24 @@ class WmsEffectStatusService:
                 reason_code=(reason_code if isinstance(reason_code, str) else "WMS_STATUS_QUERY_CONTRACT_FAILED"),
                 evidence=evidence,
             )
-        if int(current_claim.intent.status_check_count or 0) >= int(
-            self._settings.WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS
-        ):
-            return await self._open_reconciliation(
+        next_check = self._next_check_within_confirmation_budget(
+            current_claim.intent,
+            minimum_delay_seconds=(
+                float(retry_after_seconds)
+                if isinstance(retry_after_seconds, (int, float)) and retry_after_seconds >= 0
+                else None
+            ),
+        )
+        if next_check is None:
+            return await self._open_confirmation_budget_reconciliation(
                 db,
                 claim=current_claim,
-                reason_code="WMS_STATUS_QUERY_EXHAUSTED",
                 evidence=evidence,
             )
         await self._repository.release_claim(
             db,
             claim=current_claim,
-            status_check_after=self._next_check(
-                current_claim.intent,
-                minimum_delay_seconds=(
-                    float(retry_after_seconds)
-                    if isinstance(retry_after_seconds, (int, float)) and retry_after_seconds >= 0
-                    else None
-                ),
-            ),
+            status_check_after=next_check,
         )
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="RETRY_SCHEDULED")
@@ -647,10 +662,17 @@ class WmsEffectStatusService:
                 evidence_json=evidence,
             ),
         )
+        next_check = self._next_check_within_confirmation_budget(claim.intent)
+        if next_check is None:
+            return await self._open_confirmation_budget_reconciliation(
+                db,
+                claim=claim,
+                evidence=evidence,
+            )
         await self._repository.release_claim(
             db,
             claim=claim,
-            status_check_after=self._next_check(claim.intent),
+            status_check_after=next_check,
         )
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="STALE")
@@ -685,10 +707,17 @@ class WmsEffectStatusService:
                 ),
                 evidence={**evidence, "transport": result.evidence_json()},
             )
+        next_check = self._next_check_within_confirmation_budget(current_claim.intent)
+        if next_check is None:
+            return await self._open_confirmation_budget_reconciliation(
+                db,
+                claim=current_claim,
+                evidence={**evidence, "transport": result.evidence_json()},
+            )
         await self._repository.release_claim(
             db,
             claim=current_claim,
-            status_check_after=self._next_check(current_claim.intent),
+            status_check_after=next_check,
         )
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="RESUBMITTED")
@@ -718,6 +747,23 @@ class WmsEffectStatusService:
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="RECONCILING")
 
+    async def _open_confirmation_budget_reconciliation(
+        self,
+        db: Any,
+        *,
+        claim: WmsEffectStatusClaim,
+        evidence: dict[str, Any],
+    ) -> WmsEffectStatusCheckResult:
+        return await self._open_reconciliation(
+            db,
+            claim=claim,
+            reason_code=_CONFIRMATION_BUDGET_EXHAUSTED,
+            evidence={
+                **evidence,
+                "confirmation_budget": self._confirmation_budget_evidence(claim.intent),
+            },
+        )
+
     def _resolve_reconciliation_bridge(self) -> Any:
         if self._reconciliation_bridge is None:
             from src.app.runtime.orchestration.effect_bridges import effect_reconciliation_bridge
@@ -742,6 +788,53 @@ class WmsEffectStatusService:
         if minimum_delay_seconds is not None:
             delay = max(delay, minimum_delay_seconds)
         return self._now() + timedelta(seconds=delay)
+
+    def _next_check_within_confirmation_budget(
+        self,
+        intent: Any,
+        *,
+        minimum_delay_seconds: float | None = None,
+    ) -> datetime | None:
+        if int(intent.status_check_count or 0) >= int(self._settings.WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS):
+            return None
+        current = self._as_db_utc(self._now())
+        deadline = self._confirmation_deadline(intent, current=current)
+        if current >= deadline:
+            return None
+        if minimum_delay_seconds is not None and current + timedelta(seconds=minimum_delay_seconds) > deadline:
+            return None
+        candidate = self._as_db_utc(
+            self._next_check(
+                intent,
+                minimum_delay_seconds=minimum_delay_seconds,
+            )
+        )
+        return min(candidate, deadline)
+
+    def _confirmation_deadline(self, intent: Any, *, current: datetime) -> datetime:
+        started_at = getattr(intent, "status_check_started_at", None)
+        started = current if started_at is None else self._as_db_utc(started_at)
+        return started + timedelta(seconds=float(self._settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS))
+
+    def _confirmation_budget_evidence(self, intent: Any) -> dict[str, Any]:
+        current = self._as_db_utc(self._now())
+        deadline = self._confirmation_deadline(intent, current=current)
+        return {
+            "status_check_count": int(intent.status_check_count or 0),
+            "max_query_attempts": int(self._settings.WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS),
+            "status_check_started_at": self._as_db_utc(
+                getattr(intent, "status_check_started_at", None) or current
+            ).isoformat(),
+            "max_confirmation_age_seconds": float(self._settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS),
+            "deadline": deadline.isoformat(),
+        }
+
+    @staticmethod
+    def _as_db_utc(value: datetime) -> datetime:
+        normalized = timezone.to_db_datetime(value)
+        if normalized is None:
+            raise TypeError("WMS status confirmation time must be a datetime")
+        return normalized
 
     def _occurred_at_ms(self) -> int:
         current = self._now()
