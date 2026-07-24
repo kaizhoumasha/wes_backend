@@ -60,7 +60,6 @@ def _retry_after_seconds(
     value: str | None,
     *,
     now: datetime,
-    max_delay_seconds: float,
 ) -> float | None:
     if value is None:
         return None
@@ -71,15 +70,14 @@ def _retry_after_seconds(
             return None
         if not math.isfinite(seconds):
             return None
-        return min(seconds, max_delay_seconds)
+        return seconds
     try:
         target = parsedate_to_datetime(value)
     except (TypeError, ValueError, OverflowError):
         return None
     if target is None or target.tzinfo is None:
         return None
-    delay = max(0.0, (target.astimezone(UTC) - now.astimezone(UTC)).total_seconds())
-    return min(delay, max_delay_seconds)
+    return max(0.0, (target.astimezone(UTC) - now.astimezone(UTC)).total_seconds())
 
 
 class WmsEffectStatusQueryAdapter:
@@ -282,7 +280,6 @@ class WmsEffectStatusQueryAdapter:
             provider_delay = _retry_after_seconds(
                 retry_after,
                 now=self._now(),
-                max_delay_seconds=self._max_backoff_seconds,
             )
             return QueryTechnicalFailure(
                 reason_code="WMS_RATE_LIMITED",
@@ -304,14 +301,19 @@ class WmsEffectStatusQueryAdapter:
 
     def _local_backoff(self, attempt_count: int) -> float:
         exponent = max(0, attempt_count - 1)
-        if self._initial_backoff_seconds >= self._max_backoff_seconds:
-            return self._max_backoff_seconds
-        saturation_exponent = math.ceil(math.log2(self._max_backoff_seconds / self._initial_backoff_seconds))
-        if exponent >= saturation_exponent:
-            return self._max_backoff_seconds
-        base = self._initial_backoff_seconds * (2**exponent)
-        jitter = max(0.0, min(base, float(self._jitter(base))))
-        return min(self._max_backoff_seconds, base + jitter)
+        saturation_exponent = (
+            math.ceil(math.log2(self._max_backoff_seconds / self._initial_backoff_seconds))
+            if self._max_backoff_seconds > self._initial_backoff_seconds
+            else 0
+        )
+        base = (
+            self._max_backoff_seconds
+            if exponent >= saturation_exponent
+            else min(self._max_backoff_seconds, self._initial_backoff_seconds * (2**exponent))
+        )
+        jitter_window = base / 2
+        jitter = max(0.0, min(jitter_window, float(self._jitter(jitter_window))))
+        return base - jitter
 
 
 __all__ = [

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 from src.app.effect_ledger_status import SystemOutboxStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
@@ -22,6 +22,10 @@ _QUERYABLE_TRANSPORT_TERMINALS = (
     SystemOutboxStatus.SENT,
     SystemOutboxStatus.UNKNOWN,
     SystemOutboxStatus.FAILED,
+)
+_WMS_EFFECT_CAPABILITY_BINDINGS = tuple(
+    (*operation_identity.rsplit("@", maxsplit=1), operation_identity)
+    for operation_identity in WMS_EFFECT_OPERATION_IDENTITIES
 )
 
 
@@ -88,7 +92,16 @@ class WmsEffectStatusRepository:
             .join(SystemOutbox, outbox_columns.dispatch_key == intent_columns.dispatch_key)
             .where(
                 intent_columns.effect_status.in_(_CLAIMABLE_INTENT_STATUSES),
-                intent_columns.status_binding_snapshot_hash.is_not(None),
+                or_(
+                    *(
+                        and_(
+                            intent_columns.capability_key == capability_key,
+                            intent_columns.capability_contract_version == contract_version,
+                            outbox_columns.operation_identity == operation_identity,
+                        )
+                        for capability_key, contract_version, operation_identity in _WMS_EFFECT_CAPABILITY_BINDINGS
+                    )
+                ),
                 or_(
                     intent_columns.status_check_after.is_(None),
                     intent_columns.status_check_after <= now,

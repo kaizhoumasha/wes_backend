@@ -302,13 +302,35 @@ async def test_wms_status_enabled_intent_records_callback_without_advancing_term
     event_type: EffectReducerEventType,
 ) -> None:
     repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
-    repository.intent.status_binding_snapshot_hash = "a" * 64
+    repository.intent.capability_key = "wms.fulfillment.notify_pkg_binding"
+    repository.intent.capability_contract_version = "v1"
+    repository.intent.operation_identity = "WMS:PKG-001:PALLET-001"
+    # callback authority 由 operation/status capability 身份决定，不依赖可损坏的 binding。
+    repository.intent.status_binding_snapshot_hash = None
+    repository.intent.status_binding_snapshot_json = None
 
     result = await EffectReducer(repository=repository).reduce(_Db(), _event(event_type))
 
     assert result is not None and result.state_changed is False
     assert repository.intent.effect_status is RuntimeIntentStatus.ACCEPTED
     assert repository.intent.outcome_history_json[0]["event_type"] == event_type.value
+
+
+@pytest.mark.asyncio
+async def test_non_wms_intent_with_incidental_binding_hash_keeps_callback_authority() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
+    repository.intent.capability_key = "runtime.session_hold"
+    repository.intent.capability_contract_version = "v1"
+    repository.intent.operation_identity = "hold-instance-001"
+    repository.intent.status_binding_snapshot_hash = "a" * 64
+
+    result = await EffectReducer(repository=repository).reduce(
+        _Db(),
+        _event(EffectReducerEventType.CALLBACK_COMPLETED),
+    )
+
+    assert result is not None and result.state_changed is True
+    assert repository.intent.effect_status is RuntimeIntentStatus.COMPLETED
 
 
 @pytest.mark.asyncio

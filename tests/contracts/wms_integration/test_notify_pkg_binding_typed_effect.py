@@ -143,6 +143,9 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         dispatch_key=request.dispatch_key,
         idempotency_key="intent-notify-binding-001",
         effect_status="PROPOSED",
+        capability_key="wms.fulfillment.notify_pkg_binding",
+        capability_contract_version="v1",
+        operation_identity="WMS:PKG-001:PALLET-001",
     )
     service = modules.NotifyPackageBindingEffectPreparationService(intent_repository=pair_repository)
 
@@ -166,6 +169,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     )
     assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
     assert len(intent_log.status_binding_snapshot_hash) == 64
+    assert intent_log.operation_identity == "WMS:PKG-001:PALLET-001"
     assert pair_repository.calls == [(db, intent_log, outbox)]
 
     with pytest.raises(ValueError, match="idempotency_key"):

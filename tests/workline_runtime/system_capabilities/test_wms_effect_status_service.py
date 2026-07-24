@@ -113,6 +113,9 @@ class _Repository:
     async def claim_by_dispatch_key(self, _db: Any, **_kwargs: Any) -> Any:
         return self.claim
 
+    async def claim_due_batch(self, _db: Any, **_kwargs: Any) -> tuple[Any, ...]:
+        return (self.claim,)
+
     async def get_claim_for_update(self, _db: Any, **_kwargs: Any) -> Any:
         return None if self.fence_writeback else self.claim
 
@@ -455,6 +458,32 @@ async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_out
 
 
 @pytest.mark.asyncio
+async def test_retry_after_above_local_max_remains_the_schedule_lower_bound() -> None:
+    claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
+    db = _Db()
+    error = RuntimeError("provider rate limit")
+    error.failure = SimpleNamespace(  # type: ignore[attr-defined]
+        reason_code="WMS_RATE_LIMITED",
+        retryable=True,
+        retry_after_seconds=120.0,
+    )
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=_Reducer(),
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: lambda: _FailingPort(error, db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RETRY_SCHEDULED"
+    assert claim.intent.status_check_after == NOW + timedelta(seconds=120)
+
+
+@pytest.mark.asyncio
 async def test_non_retryable_query_contract_failure_opens_reconciliation_immediately() -> None:
     _require_status_service()
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
@@ -513,6 +542,114 @@ async def test_tampered_frozen_status_binding_fails_closed_to_reconciliation_bef
     assert result.outcome == "RECONCILING"
     assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_BINDING_INVALID"
     assert port_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("snapshot", "snapshot_hash"),
+    [
+        (None, "a" * 64),
+        ({}, None),
+        ({"corrupt": True}, "b" * 64),
+    ],
+)
+async def test_due_scanner_claims_missing_or_corrupt_binding_and_fails_closed_before_http(
+    snapshot: object,
+    snapshot_hash: str | None,
+) -> None:
+    claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
+    claim.intent.status_binding_snapshot_json = snapshot
+    claim.intent.status_binding_snapshot_hash = snapshot_hash
+    claim.intent.operation_identity = NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
+    db = _Db()
+    repository = _Repository(claim)
+    reconciliation = _ReconciliationBridge()
+    port_calls = 0
+
+    def port_builder(_binding: Any) -> Any:
+        nonlocal port_calls
+        port_calls += 1
+        return lambda: _Port(_snapshot(WmsEffectStatus.ACCEPTED), db)
+
+    results = await WmsEffectStatusService(
+        repository=repository,
+        reducer=_Reducer(),
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=port_builder,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    ).check_due_batch(db, limit=10)
+
+    assert [result.outcome for result in results] == ["RECONCILING"]
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_BINDING_INVALID"
+    assert repository.released == 1
+    assert port_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_corrupt_frozen_payload_is_normalized_to_request_contract_reconciliation() -> None:
+    claim = _claim()
+    claim.intent.operation_identity = NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
+    claim.outbox.payload_json.pop("package_id")
+    db = _Db()
+    reconciliation = _ReconciliationBridge()
+    port_calls = 0
+
+    def port_builder(_binding: Any) -> Any:
+        nonlocal port_calls
+        port_calls += 1
+        return lambda: _Port(_snapshot(WmsEffectStatus.ACCEPTED), db)
+
+    result = await WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=_Reducer(),
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=port_builder,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    ).check_dispatch(db, dispatch_key=claim.intent.dispatch_key)
+
+    assert result.outcome == "RECONCILING"
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_REQUEST_INVALID"
+    assert claim.intent.status_check_lease_token is None
+    assert port_calls == 0
+
+
+def test_saturated_status_backoff_uses_injectable_random_source_without_collapsing_to_maximum() -> None:
+    class RandomSource:
+        def __init__(self, sample_ratio: float) -> None:
+            self.sample_ratio = sample_ratio
+            self.bounds: list[tuple[float, float]] = []
+
+        def uniform(self, lower: float, upper: float) -> float:
+            self.bounds.append((lower, upper))
+            return lower + ((upper - lower) * self.sample_ratio)
+
+    low_sample = RandomSource(0.0)
+    high_sample = RandomSource(1.0)
+    saturated = SimpleNamespace(status_check_count=1_000_000)
+    low_delay = (
+        WmsEffectStatusService(
+            settings_source=_settings(),
+            now=lambda: NOW,
+            random_source=low_sample,
+        )._next_check(saturated)
+        - NOW
+    ).total_seconds()
+    high_delay = (
+        WmsEffectStatusService(
+            settings_source=_settings(),
+            now=lambda: NOW,
+            random_source=high_sample,
+        )._next_check(saturated)
+        - NOW
+    ).total_seconds()
+
+    assert low_sample.bounds == [(0.0, 15.0)]
+    assert high_sample.bounds == [(0.0, 15.0)]
+    assert {low_delay, high_delay} == {15.0, 30.0}
 
 
 @pytest.mark.asyncio

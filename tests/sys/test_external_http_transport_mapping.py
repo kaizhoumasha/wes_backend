@@ -41,23 +41,29 @@ from tests.support.external_http import (
 )
 
 
-def _outbox() -> SimpleNamespace:
+def _outbox(*, operation_identity: str = "tests.external-http.effect@v1") -> SimpleNamespace:
+    values: dict[str, Any] = {
+        "id": 1,
+        "dispatch_key": "dispatch-001",
+        "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP,
+        "target_type": SystemOutboxTargetType.HTTP_ENDPOINT,
+        "status": SystemOutboxStatus.NEW,
+        "attempt_count": 0,
+        "next_retry_at": None,
+        "last_error": None,
+        "finished_at": None,
+        "operation_domain": "HANDLING",
+        "lease_owner_token": "test-owner:1",
+        "lease_expires_at": datetime(2027, 1, 1),
+    }
+    if operation_identity == "wms.fulfillment.notify_pkg_binding@v1":
+        values["idempotency_key"] = "idem-status-001"
     return frozen_outbox_namespace(
         {"request_id": "REQ-001"},
         target_code="WMS_RCS_BIN_OPERATION",
         target_url="http://wms-rcs/api/wes/transport-request",
-        id=1,
-        dispatch_key="dispatch-001",
-        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
-        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        status=SystemOutboxStatus.NEW,
-        attempt_count=0,
-        next_retry_at=None,
-        last_error=None,
-        finished_at=None,
-        operation_domain="HANDLING",
-        lease_owner_token="test-owner:1",
-        lease_expires_at=datetime(2027, 1, 1),
+        operation_identity=operation_identity,
+        **values,
     )
 
 
@@ -278,6 +284,92 @@ async def test_accepted_explicit_protocol_reject_is_transport_sent_without_retry
             "auto_commit": False,
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transport_result",
+    [
+        ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        ),
+        ExternalHttpTransportResult.accepted(
+            http_status_code=409,
+            protocol_result=ExternalHttpProtocolResult.REJECTED,
+            protocol_error_code="IDEMPOTENCY_REQUEST_IN_PROGRESS",
+            error_code="HTTP_REJECTED",
+        ),
+        ExternalHttpTransportResult.ambiguous(
+            phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
+            error_code="READ_TIMEOUT",
+        ),
+    ],
+)
+async def test_wms_effect_status_is_enqueued_only_after_transport_evidence_commit(
+    transport_result: ExternalHttpTransportResult,
+) -> None:
+    outbox = _outbox(operation_identity="wms.fulfillment.notify_pkg_binding@v1")
+    repository = _Repository(outbox)
+    db = SimpleNamespace(commit=AsyncMock())
+    enqueued: list[str] = []
+
+    class QueueGateway:
+        def enqueue_wms_effect_status(self, *, dispatch_key: str) -> None:
+            assert db.commit.await_count >= 3, "claim、发送边界与 transport evidence 必须先提交"
+            enqueued.append(dispatch_key)
+
+    engine = SystemOutboxEngine(
+        outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
+        external_http_sender=AsyncMock(return_value=transport_result),
+        credential_provider=StaticTestCredentialProvider(),
+        dispatch_attempt_service=_AttemptService(),
+        workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
+        task_queue_gateway=QueueGateway(),
+    )
+
+    await engine.dispatch(db, limit=1)
+
+    assert enqueued == ["dispatch-001"]
+
+
+@pytest.mark.asyncio
+async def test_status_enqueue_broker_failure_does_not_rollback_committed_ledger_and_beat_remains_fallback() -> None:
+    outbox = _outbox(operation_identity="wms.fulfillment.notify_pkg_binding@v1")
+    repository = _Repository(outbox)
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    class FailingQueueGateway:
+        def enqueue_wms_effect_status(self, *, dispatch_key: str) -> None:
+            assert dispatch_key == "dispatch-001"
+            raise RuntimeError("broker unavailable")
+
+    engine = SystemOutboxEngine(
+        outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
+        external_http_sender=AsyncMock(
+            return_value=ExternalHttpTransportResult.accepted(
+                http_status_code=202,
+                protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+            )
+        ),
+        credential_provider=StaticTestCredentialProvider(),
+        dispatch_attempt_service=_AttemptService(),
+        workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
+        task_queue_gateway=FailingQueueGateway(),
+    )
+
+    stats = await engine.dispatch(db, limit=1)
+
+    assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
+    assert repository.outbox.status is SystemOutboxStatus.SENT
+    db.rollback.assert_not_awaited()
+    from src.celery_app.config import beat_schedule
+
+    assert "scan-wms-effect-status-batch" in beat_schedule
 
 
 @pytest.mark.asyncio

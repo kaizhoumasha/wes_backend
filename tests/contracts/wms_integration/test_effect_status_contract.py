@@ -602,11 +602,11 @@ async def test_adapter_maps_http_failures_without_interpreting_submit_conflicts(
 @pytest.mark.parametrize(
     ("retry_after", "attempt_count", "expected_delay"),
     [
-        ("12", 1, 8.0),
+        ("12", 1, 12.0),
         ("+12", 2, 2.0),
         ("-0", 2, 2.0),
         (" 12", 2, 2.0),
-        ("99999999", 1, 8.0),
+        ("99999999", 1, 99999999.0),
         ("9" * 309, 2, 2.0),
         ("Fri, 24 Jul 2026 00:00:06 GMT", 1, 6.0),
         ("invalid", 3, 4.0),
@@ -659,24 +659,52 @@ async def test_default_rate_limit_backoff_adds_bounded_random_jitter(monkeypatch
     with pytest.raises(WmsEffectStatusQueryError) as raised:
         await adapter.query_status(_notify_request(attempt_count=2))
 
-    assert sampled_bounds == [(0.0, 2.0)]
+    assert sampled_bounds == [(0.0, 1.0)]
     assert isinstance(raised.value.failure, QueryTechnicalFailure)
-    assert raised.value.failure.retry_after_seconds == 3.0
+    assert raised.value.failure.retry_after_seconds == 1.5
 
 
-def test_local_backoff_caps_before_exponentiation_for_huge_attempt_count() -> None:
-    jitter_calls: list[float] = []
-    adapter = WmsEffectStatusQueryAdapter(
+def test_local_backoff_caps_before_exponentiation_and_keeps_jitter_at_saturation() -> None:
+    jitter_bounds: list[float] = []
+    low_sample = WmsEffectStatusQueryAdapter(
         binding=_binding(),
         credential_provider=_CredentialProvider(),
         evidence_writer=_RecordingStatusEvidenceWriter(),
-        jitter=lambda upper: jitter_calls.append(upper) or upper,
+        jitter=lambda upper: jitter_bounds.append(upper) or 0.0,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+    high_sample = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
+        jitter=lambda upper: upper,
         initial_backoff_seconds=1.0,
         max_backoff_seconds=8.0,
     )
 
-    assert adapter._local_backoff(1_000_000) == 8.0
-    assert jitter_calls == []
+    assert low_sample._local_backoff(1_000_000) == 8.0
+    assert high_sample._local_backoff(1_000_000) == 4.0
+    assert jitter_bounds == [4.0]
+
+
+@pytest.mark.asyncio
+async def test_provider_retry_after_above_local_max_is_not_capped() -> None:
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(429, headers={"Retry-After": "120"})),
+        jitter=lambda _upper: 0.0,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=30.0,
+    )
+
+    with pytest.raises(WmsEffectStatusQueryError) as raised:
+        await adapter.query_status(_notify_request())
+
+    assert isinstance(raised.value.failure, QueryTechnicalFailure)
+    assert raised.value.failure.retry_after_seconds == 120.0
 
 
 @pytest.mark.asyncio

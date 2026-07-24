@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -58,6 +59,11 @@ def freeze_wms_effect_status_binding(*, intent_log: Any, outbox: Any) -> None:
     binding = build_wms_effect_status_binding(settings_source=settings)
     if binding.provider_profile_identity != getattr(outbox, "provider_profile_identity", None):
         raise ValueError("WMS EFFECT status binding must match the frozen outbound provider profile")
+    capability_identity = (
+        f"{getattr(intent_log, 'capability_key', '')}@{getattr(intent_log, 'capability_contract_version', '')}"
+    )
+    if capability_identity != outbox.operation_identity:
+        raise ValueError("WMS EFFECT intent capability identity differs from the paired outbox")
     persisted = binding.as_persisted()
     intent_log.status_binding_snapshot_json = persisted["snapshot"]
     intent_log.status_binding_snapshot_hash = persisted["snapshot_hash"]
@@ -77,13 +83,15 @@ class WmsEffectStatusService:
         settings_source: Any = settings,
         now: Any | None = None,
         jitter: Any | None = None,
+        random_source: Any | None = None,
     ) -> None:
         self._repository = repository
         self._reducer = reducer
         self._reconciliation_bridge = reconciliation_bridge
         self._settings = settings_source
         self._now = now or (lambda: datetime.now(UTC).replace(tzinfo=None))
-        self._jitter = jitter or (lambda upper: upper / 2)
+        source = random_source or random.SystemRandom()
+        self._jitter = jitter or (lambda upper: source.uniform(0.0, upper))
         self._port_factory_builder = port_factory_builder or self._default_port_factory_builder
         self._resubmit_dispatcher = resubmit_dispatcher or self._default_resubmit_dispatcher
 
@@ -99,12 +107,20 @@ class WmsEffectStatusService:
         await db.commit()
         try:
             binding = self._load_binding(claim)
-            request = self._build_request(claim)
         except (TypeError, ValueError) as exc:
             return await self._record_contract_failure(
                 db,
                 claim=claim,
                 reason_code="WMS_STATUS_BINDING_INVALID",
+                error=exc,
+            )
+        try:
+            request = self._build_request(claim)
+        except (TypeError, ValueError) as exc:
+            return await self._record_contract_failure(
+                db,
+                claim=claim,
+                reason_code="WMS_STATUS_REQUEST_INVALID",
                 error=exc,
             )
         try:
@@ -129,13 +145,24 @@ class WmsEffectStatusService:
         for claim in claims:
             try:
                 binding = self._load_binding(claim)
-                request = self._build_request(claim)
             except (TypeError, ValueError) as exc:
                 results.append(
                     await self._record_contract_failure(
                         db,
                         claim=claim,
                         reason_code="WMS_STATUS_BINDING_INVALID",
+                        error=exc,
+                    )
+                )
+                continue
+            try:
+                request = self._build_request(claim)
+            except (TypeError, ValueError) as exc:
+                results.append(
+                    await self._record_contract_failure(
+                        db,
+                        claim=claim,
+                        reason_code="WMS_STATUS_REQUEST_INVALID",
                         error=exc,
                     )
                 )
@@ -201,11 +228,15 @@ class WmsEffectStatusService:
         identity_factory = identity_by_operation.get(outbox.operation_identity)
         if identity_factory is None:
             raise ValueError("paired outbox is not an authored WMS EFFECT operation")
+        try:
+            expected_result_identity = identity_factory()
+        except KeyError as exc:
+            raise ValueError("frozen WMS EFFECT payload is missing a status identity field") from exc
         return WmsEffectStatusRequest(
             operation_identity=outbox.operation_identity,
             idempotency_key=intent.idempotency_key,
             attempt_count=max(1, int(intent.status_check_count or 1)),
-            expected_result_identity=identity_factory(),
+            expected_result_identity=expected_result_identity,
         )
 
     async def _apply_snapshot(
@@ -625,10 +656,11 @@ class WmsEffectStatusService:
         exponent = max(0, int(intent.status_check_count or 1) - 1)
         saturation = math.ceil(math.log2(maximum / initial)) if maximum > initial else 0
         base = maximum if exponent >= saturation else min(maximum, initial * (2**exponent))
-        jitter = max(0.0, min(base, float(self._jitter(base))))
-        delay = min(maximum, base + jitter)
+        jitter_window = base / 2
+        jitter = max(0.0, min(jitter_window, float(self._jitter(jitter_window))))
+        delay = base - jitter
         if minimum_delay_seconds is not None:
-            delay = max(delay, min(maximum, minimum_delay_seconds))
+            delay = max(delay, minimum_delay_seconds)
         return self._now() + timedelta(seconds=delay)
 
     def _occurred_at_ms(self) -> int:
