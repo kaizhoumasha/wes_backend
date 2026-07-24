@@ -30,7 +30,21 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """直接收敛双账本 schema，不搬迁旧状态或旧数据。"""
+    """清空未发布旧账本后直接收敛 schema，不保留兼容状态。"""
+
+    # 新状态合同没有旧 identity/status 的无损映射；开发环境显式清账，
+    # 避免伪造 dispatch/provider 事实后再施加目标态 NOT NULL 与约束。
+    op.execute(
+        sa.text(
+            """
+            TRUNCATE TABLE
+                wes_runtime.runtime_intent_logs,
+                wes_biz.system_outbox,
+                wes_biz.workline_dispatch_attempts
+            RESTART IDENTITY CASCADE
+            """
+        )
+    )
 
     op.drop_index(
         "ix_runtime_intent_log_effect_status",
@@ -129,7 +143,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """恢复旧 schema；不映射任何 final 状态数据。"""
+    """清空目标态账本后恢复旧 schema，不保留不兼容状态数据。"""
+
+    op.execute(
+        sa.text(
+            """
+            TRUNCATE TABLE
+                wes_runtime.runtime_intent_logs,
+                wes_biz.system_outbox,
+                wes_biz.workline_dispatch_attempts
+            RESTART IDENTITY CASCADE
+            """
+        )
+    )
 
     op.drop_constraint(
         op.f(DISPATCH_ATTEMPT_STATUS_CONSTRAINT),
