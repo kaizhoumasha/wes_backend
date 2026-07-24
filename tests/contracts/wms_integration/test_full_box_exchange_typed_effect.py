@@ -157,6 +157,8 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         b'{"dispatch_key":"wms-full-box-exchange:WMS:RACK-001:EMPTY-001:FULL-001","empty_box_id":"EMPTY-001",'
         b'"full_box_id":"FULL-001","rack_id":"RACK-001"}'
     )
+    assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
+    assert len(intent_log.status_binding_snapshot_hash) == 64
     assert pair_repository.calls == [(db, intent_log, outbox)]
 
     with pytest.raises(ValueError, match="idempotency_key"):

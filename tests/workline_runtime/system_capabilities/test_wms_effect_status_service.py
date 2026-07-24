@@ -1,0 +1,585 @@
+"""WMS EFFECT 状态查询 orchestration、lease fencing 与版本归并合同。"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from src.app.runtime.orchestration.effect_state_contract import EffectReducerEventType
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+from src.app.sys.external_http_transport import ExternalHttpProtocolResult, ExternalHttpTransportResult
+from src.app.wms_integration.ports.effect_status import (
+    NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+    WmsEffectStatus,
+    WmsEffectStatusSnapshot,
+    build_wms_effect_status_binding,
+)
+from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
+
+try:
+    from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusClaim
+    from src.app.runtime.orchestration.services.wms_effect_status_service import WmsEffectStatusService
+except ImportError as exc:
+    _IMPORT_ERROR: ImportError | None = exc
+else:
+    _IMPORT_ERROR = None
+
+
+NOW = datetime(2026, 7, 24, 12, 0, 0)
+
+
+def _require_status_service() -> None:
+    assert _IMPORT_ERROR is None, f"WMS EFFECT status service 尚未实现: {_IMPORT_ERROR}"
+
+
+def _settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        APP_ENV="test",
+        WMS_EFFECT_STATUS_URL="https://wms.example/northbound/operations/status",
+        WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
+        WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
+        WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS=10.0,
+        WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS=2.0,
+        WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS=30.0,
+        WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS=3,
+        WES_EFFECT_NOT_FOUND_GRACE_SECONDS=60.0,
+    )
+
+
+def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any:
+    binding = build_wms_effect_status_binding(settings_source=_settings()).as_persisted()
+    intent = SimpleNamespace(
+        id=17,
+        dispatch_key="dispatch-001",
+        idempotency_key="idem-001",
+        effect_status=status,
+        status_check_started_at=NOW,
+        status_check_after=NOW,
+        status_check_count=1,
+        status_resubmit_count=0,
+        status_source_version=None,
+        status_check_lease_token="lease-001",
+        status_check_lease_until=NOW + timedelta(seconds=10),
+        status_binding_snapshot_json=binding["snapshot"],
+        status_binding_snapshot_hash=binding["snapshot_hash"],
+        outcome_history_json=[],
+        outcome_kind=None,
+        outcome_code=None,
+        outcome_json={},
+        effect_updated_at_ms=None,
+    )
+    outbox = SimpleNamespace(
+        id=31,
+        dispatch_key="dispatch-001",
+        idempotency_key="idem-001",
+        operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+        provider_profile_identity=binding["snapshot"]["provider_profile_identity"],
+        provider_profile_hash=binding["snapshot"]["provider_profile_hash"],
+        payload_json={
+            "dispatch_key": "dispatch-001",
+            "package_id": "PKG-001",
+            "pallet_id": "PALLET-001",
+            "station_code": "ST-001",
+        },
+        status="SENT",
+        attempt_count=4,
+        next_retry_at=NOW + timedelta(minutes=5),
+    )
+    return WmsEffectStatusClaim(intent=intent, outbox=outbox, lease_token="lease-001")
+
+
+class _Db:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class _Repository:
+    def __init__(self, claim: Any, *, fence_writeback: bool = False) -> None:
+        self.claim = claim
+        self.fence_writeback = fence_writeback
+        self.released = 0
+        self.reserved = 0
+
+    async def claim_by_dispatch_key(self, _db: Any, **_kwargs: Any) -> Any:
+        return self.claim
+
+    async def get_claim_for_update(self, _db: Any, **_kwargs: Any) -> Any:
+        return None if self.fence_writeback else self.claim
+
+    async def release_claim(
+        self,
+        _db: Any,
+        *,
+        claim: Any,
+        status_check_after: datetime | None,
+    ) -> bool:
+        self.released += 1
+        claim.intent.status_check_after = status_check_after
+        claim.intent.status_check_lease_token = None
+        claim.intent.status_check_lease_until = None
+        return True
+
+    async def reserve_resubmit(self, _db: Any, *, claim: Any) -> bool:
+        if claim.intent.status_resubmit_count:
+            return False
+        claim.intent.status_resubmit_count = 1
+        self.reserved += 1
+        return True
+
+
+class _Reducer:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    async def reduce(self, _db: Any, event: Any, **_kwargs: Any) -> SimpleNamespace:
+        self.events.append(event)
+        return SimpleNamespace(state_changed=True)
+
+
+class _ReconciliationBridge:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def open(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        return SimpleNamespace(state_changed=True)
+
+
+class _Port:
+    def __init__(self, snapshot: WmsEffectStatusSnapshot, db: _Db) -> None:
+        self.snapshot = snapshot
+        self.db = db
+        self.requests: list[Any] = []
+
+    async def query_status(self, request: Any) -> WmsEffectStatusSnapshot:
+        assert self.db.commits == 1, "claim 必须先独立提交，HTTP 才能开始"
+        self.requests.append(request)
+        return self.snapshot
+
+
+class _FailingPort:
+    def __init__(self, error: Exception, db: _Db) -> None:
+        self.error = error
+        self.db = db
+
+    async def query_status(self, _request: Any) -> WmsEffectStatusSnapshot:
+        assert self.db.commits == 1, "claim 必须先独立提交，HTTP 才能开始"
+        raise self.error
+
+
+def _snapshot(state: WmsEffectStatus, *, source_version: int = 7) -> WmsEffectStatusSnapshot:
+    visible = {
+        "provider_reference": "wms-effect-001",
+        "updated_at": datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        "source_version": source_version,
+    }
+    if state is WmsEffectStatus.COMPLETED:
+        return WmsEffectStatusSnapshot(
+            operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+            idempotency_key="idem-001",
+            state=state,
+            result=NotifyPackageBindingOperationResult(
+                dispatch_key="dispatch-001",
+                package_id="PKG-001",
+                pallet_id="PALLET-001",
+                accepted=True,
+                bound_at="2026-07-24T12:00:00Z",
+                source_version=str(source_version),
+            ),
+            **visible,
+        )
+    if state is WmsEffectStatus.REJECTED:
+        return WmsEffectStatusSnapshot(
+            operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+            idempotency_key="idem-001",
+            state=state,
+            reason_code="WMS_BUSINESS_REJECTED",
+            **visible,
+        )
+    return WmsEffectStatusSnapshot(
+        operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+        idempotency_key="idem-001",
+        state=state,
+        **visible,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING])
+async def test_non_terminal_snapshot_commits_claim_before_http_and_schedules_next_query(
+    state: WmsEffectStatus,
+) -> None:
+    _require_status_service()
+    claim = _claim()
+    db = _Db()
+    repository = _Repository(claim)
+    reducer = _Reducer()
+    port = _Port(_snapshot(state), db)
+    outbox_before = (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at)
+    service = WmsEffectStatusService(
+        repository=repository,
+        reducer=reducer,
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: lambda: port,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == state.value
+    assert db.commits == 2
+    assert reducer.events[0].event_type.value == f"STATUS_{state.value}"
+    assert claim.intent.status_source_version == 7
+    assert claim.intent.status_check_after == NOW + timedelta(seconds=2)
+    assert claim.intent.status_check_lease_token is None
+    assert (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at) == outbox_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [WmsEffectStatus.COMPLETED, WmsEffectStatus.REJECTED])
+async def test_terminal_snapshot_clears_schedule_and_uses_unique_status_terminal_event(
+    state: WmsEffectStatus,
+) -> None:
+    _require_status_service()
+    claim = _claim()
+    db = _Db()
+    reducer = _Reducer()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: lambda: _Port(_snapshot(state), db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == state.value
+    assert reducer.events[0].event_type.value == f"STATUS_{state.value}"
+    assert claim.intent.status_check_after is None
+    assert claim.intent.status_source_version == 7
+
+
+@pytest.mark.asyncio
+async def test_completed_result_correlation_mismatch_fails_closed_before_terminal_reducer_event() -> None:
+    _require_status_service()
+    claim = _claim()
+    db = _Db()
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    invalid = _snapshot(WmsEffectStatus.COMPLETED).model_copy(
+        update={
+            "result": NotifyPackageBindingOperationResult(
+                dispatch_key="dispatch-001",
+                package_id="OTHER-PACKAGE",
+                pallet_id="PALLET-001",
+                accepted=True,
+                bound_at="2026-07-24T12:00:00Z",
+                source_version="7",
+            )
+        }
+    )
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: lambda: _Port(invalid, db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RECONCILING"
+    assert reducer.events == []
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_RESULT_IDENTITY_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_late_worker_response_is_dropped_when_lease_token_no_longer_matches() -> None:
+    _require_status_service()
+    claim = _claim()
+    db = _Db()
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim, fence_writeback=True),
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: lambda: _Port(_snapshot(WmsEffectStatus.COMPLETED), db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "FENCED"
+    assert db.commits == 1
+    assert reducer.events == []
+    assert reconciliation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_same_source_version_with_different_snapshot_opens_reconciliation_without_terminal_overwrite() -> None:
+    _require_status_service()
+    claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
+    claim.intent.status_source_version = 7
+    claim.intent.outcome_history_json = [
+        {
+            "event_type": "STATUS_ACCEPTED",
+            "source_version": 7,
+            "snapshot_hash": "0" * 64,
+        }
+    ]
+    db = _Db()
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: lambda: _Port(_snapshot(WmsEffectStatus.COMPLETED), db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RECONCILING"
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_SOURCE_VERSION_CONFLICT"
+    assert reducer.events == []
+    assert claim.intent.status_check_after is None
+
+
+@pytest.mark.asyncio
+async def test_stale_source_version_keeps_current_outcome_and_records_stale_evidence() -> None:
+    _require_status_service()
+    claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
+    claim.intent.status_source_version = 8
+    db = _Db()
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: (
+            lambda: _Port(_snapshot(WmsEffectStatus.PROCESSING, source_version=7), db)
+        ),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "STALE"
+    assert reducer.events[0].event_type.value == "STATUS_STALE"
+    assert claim.intent.status_source_version == 8
+    assert claim.intent.status_check_after == NOW + timedelta(seconds=2)
+    assert reconciliation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_lower_version_contradictory_terminal_is_reduced_for_reconciliation_instead_of_stale() -> None:
+    _require_status_service()
+    claim = _claim(status=RuntimeIntentStatus.COMPLETED)
+    claim.intent.status_source_version = 8
+    db = _Db()
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: lambda: _Port(_snapshot(WmsEffectStatus.REJECTED, source_version=7), db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == WmsEffectStatus.REJECTED.value
+    assert reducer.events[0].event_type is EffectReducerEventType.STATUS_REJECTED
+    assert reducer.events[0].evidence_json["source_version"] == 7
+    assert reconciliation.calls == []
+
+
+@pytest.mark.asyncio
+async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_outcome_history() -> None:
+    _require_status_service()
+    claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
+    db = _Db()
+    reducer = _Reducer()
+    failure = SimpleNamespace(
+        reason_code="WMS_RATE_LIMITED",
+        retryable=True,
+        retry_after_seconds=20.0,
+    )
+    error = RuntimeError("bounded query failure")
+    error.failure = failure  # type: ignore[attr-defined]
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: lambda: _FailingPort(error, db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RETRY_SCHEDULED"
+    assert claim.intent.status_check_after == NOW + timedelta(seconds=20)
+    assert reducer.events[0].event_type is EffectReducerEventType.STATUS_QUERY_FAILED
+    assert reducer.events[0].reason_code == "WMS_RATE_LIMITED"
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_query_contract_failure_opens_reconciliation_immediately() -> None:
+    _require_status_service()
+    claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
+    db = _Db()
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    error = RuntimeError("frozen credential revision is unavailable")
+    error.failure = SimpleNamespace(  # type: ignore[attr-defined]
+        reason_code="WMS_CREDENTIAL_UNAVAILABLE",
+    )
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: lambda: _FailingPort(error, db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RECONCILING"
+    assert reducer.events[0].event_type is EffectReducerEventType.STATUS_QUERY_FAILED
+    assert reconciliation.calls[0]["reason_code"] == "WMS_CREDENTIAL_UNAVAILABLE"
+    assert claim.intent.status_check_after is None
+
+
+@pytest.mark.asyncio
+async def test_tampered_frozen_status_binding_fails_closed_to_reconciliation_before_http() -> None:
+    _require_status_service()
+    claim = _claim()
+    claim.intent.status_binding_snapshot_json["auth_scheme"] = "NONE"
+    db = _Db()
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    port_calls = 0
+
+    def port_builder(_binding: Any) -> Any:
+        nonlocal port_calls
+        port_calls += 1
+        return lambda: _Port(_snapshot(WmsEffectStatus.ACCEPTED), db)
+
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=port_builder,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RECONCILING"
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_BINDING_INVALID"
+    assert port_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_not_found_after_grace_resubmits_same_key_once_after_counter_commit() -> None:
+    _require_status_service()
+    claim = _claim()
+    claim.intent.status_check_started_at = NOW - timedelta(seconds=61)
+    db = _Db()
+    repository = _Repository(claim)
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    resubmit_calls: list[tuple[str, str, int]] = []
+
+    async def resubmit(current_claim: Any) -> ExternalHttpTransportResult:
+        assert db.commits == 2, "重提计数必须先提交，网络调用才能开始"
+        resubmit_calls.append(
+            (
+                current_claim.outbox.operation_identity,
+                current_claim.outbox.idempotency_key,
+                current_claim.intent.status_resubmit_count,
+            )
+        )
+        return ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+
+    not_found = WmsEffectStatusSnapshot.not_found(WmsEffectStatusService._build_request(claim))
+    service = WmsEffectStatusService(
+        repository=repository,
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: lambda: _Port(not_found, db),
+        resubmit_dispatcher=resubmit,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+    outbox_before = (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at)
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RESUBMITTED"
+    assert repository.reserved == 1
+    assert claim.intent.status_resubmit_count == 1
+    assert resubmit_calls == [(NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY, "idem-001", 1)]
+    assert (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at) == outbox_before
+    assert reducer.events[0].event_type is EffectReducerEventType.STATUS_NOT_FOUND
+    assert reconciliation.calls == []
+
+
+def test_wms_effect_status_immediate_and_fallback_tasks_are_registered() -> None:
+    from src.celery_app.config import beat_schedule
+    from src.celery_app.tasks import workline
+
+    assert "check_wms_effect_status" in workline.__all__
+    assert "scan_wms_effect_status_batch" in workline.__all__
+    assert beat_schedule["scan-wms-effect-status-batch"] == {
+        "task": "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
+        "schedule": 10.0,
+    }
+
+
+def test_wms_effect_status_repository_and_service_are_exported() -> None:
+    from src.app.runtime.orchestration import repositories, services
+
+    assert repositories.WmsEffectStatusRepository is not None
+    assert repositories.wms_effect_status_repository is not None
+    assert services.WmsEffectStatusService is WmsEffectStatusService
+    assert services.wms_effect_status_service is not None

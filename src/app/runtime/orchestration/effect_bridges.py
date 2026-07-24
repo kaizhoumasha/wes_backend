@@ -16,6 +16,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportOutcome,
     ExternalHttpTransportResult,
 )
+from src.app.wms_integration.ports.effect_status import WMS_EFFECT_OPERATION_IDENTITIES
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
@@ -42,8 +43,15 @@ class EffectTransportBridge:
         result: ExternalHttpTransportResult,
         retry_exhausted: bool,
         occurred_at_ms: int,
+        operation_identity: str | None = None,
     ) -> tuple[Any, ...]:
-        if result.protocol_result is ExternalHttpProtocolResult.REJECTED:
+        wms_idempotency_response = (
+            operation_identity in WMS_EFFECT_OPERATION_IDENTITIES and result.http_status_code in {409, 422}
+        )
+        if wms_idempotency_response:
+            # HTTP 已收到请求，transport ledger 保持 SENT；领域恢复动作由稳定码决定。
+            event_type = EffectReducerEventType.TRANSPORT_ACCEPTED
+        elif result.protocol_result is ExternalHttpProtocolResult.REJECTED:
             event_type = EffectReducerEventType.TRANSPORT_REJECTED
         else:
             event_type = {
@@ -52,6 +60,8 @@ class EffectTransportBridge:
                 ExternalHttpTransportOutcome.AMBIGUOUS: EffectReducerEventType.TRANSPORT_AMBIGUOUS,
             }[result.outcome]
         transport_evidence = result.evidence_json()
+        if operation_identity is not None:
+            transport_evidence = {**transport_evidence, "operation_identity": operation_identity}
         source_event_id = generated_effect_source_event_id(
             "transport",
             dispatch_key,
@@ -89,6 +99,43 @@ class EffectTransportBridge:
                     evidence_json=transport_evidence,
                 )
             )
+        elif wms_idempotency_response:
+            expected_code = {
+                409: "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+                422: "IDEMPOTENCY_CONFLICT",
+            }[result.http_status_code]
+            if result.protocol_error_code == expected_code and result.http_status_code == 422:
+                events.append(
+                    EffectReducerEvent(
+                        event_type=EffectReducerEventType.IDEMPOTENCY_CONFLICT,
+                        dispatch_key=dispatch_key,
+                        occurred_at_ms=occurred_at_ms,
+                        source_event_id=generated_effect_source_event_id(
+                            "wms-idempotency-conflict",
+                            dispatch_key,
+                            attempt_no,
+                            transport_evidence,
+                        ),
+                        reason_code="IDEMPOTENCY_CONFLICT",
+                        evidence_json=transport_evidence,
+                    )
+                )
+            elif result.protocol_error_code != expected_code:
+                events.append(
+                    EffectReducerEvent(
+                        event_type=EffectReducerEventType.RECONCILIATION_OPENED,
+                        dispatch_key=dispatch_key,
+                        occurred_at_ms=occurred_at_ms,
+                        source_event_id=generated_effect_source_event_id(
+                            "wms-idempotency-protocol-conflict",
+                            dispatch_key,
+                            attempt_no,
+                            transport_evidence,
+                        ),
+                        reason_code="WMS_IDEMPOTENCY_PROTOCOL_CONFLICT",
+                        evidence_json=transport_evidence,
+                    )
+                )
         return tuple([await self._reducer.reduce(db, event, require_intent=False) for event in events])
 
 

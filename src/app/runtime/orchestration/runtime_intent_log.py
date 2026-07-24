@@ -7,6 +7,7 @@ attempt/retry 与 transport error 分别归 SystemOutbox 和 WorklineDispatchAtt
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003 - SQLModel 运行时需要解析字段类型
 from enum import Enum
 from typing import Any, ClassVar, cast
 
@@ -54,6 +55,11 @@ class RuntimeIntentLog(BaseMixin, table=True):
             name="uq_runtime_intent_log_effect_identity",
         ),
         Index("ux_runtime_intent_log_dispatch_key", "dispatch_key", unique=True),
+        Index(
+            "ix_runtime_intent_log_effect_status_check_after",
+            "effect_status",
+            "status_check_after",
+        ),
         {"schema": RUNTIME_SCHEMA},
     )
 
@@ -125,6 +131,20 @@ class RuntimeIntentLog(BaseMixin, table=True):
     outcome_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     outcome_history_json: list[dict[str, object]] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     effect_updated_at_ms: int | None = Field(default=None, sa_type=BigInteger)
+
+    # WMS EFFECT 语义确认账本；transport terminal 与普通 retry 字段不得复用。
+    status_check_started_at: datetime | None = Field(default=None)
+    status_check_after: datetime | None = Field(default=None)
+    status_check_count: int = Field(default=0, ge=0)
+    status_resubmit_count: int = Field(default=0, ge=0)
+    status_source_version: int | None = Field(default=None, ge=0, sa_type=BigInteger)
+    status_check_lease_token: str | None = Field(default=None, max_length=64)
+    status_check_lease_until: datetime | None = Field(default=None)
+    status_binding_snapshot_json: dict[str, object] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+    )
+    status_binding_snapshot_hash: str | None = Field(default=None, max_length=64)
 
 
 __all__ = ["RuntimeIntentLog", "RuntimeIntentStatus"]

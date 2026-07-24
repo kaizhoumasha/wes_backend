@@ -110,6 +110,26 @@ def test_effect_ledgers_expose_only_final_state_enums() -> None:
     }
 
 
+def test_runtime_intent_log_exposes_wms_effect_status_polling_state() -> None:
+    columns = RuntimeIntentLog.__table__.c
+
+    assert {
+        "status_check_started_at",
+        "status_check_after",
+        "status_check_count",
+        "status_resubmit_count",
+        "status_source_version",
+        "status_check_lease_token",
+        "status_check_lease_until",
+        "status_binding_snapshot_json",
+        "status_binding_snapshot_hash",
+    } <= set(columns.keys())
+    assert any(
+        tuple(column.name for column in index.columns) == ("effect_status", "status_check_after")
+        for index in RuntimeIntentLog.__table__.indexes
+    )
+
+
 def test_effect_transition_matrices_are_closed_and_terminal_states_have_no_outgoing_edges() -> None:
     _require_effect_state_contract()
     assert {
@@ -194,6 +214,13 @@ def test_effect_reducer_event_schema_is_closed_and_supports_reconciliation_resol
         "CALLBACK_ACCEPTED",
         "CALLBACK_COMPLETED",
         "CALLBACK_REJECTED",
+        "STATUS_ACCEPTED",
+        "STATUS_PROCESSING",
+        "STATUS_COMPLETED",
+        "STATUS_REJECTED",
+        "STATUS_NOT_FOUND",
+        "STATUS_QUERY_FAILED",
+        "STATUS_STALE",
         "RECONCILIATION_OPENED",
         "RECONCILIATION_RESOLVED",
         "IDEMPOTENCY_CONFLICT",

@@ -291,6 +291,7 @@ class SystemOutboxEngine:
                         effect_transport_bridge=self._resolve_effect_transport_bridge(),
                         dispatch_key=str(outbox.dispatch_key),
                         attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
+                        operation_identity=getattr(outbox, "operation_identity", None),
                     )
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
@@ -399,6 +400,7 @@ class SystemOutboxEngine:
             result=result,
             retry_exhausted=enum_value(getattr(updated, "status", None)) == "FAILED",
             occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+            operation_identity=getattr(outbox, "operation_identity", None),
         )
 
     async def _finalize_external_http_result(
@@ -473,6 +475,9 @@ class SystemOutboxEngine:
 async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须显式返回唯一分类
     request: ExternalHttpDispatchRequest,
 ) -> ExternalHttpTransportResult:
+    import json
+    import re
+
     import httpx
 
     try:
@@ -484,15 +489,22 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                 headers=request.headers,
             )
             status_code = int(response.status_code)
+            protocol_error_code = _extract_protocol_error_code(
+                getattr(response, "content", None),
+                json_module=json,
+                stable_code_pattern=re.compile(r"^[A-Z][A-Z0-9_]{0,119}$"),
+            )
             if 200 <= status_code < 300:
                 return ExternalHttpTransportResult.accepted(
                     http_status_code=status_code,
                     protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+                    protocol_error_code=protocol_error_code,
                 )
             if 300 <= status_code < 500:
                 return ExternalHttpTransportResult.accepted(
                     http_status_code=status_code,
                     protocol_result=ExternalHttpProtocolResult.REJECTED,
+                    protocol_error_code=protocol_error_code,
                     error_code="HTTP_REJECTED",
                     error_message=f"HTTP {status_code} explicitly rejected request",
                 )
@@ -500,6 +512,7 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                 phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
                 protocol_result=ExternalHttpProtocolResult.UNKNOWN,
                 http_status_code=status_code,
+                protocol_error_code=protocol_error_code,
                 error_code="HTTP_RESPONSE_AMBIGUOUS",
                 error_message=f"HTTP {status_code} has ambiguous delivery semantics",
             )
@@ -555,6 +568,28 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
             error_code="UNCLASSIFIED_TRANSPORT_ERROR",
             error_message=f"unclassified outbound HTTP transport error: {type(exc).__name__}",
         )
+
+
+def _extract_protocol_error_code(
+    content: object,
+    *,
+    json_module: Any,
+    stable_code_pattern: Any,
+) -> str | None:
+    """只从有界 JSON object 提取低敏顶层稳定错误码。"""
+
+    if not isinstance(content, bytes) or not content or len(content) > 4096:
+        return None
+    try:
+        decoded = json_module.loads(content)
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    value = decoded.get("protocol_error_code")
+    if not isinstance(value, str) or stable_code_pattern.fullmatch(value) is None:
+        return None
+    return value
 
 
 async def _dispatch_workline_domain(db: Any, limit: int) -> DispatchResult:

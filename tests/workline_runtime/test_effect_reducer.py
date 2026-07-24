@@ -260,6 +260,84 @@ async def test_callback_before_transport_response_keeps_completed_terminal() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type_value", "expected"),
+    [
+        ("STATUS_ACCEPTED", RuntimeIntentStatus.ACCEPTED),
+        ("STATUS_PROCESSING", RuntimeIntentStatus.ACCEPTED),
+        ("STATUS_COMPLETED", RuntimeIntentStatus.COMPLETED),
+        ("STATUS_REJECTED", RuntimeIntentStatus.REJECTED),
+    ],
+)
+async def test_status_snapshot_events_are_the_authoritative_wms_semantic_progression(
+    event_type_value: str,
+    expected: RuntimeIntentStatus,
+) -> None:
+    repository = _ReducerRepository()
+    event_type = EffectReducerEventType(event_type_value)
+    event = _event(event_type).model_copy(
+        update={
+            "source_event_id": f"wms-status:{event_type.value}:7",
+            "evidence_json": {"source_version": 7, "snapshot_hash": "a" * 64},
+        }
+    )
+
+    await EffectReducer(repository=repository).reduce(_Db(), event)
+    replay = await EffectReducer(repository=repository).reduce(_Db(), event)
+
+    assert repository.intent.effect_status is expected
+    assert replay is not None and replay.state_changed is False
+    assert len(repository.intent.outcome_history_json) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        EffectReducerEventType.CALLBACK_COMPLETED,
+        EffectReducerEventType.CALLBACK_REJECTED,
+    ],
+)
+async def test_wms_status_enabled_intent_records_callback_without_advancing_terminal(
+    event_type: EffectReducerEventType,
+) -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
+    repository.intent.status_binding_snapshot_hash = "a" * 64
+
+    result = await EffectReducer(repository=repository).reduce(_Db(), _event(event_type))
+
+    assert result is not None and result.state_changed is False
+    assert repository.intent.effect_status is RuntimeIntentStatus.ACCEPTED
+    assert repository.intent.outcome_history_json[0]["event_type"] == event_type.value
+
+
+@pytest.mark.asyncio
+async def test_conflicting_status_terminals_keep_first_terminal_and_open_reconciliation() -> None:
+    repository = _ReducerRepository()
+    reducer = EffectReducer(repository=repository)
+    status_completed = EffectReducerEventType("STATUS_COMPLETED")
+    status_rejected = EffectReducerEventType("STATUS_REJECTED")
+
+    await reducer.reduce(
+        _Db(),
+        _event(status_completed).model_copy(update={"evidence_json": {"source_version": 7, "snapshot_hash": "a" * 64}}),
+    )
+    conflict = await reducer.reduce(
+        _Db(),
+        _event(status_rejected, occurred_at_ms=1200).model_copy(
+            update={
+                "reason_code": "WMS_BUSINESS_REJECTED",
+                "evidence_json": {"source_version": 8, "snapshot_hash": "b" * 64},
+            }
+        ),
+    )
+
+    assert conflict is not None and conflict.contradiction is True
+    assert repository.intent.effect_status is RuntimeIntentStatus.COMPLETED
+    assert repository.cases[0].status is ReconciliationCaseStatus.OPEN
+
+
+@pytest.mark.asyncio
 async def test_callback_completed_before_transport_rejected_opens_contradiction_case() -> None:
     repository = _ReducerRepository()
     reducer = EffectReducer(repository=repository)
@@ -911,6 +989,89 @@ async def test_transport_bridge_maps_typed_result_without_marking_sent_as_comple
     assert [event.event_type for event in reducer.events] == expected_events
     assert EffectReducerEventType.CALLBACK_COMPLETED not in expected_events
     assert reducer.require_intent == [False] * len(expected_events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "protocol_error_code", "expected_events"),
+    [
+        (
+            409,
+            "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+            [EffectReducerEventType.TRANSPORT_ACCEPTED],
+        ),
+        (
+            422,
+            "IDEMPOTENCY_CONFLICT",
+            [
+                EffectReducerEventType.TRANSPORT_ACCEPTED,
+                EffectReducerEventType.IDEMPOTENCY_CONFLICT,
+            ],
+        ),
+        (
+            409,
+            None,
+            [
+                EffectReducerEventType.TRANSPORT_ACCEPTED,
+                EffectReducerEventType.RECONCILIATION_OPENED,
+            ],
+        ),
+        (
+            422,
+            "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+            [
+                EffectReducerEventType.TRANSPORT_ACCEPTED,
+                EffectReducerEventType.RECONCILIATION_OPENED,
+            ],
+        ),
+    ],
+)
+async def test_wms_effect_transport_bridge_interprets_only_stable_idempotency_protocol_combinations(
+    status_code: int,
+    protocol_error_code: str | None,
+    expected_events: list[EffectReducerEventType],
+) -> None:
+    reducer = _RecordingReducer()
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=status_code,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        protocol_error_code=protocol_error_code,
+        error_code="HTTP_REJECTED",
+    )
+
+    await EffectTransportBridge(reducer=reducer).record_result(
+        _Db(),
+        dispatch_key="dispatch-1",
+        attempt_no=2,
+        result=result,
+        retry_exhausted=False,
+        occurred_at_ms=1300,
+        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+    )
+
+    assert [event.event_type for event in reducer.events] == expected_events
+
+
+@pytest.mark.asyncio
+async def test_non_wms_409_remains_generic_transport_rejection() -> None:
+    reducer = _RecordingReducer()
+
+    await EffectTransportBridge(reducer=reducer).record_result(
+        _Db(),
+        dispatch_key="dispatch-generic",
+        attempt_no=1,
+        result=ExternalHttpTransportResult.accepted(
+            http_status_code=409,
+            protocol_result=ExternalHttpProtocolResult.REJECTED,
+            protocol_error_code="IDEMPOTENCY_REQUEST_IN_PROGRESS",
+            error_code="HTTP_REJECTED",
+        ),
+        retry_exhausted=False,
+        occurred_at_ms=1300,
+        operation_identity="generic.webhook@v1",
+    )
+
+    assert [event.event_type for event in reducer.events] == [EffectReducerEventType.TRANSPORT_REJECTED]
 
 
 @pytest.mark.asyncio

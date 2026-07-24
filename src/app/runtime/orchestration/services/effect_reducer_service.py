@@ -91,6 +91,35 @@ EFFECT_REDUCER_TRANSITION_MATRIX = MappingProxyType(
                 RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.REJECTED,
             }
         ),
+        EffectReducerEventType.STATUS_ACCEPTED: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.ACCEPTED,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.ACCEPTED,
+            }
+        ),
+        EffectReducerEventType.STATUS_PROCESSING: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.ACCEPTED,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.ACCEPTED,
+            }
+        ),
+        EffectReducerEventType.STATUS_COMPLETED: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.COMPLETED,
+                RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.COMPLETED,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.COMPLETED,
+            }
+        ),
+        EffectReducerEventType.STATUS_REJECTED: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.REJECTED,
+                RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.REJECTED,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.REJECTED,
+            }
+        ),
+        EffectReducerEventType.STATUS_NOT_FOUND: MappingProxyType({}),
+        EffectReducerEventType.STATUS_QUERY_FAILED: MappingProxyType({}),
+        EffectReducerEventType.STATUS_STALE: MappingProxyType({}),
         EffectReducerEventType.RECONCILIATION_OPENED: MappingProxyType(
             {
                 RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.RECONCILING,
@@ -121,6 +150,12 @@ _CALLBACK_EVENTS = frozenset(
         EffectReducerEventType.CALLBACK_ACCEPTED,
         EffectReducerEventType.CALLBACK_COMPLETED,
         EffectReducerEventType.CALLBACK_REJECTED,
+    }
+)
+_STATUS_TERMINAL_EVENTS = frozenset(
+    {
+        EffectReducerEventType.STATUS_COMPLETED,
+        EffectReducerEventType.STATUS_REJECTED,
     }
 )
 _CASE_OPENING_EVENTS = frozenset(
@@ -181,6 +216,18 @@ class EffectReducer:
                     case_created=False,
                     contradiction=False,
                 )
+        if (
+            event.source_event_id
+            and event.event_type is not EffectReducerEventType.RECONCILIATION_RESOLVED
+            and self._is_intent_evidence_replay(intent, event=event, evidence=evidence)
+        ):
+            return EffectReductionResult(
+                intent_status=current,
+                case_status=open_case.status if open_case is not None else None,
+                state_changed=False,
+                case_created=False,
+                contradiction=False,
+            )
         contradiction = self._is_contradictory_evidence(intent, current=current, event_type=event.event_type)
         case_created = False
 
@@ -214,6 +261,7 @@ class EffectReducer:
             current=current,
             event=event,
             has_open_case=open_case is not None,
+            status_query_authoritative=bool(getattr(intent, "status_binding_snapshot_hash", None)),
         )
         state_changed = target is not None and target is not current
         if state_changed:
@@ -266,17 +314,49 @@ class EffectReducer:
         return True
 
     @staticmethod
+    def _is_intent_evidence_replay(
+        intent: Any,
+        *,
+        event: EffectReducerEvent,
+        evidence: dict[str, object],
+    ) -> bool:
+        matching = next(
+            (
+                existing
+                for existing in (intent.outcome_history_json or ())
+                if existing.get("source_event_id") == event.source_event_id
+                and existing.get("event_type") == event.event_type.value
+            ),
+            None,
+        )
+        if matching is None:
+            return False
+        existing_fact = {key: value for key, value in matching.items() if key != "occurred_at_ms"}
+        replayed_fact = {key: value for key, value in evidence.items() if key != "occurred_at_ms"}
+        if existing_fact != replayed_fact:
+            raise ReconciliationEvidenceConflict("source_event_id cannot be reused with different evidence")
+        return True
+
+    @staticmethod
     def _target_status(
         *,
         current: RuntimeIntentStatus,
         event: EffectReducerEvent,
         has_open_case: bool,
+        status_query_authoritative: bool,
     ) -> RuntimeIntentStatus | None:
         if current in _TERMINAL_STATUSES:
             return None
         if event.event_type is EffectReducerEventType.RECONCILIATION_RESOLVED:
             return event.resolution if current is RuntimeIntentStatus.RECONCILING else None
         if has_open_case and event.event_type not in _CASE_OPENING_EVENTS:
+            return None
+        if status_query_authoritative and event.event_type in {
+            EffectReducerEventType.CALLBACK_COMPLETED,
+            EffectReducerEventType.CALLBACK_REJECTED,
+        }:
+            # WMS EFFECT callback 只作为旁证；
+            # 业务终态必须来自 lease-fenced typed status snapshot。
             return None
         if (
             event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT
@@ -293,6 +373,13 @@ class EffectReducer:
         current: RuntimeIntentStatus,
         event_type: EffectReducerEventType,
     ) -> bool:
+        if event_type in _STATUS_TERMINAL_EVENTS:
+            return (current, event_type) in {
+                (RuntimeIntentStatus.COMPLETED, EffectReducerEventType.STATUS_REJECTED),
+                (RuntimeIntentStatus.REJECTED, EffectReducerEventType.STATUS_COMPLETED),
+                (RuntimeIntentStatus.TECHNICAL_FAILED, EffectReducerEventType.STATUS_COMPLETED),
+                (RuntimeIntentStatus.TECHNICAL_FAILED, EffectReducerEventType.STATUS_REJECTED),
+            }
         if event_type in _CALLBACK_EVENTS:
             if current is RuntimeIntentStatus.TECHNICAL_FAILED:
                 return True

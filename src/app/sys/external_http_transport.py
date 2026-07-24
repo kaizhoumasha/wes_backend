@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
 
 from src.app.sys.canonical_dispatch import ExternalHttpDispatchRequest
+
+_PROTOCOL_ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,119}$")
 
 
 class ExternalHttpTransportOutcome(str, Enum):
@@ -46,6 +49,7 @@ class ExternalHttpTransportResult:
     protocol_result: ExternalHttpProtocolResult
     safe_to_retry: bool
     http_status_code: int | None = None
+    protocol_error_code: str | None = None
     error_code: str | None = None
     error_message: str | None = None
 
@@ -79,6 +83,11 @@ class ExternalHttpTransportResult:
             self._validate_ambiguous_evidence()
         if self.http_status_code is not None and not 100 <= self.http_status_code <= 599:
             raise ValueError("http_status_code must be between 100 and 599")
+        if self.protocol_error_code is not None:
+            if self.phase is not ExternalHttpTransportPhase.RESPONSE_RECEIVED:
+                raise ValueError("protocol_error_code requires RESPONSE_RECEIVED")
+            if not _PROTOCOL_ERROR_CODE_RE.fullmatch(self.protocol_error_code):
+                raise ValueError("protocol_error_code must be a bounded stable code")
 
     def _validate_ambiguous_evidence(self) -> None:
         if self.phase is ExternalHttpTransportPhase.SANDBOX:
@@ -118,6 +127,7 @@ class ExternalHttpTransportResult:
         *,
         http_status_code: int,
         protocol_result: ExternalHttpProtocolResult,
+        protocol_error_code: str | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
     ) -> ExternalHttpTransportResult:
@@ -127,6 +137,7 @@ class ExternalHttpTransportResult:
             protocol_result=protocol_result,
             safe_to_retry=False,
             http_status_code=http_status_code,
+            protocol_error_code=protocol_error_code,
             error_code=error_code,
             error_message=error_message,
         )
@@ -138,6 +149,7 @@ class ExternalHttpTransportResult:
         phase: ExternalHttpTransportPhase,
         protocol_result: ExternalHttpProtocolResult = ExternalHttpProtocolResult.NOT_AVAILABLE,
         http_status_code: int | None = None,
+        protocol_error_code: str | None = None,
         error_code: str,
         error_message: str | None = None,
     ) -> ExternalHttpTransportResult:
@@ -147,6 +159,7 @@ class ExternalHttpTransportResult:
             protocol_result=protocol_result,
             safe_to_retry=False,
             http_status_code=http_status_code,
+            protocol_error_code=protocol_error_code,
             error_code=error_code,
             error_message=error_message,
         )
@@ -171,6 +184,7 @@ class ExternalHttpTransportResult:
             "protocol_result": self.protocol_result.value,
             "safe_to_retry": self.safe_to_retry,
             "http_status_code": self.http_status_code,
+            "protocol_error_code": self.protocol_error_code,
             "error_code": self.error_code,
             "error_message": self.error_message,
         }

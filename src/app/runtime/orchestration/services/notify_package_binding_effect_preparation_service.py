@@ -8,6 +8,7 @@ from src.app.runtime.orchestration.repositories.runtime_intent_log_repository im
     RuntimeIntentLogRepository,
     runtime_intent_log_repository,
 )
+from src.app.runtime.orchestration.services.wms_effect_status_service import freeze_wms_effect_status_binding
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
@@ -42,6 +43,7 @@ class NotifyPackageBindingEffectPreparationService:
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise ValueError("notify_pkg_binding intent requires persisted idempotency_key")
         outbox = adapter.build_outbox(request, idempotency_key=idempotency_key)
+        freeze_wms_effect_status_binding(intent_log=intent_log, outbox=outbox)
         await self._intent_repository.add_proposed_pair(db, intent_log=intent_log, outbox=outbox)
         return outbox
 

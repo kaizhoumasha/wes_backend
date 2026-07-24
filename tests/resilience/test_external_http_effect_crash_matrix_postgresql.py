@@ -82,8 +82,15 @@ _CRASH_POINTS = (
     "AFTER_REDUCER_EVIDENCE",
     "AFTER_EVIDENCE_COMMIT",
 )
-_CRASH_POINTS_BEFORE_SEND = frozenset({"AFTER_CLAIM_COMMIT", "BEFORE_SEND"})
-_CRASH_POINTS_WITH_DURABLE_ACCEPTANCE = frozenset({"BEFORE_CLAIM", "AFTER_EVIDENCE_COMMIT"})
+_CRASH_POINTS_WITH_PERSISTED_TERMINAL = frozenset({"BEFORE_CLAIM", "AFTER_EVIDENCE_COMMIT"})
+_CRASH_POINTS_WITHOUT_SEND = frozenset({"BEFORE_SEND"})
+_CRASH_POINTS_WITH_DURABLE_ACCEPTANCE = frozenset(
+    {
+        "BEFORE_CLAIM",
+        "AFTER_CLAIM_COMMIT",
+        "AFTER_EVIDENCE_COMMIT",
+    }
+)
 
 
 class _SimulatedWorkerCrash(BaseException):
@@ -343,12 +350,15 @@ async def _load_effect_state(
     db: AsyncSession,
     *,
     seeded: _SeededEffect,
+    expected_attempt_count: int = 1,
 ) -> tuple[SystemOutbox, WorklineDispatchAttempt, RuntimeIntentLog, ReconciliationCase | None]:
     outbox = await db.get(SystemOutbox, seeded.outbox_id)
     attempts = list(
         (
             await db.execute(
-                select(WorklineDispatchAttempt).where(WorklineDispatchAttempt.dispatch_key == seeded.dispatch_key)
+                select(WorklineDispatchAttempt)
+                .where(WorklineDispatchAttempt.dispatch_key == seeded.dispatch_key)
+                .order_by(WorklineDispatchAttempt.attempt_no)
             )
         )
         .scalars()
@@ -356,12 +366,21 @@ async def _load_effect_state(
     )
     intent = await db.scalar(select(RuntimeIntentLog).where(RuntimeIntentLog.dispatch_key == seeded.dispatch_key))
     case = await db.scalar(select(ReconciliationCase).where(ReconciliationCase.dispatch_key == seeded.dispatch_key))
-    assert outbox is not None and len(attempts) == 1 and intent is not None
-    return outbox, attempts[0], intent, case
+    assert outbox is not None and len(attempts) == expected_attempt_count and intent is not None
+    return outbox, attempts[-1], intent, case
 
 
-async def _assert_durable_acceptance(db: AsyncSession, *, seeded: _SeededEffect) -> None:
-    outbox, attempt, intent, case = await _load_effect_state(db, seeded=seeded)
+async def _assert_durable_acceptance(
+    db: AsyncSession,
+    *,
+    seeded: _SeededEffect,
+    expected_attempt_count: int = 1,
+) -> None:
+    outbox, attempt, intent, case = await _load_effect_state(
+        db,
+        seeded=seeded,
+        expected_attempt_count=expected_attempt_count,
+    )
     assert enum_value(outbox.status) == SystemOutboxStatus.SENT.value
     assert enum_value(attempt.status) == DispatchAttemptStatus.SENT.value
     assert attempt.transport_outcome == "ACCEPTED"
@@ -370,7 +389,12 @@ async def _assert_durable_acceptance(db: AsyncSession, *, seeded: _SeededEffect)
     assert case is None
 
 
-async def _assert_lease_loss_unknown(db: AsyncSession, *, seeded: _SeededEffect) -> None:
+async def _assert_lease_loss_unknown(
+    db: AsyncSession,
+    *,
+    seeded: _SeededEffect,
+    include_late_acceptance: bool = False,
+) -> None:
     outbox, attempt, intent, case = await _load_effect_state(db, seeded=seeded)
     assert enum_value(outbox.status) == SystemOutboxStatus.UNKNOWN.value
     assert outbox.next_retry_at is None
@@ -379,10 +403,13 @@ async def _assert_lease_loss_unknown(db: AsyncSession, *, seeded: _SeededEffect)
     assert attempt.safe_to_retry is False
     assert attempt.response_json["lease_loss"] is True
     assert enum_value(intent.effect_status) == RuntimeIntentStatus.RECONCILING.value
-    assert [item["event_type"] for item in intent.outcome_history_json] == [
+    expected_events = [
         "TRANSPORT_AMBIGUOUS",
         "RECONCILIATION_OPENED",
     ]
+    if include_late_acceptance:
+        expected_events.append("TRANSPORT_ACCEPTED")
+    assert [item["event_type"] for item in intent.outcome_history_json] == expected_events
     assert case is not None
     assert enum_value(case.status) == ReconciliationCaseStatus.OPEN.value
     assert case.reason_code == "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED"
@@ -409,7 +436,7 @@ def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql(
                 async with session_factory() as crashed_db:
                     await crashed_worker.dispatch(crashed_db, limit=1)
 
-            if point not in _CRASH_POINTS_WITH_DURABLE_ACCEPTANCE:
+            if point not in _CRASH_POINTS_WITH_PERSISTED_TERMINAL:
                 async with session_factory() as expire_db:
                     await _expire_claimed_lease(expire_db, outbox_id=seeded.outbox_id)
 
@@ -420,12 +447,16 @@ def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql(
             async with session_factory() as restarted_db:
                 second = await restarted_worker.dispatch(restarted_db, limit=1)
                 if point in _CRASH_POINTS_WITH_DURABLE_ACCEPTANCE:
-                    await _assert_durable_acceptance(restarted_db, seeded=seeded)
+                    await _assert_durable_acceptance(
+                        restarted_db,
+                        seeded=seeded,
+                        expected_attempt_count=(2 if point == "AFTER_CLAIM_COMMIT" else 1),
+                    )
                 else:
                     assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
                     await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
 
-            expected_send_count = 0 if point in _CRASH_POINTS_BEFORE_SEND else 1
+            expected_send_count = 0 if point in _CRASH_POINTS_WITHOUT_SEND else 1
             assert sender.calls == expected_send_count, point
             assert hook.observed[-1] == point
 
@@ -612,7 +643,11 @@ def test_lease_loss_during_send_fences_old_worker_and_never_sends_twice_on_postg
         async with session_factory() as restarted_db:
             second = await restarted_worker.dispatch(restarted_db, limit=1)
             assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-            await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
+            await _assert_lease_loss_unknown(
+                restarted_db,
+                seeded=seeded,
+                include_late_acceptance=True,
+            )
 
         assert calls == 1
 

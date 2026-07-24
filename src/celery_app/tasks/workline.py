@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
@@ -474,18 +475,62 @@ def scan_smt_inbound_handoff_demands_batch(
         raise self.retry(exc=e, countdown=countdown) from None
 
 
+@celery_app.task(
+    name="src.celery_app.tasks.workline.check_wms_effect_status",
+    base=celery_app.Task,
+)
+def check_wms_effect_status(dispatch_key: str) -> dict[str, object]:
+    """按 dispatch key 执行一次 lease-fenced WMS EFFECT 状态确认。"""
+
+    async def _check() -> dict[str, object]:
+        from src.app.runtime.orchestration.services.wms_effect_status_service import (
+            wms_effect_status_service,
+        )
+
+        async with get_db_context() as db:
+            result = await wms_effect_status_service.check_dispatch(db, dispatch_key=dispatch_key)
+            return asdict(result)
+
+    return cast("dict[str, object]", run_async(_check))
+
+
+@celery_app.task(
+    name="src.celery_app.tasks.workline.scan_wms_effect_status_batch",
+    base=celery_app.Task,
+)
+def scan_wms_effect_status_batch(limit: int | None = None) -> list[dict[str, object]]:
+    """小批量顺序确认到期 WMS EFFECT，Beat 只负责兜底扫描。"""
+
+    from src.core.conf import settings
+
+    batch_limit = int(limit or settings.WES_EFFECT_STATUS_SCAN_BATCH_SIZE)
+
+    async def _scan() -> list[dict[str, object]]:
+        from src.app.runtime.orchestration.services.wms_effect_status_service import (
+            wms_effect_status_service,
+        )
+
+        async with get_db_context() as db:
+            results = await wms_effect_status_service.check_due_batch(db, limit=batch_limit)
+            return [asdict(item) for item in results]
+
+    return cast("list[dict[str, object]]", run_async(_scan))
+
+
 # ============================================
 # 导出
 # ============================================
 __all__ = [
     # Celery 任务入口（公共 API）
     "_empty_smt_inbound_handoff_recovery_result",
+    "check_wms_effect_status",
     "maintain_query_shadow_partitions",
     "process_query_shadow_comparison",
     "process_signal",
     "scan_device_heartbeats_batch",
     "scan_smt_inbound_handoff_demands_batch",
     "scan_timeouts_batch",
+    "scan_wms_effect_status_batch",
 ]
 
 

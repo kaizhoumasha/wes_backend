@@ -359,6 +359,7 @@ async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -
         effect_transport_bridge=bridge,
         dispatch_key="dispatch-callback-race",
         attempt_no=2,
+        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
     )
 
     assert recovered is callback_completed
@@ -371,6 +372,7 @@ async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -
         auto_commit=False,
     )
     assert bridge.record_result.await_args.kwargs["result"] is result
+    assert bridge.record_result.await_args.kwargs["operation_identity"] == "wms.fulfillment.notify_pkg_binding@v1"
     recovery_db.commit.assert_awaited_once()
 
 

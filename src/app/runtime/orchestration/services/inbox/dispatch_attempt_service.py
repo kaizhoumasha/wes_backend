@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -289,6 +290,56 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
             result=result,
             outbox_finalization=outbox_finalization,
         )
+        if auto_commit:
+            await self._commit_mutation(db)
+        return attempt
+
+    async def append_status_resubmit_result(
+        self,
+        db: Any,
+        *,
+        outbox: Any,
+        result: ExternalHttpTransportResult,
+        auto_commit: bool = True,
+    ) -> WorklineDispatchAttempt:
+        """为状态确认阶段同键重提追加 transport evidence，不改写 Outbox。"""
+
+        outbox_id = getattr(outbox, "id", None)
+        if not isinstance(outbox_id, int):
+            raise TypeError("状态确认重提需要有效 outbox_id")
+        now = timezone.now_for_db()
+        lease_token = f"status-resubmit:{uuid4().hex}"
+        attempt = WorklineDispatchAttempt(
+            outbox_id=outbox_id,
+            dispatch_key=str(getattr(outbox, "dispatch_key", "")),
+            attempt_no=await _next_attempt_no(
+                db,
+                repository=self.repo,
+                outbox_id=outbox_id,
+                outbox=outbox,
+            ),
+            lease_token=lease_token,
+            lease_expires_at=now + timedelta(minutes=5),
+            status=DispatchAttemptStatus.DISPATCHING,
+            target_type=optional_enum_str(getattr(outbox, "target_type", None)),
+            target_code=getattr(outbox, "target_code", None),
+            started_at=now,
+            trace_json=TraceContext.from_runtime(outbox=outbox).project_outbox_trace(outbox=outbox),
+        )
+        db.add(attempt)
+        await _flush_if_supported(db)
+        await _finalize_external_http_attempt(
+            db,
+            attempt=attempt,
+            lease_owner_token=lease_token,
+            result=result,
+            outbox_finalization=enum_value(getattr(outbox, "status", None)).lower(),
+        )
+        attempt.response_json = {
+            **dict(attempt.response_json),
+            "status_confirmation_resubmit": True,
+        }
+        await _flush_if_supported(db)
         if auto_commit:
             await self._commit_mutation(db)
         return attempt
