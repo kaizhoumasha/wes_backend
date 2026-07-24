@@ -50,6 +50,6 @@
 | 首次提交、处理中重放、已完成重放、同 key 冲突 | PASS |
 | ACCEPTED → PROCESSING → COMPLETED（任意非负递增版本）、typed result、REJECTED 稳定查询、NOT_FOUND | PASS |
 | 首次未到达后重提、受控恢复、已受理暂不可见唯一效果、已见状态后对账 | PASS |
-| 可控时钟下的最小保留期/可见性边界、流式最大响应体、429 两种 Retry-After、5xx、真实客户端提交/查询超时 | PASS |
+| 可控时钟下 `retention_seconds - 1` 的最小保留期/可见性边界、流式最大响应体、429 两种 Retry-After、5xx、真实客户端提交/查询超时 | PASS |
 
 探针输出只含本地 case 枚举和布尔结果；恶意远端 body 的负测已验证 stdout、stderr 和报告均不含 secret/PII/body。

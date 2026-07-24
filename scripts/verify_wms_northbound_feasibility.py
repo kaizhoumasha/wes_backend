@@ -71,24 +71,34 @@ async def _request(
     max_response_bytes: int = _MAX_SAFE_RESPONSE_BYTES,
     **kwargs: Any,
 ) -> httpx.Response | None:
-    """流式读取至上限加一字节，超限立即关闭连接且绝不把 body 输出。"""
+    """单一总 deadline 覆盖 send、流式 body 与 close；超限立即关闭连接。"""
 
+    response: httpx.Response | None = None
+    deadline = asyncio.get_running_loop().time() + request_timeout_seconds
     try:
-        request = client.build_request(method, path, **kwargs)
-        response = await asyncio.wait_for(client.send(request, stream=True), timeout=request_timeout_seconds)
-        content = bytearray()
-        async for chunk in response.aiter_raw(chunk_size=1):
-            content.extend(chunk)
-            if len(content) > max_response_bytes:
-                response.extensions["probe_body_exceeded"] = True
-                response._content = b""  # 关闭 stream 前仅保留本地失败标记
-                await response.aclose()
-                return response
-        response._content = bytes(content)  # 让后续严格 JSON 验证只读取已封顶内容
-        await response.aclose()
-        return response
+        async with asyncio.timeout_at(deadline):
+            request = client.build_request(method, path, **kwargs)
+            response = await client.send(request, stream=True)
+            content = bytearray()
+            async for chunk in response.aiter_raw(chunk_size=8192):
+                content.extend(chunk)
+                if len(content) > max_response_bytes:
+                    response.extensions["probe_body_exceeded"] = True
+                    response._content = b""  # 关闭 stream 前仅保留本地失败标记
+                    await response.aclose()
+                    return response
+            response._content = bytes(content)  # 让后续严格 JSON 验证只读取已封顶内容
+            await response.aclose()
+            return response
     except (httpx.HTTPError, TimeoutError):
         return None
+    finally:
+        if response is not None:
+            try:
+                async with asyncio.timeout_at(deadline):
+                    await response.aclose()
+            except TimeoutError:
+                pass
 
 
 def _json_object(response: httpx.Response | None, *, max_response_bytes: int) -> dict[str, Any] | None:
@@ -447,16 +457,16 @@ async def run_probe(
     for _ in range(3):
         await status(retention_key)
     within_retention = await submit(retention_key, scenario="success")
-    retention_elapsed = await advance(safe_values["retention_seconds"])
-    after_retention = await submit(retention_key, scenario="success")
+    before_retention_elapsed = await advance(max(safe_values["retention_seconds"] - 1, 0))
+    before_retention_replay = await submit(retention_key, scenario="success")
     results.append(
         _result(
             "retention_boundary_observed",
             within_retention is not None
             and within_retention.status_code == 200
-            and retention_elapsed
-            and after_retention is not None
-            and after_retention.status_code == 200
+            and before_retention_elapsed
+            and before_retention_replay is not None
+            and before_retention_replay.status_code == 200
             and await effect_count(retention_key) == 1,
         )
     )

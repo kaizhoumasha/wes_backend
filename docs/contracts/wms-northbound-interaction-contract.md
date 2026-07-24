@@ -88,7 +88,7 @@ JSON 字段顺序、空白或 transport retry 改变比较结论。
 | 拒绝/未找到 | `REJECTED` 有稳定 reason code；`NOT_FOUND` 的 version/updated_at 为空。 |
 | 已受理暂不可见 | 同键重提后，经公开效果计数/等价观察面证明仅有一份业务效果。 |
 | 受控恢复/已见状态后丢失 | 仅在从未见可见状态且超宽限期时保持四项冻结身份重提一次；已见状态后 `NOT_FOUND` 直接人工对账。 |
-| 保留期边界/响应体上限 | 用可控时钟证明最小保留期边界前不重新生效（边界后不要求立即重生效）；流式读取最多到上限加一字节即中止并拒绝明显超限的 chunked wire body。 |
+| 保留期边界/响应体上限 | 仅在 `retention_seconds - 1`（非负）验证仍幂等；边界及之后不强制任何过期行为。body 以有界流式分块读取，首个越过上限的分块即关闭并拒绝。 |
 | 429 / 5xx / 状态查询超时 | 分别验证 `Retry-After`、稳定错误形状及 deadline 行为。 |
 
 联调运行 `uv run python scripts/verify_wms_northbound_feasibility.py --base-url <stub-url>`。探针仅输出本地 case

@@ -108,6 +108,9 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
             await asyncio.sleep(0.05)
 
         record = records.get(key)
+        if record is not None and clock["seconds"] - record["created_at"] >= contract_values["retention_seconds"]:
+            records.pop(key)
+            record = None
         if record is not None:
             if record["canonical_payload"] != canonical_payload or record["frozen_binding"] != frozen_binding:
                 raise HTTPException(status_code=422, detail={"error_code": "IDEMPOTENCY_CONFLICT"})
@@ -288,3 +291,41 @@ async def test_malicious_200_contract_values_fail_without_traceback_or_remote_ec
     assert report.passed is False
     assert remote_secret not in captured.out + captured.err + serialized
     assert {case.detail for case in report.cases} == {"CONTRACT_ASSERTION"}
+
+
+@pytest.mark.asyncio
+async def test_total_deadline_includes_slow_streamed_response_body(capsys: pytest.CaptureFixture[str]) -> None:
+    """即使 headers 已返回，慢速分块 body 也必须消耗同一个客户端总 deadline。"""
+
+    app = FastAPI()
+
+    @app.get("/northbound/contract")
+    async def contract() -> dict[str, int]:
+        return {
+            "retention_seconds": 9,
+            "wes_max_confirmation_age_seconds": 6,
+            "safety_margin_seconds": 3,
+            "visibility_sla_seconds": 2,
+            "not_found_grace_period_seconds": 3,
+            "max_response_bytes": 4096,
+        }
+
+    @app.api_route("/{path:path}", methods=["GET", "POST"])
+    async def slow_body(path: str) -> StreamingResponse:
+        async def body():
+            await asyncio.sleep(0.05)
+            yield json.dumps(_snapshot("ACCEPTED", source_version=10)).encode()
+
+        return StreamingResponse(body(), media_type="application/json")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://slow-body-wms.test",
+    ) as client:
+        report = await run_probe(client, operation_identity=OPERATION_IDENTITY, request_timeout_seconds=0.01)
+
+    captured = capsys.readouterr()
+    first_submit = next(case for case in report.cases if case.case_id == "first_submit")
+    assert first_submit.passed is False
+    assert captured.out == ""
+    assert captured.err == ""
