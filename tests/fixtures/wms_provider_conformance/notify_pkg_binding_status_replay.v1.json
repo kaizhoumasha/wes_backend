@@ -1,0 +1,78 @@
+{
+  "schema_version": "wms-effect-status-replay.v1",
+  "operation_identity": "wms.fulfillment.notify_pkg_binding@v1",
+  "request": {
+    "idempotency_key": "replay-notify-pkg-binding-001",
+    "expected_result_identity": {
+      "dispatch_key": "dispatch-replay-notify-pkg-binding-001",
+      "package_id": "package-replay-001",
+      "pallet_id": "pallet-replay-001"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "accepted",
+      "response": {
+        "state": "ACCEPTED",
+        "provider_reference": "wms-replay-notify-pkg-binding-001",
+        "reason_code": null,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": 1,
+        "result_payload": null
+      }
+    },
+    {
+      "case_id": "processing",
+      "response": {
+        "state": "PROCESSING",
+        "provider_reference": "wms-replay-notify-pkg-binding-001",
+        "reason_code": null,
+        "updated_at": "2026-07-24T00:00:01+00:00",
+        "source_version": 2,
+        "result_payload": null
+      }
+    },
+    {
+      "case_id": "completed",
+      "response": {
+        "state": "COMPLETED",
+        "provider_reference": "wms-replay-notify-pkg-binding-001",
+        "reason_code": null,
+        "updated_at": "2026-07-24T00:00:02+00:00",
+        "source_version": 3,
+        "result_payload": {
+          "dispatch_key": "dispatch-replay-notify-pkg-binding-001",
+          "package_id": "package-replay-001",
+          "pallet_id": "pallet-replay-001",
+          "accepted": true,
+          "bound_at": "2026-07-24T00:00:02+00:00",
+          "reason_code": null,
+          "source_version": "3"
+        }
+      }
+    },
+    {
+      "case_id": "rejected",
+      "response": {
+        "state": "REJECTED",
+        "provider_reference": "wms-replay-notify-pkg-binding-001",
+        "reason_code": "WMS_BUSINESS_REJECTED",
+        "updated_at": "2026-07-24T00:00:02+00:00",
+        "source_version": 3,
+        "result_payload": null
+      }
+    },
+    {
+      "case_id": "not_found",
+      "response": {
+        "state": "NOT_FOUND",
+        "provider_reference": null,
+        "reason_code": null,
+        "updated_at": null,
+        "source_version": null,
+        "result_payload": null
+      }
+    }
+  ],
+  "digest": "3918d3faa16de9ba784e8776a8dd9a282cc8b32000cb6a6a540936ab0866f971"
+}

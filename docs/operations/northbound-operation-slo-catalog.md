@@ -21,17 +21,24 @@
 
 ## Day-1 看板面板
 
+下列面板只展示 WES 可观察的 submit、status query、callback hint 和本地账本事实，不推断 WMS 内部队列、
+阶段或补偿行为。
+
 | 面板 | 数据口径 | 分组/限制 |
 | --- | --- | --- |
-| Operation call / outcome | `sample_count`、六类闭集 outcome | operation + authored profile |
-| Query latency | `latency_ms` p50/p95/p99 | operation + authored profile |
+| Operation call / outcome | `sample_count`、六类闭集 outcome | operation + 唯一部署 profile |
+| Query latency | `latency_ms` p50/p95/p99 | operation + 唯一部署 profile |
 | Evidence failure | `wms_evidence.persistence_failure` | capability + policy version |
-| Shadow/readiness | 最新 readiness verdict、shadow divergence | operation + authored profile |
+| EFFECT submit | submit accepted/ambiguous/not-sent 数量与延迟 | operation + 唯一部署 profile |
+| EFFECT status states | `ACCEPTED/PROCESSING/COMPLETED/REJECTED/NOT_FOUND` 数量、延迟、重试次数与 age | operation + 唯一部署 profile |
+| Status query backlog | status query backlog 数量、最大 age、单批领取量与批次耗时 | 仅平台级计数和测量 |
+| Status backpressure | 429、`Retry-After`、circuit-open、实际退避时长 | operation + 闭集结果 |
+| Status exhaustion | 超宽限期 `NOT_FOUND`、查询耗尽、幂等冲突 | operation + 稳定 reason code |
 | Outbox health | backlog、oldest queue age、active lease | 仅平台计数，不展示 bucket |
 | Rate limit / pause | 命中 bucket 数、暂停 bucket 数 | 不把 bucket 值作为 label |
 | Lease steal/loss | contention 与 stale lease loss | capability + policy version |
-| UNKNOWN / reconciliation | UNKNOWN ratio、open case 数、oldest age | operation + authored profile |
-| Callback duplicate/contradiction | 幂等 duplicate 与冲突 evidence | operation +闭集 outcome |
+| UNKNOWN / reconciliation | UNKNOWN ratio、open case 数、oldest age | operation + 唯一部署 profile |
+| Callback hint | callback hint 接收、拒绝、重复、触发查询、enqueue 降级数量 | operation + 闭集 outcome |
 | Credential resolve | resolved/revoked/failure/provider error | provider kind + 闭集 outcome |
 
 看板不得接受 tenant、用户 ID、业务单号、payload、trace/correlation/evidence、credential ref 或 bucket
@@ -45,7 +52,8 @@
 - 普通用户：仅 `WorkLine.created_by == 当前用户`；可用 `workline_id` 进一步缩小范围。
 - 超级管理员：显式 `PLATFORM` scope。
 - 返回：provider/operation、backlog、active lease、UNKNOWN、oldest age、rate-limit、lease loss、
-  open reconciliation 与最新 readiness；不返回 payload、header、trace、凭据引用或业务键。
+  submit 分类、status state/age/retry/backoff、callback hint、open reconciliation；不返回 payload、header、
+  trace、凭据引用或业务键。
 - 所有允许/拒绝读取都写安全审计。
 
 ## 告警路由
@@ -54,6 +62,9 @@
 | --- | ---: | --- | --- |
 | `northbound-slo-fast-burn` | 14.4 | runtime-platform | `pause-resume` |
 | `northbound-unknown-ratio` | 6.0 | runtime-platform | `unknown-reconciliation` |
+| `northbound-status-backlog-age` | 6.0 | runtime-platform | `status-query-backpressure` |
+| `northbound-status-rate-limited` | 6.0 | runtime-platform | `status-query-backpressure` |
 | `northbound-credential-revoked` | 14.4 | security-platform | `credential-revoked` |
 | `northbound-lease-loss` | 6.0 | runtime-platform | `lease-fencing` |
 | `northbound-callback-contradiction` | 3.0 | runtime-platform | `callback-diagnostics` |
+| `northbound-callback-enqueue-degraded` | 3.0 | runtime-platform | `callback-diagnostics` |

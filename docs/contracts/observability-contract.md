@@ -25,24 +25,48 @@
 | `northbound.operation.confirm_inbound` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
 | `northbound.operation.notify_pkg_binding` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
 | `northbound.operation.full_box_exchange` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
+| `wms_effect.submit` | span + metric + log event | `operation_identity`, `provider_profile_identity`, `outcome`, `latency_ms`, `sample_count` |
+| `wms_effect.status_query` | span + metric + log event | `operation_identity`, `state`, `outcome`, `latency_ms`, `retry_count`, `age_ms` |
+| `wms_effect.status_backlog` | metric | `backlog_count`, `max_age_ms`, `claimed_count`, `duration_ms` |
+| `wms_effect.status_backpressure` | metric + log event | `operation_identity`, `outcome`, `retry_after_ms`, `actual_backoff_ms` |
+| `wms_effect.recovery` | metric + log event | `operation_identity`, `reason_code`, `sample_count`, `age_ms` |
+| `wms_effect.callback_hint` | metric + log event | `operation_identity`, `outcome`, `sample_count` |
 
 ## Exact Allow-list 与 Metric Projection
 
 - 所有 signal 都声明 `allowed_attributes`、不可覆盖的固定属性、闭集 label 值和非负有限数值测量；未知 signal、额外属性、固定属性覆盖、非标量、非法枚举、NaN/无穷/负测量均 fail-closed。
 - `payload`、`canonical_payload`、`header`、`Authorization`、`signature`、`secret`、`token`、`password`、`credential_reference` 等字段名禁止进入事件；字符串值中出现 `secret://`、Bearer、签名或 Authorization 痕迹同样拒绝。
 - Span/log 接收完整的已验证属性；metric 只接收 `metric_label_attributes ∪ metric_measurement_attributes`。`trace_id`、`correlation_id`、`evidence_ref`、业务键、bucket、tenant、用户 ID 不得成为 metric label。
-- 所有 metric 固定带 `capability_identity` 与 `policy_version=northbound-observability.v1`。北向 operation metric 只允许以下标签：
+- 所有 metric 固定带 `capability_identity` 与 `policy_version=northbound-observability.v1`。通用北向 operation metric 只允许以下标签：
   `capability_identity`、`operation_identity`、`provider_profile_identity`、`outcome`、`policy_version`。
-- `provider_profile_identity` 仅允许三个 authored profile：sandbox、staging、production；`outcome` 仅允许
+- 每个部署只有一个 active `provider_profile_identity`；它是部署级低基数常量，不能由 payload 选择，也不能建立
+  profile catalog/router/fallback。`outcome` 仅允许
   `SUCCESS`、`BUSINESS_REJECT`、`TECHNICAL_FAILURE`、`CONTRACT_FAILURE`、`UNKNOWN`、`RECONCILING`。
-- 北向 operation 数值只包含 `latency_ms`、`sample_count`、`unknown_count`；dispatch health 只包含平台级计数和 age，不携带命中 bucket。
+- WMS EFFECT 专用 signal 额外允许低基数 `state`、`reason_code` 与 `breaker_state` 标签；`state` 仅为五态，
+  `reason_code` 仅为合同登记的稳定码，breaker 仅为 OPEN/HALF_OPEN/CLOSED。Submit outcome 仅为
+  `ACCEPTED/AMBIGUOUS/NOT_SENT`；callback hint outcome 仅为
+  `RECEIVED/REJECTED/DUPLICATE/QUERY_TRIGGERED/ENQUEUE_DEGRADED`。
+- 通用北向 operation 数值只包含 `latency_ms`、`sample_count`、`unknown_count`；WMS EFFECT 专用 signal 可增加
+  `retry_count`、`age_ms`、`backlog_count`、`max_age_ms`、`claimed_count`、`duration_ms`、
+  `retry_after_ms`、`actual_backoff_ms`。所有值必须非负有限；不得携带 bucket、关联键或业务 ID。
+
+## WMS EFFECT 可观察交互
+
+- Submit 固定记录 accepted/ambiguous/not-sent 数量与延迟；三类结果只说明 WES 观察到的传输边界，不解释 WMS
+  内部是否排队、执行或补偿。
+- Status query 固定记录五态数量、延迟、重试次数和 age；backlog 固定记录数量、最大 age、单批领取量和批次耗时。
+- 429 记录合法 `Retry-After` 与实际退避时长；timeout/5xx/circuit-open 记录闭集 outcome、breaker 状态和实际
+  backoff，不保存任意远端 body。
+- 恢复/对账固定记录 `NOT_FOUND` 超宽限期、查询耗尽、幂等冲突和 open reconciliation 数量。
+- Callback hint 固定记录接收、拒绝、重复、触发查询和 enqueue 降级数量。Callback 不记录或推动业务终态。
+- 指标和日志只陈述 WES 可观察的 submit/status/callback 交互事实，禁止推断 WMS 内部状态机、队列或根因。
 
 ## 北向 Operation SLO 与 Trace
 
 - 可执行目录版本为 `northbound-operation-slo.v1`，覆盖全部四个 authored WMS operation。Provider binding authoring 时缺少目录条目必须阻塞。
 - 统一窗口为 30 天，可用性目标为 99.5%，UNKNOWN 比例上限为 0.1%，open reconciliation age 上限为 900 秒；各 operation 的 p95 延迟目标、burn rate 与告警责任人见
   [`northbound-operation-slo-catalog.md`](../operations/northbound-operation-slo-catalog.md)。
-- Trace stage 是闭集：`PLUGIN_EXECUTION → QUERY_EVIDENCE → POLICY_DECISION → RUNTIME_INTENT_LOG → DISPATCH_ATTEMPT → CALLBACK → RECONCILIATION`。
+- Trace stage 是闭集：`PLUGIN_EXECUTION → QUERY_EVIDENCE → POLICY_DECISION → RUNTIME_INTENT_LOG → DISPATCH_ATTEMPT → STATUS_QUERY → CALLBACK_HINT → RECONCILIATION`。
 - QUERY 在 typed evidence 落库后发射；EFFECT 在 typed dispatch result 固化后发射。后续 callback/reconciliation 复用既有稳定 correlation/evidence 锚点，禁止从 payload 推导追踪或权限。
 
 ## Attribute Rules
@@ -82,6 +106,10 @@
 - WMS 成功响应后的本地 evidence/breaker 留痕失败使用 `wms_evidence.persistence_failure`；该事件必须保留原始 `trace_id` 和 `evidence_key`，供系统诊断而非业务 HOLD。
 - `northbound.dispatch.health` 在 claim 扫描事务完成后发射平台级队列/lease/rate-limit 摘要；观测失败不得改变公平调度或 lease/fencing 决策。
 - 北向 QUERY transport 与 EXTERNAL_HTTP outbox delivery 分别在 typed evidence / typed result 固化后发射 operation signal；观测失败不得改变 delivery、retry、UNKNOWN 或 reconciliation 语义。
+- WMS EFFECT submit bridge 在 transport 分类固化后发射 `wms_effect.submit`；status worker 在 claim 提交、
+  事务外查询和 token-fenced writeback 后分别聚合 backlog/backpressure/status/recovery 信号。
+- Callback ingress 在提前到期持久化成功后发射 `wms_effect.callback_hint`；best-effort enqueue 失败发射
+  `outcome=ENQUEUE_DEGRADED`，观测失败不得改变 ACK 或 scanner 接管。
 - 凭据 Provider 统一由审计 wrapper 包裹，只允许发射闭集 `provider_kind/outcome`；凭据 ref、secret material、header 与异常文本不得进入日志或指标。
 - 具体 backend（Jaeger / Tempo / SkyWalking 等）必须通过 `RuntimeOpenTelemetryBridge` 后方的 HTTP adapter / collector endpoint 挂载，不能新增临时字段替代稳定 attributes。
 

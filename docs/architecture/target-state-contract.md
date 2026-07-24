@@ -53,7 +53,7 @@ P0 必须支撑以下能力（每条都是验收项；来源主计划 §2.2）�
 | Handoff | 任何物料/料箱/货架交接必须以 External callback 或 `RuntimeIntentLog` evidence 推进，禁止 API 层直接改投影 |
 | Resource projection | 同一 object 在同一 WorkLine 内只能有一个可解释的 active 归属；瞬态冲突必须带 `transient_until`，超时进入 `RECONCILING` |
 | Device command | 每个物理动作必须有 `command_code + idempotency_key + request_hash + callback result` 闭环 |
-| WMS fulfillment | 任何外部履约必须有 11 态机状态、timeout、callback/evidence 和失败恢复路径 |
+| WMS fulfillment | 任何外部履约必须有稳定幂等键、冻结 submit/status binding、timeout、状态查询终态证据和失败恢复路径；callback 仅为可选查询提示 |
 
 > 完整行为不变量见主计划 §2.2；11 态机完整转移表留 Phase 3 `fulfillment-state-machine-spec.md`。
 
@@ -114,9 +114,9 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 设备业务命令结果 | ECS/device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 |
 | 硬件防呆、安全回路、急停、复位、物理坐标/关节控制 | ECS/现场安全系统 | **只感知，不控制** | 只写 event/evidence/hold，不下发安全控制或坐标级指令 |
 | 设备事件/任务结果回调 | ECS/device callback | normalize + dispatch | typed evidence + RuntimeInbox + device projection |
-| AGV/CTU 履约状态与位置 evidence | WMS/RCS fulfillment callback | 引用履约回调 evidence | 触发 handling 派生状态，不复制实时位置或 SDK 状态 |
+| AGV/CTU 履约状态与位置 evidence | WMS/RCS fulfillment status query | 引用规范化状态 evidence | 触发 handling 派生状态，不复制实时位置或 SDK 状态 |
 | 货架/料箱/库位主数据 | WMS | 引用 + 作业期投影 | 不复制主数据，只维护 active projection |
-| WMS 回调事件（WMS 主动推送） | WMS callback | normalize + dispatch | typed evidence + correlation key |
+| WMS EFFECT callback hint（可选） | WMS callback ingress | 校验关联键并提前调度状态查询 | hint evidence + correlation key；不写业务终态 |
 | 冲突、对账、RECONCILING 决议 | WES ReconciliationManager | 冲突记录 + 决议权威 | RECONCILING evidence + `resolution_decision`；恢复动作由各 owner 按 evidence 执行 |
 | WES 作业期料盘/物料根实体 | **WES material 域（WES 自有）** | 根实体拥有者 | material_units 身份 + 作业期业务状态；位置摘要只读投影只能由 `RuntimeLocationEvent` 更新 |
 
@@ -149,13 +149,26 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 自动化设备只通过 WES 接入 | `device` 域——WMS 不直连设备 |
 | WES 不同步基础数据 | `WmsMasterDataPort` / `InventoryQueryOperationPort`——按需查询；库存禁止跨请求缓存 |
 | WMS 是库存唯一真实源 | Authority Matrix——库存事务必须以 WMS 提交成功为准 |
-| 外部输入统一进入 callback | callback → `RuntimeInbox`——只校验、落原始日志、ACK、写 inbox，不直接改 session |
+| WMS EFFECT 终态来自查询 | submit 受理/结果不明后由 status query 闭环；callback 只提示查询，不直接改终态 |
 
 **Runtime capability 注入边界**（主计划 §3.5）：
 
 - `wms_integration` 只能作为 ACL provider 注册到端口注册表
 - Runtime capability 只能依赖领域级 port contract，**不能**直接依赖 `wms_integration`/`device` 实现对象、HTTP client、DTO、异常、service locator
 - QueryPort（只读）/ EffectPort（出站副作用，必须先写 `RuntimeIntentLog`）/ InboundEventPort（只写 `RuntimeInbox`）三类注入边界严格分离
+
+**单 WMS Provider 交互边界（2026-07 北向简化）**：
+
+- 每个工厂部署只实例化一个 active WMS Provider profile；它承载多个 typed QUERY/EFFECT operation，不存在
+  catalog、selector、按 payload 路由、热切换或 fallback。
+- 新 Intent 冻结 active profile 的 submit/status binding；存量 Intent 继续使用同一 WMS Provider 的历史
+  binding/credential revision，缺失或撤销时进入人工对账。
+- 三个 EFFECT 使用不可变 `operation_identity + idempotency_key + canonical payload + frozen binding` 提交，
+  并以状态查询快照作为唯一业务完成/拒绝事实；callback 缺失不影响正确性。
+- WES 只关心 submit、status query、callback hint 交互合同和可观察结果，不建模或推断 WMS 内部队列、流程、
+  库存事务和补偿逻辑。
+- 开发阶段使用确定性 mock/replay；真实 WMS 的 Provider/build identity、SLA/保留期、全 operation case evidence
+  和双方签字必须在联调环境另行验收。mock 通过不能把真实验收从 `PENDING` 改为通过。
 
 **7 个目标 WMS port**（主计划 §5.1，字段留 Phase 1 `wms-integration-ports-spec.md`）：
 `WmsMasterDataPort` / `WmsDocumentPort` / `InventoryQueryOperationPort` / `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `WmsEventPort` / `WmsReconciliationQueryPort`。

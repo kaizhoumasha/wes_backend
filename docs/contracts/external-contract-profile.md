@@ -19,6 +19,8 @@ note: |
 ## 1. 编写目的
 
 按 `provider_code + contract_version` 描述 WMS/ECS/RCS provider 的能力、字段映射、超时、重试、fixture set 和不支持动作，使 Runtime capability admission 和 callback normalizer 能在合同约束下工作，不依赖供应商 DTO/SDK。
+WMS 的当前部署约束是“一个工厂一个 Provider、一个 Provider 多个 typed operation”；本文中的环境示例不是运行时
+多 Provider catalog，也不允许按 operation/payload 路由或 fallback。
 
 ## 2. ExternalContractProfile 字段表
 
@@ -94,6 +96,25 @@ security_profile:
 - 未声明的 `runtime_capabilities` 不得进入 `RuntimeCapabilityContext`；未声明的 `inbound_normalizers` 不得被 callback API 接收
 - profile 未声明的字段不得进入 runtime capability；必须被 normalizer 丢弃或写入诊断 evidence
 - `field_mapping` 不承载业务分支、计算规则或流程决策；复杂转换必须在 adapter/normalizer 代码中实现，并由 contract tests 覆盖
+- WMS 每个部署只加载一个 active profile；新 Intent 冻结该 profile 的 submit/status binding，存量 Intent 保留同一
+  Provider 的历史 binding/credential revision，禁止切到另一个 Provider。
+- API 与 Celery 必须从同一 Settings/env/Compose 链读取 endpoint、deadline、response budget、可见性 SLA、
+  `NOT_FOUND` 宽限期、确认窗口和保留期；缺失或互相矛盾时启动失败。
+
+## 5.1 当前 WMS 北向 operation profile
+
+| Mode | Operation identity | 交互 |
+| --- | --- | --- |
+| QUERY | `wms.inventory.query_inventory@v1` | 同步查询；保留预算、分页、typed evidence 和确定性 replay |
+| EFFECT | `wms.inventory.confirm_inbound@v1` | 幂等 submit + status query；callback hint 可选 |
+| EFFECT | `wms.fulfillment.full_box_exchange@v1` | 幂等 submit + status query；callback hint 可选 |
+| EFFECT | `wms.fulfillment.notify_pkg_binding@v1` | 幂等 submit + status query；callback hint 可选 |
+
+WES 只定义并观测 submit、status query 和 callback hint。WMS 内部排队、任务状态机、库存处理和补偿逻辑不属于
+profile，也不能从 HTTP 状态或延迟推断。开发阶段由 mock/replay 提供这些交互能力；真实 WMS 上线前必须按
+[`wms-northbound-interaction-contract.md`](./wms-northbound-interaction-contract.md) 和
+[`wms-northbound-acceptance-and-cutover.md`](../operations/wms-northbound-acceptance-and-cutover.md)
+完成联调验收。
 
 ## 6. fixture schema
 
@@ -115,3 +136,7 @@ security_profile:
 1. ✅ Pydantic schema 落在 `tests/support/external_contract_profile.py`，未污染生产 import path
 2. ✅ `unsupported_actions` 在 provider 未声明能力时，runtime capability 和 callback API 必须拒绝（§4）
 3. ✅ fixture 可被 adapter contract tests 复用（§6 fixture schema + `tests/fixtures/external_contracts/wms/default`）
+
+当前北向简化的发布状态以联调与切换记录为准：仓库 mock/replay 通过不等于真实 WMS 验收通过；在 Provider
+identity、contract/build version、SLA/保留期、逐 case evidence 和双方确认字段为空时，真实验收必须为
+`PENDING`，数据清理与整体切换必须为 `BLOCKED`。
