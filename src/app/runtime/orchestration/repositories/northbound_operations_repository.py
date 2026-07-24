@@ -13,8 +13,10 @@ from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.system_capabilities.shadow_models import QueryShadowReadinessReportRecord
 from src.app.sys.models.outbox import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
+from src.core.conf import settings
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
+from src.utils.value_normalization import runtime_profile_environment
 
 _WMS_CALL_EVIDENCE = table(
     "wms_call_evidence",
@@ -38,6 +40,24 @@ class NorthboundOperationHealthRow:
     lease_loss_count: int
     reconciliation_open_count: int
     readiness: str
+
+
+def _active_catalog_keys() -> tuple[tuple[str, str], ...]:
+    """从当前运行环境的 provider binding 生成空账本运维基线。"""
+    from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILES
+
+    environment = runtime_profile_environment(settings.APP_ENV)
+    profiles = tuple(
+        profile for profile in WMS_PROVIDER_PROFILES.values() if profile.identity.environment == environment
+    )
+    if len(profiles) != 1:
+        raise RuntimeError("active WMS provider profile must resolve exactly once")
+    profile = profiles[0]
+    return tuple(
+        (profile.identity.identity, binding.operation.identity)
+        for binding in profile.bindings
+        if binding.operation.identity in NORTHBOUND_OPERATION_SLO_CATALOG
+    )
 
 
 class NorthboundOperationsRepository:
@@ -113,6 +133,8 @@ class NorthboundOperationsRepository:
             await self._load_sync_query_evidence_keys(db) if tenant_id is None and workline_id is None else ()
         )
         visible_keys = tuple(sorted(set(keys) | set(readiness) | set(evidence_keys)))
+        if not visible_keys and tenant_id is None and workline_id is None:
+            visible_keys = tuple(sorted(_active_catalog_keys()))
         if not visible_keys:
             return ()
         reconciliation_counts = (
