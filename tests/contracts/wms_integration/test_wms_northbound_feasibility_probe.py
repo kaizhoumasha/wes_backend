@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from scripts.verify_wms_northbound_feasibility import run_probe
 
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 OPERATION_IDENTITY = "wms.fulfillment.notify_pkg_binding@v1"
+SOURCE_VERSIONS = (10, 20, 30)
 
 
 def _snapshot(
@@ -61,7 +62,8 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
     def record_key(operation_identity: str, idempotency_key: str) -> tuple[str, str]:
         return operation_identity, idempotency_key
 
-    def visible_snapshot(state: str, source_version: int, *, reason_code: str | None = None) -> dict[str, Any]:
+    def visible_snapshot(state: str, state_index: int, *, reason_code: str | None = None) -> dict[str, Any]:
+        source_version = SOURCE_VERSIONS[state_index]
         result_payload = None
         if state == "COMPLETED":
             result_payload = {
@@ -86,8 +88,12 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
         return {"effect_count": effects.get(record_key(operation_identity, idempotency_key), 0)}
 
     @app.get("/northbound/test/oversized-response")
-    async def oversized_response() -> Response:
-        return Response(content="x" * (contract_values["max_response_bytes"] + 1), media_type="application/json")
+    async def oversized_response() -> StreamingResponse:
+        async def body():
+            for _ in range(4096):
+                yield b"x" * 1024
+
+        return StreamingResponse(body(), media_type="application/json")
 
     @app.post("/northbound/operations")
     async def submit(
@@ -99,12 +105,9 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
         frozen_binding = payload["frozen_binding"]
         key = record_key(operation_identity, idempotency_key)
         if x_first_attempt_dropped == "true":
-            raise HTTPException(status_code=504, detail={"error_code": "UPSTREAM_TIMEOUT"})
+            await asyncio.sleep(0.05)
 
         record = records.get(key)
-        if record is not None and clock["seconds"] - record["created_at"] >= contract_values["retention_seconds"]:
-            records.pop(key)
-            record = None
         if record is not None:
             if record["canonical_payload"] != canonical_payload or record["frozen_binding"] != frozen_binding:
                 raise HTTPException(status_code=422, detail={"error_code": "IDEMPOTENCY_CONFLICT"})
@@ -247,4 +250,41 @@ async def test_malicious_remote_body_never_reaches_probe_output(capsys: pytest.C
     assert remote_secret not in captured.out
     assert remote_secret not in captured.err
     assert remote_secret not in serialized
+    assert {case.detail for case in report.cases} == {"CONTRACT_ASSERTION"}
+
+
+@pytest.mark.asyncio
+async def test_malicious_200_contract_values_fail_without_traceback_or_remote_echo(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """字符串、bool 和空值合同参数只能变成固定失败摘要，不能进入算术或输出。"""
+
+    app = FastAPI()
+    remote_secret = "retention=secret-customer-Alice"
+
+    @app.get("/northbound/contract")
+    async def invalid_contract() -> dict[str, object]:
+        return {
+            "retention_seconds": remote_secret,
+            "wes_max_confirmation_age_seconds": True,
+            "safety_margin_seconds": None,
+            "visibility_sla_seconds": "2",
+            "not_found_grace_period_seconds": 3,
+            "max_response_bytes": False,
+        }
+
+    @app.api_route("/{path:path}", methods=["GET", "POST"])
+    async def other_responses(path: str) -> JSONResponse:
+        return JSONResponse(status_code=500, content={"detail": {"error_code": remote_secret}})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://invalid-contract-wms.test",
+    ) as client:
+        report = await run_probe(client, operation_identity=OPERATION_IDENTITY, request_timeout_seconds=0.01)
+
+    captured = capsys.readouterr()
+    serialized = json.dumps([asdict(case) for case in report.cases])
+    assert report.passed is False
+    assert remote_secret not in captured.out + captured.err + serialized
     assert {case.detail for case in report.cases} == {"CONTRACT_ASSERTION"}

@@ -19,6 +19,9 @@ _STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOU
 _REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _MAX_SAFE_RESPONSE_BYTES = 1024 * 1024
+_REJECTED_REASON_CODES = {
+    "wms.fulfillment.notify_pkg_binding@v1": frozenset({"WMS_BUSINESS_REJECTED"}),
+}
 
 
 @dataclass(frozen=True)
@@ -65,12 +68,25 @@ async def _request(
     path: str,
     *,
     request_timeout_seconds: float,
+    max_response_bytes: int = _MAX_SAFE_RESPONSE_BYTES,
     **kwargs: Any,
 ) -> httpx.Response | None:
-    """以 deadline 调用 HTTP；远端异常只形成失败断言，绝不向输出泄漏内容。"""
+    """流式读取至上限加一字节，超限立即关闭连接且绝不把 body 输出。"""
 
     try:
-        return await asyncio.wait_for(client.request(method, path, **kwargs), timeout=request_timeout_seconds)
+        request = client.build_request(method, path, **kwargs)
+        response = await asyncio.wait_for(client.send(request, stream=True), timeout=request_timeout_seconds)
+        content = bytearray()
+        async for chunk in response.aiter_raw(chunk_size=1):
+            content.extend(chunk)
+            if len(content) > max_response_bytes:
+                response.extensions["probe_body_exceeded"] = True
+                response._content = b""  # 关闭 stream 前仅保留本地失败标记
+                await response.aclose()
+                return response
+        response._content = bytes(content)  # 让后续严格 JSON 验证只读取已封顶内容
+        await response.aclose()
+        return response
     except (httpx.HTTPError, TimeoutError):
         return None
 
@@ -78,7 +94,7 @@ async def _request(
 def _json_object(response: httpx.Response | None, *, max_response_bytes: int) -> dict[str, Any] | None:
     """拒绝超限、非对象或畸形 JSON；不传递远端 body 到报告。"""
 
-    if response is None or len(response.content) > max_response_bytes:
+    if response is None or response.extensions.get("probe_body_exceeded") or len(response.content) > max_response_bytes:
         return None
     try:
         payload = response.json()
@@ -94,7 +110,26 @@ def _is_aware_rfc3339(value: object) -> bool:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return False
-    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+    return parsed.tzinfo is not None and parsed.utcoffset() == UTC.utcoffset(parsed)
+
+
+def _positive_contract_values(contract: object) -> dict[str, int] | None:
+    """远端合同数值先完整验型，避免字符串/bool 参与算术或出现在输出中。"""
+
+    required = (
+        "retention_seconds",
+        "wes_max_confirmation_age_seconds",
+        "safety_margin_seconds",
+        "visibility_sla_seconds",
+        "not_found_grace_period_seconds",
+        "max_response_bytes",
+    )
+    if not isinstance(contract, dict):
+        return None
+    values = {name: contract.get(name) for name in required}
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values.values()):
+        return None
+    return values
 
 
 def _is_snapshot(snapshot: object) -> bool:  # noqa: PLR0911 - 每个 return 对应一个合同失败边界
@@ -188,20 +223,23 @@ async def run_probe(
     contract_response = await _request(
         client, "GET", "/northbound/contract", request_timeout_seconds=request_timeout_seconds
     )
-    contract = _json_object(contract_response, max_response_bytes=bootstrap_limit) or {}
-    max_response_bytes = contract.get("max_response_bytes")
-    if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int):
-        max_response_bytes = 0
-    max_response_bytes = min(max_response_bytes, _MAX_SAFE_RESPONSE_BYTES)
+    contract = _json_object(contract_response, max_response_bytes=bootstrap_limit)
+    contract_values = _positive_contract_values(contract)
+    max_response_bytes = min(contract_values["max_response_bytes"], _MAX_SAFE_RESPONSE_BYTES) if contract_values else 0
     contract_ok = (
         contract_response is not None
         and contract_response.status_code == 200
-        and max_response_bytes > 0
-        and contract.get("retention_seconds", -1)
-        >= contract.get("wes_max_confirmation_age_seconds", 0) + contract.get("safety_margin_seconds", 0)
-        and contract.get("visibility_sla_seconds", -1) <= contract.get("not_found_grace_period_seconds", -1)
+        and contract_values is not None
+        and contract_values["retention_seconds"]
+        >= contract_values["wes_max_confirmation_age_seconds"] + contract_values["safety_margin_seconds"]
+        and contract_values["visibility_sla_seconds"] <= contract_values["not_found_grace_period_seconds"]
     )
     results.append(_result("retention_and_visibility_boundaries", contract_ok))
+    safe_values = contract_values or {
+        "retention_seconds": 0,
+        "visibility_sla_seconds": 0,
+        "not_found_grace_period_seconds": 0,
+    }
 
     async def submit(
         key: str,
@@ -215,6 +253,7 @@ async def run_probe(
             "POST",
             "/northbound/operations",
             request_timeout_seconds=request_timeout_seconds,
+            max_response_bytes=max_response_bytes,
             json=_submit_body(operation_identity, key, _payload(scenario=scenario, fingerprint=fingerprint)),
             headers=headers,
         )
@@ -225,6 +264,7 @@ async def run_probe(
             "GET",
             "/northbound/operations/status",
             request_timeout_seconds=request_timeout_seconds,
+            max_response_bytes=max_response_bytes,
             params={"operation_identity": operation_identity, "idempotency_key": key},
             headers=headers,
         )
@@ -235,6 +275,7 @@ async def run_probe(
             "GET",
             "/northbound/operations/effects",
             request_timeout_seconds=request_timeout_seconds,
+            max_response_bytes=max_response_bytes,
             params={"operation_identity": operation_identity, "idempotency_key": key},
         )
         payload = _json_object(response, max_response_bytes=max_response_bytes)
@@ -247,6 +288,7 @@ async def run_probe(
             "POST",
             "/northbound/test-clock/advance",
             request_timeout_seconds=request_timeout_seconds,
+            max_response_bytes=max_response_bytes,
             json={"seconds": seconds},
         )
         return (
@@ -281,7 +323,7 @@ async def run_probe(
             "source_version_and_typed_result",
             all(_is_snapshot(snapshot) for snapshot in snapshots)
             and [snapshot["state"] for snapshot in snapshots] == ["ACCEPTED", "PROCESSING", "COMPLETED"]
-            and [snapshot["source_version"] for snapshot in snapshots] == [0, 1, 2],
+            and snapshots[0]["source_version"] < snapshots[1]["source_version"] < snapshots[2]["source_version"],
         )
     )
 
@@ -313,7 +355,16 @@ async def run_probe(
     rejected_key = f"probe-rejected-{uuid4().hex}"
     await submit(rejected_key, scenario="rejected")
     rejected = _json_object(await status(rejected_key), max_response_bytes=max_response_bytes)
-    results.append(_result("rejected_reason_code", _is_snapshot(rejected) and rejected.get("state") == "REJECTED"))
+    rejected_replay = _json_object(await status(rejected_key), max_response_bytes=max_response_bytes)
+    results.append(
+        _result(
+            "rejected_reason_code",
+            _is_snapshot(rejected)
+            and rejected.get("state") == "REJECTED"
+            and rejected == rejected_replay
+            and rejected.get("reason_code") in _REJECTED_REASON_CODES.get(operation_identity, frozenset()),
+        )
+    )
 
     missing = _json_object(await status(f"missing-{uuid4().hex}"), max_response_bytes=max_response_bytes)
     results.append(_result("not_found_empty_version", _is_snapshot(missing) and missing.get("state") == "NOT_FOUND"))
@@ -324,8 +375,7 @@ async def run_probe(
     results.append(
         _result(
             "first_submit_not_arrived_retry_creates",
-            first_not_arrived is not None
-            and first_not_arrived.status_code == 504
+            first_not_arrived is None
             and retry_after_not_arrived is not None
             and retry_after_not_arrived.status_code == 202
             and await effect_count(not_arrived_key) == 1,
@@ -335,7 +385,7 @@ async def run_probe(
     recovery_key = f"probe-recovery-{uuid4().hex}"
     await submit(recovery_key, scenario="recoverable_not_found")
     no_visible_before_recovery = _json_object(await status(recovery_key), max_response_bytes=max_response_bytes)
-    recovery_after_grace = await advance(int(contract.get("not_found_grace_period_seconds", 0)) + 1)
+    recovery_after_grace = await advance(safe_values["not_found_grace_period_seconds"] + 1)
     controlled_replay = await submit(recovery_key, scenario="recoverable_not_found")
     results.append(
         _result(
@@ -372,7 +422,7 @@ async def run_probe(
     await submit(not_visible_key, scenario="not_visible")
     missing_before_visible = _json_object(await status(not_visible_key), max_response_bytes=max_response_bytes)
     replay_while_not_visible = await submit(not_visible_key, scenario="not_visible")
-    visibility_elapsed = await advance(int(contract.get("visibility_sla_seconds", 0)))
+    visibility_elapsed = await advance(safe_values["visibility_sla_seconds"])
     visible_after_replay = _json_object(await status(not_visible_key), max_response_bytes=max_response_bytes)
     results.append(
         _result(
@@ -397,7 +447,7 @@ async def run_probe(
     for _ in range(3):
         await status(retention_key)
     within_retention = await submit(retention_key, scenario="success")
-    retention_elapsed = await advance(int(contract.get("retention_seconds", 0)))
+    retention_elapsed = await advance(safe_values["retention_seconds"])
     after_retention = await submit(retention_key, scenario="success")
     results.append(
         _result(
@@ -406,8 +456,8 @@ async def run_probe(
             and within_retention.status_code == 200
             and retention_elapsed
             and after_retention is not None
-            and after_retention.status_code == 202
-            and await effect_count(retention_key) == 2,
+            and after_retention.status_code == 200
+            and await effect_count(retention_key) == 1,
         )
     )
 
@@ -446,6 +496,7 @@ async def run_probe(
         "GET",
         "/northbound/test/oversized-response",
         request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
     )
     results.append(
         _result("maximum_response_body", _json_object(oversized, max_response_bytes=max_response_bytes) is None)
