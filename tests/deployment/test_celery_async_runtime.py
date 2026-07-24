@@ -413,7 +413,7 @@ def test_worker_init_validates_transport_and_leaves_parent_async_resources_empty
 
     app_module.on_worker_init()
 
-    validate_transport.assert_called_once_with(app_env=app_module.settings.APP_ENV)
+    validate_transport.assert_called_once_with(settings_source=app_module.settings)
     assert db_module.engine is None
     assert db_module.AsyncSessionLocal is None
     infra.init_db.assert_not_awaited()
@@ -454,7 +454,7 @@ def test_worker_init_validates_transport_before_logger_failure(monkeypatch: pyte
     with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
         worker_init.send(sender=app_module.celery_app)
 
-    validate_transport.assert_called_once_with(app_env=app_module.settings.APP_ENV)
+    validate_transport.assert_called_once_with(settings_source=app_module.settings)
     setup_logger.assert_not_called()
 
 
@@ -474,7 +474,7 @@ def test_worker_init_fails_closed_when_logger_initialization_fails(monkeypatch: 
     with pytest.raises(WorkerTerminate, match="worker logging initialization rejected"):
         worker_init.send(sender=app_module.celery_app)
 
-    validate_transport.assert_called_once_with(app_env=app_module.settings.APP_ENV)
+    validate_transport.assert_called_once_with(settings_source=app_module.settings)
 
 
 def test_worker_init_fails_closed_when_provider_catalog_import_fails(monkeypatch: pytest.MonkeyPatch) -> None:

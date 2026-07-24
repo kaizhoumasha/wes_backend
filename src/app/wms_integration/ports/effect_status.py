@@ -440,13 +440,17 @@ class FrozenWmsEffectStatusBinding(BaseModel):
 def build_wms_effect_status_binding(*, settings_source: Any) -> FrozenWmsEffectStatusBinding:
     """从当前唯一 active WMS profile 生成新 Intent 使用的状态 binding。"""
 
-    from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_EXTERNAL_HTTP_EFFECT_PROFILES
-    from src.app.runtime.system_capabilities.wms.scheduling_identity import wms_runtime_profile_identity
+    from src.app.runtime.system_capabilities.wms.provider_catalog import (
+        WMS_EXTERNAL_HTTP_EFFECT_PROFILE,
+        WMS_PROVIDER_PROFILE,
+        build_active_wms_provider_profile,
+    )
 
-    profile_identity = wms_runtime_profile_identity(settings_source.APP_ENV)
-    profile = WMS_EXTERNAL_HTTP_EFFECT_PROFILES.get(profile_identity)
-    if profile is None:
-        raise ValueError("active WMS EFFECT provider profile is not authored")
+    expected_environment = build_active_wms_provider_profile(settings_source).identity.environment
+    profile = WMS_EXTERNAL_HTTP_EFFECT_PROFILE
+    profile_identity = WMS_PROVIDER_PROFILE.identity.identity
+    if profile.environment != expected_environment:
+        raise ValueError("status binding Settings must match the process active WMS provider profile")
     credential_references = frozenset(binding.credential_reference for binding in profile.bindings)
     auth_schemes = frozenset(binding.auth_scheme for binding in profile.bindings)
     if len(credential_references) != 1 or len(auth_schemes) != 1:

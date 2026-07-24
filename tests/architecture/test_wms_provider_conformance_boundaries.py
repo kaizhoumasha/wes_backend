@@ -11,7 +11,6 @@ from tests.mock import wms_scripted_provider
 from tests.support.wms_provider_replay import QueryInventoryReplayFactory
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DESIGN_PATH = REPO_ROOT / "docs/superpowers/specs/2026-07-21-northbound-capability-extraction-design.md"
 
 
 def test_pure_runner_has_no_network_credential_or_persistence_import_capability() -> None:
@@ -27,36 +26,9 @@ def test_pure_runner_has_no_network_credential_or_persistence_import_capability(
     for function in (
         provider_conformance.build_wms_conformance_report,
         provider_conformance.verify_wms_conformance_report,
-        provider_conformance.run_query_inventory_staging_live_conformance,
     ):
         parameters = set(inspect.signature(function).parameters)
         assert parameters.isdisjoint({"base_url", "endpoint", "headers", "credential", "secret", "transport"})
-
-
-def test_staging_entry_requires_a_deployment_sealed_executor_without_caller_verifier() -> None:
-    parameters = set(inspect.signature(provider_conformance.run_query_inventory_staging_live_conformance).parameters)
-    verifier_parameters = set(inspect.signature(provider_conformance.verify_wms_conformance_report).parameters)
-
-    assert "executor" in parameters
-    assert "execute" not in parameters
-    assert "endpoint_revision" not in parameters
-    assert "attestation_verifier" not in parameters
-    assert "staging_attestation_verifier" not in verifier_parameters
-    assert hasattr(provider_conformance, "StagingConformanceExecutorAttestation")
-    assert hasattr(provider_conformance, "compose_query_inventory_staging_conformance_executor")
-    assert not hasattr(provider_conformance, "issue_staging_conformance_executor_attestation")
-    assert not hasattr(provider_conformance, "Ed25519StagingConformanceAttestationVerifier")
-
-
-def test_conformance_attestation_documents_its_process_trust_boundary() -> None:
-    design = DESIGN_PATH.read_text(encoding="utf-8")
-
-    assert "同进程代码与部署环境均为 trusted" in design
-    assert "任意同进程代码执行视为进程完全失陷" in design
-    assert "不在 conformance attestation 威胁模型内" in design
-    assert "在该信任边界内" in design
-    assert "任意调用方无法伪造" not in design
-    assert "不可伪造的 conformance attestation" not in design
 
 
 def test_simulator_is_test_only_in_process_and_does_not_copy_production_lifecycle() -> None:
@@ -100,3 +72,29 @@ def test_replay_factory_source_has_no_external_effect_capability() -> None:
         node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     assert forbidden_names.isdisjoint(called_names | called_attributes)
+
+
+def test_conformance_runtime_has_no_staging_attestation_or_trust_root() -> None:
+    source = inspect.getsource(provider_conformance)
+    trust_root_path = REPO_ROOT / "src/app/runtime/system_capabilities/wms/conformance_trust_root.py"
+
+    assert not trust_root_path.exists()
+    assert "StagingConformance" not in source
+    assert "Ed25519" not in source
+    assert "staging_attestation" not in source
+    assert "signature" not in source
+    assert not hasattr(provider_conformance.ConformanceTarget, "STAGING_LIVE")
+
+
+def test_conformance_report_uses_only_the_active_profile_and_local_targets() -> None:
+    build_parameters = set(inspect.signature(provider_conformance.build_wms_conformance_report).parameters)
+    verify_parameters = set(inspect.signature(provider_conformance.verify_wms_conformance_report).parameters)
+
+    assert "profile" not in build_parameters
+    assert "endpoint_revision" not in build_parameters
+    assert "profile" not in verify_parameters
+    assert set(provider_conformance.ConformanceTarget) == {
+        provider_conformance.ConformanceTarget.CI_ADAPTER,
+        provider_conformance.ConformanceTarget.SIMULATOR,
+        provider_conformance.ConformanceTarget.REPLAY,
+    }

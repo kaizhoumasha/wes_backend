@@ -21,7 +21,7 @@ class OperationConformanceRequirement(BaseModel):
 
 
 class WmsConformanceManifest(BaseModel):
-    """仅供 CI/simulator/staging conformance 使用的构建期清单。"""
+    """仅供 CI、simulator、replay 与双方联调使用的构建期清单。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

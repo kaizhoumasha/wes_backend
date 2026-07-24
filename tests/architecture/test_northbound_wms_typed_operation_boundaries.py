@@ -6,6 +6,7 @@ import importlib
 import importlib.util
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -132,3 +133,41 @@ def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> No
         "callback_adapter",
     )
     assert all(term not in source for term in forbidden)
+
+
+def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalog() -> None:
+    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+
+    sandbox = catalog.build_active_wms_provider_profile(SimpleNamespace(APP_ENV="test"))
+    production = catalog.build_active_wms_provider_profile(SimpleNamespace(APP_ENV="prod"))
+
+    assert sandbox.identity.environment == "sandbox"
+    assert production.identity.environment == "production"
+    assert len(sandbox.bindings) == len(production.bindings) == 4
+    assert {binding.profile for binding in sandbox.bindings} == {sandbox.identity}
+    assert {binding.profile for binding in production.bindings} == {production.identity}
+    assert not hasattr(catalog, "WMS_PROVIDER_PROFILES")
+    assert not hasattr(catalog, "WMS_EXTERNAL_HTTP_EFFECT_PROFILES")
+
+    source = inspect.getsource(catalog)
+    assert "MappingProxyType" not in source
+    assert "runtime_profile_environment" not in source
+
+
+def test_endpoint_or_secret_rotation_does_not_change_active_provider_identity() -> None:
+    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+    first = SimpleNamespace(
+        APP_ENV="test",
+        WMS_SYNC_BASE_URL="https://wms-one.invalid/api",
+        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="first-secret",
+    )
+    rotated = SimpleNamespace(
+        APP_ENV="test",
+        WMS_SYNC_BASE_URL="https://wms-two.invalid/api",
+        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="rotated-secret",
+    )
+
+    assert (
+        catalog.build_active_wms_provider_profile(first).identity
+        == catalog.build_active_wms_provider_profile(rotated).identity
+    )

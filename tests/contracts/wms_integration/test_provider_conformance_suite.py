@@ -12,7 +12,6 @@ from pydantic import ValidationError
 
 from src.app.runtime.system_capabilities.wms.conformance_manifest import WMS_CONFORMANCE_MANIFEST
 from src.app.runtime.system_capabilities.wms.contracts import WmsOperationMode
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
@@ -36,7 +35,6 @@ from tests.support.wms_provider_replay import (
     QueryInventoryReplayFactory,
 )
 
-SANDBOX_PROFILE = WMS_PROVIDER_PROFILES["wms.2026-07-06.material-flow.sandbox"]
 GENERATED_AT = datetime(2026, 7, 21, 8, 0, tzinfo=UTC)
 EFFECT_STATUS_REPLAY_FIXTURE = {
     "state": "COMPLETED",
@@ -82,7 +80,6 @@ async def test_every_target_runs_the_same_core_question_bank_without_override(ta
         cases=QUERY_INVENTORY_CONFORMANCE_CASES,
         observations=observations,
         target=target_factory.target,
-        profile=SANDBOX_PROFILE,
         fixture_digest=target_factory.asset_digest,
         generated_at=GENERATED_AT,
     )

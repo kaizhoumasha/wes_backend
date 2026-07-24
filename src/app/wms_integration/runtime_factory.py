@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding, wms_sync_base_url
+from src.app.runtime.system_capabilities.wms.provider_catalog import (
+    WMS_PROVIDER_PROFILE,
+    build_active_wms_provider_profile,
+    resolve_wms_operation_binding,
+    wms_sync_base_url,
+)
 from src.app.sys.external_http_credentials import AuditedVersionedCredentialProvider
 from src.app.sys.external_http_credentials import (
     build_environment_external_http_credential_provider as build_environment_credential_provider,
@@ -27,6 +32,7 @@ from src.app.wms_integration.services.query_transport import (
     WmsQueryEvidenceWriter,
     WmsQueryTransportExecutor,
 )
+from src.core.conf import settings
 from src.database.db import get_db_context
 
 if TYPE_CHECKING:
@@ -107,19 +113,23 @@ def _json_ready_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def build_inventory_query_port_factory(
     *,
-    provider_profile: Any,
     simulation: bool,
     sandbox_rows_provider: SandboxInventoryRowsProvider,
     transport: httpx.AsyncBaseTransport | None = None,
     credential_provider: WmsCredentialProvider | None = None,
     evidence_writer: WmsQueryEvidenceWriter | None = None,
     base_url: str | None = None,
+    settings_source: Any | None = None,
 ) -> Callable[[], InventoryQueryOperationPort]:
-    """以 attempt pin 的完整 profile 构建唯一 QUERY executor factory。"""
+    """以当前部署唯一 active profile 构建 QUERY executor factory。"""
 
-    profile_identity = getattr(provider_profile, "identity", None)
-    if not isinstance(profile_identity, str) or not profile_identity:
-        raise ValueError("pinned provider profile identity is required")
+    active_settings = settings if settings_source is None else settings_source
+    expected_environment = build_active_wms_provider_profile(active_settings).identity.environment
+    if simulation and expected_environment == "production":
+        raise ValueError("production WMS runtime forbids in-process simulation")
+    if WMS_PROVIDER_PROFILE.identity.environment != expected_environment:
+        raise ValueError("runtime factory Settings must match the process active WMS provider profile")
+    profile_identity = WMS_PROVIDER_PROFILE.identity.identity
     binding = resolve_wms_operation_binding(
         profile_identity=profile_identity,
         operation_identity=CONTRACT.identity,
@@ -149,8 +159,10 @@ def build_inventory_query_port_factory(
             secret=secret,
         )
     else:
-        resolved_base_url = resolved_base_url or wms_sync_base_url()
-        resolved_credential_provider = resolved_credential_provider or build_environment_credential_provider()
+        resolved_base_url = resolved_base_url or wms_sync_base_url(settings_source=active_settings)
+        resolved_credential_provider = resolved_credential_provider or build_environment_credential_provider(
+            settings_source=active_settings
+        )
     if resolved_credential_provider is None:
         raise ValueError("WMS QUERY credential provider is required")
     if not isinstance(resolved_credential_provider, AuditedVersionedCredentialProvider):
@@ -181,10 +193,14 @@ def build_effect_status_query_port_factory(
     transport: httpx.AsyncBaseTransport | None = None,
     initial_backoff_seconds: float,
     max_backoff_seconds: float,
+    settings_source: Any | None = None,
 ) -> Callable[[], WmsEffectStatusQueryPort]:
     """仅从 Intent 冻结 binding 装配状态查询 adapter，不回查 active endpoint。"""
 
-    resolved_credential_provider = credential_provider or build_environment_credential_provider()
+    active_settings = settings if settings_source is None else settings_source
+    resolved_credential_provider = credential_provider or build_environment_credential_provider(
+        settings_source=active_settings
+    )
     if not isinstance(resolved_credential_provider, AuditedVersionedCredentialProvider):
         resolved_credential_provider = AuditedVersionedCredentialProvider(
             resolved_credential_provider,

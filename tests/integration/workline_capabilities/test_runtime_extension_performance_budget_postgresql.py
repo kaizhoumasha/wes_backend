@@ -108,7 +108,6 @@ def _inventory_query_port_factory_builder(session_factory: Any, http_calls: list
     def builder(*, provider_profile: Any, simulation: bool, sandbox_rows_provider: Any):
         breaker_service = WmsCircuitBreakerService(failure_threshold=2, retry_after_seconds=60)
         return build_inventory_query_port_factory(
-            provider_profile=provider_profile,
             simulation=simulation,
             sandbox_rows_provider=sandbox_rows_provider,
             transport=httpx.MockTransport(handler),

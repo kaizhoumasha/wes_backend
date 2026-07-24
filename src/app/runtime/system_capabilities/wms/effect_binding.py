@@ -16,7 +16,7 @@ def freeze_wms_effect_binding(
     target_code: str,
     registry: EndpointRegistry | None = None,
 ) -> FrozenExternalHttpBinding:
-    """延迟读取完整 Provider catalog，避免 operation package 初始化环。"""
+    """延迟读取当前部署唯一 active Provider，避免 operation package 初始化环。"""
 
     from src.app.runtime.system_capabilities.wms.provider_catalog import (
         freeze_wms_effect_binding as freeze_from_catalog,

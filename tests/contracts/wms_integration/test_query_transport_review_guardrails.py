@@ -18,7 +18,6 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy.exc import DBAPIError
 
-from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
 from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
@@ -27,6 +26,7 @@ from src.app.runtime.system_capabilities.definition import (
 )
 from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
 from src.app.wms_integration.models import WmsOperationName
 from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationRequest
@@ -97,7 +97,7 @@ def _adapter(
 ) -> InventoryQueryOperationAdapter:
     WmsBoundQueryEndpoint, resolve_wms_operation_binding = _query_transport_contracts()
     binding = resolve_wms_operation_binding(
-        profile_identity="wms.2026-07-06.material-flow.production",
+        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
         operation_identity=CONTRACT.identity,
     )
     binding = binding.model_copy(
@@ -136,7 +136,7 @@ async def test_production_query_consumes_pinned_binding_and_signs_exact_http_req
     credential_provider = _CredentialProvider(secret)
     evidence_writer = _EvidenceWriter()
     binding = resolve_wms_operation_binding(
-        profile_identity="wms.2026-07-06.material-flow.production",
+        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
         operation_identity=CONTRACT.identity,
     )
     executor = WmsQueryTransportExecutor(
@@ -253,7 +253,6 @@ async def test_truncated_trailing_or_corrupt_content_encoding_never_succeeds(
 
 def test_sandbox_factory_reuses_closed_transport_executor_and_pinned_profile() -> None:
     factory = build_inventory_query_port_factory(
-        provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE,
         simulation=True,
         sandbox_rows_provider=lambda **_kwargs: [],
     )
@@ -262,7 +261,7 @@ def test_sandbox_factory_reuses_closed_transport_executor_and_pinned_profile() -
 
     assert isinstance(port, InventoryQueryOperationAdapter)
     assert isinstance(port._executor, WmsQueryTransportExecutor)
-    assert port._executor.binding.profile.identity == WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity
+    assert port._executor.binding.profile.identity == WMS_PROVIDER_PROFILE.identity.identity
     runtime_factory_source = inspect.getsource(build_inventory_query_port_factory)
     assert "before_call(" not in runtime_factory_source
     assert "evidence_writer.record(" not in runtime_factory_source

@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceTarget,
@@ -21,7 +20,6 @@ from tests.support.wms_provider_conformance import verify_query_inventory_replay
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ASSET_PATH = REPO_ROOT / "tests/fixtures/wms_provider_conformance/query_inventory_replay.v1.json"
 PINNED_ASSET_DIGEST = "4584ece449cdcfa69f6a46ac4315b3f11a285f3f832a82bc04685c21ac22bf52"
-SANDBOX_PROFILE = WMS_PROVIDER_PROFILES["wms.2026-07-06.material-flow.sandbox"]
 GENERATED_AT = datetime(2026, 7, 21, 8, 0, tzinfo=UTC)
 
 
@@ -75,7 +73,6 @@ async def test_replay_report_carries_and_verifies_the_actual_asset_digest() -> N
         cases=QUERY_INVENTORY_CONFORMANCE_CASES,
         observations=observations,
         target=ConformanceTarget.REPLAY,
-        profile=SANDBOX_PROFILE,
         fixture_digest=factory.asset_digest,
         generated_at=GENERATED_AT,
     )

@@ -13,7 +13,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE, resolve_wms_operation_binding
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
@@ -252,7 +252,7 @@ async def _execute_adapter_case(case: ScriptedQueryCase, *, handler) -> Conforma
             }
         )
     binding = resolve_wms_operation_binding(
-        profile_identity="wms.2026-07-06.material-flow.sandbox",
+        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
         operation_identity=CONTRACT.identity,
     ).model_copy(update={"operation": contract})
     executor = WmsQueryTransportExecutor(

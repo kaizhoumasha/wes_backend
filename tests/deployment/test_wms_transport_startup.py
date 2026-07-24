@@ -26,8 +26,9 @@ async def test_startup_rejects_invalid_wms_transport_before_database_init(
     monkeypatch.setattr(redis_client, "close_redis", close_redis)
     monkeypatch.setattr(settings, "APP_ENV", "prod")
 
-    def reject_wms_transport(*, app_env: str) -> None:
-        assert app_env == "prod"
+    def reject_wms_transport(*, settings_source: object) -> None:
+        assert settings_source is settings
+        assert settings_source.APP_ENV == "prod"
         raise ValueError("WMS production transport configuration is invalid")
 
     monkeypatch.setattr(provider_catalog, "validate_wms_transport_configuration", reject_wms_transport)

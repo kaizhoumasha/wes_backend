@@ -225,6 +225,8 @@ class WmsProviderProfile(BaseModel):
 
     @model_validator(mode="after")
     def validate_composition(self) -> WmsProviderProfile:
+        if len(self.bindings) < 2:
+            raise ValueError("active provider profile must contain multiple typed operation bindings")
         if any(binding.profile != self.identity for binding in self.bindings):
             raise ValueError("all operation bindings must use provider profile identity")
         operation_identities = tuple(binding.operation.identity for binding in self.bindings)
