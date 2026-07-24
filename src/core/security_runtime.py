@@ -41,10 +41,17 @@ from src.core.security_primitives import (
     jwt_decode,
     jwt_encode,
 )
-from src.database.redis_client import get_redis, is_redis_available
+from src.database.redis_client import ensure_redis_connection, get_redis, is_redis_available
 from src.utils.timezone import timezone
 
 RedisResultT = TypeVar("RedisResultT")
+
+
+async def _redis_client_with_reconnect() -> Any | None:
+    """认证操作按需触发 Redis single-flight 重连。"""
+    if (not is_redis_available() or get_redis() is None) and not await ensure_redis_connection():
+        return None
+    return get_redis()
 
 
 async def _safe_redis_operation(
@@ -53,13 +60,9 @@ async def _safe_redis_operation(
     fallback_result: RedisResultT | None = None,
 ) -> RedisResultT | None:
     """安全执行 Redis 操作（自动降级）。"""
-    if not is_redis_available():
-        logger.debug(f"Redis 不可用，跳过操作: {operation_name}")
-        return fallback_result
-
-    redis_client = get_redis()
+    redis_client = await _redis_client_with_reconnect()
     if redis_client is None:
-        logger.warning(f"Redis 客户端为 None，跳过操作: {operation_name}")
+        logger.debug(f"Redis 不可用，跳过操作: {operation_name}")
         return fallback_result
 
     try:
@@ -71,13 +74,9 @@ async def _safe_redis_operation(
         return fallback_result
 
 
-def _require_redis_client(operation_name: str) -> Any:
+async def _require_redis_client(operation_name: str) -> Any:
     """安全关键路径必须要求 Redis 可用，禁止降级放行。"""
-    if not is_redis_available():
-        logger.error(f"Redis 不可用，拒绝执行安全关键操作: {operation_name}")
-        raise AuthException("认证服务暂时不可用，请稍后重试")
-
-    redis_client = get_redis()
+    redis_client = await _redis_client_with_reconnect()
     if redis_client is None:
         logger.error(f"Redis 客户端不可用，拒绝执行安全关键操作: {operation_name}")
         raise AuthException("认证服务暂时不可用，请稍后重试")
@@ -221,7 +220,7 @@ async def create_new_token(
     **extra_info: Any,
 ) -> NewTokenData:
     """创建新令牌（刷新令牌）。"""
-    redis_client = _require_redis_client("刷新令牌")
+    redis_client = await _require_redis_client("刷新令牌")
 
     token_payload = jwt_decode(refresh_token)
     if token_payload.token_type != TokenType.REFRESH:
@@ -366,7 +365,7 @@ async def _verify_token(token: str, request: Request) -> TokenPayload:
     if token_payload.token_type != TokenType.ACCESS:
         raise InvalidTokenException(f"无效的 token 类型: {token_payload.token_type.value}")
 
-    redis_client = _require_redis_client("访问令牌验证")
+    redis_client = await _require_redis_client("访问令牌验证")
 
     async def _verify_redis(redis_client: Any) -> None:
         if await redis_client.exists(_make_blacklist_key(token_payload.jti)):
