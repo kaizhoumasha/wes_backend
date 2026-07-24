@@ -84,6 +84,7 @@ async def dispatch_external_http(
             binding=binding,
             canonical_payload_bytes=getattr(outbox, "canonical_payload_bytes", None),
             payload_hash=getattr(outbox, "payload_hash", None),
+            idempotency_key=getattr(outbox, "idempotency_key", None),
             secret=secret,
             timestamp=timezone.now_utc().isoformat(),
             nonce=uuid4().hex,

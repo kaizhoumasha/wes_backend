@@ -29,11 +29,13 @@ async def test_external_http_canonical_bytes_round_trip_exactly(integration_db_s
         target_code="WMS_RCS_BIN_OPERATION",
     )
     dispatch_key = f"canonical-roundtrip:{uuid4().hex}"
+    idempotency_key = f"intent:{uuid4().hex}"
     integration_db_session.add(
         SystemOutbox(
             **frozen_binding.as_persisted_fields(),
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             dispatch_key=dispatch_key,
+            idempotency_key=idempotency_key,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             payload_json=projection,
             canonical_payload_bytes=canonical.body,
@@ -52,6 +54,7 @@ async def test_external_http_canonical_bytes_round_trip_exactly(integration_db_s
     assert persisted.canonical_payload_bytes == canonical.body
     assert persisted.payload_hash == canonical.sha256
     assert persisted.payload_json == projection
+    assert persisted.idempotency_key == idempotency_key
     assert persisted.provider_profile_hash == frozen_binding.provider_profile_hash
     assert persisted.binding_revision == frozen_binding.binding_revision
     assert persisted.target_snapshot_json == frozen_binding.target_snapshot.as_json()
@@ -74,6 +77,7 @@ async def test_external_http_frozen_binding_cannot_change_after_insert(
         **frozen_binding.as_persisted_fields(),
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=f"frozen-binding-immutable:{uuid4().hex}",
+        idempotency_key=f"intent:{uuid4().hex}",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         payload_json=projection,
         canonical_payload_bytes=canonical.body,
@@ -83,6 +87,6 @@ async def test_external_http_frozen_binding_cannot_change_after_insert(
     integration_db_session.add(outbox)
     await integration_db_session.flush()
 
-    outbox.credential_reference = "secret://wms/legacy-transport-production-hmac@v2"
+    outbox.idempotency_key = f"mutated:{uuid4().hex}"
     with pytest.raises(ValueError, match="scheduling identity persisted fields are immutable"):
         await integration_db_session.flush()

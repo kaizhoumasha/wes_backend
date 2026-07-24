@@ -38,7 +38,10 @@ class NotifyPackageBindingEffectPreparationService:
     ) -> SystemOutbox:
         if intent_log.dispatch_key != request.dispatch_key:
             raise ValueError("notify_pkg_binding intent/outbox dispatch_key mismatch")
-        outbox = adapter.build_outbox(request)
+        idempotency_key = getattr(intent_log, "idempotency_key", None)
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("notify_pkg_binding intent requires persisted idempotency_key")
+        outbox = adapter.build_outbox(request, idempotency_key=idempotency_key)
         await self._intent_repository.add_proposed_pair(db, intent_log=intent_log, outbox=outbox)
         return outbox
 

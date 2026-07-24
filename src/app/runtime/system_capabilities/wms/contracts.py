@@ -127,6 +127,7 @@ class WmsOperationContract(BaseModel):
     budget: WmsTransportBudget
     retry_policy: WmsRetryPolicy
     outbound_auth_scheme: OutboundAuthScheme
+    supports_status_query: bool = False
     pagination: WmsPaginationContract | None = None
 
     @model_validator(mode="after")
@@ -142,6 +143,10 @@ class WmsOperationContract(BaseModel):
             raise ValueError("EFFECT operation must not declare query row budget")
         if self.mode is WmsOperationMode.EFFECT and self.pagination is not None:
             raise ValueError("EFFECT operation must not declare pagination contract")
+        if self.mode is WmsOperationMode.EFFECT and not self.supports_status_query:
+            raise ValueError("EFFECT operation must declare status query capability")
+        if self.mode is WmsOperationMode.QUERY and self.supports_status_query:
+            raise ValueError("QUERY operation must not declare EFFECT status query capability")
         if self.outbound_auth_scheme is OutboundAuthScheme.NONE:
             raise ValueError("production-capable operation contract cannot require outbound auth NONE")
         return self

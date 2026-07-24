@@ -174,9 +174,10 @@ def test_each_effect_gateway_maps_typed_request_to_dispatch_envelope_once(
     monkeypatch.setattr(provider_catalog.settings, "WMS_SYNC_BASE_URL", "http://mock_wms:8011/api/wms")
     request = request_type(**request_kwargs)
 
-    envelope = gateway_type().build_envelope(request)
+    envelope = gateway_type().build_envelope(request, idempotency_key="intent-foundation-001")
 
     assert envelope.dispatch_key == request.dispatch_key
+    assert envelope.idempotency_key == "intent-foundation-001"
     assert envelope.dispatch_type.value == "EXTERNAL_HTTP"
     assert envelope.target_type.value == "HTTP_ENDPOINT"
     assert envelope.payload_json == expected_payload

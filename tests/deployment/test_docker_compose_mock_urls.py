@@ -24,6 +24,20 @@ LEGACY_ENDPOINT_NAMES = (
     "WMS_RCS_BIN_OPERATION_URL",
     "WMS_RCS_FULL_BOX_EXCHANGE_URL",
 )
+STATUS_CONFIG_NAMES = (
+    "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
+    "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
+    "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS",
+    "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS",
+    "WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS",
+    "WES_EFFECT_NOT_FOUND_GRACE_SECONDS",
+    "WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS",
+    "WES_EFFECT_STATUS_SCAN_BATCH_SIZE",
+    "WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS",
+    "WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS",
+    "WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS",
+    "WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS",
+)
 
 
 def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
@@ -32,6 +46,7 @@ def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
 
     api_env = services["api"]["environment"]
     celery_env = services["celery_worker"]["environment"]
+    celery_beat_env = services["celery_beat"]["environment"]
     mock_wms_env = services["mock_wms"]["environment"]
 
     assert api_env["WMS_SYNC_BASE_URL"] == "${CONTAINER_WMS_SYNC_BASE_URL:-}"
@@ -40,11 +55,20 @@ def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
         assert api_env[endpoint_name] == f"${{{container_name}:-}}"
         assert celery_env[endpoint_name] == api_env[endpoint_name]
     assert celery_env["WMS_SYNC_BASE_URL"] == api_env["WMS_SYNC_BASE_URL"]
+    assert api_env["WMS_EFFECT_STATUS_URL"] == "${CONTAINER_WMS_EFFECT_STATUS_URL:-}"
+    assert celery_env["WMS_EFFECT_STATUS_URL"] == api_env["WMS_EFFECT_STATUS_URL"]
+    assert celery_beat_env["WMS_EFFECT_STATUS_URL"] == api_env["WMS_EFFECT_STATUS_URL"]
+    for setting_name in STATUS_CONFIG_NAMES:
+        assert api_env[setting_name] == f"${{{setting_name}}}"
+        assert celery_env[setting_name] == api_env[setting_name]
+        assert celery_beat_env[setting_name] == api_env[setting_name]
     for secret_name in HMAC_SECRET_NAMES:
         assert api_env[secret_name] == f"${{{secret_name}:-}}"
         assert celery_env[secret_name] == api_env[secret_name]
+        assert celery_beat_env[secret_name] == api_env[secret_name]
     assert api_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == f"${{{REVOKED_CREDENTIAL_REFERENCES_NAME}:-}}"
     assert celery_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == api_env[REVOKED_CREDENTIAL_REFERENCES_NAME]
+    assert celery_beat_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == api_env[REVOKED_CREDENTIAL_REFERENCES_NAME]
     assert (
         mock_wms_env["WES_EXTERNAL_CALLBACK_URL"]
         == "${CONTAINER_WES_EXTERNAL_CALLBACK_URL:-http://api:8001/api/v1/callback/external}"
@@ -58,6 +82,10 @@ def test_dev_and_test_env_declare_container_mock_urls() -> None:
         env_text = (BACKEND_ROOT / env_file).read_text(encoding="utf-8")
 
         assert "CONTAINER_WMS_SYNC_BASE_URL=http://mock_wms:8011/api/wms" in env_text
+        assert "CONTAINER_WMS_EFFECT_STATUS_URL=http://mock_wms:8011/northbound/operations/status" in env_text
+        assert "WMS_EFFECT_STATUS_URL=http://localhost:8011/northbound/operations/status" in env_text
+        for setting_name in STATUS_CONFIG_NAMES:
+            assert f"{setting_name}=" in env_text
         for endpoint_name in LEGACY_ENDPOINT_NAMES:
             assert f"CONTAINER_{endpoint_name}=http://mock_wms:8011/" in env_text
             assert f"{endpoint_name}=http://localhost:8011/" in env_text
@@ -74,6 +102,10 @@ def test_local_settings_load_all_active_wms_credentials_from_generated_dotenv() 
     local_settings = Settings(_env_file=BACKEND_ROOT / ".env.dev")  # pyright: ignore[reportCallIssue]
 
     assert local_settings.WMS_SYNC_BASE_URL
+    assert local_settings.WMS_EFFECT_STATUS_URL
+    assert local_settings.WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS >= (
+        local_settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS + local_settings.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS
+    )
     for endpoint_name in LEGACY_ENDPOINT_NAMES:
         assert getattr(local_settings, endpoint_name)
     assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1
@@ -86,6 +118,10 @@ def test_prod_env_requires_explicit_wms_https_and_production_hmac_secret() -> No
 
     assert "CONTAINER_WMS_SYNC_BASE_URL=" in env_text
     assert "WMS_SYNC_BASE_URL=" in env_text
+    assert "CONTAINER_WMS_EFFECT_STATUS_URL=" in env_text
+    assert "WMS_EFFECT_STATUS_URL=" in env_text
+    for setting_name in STATUS_CONFIG_NAMES:
+        assert f"{setting_name}=" in env_text
     for endpoint_name in LEGACY_ENDPOINT_NAMES:
         assert f"CONTAINER_{endpoint_name}=" in env_text
         assert f"{endpoint_name}=" in env_text

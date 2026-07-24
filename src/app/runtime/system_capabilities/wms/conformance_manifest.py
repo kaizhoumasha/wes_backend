@@ -45,6 +45,7 @@ _CORE_EFFECT_CASES = (
     "unavailable",
     "malformed",
     "idempotency",
+    "status_query",
     "callback_timing",
 )
 

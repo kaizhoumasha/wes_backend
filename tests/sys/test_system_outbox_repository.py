@@ -26,10 +26,18 @@ from src.app.sys.models.outbox import (
     SystemOutbox,
     SystemOutboxDispatchType,
     SystemOutboxTargetType,
+    SystemOutboxUpdate,
 )
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository
 from src.utils.timezone import timezone
 from tests.support.external_http import frozen_external_http_binding
+
+
+def test_system_outbox_declares_nullable_idempotency_request_metadata() -> None:
+    column = SystemOutbox.__table__.c.idempotency_key
+
+    assert column.nullable is True
+    assert "idempotency_key" not in SystemOutboxUpdate.model_fields
 
 
 class _FakeResult:
@@ -98,6 +106,7 @@ async def test_typed_callback_finishes_external_outbox_idempotently(
         operation_domain="WORKLINE",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=f"typed-callback-finish:{initial_status.value}",
+        idempotency_key=f"intent-finish:{initial_status.value}",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         payload_json=payload,
         canonical_payload_bytes=canonical.body,
@@ -137,6 +146,7 @@ async def test_typed_callback_does_not_finish_an_external_outbox_before_dispatch
         operation_domain="WMS_INVENTORY",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key="typed-callback-before-dispatch",
+        idempotency_key="intent-before-dispatch",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         payload_json=payload,
         canonical_payload_bytes=canonical.body,
@@ -177,6 +187,7 @@ async def test_business_identity_mismatch_isolates_external_outbox(
         operation_domain="WMS_INVENTORY",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key=f"typed-callback-mismatch:{initial_status.value}",
+        idempotency_key=f"intent-mismatch:{initial_status.value}",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         payload_json=payload,
         canonical_payload_bytes=canonical.body,
@@ -223,6 +234,7 @@ async def test_finished_wms_outbox_recovers_expired_orphan_attempt_with_real_rep
         operation_domain="WMS_INVENTORY",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key="typed-callback-orphan-attempt",
+        idempotency_key="intent-orphan-attempt",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         payload_json=payload,
         canonical_payload_bytes=canonical.body,

@@ -138,12 +138,17 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         )
     )
     db = object()
-    intent_log = SimpleNamespace(dispatch_key=request.dispatch_key, effect_status="PROPOSED")
+    intent_log = SimpleNamespace(
+        dispatch_key=request.dispatch_key,
+        idempotency_key="intent-full-box-001",
+        effect_status="PROPOSED",
+    )
     service = modules.FullBoxExchangeEffectPreparationService(intent_repository=pair_repository)
 
     outbox = await service.prepare(db, request=request, intent_log=intent_log, adapter=adapter)
 
     assert outbox.status == SystemOutboxStatus.NEW
+    assert outbox.idempotency_key == "intent-full-box-001"
     assert outbox.operation_identity == CONTRACT.identity
     assert outbox.operation_key == "WMS:RACK-001:EMPTY-001:FULL-001"
     assert outbox.target_snapshot_json["url"] == ("https://wms-v1.example/api/wes/fulfillment/full-box-exchange")
@@ -153,6 +158,18 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         b'"full_box_id":"FULL-001","rack_id":"RACK-001"}'
     )
     assert pair_repository.calls == [(db, intent_log, outbox)]
+
+    with pytest.raises(ValueError, match="idempotency_key"):
+        await service.prepare(
+            db,
+            request=request,
+            intent_log=SimpleNamespace(
+                dispatch_key=request.dispatch_key,
+                idempotency_key=None,
+                effect_status="PROPOSED",
+            ),
+            adapter=adapter,
+        )
 
 
 class _RecordingCallbackBridge:

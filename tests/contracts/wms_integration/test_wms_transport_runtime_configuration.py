@@ -14,6 +14,7 @@ from src.app.wms_integration.ports.query_inventory_operation import InventoryQue
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure
 from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
 from src.app.wms_integration.services.query_transport import WmsBoundQueryEndpoint, WmsQueryCallPermit
+from src.core.conf import Settings
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -33,6 +34,70 @@ class _EvidenceWriter:
         permit: WmsQueryCallPermit,
     ) -> str:
         return "evidence-1"
+
+
+def _status_settings(**overrides: object) -> Settings:
+    return Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=".env.dev",
+        DATABASE_RUNTIME_ROLE="cli",
+        DATABASE_POOL_SIZE=1,
+        **overrides,
+    )
+
+
+def test_wms_effect_status_runtime_configuration_exposes_all_frozen_budgets() -> None:
+    configured = _status_settings()
+
+    assert configured.WMS_EFFECT_STATUS_URL
+    assert configured.WMS_EFFECT_STATUS_TIMEOUT_SECONDS > 0
+    assert configured.WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES > 0
+    assert configured.WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS > 0
+    assert configured.WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS > 0
+    assert configured.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS > 0
+    assert configured.WES_EFFECT_NOT_FOUND_GRACE_SECONDS > 0
+    assert configured.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS > 0
+    assert configured.WES_EFFECT_STATUS_SCAN_BATCH_SIZE > 0
+    assert configured.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS >= configured.WMS_EFFECT_STATUS_TIMEOUT_SECONDS
+    assert configured.WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS > 0
+    assert 0 < configured.WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS <= configured.WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"WMS_EFFECT_STATUS_URL": ""}, "WMS_EFFECT_STATUS_URL"),
+        ({"WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 0}, "WMS_EFFECT_STATUS_TIMEOUT_SECONDS"),
+        ({"WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS": 1, "WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 2}, "lease"),
+        (
+            {
+                "WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS": 9,
+                "WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS": 8,
+            },
+            "backoff",
+        ),
+        (
+            {
+                "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS": 8,
+                "WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS": 6,
+                "WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS": 3,
+            },
+            "retention",
+        ),
+        (
+            {
+                "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS": 4,
+                "WES_EFFECT_NOT_FOUND_GRACE_SECONDS": 3,
+            },
+            "visibility",
+        ),
+    ],
+)
+def test_wms_effect_status_runtime_configuration_fails_fast(
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _status_settings(**overrides)
 
 
 def _configure_transport(

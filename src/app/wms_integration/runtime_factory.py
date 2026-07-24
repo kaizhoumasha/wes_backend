@@ -17,7 +17,7 @@ from src.app.sys.external_http_credentials import AuditedVersionedCredentialProv
 from src.app.sys.external_http_credentials import (
     build_environment_external_http_credential_provider as build_environment_credential_provider,
 )
-from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
+from src.app.wms_integration.adapters import InventoryQueryOperationAdapter, WmsEffectStatusQueryAdapter
 from src.app.wms_integration.services.circuit_breaker_service import wms_circuit_breaker_service
 from src.app.wms_integration.services.evidence_service import wms_call_evidence_service
 from src.app.wms_integration.services.query_transport import (
@@ -32,6 +32,7 @@ from src.database.db import get_db_context
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from src.app.wms_integration.ports.effect_status import FrozenWmsEffectStatusBinding, WmsEffectStatusQueryPort
     from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 
     SandboxInventoryRowsProvider = Callable[..., list[dict[str, Any]]]
@@ -172,4 +173,36 @@ def build_inventory_query_port_factory(
     return factory
 
 
-__all__ = ["build_inventory_query_port_factory"]
+def build_effect_status_query_port_factory(
+    *,
+    binding: FrozenWmsEffectStatusBinding,
+    credential_provider: WmsCredentialProvider | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+    initial_backoff_seconds: float,
+    max_backoff_seconds: float,
+) -> Callable[[], WmsEffectStatusQueryPort]:
+    """仅从 Intent 冻结 binding 装配状态查询 adapter，不回查 active endpoint。"""
+
+    resolved_credential_provider = credential_provider or build_environment_credential_provider()
+    if not isinstance(resolved_credential_provider, AuditedVersionedCredentialProvider):
+        resolved_credential_provider = AuditedVersionedCredentialProvider(
+            resolved_credential_provider,
+            provider_kind="custom",
+        )
+
+    def factory() -> WmsEffectStatusQueryPort:
+        return WmsEffectStatusQueryAdapter(
+            binding=binding,
+            credential_provider=resolved_credential_provider,
+            transport=transport,
+            initial_backoff_seconds=initial_backoff_seconds,
+            max_backoff_seconds=max_backoff_seconds,
+        )
+
+    return factory
+
+
+__all__ = [
+    "build_effect_status_query_port_factory",
+    "build_inventory_query_port_factory",
+]

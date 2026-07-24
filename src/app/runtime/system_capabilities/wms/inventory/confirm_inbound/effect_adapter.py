@@ -21,8 +21,10 @@ class ConfirmInboundEffectAdapter:
     def build_outbox(
         self,
         request: ConfirmInboundOperationRequest,
+        *,
+        idempotency_key: str,
     ) -> SystemOutbox:
-        envelope = self._gateway.build_envelope(request)
+        envelope = self._gateway.build_envelope(request, idempotency_key=idempotency_key)
         frozen_binding = envelope.frozen_binding
         if frozen_binding is None:
             raise ValueError("confirm_inbound requires frozen EXTERNAL_HTTP binding")
@@ -34,6 +36,7 @@ class ConfirmInboundEffectAdapter:
             operation_key=envelope.operation_key,
             dispatch_type=envelope.dispatch_type,
             dispatch_key=envelope.dispatch_key,
+            idempotency_key=envelope.idempotency_key,
             target_type=envelope.target_type,
             target_code=frozen_binding.target_snapshot.code,
             provider_profile_identity=frozen_binding.provider_profile_identity,

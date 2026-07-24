@@ -59,6 +59,26 @@ class SystemOutboxTargetType(str, Enum):
 
 
 SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS = frozenset({"DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT"})
+WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
+    {
+        "wms.inventory.confirm_inbound@v1",
+        "wms.fulfillment.full_box_exchange@v1",
+        "wms.fulfillment.notify_pkg_binding@v1",
+    }
+)
+
+
+def _validate_wms_effect_idempotency(outbox: Any) -> None:
+    if getattr(outbox, "operation_identity", None) not in WMS_EFFECT_OPERATION_IDENTITIES:
+        return
+    idempotency_key = getattr(outbox, "idempotency_key", None)
+    if (
+        not isinstance(idempotency_key, str)
+        or not idempotency_key.strip()
+        or "\n" in idempotency_key
+        or "\r" in idempotency_key
+    ):
+        raise ValueError("WMS EFFECT requires a non-empty single-line idempotency_key")
 
 
 def is_system_outbox_resource_wait(outbox: Any) -> bool:
@@ -109,6 +129,7 @@ class DispatchEnvelope:
     operation_identity: str
     payload_json: dict[str, Any]
     operation_domain: str
+    idempotency_key: str | None = None
     frozen_binding: FrozenExternalHttpBinding | None = None
     canonical_payload_bytes: bytes | None = None
     payload_hash: str | None = None
@@ -119,6 +140,7 @@ class DispatchEnvelope:
     trace_id: str | None = None
 
     def __post_init__(self) -> None:
+        _validate_wms_effect_idempotency(self)
         if self.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
             if self.frozen_binding is not None:
                 raise ValueError("non-EXTERNAL_HTTP DispatchEnvelope must not carry frozen binding")
@@ -174,6 +196,11 @@ class SystemOutboxBase(BaseMixin):
         description="派发类型",
     )
     dispatch_key: str = Field(min_length=1, max_length=240, index=True, description="派发幂等键")
+    idempotency_key: str | None = Field(
+        default=None,
+        max_length=160,
+        description="下游 EFFECT 请求幂等键；创建后不可变，通用/历史 Outbox 可空",
+    )
     target_type: SystemOutboxTargetType = Field(
         index=True,
         sa_type=cast(
@@ -400,6 +427,7 @@ class SystemOutboxUpdate(
     ModelFactory(SystemOutboxBase).for_update(
         exclude=(
             "dispatch_key",
+            "idempotency_key",
             "target_code",
             "provider_profile_identity",
             "provider_profile_hash",
@@ -420,6 +448,7 @@ class SystemOutboxUpdate(
     """系统级发件箱更新 Schema。"""
 
     dispatch_key: ClassVar[str]
+    idempotency_key: ClassVar[str]
     target_code: ClassVar[str]
     payload_json: ClassVar[dict[str, Any]]
     canonical_payload_bytes: ClassVar[bytes]
@@ -437,6 +466,7 @@ class SystemOutboxUpdate(
 
 
 def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
+    _validate_wms_effect_idempotency(outbox)
     dispatch_type = getattr(outbox, "dispatch_type", None)
     dispatch_type_value = dispatch_type.value if isinstance(dispatch_type, Enum) else dispatch_type
     if dispatch_type_value != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
@@ -493,6 +523,7 @@ def _prevent_external_http_payload_update(_mapper: Any, _connection: Any, outbox
         "target_snapshot_hash",
         "auth_scheme",
         "credential_reference",
+        "idempotency_key",
     )
     if any(state.attrs[field_name].history.has_changes() for field_name in scheduling_fields):
         raise ValueError("SystemOutbox scheduling identity persisted fields are immutable")

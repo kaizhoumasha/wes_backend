@@ -4,16 +4,27 @@ from __future__ import annotations
 
 import inspect
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
+from src.app.runtime.system_capabilities.wms.conformance_manifest import WMS_CONFORMANCE_MANIFEST
+from src.app.runtime.system_capabilities.wms.contracts import WmsOperationMode
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
     build_wms_conformance_report,
 )
+from src.app.wms_integration.adapters.effect_status_query_adapter import WmsEffectStatusQueryAdapter
+from src.app.wms_integration.ports.effect_status import (
+    NotifyPackageBindingResultIdentity,
+    WmsEffectStatusRequest,
+    build_wms_effect_status_binding,
+)
+from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
     RecordingConformanceTarget,
@@ -26,6 +37,27 @@ from tests.support.wms_provider_replay import (
 
 SANDBOX_PROFILE = WMS_PROVIDER_PROFILES["wms.2026-07-06.material-flow.sandbox"]
 GENERATED_AT = datetime(2026, 7, 21, 8, 0, tzinfo=UTC)
+EFFECT_STATUS_REPLAY_FIXTURE = {
+    "state": "COMPLETED",
+    "provider_reference": "wms-conformance-effect-001",
+    "reason_code": None,
+    "updated_at": "2026-07-24T00:00:00+00:00",
+    "source_version": 4,
+    "result_payload": {
+        "dispatch_key": "dispatch-conformance-001",
+        "package_id": "PKG-CONFORMANCE-001",
+        "pallet_id": "PALLET-CONFORMANCE-001",
+        "accepted": True,
+        "bound_at": "2026-07-24T00:00:00+00:00",
+        "reason_code": None,
+        "source_version": "4",
+    },
+}
+
+
+class _EffectStatusConformanceCredentialProvider:
+    def resolve(self, _credential_reference: str) -> bytes:
+        return b"test-only-effect-status-conformance"
 
 
 @pytest.mark.asyncio
@@ -126,3 +158,68 @@ def test_common_conformance_test_has_no_skip_or_xfail_escape_hatch() -> None:
     assert "pytest.mark.skip" not in source
     assert "pytest.mark.xfail" not in source
     assert "pytest.skip(" not in source
+
+
+def test_every_effect_conformance_question_bank_contains_unsigned_status_query_case() -> None:
+    effect_requirements = tuple(
+        requirement
+        for requirement in WMS_CONFORMANCE_MANIFEST.operations
+        if requirement.operation.mode is WmsOperationMode.EFFECT
+    )
+
+    assert len(effect_requirements) == 3
+    assert all("status_query" in requirement.required_cases for requirement in effect_requirements)
+    serialized = repr(tuple(requirement.required_cases for requirement in effect_requirements)).lower()
+    assert "signature" not in serialized
+    assert "credential" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_unsigned_effect_status_case_replays_the_same_interaction_contract_deterministically() -> None:
+    observed_query_params: list[dict[str, str]] = []
+
+    async def replay(request: httpx.Request) -> httpx.Response:
+        observed_query_params.append(dict(request.url.params))
+        return httpx.Response(200, json=EFFECT_STATUS_REPLAY_FIXTURE)
+
+    binding = build_wms_effect_status_binding(
+        settings_source=SimpleNamespace(
+            APP_ENV="test",
+            WMS_EFFECT_STATUS_URL="https://conformance.invalid/northbound/operations/status",
+            WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
+            WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
+        )
+    )
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=binding,
+        credential_provider=_EffectStatusConformanceCredentialProvider(),
+        transport=httpx.MockTransport(replay),
+        jitter=lambda _upper: 0.0,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+    request = WmsEffectStatusRequest(
+        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+        idempotency_key="intent-conformance-001",
+        expected_result_identity=NotifyPackageBindingResultIdentity(
+            dispatch_key="dispatch-conformance-001",
+            package_id="PKG-CONFORMANCE-001",
+            pallet_id="PALLET-CONFORMANCE-001",
+        ),
+    )
+
+    first = await adapter.query_status(request)
+    second = await adapter.query_status(request)
+
+    assert first == second
+    assert isinstance(first.result, NotifyPackageBindingOperationResult)
+    assert observed_query_params == [
+        {
+            "operation_identity": "wms.fulfillment.notify_pkg_binding@v1",
+            "idempotency_key": "intent-conformance-001",
+        },
+        {
+            "operation_identity": "wms.fulfillment.notify_pkg_binding@v1",
+            "idempotency_key": "intent-conformance-001",
+        },
+    ]

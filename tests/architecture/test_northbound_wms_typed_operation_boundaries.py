@@ -74,3 +74,23 @@ def test_generated_operation_index_has_no_runtime_discovery() -> None:
     assert "rglob(" not in source
     assert "import_module(" not in source
     assert "__import__(" not in source
+
+
+def test_every_authored_wms_effect_declares_status_query_capability() -> None:
+    contracts = _load("src.app.runtime.system_capabilities.wms.contracts")
+    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+
+    effects = tuple(
+        binding.operation
+        for binding in catalog.WMS_PROVIDER_PROFILE.bindings
+        if binding.operation.mode is contracts.WmsOperationMode.EFFECT
+    )
+    queries = tuple(
+        binding.operation
+        for binding in catalog.WMS_PROVIDER_PROFILE.bindings
+        if binding.operation.mode is contracts.WmsOperationMode.QUERY
+    )
+
+    assert len(effects) == 3
+    assert all(operation.supports_status_query is True for operation in effects)
+    assert all(operation.supports_status_query is False for operation in queries)

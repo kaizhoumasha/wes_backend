@@ -247,6 +247,7 @@ def test_dispatch_envelope_requires_and_carries_frozen_binding() -> None:
 
     envelope = DispatchEnvelope(
         dispatch_key="effect:IN-001",
+        idempotency_key="intent:IN-001",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         target_code=frozen.target_snapshot.code,
@@ -263,6 +264,7 @@ def test_dispatch_envelope_requires_and_carries_frozen_binding() -> None:
     with pytest.raises(ValueError, match="frozen binding"):
         DispatchEnvelope(
             dispatch_key="effect:IN-002",
+            idempotency_key="intent:IN-002",
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=frozen.target_snapshot.code,
@@ -281,6 +283,7 @@ def test_external_http_outbox_requires_frozen_fields_and_update_schema_hides_the
     common = {
         "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP,
         "dispatch_key": "effect:IN-001",
+        "idempotency_key": "intent:IN-001",
         "target_type": SystemOutboxTargetType.HTTP_ENDPOINT,
         "target_code": frozen.target_snapshot.code,
         "provider_profile_identity": frozen.provider_profile_identity,
@@ -302,6 +305,7 @@ def test_external_http_outbox_requires_frozen_fields_and_update_schema_hides_the
         "target_snapshot_hash",
         "auth_scheme",
         "credential_reference",
+        "idempotency_key",
     }.isdisjoint(SystemOutboxUpdate.model_fields)
 
 

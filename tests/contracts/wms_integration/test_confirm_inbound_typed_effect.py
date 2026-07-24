@@ -127,7 +127,11 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         )
     )
     db = object()
-    intent_log = SimpleNamespace(dispatch_key=request.dispatch_key, effect_status="PROPOSED")
+    intent_log = SimpleNamespace(
+        dispatch_key=request.dispatch_key,
+        idempotency_key="intent-confirm-inbound-001",
+        effect_status="PROPOSED",
+    )
     service = modules.ConfirmInboundEffectPreparationService(intent_repository=pair_repository)
 
     outbox = await service.prepare(
@@ -139,6 +143,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
 
     assert outbox.status == SystemOutboxStatus.NEW
     assert outbox.dispatch_key == request.dispatch_key
+    assert outbox.idempotency_key == "intent-confirm-inbound-001"
     assert outbox.operation_identity == CONTRACT.identity
     assert outbox.target_snapshot_json["url"] == "https://wms-v1.example/api/wes/inventory/confirm-inbound"
     assert outbox.provider_profile_identity == "wms.2026-07-06.material-flow.sandbox"
@@ -148,6 +153,18 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         b'"owner_code":"OWNER-01","quantity":"1.25","warehouse_code":"WH-01"}'
     )
     assert pair_repository.calls == [(db, intent_log, outbox)]
+
+    with pytest.raises(ValueError, match="idempotency_key"):
+        await service.prepare(
+            db,
+            request=request,
+            intent_log=SimpleNamespace(
+                dispatch_key=request.dispatch_key,
+                idempotency_key=" ",
+                effect_status="PROPOSED",
+            ),
+            adapter=adapter,
+        )
 
 
 class _RecordingCallbackBridge:

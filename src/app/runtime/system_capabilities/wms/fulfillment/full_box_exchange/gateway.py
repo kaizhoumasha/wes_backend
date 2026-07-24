@@ -22,7 +22,14 @@ class FullBoxExchangeDispatchGateway:
     def __init__(self, *, registry: EndpointRegistry | None = None) -> None:
         self._registry = registry
 
-    def build_envelope(self, request: FullBoxExchangeOperationRequest) -> DispatchEnvelope:
+    def build_envelope(
+        self,
+        request: FullBoxExchangeOperationRequest,
+        *,
+        idempotency_key: str,
+    ) -> DispatchEnvelope:
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("full_box_exchange requires persisted idempotency_key")
         payload_json = {
             "dispatch_key": request.dispatch_key,
             "rack_id": request.rack_id,
@@ -39,6 +46,7 @@ class FullBoxExchangeDispatchGateway:
         )
         return DispatchEnvelope(
             dispatch_key=request.dispatch_key,
+            idempotency_key=idempotency_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=CONTRACT.target_code,
