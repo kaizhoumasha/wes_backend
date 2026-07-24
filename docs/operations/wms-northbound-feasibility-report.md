@@ -26,7 +26,9 @@
 | WES NOT_FOUND grace period | 3 秒 | 部署参数 |
 | 最大响应体 | 4096 bytes | 以超限 wire body 负测验证 |
 
-认证在开发 stub 中由进程内隔离替代；真实 WMS 必须在 Task 9 明确 TLS/credential 方案，且探针不记录 credential。
+开发 stub 不持有凭据，也未验证完整 HMAC 签名；它只验证 canonical raw body 与
+`X-WES-Content-SHA256` 一致，并拒绝 hash 篡改。真实 WMS 必须按合同提供 TLS 传输保护及 HMAC-SHA256 应用层认证，
+且探针不记录 credential、secret 或完整签名。
 
 ## 开发 mock 公开面与 operation 清单
 
@@ -42,8 +44,10 @@
 
 Submit wire 与当前 sender 一致：HTTP body 直接是 typed operation payload；
 `X-WES-Operation-Identity` 和 `Idempotency-Key` 是 header。Mock 不接收 `canonical_payload` 外层包络或
-`frozen_binding`；frozen binding 只在 WES 内部保证重试使用原 endpoint/credential revision。本开发 mock 未启用
-HMAC，真实联调必须另行验证 `canonical_dispatch.py` 定义的七项换行 canonical input，不能用本报告自证认证兼容。
+`frozen_binding`；frozen binding 只在 WES 内部保证重试使用原 endpoint/credential revision。本开发 mock 对
+canonical raw body bytes 计算并校验 `X-WES-Content-SHA256`，幂等 fingerprint 也以该 hash 比较，不按解析后的
+dict 相等性判断。本开发 mock 的完整 HMAC 仍未验证；真实联调必须分别验证 Submit 七项与 Status query 五项换行
+canonical input，不能用本报告自证认证兼容。
 
 ## 黑盒探针证据
 
@@ -53,6 +57,7 @@ HMAC，真实联调必须另行验证 `canonical_dispatch.py` 定义的七项换
 | case | 结果 |
 | --- | --- |
 | 首次提交、处理中重放、已完成重放、同 key 冲突 | PASS |
+| canonical raw body hash、`X-WES-Content-SHA256` 与篡改拒绝 | PASS |
 | ACCEPTED → PROCESSING → COMPLETED（任意非负递增版本）、typed result、REJECTED 稳定查询、NOT_FOUND | PASS |
 | 首次未到达后重提、受控恢复、已受理暂不可见唯一效果、已见状态后对账 | PASS |
 | 可控时钟下 `retention_seconds - 1` 的最小保留期/可见性边界、流式最大响应体、429 两种 Retry-After、5xx、真实客户端提交/查询超时 | PASS |

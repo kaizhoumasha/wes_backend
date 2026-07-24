@@ -24,7 +24,7 @@ callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使�
 | QUERY | 实现 `wms.inventory.query_inventory@v1` 的预算、分页、数值精度、业务拒绝、429 和错误形状 | 执行 QUERY 合同题库并保存规范化结果 |
 | callback hint（可选） | 仅携带关联键，允许 WES 提前发起 status query；不提供终态权威 | 验证接收、拒绝、重复、触发查询以及 enqueue 失败后的 scanner 接管 |
 | 保留与可见性 | 承诺幂等/状态记录保留期、状态可见性 SLA、最大响应体和 submit/status deadline | 验证 `retention >= WES max confirmation age + safety margin` 且 `visibility SLA <= NOT_FOUND grace` |
-| 安全 | 提供 TLS 保护和部署凭据交付流程；按 method/path/timestamp/nonce/payload hash/operation identity/idempotency key 顺序验 HMAC | 仅记录认证方式与凭据引用版本；证据中不得出现密钥、完整 header 或未脱敏 body |
+| 安全 | 提供 TLS 传输保护和 HMAC-SHA256 凭据交付流程；分别实现 Submit 的 `X-WES-*` 七项 canonical 与 Status query 的 `X-WMS-*` 五项 canonical | 分开采集两类签名证据；仅记录认证方式、凭据引用版本和脱敏/hash 后事实，不得出现密钥、完整 header 或未脱敏 body |
 
 必须覆盖的 operation：
 
@@ -53,9 +53,36 @@ callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使�
 | Submit/status deadline |  |
 | 最大响应体 |  |
 
-每个验收 case 都必须记录下列字段；失败证据只能保留有界、脱敏后的协议事实。
+### Submit 签名证据（七项 canonical）
 
-| Operation | Case ID | Typed body canonical hash | Operation/key header 校验 | HTTP/status result | 规范化结果 | 耗时 | 脱敏 evidence ref | 结论 |
+每个真实 EFFECT operation 至少留存一个成功签名和一个篡改拒绝样例。只记录 header 名、脱敏/hash 后的值和校验
+结论，不记录 secret、完整签名或完整业务 body。
+
+| Operation | Method | Path | Timestamp evidence | Nonce evidence | Typed body SHA-256 | Operation identity | Idempotency key evidence | WMS 验签结论 | Evidence ref |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+|  |  |  |  |  |  |  |  |  |  |
+
+canonical 顺序必须是：method → path → timestamp → nonce → payload hash → operation identity →
+idempotency key。对应 header 必须使用 `X-WES-*`、`X-WES-Operation-Identity` 和 `Idempotency-Key`。
+
+### Status query 签名证据（五项 canonical）
+
+每个真实 EFFECT operation 至少留存一个成功签名和一个 timestamp/nonce/body hash 篡改拒绝样例。GET 空 body 的
+hash 必须按原始空 bytes 计算；不得复制 Submit 的 operation identity/idempotency key 到五项 canonical。
+
+| Operation | Method | Raw path | Timestamp evidence | Nonce evidence | Actual request body SHA-256 | WMS 验签结论 | Evidence ref |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+|  |  |  |  |  |  |  |  |
+
+canonical 顺序必须是：method → path → timestamp → nonce → body hash。对应 header 必须使用 `X-WMS-*`。
+这里的 path 是包含原始 query string 的 HTTP raw path；`operation_identity` 和 `idempotency_key` 按 status query
+parameter 传递，并通过该 raw-path 值共同被签名，但不是额外的第六、第七项 canonical 字段。
+
+### 业务验收 case 证据
+
+每个验收 case 都必须记录下列字段；签名事实引用上述两张独立表，失败证据只能保留有界、脱敏后的协议事实。
+
+| Operation | Case ID | Typed body canonical hash | Submit/Status 签名 evidence ref | HTTP/status result | 规范化结果 | 耗时 | 脱敏 evidence ref | 结论 |
 | --- | --- | --- | --- | --- | --- | ---: | --- | --- |
 |  |  |  |  |  |  |  |  |  |
 

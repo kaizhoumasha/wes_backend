@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -11,10 +12,11 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from scripts.verify_wms_northbound_feasibility import run_probe
+from src.app.sys.canonical_dispatch import canonical_json_bytes
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -100,21 +102,30 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
 
     @app.post("/northbound/operations")
     async def submit(
-        payload: dict[str, Any],
+        request: Request,
         idempotency_key: str = Header(alias="Idempotency-Key"),
         operation_identity: str = Header(alias="X-WES-Operation-Identity"),
+        content_sha256: str = Header(alias="X-WES-Content-SHA256"),
         x_probe_scenario: str = Header(alias="X-Probe-Scenario"),
         x_first_attempt_dropped: str | None = Header(default=None),
     ) -> JSONResponse:
+        raw_body = await request.body()
+        actual_hash = hashlib.sha256(raw_body).hexdigest()
+        if content_sha256 != actual_hash:
+            raise HTTPException(status_code=422, detail={"error_code": "CONTENT_HASH_MISMATCH"})
+        try:
+            payload = json.loads(raw_body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=422, detail={"error_code": "INVALID_JSON"}) from exc
+        if not isinstance(payload, dict) or canonical_json_bytes(payload) != raw_body:
+            raise HTTPException(status_code=422, detail={"error_code": "NON_CANONICAL_BODY"})
         assert set(payload) == {
             "dispatch_key",
             "package_id",
             "pallet_id",
-            "provider_code",
             "station_code",
         }
         assert not {"operation_identity", "idempotency_key", "canonical_payload", "frozen_binding"} & set(payload)
-        canonical_payload = payload
         key = record_key(operation_identity, idempotency_key)
         if x_first_attempt_dropped == "true":
             await asyncio.sleep(0.05)
@@ -124,7 +135,7 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
             records.pop(key)
             record = None
         if record is not None:
-            if record["canonical_payload"] != canonical_payload:
+            if record["payload_hash"] != content_sha256:
                 raise HTTPException(status_code=422, detail={"error_code": "IDEMPOTENCY_CONFLICT"})
             if record["scenario"] == "rejected":
                 return JSONResponse(
@@ -135,7 +146,7 @@ async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
             raise HTTPException(status_code=409, detail={"error_code": "IDEMPOTENCY_REQUEST_IN_PROGRESS"})
 
         records[key] = {
-            "canonical_payload": canonical_payload,
+            "payload_hash": content_sha256,
             "scenario": x_probe_scenario,
             "status_reads": 0,
             "created_at": clock["seconds"],
@@ -222,9 +233,32 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
         "wms_5xx_shape",
         "status_query_timeout",
         "maximum_response_body",
+        "content_hash_tamper_rejected",
     }
     assert all(case.passed for case in report.cases)
     assert all("secret" not in case.detail.lower() for case in report.cases)
+
+
+@pytest.mark.asyncio
+async def test_mock_rejects_raw_body_hash_tampering(
+    northbound_stub_client: httpx.AsyncClient,
+) -> None:
+    raw_body = b'{"dispatch_key":"dispatch-001","package_id":"package-001","pallet_id":"pallet-001","station_code":"station-a"}'
+
+    response = await northbound_stub_client.post(
+        "/northbound/operations",
+        content=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "Idempotency-Key": "tampered-content-hash",
+            "X-Probe-Scenario": "success",
+            "X-WES-Content-SHA256": "0" * 64,
+            "X-WES-Operation-Identity": OPERATION_IDENTITY,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": {"error_code": "CONTENT_HASH_MISMATCH"}}
 
 
 @pytest.mark.asyncio

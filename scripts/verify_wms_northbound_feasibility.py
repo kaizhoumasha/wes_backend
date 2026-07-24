@@ -15,6 +15,8 @@ from uuid import uuid4
 
 import httpx
 
+from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256
+
 _STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"})
 _REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
@@ -47,7 +49,6 @@ class FeasibilityReport:
 def _payload(*, fingerprint: str = "payload-a") -> dict[str, Any]:
     return {
         "dispatch_key": "dispatch-001",
-        "provider_code": "WMS",
         "package_id": "package-001",
         "pallet_id": "pallet-001",
         "station_code": "station-a" if fingerprint == "payload-a" else "station-b",
@@ -259,11 +260,16 @@ async def run_probe(
         *,
         scenario: str = "success",
         fingerprint: str = "payload-a",
+        content_hash: str | None = None,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response | None:
+        body = canonical_json_bytes(_payload(fingerprint=fingerprint))
+        payload_hash = payload_sha256(body)
         wire_headers = {
+            "Content-Type": "application/json",
             "Idempotency-Key": key,
             "X-Probe-Scenario": scenario,
+            "X-WES-Content-SHA256": content_hash or payload_hash,
             "X-WES-Operation-Identity": operation_identity,
             **(headers or {}),
         }
@@ -273,7 +279,7 @@ async def run_probe(
             "/northbound/operations",
             request_timeout_seconds=request_timeout_seconds,
             max_response_bytes=max_response_bytes,
-            json=_payload(fingerprint=fingerprint),
+            content=body,
             headers=wire_headers,
         )
 
@@ -368,6 +374,21 @@ async def run_probe(
                 error_code="IDEMPOTENCY_CONFLICT",
                 max_response_bytes=max_response_bytes,
             ),
+        )
+    )
+
+    tampered_key = f"probe-tampered-{uuid4().hex}"
+    tampered = await submit(tampered_key, content_hash="0" * 64)
+    results.append(
+        _result(
+            "content_hash_tamper_rejected",
+            _stable_error(
+                tampered,
+                status_code=422,
+                error_code="CONTENT_HASH_MISMATCH",
+                max_response_bytes=max_response_bytes,
+            )
+            and await effect_count(tampered_key) == 0,
         )
     )
 

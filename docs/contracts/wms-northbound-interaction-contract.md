@@ -10,19 +10,53 @@
 
 HTTP body 是 operation-specific typed payload 的 canonical JSON，即对应
 `ConfirmInboundOperationRequest`、`FullBoxExchangeOperationRequest` 或 `NotifyPackageBindingOperationRequest`
-的原始业务字段；没有 `operation_identity/idempotency_key/canonical_payload/frozen_binding` 外层包络。例如：
+经 gateway 投影后的 wire 字段；没有 `operation_identity/idempotency_key/canonical_payload/frozen_binding`
+外层包络。所有 string 在进入 wire 前已去除首尾空白且不得为空；表中 `1..N` 表示 UTF-8 JSON string 的字符长度
+约束。body 只允许表中字段，当前三个请求均无枚举字段。
 
-```json
-{
-  "dispatch_key": "opaque-dispatch-key",
-  "...": "该 typed operation 冻结的其它业务字段"
-}
-```
+### `wms.inventory.confirm_inbound@v1`
 
-`Idempotency-Key` 和 `X-WES-Operation-Identity` 是 HTTP header。当前 WES sender 还发送
-`Content-Type`、`X-WES-Content-SHA256`、`X-WES-Credential-Reference`、`X-WES-Nonce`、
-`X-WES-Signature`、`X-WES-Signature-Algorithm` 和 `X-WES-Timestamp` 这一封闭 header 集；WMS 不得要求
-把这些传输元数据复制进 typed body。
+| Wire 字段 | JSON 类型 | 必填 | 约束 |
+| --- | --- | --- | --- |
+| `dispatch_key` | string | 是 | 1..240 |
+| `inbound_key` | string | 是 | 1..120 |
+| `material_code` | string | 是 | 1..120 |
+| `quantity` | decimal string | 是 | `> 0`、有限十进制数；gateway 以 `str(Decimal)` 编码，不是 JSON number |
+| `warehouse_code` | string | 否 | 1..120；无值时字段整体省略，不发送 `null` |
+| `owner_code` | string | 否 | 1..120；无值时字段整体省略，不发送 `null` |
+| `lot_no` | string | 否 | 1..120；无值时字段整体省略，不发送 `null` |
+
+当前无枚举字段。不发送：`workline_id`、`session_id`、`trace_id`，以及 provider profile、frozen binding、
+operation identity、idempotency key、Outbox/Intent 元数据；后两项只按下文进入 header。
+
+### `wms.fulfillment.full_box_exchange@v1`
+
+| Wire 字段 | JSON 类型 | 必填 | 约束 |
+| --- | --- | --- | --- |
+| `dispatch_key` | string | 是 | 1..240 |
+| `rack_id` | string | 是 | 1..120 |
+| `empty_box_id` | string | 是 | 1..120 |
+| `full_box_id` | string | 是 | 1..120 |
+
+当前无枚举字段。不发送：`provider_code`、`workline_id`、`session_id`、`trace_id`，以及 provider profile、
+frozen binding、operation identity、idempotency key、Outbox/Intent 元数据。`provider_code` 只参与 WES 内部
+operation key，不是 WMS wire body 字段。
+
+### `wms.fulfillment.notify_pkg_binding@v1`
+
+| Wire 字段 | JSON 类型 | 必填 | 约束 |
+| --- | --- | --- | --- |
+| `dispatch_key` | string | 是 | 1..240 |
+| `package_id` | string | 是 | 1..120 |
+| `pallet_id` | string | 是 | 1..120 |
+| `station_code` | string | 是 | 1..120 |
+
+当前无枚举字段。不发送：`provider_code`、`workline_id`、`session_id`、`trace_id`，以及 provider profile、
+frozen binding、operation identity、idempotency key、Outbox/Intent 元数据。`provider_code` 只参与 WES 内部
+operation key，不是 WMS wire body 字段。
+
+以上表格是 WMS 开发团队实现 request validator 的自包含输入合同，并与三个 Pydantic Request model 及 gateway
+投影同步；Request model 中存在但表中未列出的字段均为 WES 内部字段，不得推断为可选 wire 字段。
 
 frozen binding 仅为 WES 内部持久化事实，绝不进入 HTTP body、header 或 query。它冻结 endpoint、credential
 reference、operation identity 和 binding revision，使重试/重启继续构造同一远端请求；WMS 无需理解或保存 WES
@@ -33,7 +67,22 @@ object key 排序、无额外空白且拒绝 NaN/Infinity。WMS 必须按
 `X-WES-Operation-Identity + Idempotency-Key` 定位原请求，并用 fingerprint 比较 body，不得因原始 JSON
 字段顺序、空白、timestamp/nonce 更新或 transport retry 改变结论。
 
-当前 `canonical_dispatch.py` 的 HMAC canonical input 顺序严格为
+### Submit 请求认证
+
+Submit 使用 `X-WES-*` HMAC header。`Idempotency-Key` 和 `X-WES-Operation-Identity` 是 HTTP header；当前 WES
+sender 的封闭 header 集为：
+
+- `Content-Type: application/json`
+- `X-WES-Content-SHA256`
+- `X-WES-Credential-Reference`
+- `X-WES-Nonce`
+- `X-WES-Signature`
+- `X-WES-Signature-Algorithm`：固定值 `HMAC_SHA256`
+- `X-WES-Timestamp`
+- `X-WES-Operation-Identity`
+- `Idempotency-Key`
+
+WMS 不得要求把这些传输元数据复制进 typed body。`canonical_dispatch.py` 的 Submit 七项 canonical input 顺序严格为
 method → path → timestamp → nonce → payload hash → operation identity → idempotency key，各字段使用换行符连接：
 
 ```text
@@ -48,6 +97,35 @@ POST
 
 这里的 path 是冻结 endpoint URL 的 path（空 path 归一为 `/`），不含 scheme、host 或 query。任何字段、顺序或
 分隔符变化都会产生不同签名。
+
+### Status query 请求认证
+
+Status query 使用另一套既有 `X-WMS-*` HMAC header，不能沿用或重命名 Submit 的 `X-WES-*` header：
+
+- `X-WMS-Content-SHA256`
+- `X-WMS-Credential-Reference`
+- `X-WMS-Nonce`
+- `X-WMS-Signature`
+- `X-WMS-Signature-Algorithm`：固定值 `HMAC_SHA256`
+- `X-WMS-Timestamp`
+
+`http_transport.py` 的 Status query 五项 canonical input 顺序严格为
+method → path → timestamp → nonce → body hash，各字段使用换行符连接：
+
+```text
+GET
+/resolved/status/path?operation_identity=<encoded>&idempotency_key=<encoded>
+<X-WMS-Timestamp>
+<X-WMS-Nonce>
+<X-WMS-Content-SHA256>
+```
+
+这里的 path 实际取自 `httpx.Request.url.raw_path`：不含 scheme 和 host，但包含 `?` 后的原始 query string。
+因此 `operation_identity`、`idempotency_key` 的字段名、编码值和发送顺序都作为第二项的一部分参与签名；WMS 必须
+对收到的 request target 原样取值，不能先解析、排序或重新编码 query。当前 Status query 使用 GET。GET 的 request body 为空 bytes，因此
+`X-WMS-Content-SHA256` 必须是 `SHA-256(b"")`。若未来某个已冻结 status target 使用非空实际 body，则该 header
+和五项 canonical 的最后一项都必须改为该次实际 raw body bytes 的 SHA-256；不得使用 response body 或解析后的
+dict 计算。
 
 ## 2. 提交幂等与冲突
 
@@ -98,7 +176,10 @@ WES 的唯一一次受控恢复重提还必须同时满足：此前从未观察�
 
 ## 5. 传输、安全与运维
 
-- 认证使用部署定义的 TLS 保护方式（mTLS 或短期 Bearer/OAuth）；密钥、完整认证 header、未脱敏 body 均不得写入探针、日志、证据或报告。
+- TLS 仅提供传输保护；HMAC-SHA256 是当前应用层认证。Submit 使用上述 `X-WES-*` 七项 canonical，Status query
+  使用上述 `X-WMS-*` 五项 canonical。Bearer/OAuth 不是当前合同；如未来引入，必须作为新版本合同单独设计、评审
+  和验收，不能替换或混入本版本 HMAC 语义。
+- 密钥、完整认证 header、未脱敏 body 均不得写入探针、日志、证据或报告。
 - 客户端和服务端必须为提交、状态查询分别声明 deadline；联调以真实客户端 deadline（服务端 sleep/断连）验证提交超时，而非用 HTTP 504 代替。超时后同键同 payload 重提，仍按本合同幂等语义处理，不能猜测业务成功。
 - 429 必须带合法 `Retry-After`（delta-seconds 或 HTTP-date）；WES 以其为下一次状态查询的时间下限，不在限流窗口忙重试。
 - 5xx 使用稳定、可分类错误码；最大响应体大小作为部署承诺。超过承诺、畸形 JSON 或未知状态均为合同失败。
