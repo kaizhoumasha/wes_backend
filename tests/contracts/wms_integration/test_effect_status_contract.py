@@ -45,6 +45,7 @@ NOTIFY_PACKAGE_BINDING = "wms.fulfillment.notify_pkg_binding@v1"
 def _binding(*, timeout_seconds: float = 2.0) -> FrozenWmsEffectStatusBinding:
     settings = SimpleNamespace(
         APP_ENV="test",
+        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
         WMS_EFFECT_STATUS_URL="https://wms.example/northbound/operations/status",
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=timeout_seconds,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
@@ -120,7 +121,7 @@ def test_status_binding_is_hashed_immutable_non_secret_and_strictly_round_trips(
     persisted = binding.as_persisted()
 
     assert persisted["snapshot"]["target"]["url"] == "https://wms.example/northbound/operations/status"
-    assert persisted["snapshot"]["credential_reference"].endswith("@v1")
+    assert persisted["snapshot"]["credential_reference"].endswith("@v2")
     assert "secret" not in repr(persisted).lower().replace("secret://", "")
     assert FrozenWmsEffectStatusBinding.from_persisted(**persisted) == binding
     with pytest.raises(ValidationError, match="frozen"):
@@ -363,7 +364,7 @@ def test_status_progression_rejects_version_regression_and_same_version_drift() 
 
 class _CredentialProvider:
     def resolve(self, credential_reference: str) -> bytes:
-        assert credential_reference.endswith("@v1")
+        assert credential_reference.endswith("@v2")
         return b"status-test-secret"
 
 
@@ -428,7 +429,7 @@ async def test_adapter_uses_only_frozen_query_key_and_returns_typed_snapshot() -
         "operation_identity": NOTIFY_PACKAGE_BINDING,
         "idempotency_key": "intent-idempotency-001",
     }
-    assert requests[0].headers["X-WMS-Credential-Reference"].endswith("@v1")
+    assert requests[0].headers["X-WMS-Credential-Reference"].endswith("@v2")
     assert requests[0].headers["X-WMS-Signature"]
     assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")] * 2
     assert all(isinstance(record["outcome"], QuerySuccess) for record in evidence_writer.records)

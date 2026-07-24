@@ -9,6 +9,9 @@ import httpx
 import pytest
 
 from src.app.runtime.system_capabilities.wms import provider_catalog
+from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256
+from src.app.sys.external_http_credentials import build_environment_external_http_credential_provider
+from src.app.wms_integration.ports.effect_status import FrozenWmsEffectStatusBinding
 from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationRequest
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure
 from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
@@ -59,6 +62,66 @@ def test_wms_effect_status_runtime_configuration_exposes_all_frozen_budgets() ->
     assert configured.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS >= configured.WMS_EFFECT_STATUS_TIMEOUT_SECONDS
     assert configured.WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS > 0
     assert 0 < configured.WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS <= configured.WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS
+
+
+def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_frozen_revisions() -> None:
+    old_settings = SimpleNamespace(APP_ENV="test", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1")
+    active_settings = SimpleNamespace(
+        APP_ENV="test",
+        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
+        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="old-secret",
+        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2="new-secret",
+        WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES="",
+    )
+
+    old_profile = provider_catalog.build_active_wms_provider_profile(old_settings)
+    active_profile = provider_catalog.build_active_wms_provider_profile(active_settings)
+    old_reference = old_profile.bindings[0].outbound_auth.credential_reference
+    active_reference = active_profile.bindings[0].outbound_auth.credential_reference
+    credential_provider = build_environment_external_http_credential_provider(settings_source=active_settings)
+    old_profile_hash = payload_sha256(
+        canonical_json_bytes(
+            {
+                "credential_reference": old_reference,
+                "provider_profile_identity": old_profile.identity.identity,
+            }
+        )
+    )
+    target = {
+        "url": "https://old-wms.example.test/status",
+        "http_method": "GET",
+        "timeout_seconds": 2.0,
+        "max_response_bytes": 4096,
+    }
+    target_hash = payload_sha256(canonical_json_bytes(target))
+    old_binding_snapshot = {
+        "auth_scheme": "HMAC_SHA256",
+        "binding_revision": payload_sha256(
+            canonical_json_bytes(
+                {
+                    "auth_scheme": "HMAC_SHA256",
+                    "credential_reference": old_reference,
+                    "provider_profile_hash": old_profile_hash,
+                    "target_hash": target_hash,
+                }
+            )
+        ),
+        "credential_reference": old_reference,
+        "provider_profile_hash": old_profile_hash,
+        "provider_profile_identity": old_profile.identity.identity,
+        "target": target,
+        "target_hash": target_hash,
+    }
+    frozen_old_binding = FrozenWmsEffectStatusBinding.from_persisted(
+        snapshot=old_binding_snapshot,
+        snapshot_hash=payload_sha256(canonical_json_bytes(old_binding_snapshot)),
+    )
+
+    assert old_profile.identity.identity == active_profile.identity.identity
+    assert old_reference == "secret://wms/material-flow-sandbox-hmac@v1"
+    assert active_reference == "secret://wms/material-flow-sandbox-hmac@v2"
+    assert credential_provider.resolve(frozen_old_binding.credential_reference) == b"old-secret"
+    assert credential_provider.resolve(active_reference) == b"new-secret"
 
 
 @pytest.mark.parametrize(
@@ -116,6 +179,8 @@ def _configure_transport(
     full_box_endpoint_url: str = "https://wms.example/api/full-box-exchange",
 ) -> None:
     monkeypatch.setattr(provider_catalog.settings, "APP_ENV", app_env)
+    monkeypatch.setattr(provider_catalog.settings, "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED", False)
+    monkeypatch.setattr(provider_catalog.settings, "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION", "v1")
     monkeypatch.setattr(
         provider_catalog.settings,
         "WMS_EFFECT_STATUS_URL",
@@ -177,6 +242,8 @@ def test_wms_transport_reads_url_and_hmac_from_pydantic_settings(
         "settings",
         SimpleNamespace(
             APP_ENV="dev",
+            WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=False,
+            WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1",
             WMS_SYNC_BASE_URL="http://localhost:8011/api/wms",
             WMS_RCS_RACK_OPERATION_URL="http://localhost:8011/api/wms/rack-operation",
             WMS_RCS_BIN_OPERATION_URL="http://localhost:8011/api/wms/transport-request",
@@ -305,7 +372,10 @@ def test_production_runtime_rejects_explicit_in_process_simulation() -> None:
         build_inventory_query_port_factory(
             simulation=True,
             sandbox_rows_provider=lambda **_kwargs: [],
-            settings_source=SimpleNamespace(APP_ENV="prod"),
+            settings_source=SimpleNamespace(
+                APP_ENV="prod",
+                WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
+            ),
         )
 
 
@@ -313,13 +383,19 @@ def test_production_runtime_rejects_explicit_in_process_simulation() -> None:
 async def test_query_factory_honors_shared_credential_revocation_before_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    reference = "secret://wms/material-flow-sandbox-hmac@v1"
+    reference = "secret://wms/material-flow-sandbox-hmac@v2"
     _configure_transport(
         monkeypatch,
         base_url="https://wms.example/api",
         app_env="test",
         sandbox_secret="sandbox-secret",
         revoked_references=reference,
+    )
+    monkeypatch.setattr(provider_catalog.settings, "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION", "v2")
+    monkeypatch.setattr(
+        provider_catalog.settings,
+        "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
+        "sandbox-secret-v2",
     )
     calls = 0
 

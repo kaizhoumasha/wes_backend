@@ -124,10 +124,10 @@ def build_inventory_query_port_factory(
     """以当前部署唯一 active profile 构建 QUERY executor factory。"""
 
     active_settings = settings if settings_source is None else settings_source
-    expected_environment = build_active_wms_provider_profile(active_settings).identity.environment
-    if simulation and expected_environment == "production":
+    configured_profile = build_active_wms_provider_profile(active_settings)
+    if simulation and configured_profile.identity.environment == "production":
         raise ValueError("production WMS runtime forbids in-process simulation")
-    if WMS_PROVIDER_PROFILE.identity.environment != expected_environment:
+    if configured_profile != WMS_PROVIDER_PROFILE:
         raise ValueError("runtime factory Settings must match the process active WMS provider profile")
     profile_identity = WMS_PROVIDER_PROFILE.identity.identity
     binding = resolve_wms_operation_binding(

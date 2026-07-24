@@ -138,8 +138,12 @@ def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> No
 def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalog() -> None:
     catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
 
-    sandbox = catalog.build_active_wms_provider_profile(SimpleNamespace(APP_ENV="test"))
-    production = catalog.build_active_wms_provider_profile(SimpleNamespace(APP_ENV="prod"))
+    sandbox = catalog.build_active_wms_provider_profile(
+        SimpleNamespace(APP_ENV="test", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2")
+    )
+    production = catalog.build_active_wms_provider_profile(
+        SimpleNamespace(APP_ENV="prod", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2")
+    )
 
     assert sandbox.identity.environment == "sandbox"
     assert production.identity.environment == "production"
@@ -158,13 +162,15 @@ def test_endpoint_or_secret_rotation_does_not_change_active_provider_identity() 
     catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
     first = SimpleNamespace(
         APP_ENV="test",
+        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1",
         WMS_SYNC_BASE_URL="https://wms-one.invalid/api",
         WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="first-secret",
     )
     rotated = SimpleNamespace(
         APP_ENV="test",
+        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
         WMS_SYNC_BASE_URL="https://wms-two.invalid/api",
-        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="rotated-secret",
+        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2="rotated-secret",
     )
 
     assert (

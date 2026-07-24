@@ -11,6 +11,9 @@ HMAC_SECRET_NAMES = (
     "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
     "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1",
     "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1",
+    "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
+    "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2",
+    "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2",
     "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1",
     "WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1",
     "WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1",
@@ -92,7 +95,10 @@ def test_dev_and_test_env_declare_container_mock_urls() -> None:
         assert "CONTAINER_WES_EXTERNAL_CALLBACK_URL=http://api:8001/api/v1/callback/external" in env_text
         assert "API_APP_ID=app_local_mock" in env_text
         assert "API_APP_SECRET=local_mock_change_me" in env_text
+        assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=true" in env_text
+        assert "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION=v2" in env_text
         assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1=" in env_text
+        assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2=" in env_text
         assert "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1=" in env_text
         assert "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1=" in env_text
         assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text
@@ -108,7 +114,10 @@ def test_local_settings_load_all_active_wms_credentials_from_generated_dotenv() 
     )
     for endpoint_name in LEGACY_ENDPOINT_NAMES:
         assert getattr(local_settings, endpoint_name)
+    assert local_settings.WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED is True
+    assert local_settings.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION == "v2"
     assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1
+    assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2
     assert local_settings.WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1
     assert local_settings.WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1
 
@@ -125,7 +134,10 @@ def test_prod_env_requires_explicit_wms_https_and_production_hmac_secret() -> No
     for endpoint_name in LEGACY_ENDPOINT_NAMES:
         assert f"CONTAINER_{endpoint_name}=" in env_text
         assert f"{endpoint_name}=" in env_text
+    assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=false" in env_text
+    assert "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION=v2" in env_text
     assert "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1=" in env_text
+    assert "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2=" in env_text
     assert "WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1=" in env_text
     assert "WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1=" in env_text
     assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text

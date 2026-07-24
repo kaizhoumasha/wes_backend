@@ -446,10 +446,10 @@ def build_wms_effect_status_binding(*, settings_source: Any) -> FrozenWmsEffectS
         build_active_wms_provider_profile,
     )
 
-    expected_environment = build_active_wms_provider_profile(settings_source).identity.environment
+    configured_profile = build_active_wms_provider_profile(settings_source)
     profile = WMS_EXTERNAL_HTTP_EFFECT_PROFILE
     profile_identity = WMS_PROVIDER_PROFILE.identity.identity
-    if profile.environment != expected_environment:
+    if configured_profile != WMS_PROVIDER_PROFILE:
         raise ValueError("status binding Settings must match the process active WMS provider profile")
     credential_references = frozenset(binding.credential_reference for binding in profile.bindings)
     auth_schemes = frozenset(binding.auth_scheme for binding in profile.bindings)

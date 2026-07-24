@@ -75,6 +75,9 @@ def build_active_wms_provider_profile(settings_source: Any) -> WmsProviderProfil
     """仅从当前部署 Settings 构建一个 active WMS Provider profile。"""
 
     environment = _deployment_provider_environment(settings_source.APP_ENV)
+    credential_version = settings_source.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION
+    if credential_version not in {"v1", "v2"}:
+        raise ValueError("WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION must be v1 or v2")
     identity = ExternalContractProfile(
         provider_code="WMS",
         contract_version=WMS_MATERIAL_FLOW_CONTRACT_VERSION,
@@ -82,7 +85,7 @@ def build_active_wms_provider_profile(settings_source: Any) -> WmsProviderProfil
     )
     outbound_auth = OutboundAuthProfile(
         scheme=OutboundAuthScheme.HMAC_SHA256,
-        credential_reference=f"secret://wms/material-flow-{environment}-hmac@v1",
+        credential_reference=f"secret://wms/material-flow-{environment}-hmac@{credential_version}",
     )
     return WmsProviderProfile(
         identity=identity,
@@ -134,6 +137,12 @@ def validate_wms_transport_configuration(*, settings_source: Any | None = None) 
     active_settings = settings if settings_source is None else settings_source
     active_profile = build_active_wms_provider_profile(active_settings)
     environment = active_profile.identity.environment
+    if environment == "production" and getattr(
+        active_settings,
+        "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED",
+        False,
+    ):
+        raise ValueError("production WMS QUERY in-process simulation is forbidden")
     base_url = wms_sync_base_url(settings_source=active_settings)
     parsed = validate_wms_base_url(base_url)
     if environment == "production" and parsed.scheme.lower() != "https":

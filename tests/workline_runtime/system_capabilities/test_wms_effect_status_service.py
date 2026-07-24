@@ -41,6 +41,7 @@ def _require_status_service() -> None:
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
         APP_ENV="test",
+        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
         WMS_EFFECT_STATUS_URL="https://wms.example/northbound/operations/status",
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
@@ -50,6 +51,25 @@ def _settings() -> SimpleNamespace:
         WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS=3,
         WES_EFFECT_NOT_FOUND_GRACE_SECONDS=60.0,
     )
+
+
+def test_default_status_port_factory_receives_service_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.app.wms_integration import runtime_factory
+
+    configured = _settings()
+    captured: dict[str, Any] = {}
+
+    def capture_factory(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return lambda: object()
+
+    monkeypatch.setattr(runtime_factory, "build_effect_status_query_port_factory", capture_factory)
+    service = WmsEffectStatusService(settings_source=configured)
+    binding = service._load_binding(_claim())
+
+    service._default_port_factory_builder(binding)
+
+    assert captured["settings_source"] is configured
 
 
 def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any:

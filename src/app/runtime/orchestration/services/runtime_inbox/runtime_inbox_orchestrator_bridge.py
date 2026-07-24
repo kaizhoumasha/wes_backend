@@ -1416,7 +1416,7 @@ class RuntimeInboxProcessorBridge:
                 workline=workline,
                 snapshot=snapshot,
             )
-            provider_profile = await self._pin_attempt_runtime_to_dispatch_snapshot(
+            await self._pin_attempt_runtime_to_dispatch_snapshot(
                 db,
                 runtime=attempt_runtime,
                 snapshot=dispatch_request.snapshot,
@@ -1424,7 +1424,6 @@ class RuntimeInboxProcessorBridge:
             _configure_attempt_runtime_ports(
                 attempt_runtime,
                 services=services,
-                provider_profile=provider_profile,
             )
         context = PluginAttemptContext(
             attempt_id=processor_token,
@@ -1731,7 +1730,6 @@ def _configure_attempt_runtime_ports(
     attempt_runtime: RuntimeInboxAttemptRuntime,
     *,
     services: Any,
-    provider_profile: Any,
 ) -> None:
     """把当前 Inbox 的 typed operation factory 注册为 attempt-scoped QUERY Port。"""
 
@@ -1742,7 +1740,7 @@ def _configure_attempt_runtime_ports(
 
     attempt_runtime.port_registry.register(
         InventoryQueryOperationPort,
-        factory_builder(provider_profile=provider_profile),
+        factory_builder(),
     )
 
 

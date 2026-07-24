@@ -110,9 +110,15 @@ class Settings(BaseSettings):
     WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS: int = Field(gt=0)
     WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS: float = Field(gt=0)
     WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS: float = Field(gt=0)
+    WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED: bool = False
+    # 兼容未迁移的离线 Settings 构造；各部署 profile 必须显式声明当前 active revision。
+    WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION: Literal["v1", "v2"] = "v1"
     WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2: str = Field(default="", repr=False)
+    WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2: str = Field(default="", repr=False)
+    WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2: str = Field(default="", repr=False)
     WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
@@ -318,10 +324,12 @@ class Settings(BaseSettings):
             raise ValueError("WMS EFFECT idempotency retention 不得小于 WES confirmation age 与 safety margin 之和")
         if self.WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS > self.WES_EFFECT_NOT_FOUND_GRACE_SECONDS:
             raise ValueError("WMS EFFECT visibility SLA 不得大于 WES NOT_FOUND grace period")
+        if self.APP_ENV == "prod" and self.WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED:
+            raise ValueError("production WMS QUERY in-process simulation 必须在启动前禁用")
         active_secret_name = (
-            "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1"
+            f"WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_{self.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION.upper()}"
             if self.APP_ENV == "prod"
-            else "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1"
+            else f"WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_{self.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION.upper()}"
         )
         if not getattr(self, active_secret_name):
             raise ValueError(f"{active_secret_name} 必须为 WMS EFFECT status 查询显式配置")

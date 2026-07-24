@@ -259,6 +259,7 @@ class WmsEffectStatusService:
             binding=binding,
             initial_backoff_seconds=float(self._settings.WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS),
             max_backoff_seconds=float(self._settings.WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS),
+            settings_source=self._settings,
         )
 
     @staticmethod
