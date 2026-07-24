@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from src.app.callback.models.ingress_response import (
     CallbackEventAcceptedResponse,
@@ -307,6 +307,7 @@ async def resolve_effect_reconciliation(
     payload: ResolveEffectReconciliationRequest,
     db: AsyncSessionDep,
     current_user_id: Annotated[int, Depends(require_auth)],
+    request: Request,
     response: Response,
 ) -> ResponseSchemaModel[dict[str, Any]]:
     try:
@@ -317,6 +318,7 @@ async def resolve_effect_reconciliation(
             resolution=payload.resolution,
             operator_note=payload.operator_note,
             operator_id=current_user_id,
+            is_superuser=bool(getattr(request.state, "is_superuser", False)),
         )
     except ReconciliationResolutionConflict as exc:
         response.status_code = ResourceErrorCode.CONFLICT.http_status

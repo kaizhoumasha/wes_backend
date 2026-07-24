@@ -31,6 +31,9 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
     try:
         logger.info("Initializing application resources...")
+        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+
+        validate_wms_transport_configuration(app_env=settings.APP_ENV)
         await init_db()
 
         # production cutover 没有 fallback；启动前必须从 append-only DB 记录

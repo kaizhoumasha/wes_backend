@@ -406,6 +406,10 @@ async def test_resolution_request_id_cannot_be_reused_with_a_different_decision(
 @pytest.mark.asyncio
 async def test_effect_reconciliation_resolution_service_commits_stable_operator_decision() -> None:
     _require_t8d()
+    outbox_repository = SimpleNamespace(
+        get_by_dispatch_key=AsyncMock(return_value=SimpleNamespace(workline_id=7)),
+    )
+    owner_scope_repository = SimpleNamespace(workline_is_owned_by=AsyncMock(return_value=True))
     bridge = SimpleNamespace(
         resolve=AsyncMock(
             return_value=SimpleNamespace(
@@ -417,15 +421,26 @@ async def test_effect_reconciliation_resolution_service_commits_stable_operator_
     )
     db = SimpleNamespace(commit=AsyncMock())
 
-    result = await EffectReconciliationResolutionService(reconciliation_bridge=bridge).resolve(
+    result = await EffectReconciliationResolutionService(
+        reconciliation_bridge=bridge,
+        outbox_repository=outbox_repository,
+        owner_scope_repository=owner_scope_repository,
+    ).resolve(
         db,
         dispatch_key="dispatch-1",
         request_id=" resolution-request-1 ",
         resolution="COMPLETED",
         operator_note="已核验 WMS 权威记录",
         operator_id=88,
+        is_superuser=False,
     )
 
+    outbox_repository.get_by_dispatch_key.assert_awaited_once_with(db, "dispatch-1")
+    owner_scope_repository.workline_is_owned_by.assert_awaited_once_with(
+        db,
+        workline_id=7,
+        tenant_id=88,
+    )
     bridge.resolve.assert_awaited_once()
     assert bridge.resolve.await_args.kwargs["source_event_id"] == "resolution-request-1"
     assert bridge.resolve.await_args.kwargs["evidence_json"] == {
@@ -442,6 +457,73 @@ async def test_effect_reconciliation_resolution_service_commits_stable_operator_
         "case_status": "RESOLVED",
         "state_changed": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_effect_reconciliation_resolution_rejects_cross_workline_operator_before_reducer() -> None:
+    _require_t8d()
+    outbox_repository = SimpleNamespace(
+        get_by_dispatch_key=AsyncMock(return_value=SimpleNamespace(workline_id=7)),
+    )
+    owner_scope_repository = SimpleNamespace(workline_is_owned_by=AsyncMock(return_value=False))
+    bridge = SimpleNamespace(resolve=AsyncMock())
+    db = SimpleNamespace(commit=AsyncMock())
+
+    from src.core.exceptions import PermissionException
+
+    with pytest.raises(PermissionException, match="无权提交该 WorkLine"):
+        await EffectReconciliationResolutionService(
+            reconciliation_bridge=bridge,
+            outbox_repository=outbox_repository,
+            owner_scope_repository=owner_scope_repository,
+        ).resolve(
+            db,
+            dispatch_key="dispatch-other-owner",
+            request_id="resolution-request-2",
+            resolution="REJECTED",
+            operator_note="跨 WorkLine 请求",
+            operator_id=88,
+            is_superuser=False,
+        )
+
+    bridge.resolve.assert_not_awaited()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_effect_reconciliation_resolution_allows_superuser_without_owner_lookup() -> None:
+    _require_t8d()
+    outbox_repository = SimpleNamespace(
+        get_by_dispatch_key=AsyncMock(return_value=SimpleNamespace(workline_id=7)),
+    )
+    owner_scope_repository = SimpleNamespace(workline_is_owned_by=AsyncMock())
+    bridge = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=SimpleNamespace(
+                intent_status=RuntimeIntentStatus.REJECTED,
+                case_status=ReconciliationCaseStatus.RESOLVED,
+                state_changed=True,
+            )
+        )
+    )
+    db = SimpleNamespace(commit=AsyncMock())
+
+    await EffectReconciliationResolutionService(
+        reconciliation_bridge=bridge,
+        outbox_repository=outbox_repository,
+        owner_scope_repository=owner_scope_repository,
+    ).resolve(
+        db,
+        dispatch_key="dispatch-1",
+        request_id="resolution-request-3",
+        resolution="REJECTED",
+        operator_note="平台管理员决议",
+        operator_id=1,
+        is_superuser=True,
+    )
+
+    owner_scope_repository.workline_is_owned_by.assert_not_awaited()
+    bridge.resolve.assert_awaited_once()
 
 
 @pytest.mark.asyncio

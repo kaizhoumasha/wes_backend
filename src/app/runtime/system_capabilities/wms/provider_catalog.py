@@ -39,9 +39,14 @@ from src.app.sys.external_http_binding import (
     FrozenExternalHttpBinding,
     freeze_external_http_binding,
 )
+from src.app.sys.external_http_credentials import (
+    EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE,
+    CredentialResolutionError,
+    build_environment_external_http_credential_provider,
+)
 from src.app.sys.services.endpoint_registry import EndpointRegistry
-
-DEFAULT_WMS_SYNC_BASE_URL = "http://wms/api"
+from src.app.wms_integration.transport_url import validate_wms_base_url
+from src.utils.value_normalization import runtime_profile_environment
 
 
 def _binding(profile, outbound_auth, operation):
@@ -101,7 +106,27 @@ WMS_TYPED_EFFECT_CALLBACK_TYPES = frozenset(callback.callback_type for callback 
 def wms_sync_base_url() -> str:
     """返回 typed WMS operation 共用的唯一同步服务根地址。"""
 
-    return (os.getenv("WMS_SYNC_BASE_URL") or DEFAULT_WMS_SYNC_BASE_URL).rstrip("/")
+    base_url = (os.getenv("WMS_SYNC_BASE_URL") or "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError("WMS_SYNC_BASE_URL 必须显式配置")
+    return base_url
+
+
+def validate_wms_transport_configuration(*, app_env: object) -> None:
+    """在进程开始接收任务前校验活动 WMS profile 的 endpoint 与 HMAC 材料。"""
+
+    environment = runtime_profile_environment(app_env)
+    base_url = wms_sync_base_url()
+    parsed = validate_wms_base_url(base_url)
+    if environment == "production" and parsed.scheme.lower() != "https":
+        raise ValueError("production WMS_SYNC_BASE_URL 必须使用 HTTPS")
+
+    credential_reference = f"secret://wms/material-flow-{environment}-hmac@v1"
+    env_name = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[credential_reference]
+    try:
+        build_environment_external_http_credential_provider().resolve(credential_reference)
+    except (CredentialResolutionError, LookupError) as exc:
+        raise ValueError(f"{env_name} 必须为活动 WMS profile 显式配置且未被撤销") from exc
 
 
 def _typed_wms_endpoint_registry(profile: WmsProviderProfile) -> EndpointRegistry:
@@ -186,5 +211,6 @@ __all__ = [
     "WMS_TYPED_EFFECT_CALLBACK_TYPES",
     "freeze_wms_effect_binding",
     "resolve_wms_operation_binding",
+    "validate_wms_transport_configuration",
     "wms_sync_base_url",
 ]

@@ -145,6 +145,7 @@ def test_query_response_accepts_explicit_empty_items(response_model: type) -> No
     ],
 )
 def test_each_effect_gateway_maps_typed_request_to_dispatch_envelope_once(
+    monkeypatch: pytest.MonkeyPatch,
     gateway_type: type[
         ConfirmInboundDispatchGateway | NotifyPackageBindingDispatchGateway | FullBoxExchangeDispatchGateway
     ],
@@ -154,6 +155,7 @@ def test_each_effect_gateway_maps_typed_request_to_dispatch_envelope_once(
     request_kwargs: dict[str, object],
     expected_payload: dict[str, object],
 ) -> None:
+    monkeypatch.setenv("WMS_SYNC_BASE_URL", "http://mock_wms:8011/api/wms")
     request = request_type(**request_kwargs)
 
     envelope = gateway_type().build_envelope(request)

@@ -44,8 +44,11 @@ celery_app = Celery(
 
 @worker_init.connect
 def on_worker_init(*args: Any, **kwargs: Any) -> None:
-    """Worker 主进程只初始化日志，禁止创建可被 fork 继承的异步资源。"""
+    """Worker 主进程初始化同步配置门禁，禁止创建可被 fork 继承的异步资源。"""
     setup_logger()  # 初始化 loguru + 抑制 pidbox/kombu/amqp 噪音
+    from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+
+    validate_wms_transport_configuration(app_env=settings.APP_ENV)
 
 
 @worker_process_init.connect

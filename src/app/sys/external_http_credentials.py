@@ -11,17 +11,19 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
 
-_REFERENCE_ENV_NAMES = {
-    "secret://wms/material-flow-sandbox-hmac@v1": "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
-    "secret://wms/material-flow-staging-hmac@v1": "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1",
-    "secret://wms/material-flow-production-hmac@v1": "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1",
-    "secret://wms/legacy-transport-sandbox-hmac@v1": "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1",
-    "secret://wms/legacy-transport-staging-hmac@v1": "WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1",
-    "secret://wms/legacy-transport-production-hmac@v1": "WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1",
-    "secret://workline/plugin-runtime-sandbox-hmac@v1": "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1",
-    "secret://workline/plugin-runtime-staging-hmac@v1": "WORKLINE_PLUGIN_RUNTIME_STAGING_HMAC_SECRET_V1",
-    "secret://workline/plugin-runtime-production-hmac@v1": "WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1",
-}
+EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE = MappingProxyType(
+    {
+        "secret://wms/material-flow-sandbox-hmac@v1": "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
+        "secret://wms/material-flow-staging-hmac@v1": "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1",
+        "secret://wms/material-flow-production-hmac@v1": "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1",
+        "secret://wms/legacy-transport-sandbox-hmac@v1": "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1",
+        "secret://wms/legacy-transport-staging-hmac@v1": "WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1",
+        "secret://wms/legacy-transport-production-hmac@v1": "WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1",
+        "secret://workline/plugin-runtime-sandbox-hmac@v1": "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1",
+        "secret://workline/plugin-runtime-staging-hmac@v1": "WORKLINE_PLUGIN_RUNTIME_STAGING_HMAC_SECRET_V1",
+        "secret://workline/plugin-runtime-production-hmac@v1": "WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1",
+    }
+)
 _REVOKED_REFERENCES_ENV = "WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES"
 
 
@@ -132,7 +134,7 @@ def build_environment_external_http_credential_provider() -> AuditedVersionedCre
     )
     return AuditedVersionedCredentialProvider(
         EnvironmentVersionedCredentialProvider(
-            reference_env_names=_REFERENCE_ENV_NAMES,
+            reference_env_names=EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE,
             revoked_references=revoked_references,
         ),
         provider_kind="environment",
@@ -143,6 +145,7 @@ external_http_credential_provider = build_environment_external_http_credential_p
 
 
 __all__ = [
+    "EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE",
     "AuditedVersionedCredentialProvider",
     "CredentialResolutionAudit",
     "CredentialResolutionError",

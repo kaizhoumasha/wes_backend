@@ -291,6 +291,7 @@ async def test_resolve_effect_reconciliation_uses_authenticated_operator(
         ),
         db=SimpleNamespace(),  # type: ignore[arg-type]
         current_user_id=88,
+        request=SimpleNamespace(state=SimpleNamespace(is_superuser=False)),  # type: ignore[arg-type]
         response=operation_api.Response(),
     )
 
@@ -301,6 +302,7 @@ async def test_resolve_effect_reconciliation_uses_authenticated_operator(
         resolution="COMPLETED",
         operator_note="WMS 侧已核验完成",
         operator_id=88,
+        is_superuser=False,
     )
     assert response["code"] == "1000"
     assert response["data"]["dispatch_key"] == "dispatch-1"
@@ -333,6 +335,7 @@ async def test_resolve_effect_reconciliation_maps_domain_errors_to_http_status(
         ),
         db=SimpleNamespace(),  # type: ignore[arg-type]
         current_user_id=88,
+        request=SimpleNamespace(state=SimpleNamespace(is_superuser=False)),  # type: ignore[arg-type]
         response=http_response,
     )
 

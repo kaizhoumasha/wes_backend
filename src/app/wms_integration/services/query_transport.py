@@ -36,6 +36,7 @@ from src.app.wms_integration.ports.query_outcome import (
     QueryTechnicalFailure,
     WmsQueryOutcome,
 )
+from src.app.wms_integration.transport_url import validate_wms_base_url
 from src.core.logger import logger
 
 if TYPE_CHECKING:
@@ -91,10 +92,8 @@ class WmsBoundQueryEndpoint:
     def __post_init__(self) -> None:
         if self.binding.operation.mode is not WmsOperationMode.QUERY:
             raise ValueError("query endpoint requires a QUERY operation binding")
-        parsed = httpx.URL(self.base_url)
-        if parsed.scheme not in {"http", "https"} or parsed.host is None:
-            raise ValueError("WMS provider base URL must be an absolute HTTP URL")
-        if self.binding.profile.environment == "production" and parsed.scheme != "https":
+        parsed = validate_wms_base_url(self.base_url)
+        if self.binding.profile.environment == "production" and parsed.scheme.lower() != "https":
             raise ValueError("production WMS provider endpoint requires HTTPS")
 
     @property

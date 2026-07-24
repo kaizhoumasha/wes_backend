@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import secrets
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -15,6 +14,9 @@ import httpx
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding, wms_sync_base_url
 from src.app.sys.external_http_credentials import AuditedVersionedCredentialProvider
+from src.app.sys.external_http_credentials import (
+    build_environment_external_http_credential_provider as build_environment_credential_provider,
+)
 from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
 from src.app.wms_integration.services.circuit_breaker_service import wms_circuit_breaker_service
 from src.app.wms_integration.services.evidence_service import wms_call_evidence_service
@@ -33,26 +35,6 @@ if TYPE_CHECKING:
     from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 
     SandboxInventoryRowsProvider = Callable[..., list[dict[str, Any]]]
-
-
-_CREDENTIAL_ENV_BY_REFERENCE = {
-    "secret://wms/material-flow-sandbox-hmac@v1": "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
-    "secret://wms/material-flow-staging-hmac@v1": "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1",
-    "secret://wms/material-flow-production-hmac@v1": "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1",
-}
-
-
-class EnvironmentWmsCredentialProvider:
-    """仅解析 author-time allowlist 中的版本化 credential reference。"""
-
-    def resolve(self, credential_reference: str) -> bytes:
-        env_name = _CREDENTIAL_ENV_BY_REFERENCE.get(credential_reference)
-        if env_name is None:
-            raise LookupError("WMS credential reference is not configured")
-        secret = os.getenv(env_name)
-        if secret is None or not secret:
-            raise LookupError("WMS credential material is unavailable")
-        return secret.encode("utf-8")
 
 
 class _EphemeralCredentialProvider:
@@ -167,15 +149,14 @@ def build_inventory_query_port_factory(
         )
     else:
         resolved_base_url = resolved_base_url or wms_sync_base_url()
-        resolved_credential_provider = resolved_credential_provider or EnvironmentWmsCredentialProvider()
+        resolved_credential_provider = resolved_credential_provider or build_environment_credential_provider()
     if resolved_credential_provider is None:
         raise ValueError("WMS QUERY credential provider is required")
-    resolved_credential_provider = AuditedVersionedCredentialProvider(
-        resolved_credential_provider,
-        provider_kind="environment"
-        if isinstance(resolved_credential_provider, EnvironmentWmsCredentialProvider)
-        else "custom",
-    )
+    if not isinstance(resolved_credential_provider, AuditedVersionedCredentialProvider):
+        resolved_credential_provider = AuditedVersionedCredentialProvider(
+            resolved_credential_provider,
+            provider_kind="custom",
+        )
     endpoint = WmsBoundQueryEndpoint(binding=binding, base_url=resolved_base_url)
 
     def factory() -> InventoryQueryOperationPort:
@@ -191,4 +172,4 @@ def build_inventory_query_port_factory(
     return factory
 
 
-__all__ = ["EnvironmentWmsCredentialProvider", "build_inventory_query_port_factory"]
+__all__ = ["build_inventory_query_port_factory"]
