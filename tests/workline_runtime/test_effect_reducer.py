@@ -1075,6 +1075,33 @@ async def test_wms_effect_transport_bridge_interprets_only_stable_idempotency_pr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 401, 403, 429])
+async def test_wms_effect_non_idempotency_rejections_open_reconciliation(status_code: int) -> None:
+    reducer = _RecordingReducer()
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=status_code,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        error_code="HTTP_REJECTED",
+    )
+
+    await EffectTransportBridge(reducer=reducer).record_result(
+        _Db(),
+        dispatch_key="dispatch-1",
+        attempt_no=2,
+        result=result,
+        retry_exhausted=False,
+        occurred_at_ms=1300,
+        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+    )
+
+    assert [event.event_type for event in reducer.events] == [
+        EffectReducerEventType.TRANSPORT_ACCEPTED,
+        EffectReducerEventType.RECONCILIATION_OPENED,
+    ]
+    assert reducer.events[-1].reason_code == "WMS_SUBMIT_PROTOCOL_REJECTED"
+
+
+@pytest.mark.asyncio
 async def test_non_wms_409_remains_generic_transport_rejection() -> None:
     reducer = _RecordingReducer()
 

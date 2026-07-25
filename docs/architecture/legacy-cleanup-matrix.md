@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-逐入口数据在 legacy-cleanup-matrix.csv（644 条，由脚本生成，可复现）。
+逐入口数据在 legacy-cleanup-matrix.csv（645 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -33,11 +33,11 @@ uv run python scripts/generate_legacy_matrix.py
 
 扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。最终扩展平台目录及精确目标态符号从 legacy cleanup 范围排除；Task 10 前仍存在的旧路由 import 与业务编排分支则按生产文件逐项登记独立 seed。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 technical cleanup scope 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；business legacy absence cleanup 后，已迁入 `src/app/runtime/capabilities/material_flow/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
 
-## 3. 汇总（截至北向 EFFECT 收敛复核 @ 2026-07-24）
+## 3. 汇总（截至北向 EFFECT 收敛复核 @ 2026-07-25）
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **644** |
+| **total_entries** | **645** |
 | phase4_carrier（承载 Phase 4 业务语义） | 113 |
 | pending-review | 0 |
 
@@ -47,7 +47,7 @@ uv run python scripts/generate_legacy_matrix.py
 | --- | ---: |
 | service | 310 |
 | domain_object | 60 |
-| test | 199 |
+| test | 200 |
 | model | 44 |
 | api_route | 23 |
 | repository | 7 |
@@ -57,7 +57,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 375 |
+| rebuild | 376 |
 | keep-contract | 252 |
 | delete | 10 |
 | move | 7 |
@@ -67,7 +67,7 @@ uv run python scripts/generate_legacy_matrix.py
 | drop_phase | count |
 | --- | ---: |
 | phase5-tech | 263 |
-| phase2 | 259 |
+| phase2 | 260 |
 | phase4 | 113 |
 | phase1 | 9 |
 
@@ -76,7 +76,7 @@ uv run python scripts/generate_legacy_matrix.py
 | current_owner | count |
 | --- | ---: |
 | workline | 420 |
-| workline_runtime | 189 |
+| workline_runtime | 190 |
 | workline_plugins | 11 |
 | runtime | 8 |
 | handling | 4 |
