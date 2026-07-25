@@ -1361,7 +1361,7 @@ async def legacy_full_box_exchange(payload: dict[str, Any], background_tasks: Ba
     callback_payload = _legacy_transport_callback_payload(
         callback_type=str(payload.get("callback_type") or "WMS_FULL_BOX_EXCHANGE_RESULT"),
         request_payload=payload,
-        exchange_status="PHYSICAL_COMPLETED",
+        exchange_status="BUSINESS_COMPLETED",
     )
     background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
     return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}

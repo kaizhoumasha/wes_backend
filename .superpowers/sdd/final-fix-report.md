@@ -8,7 +8,7 @@
 `PENDING/BLOCKED`，本次结论不替代外部验收。
 
 最终镜像：
-`sha256:2b8f8ff7336213ce0292f25de6d656537b377fb10bcd520264435f92efcdc180`。
+`sha256:29be6894b99d3f66cd0b84ed5f2013a67f415446d47f31e984c0cd6170d21a05`。
 
 ## GitNexus 影响分析
 
@@ -84,6 +84,27 @@
 - 断言恰好 `1 × 202`、`7 × 409`、累计 effect count 为 1。
 - store 的查询、提交、过期、回调 hint、拒绝与 reset 共享同一个 `RLock` 临界区。
 
+## 终审 Important 追加波次
+
+### Legacy 满箱完成语义
+
+- RED：legacy route 回归期望 `BUSINESS_COMPLETED`，实际得到 `PHYSICAL_COMPLETED`。
+- GREEN：`POST /api/wms/legacy/full-box-exchange` 恢复 `BUSINESS_COMPLETED`，typed route 仍保持
+  HTTP 202 + hint-only。
+- legacy callback 明确不携带 `post_exchange_relations`；生产消费者回归证明
+  `BUSINESS_COMPLETED` 无 relations 正常完成，而 `PHYSICAL_COMPLETED` 无 relations 进入资源对账。
+
+### 并发证据升级为真实 TCP
+
+- RED：release evidence 守卫要求两个具名 live 并发 case，原 heavy test 与可行性报告均不存在这些证据。
+- GREEN：新增
+  `test_compose_mock_wms_concurrent_identical_replay_over_tcp` 和
+  `test_compose_mock_wms_concurrent_fault_claim_over_tcp`。
+- 最终镜像经 Docker published socket 实测：8 路同键为 `1 × 202 / 7 × 409 / effect=1`；
+  双请求一次性 fault claim 为 `1 × 503 / 1 × 200`。
+- 可行性报告明确给出具名 live case；ASGI 公共路由测试只保留为快速诊断证据。
+- 本波次 GitNexus `detect-changes --scope all`：9 个文件、18 个符号、0 条受影响执行流、风险 `LOW`。
+
 ## TDD 证据
 
 - 凭据 RED：真实 material-flow v1 被旧 allowlist 拒绝，真实 WES v2 sender 收到 401；GREEN：2 passed。
@@ -101,7 +122,7 @@
 - 相关 Mock/contract/deployment/runtime/topology：`164 passed`。
 - 默认测试收集：`4088 tests collected`。
 - 默认全仓测试：`4083 passed, 5 skipped, 6 warnings`，耗时 445.67 秒。
-- 最终源树 Docker heavy/live：`1 passed`，耗时 1.42 秒。
+- 最终源树 Docker heavy/live：`3 passed`，耗时 1.33 秒。
 - 最终源树 CLI 黑盒探针：45 个 case 全部 `passed=true`。
 - `ruff format --check`、`ruff check`：通过。
 - Bandit：106754 行生产代码，0 issue。

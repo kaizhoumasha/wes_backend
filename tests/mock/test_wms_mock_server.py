@@ -1208,8 +1208,9 @@ def test_legacy_full_box_endpoint_keeps_200_completion_callback_separate_from_ty
     callback.assert_awaited_once()
     callback_payload = callback.await_args.args[1]
     assert callback_payload["callback_type"] == "WMS_FULL_BOX_EXCHANGE_RESULT"
-    assert callback_payload["exchange_status"] == "PHYSICAL_COMPLETED"
+    assert callback_payload["exchange_status"] == "BUSINESS_COMPLETED"
     assert callback_payload["rack_release_id"] == "release-legacy-001"
+    assert "post_exchange_relations" not in callback_payload
 
 
 def test_public_clock_drives_visibility_and_retention_boundaries(

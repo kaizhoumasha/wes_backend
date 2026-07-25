@@ -5,7 +5,7 @@
 - WES owner：WES Runtime Team
 - 开发 WMS stub owner：WES Mock WMS Team
 - Mock/build version：Docker image
-  `sha256:2b8f8ff7336213ce0292f25de6d656537b377fb10bcd520264435f92efcdc180`
+  `sha256:29be6894b99d3f66cd0b84ed5f2013a67f415446d47f31e984c0cd6170d21a05`
 - WES 确认状态：实际 Compose Mock TCP 黑盒探针 `PASS`
 - 开发 Mock WMS 确认状态：三个 typed EFFECT 公开 HTTP 路由 `PASS`
 - 依据：[WMS 北向最小交互合同](../contracts/wms-northbound-interaction-contract.md)
@@ -39,7 +39,7 @@ Submit 的 `X-WES-*` 七项与 Status query 的 `X-WMS-*` 五项 HMAC canonical 
 | --- | --- |
 | confirm inbound submit | `POST /api/wms/inventory/confirm-inbound` |
 | full box exchange submit | `POST /api/wms/fulfillment/full-box-exchange` |
-| legacy full box exchange | `POST /api/wms/legacy/full-box-exchange`，仅该路由发送历史完成 callback |
+| legacy full box exchange | `POST /api/wms/legacy/full-box-exchange`，仅该路由发送 `BUSINESS_COMPLETED` 历史完成 callback |
 | package binding submit | `POST /api/wms/fulfillment/package-binding` |
 | status endpoint | `GET /northbound/operations/status` |
 | 公开效果观察面 | `GET /debug/northbound/effects`，仅返回 effect count |
@@ -63,12 +63,15 @@ dict 相等性判断。实际 Mock 已验证 Submit 七项与 Status query 五�
 - `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`；
 - `docker compose --profile dev up -d --build mock_wms`；
 - `WMS_NORTHBOUND_LIVE_BASE_URL=http://127.0.0.1:8011 WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS=0.25
-  uv run pytest tests/integration/test_wms_mock_northbound_live.py -q`，结果 `1 passed`；
+  uv run pytest tests/integration/test_wms_mock_northbound_live.py -q`，结果 `3 passed`；
 - `uv run python scripts/verify_wms_northbound_feasibility.py
   --base-url http://127.0.0.1:8011 --timeout-seconds 0.25`，结果 45 个 case 全部 `passed=true`。
 
 快速测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项真实 TCP 黑盒证据。探针不读取 Mock 内部状态，
-只经 submit/status/debug 的公开 HTTP 路由断言。所有强制 case 通过：
+只经 submit/status/debug 的公开 HTTP 路由断言。并发证据由具名 live case
+`test_compose_mock_wms_concurrent_identical_replay_over_tcp` 与
+`test_compose_mock_wms_concurrent_fault_claim_over_tcp` 直接通过 Docker published socket 采集，不再借用
+ASGI 公共路由测试代替。所有强制 case 通过：
 
 | case | 结果 |
 | --- | --- |

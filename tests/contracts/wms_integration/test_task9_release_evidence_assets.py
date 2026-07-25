@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = ROOT / "tests/fixtures/wms_provider_conformance"
 RELEASE_EVIDENCE = ROOT / "docs/operations/wms-northbound-acceptance-and-cutover.md"
 FEASIBILITY_REPORT = ROOT / "docs/operations/wms-northbound-feasibility-report.md"
+LIVE_ACCEPTANCE_TEST = ROOT / "tests/integration/test_wms_mock_northbound_live.py"
 SLO_CATALOG = ROOT / "docs/operations/northbound-operation-slo-catalog.md"
 RUNBOOK = ROOT / "docs/runbooks/northbound-operation-observability.md"
 INTERACTION_CONTRACT = ROOT / "docs/contracts/wms-northbound-interaction-contract.md"
@@ -135,11 +136,23 @@ def test_mock_feasibility_go_is_backed_by_live_compose_and_active_wes_credential
     report = FEASIBILITY_REPORT.read_text(encoding="utf-8")
     release = RELEASE_EVIDENCE.read_text(encoding="utf-8")
 
-    assert "sha256:2b8f8ff7336213ce0292f25de6d656537b377fb10bcd520264435f92efcdc180" in report
+    assert "sha256:29be6894b99d3f66cd0b84ed5f2013a67f415446d47f31e984c0cd6170d21a05" in report
     assert "tests/integration/test_wms_mock_northbound_live.py" in report
     assert "45 个 case 全部 `passed=true`" in report
     assert "`secret://wms/material-flow-sandbox-hmac@v2`" in release
     assert "Mock 专用 credential" in release
+
+
+def test_concurrency_claims_have_named_live_tcp_acceptance_tests() -> None:
+    report = FEASIBILITY_REPORT.read_text(encoding="utf-8")
+    live_test_source = LIVE_ACCEPTANCE_TEST.read_text(encoding="utf-8")
+    live_cases = (
+        "test_compose_mock_wms_concurrent_identical_replay_over_tcp",
+        "test_compose_mock_wms_concurrent_fault_claim_over_tcp",
+    )
+
+    assert all(case_name in live_test_source for case_name in live_cases)
+    assert all(f"`{case_name}`" in report for case_name in live_cases)
 
 
 def test_active_operations_docs_use_submit_status_callback_facts_not_shadow_readiness() -> None:

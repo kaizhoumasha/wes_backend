@@ -8,8 +8,8 @@ callback hint 交互，不记录或推断 WMS 内部工作流。当前 P0 验收
 
 - 实际开发 Mock 验证：`PASS/GO`（当前 P0 门禁已关闭）
 - 实际 Compose 验证：image
-  `sha256:2b8f8ff7336213ce0292f25de6d656537b377fb10bcd520264435f92efcdc180`，
-  live pytest `1 passed`，CLI 45 case 全部 `passed=true`
+  `sha256:29be6894b99d3f66cd0b84ed5f2013a67f415446d47f31e984c0cd6170d21a05`，
+  live pytest `3 passed`，CLI 45 case 全部 `passed=true`
 - 外部 WMS 联调验收模板：`PENDING`（后续，不阻塞当前 Mock 验收）
 - 外部 WMS 观测映射与采集模板：`BLOCKED`
 - 外部 WMS 联调测试数据清理模板：`BLOCKED`
@@ -28,6 +28,8 @@ Mock 能力可以进入后续 WES 开发。不得把该结论替代未来外部 
 Mock Submit/Status 直接使用 WES sandbox material-flow v1/v2 凭据引用，active 为
 `secret://wms/material-flow-sandbox-hmac@v2`；没有 Mock 专用 credential。typed route
 `POST /api/wms/fulfillment/full-box-exchange` 不发送历史完成 callback，后者仅保留在独立 legacy route。
+legacy callback 固定为 `BUSINESS_COMPLETED`，即使不携带 `post_exchange_relations` 也保持既有生产消费语义；
+`PHYSICAL_COMPLETED` 缺少该关系事实时仍进入资源对账。
 
 ## WMS 团队必须提供的能力
 

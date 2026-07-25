@@ -124,6 +124,8 @@
 - [x] 分离 typed full-box callback hint 与 legacy completion callback 路由。
 - [x] 新增并发同键 HTTP 重放，证明一个 202、其余 409、effect count=1。
 - [x] 修复独立 WMS Docker 镜像入口并完成真实 Compose build、live pytest 与 45-case CLI 探针。
+- [x] 恢复 legacy full-box `BUSINESS_COMPLETED`，并证明无 `post_exchange_relations` 时兼容生产消费者。
+- [x] 将并发同键重放与一次性 fault claim 升级为 Docker published socket 的具名 live 验收。
 - [x] 运行完整相关回归、默认测试收集、quality gate 和 GitNexus detect changes。
 - [x] 更新最终修复报告并完成提交前检查。
 
