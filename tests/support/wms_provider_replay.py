@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 CaseId = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_]*$")]
 ConformanceCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Z][A-Z0-9_]*$")]
-QUERY_INVENTORY_REPLAY_ASSET_DIGEST = "4584ece449cdcfa69f6a46ac4315b3f11a285f3f832a82bc04685c21ac22bf52"
+QUERY_INVENTORY_REPLAY_ASSET_DIGEST = "d396dce29e343138317e00ba8389a5d869c16c1262373e575a84cc5e5375bca5"
 QUERY_INVENTORY_REPLAY_CASE_IDS = (
     "success",
     "empty",

@@ -1,10 +1,16 @@
 ---
 title: 北向公共能力双层提炼设计
-status: CEO + Engineering 评审完成，可进入实施
+status: 已实施；本机 Docker 开发环境验收通过
 created_at: 2026-07-21
 reviewed_at: 2026-07-21
+implemented_at: 2026-07-24
 parent: docs/architecture/target-state-contract.md
 ---
+
+> **部分取代（2026-07-24）：** 本设计中关于多 Provider、shadow/readiness、staging 签名 attestation
+> 与 callback 终态权威的内容，已由
+> [北向交互收敛 ADR](../../architecture/adr/2026-07-24-northbound-interaction-simplification.md)
+> 部分取代。其余 typed operation、Outbox、canonical payload、冻结 binding 与人工对账设计仍有效；本文件保留历史上下文，不重写。
 
 # 北向公共能力双层提炼设计
 
@@ -553,80 +559,88 @@ Lane A/B/C 可在 Foundation 合并后使用独立 worktree 并行；Lane A 与 
 
 Synthesized from this review's findings. Each task derives from a specific finding above. Run with Claude Code or Codex; checkbox as you ship.
 
-- [ ] **T1（P1，human: ~4h / CC: ~30min）** — contracts — 完成 legacy consumer inventory 与 operation ADR
+- [x] **T1（P1，human: ~4h / CC: ~30min）** — contracts — 完成 legacy consumer inventory 与 operation ADR
   - Surfaced by: Code Quality / Test / Long-Term — 字符串式 WMS 调用与旧测试合同必须在本设计内归零。
   - Files: `src/app/runtime/capabilities/material_flow/`、`src/app/runtime/system_capabilities/`、Plugin definitions、现有测试 inventory、设计 ADR。
   - Verify: inventory 覆盖调用方、binding、生成索引、测试、指标与文档；每项有目标 identity，测试逐项标记 `KEEP/REWRITE/DELETE`。
-- [ ] **T2（P1，human: ~1d / CC: ~2h）** — capability contracts — 建立独立 typed operation 合同，并由每个 EFFECT 的领域 gateway 映射到现有 `DispatchEnvelope`
+- [x] **T2（P1，human: ~1d / CC: ~2h）** — capability contracts — 建立独立 typed operation 合同，并由每个 EFFECT 的领域 gateway 映射到现有 `DispatchEnvelope`
   - Surfaced by: Architecture — 禁止 family god handler、自由字符串 dispatch，以及把 transport 职责塞进高影响 Definition。
   - Files: `src/app/wms_integration/ports/` 的唯一 operation 合同、`src/app/runtime/system_capabilities/wms/`、对应领域 gateway、`ExternalContractProfile` identity、`WmsOperationContract`、`InboundCallbackContract`、conformance manifest、generated index；`SystemCapabilityDefinition` 不新增 dispatch 字段。
   - Verify: contract/architecture tests 证明 Capability/Port 无重复 operation schema、数量全程 `Decimal`、Provider DTO 只映射一次且不伪造缺省值；每个 operation 独立、Definition identity 不包含 transport metadata、运行时 Profile 无 fixture/cache/字符串 Port.method 字段、production operation 不允许 outbound auth `NONE`。
-- [ ] **T3（P1，human: ~1d / CC: ~2h）** — inventory QUERY — 实现通用查询、预算、typed snapshot 与 fail-closed evidence，并删除现有跨请求缓存路径
+- [x] **T3（P1，human: ~1d / CC: ~2h）** — inventory QUERY — 实现通用查询、预算、typed snapshot 与 fail-closed evidence，并删除现有跨请求缓存路径
   - Surfaced by: Architecture / Code Quality / Error Map / Performance — empty success、预算超限不截断；统一封闭领域 outcome；全局删除 `WmsQueryCacheService`、TTL 配置、缓存测试与文档，不保留调用方特例或兼容分支。
   - Files: WMS shared QUERY outcome、无 operation 分支的 transport executor、inventory Port/adapter、QUERY capability、evidence；删除 family-level `WmsTypedPortService` 方法与特殊 payload 分支。
   - Verify: success/empty/business reject/timeout/429/malformed/pagination/precision/over-budget/evidence failure/unexpected exception contract tests；包括伪造/缺失 `Content-Length`、wire/decoded chunk 越界、异常压缩比、unsupported encoding、JSON 深度/字段长度、分页累计越界与 deadline；guardrail 阻止恢复 operation-specific 异常梯子、family operation switch、重复 transport service 或 catch-all retryable。
-- [ ] **T4（P1，human: ~1d / CC: ~2h）** — material-flow — 提取纯 admission policy 与 decision provenance
+- [x] **T4（P1，human: ~1d / CC: ~2h）** — material-flow — 提取纯 admission policy 与 decision provenance
   - Surfaced by: Architecture / Debuggability — 业务判定必须无 I/O、可解释、可重放。
   - Files: `src/app/runtime/capabilities/material_flow/`、rough-sorter typed contracts。
   - Verify: 表驱动测试覆盖 ADMIT/REJECT/HOLD、nil/empty/version mismatch。
-- [ ] **T5（P1，human: ~2d / CC: ~4h）** — provider quality — 建立不可覆写 conformance suite、纯 replay runner 与最小模拟 Provider
+- [x] **T5（P1，human: ~2d / CC: ~4h）** — provider quality — 建立不可覆写 conformance suite、纯 replay runner 与最小模拟 Provider
   - Surfaced by: Test / Security — 所有 Provider 使用同一张试卷，模拟器三层禁止生产。
   - Files: `tests/contracts/`、`tests/mock/`、Provider profile/adapters、replay。
   - Verify: CI 中真实 adapter、simulator、replay factory 全部通过 scripted provider 核心参数集且无 skip/xfail；staging live conformance 生成可验证、不可变报告，所有非 staging runner 无生产 endpoint/credential 访问能力。
-- [ ] **T6（P1，human: ~2d / CC: ~4h）** — shadow/readiness — 实现 comparison 分区存储、不可变报告与删除门禁
+- [x] **T6（P1，human: ~2d / CC: ~4h）** — shadow/readiness — 实现 comparison 分区存储、不可变报告与删除门禁
   - Surfaced by: Data Flow / Observability / Performance — shadow 失败不改动作但必须重置窗口。
   - Files: QUERY evidence shadow eligibility/version/comparison key、bounded pure evaluator、现有 task queue producer/consumer、comparison model/repository/service、readiness generator、Alembic revision、现有定时任务中的 partition maintainer。
   - Verify: expected 集合只能从 durable evidence 派生，生产响应不等待 store；在 evidence commit 前后、enqueue 前后注入 crash，任何缺口均可见；enqueue/consumer/store outage、expected/stored gap、evaluator error、version change 均重置窗口；预建当前+未来 3 个月、缺失分区 fail/readiness invalid、跨月并发写、90 天在线 drop 与 lock timeout；审批引用 report ID。
-- [ ] **T7（P1，human: ~1d / CC: ~2h）** — rough sorter — 迁移首个 QUERY 切片并删除专用 capability
+- [x] **T7（P1，human: ~1d / CC: ~2h）** — rough sorter — 迁移首个 QUERY 切片并删除专用 capability
   - Surfaced by: Deployment / Zero Compatibility — 旧 evaluator 只能临时验证，不得进入可发布代码。
   - Files: rough-sorter Plugin、旧专用 capability、generated index、相关 tests。
   - Verify: readiness gate 通过；旧 identity、routing、binding、生成引用和 import 全部归零。
-- [ ] **T8a（P1，human: ~1d / CC: ~2h）** — EFFECT state contract — 落地双账本最终枚举、reducer event 与 schema
+- [x] **T8a（P1，human: ~1d / CC: ~2h）** — EFFECT state contract — 落地双账本最终枚举、reducer event 与 schema
   - Surfaced by: Architecture / Outside voice — 持久化状态、事件和 outcome 必须有唯一归属。
   - Files: RuntimeIntentLog、SystemOutbox、DispatchAttempt、repository、Alembic revision。
   - Verify: 转移矩阵 contract tests；双侧 `dispatch_key` 唯一且同事务 1:1；旧 transport 字段归零。
-- [ ] **T8b（P1，human: ~1d / CC: ~2h）** — canonical dispatch — 持久化 canonical payload bytes 并统一 hash/签名/body
+- [x] **T8b（P1，human: ~1d / CC: ~2h）** — canonical dispatch — 持久化 canonical payload bytes 并统一 hash/签名/body
   - Surfaced by: Code Quality / Outside voice — JSONB 重新序列化不能保证原字节。
   - Files: 领域 gateway canonical serializer、DispatchEnvelope EXTERNAL_HTTP 分支、SystemOutbox、repository。
   - Verify: 数据库往返逐字节一致；retry 不读取 `payload_json`，同一 bytes 决定 hash/签名/HTTP body。
-- [ ] **T8c（P1，human: ~1d / CC: ~2h）** — typed sender — 以 typed transport result 替换全部 `EXTERNAL_HTTP` 布尔合同
+- [x] **T8c（P1，human: ~1d / CC: ~2h）** — typed sender — 以 typed transport result 替换全部 `EXTERNAL_HTTP` 布尔合同
   - Surfaced by: Architecture / Error Map — 仅 `NOT_SENT` 可重试，`AMBIGUOUS` 必须停发。
   - Files: `outbox_delivery.py`、`outbox_engine.py`、Outbox dispatch service、DispatchAttempt evidence。
   - Verify: NOT_SENT/ACCEPTED/AMBIGUOUS/explicit reject mapping；timeout/reset/ambiguous 5xx 不重复发送。
-- [ ] **T8d（P1，human: ~1d / CC: ~2h）** — effect reducer — 实现 transport/callback/reconciliation 的单调 reducer
+- [x] **T8d（P1，human: ~1d / CC: ~2h）** — effect reducer — 实现 transport/callback/reconciliation 的单调 reducer
   - Surfaced by: Architecture / Test — terminal 不倒退，矛盾 evidence 只进入 reconciliation。
   - Files: effect reducer、RuntimeIntentLog service、独立 ReconciliationCase、callback bridge/reconciliation policy。
   - Verify: 表驱动排列 + property invariants；terminal 永不改写，ordinary callback 不能关闭 OPEN case，只有 `RECONCILIATION_RESOLVED` 可关闭并推进未终态 intent；duplicate/late/contradictory matrix。
-- [ ] **T8e（P1，human: ~1.5d / CC: ~3h）** — dispatch concurrency — 实现 lease/fencing 与 indexed fair-bucket 调度
+- [x] **T8e（P1，human: ~1.5d / CC: ~3h）** — dispatch concurrency — 实现 lease/fencing 与 indexed fair-bucket 调度
   - Surfaced by: Architecture / Performance — Provider 桶隔离且 lease 丢失后旧 worker 不得提交。
   - Files: SystemOutbox scheduling columns、repository/dispatcher、DispatchAttempt。
   - Verify: 真实 PostgreSQL `SKIP LOCKED`/lease/fair-bucket tests；单桶限流不饿死其他桶。
-- [ ] **T8f（P1，human: ~1d / CC: ~2h）** — frozen auth target — 冻结 target snapshot 与版本化 credential reference
+- [x] **T8f（P1，human: ~1d / CC: ~2h）** — frozen auth target — 冻结 target snapshot 与版本化 credential reference
   - Surfaced by: Security / Outside voice — 重试不得读取最新 endpoint 或自动替换轮换密钥。
   - Files: Provider/binding profile、OutboundAuthProfile、secret provider boundary、SystemOutbox snapshot。
   - Verify: rotation 只影响新 intent；旧 key 撤销停止发送；secret/header 不进入日志/evidence。
-- [ ] **T8g（P1，human: ~1d / CC: ~2h）** — effect resilience — 完成发送与 evidence 边界 crash matrix
+- [x] **T8g（P1，human: ~1d / CC: ~2h）** — effect resilience — 完成发送与 evidence 边界 crash matrix
   - Surfaced by: Deployment / Test — 外部已接受但本地未知必须进入 UNKNOWN，禁止盲重发。
   - Files: `tests/integration/`、`tests/resilience/`、fault injection hooks。
   - Verify: before/after claim/send/evidence、lease loss、unexpected exception 全矩阵；每个前置提交保持构建和对应测试通过。
-- [ ] **T9（P1，human: ~2d / CC: ~4h）** — inventory transaction — 迁移 `confirm_inbound`
+- [x] **T9（P1，human: ~2d / CC: ~4h）** — inventory transaction — 迁移 `confirm_inbound`
   - Surfaced by: EFFECT lifecycle — 幂等、拒绝、UNKNOWN 与 reconciliation 必须可证明。
   - Files: inventory transaction capability/Port adapter、consumer、integration/resilience tests。
   - Verify: 重复执行不重复外部事务；所有 terminal/unknown evidence 可重建。
-- [ ] **T10（P1，human: ~2d / CC: ~4h）** — fulfillment — 迁移 `notify_pkg_binding` callback reducer
+- [x] **T10（P1，human: ~2d / CC: ~4h）** — fulfillment — 迁移 `notify_pkg_binding` callback reducer
   - Surfaced by: Data Flow / Error Map — callback 可重复、乱序、迟到且与同步结果矛盾。
   - Files: fulfillment capability/Port adapter、callback/reconciliation、tests。
   - Verify: callback-before-response、duplicate、contradiction、timeout-then-success 全矩阵。
-- [ ] **T11（P1，human: ~2d / CC: ~4h）** — observability/security — 交付 SLO catalog、dashboard、alert、Runbook 与受限运维入口
+- [x] **T11（P1，human: ~2d / CC: ~4h）** — observability/security — 交付 SLO catalog、dashboard、alert、Runbook 与受限运维入口
   - Surfaced by: Security / Observability — readiness/replay 需要 RBAC、租户作用域和可复核证据。
   - Files: metrics/tracing、RBAC、audit、`OutboundAuthProfile`/secret provider 边界、operational docs。
   - Verify: 低基数 label guardrail、跨租户拒绝、trace 全链路、每个告警链接 Runbook，以及日志/evidence 不包含 secret 或完整认证 header。
-- [ ] **T12（P1，估时由 T1 inventory 生成）** — legacy removal meta gate — 按真实 operation 展开迁移任务并完成全量归零
+- [x] **T12（P1，估时由 T1 inventory 生成）** — legacy removal meta gate — 按真实 operation 展开迁移任务并完成全量归零
   - Surfaced by: User constraint / Outside voice / Long-Term — inventory 未知前不得伪造“全部剩余 operation”固定估时；未发布系统不得保留兼容机制或延期清理。
   - Files: T1 inventory 所列每个消费者、`sorter_inbound_runtime_service.py` 等旧 dispatcher、guardrails；每个真实 operation 生成独立任务、依赖、human/CC 估时与验证命令。
   - Verify: 所有展开任务完成；生产与测试代码中的 `port_method` / `effect_contracts` / cache/旧 endpoint/旧 dispatch 状态/boolean sender 引用为 0；删除 `WmsEndpointConfig`、WMS EndpointRegistry 重复条目与 Provider profile 字符串 Port.method 清单；生成报告干净，开发/测试旧数据清理，架构测试阻止回归。
 
-## 18. Review Completion Summary
+## 18. 实施状态（2026-07-24）
+
+- **状态**：T1–T12 全部完成，已合入 `develop` 的 `0b998e6a06468d466718fa266790a9a76a48ea23`（`v0.19.0.0 feat(runtime,wms): 提取北向 typed capability (#90)`）。
+- **任务证据**：实施记录保存在 `.superpowers/sdd/`；T2、T5–T12 分别有任务报告，Foundation/T1 的收口证据在 `foundation-repair-report.md`、operation inventory、ADR 与 generated legacy removal report。
+- **零遗留**：`docs/architecture/northbound-legacy-removal-report.json` 当前且为 `finding_count=0`、`remaining_inventory_count=0`；活跃 operation inventory 仅保留 CSV 表头。
+- **最终验证**：本机 Docker 开发环境执行 `./scripts/init-env.sh dev` 后，`uv run pytest tests/ -q --capture=fd --log-level=ERROR` 为 `3912 passed, 5 skipped`；`./scripts/git-quality-gate.sh --profile quality` 通过；生成式 legacy removal 报告检查通过。
+- **验证边界**：按实施范围未执行 Jenkins/GitLab 验证。`.env` 为忽略的本机状态，配置 profile 变动后必须重新运行 `./scripts/init-env.sh dev`。
+
+## 19. Review Completion Summary
 
 | Area | Result |
 | --- | --- |

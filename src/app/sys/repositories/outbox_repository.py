@@ -43,6 +43,7 @@ class ExpiredExternalHttpLeaseFence:
     lease_expires_at: datetime
     attempt_no_hint: int
     dispatch_started: bool
+    operation_identity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +69,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
 
         immutable_fields = {
             "dispatch_key",
+            "idempotency_key",
             "target_code",
             "provider_profile_identity",
             "provider_profile_hash",
@@ -216,6 +218,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                     lease_expires_at=lease_expires_at,
                     attempt_no_hint=max(1, int(outbox.attempt_count or 0) + 1),
                     dispatch_started=dispatch_started,
+                    operation_identity=getattr(outbox, "operation_identity", None),
                 )
             )
             self._clear_block(outbox)

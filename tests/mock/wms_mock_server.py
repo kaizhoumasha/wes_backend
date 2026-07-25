@@ -702,18 +702,22 @@ async def _post_callback(url: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 def _typed_effect_callback_payload(
     *,
-    callback_type: str,
+    operation_identity: str,
+    idempotency_key: str,
     request_payload: dict[str, Any],
-    data: dict[str, Any],
 ) -> dict[str, Any]:
     dispatch_key = str(request_payload.get("dispatch_key") or "")
-    source_event_hash = hashlib.sha256(f"{callback_type}:{dispatch_key}".encode()).hexdigest()[:16]
+    source_event_hash = hashlib.sha256(f"{operation_identity}:{dispatch_key}".encode()).hexdigest()[:16]
     return {
-        "callback_type": callback_type,
+        "callback_type": "WMS_EFFECT_STATUS_HINT",
         "source_system": "WMS",
         "source_event_id": f"wms-mock:typed-effect:{source_event_hash}",
         "trace_id": str(request_payload.get("trace_id") or f"wms-mock:{dispatch_key}"),
-        "data": data,
+        "data": {
+            "operation_identity": operation_identity,
+            "idempotency_key": idempotency_key,
+            "dispatch_key": dispatch_key,
+        },
     }
 
 
@@ -1011,27 +1015,21 @@ async def transport_request(payload: dict[str, Any], background_tasks: Backgroun
 
 
 @app.post("/api/wms/fulfillment/package-binding", summary="本机 Mock: typed PKG 绑定通知")
-async def notify_pkg_binding(payload: dict[str, Any], background_tasks: BackgroundTasks):
+async def notify_pkg_binding(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
     """模拟 `wms.fulfillment.notify_pkg_binding@v1`，仅供本机开发验收。"""
 
     dispatch_key = str(payload.get("dispatch_key") or "")
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
     package_id = str(payload.get("package_id") or "")
     pallet_id = str(payload.get("pallet_id") or "")
     station_code = str(payload.get("station_code") or "")
-    callback_data = {
-        "dispatch_key": dispatch_key,
-        "package_id": package_id,
-        "pallet_id": pallet_id,
-        "accepted": True,
-        "source_version": "mock-wms.v1",
-    }
     background_tasks.add_task(
         _post_callback,
         WES_EXTERNAL_CALLBACK_URL,
         _typed_effect_callback_payload(
-            callback_type="WMS_PACKAGE_BOUND",
+            operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+            idempotency_key=idempotency_key,
             request_payload=payload,
-            data=callback_data,
         ),
     )
     return {
@@ -1059,10 +1057,11 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
 
 
 @app.post("/api/wms/fulfillment/full-box-exchange", summary="本机 Mock: 满箱交换履约")
-async def full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks):
+async def full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
     """模拟满箱交换 typed EFFECT，不触发生产写路径。"""
 
     dispatch_key = str(payload.get("dispatch_key") or "")
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
     requested_callback_type = str(payload.get("callback_type") or "")
     if dispatch_key and requested_callback_type == "WMS_FULL_BOX_EXCHANGE_RESULT":
         background_tasks.add_task(
@@ -1079,17 +1078,9 @@ async def full_box_exchange(payload: dict[str, Any], background_tasks: Backgroun
             _post_callback,
             WES_EXTERNAL_CALLBACK_URL,
             _typed_effect_callback_payload(
-                callback_type="WMS_FULL_BOX_EXCHANGE_COMPLETED",
+                operation_identity="wms.fulfillment.full_box_exchange@v1",
+                idempotency_key=idempotency_key,
                 request_payload=payload,
-                data={
-                    "dispatch_key": dispatch_key,
-                    "rack_id": str(payload.get("rack_id") or ""),
-                    "empty_box_id": str(payload.get("empty_box_id") or ""),
-                    "full_box_id": str(payload.get("full_box_id") or ""),
-                    "accepted": True,
-                    "exchange_request_code": dispatch_key,
-                    "source_version": "mock-wms.v1",
-                },
             ),
         )
     rack_code = str(payload.get("rack_code") or "")
@@ -1472,21 +1463,17 @@ async def delete_reservation(reservation_key: str):
 
 
 @app.post("/api/wms/inventory/confirm-inbound")
-async def confirm_inbound_effect(payload: dict[str, Any], background_tasks: BackgroundTasks):
+async def confirm_inbound_effect(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
     dispatch_key = str(payload.get("dispatch_key") or "")
+    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
     inbound_key = str(payload.get("inbound_key") or "")
     background_tasks.add_task(
         _post_callback,
         WES_EXTERNAL_CALLBACK_URL,
         _typed_effect_callback_payload(
-            callback_type="WMS_INBOUND_CONFIRMED",
+            operation_identity="wms.inventory.confirm_inbound@v1",
+            idempotency_key=idempotency_key,
             request_payload=payload,
-            data={
-                "dispatch_key": dispatch_key,
-                "inbound_key": inbound_key,
-                "accepted": True,
-                "source_version": "mock-wms.v1",
-            },
         ),
     )
     return {

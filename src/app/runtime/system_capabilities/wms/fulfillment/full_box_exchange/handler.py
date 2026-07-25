@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from src.app.runtime.system_capabilities.outcomes import Success
 
+from .contract import CONTRACT
 from .effect_adapter import full_box_exchange_effect_adapter
 from .effect_contract import FullBoxExchangeDispatchAccepted, FullBoxExchangeEffectAdmission
 
@@ -17,8 +18,8 @@ class FullBoxExchangeEffectHandler:
     """只创建双账本；外部 I/O 由提交后的既有 dispatcher 执行。"""
 
     async def __call__(self, request: FullBoxExchangeOperationRequest, *, execution: object) -> object:
-        from src.app.runtime.orchestration.services.full_box_exchange_effect_preparation_service import (
-            full_box_exchange_effect_preparation_service,
+        from src.app.runtime.orchestration.services.wms_effect_preparation_service import (
+            wms_effect_preparation_service,
         )
 
         admission = execution.admission  # type: ignore[attr-defined]
@@ -35,8 +36,9 @@ class FullBoxExchangeEffectHandler:
         intent_log = execution.intent_log  # type: ignore[attr-defined]
         if intent_log is None:
             raise RuntimeError("full_box_exchange OUTBOX_ASYNC claim row is missing")
-        outbox = await full_box_exchange_effect_preparation_service.prepare(
+        outbox = await wms_effect_preparation_service.prepare(
             execution.db,  # type: ignore[attr-defined]
+            operation=CONTRACT,
             request=request,
             intent_log=intent_log,
             adapter=full_box_exchange_effect_adapter,

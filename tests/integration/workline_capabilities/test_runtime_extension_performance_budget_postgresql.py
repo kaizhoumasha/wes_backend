@@ -29,6 +29,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteInput
 from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.sys.models import SystemOutbox
 from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
 from src.app.wms_integration.services import (
@@ -105,19 +106,19 @@ def _inventory_query_port_factory_builder(session_factory: Any, http_calls: list
             },
         )
 
-    def builder(*, provider_profile: Any, simulation: bool, sandbox_rows_provider: Any):
+    def builder(*, simulation: bool, sandbox_rows_provider: Any, settings_source: Any):
         breaker_service = WmsCircuitBreakerService(failure_threshold=2, retry_after_seconds=60)
         return build_inventory_query_port_factory(
-            provider_profile=provider_profile,
             simulation=simulation,
             sandbox_rows_provider=sandbox_rows_provider,
             transport=httpx.MockTransport(handler),
             evidence_writer=WmsCallEvidenceQueryWriter(
                 session_factory=session_factory,
-                provider_profile_identity=provider_profile.identity,
+                provider_profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
                 evidence_service=WmsCallEvidenceService(),
                 breaker_service=breaker_service,
             ),
+            settings_source=settings_source,
         )
 
     return builder
@@ -133,7 +134,7 @@ async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_
             "src.app.wms_integration.runtime_factory.build_inventory_query_port_factory",
             _inventory_query_port_factory_builder(session_factory, http_calls),
         )
-        monkeypatch.setattr(settings, "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1", "performance-fixture-secret")
+        monkeypatch.setattr(settings, "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2", "performance-fixture-secret")
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
             service = RuntimeInboxService()

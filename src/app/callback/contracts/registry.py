@@ -105,9 +105,9 @@ _REGISTRY: dict[ErrorCode, DiagnosticCodeDefinition] = {
     ErrorCode.CALLBACK_DEADLINE_EXPIRED: DiagnosticCodeDefinition(
         code=ErrorCode.CALLBACK_DEADLINE_EXPIRED,
         owner="runtime",
-        cause="设备已 ACK，但未在业务完成窗口内回传 Callback，物理状态未知。",
+        cause="需要终态 callback 的设备已 ACK，但未在业务完成窗口内回传结果，物理状态未知。",
         operator_action="停止对受影响设备继续投料，现场确认动作是否完成，然后执行人工对账解除隔离。",
-        fix="读取 session reconciliation 字段和 late callback evidence，调用 resolve API 决议 completed/failed/cancelled。",
+        fix="读取设备 session reconciliation 和 late callback evidence，调用 resolve API 决议 completed/failed/cancelled。",
         recoverability=Recoverability.MANUAL_INTERVENTION_REQUIRED,
         docs_anchor="CALLBACK_DEADLINE_EXPIRED",
     ),

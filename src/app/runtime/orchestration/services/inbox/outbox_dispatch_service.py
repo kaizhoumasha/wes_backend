@@ -590,6 +590,7 @@ class OutboxDispatchService:
                         result=result,
                         retry_exhausted=False,
                         occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+                        operation_identity=getattr(outbox, "operation_identity", None),
                     )
                     await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_REDUCER_EVIDENCE, outbox)
                 return None
@@ -617,6 +618,7 @@ class OutboxDispatchService:
                 result=result,
                 retry_exhausted=enum_value(getattr(updated, "status", None)) == "FAILED",
                 occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+                operation_identity=getattr(outbox, "operation_identity", None),
             )
             await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_REDUCER_EVIDENCE, outbox)
         return updated
@@ -1093,6 +1095,7 @@ class OutboxDispatchService:
                             effect_transport_bridge=self._resolve_effect_transport_bridge(),
                             dispatch_key=str(outbox.dispatch_key),
                             attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
+                            operation_identity=getattr(outbox, "operation_identity", None),
                         )
                         logger.exception(f"Outbox {outbox_pk} 证据落库失败，已隔离收口为 UNKNOWN")
                         result["failed"] += 1

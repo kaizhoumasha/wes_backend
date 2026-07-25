@@ -26,6 +26,8 @@ from src.app.runtime.workline_plugins.attempt_coordinator import WriteDispositio
 from src.app.runtime.workline_plugins.contracts import PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import PinnedPluginSnapshot, PluginDispatchRequest
 from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
+from src.app.workline import runtime_services as runtime_services_module
+from src.app.workline.runtime_services import build_workline_runtime_services
 from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
 
@@ -136,12 +138,41 @@ def test_attempt_runtime_registers_typed_inventory_factory_without_caching_insta
     _configure_attempt_runtime_ports(
         runtime,
         services=SimpleNamespace(
-            inventory_query_port_factory=lambda *, provider_profile: _InventoryPort,
+            inventory_query_port_factory=lambda: _InventoryPort,
         ),
-        provider_profile=_profile(),
     )
 
     assert registry.get(InventoryQueryOperationPort) is not registry.get(InventoryQueryOperationPort)
+
+
+def test_real_runtime_services_register_current_deployment_inventory_query_port() -> None:
+    """真实 runtime services 与 attempt seam 必须共享无 Provider selector 的 callable contract。"""
+
+    registry = CapabilityPortRegistry()
+    runtime = SimpleNamespace(port_registry=registry)
+    services = build_workline_runtime_services(
+        db=object(),
+        session=SimpleNamespace(run_mode="NORMAL"),
+    )
+
+    _configure_attempt_runtime_ports(runtime, services=services)
+
+    assert callable(registry.get(InventoryQueryOperationPort).execute)
+
+
+def test_simulation_run_mode_requires_enabled_deployment_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        runtime_services_module,
+        "settings",
+        SimpleNamespace(WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=False),
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match=r"simulation.*disabled"):
+        build_workline_runtime_services(
+            db=object(),
+            session=SimpleNamespace(run_mode="SIMULATION"),
+        )
 
 
 def test_pinned_binding_profile_uses_exact_snapshot_identity() -> None:
@@ -339,9 +370,8 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
     async def build_dispatch_request(*_args: object, **_kwargs: object) -> PluginDispatchRequest:
         return dispatch_request
 
-    def configure_ports(runtime: object, *, services: object, provider_profile: ExternalContractProfile) -> None:
+    def configure_ports(runtime: object, *, services: object) -> None:
         _ = services
-        assert provider_profile.identity == profile.identity
         runtime.port_registry.register(InventoryQueryOperationPort, _InventoryPort)
 
     monkeypatch.setattr(workline_plugin_binding_service, "get_pinned", AsyncMock(return_value=binding))

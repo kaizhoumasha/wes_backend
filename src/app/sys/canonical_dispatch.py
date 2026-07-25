@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -16,6 +17,15 @@ from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from src.app.sys.external_http_binding import FrozenExternalHttpBinding
+
+_CANONICAL_WMS_OPERATION_IDENTITY_RE = re.compile(r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")
+_WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
+    {
+        "wms.inventory.confirm_inbound@v1",
+        "wms.fulfillment.full_box_exchange@v1",
+        "wms.fulfillment.notify_pkg_binding@v1",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -112,7 +122,9 @@ class ExternalHttpDispatchRequest:
     auth_scheme: Literal["HMAC_SHA256"]
     timestamp: str
     nonce: str
+    operation_identity: str
     _signature: str = field(repr=False)
+    idempotency_key: str | None = None
 
     @classmethod
     def from_persisted(
@@ -124,6 +136,7 @@ class ExternalHttpDispatchRequest:
         secret: bytes,
         timestamp: str,
         nonce: str,
+        idempotency_key: str | None = None,
     ) -> ExternalHttpDispatchRequest:
         payload = CanonicalPayload.from_persisted(
             canonical_payload_bytes=canonical_payload_bytes,
@@ -135,9 +148,24 @@ class ExternalHttpDispatchRequest:
         nonce = str(nonce or "").strip()
         if not timestamp or "\n" in timestamp or not nonce or "\n" in nonce:
             raise ValueError("request authentication timestamp and nonce must be non-empty single-line values")
+        if binding.operation_identity in _WMS_EFFECT_OPERATION_IDENTITIES and idempotency_key is None:
+            raise ValueError("WMS EFFECT request requires a non-empty idempotency_key")
+        if idempotency_key is not None:
+            if (
+                not isinstance(idempotency_key, str)
+                or not idempotency_key.strip()
+                or "\n" in idempotency_key
+                or "\r" in idempotency_key
+            ):
+                raise ValueError("idempotency_key must be a non-empty single-line value")
+            if not _CANONICAL_WMS_OPERATION_IDENTITY_RE.fullmatch(binding.operation_identity):
+                raise ValueError("WMS EFFECT request requires a canonical operation identity")
         target = binding.target_snapshot
         path = urlparse(target.url).path or "/"
-        signature_payload = f"{target.http_method}\n{path}\n{timestamp}\n{nonce}\n{payload.sha256}".encode()
+        signature_fields = [target.http_method, path, timestamp, nonce, payload.sha256]
+        if idempotency_key is not None:
+            signature_fields.extend((binding.operation_identity, idempotency_key))
+        signature_payload = "\n".join(signature_fields).encode()
         signature = hmac.new(secret, signature_payload, hashlib.sha256).hexdigest()
         return cls(
             endpoint=EndpointDefinition(code=target.code, url=target.url),
@@ -148,7 +176,9 @@ class ExternalHttpDispatchRequest:
             auth_scheme=binding.auth_scheme,
             timestamp=timestamp,
             nonce=nonce,
+            operation_identity=binding.operation_identity,
             _signature=signature,
+            idempotency_key=idempotency_key,
         )
 
     @property
@@ -163,7 +193,7 @@ class ExternalHttpDispatchRequest:
     def headers(self) -> dict[str, str]:
         """返回封闭的认证 header 集；调用方不能注入自由 header mapping。"""
 
-        return {
+        headers = {
             "Content-Type": "application/json",
             "X-WES-Content-SHA256": self.payload_hash,
             "X-WES-Credential-Reference": self.credential_reference,
@@ -172,6 +202,10 @@ class ExternalHttpDispatchRequest:
             "X-WES-Signature-Algorithm": self.auth_scheme,
             "X-WES-Timestamp": self.timestamp,
         }
+        if self.idempotency_key is not None:
+            headers["Idempotency-Key"] = self.idempotency_key
+            headers["X-WES-Operation-Identity"] = self.operation_identity
+        return headers
 
     def sign_hmac_sha256(self, secret: bytes) -> str:
         return self.payload.sign_hmac_sha256(secret)

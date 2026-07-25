@@ -18,26 +18,41 @@ def evidence_payload() -> dict[str, object]:
         "source": "master-data",
         "evidence_at": datetime(2026, 7, 17, tzinfo=UTC).isoformat(),
         "source_version": "42",
-        "admission_snapshot": {"profile": "provider-contract"},
+        "admission_snapshot": {
+            "profile": "provider-contract",
+            "budget": {"timeout_ms": 500, "max_output_bytes": 4096},
+        },
         "summary": {"found": True},
-        "shadow_expected": None,
     }
 
 
-def test_query_evidence_requires_explicit_shadow_contract_and_serializes_null() -> None:
+def test_query_evidence_rejects_removed_shadow_expected_field() -> None:
     from pydantic import ValidationError
 
     from src.app.runtime.system_capabilities.evidence import QueryEvidence
 
     payload = evidence_payload()
-    payload.pop("shadow_expected")
+    payload["shadow_expected"] = None
     with pytest.raises(ValidationError, match="shadow_expected"):
         QueryEvidence.model_validate(payload)
 
-    payload["shadow_expected"] = None
-    evidence = QueryEvidence.model_validate(payload)
 
-    assert evidence.payload()["shadow_expected"] is None
+def test_query_evidence_preserves_actual_provenance_budget_and_canonical_hashes() -> None:
+    from src.app.runtime.system_capabilities.evidence import QueryEvidence
+
+    evidence = QueryEvidence.model_validate(evidence_payload())
+    payload = evidence.payload()
+
+    assert payload["input_hash"] == "a" * 64
+    assert payload["output_hash"] == "b" * 64
+    assert payload["authority"] == "WMS"
+    assert payload["source"] == "master-data"
+    assert payload["source_version"] == "42"
+    assert payload["admission_snapshot"]["budget"] == {
+        "timeout_ms": 500,
+        "max_output_bytes": 4096,
+    }
+    assert "shadow_expected" not in payload
 
 
 def test_evidence_maps_to_existing_decision_made_timeline_payload() -> None:

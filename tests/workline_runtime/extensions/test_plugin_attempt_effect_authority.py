@@ -336,9 +336,7 @@ async def test_business_reject_rolls_back_attempt_and_emits_typed_internal_resul
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
-        write_set=AttemptWriteSet(
-            evidence=(), next_state={"phase": "MUST_NOT_ADVANCE"}, intents=("i1",), shadow_comparisons=()
-        ),
+        write_set=AttemptWriteSet(evidence=(), next_state={"phase": "MUST_NOT_ADVANCE"}, intents=("i1",)),
     )
 
     expected_disposition = "TERMINAL_FAILURE" if original_route == "CAPABILITY_EFFECT_RESULT" else "COMMITTED"

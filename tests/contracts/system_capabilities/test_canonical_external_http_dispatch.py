@@ -46,6 +46,7 @@ def _external_envelope(**overrides: Any) -> DispatchEnvelope:
     )
     values = {
         "dispatch_key": "dispatch-001",
+        "idempotency_key": "intent-idempotency-001",
         "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP,
         "target_type": SystemOutboxTargetType.HTTP_ENDPOINT,
         "target_code": "WMS_INBOUND",
@@ -69,17 +70,24 @@ def test_canonical_payload_uses_one_frozen_byte_sequence_for_hash_signature_and_
     assert first.sha256 == sha256(first.body).hexdigest()
     assert first.sign_hmac_sha256(b"test-secret") == new_hmac(b"test-secret", first.body, sha256).hexdigest()
 
-    binding = frozen_external_http_binding(target_code="WMS_INBOUND", target_url="https://wms.example/inbound")
+    binding = frozen_external_http_binding(
+        target_code="WMS_INBOUND",
+        target_url="https://wms.example/inbound",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+    )
     request = ExternalHttpDispatchRequest.from_persisted(
         binding=binding,
         canonical_payload_bytes=first.body,
         payload_hash=first.sha256,
+        idempotency_key="intent-idempotency-001",
         secret=TEST_SECRET,
         timestamp="2026-07-23T00:00:00+00:00",
         nonce="canonical-test",
     )
     assert request.body is first.body
     assert request.payload_hash == first.sha256
+    assert request.idempotency_key == "intent-idempotency-001"
+    assert request.operation_identity == binding.operation_identity
     assert request.sign_hmac_sha256(b"test-secret") == first.sign_hmac_sha256(b"test-secret")
     with pytest.raises(FrozenInstanceError):
         request.endpoint = EndpointDefinition(code="OTHER", url="https://other.example")  # type: ignore[misc]
@@ -162,6 +170,7 @@ async def test_repeated_external_http_attempts_use_frozen_bytes_without_reading_
     class ProjectionMustNotBeRead:
         canonical_payload_bytes = canonical.body
         payload_hash = canonical.sha256
+        idempotency_key = "intent-idempotency-001"
 
         @property
         def payload_json(self) -> dict[str, Any]:
@@ -181,6 +190,7 @@ async def test_repeated_external_http_attempts_use_frozen_bytes_without_reading_
     frozen_binding = frozen_external_http_binding(
         target_code="WMS_INBOUND",
         target_url="https://wms.example/inbound",
+        operation_identity="wms.inventory.confirm_inbound@v1",
     )
     for field_name, value in frozen_binding.as_persisted_fields().items():
         setattr(outbox, field_name, value)
@@ -192,6 +202,10 @@ async def test_repeated_external_http_attempts_use_frozen_bytes_without_reading_
     assert second.outcome is ExternalHttpTransportOutcome.NOT_SENT
     assert [request.body for request in requests] == [canonical.body, canonical.body]
     assert [request.payload_hash for request in requests] == [canonical.sha256, canonical.sha256]
+    assert [request.idempotency_key for request in requests] == [
+        "intent-idempotency-001",
+        "intent-idempotency-001",
+    ]
 
 
 def test_external_http_request_rejects_persisted_bytes_hash_mismatch() -> None:
@@ -204,10 +218,101 @@ def test_external_http_request_rejects_persisted_bytes_hash_mismatch() -> None:
             binding=frozen_binding,
             canonical_payload_bytes=b'{"request_id":"REQ-001"}',
             payload_hash="f" * 64,
+            idempotency_key="intent-idempotency-001",
             secret=TEST_SECRET,
             timestamp="2026-07-23T00:00:00+00:00",
             nonce="mismatch-test",
         )
+
+
+def test_effect_request_headers_are_closed_and_metadata_is_signed() -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-001"})
+    binding = frozen_external_http_binding(
+        target_code="WMS_INBOUND",
+        target_url="https://wms.example/inbound",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+    )
+    request = ExternalHttpDispatchRequest.from_persisted(
+        binding=binding,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        idempotency_key="intent-idempotency-001",
+        secret=TEST_SECRET,
+        timestamp="2026-07-24T00:00:00+00:00",
+        nonce="metadata-test",
+    )
+
+    assert request.headers == {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "intent-idempotency-001",
+        "X-WES-Content-SHA256": canonical.sha256,
+        "X-WES-Credential-Reference": request.credential_reference,
+        "X-WES-Nonce": "metadata-test",
+        "X-WES-Operation-Identity": "wms.inventory.confirm_inbound@v1",
+        "X-WES-Signature": request.headers["X-WES-Signature"],
+        "X-WES-Signature-Algorithm": "HMAC_SHA256",
+        "X-WES-Timestamp": "2026-07-24T00:00:00+00:00",
+    }
+    expected_canonical = (
+        "POST\n/inbound\n2026-07-24T00:00:00+00:00\nmetadata-test\n"
+        f"{canonical.sha256}\nwms.inventory.confirm_inbound@v1\nintent-idempotency-001"
+    ).encode()
+    expected_signature = new_hmac(TEST_SECRET, expected_canonical, sha256).hexdigest()
+    assert request.headers["X-WES-Signature"] == expected_signature
+
+    for original, tampered in (
+        (b"wms.inventory.confirm_inbound@v1", b"wms.inventory.other@v1"),
+        (b"intent-idempotency-001", b"other-idempotency-key"),
+    ):
+        tampered_canonical = expected_canonical.replace(original, tampered)
+        assert new_hmac(TEST_SECRET, tampered_canonical, sha256).hexdigest() != expected_signature
+
+
+def test_authored_wms_effect_request_rejects_missing_idempotency_key() -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-001"})
+    binding = frozen_external_http_binding(
+        target_code="WMS_INBOUND",
+        target_url="https://wms.example/inbound",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+    )
+
+    with pytest.raises(ValueError, match="idempotency_key"):
+        ExternalHttpDispatchRequest.from_persisted(
+            binding=binding,
+            canonical_payload_bytes=canonical.body,
+            payload_hash=canonical.sha256,
+            secret=TEST_SECRET,
+            timestamp="2026-07-24T00:00:00+00:00",
+            nonce="metadata-test",
+        )
+
+
+def test_generic_outbox_keeps_idempotency_metadata_nullable() -> None:
+    envelope = DispatchEnvelope(
+        dispatch_key="device-command-001",
+        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        target_type=SystemOutboxTargetType.DEVICE,
+        target_code="ECS-001",
+        provider_profile_identity="ecs.device-command.v1",
+        operation_identity="device.command",
+        payload_json={"command": "MOVE"},
+        operation_domain="DEVICE",
+    )
+
+    assert envelope.idempotency_key is None
+    assert (
+        SystemOutboxCreate(
+            dispatch_key="device-command-002",
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            target_type=SystemOutboxTargetType.DEVICE,
+            target_code="ECS-001",
+            provider_profile_identity="ecs.device-command.v1",
+            operation_identity="device.command",
+            payload_json={"command": "MOVE"},
+            operation_domain="DEVICE",
+        ).idempotency_key
+        is None
+    )
 
 
 def test_replay_parses_only_the_frozen_canonical_bytes() -> None:

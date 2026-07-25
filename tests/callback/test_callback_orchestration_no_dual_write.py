@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -130,7 +130,7 @@ async def test_process_external_writes_only_runtime_inbox() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_external_routes_typed_wms_effect_callback_before_commit() -> None:
+async def test_process_external_routes_wms_effect_hint_without_changing_runtime_inbox_flow() -> None:
     runtime_record = SimpleNamespace(
         id=44,
         trace_id="trace-typed-effect-001",
@@ -147,25 +147,28 @@ async def test_process_external_routes_typed_wms_effect_callback_before_commit()
     service._typed_effect_callback_router = typed_router
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
     payload = {
-        "callback_type": "WMS_INBOUND_CONFIRMED",
+        "callback_type": "WMS_EFFECT_STATUS_HINT",
         "source_system": "WMS",
         "source_event_id": "wms-event-001",
         "data": {
+            "operation_identity": "wms.inventory.confirm_inbound@v1",
+            "idempotency_key": "idem-confirm-inbound-001",
             "dispatch_key": "confirm-inbound-001",
-            "inbound_key": "INBOUND-001",
-            "accepted": True,
         },
     }
 
     await service.process_external(
         SimpleNamespace(),
-        callback_type="WMS_INBOUND_CONFIRMED",
+        callback_type="WMS_EFFECT_STATUS_HINT",
         payload=payload,
         request_id="req-typed-effect-001",
         trace_id="trace-typed-effect-001",
         enqueue_processing=lambda: None,
     )
 
-    typed_router.route.assert_awaited_once()
-    assert typed_router.route.await_args.kwargs["source_event_id"] == "wms-provider-event-001"
+    typed_router.route.assert_awaited_once_with(
+        ANY,
+        callback_type="WMS_EFFECT_STATUS_HINT",
+        payload=payload,
+    )
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()

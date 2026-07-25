@@ -20,6 +20,7 @@ async def test_tenant_principal_reads_only_owner_scoped_operational_snapshot() -
     bucket = SimpleNamespace(
         provider_profile_identity="wms.2026-07-06.material-flow.production",
         operation_identity="wms.inventory.query_inventory@v1",
+        mode="QUERY",
         backlog_count=1,
         active_lease_count=0,
         unknown_count=0,
@@ -27,7 +28,6 @@ async def test_tenant_principal_reads_only_owner_scoped_operational_snapshot() -
         rate_limited_count=0,
         lease_loss_count=0,
         reconciliation_open_count=0,
-        readiness="READY",
     )
     repository = SimpleNamespace(
         workline_is_owned_by=AsyncMock(return_value=True),
@@ -48,6 +48,8 @@ async def test_tenant_principal_reads_only_owner_scoped_operational_snapshot() -
     assert snapshot.tenant_scope == "WORKLINE_OWNER"
     assert snapshot.workline_id == 7
     assert snapshot.operations[0].operation_identity == "wms.inventory.query_inventory@v1"
+    assert snapshot.operations[0].mode == "QUERY"
+    assert "readiness" not in snapshot.operations[0].model_dump()
     audit_args = audit_service.create_audit_log.await_args.kwargs["args"]
     assert audit_args["decision"] == "ALLOWED"
     assert audit_args["tenant_id"] == "42"

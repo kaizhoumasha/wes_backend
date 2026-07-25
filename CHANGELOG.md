@@ -7,26 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.19.0.0] - 2026-07-24
+## [0.20.0.0] - 2026-07-25
 
 ### Added
-- 可通过统一的 WMS typed operation 执行库存查询、入库确认、料盘绑定和满箱交换，并以冻结的 Provider、凭据、请求与证据支持确定性重放。
-- 新增 Provider conformance、录制回放、查询影子对比及持久化 READY+GO 切换门禁，使生产北向能力在上线前可验证、可审批且默认拒绝不完整配置。
-- 新增 EFFECT 单调状态归并、dispatch attempt、对账决议、租约围栏和崩溃恢复闭环，覆盖 HTTP、设备命令与内部信号的并发派发。
-- 新增北向 operation 运维快照、SLO、指标、告警语义和 Runbook，可统一查看同步 QUERY 与异步 EFFECT 的健康度和就绪状态。
+- WMS EFFECT 操作现在通过幂等提交与状态查询确认最终结果，支持超时、模糊发送、崩溃恢复、租约围栏和人工对账场景下的安全恢复。
+- 新增状态查询 Port、HTTP adapter、持久化轮询状态和 PostgreSQL claim 机制，并为入库确认、料盘绑定和满箱交换提供统一的状态确认合同。
+- 新增北向可行性探针、录制回放资产、联调验收模板、切换 Runbook 和 operation SLO 目录，为真实 WMS 联调与后续整体切换提供可执行材料。
 
 ### Changed
-- 粗分机库存准入迁移到通用 typed QUERY，并按物料、批次、仓库和货主精确匹配 WMS 权威库存，跨货主或缺失货主数据默认拒绝。
-- 外部 HTTP 派发改为冻结 canonical payload、目标 binding 和 HMAC credential reference；生产环境强制 HTTPS，并由 Settings 与部署模板统一提供配置。
-- WMS callback 统一接入生产入口和 typed reducer，校验 dispatch identity 与业务关联字段，人工对账决议同时受 WorkLine owner scope 约束。
+- 北向运行时收敛为单部署 Provider，callback 仅作为提前查询提示，业务终态统一由状态查询与 reducer 决定。
+- 三个 WMS EFFECT operation 合并使用共享 preparation service，同时保留各 operation 的 typed 请求映射、签名和幂等身份。
+- Docker、Celery、Settings 与测试部署模板统一提供状态轮询、凭据、签名和连接配置，缺失生产配置时继续 fail-closed。
 
 ### Fixed
-- 修复 EFFECT 在协议拒绝、callback 抢先完成、证据提交失败、租约过期重领和至少一次重放场景中的悬挂、重复派发与账本不一致。
-- 修复库存 QUERY 对 429、超时和瞬时网络错误未执行合同重试，以及 readiness 重复样本可能错误放行的问题。
-- 修复 callback 请求体上限与 OpenAPI 契约、认证 Redis 启动恢复、空账本 operation 快照及 Celery 独立启动门禁等发布前 QA 问题。
+- 修复 WMS 协议拒绝未进入开放对账、状态确认预算不完整、逐项租约丢失以及回调关联键不一致导致的账本悬挂。
+- 修复 PostgreSQL 崩溃恢复测试仍期待旧式立即对账的问题，并同步 legacy 清理矩阵与闭环计数。
+- 修复 Provider 轮换、请求体双签名、状态提示关联和启动门禁中的合同漂移。
 
 ### Removed
-- 删除旧 WMS typed ports、手写 transport/cache/service locator 和北向兼容生产路径，operation 目录、生成索引与 legacy removal 账本成为唯一目标态。
+- 删除未接入生产路径的 query shadow/readiness 平台、旧 conformance trust root、terminal callback adapter 和重复的 operation preparation service。
 
 ## [0.18.1.0] - 2026-07-21
 

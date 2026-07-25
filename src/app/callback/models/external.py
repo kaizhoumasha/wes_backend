@@ -15,12 +15,15 @@ class CallbackExternalRequest(BaseModel):
         json_schema_extra={
             "examples": [
                 {
-                    "callback_type": "WMS_INBOUND_CONFIRMED",
+                    "callback_type": "WMS_EFFECT_STATUS_HINT",
                     "trace_id": "trace-01JQA",
                     "source_event_id": "wms-event-01JQA",
-                    "dispatch_key": "dispatch-01JQA",
-                    "inbound_key": "inbound-01JQA",
-                    "accepted": True,
+                    "source_system": "WMS",
+                    "data": {
+                        "operation_identity": "wms.inventory.confirm_inbound@v1",
+                        "idempotency_key": "idem-01JQA",
+                        "dispatch_key": "dispatch-01JQA",
+                    },
                 }
             ]
         },

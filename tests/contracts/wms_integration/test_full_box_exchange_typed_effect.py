@@ -23,12 +23,7 @@ from src.app.wms_integration.ports.full_box_exchange_operation import (
 
 
 def _modules() -> SimpleNamespace:
-    callback_adapter = import_module(
-        "src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.callback_adapter"
-    )
-    preparation_service = import_module(
-        "src.app.runtime.orchestration.services.full_box_exchange_effect_preparation_service"
-    )
+    preparation_service = import_module("src.app.runtime.orchestration.services.wms_effect_preparation_service")
     definition = import_module("src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.definition")
     effect_adapter = import_module(
         "src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.effect_adapter"
@@ -41,8 +36,7 @@ def _modules() -> SimpleNamespace:
         "src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.intent_adapter"
     )
     return SimpleNamespace(
-        FullBoxExchangeCallbackAdapter=callback_adapter.FullBoxExchangeCallbackAdapter,
-        FullBoxExchangeEffectPreparationService=preparation_service.FullBoxExchangeEffectPreparationService,
+        WmsEffectPreparationService=preparation_service.WmsEffectPreparationService,
         CAPABILITY_KEY=definition.CAPABILITY_KEY,
         CONTRACT_VERSION=definition.CONTRACT_VERSION,
         DEFINITION=definition.DEFINITION,
@@ -138,12 +132,26 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         )
     )
     db = object()
-    intent_log = SimpleNamespace(dispatch_key=request.dispatch_key, effect_status="PROPOSED")
-    service = modules.FullBoxExchangeEffectPreparationService(intent_repository=pair_repository)
+    intent_log = SimpleNamespace(
+        dispatch_key=request.dispatch_key,
+        idempotency_key="intent-full-box-001",
+        effect_status="PROPOSED",
+        capability_key="wms.fulfillment.full_box_exchange",
+        capability_contract_version="v1",
+        operation_identity="WMS:RACK-001:EMPTY-001:FULL-001",
+    )
+    service = modules.WmsEffectPreparationService(intent_repository=pair_repository)
 
-    outbox = await service.prepare(db, request=request, intent_log=intent_log, adapter=adapter)
+    outbox = await service.prepare(
+        db,
+        operation=CONTRACT,
+        request=request,
+        intent_log=intent_log,
+        adapter=adapter,
+    )
 
     assert outbox.status == SystemOutboxStatus.NEW
+    assert outbox.idempotency_key == "intent-full-box-001"
     assert outbox.operation_identity == CONTRACT.identity
     assert outbox.operation_key == "WMS:RACK-001:EMPTY-001:FULL-001"
     assert outbox.target_snapshot_json["url"] == ("https://wms-v1.example/api/wes/fulfillment/full-box-exchange")
@@ -152,50 +160,20 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         b'{"dispatch_key":"wms-full-box-exchange:WMS:RACK-001:EMPTY-001:FULL-001","empty_box_id":"EMPTY-001",'
         b'"full_box_id":"FULL-001","rack_id":"RACK-001"}'
     )
+    assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
+    assert len(intent_log.status_binding_snapshot_hash) == 64
+    assert intent_log.operation_identity == "WMS:RACK-001:EMPTY-001:FULL-001"
     assert pair_repository.calls == [(db, intent_log, outbox)]
 
-
-class _RecordingCallbackBridge:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    async def record(self, db: object, **values: object) -> object:
-        self.calls.append({"db": db, **values})
-        return SimpleNamespace(effect_status="recorded")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("accepted", "reason_code", "expected_outcome"),
-    [(True, None, "COMPLETED"), (False, "RACK_LOCKED", "REJECTED")],
-)
-async def test_callback_adapter_maps_typed_business_result_only_through_reducer(
-    accepted: bool,
-    reason_code: str | None,
-    expected_outcome: str,
-) -> None:
-    modules = _modules()
-    bridge = _RecordingCallbackBridge()
-    adapter = modules.FullBoxExchangeCallbackAdapter(bridge=bridge)
-    result = FullBoxExchangeOperationResult(
-        dispatch_key=_request().dispatch_key,
-        rack_id=_request().rack_id,
-        empty_box_id=_request().empty_box_id,
-        full_box_id=_request().full_box_id,
-        accepted=accepted,
-        exchange_request_code="EXCHANGE-001" if accepted else None,
-        reason_code=reason_code,
-        source_version="wms:v12",
-    )
-
-    await adapter.record(
-        object(),
-        result=result,
-        occurred_at_ms=123_456,
-        source_event_id="wms-callback:event-1",
-    )
-
-    assert bridge.calls[0]["dispatch_key"] == result.dispatch_key
-    assert bridge.calls[0]["outcome"].value == expected_outcome
-    assert bridge.calls[0]["reason_code"] == reason_code
-    assert bridge.calls[0]["evidence_json"] == result.model_dump(mode="json")
+    with pytest.raises(ValueError, match="idempotency_key"):
+        await service.prepare(
+            db,
+            operation=CONTRACT,
+            request=request,
+            intent_log=SimpleNamespace(
+                dispatch_key=request.dispatch_key,
+                idempotency_key=None,
+                effect_status="PROPOSED",
+            ),
+            adapter=adapter,
+        )

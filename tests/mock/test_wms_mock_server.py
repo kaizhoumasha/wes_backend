@@ -239,7 +239,7 @@ def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> No
 
 
 @pytest.mark.parametrize(
-    ("path", "payload", "callback_type", "expected_data"),
+    ("path", "payload", "operation_identity"),
     (
         (
             "/api/wms/inventory/confirm-inbound",
@@ -249,13 +249,7 @@ def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> No
                 "material_code": "MAT-001",
                 "quantity": "1",
             },
-            "WMS_INBOUND_CONFIRMED",
-            {
-                "dispatch_key": "confirm-inbound-001",
-                "inbound_key": "INBOUND-001",
-                "accepted": True,
-                "source_version": "mock-wms.v1",
-            },
+            "wms.inventory.confirm_inbound@v1",
         ),
         (
             "/api/wms/fulfillment/package-binding",
@@ -266,14 +260,7 @@ def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> No
                 "pallet_id": "PALLET-001",
                 "station_code": "STATION-001",
             },
-            "WMS_PACKAGE_BOUND",
-            {
-                "dispatch_key": "package-binding-001",
-                "package_id": "PKG-001",
-                "pallet_id": "PALLET-001",
-                "accepted": True,
-                "source_version": "mock-wms.v1",
-            },
+            "wms.fulfillment.notify_pkg_binding@v1",
         ),
         (
             "/api/wms/fulfillment/full-box-exchange",
@@ -284,16 +271,7 @@ def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> No
                 "empty_box_id": "EMPTY-001",
                 "full_box_id": "FULL-001",
             },
-            "WMS_FULL_BOX_EXCHANGE_COMPLETED",
-            {
-                "dispatch_key": "full-box-001",
-                "rack_id": "RACK-001",
-                "empty_box_id": "EMPTY-001",
-                "full_box_id": "FULL-001",
-                "accepted": True,
-                "exchange_request_code": "full-box-001",
-                "source_version": "mock-wms.v1",
-            },
+            "wms.fulfillment.full_box_exchange@v1",
         ),
     ),
 )
@@ -301,22 +279,25 @@ def test_wms_mock_typed_effect_routes_deliver_declared_callback(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     payload: dict[str, object],
-    callback_type: str,
-    expected_data: dict[str, object],
+    operation_identity: str,
 ) -> None:
     mock_post_callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
 
     with TestClient(wms_mock_server.app) as client:
-        response = client.post(path, json=payload)
+        response = client.post(path, json=payload, headers={"Idempotency-Key": "idem-mock-001"})
 
     assert response.status_code == 200
     mock_post_callback.assert_awaited_once()
     callback_payload = mock_post_callback.await_args.args[1]
-    assert callback_payload["callback_type"] == callback_type
+    assert callback_payload["callback_type"] == "WMS_EFFECT_STATUS_HINT"
     assert callback_payload["source_system"] == "WMS"
     assert callback_payload["source_event_id"].startswith("wms-mock:typed-effect:")
-    assert callback_payload["data"] == expected_data
+    assert callback_payload["data"] == {
+        "operation_identity": operation_identity,
+        "idempotency_key": "idem-mock-001",
+        "dispatch_key": payload["dispatch_key"],
+    }
 
 
 @pytest.mark.asyncio
@@ -341,7 +322,14 @@ async def test_wms_mock_callback_sender_uses_authenticated_canonical_body(monkey
     monkeypatch.setattr(wms_mock_server, "CALLBACK_API_APP_ID", "app-wms-mock")
     monkeypatch.setattr(wms_mock_server, "CALLBACK_API_APP_SECRET", "secret-wms-mock")
     monkeypatch.setattr(wms_mock_server.httpx, "AsyncClient", lambda **_kwargs: _Client())
-    payload = {"callback_type": "WMS_INBOUND_CONFIRMED", "data": {"dispatch_key": "dispatch-001"}}
+    payload = {
+        "callback_type": "WMS_EFFECT_STATUS_HINT",
+        "data": {
+            "operation_identity": "wms.inventory.confirm_inbound@v1",
+            "idempotency_key": "idem-001",
+            "dispatch_key": "dispatch-001",
+        },
+    }
 
     result = await wms_mock_server._post_callback(
         "http://api:8001/api/v1/callback/external",

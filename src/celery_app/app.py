@@ -49,7 +49,7 @@ def on_worker_init(*args: Any, **kwargs: Any) -> None:
     try:
         from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
 
-        validate_wms_transport_configuration(app_env=settings.APP_ENV)
+        validate_wms_transport_configuration(settings_source=settings)
     except Exception as exc:
         # Celery Signal.send 会吞掉普通 Exception；配置非法时必须阻止主进程进入消费阶段。
         raise WorkerTerminate("WMS transport configuration rejected") from exc

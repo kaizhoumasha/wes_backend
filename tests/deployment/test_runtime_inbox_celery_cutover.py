@@ -65,6 +65,21 @@ def test_gateway_enqueues_only_runtime_inbox_task(monkeypatch: pytest.MonkeyPatc
     assert not hasattr(gateway, "enqueue_workline_inbox")
 
 
+def test_gateway_enqueues_wms_effect_status_by_dispatch_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.core.task_queue_gateway import CHECK_WMS_EFFECT_STATUS_TASK, CeleryTaskQueueGateway
+
+    gateway = CeleryTaskQueueGateway()
+    send_task = MagicMock()
+    monkeypatch.setattr(gateway, "_send_task", send_task)
+
+    gateway.enqueue_wms_effect_status(dispatch_key="dispatch-status-001")
+
+    send_task.assert_called_once_with(
+        CHECK_WMS_EFFECT_STATUS_TASK,
+        kwargs={"dispatch_key": "dispatch-status-001"},
+    )
+
+
 def test_gateway_does_not_fallback_when_runtime_task_is_unregistered(monkeypatch: pytest.MonkeyPatch) -> None:
     from celery.exceptions import NotRegistered
 

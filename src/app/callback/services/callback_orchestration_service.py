@@ -529,8 +529,6 @@ class CallbackOrchestrationService:
             db,
             callback_type=callback_type,
             payload=payload,
-            occurred_at_ms=_current_timestamp_ms(),
-            source_event_id=runtime_inbox_result.record.source_event_id,
         )
         if not typed_effect_handled:
             await self._resolve_rack_task_service().record_callback_from_external_http(

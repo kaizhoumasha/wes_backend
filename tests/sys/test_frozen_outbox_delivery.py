@@ -48,6 +48,7 @@ def _outbox() -> SimpleNamespace:
         **frozen.as_persisted_fields(),
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,
+        idempotency_key="intent-frozen-delivery-001",
     )
 
 

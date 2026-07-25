@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.runtime.system_capabilities.wms.contracts import WmsPaginationContract
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE, resolve_wms_operation_binding
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
 from src.app.wms_integration.models import WmsCallEvidence
 from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationRequest
@@ -98,7 +98,7 @@ def _adapter(
         }
     )
     binding = resolve_wms_operation_binding(
-        profile_identity="wms.2026-07-06.material-flow.production",
+        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
         operation_identity=CONTRACT.identity,
     ).model_copy(update={"operation": contract})
     executor = WmsQueryTransportExecutor(
@@ -436,7 +436,7 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
     executor = WmsQueryTransportExecutor(
         endpoint=WmsBoundQueryEndpoint(
             binding=resolve_wms_operation_binding(
-                profile_identity="wms.2026-07-06.material-flow.production",
+                profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
                 operation_identity=CONTRACT.identity,
             ),
             base_url="https://wms.test",
@@ -444,7 +444,7 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
         transport=httpx.MockTransport(handler),
         evidence_writer=WmsCallEvidenceQueryWriter(
             session_factory=session_factory,
-            provider_profile_identity="wms.2026-07-06.material-flow.production",
+            provider_profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
             evidence_service=wms_call_evidence_service,
             breaker_service=WmsCircuitBreakerService(),
         ),
@@ -460,6 +460,6 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
         result = await db.execute(select(WmsCallEvidence).where(WmsCallEvidence.evidence_key == outcome.evidence_key))
         evidence = result.scalar_one()
     assert evidence.operation_name == CONTRACT.identity
-    assert evidence.provider_profile_identity == "wms.2026-07-06.material-flow.production"
+    assert evidence.provider_profile_identity == WMS_PROVIDER_PROFILE.identity.identity
     assert evidence.status == "SUCCEEDED"
     assert evidence.response_snapshot["source_version"] == "WMS-42"

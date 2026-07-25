@@ -670,6 +670,11 @@ def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySig
             "span+metric+log",
             common | {"provider_code", "source_event_id"},
         ),
+        "wms_effect_status_hint.enqueue_failed": _runtime_signal(
+            "wms_effect_status_hint.enqueue_failed",
+            "metric+log",
+            frozenset({"operation_identity", "dispatch_key_hash", "error_type"}),
+        ),
         "runtime_inbox.claim_batch": _runtime_signal(
             "runtime_inbox.claim_batch",
             "metric",

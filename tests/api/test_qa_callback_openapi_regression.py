@@ -17,4 +17,4 @@ def test_external_callback_openapi_declares_request_body_contract() -> None:
     assert request_body["required"] is True
     assert "callback_type" in schema["required"]
     assert {"callback_type", "trace_id", "dispatch_key", "data"} <= schema["properties"].keys()
-    assert schema["examples"][0]["callback_type"] == "WMS_INBOUND_CONFIRMED"
+    assert schema["examples"][0]["callback_type"] == "WMS_EFFECT_STATUS_HINT"

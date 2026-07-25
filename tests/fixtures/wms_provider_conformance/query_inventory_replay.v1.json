@@ -8,7 +8,7 @@
       "retryable": null,
       "retry_after_seconds": null,
       "evidence_recorded": true,
-      "items": [{"material_code": "MAT-001", "available_quantity": "7.25"}]
+      "items": [{"material_code": "MAT-REPLAY-001", "available_quantity": "7.25"}]
     },
     {
       "case_id": "empty",
@@ -90,8 +90,8 @@
       "retry_after_seconds": null,
       "evidence_recorded": true,
       "items": [
-        {"material_code": "MAT-001", "available_quantity": "1"},
-        {"material_code": "MAT-002", "available_quantity": "2"}
+        {"material_code": "MAT-REPLAY-001", "available_quantity": "1"},
+        {"material_code": "MAT-REPLAY-002", "available_quantity": "2"}
       ]
     },
     {
@@ -101,7 +101,7 @@
       "retryable": null,
       "retry_after_seconds": null,
       "evidence_recorded": true,
-      "items": [{"material_code": "MAT-001", "available_quantity": "9007199254740993.125"}]
+      "items": [{"material_code": "MAT-REPLAY-001", "available_quantity": "9007199254740993.125"}]
     },
     {
       "case_id": "budget",
@@ -122,5 +122,5 @@
       "items": []
     }
   ],
-  "digest": "4584ece449cdcfa69f6a46ac4315b3f11a285f3f832a82bc04685c21ac22bf52"
+  "digest": "d396dce29e343138317e00ba8389a5d869c16c1262373e575a84cc5e5375bca5"
 }

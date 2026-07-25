@@ -134,6 +134,7 @@ class ExternalHttpLeaseLossService:
                 result=result,
                 retry_exhausted=False,
                 occurred_at_ms=occurred_at_ms,
+                operation_identity=fence.operation_identity,
             )
         orphan_attempts = (
             await self.dispatch_attempt_repository.list_expired_dispatching_for_finished_outboxes_for_update(

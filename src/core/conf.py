@@ -2,6 +2,7 @@
 import json
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -96,9 +97,28 @@ class Settings(BaseSettings):
     WMS_RCS_RACK_OPERATION_URL: str = ""
     WMS_RCS_BIN_OPERATION_URL: str = ""
     WMS_RCS_FULL_BOX_EXCHANGE_URL: str = ""
+    WMS_EFFECT_STATUS_URL: str
+    WMS_EFFECT_STATUS_TIMEOUT_SECONDS: float = Field(gt=0)
+    WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: int = Field(gt=0)
+    WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: int = Field(gt=0)
+    WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS: float = Field(gt=0)
+    WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS: int = Field(gt=0)
+    WES_EFFECT_NOT_FOUND_GRACE_SECONDS: float = Field(gt=0)
+    WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS: int = Field(gt=0)
+    WES_EFFECT_STATUS_SCAN_BATCH_SIZE: int = Field(gt=0)
+    WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS: float = Field(gt=0)
+    WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS: int = Field(gt=0)
+    WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS: float = Field(gt=0)
+    WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS: float = Field(gt=0)
+    WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED: bool = False
+    # 兼容未迁移的离线 Settings 构造；各部署 profile 必须显式声明当前 active revision。
+    WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION: Literal["v1", "v2"] = "v1"
     WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
+    WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2: str = Field(default="", repr=False)
+    WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2: str = Field(default="", repr=False)
+    WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2: str = Field(default="", repr=False)
     WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
@@ -278,6 +298,42 @@ class Settings(BaseSettings):
     IP_LOCATION_EXPIRE_SECONDS: int | None = 60 * 60 * 24 * 1  # 过期时间，单位：秒
 
     # ==================== 配置验证 ====================
+
+    @model_validator(mode="after")
+    def validate_wms_effect_status_settings(self):
+        """启动时冻结状态查询预算并验证跨系统承诺。"""
+
+        parsed_status_url = urlparse(self.WMS_EFFECT_STATUS_URL)
+        if (
+            parsed_status_url.scheme not in {"http", "https"}
+            or not parsed_status_url.netloc
+            or parsed_status_url.username is not None
+            or parsed_status_url.password is not None
+            or parsed_status_url.query
+            or parsed_status_url.fragment
+        ):
+            raise ValueError("WMS_EFFECT_STATUS_URL 必须是无 userinfo/query/fragment 的合法 HTTP(S) endpoint")
+        if self.APP_ENV == "prod" and parsed_status_url.scheme != "https":
+            raise ValueError("production WMS_EFFECT_STATUS_URL 必须使用 HTTPS")
+        if self.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS < self.WMS_EFFECT_STATUS_TIMEOUT_SECONDS:
+            raise ValueError("WMS EFFECT status claim lease 必须覆盖单次 transport timeout")
+        if self.WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS > self.WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS:
+            raise ValueError("WMS EFFECT status backoff 下限不得大于上限")
+        minimum_retention = self.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS + self.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS
+        if minimum_retention > self.WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS:
+            raise ValueError("WMS EFFECT idempotency retention 不得小于 WES confirmation age 与 safety margin 之和")
+        if self.WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS > self.WES_EFFECT_NOT_FOUND_GRACE_SECONDS:
+            raise ValueError("WMS EFFECT visibility SLA 不得大于 WES NOT_FOUND grace period")
+        if self.APP_ENV == "prod" and self.WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED:
+            raise ValueError("production WMS QUERY in-process simulation 必须在启动前禁用")
+        active_secret_name = (
+            f"WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_{self.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION.upper()}"
+            if self.APP_ENV == "prod"
+            else f"WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_{self.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION.upper()}"
+        )
+        if not getattr(self, active_secret_name):
+            raise ValueError(f"{active_secret_name} 必须为 WMS EFFECT status 查询显式配置")
+        return self
 
     @model_validator(mode="after")
     def validate_security_settings(self):

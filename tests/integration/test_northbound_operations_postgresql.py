@@ -11,7 +11,6 @@ import pytest
 from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
     NorthboundOperationsRepository,
 )
-from src.app.runtime.system_capabilities.shadow_models import QueryShadowReadinessReportRecord
 from src.app.sys.models import (
     SystemOutbox,
     SystemOutboxDispatchType,
@@ -42,7 +41,7 @@ def _outbox(*, suffix: str, workline_id: int, created_at_offset_seconds: int) ->
 
 
 @pytest.mark.asyncio
-async def test_postgresql_snapshot_is_owner_scoped_and_uses_latest_readiness(
+async def test_postgresql_snapshot_is_owner_scoped_and_reports_operation_mode(
     integration_db_session: AsyncSession,
 ) -> None:
     suffix = uuid4().hex
@@ -64,22 +63,6 @@ async def test_postgresql_snapshot_is_owner_scoped_and_uses_latest_readiness(
         (
             _outbox(suffix=f"{suffix}:owner", workline_id=owner_workline.id, created_at_offset_seconds=30),
             _outbox(suffix=f"{suffix}:other", workline_id=other_workline.id, created_at_offset_seconds=90),
-            QueryShadowReadinessReportRecord(
-                report_id=f"{suffix}{'a' * 32}",
-                generated_at=timezone.now_for_db() - timedelta(minutes=1),
-                provider_profile_identity="wms.2026-07-06.material-flow.production",
-                operation_identity="wms.inventory.confirm_inbound@v1",
-                verdict="NOT_READY",
-                report_json={},
-            ),
-            QueryShadowReadinessReportRecord(
-                report_id=f"{suffix}{'b' * 32}",
-                generated_at=timezone.now_for_db(),
-                provider_profile_identity="wms.2026-07-06.material-flow.production",
-                operation_identity="wms.inventory.confirm_inbound@v1",
-                verdict="READY",
-                report_json={},
-            ),
         )
     )
     await integration_db_session.flush()
@@ -93,6 +76,6 @@ async def test_postgresql_snapshot_is_owner_scoped_and_uses_latest_readiness(
     assert len(rows) == 1
     row = rows[0]
     assert row.operation_identity == "wms.inventory.confirm_inbound@v1"
+    assert row.mode == "EFFECT"
     assert row.backlog_count == 1
     assert 25 <= row.oldest_queue_age_seconds < 60
-    assert row.readiness == "READY"

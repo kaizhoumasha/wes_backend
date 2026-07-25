@@ -23,12 +23,7 @@ from src.app.wms_integration.ports.notify_pkg_binding_operation import (
 
 
 def _t10_modules() -> SimpleNamespace:
-    callback_adapter = import_module(
-        "src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.callback_adapter"
-    )
-    preparation_service = import_module(
-        "src.app.runtime.orchestration.services.notify_package_binding_effect_preparation_service"
-    )
+    preparation_service = import_module("src.app.runtime.orchestration.services.wms_effect_preparation_service")
     definition = import_module("src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.definition")
     effect_adapter = import_module(
         "src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_adapter"
@@ -41,8 +36,7 @@ def _t10_modules() -> SimpleNamespace:
         "src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.intent_adapter"
     )
     return SimpleNamespace(
-        NotifyPackageBindingCallbackAdapter=callback_adapter.NotifyPackageBindingCallbackAdapter,
-        NotifyPackageBindingEffectPreparationService=(preparation_service.NotifyPackageBindingEffectPreparationService),
+        WmsEffectPreparationService=preparation_service.WmsEffectPreparationService,
         CAPABILITY_KEY=definition.CAPABILITY_KEY,
         CONTRACT_VERSION=definition.CONTRACT_VERSION,
         DEFINITION=definition.DEFINITION,
@@ -139,11 +133,19 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         )
     )
     db = object()
-    intent_log = SimpleNamespace(dispatch_key=request.dispatch_key, effect_status="PROPOSED")
-    service = modules.NotifyPackageBindingEffectPreparationService(intent_repository=pair_repository)
+    intent_log = SimpleNamespace(
+        dispatch_key=request.dispatch_key,
+        idempotency_key="intent-notify-binding-001",
+        effect_status="PROPOSED",
+        capability_key="wms.fulfillment.notify_pkg_binding",
+        capability_contract_version="v1",
+        operation_identity="WMS:PKG-001:PALLET-001",
+    )
+    service = modules.WmsEffectPreparationService(intent_repository=pair_repository)
 
     outbox = await service.prepare(
         db,
+        operation=CONTRACT,
         request=request,
         intent_log=intent_log,
         adapter=adapter,
@@ -151,6 +153,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
 
     assert outbox.status == SystemOutboxStatus.NEW
     assert outbox.dispatch_key == request.dispatch_key
+    assert outbox.idempotency_key == "intent-notify-binding-001"
     assert outbox.operation_identity == CONTRACT.identity
     assert outbox.operation_key == "WMS:PKG-001:PALLET-001"
     assert outbox.target_snapshot_json["url"] == ("https://wms-v1.example/api/wes/fulfillment/package-binding")
@@ -159,53 +162,20 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         b'{"dispatch_key":"wms-notify-pkg-binding:WMS:PKG-001:PALLET-001","package_id":"PKG-001",'
         b'"pallet_id":"PALLET-001","station_code":"STATION-001"}'
     )
+    assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
+    assert len(intent_log.status_binding_snapshot_hash) == 64
+    assert intent_log.operation_identity == "WMS:PKG-001:PALLET-001"
     assert pair_repository.calls == [(db, intent_log, outbox)]
 
-
-class _RecordingCallbackBridge:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    async def record(self, db: object, **values: object) -> object:
-        self.calls.append({"db": db, **values})
-        return SimpleNamespace(effect_status="recorded")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("accepted", "reason_code", "expected_outcome"),
-    [
-        (True, None, "COMPLETED"),
-        (False, "PALLET_LOCKED", "REJECTED"),
-    ],
-)
-async def test_callback_adapter_maps_typed_business_result_only_through_reducer(
-    accepted: bool,
-    reason_code: str | None,
-    expected_outcome: str,
-) -> None:
-    modules = _t10_modules()
-    bridge = _RecordingCallbackBridge()
-    adapter = modules.NotifyPackageBindingCallbackAdapter(bridge=bridge)
-    result = NotifyPackageBindingOperationResult(
-        dispatch_key="wms-notify-pkg-binding:WMS:PKG-001:PALLET-001",
-        package_id="PKG-001",
-        pallet_id="PALLET-001",
-        accepted=accepted,
-        bound_at="2026-07-23T10:00:00Z" if accepted else None,
-        reason_code=reason_code,
-        source_version="wms:v12",
-    )
-
-    reduced = await adapter.record(
-        object(),
-        result=result,
-        occurred_at_ms=123_456,
-        source_event_id="wms-callback:event-1",
-    )
-
-    assert reduced.effect_status == "recorded"
-    assert bridge.calls[0]["dispatch_key"] == result.dispatch_key
-    assert bridge.calls[0]["outcome"].value == expected_outcome
-    assert bridge.calls[0]["reason_code"] == reason_code
-    assert bridge.calls[0]["evidence_json"] == result.model_dump(mode="json")
+    with pytest.raises(ValueError, match="idempotency_key"):
+        await service.prepare(
+            db,
+            operation=CONTRACT,
+            request=request,
+            intent_log=SimpleNamespace(
+                dispatch_key=request.dispatch_key,
+                idempotency_key="",
+                effect_status="PROPOSED",
+            ),
+            adapter=adapter,
+        )

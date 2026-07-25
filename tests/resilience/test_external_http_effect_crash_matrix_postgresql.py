@@ -19,18 +19,21 @@ from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
-from src.app.runtime.orchestration.services.confirm_inbound_effect_preparation_service import (
-    ConfirmInboundEffectPreparationService,
-)
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import WorklineDispatchAttemptService
-from src.app.runtime.orchestration.services.notify_package_binding_effect_preparation_service import (
-    NotifyPackageBindingEffectPreparationService,
+from src.app.runtime.orchestration.services.wms_effect_preparation_service import (
+    WmsEffectPreparationService,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
+    CONTRACT as NOTIFY_PKG_BINDING_CONTRACT,
 )
 from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_adapter import (
     NotifyPackageBindingEffectAdapter,
 )
 from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.gateway import (
     NotifyPackageBindingDispatchGateway,
+)
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
+    CONTRACT as CONFIRM_INBOUND_CONTRACT,
 )
 from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.effect_adapter import (
     ConfirmInboundEffectAdapter,
@@ -82,8 +85,15 @@ _CRASH_POINTS = (
     "AFTER_REDUCER_EVIDENCE",
     "AFTER_EVIDENCE_COMMIT",
 )
-_CRASH_POINTS_BEFORE_SEND = frozenset({"AFTER_CLAIM_COMMIT", "BEFORE_SEND"})
-_CRASH_POINTS_WITH_DURABLE_ACCEPTANCE = frozenset({"BEFORE_CLAIM", "AFTER_EVIDENCE_COMMIT"})
+_CRASH_POINTS_WITH_PERSISTED_TERMINAL = frozenset({"BEFORE_CLAIM", "AFTER_EVIDENCE_COMMIT"})
+_CRASH_POINTS_WITHOUT_SEND = frozenset({"BEFORE_SEND"})
+_CRASH_POINTS_WITH_DURABLE_ACCEPTANCE = frozenset(
+    {
+        "BEFORE_CLAIM",
+        "AFTER_CLAIM_COMMIT",
+        "AFTER_EVIDENCE_COMMIT",
+    }
+)
 
 
 class _SimulatedWorkerCrash(BaseException):
@@ -254,8 +264,9 @@ async def _seed_confirm_inbound_effect(db: AsyncSession, *, suffix: str) -> _See
             registry=EndpointRegistry({"WMS_INBOUND_CONFIRM": "https://wms.example/api/wes/inventory/confirm-inbound"})
         )
     )
-    outbox = await ConfirmInboundEffectPreparationService().prepare(
+    outbox = await WmsEffectPreparationService().prepare(
         db,
+        operation=CONFIRM_INBOUND_CONTRACT,
         request=request,
         intent_log=intent,
         adapter=adapter,
@@ -313,8 +324,9 @@ async def _seed_notify_package_binding_effect(db: AsyncSession, *, suffix: str) 
             )
         )
     )
-    outbox = await NotifyPackageBindingEffectPreparationService().prepare(
+    outbox = await WmsEffectPreparationService().prepare(
         db,
+        operation=NOTIFY_PKG_BINDING_CONTRACT,
         request=request,
         intent_log=intent,
         adapter=adapter,
@@ -343,12 +355,15 @@ async def _load_effect_state(
     db: AsyncSession,
     *,
     seeded: _SeededEffect,
+    expected_attempt_count: int = 1,
 ) -> tuple[SystemOutbox, WorklineDispatchAttempt, RuntimeIntentLog, ReconciliationCase | None]:
     outbox = await db.get(SystemOutbox, seeded.outbox_id)
     attempts = list(
         (
             await db.execute(
-                select(WorklineDispatchAttempt).where(WorklineDispatchAttempt.dispatch_key == seeded.dispatch_key)
+                select(WorklineDispatchAttempt)
+                .where(WorklineDispatchAttempt.dispatch_key == seeded.dispatch_key)
+                .order_by(WorklineDispatchAttempt.attempt_no)
             )
         )
         .scalars()
@@ -356,12 +371,21 @@ async def _load_effect_state(
     )
     intent = await db.scalar(select(RuntimeIntentLog).where(RuntimeIntentLog.dispatch_key == seeded.dispatch_key))
     case = await db.scalar(select(ReconciliationCase).where(ReconciliationCase.dispatch_key == seeded.dispatch_key))
-    assert outbox is not None and len(attempts) == 1 and intent is not None
-    return outbox, attempts[0], intent, case
+    assert outbox is not None and len(attempts) == expected_attempt_count and intent is not None
+    return outbox, attempts[-1], intent, case
 
 
-async def _assert_durable_acceptance(db: AsyncSession, *, seeded: _SeededEffect) -> None:
-    outbox, attempt, intent, case = await _load_effect_state(db, seeded=seeded)
+async def _assert_durable_acceptance(
+    db: AsyncSession,
+    *,
+    seeded: _SeededEffect,
+    expected_attempt_count: int = 1,
+) -> None:
+    outbox, attempt, intent, case = await _load_effect_state(
+        db,
+        seeded=seeded,
+        expected_attempt_count=expected_attempt_count,
+    )
     assert enum_value(outbox.status) == SystemOutboxStatus.SENT.value
     assert enum_value(attempt.status) == DispatchAttemptStatus.SENT.value
     assert attempt.transport_outcome == "ACCEPTED"
@@ -370,7 +394,13 @@ async def _assert_durable_acceptance(db: AsyncSession, *, seeded: _SeededEffect)
     assert case is None
 
 
-async def _assert_lease_loss_unknown(db: AsyncSession, *, seeded: _SeededEffect) -> None:
+async def _assert_lease_loss_unknown(
+    db: AsyncSession,
+    *,
+    seeded: _SeededEffect,
+    include_late_acceptance: bool = False,
+    expects_status_query_recovery: bool = False,
+) -> None:
     outbox, attempt, intent, case = await _load_effect_state(db, seeded=seeded)
     assert enum_value(outbox.status) == SystemOutboxStatus.UNKNOWN.value
     assert outbox.next_retry_at is None
@@ -378,14 +408,22 @@ async def _assert_lease_loss_unknown(db: AsyncSession, *, seeded: _SeededEffect)
     assert attempt.transport_outcome == "AMBIGUOUS"
     assert attempt.safe_to_retry is False
     assert attempt.response_json["lease_loss"] is True
-    assert enum_value(intent.effect_status) == RuntimeIntentStatus.RECONCILING.value
-    assert [item["event_type"] for item in intent.outcome_history_json] == [
-        "TRANSPORT_AMBIGUOUS",
-        "RECONCILIATION_OPENED",
-    ]
-    assert case is not None
-    assert enum_value(case.status) == ReconciliationCaseStatus.OPEN.value
-    assert case.reason_code == "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED"
+    expected_intent_status = (
+        RuntimeIntentStatus.UNKNOWN.value if expects_status_query_recovery else RuntimeIntentStatus.RECONCILING.value
+    )
+    assert enum_value(intent.effect_status) == expected_intent_status
+    expected_events = ["TRANSPORT_AMBIGUOUS"]
+    if not expects_status_query_recovery:
+        expected_events.append("RECONCILIATION_OPENED")
+    if include_late_acceptance:
+        expected_events.append("TRANSPORT_ACCEPTED")
+    assert [item["event_type"] for item in intent.outcome_history_json] == expected_events
+    if expects_status_query_recovery:
+        assert case is None
+    else:
+        assert case is not None
+        assert enum_value(case.status) == ReconciliationCaseStatus.OPEN.value
+        assert case.reason_code == "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED"
 
 
 def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql() -> None:
@@ -409,7 +447,7 @@ def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql(
                 async with session_factory() as crashed_db:
                     await crashed_worker.dispatch(crashed_db, limit=1)
 
-            if point not in _CRASH_POINTS_WITH_DURABLE_ACCEPTANCE:
+            if point not in _CRASH_POINTS_WITH_PERSISTED_TERMINAL:
                 async with session_factory() as expire_db:
                     await _expire_claimed_lease(expire_db, outbox_id=seeded.outbox_id)
 
@@ -420,12 +458,16 @@ def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql(
             async with session_factory() as restarted_db:
                 second = await restarted_worker.dispatch(restarted_db, limit=1)
                 if point in _CRASH_POINTS_WITH_DURABLE_ACCEPTANCE:
-                    await _assert_durable_acceptance(restarted_db, seeded=seeded)
+                    await _assert_durable_acceptance(
+                        restarted_db,
+                        seeded=seeded,
+                        expected_attempt_count=(2 if point == "AFTER_CLAIM_COMMIT" else 1),
+                    )
                 else:
                     assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
                     await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
 
-            expected_send_count = 0 if point in _CRASH_POINTS_BEFORE_SEND else 1
+            expected_send_count = 0 if point in _CRASH_POINTS_WITHOUT_SEND else 1
             assert sender.calls == expected_send_count, point
             assert hook.observed[-1] == point
 
@@ -433,7 +475,7 @@ def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql(
 
 
 def test_confirm_inbound_after_send_crash_enters_unknown_without_blind_resend_on_postgresql() -> None:
-    """T9 frozen outbox 发送后崩溃只能进入 UNKNOWN/RECONCILING，禁止盲重发。"""
+    """T9 frozen outbox 发送后崩溃保持 UNKNOWN 等待 status query，禁止盲重发。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession],
@@ -465,7 +507,11 @@ def test_confirm_inbound_after_send_crash_enters_unknown_without_blind_resend_on
         async with session_factory() as restarted_db:
             second = await restarted_worker.dispatch(restarted_db, limit=1)
             assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-            await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
+            await _assert_lease_loss_unknown(
+                restarted_db,
+                seeded=seeded,
+                expects_status_query_recovery=True,
+            )
             outbox = await restarted_db.get(SystemOutbox, seeded.outbox_id)
             assert outbox is not None and outbox.operation_identity == OPERATION_IDENTITY
 
@@ -475,7 +521,7 @@ def test_confirm_inbound_after_send_crash_enters_unknown_without_blind_resend_on
 
 
 def test_notify_package_binding_after_send_crash_enters_unknown_without_blind_resend_on_postgresql() -> None:
-    """T10 frozen outbox 发送后崩溃只能进入 UNKNOWN/RECONCILING，禁止盲重发。"""
+    """T10 frozen outbox 发送后崩溃保持 UNKNOWN 等待 status query，禁止盲重发。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession],
@@ -507,7 +553,11 @@ def test_notify_package_binding_after_send_crash_enters_unknown_without_blind_re
         async with session_factory() as restarted_db:
             second = await restarted_worker.dispatch(restarted_db, limit=1)
             assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-            await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
+            await _assert_lease_loss_unknown(
+                restarted_db,
+                seeded=seeded,
+                expects_status_query_recovery=True,
+            )
             outbox = await restarted_db.get(SystemOutbox, seeded.outbox_id)
             assert outbox is not None
             assert outbox.operation_identity == NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
@@ -612,7 +662,11 @@ def test_lease_loss_during_send_fences_old_worker_and_never_sends_twice_on_postg
         async with session_factory() as restarted_db:
             second = await restarted_worker.dispatch(restarted_db, limit=1)
             assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-            await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
+            await _assert_lease_loss_unknown(
+                restarted_db,
+                seeded=seeded,
+                include_late_acceptance=True,
+            )
 
         assert calls == 1
 

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import time
 import zlib
@@ -35,6 +33,13 @@ from src.app.wms_integration.ports.query_outcome import (
     QuerySuccess,
     QueryTechnicalFailure,
     WmsQueryOutcome,
+)
+from src.app.wms_integration.services.http_transport import (
+    WmsHttpResponseContractError,
+    WmsHttpWireBudgetExceeded,
+    open_wms_http_client,
+    send_bounded_wms_request,
+    sign_wms_hmac_request,
 )
 from src.app.wms_integration.transport_url import validate_wms_base_url
 from src.core.logger import logger
@@ -305,6 +310,13 @@ class WmsQueryTransportExecutor:
                 )
         except _QueryBudgetViolation as exc:
             outcome = QueryContractFailure(reason_code=exc.reason_code, message=exc.message)
+        except WmsHttpWireBudgetExceeded as exc:
+            outcome = QueryContractFailure(reason_code=exc.reason_code, message=str(exc))
+        except WmsHttpResponseContractError:
+            outcome = QueryContractFailure(
+                reason_code="WMS_MALFORMED_RESPONSE",
+                message="WMS QUERY response violates the provider contract",
+            )
         except _ContentEncodingFailure:
             outcome = QueryContractFailure(
                 reason_code="WMS_CONTENT_ENCODING_INVALID",
@@ -383,11 +395,12 @@ class WmsQueryTransportExecutor:
         cumulative_wire_bytes = 0
         cumulative_decoded_bytes = 0
         cumulative_rows = 0
+        deadline = asyncio.get_running_loop().time() + contract.budget.timeout_seconds
 
-        async with httpx.AsyncClient(
+        async with open_wms_http_client(
             transport=self._transport,
-            trust_env=False,
-            timeout=contract.budget.timeout_seconds,
+            timeout_seconds=contract.budget.timeout_seconds,
+            deadline=deadline,
         ) as client:
             for _page_number in range(1, pagination.max_pages + 1):
                 page_payload = dict(provider_payload)
@@ -398,48 +411,46 @@ class WmsQueryTransportExecutor:
                     self._endpoint.url,
                     **({"params": page_payload} if contract.http_method.value == "GET" else {"json": page_payload}),
                 )
-                self._authenticate(outbound_request)
-                response = await client.send(outbound_request, stream=True)
-                try:
-                    raw_body, cumulative_wire_bytes = await _read_bounded_wire_body(
-                        response,
-                        max_chunk_bytes=contract.budget.max_chunk_bytes,
-                        max_wire_bytes=contract.budget.max_wire_bytes,
-                        cumulative_wire_bytes=cumulative_wire_bytes,
-                    )
-                    status_failure = _classify_http_failure(response.status_code, None, response.headers)
-                    if status_failure is not None and (
-                        response.status_code in {401, 403, 408, 429} or not (400 <= response.status_code < 500)
-                    ):
-                        return status_failure
-                    if 400 <= response.status_code < 500:
-                        payload = _parse_optional_failure_body(
-                            raw_body,
-                            content_encoding=response.headers.get("content-encoding", "identity"),
-                            budget=contract.budget,
-                        )
-                        return _classify_http_failure(
-                            response.status_code, payload, response.headers
-                        ) or QueryTechnicalFailure(
-                            reason_code="WMS_PROVIDER_CLIENT_ERROR",
-                            message="WMS QUERY provider returned a client error",
-                            retryable=False,
-                        )
-                    decoded_body = _decode_bounded_body(
-                        raw_body,
+                response, cumulative_wire_bytes = await send_bounded_wms_request(
+                    client=client,
+                    request=outbound_request,
+                    authenticate=self._authenticate,
+                    deadline=deadline,
+                    max_chunk_bytes=contract.budget.max_chunk_bytes,
+                    max_wire_bytes=contract.budget.max_wire_bytes,
+                    cumulative_wire_bytes=cumulative_wire_bytes,
+                )
+                status_failure = _classify_http_failure(response.status_code, None, response.headers)
+                if status_failure is not None and (
+                    response.status_code in {401, 403, 408, 429} or not (400 <= response.status_code < 500)
+                ):
+                    return status_failure
+                if 400 <= response.status_code < 500:
+                    payload = _parse_optional_failure_body(
+                        response.body,
                         content_encoding=response.headers.get("content-encoding", "identity"),
-                        allowed_content_encodings=contract.budget.allowed_content_encodings,
-                        max_decoded_bytes=contract.budget.max_decoded_bytes - cumulative_decoded_bytes,
-                        max_compression_ratio=contract.budget.max_compression_ratio,
+                        budget=contract.budget,
                     )
-                    cumulative_decoded_bytes += len(decoded_body)
-                    parsed = _parse_bounded_json(
-                        decoded_body,
-                        max_depth=contract.budget.max_json_depth,
-                        max_field_length=contract.budget.max_field_length,
+                    return _classify_http_failure(
+                        response.status_code, payload, response.headers
+                    ) or QueryTechnicalFailure(
+                        reason_code="WMS_PROVIDER_CLIENT_ERROR",
+                        message="WMS QUERY provider returned a client error",
+                        retryable=False,
                     )
-                finally:
-                    await response.aclose()
+                decoded_body = _decode_bounded_body(
+                    response.body,
+                    content_encoding=response.headers.get("content-encoding", "identity"),
+                    allowed_content_encodings=contract.budget.allowed_content_encodings,
+                    max_decoded_bytes=contract.budget.max_decoded_bytes - cumulative_decoded_bytes,
+                    max_compression_ratio=contract.budget.max_compression_ratio,
+                )
+                cumulative_decoded_bytes += len(decoded_body)
+                parsed = _parse_bounded_json(
+                    decoded_body,
+                    max_depth=contract.budget.max_json_depth,
+                    max_field_length=contract.budget.max_field_length,
+                )
                 if not isinstance(parsed, dict):
                     raise _MalformedProviderResponse("successful QUERY response must be an object")
                 page_rows = parsed.get(pagination.response_items_field)
@@ -484,30 +495,16 @@ class WmsQueryTransportExecutor:
             raise _CredentialResolutionFailure from exc
         if not isinstance(secret, bytes) or not secret:
             raise _CredentialResolutionFailure
-        timestamp = str(int(self._now().timestamp()))
         nonce = self._nonce_factory()
         if not isinstance(nonce, str) or not nonce:
             raise _CredentialResolutionFailure
-        body_hash = hashlib.sha256(request.content).hexdigest()
-        canonical = "\n".join(
-            (
-                request.method,
-                request.url.raw_path.decode("ascii"),
-                timestamp,
-                nonce,
-                body_hash,
-            )
-        )
-        signature = hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
-        request.headers.update(
-            {
-                "X-WMS-Credential-Reference": auth.credential_reference,
-                "X-WMS-Signature-Algorithm": auth.scheme.value,
-                "X-WMS-Timestamp": timestamp,
-                "X-WMS-Nonce": nonce,
-                "X-WMS-Content-SHA256": body_hash,
-                "X-WMS-Signature": signature,
-            }
+        sign_wms_hmac_request(
+            request,
+            credential_reference=auth.credential_reference,
+            auth_scheme=auth.scheme.value,
+            secret=secret,
+            now=self._now,
+            nonce_factory=lambda: nonce,
         )
 
     async def _record_evidence(
@@ -539,45 +536,6 @@ class WmsQueryTransportExecutor:
                 message="WMS QUERY evidence writer returned no key",
             )
         return replace(outcome, evidence_key=evidence_key)
-
-
-async def _read_bounded_wire_body(
-    response: httpx.Response,
-    *,
-    max_chunk_bytes: int,
-    max_wire_bytes: int,
-    cumulative_wire_bytes: int,
-) -> tuple[bytes, int]:
-    content_length = response.headers.get("content-length")
-    if content_length is not None:
-        try:
-            declared_length = int(content_length)
-        except ValueError as exc:
-            raise _MalformedProviderResponse("invalid Content-Length") from exc
-        if declared_length < 0:
-            raise _MalformedProviderResponse("negative Content-Length")
-        if cumulative_wire_bytes + declared_length > max_wire_bytes:
-            raise _QueryBudgetViolation("WMS_WIRE_BUDGET_EXCEEDED", "WMS QUERY wire budget exceeded")
-
-    body = bytearray()
-    chunks = (response.content,) if response.is_stream_consumed else response.aiter_raw()
-    async for chunk in _as_async_chunks(chunks):
-        if len(chunk) > max_chunk_bytes:
-            raise _QueryBudgetViolation("WMS_CHUNK_BUDGET_EXCEEDED", "WMS QUERY chunk budget exceeded")
-        cumulative_wire_bytes += len(chunk)
-        if cumulative_wire_bytes > max_wire_bytes:
-            raise _QueryBudgetViolation("WMS_WIRE_BUDGET_EXCEEDED", "WMS QUERY wire budget exceeded")
-        body.extend(chunk)
-    return bytes(body), cumulative_wire_bytes
-
-
-async def _as_async_chunks(chunks):
-    if hasattr(chunks, "__aiter__"):
-        async for chunk in chunks:
-            yield chunk
-        return
-    for chunk in chunks:
-        yield chunk
 
 
 def _decode_bounded_body(

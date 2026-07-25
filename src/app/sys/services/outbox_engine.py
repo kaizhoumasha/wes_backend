@@ -30,8 +30,10 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportResult,
 )
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
+from src.app.sys.models.outbox import WMS_EFFECT_OPERATION_IDENTITIES
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.core.logger import logger
+from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
@@ -81,6 +83,7 @@ class SystemOutboxEngine:
         effect_transport_bridge: Any | None = None,
         dispatch_scheduler: Any | None = None,
         external_http_fault_hook: ExternalHttpDispatchFaultHook | None = None,
+        task_queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
@@ -90,6 +93,7 @@ class SystemOutboxEngine:
         self.dispatch_attempt_service = dispatch_attempt_service
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
         self.effect_transport_bridge = effect_transport_bridge
+        self.task_queue_gateway = task_queue_gateway
         # 仅通过构造器显式注入；生产 singleton 默认禁用，不提供环境变量或全局开关。
         self.external_http_fault_hook = external_http_fault_hook
         self.dispatch_scheduler = dispatch_scheduler or FairDispatchScheduler(
@@ -291,6 +295,7 @@ class SystemOutboxEngine:
                         effect_transport_bridge=self._resolve_effect_transport_bridge(),
                         dispatch_key=str(outbox.dispatch_key),
                         attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
+                        operation_identity=getattr(outbox, "operation_identity", None),
                     )
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
@@ -298,6 +303,10 @@ class SystemOutboxEngine:
                     await self._emit_external_http_fault(
                         ExternalHttpDispatchFaultPoint.AFTER_EVIDENCE_COMMIT,
                         outbox,
+                    )
+                    self._enqueue_wms_effect_status_if_needed(
+                        outbox=outbox,
+                        result=dispatch_result,
                     )
                     if dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
                         result["success"] += 1
@@ -399,6 +408,7 @@ class SystemOutboxEngine:
             result=result,
             retry_exhausted=enum_value(getattr(updated, "status", None)) == "FAILED",
             occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
+            operation_identity=getattr(outbox, "operation_identity", None),
         )
 
     async def _finalize_external_http_result(
@@ -469,10 +479,37 @@ class SystemOutboxEngine:
     ) -> None:
         await emit_external_http_dispatch_fault(self.external_http_fault_hook, point, outbox)
 
+    def _enqueue_wms_effect_status_if_needed(
+        self,
+        *,
+        outbox: Any,
+        result: ExternalHttpTransportResult,
+    ) -> None:
+        """transport 证据提交后即时唤醒状态确认；失败由 Beat 扫描兜底。"""
+
+        if getattr(outbox, "operation_identity", None) not in WMS_EFFECT_OPERATION_IDENTITIES:
+            return
+        accepted_or_in_progress = result.outcome is ExternalHttpTransportOutcome.ACCEPTED and (
+            result.protocol_result is ExternalHttpProtocolResult.ACCEPTED
+            or (result.http_status_code == 409 and result.protocol_error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS")
+        )
+        if result.outcome is not ExternalHttpTransportOutcome.AMBIGUOUS and not accepted_or_in_progress:
+            return
+        try:
+            self.task_queue_gateway.enqueue_wms_effect_status(dispatch_key=str(outbox.dispatch_key))
+        except Exception as exc:
+            logger.warning(
+                "WMS EFFECT 即时状态确认入队失败，将由 Beat 兜底: "
+                f"dispatch_key={outbox.dispatch_key}, error={type(exc).__name__}"
+            )
+
 
 async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须显式返回唯一分类
     request: ExternalHttpDispatchRequest,
 ) -> ExternalHttpTransportResult:
+    import json
+    import re
+
     import httpx
 
     try:
@@ -484,15 +521,22 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                 headers=request.headers,
             )
             status_code = int(response.status_code)
+            protocol_error_code = _extract_protocol_error_code(
+                getattr(response, "content", None),
+                json_module=json,
+                stable_code_pattern=re.compile(r"^[A-Z][A-Z0-9_]{0,119}$"),
+            )
             if 200 <= status_code < 300:
                 return ExternalHttpTransportResult.accepted(
                     http_status_code=status_code,
                     protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+                    protocol_error_code=protocol_error_code,
                 )
             if 300 <= status_code < 500:
                 return ExternalHttpTransportResult.accepted(
                     http_status_code=status_code,
                     protocol_result=ExternalHttpProtocolResult.REJECTED,
+                    protocol_error_code=protocol_error_code,
                     error_code="HTTP_REJECTED",
                     error_message=f"HTTP {status_code} explicitly rejected request",
                 )
@@ -500,6 +544,7 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                 phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
                 protocol_result=ExternalHttpProtocolResult.UNKNOWN,
                 http_status_code=status_code,
+                protocol_error_code=protocol_error_code,
                 error_code="HTTP_RESPONSE_AMBIGUOUS",
                 error_message=f"HTTP {status_code} has ambiguous delivery semantics",
             )
@@ -555,6 +600,28 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
             error_code="UNCLASSIFIED_TRANSPORT_ERROR",
             error_message=f"unclassified outbound HTTP transport error: {type(exc).__name__}",
         )
+
+
+def _extract_protocol_error_code(
+    content: object,
+    *,
+    json_module: Any,
+    stable_code_pattern: Any,
+) -> str | None:
+    """只从有界 JSON object 提取低敏顶层稳定错误码。"""
+
+    if not isinstance(content, bytes) or not content or len(content) > 4096:
+        return None
+    try:
+        decoded = json_module.loads(content)
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    value = decoded.get("protocol_error_code")
+    if not isinstance(value, str) or stable_code_pattern.fullmatch(value) is None:
+        return None
+    return value
 
 
 async def _dispatch_workline_domain(db: Any, limit: int) -> DispatchResult:

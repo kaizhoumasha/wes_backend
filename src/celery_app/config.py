@@ -30,6 +30,11 @@ beat_schedule: dict[str, dict[str, str | float]] = {
         "task": "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
         "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
     },
+    # WMS EFFECT 状态确认 - 即时任务由 dispatch key 触发，Beat 仅扫描遗漏/到期项。
+    "scan-wms-effect-status-batch": {
+        "task": "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
+        "schedule": 10.0,
+    },
     # 超时 Session 扫描任务
     "scan-timeouts-batch": {
         "task": "src.celery_app.tasks.workline.scan_timeouts_batch",
@@ -44,11 +49,6 @@ beat_schedule: dict[str, dict[str, str | float]] = {
     "scan-smt-inbound-handoff-demands-batch": {
         "task": "src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch",
         "schedule": 30.0,
-    },
-    # QUERY shadow comparison 月分区预建与 90 天整月清理。
-    "maintain-query-shadow-partitions": {
-        "task": "src.celery_app.tasks.workline.maintain_query_shadow_partitions",
-        "schedule": 3600.0,
     },
 }
 

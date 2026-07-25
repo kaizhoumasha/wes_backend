@@ -27,8 +27,11 @@ class NotifyPackageBindingDispatchGateway:
         self,
         request: NotifyPackageBindingOperationRequest,
         *,
+        idempotency_key: str,
         frozen_binding: FrozenExternalHttpBinding | None = None,
     ) -> DispatchEnvelope:
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("notify_pkg_binding requires persisted idempotency_key")
         payload_json = {
             "dispatch_key": request.dispatch_key,
             "package_id": request.package_id,
@@ -46,6 +49,7 @@ class NotifyPackageBindingDispatchGateway:
             )
         return DispatchEnvelope(
             dispatch_key=request.dispatch_key,
+            idempotency_key=idempotency_key,
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
             target_code=CONTRACT.target_code,

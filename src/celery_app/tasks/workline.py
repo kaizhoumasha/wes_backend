@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 if TYPE_CHECKING:
@@ -67,69 +67,6 @@ class DispatchResult(TypedDict):
     success: int
     failed: int
     skipped: int
-
-
-@celery_app.task(
-    name="src.celery_app.tasks.workline.process_query_shadow_comparison",
-    base=celery_app.Task,
-    bind=True,
-    max_retries=3,
-    default_retry_delay=10,
-)
-def process_query_shadow_comparison(self: Any, payload: dict[str, Any]) -> None:
-    """异步 append 引用式 comparison；缺分区或 store 故障显式重试。"""
-
-    async def _store() -> None:
-        from src.app.runtime.system_capabilities.shadow_service import query_shadow_comparison_service
-
-        async with get_db_context() as db:
-            try:
-                await query_shadow_comparison_service.store(db, payload=payload)
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                raise
-
-    try:
-        run_async(_store)
-    except Exception as exc:
-        logger.error(f"QUERY shadow comparison consumer 失败: error={type(exc).__name__}")
-        retries = int(getattr(self.request, "retries", 0) or 0)
-        raise self.retry(exc=exc, countdown=10 * (2**retries)) from None
-
-
-@celery_app.task(
-    name="src.celery_app.tasks.workline.maintain_query_shadow_partitions",
-    base=celery_app.Task,
-    bind=True,
-    max_retries=3,
-    default_retry_delay=60,
-)
-def maintain_query_shadow_partitions(self: Any) -> dict[str, object]:
-    """复用 Beat/worker 基础设施维护 current+3 月分区与在线 retention drop。"""
-
-    async def _maintain() -> dict[str, object]:
-        from src.app.runtime.system_capabilities.shadow_partitioning import QueryShadowPartitionMaintainer
-
-        async with get_db_context() as db:
-            try:
-                result = await QueryShadowPartitionMaintainer().maintain(db, now=datetime.now(UTC))
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                raise
-        return {
-            "lock_acquired": result.lock_acquired,
-            "created": list(result.created),
-            "dropped": list(result.dropped),
-        }
-
-    try:
-        return cast("dict[str, object]", run_async(_maintain))
-    except Exception as exc:
-        logger.error(f"QUERY shadow partition maintenance 失败: error={type(exc).__name__}")
-        retries = int(getattr(self.request, "retries", 0) or 0)
-        raise self.retry(exc=exc, countdown=60 * (2**retries)) from None
 
 
 def _ensure_non_empty_retry_result(task_name: str, result: Mapping[str, object], retries: int) -> None:
@@ -474,18 +411,60 @@ def scan_smt_inbound_handoff_demands_batch(
         raise self.retry(exc=e, countdown=countdown) from None
 
 
+@celery_app.task(
+    name="src.celery_app.tasks.workline.check_wms_effect_status",
+    base=celery_app.Task,
+)
+def check_wms_effect_status(dispatch_key: str) -> dict[str, object]:
+    """按 dispatch key 执行一次 lease-fenced WMS EFFECT 状态确认。"""
+
+    async def _check() -> dict[str, object]:
+        from src.app.runtime.orchestration.services.wms_effect_status_service import (
+            wms_effect_status_service,
+        )
+
+        async with get_db_context() as db:
+            result = await wms_effect_status_service.check_dispatch(db, dispatch_key=dispatch_key)
+            return asdict(result)
+
+    return cast("dict[str, object]", run_async(_check))
+
+
+@celery_app.task(
+    name="src.celery_app.tasks.workline.scan_wms_effect_status_batch",
+    base=celery_app.Task,
+)
+def scan_wms_effect_status_batch(limit: int | None = None) -> list[dict[str, object]]:
+    """小批量顺序确认到期 WMS EFFECT，Beat 只负责兜底扫描。"""
+
+    from src.core.conf import settings
+
+    batch_limit = int(limit or settings.WES_EFFECT_STATUS_SCAN_BATCH_SIZE)
+
+    async def _scan() -> list[dict[str, object]]:
+        from src.app.runtime.orchestration.services.wms_effect_status_service import (
+            wms_effect_status_service,
+        )
+
+        async with get_db_context() as db:
+            results = await wms_effect_status_service.check_due_batch(db, limit=batch_limit)
+            return [asdict(item) for item in results]
+
+    return cast("list[dict[str, object]]", run_async(_scan))
+
+
 # ============================================
 # 导出
 # ============================================
 __all__ = [
     # Celery 任务入口（公共 API）
     "_empty_smt_inbound_handoff_recovery_result",
-    "maintain_query_shadow_partitions",
-    "process_query_shadow_comparison",
+    "check_wms_effect_status",
     "process_signal",
     "scan_device_heartbeats_batch",
     "scan_smt_inbound_handoff_demands_batch",
     "scan_timeouts_batch",
+    "scan_wms_effect_status_batch",
 ]
 
 

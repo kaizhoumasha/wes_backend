@@ -5,6 +5,18 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_attempt_write_set_rejects_removed_shadow_comparisons_field() -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
+
+    with pytest.raises(TypeError, match="shadow_comparisons"):
+        AttemptWriteSet(
+            evidence=(),
+            next_state={"phase": "READY"},
+            intents=(),
+            shadow_comparisons=(),
+        )
+
+
 def test_write_set_limit_rejection_preserves_fallback_state() -> None:
     from src.app.runtime.workline_plugins.attempt_coordinator import (
         AttemptWriteSet,
@@ -14,7 +26,7 @@ def test_write_set_limit_rejection_preserves_fallback_state() -> None:
 
     current_state = {"phase": "WAITING_DEVICE_RESULT", "current_correlation": "CMD-1"}
     bounded = bound_attempt_write_set(
-        AttemptWriteSet(evidence=(), next_state={"value": "too-large"}, intents=(), shadow_comparisons=()),
+        AttemptWriteSet(evidence=(), next_state={"value": "too-large"}, intents=()),
         limits=PluginWriteSetLimits(max_next_state_bytes=1),
         fallback_state=current_state,
     )
@@ -76,7 +88,7 @@ async def test_writeback_rechecks_locked_binding_admission_before_persisting() -
             session_id=41,
             workline_id=8,
             trace_id="trace-1",
-            write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=(), shadow_comparisons=()),
+            write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=()),
         )
 
     assert events == ["lock", "rollback"]
@@ -166,7 +178,7 @@ async def test_writeback_reloads_device_snapshot_under_shared_workline_lock() ->
             session_id=41,
             workline_id=8,
             trace_id="trace-1",
-            write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=(), shadow_comparisons=()),
+            write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=()),
         )
 
     assert events == ["authoritative-lock", "topology-shared-lock", "topology-reload", "rollback"]
@@ -283,7 +295,7 @@ async def test_writeback_device_fact_version_race_returns_safe_retry_without_wri
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
-        write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=(), shadow_comparisons=()),
+        write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=()),
     )
 
     assert disposition is WriteDisposition.SAFE_RETRY
@@ -372,7 +384,7 @@ def test_write_set_rejects_non_finite_numbers_and_preserves_fallback_state(inval
 
     current_state = {"phase": "WAITING_DEVICE_RESULT", "current_correlation": "CMD-1"}
     bounded = bound_attempt_write_set(
-        AttemptWriteSet(evidence=(), next_state={"invalid": invalid_number}, intents=(), shadow_comparisons=()),
+        AttemptWriteSet(evidence=(), next_state={"invalid": invalid_number}, intents=()),
         limits=PluginWriteSetLimits(),
         fallback_state=current_state,
     )
@@ -394,7 +406,7 @@ def test_write_set_rejects_recursive_container_and_preserves_fallback_state() ->
     current_state = {"phase": "WAITING_DEVICE_RESULT", "current_correlation": "CMD-1"}
 
     bounded = bound_attempt_write_set(
-        AttemptWriteSet(evidence=(), next_state=recursive_state, intents=(), shadow_comparisons=()),
+        AttemptWriteSet(evidence=(), next_state=recursive_state, intents=()),
         limits=PluginWriteSetLimits(),
         fallback_state=current_state,
     )
@@ -457,7 +469,6 @@ def test_write_set_bounds_recorded_decision_payload_and_clears_it_on_rejection(
             next_state=current_state,
             intents=(),
             recorded_decision=recorded_decision,
-            shadow_comparisons=(),
         ),
         limits=PluginWriteSetLimits(**limits),
         fallback_state=current_state,
@@ -486,7 +497,6 @@ def test_write_set_rejects_recursive_recorded_anchor_and_preserves_fallback_stat
             next_state=current_state,
             intents=(),
             recorded_attempt_anchor=recursive_anchor,
-            shadow_comparisons=(),
         ),
         limits=PluginWriteSetLimits(),
         fallback_state=current_state,
@@ -520,7 +530,6 @@ def test_accepted_write_set_isolated_from_mutation_after_validation() -> None:
             intents=(),
             recorded_decision=recorded_decision,
             recorded_attempt_anchor=recorded_anchor,
-            shadow_comparisons=(),
         ),
         limits=PluginWriteSetLimits(),
         fallback_state={"phase": "WAITING_DEVICE_RESULT"},
@@ -549,7 +558,7 @@ def test_write_set_rejects_non_object_next_state_without_rewriting_fallback(inva
     )
 
     bounded = bound_attempt_write_set(
-        AttemptWriteSet(evidence=(), next_state=invalid_state, intents=(), shadow_comparisons=()),
+        AttemptWriteSet(evidence=(), next_state=invalid_state, intents=()),
         limits=PluginWriteSetLimits(),
         fallback_state={"phase": "WAITING_DEVICE_RESULT"},
     )
@@ -569,7 +578,7 @@ def test_write_set_rejection_does_not_copy_invalid_fallback_into_persisted_paylo
     recursive_fallback: dict[str, object] = {}
     recursive_fallback["self"] = recursive_fallback
     bounded = bound_attempt_write_set(
-        AttemptWriteSet(evidence=(), next_state={"value": "oversized"}, intents=(), shadow_comparisons=()),
+        AttemptWriteSet(evidence=(), next_state={"value": "oversized"}, intents=()),
         limits=PluginWriteSetLimits(max_next_state_bytes=1),
         fallback_state=recursive_fallback,
     )
@@ -622,7 +631,6 @@ async def test_persist_locked_attempt_skips_plugin_state_write_when_preservation
             outcome_code="HOLD",
             hold_reason="PLUGIN_WRITE_SET_LIMIT_EXCEEDED",
             preserve_plugin_state=True,
-            shadow_comparisons=(),
         ),
     )
 
@@ -645,7 +653,6 @@ def test_live_write_set_cannot_self_authorize_plugin_state_preservation() -> Non
             intents=(),
             outcome_code="ROUTE_A",
             preserve_plugin_state=True,
-            shadow_comparisons=(),
         ),
         limits=PluginWriteSetLimits(),
         fallback_state={"phase": "WAITING_DEVICE_RESULT"},
@@ -683,9 +690,7 @@ async def test_three_stage_attempt_queries_without_db_then_commits_atomically() 
     disposition = await AttemptCoordinator(snapshot).execute(
         query_phase=query_phase,
         current_snapshot=current_snapshot,
-        build_write_set=lambda evidence: AttemptWriteSet(
-            evidence=evidence, next_state={"step": 2}, intents=(), shadow_comparisons=()
-        ),
+        build_write_set=lambda evidence: AttemptWriteSet(evidence=evidence, next_state={"step": 2}, intents=()),
         writeback=writeback,
     )
 
@@ -1036,9 +1041,7 @@ async def test_plugin_attempt_persistence_uses_reserved_timeline_sequence_instea
         workline_id=8,
         trace_id="trace-1",
         snapshot=AttemptSnapshot(processor_token="lease-1", session_version=0, plugin_state_version=0),
-        write_set=AttemptWriteSet(
-            evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A", shadow_comparisons=()
-        ),
+        write_set=AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A"),
     )
 
     assert events == ["timeline-reserve"]
@@ -1105,7 +1108,6 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
         next_state={"step": 2},
         intents=("i1",),
         outcome_code="ROUTE_A",
-        shadow_comparisons=(),
     )
     events: list[str] = []
 
@@ -1263,7 +1265,7 @@ async def test_matching_intent_claim_skips_duplicate_ledger_but_commits_terminal
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
-        write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("i1",), shadow_comparisons=()),
+        write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("i1",)),
     )
 
     assert disposition is WriteDisposition.COMMITTED
@@ -1333,7 +1335,7 @@ async def test_plugin_effect_failure_rolls_back_before_state_and_terminal() -> N
             session_id=41,
             workline_id=8,
             trace_id="trace-1",
-            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("intent",), shadow_comparisons=()),
+            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("intent",)),
         )
 
     assert events == ["provisional-ledger", "effect", "rollback"]
@@ -1401,7 +1403,6 @@ async def test_writeback_bounds_oversized_plugin_payload_before_timeline_and_led
             evidence=(),
             next_state={},
             intents=(RuntimeIntent.continue_next(payload={"secret": "must-not-persist"}),),
-            shadow_comparisons=(),
         ),
     )
 
@@ -1462,7 +1463,6 @@ async def test_recorded_legal_hold_uses_failed_terminal() -> None:
             intents=(),
             outcome_code="HOLD",
             hold_reason="BUSINESS_RULE_HOLD",
-            shadow_comparisons=(),
         ),
     )
 
@@ -1531,7 +1531,7 @@ async def test_intent_ledger_failure_rolls_back_before_terminal() -> None:
             session_id=41,
             workline_id=8,
             trace_id="trace-1",
-            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("i1",), shadow_comparisons=()),
+            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("i1",)),
         )
 
     assert events == ["intent-conflict", "rollback"]
@@ -1672,7 +1672,7 @@ async def test_writeback_version_race_writes_nothing_and_rolls_back() -> None:
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
-        write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=(), shadow_comparisons=()),
+        write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=()),
     )
 
     assert disposition is WriteDisposition.SAFE_RETRY
@@ -1737,7 +1737,7 @@ async def test_writeback_material_fact_version_race_writes_nothing_and_rolls_bac
         session_id=41,
         workline_id=21,
         trace_id="trace-1",
-        write_set=AttemptWriteSet(evidence=(), next_state={"phase": "READY"}, intents=(), shadow_comparisons=()),
+        write_set=AttemptWriteSet(evidence=(), next_state={"phase": "READY"}, intents=()),
     )
 
     assert disposition is WriteDisposition.SAFE_RETRY
@@ -1800,7 +1800,7 @@ async def test_writeback_plugin_config_drift_writes_nothing_and_rolls_back() -> 
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
-        write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=(), shadow_comparisons=()),
+        write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=()),
     )
 
     assert disposition is WriteDisposition.SAFE_RETRY
@@ -1851,7 +1851,7 @@ async def test_writeback_persistence_error_rolls_back_before_terminal() -> None:
             session_id=41,
             workline_id=8,
             trace_id="trace-1",
-            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=(), shadow_comparisons=()),
+            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=()),
         )
 
     assert events == ["persist", "rollback"]
