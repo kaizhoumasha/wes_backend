@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,6 +27,10 @@ from src.app.wms_integration.services.http_transport import sign_wms_hmac_reques
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = ROOT / "tests/fixtures/wms_provider_conformance"
 RELEASE_EVIDENCE = ROOT / "docs/operations/wms-northbound-acceptance-and-cutover.md"
+FEASIBILITY_REPORT = ROOT / "docs/operations/wms-northbound-feasibility-report.md"
+FINAL_FIX_REPORT = ROOT / ".superpowers/sdd/final-fix-report.md"
+LIVE_ACCEPTANCE_TEST = ROOT / "tests/integration/test_wms_mock_northbound_live.py"
+WMS_ACCEPTANCE_COMPOSE = ROOT / "docker-compose.wms-acceptance.yml"
 SLO_CATALOG = ROOT / "docs/operations/northbound-operation-slo-catalog.md"
 RUNBOOK = ROOT / "docs/runbooks/northbound-operation-observability.md"
 INTERACTION_CONTRACT = ROOT / "docs/contracts/wms-northbound-interaction-contract.md"
@@ -120,14 +125,53 @@ def test_replay_assets_are_synthetic_and_do_not_contain_secret_material() -> Non
 def test_release_evidence_keeps_real_acceptance_and_cutover_explicitly_blocked() -> None:
     content = RELEASE_EVIDENCE.read_text(encoding="utf-8")
 
-    assert "开发 mock 验证：`PASS`" in content
-    assert "真实 WMS 联调验收：`PENDING`" in content
-    assert "联调测试数据清理：`BLOCKED`" in content
-    assert "整体切换：`BLOCKED`" in content
-    assert "不得用 mock 结果替代真实 WMS 联调验收" in content
-    assert "不得预填确认人、验收时间、WMS 构建版本" in content
+    assert "实际开发 Mock 验证：`PASS/GO`（当前 P0 门禁已关闭）" in content
+    assert "外部 WMS 联调验收模板：`PENDING`（后续，不阻塞当前 Mock 验收）" in content
+    assert "外部 WMS 联调测试数据清理模板：`BLOCKED`" in content
+    assert "外部 WMS 整体切换模板：`BLOCKED`" in content
+    assert "不得把该结论替代未来外部 WMS 的联调验收" in content
+    assert "不得预填外部确认人、验收时间或构建版本" in content
     assert "首个真实 EFFECT" in content
     assert all(operation_identity in content for operation_identity in EFFECT_REPLAY_ASSETS)
+
+
+def test_mock_feasibility_go_is_backed_by_live_compose_and_active_wes_credential() -> None:
+    report = FEASIBILITY_REPORT.read_text(encoding="utf-8")
+    final_fix_report = FINAL_FIX_REPORT.read_text(encoding="utf-8")
+    release = RELEASE_EVIDENCE.read_text(encoding="utf-8")
+    acceptance_compose = WMS_ACCEPTANCE_COMPOSE.read_text(encoding="utf-8")
+
+    report_image_digests = dict(re.findall(r"(WMS|ECS) Docker image\s+`(sha256:[0-9a-f]{64})`", report))
+    final_fix_image_digests = dict(re.findall(r"(WMS|ECS)\s+`(sha256:[0-9a-f]{64})`", final_fix_report))
+    release_image_digests = dict(re.findall(r"(WMS|ECS) image\s+`(sha256:[0-9a-f]{64})`", release))
+    assert report_image_digests.keys() == {"WMS", "ECS"}
+    assert final_fix_image_digests == report_image_digests
+    assert release_image_digests == report_image_digests
+    assert "`4104 tests collected`" in final_fix_report
+    assert "`4099 passed, 5 skipped, 6 warnings`" in final_fix_report
+    assert "tests/integration/test_wms_mock_northbound_live.py" in report
+    assert "tests/integration/test_mock_container_entrypoints.py" in report
+    assert "结果 `5 passed`" in report
+    assert "结果 `6 passed`" in report
+    assert "docker-compose.wms-acceptance.yml" in report
+    assert "--reload" not in acceptance_compose
+    assert "volumes:" not in acceptance_compose
+    assert "ClientDisconnect" in report
+    assert "48 个 case 全部 `passed=true`" in report
+    assert "`secret://wms/material-flow-sandbox-hmac@v2`" in release
+    assert "Mock 专用 credential" in release
+
+
+def test_concurrency_claims_have_named_live_tcp_acceptance_tests() -> None:
+    report = FEASIBILITY_REPORT.read_text(encoding="utf-8")
+    live_test_source = LIVE_ACCEPTANCE_TEST.read_text(encoding="utf-8")
+    live_cases = (
+        "test_compose_mock_wms_concurrent_identical_replay_over_tcp",
+        "test_compose_mock_wms_concurrent_fault_claim_over_tcp",
+    )
+
+    assert all(case_name in live_test_source for case_name in live_cases)
+    assert all(f"`{case_name}`" in report for case_name in live_cases)
 
 
 def test_active_operations_docs_use_submit_status_callback_facts_not_shadow_readiness() -> None:
@@ -158,6 +202,16 @@ def test_submit_wire_contract_matches_canonical_dispatch_without_binding_wrapper
     assert '"canonical_payload"' not in probe_source
     assert '"Idempotency-Key"' in probe_source
     assert '"X-WES-Operation-Identity"' in probe_source
+
+
+def test_contract_separates_wire_content_hash_from_idempotency_fingerprint() -> None:
+    contract = INTERACTION_CONTRACT.read_text(encoding="utf-8")
+    release = RELEASE_EVIDENCE.read_text(encoding="utf-8")
+
+    assert "`X-WES-Content-SHA256` 是实际 HTTP body bytes 的传输完整性哈希" in contract
+    assert "不得直接以 `X-WES-Content-SHA256` 作为幂等 fingerprint" in contract
+    assert "以 `X-WES-Content-SHA256` 比较 fingerprint" not in release
+    assert "typed schema 校验后重新生成 canonical JSON fingerprint" in release
 
 
 def test_interaction_contract_freezes_each_effect_wire_body_schema() -> None:
@@ -311,9 +365,9 @@ def test_feasibility_probe_hashes_exact_raw_body_and_declares_auth_limit() -> No
     assert "payload_sha256" in probe_source
     assert '"X-WES-Content-SHA256"' in probe_source
     assert "canonical_payload" not in probe_source
-    assert "payload_hash" in probe_source
-    assert "完整 HMAC" in report
-    assert "未验证" in report
+    assert "_submit_headers" in probe_source
+    assert "`X-WES-*` 七项" in report
+    assert "已验证 Submit 七项与 Status query 五项" in report
 
 
 def test_observability_docs_distinguish_current_signals_from_target_cutover_evidence() -> None:
@@ -331,5 +385,5 @@ def test_observability_docs_distinguish_current_signals_from_target_cutover_evid
     assert "当前已配置告警" in slo
     assert "目标告警候选" in slo
     assert "目标口径不是已存在的生产指标" in runbook
-    assert "观测映射与采集验证：`BLOCKED`" in release
+    assert "外部 WMS 观测映射与采集模板：`BLOCKED`" in release
     assert "mock/replay 不能关闭该门禁" in release

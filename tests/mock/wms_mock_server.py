@@ -23,20 +23,37 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-
-# 添加项目根目录到 sys.path
+from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any, Optional
 from uuid import uuid4
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Request, Response
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.requests import ClientDisconnect
 from uvicorn import Config, Server
 
+# 添加项目根目录到 sys.path
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+# 北向 contract 核心必须同时支持 pytest package import 与 Docker 的脚本入口。
+from tests.mock.wms_northbound_contract import (
+    ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+    NorthboundAuthError,
+    NorthboundHmacReplayGuard,
+    NorthboundOperationStore,
+    NorthboundPayloadValidationError,
+    canonical_payload_bytes,
+    content_sha256,
+    validate_typed_request,
+    verify_status_hmac,
+    verify_submit_hmac,
+)
 
 
 def _load_sandbox_catalog() -> Any:
@@ -526,9 +543,56 @@ class MockWmsState:
 
 mock_wms_state = MockWmsState()
 
+# 北向 contract 记录独立于遗留货架状态，但必须随同 Mock reset 清理。
+northbound_clock_state: dict[str, datetime | None] = {"now": None}
+
+
+@dataclass(frozen=True, slots=True)
+class _NorthboundFault:
+    status: int
+    target_path: str
+    method: str
+    operation_identity: str | None
+    retry_after: int | None
+    delay: float
+    after_response: bool
+    not_found: bool
+    max_response_bytes: int | None
+    response_body_bytes: int | None
+
+
+northbound_fault_lock = RLock()
+northbound_fault_state: dict[str, _NorthboundFault | None] = {"next": None}
+northbound_callback_hint_evidence: dict[tuple[str, str], dict[str, str]] = {}
+
+
+def _northbound_now() -> datetime:
+    return northbound_clock_state["now"] or datetime.now(UTC)
+
+
+def _positive_finite_env_float(name: str, default: str) -> float:
+    value = float(os.getenv(name, default))
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return value
+
+
+northbound_operation_store = NorthboundOperationStore(
+    clock=_northbound_now,
+    retention_seconds=int(os.getenv("WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS", "9")),
+    visibility_sla_seconds=_positive_finite_env_float("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2"),
+)
+northbound_hmac_replay_guard = NorthboundHmacReplayGuard()
+
 
 def reset_mock_wms_state() -> None:
     mock_wms_state.reset()
+    northbound_operation_store.reset()
+    northbound_hmac_replay_guard.reset()
+    northbound_clock_state["now"] = None
+    with northbound_fault_lock:
+        northbound_fault_state["next"] = None
+    northbound_callback_hint_evidence.clear()
     fault_injection_state["next_status"] = 200
     fault_injection_state["next_delay"] = 0.0
 
@@ -582,10 +646,83 @@ def _rack_operation_task_payload(
 app = FastAPI(title="WMS Mock Server", description="模拟 WMS 主数据查询及库存操作接口", version="1.0.0")
 
 
+def _northbound_fault_matches(fault: _NorthboundFault, request: Request) -> bool:
+    if request.method != fault.method or request.url.path != fault.target_path:
+        return False
+    if fault.operation_identity is None:
+        return True
+    actual_identity = request.headers.get("X-WES-Operation-Identity") or request.query_params.get("operation_identity")
+    return actual_identity == fault.operation_identity
+
+
+def _northbound_not_found_payload() -> dict[str, Any]:
+    return {
+        "state": "NOT_FOUND",
+        "provider_reference": None,
+        "reason_code": None,
+        "updated_at": None,
+        "source_version": None,
+        "result_payload": None,
+    }
+
+
+def _northbound_fault_response(fault: _NorthboundFault) -> Response:
+    if 500 <= fault.status <= 599:
+        code = "TEMPORARILY_UNAVAILABLE"
+    elif fault.status == 429:
+        code = "RATE_LIMITED"
+    else:
+        code = "NORTHBOUND_FAULT"
+    prefix = json.dumps({"code": code}, separators=(",", ":")).encode()
+    headers = {"Retry-After": str(fault.retry_after)} if fault.status == 429 and fault.retry_after is not None else None
+    if fault.response_body_bytes is None:
+        content = prefix if fault.max_response_bytes is None else prefix[: fault.max_response_bytes]
+        return Response(content=content, status_code=fault.status, media_type="application/json", headers=headers)
+
+    async def stream_body():
+        remaining_budget = fault.max_response_bytes
+        prefix_chunk = prefix if remaining_budget is None else prefix[:remaining_budget]
+        if prefix_chunk:
+            yield prefix_chunk
+        if remaining_budget is not None:
+            remaining_budget = max(remaining_budget - len(prefix_chunk), 0)
+        remaining_filler = fault.response_body_bytes
+        if remaining_budget is not None:
+            remaining_filler = min(remaining_filler, remaining_budget)
+        while remaining_filler > 0:
+            chunk_size = min(remaining_filler, 1024)
+            yield b"x" * chunk_size
+            remaining_filler -= chunk_size
+
+    return StreamingResponse(stream_body(), status_code=fault.status, media_type="application/json", headers=headers)
+
+
 @app.middleware("http")
 async def fault_injection_middleware(request: Request, call_next):
     if request.url.path.startswith("/debug"):
         return await call_next(request)
+
+    # 一次性 fault 必须在首个 await 前由同步锁原子认领，避免并发请求重复消费。
+    claimed_fault: _NorthboundFault | None = None
+    with northbound_fault_lock:
+        configured_fault = northbound_fault_state["next"]
+        if configured_fault is not None and _northbound_fault_matches(configured_fault, request):
+            claimed_fault = configured_fault
+            northbound_fault_state["next"] = None
+
+    if claimed_fault is not None and claimed_fault.after_response:
+        response = await call_next(request)
+        if claimed_fault.delay > 0:
+            await asyncio.sleep(claimed_fault.delay)
+        return response
+
+    if claimed_fault is not None:
+        if claimed_fault.delay > 0:
+            await asyncio.sleep(claimed_fault.delay)
+        if claimed_fault.not_found:
+            return JSONResponse(status_code=200, content=_northbound_not_found_payload())
+        if claimed_fault.status != 200 or claimed_fault.response_body_bytes is not None:
+            return _northbound_fault_response(claimed_fault)
 
     if fault_injection_state["next_delay"] > 0:
         await asyncio.sleep(fault_injection_state["next_delay"])
@@ -616,6 +753,37 @@ class RackStatusRequest(BaseModel):
     current_location: str | None = None
 
 
+class NorthboundFaultRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: int = 500
+    target_path: str
+    method: str
+    operation_identity: str | None = None
+    retry_after: int | None = None
+    delay: float = Field(default=0.0, ge=0)
+    after_response: bool = False
+    not_found: bool = False
+    max_response_bytes: int | None = Field(default=None, ge=1, le=16 * 1024 * 1024)
+    response_body_bytes: int | None = Field(default=None, ge=0, le=16 * 1024 * 1024)
+
+
+class NorthboundRejectRequest(BaseModel):
+    operation_identity: str
+    idempotency_key: str
+    reason_code: str
+
+
+class NorthboundClockRequest(BaseModel):
+    now: str | None = None
+
+
+class NorthboundVisibilityRequest(BaseModel):
+    operation_identity: str
+    idempotency_key: str
+    delay_seconds: float = Field(ge=0, allow_inf_nan=False)
+
+
 @app.post("/debug/simulate-failure", summary="注入 HTTP 故障")
 async def simulate_failure(request: SimulateFailureRequest):
     """
@@ -630,9 +798,160 @@ async def simulate_failure(request: SimulateFailureRequest):
 @app.post("/debug/reset", summary="恢复 WMS Mock 初始状态")
 async def debug_reset():
     await mock_wms_state.reset_locked()
+    northbound_operation_store.reset()
+    northbound_hmac_replay_guard.reset()
+    northbound_clock_state["now"] = None
+    with northbound_fault_lock:
+        northbound_fault_state["next"] = None
+    northbound_callback_hint_evidence.clear()
     fault_injection_state["next_status"] = 200
     fault_injection_state["next_delay"] = 0.0
     return {"code": 200, "data": {"reset": True}}
+
+
+@app.post("/debug/northbound/faults", summary="注入北向 HTTP 故障")
+async def debug_set_northbound_fault(request: NorthboundFaultRequest):
+    """仅供 Mock 验收模拟限流、服务端错误、慢响应与响应体边界。"""
+
+    method = request.method.strip().upper()
+    target_path = request.target_path.strip()
+    if method not in {"GET", "POST"} or not target_path.startswith(
+        ("/northbound/", "/api/wms/inventory/confirm-inbound", "/api/wms/fulfillment/")
+    ):
+        return JSONResponse(status_code=422, content={"code": "INVALID_NORTHBOUND_FAULT_SCOPE"})
+    configured = _NorthboundFault(
+        status=request.status,
+        target_path=target_path,
+        method=method,
+        operation_identity=request.operation_identity,
+        retry_after=request.retry_after,
+        delay=request.delay,
+        after_response=request.after_response,
+        not_found=request.not_found,
+        max_response_bytes=request.max_response_bytes,
+        response_body_bytes=request.response_body_bytes,
+    )
+    with northbound_fault_lock:
+        northbound_fault_state["next"] = configured
+    return {
+        "code": 200,
+        "data": {
+            "status": configured.status,
+            "target_path": configured.target_path,
+            "method": configured.method,
+            "operation_identity": configured.operation_identity,
+            "retry_after": configured.retry_after,
+            "delay": configured.delay,
+            "after_response": configured.after_response,
+            "not_found": configured.not_found,
+            "max_response_bytes": configured.max_response_bytes,
+            "response_body_bytes": configured.response_body_bytes,
+        },
+    }
+
+
+@app.post("/debug/northbound/reject", summary="将北向请求置为业务拒绝")
+async def debug_reject_northbound_operation(request: NorthboundRejectRequest):
+    snapshot = northbound_operation_store.reject(
+        request.operation_identity,
+        request.idempotency_key,
+        reason_code=request.reason_code,
+    )
+    return snapshot.as_dict()
+
+
+@app.post("/debug/northbound/clock", summary="设置北向 Mock 时钟")
+async def debug_set_northbound_clock(request: NorthboundClockRequest):
+    if request.now is None:
+        northbound_clock_state["now"] = None
+    else:
+        parsed = datetime.fromisoformat(request.now)
+        if parsed.tzinfo is None:
+            return JSONResponse(status_code=422, content={"code": "CLOCK_MUST_BE_TIMEZONE_AWARE"})
+        northbound_clock_state["now"] = parsed.astimezone(UTC)
+    return {
+        "code": 200,
+        "data": {"now": northbound_clock_state["now"].isoformat() if northbound_clock_state["now"] else None},
+    }
+
+
+@app.post("/debug/northbound/visibility", summary="设置北向状态暂时不可见次数")
+async def debug_set_northbound_visibility(request: NorthboundVisibilityRequest):
+    """仅供黑盒探针按公开时钟模拟受理后在 SLA 内暂时返回 NOT_FOUND。"""
+
+    try:
+        northbound_operation_store.configure_visibility_delay(
+            request.operation_identity,
+            request.idempotency_key,
+            delay_seconds=request.delay_seconds,
+        )
+    except ValueError:
+        return JSONResponse(status_code=422, content={"code": "VISIBILITY_DELAY_OUTSIDE_SLA"})
+    return {
+        "operation_identity": request.operation_identity,
+        "idempotency_key": request.idempotency_key,
+        "delay_seconds": request.delay_seconds,
+    }
+
+
+@app.get("/debug/northbound/effects", summary="查询北向业务效果计数")
+async def debug_northbound_effect_count(operation_identity: str, idempotency_key: str):
+    return {
+        "operation_identity": operation_identity,
+        "idempotency_key": idempotency_key,
+        "effect_count": northbound_operation_store.effect_count(operation_identity, idempotency_key),
+    }
+
+
+@app.get("/debug/northbound/callback-hints", summary="查询北向 callback hint 脱敏投影")
+async def debug_northbound_callback_hints(operation_identity: str, idempotency_key: str):
+    hint = northbound_callback_hint_evidence.get((operation_identity, idempotency_key))
+    return {"hints": [] if hint is None else [hint]}
+
+
+async def _request_body_or_none(request: Request) -> bytes | None:
+    """客户端已因 deadline 断开时安静终止，不把预期超时记录成 ASGI 异常。"""
+
+    try:
+        return await request.body()
+    except ClientDisconnect:
+        return None
+
+
+@app.get("/northbound/contract", summary="查询北向 Mock 合同承诺")
+async def northbound_contract():
+    return {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": int(os.getenv("WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS", "9")),
+        "status_visibility_sla_seconds": _positive_finite_env_float("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2"),
+        "max_response_bytes": int(os.getenv("WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES", "4096")),
+        "submit_deadline_seconds": _positive_finite_env_float("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", "30"),
+        "status_deadline_seconds": _positive_finite_env_float("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", "2"),
+    }
+
+
+@app.get("/northbound/operations/status", summary="查询北向 typed EFFECT 权威状态")
+async def northbound_operation_status(request: Request, operation_identity: str, idempotency_key: str):
+    raw_path = request.scope["path"]
+    query_string = request.scope.get("query_string", b"")
+    if query_string:
+        raw_path = f"{raw_path}?{query_string.decode('ascii')}"
+    body = await _request_body_or_none(request)
+    if body is None:
+        return Response(status_code=499)
+    try:
+        verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
+        northbound_hmac_replay_guard.consume(
+            credential_reference=request.headers["X-WMS-Credential-Reference"],
+            timestamp=request.headers["X-WMS-Timestamp"],
+            nonce=request.headers["X-WMS-Nonce"],
+        )
+        snapshot = northbound_operation_store.query(operation_identity, idempotency_key)
+    except NorthboundAuthError as exc:
+        return JSONResponse(status_code=401, content={"code": exc.code})
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"code": str(exc)})
+    return snapshot.as_dict()
 
 
 @app.get("/debug/racks", summary="查看 WMS Mock 货架状态")
@@ -718,6 +1037,117 @@ def _typed_effect_callback_payload(
             "idempotency_key": idempotency_key,
             "dispatch_key": dispatch_key,
         },
+    }
+
+
+async def _submit_northbound_effect(
+    *,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    operation_identity: str,
+) -> Response:
+    """以共享状态核心受理 typed EFFECT，同时保留各 operation 的既有响应字段。"""
+
+    body = await _request_body_or_none(request)
+    if body is None:
+        return Response(status_code=499)
+    try:
+        verify_submit_hmac(request.headers, body, method=request.method, path=request.url.path)
+        northbound_hmac_replay_guard.consume(
+            credential_reference=request.headers["X-WES-Credential-Reference"],
+            timestamp=request.headers["X-WES-Timestamp"],
+            nonce=request.headers["X-WES-Nonce"],
+        )
+        submitted_identity = str(request.headers.get("X-WES-Operation-Identity") or "")
+        if submitted_identity != operation_identity:
+            return JSONResponse(status_code=422, content={"code": "OPERATION_IDENTITY_MISMATCH"})
+        if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+            raise NorthboundPayloadValidationError("typed request content type must be application/json")
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise NorthboundPayloadValidationError("typed request must contain valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise NorthboundPayloadValidationError("typed request must be a JSON object")
+        idempotency_key = str(request.headers.get("Idempotency-Key") or "")
+        validated_payload = validate_typed_request(operation_identity, payload)
+        submission = northbound_operation_store.submit(
+            operation_identity,
+            idempotency_key,
+            content_sha256(canonical_payload_bytes(validated_payload)),
+            validated_payload,
+        )
+    except NorthboundAuthError as exc:
+        return JSONResponse(status_code=401, content={"code": exc.code})
+    except NorthboundPayloadValidationError:
+        return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST"})
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content={"code": str(exc)})
+
+    if submission.error_code is not None:
+        return JSONResponse(
+            status_code=submission.status_code,
+            content={
+                "code": submission.error_code,
+                "data": submission.snapshot.as_dict() if submission.snapshot is not None else None,
+            },
+        )
+
+    data = _northbound_response_data(operation_identity, validated_payload)
+    if submission.snapshot is not None:
+        data["northbound_status"] = submission.snapshot.as_dict()
+    if submission.status_code == 202 and northbound_operation_store.register_callback_hint(
+        operation_identity, idempotency_key
+    ):
+        # Evidence endpoint 只保留 callback hint 的关联键投影，绝不复制终态或认证字段。
+        northbound_callback_hint_evidence[(operation_identity, idempotency_key)] = {
+            "callback_type": "WMS_EFFECT_STATUS_HINT",
+            "dispatch_key": str(validated_payload.get("dispatch_key") or ""),
+            "idempotency_key": idempotency_key,
+            "operation_identity": operation_identity,
+        }
+        background_tasks.add_task(
+            _post_callback,
+            WES_EXTERNAL_CALLBACK_URL,
+            _typed_effect_callback_payload(
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+                request_payload=validated_payload,
+            ),
+        )
+    return JSONResponse(status_code=submission.status_code, content={"code": submission.status_code, "data": data})
+
+
+def _northbound_response_data(operation_identity: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """从已校验 typed payload 构造各 operation 的兼容受理字段。"""
+
+    if operation_identity == "wms.inventory.confirm_inbound@v1":
+        return {
+            "dispatch_key": payload["dispatch_key"],
+            "inbound_key": payload["inbound_key"],
+            "accepted": True,
+        }
+    if operation_identity == "wms.fulfillment.notify_pkg_binding@v1":
+        return {
+            "request_id": payload["dispatch_key"],
+            "binding_key": f"{payload['package_id']}:{payload['pallet_id']}:{payload['station_code']}",
+            "package_id": payload["package_id"],
+            "pallet_id": payload["pallet_id"],
+            "station_code": payload["station_code"],
+            "accepted": True,
+        }
+    return {
+        "environment": "LOCAL_MOCK_ONLY",
+        "production_write_path": False,
+        "request_id": payload["dispatch_key"],
+        "fulfillment_action": "FULL_BOX_EXCHANGE",
+        "batch_key": payload["rack_id"],
+        "rack_id": payload["rack_id"],
+        "empty_box_id": payload["empty_box_id"],
+        "full_box_id": payload["full_box_id"],
+        "station_admission_blocked_until_exchange_completed": True,
+        "box_level_inventory_transaction_required": True,
+        "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
     }
 
 
@@ -1014,35 +1444,29 @@ async def transport_request(payload: dict[str, Any], background_tasks: Backgroun
     return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}
 
 
-@app.post("/api/wms/fulfillment/package-binding", summary="本机 Mock: typed PKG 绑定通知")
-async def notify_pkg_binding(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
-    """模拟 `wms.fulfillment.notify_pkg_binding@v1`，仅供本机开发验收。"""
+@app.post("/api/wms/legacy/full-box-exchange", summary="兼容遗留满箱交换请求并回调 WES")
+async def legacy_full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks):
+    """遗留 family transport 保持同步 200 与完成 callback，不复用 typed EFFECT 语义。"""
 
-    dispatch_key = str(payload.get("dispatch_key") or "")
-    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
-    package_id = str(payload.get("package_id") or "")
-    pallet_id = str(payload.get("pallet_id") or "")
-    station_code = str(payload.get("station_code") or "")
-    background_tasks.add_task(
-        _post_callback,
-        WES_EXTERNAL_CALLBACK_URL,
-        _typed_effect_callback_payload(
-            operation_identity="wms.fulfillment.notify_pkg_binding@v1",
-            idempotency_key=idempotency_key,
-            request_payload=payload,
-        ),
+    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
+    callback_payload = _legacy_transport_callback_payload(
+        callback_type=str(payload.get("callback_type") or "WMS_FULL_BOX_EXCHANGE_RESULT"),
+        request_payload=payload,
+        exchange_status="BUSINESS_COMPLETED",
     )
-    return {
-        "code": 200,
-        "data": {
-            "request_id": payload.get("request_id") or dispatch_key,
-            "binding_key": f"{package_id}:{pallet_id}:{station_code}",
-            "package_id": package_id,
-            "pallet_id": pallet_id,
-            "station_code": station_code,
-            "accepted": True,
-        },
-    }
+    background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
+    return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}
+
+
+@app.post("/api/wms/fulfillment/package-binding", summary="本机 Mock: typed PKG 绑定通知")
+async def notify_pkg_binding(request: Request, background_tasks: BackgroundTasks):
+    """模拟 `wms.fulfillment.notify_pkg_binding@v1` 的已认证幂等受理。"""
+
+    return await _submit_northbound_effect(
+        request=request,
+        background_tasks=background_tasks,
+        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+    )
 
 
 def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
@@ -1057,58 +1481,14 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
 
 
 @app.post("/api/wms/fulfillment/full-box-exchange", summary="本机 Mock: 满箱交换履约")
-async def full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
+async def full_box_exchange(request: Request, background_tasks: BackgroundTasks):
     """模拟满箱交换 typed EFFECT，不触发生产写路径。"""
 
-    dispatch_key = str(payload.get("dispatch_key") or "")
-    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
-    requested_callback_type = str(payload.get("callback_type") or "")
-    if dispatch_key and requested_callback_type == "WMS_FULL_BOX_EXCHANGE_RESULT":
-        background_tasks.add_task(
-            _post_callback,
-            WES_EXTERNAL_CALLBACK_URL,
-            _legacy_transport_callback_payload(
-                callback_type=requested_callback_type,
-                request_payload=payload,
-                exchange_status="BUSINESS_COMPLETED",
-            ),
-        )
-    elif dispatch_key:
-        background_tasks.add_task(
-            _post_callback,
-            WES_EXTERNAL_CALLBACK_URL,
-            _typed_effect_callback_payload(
-                operation_identity="wms.fulfillment.full_box_exchange@v1",
-                idempotency_key=idempotency_key,
-                request_payload=payload,
-            ),
-        )
-    rack_code = str(payload.get("rack_code") or "")
-    rack_side = str(payload.get("rack_side") or "")
-    full_box_object_keys = _string_list(payload, "full_box_object_keys")
-    full_box_set = set(full_box_object_keys)
-    sorting_candidate_object_keys = [
-        object_key for object_key in _string_list(payload, "remaining_object_keys") if object_key not in full_box_set
-    ]
-    exchange_required = bool(full_box_object_keys)
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "request_id": payload.get("request_id", ""),
-            "fulfillment_action": "FULL_BOX_EXCHANGE" if exchange_required else "SORTER_STATION_ADMISSION",
-            "batch_key": f"{rack_code}:{rack_side}",
-            "rack_code": rack_code,
-            "rack_side": rack_side,
-            "exchange_zone": payload.get("exchange_zone", ""),
-            "full_box_object_keys": full_box_object_keys,
-            "sorting_candidate_object_keys": sorting_candidate_object_keys,
-            "station_admission_blocked_until_exchange_completed": exchange_required,
-            "box_level_inventory_transaction_required": exchange_required,
-            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
-        },
-    }
+    return await _submit_northbound_effect(
+        request=request,
+        background_tasks=background_tasks,
+        operation_identity="wms.fulfillment.full_box_exchange@v1",
+    )
 
 
 @app.post("/api/wms/fulfillment/change-rack-face", summary="本机 Mock: 货架换面履约")
@@ -1463,27 +1843,12 @@ async def delete_reservation(reservation_key: str):
 
 
 @app.post("/api/wms/inventory/confirm-inbound")
-async def confirm_inbound_effect(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
-    dispatch_key = str(payload.get("dispatch_key") or "")
-    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
-    inbound_key = str(payload.get("inbound_key") or "")
-    background_tasks.add_task(
-        _post_callback,
-        WES_EXTERNAL_CALLBACK_URL,
-        _typed_effect_callback_payload(
-            operation_identity="wms.inventory.confirm_inbound@v1",
-            idempotency_key=idempotency_key,
-            request_payload=payload,
-        ),
+async def confirm_inbound_effect(request: Request, background_tasks: BackgroundTasks):
+    return await _submit_northbound_effect(
+        request=request,
+        background_tasks=background_tasks,
+        operation_identity="wms.inventory.confirm_inbound@v1",
     )
-    return {
-        "code": 200,
-        "data": {
-            "dispatch_key": dispatch_key,
-            "inbound_key": inbound_key,
-            "accepted": True,
-        },
-    }
 
 
 @app.post("/api/wms/outbound/confirm")
@@ -1514,7 +1879,7 @@ class WmsMockServer:
     def __init__(self, host: str = "127.0.0.1", port: int = 8011):
         self.host = host
         self.port = port
-        self.config = Config(app=app, host=host, port=port, log_level="info")
+        self.config = Config(app=app, host=host, port=port, log_level="info", access_log=False)
 
     async def start(self) -> None:
         logger.info(f"WMS Mock 服务启动: http://{self.host}:{self.port}")

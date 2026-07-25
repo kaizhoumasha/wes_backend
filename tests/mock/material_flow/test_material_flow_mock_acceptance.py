@@ -5,11 +5,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import time
 from typing import ClassVar
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from src.app.runtime.capabilities.material_flow.sorter_inbound_preview_service import SorterInboundPreviewService
 from tests.mock import ecs_mock_server, wms_mock_server
+from tests.mock.wms_northbound_contract import (
+    ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+    MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2,
+    canonical_submit_string,
+)
 
 
 class _CapturingAsyncClient:
@@ -46,24 +57,69 @@ def setup_function() -> None:
     wms_mock_server.reset_mock_wms_state()
 
 
+def _typed_submit(
+    client: TestClient,
+    *,
+    path: str,
+    operation_identity: str,
+    idempotency_key: str,
+    payload: dict,
+    secret: str,
+):
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    timestamp = str(int(time.time()))
+    nonce = uuid4().hex
+    payload_hash = hashlib.sha256(body).hexdigest()
+    canonical = canonical_submit_string(
+        method="POST",
+        path=path,
+        timestamp=timestamp,
+        nonce=nonce,
+        payload_hash=payload_hash,
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+    )
+    headers = {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotency_key,
+        "X-WES-Content-SHA256": payload_hash,
+        "X-WES-Credential-Reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "X-WES-Nonce": nonce,
+        "X-WES-Operation-Identity": operation_identity,
+        "X-WES-Signature": hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest(),
+        "X-WES-Signature-Algorithm": "HMAC_SHA256",
+        "X-WES-Timestamp": timestamp,
+    }
+    return client.post(path, content=body, headers=headers)
+
+
 def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_transaction(monkeypatch) -> None:
     """PKG binding 走 fulfillment mock，库存事务走 inventory mock。"""
 
+    secret = "material-flow-acceptance-v2"
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, secret)
     monkeypatch.setattr(wms_mock_server.httpx, "AsyncClient", _CapturingAsyncClient)
     with TestClient(wms_mock_server.app) as client:
-        binding_response = client.post(
-            "/api/wms/fulfillment/package-binding",
-            json={
+        binding_response = _typed_submit(
+            client,
+            path="/api/wms/fulfillment/package-binding",
+            operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+            idempotency_key="mock-sorter-binding-001",
+            secret=secret,
+            payload={
                 "dispatch_key": "mock-sorter-binding-001",
-                "provider_code": "WMS",
                 "package_id": "PKG-CAP001-LOT-A-001",
                 "pallet_id": "PALLET-A",
                 "station_code": "SORTER-STATION-A",
             },
         )
-        inventory_response = client.post(
-            "/api/wms/inventory/confirm-inbound",
-            json={
+        inventory_response = _typed_submit(
+            client,
+            path="/api/wms/inventory/confirm-inbound",
+            operation_identity="wms.inventory.confirm_inbound@v1",
+            idempotency_key="wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
+            secret=secret,
+            payload={
                 "dispatch_key": "wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
                 "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
                 "material_code": "MAT-CAP001",
@@ -71,65 +127,85 @@ def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_tra
             },
         )
 
-    assert binding_response.status_code == 200
-    assert binding_response.json()["data"] == {
+    assert binding_response.status_code == 202
+    assert binding_response.json()["data"] | {"northbound_status": None} == {
         "request_id": "mock-sorter-binding-001",
         "binding_key": "PKG-CAP001-LOT-A-001:PALLET-A:SORTER-STATION-A",
         "package_id": "PKG-CAP001-LOT-A-001",
         "pallet_id": "PALLET-A",
         "station_code": "SORTER-STATION-A",
         "accepted": True,
+        "northbound_status": None,
     }
-    assert inventory_response.status_code == 200
-    assert inventory_response.json()["data"] == {
+    assert inventory_response.status_code == 202
+    assert inventory_response.json()["data"] | {"northbound_status": None} == {
         "dispatch_key": "wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
         "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
         "accepted": True,
+        "northbound_status": None,
     }
 
 
-def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract() -> None:
-    """满箱交换必须在分拣机逐件流程前分流，且已满箱物料不得进入逐件候选集。"""
+def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract(monkeypatch) -> None:
+    """WES 先完成满箱安全分流，再通过严格 typed EFFECT 合同提交 WMS。"""
+
+    secret = "material-flow-acceptance-v2"
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, secret)
+    preview_service = SorterInboundPreviewService()
+    preview = preview_service.preview_full_box_exchange(
+        {
+            "request_id": "mock-sorter-full-box-001",
+            "rack_code": "RACK-6CELL-001",
+            "rack_side": "A",
+            "exchange_zone": "FULL_BOX_EXCHANGE_ZONE_A",
+            "full_box_object_keys": ["PKG-FULL-001", "PKG-FULL-002"],
+            "remaining_object_keys": ["PKG-FULL-001", "PKG-PIECE-001"],
+        }
+    )
+    no_exchange_preview = preview_service.preview_full_box_exchange(
+        {
+            "request_id": "mock-sorter-no-full-box-001",
+            "rack_code": "RACK-6CELL-002",
+            "rack_side": "B",
+            "exchange_zone": "FULL_BOX_EXCHANGE_ZONE_A",
+            "full_box_object_keys": [],
+            "remaining_object_keys": ["PKG-PIECE-002"],
+        }
+    )
 
     with TestClient(wms_mock_server.app) as client:
-        response = client.post(
-            "/api/wms/fulfillment/full-box-exchange",
-            json={
-                "request_id": "mock-sorter-full-box-001",
-                "rack_code": "RACK-6CELL-001",
-                "rack_side": "A",
-                "exchange_zone": "FULL_BOX_EXCHANGE_ZONE_A",
-                "full_box_object_keys": ["PKG-FULL-001", "PKG-FULL-002"],
-                "remaining_object_keys": ["PKG-PIECE-001"],
-            },
-        )
-        no_exchange_response = client.post(
-            "/api/wms/fulfillment/full-box-exchange",
-            json={
-                "request_id": "mock-sorter-no-full-box-001",
-                "rack_code": "RACK-6CELL-002",
-                "rack_side": "B",
-                "exchange_zone": "FULL_BOX_EXCHANGE_ZONE_A",
-                "full_box_object_keys": [],
-                "remaining_object_keys": ["PKG-PIECE-002"],
+        response = _typed_submit(
+            client,
+            path="/api/wms/fulfillment/full-box-exchange",
+            operation_identity="wms.fulfillment.full_box_exchange@v1",
+            idempotency_key="mock-sorter-full-box-001",
+            secret=secret,
+            payload={
+                "dispatch_key": "mock-sorter-full-box-001",
+                "rack_id": "RACK-6CELL-001",
+                "empty_box_id": "BOX-EMPTY-001",
+                "full_box_id": "BOX-FULL-001",
             },
         )
 
-    assert response.status_code == 200
+    assert preview["fulfillment_action"] == "FULL_BOX_EXCHANGE"
+    assert preview["batch_key"] == "RACK-6CELL-001:A"
+    assert preview["station_admission_blocked_until_exchange_completed"] is True
+    assert preview["box_level_inventory_transaction_required"] is True
+    assert preview["completion_policy"] == "CALLBACK_AND_RECONCILIATION_REQUIRED"
+    assert preview["sorting_candidate_object_keys"] == ["PKG-PIECE-001"]
+    assert not set(preview["full_box_object_keys"]) & set(preview["sorting_candidate_object_keys"])
+    assert no_exchange_preview["fulfillment_action"] == "SORTER_STATION_ADMISSION"
+    assert no_exchange_preview["station_admission_blocked_until_exchange_completed"] is False
+    assert no_exchange_preview["box_level_inventory_transaction_required"] is False
+    assert no_exchange_preview["sorting_candidate_object_keys"] == ["PKG-PIECE-002"]
+
+    assert response.status_code == 202
     data = response.json()["data"]
     assert data["environment"] == "LOCAL_MOCK_ONLY"
     assert data["production_write_path"] is False
-    assert data["fulfillment_action"] == "FULL_BOX_EXCHANGE"
-    assert data["batch_key"] == "RACK-6CELL-001:A"
-    assert data["station_admission_blocked_until_exchange_completed"] is True
-    assert data["box_level_inventory_transaction_required"] is True
-    assert data["sorting_candidate_object_keys"] == ["PKG-PIECE-001"]
-    assert not set(data["full_box_object_keys"]) & set(data["sorting_candidate_object_keys"])
-    assert no_exchange_response.status_code == 200
-    no_exchange_data = no_exchange_response.json()["data"]
-    assert no_exchange_data["fulfillment_action"] == "SORTER_STATION_ADMISSION"
-    assert no_exchange_data["station_admission_blocked_until_exchange_completed"] is False
-    assert no_exchange_data["sorting_candidate_object_keys"] == ["PKG-PIECE-002"]
+    assert data["rack_id"] == "RACK-6CELL-001"
+    assert data["northbound_status"]["state"] == "ACCEPTED"
 
 
 def test_sorter_inbound_mock_acceptance_keeps_change_rack_face_as_independent_fulfillment() -> None:

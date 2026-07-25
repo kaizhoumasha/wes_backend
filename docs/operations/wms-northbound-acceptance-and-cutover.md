@@ -1,25 +1,44 @@
 # WMS 北向联调验收与整体切换记录
 
 本文是单工厂、单 WMS Provider 的发布证据模板。WES 只验收双方可观察的 submit、status query 和可选
-callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使用仓库 mock/replay 验证 WES 合同实现；真实 WMS
-尚未上线，因此真实联调、数据清理和整体切换必须保持未完成状态。
+callback hint 交互，不记录或推断 WMS 内部工作流。当前 P0 验收源是仓库内实际 Mock；未来外部 WMS 的联调、
+数据清理和整体切换仍保留为后续模板，不阻塞当前开发 Mock 能力门禁。
 
 ## 当前结论
 
-- 开发 mock 验证：`PASS`
-- 真实 WMS 联调验收：`PENDING`
-- 观测映射与采集验证：`BLOCKED`
-- 联调测试数据清理：`BLOCKED`
-- 整体切换：`BLOCKED`
+- 实际开发 Mock 验证：`PASS/GO`（当前 P0 门禁已关闭）
+- 实际 Compose 验证：WMS image
+  `sha256:ef142f2a47bd604f67c22802b22cd39b805f6f677c43e3a5e2f6e9e0e497348e`，
+  ECS image `sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`，
+  容器入口/点时 digest/浮点覆盖 `5 passed`、验收镜像 live pytest `6 passed`、CLI 48 case 全部
+  `passed=true`；Live 容器无源码挂载，且日志不含完整关联键与预期 deadline 断连 traceback
+- 外部 WMS 联调验收模板：`PENDING`（后续，不阻塞当前 Mock 验收）
+- 外部 WMS 观测映射与采集模板：`BLOCKED`
+- 外部 WMS 联调测试数据清理模板：`BLOCKED`
+- 外部 WMS 整体切换模板：`BLOCKED`
 
-`PASS` 仅表示当前代码能通过确定性 mock/replay 合同测试。不得用 mock 结果替代真实 WMS 联调验收，也不得预填确认人、验收时间、WMS 构建版本。只有下述真实证据完整、双方确认且清理目标经过单独审查后，才能改变
-`PENDING/BLOCKED` 状态。
+`PASS/GO` 表示 `docker-compose.wms-acceptance.yml` 启动的已构建 `mock_wms_acceptance` 镜像已通过三类 typed EFFECT
+的真实 TCP 黑盒合同验收，当前开发
+Mock 能力可以进入后续 WES 开发。不得把该结论替代未来外部 WMS 的联调验收，也不得预填外部确认人、验收时间或构建版本。
+只有下述真实证据完整、双方确认且清理目标经过单独审查后，才能改变外部模板的 `PENDING/BLOCKED` 状态。
+
+实际 Mock 的 `PASS/GO` 已额外证明：`t0 / visibility_sla-1 / visibility_sla` 与
+`retention-1 / retention` 按 UTC aware 时钟和精确边界工作；保留边界前同键重放不产生第二份 effect，
+边界后旧记录过期且受控重提得到累计 effect=2。callback evidence 只公开 `operation_identity`、
+`idempotency_key`、`dispatch_key` 与 `WMS_EFFECT_STATUS_HINT`，不携带 `COMPLETED`、`REJECTED`、`result`
+或 `status` 等终态权威字段。最终状态仍必须由 `GET /northbound/operations/status` 获得。
+
+Mock Submit/Status 直接使用 WES sandbox material-flow v1/v2 凭据引用，active 为
+`secret://wms/material-flow-sandbox-hmac@v2`；没有 Mock 专用 credential。typed route
+`POST /api/wms/fulfillment/full-box-exchange` 不发送历史完成 callback，后者仅保留在独立 legacy route。
+legacy callback 固定为 `BUSINESS_COMPLETED`，即使不携带 `post_exchange_relations` 也保持既有生产消费语义；
+`PHYSICAL_COMPLETED` 缺少该关系事实时仍进入资源对账。
 
 ## WMS 团队必须提供的能力
 
 | 能力 | WMS 交付要求 | WES 验收方式 |
 | --- | --- | --- |
-| EFFECT submit | HTTP body 接收 operation-specific typed payload；从 `X-WES-Operation-Identity` 与 `Idempotency-Key` header 读取请求身份，以 `X-WES-Content-SHA256` 比较 fingerprint；不得要求 WES internal frozen binding 上 wire | 按合同矩阵验证 202、200、409、422、真实 deadline 超时、HMAC canonical input 及重复提交 |
+| EFFECT submit | HTTP body 接收 operation-specific typed payload；从 `X-WES-Operation-Identity` 与 `Idempotency-Key` header 读取请求身份；以 `X-WES-Content-SHA256` 校验实际 wire bytes，并在 typed schema 校验后重新生成 canonical JSON fingerprint；在幂等写入前严格拒绝 missing/extra/blank/type/非法 decimal；不得要求 WES internal frozen binding 上 wire | 按合同矩阵验证 202、200、409、422、并发恰好一个首次受理、真实 deadline 超时、HMAC canonical input 及重复提交 |
 | EFFECT status query | 按 `operation_identity + idempotency_key` 返回五态、单调 `source_version`、稳定拒绝码和 operation-specific typed result | 对三类 EFFECT 逐项回放可见状态、终态、`NOT_FOUND`、429、5xx、超时和响应体上限 |
 | QUERY | 实现 `wms.inventory.query_inventory@v1` 的预算、分页、数值精度、业务拒绝、429 和错误形状 | 执行 QUERY 合同题库并保存规范化结果 |
 | callback hint（可选） | 仅携带关联键，允许 WES 提前发起 status query；不提供终态权威 | 验证接收、拒绝、重复、触发查询以及 enqueue 失败后的 scanner 接管 |
@@ -86,10 +105,11 @@ parameter 传递，并通过该 raw-path 值共同被签名，但不是额外的
 | --- | --- | --- | --- | --- | --- | ---: | --- | --- |
 |  |  |  |  |  |  |  |  |  |
 
-最低 case 集合为：首次受理、处理中同键重放、已完成同键重放、同键异 fingerprint、提交真实 deadline
-超时、可见性 SLA 边界、单调状态序列、拒绝、`NOT_FOUND` 宽限期、受控同键重提、已见状态后丢失、
-保留期边界、响应体上限、429 + `Retry-After`、5xx 和状态查询超时。三类 EFFECT 的 `COMPLETED` 必须分别通过
-对应 typed result 校验。
+最低 case 集合为：首次受理、并发处理中同键重放、已完成同键重放、同键异 fingerprint、typed body
+required/allowed/type/值域拒绝、提交真实 deadline 超时、可见性 SLA 精确边界、单调状态序列、拒绝、
+`NOT_FOUND` 宽限期、受控同键重提、已见状态后丢失、保留期精确边界、流式响应体上限、429 +
+`Retry-After`、固定 5xx 和状态查询超时。故障注入必须精确作用于 method/path/operation，且并发一次性故障
+恰好由一个匹配请求消费。三类 EFFECT 的 `COMPLETED` 必须分别通过对应 typed result 校验。
 
 双方确认字段：
 

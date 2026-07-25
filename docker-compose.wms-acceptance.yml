@@ -1,0 +1,43 @@
+# ============================================
+# WMS Mock 最终镜像验收
+# ============================================
+# 该配置刻意不声明 build、源码挂载或 reload，确保真实 TCP/CLI 验收的是
+# 已构建镜像本身，而不是宿主机工作树中的 tests/mock。
+services:
+  mock_wms_acceptance:
+    image: ${MOCK_WMS_ACCEPTANCE_IMAGE:-wes-mock:wms}
+    restart: "no"
+    ports:
+      - "${DOCKER_HOST_BIND_IP:-127.0.0.1}:${MOCK_WMS_ACCEPTANCE_PORT:-18011}:8011"
+    working_dir: /app/tests/mock
+    command: >
+      python -m uvicorn
+      wms_mock_server:app
+      --host 0.0.0.0
+      --port 8011
+      --log-level info
+      --no-access-log
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WES_EXTERNAL_CALLBACK_URL: ${CONTAINER_WES_EXTERNAL_CALLBACK_URL:-http://api:8001/api/v1/callback/external}
+      API_APP_ID: ${API_APP_ID:-app_local_mock}
+      API_APP_SECRET: ${API_APP_SECRET:-local_mock_change_me}
+      WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: ${WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1:-}
+      WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2:-}
+      WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
+      WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS: ${WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS}
+      WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
+      WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS: ${WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS}
+      WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8011/"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+      start_period: 2s

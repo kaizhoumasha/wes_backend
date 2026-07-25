@@ -62,8 +62,10 @@ frozen binding 仅为 WES 内部持久化事实，绝不进入 HTTP body、heade
 reference、operation identity 和 binding revision，使重试/重启继续构造同一远端请求；WMS 无需理解或保存 WES
 binding revision。
 
-Fingerprint 是 typed body canonical bytes 的 SHA-256，即 `X-WES-Content-SHA256`。Canonical JSON 使用 UTF-8、
-object key 排序、无额外空白且拒绝 NaN/Infinity。WMS 必须按
+`X-WES-Content-SHA256` 是实际 HTTP body bytes 的传输完整性哈希，进入七项 HMAC 并在解析前校验。
+幂等 fingerprint 则是在 typed schema 校验后重新生成 canonical JSON bytes 再计算 SHA-256；不得直接以 `X-WES-Content-SHA256` 作为幂等 fingerprint。
+Canonical JSON 使用 UTF-8、object key 排序、无额外空白且
+拒绝 NaN/Infinity。WMS 必须按
 `X-WES-Operation-Identity + Idempotency-Key` 定位原请求，并用 fingerprint 比较 body，不得因原始 JSON
 字段顺序、空白、timestamp/nonce 更新或 transport retry 改变结论。
 
@@ -179,6 +181,10 @@ WES 的唯一一次受控恢复重提还必须同时满足：此前从未观察�
 - TLS 仅提供传输保护；HMAC-SHA256 是当前应用层认证。Submit 使用上述 `X-WES-*` 七项 canonical，Status query
   使用上述 `X-WMS-*` 五项 canonical。Bearer/OAuth 不是当前合同；如未来引入，必须作为新版本合同单独设计、评审
   和验收，不能替换或混入本版本 HMAC 语义。
+- 服务端验签成功后必须校验 timestamp 新鲜度并原子消费 credential reference + nonce。当前开发 Mock 使用前后
+  30 秒时钟窗口和 300 秒 nonce TTL；Submit 接受 WES sender 的 UTC aware ISO-8601，Status 接受 Unix 秒。
+  合法 transport retry 必须保留 operation identity、幂等键和 typed body，但为每次 HTTP attempt 生成新的
+  timestamp、nonce 与签名。
 - 密钥、完整认证 header、未脱敏 body 均不得写入探针、日志、证据或报告。
 - 客户端和服务端必须为提交、状态查询分别声明 deadline；联调以真实客户端 deadline（服务端 sleep/断连）验证提交超时，而非用 HTTP 504 代替。超时后同键同 payload 重提，仍按本合同幂等语义处理，不能猜测业务成功。
 - 429 必须带合法 `Retry-After`（delta-seconds 或 HTTP-date）；WES 以其为下一次状态查询的时间下限，不在限流窗口忙重试。

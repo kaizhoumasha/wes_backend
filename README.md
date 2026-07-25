@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.20.0.0
+**Version**: 0.20.1.0
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
@@ -67,6 +67,7 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 - [粗分机硬件供应商联调操作手册](docs/hardware/粗分机硬件供应商联调操作手册.md)：面向真实设备侧的事件、命令、状态和 Result 联调。
 - [粗分机内部 Mock 与 Sandbox 调试手册](docs/hardware/粗分机内部Mock与Sandbox调试手册.md)：面向 WES 内部的 Mock ECS、Mock WMS、Sandbox 和多物料并发观察。
 - [WorkLine runtime hold quickstart](docs/workline_runtime_hold_quickstart.md)：说明 RuntimeHold 与人工恢复的基础操作。
+- [WMS Mock 北向能力需求](docs/contracts/wms-mock-northbound-capability-requirements.md)：定义实际开发 Mock 的 P0 能力、验收真源和完成标准。
 - [WMS 北向最小交互合同](docs/contracts/wms-northbound-interaction-contract.md)：定义三个 EFFECT operation 的 typed payload、幂等提交、状态查询、签名、保留期和联调验收矩阵。
 - [北向交互收敛 ADR](docs/architecture/adr/2026-07-24-northbound-interaction-simplification.md)：说明单部署 Provider、callback 查询提示、状态查询终态权威以及 query shadow/readiness 删除决策。
 - [WMS 北向开发 mock 可行性报告](docs/operations/wms-northbound-feasibility-report.md)：记录开发 mock 合同门禁、黑盒探针范围和真实 WMS 联调限制。

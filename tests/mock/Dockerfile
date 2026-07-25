@@ -36,8 +36,10 @@ RUN pip install --no-cache-dir \
 # 复制 mock 服务代码
 WORKDIR /app
 COPY tests/mock/ /app/tests/mock/
-COPY src/workline_runtime/sandbox_catalog.py /app/src/workline_runtime/sandbox_catalog.py
-COPY src/workline_runtime/runtime_events.py /app/src/workline_runtime/runtime_events.py
+# Mock 仅复用沙箱目录的纯数据桥接模块，不引入完整 WES 运行时依赖。
+COPY src/app/runtime/orchestration/sandbox_catalog_bridge.py /app/src/app/runtime/orchestration/sandbox_catalog_bridge.py
+# ECS Mock 仅复用 callback 域无外部依赖的事件分类常量与判定函数。
+COPY src/app/callback/contracts/runtime_events.py /app/src/app/callback/contracts/runtime_events.py
 
 # 创建非 root 用户
 RUN useradd -m -u 1000 mockuser && \

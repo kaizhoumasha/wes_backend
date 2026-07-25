@@ -3,26 +3,195 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
+import subprocess
+import sys
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
-from email.utils import format_datetime
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
+from urllib.parse import urlencode
 
 import httpx
 import pytest
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.testclient import TestClient
 
-from scripts.verify_wms_northbound_feasibility import run_probe
-from src.app.sys.canonical_dispatch import canonical_json_bytes
+from scripts import verify_wms_northbound_feasibility as probe_module
+from scripts.verify_wms_northbound_feasibility import _contract_values, _status_headers, _submit_headers, run_probe
+from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
+    CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
+    CONTRACT as PACKAGE_BINDING_CONTRACT,
+)
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
+    CONTRACT as CONFIRM_INBOUND_CONTRACT,
+)
+from src.core.conf import settings
+from tests.mock import wms_mock_server
+from tests.mock.wms_northbound_contract import (
+    ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+    MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1,
+    MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-OPERATION_IDENTITY = "wms.fulfillment.notify_pkg_binding@v1"
-SOURCE_VERSIONS = (10, 20, 30)
+OPERATION_IDENTITIES = {
+    "wms.inventory.confirm_inbound@v1",
+    "wms.fulfillment.full_box_exchange@v1",
+    "wms.fulfillment.notify_pkg_binding@v1",
+}
+
+
+def test_contract_values_reject_retention_shorter_than_wes_confirmation_window() -> None:
+    contract = {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": 5,
+        "status_visibility_sla_seconds": 2,
+        "max_response_bytes": 4096,
+        "submit_deadline_seconds": 2,
+        "status_deadline_seconds": 2,
+    }
+
+    assert _contract_values(contract) is None
+
+
+def test_contract_values_reject_visibility_slower_than_wes_not_found_grace() -> None:
+    contract = {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": 9,
+        "status_visibility_sla_seconds": 4,
+        "max_response_bytes": 4096,
+        "submit_deadline_seconds": 2,
+        "status_deadline_seconds": 2,
+    }
+
+    assert _contract_values(contract) is None
+
+
+def test_contract_values_accept_finite_fractional_time_contract() -> None:
+    contract = {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": 9,
+        "status_visibility_sla_seconds": 2.5,
+        "max_response_bytes": 4096,
+        "submit_deadline_seconds": 30.5,
+        "status_deadline_seconds": 2.5,
+    }
+
+    assert _contract_values(contract) == contract
+
+
+@pytest.mark.parametrize("invalid_value", [float("inf"), float("-inf"), float("nan")])
+def test_contract_values_reject_non_finite_time_contract(invalid_value: float) -> None:
+    contract = {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": 9,
+        "status_visibility_sla_seconds": 2,
+        "max_response_bytes": 4096,
+        "submit_deadline_seconds": invalid_value,
+        "status_deadline_seconds": 2,
+    }
+
+    assert _contract_values(contract) is None
+
+
+def test_mock_contract_deadlines_match_wes_transport_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    submit_deadlines = {
+        contract.budget.timeout_seconds
+        for contract in (CONFIRM_INBOUND_CONTRACT, FULL_BOX_EXCHANGE_CONTRACT, PACKAGE_BINDING_CONTRACT)
+    }
+    assert len(submit_deadlines) == 1
+    expected_submit_deadline = float(submit_deadlines.pop())
+    monkeypatch.setenv("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", str(expected_submit_deadline))
+    monkeypatch.setenv("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", str(settings.WMS_EFFECT_STATUS_TIMEOUT_SECONDS))
+
+    with TestClient(wms_mock_server.app) as client:
+        contract = client.get("/northbound/contract")
+
+    assert contract.status_code == 200
+    assert contract.json()["submit_deadline_seconds"] == expected_submit_deadline
+    assert contract.json()["status_deadline_seconds"] == settings.WMS_EFFECT_STATUS_TIMEOUT_SECONDS
+
+
+def test_mock_contract_accepts_fractional_time_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2.5")
+    monkeypatch.setenv("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", "30.5")
+    monkeypatch.setenv("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", "2.5")
+
+    with TestClient(wms_mock_server.app) as client:
+        contract = client.get("/northbound/contract")
+
+    assert contract.status_code == 200
+    assert contract.json()["status_visibility_sla_seconds"] == 2.5
+    assert contract.json()["submit_deadline_seconds"] == 30.5
+    assert contract.json()["status_deadline_seconds"] == 2.5
+
+
+@pytest.mark.asyncio
+async def test_probe_reports_public_deadline_alignment(northbound_mock_client: httpx.AsyncClient) -> None:
+    report = await run_probe(northbound_mock_client, request_timeout_seconds=1.0)
+
+    case = next((case for case in report.cases if case.case_id == "public_contract_deadline_alignment"), None)
+    assert case is not None
+    assert case.passed is True
+
+
+def test_feasibility_probe_script_is_directly_executable() -> None:
+    script = Path(__file__).resolve().parents[3] / "scripts/verify_wms_northbound_feasibility.py"
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        check=False,
+        capture_output=True,
+        cwd=script.parent,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--base-url" in completed.stdout
+
+
+@pytest.mark.asyncio
+async def test_feasibility_probe_cli_ignores_host_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Client:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        probe_module,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            base_url="http://127.0.0.1:8011",
+            operation_identity=None,
+            timeout_seconds=0.25,
+            submit_timeout_seconds=0.25,
+            status_timeout_seconds=0.25,
+        ),
+    )
+    monkeypatch.setattr(probe_module.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(
+        probe_module,
+        "run_probe",
+        AsyncMock(return_value=probe_module.FeasibilityReport(cases=())),
+    )
+
+    assert await probe_module._main() == 0
+    assert captured["trust_env"] is False
 
 
 def _snapshot(
@@ -45,229 +214,105 @@ def _snapshot(
 
 
 @pytest.fixture
-async def northbound_stub_client() -> AsyncIterator[httpx.AsyncClient]:
-    """最小 WMS 联调 stub；探针仅通过公开 HTTP 面观察状态和业务效果计数。"""
+async def northbound_mock_client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.AsyncClient]:
+    """验收探针连接实际 Mock app，仅通过其公开 HTTP 路由复位和观察。"""
 
-    app = FastAPI()
-    records: dict[tuple[str, str], dict[str, Any]] = {}
-    effects: dict[tuple[str, str], int] = {}
-    clock = {"seconds": 0}
-    contract_values = {
-        "retention_seconds": 9,
-        "wes_max_confirmation_age_seconds": 6,
-        "safety_margin_seconds": 3,
-        "visibility_sla_seconds": 2,
-        "not_found_grace_period_seconds": 3,
-        "max_response_bytes": 4096,
-    }
-
-    def record_key(operation_identity: str, idempotency_key: str) -> tuple[str, str]:
-        return operation_identity, idempotency_key
-
-    def visible_snapshot(state: str, state_index: int, *, reason_code: str | None = None) -> dict[str, Any]:
-        source_version = SOURCE_VERSIONS[state_index]
-        result_payload = None
-        if state == "COMPLETED":
-            result_payload = {
-                "accepted": True,
-                "bound_at": "2026-07-24T08:00:00+00:00",
-                "dispatch_key": "dispatch-001",
-                "package_id": "package-001",
-                "pallet_id": "pallet-001",
-                "reason_code": None,
-                "source_version": str(source_version),
-            }
-        return _snapshot(state, source_version=source_version, reason_code=reason_code, result_payload=result_payload)
-
-    @app.get("/northbound/contract")
-    async def contract() -> dict[str, int]:
-        return contract_values
-
-    @app.post("/northbound/test-clock/advance")
-    async def advance_clock(payload: dict[str, int]) -> dict[str, int]:
-        clock["seconds"] += payload["seconds"]
-        return {"now": clock["seconds"]}
-
-    @app.get("/northbound/operations/effects")
-    async def effect_count(operation_identity: str = Query(), idempotency_key: str = Query()) -> dict[str, int]:
-        return {"effect_count": effects.get(record_key(operation_identity, idempotency_key), 0)}
-
-    @app.get("/northbound/test/oversized-response")
-    async def oversized_response() -> StreamingResponse:
-        async def body():
-            for _ in range(4096):
-                yield b"x" * 1024
-
-        return StreamingResponse(body(), media_type="application/json")
-
-    @app.post("/northbound/operations")
-    async def submit(
-        request: Request,
-        idempotency_key: str = Header(alias="Idempotency-Key"),
-        operation_identity: str = Header(alias="X-WES-Operation-Identity"),
-        content_sha256: str = Header(alias="X-WES-Content-SHA256"),
-        x_probe_scenario: str = Header(alias="X-Probe-Scenario"),
-        x_first_attempt_dropped: str | None = Header(default=None),
-    ) -> JSONResponse:
-        raw_body = await request.body()
-        actual_hash = hashlib.sha256(raw_body).hexdigest()
-        if content_sha256 != actual_hash:
-            raise HTTPException(status_code=422, detail={"error_code": "CONTENT_HASH_MISMATCH"})
-        try:
-            payload = json.loads(raw_body)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=422, detail={"error_code": "INVALID_JSON"}) from exc
-        if not isinstance(payload, dict) or canonical_json_bytes(payload) != raw_body:
-            raise HTTPException(status_code=422, detail={"error_code": "NON_CANONICAL_BODY"})
-        assert set(payload) == {
-            "dispatch_key",
-            "package_id",
-            "pallet_id",
-            "station_code",
-        }
-        assert not {"operation_identity", "idempotency_key", "canonical_payload", "frozen_binding"} & set(payload)
-        key = record_key(operation_identity, idempotency_key)
-        if x_first_attempt_dropped == "true":
-            await asyncio.sleep(0.05)
-
-        record = records.get(key)
-        if record is not None and clock["seconds"] - record["created_at"] >= contract_values["retention_seconds"]:
-            records.pop(key)
-            record = None
-        if record is not None:
-            if record["payload_hash"] != content_sha256:
-                raise HTTPException(status_code=422, detail={"error_code": "IDEMPOTENCY_CONFLICT"})
-            if record["scenario"] == "rejected":
-                return JSONResponse(
-                    status_code=200, content=visible_snapshot("REJECTED", 0, reason_code="WMS_BUSINESS_REJECTED")
-                )
-            if record["status_reads"] >= 3:
-                return JSONResponse(status_code=200, content=visible_snapshot("COMPLETED", 2))
-            raise HTTPException(status_code=409, detail={"error_code": "IDEMPOTENCY_REQUEST_IN_PROGRESS"})
-
-        records[key] = {
-            "payload_hash": content_sha256,
-            "scenario": x_probe_scenario,
-            "status_reads": 0,
-            "created_at": clock["seconds"],
-        }
-        effects[key] = effects.get(key, 0) + 1
-        return JSONResponse(status_code=202, content=visible_snapshot("ACCEPTED", 0))
-
-    @app.get("/northbound/operations/status")
-    async def status(
-        operation_identity: str = Query(),
-        idempotency_key: str = Query(),
-        x_probe_fault: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        if x_probe_fault == "rate_limit_delta":
-            raise HTTPException(status_code=429, detail={"error_code": "RATE_LIMITED"}, headers={"Retry-After": "2"})
-        if x_probe_fault == "rate_limit_date":
-            retry_at = datetime.now(UTC) + timedelta(seconds=2)
-            raise HTTPException(
-                status_code=429,
-                detail={"error_code": "RATE_LIMITED"},
-                headers={"Retry-After": format_datetime(retry_at, usegmt=True)},
-            )
-        if x_probe_fault == "unavailable":
-            raise HTTPException(status_code=503, detail={"error_code": "TEMPORARILY_UNAVAILABLE"})
-        if x_probe_fault == "timeout":
-            await asyncio.sleep(0.05)
-
-        record = records.get(record_key(operation_identity, idempotency_key))
-        if record is None:
-            return _snapshot("NOT_FOUND", source_version=None)
-        if record["scenario"] == "rejected":
-            return visible_snapshot("REJECTED", 0, reason_code="WMS_BUSINESS_REJECTED")
-        if record["scenario"] == "recoverable_not_found":
-            return _snapshot("NOT_FOUND", source_version=None)
-        if (
-            record["scenario"] == "not_visible"
-            and clock["seconds"] - record["created_at"] < contract_values["visibility_sla_seconds"]
-        ):
-            return _snapshot("NOT_FOUND", source_version=None)
-        if record["scenario"] == "visible_then_missing" and record["status_reads"] > 0:
-            return _snapshot("NOT_FOUND", source_version=None)
-
-        record["status_reads"] += 1
-        if record["status_reads"] == 1:
-            return visible_snapshot("ACCEPTED", 0)
-        if record["status_reads"] == 2:
-            return visible_snapshot("PROCESSING", 1)
-        return visible_snapshot("COMPLETED", 2)
-
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1, "probe-material-flow-v1")
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, "probe-material-flow-v2")
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+        transport=httpx.ASGITransport(app=wms_mock_server.app),
         base_url="http://mock-wms.test",
-        timeout=httpx.Timeout(0.01),
+        timeout=httpx.Timeout(0.05),
     ) as client:
+        reset = await client.post("/debug/reset")
+        assert reset.status_code == 200
         yield client
 
 
 @pytest.mark.asyncio
 async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
-    northbound_stub_client: httpx.AsyncClient,
+    northbound_mock_client: httpx.AsyncClient,
 ) -> None:
     report = await run_probe(
-        northbound_stub_client,
-        operation_identity=OPERATION_IDENTITY,
-        request_timeout_seconds=0.01,
+        northbound_mock_client,
+        request_timeout_seconds=1.0,
     )
 
-    assert report.passed is True, report.cases
-    assert {case.case_id for case in report.cases} == {
-        "first_submit",
-        "in_progress_replay",
-        "completed_replay",
-        "idempotency_conflict",
-        "source_version_and_typed_result",
-        "rejected_reason_code",
-        "not_found_empty_version",
-        "first_submit_not_arrived_retry_creates",
-        "controlled_recovery_replay_preserves_wire_identity",
-        "visible_then_not_found_requires_reconciliation",
-        "accepted_not_visible_replay_has_one_effect",
-        "retention_and_visibility_boundaries",
-        "retention_boundary_observed",
-        "rate_limit_retry_after",
-        "wms_5xx_shape",
-        "status_query_timeout",
-        "maximum_response_body",
-        "content_hash_tamper_rejected",
-    }
+    failed_cases = tuple(case for case in report.cases if not case.passed)
+    assert report.passed is True, failed_cases
+    case_ids = {case.case_id for case in report.cases}
+    assert {"public_contract_parameters", "active_v2_hmac_secret_available"} <= case_ids
+    for operation_identity in OPERATION_IDENTITIES:
+        assert {
+            f"{operation_identity}:first_submit",
+            f"{operation_identity}:in_progress_replay",
+            f"{operation_identity}:five_state_progression_and_typed_result",
+            f"{operation_identity}:completed_replay",
+            f"{operation_identity}:idempotency_conflict",
+            f"{operation_identity}:rejected_stable_reason",
+            f"{operation_identity}:not_found",
+            f"{operation_identity}:visibility_sla_and_retention_boundaries",
+            f"{operation_identity}:visible_then_lost_is_independent_fault",
+            f"{operation_identity}:typed_request_validation",
+            f"{operation_identity}:callback_hint_evidence_and_status_authority",
+            f"{operation_identity}:submit_hmac_signature_tamper",
+        } <= case_ids
+    assert {
+        "fault_matrix_rate_limit_and_fixed_5xx",
+        "northbound_fault_scope_excludes_health_inventory_and_legacy",
+        "submit_deadline_ambiguous_retry_one_effect",
+        "status_deadline",
+        "response_body_budget_exceeded_without_remote_echo",
+        "status_nonce_replay_rejected_without_remote_echo",
+        "status_hmac_tamper_rejected_without_remote_echo",
+        "submit_stale_timestamp_rejected_without_remote_echo",
+        "public_reset_clears_observable_operation",
+    } <= case_ids
     assert all(case.passed for case in report.cases)
     assert all("secret" not in case.detail.lower() for case in report.cases)
 
 
 @pytest.mark.asyncio
 async def test_mock_rejects_raw_body_hash_tampering(
-    northbound_stub_client: httpx.AsyncClient,
+    northbound_mock_client: httpx.AsyncClient,
 ) -> None:
     raw_body = b'{"dispatch_key":"dispatch-001","package_id":"package-001","pallet_id":"pallet-001","station_code":"station-a"}'
+    path = "/api/wms/fulfillment/package-binding"
+    headers = _submit_headers(
+        secret=b"probe-material-flow-v2",
+        credential_reference=ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        path=path,
+        body=raw_body,
+        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+        key="tampered-content-hash",
+    )
+    headers["X-WES-Content-SHA256"] = "0" * 64
 
-    response = await northbound_stub_client.post(
-        "/northbound/operations",
+    response = await northbound_mock_client.post(
+        path,
         content=raw_body,
-        headers={
-            "Content-Type": "application/json",
-            "Idempotency-Key": "tampered-content-hash",
-            "X-Probe-Scenario": "success",
-            "X-WES-Content-SHA256": "0" * 64,
-            "X-WES-Operation-Identity": OPERATION_IDENTITY,
-        },
+        headers=headers,
     )
 
-    assert response.status_code == 422
-    assert response.json() == {"detail": {"error_code": "CONTENT_HASH_MISMATCH"}}
+    assert response.status_code == 401
+    assert response.json() == {"code": "CONTENT_HASH_MISMATCH"}
 
 
 @pytest.mark.asyncio
 async def test_feasibility_probe_reports_protocol_failure_without_response_body(
-    northbound_stub_client: httpx.AsyncClient,
+    northbound_mock_client: httpx.AsyncClient,
 ) -> None:
-    response = await northbound_stub_client.get(
-        "/northbound/operations/status",
-        params={"operation_identity": OPERATION_IDENTITY, "idempotency_key": "missing"},
+    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    raw_path = "/northbound/operations/status?" + urlencode(
+        (("operation_identity", operation_identity), ("idempotency_key", "missing"))
+    )
+    response = await northbound_mock_client.get(
+        raw_path,
+        headers=_status_headers(
+            secret=b"probe-material-flow-v2",
+            credential_reference=ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+            raw_path=raw_path,
+        ),
     )
 
     assert response.status_code == 200
@@ -290,7 +335,9 @@ async def test_malicious_remote_body_never_reaches_probe_output(capsys: pytest.C
         transport=httpx.ASGITransport(app=app),
         base_url="http://malicious-wms.test",
     ) as client:
-        report = await run_probe(client, operation_identity=OPERATION_IDENTITY, request_timeout_seconds=0.01)
+        report = await run_probe(
+            client, operation_identity="wms.fulfillment.notify_pkg_binding@v1", request_timeout_seconds=0.01
+        )
 
     captured = capsys.readouterr()
     serialized = json.dumps([asdict(case) for case in report.cases])
@@ -313,12 +360,12 @@ async def test_malicious_200_contract_values_fail_without_traceback_or_remote_ec
     @app.get("/northbound/contract")
     async def invalid_contract() -> dict[str, object]:
         return {
-            "retention_seconds": remote_secret,
-            "wes_max_confirmation_age_seconds": True,
-            "safety_margin_seconds": None,
-            "visibility_sla_seconds": "2",
-            "not_found_grace_period_seconds": 3,
-            "max_response_bytes": False,
+            "credential_reference": remote_secret,
+            "idempotency_retention_seconds": True,
+            "status_visibility_sla_seconds": None,
+            "max_response_bytes": "4096",
+            "submit_deadline_seconds": 2,
+            "status_deadline_seconds": False,
         }
 
     @app.api_route("/{path:path}", methods=["GET", "POST"])
@@ -329,7 +376,9 @@ async def test_malicious_200_contract_values_fail_without_traceback_or_remote_ec
         transport=httpx.ASGITransport(app=app),
         base_url="http://invalid-contract-wms.test",
     ) as client:
-        report = await run_probe(client, operation_identity=OPERATION_IDENTITY, request_timeout_seconds=0.01)
+        report = await run_probe(
+            client, operation_identity="wms.fulfillment.notify_pkg_binding@v1", request_timeout_seconds=0.01
+        )
 
     captured = capsys.readouterr()
     serialized = json.dumps([asdict(case) for case in report.cases])
@@ -339,20 +388,23 @@ async def test_malicious_200_contract_values_fail_without_traceback_or_remote_ec
 
 
 @pytest.mark.asyncio
-async def test_total_deadline_includes_slow_streamed_response_body(capsys: pytest.CaptureFixture[str]) -> None:
+async def test_total_deadline_includes_slow_streamed_response_body(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """即使 headers 已返回，慢速分块 body 也必须消耗同一个客户端总 deadline。"""
 
     app = FastAPI()
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, "probe-material-flow-v2")
 
     @app.get("/northbound/contract")
-    async def contract() -> dict[str, int]:
+    async def contract() -> dict[str, object]:
         return {
-            "retention_seconds": 9,
-            "wes_max_confirmation_age_seconds": 6,
-            "safety_margin_seconds": 3,
-            "visibility_sla_seconds": 2,
-            "not_found_grace_period_seconds": 3,
+            "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+            "idempotency_retention_seconds": 9,
+            "status_visibility_sla_seconds": 2,
             "max_response_bytes": 4096,
+            "submit_deadline_seconds": 2,
+            "status_deadline_seconds": 2,
         }
 
     @app.api_route("/{path:path}", methods=["GET", "POST"])
@@ -367,10 +419,14 @@ async def test_total_deadline_includes_slow_streamed_response_body(capsys: pytes
         transport=httpx.ASGITransport(app=app),
         base_url="http://slow-body-wms.test",
     ) as client:
-        report = await run_probe(client, operation_identity=OPERATION_IDENTITY, request_timeout_seconds=0.01)
+        report = await run_probe(
+            client, operation_identity="wms.fulfillment.notify_pkg_binding@v1", request_timeout_seconds=0.01
+        )
 
     captured = capsys.readouterr()
-    first_submit = next(case for case in report.cases if case.case_id == "first_submit")
+    first_submit = next(
+        case for case in report.cases if case.case_id == "wms.fulfillment.notify_pkg_binding@v1:first_submit"
+    )
     assert first_submit.passed is False
     assert captured.out == ""
     assert captured.err == ""

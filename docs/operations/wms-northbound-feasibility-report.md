@@ -1,12 +1,14 @@
-# WMS 北向可行性报告（开发 mock 合同门禁）
+# WMS 北向可行性报告（实际开发 Mock 合同门禁）
 
-- 结论：**GO（仅开发阶段 mock 合同门禁）**
-- 确认时间：2026-07-24
+- 结论：**GO（实际开发 Mock，P0 可行性门禁已关闭）**
+- 确认时间：2026-07-25
 - WES owner：WES Runtime Team
 - 开发 WMS stub owner：WES Mock WMS Team
-- stub/build version：`task1-dev-mock-v1`
-- WES 确认状态：已确认开发 mock 合同门禁
-- 开发 Mock WMS 确认状态：已确认公开 HTTP stub 行为
+- Mock/build version：WMS Docker image
+  `sha256:ef142f2a47bd604f67c22802b22cd39b805f6f677c43e3a5e2f6e9e0e497348e`；
+  ECS Docker image `sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`
+- WES 确认状态：实际 Compose Mock TCP 黑盒探针 `PASS`
+- 开发 Mock WMS 确认状态：三个 typed EFFECT 公开 HTTP 路由 `PASS`
 - 依据：[WMS 北向最小交互合同](../contracts/wms-northbound-interaction-contract.md)
 
 ## 范围与限制
@@ -19,47 +21,86 @@
 
 | 参数 | 值 | 门槛 |
 | --- | ---: | --- |
-| WES max confirmation age | 6 秒 | 开发 stub 可控时钟参数 |
-| safety margin | 3 秒 | 开发 stub 可控时钟参数 |
-| WMS retention | 9 秒 | 不小于前两项之和 |
-| WMS visibility SLA | 2 秒 | 不大于 NOT_FOUND grace period |
-| WES NOT_FOUND grace period | 3 秒 | 部署参数 |
-| 最大响应体 | 4096 bytes | 以超限 wire body 负测验证 |
+| WMS 幂等记录保留期 | 9 秒 | `/northbound/contract.idempotency_retention_seconds` |
+| WMS 状态可见性 SLA | 2 秒 | `/northbound/contract.status_visibility_sla_seconds` |
+| Submit deadline | 30 秒 | `/northbound/contract.submit_deadline_seconds`，与三个 typed EFFECT author-time budget 一致 |
+| Status deadline | 2 秒 | `/northbound/contract.status_deadline_seconds` |
+| 最大响应体 | 4096 bytes | `/northbound/contract.max_response_bytes` 与有界读取负测 |
 
-开发 stub 不持有凭据，也未验证完整 HMAC 签名；它只验证 canonical raw body 与
-`X-WES-Content-SHA256` 一致，并拒绝 hash 篡改。真实 WMS 必须按合同提供 TLS 传输保护及 HMAC-SHA256 应用层认证，
-且探针不记录 credential、secret 或完整签名。
+visibility SLA 与 submit/status deadline 接受 Settings 合同允许的有限正小数秒覆盖；retention 与最大响应体
+仍保持正整数。
+
+实际 Mock 直接复用 WES sandbox material-flow 的真实版本化 credential reference：
+`secret://wms/material-flow-sandbox-hmac@v1` 与
+`secret://wms/material-flow-sandbox-hmac@v2`，active version 为 v2。secret 仅从
+`WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1/V2` 读取，不存在 Mock 专用 credential。Mock 分别校验
+Submit 的 `X-WES-*` 七项与 Status query 的 `X-WMS-*` 五项 HMAC canonical input；验签后按真实时钟执行
+前后 30 秒的新鲜度检查，并以 credential reference + nonce 做 300 秒原子去重。Mock 拒绝过期/未来
+timestamp、重复 nonce、错误 content hash 或签名篡改；探针不记录 credential、secret、完整签名或业务 body。
 
 ## 开发 mock 公开面与 operation 清单
 
 | 项目 | 值 |
 | --- | --- |
-| submit endpoint | `POST /northbound/operations` |
+| confirm inbound submit | `POST /api/wms/inventory/confirm-inbound` |
+| full box exchange submit | `POST /api/wms/fulfillment/full-box-exchange` |
+| legacy full box exchange | `POST /api/wms/legacy/full-box-exchange`，仅该路由发送 `BUSINESS_COMPLETED` 历史完成 callback |
+| package binding submit | `POST /api/wms/fulfillment/package-binding` |
 | status endpoint | `GET /northbound/operations/status` |
-| 公开效果观察面 | `GET /northbound/operations/effects`，仅返回 effect count |
-| 可控时钟（开发 stub） | `POST /northbound/test-clock/advance` |
-| operation | `wms.fulfillment.notify_pkg_binding@v1` |
+| 公开效果观察面 | `GET /debug/northbound/effects`，仅返回 effect count |
+| Mock-only 控制面 | `POST /debug/northbound/faults`、`/debug/northbound/visibility`、`/debug/northbound/reject`、`/debug/northbound/clock`、`/debug/reset` |
+| Mock-only callback evidence | `GET /debug/northbound/callback-hints`，仅含关联键与 callback type 的脱敏投影 |
+| operation | `wms.inventory.confirm_inbound@v1`、`wms.fulfillment.full_box_exchange@v1`、`wms.fulfillment.notify_pkg_binding@v1` |
 
-`/northbound/test-*` 只供开发 mock 探针使用，绝不属于真实 WMS 生产接口。
+`/debug/northbound/*` 与 `/debug/reset` 只供开发 Mock 探针使用，绝不属于未来外部 WMS 接口。
 
 Submit wire 与当前 sender 一致：HTTP body 直接是 typed operation payload；
 `X-WES-Operation-Identity` 和 `Idempotency-Key` 是 header。Mock 不接收 `canonical_payload` 外层包络或
 `frozen_binding`；frozen binding 只在 WES 内部保证重试使用原 endpoint/credential revision。本开发 mock 对
-canonical raw body bytes 计算并校验 `X-WES-Content-SHA256`，幂等 fingerprint 也以该 hash 比较，不按解析后的
-dict 相等性判断。本开发 mock 的完整 HMAC 仍未验证；真实联调必须分别验证 Submit 七项与 Status query 五项换行
-canonical input，不能用本报告自证认证兼容。
+raw body bytes 计算并校验 `X-WES-Content-SHA256`；验签后显式解析 JSON object，并对校验后的 typed payload
+重新生成排序、无空白、拒绝非有限数的 canonical bytes 作为幂等 fingerprint，因此字段顺序与空白不改变重放结论。
+实际 Mock 已验证 Submit 七项与 Status query 五项换行 canonical input；未来外部 WMS 仍须
+分别保留同等签名证据，不能用本报告替代其认证兼容验收。
 
 ## 黑盒探针证据
 
-运行：`uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`。
-探针不导入 WES 生产 adapter、不读取 mock 内部状态，只通过 submit/status HTTP 响应断言。所有强制 case 通过：
+2026-07-25 先运行快速合同测试，再显式构建并启动实际 Docker Compose 服务：
+
+- `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`；
+- `docker compose --profile dev build mock_ecs mock_wms`；
+- `uv run pytest tests/integration/test_mock_container_entrypoints.py -q`，结果 `5 passed`，覆盖 ECS/WMS
+  双入口、合法浮点合同覆盖，并校验报告保留格式正确的点时镜像 digest；
+- `docker compose -f docker-compose.wms-acceptance.yml up -d --force-recreate mock_wms_acceptance`，该验收配置
+  使用独立 service identity 和默认宿主端口 `18011`，不含 `build`、源码 bind mount 或 `--reload`；
+- `WMS_NORTHBOUND_LIVE_BASE_URL=http://127.0.0.1:18011 WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS=0.25
+  uv run pytest tests/integration/test_wms_mock_northbound_live.py -q`，结果 `6 passed`，并验证容器 `.Image`
+  等于本轮 `MOCK_WMS_ACCEPTANCE_IMAGE`（默认 `wes-mock:wms`）在本机解析出的 image ID、
+  `/app/tests/mock` 无宿主机挂载，且容器日志不含完整
+  `idempotency_key`、`ClientDisconnect` 或 `Exception in ASGI application`；
+- `uv run python scripts/verify_wms_northbound_feasibility.py
+  --base-url http://127.0.0.1:18011 --timeout-seconds 0.25
+  --submit-timeout-seconds 0.25 --status-timeout-seconds 0.25`，结果 48 个 case 全部 `passed=true`。
+
+快速测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项针对已构建镜像的真实 TCP 黑盒证据。
+开发用 `docker-compose.yml` 仍保留热更新挂载，但不参与最终镜像验收。探针不读取 Mock 内部状态，
+只经 submit/status/debug 的公开 HTTP 路由断言。并发证据由具名 live case
+`test_compose_mock_wms_concurrent_identical_replay_over_tcp` 与
+`test_compose_mock_wms_concurrent_fault_claim_over_tcp` 直接通过 Docker published socket 采集，不再借用
+ASGI 公共路由测试代替。所有强制 case 通过：
+
+报告顶部的 digest 是本次验收构建的点时证据，不作为后续机器重新构建后的固定预期值；运行时镜像一致性必须
+在同一轮验收内比较所选 image tag 与容器实际 `.Image`。
 
 | case | 结果 |
 | --- | --- |
-| 首次提交、处理中重放、已完成重放、同 key 冲突 | PASS |
-| canonical raw body hash、`X-WES-Content-SHA256` 与篡改拒绝 | PASS |
-| ACCEPTED → PROCESSING → COMPLETED（任意非负递增版本）、typed result、REJECTED 稳定查询、NOT_FOUND | PASS |
-| 首次未到达后重提、受控恢复、已受理暂不可见唯一效果、已见状态后对账 | PASS |
-| 可控时钟下 `retention_seconds - 1` 的最小保留期/可见性边界、流式最大响应体、429 两种 Retry-After、5xx、真实客户端提交/查询超时 | PASS |
+| 三个 operation 的首次提交、并发同键重放、已完成重放、同 key 冲突与单一 effect | PASS |
+| 三个 operation 的 required/extra/blank/type/finite-positive typed body 负测，失败无记录 | PASS |
+| 非对象、畸形 JSON、错误 Content-Type 固定返回 `INVALID_TYPED_REQUEST`；同 payload 不同字段顺序/空白安全重放 | PASS |
+| 三个 operation 的 ACCEPTED → PROCESSING → COMPLETED、单调版本、非空 typed result 关联字段、REJECTED、NOT_FOUND | PASS |
+| `t0 / visibility_sla-1 / visibility_sla` 可见性边界、`retention-1 / retention` 过期边界与边界后 effect=2 | PASS |
+| Submit content hash、真实 WES sender/signature、过期 timestamp、重复 nonce、Status signature 篡改拒绝 | PASS |
+| 精确 path/method/operation fault scope；并发匹配请求恰好一个 claim，health/inventory/legacy 不消费 | PASS |
+| 公开 submit/status deadline 与 WES 真源对齐；429 + Retry-After、固定 5xx、真实独立超时、惰性流式超限 body、可见后丢失、公开 reset | PASS |
+| callback hint 首次受理仅记录一次脱敏投影；投影无终态字段，COMPLETED 只由 status 查询获得 | PASS |
 
 探针输出只含本地 case 枚举和布尔结果；恶意远端 body 的负测已验证 stdout、stderr 和报告均不含 secret/PII/body。
