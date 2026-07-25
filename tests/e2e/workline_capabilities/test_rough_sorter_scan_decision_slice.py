@@ -257,6 +257,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     InventoryAuthorityItem(
                         material_code=request.material_code,
                         warehouse_code=request.warehouse_code or "WH-IT",
+                        owner_code=request.owner_code,
                         storage_location_code="A-01",
                         available_quantity=10,
                         lot_no="LOT-IT-001",
@@ -724,8 +725,8 @@ def test_approved_rough_sorter_scan_decision_case(case: dict[str, Any], monkeypa
     )
     expected_effect_identities.extend("runtime.session_hold" for item in expected_intents if item["kind"] == "BLOCK")
     assert evidence.effect_identities == tuple(expected_effect_identities), evidence
-    # RuntimeIntent ledger 与 System Capability effect ledger 各保存一份同身份记录。
-    expected_ledger_identities = tuple(expected_effect_identities) * 2
+    # RuntimeIntentLog 只保存语义账本；transport 账本由 SystemOutbox 以 dispatch_key 1:1 对应。
+    expected_ledger_identities = tuple(expected_effect_identities)
     assert Counter(evidence.effect_ledger_identities) == Counter(expected_ledger_identities), (
         evidence.effect_ledger_identities
     )

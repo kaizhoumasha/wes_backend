@@ -21,6 +21,7 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     WriteDisposition,
 )
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
+from src.app.sys.models import SystemOutbox
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
     processor,
@@ -179,7 +180,16 @@ def test_two_workers_process_distinct_inboxes_for_same_business_key_exactly_once
             )
             assert plugin_decisions == 1
             assert duplicate_archives == 1
-            assert await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 4
+            intents = list((await db.execute(select(RuntimeIntentLog).order_by(RuntimeIntentLog.id))).scalars())
+            assert tuple(intent.capability_key for intent in intents) == (
+                "material_flow.material_unit_write",
+                "device.device_command_write",
+            )
+            outboxes = list((await db.execute(select(SystemOutbox).order_by(SystemOutbox.id))).scalars())
+            device_intents = [intent for intent in intents if intent.capability_key == "device.device_command_write"]
+            assert tuple(outbox.dispatch_key for outbox in outboxes) == tuple(
+                intent.dispatch_key for intent in device_intents
+            )
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

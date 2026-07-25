@@ -92,6 +92,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
                         InventoryAuthorityItem(
                             material_code=request.material_code,
                             warehouse_code=request.warehouse_code or "WH-IT",
+                            owner_code=request.owner_code,
                             storage_location_code="A-01",
                             available_quantity=10,
                             lot_no="LOT-IT-001",
@@ -317,8 +318,13 @@ def test_missing_callback_becomes_visible_timeout_without_fake_success() -> None
             command = await db.scalar(select(DeviceCommand).where(DeviceCommand.workline_id == seeded.workline_id))
             assert command is not None and session is not None
             assert source_inbox is not None and session.status == "WAITING_DEVICE_RESULT"
-            baseline_intents = await db.scalar(select(func.count()).select_from(RuntimeIntentLog))
-            assert baseline_intents == 4
+            baseline_intents = tuple(
+                (await db.execute(select(RuntimeIntentLog).order_by(RuntimeIntentLog.id))).scalars()
+            )
+            assert tuple(intent.capability_key for intent in baseline_intents) == (
+                "material_flow.material_unit_write",
+                "device.device_command_write",
+            )
 
             now = timezone.now_for_db()
             command.status = CommandStatus.ACK_RECEIVED
@@ -376,7 +382,7 @@ def test_missing_callback_becomes_visible_timeout_without_fake_success() -> None
             assert hold is not None and hold.source_reason == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
             assert command is not None and command.status != CommandStatus.COMPLETED
             assert await verify_db.scalar(select(func.count()).select_from(RuntimeHold)) == 1
-            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == baseline_intents
+            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == len(baseline_intents)
 
             await verify_db.execute(
                 update(RuntimeInbox)
@@ -402,7 +408,7 @@ def test_missing_callback_becomes_visible_timeout_without_fake_success() -> None
             replay_result = await processor(service).process_claimed(verify_db, claim=replay_claim)
             assert replay_result["processed"] == 1
             assert await verify_db.scalar(select(func.count()).select_from(RuntimeHold)) == 1
-            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == baseline_intents
+            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == len(baseline_intents)
             replay_row = await verify_db.get(RuntimeInbox, replay_id, populate_existing=True)
             assert replay_row is not None and replay_row.status == "DEAD_LETTER"
             assert replay_row.last_error_code == "RECORDED_REPLAY_RECORD_MISSING"
@@ -431,6 +437,7 @@ def test_followup_device_command_requires_terminal_result(action: str, terminal_
                     InventoryAuthorityItem(
                         material_code=request.material_code,
                         warehouse_code=request.warehouse_code or "WH-IT",
+                        owner_code=request.owner_code,
                         storage_location_code="A-01",
                         available_quantity=10,
                         lot_no="LOT-IT-001",

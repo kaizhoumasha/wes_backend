@@ -68,8 +68,8 @@ class RuntimeIntentLogRepository:
                 raise TypeError("plugin attempt intents must be RuntimeIntent")
             validated_intent = RuntimeIntent.model_validate(value.model_dump(mode="python"))
             # SYSTEM_CAPABILITY 由 effect service 自己 claim 唯一权威 ledger；
-            # 此处若再预写会形成同一 effect 的第二条 RuntimeIntentLog。
-            if validated_intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY:
+            # CONTINUE_NEXT 是平台内建生命周期动作，二者均不应预写 plugin semantic ledger。
+            if validated_intent.kind in {RuntimeIntentKind.SYSTEM_CAPABILITY, RuntimeIntentKind.CONTINUE_NEXT}:
                 continue
             prepared.append(
                 self._build_prepared(

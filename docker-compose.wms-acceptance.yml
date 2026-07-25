@@ -36,7 +36,7 @@ services:
       WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS: ${WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS}
       WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8011/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8011/northbound/contract"]
       interval: 2s
       timeout: 1s
       retries: 15

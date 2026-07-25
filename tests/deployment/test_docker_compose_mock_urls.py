@@ -26,6 +26,13 @@ MOCK_WMS_MATERIAL_FLOW_SECRET_NAMES = (
     "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
     "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
 )
+ACCEPTANCE_CONTRACT_CONFIG_NAMES = (
+    "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS",
+    "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS",
+    "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
+    "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS",
+    "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
+)
 LEGACY_ENDPOINT_NAMES = (
     "WMS_RCS_RACK_OPERATION_URL",
     "WMS_RCS_BIN_OPERATION_URL",
@@ -92,8 +99,11 @@ def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
         "CMD",
         "curl",
         "-f",
-        "http://localhost:8011/",
+        "http://localhost:8011/northbound/contract",
     ]
+    acceptance_mock_env = acceptance_compose["services"]["mock_wms_acceptance"]["environment"]
+    for setting_name in ACCEPTANCE_CONTRACT_CONFIG_NAMES:
+        assert acceptance_mock_env[setting_name] == f"${{{setting_name}}}"
 
 
 def test_wms_acceptance_compose_is_isolated_from_the_development_mock() -> None:

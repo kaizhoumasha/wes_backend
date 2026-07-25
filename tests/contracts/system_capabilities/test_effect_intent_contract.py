@@ -162,6 +162,37 @@ def test_generic_plugin_intent_ledger_skips_system_capability_owned_effect() -> 
     assert prepared == ()
 
 
+def test_generic_plugin_intent_ledger_skips_validated_platform_continue_next() -> None:
+    from types import SimpleNamespace
+
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot
+
+    repository = RuntimeIntentLogRepository()
+    locked = SimpleNamespace(
+        inbox=SimpleNamespace(
+            id=52,
+            execution_session_id=62,
+            correlation_id="corr-continue-next-ledger",
+        )
+    )
+    snapshot = AttemptSnapshot(
+        processor_token="lease-2",
+        session_version=4,
+        plugin_state_version=3,
+        definition_identity=f"rough_sorter@rough_sorter.v2:{'e' * 64}",
+        binding_id=8,
+        binding_version=3,
+        index_digest="b" * 64,
+    )
+    intent = RuntimeIntent.continue_next(action="MOVE_FORWARD_COMPLETED")
+
+    assert repository.prepare_attempt_intents(locked=locked, snapshot=snapshot, intents=(intent,)) == ()
+
+    invalid_intent = intent.model_copy(update={"capability_key": "device.device_command_write"})
+    with pytest.raises(ValidationError, match="SYSTEM_CAPABILITY-only"):
+        repository.prepare_attempt_intents(locked=locked, snapshot=snapshot, intents=(invalid_intent,))
+
+
 def test_three_effect_definitions_have_closed_completion_modes() -> None:
     assert MATERIAL_DEFINITION.mode is SystemCapabilityMode.EFFECT
     assert MATERIAL_DEFINITION.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL

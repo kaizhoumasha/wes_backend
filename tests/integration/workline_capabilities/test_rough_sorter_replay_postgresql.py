@@ -3,23 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from sqlalchemy import func, update
 from sqlmodel import select
 
-from src.app.device.models.command import DeviceCommand
+from src.app.callback.services.callback_ingress_service import CallbackIngressService
+from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.device.services.device_command_service import DeviceCommandService
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.sys.models import SystemOutbox
-from src.app.sys.services import AuditLogService
 from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
 from src.app.wms_integration.ports.query_inventory_operation import (
     InventoryAuthorityItem,
     InventoryQueryOperationResult,
 )
 from src.app.wms_integration.ports.query_outcome import QuerySuccess
-from tests.integration.workline_capabilities.test_rough_sorter_outbox_result_flow import _process_seeded_scan
+from tests.integration.workline_capabilities.test_rough_sorter_outbox_result_flow import (
+    _callback_request,
+    _process_seeded_scan,
+)
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
     processor,
@@ -43,6 +49,7 @@ def test_recorded_replay_of_successful_query_never_calls_provider_or_creates_eff
                         InventoryAuthorityItem(
                             material_code=request.material_code,
                             warehouse_code=request.warehouse_code or "WH-IT",
+                            owner_code=request.owner_code,
                             storage_location_code="A-01",
                             available_quantity=10,
                             lot_no="LOT-IT-001",
@@ -53,32 +60,46 @@ def test_recorded_replay_of_successful_query_never_calls_provider_or_creates_eff
             )
 
         monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
-        service = RuntimeInboxService(audit_service=AuditLogService())
+
+        async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(DeviceCommandService, "_invalidate_command_cache", invalidate_cache)
+        service = RuntimeInboxService()
 
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
             await _process_seeded_scan(db, service, seeded)
             command = await db.scalar(select(DeviceCommand).where(DeviceCommand.workline_id == seeded.workline_id))
             assert command is not None
-            accepted = await service.accept_command_result(
+            response = await CallbackIngressService().handle_result(
+                _callback_request(
+                    {
+                        "command_code": command.command_code,
+                        "device_code": "IT-ARM-01",
+                        "result": "SUCCESS",
+                        "finish_time": int(time.time() * 1000),
+                        "source_event_id": "it-replay-success-callback",
+                        "trace_id": seeded.trace_id,
+                        "data": {"reel_diameter": "100", "reel_thickness": "10"},
+                    }
+                ),
                 db,
-                command_code=command.command_code,
-                source_event_id="it-replay-success-callback",
-                device_code="IT-ARM-01",
-                workline_id=seeded.workline_id,
-                device_id=seeded.arm_id,
-                command_id=command.id,
-                trace_id=seeded.trace_id,
-                payload_json={
-                    "logical_route": "PICK_AND_PUT_RESULT",
-                    "command_code": command.command_code,
-                    "command_type": "PICK_AND_PUT",
-                    "result": "SUCCESS",
-                    "data": {"reel_diameter": "100", "reel_thickness": "10"},
-                },
+                request_id="it-replay-success-request",
+                start_time=time.time(),
+                enqueue_processing=lambda: None,
             )
-            await db.commit()
-            callback_id = int(accepted.record.id)
+            assert response["code"] == "1000"
+            callback = await db.scalar(
+                select(RuntimeInbox).where(
+                    RuntimeInbox.provider_code == "ECS",
+                    RuntimeInbox.source_event_id == "it-replay-success-callback",
+                )
+            )
+            assert callback is not None
+            callback_id = int(callback.id)
+            await db.refresh(command)
+            assert command.status == CommandStatus.COMPLETED
             callback_claim = await claim(db, service, token="replay-live-callback-owner")
             live_result = await processor(service).process_claimed(db, claim=callback_claim)
             if live_result["resource_wait"]:
@@ -89,6 +110,15 @@ def test_recorded_replay_of_successful_query_never_calls_provider_or_creates_eff
             assert live_result["success"] == 1 and provider_calls == 1
             baseline_intents = await db.scalar(select(func.count()).select_from(RuntimeIntentLog))
             baseline_outbox = await db.scalar(select(func.count()).select_from(SystemOutbox))
+            recorded_decision_count = await db.scalar(
+                select(func.count())
+                .select_from(WorklineTimeline)
+                .where(
+                    WorklineTimeline.related_inbox_id == callback_id,
+                    WorklineTimeline.payload_json["record_type"].as_string() == "PLUGIN_DECISION",
+                )
+            )
+            assert recorded_decision_count == 1
             await db.execute(
                 update(RuntimeInbox)
                 .where(RuntimeInbox.id == callback_id)

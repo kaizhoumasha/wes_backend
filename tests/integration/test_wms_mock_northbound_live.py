@@ -9,6 +9,8 @@ import asyncio
 import os
 import shutil
 import subprocess
+import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -16,12 +18,44 @@ import httpx
 import pytest
 
 from scripts.verify_wms_northbound_feasibility import _status_headers, _submit_headers, run_probe
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
+    RoughSorterBindingSnapshot,
+    RoughSorterInventoryAdmissionPolicyInput,
+    RoughSorterInventoryQueryOutcomeKind,
+    RoughSorterInventoryQuerySnapshot,
+)
+from src.app.runtime.capabilities.material_flow.rough_sorter_inventory_admission_policy import (
+    decide_rough_sorter_inventory_admission,
+)
+from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
+from src.app.runtime.system_capabilities.wms.provider_catalog import (
+    WMS_PROVIDER_PROFILE,
+    resolve_wms_operation_binding,
+)
 from src.app.sys.canonical_dispatch import canonical_json_bytes
 from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE
+from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
+from src.app.wms_integration.ports.query_inventory_operation import (
+    OPERATION_IDENTITY,
+    InventoryQueryOperationRequest,
+)
+from src.app.wms_integration.ports.query_outcome import QuerySuccess, QueryTechnicalFailure
+from src.app.wms_integration.services.query_transport import (
+    WmsBoundQueryEndpoint,
+    WmsQueryCallPermit,
+    WmsQueryTransportExecutor,
+)
 from src.core.conf import settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ACCEPTANCE_COMPOSE_FILE = BACKEND_ROOT / "docker-compose.wms-acceptance.yml"
+ACCEPTANCE_CONTRACT_ENV = {
+    "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS": "9",
+    "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS": "2",
+    "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES": "4096",
+    "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS": "30",
+    "WMS_EFFECT_STATUS_TIMEOUT_SECONDS": "2",
+}
 
 
 def _acceptance_wms_image() -> str:
@@ -33,6 +67,141 @@ def _live_connection() -> tuple[str, float]:
     if not base_url:
         pytest.fail("WMS_NORTHBOUND_LIVE_BASE_URL is required for explicit live acceptance")
     return base_url, float(os.getenv("WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS", "0.25"))
+
+
+def _compose_command(project_name: str, healthcheck_timing_override: Path, *args: str) -> list[str]:
+    docker = shutil.which("docker")
+    assert docker is not None
+    return [
+        docker,
+        "compose",
+        "--project-name",
+        project_name,
+        "-f",
+        str(ACCEPTANCE_COMPOSE_FILE),
+        "-f",
+        str(healthcheck_timing_override),
+        *args,
+    ]
+
+
+def _wait_for_acceptance_health(
+    project_name: str, healthcheck_timing_override: Path, expected_status: str, timeout_seconds: float = 10
+) -> str:
+    deadline = time.monotonic() + timeout_seconds
+    observed_status = "container-not-created"
+    while time.monotonic() < deadline:
+        container = subprocess.run(
+            _compose_command(project_name, healthcheck_timing_override, "ps", "-q", "mock_wms_acceptance"),
+            cwd=BACKEND_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        container_id = container.stdout.strip()
+        if container.returncode == 0 and container_id:
+            health = subprocess.run(
+                [
+                    shutil.which("docker") or "docker",
+                    "inspect",
+                    container_id,
+                    "--format",
+                    "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if health.returncode == 0:
+                observed_status = health.stdout.strip()
+                if observed_status == expected_status:
+                    return observed_status
+        time.sleep(0.5)
+    return observed_status
+
+
+def _recreate_acceptance_mock(
+    project_name: str, healthcheck_timing_override: Path, environment: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        _compose_command(
+            project_name, healthcheck_timing_override, "up", "-d", "--force-recreate", "mock_wms_acceptance"
+        ),
+        cwd=BACKEND_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=environment,
+    )
+
+
+def test_acceptance_healthcheck_fails_fast_for_invalid_contract_configuration(tmp_path: Path) -> None:
+    """独立验收项目必须以合同端点暴露空合同参数，而不是仅报告进程存活。"""
+    docker = shutil.which("docker")
+    assert docker is not None
+    acceptance_image = _acceptance_wms_image()
+    image = subprocess.run(
+        [docker, "image", "inspect", acceptance_image],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert image.returncode == 0, image.stderr
+
+    project_name = f"wes_acceptance_health_{uuid.uuid4().hex}"
+    healthcheck_timing_override = tmp_path / "acceptance-healthcheck-timing.yml"
+    healthcheck_timing_override.write_text(
+        """services:
+  mock_wms_acceptance:
+    healthcheck:
+      interval: 200ms
+      timeout: 100ms
+      retries: 3
+      start_period: 100ms
+""",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "DOCKER_HOST_BIND_IP": "127.0.0.1",
+        "MOCK_WMS_ACCEPTANCE_PORT": "0",
+        "MOCK_WMS_ACCEPTANCE_IMAGE": acceptance_image,
+        **ACCEPTANCE_CONTRACT_ENV,
+    }
+    try:
+        invalid_environment = {**environment, "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS": ""}
+        invalid = _recreate_acceptance_mock(project_name, healthcheck_timing_override, invalid_environment)
+        assert invalid.returncode == 0, invalid.stdout + invalid.stderr
+        assert _wait_for_acceptance_health(project_name, healthcheck_timing_override, "unhealthy") == "unhealthy"
+
+        cleaned = subprocess.run(
+            _compose_command(project_name, healthcheck_timing_override, "down", "--remove-orphans"),
+            cwd=BACKEND_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=environment,
+        )
+        assert cleaned.returncode == 0, cleaned.stdout + cleaned.stderr
+
+        valid = _recreate_acceptance_mock(project_name, healthcheck_timing_override, environment)
+        assert valid.returncode == 0, valid.stdout + valid.stderr
+        assert _wait_for_acceptance_health(project_name, healthcheck_timing_override, "healthy") == "healthy"
+    finally:
+        subprocess.run(
+            _compose_command(project_name, healthcheck_timing_override, "down", "--remove-orphans"),
+            cwd=BACKEND_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=environment,
+        )
 
 
 def test_acceptance_image_override_selects_runtime_identity(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,6 +223,39 @@ async def _reset_and_active_credential(client: httpx.AsyncClient) -> tuple[str, 
     return credential_reference, configured_secret.encode("utf-8")
 
 
+class _LiveQueryEvidenceWriter:
+    async def before_call(self, *, operation_identity: str, target_code: str) -> WmsQueryCallPermit:
+        return WmsQueryCallPermit(allowed=True)
+
+    async def record(self, **_kwargs) -> str:
+        return "evidence:docker-wms:rough-sorter-001"
+
+
+class _LiveQueryCredentialProvider:
+    def __init__(self, *, credential_reference: str, secret: bytes) -> None:
+        self._credential_reference = credential_reference
+        self._secret = secret
+
+    def resolve(self, credential_reference: str) -> bytes:
+        if credential_reference != self._credential_reference:
+            raise ValueError("unexpected live WMS credential reference")
+        return self._secret
+
+
+def _live_inventory_adapter(*, base_url: str, binding, credential_reference: str, secret: bytes):
+    return InventoryQueryOperationAdapter(
+        executor=WmsQueryTransportExecutor(
+            endpoint=WmsBoundQueryEndpoint(binding=binding, base_url=f"{base_url}/api/wms"),
+            transport=None,
+            evidence_writer=_LiveQueryEvidenceWriter(),
+            credential_provider=_LiveQueryCredentialProvider(
+                credential_reference=credential_reference,
+                secret=secret,
+            ),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_compose_mock_wms_northbound_live_contract() -> None:
     base_url, timeout_seconds = _live_connection()
@@ -67,6 +269,131 @@ async def test_compose_mock_wms_northbound_live_contract() -> None:
         report = await run_probe(client, request_timeout_seconds=timeout_seconds)
 
     assert report.passed is True, report.cases
+
+
+@pytest.mark.asyncio
+async def test_compose_mock_wms_inventory_query_matches_production_adapter_over_tcp() -> None:
+    base_url, _timeout_seconds = _live_connection()
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        timeout=httpx.Timeout(_timeout_seconds),
+        trust_env=False,
+    ) as client:
+        credential_reference, secret = await _reset_and_active_credential(client)
+    binding = resolve_wms_operation_binding(
+        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        operation_identity=CONTRACT.identity,
+    )
+    assert binding.outbound_auth.credential_reference == credential_reference
+    adapter = _live_inventory_adapter(
+        base_url=base_url,
+        binding=binding,
+        credential_reference=credential_reference,
+        secret=secret,
+    )
+
+    outcome = await adapter.execute(
+        InventoryQueryOperationRequest(
+            material_code="CAP001",
+            lot_no="LOT-A",
+            warehouse_code="WH-IT",
+            owner_code="OWNER-IT",
+        )
+    )
+
+    assert isinstance(outcome, QuerySuccess), outcome
+    assert outcome.evidence_key == "evidence:docker-wms:rough-sorter-001"
+    assert outcome.value.source_version == "mock-inventory-v1"
+    assert len(outcome.value.items) == 1
+    item = outcome.value.items[0]
+    assert item.material_code == "CAP001"
+    assert item.lot_no == "LOT-A"
+    assert item.warehouse_code == "WH-IT"
+    assert item.owner_code == "OWNER-IT"
+    assert item.available_quantity > 0
+
+    wrong_dimensions = await adapter.execute(
+        InventoryQueryOperationRequest(
+            material_code="CAP001",
+            lot_no="LOT-A",
+            warehouse_code="WH-IT",
+            owner_code="OWNER-WRONG",
+        )
+    )
+    assert isinstance(wrong_dimensions, QuerySuccess), wrong_dimensions
+    assert wrong_dimensions.value.items == ()
+    assert wrong_dimensions.value.source_version == "mock-inventory-v1"
+
+    decision = decide_rough_sorter_inventory_admission(
+        RoughSorterInventoryAdmissionPolicyInput(
+            material_code="CAP001",
+            lot_no="LOT-A",
+            warehouse_code="WH-IT",
+            owner_code="OWNER-IT",
+            binding_snapshot=RoughSorterBindingSnapshot(
+                binding_id=1,
+                binding_version=1,
+                profile_identity=binding.profile.identity,
+                plugin_config_hash="a" * 64,
+                generated_index_digest="b" * 64,
+            ),
+            supported_profile_identities=(binding.profile.identity,),
+            source_operation=OPERATION_IDENTITY,
+            query_snapshot=RoughSorterInventoryQuerySnapshot(
+                outcome_kind=RoughSorterInventoryQueryOutcomeKind.SUCCESS,
+                result=outcome.value,
+                evidence_key=outcome.evidence_key,
+            ),
+        )
+    )
+    assert decision.decision == "ADMIT"
+    assert decision.reason_code == "WMS_ADMITTED"
+    assert decision.provenance.source.evidence_key == outcome.evidence_key
+    assert decision.provenance.source.source_version == "mock-inventory-v1"
+
+
+@pytest.mark.asyncio
+async def test_compose_mock_wms_inventory_query_hmac_fails_closed_over_tcp() -> None:
+    base_url, timeout_seconds = _live_connection()
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        timeout=httpx.Timeout(timeout_seconds),
+        trust_env=False,
+    ) as client:
+        credential_reference, secret = await _reset_and_active_credential(client)
+        unsigned = await client.get(
+            "/api/wms/inventory/query",
+            params={
+                "material_id": "CAP001",
+                "lot_no": "LOT-A",
+                "warehouse_code": "WH-IT",
+                "owner_code": "OWNER-IT",
+            },
+        )
+    binding = resolve_wms_operation_binding(
+        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        operation_identity=CONTRACT.identity,
+    )
+    invalid_auth = await _live_inventory_adapter(
+        base_url=base_url,
+        binding=binding,
+        credential_reference=credential_reference,
+        secret=secret + b"-wrong",
+    ).execute(
+        InventoryQueryOperationRequest(
+            material_code="CAP001",
+            lot_no="LOT-A",
+            warehouse_code="WH-IT",
+            owner_code="OWNER-IT",
+        )
+    )
+
+    assert unsigned.status_code == 401
+    assert unsigned.json() == {"code": "MISSING_OR_INVALID_AUTH_HEADER"}
+    assert secret.decode("utf-8") not in unsigned.text
+    assert isinstance(invalid_auth, QueryTechnicalFailure), invalid_auth
+    assert invalid_auth.reason_code == "WMS_AUTHENTICATION_FAILED"
+    assert invalid_auth.retryable is False
 
 
 @pytest.mark.asyncio
