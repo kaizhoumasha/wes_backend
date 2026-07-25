@@ -23,8 +23,6 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-
-# 添加项目根目录到 sys.path
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
@@ -34,9 +32,13 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from pydantic import BaseModel
 from uvicorn import Config, Server
 
+# 添加项目根目录到 sys.path
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+# 北向 contract 核心必须同时支持 pytest package import 与 Docker 的脚本入口。
+from tests.mock.wms_northbound_contract import NorthboundOperationStore
 
 
 def _load_sandbox_catalog() -> Any:
@@ -525,10 +527,13 @@ class MockWmsState:
 
 
 mock_wms_state = MockWmsState()
+# 北向 contract 记录独立于遗留货架状态，但必须随同 Mock reset 清理。
+northbound_operation_store = NorthboundOperationStore()
 
 
 def reset_mock_wms_state() -> None:
     mock_wms_state.reset()
+    northbound_operation_store.reset()
     fault_injection_state["next_status"] = 200
     fault_injection_state["next_delay"] = 0.0
 
@@ -630,6 +635,7 @@ async def simulate_failure(request: SimulateFailureRequest):
 @app.post("/debug/reset", summary="恢复 WMS Mock 初始状态")
 async def debug_reset():
     await mock_wms_state.reset_locked()
+    northbound_operation_store.reset()
     fault_injection_state["next_status"] = 200
     fault_injection_state["next_delay"] = 0.0
     return {"code": 200, "data": {"reset": True}}
