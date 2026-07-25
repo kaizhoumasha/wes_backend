@@ -9,7 +9,9 @@ import sys
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
 import httpx
@@ -18,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 
+from scripts import verify_wms_northbound_feasibility as probe_module
 from scripts.verify_wms_northbound_feasibility import _contract_values, _status_headers, _submit_headers, run_probe
 from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
     CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
@@ -155,6 +158,42 @@ def test_feasibility_probe_script_is_directly_executable() -> None:
     assert "--base-url" in completed.stdout
 
 
+@pytest.mark.asyncio
+async def test_feasibility_probe_cli_ignores_host_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Client:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        probe_module,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            base_url="http://127.0.0.1:8011",
+            operation_identity=None,
+            timeout_seconds=0.25,
+            submit_timeout_seconds=0.25,
+            status_timeout_seconds=0.25,
+        ),
+    )
+    monkeypatch.setattr(probe_module.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(
+        probe_module,
+        "run_probe",
+        AsyncMock(return_value=probe_module.FeasibilityReport(cases=())),
+    )
+
+    assert await probe_module._main() == 0
+    assert captured["trust_env"] is False
+
+
 def _snapshot(
     state: str,
     *,
@@ -224,7 +263,9 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
         "submit_deadline_ambiguous_retry_one_effect",
         "status_deadline",
         "response_body_budget_exceeded_without_remote_echo",
+        "status_nonce_replay_rejected_without_remote_echo",
         "status_hmac_tamper_rejected_without_remote_echo",
+        "submit_stale_timestamp_rejected_without_remote_echo",
         "public_reset_clears_observable_operation",
     } <= case_ids
     assert all(case.passed for case in report.cases)

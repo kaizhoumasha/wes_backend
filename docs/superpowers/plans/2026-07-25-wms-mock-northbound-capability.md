@@ -18,7 +18,8 @@
 - `tests/mock/wms_mock_server.py` 是唯一 WMS 能力真源；不得以内嵌 FastAPI stub 或 fixture 冒充实际 Mock。
 - Submit 使用 `X-WES-*` 七项 canonical HMAC；Status 使用 `X-WMS-*` 五项 canonical HMAC。
 - Mock 直接复用 WES material-flow sandbox v1/v2 credential，active 为 v2；不得保留 Mock 专用 credential。
-- 幂等作用域固定为 `operation_identity + idempotency_key`，fingerprint 固定为 canonical raw body SHA-256。
+- 幂等作用域固定为 `operation_identity + idempotency_key`；fingerprint 固定为通过 typed schema 校验后的
+  canonical JSON SHA-256，原始 wire body SHA-256 仅用于 HMAC content-hash 校验。
 - typed body 在幂等写入前按冻结 wire schema 严格校验；并发首次提交必须原子化为一个 202 和单一 effect。
 - callback hint 不携带终态权威，且每个首次受理请求最多发送一次。
 - 三个 operation 必须共享状态存储与 reducer 规则，不复制三套状态机。
@@ -123,7 +124,7 @@
 - [x] 将故障改为 method/path/operation 精确作用域和并发原子 claim，固定 5xx 并流式发送超限响应。
 - [x] 分离 typed full-box callback hint 与 legacy completion callback 路由。
 - [x] 新增并发同键 HTTP 重放，证明一个 202、其余 409、effect count=1。
-- [x] 修复共享 ECS/WMS Docker 镜像依赖并完成真实 Compose build、双入口 smoke、live pytest 与 46-case CLI 探针。
+- [x] 修复共享 ECS/WMS Docker 镜像依赖并完成真实 Compose build、双入口 smoke、live pytest 与 48-case CLI 探针。
 - [x] 恢复 legacy full-box `BUSINESS_COMPLETED`，并证明无 `post_exchange_relations` 时兼容生产消费者。
 - [x] 将并发同键重放与一次性 fault claim 升级为 Docker published socket 的具名 live 验收。
 - [x] 运行完整相关回归、默认测试收集、quality gate 和 GitNexus detect changes。

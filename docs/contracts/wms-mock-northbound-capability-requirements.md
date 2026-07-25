@@ -39,16 +39,19 @@ Mock 直接复用 WES sandbox material-flow 的真实版本化凭据引用：
 1. 从 `X-WES-Operation-Identity` 和 `Idempotency-Key` 读取请求身份；
 2. 对原始 HTTP body bytes 计算 SHA-256，并校验 `X-WES-Content-SHA256`；
 3. 校验 Submit 七项 canonical input 的 HMAC-SHA256；
-4. 以 `operation_identity + idempotency_key` 为作用域保存 canonical body fingerprint；
-5. 首次受理返回 HTTP 202；
-6. 同 key、同 fingerprint 且仍处理中时返回 HTTP 409 和
+4. 在验签成功后校验签名时间处于服务端真实时钟前后 30 秒窗口内，并以 credential reference + nonce
+   做 300 秒原子去重；Submit 兼容 WES sender 的 UTC aware ISO-8601 时间戳；
+5. 以 `operation_identity + idempotency_key` 为作用域保存 canonical body fingerprint；
+6. 首次受理返回 HTTP 202；
+7. 同 key、同 fingerprint 且仍处理中时返回 HTTP 409 和
    `IDEMPOTENCY_REQUEST_IN_PROGRESS`；
-7. 同 key、同 fingerprint 且已终结时返回原业务结果，不产生第二份业务效果；
-8. 同 key、不同 fingerprint 时返回 HTTP 422 和 `IDEMPOTENCY_CONFLICT`；
-9. callback hint 只发送一次可关联提示，不携带或决定终态；
-10. typed body 必须在创建幂等记录前按冻结 wire schema 校验 required/allowed fields、非空字符串、长度和
+8. 同 key、同 fingerprint 且已终结时返回原业务结果，不产生第二份业务效果；
+9. 同 key、不同 fingerprint 时返回 HTTP 422 和 `IDEMPOTENCY_CONFLICT`；
+10. callback hint 只发送一次可关联提示，不携带或决定终态；
+11. typed body 必须在创建幂等记录前按冻结 wire schema 校验 required/allowed fields、非空字符串、长度和
     `quantity` 的有限正十进制字符串；失败固定返回 HTTP 422 + `INVALID_TYPED_REQUEST`，不得留下记录或 effect；
-11. 并发同 key、同 fingerprint 首次提交必须恰好一个 HTTP 202，其余为 HTTP 409，effect count 恒为 1。
+12. 并发同 key、同 fingerprint 首次提交必须恰好一个 HTTP 202，其余为 HTTP 409，effect count 恒为 1；
+    每个 HTTP attempt 必须使用独立 timestamp、nonce 和签名。
 
 ### 3.2 Status query
 
@@ -60,7 +63,8 @@ GET /northbound/operations/status
   &idempotency_key=<key>
 ```
 
-Status query 必须校验 `X-WMS-*` 五项 canonical input。响应状态只允许
+Status query 必须校验 `X-WMS-*` 五项 canonical input，并对 Unix 秒时间戳执行相同的 30 秒新鲜度和
+300 秒 nonce 去重。响应状态只允许
 `ACCEPTED | PROCESSING | COMPLETED | REJECTED | NOT_FOUND`。
 
 可见状态包含 `provider_reference`、`updated_at` 和单调非负整数 `source_version`；
@@ -92,8 +96,8 @@ Status query 必须校验 `X-WMS-*` 五项 canonical input。响应状态只允�
 typed `POST /api/wms/fulfillment/full-box-exchange` 只返回 HTTP 202 和 callback hint；历史完成 callback
 仅由独立的 `POST /api/wms/legacy/full-box-exchange` 触发，二者不得混用。
 
-故障注入只存在于 Mock/测试环境。reset 必须清理 typed EFFECT 幂等记录、状态快照、callback hint
-去重记录、故障注入和可控时钟；清理后相同 idempotency key 可以作为新请求重新受理。
+故障注入只存在于 Mock/测试环境。reset 必须清理 typed EFFECT 幂等记录、状态快照、HMAC nonce、
+callback hint 去重记录、故障注入和可控时钟；清理后相同 idempotency key 可以作为新请求重新受理。
 
 ## 4. 完成标准
 

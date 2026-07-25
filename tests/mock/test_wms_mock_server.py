@@ -3,11 +3,14 @@ import hashlib
 import hmac
 import json
 import os
+import time
 import tracemalloc
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -45,9 +48,17 @@ def reset_wms_mock_state(monkeypatch: pytest.MonkeyPatch) -> None:
     wms_mock_server.reset_mock_wms_state()
 
 
-def _submit_headers(*, body: bytes, path: str, operation_identity: str, idempotency_key: str) -> dict[str, str]:
-    timestamp = "1721865600"
-    nonce = "submit-nonce"
+def _submit_headers(
+    *,
+    body: bytes,
+    path: str,
+    operation_identity: str,
+    idempotency_key: str,
+    timestamp: str | None = None,
+    nonce: str | None = None,
+) -> dict[str, str]:
+    timestamp = timestamp or str(int(time.time()))
+    nonce = nonce or uuid4().hex
     payload_hash = hashlib.sha256(body).hexdigest()
     canonical = canonical_submit_string(
         method="POST",
@@ -75,9 +86,15 @@ def _submit_headers(*, body: bytes, path: str, operation_identity: str, idempote
     }
 
 
-def _status_headers(*, path: str, body: bytes = b"") -> dict[str, str]:
-    timestamp = "1721865600"
-    nonce = "status-nonce"
+def _status_headers(
+    *,
+    path: str,
+    body: bytes = b"",
+    timestamp: str | None = None,
+    nonce: str | None = None,
+) -> dict[str, str]:
+    timestamp = timestamp or str(int(time.time()))
+    nonce = nonce or uuid4().hex
     payload_hash = hashlib.sha256(body).hexdigest()
     canonical = canonical_status_string(
         method="GET", path=path, timestamp=timestamp, nonce=nonce, payload_hash=payload_hash
@@ -248,20 +265,34 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
     callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", callback)
     body = json.dumps(payload, separators=(",", ":")).encode()
-    headers = _submit_headers(
-        body=body, path=path, operation_identity=operation_identity, idempotency_key="idem-submit-001"
-    )
-
     with TestClient(wms_mock_server.app) as client:
-        first = client.post(path, content=body, headers=headers)
-        processing_replay = client.post(path, content=body, headers=headers)
+        first = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body, path=path, operation_identity=operation_identity, idempotency_key="idem-submit-001"
+            ),
+        )
+        processing_replay = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body, path=path, operation_identity=operation_identity, idempotency_key="idem-submit-001"
+            ),
+        )
         status_path = "/northbound/operations/status?" + urlencode(
             {"operation_identity": operation_identity, "idempotency_key": "idem-submit-001"}
         )
         accepted = client.get(status_path, headers=_status_headers(path=status_path))
         processing = client.get(status_path, headers=_status_headers(path=status_path))
         completed = client.get(status_path, headers=_status_headers(path=status_path))
-        completed_replay = client.post(path, content=body, headers=headers)
+        completed_replay = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body, path=path, operation_identity=operation_identity, idempotency_key="idem-submit-001"
+            ),
+        )
         conflict_body = json.dumps({**payload, "dispatch_key": "changed"}, separators=(",", ":")).encode()
         conflict = client.post(
             path,
@@ -309,6 +340,115 @@ def test_wms_mock_northbound_submit_rejects_invalid_hmac() -> None:
 
     assert response.status_code == 401
     assert response.json()["code"] == "INVALID_HMAC_SIGNATURE"
+
+
+def test_wms_mock_northbound_submit_rejects_stale_signed_timestamp() -> None:
+    path = "/api/wms/inventory/confirm-inbound"
+    body = (
+        b'{"dispatch_key":"dispatch-stale","inbound_key":"inbound-stale",'
+        b'"material_code":"material-stale","quantity":"1"}'
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity="wms.inventory.confirm_inbound@v1",
+                idempotency_key="idem-stale-001",
+                timestamp="1721865600",
+            ),
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"code": "SIGNATURE_TIMESTAMP_OUT_OF_WINDOW"}
+
+
+def test_wms_mock_northbound_submit_rejects_captured_request_after_idempotency_expiry() -> None:
+    operation_identity = "wms.inventory.confirm_inbound@v1"
+    idempotency_key = "idem-captured-replay-001"
+    path = "/api/wms/inventory/confirm-inbound"
+    body = (
+        b'{"dispatch_key":"dispatch-captured","inbound_key":"inbound-captured",'
+        b'"material_code":"material-captured","quantity":"1"}'
+    )
+    headers = _submit_headers(
+        body=body,
+        path=path,
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+    )
+    accepted_at = datetime(2026, 7, 25, tzinfo=UTC)
+    wms_mock_server.northbound_clock_state["now"] = accepted_at
+
+    with TestClient(wms_mock_server.app) as client:
+        first = client.post(path, content=body, headers=headers)
+        wms_mock_server.northbound_clock_state["now"] = accepted_at + timedelta(seconds=9)
+        replay = client.post(path, content=body, headers=headers)
+        effects = client.get(
+            "/debug/northbound/effects",
+            params={"operation_identity": operation_identity, "idempotency_key": idempotency_key},
+        )
+
+    assert first.status_code == 202
+    assert replay.status_code == 401
+    assert replay.json() == {"code": "HMAC_NONCE_REPLAYED"}
+    assert effects.json()["effect_count"] == 1
+
+
+def test_wms_mock_northbound_status_rejects_reused_nonce() -> None:
+    status_path = "/northbound/operations/status?" + urlencode(
+        {
+            "operation_identity": "wms.inventory.confirm_inbound@v1",
+            "idempotency_key": "idem-status-replay-001",
+        }
+    )
+    headers = _status_headers(path=status_path)
+
+    with TestClient(wms_mock_server.app) as client:
+        first = client.get(status_path, headers=headers)
+        replay = client.get(status_path, headers=headers)
+
+    assert first.status_code == 200
+    assert replay.status_code == 401
+    assert replay.json() == {"code": "HMAC_NONCE_REPLAYED"}
+
+
+def test_wms_mock_northbound_rejects_nonce_reused_across_submit_and_status() -> None:
+    nonce = "shared-submit-status-nonce"
+    operation_identity = "wms.inventory.confirm_inbound@v1"
+    idempotency_key = "idem-cross-channel-replay-001"
+    submit_path = "/api/wms/inventory/confirm-inbound"
+    status_path = "/northbound/operations/status?" + urlencode(
+        {
+            "operation_identity": operation_identity,
+            "idempotency_key": idempotency_key,
+        }
+    )
+    body = (
+        b'{"dispatch_key":"dispatch-cross-channel","inbound_key":"inbound-cross-channel",'
+        b'"material_code":"material-cross-channel","quantity":"1"}'
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        accepted = client.post(
+            submit_path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=submit_path,
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+                nonce=nonce,
+            ),
+        )
+        replay = client.get(status_path, headers=_status_headers(path=status_path, nonce=nonce))
+
+    assert accepted.status_code == 202
+    assert replay.status_code == 401
+    assert replay.json() == {"code": "HMAC_NONCE_REPLAYED"}
 
 
 def test_typed_submit_rejects_whitespace_variant_before_idempotency_write() -> None:
@@ -676,7 +816,16 @@ def test_wms_mock_northbound_visibility_callback_evidence_and_large_body_are_pub
         hidden = client.get(status_path, headers=_status_headers(path=status_path))
         client.post("/debug/northbound/clock", json={"now": "2026-07-25T00:00:01+00:00"})
         visible = client.get(status_path, headers=_status_headers(path=status_path))
-        replay = client.post(path, content=body, headers=headers)
+        replay = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+            ),
+        )
         effects = client.get(
             "/debug/northbound/effects?"
             + urlencode({"operation_identity": operation_identity, "idempotency_key": idempotency_key})
@@ -1088,7 +1237,7 @@ def test_real_wes_submit_sender_and_status_signer_interoperate_with_mock_active_
         canonical_payload_bytes=canonical.body,
         payload_hash=canonical.sha256,
         secret=secret,
-        timestamp="2026-07-25T00:00:00+00:00",
+        timestamp=datetime.now(UTC).isoformat(),
         nonce="real-wes-submit-nonce",
         idempotency_key=idempotency_key,
     )
@@ -1105,7 +1254,7 @@ def test_real_wes_submit_sender_and_status_signer_interoperate_with_mock_active_
             credential_reference=credential_reference,
             auth_scheme="HMAC_SHA256",
             secret=secret,
-            now=lambda: wms_mock_server.datetime(2026, 7, 25, tzinfo=wms_mock_server.UTC),
+            now=lambda: datetime.now(UTC),
             nonce_factory=lambda: "real-wes-status-nonce",
         )
         status = client.get(status_path, headers=status_request.headers)
@@ -1458,10 +1607,28 @@ def test_public_clock_drives_visibility_and_retention_boundaries(
         client.post("/debug/northbound/clock", json={"now": "2026-07-25T00:00:02+00:00"})
         visible_at_sla = client.get(status_path, headers=_status_headers(path=status_path))
         client.post("/debug/northbound/clock", json={"now": "2026-07-25T00:00:08+00:00"})
-        replay_before_boundary = client.post(path, content=body, headers=headers)
+        replay_before_boundary = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+            ),
+        )
         client.post("/debug/northbound/clock", json={"now": "2026-07-25T00:00:09+00:00"})
         expired_at_boundary = client.get(status_path, headers=_status_headers(path=status_path))
-        recovered_at_boundary = client.post(path, content=body, headers=headers)
+        recovered_at_boundary = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+            ),
+        )
         effects = client.get(
             "/debug/northbound/effects",
             params={"operation_identity": operation_identity, "idempotency_key": idempotency_key},
@@ -1606,18 +1773,23 @@ async def test_concurrent_identical_http_replay_creates_exactly_one_effect(
         "station_code": "station-concurrent-replay-001",
     }
     body = json.dumps(payload, separators=(",", ":")).encode()
-    headers = _submit_headers(
-        body=body,
-        path=path,
-        operation_identity=operation_identity,
-        idempotency_key=idempotency_key,
-    )
+    request_headers = [
+        _submit_headers(
+            body=body,
+            path=path,
+            operation_identity=operation_identity,
+            idempotency_key=idempotency_key,
+        )
+        for _ in range(8)
+    ]
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=wms_mock_server.app),
         base_url="http://mock-wms.test",
     ) as client:
-        responses = await asyncio.gather(*(client.post(path, content=body, headers=headers) for _ in range(8)))
+        responses = await asyncio.gather(
+            *(client.post(path, content=body, headers=headers) for headers in request_headers)
+        )
         effects = await client.get(
             "/debug/northbound/effects",
             params={"operation_identity": operation_identity, "idempotency_key": idempotency_key},

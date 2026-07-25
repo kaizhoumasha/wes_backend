@@ -8,7 +8,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from typing import ClassVar
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -65,8 +67,8 @@ def _typed_submit(
     secret: str,
 ):
     body = json.dumps(payload, separators=(",", ":")).encode()
-    timestamp = "1721865600"
-    nonce = f"acceptance-{idempotency_key}"
+    timestamp = str(int(time.time()))
+    nonce = uuid4().hex
     payload_hash = hashlib.sha256(body).hexdigest()
     canonical = canonical_submit_string(
         method="POST",

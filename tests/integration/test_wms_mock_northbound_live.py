@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,14 +22,10 @@ from src.core.conf import settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ACCEPTANCE_COMPOSE_FILE = BACKEND_ROOT / "docker-compose.wms-acceptance.yml"
-FEASIBILITY_REPORT = BACKEND_ROOT / "docs" / "operations" / "wms-northbound-feasibility-report.md"
 
 
-def _reported_wms_image_digest() -> str:
-    report = FEASIBILITY_REPORT.read_text(encoding="utf-8")
-    match = re.search(r"WMS Docker image\s+`(sha256:[0-9a-f]{64})`", report)
-    assert match is not None, "WMS image digest is missing from feasibility report"
-    return match.group(1)
+def _acceptance_wms_image() -> str:
+    return os.getenv("MOCK_WMS_ACCEPTANCE_IMAGE", "wes-mock:wms").strip() or "wes-mock:wms"
 
 
 def _live_connection() -> tuple[str, float]:
@@ -38,6 +33,13 @@ def _live_connection() -> tuple[str, float]:
     if not base_url:
         pytest.fail("WMS_NORTHBOUND_LIVE_BASE_URL is required for explicit live acceptance")
     return base_url, float(os.getenv("WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS", "0.25"))
+
+
+def test_acceptance_image_override_selects_runtime_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    image = "registry.example/wes-mock:wms-review"
+    monkeypatch.setenv("MOCK_WMS_ACCEPTANCE_IMAGE", image)
+
+    assert _acceptance_wms_image() == image
 
 
 async def _reset_and_active_credential(client: httpx.AsyncClient) -> tuple[str, bytes]:
@@ -88,15 +90,20 @@ async def test_compose_mock_wms_concurrent_identical_replay_over_tcp() -> None:
         trust_env=False,
     ) as client:
         credential_reference, secret = await _reset_and_active_credential(client)
-        headers = _submit_headers(
-            secret=secret,
-            credential_reference=credential_reference,
-            path=path,
-            body=body,
-            operation_identity=operation_identity,
-            key=idempotency_key,
+        request_headers = [
+            _submit_headers(
+                secret=secret,
+                credential_reference=credential_reference,
+                path=path,
+                body=body,
+                operation_identity=operation_identity,
+                key=idempotency_key,
+            )
+            for _ in range(8)
+        ]
+        responses = await asyncio.gather(
+            *(client.post(path, content=body, headers=headers) for headers in request_headers)
         )
-        responses = await asyncio.gather(*(client.post(path, content=body, headers=headers) for _ in range(8)))
         effects = await client.get(
             "/debug/northbound/effects",
             params={"operation_identity": operation_identity, "idempotency_key": idempotency_key},
@@ -171,9 +178,18 @@ def test_compose_mock_wms_live_logs_redact_query_keys_and_expected_disconnects()
     assert "Exception in ASGI application" not in logs
 
 
-def test_live_acceptance_runs_the_reported_wms_image_without_source_mounts() -> None:
+def test_live_acceptance_runs_the_selected_wms_image_without_source_mounts() -> None:
     docker = shutil.which("docker")
     assert docker is not None
+    acceptance_image = _acceptance_wms_image()
+    expected_image = subprocess.run(
+        [docker, "image", "inspect", acceptance_image, "--format", "{{.Id}}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert expected_image.returncode == 0, expected_image.stderr
 
     container = subprocess.run(
         [docker, "compose", "-f", str(ACCEPTANCE_COMPOSE_FILE), "ps", "-q", "mock_wms"],
@@ -196,5 +212,5 @@ def test_live_acceptance_runs_the_reported_wms_image_without_source_mounts() -> 
     image_id, mounts = inspected.stdout.strip().split("|", maxsplit=1)
 
     assert inspected.returncode == 0, inspected.stderr
-    assert image_id == _reported_wms_image_digest()
+    assert image_id == expected_image.stdout.strip()
     assert '"/app/tests/mock"' not in mounts

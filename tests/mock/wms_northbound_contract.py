@@ -41,6 +41,8 @@ _ALLOWED_REJECTION_REASON_CODES_BY_OPERATION = {
     "wms.fulfillment.full_box_exchange@v1": frozenset({"RACK_LOCKED", "WMS_BUSINESS_REJECTED"}),
     "wms.fulfillment.notify_pkg_binding@v1": frozenset({"WMS_BUSINESS_REJECTED"}),
 }
+_HMAC_CLOCK_SKEW_SECONDS = 30
+_HMAC_NONCE_TTL_SECONDS = 300
 _REQUEST_FIELDS_BY_OPERATION = {
     "wms.inventory.confirm_inbound@v1": {
         "required": frozenset({"dispatch_key", "inbound_key", "material_code", "quantity"}),
@@ -88,6 +90,72 @@ class NorthboundAuthError(ValueError):
 
 class NorthboundPayloadValidationError(ValueError):
     """typed wire body 不满足冻结 required/allowed/type 合同。"""
+
+
+class NorthboundHmacReplayGuard:
+    """以真实时钟校验签名新鲜度，并原子消费短期 nonce。"""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        clock_skew_seconds: int = _HMAC_CLOCK_SKEW_SECONDS,
+        nonce_ttl_seconds: int = _HMAC_NONCE_TTL_SECONDS,
+    ) -> None:
+        if clock_skew_seconds < 0 or nonce_ttl_seconds <= 0:
+            raise ValueError("HMAC clock skew and nonce TTL must be valid")
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock_skew_seconds = clock_skew_seconds
+        self._nonce_ttl_seconds = nonce_ttl_seconds
+        self._lock = RLock()
+        self._seen: dict[tuple[str, str], int] = {}
+
+    def consume(
+        self,
+        *,
+        credential_reference: str,
+        timestamp: str,
+        nonce: str,
+    ) -> None:
+        """验签成功后消费 nonce；过期、未来或重复请求均 fail closed。"""
+
+        current = self._current_timestamp()
+        signed_at = self._parse_signed_timestamp(timestamp)
+        if abs(current - signed_at) > self._clock_skew_seconds:
+            raise NorthboundAuthError("SIGNATURE_TIMESTAMP_OUT_OF_WINDOW")
+        key = (credential_reference, nonce)
+        with self._lock:
+            self._prune(current)
+            expires_at = self._seen.get(key)
+            if expires_at is not None and expires_at > current:
+                raise NorthboundAuthError("HMAC_NONCE_REPLAYED")
+            self._seen[key] = current + self._nonce_ttl_seconds
+
+    def reset(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+    def _current_timestamp(self) -> int:
+        current = self._clock()
+        if current.tzinfo is None or current.utcoffset() is None:
+            raise ValueError("Northbound HMAC clock must be timezone-aware")
+        return int(current.timestamp())
+
+    def _parse_signed_timestamp(self, value: str) -> int:
+        if value.isdecimal():
+            return int(value)
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise NorthboundAuthError("INVALID_SIGNATURE_TIMESTAMP") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise NorthboundAuthError("INVALID_SIGNATURE_TIMESTAMP")
+        return int(parsed.timestamp())
+
+    def _prune(self, current: int) -> None:
+        expired = [key for key, expires_at in self._seen.items() if expires_at <= current]
+        for key in expired:
+            self._seen.pop(key, None)
 
 
 def content_sha256(body: bytes) -> str:
@@ -584,6 +652,7 @@ __all__ = [
     "MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1",
     "MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2",
     "NorthboundAuthError",
+    "NorthboundHmacReplayGuard",
     "NorthboundOperationStore",
     "NorthboundPayloadValidationError",
     "NorthboundStatusSnapshot",

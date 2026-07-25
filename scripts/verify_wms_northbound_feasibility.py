@@ -318,10 +318,18 @@ def _signature(secret: bytes, canonical: str) -> str:
 
 
 def _submit_headers(
-    *, secret: bytes, credential_reference: str, path: str, body: bytes, operation_identity: str, key: str
+    *,
+    secret: bytes,
+    credential_reference: str,
+    path: str,
+    body: bytes,
+    operation_identity: str,
+    key: str,
+    timestamp: str | None = None,
+    nonce: str | None = None,
 ) -> dict[str, str]:
-    timestamp = str(int(datetime.now(UTC).timestamp()))
-    nonce = uuid4().hex
+    timestamp = timestamp or str(int(datetime.now(UTC).timestamp()))
+    nonce = nonce or uuid4().hex
     body_hash = payload_sha256(body)
     canonical = f"POST\n{path}\n{timestamp}\n{nonce}\n{body_hash}\n{operation_identity}\n{key}"
     return {
@@ -899,6 +907,72 @@ async def run_probe(
         )
     )
 
+    stale_submit_path = _OPERATION_SPECS[fault_identity]["submit_path"]
+    stale_submit_body = canonical_json_bytes(fault_payload)
+    stale_submit_key = f"probe-stale-submit-{uuid4().hex}"
+    stale_submit = await _request(
+        client,
+        "POST",
+        stale_submit_path,
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        content=stale_submit_body,
+        headers=_submit_headers(
+            secret=secret,
+            credential_reference=contract_values["credential_reference"],
+            path=stale_submit_path,
+            body=stale_submit_body,
+            operation_identity=fault_identity,
+            key=stale_submit_key,
+            timestamp="1721865600",
+        ),
+    )
+    results.append(
+        _result(
+            "submit_stale_timestamp_rejected_without_remote_echo",
+            stale_submit is not None
+            and stale_submit.status_code == 401
+            and _json_object(stale_submit, max_response_bytes=max_response_bytes)
+            == {"code": "SIGNATURE_TIMESTAMP_OUT_OF_WINDOW"},
+        )
+    )
+
+    replay_raw_path = "/northbound/operations/status?" + urlencode(
+        (("operation_identity", fault_identity), ("idempotency_key", fault_key))
+    )
+    replay_headers = _status_headers(
+        secret=secret,
+        credential_reference=contract_values["credential_reference"],
+        raw_path=replay_raw_path,
+    )
+    first_status_attempt = await _request(
+        client,
+        "GET",
+        replay_raw_path,
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        headers=replay_headers,
+    )
+    replayed_status_attempt = await _request(
+        client,
+        "GET",
+        replay_raw_path,
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        headers=replay_headers,
+    )
+    results.append(
+        _result(
+            "status_nonce_replay_rejected_without_remote_echo",
+            first_status_attempt is not None
+            and first_status_attempt.status_code == 200
+            and replayed_status_attempt is not None
+            and replayed_status_attempt.status_code == 401
+            and _json_object(replayed_status_attempt, max_response_bytes=max_response_bytes)
+            == {"code": "HMAC_NONCE_REPLAYED"},
+        )
+    )
+
     tampered_raw_path = "/northbound/operations/status?" + urlencode(
         (("operation_identity", fault_identity), ("idempotency_key", fault_key))
     )
@@ -977,7 +1051,11 @@ async def _main() -> int:
         args.submit_timeout_seconds or 0,
         args.status_timeout_seconds or 0,
     )
-    async with httpx.AsyncClient(base_url=args.base_url, timeout=httpx.Timeout(client_timeout)) as client:
+    async with httpx.AsyncClient(
+        base_url=args.base_url,
+        timeout=httpx.Timeout(client_timeout),
+        trust_env=False,
+    ) as client:
         report = await run_probe(
             client,
             operation_identity=args.operation_identity,

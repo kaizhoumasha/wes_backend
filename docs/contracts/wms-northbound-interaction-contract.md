@@ -179,6 +179,10 @@ WES 的唯一一次受控恢复重提还必须同时满足：此前从未观察�
 - TLS 仅提供传输保护；HMAC-SHA256 是当前应用层认证。Submit 使用上述 `X-WES-*` 七项 canonical，Status query
   使用上述 `X-WMS-*` 五项 canonical。Bearer/OAuth 不是当前合同；如未来引入，必须作为新版本合同单独设计、评审
   和验收，不能替换或混入本版本 HMAC 语义。
+- 服务端验签成功后必须校验 timestamp 新鲜度并原子消费 credential reference + nonce。当前开发 Mock 使用前后
+  30 秒时钟窗口和 300 秒 nonce TTL；Submit 接受 WES sender 的 UTC aware ISO-8601，Status 接受 Unix 秒。
+  合法 transport retry 必须保留 operation identity、幂等键和 typed body，但为每次 HTTP attempt 生成新的
+  timestamp、nonce 与签名。
 - 密钥、完整认证 header、未脱敏 body 均不得写入探针、日志、证据或报告。
 - 客户端和服务端必须为提交、状态查询分别声明 deadline；联调以真实客户端 deadline（服务端 sleep/断连）验证提交超时，而非用 HTTP 504 代替。超时后同键同 payload 重提，仍按本合同幂等语义处理，不能猜测业务成功。
 - 429 必须带合法 `Retry-After`（delta-seconds 或 HTTP-date）；WES 以其为下一次状态查询的时间下限，不在限流窗口忙重试。

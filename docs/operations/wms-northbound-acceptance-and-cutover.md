@@ -8,9 +8,9 @@ callback hint 交互，不记录或推断 WMS 内部工作流。当前 P0 验收
 
 - 实际开发 Mock 验证：`PASS/GO`（当前 P0 门禁已关闭）
 - 实际 Compose 验证：WMS image
-  `sha256:b3fc373dc9531e39a6731851d6bb5b208c5f29199c7446c1945693d9208a45c8`，
-  ECS image `sha256:3c2ef80df6325ef8b83a6f4ec850edddad4629f0e28ba33c488f1b21d65b8a61`，
-  容器入口/digest/浮点覆盖 `5 passed`、验收镜像 live pytest `5 passed`、CLI 46 case 全部
+  `sha256:ef142f2a47bd604f67c22802b22cd39b805f6f677c43e3a5e2f6e9e0e497348e`，
+  ECS image `sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`，
+  容器入口/点时 digest/浮点覆盖 `5 passed`、验收镜像 live pytest `6 passed`、CLI 48 case 全部
   `passed=true`；Live 容器无源码挂载，且日志不含完整关联键与预期 deadline 断连 traceback
 - 外部 WMS 联调验收模板：`PENDING`（后续，不阻塞当前 Mock 验收）
 - 外部 WMS 观测映射与采集模板：`BLOCKED`

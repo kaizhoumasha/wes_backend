@@ -132,10 +132,10 @@ WES Intent/Outbox
 ### Task 1：冻结最小北向合同与架构决策
 
 **验收状态：已完成。** 2026-07-25 已显式构建 Docker image
-WMS `sha256:b3fc373dc9531e39a6731851d6bb5b208c5f29199c7446c1945693d9208a45c8` 与 ECS
-`sha256:3c2ef80df6325ef8b83a6f4ec850edddad4629f0e28ba33c488f1b21d65b8a61`，共享镜像双入口 smoke
-`2 passed`；实际 Compose `mock_wms` 通过三个 typed EFFECT 的真实 TCP 黑盒探针：heavy/live pytest
-`3 passed`，CLI 46 case 全部 `passed=true`。
+WMS `sha256:ef142f2a47bd604f67c22802b22cd39b805f6f677c43e3a5e2f6e9e0e497348e` 与 ECS
+`sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`，共享镜像双入口、浮点覆盖与
+点时 digest 证据 `5 passed`；实际 Compose `mock_wms` 通过三个 typed EFFECT 的真实 TCP 黑盒探针：
+heavy/live pytest `6 passed`，CLI 48 case 全部 `passed=true`。
 未来外部 WMS 联调模板保留，但不再构成当前 P0 进入门禁。
 
 **Files:**

@@ -8,8 +8,8 @@
 `PENDING/BLOCKED`，本次结论不替代外部验收。
 
 最终镜像：WMS
-`sha256:b3fc373dc9531e39a6731851d6bb5b208c5f29199c7446c1945693d9208a45c8`，ECS
-`sha256:3c2ef80df6325ef8b83a6f4ec850edddad4629f0e28ba33c488f1b21d65b8a61`。
+`sha256:ef142f2a47bd604f67c22802b22cd39b805f6f677c43e3a5e2f6e9e0e497348e`，ECS
+`sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`。
 
 ## GitNexus 影响分析
 
@@ -145,9 +145,9 @@
 - 相关 Mock/contract/deployment/topology：`202 passed`。
 - 默认测试收集：`4101 tests collected`。
 - 默认全仓测试：`4096 passed, 5 skipped, 6 warnings`，耗时 467.41 秒。
-- 最终已构建 WMS 镜像 Docker heavy/live：`5 passed`，耗时 1.11 秒；容器 image ID 与报告 digest
-  一致，且 `/app/tests/mock` 无宿主机挂载。
-- 最终已构建 WMS 镜像 CLI 黑盒探针：46 个 case 全部 `passed=true`。
+- 最终已构建 WMS 镜像 Docker heavy/live：`6 passed`；容器 image ID 与本轮选择的本地 image tag
+  解析结果一致，且 `/app/tests/mock` 无宿主机挂载；报告 digest 仅作为该次验收的点时证据。
+- 最终已构建 WMS 镜像 CLI 黑盒探针：48 个 case 全部 `passed=true`。
 - `ruff format --check`、`ruff check`：通过。
 - Bandit：106754 行生产代码，0 issue。
 - `./scripts/git-quality-gate.sh --profile quality`：完整通过。

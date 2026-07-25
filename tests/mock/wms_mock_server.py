@@ -45,6 +45,7 @@ if str(project_root) not in sys.path:
 from tests.mock.wms_northbound_contract import (
     ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
     NorthboundAuthError,
+    NorthboundHmacReplayGuard,
     NorthboundOperationStore,
     NorthboundPayloadValidationError,
     canonical_payload_bytes,
@@ -581,11 +582,13 @@ northbound_operation_store = NorthboundOperationStore(
     retention_seconds=int(os.getenv("WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS", "9")),
     visibility_sla_seconds=_positive_finite_env_float("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2"),
 )
+northbound_hmac_replay_guard = NorthboundHmacReplayGuard()
 
 
 def reset_mock_wms_state() -> None:
     mock_wms_state.reset()
     northbound_operation_store.reset()
+    northbound_hmac_replay_guard.reset()
     northbound_clock_state["now"] = None
     with northbound_fault_lock:
         northbound_fault_state["next"] = None
@@ -796,6 +799,7 @@ async def simulate_failure(request: SimulateFailureRequest):
 async def debug_reset():
     await mock_wms_state.reset_locked()
     northbound_operation_store.reset()
+    northbound_hmac_replay_guard.reset()
     northbound_clock_state["now"] = None
     with northbound_fault_lock:
         northbound_fault_state["next"] = None
@@ -937,6 +941,11 @@ async def northbound_operation_status(request: Request, operation_identity: str,
         return Response(status_code=499)
     try:
         verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
+        northbound_hmac_replay_guard.consume(
+            credential_reference=request.headers["X-WMS-Credential-Reference"],
+            timestamp=request.headers["X-WMS-Timestamp"],
+            nonce=request.headers["X-WMS-Nonce"],
+        )
         snapshot = northbound_operation_store.query(operation_identity, idempotency_key)
     except NorthboundAuthError as exc:
         return JSONResponse(status_code=401, content={"code": exc.code})
@@ -1044,6 +1053,11 @@ async def _submit_northbound_effect(
         return Response(status_code=499)
     try:
         verify_submit_hmac(request.headers, body, method=request.method, path=request.url.path)
+        northbound_hmac_replay_guard.consume(
+            credential_reference=request.headers["X-WES-Credential-Reference"],
+            timestamp=request.headers["X-WES-Timestamp"],
+            nonce=request.headers["X-WES-Nonce"],
+        )
         submitted_identity = str(request.headers.get("X-WES-Operation-Identity") or "")
         if submitted_identity != operation_identity:
             return JSONResponse(status_code=422, content={"code": "OPERATION_IDENTITY_MISMATCH"})
