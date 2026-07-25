@@ -399,6 +399,7 @@ async def _assert_lease_loss_unknown(
     *,
     seeded: _SeededEffect,
     include_late_acceptance: bool = False,
+    expects_status_query_recovery: bool = False,
 ) -> None:
     outbox, attempt, intent, case = await _load_effect_state(db, seeded=seeded)
     assert enum_value(outbox.status) == SystemOutboxStatus.UNKNOWN.value
@@ -407,17 +408,22 @@ async def _assert_lease_loss_unknown(
     assert attempt.transport_outcome == "AMBIGUOUS"
     assert attempt.safe_to_retry is False
     assert attempt.response_json["lease_loss"] is True
-    assert enum_value(intent.effect_status) == RuntimeIntentStatus.RECONCILING.value
-    expected_events = [
-        "TRANSPORT_AMBIGUOUS",
-        "RECONCILIATION_OPENED",
-    ]
+    expected_intent_status = (
+        RuntimeIntentStatus.UNKNOWN.value if expects_status_query_recovery else RuntimeIntentStatus.RECONCILING.value
+    )
+    assert enum_value(intent.effect_status) == expected_intent_status
+    expected_events = ["TRANSPORT_AMBIGUOUS"]
+    if not expects_status_query_recovery:
+        expected_events.append("RECONCILIATION_OPENED")
     if include_late_acceptance:
         expected_events.append("TRANSPORT_ACCEPTED")
     assert [item["event_type"] for item in intent.outcome_history_json] == expected_events
-    assert case is not None
-    assert enum_value(case.status) == ReconciliationCaseStatus.OPEN.value
-    assert case.reason_code == "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED"
+    if expects_status_query_recovery:
+        assert case is None
+    else:
+        assert case is not None
+        assert enum_value(case.status) == ReconciliationCaseStatus.OPEN.value
+        assert case.reason_code == "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED"
 
 
 def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql() -> None:
@@ -469,7 +475,7 @@ def test_external_http_crash_matrix_recovers_without_blind_resend_on_postgresql(
 
 
 def test_confirm_inbound_after_send_crash_enters_unknown_without_blind_resend_on_postgresql() -> None:
-    """T9 frozen outbox 发送后崩溃只能进入 UNKNOWN/RECONCILING，禁止盲重发。"""
+    """T9 frozen outbox 发送后崩溃保持 UNKNOWN 等待 status query，禁止盲重发。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession],
@@ -501,7 +507,11 @@ def test_confirm_inbound_after_send_crash_enters_unknown_without_blind_resend_on
         async with session_factory() as restarted_db:
             second = await restarted_worker.dispatch(restarted_db, limit=1)
             assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-            await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
+            await _assert_lease_loss_unknown(
+                restarted_db,
+                seeded=seeded,
+                expects_status_query_recovery=True,
+            )
             outbox = await restarted_db.get(SystemOutbox, seeded.outbox_id)
             assert outbox is not None and outbox.operation_identity == OPERATION_IDENTITY
 
@@ -511,7 +521,7 @@ def test_confirm_inbound_after_send_crash_enters_unknown_without_blind_resend_on
 
 
 def test_notify_package_binding_after_send_crash_enters_unknown_without_blind_resend_on_postgresql() -> None:
-    """T10 frozen outbox 发送后崩溃只能进入 UNKNOWN/RECONCILING，禁止盲重发。"""
+    """T10 frozen outbox 发送后崩溃保持 UNKNOWN 等待 status query，禁止盲重发。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession],
@@ -543,7 +553,11 @@ def test_notify_package_binding_after_send_crash_enters_unknown_without_blind_re
         async with session_factory() as restarted_db:
             second = await restarted_worker.dispatch(restarted_db, limit=1)
             assert second == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
-            await _assert_lease_loss_unknown(restarted_db, seeded=seeded)
+            await _assert_lease_loss_unknown(
+                restarted_db,
+                seeded=seeded,
+                expects_status_query_recovery=True,
+            )
             outbox = await restarted_db.get(SystemOutbox, seeded.outbox_id)
             assert outbox is not None
             assert outbox.operation_identity == NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
