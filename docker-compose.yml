@@ -692,6 +692,7 @@ services:
       WES_EXTERNAL_CALLBACK_URL: ${CONTAINER_WES_EXTERNAL_CALLBACK_URL:-http://api:8001/api/v1/callback/external}
       API_APP_ID: ${API_APP_ID:-app_local_mock}
       API_APP_SECRET: ${API_APP_SECRET:-local_mock_change_me}
+      MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1: ${MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1:-}
       MOCK_WMS_CELL_CAPACITY_DEPTH_MM: ${MOCK_WMS_CELL_CAPACITY_DEPTH_MM:-50}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8011/"]

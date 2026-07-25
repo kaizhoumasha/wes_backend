@@ -1,8 +1,12 @@
 import asyncio
+import hashlib
+import hmac
 import json
+import os
 from pathlib import Path
 from time import monotonic
 from unittest.mock import AsyncMock
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -15,11 +19,65 @@ from src.app.runtime.orchestration.sandbox_catalog_bridge import (
 from src.app.wms_integration.services.callback_normalizer import WmsExecutionCallbackNormalizer
 from src.core.api_security import calculate_body_hmac_signature
 from tests.mock import wms_mock_server
+from tests.mock.wms_northbound_contract import (
+    MOCK_NORTHBOUND_CREDENTIAL_REFERENCE,
+    MOCK_NORTHBOUND_HMAC_SECRET_ENV,
+    canonical_status_string,
+    canonical_submit_string,
+)
 
 
 @pytest.fixture(autouse=True)
-def reset_wms_mock_state() -> None:
+def reset_wms_mock_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(MOCK_NORTHBOUND_HMAC_SECRET_ENV, "test-mock-northbound-secret")
     wms_mock_server.reset_mock_wms_state()
+
+
+def _submit_headers(*, body: bytes, path: str, operation_identity: str, idempotency_key: str) -> dict[str, str]:
+    timestamp = "1721865600"
+    nonce = "submit-nonce"
+    payload_hash = hashlib.sha256(body).hexdigest()
+    canonical = canonical_submit_string(
+        method="POST",
+        path=path,
+        timestamp=timestamp,
+        nonce=nonce,
+        payload_hash=payload_hash,
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+    )
+    return {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotency_key,
+        "X-WES-Content-SHA256": payload_hash,
+        "X-WES-Credential-Reference": MOCK_NORTHBOUND_CREDENTIAL_REFERENCE,
+        "X-WES-Nonce": nonce,
+        "X-WES-Operation-Identity": operation_identity,
+        "X-WES-Signature": hmac.new(
+            os.environ[MOCK_NORTHBOUND_HMAC_SECRET_ENV].encode(), canonical.encode(), hashlib.sha256
+        ).hexdigest(),
+        "X-WES-Signature-Algorithm": "HMAC_SHA256",
+        "X-WES-Timestamp": timestamp,
+    }
+
+
+def _status_headers(*, path: str) -> dict[str, str]:
+    timestamp = "1721865600"
+    nonce = "status-nonce"
+    payload_hash = hashlib.sha256(b"").hexdigest()
+    canonical = canonical_status_string(
+        method="GET", path=path, timestamp=timestamp, nonce=nonce, payload_hash=payload_hash
+    )
+    return {
+        "X-WMS-Content-SHA256": payload_hash,
+        "X-WMS-Credential-Reference": MOCK_NORTHBOUND_CREDENTIAL_REFERENCE,
+        "X-WMS-Nonce": nonce,
+        "X-WMS-Signature": hmac.new(
+            os.environ[MOCK_NORTHBOUND_HMAC_SECRET_ENV].encode(), canonical.encode(), hashlib.sha256
+        ).hexdigest(),
+        "X-WMS-Signature-Algorithm": "HMAC_SHA256",
+        "X-WMS-Timestamp": timestamp,
+    }
 
 
 def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> None:
@@ -118,6 +176,206 @@ def test_wms_mock_debug_reset_bypasses_pending_fault_injection_delay() -> None:
     assert response.status_code == 200
     assert elapsed < 0.5
     assert wms_mock_server.fault_injection_state == {"next_status": 200, "next_delay": 0.0}
+
+
+@pytest.mark.parametrize(
+    ("path", "operation_identity", "payload", "compatibility_field"),
+    (
+        (
+            "/api/wms/inventory/confirm-inbound",
+            "wms.inventory.confirm_inbound@v1",
+            {"dispatch_key": "dispatch-confirm", "inbound_key": "inbound-001", "document_no": "doc-001"},
+            "inbound_key",
+        ),
+        (
+            "/api/wms/fulfillment/full-box-exchange",
+            "wms.fulfillment.full_box_exchange@v1",
+            {
+                "dispatch_key": "dispatch-exchange",
+                "rack_id": "rack-001",
+                "empty_box_id": "empty-001",
+                "full_box_id": "full-001",
+                "exchange_request_code": "exchange-001",
+            },
+            "rack_id",
+        ),
+        (
+            "/api/wms/fulfillment/package-binding",
+            "wms.fulfillment.notify_pkg_binding@v1",
+            {
+                "dispatch_key": "dispatch-binding",
+                "package_id": "package-001",
+                "pallet_id": "pallet-001",
+                "station_code": "station-001",
+            },
+            "package_id",
+        ),
+    ),
+)
+def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    operation_identity: str,
+    payload: dict[str, str],
+    compatibility_field: str,
+) -> None:
+    callback = AsyncMock(return_value={"delivered": True})
+    monkeypatch.setattr(wms_mock_server, "_post_callback", callback)
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    headers = _submit_headers(
+        body=body, path=path, operation_identity=operation_identity, idempotency_key="idem-submit-001"
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        first = client.post(path, content=body, headers=headers)
+        processing_replay = client.post(path, content=body, headers=headers)
+        status_path = "/northbound/operations/status?" + urlencode(
+            {"operation_identity": operation_identity, "idempotency_key": "idem-submit-001"}
+        )
+        accepted = client.get(status_path, headers=_status_headers(path=status_path))
+        processing = client.get(status_path, headers=_status_headers(path=status_path))
+        completed = client.get(status_path, headers=_status_headers(path=status_path))
+        completed_replay = client.post(path, content=body, headers=headers)
+        conflict_body = json.dumps({**payload, "dispatch_key": "changed"}, separators=(",", ":")).encode()
+        conflict = client.post(
+            path,
+            content=conflict_body,
+            headers=_submit_headers(
+                body=conflict_body, path=path, operation_identity=operation_identity, idempotency_key="idem-submit-001"
+            ),
+        )
+        effects = client.get(
+            "/debug/northbound/effects?"
+            + urlencode({"operation_identity": operation_identity, "idempotency_key": "idem-submit-001"})
+        )
+
+    assert first.status_code == 202
+    assert first.json()["data"][compatibility_field] == payload[compatibility_field]
+    assert processing_replay.status_code == 409
+    assert processing_replay.json()["code"] == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+    assert [accepted.json()["state"], processing.json()["state"], completed.json()["state"]] == [
+        "ACCEPTED",
+        "PROCESSING",
+        "COMPLETED",
+    ]
+    assert completed.json()["result_payload"][compatibility_field] == payload[compatibility_field]
+    assert completed_replay.status_code == 200
+    assert completed_replay.json()["data"]["northbound_status"]["state"] == "COMPLETED"
+    assert conflict.status_code == 422
+    assert conflict.json()["code"] == "IDEMPOTENCY_CONFLICT"
+    assert effects.json()["effect_count"] == 1
+    callback.assert_awaited_once()
+
+
+def test_wms_mock_northbound_submit_rejects_invalid_hmac() -> None:
+    path = "/api/wms/inventory/confirm-inbound"
+    body = b'{"dispatch_key":"dispatch-auth","inbound_key":"inbound-auth"}'
+    headers = _submit_headers(
+        body=body,
+        path=path,
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        idempotency_key="idem-auth-001",
+    )
+    headers["X-WES-Signature"] = "invalid"
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(path, content=body, headers=headers)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "INVALID_HMAC_SIGNATURE"
+
+
+def test_wms_mock_northbound_status_exposes_not_found_and_rejected_states() -> None:
+    operation_identity = "wms.fulfillment.full_box_exchange@v1"
+    status_path = "/northbound/operations/status?" + urlencode(
+        {"operation_identity": operation_identity, "idempotency_key": "idem-rejected-001"}
+    )
+    path = "/api/wms/fulfillment/full-box-exchange"
+    body = b'{"dispatch_key":"dispatch-rejected","rack_id":"rack-001"}'
+
+    with TestClient(wms_mock_server.app) as client:
+        not_found = client.get(status_path, headers=_status_headers(path=status_path))
+        submit = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body, path=path, operation_identity=operation_identity, idempotency_key="idem-rejected-001"
+            ),
+        )
+        rejected = client.post(
+            "/debug/northbound/reject",
+            json={
+                "operation_identity": operation_identity,
+                "idempotency_key": "idem-rejected-001",
+                "reason_code": "RACK_LOCKED",
+            },
+        )
+        status = client.get(status_path, headers=_status_headers(path=status_path))
+
+    assert not_found.json() == {
+        "state": "NOT_FOUND",
+        "provider_reference": None,
+        "reason_code": None,
+        "updated_at": None,
+        "source_version": None,
+        "result_payload": None,
+    }
+    assert submit.status_code == 202
+    assert rejected.status_code == 200
+    assert status.json()["state"] == "REJECTED"
+    assert status.json()["reason_code"] == "RACK_LOCKED"
+    assert status.json()["result_payload"] is None
+
+
+def test_wms_mock_northbound_contract_faults_and_reset_are_publicly_controllable() -> None:
+    operation_identity = "wms.inventory.confirm_inbound@v1"
+    path = "/api/wms/inventory/confirm-inbound"
+    body = b'{"dispatch_key":"dispatch-reset","inbound_key":"inbound-reset"}'
+    headers = _submit_headers(
+        body=body, path=path, operation_identity=operation_identity, idempotency_key="idem-reset-001"
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        contract = client.get("/northbound/contract")
+        configured_fault = client.post(
+            "/debug/northbound/faults",
+            json={"status": 429, "retry_after": 3, "delay": 0.01, "max_response_bytes": 32},
+        )
+        throttled = client.get("/northbound/contract")
+        configured_5xx = client.post("/debug/northbound/faults", json={"status": 503})
+        unavailable = client.get("/northbound/contract")
+        configured_delay = client.post("/debug/northbound/faults", json={"status": 200, "delay": 0.02})
+        started_at = monotonic()
+        delayed = client.get("/northbound/contract")
+        elapsed = monotonic() - started_at
+        status_path = "/northbound/operations/status?" + urlencode(
+            {"operation_identity": operation_identity, "idempotency_key": "idem-reset-001"}
+        )
+        invalid_status_hmac = client.get(status_path, headers={"X-WMS-Signature": "invalid"})
+        clock = client.post("/debug/northbound/clock", json={"now": "2026-07-25T00:00:00+00:00"})
+        first = client.post(path, content=body, headers=headers)
+        reset = client.post("/debug/reset")
+        resubmitted = client.post(path, content=body, headers=headers)
+
+    assert contract.status_code == 200
+    assert contract.json()["credential_reference"] == MOCK_NORTHBOUND_CREDENTIAL_REFERENCE
+    assert {"idempotency_retention_seconds", "status_visibility_sla_seconds", "max_response_bytes"} <= set(
+        contract.json()
+    )
+    assert configured_fault.status_code == 200
+    assert throttled.status_code == 429
+    assert throttled.headers["Retry-After"] == "3"
+    assert len(throttled.content) <= 32
+    assert configured_5xx.status_code == 200
+    assert unavailable.status_code == 503
+    assert configured_delay.status_code == 200
+    assert delayed.status_code == 200
+    assert elapsed >= 0.015
+    assert invalid_status_hmac.status_code == 401
+    assert clock.json()["data"]["now"] == "2026-07-25T00:00:00+00:00"
+    assert first.status_code == 202
+    assert reset.status_code == 200
+    assert resubmitted.status_code == 202
 
 
 def test_wms_mock_rack_operation_ignores_unknown_requested_rack_code() -> None:
@@ -283,11 +541,21 @@ def test_wms_mock_typed_effect_routes_deliver_declared_callback(
 ) -> None:
     mock_post_callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
+    body = json.dumps(payload, separators=(",", ":")).encode()
 
     with TestClient(wms_mock_server.app) as client:
-        response = client.post(path, json=payload, headers={"Idempotency-Key": "idem-mock-001"})
+        response = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key="idem-mock-001",
+            ),
+        )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     mock_post_callback.assert_awaited_once()
     callback_payload = mock_post_callback.await_args.args[1]
     assert callback_payload["callback_type"] == "WMS_EFFECT_STATUS_HINT"
@@ -403,11 +671,22 @@ def test_wms_mock_full_box_route_delivers_legacy_handling_callback(monkeypatch: 
         "rack_id": "RACK-001",
         "rack_release_id": "release-001",
     }
+    path = "/api/wms/fulfillment/full-box-exchange"
+    body = json.dumps(payload, separators=(",", ":")).encode()
 
     with TestClient(wms_mock_server.app) as client:
-        response = client.post("/api/wms/fulfillment/full-box-exchange", json=payload)
+        response = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity="wms.fulfillment.full_box_exchange@v1",
+                idempotency_key="idem-full-box-legacy-001",
+            ),
+        )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     mock_post_callback.assert_awaited_once()
     callback_payload = mock_post_callback.await_args.args[1]
     assert callback_payload["callback_type"] == "WMS_FULL_BOX_EXCHANGE_RESULT"
