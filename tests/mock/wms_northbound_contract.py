@@ -26,6 +26,11 @@ _KNOWN_OPERATION_IDENTITIES = frozenset(
         "wms.fulfillment.notify_pkg_binding@v1",
     }
 )
+_ALLOWED_REJECTION_REASON_CODES_BY_OPERATION = {
+    "wms.inventory.confirm_inbound@v1": frozenset({"MATERIAL_BLOCKED", "WMS_BUSINESS_REJECTED"}),
+    "wms.fulfillment.full_box_exchange@v1": frozenset({"RACK_LOCKED", "WMS_BUSINESS_REJECTED"}),
+    "wms.fulfillment.notify_pkg_binding@v1": frozenset({"WMS_BUSINESS_REJECTED"}),
+}
 
 
 class NorthboundAuthError(ValueError):
@@ -254,8 +259,8 @@ class NorthboundOperationStore:
     def reject(self, operation_identity: str, idempotency_key: str, *, reason_code: str) -> NorthboundStatusSnapshot:
         """将已受理记录置为拒绝终态，供 Mock 故障场景使用。"""
 
-        if not reason_code:
-            raise ValueError("reason_code must be non-empty")
+        if reason_code not in _ALLOWED_REJECTION_REASON_CODES_BY_OPERATION[operation_identity]:
+            raise ValueError("reason_code is not allowed for operation_identity")
         with self._lock:
             record = self._records.get(self._record_key(operation_identity, idempotency_key))
             if record is None:
@@ -370,24 +375,26 @@ def _result_base(payload: Mapping[str, Any], *, source_version: int) -> dict[str
 def build_confirm_inbound_result(
     payload: Mapping[str, Any], *, source_version: int, completed_at: str
 ) -> dict[str, Any]:
+    # Confirm inbound 的 frozen replay schema 不携带完成时间或原始物料明细。
+    del completed_at
     return {
         **_result_base(payload, source_version=source_version),
-        "confirmed_at": completed_at,
         "inbound_key": str(payload.get("inbound_key") or ""),
-        "material_code": str(payload.get("material_code") or ""),
-        "quantity": str(payload.get("quantity") or ""),
+        "document_no": str(payload.get("document_no") or ""),
     }
 
 
 def build_full_box_exchange_result(
     payload: Mapping[str, Any], *, source_version: int, completed_at: str
 ) -> dict[str, Any]:
+    # Full-box exchange 的 frozen replay schema 不携带完成时间。
+    del completed_at
     return {
         **_result_base(payload, source_version=source_version),
-        "exchanged_at": completed_at,
         "rack_id": str(payload.get("rack_id") or ""),
         "empty_box_id": str(payload.get("empty_box_id") or ""),
         "full_box_id": str(payload.get("full_box_id") or ""),
+        "exchange_request_code": str(payload.get("exchange_request_code") or ""),
     }
 
 

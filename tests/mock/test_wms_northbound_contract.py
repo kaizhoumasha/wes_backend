@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,8 @@ from tests.mock.wms_northbound_contract import (
     MOCK_NORTHBOUND_HMAC_SECRET_ENV,
     NorthboundAuthError,
     NorthboundOperationStore,
+    build_confirm_inbound_result,
+    build_full_box_exchange_result,
     build_package_binding_result,
     canonical_status_string,
     canonical_submit_string,
@@ -173,6 +177,93 @@ def test_store_replays_processing_and_can_record_rejection_and_not_found() -> No
     assert missing.state == "NOT_FOUND"
     assert missing.source_version is None
     assert missing.updated_at is None
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "builder", "payload"),
+    (
+        (
+            "confirm_inbound_status_replay.v1.json",
+            build_confirm_inbound_result,
+            {
+                "dispatch_key": "dispatch-replay-confirm-inbound-001",
+                "inbound_key": "inbound-replay-001",
+                "document_no": "document-replay-001",
+            },
+        ),
+        (
+            "full_box_exchange_status_replay.v1.json",
+            build_full_box_exchange_result,
+            {
+                "dispatch_key": "dispatch-replay-full-box-exchange-001",
+                "rack_id": "rack-replay-001",
+                "empty_box_id": "empty-box-replay-001",
+                "full_box_id": "full-box-replay-001",
+                "exchange_request_code": "exchange-replay-001",
+            },
+        ),
+        (
+            "notify_pkg_binding_status_replay.v1.json",
+            build_package_binding_result,
+            {
+                "dispatch_key": "dispatch-replay-notify-pkg-binding-001",
+                "package_id": "package-replay-001",
+                "pallet_id": "pallet-replay-001",
+            },
+        ),
+    ),
+)
+def test_completed_result_builders_match_frozen_status_replay_schema(
+    fixture_name: str,
+    builder: object,
+    payload: dict[str, str],
+) -> None:
+    fixture_path = Path(__file__).parents[1] / "fixtures" / "wms_provider_conformance" / fixture_name
+    fixture = json.loads(fixture_path.read_text())
+    expected = next(case for case in fixture["cases"] if case["case_id"] == "completed")["response"]["result_payload"]
+    assert callable(builder)
+
+    result = builder(payload, source_version=3, completed_at="2026-07-24T00:00:02+00:00")
+
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "reason_code"),
+    (
+        ("wms.inventory.confirm_inbound@v1", "MATERIAL_BLOCKED"),
+        ("wms.fulfillment.full_box_exchange@v1", "RACK_LOCKED"),
+        ("wms.fulfillment.notify_pkg_binding@v1", "WMS_BUSINESS_REJECTED"),
+    ),
+)
+def test_store_reject_accepts_only_reason_code_frozen_for_each_operation(
+    operation_identity: str, reason_code: str
+) -> None:
+    store = NorthboundOperationStore()
+    store.submit(operation_identity, "idem-reject", "a" * 64, _payload())
+
+    rejected = store.reject(operation_identity, "idem-reject", reason_code=reason_code)
+
+    assert rejected.state == "REJECTED"
+    assert rejected.reason_code == reason_code
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "reason_code"),
+    (
+        ("wms.inventory.confirm_inbound@v1", "RACK_LOCKED"),
+        ("wms.fulfillment.full_box_exchange@v1", "MATERIAL_BLOCKED"),
+        ("wms.fulfillment.notify_pkg_binding@v1", "MATERIAL_BLOCKED"),
+    ),
+)
+def test_store_reject_rejects_reason_code_frozen_for_another_operation(
+    operation_identity: str, reason_code: str
+) -> None:
+    store = NorthboundOperationStore()
+    store.submit(operation_identity, "idem-reject", "a" * 64, _payload())
+
+    with pytest.raises(ValueError, match="reason_code is not allowed"):
+        store.reject(operation_identity, "idem-reject", reason_code=reason_code)
 
 
 def test_callback_hint_is_registered_once_and_reset_removes_northbound_records() -> None:
