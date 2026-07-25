@@ -1257,21 +1257,12 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
 async def full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
     """模拟满箱交换 typed EFFECT，不触发生产写路径。"""
 
-    dispatch_key = str(payload.get("dispatch_key") or "")
     idempotency_key = str(request.headers.get("Idempotency-Key") or "")
-    requested_callback_type = str(payload.get("callback_type") or "")
-    if dispatch_key and requested_callback_type == "WMS_FULL_BOX_EXCHANGE_RESULT":
-        callback_payload = _legacy_transport_callback_payload(
-            callback_type=requested_callback_type,
-            request_payload=payload,
-            exchange_status="BUSINESS_COMPLETED",
-        )
-    else:
-        callback_payload = _typed_effect_callback_payload(
-            operation_identity="wms.fulfillment.full_box_exchange@v1",
-            idempotency_key=idempotency_key,
-            request_payload=payload,
-        )
+    callback_payload = _typed_effect_callback_payload(
+        operation_identity="wms.fulfillment.full_box_exchange@v1",
+        idempotency_key=idempotency_key,
+        request_payload=payload,
+    )
     rack_code = str(payload.get("rack_code") or "")
     rack_side = str(payload.get("rack_side") or "")
     full_box_object_keys = _string_list(payload, "full_box_object_keys")

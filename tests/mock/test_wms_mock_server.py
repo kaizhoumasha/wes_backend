@@ -16,7 +16,6 @@ from src.app.runtime.orchestration.sandbox_catalog_bridge import (
     mock_wms_inventory_seed,
     rough_sorter_scan_completed_payload,
 )
-from src.app.wms_integration.services.callback_normalizer import WmsExecutionCallbackNormalizer
 from src.core.api_security import calculate_body_hmac_signature
 from tests.mock import wms_mock_server
 from tests.mock.wms_northbound_contract import (
@@ -325,6 +324,27 @@ def test_wms_mock_northbound_status_exposes_not_found_and_rejected_states() -> N
     assert status.json()["state"] == "REJECTED"
     assert status.json()["reason_code"] == "RACK_LOCKED"
     assert status.json()["result_payload"] is None
+
+
+def test_wms_mock_northbound_status_hmac_binds_exact_raw_query_path() -> None:
+    signed_path = (
+        "/northbound/operations/status?operation_identity=wms.inventory.confirm_inbound%40v1"
+        "&idempotency_key=idem-raw-query-001"
+    )
+    semantically_equivalent_path = (
+        "/northbound/operations/status?idempotency_key=idem-raw-query-001"
+        "&operation_identity=wms.inventory.confirm_inbound@v1"
+    )
+    headers = _status_headers(path=signed_path)
+
+    with TestClient(wms_mock_server.app) as client:
+        mismatched = client.get(semantically_equivalent_path, headers=headers)
+        exact = client.get(signed_path, headers=headers)
+
+    assert mismatched.status_code == 401
+    assert mismatched.json()["code"] == "INVALID_HMAC_SIGNATURE"
+    assert exact.status_code == 200
+    assert exact.json()["state"] == "NOT_FOUND"
 
 
 def test_wms_mock_northbound_contract_faults_and_reset_are_publicly_controllable() -> None:
@@ -660,7 +680,9 @@ def test_wms_mock_bin_transport_route_delivers_completion_callback(monkeypatch: 
     }
 
 
-def test_wms_mock_full_box_route_delivers_legacy_handling_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wms_mock_full_box_northbound_submit_never_sends_legacy_completion_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     mock_post_callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
     payload = {
@@ -689,13 +711,12 @@ def test_wms_mock_full_box_route_delivers_legacy_handling_callback(monkeypatch: 
     assert response.status_code == 202
     mock_post_callback.assert_awaited_once()
     callback_payload = mock_post_callback.await_args.args[1]
-    assert callback_payload["callback_type"] == "WMS_FULL_BOX_EXCHANGE_RESULT"
-    assert callback_payload["dispatch_key"] == payload["dispatch_key"]
-    assert callback_payload["exchange_status"] == "BUSINESS_COMPLETED"
-    assert callback_payload["rack_release_id"] == payload["rack_release_id"]
-    assert "data" not in callback_payload
-    normalized = WmsExecutionCallbackNormalizer().normalize(callback_payload)
-    assert normalized["payload"]["exchange_status"] == "BUSINESS_COMPLETED"
+    assert callback_payload["callback_type"] == "WMS_EFFECT_STATUS_HINT"
+    assert callback_payload["data"] == {
+        "operation_identity": "wms.fulfillment.full_box_exchange@v1",
+        "idempotency_key": "idem-full-box-legacy-001",
+        "dispatch_key": payload["dispatch_key"],
+    }
 
 
 def _rack_allocate_payload(
