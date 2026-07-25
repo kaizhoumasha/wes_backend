@@ -37,6 +37,7 @@ _STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOU
 _REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _MAX_SAFE_RESPONSE_BYTES = 1024 * 1024
+_RESPONSE_CLOSE_TIMEOUT_SECONDS = 1.0
 _ACTIVE_CREDENTIAL_REFERENCE = str(WMS_NORTHBOUND_AUTH.credential_reference)
 _ACTIVE_HMAC_SECRET_ENV = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[_ACTIVE_CREDENTIAL_REFERENCE]
 
@@ -132,7 +133,7 @@ async def _request(
     max_response_bytes: int = _MAX_SAFE_RESPONSE_BYTES,
     **kwargs: Any,
 ) -> httpx.Response | None:
-    """单一总 deadline 覆盖 send、流式 body 与 close；超限立即关闭连接。"""
+    """请求 deadline 覆盖 send 与流式 body；清理使用独立短期限保证连接关闭。"""
 
     response: httpx.Response | None = None
     deadline = asyncio.get_running_loop().time() + request_timeout_seconds
@@ -156,9 +157,9 @@ async def _request(
     finally:
         if response is not None:
             try:
-                async with asyncio.timeout_at(deadline):
+                async with asyncio.timeout(_RESPONSE_CLOSE_TIMEOUT_SECONDS):
                     await response.aclose()
-            except TimeoutError:
+            except (httpx.HTTPError, TimeoutError):
                 pass
 
 

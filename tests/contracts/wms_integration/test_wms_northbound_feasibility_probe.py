@@ -430,3 +430,40 @@ async def test_total_deadline_includes_slow_streamed_response_body(
     assert first_submit.passed is False
     assert captured.out == ""
     assert captured.err == ""
+
+
+@pytest.mark.asyncio
+async def test_total_deadline_timeout_still_closes_streamed_response() -> None:
+    class TrackingSlowStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.close_started = 0
+            self.close_finished = 0
+
+        async def __aiter__(self):
+            await asyncio.sleep(0.05)
+            yield b"{}"
+
+        async def aclose(self) -> None:
+            self.close_started += 1
+            await asyncio.sleep(0)
+            self.close_finished += 1
+
+    stream = TrackingSlowStream()
+
+    async def slow_response(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(slow_response),
+        base_url="http://slow-body-wms.test",
+    ) as client:
+        response = await probe_module._request(
+            client,
+            "GET",
+            "/slow",
+            request_timeout_seconds=0.001,
+        )
+
+    assert response is None
+    assert stream.close_started == 1
+    assert stream.close_finished == 1

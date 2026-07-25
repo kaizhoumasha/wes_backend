@@ -1026,11 +1026,10 @@ def _typed_effect_callback_payload(
     request_payload: dict[str, Any],
 ) -> dict[str, Any]:
     dispatch_key = str(request_payload.get("dispatch_key") or "")
-    source_event_hash = hashlib.sha256(f"{operation_identity}:{dispatch_key}".encode()).hexdigest()[:16]
     return {
         "callback_type": "WMS_EFFECT_STATUS_HINT",
         "source_system": "WMS",
-        "source_event_id": f"wms-mock:typed-effect:{source_event_hash}",
+        "source_event_id": f"wms-mock:typed-effect:{uuid4().hex}",
         "trace_id": str(request_payload.get("trace_id") or f"wms-mock:{dispatch_key}"),
         "data": {
             "operation_identity": operation_identity,

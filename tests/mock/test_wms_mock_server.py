@@ -1066,6 +1066,54 @@ def test_wms_mock_typed_effect_routes_deliver_declared_callback(
     }
 
 
+def test_wms_mock_typed_effect_first_acceptances_use_unique_callback_event_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_post_callback = AsyncMock(return_value={"delivered": True})
+    monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
+    path = "/api/wms/fulfillment/package-binding"
+    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    payload = {
+        "dispatch_key": "package-binding-shared-dispatch",
+        "package_id": "PKG-001",
+        "pallet_id": "PALLET-001",
+        "station_code": "STATION-001",
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode()
+
+    with TestClient(wms_mock_server.app) as client:
+        for idempotency_key in ("idem-mock-001", "idem-mock-002"):
+            response = client.post(
+                path,
+                content=body,
+                headers=_submit_headers(
+                    body=body,
+                    path=path,
+                    operation_identity=operation_identity,
+                    idempotency_key=idempotency_key,
+                ),
+            )
+            assert response.status_code == 202
+
+        reset = client.post("/debug/reset")
+        assert reset.status_code == 200
+        restored = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key="idem-mock-001",
+            ),
+        )
+        assert restored.status_code == 202
+
+    source_event_ids = {call.args[1]["source_event_id"] for call in mock_post_callback.await_args_list}
+    assert mock_post_callback.await_count == 3
+    assert len(source_event_ids) == 3
+
+
 @pytest.mark.asyncio
 async def test_wms_mock_callback_sender_uses_authenticated_canonical_body(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
