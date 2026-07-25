@@ -12,14 +12,7 @@
 模块:
     - ecs_mock_server: ECS Mock 服务 (端口 8010)
     - wms_mock_server: WMS Mock 服务 (端口 8011)
+
+各 Mock 镜像是独立部署单元，因此包入口不能预加载其它服务及其运行时依赖。
+调用方应显式导入所需的子模块，例如 ``from tests.mock import wms_mock_server``。
 """
-
-from tests.mock.ecs_mock_server import EcsMockServer
-from tests.mock.ecs_mock_server import app as ecs_app
-from tests.mock.wms_mock_server import app as wms_app
-
-__all__ = [
-    "EcsMockServer",
-    "ecs_app",
-    "wms_app",
-]

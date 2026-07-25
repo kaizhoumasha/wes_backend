@@ -7,25 +7,33 @@ callback hint 交互，不记录或推断 WMS 内部工作流。当前 P0 验收
 ## 当前结论
 
 - 实际开发 Mock 验证：`PASS/GO`（当前 P0 门禁已关闭）
+- 实际 Compose 验证：image
+  `sha256:2b8f8ff7336213ce0292f25de6d656537b377fb10bcd520264435f92efcdc180`，
+  live pytest `1 passed`，CLI 45 case 全部 `passed=true`
 - 外部 WMS 联调验收模板：`PENDING`（后续，不阻塞当前 Mock 验收）
 - 外部 WMS 观测映射与采集模板：`BLOCKED`
 - 外部 WMS 联调测试数据清理模板：`BLOCKED`
 - 外部 WMS 整体切换模板：`BLOCKED`
 
-`PASS/GO` 表示实际 `tests.mock.wms_mock_server.app` 已通过三类 typed EFFECT 的黑盒合同验收，当前开发 Mock
-能力可以进入后续 WES 开发。不得把该结论替代未来外部 WMS 的联调验收，也不得预填外部确认人、验收时间或构建版本。
+`PASS/GO` 表示实际 Docker Compose `mock_wms` 已通过三类 typed EFFECT 的真实 TCP 黑盒合同验收，当前开发
+Mock 能力可以进入后续 WES 开发。不得把该结论替代未来外部 WMS 的联调验收，也不得预填外部确认人、验收时间或构建版本。
 只有下述真实证据完整、双方确认且清理目标经过单独审查后，才能改变外部模板的 `PENDING/BLOCKED` 状态。
 
-实际 Mock 的 `PASS/GO` 已额外证明：受理记录可在公开配置的可见性读数内暂时返回 `NOT_FOUND`，恢复可见后同键重放
-不产生第二份 effect；callback evidence 只公开 `operation_identity`、`idempotency_key`、`dispatch_key` 与
-`WMS_EFFECT_STATUS_HINT`，不携带 `COMPLETED`、`REJECTED`、`result` 或 `status` 等终态权威字段。最终状态仍必须由
-`GET /northbound/operations/status` 获得。
+实际 Mock 的 `PASS/GO` 已额外证明：`t0 / visibility_sla-1 / visibility_sla` 与
+`retention-1 / retention` 按 UTC aware 时钟和精确边界工作；保留边界前同键重放不产生第二份 effect，
+边界后旧记录过期且受控重提得到累计 effect=2。callback evidence 只公开 `operation_identity`、
+`idempotency_key`、`dispatch_key` 与 `WMS_EFFECT_STATUS_HINT`，不携带 `COMPLETED`、`REJECTED`、`result`
+或 `status` 等终态权威字段。最终状态仍必须由 `GET /northbound/operations/status` 获得。
+
+Mock Submit/Status 直接使用 WES sandbox material-flow v1/v2 凭据引用，active 为
+`secret://wms/material-flow-sandbox-hmac@v2`；没有 Mock 专用 credential。typed route
+`POST /api/wms/fulfillment/full-box-exchange` 不发送历史完成 callback，后者仅保留在独立 legacy route。
 
 ## WMS 团队必须提供的能力
 
 | 能力 | WMS 交付要求 | WES 验收方式 |
 | --- | --- | --- |
-| EFFECT submit | HTTP body 接收 operation-specific typed payload；从 `X-WES-Operation-Identity` 与 `Idempotency-Key` header 读取请求身份，以 `X-WES-Content-SHA256` 比较 fingerprint；不得要求 WES internal frozen binding 上 wire | 按合同矩阵验证 202、200、409、422、真实 deadline 超时、HMAC canonical input 及重复提交 |
+| EFFECT submit | HTTP body 接收 operation-specific typed payload；从 `X-WES-Operation-Identity` 与 `Idempotency-Key` header 读取请求身份，以 `X-WES-Content-SHA256` 比较 fingerprint；在幂等写入前严格拒绝 missing/extra/blank/type/非法 decimal；不得要求 WES internal frozen binding 上 wire | 按合同矩阵验证 202、200、409、422、并发恰好一个首次受理、真实 deadline 超时、HMAC canonical input 及重复提交 |
 | EFFECT status query | 按 `operation_identity + idempotency_key` 返回五态、单调 `source_version`、稳定拒绝码和 operation-specific typed result | 对三类 EFFECT 逐项回放可见状态、终态、`NOT_FOUND`、429、5xx、超时和响应体上限 |
 | QUERY | 实现 `wms.inventory.query_inventory@v1` 的预算、分页、数值精度、业务拒绝、429 和错误形状 | 执行 QUERY 合同题库并保存规范化结果 |
 | callback hint（可选） | 仅携带关联键，允许 WES 提前发起 status query；不提供终态权威 | 验证接收、拒绝、重复、触发查询以及 enqueue 失败后的 scanner 接管 |
@@ -92,10 +100,11 @@ parameter 传递，并通过该 raw-path 值共同被签名，但不是额外的
 | --- | --- | --- | --- | --- | --- | ---: | --- | --- |
 |  |  |  |  |  |  |  |  |  |
 
-最低 case 集合为：首次受理、处理中同键重放、已完成同键重放、同键异 fingerprint、提交真实 deadline
-超时、可见性 SLA 边界、单调状态序列、拒绝、`NOT_FOUND` 宽限期、受控同键重提、已见状态后丢失、
-保留期边界、响应体上限、429 + `Retry-After`、5xx 和状态查询超时。三类 EFFECT 的 `COMPLETED` 必须分别通过
-对应 typed result 校验。
+最低 case 集合为：首次受理、并发处理中同键重放、已完成同键重放、同键异 fingerprint、typed body
+required/allowed/type/值域拒绝、提交真实 deadline 超时、可见性 SLA 精确边界、单调状态序列、拒绝、
+`NOT_FOUND` 宽限期、受控同键重提、已见状态后丢失、保留期精确边界、流式响应体上限、429 +
+`Retry-After`、固定 5xx 和状态查询超时。故障注入必须精确作用于 method/path/operation，且并发一次性故障
+恰好由一个匹配请求消费。三类 EFFECT 的 `COMPLETED` 必须分别通过对应 typed result 校验。
 
 双方确认字段：
 

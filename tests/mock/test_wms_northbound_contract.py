@@ -5,15 +5,18 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from tests.mock import wms_mock_server
 from tests.mock.wms_northbound_contract import (
-    MOCK_NORTHBOUND_CREDENTIAL_REFERENCE,
-    MOCK_NORTHBOUND_HMAC_SECRET_ENV,
+    ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+    MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V1,
+    MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2,
+    MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1,
+    MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2,
     NorthboundAuthError,
     NorthboundOperationStore,
     build_confirm_inbound_result,
@@ -44,7 +47,7 @@ def _submit_headers(*, body: bytes, secret: bytes, content_hash: str | None = No
         idempotency_key=idempotency_key,
     )
     return {
-        "X-WES-Credential-Reference": MOCK_NORTHBOUND_CREDENTIAL_REFERENCE,
+        "X-WES-Credential-Reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
         "X-WES-Signature-Algorithm": "HMAC_SHA256",
         "X-WES-Timestamp": timestamp,
         "X-WES-Nonce": nonce,
@@ -63,7 +66,7 @@ def _status_headers(*, secret: bytes, path: str) -> dict[str, str]:
         method="GET", path=path, timestamp=timestamp, nonce=nonce, payload_hash=payload_hash
     )
     return {
-        "X-WMS-Credential-Reference": MOCK_NORTHBOUND_CREDENTIAL_REFERENCE,
+        "X-WMS-Credential-Reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
         "X-WMS-Signature-Algorithm": "HMAC_SHA256",
         "X-WMS-Timestamp": timestamp,
         "X-WMS-Nonce": nonce,
@@ -82,16 +85,18 @@ def _payload(*, station_code: str = "station-a") -> dict[str, str]:
 
 
 def test_resolve_mock_credential_accepts_only_versioned_allowlisted_reference(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(MOCK_NORTHBOUND_HMAC_SECRET_ENV, "mock-hmac-secret")
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1, "mock-hmac-secret-v1")
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, "mock-hmac-secret-v2")
 
-    assert resolve_mock_northbound_credential(MOCK_NORTHBOUND_CREDENTIAL_REFERENCE) == b"mock-hmac-secret"
+    assert resolve_mock_northbound_credential(MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V1) == b"mock-hmac-secret-v1"
+    assert resolve_mock_northbound_credential(MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2) == b"mock-hmac-secret-v2"
     with pytest.raises(NorthboundAuthError, match="CREDENTIAL_REFERENCE_REJECTED"):
         resolve_mock_northbound_credential("secret://wms/other@v1")
 
 
 def test_submit_hmac_rejects_tampered_content_hash(monkeypatch: pytest.MonkeyPatch) -> None:
     secret = b"mock-hmac-secret"
-    monkeypatch.setenv(MOCK_NORTHBOUND_HMAC_SECRET_ENV, secret.decode())
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, secret.decode())
     body = b'{"dispatch_key":"dispatch-001"}'
 
     with pytest.raises(NorthboundAuthError, match="CONTENT_HASH_MISMATCH"):
@@ -105,7 +110,7 @@ def test_submit_hmac_rejects_tampered_content_hash(monkeypatch: pytest.MonkeyPat
 
 def test_submit_hmac_rejects_signature_not_matching_canonical_field_order(monkeypatch: pytest.MonkeyPatch) -> None:
     secret = b"mock-hmac-secret"
-    monkeypatch.setenv(MOCK_NORTHBOUND_HMAC_SECRET_ENV, secret.decode())
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, secret.decode())
     body = b'{"dispatch_key":"dispatch-001"}'
     headers = _submit_headers(body=body, secret=secret)
     headers["X-WES-Signature"] = "0" * 64
@@ -116,7 +121,7 @@ def test_submit_hmac_rejects_signature_not_matching_canonical_field_order(monkey
 
 def test_status_hmac_uses_received_raw_query_path(monkeypatch: pytest.MonkeyPatch) -> None:
     secret = b"mock-hmac-secret"
-    monkeypatch.setenv(MOCK_NORTHBOUND_HMAC_SECRET_ENV, secret.decode())
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, secret.decode())
     path = "/northbound/operations/status?operation_identity=wms.fulfillment.notify_pkg_binding%40v1&idempotency_key=idem-001"
     headers = _status_headers(secret=secret, path=path)
 
@@ -286,3 +291,75 @@ def test_wms_mock_reset_clears_shared_northbound_operation_store() -> None:
     wms_mock_server.reset_mock_wms_state()
 
     assert wms_mock_server.northbound_operation_store.query(operation_identity, "idem-reset").state == "NOT_FOUND"
+
+
+def test_mock_credential_uses_material_flow_sandbox_rotation_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mock 必须接受真实 WES active v2 与冻结重试 v1，拒绝已废弃的 mock 专用 reference。"""
+
+    monkeypatch.setenv("WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1", "material-flow-v1")
+    monkeypatch.setenv("WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2", "material-flow-v2")
+    monkeypatch.setenv("MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1", "obsolete-mock-secret")
+
+    assert resolve_mock_northbound_credential("secret://wms/material-flow-sandbox-hmac@v1") == b"material-flow-v1"
+    assert resolve_mock_northbound_credential("secret://wms/material-flow-sandbox-hmac@v2") == b"material-flow-v2"
+    with pytest.raises(NorthboundAuthError, match="CREDENTIAL_REFERENCE_REJECTED"):
+        resolve_mock_northbound_credential("secret://wms/mock-northbound-hmac@v1")
+
+
+def test_store_visibility_and_retention_follow_clock_boundaries() -> None:
+    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    idempotency_key = "idem-clock-boundary-001"
+    started_at = datetime(2026, 7, 25, tzinfo=UTC)
+    current = [started_at]
+    store = NorthboundOperationStore(
+        clock=lambda: current[0],
+        retention_seconds=9,
+        visibility_sla_seconds=2,
+    )
+    store.configure_visibility_delay(operation_identity, idempotency_key, delay_seconds=2)
+
+    first = store.submit(operation_identity, idempotency_key, "a" * 64, _payload())
+    hidden_at_accept = store.query(operation_identity, idempotency_key)
+    current[0] = started_at + timedelta(seconds=1)
+    hidden_before_sla = store.query(operation_identity, idempotency_key)
+    current[0] = started_at + timedelta(seconds=2)
+    visible_at_sla = store.query(operation_identity, idempotency_key)
+    current[0] = started_at + timedelta(seconds=8)
+    replay_before_boundary = store.submit(operation_identity, idempotency_key, "a" * 64, _payload())
+    current[0] = started_at + timedelta(seconds=9)
+    expired_at_boundary = store.query(operation_identity, idempotency_key)
+    recovered_at_boundary = store.submit(operation_identity, idempotency_key, "a" * 64, _payload())
+
+    assert first.status_code == 202
+    assert hidden_at_accept.state == "NOT_FOUND"
+    assert hidden_before_sla.state == "NOT_FOUND"
+    assert visible_at_sla.state == "ACCEPTED"
+    assert replay_before_boundary.status_code == 409
+    assert store.effect_count(operation_identity, idempotency_key) == 2
+    assert expired_at_boundary.state == "NOT_FOUND"
+    assert recovered_at_boundary.status_code == 202
+
+
+def test_store_is_immediately_visible_without_mock_visibility_control() -> None:
+    store = NorthboundOperationStore(
+        clock=lambda: datetime(2026, 7, 25, tzinfo=UTC),
+        retention_seconds=9,
+        visibility_sla_seconds=2,
+    )
+    operation_identity = "wms.inventory.confirm_inbound@v1"
+
+    store.submit(
+        operation_identity,
+        "idem-immediately-visible",
+        "a" * 64,
+        {
+            "dispatch_key": "dispatch-immediately-visible",
+            "inbound_key": "inbound-immediately-visible",
+            "material_code": "material-immediately-visible",
+            "quantity": "1",
+        },
+    )
+
+    assert store.query(operation_identity, "idem-immediately-visible").state == "ACCEPTED"

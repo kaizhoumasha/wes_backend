@@ -13,9 +13,10 @@
 
 验收必须通过公开 HTTP 访问实际 `mock_wms`，不得读取其内部状态。
 
-## 2. 当前差距
+## 2. 当前实现基线
 
-实际 `mock_wms` 已提供三个 typed EFFECT 提交接口，并能发送 `WMS_EFFECT_STATUS_HINT`：
+实际 `mock_wms` 已提供三个 typed EFFECT 提交接口、统一 status query、HMAC 校验、幂等记录、
+operation-specific typed result、故障控制和 reset：
 
 | Operation | Submit endpoint |
 | --- | --- |
@@ -23,7 +24,11 @@
 | `wms.fulfillment.full_box_exchange@v1` | `POST /api/wms/fulfillment/full-box-exchange` |
 | `wms.fulfillment.notify_pkg_binding@v1` | `POST /api/wms/fulfillment/package-binding` |
 
-当前缺少统一 status query、完整幂等记录、Submit/Status HMAC 校验、故障边界控制和对应 reset。
+Mock 直接复用 WES sandbox material-flow 的真实版本化凭据引用：
+`secret://wms/material-flow-sandbox-hmac@v1` 与
+`secret://wms/material-flow-sandbox-hmac@v2`，active version 为 v2。secret 分别只从
+`WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1/V2` 注入；禁止再创建 Mock 专用 credential reference
+或 secret 环境变量。
 
 ## 3. P0 必须能力
 
@@ -40,7 +45,10 @@
    `IDEMPOTENCY_REQUEST_IN_PROGRESS`；
 7. 同 key、同 fingerprint 且已终结时返回原业务结果，不产生第二份业务效果；
 8. 同 key、不同 fingerprint 时返回 HTTP 422 和 `IDEMPOTENCY_CONFLICT`；
-9. callback hint 只发送一次可关联提示，不携带或决定终态。
+9. callback hint 只发送一次可关联提示，不携带或决定终态；
+10. typed body 必须在创建幂等记录前按冻结 wire schema 校验 required/allowed fields、非空字符串、长度和
+    `quantity` 的有限正十进制字符串；失败固定返回 HTTP 422 + `INVALID_TYPED_REQUEST`，不得留下记录或 effect；
+11. 并发同 key、同 fingerprint 首次提交必须恰好一个 HTTP 202，其余为 HTTP 409，effect count 恒为 1。
 
 ### 3.2 Status query
 
@@ -64,11 +72,25 @@ Status query 必须校验 `X-WMS-*` 五项 canonical input。响应状态只允�
 状态查询必须分别覆盖入库确认、满箱交换和料盘绑定。结果 schema 以
 `docs/contracts/wms-northbound-interaction-contract.md` 及
 `tests/fixtures/wms_provider_conformance/*_status_replay.v1.json` 为准。
+入库确认的 `document_no`、满箱交换的 `exchange_request_code` 以及三个 operation 的原始关联字段
+必须非空且可追溯到提交 body；禁止为了通过 schema 而返回空占位值。
 
 ### 3.4 保留、可见性、故障与重置
 
 实际 Mock 必须公开可配置且可验证的幂等/状态保留期、可见性 SLA、最大响应体、deadline、429 +
 `Retry-After`、5xx、慢响应、暂时 `NOT_FOUND`、可见后丢失和受控同键恢复重提。
+
+时间语义以 UTC aware Mock 时钟为准：首次受理时同时冻结 `accepted_at`、`visible_at` 和 `expires_at`。
+当 `now < visible_at` 时 status 返回 `NOT_FOUND`；当 `now >= visible_at` 时记录可见；当
+`now >= expires_at` 时原记录原子过期，同键再次提交可创建新 effect。保留边界前的同键重放仍必须命中原记录，
+不得依赖查询次数模拟时间。
+
+故障必须以 HTTP method、精确 target path 及可选 operation identity 为作用域，并在并发请求到达第一个
+`await` 前原子 claim；不匹配的 health/contract、inventory QUERY 与 legacy full-box 路由不得消费故障。
+5xx 固定使用 `TEMPORARILY_UNAVAILABLE`，超大响应必须流式发送，submit/status deadline 必须由真实网络等待触发。
+
+typed `POST /api/wms/fulfillment/full-box-exchange` 只返回 HTTP 202 和 callback hint；历史完成 callback
+仅由独立的 `POST /api/wms/legacy/full-box-exchange` 触发，二者不得混用。
 
 故障注入只存在于 Mock/测试环境。reset 必须清理 typed EFFECT 幂等记录、状态快照、callback hint
 去重记录、故障注入和可控时钟；清理后相同 idempotency key 可以作为新请求重新受理。
@@ -80,6 +102,8 @@ Status query 必须校验 `X-WMS-*` 五项 canonical input。响应状态只允�
 3. Docker/E2E submit/status URL 与探针公开 URL 一致；
 4. `tests/mock/`、`tests/contracts/wms_integration/` 和相关 runtime contract tests 全绿；
 5. reset 测试证明全部北向状态已清空；
-6. 验收报告记录 Mock build/version、承诺参数、命令和结果。
+6. 验收报告记录 Mock image digest、承诺参数、命令和结果；
+7. 必须显式构建并启动 Docker Compose `mock_wms`，以真实 TCP 连接运行 heavy/live pytest 和 CLI 探针；
+   ASGITransport 测试不能替代该证据。
 
 P0 完成前不新增 WMS 内部工作流模型；WES 只验收公开 submit、status query 和可选 callback hint。

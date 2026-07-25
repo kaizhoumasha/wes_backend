@@ -22,7 +22,10 @@ HMAC_SECRET_NAMES = (
     "WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1",
 )
 REVOKED_CREDENTIAL_REFERENCES_NAME = "WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES"
-MOCK_NORTHBOUND_HMAC_SECRET_NAME = "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1"
+MOCK_WMS_MATERIAL_FLOW_SECRET_NAMES = (
+    "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
+    "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
+)
 LEGACY_ENDPOINT_NAMES = (
     "WMS_RCS_RACK_OPERATION_URL",
     "WMS_RCS_BIN_OPERATION_URL",
@@ -79,7 +82,27 @@ def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
     )
     assert mock_wms_env["API_APP_ID"] == "${API_APP_ID:-app_local_mock}"
     assert mock_wms_env["API_APP_SECRET"] == "${API_APP_SECRET:-local_mock_change_me}"
-    assert mock_wms_env[MOCK_NORTHBOUND_HMAC_SECRET_NAME] == f"${{{MOCK_NORTHBOUND_HMAC_SECRET_NAME}:-}}"
+    for secret_name in MOCK_WMS_MATERIAL_FLOW_SECRET_NAMES:
+        assert mock_wms_env[secret_name] == f"${{{secret_name}:-}}"
+    assert "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1" not in mock_wms_env
+
+
+def test_mock_dockerfile_copies_only_the_current_sandbox_catalog_bridge() -> None:
+    dockerfile_text = (BACKEND_ROOT / "tests/mock/Dockerfile").read_text(encoding="utf-8")
+
+    assert (
+        "COPY src/app/runtime/orchestration/sandbox_catalog_bridge.py "
+        "/app/src/app/runtime/orchestration/sandbox_catalog_bridge.py"
+    ) in dockerfile_text
+    assert "src/workline_runtime/sandbox_catalog.py" not in dockerfile_text
+    assert "src/workline_runtime/runtime_events.py" not in dockerfile_text
+
+
+def test_mock_package_does_not_eagerly_import_peer_servers() -> None:
+    package_text = (BACKEND_ROOT / "tests/mock/__init__.py").read_text(encoding="utf-8")
+
+    assert "from tests.mock.ecs_mock_server import" not in package_text
+    assert "from tests.mock.wms_mock_server import" not in package_text
 
 
 def test_dev_and_test_env_declare_container_mock_urls() -> None:
@@ -97,11 +120,15 @@ def test_dev_and_test_env_declare_container_mock_urls() -> None:
         assert "CONTAINER_WES_EXTERNAL_CALLBACK_URL=http://api:8001/api/v1/callback/external" in env_text
         assert "API_APP_ID=app_local_mock" in env_text
         assert "API_APP_SECRET=local_mock_change_me" in env_text
-        assert f"{MOCK_NORTHBOUND_HMAC_SECRET_NAME}=" in env_text
+        assert "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1=" not in env_text
         assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=true" in env_text
         assert "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION=v2" in env_text
         assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1=" in env_text
         assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2=" in env_text
+        assert (
+            "CONTAINER_WMS_RCS_FULL_BOX_EXCHANGE_URL=http://mock_wms:8011/api/wms/legacy/full-box-exchange"
+        ) in env_text
+        assert "WMS_RCS_FULL_BOX_EXCHANGE_URL=http://localhost:8011/api/wms/legacy/full-box-exchange" in env_text
         assert "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1=" in env_text
         assert "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1=" in env_text
         assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text

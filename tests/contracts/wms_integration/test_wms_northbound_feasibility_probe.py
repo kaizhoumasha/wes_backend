@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
@@ -16,7 +19,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from scripts.verify_wms_northbound_feasibility import _status_headers, _submit_headers, run_probe
 from tests.mock import wms_mock_server
-from tests.mock.wms_northbound_contract import MOCK_NORTHBOUND_HMAC_SECRET_ENV
+from tests.mock.wms_northbound_contract import (
+    ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+    MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1,
+    MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -26,6 +33,21 @@ OPERATION_IDENTITIES = {
     "wms.fulfillment.full_box_exchange@v1",
     "wms.fulfillment.notify_pkg_binding@v1",
 }
+
+
+def test_feasibility_probe_script_is_directly_executable() -> None:
+    script = Path(__file__).resolve().parents[3] / "scripts/verify_wms_northbound_feasibility.py"
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        check=False,
+        capture_output=True,
+        cwd=script.parent,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--base-url" in completed.stdout
 
 
 def _snapshot(
@@ -51,7 +73,8 @@ def _snapshot(
 async def northbound_mock_client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.AsyncClient]:
     """验收探针连接实际 Mock app，仅通过其公开 HTTP 路由复位和观察。"""
 
-    monkeypatch.setenv(MOCK_NORTHBOUND_HMAC_SECRET_ENV, "probe-mock-hmac-secret")
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1, "probe-material-flow-v1")
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, "probe-material-flow-v2")
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=wms_mock_server.app),
         base_url="http://mock-wms.test",
@@ -73,7 +96,7 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
 
     assert report.passed is True, report.cases
     case_ids = {case.case_id for case in report.cases}
-    assert {"public_contract_parameters", "mock_hmac_secret_available"} <= case_ids
+    assert {"public_contract_parameters", "active_v2_hmac_secret_available"} <= case_ids
     for operation_identity in OPERATION_IDENTITIES:
         assert {
             f"{operation_identity}:first_submit",
@@ -83,12 +106,17 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
             f"{operation_identity}:idempotency_conflict",
             f"{operation_identity}:rejected_stable_reason",
             f"{operation_identity}:not_found",
-            f"{operation_identity}:visibility_not_found_then_visible_one_effect",
+            f"{operation_identity}:visibility_sla_and_retention_boundaries",
+            f"{operation_identity}:visible_then_lost_is_independent_fault",
+            f"{operation_identity}:typed_request_validation",
             f"{operation_identity}:callback_hint_evidence_and_status_authority",
             f"{operation_identity}:submit_hmac_signature_tamper",
         } <= case_ids
     assert {
-        "fault_matrix_rate_limit_5xx_timeout_and_response_budget",
+        "fault_matrix_rate_limit_and_fixed_5xx",
+        "northbound_fault_scope_excludes_health_inventory_and_legacy",
+        "submit_deadline_ambiguous_retry_one_effect",
+        "status_deadline",
         "response_body_budget_exceeded_without_remote_echo",
         "status_hmac_tamper_rejected_without_remote_echo",
         "public_reset_clears_observable_operation",
@@ -104,8 +132,8 @@ async def test_mock_rejects_raw_body_hash_tampering(
     raw_body = b'{"dispatch_key":"dispatch-001","package_id":"package-001","pallet_id":"pallet-001","station_code":"station-a"}'
     path = "/api/wms/fulfillment/package-binding"
     headers = _submit_headers(
-        secret=b"probe-mock-hmac-secret",
-        credential_reference="secret://wms/mock-northbound-hmac@v1",
+        secret=b"probe-material-flow-v2",
+        credential_reference=ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
         path=path,
         body=raw_body,
         operation_identity="wms.fulfillment.notify_pkg_binding@v1",
@@ -134,8 +162,8 @@ async def test_feasibility_probe_reports_protocol_failure_without_response_body(
     response = await northbound_mock_client.get(
         raw_path,
         headers=_status_headers(
-            secret=b"probe-mock-hmac-secret",
-            credential_reference="secret://wms/mock-northbound-hmac@v1",
+            secret=b"probe-material-flow-v2",
+            credential_reference=ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
             raw_path=raw_path,
         ),
     )
@@ -219,12 +247,12 @@ async def test_total_deadline_includes_slow_streamed_response_body(
     """即使 headers 已返回，慢速分块 body 也必须消耗同一个客户端总 deadline。"""
 
     app = FastAPI()
-    monkeypatch.setenv(MOCK_NORTHBOUND_HMAC_SECRET_ENV, "probe-mock-hmac-secret")
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, "probe-material-flow-v2")
 
     @app.get("/northbound/contract")
     async def contract() -> dict[str, object]:
         return {
-            "credential_reference": "secret://wms/mock-northbound-hmac@v1",
+            "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
             "idempotency_retention_seconds": 9,
             "status_visibility_sla_seconds": 2,
             "max_response_bytes": 4096,

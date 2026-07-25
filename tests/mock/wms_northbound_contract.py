@@ -9,16 +9,23 @@ import hashlib
 import hmac
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-MOCK_NORTHBOUND_CREDENTIAL_REFERENCE = "secret://wms/mock-northbound-hmac@v1"
-MOCK_NORTHBOUND_HMAC_SECRET_ENV = "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1"
-_CREDENTIAL_ENV_BY_REFERENCE = {MOCK_NORTHBOUND_CREDENTIAL_REFERENCE: MOCK_NORTHBOUND_HMAC_SECRET_ENV}
+MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V1 = "secret://wms/material-flow-sandbox-hmac@v1"
+MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2 = "secret://wms/material-flow-sandbox-hmac@v2"
+ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE = MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2
+MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1 = "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1"
+MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2 = "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2"
+_CREDENTIAL_ENV_BY_REFERENCE = {
+    MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V1: MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1,
+    MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2: MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2,
+}
 _KNOWN_OPERATION_IDENTITIES = frozenset(
     {
         "wms.inventory.confirm_inbound@v1",
@@ -31,6 +38,41 @@ _ALLOWED_REJECTION_REASON_CODES_BY_OPERATION = {
     "wms.fulfillment.full_box_exchange@v1": frozenset({"RACK_LOCKED", "WMS_BUSINESS_REJECTED"}),
     "wms.fulfillment.notify_pkg_binding@v1": frozenset({"WMS_BUSINESS_REJECTED"}),
 }
+_REQUEST_FIELDS_BY_OPERATION = {
+    "wms.inventory.confirm_inbound@v1": {
+        "required": frozenset({"dispatch_key", "inbound_key", "material_code", "quantity"}),
+        "optional": frozenset({"warehouse_code", "owner_code", "lot_no"}),
+        "max_lengths": {
+            "dispatch_key": 240,
+            "inbound_key": 120,
+            "material_code": 120,
+            "quantity": 120,
+            "warehouse_code": 120,
+            "owner_code": 120,
+            "lot_no": 120,
+        },
+    },
+    "wms.fulfillment.full_box_exchange@v1": {
+        "required": frozenset({"dispatch_key", "rack_id", "empty_box_id", "full_box_id"}),
+        "optional": frozenset(),
+        "max_lengths": {
+            "dispatch_key": 240,
+            "rack_id": 120,
+            "empty_box_id": 120,
+            "full_box_id": 120,
+        },
+    },
+    "wms.fulfillment.notify_pkg_binding@v1": {
+        "required": frozenset({"dispatch_key", "package_id", "pallet_id", "station_code"}),
+        "optional": frozenset(),
+        "max_lengths": {
+            "dispatch_key": 240,
+            "package_id": 120,
+            "pallet_id": 120,
+            "station_code": 120,
+        },
+    },
+}
 
 
 class NorthboundAuthError(ValueError):
@@ -41,6 +83,10 @@ class NorthboundAuthError(ValueError):
         super().__init__(code)
 
 
+class NorthboundPayloadValidationError(ValueError):
+    """typed wire body 不满足冻结 required/allowed/type 合同。"""
+
+
 def content_sha256(body: bytes) -> str:
     """返回实际 wire bytes 的小写 SHA-256 指纹。"""
 
@@ -48,7 +94,7 @@ def content_sha256(body: bytes) -> str:
 
 
 def resolve_mock_northbound_credential(credential_reference: str) -> bytes:
-    """只解析 Mock 明确声明的版本化 credential reference。"""
+    """解析真实 WES sandbox material-flow active/frozen credential reference。"""
 
     env_name = _CREDENTIAL_ENV_BY_REFERENCE.get(credential_reference)
     if env_name is None:
@@ -122,6 +168,33 @@ def verify_status_hmac(headers: Mapping[str, str], body: bytes, *, method: str, 
     _verify_signature(normalized, "x-wms-signature", expected)
 
 
+def validate_typed_request(operation_identity: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """在幂等写入前校验 Mock 自包含的 operation-specific wire schema。"""
+
+    try:
+        spec = _REQUEST_FIELDS_BY_OPERATION[operation_identity]
+    except KeyError as exc:
+        raise NorthboundPayloadValidationError("unsupported operation_identity") from exc
+    fields = frozenset(payload)
+    required = spec["required"]
+    allowed = required | spec["optional"]
+    if not required <= fields or not fields <= allowed:
+        raise NorthboundPayloadValidationError("typed request fields are invalid")
+    for field_name, value in payload.items():
+        if not isinstance(value, str) or value != value.strip() or not value:
+            raise NorthboundPayloadValidationError("typed request string is invalid")
+        if len(value) > spec["max_lengths"][field_name]:
+            raise NorthboundPayloadValidationError("typed request string is too long")
+    if operation_identity == "wms.inventory.confirm_inbound@v1":
+        try:
+            quantity = Decimal(payload["quantity"])
+        except (InvalidOperation, ValueError) as exc:
+            raise NorthboundPayloadValidationError("quantity is not a decimal string") from exc
+        if not quantity.is_finite() or quantity <= 0:
+            raise NorthboundPayloadValidationError("quantity must be a positive finite decimal")
+    return dict(payload)
+
+
 def _normalized_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {str(name).lower(): str(value) for name, value in headers.items()}
 
@@ -190,6 +263,9 @@ class _OperationRecord:
     fingerprint: str
     payload: dict[str, Any]
     provider_reference: str
+    accepted_at: datetime
+    visible_at: datetime
+    expires_at: datetime
     state: str
     source_version: int
     updated_at: str
@@ -202,10 +278,22 @@ class _OperationRecord:
 class NorthboundOperationStore:
     """由单一锁保护的 Mock 北向幂等记录与确定性状态推进。"""
 
-    def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        retention_seconds: int = 9,
+        visibility_sla_seconds: int = 2,
+    ) -> None:
+        if retention_seconds <= 0 or visibility_sla_seconds <= 0:
+            raise ValueError("northbound retention and visibility SLA must be positive")
         self._lock = RLock()
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._retention_seconds = retention_seconds
+        self._visibility_sla_seconds = visibility_sla_seconds
         self._records: dict[tuple[str, str], _OperationRecord] = {}
+        self._pending_visibility_delays: dict[tuple[str, str], int] = {}
+        self._effect_counts: dict[tuple[str, str], int] = {}
 
     def submit(
         self,
@@ -218,16 +306,23 @@ class NorthboundOperationStore:
 
         key = self._record_key(operation_identity, idempotency_key)
         with self._lock:
-            record = self._records.get(key)
+            current = self._current_time()
+            record = self._active_record(key, current)
             if record is None:
-                now = self._now()
+                visibility_delay = self._pending_visibility_delays.pop(key, 0)
+                effect_count = self._effect_counts.get(key, 0) + 1
+                self._effect_counts[key] = effect_count
                 record = _OperationRecord(
                     fingerprint=fingerprint,
                     payload=dict(payload),
                     provider_reference=self._provider_reference(operation_identity, idempotency_key),
+                    accepted_at=current,
+                    visible_at=current + timedelta(seconds=visibility_delay),
+                    expires_at=current + timedelta(seconds=self._retention_seconds),
                     state="ACCEPTED",
                     source_version=0,
-                    updated_at=now,
+                    updated_at=current.isoformat(),
+                    effect_count=effect_count,
                 )
                 self._records[key] = record
                 return NorthboundSubmission(status_code=202, snapshot=self._snapshot(record))
@@ -243,11 +338,15 @@ class NorthboundOperationStore:
             )
 
     def query(self, operation_identity: str, idempotency_key: str) -> NorthboundStatusSnapshot:
-        """返回当前快照后，将非终态按 ACCEPTED→PROCESSING→COMPLETED 推进一次。"""
+        """按时钟判定不可见/过期；可见后再推进 ACCEPTED→PROCESSING→COMPLETED。"""
 
         with self._lock:
-            record = self._records.get(self._record_key(operation_identity, idempotency_key))
+            key = self._record_key(operation_identity, idempotency_key)
+            current = self._current_time()
+            record = self._active_record(key, current)
             if record is None:
+                return _not_found_snapshot()
+            if current < record.visible_at:
                 return _not_found_snapshot()
             snapshot = self._snapshot(record)
             if record.state == "ACCEPTED":
@@ -262,7 +361,8 @@ class NorthboundOperationStore:
         if reason_code not in _ALLOWED_REJECTION_REASON_CODES_BY_OPERATION[operation_identity]:
             raise ValueError("reason_code is not allowed for operation_identity")
         with self._lock:
-            record = self._records.get(self._record_key(operation_identity, idempotency_key))
+            key = self._record_key(operation_identity, idempotency_key)
+            record = self._active_record(key, self._current_time())
             if record is None:
                 return _not_found_snapshot()
             if record.state not in {"COMPLETED", "REJECTED"}:
@@ -273,7 +373,8 @@ class NorthboundOperationStore:
         """只允许现存 record 首次登记 callback hint，避免重复触发状态查询。"""
 
         with self._lock:
-            record = self._records.get(self._record_key(operation_identity, idempotency_key))
+            key = self._record_key(operation_identity, idempotency_key)
+            record = self._active_record(key, self._current_time())
             if record is None or record.callback_hint_registered:
                 return False
             record.callback_hint_registered = True
@@ -281,14 +382,34 @@ class NorthboundOperationStore:
 
     def effect_count(self, operation_identity: str, idempotency_key: str) -> int:
         with self._lock:
-            record = self._records.get(self._record_key(operation_identity, idempotency_key))
-            return 0 if record is None else record.effect_count
+            return self._effect_counts.get(self._record_key(operation_identity, idempotency_key), 0)
+
+    def configure_visibility_delay(
+        self,
+        operation_identity: str,
+        idempotency_key: str,
+        *,
+        delay_seconds: int,
+    ) -> None:
+        """Mock-only 控制面按秒设置 ``visible_at``，不得超过公开 SLA。"""
+
+        if not 0 <= delay_seconds <= self._visibility_sla_seconds:
+            raise ValueError("visibility delay must be within the declared SLA")
+        key = self._record_key(operation_identity, idempotency_key)
+        with self._lock:
+            record = self._active_record(key, self._current_time())
+            if record is None:
+                self._pending_visibility_delays[key] = delay_seconds
+            else:
+                record.visible_at = record.accepted_at + timedelta(seconds=delay_seconds)
 
     def reset(self) -> None:
         """清理全部北向记录和 callback hint 登记，供 /debug/reset 复位。"""
 
         with self._lock:
             self._records.clear()
+            self._pending_visibility_delays.clear()
+            self._effect_counts.clear()
 
     def _transition(
         self,
@@ -335,11 +456,25 @@ class NorthboundOperationStore:
         digest = hashlib.sha256(f"{operation_identity}\n{idempotency_key}".encode()).hexdigest()[:16]
         return f"mock-wms:{digest}"
 
-    def _now(self) -> str:
+    def _active_record(
+        self,
+        key: tuple[str, str],
+        current: datetime,
+    ) -> _OperationRecord | None:
+        record = self._records.get(key)
+        if record is not None and current >= record.expires_at:
+            self._records.pop(key, None)
+            return None
+        return record
+
+    def _current_time(self) -> datetime:
         current = self._clock()
-        if current.tzinfo is None:
+        if current.tzinfo is None or current.utcoffset() is None:
             raise ValueError("Northbound mock clock must be timezone-aware")
-        return current.astimezone(UTC).isoformat()
+        return current.astimezone(UTC)
+
+    def _now(self) -> str:
+        return self._current_time().isoformat()
 
 
 def build_typed_result(
@@ -380,7 +515,7 @@ def build_confirm_inbound_result(
     return {
         **_result_base(payload, source_version=source_version),
         "inbound_key": str(payload.get("inbound_key") or ""),
-        "document_no": str(payload.get("document_no") or ""),
+        "document_no": str(payload.get("document_no") or payload.get("inbound_key") or ""),
     }
 
 
@@ -394,7 +529,7 @@ def build_full_box_exchange_result(
         "rack_id": str(payload.get("rack_id") or ""),
         "empty_box_id": str(payload.get("empty_box_id") or ""),
         "full_box_id": str(payload.get("full_box_id") or ""),
-        "exchange_request_code": str(payload.get("exchange_request_code") or ""),
+        "exchange_request_code": str(payload.get("exchange_request_code") or payload.get("dispatch_key") or ""),
     }
 
 
@@ -421,10 +556,14 @@ def _not_found_snapshot() -> NorthboundStatusSnapshot:
 
 
 __all__ = [
-    "MOCK_NORTHBOUND_CREDENTIAL_REFERENCE",
-    "MOCK_NORTHBOUND_HMAC_SECRET_ENV",
+    "ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE",
+    "MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V1",
+    "MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2",
+    "MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1",
+    "MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2",
     "NorthboundAuthError",
     "NorthboundOperationStore",
+    "NorthboundPayloadValidationError",
     "NorthboundStatusSnapshot",
     "NorthboundSubmission",
     "build_confirm_inbound_result",
@@ -435,6 +574,7 @@ __all__ = [
     "canonical_submit_string",
     "content_sha256",
     "resolve_mock_northbound_credential",
+    "validate_typed_request",
     "verify_status_hmac",
     "verify_submit_hmac",
 ]

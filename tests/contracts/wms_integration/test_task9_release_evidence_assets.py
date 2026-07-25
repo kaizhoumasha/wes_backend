@@ -26,6 +26,7 @@ from src.app.wms_integration.services.http_transport import sign_wms_hmac_reques
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = ROOT / "tests/fixtures/wms_provider_conformance"
 RELEASE_EVIDENCE = ROOT / "docs/operations/wms-northbound-acceptance-and-cutover.md"
+FEASIBILITY_REPORT = ROOT / "docs/operations/wms-northbound-feasibility-report.md"
 SLO_CATALOG = ROOT / "docs/operations/northbound-operation-slo-catalog.md"
 RUNBOOK = ROOT / "docs/runbooks/northbound-operation-observability.md"
 INTERACTION_CONTRACT = ROOT / "docs/contracts/wms-northbound-interaction-contract.md"
@@ -128,6 +129,17 @@ def test_release_evidence_keeps_real_acceptance_and_cutover_explicitly_blocked()
     assert "不得预填外部确认人、验收时间或构建版本" in content
     assert "首个真实 EFFECT" in content
     assert all(operation_identity in content for operation_identity in EFFECT_REPLAY_ASSETS)
+
+
+def test_mock_feasibility_go_is_backed_by_live_compose_and_active_wes_credential() -> None:
+    report = FEASIBILITY_REPORT.read_text(encoding="utf-8")
+    release = RELEASE_EVIDENCE.read_text(encoding="utf-8")
+
+    assert "sha256:2b8f8ff7336213ce0292f25de6d656537b377fb10bcd520264435f92efcdc180" in report
+    assert "tests/integration/test_wms_mock_northbound_live.py" in report
+    assert "45 个 case 全部 `passed=true`" in report
+    assert "`secret://wms/material-flow-sandbox-hmac@v2`" in release
+    assert "Mock 专用 credential" in release
 
 
 def test_active_operations_docs_use_submit_status_callback_facts_not_shadow_readiness() -> None:

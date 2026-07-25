@@ -9,22 +9,32 @@ import hmac
 import json
 import os
 import re
+import sys
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
 
-from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_NORTHBOUND_AUTH  # noqa: E402
+from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256  # noqa: E402
+from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE  # noqa: E402
+from src.core.conf import settings  # noqa: E402
 
 _STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"})
 _REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _MAX_SAFE_RESPONSE_BYTES = 1024 * 1024
-_MOCK_HMAC_SECRET_ENV = "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1"  # noqa: S105 - 环境变量名，不是密钥值。
+_ACTIVE_CREDENTIAL_REFERENCE = str(WMS_NORTHBOUND_AUTH.credential_reference)
+_ACTIVE_HMAC_SECRET_ENV = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[_ACTIVE_CREDENTIAL_REFERENCE]
 
 _OPERATION_SPECS: dict[str, dict[str, Any]] = {
     "wms.inventory.confirm_inbound@v1": {
@@ -177,7 +187,7 @@ def _contract_values(contract: object) -> dict[str, Any] | None:
     credential_reference = contract.get("credential_reference")
     if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values.values()):
         return None
-    if not isinstance(credential_reference, str) or not credential_reference.startswith("secret://"):
+    if credential_reference != _ACTIVE_CREDENTIAL_REFERENCE or not credential_reference.endswith("@v2"):
         return None
     return {**values, "credential_reference": credential_reference}
 
@@ -234,13 +244,18 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
     if not base_result_is_valid:
         return False
     if operation_identity == "wms.inventory.confirm_inbound@v1":
-        return result["inbound_key"] == payload["inbound_key"] and result["document_no"] == ""
+        return (
+            result["inbound_key"] == payload["inbound_key"]
+            and result["document_no"] == payload["inbound_key"]
+            and bool(result["document_no"])
+        )
     if operation_identity == "wms.fulfillment.full_box_exchange@v1":
         return (
             result["rack_id"] == payload["rack_id"]
             and result["empty_box_id"] == payload["empty_box_id"]
             and result["full_box_id"] == payload["full_box_id"]
-            and result["exchange_request_code"] == ""
+            and result["exchange_request_code"] == payload["dispatch_key"]
+            and bool(result["exchange_request_code"])
         )
     return (
         _is_aware_rfc3339(result["bound_at"])
@@ -324,8 +339,9 @@ async def run_probe(
     if contract_values is None:
         return FeasibilityReport(cases=tuple(results))
 
-    secret = os.getenv(_MOCK_HMAC_SECRET_ENV, "").encode("utf-8")
-    results.append(_result("mock_hmac_secret_available", bool(secret)))
+    configured_secret = os.getenv(_ACTIVE_HMAC_SECRET_ENV) or getattr(settings, _ACTIVE_HMAC_SECRET_ENV, "")
+    secret = configured_secret.encode("utf-8")
+    results.append(_result("active_v2_hmac_secret_available", bool(secret)))
     if not secret:
         return FeasibilityReport(cases=tuple(results))
     max_response_bytes = min(contract_values["max_response_bytes"], _MAX_SAFE_RESPONSE_BYTES)
@@ -397,7 +413,7 @@ async def run_probe(
         )
         return response is not None and response.status_code == 200
 
-    async def configure_visibility(identity: str, key: str, *, not_visible_queries: int) -> bool:
+    async def configure_visibility(identity: str, key: str, *, delay_seconds: int) -> bool:
         response = await _request(
             client,
             "POST",
@@ -407,7 +423,7 @@ async def run_probe(
             json={
                 "operation_identity": identity,
                 "idempotency_key": key,
-                "not_visible_queries": not_visible_queries,
+                "delay_seconds": delay_seconds,
             },
         )
         payload = _json_object(response, max_response_bytes=max_response_bytes)
@@ -418,8 +434,26 @@ async def run_probe(
             == {
                 "operation_identity": identity,
                 "idempotency_key": key,
-                "not_visible_queries": not_visible_queries,
+                "delay_seconds": delay_seconds,
             }
+        )
+
+    async def configure_clock(now: datetime | None) -> bool:
+        response = await _request(
+            client,
+            "POST",
+            "/debug/northbound/clock",
+            request_timeout_seconds=request_timeout_seconds,
+            max_response_bytes=max_response_bytes,
+            json={"now": now.isoformat() if now is not None else None},
+        )
+        payload = _json_object(response, max_response_bytes=max_response_bytes)
+        expected = now.astimezone(UTC).isoformat() if now is not None else None
+        return (
+            response is not None
+            and response.status_code == 200
+            and payload is not None
+            and payload.get("data", {}).get("now") == expected
         )
 
     async def callback_hints(identity: str, key: str) -> dict[str, Any] | None:
@@ -498,6 +532,56 @@ async def run_probe(
             )
         )
 
+        required_field = {
+            "wms.inventory.confirm_inbound@v1": "material_code",
+            "wms.fulfillment.full_box_exchange@v1": "full_box_id",
+            "wms.fulfillment.notify_pkg_binding@v1": "station_code",
+        }[identity]
+        missing_payload = {field: value for field, value in payload.items() if field != required_field}
+        invalid_payloads = (
+            missing_payload,
+            {**payload, "unexpected_wire_field": "forbidden"},
+            {**payload, required_field: " "},
+        )
+        validation_responses = []
+        for invalid_index, invalid_payload in enumerate(invalid_payloads):
+            validation_responses.append(
+                await submit(
+                    identity,
+                    f"probe-invalid-{invalid_index}-{uuid4().hex}",
+                    invalid_payload,
+                )
+            )
+        if identity == "wms.inventory.confirm_inbound@v1":
+            validation_responses.extend(
+                [
+                    await submit(
+                        identity,
+                        f"probe-invalid-quantity-{uuid4().hex}",
+                        {**payload, "quantity": invalid_quantity},
+                    )
+                    for invalid_quantity in (0, "NaN", "-1", "not-a-decimal")
+                ]
+            )
+        recovery_key = f"probe-invalid-recovery-{uuid4().hex}"
+        rejected_before_write = await submit(identity, recovery_key, missing_payload)
+        accepted_after_rejection = await submit(identity, recovery_key, payload)
+        results.append(
+            _result(
+                f"{identity}:typed_request_validation",
+                all(
+                    response is not None
+                    and response.status_code == 422
+                    and _json_object(response, max_response_bytes=max_response_bytes)
+                    == {"code": "INVALID_TYPED_REQUEST"}
+                    for response in (*validation_responses, rejected_before_write)
+                )
+                and accepted_after_rejection is not None
+                and accepted_after_rejection.status_code == 202
+                and await effect_count(identity, recovery_key) == 1,
+            )
+        )
+
         rejected_key = f"probe-rejected-{uuid4().hex}"
         await submit(identity, rejected_key, payload)
         rejected = await _request(
@@ -553,29 +637,75 @@ async def run_probe(
         )
 
         visibility_key = f"probe-visibility-{uuid4().hex}"
-        visibility_reads = 1
-        visibility_configured = visibility_reads <= contract_values[
-            "status_visibility_sla_seconds"
-        ] and await configure_visibility(identity, visibility_key, not_visible_queries=visibility_reads)
-        await submit(identity, visibility_key, payload)
-        temporarily_missing = _json_object(
-            await status(identity, visibility_key), max_response_bytes=max_response_bytes
+        visibility_sla = contract_values["status_visibility_sla_seconds"]
+        retention = contract_values["idempotency_retention_seconds"]
+        accepted_at = datetime(2026, 7, 25, tzinfo=UTC)
+        clock_started = await configure_clock(accepted_at)
+        visibility_configured = await configure_visibility(
+            identity,
+            visibility_key,
+            delay_seconds=visibility_sla,
         )
-        visible_after_grace = _json_object(
-            await status(identity, visibility_key), max_response_bytes=max_response_bytes
+        first_visibility_submit = await submit(identity, visibility_key, payload)
+        hidden_at_accept = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
+        before_sla_clock = await configure_clock(accepted_at + timedelta(seconds=max(visibility_sla - 1, 0)))
+        hidden_before_sla = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
+        at_sla_clock = await configure_clock(accepted_at + timedelta(seconds=visibility_sla))
+        visible_at_sla = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
+        before_retention_clock = await configure_clock(accepted_at + timedelta(seconds=retention - 1))
+        replay_before_retention = await submit(identity, visibility_key, payload)
+        at_retention_clock = await configure_clock(accepted_at + timedelta(seconds=retention))
+        expired_at_retention = _json_object(
+            await status(identity, visibility_key),
+            max_response_bytes=max_response_bytes,
         )
-        visibility_replay = await submit(identity, visibility_key, payload)
+        recovered_at_retention = await submit(identity, visibility_key, payload)
+        effect_count_after_recovery = await effect_count(identity, visibility_key)
+        clock_restored = await configure_clock(None)
         results.append(
             _result(
-                f"{identity}:visibility_not_found_then_visible_one_effect",
-                visibility_configured
-                and _is_snapshot(temporarily_missing, operation_identity=identity, payload=payload)
-                and temporarily_missing["state"] == "NOT_FOUND"
-                and _is_snapshot(visible_after_grace, operation_identity=identity, payload=payload)
-                and visible_after_grace["state"] == "ACCEPTED"
-                and visibility_replay is not None
-                and visibility_replay.status_code == 409
-                and await effect_count(identity, visibility_key) == 1,
+                f"{identity}:visibility_sla_and_retention_boundaries",
+                clock_started
+                and visibility_configured
+                and first_visibility_submit is not None
+                and first_visibility_submit.status_code == 202
+                and _is_snapshot(hidden_at_accept, operation_identity=identity, payload=payload)
+                and hidden_at_accept["state"] == "NOT_FOUND"
+                and before_sla_clock
+                and _is_snapshot(hidden_before_sla, operation_identity=identity, payload=payload)
+                and hidden_before_sla["state"] == "NOT_FOUND"
+                and at_sla_clock
+                and _is_snapshot(visible_at_sla, operation_identity=identity, payload=payload)
+                and visible_at_sla["state"] == "ACCEPTED"
+                and before_retention_clock
+                and replay_before_retention is not None
+                and replay_before_retention.status_code == 409
+                and at_retention_clock
+                and _is_snapshot(expired_at_retention, operation_identity=identity, payload=payload)
+                and expired_at_retention["state"] == "NOT_FOUND"
+                and recovered_at_retention is not None
+                and recovered_at_retention.status_code == 202
+                and effect_count_after_recovery == 2
+                and clock_restored,
+            )
+        )
+
+        visible_then_lost_configured = await configure_fault(
+            status=200,
+            target_path="/northbound/operations/status",
+            method="GET",
+            operation_identity=identity,
+            not_found=True,
+        )
+        lost_after_visible = _json_object(await status(identity, key), max_response_bytes=max_response_bytes)
+        visible_again = _json_object(await status(identity, key), max_response_bytes=max_response_bytes)
+        results.append(
+            _result(
+                f"{identity}:visible_then_lost_is_independent_fault",
+                visible_then_lost_configured
+                and _is_snapshot(lost_after_visible, operation_identity=identity, payload=payload)
+                and lost_after_visible["state"] == "NOT_FOUND"
+                and visible_again == snapshots[-1],
             )
         )
 
@@ -599,22 +729,26 @@ async def run_probe(
     fault_key = f"probe-fault-{uuid4().hex}"
     fault_payload = dict(_OPERATION_SPECS[fault_identity]["payload"])
     await submit(fault_identity, fault_key, fault_payload)
-    rate_configured = await configure_fault(status=429, retry_after=2)
-    rate_limited = await status(fault_identity, fault_key)
-    unavailable_configured = await configure_fault(status=503, max_response_bytes=1)
-    unavailable = await status(fault_identity, fault_key)
-    timeout_configured = await configure_fault(status=200, delay=max(request_timeout_seconds * 2, 0.05))
-    timed_out = await status(fault_identity, fault_key)
-    fault_reset = await _request(
-        client,
-        "POST",
-        "/debug/reset",
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
+    status_target = "/northbound/operations/status"
+    rate_configured = await configure_fault(
+        status=429,
+        retry_after=2,
+        target_path=status_target,
+        method="GET",
+        operation_identity=fault_identity,
     )
+    rate_limited = await status(fault_identity, fault_key)
+    unavailable_configured = await configure_fault(
+        status=503,
+        target_path=status_target,
+        method="GET",
+        operation_identity=fault_identity,
+    )
+    unavailable = await status(fault_identity, fault_key)
+    unavailable_body = _json_object(unavailable, max_response_bytes=max_response_bytes)
     results.append(
         _result(
-            "fault_matrix_rate_limit_5xx_timeout_and_response_budget",
+            "fault_matrix_rate_limit_and_fixed_5xx",
             rate_configured
             and rate_limited is not None
             and rate_limited.status_code == 429
@@ -622,11 +756,102 @@ async def run_probe(
             and unavailable_configured
             and unavailable is not None
             and unavailable.status_code == 503
-            and _json_object(unavailable, max_response_bytes=max_response_bytes) is None
-            and timeout_configured
-            and timed_out is None
-            and fault_reset is not None
-            and fault_reset.status_code == 200,
+            and unavailable_body == {"code": "TEMPORARILY_UNAVAILABLE"},
+        )
+    )
+
+    scope_configured = await configure_fault(
+        status=503,
+        target_path=status_target,
+        method="GET",
+        operation_identity=fault_identity,
+    )
+    health = await _request(
+        client,
+        "GET",
+        "/",
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
+    inventory = await _request(
+        client,
+        "GET",
+        "/api/wms/materials/MAT001",
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
+    legacy = await _request(
+        client,
+        "POST",
+        "/api/wms/legacy/full-box-exchange",
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        json={"dispatch_key": f"probe-legacy-scope-{uuid4().hex}"},
+    )
+    scoped_fault = await status(fault_identity, fault_key)
+    results.append(
+        _result(
+            "northbound_fault_scope_excludes_health_inventory_and_legacy",
+            scope_configured
+            and health is not None
+            and health.status_code == 200
+            and inventory is not None
+            and inventory.status_code in {200, 404}
+            and legacy is not None
+            and legacy.status_code == 200
+            and scoped_fault is not None
+            and scoped_fault.status_code == 503,
+        )
+    )
+
+    submit_deadline_key = f"probe-submit-deadline-{uuid4().hex}"
+    submit_deadline_configured = await configure_fault(
+        status=200,
+        target_path=_OPERATION_SPECS[fault_identity]["submit_path"],
+        method="POST",
+        operation_identity=fault_identity,
+        delay=max(request_timeout_seconds * 2, 0.05),
+        after_response=True,
+    )
+    ambiguous_submit = await submit(fault_identity, submit_deadline_key, fault_payload)
+    ambiguous_retry = await submit(fault_identity, submit_deadline_key, fault_payload)
+    ambiguous_retry_body = _json_object(ambiguous_retry, max_response_bytes=max_response_bytes)
+    results.append(
+        _result(
+            "submit_deadline_ambiguous_retry_one_effect",
+            submit_deadline_configured
+            and ambiguous_submit is None
+            and ambiguous_retry is not None
+            and ambiguous_retry.status_code == 409
+            and ambiguous_retry_body is not None
+            and ambiguous_retry_body.get("code") == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+            and await effect_count(fault_identity, submit_deadline_key) == 1,
+        )
+    )
+
+    status_deadline_key = f"probe-status-deadline-{uuid4().hex}"
+    status_deadline_submit = await submit(fault_identity, status_deadline_key, fault_payload)
+    status_deadline_configured = await configure_fault(
+        status=200,
+        target_path=status_target,
+        method="GET",
+        operation_identity=fault_identity,
+        delay=max(request_timeout_seconds * 2, 0.05),
+    )
+    timed_out_status = await status(fault_identity, status_deadline_key)
+    status_after_timeout = _json_object(
+        await status(fault_identity, status_deadline_key),
+        max_response_bytes=max_response_bytes,
+    )
+    results.append(
+        _result(
+            "status_deadline",
+            status_deadline_submit is not None
+            and status_deadline_submit.status_code == 202
+            and status_deadline_configured
+            and timed_out_status is None
+            and _is_snapshot(status_after_timeout, operation_identity=fault_identity, payload=fault_payload)
+            and status_after_timeout["state"] == "ACCEPTED",
         )
     )
 
@@ -650,7 +875,11 @@ async def run_probe(
     )
 
     oversized_configured = await configure_fault(
-        status=503, response_body_bytes=contract_values["max_response_bytes"] + 1
+        status=503,
+        target_path=status_target,
+        method="GET",
+        operation_identity=fault_identity,
+        response_body_bytes=contract_values["max_response_bytes"] + 1,
     )
     oversized = await status(fault_identity, fault_key)
     results.append(
