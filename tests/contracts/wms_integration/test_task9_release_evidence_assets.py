@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -140,22 +141,23 @@ def test_mock_feasibility_go_is_backed_by_live_compose_and_active_wes_credential
     release = RELEASE_EVIDENCE.read_text(encoding="utf-8")
     acceptance_compose = WMS_ACCEPTANCE_COMPOSE.read_text(encoding="utf-8")
 
-    image_digests = (
-        "sha256:b3fc373dc9531e39a6731851d6bb5b208c5f29199c7446c1945693d9208a45c8",
-        "sha256:3c2ef80df6325ef8b83a6f4ec850edddad4629f0e28ba33c488f1b21d65b8a61",
-    )
-    assert all(digest in report and digest in final_fix_report for digest in image_digests)
-    assert "`4101 tests collected`" in final_fix_report
-    assert "`4096 passed, 5 skipped, 6 warnings`" in final_fix_report
+    report_image_digests = dict(re.findall(r"(WMS|ECS) Docker image\s+`(sha256:[0-9a-f]{64})`", report))
+    final_fix_image_digests = dict(re.findall(r"(WMS|ECS)\s+`(sha256:[0-9a-f]{64})`", final_fix_report))
+    release_image_digests = dict(re.findall(r"(WMS|ECS) image\s+`(sha256:[0-9a-f]{64})`", release))
+    assert report_image_digests.keys() == {"WMS", "ECS"}
+    assert final_fix_image_digests == report_image_digests
+    assert release_image_digests == report_image_digests
+    assert "`4104 tests collected`" in final_fix_report
+    assert "`4099 passed, 5 skipped, 6 warnings`" in final_fix_report
     assert "tests/integration/test_wms_mock_northbound_live.py" in report
     assert "tests/integration/test_mock_container_entrypoints.py" in report
     assert "结果 `5 passed`" in report
-    assert "结果 `5 passed`" in report
+    assert "结果 `6 passed`" in report
     assert "docker-compose.wms-acceptance.yml" in report
     assert "--reload" not in acceptance_compose
     assert "volumes:" not in acceptance_compose
     assert "ClientDisconnect" in report
-    assert "46 个 case 全部 `passed=true`" in report
+    assert "48 个 case 全部 `passed=true`" in report
     assert "`secret://wms/material-flow-sandbox-hmac@v2`" in release
     assert "Mock 专用 credential" in release
 
@@ -200,6 +202,16 @@ def test_submit_wire_contract_matches_canonical_dispatch_without_binding_wrapper
     assert '"canonical_payload"' not in probe_source
     assert '"Idempotency-Key"' in probe_source
     assert '"X-WES-Operation-Identity"' in probe_source
+
+
+def test_contract_separates_wire_content_hash_from_idempotency_fingerprint() -> None:
+    contract = INTERACTION_CONTRACT.read_text(encoding="utf-8")
+    release = RELEASE_EVIDENCE.read_text(encoding="utf-8")
+
+    assert "`X-WES-Content-SHA256` 是实际 HTTP body bytes 的传输完整性哈希" in contract
+    assert "不得直接以 `X-WES-Content-SHA256` 作为幂等 fingerprint" in contract
+    assert "以 `X-WES-Content-SHA256` 比较 fingerprint" not in release
+    assert "typed schema 校验后重新生成 canonical JSON fingerprint" in release
 
 
 def test_interaction_contract_freezes_each_effect_wire_body_schema() -> None:

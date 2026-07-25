@@ -88,12 +88,27 @@ def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
     for secret_name in MOCK_WMS_MATERIAL_FLOW_SECRET_NAMES:
         assert mock_wms_env[secret_name] == f"${{{secret_name}:-}}"
     assert "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1" not in mock_wms_env
-    assert acceptance_compose["services"]["mock_wms"]["healthcheck"]["test"] == [
+    assert acceptance_compose["services"]["mock_wms_acceptance"]["healthcheck"]["test"] == [
         "CMD",
         "curl",
         "-f",
         "http://localhost:8011/",
     ]
+
+
+def test_wms_acceptance_compose_is_isolated_from_the_development_mock() -> None:
+    compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    acceptance_compose = yaml.safe_load(
+        (BACKEND_ROOT / "docker-compose.wms-acceptance.yml").read_text(encoding="utf-8")
+    )
+    development_mock = compose["services"]["mock_wms"]
+    acceptance_services = acceptance_compose["services"]
+
+    assert "mock_wms" not in acceptance_services
+    acceptance_mock = acceptance_services["mock_wms_acceptance"]
+    assert "container_name" not in acceptance_mock
+    assert acceptance_mock["ports"] == ["${DOCKER_HOST_BIND_IP:-127.0.0.1}:${MOCK_WMS_ACCEPTANCE_PORT:-18011}:8011"]
+    assert acceptance_mock["ports"] != development_mock["ports"]
 
 
 def test_mock_wms_receives_the_same_public_northbound_contract_settings_as_wes() -> None:

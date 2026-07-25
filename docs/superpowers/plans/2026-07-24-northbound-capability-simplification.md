@@ -17,9 +17,10 @@
 - 每个工厂部署始终只对接一个 WMS Provider，不支持多个不同 Provider 的 catalog、路由、切换或故障转移；环境差异由部署配置解决。
 - active profile 只用于创建新 Intent。存量 Intent 继续使用创建时冻结的同一 WMS Provider endpoint/auth revision；保留历史 revision 是完成在途请求的协议要求，不代表运行时存在多个 Provider。
 - WMS 状态 endpoint、跨系统 SLA 承诺和 WES 轮询预算统一由现有 Pydantic Settings 加载，并通过 `.env` profile 与 Docker Compose 同时注入 API/Celery；adapter、task 和 operation contract 禁止持有工厂相关默认值。
-- Tasks 2–9 的当前开发进入条件是 Task 1 的仓内 WMS Mock 可行性门禁为 `GO`：实际 Docker Compose
-  `mock_wms` 必须通过真实 TCP 黑盒关键语义探针。外部 WMS 的书面确认与目标环境联调仍是生产切换门禁，
-  不阻塞当前 Mock 能力开发；任一适用门禁为 `NO-GO` 时先修订合同/ADR。
+- Tasks 2–9 的当前开发进入条件是 Task 1 的仓内 WMS Mock 可行性门禁为 `GO`：开发 Compose 的
+  `mock_wms` 负责构建共享镜像，独立验收 Compose 的 `mock_wms_acceptance` 必须在默认
+  `http://127.0.0.1:18011` 通过真实 TCP 黑盒关键语义探针。外部 WMS 的书面确认与目标环境联调仍是
+  生产切换门禁，不阻塞当前 Mock 能力开发；任一适用门禁为 `NO-GO` 时先修订合同/ADR。
 - callback 是可选加速信号，不携带终态权威。所有 `COMPLETED`、`REJECTED` 终态必须来自 WMS 状态查询响应。
 - `COMPLETED` 状态必须携带 operation-specific `result_payload`，并按冻结 operation contract 的既有 `result_model` 严格校验后才能进入 reducer；`REJECTED` 只携带稳定 `reason_code`。原始或校验失败的 payload 不得作为业务结果持久化。
 - 状态查询只通过 reducer 推进 RuntimeIntentLog，并按需打开或更新 ReconciliationCase。SystemOutbox 与 DispatchAttempt 只记录 transport 事实，既有 `SENT`、`UNKNOWN`、`FAILED` 终态不得被业务查询结果改写。
@@ -134,8 +135,9 @@ WES Intent/Outbox
 **验收状态：已完成。** 2026-07-25 已显式构建 Docker image
 WMS `sha256:ef142f2a47bd604f67c22802b22cd39b805f6f677c43e3a5e2f6e9e0e497348e` 与 ECS
 `sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`，共享镜像双入口、浮点覆盖与
-点时 digest 证据 `5 passed`；实际 Compose `mock_wms` 通过三个 typed EFFECT 的真实 TCP 黑盒探针：
-heavy/live pytest `6 passed`，CLI 48 case 全部 `passed=true`。
+点时 digest 证据 `5 passed`；独立验收 Compose `mock_wms_acceptance` 在默认
+`http://127.0.0.1:18011` 通过三个 typed EFFECT 的真实 TCP 黑盒探针：heavy/live pytest `6 passed`，
+CLI 48 case 全部 `passed=true`。
 未来外部 WMS 联调模板保留，但不再构成当前 P0 进入门禁。
 
 **Files:**
@@ -192,7 +194,9 @@ uv run pytest tests/architecture/test_northbound_wms_typed_operation_boundaries.
 - 状态枚举、单调 `source_version`、operation-specific typed result 和拒绝原因。
 - 幂等/结果保留期、状态可见性 SLA、最大响应体、限流与 `Retry-After`。
 
-开发门禁显式构建 Compose `mock_wms` 后，运行不依赖 WES 生产 adapter 的真实 TCP 黑盒探针，覆盖：
+开发门禁以 `docker compose --profile dev build mock_ecs mock_wms` 显式构建共享镜像，再启动独立验收
+Compose `mock_wms_acceptance`，并通过默认 `http://127.0.0.1:18011` 运行不依赖 WES 生产 adapter 的
+真实 TCP 黑盒探针，覆盖：
 
 - 首次提交、处理中同键重放、已完成同键重放、同键不同 fingerprint 冲突。
 - `ACCEPTED → PROCESSING → COMPLETED` 的版本单调性与 typed result。

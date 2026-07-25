@@ -4,12 +4,11 @@
 # 该配置刻意不声明 build、源码挂载或 reload，确保真实 TCP/CLI 验收的是
 # 已构建镜像本身，而不是宿主机工作树中的 tests/mock。
 services:
-  mock_wms:
+  mock_wms_acceptance:
     image: ${MOCK_WMS_ACCEPTANCE_IMAGE:-wes-mock:wms}
-    container_name: wes_mock_wms_${ENV:-test}
     restart: "no"
     ports:
-      - "${DOCKER_HOST_BIND_IP:-127.0.0.1}:${MOCK_WMS_PORT:-8011}:8011"
+      - "${DOCKER_HOST_BIND_IP:-127.0.0.1}:${MOCK_WMS_ACCEPTANCE_PORT:-18011}:8011"
     working_dir: /app/tests/mock
     command: >
       python -m uvicorn

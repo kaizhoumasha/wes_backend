@@ -62,8 +62,10 @@ frozen binding 仅为 WES 内部持久化事实，绝不进入 HTTP body、heade
 reference、operation identity 和 binding revision，使重试/重启继续构造同一远端请求；WMS 无需理解或保存 WES
 binding revision。
 
-Fingerprint 是 typed body canonical bytes 的 SHA-256，即 `X-WES-Content-SHA256`。Canonical JSON 使用 UTF-8、
-object key 排序、无额外空白且拒绝 NaN/Infinity。WMS 必须按
+`X-WES-Content-SHA256` 是实际 HTTP body bytes 的传输完整性哈希，进入七项 HMAC 并在解析前校验。
+幂等 fingerprint 则是在 typed schema 校验后重新生成 canonical JSON bytes 再计算 SHA-256；不得直接以 `X-WES-Content-SHA256` 作为幂等 fingerprint。
+Canonical JSON 使用 UTF-8、object key 排序、无额外空白且
+拒绝 NaN/Infinity。WMS 必须按
 `X-WES-Operation-Identity + Idempotency-Key` 定位原请求，并用 fingerprint 比较 body，不得因原始 JSON
 字段顺序、空白、timestamp/nonce 更新或 transport retry 改变结论。
 

@@ -70,15 +70,15 @@ raw body bytes 计算并校验 `X-WES-Content-SHA256`；验签后显式解析 JS
 - `docker compose --profile dev build mock_ecs mock_wms`；
 - `uv run pytest tests/integration/test_mock_container_entrypoints.py -q`，结果 `5 passed`，覆盖 ECS/WMS
   双入口、合法浮点合同覆盖，并校验报告保留格式正确的点时镜像 digest；
-- `docker compose -f docker-compose.wms-acceptance.yml up -d --force-recreate mock_wms`，该验收配置不含
-  `build`、源码 bind mount 或 `--reload`；
-- `WMS_NORTHBOUND_LIVE_BASE_URL=http://127.0.0.1:8011 WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS=0.25
+- `docker compose -f docker-compose.wms-acceptance.yml up -d --force-recreate mock_wms_acceptance`，该验收配置
+  使用独立 service identity 和默认宿主端口 `18011`，不含 `build`、源码 bind mount 或 `--reload`；
+- `WMS_NORTHBOUND_LIVE_BASE_URL=http://127.0.0.1:18011 WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS=0.25
   uv run pytest tests/integration/test_wms_mock_northbound_live.py -q`，结果 `6 passed`，并验证容器 `.Image`
   等于本轮 `MOCK_WMS_ACCEPTANCE_IMAGE`（默认 `wes-mock:wms`）在本机解析出的 image ID、
   `/app/tests/mock` 无宿主机挂载，且容器日志不含完整
   `idempotency_key`、`ClientDisconnect` 或 `Exception in ASGI application`；
 - `uv run python scripts/verify_wms_northbound_feasibility.py
-  --base-url http://127.0.0.1:8011 --timeout-seconds 0.25
+  --base-url http://127.0.0.1:18011 --timeout-seconds 0.25
   --submit-timeout-seconds 0.25 --status-timeout-seconds 0.25`，结果 48 个 case 全部 `passed=true`。
 
 快速测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项针对已构建镜像的真实 TCP 黑盒证据。

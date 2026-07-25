@@ -3,7 +3,7 @@
 ## 结论
 
 2026-07-25 多轮最终复核提出的问题已全部修复。当前开发阶段的 WMS 北向 P0 门禁为
-`PASS/GO`，依据是最终源树构建出的真实 Docker Compose `mock_wms`，不是内嵌 stub 或仅
+`PASS/GO`，依据是最终源树构建出的真实 Docker Compose `mock_wms_acceptance`，不是内嵌 stub 或仅
 `ASGITransport` 证据。外部真实 WMS 的联调、观测采集、数据清理和生产切换门禁仍保持
 `PENDING/BLOCKED`，本次结论不替代外部验收。
 
@@ -143,8 +143,8 @@
 ## 验证结果
 
 - 相关 Mock/contract/deployment/topology：`202 passed`。
-- 默认测试收集：`4101 tests collected`。
-- 默认全仓测试：`4096 passed, 5 skipped, 6 warnings`，耗时 467.41 秒。
+- 默认测试收集：`4104 tests collected`。
+- 默认全仓测试：`4099 passed, 5 skipped, 6 warnings`，耗时 445.03 秒。
 - 最终已构建 WMS 镜像 Docker heavy/live：`6 passed`；容器 image ID 与本轮选择的本地 image tag
   解析结果一致，且 `/app/tests/mock` 无宿主机挂载；报告 digest 仅作为该次验收的点时证据。
 - 最终已构建 WMS 镜像 CLI 黑盒探针：48 个 case 全部 `passed=true`。

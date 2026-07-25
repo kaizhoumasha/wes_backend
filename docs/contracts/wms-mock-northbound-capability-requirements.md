@@ -101,13 +101,15 @@ callback hint 去重记录、故障注入和可控时钟；清理后相同 idemp
 
 ## 4. 完成标准
 
-1. 黑盒探针连接实际 `mock_wms` 并覆盖全部三个 EFFECT，不创建内嵌 stub；
+1. 黑盒探针连接验收 Compose 的实际 `mock_wms_acceptance` 并覆盖全部三个 EFFECT，不创建内嵌 stub；
 2. 全部 P0 case 通过，无 `xfail`、skip 或放宽断言；
 3. Docker/E2E submit/status URL 与探针公开 URL 一致；
 4. `tests/mock/`、`tests/contracts/wms_integration/` 和相关 runtime contract tests 全绿；
 5. reset 测试证明全部北向状态已清空；
 6. 验收报告记录 Mock image digest、承诺参数、命令和结果；
-7. 必须显式构建并启动 Docker Compose `mock_wms`，以真实 TCP 连接运行 heavy/live pytest 和 CLI 探针；
-   ASGITransport 测试不能替代该证据。
+7. 必须先以 `docker compose --profile dev build mock_ecs mock_wms` 构建共享镜像，再以
+   `docker compose -f docker-compose.wms-acceptance.yml up -d --force-recreate mock_wms_acceptance`
+   启动无源码挂载的独立验收服务；heavy/live pytest 和 CLI 探针默认通过
+   `http://127.0.0.1:18011` 建立真实 TCP 连接，ASGITransport 测试不能替代该证据。
 
 P0 完成前不新增 WMS 内部工作流模型；WES 只验收公开 submit、status query 和可选 callback hint。

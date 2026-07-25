@@ -163,7 +163,7 @@ def test_compose_mock_wms_live_logs_redact_query_keys_and_expected_disconnects()
     assert docker is not None
 
     completed = subprocess.run(
-        [docker, "compose", "-f", str(ACCEPTANCE_COMPOSE_FILE), "logs", "--no-color", "mock_wms"],
+        [docker, "compose", "-f", str(ACCEPTANCE_COMPOSE_FILE), "logs", "--no-color", "mock_wms_acceptance"],
         cwd=BACKEND_ROOT,
         check=False,
         capture_output=True,
@@ -192,7 +192,7 @@ def test_live_acceptance_runs_the_selected_wms_image_without_source_mounts() -> 
     assert expected_image.returncode == 0, expected_image.stderr
 
     container = subprocess.run(
-        [docker, "compose", "-f", str(ACCEPTANCE_COMPOSE_FILE), "ps", "-q", "mock_wms"],
+        [docker, "compose", "-f", str(ACCEPTANCE_COMPOSE_FILE), "ps", "-q", "mock_wms_acceptance"],
         cwd=BACKEND_ROOT,
         check=False,
         capture_output=True,

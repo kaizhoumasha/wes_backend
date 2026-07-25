@@ -17,7 +17,7 @@ callback hint 交互，不记录或推断 WMS 内部工作流。当前 P0 验收
 - 外部 WMS 联调测试数据清理模板：`BLOCKED`
 - 外部 WMS 整体切换模板：`BLOCKED`
 
-`PASS/GO` 表示 `docker-compose.wms-acceptance.yml` 启动的已构建 `mock_wms` 镜像已通过三类 typed EFFECT
+`PASS/GO` 表示 `docker-compose.wms-acceptance.yml` 启动的已构建 `mock_wms_acceptance` 镜像已通过三类 typed EFFECT
 的真实 TCP 黑盒合同验收，当前开发
 Mock 能力可以进入后续 WES 开发。不得把该结论替代未来外部 WMS 的联调验收，也不得预填外部确认人、验收时间或构建版本。
 只有下述真实证据完整、双方确认且清理目标经过单独审查后，才能改变外部模板的 `PENDING/BLOCKED` 状态。
@@ -38,7 +38,7 @@ legacy callback 固定为 `BUSINESS_COMPLETED`，即使不携带 `post_exchange_
 
 | 能力 | WMS 交付要求 | WES 验收方式 |
 | --- | --- | --- |
-| EFFECT submit | HTTP body 接收 operation-specific typed payload；从 `X-WES-Operation-Identity` 与 `Idempotency-Key` header 读取请求身份，以 `X-WES-Content-SHA256` 比较 fingerprint；在幂等写入前严格拒绝 missing/extra/blank/type/非法 decimal；不得要求 WES internal frozen binding 上 wire | 按合同矩阵验证 202、200、409、422、并发恰好一个首次受理、真实 deadline 超时、HMAC canonical input 及重复提交 |
+| EFFECT submit | HTTP body 接收 operation-specific typed payload；从 `X-WES-Operation-Identity` 与 `Idempotency-Key` header 读取请求身份；以 `X-WES-Content-SHA256` 校验实际 wire bytes，并在 typed schema 校验后重新生成 canonical JSON fingerprint；在幂等写入前严格拒绝 missing/extra/blank/type/非法 decimal；不得要求 WES internal frozen binding 上 wire | 按合同矩阵验证 202、200、409、422、并发恰好一个首次受理、真实 deadline 超时、HMAC canonical input 及重复提交 |
 | EFFECT status query | 按 `operation_identity + idempotency_key` 返回五态、单调 `source_version`、稳定拒绝码和 operation-specific typed result | 对三类 EFFECT 逐项回放可见状态、终态、`NOT_FOUND`、429、5xx、超时和响应体上限 |
 | QUERY | 实现 `wms.inventory.query_inventory@v1` 的预算、分页、数值精度、业务拒绝、429 和错误形状 | 执行 QUERY 合同题库并保存规范化结果 |
 | callback hint（可选） | 仅携带关联键，允许 WES 提前发起 status query；不提供终态权威 | 验证接收、拒绝、重复、触发查询以及 enqueue 失败后的 scanner 接管 |

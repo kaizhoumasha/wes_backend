@@ -136,5 +136,7 @@
 - HMAC 篡改、同键异 payload、429、5xx、超时、超限 body、暂时不可见和 reset 全部被自动化测试覆盖。
 - callback hint 只触发查询且不直接提供终态。
 - Docker/E2E 使用与测试一致的 endpoint、WES material-flow v1/v2 credential reference 和 secret。
-- 实际 Compose `mock_wms` 必须通过真实 TCP heavy/live pytest 与 CLI 探针，不能仅依赖 ASGITransport。
+- 使用 `docker compose --profile dev build mock_ecs mock_wms` 构建共享镜像后，实际验收 Compose
+  `mock_wms_acceptance` 必须在默认 `http://127.0.0.1:18011` 通过真实 TCP heavy/live pytest 与 CLI
+  探针，不能仅依赖 ASGITransport。
 - 相关测试、架构门禁、完整质量门禁全部通过。
