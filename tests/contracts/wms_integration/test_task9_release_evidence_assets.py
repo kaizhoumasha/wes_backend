@@ -27,7 +27,9 @@ ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = ROOT / "tests/fixtures/wms_provider_conformance"
 RELEASE_EVIDENCE = ROOT / "docs/operations/wms-northbound-acceptance-and-cutover.md"
 FEASIBILITY_REPORT = ROOT / "docs/operations/wms-northbound-feasibility-report.md"
+FINAL_FIX_REPORT = ROOT / ".superpowers/sdd/final-fix-report.md"
 LIVE_ACCEPTANCE_TEST = ROOT / "tests/integration/test_wms_mock_northbound_live.py"
+WMS_ACCEPTANCE_COMPOSE = ROOT / "docker-compose.wms-acceptance.yml"
 SLO_CATALOG = ROOT / "docs/operations/northbound-operation-slo-catalog.md"
 RUNBOOK = ROOT / "docs/runbooks/northbound-operation-observability.md"
 INTERACTION_CONTRACT = ROOT / "docs/contracts/wms-northbound-interaction-contract.md"
@@ -134,11 +136,26 @@ def test_release_evidence_keeps_real_acceptance_and_cutover_explicitly_blocked()
 
 def test_mock_feasibility_go_is_backed_by_live_compose_and_active_wes_credential() -> None:
     report = FEASIBILITY_REPORT.read_text(encoding="utf-8")
+    final_fix_report = FINAL_FIX_REPORT.read_text(encoding="utf-8")
     release = RELEASE_EVIDENCE.read_text(encoding="utf-8")
+    acceptance_compose = WMS_ACCEPTANCE_COMPOSE.read_text(encoding="utf-8")
 
-    assert "sha256:29be6894b99d3f66cd0b84ed5f2013a67f415446d47f31e984c0cd6170d21a05" in report
+    image_digests = (
+        "sha256:b3fc373dc9531e39a6731851d6bb5b208c5f29199c7446c1945693d9208a45c8",
+        "sha256:3c2ef80df6325ef8b83a6f4ec850edddad4629f0e28ba33c488f1b21d65b8a61",
+    )
+    assert all(digest in report and digest in final_fix_report for digest in image_digests)
+    assert "`4101 tests collected`" in final_fix_report
+    assert "`4096 passed, 5 skipped, 6 warnings`" in final_fix_report
     assert "tests/integration/test_wms_mock_northbound_live.py" in report
-    assert "45 个 case 全部 `passed=true`" in report
+    assert "tests/integration/test_mock_container_entrypoints.py" in report
+    assert "结果 `5 passed`" in report
+    assert "结果 `5 passed`" in report
+    assert "docker-compose.wms-acceptance.yml" in report
+    assert "--reload" not in acceptance_compose
+    assert "volumes:" not in acceptance_compose
+    assert "ClientDisconnect" in report
+    assert "46 个 case 全部 `passed=true`" in report
     assert "`secret://wms/material-flow-sandbox-hmac@v2`" in release
     assert "Mock 专用 credential" in release
 

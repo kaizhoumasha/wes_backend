@@ -16,8 +16,19 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.testclient import TestClient
 
-from scripts.verify_wms_northbound_feasibility import _status_headers, _submit_headers, run_probe
+from scripts.verify_wms_northbound_feasibility import _contract_values, _status_headers, _submit_headers, run_probe
+from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
+    CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
+    CONTRACT as PACKAGE_BINDING_CONTRACT,
+)
+from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
+    CONTRACT as CONFIRM_INBOUND_CONTRACT,
+)
+from src.core.conf import settings
 from tests.mock import wms_mock_server
 from tests.mock.wms_northbound_contract import (
     ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
@@ -33,6 +44,100 @@ OPERATION_IDENTITIES = {
     "wms.fulfillment.full_box_exchange@v1",
     "wms.fulfillment.notify_pkg_binding@v1",
 }
+
+
+def test_contract_values_reject_retention_shorter_than_wes_confirmation_window() -> None:
+    contract = {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": 5,
+        "status_visibility_sla_seconds": 2,
+        "max_response_bytes": 4096,
+        "submit_deadline_seconds": 2,
+        "status_deadline_seconds": 2,
+    }
+
+    assert _contract_values(contract) is None
+
+
+def test_contract_values_reject_visibility_slower_than_wes_not_found_grace() -> None:
+    contract = {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": 9,
+        "status_visibility_sla_seconds": 4,
+        "max_response_bytes": 4096,
+        "submit_deadline_seconds": 2,
+        "status_deadline_seconds": 2,
+    }
+
+    assert _contract_values(contract) is None
+
+
+def test_contract_values_accept_finite_fractional_time_contract() -> None:
+    contract = {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": 9,
+        "status_visibility_sla_seconds": 2.5,
+        "max_response_bytes": 4096,
+        "submit_deadline_seconds": 30.5,
+        "status_deadline_seconds": 2.5,
+    }
+
+    assert _contract_values(contract) == contract
+
+
+@pytest.mark.parametrize("invalid_value", [float("inf"), float("-inf"), float("nan")])
+def test_contract_values_reject_non_finite_time_contract(invalid_value: float) -> None:
+    contract = {
+        "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "idempotency_retention_seconds": 9,
+        "status_visibility_sla_seconds": 2,
+        "max_response_bytes": 4096,
+        "submit_deadline_seconds": invalid_value,
+        "status_deadline_seconds": 2,
+    }
+
+    assert _contract_values(contract) is None
+
+
+def test_mock_contract_deadlines_match_wes_transport_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    submit_deadlines = {
+        contract.budget.timeout_seconds
+        for contract in (CONFIRM_INBOUND_CONTRACT, FULL_BOX_EXCHANGE_CONTRACT, PACKAGE_BINDING_CONTRACT)
+    }
+    assert len(submit_deadlines) == 1
+    expected_submit_deadline = float(submit_deadlines.pop())
+    monkeypatch.setenv("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", str(expected_submit_deadline))
+    monkeypatch.setenv("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", str(settings.WMS_EFFECT_STATUS_TIMEOUT_SECONDS))
+
+    with TestClient(wms_mock_server.app) as client:
+        contract = client.get("/northbound/contract")
+
+    assert contract.status_code == 200
+    assert contract.json()["submit_deadline_seconds"] == expected_submit_deadline
+    assert contract.json()["status_deadline_seconds"] == settings.WMS_EFFECT_STATUS_TIMEOUT_SECONDS
+
+
+def test_mock_contract_accepts_fractional_time_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2.5")
+    monkeypatch.setenv("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", "30.5")
+    monkeypatch.setenv("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", "2.5")
+
+    with TestClient(wms_mock_server.app) as client:
+        contract = client.get("/northbound/contract")
+
+    assert contract.status_code == 200
+    assert contract.json()["status_visibility_sla_seconds"] == 2.5
+    assert contract.json()["submit_deadline_seconds"] == 30.5
+    assert contract.json()["status_deadline_seconds"] == 2.5
+
+
+@pytest.mark.asyncio
+async def test_probe_reports_public_deadline_alignment(northbound_mock_client: httpx.AsyncClient) -> None:
+    report = await run_probe(northbound_mock_client, request_timeout_seconds=1.0)
+
+    case = next((case for case in report.cases if case.case_id == "public_contract_deadline_alignment"), None)
+    assert case is not None
+    assert case.passed is True
 
 
 def test_feasibility_probe_script_is_directly_executable() -> None:
@@ -91,10 +196,11 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
 ) -> None:
     report = await run_probe(
         northbound_mock_client,
-        request_timeout_seconds=0.01,
+        request_timeout_seconds=1.0,
     )
 
-    assert report.passed is True, report.cases
+    failed_cases = tuple(case for case in report.cases if not case.passed)
+    assert report.passed is True, failed_cases
     case_ids = {case.case_id for case in report.cases}
     assert {"public_contract_parameters", "active_v2_hmac_secret_available"} <= case_ids
     for operation_identity in OPERATION_IDENTITIES:

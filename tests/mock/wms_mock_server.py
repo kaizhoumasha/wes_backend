@@ -32,7 +32,8 @@ from uuid import uuid4
 import httpx
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.requests import ClientDisconnect
 from uvicorn import Config, Server
 
 # 添加项目根目录到 sys.path
@@ -46,6 +47,7 @@ from tests.mock.wms_northbound_contract import (
     NorthboundAuthError,
     NorthboundOperationStore,
     NorthboundPayloadValidationError,
+    canonical_payload_bytes,
     content_sha256,
     validate_typed_request,
     verify_status_hmac,
@@ -567,10 +569,17 @@ def _northbound_now() -> datetime:
     return northbound_clock_state["now"] or datetime.now(UTC)
 
 
+def _positive_finite_env_float(name: str, default: str) -> float:
+    value = float(os.getenv(name, default))
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return value
+
+
 northbound_operation_store = NorthboundOperationStore(
     clock=_northbound_now,
     retention_seconds=int(os.getenv("WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS", "9")),
-    visibility_sla_seconds=int(os.getenv("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2")),
+    visibility_sla_seconds=_positive_finite_env_float("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2"),
 )
 
 
@@ -661,18 +670,26 @@ def _northbound_fault_response(fault: _NorthboundFault) -> Response:
         code = "RATE_LIMITED"
     else:
         code = "NORTHBOUND_FAULT"
-    content = json.dumps({"code": code}, separators=(",", ":")).encode()
-    if fault.response_body_bytes is not None:
-        content += b"x" * fault.response_body_bytes
-    if fault.max_response_bytes is not None:
-        content = content[: fault.max_response_bytes]
+    prefix = json.dumps({"code": code}, separators=(",", ":")).encode()
     headers = {"Retry-After": str(fault.retry_after)} if fault.status == 429 and fault.retry_after is not None else None
     if fault.response_body_bytes is None:
+        content = prefix if fault.max_response_bytes is None else prefix[: fault.max_response_bytes]
         return Response(content=content, status_code=fault.status, media_type="application/json", headers=headers)
 
     async def stream_body():
-        for offset in range(0, len(content), 1024):
-            yield content[offset : offset + 1024]
+        remaining_budget = fault.max_response_bytes
+        prefix_chunk = prefix if remaining_budget is None else prefix[:remaining_budget]
+        if prefix_chunk:
+            yield prefix_chunk
+        if remaining_budget is not None:
+            remaining_budget = max(remaining_budget - len(prefix_chunk), 0)
+        remaining_filler = fault.response_body_bytes
+        if remaining_budget is not None:
+            remaining_filler = min(remaining_filler, remaining_budget)
+        while remaining_filler > 0:
+            chunk_size = min(remaining_filler, 1024)
+            yield b"x" * chunk_size
+            remaining_filler -= chunk_size
 
     return StreamingResponse(stream_body(), status_code=fault.status, media_type="application/json", headers=headers)
 
@@ -741,11 +758,11 @@ class NorthboundFaultRequest(BaseModel):
     method: str
     operation_identity: str | None = None
     retry_after: int | None = None
-    delay: float = 0.0
+    delay: float = Field(default=0.0, ge=0)
     after_response: bool = False
     not_found: bool = False
-    max_response_bytes: int | None = None
-    response_body_bytes: int | None = None
+    max_response_bytes: int | None = Field(default=None, ge=1, le=16 * 1024 * 1024)
+    response_body_bytes: int | None = Field(default=None, ge=0, le=16 * 1024 * 1024)
 
 
 class NorthboundRejectRequest(BaseModel):
@@ -761,7 +778,7 @@ class NorthboundClockRequest(BaseModel):
 class NorthboundVisibilityRequest(BaseModel):
     operation_identity: str
     idempotency_key: str
-    delay_seconds: int
+    delay_seconds: float = Field(ge=0, allow_inf_nan=False)
 
 
 @app.post("/debug/simulate-failure", summary="注入 HTTP 故障")
@@ -888,15 +905,24 @@ async def debug_northbound_callback_hints(operation_identity: str, idempotency_k
     return {"hints": [] if hint is None else [hint]}
 
 
+async def _request_body_or_none(request: Request) -> bytes | None:
+    """客户端已因 deadline 断开时安静终止，不把预期超时记录成 ASGI 异常。"""
+
+    try:
+        return await request.body()
+    except ClientDisconnect:
+        return None
+
+
 @app.get("/northbound/contract", summary="查询北向 Mock 合同承诺")
 async def northbound_contract():
     return {
         "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
         "idempotency_retention_seconds": int(os.getenv("WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS", "9")),
-        "status_visibility_sla_seconds": int(os.getenv("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2")),
+        "status_visibility_sla_seconds": _positive_finite_env_float("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2"),
         "max_response_bytes": int(os.getenv("WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES", "4096")),
-        "submit_deadline_seconds": int(os.getenv("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", "2")),
-        "status_deadline_seconds": int(os.getenv("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", "2")),
+        "submit_deadline_seconds": _positive_finite_env_float("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", "30"),
+        "status_deadline_seconds": _positive_finite_env_float("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", "2"),
     }
 
 
@@ -906,8 +932,11 @@ async def northbound_operation_status(request: Request, operation_identity: str,
     query_string = request.scope.get("query_string", b"")
     if query_string:
         raw_path = f"{raw_path}?{query_string.decode('ascii')}"
+    body = await _request_body_or_none(request)
+    if body is None:
+        return Response(status_code=499)
     try:
-        verify_status_hmac(request.headers, await request.body(), method=request.method, path=raw_path)
+        verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
         snapshot = northbound_operation_store.query(operation_identity, idempotency_key)
     except NorthboundAuthError as exc:
         return JSONResponse(status_code=401, content={"code": exc.code})
@@ -1005,26 +1034,33 @@ def _typed_effect_callback_payload(
 async def _submit_northbound_effect(
     *,
     request: Request,
-    payload: dict[str, Any],
     background_tasks: BackgroundTasks,
     operation_identity: str,
-    response_data: dict[str, Any],
-    callback_payload: dict[str, Any],
-) -> JSONResponse:
+) -> Response:
     """以共享状态核心受理 typed EFFECT，同时保留各 operation 的既有响应字段。"""
 
-    body = await request.body()
+    body = await _request_body_or_none(request)
+    if body is None:
+        return Response(status_code=499)
     try:
         verify_submit_hmac(request.headers, body, method=request.method, path=request.url.path)
         submitted_identity = str(request.headers.get("X-WES-Operation-Identity") or "")
         if submitted_identity != operation_identity:
             return JSONResponse(status_code=422, content={"code": "OPERATION_IDENTITY_MISMATCH"})
+        if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+            raise NorthboundPayloadValidationError("typed request content type must be application/json")
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise NorthboundPayloadValidationError("typed request must contain valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise NorthboundPayloadValidationError("typed request must be a JSON object")
         idempotency_key = str(request.headers.get("Idempotency-Key") or "")
         validated_payload = validate_typed_request(operation_identity, payload)
         submission = northbound_operation_store.submit(
             operation_identity,
             idempotency_key,
-            content_sha256(body),
+            content_sha256(canonical_payload_bytes(validated_payload)),
             validated_payload,
         )
     except NorthboundAuthError as exc:
@@ -1043,7 +1079,7 @@ async def _submit_northbound_effect(
             },
         )
 
-    data = {**response_data}
+    data = _northbound_response_data(operation_identity, validated_payload)
     if submission.snapshot is not None:
         data["northbound_status"] = submission.snapshot.as_dict()
     if submission.status_code == 202 and northbound_operation_store.register_callback_hint(
@@ -1052,12 +1088,53 @@ async def _submit_northbound_effect(
         # Evidence endpoint 只保留 callback hint 的关联键投影，绝不复制终态或认证字段。
         northbound_callback_hint_evidence[(operation_identity, idempotency_key)] = {
             "callback_type": "WMS_EFFECT_STATUS_HINT",
-            "dispatch_key": str(payload.get("dispatch_key") or ""),
+            "dispatch_key": str(validated_payload.get("dispatch_key") or ""),
             "idempotency_key": idempotency_key,
             "operation_identity": operation_identity,
         }
-        background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
+        background_tasks.add_task(
+            _post_callback,
+            WES_EXTERNAL_CALLBACK_URL,
+            _typed_effect_callback_payload(
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+                request_payload=validated_payload,
+            ),
+        )
     return JSONResponse(status_code=submission.status_code, content={"code": submission.status_code, "data": data})
+
+
+def _northbound_response_data(operation_identity: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """从已校验 typed payload 构造各 operation 的兼容受理字段。"""
+
+    if operation_identity == "wms.inventory.confirm_inbound@v1":
+        return {
+            "dispatch_key": payload["dispatch_key"],
+            "inbound_key": payload["inbound_key"],
+            "accepted": True,
+        }
+    if operation_identity == "wms.fulfillment.notify_pkg_binding@v1":
+        return {
+            "request_id": payload["dispatch_key"],
+            "binding_key": f"{payload['package_id']}:{payload['pallet_id']}:{payload['station_code']}",
+            "package_id": payload["package_id"],
+            "pallet_id": payload["pallet_id"],
+            "station_code": payload["station_code"],
+            "accepted": True,
+        }
+    return {
+        "environment": "LOCAL_MOCK_ONLY",
+        "production_write_path": False,
+        "request_id": payload["dispatch_key"],
+        "fulfillment_action": "FULL_BOX_EXCHANGE",
+        "batch_key": payload["rack_id"],
+        "rack_id": payload["rack_id"],
+        "empty_box_id": payload["empty_box_id"],
+        "full_box_id": payload["full_box_id"],
+        "station_admission_blocked_until_exchange_completed": True,
+        "box_level_inventory_transaction_required": True,
+        "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
+    }
 
 
 def _legacy_transport_callback_payload(
@@ -1368,32 +1445,13 @@ async def legacy_full_box_exchange(payload: dict[str, Any], background_tasks: Ba
 
 
 @app.post("/api/wms/fulfillment/package-binding", summary="本机 Mock: typed PKG 绑定通知")
-async def notify_pkg_binding(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
+async def notify_pkg_binding(request: Request, background_tasks: BackgroundTasks):
     """模拟 `wms.fulfillment.notify_pkg_binding@v1` 的已认证幂等受理。"""
 
-    dispatch_key = str(payload.get("dispatch_key") or "")
-    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
-    package_id = str(payload.get("package_id") or "")
-    pallet_id = str(payload.get("pallet_id") or "")
-    station_code = str(payload.get("station_code") or "")
     return await _submit_northbound_effect(
         request=request,
-        payload=payload,
         background_tasks=background_tasks,
         operation_identity="wms.fulfillment.notify_pkg_binding@v1",
-        response_data={
-            "request_id": payload.get("request_id") or dispatch_key,
-            "binding_key": f"{package_id}:{pallet_id}:{station_code}",
-            "package_id": package_id,
-            "pallet_id": pallet_id,
-            "station_code": station_code,
-            "accepted": True,
-        },
-        callback_payload=_typed_effect_callback_payload(
-            operation_identity="wms.fulfillment.notify_pkg_binding@v1",
-            idempotency_key=idempotency_key,
-            request_payload=payload,
-        ),
     )
 
 
@@ -1409,45 +1467,13 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
 
 
 @app.post("/api/wms/fulfillment/full-box-exchange", summary="本机 Mock: 满箱交换履约")
-async def full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
+async def full_box_exchange(request: Request, background_tasks: BackgroundTasks):
     """模拟满箱交换 typed EFFECT，不触发生产写路径。"""
 
-    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
-    callback_payload = _typed_effect_callback_payload(
-        operation_identity="wms.fulfillment.full_box_exchange@v1",
-        idempotency_key=idempotency_key,
-        request_payload=payload,
-    )
-    rack_code = str(payload.get("rack_code") or "")
-    rack_side = str(payload.get("rack_side") or "")
-    full_box_object_keys = _string_list(payload, "full_box_object_keys")
-    full_box_set = set(full_box_object_keys)
-    sorting_candidate_object_keys = [
-        object_key for object_key in _string_list(payload, "remaining_object_keys") if object_key not in full_box_set
-    ]
-    exchange_required = bool(full_box_object_keys)
     return await _submit_northbound_effect(
         request=request,
-        payload=payload,
         background_tasks=background_tasks,
         operation_identity="wms.fulfillment.full_box_exchange@v1",
-        response_data={
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "request_id": payload.get("request_id", ""),
-            "fulfillment_action": "FULL_BOX_EXCHANGE" if exchange_required else "SORTER_STATION_ADMISSION",
-            "batch_key": f"{rack_code}:{rack_side}",
-            "rack_id": str(payload.get("rack_id") or ""),
-            "rack_code": rack_code,
-            "rack_side": rack_side,
-            "exchange_zone": payload.get("exchange_zone", ""),
-            "full_box_object_keys": full_box_object_keys,
-            "sorting_candidate_object_keys": sorting_candidate_object_keys,
-            "station_admission_blocked_until_exchange_completed": exchange_required,
-            "box_level_inventory_transaction_required": exchange_required,
-            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
-        },
-        callback_payload=callback_payload,
     )
 
 
@@ -1803,25 +1829,11 @@ async def delete_reservation(reservation_key: str):
 
 
 @app.post("/api/wms/inventory/confirm-inbound")
-async def confirm_inbound_effect(payload: dict[str, Any], background_tasks: BackgroundTasks, request: Request):
-    dispatch_key = str(payload.get("dispatch_key") or "")
-    idempotency_key = str(request.headers.get("Idempotency-Key") or "")
-    inbound_key = str(payload.get("inbound_key") or "")
+async def confirm_inbound_effect(request: Request, background_tasks: BackgroundTasks):
     return await _submit_northbound_effect(
         request=request,
-        payload=payload,
         background_tasks=background_tasks,
         operation_identity="wms.inventory.confirm_inbound@v1",
-        response_data={
-            "dispatch_key": dispatch_key,
-            "inbound_key": inbound_key,
-            "accepted": True,
-        },
-        callback_payload=_typed_effect_callback_payload(
-            operation_identity="wms.inventory.confirm_inbound@v1",
-            idempotency_key=idempotency_key,
-            request_payload=payload,
-        ),
     )
 
 
@@ -1853,7 +1865,7 @@ class WmsMockServer:
     def __init__(self, host: str = "127.0.0.1", port: int = 8011):
         self.host = host
         self.port = port
-        self.config = Config(app=app, host=host, port=port, log_level="info")
+        self.config = Config(app=app, host=host, port=port, log_level="info", access_log=False)
 
     async def start(self) -> None:
         logger.info(f"WMS Mock 服务启动: http://{self.host}:{self.port}")

@@ -84,6 +84,31 @@ def _payload(*, station_code: str = "station-a") -> dict[str, str]:
     }
 
 
+def test_operation_store_accepts_fractional_visibility_sla() -> None:
+    clock = {"now": datetime(2026, 7, 25, tzinfo=UTC)}
+    store = NorthboundOperationStore(
+        clock=lambda: clock["now"],
+        retention_seconds=9,
+        visibility_sla_seconds=2.5,
+    )
+
+    store.configure_visibility_delay(
+        "wms.fulfillment.notify_pkg_binding@v1",
+        "idem-fractional-visibility",
+        delay_seconds=2.5,
+    )
+    store.submit(
+        "wms.fulfillment.notify_pkg_binding@v1",
+        "idem-fractional-visibility",
+        "a" * 64,
+        _payload(),
+    )
+    clock["now"] += timedelta(seconds=2.49)
+    assert store.query("wms.fulfillment.notify_pkg_binding@v1", "idem-fractional-visibility").state == "NOT_FOUND"
+    clock["now"] += timedelta(seconds=0.01)
+    assert store.query("wms.fulfillment.notify_pkg_binding@v1", "idem-fractional-visibility").state == "ACCEPTED"
+
+
 def test_resolve_mock_credential_accepts_only_versioned_allowlisted_reference(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1, "mock-hmac-secret-v1")
     monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, "mock-hmac-secret-v2")
@@ -108,6 +133,19 @@ def test_submit_hmac_rejects_tampered_content_hash(monkeypatch: pytest.MonkeyPat
         )
 
 
+def test_submit_hmac_rejects_header_whitespace_even_when_signature_uses_trimmed_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = b"mock-hmac-secret"
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, secret.decode())
+    body = b'{"dispatch_key":"dispatch-001"}'
+    headers = _submit_headers(body=body, secret=secret)
+    headers["Idempotency-Key"] = "  idem-001  "
+
+    with pytest.raises(NorthboundAuthError, match="MISSING_OR_INVALID_AUTH_HEADER"):
+        verify_submit_hmac(headers, body, method="POST", path="/northbound/operations")
+
+
 def test_submit_hmac_rejects_signature_not_matching_canonical_field_order(monkeypatch: pytest.MonkeyPatch) -> None:
     secret = b"mock-hmac-secret"
     monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, secret.decode())
@@ -128,6 +166,36 @@ def test_status_hmac_uses_received_raw_query_path(monkeypatch: pytest.MonkeyPatc
     verify_status_hmac(headers, b"", method="GET", path=path)
     with pytest.raises(NorthboundAuthError, match="INVALID_HMAC_SIGNATURE"):
         verify_status_hmac(headers, b"", method="GET", path=path.replace("%40", "@"))
+
+
+def test_status_hmac_rejects_non_empty_body_even_when_hash_and_signature_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = b"mock-hmac-secret"
+    monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2, secret.decode())
+    path = "/northbound/operations/status?operation_identity=op&idempotency_key=idem-001"
+    body = b"unexpected"
+    payload_hash = content_sha256(body)
+    timestamp = "1721865601"
+    nonce = "status-nonce"
+    canonical = canonical_status_string(
+        method="GET",
+        path=path,
+        timestamp=timestamp,
+        nonce=nonce,
+        payload_hash=payload_hash,
+    )
+    headers = {
+        "X-WMS-Credential-Reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
+        "X-WMS-Signature-Algorithm": "HMAC_SHA256",
+        "X-WMS-Timestamp": timestamp,
+        "X-WMS-Nonce": nonce,
+        "X-WMS-Content-SHA256": payload_hash,
+        "X-WMS-Signature": hmac.new(secret, canonical.encode(), hashlib.sha256).hexdigest(),
+    }
+
+    with pytest.raises(NorthboundAuthError, match="CONTENT_HASH_MISMATCH"):
+        verify_status_hmac(headers, body, method="GET", path=path)
 
 
 def test_store_scopes_idempotency_by_operation_identity_and_replays_completed_typed_result() -> None:

@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
@@ -16,6 +20,17 @@ from scripts.verify_wms_northbound_feasibility import _status_headers, _submit_h
 from src.app.sys.canonical_dispatch import canonical_json_bytes
 from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE
 from src.core.conf import settings
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+ACCEPTANCE_COMPOSE_FILE = BACKEND_ROOT / "docker-compose.wms-acceptance.yml"
+FEASIBILITY_REPORT = BACKEND_ROOT / "docs" / "operations" / "wms-northbound-feasibility-report.md"
+
+
+def _reported_wms_image_digest() -> str:
+    report = FEASIBILITY_REPORT.read_text(encoding="utf-8")
+    match = re.search(r"WMS Docker image\s+`(sha256:[0-9a-f]{64})`", report)
+    assert match is not None, "WMS image digest is missing from feasibility report"
+    return match.group(1)
 
 
 def _live_connection() -> tuple[str, float]:
@@ -134,3 +149,52 @@ async def test_compose_mock_wms_concurrent_fault_claim_over_tcp() -> None:
     assert next(response for response in responses if response.status_code == 503).json() == {
         "code": "TEMPORARILY_UNAVAILABLE"
     }
+
+
+def test_compose_mock_wms_live_logs_redact_query_keys_and_expected_disconnects() -> None:
+    docker = shutil.which("docker")
+    assert docker is not None
+
+    completed = subprocess.run(
+        [docker, "compose", "-f", str(ACCEPTANCE_COMPOSE_FILE), "logs", "--no-color", "mock_wms"],
+        cwd=BACKEND_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    logs = completed.stdout + completed.stderr
+
+    assert completed.returncode == 0, logs
+    assert "idempotency_key=" not in logs
+    assert "ClientDisconnect" not in logs
+    assert "Exception in ASGI application" not in logs
+
+
+def test_live_acceptance_runs_the_reported_wms_image_without_source_mounts() -> None:
+    docker = shutil.which("docker")
+    assert docker is not None
+
+    container = subprocess.run(
+        [docker, "compose", "-f", str(ACCEPTANCE_COMPOSE_FILE), "ps", "-q", "mock_wms"],
+        cwd=BACKEND_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    container_id = container.stdout.strip()
+    assert container.returncode == 0 and container_id, container.stderr
+
+    inspected = subprocess.run(
+        [docker, "inspect", container_id, "--format", "{{.Image}}|{{json .Mounts}}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    image_id, mounts = inspected.stdout.strip().split("|", maxsplit=1)
+
+    assert inspected.returncode == 0, inspected.stderr
+    assert image_id == _reported_wms_image_digest()
+    assert '"/app/tests/mock"' not in mounts

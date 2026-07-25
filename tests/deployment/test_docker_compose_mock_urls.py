@@ -87,6 +87,38 @@ def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
     assert "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1" not in mock_wms_env
 
 
+def test_mock_wms_receives_the_same_public_northbound_contract_settings_as_wes() -> None:
+    compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    api_env = services["api"]["environment"]
+    mock_wms_env = services["mock_wms"]["environment"]
+
+    for setting_name in (
+        "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
+        "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
+        "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS",
+        "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS",
+    ):
+        assert mock_wms_env[setting_name] == api_env[setting_name]
+
+
+def test_mock_wms_submit_deadline_is_independently_configurable() -> None:
+    compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    mock_wms_env = compose["services"]["mock_wms"]["environment"]
+
+    assert mock_wms_env["WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS"] == "${WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS}"
+    for env_file in (".env.dev", ".env.test", ".env.prod"):
+        env_text = (BACKEND_ROOT / env_file).read_text(encoding="utf-8")
+        assert "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS=30" in env_text
+
+
+def test_mock_wms_disables_query_bearing_uvicorn_access_log() -> None:
+    compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    mock_wms_command = compose["services"]["mock_wms"]["command"]
+
+    assert "--no-access-log" in mock_wms_command
+
+
 def test_mock_dockerfile_copies_only_the_current_sandbox_catalog_bridge() -> None:
     dockerfile_text = (BACKEND_ROOT / "tests/mock/Dockerfile").read_text(encoding="utf-8")
 

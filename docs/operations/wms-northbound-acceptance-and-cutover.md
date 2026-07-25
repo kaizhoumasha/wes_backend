@@ -7,15 +7,18 @@ callback hint 交互，不记录或推断 WMS 内部工作流。当前 P0 验收
 ## 当前结论
 
 - 实际开发 Mock 验证：`PASS/GO`（当前 P0 门禁已关闭）
-- 实际 Compose 验证：image
-  `sha256:29be6894b99d3f66cd0b84ed5f2013a67f415446d47f31e984c0cd6170d21a05`，
-  live pytest `3 passed`，CLI 45 case 全部 `passed=true`
+- 实际 Compose 验证：WMS image
+  `sha256:b3fc373dc9531e39a6731851d6bb5b208c5f29199c7446c1945693d9208a45c8`，
+  ECS image `sha256:3c2ef80df6325ef8b83a6f4ec850edddad4629f0e28ba33c488f1b21d65b8a61`，
+  容器入口/digest/浮点覆盖 `5 passed`、验收镜像 live pytest `5 passed`、CLI 46 case 全部
+  `passed=true`；Live 容器无源码挂载，且日志不含完整关联键与预期 deadline 断连 traceback
 - 外部 WMS 联调验收模板：`PENDING`（后续，不阻塞当前 Mock 验收）
 - 外部 WMS 观测映射与采集模板：`BLOCKED`
 - 外部 WMS 联调测试数据清理模板：`BLOCKED`
 - 外部 WMS 整体切换模板：`BLOCKED`
 
-`PASS/GO` 表示实际 Docker Compose `mock_wms` 已通过三类 typed EFFECT 的真实 TCP 黑盒合同验收，当前开发
+`PASS/GO` 表示 `docker-compose.wms-acceptance.yml` 启动的已构建 `mock_wms` 镜像已通过三类 typed EFFECT
+的真实 TCP 黑盒合同验收，当前开发
 Mock 能力可以进入后续 WES 开发。不得把该结论替代未来外部 WMS 的联调验收，也不得预填外部确认人、验收时间或构建版本。
 只有下述真实证据完整、双方确认且清理目标经过单独审查后，才能改变外部模板的 `PENDING/BLOCKED` 状态。
 

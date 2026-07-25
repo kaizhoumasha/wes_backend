@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import os
+import tracemalloc
 from pathlib import Path
 from time import monotonic
 from unittest.mock import AsyncMock
@@ -10,7 +11,9 @@ from urllib.parse import urlencode
 
 import httpx
 import pytest
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from src.app.runtime.orchestration.sandbox_catalog_bridge import (
     mock_wms_inventory_seed,
@@ -72,10 +75,10 @@ def _submit_headers(*, body: bytes, path: str, operation_identity: str, idempote
     }
 
 
-def _status_headers(*, path: str) -> dict[str, str]:
+def _status_headers(*, path: str, body: bytes = b"") -> dict[str, str]:
     timestamp = "1721865600"
     nonce = "status-nonce"
-    payload_hash = hashlib.sha256(b"").hexdigest()
+    payload_hash = hashlib.sha256(body).hexdigest()
     canonical = canonical_status_string(
         method="GET", path=path, timestamp=timestamp, nonce=nonce, payload_hash=payload_hash
     )
@@ -98,6 +101,12 @@ def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> No
 
     assert "from src.workline_runtime.sandbox_catalog import" not in source
     assert "spec_from_file_location" in source
+
+
+def test_standalone_wms_mock_server_disables_query_bearing_access_log() -> None:
+    server = wms_mock_server.WmsMockServer()
+
+    assert server.config.access_log is False
 
 
 def test_wms_mock_release_reservation_matches_typed_port_contract() -> None:
@@ -300,6 +309,199 @@ def test_wms_mock_northbound_submit_rejects_invalid_hmac() -> None:
 
     assert response.status_code == 401
     assert response.json()["code"] == "INVALID_HMAC_SIGNATURE"
+
+
+def test_typed_submit_rejects_whitespace_variant_before_idempotency_write() -> None:
+    path = "/api/wms/inventory/confirm-inbound"
+    operation_identity = "wms.inventory.confirm_inbound@v1"
+    idempotency_key = "idem-authenticated-scope-001"
+    body = (
+        b'{"dispatch_key":"dispatch-authenticated-scope","inbound_key":"inbound-authenticated-scope",'
+        b'"material_code":"material-authenticated-scope","quantity":"1"}'
+    )
+    clean_headers = _submit_headers(
+        body=body,
+        path=path,
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+    )
+    whitespace_headers = {**clean_headers, "Idempotency-Key": f"  {idempotency_key}  "}
+
+    with TestClient(wms_mock_server.app) as client:
+        whitespace = client.post(path, content=body, headers=whitespace_headers)
+        clean = client.post(path, content=body, headers=clean_headers)
+        clean_effects = client.get(
+            "/debug/northbound/effects",
+            params={"operation_identity": operation_identity, "idempotency_key": idempotency_key},
+        )
+        whitespace_effects = client.get(
+            "/debug/northbound/effects",
+            params={"operation_identity": operation_identity, "idempotency_key": f"  {idempotency_key}  "},
+        )
+
+    assert whitespace.status_code == 401
+    assert whitespace.json() == {"code": "MISSING_OR_INVALID_AUTH_HEADER"}
+    assert clean.status_code == 202
+    assert clean_effects.json()["effect_count"] == 1
+    assert whitespace_effects.json()["effect_count"] == 0
+
+
+def test_status_query_rejects_self_consistently_signed_non_empty_get_body() -> None:
+    body = b"unexpected"
+    status_path = "/northbound/operations/status?" + urlencode(
+        {
+            "operation_identity": "wms.inventory.confirm_inbound@v1",
+            "idempotency_key": "idem-non-empty-status-body-001",
+        }
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.request(
+            "GET",
+            status_path,
+            content=body,
+            headers=_status_headers(path=status_path, body=body),
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"code": "CONTENT_HASH_MISMATCH"}
+
+
+@pytest.mark.asyncio
+async def test_status_query_handles_client_disconnect_without_raising() -> None:
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/northbound/operations/status",
+            "query_string": (
+                b"operation_identity=wms.inventory.confirm_inbound%40v1&idempotency_key=idem-disconnected-status-001"
+            ),
+            "headers": [],
+        },
+        receive=receive,
+    )
+
+    response = await wms_mock_server.northbound_operation_status(
+        request,
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        idempotency_key="idem-disconnected-status-001",
+    )
+
+    assert response.status_code == 499
+
+
+def test_typed_submit_replay_uses_canonical_json_fingerprint() -> None:
+    path = "/api/wms/fulfillment/package-binding"
+    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    idempotency_key = "idem-canonical-replay-001"
+    canonical_body = (
+        b'{"dispatch_key":"dispatch-canonical","package_id":"package-canonical",'
+        b'"pallet_id":"pallet-canonical","station_code":"station-canonical"}'
+    )
+    equivalent_body = (
+        b'{ "station_code": "station-canonical", "pallet_id": "pallet-canonical", '
+        b'"package_id": "package-canonical", "dispatch_key": "dispatch-canonical" }'
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        first = client.post(
+            path,
+            content=canonical_body,
+            headers=_submit_headers(
+                body=canonical_body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+            ),
+        )
+        replay = client.post(
+            path,
+            content=equivalent_body,
+            headers=_submit_headers(
+                body=equivalent_body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+            ),
+        )
+        effects = client.get(
+            "/debug/northbound/effects",
+            params={"operation_identity": operation_identity, "idempotency_key": idempotency_key},
+        )
+
+    assert first.status_code == 202
+    assert replay.status_code == 409
+    assert replay.json()["code"] == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+    assert effects.json()["effect_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "content_type"),
+    (
+        (b"[]", "application/json"),
+        (b'"scalar"', "application/json"),
+        (b"{", "application/json"),
+        (
+            b'{"dispatch_key":"dispatch-content-type","package_id":"package-content-type",'
+            b'"pallet_id":"pallet-content-type","station_code":"station-content-type"}',
+            "text/plain",
+        ),
+    ),
+)
+def test_typed_submit_rejects_non_object_malformed_or_wrong_content_type_with_fixed_error(
+    body: bytes,
+    content_type: str,
+) -> None:
+    path = "/api/wms/fulfillment/package-binding"
+    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    idempotency_key = f"idem-invalid-json-{hashlib.sha256(body + content_type.encode()).hexdigest()[:12]}"
+    headers = _submit_headers(
+        body=body,
+        path=path,
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+    )
+    headers["Content-Type"] = content_type
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(path, content=body, headers=headers)
+        effects = client.get(
+            "/debug/northbound/effects",
+            params={"operation_identity": operation_identity, "idempotency_key": idempotency_key},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "INVALID_TYPED_REQUEST"}
+    assert effects.json()["effect_count"] == 0
+
+
+def test_streaming_fault_response_does_not_allocate_the_declared_body_up_front() -> None:
+    fault = wms_mock_server._NorthboundFault(
+        status=503,
+        target_path="/northbound/contract",
+        method="GET",
+        operation_identity=None,
+        retry_after=None,
+        delay=0,
+        after_response=False,
+        not_found=False,
+        max_response_bytes=None,
+        response_body_bytes=4 * 1024 * 1024,
+    )
+
+    tracemalloc.start()
+    try:
+        response = wms_mock_server._northbound_fault_response(fault)
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert isinstance(response, StreamingResponse)
+    assert peak_bytes < 256 * 1024
 
 
 def test_wms_mock_northbound_status_exposes_not_found_and_rejected_states() -> None:

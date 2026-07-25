@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import math
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -15,7 +18,7 @@ from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
 
 MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V1 = "secret://wms/material-flow-sandbox-hmac@v1"
 MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2 = "secret://wms/material-flow-sandbox-hmac@v2"
@@ -93,6 +96,23 @@ def content_sha256(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def canonical_payload_bytes(payload: Mapping[str, Any]) -> bytes:
+    """按 WES frozen payload 规则生成唯一 JSON object bytes。"""
+
+    if not isinstance(payload, Mapping):
+        raise NorthboundPayloadValidationError("typed request must be a JSON object")
+    try:
+        return json.dumps(
+            dict(payload),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise NorthboundPayloadValidationError("typed request must contain valid JSON values") from exc
+
+
 def resolve_mock_northbound_credential(credential_reference: str) -> bytes:
     """解析真实 WES sandbox material-flow active/frozen credential reference。"""
 
@@ -155,6 +175,8 @@ def verify_submit_hmac(headers: Mapping[str, str], body: bytes, *, method: str, 
 def verify_status_hmac(headers: Mapping[str, str], body: bytes, *, method: str, path: str) -> None:
     """验证 Status header 与收到的 raw request target 的五项 HMAC。"""
 
+    if body:
+        raise NorthboundAuthError("CONTENT_HASH_MISMATCH")
     normalized = _normalized_headers(headers)
     payload_hash = _verify_content_hash(normalized, "x-wms-content-sha256", body)
     _require_algorithm(normalized, "x-wms-signature-algorithm")
@@ -200,8 +222,8 @@ def _normalized_headers(headers: Mapping[str, str]) -> dict[str, str]:
 
 
 def _required_header(headers: Mapping[str, str], name: str) -> str:
-    value = headers.get(name, "").strip()
-    if not value or "\r" in value or "\n" in value:
+    value = headers.get(name, "")
+    if not value or value != value.strip() or "\r" in value or "\n" in value:
         raise NorthboundAuthError("MISSING_OR_INVALID_AUTH_HEADER")
     return value
 
@@ -283,16 +305,16 @@ class NorthboundOperationStore:
         *,
         clock: Callable[[], datetime] | None = None,
         retention_seconds: int = 9,
-        visibility_sla_seconds: int = 2,
+        visibility_sla_seconds: float = 2,
     ) -> None:
-        if retention_seconds <= 0 or visibility_sla_seconds <= 0:
+        if retention_seconds <= 0 or not math.isfinite(visibility_sla_seconds) or visibility_sla_seconds <= 0:
             raise ValueError("northbound retention and visibility SLA must be positive")
         self._lock = RLock()
         self._clock = clock or (lambda: datetime.now(UTC))
         self._retention_seconds = retention_seconds
         self._visibility_sla_seconds = visibility_sla_seconds
         self._records: dict[tuple[str, str], _OperationRecord] = {}
-        self._pending_visibility_delays: dict[tuple[str, str], int] = {}
+        self._pending_visibility_delays: dict[tuple[str, str], float] = {}
         self._effect_counts: dict[tuple[str, str], int] = {}
 
     def submit(
@@ -389,7 +411,7 @@ class NorthboundOperationStore:
         operation_identity: str,
         idempotency_key: str,
         *,
-        delay_seconds: int,
+        delay_seconds: float,
     ) -> None:
         """Mock-only 控制面按秒设置 ``visible_at``，不得超过公开 SLA。"""
 
@@ -570,6 +592,7 @@ __all__ = [
     "build_full_box_exchange_result",
     "build_package_binding_result",
     "build_typed_result",
+    "canonical_payload_bytes",
     "canonical_status_string",
     "canonical_submit_string",
     "content_sha256",

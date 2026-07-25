@@ -4,8 +4,9 @@
 - 确认时间：2026-07-25
 - WES owner：WES Runtime Team
 - 开发 WMS stub owner：WES Mock WMS Team
-- Mock/build version：Docker image
-  `sha256:29be6894b99d3f66cd0b84ed5f2013a67f415446d47f31e984c0cd6170d21a05`
+- Mock/build version：WMS Docker image
+  `sha256:b3fc373dc9531e39a6731851d6bb5b208c5f29199c7446c1945693d9208a45c8`；
+  ECS Docker image `sha256:3c2ef80df6325ef8b83a6f4ec850edddad4629f0e28ba33c488f1b21d65b8a61`
 - WES 确认状态：实际 Compose Mock TCP 黑盒探针 `PASS`
 - 开发 Mock WMS 确认状态：三个 typed EFFECT 公开 HTTP 路由 `PASS`
 - 依据：[WMS 北向最小交互合同](../contracts/wms-northbound-interaction-contract.md)
@@ -22,9 +23,12 @@
 | --- | ---: | --- |
 | WMS 幂等记录保留期 | 9 秒 | `/northbound/contract.idempotency_retention_seconds` |
 | WMS 状态可见性 SLA | 2 秒 | `/northbound/contract.status_visibility_sla_seconds` |
-| Submit deadline | 2 秒 | `/northbound/contract.submit_deadline_seconds` |
+| Submit deadline | 30 秒 | `/northbound/contract.submit_deadline_seconds`，与三个 typed EFFECT author-time budget 一致 |
 | Status deadline | 2 秒 | `/northbound/contract.status_deadline_seconds` |
 | 最大响应体 | 4096 bytes | `/northbound/contract.max_response_bytes` 与有界读取负测 |
+
+visibility SLA 与 submit/status deadline 接受 Settings 合同允许的有限正小数秒覆盖；retention 与最大响应体
+仍保持正整数。
 
 实际 Mock 直接复用 WES sandbox material-flow 的真实版本化 credential reference：
 `secret://wms/material-flow-sandbox-hmac@v1` 与
@@ -52,8 +56,9 @@ Submit 的 `X-WES-*` 七项与 Status query 的 `X-WMS-*` 五项 HMAC canonical 
 Submit wire 与当前 sender 一致：HTTP body 直接是 typed operation payload；
 `X-WES-Operation-Identity` 和 `Idempotency-Key` 是 header。Mock 不接收 `canonical_payload` 外层包络或
 `frozen_binding`；frozen binding 只在 WES 内部保证重试使用原 endpoint/credential revision。本开发 mock 对
-canonical raw body bytes 计算并校验 `X-WES-Content-SHA256`，幂等 fingerprint 也以该 hash 比较，不按解析后的
-dict 相等性判断。实际 Mock 已验证 Submit 七项与 Status query 五项换行 canonical input；未来外部 WMS 仍须
+raw body bytes 计算并校验 `X-WES-Content-SHA256`；验签后显式解析 JSON object，并对校验后的 typed payload
+重新生成排序、无空白、拒绝非有限数的 canonical bytes 作为幂等 fingerprint，因此字段顺序与空白不改变重放结论。
+实际 Mock 已验证 Submit 七项与 Status query 五项换行 canonical input；未来外部 WMS 仍须
 分别保留同等签名证据，不能用本报告替代其认证兼容验收。
 
 ## 黑盒探针证据
@@ -61,13 +66,21 @@ dict 相等性判断。实际 Mock 已验证 Submit 七项与 Status query 五�
 2026-07-25 先运行快速合同测试，再显式构建并启动实际 Docker Compose 服务：
 
 - `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`；
-- `docker compose --profile dev up -d --build mock_wms`；
+- `docker compose --profile dev build mock_ecs mock_wms`；
+- `uv run pytest tests/integration/test_mock_container_entrypoints.py -q`，结果 `5 passed`，覆盖 ECS/WMS
+  双入口、合法浮点合同覆盖和当前镜像 digest；
+- `docker compose -f docker-compose.wms-acceptance.yml up -d --force-recreate mock_wms`，该验收配置不含
+  `build`、源码 bind mount 或 `--reload`；
 - `WMS_NORTHBOUND_LIVE_BASE_URL=http://127.0.0.1:8011 WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS=0.25
-  uv run pytest tests/integration/test_wms_mock_northbound_live.py -q`，结果 `3 passed`；
+  uv run pytest tests/integration/test_wms_mock_northbound_live.py -q`，结果 `5 passed`，并验证容器 `.Image`
+  等于本报告记录的 WMS digest、`/app/tests/mock` 无宿主机挂载，且容器日志不含完整
+  `idempotency_key`、`ClientDisconnect` 或 `Exception in ASGI application`；
 - `uv run python scripts/verify_wms_northbound_feasibility.py
-  --base-url http://127.0.0.1:8011 --timeout-seconds 0.25`，结果 45 个 case 全部 `passed=true`。
+  --base-url http://127.0.0.1:8011 --timeout-seconds 0.25
+  --submit-timeout-seconds 0.25 --status-timeout-seconds 0.25`，结果 46 个 case 全部 `passed=true`。
 
-快速测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项真实 TCP 黑盒证据。探针不读取 Mock 内部状态，
+快速测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项针对已构建镜像的真实 TCP 黑盒证据。
+开发用 `docker-compose.yml` 仍保留热更新挂载，但不参与最终镜像验收。探针不读取 Mock 内部状态，
 只经 submit/status/debug 的公开 HTTP 路由断言。并发证据由具名 live case
 `test_compose_mock_wms_concurrent_identical_replay_over_tcp` 与
 `test_compose_mock_wms_concurrent_fault_claim_over_tcp` 直接通过 Docker published socket 采集，不再借用
@@ -77,11 +90,12 @@ ASGI 公共路由测试代替。所有强制 case 通过：
 | --- | --- |
 | 三个 operation 的首次提交、并发同键重放、已完成重放、同 key 冲突与单一 effect | PASS |
 | 三个 operation 的 required/extra/blank/type/finite-positive typed body 负测，失败无记录 | PASS |
+| 非对象、畸形 JSON、错误 Content-Type 固定返回 `INVALID_TYPED_REQUEST`；同 payload 不同字段顺序/空白安全重放 | PASS |
 | 三个 operation 的 ACCEPTED → PROCESSING → COMPLETED、单调版本、非空 typed result 关联字段、REJECTED、NOT_FOUND | PASS |
 | `t0 / visibility_sla-1 / visibility_sla` 可见性边界、`retention-1 / retention` 过期边界与边界后 effect=2 | PASS |
 | Submit content hash、真实 WES sender/signature、Status signature 篡改拒绝 | PASS |
 | 精确 path/method/operation fault scope；并发匹配请求恰好一个 claim，health/inventory/legacy 不消费 | PASS |
-| 429 + Retry-After、固定 5xx、真实 submit/status deadline、流式超限 body、可见后丢失、公开 reset | PASS |
+| 公开 submit/status deadline 与 WES 真源对齐；429 + Retry-After、固定 5xx、真实独立超时、惰性流式超限 body、可见后丢失、公开 reset | PASS |
 | callback hint 首次受理仅记录一次脱敏投影；投影无终态字段，COMPLETED 只由 status 查询获得 | PASS |
 
 探针输出只含本地 case 枚举和布尔结果；恶意远端 body 的负测已验证 stdout、stderr 和报告均不含 secret/PII/body。

@@ -2,13 +2,14 @@
 
 ## 结论
 
-2026-07-25 最终复核提出的 8 组问题已全部修复。当前开发阶段的 WMS 北向 P0 门禁为
+2026-07-25 多轮最终复核提出的问题已全部修复。当前开发阶段的 WMS 北向 P0 门禁为
 `PASS/GO`，依据是最终源树构建出的真实 Docker Compose `mock_wms`，不是内嵌 stub 或仅
 `ASGITransport` 证据。外部真实 WMS 的联调、观测采集、数据清理和生产切换门禁仍保持
 `PENDING/BLOCKED`，本次结论不替代外部验收。
 
-最终镜像：
-`sha256:29be6894b99d3f66cd0b84ed5f2013a67f415446d47f31e984c0cd6170d21a05`。
+最终镜像：WMS
+`sha256:b3fc373dc9531e39a6731851d6bb5b208c5f29199c7446c1945693d9208a45c8`，ECS
+`sha256:3c2ef80df6325ef8b83a6f4ec850edddad4629f0e28ba33c488f1b21d65b8a61`。
 
 ## GitNexus 影响分析
 
@@ -50,8 +51,8 @@
 
 ### 4. 真实 Docker 与真实 deadline
 
-- 修复 Dockerfile 复制已删除 `src/workline_runtime/*` 的问题，改为仅复制自包含
-  `sandbox_catalog_bridge.py`。
+- 修复 Dockerfile 复制已删除 `src/workline_runtime/*` 的问题；共享镜像仅复制自包含的
+  `sandbox_catalog_bridge.py` 与 callback `runtime_events.py`，ECS/WMS 双入口均可导入。
 - 删除 `tests.mock` 包入口对 ECS/WMS 的 eager import，使 WMS 镜像不依赖完整 WES/ECS 运行时。
 - submit ambiguous timeout 使用服务端受理后的真实延迟；status timeout 使用独立真实延迟。
 - 新增显式 heavy test `tests/integration/test_wms_mock_northbound_live.py`，无 skip 兜底。
@@ -76,7 +77,7 @@
 - 5xx 固定返回 `TEMPORARILY_UNAVAILABLE`；429 固定返回 `RATE_LIMITED` 并携带
   `Retry-After`。
 - 超限 body 使用 `StreamingResponse` 分块发送，探针在真实读取过程中执行有界拒绝，不依赖
-  `Content-Length`。
+  `Content-Length`；响应生成器不再预分配完整故障体。
 
 ### 8. 并发同键重放
 
@@ -85,6 +86,25 @@
 - store 的查询、提交、过期、回调 hint、拒绝与 reset 共享同一个 `RLock` 临界区。
 
 ## 终审 Important 追加波次
+
+### Canonical 幂等、固定 typed 错误与 deadline 真源
+
+- Submit 继续用 raw bytes 校验 content hash/HMAC，但幂等 fingerprint 改为校验后 typed payload 的
+  canonical JSON SHA-256；字段顺序和空白不再造成冲突。
+- 三个 typed route 由共享入口读取 raw body，非对象、畸形 JSON 和错误 Content-Type 固定返回
+  `422 INVALID_TYPED_REQUEST`，且不创建 effect。
+- submit/status deadline 分别配置；submit 为三个 typed operation 共用的 30 秒 author-time budget，
+  status 继续来自 `WMS_EFFECT_STATUS_TIMEOUT_SECONDS`。探针新增公开 deadline alignment case。
+- visibility SLA 与 submit/status deadline 按 WES Settings 合同接受有限正浮点秒数；retention 与
+  max-response 保持正整数。Docker 回归使用 `2.5/30.5/2.5` 覆盖验证镜像可导入并公开一致合同。
+- 成功探针测试使用 1 秒请求预算，避免全量日志负载消耗 10/100ms 测试预算；独立超时故障注入仍验证
+  submit/status deadline 会截断慢响应。
+- 所有 HMAC canonical required header 拒绝前后空白，避免验签值与幂等 store key 分叉；Status GET
+  固定要求空 body，即使非空 body 的 hash/signature 自洽也返回 `CONTENT_HASH_MISMATCH`。
+- Compose 与 `WmsMockServer` 独立入口均关闭 Uvicorn 默认 access log，避免 query 中关联键明文落盘；
+  submit/status 的 `ClientDisconnect` 在认证读取边界映射为静默 499，Live 日志守卫确认无关联键与
+  ASGI traceback。
+- 共享 Mock 镜像新增 ECS 所需的自包含 runtime event 分类模块，并以两个最终 image tag 执行双入口 smoke。
 
 ### Legacy 满箱完成语义
 
@@ -110,20 +130,24 @@
 - 凭据 RED：真实 material-flow v1 被旧 allowlist 拒绝，真实 WES v2 sender 收到 401；GREEN：2 passed。
 - typed/legacy/result RED：非法 body 被 202 接受、关联字段为空、legacy route 404，共
   `11 failed, 1 passed`；GREEN：12 passed。
-- 时间 RED：store 不接受 retention/visibility 参数；GREEN：store 与公开 HTTP 精确边界测试通过。
+- 时间 RED：store 不接受 retention/visibility 参数，合法 `2.5` 配置会触发 `int()` 导入/路由异常；
+  GREEN：store 与公开 HTTP 精确边界、有限正浮点和非有限数拒绝测试通过。
 - 故障 RED：health 被错误消费、可见后丢失未生效、超限依赖 `Content-Length`；GREEN：3 passed。
 - Compose RED：Mock 未注入真实 v1/v2 secret 且仍保留旧 secret；GREEN：2 passed。
 - Dockerfile RED：镜像仍复制已删除模块；GREEN：部署合同测试通过并成功构建。
 - 包入口 RED：导入 WMS 时 eager import ECS 导致容器 `ModuleNotFoundError`；GREEN：独立镜像启动。
 - CLI RED：直接执行脚本无法导入 `src`；GREEN：`--help` 子进程测试与实际 CLI 均通过。
+- 认证边界 RED：空白幂等键与 clean key 可各写一个 effect，非空 Status GET 自洽签名得到 200；
+  GREEN：核心与公开路由 4 个回归全部通过。
 
 ## 验证结果
 
-- 相关 Mock/contract/deployment/runtime/topology：`164 passed`。
-- 默认测试收集：`4088 tests collected`。
-- 默认全仓测试：`4083 passed, 5 skipped, 6 warnings`，耗时 445.67 秒。
-- 最终源树 Docker heavy/live：`3 passed`，耗时 1.33 秒。
-- 最终源树 CLI 黑盒探针：45 个 case 全部 `passed=true`。
+- 相关 Mock/contract/deployment/topology：`202 passed`。
+- 默认测试收集：`4101 tests collected`。
+- 默认全仓测试：`4096 passed, 5 skipped, 6 warnings`，耗时 467.41 秒。
+- 最终已构建 WMS 镜像 Docker heavy/live：`5 passed`，耗时 1.11 秒；容器 image ID 与报告 digest
+  一致，且 `/app/tests/mock` 无宿主机挂载。
+- 最终已构建 WMS 镜像 CLI 黑盒探针：46 个 case 全部 `passed=true`。
 - `ruff format --check`、`ruff check`：通过。
 - Bandit：106754 行生产代码，0 issue。
 - `./scripts/git-quality-gate.sh --profile quality`：完整通过。
