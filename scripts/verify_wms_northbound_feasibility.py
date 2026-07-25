@@ -223,13 +223,29 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
         return snapshot["result_payload"] is None
     result = snapshot["result_payload"]
     spec = _OPERATION_SPECS[operation_identity]
-    return (
+    base_result_is_valid = (
         isinstance(result, dict)
         and set(result) == spec["result_fields"]
         and result["accepted"] is True
         and result["dispatch_key"] == payload["dispatch_key"]
         and result["reason_code"] is None
         and result["source_version"] == str(source_version)
+    )
+    if not base_result_is_valid:
+        return False
+    if operation_identity == "wms.inventory.confirm_inbound@v1":
+        return result["inbound_key"] == payload["inbound_key"] and result["document_no"] == ""
+    if operation_identity == "wms.fulfillment.full_box_exchange@v1":
+        return (
+            result["rack_id"] == payload["rack_id"]
+            and result["empty_box_id"] == payload["empty_box_id"]
+            and result["full_box_id"] == payload["full_box_id"]
+            and result["exchange_request_code"] == ""
+        )
+    return (
+        _is_aware_rfc3339(result["bound_at"])
+        and result["package_id"] == payload["package_id"]
+        and result["pallet_id"] == payload["pallet_id"]
     )
 
 
@@ -318,9 +334,20 @@ async def run_probe(
         results.append(_result("requested_operation_supported", False))
         return FeasibilityReport(cases=tuple(results))
 
-    async def submit(identity: str, key: str, payload: dict[str, Any]) -> httpx.Response | None:
+    async def submit(
+        identity: str, key: str, payload: dict[str, Any], *, header_overrides: dict[str, str] | None = None
+    ) -> httpx.Response | None:
         spec = _OPERATION_SPECS[identity]
         body = canonical_json_bytes(payload)
+        headers = _submit_headers(
+            secret=secret,
+            credential_reference=contract_values["credential_reference"],
+            path=spec["submit_path"],
+            body=body,
+            operation_identity=identity,
+            key=key,
+        )
+        headers.update(header_overrides or {})
         return await _request(
             client,
             "POST",
@@ -328,14 +355,7 @@ async def run_probe(
             request_timeout_seconds=request_timeout_seconds,
             max_response_bytes=max_response_bytes,
             content=body,
-            headers=_submit_headers(
-                secret=secret,
-                credential_reference=contract_values["credential_reference"],
-                path=spec["submit_path"],
-                body=body,
-                operation_identity=identity,
-                key=key,
-            ),
+            headers=headers,
         )
 
     async def status(identity: str, key: str) -> httpx.Response | None:
@@ -377,6 +397,42 @@ async def run_probe(
         )
         return response is not None and response.status_code == 200
 
+    async def configure_visibility(identity: str, key: str, *, not_visible_queries: int) -> bool:
+        response = await _request(
+            client,
+            "POST",
+            "/debug/northbound/visibility",
+            request_timeout_seconds=request_timeout_seconds,
+            max_response_bytes=max_response_bytes,
+            json={
+                "operation_identity": identity,
+                "idempotency_key": key,
+                "not_visible_queries": not_visible_queries,
+            },
+        )
+        payload = _json_object(response, max_response_bytes=max_response_bytes)
+        return (
+            response is not None
+            and response.status_code == 200
+            and payload
+            == {
+                "operation_identity": identity,
+                "idempotency_key": key,
+                "not_visible_queries": not_visible_queries,
+            }
+        )
+
+    async def callback_hints(identity: str, key: str) -> dict[str, Any] | None:
+        response = await _request(
+            client,
+            "GET",
+            "/debug/northbound/callback-hints",
+            request_timeout_seconds=request_timeout_seconds,
+            max_response_bytes=max_response_bytes,
+            params={"operation_identity": identity, "idempotency_key": key},
+        )
+        return _json_object(response, max_response_bytes=max_response_bytes)
+
     for identity in selected:
         spec = _OPERATION_SPECS[identity]
         payload = dict(spec["payload"])
@@ -404,6 +460,7 @@ async def run_probe(
                 and processing_body.get("code") == "IDEMPOTENCY_REQUEST_IN_PROGRESS",
             )
         )
+        hint_evidence = await callback_hints(identity, key)
 
         snapshots = [_json_object(await status(identity, key), max_response_bytes=max_response_bytes) for _ in range(3)]
         results.append(
@@ -477,14 +534,64 @@ async def run_probe(
             )
         )
 
-        # Submit 仅返回 ACCEPTED 快照；最终状态只由后续 status 公开面提供，
-        # callback 不具有终态权威。
+        hint = hint_evidence.get("hints") if hint_evidence else None
+        expected_hint = {
+            "callback_type": "WMS_EFFECT_STATUS_HINT",
+            "dispatch_key": payload["dispatch_key"],
+            "idempotency_key": key,
+            "operation_identity": identity,
+        }
+        # Submit 仅记录脱敏 hint；最终状态仍只由后续 status 公开面提供。
         results.append(
             _result(
-                f"{identity}:callback_hint_requires_status_authority",
-                isinstance(first_snapshot, dict)
-                and first_snapshot.get("state") == "ACCEPTED"
+                f"{identity}:callback_hint_evidence_and_status_authority",
+                isinstance(hint, list)
+                and hint == [expected_hint]
+                and all(set(item) == set(expected_hint) for item in hint if isinstance(item, dict))
                 and snapshots[-1].get("state") == "COMPLETED",
+            )
+        )
+
+        visibility_key = f"probe-visibility-{uuid4().hex}"
+        visibility_reads = 1
+        visibility_configured = visibility_reads <= contract_values[
+            "status_visibility_sla_seconds"
+        ] and await configure_visibility(identity, visibility_key, not_visible_queries=visibility_reads)
+        await submit(identity, visibility_key, payload)
+        temporarily_missing = _json_object(
+            await status(identity, visibility_key), max_response_bytes=max_response_bytes
+        )
+        visible_after_grace = _json_object(
+            await status(identity, visibility_key), max_response_bytes=max_response_bytes
+        )
+        visibility_replay = await submit(identity, visibility_key, payload)
+        results.append(
+            _result(
+                f"{identity}:visibility_not_found_then_visible_one_effect",
+                visibility_configured
+                and _is_snapshot(temporarily_missing, operation_identity=identity, payload=payload)
+                and temporarily_missing["state"] == "NOT_FOUND"
+                and _is_snapshot(visible_after_grace, operation_identity=identity, payload=payload)
+                and visible_after_grace["state"] == "ACCEPTED"
+                and visibility_replay is not None
+                and visibility_replay.status_code == 409
+                and await effect_count(identity, visibility_key) == 1,
+            )
+        )
+
+        signature_tamper = await submit(
+            identity,
+            f"probe-submit-hmac-{uuid4().hex}",
+            payload,
+            header_overrides={"X-WES-Signature": "0" * 64},
+        )
+        signature_tamper_body = _json_object(signature_tamper, max_response_bytes=max_response_bytes)
+        results.append(
+            _result(
+                f"{identity}:submit_hmac_signature_tamper",
+                signature_tamper is not None
+                and signature_tamper.status_code == 401
+                and signature_tamper_body == {"code": "INVALID_HMAC_SIGNATURE"},
             )
         )
 
@@ -540,6 +647,22 @@ async def run_probe(
     )
     results.append(
         _result("status_hmac_tamper_rejected_without_remote_echo", tampered is not None and tampered.status_code == 401)
+    )
+
+    oversized_configured = await configure_fault(
+        status=503, response_body_bytes=contract_values["max_response_bytes"] + 1
+    )
+    oversized = await status(fault_identity, fault_key)
+    results.append(
+        _result(
+            "response_body_budget_exceeded_without_remote_echo",
+            oversized_configured
+            and oversized is not None
+            and oversized.status_code == 503
+            and oversized.extensions.get("probe_body_exceeded") is True
+            and oversized.content == b""
+            and _json_object(oversized, max_response_bytes=max_response_bytes) is None,
+        )
     )
 
     reset = await _request(

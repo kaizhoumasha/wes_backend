@@ -16,6 +16,11 @@ callback hint 交互，不记录或推断 WMS 内部工作流。当前 P0 验收
 能力可以进入后续 WES 开发。不得把该结论替代未来外部 WMS 的联调验收，也不得预填外部确认人、验收时间或构建版本。
 只有下述真实证据完整、双方确认且清理目标经过单独审查后，才能改变外部模板的 `PENDING/BLOCKED` 状态。
 
+实际 Mock 的 `PASS/GO` 已额外证明：受理记录可在公开配置的可见性读数内暂时返回 `NOT_FOUND`，恢复可见后同键重放
+不产生第二份 effect；callback evidence 只公开 `operation_identity`、`idempotency_key`、`dispatch_key` 与
+`WMS_EFFECT_STATUS_HINT`，不携带 `COMPLETED`、`REJECTED`、`result` 或 `status` 等终态权威字段。最终状态仍必须由
+`GET /northbound/operations/status` 获得。
+
 ## WMS 团队必须提供的能力
 
 | 能力 | WMS 交付要求 | WES 验收方式 |

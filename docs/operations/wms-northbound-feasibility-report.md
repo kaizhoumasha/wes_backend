@@ -38,7 +38,8 @@
 | package binding submit | `POST /api/wms/fulfillment/package-binding` |
 | status endpoint | `GET /northbound/operations/status` |
 | 公开效果观察面 | `GET /debug/northbound/effects`，仅返回 effect count |
-| Mock-only 控制面 | `POST /debug/northbound/faults`、`/debug/northbound/reject`、`/debug/northbound/clock`、`/debug/reset` |
+| Mock-only 控制面 | `POST /debug/northbound/faults`、`/debug/northbound/visibility`、`/debug/northbound/reject`、`/debug/northbound/clock`、`/debug/reset` |
+| Mock-only callback evidence | `GET /debug/northbound/callback-hints`，仅含关联键与 callback type 的脱敏投影 |
 | operation | `wms.inventory.confirm_inbound@v1`、`wms.fulfillment.full_box_exchange@v1`、`wms.fulfillment.notify_pkg_binding@v1` |
 
 `/debug/northbound/*` 与 `/debug/reset` 只供开发 Mock 探针使用，绝不属于未来外部 WMS 接口。
@@ -59,9 +60,10 @@ dict 相等性判断。实际 Mock 已验证 Submit 七项与 Status query 五�
 | case | 结果 |
 | --- | --- |
 | 三个 operation 的首次提交、处理中重放、已完成重放、同 key 冲突与单一 effect | PASS |
-| 三个 operation 的 ACCEPTED → PROCESSING → COMPLETED、单调版本、typed result、REJECTED、NOT_FOUND | PASS |
-| Submit/Status HMAC、content hash 与篡改拒绝 | PASS |
-| 429 + Retry-After、5xx、总 deadline、response budget、公开 reset | PASS |
-| callback hint 仅对应 ACCEPTED；COMPLETED 只由 status 查询获得 | PASS |
+| 三个 operation 的 ACCEPTED → PROCESSING → COMPLETED、单调版本、严格 typed result 关联字段/时间/空值、REJECTED、NOT_FOUND | PASS |
+| 已受理后暂时 `NOT_FOUND(null version)`、公开可见性读数预算、恢复可见和同键重放单一 effect | PASS |
+| Submit content hash、Submit signature、Status signature 篡改拒绝 | PASS |
+| 429 + Retry-After、5xx、总 deadline、实际超过 contract body budget 的有界读取、公开 reset | PASS |
+| callback hint 首次受理仅记录一次脱敏投影；投影无终态字段，COMPLETED 只由 status 查询获得 | PASS |
 
 探针输出只含本地 case 枚举和布尔结果；恶意远端 body 的负测已验证 stdout、stderr 和报告均不含 secret/PII/body。

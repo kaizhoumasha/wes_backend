@@ -544,7 +544,10 @@ northbound_fault_state: dict[str, int | float | None] = {
     "next_delay": 0.0,
     "next_retry_after": None,
     "max_response_bytes": None,
+    "response_body_bytes": None,
 }
+northbound_visibility_state: dict[tuple[str, str], int] = {}
+northbound_callback_hint_evidence: dict[tuple[str, str], dict[str, str]] = {}
 
 
 def _northbound_now() -> datetime:
@@ -563,7 +566,10 @@ def reset_mock_wms_state() -> None:
         next_delay=0.0,
         next_retry_after=None,
         max_response_bytes=None,
+        response_body_bytes=None,
     )
+    northbound_visibility_state.clear()
+    northbound_callback_hint_evidence.clear()
     fault_injection_state["next_status"] = 200
     fault_injection_state["next_delay"] = 0.0
 
@@ -630,8 +636,16 @@ async def fault_injection_middleware(request: Request, call_next):
         status = int(northbound_fault_state["next_status"])
         retry_after = northbound_fault_state["next_retry_after"]
         max_response_bytes = northbound_fault_state["max_response_bytes"]
-        northbound_fault_state.update(next_status=200, next_retry_after=None, max_response_bytes=None)
+        response_body_bytes = northbound_fault_state["response_body_bytes"]
+        northbound_fault_state.update(
+            next_status=200,
+            next_retry_after=None,
+            max_response_bytes=None,
+            response_body_bytes=None,
+        )
         content = json.dumps({"code": status, "message": "Northbound Fault Injected"})
+        if response_body_bytes is not None:
+            content += "x" * int(response_body_bytes)
         if max_response_bytes is not None:
             content = content[: int(max_response_bytes)]
         headers = {"Retry-After": str(retry_after)} if status == 429 and retry_after is not None else None
@@ -671,6 +685,7 @@ class NorthboundFaultRequest(BaseModel):
     retry_after: int | None = None
     delay: float = 0.0
     max_response_bytes: int | None = None
+    response_body_bytes: int | None = None
 
 
 class NorthboundRejectRequest(BaseModel):
@@ -681,6 +696,12 @@ class NorthboundRejectRequest(BaseModel):
 
 class NorthboundClockRequest(BaseModel):
     now: str | None = None
+
+
+class NorthboundVisibilityRequest(BaseModel):
+    operation_identity: str
+    idempotency_key: str
+    not_visible_queries: int
 
 
 @app.post("/debug/simulate-failure", summary="注入 HTTP 故障")
@@ -704,7 +725,10 @@ async def debug_reset():
         next_delay=0.0,
         next_retry_after=None,
         max_response_bytes=None,
+        response_body_bytes=None,
     )
+    northbound_visibility_state.clear()
+    northbound_callback_hint_evidence.clear()
     fault_injection_state["next_status"] = 200
     fault_injection_state["next_delay"] = 0.0
     return {"code": 200, "data": {"reset": True}}
@@ -719,6 +743,7 @@ async def debug_set_northbound_fault(request: NorthboundFaultRequest):
         next_delay=request.delay,
         next_retry_after=request.retry_after,
         max_response_bytes=request.max_response_bytes,
+        response_body_bytes=request.response_body_bytes,
     )
     return {"code": 200, "data": dict(northbound_fault_state)}
 
@@ -748,6 +773,22 @@ async def debug_set_northbound_clock(request: NorthboundClockRequest):
     }
 
 
+@app.post("/debug/northbound/visibility", summary="设置北向状态暂时不可见次数")
+async def debug_set_northbound_visibility(request: NorthboundVisibilityRequest):
+    """仅供黑盒探针模拟已受理记录在承诺可见性读数内暂时返回 NOT_FOUND。"""
+
+    visibility_sla_seconds = int(os.getenv("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2"))
+    if not 1 <= request.not_visible_queries <= visibility_sla_seconds:
+        return JSONResponse(status_code=422, content={"code": "VISIBILITY_QUERY_BUDGET_EXCEEDED"})
+    key = (request.operation_identity, request.idempotency_key)
+    northbound_visibility_state[key] = request.not_visible_queries
+    return {
+        "operation_identity": request.operation_identity,
+        "idempotency_key": request.idempotency_key,
+        "not_visible_queries": request.not_visible_queries,
+    }
+
+
 @app.get("/debug/northbound/effects", summary="查询北向业务效果计数")
 async def debug_northbound_effect_count(operation_identity: str, idempotency_key: str):
     return {
@@ -755,6 +796,12 @@ async def debug_northbound_effect_count(operation_identity: str, idempotency_key
         "idempotency_key": idempotency_key,
         "effect_count": northbound_operation_store.effect_count(operation_identity, idempotency_key),
     }
+
+
+@app.get("/debug/northbound/callback-hints", summary="查询北向 callback hint 脱敏投影")
+async def debug_northbound_callback_hints(operation_identity: str, idempotency_key: str):
+    hint = northbound_callback_hint_evidence.get((operation_identity, idempotency_key))
+    return {"hints": [] if hint is None else [hint]}
 
 
 @app.get("/northbound/contract", summary="查询北向 Mock 合同承诺")
@@ -777,6 +824,21 @@ async def northbound_operation_status(request: Request, operation_identity: str,
         raw_path = f"{raw_path}?{query_string.decode('ascii')}"
     try:
         verify_status_hmac(request.headers, await request.body(), method=request.method, path=raw_path)
+        key = (operation_identity, idempotency_key)
+        remaining_visibility_reads = northbound_visibility_state.get(key, 0)
+        if remaining_visibility_reads > 0:
+            if remaining_visibility_reads == 1:
+                northbound_visibility_state.pop(key, None)
+            else:
+                northbound_visibility_state[key] = remaining_visibility_reads - 1
+            return {
+                "state": "NOT_FOUND",
+                "provider_reference": None,
+                "reason_code": None,
+                "updated_at": None,
+                "source_version": None,
+                "result_payload": None,
+            }
         snapshot = northbound_operation_store.query(operation_identity, idempotency_key)
     except NorthboundAuthError as exc:
         return JSONResponse(status_code=401, content={"code": exc.code})
@@ -915,6 +977,13 @@ async def _submit_northbound_effect(
     if submission.status_code == 202 and northbound_operation_store.register_callback_hint(
         operation_identity, idempotency_key
     ):
+        # Evidence endpoint 只保留 callback hint 的关联键投影，绝不复制终态或认证字段。
+        northbound_callback_hint_evidence[(operation_identity, idempotency_key)] = {
+            "callback_type": "WMS_EFFECT_STATUS_HINT",
+            "dispatch_key": str(payload.get("dispatch_key") or ""),
+            "idempotency_key": idempotency_key,
+            "operation_identity": operation_identity,
+        }
         background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
     return JSONResponse(status_code=submission.status_code, content={"code": submission.status_code, "data": data})
 

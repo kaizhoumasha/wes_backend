@@ -83,10 +83,13 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
             f"{operation_identity}:idempotency_conflict",
             f"{operation_identity}:rejected_stable_reason",
             f"{operation_identity}:not_found",
-            f"{operation_identity}:callback_hint_requires_status_authority",
+            f"{operation_identity}:visibility_not_found_then_visible_one_effect",
+            f"{operation_identity}:callback_hint_evidence_and_status_authority",
+            f"{operation_identity}:submit_hmac_signature_tamper",
         } <= case_ids
     assert {
         "fault_matrix_rate_limit_5xx_timeout_and_response_budget",
+        "response_body_budget_exceeded_without_remote_echo",
         "status_hmac_tamper_rejected_without_remote_echo",
         "public_reset_clears_observable_operation",
     } <= case_ids

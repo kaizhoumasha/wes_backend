@@ -398,6 +398,84 @@ def test_wms_mock_northbound_contract_faults_and_reset_are_publicly_controllable
     assert resubmitted.status_code == 202
 
 
+def test_wms_mock_northbound_visibility_callback_evidence_and_large_body_are_publicly_controllable() -> None:
+    """验收控制面只暴露脱敏投影，状态推进和效果计数仍通过公开 HTTP 观察。"""
+
+    operation_identity = "wms.inventory.confirm_inbound@v1"
+    idempotency_key = "idem-public-evidence-001"
+    path = "/api/wms/inventory/confirm-inbound"
+    body = b'{"dispatch_key":"dispatch-public","inbound_key":"inbound-public"}'
+    headers = _submit_headers(
+        body=body,
+        path=path,
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+    )
+    status_path = "/northbound/operations/status?" + urlencode(
+        {"operation_identity": operation_identity, "idempotency_key": idempotency_key}
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        contract = client.get("/northbound/contract")
+        configured_visibility = client.post(
+            "/debug/northbound/visibility",
+            json={
+                "operation_identity": operation_identity,
+                "idempotency_key": idempotency_key,
+                "not_visible_queries": 1,
+            },
+        )
+        first = client.post(path, content=body, headers=headers)
+        hidden = client.get(status_path, headers=_status_headers(path=status_path))
+        visible = client.get(status_path, headers=_status_headers(path=status_path))
+        replay = client.post(path, content=body, headers=headers)
+        effects = client.get(
+            "/debug/northbound/effects?"
+            + urlencode({"operation_identity": operation_identity, "idempotency_key": idempotency_key})
+        )
+        hints = client.get(
+            "/debug/northbound/callback-hints?"
+            + urlencode({"operation_identity": operation_identity, "idempotency_key": idempotency_key})
+        )
+        configured_large_body = client.post(
+            "/debug/northbound/faults",
+            json={"status": 503, "response_body_bytes": contract.json()["max_response_bytes"] + 1},
+        )
+        oversized = client.get("/northbound/contract")
+        reset = client.post("/debug/reset")
+        hints_after_reset = client.get(
+            "/debug/northbound/callback-hints?"
+            + urlencode({"operation_identity": operation_identity, "idempotency_key": idempotency_key})
+        )
+        resubmitted_after_reset = client.post(path, content=body, headers=headers)
+        visible_after_reset = client.get(status_path, headers=_status_headers(path=status_path))
+
+    assert configured_visibility.status_code == 200
+    assert first.status_code == 202
+    assert hidden.json()["state"] == "NOT_FOUND"
+    assert hidden.json()["source_version"] is None
+    assert visible.json()["state"] == "ACCEPTED"
+    assert replay.status_code == 409
+    assert effects.json()["effect_count"] == 1
+    assert hints.json() == {
+        "hints": [
+            {
+                "callback_type": "WMS_EFFECT_STATUS_HINT",
+                "dispatch_key": "dispatch-public",
+                "idempotency_key": idempotency_key,
+                "operation_identity": operation_identity,
+            }
+        ]
+    }
+    assert configured_large_body.status_code == 200
+    assert oversized.status_code == 503
+    assert len(oversized.content) > contract.json()["max_response_bytes"]
+    assert reset.status_code == 200
+    assert hints_after_reset.json() == {"hints": []}
+    assert resubmitted_after_reset.status_code == 202
+    assert visible_after_reset.json()["state"] == "ACCEPTED"
+
+
 def test_wms_mock_rack_operation_ignores_unknown_requested_rack_code() -> None:
     callback_payload = wms_mock_server._rack_operation_callback_payload(
         {
