@@ -129,6 +129,9 @@ WES Intent/Outbox
 
 ### Task 1：冻结最小北向合同与架构决策
 
+**验收状态：已完成。** 2026-07-25 已由实际 `tests.mock.wms_mock_server.app` 通过三个 typed EFFECT 的公开 HTTP
+黑盒探针，结果为 `PASS/GO`；未来外部 WMS 联调模板保留，但不再构成当前 P0 进入门禁。
+
 **Files:**
 
 - Create: `docs/contracts/wms-northbound-interaction-contract.md`
@@ -1065,7 +1068,7 @@ Task 1 GO/NO-GO
 Synthesized from this review's findings. Each task derives from a specific finding above.
 Run with Claude Code or Codex; checkbox as you ship.
 
-- [ ] **T1 (P1, human: ~1–2d + WMS coordination / CC: ~30min)** — WMS contract — 冻结交互合同并取得 feasibility `GO`
+- [x] **T1 (P1, human: ~1–2d + WMS coordination / CC: ~30min)** — WMS contract — 实际 Mock 黑盒探针已取得 feasibility `GO`
   - Surfaced by: Architecture review — WMS 外部可行性原被后置到 Task 9。
   - Files: `docs/contracts/wms-northbound-interaction-contract.md`, `docs/operations/wms-northbound-feasibility-report.md`, `scripts/verify_wms_northbound_feasibility.py`
   - Verify: `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`

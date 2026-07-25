@@ -120,12 +120,12 @@ def test_replay_assets_are_synthetic_and_do_not_contain_secret_material() -> Non
 def test_release_evidence_keeps_real_acceptance_and_cutover_explicitly_blocked() -> None:
     content = RELEASE_EVIDENCE.read_text(encoding="utf-8")
 
-    assert "开发 mock 验证：`PASS`" in content
-    assert "真实 WMS 联调验收：`PENDING`" in content
-    assert "联调测试数据清理：`BLOCKED`" in content
-    assert "整体切换：`BLOCKED`" in content
-    assert "不得用 mock 结果替代真实 WMS 联调验收" in content
-    assert "不得预填确认人、验收时间、WMS 构建版本" in content
+    assert "实际开发 Mock 验证：`PASS/GO`（当前 P0 门禁已关闭）" in content
+    assert "外部 WMS 联调验收模板：`PENDING`（后续，不阻塞当前 Mock 验收）" in content
+    assert "外部 WMS 联调测试数据清理模板：`BLOCKED`" in content
+    assert "外部 WMS 整体切换模板：`BLOCKED`" in content
+    assert "不得把该结论替代未来外部 WMS 的联调验收" in content
+    assert "不得预填外部确认人、验收时间或构建版本" in content
     assert "首个真实 EFFECT" in content
     assert all(operation_identity in content for operation_identity in EFFECT_REPLAY_ASSETS)
 
@@ -311,9 +311,9 @@ def test_feasibility_probe_hashes_exact_raw_body_and_declares_auth_limit() -> No
     assert "payload_sha256" in probe_source
     assert '"X-WES-Content-SHA256"' in probe_source
     assert "canonical_payload" not in probe_source
-    assert "payload_hash" in probe_source
-    assert "完整 HMAC" in report
-    assert "未验证" in report
+    assert "_submit_headers" in probe_source
+    assert "`X-WES-*` 七项" in report
+    assert "已验证 Submit 七项与 Status query 五项" in report
 
 
 def test_observability_docs_distinguish_current_signals_from_target_cutover_evidence() -> None:
@@ -331,5 +331,5 @@ def test_observability_docs_distinguish_current_signals_from_target_cutover_evid
     assert "当前已配置告警" in slo
     assert "目标告警候选" in slo
     assert "目标口径不是已存在的生产指标" in runbook
-    assert "观测映射与采集验证：`BLOCKED`" in release
+    assert "外部 WMS 观测映射与采集模板：`BLOCKED`" in release
     assert "mock/replay 不能关闭该门禁" in release

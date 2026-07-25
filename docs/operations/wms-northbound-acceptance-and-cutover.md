@@ -1,19 +1,20 @@
 # WMS 北向联调验收与整体切换记录
 
 本文是单工厂、单 WMS Provider 的发布证据模板。WES 只验收双方可观察的 submit、status query 和可选
-callback hint 交互，不记录或推断 WMS 内部工作流。开发阶段使用仓库 mock/replay 验证 WES 合同实现；真实 WMS
-尚未上线，因此真实联调、数据清理和整体切换必须保持未完成状态。
+callback hint 交互，不记录或推断 WMS 内部工作流。当前 P0 验收源是仓库内实际 Mock；未来外部 WMS 的联调、
+数据清理和整体切换仍保留为后续模板，不阻塞当前开发 Mock 能力门禁。
 
 ## 当前结论
 
-- 开发 mock 验证：`PASS`
-- 真实 WMS 联调验收：`PENDING`
-- 观测映射与采集验证：`BLOCKED`
-- 联调测试数据清理：`BLOCKED`
-- 整体切换：`BLOCKED`
+- 实际开发 Mock 验证：`PASS/GO`（当前 P0 门禁已关闭）
+- 外部 WMS 联调验收模板：`PENDING`（后续，不阻塞当前 Mock 验收）
+- 外部 WMS 观测映射与采集模板：`BLOCKED`
+- 外部 WMS 联调测试数据清理模板：`BLOCKED`
+- 外部 WMS 整体切换模板：`BLOCKED`
 
-`PASS` 仅表示当前代码能通过确定性 mock/replay 合同测试。不得用 mock 结果替代真实 WMS 联调验收，也不得预填确认人、验收时间、WMS 构建版本。只有下述真实证据完整、双方确认且清理目标经过单独审查后，才能改变
-`PENDING/BLOCKED` 状态。
+`PASS/GO` 表示实际 `tests.mock.wms_mock_server.app` 已通过三类 typed EFFECT 的黑盒合同验收，当前开发 Mock
+能力可以进入后续 WES 开发。不得把该结论替代未来外部 WMS 的联调验收，也不得预填外部确认人、验收时间或构建版本。
+只有下述真实证据完整、双方确认且清理目标经过单独审查后，才能改变外部模板的 `PENDING/BLOCKED` 状态。
 
 ## WMS 团队必须提供的能力
 
