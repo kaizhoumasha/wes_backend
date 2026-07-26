@@ -67,6 +67,9 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 - [粗分机硬件供应商联调操作手册](docs/hardware/粗分机硬件供应商联调操作手册.md)：面向真实设备侧的事件、命令、状态和 Result 联调。
 - [粗分机内部 Mock 与 Sandbox 调试手册](docs/hardware/粗分机内部Mock与Sandbox调试手册.md)：面向 WES 内部的 Mock ECS、Mock WMS、Sandbox 和多物料并发观察。
 - [WorkLine runtime hold quickstart](docs/workline_runtime_hold_quickstart.md)：说明 RuntimeHold 与人工恢复的基础操作。
+- [WorkLine 插件迁移清单与跨环境批准](docs/operations/workline-plugin-migration-inventory.md)：说明单环境 inventory、跨环境 migration matrix、批准证据和 fail-closed preflight 的操作顺序。
+- [Superpowers 计划与规格文档生命周期](docs/superpowers/README.md)：索引当前仍承担执行或机器门禁职责的 SPEC/PLAN，以及历史文档归档规则。
+- [本机 Docker、WMS Mock 与 ECS Mock 系统设计](artifacts/p9-wes-local-docker-wms-ecs-mock-system-design.docx)：结合后续 SPEC/PLAN 说明本机开发环境、Mock 边界和验收路径。
 - [WMS Mock 北向能力需求](docs/contracts/wms-mock-northbound-capability-requirements.md)：定义实际开发 Mock 的 P0 能力、验收真源和完成标准。
 - [WMS 北向最小交互合同](docs/contracts/wms-northbound-interaction-contract.md)：定义三个 EFFECT operation 的 typed payload、幂等提交、状态查询、签名、保留期和联调验收矩阵。
 - [北向交互收敛 ADR](docs/architecture/adr/2026-07-24-northbound-interaction-simplification.md)：说明单部署 Provider、callback 查询提示、状态查询终态权威以及 query shadow/readiness 删除决策。
