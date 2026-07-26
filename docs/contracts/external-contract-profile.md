@@ -2,7 +2,7 @@
 status: Phase 0 外部合同 profile
 created_at: 2026-06-25
 parent: docs/architecture/workline-and-plugin-restructuring.md
-spec: docs/superpowers/specs/2026-06-25-workline-restructuring-phase-0-spec.md
+spec: docs/superpowers/archive/specs/2026-06-25-workline-restructuring-phase-0-spec.md
 related: docs/architecture/target-state-contract.md, docs/architecture/integration-lab-and-simulator.md
 note: |
   本文件定义 WMS/ECS provider 的外部合同 profile。

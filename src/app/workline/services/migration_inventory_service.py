@@ -14,10 +14,15 @@ from pydantic import ValidationError
 
 from src.app.contracts.external_contract_profile_catalog import list_external_contract_profiles
 from src.app.runtime.orchestration.repository_wiring import workline_repository
+from src.app.runtime.system_capabilities.generated_index import (
+    SYSTEM_CAPABILITY_INDEX,
+    SYSTEM_CAPABILITY_INDEX_DIGEST,
+)
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.registry import list_workline_capability_definitions
 from src.app.workline.models import (
     WorkLine,
+    WorklineCapabilityRequirementInventoryItem,
     WorklineMigrationInventoryIssue,
     WorklineMigrationInventoryIssueCode,
     WorklineMigrationInventoryItem,
@@ -73,6 +78,24 @@ class _ExtensionReferenceRepository(Protocol):
 class _NormalizedCapabilityDefinition:
     capability_key: str
     contract_version: str
+    allowed_capabilities: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _NormalizedSystemCapabilityDefinition:
+    capability_key: str
+    contract_version: str
+    mode: str
+    admission: str
+    required_ports: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CapabilityProjection:
+    plugin_known: bool
+    catalog_identity_matched: bool
+    catalog_contract_version: str | None
+    capability_requirements: tuple[WorklineCapabilityRequirementInventoryItem, ...]
 
 
 def _load_provider_profiles() -> Iterable[Any]:
@@ -93,6 +116,7 @@ class WorklineMigrationInventoryService:
         *,
         repository: _InventoryRepository = workline_repository,
         capability_definitions_loader: Callable[[], Iterable[Any]] = list_workline_capability_definitions,
+        system_capability_definitions_loader: Callable[[], Iterable[Any]] = lambda: SYSTEM_CAPABILITY_INDEX.values(),
         provider_profile_loader: Callable[[], Iterable[Any]] = _load_provider_profiles,
         extension_reference_repository: _ExtensionReferenceRepository | None = None,
         clock: Callable[[], datetime] = timezone.now_utc,
@@ -102,6 +126,7 @@ class WorklineMigrationInventoryService:
             raise ValueError("max_worklines 必须为 1..100，禁止临时放宽迁移清单安全上限")
         self.repository = repository
         self._capability_definitions_loader = capability_definitions_loader
+        self._system_capability_definitions_loader = system_capability_definitions_loader
         self._provider_profile_loader = provider_profile_loader
         self._extension_reference_repository = extension_reference_repository
         self._clock = clock
@@ -120,6 +145,7 @@ class WorklineMigrationInventoryService:
             )
 
         capability_catalog = self._build_capability_catalog(self._capability_definitions_loader())
+        system_capability_catalog = self._build_system_capability_catalog(self._system_capability_definitions_loader())
         provider_catalog = self._build_provider_catalog(self._provider_profile_loader())
         workline_ids = tuple(sorted(self._strict_source_int(source, "id") for source in source_worklines))
         extension_references_by_workline = (
@@ -134,7 +160,15 @@ class WorklineMigrationInventoryService:
             workline_id = self._strict_source_int(source, "id")
             summary = await self.repository.get_unfinished_workload_summary(db, workline_id)
             extension_references = extension_references_by_workline.get(workline_id, [])
-            items.append(self._build_item(source, summary, capability_catalog, extension_references))
+            items.append(
+                self._build_item(
+                    source,
+                    summary,
+                    capability_catalog,
+                    system_capability_catalog,
+                    extension_references,
+                )
+            )
 
         ordered_items = tuple(sorted(items, key=lambda item: (item.line_code, item.workline_id)))
         ordered_issues = tuple(
@@ -152,6 +186,8 @@ class WorklineMigrationInventoryService:
                 environment=environment,
                 generated_at=generated_at,
                 inventory_digest="0" * 64,
+                plugin_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+                system_capability_index_digest=SYSTEM_CAPABILITY_INDEX_DIGEST,
                 foundation_ready=foundation_ready,
                 worklines=ordered_items,
                 provider_profile_catalog=provider_catalog,
@@ -192,6 +228,64 @@ class WorklineMigrationInventoryService:
             catalog[identity] = _NormalizedCapabilityDefinition(
                 capability_key=capability_key,
                 contract_version=contract_version,
+                allowed_capabilities=tuple(
+                    sorted(
+                        (
+                            WorklineMigrationInventoryService._normalize_catalog_string(
+                                capability_identity[0], "allowed capability key"
+                            ),
+                            WorklineMigrationInventoryService._normalize_catalog_string(
+                                capability_identity[1], "allowed capability version"
+                            ),
+                        )
+                        for capability_identity in getattr(definition, "allowed_capabilities", ())
+                    )
+                ),
+            )
+        return catalog
+
+    @staticmethod
+    def _build_system_capability_catalog(
+        definitions: Iterable[Any],
+    ) -> dict[tuple[str, str], _NormalizedSystemCapabilityDefinition]:
+        catalog: dict[tuple[str, str], _NormalizedSystemCapabilityDefinition] = {}
+        for definition in definitions:
+            capability_key = WorklineMigrationInventoryService._normalize_catalog_string(
+                getattr(definition, "capability_key", _MISSING), "system capability key"
+            )
+            contract_version = WorklineMigrationInventoryService._normalize_catalog_string(
+                getattr(definition, "contract_version", _MISSING), "system capability version"
+            )
+            mode_source = getattr(definition, "mode", _MISSING)
+            mode = WorklineMigrationInventoryService._normalize_catalog_string(
+                mode_source.value if isinstance(mode_source, Enum) else mode_source,
+                "system capability mode",
+            )
+            admission = WorklineMigrationInventoryService._normalize_catalog_string(
+                getattr(definition, "admission", _MISSING), "system capability admission"
+            )
+            required_ports = tuple(
+                sorted(
+                    f"{port.__module__}.{port.__qualname__}"
+                    for port in getattr(definition, "required_ports", ())
+                    if isinstance(port, type)
+                )
+            )
+            if len(required_ports) != len(getattr(definition, "required_ports", ())):
+                raise WorklineMigrationInventoryInvariantError(
+                    f"system capability {capability_key}@{contract_version} required_ports 必须为类型"
+                )
+            identity = (capability_key, contract_version)
+            if identity in catalog:
+                raise WorklineMigrationInventoryInvariantError(
+                    f"system capability catalog 重复 identity: {capability_key}@{contract_version}"
+                )
+            catalog[identity] = _NormalizedSystemCapabilityDefinition(
+                capability_key=capability_key,
+                contract_version=contract_version,
+                mode=mode,
+                admission=admission,
+                required_ports=required_ports,
             )
         return catalog
 
@@ -216,11 +310,98 @@ class WorklineMigrationInventoryService:
             items.append(item)
         return tuple(sorted(items, key=lambda item: (item.provider_code, item.contract_version, item.environment)))
 
+    @classmethod
+    def derive_provider_profile_catalog(
+        cls,
+        profiles: Iterable[Any],
+    ) -> tuple[WorklineProviderProfileInventoryItem, ...]:
+        """从 Provider Profile definitions 生成唯一 inventory 投影。"""
+
+        return cls._build_provider_catalog(profiles)
+
+    @classmethod
+    def derive_capability_projection(
+        cls,
+        *,
+        workline_id: int,
+        plugin_key: str | None,
+        configured_version: str | None,
+        capability_definitions: Iterable[Any],
+        system_capability_definitions: Iterable[Any],
+    ) -> _CapabilityProjection:
+        """从 Plugin/System Capability definitions 生成唯一 inventory 投影。"""
+
+        return cls._derive_capability_projection(
+            workline_id=workline_id,
+            plugin_key=plugin_key,
+            configured_version=configured_version,
+            capability_catalog=cls._build_capability_catalog(capability_definitions),
+            system_capability_catalog=cls._build_system_capability_catalog(system_capability_definitions),
+        )
+
+    @staticmethod
+    def _derive_capability_projection(
+        *,
+        workline_id: int,
+        plugin_key: str | None,
+        configured_version: str | None,
+        capability_catalog: Mapping[tuple[str, str], _NormalizedCapabilityDefinition],
+        system_capability_catalog: Mapping[tuple[str, str], _NormalizedSystemCapabilityDefinition],
+    ) -> _CapabilityProjection:
+        definitions_for_plugin = (
+            tuple(
+                definition
+                for (catalog_plugin_key, _catalog_version), definition in capability_catalog.items()
+                if catalog_plugin_key == plugin_key
+            )
+            if isinstance(plugin_key, str)
+            else ()
+        )
+        catalog_definition = (
+            capability_catalog.get((plugin_key, configured_version))
+            if isinstance(plugin_key, str) and isinstance(configured_version, str)
+            else definitions_for_plugin[0]
+            if configured_version is None and len(definitions_for_plugin) == 1
+            else None
+        )
+        capability_requirements: tuple[WorklineCapabilityRequirementInventoryItem, ...] = ()
+        if catalog_definition is not None:
+            missing_capabilities = tuple(
+                identity
+                for identity in catalog_definition.allowed_capabilities
+                if identity not in system_capability_catalog
+            )
+            if missing_capabilities:
+                raise WorklineMigrationInventoryInvariantError(
+                    f"WorkLine {workline_id} plugin 引用未生成的 system capability: {missing_capabilities}"
+                )
+            capability_requirements = tuple(
+                WorklineCapabilityRequirementInventoryItem(
+                    capability_key=system_capability_catalog[identity].capability_key,
+                    contract_version=system_capability_catalog[identity].contract_version,
+                    mode=system_capability_catalog[identity].mode,
+                    admission=system_capability_catalog[identity].admission,
+                    required_ports=system_capability_catalog[identity].required_ports,
+                )
+                for identity in catalog_definition.allowed_capabilities
+            )
+        return _CapabilityProjection(
+            plugin_known=bool(definitions_for_plugin),
+            catalog_identity_matched=(
+                isinstance(plugin_key, str)
+                and isinstance(configured_version, str)
+                and (plugin_key, configured_version) in capability_catalog
+            ),
+            catalog_contract_version=None if catalog_definition is None else catalog_definition.contract_version,
+            capability_requirements=capability_requirements,
+        )
+
     @staticmethod
     def _build_item(
         source: Any,
         raw_summary: Any,
         capability_catalog: Mapping[tuple[str, str], _NormalizedCapabilityDefinition],
+        system_capability_catalog: Mapping[tuple[str, str], _NormalizedSystemCapabilityDefinition],
         raw_extension_references: Iterable[Mapping[str, Any]] = (),
     ) -> WorklineMigrationInventoryItem:
         workline_id = WorklineMigrationInventoryService._strict_source_int(source, "id")
@@ -283,35 +464,21 @@ class WorklineMigrationInventoryService:
             ) from exc
 
         runtime_references = WorklineMigrationInventoryService._normalize_summary(raw_summary, workline_id)
-        definitions_for_plugin = (
-            tuple(
-                definition
-                for (catalog_plugin_key, _catalog_version), definition in capability_catalog.items()
-                if catalog_plugin_key == plugin_key
-            )
-            if isinstance(plugin_key, str)
-            else ()
+        capability_projection = WorklineMigrationInventoryService._derive_capability_projection(
+            workline_id=workline_id,
+            plugin_key=plugin_key,
+            configured_version=configured_version,
+            capability_catalog=capability_catalog,
+            system_capability_catalog=system_capability_catalog,
         )
-        catalog_definition = (
-            capability_catalog.get((plugin_key, configured_version))
-            if isinstance(plugin_key, str) and isinstance(configured_version, str)
-            else definitions_for_plugin[0]
-            if configured_version is None and len(definitions_for_plugin) == 1
-            else None
-        )
-        catalog_version = None if catalog_definition is None else catalog_definition.contract_version
-        issues = WorklineMigrationInventoryService._classify_issues(
+        issues = WorklineMigrationInventoryService.classify_item_issues(
             workline_id=workline_id,
             line_code=line_code,
             is_active=is_active,
             plugin_key=plugin_key,
             configured_version=configured_version,
-            plugin_known=bool(definitions_for_plugin),
-            catalog_identity_matched=(
-                isinstance(plugin_key, str)
-                and isinstance(configured_version, str)
-                and (plugin_key, configured_version) in capability_catalog
-            ),
+            plugin_known=capability_projection.plugin_known,
+            catalog_identity_matched=capability_projection.catalog_identity_matched,
             active_binding_id=active_binding_id,
             active_binding_version=active_binding_version,
             active_config_hash=active_config_hash,
@@ -325,13 +492,14 @@ class WorklineMigrationInventoryService:
                 is_active=is_active,
                 plugin_key=plugin_key,
                 configured_contract_version=configured_version,
-                catalog_contract_version=catalog_version,
+                catalog_contract_version=capability_projection.catalog_contract_version,
                 run_mode=run_mode,
                 active_plugin_binding_id=active_binding_id,
                 active_plugin_binding_version=active_binding_version,
                 active_plugin_config_hash=active_config_hash,
                 active_plugin_index_digest=active_index_digest,
                 provider_requirements=provider_requirements,
+                capability_requirements=capability_projection.capability_requirements,
                 runtime_extension_references=extension_references,
                 runtime_references=runtime_references,
                 foundation_ready=not any(
@@ -447,7 +615,7 @@ class WorklineMigrationInventoryService:
             ) from exc
 
     @staticmethod
-    def _classify_issues(
+    def classify_item_issues(
         *,
         workline_id: int,
         line_code: Any,

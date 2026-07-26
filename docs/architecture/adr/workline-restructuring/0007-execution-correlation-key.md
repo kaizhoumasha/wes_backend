@@ -44,4 +44,4 @@
 
 - 顶层设计：[`../../workline-and-plugin-restructuring.md`](../../workline-and-plugin-restructuring.md)
 - Sub-spec 10 §ExecutionCorrelation：[`../../specs/workline-restructuring/10-runtime-orchestration.md`](../../specs/workline-restructuring/10-runtime-orchestration.md)
-- C0 sub-spec：[`../../../superpowers/specs/2026-06-23-workline-c0-resource-projection-foundation.md`](../../../superpowers/specs/2026-06-23-workline-c0-resource-projection-foundation.md) §C0-1
+- C0 sub-spec：[`../../../superpowers/archive/specs/2026-06-23-workline-c0-resource-projection-foundation.md`](../../../superpowers/archive/specs/2026-06-23-workline-c0-resource-projection-foundation.md) §C0-1

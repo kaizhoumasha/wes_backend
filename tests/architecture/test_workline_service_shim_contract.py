@@ -251,7 +251,7 @@ def test_workline_service_config_only_after_runtime_split():
 
 
 # WorkLine service facade 收口:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到
-# 当前 13 个真实 module export + 1 个死引用 tombstone,其余 dead entries
+# 当前 21 个真实 module export + 1 个死引用 tombstone,其余 dead entries
 # 必须删除。`runtime_intent_effects.py:1545/1627` 与
 # 1 处死引用保留(未触发,不爆),
 # 作为 lazy shim 兜底的最后一道闸,验证 `__all__` / `_LAZY_SHIM_MAP` 语义一致。
@@ -259,7 +259,7 @@ def test_workline_service_config_only_after_runtime_split():
 # 来源:runtime inbox shim cleanup audit (2026-06-30),配置域 plane/manifest 导出同步
 #   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
 #   DEAD 但 caller 仍存在 (1):workline_bin_cell_reservation_service
-#   实际 module export (17):WorklineDiagnosticService, workline_diagnostic_service,
+#   实际 module export (21):WorklineDiagnosticService, workline_diagnostic_service,
 #                           WorkLineSafetyBlocked, WorkLineSafetyService,
 #                           workline_safety_service, WorkLineService,
 #                           workline_service, OrchestratorWriteBackService,
@@ -270,7 +270,11 @@ def test_workline_service_config_only_after_runtime_split():
 #                           WorklineMigrationInventoryService,
 #                           WorklineMigrationInventoryInvariantError,
 #                           WorklineMigrationInventoryLimitExceeded,
-#                           workline_migration_inventory_service
+#                           workline_migration_inventory_service,
+#                           WorklineMigrationMatrixService,
+#                           WorklineMigrationMatrixInvariantError,
+#                           WorklineMigrationMatrixPreflightError,
+#                           workline_migration_matrix_service
 #   shim 兜底死引用 (1):workline_bin_cell_reservation_service
 #                        → bin_cell_reservation_service
 _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
@@ -296,6 +300,11 @@ _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
         "WorklineMigrationInventoryInvariantError",
         "WorklineMigrationInventoryLimitExceeded",
         "workline_migration_inventory_service",
+        # migration_matrix_service
+        "WorklineMigrationMatrixService",
+        "WorklineMigrationMatrixInvariantError",
+        "WorklineMigrationMatrixPreflightError",
+        "workline_migration_matrix_service",
         # write_back_service
         "OrchestratorWriteBackService",
         "orchestrator_write_back_service",

@@ -739,8 +739,8 @@ Phase 5 ────────────────────────
 
 ### 13.3 现有相关文档
 
-- [`docs/superpowers/specs/2026-06-19-workline-multi-object-state-machine-design.md`](../superpowers/specs/2026-06-19-workline-multi-object-state-machine-design.md) — 状态机子设计
-- [`docs/superpowers/specs/2026-06-23-workline-c0-resource-projection-foundation.md`](../superpowers/specs/2026-06-23-workline-c0-resource-projection-foundation.md) — C0 子基础
+- [`docs/superpowers/archive/specs/2026-06-19-workline-multi-object-state-machine-design.md`](../superpowers/archive/specs/2026-06-19-workline-multi-object-state-machine-design.md) — 历史状态机子设计
+- [`docs/superpowers/archive/specs/2026-06-23-workline-c0-resource-projection-foundation.md`](../superpowers/archive/specs/2026-06-23-workline-c0-resource-projection-foundation.md) — 历史 C0 子基础
 - [`docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md`](adr/2026-05-13-wes-wms-rcs-resource-boundary.md) — 现有 ADR
 - [`docs/architecture/adr/2026-05-26-wms-integration-domain.md`](adr/2026-05-26-wms-integration-domain.md) — 现有 ADR
 - [`docs/architecture/ARCHITECTURE_EVOLUTION_ROADMAP.md`](ARCHITECTURE_EVOLUTION_ROADMAP.md) — 季度级演进路线图

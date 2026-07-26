@@ -18,9 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_ACTIVE_FOUNDATION_PATHS = frozenset(
     {
         "src/app/workline/models/migration_inventory.py",
+        "src/app/workline/models/migration_matrix.py",
         "src/app/workline/services/migration_inventory_service.py",
+        "src/app/workline/services/migration_matrix_service.py",
         "tests/workline_runtime/test_workline_migration_inventory_models.py",
         "tests/workline_runtime/test_workline_migration_inventory_service.py",
+        "tests/workline_runtime/test_workline_migration_matrix_service.py",
     }
 )
 

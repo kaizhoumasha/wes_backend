@@ -8,6 +8,11 @@
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Celery、Pydantic、pytest、Alembic、GitNexus。
 
+> **代码现状验收（2026-07-26）：** T1–T8 已随 PR #91–#93 落地。当前代码已具备持久化幂等键、
+> typed status Port、短事务 claim/租约围栏、callback hint、单 Provider 装配、shadow/readiness 清零和共享
+> preparation。T9 真实 WMS 联调、清数据和首个真实 EFFECT 后的 forward-only 切换仍未完成，因此本文继续保留在
+> 活跃计划目录。
+
 ## 全局约束
 
 - 当前系统和 WMS 均未上线，无监管留存要求；允许清理开发/联调数据后整体切换，不保留旧 schema、旧调用方式、双写或兼容 dispatcher。
@@ -114,7 +119,7 @@ WES Intent/Outbox
 - `src/app/runtime/system_capabilities/evidence.py`：移除始终为 `None` 的 `shadow_expected`。
 - `src/app/runtime/orchestration/repositories/northbound_operations_repository.py`、`src/app/runtime/orchestration/services/query/northbound_operations_query_service.py`：移除 readiness 投影。
 - 三个 operation 的 `effect_adapter.py`、`intent_adapter.py` 及 `__init__.py`：接入共享 preparation；保留 operation 特有 payload 映射。
-- `docs/superpowers/specs/2026-07-21-northbound-capability-extraction-design.md`：标记被本 ADR 部分取代。
+- `docs/superpowers/archive/specs/2026-07-21-northbound-capability-extraction-design.md`：标记被本 ADR 部分取代。
 - `docs/architecture/target-state-contract.md`、`docs/contracts/external-contract-profile.md`、`docs/contracts/observability-contract.md`、`docs/operations/northbound-operation-slo-catalog.md`、`docs/runbooks/northbound-operation-observability.md`：同步目标合同、指标和排障方式。
 
 ### 删除
@@ -144,7 +149,7 @@ CLI 48 case 全部 `passed=true`。
 
 - Create: `docs/contracts/wms-northbound-interaction-contract.md`
 - Create: `docs/architecture/adr/2026-07-24-northbound-interaction-simplification.md`
-- Modify: `docs/superpowers/specs/2026-07-21-northbound-capability-extraction-design.md`
+- Modify: `docs/superpowers/archive/specs/2026-07-21-northbound-capability-extraction-design.md`
 - Test: `tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py`
 
 **Step 1: 锁定绿色基线与后续 guardrail 归属**
@@ -1085,31 +1090,31 @@ Run with Claude Code or Codex; checkbox as you ship.
   - Surfaced by: Architecture review — WMS 外部可行性原被后置到 Task 9。
   - Files: `docs/contracts/wms-northbound-interaction-contract.md`, `docs/operations/wms-northbound-feasibility-report.md`, `scripts/verify_wms_northbound_feasibility.py`
   - Verify: `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`
-- [ ] **T2 (P1, human: ~2–3d / CC: ~3–5h)** — WMS transport contract — 打通持久化幂等键、受控签名 header、Settings 和 status Port
+- [x] **T2 (P1, human: ~2–3d / CC: ~3–5h)** — WMS transport contract — 打通持久化幂等键、受控签名 header、Settings 和 status Port
   - Surfaced by: Outside voice + architecture review — submit 未携带关联键，配置文件和状态合同缺失。
   - Files: `src/app/sys/`, `src/app/wms_integration/`, `src/core/conf.py`, env/Compose profiles, generated Outbox migration
   - Verify: Task 2 contract、deployment、repository、integration commands 全部通过。
-- [ ] **T3 (P1, human: ~4–6d / CC: ~6–10h)** — Runtime reliability — 建立持久化状态确认、typed result、租约围栏和同键单次重提
+- [x] **T3 (P1, human: ~4–6d / CC: ~6–10h)** — Runtime reliability — 建立持久化状态确认、typed result、租约围栏和同键单次重提
   - Surfaced by: Architecture/test/performance review — 轮询状态、业务结果、崩溃恢复、乱序和 `NOT_FOUND` 恢复必须形成闭环。
   - Files: `src/app/runtime/orchestration/`, `src/celery_app/`, generated RuntimeIntent migration
   - Verify: reducer/service unit tests、PostgreSQL integration、resilience crash matrix 和三类 typed EFFECT tests 通过。
-- [ ] **T4 (P1, human: ~1–2d / CC: ~2–3h)** — Callback boundary — 将 callback 收敛为可恢复的查询提示
+- [x] **T4 (P1, human: ~1–2d / CC: ~2–3h)** — Callback boundary — 将 callback 收敛为可恢复的查询提示
   - Surfaced by: Architecture review — callback 不能作为终态权威，broker 失败不能丢失确认。
   - Files: `src/app/callback/`, callback router/normalizer/registry, WMS contracts
   - Verify: callback routing、scanner fallback、architecture guardrail tests 通过。
-- [ ] **T5 (P1, human: ~1–2d / CC: ~2–3h)** — Provider assembly — 只装配一个 WMS Provider 并保留同 Provider frozen revision
+- [x] **T5 (P1, human: ~1–2d / CC: ~2–3h)** — Provider assembly — 只装配一个 WMS Provider 并保留同 Provider frozen revision
   - Surfaced by: Scope/code-quality review — 三环境 profile map 与一厂一 Provider 不匹配，active revision 不能覆盖存量 Intent。
   - Files: WMS provider catalog/contracts/effect binding/runtime factory/conformance modules
   - Verify: provider conformance、mock、configuration 和 architecture tests 通过。
-- [ ] **T6 (P2, human: ~2–3d / CC: ~4–6h)** — Runtime cleanup — 删除无生产调用的 shadow/readiness 平台
+- [x] **T6 (P2, human: ~2–3d / CC: ~4–6h)** — Runtime cleanup — 删除无生产调用的 shadow/readiness 平台
   - Surfaced by: Scope review — 完整 shadow 平台没有生产构造/enqueue 路径。
   - Files: runtime system capabilities、northbound projection/API、Celery、generated destructive migration
   - Verify: projection/API/migration/topology tests 与生产引用归零检查通过。
-- [ ] **T7 (P2, human: ~1d / CC: ~1–2h)** — Evidence cleanup — 删除 Attempt/QueryEvidence 的 shadow 残留
+- [x] **T7 (P2, human: ~1d / CC: ~1–2h)** — Evidence cleanup — 删除 Attempt/QueryEvidence 的 shadow 残留
   - Surfaced by: Code-quality review — 空 shadow write set 和 `shadow_expected=None` 是无收益合同噪声。
   - Files: attempt coordinator、query evidence/gateway、runtime inbox writeback
   - Verify: attempt/evidence contract tests 与 PostgreSQL integration test 通过。
-- [ ] **T8 (P2, human: ~1–2d / CC: ~2–3h)** — WMS DRY — 在特征测试保护下合并三个 preparation 流程
+- [x] **T8 (P2, human: ~1–2d / CC: ~2–3h)** — WMS DRY — 在特征测试保护下合并三个 preparation 流程
   - Surfaced by: Code-quality review — 三个 EFFECT preparation 大量重复但业务 payload 必须继续分离。
   - Files: runtime orchestration preparation services、三个 WMS operation adapter package
   - Verify: system capability、三个 typed EFFECT contract 和 Ruff 检查通过。
@@ -1132,6 +1137,7 @@ Run with Claude Code or Codex; checkbox as you ship.
 
 **CROSS-MODEL:** 两侧一致认为应保留 typed operation、Outbox、冻结 binding 和人工对账，同时删除当前阶段无收益的多 profile、shadow/readiness 与生产 attestation；分歧仅在是否进一步缩小已确认的 9-task scope。
 
-**VERDICT:** CEO + CODEX + ENG CLEARED — ready to implement；Task 1 的 WMS feasibility `GO` 仍是进入生产代码改造的外部执行门禁。
+**CURRENT VERDICT（2026-07-26）：** T1–T8 已完成并由当前代码与测试覆盖；T9 真实 WMS 联调和
+forward-only 切换保持 OPEN。以上 Review 表保留为实施前历史评审快照。
 
 NO UNRESOLVED DECISIONS

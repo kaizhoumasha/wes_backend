@@ -2,7 +2,7 @@
 status: Phase 0 设备接入合同
 created_at: 2026-06-25
 parent: docs/architecture/workline-and-plugin-restructuring.md
-spec: docs/superpowers/specs/2026-06-25-workline-restructuring-phase-0-spec.md
+spec: docs/superpowers/archive/specs/2026-06-25-workline-restructuring-phase-0-spec.md
 authority: docs/integration/third_party_integration_whitepaper.md
 related: docs/architecture/target-state-contract.md
 note: |

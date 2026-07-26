@@ -1,6 +1,6 @@
 # Phase 4 设计推进 SPEC（含 Phase 1/2/3 遗留门禁）
 
-> 状态：设计 SPEC 已写，未进入实现
+> 状态：历史 umbrella 合同；开发/测试闭环已实现，仍由 Phase 4 文档合同测试读取；生产现场 evidence/canary 门禁继续有效
 > 父计划：`docs/architecture/workline-and-plugin-restructuring.md` §10.5
 > 关联 SPEC：`cell-reservation-spec.md`、`material-location-query-spec.md`、`workline-active-objects-spec.md`、`sorter-inbound-capability-spec.md`、`smt-ng-wms-reconciliation-spec.md`
 

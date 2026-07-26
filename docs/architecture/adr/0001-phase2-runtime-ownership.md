@@ -84,5 +84,5 @@ Phase 0 (#63) + Phase 1 Packet A/B/C/D (#64, #66) 已落地 runtime/orchestratio
 - 主计划 §3.5.1 + H2 inbound normalizer 边界
 - 主计划 §10.8 L2269 legacy-runtime-migration-spec (Step 8 待补)
 - 现有 ADR:[`../workline-restructuring/0001-b方案选择与capability-freeze.md`](../workline-restructuring/0001-b方案选择与capability-freeze.md), [`../workline-restructuring/0007-execution-correlation-key.md`](../workline-restructuring/0007-execution-correlation-key.md), [`../workline-restructuring/0005-idempotency-composite-key.md`](../workline-restructuring/0005-idempotency-composite-key.md)
-- Phase 1 SPEC:`docs/superpowers/specs/2026-06-26-workline-restructuring-phase-1-spec.md`
+- Phase 1 SPEC:`docs/superpowers/archive/specs/2026-06-26-workline-restructuring-phase-1-spec.md`
 - Phase 2 launch PR 实施计划:`/Users/kaizhou/.claude/plans/dreamy-wondering-otter.md`

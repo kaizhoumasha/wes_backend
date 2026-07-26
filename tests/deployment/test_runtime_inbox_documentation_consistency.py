@@ -8,8 +8,6 @@ from pathlib import Path
 from scripts.workline_inbox_retirement_guardrail import CURRENT_DOC_FILES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DESIGN = REPO_ROOT / "docs/superpowers/specs/2026-07-12-runtime-inbox-acceptance-closure-design.md"
-PLAN = REPO_ROOT / "docs/superpowers/plans/2026-07-10-runtime-inbox-single-source-of-truth.md"
 FILE_INDEX = REPO_ROOT / "docs/architecture/file_index.md"
 BUSINESS_SSOT = REPO_ROOT / "docs/business/workline_business_data_event_flow_spec.md"
 RUNTIME_SPEC = REPO_ROOT / "docs/architecture/runtime-orchestration-spec.md"
@@ -94,44 +92,6 @@ def test_current_runtime_docs_describe_service_replay_reset_heavy_and_ci_paths()
     assert all(contract in documents for contract in required_contracts)
 
 
-def test_acceptance_design_marks_t1_to_t10_complete_with_current_evidence():
-    design = _text(DESIGN)
-    task_10 = design.split("- [x] **T10 ", maxsplit=1)[1].split("## T1–T10 提交与证据摘要", maxsplit=1)[0]
-
-    for task in range(1, 11):
-        assert re.search(rf"- \[x\] \*\*T{task} ", design)
-    assert "T10 最终全量验收已完成" in design
-    assert "## T1–T10 提交与证据摘要" in design
-    assert "/Users/kaizhou/codeDev/wes_backend/reports/runtime-inbox-acceptance" in design
-    assert "artifact 不提交" in design
-    assert "p95 ≤150ms" in task_10
-    assert "吞吐 ≥1000 条/秒" in task_10
-    assert "repository.commit_sha" in task_10
-    assert not re.search(r"\bp(?:50|95)\s+\d", task_10)
-    assert not re.search(r"吞吐\s+\d+(?:\.\d+)?\s*条/秒", task_10)
-
-
-def test_original_plan_removes_stale_warnings_and_records_t10_completion():
-    plan = _text(PLAN)
-    task_9 = plan.split("### Task 9：", maxsplit=1)[1].split("## 测试覆盖图", maxsplit=1)[0]
-    task_10 = plan.split("### Task 10：最终全量验收与当前证据", maxsplit=1)[1].split("## 测试覆盖图", maxsplit=1)[0]
-
-    assert "⚠️ 未跑 `alembic upgrade head`" not in plan
-    assert "仍保留（28 个 consumer 依赖" not in plan
-    assert "tests/runtime/orchestration/test_inbox_batch_processor_characterization.py" not in plan
-    assert "旧 task/Beat/gateway 表面的物理删除归 Task 7" not in plan
-    assert "tests/runtime/orchestration/test_runtime_inbox_processor_parity.py" in plan
-    assert "T9 文档同步完成；T10 最终验收已完成" in task_9
-    assert "### Task 10：最终全量验收与当前证据" in task_9
-    assert "artifact 不提交" in task_9
-    assert "p95 ≤150ms" in task_10
-    assert "吞吐 ≥1000 条/秒" in task_10
-    assert "repository.commit_sha" in task_10
-    assert not re.search(r"\bp(?:50|95)\s+\d", task_10)
-    assert not re.search(r"吞吐\s+\d+(?:\.\d+)?\s*条/秒", task_10)
-    assert "全量测试 `2090 passed, 5 skipped`" not in task_9
-
-
 def test_file_index_lists_runtime_inbox_migrations_operations_ci_tests_and_response_codes():
     index = _text(FILE_INDEX)
     required_paths = (
@@ -169,7 +129,7 @@ def test_todos_active_section_contains_no_completed_runtime_inbox_work():
 
 
 def test_current_doc_files_and_local_markdown_links_exist():
-    checked_files = [*(REPO_ROOT / path for path in CURRENT_DOC_FILES), DESIGN, PLAN, TODOS]
+    checked_files = [*(REPO_ROOT / path for path in CURRENT_DOC_FILES), TODOS]
     assert all(path.is_file() for path in checked_files)
 
     missing_links: list[str] = []

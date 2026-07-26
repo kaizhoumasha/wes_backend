@@ -13,6 +13,7 @@ import pytest
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.runtime.orchestration import repository_wiring
+from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX_DIGEST
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.workline.models import WorkLine
 from src.app.workline.services import (
@@ -306,6 +307,44 @@ async def test_inventory_includes_sorted_workitem_and_intent_binding_index_refer
 
 
 @pytest.mark.asyncio
+async def test_inventory_derives_each_workline_capability_provider_and_port_requirements_from_generated_indexes() -> (
+    None
+):
+    source = _workline(
+        1,
+        "LINE-01",
+        plugin="rough_sorter",
+        version="rough_sorter.v2",
+    )
+    service = WorklineMigrationInventoryService(
+        repository=FakeRepository([source]),
+        provider_profile_loader=list,
+        clock=lambda: NOW,
+    )
+
+    report = await service.build_report(object(), environment="production")
+
+    assert report.plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
+    assert report.system_capability_index_digest == SYSTEM_CAPABILITY_INDEX_DIGEST
+    requirements = report.worklines[0].capability_requirements
+    assert tuple((item.capability_key, item.contract_version) for item in requirements) == (
+        ("device.device_command_write", "v1"),
+        ("material_flow.material_unit_write", "v1"),
+        ("runtime.session_hold", "v1"),
+        ("wms.fulfillment.full_box_exchange", "v1"),
+        ("wms.fulfillment.notify_pkg_binding", "v1"),
+        ("wms.inventory.confirm_inbound", "v1"),
+        ("wms.inventory.query_inventory", "v1"),
+    )
+    query_requirement = requirements[-1]
+    assert query_requirement.mode == "QUERY"
+    assert query_requirement.admission == "wms.2026-07-06.material-flow"
+    assert query_requirement.required_ports == (
+        "src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort",
+    )
+
+
+@pytest.mark.asyncio
 async def test_inventory_loads_extension_references_in_one_batch_for_all_worklines() -> None:
     class ExtensionRepository:
         def __init__(self) -> None:
@@ -367,10 +406,12 @@ async def test_empty_inventory_produces_ready_deterministic_report() -> None:
     expected_payload = {
         "schema_version": "workline-migration-inventory-foundation.v1",
         "environment": "production",
+        "plugin_index_digest": WORKLINE_PLUGIN_INDEX_DIGEST,
+        "system_capability_index_digest": SYSTEM_CAPABILITY_INDEX_DIGEST,
+        "foundation_ready": True,
         "worklines": [],
         "provider_profile_catalog": [],
         "issues": [],
-        "foundation_ready": True,
     }
     expected_json = json.dumps(expected_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     assert report.inventory_digest == hashlib.sha256(expected_json.encode()).hexdigest()

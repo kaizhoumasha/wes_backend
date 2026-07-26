@@ -80,6 +80,16 @@ class WorklineRuntimeExtensionReference(_FrozenInventoryModel):
     plugin_index_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
+class WorklineCapabilityRequirementInventoryItem(_FrozenInventoryModel):
+    """插件声明的单项 System Capability、Provider admission 与 Port 要求。"""
+
+    capability_key: _NonBlankString
+    contract_version: _NonBlankString
+    mode: _NonBlankString
+    admission: _NonBlankString
+    required_ports: tuple[_NonBlankString, ...] = ()
+
+
 class WorklineMigrationInventoryIssue(_FrozenInventoryModel):
     """迁移清单问题。"""
 
@@ -105,6 +115,7 @@ class WorklineMigrationInventoryItem(_FrozenInventoryModel):
     active_plugin_config_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     active_plugin_index_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     provider_requirements: tuple[_NonBlankString, ...] = ()
+    capability_requirements: tuple[WorklineCapabilityRequirementInventoryItem, ...] = ()
     runtime_extension_references: tuple[WorklineRuntimeExtensionReference, ...] = ()
     runtime_references: WorklineRuntimeReferenceSummary
     foundation_ready: bool
@@ -126,6 +137,8 @@ class WorklineMigrationInventoryReport(_FrozenInventoryModel):
     environment: _NonBlankString
     generated_at: AwareDatetime
     inventory_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plugin_index_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    system_capability_index_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     foundation_ready: bool
     worklines: tuple[WorklineMigrationInventoryItem, ...] = ()
     provider_profile_catalog: tuple[WorklineProviderProfileInventoryItem, ...] = ()

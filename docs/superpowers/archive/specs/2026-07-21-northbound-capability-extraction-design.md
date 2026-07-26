@@ -9,7 +9,7 @@ parent: docs/architecture/target-state-contract.md
 
 > **部分取代（2026-07-24）：** 本设计中关于多 Provider、shadow/readiness、staging 签名 attestation
 > 与 callback 终态权威的内容，已由
-> [北向交互收敛 ADR](../../architecture/adr/2026-07-24-northbound-interaction-simplification.md)
+> [北向交互收敛 ADR](../../../architecture/adr/2026-07-24-northbound-interaction-simplification.md)
 > 部分取代。其余 typed operation、Outbox、canonical payload、冻结 binding 与人工对账设计仍有效；本文件保留历史上下文，不重写。
 
 # 北向公共能力双层提炼设计

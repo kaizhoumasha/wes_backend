@@ -2,8 +2,8 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年7月13日（RuntimeInbox 六类 ingress、五态与 audit-only/replay/reset/heavy/CI 验收入口）
-**同步状态**: ✅ RuntimeInbox 当前架构与实际仓库结构已同步；历史版本日志保留当时路径，仅作迁移审计，不代表当前入口
+**最后更新**: 2026年7月26日（WorkLine 插件跨环境 migration matrix、digest-bound 批准与 preflight 输入）
+**同步状态**: ✅ RuntimeInbox 与 WorkLine 插件 inventory 当前架构已同步；历史版本日志保留当时路径，仅作迁移审计，不代表当前入口
 
 ---
 
@@ -11,6 +11,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-07-26 | workline-plugin-inventory-t1 | 单环境 inventory 增加 generated Plugin/System Capability digest，并从静态 capability index 派生逐 WorkLine Provider admission 与 Port requirement；新增跨环境 migration matrix、digest-bound 批准证据、稳定 matrix digest、fail-closed preflight 复用服务和 CLI。 |
 | 2026-07-13 | runtime-inbox-acceptance-closure T1–T10 | 固化 audit-only 数据库合同、正式 Service/replay 边界、reset 与 current-doc scanner；补齐隔离 PostgreSQL migration/processing/crash/benchmark runner、commit-bound evidence 和 `Jenkinsfile.backend-ci` artifact 归档。T10 默认全量、静态/质量门禁与隔离 PostgreSQL 正式验收均已完成，artifact 在最终 HEAD 上生成且不提交。 |
 | 2026-07-11 | runtime-inbox-single-source-of-truth | callback/device/internal/timer producer 统一写入 `wes_runtime.runtime_inbox`；唯一 repository、五态 claim/fencing 与三阶段 processor 落地；旧 WorklineInbox model/repository/table、InboxBatchProcessor、RuntimeInboxConsumer facade 与 enqueue shim 物理删除；补齐 Revision A/B 回环、两个 crash window、1000 backlog/4 worker benchmark、SLI snapshot 与稳定观测 signal。 |
 | 2026-07-01 | 0.10.4.0 / phase3-execution-safety-recovery | Phase 3 执行安全与恢复 PR（`feature/phase3-execution-safety-recovery`）：callback 外部入口升级为 body-bound HMAC（`X-Nonce` / `X-Body-SHA256` / 30s 窗口），nonce 使用 Redis `SET NX EX` 固定 TTL 原子消费并在 Redis 不可校验时 fail closed；RuntimeInbox 增加 provider_code + event_type + source_event_id 幂等接收、唯一冲突后重读比对 payload_hash、不同 hash 409 审计、DEAD_LETTER 人工重放新建记录；新增 ActiveObject 归属仲裁与 Reconciliation owner-scoped 决议；新增 DeviceCommand lease 过期策略与 RuntimeInbox backpressure 策略；WMS 增加 11 态 fulfillment 状态机、终态保护、typed evidence envelope 与 lifecycle service；WorkLine 配置域新增 plane scene/snapshot 读模型与 manifest 激活前 queue/device/capability 引用校验；新增 `docs/contracts/observability-contract.md` 与 `docs/contracts/runtime-toggle-governance.md`，并重新生成 legacy cleanup matrix（679 条）。版本 0.10.3.0 → 0.10.4.0 patch |
@@ -847,6 +848,8 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | `test_api_signature.sh` | API 签名验证测试 | 📚 参考资料 |
 | `check_runtime_toggle_release_gate.py` | Runtime toggle 发布门禁入口，供 `git-quality-gate.sh --check runtime-toggle-release` 调用 | 🔧 架构核心 |
 | `scripts/data/reset_runtime_data.py` | schema-qualified 运行数据 reset；dry-run、`--yes`、主数据保护与 Mock fail-closed | 🔧 架构核心 |
+| `scripts/workline_migration_inventory.py` | 在单环境只读快照中生成 WorkLine plugin/binding/runtime reference inventory | 🔧 架构核心 |
+| `scripts/workline_migration_matrix.py` | 聚合跨环境 inventory 与 digest-bound 批准证据，输出 T8 可复用 matrix | 🔧 架构核心 |
 | `scripts/workline_inbox_retirement_guardrail.py` | 扫描 active Python/Shell/current docs，阻止已退役 Inbox 入口回流 | 🔧 架构核心 |
 | `scripts/run_runtime_inbox_postgresql_acceptance.py` | 严格验收 runner：preflight 后顺序执行 migration、processing、两个 crash window、benchmark 和 evidence validator | 🔧 架构核心 |
 | `scripts/run_runtime_inbox_postgresql_acceptance_ci.sh` | CI 隔离 PG17 生命周期、clean checkout、secret env、artifact mount 与强制 cleanup | 🔧 架构核心 |

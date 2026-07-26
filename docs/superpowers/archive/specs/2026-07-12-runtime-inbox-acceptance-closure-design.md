@@ -1,8 +1,10 @@
 # RuntimeInbox 验收闭环修复设计
 
+> 归档状态（2026-07-26）：T1–T10 已完成；历史任务与证据文本不再作为机器合同输入。
+
 ## 背景与目标
 
-`docs/superpowers/plans/2026-07-10-runtime-inbox-single-source-of-truth.md` 的主运行链路已经基本收敛，但逐项验收仍发现数据库约束、模块归属、重放语义、运维脚本、当前文档和真实 PostgreSQL 门禁未完全闭合。
+`docs/superpowers/archive/plans/2026-07-10-runtime-inbox-single-source-of-truth.md` 的主运行链路已经基本收敛，但逐项验收仍发现数据库约束、模块归属、重放语义、运维脚本、当前文档和真实 PostgreSQL 门禁未完全闭合。
 
 本轮目标是消除这些验收阻断项，使原计划 Task 1–9 的完成状态能够由当前代码、迁移、运行文档和可重复测试证据共同证明，而不是依赖历史执行记录。
 
