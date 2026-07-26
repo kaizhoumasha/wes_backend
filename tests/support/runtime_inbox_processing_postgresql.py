@@ -319,15 +319,23 @@ async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_c
         .select_from(DeviceCommand)
         .where(DeviceCommand.workline_id == seeded.workline_id, DeviceCommand.trace_id == seeded.trace_id)
     )
-    outbox_count = await db.scalar(
-        select(func.count()).select_from(SystemOutbox).where(SystemOutbox.session_id == seeded.session_id)
+    outboxes = list(
+        (
+            await db.execute(
+                select(SystemOutbox).where(SystemOutbox.session_id == seeded.session_id).order_by(SystemOutbox.id)
+            )
+        ).scalars()
     )
     assert command_count == expected_count
-    assert outbox_count == expected_count
-    intent_count = await db.scalar(
-        select(func.count())
-        .select_from(RuntimeIntentLog)
-        .where(RuntimeIntentLog.execution_session_id == inbox.execution_session_id)
+    assert len(outboxes) == expected_count
+    intents = list(
+        (
+            await db.execute(
+                select(RuntimeIntentLog)
+                .where(RuntimeIntentLog.execution_session_id == inbox.execution_session_id)
+                .order_by(RuntimeIntentLog.id)
+            )
+        ).scalars()
     )
     decision_count = await db.scalar(
         select(func.count())
@@ -337,7 +345,17 @@ async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_c
             WorklineTimeline.payload_json["record_type"].as_string() == "PLUGIN_DECISION",
         )
     )
-    assert intent_count == expected_count * 4
+    expected_capability_keys = (
+        (
+            "material_flow.material_unit_write",
+            "device.device_command_write",
+        )
+        if expected_count
+        else ()
+    )
+    assert tuple(intent.capability_key for intent in intents) == expected_capability_keys
+    device_intents = [intent for intent in intents if intent.capability_key == "device.device_command_write"]
+    assert tuple(outbox.dispatch_key for outbox in outboxes) == tuple(intent.dispatch_key for intent in device_intents)
     assert decision_count == expected_count
 
 

@@ -113,8 +113,8 @@ _MOCK_WMS_INVENTORY: dict[tuple[str, str], dict[str, Any]] = {
     ("CAP001", "LOT-A"): {
         "sku": "CAP001",
         "lot_no": "LOT-A",
-        "warehouse_code": None,
-        "owner_code": None,
+        "warehouse_code": "WH-IT",
+        "owner_code": "OWNER-IT",
         "total_qty": Decimal("50000"),
         "available_qty": Decimal("50000"),
         "reserved_qty": Decimal("0"),

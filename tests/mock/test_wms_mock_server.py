@@ -113,6 +113,32 @@ def _status_headers(
     }
 
 
+def _inventory_query_request(
+    client: TestClient,
+    *,
+    material_id: str,
+    lot_no: str | None = None,
+    warehouse_code: str | None = None,
+    owner_code: str | None = None,
+):
+    params = {
+        key: value
+        for key, value in {
+            "material_id": material_id,
+            "lot_no": lot_no,
+            "warehouse_code": warehouse_code,
+            "owner_code": owner_code,
+        }.items()
+        if value is not None
+    }
+    raw_path = "/api/wms/inventory/query?" + urlencode(tuple(params.items()))
+    return client.get(
+        "/api/wms/inventory/query",
+        params=params,
+        headers=_status_headers(path=raw_path),
+    )
+
+
 def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> None:
     source = Path(wms_mock_server.__file__).read_text()
 
@@ -908,49 +934,155 @@ def test_wms_mock_inventory_query_matches_known_sku_and_lot_no() -> None:
     payload_data = rough_sorter_scan_completed_payload()["data"]
     inventory = mock_wms_inventory_seed()[("CAP001", "LOT-A")]
     with TestClient(wms_mock_server.app) as client:
-        response = client.post(
-            "/api/wms/inventory/query",
-            json={"sku": payload_data["HHPN"], "lot_no": payload_data["LotCode"]},
+        response = _inventory_query_request(
+            client,
+            material_id=payload_data["HHPN"],
+            lot_no=payload_data["LotCode"],
         )
 
     assert response.status_code == 200
-    assert response.json()["data"]["items"] == [inventory]
+    assert response.json() == {
+        "items": [inventory],
+        "source_version": "mock-inventory-v1",
+    }
+
+
+def test_wms_mock_inventory_query_returns_rough_sorter_dimensions_for_canonical_material_id() -> None:
+    inventory = mock_wms_inventory_seed()[("CAP001", "LOT-A")]
+    with TestClient(wms_mock_server.app) as client:
+        response = _inventory_query_request(
+            client,
+            material_id="CAP001",
+            lot_no="LOT-A",
+            warehouse_code="WH-IT",
+            owner_code="OWNER-IT",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [inventory]
+    assert response.json()["source_version"] == "mock-inventory-v1"
+    assert inventory["warehouse_code"] == "WH-IT"
+    assert inventory["owner_code"] == "OWNER-IT"
+
+
+def test_wms_mock_inventory_seed_limits_rough_sorter_dimensions_to_canonical_product() -> None:
+    inventory = mock_wms_inventory_seed()
+
+    assert inventory[("CAP001", "LOT-A")]["warehouse_code"] == "WH-IT"
+    assert inventory[("CAP001", "LOT-A")]["owner_code"] == "OWNER-IT"
+    assert "warehouse_code" not in inventory[("RES001", "LOT-R")]
+    assert "owner_code" not in inventory[("RES001", "LOT-R")]
 
 
 def test_wms_mock_inventory_query_matches_additional_catalog_products() -> None:
     inventory = mock_wms_inventory_seed()
     with TestClient(wms_mock_server.app) as client:
-        resistor_response = client.post(
-            "/api/wms/inventory/query",
-            json={"sku": "RES001", "lot_no": "LOT-R"},
+        resistor_response = _inventory_query_request(
+            client,
+            material_id="RES001",
+            lot_no="LOT-R",
         )
-        ic_response = client.get(
-            "/api/wms/inventory/query",
-            params={"sku": "IC001", "lot_no": "LOT-I"},
+        ic_response = _inventory_query_request(
+            client,
+            material_id="IC001",
+            lot_no="LOT-I",
         )
 
     assert resistor_response.status_code == 200
-    assert resistor_response.json()["data"]["items"] == [inventory[("RES001", "LOT-R")]]
+    assert resistor_response.json()["items"] == [inventory[("RES001", "LOT-R")]]
     assert ic_response.status_code == 200
-    assert ic_response.json()["data"]["items"] == [inventory[("IC001", "LOT-I")]]
+    assert ic_response.json()["items"] == [inventory[("IC001", "LOT-I")]]
 
 
 def test_wms_mock_inventory_query_returns_empty_items_for_unknown_sku_or_lot_no() -> None:
     payload_data = rough_sorter_scan_completed_payload()["data"]
     with TestClient(wms_mock_server.app) as client:
-        unknown_sku_response = client.post(
-            "/api/wms/inventory/query",
-            json={"sku": "UNKNOWN", "lot_no": payload_data["LotCode"]},
+        unknown_sku_response = _inventory_query_request(
+            client,
+            material_id="UNKNOWN",
+            lot_no=payload_data["LotCode"],
         )
-        unknown_lot_response = client.get(
-            "/api/wms/inventory/query",
-            params={"sku": payload_data["HHPN"], "lot_no": "UNKNOWN"},
+        unknown_lot_response = _inventory_query_request(
+            client,
+            material_id=payload_data["HHPN"],
+            lot_no="UNKNOWN",
         )
 
     assert unknown_sku_response.status_code == 200
-    assert unknown_sku_response.json()["data"]["items"] == []
+    assert unknown_sku_response.json()["items"] == []
     assert unknown_lot_response.status_code == 200
-    assert unknown_lot_response.json()["data"]["items"] == []
+    assert unknown_lot_response.json()["items"] == []
+
+
+@pytest.mark.parametrize(
+    ("warehouse_code", "owner_code"),
+    [
+        ("WH-WRONG", "OWNER-IT"),
+        ("WH-IT", "OWNER-WRONG"),
+    ],
+)
+def test_wms_mock_inventory_query_filters_all_requested_dimensions(
+    warehouse_code: str,
+    owner_code: str,
+) -> None:
+    with TestClient(wms_mock_server.app) as client:
+        response = _inventory_query_request(
+            client,
+            material_id="CAP001",
+            lot_no="LOT-A",
+            warehouse_code=warehouse_code,
+            owner_code=owner_code,
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "source_version": "mock-inventory-v1",
+    }
+
+
+def test_wms_mock_inventory_query_hmac_fails_closed_without_leaking_secret() -> None:
+    params = {
+        "material_id": "CAP001",
+        "lot_no": "LOT-A",
+        "warehouse_code": "WH-IT",
+        "owner_code": "OWNER-IT",
+    }
+    raw_path = "/api/wms/inventory/query?" + urlencode(tuple(params.items()))
+    invalid_headers = _status_headers(path=raw_path)
+    invalid_headers["X-WMS-Signature"] = "0" * 64
+    with TestClient(wms_mock_server.app) as client:
+        unsigned = client.get("/api/wms/inventory/query", params=params)
+        invalid_secret = client.get("/api/wms/inventory/query", params=params, headers=invalid_headers)
+        tampered = client.get(
+            "/api/wms/inventory/query",
+            params={**params, "owner_code": "OWNER-TAMPERED"},
+            headers=_status_headers(path=raw_path),
+        )
+
+    assert unsigned.status_code == 401
+    assert unsigned.json() == {"code": "MISSING_OR_INVALID_AUTH_HEADER"}
+    assert invalid_secret.status_code == 401
+    assert invalid_secret.json() == {"code": "INVALID_HMAC_SIGNATURE"}
+    assert tampered.status_code == 401
+    assert tampered.json() == {"code": "INVALID_HMAC_SIGNATURE"}
+    response_text = f"{unsigned.text}{invalid_secret.text}{tampered.text}"
+    assert os.environ[MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2] not in response_text
+
+
+def test_wms_mock_inventory_query_rejects_legacy_post_and_sku_alias() -> None:
+    with TestClient(wms_mock_server.app) as client:
+        post_response = client.post(
+            "/api/wms/inventory/query",
+            json={"material_id": "CAP001", "lot_no": "LOT-A"},
+        )
+        sku_alias_response = client.get(
+            "/api/wms/inventory/query",
+            params={"sku": "CAP001", "lot_no": "LOT-A"},
+        )
+
+    assert post_response.status_code == 405
+    assert sku_alias_response.status_code == 422
 
 
 def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> None:

@@ -1776,33 +1776,59 @@ async def get_grn(grn_id: str):
 # --- 交易接口 (Inventory / Reservations) ---
 
 
-def _inventory_items(*, sku: str, lot_no: str | None = None) -> list[dict[str, Any]]:
+def _inventory_items(
+    *,
+    sku: str,
+    lot_no: str | None = None,
+    warehouse_code: str | None = None,
+    owner_code: str | None = None,
+) -> list[dict[str, Any]]:
     if not sku:
         return []
-    if lot_no:
-        item = MOCK_INVENTORY.get((sku, lot_no))
-        return [dict(item)] if item is not None else []
-    return [dict(item) for (item_sku, _), item in MOCK_INVENTORY.items() if item_sku == sku]
-
-
-@app.post("/api/wms/inventory/query", summary="查询库存 (POST)")
-async def query_inventory_post(payload: dict[str, Any]):
-    # Note: 此为兼容当前代码 `wms_integration` 中的 post_json 方法而存在。
-    material_id = str(payload.get("sku") or "")
-    lot_no = payload.get("lot_no")
-    return {
-        "code": 200,
-        "data": {"items": _inventory_items(sku=material_id, lot_no=lot_no if isinstance(lot_no, str) else None)},
-    }
+    return [
+        dict(item)
+        for (item_sku, item_lot_no), item in MOCK_INVENTORY.items()
+        if item_sku == sku
+        and (lot_no is None or item_lot_no == lot_no)
+        and (warehouse_code is None or item.get("warehouse_code") == warehouse_code)
+        and (owner_code is None or item.get("owner_code") == owner_code)
+    ]
 
 
 @app.get("/api/wms/inventory/query", summary="查询库存 (GET)")
-async def query_inventory_get(material_id: str | None = None, sku: str | None = None, lot_no: str | None = None):
-    # 此为符合文档白皮书的标准 GET 路由
-    target_sku = sku or material_id or ""
+async def query_inventory_get(
+    request: Request,
+    material_id: str,
+    lot_no: str | None = None,
+    warehouse_code: str | None = None,
+    owner_code: str | None = None,
+):
+    """返回 production QUERY wire contract，不暴露 legacy envelope 或参数别名。"""
+
+    raw_path = request.scope["path"]
+    query_string = request.scope.get("query_string", b"")
+    if query_string:
+        raw_path = f"{raw_path}?{query_string.decode('ascii')}"
+    body = await _request_body_or_none(request)
+    if body is None:
+        return Response(status_code=499)
+    try:
+        verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
+        northbound_hmac_replay_guard.consume(
+            credential_reference=request.headers["X-WMS-Credential-Reference"],
+            timestamp=request.headers["X-WMS-Timestamp"],
+            nonce=request.headers["X-WMS-Nonce"],
+        )
+    except NorthboundAuthError as exc:
+        return JSONResponse(status_code=401, content={"code": exc.code})
     return {
-        "code": 200,
-        "data": {"items": _inventory_items(sku=target_sku, lot_no=lot_no)},
+        "items": _inventory_items(
+            sku=material_id,
+            lot_no=lot_no,
+            warehouse_code=warehouse_code,
+            owner_code=owner_code,
+        ),
+        "source_version": "mock-inventory-v1",
     }
 
 
