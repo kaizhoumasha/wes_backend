@@ -2188,7 +2188,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "aiosqlite" },
-    { name = "locust" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-benchmark" },
@@ -2228,7 +2227,6 @@ requires-dist = [
     { name = "greenlet", specifier = ">=3.3.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "locust", specifier = ">=2.43.1" },
-    { name = "locust", marker = "extra == 'dev'", specifier = ">=2.33.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "orjson", specifier = ">=3.11.8" },
     { name = "psutil", specifier = ">=6.1.1" },

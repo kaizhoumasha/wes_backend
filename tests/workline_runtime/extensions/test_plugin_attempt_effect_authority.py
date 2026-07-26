@@ -150,7 +150,7 @@ async def test_plugin_attempt_lock_loads_effect_execution_identity() -> None:
             payload_json={"logical_route": "SCAN_COMPLETED"},
             payload_schema_version=1,
             claim_bucket_key="session:1",
-            received_at=datetime.now(UTC).replace(tzinfo=None),
+            received_at=1_700_000_000_000,
         )
         db.add(inbox)
         await db.commit()

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from decimal import Decimal
 from enum import Enum
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 
 def enum_value(value: Any) -> Any:
@@ -27,12 +27,14 @@ def optional_enum_str(value: Any) -> str | None:
     return enum_str(value)
 
 
-def runtime_profile_environment(app_env: object) -> str:
+def runtime_profile_environment(app_env: object) -> Literal["sandbox", "staging", "production"]:
     """把应用运行环境收敛为外部 Provider profile environment。"""
-    return {"production": "production", "prod": "production", "staging": "staging"}.get(
-        str(app_env).lower(),
-        "sandbox",
-    )
+    normalized = str(app_env).lower()
+    if normalized in {"production", "prod"}:
+        return "production"
+    if normalized == "staging":
+        return "staging"
+    return "sandbox"
 
 
 def optional_int(value: Any) -> int | None:
@@ -84,6 +86,13 @@ def coerce_optional_str(value: Any) -> str | None:
 def string_value(value: Any, default: str = "") -> str:
     """仅接受字符串，否则返回默认值。"""
     return value if isinstance(value, str) else default
+
+
+def require_string(value: object, field_name: str) -> str:
+    """严格收窄字符串类型，不改变内容或空白。"""
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    return value
 
 
 def coerce_string_value(value: Any, default: str = "") -> str:
@@ -223,6 +232,7 @@ __all__ = [
     "optional_str_attr",
     "positive_quantity",
     "positive_timeout_seconds",
+    "require_string",
     "require_text",
     "require_text_any",
     "required_int_attr",

@@ -203,7 +203,8 @@ class WmsEffectStatusSnapshot(BaseModel):
 
         if self.provider_reference is None or self.updated_at is None or self.source_version is None:
             raise ValueError("visible WMS status requires provider_reference, updated_at and source_version")
-        if self.updated_at.utcoffset() is None or self.updated_at.utcoffset().total_seconds() != 0:
+        utc_offset = self.updated_at.utcoffset()
+        if utc_offset is None or utc_offset.total_seconds() != 0:
             raise ValueError("visible WMS status updated_at must be offset-aware UTC")
 
         if self.state == WmsEffectStatus.COMPLETED:
@@ -305,7 +306,8 @@ def parse_wms_effect_status_snapshot(
 
     if wire.provider_reference is None or wire.updated_at is None or wire.source_version is None:
         raise ValueError("visible WMS status requires provider_reference, updated_at and source_version")
-    if wire.updated_at.utcoffset() is None or wire.updated_at.utcoffset().total_seconds() != 0:
+    utc_offset = wire.updated_at.utcoffset()
+    if utc_offset is None or utc_offset.total_seconds() != 0:
         raise ValueError("visible WMS status updated_at must be offset-aware UTC")
 
     result: WmsEffectOperationResult | None = None

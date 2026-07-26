@@ -28,6 +28,22 @@ class EffectCallbackOutcome(str, Enum):
     REJECTED = "REJECTED"
 
 
+def _expected_wms_idempotency_code(
+    result: ExternalHttpTransportResult,
+    *,
+    protocol_rejection: bool,
+) -> str | None:
+    """把 WMS submit 的幂等 HTTP 状态收敛为稳定协议码。"""
+
+    if not protocol_rejection:
+        return None
+    if result.http_status_code == 409:
+        return "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+    if result.http_status_code == 422:
+        return "IDEMPOTENCY_CONFLICT"
+    return None
+
+
 class EffectTransportBridge:
     """把已持久化 typed transport result 翻译为封闭 reducer event。"""
 
@@ -47,7 +63,10 @@ class EffectTransportBridge:
     ) -> tuple[Any, ...]:
         is_wms_effect = operation_identity in WMS_EFFECT_OPERATION_IDENTITIES
         wms_protocol_rejection = is_wms_effect and result.protocol_result is ExternalHttpProtocolResult.REJECTED
-        wms_idempotency_response = wms_protocol_rejection and result.http_status_code in {409, 422}
+        expected_idempotency_code = _expected_wms_idempotency_code(
+            result,
+            protocol_rejection=wms_protocol_rejection,
+        )
         if wms_protocol_rejection:
             # WMS submit 响应不能直接裁决业务 REJECTED；只有 status query 拥有终态裁决权。
             # HTTP 已收到请求，因此 transport 先记为 ACCEPTED，再按稳定协议码进入冲突或对账恢复。
@@ -104,12 +123,8 @@ class EffectTransportBridge:
                 )
             )
         elif wms_protocol_rejection:
-            if wms_idempotency_response:
-                expected_code = {
-                    409: "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-                    422: "IDEMPOTENCY_CONFLICT",
-                }[result.http_status_code]
-                if result.protocol_error_code == expected_code and result.http_status_code == 422:
+            if expected_idempotency_code is not None:
+                if result.protocol_error_code == expected_idempotency_code and result.http_status_code == 422:
                     events.append(
                         EffectReducerEvent(
                             event_type=EffectReducerEventType.IDEMPOTENCY_CONFLICT,
@@ -125,7 +140,7 @@ class EffectTransportBridge:
                             evidence_json=transport_evidence,
                         )
                     )
-                elif result.protocol_error_code != expected_code:
+                elif result.protocol_error_code != expected_idempotency_code:
                     events.append(
                         EffectReducerEvent(
                             event_type=EffectReducerEventType.RECONCILIATION_OPENED,

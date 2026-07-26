@@ -77,11 +77,28 @@ class MaterialLocationConsistencyService:
         active_mounts: Iterable[Any],
         active_occupancies: Iterable[Any],
     ) -> list[MaterialLocationConsistencyIssue]:
-        occupancy_by_id = {
+        occupancy_by_id = self._index_occupancies(active_occupancies)
+        mounts_by_pkg = self._index_active_mounts(active_mounts)
+        issues = (
+            self._diagnose_material_unit(
+                material_unit=material_unit,
+                mounts_by_pkg=mounts_by_pkg,
+                occupancy_by_id=occupancy_by_id,
+            )
+            for material_unit in material_units
+        )
+        return [issue for issue in issues if issue is not None]
+
+    @staticmethod
+    def _index_occupancies(active_occupancies: Iterable[Any]) -> dict[Any, Any]:
+        return {
             occupancy_id: occupancy
             for occupancy in active_occupancies
             if (occupancy_id := getattr(occupancy, "id", None)) is not None
         }
+
+    @staticmethod
+    def _index_active_mounts(active_mounts: Iterable[Any]) -> dict[str, list[Any]]:
         mounts_by_pkg: dict[str, list[Any]] = defaultdict(list)
         for mount in active_mounts:
             if getattr(mount, "ended_at", None) is not None:
@@ -89,77 +106,71 @@ class MaterialLocationConsistencyService:
             pkg_code = getattr(mount, "pkg_code", None)
             if pkg_code:
                 mounts_by_pkg[str(pkg_code)].append(mount)
+        return mounts_by_pkg
 
-        issues: list[MaterialLocationConsistencyIssue] = []
-        for material_unit in material_units:
-            pkg_code = getattr(material_unit, "pkg_code", None)
-            if not pkg_code:
-                continue
-            pkg_mounts = mounts_by_pkg.get(str(pkg_code), [])
-            current_location = getattr(material_unit, "current_location", None)
-            if not pkg_mounts:
-                if current_location:
-                    issues.append(
-                        MaterialLocationConsistencyIssue(
-                            reason_code="MISSING_ACTIVE_MOUNT",
-                            pkg_code=str(pkg_code),
-                            material_unit=material_unit,
-                            current_location=current_location,
-                        )
-                    )
-                continue
-            if len(pkg_mounts) > 1:
-                issues.append(
-                    MaterialLocationConsistencyIssue(
-                        reason_code="MULTIPLE_ACTIVE_MOUNTS",
-                        pkg_code=str(pkg_code),
-                        material_unit=material_unit,
-                        current_location=current_location,
-                        active_mount_ids=[getattr(mount, "id", None) for mount in pkg_mounts],
-                    )
-                )
-                continue
+    def _diagnose_material_unit(
+        self,
+        *,
+        material_unit: Any,
+        mounts_by_pkg: dict[str, list[Any]],
+        occupancy_by_id: dict[Any, Any],
+    ) -> MaterialLocationConsistencyIssue | None:
+        pkg_code_value = getattr(material_unit, "pkg_code", None)
+        if not pkg_code_value:
+            return None
+        pkg_code = str(pkg_code_value)
+        pkg_mounts = mounts_by_pkg.get(pkg_code, [])
+        current_location = getattr(material_unit, "current_location", None)
+        if not pkg_mounts:
+            if not current_location:
+                return None
+            return MaterialLocationConsistencyIssue(
+                reason_code="MISSING_ACTIVE_MOUNT",
+                pkg_code=pkg_code,
+                material_unit=material_unit,
+                current_location=current_location,
+            )
+        if len(pkg_mounts) > 1:
+            return MaterialLocationConsistencyIssue(
+                reason_code="MULTIPLE_ACTIVE_MOUNTS",
+                pkg_code=pkg_code,
+                material_unit=material_unit,
+                current_location=current_location,
+                active_mount_ids=[getattr(mount, "id", None) for mount in pkg_mounts],
+            )
 
-            mount = pkg_mounts[0]
-            occupancy_id = getattr(mount, "bin_cell_occupancy_id", None)
-            occupancy = occupancy_by_id.get(occupancy_id)
-            if occupancy_id is not None and occupancy is None:
-                issues.append(
-                    MaterialLocationConsistencyIssue(
-                        reason_code="MISSING_ACTIVE_OCCUPANCY",
-                        pkg_code=str(pkg_code),
-                        material_unit=material_unit,
-                        current_location=current_location,
-                        active_mount_ids=[getattr(mount, "id", None)],
-                        details={"bin_cell_occupancy_id": occupancy_id},
-                    )
-                )
-                continue
+        mount = pkg_mounts[0]
+        occupancy_id = getattr(mount, "bin_cell_occupancy_id", None)
+        occupancy = occupancy_by_id.get(occupancy_id)
+        if occupancy_id is not None and occupancy is None:
+            return MaterialLocationConsistencyIssue(
+                reason_code="MISSING_ACTIVE_OCCUPANCY",
+                pkg_code=pkg_code,
+                material_unit=material_unit,
+                current_location=current_location,
+                active_mount_ids=[getattr(mount, "id", None)],
+                details={"bin_cell_occupancy_id": occupancy_id},
+            )
 
-            projection_location = self._location_from_projection(mount=mount, occupancy=occupancy)
-            if not projection_location:
-                issues.append(
-                    MaterialLocationConsistencyIssue(
-                        reason_code="MISSING_PROJECTION_LOCATION",
-                        pkg_code=str(pkg_code),
-                        material_unit=material_unit,
-                        current_location=current_location,
-                        active_mount_ids=[getattr(mount, "id", None)],
-                    )
-                )
-                continue
-            if current_location != projection_location:
-                issues.append(
-                    MaterialLocationConsistencyIssue(
-                        reason_code="LOCATION_MISMATCH",
-                        pkg_code=str(pkg_code),
-                        material_unit=material_unit,
-                        current_location=current_location,
-                        projection_location=projection_location,
-                        active_mount_ids=[getattr(mount, "id", None)],
-                    )
-                )
-        return issues
+        projection_location = self._location_from_projection(mount=mount, occupancy=occupancy)
+        if not projection_location:
+            return MaterialLocationConsistencyIssue(
+                reason_code="MISSING_PROJECTION_LOCATION",
+                pkg_code=pkg_code,
+                material_unit=material_unit,
+                current_location=current_location,
+                active_mount_ids=[getattr(mount, "id", None)],
+            )
+        if current_location == projection_location:
+            return None
+        return MaterialLocationConsistencyIssue(
+            reason_code="LOCATION_MISMATCH",
+            pkg_code=pkg_code,
+            material_unit=material_unit,
+            current_location=current_location,
+            projection_location=projection_location,
+            active_mount_ids=[getattr(mount, "id", None)],
+        )
 
     def repair(
         self,

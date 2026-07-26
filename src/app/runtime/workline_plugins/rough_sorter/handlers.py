@@ -54,7 +54,8 @@ if TYPE_CHECKING:
 
     from .config import RoughSorterConfig
 
-WMS_QUERY_IDENTITY = tuple(OPERATION_IDENTITY.rsplit("@", maxsplit=1))
+WMS_QUERY_CAPABILITY_KEY, WMS_QUERY_CONTRACT_VERSION = OPERATION_IDENTITY.rsplit("@", maxsplit=1)
+WMS_QUERY_IDENTITY = (WMS_QUERY_CAPABILITY_KEY, WMS_QUERY_CONTRACT_VERSION)
 MATERIAL_EFFECT = "material_flow.material_unit_write@v1"
 DEVICE_EFFECT = "device.device_command_write@v1"
 HOLD_EFFECT = "runtime.session_hold@v1"

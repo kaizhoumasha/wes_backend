@@ -267,10 +267,12 @@ class EffectReducer:
                 f"{getattr(intent, 'capability_contract_version', '')}" in WMS_EFFECT_OPERATION_IDENTITIES
             ),
         )
-        state_changed = target is not None and target is not current
-        if state_changed:
+        if target is not None and target is not current:
             transition_runtime_intent(intent, target)
             self._write_current_outcome(intent, event=event)
+            state_changed = True
+        else:
+            state_changed = False
         self._append_intent_evidence(intent, event=event, evidence=evidence)
         await db.flush()
         return EffectReductionResult(

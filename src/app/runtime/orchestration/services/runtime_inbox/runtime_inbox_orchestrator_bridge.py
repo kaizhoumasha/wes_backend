@@ -218,7 +218,7 @@ def _system_capability_intents(
             converted.append(intent)
             continue
         capability_key: str
-        dispatch_key: str
+        dispatch_key: str | None = None
         payload: dict[str, Any]
         precondition: dict[str, Any]
         fact_version: str | int
@@ -286,6 +286,7 @@ def _system_capability_intents(
         operation_key = f"inbox:{context.inbox_id}:{index}:{intent.kind.value.lower()}"
         if intent.kind is not RuntimeIntentKind.COMMAND:
             dispatch_key = f"system-capability:{capability_key}:{operation_key}"
+        dispatch_key = _required_dispatch_key(dispatch_key)
         converted.append(
             RuntimeIntent.system_capability(
                 capability_key=capability_key,
@@ -303,6 +304,14 @@ def _system_capability_intents(
             )
         )
     return tuple(converted)
+
+
+def _required_dispatch_key(value: str | None) -> str:
+    """收窄分支组装后的 dispatch key，并对未来新增 intent 分支保持 fail-closed。"""
+
+    if value is None:
+        raise RuntimeError("effect conversion did not resolve dispatch key")
+    return value
 
 
 def _pinned_command_target(snapshot: AttemptSnapshot, intent: RuntimeIntent) -> tuple[int, int]:
@@ -392,7 +401,7 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
     route = callback_route
     if route == "SYSTEM_CAPABILITY_RESULT":
         raise ValueError("raw SYSTEM_CAPABILITY_RESULT is not a plugin route")
-    if route is None:
+    if not route:
         raise ValueError("plugin logical route is required")
     return route, payload
 
@@ -434,7 +443,7 @@ class RuntimeInboxAttemptRuntime:
             raise ValueError("replacement attempt id mismatch")
         close_report = await self.gateway.aclose()
         if close_report.unterminated:
-            await replacement.aclose()
+            _ = await replacement.aclose()
             raise RuntimeError("attempt runtime replacement left unterminated queries")
         object.__setattr__(self, "port_registry", replacement.port_registry)
         object.__setattr__(self, "context", replacement.context)
@@ -1708,7 +1717,7 @@ async def _replay_digest_matches_source(  # noqa: PLR0911 - 每个 identity/anch
         replay_anchor = getattr(inbox, anchor_field, None)
         if source_anchor is None or replay_anchor is None or source_anchor != replay_anchor:
             return False
-    recorded_digest = optional_str(getattr(source, "payload_hash", None)) if source is not None else None
+    recorded_digest = optional_str(getattr(source, "payload_hash", None))
     if recorded_digest is None:
         return False
     normalized_supplied = supplied_digest.removeprefix("sha256:")

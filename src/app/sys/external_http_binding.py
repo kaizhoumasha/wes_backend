@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
 from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256
+from src.utils.value_normalization import require_string
 
 if TYPE_CHECKING:
     from src.app.sys.services.endpoint_registry import EndpointRegistry
@@ -23,6 +24,14 @@ def _required_text(value: Any, field_name: str) -> str:
     if not text:
         raise ValueError(f"{field_name} is required")
     return text
+
+
+def _persisted_auth_scheme(value: object) -> Literal["HMAC_SHA256"]:
+    """恢复受支持的认证方案，同时保留闭集类型。"""
+
+    if value != "HMAC_SHA256":
+        raise ValueError("unsupported frozen outbound auth scheme")
+    return "HMAC_SHA256"
 
 
 def _sha256_json(value: Any) -> str:
@@ -192,28 +201,29 @@ class FrozenExternalHttpBinding:
     def from_persisted(
         cls,
         *,
-        provider_profile_identity: str,
-        provider_profile_hash: str,
-        operation_identity: str,
-        binding_revision: str,
-        target_code: str,
+        provider_profile_identity: object,
+        provider_profile_hash: object,
+        operation_identity: object,
+        binding_revision: object,
+        target_code: object,
         target_snapshot_json: Any,
-        target_snapshot_hash: str,
-        auth_scheme: str,
-        credential_reference: str,
+        target_snapshot_hash: object,
+        auth_scheme: object,
+        credential_reference: object,
     ) -> FrozenExternalHttpBinding:
         target_snapshot = ExternalHttpTargetSnapshot.from_json(target_snapshot_json)
-        if target_snapshot.code != target_code:
+        persisted_target_code = require_string(target_code, "target_code")
+        if target_snapshot.code != persisted_target_code:
             raise ValueError("persisted target code differs from target snapshot")
         return cls(
-            provider_profile_identity=provider_profile_identity,
-            provider_profile_hash=provider_profile_hash,
-            operation_identity=operation_identity,
-            binding_revision=binding_revision,
+            provider_profile_identity=require_string(provider_profile_identity, "provider_profile_identity"),
+            provider_profile_hash=require_string(provider_profile_hash, "provider_profile_hash"),
+            operation_identity=require_string(operation_identity, "operation_identity"),
+            binding_revision=require_string(binding_revision, "binding_revision"),
             target_snapshot=target_snapshot,
-            target_snapshot_hash=target_snapshot_hash,
-            auth_scheme=auth_scheme,  # type: ignore[arg-type]
-            credential_reference=credential_reference,
+            target_snapshot_hash=require_string(target_snapshot_hash, "target_snapshot_hash"),
+            auth_scheme=_persisted_auth_scheme(auth_scheme),
+            credential_reference=require_string(credential_reference, "credential_reference"),
         )
 
 

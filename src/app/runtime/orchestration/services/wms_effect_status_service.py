@@ -8,7 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.app.runtime.orchestration.effect_state_contract import (
     EffectReducerEvent,
@@ -35,6 +35,7 @@ from src.app.wms_integration.ports.effect_status import (
     FrozenWmsEffectStatusBinding,
     FullBoxExchangeResultIdentity,
     NotifyPackageBindingResultIdentity,
+    OperationIdentity,
     WmsEffectStatus,
     WmsEffectStatusRequest,
     WmsEffectStatusSnapshot,
@@ -317,7 +318,7 @@ class WmsEffectStatusService:
         except KeyError as exc:
             raise ValueError("frozen WMS EFFECT payload is missing a status identity field") from exc
         return WmsEffectStatusRequest(
-            operation_identity=outbox.operation_identity,
+            operation_identity=cast("OperationIdentity", outbox.operation_identity),
             idempotency_key=intent.idempotency_key,
             attempt_count=max(1, int(intent.status_check_count or 1)),
             expected_result_identity=expected_result_identity,
@@ -406,7 +407,7 @@ class WmsEffectStatusService:
                     claim=current_claim,
                     evidence=evidence,
                 )
-        await self._repository.release_claim(db, claim=current_claim, status_check_after=next_check)
+        _ = await self._repository.release_claim(db, claim=current_claim, status_check_after=next_check)
         await db.commit()
         return WmsEffectStatusCheckResult(
             dispatch_key=intent.dispatch_key,
@@ -482,7 +483,7 @@ class WmsEffectStatusService:
         evidence: dict[str, Any],
     ) -> WmsEffectStatusCheckResult:
         intent = claim.intent
-        await self._reducer.reduce(
+        _ = await self._reducer.reduce(
             db,
             EffectReducerEvent(
                 event_type=EffectReducerEventType.STATUS_NOT_FOUND,
@@ -550,7 +551,7 @@ class WmsEffectStatusService:
                     evidence={**evidence, "error_type": type(exc).__name__},
                 )
             return await self._record_resubmit_result(db, claim=claim, result=result, evidence=evidence)
-        await self._repository.release_claim(db, claim=claim, status_check_after=next_check)
+        _ = await self._repository.release_claim(db, claim=claim, status_check_after=next_check)
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=intent.dispatch_key, outcome=WmsEffectStatus.NOT_FOUND.value)
 
@@ -573,7 +574,7 @@ class WmsEffectStatusService:
         failure = getattr(error, "failure", None)
         reason_code = getattr(failure, "reason_code", None)
         retry_after_seconds = getattr(failure, "retry_after_seconds", None)
-        await self._reducer.reduce(
+        _ = await self._reducer.reduce(
             db,
             EffectReducerEvent(
                 event_type=EffectReducerEventType.STATUS_QUERY_FAILED,
@@ -610,7 +611,7 @@ class WmsEffectStatusService:
                 claim=current_claim,
                 evidence=evidence,
             )
-        await self._repository.release_claim(
+        _ = await self._repository.release_claim(
             db,
             claim=current_claim,
             status_check_after=next_check,
@@ -648,7 +649,7 @@ class WmsEffectStatusService:
         claim: WmsEffectStatusClaim,
         evidence: dict[str, Any],
     ) -> WmsEffectStatusCheckResult:
-        await self._reducer.reduce(
+        _ = await self._reducer.reduce(
             db,
             EffectReducerEvent(
                 event_type=EffectReducerEventType.STATUS_STALE,
@@ -669,7 +670,7 @@ class WmsEffectStatusService:
                 claim=claim,
                 evidence=evidence,
             )
-        await self._repository.release_claim(
+        _ = await self._repository.release_claim(
             db,
             claim=claim,
             status_check_after=next_check,
@@ -714,7 +715,7 @@ class WmsEffectStatusService:
                 claim=current_claim,
                 evidence={**evidence, "transport": result.evidence_json()},
             )
-        await self._repository.release_claim(
+        _ = await self._repository.release_claim(
             db,
             claim=current_claim,
             status_check_after=next_check,
@@ -730,7 +731,7 @@ class WmsEffectStatusService:
         reason_code: str,
         evidence: dict[str, Any],
     ) -> WmsEffectStatusCheckResult:
-        await self._resolve_reconciliation_bridge().open(
+        _ = await self._resolve_reconciliation_bridge().open(
             db,
             dispatch_key=claim.intent.dispatch_key,
             occurred_at_ms=self._occurred_at_ms(),
@@ -743,7 +744,7 @@ class WmsEffectStatusService:
                 evidence,
             ),
         )
-        await self._repository.release_claim(db, claim=claim, status_check_after=None)
+        _ = await self._repository.release_claim(db, claim=claim, status_check_after=None)
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="RECONCILING")
 
@@ -858,7 +859,7 @@ class WmsEffectStatusService:
             system_outbox_engine.external_http_sender,
         )
         async with get_db_context() as evidence_db:
-            await workline_dispatch_attempt_service.append_status_resubmit_result(
+            _ = await workline_dispatch_attempt_service.append_status_resubmit_result(
                 evidence_db,
                 outbox=claim.outbox,
                 result=result,

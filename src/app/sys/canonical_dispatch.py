@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
+from src.utils.value_normalization import require_string
+
 if TYPE_CHECKING:
     from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 
@@ -26,6 +28,14 @@ _WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
         "wms.fulfillment.notify_pkg_binding@v1",
     }
 )
+
+
+def _persisted_bytes(value: object, field_name: str) -> bytes:
+    """在持久化恢复边界把未验证值收窄为 bytes。"""
+
+    if not isinstance(value, bytes):
+        raise TypeError(f"{field_name} must be bytes")
+    return value
 
 
 @dataclass(frozen=True)
@@ -78,10 +88,13 @@ class CanonicalPayload:
         return cls(body=body, sha256=payload_sha256(body))
 
     @classmethod
-    def from_persisted(cls, *, canonical_payload_bytes: bytes, payload_hash: str) -> CanonicalPayload:
+    def from_persisted(cls, *, canonical_payload_bytes: object, payload_hash: object) -> CanonicalPayload:
         """从数据库恢复原 bytes，只校验完整性，不重新序列化查询投影。"""
 
-        return cls(body=canonical_payload_bytes, sha256=payload_hash)
+        return cls(
+            body=_persisted_bytes(canonical_payload_bytes, "canonical_payload_bytes"),
+            sha256=require_string(payload_hash, "payload_hash"),
+        )
 
     def validate_projection(self, projection: Mapping[str, Any]) -> None:
         """仅在写入边界验证查询投影与冻结 bytes 一致。"""
@@ -131,8 +144,8 @@ class ExternalHttpDispatchRequest:
         cls,
         *,
         binding: FrozenExternalHttpBinding,
-        canonical_payload_bytes: bytes,
-        payload_hash: str,
+        canonical_payload_bytes: object,
+        payload_hash: object,
         secret: bytes,
         timestamp: str,
         nonce: str,

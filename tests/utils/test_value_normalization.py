@@ -10,6 +10,7 @@ from src.utils.value_normalization import (
     mapping_copy,
     positive_quantity,
     positive_timeout_seconds,
+    require_string,
     require_text,
     require_text_any,
     string_list,
@@ -43,6 +44,15 @@ class TestRequireText:
     def test_raises_when_value_is_not_string(self, value: object) -> None:
         with pytest.raises(ValueError, match="a is required"):
             require_text(value, "a")
+
+
+class TestRequireString:
+    def test_preserves_string_exactly(self) -> None:
+        assert require_string("  value  ", "field") == "  value  "
+
+    def test_rejects_non_string(self) -> None:
+        with pytest.raises(TypeError, match="field must be a string"):
+            require_string(None, "field")
 
 
 class TestRequireTextAny:

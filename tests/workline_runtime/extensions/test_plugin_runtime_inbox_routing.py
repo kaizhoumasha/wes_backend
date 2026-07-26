@@ -113,6 +113,17 @@ def test_canonical_plugin_input_rejects_uncorrelated_command_result() -> None:
         )
 
 
+def test_canonical_plugin_input_rejects_missing_logical_route() -> None:
+    with pytest.raises(ValueError, match="plugin logical route is required"):
+        _canonical_plugin_input(
+            SimpleNamespace(
+                kind="INTERNAL_EVENT",
+                event_type="",
+                payload_json={},
+            )
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("overrides", "expected"),

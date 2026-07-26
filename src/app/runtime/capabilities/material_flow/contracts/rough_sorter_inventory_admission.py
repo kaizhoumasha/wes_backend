@@ -111,7 +111,7 @@ class RoughSorterInventoryDecisionProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    policy_version: Literal[POLICY_VERSION] = POLICY_VERSION
+    policy_version: Literal["rough-sorter-inventory-admission.v1"] = POLICY_VERSION
     source: RoughSorterInventorySourceProvenance
     binding: RoughSorterBindingSnapshot
     supported_profile_identities: tuple[StableString, ...]

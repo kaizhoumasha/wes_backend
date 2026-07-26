@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import and_, case, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, true, update
 
 from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.effect_state_contract import (
@@ -534,8 +534,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
 
     @staticmethod
     def _dispatch_claimable_clause(columns: Any, *, now: Any, retry_budget: int | None) -> Any:
-        retry_budget_clause = True if retry_budget is None else columns.attempt_count <= retry_budget
-        expired_lease_budget_clause = True if retry_budget is None else columns.attempt_count < retry_budget
+        retry_budget_clause = true() if retry_budget is None else columns.attempt_count <= retry_budget
+        expired_lease_budget_clause = true() if retry_budget is None else columns.attempt_count < retry_budget
         return and_(
             retry_budget_clause,
             or_(

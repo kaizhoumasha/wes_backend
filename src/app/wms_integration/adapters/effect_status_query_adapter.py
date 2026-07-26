@@ -24,6 +24,7 @@ from src.app.wms_integration.ports.effect_status import (
     parse_wms_effect_status_snapshot,
 )
 from src.app.wms_integration.ports.query_outcome import (
+    QueryBusinessReject,
     QueryContractFailure,
     QuerySuccess,
     QueryTechnicalFailure,
@@ -49,9 +50,12 @@ WMS_EFFECT_STATUS_TARGET_CODE = "WMS_EFFECT_STATUS"
 
 
 class WmsEffectStatusQueryError(RuntimeError):
-    """把 transport/合同错误收敛到既有 QUERY 命名分类。"""
+    """把非成功结果收敛到既有 QUERY 命名分类。"""
 
-    def __init__(self, failure: QueryTechnicalFailure | QueryContractFailure) -> None:
+    def __init__(
+        self,
+        failure: QueryBusinessReject | QueryTechnicalFailure | QueryContractFailure,
+    ) -> None:
         self.failure = failure
         super().__init__(failure.message)
 
@@ -75,7 +79,7 @@ def _retry_after_seconds(
         target = parsedate_to_datetime(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    if target is None or target.tzinfo is None:
+    if target.tzinfo is None:
         return None
     return max(0.0, (target.astimezone(UTC) - now.astimezone(UTC)).total_seconds())
 
