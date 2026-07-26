@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.2.0] - 2026-07-26
+
+### Changed
+- WMS Mock 库存查询现在与生产 adapter 使用相同的签名 GET 合同，并支持按仓库和货主过滤库存，不再接受 legacy POST envelope 与 `sku` 参数别名。
+- WMS 独立验收容器的健康检查改为验证公开北向合同，确保合同配置缺失时服务不会被误判为可用。
+
+### Fixed
+- 修复插件 attempt 为 `CONTINUE_NEXT` 平台生命周期动作重复预写 semantic ledger 的问题，保持 effect、device outbox 与 replay 账本一一对应。
+- 修复粗分机 sandbox 库存种子的仓库和货主维度缺失，并补齐 HMAC fail-closed、并发重放、PostgreSQL attempt/outbox/replay 回归验证。
+
 ## [0.20.1.0] - 2026-07-25
 
 ### Added
