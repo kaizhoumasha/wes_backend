@@ -19,11 +19,9 @@
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
 | `plans/2026-07-04-runtime-evidence-readiness.md` | `check_runtime_evidence_readiness_gate.py` 的机器合同输入 | 开发/测试与 evidence gate 已闭合；现场发布仍需 production evidence/canary |
-| `plans/2026-07-10-runtime-inbox-single-source-of-truth.md` | RuntimeInbox 文档一致性测试的验收合同 | T1–T10 已完成，继续作为当前事实验收证据 |
 | `plans/2026-07-24-northbound-capability-simplification.md` | WMS 北向剩余切换门禁的执行入口 | T1–T8 已落地；T9 真实 WMS 联调与 forward-only 切换未完成 |
 | `specs/2026-07-03-phase4-design-with-residuals.md` | Phase 4 文档合同测试的 umbrella 输入 | 开发/测试闭环已实现；生产现场门禁仍有效 |
-| `specs/2026-07-12-runtime-inbox-acceptance-closure-design.md` | RuntimeInbox T1–T10 验收合同 | 已完成，继续被自动化一致性测试读取 |
-| `specs/2026-07-15-workline-plugin-system-capability-platform-design.md` | 完整平台目标与剩余任务的权威规格 | T3–T7 最小切片已交付；T1 Remaining、其他 Workline、T8、T9 未完成 |
+| `specs/2026-07-15-workline-plugin-system-capability-platform-design.md` | 完整平台目标与剩余任务的权威规格 | T1–T7 已交付；其他 Workline、T8、T9 未完成 |
 
 ### 本轮归档文档
 
@@ -41,6 +39,7 @@
 | `archive/plans/2026-07-08-process-naming-debt-cleanup.md` | PR #81 已完成命名债务收敛 |
 | `archive/plans/2026-07-09-design-principle-fixes.md` | PR #84 已落地有效修复，其余旧 WMS/文档拆分设想已被后续架构取代 |
 | `archive/plans/2026-07-09-stale-test-cleanup.md` | 文档已有 Final Archive Note，PR #83 已合入 |
+| `archive/plans/2026-07-10-runtime-inbox-single-source-of-truth.md` | T1–T10 已完成；机器门禁已迁移到当前架构文档与稳定 guardrail |
 | `archive/plans/2026-07-13-celery-single-async-runtime.md` | PR #85 已完成单异步运行时与连接容量修复 |
 | `archive/plans/2026-07-14-agent-log-output-convergence.md` | PR #85 已完成日志输出收敛 |
 | `archive/plans/2026-07-15-workline-active-inventory-foundation.md` | PR #86 已完成 foundation；扩容触发条件已保留在 `TODOS.md` |
@@ -57,6 +56,7 @@
 | `archive/specs/2026-06-25-workline-restructuring-phase-0-spec.md` | Phase 0 护栏与目标态锁定已完成 |
 | `archive/specs/2026-06-26-workline-restructuring-phase-1-spec.md` | Phase 1 已交付并被后续 RuntimeInbox/Plugin 平台演进取代 |
 | `archive/specs/2026-06-27-workline-phase-1-packet-d-design.md` | Packet D 已实施，当前北向合同由新 ADR 和状态查询模型承载 |
+| `archive/specs/2026-07-12-runtime-inbox-acceptance-closure-design.md` | T1–T10 已完成；历史任务与证据文本不再作为机器合同输入 |
 | `archive/specs/2026-07-21-northbound-capability-extraction-design.md` | PR #90 已实施，动态多 Provider/shadow 部分又被北向简化 ADR 取代 |
 
 ## 归档判定规则

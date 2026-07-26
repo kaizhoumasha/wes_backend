@@ -1,5 +1,7 @@
 # RuntimeInbox 主链路收敛实施计划
 
+> 归档状态（2026-07-26）：T1–T10 已完成；机器门禁已迁移到当前架构文档与稳定 guardrail。
+
 **目标：** 让 `RuntimeInbox` 成为 callback、内部事件、超时、重放进入 runtime orchestration 的唯一持久化事实源；删除 `WorklineInbox` 表、旧 repository/service、`InboxBatchProcessor`、`RuntimeInboxConsumer` facade 及全部运行时引用。
 
 **交付策略：** 单 PR 全量切换。系统尚未发布，不保留旧 import、旧 task 名、兼容 shim 或双写路径；但必须保持 Alembic 历史不可变，并用 forward revisions 完成破坏性迁移。

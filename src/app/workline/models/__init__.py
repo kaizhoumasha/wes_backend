@@ -15,6 +15,7 @@ from src.app.rack.models import (
 )
 
 from .migration_inventory import (
+    WorklineCapabilityRequirementInventoryItem,
     WorklineMigrationInventoryIssue,
     WorklineMigrationInventoryIssueCode,
     WorklineMigrationInventoryItem,
@@ -25,6 +26,12 @@ from .migration_inventory import (
     WorklineRuntimeReferenceSample,
     WorklineRuntimeReferenceSummary,
     WorklineRuntimeReferenceType,
+)
+from .migration_matrix import (
+    WorklineInventoryApprovalEvidence,
+    WorklineMigrationMatrixIssue,
+    WorklineMigrationMatrixIssueCode,
+    WorklineMigrationMatrixReport,
 )
 from .plane import (
     PlaneEdge,
@@ -84,11 +91,16 @@ __all__ = [
     "WorkLineRunMode",
     "WorkLineStateTransitionRequest",
     "WorkLineUpdate",
+    "WorklineCapabilityRequirementInventoryItem",
+    "WorklineInventoryApprovalEvidence",
     "WorklineMigrationInventoryIssue",
     "WorklineMigrationInventoryIssueCode",
     "WorklineMigrationInventoryItem",
     "WorklineMigrationInventoryReport",
     "WorklineMigrationInventorySeverity",
+    "WorklineMigrationMatrixIssue",
+    "WorklineMigrationMatrixIssueCode",
+    "WorklineMigrationMatrixReport",
     "WorklinePluginBinding",
     "WorklineProviderProfileInventoryItem",
     "WorklineRuntimeExtensionReference",

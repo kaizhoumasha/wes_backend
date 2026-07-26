@@ -22,10 +22,31 @@ LEGACY_FILES = (
     "src/app/runtime/orchestration/repositories/inbox_repository.py",
     "src/app/runtime/orchestration/services/inbox/inbox_service.py",
 )
+MACHINE_GATE_TEXT_SUFFIXES = frozenset({".py", ".sh", ".toml", ".yaml", ".yml"})
 
 
 def _find_legacy_references(*, repo_root: Path, roots: tuple[str, ...]) -> list[str]:
     return sorted({finding.path for finding in find_legacy_references(repo_root=repo_root, roots=roots)})
+
+
+def _find_runtime_inbox_plan_gate_references(repo_root: Path) -> list[str]:
+    candidates: set[Path] = set()
+    for root in ("scripts", "tests", ".github"):
+        root_path = repo_root / root
+        if root_path.is_dir():
+            candidates.update(
+                path for path in root_path.rglob("*") if path.is_file() and path.suffix in MACHINE_GATE_TEXT_SUFFIXES
+            )
+    candidates.update(path for path in repo_root.glob("Jenkinsfile*") if path.is_file())
+
+    offenders: list[str] = []
+    for path in sorted(candidates):
+        if path.resolve() == Path(__file__).resolve():
+            continue
+        source = path.read_text(encoding="utf-8")
+        if "docs/superpowers/" in source and "runtime-inbox" in source and ("/plans/" in source or "/specs/" in source):
+            offenders.append(str(path.relative_to(repo_root)))
+    return offenders
 
 
 def test_legacy_workline_inbox_surface_is_physically_removed() -> None:
@@ -173,6 +194,26 @@ def test_current_docs_are_explicit_files_and_never_archive_or_plan_prefixes() ->
     assert all(
         "/archive/" not in path and "/plans/" not in path and "/specs/" not in path for path in CURRENT_DOC_FILES
     )
+
+
+def test_runtime_inbox_machine_gates_do_not_read_active_superpowers_plans_or_specs() -> None:
+    offenders = _find_runtime_inbox_plan_gate_references(REPO_ROOT)
+    assert not offenders, f"RuntimeInbox 机器门禁仍读取历史 plan/spec: {sorted(offenders)}"
+
+
+def test_runtime_inbox_machine_gate_scanner_covers_shell_and_ci_files(tmp_path: Path) -> None:
+    fixtures = {
+        "scripts/offender.sh": ("plan=docs/superpowers/plans/2026-07-10-runtime-inbox-single-source-of-truth.md"),
+        "Jenkinsfile.backend-ci": (
+            "spec='docs/superpowers/specs/2026-07-12-runtime-inbox-acceptance-closure-design.md'"
+        ),
+    }
+    for relative_path, content in fixtures.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    assert _find_runtime_inbox_plan_gate_references(tmp_path) == sorted(fixtures)
 
 
 def test_scanner_rejects_legacy_modules_without_workline_inbox_symbol(tmp_path: Path) -> None:

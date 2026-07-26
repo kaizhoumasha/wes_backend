@@ -64,27 +64,29 @@ fallback 或 import shim。最终代码只保留目标合同，严格遵循 DRY�
 完整目标包含：开发脚手架、无副作用诊断、所有 active Workline 的独立规格与实现、原子切换、旧入口清零和
 开发文档更新。各子计划必须遵守本文合同，不得引入过渡 adapter 或双轨 dispatcher。
 
-### 3.3 实施进度（截至 2026-07-18）
+### 3.3 实施进度（截至 2026-07-26）
 
 总体状态为 **Implementation In Progress**。`v0.17.0.0` / PR #86 已交付 T1 的单环境 active inventory
 foundation；`v0.17.1.0` / PR #87 已将 rough sorter 窄闭环业务合同、权威 fixture 与机器化合同测试合并到
-`develop`。本分支已完成最小 Runtime contract 与 rough sorter 真实 vertical slice；cutover 尚未实施。
+`develop`。T1 Remaining 已补齐 WorkItem/Intent 引用、逐 WorkLine capability/provider/Port requirement、
+跨环境聚合、digest-bound 批准证据与可复用 preflight 校验；cutover 尚未实施。
 
 | 工作项 | 状态 | 已完成证据 / 剩余边界 |
 | --- | --- | --- |
 | Active inventory foundation | 已完成 | 严格冻结报告模型、权威 repository 装配、确定性 digest、100 条安全上限、只读 CLI 与稳定退出码已合并到 `develop` |
 | PostgreSQL inventory contract | 已完成 | 五类运行引用状态矩阵、`REPEATABLE READ + READ ONLY`、MVCC 快照与数据库拒写测试通过 |
 | 治理与发布门禁 | 已完成 | `v0.17.1.0` 合并前完整回归 `2691 passed, 5 skipped`；PostgreSQL integration `11 passed`，Ruff、Bandit、测试拓扑与架构门禁通过 |
-| 跨环境 migration matrix 与批准 | 未完成 | 当前命令每次只生成一个环境的 foundation report；仍需聚合、签名与批准证据 |
-| WorkItem/Intent version pin、binding requirement | 未完成 | 待 Runtime contract 与 binding 模型落地后纳入同一 inventory/preflight |
+| 跨环境 migration matrix 与批准 | 已完成 | `workline_migration_matrix.py` 聚合必需环境报告，批准证据绑定精确 inventory digest；缺环境、旧批准、单环境阻断和索引漂移均 fail closed |
+| WorkItem/Intent version pin、binding requirement | 已完成 | 批量列出 WorkItem/Intent 固定引用；逐 WorkLine 输出 binding/provider snapshot，并从 generated capability index 派生 Provider admission 与 Port 类型 |
 | Rough sorter 窄闭环业务合同（T2） | 已完成 | `v0.17.1.0` / PR #87 已合并到 `develop`（merge `c89674f6`）；[业务合同](../../business/rough_sorter_scan_decision_contract.md)、[13-case fixture](../../../tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json)与机器化合同测试已固化 `WAITING_DEVICE_RESULT`、Session/RuntimeHold 所有权、replay evidence 和迟到结果语义，并由 kaizhou 于 `2026-07-16T19:39:04+08:00` 批准；这仍不是生产 Runtime 交付 |
 | 最小 Runtime contract、生成索引与 Binding（T3–T5） | 本切片已完成 | 最终两类 Definition、typed binding/state/input/decision、确定性 generated index 已落地；Plugin digest `34d4332b...541cc`，Capability digest `165471b4...c0b6`；相关 Alembic revisions 已由生成器创建并经 PostgreSQL inventory/integration 验证 |
 | QUERY/evidence/replay 与通用 EFFECT（T6–T7） | 本切片已完成 | attempt-scoped QUERY、recorded replay、`SYSTEM_CAPABILITY` EFFECT、Outbox/result 回流及 rollback/crash recovery 已覆盖；rough sorter fresh 13-case E2E 为 `13 passed`，后续两类命令成功/失败/超时为 6 个 PostgreSQL 场景，性能预算与 generator `--check` 通过 |
-| Cutover 与开发者体验（T8–T9） | 未完成 | inventory-backed 跨环境 preflight、freeze/drain、历史 trace replay、原子切换、脚手架、无副作用诊断及开发指南仍须独立计划 |
+| Cutover 与开发者体验（T8–T9） | 未完成 | 将已交付的 approved matrix preflight 接入真实 cutover，并完成 freeze/drain、历史 trace replay、原子切换、脚手架、无副作用诊断及开发指南，仍须独立计划 |
 
-T2 与本切片 T3–T7 已闭合，但这只证明 rough sorter 最小 vertical slice readiness，**不代表**
-完整 T1、其他 active Workline、Integration Gate 或 production cutover readiness。inventory CLI 的 `foundation_ready=true` 只证明当前阶段事实合同通过，
-不能替代跨环境批准、版本引用清零和最终切换门禁。
+T1–T7 已闭合，但这只证明 inventory/matrix 机器门禁与 rough sorter 最小 vertical slice readiness，**不代表**
+其他 active Workline、Integration Gate 或 production cutover readiness。inventory CLI 的 `foundation_ready=true`
+只证明单环境事实合同通过，不能替代跨环境批准矩阵；approved matrix 也不能替代 T8 的版本引用清零、
+freeze/drain 和最终原子切换。
 
 ## 4. What already exists
 
@@ -491,12 +493,13 @@ CODE PATHS                                            OPERATIONS / USER FLOWS
 
 Synthesized from this review's findings. Each task derives from a specific finding above.
 
-- [ ] **T1 (P1, human: ~1d / CC: ~2h)** — Inventory — 建立 active Workline 权威清单与 migration matrix
+- [x] **T1 (P1, human: ~1d / CC: ~2h)** — Inventory — 建立 active Workline 权威清单与 migration matrix
   - Surfaced by: Scope/Outside voice — 切换集合必须在平台实现前可计算。
   - Files: Runtime query/service、deployment preflight、业务规格目录。
   - Verify: fixture 环境覆盖 DB/config/non-terminal runtime refs，输出稳定清单。
   - [x] Foundation（`v0.17.0.0` / PR #86）— 单环境只读报告、五类运行引用、provider profile catalog、确定性 digest、CLI、PostgreSQL 合同和治理门禁。
-  - [ ] Remaining — WorkItem/Intent 版本引用、逐 Workline binding/provider/Port requirement、跨环境聚合、批准证据与 cutover preflight 复用。
+  - [x] Remaining — WorkItem/Intent 版本引用、逐 Workline binding/provider/Port requirement、跨环境聚合、批准证据与 cutover preflight 复用。
+  - Evidence: [运维入口](../../operations/workline-plugin-migration-inventory.md)、`WorklineMigrationMatrixService.assert_approved_matrix()`、matrix CLI 及 inventory/matrix unit/deployment tests。每次真实切换仍须生成 fresh 环境报告与批准 artifact；这不表示 T8 已执行。
 - [x] **T2 (P1, human: ~2d / CC: ~4h)** — Rough sorter — 批准首个真实窄闭环业务规格
   - Surfaced by: Scope challenge — 平台合同不得由中性示例猜测。
   - Evidence: [业务合同](../../business/rough_sorter_scan_decision_contract.md)、[13-case fixture](../../../tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json) 与 [合同测试](../../../tests/contracts/workline/test_rough_sorter_scan_decision_spec.py)。
@@ -525,7 +528,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Surfaced by: Test review — 公共合同必须复用且符合测试拓扑。
   - Evidence: [shared conformance](../../../tests/workline_plugins/test_conformance_contract.py)、[13-case real PostgreSQL E2E](../../../tests/e2e/workline_capabilities/test_rough_sorter_scan_decision_slice.py)、[test topology guardrail](../../../tests/architecture/test_test_suite_topology_guardrail.py)、[quality gate](../../../scripts/git-quality-gate.sh)。
   - Verify: 13 个批准 case 和 6 个终态场景使用实际 Timeline/decision/effect/Session/Hold 证据；generator `--check`、topology、collect-only、Ruff/Bandit/quality gate 为最终提交门禁。
-- [ ] **T8 (P1, human: ~4d / CC: ~1d)** — Cutover — 实现 inventory-backed preflight、排空和 roll-forward 演练
+- [ ] **T8 (P1, human: ~4d / CC: ~1d)** — Cutover — 接入 approved matrix preflight，实施排空和 roll-forward 演练
   - Surfaced by: Test/Outside voice — 原子切换需要可终止、可自动判定。
   - Files: deployment、integration、migration、runbook。
   - Verify: 非零旧引用/摘要不一致阻断；cutover point 前 rollback、之后 roll-forward。
@@ -570,13 +573,14 @@ Synthesized from this review's findings. Each task derives from a specific findi
 方案可以进入分阶段实施，但必须先完成 active inventory 与 rough sorter 真实窄闭环规格。平台不得先于真实需求
 形成通用框架；任何旧入口、双轨运行、隐式版本升级、跨层访问或自由格式状态都属于阻断项。
 
-### 当前结论（截至 2026-07-18）
+### 当前结论（截至 2026-07-26）
 
+- T1 inventory foundation 与 Remaining 均已完成，跨环境 matrix、digest-bound 批准和可复用 preflight 已闭合。
 - T2 rough sorter 业务合同已由 kaizhou 批准，业务合同门禁已通过。
 - T2 合同与机器化证据已随 `v0.17.1.0` / PR #87 合并到 `develop`；完整回归为 `2691 passed, 5 skipped`。
-- T1 Remaining 仍未完成，不得把 inventory foundation 解释为完整 T1。
 - T3–T7 的 rough sorter 最小 production vertical slice 已交付并由上述 generated digest、migration、PostgreSQL E2E/terminal matrix、performance 与质量门禁证据约束。
-- T1 Remaining、其他 active Workline 的批准规格/迁移、T8 cutover 和 T9 developer experience 仍未完成；不得将本切片 readiness 表述为 production cutover readiness。
+- 其他 active Workline 的批准规格/迁移、T8 cutover 和 T9 developer experience 仍未完成；不得将
+  T1–T7 readiness 表述为 production cutover readiness。
 
 ### Review artifacts
 

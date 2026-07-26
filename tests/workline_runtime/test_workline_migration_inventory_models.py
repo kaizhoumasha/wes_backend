@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.app.workline.models import (
+    WorklineCapabilityRequirementInventoryItem,
     WorklineMigrationInventoryIssue,
     WorklineMigrationInventoryIssueCode,
     WorklineMigrationInventoryItem,
@@ -211,6 +212,33 @@ def test_workline_item_exposes_binding_index_and_provider_requirements() -> None
 
     assert item.active_plugin_binding_id == 9
     assert item.provider_requirements == ("WMS@v1",)
+
+
+def test_workline_item_exposes_derived_capability_and_port_requirements() -> None:
+    requirement = WorklineCapabilityRequirementInventoryItem(
+        capability_key="wms.inventory.query_inventory",
+        contract_version="v1",
+        mode="QUERY",
+        admission="wms.2026-07-06.material-flow",
+        required_ports=("src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort",),
+    )
+    item = WorklineMigrationInventoryItem(
+        workline_id=1,
+        line_code="LINE-01",
+        is_active=True,
+        plugin_key="rough_sorter",
+        configured_contract_version="rough_sorter.v2",
+        catalog_contract_version="rough_sorter.v2",
+        run_mode="AUTO",
+        capability_requirements=(requirement,),
+        runtime_references=WorklineRuntimeReferenceSummary(**_valid_reference_summary_payload()),
+        foundation_ready=True,
+    )
+
+    assert item.capability_requirements == (requirement,)
+    assert item.model_dump(mode="json")["capability_requirements"][0]["required_ports"] == [
+        "src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort"
+    ]
 
 
 def test_schema_version_is_defaulted_and_cannot_be_overridden() -> None:
