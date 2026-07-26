@@ -2,7 +2,7 @@
 
 > 面向 WES 项目组内部调试、本地开发和 E2E 验证。
 > 供应商正式联调请使用 [`粗分机硬件供应商联调操作手册.md`](./粗分机硬件供应商联调操作手册.md)。
-> 最近同步：2026-06-08，从供应商版手册拆出 Sandbox、Mock ECS 和 Mock WMS 操作。
+> 最近同步：2026-07-26，Mock WMS 库存查询已对齐生产 adapter 的签名 GET 合同。
 
 ---
 
@@ -413,17 +413,50 @@ Mock ECS 接收每条 WES 命令时，会为该命令随机生成一个 2~8 秒�
 uv run python tests/mock/wms_mock_server.py
 ```
 
-库存查询：
+库存查询必须使用 `material_id`，并按生产 adapter 的 `X-WMS-*` HMAC 规则签名。`lot_no`、
+`warehouse_code`、`owner_code` 为可选过滤条件；旧 POST envelope 和 `sku` 参数别名不再支持。
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8011/api/wms/inventory/query" \
-  -H "Content-Type: application/json" \
-  -d '{"sku":"CAP001","lot_no":"LOT-A"}' | jq
+uv run python - <<'PY'
+import os
+from datetime import UTC, datetime
+from uuid import uuid4
+
+import httpx
+from dotenv import load_dotenv
+
+from src.app.wms_integration.services.http_transport import sign_wms_hmac_request
+
+load_dotenv(".env")
+request = httpx.Request(
+    "GET",
+    "http://127.0.0.1:8011/api/wms/inventory/query",
+    params={
+        "material_id": "CAP001",
+        "lot_no": "LOT-A",
+        "warehouse_code": "WH-IT",
+        "owner_code": "OWNER-IT",
+    },
+)
+sign_wms_hmac_request(
+    request,
+    credential_reference="secret://wms/material-flow-sandbox-hmac@v2",
+    auth_scheme="HMAC_SHA256",
+    secret=os.environ["WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2"].encode(),
+    now=lambda: datetime.now(UTC),
+    nonce_factory=lambda: uuid4().hex,
+)
+with httpx.Client() as client:
+    response = client.send(request)
+    response.raise_for_status()
+    print(response.json())
+PY
 ```
 
-返回的 `data.items` 应非空。
+返回的顶层 `items` 应非空，并包含 `source_version`。缺失或错误签名返回 401；未知物料、批次、仓库或货主返回
+空 `items`，粗分机进入 `WMS_REJECTED` 业务 NG。
 
-未知物料或批次会返回空库存，粗分机进入 `WMS_REJECTED` 业务 NG。
+独立验收容器以 `GET /northbound/contract` 作为健康检查，合同必需配置缺失时容器应保持 unhealthy。
 
 ---
 
