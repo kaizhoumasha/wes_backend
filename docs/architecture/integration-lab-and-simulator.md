@@ -2,7 +2,7 @@
 status: Phase 0 联调实验室
 created_at: 2026-06-25
 parent: docs/architecture/workline-and-plugin-restructuring.md
-spec: docs/superpowers/specs/2026-06-25-workline-restructuring-phase-0-spec.md
+spec: docs/superpowers/archive/specs/2026-06-25-workline-restructuring-phase-0-spec.md
 related: docs/contracts/external-contract-profile.md
 note: |
   本文件定义 IntegrationLab 的 simulator、sandbox、fixture、scenario runner 基线。

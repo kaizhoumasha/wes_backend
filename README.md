@@ -72,7 +72,7 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 - [北向交互收敛 ADR](docs/architecture/adr/2026-07-24-northbound-interaction-simplification.md)：说明单部署 Provider、callback 查询提示、状态查询终态权威以及 query shadow/readiness 删除决策。
 - [WMS 北向开发 mock 可行性报告](docs/operations/wms-northbound-feasibility-report.md)：记录开发 mock 合同门禁、黑盒探针范围和真实 WMS 联调限制。
 - [WMS 北向联调验收与整体切换记录](docs/operations/wms-northbound-acceptance-and-cutover.md)：提供真实签名、业务 case、观测映射、数据清理、切换和 forward-fix 验收模板。
-- [北向能力提取设计（历史设计）](docs/superpowers/specs/2026-07-21-northbound-capability-extraction-design.md)：保留 typed operation、Outbox、canonical payload 和冻结 binding 的设计上下文；多 Provider、shadow/readiness 与 callback 终态权威部分已由收敛 ADR 取代。
+- [北向能力提取设计（历史设计）](docs/superpowers/archive/specs/2026-07-21-northbound-capability-extraction-design.md)：保留 typed operation、Outbox、canonical payload 和冻结 binding 的设计上下文；多 Provider、shadow/readiness 与 callback 终态权威部分已由收敛 ADR 取代。
 - [北向 operation SLO 目录](docs/operations/northbound-operation-slo-catalog.md) 与 [运维 Runbook](docs/runbooks/northbound-operation-observability.md)：说明 QUERY/EFFECT 指标、告警、运维快照和故障处置。
 - [WMS operation identity ADR](docs/architecture/adr/2026-07-21-wms-operation-identity.md)：说明 operation、provider profile、dispatch 和 evidence 的稳定身份约定。
 

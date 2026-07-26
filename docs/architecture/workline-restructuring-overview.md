@@ -12,8 +12,8 @@ parent_goal: 对当前 WORKLINE + PLUGIN 体系进行全面重构/重做
 document_type: 概要设计说明书 + 详细设计（Outline Design + Detailed Design）
 audience: eng/arch lead, WES owner, WMS 集成 lead, code reviewer
 related_specs:
-  - docs/superpowers/specs/2026-06-19-workline-multi-object-state-machine-design.md  (子设计)
-  - docs/superpowers/specs/2026-06-23-workline-c0-resource-projection-foundation.md  (C0 子基础)
+  - docs/superpowers/archive/specs/2026-06-19-workline-multi-object-state-machine-design.md  (历史子设计)
+  - docs/superpowers/archive/specs/2026-06-23-workline-c0-resource-projection-foundation.md  (历史 C0 子基础)
   - docs/architecture/runtime-orchestration-spec.md  (Runtime/Orchestration 域最小骨架 SPEC)
 detail_docs:
   - 关键决策（ADR）：docs/architecture/adr/workline-restructuring/
@@ -120,8 +120,8 @@ review_summary: |
 | --- | --- | --- |
 | 1 | `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` | 现有 ADR：WES/WMS/RCS 运行时资源边界 |
 | 2 | `docs/architecture/adr/2026-05-26-wms-integration-domain.md` | 现有 ADR：WMS 对接辅助域 |
-| 3 | `docs/superpowers/specs/2026-06-19-workline-multi-object-state-machine-design.md` | 状态机子设计 |
-| 4 | `docs/superpowers/specs/2026-06-23-workline-c0-resource-projection-foundation.md` | C0 资源投影子基础 |
+| 3 | `docs/superpowers/archive/specs/2026-06-19-workline-multi-object-state-machine-design.md` | 历史状态机子设计 |
+| 4 | `docs/superpowers/archive/specs/2026-06-23-workline-c0-resource-projection-foundation.md` | 历史 C0 资源投影子基础 |
 | 5 | `docs/architecture/ARCHITECTURE_EVOLUTION_ROADMAP.md` | 季度级演进路线图 |
 | 6 | `docs/architecture/REPOSITORY_GUIDE.md` | 通用 Repository 使用指南 |
 | 7 | `docs/architecture/SRS.md` | 软件需求规格说明书 |
@@ -262,4 +262,3 @@ P0 必须支撑以下能力（每条都是验收项）：
 - [x] DeviceCommand 调度策略支持设备能力选择、优先级、deadline、串行/限流、取消和状态快照 TTL。PR #73 已落地可过期 command lease；本分支补齐 `DeviceDispatchPolicy` 策略合同与 fresh IDLE、stale/UNKNOWN、RUNNING deadline、HOLD/RECONCILING 冻结测试，并接入 DeviceCommandGateway 热路径：过期本地 IDLE 快照必须先重查 ECS status probe，fresh busy/hard-state 本地短路。
 
 ---
-

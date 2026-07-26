@@ -3,13 +3,13 @@ title: Workline Plugin 与 System Capability 平台设计
 status: Implementation In Progress
 created_at: 2026-07-15
 reviewed_at: 2026-07-15
-updated_at: 2026-07-16
+updated_at: 2026-07-26
 scope: 平台架构与首个真实垂直切片，不包含完整 Workline 业务流程
 replaces:
   - docs/plugin_development_guide.md 的旧插件开发口径
   - docs/business/workline_plugin_architecture_design.md 中已失效的旧插件运行框架口径
 related:
-  - docs/superpowers/plans/2026-07-15-workline-active-inventory-foundation.md
+  - docs/superpowers/archive/plans/2026-07-15-workline-active-inventory-foundation.md
   - docs/architecture/workline-and-plugin-restructuring.md
   - docs/architecture/workline-restructuring-architecture.md
   - docs/architecture/workline-restructuring-module.md
@@ -505,7 +505,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Verify: 输入、状态、能力、成功/NG/timeout/replay 验收完整。
 - [x] **T3 (P1, human: ~4d / CC: ~1d)** — Runtime contracts — 收敛两类 Definition、typed outcome 与静态索引
   - Surfaced by: Architecture/Code quality — 删除重复 catalog、身份与 generator 抽象。
-  - Evidence: [Plugin generated index](../../../src/app/runtime/workline_plugins/generated_index.py) digest `34d4332b...541cc`、[Capability generated index](../../../src/app/runtime/system_capabilities/generated_index.py) digest `165471b4...c0b6`、[generator drift tests](../../../tests/workline_runtime/extensions/test_generated_index.py)。只实现本切片需要的 typed outcome、QUERY evidence、Intent identity 与 recorded replay。
+  - Evidence: [Plugin generated index](../../../src/app/runtime/workline_plugins/generated_index.py) digest `34d4332b...541cc`、[Capability generated index](../../../src/app/runtime/system_capabilities/generated_index.py) digest `165471b4...c0b6`、[generator drift tests](../../../tests/workline_runtime/extensions/test_runtime_extension_index_generation.py)。只实现本切片需要的 typed outcome、QUERY evidence、Intent identity 与 recorded replay。
   - Files: runtime capability/contracts/index generator、architecture tests。
   - Verify: 生成确定、`--check`、cold-start、旧 catalog 清零。
 - [x] **T4 (P1, human: ~5d / CC: ~1d)** — Plugin runtime — 实现 binding、Context、PluginState、PluginDecision 与业务 timeout route

@@ -2,7 +2,7 @@
 status: Phase 1 CEO-006
 created_at: 2026-06-26
 parent: docs/architecture/workline-and-plugin-restructuring.md
-spec: docs/superpowers/specs/2026-06-26-workline-restructuring-phase-1-spec.md
+spec: docs/superpowers/archive/specs/2026-06-26-workline-restructuring-phase-1-spec.md
 related: docs/architecture/target-state-contract.md, docs/architecture/adr/workline-restructuring/0008-authority-matrix.md
 note: |
   本文档是 Phase 1 CEO-006 交付物，从 Phase 0 target-state-contract.md §4

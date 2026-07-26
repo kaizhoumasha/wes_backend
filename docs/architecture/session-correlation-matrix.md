@@ -2,7 +2,7 @@
 status: Phase 0 迁移矩阵
 created_at: 2026-06-25
 parent: docs/architecture/workline-and-plugin-restructuring.md
-spec: docs/superpowers/specs/2026-06-25-workline-restructuring-phase-0-spec.md
+spec: docs/superpowers/archive/specs/2026-06-25-workline-restructuring-phase-0-spec.md
 related: docs/architecture/target-state-contract.md
 note: |
   本矩阵逐文件列出跨域 session FK 的目标态收敛方式。

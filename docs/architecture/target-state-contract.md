@@ -2,7 +2,7 @@
 status: Phase 0 锁定合同
 created_at: 2026-06-25
 parent: docs/architecture/workline-and-plugin-restructuring.md
-spec: docs/superpowers/specs/2026-06-25-workline-restructuring-phase-0-spec.md
+spec: docs/superpowers/archive/specs/2026-06-25-workline-restructuring-phase-0-spec.md
 audience: 后端实现 agent、reviewer、WMS/ECS 集成 lead
 note: |
   本文件从顶层设计抽取可执行目标态合同，不复制完整顶层设计。

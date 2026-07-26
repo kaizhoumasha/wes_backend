@@ -6,8 +6,8 @@ parent_goal: 对当前 WORKLINE + PLUGIN 体系进行全面重构/重做
 document_type: 概要设计说明书 + 详细设计（Outline Design + Detailed Design）
 audience: eng/arch lead, WES owner, WMS 集成 lead, code reviewer
 related_specs:
-  - docs/superpowers/specs/2026-06-19-workline-multi-object-state-machine-design.md  (子设计)
-  - docs/superpowers/specs/2026-06-23-workline-c0-resource-projection-foundation.md  (C0 子基础)
+  - docs/superpowers/archive/specs/2026-06-19-workline-multi-object-state-machine-design.md  (历史子设计)
+  - docs/superpowers/archive/specs/2026-06-23-workline-c0-resource-projection-foundation.md  (历史 C0 子基础)
   - docs/architecture/runtime-orchestration-spec.md  (Runtime/Orchestration 域最小骨架 SPEC)
 detail_docs:
   - 关键决策（ADR）：docs/architecture/adr/workline-restructuring/

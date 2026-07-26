@@ -159,4 +159,4 @@ ARCHITECTURE_PHASE=phase1 ./scripts/architecture-guardrails.sh --phase phase1
 - [`./reviews/phase2-coverage-baseline-2026-06-28.md`](./reviews/phase2-coverage-baseline-2026-06-28.md) P0-003 baseline 87%
 - `~/.gstack/projects/kaizhoumasha-wes_backend/develop-autoplan-restore-20260628-121500.md` Final Approval Gate 决议
 - `docs/architecture/legacy-cleanup-matrix.csv` 814 rows
-- `docs/superpowers/specs/2026-06-26-workline-restructuring-phase-1-spec.md` Phase 1 SPEC,引用 §3.5.1 + §7.5
+- `docs/superpowers/archive/specs/2026-06-26-workline-restructuring-phase-1-spec.md` Phase 1 SPEC,引用 §3.5.1 + §7.5

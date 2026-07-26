@@ -6,7 +6,7 @@ date: 2026-06-26
 deciders: architect lead, security engineer
 phase: Phase 1 Foundation (AP1 prerequisite for CEO-013)
 related:
-  - ../../superpowers/specs/2026-06-26-workline-restructuring-phase-1-spec.md
+  - ../../superpowers/archive/specs/2026-06-26-workline-restructuring-phase-1-spec.md
   - ../../contracts/external-contract-profile.md
   - ../../../architecture/workline-and-plugin-restructuring.md (主计划 §5.1 + §3.5.1)
 supersedes: null

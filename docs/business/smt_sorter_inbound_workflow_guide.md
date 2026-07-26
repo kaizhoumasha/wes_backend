@@ -25,8 +25,8 @@ v0.7.0.0 已完成 SMT 分拣入库后端 handoff/manifest P0 闭环，范围是
 
 详细合同与验收记录见：
 
-- `docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md`
-- `docs/superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md`
+- `docs/superpowers/archive/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md`
+- `docs/superpowers/archive/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md`
 
 ## 1. 文档定位
 

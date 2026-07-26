@@ -89,7 +89,7 @@
 
 **Cons:** 需要扩展 `RuntimeInboxQueryPort`、RuntimeHold repository 和 WorkLineRepository，触及 HIGH 风险 RuntimeInbox 查询路径，必须先完成 GitNexus impact analysis。
 
-**Context:** `docs/superpowers/plans/2026-07-15-workline-active-inventory-foundation.md` 将逐条查询策略的安全上限固定为 100，并设置 60 秒总超时。触发后应设计按 WorkLine 分组的 bulk count/sample 查询，让单条与批量 API 共享状态常量和测试矩阵；禁止 inventory repository 直接复制 RuntimeInbox/Outbox 等状态集合，也禁止仅通过配置调大上限。
+**Context:** `docs/superpowers/archive/plans/2026-07-15-workline-active-inventory-foundation.md` 将逐条查询策略的安全上限固定为 100，并设置 60 秒总超时。触发后应设计按 WorkLine 分组的 bulk count/sample 查询，让单条与批量 API 共享状态常量和测试矩阵；禁止 inventory repository 直接复制 RuntimeInbox/Outbox 等状态集合，也禁止仅通过配置调大上限。
 
 **Effort:** L (human: ~3-5 days / CC: ~6-10 hours)
 
@@ -202,7 +202,7 @@
 
 **Why:** `/runtime/monitor` 现场态势图需要显示执行证据，但 WES 不是 WMS 库存事实源。没有结构化契约时，前端只能从 `context_json`、`payload_json`、`event_payload` 猜测资源含义，容易把插件专用 JSON 推断误展示成库存真相。
 
-**Context:** `docs/superpowers/specs/2026-06-05-runtime-workline-scene-monitor-design.md` 工程评审最初接受为后续项；2026-06-08 前端 eng review 后，用户选择本 PR 直接落地逐项 `RuntimeResourceEvidenceItem[]`，不再推迟到 P3。v1 仍明确禁止前端 raw JSON resource badge inference。
+**Context:** `docs/superpowers/archive/specs/2026-06-05-runtime-workline-scene-monitor-design.md` 工程评审最初接受为后续项；2026-06-08 前端 eng review 后，用户选择本 PR 直接落地逐项 `RuntimeResourceEvidenceItem[]`，不再推迟到 P3。v1 仍明确禁止前端 raw JSON resource badge inference。
 
 **Scope:**
 - 定义资源证据字段的来源、命名、生命周期和权限边界
@@ -226,7 +226,7 @@
 
 **Why:** 当前 caller contract 通过 fake caller 保护 timeout/5xx/circuit-open 的处理边界；仍需要真实业务调用方验证 evidence_key 传播、RuntimeHold 或诊断创建、用户可见错误和恢复路径。
 
-**Context:** `docs/superpowers/plans/2026-05-26-wms-integration-domain.md` 的 Deferred / TODO Decisions 已接受该后续项，`docs/integration/wms_caller_checklist.md` 是接入检查清单。
+**Context:** `docs/superpowers/archive/plans/2026-05-26-wms-integration-domain.md` 的 Deferred / TODO Decisions 已接受该后续项，`docs/integration/wms_caller_checklist.md` 是接入检查清单。
 
 **Scope:**
 - 选定首个真实 WMS 同步查询或写入场景
@@ -245,7 +245,7 @@
 
 ### Runtime reconciliation 系统级处理
 
-**What:** 按 `docs/superpowers/plans/2026-05-08-workline-timeout-system-handling.md` 实现系统级 runtime reconciliation，移除插件 `on_timeout()` 默认 failure 路径。
+**What:** 按 `docs/superpowers/archive/plans/2026-05-08-workline-timeout-system-handling.md` 实现系统级 runtime reconciliation，移除插件 `on_timeout()` 默认 failure 路径。
 
 **Why:** execution Callback timeout 和 dispatch ACK exhausted 都是物理状态未知/通信接受状态未知，不能由插件默认 failure 处理，也不能自动重发物理命令。
 

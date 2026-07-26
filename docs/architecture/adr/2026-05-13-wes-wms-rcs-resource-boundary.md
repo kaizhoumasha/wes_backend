@@ -6,7 +6,7 @@ Accepted - 2026-05-13
 
 ## 背景
 
-`docs/superpowers/specs/2026-05-13-smt-execution-resource-model-design.md` 要求 WES 建立运行时资源事实层，用于追踪 WorkLine、Device、Rack、Bin、Material、Location 和 ExchangeTask 的执行证据。
+`docs/superpowers/archive/specs/2026-05-13-smt-execution-resource-model-design.md` 要求 WES 建立运行时资源事实层，用于追踪 WorkLine、Device、Rack、Bin、Material、Location 和 ExchangeTask 的执行证据。
 
 现有 `docs/architecture/SRS.md` 同时存在两个口径：
 
