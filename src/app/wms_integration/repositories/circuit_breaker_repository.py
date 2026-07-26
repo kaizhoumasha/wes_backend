@@ -2,29 +2,16 @@
 
 from __future__ import annotations
 
-from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import Select, select, text
 
 from src.app.wms_integration.models import WmsCircuitBreakerState
 from src.database.base_repository import BaseRepository
+from src.database.dialect import dialect_name
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-
-def _dialect_name(db: Any) -> str | None:
-    get_bind = getattr(db, "get_bind", None)
-    bind = get_bind() if callable(get_bind) else getattr(db, "bind", None)
-    if isawaitable(bind):
-        close = getattr(bind, "close", None)
-        if callable(close):
-            _ = close()
-        return None
-    dialect = getattr(bind, "dialect", None)
-    name = getattr(dialect, "name", None)
-    return name if isinstance(name, str) else None
 
 
 class WmsCircuitBreakerRepository(BaseRepository[WmsCircuitBreakerState]):
@@ -55,7 +42,7 @@ class WmsCircuitBreakerRepository(BaseRepository[WmsCircuitBreakerState]):
         PostgreSQL 下锁住“状态行可能尚不存在”的并发创建窗口；SQLite 单测环境跳过。
         """
 
-        if _dialect_name(db) != "postgresql":
+        if dialect_name(db) != "postgresql":
             return
         _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),

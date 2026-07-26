@@ -186,8 +186,8 @@ class WorklinePluginIndexBuilder:
             for route, handler_identity, facts_model_identity in source.handler_identities:
                 if route not in definition.routes:
                     raise ValueError(f"handler registration route is not declared: {route}")
-                self._require_identity(handler_identity, field_name="handler identity")
-                self._require_identity(facts_model_identity, field_name="facts model identity")
+                _ = self._require_identity(handler_identity, field_name="handler identity")
+                _ = self._require_identity(facts_model_identity, field_name="facts model identity")
 
         identities = tuple(self._identity_key(item.definition) for item in ordered)
         digest = workline_plugin_index_digest((item.definition, item.handler_identities) for item in ordered)
@@ -241,8 +241,8 @@ class WorklinePluginIndexBuilder:
         rack_positions: dict[str, frozenset[str]] = {}
         for position in schema.rack_positions:
             code = cls._require_identity(position.code, field_name="rack position code")
-            cls._require_identity(position.role, field_name="rack position role")
-            cls._require_identity(position.station_code, field_name="rack position station_code")
+            _ = cls._require_identity(position.role, field_name="rack position role")
+            _ = cls._require_identity(position.station_code, field_name="rack position station_code")
             if code in rack_positions:
                 raise ValueError(f"duplicate rack position: {code}")
             carrier = position.carrier_capability
@@ -285,7 +285,7 @@ class WorklinePluginIndexBuilder:
         for edge in schema.topology.flow_edges:
             validate_node(edge.from_node)
             validate_node(edge.to_node)
-            cls._require_identity(edge.type, field_name="topology edge type")
+            _ = cls._require_identity(edge.type, field_name="topology edge type")
 
         event_names: set[str] = set()
         for event in schema.events:
@@ -330,7 +330,7 @@ class WorklinePluginIndexBuilder:
                 "snapshot_kind",
                 "lease_scope",
             ):
-                cls._require_identity(getattr(boundary, field_name), field_name=f"resource boundary {field_name}")
+                _ = cls._require_identity(getattr(boundary, field_name), field_name=f"resource boundary {field_name}")
             if boundary.rack_position_code not in rack_positions:
                 raise ValueError(f"unknown resource boundary rack position: {boundary.rack_position_code}")
             if boundary.rack_kind not in rack_positions[boundary.rack_position_code]:
@@ -460,7 +460,7 @@ class WorklinePluginIndexBuilder:
                     reason.contract_version,
                 ) != (definition.plugin_key, definition.contract_version):
                     raise ValueError("plugin NG reason identity does not match Definition")
-            build_ng_reason_catalog(reasons)
+            _ = build_ng_reason_catalog(reasons)
 
     @staticmethod
     def _identity_key(definition: WorklinePluginDefinition) -> tuple[str, str]:

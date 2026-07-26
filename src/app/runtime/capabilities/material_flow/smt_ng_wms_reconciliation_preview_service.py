@@ -11,6 +11,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from src.app.runtime.capabilities.material_flow.smt_ng_wms_reconciliation_policy import (
+    ALL_EFFECT_SCOPES,
+    RELEASED_EFFECT_SCOPES_BY_ALLOWED_SCOPE,
+    conflict_state,
+    external_reference,
+    reason_code,
+    reconciliation_action,
+)
 from src.utils.value_normalization import coerce_string_value
 
 if TYPE_CHECKING:
@@ -18,22 +26,6 @@ if TYPE_CHECKING:
 
 
 LOCAL_PREVIEW_ENVIRONMENT = "LOCAL_MOCK_ONLY"
-ALL_EFFECT_SCOPES = ["OBJECT", "WORKLINE", "QUEUE", "DEVICE", "RESOURCE"]
-RELEASED_EFFECT_SCOPES_BY_ALLOWED_SCOPE = {
-    "OBJECT_ONLY": ["OBJECT"],
-    "QUEUE_ONLY": ["QUEUE"],
-    "DEVICE_ONLY": ["DEVICE"],
-    "RESOURCE_ONLY": ["RESOURCE"],
-    "WORKLINE": ["WORKLINE"],
-}
-RECONCILING_REASON_BY_SCENARIO = {
-    "NG_EVIDENCE": "NG_EVIDENCE_LOCAL_STATE_MISMATCH",
-    "MISSING_LOCAL_PHYSICAL_FACT": "MISSING_LOCAL_PHYSICAL_FACT",
-    "WMS_REJECT": "WMS_REJECTED_LOCAL_FACT",
-    "TARGET_BIN_WRITEBACK_FAILED": "TARGET_BIN_WRITEBACK_FAILED",
-    "OUT_OF_ORDER_CALLBACK": "OUT_OF_ORDER_CALLBACK",
-    "SOURCE_VERSION_DRIFT": "SOURCE_VERSION_DRIFT",
-}
 
 
 class SmtNgWmsReconciliationPreviewService:
@@ -43,9 +35,8 @@ class SmtNgWmsReconciliationPreviewService:
         """预览 WMS/NG 对账快照，不推进任何生产写路径。"""
 
         scenario = coerce_string_value(payload.get("scenario") or "OK").upper()
-        conflict_state = self._conflict_state(scenario)
-        requires_runtime_hold = conflict_state == "RECONCILING"
-        reason_code = self._reason_code(scenario, conflict_state)
+        state = conflict_state(scenario)
+        requires_runtime_hold = state == "RECONCILING"
         return {
             **_preview_boundary(),
             "scenario": scenario,
@@ -53,12 +44,12 @@ class SmtNgWmsReconciliationPreviewService:
             "object_key": payload.get("object_key", ""),
             "source_event_id": payload.get("source_event_id", ""),
             "source_version": payload.get("source_version", "mock-wms.v1"),
-            "external_reference": _external_reference(payload),
-            "conflict_state": conflict_state,
-            "reason_code": reason_code,
+            "external_reference": external_reference(payload),
+            "conflict_state": state,
+            "reason_code": reason_code(scenario, state),
             "requires_runtime_hold": requires_runtime_hold,
             "allowed_next_effect_scope": "OBJECT_ONLY",
-            "reconciliation_action": self._reconciliation_action(conflict_state),
+            "reconciliation_action": reconciliation_action(state),
             "preserve_local_physical_fact": scenario in {"WMS_REJECT", "TARGET_BIN_WRITEBACK_FAILED"},
             "disallow_workline_wide_release": requires_runtime_hold,
         }
@@ -83,44 +74,12 @@ class SmtNgWmsReconciliationPreviewService:
             "disallow_workline_wide_release": "WORKLINE" in blocked_effect_scopes,
         }
 
-    def _conflict_state(self, scenario: str) -> str:
-        if scenario == "DUPLICATE_CALLBACK":
-            return "IDEMPOTENT_DUPLICATE"
-        if scenario == "OK":
-            return "OK"
-        return "RECONCILING"
-
-    def _reason_code(self, scenario: str, conflict_state: str) -> str | None:
-        if conflict_state == "OK":
-            return None
-        if conflict_state == "IDEMPOTENT_DUPLICATE":
-            return "DUPLICATE_CALLBACK_SAME_HASH"
-        return RECONCILING_REASON_BY_SCENARIO.get(scenario, "RECONCILIATION_REQUIRED")
-
-    def _reconciliation_action(self, conflict_state: str) -> str:
-        if conflict_state == "IDEMPOTENT_DUPLICATE":
-            return "MERGE_EVIDENCE_ONLY"
-        if conflict_state == "RECONCILING":
-            return "CREATE_RUNTIME_HOLD"
-        return "NONE"
-
 
 def _preview_boundary() -> dict[str, Any]:
     return {
         "environment": LOCAL_PREVIEW_ENVIRONMENT,
         "production_write_path": False,
         "legacy_plugin_entry_used": False,
-    }
-
-
-def _external_reference(payload: Mapping[str, Any]) -> dict[str, str] | None:
-    reference_type = coerce_string_value(payload.get("external_reference_type"))
-    reference_value = coerce_string_value(payload.get("external_reference_value"))
-    if not reference_type and not reference_value:
-        return None
-    return {
-        "type": reference_type,
-        "value": reference_value,
     }
 
 

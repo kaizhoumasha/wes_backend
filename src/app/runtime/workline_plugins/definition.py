@@ -48,8 +48,8 @@ class WorklinePluginDefinition:
     input_evidence_parser: Any | None = None
 
     def __post_init__(self) -> None:
-        validate_key_version(self.plugin_key, field_name="plugin_key")
-        validate_key_version(self.contract_version, field_name="contract_version")
+        _ = validate_key_version(self.plugin_key, field_name="plugin_key")
+        _ = validate_key_version(self.contract_version, field_name="contract_version")
         for field_name in ("config_model", "state_model"):
             model = getattr(self, field_name)
             if not inspect.isclass(model) or not issubclass(model, BaseModel):
@@ -65,12 +65,12 @@ class WorklinePluginDefinition:
         ):
             hook = getattr(self, field_name)
             if hook is not None:
-                _callable_identity(hook)
+                _ = _callable_identity(hook)
 
         if len(set(self.routes)) != len(self.routes):
             raise ValueError("routes must be unique")
         for route in self.routes:
-            validate_key_version(route, field_name="route")
+            _ = validate_key_version(route, field_name="route")
         routes = stable_sort(self.routes)
 
         capabilities: list[tuple[str, str]] = []
@@ -89,7 +89,7 @@ class WorklinePluginDefinition:
                 raise ValueError(f"parser route is not declared: {route}")
             if not callable(parser):
                 raise TypeError(f"parser must be callable: {route}")
-            _callable_identity(parser)
+            _ = _callable_identity(parser)
         object.__setattr__(self, "routes", routes)
         object.__setattr__(self, "allowed_capabilities", stable_sort(capabilities))
         object.__setattr__(self, "parsers", MappingProxyType(dict(sorted(self.parsers.items()))))

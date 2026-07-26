@@ -35,7 +35,7 @@ from src.app.callback.services.callback_log_service import callback_log_service
 from src.app.callback.services.callback_orchestration_service import callback_orchestration_service
 from src.app.callback.utils import JsonDict, resolve_first_str
 from src.app.contracts.external_contract_profile import ExternalContractProfile
-from src.app.device.models import parse_device_capabilities
+from src.app.device.models import DeviceCapabilityProfile, parse_device_capabilities
 from src.app.device.models.command import (
     _FORBIDDEN_PARAM_KEYS,
     CommandCallbackResult,
@@ -429,15 +429,6 @@ def _require_first_str(payload: JsonDict, aliases: tuple[str, ...], field_name: 
     if value:
         return value
     raise ValueError(f"{field_name} is required")
-
-
-def _require_payload_value(payload: JsonDict, field_name: str) -> object:
-    value = payload.get(field_name)
-    if value is None:
-        raise ValueError(f"{field_name} is required")
-    if isinstance(value, str) and not value.strip():
-        raise ValueError(f"{field_name} is required")
-    return value
 
 
 def _validate_top_level_fields(payload: JsonDict, allowed_fields: frozenset[str], callback_type: str) -> None:
@@ -1346,23 +1337,44 @@ async def _handle_device_context_failure(
     )
 
 
-async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返回，便于 failure_stage 精确归因
+@dataclass(frozen=True, slots=True)
+class _ResultCallbackEnvelope:
+    """已通过 result 最小包络与 provider 校验的数据。"""
+
+    callback_data: JsonDict
+    device_code: str
+    command_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ResultCallbackContext:
+    """已绑定权威 command、device、workline 的 result 上下文。"""
+
+    envelope: _ResultCallbackEnvelope
+    existing_command: Any
+    resolved_trace_id: str | None
+    device: Any
+    workline: Any
+    resolved_contract_version: Any
+    capabilities: DeviceCapabilityProfile
+
+
+async def _admit_result_callback_envelope(
     request: Request,
     db: AsyncSessionDep,
     *,
     request_id: str | None,
     start_time: float,
-    enqueue_processing: Callable[[], None],
-) -> CallbackResultIngressResponse:
+) -> tuple[_ResultCallbackEnvelope | None, CallbackResultIngressResponse | None]:
+    """读取并校验 result callback 的最小包络。"""
     callback_data: JsonDict = {}
-
     try:
         callback_data = await _read_request_json(request)
     except HTTPException:
         raise
     except Exception as exc:
         logger.error(f"指令结果回调解析失败: {exc}")
-        return await _handle_result_validation_failure(
+        return None, await _handle_result_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -1393,7 +1405,7 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             payload=callback_data,
             command_code=_resolve_payload_command_code(callback_data),
         )
-        return await _handle_result_validation_failure(
+        return None, await _handle_result_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -1413,7 +1425,7 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
         )
     except PermissionError as exc:
         logger.error(f"指令结果回调 provider profile admission 失败: {exc}")
-        return await _handle_result_validation_failure(
+        return None, await _handle_result_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -1422,17 +1434,33 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
         )
+    return _ResultCallbackEnvelope(callback_data, device_code, command_code), None
 
-    logger.info(f"收到指令结果回调: {command_code} (request_id={request_id})")
 
-    existing_command = await device_command_service.get_command_by_code(db, command_code)
+def _command_matches_callback_device(command: Any, device: Any) -> bool:
+    command_device_id = _resolve_command_device_id(command)
+    callback_device_id = resolve_entity_id(device)
+    return command_device_id is not None and callback_device_id is not None and command_device_id == callback_device_id
+
+
+async def _resolve_result_callback_context(
+    request: Request,
+    db: AsyncSessionDep,
+    *,
+    envelope: _ResultCallbackEnvelope,
+    request_id: str | None,
+    start_time: float,
+) -> tuple[_ResultCallbackContext | None, CallbackResultIngressResponse | None]:
+    """绑定 result callback 的权威 command、device 与能力配置。"""
+    callback_data = envelope.callback_data
+    existing_command = await device_command_service.get_command_by_code(db, envelope.command_code)
     if existing_command is None:
-        message = f"未找到指令: {command_code}"
+        message = f"未找到指令: {envelope.command_code}"
         await _log_callback_outcome(
             db,
             request,
             callback_type="result",
-            subject_code=device_code,
+            subject_code=envelope.device_code,
             request_body=callback_data,
             request_id=request_id,
             trace_id=_resolve_callback_trace_id(callback_data),
@@ -1447,10 +1475,9 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             ingress_outcome=_INGRESS_OUTCOME_REJECTED,
             failure_stage=_FAILURE_STAGE_COMMAND_LOOKUP,
         )
-        return cast("CallbackResultIngressResponse", _build_not_found_fail(message))
+        return None, cast("CallbackResultIngressResponse", _build_not_found_fail(message))
 
-    command_trace_id = getattr(existing_command, "trace_id", None)
-    resolved_trace_id = _resolve_callback_trace_id(callback_data) or command_trace_id
+    resolved_trace_id = _resolve_callback_trace_id(callback_data) or getattr(existing_command, "trace_id", None)
     _emit_callback_normalize_observability(
         callback_data,
         {"callback_type": "result", "trace_id": resolved_trace_id},
@@ -1458,15 +1485,15 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
     )
 
     # 使用 DeviceContextService 验证设备和工作线上下文
-    ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
+    ctx_result, ctx_error = await device_context_service.resolve(db, envelope.device_code)
     if ctx_error:
-        return cast(
+        return None, cast(
             "CallbackResultIngressResponse",
             await _handle_device_context_failure(
                 db,
                 request,
                 callback_type="result",
-                subject_code=device_code,
+                subject_code=envelope.device_code,
                 request_body=callback_data,
                 request_id=request_id,
                 response_time_ms=_response_time_ms(start_time),
@@ -1482,12 +1509,12 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
     # 安全保证：上面已检查 ctx_error 并提前返回
     device = ctx_result.device  # type: ignore[union-attr]
     workline = ctx_result.workline  # type: ignore[union-attr]
-    _resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
-
-    command_device_id = _resolve_command_device_id(existing_command)
-    callback_device_id = resolve_entity_id(device)
-    if command_device_id is None or callback_device_id is None or command_device_id != callback_device_id:
-        message = f"结果回调设备与指令归属不匹配: command_code={command_code}, callback_device_code={device_code}"
+    resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
+    if not _command_matches_callback_device(existing_command, device):
+        message = (
+            f"结果回调设备与指令归属不匹配: "
+            f"command_code={envelope.command_code}, callback_device_code={envelope.device_code}"
+        )
         await _record_callback_diagnostic(
             db,
             error_code=ErrorCode.CONTRACT_MISMATCH,
@@ -1497,12 +1524,12 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             payload=callback_data,
             device=device,
             workline=workline,
-            command_code=command_code,
+            command_code=envelope.command_code,
             trace_id=resolved_trace_id,
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
         )
-        return await _handle_result_validation_failure(
+        return None, await _handle_result_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -1529,12 +1556,12 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             payload=callback_data,
             device=device,
             workline=workline,
-            command_code=command_code,
+            command_code=envelope.command_code,
             trace_id=resolved_trace_id,
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
         )
-        return await _handle_result_validation_failure(
+        return None, await _handle_result_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -1547,77 +1574,148 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             causation_id=_resolve_callback_causation_id(callback_data),
         )
 
-    try:
-        # 从已有 command 获取 contract_version（覆盖设备上下文）
-        command_contract_version = getattr(existing_command, "contract_version", None)
-        if isinstance(command_contract_version, str) and command_contract_version:
-            _resolved_contract_version = command_contract_version
+    command_contract_version = getattr(existing_command, "contract_version", None)
+    if isinstance(command_contract_version, str) and command_contract_version:
+        resolved_contract_version = command_contract_version
+    return (
+        _ResultCallbackContext(
+            envelope=envelope,
+            existing_command=existing_command,
+            resolved_trace_id=resolved_trace_id,
+            device=device,
+            workline=workline,
+            resolved_contract_version=resolved_contract_version,
+            capabilities=capabilities,
+        ),
+        None,
+    )
 
+
+async def _validate_result_callback_contract(
+    request: Request,
+    db: AsyncSessionDep,
+    *,
+    context: _ResultCallbackContext,
+    callback: CommandCallbackResult,
+    request_id: str | None,
+    start_time: float,
+) -> CallbackResultIngressResponse | None:
+    """校验 result data 的 H4 边界与设备 callback capability。"""
+    callback_data = context.envelope.callback_data
+    forbidden_hits = _collect_forbidden_param_keys(callback.data)
+    if forbidden_hits:
+        forbidden_paths = [path for path, _ in forbidden_hits]
+        message = f"指令结果回调 data 包含禁止字段: {', '.join(forbidden_paths)}"
+        logger.error(f"{message} (command_code={callback.command_code})")
+        await _record_callback_diagnostic(
+            db,
+            error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+            message=message,
+            request_id=request_id,
+            callback_type="result",
+            payload=callback_data,
+            device=context.device,
+            workline=context.workline,
+            command_code=callback.command_code,
+            trace_id=context.resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+        )
+        return await _handle_result_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=message,
+            response_time_ms=_response_time_ms(start_time),
+            failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+            reason_code=_CALLBACK_DATA_FORBIDDEN_FIELD_REASON_CODE,
+            diagnostic={"forbidden_paths": forbidden_paths},
+            trace_id=context.resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+        )
+    if context.capabilities.allows_result_callback():
+        return None
+    message = f"设备 {context.envelope.device_code} 未声明支持结果回调"
+    await _record_callback_diagnostic(
+        db,
+        error_code=ErrorCode.CONFIG_INVALID,
+        message=message,
+        request_id=request_id,
+        callback_type="result",
+        payload=callback_data,
+        device=context.device,
+        workline=context.workline,
+        command_code=callback.command_code,
+        trace_id=context.resolved_trace_id,
+        event_id=_resolve_callback_event_id(callback_data),
+        causation_id=_resolve_callback_causation_id(callback_data),
+    )
+    return await _handle_result_validation_failure(
+        db,
+        request,
+        request_id=request_id,
+        callback_data=callback_data,
+        message=message,
+        response_time_ms=_response_time_ms(start_time),
+        failure_stage=_FAILURE_STAGE_CAPABILITY_VALIDATE,
+        trace_id=context.resolved_trace_id,
+        event_id=_resolve_callback_event_id(callback_data),
+        causation_id=_resolve_callback_causation_id(callback_data),
+    )
+
+
+async def handle_callback_result(
+    request: Request,
+    db: AsyncSessionDep,
+    *,
+    request_id: str | None,
+    start_time: float,
+    enqueue_processing: Callable[[], None],
+) -> CallbackResultIngressResponse:
+    envelope, rejection = await _admit_result_callback_envelope(
+        request,
+        db,
+        request_id=request_id,
+        start_time=start_time,
+    )
+    if rejection is not None:
+        return rejection
+    admitted_envelope = cast("_ResultCallbackEnvelope", envelope)
+    callback_data = admitted_envelope.callback_data
+    device_code = admitted_envelope.device_code
+    command_code = admitted_envelope.command_code
+
+    logger.info(f"收到指令结果回调: {command_code} (request_id={request_id})")
+
+    callback_context, rejection = await _resolve_result_callback_context(
+        request,
+        db,
+        envelope=admitted_envelope,
+        request_id=request_id,
+        start_time=start_time,
+    )
+    if rejection is not None:
+        return rejection
+    admitted_context = cast("_ResultCallbackContext", callback_context)
+    existing_command = admitted_context.existing_command
+    resolved_trace_id = admitted_context.resolved_trace_id
+    _resolved_contract_version = admitted_context.resolved_contract_version
+
+    try:
         # 直接用原始 payload 验证（Pydantic 自动处理别名）
         callback = CommandCallbackResult.model_validate(callback_data)
-        # H4 子层守卫: callback.data 禁止包含 plc_address / coordinate 等
-        # 直连设备控制字段, 与 CommandBase.params 入站校验保持一致。
-        forbidden_hits = _collect_forbidden_param_keys(callback.data)
-        if forbidden_hits:
-            forbidden_paths = [path for path, _ in forbidden_hits]
-            message = f"指令结果回调 data 包含禁止字段: {', '.join(forbidden_paths)}"
-            logger.error(f"{message} (command_code={callback.command_code})")
-            await _record_callback_diagnostic(
-                db,
-                error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
-                message=message,
-                request_id=request_id,
-                callback_type="result",
-                payload=callback_data,
-                device=device,
-                workline=workline,
-                command_code=callback.command_code,
-                trace_id=resolved_trace_id,
-                event_id=_resolve_callback_event_id(callback_data),
-                causation_id=_resolve_callback_causation_id(callback_data),
-            )
-            return await _handle_result_validation_failure(
-                db,
-                request,
-                request_id=request_id,
-                callback_data=callback_data,
-                message=message,
-                response_time_ms=_response_time_ms(start_time),
-                failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
-                reason_code=_CALLBACK_DATA_FORBIDDEN_FIELD_REASON_CODE,
-                diagnostic={"forbidden_paths": forbidden_paths},
-                trace_id=resolved_trace_id,
-                event_id=_resolve_callback_event_id(callback_data),
-                causation_id=_resolve_callback_causation_id(callback_data),
-            )
-        if not capabilities.allows_result_callback():
-            message = f"设备 {device_code} 未声明支持结果回调"
-            await _record_callback_diagnostic(
-                db,
-                error_code=ErrorCode.CONFIG_INVALID,
-                message=message,
-                request_id=request_id,
-                callback_type="result",
-                payload=callback_data,
-                device=device,
-                workline=workline,
-                command_code=callback.command_code,
-                trace_id=resolved_trace_id,
-                event_id=_resolve_callback_event_id(callback_data),
-                causation_id=_resolve_callback_causation_id(callback_data),
-            )
-            return await _handle_result_validation_failure(
-                db,
-                request,
-                request_id=request_id,
-                callback_data=callback_data,
-                message=message,
-                response_time_ms=_response_time_ms(start_time),
-                failure_stage=_FAILURE_STAGE_CAPABILITY_VALIDATE,
-                trace_id=resolved_trace_id,
-                event_id=_resolve_callback_event_id(callback_data),
-                causation_id=_resolve_callback_causation_id(callback_data),
-            )
+        contract_rejection = await _validate_result_callback_contract(
+            request,
+            db,
+            context=admitted_context,
+            callback=callback,
+            request_id=request_id,
+            start_time=start_time,
+        )
+        if contract_rejection is not None:
+            return contract_rejection
         outcome = await callback_orchestration_service.process_result(
             db,
             callback=callback,
@@ -1805,23 +1903,34 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
         raise
 
 
-async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返回，便于 failure_stage 精确归因
+@dataclass(frozen=True, slots=True)
+class _EventCallbackContext:
+    """已通过入口校验并绑定设备上下文的 canonical event。"""
+
+    event_data: JsonDict
+    event_request: CallbackEventRequest
+    device_context: Any
+    device: Any
+    workline: Any
+    canonical_event_type: str
+
+
+async def _admit_event_callback(
     request: Request,
     db: AsyncSessionDep,
     *,
     request_id: str | None,
     start_time: float,
-    enqueue_processing: Callable[[], None],
-) -> CallbackEventIngressDecision:
+) -> tuple[_EventCallbackContext | None, CallbackEventIngressDecision | None]:
+    """完成 event 的包络、H4、设备上下文、canonical 与 provider 校验。"""
     event_data: JsonDict = {}
-
     try:
         event_data = await _read_request_json(request)
     except HTTPException:
         raise
     except Exception as exc:
         logger.error(f"设备事件上报解析失败: {exc}")
-        return CallbackEventIngressDecision(
+        return None, CallbackEventIngressDecision(
             body=await _handle_event_validation_failure(
                 db,
                 request,
@@ -1856,7 +1965,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             callback_type="event",
             payload=event_data,
         )
-        return CallbackEventIngressDecision(
+        return None, CallbackEventIngressDecision(
             body=await _handle_event_validation_failure(
                 db,
                 request,
@@ -1886,7 +1995,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             callback_type="event",
             payload=event_data,
         )
-        return CallbackEventIngressDecision(
+        return None, CallbackEventIngressDecision(
             body=await _handle_event_validation_failure(
                 db,
                 request,
@@ -1904,8 +2013,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
     # 设备/工作线上下文和能力校验属于“是否可路由入站”的入口职责。
     ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
     if ctx_error:
-        response_status = _resolve_ctx_error_response_status(ctx_error)
-        return CallbackEventIngressDecision(
+        return None, CallbackEventIngressDecision(
             body=cast(
                 "CallbackEventIngressResponse",
                 await _handle_device_context_failure(
@@ -1920,7 +2028,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
                     audit_title="设备事件上报",
                 ),
             ),
-            http_status=response_status,
+            http_status=_resolve_ctx_error_response_status(ctx_error),
         )
     # ctx_error 为 None 时，ctx_result 必有值（类型检查器无法理解 tuple 解包后的关联）
     device = ctx_result.device  # type: ignore[union-attr]
@@ -1938,6 +2046,50 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             callback_type="event",
             payload=event_data,
         )
+        return None, CallbackEventIngressDecision(
+            body=await _handle_event_validation_failure(
+                db,
+                request,
+                request_id=request_id,
+                event_data=event_data,
+                message=f"事件上报契约校验失败: {exc}",
+                response_time_ms=_response_time_ms(start_time),
+                failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+            )
+        )
+
+    return (
+        _EventCallbackContext(
+            event_data=event_data,
+            event_request=normalized_event_request,
+            device_context=ctx_result,
+            device=device,
+            workline=workline,
+            canonical_event_type=canonical_event_type,
+        ),
+        None,
+    )
+
+
+async def _admit_event_route(
+    request: Request,
+    db: AsyncSessionDep,
+    *,
+    context: _EventCallbackContext,
+    request_id: str | None,
+    start_time: float,
+) -> CallbackEventIngressDecision | None:
+    """处理 start、平台保留事件与 production capability admission。"""
+    event_data = context.event_data
+    device_code = context.event_request.device_code
+    try:
+        callback_provider_profile_admission_service.admit(
+            provider_code="ECS",
+            callback_type=context.event_request.event_type,
+            direction="event",
+        )
+    except PermissionError as exc:
+        logger.error(f"设备事件上报 provider profile admission 失败: {exc}")
         return CallbackEventIngressDecision(
             body=await _handle_event_validation_failure(
                 db,
@@ -1950,143 +2102,160 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             )
         )
 
-    try:
-        try:
-            callback_provider_profile_admission_service.admit(
-                provider_code="ECS",
-                callback_type=normalized_event_request.event_type,
-                direction="event",
-            )
-        except PermissionError as exc:
-            logger.error(f"设备事件上报 provider profile admission 失败: {exc}")
-            return CallbackEventIngressDecision(
-                body=await _handle_event_validation_failure(
-                    db,
-                    request,
-                    request_id=request_id,
-                    event_data=event_data,
-                    message=f"事件上报契约校验失败: {exc}",
-                    response_time_ms=_response_time_ms(start_time),
-                    failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
-                )
-            )
+    if context.event_request.event_type == "WORKLINE_START_REQUESTED":
+        return await _handle_event_start_admission(
+            db,
+            request,
+            request_id=request_id,
+            event_data=event_data,
+            device_code=device_code,
+            start_time=start_time,
+        )
 
-        if normalized_event_request.event_type == "WORKLINE_START_REQUESTED":
-            return await _handle_event_start_admission(
+    if is_platform_control_event(context.canonical_event_type):
+        message = f"事件上报契约校验失败: {context.canonical_event_type} 是平台保留控制事件，不能作为事件映射目标"
+        logger.error(message)
+        await _record_callback_diagnostic(
+            db,
+            error_code=ErrorCode.CONFIG_INVALID,
+            message=message,
+            request_id=request_id,
+            callback_type="event",
+            payload=event_data,
+            device=context.device,
+            workline=context.workline,
+            canonical_event_type=context.canonical_event_type,
+        )
+        return CallbackEventIngressDecision(
+            body=await _handle_event_validation_failure(
                 db,
                 request,
                 request_id=request_id,
                 event_data=event_data,
-                device_code=device_code,
-                start_time=start_time,
-            )
-
-        if is_platform_control_event(canonical_event_type):
-            message = f"事件上报契约校验失败: {canonical_event_type} 是平台保留控制事件，不能作为事件映射目标"
-            logger.error(message)
-            await _record_callback_diagnostic(
-                db,
-                error_code=ErrorCode.CONFIG_INVALID,
                 message=message,
+                response_time_ms=_response_time_ms(start_time),
+                failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+            )
+        )
+
+    if not is_production_event(context.canonical_event_type):
+        return None
+    workline_id = getattr(context.workline, "id", None)
+    if not isinstance(workline_id, int):
+        workline_id = getattr(context.device_context, "work_line_id", None)
+    runtime_snapshot = (
+        await workline_runtime_status_projection_service.runtime_status_snapshot(db, workline_id=workline_id)
+        if isinstance(workline_id, int)
+        else WorkLineRuntimeStatusSnapshot(
+            runtime_status=None,
+            source="runtime/orchestration:missing-workline-id",
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+            active_safety_incident_id=None,
+        )
+    )
+    runtime_status = _optional_enum_str(runtime_snapshot.runtime_status)
+    if not _is_workline_accepting_production_events(runtime_snapshot):
+        return await _handle_event_workline_guard_rejection(
+            db,
+            request,
+            request_id=request_id,
+            event_data=event_data,
+            device_code=device_code,
+            runtime_status=runtime_status or "UNKNOWN",
+            response_time_ms=_response_time_ms(start_time),
+        )
+
+    try:
+        capabilities = parse_device_capabilities(getattr(context.device, "capabilities_json", None))
+    except (TypeError, ValidationError, ValueError) as exc:
+        message = f"设备能力配置无效: {exc}"
+        logger.error(f"设备事件上报能力配置校验失败: {exc}")
+        await _record_callback_diagnostic(
+            db,
+            error_code=ErrorCode.CONFIG_INVALID,
+            message=message,
+            request_id=request_id,
+            callback_type="event",
+            payload=event_data,
+            device=context.device,
+            workline=context.workline,
+            canonical_event_type=context.canonical_event_type,
+        )
+        return CallbackEventIngressDecision(
+            body=await _handle_event_validation_failure(
+                db,
+                request,
                 request_id=request_id,
-                callback_type="event",
-                payload=event_data,
-                device=device,
-                workline=workline,
-                canonical_event_type=canonical_event_type,
+                event_data=event_data,
+                message=message,
+                response_time_ms=_response_time_ms(start_time),
+                failure_stage=_FAILURE_STAGE_CONFIG_VALIDATE,
             )
-            return CallbackEventIngressDecision(
-                body=await _handle_event_validation_failure(
-                    db,
-                    request,
-                    request_id=request_id,
-                    event_data=event_data,
-                    message=message,
-                    response_time_ms=_response_time_ms(start_time),
-                    failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
-                )
-            )
+        )
 
-        if is_production_event(canonical_event_type):
-            workline_id = getattr(workline, "id", None)
-            if not isinstance(workline_id, int):
-                workline_id = getattr(ctx_result, "work_line_id", None)
-            runtime_snapshot = (
-                await workline_runtime_status_projection_service.runtime_status_snapshot(db, workline_id=workline_id)
-                if isinstance(workline_id, int)
-                else WorkLineRuntimeStatusSnapshot(
-                    runtime_status=None,
-                    source="runtime/orchestration:missing-workline-id",
-                    stopped_at=None,
-                    stopped_reason=None,
-                    resumed_at=None,
-                    active_safety_incident_id=None,
-                )
-            )
-            runtime_status = _optional_enum_str(runtime_snapshot.runtime_status)
-            if not _is_workline_accepting_production_events(runtime_snapshot):
-                return await _handle_event_workline_guard_rejection(
-                    db,
-                    request,
-                    request_id=request_id,
-                    event_data=event_data,
-                    device_code=device_code,
-                    runtime_status=runtime_status or "UNKNOWN",
-                    response_time_ms=_response_time_ms(start_time),
-                )
+    if capabilities.supports_event(context.canonical_event_type):
+        return None
+    message = f"设备 {device_code} 未声明支持事件: {context.canonical_event_type}"
+    await _record_callback_diagnostic(
+        db,
+        error_code=ErrorCode.CONFIG_INVALID,
+        message=message,
+        request_id=request_id,
+        callback_type="event",
+        payload=event_data,
+        device=context.device,
+        workline=context.workline,
+        canonical_event_type=context.canonical_event_type,
+    )
+    return CallbackEventIngressDecision(
+        body=await _handle_event_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            event_data=event_data,
+            message=message,
+            response_time_ms=_response_time_ms(start_time),
+            failure_stage=_FAILURE_STAGE_CAPABILITY_VALIDATE,
+        )
+    )
 
-            try:
-                capabilities = parse_device_capabilities(getattr(device, "capabilities_json", None))
-            except (TypeError, ValidationError, ValueError) as exc:
-                message = f"设备能力配置无效: {exc}"
-                logger.error(f"设备事件上报能力配置校验失败: {exc}")
-                await _record_callback_diagnostic(
-                    db,
-                    error_code=ErrorCode.CONFIG_INVALID,
-                    message=message,
-                    request_id=request_id,
-                    callback_type="event",
-                    payload=event_data,
-                    device=device,
-                    workline=workline,
-                    canonical_event_type=canonical_event_type,
-                )
-                return CallbackEventIngressDecision(
-                    body=await _handle_event_validation_failure(
-                        db,
-                        request,
-                        request_id=request_id,
-                        event_data=event_data,
-                        message=message,
-                        response_time_ms=_response_time_ms(start_time),
-                        failure_stage=_FAILURE_STAGE_CONFIG_VALIDATE,
-                    )
-                )
 
-            if not capabilities.supports_event(canonical_event_type):
-                message = f"设备 {device_code} 未声明支持事件: {canonical_event_type}"
-                await _record_callback_diagnostic(
-                    db,
-                    error_code=ErrorCode.CONFIG_INVALID,
-                    message=message,
-                    request_id=request_id,
-                    callback_type="event",
-                    payload=event_data,
-                    device=device,
-                    workline=workline,
-                    canonical_event_type=canonical_event_type,
-                )
-                return CallbackEventIngressDecision(
-                    body=await _handle_event_validation_failure(
-                        db,
-                        request,
-                        request_id=request_id,
-                        event_data=event_data,
-                        message=message,
-                        response_time_ms=_response_time_ms(start_time),
-                        failure_stage=_FAILURE_STAGE_CAPABILITY_VALIDATE,
-                    )
-                )
+async def handle_callback_event(
+    request: Request,
+    db: AsyncSessionDep,
+    *,
+    request_id: str | None,
+    start_time: float,
+    enqueue_processing: Callable[[], None],
+) -> CallbackEventIngressDecision:
+    event_context, rejection = await _admit_event_callback(
+        request,
+        db,
+        request_id=request_id,
+        start_time=start_time,
+    )
+    if rejection is not None:
+        return rejection
+    admitted_context = cast("_EventCallbackContext", event_context)
+    event_data = admitted_context.event_data
+    normalized_event_request = admitted_context.event_request
+    ctx_result = admitted_context.device_context
+    device = admitted_context.device
+    canonical_event_type = admitted_context.canonical_event_type
+    device_code = normalized_event_request.device_code
+
+    try:
+        route_rejection = await _admit_event_route(
+            request,
+            db,
+            context=admitted_context,
+            request_id=request_id,
+            start_time=start_time,
+        )
+        if route_rejection is not None:
+            return route_rejection
 
         # ctx_error 为 None 时，ctx_result 必有值
         is_workline_event = ctx_result.is_workline_bound  # type: ignore[union-attr]
@@ -2218,24 +2387,31 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
         raise
 
 
-async def handle_callback_external(
+@dataclass(frozen=True, slots=True)
+class _ExternalCallbackAdmission:
+    """已通过 external callback 入口校验的标准化上下文。"""
+
+    callback_data: JsonDict
+    callback_type: str
+    trace_id: str | None
+
+
+async def _admit_external_callback(
     request: Request,
     db: AsyncSessionDep,
     *,
     request_id: str | None,
     start_time: float,
-    enqueue_processing: Callable[[], None],
-) -> CallbackExternalIngressResponse:
+) -> tuple[_ExternalCallbackAdmission | None, CallbackExternalIngressResponse | None]:
+    """完成读取、标准化、provider 和 H4 边界校验。"""
     callback_data: JsonDict = {}
-    callback_type = "UNKNOWN"
-
     try:
         callback_data = await _read_request_json(request)
     except HTTPException:
         raise
     except Exception as exc:
         logger.error(f"外部回调解析失败: {exc}")
-        return await _handle_external_validation_failure(
+        return None, await _handle_external_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -2254,7 +2430,7 @@ async def handle_callback_external(
             str(field_name) for field_name in callback_data if field_name not in _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS
         )
         logger.error(f"外部回调 H4 边界违规: {exc}")
-        return await _handle_external_validation_failure(
+        return None, await _handle_external_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -2272,7 +2448,7 @@ async def handle_callback_external(
         external_trace_id = cast("str | None", normalized_payload["trace_id"])
     except ValueError as exc:
         logger.error(f"外部回调最小包络校验失败: {exc}")
-        return await _handle_external_validation_failure(
+        return None, await _handle_external_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -2291,7 +2467,7 @@ async def handle_callback_external(
         _emit_callback_normalize_observability(callback_data, normalized_payload, request_id=request_id)
     except PermissionError as exc:
         logger.error(f"外部回调 provider profile admission 失败: {exc}")
-        return await _handle_external_validation_failure(
+        return None, await _handle_external_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -2308,7 +2484,7 @@ async def handle_callback_external(
         forbidden_paths = [path for path, _ in external_forbidden_hits]
         message = f"外部回调 data 包含禁止字段: {', '.join(forbidden_paths)}"
         logger.error(f"{message} (callback_type={callback_type})")
-        return await _handle_external_validation_failure(
+        return None, await _handle_external_validation_failure(
             db,
             request,
             request_id=request_id,
@@ -2319,6 +2495,37 @@ async def handle_callback_external(
             reason_code=_CALLBACK_DATA_FORBIDDEN_FIELD_REASON_CODE,
             diagnostic={"forbidden_paths": forbidden_paths},
         )
+
+    return (
+        _ExternalCallbackAdmission(
+            callback_data=callback_data,
+            callback_type=callback_type,
+            trace_id=external_trace_id,
+        ),
+        None,
+    )
+
+
+async def handle_callback_external(
+    request: Request,
+    db: AsyncSessionDep,
+    *,
+    request_id: str | None,
+    start_time: float,
+    enqueue_processing: Callable[[], None],
+) -> CallbackExternalIngressResponse:
+    admission, rejection = await _admit_external_callback(
+        request,
+        db,
+        request_id=request_id,
+        start_time=start_time,
+    )
+    if rejection is not None:
+        return rejection
+    admitted = cast("_ExternalCallbackAdmission", admission)
+    callback_data = admitted.callback_data
+    callback_type = admitted.callback_type
+    external_trace_id = admitted.trace_id
 
     logger.info(f"收到外部系统回调: {callback_type} (request_id={request_id})")
 

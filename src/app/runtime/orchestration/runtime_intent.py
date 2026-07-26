@@ -645,9 +645,9 @@ class RuntimeIntent(BaseModel):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"SYSTEM_CAPABILITY intent requires {field_name}")
-        validate_key_version(str(self.capability_key), field_name="capability_key")
-        validate_key_version(str(self.contract_version), field_name="contract_version")
-        validate_system_capability_operation_key(self.operation_key)
+        _ = validate_key_version(str(self.capability_key), field_name="capability_key")
+        _ = validate_key_version(str(self.contract_version), field_name="contract_version")
+        _ = validate_system_capability_operation_key(self.operation_key)
         if not self.payload_json:
             raise ValueError("SYSTEM_CAPABILITY intent requires typed payload")
         if self.payload_hash != sha256_digest(self.payload_json):

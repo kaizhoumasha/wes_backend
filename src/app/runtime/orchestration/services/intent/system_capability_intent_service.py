@@ -103,7 +103,7 @@ class SystemCapabilityIntentService:
             raise ValueError("SYSTEM_CAPABILITY intent requires EFFECT definition")
         if not isinstance(intent.dispatch_key, str) or not intent.dispatch_key:
             raise ValueError("SYSTEM_CAPABILITY effect requires explicit dispatch_key")
-        validate_system_capability_operation_key(intent.operation_key)
+        _ = validate_system_capability_operation_key(intent.operation_key)
         execution_identity = self._validate_execution_identity(ctx, intent, definition=definition)
         if intent.payload_hash != sha256_digest(intent.payload_json):
             raise ValueError("SYSTEM_CAPABILITY payload_hash mismatch")

@@ -65,8 +65,6 @@ def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
     if definition is None:
         return frozenset({"SCAN_COMPLETED"})
     events = definition.schema.events
-    if events is None:
-        return frozenset({"SCAN_COMPLETED"})
     return frozenset(
         event_type
         for event in events

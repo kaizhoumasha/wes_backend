@@ -153,7 +153,7 @@ class MaterialUnitMutationService:
             expected = fact_version
         elif isinstance(fact_version, str):
             suffix = fact_version.rsplit(":", 1)[-1]
-            version_text = suffix[1:] if suffix.startswith("v") else suffix
+            version_text = suffix.removeprefix("v")
             expected = int(version_text) if version_text.isdigit() else None
         else:
             expected = None

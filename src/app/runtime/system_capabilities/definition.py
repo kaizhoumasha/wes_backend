@@ -81,10 +81,10 @@ class SystemCapabilityDefinition:
     admission_model: type[BaseModel] = SystemCapabilityEffectAdmission
 
     def __post_init__(self) -> None:
-        validate_key_version(self.capability_key, field_name="capability_key")
-        validate_key_version(self.contract_version, field_name="contract_version")
-        validate_key_version(self.admission, field_name="admission")
-        validate_key_version(self.audit_policy, field_name="audit_policy")
+        _ = validate_key_version(self.capability_key, field_name="capability_key")
+        _ = validate_key_version(self.contract_version, field_name="contract_version")
+        _ = validate_key_version(self.admission, field_name="admission")
+        _ = validate_key_version(self.audit_policy, field_name="audit_policy")
         object.__setattr__(self, "mode", SystemCapabilityMode(self.mode))
         object.__setattr__(self, "completion_mode", EffectCompletionMode(self.completion_mode))
         for field_name in ("input_model", "output_model", "admission_model"):
@@ -93,7 +93,7 @@ class SystemCapabilityDefinition:
                 raise TypeError(f"{field_name} must be a Pydantic model class")
         if not (inspect.isclass(self.handler_factory) or inspect.isroutine(self.handler_factory)):
             raise TypeError("handler_factory must be a class or function, not a handler instance")
-        _stable_callable_identity(self.handler_factory, field_name="handler_factory")
+        _ = _stable_callable_identity(self.handler_factory, field_name="handler_factory")
         if isinstance(self.timeout_seconds, bool) or not isinstance(self.timeout_seconds, Real):
             raise TypeError("timeout_seconds must be a finite positive real number")
         timeout_seconds = float(self.timeout_seconds)

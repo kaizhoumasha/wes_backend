@@ -20,7 +20,6 @@ Session 归属解析器
 """
 
 import uuid
-from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from sqlalchemy import text
@@ -43,6 +42,7 @@ from src.app.workline.domain.run_mode import normalize_run_mode
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import ensure_dict, non_empty_str
 from src.core.logger import logger
+from src.database.dialect import dialect_name
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -121,23 +121,10 @@ def _resolve_plugin_business_key(
         raise SessionResolveError(f"Plugin business_key resolver failed: {exc}") from exc
 
 
-def _dialect_name(db: Any) -> str | None:
-    get_bind = getattr(db, "get_bind", None)
-    bind = get_bind() if callable(get_bind) else getattr(db, "bind", None)
-    if isawaitable(bind):
-        close = getattr(bind, "close", None)
-        if callable(close):
-            _ = close()
-        return None
-    dialect = getattr(bind, "dialect", None)
-    name = getattr(dialect, "name", None)
-    return name if isinstance(name, str) else None
-
-
 async def _lock_device_event_business_keys(db: Any, *, workline_id: int, business_keys: set[str]) -> None:
     """按实际 64-bit advisory resource 顺序锁定业务键的查找与创建窗口。"""
 
-    if _dialect_name(db) != "postgresql" or not business_keys:
+    if dialect_name(db) != "postgresql" or not business_keys:
         return
 
     lock_keys = [f"workline-session:{workline_id}:{business_key}" for business_key in sorted(business_keys)]
@@ -286,6 +273,13 @@ def _resolve_workline_contract_version(workline: "WorkLine | None") -> str | Non
     return contract_version if isinstance(contract_version, str) and contract_version else None
 
 
+def _binding_runtime_identity(binding: Any, workline: "WorkLine") -> tuple[Any, Any]:
+    """优先使用已解析 binding 的运行时 identity，缺失时回退工作线快照。"""
+    if binding is not None:
+        return getattr(binding, "plugin_key", None), getattr(binding, "contract_version", None)
+    return getattr(workline, "plugin_key", None), getattr(workline, "contract_version", None)
+
+
 class SessionResolver:
     """Session 归属解析器
 
@@ -380,6 +374,134 @@ class SessionResolver:
             return await self._resolve_by_session_id(db, inbox, session_id=session_id)
         raise ValueError(f"Unsupported RuntimeInbox kind: {kind}")
 
+    async def _reuse_existing_device_event_session(
+        self,
+        db: AsyncSession,
+        inbox: Any,
+        *,
+        workline_id: int,
+        business_key: str,
+        trace: TraceContext,
+        observed_at: Any,
+    ) -> WorklineSession | None:
+        """探测并在 advisory lock 内复查、复用既有业务周期。"""
+        existing_session = await self._find_existing_device_event_session(
+            db,
+            inbox,
+            workline_id=workline_id,
+            business_key=business_key,
+            trace=trace,
+            observed_at=observed_at,
+            apply_ingress_metadata=False,
+        )
+        if existing_session is None:
+            return None
+
+        locked_business_keys = {business_key}
+        persisted_business_key = non_empty_str(getattr(existing_session, "business_key", None))
+        if persisted_business_key is not None:
+            locked_business_keys.add(persisted_business_key)
+        await _lock_device_event_business_keys(
+            db,
+            workline_id=workline_id,
+            business_keys=locked_business_keys,
+        )
+        locked_existing_session = await self._find_existing_device_event_session(
+            db,
+            inbox,
+            workline_id=workline_id,
+            business_key=business_key,
+            trace=trace,
+            observed_at=observed_at,
+        )
+        if locked_existing_session is None:
+            raise SessionResolveError("Session ownership changed while acquiring business key lock")
+        locked_session_business_key = non_empty_str(getattr(locked_existing_session, "business_key", None))
+        if locked_session_business_key is not None and locked_session_business_key not in locked_business_keys:
+            raise SessionResolveError("Session business key changed outside the acquired advisory lock set")
+        await self._backfill_platform_execution_anchor(db, inbox=inbox, session=locked_existing_session)
+        return locked_existing_session
+
+    async def _pin_new_device_event_execution_anchor(
+        self,
+        db: AsyncSession,
+        *,
+        inbox: Any,
+        workline: "WorkLine",
+        session: WorklineSession,
+        binding: Any,
+    ) -> None:
+        """创建平台 Session 后校验并写回同事务 execution/correlation 锚点。"""
+        execution_anchor = await self.plugin_binding_service.pin_new_runtime_session(
+            db,
+            workline=workline,
+            session=session,
+            binding=binding,
+        )
+        if execution_anchor is None:
+            return
+        execution_session, work_item = execution_anchor
+        execution_session_id = getattr(execution_session, "id", None)
+        correlation_id = getattr(work_item, "correlation_id", None)
+        if not isinstance(execution_session_id, int) or not isinstance(correlation_id, str) or not correlation_id:
+            raise RuntimeError("新平台 Session 缺少持久化执行锚点")
+        # Stage 3 只信任 Inbox 上的 execution/correlation 锚点；必须与聚合创建处于同一事务。
+        inbox.execution_session_id = execution_session_id
+        inbox.correlation_id = correlation_id
+
+    async def _resolve_locked_active_binding(
+        self,
+        db: AsyncSession,
+        *,
+        workline: "WorkLine",
+        candidate_binding: Any,
+    ) -> Any:
+        """复用仍与锁后 active pin 一致的候选 binding，否则重新解析。"""
+        if candidate_binding is not None and getattr(candidate_binding, "id", None) == getattr(
+            workline,
+            "active_plugin_binding_id",
+            None,
+        ):
+            return candidate_binding
+        return await self.plugin_binding_service.resolve_new_session_binding(db, workline=workline)
+
+    async def _reuse_locked_device_event_session(
+        self,
+        db: AsyncSession,
+        inbox: Any,
+        *,
+        workline_id: int,
+        candidate_business_key: str,
+        active_business_key: str,
+        trace: TraceContext,
+        observed_at: Any,
+    ) -> WorklineSession | None:
+        """在候选键与 active plugin 键均已加锁后复查并复用既有 Session。"""
+        if active_business_key != candidate_business_key:
+            existing_session = await self._find_existing_device_event_session(
+                db,
+                inbox,
+                workline_id=workline_id,
+                business_key=candidate_business_key,
+                trace=trace,
+                observed_at=observed_at,
+            )
+            if existing_session is not None:
+                await self._backfill_platform_execution_anchor(db, inbox=inbox, session=existing_session)
+                return existing_session
+
+        existing_session = await self._find_existing_device_event_session(
+            db,
+            inbox,
+            workline_id=workline_id,
+            business_key=active_business_key,
+            trace=trace,
+            observed_at=observed_at,
+        )
+        if existing_session is not None:
+            await self._backfill_platform_execution_anchor(db, inbox=inbox, session=existing_session)
+        return existing_session
+
     async def _resolve_device_event(
         self,
         db: AsyncSession,
@@ -410,15 +532,9 @@ class SessionResolver:
             business_key = _resolve_business_key(payload_json, plugin_key=None)
         except SessionResolveError:
             candidate_binding = await self.plugin_binding_service.resolve_new_session_binding(db, workline=workline)
-            candidate_plugin_key = (
-                getattr(candidate_binding, "plugin_key", None)
-                if candidate_binding is not None
-                else getattr(workline, "plugin_key", None)
-            )
-            candidate_contract_version = (
-                getattr(candidate_binding, "contract_version", None)
-                if candidate_binding is not None
-                else getattr(workline, "contract_version", None)
+            candidate_plugin_key, candidate_contract_version = _binding_runtime_identity(
+                candidate_binding,
+                workline,
             )
             business_key = _resolve_business_key(
                 payload_json,
@@ -430,40 +546,16 @@ class SessionResolver:
 
         # 先无副作用探测历史业务周期；命中后只锁该历史键并在锁内复查，
         # 从而保留“不读取当前 binding”的历史 pin 快路径。
-        existing_session = await self._find_existing_device_event_session(
+        existing_session = await self._reuse_existing_device_event_session(
             db,
             inbox,
             workline_id=workline_id,
             business_key=business_key,
             trace=trace,
             observed_at=now,
-            apply_ingress_metadata=False,
         )
         if existing_session is not None:
-            locked_business_keys = {business_key}
-            persisted_business_key = non_empty_str(getattr(existing_session, "business_key", None))
-            if persisted_business_key is not None:
-                locked_business_keys.add(persisted_business_key)
-            await _lock_device_event_business_keys(
-                db,
-                workline_id=workline_id,
-                business_keys=locked_business_keys,
-            )
-            locked_existing_session = await self._find_existing_device_event_session(
-                db,
-                inbox,
-                workline_id=workline_id,
-                business_key=business_key,
-                trace=trace,
-                observed_at=now,
-            )
-            if locked_existing_session is None:
-                raise SessionResolveError("Session ownership changed while acquiring business key lock")
-            locked_session_business_key = non_empty_str(getattr(locked_existing_session, "business_key", None))
-            if locked_session_business_key is not None and locked_session_business_key not in locked_business_keys:
-                raise SessionResolveError("Session business key changed outside the acquired advisory lock set")
-            await self._backfill_platform_execution_anchor(db, inbox=inbox, session=locked_existing_session)
-            return locked_existing_session
+            return existing_session
 
         # 只有确认需要创建新 Session 后才获取 WorkLine pin 共享锁。
         # 同一 WorkLine 的不同业务键可并行；activation/cutover 排他锁
@@ -477,22 +569,12 @@ class SessionResolver:
             from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 
             raise WorkLineSafetyBlocked(f"WorkLine 已停用，不再接收新工作: workline_id={workline_id}")
-        active_binding = (
-            candidate_binding
-            if candidate_binding is not None
-            and getattr(candidate_binding, "id", None) == getattr(workline, "active_plugin_binding_id", None)
-            else await self.plugin_binding_service.resolve_new_session_binding(db, workline=workline)
+        active_binding = await self._resolve_locked_active_binding(
+            db,
+            workline=workline,
+            candidate_binding=candidate_binding,
         )
-        runtime_plugin_key = (
-            getattr(active_binding, "plugin_key", None)
-            if active_binding is not None
-            else getattr(workline, "plugin_key", None)
-        )
-        runtime_contract_version = (
-            getattr(active_binding, "contract_version", None)
-            if active_binding is not None
-            else getattr(workline, "contract_version", None)
-        )
+        runtime_plugin_key, runtime_contract_version = _binding_runtime_identity(active_binding, workline)
         current_business_key = _resolve_business_key(
             payload_json,
             plugin_key=runtime_plugin_key,
@@ -506,30 +588,18 @@ class SessionResolver:
             workline_id=workline_id,
             business_keys={business_key, current_business_key},
         )
-        if current_business_key != business_key:
-            existing_session = await self._find_existing_device_event_session(
-                db,
-                inbox,
-                workline_id=workline_id,
-                business_key=business_key,
-                trace=trace,
-                observed_at=now,
-            )
-            if existing_session is not None:
-                await self._backfill_platform_execution_anchor(db, inbox=inbox, session=existing_session)
-                return existing_session
-        business_key = current_business_key
-        existing_session = await self._find_existing_device_event_session(
+        existing_session = await self._reuse_locked_device_event_session(
             db,
             inbox,
             workline_id=workline_id,
-            business_key=business_key,
+            candidate_business_key=business_key,
+            active_business_key=current_business_key,
             trace=trace,
             observed_at=now,
         )
         if existing_session is not None:
-            await self._backfill_platform_execution_anchor(db, inbox=inbox, session=existing_session)
             return existing_session
+        business_key = current_business_key
 
         # 创建新 Session
         session_code = f"SES_{uuid.uuid4().hex[:16]}"
@@ -568,21 +638,13 @@ class SessionResolver:
         if new_session is None:
             raise RuntimeError("Failed to create session for DEVICE_EVENT")
 
-        execution_anchor = await self.plugin_binding_service.pin_new_runtime_session(
+        await self._pin_new_device_event_execution_anchor(
             db,
+            inbox=inbox,
             workline=workline,
             session=new_session,
             binding=active_binding,
         )
-        if execution_anchor is not None:
-            execution_session, work_item = execution_anchor
-            execution_session_id = getattr(execution_session, "id", None)
-            correlation_id = getattr(work_item, "correlation_id", None)
-            if not isinstance(execution_session_id, int) or not isinstance(correlation_id, str) or not correlation_id:
-                raise RuntimeError("新平台 Session 缺少持久化执行锚点")
-            # Stage 3 只信任 Inbox 上的 execution/correlation 锚点；必须与聚合创建处于同一事务。
-            inbox.execution_session_id = execution_session_id
-            inbox.correlation_id = correlation_id
 
         return new_session
 

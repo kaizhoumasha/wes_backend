@@ -120,7 +120,7 @@ class RuntimeOpenTelemetryBridge:
     def close(self) -> None:
         close = getattr(self._exporter, "close", None)
         if callable(close):
-            close()
+            _ = close()
 
 
 class RuntimeQueuedObservabilityObserver:
@@ -192,7 +192,7 @@ class RuntimeQueuedObservabilityObserver:
                 self._queue.task_done()
         close = getattr(self._observer, "close", None)
         if callable(close):
-            close()
+            _ = close()
 
 
 class RuntimeOpenTelemetryHttpExporter:
@@ -247,7 +247,7 @@ class RuntimeOpenTelemetryHttpExporter:
     def close(self) -> None:
         close = getattr(self._post_json, "close", None)
         if callable(close):
-            close()
+            _ = close()
 
 
 class RuntimeObservabilityRegistry:
@@ -366,7 +366,7 @@ class RuntimeObservabilityRegistry:
             self._observers[observer_key] = observer
         close = getattr(previous, "close", None)
         if callable(close):
-            close()
+            _ = close()
 
     def close(self) -> None:
         """停止接收新观测，排空并关闭所有 exporter；registry 可在下一次 lifespan 重新配置。"""
@@ -377,7 +377,7 @@ class RuntimeObservabilityRegistry:
         for observer in observers:
             close = getattr(observer, "close", None)
             if callable(close):
-                close()
+                _ = close()
 
     def emit(self, name: str, attributes: dict[str, object]) -> RuntimeObservabilityEvent:
         """Validate and publish a stable observability event to configured adapters."""

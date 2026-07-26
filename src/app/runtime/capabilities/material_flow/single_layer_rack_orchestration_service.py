@@ -509,7 +509,7 @@ class SingleLayerRackOrchestrationService:
         station = payload.get("station")
         station_payload = dict(station) if isinstance(station, Mapping) else {}
         station_payload.setdefault("position_code", str(operation_payload.get("station_code") or ""))
-        station_payload.setdefault("workline_code", operation_payload.get("workline_code"))
+        _ = station_payload.setdefault("workline_code", operation_payload.get("workline_code"))
         payload["station"] = station_payload
         _ = payload.setdefault("station_code", operation_payload.get("station_code"))
         return payload
