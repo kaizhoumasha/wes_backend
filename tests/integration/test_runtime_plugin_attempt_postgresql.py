@@ -169,7 +169,7 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             ledger = await verify_db.scalar(
                 select(RuntimeIntentLog).where(
                     RuntimeIntentLog.execution_session_id == inbox.execution_session_id,
-                    RuntimeIntentLog.operation_kind == "plugin_intent",
+                    RuntimeIntentLog.operation_kind == "system_capability_effect",
                 )
             )
             timeline_count = await verify_db.scalar(
@@ -181,7 +181,11 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             assert session is not None and session.plugin_state_json == {"step": 2}
             assert timeline_count == 1
             assert ledger is not None
-            assert ledger.idempotency_key == f"plugin-attempt:binding:{snapshot.binding_id}:1:inbox:1:intent:0"
+            assert ledger.idempotency_key == (
+                "system-capability:device.device_command_write@v1:"
+                f"session:{seeded.session_id}:work-item:{ledger.execution_work_item_id}:operation-1"
+            )
+            assert ledger.operation_identity == "operation-1"
             assert ledger.effect_status == "PROPOSED"
             assert ledger.dispatch_key == "device-command:CMD-INTEGRATION-OPERATION-1"
             assert len(ledger.request_hash) == 64
@@ -203,6 +207,7 @@ def test_intent_ledger_failure_rolls_back_decision_state_ledger_and_terminal() -
             result_policy="COMMAND_RESULT",
             action="MOVE",
             idempotency_key="operation-1",
+            dispatch_key="device-command:CMD-INTEGRATION-ROLLBACK",
             payload_json={"target": "A-01"},
         )
         async with session_factory() as db:
