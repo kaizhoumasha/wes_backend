@@ -74,6 +74,16 @@ def _run_fixture(tmp_path: Path, relative_path: str, source: str) -> subprocess.
             "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
         ),
         (
+            "orchestration/runtime_intent_effects.py",
+            "dispatch('material_flow.' + 'smt_' + 'source_pick_command')\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
+            "orchestration/device_command_gateway.py",
+            "def route(): capability = 'material_flow.' + 'smt_source_pick_ledger'; return dispatch(capability)\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
             "consumer.py",
             "from src.app.runtime.capability_catalog import get_workline_capability_definition\n",
             "LEGACY_CAPABILITY_ROUTING_IMPORT",

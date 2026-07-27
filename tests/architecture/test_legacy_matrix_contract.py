@@ -59,10 +59,19 @@ def test_removed_inbox_processor_has_no_inventory_mapping_or_entries():
     assert not any(entry.relative_path == legacy_path for entry in parse_entries())
 
 
-def test_target_only_smt_runtime_anchor_is_not_reverse_mapped_as_legacy() -> None:
+def test_unregistered_target_only_smt_symbols_are_not_reverse_mapped_as_legacy() -> None:
     entries = {entry.entry_id for entry in parse_entries()}
 
-    assert "legacy:src/app/workline/services/smt_inbound_handoff_service.py:_SmtSortingClaimRuntime" not in entries
+    assert set(generate_legacy_matrix.MIGRATED_SERVICE_SYMBOL_PROVENANCE) == set(
+        generate_legacy_matrix.MIGRATED_SERVICE_IMPLS
+    )
+    legacy_prefix = "legacy:src/app/workline/services/smt_inbound_handoff_service.py:"
+    assert generate_legacy_matrix.MIGRATED_SERVICE_SYMBOL_PROVENANCE[
+        "src/app/workline/services/smt_inbound_handoff_service.py"
+    ] == ("SmtInboundHandoffService",)
+    assert legacy_prefix + "_SmtSortingClaimRuntime" not in entries
+    assert legacy_prefix + "SmtInboundHandoffClaimResult" not in entries
+    assert legacy_prefix + "SmtInboundHandoffLedgerResult" not in entries
 
 
 def test_active_inventory_foundation_is_not_legacy_cleanup_scope():

@@ -781,6 +781,13 @@ class SmtInboundHandoffService:
                 reason="claim_target_in_flight",
             )
 
+        # claim 聚合必须先固定一个全链一致的 trace；无外部 trace 时使用确定性 source event，
+        # 禁止 Session、ExecutionCorrelation 与 RuntimeInbox 各自选择不同 fallback。
+        resolved_trace_id = (
+            self._text_or_none(trace_id)
+            or self._text_or_none(locked_demand.trace_id)
+            or self._source_pick_event_id(locked_item)
+        )
         claim_runtime = await self._create_sorting_claim_session(
             db,
             workline=target_workline,
@@ -788,7 +795,7 @@ class SmtInboundHandoffService:
             workline_code=workline_code,
             demand=locked_demand,
             item=locked_item,
-            trace_id=trace_id,
+            trace_id=resolved_trace_id,
             route_evidence=getattr(route, "route_evidence", None),
         )
         inbox = await self._create_source_pick_request_inbox(
@@ -799,7 +806,7 @@ class SmtInboundHandoffService:
             workline_id=workline_id,
             execution_session_id=claim_runtime.execution_session_id,
             correlation_id=claim_runtime.correlation_id,
-            trace_id=trace_id,
+            trace_id=resolved_trace_id,
             route_evidence=getattr(route, "route_evidence", None),
         )
 

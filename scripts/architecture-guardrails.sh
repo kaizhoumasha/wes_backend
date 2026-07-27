@@ -670,6 +670,54 @@ def scan_generic_orchestration(path: Path) -> None:
         normalized = node.value.upper()
         return node.value if any(token in normalized for token in business_literals) else None
 
+    def constant_string(node: ast.AST, aliases: dict[str, str]) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = constant_string(node.left, aliases)
+            right = constant_string(node.right, aliases)
+            return left + right if left is not None and right is not None else None
+        return None
+
+    parent_by_node = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    scopes = [tree, *(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef))]
+    aliases_by_scope: dict[ast.AST, dict[str, str]] = {}
+    for scope in scopes:
+        aliases: dict[str, str] = {}
+        for statement in scope.body:
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+                value = constant_string(statement.value, aliases)
+                if isinstance(target, ast.Name) and value is not None:
+                    aliases[target.id] = value
+            elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                value = constant_string(statement.value, aliases) if statement.value is not None else None
+                if value is not None:
+                    aliases[statement.target.id] = value
+        aliases_by_scope[scope] = aliases
+
+    def aliases_for(node: ast.AST) -> dict[str, str]:
+        current: ast.AST | None = node
+        while current is not None:
+            if current in aliases_by_scope:
+                return aliases_by_scope[current]
+            current = parent_by_node.get(current)
+        return {}
+
+    def capability_keys_in(node: ast.AST) -> set[str]:
+        aliases = aliases_for(node)
+        return {
+            value
+            for candidate in ast.walk(node)
+            if (value := constant_string(candidate, aliases)) in business_capability_keys
+        }
+
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             modules = tuple(imported_modules(path, node))
@@ -683,13 +731,7 @@ def scan_generic_orchestration(path: Path) -> None:
                 )
             continue
         if isinstance(node, (ast.Dict, ast.Call)):
-            capability_keys = {
-                candidate.value
-                for candidate in ast.walk(node)
-                if isinstance(candidate, ast.Constant)
-                and isinstance(candidate.value, str)
-                and candidate.value in business_capability_keys
-            }
+            capability_keys = capability_keys_in(node)
             if capability_keys:
                 emit(
                     "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
@@ -706,13 +748,7 @@ def scan_generic_orchestration(path: Path) -> None:
             for candidate in ast.walk(node)
             if (literal := business_literal(candidate)) is not None
         }
-        literals.update(
-            candidate.value
-            for candidate in ast.walk(node)
-            if isinstance(candidate, ast.Constant)
-            and isinstance(candidate.value, str)
-            and candidate.value in business_capability_keys
-        )
+        literals.update(capability_keys_in(node))
         if literals:
             emit(
                 "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",

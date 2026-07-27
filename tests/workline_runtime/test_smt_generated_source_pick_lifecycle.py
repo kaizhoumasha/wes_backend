@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 from src.app.contracts.external_contract_profile import ExternalContractProfile
-from src.app.device.models.command import CommandCallbackResult, CommandResult, DeviceCommand
+from src.app.device.models.command import CommandCallbackResult, CommandResult, CommandStatus, DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.device.services.device_service import device_service
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
@@ -92,6 +94,8 @@ def _provider_profile() -> ExternalContractProfile:
 
 async def _seed_source_pick(
     db_session: object,
+    *,
+    trace_id: str | None = "trace-generated-source-pick",
 ) -> tuple[WorkLine, Device, SmtInboundHandoffDemand, SmtInboundHandoffSourceItem]:
     profile = _provider_profile()
     config = SmtSortingInboundConfig(provider_profile=profile.identity)
@@ -148,7 +152,7 @@ async def _seed_source_pick(
         rack_release_id="generated-source-pick-release",
         single_layer_rack_code="RACK-GENERATED-1",
         status=SmtInboundHandoffDemandStatus.READY_FOR_SORTING,
-        trace_id="trace-generated-source-pick",
+        trace_id=trace_id,
     )
     db_session.add_all([workline, device, projection, demand])
     await db_session.flush()
@@ -168,8 +172,10 @@ async def _seed_source_pick(
 
 async def _claim_and_process_source_pick(
     db_session: object,
+    *,
+    trace_id: str | None = "trace-generated-source-pick",
 ) -> tuple[SmtInboundHandoffService, SmtInboundHandoffSourceItem, RuntimeInbox, DeviceCommand, SystemOutbox]:
-    workline, _device, demand, source_item = await _seed_source_pick(db_session)
+    workline, _device, demand, source_item = await _seed_source_pick(db_session, trace_id=trace_id)
     service = SmtInboundHandoffService(
         route_service=_SelectedRouteService(workline_id=workline.id, workline_code=workline.line_code)
     )
@@ -204,6 +210,107 @@ async def _claim_and_process_source_pick(
     assert command is not None
     assert outbox is not None
     return service, source_item, source_inbox, command, outbox
+
+
+@pytest.mark.asyncio
+async def test_smt_claim_without_trace_persists_one_canonical_trace_through_callback(
+    db_session: object,
+) -> None:
+    _service, source_item, source_inbox, command, _outbox = await _claim_and_process_source_pick(
+        db_session,
+        trace_id=None,
+    )
+    session = await db_session.get(WorklineSession, source_item.sorting_session_id)
+    correlation = await db_session.scalar(
+        select(ExecutionCorrelation).where(ExecutionCorrelation.correlation_id == source_inbox.correlation_id)
+    )
+    assert session is not None
+    assert correlation is not None
+    assert session.trace_id == source_inbox.event_id
+    assert correlation.trace_id == source_inbox.event_id
+    assert source_inbox.trace_id == source_inbox.event_id
+    assert command.trace_id == source_inbox.event_id
+
+    callback_command_service = DeviceCommandService()
+    callback_command_service.enable_cache = False
+    callback = CommandCallbackResult(
+        command_code=command.command_code,
+        device_code="SMT-SOURCE-ARM-1",
+        result=CommandResult.SUCCESS,
+        finish_time=int(timezone.now_utc().timestamp() * 1000),
+        source_event_id="smt-source-pick-no-trace-callback",
+        trace_id=None,
+    )
+    outcome = await CallbackOrchestrationService(queue_gateway=_NoopQueueGateway()).process_result(
+        db_session,
+        callback=callback,
+        existing_command=command,
+        request_id="request-smt-source-pick-no-trace-callback",
+        resolved_contract_version=DEFINITION.contract_version,
+        command_service=callback_command_service,
+        device_service=device_service,
+        enqueue_processing=lambda: None,
+    )
+    assert outcome.is_duplicate is False
+    callback_inbox = await db_session.scalar(select(RuntimeInbox).where(RuntimeInbox.kind == "COMMAND_RESULT"))
+    assert callback_inbox is not None
+    assert callback_inbox.trace_id == source_inbox.event_id
+    [claim] = await RuntimeInboxService().claim_for_processing(
+        db_session,
+        limit=1,
+        processor_token="lease-smt-source-pick-no-trace-callback",
+        stale_after_seconds=60,
+    )
+    await db_session.commit()
+    processed = await RuntimeInboxProcessorBridge(queue_gateway=_NoopQueueGateway()).process_claimed(
+        db_session,
+        claim=claim,
+    )
+    assert processed["success"] == 1
+    await db_session.refresh(source_item)
+    assert source_item.status == SmtInboundHandoffSourceItemStatus.PICKED
+
+
+@pytest.mark.asyncio
+async def test_smt_claim_without_trace_recovery_advances_completed_command_to_picked(
+    db_session: object,
+) -> None:
+    service, source_item, source_inbox, command, _outbox = await _claim_and_process_source_pick(
+        db_session,
+        trace_id=None,
+    )
+    command.status = CommandStatus.COMPLETED
+    command.result = CommandResult.SUCCESS
+    db_session.add_all([command, source_item])
+    await db_session.commit()
+    await db_session.execute(
+        update(SmtInboundHandoffSourceItem)
+        .where(SmtInboundHandoffSourceItem.id == source_item.id)
+        .values(updated_at=timezone.now_for_db() - timedelta(minutes=10))
+    )
+    await db_session.commit()
+    await db_session.refresh(command)
+    await db_session.refresh(source_item)
+    await db_session.refresh(source_inbox)
+    assert command.status == CommandStatus.COMPLETED
+    assert command.result == CommandResult.SUCCESS
+    assert source_item.source_pick_command_id == command.id
+    assert source_inbox.status == "PROCESSED"
+
+    summary = await service.scan_smt_inbound_handoff_demands_batch(
+        db_session,
+        scan_limit=0,
+        recovery_limit=10,
+        claim_limit=0,
+        stale_after_seconds=0,
+    )
+
+    await db_session.refresh(source_item)
+    assert summary["scanned"] == 1, summary
+    assert summary["advanced"] == 1, summary
+    assert summary["manual_hold"] == 0
+    assert source_item.status == SmtInboundHandoffSourceItemStatus.PICKED
+    assert command.trace_id == source_inbox.event_id
 
 
 @pytest.mark.asyncio
