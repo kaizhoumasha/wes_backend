@@ -101,6 +101,9 @@ class _Repository:
     async def get_source_item_for_update(self, _db: object, _source_item_id: int) -> object:
         raise AssertionError("恢复 helper 已持有 source item，不应重复查询")
 
+    async def source_pick_execution_anchor_matches(self, _db: object, **_kwargs: object) -> bool:
+        return True
+
 
 class _RecoveryService(SmtInboundHandoffService):
     def __init__(self, candidates: list[object]) -> None:

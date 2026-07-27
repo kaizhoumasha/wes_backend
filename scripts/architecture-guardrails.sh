@@ -649,18 +649,46 @@ def scan_generic_orchestration(path: Path) -> None:
     tree = parse(path, "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION")
     if tree is None:
         return
-    business_tokens = ("plugin_key", "event_type", ".action", "BUSINESS_TIMEOUT", "ROUGH_SORTER", "SMT_")
-    source = path.read_text(encoding="utf-8")
+    business_literals = (
+        "SCAN_COMPLETED",
+        "BUSINESS_TIMEOUT",
+        "ROUGH_SORTER",
+        "SMT_SORTING",
+        "SORTING_SOURCE_PICK",
+    )
+    business_imports = ("rough_sorter", "smt_sorting_inbound", "smt_source_pick")
+
+    def business_literal(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            return None
+        normalized = node.value.upper()
+        return node.value if any(token in normalized for token in business_literals) else None
+
     for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = tuple(imported_modules(path, node))
+            if any(token in module.lower() for module in modules for token in business_imports):
+                emit(
+                    "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+                    path,
+                    node.lineno,
+                    "通用 Orchestrator/Effect/Gateway import Workline 专属 Plugin 或 System Capability",
+                    "业务 import 与处理逻辑迁入 Plugin 或 System Capability handler",
+                )
             continue
-        segment = ast.get_source_segment(source, node.test) or ""
-        if any(token in segment for token in business_tokens):
+        if not isinstance(node, (ast.Compare, ast.MatchValue)):
+            continue
+        literals = {
+            literal
+            for candidate in ast.walk(node)
+            if (literal := business_literal(candidate)) is not None
+        }
+        if literals:
             emit(
                 "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
                 path,
                 node.lineno,
-                "Orchestrator/EffectApplier 包含 Workline key/event/action/business-timeout 分支",
+                f"通用 Orchestrator/Effect/Gateway 比较 Workline 业务字面量: {sorted(literals)}",
                 "业务分支迁入 Plugin 或 System Capability handler",
             )
 
@@ -709,8 +737,9 @@ if not FIXTURE_ONLY:
         if path.exists():
             scan_generated_index(path)
     for path in (
-        Path("src/app/runtime/orchestration/orchestrator_bridge.py"),
         Path("src/app/runtime/orchestration/runtime_intent_effects.py"),
+        Path("src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py"),
+        Path("src/app/runtime/orchestration/services/device_command_gateway.py"),
     ):
         if path.exists():
             scan_generic_orchestration(path)
@@ -728,7 +757,7 @@ if FIXTURE_ROOT:
             scan_generated_index(path)
         else:
             scan_capability(path)
-    for name in ("orchestrator_bridge.py", "runtime_intent_effects.py"):
+    for name in ("orchestrator_bridge.py", "runtime_intent_effects.py", "device_command_gateway.py"):
         path = fixture / "orchestration" / name
         if path.exists():
             scan_generic_orchestration(path)

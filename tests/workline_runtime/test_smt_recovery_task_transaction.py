@@ -8,6 +8,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
@@ -21,8 +24,12 @@ from src.celery_app.tasks.workline import _scan_smt_inbound_handoff_demands_in_t
 from src.utils.timezone import timezone
 
 
+@pytest.mark.parametrize("execution_anchor_mismatch", [False, True])
 @pytest.mark.asyncio
-async def test_recovery_task_commit_persists_correlation_and_picked_after_session_exit(db_engine: object) -> None:
+async def test_recovery_task_commit_persists_correlation_and_picked_after_session_exit(
+    db_engine: object,
+    execution_anchor_mismatch: bool,
+) -> None:
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     correlation_id = "workline-session:SMT-TASK-21"
     command_code = "SC-SOURCE-PICK-TASK-31"
@@ -58,9 +65,59 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
         seed_db.add_all([demand, session])
         await seed_db.flush()
 
+        inbox_execution_session = ExecutionSession(
+            workline_id=7,
+            plugin_key=session.plugin_key,
+            manifest_version=session.contract_version,
+            plugin_binding_id=session.plugin_binding_id,
+            plugin_binding_version=session.plugin_binding_version,
+            plugin_config_hash=session.plugin_config_hash,
+            plugin_index_digest=session.plugin_index_digest,
+            state="RUNNING",
+        )
+        seed_db.add(inbox_execution_session)
+        await seed_db.flush()
+        correlation_execution_session = inbox_execution_session
+        if execution_anchor_mismatch:
+            correlation_execution_session = ExecutionSession(
+                workline_id=7,
+                plugin_key=session.plugin_key,
+                manifest_version=session.contract_version,
+                plugin_binding_id=session.plugin_binding_id,
+                plugin_binding_version=session.plugin_binding_version,
+                plugin_config_hash=session.plugin_config_hash,
+                plugin_index_digest=session.plugin_index_digest,
+                state="RUNNING",
+            )
+            seed_db.add(correlation_execution_session)
+            await seed_db.flush()
+        execution_correlation = ExecutionCorrelation(
+            correlation_id=correlation_id,
+            execution_session_id=correlation_execution_session.id,
+            trace_id="trace-task-recovery",
+            source_event_id=request_event_id,
+        )
+        seed_db.add(execution_correlation)
+        await seed_db.flush()
+        execution_work_item = ExecutionWorkItem(
+            execution_session_id=correlation_execution_session.id,
+            correlation_id=correlation_id,
+            plugin_key=session.plugin_key,
+            manifest_version=session.contract_version,
+            plugin_binding_id=session.plugin_binding_id,
+            plugin_binding_version=session.plugin_binding_version,
+            plugin_config_hash=session.plugin_config_hash,
+            plugin_index_digest=session.plugin_index_digest,
+            object_type="bin",
+            object_key="task-source-item",
+            current_step="SORTING_SOURCE_PICK",
+        )
+        seed_db.add(execution_work_item)
+        await seed_db.flush()
+
         inbox = RuntimeInbox(
             workline_session_id=session.id,
-            execution_session_id=61,
+            execution_session_id=inbox_execution_session.id,
             correlation_id=correlation_id,
             kind="INTERNAL_EVENT",
             workline_id=7,
@@ -137,11 +194,17 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             legacy_limit=None,
         )
 
-    assert summary["advanced"] == 1
+    assert summary["advanced"] == (0 if execution_anchor_mismatch else 1)
+    assert summary["manual_hold"] == (1 if execution_anchor_mismatch else 0)
     async with session_factory() as verify_db:
         persisted = await verify_db.get(SmtInboundHandoffSourceItem, source_item_id)
 
     assert persisted is not None
-    assert persisted.source_pick_command_id == command_id
-    assert persisted.source_pick_command_code == command_code
-    assert persisted.status == SmtInboundHandoffSourceItemStatus.PICKED
+    if execution_anchor_mismatch:
+        assert persisted.source_pick_command_id is None
+        assert persisted.source_pick_command_code is None
+        assert persisted.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+    else:
+        assert persisted.source_pick_command_id == command_id
+        assert persisted.source_pick_command_code == command_code
+        assert persisted.status == SmtInboundHandoffSourceItemStatus.PICKED

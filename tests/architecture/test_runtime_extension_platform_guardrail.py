@@ -54,6 +54,16 @@ def _run_fixture(tmp_path: Path, relative_path: str, source: str) -> subprocess.
             "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
         ),
         (
+            "orchestration/device_command_gateway.py",
+            "if task_type == 'SORTING_SOURCE_PICK':\n    pass\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
+            "orchestration/device_command_gateway.py",
+            "from src.app.runtime.system_capabilities.material_flow.smt_source_pick_command import DEFINITION\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
             "consumer.py",
             "from src.app.runtime.capability_catalog import get_workline_capability_definition\n",
             "LEGACY_CAPABILITY_ROUTING_IMPORT",
@@ -345,6 +355,7 @@ def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> 
     routing_sources = (
         REPO_ROOT / "src/app/runtime/orchestration/runtime_intent_effects.py",
         REPO_ROOT / "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py",
+        REPO_ROOT / "src/app/runtime/orchestration/services/device_command_gateway.py",
     )
     forbidden_tokens = (
         "ROUGH_SORTER_PLUGIN_KEY",
@@ -354,6 +365,7 @@ def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> 
         "ACTION_PICK_AND_PUT",
         "ACTION_MOVE_TO_NG",
         "SORTING_SOURCE_PICK_REQUESTED",
+        "SORTING_SOURCE_PICK",
         "handoff_source_item_id",
         "BUSINESS_TIMEOUT",
     )

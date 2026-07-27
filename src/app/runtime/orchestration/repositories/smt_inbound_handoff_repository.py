@@ -11,6 +11,9 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.device.models.command import DeviceCommand
 from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import SMT_SORTING_INBOUND_PLUGIN_KEY
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
@@ -163,6 +166,76 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         """按 ID 读取 source-pick RuntimeInbox evidence。"""
 
         return await self.runtime_inbox_query.get_evidence_by_id(db, inbox_id)
+
+    async def source_pick_execution_anchor_matches(
+        self,
+        db: AsyncSession,
+        *,
+        inbox_id: int,
+        workline_session_id: int,
+        workline_id: int,
+        correlation_id: str,
+        plugin_key: str,
+        contract_version: str,
+        execution_session_id: int | None = None,
+    ) -> bool:
+        """交叉校验 Inbox、ExecutionSession、Correlation 与 WorkItem 的同一执行链。"""
+
+        inbox = await self.runtime_inbox_query.get_projection_by_id(db, inbox_id)
+        if inbox is None or not isinstance(inbox.execution_session_id, int):
+            return False
+        if execution_session_id is not None and inbox.execution_session_id != execution_session_id:
+            return False
+        if (
+            inbox.workline_session_ref != workline_session_id
+            or inbox.workline_id != workline_id
+            or inbox.correlation_id != correlation_id
+        ):
+            return False
+
+        session = await db.get(WorklineSession, workline_session_id)
+        execution_session = await db.get(ExecutionSession, inbox.execution_session_id)
+        correlation = await db.scalar(
+            select(ExecutionCorrelation).where(ExecutionCorrelation.correlation_id == correlation_id)
+        )
+        work_item = await db.scalar(select(ExecutionWorkItem).where(ExecutionWorkItem.correlation_id == correlation_id))
+        if session is None or execution_session is None or correlation is None or work_item is None:
+            return False
+
+        expected_pin = (
+            plugin_key,
+            contract_version,
+            getattr(session, "plugin_binding_id", None),
+            getattr(session, "plugin_binding_version", None),
+            getattr(session, "plugin_config_hash", None),
+            getattr(session, "plugin_index_digest", None),
+        )
+        return (
+            getattr(session, "workline_id", None) == workline_id
+            and (getattr(session, "plugin_key", None), getattr(session, "contract_version", None)) == expected_pin[:2]
+            and getattr(execution_session, "workline_id", None) == workline_id
+            and (
+                getattr(execution_session, "plugin_key", None),
+                getattr(execution_session, "manifest_version", None),
+                getattr(execution_session, "plugin_binding_id", None),
+                getattr(execution_session, "plugin_binding_version", None),
+                getattr(execution_session, "plugin_config_hash", None),
+                getattr(execution_session, "plugin_index_digest", None),
+            )
+            == expected_pin
+            and getattr(correlation, "execution_session_id", None) == inbox.execution_session_id
+            and getattr(work_item, "execution_session_id", None) == inbox.execution_session_id
+            and getattr(work_item, "correlation_id", None) == correlation_id
+            and (
+                getattr(work_item, "plugin_key", None),
+                getattr(work_item, "manifest_version", None),
+                getattr(work_item, "plugin_binding_id", None),
+                getattr(work_item, "plugin_binding_version", None),
+                getattr(work_item, "plugin_config_hash", None),
+                getattr(work_item, "plugin_index_digest", None),
+            )
+            == expected_pin
+        )
 
     async def get_device_command_by_id(
         self,
