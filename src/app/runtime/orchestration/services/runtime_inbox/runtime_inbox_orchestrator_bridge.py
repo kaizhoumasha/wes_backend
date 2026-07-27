@@ -224,7 +224,14 @@ def _command_capability_spec(conversion: _PluginIntentConversion) -> _SystemCapa
     context = conversion.context
     intent = conversion.intent
     target_device_id, target_device_version = _pinned_command_target(context.snapshot, intent)
-    command_code = f"SC-{sha256_digest({'binding': context.snapshot.binding_identity, 'operation': f'inbox:{context.inbox_id}:{conversion.index}:command'})[:32]}"
+    operation_identity = f"inbox:{context.inbox_id}:{conversion.index}:command"
+    command_digest = sha256_digest(
+        {
+            "binding": context.snapshot.binding_identity,
+            "operation": operation_identity,
+        }
+    )
+    command_code = f"SC-{command_digest[:32]}"
     return _SystemCapabilitySpec(
         capability_key="device.device_command_write",
         dispatch_key=f"device-command:{command_code}",

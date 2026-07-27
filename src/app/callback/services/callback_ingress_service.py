@@ -1701,7 +1701,7 @@ async def handle_callback_result(
     admitted_context = cast("_ResultCallbackContext", callback_context)
     existing_command = admitted_context.existing_command
     resolved_trace_id = admitted_context.resolved_trace_id
-    _resolved_contract_version = admitted_context.resolved_contract_version
+    resolved_contract_version = admitted_context.resolved_contract_version
 
     try:
         # 直接用原始 payload 验证（Pydantic 自动处理别名）
@@ -1721,7 +1721,7 @@ async def handle_callback_result(
             callback=callback,
             existing_command=existing_command,
             request_id=request_id,
-            resolved_contract_version=_resolved_contract_version,
+            resolved_contract_version=resolved_contract_version,
             trace_id=resolved_trace_id,
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
