@@ -438,8 +438,6 @@ class SessionResolver:
             session=session,
             binding=binding,
         )
-        if execution_anchor is None:
-            return
         execution_session, work_item = execution_anchor
         execution_session_id = getattr(execution_session, "id", None)
         correlation_id = getattr(work_item, "correlation_id", None)
@@ -610,6 +608,11 @@ class SessionResolver:
             "session_code": session_code,
             "workline_id": workline_id,
             "plugin_key": runtime_plugin_key,
+            "contract_version": active_binding.contract_version,
+            "plugin_binding_id": active_binding.id,
+            "plugin_binding_version": active_binding.binding_version,
+            "plugin_config_hash": active_binding.typed_config_hash,
+            "plugin_index_digest": active_binding.generated_index_digest,
             "run_mode": RunMode(normalize_run_mode(getattr(workline, "run_mode", None))),
             "business_key": business_key,
             "barcode": resolve_payload_display_identity(payload_json),
@@ -625,14 +628,6 @@ class SessionResolver:
             },
             "started_at": now,
         }
-
-        contract_version = (
-            getattr(active_binding, "contract_version", None)
-            if active_binding is not None
-            else _resolve_workline_contract_version(workline)
-        )
-        if contract_version:
-            session_data["contract_version"] = contract_version
 
         new_session = await self.session_repo.create(db, session_data)
         if new_session is None:

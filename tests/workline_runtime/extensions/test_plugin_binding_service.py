@@ -572,6 +572,133 @@ def test_runtime_models_pin_same_binding_identity_and_json_state() -> None:
     assert "plugin_state_json" in ExecutionSession.model_fields
 
 
+def _complete_runtime_binding_payload(model_name: str) -> dict[str, object]:
+    common = {
+        "plugin_key": "rough_sorter",
+        "plugin_binding_id": 8,
+        "plugin_binding_version": 2,
+        "plugin_config_hash": "a" * 64,
+        "plugin_index_digest": "b" * 64,
+    }
+    if model_name == "WorklineSession":
+        return {
+            **common,
+            "session_code": "SESSION-BINDING-REQUIRED",
+            "workline_id": 7,
+            "contract_version": "rough_sorter.v2",
+        }
+    if model_name == "ExecutionSession":
+        return {
+            **common,
+            "workline_id": 7,
+            "manifest_version": "rough_sorter.v2",
+        }
+    return {
+        **common,
+        "execution_session_id": 31,
+        "correlation_id": "workline-session:SESSION-BINDING-REQUIRED",
+        "manifest_version": "rough_sorter.v2",
+        "object_type": "session",
+        "object_key": "PKG-1",
+        "current_step": "INGRESS",
+    }
+
+
+@pytest.mark.parametrize(
+    ("model_name", "version_field"),
+    [
+        ("WorklineSession", "contract_version"),
+        ("ExecutionSession", "manifest_version"),
+        ("ExecutionWorkItem", "manifest_version"),
+    ],
+)
+def test_runtime_binding_fields_are_required_non_nullable_database_columns(
+    model_name: str,
+    version_field: str,
+) -> None:
+    from src.app.runtime.orchestration.execution_session import ExecutionSession
+    from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+    from src.app.runtime.orchestration.models.session import WorklineSession
+
+    model = {
+        "WorklineSession": WorklineSession,
+        "ExecutionSession": ExecutionSession,
+        "ExecutionWorkItem": ExecutionWorkItem,
+    }[model_name]
+    required_fields = (
+        "plugin_key",
+        version_field,
+        "plugin_binding_id",
+        "plugin_binding_version",
+        "plugin_config_hash",
+        "plugin_index_digest",
+    )
+
+    assert set(required_fields) <= set(model.model_fields)
+    for field_name in required_fields:
+        assert model.model_fields[field_name].is_required(), f"{model_name}.{field_name} 必须是必填字段"
+        assert model.__table__.c[field_name].nullable is False, f"{model_name}.{field_name} 必须是 NOT NULL"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "missing_field"),
+    [
+        (model_name, field_name)
+        for model_name, version_field in (
+            ("WorklineSession", "contract_version"),
+            ("ExecutionSession", "manifest_version"),
+            ("ExecutionWorkItem", "manifest_version"),
+        )
+        for field_name in (
+            "plugin_key",
+            version_field,
+            "plugin_binding_id",
+            "plugin_binding_version",
+            "plugin_config_hash",
+            "plugin_index_digest",
+        )
+    ],
+)
+def test_runtime_models_reject_every_missing_binding_pin(model_name: str, missing_field: str) -> None:
+    from pydantic import ValidationError
+
+    from src.app.runtime.orchestration.execution_session import ExecutionSession
+    from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+    from src.app.runtime.orchestration.models.session import WorklineSession
+
+    model = {
+        "WorklineSession": WorklineSession,
+        "ExecutionSession": ExecutionSession,
+        "ExecutionWorkItem": ExecutionWorkItem,
+    }[model_name]
+    payload = _complete_runtime_binding_payload(model_name)
+    payload.pop(missing_field)
+
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+@pytest.mark.parametrize("model_name", ["WorklineSession", "ExecutionSession", "ExecutionWorkItem"])
+def test_runtime_models_accept_complete_binding_snapshot(model_name: str) -> None:
+    from src.app.runtime.orchestration.execution_session import ExecutionSession
+    from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+    from src.app.runtime.orchestration.models.session import WorklineSession
+
+    model = {
+        "WorklineSession": WorklineSession,
+        "ExecutionSession": ExecutionSession,
+        "ExecutionWorkItem": ExecutionWorkItem,
+    }[model_name]
+
+    record = model.model_validate(_complete_runtime_binding_payload(model_name))
+
+    assert record.plugin_key == "rough_sorter"
+    assert record.plugin_binding_id == 8
+    assert record.plugin_binding_version == 2
+    assert record.plugin_config_hash == "a" * 64
+    assert record.plugin_index_digest == "b" * 64
+
+
 @pytest.mark.parametrize(("plugin_key", "contract_version"), [(None, "v1"), ("rough_sorter", None)])
 def test_binding_activation_rejects_incomplete_plugin_identity(plugin_key: object, contract_version: object) -> None:
     workline = SimpleNamespace(id=7, plugin_key=plugin_key, contract_version=contract_version, config={})

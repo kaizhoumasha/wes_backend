@@ -29,13 +29,20 @@ from src.app.runtime.orchestration.services.idempotency_guard import (
     is_wes_internal_key,
     make_wes_internal_key,
 )
+from tests.support.runtime_binding import binding_pin_fields
 
 NOW_MS = 1_700_000_000_000
 
 
 async def _seed_correlation(db_session, *, correlation_id: str = "corr-h5-001") -> ExecutionCorrelation:
     """建立 ExecutionSession + ExecutionCorrelation, 满足 IdempotencyKey FK 前置。"""
-    session = ExecutionSession(workline_id=1, manifest_version="v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=1,
+        plugin_key="test-plugin",
+        manifest_version="v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
     correlation = ExecutionCorrelation(

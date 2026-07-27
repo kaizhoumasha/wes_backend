@@ -67,6 +67,7 @@ async def _effect_context(db) -> dict[str, object]:  # type: ignore[no-untyped-d
             execution_session_id=execution_session.id,
             correlation_id=correlation.correlation_id,
             plugin_key=session.plugin_key,
+            manifest_version=session.contract_version,
             plugin_binding_id=session.plugin_binding_id,
             plugin_binding_version=session.plugin_binding_version,
             plugin_config_hash=session.plugin_config_hash,

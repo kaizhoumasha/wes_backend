@@ -36,6 +36,7 @@ from src.app.wms_integration.ports.effect_status import (
 )
 from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationRequest
 from src.utils.timezone import timezone
+from tests.support.runtime_binding import seed_runtime_binding
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 from tests.support.runtime_inbox_processing_postgresql import with_temporary_runtime_database
 
@@ -44,7 +45,20 @@ PARENT = "6ea20f0c0d22"
 
 
 async def _seed_status_pair(db, *, suffix: str) -> tuple[NotifyPackageBindingOperationRequest, RuntimeIntentLog]:
-    execution_session = ExecutionSession(workline_id=1, manifest_version="v1", state="RUNNING")
+    workline, binding = await seed_runtime_binding(
+        db,
+        line_code=f"WMS-EFFECT-STATUS-{suffix}",
+    )
+    execution_session = ExecutionSession(
+        workline_id=workline.id,
+        plugin_key=binding.plugin_key,
+        manifest_version=binding.contract_version,
+        plugin_binding_id=binding.id,
+        plugin_binding_version=binding.binding_version,
+        plugin_config_hash=binding.typed_config_hash,
+        plugin_index_digest=binding.generated_index_digest,
+        state="RUNNING",
+    )
     db.add(execution_session)
     await db.flush()
     assert execution_session.id is not None
@@ -176,7 +190,20 @@ def test_status_claim_is_short_reclaimable_and_old_worker_is_fenced() -> None:
         now = timezone.now_for_db()
         repository = WmsEffectStatusRepository()
         async with session_factory() as db:
-            execution_session = ExecutionSession(workline_id=1, manifest_version="v1", state="RUNNING")
+            workline, binding = await seed_runtime_binding(
+                db,
+                line_code="WMS-EFFECT-STATUS-CLAIM",
+            )
+            execution_session = ExecutionSession(
+                workline_id=workline.id,
+                plugin_key=binding.plugin_key,
+                manifest_version=binding.contract_version,
+                plugin_binding_id=binding.id,
+                plugin_binding_version=binding.binding_version,
+                plugin_config_hash=binding.typed_config_hash,
+                plugin_index_digest=binding.generated_index_digest,
+                state="RUNNING",
+            )
             db.add(execution_session)
             await db.flush()
             assert execution_session.id is not None

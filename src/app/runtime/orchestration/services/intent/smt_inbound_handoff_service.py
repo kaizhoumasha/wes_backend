@@ -25,10 +25,6 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_inbound_handoff_re
     SmtInboundHandoffReasonCatalog,
     SmtInboundHandoffReasonCode,
 )
-from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
-    SMT_SORTING_INBOUND_CONTRACT_VERSION,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-)
 from src.app.runtime.capabilities.material_flow.contracts.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
 from src.app.runtime.capabilities.material_flow.contracts.sorting_inbound_context import SortingInboundContext
 from src.app.runtime.capabilities.material_flow.smt_inbound_handoff_route_service import (
@@ -44,6 +40,10 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.runtime.orchestration.repository_wiring import smt_inbound_handoff_repository
+from src.app.workline.services.plugin_binding_service import (
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
@@ -116,12 +116,14 @@ class SmtInboundHandoffService:
         reason_catalog: SmtInboundHandoffReasonCatalog = SMT_INBOUND_HANDOFF_REASON_CATALOG,
         handling_operation_service: HandlingOperationService | None = None,
         route_service: SmtInboundHandoffRouteService = smt_inbound_handoff_route_service,
+        plugin_binding_service: WorklinePluginBindingService = workline_plugin_binding_service,
     ) -> None:
         self.repository = repository
         self.usage_policy = usage_policy
         self.reason_catalog = reason_catalog
         self.handling_operation_service = handling_operation_service
         self.route_service = route_service
+        self.plugin_binding_service = plugin_binding_service
 
     async def create_or_get_from_release(
         self,
@@ -703,6 +705,7 @@ class SmtInboundHandoffService:
         target_workline = await self.repository.lock_target_workline_by_id(db, workline_id=workline_id)
         if target_workline is None:
             return self._claim_result("EMPTY")
+        binding = await self.plugin_binding_service.resolve_new_session_binding(db, workline=target_workline)
         if timezone.now_for_db() - route_probe_started_at > timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS):
             return await self._release_claim_candidate_for_retry(
                 db,
@@ -738,7 +741,8 @@ class SmtInboundHandoffService:
 
         session = await self._create_sorting_claim_session(
             db,
-            workline_id=workline_id,
+            workline=target_workline,
+            binding=binding,
             workline_code=workline_code,
             demand=locked_demand,
             item=locked_item,
@@ -1583,24 +1587,30 @@ class SmtInboundHandoffService:
         self,
         db: AsyncSession,
         *,
-        workline_id: int,
+        workline: Any,
+        binding: Any,
         workline_code: str | None,
         demand: SmtInboundHandoffDemand,
         item: SmtInboundHandoffSourceItem,
         trace_id: str | None,
         route_evidence: Any,
     ) -> WorklineSession:
+        workline_id = cast("int", getattr(workline, "id", None))
         event_id = self._source_pick_event_id(item)
         session = WorklineSession(
             session_code=f"smt-inbound-handoff:{demand.id}:source-item:{item.id}:claim:{item.claim_attempt_no}",
             workline_id=workline_id,
-            plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+            plugin_key=binding.plugin_key,
             run_mode=RunMode.AUTO,
             business_key=demand.demand_key,
             status=SessionStatus.RUNNING,
             context_json={},
             context_schema_version="smt-sorting-inbound.v1",
-            contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+            contract_version=binding.contract_version,
+            plugin_binding_id=binding.id,
+            plugin_binding_version=binding.binding_version,
+            plugin_config_hash=binding.typed_config_hash,
+            plugin_index_digest=binding.generated_index_digest,
             started_at=timezone.now_for_db(),
             trace_id=self._text_or_none(trace_id) or demand.trace_id,
         )
@@ -1614,8 +1624,7 @@ class SmtInboundHandoffService:
             target_workline_code=cast("str", self._text_or_none(workline_code)),
             manifest_contract_version=cast(
                 "str",
-                self._text_or_none(route_context.get("manifest_contract_version"))
-                or SMT_SORTING_INBOUND_CONTRACT_VERSION,
+                self._text_or_none(route_context.get("manifest_contract_version")) or binding.contract_version,
             ),
             source_rack_position_code=cast(
                 "str",
@@ -1632,6 +1641,12 @@ class SmtInboundHandoffService:
         sorting_context.set_station_state(scan_platform="EMPTY")
         db.add(session)
         await db.flush()
+        await self.plugin_binding_service.pin_new_runtime_session(
+            db,
+            workline=workline,
+            session=session,
+            binding=binding,
+        )
         await self._link_claim_session_material_unit(db, session=session, item=item)
         return session
 

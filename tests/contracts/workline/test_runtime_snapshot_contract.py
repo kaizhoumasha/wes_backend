@@ -15,11 +15,19 @@ from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
     RuntimeSnapshotInput,
     runtime_snapshot_assembler,
 )
+from tests.support.runtime_binding import binding_pin_fields
 
 
 def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation():
     """目标态: snapshot 必须含 state/timeline/inbox/hold/pending intent/correlation。"""
-    session = ExecutionSession(id=101, workline_id=7, manifest_version="manifest-v1", state="RUNNING")
+    session = ExecutionSession(
+        id=101,
+        workline_id=7,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     correlation = ExecutionCorrelation(
         id=201,
         correlation_id="corr-001",

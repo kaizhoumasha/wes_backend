@@ -5,6 +5,7 @@ import pytest
 from src.app.rack.models import RackTask, RackTaskStatus, RackTaskType
 from src.app.rack.repositories import RackTaskRepository
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
+from tests.support.runtime_binding import binding_pin_fields
 
 
 def test_material_session_query_helpers_removed_from_rack_task_repository() -> None:
@@ -18,6 +19,8 @@ async def test_cancel_active_by_material_session_closes_only_active_tasks(db_ses
         session_code="session-rack-timeout",
         workline_id=45,
         plugin_key="test_workline_plugin",
+        contract_version="v1",
+        **binding_pin_fields(),
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.MANUAL_HOLD,
     )

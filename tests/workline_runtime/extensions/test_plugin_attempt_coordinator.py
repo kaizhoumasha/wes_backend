@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.runtime_binding import binding_pin_fields
+
 
 def test_attempt_write_set_rejects_removed_shadow_comparisons_field() -> None:
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
@@ -832,6 +834,7 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
     from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
     from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+    from src.app.workline.models import WorklinePluginBinding
     from src.utils.timezone import timezone
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -843,6 +846,7 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
 
     async with engine.begin() as connection:
         for table in (
+            WorklinePluginBinding.__table__,
             ExecutionSession.__table__,
             ExecutionCorrelation.__table__,
             MaterialUnit.__table__,
@@ -853,10 +857,25 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
             await connection.run_sync(table.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as first, sessions() as second:
+        binding = WorklinePluginBinding(
+            workline_id=8,
+            plugin_key="plugin.rough-sorter",
+            contract_version="manifest-v1",
+            binding_version=1,
+            typed_config_hash="c" * 64,
+            generated_index_digest="d" * 64,
+            environment="test",
+            activated_at=timezone.now_for_db(),
+            activated_by="pytest",
+            activated_reason="stale shared identity map",
+        )
+        first.add(binding)
+        await first.flush()
         execution_session = ExecutionSession(
             workline_id=8,
             manifest_version="manifest-v1",
             plugin_key="plugin.rough-sorter",
+            **binding_pin_fields(binding_id=int(binding.id)),
         )
         first.add(execution_session)
         await first.flush()
@@ -879,6 +898,8 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
             session_code="SESSION-STALE",
             workline_id=8,
             plugin_key="plugin.rough-sorter",
+            contract_version="manifest-v1",
+            **binding_pin_fields(binding_id=int(binding.id)),
             current_material_unit_id=material_unit.id,
         )
         first.add(session)
@@ -888,6 +909,8 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
                 execution_session_id=int(execution_session.id),
                 correlation_id="corr-stale-1",
                 plugin_key="plugin.rough-sorter",
+                manifest_version="manifest-v1",
+                **binding_pin_fields(binding_id=int(binding.id)),
                 object_type="material",
                 object_key="material:stale",
                 current_step="scan",
@@ -954,7 +977,13 @@ async def test_workline_session_ordinary_update_automatically_increments_version
         await connection.run_sync(WorklineSession.__table__.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as db:
-        session = WorklineSession(session_code="SESSION-VERSION-LIFECYCLE", workline_id=8, plugin_key="plugin")
+        session = WorklineSession(
+            session_code="SESSION-VERSION-LIFECYCLE",
+            workline_id=8,
+            plugin_key="plugin",
+            contract_version="v1",
+            **binding_pin_fields(),
+        )
         db.add(session)
         await db.commit()
         initial_version = session.version
@@ -983,7 +1012,13 @@ async def test_workline_session_concurrent_orm_update_raises_stale_data_error() 
         await connection.run_sync(WorklineSession.__table__.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as seed:
-        session = WorklineSession(session_code="SESSION-VERSION-CAS", workline_id=8, plugin_key="plugin")
+        session = WorklineSession(
+            session_code="SESSION-VERSION-CAS",
+            workline_id=8,
+            plugin_key="plugin",
+            contract_version="v1",
+            **binding_pin_fields(),
+        )
         seed.add(session)
         await seed.commit()
         session_id = int(session.id)

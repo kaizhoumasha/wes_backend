@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from tests.support.runtime_binding import binding_pin_fields
 
 NOW_MS = 1_700_000_000_000
 
@@ -82,7 +83,13 @@ async def test_accept_device_event_with_all_optional_args(db_session) -> None:
 
     service = RuntimeInboxService()
 
-    session = ExecutionSession(workline_id=11, manifest_version="manifest-v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=11,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
 
@@ -324,7 +331,13 @@ async def test_accept_internal_event_with_all_optional_args(db_session) -> None:
 
     service = RuntimeInboxService()
 
-    session = ExecutionSession(workline_id=21, manifest_version="manifest-v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=21,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
 
@@ -660,7 +673,13 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
     """内部 producer 必须按身份优先级写稳定桶和毫秒时间。"""
 
     service = RuntimeInboxService()
-    session = ExecutionSession(workline_id=31, manifest_version="manifest-v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=31,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
     correlation = ExecutionCorrelation(
@@ -842,7 +861,13 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
 async def test_accept_timer_timeout_keeps_legacy_and_execution_session_identities_separate(db_session) -> None:
     """仅有真实 runtime 映射时写 execution FK，业务 identity 仍使用 legacy session。"""
 
-    execution_session = ExecutionSession(workline_id=41, manifest_version="manifest-v1", state="RUNNING")
+    execution_session = ExecutionSession(
+        workline_id=41,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(execution_session)
     await db_session.flush()
     legacy_session_id = 1941

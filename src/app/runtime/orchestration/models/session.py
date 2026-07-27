@@ -160,20 +160,18 @@ class WorklineSessionBase(BaseMixin):
         max_length=50,
         description="上下文 Schema 版本（插件管理）",
     )
-    contract_version: str | None = Field(
-        default=None,
+    contract_version: str = Field(
         max_length=50,
         description="执行时绑定的协议版本",
     )
-    plugin_binding_id: int | None = Field(
-        default=None,
+    plugin_binding_id: int = Field(
         foreign_key="wes_biz.workline_plugin_bindings.id",
         index=True,
         description="执行时固定的插件 binding ID",
     )
-    plugin_binding_version: int | None = Field(default=None, ge=1, description="执行时固定的 binding 版本")
-    plugin_config_hash: str | None = Field(default=None, max_length=64, description="执行时固定的 typed config 摘要")
-    plugin_index_digest: str | None = Field(default=None, max_length=64, description="执行时固定的生成索引摘要")
+    plugin_binding_version: int = Field(ge=1, description="执行时固定的 binding 版本")
+    plugin_config_hash: str = Field(max_length=64, description="执行时固定的 typed config 摘要")
+    plugin_index_digest: str = Field(max_length=64, description="执行时固定的生成索引摘要")
     plugin_state_json: dict[str, object] = Field(
         default_factory=dict,
         sa_column=Column(JSON),

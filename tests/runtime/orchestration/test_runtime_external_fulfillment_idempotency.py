@@ -20,6 +20,7 @@ from src.app.runtime.orchestration.services.idempotency_guard import Idempotency
 from src.app.sys.models import SystemOutbox
 from src.app.wms_integration.services.redaction import canonical_sha256
 from src.app.workline.services.write_back_service import _build_effect_apply_context
+from tests.support.runtime_binding import binding_pin_fields
 
 
 class _CollectingDb:
@@ -47,7 +48,13 @@ class _CollectingDb:
 
 
 async def _seed_execution_correlation(db_session: Any, *, correlation_id: str) -> ExecutionCorrelation:
-    session = ExecutionSession(workline_id=1, manifest_version="v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=1,
+        plugin_key="test-plugin",
+        manifest_version="v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
     correlation = ExecutionCorrelation(

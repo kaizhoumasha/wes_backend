@@ -16,6 +16,7 @@ from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.utils.timezone import timezone
+from tests.support.runtime_binding import binding_pin_fields
 
 
 @pytest.mark.asyncio
@@ -43,6 +44,8 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         session_code="session-runtime-timer-001",
         workline_id=45,
         plugin_key="test_workline_plugin",
+        contract_version="v1",
+        **binding_pin_fields(),
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
@@ -51,13 +54,17 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         session_code="session-runtime-timer-wrong-id-sentinel",
         workline_id=45,
         plugin_key="test_workline_plugin",
+        contract_version="v1",
+        **binding_pin_fields(),
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
     execution_session = ExecutionSession(
         id=9001,
         workline_id=45,
+        plugin_key="test-plugin",
         manifest_version="test-manifest-v1",
+        **binding_pin_fields(),
         state="RUNNING",
     )
     db_session.add_all([runtime_session, wrong_id_sentinel, execution_session])
