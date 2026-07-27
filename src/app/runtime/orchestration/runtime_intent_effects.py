@@ -535,6 +535,16 @@ class RuntimeIntentEffectApplier:
         self._system_capability_effect_service = system_capability_effect_service
         self._material_unit_mutation_service = material_unit_mutation_service
 
+    async def persist_business_reject(self, ctx: Any, evidence: object) -> bool:
+        """把 rollback 后的 typed 拒绝补偿委托给对应 System Capability。"""
+
+        service = self._system_capability_effect_service
+        if service is None:
+            from src.app.runtime.orchestration.services.intent import system_capability_effect_service
+
+            service = system_capability_effect_service
+        return bool(await service.persist_business_reject(ctx, evidence))
+
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> RuntimeIntentEffectResult:  # noqa: PLR0912
         _validate_runtime_intents(intents)
 

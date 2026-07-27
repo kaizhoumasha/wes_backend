@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-逐入口数据在 legacy-cleanup-matrix.csv（661 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（662 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -37,7 +37,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **661** |
+| **total_entries** | **662** |
 | phase4_carrier（承载 Phase 4 业务语义） | 115 |
 | pending-review | 0 |
 
@@ -47,7 +47,7 @@ uv run python scripts/generate_legacy_matrix.py
 | --- | ---: |
 | service | 303 |
 | domain_object | 60 |
-| test | 223 |
+| test | 224 |
 | model | 44 |
 | api_route | 23 |
 | repository | 7 |
@@ -58,7 +58,7 @@ uv run python scripts/generate_legacy_matrix.py
 | strategy | count |
 | --- | ---: |
 | rebuild | 385 |
-| keep-contract | 255 |
+| keep-contract | 256 |
 | delete | 14 |
 | move | 7 |
 
@@ -66,7 +66,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | drop_phase | count |
 | --- | ---: |
-| phase5-tech | 270 |
+| phase5-tech | 271 |
 | phase2 | 267 |
 | phase4 | 115 |
 | phase1 | 9 |
@@ -76,7 +76,7 @@ uv run python scripts/generate_legacy_matrix.py
 | current_owner | count |
 | --- | ---: |
 | workline | 413 |
-| workline_runtime | 213 |
+| workline_runtime | 214 |
 | workline_plugins | 11 |
 | runtime | 8 |
 | handling | 4 |
@@ -182,11 +182,11 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | `class` / `def` / `async def` 全量登记；执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
 | `single_layer_rack_orchestration_service` | rebuild | material-flow 单层机架编排，按目标态 capability 重建（WMS_INTEGRATION_BOUNDARY seed 关联） |
 
-### 7.2 workline_runtime（213 entries）
+### 7.2 workline_runtime（214 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
-| `tests/workline_runtime/` | keep-contract / rebuild | 212 条 runtime / material-flow characterization 与合同测试，作为目标态能力闭合和 legacy 删除前的 blocking evidence；RuntimeInbox projection/repository 合同已入矩阵 |
+| `tests/workline_runtime/` | keep-contract / rebuild | 213 条 runtime / material-flow characterization 与合同测试，作为目标态能力闭合和 legacy 删除前的 blocking evidence；RuntimeInbox projection/repository 合同已入矩阵 |
 | `src/workline_runtime/services.py:build_workline_runtime_services` | rebuild | guardrail seed tombstone，用于当前 allowlist 精确反查 |
 
 ### 7.3 workline_plugins（11 entries，均为测试证据）
@@ -226,7 +226,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 661 条，strategy 字段非空）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 662 条，strategy 字段非空）
 2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，115 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）

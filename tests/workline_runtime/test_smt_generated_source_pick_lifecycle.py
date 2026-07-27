@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 from src.app.contracts.external_contract_profile import ExternalContractProfile
@@ -318,6 +319,73 @@ async def test_smt_fast_success_callback_marks_picked_before_first_recovery_scan
     await db_session.refresh(source_item)
     assert summary["manual_hold"] == 0
     assert source_item.status == SmtInboundHandoffSourceItemStatus.PICKED
+
+
+@pytest.mark.asyncio
+async def test_smt_anchor_reject_persists_manual_hold_after_callback_transaction_reopens(
+    db_session: object,
+) -> None:
+    """业务拒绝 rollback 后必须在重新加锁的事务中持久化 fail-closed Hold。"""
+
+    _service, source_item, source_inbox, command, _outbox = await _claim_and_process_source_pick(db_session)
+    source_item_id = int(source_item.id)
+    sorting_session_id = int(source_item.sorting_session_id)
+    command_code = command.command_code
+    source_inbox.execution_session_id = int(source_inbox.execution_session_id) + 10_000
+    db_session.add(source_inbox)
+    await db_session.commit()
+
+    callback_command_service = DeviceCommandService()
+    callback_command_service.enable_cache = False
+    callback = CommandCallbackResult(
+        command_code=command_code,
+        device_code="SMT-SOURCE-ARM-1",
+        result=CommandResult.SUCCESS,
+        finish_time=int(timezone.now_utc().timestamp() * 1000),
+        source_event_id="smt-source-pick-result-anchor-reject",
+        trace_id=command.trace_id,
+    )
+    outcome = await CallbackOrchestrationService(queue_gateway=_NoopQueueGateway()).process_result(
+        db_session,
+        callback=callback,
+        existing_command=command,
+        request_id="request-smt-source-pick-result-anchor-reject",
+        resolved_contract_version=DEFINITION.contract_version,
+        command_service=callback_command_service,
+        device_service=device_service,
+        enqueue_processing=lambda: None,
+    )
+    assert outcome.is_duplicate is False
+
+    callback_inbox = await db_session.scalar(select(RuntimeInbox).where(RuntimeInbox.kind == "COMMAND_RESULT"))
+    assert callback_inbox is not None
+    [claim] = await RuntimeInboxService().claim_for_processing(
+        db_session,
+        limit=1,
+        processor_token="lease-smt-source-pick-anchor-reject",
+        stale_after_seconds=60,
+    )
+    await db_session.commit()
+    processed = await RuntimeInboxProcessorBridge(queue_gateway=_NoopQueueGateway()).process_claimed(
+        db_session,
+        claim=claim,
+    )
+    assert processed["success"] == 1
+
+    session_factory = async_sessionmaker(db_session.bind, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as verify_db:
+        persisted_item = await verify_db.get(SmtInboundHandoffSourceItem, source_item_id)
+        persisted_session = await verify_db.get(WorklineSession, sorting_session_id)
+        feedback = await verify_db.scalar(
+            select(RuntimeInbox).where(RuntimeInbox.event_type == "CAPABILITY_EFFECT_RESULT")
+        )
+
+    assert persisted_item is not None
+    assert persisted_item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+    assert persisted_session is not None
+    assert persisted_session.status == SessionStatus.WAITING_DEVICE_RESULT
+    assert persisted_session.awaiting_device_command_code == command_code
+    assert feedback is not None
 
 
 @pytest.mark.asyncio

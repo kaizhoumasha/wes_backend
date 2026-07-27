@@ -24,11 +24,11 @@ from src.celery_app.tasks.workline import _scan_smt_inbound_handoff_demands_in_t
 from src.utils.timezone import timezone
 
 
-@pytest.mark.parametrize("execution_anchor_mismatch", [False, True])
+@pytest.mark.parametrize("execution_anchor_case", ["owned", "split_execution", "complete_replacement"])
 @pytest.mark.asyncio
 async def test_recovery_task_commit_persists_correlation_and_picked_after_session_exit(
     db_engine: object,
-    execution_anchor_mismatch: bool,
+    execution_anchor_case: str,
 ) -> None:
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     correlation_id = "workline-session:SMT-TASK-21"
@@ -59,6 +59,8 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             plugin_config_hash="a" * 64,
             plugin_index_digest="b" * 64,
             plugin_state_json={},
+            trace_id="trace-task-recovery",
+            business_key="business-task-recovery",
             current_wait_type="DEVICE_CALLBACK",
             awaiting_device_command_code=command_code,
         )
@@ -77,30 +79,15 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
         )
         seed_db.add(inbox_execution_session)
         await seed_db.flush()
-        correlation_execution_session = inbox_execution_session
-        if execution_anchor_mismatch:
-            correlation_execution_session = ExecutionSession(
-                workline_id=7,
-                plugin_key=session.plugin_key,
-                manifest_version=session.contract_version,
-                plugin_binding_id=session.plugin_binding_id,
-                plugin_binding_version=session.plugin_binding_version,
-                plugin_config_hash=session.plugin_config_hash,
-                plugin_index_digest=session.plugin_index_digest,
-                state="RUNNING",
-            )
-            seed_db.add(correlation_execution_session)
-            await seed_db.flush()
-        execution_correlation = ExecutionCorrelation(
+        owned_correlation = ExecutionCorrelation(
             correlation_id=correlation_id,
-            execution_session_id=correlation_execution_session.id,
-            trace_id="trace-task-recovery",
+            execution_session_id=inbox_execution_session.id,
+            trace_id=session.trace_id,
             source_event_id=request_event_id,
+            business_owner_key=session.business_key,
         )
-        seed_db.add(execution_correlation)
-        await seed_db.flush()
-        execution_work_item = ExecutionWorkItem(
-            execution_session_id=correlation_execution_session.id,
+        owned_work_item = ExecutionWorkItem(
+            execution_session_id=inbox_execution_session.id,
             correlation_id=correlation_id,
             plugin_key=session.plugin_key,
             manifest_version=session.contract_version,
@@ -112,13 +99,54 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             object_key="task-source-item",
             current_step="SORTING_SOURCE_PICK",
         )
-        seed_db.add(execution_work_item)
+        seed_db.add_all([owned_correlation, owned_work_item])
         await seed_db.flush()
+
+        active_execution_session = inbox_execution_session
+        active_correlation_id = correlation_id
+        if execution_anchor_case != "owned":
+            replacement_execution_session = ExecutionSession(
+                workline_id=7,
+                plugin_key=session.plugin_key,
+                manifest_version=session.contract_version,
+                plugin_binding_id=session.plugin_binding_id,
+                plugin_binding_version=session.plugin_binding_version,
+                plugin_config_hash=session.plugin_config_hash,
+                plugin_index_digest=session.plugin_index_digest,
+                state="RUNNING",
+            )
+            seed_db.add(replacement_execution_session)
+            await seed_db.flush()
+            active_correlation_id = "workline-session:SMT-TASK-OTHER"
+            replacement_correlation = ExecutionCorrelation(
+                correlation_id=active_correlation_id,
+                execution_session_id=replacement_execution_session.id,
+                trace_id="trace-other",
+                source_event_id="source-pick-task-event-other",
+                business_owner_key="business-other",
+            )
+            replacement_work_item = ExecutionWorkItem(
+                execution_session_id=replacement_execution_session.id,
+                correlation_id=active_correlation_id,
+                plugin_key=session.plugin_key,
+                manifest_version=session.contract_version,
+                plugin_binding_id=session.plugin_binding_id,
+                plugin_binding_version=session.plugin_binding_version,
+                plugin_config_hash=session.plugin_config_hash,
+                plugin_index_digest=session.plugin_index_digest,
+                object_type="bin",
+                object_key="task-source-item-other",
+                current_step="SORTING_SOURCE_PICK",
+            )
+            seed_db.add_all([replacement_correlation, replacement_work_item])
+            await seed_db.flush()
+            if execution_anchor_case == "complete_replacement":
+                active_execution_session = replacement_execution_session
 
         inbox = RuntimeInbox(
             workline_session_id=session.id,
-            execution_session_id=inbox_execution_session.id,
-            correlation_id=correlation_id,
+            execution_session_id=active_execution_session.id,
+            correlation_id=active_correlation_id,
             kind="INTERNAL_EVENT",
             workline_id=7,
             event_id=request_event_id,
@@ -129,7 +157,7 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             payload_json={"event_id": request_event_id},
             payload_schema_version=1,
             status="PROCESSED",
-            claim_bucket_key=correlation_id,
+            claim_bucket_key=active_correlation_id,
             received_at=1,
             processed_at=2,
         )
@@ -164,7 +192,7 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             device_id=1,
             task_type="SORTING_SOURCE_PICK",
             command_code=command_code,
-            correlation_id=correlation_id,
+            correlation_id=active_correlation_id,
             workline_id=7,
             plugin_key=session.plugin_key,
             contract_version=session.contract_version,
@@ -194,6 +222,7 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             legacy_limit=None,
         )
 
+    execution_anchor_mismatch = execution_anchor_case != "owned"
     assert summary["advanced"] == (0 if execution_anchor_mismatch else 1)
     assert summary["manual_hold"] == (1 if execution_anchor_mismatch else 0)
     async with session_factory() as verify_db:

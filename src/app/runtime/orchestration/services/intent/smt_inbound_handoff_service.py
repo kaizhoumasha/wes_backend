@@ -1205,6 +1205,48 @@ class SmtInboundHandoffService:
 
         raise ValueError(f"source pick success 状态不允许: {item.status}")
 
+    async def persist_source_pick_manual_hold_after_reject(
+        self,
+        db: AsyncSession,
+        *,
+        handoff_demand_id: int,
+        source_item_id: int,
+        claim_attempt_no: int,
+        source_pick_inbox_id: int,
+        command_id: int,
+        command_code: str,
+    ) -> bool:
+        """在业务拒绝 rollback 后重新锁定 source item，并持久化 fail-closed Hold。"""
+
+        item = await self._resolve_source_pick_success_item_for_update(db, source_item_id=source_item_id)
+        if item is None:
+            raise ValueError(f"未找到 handoff source item: {source_item_id}")
+        self._validate_source_pick_success_evidence(
+            item,
+            handoff_demand_id=handoff_demand_id,
+            claim_attempt_no=claim_attempt_no,
+            source_pick_inbox_id=source_pick_inbox_id,
+            command_id=command_id,
+        )
+        if item.source_pick_command_code != command_code:
+            raise ValueError("source pick manual hold command_code 不匹配")
+        if item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
+            return True
+        if item.status not in _CLAIMED_ITEM_STATUSES:
+            raise ValueError("source pick manual hold 仅允许 claimed 状态")
+
+        demand = await db.get(SmtInboundHandoffDemand, handoff_demand_id)
+        if demand is None:
+            raise ValueError(f"未找到 handoff demand: {handoff_demand_id}")
+        await self._manual_hold_source_pick_recovery(
+            db,
+            demand=demand,
+            item=item,
+            failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+            message="source pick success execution anchor 不一致，拒绝推进",
+        )
+        return True
+
     async def record_source_item_terminal_result(
         self,
         db: AsyncSession,

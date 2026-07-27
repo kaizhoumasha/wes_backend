@@ -657,6 +657,12 @@ def scan_generic_orchestration(path: Path) -> None:
         "SORTING_SOURCE_PICK",
     )
     business_imports = ("rough_sorter", "smt_sorting_inbound", "smt_source_pick")
+    business_capability_keys = frozenset(
+        {
+            "material_flow.smt_source_pick_command",
+            "material_flow.smt_source_pick_ledger",
+        }
+    )
 
     def business_literal(node: ast.AST) -> str | None:
         if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
@@ -676,6 +682,23 @@ def scan_generic_orchestration(path: Path) -> None:
                     "业务 import 与处理逻辑迁入 Plugin 或 System Capability handler",
                 )
             continue
+        if isinstance(node, (ast.Dict, ast.Call)):
+            capability_keys = {
+                candidate.value
+                for candidate in ast.walk(node)
+                if isinstance(candidate, ast.Constant)
+                and isinstance(candidate.value, str)
+                and candidate.value in business_capability_keys
+            }
+            if capability_keys:
+                emit(
+                    "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+                    path,
+                    node.lineno,
+                    f"通用 Orchestrator/Effect/Gateway 映射或派发 Workline 专属能力: {sorted(capability_keys)}",
+                    "能力身份分支迁入 Plugin 或 System Capability handler",
+                )
+            continue
         if not isinstance(node, (ast.Compare, ast.MatchValue)):
             continue
         literals = {
@@ -683,6 +706,13 @@ def scan_generic_orchestration(path: Path) -> None:
             for candidate in ast.walk(node)
             if (literal := business_literal(candidate)) is not None
         }
+        literals.update(
+            candidate.value
+            for candidate in ast.walk(node)
+            if isinstance(candidate, ast.Constant)
+            and isinstance(candidate.value, str)
+            and candidate.value in business_capability_keys
+        )
         if literals:
             emit(
                 "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",

@@ -378,6 +378,65 @@ class RuntimeInboxWriteBackService:
             self._effect_applier = RuntimeIntentEffectApplier()
         return self._effect_applier
 
+    async def _persist_business_reject_after_rollback(
+        self,
+        db: Any,
+        *,
+        expected_snapshot: AttemptSnapshot,
+        inbox_id: int,
+        session_id: int,
+        workline_id: int,
+        trace_id: str,
+        effect_ctx: dict[str, Any],
+        evidence: dict[str, Any],
+    ) -> bool | None:
+        """重新锁定 attempt 后执行可选补偿；None 表示 fencing 已失效。"""
+
+        locked = await self._plugin_attempt_repository.lock_authoritative(
+            db,
+            inbox_id=inbox_id,
+            session_id=session_id,
+        )
+        if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
+            await db.rollback()
+            return None
+        compensation = getattr(self.effect_applier, "persist_business_reject", None)
+        compensation_persisted = False
+        if callable(compensation):
+            compensation_workline = await self._workline_repository.get_by_id(db, workline_id)
+            if compensation_workline is None:
+                raise RuntimeError(f"Workline {workline_id} missing during business reject compensation")
+            compensation_trace = TraceContext.from_runtime(
+                session=locked.session,
+                workline=compensation_workline,
+                inbox=locked.inbox,
+                trace_id=trace_id,
+            )
+            compensation_ctx = {
+                **effect_ctx,
+                "session": locked.session,
+                "workline": compensation_workline,
+                "inbox": locked.inbox,
+                "work_item": getattr(locked, "work_item", None),
+                "plugin_binding": getattr(locked, "plugin_binding", None),
+                "trace": compensation_trace,
+                "correlation_id": getattr(locked.inbox, "correlation_id", None) or trace_id,
+                "effect_state": EffectApplyState(),
+                "current_status": getattr(locked.session, "status", None),
+                "session_ctx": _session_context(locked.session),
+                "now": timezone.now_for_db(),
+            }
+            compensation_persisted = bool(await compensation(compensation_ctx, evidence))
+        reject_outcome = evidence.get("outcome")
+        reject_details = reject_outcome.get("details") if isinstance(reject_outcome, dict) else None
+        if (
+            isinstance(reject_details, dict)
+            and reject_details.get("durable_reject_required") is True
+            and not compensation_persisted
+        ):
+            raise RuntimeError("required business reject compensation was not persisted")
+        return compensation_persisted
+
     async def commit_plugin_attempt(
         self,
         db: Any,
@@ -475,29 +534,27 @@ class RuntimeInboxWriteBackService:
                     inbox=locked.inbox,
                     trace_id=trace_id,
                 )
-                effect_result = await self.effect_applier.apply(
-                    {
-                        "db": db,
-                        "session": locked.session,
-                        "workline": workline,
-                        "inbox": locked.inbox,
-                        "work_item": getattr(locked, "work_item", None),
-                        "plugin_binding": getattr(locked, "plugin_binding", None),
-                        "devices_by_role": devices_by_role or {},
-                        "source_device": None,
-                        "trace_id": trace_id,
-                        "trace": trace,
-                        "correlation_id": getattr(locked.inbox, "correlation_id", None) or trace_id,
-                        "effect_state": EffectApplyState(),
-                        "current_status": getattr(locked.session, "status", None),
-                        "session_ctx": _session_context(locked.session),
-                        "now": timezone.now_for_db(),
-                        "awaiting_device_command_pk": None,
-                        "awaiting_command_code": None,
-                        "next_timeline_seq_no": None,
-                    },
-                    list(write_set.intents),
-                )
+                effect_ctx = {
+                    "db": db,
+                    "session": locked.session,
+                    "workline": workline,
+                    "inbox": locked.inbox,
+                    "work_item": getattr(locked, "work_item", None),
+                    "plugin_binding": getattr(locked, "plugin_binding", None),
+                    "devices_by_role": devices_by_role or {},
+                    "source_device": None,
+                    "trace_id": trace_id,
+                    "trace": trace,
+                    "correlation_id": getattr(locked.inbox, "correlation_id", None) or trace_id,
+                    "effect_state": EffectApplyState(),
+                    "current_status": getattr(locked.session, "status", None),
+                    "session_ctx": _session_context(locked.session),
+                    "now": timezone.now_for_db(),
+                    "awaiting_device_command_pk": None,
+                    "awaiting_command_code": None,
+                    "next_timeline_seq_no": None,
+                }
+                effect_result = await self.effect_applier.apply(effect_ctx, list(write_set.intents))
                 business_reject_evidence = getattr(effect_result, "business_reject_evidence", None)
                 if isinstance(business_reject_evidence, dict):
                     reject_source = {
@@ -509,6 +566,18 @@ class RuntimeInboxWriteBackService:
                         "correlation_id": getattr(locked.inbox, "correlation_id", None),
                     }
                     await db.rollback()
+                    compensation_result = await self._persist_business_reject_after_rollback(
+                        db,
+                        expected_snapshot=expected_snapshot,
+                        inbox_id=inbox_id,
+                        session_id=session_id,
+                        workline_id=workline_id,
+                        trace_id=trace_id,
+                        effect_ctx=effect_ctx,
+                        evidence=business_reject_evidence,
+                    )
+                    if compensation_result is None:
+                        return WriteDisposition.SAFE_RETRY
                     is_recursive_effect_reject = (
                         reject_source["payload_json"].get("logical_route") == "CAPABILITY_EFFECT_RESULT"
                     )

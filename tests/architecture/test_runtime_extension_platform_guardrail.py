@@ -64,6 +64,16 @@ def _run_fixture(tmp_path: Path, relative_path: str, source: str) -> subprocess.
             "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
         ),
         (
+            "orchestration/runtime_intent_effects.py",
+            "routes = {'material_flow.smt_source_pick_command': dispatch}\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
+            "orchestration/device_command_gateway.py",
+            "dispatch('material_flow.smt_source_pick_ledger')\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
             "consumer.py",
             "from src.app.runtime.capability_catalog import get_workline_capability_definition\n",
             "LEGACY_CAPABILITY_ROUTING_IMPORT",
@@ -368,6 +378,8 @@ def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> 
         "SORTING_SOURCE_PICK",
         "handoff_source_item_id",
         "BUSINESS_TIMEOUT",
+        "material_flow.smt_source_pick_command",
+        "material_flow.smt_source_pick_ledger",
     )
 
     violations = {

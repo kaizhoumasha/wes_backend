@@ -89,6 +89,14 @@ class SystemCapabilityIntentService:
         self._plugin_definitions = dict(plugin_definitions)
         self._plugin_index_digest = plugin_index_digest
 
+    def get_effect_definition(self, capability_key: str, contract_version: str) -> SystemCapabilityDefinition | None:
+        """按生成索引身份读取 EFFECT 定义，供事务补偿复用同一 handler 合同。"""
+
+        definition = self._definitions.get((capability_key, contract_version))
+        if definition is None or definition.mode is not SystemCapabilityMode.EFFECT:
+            return None
+        return definition
+
     async def prepare_and_claim(self, ctx: Mapping[str, Any], intent: RuntimeIntent) -> PreparedSystemCapabilityIntent:
         # model_copy(update=...) 不执行 Pydantic validator；admission 必须从序列化值
         # 重建 typed contract，避免插件绕过 kind 独占字段和跨字段约束。

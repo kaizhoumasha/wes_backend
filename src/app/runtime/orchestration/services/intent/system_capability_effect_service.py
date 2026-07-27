@@ -205,6 +205,38 @@ class SystemCapabilityEffectService:
             evidence=evidence,
         )
 
+    async def persist_business_reject(self, ctx: dict[str, Any], raw_evidence: object) -> bool:
+        """在外层 rollback 后按 typed evidence 执行可选的拒绝补偿钩子。"""
+
+        try:
+            evidence = SystemCapabilityEffectEvidence.model_validate(raw_evidence)
+        except ValidationError:
+            return False
+        definition = self._intent_service.get_effect_definition(
+            evidence.capability_key,
+            evidence.contract_version,
+        )
+        if definition is None or definition.completion_mode is not EffectCompletionMode.LOCAL_TRANSACTIONAL:
+            return False
+        outcome = parse_outcome(evidence.outcome, payload_type=definition.output_model)
+        if not isinstance(outcome, BusinessReject):
+            return False
+        handler = definition.handler_factory()
+        compensation = getattr(handler, "persist_business_reject", None)
+        if not callable(compensation):
+            return False
+        persisted = compensation(outcome, ctx=ctx)
+        if isawaitable(persisted):
+            persisted = await persisted
+        if persisted is not True:
+            return False
+        flush = getattr(ctx["db"], "flush", None)
+        if callable(flush):
+            flush_result = flush()
+            if isawaitable(flush_result):
+                await flush_result
+        return True
+
     @staticmethod
     def _build_evidence(
         *, intent: RuntimeIntent, prepared: Any, outcome: EffectOutcome

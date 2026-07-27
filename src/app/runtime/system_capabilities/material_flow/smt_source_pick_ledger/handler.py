@@ -44,9 +44,19 @@ class SmtSourcePickLedgerHandler:
                 message="SMT source-pick ledger evidence mismatch",
             )
         if result.outcome == "manual_hold":
+            source_item = result.source_item
             return BusinessReject(
                 reason_code="SMT_SOURCE_PICK_MANUAL_HOLD",
                 message="SMT source-pick ledger is on manual hold",
+                details={
+                    "durable_reject_required": True,
+                    "handoff_demand_id": source_item.handoff_demand_id,
+                    "source_item_id": source_item.id,
+                    "claim_attempt_no": source_item.claim_attempt_no,
+                    "source_pick_inbox_id": source_item.source_pick_inbox_id,
+                    "command_id": command_id,
+                    "command_code": request.command_code,
+                },
             )
         if result.outcome == "already_terminal":
             return BusinessReject(
@@ -63,6 +73,39 @@ class SmtSourcePickLedgerHandler:
                 status="PICKED",
                 advanced=result.advanced,
             )
+        )
+
+    async def persist_business_reject(self, outcome: BusinessReject, *, ctx: dict[str, object]) -> bool:
+        """在 callback 主事务 rollback 后，以原始命令证据重新加锁并落安全 Hold。"""
+
+        if outcome.reason_code != "SMT_SOURCE_PICK_MANUAL_HOLD":
+            return False
+        details = outcome.details
+        required_ints = (
+            "handoff_demand_id",
+            "source_item_id",
+            "claim_attempt_no",
+            "source_pick_inbox_id",
+            "command_id",
+        )
+        if any(not isinstance(details.get(field), int) for field in required_ints):
+            raise ValueError("SMT source-pick manual hold compensation evidence is incomplete")
+        command_code = details.get("command_code")
+        if not isinstance(command_code, str) or not command_code:
+            raise ValueError("SMT source-pick manual hold compensation command_code is missing")
+
+        from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
+            smt_inbound_handoff_service,
+        )
+
+        return await smt_inbound_handoff_service.persist_source_pick_manual_hold_after_reject(
+            ctx["db"],  # type: ignore[arg-type]
+            handoff_demand_id=details["handoff_demand_id"],
+            source_item_id=details["source_item_id"],
+            claim_attempt_no=details["claim_attempt_no"],
+            source_pick_inbox_id=details["source_pick_inbox_id"],
+            command_id=details["command_id"],
+            command_code=command_code,
         )
 
 

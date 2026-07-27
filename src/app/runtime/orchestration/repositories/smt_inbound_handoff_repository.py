@@ -11,15 +11,15 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.device.models.command import DeviceCommand
 from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import SMT_SORTING_INBOUND_PLUGIN_KEY
-from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
-from src.app.runtime.orchestration.execution_session import ExecutionSession
-from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
     SmtInboundHandoffDemandStatus,
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
+)
+from src.app.runtime.orchestration.repositories.session_execution_anchor_repository import (
+    session_execution_anchor_repository,
 )
 from src.app.sys.models.outbox import SystemOutbox
 from src.app.workline.models.workline import WorkLine
@@ -34,9 +34,15 @@ if TYPE_CHECKING:
 class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
     """SMT 入库 handoff demand/source item 数据访问层。"""
 
-    def __init__(self, *, runtime_inbox_query: RuntimeInboxQueryPort) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_inbox_query: RuntimeInboxQueryPort,
+        execution_anchor_repository: Any = session_execution_anchor_repository,
+    ) -> None:
         super().__init__(SmtInboundHandoffDemand)
         self.runtime_inbox_query = runtime_inbox_query
+        self.execution_anchor_repository = execution_anchor_repository
 
     async def get_demand_by_release_id(
         self,
@@ -179,7 +185,7 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         contract_version: str,
         execution_session_id: int | None = None,
     ) -> bool:
-        """交叉校验 Inbox、ExecutionSession、Correlation 与 WorkItem 的同一执行链。"""
+        """按 WorklineSession 所有权交叉校验完整执行聚合。"""
 
         inbox = await self.runtime_inbox_query.get_projection_by_id(db, inbox_id)
         if inbox is None or not isinstance(inbox.execution_session_id, int):
@@ -194,47 +200,53 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
             return False
 
         session = await db.get(WorklineSession, workline_session_id)
-        execution_session = await db.get(ExecutionSession, inbox.execution_session_id)
-        correlation = await db.scalar(
-            select(ExecutionCorrelation).where(ExecutionCorrelation.correlation_id == correlation_id)
-        )
-        work_item = await db.scalar(select(ExecutionWorkItem).where(ExecutionWorkItem.correlation_id == correlation_id))
-        if session is None or execution_session is None or correlation is None or work_item is None:
+        if session is None:
+            return False
+        session_code = getattr(session, "session_code", None)
+        trace_id = getattr(session, "trace_id", None)
+        business_key = getattr(session, "business_key", None)
+        plugin_binding_id = getattr(session, "plugin_binding_id", None)
+        plugin_binding_version = getattr(session, "plugin_binding_version", None)
+        plugin_config_hash = getattr(session, "plugin_config_hash", None)
+        plugin_index_digest = getattr(session, "plugin_index_digest", None)
+        if not (
+            isinstance(session_code, str)
+            and session_code
+            and isinstance(trace_id, str)
+            and trace_id
+            and isinstance(business_key, str)
+            and business_key
+            and isinstance(plugin_binding_id, int)
+            and isinstance(plugin_binding_version, int)
+            and isinstance(plugin_config_hash, str)
+            and plugin_config_hash
+            and isinstance(plugin_index_digest, str)
+            and plugin_index_digest
+            and getattr(session, "workline_id", None) == workline_id
+            and getattr(session, "plugin_key", None) == plugin_key
+            and getattr(session, "contract_version", None) == contract_version
+        ):
             return False
 
-        expected_pin = (
-            plugin_key,
-            contract_version,
-            getattr(session, "plugin_binding_id", None),
-            getattr(session, "plugin_binding_version", None),
-            getattr(session, "plugin_config_hash", None),
-            getattr(session, "plugin_index_digest", None),
+        canonical_correlation_id = f"workline-session:{session_code}"
+        owned_anchor = await self.execution_anchor_repository.resolve_owned_anchor(
+            db,
+            correlation_id=canonical_correlation_id,
+            trace_id=trace_id,
+            workline_id=workline_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            plugin_binding_id=plugin_binding_id,
+            plugin_binding_version=plugin_binding_version,
+            plugin_config_hash=plugin_config_hash,
+            plugin_index_digest=plugin_index_digest,
+            business_key=business_key,
         )
         return (
-            getattr(session, "workline_id", None) == workline_id
-            and (getattr(session, "plugin_key", None), getattr(session, "contract_version", None)) == expected_pin[:2]
-            and getattr(execution_session, "workline_id", None) == workline_id
-            and (
-                getattr(execution_session, "plugin_key", None),
-                getattr(execution_session, "manifest_version", None),
-                getattr(execution_session, "plugin_binding_id", None),
-                getattr(execution_session, "plugin_binding_version", None),
-                getattr(execution_session, "plugin_config_hash", None),
-                getattr(execution_session, "plugin_index_digest", None),
-            )
-            == expected_pin
-            and getattr(correlation, "execution_session_id", None) == inbox.execution_session_id
-            and getattr(work_item, "execution_session_id", None) == inbox.execution_session_id
-            and getattr(work_item, "correlation_id", None) == correlation_id
-            and (
-                getattr(work_item, "plugin_key", None),
-                getattr(work_item, "manifest_version", None),
-                getattr(work_item, "plugin_binding_id", None),
-                getattr(work_item, "plugin_binding_version", None),
-                getattr(work_item, "plugin_config_hash", None),
-                getattr(work_item, "plugin_index_digest", None),
-            )
-            == expected_pin
+            owned_anchor is not None
+            and owned_anchor[0] == canonical_correlation_id
+            and correlation_id == canonical_correlation_id
+            and owned_anchor[1] == inbox.execution_session_id
         )
 
     async def get_device_command_by_id(

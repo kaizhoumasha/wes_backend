@@ -41,7 +41,13 @@ async def test_late_success_rejects_incompatible_source_pick_terminal(
             outcome=ledger_outcome,
             advanced=False,
             already_terminal=ledger_outcome == "already_terminal",
-            source_item=SimpleNamespace(status=ledger_outcome),
+            source_item=SimpleNamespace(
+                status=ledger_outcome,
+                handoff_demand_id=11,
+                id=12,
+                claim_attempt_no=2,
+                source_pick_inbox_id=13,
+            ),
         )
     )
     monkeypatch.setattr(
