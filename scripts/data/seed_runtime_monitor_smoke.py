@@ -24,6 +24,7 @@ from scripts.data.sync_test_workline_devices import (
     sync_test_workline_devices,
 )
 from src.app.device.repositories import device_repository
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
@@ -33,6 +34,7 @@ from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_IND
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION as SMT_SORTING_INBOUND_DEFINITION
 from src.app.workline.models import WorkLine, WorklinePluginBinding
 from src.app.workline.services.plugin_binding_service import (
+    PluginBindingAdmissionError,
     WorklinePluginBindingService,
     workline_plugin_binding_service,
 )
@@ -224,18 +226,54 @@ async def _ensure_smoke_binding(db: AsyncSession, workline: WorkLine) -> Worklin
 
     if workline.id is None:
         raise RuntimeError(f"workline id missing for runtime monitor smoke binding: {workline.line_code}")
+    environment = WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV)
+    devices = await device_repository.get_by_work_line_id(db, workline.id)
+    activation_plan = workline_plugin_binding_service.validate_activation_configuration(
+        workline=workline,
+        environment=environment,
+        devices=devices,
+    )
+    desired_config_hash = sha256_digest(activation_plan.typed_config)
+
     if workline.active_plugin_binding_id is not None:
-        binding = await workline_plugin_binding_service.get_pinned(
-            db,
-            binding_id=workline.active_plugin_binding_id,
-        )
-        if (
-            binding.workline_id == workline.id
-            and binding.plugin_key == workline.plugin_key
-            and binding.contract_version == workline.contract_version
-            and binding.generated_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
-        ):
-            return binding
+        try:
+            binding = await workline_plugin_binding_service.get_pinned(
+                db,
+                binding_id=workline.active_plugin_binding_id,
+            )
+        except PluginBindingAdmissionError:
+            binding = None
+        if binding is not None:
+            active_pin = (
+                workline.active_plugin_binding_id,
+                workline.active_plugin_binding_version,
+                workline.active_plugin_config_hash,
+                workline.active_plugin_index_digest,
+            )
+            binding_pin = (
+                binding.id,
+                binding.binding_version,
+                binding.typed_config_hash,
+                binding.generated_index_digest,
+            )
+            if (
+                binding.workline_id == workline.id
+                and binding.plugin_key == workline.plugin_key
+                and binding.contract_version == workline.contract_version
+                and active_pin == binding_pin
+                and binding.typed_config_hash == desired_config_hash
+                and binding.generated_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
+            ):
+                try:
+                    workline_plugin_binding_service.assert_execution_admitted(
+                        binding,
+                        environment=environment,
+                        now=timezone.now_for_db(),
+                    )
+                except PluginBindingAdmissionError:
+                    pass
+                else:
+                    return binding
 
     workline_version = workline.version
     if not isinstance(workline_version, int):
@@ -246,14 +284,17 @@ async def _ensure_smoke_binding(db: AsyncSession, workline: WorkLine) -> Worklin
         expected_workline_version=workline_version,
         actor="runtime-monitor-smoke",
         reason="本地运行监控调试种子",
-        environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
-        devices=await device_repository.get_by_work_line_id(db, workline.id),
+        environment=environment,
+        devices=devices,
     )
     workline.active_plugin_binding_id = binding.id
     workline.active_plugin_binding_version = binding.binding_version
     workline.active_plugin_config_hash = binding.typed_config_hash
     workline.active_plugin_index_digest = binding.generated_index_digest
-    workline.active_plugin_provider_requirements_json = []
+    workline.active_plugin_provider_requirements_json = [
+        f"{profile['provider_code']}@{profile['contract_version']}#{profile['environment']}"
+        for profile in binding.provider_profile_snapshot_json
+    ]
     await db.flush()
     return binding
 
