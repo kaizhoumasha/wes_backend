@@ -3,7 +3,6 @@
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     ProcessResult,
     RuntimeInboxProcessorBridge,
-    RuntimeInboxProcessorService,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxAcceptResult,
@@ -36,7 +35,6 @@ __all__ = [
     "RuntimeInboxNotFound",
     "RuntimeInboxPayloadTooLarge",
     "RuntimeInboxProcessorBridge",
-    "RuntimeInboxProcessorService",
     "RuntimeInboxReplayNotAllowed",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",

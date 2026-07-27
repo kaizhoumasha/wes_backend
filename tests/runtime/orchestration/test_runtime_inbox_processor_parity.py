@@ -374,6 +374,19 @@ def _as_tuple(result: dict[str, int]) -> tuple[int, int, int, int, int]:
     )
 
 
+def _install_test_runner(processor: RuntimeInboxProcessorBridge, runner: object) -> None:
+    processor._generated_attempt_runner = runner  # type: ignore[assignment]
+
+    async def _build_request(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(snapshot=SimpleNamespace())
+
+    async def _pin_runtime(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    processor._build_generated_dispatch_request = _build_request  # type: ignore[method-assign]
+    processor._pin_attempt_runtime_to_dispatch_snapshot = _pin_runtime  # type: ignore[method-assign]
+
+
 async def _run_case(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -551,13 +564,13 @@ async def _run_case(
                 )
             )  # type: ignore[arg-type]
         ),
-        plugin_attempt_runner=_Runner(),
         writeback_service=_PlatformWriteBack(),  # type: ignore[arg-type]
         inbox_service=terminal,  # type: ignore[arg-type]
         inbox_repository=_Repository(inbox),  # type: ignore[arg-type]
         replay_source_validator=_ReplaySourceValidator(),  # type: ignore[arg-type]
         recorded_replay_service=_RecordedReplay(),  # type: ignore[arg-type]
     )
+    _install_test_runner(processor, _Runner())
     result = await processor.process_claimed(db, claim={"id": 1, "processor_token": "token-parity"})
     return result, archives, terminal.actions, diagnostics, interactions, db
 

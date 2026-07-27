@@ -1358,7 +1358,9 @@ class SmtInboundHandoffService:
             for item in stuck_items:
                 summary["scanned"] += 1
                 try:
-                    outcome = await self._recover_stuck_source_item(db, item, now=now)
+                    # 单项恢复使用 savepoint 隔离 DB 错误，避免一次坏数据污染后续候选。
+                    async with db.begin_nested():
+                        outcome = await self._recover_stuck_source_item(db, item, now=now)
                 except Exception:
                     summary["recovery_errors"] += 1
                     continue
@@ -1575,13 +1577,29 @@ class SmtInboundHandoffService:
             return None
 
         correlation_id = self._text_or_none(getattr(inbox, "correlation_id", None))
+        awaiting_command_code = self._text_or_none(getattr(session, "awaiting_device_command_code", None))
+        workline_id = self._int_or_none(getattr(session, "workline_id", None))
+        source_pick_request_event_id = self._text_or_none(getattr(inbox, "event_id", None))
         candidates = (
             await self.command_repository.list_by_runtime_correlation(
                 db,
                 correlation_id=correlation_id,
+                awaiting_command_code=awaiting_command_code,
+                workline_id=workline_id,
+                task_type="SORTING_SOURCE_PICK",
+                handoff_demand_id=item.handoff_demand_id,
+                handoff_source_item_id=cast("int", item.id),
+                claim_attempt_no=item.claim_attempt_no,
+                source_pick_inbox_id=cast("int", item.source_pick_inbox_id),
+                source_pick_request_event_id=source_pick_request_event_id,
                 limit=2,
             )
-            if correlation_id is not None
+            if (
+                correlation_id is not None
+                and awaiting_command_code is not None
+                and workline_id is not None
+                and source_pick_request_event_id is not None
+            )
             else []
         )
         if len(candidates) != 1:

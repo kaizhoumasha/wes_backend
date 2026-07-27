@@ -1,4 +1,4 @@
-"""RuntimeInboxProcessorService composition (Task 5 三阶段 Processor 拆分).
+"""RuntimeInbox generated-only processor composition（Task 5 三阶段拆分）。
 
 组合 Validation → Orchestration → Write-back 三阶段.
 提供 RuntimeInbox 唯一生产入口 `process_claimed(db, claim)`，由 Celery task 调用。
@@ -86,7 +86,6 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptSnapshot,
     AttemptWriteSet,
     PluginAttemptContext,
-    PluginAttemptRunner,
     PluginWriteSetLimits,
     WriteDisposition,
     bound_attempt_write_set,
@@ -104,6 +103,7 @@ from src.app.workline.constants import (
     WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
+from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.utils import payload_dict
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
@@ -732,7 +732,7 @@ class RuntimeInboxProcessorBridge:
         inbox_service: RuntimeInboxService | None = None,
         inbox_repository: RuntimeInboxRepository | None = None,
         replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
-        plugin_attempt_runner: PluginAttemptRunner | None = None,
+        plugin_dispatcher: WorklinePluginDispatcher | None = None,
         recorded_replay_service: TimelineRecordedReplayService | None = None,
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
         material_unit_repository: MaterialUnitRepository | None = None,
@@ -746,7 +746,7 @@ class RuntimeInboxProcessorBridge:
             self._inbox_repository
         )
         # 平台 binding 只进入 generated dispatcher；destructive switch 后禁止 legacy fallback。
-        self._plugin_attempt_runner = plugin_attempt_runner or GeneratedPluginAttemptRunner()
+        self._generated_attempt_runner = GeneratedPluginAttemptRunner(dispatcher=plugin_dispatcher)
         self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
         self._material_unit_repository = material_unit_repository or default_material_unit_repository
@@ -867,6 +867,25 @@ class RuntimeInboxProcessorBridge:
         )
         await runtime.replace_with(replacement)
         return provider_profile
+
+    async def _build_generated_dispatch_request(
+        self,
+        db: Any,
+        *,
+        inbox: Any,
+        session: Any,
+        workline: Any,
+        snapshot: AttemptSnapshot,
+    ) -> PluginDispatchRequest:
+        """构造 generated dispatcher 的不可变请求；生产路径不允许跳过。"""
+
+        return await _build_plugin_dispatch_request(
+            db,
+            inbox=inbox,
+            session=session,
+            workline=workline,
+            snapshot=snapshot,
+        )
 
     async def claim_and_process_batch(
         self,
@@ -1378,6 +1397,28 @@ class RuntimeInboxProcessorBridge:
                 attempt_runtime=attempt_runtime,
             )
 
+        except PluginBindingAdmissionError as e:
+            diagnostic_error_code = e.error_code or ErrorCode.UNKNOWN
+            retryable = e.error_code is None
+            logger.warning(
+                f"Inbox {inbox_pk_text} plugin binding admission failed: "
+                f"code={diagnostic_error_code.value}, message={e}"
+            )
+            await self._record_processing_failure(
+                db,
+                diagnostic_inbox=diagnostic_inbox,
+                inbox_pk=inbox_pk,
+                processor_token=processor_token,
+                diagnostic_error_code=diagnostic_error_code,
+                failure_error_code=diagnostic_error_code.value,
+                diagnostic_message=str(e),
+                failure_message=str(e),
+                retryable=retryable,
+                mark_failure_log=f"Inbox {inbox_pk_text} plugin binding admission 失败补记失败",
+            )
+            result["failed"] += 1
+            result["processed"] += 1
+
         except SessionResolveError as e:
             logger.warning(f"Inbox {inbox_pk_text} session resolve failed: {e}")
             await self._record_processing_failure(
@@ -1496,24 +1537,22 @@ class RuntimeInboxProcessorBridge:
             material_unit_version=material_fact_version,
             devices_by_role=devices_by_role,
         )
-        dispatch_request = None
-        if isinstance(self._plugin_attempt_runner, GeneratedPluginAttemptRunner):
-            dispatch_request = await _build_plugin_dispatch_request(
-                db,
-                inbox=inbox,
-                session=session,
-                workline=workline,
-                snapshot=snapshot,
-            )
-            await self._pin_attempt_runtime_to_dispatch_snapshot(
-                db,
-                runtime=attempt_runtime,
-                snapshot=dispatch_request.snapshot,
-            )
-            _configure_attempt_runtime_ports(
-                attempt_runtime,
-                services=services,
-            )
+        dispatch_request = await self._build_generated_dispatch_request(
+            db,
+            inbox=inbox,
+            session=session,
+            workline=workline,
+            snapshot=snapshot,
+        )
+        await self._pin_attempt_runtime_to_dispatch_snapshot(
+            db,
+            runtime=attempt_runtime,
+            snapshot=dispatch_request.snapshot,
+        )
+        _configure_attempt_runtime_ports(
+            attempt_runtime,
+            services=services,
+        )
         context = PluginAttemptContext(
             attempt_id=processor_token,
             inbox_id=inbox_id,
@@ -1537,7 +1576,7 @@ class RuntimeInboxProcessorBridge:
         # Stage 2 不接收 db/session/repository。Recorded replay 直接解码，
         # 因此不会调用 runner 或 Gateway handler。
         if replay_resolution is None:
-            write_set = await self._plugin_attempt_runner.run(context)
+            write_set = await self._generated_attempt_runner.run(context)
         else:
             write_set = _write_set_from_recorded_replay(replay_resolution, fallback_state=context.plugin_state)
         write_set = _bounded_plugin_write_set(
@@ -1877,6 +1916,10 @@ def _plugin_attempt_snapshot(
         binding_version=optional_int(getattr(session, "plugin_binding_version", None)),
         plugin_config_hash=optional_str(getattr(session, "plugin_config_hash", None)),
         index_digest=optional_str(getattr(session, "plugin_index_digest", None)),
+        wait_anchor=(
+            optional_str(getattr(session, "current_wait_type", None)),
+            optional_str(getattr(session, "awaiting_device_command_code", None)),
+        ),
     )
 
 
@@ -2315,12 +2358,7 @@ async def _handle_timer_timeout(
     )
 
 
-# Public alias used by callers.
-RuntimeInboxProcessorService = RuntimeInboxProcessorBridge
-
-
 __all__ = [
     "ProcessResult",
     "RuntimeInboxProcessorBridge",
-    "RuntimeInboxProcessorService",
 ]

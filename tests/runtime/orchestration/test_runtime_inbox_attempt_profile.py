@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.runtime.capability_port_registry import CapabilityPortRegistry
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
-    GeneratedPluginAttemptRunner,
     RuntimeInboxProcessorBridge,
     _configure_attempt_runtime_ports,
     _runtime_profile_from_pinned_binding,
@@ -388,7 +387,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
         validation_service=Validation(),
         inbox_repository=Repository(),
         writeback_service=WriteBack(),
-        plugin_attempt_runner=GeneratedPluginAttemptRunner(dispatcher=Dispatcher()),
+        plugin_dispatcher=Dispatcher(),
     )
     created_gateways: list[object] = []
     original_create_attempt_runtime = bridge.create_attempt_runtime

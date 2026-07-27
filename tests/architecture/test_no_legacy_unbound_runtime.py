@@ -25,7 +25,9 @@ GENERATED_RUNTIME_SOURCES = (
 )
 BANNED_GENERATED_TOKENS = (
     "OrchestratorResult",
+    "RuntimeInboxProcessorService",
     "orch_result",
+    "plugin_attempt_runner",
     "SimpleNamespace",
     "legacy_compatibility",
     "runtime_inbox_processor_service",

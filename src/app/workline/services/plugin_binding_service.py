@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 class PluginBindingAdmissionError(RuntimeError):
     """binding 激活或执行准入失败；调用方必须 fail closed。"""
 
+    def __init__(self, message: str, *, error_code: ErrorCode | None = None) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
 
 @dataclass(frozen=True, slots=True)
 class _PluginBindingActivationPlan:

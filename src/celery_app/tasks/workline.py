@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
 from src.celery_app.app import celery_app
@@ -89,6 +91,36 @@ def _empty_smt_inbound_handoff_recovery_result() -> SmtInboundHandoffRecoveryRes
         "manual_hold": 0,
         "recovery_errors": 0,
     }
+
+
+async def _scan_smt_inbound_handoff_demands_in_transaction(
+    db: AsyncSession,
+    *,
+    service: Any,
+    scan_limit: int,
+    recovery_limit: int,
+    claim_limit: int,
+    stale_after_seconds: int,
+    legacy_limit: int | None,
+) -> SmtInboundHandoffRecoveryResult:
+    """执行一次 SMT recovery，并在 task-local Session 上提交完整批次。"""
+
+    if legacy_limit is not None:
+        recovery_result = await service.scan_smt_inbound_handoff_demands_batch(
+            db,
+            stale_after_seconds=stale_after_seconds,
+            limit=legacy_limit,
+        )
+    else:
+        recovery_result = await service.scan_smt_inbound_handoff_demands_batch(
+            db,
+            stale_after_seconds=stale_after_seconds,
+            scan_limit=scan_limit,
+            recovery_limit=recovery_limit,
+            claim_limit=claim_limit,
+        )
+    await db.commit()
+    return cast("SmtInboundHandoffRecoveryResult", recovery_result)
 
 
 class TimeoutScanner:
@@ -377,21 +409,15 @@ def scan_smt_inbound_handoff_demands_batch(
                 smt_inbound_handoff_service,
             )
 
-            if legacy_limit is not None:
-                recovery_result = await smt_inbound_handoff_service.scan_smt_inbound_handoff_demands_batch(
-                    db,
-                    stale_after_seconds=stale_after_seconds,
-                    limit=legacy_limit,
-                )
-            else:
-                recovery_result = await smt_inbound_handoff_service.scan_smt_inbound_handoff_demands_batch(
-                    db,
-                    stale_after_seconds=stale_after_seconds,
-                    scan_limit=scan_limit,
-                    recovery_limit=recovery_limit,
-                    claim_limit=claim_limit,
-                )
-            return cast("SmtInboundHandoffRecoveryResult", recovery_result)
+            return await _scan_smt_inbound_handoff_demands_in_transaction(
+                db,
+                service=smt_inbound_handoff_service,
+                scan_limit=scan_limit,
+                recovery_limit=recovery_limit,
+                claim_limit=claim_limit,
+                stale_after_seconds=stale_after_seconds,
+                legacy_limit=legacy_limit,
+            )
 
     try:
         result = run_async(_scan)

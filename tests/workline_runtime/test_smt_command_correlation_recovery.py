@@ -151,7 +151,20 @@ async def test_unique_matching_candidate_recovers_command_correlation() -> None:
     outcome, item = await _recover(service)
 
     assert outcome == "advanced"
-    assert service.command_repository.calls == [{"correlation_id": "workline-session:SMT-21", "limit": 2}]
+    assert service.command_repository.calls == [
+        {
+            "correlation_id": "workline-session:SMT-21",
+            "awaiting_command_code": "SC-SOURCE-PICK-31",
+            "workline_id": 7,
+            "task_type": "SORTING_SOURCE_PICK",
+            "handoff_demand_id": 11,
+            "handoff_source_item_id": 12,
+            "claim_attempt_no": 3,
+            "source_pick_inbox_id": 31,
+            "source_pick_request_event_id": "source-pick-event-31",
+            "limit": 2,
+        }
+    ]
     assert service.correlations == [
         {
             "handoff_demand_id": 11,
@@ -257,9 +270,138 @@ async def test_command_repository_uses_correlation_index_entry_with_two_row_budg
     build_statement = getattr(repository, "build_runtime_correlation_statement", None)
     assert build_statement is not None, "command recovery 必须复用 correlation_id 索引入口"
 
-    statement = build_statement(correlation_id="workline-session:SMT-21", limit=2)
+    statement = build_statement(
+        correlation_id="workline-session:SMT-21",
+        awaiting_command_code="SC-SOURCE-PICK-31",
+        workline_id=7,
+        task_type="SORTING_SOURCE_PICK",
+        handoff_demand_id=11,
+        handoff_source_item_id=12,
+        claim_attempt_no=3,
+        source_pick_inbox_id=31,
+        source_pick_request_event_id="source-pick-event-31",
+        limit=2,
+    )
     compiled = str(statement)
 
     assert "correlation_id" in compiled
     assert getattr(statement, "_limit_clause", None) is not None
     assert int(statement._limit_clause.value) == 2  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_command_repository_filters_evidence_before_two_row_budget(db_session: Any) -> None:
+    from src.app.device.models.command import CommandStatus, DeviceCommand
+    from src.app.device.repositories.command_repository import DeviceCommandRepository
+
+    unrelated = DeviceCommand(
+        device_id=1,
+        task_type="SORTING_SOURCE_PICK",
+        command_code="SC-UNRELATED-FIRST",
+        correlation_id="workline-session:SMT-21",
+        workline_id=7,
+        params={
+            "handoff_demand_id": 999,
+            "handoff_source_item_id": 999,
+            "claim_attempt_no": 999,
+            "source_pick_inbox_id": 999,
+            "source_pick_request_event_id": "unrelated-event",
+        },
+        status=CommandStatus.PENDING,
+    )
+    valid = DeviceCommand(
+        device_id=1,
+        task_type="SORTING_SOURCE_PICK",
+        command_code="SC-SOURCE-PICK-31",
+        correlation_id="workline-session:SMT-21",
+        workline_id=7,
+        params={
+            "handoff_demand_id": 11,
+            "handoff_source_item_id": 12,
+            "claim_attempt_no": 3,
+            "source_pick_inbox_id": 31,
+            "source_pick_request_event_id": "source-pick-event-31",
+        },
+        status=CommandStatus.PENDING,
+    )
+    db_session.add_all([unrelated, valid])
+    await db_session.flush()
+
+    candidates = await DeviceCommandRepository().list_by_runtime_correlation(
+        db_session,
+        correlation_id="workline-session:SMT-21",
+        awaiting_command_code="SC-SOURCE-PICK-31",
+        workline_id=7,
+        task_type="SORTING_SOURCE_PICK",
+        handoff_demand_id=11,
+        handoff_source_item_id=12,
+        claim_attempt_no=3,
+        source_pick_inbox_id=31,
+        source_pick_request_event_id="source-pick-event-31",
+        limit=2,
+    )
+
+    assert [candidate.command_code for candidate in candidates] == ["SC-SOURCE-PICK-31"]
+
+
+class _RecoveryScanRepository:
+    async def list_due_recovery_demands(self, _db: object, **_kwargs: object) -> list[object]:
+        return []
+
+    async def list_stuck_source_items_for_recovery(self, _db: object, **_kwargs: object) -> list[object]:
+        return [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+
+
+class _NestedTransaction:
+    def __init__(self, db: _SavepointDB) -> None:
+        self.db = db
+
+    async def __aenter__(self) -> None:
+        self.db.entered += 1
+
+    async def __aexit__(self, exc_type: object, _exc: object, _tb: object) -> bool:
+        if exc_type is not None:
+            self.db.rolled_back += 1
+        return False
+
+
+class _SavepointDB:
+    def __init__(self) -> None:
+        self.entered = 0
+        self.rolled_back = 0
+
+    def begin_nested(self) -> _NestedTransaction:
+        return _NestedTransaction(self)
+
+
+class _SavepointRecoveryService(SmtInboundHandoffService):
+    def __init__(self) -> None:
+        super().__init__(repository=_RecoveryScanRepository())  # type: ignore[arg-type]
+        self.recovered_ids: list[int] = []
+
+    async def _recover_stuck_source_item(self, _db: object, item: object, *, now: object) -> str:
+        _ = now
+        item_id = int(item.id)  # type: ignore[attr-defined]
+        self.recovered_ids.append(item_id)
+        if item_id == 1:
+            raise RuntimeError("first recovery failed")
+        return "advanced"
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_uses_savepoint_per_item_and_continues_after_failure() -> None:
+    service = _SavepointRecoveryService()
+    db = _SavepointDB()
+
+    summary = await service.scan_smt_inbound_handoff_demands_batch(
+        db,  # type: ignore[arg-type]
+        scan_limit=0,
+        recovery_limit=2,
+        claim_limit=0,
+    )
+
+    assert service.recovered_ids == [1, 2]
+    assert db.entered == 2
+    assert db.rolled_back == 1
+    assert summary["recovery_errors"] == 1
+    assert summary["advanced"] == 1

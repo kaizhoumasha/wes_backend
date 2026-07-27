@@ -9,6 +9,7 @@ from src.app.runtime.orchestration.events_bridge import RESERVED_RUNTIME_EVENTS
 from src.app.workline.constants import EXTERNAL_HTTP_INBOX_KIND
 from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
 from src.app.workline.services.plugin_binding_service import (
+    PluginBindingAdmissionError,
     WorklinePluginBindingService,
     workline_plugin_binding_service,
 )
@@ -198,9 +199,10 @@ async def _assert_platform_plugin_binding_admitted(
         return
     binding_id = getattr(session, "plugin_binding_id", None)
     if not isinstance(binding_id, int):
-        from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
-
-        raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value)
+        raise PluginBindingAdmissionError(
+            ErrorCode.PLUGIN_BINDING_REQUIRED.value,
+            error_code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+        )
     binding = await workline_plugin_binding_service.get_pinned(db, binding_id=binding_id)
     workline_plugin_binding_service.assert_pinned_identity(binding=binding, workline=workline, session=session)
     workline_plugin_binding_service.assert_execution_admitted(

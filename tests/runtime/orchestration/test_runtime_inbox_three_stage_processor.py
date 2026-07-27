@@ -65,6 +65,23 @@ from src.utils.timezone import timezone
 # ============================================================
 
 
+def _bridge_with_test_runner(runner: Any, **kwargs: Any) -> RuntimeInboxProcessorBridge:
+    """测试可替换 Stage 2 结果，生产构造器只允许注入 generated dispatcher。"""
+
+    bridge = RuntimeInboxProcessorBridge(**kwargs)
+    bridge._generated_attempt_runner = runner
+
+    async def _build_request(*_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(snapshot=SimpleNamespace())
+
+    async def _pin_runtime(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    bridge._build_generated_dispatch_request = _build_request  # type: ignore[method-assign]
+    bridge._pin_attempt_runtime_to_dispatch_snapshot = _pin_runtime  # type: ignore[method-assign]
+    return bridge
+
+
 def _write_set(**kwargs: Any) -> Any:
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
 
@@ -347,9 +364,9 @@ async def test_process_cancellation_closes_attempt_and_leaves_no_background_hand
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
         not_duplicate,
     )
-    bridge = RuntimeInboxProcessorBridge(
+    bridge = _bridge_with_test_runner(
+        Runner(),
         inbox_repository=Repository(),  # type: ignore[arg-type]
-        plugin_attempt_runner=Runner(),
     )
     bridge.create_attempt_runtime = lambda *_args, **_kwargs: runtime  # type: ignore[method-assign]
     process_task = asyncio.create_task(bridge.process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"}))
@@ -433,8 +450,8 @@ async def test_platform_processor_returns_within_gateway_hard_deadline() -> None
         plugin_binding_version=4,
         plugin_index_digest="b" * 64,
     )
-    bridge = RuntimeInboxProcessorBridge(
-        plugin_attempt_runner=Runner(),
+    bridge = _bridge_with_test_runner(
+        Runner(),
         writeback_service=WriteBack(),  # type: ignore[arg-type]
     )
     try:
@@ -963,10 +980,10 @@ async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_conte
         not_duplicate,
     )
 
-    result = await RuntimeInboxProcessorBridge(
+    result = await _bridge_with_test_runner(
+        Runner(),
         inbox_repository=Repository(),  # type: ignore[arg-type]
         writeback_service=WriteBack(),  # type: ignore[arg-type]
-        plugin_attempt_runner=Runner(),
     ).process_claimed(db, claim={"id": 91, "processor_token": "lease-1"})
 
     assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
@@ -1056,11 +1073,11 @@ async def test_command_result_guards_dispatcher_before_plugin_writes(
         record_archive,
     )
 
-    result = await RuntimeInboxProcessorBridge(
+    result = await _bridge_with_test_runner(
+        Runner(),
         inbox_repository=Repository(),  # type: ignore[arg-type]
         inbox_service=InboxService(),  # type: ignore[arg-type]
         writeback_service=WriteBack(),  # type: ignore[arg-type]
-        plugin_attempt_runner=Runner(),
     ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
 
     assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
@@ -1253,11 +1270,11 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
         effect_applier=RuntimeIntentEffectApplier(system_capability_effect_service=CapabilityEffects()),
     )
 
-    result = await RuntimeInboxProcessorBridge(
+    result = await _bridge_with_test_runner(
+        Runner(),
         inbox_repository=InboxRepository(),  # type: ignore[arg-type]
         inbox_service=InboxService(),  # type: ignore[arg-type]
         writeback_service=writeback,
-        plugin_attempt_runner=Runner(),
         queue_gateway=QueueGateway(),  # type: ignore[arg-type]
     ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
 
@@ -1294,8 +1311,8 @@ async def test_platform_query_stage_releases_real_async_session_transaction() ->
             return WriteDisposition.COMMITTED
 
     runner = Runner()
-    bridge = RuntimeInboxProcessorBridge(
-        plugin_attempt_runner=runner,
+    bridge = _bridge_with_test_runner(
+        runner,
         writeback_service=WriteBack(),  # type: ignore[arg-type]
     )
     inbox = _make_inbox(inbox_id=91, payload_json={"event_type": "SCAN_COMPLETED"})
@@ -1362,8 +1379,8 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
             return WriteDisposition.COMMITTED
 
-    bridge = RuntimeInboxProcessorBridge(
-        plugin_attempt_runner=Runner(),
+    bridge = _bridge_with_test_runner(
+        Runner(),
         writeback_service=WriteBack(),  # type: ignore[arg-type]
         material_unit_repository=MaterialRepository(),  # type: ignore[arg-type]
     )
@@ -1439,8 +1456,8 @@ async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None
             events.append("enqueue-failed")
             raise RuntimeError("broker unavailable")
 
-    bridge = RuntimeInboxProcessorBridge(
-        plugin_attempt_runner=Runner(),
+    bridge = _bridge_with_test_runner(
+        Runner(),
         writeback_service=WriteBack(),  # type: ignore[arg-type]
         queue_gateway=FailingQueueGateway(),  # type: ignore[arg-type]
     )
@@ -1495,8 +1512,8 @@ async def test_platform_safe_retry_requeues_inbox_with_same_lease() -> None:
             calls.append(("park", kwargs))
             return True
 
-    bridge = RuntimeInboxProcessorBridge(
-        plugin_attempt_runner=Runner(),
+    bridge = _bridge_with_test_runner(
+        Runner(),
         writeback_service=WriteBack(),  # type: ignore[arg-type]
         inbox_service=InboxService(),  # type: ignore[arg-type]
     )
@@ -1534,6 +1551,119 @@ async def test_platform_safe_retry_requeues_inbox_with_same_lease() -> None:
             },
         ),
         ("commit", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generated_attempt_wait_anchor_change_safe_retries_then_next_round_archives_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+        _ClaimedInboxContext,
+        _plugin_attempt_snapshot,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+
+    events: list[object] = []
+    session = SimpleNamespace(
+        id=10,
+        version=7,
+        plugin_state_version=3,
+        plugin_state_json={},
+        plugin_identity="plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_binding_id=17,
+        plugin_binding_version=4,
+        plugin_config_hash="c" * 64,
+        plugin_index_digest="b" * 64,
+        status="WAITING_DEVICE_RESULT",
+        current_wait_type="DEVICE_CALLBACK",
+        awaiting_device_command_code="CMD-1",
+        current_material_unit_id=None,
+    )
+    snapshot = _plugin_attempt_snapshot(session, processor_token="lease-1")
+    assert snapshot.wait_anchor == ("DEVICE_CALLBACK", "CMD-1")
+    # 模拟 Stage 2 QUERY 期间，另一个 callback 已把等待锚推进到下一条命令。
+    session.awaiting_device_command_code = "CMD-2"
+
+    class Db:
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+        async def commit(self) -> None:
+            events.append("archive-commit")
+
+    class PluginRepository:
+        async def lock_authoritative(self, _db: object, **_kwargs: object) -> object:
+            events.append("authoritative-lock")
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=session,
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            events.append("MUST_NOT_PERSIST")
+
+    disposition = await RuntimeInboxWriteBackService(
+        plugin_attempt_repository=PluginRepository(),
+    ).commit_plugin_attempt(
+        Db(),
+        expected_snapshot=snapshot,
+        inbox_id=91,
+        session_id=10,
+        workline_id=20,
+        trace_id="trace-anchor",
+        write_set=AttemptWriteSet(
+            evidence=("late-query-evidence",),
+            next_state={"step": "MUST_NOT_APPLY"},
+            intents=(),
+        ),
+    )
+
+    assert disposition is WriteDisposition.SAFE_RETRY
+    assert events == ["authoritative-lock", "rollback"]
+
+    async def _archive(*_args: object, **kwargs: object) -> None:
+        events.append(("archive", kwargs["reason"]))
+
+    class InboxService:
+        async def mark_processed(self, _db: object, **kwargs: object) -> bool:
+            events.append(("processed", kwargs["lease_token"]))
+            return True
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._record_late_command_result_archive_timeline",
+        _archive,
+    )
+    late_inbox = _make_inbox(
+        inbox_id=91,
+        kind="COMMAND_RESULT",
+        payload_json={"command_code": "CMD-1", "result": "SUCCESS"},
+    )
+    late_context = _ClaimedInboxContext(
+        inbox=late_inbox,
+        inbox_pk=91,
+        payload={"command_code": "CMD-1", "result": "SUCCESS"},
+        resolved_event_type="COMMAND_RESULT",
+        session=session,
+        workline=SimpleNamespace(id=20),
+        device=None,
+        command=SimpleNamespace(command_code="CMD-1", status="COMPLETED"),
+        processor_token="lease-1",
+    )
+    result = await RuntimeInboxProcessorBridge(
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+    )._process_duplicate_or_late_event(
+        Db(),  # type: ignore[arg-type]
+        context=late_context,
+    )
+
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert events == [
+        "authoritative-lock",
+        "rollback",
+        ("archive", "COMMAND_RESULT_CORRELATION_MISMATCH"),
+        ("processed", "lease-1"),
+        "archive-commit",
     ]
 
 
@@ -1660,11 +1790,11 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
         not_duplicate,
     )
-    result = await RuntimeInboxProcessorBridge(
+    result = await _bridge_with_test_runner(
+        Runner(),
         inbox_repository=Repository(),  # type: ignore[arg-type]
         writeback_service=WriteBack(),  # type: ignore[arg-type]
         replay_source_validator=Validator(),  # type: ignore[arg-type]
-        plugin_attempt_runner=Runner(),  # type: ignore[arg-type]
         recorded_replay_service=ReplayService(),  # type: ignore[arg-type]
         plugin_write_set_limits=(
             PluginWriteSetLimits(max_next_state_bytes=1) if replay_case == "oversize_state" else None
@@ -1784,12 +1914,12 @@ async def test_platform_recorded_replay_precedes_late_callback_and_timer_routes(
         forbidden_route,
     )
 
-    result = await RuntimeInboxProcessorBridge(
+    result = await _bridge_with_test_runner(
+        Runner(),
         inbox_repository=Repository(),  # type: ignore[arg-type]
         writeback_service=WriteBack(),  # type: ignore[arg-type]
         replay_source_validator=Validator(),  # type: ignore[arg-type]
         recorded_replay_service=ReplayService(),  # type: ignore[arg-type]
-        plugin_attempt_runner=Runner(),  # type: ignore[arg-type]
     ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
 
     assert result["success"] == 1
@@ -2050,8 +2180,8 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
         load_related,
     )
-    processor = RuntimeInboxProcessorBridge(
-        plugin_attempt_runner=_Runner(),  # type: ignore[arg-type]
+    processor = _bridge_with_test_runner(
+        _Runner(),
         writeback_service=_WriteBack(),  # type: ignore[arg-type]
         inbox_service=runtime_service,
         recorded_replay_service=_RecordedReplay(),  # type: ignore[arg-type]

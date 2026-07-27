@@ -1,7 +1,7 @@
 """RuntimeInbox Celery task (Plan Task 6).
 
 消费 RuntimeInbox 表中 RECEIVED 状态行 → 转 PROCESSING (token fencing) →
-调用 RuntimeInboxProcessorService.process_claimed → 终态写回.
+调用 RuntimeInboxProcessorBridge.process_claimed → 终态写回.
 
 claim-one / process-one 循环, 每条 timeout INBOX_PROCESS_TIMEOUT_SECONDS.
 

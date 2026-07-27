@@ -58,7 +58,7 @@ from src.app.workline.utils import payload_dict
 from src.core.conf import settings
 from src.core.task_queue_gateway import task_queue_gateway
 from src.utils.timezone import timezone
-from src.utils.value_normalization import canonical_event_type, optional_int, string_value
+from src.utils.value_normalization import canonical_event_type, optional_int, optional_str, string_value
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
@@ -96,6 +96,14 @@ def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> b
         and getattr(session, "version", None) == expected.session_version
         and getattr(session, "plugin_state_version", None) == expected.plugin_state_version
         and (expected.session_status is None or _session_status_value(session) == expected.session_status)
+        and (
+            expected.wait_anchor is None
+            or (
+                optional_str(getattr(session, "current_wait_type", None)),
+                optional_str(getattr(session, "awaiting_device_command_code", None)),
+            )
+            == expected.wait_anchor
+        )
         and (
             expected.material_unit_id is None
             or (
