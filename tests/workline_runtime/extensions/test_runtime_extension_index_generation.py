@@ -26,6 +26,7 @@ from src.app.runtime.workline_plugins import WorklinePluginDefinition
 from src.app.runtime.workline_plugins.index_builder import (
     WorklinePluginIndexBuilder,
     WorklinePluginSource,
+    workline_plugin_handler_identities,
 )
 from src.app.runtime.workline_plugins.schema import (
     STATE_MACHINE_CONTRACT_PROFILES,
@@ -136,6 +137,10 @@ def parse_scan(payload: dict[str, object]) -> str:
     return str(payload["barcode"])
 
 
+def build_plugin_facts(_source: object) -> PluginState:
+    return PluginState()
+
+
 def duplicate_ng_reasons() -> tuple[NgReasonDefinition, ...]:
     reason = NgReasonDefinition(
         canonical_code="DUPLICATE_NG",
@@ -198,10 +203,14 @@ def plugin_source(
     module_name: str = "tests.fixtures.plugins.rough_sorter.definition",
     directory_key: str = "rough_sorter",
 ) -> WorklinePluginSource:
+    definition = definition or plugin_definition()
     return WorklinePluginSource(
         module_name=module_name,
         directory_key=directory_key,
-        definition=definition or plugin_definition(),
+        definition=definition,
+        handler_identities=(
+            ("scan.completed", f"{__name__}.parse_scan", f"{__name__}.PluginState", f"{__name__}.build_plugin_facts"),
+        ),
     )
 
 
@@ -291,7 +300,9 @@ def test_plugin_renderer_executes_with_definition_mapping(monkeypatch: pytest.Mo
         module_name="pluginpkg.rough_sorter.definition",
         directory_key="rough_sorter",
         definition=plugin_definition(),
-        handler_identities=(("scan.completed", f"{__name__}.parse_scan", f"{__name__}.PluginState"),),
+        handler_identities=(
+            ("scan.completed", f"{__name__}.parse_scan", f"{__name__}.PluginState", f"{__name__}.build_plugin_facts"),
+        ),
     )
     second = WorklinePluginSource(
         module_name="pluginpkg.secondary.definition",
@@ -301,7 +312,9 @@ def test_plugin_renderer_executes_with_definition_mapping(monkeypatch: pytest.Mo
             routes=("sort.completed",),
             parsers={"sort.completed": parse_scan},
         ),
-        handler_identities=(("sort.completed", f"{__name__}.parse_scan", f"{__name__}.PluginState"),),
+        handler_identities=(
+            ("sort.completed", f"{__name__}.parse_scan", f"{__name__}.PluginState", f"{__name__}.build_plugin_facts"),
+        ),
     )
     generated = WorklinePluginIndexBuilder(
         capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}
@@ -314,13 +327,13 @@ def test_plugin_renderer_executes_with_definition_mapping(monkeypatch: pytest.Mo
     first_module = ModuleType(first.module_name)
     first_module.DEFINITION = first.definition  # type: ignore[attr-defined]
     first_module.ROUTE_HANDLERS = {  # type: ignore[attr-defined]
-        ("rough_sorter", "v1", "scan.completed"): ((parse_scan, PluginState),)
+        ("rough_sorter", "v1", "scan.completed"): ((parse_scan, PluginState, build_plugin_facts),)
     }
     monkeypatch.setitem(sys.modules, first.module_name, first_module)
     second_module = ModuleType(second.module_name)
     second_module.DEFINITION = second.definition  # type: ignore[attr-defined]
     second_module.ROUTE_HANDLERS = {  # type: ignore[attr-defined]
-        ("secondary", "v1", "sort.completed"): ((parse_scan, PluginState),)
+        ("secondary", "v1", "sort.completed"): ((parse_scan, PluginState, build_plugin_facts),)
     }
     monkeypatch.setitem(sys.modules, second.module_name, second_module)
 
@@ -336,8 +349,8 @@ def test_plugin_renderer_executes_with_definition_mapping(monkeypatch: pytest.Mo
     generated_registrations = namespace["WORKLINE_PLUGIN_HANDLER_REGISTRATIONS"]
     assert generated_registrations == MappingProxyType(
         {
-            ("rough_sorter", "v1", "scan.completed"): ((parse_scan, PluginState),),
-            ("secondary", "v1", "sort.completed"): ((parse_scan, PluginState),),
+            ("rough_sorter", "v1", "scan.completed"): ((parse_scan, PluginState, build_plugin_facts),),
+            ("secondary", "v1", "sort.completed"): ((parse_scan, PluginState, build_plugin_facts),),
         }
     )
 
@@ -361,17 +374,54 @@ def test_plugin_digest_changes_when_static_handler_registration_changes() -> Non
         module_name=source.module_name,
         directory_key=source.directory_key,
         definition=source.definition,
-        handler_identities=(("scan.completed", "pkg.handlers.decide_v1", "pkg.facts.ScanFacts"),),
+        handler_identities=(("scan.completed", "pkg.handlers.decide_v1", "pkg.facts.ScanFacts", "pkg.facts.build_v1"),),
     )
     second = WorklinePluginSource(
         module_name=source.module_name,
         directory_key=source.directory_key,
         definition=source.definition,
-        handler_identities=(("scan.completed", "pkg.handlers.decide_v2", "pkg.facts.ScanFacts"),),
+        handler_identities=(("scan.completed", "pkg.handlers.decide_v2", "pkg.facts.ScanFacts", "pkg.facts.build_v1"),),
     )
     builder = WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY})
 
     assert builder.build((first,)).digest != builder.build((second,)).digest
+
+
+def test_plugin_digest_changes_when_facts_builder_registration_changes() -> None:
+    source = plugin_source()
+    first = WorklinePluginSource(
+        module_name=source.module_name,
+        directory_key=source.directory_key,
+        definition=source.definition,
+        handler_identities=(("scan.completed", "pkg.handlers.decide", "pkg.facts.ScanFacts", "pkg.facts.build_v1"),),
+    )
+    second = WorklinePluginSource(
+        module_name=source.module_name,
+        directory_key=source.directory_key,
+        definition=source.definition,
+        handler_identities=(("scan.completed", "pkg.handlers.decide", "pkg.facts.ScanFacts", "pkg.facts.build_v2"),),
+    )
+    builder = WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY})
+
+    assert builder.build((first,)).digest != builder.build((second,)).digest
+
+
+def test_plugin_registration_identity_rejects_lambda_missing_and_duplicate_routes() -> None:
+    definition = plugin_definition()
+    route_key = (definition.plugin_key, definition.contract_version, "scan.completed")
+
+    with pytest.raises(TypeError, match="stable import identity"):
+        workline_plugin_handler_identities(
+            definition,
+            {route_key: ((lambda _payload: None, PluginState, build_plugin_facts),)},
+        )
+    with pytest.raises(ValueError, match="exactly one handler registration"):
+        workline_plugin_handler_identities(definition, {})
+    with pytest.raises(ValueError, match="exactly one handler registration"):
+        workline_plugin_handler_identities(
+            definition,
+            {route_key: ((parse_scan, PluginState, build_plugin_facts), (parse_scan, PluginState, build_plugin_facts))},
+        )
 
 
 def test_plugin_builder_rejects_duplicate_identity() -> None:
@@ -419,7 +469,7 @@ def test_builder_discovers_author_definition_files_only_at_build_time(
                 DEFINITION=definition,
                 ROUTE_HANDLERS={
                     (definition.plugin_key, definition.contract_version, "scan.completed"): (  # type: ignore[union-attr]
-                        (parse_scan, PluginState),
+                        (parse_scan, PluginState, build_plugin_facts),
                     )
                 },
             )
@@ -458,7 +508,9 @@ def test_plugin_builder_keeps_multiple_contract_versions_from_one_plugin_directo
         plugin_definition(contract_version="v2"),
     )
     route_handlers = {
-        (definition.plugin_key, definition.contract_version, "scan.completed"): ((parse_scan, PluginState),)
+        (definition.plugin_key, definition.contract_version, "scan.completed"): (
+            (parse_scan, PluginState, build_plugin_facts),
+        )
         for definition in versions
     }
     module_name = "fixture.plugins.rough_sorter.definition"
@@ -833,8 +885,14 @@ def test_generated_indexes_are_complete_read_only_and_cold_start_safe() -> None:
         ("wms.inventory.confirm_inbound", "v1"),
         ("wms.inventory.query_inventory", "v1"),
     )
-    assert plugin_index.WORKLINE_PLUGIN_IDENTITIES == (("rough_sorter", "rough_sorter.v2"),)
-    assert tuple(plugin_index.WORKLINE_PLUGIN_INDEX) == (("rough_sorter", "rough_sorter.v2"),)
+    assert plugin_index.WORKLINE_PLUGIN_IDENTITIES == (
+        ("rough_sorter", "rough_sorter.v2"),
+        ("smt_sorting_inbound", "v1"),
+    )
+    assert tuple(plugin_index.WORKLINE_PLUGIN_INDEX) == (
+        ("rough_sorter", "rough_sorter.v2"),
+        ("smt_sorting_inbound", "v1"),
+    )
     with pytest.raises(TypeError):
         system_index.SYSTEM_CAPABILITY_INDEX[("x", "v1")] = object()  # type: ignore[index]
 
@@ -866,7 +924,7 @@ def test_cli_write_is_idempotent_and_check_reports_both_indexes(tmp_path: Path) 
     assert first_bytes == (plugin_output.read_bytes(), system_output.read_bytes())
     check = subprocess.run([*command, "--check"], cwd=REPO_ROOT, check=False, capture_output=True, text=True)
     assert check.returncode == 0
-    assert "workline_plugins: count=1 digest=" in check.stdout
+    assert "workline_plugins: count=2 digest=" in check.stdout
     assert "system_capabilities: count=7 digest=" in check.stdout
 
 

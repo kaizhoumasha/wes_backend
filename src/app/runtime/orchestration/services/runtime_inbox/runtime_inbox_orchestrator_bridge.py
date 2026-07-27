@@ -100,6 +100,7 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
 from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS, PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import (
     PinnedPluginSnapshot,
+    PluginAttemptFactSource,
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
@@ -1730,10 +1731,6 @@ async def _build_plugin_dispatch_request(
     """在 Stage 1 固定 binding/config/facts，Stage 2 只消费 immutable request。"""
 
     _ = workline
-    from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
-        RoughSorterBindingSnapshot,
-    )
-    from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts
     from src.app.workline.services.plugin_binding_service import (
         WorklinePluginBindingService,
         workline_plugin_binding_service,
@@ -1771,11 +1768,18 @@ async def _build_plugin_dispatch_request(
         raise ValueError("plugin identity is required")
     route, raw_input = _canonical_plugin_input(inbox)
     command_id = optional_int(getattr(inbox, "command_id", None))
-    if route == "PICK_AND_PUT_RESULT" and command_id is not None:
+    route_diagnostic: str | None = None
+    if route == "PICK_AND_PUT_RESULT" and command_id is None:
+        route_diagnostic = "COMMAND_ID_MISSING"
+    elif route == "PICK_AND_PUT_RESULT":
         from src.app.device.repositories import device_command_repository
 
         command = await device_command_repository.get_by_id(db, command_id)
-        command_type = optional_str(getattr(command, "task_type", None))
+        command_type = optional_str(getattr(command, "task_type", None)) if command is not None else None
+        if command is None:
+            route_diagnostic = "COMMAND_NOT_FOUND"
+        elif command_type not in {"PICK_AND_PUT", "MOVE_FORWARD", "MOVE_TO_NG"}:
+            route_diagnostic = "COMMAND_TASK_TYPE_UNSUPPORTED"
         if command_type in {"PICK_AND_PUT", "MOVE_FORWARD", "MOVE_TO_NG"}:
             # 外部 callback 不负责声明动作类型；始终以 command_id 对应的权威命令为准。
             raw_input = {**raw_input, "command_type": command_type}
@@ -1786,45 +1790,25 @@ async def _build_plugin_dispatch_request(
         raw_input=raw_input,
     )
     state = deepcopy(dict(getattr(session, "plugin_state_json", {}) or {}))
-    data = payload_dict(raw_input.get("data"))
     session_context = payload_dict(getattr(session, "context_json", None))
-    six_in_one = payload_dict(session_context.get("six_in_one"))
     material_fact: dict[str, Any] = {}
     material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
     if material_unit_id is not None:
         material_fact = await default_material_unit_repository.get_plugin_fact_payload(db, material_unit_id) or {}
-    material_six_in_one = payload_dict(material_fact.get("six_in_one"))
-    # MaterialUnit 一旦持久化即成为业务身份权威；业务键严格按 root identity、
-    # root pkg_code、six_in_one.PkgID 取值，避免嵌套历史快照遮蔽根身份。
-    identity_sources = (material_six_in_one, material_fact) if material_fact else (data, six_in_one, session_context)
-    if material_fact:
-        business_key = (
-            optional_str(material_fact.get("material_identity_key"))
-            or optional_str(material_fact.get("pkg_code"))
-            or optional_str(material_six_in_one.get("PkgID"))
-        )
-    else:
-        business_key = _first_plugin_fact(
-            *identity_sources,
-            names=("material_identity_key", "business_key", "pkg_code", "PkgID"),
-        )
-    hhpn = _first_plugin_fact(*identity_sources, names=("HHPN", "hhpn"))
-    lot_code = _first_plugin_fact(*identity_sources, names=("LotCode", "lot_code"))
     command_code = optional_str(raw_input.get("command_code"))
     awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
-    facts = RoughSorterFacts(
-        business_key=business_key,
-        hhpn=hhpn,
-        lot_code=lot_code,
-        correlation_matches=command_code is None or (awaiting_code is not None and command_code == awaiting_code),
-        replay_digest_matches=replay_digest_matches,
-        binding_snapshot=RoughSorterBindingSnapshot(
-            binding_id=binding_id,
-            binding_version=snapshot.binding_version,
-            profile_identity=profile_identity,
-            plugin_config_hash=snapshot.plugin_config_hash,
-            generated_index_digest=snapshot.index_digest,
-        ),
+    correlation_matches = command_code is None or (awaiting_code is not None and command_code == awaiting_code)
+    if route == "PICK_AND_PUT_RESULT" and not correlation_matches:
+        route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
+    pinned_snapshot = PinnedPluginSnapshot(
+        plugin_key=plugin_key,
+        contract_version=contract_version,
+        binding_identity=f"binding:{binding_id}:{snapshot.binding_version}",
+        binding_id=binding_id,
+        binding_version=snapshot.binding_version,
+        config_hash=snapshot.plugin_config_hash,
+        index_digest=snapshot.index_digest,
+        profile_identity=profile_identity,
     )
     return PluginDispatchRequest(
         plugin_key=plugin_key,
@@ -1834,17 +1818,16 @@ async def _build_plugin_dispatch_request(
         raw_state=state,
         context_state=state,
         raw_input=raw_input,
-        raw_facts=facts.model_dump(mode="json"),
-        snapshot=PinnedPluginSnapshot(
-            plugin_key=plugin_key,
-            contract_version=contract_version,
-            binding_identity=f"binding:{binding_id}:{snapshot.binding_version}",
-            binding_id=binding_id,
-            binding_version=snapshot.binding_version,
-            config_hash=snapshot.plugin_config_hash,
-            index_digest=snapshot.index_digest,
-            profile_identity=profile_identity,
+        fact_source=PluginAttemptFactSource(
+            snapshot=pinned_snapshot,
+            raw_input=raw_input,
+            session_context=session_context,
+            material_fact=material_fact,
+            correlation_matches=correlation_matches,
+            replay_digest_matches=replay_digest_matches,
+            route_diagnostic=route_diagnostic,
         ),
+        snapshot=pinned_snapshot,
     )
 
 

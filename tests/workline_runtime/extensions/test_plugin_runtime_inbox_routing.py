@@ -981,9 +981,12 @@ async def test_plugin_dispatch_prefers_persisted_material_identity_over_conflict
         object(), inbox=inbox, session=session, workline=SimpleNamespace(id=3), snapshot=snapshot
     )
 
-    assert request.raw_facts["business_key"] == "BUSINESS-PERSISTED"
-    assert request.raw_facts["hhpn"] == "HH-PERSISTED"
-    assert request.raw_facts["lot_code"] == "LOT-PERSISTED"
+    from src.app.runtime.workline_plugins.rough_sorter.handlers import build_facts
+
+    facts = build_facts(request.fact_source)
+    assert facts.business_key == "BUSINESS-PERSISTED"
+    assert facts.hhpn == "HH-PERSISTED"
+    assert facts.lot_code == "LOT-PERSISTED"
 
 
 @pytest.mark.asyncio
@@ -1062,7 +1065,9 @@ async def test_plugin_dispatch_uses_root_pkg_code_before_persisted_six_in_one_pk
         ),
     )
 
-    assert request.raw_facts["business_key"] == "PKG-ROOT"
+    from src.app.runtime.workline_plugins.rough_sorter.handlers import build_facts
+
+    assert build_facts(request.fact_source).business_key == "PKG-ROOT"
 
 
 @pytest.mark.asyncio
@@ -1164,6 +1169,7 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
 async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from src.app.device.repositories import device_command_repository
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
     config = {
@@ -1198,6 +1204,11 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
             )
         ),
     )
+    monkeypatch.setattr(
+        device_command_repository,
+        "get_by_id",
+        AsyncMock(return_value=SimpleNamespace(task_type="PICK_AND_PUT")),
+    )
     session = SimpleNamespace(
         id=2,
         version=7,
@@ -1223,6 +1234,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     )
     inbox = SimpleNamespace(
         id=1,
+        command_id=91,
         kind="COMMAND_RESULT",
         event_type="COMMAND_RESULT",
         payload_json={

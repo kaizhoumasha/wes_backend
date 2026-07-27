@@ -26,7 +26,8 @@ def build_generated_handler_registry(
         for route in definition.routes:
             authored = WORKLINE_PLUGIN_HANDLER_REGISTRATIONS.get((*identity, route), ())
             registrations[(*identity, route)] = tuple(
-                HandlerRegistration(handler=handler, facts_model=facts_model) for handler, facts_model in authored
+                HandlerRegistration(handler=handler, facts_model=facts_model, facts_builder=facts_builder)
+                for handler, facts_model, facts_builder in authored
             )
     return MappingProxyType(registrations)
 

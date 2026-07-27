@@ -24,7 +24,11 @@ from src.app.runtime.system_capabilities.definition import (
 from src.app.runtime.system_capabilities.outcomes import RetryableFailure, Success
 from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 from src.app.runtime.workline_plugins.contracts import PluginDecision
-from src.app.runtime.workline_plugins.dispatcher import PinnedPluginSnapshot, PluginDispatchRequest
+from src.app.runtime.workline_plugins.dispatcher import (
+    PinnedPluginSnapshot,
+    PluginAttemptFactSource,
+    PluginDispatchRequest,
+)
 from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 from src.app.workline import runtime_services as runtime_services_module
 from src.app.workline.runtime_services import build_workline_runtime_services
@@ -262,7 +266,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
         raw_state={"step": 1},
         context_state={"step": 1},
         raw_input={"value": 7},
-        raw_facts={},
+        fact_source=PluginAttemptFactSource(snapshot=snapshot),
         snapshot=snapshot,
     )
     definitions = {

@@ -15,6 +15,7 @@ from src.app.runtime.system_capabilities.outcomes import Success
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, PluginAttemptContext
 from src.app.runtime.workline_plugins.dispatcher import (
     PinnedPluginSnapshot,
+    PluginAttemptFactSource,
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
@@ -89,7 +90,13 @@ def _request(*, route: str, state: RoughSorterState, raw_input: dict[str, object
         raw_state=state.model_dump(mode="json"),
         context_state=state.model_dump(mode="json"),
         raw_input=raw_input,
-        raw_facts=_facts().model_dump(mode="json"),
+        fact_source=PluginAttemptFactSource(
+            snapshot=_snapshot(),
+            material_fact={
+                "material_identity_key": "PKG-001",
+                "six_in_one": {"HHPN": "HH-001", "LotCode": "LOT-001"},
+            },
+        ),
         snapshot=_snapshot(),
     )
 

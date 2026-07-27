@@ -8,15 +8,15 @@ from pydantic import ValidationError
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
     RoughSorterBindingSnapshot,
 )
+from src.app.runtime.workline_plugins.contracts import CommandResultInput
 from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
 from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts
 from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     BusinessTimeoutInput,
-    PickAndPutResultInput,
     ReplayRequestInput,
     ScanCompletedInput,
     parse_business_timeout,
-    parse_pick_and_put_result,
+    parse_command_result,
     parse_replay_request,
     parse_scan_completed,
 )
@@ -99,7 +99,7 @@ def test_state_contains_only_local_orchestration_references() -> None:
 
 def test_logical_input_parsers_are_typed_and_forbid_unknown_fields() -> None:
     scan = parse_scan_completed({"data": {"PkgID": "PKG-001"}})
-    result = parse_pick_and_put_result(
+    result = parse_command_result(
         {
             "command_code": "CMD-001",
             "command_type": "PICK_AND_PUT",
@@ -113,7 +113,7 @@ def test_logical_input_parsers_are_typed_and_forbid_unknown_fields() -> None:
     )
 
     assert isinstance(scan, ScanCompletedInput)
-    assert isinstance(result, PickAndPutResultInput)
+    assert isinstance(result, CommandResultInput)
     assert isinstance(timeout, BusinessTimeoutInput)
     assert isinstance(replay, ReplayRequestInput)
     with pytest.raises(ValidationError):
@@ -123,13 +123,13 @@ def test_logical_input_parsers_are_typed_and_forbid_unknown_fields() -> None:
 @pytest.mark.parametrize("result", ["PENDING", "ACK_RECEIVED", "SUCESS", " success "])
 def test_pick_result_rejects_non_terminal_or_noncanonical_result(result: str) -> None:
     with pytest.raises(ValidationError):
-        parse_pick_and_put_result({"command_code": "CMD-001", "command_type": "PICK_AND_PUT", "result": result})
+        parse_command_result({"command_code": "CMD-001", "command_type": "PICK_AND_PUT", "result": result})
 
 
 @pytest.mark.parametrize("command_code", ["", "   "])
 def test_result_and_timeout_reject_blank_command_code(command_code: str) -> None:
     with pytest.raises(ValidationError):
-        parse_pick_and_put_result({"command_code": command_code, "command_type": "PICK_AND_PUT", "result": "SUCCESS"})
+        parse_command_result({"command_code": command_code, "command_type": "PICK_AND_PUT", "result": "SUCCESS"})
     with pytest.raises(ValidationError):
         parse_business_timeout({"command_code": command_code, "wait_type": "COMMAND_RESULT"})
 

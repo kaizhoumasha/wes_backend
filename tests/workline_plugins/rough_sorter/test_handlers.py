@@ -21,17 +21,18 @@ from src.app.runtime.workline_plugins.contracts import PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import (
     HandlerRegistration,
     PinnedPluginSnapshot,
+    PluginAttemptFactSource,
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
-from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
+from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, build_facts, decide
 from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     parse_business_timeout,
     parse_capability_effect_result,
-    parse_pick_and_put_result,
+    parse_command_result,
     parse_replay_request,
     parse_scan_completed,
 )
@@ -118,7 +119,7 @@ def _logical_input(case: dict[str, Any]) -> object:
     event_type = case["trigger"]["event_type"]
     parser = {
         "SCAN_COMPLETED": parse_scan_completed,
-        "COMMAND_RESULT": parse_pick_and_put_result,
+        "COMMAND_RESULT": parse_command_result,
         "TIMER_TIMEOUT": parse_business_timeout,
         "REPLAY_REQUEST": parse_replay_request,
     }[event_type]
@@ -180,11 +181,25 @@ def _dispatch_request(case: dict[str, Any], **overrides: object) -> PluginDispat
         "raw_state": state.model_dump(mode="json"),
         "context_state": state.model_dump(mode="json"),
         "raw_input": case["trigger"]["payload"],
-        "raw_facts": _facts(case).model_dump(mode="json"),
+        "fact_source": _fact_source(case),
         "snapshot": _snapshot(),
     }
     values.update(overrides)
     return PluginDispatchRequest.model_validate(values)
+
+
+def _fact_source(case: dict[str, Any]) -> PluginAttemptFactSource:
+    facts = _facts(case)
+    return PluginAttemptFactSource(
+        snapshot=_snapshot(),
+        raw_input=case["trigger"]["payload"],
+        material_fact={
+            "material_identity_key": facts.business_key,
+            "six_in_one": {"HHPN": facts.hhpn, "LotCode": facts.lot_code},
+        },
+        correlation_matches=facts.correlation_matches,
+        replay_digest_matches=facts.replay_digest_matches,
+    )
 
 
 def _intent_signature(intents: tuple[RuntimeIntent, ...]) -> tuple[tuple[str, str | None, str | None], ...]:
@@ -378,7 +393,7 @@ async def test_dispatcher_revalidates_handler_state_model_copy_result() -> None:
 
     key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
     dispatcher = WorklinePluginDispatcher(
-        handler_registry={key: (HandlerRegistration(handler=invalid_handler, facts_model=RoughSorterFacts),)}
+        handler_registry={key: (HandlerRegistration(invalid_handler, RoughSorterFacts, build_facts),)}
     )
 
     result = await dispatcher.dispatch(
@@ -401,7 +416,6 @@ async def test_dispatcher_revalidates_handler_state_model_copy_result() -> None:
         ("config", "PLUGIN_CONTRACT_INVALID"),
         ("input", "PLUGIN_CONTRACT_INVALID"),
         ("result", "PLUGIN_CONTRACT_INVALID"),
-        ("facts", "PLUGIN_CONTRACT_INVALID"),
         ("config_hash", "PLUGIN_CONFIG_HASH_MISMATCH"),
         ("index", "PLUGIN_INDEX_DIGEST_MISMATCH"),
         ("profile", "PLUGIN_PROFILE_MISMATCH"),
@@ -435,8 +449,6 @@ async def test_dispatcher_fails_closed_for_invalid_contract(mutation: str, expec
                 },
             }
         )
-    elif mutation == "facts":
-        request_overrides["raw_facts"] = {"business_key": "PKG-001"}
     elif mutation == "config_hash":
         request_overrides["snapshot"] = _snapshot(config_hash="c" * 64)
     elif mutation == "index":
@@ -536,7 +548,7 @@ async def test_followup_device_result_is_consumed_without_overlapping_wait(
     expected_reason: str | None,
 ) -> None:
     command_code = f"CMD-{command_type}"
-    logical_input = parse_pick_and_put_result(
+    logical_input = parse_command_result(
         {
             "command_code": command_code,
             "command_type": command_type,
@@ -601,7 +613,7 @@ async def test_dispatcher_blocks_handler_undeclared_capability_without_calling_g
 
     key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
     dispatcher = WorklinePluginDispatcher(
-        handler_registry={key: (HandlerRegistration(hidden_capability_handler, RoughSorterFacts),)}
+        handler_registry={key: (HandlerRegistration(hidden_capability_handler, RoughSorterFacts, build_facts),)}
     )
     gateway = _Gateway(case["trigger"]["decision_discriminator"])
 
@@ -619,8 +631,8 @@ async def test_dispatcher_blocks_handler_undeclared_capability_without_calling_g
         ((), "PLUGIN_HANDLER_MISSING"),
         (
             (
-                HandlerRegistration(decide, RoughSorterFacts),
-                HandlerRegistration(decide, RoughSorterFacts),
+                HandlerRegistration(decide, RoughSorterFacts, build_facts),
+                HandlerRegistration(decide, RoughSorterFacts, build_facts),
             ),
             "PLUGIN_HANDLER_AMBIGUOUS",
         ),
@@ -651,7 +663,7 @@ async def test_dispatcher_propagates_cancellation_without_mapping_business_outco
 
     key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
     dispatcher = WorklinePluginDispatcher(
-        handler_registry={key: (HandlerRegistration(cancelled_handler, RoughSorterFacts),)}
+        handler_registry={key: (HandlerRegistration(cancelled_handler, RoughSorterFacts, build_facts),)}
     )
 
     with pytest.raises(asyncio.CancelledError):
@@ -670,7 +682,7 @@ async def test_dispatcher_does_not_swallow_handler_programming_error() -> None:
 
     key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
     dispatcher = WorklinePluginDispatcher(
-        handler_registry={key: (HandlerRegistration(broken_handler, RoughSorterFacts),)}
+        handler_registry={key: (HandlerRegistration(broken_handler, RoughSorterFacts, build_facts),)}
     )
 
     with pytest.raises(RuntimeError, match="programming defect"):

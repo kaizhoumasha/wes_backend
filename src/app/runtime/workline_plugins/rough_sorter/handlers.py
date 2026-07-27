@@ -32,7 +32,13 @@ from src.app.runtime.capabilities.material_flow.rough_sorter_inventory_admission
 )
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
-from src.app.runtime.workline_plugins.contracts import PluginContext, PluginDecision
+from src.app.runtime.workline_plugins.contracts import (
+    CapabilityEffectResultInput,
+    CommandResultInput,
+    PluginContext,
+    PluginDecision,
+)
+from src.app.runtime.workline_plugins.dispatcher import PluginAttemptFactSource  # noqa: TC001
 from src.app.wms_integration.ports.query_inventory_operation import (
     OPERATION_IDENTITY,
     InventoryQueryOperationRequest,
@@ -41,8 +47,6 @@ from src.app.wms_integration.ports.query_inventory_operation import (
 
 from .inputs import (
     BusinessTimeoutInput,
-    CapabilityEffectResultInput,
-    PickAndPutResultInput,
     ReplayRequestInput,
     RoughSorterInput,
     ScanCompletedInput,
@@ -78,7 +82,67 @@ class RoughSorterFacts(BaseModel):
     source_location: SourceLocation = "SCAN_POINT"
     correlation_matches: bool = True
     replay_digest_matches: bool | None = None
+    route_diagnostic: str | None = None
     binding_snapshot: RoughSorterBindingSnapshot
+
+
+def _payload(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _first_fact(source: dict[str, object], names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = source.get(name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _first_from_sources(sources: tuple[dict[str, object], ...], names: tuple[str, ...]) -> str | None:
+    for source in sources:
+        if value := _first_fact(source, names):
+            return value
+    return None
+
+
+def build_facts(source: PluginAttemptFactSource) -> RoughSorterFacts:
+    """把通用 route 原料收敛为粗分机决策所需事实。"""
+
+    material_six_in_one = _payload(source.material_fact.get("six_in_one"))
+    session_six_in_one = _payload(source.session_context.get("six_in_one"))
+    input_data = _payload(source.raw_input.get("data"))
+    identity_sources = (
+        (material_six_in_one, source.material_fact)
+        if source.material_fact
+        else (
+            input_data,
+            session_six_in_one,
+            source.session_context,
+        )
+    )
+    if source.material_fact:
+        business_key = _first_fact(source.material_fact, ("material_identity_key", "pkg_code")) or _first_fact(
+            material_six_in_one, ("PkgID",)
+        )
+    else:
+        business_key = _first_from_sources(
+            identity_sources, ("material_identity_key", "business_key", "pkg_code", "PkgID")
+        )
+    return RoughSorterFacts(
+        business_key=business_key,
+        hhpn=_first_from_sources(identity_sources, ("HHPN", "hhpn")),
+        lot_code=_first_from_sources(identity_sources, ("LotCode", "lot_code")),
+        correlation_matches=source.correlation_matches,
+        replay_digest_matches=source.replay_digest_matches,
+        route_diagnostic=source.route_diagnostic,
+        binding_snapshot=RoughSorterBindingSnapshot(
+            binding_id=source.snapshot.binding_id,
+            binding_version=source.snapshot.binding_version,
+            profile_identity=source.snapshot.profile_identity,
+            plugin_config_hash=source.snapshot.config_hash,
+            generated_index_digest=source.snapshot.index_digest,
+        ),
+    )
 
 
 class RuntimeReconciliationRequest(BaseModel):
@@ -111,6 +175,8 @@ async def decide(  # noqa: PLR0911 - route/state/correlation fail-closed 分支�
     """只读取 typed input/state/facts/QUERY outcome 并返回 typed decision。"""
 
     _ = context
+    if facts.route_diagnostic is not None:
+        return _evidence_only(state, reason_code=facts.route_diagnostic)
     if replay:
         return _decision("REPLAY_ACCEPTED_NOOP", state, zero_new_effect=True, evidence_only=True)
     if isinstance(logical_input, CapabilityEffectResultInput):
@@ -151,6 +217,8 @@ async def decide(  # noqa: PLR0911 - route/state/correlation fail-closed 分支�
                 reason_code=reason_code,
             ),
         )
+    if logical_input.command_type not in {ACTION_PICK_AND_PUT, ACTION_MOVE_FORWARD, ACTION_MOVE_TO_NG}:
+        return _evidence_only(state, reason_code="COMMAND_TASK_TYPE_UNSUPPORTED")
     if logical_input.command_type != ACTION_PICK_AND_PUT:
         return _followup_command_result_decision(logical_input, state=state, facts=facts)
     if state.phase != "PICK_TO_PIPELINE":
@@ -161,7 +229,7 @@ async def decide(  # noqa: PLR0911 - route/state/correlation fail-closed 分支�
 
 
 def _followup_command_result_decision(
-    logical_input: PickAndPutResultInput,
+    logical_input: CommandResultInput,
     *,
     state: RoughSorterState,
     facts: RoughSorterFacts,
@@ -248,7 +316,7 @@ def _scan_decision(
 
 
 async def _pick_result_decision(
-    logical_input: PickAndPutResultInput,
+    logical_input: CommandResultInput,
     *,
     state: RoughSorterState,
     config: RoughSorterConfig,
