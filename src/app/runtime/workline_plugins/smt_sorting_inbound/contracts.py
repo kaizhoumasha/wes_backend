@@ -29,7 +29,6 @@ class SourcePickRequestInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     route: Literal["SOURCE_PICK_REQUESTED"] = "SOURCE_PICK_REQUESTED"
-    command_code: StableString
 
 
 class SmtSortingInboundFacts(BaseModel):

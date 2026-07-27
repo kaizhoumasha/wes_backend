@@ -47,7 +47,7 @@ def _facts(**overrides: object) -> SmtSortingInboundFacts:
 @pytest.mark.asyncio
 async def test_source_pick_request_waits_for_its_command_result() -> None:
     decision = await decide(
-        SourcePickRequestInput(command_code="CMD-1"),
+        SourcePickRequestInput(),
         state=SmtSortingInboundState(),
         config=SmtSortingInboundConfig(provider_profile="runtime"),
         facts=_facts(),
@@ -69,7 +69,7 @@ async def test_source_pick_request_waits_for_its_command_result() -> None:
 )
 async def test_source_pick_request_is_idempotent_outside_initial_wait(state: SmtSortingInboundState) -> None:
     decision = await decide(
-        SourcePickRequestInput(command_code="CMD-RETRY"),
+        SourcePickRequestInput(),
         state=state,
         config=SmtSortingInboundConfig(provider_profile="runtime"),
         facts=_facts(),
@@ -89,7 +89,10 @@ def test_smt_definition_declares_source_arm_command_and_effect_contract() -> Non
     assert DEFINITION.schema.devices[0].role == "SORTING_SOURCE_ARM"
     assert DEFINITION.schema.commands[0].command == "SORTING_SOURCE_PICK"
     assert DEFINITION.schema.commands[0].target_device_role == "SORTING_SOURCE_ARM"
-    assert DEFINITION.allowed_capabilities == (("device.device_command_write", "v1"),)
+    assert DEFINITION.allowed_capabilities == (
+        ("device.device_command_write", "v1"),
+        ("runtime.session_hold", "v1"),
+    )
 
     with pytest.raises(ValueError):
         SmtSortingInboundConfig(provider_profile="runtime", source_arm_role="UNDECLARED_ARM")
@@ -115,7 +118,7 @@ async def test_smt_source_pick_binds_generated_command_code_for_command_result()
         raw_config=config.model_dump(mode="json"),
         raw_state={},
         context_state={},
-        raw_input={"command_code": "REQUEST-CORRELATION"},
+        raw_input={},
         fact_source=PluginAttemptFactSource(snapshot=snapshot),
         snapshot=snapshot,
     )
@@ -164,6 +167,65 @@ async def test_smt_source_pick_binds_generated_command_code_for_command_result()
     result = await WorklinePluginDispatcher().dispatch(request=callback_request, gateway=object())
 
     assert result.outcome_code == "SOURCE_PICK_COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_smt_failed_command_result_converts_to_declared_session_hold() -> None:
+    config = SmtSortingInboundConfig(provider_profile="runtime")
+    snapshot = PinnedPluginSnapshot(
+        plugin_key=DEFINITION.plugin_key,
+        contract_version=DEFINITION.contract_version,
+        binding_identity="binding:1:1",
+        binding_id=1,
+        binding_version=1,
+        config_hash=sha256_digest(config.model_dump(mode="json")),
+        index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+        profile_identity="runtime",
+    )
+    request = PluginDispatchRequest(
+        plugin_key=DEFINITION.plugin_key,
+        contract_version=DEFINITION.contract_version,
+        logical_route="COMMAND_RESULT",
+        raw_config=config.model_dump(mode="json"),
+        raw_state={"current_correlation": "SC-FAILED"},
+        context_state={"current_correlation": "SC-FAILED"},
+        raw_input={
+            "route": "COMMAND_RESULT",
+            "command_code": "SC-FAILED",
+            "command_type": "SORTING_SOURCE_PICK",
+            "result": "FAILED",
+        },
+        fact_source=PluginAttemptFactSource(snapshot=snapshot),
+        snapshot=snapshot,
+    )
+    write_set = await GeneratedPluginAttemptRunner().run(
+        PluginAttemptContext(
+            attempt_id="smt-source-pick-failed",
+            inbox_id=12,
+            session_id=2,
+            workline_id=3,
+            event_type="COMMAND_RESULT",
+            payload={},
+            plugin_state={"current_correlation": "SC-FAILED"},
+            snapshot=AttemptSnapshot(
+                processor_token="smt-source-pick-failed",
+                session_version=2,
+                plugin_state_version=1,
+                session_status="WAITING_DEVICE_RESULT",
+                binding_id=1,
+                binding_version=1,
+            ),
+            runtime=type("Runtime", (), {"gateway": object()})(),
+            dispatch_request=request,
+        )
+    )
+
+    assert write_set.outcome_code == "SOURCE_PICK_FAILED"
+    [hold] = write_set.intents
+    assert hold.kind is RuntimeIntentKind.SYSTEM_CAPABILITY
+    assert hold.capability_key == "runtime.session_hold"
+    assert hold.contract_version == "v1"
+    assert hold.payload_json["reason_code"] == "SOURCE_PICK_FAILED"
 
 
 @pytest.mark.asyncio
