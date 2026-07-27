@@ -1,6 +1,6 @@
 # Legacy Unbound Runtime 消除实施计划
 
-> **执行方式：** 使用 `superpowers:executing-plans` 按工作包实施。默认在普通功能分支上顺序执行，不启用 sub-agent 或 worktree 并行。
+> **执行方式：** 使用 `subagent-driven-development` 在单一隔离 worktree 中串行实施。每个工作包由新 implementer 执行并接受独立任务审查，不并行派发实现者。
 
 **目标：** 删除未绑定 Session 的 legacy 执行路径，使所有可执行 WorkLine Session 只能通过 immutable Plugin Binding、generated Plugin dispatcher 和 System Capability 推进。
 
@@ -149,7 +149,7 @@ DeviceCommand
 - command 缺失、类型不支持或 evidence 不一致时返回稳定诊断，事务中零 effect。
 - correlation 恢复仅接受唯一候选；0 条和 2 条及以上都进入受控失败，不猜测。
 
-## 工作包 1：建立 route-level facts 合同并新增 SMT generated Plugin
+## Task 1：建立 route-level facts 合同并新增 SMT generated Plugin
 
 **目标：** 消除 runtime bridge 对 `RoughSorterFacts` 的硬编码，让粗分机与 SMT 使用同一个 generated dispatcher 合同。
 
@@ -207,7 +207,7 @@ rtk uv run pytest tests/workline_runtime/extensions/test_plugin_runtime_inbox_ro
 rtk uv run pytest tests/workline_runtime/extensions/test_runtime_extension_index_generation.py -q
 ```
 
-## 工作包 2：把 Plugin Binding 变成不可绕过的数据库不变量
+## Task 2：把 Plugin Binding 变成不可绕过的数据库不变量
 
 **目标：** Session 与 execution 记录从创建时起必须携带完整 binding pins，不允许 Optional 或 conditional coherence。
 
@@ -275,7 +275,7 @@ rtk uv run pytest tests/integration/test_workline_migration_inventory_postgresql
 rtk uv run pytest tests/integration/workline_capabilities/test_smt_sorting_inbound_plugin_attempt_postgresql.py -q -o addopts=''
 ```
 
-## 工作包 3：删除双轨并闭合 SMT command correlation
+## Task 3：删除双轨并闭合 SMT command correlation
 
 **目标：** 只保留 generated attempt 主线，删除 legacy/unbound 执行者，并使 SMT handoff 从 command 创建到 `PICKED` 可恢复、可证明、可幂等。
 
@@ -347,7 +347,7 @@ rtk uv run pytest tests/workline_plugins -q
 rtk uv run pytest tests/architecture/test_no_legacy_unbound_runtime.py -q
 ```
 
-## 工作包 4：完成数据库闭环、性能门禁、文档和最终审计
+## Task 4：完成数据库闭环、性能门禁、文档和最终审计
 
 **目标：** 用真实 PostgreSQL 证明完整链路、幂等性和查询/延迟预算，并更新当前文档。
 
@@ -472,7 +472,7 @@ Sequential implementation, no parallelization opportunity。四个工作包共�
 
 ## 分支、提交与 staging 纪律
 
-- 从 `develop` 创建普通分支：`refactor/remove-legacy-unbound-runtime`。
+- 从 `develop` 创建隔离 worktree 分支：`refactor/remove-legacy-unbound-runtime`。
 - 每个工作包完成并通过聚焦测试后形成一个逻辑 commit；不提交未通过测试的中间状态。
 - 新增/修改/删除文件均按精确路径 stage。
 - 每次 commit 前：
