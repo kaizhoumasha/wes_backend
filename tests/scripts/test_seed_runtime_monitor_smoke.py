@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 
-from scripts.data.seed_runtime_monitor_smoke import FALLBACK_LINE_CODE, seed_runtime_monitor_smoke
+from scripts.data.seed_runtime_monitor_smoke import seed_runtime_monitor_smoke
 from scripts.data.sync_test_workline_devices import TEST_SMT_SORTING_INBOUND_LINE_CODE
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold, RuntimeHoldType
 from src.app.runtime.orchestration.models.session import (
@@ -14,9 +14,29 @@ from src.app.runtime.orchestration.models.session import (
 )
 from src.app.runtime.orchestration.services.query.runtime_query_service import RuntimeQueryService
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
-from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX, WORKLINE_PLUGIN_INDEX_DIGEST
+from src.app.workline.models import LineType, WorkLine, WorklinePluginBinding, WorkLineRunMode
 from src.core.conf import settings
 from src.utils.timezone import timezone
+
+
+@pytest.mark.asyncio
+async def test_seed_runtime_monitor_smoke_never_activates_missing_generated_manifest(db_session) -> None:
+    await seed_runtime_monitor_smoke(db_session, commit=False)
+
+    binding = (
+        await db_session.execute(
+            select(WorklinePluginBinding).where(
+                WorklinePluginBinding.plugin_key == "runtime_monitor_smoke_missing_manifest"
+            )
+        )
+    ).scalar_one_or_none()
+    fallback_workline = (
+        await db_session.execute(select(WorkLine).where(WorkLine.line_code == "WL-RUNTIME-MONITOR-FALLBACK-SMOKE"))
+    ).scalar_one_or_none()
+
+    assert binding is None
+    assert fallback_workline is None
 
 
 @pytest.mark.asyncio
@@ -28,15 +48,18 @@ async def test_seed_runtime_monitor_smoke_creates_runtime_projection_scenarios(d
         db_session,
         result["single_layer_workline"]["id"],
     )
-    fallback_projection = await service.get_workline_monitor_projection(
-        db_session,
-        result["fallback_workline"]["id"],
-    )
+    workline = await db_session.get(WorkLine, result["single_layer_workline"]["id"])
+    assert workline is not None
+    binding = await db_session.get(WorklinePluginBinding, workline.active_plugin_binding_id)
 
     assert single_layer_projection is not None
+    assert binding is not None
+    assert (binding.plugin_key, binding.contract_version) in WORKLINE_PLUGIN_INDEX
+    assert binding.generated_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
+    assert binding.activated_by == "runtime-monitor-smoke"
     assert single_layer_projection.boundary.workline_readiness == "READY"
-    # SMT legacy seed 尚未进入 generated plugin index；平台边界必须保持 UNKNOWN，
-    # 不再从 session context 伪造 Station Lease 权威状态。
+    # Smoke seed 使用 generated plugin binding，但没有 Station Lease 事实；
+    # 平台边界必须保持 UNKNOWN，不从 session context 伪造权威状态。
     assert single_layer_projection.boundary.station_lease == "UNKNOWN"
     assert single_layer_projection.boundary.rack_operation_wait == "WAITING_WMS"
     assert single_layer_projection.resource_evidence.kind == "WMS_CALLBACK_EVIDENCE"
@@ -61,13 +84,6 @@ async def test_seed_runtime_monitor_smoke_creates_runtime_projection_scenarios(d
     assert smoke_pkg.reel_code == "REEL-SMOKE-001"
     assert smoke_pkg.position_index == 1
 
-    assert fallback_projection is not None
-    assert fallback_projection.boundary.workline_readiness == "READY"
-    assert fallback_projection.boundary.station_lease == "UNKNOWN"
-    assert fallback_projection.boundary.single_layer_rack_snapshot == "UNKNOWN"
-    assert fallback_projection.resource_evidence.kind == "GENERIC_EVIDENCE"
-    assert fallback_projection.resource_evidence.items[0].resource_code == "GENERIC-FALLBACK-001"
-
 
 @pytest.mark.asyncio
 async def test_seed_runtime_monitor_smoke_ignores_soft_deleted_worklines(db_session) -> None:
@@ -78,21 +94,12 @@ async def test_seed_runtime_monitor_smoke_ignores_soft_deleted_worklines(db_sess
         run_mode=WorkLineRunMode.SIMULATION,
     )
     soft_deleted_base.soft_delete()
-    soft_deleted_fallback = WorkLine(
-        line_code=FALLBACK_LINE_CODE,
-        line_name="soft deleted fallback line",
-        line_type=LineType.AUTO,
-        run_mode=WorkLineRunMode.SIMULATION,
-    )
-    soft_deleted_fallback.soft_delete()
-    db_session.add_all([soft_deleted_base, soft_deleted_fallback])
+    db_session.add(soft_deleted_base)
     await db_session.flush()
 
     result = await seed_runtime_monitor_smoke(db_session, commit=False)
 
     assert result["single_layer_workline"]["id"] != soft_deleted_base.id
-    assert result["fallback_workline"]["id"] != soft_deleted_fallback.id
-    assert result["fallback_workline"]["line_code"] == FALLBACK_LINE_CODE
 
 
 @pytest.mark.asyncio
@@ -163,7 +170,7 @@ async def test_seed_runtime_monitor_smoke_rejects_prod_env(db_session, monkeypat
     with pytest.raises(RuntimeError, match="不允许同步开发/测试调试"):
         await seed_runtime_monitor_smoke(db_session, commit=False)
 
-    result = await db_session.execute(select(WorkLine).where(WorkLine.line_code == FALLBACK_LINE_CODE))
+    result = await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_SMT_SORTING_INBOUND_LINE_CODE))
     assert result.scalar_one_or_none() is None
 
 
