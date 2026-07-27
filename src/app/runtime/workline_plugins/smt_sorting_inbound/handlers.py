@@ -34,6 +34,8 @@ async def decide(
     if isinstance(logical_input, CapabilityEffectResultInput):
         return _decision("CAPABILITY_REJECTED", state)
     if isinstance(logical_input, SourcePickRequestInput):
+        if state.phase != "WAITING_SOURCE_PICK" or state.current_correlation is not None:
+            return _decision("SOURCE_PICK_REQUEST_IGNORED", state)
         return _decision(
             "SOURCE_PICK_REQUESTED",
             state,

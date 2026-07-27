@@ -59,8 +59,40 @@ async def test_source_pick_request_waits_for_its_command_result() -> None:
     assert len(decision.intents) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    (
+        SmtSortingInboundState(current_correlation="SC-PENDING"),
+        SmtSortingInboundState(phase="WAITING_SCAN"),
+    ),
+)
+async def test_source_pick_request_is_idempotent_outside_initial_wait(state: SmtSortingInboundState) -> None:
+    decision = await decide(
+        SourcePickRequestInput(command_code="CMD-RETRY"),
+        state=state,
+        config=SmtSortingInboundConfig(provider_profile="runtime"),
+        facts=_facts(),
+        gateway=object(),
+    )
+
+    assert decision.outcome_code == "SOURCE_PICK_REQUEST_IGNORED"
+    assert decision.next_state == state
+    assert decision.intents == ()
+
+
 def test_smt_definition_uses_fixed_generated_identity() -> None:
     assert DEFINITION.contract_version == "smt_sorting_inbound.v1"
+
+
+def test_smt_definition_declares_source_arm_command_and_effect_contract() -> None:
+    assert DEFINITION.schema.devices[0].role == "SORTING_SOURCE_ARM"
+    assert DEFINITION.schema.commands[0].command == "SORTING_SOURCE_PICK"
+    assert DEFINITION.schema.commands[0].target_device_role == "SORTING_SOURCE_ARM"
+    assert DEFINITION.allowed_capabilities == (("device.device_command_write", "v1"),)
+
+    with pytest.raises(ValueError):
+        SmtSortingInboundConfig(provider_profile="runtime", source_arm_role="UNDECLARED_ARM")
 
 
 @pytest.mark.asyncio

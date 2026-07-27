@@ -199,7 +199,10 @@ class WorklinePluginDispatcher:
             context_state = definition.state_model.model_validate(request.context_state)
             if state != context_state:
                 return _violation("STATE_CONTEXT_MISMATCH", "context state differs from parsed plugin state")
-            facts = registration.facts_model.model_validate(registration.facts_builder(request.fact_source))
+            # facts builder 可以做复杂的归一化；深拷贝隔离其原地修改。
+            # 这样不会污染 attempt 的共享原料。
+            facts_source = request.fact_source.model_copy(deep=True)
+            facts = registration.facts_model.model_validate(registration.facts_builder(facts_source))
             facts_violation = _validate_facts_snapshot(facts, request.snapshot)
             if facts_violation is not None:
                 return facts_violation

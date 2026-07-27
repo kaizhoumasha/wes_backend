@@ -15,7 +15,7 @@ class SmtSortingInboundConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider_profile: StableString
-    source_arm_role: StableString = "SORTING_SOURCE_ARM"
+    source_arm_role: Literal["SORTING_SOURCE_ARM"] = "SORTING_SOURCE_ARM"
 
 
 class SmtSortingInboundState(BaseModel):
