@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     GeneratedPluginAttemptRunner,
+    _canonical_plugin_input,
 )
 from src.app.runtime.system_capabilities.outcomes import BusinessReject
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, PluginAttemptContext
@@ -44,10 +47,20 @@ def _facts(**overrides: object) -> SmtSortingInboundFacts:
     return build_facts(source)
 
 
+def _source_pick_input() -> SourcePickRequestInput:
+    return SourcePickRequestInput(
+        handoff_demand_id=11,
+        handoff_source_item_id=12,
+        claim_attempt_no=3,
+        source_pick_inbox_id=31,
+        source_pick_request_event_id="source-pick-event-31",
+    )
+
+
 @pytest.mark.asyncio
 async def test_source_pick_request_waits_for_its_command_result() -> None:
     decision = await decide(
-        SourcePickRequestInput(),
+        _source_pick_input(),
         state=SmtSortingInboundState(),
         config=SmtSortingInboundConfig(provider_profile="runtime"),
         facts=_facts(),
@@ -60,6 +73,62 @@ async def test_source_pick_request_waits_for_its_command_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_source_pick_request_carries_strict_command_correlation_evidence() -> None:
+    source_pick = SourcePickRequestInput(
+        handoff_demand_id=11,
+        handoff_source_item_id=12,
+        claim_attempt_no=3,
+        source_pick_inbox_id=31,
+        source_pick_request_event_id="source-pick-event-31",
+    )
+
+    decision = await decide(
+        source_pick,
+        state=SmtSortingInboundState(),
+        config=SmtSortingInboundConfig(provider_profile="runtime"),
+        facts=_facts(),
+        gateway=object(),
+    )
+
+    [command] = decision.intents
+    assert command.payload_json == {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 12,
+        "claim_attempt_no": 3,
+        "source_pick_inbox_id": 31,
+        "source_pick_request_event_id": "source-pick-event-31",
+    }
+
+
+def test_internal_source_pick_event_normalizes_to_generated_route_with_inbox_evidence() -> None:
+    inbox = SimpleNamespace(
+        id=31,
+        kind="INTERNAL_EVENT",
+        event_type="SORTING_SOURCE_PICK_REQUESTED",
+        event_id="source-pick-event-31",
+        payload_json={
+            "data": {
+                "handoff_demand_id": 11,
+                "handoff_source_item_id": 12,
+                "claim_attempt_no": 3,
+            }
+        },
+    )
+
+    logical_route, raw_input = _canonical_plugin_input(inbox)
+
+    assert logical_route == "SOURCE_PICK_REQUESTED"
+    assert raw_input == {
+        "route": "SOURCE_PICK_REQUESTED",
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 12,
+        "claim_attempt_no": 3,
+        "source_pick_inbox_id": 31,
+        "source_pick_request_event_id": "source-pick-event-31",
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "state",
     (
@@ -69,7 +138,7 @@ async def test_source_pick_request_waits_for_its_command_result() -> None:
 )
 async def test_source_pick_request_is_idempotent_outside_initial_wait(state: SmtSortingInboundState) -> None:
     decision = await decide(
-        SourcePickRequestInput(),
+        _source_pick_input(),
         state=state,
         config=SmtSortingInboundConfig(provider_profile="runtime"),
         facts=_facts(),
@@ -118,7 +187,7 @@ async def test_smt_source_pick_binds_generated_command_code_for_command_result()
         raw_config=config.model_dump(mode="json"),
         raw_state={},
         context_state={},
-        raw_input={},
+        raw_input=_source_pick_input().model_dump(mode="json"),
         fact_source=PluginAttemptFactSource(snapshot=snapshot),
         snapshot=snapshot,
     )

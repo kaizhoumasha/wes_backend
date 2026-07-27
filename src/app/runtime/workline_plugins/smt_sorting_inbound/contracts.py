@@ -29,6 +29,11 @@ class SourcePickRequestInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     route: Literal["SOURCE_PICK_REQUESTED"] = "SOURCE_PICK_REQUESTED"
+    handoff_demand_id: int
+    handoff_source_item_id: int
+    claim_attempt_no: int
+    source_pick_inbox_id: int
+    source_pick_request_event_id: StableString
 
 
 class SmtSortingInboundFacts(BaseModel):

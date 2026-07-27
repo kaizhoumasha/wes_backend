@@ -7,7 +7,7 @@
 - claim 阶段: 由唯一 RuntimeInboxRepository.claim_received_with_token 持有
   (调用方负责).
 - validation 阶段: RuntimeInboxValidationService.
-- orchestration 阶段: RuntimeInboxProcessorService 委托 OrchestratorService.
+- orchestration 阶段: generated plugin runner 只返回 immutable write set.
 - write-back 阶段: RuntimeInboxWriteBackService.
 - ESTOP / TIMER_TIMEOUT / duplicate entry / late command / missing context
   均由 RuntimeInbox-owned 三阶段服务承载。
@@ -34,7 +34,6 @@ from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
 )
-from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.repositories.material_unit_repository import (
     MaterialUnitRepository,
 )
@@ -55,9 +54,6 @@ from src.app.runtime.orchestration.runtime_intent import (
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
     _canonical_workline_session_id,
 )
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
-    LegacyUnboundSessionProcessor,
-)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxReplaySourceValidation,
@@ -71,7 +67,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
-    WriteBackState,
     _build_runtime_session_updated_event_payload,
     _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
@@ -79,7 +74,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     _record_late_command_result_archive_timeline,
     _require_fenced_update,
     _session_status_value,
-    _session_write_snapshot,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
 from src.app.runtime.system_capabilities.gateway import AttemptCloseReport, SystemCapabilityGateway
@@ -104,7 +98,6 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
-from src.app.runtime.workline_plugins.legacy_compatibility import is_supported_legacy_unbound_session
 from src.app.runtime.workline_plugins.registry import parse_workline_six_in_one
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -473,6 +466,16 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
             "idempotency_key": string_value(payload.get("idempotency_key")),
             "payload_digest": string_value(payload.get("payload_digest")),
         }
+    if kind == "INTERNAL_EVENT" and callback_route == "SORTING_SOURCE_PICK_REQUESTED":
+        data = payload_dict(payload.get("data"))
+        return "SOURCE_PICK_REQUESTED", {
+            "route": "SOURCE_PICK_REQUESTED",
+            "handoff_demand_id": data.get("handoff_demand_id"),
+            "handoff_source_item_id": data.get("handoff_source_item_id"),
+            "claim_attempt_no": data.get("claim_attempt_no"),
+            "source_pick_inbox_id": resolve_entity_id(inbox),
+            "source_pick_request_event_id": getattr(inbox, "event_id", None),
+        }
     route = callback_route
     if route == "SYSTEM_CAPABILITY_RESULT":
         raise ValueError("raw SYSTEM_CAPABILITY_RESULT is not a plugin route")
@@ -734,7 +737,6 @@ class RuntimeInboxProcessorBridge:
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
         material_unit_repository: MaterialUnitRepository | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
-        processor_service: LegacyUnboundSessionProcessor | Any | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._inbox_service = inbox_service or runtime_inbox_service
@@ -749,9 +751,6 @@ class RuntimeInboxProcessorBridge:
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
         self._material_unit_repository = material_unit_repository or default_material_unit_repository
         self._queue_gateway = queue_gateway
-        # 仅未绑定迁移会话进入兼容 processor；任何已绑定会话始终由
-        # GeneratedPluginAttemptRunner fail closed，禁止跨路径回落。
-        self._processor_service = processor_service or LegacyUnboundSessionProcessor()
 
     def _enqueue_outbox_dispatch(self) -> None:
         """提交后的即时触发失败不撤销业务事务，Beat 继续承担兜底。"""
@@ -1162,89 +1161,6 @@ class RuntimeInboxProcessorBridge:
         result["processed"] += 1
         return result
 
-    async def _process_legacy_unbound_attempt(
-        self,
-        db: AsyncSession,
-        *,
-        context: _ClaimedInboxContext,
-        devices_by_role: dict[str, list[Any]],
-        services: Any,
-    ) -> ProcessResult:
-        """处理迁移期未绑定 Session 的隔离兼容路径。"""
-        result = _empty_result()
-        if not is_supported_legacy_unbound_session(context.session, context.workline):
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
-                    inbox_id=context.inbox_pk,
-                    lease_token=context.processor_token,
-                    error_code="LEGACY_PLUGIN_IDENTITY_UNSUPPORTED",
-                    error_message="未绑定 Session 的插件 identity 不在迁移期兼容白名单",
-                    retryable=False,
-                ),
-                action="mark_failed",
-                inbox_id=context.inbox_pk,
-            )
-            await db.commit()
-            result["failed"] += 1
-            result["processed"] += 1
-            return result
-
-        write_state = WriteBackState()
-        session_snapshot = _session_write_snapshot(context.session)
-        write_callback = self._writeback_service.build_write_callback(
-            db,
-            session=context.session,
-            workline=context.workline,
-            inbox=context.inbox,
-            devices_by_role=devices_by_role,
-            device=context.device,
-            command=context.command,
-            inbox_pk=context.inbox_pk,
-            session_snapshot=session_snapshot,
-            sse_workline_id=resolve_entity_id(context.workline),
-            sse_session_id=resolve_entity_id(context.session),
-            processor_token=context.processor_token,
-            state=write_state,
-        )
-        orch_result = await self._processor_service.process(
-            db,
-            session=context.session,
-            workline=context.workline,
-            inbox=context.inbox,
-            devices_by_role=devices_by_role,
-            services=services,
-            trace_id=getattr(context.inbox, "trace_id", None) or "",
-            write_callback=write_callback,
-        )
-        if orch_result.success:
-            if not write_state.write_effects_applied:
-                raise RuntimeError("WRITE lock callback was not executed for successful legacy orchestrator result")
-            if write_state.disposition == WriteBackDisposition.RESOURCE_RETRY:
-                result["resource_wait"] += 1
-            else:
-                result["success"] += 1
-            if write_state.enqueue_outbox_dispatch:
-                self._enqueue_outbox_dispatch()
-        else:
-            error_msg = orch_result.error or "Unknown legacy orchestrator error"
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
-                    inbox_id=context.inbox_pk,
-                    lease_token=context.processor_token,
-                    error_code=orch_result.error_code or ErrorCode.PLUGIN_EXECUTION_FAILED.value,
-                    error_message=error_msg,
-                    retryable=True,
-                ),
-                action="mark_failed",
-                inbox_id=context.inbox_pk,
-            )
-            await db.commit()
-            result["failed"] += 1
-        result["processed"] += 1
-        return result
-
     @staticmethod
     async def _ensure_safety_checked(
         db: AsyncSession,
@@ -1406,27 +1322,18 @@ class RuntimeInboxProcessorBridge:
         if terminal_result is not None:
             return terminal_result
 
-        if isinstance(getattr(session, "plugin_binding_id", None), int):
-            return await self._process_platform_plugin_attempt(
-                db,
-                inbox=inbox,
-                session=session,
-                workline=workline,
-                resolved_event_type=resolved_event_type,
-                processor_token=processor_token,
-                attempt_runtime=attempt_runtime,
-                services=services,
-                devices_by_role=devices_by_role,
-            )
-
-        # ========== Stage 2/3: migration-period unbound compatibility ==========
-        # 迁移前 Session 没有 immutable binding；在 drain/backfill 完成前继续走
-        # 隔离兼容 processor，避免把已接收业务事件终止为不可重试失败。
-        return await self._process_legacy_unbound_attempt(
+        # ========== Stage 2/3: generated plugin attempt ==========
+        # Context loader 已强制校验 immutable binding；处理链不再保留未绑定分支。
+        return await self._process_platform_plugin_attempt(
             db,
-            context=context,
-            devices_by_role=devices_by_role,
+            inbox=inbox,
+            session=session,
+            workline=workline,
+            resolved_event_type=resolved_event_type,
+            processor_token=processor_token,
+            attempt_runtime=attempt_runtime,
             services=services,
+            devices_by_role=devices_by_role,
         )
 
     async def process_claimed(

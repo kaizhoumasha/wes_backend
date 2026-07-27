@@ -1219,6 +1219,7 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
+        workline=SimpleNamespace(id=8),
         write_set=write_set,
     )
 
@@ -1300,6 +1301,7 @@ async def test_matching_intent_claim_skips_duplicate_ledger_but_commits_terminal
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
+        workline=SimpleNamespace(id=8),
         write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("i1",)),
     )
 
@@ -1370,6 +1372,7 @@ async def test_plugin_effect_failure_rolls_back_before_state_and_terminal() -> N
             session_id=41,
             workline_id=8,
             trace_id="trace-1",
+            workline=SimpleNamespace(id=8),
             write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("intent",)),
         )
 
@@ -1566,6 +1569,7 @@ async def test_intent_ledger_failure_rolls_back_before_terminal() -> None:
             session_id=41,
             workline_id=8,
             trace_id="trace-1",
+            workline=SimpleNamespace(id=8),
             write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("i1",)),
         )
 

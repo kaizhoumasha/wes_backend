@@ -25,7 +25,6 @@ from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationState,
     SessionStatus,
 )
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
@@ -34,8 +33,6 @@ from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliatio
 from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxCorrelationUnavailable,
     RuntimeInboxService,
-    RuntimeInboxWriteBackService,
-    WriteBackState,
 )
 from src.app.runtime.system_capabilities.outcomes import ContractViolation
 from src.app.runtime.workline_plugins.contracts import PluginContext
@@ -551,6 +548,7 @@ async def test_block_effect_holds_only_session_and_preserves_entity_statuses(
             "session": session,
             "inbox": SimpleNamespace(id=8808, payload_json={}),
             "trace_id": "trace-rs-sd-008",
+            "effect_state": workline_effects.EffectApplyState(),
             "current_status": SessionStatus.WAITING_DEVICE_RESULT.value,
             "now": now,
             "material_unit": material,
@@ -755,69 +753,6 @@ async def test_late_duplicate_callback_records_idempotent_evidence_without_advan
     assert evidence[0]["command_code"] == command_code
     assert len(db.added) == 1
     assert db.added[0].message == "Late callback recorded as runtime reconciliation evidence."
-
-
-@pytest.mark.asyncio
-async def test_current_wait_anchor_mismatch_archives_without_applying_followup_command() -> None:
-    case = _case("RS-SD-013")
-    command_code = case["trigger"]["payload"]["command_code"]
-    session = SimpleNamespace(
-        id=13,
-        workline_id=7,
-        trace_id="trace-rs-sd-013",
-        status=SessionStatus.WAITING_DEVICE_RESULT,
-        current_wait_type="COMMAND_RESULT",
-        awaiting_device_command_code="CMD-CURRENT-013",
-        context_json={},
-    )
-    command = SimpleNamespace(id=991, command_code=command_code, status="COMPLETED")
-    inbox = SimpleNamespace(
-        id=1301,
-        kind="COMMAND_RESULT",
-        trace_id="trace-rs-sd-013",
-        payload_json=deepcopy(case["trigger"]["payload"]),
-    )
-    business_writeback = AsyncMock()
-    inbox_service = SimpleNamespace(mark_processed=AsyncMock(return_value=True))
-    state = WriteBackState()
-    db = _RecordingDb()
-    session_anchor = (session.status, session.current_wait_type, session.awaiting_device_command_code)
-    callback = RuntimeInboxWriteBackService(
-        write_back_service=SimpleNamespace(write_back=business_writeback),
-        inbox_service=inbox_service,
-    ).build_write_callback(
-        db,
-        session=session,
-        workline=SimpleNamespace(id=7),
-        inbox=inbox,
-        devices_by_role={},
-        device=None,
-        command=command,
-        inbox_pk=inbox.id,
-        session_snapshot=(session.status, session.awaiting_device_command_code),
-        sse_workline_id=7,
-        sse_session_id=session.id,
-        processor_token="lease-rs-sd-013",
-        state=state,
-    )
-    followup = RuntimeIntent.command(
-        device_role="ROUGH_SORTER_CONVEYOR", action="MOVE_FORWARD", result_policy="COMMAND_RESULT"
-    )
-
-    await callback(OrchestratorResult(success=True, intents=[followup]))
-
-    assert (session.status, session.current_wait_type, session.awaiting_device_command_code) == session_anchor
-    business_writeback.assert_not_awaited()
-    inbox_service.mark_processed.assert_awaited_once_with(
-        db,
-        inbox_id=inbox.id,
-        lease_token="lease-rs-sd-013",
-    )
-    assert state.disposition == WriteBackDisposition.PROCESSED
-    assert state.enqueue_outbox_dispatch is False
-    assert len(db.added) == 1
-    assert db.added[0].message == "LATE_COMMAND_RESULT_ARCHIVED"
-    assert db.added[0].payload_json["reason"] == "COMMAND_RESULT_BECAME_STALE_BEFORE_WRITE"
 
 
 @pytest.mark.asyncio

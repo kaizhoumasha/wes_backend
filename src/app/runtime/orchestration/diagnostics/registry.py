@@ -56,6 +56,15 @@ _REGISTRY: dict[ErrorCode, DiagnosticCodeDefinition] = {
         recoverability=Recoverability.MANUAL_INTERVENTION_REQUIRED,
         docs_anchor="SESSION_RESOLVE_FAILED",
     ),
+    ErrorCode.PLUGIN_BINDING_REQUIRED: DiagnosticCodeDefinition(
+        code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+        owner="configuration",
+        cause="运行中的 Session 缺少不可变插件 binding pin。",
+        operator_action="暂停该工位操作，联系运维人员完成插件 binding 配置后重试。",
+        fix="检查 Session 创建链路与 Workline active binding，修复后重新创建或迁移 Session。",
+        recoverability=Recoverability.MANUAL_INTERVENTION_REQUIRED,
+        docs_anchor="PLUGIN_BINDING_REQUIRED",
+    ),
     ErrorCode.PLUGIN_EXECUTION_FAILED: DiagnosticCodeDefinition(
         code=ErrorCode.PLUGIN_EXECUTION_FAILED,
         owner="plugin",

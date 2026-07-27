@@ -13,13 +13,14 @@ from src.app.runtime.orchestration.execution_correlation import ExecutionCorrela
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.app.runtime.orchestration.models.session import SessionStatus
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
 from src.app.sys.models import SystemOutbox
 from src.app.wms_integration.services.redaction import canonical_sha256
-from src.app.workline.services.write_back_service import _build_effect_apply_context
+from src.app.workline.services.write_back_service import EffectApplyState
+from src.app.workline.trace_context import TraceContext
+from src.utils.timezone import timezone
 from tests.support.runtime_binding import binding_pin_fields
 
 
@@ -92,15 +93,25 @@ def _ctx(db: Any, correlation: ExecutionCorrelation) -> dict[str, Any]:
         trace_id=correlation.trace_id,
         payload_json={"correlation_id": correlation.correlation_id, "event_type": "DEVICE_EVENT"},
     )
-    return _build_effect_apply_context(
-        db=db,
-        session=session,
-        workline=workline,
-        inbox=inbox,
-        devices_by_role={},
-        source_device=None,
-        orch_result=OrchestratorResult(success=True, intents=[]),
-    )
+    trace = TraceContext.from_runtime(session=session, workline=workline, inbox=inbox)
+    return {
+        "db": db,
+        "session": session,
+        "workline": workline,
+        "inbox": inbox,
+        "devices_by_role": {},
+        "source_device": None,
+        "effect_state": EffectApplyState(),
+        "current_status": session.status,
+        "trace_id": trace.trace_id,
+        "trace": trace,
+        "correlation_id": correlation.correlation_id,
+        "session_ctx": {},
+        "now": timezone.now_for_db(),
+        "awaiting_device_command_pk": None,
+        "awaiting_command_code": None,
+        "next_timeline_seq_no": None,
+    }
 
 
 def _fulfillment_intent(*, payload: dict[str, Any]) -> RuntimeIntent:

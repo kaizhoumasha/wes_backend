@@ -13,6 +13,7 @@ from src.app.contracts.external_contract_profile_catalog import (
     external_contract_profile_catalog,
 )
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -34,9 +35,6 @@ if TYPE_CHECKING:
 
 class PluginBindingAdmissionError(RuntimeError):
     """binding 激活或执行准入失败；调用方必须 fail closed。"""
-
-
-PLUGIN_BINDING_REQUIRED = "PLUGIN_BINDING_REQUIRED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,11 +325,11 @@ class WorklinePluginBindingService:
 
         binding_id = getattr(workline, "active_plugin_binding_id", None)
         if not isinstance(binding_id, int):
-            raise PluginBindingAdmissionError(PLUGIN_BINDING_REQUIRED)
+            raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value)
         try:
             return await self.get_pinned(db, binding_id=binding_id)
         except PluginBindingAdmissionError as exc:
-            raise PluginBindingAdmissionError(PLUGIN_BINDING_REQUIRED) from exc
+            raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value) from exc
 
     def assert_pinned_identity(self, *, binding: Any, workline: Any, session: Any) -> None:
         """历史 retry 只校验 session pin 与 binding 本身，不追随 WorkLine 当前 active pin。"""
@@ -363,14 +361,14 @@ class WorklinePluginBindingService:
 
         binding_id = getattr(workline, "active_plugin_binding_id", None)
         if not isinstance(binding_id, int):
-            raise PluginBindingAdmissionError(PLUGIN_BINDING_REQUIRED)
+            raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value)
         if binding is None:
             try:
                 binding = await self.get_pinned(db, binding_id=binding_id)
             except PluginBindingAdmissionError as exc:
-                raise PluginBindingAdmissionError(PLUGIN_BINDING_REQUIRED) from exc
+                raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value) from exc
         if binding is None:
-            raise PluginBindingAdmissionError(PLUGIN_BINDING_REQUIRED)
+            raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value)
         if getattr(binding, "id", None) != binding_id:
             raise PluginBindingAdmissionError("预解析 binding 与 WorkLine active pin 不一致")
         active_identity = (
@@ -493,7 +491,6 @@ class WorklinePluginBindingService:
 workline_plugin_binding_service = WorklinePluginBindingService(profile_catalog=external_contract_profile_catalog)
 
 __all__ = [
-    "PLUGIN_BINDING_REQUIRED",
     "PluginBindingAdmissionError",
     "WorklinePluginBindingService",
     "workline_plugin_binding_service",

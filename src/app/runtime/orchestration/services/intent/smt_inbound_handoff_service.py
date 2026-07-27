@@ -13,13 +13,17 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from src.app.device.repositories.command_repository import (
+    DeviceCommandRepository,
+    device_command_repository,
+)
 from src.app.runtime.capabilities.material_flow.contracts.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
@@ -105,6 +109,33 @@ _SORTING_TARGET_RACK_POSITION_CODE = "TARGET_STATION"
 _CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS = 5
 
 
+@dataclass(frozen=True, slots=True)
+class SmtInboundHandoffClaimResult:
+    """SMT claim 的 typed 结果。"""
+
+    kind: str
+    failure_code: str | None = None
+    failure_message: str | None = None
+    next_attempt_at: Any | None = None
+    demand: Any | None = None
+    source_item: Any | None = None
+    inbox: Any | None = None
+    session: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SmtInboundHandoffLedgerResult:
+    """SMT source item 账本推进结果。"""
+
+    outcome: str
+    advanced: bool
+    already_terminal: bool
+    source_item: Any
+    current_demand_id: int | None = None
+    demand: Any | None = None
+    session: Any | None = None
+
+
 class SmtInboundHandoffService:
     """处理粗分机 release fact 到 handoff demand 的幂等入口。"""
 
@@ -117,6 +148,7 @@ class SmtInboundHandoffService:
         handling_operation_service: HandlingOperationService | None = None,
         route_service: SmtInboundHandoffRouteService = smt_inbound_handoff_route_service,
         plugin_binding_service: WorklinePluginBindingService = workline_plugin_binding_service,
+        command_repository: DeviceCommandRepository = device_command_repository,
     ) -> None:
         self.repository = repository
         self.usage_policy = usage_policy
@@ -124,6 +156,7 @@ class SmtInboundHandoffService:
         self.handling_operation_service = handling_operation_service
         self.route_service = route_service
         self.plugin_binding_service = plugin_binding_service
+        self.command_repository = command_repository
 
     async def create_or_get_from_release(
         self,
@@ -980,7 +1013,7 @@ class SmtInboundHandoffService:
         command_id: int | None = None,
         session: Any | None = None,
         trace_id: str | None = None,
-    ) -> SimpleNamespace:
+    ) -> SmtInboundHandoffLedgerResult:
         """记录 source-pick 成功账本，只允许 claimed 状态幂等推进到 PICKED。"""
 
         _ = trace_id
@@ -1041,7 +1074,7 @@ class SmtInboundHandoffService:
                 _ = await self.recalculate_demand_status(db, demand, reason="source_pick_success")
             else:
                 await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="advanced",
                 advanced=True,
                 already_terminal=False,
@@ -1051,7 +1084,7 @@ class SmtInboundHandoffService:
         if item.status == SmtInboundHandoffSourceItemStatus.PICKED:
             db.add(item)
             await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="already_picked",
                 advanced=False,
                 already_terminal=False,
@@ -1061,7 +1094,7 @@ class SmtInboundHandoffService:
         if item.status in _TERMINAL_ITEM_STATUSES:
             db.add(item)
             await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="already_terminal",
                 advanced=False,
                 already_terminal=True,
@@ -1071,7 +1104,7 @@ class SmtInboundHandoffService:
         if item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
             db.add(item)
             await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="manual_hold",
                 advanced=False,
                 already_terminal=False,
@@ -1089,7 +1122,7 @@ class SmtInboundHandoffService:
         command_id: int | None = None,
         trace_id: str | None = None,
         terminal_evidence: Mapping[str, Any] | None = None,
-    ) -> SimpleNamespace:
+    ) -> SmtInboundHandoffLedgerResult:
         """记录 target/NG 终态账本，幂等关闭当前 source item 和 sorting session。"""
 
         status = self._terminal_source_item_status(terminal_status)
@@ -1126,7 +1159,7 @@ class SmtInboundHandoffService:
             db.add(session)
             db.add(item)
             await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="already_terminal",
                 advanced=False,
                 already_terminal=True,
@@ -1188,7 +1221,7 @@ class SmtInboundHandoffService:
         db.add(demand)
         db.add(session)
         _ = await self.recalculate_demand_status(db, demand, reason="source_item_terminal_result")
-        return SimpleNamespace(
+        return SmtInboundHandoffLedgerResult(
             outcome="advanced",
             advanced=True,
             already_terminal=False,
@@ -1209,7 +1242,7 @@ class SmtInboundHandoffService:
         command_id: int | None,
         trace_id: str | None,
         terminal_evidence: Mapping[str, Any] | None,
-    ) -> SimpleNamespace:
+    ) -> SmtInboundHandoffLedgerResult:
         self._apply_item_failure(
             item,
             SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID.value,
@@ -1265,7 +1298,7 @@ class SmtInboundHandoffService:
         db.add(demand)
         db.add(session)
         _ = await self.recalculate_demand_status(db, demand, reason="source_item_terminal_conflict")
-        return SimpleNamespace(
+        return SmtInboundHandoffLedgerResult(
             outcome="manual_hold",
             advanced=False,
             already_terminal=False,
@@ -1473,14 +1506,29 @@ class SmtInboundHandoffService:
             )
             outcome = "manual_hold"
         elif inbox_status == "PROCESSED" and item.source_pick_command_id is None:
-            await self._manual_hold_source_pick_recovery(
-                db,
-                demand=demand,
-                item=item,
-                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
-                message="source pick inbox 已处理但缺少 command correlation evidence",
+            session = (
+                await db.get(WorklineSession, item.sorting_session_id)
+                if isinstance(item.sorting_session_id, int)
+                else None
             )
-            outcome = "manual_hold"
+            if session is None:
+                await self._manual_hold_source_pick_recovery(
+                    db,
+                    demand=demand,
+                    item=item,
+                    failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                    message="source pick inbox 已处理但 sorting session 不存在",
+                )
+                outcome = "manual_hold"
+            else:
+                outcome = await self._recover_processed_source_pick_command(
+                    db,
+                    demand=demand,
+                    item=item,
+                    inbox=inbox,
+                    session=session,
+                    now=now,
+                )
         elif item.source_pick_command_id is not None:
             command = await db.get(DeviceCommand, item.source_pick_command_id)
             command_status = self._enum_text(getattr(command, "status", None))
@@ -1509,6 +1557,139 @@ class SmtInboundHandoffService:
                 )
                 outcome = "manual_hold"
         return outcome
+
+    async def _recover_processed_source_pick_command(
+        self,
+        db: AsyncSession,
+        *,
+        demand: SmtInboundHandoffDemand,
+        item: SmtInboundHandoffSourceItem,
+        inbox: Any,
+        session: Any,
+        now: Any,
+    ) -> str | None:
+        """用 correlation 索引与五项业务证据恢复 source-pick command 关联。"""
+
+        _ = now
+        if item.status == SmtInboundHandoffSourceItemStatus.PICKED or item.status in _TERMINAL_ITEM_STATUSES:
+            return None
+
+        correlation_id = self._text_or_none(getattr(inbox, "correlation_id", None))
+        candidates = (
+            await self.command_repository.list_by_runtime_correlation(
+                db,
+                correlation_id=correlation_id,
+                limit=2,
+            )
+            if correlation_id is not None
+            else []
+        )
+        if len(candidates) != 1:
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                message=f"source pick command correlation 候选数量为 {len(candidates)}，拒绝猜测",
+            )
+            return "manual_hold"
+
+        command = candidates[0]
+        if not self._source_pick_recovery_evidence_matches(
+            item=item,
+            inbox=inbox,
+            session=session,
+            command=command,
+            correlation_id=correlation_id,
+        ):
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                message="source pick command correlation evidence 不一致，拒绝恢复",
+            )
+            return "manual_hold"
+
+        command_id = cast("int", getattr(command, "id", None))
+        command_code = cast("str", getattr(command, "command_code", None))
+        await self.record_source_pick_command_correlation(
+            db,
+            handoff_demand_id=item.handoff_demand_id,
+            source_item_id=cast("int", item.id),
+            claim_attempt_no=item.claim_attempt_no,
+            source_pick_inbox_id=cast("int", item.source_pick_inbox_id),
+            command_id=command_id,
+            command_code=command_code,
+            dispatch_key=f"device-command:{command_code}",
+            trace_id=getattr(inbox, "trace_id", None),
+        )
+
+        command_status = self._enum_text(getattr(command, "status", None))
+        command_result = self._enum_text(getattr(command, "result", None))
+        if command_status == "COMPLETED" and command_result == "SUCCESS":
+            result = await self.record_source_pick_success(
+                db,
+                handoff_demand_id=item.handoff_demand_id,
+                source_item_id=cast("int", item.id),
+                claim_attempt_no=item.claim_attempt_no,
+                source_pick_inbox_id=item.source_pick_inbox_id,
+                command_id=command_id,
+            )
+            return "manual_hold" if result.outcome == "manual_hold" else "advanced"
+        if command_status in {"FAILED", "TIMEOUT", "CANCELLED"}:
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                message="source pick command 已进入失败终态但 source item 未推进",
+            )
+            return "manual_hold"
+        return "advanced"
+
+    def _source_pick_recovery_evidence_matches(
+        self,
+        *,
+        item: SmtInboundHandoffSourceItem,
+        inbox: Any,
+        session: Any,
+        command: Any,
+        correlation_id: str,
+    ) -> bool:
+        """校验 demand/item/attempt/inbox/event 五项证据及 session/command 归属。"""
+
+        params = self._dict_or_empty(getattr(command, "params", None))
+        request = self._source_pick_request_from_session(session)
+        expected = {
+            "handoff_demand_id": item.handoff_demand_id,
+            "handoff_source_item_id": item.id,
+            "claim_attempt_no": item.claim_attempt_no,
+            "source_pick_inbox_id": item.source_pick_inbox_id,
+            "source_pick_request_event_id": getattr(inbox, "event_id", None),
+        }
+        if any(params.get(key) != value for key, value in expected.items()):
+            return False
+        request_expected = {
+            "handoff_demand_id": expected["handoff_demand_id"],
+            "handoff_source_item_id": expected["handoff_source_item_id"],
+            "claim_attempt_no": expected["claim_attempt_no"],
+            "event_id": expected["source_pick_request_event_id"],
+        }
+        if any(request.get(key) != value for key, value in request_expected.items()):
+            return False
+        command_code = self._text_or_none(getattr(command, "command_code", None))
+        return (
+            isinstance(item.sorting_session_id, int)
+            and getattr(session, "id", None) == item.sorting_session_id
+            and getattr(inbox, "workline_session_id", None) == item.sorting_session_id
+            and getattr(command, "correlation_id", None) == correlation_id
+            and getattr(command, "workline_id", None) == getattr(inbox, "workline_id", None)
+            and getattr(session, "workline_id", None) == getattr(inbox, "workline_id", None)
+            and self._enum_text(getattr(command, "task_type", None)) == "SORTING_SOURCE_PICK"
+            and command_code is not None
+            and getattr(session, "awaiting_device_command_code", None) == command_code
+        )
 
     def _release_item_for_source_pick_retry(
         self,
@@ -1873,8 +2054,8 @@ class SmtInboundHandoffService:
         session.context_json = root_context
 
     @staticmethod
-    def _claim_result(kind: str, **values: Any) -> SimpleNamespace:
-        return SimpleNamespace(kind=kind, **values)
+    def _claim_result(kind: str, **values: Any) -> SmtInboundHandoffClaimResult:
+        return SmtInboundHandoffClaimResult(kind=kind, **values)
 
     @staticmethod
     def _dict_or_empty(value: Any) -> dict[str, Any]:

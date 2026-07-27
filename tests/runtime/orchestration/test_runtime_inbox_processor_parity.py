@@ -9,8 +9,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxManualHoldEvidence
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as bridge_module
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
@@ -18,9 +16,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
-)
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
-    RuntimeInboxWriteBackService,
 )
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
 
@@ -465,23 +460,6 @@ async def _run_case(
             }
         )
         return incident
-
-    effect = (
-        RuntimeIntentEffectResult.resource_retry()
-        if case.writeback == "resource_wait"
-        else RuntimeIntentEffectResult.processed()
-    )
-
-    class _WriteBack:
-        async def write_back(self, *args: object, **kwargs: object) -> RuntimeIntentEffectResult:
-            _ = args
-            interactions.append(
-                {
-                    "kind": "writeback",
-                    "source_device_id": getattr(kwargs.get("source_device"), "id", None),
-                }
-            )
-            return effect
 
     class _Runner:
         async def run(self, _context: object) -> AttemptWriteSet:

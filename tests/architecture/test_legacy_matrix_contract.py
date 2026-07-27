@@ -29,8 +29,20 @@ EXPECTED_ACTIVE_FOUNDATION_PATHS = frozenset(
 
 EXPECTED_ACTIVE_PLATFORM_PREFIXES = (
     "tests/workline_plugins/rough_sorter/",
+    "tests/workline_plugins/smt_sorting_inbound/",
     "tests/workline_runtime/extensions/",
     "tests/workline_runtime/system_capabilities/",
+)
+
+EXPECTED_ACTIVE_PLATFORM_PATHS = frozenset(
+    {
+        "src/app/workline/models/plugin_binding.py",
+        "src/app/workline/repositories/plugin_binding_repository.py",
+        "src/app/workline/services/plugin_binding_service.py",
+        "tests/workline_plugins/test_conformance_contract.py",
+        "tests/workline_plugins/test_generated_facts_contract.py",
+        "tests/workline_runtime/test_workline_session_repository_versioning.py",
+    }
 )
 
 
@@ -57,6 +69,7 @@ def test_active_inventory_foundation_is_not_legacy_cleanup_scope():
 
 def test_active_extension_platform_is_not_legacy_cleanup_scope():
     assert generate_legacy_matrix.ACTIVE_PLATFORM_PREFIXES == EXPECTED_ACTIVE_PLATFORM_PREFIXES
+    assert generate_legacy_matrix.ACTIVE_PLATFORM_PATHS == EXPECTED_ACTIVE_PLATFORM_PATHS
 
     entries = parse_entries()
     assert not any(entry.relative_path.startswith(EXPECTED_ACTIVE_PLATFORM_PREFIXES) for entry in entries)

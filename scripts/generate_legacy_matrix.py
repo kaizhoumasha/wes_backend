@@ -193,6 +193,7 @@ ACTIVE_FOUNDATION_PATHS = frozenset(
 # Task 9 起由最终扩展平台直接承载的实现与测试，不是待删除的 legacy 入口。
 ACTIVE_PLATFORM_PREFIXES = (
     "tests/workline_plugins/rough_sorter/",
+    "tests/workline_plugins/smt_sorting_inbound/",
     "tests/workline_runtime/extensions/",
     "tests/workline_runtime/system_capabilities/",
 )
@@ -202,6 +203,7 @@ ACTIVE_PLATFORM_PATHS = frozenset(
         "src/app/workline/repositories/plugin_binding_repository.py",
         "src/app/workline/services/plugin_binding_service.py",
         "tests/workline_plugins/test_conformance_contract.py",
+        "tests/workline_plugins/test_generated_facts_contract.py",
         "tests/workline_runtime/test_workline_session_repository_versioning.py",
     }
 )

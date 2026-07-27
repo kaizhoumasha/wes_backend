@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.events_bridge import RESERVED_RUNTIME_EVENTS
 from src.app.workline.constants import EXTERNAL_HTTP_INBOX_KIND
 from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
@@ -196,14 +197,10 @@ async def _assert_platform_plugin_binding_admitted(
     if workline is None or session is None:
         return
     binding_id = getattr(session, "plugin_binding_id", None)
-    active_binding_id = getattr(workline, "active_plugin_binding_id", None)
-    if not isinstance(binding_id, int) and not isinstance(active_binding_id, int):
-        # 迁移期 legacy WorkLine 从未生成 binding，继续沿用原执行路径。
-        return
     if not isinstance(binding_id, int):
         from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
 
-        raise PluginBindingAdmissionError("平台 Session 缺少 immutable binding pin")
+        raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value)
     binding = await workline_plugin_binding_service.get_pinned(db, binding_id=binding_id)
     workline_plugin_binding_service.assert_pinned_identity(binding=binding, workline=workline, session=session)
     workline_plugin_binding_service.assert_execution_admitted(

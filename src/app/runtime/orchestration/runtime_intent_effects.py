@@ -11,7 +11,6 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping
-from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -91,10 +90,7 @@ def _merge_context_patch(ctx: Any, patch: dict[str, Any]) -> None:
     if not patch:
         return
 
-    orch_result = ctx["orch_result"]
-    merged = dict(getattr(orch_result, "context_patch", None) or {})
-    merged.update(patch)
-    orch_result.context_patch = merged
+    ctx["effect_state"].context_patch.update(patch)
 
 
 def _is_command_producing_intent(intent: RuntimeIntent) -> bool:
@@ -549,16 +545,14 @@ class RuntimeIntentEffectApplier:
             await self._apply_noop_completion(ctx)
             return RuntimeIntentEffectResult.processed()
 
-        terminal_state = SimpleNamespace(
-            skip_next_material_unit_intent=False,
-        )
+        effect_state = ctx["effect_state"]
         for intent in intents:
-            skip_material_unit_intent = terminal_state.skip_next_material_unit_intent and intent.kind in {
+            skip_material_unit_intent = effect_state.skip_next_material_unit_intent and intent.kind in {
                 RuntimeIntentKind.CREATE_MATERIAL_UNIT,
                 RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
             }
-            if terminal_state.skip_next_material_unit_intent and not skip_material_unit_intent:
-                terminal_state.skip_next_material_unit_intent = False
+            if effect_state.skip_next_material_unit_intent and not skip_material_unit_intent:
+                effect_state.skip_next_material_unit_intent = False
 
             if intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY:
                 service = self._system_capability_effect_service
@@ -632,7 +626,7 @@ class RuntimeIntentEffectApplier:
                 if _is_reconciling_result(result):
                     await self._apply_resource_reconciliation_hold(ctx, result)
                     return RuntimeIntentEffectResult.processed()
-                terminal_state.skip_next_material_unit_intent = _is_duplicate_result(result)
+                effect_state.skip_next_material_unit_intent = _is_duplicate_result(result)
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
@@ -647,14 +641,14 @@ class RuntimeIntentEffectApplier:
 
             if intent.kind == RuntimeIntentKind.CREATE_MATERIAL_UNIT:
                 if skip_material_unit_intent:
-                    terminal_state.skip_next_material_unit_intent = False
+                    effect_state.skip_next_material_unit_intent = False
                     continue
                 await self._apply_create_material_unit(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS:
                 if skip_material_unit_intent:
-                    terminal_state.skip_next_material_unit_intent = False
+                    effect_state.skip_next_material_unit_intent = False
                     continue
                 await self._apply_update_material_unit_status(ctx, intent)
                 continue
@@ -663,7 +657,6 @@ class RuntimeIntentEffectApplier:
                 _merge_context_patch(ctx, intent.context_patch)
                 workline_effects._apply_context_patch(ctx)
                 workline_effects._clear_session_failure(ctx["session"])
-                ctx["orch_result"].complete = True
                 _ = await workline_effects._apply_completion_transition(ctx)
                 await self._cleanup_completed_material_unit(ctx)
                 continue
@@ -875,7 +868,7 @@ class RuntimeIntentEffectApplier:
         resolved_command_code = string_value(vendor_payload.get("command_code"), generated_command_code)
         command_data = workline_effects._build_command_create_payload(
             ctx,
-            command_intent=SimpleNamespace(action=str(intent.action), parameters=dict(intent.payload_json)),
+            action=str(intent.action),
             vendor_payload=vendor_payload,
             target_device_id=target_device_id,
             resolved_command_code=resolved_command_code,
@@ -1668,7 +1661,11 @@ class RuntimeIntentEffectApplier:
     async def _apply_governance_failure(self, ctx: Any, exc: Any) -> None:
         from src.app.workline.services import write_back_service as workline_effects
 
-        ctx["orch_result"].failure = SimpleNamespace(domain=exc.domain, code=exc.code, message=exc.message)
+        ctx["effect_state"].failure = workline_effects.EffectFailure(
+            domain=exc.domain,
+            code=exc.code,
+            message=exc.message,
+        )
         _ = await workline_effects._apply_failure_transition(ctx)
 
     async def _apply_destination_failure(self, ctx: Any, exc: ValueError) -> None:

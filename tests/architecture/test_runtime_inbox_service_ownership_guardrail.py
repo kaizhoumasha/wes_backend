@@ -28,13 +28,11 @@ PUBLIC_SERVICE_SYMBOLS = {
 }
 PUBLIC_PACKAGE_SYMBOLS = PUBLIC_SERVICE_SYMBOLS | {
     "ProcessResult",
-    "RuntimeInboxOrchestratorDelegate",
     "RuntimeInboxProcessorBridge",
     "RuntimeInboxProcessorService",
     "RuntimeInboxValidationService",
     "RuntimeInboxWriteBackService",
     "ValidationOutcome",
-    "WriteBackState",
 }
 
 

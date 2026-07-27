@@ -54,6 +54,35 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         return str(value) if value is not None else None
 
     @staticmethod
+    def build_runtime_correlation_statement(*, correlation_id: str, limit: int = 2) -> Any:
+        """构造关联恢复查询；最多读取两行即可区分唯一与歧义。"""
+
+        columns = cast("Any", DeviceCommand).__table__.c
+        return (
+            select(DeviceCommand)
+            .where(columns.correlation_id == correlation_id)
+            .order_by(columns.id.asc())
+            .limit(min(max(limit, 1), 2))
+        )
+
+    async def list_by_runtime_correlation(
+        self,
+        db: AsyncSession,
+        *,
+        correlation_id: str,
+        limit: int = 2,
+    ) -> list[DeviceCommand]:
+        """按已索引的 runtime correlation 读取至多两个候选。"""
+
+        result = await db.execute(
+            self.build_runtime_correlation_statement(
+                correlation_id=correlation_id,
+                limit=limit,
+            )
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
     async def add_runtime_effect(
         db: AsyncSession,
         command: DeviceCommand,

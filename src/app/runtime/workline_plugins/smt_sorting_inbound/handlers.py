@@ -42,7 +42,13 @@ async def decide(
             RuntimeIntent.command(
                 device_role=config.source_arm_role,
                 action="SORTING_SOURCE_PICK",
-                payload={},
+                payload={
+                    "handoff_demand_id": logical_input.handoff_demand_id,
+                    "handoff_source_item_id": logical_input.handoff_source_item_id,
+                    "claim_attempt_no": logical_input.claim_attempt_no,
+                    "source_pick_inbox_id": logical_input.source_pick_inbox_id,
+                    "source_pick_request_event_id": logical_input.source_pick_request_event_id,
+                },
                 result_policy="COMMAND_RESULT",
             ),
         )

@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-逐入口数据在 legacy-cleanup-matrix.csv（645 条，由脚本生成，可复现）。
+逐入口数据在 legacy-cleanup-matrix.csv（638 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -37,15 +37,15 @@ uv run python scripts/generate_legacy_matrix.py
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **645** |
-| phase4_carrier（承载 Phase 4 业务语义） | 113 |
+| **total_entries** | **638** |
+| phase4_carrier（承载 Phase 4 业务语义） | 115 |
 | pending-review | 0 |
 
 ### total_entries_by_type
 
 | entry_type | count |
 | --- | ---: |
-| service | 310 |
+| service | 303 |
 | domain_object | 60 |
 | test | 200 |
 | model | 44 |
@@ -57,8 +57,8 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 376 |
-| keep-contract | 252 |
+| rebuild | 375 |
+| keep-contract | 246 |
 | delete | 10 |
 | move | 7 |
 
@@ -66,16 +66,16 @@ uv run python scripts/generate_legacy_matrix.py
 
 | drop_phase | count |
 | --- | ---: |
-| phase5-tech | 263 |
-| phase2 | 260 |
-| phase4 | 113 |
+| phase5-tech | 257 |
+| phase2 | 257 |
+| phase4 | 115 |
 | phase1 | 9 |
 
 ### total_entries_by_owner
 
 | current_owner | count |
 | --- | ---: |
-| workline | 420 |
+| workline | 413 |
 | workline_runtime | 190 |
 | workline_plugins | 11 |
 | runtime | 8 |
@@ -158,7 +158,7 @@ WorkLine 重构收尾不再用单一“清理旧代码”口径推进，删除�
 2026-07-08 验收记录：
 
 - technical scope 已通过运行态 owner guardrail、RuntimeInbox cutover、mock closure 与 WorkLine technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
-- business scope 携带 regenerated production/runtime artifacts 后已通过 readiness gate；随后执行 business legacy absence ledger 关闭：113 条 phase4 carrier 中 53 行 moved、10 行 test-only-migrated、30 行 kept-config-only、20 行 already-removed，0 pending。机器验收见 `docs/architecture/business-legacy-absence-ledger.csv` 与 `scripts/check_business_legacy_absence_gate.py --mode final`。
+- business scope 携带 regenerated production/runtime artifacts 后已通过 readiness gate；随后执行 business legacy absence ledger 关闭：115 条 phase4 carrier 中 53 行 moved、10 行 test-only-migrated、30 行 kept-config-only、22 行 already-removed，0 pending。机器验收见 `docs/architecture/business-legacy-absence-ledger.csv` 与 `scripts/check_business_legacy_absence_gate.py --mode final`。
 - 旧 `src/workline_plugins/*` 仅保留在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径；absence guardrail 负责阻断。
 - restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；quality profile 中的 runtime production closure、runtime evidence、business legacy absence 与 architecture guardrails 负责阻断回流。
 
@@ -171,7 +171,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 ## 7. 按域说明
 
-### 7.1 workline（420 entries）
+### 7.1 workline（413 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
@@ -219,15 +219,15 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | 风险项 | phase | 说明 |
 | --- | --- | --- |
-| 执行状态迁移（202 条执行状态语义；phase2 rebuild 总计 253 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
-| phase4 业务流程（113 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
+| 执行状态迁移（217 条执行状态语义；phase2 rebuild 总计 250 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
+| phase4 业务流程（115 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
 | `single_layer_rack_orchestration_service`（WMS_INTEGRATION_BOUNDARY seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
 | device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 645 条，strategy 字段非空）
-2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，113 条）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 638 条，strategy 字段非空）
+2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，115 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）
 5. ✅ `total_entries_by_type` 汇总存在，由脚本输出

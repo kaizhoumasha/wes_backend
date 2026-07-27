@@ -57,6 +57,13 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         "系统无法匹配当前业务会话，请联系支持人员。",
         ["检查 business_key / trace_id 归属逻辑", "核对设备与作业线绑定关系"],
     ),
+    ErrorCode.PLUGIN_BINDING_REQUIRED: (
+        Severity.ERROR,
+        Recoverability.MANUAL_INTERVENTION_REQUIRED,
+        ProblemClass.SOFTWARE,
+        "当前作业会话缺少插件 binding，无法安全继续。",
+        ["检查 Session immutable binding pin", "核对 Workline active binding 配置"],
+    ),
     ErrorCode.PLUGIN_EXECUTION_FAILED: (
         Severity.ERROR,
         Recoverability.MANUAL_RETRYABLE,

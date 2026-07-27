@@ -63,6 +63,7 @@ class ErrorCode(str, Enum):
     # Session / 工作流上下文问题
     SESSION_CONTEXT_MISSING = "SESSION_CONTEXT_MISSING"  # 缺少继续处理所需的 Session 上下文。
     SESSION_RESOLVE_FAILED = "SESSION_RESOLVE_FAILED"  # 无法根据输入解析到目标 Session。
+    PLUGIN_BINDING_REQUIRED = "PLUGIN_BINDING_REQUIRED"  # Session 缺少不可变插件 binding pin。
 
     # 插件执行与状态迁移问题
     PLUGIN_EXECUTION_FAILED = "PLUGIN_EXECUTION_FAILED"  # 插件执行过程中抛出异常或返回失败。
@@ -89,6 +90,7 @@ _ERROR_CODE_TO_DOMAIN: dict[ErrorCode, ErrorDomain] = {
     ErrorCode.CONTRACT_MISMATCH: ErrorDomain.CONFIG,
     ErrorCode.SESSION_CONTEXT_MISSING: ErrorDomain.WORKFLOW,
     ErrorCode.SESSION_RESOLVE_FAILED: ErrorDomain.WORKFLOW,
+    ErrorCode.PLUGIN_BINDING_REQUIRED: ErrorDomain.CONFIG,
     ErrorCode.PLUGIN_EXECUTION_FAILED: ErrorDomain.PLUGIN,
     ErrorCode.PLUGIN_TRANSITION_INVALID: ErrorDomain.PLUGIN,
     ErrorCode.DEVICE_UNREACHABLE: ErrorDomain.DEVICE,

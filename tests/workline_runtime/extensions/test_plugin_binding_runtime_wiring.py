@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -143,7 +144,8 @@ async def test_runtime_session_pin_rejects_missing_resolved_binding(monkeypatch:
 def test_plugin_binding_required_uses_one_exported_reason_code() -> None:
     plugin_binding_module = importlib.import_module("src.app.workline.services.plugin_binding_service")
 
-    assert getattr(plugin_binding_module, "PLUGIN_BINDING_REQUIRED", None) == "PLUGIN_BINDING_REQUIRED"
+    assert not hasattr(plugin_binding_module, "PLUGIN_BINDING_REQUIRED")
+    assert ErrorCode.PLUGIN_BINDING_REQUIRED.value == "PLUGIN_BINDING_REQUIRED"
 
 
 @pytest.mark.asyncio
