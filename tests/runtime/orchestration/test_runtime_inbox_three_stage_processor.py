@@ -1168,23 +1168,21 @@ async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_conte
     assert events == ["claim-snapshot-commit-release", "query-decision", "lock-revalidate-write"]
 
 
-@pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
 @pytest.mark.parametrize("correlation", ["success", "missing", "mismatch"])
 @pytest.mark.asyncio
-async def test_pick_result_callback_guards_dispatcher_before_plugin_writes(
+async def test_command_result_guards_dispatcher_before_plugin_writes(
     monkeypatch: pytest.MonkeyPatch,
-    kind: str,
     correlation: str,
 ) -> None:
     from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
     calls = {"archive": 0, "runner": 0, "writeback": 0, "terminal": 0}
     callback_code = {"success": "CMD-1", "missing": None, "mismatch": "CMD-OTHER"}[correlation]
-    payload = {"logical_route": "PICK_AND_PUT_RESULT", "result": "SUCCESS"}
+    payload = {"result": "SUCCESS"}
     if callback_code is not None:
         payload["command_code"] = callback_code
-    inbox = _make_inbox(inbox_id=91, kind=kind, payload_json=payload)
-    inbox.event_type = "PICK_AND_PUT_RESULT" if kind == "INTERNAL_EVENT" else "EXTERNAL_HTTP"
+    inbox = _make_inbox(inbox_id=91, kind="COMMAND_RESULT", payload_json=payload)
+    inbox.event_type = "COMMAND_RESULT"
     session = SimpleNamespace(
         id=10,
         version=7,
@@ -2598,12 +2596,8 @@ class TestIsLateOrDuplicateCommandResult:
             is False
         )
 
-    @pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
-    def test_pick_result_callback_missing_correlation_is_evidence_only(self, kind: str) -> None:
-        inbox = _make_inbox(
-            kind=kind,
-            payload_json={"logical_route": "PICK_AND_PUT_RESULT", "result": "SUCCESS"},
-        )
+    def test_command_result_missing_correlation_is_evidence_only(self) -> None:
+        inbox = _make_inbox(kind="COMMAND_RESULT", payload_json={"result": "SUCCESS"})
         session = _make_session(status="WAITING_DEVICE_RESULT", awaiting_device_command_code="CMD-1")
         assert (
             _is_late_or_duplicate_command_result_for_session(
@@ -2615,11 +2609,10 @@ class TestIsLateOrDuplicateCommandResult:
             is True
         )
 
-    @pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
-    def test_pick_result_callback_mismatch_is_evidence_only(self, kind: str) -> None:
+    def test_command_result_mismatch_is_evidence_only(self) -> None:
         inbox = _make_inbox(
-            kind=kind,
-            payload_json={"callback_type": "PICK_AND_PUT_RESULT", "command_code": "CMD-OTHER"},
+            kind="COMMAND_RESULT",
+            payload_json={"command_code": "CMD-OTHER"},
         )
         session = _make_session(status="WAITING_DEVICE_RESULT", awaiting_device_command_code="CMD-1")
         command = SimpleNamespace(command_code="CMD-OTHER", status="PENDING")

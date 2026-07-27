@@ -887,11 +887,11 @@ def test_generated_indexes_are_complete_read_only_and_cold_start_safe() -> None:
     )
     assert plugin_index.WORKLINE_PLUGIN_IDENTITIES == (
         ("rough_sorter", "rough_sorter.v2"),
-        ("smt_sorting_inbound", "v1"),
+        ("smt_sorting_inbound", "smt_sorting_inbound.v1"),
     )
     assert tuple(plugin_index.WORKLINE_PLUGIN_INDEX) == (
         ("rough_sorter", "rough_sorter.v2"),
-        ("smt_sorting_inbound", "v1"),
+        ("smt_sorting_inbound", "smt_sorting_inbound.v1"),
     )
     with pytest.raises(TypeError):
         system_index.SYSTEM_CAPABILITY_INDEX[("x", "v1")] = object()  # type: ignore[index]

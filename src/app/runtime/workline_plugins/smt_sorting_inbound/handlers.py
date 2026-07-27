@@ -34,10 +34,9 @@ async def decide(
     if isinstance(logical_input, CapabilityEffectResultInput):
         return _decision("CAPABILITY_REJECTED", state)
     if isinstance(logical_input, SourcePickRequestInput):
-        next_state = state.model_copy(update={"current_correlation": logical_input.command_code})
         return _decision(
             "SOURCE_PICK_REQUESTED",
-            next_state,
+            state,
             RuntimeIntent.command(
                 device_role=config.source_arm_role,
                 action="SORTING_SOURCE_PICK",

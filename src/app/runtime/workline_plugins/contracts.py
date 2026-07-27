@@ -27,9 +27,9 @@ class CommandResultInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    route: StableInputString = "COMMAND_RESULT"
+    route: Literal["COMMAND_RESULT"] = "COMMAND_RESULT"
     command_code: CommandCode
-    command_type: StableInputString
+    command_type: StableInputString | None = None
     result: CommandResultStatus
     data: dict[str, Any] = Field(default_factory=dict)
     error_detail: dict[str, Any] = Field(default_factory=dict)

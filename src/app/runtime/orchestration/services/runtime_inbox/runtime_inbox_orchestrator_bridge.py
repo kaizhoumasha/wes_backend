@@ -446,18 +446,13 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
     event_type = string_value(getattr(inbox, "event_type", None))
     declared_route = optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
     callback_route = declared_route or event_type
-    if kind == "COMMAND_RESULT" or (
-        kind in {"INTERNAL_EVENT", "EXTERNAL_HTTP"} and callback_route == "PICK_AND_PUT_RESULT"
-    ):
+    if kind == "COMMAND_RESULT":
         command_code = optional_str(payload.get("command_code"))
         if command_code is None:
             raise ValueError("command correlation is required")
-        return "PICK_AND_PUT_RESULT", {
-            "route": "PICK_AND_PUT_RESULT",
+        return "COMMAND_RESULT", {
+            "route": "COMMAND_RESULT",
             "command_code": command_code,
-            "command_type": optional_str(payload.get("command_type"))
-            or optional_str(payload.get("task_type"))
-            or "PICK_AND_PUT",
             "result": string_value(payload.get("result") or "ERROR").upper(),
             "data": payload_dict(payload.get("data")),
             "error_detail": payload_dict(payload.get("error_detail")),
@@ -655,9 +650,6 @@ async def _rollback_and_discard_deferred_sse_events(db: AsyncSession) -> None:
 def _is_lifecycle_only_external_callback(inbox: Any, payload: dict[str, Any]) -> bool:
     """识别已在 ingress 完成副作用、无需运行时能力编排的外部回调。"""
     if _kind_value(inbox) != "EXTERNAL_HTTP":
-        return False
-    callback_route = optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
-    if callback_route == "PICK_AND_PUT_RESULT":
         return False
     attributes = payload_dict(payload.get("attributes"))
     return (
@@ -1769,18 +1761,18 @@ async def _build_plugin_dispatch_request(
     route, raw_input = _canonical_plugin_input(inbox)
     command_id = optional_int(getattr(inbox, "command_id", None))
     route_diagnostic: str | None = None
-    if route == "PICK_AND_PUT_RESULT" and command_id is None:
+    if route == "COMMAND_RESULT" and command_id is None:
         route_diagnostic = "COMMAND_ID_MISSING"
-    elif route == "PICK_AND_PUT_RESULT":
+    elif route == "COMMAND_RESULT":
         from src.app.device.repositories import device_command_repository
 
         command = await device_command_repository.get_by_id(db, command_id)
         command_type = optional_str(getattr(command, "task_type", None)) if command is not None else None
         if command is None:
             route_diagnostic = "COMMAND_NOT_FOUND"
-        elif command_type not in {"PICK_AND_PUT", "MOVE_FORWARD", "MOVE_TO_NG"}:
-            route_diagnostic = "COMMAND_TASK_TYPE_UNSUPPORTED"
-        if command_type in {"PICK_AND_PUT", "MOVE_FORWARD", "MOVE_TO_NG"}:
+        elif command_type is None:
+            route_diagnostic = "COMMAND_TASK_TYPE_MISSING"
+        else:
             # 外部 callback 不负责声明动作类型；始终以 command_id 对应的权威命令为准。
             raw_input = {**raw_input, "command_type": command_type}
     replay_digest_matches = await _replay_digest_matches_source(
@@ -1798,7 +1790,7 @@ async def _build_plugin_dispatch_request(
     command_code = optional_str(raw_input.get("command_code"))
     awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
     correlation_matches = command_code is None or (awaiting_code is not None and command_code == awaiting_code)
-    if route == "PICK_AND_PUT_RESULT" and not correlation_matches:
+    if route == "COMMAND_RESULT" and not correlation_matches:
         route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
     pinned_snapshot = PinnedPluginSnapshot(
         plugin_key=plugin_key,

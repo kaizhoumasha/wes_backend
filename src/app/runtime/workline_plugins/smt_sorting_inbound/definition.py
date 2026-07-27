@@ -8,7 +8,7 @@ from .handlers import build_facts, decide
 
 DEFINITION = WorklinePluginDefinition(
     plugin_key="smt_sorting_inbound",
-    contract_version="v1",
+    contract_version="smt_sorting_inbound.v1",
     config_model=SmtSortingInboundConfig,
     state_model=SmtSortingInboundState,
     routes=("SOURCE_PICK_REQUESTED", "COMMAND_RESULT", "CAPABILITY_EFFECT_RESULT"),

@@ -263,11 +263,21 @@ def _validate_facts_snapshot(facts: BaseModel, snapshot: PinnedPluginSnapshot) -
         snapshot.index_digest,
     )
     actual = (
-        getattr(facts_binding, "binding_id", None),
-        getattr(facts_binding, "binding_version", None),
-        getattr(facts_binding, "profile_identity", None),
-        getattr(facts_binding, "plugin_config_hash", None),
-        getattr(facts_binding, "generated_index_digest", None),
+        (
+            facts_binding.binding_id,
+            facts_binding.binding_version,
+            facts_binding.profile_identity,
+            facts_binding.config_hash,
+            facts_binding.index_digest,
+        )
+        if isinstance(facts_binding, PinnedPluginSnapshot)
+        else (
+            getattr(facts_binding, "binding_id", None),
+            getattr(facts_binding, "binding_version", None),
+            getattr(facts_binding, "profile_identity", None),
+            getattr(facts_binding, "plugin_config_hash", None),
+            getattr(facts_binding, "generated_index_digest", None),
+        )
     )
     if actual[:2] != expected[:2]:
         return _violation("PLUGIN_BINDING_IDENTITY_MISMATCH", "facts binding id/version differs from pinned binding")

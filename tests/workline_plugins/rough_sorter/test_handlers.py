@@ -437,11 +437,11 @@ async def test_dispatcher_fails_closed_for_invalid_contract(mutation: str, expec
     elif mutation == "config":
         request_overrides["raw_config"] = {"provider_profile": _config().provider_profile}
     elif mutation == "input":
-        request_overrides.update({"logical_route": "PICK_AND_PUT_RESULT", "raw_input": {}})
+        request_overrides.update({"logical_route": "COMMAND_RESULT", "raw_input": {}})
     elif mutation == "result":
         request_overrides.update(
             {
-                "logical_route": "PICK_AND_PUT_RESULT",
+                "logical_route": "COMMAND_RESULT",
                 "raw_input": {
                     "command_code": "CMD-001",
                     "command_type": "PICK_AND_PUT",

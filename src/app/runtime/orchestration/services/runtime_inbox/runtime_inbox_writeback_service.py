@@ -205,11 +205,7 @@ def _is_late_or_duplicate_command_result_for_session(
 ) -> bool:
     """识别已消费过或迟到的 COMMAND_RESULT。"""
     kind = _kind_value(inbox)
-    declared_route = payload.get("logical_route") or payload.get("callback_type")
-    event_type = getattr(getattr(inbox, "event_type", None), "value", getattr(inbox, "event_type", None))
-    callback_route = declared_route or event_type
-    is_pick_result_callback = kind in {"INTERNAL_EVENT", "EXTERNAL_HTTP"} and callback_route == "PICK_AND_PUT_RESULT"
-    if kind != "COMMAND_RESULT" and not is_pick_result_callback:
+    if kind != "COMMAND_RESULT":
         return False
     if session is None:
         return False

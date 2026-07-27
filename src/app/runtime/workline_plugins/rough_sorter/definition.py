@@ -123,7 +123,7 @@ DEFINITION = WorklinePluginDefinition(
     state_model=RoughSorterState,
     routes=(
         "SCAN_COMPLETED",
-        "PICK_AND_PUT_RESULT",
+        "COMMAND_RESULT",
         "BUSINESS_TIMEOUT",
         "REPLAY_REQUEST",
         "CAPABILITY_EFFECT_RESULT",
@@ -139,7 +139,7 @@ DEFINITION = WorklinePluginDefinition(
     ),
     parsers={
         "SCAN_COMPLETED": parse_scan_completed,
-        "PICK_AND_PUT_RESULT": parse_command_result,
+        "COMMAND_RESULT": parse_command_result,
         "BUSINESS_TIMEOUT": parse_business_timeout,
         "REPLAY_REQUEST": parse_replay_request,
         "CAPABILITY_EFFECT_RESULT": parse_capability_effect_result,

@@ -9,13 +9,13 @@ from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import ROUT
 
 WORKLINE_PLUGIN_IDENTITIES = (
     ("rough_sorter", "rough_sorter.v2"),
-    ("smt_sorting_inbound", "v1"),
+    ("smt_sorting_inbound", "smt_sorting_inbound.v1"),
 )
-WORKLINE_PLUGIN_INDEX_DIGEST = "2ab2f834e949eb5c2551de32bfc7357c3b580e13c0a5863a313e2fc21e48a3ac"
+WORKLINE_PLUGIN_INDEX_DIGEST = "84ccf7ef0581394419102ac6711a9d4583cf7bb30178c43486399250876cfb96"
 WORKLINE_PLUGIN_INDEX = MappingProxyType(
     {
         ("rough_sorter", "rough_sorter.v2"): _DEFINITION_0,
-        ("smt_sorting_inbound", "v1"): _DEFINITION_1,
+        ("smt_sorting_inbound", "smt_sorting_inbound.v1"): _DEFINITION_1,
     }
 )
 WORKLINE_PLUGIN_HANDLER_REGISTRATIONS = MappingProxyType(
@@ -26,8 +26,8 @@ WORKLINE_PLUGIN_HANDLER_REGISTRATIONS = MappingProxyType(
         ("rough_sorter", "rough_sorter.v2", "CAPABILITY_EFFECT_RESULT"): _ROUTE_HANDLERS_0.get(
             ("rough_sorter", "rough_sorter.v2", "CAPABILITY_EFFECT_RESULT"), ()
         ),
-        ("rough_sorter", "rough_sorter.v2", "PICK_AND_PUT_RESULT"): _ROUTE_HANDLERS_0.get(
-            ("rough_sorter", "rough_sorter.v2", "PICK_AND_PUT_RESULT"), ()
+        ("rough_sorter", "rough_sorter.v2", "COMMAND_RESULT"): _ROUTE_HANDLERS_0.get(
+            ("rough_sorter", "rough_sorter.v2", "COMMAND_RESULT"), ()
         ),
         ("rough_sorter", "rough_sorter.v2", "REPLAY_REQUEST"): _ROUTE_HANDLERS_0.get(
             ("rough_sorter", "rough_sorter.v2", "REPLAY_REQUEST"), ()
@@ -35,14 +35,14 @@ WORKLINE_PLUGIN_HANDLER_REGISTRATIONS = MappingProxyType(
         ("rough_sorter", "rough_sorter.v2", "SCAN_COMPLETED"): _ROUTE_HANDLERS_0.get(
             ("rough_sorter", "rough_sorter.v2", "SCAN_COMPLETED"), ()
         ),
-        ("smt_sorting_inbound", "v1", "CAPABILITY_EFFECT_RESULT"): _ROUTE_HANDLERS_1.get(
-            ("smt_sorting_inbound", "v1", "CAPABILITY_EFFECT_RESULT"), ()
+        ("smt_sorting_inbound", "smt_sorting_inbound.v1", "CAPABILITY_EFFECT_RESULT"): _ROUTE_HANDLERS_1.get(
+            ("smt_sorting_inbound", "smt_sorting_inbound.v1", "CAPABILITY_EFFECT_RESULT"), ()
         ),
-        ("smt_sorting_inbound", "v1", "COMMAND_RESULT"): _ROUTE_HANDLERS_1.get(
-            ("smt_sorting_inbound", "v1", "COMMAND_RESULT"), ()
+        ("smt_sorting_inbound", "smt_sorting_inbound.v1", "COMMAND_RESULT"): _ROUTE_HANDLERS_1.get(
+            ("smt_sorting_inbound", "smt_sorting_inbound.v1", "COMMAND_RESULT"), ()
         ),
-        ("smt_sorting_inbound", "v1", "SOURCE_PICK_REQUESTED"): _ROUTE_HANDLERS_1.get(
-            ("smt_sorting_inbound", "v1", "SOURCE_PICK_REQUESTED"), ()
+        ("smt_sorting_inbound", "smt_sorting_inbound.v1", "SOURCE_PICK_REQUESTED"): _ROUTE_HANDLERS_1.get(
+            ("smt_sorting_inbound", "smt_sorting_inbound.v1", "SOURCE_PICK_REQUESTED"), ()
         ),
     }
 )

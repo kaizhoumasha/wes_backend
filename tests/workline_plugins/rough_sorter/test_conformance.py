@@ -175,7 +175,7 @@ class TestRoughSorterConformance(PluginConformanceSuite):
                 raw_input={"data": {"PkgID": "PKG-001"}},
             ),
             query_request=_request(
-                route="PICK_AND_PUT_RESULT",
+                route="COMMAND_RESULT",
                 state=picking,
                 raw_input={
                     "command_code": "CMD-PICK-001",

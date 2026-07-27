@@ -263,7 +263,7 @@ def test_typed_plugin_definition_covers_all_approved_logical_trigger_routes() ->
     )
     assert set(ROUGH_SORTER_DEFINITION.routes) == {
         "SCAN_COMPLETED",
-        "PICK_AND_PUT_RESULT",
+        "COMMAND_RESULT",
         "BUSINESS_TIMEOUT",
         "REPLAY_REQUEST",
         "CAPABILITY_EFFECT_RESULT",
@@ -332,7 +332,7 @@ async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) 
     case = _case(case_id)
     event_type = case["trigger"]["event_type"]
     raw_input = deepcopy(payload if payload is not None else case["trigger"]["payload"])
-    route = "SCAN_COMPLETED" if event_type == "SCAN_COMPLETED" else "PICK_AND_PUT_RESULT"
+    route = "SCAN_COMPLETED" if event_type == "SCAN_COMPLETED" else "COMMAND_RESULT"
     logical_input = ROUGH_SORTER_DEFINITION.parsers[route](raw_input)
     command_code = raw_input.get("command_code") if isinstance(raw_input.get("command_code"), str) else None
     state = RoughSorterState(
