@@ -32,7 +32,6 @@ class SourcePickRequestInput(BaseModel):
     handoff_demand_id: int
     handoff_source_item_id: int
     claim_attempt_no: int
-    source_pick_inbox_id: int
     source_pick_request_event_id: StableString
 
 
@@ -42,6 +41,8 @@ class SmtSortingInboundFacts(BaseModel):
     correlation_matches: bool = True
     route_diagnostic: StableString | None = None
     binding_snapshot: PinnedPluginSnapshot
+    source_arm_device_id: int | None = None
+    source_arm_device_version: int | None = None
 
 
 __all__ = [

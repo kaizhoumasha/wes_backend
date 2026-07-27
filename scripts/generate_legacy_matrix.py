@@ -99,6 +99,12 @@ MIGRATED_SERVICE_IMPLS = {
     ),
 }
 MIGRATED_IMPL_TO_LEGACY = {impl: legacy for legacy, impl in MIGRATED_SERVICE_IMPLS.items()}
+# 仅存在于目标 runtime 的内部组合类型不代表历史 legacy 入口，禁止反向伪造清理项。
+MIGRATED_TARGET_ONLY_SYMBOLS = {
+    "src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py": {
+        "_SmtSortingClaimRuntime",
+    },
+}
 
 # Business legacy cleanup 会把旧 WorkLine domain 业务合同迁入
 # runtime/capabilities/material_flow/contracts。matrix 必须继续按 legacy entry_id 记账,
@@ -666,6 +672,8 @@ def _defined_test_symbols_from_python(path: Path) -> list[str]:
 def _add_migrated_service_entries(add: Callable[[str, str, str, str], None]) -> None:
     for legacy_path, impl_path in MIGRATED_SERVICE_IMPLS.items():
         for symbol in _defined_symbols_from_python(REPO_ROOT / impl_path):
+            if symbol in MIGRATED_TARGET_ONLY_SYMBOLS.get(impl_path, set()):
+                continue
             add(legacy_path, symbol, "service", "workline")
 
 

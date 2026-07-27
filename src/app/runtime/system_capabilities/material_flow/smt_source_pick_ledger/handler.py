@@ -43,6 +43,21 @@ class SmtSourcePickLedgerHandler:
                 reason_code="SMT_SOURCE_PICK_LEDGER_EVIDENCE_MISMATCH",
                 message="SMT source-pick ledger evidence mismatch",
             )
+        if result.outcome == "manual_hold":
+            return BusinessReject(
+                reason_code="SMT_SOURCE_PICK_MANUAL_HOLD",
+                message="SMT source-pick ledger is on manual hold",
+            )
+        if result.outcome == "already_terminal":
+            return BusinessReject(
+                reason_code="SMT_SOURCE_PICK_TERMINAL_CONFLICT",
+                message="SMT source-pick ledger is already terminal",
+            )
+        if result.outcome not in {"advanced", "already_picked"}:
+            return BusinessReject(
+                reason_code="SMT_SOURCE_PICK_LEDGER_OUTCOME_UNSUPPORTED",
+                message="SMT source-pick ledger returned an unsupported outcome",
+            )
         return Success(
             payload=SmtSourcePickLedgerOutput(
                 status="PICKED",

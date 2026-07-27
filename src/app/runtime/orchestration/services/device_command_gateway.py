@@ -13,7 +13,7 @@ runtime/orchestration/services/,原位置成为跨域引用违例。
 
 from collections.abc import Mapping
 from datetime import timedelta
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn
 from urllib.parse import quote
 
 from loguru import logger
@@ -1111,42 +1111,6 @@ async def prepare_runtime_device_command_effect(
             trace_id=ctx.get("trace_id"),
             intent_log=intent_log,
         )
-        if getattr(request, "action", None) == "SORTING_SOURCE_PICK":
-            from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
-                smt_inbound_handoff_service,
-            )
-
-            payload = _payload_dict(getattr(request, "payload", None))
-            evidence = {
-                field: coerce_optional_int(payload.get(field))
-                for field in (
-                    "handoff_demand_id",
-                    "handoff_source_item_id",
-                    "claim_attempt_no",
-                    "source_pick_inbox_id",
-                )
-            }
-            missing_fields = [field for field, value in evidence.items() if value is None]
-            if missing_fields:
-                raise ValueError(
-                    "SORTING_SOURCE_PICK request missing ledger evidence: " + ", ".join(sorted(missing_fields))
-                )
-            command_id = resolve_entity_id(command)
-            command_code = coerce_string_value(getattr(command, "command_code", None))
-            dispatch_key = coerce_string_value(getattr(outbox, "dispatch_key", None))
-            if command_id is None or command_code is None or dispatch_key is None:
-                raise ValueError("SORTING_SOURCE_PICK command/outbox missing ledger correlation identity")
-            await smt_inbound_handoff_service.record_source_pick_command_correlation(
-                ctx["db"],
-                handoff_demand_id=cast("int", evidence["handoff_demand_id"]),
-                source_item_id=cast("int", evidence["handoff_source_item_id"]),
-                claim_attempt_no=cast("int", evidence["claim_attempt_no"]),
-                source_pick_inbox_id=cast("int", evidence["source_pick_inbox_id"]),
-                command_id=command_id,
-                command_code=command_code,
-                dispatch_key=dispatch_key,
-                trace_id=ctx.get("trace_id"),
-            )
         return command, outbox
     except StaleDeviceCommandPrecondition as exc:
         raise StaleRuntimeDeviceCommandAdmission("device fact changed") from exc

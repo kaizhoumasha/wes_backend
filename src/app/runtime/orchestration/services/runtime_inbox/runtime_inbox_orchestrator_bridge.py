@@ -408,7 +408,7 @@ def _bind_command_correlation(next_state: Any, intents: tuple[RuntimeIntent, ...
         intent.payload_json.get("command_code")
         for intent in intents
         if intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY
-        and intent.capability_key == "device.device_command_write"
+        and intent.payload_json.get("result_policy") == "COMMAND_RESULT"
         and isinstance(intent.payload_json.get("command_code"), str)
     ]
     if len(command_codes) != 1 or getattr(next_state, "current_correlation", None) is not None:
@@ -450,38 +450,19 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
             "data": payload_dict(payload.get("data")),
             "error_detail": payload_dict(payload.get("error_detail")),
         }
-    if kind == "TIMER_TIMEOUT" or event_type == "TIMER_TIMEOUT":
-        data = payload_dict(payload.get("data")) or payload
-        command_code = optional_str(data.get("command_code"))
-        if command_code is None:
-            raise ValueError("command correlation is required")
-        return "BUSINESS_TIMEOUT", {
-            "route": "BUSINESS_TIMEOUT",
-            "command_code": command_code,
-            "wait_type": optional_str(data.get("wait_type")) or "COMMAND_RESULT",
-        }
     if kind == "REPLAY_REQUEST" or (kind == "INTERNAL_EVENT" and callback_route == "REPLAY_REQUEST"):
         return "REPLAY_REQUEST", {
             "route": "REPLAY_REQUEST",
             "idempotency_key": string_value(payload.get("idempotency_key")),
             "payload_digest": string_value(payload.get("payload_digest")),
         }
-    if kind == "INTERNAL_EVENT" and callback_route == "SORTING_SOURCE_PICK_REQUESTED":
-        data = payload_dict(payload.get("data"))
-        return "SOURCE_PICK_REQUESTED", {
-            "route": "SOURCE_PICK_REQUESTED",
-            "handoff_demand_id": data.get("handoff_demand_id"),
-            "handoff_source_item_id": data.get("handoff_source_item_id"),
-            "claim_attempt_no": data.get("claim_attempt_no"),
-            "source_pick_inbox_id": resolve_entity_id(inbox),
-            "source_pick_request_event_id": getattr(inbox, "event_id", None),
-        }
     route = callback_route
     if route == "SYSTEM_CAPABILITY_RESULT":
         raise ValueError("raw SYSTEM_CAPABILITY_RESULT is not a plugin route")
     if not route:
         raise ValueError("plugin logical route is required")
-    return route, payload
+    declared_input = payload_dict(payload.get("input"))
+    return route, declared_input or payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -682,10 +663,16 @@ def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
 
 
 def _plugin_write_set_requires_outbox_dispatch(write_set: AttemptWriteSet) -> bool:
-    """插件设备命令写入会创建 SystemOutbox，提交后必须即时触发派发。"""
+    """插件声明的 OUTBOX_ASYNC capability 提交后必须即时触发派发。"""
+
+    from src.app.runtime.system_capabilities.definition import EffectCompletionMode
+    from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 
     return any(
-        intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY and intent.capability_key == "device.device_command_write"
+        intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY
+        and (definition := SYSTEM_CAPABILITY_INDEX.get((intent.capability_key or "", intent.contract_version or "")))
+        is not None
+        and definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
         for intent in write_set.intents
     )
 
@@ -1761,6 +1748,7 @@ async def _build_plugin_dispatch_request(
             raw_input=raw_input,
             session_context=session_context,
             material_fact=material_fact,
+            device_fact_versions=snapshot.device_fact_versions,
             correlation_matches=correlation_matches,
             replay_digest_matches=replay_digest_matches,
             route_diagnostic=route_diagnostic,

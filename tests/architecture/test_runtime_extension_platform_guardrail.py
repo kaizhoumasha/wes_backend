@@ -342,7 +342,10 @@ def test_active_sources_have_zero_legacy_runtime_catalog_references() -> None:
 
 def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> None:
     removed_orchestrator = REPO_ROOT / "src/app/runtime/orchestration/orchestrator_bridge.py"
-    routing_sources = (REPO_ROOT / "src/app/runtime/orchestration/runtime_intent_effects.py",)
+    routing_sources = (
+        REPO_ROOT / "src/app/runtime/orchestration/runtime_intent_effects.py",
+        REPO_ROOT / "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py",
+    )
     forbidden_tokens = (
         "ROUGH_SORTER_PLUGIN_KEY",
         "SMT_SORTING_INBOUND_PLUGIN_KEY",
@@ -350,6 +353,8 @@ def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> 
         "EVENT_SOURCE_PICK_REQUESTED",
         "ACTION_PICK_AND_PUT",
         "ACTION_MOVE_TO_NG",
+        "SORTING_SOURCE_PICK_REQUESTED",
+        "handoff_source_item_id",
         "BUSINESS_TIMEOUT",
     )
 

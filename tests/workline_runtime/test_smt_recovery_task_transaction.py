@@ -60,6 +60,7 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
 
         inbox = RuntimeInbox(
             workline_session_id=session.id,
+            execution_session_id=61,
             correlation_id=correlation_id,
             kind="INTERNAL_EVENT",
             workline_id=7,
@@ -108,6 +109,8 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             command_code=command_code,
             correlation_id=correlation_id,
             workline_id=7,
+            plugin_key=session.plugin_key,
+            contract_version=session.contract_version,
             params={
                 "handoff_demand_id": demand.id,
                 "handoff_source_item_id": source_item.id,

@@ -977,6 +977,12 @@ class SmtInboundHandoffService:
         command_id: int,
         command_code: str,
         dispatch_key: str,
+        session_id: int,
+        workline_id: int,
+        execution_session_id: int,
+        correlation_id: str,
+        plugin_key: str,
+        contract_version: str,
         trace_id: str | None = None,
     ) -> SmtInboundHandoffSourceItem:
         """记录首盘 source-pick command/outbox evidence，并推进 claim 后状态。"""
@@ -993,6 +999,30 @@ class SmtInboundHandoffService:
             raise ValueError("source pick command correlation inbox 不匹配")
         if item.status not in _CLAIMED_ITEM_STATUSES:
             raise ValueError(f"source pick command correlation 状态不允许: {item.status}")
+        if item.sorting_session_id != session_id or item.target_workline_id != workline_id:
+            raise ValueError("source pick command correlation session/workline 不匹配")
+        if not isinstance(execution_session_id, int) or execution_session_id <= 0:
+            raise TypeError("source pick command correlation execution_session_id 无效")
+
+        inbox = await self.repository.get_runtime_inbox_by_id(db, source_pick_inbox_id)
+        command = await self.repository.get_device_command_by_id(db, command_id)
+        if inbox is None or command is None:
+            raise ValueError("source pick command correlation 权威 evidence 缺失")
+        if (
+            getattr(command, "command_code", None) != command_code
+            or getattr(command, "workline_id", None) != workline_id
+            or getattr(command, "correlation_id", None) != correlation_id
+            or getattr(command, "plugin_key", None) != plugin_key
+            or getattr(command, "contract_version", None) != contract_version
+        ):
+            raise ValueError("source pick command correlation command ownership 不匹配")
+        existing = (
+            (item.source_pick_command_id, command_id),
+            (item.source_pick_command_code, command_code),
+            (item.source_pick_dispatch_key, dispatch_key),
+        )
+        if any(current is not None and current != expected for current, expected in existing):
+            raise ValueError("source pick command correlation 禁止覆盖既有关联")
 
         item.status = SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING
         item.source_pick_command_id = command_id
@@ -1655,6 +1685,12 @@ class SmtInboundHandoffService:
             command_id=command_id,
             command_code=command_code,
             dispatch_key=f"device-command:{command_code}",
+            session_id=cast("int", getattr(session, "id", None)),
+            workline_id=cast("int", workline_id),
+            execution_session_id=cast("int", getattr(inbox, "execution_session_id", None)),
+            correlation_id=cast("str", correlation_id),
+            plugin_key=cast("str", getattr(command, "plugin_key", None)),
+            contract_version=cast("str", getattr(command, "contract_version", None)),
             trace_id=getattr(inbox, "trace_id", None),
         )
 
@@ -1714,11 +1750,14 @@ class SmtInboundHandoffService:
         command_code = self._text_or_none(getattr(command, "command_code", None))
         return (
             isinstance(item.sorting_session_id, int)
+            and isinstance(getattr(inbox, "execution_session_id", None), int)
             and getattr(session, "id", None) == item.sorting_session_id
             and getattr(inbox, "workline_session_id", None) == item.sorting_session_id
             and getattr(command, "correlation_id", None) == correlation_id
             and getattr(command, "workline_id", None) == getattr(inbox, "workline_id", None)
             and getattr(session, "workline_id", None) == getattr(inbox, "workline_id", None)
+            and getattr(command, "plugin_key", None) == getattr(session, "plugin_key", None)
+            and getattr(command, "contract_version", None) == getattr(session, "contract_version", None)
             and self._enum_text(getattr(command, "task_type", None)) == "SORTING_SOURCE_PICK"
             and command_code is not None
             and getattr(session, "awaiting_device_command_code", None) == command_code
@@ -1938,21 +1977,7 @@ class SmtInboundHandoffService:
         resolved_trace_id = self._text_or_none(trace_id) or self._text_or_none(demand.trace_id) or event_id
         causation_id = f"handoff-source-item:{item_id}"
         event_type = _SOURCE_PICK_REQUESTED_EVENT
-        data = {
-            "session_id": session_id,
-            "handoff_demand_id": demand_id,
-            "handoff_source_item_id": item_id,
-            "claim_attempt_no": item.claim_attempt_no,
-            "rack_release_id": demand.rack_release_id,
-            "single_layer_rack_code": demand.single_layer_rack_code,
-            "bin_code": item.bin_code,
-            "bin_cell_index": item.bin_cell_index,
-            "bin_cell_code": item.bin_cell_code,
-            "material_identity_key": item.material_identity_key,
-            "pkg_code": item.pkg_code,
-            "reel_thickness_mm": str(item.reel_thickness_mm) if item.reel_thickness_mm is not None else None,
-            "route_evidence": self._dict_or_empty(route_evidence),
-        }
+        _ = route_evidence
 
         # RuntimeInbox 是 INTERNAL_EVENT 唯一事实源，item.source_pick_inbox_id 指向该记录。
         from src.app.runtime.orchestration.services.runtime_inbox import (
@@ -1962,10 +1987,20 @@ class SmtInboundHandoffService:
         runtime_inbox_result = await runtime_inbox_service.accept_internal_event(
             db,
             event_type=event_type,
-            payload_json={"event_type": event_type, "data": data},
+            payload_json={
+                "logical_route": "SOURCE_PICK_REQUESTED",
+                "input": {
+                    "route": "SOURCE_PICK_REQUESTED",
+                    "handoff_demand_id": demand_id,
+                    "handoff_source_item_id": item_id,
+                    "claim_attempt_no": item.claim_attempt_no,
+                    "source_pick_request_event_id": event_id,
+                },
+            },
             trace_id=resolved_trace_id,
             event_id=event_id,
             causation_id=causation_id,
+            workline_session_id=session_id,
             workline_id=workline_id,
             execution_session_id=execution_session_id,
             correlation_id=correlation_id,

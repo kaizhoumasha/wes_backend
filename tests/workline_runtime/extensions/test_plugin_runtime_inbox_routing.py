@@ -72,7 +72,14 @@ from src.app.wms_integration.ports.query_inventory_operation import (
         (
             "TIMER_TIMEOUT",
             "TIMER_TIMEOUT",
-            {"command_code": "CMD-1", "wait_type": "COMMAND_RESULT"},
+            {
+                "logical_route": "BUSINESS_TIMEOUT",
+                "input": {
+                    "route": "BUSINESS_TIMEOUT",
+                    "command_code": "CMD-1",
+                    "wait_type": "COMMAND_RESULT",
+                },
+            },
             "BUSINESS_TIMEOUT",
             {"route": "BUSINESS_TIMEOUT", "command_code": "CMD-1", "wait_type": "COMMAND_RESULT"},
         ),

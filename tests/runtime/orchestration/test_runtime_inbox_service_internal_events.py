@@ -840,6 +840,12 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
     assert record.payload_hash
     assert record.payload_schema_version == 1
     assert record.payload_json == {
+        "logical_route": "BUSINESS_TIMEOUT",
+        "input": {
+            "route": "BUSINESS_TIMEOUT",
+            "command_code": "CMD-TIMEOUT-001",
+            "wait_type": "DEVICE_RESULT",
+        },
         "event_type": "TIMER_TIMEOUT",
         "data": {
             "session_id": legacy_session_id,
@@ -934,6 +940,15 @@ async def test_smt_source_pick_producer_emits_canonical_workline_session_identit
     )
 
     assert record.id == 501
-    assert captured["payload_json"]["data"]["session_id"] == 33
+    assert captured["payload_json"] == {
+        "logical_route": "SOURCE_PICK_REQUESTED",
+        "input": {
+            "route": "SOURCE_PICK_REQUESTED",
+            "handoff_demand_id": 11,
+            "handoff_source_item_id": 22,
+            "claim_attempt_no": 3,
+            "source_pick_request_event_id": "smt-inbound-handoff-source-item:22:claim:3",
+        },
+    }
     assert captured["execution_session_id"] == 71
     assert captured["correlation_id"] == "workline-session:smt-source-pick-33"

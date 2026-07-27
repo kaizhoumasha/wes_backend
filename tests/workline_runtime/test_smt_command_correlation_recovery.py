@@ -39,6 +39,8 @@ def _session() -> SimpleNamespace:
     return SimpleNamespace(
         id=21,
         workline_id=7,
+        plugin_key="smt_sorting_inbound",
+        contract_version="smt_sorting_inbound.v1",
         awaiting_device_command_code="SC-SOURCE-PICK-31",
         context_json={"sorting": {"context_schema_version": 1, "source_pick_request": request}},
     )
@@ -50,6 +52,7 @@ def _inbox() -> SimpleNamespace:
         status="PROCESSED",
         workline_id=7,
         workline_session_id=21,
+        execution_session_id=61,
         correlation_id="workline-session:SMT-21",
         event_id="source-pick-event-31",
     )
@@ -75,6 +78,8 @@ def _command(
         command_code="SC-SOURCE-PICK-31",
         correlation_id="workline-session:SMT-21",
         workline_id=7,
+        plugin_key="smt_sorting_inbound",
+        contract_version="smt_sorting_inbound.v1",
         task_type="SORTING_SOURCE_PICK",
         params=params,
         status=status,
@@ -174,6 +179,12 @@ async def test_unique_matching_candidate_recovers_command_correlation() -> None:
             "command_id": 41,
             "command_code": "SC-SOURCE-PICK-31",
             "dispatch_key": "device-command:SC-SOURCE-PICK-31",
+            "session_id": 21,
+            "workline_id": 7,
+            "execution_session_id": 61,
+            "correlation_id": "workline-session:SMT-21",
+            "plugin_key": "smt_sorting_inbound",
+            "contract_version": "smt_sorting_inbound.v1",
             "trace_id": None,
         }
     ]

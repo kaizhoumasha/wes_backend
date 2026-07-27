@@ -808,6 +808,7 @@ class RuntimeInboxService:
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
+        workline_session_id: int | None = None,
         workline_id: int | None = None,
         device_id: int | None = None,
         command_id: int | None = None,
@@ -844,6 +845,7 @@ class RuntimeInboxService:
             trace_id=trace_id,
             event_id=event_id,
             causation_id=causation_id,
+            workline_session_id=workline_session_id,
             workline_id=workline_id,
             device_id=device_id,
             command_id=command_id,
@@ -862,6 +864,7 @@ class RuntimeInboxService:
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
+        workline_session_id: int | None = None,
         workline_id: int | None = None,
         execution_session_id: int | None = None,
         correlation_id: str | None = None,
@@ -897,6 +900,7 @@ class RuntimeInboxService:
             trace_id=trace_id,
             event_id=event_id,
             causation_id=causation_id,
+            workline_session_id=workline_session_id,
             workline_id=workline_id,
             execution_session_id=execution_session_id,
             correlation_id=correlation_id,
@@ -1051,7 +1055,16 @@ class RuntimeInboxService:
             "command_status": command_status,
             "ack_received_at": _format_runtime_temporal(ack_received_at),
         }
-        canonical_payload = {"event_type": "TIMER_TIMEOUT", "data": payload_data}
+        canonical_payload = {
+            "logical_route": "BUSINESS_TIMEOUT",
+            "input": {
+                "route": "BUSINESS_TIMEOUT",
+                "command_code": command_key,
+                "wait_type": wait_type or "COMMAND_RESULT",
+            },
+            "event_type": "TIMER_TIMEOUT",
+            "data": payload_data,
+        }
         record_data: dict[str, Any] = {
             "kind": "TIMER_TIMEOUT",
             "workline_session_id": session_id,

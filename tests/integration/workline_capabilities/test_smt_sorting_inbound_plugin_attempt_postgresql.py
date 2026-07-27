@@ -165,13 +165,16 @@ def test_smt_claim_binding_is_atomic_and_fresh_generated_dispatch_succeeds() -> 
                         raw_state={},
                         context_state={},
                         raw_input={
+                            "route": "SOURCE_PICK_REQUESTED",
                             "handoff_demand_id": demand.id,
                             "handoff_source_item_id": item.id,
                             "claim_attempt_no": item.claim_attempt_no,
-                            "source_pick_inbox_id": 13,
                             "source_pick_request_event_id": "smt-source-pick-requested-13",
                         },
-                        fact_source=PluginAttemptFactSource(snapshot=snapshot),
+                        fact_source=PluginAttemptFactSource(
+                            snapshot=snapshot,
+                            device_fact_versions=(("SORTING_SOURCE_ARM", 31, 0),),
+                        ),
                         snapshot=snapshot,
                     ),
                     gateway=object(),

@@ -14,7 +14,7 @@ from src.app.device.models.device import Device, DeviceStatus
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.device.services.device_service import device_service
 from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.orchestration.models.session import WorklineSession
+from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
     SmtInboundHandoffDemandStatus,
@@ -219,6 +219,30 @@ async def test_smt_claim_processor_persists_execution_anchor_command_and_outbox(
 
 
 @pytest.mark.asyncio
+async def test_smt_command_correlation_rejects_cross_session_overwrite(db_session: object) -> None:
+    service, source_item, source_inbox, command, outbox = await _claim_and_process_source_pick(db_session)
+
+    with pytest.raises(ValueError, match="session"):
+        await service.record_source_pick_command_correlation(
+            db_session,
+            handoff_demand_id=source_item.handoff_demand_id,
+            source_item_id=source_item.id,
+            claim_attempt_no=source_item.claim_attempt_no,
+            source_pick_inbox_id=source_inbox.id,
+            command_id=command.id,
+            command_code=command.command_code,
+            dispatch_key=outbox.dispatch_key,
+            session_id=source_item.sorting_session_id + 1,
+            workline_id=source_inbox.workline_id,
+            execution_session_id=source_inbox.execution_session_id,
+            correlation_id=source_inbox.correlation_id,
+            plugin_key=command.plugin_key,
+            contract_version=command.contract_version,
+            trace_id=command.trace_id,
+        )
+
+
+@pytest.mark.asyncio
 async def test_smt_fast_success_callback_marks_picked_before_first_recovery_scan(db_session: object) -> None:
     service, source_item, _source_inbox, command, _outbox = await _claim_and_process_source_pick(db_session)
     callback_command_service = DeviceCommandService()
@@ -294,3 +318,61 @@ async def test_smt_fast_success_callback_marks_picked_before_first_recovery_scan
     await db_session.refresh(source_item)
     assert summary["manual_hold"] == 0
     assert source_item.status == SmtInboundHandoffSourceItemStatus.PICKED
+
+
+@pytest.mark.asyncio
+async def test_smt_late_success_after_manual_hold_does_not_continue_session(db_session: object) -> None:
+    _service, source_item, _source_inbox, command, _outbox = await _claim_and_process_source_pick(db_session)
+    command_code = command.command_code
+    source_item.status = SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+    source_item.failure_code = "SOURCE_PICK_RECOVERY_AMBIGUOUS"
+    db_session.add(source_item)
+    await db_session.commit()
+
+    callback_command_service = DeviceCommandService()
+    callback_command_service.enable_cache = False
+    callback = CommandCallbackResult(
+        command_code=command.command_code,
+        device_code="SMT-SOURCE-ARM-1",
+        result=CommandResult.SUCCESS,
+        finish_time=int(timezone.now_utc().timestamp() * 1000),
+        source_event_id="smt-source-pick-result-late",
+        trace_id=command.trace_id,
+    )
+    outcome = await CallbackOrchestrationService(queue_gateway=_NoopQueueGateway()).process_result(
+        db_session,
+        callback=callback,
+        existing_command=command,
+        request_id="request-smt-source-pick-result-late",
+        resolved_contract_version=DEFINITION.contract_version,
+        command_service=callback_command_service,
+        device_service=device_service,
+        enqueue_processing=lambda: None,
+    )
+    assert outcome.is_duplicate is False
+
+    callback_inbox = await db_session.scalar(select(RuntimeInbox).where(RuntimeInbox.kind == "COMMAND_RESULT"))
+    assert callback_inbox is not None
+    [claim] = await RuntimeInboxService().claim_for_processing(
+        db_session,
+        limit=1,
+        processor_token="lease-smt-source-pick-result-late",
+        stale_after_seconds=60,
+    )
+    await db_session.commit()
+    processed = await RuntimeInboxProcessorBridge(queue_gateway=_NoopQueueGateway()).process_claimed(
+        db_session,
+        claim=claim,
+    )
+    assert processed["success"] == 1
+
+    await db_session.refresh(source_item)
+    session = await db_session.get(WorklineSession, source_item.sorting_session_id)
+    feedback = await db_session.scalar(
+        select(RuntimeInbox).where(RuntimeInbox.event_type == "CAPABILITY_EFFECT_RESULT")
+    )
+    assert source_item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+    assert session is not None
+    assert session.status == SessionStatus.WAITING_DEVICE_RESULT
+    assert session.awaiting_device_command_code == command_code
+    assert feedback is not None

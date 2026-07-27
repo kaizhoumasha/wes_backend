@@ -12,10 +12,11 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
     GeneratedPluginAttemptRunner,
     _canonical_plugin_input,
 )
-from src.app.runtime.system_capabilities.outcomes import BusinessReject
+from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, PluginAttemptContext
 from src.app.runtime.workline_plugins.contracts import CapabilityEffectResultInput, CommandResultInput
 from src.app.runtime.workline_plugins.dispatcher import (
+    DeclaredCapabilityGateway,
     PinnedPluginSnapshot,
     PluginAttemptFactSource,
     PluginDispatchRequest,
@@ -43,7 +44,11 @@ def _facts(**overrides: object) -> SmtSortingInboundFacts:
         index_digest="b" * 64,
         profile_identity="runtime",
     )
-    source = PluginAttemptFactSource(snapshot=snapshot, **overrides)
+    source = PluginAttemptFactSource(
+        snapshot=snapshot,
+        device_fact_versions=(("SORTING_SOURCE_ARM", 31, 0),),
+        **overrides,
+    )
     return build_facts(source)
 
 
@@ -52,7 +57,6 @@ def _source_pick_input() -> SourcePickRequestInput:
         handoff_demand_id=11,
         handoff_source_item_id=12,
         claim_attempt_no=3,
-        source_pick_inbox_id=31,
         source_pick_request_event_id="source-pick-event-31",
     )
 
@@ -78,7 +82,6 @@ async def test_source_pick_request_carries_strict_command_correlation_evidence()
         handoff_demand_id=11,
         handoff_source_item_id=12,
         claim_attempt_no=3,
-        source_pick_inbox_id=31,
         source_pick_request_event_id="source-pick-event-31",
     )
 
@@ -91,11 +94,13 @@ async def test_source_pick_request_carries_strict_command_correlation_evidence()
     )
 
     [command] = decision.intents
-    assert command.payload_json == {
+    assert command.capability_key == "material_flow.smt_source_pick_command"
+    assert command.payload_json["target_device_id"] == 31
+    assert command.payload_json["command_code"].startswith("SC-")
+    assert command.payload_json["payload"] == {
         "handoff_demand_id": 11,
         "handoff_source_item_id": 12,
         "claim_attempt_no": 3,
-        "source_pick_inbox_id": 31,
         "source_pick_request_event_id": "source-pick-event-31",
     }
 
@@ -107,11 +112,14 @@ def test_internal_source_pick_event_normalizes_to_generated_route_with_inbox_evi
         event_type="SORTING_SOURCE_PICK_REQUESTED",
         event_id="source-pick-event-31",
         payload_json={
-            "data": {
+            "logical_route": "SOURCE_PICK_REQUESTED",
+            "input": {
+                "route": "SOURCE_PICK_REQUESTED",
                 "handoff_demand_id": 11,
                 "handoff_source_item_id": 12,
                 "claim_attempt_no": 3,
-            }
+                "source_pick_request_event_id": "source-pick-event-31",
+            },
         },
     )
 
@@ -123,7 +131,6 @@ def test_internal_source_pick_event_normalizes_to_generated_route_with_inbox_evi
         "handoff_demand_id": 11,
         "handoff_source_item_id": 12,
         "claim_attempt_no": 3,
-        "source_pick_inbox_id": 31,
         "source_pick_request_event_id": "source-pick-event-31",
     }
 
@@ -159,13 +166,34 @@ def test_smt_definition_declares_source_arm_command_and_effect_contract() -> Non
     assert DEFINITION.schema.commands[0].command == "SORTING_SOURCE_PICK"
     assert DEFINITION.schema.commands[0].target_device_role == "SORTING_SOURCE_ARM"
     assert DEFINITION.allowed_capabilities == (
-        ("device.device_command_write", "v1"),
+        ("material_flow.smt_source_pick_command", "v1"),
         ("material_flow.smt_source_pick_ledger", "v1"),
         ("runtime.session_hold", "v1"),
     )
 
     with pytest.raises(ValueError):
         SmtSortingInboundConfig(provider_profile="runtime", source_arm_role="UNDECLARED_ARM")
+
+
+@pytest.mark.asyncio
+async def test_other_plugin_cannot_invoke_smt_source_pick_command_capability() -> None:
+    class _ForbiddenUnderlyingGateway:
+        async def execute(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("undeclared cross-plugin capability must not reach the runtime gateway")
+
+    gateway = DeclaredCapabilityGateway(
+        _ForbiddenUnderlyingGateway(),
+        allowed_capabilities=frozenset({("material_flow.material_unit_write", "v1")}),
+    )
+
+    result = await gateway.execute(
+        "material_flow.smt_source_pick_command",
+        "v1",
+        {"action": "SORTING_SOURCE_PICK"},
+    )
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "CAPABILITY_NOT_DECLARED"
 
 
 @pytest.mark.asyncio
@@ -189,7 +217,10 @@ async def test_smt_source_pick_binds_generated_command_code_for_command_result()
         raw_state={},
         context_state={},
         raw_input=_source_pick_input().model_dump(mode="json"),
-        fact_source=PluginAttemptFactSource(snapshot=snapshot),
+        fact_source=PluginAttemptFactSource(
+            snapshot=snapshot,
+            device_fact_versions=(("SORTING_SOURCE_ARM", 31, 0),),
+        ),
         snapshot=snapshot,
     )
     write_set = await GeneratedPluginAttemptRunner().run(
@@ -217,6 +248,7 @@ async def test_smt_source_pick_binds_generated_command_code_for_command_result()
     assert write_set.outcome_code == "SOURCE_PICK_REQUESTED", write_set.hold_reason
     [command] = write_set.intents
     assert command.kind is RuntimeIntentKind.SYSTEM_CAPABILITY
+    assert command.capability_key == "material_flow.smt_source_pick_command"
     assert command.payload_json["command_code"].startswith("SC-")
     assert write_set.next_state.current_correlation == command.payload_json["command_code"]
 

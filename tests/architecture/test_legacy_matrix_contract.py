@@ -59,6 +59,12 @@ def test_removed_inbox_processor_has_no_inventory_mapping_or_entries():
     assert not any(entry.relative_path == legacy_path for entry in parse_entries())
 
 
+def test_target_only_smt_runtime_anchor_is_not_reverse_mapped_as_legacy() -> None:
+    entries = {entry.entry_id for entry in parse_entries()}
+
+    assert "legacy:src/app/workline/services/smt_inbound_handoff_service.py:_SmtSortingClaimRuntime" not in entries
+
+
 def test_active_inventory_foundation_is_not_legacy_cleanup_scope():
     """当前迁移清单基础能力不得被误登记为待迁移或待删除入口。"""
     assert generate_legacy_matrix.ACTIVE_FOUNDATION_PATHS == EXPECTED_ACTIVE_FOUNDATION_PATHS

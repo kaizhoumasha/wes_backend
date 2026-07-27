@@ -87,6 +87,7 @@ class PluginAttemptFactSource(BaseModel):
     raw_input: dict[str, object] = Field(default_factory=dict)
     session_context: dict[str, object] = Field(default_factory=dict)
     material_fact: dict[str, object] = Field(default_factory=dict)
+    device_fact_versions: tuple[tuple[StableString, int, int], ...] = ()
     correlation_matches: bool = True
     replay_digest_matches: bool | None = None
     route_diagnostic: StableString | None = None
