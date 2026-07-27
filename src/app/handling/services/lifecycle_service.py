@@ -402,13 +402,13 @@ def _derive_operation_status(steps: list[Any]) -> HandlingOperationStatus:
     if not steps:
         return HandlingOperationStatus.REQUESTED
     statuses = {_step_status_value(getattr(step, "step_status", None)) for step in steps}
-    if any(status in {HandlingStepStatus.FAILED.value} for status in statuses):
+    if HandlingStepStatus.FAILED.value in statuses:
         return HandlingOperationStatus.FAILED
-    if any(status in {HandlingStepStatus.TIMEOUT.value} for status in statuses):
+    if HandlingStepStatus.TIMEOUT.value in statuses:
         return HandlingOperationStatus.TIMEOUT
-    if any(status in {HandlingStepStatus.CANCELLED.value} for status in statuses):
+    if HandlingStepStatus.CANCELLED.value in statuses:
         return HandlingOperationStatus.CANCELLED
-    if any(status in {HandlingStepStatus.RECONCILING.value} for status in statuses):
+    if HandlingStepStatus.RECONCILING.value in statuses:
         return HandlingOperationStatus.RECONCILING
     if all(status == HandlingStepStatus.SUCCEEDED.value for status in statuses):
         return HandlingOperationStatus.SUCCEEDED

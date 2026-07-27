@@ -12,6 +12,7 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import r
 from src.app.sys.models.outbox import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
 from src.database.base_repository import BaseRepository
+from src.database.dialect import dialect_name
 
 
 class WorkLineRepository(BaseRepository[WorkLine]):
@@ -63,9 +64,9 @@ class WorkLineRepository(BaseRepository[WorkLine]):
     async def acquire_plugin_pin_shared(self, db: AsyncSession, workline_id: int) -> None:
         """为新 Session 读取当前插件 pin 获取事务级共享锁。"""
 
-        if self._dialect_name(db) != "postgresql":
+        if dialect_name(db) != "postgresql":
             return
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:lock_key, 0))"),
             {"lock_key": self._plugin_pin_lock_key(workline_id)},
         )
@@ -73,9 +74,9 @@ class WorkLineRepository(BaseRepository[WorkLine]):
     async def acquire_plugin_pin_exclusive(self, db: AsyncSession, workline_id: int) -> None:
         """为 activation/cutover 切换插件 pin 获取事务级排他锁。"""
 
-        if self._dialect_name(db) != "postgresql":
+        if dialect_name(db) != "postgresql":
             return
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
             {"lock_key": self._plugin_pin_lock_key(workline_id)},
         )
@@ -104,15 +105,6 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         """生成跨进程稳定且带版本 namespace 的插件 pin 锁键。"""
 
         return f"workline-plugin-pin:v1:{workline_id}"
-
-    @staticmethod
-    def _dialect_name(db: AsyncSession) -> str | None:
-        """解析数据库方言；非 PostgreSQL 环境明确跳过 advisory lock。"""
-
-        bind = db.get_bind()
-        dialect = getattr(bind, "dialect", None)
-        name = getattr(dialect, "name", None)
-        return name if isinstance(name, str) else None
 
     async def get_unfinished_workload_summary(
         self,

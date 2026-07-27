@@ -163,8 +163,6 @@ def build_inventory_query_port_factory(
         resolved_credential_provider = resolved_credential_provider or build_environment_credential_provider(
             settings_source=active_settings
         )
-    if resolved_credential_provider is None:
-        raise ValueError("WMS QUERY credential provider is required")
     if not isinstance(resolved_credential_provider, AuditedVersionedCredentialProvider):
         resolved_credential_provider = AuditedVersionedCredentialProvider(
             resolved_credential_provider,

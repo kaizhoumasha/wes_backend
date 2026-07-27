@@ -57,7 +57,7 @@ class SystemOutboxCancellationService:
     ) -> None:
         occurred_at_ms = int(timezone.now_utc().timestamp() * 1000)
         for item in cancelled:
-            await self._reducer.reduce(
+            _ = await self._reducer.reduce(
                 db,
                 EffectReducerEvent(
                     event_type=EffectReducerEventType.DISPATCH_CANCELLED,

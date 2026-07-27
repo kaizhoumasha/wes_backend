@@ -906,7 +906,7 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
             payload_json={"logical_route": "SCAN_COMPLETED"},
             payload_schema_version=1,
             claim_bucket_key="session:stale",
-            received_at=timezone.now_for_db(),
+            received_at=1_700_000_000_000,
         )
         first.add(inbox)
         await first.commit()

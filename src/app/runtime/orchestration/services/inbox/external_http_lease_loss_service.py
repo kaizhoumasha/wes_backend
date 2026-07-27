@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.effect_state_contract import transition_dispatch_attempt
@@ -13,6 +13,10 @@ from src.app.runtime.orchestration.repositories.dispatch_attempt_repository impo
 from src.app.sys.external_http_transport import ExternalHttpTransportPhase, ExternalHttpTransportResult
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, system_outbox_repository
 from src.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractAsyncContextManager
 
 LEASE_LOSS_ERROR_CODE = "STALE_EXTERNAL_HTTP_DISPATCH_LEASE_EXPIRED"
 LEASE_LOSS_ERROR_MESSAGE = "delivery evidence unavailable; automatic replay fenced"
@@ -60,6 +64,7 @@ class ExternalHttpLeaseLossService:
                 operation_domains=operation_domains,
                 exclude_operation_domains=exclude_operation_domains,
             )
+        begin_nested = cast("Callable[[], AbstractAsyncContextManager[Any]]", begin_nested)
         async with begin_nested():
             return await self._fence_in_transaction(
                 db,

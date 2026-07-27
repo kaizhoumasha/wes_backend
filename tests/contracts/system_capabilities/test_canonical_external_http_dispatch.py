@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
+from src.app.sys import canonical_dispatch
 from src.app.sys.canonical_dispatch import CanonicalPayload, ExternalHttpDispatchRequest
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
@@ -206,6 +207,47 @@ async def test_repeated_external_http_attempts_use_frozen_bytes_without_reading_
         "intent-idempotency-001",
         "intent-idempotency-001",
     ]
+
+
+@pytest.mark.asyncio
+async def test_external_http_dispatch_hashes_canonical_payload_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-001"})
+    outbox = SimpleNamespace(
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        idempotency_key="intent-idempotency-001",
+    )
+    frozen_binding = frozen_external_http_binding(
+        target_code="WMS_INBOUND",
+        target_url="https://wms.example/inbound",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+    )
+    for field_name, value in frozen_binding.as_persisted_fields().items():
+        setattr(outbox, field_name, value)
+    original_payload_sha256 = canonical_dispatch.payload_sha256
+    hash_count = 0
+
+    def tracked_payload_sha256(payload: bytes) -> str:
+        nonlocal hash_count
+        hash_count += 1
+        return original_payload_sha256(payload)
+
+    monkeypatch.setattr(canonical_dispatch, "payload_sha256", tracked_payload_sha256)
+    requests: list[ExternalHttpDispatchRequest] = []
+
+    async def sender(request: ExternalHttpDispatchRequest) -> ExternalHttpTransportResult:
+        requests.append(request)
+        return ExternalHttpTransportResult.not_sent(
+            phase=ExternalHttpTransportPhase.CONNECTING,
+            safe_to_retry=True,
+            error_code="CONNECT_ERROR",
+        )
+
+    result = await dispatch_external_http(outbox, StaticTestCredentialProvider(), sender)
+
+    assert result.outcome is ExternalHttpTransportOutcome.NOT_SENT
+    assert len(requests) == 1
+    assert hash_count == 1
 
 
 def test_external_http_request_rejects_persisted_bytes_hash_mismatch() -> None:

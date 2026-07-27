@@ -11,6 +11,7 @@ from src.app.runtime.system_capabilities.wms.contracts import (
     OutboundAuthProfile,
     OutboundAuthScheme,
     WmsEffectStatusHint,
+    WmsOperationContract,
     WmsProviderOperationBinding,
     WmsProviderProfile,
 )
@@ -51,7 +52,7 @@ WMS_EFFECT_STATUS_HINT_CALLBACK = InboundCallbackContract(
 def _binding(
     profile: ExternalContractProfile,
     outbound_auth: OutboundAuthProfile,
-    operation: Any,
+    operation: WmsOperationContract,
 ) -> WmsProviderOperationBinding:
     _ = require_northbound_operation_slo(operation.identity)
     return WmsProviderOperationBinding(
@@ -172,7 +173,7 @@ def validate_wms_transport_configuration(*, settings_source: Any | None = None) 
     for credential_reference in credential_references:
         env_name = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[credential_reference]
         try:
-            credential_provider.resolve(credential_reference)
+            _ = credential_provider.resolve(credential_reference)
         except (CredentialResolutionError, LookupError) as exc:
             raise ValueError(f"{env_name} 必须为活动运行环境显式配置且未被撤销") from exc
 
@@ -197,17 +198,29 @@ def _external_http_effect_profile(profile: WmsProviderProfile) -> ExternalHttpPr
         identity=profile.identity.identity,
         environment=profile.identity.environment,
         bindings=tuple(
-            ExternalHttpBindingDefinition(
-                operation_identity=binding.operation.identity,
-                allowed_target_codes=(binding.operation.target_code,),
-                http_method=binding.operation.http_method.value,
-                timeout_seconds=binding.operation.budget.timeout_seconds,
-                auth_scheme=binding.outbound_auth.scheme.value,
-                credential_reference=str(binding.outbound_auth.credential_reference),
-            )
+            _external_http_effect_binding(binding)
             for binding in profile.bindings
             if binding.operation.mode.value == "EFFECT"
         ),
+    )
+
+
+def _external_http_effect_binding(binding: WmsProviderOperationBinding) -> ExternalHttpBindingDefinition:
+    """把通用 WMS binding 收窄为 EXTERNAL_HTTP EFFECT 支持的 POST/HMAC 合同。"""
+
+    http_method = binding.operation.http_method.value
+    if http_method != "POST":
+        raise ValueError("WMS EXTERNAL_HTTP EFFECT binding only supports POST")
+    auth_scheme = binding.outbound_auth.scheme.value
+    if auth_scheme != "HMAC_SHA256":
+        raise ValueError("WMS EXTERNAL_HTTP EFFECT binding requires HMAC_SHA256")
+    return ExternalHttpBindingDefinition(
+        operation_identity=binding.operation.identity,
+        allowed_target_codes=(binding.operation.target_code,),
+        http_method=http_method,
+        timeout_seconds=binding.operation.budget.timeout_seconds,
+        auth_scheme=auth_scheme,
+        credential_reference=str(binding.outbound_auth.credential_reference),
     )
 
 

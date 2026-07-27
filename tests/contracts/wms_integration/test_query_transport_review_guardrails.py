@@ -25,6 +25,7 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityMode,
 )
 from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
+from src.app.runtime.system_capabilities.wms.contracts import WmsHttpMethod
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
@@ -121,6 +122,20 @@ def _adapter(
         nonce_factory=lambda: "nonce-1",
     )
     return InventoryQueryOperationAdapter(executor=executor)
+
+
+def test_query_transport_rejects_speculative_post_contract() -> None:
+    WmsBoundQueryEndpoint, resolve_wms_operation_binding = _query_transport_contracts()
+    binding = resolve_wms_operation_binding(
+        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        operation_identity=CONTRACT.identity,
+    )
+    post_binding = binding.model_copy(
+        update={"operation": binding.operation.model_copy(update={"http_method": WmsHttpMethod.POST})}
+    )
+
+    with pytest.raises(ValueError, match="only supports GET"):
+        WmsBoundQueryEndpoint(binding=post_binding, base_url="https://wms.test")
 
 
 @pytest.mark.asyncio

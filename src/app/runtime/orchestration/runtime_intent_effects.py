@@ -690,7 +690,7 @@ class RuntimeIntentEffectApplier:
             from src.app.runtime.orchestration.services import material_unit_mutation_service
 
             service = material_unit_mutation_service
-        await service.create(ctx, intent.payload_json)
+        _ = await service.create(ctx, intent.payload_json)
 
     async def _apply_update_material_unit_status(self, ctx: Any, intent: RuntimeIntent) -> None:
         service = self._material_unit_mutation_service
@@ -698,7 +698,7 @@ class RuntimeIntentEffectApplier:
             from src.app.runtime.orchestration.services import material_unit_mutation_service
 
             service = material_unit_mutation_service
-        await service.update_status(ctx, intent.payload_json)
+        _ = await service.update_status(ctx, intent.payload_json)
 
     async def _apply_current_material_unit_reconciliation_status(self, ctx: Any) -> None:
         from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus

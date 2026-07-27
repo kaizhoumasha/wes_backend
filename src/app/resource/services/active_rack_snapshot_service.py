@@ -120,7 +120,7 @@ def _positive_int(value: Any) -> int:
         parsed = int(str(value).strip())
     except (TypeError, ValueError):
         return 0
-    return parsed if parsed > 0 else 0
+    return max(0, parsed)
 
 
 def _mount_stack_position(mount: Any) -> int:

@@ -463,7 +463,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         checks = self._build_configuration_checks(workline, devices, rack_positions)
         if self.plugin_binding_service.manages(workline):
             try:
-                self.plugin_binding_service.validate_activation_configuration(
+                _ = self.plugin_binding_service.validate_activation_configuration(
                     workline=workline,
                     environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
                     devices=devices,

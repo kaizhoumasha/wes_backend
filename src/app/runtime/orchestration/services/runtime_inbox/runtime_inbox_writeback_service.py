@@ -485,7 +485,7 @@ class RuntimeInboxWriteBackService:
                 if has_device_dependency:
                     # Stage 1 对新旧设备 binding 都固定事实；Stage 3 必须与设备拓扑 CRUD 共享锁，
                     # 并锁定重载行直至提交，防止 QUERY 期间新增、换绑或状态更新后提交陈旧决策。
-                    await self._workline_repository.acquire_plugin_pin_shared(db, workline_id)
+                    _ = await self._workline_repository.acquire_plugin_pin_shared(db, workline_id)
                     current_devices = await self._device_repository.get_by_work_line_id_for_update(db, workline_id)
                     current_devices_by_role: dict[str, list[Any]] = {}
                     for current_device in current_devices:
@@ -526,7 +526,7 @@ class RuntimeInboxWriteBackService:
                         now_ms=int(timezone.now_utc().timestamp() * 1000),
                     )
                     if claim_result is ClaimResult.NEW:
-                        self._intent_log_repository.add_prepared(db, prepared)
+                        _ = self._intent_log_repository.add_prepared(db, prepared)
                 effect_result = await self.effect_applier.apply(
                     {
                         "db": db,
@@ -567,7 +567,7 @@ class RuntimeInboxWriteBackService:
                         )
                     else:
                         feedback_digest = sha256_digest(business_reject_evidence)
-                        await self.inbox_service.accept_internal_event(
+                        _ = await self.inbox_service.accept_internal_event(
                             db,
                             event_type="CAPABILITY_EFFECT_RESULT",
                             payload_json={
@@ -609,7 +609,7 @@ class RuntimeInboxWriteBackService:
                     if is_recursive_effect_reject:
                         return WriteDisposition.TERMINAL_FAILURE
                     return WriteDisposition.COMMITTED
-            await self._plugin_attempt_repository.persist_locked_attempt(
+            _ = await self._plugin_attempt_repository.persist_locked_attempt(
                 db,
                 locked=locked,
                 workline_id=workline_id,

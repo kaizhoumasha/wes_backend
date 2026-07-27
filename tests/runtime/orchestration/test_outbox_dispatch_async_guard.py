@@ -11,7 +11,7 @@ fix 的回归护栏。
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -23,6 +23,7 @@ from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import
     _escalate_status_precheck_wait_if_needed,
 )
 from src.app.sys.models.outbox import SystemOutboxStatus
+from src.utils.timezone import timezone
 
 
 def _make_blocked_outbox() -> Any:
@@ -37,8 +38,8 @@ def _make_blocked_outbox() -> Any:
         blocked_check_count=30,
         workline_id=1,
         operation_domain="WORKLINE",
-        # naive UTC,now_for_db() 减法需要同类型
-        blocked_at=datetime.utcnow() - timedelta(seconds=600),
+        # 数据库存储使用 naive UTC，与生产代码 now_for_db() 的减法保持同类型。
+        blocked_at=timezone.now_for_db() - timedelta(seconds=600),
     )
 
 

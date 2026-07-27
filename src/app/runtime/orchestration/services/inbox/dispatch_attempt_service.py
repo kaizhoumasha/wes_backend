@@ -328,7 +328,7 @@ class WorklineDispatchAttemptService(BaseService[WorklineDispatchAttempt, Workli
         )
         db.add(attempt)
         await _flush_if_supported(db)
-        await _finalize_external_http_attempt(
+        _ = await _finalize_external_http_attempt(
             db,
             attempt=attempt,
             lease_owner_token=lease_token,

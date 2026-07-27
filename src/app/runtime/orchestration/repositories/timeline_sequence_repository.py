@@ -2,32 +2,19 @@
 
 from __future__ import annotations
 
-from inspect import isawaitable
 from typing import Any, cast
 
 from sqlalchemy import func, select, text
 
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
-
-
-def _dialect_name(db: Any) -> str | None:
-    get_bind = getattr(db, "get_bind", None)
-    bind = get_bind() if callable(get_bind) else getattr(db, "bind", None)
-    if isawaitable(bind):
-        close = getattr(bind, "close", None)
-        if callable(close):
-            _ = close()
-        return None
-    dialect = getattr(bind, "dialect", None)
-    name = getattr(dialect, "name", None)
-    return name if isinstance(name, str) else None
+from src.database.dialect import dialect_name
 
 
 class TimelineSequenceRepository:
     """同层 owner：持有 advisory lock 与 max(seq_no) 查询，不依赖 Service。"""
 
     async def acquire_lock(self, db: Any, *, session_id: int) -> None:
-        if _dialect_name(db) == "postgresql":
+        if dialect_name(db) == "postgresql":
             await db.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
                 {"lock_key": f"workline_timeline:{session_id}"},

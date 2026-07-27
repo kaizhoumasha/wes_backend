@@ -124,7 +124,9 @@ class NorthboundOperationsRepository:
             await self._load_sync_query_evidence_keys(db) if tenant_id is None and workline_id is None else ()
         )
         catalog_operations = _active_catalog_operations()
-        operation_modes = {operation_identity: mode for _, operation_identity, mode in catalog_operations}
+        operation_modes: dict[str, Literal["QUERY", "EFFECT"]] = {
+            operation_identity: mode for _, operation_identity, mode in catalog_operations
+        }
         visible_keys = tuple(sorted(set(keys) | set(evidence_keys)))
         if not visible_keys and tenant_id is None and workline_id is None:
             visible_keys = tuple(sorted((profile, operation) for profile, operation, _ in catalog_operations))

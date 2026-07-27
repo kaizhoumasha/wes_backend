@@ -376,6 +376,7 @@ async def test_expired_bound_http_lease_closes_attempt_and_opens_reconciliation_
 ) -> None:
     suffix = uuid4().hex
     outbox, attempt, intent = await _seed_bound_expired_lease(integration_db_session, suffix=suffix)
+    outbox.dispatch_started_at = timezone.now_for_db() - timedelta(seconds=2)
     scheduler = FairDispatchScheduler(
         repository=SystemOutboxRepository(),
         policy_registry=DispatchPolicyRegistry(),
@@ -423,6 +424,7 @@ async def test_expired_http_lease_bridge_failure_rolls_back_the_whole_closure_sa
 
     suffix = uuid4().hex
     outbox, attempt, _intent = await _seed_bound_expired_lease(integration_db_session, suffix=suffix)
+    outbox.dispatch_started_at = timezone.now_for_db() - timedelta(seconds=2)
     service = ExternalHttpLeaseLossService(effect_transport_bridge=_FailingBridge())
 
     with pytest.raises(RuntimeError, match="bridge unavailable"):

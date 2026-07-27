@@ -882,7 +882,7 @@ class OutboxDispatchService:
                     policy.retry_budget,
                     lease_owner_token=lease_owner_token,
                 )
-                if dispatch_attempt is not None and failed_outbox is not None:
+                if dispatch_attempt is not None and failed_outbox is not None and lease_owner_token is not None:
                     _ = await attempt_service.finalize_attempt_record(
                         db,
                         attempt=dispatch_attempt,
@@ -927,7 +927,7 @@ class OutboxDispatchService:
                     policy.retry_budget,
                     lease_owner_token=lease_owner_token,
                 )
-                if dispatch_attempt is not None and failed_outbox is not None:
+                if dispatch_attempt is not None and failed_outbox is not None and lease_owner_token is not None:
                     try:
                         _ = await attempt_service.finalize_attempt_record(
                             db,
@@ -1015,16 +1015,17 @@ class OutboxDispatchService:
             outbox = claim.outbox
             lease_owner_token = claim.lease_owner_token
             retry_budget = claim.policy.retry_budget
+            outbox_id = resolve_required_pk(outbox, "outbox", "id", "outbox_id")
             outbox_pk_text = str(getattr(outbox, "id", "unknown"))
             trace = TraceContext.from_runtime(outbox=outbox)
-            dispatch_attempt: Any | None = attempts_by_outbox_id.get(resolve_entity_id(outbox))
+            dispatch_attempt: Any | None = attempts_by_outbox_id.get(outbox_id)
             if enum_value(getattr(outbox, "dispatch_type", None)) == "EXTERNAL_HTTP":
                 await self._emit_external_http_fault(
                     ExternalHttpDispatchFaultPoint.AFTER_CLAIM_COMMIT,
                     outbox,
                 )
             try:
-                outbox_pk = resolve_required_pk(outbox, "outbox", "id", "outbox_id")
+                outbox_pk = outbox_id
                 outbox_workline_id = getattr(outbox, "workline_id", None)
                 if outbox_workline_id is not None:
                     try:

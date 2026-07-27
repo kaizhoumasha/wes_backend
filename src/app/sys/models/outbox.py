@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003
 from enum import Enum
-from typing import Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from pydantic import model_validator
 from sqlalchemy import (
@@ -40,6 +40,9 @@ from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm.state import InstanceState
 
 
 class SystemOutboxDispatchType(str, Enum):
@@ -491,9 +494,12 @@ def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
         canonical_payload_bytes=canonical_payload_bytes,
         payload_hash=payload_hash,
     )
-    canonical.validate_projection(getattr(outbox, "payload_json", None))
+    payload_projection = getattr(outbox, "payload_json", None)
+    if not isinstance(payload_projection, dict):
+        raise TypeError("EXTERNAL_HTTP SystemOutbox requires payload_json object")
+    canonical.validate_projection(payload_projection)
     try:
-        FrozenExternalHttpBinding.from_persisted(
+        _ = FrozenExternalHttpBinding.from_persisted(
             provider_profile_identity=getattr(outbox, "provider_profile_identity", None),
             provider_profile_hash=getattr(outbox, "provider_profile_hash", None),
             operation_identity=getattr(outbox, "operation_identity", None),
@@ -512,7 +518,7 @@ def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
 def _prevent_external_http_payload_update(_mapper: Any, _connection: Any, outbox: SystemOutbox) -> None:
     """调度 identity 与 EXTERNAL_HTTP canonical payload 一经持久化均不可改写。"""
 
-    state = inspect(outbox)
+    state = cast("InstanceState[SystemOutbox]", inspect(outbox))
     scheduling_fields = (
         "provider_profile_identity",
         "provider_profile_hash",

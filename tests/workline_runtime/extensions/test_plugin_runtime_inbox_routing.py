@@ -113,6 +113,17 @@ def test_canonical_plugin_input_rejects_uncorrelated_command_result() -> None:
         )
 
 
+def test_canonical_plugin_input_rejects_missing_logical_route() -> None:
+    with pytest.raises(ValueError, match="plugin logical route is required"):
+        _canonical_plugin_input(
+            SimpleNamespace(
+                kind="INTERNAL_EVENT",
+                event_type="",
+                payload_json={},
+            )
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("overrides", "expected"),
@@ -179,6 +190,100 @@ async def test_logical_replay_requires_same_identity_digest_and_runtime_anchors(
     assert (
         await _replay_digest_matches_source(object(), inbox=replay, route="REPLAY_REQUEST", raw_input=raw_input)
         is expected
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "causation_id", "raw_input", "expected"),
+    [
+        ("SCAN_COMPLETED", "inbox:7", {}, None),
+        ("REPLAY_REQUEST", None, {"idempotency_key": "source-key", "payload_digest": "a" * 64}, False),
+        ("REPLAY_REQUEST", "event:7", {"idempotency_key": "source-key", "payload_digest": "a" * 64}, False),
+        ("REPLAY_REQUEST", "inbox:not-an-int", {"idempotency_key": "source-key", "payload_digest": "a" * 64}, False),
+        ("REPLAY_REQUEST", "inbox:0", {"idempotency_key": "source-key", "payload_digest": "a" * 64}, False),
+        ("REPLAY_REQUEST", "inbox:8", {"idempotency_key": "source-key", "payload_digest": "a" * 64}, False),
+        ("REPLAY_REQUEST", "inbox:7", {"payload_digest": "a" * 64}, False),
+        ("REPLAY_REQUEST", "inbox:7", {"idempotency_key": "source-key"}, False),
+    ],
+)
+async def test_logical_replay_invalid_source_identity_fails_closed_before_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    causation_id: str | None,
+    raw_input: dict[str, object],
+    expected: bool | None,
+) -> None:
+    repository = SimpleNamespace(get_by_id=AsyncMock())
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge.runtime_inbox_repository",
+        repository,
+    )
+    replay = SimpleNamespace(id=8, causation_id=causation_id)
+
+    assert await _replay_digest_matches_source(object(), inbox=replay, route=route, raw_input=raw_input) is expected
+    repository.get_by_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "recorded_rows",
+    [
+        [],
+        [
+            SimpleNamespace(
+                payload_json={
+                    "record_type": "PLUGIN_DECISION",
+                    "attempt_anchor": {"logical_idempotency_key": "source-key"},
+                }
+            ),
+            SimpleNamespace(
+                payload_json={
+                    "record_type": "PLUGIN_DECISION",
+                    "attempt_anchor": {"logical_idempotency_key": "source-key"},
+                }
+            ),
+        ],
+        [SimpleNamespace(payload_json={"record_type": "PLUGIN_DECISION", "attempt_anchor": None})],
+    ],
+)
+async def test_logical_replay_requires_one_recorded_decision_with_logical_key(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_rows: list[SimpleNamespace],
+) -> None:
+    source = SimpleNamespace(
+        id=7,
+        payload_hash="a" * 64,
+        workline_id=20,
+        workline_session_id=10,
+        execution_session_id=30,
+        correlation_id="correlation-1",
+    )
+    replay = SimpleNamespace(
+        id=8,
+        causation_id="inbox:7",
+        workline_id=20,
+        workline_session_id=10,
+        execution_session_id=30,
+        correlation_id="correlation-1",
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge.runtime_inbox_repository",
+        SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge.timeline_recorded_replay_repository",
+        SimpleNamespace(list_recorded_decisions=AsyncMock(return_value=recorded_rows)),
+    )
+
+    assert (
+        await _replay_digest_matches_source(
+            object(),
+            inbox=replay,
+            route="REPLAY_REQUEST",
+            raw_input={"idempotency_key": "source-key", "payload_digest": "a" * 64},
+        )
+        is False
     )
 
 

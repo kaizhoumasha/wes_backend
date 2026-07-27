@@ -22,6 +22,7 @@ from src.app.runtime.orchestration.operation_observability import (
 )
 from src.app.runtime.system_capabilities.wms.contracts import (
     OutboundAuthScheme,
+    WmsHttpMethod,
     WmsOperationMode,
     WmsProviderOperationBinding,
     WmsTransportBudget,
@@ -75,6 +76,16 @@ class _CredentialResolutionFailure(Exception):
     pass
 
 
+def _require_query_outcome(
+    outcome: WmsQueryOutcome[QueryResultT] | None,
+) -> WmsQueryOutcome[QueryResultT]:
+    """收窄已通过模型校验的重试策略执行结果。"""
+
+    if outcome is None:
+        raise RuntimeError("validated WMS retry policy must execute at least one attempt")
+    return outcome
+
+
 def _query_observability_outcome(
     outcome: object,
 ) -> NorthboundOutcome:
@@ -87,6 +98,17 @@ def _query_observability_outcome(
     return "CONTRACT_FAILURE"
 
 
+def _build_query_request(
+    client: httpx.AsyncClient,
+    *,
+    url: str,
+    payload: Mapping[str, str],
+) -> httpx.Request:
+    """按当前 QUERY 合同构建 typed GET params。"""
+
+    return client.build_request("GET", url, params=payload)
+
+
 @dataclass(frozen=True, slots=True)
 class WmsBoundQueryEndpoint:
     """Attempt pin 的 Provider operation binding 与部署 origin 的组合。"""
@@ -97,6 +119,8 @@ class WmsBoundQueryEndpoint:
     def __post_init__(self) -> None:
         if self.binding.operation.mode is not WmsOperationMode.QUERY:
             raise ValueError("query endpoint requires a QUERY operation binding")
+        if self.binding.operation.http_method is not WmsHttpMethod.GET:
+            raise ValueError("WMS QUERY transport only supports GET")
         parsed = validate_wms_base_url(self.base_url)
         if self.binding.profile.environment == "production" and parsed.scheme.lower() != "https":
             raise ValueError("production WMS provider endpoint requires HTTPS")
@@ -209,7 +233,7 @@ class WmsCallEvidenceQueryWriter:
                         if isinstance(outcome, (QuerySuccess, QueryBusinessReject))
                         else self._breaker_service.record_failure
                     )
-                    await record_breaker(
+                    _ = await record_breaker(
                         db,
                         target_code=target_code,
                         operation_name=operation_identity,
@@ -251,12 +275,13 @@ class WmsQueryTransportExecutor:
         self,
         *,
         request: BaseModel,
-        provider_payload: Mapping[str, object],
+        provider_payload: Mapping[str, str],
         map_success: Callable[[Any], QueryResultT],
     ) -> WmsQueryOutcome[QueryResultT]:
         started_at = time.perf_counter()
         contract = self.binding.operation
         permit = WmsQueryCallPermit(allowed=False, reason="BREAKER_STATE_UNAVAILABLE")
+        outcome: WmsQueryOutcome[QueryResultT] | None = None
         try:
             permit = await self._evidence_writer.before_call(
                 operation_identity=contract.identity,
@@ -342,7 +367,7 @@ class WmsQueryTransportExecutor:
         return await self._record_and_observe(
             contract=contract,
             request=request,
-            outcome=outcome,
+            outcome=_require_query_outcome(outcome),
             permit=permit,
             started_at=started_at,
         )
@@ -381,7 +406,7 @@ class WmsQueryTransportExecutor:
     async def _execute_with_deadline(
         self,
         *,
-        provider_payload: Mapping[str, object],
+        provider_payload: Mapping[str, str],
         map_success: Callable[[Any], QueryResultT],
     ) -> WmsQueryOutcome[QueryResultT]:
         contract = self.binding.operation
@@ -406,10 +431,10 @@ class WmsQueryTransportExecutor:
                 page_payload = dict(provider_payload)
                 if cursor is not None:
                     page_payload[pagination.request_cursor_field] = cursor
-                outbound_request = client.build_request(
-                    contract.http_method.value,
-                    self._endpoint.url,
-                    **({"params": page_payload} if contract.http_method.value == "GET" else {"json": page_payload}),
+                outbound_request = _build_query_request(
+                    client,
+                    url=self._endpoint.url,
+                    payload=page_payload,
                 )
                 response, cumulative_wire_bytes = await send_bounded_wms_request(
                     client=client,

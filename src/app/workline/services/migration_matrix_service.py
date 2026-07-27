@@ -124,7 +124,7 @@ class WorklineMigrationMatrixService:
         self,
         matrix: WorklineMigrationMatrixReport,
         *,
-        expected_matrix_digest: str,
+        expected_matrix_digest: str | None,
         max_inventory_age: timedelta,
     ) -> None:
         if expected_matrix_digest is None:
@@ -188,6 +188,8 @@ class WorklineMigrationMatrixService:
         by_environment: dict[str, object] = {}
         for item in items:
             environment = getattr(item, "environment", None)
+            if not isinstance(environment, str) or not environment:
+                raise WorklineMigrationMatrixInvariantError(f"{source} environment 必须为非空字符串")
             if environment in by_environment:
                 raise WorklineMigrationMatrixInvariantError(f"{source} environment 重复: {environment}")
             by_environment[environment] = item

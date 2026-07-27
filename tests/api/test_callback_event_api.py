@@ -203,6 +203,57 @@ class TestCallbackEventAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_callback_event_audits_unexpected_provider_admission_failure(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        context = SimpleNamespace(
+            device=SimpleNamespace(capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]}),
+            workline=SimpleNamespace(
+                id=1,
+                plugin_key="test_workline_plugin",
+                contract_version="1.0",
+                is_active=True,
+            ),
+            plugin_key="test_workline_plugin",
+            contract_version="1.0",
+            work_line_id=1,
+            is_workline_bound=True,
+        )
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(return_value=(context, None)),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_provider_profile_admission_service.admit",
+                side_effect=RuntimeError("provider profile unavailable"),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="provider profile unavailable"):
+                await callback_ingress_module.handle_callback_event(
+                    build_request(body=create_event_payload(), path="/api/v1/callback/event"),
+                    db_session,
+                    request_id="req-provider-admission-error",
+                    start_time=0.0,
+                    enqueue_processing=lambda: None,
+                )
+
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["response_status"] == 500
+        assert log_kwargs["ingress_outcome"] == "FAILED"
+        assert log_kwargs["failure_stage"] == "ORCHESTRATION"
+
+    @pytest.mark.asyncio
     async def test_callback_event_rejects_missing_event_type_before_device_context(
         self,
         db_session: AsyncSession,

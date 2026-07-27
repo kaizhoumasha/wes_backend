@@ -174,7 +174,7 @@ class SystemCapabilityGateway:
         tasks = set(self._inflight.values()) | set(self._tracked_children)
         for task in tasks:
             if not task.done():
-                task.cancel()
+                _ = task.cancel()
         if tasks:
             done, pending = await asyncio.wait(tasks, timeout=grace_seconds)
         else:
@@ -184,7 +184,7 @@ class SystemCapabilityGateway:
                 self._consume_child(task)
         for query_key, task in tuple(self._inflight.items()):
             if task in done:
-                self._inflight.pop(query_key, None)
+                _ = self._inflight.pop(query_key, None)
         unterminated = len(pending)
         return AttemptCloseReport(
             requested=len(tasks),
@@ -198,7 +198,7 @@ class SystemCapabilityGateway:
 
         if self._inflight.get(query_key) is not task:
             return
-        self._inflight.pop(query_key, None)
+        _ = self._inflight.pop(query_key, None)
         if task.cancelled():
             return
         try:
@@ -219,7 +219,7 @@ class SystemCapabilityGateway:
         child.add_done_callback(self._consume_child)
         done, _ = await asyncio.wait({child}, timeout=definition.timeout_seconds)
         if child not in done:
-            child.cancel()
+            _ = child.cancel()
             outcome = RetryableFailure(error_code="TIMEOUT", message="system capability query timed out")
         else:
             try:

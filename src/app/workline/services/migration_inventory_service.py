@@ -300,7 +300,7 @@ class WorklineMigrationInventoryService:
                 "environment": getattr(profile, "environment", _MISSING),
             }
             try:
-                item = WorklineProviderProfileInventoryItem(**source)
+                item = WorklineProviderProfileInventoryItem.model_validate(source)
             except ValidationError as exc:
                 raise WorklineMigrationInventoryInvariantError(f"provider profile 不满足迁移清单合同: {exc}") from exc
             identity = (item.provider_code, item.contract_version, item.environment)
@@ -514,10 +514,10 @@ class WorklineMigrationInventoryService:
 
     @staticmethod
     def _normalize_summary(raw_summary: Any, workline_id: int) -> WorklineRuntimeReferenceSummary:
-        if not isinstance(raw_summary, Mapping) or set(raw_summary) != _SUMMARY_KEYS:
+        if not isinstance(raw_summary, Mapping) or frozenset(raw_summary) != _SUMMARY_KEYS:
             raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} summary 顶层键不精确")
         raw_by_type = raw_summary["by_type"]
-        if not isinstance(raw_by_type, Mapping) or set(raw_by_type) != _BY_TYPE_KEYS:
+        if not isinstance(raw_by_type, Mapping) or frozenset(raw_by_type) != _BY_TYPE_KEYS:
             raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} summary.by_type 键不精确")
         by_type: dict[str, int] = {}
         for key in _BY_TYPE_KEYS:

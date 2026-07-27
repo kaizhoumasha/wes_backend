@@ -216,7 +216,7 @@ class RuntimeInbox(BaseMixin, table=True):
     last_error_code: str | None = Field(default=None, max_length=120)
     last_error_message: str | None = Field(default=None, max_length=500)
 
-    # 时间 (Revision A 扩展, naive UTC from timezone.now_for_db())
+    # 时间（Revision A 扩展，统一使用 Unix timestamp ms）
     received_at: int | None = Field(default=None, sa_type=BigInteger, description="Unix timestamp ms, 写库时填充")
     processed_at: int | None = Field(
         default=None,
