@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.4.0] - 2026-07-27
+
+### Changed
+- 运行时类型与外部调用契约进一步收紧，统一值规范化、外部 HTTP/WMS 状态查询、Outbox 派发与系统能力账本的 typed 边界，并保持失败路径 fail-closed。
+- Callback result、event 与 external 入站按包络准入、权威上下文、路由校验和编排阶段拆分；RuntimeInbox processor、插件 effect intent 转换、replay 验真与 Session 复用流程同步按职责收敛，降低嵌套和重复分支。
+- SMT/NG/WMS 对账策略与数据库方言解析提取为共享 helper，减少 preview/runtime 及多个 Repository 间的重复实现。
+- 补齐 PostgreSQL 外部 HTTP transport attempt、插件 attempt、派发结果与系统能力账本的一致性验证，并扩展 callback 与插件运行时回归覆盖。
+
+### Fixed
+- 修复 event callback 的 provider profile admission 发生非预期异常时绕过统一失败审计的问题，确保记录 `500 / FAILED / ORCHESTRATION` 后继续传播原始异常。
+
 ## [0.20.3.0] - 2026-07-26
 
 ### Added
