@@ -160,6 +160,7 @@ def test_smt_definition_declares_source_arm_command_and_effect_contract() -> Non
     assert DEFINITION.schema.commands[0].target_device_role == "SORTING_SOURCE_ARM"
     assert DEFINITION.allowed_capabilities == (
         ("device.device_command_write", "v1"),
+        ("material_flow.smt_source_pick_ledger", "v1"),
         ("runtime.session_hold", "v1"),
     )
 
@@ -236,6 +237,14 @@ async def test_smt_source_pick_binds_generated_command_code_for_command_result()
     result = await WorklinePluginDispatcher().dispatch(request=callback_request, gateway=object())
 
     assert result.outcome_code == "SOURCE_PICK_COMPLETED"
+    ledger_effect, continue_next = result.intents
+    assert ledger_effect.kind is RuntimeIntentKind.SYSTEM_CAPABILITY
+    assert ledger_effect.capability_key == "material_flow.smt_source_pick_ledger"
+    assert ledger_effect.payload_json == {
+        "operation": "RECORD_PICKED",
+        "command_code": command.payload_json["command_code"],
+    }
+    assert continue_next.kind is RuntimeIntentKind.CONTINUE_NEXT
 
 
 @pytest.mark.asyncio
@@ -312,6 +321,10 @@ async def test_source_pick_result_has_stable_terminal_decision(result: str, expe
     )
 
     assert decision.outcome_code == expected
+    if result == "SUCCESS":
+        ledger_effect, continue_next = decision.intents
+        assert ledger_effect.capability_key == "material_flow.smt_source_pick_ledger"
+        assert continue_next.kind is RuntimeIntentKind.CONTINUE_NEXT
 
 
 @pytest.mark.asyncio

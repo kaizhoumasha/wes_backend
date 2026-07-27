@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
 from src.app.runtime.workline_plugins.contracts import CapabilityEffectResultInput, CommandResultInput, PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import PluginAttemptFactSource  # noqa: TC001
@@ -57,9 +59,31 @@ async def decide(
     if logical_input.command_type != "SORTING_SOURCE_PICK":
         return _decision("COMMAND_TASK_TYPE_UNSUPPORTED", state)
     if logical_input.result.value == "SUCCESS":
+        command_fact = sha256(logical_input.command_code.encode()).hexdigest()[:32]
+        ledger_effect = RuntimeIntent.system_capability(
+            capability_key="material_flow.smt_source_pick_ledger",
+            contract_version="v1",
+            operation_key=f"smt-source-pick:{command_fact}:picked",
+            dispatch_key=f"system-capability:material_flow.smt_source_pick_ledger:{command_fact}",
+            payload={
+                "operation": "RECORD_PICKED",
+                "command_code": logical_input.command_code,
+            },
+            precondition={"expected_status": "CLAIMED_BY_SORTING"},
+            fact_version=f"command:{command_fact}:SUCCESS",
+            timeout_seconds=5,
+            creator_authority="WORKLINE_PLUGIN",
+            authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+            binding_snapshot={
+                "binding_id": facts.binding_snapshot.binding_id,
+                "binding_version": facts.binding_snapshot.binding_version,
+            },
+            provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
+        )
         return _decision(
             "SOURCE_PICK_COMPLETED",
             state.model_copy(update={"phase": "WAITING_SCAN", "current_correlation": None}),
+            ledger_effect,
             RuntimeIntent.continue_next(action="SOURCE_PICK_COMPLETED"),
         )
     return _decision(

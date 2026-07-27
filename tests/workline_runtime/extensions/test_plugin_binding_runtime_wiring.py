@@ -232,9 +232,15 @@ async def test_smt_claim_resolves_active_binding_before_creating_session_aggrega
             **_kwargs: object,
         ) -> SimpleNamespace:
             events.append(("create", binding))
-            return SimpleNamespace(id=21)
+            return SimpleNamespace(
+                session=SimpleNamespace(id=21),
+                execution_session_id=22,
+                correlation_id="workline-session:SMT-CLAIM-21",
+            )
 
-        async def _create_source_pick_request_inbox(self, _db: object, **_kwargs: object) -> SimpleNamespace:
+        async def _create_source_pick_request_inbox(self, _db: object, **kwargs: object) -> SimpleNamespace:
+            assert kwargs["execution_session_id"] == 22
+            assert kwargs["correlation_id"] == "workline-session:SMT-CLAIM-21"
             return SimpleNamespace(id=31)
 
         async def recalculate_demand_status(self, _db: object, _demand: object, *, reason: str) -> object:

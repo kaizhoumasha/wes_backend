@@ -879,6 +879,7 @@ def test_generated_indexes_are_complete_read_only_and_cold_start_safe() -> None:
     assert system_index.SYSTEM_CAPABILITY_IDENTITIES == (
         ("device.device_command_write", "v1"),
         ("material_flow.material_unit_write", "v1"),
+        ("material_flow.smt_source_pick_ledger", "v1"),
         ("runtime.session_hold", "v1"),
         ("wms.fulfillment.full_box_exchange", "v1"),
         ("wms.fulfillment.notify_pkg_binding", "v1"),
@@ -925,7 +926,7 @@ def test_cli_write_is_idempotent_and_check_reports_both_indexes(tmp_path: Path) 
     check = subprocess.run([*command, "--check"], cwd=REPO_ROOT, check=False, capture_output=True, text=True)
     assert check.returncode == 0
     assert "workline_plugins: count=2 digest=" in check.stdout
-    assert "system_capabilities: count=7 digest=" in check.stdout
+    assert "system_capabilities: count=8 digest=" in check.stdout
 
 
 def test_cli_check_detects_drift_without_overwriting_file(tmp_path: Path) -> None:

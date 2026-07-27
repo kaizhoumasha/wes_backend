@@ -124,6 +124,15 @@ class SmtInboundHandoffClaimResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _SmtSortingClaimRuntime:
+    """一次 SMT claim 原子创建的 Workline/Execution 运行锚点。"""
+
+    session: WorklineSession
+    execution_session_id: int
+    correlation_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class SmtInboundHandoffLedgerResult:
     """SMT source item 账本推进结果。"""
 
@@ -772,7 +781,7 @@ class SmtInboundHandoffService:
                 reason="claim_target_in_flight",
             )
 
-        session = await self._create_sorting_claim_session(
+        claim_runtime = await self._create_sorting_claim_session(
             db,
             workline=target_workline,
             binding=binding,
@@ -786,8 +795,10 @@ class SmtInboundHandoffService:
             db,
             demand=locked_demand,
             item=locked_item,
-            session=session,
+            session=claim_runtime.session,
             workline_id=workline_id,
+            execution_session_id=claim_runtime.execution_session_id,
+            correlation_id=claim_runtime.correlation_id,
             trace_id=trace_id,
             route_evidence=getattr(route, "route_evidence", None),
         )
@@ -795,7 +806,7 @@ class SmtInboundHandoffService:
         locked_item.status = SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
         locked_item.target_workline_id = workline_id
         locked_item.target_workline_code = self._text_or_none(workline_code)
-        locked_item.sorting_session_id = cast("int", session.id)
+        locked_item.sorting_session_id = cast("int", claim_runtime.session.id)
         locked_item.source_pick_inbox_id = cast("int", inbox.id)
         locked_item.claimed_at = now
         locked_item.failure_code = None
@@ -813,7 +824,7 @@ class SmtInboundHandoffService:
             demand=locked_demand,
             source_item=locked_item,
             inbox=inbox,
-            session=session,
+            session=claim_runtime.session,
         )
 
     async def _lock_ready_candidate_or_retry(
@@ -1011,6 +1022,7 @@ class SmtInboundHandoffService:
         claim_attempt_no: int | None = None,
         source_pick_inbox_id: int | None = None,
         command_id: int | None = None,
+        command_code: str | None = None,
         session: Any | None = None,
         trace_id: str | None = None,
     ) -> SmtInboundHandoffLedgerResult:
@@ -1019,6 +1031,9 @@ class SmtInboundHandoffService:
         _ = trace_id
         context_request = self._source_pick_request_from_session(session)
         command_request = await self._source_pick_request_from_command(db, command_id)
+        authoritative_command_code = self._text_or_none(command_request.get("command_code"))
+        if command_code is not None and authoritative_command_code != command_code:
+            raise ValueError("source pick success command_code 不匹配")
         resolved_source_item_id = (
             source_item_id
             or self._int_or_none(context_request.get("handoff_source_item_id"))
@@ -1793,7 +1808,7 @@ class SmtInboundHandoffService:
         item: SmtInboundHandoffSourceItem,
         trace_id: str | None,
         route_evidence: Any,
-    ) -> WorklineSession:
+    ) -> _SmtSortingClaimRuntime:
         workline_id = cast("int", getattr(workline, "id", None))
         event_id = self._source_pick_event_id(item)
         session = WorklineSession(
@@ -1840,14 +1855,22 @@ class SmtInboundHandoffService:
         sorting_context.set_station_state(scan_platform="EMPTY")
         db.add(session)
         await db.flush()
-        await self.plugin_binding_service.pin_new_runtime_session(
+        execution_session, work_item = await self.plugin_binding_service.pin_new_runtime_session(
             db,
             workline=workline,
             session=session,
             binding=binding,
         )
+        execution_session_id = getattr(execution_session, "id", None)
+        correlation_id = self._text_or_none(getattr(work_item, "correlation_id", None))
+        if not isinstance(execution_session_id, int) or correlation_id is None:
+            raise RuntimeError("SMT sorting claim runtime aggregate missing execution anchor")
         await self._link_claim_session_material_unit(db, session=session, item=item)
-        return session
+        return _SmtSortingClaimRuntime(
+            session=session,
+            execution_session_id=execution_session_id,
+            correlation_id=correlation_id,
+        )
 
     async def _link_claim_session_material_unit(
         self,
@@ -1901,6 +1924,8 @@ class SmtInboundHandoffService:
         item: SmtInboundHandoffSourceItem,
         session: WorklineSession,
         workline_id: int,
+        execution_session_id: int,
+        correlation_id: str,
         trace_id: str | None,
         route_evidence: Any,
     ) -> Any:
@@ -1942,7 +1967,8 @@ class SmtInboundHandoffService:
             event_id=event_id,
             causation_id=causation_id,
             workline_id=workline_id,
-            execution_session_id=None,
+            execution_session_id=execution_session_id,
+            correlation_id=correlation_id,
             auto_commit=False,
         )
         return runtime_inbox_result.record
@@ -1969,6 +1995,7 @@ class SmtInboundHandoffService:
         command = await self.repository.get_device_command_by_id(db, command_id)
         params = self._dict_or_empty(getattr(command, "params", None))
         return {
+            "command_code": self._text_or_none(getattr(command, "command_code", None)),
             "handoff_demand_id": self._int_or_none(params.get("handoff_demand_id")),
             "handoff_source_item_id": self._int_or_none(params.get("handoff_source_item_id")),
             "claim_attempt_no": self._int_or_none(params.get("claim_attempt_no")),

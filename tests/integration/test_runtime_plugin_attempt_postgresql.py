@@ -32,6 +32,7 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     WriteDisposition,
 )
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
+from src.app.workline.models import WorkLine
 from src.utils.timezone import timezone
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
@@ -151,6 +152,8 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
         )
         assert isinstance(replay_write_set.intents[0], RuntimeIntent)
         async with session_factory() as db:
+            workline = await db.get(WorkLine, seeded.workline_id)
+            assert workline is not None
             disposition = await RuntimeInboxWriteBackService(inbox_service=service).commit_plugin_attempt(
                 db,
                 expected_snapshot=snapshot,
@@ -159,6 +162,7 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
                 workline_id=seeded.workline_id,
                 trace_id=seeded.trace_id,
                 write_set=replay_write_set,
+                workline=workline,
             )
             assert disposition is WriteDisposition.COMMITTED
 
@@ -211,6 +215,8 @@ def test_intent_ledger_failure_rolls_back_decision_state_ledger_and_terminal() -
             payload_json={"target": "A-01"},
         )
         async with session_factory() as db:
+            workline = await db.get(WorkLine, seeded.workline_id)
+            assert workline is not None
             with pytest.raises(RuntimeError, match="intent ledger failed"):
                 await RuntimeInboxWriteBackService(
                     inbox_service=service,
@@ -228,6 +234,7 @@ def test_intent_ledger_failure_rolls_back_decision_state_ledger_and_terminal() -
                         intents=(intent,),
                         outcome_code="ROUTE_A",
                     ),
+                    workline=workline,
                 )
 
         async with session_factory() as verify_db:

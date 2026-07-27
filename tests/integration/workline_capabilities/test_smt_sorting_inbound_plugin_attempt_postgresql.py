@@ -121,7 +121,7 @@ def test_smt_claim_binding_is_atomic_and_fresh_generated_dispatch_succeeds() -> 
                     persisted_workline = await db.get(WorkLine, workline.id)
                     persisted_binding = await db.get(WorklinePluginBinding, binding.id)
                     assert persisted_workline is not None and persisted_binding is not None
-                    session = await SmtInboundHandoffService()._create_sorting_claim_session(
+                    claim_runtime = await SmtInboundHandoffService()._create_sorting_claim_session(
                         db,
                         workline=persisted_workline,
                         binding=persisted_binding,
@@ -134,11 +134,14 @@ def test_smt_claim_binding_is_atomic_and_fresh_generated_dispatch_succeeds() -> 
                             "target_rack_position_code": "TARGET_STATION",
                         },
                     )
+                    session = claim_runtime.session
                     await db.commit()
                     assert session.plugin_binding_id == persisted_binding.id
                     execution_session = await db.scalar(select(ExecutionSession))
                     work_item = await db.scalar(select(ExecutionWorkItem))
                     assert execution_session is not None and work_item is not None
+                    assert claim_runtime.execution_session_id == execution_session.id
+                    assert claim_runtime.correlation_id == work_item.correlation_id
                     assert execution_session.plugin_binding_id == session.plugin_binding_id
                     assert work_item.plugin_binding_id == session.plugin_binding_id
                     assert work_item.manifest_version == DEFINITION.contract_version
@@ -161,12 +164,19 @@ def test_smt_claim_binding_is_atomic_and_fresh_generated_dispatch_succeeds() -> 
                         raw_config=config.model_dump(mode="json"),
                         raw_state={},
                         context_state={},
-                        raw_input={},
+                        raw_input={
+                            "handoff_demand_id": demand.id,
+                            "handoff_source_item_id": item.id,
+                            "claim_attempt_no": item.claim_attempt_no,
+                            "source_pick_inbox_id": 13,
+                            "source_pick_request_event_id": "smt-source-pick-requested-13",
+                        },
                         fact_source=PluginAttemptFactSource(snapshot=snapshot),
                         snapshot=snapshot,
                     ),
                     gateway=object(),
                 )
+                assert getattr(decision, "kind", None) != "contract_violation", decision
                 assert decision.outcome_code == "SOURCE_PICK_REQUESTED"
             finally:
                 await engine.dispose()

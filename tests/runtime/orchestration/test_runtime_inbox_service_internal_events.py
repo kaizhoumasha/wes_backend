@@ -927,10 +927,13 @@ async def test_smt_source_pick_producer_emits_canonical_workline_session_identit
         ),
         session=SimpleNamespace(id=33),
         workline_id=44,
+        execution_session_id=71,
+        correlation_id="workline-session:smt-source-pick-33",
         trace_id=None,
         route_evidence={},
     )
 
     assert record.id == 501
     assert captured["payload_json"]["data"]["session_id"] == 33
-    assert captured["execution_session_id"] is None
+    assert captured["execution_session_id"] == 71
+    assert captured["correlation_id"] == "workline-session:smt-source-pick-33"
