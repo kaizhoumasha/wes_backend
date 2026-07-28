@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（676 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（665 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -31,14 +31,14 @@ note: |
 uv run python scripts/generate_legacy_matrix.py
 ```
 
-扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。最终扩展平台目录及精确目标态符号从 legacy cleanup 范围排除；Task 10 前仍存在的旧路由 import 与业务编排分支则按生产文件逐项登记独立 seed。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 technical cleanup scope 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已经删除的 WorkLine service shim 依据其历史正向 provenance 按旧入口记账；business legacy absence cleanup 后，已迁入 `src/app/runtime/capabilities/material_flow/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
+扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。最终扩展平台目录及精确目标态符号从 legacy cleanup 范围排除；Task 10 前仍存在的旧路由 import 与业务编排分支则按生产文件逐项登记独立 seed。Task 1 新建的 `tests/workline_plugins/smt_sorting_inbound/` 属于 generated-only 目标态测试，没有 legacy provenance，必须保持在 active-platform exclusion 中。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 technical cleanup scope 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已经删除的 WorkLine service shim 依据其历史正向 provenance 按旧入口记账；business legacy absence cleanup 后，已迁入 `src/app/runtime/capabilities/material_flow/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
 
 ## 3. 汇总（截至 generated-only runtime 复核 @ 2026-07-27）
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **676** |
-| phase4_carrier（承载 Phase 4 业务语义） | 124 |
+| **total_entries** | **665** |
+| phase4_carrier（承载 Phase 4 业务语义） | 113 |
 | pending-review | 0 |
 
 ### total_entries_by_type
@@ -47,7 +47,7 @@ uv run python scripts/generate_legacy_matrix.py
 | --- | ---: |
 | service | 304 |
 | domain_object | 60 |
-| test | 237 |
+| test | 226 |
 | model | 44 |
 | api_route | 23 |
 | repository | 7 |
@@ -57,7 +57,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 395 |
+| rebuild | 384 |
 | keep-contract | 260 |
 | delete | 14 |
 | move | 7 |
@@ -68,7 +68,7 @@ uv run python scripts/generate_legacy_matrix.py
 | --- | ---: |
 | phase5-tech | 275 |
 | phase2 | 268 |
-| phase4 | 124 |
+| phase4 | 113 |
 | phase1 | 9 |
 
 ### total_entries_by_owner
@@ -77,7 +77,7 @@ uv run python scripts/generate_legacy_matrix.py
 | --- | ---: |
 | workline | 414 |
 | workline_runtime | 216 |
-| workline_plugins | 22 |
+| workline_plugins | 11 |
 | runtime | 8 |
 | handling | 4 |
 | rack | 5 |
@@ -158,7 +158,7 @@ WorkLine 重构收尾不再用单一“清理旧代码”口径推进，删除�
 2026-07-08 验收记录：
 
 - technical scope 已通过运行态 owner guardrail、RuntimeInbox cutover、mock closure 与 WorkLine technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
-- business scope 携带 regenerated production/runtime artifacts 后已通过 readiness gate；随后执行 business legacy absence ledger 关闭：124 条 phase4 carrier 中 53 行 moved、10 行 test-only-migrated、41 行 kept-config-only、20 行 already-removed，0 pending。机器验收见 `docs/architecture/business-legacy-absence-ledger.csv` 与 `scripts/check_business_legacy_absence_gate.py --mode final`。
+- business scope 携带 regenerated production/runtime artifacts 后已通过 readiness gate；随后执行 business legacy absence ledger 关闭：113 条 phase4 carrier 中 53 行 moved、10 行 test-only-migrated、30 行 kept-config-only、20 行 already-removed，0 pending。机器验收见 `docs/architecture/business-legacy-absence-ledger.csv` 与 `scripts/check_business_legacy_absence_gate.py --mode final`。
 - 旧 `src/workline_plugins/*` 仅保留在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径；absence guardrail 负责阻断。
 - restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；quality profile 中的 runtime production closure、runtime evidence、business legacy absence 与 architecture guardrails 负责阻断回流。
 
@@ -189,13 +189,12 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | `tests/workline_runtime/` | keep-contract / rebuild | 215 条 runtime / material-flow characterization 与合同测试，作为目标态能力闭合和 legacy 删除前的 blocking evidence；RuntimeInbox projection/repository 合同已入矩阵 |
 | `src/workline_runtime/services.py:build_workline_runtime_services` | rebuild | guardrail seed tombstone，用于当前 allowlist 精确反查 |
 
-### 7.3 workline_plugins（22 entries，均为测试证据）
+### 7.3 workline_plugins（11 entries，均有 legacy provenance 的测试证据）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
 | `tests/workline_plugins/test_rough_sorter_contract.py` | rebuild | historical entry；业务断言已迁入 `tests/contracts/workline/test_rough_sorter_inbound_contract.py` |
 | `tests/workline_plugins/test_barcode_decision_service.py` | keep-contract | historical entry；行为断言已迁入 `tests/contracts/workline/test_barcode_decision_contract.py` |
-| `tests/workline_plugins/smt_sorting_inbound/test_smt_generated_plugin.py` | rebuild | 11 条 generated-only SMT 合同证据；由 `WorklinePluginDispatcher.dispatch` 与 PostgreSQL 闭环继续承载 |
 
 ### 7.4 已删除的 legacy plugin 路径（0 entries）
 
@@ -221,14 +220,14 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | 风险项 | phase | 说明 |
 | --- | --- | --- |
 | 执行状态迁移（228 条执行状态语义；phase2 rebuild 总计 261 条，phase2 全部 268 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
-| phase4 业务流程（124 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
+| phase4 业务流程（113 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
 | `single_layer_rack_orchestration_service`（WMS_INTEGRATION_BOUNDARY seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
 | device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 676 条，strategy 字段非空）
-2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，124 条）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 665 条，strategy 字段非空）
+2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，113 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）
 5. ✅ `total_entries_by_type` 汇总存在，由脚本输出

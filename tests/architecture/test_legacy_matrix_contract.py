@@ -29,6 +29,7 @@ EXPECTED_ACTIVE_FOUNDATION_PATHS = frozenset(
 
 EXPECTED_ACTIVE_PLATFORM_PREFIXES = (
     "tests/workline_plugins/rough_sorter/",
+    "tests/workline_plugins/smt_sorting_inbound/",
     "tests/workline_runtime/extensions/",
     "tests/workline_runtime/system_capabilities/",
 )
@@ -213,14 +214,6 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             "src/app/runtime/capabilities/material_flow/",
             "BinCellReservationCapability.reserve",
             id="bin-cell-reconciling",
-        ),
-        pytest.param(
-            "[phase" + "4] 分拣机入库业务流程",
-            "tests/workline_plugins/smt_sorting_inbound/test_smt_generated_plugin.py",
-            "test_smt_definition_uses_fixed_generated_identity",
-            "src/app/runtime/workline_plugins/smt_sorting_inbound/",
-            "WorklinePluginDispatcher.dispatch",
-            id="smt-generated-plugin",
         ),
     ],
 )

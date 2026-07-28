@@ -1,6 +1,6 @@
 # Runtime/Orchestration 域最小骨架 SPEC
 
-> Phase 1 Packet C (CEO-007) 交付物 — 2026-06-27 代码落地，2026-07-03 文档补写
+> 当前 Runtime/Orchestration 实体、服务与边界合同
 > 父设计: `docs/architecture/workline-and-plugin-restructuring.md` §9.2
 
 ---
@@ -371,8 +371,7 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 
 ### 7.2 单元测试
 
-- `tests/runtime/orchestration/` — runtime/orchestration 域测试
-- `tests/runtime/orchestration/test_phase3_*.py` — Phase 3 closure 测试
+- `tests/runtime/orchestration/` — RuntimeInbox、运行态实体与 service contract 测试
 
 ### 7.3 性能测试
 
@@ -396,8 +395,8 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 | 文档 | 说明 |
 |------|------|
 | `docs/architecture/workline-and-plugin-restructuring.md` | 父设计 §9.2 |
-| `docs/architecture/target-state-contract.md` | 目标态契约 |
-| `docs/architecture/session-correlation-matrix.md` | per-file session FK 迁移矩阵 |
+| `docs/architecture/target-state-contract.md` | Runtime 边界契约 |
+| `docs/architecture/session-correlation-matrix.md` | Session/correlation 关联矩阵 |
 | `docs/architecture/authority-matrix.md` | 外部事实权威来源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand ECS 合同 |
 | `docs/contracts/external-contract-profile.md` | ExternalContractProfile 合同 |

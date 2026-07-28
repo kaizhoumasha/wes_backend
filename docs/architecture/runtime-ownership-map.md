@@ -1,6 +1,6 @@
 # Runtime Ownership Map
 
-> 目标态契约：明确 `src/app/runtime/orchestration/` 域的所有面，固化业务 capability、域服务、入站消费者对 runtime 能力的访问边界。
+> 当前契约：明确 `src/app/runtime/orchestration/` 域的所有面，固化业务 capability、域服务、入站消费者对 runtime 能力的访问边界。
 > 配套阅读：[`./workline-and-plugin-restructuring.md`](./workline-and-plugin-restructuring.md) 与 [`./adr/0001-phase2-runtime-ownership.md`](./adr/0001-phase2-runtime-ownership.md)。
 
 ## 1. 适用范围
@@ -46,9 +46,9 @@
 | `RuntimeSnapshotAssembler` | `services/runtime_snapshot_assembler.py` | RuntimeSnapshot 装配：session + timeline + inbox + hold + intent log |
 | `RuntimeInboxService` | `services/runtime_inbox/runtime_inbox_service.py` | 六类 ingress 幂等接收、五态 claim/fencing、audit-only 排除与 `REPLAY_REQUEST` 审计 |
 | `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | binding/context validation → generated dispatch → typed effect + fenced write-back |
-| `RuntimeReconciliationServiceImpl` | `services/reconciliation/runtime_reconciliation_service_impl.py` | runtime 域对账实现；调用方通过稳定 service contract 使用，不再经过 facade |
+| `RuntimeReconciliationServiceImpl` | `services/reconciliation/runtime_reconciliation_service_impl.py` | runtime 域对账实现；调用方通过正式 service contract 使用 |
 
-旧 `RuntimeReconciliationFacade` 已物理删除；device/callback 不得因此回流 import WorkLine 实现，跨域仍遵循 runtime service/port 边界。
+Device/callback 对账调用遵循 runtime service/port 边界，不 import WorkLine 实现。
 
 ## 6. 消费者入口
 
@@ -58,7 +58,7 @@
 | `src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py` | callback ingress 写入 RuntimeInbox 的薄适配器，不消费、不编排 |
 | 其他 capability | 通过 `RuntimeCapabilityContext` 获取 query/effect port contract，不直接 import inbound normalizer |
 
-`INBOUND_NORMALIZER_OWNERSHIP` guardrail 扫描 runtime、workline、callback、wms_integration/services 和 device 域，拒绝 capability 持有 `WmsEventPort` / `DeviceEventPort` / `InboundEventPort` / `RuntimeInbox`；仅 registry、RuntimeInbox entity/repository/service 等逐文件例外可持有。旧 `RuntimeInboxConsumer` 与 `InboundNormalizerContext` facade 已物理删除，不保留兼容入口。
+`INBOUND_NORMALIZER_OWNERSHIP` guardrail 扫描 runtime、workline、callback、wms_integration/services 和 device 域，拒绝 capability 持有 `WmsEventPort` / `DeviceEventPort` / `InboundEventPort` / `RuntimeInbox`；仅 registry、RuntimeInbox entity/repository/service 等逐文件例外可持有。
 
 RuntimeInbox 的六种 `kind` 为 `COMMAND_RESULT / DEVICE_EVENT / EXTERNAL_HTTP / INTERNAL_EVENT /
 TIMER_TIMEOUT / REPLAY_REQUEST`，数据库状态固定为 `RECEIVED / PROCESSING / PROCESSED / FAILED /
@@ -66,9 +66,9 @@ DEAD_LETTER`。标记为 `PRE_CUTOVER_AUDIT_ONLY` 的历史行只属于审计证
 Replay 的 `request_id`、认证 `actor`、`reason`、直接/根 source inbox 和原业务 kind 由
 `RuntimeInboxService` 统一构造与审计，API/operation service 不复制该领域规则。
 
-## 7. 已删除运行时入口的 absence boundary
+## 7. Production import boundary
 
-`src.workline_runtime` 已退出 production surface，生产代码不允许直接 import。仅以下路径类别可保留历史或非生产引用：
+生产代码不允许 import `src.workline_runtime`。仅以下非生产路径类别允许引用：
 
 | 入口 | 角色 |
 | --- | --- |

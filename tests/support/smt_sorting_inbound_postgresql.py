@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from src.app.callback.models import CallbackLog
 from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
+from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
     SmtInboundHandoffDemandStatus,
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
 )
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
@@ -28,12 +37,11 @@ from src.app.runtime.orchestration.workline_runtime_status_projection import (
 )
 from src.app.runtime.workline_plugins.smt_sorting_inbound.contracts import SmtSortingInboundConfig
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+from src.app.sys.models.audit_log import AuditLog
 from src.app.sys.models.outbox import SystemOutbox
 from src.app.workline.models import LineType, WorkLine
-from src.app.workline.services.plugin_binding_service import (
-    WorklinePluginBindingService,
-    workline_plugin_binding_service,
-)
+from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
+from src.app.workline.services.workline_service import workline_service
 from src.core.conf import settings
 
 if TYPE_CHECKING:
@@ -95,6 +103,119 @@ class ProcessedSmtSourcePick:
     outbox: SystemOutbox
 
 
+RowSnapshot = tuple[tuple[tuple[str, Any], ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SmtWriteSetSnapshot:
+    """SMT public closure 可能写入的 runtime/domain/audit 表完整行快照。"""
+
+    worklines: RowSnapshot
+    devices: RowSnapshot
+    commands: RowSnapshot
+    outboxes: RowSnapshot
+    timelines: RowSnapshot
+    sessions: RowSnapshot
+    execution_sessions: RowSnapshot
+    execution_work_items: RowSnapshot
+    execution_correlations: RowSnapshot
+    runtime_inboxes: RowSnapshot
+    runtime_intent_logs: RowSnapshot
+    runtime_holds: RowSnapshot
+    source_items: RowSnapshot
+    demands: RowSnapshot
+    attempt_evidence: tuple[tuple[Any, ...], ...]
+    callback_logs: RowSnapshot
+    audit_logs: RowSnapshot
+
+    def state_advance(self) -> tuple[Any, ...]:
+        """排除明确允许新增的 callback/audit diagnostic，仅比较运行态写集。"""
+
+        return (
+            self.worklines,
+            self.devices,
+            self.commands,
+            self.outboxes,
+            self.timelines,
+            self.sessions,
+            self.execution_sessions,
+            self.execution_work_items,
+            self.execution_correlations,
+            self.runtime_inboxes,
+            self.runtime_intent_logs,
+            self.runtime_holds,
+            self.source_items,
+            self.demands,
+            self.attempt_evidence,
+        )
+
+    def durable_effects(self) -> tuple[Any, ...]:
+        """失败 attempt 允许 RuntimeInbox terminal 元数据变化，其余写集必须回滚。"""
+
+        return (
+            self.worklines,
+            self.devices,
+            self.commands,
+            self.outboxes,
+            self.timelines,
+            self.sessions,
+            self.execution_sessions,
+            self.execution_work_items,
+            self.execution_correlations,
+            self.runtime_intent_logs,
+            self.runtime_holds,
+            self.source_items,
+            self.demands,
+            self.attempt_evidence,
+        )
+
+
+async def _snapshot_rows(db: AsyncSession, model: type[Any]) -> RowSnapshot:
+    rows = list((await db.scalars(select(model).order_by(model.id))).all())
+    columns = tuple(model.__table__.columns)
+    return tuple(tuple((column.key, deepcopy(getattr(row, column.key))) for column in columns) for row in rows)
+
+
+async def snapshot_smt_write_set(db: AsyncSession) -> SmtWriteSetSnapshot:
+    """快照 public callback/generated/recovery 链的全部可变持久化事实。"""
+
+    source_items = list(
+        (await db.scalars(select(SmtInboundHandoffSourceItem).order_by(SmtInboundHandoffSourceItem.id))).all()
+    )
+    return SmtWriteSetSnapshot(
+        worklines=await _snapshot_rows(db, WorkLine),
+        devices=await _snapshot_rows(db, Device),
+        commands=await _snapshot_rows(db, DeviceCommand),
+        outboxes=await _snapshot_rows(db, SystemOutbox),
+        timelines=await _snapshot_rows(db, WorklineTimeline),
+        sessions=await _snapshot_rows(db, WorklineSession),
+        execution_sessions=await _snapshot_rows(db, ExecutionSession),
+        execution_work_items=await _snapshot_rows(db, ExecutionWorkItem),
+        execution_correlations=await _snapshot_rows(db, ExecutionCorrelation),
+        runtime_inboxes=await _snapshot_rows(db, RuntimeInbox),
+        runtime_intent_logs=await _snapshot_rows(db, RuntimeIntentLog),
+        runtime_holds=await _snapshot_rows(db, RuntimeHold),
+        source_items=await _snapshot_rows(db, SmtInboundHandoffSourceItem),
+        demands=await _snapshot_rows(db, SmtInboundHandoffDemand),
+        attempt_evidence=tuple(
+            (
+                item.id,
+                item.claim_attempt_no,
+                item.source_pick_inbox_id,
+                item.source_pick_command_id,
+                item.source_pick_command_code,
+                item.source_pick_dispatch_key,
+                item.status,
+                item.failure_code,
+                item.failure_message,
+            )
+            for item in source_items
+        ),
+        callback_logs=await _snapshot_rows(db, CallbackLog),
+        audit_logs=await _snapshot_rows(db, AuditLog),
+    )
+
+
 async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> SeededSmtSourcePick:
     """从真实 binding activation 创建 request→bound aggregate→RuntimeInbox。"""
 
@@ -106,7 +227,7 @@ async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> Seeded
         plugin_key=DEFINITION.plugin_key,
         contract_version=DEFINITION.contract_version,
         config=config.model_dump(mode="json"),
-        is_active=True,
+        is_active=False,
     )
     db.add(workline)
     await db.flush()
@@ -118,26 +239,29 @@ async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> Seeded
         vendor_type="ECS",
         device_status=DeviceStatus.IDLE,
         capabilities_json={"supports_command_types": ["SORTING_SOURCE_PICK"]},
+        host="127.0.0.1",
+        port=1,
     )
     db.add(device)
     await db.flush()
-    binding = await workline_plugin_binding_service.activate(
+    activated_workline = await workline_service.activate(
         db,
-        workline=workline,
-        expected_workline_version=workline.version,
+        int(workline.id),
+        version=workline.version,
         actor="integration-test",
         reason=f"SMT generated PostgreSQL {suffix}",
         environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
-        devices=[device],
     )
-    workline.active_plugin_binding_id = binding.id
-    workline.active_plugin_binding_version = binding.binding_version
-    workline.active_plugin_config_hash = binding.typed_config_hash
-    workline.active_plugin_index_digest = binding.generated_index_digest
-    projection = WorklineRuntimeStatusProjection(
-        workline_id=workline.id,
-        runtime_status=WorkLineRuntimeStatus.READY.value,
+    assert activated_workline is not None
+    assert activated_workline.is_active is True
+    assert activated_workline.active_plugin_binding_id is not None
+    projection = await db.scalar(
+        select(WorklineRuntimeStatusProjection).where(
+            WorklineRuntimeStatusProjection.workline_id == activated_workline.id
+        )
     )
+    assert projection is not None
+    projection.runtime_status = WorkLineRuntimeStatus.READY.value
     demand = SmtInboundHandoffDemand(
         demand_key=f"it-smt-demand-{suffix}",
         rack_release_id=f"it-smt-release-{suffix}",
@@ -145,7 +269,7 @@ async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> Seeded
         status=SmtInboundHandoffDemandStatus.READY_FOR_SORTING,
         trace_id=f"trace-smt-pg-{suffix}",
     )
-    db.add_all([workline, projection, demand])
+    db.add_all([projection, demand])
     await db.flush()
     source_item = SmtInboundHandoffSourceItem(
         handoff_demand_id=demand.id,
@@ -161,8 +285,8 @@ async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> Seeded
 
     service = SmtInboundHandoffService(
         route_service=SelectedRouteService(
-            workline_id=int(workline.id),
-            workline_code=workline.line_code,
+            workline_id=int(activated_workline.id),
+            workline_code=activated_workline.line_code,
         )
     )
     claim_result = await service.claim_next_source_item(
@@ -182,7 +306,7 @@ async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> Seeded
     return SeededSmtSourcePick(
         service=service,
         claim=claim,
-        workline_id=int(workline.id),
+        workline_id=int(activated_workline.id),
         device_id=int(device.id),
         device_code=device.device_code,
         demand_id=int(demand.id),

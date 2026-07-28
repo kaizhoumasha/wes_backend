@@ -1,9 +1,9 @@
 # P9 WES Backend 项目文件索引
 
-> Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
+> 本文件顶部版本记录保留历史变更说明；正文目录只描述当前代码和文档职责。
 
 **最后更新**: 2026年7月26日（WorkLine 插件跨环境 migration matrix、digest-bound 批准与 preflight 输入）
-**同步状态**: ✅ RuntimeInbox 与 WorkLine 插件 inventory 当前架构已同步；历史版本日志保留当时路径，仅作迁移审计，不代表当前入口
+**同步状态**: ✅ RuntimeInbox 与 WorkLine 插件 inventory 当前架构已同步；历史版本日志保留当时路径，不代表当前入口
 
 ---
 
@@ -97,7 +97,7 @@
 | `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` | WES/WMS/RCS 运行时资源、库存权责和回调入口 ADR | 📖 必读文档 |
 | `docs/architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR：反腐层边界、证据留痕、熔断和调用方合同 | 📖 必读文档 |
 | `docs/architecture/adr/0001-phase2-runtime-ownership.md` | Runtime ownership ADR：runtime 域所有权与 inbound normalizer ownership guardrail | 📖 必读文档 |
-| `docs/architecture/runtime-ownership-map.md` | Runtime 域 ownership map：entity/repository/service 三层归属与已删除入口 absence guardrail | 📖 必读文档 |
+| `docs/architecture/runtime-ownership-map.md` | Runtime 域 ownership map：entity/repository/service 三层归属与 production import guardrail | 📖 必读文档 |
 | `docs/architecture/legacy-runtime-migration-spec.md` | 运行时物理迁移历史记录；不作为当前实现或插件开发入口 | 📚 历史对照 |
 | `docs/architecture/legacy-cleanup-execution-plan.md` | technical cleanup scope 旧 plugin runtime/import 框架清理执行记录：顺序、范围、验收、business blocker 与回滚 | 📖 必读文档 |
 | `docs/contracts/observability-contract.md` | Runtime 稳定观测合同：callback / RuntimeInbox / intent / device command / WMS breaker 的 span、metric、log event 和 attribute 口径 | 📖 必读文档 |
@@ -147,7 +147,7 @@
 | `error_handlers.py` | 全局异常处理器 | 🔧 架构核心 |
 | `rbac.py` | RBAC 权限验证、超级用户检查 | 🔧 架构核心 |
 | `security.py` | JWT 认证、密码哈希、Token 管理 | 🔧 架构核心 |
-| `api_security.py` | 外部 API 签名认证逻辑；Phase 3 callback body HMAC、nonce replay guard 和短时间窗校验入口 | 🔄 常用功能 |
+| `api_security.py` | 外部 API 签名认证逻辑；callback body HMAC、nonce replay guard 和短时间窗校验入口 | 🔄 常用功能 |
 | `runtime_toggles.py` | Typed runtime toggle 定义与 owner/expiry/security-bypass validator | 🔧 架构核心 |
 | `runtime_toggle_release_gate.py` | Runtime release toggle 发布阻塞决策：default-off 与 test_matrix evidence 校验 | 🔧 架构核心 |
 | `runtime_toggle_catalog.py` | Runtime toggle typed catalog；quality gate 的唯一检查清单 | 🔧 架构核心 |
@@ -348,7 +348,7 @@
 
 #### 🎯 ActiveObject 归属投影 (src/app/active_objects/)
 
-Phase 3 active projection 归属仲裁层，对多来源 active object fact 做唯一 owner 判定；多 owner 或 transient 超窗时输出 RECONCILING，不直接修改业务 owner 状态。
+Active projection 归属仲裁层，对多来源 active object fact 做唯一 owner 判定；多 owner 或 transient 超窗时输出 RECONCILING，不直接修改业务 owner 状态。
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
@@ -357,7 +357,7 @@ Phase 3 active projection 归属仲裁层，对多来源 active object fact 做�
 
 #### 🧭 对账决议模块 (src/app/reconciliation/)
 
-Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/freeze/manual resolution action，不跨域直接改写 owner 终态。
+RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/freeze/manual resolution action，不跨域直接改写 owner 终态。
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
@@ -375,39 +375,37 @@ Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/free
 > 包含 WES 顶层领域边界、WMS 反腐层 (wms_integration ACL 6 套 port)、Authority Matrix、Capability Freeze、4 方案决策表、实施 roadmap、数据模型、状态机图、模块 API 设计。
 
 
-作业线运行时系统，遵循白皮书 v3.1 架构设计（插件化、状态机、幂等性）。当前 `workline`
-域只负责 WorkLine 配置、Binding、诊断与安全；generated 插件、运行态模型、Repository 和
-Service 统一位于 `src/app/runtime/`。已删除的运行态 shim、旧 plugin SDK 与双轨入口由
-absence guardrail 保证不回流。
+当前 `workline` 域负责 WorkLine 配置、Binding、诊断与安全；generated 插件、运行态模型、
+Repository 和 Service 位于 `src/app/runtime/`。架构 guardrail 固化配置域与运行域的依赖边界。
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
 | `models/` | `workline.py` | WorkLine 模型（配置域 — plugin 容器 / 运行时配置 / 诊断归属） | 🔧 架构核心 |
 | | `plane.py` | WorkLine plane scene/snapshot 读模型（`plane.scene.v1` / `plane.snapshot.v1`） | 🔧 架构核心 |
-| | `safety.py` | WorkLine 安全事件审计与请求 schema（`WorklineSafetyIncident` / `WorklineSafetyIncidentStatus` / `ClearWorkLineEstopRequest` / `SimulateWorkLineEstopRequest`）；运行态 enum 已迁入 runtime/orchestration 投影 | 🔧 架构核心 |
-| | `__init__.py` | Model 导出（workline + safety + rack.model 透传 — runtime migration cleanup + F-1/F-2 后收缩为纯配置域聚合） | 🔧 架构核心 |
+| | `safety.py` | WorkLine 安全事件审计与请求 schema（`WorklineSafetyIncident` / `WorklineSafetyIncidentStatus` / `ClearWorkLineEstopRequest` / `SimulateWorkLineEstopRequest`） | 🔧 架构核心 |
+| | `__init__.py` | WorkLine 配置、安全与 rack model 导出 | 🔧 架构核心 |
 | `repositories/` | `workline_repository.py` | WorkLine Repository（按 line_code 查询 — 配置域） | 🔧 架构核心 |
-| | `safety_incident_repository.py` | WorklineSafetyIncidentRepository（**F-1/F-2 例外保留**:配置域审计表,不迁 runtime） | 🔧 架构核心 |
-| | `__init__.py` | Repository 导出（workline + safety_incident + rack.repository 透传 — stable + F-1/F-2 后收缩为纯配置域聚合） | 🔧 架构核心 |
-| `services/` | `workline_service.py` | WorkLine 配置 CRUD service（**stable split-retained**:workline start admission 调用迁出至 phase4 capabilities） | 🔧 架构核心 |
+| | `safety_incident_repository.py` | WorklineSafetyIncidentRepository：配置域安全审计仓储 | 🔧 架构核心 |
+| | `__init__.py` | WorkLine 配置、安全与 rack repository 导出 | 🔧 架构核心 |
+| `services/` | `workline_service.py` | WorkLine 配置 CRUD、激活与停用 service | 🔧 架构核心 |
 | | `manifest_validator.py` | WorkLine manifest 激活前引用完整性校验（queue / device role / capability blocker） | 🔧 架构核心 |
 | | `plane_service.py` | WorkLine plane scene/snapshot 读服务，从配置和后续 active projection 派生态势视图 | 🔧 架构核心 |
-| | `diagnostic_service.py` | WorklineDiagnosticService（**stable keep-contract**:配置域 5 个 production critical path 之一） | 🔧 架构核心 |
-| | `safety_service.py` | WorkLineSafetyService（配置域 — stable retained） | 🔧 架构核心 |
+| | `diagnostic_service.py` | WorklineDiagnosticService：配置域诊断服务 | 🔧 架构核心 |
+| | `safety_service.py` | WorkLineSafetyService：配置域安全服务 | 🔧 架构核心 |
 | | `write_back_service.py` | `RuntimeIntentEffectApplier` 与 `EffectApplyState`：generated decision 的 typed effect 落地边界 | 🔧 架构核心 |
 | | `plugin_binding_service.py` | immutable Plugin Binding 激活、撤权、准入与运行态 pin snapshot；激活时固定 generated index digest 与 provider profile identity | 🔧 架构核心 |
-| | `diagnosis_verdict_builder_service.py` | **stable keep-contract**:诊断 verdict 构造器(保持 workline 域职责;F-3 改名对齐 `_service` 命名约定,原 `diagnosis_verdict_builder.py`) | 🔧 架构核心 |
-| | `rack_position_service.py` | **stable retained**:rack 位置 service（仍 workline 域职责 — 已迁出运行态） | 🔧 架构核心 |
+| | `diagnosis_verdict_builder_service.py` | WorkLine 诊断 verdict 构造器 | 🔧 架构核心 |
+| | `rack_position_service.py` | WorkLine rack 位置 service | 🔧 架构核心 |
 | | `__init__.py` | 当前配置域 service 导出；运行态 service 不从 `workline.services` 暴露 | 🔧 架构核心 |
 | `v1/` | `workline.py` | WorkLine CRUD 路由（配置域）+ plugin manifest 查询 + activate/deactivate + plane scene/snapshot 读端点 | 🔧 架构核心 |
-| | `operation.py` | **stable split-retained**:WorkLine 启动/停止 admission + manifest 校验 + 沙箱 endpoint | 🔧 架构核心 |
+| | `operation.py` | WorkLine 启动/停止 admission、manifest 校验与沙箱 endpoint | 🔧 架构核心 |
 | | `__init__.py` | v1 路由聚合（workline / operation） | 🔧 架构核心 |
-| `unit_of_work.py` | WorklineUnitOfWork（**stable keep-contract**:workline 配置域事务边界） | 🔧 架构核心 |
+| `unit_of_work.py` | WorklineUnitOfWork：workline 配置域事务边界 | 🔧 架构核心 |
 | `constants.py` | workline 域常量 | 🔧 架构核心 |
 | `__init__.py` | workline 域顶层导出 | 🔧 架构核心 |
 | `domain/` | WorkLine 配置域合同、模型与纯领域服务；执行能力位于 `src/app/runtime/` | 🔧 架构核心 |
 | `domain/contracts/__init__.py` | domain contracts 子包导出 | 🔧 架构核心 |
-| `domain/contracts/device_error_codes.py` | 设备错误码统一规范（target-state packet 接入点） | 🔧 架构核心 |
+| `domain/contracts/device_error_codes.py` | 设备错误码统一规范 | 🔧 架构核心 |
 | `domain/models/__init__.py` | domain models 子包导出 | 🔧 架构核心 |
 | `domain/models/barcode_decision.py` | 扫码决策模型（与 `domain/services/barcode_decision_service` 配套） | 🔧 架构核心 |
 | `domain/services/__init__.py` | domain services 子包导出 | 🔧 架构核心 |
@@ -418,12 +416,14 @@ absence guardrail 保证不回流。
 
 **核心设计模式**：
 - **Inbox 模式**：统一六类编排入口（`COMMAND_RESULT / DEVICE_EVENT / EXTERNAL_HTTP / INTERNAL_EVENT / TIMER_TIMEOUT / REPLAY_REQUEST`）
-- **幂等性控制**：白皮书 6.3.1 节（厂商 ID 优先 + hash 备选），target-state 起统一为 `WES-{OPERATION_KIND}-{HASH}` 命名
+- **幂等性控制**：白皮书 6.3.1 节（厂商 ID 优先 + hash 备选），统一使用 `WES-{OPERATION_KIND}-{HASH}` 命名
 - **Outbox 模式**：统一调度出口（设备指令、外部回调、状态记录）
 
-#### 🔧 Runtime 编排层 (src/app/runtime/orchestration/) — target-state + Phase 2 + Phase 3
+#### 🔧 Runtime 编排层 (src/app/runtime/orchestration/)
 
-> Runtime 编排层是 target-state SPEC（`feature/workline-phase-1-spec`）落地的核心抽象：9 个 runtime/orchestration 实体 + BC-02 RuntimeSnapshot 合同 + H4 反注入边界 + H5 幂等键规范。设计原则：实体只承载状态，业务语义在 workline 层 Service 维护，跨域副作用通过 IdempotencyKey 串联。**stable runtime boundary** 新增 RuntimeReconciliationFacade 作为 device/callback 域对账能力唯一入口（详见 [`runtime-ownership-map.md`](./runtime-ownership-map.md) 与 [`adr/0001-phase2-runtime-ownership.md`](./adr/0001-phase2-runtime-ownership.md)）。**stable migration** 已物理删除 `RuntimeReconciliationFacade`（launch PR `d5b88562` 过渡桥接），device/callback 域全部直连 runtime/orchestration 域 impl。**stable migration** `device_command_gateway`（30.4K 跨域桥接）从 workline 域迁入此处。**Phase 3** 增加 RuntimeInbox source-event 幂等入口、人工重放审计、backpressure 策略和 DeviceCommand lease 恢复判定。
+> Runtime 是运行态事实与编排的唯一 owner。Generated plugin definition/handler 负责业务判断；
+> RuntimeInbox 校验 Binding 与上下文，派发 generated decision，并通过 typed effect 写回状态。
+> Device 与 callback 由正式 service 入口接入；运行态 service 不从 `workline` 域导出。
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
@@ -436,32 +436,32 @@ absence guardrail 保证不回流。
 | `runtime_intent_log.py` | RuntimeIntentLog 实体（plugin 产出 RuntimeIntent 的 ledger） | 🔧 架构核心 |
 | `idempotency_key.py` | IdempotencyKey 实体（`WES-{OPERATION_KIND}-{HASH}` 唯一约束） | 🔧 架构核心 |
 | `conveyor_queue_membership.py` | ConveyorQueueMembership 实体（含 `CheckConstraint` 限定 `membership_status` 取值） | 🔧 架构核心 |
-| `models/__init__.py` | WorkLine 运行态投影 model 聚合导出；Inbox 已收敛到顶层 `runtime_inbox.py`，不再存在第二套 model | 🔧 架构核心 |
-| `models/bin_cell_reservation.py` | **Phase 2 burn-down F-1 迁入**:BinCellReservation 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/diagnostic.py` | **Phase 2 burn-down F-1 迁入**:Diagnostic 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/dispatch_attempt.py` | **Phase 2 burn-down F-1 迁入**:DispatchAttempt 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/material_unit.py` | **Phase 2 burn-down F-1 迁入**:MaterialUnit 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/object_transition_event.py` | **Phase 2 burn-down F-1 迁入**:ObjectTransitionEvent 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/operation.py` | **Phase 2 burn-down F-1 迁入**:Operation 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/rack_position.py` | **Phase 2 burn-down F-1 迁入**:RackPosition 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/runtime.py` | **Phase 2 burn-down F-1 迁入**:Runtime 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/runtime_hold.py` | **Phase 2 burn-down F-1 迁入**:RuntimeHold 运行态 model（与顶层 `runtime_hold.py` 同名但 `__tablename__` 不同,无 mapper 冲突;原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/runtime_hold_api.py` | **Phase 2 burn-down F-1 迁入**:RuntimeHoldApi 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/session.py` | **Phase 2 burn-down F-1 迁入**:WorklineSession 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/smt_inbound_handoff.py` | **Phase 2 burn-down F-1 迁入**:SmtInboundHandoff 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
-| `models/timeline.py` | **Phase 2 burn-down F-1 迁入**:Timeline 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/__init__.py` | WorkLine 运行态投影 model 聚合导出；RuntimeInbox 使用顶层 `runtime_inbox.py` | 🔧 架构核心 |
+| `models/bin_cell_reservation.py` | BinCellReservation 运行态 model | 🔧 架构核心 |
+| `models/diagnostic.py` | Diagnostic 运行态 model | 🔧 架构核心 |
+| `models/dispatch_attempt.py` | DispatchAttempt 运行态 model | 🔧 架构核心 |
+| `models/material_unit.py` | MaterialUnit 运行态 model | 🔧 架构核心 |
+| `models/object_transition_event.py` | ObjectTransitionEvent 运行态 model | 🔧 架构核心 |
+| `models/operation.py` | Operation 运行态 model | 🔧 架构核心 |
+| `models/rack_position.py` | RackPosition 运行态 model | 🔧 架构核心 |
+| `models/runtime.py` | Runtime 运行态 model | 🔧 架构核心 |
+| `models/runtime_hold.py` | RuntimeHold 运行态投影 model | 🔧 架构核心 |
+| `models/runtime_hold_api.py` | RuntimeHold API 读模型 | 🔧 架构核心 |
+| `models/session.py` | WorklineSession 运行态 model | 🔧 架构核心 |
+| `models/smt_inbound_handoff.py` | SmtInboundHandoff 运行态 model | 🔧 架构核心 |
+| `models/timeline.py` | Timeline 运行态 model | 🔧 架构核心 |
 | `repositories/__init__.py` | Repository 聚合导出（含 canonical `RuntimeInboxRepository` 与运行态投影 repository） | 🔧 架构核心 |
 | `repositories/idempotency_key_repository.py` | IdempotencyKey Repository:upsert 语义封装 (`claim_if_absent` + `get_by_identity`) | 🔧 架构核心 |
-| `repositories/bin_cell_reservation_repository.py` | **Phase 2 burn-down F-1 迁入**:BinCellReservation Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
-| `repositories/diagnostic_repository.py` | **Phase 2 burn-down F-1 迁入**:Diagnostic Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
-| `repositories/dispatch_attempt_repository.py` | **Phase 2 burn-down F-1 迁入**:DispatchAttempt Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/bin_cell_reservation_repository.py` | BinCellReservation Repository | 🔧 架构核心 |
+| `repositories/diagnostic_repository.py` | Diagnostic Repository | 🔧 架构核心 |
+| `repositories/dispatch_attempt_repository.py` | DispatchAttempt Repository | 🔧 架构核心 |
 | `repositories/runtime_inbox_repository.py` | RuntimeInbox 唯一仓储：canonical persistence、同桶 FIFO `SKIP LOCKED` claim、lease reclaim、fenced terminal、typed query 与 SLI snapshot | 🔧 架构核心 |
-| `repositories/material_unit_repository.py` | **Phase 2 burn-down F-1 迁入**:MaterialUnit Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
-| `repositories/object_transition_event_repository.py` | **Phase 2 burn-down F-1 迁入**:ObjectTransitionEvent Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
-| `repositories/rack_position_repository.py` | **Phase 2 burn-down F-1 迁入**:RackPosition Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
-| `repositories/runtime_hold_repository.py` | **Phase 2 burn-down F-1 迁入**:RuntimeHold Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
-| `repositories/session_repository.py` | **Phase 2 burn-down F-1 迁入**:WorklineSession Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
-| `repositories/smt_inbound_handoff_repository.py` | **Phase 2 burn-down F-1 迁入**:SmtInboundHandoff Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/material_unit_repository.py` | MaterialUnit Repository | 🔧 架构核心 |
+| `repositories/object_transition_event_repository.py` | ObjectTransitionEvent Repository | 🔧 架构核心 |
+| `repositories/rack_position_repository.py` | RackPosition Repository | 🔧 架构核心 |
+| `repositories/runtime_hold_repository.py` | RuntimeHold Repository | 🔧 架构核心 |
+| `repositories/session_repository.py` | WorklineSession Repository | 🔧 架构核心 |
+| `repositories/smt_inbound_handoff_repository.py` | SmtInboundHandoff Repository | 🔧 架构核心 |
 | `services/idempotency_guard.py` | IdempotencyGuard:outbound effect 幂等闸门（`ClaimResult.NEW/MATCH` + `IdempotencyConflict`） | 🔧 架构核心 |
 | `services/runtime_snapshot_assembler.py` | RuntimeSnapshotAssembler：按 BC-02 合同把 session + timeline + inbox + hold + intent log 拼装成 RuntimeSnapshot 输出 | 🔧 架构核心 |
 | `services/device_command_gateway.py` | DeviceCommandGateway：设备命令治理、派发准入与持久化 effect 边界 | 🔧 架构核心 |
@@ -488,7 +488,7 @@ absence guardrail 保证不回流。
 | `lock_bridge.py` | Redis 分布式锁与 PostgreSQL advisory 降级 | 🔧 架构核心 |
 | `resource_wait_evidence_bridge.py` | RESOURCE_WAIT evidence helper | 🔧 架构核心 |
 | `sandbox_catalog_bridge.py` | SANDBOX / MOCK 确定性样例 catalog | 🔧 架构核心 |
-| `topology_bridge.py` | **stable runtime surface**：WORKLINE 运行时拓扑视图与 `validate_topology_schema`；只消费 generated Definition 的 typed schema，不保留 Manifest 兼容入口 | 🔧 架构核心 |
+| `topology_bridge.py` | WORKLINE 运行时拓扑视图与 `validate_topology_schema`；消费 generated Definition 的 typed schema | 🔧 架构核心 |
 | `consumers/` | RuntimeInbox callback ACK-before-processing 幂等入口 | 🔧 架构核心 |
 | `consumers/__init__.py` | 仅导出 CallbackRuntimeInboxWriter adapter；RuntimeInboxService 正式导出边界为 `services/runtime_inbox/__init__.py` | 🔧 架构核心 |
 | `consumers/callback_runtime_inbox_writer.py` | callback ingress 的 RuntimeInbox 薄写入适配器，保持 API → Service → Repository 分层 | 🔧 架构核心 |
@@ -497,14 +497,14 @@ absence guardrail 保证不回流。
 | `diagnostics.py` | Runtime diagnostics 正式顶层门面 | 🔧 架构核心 |
 | `__init__.py` | 模块导出（9 entity） | 🔧 架构核心 |
 
-#### 🔧 Runtime 能力面 (src/app/runtime/) — target-state 新增
+#### 🔧 Runtime 能力面 (src/app/runtime/)
 
 Runtime 顶层 capability / normalizer registry：业务能力注入（query/effect）与入站 normalizer（callback/event/result）的注册表 SSOT；与 `src/app/runtime/orchestration/` 实体层严格分层，由 import-linter `capability-isolation` contract 守护边界。
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `src/app/runtime/capability_port_registry.py` | CapabilityPortRegistry：runtime capability 注入只暴露 query/effect port contract，CAPABILITY_IMPLEMENTATION_IMPORT 静态扫描拒绝 wms_integration / device service、HTTP client、DTO、provider exception、service locator、WmsEventPort、DeviceEventPort、RuntimeInbox consumer（target-state packet + Packet D） | 🔧 架构核心 |
-| `src/app/runtime/inbound_normalizer_registry.py` | InboundNormalizerRegistry (target-state packet)：与 CapabilityPortRegistry 严格分离的入站 normalizer 注册表；singleton per-port；非业务 capability 允许路径（仅 `src/app/runtime/orchestration/consumers` 通过 RuntimeCapabilityContext.get_inbound_normalizer 访问） | 🔧 架构核心 |
+| `src/app/runtime/capability_port_registry.py` | CapabilityPortRegistry：runtime capability 注入只暴露 query/effect port contract；静态扫描拒绝 provider implementation、HTTP client、DTO、service locator 与入站 normalizer | 🔧 架构核心 |
+| `src/app/runtime/inbound_normalizer_registry.py` | InboundNormalizerRegistry：与 CapabilityPortRegistry 严格分离的入站 normalizer 注册表；singleton per-port；仅正式 consumer 通过 RuntimeCapabilityContext 访问 | 🔧 架构核心 |
 
 **关键约束**：
 - **H4 反注入边界**：callback / event / result 三个入口接受 payload 时，**仅允许**白名单顶层字段（`callback_type` / `data` / `trace_id` / `event_id` / `causation_id` / `source_system` / `source_version` / `occurred_at` / `request_id` / `timestamp` / `signature`）；业务追溯字段（如 `provider_code` / `source_event_id`）必须放入 `data` 内。外部回调 (`/callback/external`) 顶层白名单额外覆盖 WMS/RCS 协议业务元数据（`dispatch_key` / `status` / `exchange_*` / `rack_*` / `operation_key` / `operation_type` / `position_code` / `source_position_code` / `target_position_code` / `target_position_role` / `task_type` / `workline_code` / `bin_mounts` / `material` / `actions` / `sequence_no` / `source` / `station` / `target` / `active_bin_rack` / `error_code` / `error_message`）与 AGV 执行回执（`command_code` / `result` / `finish_time` / `device_code` / `task_status` / `reason_code` / `reason_message`）。H4 的真正安全屏障是子层 `_FORBIDDEN_PARAM_KEYS` 递归扫描（阻断 `plc_address` / `coordinate` 等设备控制字段），顶层白名单扩展不削弱 H4 安全语义。
@@ -518,17 +518,20 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 - SMT handoff/manifest 实施记录：`docs/superpowers/archive/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md`
 - 历史 SMT 粗分机资料：`docs/archive/legacy-smt-classifier/`
 
-#### 🧩 作业线插件实现 (src/workline_plugins/)
+#### 🧩 Generated 作业线插件实现 (src/app/runtime/workline_plugins/)
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `rough_sorter/plugin.py` | 粗分机工作线插件：按真实物理流程产出 RuntimeIntent，覆盖扫码、测量、WMS 校验、搬运、入箱、货架补给和 NG 闭环 | 🔄 常用功能 |
-| `rough_sorter/contract.py` | 粗分机插件合同：插件 key、事件/命令/phase/角色常量、命令 payload builder、业务键解析和结果分类 | 🔄 常用功能 |
-| `rough_sorter/context.py` | 粗分机 Session context 快照模型 | 🔄 常用功能 |
-| `smt_sorting_inbound/plugin.py` | SMT 分拣入库插件 manifest 与 handler 入口；manifest 只声明 source 单层货架位和 target 五层货架位 | 🔧 架构核心 |
-| `smt_sorting_inbound/context.py` | SMT 分拣入库 typed context，含 `source_pick_request`、扫码平台状态和当前物料快照 helper | 🔧 架构核心 |
-| `smt_sorting_inbound/flow_service.py` | SMT 分拣入库 RuntimeIntent 业务流，产生命令、context/resource intents 和 terminal ledger marker | 🔧 架构核心 |
-| `smt_sorting_inbound/constants.py` | SMT 分拣入库插件 key、合同版本、角色、命令、事件和 phase 常量 | 🔄 常用功能 |
+| `definition.py` | Generated definition 基础合同与 typed schema | 🔧 架构核心 |
+| `dispatcher.py` | RuntimeInbox generated plugin dispatcher | 🔧 架构核心 |
+| `handler_registry.py` | Generated handler 注册表 | 🔧 架构核心 |
+| `generated_index.py` | 构建期生成的插件索引与 digest | 🔧 架构核心 |
+| `rough_sorter/definition.py` | 粗分机工作线 generated definition | 🔄 常用功能 |
+| `rough_sorter/handlers.py` | 粗分机 typed handler 集合 | 🔄 常用功能 |
+| `rough_sorter/domain_contract.py` | 粗分机业务合同、事件与命令类型 | 🔄 常用功能 |
+| `smt_sorting_inbound/contracts.py` | SMT 分拣入库 typed 业务合同 | 🔧 架构核心 |
+| `smt_sorting_inbound/definition.py` | SMT 分拣入库 generated definition | 🔧 架构核心 |
+| `smt_sorting_inbound/handlers.py` | SMT 分拣入库 typed handler 集合 | 🔧 架构核心 |
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
@@ -542,7 +545,7 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 - **Pydantic 自动验证**：Payload 自动解析和类型安全
 - **RuntimeIntent 输出**：插件只声明上下文更新、命令、等待、业务 NG、完成或阻断意图
 - **运行时拥有副作用**：拓扑解析、Session 生命周期、命令/outbox、等待状态和终态写入集中在 Runtime
-- **无插件状态机**：不再使用 per-plugin `state_machine.py`、`transitions`、`PluginResultBuilder` 或 `plugin_state`
+- **单一执行合同**：generated handler 只返回 Runtime decision，状态推进和副作用由 Runtime 负责
 
 #### 🔔 回调模块 (src/app/callback/)
 
@@ -556,9 +559,9 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 | `services/` | `callback_service.py` | 回调处理服务 | 🔧 架构核心 |
 | `v1/` | `callback.py` | 回调 API 路由（入口校验、early return logging、request_id 入口锚点） | 🔧 架构核心 |
 
-#### 🔌 WMS 能力面 ports (src/app/wms_integration/ports/) — target-state 新增
+#### 🔌 WMS 能力面 ports (src/app/wms_integration/ports/)
 
-7 个 WMS 目标 port Protocol + typed data classes（target-state CEO-001 完成 7/7）：
+7 个 WMS port Protocol + typed data classes：
 - 3 query port: MasterData / InventoryQuery / ReconciliationQuery
 - 1 effect port: InventoryTransaction
 - 1 effect port: Fulfillment
@@ -567,13 +570,13 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
-| `ports/` | `master_data.py` | WmsMasterDataPort Protocol + 6 typed data classes（target-state Packet B） | 🔧 架构核心 |
+| `ports/` | `master_data.py` | WmsMasterDataPort Protocol + 6 typed data classes | 🔧 架构核心 |
 | | `query_inventory_operation.py` | InventoryQueryOperationPort + Decimal typed authority snapshot | 🔧 架构核心 |
-| | `inventory_transaction.py` | WmsInventoryTransactionPort Protocol + 3 typed data classes（target-state Packet B） | 🔧 架构核心 |
-| | `document.py` | WmsDocumentPort Protocol + 6 typed data classes（target-state packet） | 🔧 架构核心 |
-| | `fulfillment.py` | WmsFulfillmentPort Protocol + 2 typed data classes（target-state packet） | 🔧 架构核心 |
-| | `event.py` | InboundEventPort 基协议 + WmsEventPort Protocol + 5 typed data classes（target-state packet） | 🔧 架构核心 |
-| | `reconciliation_query.py` | WmsReconciliationQueryPort Protocol + 1 typed data class（target-state packet） | 🔧 架构核心 |
+| | `inventory_transaction.py` | WmsInventoryTransactionPort Protocol + 3 typed data classes | 🔧 架构核心 |
+| | `document.py` | WmsDocumentPort Protocol + 6 typed data classes | 🔧 架构核心 |
+| | `fulfillment.py` | WmsFulfillmentPort Protocol + 2 typed data classes | 🔧 架构核心 |
+| | `event.py` | InboundEventPort 基协议 + WmsEventPort Protocol + 5 typed data classes | 🔧 架构核心 |
+| | `reconciliation_query.py` | WmsReconciliationQueryPort Protocol + 1 typed data class | 🔧 架构核心 |
 
 #### 🔗 WMS 对接辅助域 (src/app/wms_integration/)
 
@@ -587,9 +590,9 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | `repositories/` | `evidence_repository.py` | WMS evidence Repository | 🔧 架构核心 |
 | | `circuit_breaker_repository.py` | WMS circuit breaker state Repository | 🔧 架构核心 |
 | `services/` | `http_client.py` | 同步 WMS HTTP client，暴露 typed exception hierarchy | 🔧 架构核心 |
-| | `typed_ports.py` | 旧 effect typed ports 门面；不承载 QUERY | 🔧 架构核心 |
+| | `typed_ports.py` | WMS effect typed ports 门面；不承载 QUERY | 🔧 架构核心 |
 | | `query_transport.py` | 无 operation 分支的 WMS QUERY HTTP、预算、分页与 evidence executor | 🔧 架构核心 |
-| | `fulfillment_lifecycle.py` | Phase 3 WMS fulfillment lifecycle service：基于状态机推进履约状态、保护终态、输出 RuntimeInbox 需求 | 🔧 架构核心 |
+| | `fulfillment_lifecycle.py` | WMS fulfillment lifecycle service：基于状态机推进履约状态、保护终态、输出 RuntimeInbox 需求 | 🔧 架构核心 |
 | | `evidence_service.py` | WMS evidence 脱敏、hash 和记录服务 | 🔧 架构核心 |
 | | `circuit_breaker_service.py` | DB-backed WMS 熔断状态转换服务 | 🔧 架构核心 |
 | | `callback_normalizer.py` | WMS/RCS 回调最小包络校验和字段标准化 | 🔧 架构核心 |
@@ -597,8 +600,8 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | | `endpoint_config.py` | WMS endpoint operation path、timeout 和 operation name 配置 | 🔧 架构核心 |
 | | `redaction.py` | WMS request/response 脱敏规则 | 🔧 架构核心 |
 | | `exceptions.py` | WMS typed errors：timeout、5xx、business reject、circuit-open | 🔧 架构核心 |
-| `evidence/` | `envelope.py` | Phase 3 typed EvidenceEnvelope / ExternalReference，锁定外部事实证据 envelope 和 hash 字段 | 🔧 架构核心 |
-| 根目录 | `state_machine.py` | Phase 3 WMS fulfillment 11 态状态机，保护 SUCCEEDED / REJECTED / FAILED / TIMEOUT / CANCELLED 等终态不被迟到事件覆盖 | 🔧 架构核心 |
+| `evidence/` | `envelope.py` | typed EvidenceEnvelope / ExternalReference，锁定外部事实证据 envelope 和 hash 字段 | 🔧 架构核心 |
+| 根目录 | `state_machine.py` | WMS fulfillment 11 态状态机，保护 SUCCEEDED / REJECTED / FAILED / TIMEOUT / CANCELLED 等终态不被迟到事件覆盖 | 🔧 架构核心 |
 
 #### 📡 设备模块 (src/app/device/)
 
@@ -652,12 +655,12 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | `load/` | 显式运行的负载/基准测试（Locust + runtime benchmark gate 四场景） | 📚 参考资料 |
 | `resilience/` | 显式运行的弹性/恢复测试（Redis 重连、降级、runtime scenario replay fixture） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
-| `workline_runtime/` | Runtime capability、投影、对账与 material-flow 纯逻辑回归；不同于已删除的 legacy src/workline_runtime package | 🔧 架构核心 |
+| `workline_runtime/` | Runtime capability、投影、对账与 material-flow 纯逻辑回归 | 🔧 架构核心 |
 | `wms_integration/` | WMS 对接辅助域测试（typed QUERY transport、client、typed effects、evidence、breaker、callback normalizer、caller contract） | 🔧 架构核心 |
-| `architecture/` | 架构守卫测试（import-linter 合同 + runtime public-surface / boundary guardrail；已删除运行时入口的 absence 守卫作为永久安全网） | 🔧 架构核心 |
+| `architecture/` | 架构守卫测试（import-linter 合同 + runtime public-surface / boundary / prohibited-import guardrail） | 🔧 架构核心 |
 | `runtime/orchestration/` | Runtime orchestration 单元/合同测试（RuntimeInbox persistence、五态 claim、三阶段 processor、SLI） | 🔧 架构核心 |
 | `contracts/` | 跨模块合同测试（workline behavior contract + runtime ops contract 文档存在性） | 🔧 架构核心 |
-| `contracts/workline/` | stable runtime boundary behavior contract gap TDD 同步测试 | 🔧 架构核心 |
+| `contracts/workline/` | Runtime boundary behavior contract 测试 | 🔧 架构核心 |
 | `workline/` | WorkLine 配置域测试（manifest activation validator、plane read model） | 🔧 架构核心 |
 | `workline_plugins/` | 作业线插件测试（rough_sorter / smt_sorting_inbound / barcode_decision 等） | 🔧 架构核心 |
 | `integration/workline_capabilities/` | generated plugin、binding、System Capability 与 PostgreSQL 性能闭环 | 🔧 架构核心 |
@@ -666,9 +669,9 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `architecture/test_legacy_runtime_import_guardrail.py` | 已删除 `src.workline_runtime` production import 的 absence 守卫，并覆盖 runtime public-surface / diagnostics facade 稳定导出 | 🔧 架构核心 |
-| `architecture/test_plugin_mirrors_mirror.py` | 已删除插件入口的 absence 与当前插件边界自包含校验 | 🔧 架构核心 |
-| `architecture/test_workline_domain_boundary.py` | WorkLine domain boundary 守卫：runtime material-flow 业务合同必须留在目标态 capability，旧 WorkLine 业务合同模块不可回流 | 🔧 架构核心 |
+| `architecture/test_legacy_runtime_import_guardrail.py` | 禁止 `src.workline_runtime` production import，并校验 runtime public surface / diagnostics 导出 | 🔧 架构核心 |
+| `architecture/test_plugin_mirrors_mirror.py` | Generated 插件边界自包含与禁止入口校验 | 🔧 架构核心 |
+| `architecture/test_workline_domain_boundary.py` | WorkLine domain boundary 守卫：runtime material-flow 业务合同只位于 runtime capability | 🔧 架构核心 |
 | `architecture/test_workline_plugins_mirror.py` | WorkLine 配置侧插件模式与 generated 插件实现边界校验 | 🔧 架构核心 |
 | `architecture/test_legacy_matrix_contract.py` | Legacy cleanup matrix 生成契约：service inventory、目标能力字段、CSV/Markdown 与生成器一致性 | 🔧 架构核心 |
 | `architecture/test_runtime_status_owner_guardrail.py` | Runtime status ownership 守卫：运行态写入集中在 runtime/orchestration projection，WorkLine/material-flow 只通过 snapshot/readiness 读取 | 🔧 架构核心 |
@@ -721,7 +724,7 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | `workline_runtime/test_runtime_capability_dispatcher.py` | Runtime capability dispatch 与 intent 边界 | 🔧 架构核心 |
 | `workline_runtime/test_workline_runtime_status_projection_service.py` | Runtime-owned status projection 行为 | 🔧 架构核心 |
 
-**Phase 2 behavior contract 测试文件**（`tests/contracts/workline/`,launch PR commit `8602c33b` 落地 8 个 TDD 同步 contract，burn-down 安全网）：
+**Runtime behavior contract 测试文件**（`tests/contracts/workline/`）：
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
@@ -745,9 +748,9 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | `wms_integration/test_cache.py` | WMS read-only 短缓存、坏缓存清理和降级回源测试 | 🔄 常用功能 |
 | `wms_integration/test_callback_normalizer.py` | WMS/RCS 回调包络校验和字段标准化测试 | 🔧 架构核心 |
 | `wms_integration/test_transport_contract.py` | rack/handling WMS/RCS 派发 payload 合同防漂移测试 | 🔧 架构核心 |
-| `wms_integration/test_fulfillment_state_machine.py` | Phase 3 fulfillment 11 态状态机、callback inbox requirement、终态保护和 CB-blocked late callback 测试 | 🔧 架构核心 |
-| `wms_integration/test_fulfillment_lifecycle_service.py` | Phase 3 fulfillment lifecycle service 状态推进、终态忽略和 RuntimeInbox 需求测试 | 🔧 架构核心 |
-| `wms_integration/test_typed_evidence_envelope.py` | Phase 3 typed EvidenceEnvelope / ExternalReference 字段和 extra forbid 合同测试 | 🔧 架构核心 |
+| `wms_integration/test_fulfillment_state_machine.py` | Fulfillment 11 态状态机、callback inbox requirement、终态保护和 CB-blocked late callback 测试 | 🔧 架构核心 |
+| `wms_integration/test_fulfillment_lifecycle_service.py` | Fulfillment lifecycle service 状态推进、终态忽略和 RuntimeInbox 需求测试 | 🔧 架构核心 |
+| `wms_integration/test_typed_evidence_envelope.py` | Typed EvidenceEnvelope / ExternalReference 字段和 extra forbid 合同测试 | 🔧 架构核心 |
 
 **E2E 测试文件**：
 
@@ -772,7 +775,7 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 **ECS Mock (端口 8010)**：
 - `POST /api/v1/device/command` - 接收 WES 下发命令，顶层必须包含 `device_code`
 - `GET /api/v1/device/status?device_code=...` - 查询单设备状态；不传 `device_code` 返回全部设备
-- `POST /api/v1/mock/event` - 手动上报设备事件，替代旧 `/api/v1/sensor/trigger`
+- `POST /api/v1/mock/event` - 手动上报设备事件
 - `POST /api/v1/mock/devices/{device_code}/scenario` - 设置 `success`、`fail`、`timeout` 故障注入场景
 
 ---
@@ -851,7 +854,7 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | `versions/20260527_0025_793f8773f841_add_wms_call_evidence.py` | 新增 WMS call evidence 表与索引 | 🔧 架构核心 |
 | `versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py` | 新增 WMS circuit breaker state 表与索引 | 🔧 架构核心 |
 
-**target-state SPEC 相关迁移**（`feature/workline-phase-1-spec`）：
+**Runtime orchestration 相关迁移**：
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
