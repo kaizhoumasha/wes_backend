@@ -224,6 +224,23 @@ def test_active_provider_profile_and_runtime_index_are_exact_registry_derivative
     assert all(generated.WMS_OPERATION_INDEX[operation.identity] is operation for operation in registry.WMS_OPERATIONS)
 
 
+def test_external_http_effect_bindings_accept_only_registry_target_codes() -> None:
+    from src.app.runtime.system_capabilities.wms import provider_catalog
+
+    registry = _load("src.app.wms_integration.operation_registry")
+    expected = {
+        operation.identity: (operation.target_code,)
+        for operation in registry.WMS_OPERATIONS
+        if operation.mode.value == "EFFECT"
+    }
+    actual = {
+        binding.operation_identity: binding.allowed_target_codes
+        for binding in provider_catalog.WMS_EXTERNAL_HTTP_EFFECT_PROFILE.bindings
+    }
+
+    assert actual == expected
+
+
 def test_runtime_operation_index_has_no_codegen_or_parallel_builder() -> None:
     generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
     repository_root = Path(__file__).resolve().parents[3]

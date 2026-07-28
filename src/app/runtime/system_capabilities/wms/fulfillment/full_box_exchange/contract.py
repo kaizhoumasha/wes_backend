@@ -20,7 +20,7 @@ CONTRACT = WmsOperationContract(
     request_model=FullBoxExchangeOperationRequest,
     result_model=FullBoxExchangeOperationResult,
     endpoint_path="/fulfillment/full-box-exchange",
-    target_code="WMS_FULL_BOX_EXCHANGE",
+    target_code="WMS_FULFILLMENT_FULL_BOX_EXCHANGE",
     http_method=WmsHttpMethod.POST,
     budget=WmsTransportBudget(timeout_seconds=30, max_wire_bytes=262_144, max_decoded_bytes=262_144),
     retry_policy=WmsRetryPolicy(max_attempts=3, backoff_seconds=(1, 4)),

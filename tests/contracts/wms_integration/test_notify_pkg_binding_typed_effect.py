@@ -128,7 +128,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     adapter = modules.NotifyPackageBindingEffectAdapter(
         gateway=NotifyPackageBindingDispatchGateway(
             registry=EndpointRegistry(
-                {"WMS_PACKAGE_BINDING": "https://wms-v1.example/api/wes/fulfillment/package-binding"}
+                {"WMS_FULFILLMENT_NOTIFY_PKG_BINDING": "https://wms-v1.example/api/wes/fulfillment/pkg-bindings"}
             )
         )
     )
@@ -156,7 +156,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     assert outbox.idempotency_key == "intent-notify-binding-001"
     assert outbox.operation_identity == CONTRACT.identity
     assert outbox.operation_key == "WMS:PKG-001:PALLET-001"
-    assert outbox.target_snapshot_json["url"] == ("https://wms-v1.example/api/wes/fulfillment/package-binding")
+    assert outbox.target_snapshot_json["url"] == ("https://wms-v1.example/api/wes/fulfillment/pkg-bindings")
     assert outbox.provider_profile_identity == "wms.2026-07-06.material-flow.sandbox"
     assert outbox.canonical_payload_bytes == (
         b'{"dispatch_key":"wms-notify-pkg-binding:WMS:PKG-001:PALLET-001","package_id":"PKG-001",'

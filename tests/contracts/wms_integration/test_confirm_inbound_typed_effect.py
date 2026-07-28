@@ -116,7 +116,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     adapter = modules.ConfirmInboundEffectAdapter(
         gateway=ConfirmInboundDispatchGateway(
             registry=EndpointRegistry(
-                {"WMS_INBOUND_CONFIRM": "https://wms-v1.example/api/wes/inventory/confirm-inbound"}
+                {"WMS_INVENTORY_CONFIRM_INBOUND": "https://wms-v1.example/api/wes/inventory/confirm-inbound"}
             )
         )
     )

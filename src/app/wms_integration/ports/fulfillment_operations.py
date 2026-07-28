@@ -174,6 +174,32 @@ class ConveyorExitCandidate(StrictWmsModel):
     queue_position: int = Field(ge=0)
 
 
+def frozen_candidate_digest(
+    *,
+    workline_id: int,
+    queue_code: str,
+    candidate_items: tuple[ConveyorExitCandidate, ...],
+) -> str:
+    """绑定 E13 来源队列及有序候选身份，任一成员或顺序变化都会改变 digest。"""
+
+    canonical = {
+        "workline_id": workline_id,
+        "queue_code": queue_code,
+        "candidate_items": [
+            {
+                "sequence_no": item.sequence_no,
+                "route_instance_id": item.route_instance_id,
+                "bin_id": item.bin_id,
+                "scan3_enqueued_at": item.scan3_enqueued_at,
+                "queue_position": item.queue_position,
+            }
+            for item in candidate_items
+        ],
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class MoveBinsFromConveyorExitRequest(EffectRequest):
     batch_id: StableText = Field(max_length=160)
     direction: Literal["FROM_CONVEYOR_EXIT"]
@@ -185,6 +211,13 @@ class MoveBinsFromConveyorExitRequest(EffectRequest):
     @model_validator(mode="after")
     def validate_frozen_candidates(self) -> MoveBinsFromConveyorExitRequest:
         _require_unique_batch_members(self.candidate_items)
+        expected_digest = frozen_candidate_digest(
+            workline_id=self.workline_id,
+            queue_code=self.queue_code,
+            candidate_items=self.candidate_items,
+        )
+        if self.candidate_digest != expected_digest:
+            raise ValueError("candidate_digest does not match ordered frozen candidates")
         return self
 
 
@@ -474,4 +507,4 @@ OPERATIONS = (
     CANCEL_REQUEST,
 )
 
-__all__ = ["OPERATIONS"]
+__all__ = ["OPERATIONS", "frozen_candidate_digest"]

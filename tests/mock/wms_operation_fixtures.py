@@ -148,7 +148,7 @@ REQUEST_FIXTURES = {
         "direction": "FROM_CONVEYOR_EXIT",
         "workline_id": 1,
         "queue_code": "RETURN-QUEUE",
-        "candidate_digest": "a" * 64,
+        "candidate_digest": "fdaac886d933503b3c3b545d2d3bbc9ab0e7610e8c8aa01cbb4b98795a435360",
         "candidate_items": [
             {
                 "sequence_no": 1,
@@ -402,7 +402,7 @@ RESULT_FIXTURES = {
         "source_version": "2",
         "batch_id": "BATCH-EXIT-001",
         "accepted_object_keys": ["BIN-001"],
-        "candidate_digest": "a" * 64,
+        "candidate_digest": "fdaac886d933503b3c3b545d2d3bbc9ab0e7610e8c8aa01cbb4b98795a435360",
         "items": [
             {
                 "sequence_no": 1,

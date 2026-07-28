@@ -127,7 +127,7 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
     adapter = modules.FullBoxExchangeEffectAdapter(
         gateway=FullBoxExchangeDispatchGateway(
             registry=EndpointRegistry(
-                {"WMS_FULL_BOX_EXCHANGE": "https://wms-v1.example/api/wes/fulfillment/full-box-exchange"}
+                {"WMS_FULFILLMENT_FULL_BOX_EXCHANGE": "https://wms-v1.example/api/wes/fulfillment/full-box-exchange"}
             )
         )
     )

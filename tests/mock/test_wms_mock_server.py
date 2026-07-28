@@ -130,7 +130,7 @@ def _status_headers(
 def _inventory_query_request(
     client: TestClient,
     *,
-    material_id: str,
+    material_code: str,
     lot_no: str | None = None,
     warehouse_code: str | None = None,
     owner_code: str | None = None,
@@ -138,7 +138,7 @@ def _inventory_query_request(
     params = {
         key: value
         for key, value in {
-            "material_id": material_id,
+            "material_code": material_code,
             "lot_no": lot_no,
             "warehouse_code": warehouse_code,
             "owner_code": owner_code,
@@ -153,6 +153,17 @@ def _inventory_query_request(
     )
 
 
+def _typed_inventory_record(item: dict[str, object]) -> dict[str, object]:
+    return {
+        "material_code": item["sku"],
+        "available_quantity": str(item["available_qty"]),
+        "total_quantity": str(item["total_qty"]),
+        "reserved_quantity": str(item["reserved_qty"]),
+        "location_code": None,
+        "lot_no": item.get("lot_no"),
+    }
+
+
 def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> None:
     source = Path(wms_mock_server.__file__).read_text()
 
@@ -160,24 +171,76 @@ def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> No
     assert "spec_from_file_location" in source
 
 
+def test_wms_mock_registers_exact_static_routes_for_all_frozen_operations() -> None:
+    expected = {
+        (f"/api/wms{operation.path_template}", operation.http_method.value, operation.identity)
+        for operation in WMS_OPERATIONS
+    }
+    registered = {
+        (
+            route.path,
+            method,
+            getattr(route.endpoint, "__wms_operation_identity__", None),
+        )
+        for route in wms_mock_server.app.routes
+        for method in route.methods or ()
+        if getattr(route.endpoint, "__wms_operation_identity__", None) is not None
+    }
+
+    assert registered == expected
+    assert all("{operation_path:path}" not in route.path for route in wms_mock_server.app.routes)
+
+
+def test_wms_mock_does_not_expose_deprecated_operation_alias_paths() -> None:
+    registered = {(route.path, method) for route in wms_mock_server.app.routes for method in route.methods or ()}
+
+    assert ("/api/wms/fulfillment/package-binding", "POST") not in registered
+    assert ("/api/wms/inventory/reserve", "POST") not in registered
+    assert ("/api/wms/outbound/confirm", "POST") not in registered
+
+
+def test_e02_uses_typed_post_without_legacy_envelope_or_delete_route() -> None:
+    operation_identity = "wms.inventory.release_reservation@v1"
+    path = "/api/wms/inventory/reservations/release"
+    payload = REQUEST_FIXTURES[operation_identity]
+    body = json.dumps(payload, separators=(",", ":")).encode()
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key="idem-e02-typed",
+            ),
+        )
+        deleted = client.delete("/api/wms/inventory/reserve/RES-001")
+
+    assert response.status_code == 200
+    WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(response.json())
+    assert set(response.json()) != {"code", "data"}
+    assert deleted.status_code in {404, 405}
+
+
+def test_q14_static_route_consumes_typed_material_code_contract() -> None:
+    operation_identity = "wms.inventory.query_inventory@v1"
+    payload = REQUEST_FIXTURES[operation_identity]
+    raw_path = "/api/wms/inventory/query?" + urlencode(payload)
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.get(raw_path, headers=_status_headers(path=raw_path))
+
+    assert response.status_code == 200
+    result = WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(response.json())
+    assert result.source_version == "mock-inventory-v1"
+
+
 def test_standalone_wms_mock_server_disables_query_bearing_access_log() -> None:
     server = wms_mock_server.WmsMockServer()
 
     assert server.config.access_log is False
-
-
-def test_wms_mock_release_reservation_matches_typed_port_contract() -> None:
-    with TestClient(wms_mock_server.app) as client:
-        response = client.delete("/api/wms/inventory/reserve/RSV-1")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "code": 200,
-        "data": {
-            "reservation_key": "RSV-1",
-            "released": True,
-        },
-    }
 
 
 def test_wms_mock_locations_route_passes_ruff_safe_variable_path() -> None:
@@ -342,7 +405,7 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
     ("path", "operation_identity"),
     (
         ("/api/wms/inventory/confirm-inbound", "wms.inventory.confirm_inbound@v1"),
-        ("/api/wms/fulfillment/package-binding", "wms.fulfillment.notify_pkg_binding@v1"),
+        ("/api/wms/fulfillment/pkg-bindings", "wms.fulfillment.notify_pkg_binding@v1"),
     ),
 )
 def test_wms_mock_sync_effect_returns_terminal_result_without_status_or_hint(
@@ -376,8 +439,8 @@ def test_wms_mock_sync_effect_returns_terminal_result_without_status_or_hint(
         )
 
     assert submitted.status_code == 200
-    WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(submitted.json()["data"])
-    assert "northbound_status" not in submitted.json()["data"]
+    WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(submitted.json())
+    assert "northbound_status" not in submitted.json()
     assert status.status_code == 422
     assert status.json()["code"] == "status query only accepts ASYNC_TASK operation"
     assert hints.json() == {"hints": []}
@@ -947,13 +1010,14 @@ def test_wms_mock_inventory_query_matches_known_sku_and_lot_no() -> None:
     with TestClient(wms_mock_server.app) as client:
         response = _inventory_query_request(
             client,
-            material_id=payload_data["HHPN"],
+            material_code=payload_data["HHPN"],
             lot_no=payload_data["LotCode"],
         )
 
     assert response.status_code == 200
     assert response.json() == {
-        "items": [inventory],
+        "items": [_typed_inventory_record(inventory)],
+        "next_cursor": None,
         "source_version": "mock-inventory-v1",
     }
 
@@ -963,14 +1027,14 @@ def test_wms_mock_inventory_query_returns_rough_sorter_dimensions_for_canonical_
     with TestClient(wms_mock_server.app) as client:
         response = _inventory_query_request(
             client,
-            material_id="CAP001",
+            material_code="CAP001",
             lot_no="LOT-A",
             warehouse_code="WH-IT",
             owner_code="OWNER-IT",
         )
 
     assert response.status_code == 200
-    assert response.json()["items"] == [inventory]
+    assert response.json()["items"] == [_typed_inventory_record(inventory)]
     assert response.json()["source_version"] == "mock-inventory-v1"
     assert inventory["warehouse_code"] == "WH-IT"
     assert inventory["owner_code"] == "OWNER-IT"
@@ -990,19 +1054,19 @@ def test_wms_mock_inventory_query_matches_additional_catalog_products() -> None:
     with TestClient(wms_mock_server.app) as client:
         resistor_response = _inventory_query_request(
             client,
-            material_id="RES001",
+            material_code="RES001",
             lot_no="LOT-R",
         )
         ic_response = _inventory_query_request(
             client,
-            material_id="IC001",
+            material_code="IC001",
             lot_no="LOT-I",
         )
 
     assert resistor_response.status_code == 200
-    assert resistor_response.json()["items"] == [inventory[("RES001", "LOT-R")]]
+    assert resistor_response.json()["items"] == [_typed_inventory_record(inventory[("RES001", "LOT-R")])]
     assert ic_response.status_code == 200
-    assert ic_response.json()["items"] == [inventory[("IC001", "LOT-I")]]
+    assert ic_response.json()["items"] == [_typed_inventory_record(inventory[("IC001", "LOT-I")])]
 
 
 def test_wms_mock_inventory_query_returns_empty_items_for_unknown_sku_or_lot_no() -> None:
@@ -1010,12 +1074,12 @@ def test_wms_mock_inventory_query_returns_empty_items_for_unknown_sku_or_lot_no(
     with TestClient(wms_mock_server.app) as client:
         unknown_sku_response = _inventory_query_request(
             client,
-            material_id="UNKNOWN",
+            material_code="UNKNOWN",
             lot_no=payload_data["LotCode"],
         )
         unknown_lot_response = _inventory_query_request(
             client,
-            material_id=payload_data["HHPN"],
+            material_code=payload_data["HHPN"],
             lot_no="UNKNOWN",
         )
 
@@ -1039,7 +1103,7 @@ def test_wms_mock_inventory_query_filters_all_requested_dimensions(
     with TestClient(wms_mock_server.app) as client:
         response = _inventory_query_request(
             client,
-            material_id="CAP001",
+            material_code="CAP001",
             lot_no="LOT-A",
             warehouse_code=warehouse_code,
             owner_code=owner_code,
@@ -1048,13 +1112,14 @@ def test_wms_mock_inventory_query_filters_all_requested_dimensions(
     assert response.status_code == 200
     assert response.json() == {
         "items": [],
+        "next_cursor": None,
         "source_version": "mock-inventory-v1",
     }
 
 
 def test_wms_mock_inventory_query_hmac_fails_closed_without_leaking_secret() -> None:
     params = {
-        "material_id": "CAP001",
+        "material_code": "CAP001",
         "lot_no": "LOT-A",
         "warehouse_code": "WH-IT",
         "owner_code": "OWNER-IT",
@@ -1082,14 +1147,15 @@ def test_wms_mock_inventory_query_hmac_fails_closed_without_leaking_secret() -> 
 
 
 def test_wms_mock_inventory_query_rejects_legacy_post_and_sku_alias() -> None:
+    sku_alias_path = "/api/wms/inventory/query?" + urlencode({"sku": "CAP001", "lot_no": "LOT-A"})
     with TestClient(wms_mock_server.app) as client:
         post_response = client.post(
             "/api/wms/inventory/query",
             json={"material_id": "CAP001", "lot_no": "LOT-A"},
         )
         sku_alias_response = client.get(
-            "/api/wms/inventory/query",
-            params={"sku": "CAP001", "lot_no": "LOT-A"},
+            sku_alias_path,
+            headers=_status_headers(path=sku_alias_path),
         )
 
     assert post_response.status_code == 405
@@ -1153,7 +1219,7 @@ def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> No
             "wms.inventory.confirm_inbound@v1",
         ),
         (
-            "/api/wms/fulfillment/package-binding",
+            "/api/wms/fulfillment/pkg-bindings",
             {
                 "dispatch_key": "package-binding-001",
                 "package_id": "PKG-001",
@@ -1568,7 +1634,7 @@ def test_real_wes_submit_sender_and_status_signer_interoperate_with_mock_active_
         ),
         (
             "package-binding-missing",
-            "/api/wms/fulfillment/package-binding",
+            "/api/wms/fulfillment/pkg-bindings",
             "wms.fulfillment.notify_pkg_binding@v1",
             {
                 "dispatch_key": "dispatch-binding-valid",
@@ -1668,7 +1734,7 @@ def test_typed_submit_rejects_invalid_wire_body_before_idempotency_write(
             },
         ),
         (
-            "/api/wms/fulfillment/package-binding",
+            "/api/wms/fulfillment/pkg-bindings",
             "wms.fulfillment.notify_pkg_binding@v1",
             {
                 "dispatch_key": "dispatch-result-binding",

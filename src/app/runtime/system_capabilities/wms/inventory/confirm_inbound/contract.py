@@ -20,7 +20,7 @@ CONTRACT = WmsOperationContract(
     request_model=ConfirmInboundOperationRequest,
     result_model=ConfirmInboundOperationResult,
     endpoint_path="/inventory/confirm-inbound",
-    target_code="WMS_INBOUND_CONFIRM",
+    target_code="WMS_INVENTORY_CONFIRM_INBOUND",
     http_method=WmsHttpMethod.POST,
     budget=WmsTransportBudget(timeout_seconds=30, max_wire_bytes=262_144, max_decoded_bytes=262_144),
     retry_policy=WmsRetryPolicy(max_attempts=3, backoff_seconds=(1, 4)),

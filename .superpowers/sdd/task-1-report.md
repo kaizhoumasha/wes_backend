@@ -93,3 +93,37 @@ operation 的兼容入口。
 - `gitnexus detect-changes --scope all` → 16 indexed files / 172 symbols / 10 affected processes，
   risk HIGH；命中范围为预期的 QUERY observability 和 Mock status 流程，无 T2/T5 runtime
   endpoint compiler/dispatcher。
+
+## 第三轮审查修复
+
+- E02 删除 DELETE/旧 envelope，只保留 registry 冻结的
+  `POST /inventory/reservations/release` typed request/result。
+- Mock 启动时从唯一 registry 一次性注册 35 条明确 route；删除请求期 catch-all、重复 typed handler 与
+  `/fulfillment/package-binding`、`/inventory/reserve`、`/outbound/confirm` 等旧 alias 路径。
+- Q14 改为静态 GET route 并严格消费 `material_code`，响应直接符合 typed result，不再接受
+  `material_id`/`sku` alias 或旧 envelope。
+- Provider External HTTP binding、旧三项 author-time gateway 合同统一使用 registry canonical
+  target code；删除 `_LEGACY_EFFECT_TARGET_CODES`。本节替代第二轮报告中“旧 target code 读取兼容”的
+  临时结论。
+- E13 `candidate_digest` 改为绑定 `workline_id`、`queue_code` 与有序冻结候选的 canonical SHA-256；
+  篡改 digest 或仅重排候选均在 request model 校验阶段 fail closed。
+
+## 第三轮 TDD 与验证
+
+1. RED：E02 仍返回旧 envelope，DELETE 路由仍存在；35 项 route 未标记为 registry 静态注册，Q14
+   `material_code` 请求返回 422。
+2. GREEN：35 项 operation 全部通过启动期显式 route 注册，E02/Q14 均直接通过对应 typed model。
+3. RED：3 个 External HTTP binding 仍接受旧 target code；3 条旧 alias 路径仍注册。
+4. GREEN：binding 仅接受各 operation 的 canonical target code，旧 alias 路径与旧 target code 检索为零。
+5. RED：E13 接受伪造 digest 与候选重排。
+6. GREEN：正确 digest 通过，伪造 digest 与重排候选均触发 `ValidationError`。
+
+最终验证：
+
+- `uv run pytest tests/contracts/wms_integration tests/mock/test_wms_northbound_contract.py
+  tests/mock/test_wms_mock_server.py tests/runtime/orchestration/test_northbound_operation_observability.py -q`
+  → 426 passed。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Ruff format/check、Bandit 0 issue、runtime
+  guardrails 365 passed、process naming 11 passed、architecture/import-linter/topology 全通过）。
+- worktree `gitnexus detect-changes --scope all` → 13 indexed files / 62 symbols / 2 affected processes，
+  risk MEDIUM；仅命中 Q14 Mock 查询/HMAC 流程，未实现 T2/T5 endpoint compiler/dispatcher。

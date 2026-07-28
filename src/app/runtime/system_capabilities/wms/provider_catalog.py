@@ -39,12 +39,6 @@ WMS_EFFECT_STATUS_HINT_CALLBACK = InboundCallbackContract(
     payload_model=WmsEffectStatusHint,
 )
 
-_LEGACY_EFFECT_TARGET_CODES = {
-    "wms.inventory.confirm_inbound@v1": "WMS_INBOUND_CONFIRM",
-    "wms.fulfillment.notify_pkg_binding@v1": "WMS_PACKAGE_BINDING",
-    "wms.fulfillment.full_box_exchange@v1": "WMS_FULL_BOX_EXCHANGE",
-}
-
 
 def _binding(
     profile: ExternalContractProfile,
@@ -179,13 +173,6 @@ def _typed_wms_endpoint_registry(
         for binding in profile.bindings
         if binding.operation.mode.value == "EFFECT"
     }
-    endpoints.update(
-        {
-            legacy_target_code: f"{base_url}/{binding.operation.path_template.lstrip('/')}"
-            for binding in profile.bindings
-            if (legacy_target_code := _LEGACY_EFFECT_TARGET_CODES.get(binding.operation.identity)) is not None
-        }
-    )
     return EndpointRegistry(endpoints)
 
 
@@ -210,15 +197,9 @@ def _external_http_effect_binding(binding: WmsProviderOperationBinding) -> Exter
     auth_scheme = binding.outbound_auth.scheme.value
     if auth_scheme != "HMAC_SHA256":
         raise ValueError("WMS EXTERNAL_HTTP EFFECT binding requires HMAC_SHA256")
-    legacy_target_code = _LEGACY_EFFECT_TARGET_CODES.get(binding.operation.identity)
-    target_codes = (
-        (binding.operation.target_code, legacy_target_code)
-        if legacy_target_code is not None
-        else (binding.operation.target_code,)
-    )
     return ExternalHttpBindingDefinition(
         operation_identity=binding.operation.identity,
-        allowed_target_codes=target_codes,
+        allowed_target_codes=(binding.operation.target_code,),
         http_method=http_method,
         timeout_seconds=binding.operation.budget.deadline_seconds,
         auth_scheme=auth_scheme,

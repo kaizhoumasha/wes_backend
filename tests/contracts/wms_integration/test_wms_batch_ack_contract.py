@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
 
 import pytest
@@ -12,6 +14,25 @@ from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
 E12 = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
 E13 = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
+
+
+def _candidate_digest(payload: dict[str, object]) -> str:
+    canonical = {
+        "workline_id": payload["workline_id"],
+        "queue_code": payload["queue_code"],
+        "candidate_items": [
+            {
+                "sequence_no": item["sequence_no"],
+                "route_instance_id": item["route_instance_id"],
+                "bin_id": item["bin_id"],
+                "scan3_enqueued_at": item["scan3_enqueued_at"],
+                "queue_position": item["queue_position"],
+            }
+            for item in payload["candidate_items"]
+        ],
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _e12_payload() -> dict[str, object]:
@@ -40,8 +61,6 @@ def _e12_payload() -> dict[str, object]:
 
 
 def _e13_payload() -> dict[str, object]:
-    from src.app.wms_integration.ports.fulfillment_operations import accepted_scope_digest
-
     payload = deepcopy(REQUEST_FIXTURES[E13])
     first = payload["candidate_items"][0]
     payload["candidate_items"] = [
@@ -63,8 +82,25 @@ def _e13_payload() -> dict[str, object]:
             "queue_position": 3,
         },
     ]
-    payload["candidate_digest"] = accepted_scope_digest(("BIN-001", "BIN-002", "BIN-003"))
+    payload["candidate_digest"] = _candidate_digest(payload)
     return payload
+
+
+def test_e13_request_binds_digest_to_ordered_frozen_candidates() -> None:
+    operation = WMS_OPERATION_BY_IDENTITY[E13]
+    payload = _e13_payload()
+
+    operation.request_model.model_validate(payload)
+
+    forged = deepcopy(payload)
+    forged["candidate_digest"] = "f" * 64
+    with pytest.raises(ValidationError, match="candidate_digest"):
+        operation.request_model.model_validate(forged)
+
+    reordered = deepcopy(payload)
+    reordered["candidate_items"] = list(reversed(reordered["candidate_items"]))
+    with pytest.raises(ValidationError, match="candidate_digest"):
+        operation.request_model.model_validate(reordered)
 
 
 def test_accepted_scope_rejects_duplicate_members_and_invalid_digest_shape() -> None:

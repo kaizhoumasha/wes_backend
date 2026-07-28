@@ -37,7 +37,7 @@ from starlette.requests import ClientDisconnect
 from uvicorn import Config, Server
 
 from src.app.wms_integration.operation_contract import WmsCompletionMode
-from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
 
 # 添加项目根目录到 sys.path
 project_root = Path(__file__).parent.parent.parent
@@ -52,6 +52,7 @@ from tests.mock.wms_northbound_contract import (
     NorthboundOperationStore,
     NorthboundPayloadValidationError,
     build_typed_ack,
+    build_typed_result,
     canonical_payload_bytes,
     content_sha256,
     validate_typed_request,
@@ -1114,7 +1115,7 @@ async def _submit_northbound_effect(
             return JSONResponse(status_code=500, content={"code": "MOCK_SYNC_RESULT_MISSING"})
         return JSONResponse(
             status_code=submission.status_code,
-            content={"code": submission.status_code, "data": submission.snapshot.result_payload},
+            content=submission.snapshot.result_payload,
         )
 
     data = _northbound_response_data(operation_identity, idempotency_key, validated_payload)
@@ -1457,17 +1458,6 @@ async def legacy_full_box_exchange(payload: dict[str, Any], background_tasks: Ba
     return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}
 
 
-@app.post("/api/wms/fulfillment/package-binding", summary="本机 Mock: typed PKG 绑定通知")
-async def notify_pkg_binding(request: Request, background_tasks: BackgroundTasks):
-    """模拟 `wms.fulfillment.notify_pkg_binding@v1` 的已认证幂等受理。"""
-
-    return await _submit_northbound_effect(
-        request=request,
-        background_tasks=background_tasks,
-        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
-    )
-
-
 def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
     raw_value = payload.get(field_name)
     if raw_value is None:
@@ -1477,17 +1467,6 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
     if not isinstance(raw_value, list):
         return []
     return [str(item) for item in raw_value if str(item)]
-
-
-@app.post("/api/wms/fulfillment/full-box-exchange", summary="本机 Mock: 满箱交换履约")
-async def full_box_exchange(request: Request, background_tasks: BackgroundTasks):
-    """模拟满箱交换 typed EFFECT，不触发生产写路径。"""
-
-    return await _submit_northbound_effect(
-        request=request,
-        background_tasks=background_tasks,
-        operation_identity="wms.fulfillment.full_box_exchange@v1",
-    )
 
 
 @app.post("/api/wms/fulfillment/change-rack-face", summary="本机 Mock: 货架换面履约")
@@ -1795,121 +1774,112 @@ def _inventory_items(
     ]
 
 
-@app.get("/api/wms/inventory/query", summary="查询库存 (GET)")
-async def query_inventory_get(
-    request: Request,
-    material_id: str,
-    lot_no: str | None = None,
-    warehouse_code: str | None = None,
-    owner_code: str | None = None,
-):
-    """返回 production QUERY wire contract，不暴露 legacy envelope 或参数别名。"""
-
-    raw_path = request.scope["path"]
-    query_string = request.scope.get("query_string", b"")
-    if query_string:
-        raw_path = f"{raw_path}?{query_string.decode('ascii')}"
-    body = await _request_body_or_none(request)
-    if body is None:
-        return Response(status_code=499)
-    try:
-        verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
-        northbound_hmac_replay_guard.consume(
-            credential_reference=request.headers["X-WMS-Credential-Reference"],
-            timestamp=request.headers["X-WMS-Timestamp"],
-            nonce=request.headers["X-WMS-Nonce"],
+def _static_effect_handler(operation_identity: str):
+    async def handler(request: Request, background_tasks: BackgroundTasks):
+        return await _submit_northbound_effect(
+            request=request,
+            background_tasks=background_tasks,
+            operation_identity=operation_identity,
         )
-    except NorthboundAuthError as exc:
-        return JSONResponse(status_code=401, content={"code": exc.code})
-    return {
-        "items": _inventory_items(
-            sku=material_id,
-            lot_no=lot_no,
-            warehouse_code=warehouse_code,
-            owner_code=owner_code,
-        ),
-        "source_version": "mock-inventory-v1",
-    }
+
+    handler.__name__ = f"northbound_{operation_identity.replace('.', '_').replace('@', '_')}"
+    handler.__wms_operation_identity__ = operation_identity
+    return handler
 
 
-@app.post("/api/wms/inventory/reserve")
-async def reserve_inventory(payload: dict[str, Any]):
-    return {
-        "code": 200,
-        "data": {
-            "request_id": payload.get("request_id", ""),
-            "reservation_key": payload.get("reservation_key", "RES-001"),
-            "accepted": True,
-        },
-    }
+def _typed_query_payload(request: Request, operation_identity: str) -> dict[str, Any]:
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    payload: dict[str, Any] = dict(request.path_params)
+    for field_name in operation.request_model.model_fields:
+        values = request.query_params.getlist(field_name)
+        if values:
+            payload[field_name] = values if len(values) > 1 else values[0]
+    return payload
 
 
-@app.post("/api/wms/inventory/reservations/release")
-async def release_reservation(payload: dict[str, Any]):
-    return {
-        "code": 200,
-        "data": {
-            "request_id": payload.get("request_id", ""),
-            "reservation_key": payload.get("reservation_key", ""),
-            "released": True,
-        },
-    }
+def _static_query_handler(operation_identity: str):
+    async def handler(request: Request):
+        operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+        if request.method == "GET":
+            raw_path = request.scope["path"]
+            query_string = request.scope.get("query_string", b"")
+            if query_string:
+                raw_path = f"{raw_path}?{query_string.decode('ascii')}"
+            body = await _request_body_or_none(request)
+            if body is None:
+                return Response(status_code=499)
+            try:
+                verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
+                northbound_hmac_replay_guard.consume(
+                    credential_reference=request.headers["X-WMS-Credential-Reference"],
+                    timestamp=request.headers["X-WMS-Timestamp"],
+                    nonce=request.headers["X-WMS-Nonce"],
+                )
+            except NorthboundAuthError as exc:
+                return JSONResponse(status_code=401, content={"code": exc.code})
+            payload = _typed_query_payload(request, operation_identity)
+        else:
+            body = await _request_body_or_none(request)
+            if body is None:
+                return Response(status_code=499)
+            try:
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST"})
+        try:
+            validated = operation.request_model.model_validate(payload).model_dump(mode="json")
+            if operation_identity == "wms.inventory.query_inventory@v1":
+                inventory_items = _inventory_items(
+                    sku=validated["material_code"],
+                    lot_no=validated.get("lot_no"),
+                    warehouse_code=validated.get("warehouse_code"),
+                    owner_code=validated.get("owner_code"),
+                )
+                result = {
+                    "items": [
+                        {
+                            "material_code": item["sku"],
+                            "available_quantity": str(item["available_qty"]),
+                            "total_quantity": str(item["total_qty"]),
+                            "reserved_quantity": str(item["reserved_qty"]),
+                            "lot_no": item.get("lot_no"),
+                        }
+                        for item in inventory_items
+                    ],
+                    "next_cursor": None,
+                    "source_version": "mock-inventory-v1",
+                }
+                result = operation.result_model.model_validate(result).model_dump(mode="json")
+            else:
+                result = build_typed_result(
+                    operation_identity,
+                    validated,
+                    source_version=0,
+                    completed_at=datetime.now(UTC).isoformat(),
+                )
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST"})
+        return JSONResponse(status_code=200, content=result)
+
+    handler.__name__ = f"northbound_{operation_identity.replace('.', '_').replace('@', '_')}"
+    handler.__wms_operation_identity__ = operation_identity
+    return handler
 
 
-@app.delete("/api/wms/inventory/reserve/{reservation_key}")
-async def delete_reservation(reservation_key: str):
-    return {
-        "code": 200,
-        "data": {
-            "reservation_key": reservation_key,
-            "released": True,
-        },
-    }
+def _register_frozen_operation_routes() -> None:
+    """启动期从唯一 registry 一次性注册 35 条明确 route。"""
+
+    for operation in WMS_OPERATIONS:
+        handler_factory = _static_query_handler if operation.mode.value == "QUERY" else _static_effect_handler
+        app.add_api_route(
+            f"/api/wms{operation.path_template}",
+            handler_factory(operation.identity),
+            methods=[operation.http_method.value],
+            name=f"northbound:{operation.identity}",
+        )
 
 
-@app.post("/api/wms/inventory/confirm-inbound")
-async def confirm_inbound_effect(request: Request, background_tasks: BackgroundTasks):
-    return await _submit_northbound_effect(
-        request=request,
-        background_tasks=background_tasks,
-        operation_identity="wms.inventory.confirm_inbound@v1",
-    )
-
-
-@app.post("/api/wms/outbound/confirm")
-async def confirm_outbound(payload: dict[str, Any]):
-    return {
-        "code": 200,
-        "data": {
-            "request_id": payload.get("request_id", ""),
-            "outbound_key": payload.get("outbound_key", ""),
-            "confirmed": True,
-        },
-    }
-
-
-@app.post("/api/wms/{operation_path:path}")
-async def frozen_effect_operation(
-    operation_path: str,
-    request: Request,
-    background_tasks: BackgroundTasks,
-):
-    """为 16 项 frozen EFFECT 提供统一 Mock transport；不参与生产运行时编译。"""
-
-    request_path = f"/{operation_path}"
-    path_matches = tuple(
-        operation for operation in WMS_OPERATION_BY_IDENTITY.values() if operation.path_template == request_path
-    )
-    if len(path_matches) == 1 and path_matches[0].mode.value == "QUERY":
-        return JSONResponse(status_code=405, content={"code": "METHOD_NOT_ALLOWED"})
-    matches = tuple(operation for operation in path_matches if operation.mode.value == "EFFECT")
-    if len(matches) != 1:
-        return JSONResponse(status_code=404, content={"code": "UNKNOWN_WMS_EFFECT_OPERATION"})
-    return await _submit_northbound_effect(
-        request=request,
-        background_tasks=background_tasks,
-        operation_identity=matches[0].identity,
-    )
+_register_frozen_operation_routes()
 
 
 @app.get("/")
