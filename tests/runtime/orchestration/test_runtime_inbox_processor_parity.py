@@ -9,8 +9,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxManualHoldEvidence
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as bridge_module
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
@@ -18,9 +16,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
-)
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
-    RuntimeInboxWriteBackService,
 )
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
 
@@ -379,6 +374,19 @@ def _as_tuple(result: dict[str, int]) -> tuple[int, int, int, int, int]:
     )
 
 
+def _install_test_runner(processor: RuntimeInboxProcessorBridge, runner: object) -> None:
+    processor._generated_attempt_runner = runner  # type: ignore[assignment]
+
+    async def _build_request(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(snapshot=SimpleNamespace())
+
+    async def _pin_runtime(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    processor._build_generated_dispatch_request = _build_request  # type: ignore[method-assign]
+    processor._pin_attempt_runtime_to_dispatch_snapshot = _pin_runtime  # type: ignore[method-assign]
+
+
 async def _run_case(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -465,23 +473,6 @@ async def _run_case(
             }
         )
         return incident
-
-    effect = (
-        RuntimeIntentEffectResult.resource_retry()
-        if case.writeback == "resource_wait"
-        else RuntimeIntentEffectResult.processed()
-    )
-
-    class _WriteBack:
-        async def write_back(self, *args: object, **kwargs: object) -> RuntimeIntentEffectResult:
-            _ = args
-            interactions.append(
-                {
-                    "kind": "writeback",
-                    "source_device_id": getattr(kwargs.get("source_device"), "id", None),
-                }
-            )
-            return effect
 
     class _Runner:
         async def run(self, _context: object) -> AttemptWriteSet:
@@ -573,13 +564,13 @@ async def _run_case(
                 )
             )  # type: ignore[arg-type]
         ),
-        plugin_attempt_runner=_Runner(),
         writeback_service=_PlatformWriteBack(),  # type: ignore[arg-type]
         inbox_service=terminal,  # type: ignore[arg-type]
         inbox_repository=_Repository(inbox),  # type: ignore[arg-type]
         replay_source_validator=_ReplaySourceValidator(),  # type: ignore[arg-type]
         recorded_replay_service=_RecordedReplay(),  # type: ignore[arg-type]
     )
+    _install_test_runner(processor, _Runner())
     result = await processor.process_claimed(db, claim={"id": 1, "processor_token": "token-parity"})
     return result, archives, terminal.actions, diagnostics, interactions, db
 

@@ -198,6 +198,7 @@ ALLOWED_EVIDENCE: dict[str, frozenset[str]] = {
         {
             "legacy_batch_processor_symbol",
             "legacy_repository_import",
+            "legacy_service_symbol",
             "legacy_service_import",
             "legacy_workline_batch_processor_import",
             "legacy_workline_repository_import",

@@ -13,21 +13,21 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from src.app.device.repositories.command_repository import (
+    DeviceCommandRepository,
+    device_command_repository,
+)
 from src.app.runtime.capabilities.material_flow.contracts.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
     SmtInboundHandoffReasonCode,
-)
-from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
-    SMT_SORTING_INBOUND_CONTRACT_VERSION,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.app.runtime.capabilities.material_flow.contracts.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
 from src.app.runtime.capabilities.material_flow.contracts.sorting_inbound_context import SortingInboundContext
@@ -44,6 +44,10 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.runtime.orchestration.repository_wiring import smt_inbound_handoff_repository
+from src.app.workline.services.plugin_binding_service import (
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
@@ -105,6 +109,42 @@ _SORTING_TARGET_RACK_POSITION_CODE = "TARGET_STATION"
 _CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS = 5
 
 
+@dataclass(frozen=True, slots=True)
+class SmtInboundHandoffClaimResult:
+    """SMT claim 的 typed 结果。"""
+
+    kind: str
+    failure_code: str | None = None
+    failure_message: str | None = None
+    next_attempt_at: Any | None = None
+    demand: Any | None = None
+    source_item: Any | None = None
+    inbox: Any | None = None
+    session: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SmtSortingClaimRuntime:
+    """一次 SMT claim 原子创建的 Workline/Execution 运行锚点。"""
+
+    session: WorklineSession
+    execution_session_id: int
+    correlation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SmtInboundHandoffLedgerResult:
+    """SMT source item 账本推进结果。"""
+
+    outcome: str
+    advanced: bool
+    already_terminal: bool
+    source_item: Any
+    current_demand_id: int | None = None
+    demand: Any | None = None
+    session: Any | None = None
+
+
 class SmtInboundHandoffService:
     """处理粗分机 release fact 到 handoff demand 的幂等入口。"""
 
@@ -116,12 +156,16 @@ class SmtInboundHandoffService:
         reason_catalog: SmtInboundHandoffReasonCatalog = SMT_INBOUND_HANDOFF_REASON_CATALOG,
         handling_operation_service: HandlingOperationService | None = None,
         route_service: SmtInboundHandoffRouteService = smt_inbound_handoff_route_service,
+        plugin_binding_service: WorklinePluginBindingService = workline_plugin_binding_service,
+        command_repository: DeviceCommandRepository = device_command_repository,
     ) -> None:
         self.repository = repository
         self.usage_policy = usage_policy
         self.reason_catalog = reason_catalog
         self.handling_operation_service = handling_operation_service
         self.route_service = route_service
+        self.plugin_binding_service = plugin_binding_service
+        self.command_repository = command_repository
 
     async def create_or_get_from_release(
         self,
@@ -396,18 +440,22 @@ class SmtInboundHandoffService:
             db.add(demand)
             await db.flush()
             return demand
-        if demand.failure_code is not None:
-            demand.status = SmtInboundHandoffDemandStatus.MANUAL_HOLD
-            db.add(demand)
-            await db.flush()
-            return demand
         if demand.status == SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE:
             db.add(demand)
             await db.flush()
             return demand
 
         items = await self.repository.list_source_items(db, demand_id)
-        if any(item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD for item in items):
+        held_item = next(
+            (item for item in items if item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD),
+            None,
+        )
+        if held_item is not None:
+            demand.status = SmtInboundHandoffDemandStatus.MANUAL_HOLD
+            if demand.failure_code is None:
+                demand.failure_code = held_item.failure_code
+                demand.failure_message = held_item.failure_message
+        elif demand.failure_code is not None:
             demand.status = SmtInboundHandoffDemandStatus.MANUAL_HOLD
         elif items and all(item.status in _TERMINAL_ITEM_STATUSES for item in items):
             demand.status = SmtInboundHandoffDemandStatus.COMPLETED
@@ -703,6 +751,7 @@ class SmtInboundHandoffService:
         target_workline = await self.repository.lock_target_workline_by_id(db, workline_id=workline_id)
         if target_workline is None:
             return self._claim_result("EMPTY")
+        binding = await self.plugin_binding_service.resolve_new_session_binding(db, workline=target_workline)
         if timezone.now_for_db() - route_probe_started_at > timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS):
             return await self._release_claim_candidate_for_retry(
                 db,
@@ -736,29 +785,39 @@ class SmtInboundHandoffService:
                 reason="claim_target_in_flight",
             )
 
-        session = await self._create_sorting_claim_session(
+        # claim 聚合必须先固定一个全链一致的 trace；无外部 trace 时使用确定性 source event，
+        # 禁止 Session、ExecutionCorrelation 与 RuntimeInbox 各自选择不同 fallback。
+        resolved_trace_id = (
+            self._text_or_none(trace_id)
+            or self._text_or_none(locked_demand.trace_id)
+            or self._source_pick_event_id(locked_item)
+        )
+        claim_runtime = await self._create_sorting_claim_session(
             db,
-            workline_id=workline_id,
+            workline=target_workline,
+            binding=binding,
             workline_code=workline_code,
             demand=locked_demand,
             item=locked_item,
-            trace_id=trace_id,
+            trace_id=resolved_trace_id,
             route_evidence=getattr(route, "route_evidence", None),
         )
         inbox = await self._create_source_pick_request_inbox(
             db,
             demand=locked_demand,
             item=locked_item,
-            session=session,
+            session=claim_runtime.session,
             workline_id=workline_id,
-            trace_id=trace_id,
+            execution_session_id=claim_runtime.execution_session_id,
+            correlation_id=claim_runtime.correlation_id,
+            trace_id=resolved_trace_id,
             route_evidence=getattr(route, "route_evidence", None),
         )
 
         locked_item.status = SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
         locked_item.target_workline_id = workline_id
         locked_item.target_workline_code = self._text_or_none(workline_code)
-        locked_item.sorting_session_id = cast("int", session.id)
+        locked_item.sorting_session_id = cast("int", claim_runtime.session.id)
         locked_item.source_pick_inbox_id = cast("int", inbox.id)
         locked_item.claimed_at = now
         locked_item.failure_code = None
@@ -776,7 +835,7 @@ class SmtInboundHandoffService:
             demand=locked_demand,
             source_item=locked_item,
             inbox=inbox,
-            session=session,
+            session=claim_runtime.session,
         )
 
     async def _lock_ready_candidate_or_retry(
@@ -803,12 +862,14 @@ class SmtInboundHandoffService:
         candidate: SmtInboundHandoffSourceItem,
         now: Any,
     ) -> tuple[SmtInboundHandoffDemand | None, SmtInboundHandoffSourceItem | None, Any | None]:
-        demand = await self.repository.lock_demand_by_id(db, demand_id=candidate.handoff_demand_id)
+        item, blocked_result = await self._lock_ready_candidate_or_retry(db, candidate=candidate, now=now)
+        if item is None or blocked_result is not None:
+            return None, item, blocked_result
+
+        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
         if demand is None or not self._demand_is_claimable(demand):
             return demand, None, self._claim_result("EMPTY")
-
-        item, blocked_result = await self._lock_ready_candidate_or_retry(db, candidate=candidate, now=now)
-        return demand, item, blocked_result
+        return demand, item, None
 
     async def _release_claim_candidate_for_retry(
         self,
@@ -891,9 +952,17 @@ class SmtInboundHandoffService:
         """释放 source-pick dead-letter item，使下一次 claim 使用新 attempt。"""
 
         _ = trace_id
-        item = await self.repository.get_source_item_by_id(db, source_item_id)
+        item = await self.repository.get_source_item_for_update(db, source_item_id)
         if item is None:
             raise ValueError(f"未找到 handoff source item: {source_item_id}")
+        if item.status != SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
+            raise ValueError("当前状态不可重试 source pick")
+        if "RETRY_SOURCE_PICK" not in self._available_actions(item):
+            raise ValueError("当前失败原因不可重试 source pick")
+        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
+        if demand is None:
+            raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
+
         item.claim_attempt_no += 1
         item.status = SmtInboundHandoffSourceItemStatus.READY
         item.source_pick_inbox_id = None
@@ -908,14 +977,10 @@ class SmtInboundHandoffService:
         item.claimed_at = None
         item.next_attempt_at = None
         db.add(item)
-        demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
-        if demand is not None:
-            demand.failure_code = None
-            demand.failure_message = None
-            db.add(demand)
-            _ = await self.recalculate_demand_status(db, demand, reason="release_source_pick_dead_letter_for_retry")
-        else:
-            await db.flush()
+        demand.failure_code = None
+        demand.failure_message = None
+        db.add(demand)
+        _ = await self.recalculate_demand_status(db, demand, reason="release_source_pick_dead_letter_for_retry")
         return item
 
     async def record_source_pick_command_correlation(
@@ -929,6 +994,12 @@ class SmtInboundHandoffService:
         command_id: int,
         command_code: str,
         dispatch_key: str,
+        session_id: int,
+        workline_id: int,
+        execution_session_id: int,
+        correlation_id: str,
+        plugin_key: str,
+        contract_version: str,
         trace_id: str | None = None,
     ) -> SmtInboundHandoffSourceItem:
         """记录首盘 source-pick command/outbox evidence，并推进 claim 后状态。"""
@@ -945,6 +1016,47 @@ class SmtInboundHandoffService:
             raise ValueError("source pick command correlation inbox 不匹配")
         if item.status not in _CLAIMED_ITEM_STATUSES:
             raise ValueError(f"source pick command correlation 状态不允许: {item.status}")
+        if item.sorting_session_id != session_id or item.target_workline_id != workline_id:
+            raise ValueError("source pick command correlation session/workline 不匹配")
+        if not isinstance(execution_session_id, int) or execution_session_id <= 0:
+            raise TypeError("source pick command correlation execution_session_id 无效")
+        demand = await self.repository.lock_demand_by_id(db, demand_id=handoff_demand_id)
+        if demand is None:
+            raise ValueError(f"未找到 handoff demand: {handoff_demand_id}")
+
+        inbox = await self.repository.get_runtime_inbox_by_id(db, source_pick_inbox_id)
+        command = await self.repository.get_device_command_by_id(db, command_id)
+        if inbox is None or command is None:
+            raise ValueError("source pick command correlation 权威 evidence 缺失")
+        if (
+            getattr(command, "command_code", None) != command_code
+            or getattr(command, "workline_id", None) != workline_id
+            or getattr(command, "correlation_id", None) != correlation_id
+            or getattr(command, "plugin_key", None) != plugin_key
+            or getattr(command, "contract_version", None) != contract_version
+            or getattr(command, "task_type", None) != "SORTING_SOURCE_PICK"
+            or getattr(command, "trace_id", None) != trace_id
+        ):
+            raise ValueError("source pick command correlation command ownership 不匹配")
+        if not await self.repository.source_pick_execution_anchor_matches(
+            db,
+            inbox_id=source_pick_inbox_id,
+            workline_session_id=session_id,
+            workline_id=workline_id,
+            correlation_id=correlation_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            command_trace_id=cast("str", command.trace_id),
+            execution_session_id=execution_session_id,
+        ):
+            raise ValueError("source pick command correlation execution anchor 不匹配")
+        existing = (
+            (item.source_pick_command_id, command_id),
+            (item.source_pick_command_code, command_code),
+            (item.source_pick_dispatch_key, dispatch_key),
+        )
+        if any(current is not None and current != expected for current, expected in existing):
+            raise ValueError("source pick command correlation 禁止覆盖既有关联")
 
         item.status = SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING
         item.source_pick_command_id = command_id
@@ -955,14 +1067,10 @@ class SmtInboundHandoffService:
         item.next_attempt_at = None
         db.add(item)
 
-        demand = await db.get(SmtInboundHandoffDemand, handoff_demand_id)
-        if demand is not None:
-            demand.failure_code = None
-            demand.failure_message = None
-            db.add(demand)
-            _ = await self.recalculate_demand_status(db, demand, reason="source_pick_command_correlation")
-        else:
-            await db.flush()
+        demand.failure_code = None
+        demand.failure_message = None
+        db.add(demand)
+        _ = await self.recalculate_demand_status(db, demand, reason="source_pick_command_correlation")
         return item
 
     async def record_source_pick_success(
@@ -974,14 +1082,18 @@ class SmtInboundHandoffService:
         claim_attempt_no: int | None = None,
         source_pick_inbox_id: int | None = None,
         command_id: int | None = None,
+        command_code: str | None = None,
         session: Any | None = None,
         trace_id: str | None = None,
-    ) -> SimpleNamespace:
+    ) -> SmtInboundHandoffLedgerResult:
         """记录 source-pick 成功账本，只允许 claimed 状态幂等推进到 PICKED。"""
 
         _ = trace_id
         context_request = self._source_pick_request_from_session(session)
         command_request = await self._source_pick_request_from_command(db, command_id)
+        authoritative_command_code = self._text_or_none(command_request.get("command_code"))
+        if command_code is not None and authoritative_command_code != command_code:
+            raise ValueError("source pick success command_code 不匹配")
         resolved_source_item_id = (
             source_item_id
             or self._int_or_none(context_request.get("handoff_source_item_id"))
@@ -1022,22 +1134,81 @@ class SmtInboundHandoffService:
             source_pick_inbox_id=resolved_source_pick_inbox_id,
             command_id=command_id,
         )
+        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
+        if demand is None:
+            raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
 
         if item.status in _CLAIMED_ITEM_STATUSES:
+            from src.app.device.models.command import CommandResult, CommandStatus
+
+            command = await self.repository.get_device_command_by_id(db, cast("int", command_id))
+            command_status = self._enum_text(getattr(command, "status", None))
+            command_result = self._enum_text(getattr(command, "result", None))
+            if command_status in {
+                CommandStatus.FAILED.value,
+                CommandStatus.TIMEOUT.value,
+                CommandStatus.CANCELLED.value,
+            } or (command_status == CommandStatus.COMPLETED.value and command_result != CommandResult.SUCCESS.value):
+                await self._manual_hold_source_pick_recovery(
+                    db,
+                    demand=demand,
+                    item=item,
+                    failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                    message=f"source pick command 终态失败: {command_status}",
+                )
+                return SmtInboundHandoffLedgerResult(
+                    outcome="manual_hold",
+                    advanced=False,
+                    already_terminal=False,
+                    source_item=item,
+                )
+            if command_status != CommandStatus.COMPLETED.value or command_result != CommandResult.SUCCESS.value:
+                raise ValueError("source pick success command 尚未成功完成")
+            anchor_matches = (
+                command is not None
+                and getattr(command, "task_type", None) == "SORTING_SOURCE_PICK"
+                and isinstance(item.source_pick_inbox_id, int)
+                and isinstance(item.sorting_session_id, int)
+                and isinstance(getattr(command, "workline_id", None), int)
+                and isinstance(getattr(command, "correlation_id", None), str)
+                and isinstance(getattr(command, "plugin_key", None), str)
+                and isinstance(getattr(command, "contract_version", None), str)
+                and isinstance(getattr(command, "trace_id", None), str)
+                and await self.repository.source_pick_execution_anchor_matches(
+                    db,
+                    inbox_id=item.source_pick_inbox_id,
+                    workline_session_id=item.sorting_session_id,
+                    workline_id=command.workline_id,
+                    correlation_id=command.correlation_id,
+                    plugin_key=command.plugin_key,
+                    contract_version=command.contract_version,
+                    command_trace_id=command.trace_id,
+                )
+            )
+            if not anchor_matches:
+                await self._manual_hold_source_pick_recovery(
+                    db,
+                    demand=demand,
+                    item=item,
+                    failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                    message="source pick success execution anchor 不一致，拒绝推进",
+                )
+                return SmtInboundHandoffLedgerResult(
+                    outcome="manual_hold",
+                    advanced=False,
+                    already_terminal=False,
+                    source_item=item,
+                )
             item.status = SmtInboundHandoffSourceItemStatus.PICKED
             item.failure_code = None
             item.failure_message = None
             item.next_attempt_at = None
             db.add(item)
-            demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
-            if demand is not None:
-                demand.failure_code = None
-                demand.failure_message = None
-                db.add(demand)
-                _ = await self.recalculate_demand_status(db, demand, reason="source_pick_success")
-            else:
-                await db.flush()
-            return SimpleNamespace(
+            demand.failure_code = None
+            demand.failure_message = None
+            db.add(demand)
+            _ = await self.recalculate_demand_status(db, demand, reason="source_pick_success")
+            return SmtInboundHandoffLedgerResult(
                 outcome="advanced",
                 advanced=True,
                 already_terminal=False,
@@ -1047,7 +1218,7 @@ class SmtInboundHandoffService:
         if item.status == SmtInboundHandoffSourceItemStatus.PICKED:
             db.add(item)
             await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="already_picked",
                 advanced=False,
                 already_terminal=False,
@@ -1057,7 +1228,7 @@ class SmtInboundHandoffService:
         if item.status in _TERMINAL_ITEM_STATUSES:
             db.add(item)
             await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="already_terminal",
                 advanced=False,
                 already_terminal=True,
@@ -1067,7 +1238,7 @@ class SmtInboundHandoffService:
         if item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
             db.add(item)
             await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="manual_hold",
                 advanced=False,
                 already_terminal=False,
@@ -1075,6 +1246,48 @@ class SmtInboundHandoffService:
             )
 
         raise ValueError(f"source pick success 状态不允许: {item.status}")
+
+    async def persist_source_pick_manual_hold_after_reject(
+        self,
+        db: AsyncSession,
+        *,
+        handoff_demand_id: int,
+        source_item_id: int,
+        claim_attempt_no: int,
+        source_pick_inbox_id: int,
+        command_id: int,
+        command_code: str,
+    ) -> bool:
+        """在业务拒绝 rollback 后重新锁定 source item，并持久化 fail-closed Hold。"""
+
+        item = await self._resolve_source_pick_success_item_for_update(db, source_item_id=source_item_id)
+        if item is None:
+            raise ValueError(f"未找到 handoff source item: {source_item_id}")
+        self._validate_source_pick_success_evidence(
+            item,
+            handoff_demand_id=handoff_demand_id,
+            claim_attempt_no=claim_attempt_no,
+            source_pick_inbox_id=source_pick_inbox_id,
+            command_id=command_id,
+        )
+        if item.source_pick_command_code != command_code:
+            raise ValueError("source pick manual hold command_code 不匹配")
+        if item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
+            return True
+        if item.status not in _CLAIMED_ITEM_STATUSES:
+            raise ValueError("source pick manual hold 仅允许 claimed 状态")
+
+        demand = await self.repository.lock_demand_by_id(db, demand_id=handoff_demand_id)
+        if demand is None:
+            raise ValueError(f"未找到 handoff demand: {handoff_demand_id}")
+        await self._manual_hold_source_pick_recovery(
+            db,
+            demand=demand,
+            item=item,
+            failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+            message="source pick success execution anchor 不一致，拒绝推进",
+        )
+        return True
 
     async def record_source_item_terminal_result(
         self,
@@ -1085,7 +1298,7 @@ class SmtInboundHandoffService:
         command_id: int | None = None,
         trace_id: str | None = None,
         terminal_evidence: Mapping[str, Any] | None = None,
-    ) -> SimpleNamespace:
+    ) -> SmtInboundHandoffLedgerResult:
         """记录 target/NG 终态账本，幂等关闭当前 source item 和 sorting session。"""
 
         status = self._terminal_source_item_status(terminal_status)
@@ -1105,7 +1318,7 @@ class SmtInboundHandoffService:
             raise ValueError("terminal handoff ledger demand/item 不匹配")
         self._validate_terminal_source_item_session_binding(item, session)
 
-        demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
+        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
         if demand is None:
             raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
 
@@ -1122,7 +1335,7 @@ class SmtInboundHandoffService:
             db.add(session)
             db.add(item)
             await db.flush()
-            return SimpleNamespace(
+            return SmtInboundHandoffLedgerResult(
                 outcome="already_terminal",
                 advanced=False,
                 already_terminal=True,
@@ -1184,7 +1397,7 @@ class SmtInboundHandoffService:
         db.add(demand)
         db.add(session)
         _ = await self.recalculate_demand_status(db, demand, reason="source_item_terminal_result")
-        return SimpleNamespace(
+        return SmtInboundHandoffLedgerResult(
             outcome="advanced",
             advanced=True,
             already_terminal=False,
@@ -1205,7 +1418,7 @@ class SmtInboundHandoffService:
         command_id: int | None,
         trace_id: str | None,
         terminal_evidence: Mapping[str, Any] | None,
-    ) -> SimpleNamespace:
+    ) -> SmtInboundHandoffLedgerResult:
         self._apply_item_failure(
             item,
             SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID.value,
@@ -1261,7 +1474,7 @@ class SmtInboundHandoffService:
         db.add(demand)
         db.add(session)
         _ = await self.recalculate_demand_status(db, demand, reason="source_item_terminal_conflict")
-        return SimpleNamespace(
+        return SmtInboundHandoffLedgerResult(
             outcome="manual_hold",
             advanced=False,
             already_terminal=False,
@@ -1321,7 +1534,9 @@ class SmtInboundHandoffService:
             for item in stuck_items:
                 summary["scanned"] += 1
                 try:
-                    outcome = await self._recover_stuck_source_item(db, item, now=now)
+                    # 单项恢复使用 savepoint 隔离 DB 错误，避免一次坏数据污染后续候选。
+                    async with db.begin_nested():
+                        outcome = await self._recover_stuck_source_item(db, item, now=now)
                 except Exception:
                     summary["recovery_errors"] += 1
                     continue
@@ -1390,14 +1605,6 @@ class SmtInboundHandoffService:
     ) -> dict[str, Any]:
         """人工释放 source-pick 失败 item，允许后续 claim 重新创建内部事件和命令。"""
 
-        item = await self.repository.get_source_item_by_id(db, source_item_id)
-        if item is None:
-            raise ValueError(f"handoff source item 不存在: {source_item_id}")
-        if item.status != SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
-            raise ValueError("当前状态不可重试 source pick")
-        if "RETRY_SOURCE_PICK" not in self._available_actions(item):
-            raise ValueError("当前失败原因不可重试 source pick")
-
         released = await self.release_source_pick_dead_letter_for_retry(db, source_item_id=source_item_id)
         return {
             "id": released.id,
@@ -1417,13 +1624,21 @@ class SmtInboundHandoffService:
             runtime_inbox_repository,
         )
 
-        demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
+        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
         if demand is None:
             raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
-        # source_pick_inbox_id 指向 RuntimeInbox；状态映射如下：
-        # - "in progress" = {RECEIVED, PROCESSING};
-        # - 可重试 = FAILED + next_retry_at 已设置；
-        #   终态失败 = DEAD_LETTER; 成功 = PROCESSED.
+        # source-pick recovery（每个 item 位于独立 savepoint）：
+        #
+        # RuntimeInbox
+        #   ├─ RECEIVED / PROCESSING ────────────────> 等待
+        #   ├─ FAILED ───────────────────────────────> 释放 item 后重试
+        #   ├─ DEAD_LETTER ──────────────────────────> MANUAL_HOLD
+        #   └─ PROCESSED
+        #        ├─ 已绑定 command ──────────────────> 成功 PICKED / 失败 MANUAL_HOLD
+        #        └─ 未绑定 command
+        #             ├─ 唯一且 evidence 匹配 ───────> 回写关联后按 command 终态推进
+        #             └─ 0/多候选或 evidence 不匹配 ─> MANUAL_HOLD
+        #
         # - next_retry_at 单位: RuntimeInbox 使用 Unix 毫秒, item.next_attempt_at 是
         #   naive datetime, 通过 timezone.to_utc() 转换。
         source_pick_inbox_id = item.source_pick_inbox_id
@@ -1469,14 +1684,29 @@ class SmtInboundHandoffService:
             )
             outcome = "manual_hold"
         elif inbox_status == "PROCESSED" and item.source_pick_command_id is None:
-            await self._manual_hold_source_pick_recovery(
-                db,
-                demand=demand,
-                item=item,
-                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
-                message="source pick inbox 已处理但缺少 command correlation evidence",
+            session = (
+                await db.get(WorklineSession, item.sorting_session_id)
+                if isinstance(item.sorting_session_id, int)
+                else None
             )
-            outcome = "manual_hold"
+            if session is None:
+                await self._manual_hold_source_pick_recovery(
+                    db,
+                    demand=demand,
+                    item=item,
+                    failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                    message="source pick inbox 已处理但 sorting session 不存在",
+                )
+                outcome = "manual_hold"
+            else:
+                outcome = await self._recover_processed_source_pick_command(
+                    db,
+                    demand=demand,
+                    item=item,
+                    inbox=inbox,
+                    session=session,
+                    now=now,
+                )
         elif item.source_pick_command_id is not None:
             command = await db.get(DeviceCommand, item.source_pick_command_id)
             command_status = self._enum_text(getattr(command, "status", None))
@@ -1495,7 +1725,7 @@ class SmtInboundHandoffService:
                 CommandStatus.FAILED.value,
                 CommandStatus.TIMEOUT.value,
                 CommandStatus.CANCELLED.value,
-            }:
+            } or (command_status == CommandStatus.COMPLETED.value and command_result != CommandResult.SUCCESS.value):
                 await self._manual_hold_source_pick_recovery(
                     db,
                     demand=demand,
@@ -1505,6 +1735,181 @@ class SmtInboundHandoffService:
                 )
                 outcome = "manual_hold"
         return outcome
+
+    async def _recover_processed_source_pick_command(
+        self,
+        db: AsyncSession,
+        *,
+        demand: SmtInboundHandoffDemand,
+        item: SmtInboundHandoffSourceItem,
+        inbox: Any,
+        session: Any,
+        now: Any,
+    ) -> str | None:
+        """用 correlation 索引与五项业务证据恢复 source-pick command 关联。"""
+
+        _ = now
+        if item.status == SmtInboundHandoffSourceItemStatus.PICKED or item.status in _TERMINAL_ITEM_STATUSES:
+            return None
+
+        correlation_id = self._text_or_none(getattr(inbox, "correlation_id", None))
+        awaiting_command_code = self._text_or_none(getattr(session, "awaiting_device_command_code", None))
+        workline_id = self._int_or_none(getattr(session, "workline_id", None))
+        source_pick_request_event_id = self._text_or_none(getattr(inbox, "event_id", None))
+        candidates = (
+            await self.command_repository.list_by_runtime_correlation(
+                db,
+                correlation_id=correlation_id,
+                awaiting_command_code=awaiting_command_code,
+                workline_id=workline_id,
+                task_type="SORTING_SOURCE_PICK",
+                handoff_demand_id=item.handoff_demand_id,
+                handoff_source_item_id=cast("int", item.id),
+                claim_attempt_no=item.claim_attempt_no,
+                source_pick_inbox_id=cast("int", item.source_pick_inbox_id),
+                source_pick_request_event_id=source_pick_request_event_id,
+                limit=2,
+            )
+            if (
+                correlation_id is not None
+                and awaiting_command_code is not None
+                and workline_id is not None
+                and source_pick_request_event_id is not None
+            )
+            else []
+        )
+        if len(candidates) != 1:
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                message=f"source pick command correlation 候选数量为 {len(candidates)}，拒绝猜测",
+            )
+            return "manual_hold"
+
+        command = candidates[0]
+        if not await self._source_pick_recovery_evidence_matches(
+            db,
+            item=item,
+            inbox=inbox,
+            session=session,
+            command=command,
+            correlation_id=correlation_id,
+        ):
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                message="source pick command correlation evidence 不一致，拒绝恢复",
+            )
+            return "manual_hold"
+
+        command_id = cast("int", getattr(command, "id", None))
+        command_code = cast("str", getattr(command, "command_code", None))
+        await self.record_source_pick_command_correlation(
+            db,
+            handoff_demand_id=item.handoff_demand_id,
+            source_item_id=cast("int", item.id),
+            claim_attempt_no=item.claim_attempt_no,
+            source_pick_inbox_id=cast("int", item.source_pick_inbox_id),
+            command_id=command_id,
+            command_code=command_code,
+            dispatch_key=f"device-command:{command_code}",
+            session_id=cast("int", getattr(session, "id", None)),
+            workline_id=cast("int", workline_id),
+            execution_session_id=cast("int", getattr(inbox, "execution_session_id", None)),
+            correlation_id=cast("str", correlation_id),
+            plugin_key=cast("str", getattr(command, "plugin_key", None)),
+            contract_version=cast("str", getattr(command, "contract_version", None)),
+            trace_id=getattr(inbox, "trace_id", None),
+        )
+
+        command_status = self._enum_text(getattr(command, "status", None))
+        command_result = self._enum_text(getattr(command, "result", None))
+        if command_status == "COMPLETED" and command_result == "SUCCESS":
+            result = await self.record_source_pick_success(
+                db,
+                handoff_demand_id=item.handoff_demand_id,
+                source_item_id=cast("int", item.id),
+                claim_attempt_no=item.claim_attempt_no,
+                source_pick_inbox_id=item.source_pick_inbox_id,
+                command_id=command_id,
+            )
+            return "manual_hold" if result.outcome == "manual_hold" else "advanced"
+        if command_status in {"FAILED", "TIMEOUT", "CANCELLED"} or (
+            command_status == "COMPLETED" and command_result != "SUCCESS"
+        ):
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                message="source pick command 已进入失败终态但 source item 未推进",
+            )
+            return "manual_hold"
+        return "advanced"
+
+    async def _source_pick_recovery_evidence_matches(
+        self,
+        db: AsyncSession,
+        *,
+        item: SmtInboundHandoffSourceItem,
+        inbox: Any,
+        session: Any,
+        command: Any,
+        correlation_id: str,
+    ) -> bool:
+        """校验 demand/item/attempt/inbox/event 五项证据及 session/command 归属。"""
+
+        params = self._dict_or_empty(getattr(command, "params", None))
+        request = self._source_pick_request_from_session(session)
+        expected = {
+            "handoff_demand_id": item.handoff_demand_id,
+            "handoff_source_item_id": item.id,
+            "claim_attempt_no": item.claim_attempt_no,
+            "source_pick_inbox_id": item.source_pick_inbox_id,
+            "source_pick_request_event_id": getattr(inbox, "event_id", None),
+        }
+        if any(params.get(key) != value for key, value in expected.items()):
+            return False
+        request_expected = {
+            "handoff_demand_id": expected["handoff_demand_id"],
+            "handoff_source_item_id": expected["handoff_source_item_id"],
+            "claim_attempt_no": expected["claim_attempt_no"],
+            "event_id": expected["source_pick_request_event_id"],
+        }
+        if any(request.get(key) != value for key, value in request_expected.items()):
+            return False
+        command_code = self._text_or_none(getattr(command, "command_code", None))
+        local_evidence_matches = (
+            isinstance(item.sorting_session_id, int)
+            and isinstance(getattr(inbox, "execution_session_id", None), int)
+            and getattr(session, "id", None) == item.sorting_session_id
+            and getattr(inbox, "workline_session_id", None) == item.sorting_session_id
+            and getattr(command, "correlation_id", None) == correlation_id
+            and getattr(command, "workline_id", None) == getattr(inbox, "workline_id", None)
+            and getattr(session, "workline_id", None) == getattr(inbox, "workline_id", None)
+            and getattr(command, "plugin_key", None) == getattr(session, "plugin_key", None)
+            and getattr(command, "contract_version", None) == getattr(session, "contract_version", None)
+            and self._enum_text(getattr(command, "task_type", None)) == "SORTING_SOURCE_PICK"
+            and command_code is not None
+            and getattr(session, "awaiting_device_command_code", None) == command_code
+        )
+        if not local_evidence_matches:
+            return False
+        return await self.repository.source_pick_execution_anchor_matches(
+            db,
+            inbox_id=cast("int", item.source_pick_inbox_id),
+            workline_session_id=cast("int", item.sorting_session_id),
+            workline_id=cast("int", getattr(inbox, "workline_id", None)),
+            correlation_id=correlation_id,
+            plugin_key=cast("str", getattr(command, "plugin_key", None)),
+            contract_version=cast("str", getattr(command, "contract_version", None)),
+            command_trace_id=cast("str", getattr(command, "trace_id", None)),
+            execution_session_id=cast("int", getattr(inbox, "execution_session_id", None)),
+        )
 
     def _release_item_for_source_pick_retry(
         self,
@@ -1583,24 +1988,30 @@ class SmtInboundHandoffService:
         self,
         db: AsyncSession,
         *,
-        workline_id: int,
+        workline: Any,
+        binding: Any,
         workline_code: str | None,
         demand: SmtInboundHandoffDemand,
         item: SmtInboundHandoffSourceItem,
         trace_id: str | None,
         route_evidence: Any,
-    ) -> WorklineSession:
+    ) -> _SmtSortingClaimRuntime:
+        workline_id = cast("int", getattr(workline, "id", None))
         event_id = self._source_pick_event_id(item)
         session = WorklineSession(
             session_code=f"smt-inbound-handoff:{demand.id}:source-item:{item.id}:claim:{item.claim_attempt_no}",
             workline_id=workline_id,
-            plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+            plugin_key=binding.plugin_key,
             run_mode=RunMode.AUTO,
             business_key=demand.demand_key,
             status=SessionStatus.RUNNING,
             context_json={},
             context_schema_version="smt-sorting-inbound.v1",
-            contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+            contract_version=binding.contract_version,
+            plugin_binding_id=binding.id,
+            plugin_binding_version=binding.binding_version,
+            plugin_config_hash=binding.typed_config_hash,
+            plugin_index_digest=binding.generated_index_digest,
             started_at=timezone.now_for_db(),
             trace_id=self._text_or_none(trace_id) or demand.trace_id,
         )
@@ -1614,8 +2025,7 @@ class SmtInboundHandoffService:
             target_workline_code=cast("str", self._text_or_none(workline_code)),
             manifest_contract_version=cast(
                 "str",
-                self._text_or_none(route_context.get("manifest_contract_version"))
-                or SMT_SORTING_INBOUND_CONTRACT_VERSION,
+                self._text_or_none(route_context.get("manifest_contract_version")) or binding.contract_version,
             ),
             source_rack_position_code=cast(
                 "str",
@@ -1632,8 +2042,22 @@ class SmtInboundHandoffService:
         sorting_context.set_station_state(scan_platform="EMPTY")
         db.add(session)
         await db.flush()
+        execution_session, work_item = await self.plugin_binding_service.pin_new_runtime_session(
+            db,
+            workline=workline,
+            session=session,
+            binding=binding,
+        )
+        execution_session_id = getattr(execution_session, "id", None)
+        correlation_id = self._text_or_none(getattr(work_item, "correlation_id", None))
+        if not isinstance(execution_session_id, int) or correlation_id is None:
+            raise RuntimeError("SMT sorting claim runtime aggregate missing execution anchor")
         await self._link_claim_session_material_unit(db, session=session, item=item)
-        return session
+        return _SmtSortingClaimRuntime(
+            session=session,
+            execution_session_id=execution_session_id,
+            correlation_id=correlation_id,
+        )
 
     async def _link_claim_session_material_unit(
         self,
@@ -1687,6 +2111,8 @@ class SmtInboundHandoffService:
         item: SmtInboundHandoffSourceItem,
         session: WorklineSession,
         workline_id: int,
+        execution_session_id: int,
+        correlation_id: str,
         trace_id: str | None,
         route_evidence: Any,
     ) -> Any:
@@ -1699,21 +2125,7 @@ class SmtInboundHandoffService:
         resolved_trace_id = self._text_or_none(trace_id) or self._text_or_none(demand.trace_id) or event_id
         causation_id = f"handoff-source-item:{item_id}"
         event_type = _SOURCE_PICK_REQUESTED_EVENT
-        data = {
-            "session_id": session_id,
-            "handoff_demand_id": demand_id,
-            "handoff_source_item_id": item_id,
-            "claim_attempt_no": item.claim_attempt_no,
-            "rack_release_id": demand.rack_release_id,
-            "single_layer_rack_code": demand.single_layer_rack_code,
-            "bin_code": item.bin_code,
-            "bin_cell_index": item.bin_cell_index,
-            "bin_cell_code": item.bin_cell_code,
-            "material_identity_key": item.material_identity_key,
-            "pkg_code": item.pkg_code,
-            "reel_thickness_mm": str(item.reel_thickness_mm) if item.reel_thickness_mm is not None else None,
-            "route_evidence": self._dict_or_empty(route_evidence),
-        }
+        _ = route_evidence
 
         # RuntimeInbox 是 INTERNAL_EVENT 唯一事实源，item.source_pick_inbox_id 指向该记录。
         from src.app.runtime.orchestration.services.runtime_inbox import (
@@ -1723,12 +2135,23 @@ class SmtInboundHandoffService:
         runtime_inbox_result = await runtime_inbox_service.accept_internal_event(
             db,
             event_type=event_type,
-            payload_json={"event_type": event_type, "data": data},
+            payload_json={
+                "logical_route": "SOURCE_PICK_REQUESTED",
+                "input": {
+                    "route": "SOURCE_PICK_REQUESTED",
+                    "handoff_demand_id": demand_id,
+                    "handoff_source_item_id": item_id,
+                    "claim_attempt_no": item.claim_attempt_no,
+                    "source_pick_request_event_id": event_id,
+                },
+            },
             trace_id=resolved_trace_id,
             event_id=event_id,
             causation_id=causation_id,
+            workline_session_id=session_id,
             workline_id=workline_id,
-            execution_session_id=None,
+            execution_session_id=execution_session_id,
+            correlation_id=correlation_id,
             auto_commit=False,
         )
         return runtime_inbox_result.record
@@ -1755,6 +2178,7 @@ class SmtInboundHandoffService:
         command = await self.repository.get_device_command_by_id(db, command_id)
         params = self._dict_or_empty(getattr(command, "params", None))
         return {
+            "command_code": self._text_or_none(getattr(command, "command_code", None)),
             "handoff_demand_id": self._int_or_none(params.get("handoff_demand_id")),
             "handoff_source_item_id": self._int_or_none(params.get("handoff_source_item_id")),
             "claim_attempt_no": self._int_or_none(params.get("claim_attempt_no")),
@@ -1858,8 +2282,8 @@ class SmtInboundHandoffService:
         session.context_json = root_context
 
     @staticmethod
-    def _claim_result(kind: str, **values: Any) -> SimpleNamespace:
-        return SimpleNamespace(kind=kind, **values)
+    def _claim_result(kind: str, **values: Any) -> SmtInboundHandoffClaimResult:
+        return SmtInboundHandoffClaimResult(kind=kind, **values)
 
     @staticmethod
     def _dict_or_empty(value: Any) -> dict[str, Any]:

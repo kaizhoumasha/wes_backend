@@ -48,8 +48,8 @@ def _stable_import_identity(value: object) -> str:
 
 def workline_plugin_handler_identities(
     definition: WorklinePluginDefinition,
-    registrations: Mapping[tuple[str, str, str], tuple[tuple[object, object], ...]],
-) -> tuple[tuple[str, str, str], ...]:
+    registrations: Mapping[tuple[str, str, str], tuple[tuple[object, object, object], ...]],
+) -> tuple[tuple[str, str, str, str], ...]:
     """提取单个 Definition 实际静态 handler/facts 注册身份。"""
 
     return stable_sort(
@@ -57,17 +57,26 @@ def workline_plugin_handler_identities(
             route,
             _stable_import_identity(handler),
             _stable_import_identity(facts_model),
+            _stable_import_identity(facts_builder),
         )
         for route in definition.routes
-        for handler, facts_model in registrations.get(
-            (definition.plugin_key, definition.contract_version, route),
-            (),
-        )
+        for handler, facts_model, facts_builder in _one_route_registration(definition, route, registrations)
     )
 
 
+def _one_route_registration(
+    definition: WorklinePluginDefinition,
+    route: str,
+    registrations: Mapping[tuple[str, str, str], tuple[tuple[object, object, object], ...]],
+) -> tuple[tuple[object, object, object], ...]:
+    candidates = registrations.get((definition.plugin_key, definition.contract_version, route), ())
+    if len(candidates) != 1:
+        raise ValueError(f"route requires exactly one handler registration: {route}")
+    return candidates
+
+
 def workline_plugin_index_digest(
-    entries: Iterable[tuple[WorklinePluginDefinition, tuple[tuple[str, str, str], ...]]],
+    entries: Iterable[tuple[WorklinePluginDefinition, tuple[tuple[str, str, str, str], ...]]],
 ) -> str:
     """按生成器唯一算法计算 Definition 与静态 registrations 的摘要。"""
 
@@ -92,7 +101,7 @@ class WorklinePluginSource:
     definition: WorklinePluginDefinition
     export_name: str = "DEFINITION"
     export_index: int | None = None
-    handler_identities: tuple[tuple[str, str, str], ...] = ()
+    handler_identities: tuple[tuple[str, str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,11 +192,17 @@ class WorklinePluginIndexBuilder:
                     raise ValueError(f"unknown capability reference: {capability[0]}@{capability[1]}")
                 if mode not in (SystemCapabilityMode.QUERY, SystemCapabilityMode.EFFECT):
                     raise ValueError(f"unsupported capability mode: {mode}")
-            for route, handler_identity, facts_model_identity in source.handler_identities:
+            registration_routes = tuple(registration[0] for registration in source.handler_identities)
+            if len(registration_routes) != len(definition.routes) or set(registration_routes) != set(definition.routes):
+                raise ValueError("every declared route requires exactly one handler registration")
+            if len(set(registration_routes)) != len(registration_routes):
+                raise ValueError("duplicate handler registration")
+            for route, handler_identity, facts_model_identity, facts_builder_identity in source.handler_identities:
                 if route not in definition.routes:
                     raise ValueError(f"handler registration route is not declared: {route}")
                 _ = self._require_identity(handler_identity, field_name="handler identity")
                 _ = self._require_identity(facts_model_identity, field_name="facts model identity")
+                _ = self._require_identity(facts_builder_identity, field_name="facts builder identity")
 
         identities = tuple(self._identity_key(item.definition) for item in ordered)
         digest = workline_plugin_index_digest((item.definition, item.handler_identities) for item in ordered)

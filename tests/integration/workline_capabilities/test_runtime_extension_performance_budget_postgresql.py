@@ -8,21 +8,25 @@ import statistics
 import subprocess
 import sys
 import time
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
 from fastapi import Request
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import select
 
 from src.app.callback.services.callback_ingress_service import CallbackIngressService
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
+from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.orchestration.models.session import WorklineSession
+from src.app.runtime.orchestration.models.smt_inbound_handoff import SmtInboundHandoffSourceItem
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
 )
@@ -39,10 +43,15 @@ from src.app.wms_integration.services import (
 )
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
+from src.utils.timezone import timezone
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
     seed_scan_flow,
     with_temporary_runtime_database,
+)
+from tests.support.smt_sorting_inbound_postgresql import (
+    NoopQueueGateway,
+    seed_smt_source_pick_claim,
 )
 
 if TYPE_CHECKING:
@@ -53,6 +62,10 @@ NO_QUERY_INBOX_MEDIAN_MS = 500.0
 WMS_QUERY_INBOX_MEDIAN_MS = 800.0
 OUTBOX_ENQUEUE_MEDIAN_MS = 50.0
 RECORDED_REPLAY_MEDIAN_MS = 20.0
+SMT_SOURCE_PICK_ATTEMPT_MEDIAN_MS = 500.0
+SMT_RECOVERY_BATCH_SIZE = 100
+SMT_RECOVERY_COMMAND_QUERIES_PER_ITEM = 1
+SMT_RECOVERY_CANDIDATE_LIMIT = 2
 MEASURED_SAMPLE_COUNT = 5
 
 
@@ -304,6 +317,106 @@ def _assert_budget(name: str, samples: list[float], budget_ms: float) -> float:
     measured = statistics.median(sample_ms)
     assert measured <= budget_ms, f"{name} median {measured:.3f}ms exceeds {budget_ms:.3f}ms; samples={sample_ms}"
     return measured
+
+
+async def _measure_smt_source_pick_generated_attempt() -> list[float]:
+    samples: list[float] = []
+
+    async def scenario(session_factory: Any, _queue_gateway: Any) -> None:
+        async with session_factory() as db:
+            for index in range(MEASURED_SAMPLE_COUNT + 1):
+                seeded = await seed_smt_source_pick_claim(
+                    db,
+                    suffix=f"attempt-perf-{index}",
+                    route_priority=MEASURED_SAMPLE_COUNT - index,
+                )
+                started = time.perf_counter()
+                result = await RuntimeInboxProcessorBridge(queue_gateway=NoopQueueGateway()).process_claimed(
+                    db,
+                    claim=seeded.claim,
+                )
+                samples.append(time.perf_counter() - started)
+                assert result["success"] == 1, result
+
+    await with_temporary_runtime_database(scenario)
+    return samples[1:]
+
+
+class _CountingCommandRecoveryRepository:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.max_candidates = 0
+
+    async def list_by_runtime_correlation(self, db: Any, **kwargs: Any) -> list[DeviceCommand]:
+        self.calls += 1
+        candidates = await device_command_repository.list_by_runtime_correlation(db, **kwargs)
+        self.max_candidates = max(self.max_candidates, len(candidates))
+        return candidates
+
+
+def test_smt_source_pick_recovery_command_query_budget_for_100_items() -> None:
+    async def scenario(session_factory: Any, _queue_gateway: Any) -> None:
+        source_item_ids: list[int] = []
+        async with session_factory() as db:
+            for index in range(SMT_RECOVERY_BATCH_SIZE):
+                seeded = await seed_smt_source_pick_claim(
+                    db,
+                    suffix=f"recovery-perf-{index:03d}",
+                    route_priority=SMT_RECOVERY_BATCH_SIZE - index,
+                )
+                result = await RuntimeInboxProcessorBridge(queue_gateway=NoopQueueGateway()).process_claimed(
+                    db,
+                    claim=seeded.claim,
+                )
+                assert result["success"] == 1, result
+                source_item_ids.append(seeded.source_item_id)
+
+            await db.execute(
+                update(SmtInboundHandoffSourceItem)
+                .where(SmtInboundHandoffSourceItem.id.in_(source_item_ids))
+                .values(
+                    source_pick_command_id=None,
+                    source_pick_command_code=None,
+                    source_pick_dispatch_key=None,
+                    updated_at=timezone.now_for_db() - timedelta(minutes=10),
+                )
+            )
+            await db.commit()
+            db.expire_all()
+
+            counting_repository = _CountingCommandRecoveryRepository()
+            summary = await SmtInboundHandoffService(
+                command_repository=counting_repository,  # type: ignore[arg-type]
+            ).scan_smt_inbound_handoff_demands_batch(
+                db,
+                scan_limit=0,
+                recovery_limit=SMT_RECOVERY_BATCH_SIZE,
+                claim_limit=0,
+                stale_after_seconds=1,
+            )
+            await db.commit()
+
+            assert summary["scanned"] == SMT_RECOVERY_BATCH_SIZE, summary
+            assert summary["advanced"] == SMT_RECOVERY_BATCH_SIZE, summary
+            assert counting_repository.calls <= (SMT_RECOVERY_BATCH_SIZE * SMT_RECOVERY_COMMAND_QUERIES_PER_ITEM)
+            assert counting_repository.max_candidates <= SMT_RECOVERY_CANDIDATE_LIMIT
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_smt_source_pick_generated_attempt_median_budget() -> None:
+    samples = asyncio.run(_measure_smt_source_pick_generated_attempt())
+    measured = _assert_budget(
+        "SMT source-pick generated attempt",
+        samples,
+        SMT_SOURCE_PICK_ATTEMPT_MEDIAN_MS,
+    )
+    print(
+        "SMT source-pick performance samples(ms):",
+        [round(item * 1_000, 3) for item in samples],
+        "median(ms):",
+        round(measured, 3),
+    )
 
 
 def test_runtime_extension_minimum_slice_performance_budgets(monkeypatch: pytest.MonkeyPatch) -> None:

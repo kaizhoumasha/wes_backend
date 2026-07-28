@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -220,6 +221,62 @@ async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required
     assert [profile["provider_code"] for profile in binding.provider_profile_snapshot_json] == ["WMS"]
     assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-06.material-flow"
     assert binding.provider_profile_snapshot_json[0]["environment"] == "sandbox"
+
+
+@pytest.mark.asyncio
+async def test_runtime_only_smt_activation_still_snapshots_declared_profile_identity() -> None:
+    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
+    repo = FakeRepository()
+    profile_identity = "wms.2026-07-06.material-flow.sandbox"
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key=DEFINITION.plugin_key,
+        contract_version=DEFINITION.contract_version,
+        config={"provider_profile": profile_identity},
+        version=4,
+    )
+
+    binding = await _real_rough_sorter_service(repo).activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator",
+        reason="generated-only-smt",
+        environment="sandbox",
+        devices=[],
+    )
+
+    assert [snapshot["provider_code"] for snapshot in binding.provider_profile_snapshot_json] == ["WMS"]
+    assert binding.typed_config_json["provider_profile"] == profile_identity
+
+
+@pytest.mark.asyncio
+async def test_runtime_only_smt_profile_snapshot_does_not_apply_external_admission_environment_gate() -> None:
+    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
+    repo = FakeRepository()
+    profile_identity = "wms.2026-07-06.material-flow.staging"
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key=DEFINITION.plugin_key,
+        contract_version=DEFINITION.contract_version,
+        config={"provider_profile": profile_identity},
+        version=4,
+    )
+
+    binding = await _real_rough_sorter_service(repo).activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator",
+        reason="runtime-only-profile-snapshot",
+        environment="sandbox",
+        devices=[],
+    )
+
+    assert binding.provider_profile_snapshot_json[0]["environment"] == "staging"
+    assert binding.typed_config_json["provider_profile"] == profile_identity
 
 
 @pytest.mark.asyncio
@@ -572,6 +629,133 @@ def test_runtime_models_pin_same_binding_identity_and_json_state() -> None:
     assert "plugin_state_json" in ExecutionSession.model_fields
 
 
+def _complete_runtime_binding_payload(model_name: str) -> dict[str, object]:
+    common = {
+        "plugin_key": "rough_sorter",
+        "plugin_binding_id": 8,
+        "plugin_binding_version": 2,
+        "plugin_config_hash": "a" * 64,
+        "plugin_index_digest": "b" * 64,
+    }
+    if model_name == "WorklineSession":
+        return {
+            **common,
+            "session_code": "SESSION-BINDING-REQUIRED",
+            "workline_id": 7,
+            "contract_version": "rough_sorter.v2",
+        }
+    if model_name == "ExecutionSession":
+        return {
+            **common,
+            "workline_id": 7,
+            "manifest_version": "rough_sorter.v2",
+        }
+    return {
+        **common,
+        "execution_session_id": 31,
+        "correlation_id": "workline-session:SESSION-BINDING-REQUIRED",
+        "manifest_version": "rough_sorter.v2",
+        "object_type": "session",
+        "object_key": "PKG-1",
+        "current_step": "INGRESS",
+    }
+
+
+@pytest.mark.parametrize(
+    ("model_name", "version_field"),
+    [
+        ("WorklineSession", "contract_version"),
+        ("ExecutionSession", "manifest_version"),
+        ("ExecutionWorkItem", "manifest_version"),
+    ],
+)
+def test_runtime_binding_fields_are_required_non_nullable_database_columns(
+    model_name: str,
+    version_field: str,
+) -> None:
+    from src.app.runtime.orchestration.execution_session import ExecutionSession
+    from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+    from src.app.runtime.orchestration.models.session import WorklineSession
+
+    model = {
+        "WorklineSession": WorklineSession,
+        "ExecutionSession": ExecutionSession,
+        "ExecutionWorkItem": ExecutionWorkItem,
+    }[model_name]
+    required_fields = (
+        "plugin_key",
+        version_field,
+        "plugin_binding_id",
+        "plugin_binding_version",
+        "plugin_config_hash",
+        "plugin_index_digest",
+    )
+
+    assert set(required_fields) <= set(model.model_fields)
+    for field_name in required_fields:
+        assert model.model_fields[field_name].is_required(), f"{model_name}.{field_name} 必须是必填字段"
+        assert model.__table__.c[field_name].nullable is False, f"{model_name}.{field_name} 必须是 NOT NULL"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "missing_field"),
+    [
+        (model_name, field_name)
+        for model_name, version_field in (
+            ("WorklineSession", "contract_version"),
+            ("ExecutionSession", "manifest_version"),
+            ("ExecutionWorkItem", "manifest_version"),
+        )
+        for field_name in (
+            "plugin_key",
+            version_field,
+            "plugin_binding_id",
+            "plugin_binding_version",
+            "plugin_config_hash",
+            "plugin_index_digest",
+        )
+    ],
+)
+def test_runtime_models_reject_every_missing_binding_pin(model_name: str, missing_field: str) -> None:
+    from pydantic import ValidationError
+
+    from src.app.runtime.orchestration.execution_session import ExecutionSession
+    from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+    from src.app.runtime.orchestration.models.session import WorklineSession
+
+    model = {
+        "WorklineSession": WorklineSession,
+        "ExecutionSession": ExecutionSession,
+        "ExecutionWorkItem": ExecutionWorkItem,
+    }[model_name]
+    payload = _complete_runtime_binding_payload(model_name)
+    payload.pop(missing_field)
+
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+@pytest.mark.parametrize("model_name", ["WorklineSession", "ExecutionSession", "ExecutionWorkItem"])
+def test_runtime_models_accept_complete_binding_snapshot(model_name: str) -> None:
+    from src.app.runtime.orchestration.execution_session import ExecutionSession
+    from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+    from src.app.runtime.orchestration.models.session import WorklineSession
+
+    model = {
+        "WorklineSession": WorklineSession,
+        "ExecutionSession": ExecutionSession,
+        "ExecutionWorkItem": ExecutionWorkItem,
+    }[model_name]
+
+    record = model.model_validate(_complete_runtime_binding_payload(model_name))
+
+    assert record.plugin_key == "rough_sorter"
+    assert record.plugin_binding_id == 8
+    assert record.plugin_binding_version == 2
+    assert record.plugin_config_hash == "a" * 64
+    assert record.plugin_index_digest == "b" * 64
+
+
 @pytest.mark.parametrize(("plugin_key", "contract_version"), [(None, "v1"), ("rough_sorter", None)])
 def test_binding_activation_rejects_incomplete_plugin_identity(plugin_key: object, contract_version: object) -> None:
     workline = SimpleNamespace(id=7, plugin_key=plugin_key, contract_version=contract_version, config={})
@@ -588,3 +772,11 @@ def test_binding_activation_rejects_incomplete_plugin_identity(plugin_key: objec
 async def test_missing_pinned_binding_is_rejected() -> None:
     with pytest.raises(PluginBindingAdmissionError, match="pinned binding 不存在: 9"):
         await service(FakeRepository()).get_pinned(object(), binding_id=9)
+
+
+@pytest.mark.asyncio
+async def test_missing_pinned_binding_carries_typed_required_error_code() -> None:
+    with pytest.raises(PluginBindingAdmissionError) as caught:
+        await service(FakeRepository()).get_pinned(object(), binding_id=9)
+
+    assert caught.value.error_code is ErrorCode.PLUGIN_BINDING_REQUIRED

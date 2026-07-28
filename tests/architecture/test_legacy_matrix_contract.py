@@ -29,8 +29,20 @@ EXPECTED_ACTIVE_FOUNDATION_PATHS = frozenset(
 
 EXPECTED_ACTIVE_PLATFORM_PREFIXES = (
     "tests/workline_plugins/rough_sorter/",
+    "tests/workline_plugins/smt_sorting_inbound/",
     "tests/workline_runtime/extensions/",
     "tests/workline_runtime/system_capabilities/",
+)
+
+EXPECTED_ACTIVE_PLATFORM_PATHS = frozenset(
+    {
+        "src/app/workline/models/plugin_binding.py",
+        "src/app/workline/repositories/plugin_binding_repository.py",
+        "src/app/workline/services/plugin_binding_service.py",
+        "tests/workline_plugins/test_conformance_contract.py",
+        "tests/workline_plugins/test_generated_facts_contract.py",
+        "tests/workline_runtime/test_workline_session_repository_versioning.py",
+    }
 )
 
 
@@ -47,6 +59,21 @@ def test_removed_inbox_processor_has_no_inventory_mapping_or_entries():
     assert not any(entry.relative_path == legacy_path for entry in parse_entries())
 
 
+def test_unregistered_target_only_smt_symbols_are_not_reverse_mapped_as_legacy() -> None:
+    entries = {entry.entry_id for entry in parse_entries()}
+
+    assert set(generate_legacy_matrix.MIGRATED_SERVICE_SYMBOL_PROVENANCE) == set(
+        generate_legacy_matrix.MIGRATED_SERVICE_IMPLS
+    )
+    legacy_prefix = "legacy:src/app/workline/services/smt_inbound_handoff_service.py:"
+    assert generate_legacy_matrix.MIGRATED_SERVICE_SYMBOL_PROVENANCE[
+        "src/app/workline/services/smt_inbound_handoff_service.py"
+    ] == ("SmtInboundHandoffService",)
+    assert legacy_prefix + "_SmtSortingClaimRuntime" not in entries
+    assert legacy_prefix + "SmtInboundHandoffClaimResult" not in entries
+    assert legacy_prefix + "SmtInboundHandoffLedgerResult" not in entries
+
+
 def test_active_inventory_foundation_is_not_legacy_cleanup_scope():
     """当前迁移清单基础能力不得被误登记为待迁移或待删除入口。"""
     assert generate_legacy_matrix.ACTIVE_FOUNDATION_PATHS == EXPECTED_ACTIVE_FOUNDATION_PATHS
@@ -57,6 +84,7 @@ def test_active_inventory_foundation_is_not_legacy_cleanup_scope():
 
 def test_active_extension_platform_is_not_legacy_cleanup_scope():
     assert generate_legacy_matrix.ACTIVE_PLATFORM_PREFIXES == EXPECTED_ACTIVE_PLATFORM_PREFIXES
+    assert generate_legacy_matrix.ACTIVE_PLATFORM_PATHS == EXPECTED_ACTIVE_PLATFORM_PATHS
 
     entries = parse_entries()
     assert not any(entry.relative_path.startswith(EXPECTED_ACTIVE_PLATFORM_PREFIXES) for entry in entries)
@@ -100,6 +128,21 @@ def test_generated_csv_contains_required_migration_columns():
     assert "target_path" in (fieldnames or [])
     assert "target_capability" in (fieldnames or [])
     assert "blocking_tests" in (fieldnames or [])
+
+
+def test_matrix_narrative_counts_are_derived_from_committed_csv() -> None:
+    matrix_path = REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.csv"
+    narrative = (REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.md").read_text(encoding="utf-8")
+    with matrix_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    api_route_count = sum(row["entry_type"] == "api_route" for row in rows)
+    execution_semantics_count = sum("执行状态" in row["business_semantics"] for row in rows)
+
+    assert f"API routes（{api_route_count} 个" in narrative
+    assert f"执行状态迁移（{execution_semantics_count} 条执行状态语义" in narrative
+    assert "历史正向 provenance" in narrative
+    assert "从实现文件扫描符号" not in narrative
 
 
 def test_generated_csv_uses_lf_line_endings():
@@ -146,12 +189,13 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
 
 
 @pytest.mark.parametrize(
-    ("business_semantics", "path", "symbol", "expected_capability"),
+    ("business_semantics", "path", "symbol", "expected_path", "expected_capability"),
     [
         pytest.param(
             "[phase" + "4] NG 退货/处理业务流程",
             "src/app/workline/services/ng_return_item_service.py",
             "NgReturnItemService",
+            "src/app/runtime/capabilities/material_flow/",
             "NgReturnCapability.process",
             id="ng-return",
         ),
@@ -159,6 +203,7 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             "[phase" + "4] 单层机架编排业务流程",
             "tests/workline_runtime/test_single_layer_rack_orchestration_service.py",
             "test_station_claim_active_status_accepts_system_outbox_status_enum",
+            "src/app/runtime/capabilities/material_flow/",
             "SingleLayerRackCapability.orchestrate",
             id="single-layer-rack",
         ),
@@ -166,6 +211,7 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             "[phase" + "4] Bin Cell 预约业务流程",
             "tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py",
             "test_reconciling_reservation_cannot_be_released_by_normal_failure_path",
+            "src/app/runtime/capabilities/material_flow/",
             "BinCellReservationCapability.reserve",
             id="bin-cell-reconciling",
         ),
@@ -175,6 +221,7 @@ def test_material_flow_target_marker_classification(
     business_semantics: str,
     path: str,
     symbol: str,
+    expected_path: str,
     expected_capability: str,
 ) -> None:
     target_path, target_capability = generate_legacy_matrix.resolve_migration_target(
@@ -185,7 +232,7 @@ def test_material_flow_target_marker_classification(
         "rebuild",
     )
 
-    assert target_path == "src/app/runtime/capabilities/material_flow/"
+    assert target_path == expected_path
     assert target_capability == expected_capability
 
 

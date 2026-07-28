@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from tests.support.runtime_binding import binding_pin_fields
 
 NOW_MS = 1_700_000_000_000
 
@@ -82,7 +83,13 @@ async def test_accept_device_event_with_all_optional_args(db_session) -> None:
 
     service = RuntimeInboxService()
 
-    session = ExecutionSession(workline_id=11, manifest_version="manifest-v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=11,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
 
@@ -324,7 +331,13 @@ async def test_accept_internal_event_with_all_optional_args(db_session) -> None:
 
     service = RuntimeInboxService()
 
-    session = ExecutionSession(workline_id=21, manifest_version="manifest-v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=21,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
 
@@ -660,7 +673,13 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
     """内部 producer 必须按身份优先级写稳定桶和毫秒时间。"""
 
     service = RuntimeInboxService()
-    session = ExecutionSession(workline_id=31, manifest_version="manifest-v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=31,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
     correlation = ExecutionCorrelation(
@@ -821,6 +840,12 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
     assert record.payload_hash
     assert record.payload_schema_version == 1
     assert record.payload_json == {
+        "logical_route": "BUSINESS_TIMEOUT",
+        "input": {
+            "route": "BUSINESS_TIMEOUT",
+            "command_code": "CMD-TIMEOUT-001",
+            "wait_type": "DEVICE_RESULT",
+        },
         "event_type": "TIMER_TIMEOUT",
         "data": {
             "session_id": legacy_session_id,
@@ -842,7 +867,13 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
 async def test_accept_timer_timeout_keeps_legacy_and_execution_session_identities_separate(db_session) -> None:
     """仅有真实 runtime 映射时写 execution FK，业务 identity 仍使用 legacy session。"""
 
-    execution_session = ExecutionSession(workline_id=41, manifest_version="manifest-v1", state="RUNNING")
+    execution_session = ExecutionSession(
+        workline_id=41,
+        plugin_key="test-plugin",
+        manifest_version="manifest-v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(execution_session)
     await db_session.flush()
     legacy_session_id = 1941
@@ -902,10 +933,22 @@ async def test_smt_source_pick_producer_emits_canonical_workline_session_identit
         ),
         session=SimpleNamespace(id=33),
         workline_id=44,
+        execution_session_id=71,
+        correlation_id="workline-session:smt-source-pick-33",
         trace_id=None,
         route_evidence={},
     )
 
     assert record.id == 501
-    assert captured["payload_json"]["data"]["session_id"] == 33
-    assert captured["execution_session_id"] is None
+    assert captured["payload_json"] == {
+        "logical_route": "SOURCE_PICK_REQUESTED",
+        "input": {
+            "route": "SOURCE_PICK_REQUESTED",
+            "handoff_demand_id": 11,
+            "handoff_source_item_id": 22,
+            "claim_attempt_no": 3,
+            "source_pick_request_event_id": "smt-inbound-handoff-source-item:22:claim:3",
+        },
+    }
+    assert captured["execution_session_id"] == 71
+    assert captured["correlation_id"] == "workline-session:smt-source-pick-33"

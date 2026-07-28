@@ -13,11 +13,11 @@ v0.7.0.0 已完成 SMT 分拣入库后端 handoff/manifest P0 闭环，范围是
 
 已落地合同：
 
-- `SMT_SORTING_INBOUND` manifest 只声明 WES 管理的 source 单层货架位和 target 五层货架位；NG 区、工作站、扫码平台、料箱码和料格码不再作为 manifest `RackPosition` 或 `ResourceBoundary`。
+- `smt_sorting_inbound@smt_sorting_inbound.v1` manifest 只声明 WES 管理的 source 单层货架位和 target 五层货架位；NG 区、工作站、扫码平台、料箱码和料格码不再作为 manifest `RackPosition` 或 `ResourceBoundary`。
 - Handoff route 从 manifest `SORTING_INBOUND_SOURCE` / `SORTING_INBOUND_TARGET` boundary 解析 source/target rack position，并默认使用真实 ECS realtime probe 作为 source-pick admission。
 - 粗分机 release fact 创建或更新 handoff demand 后，会先 `evaluate`，再按 demand scope 尝试 claim 一条 READY source item。
 - Claim 使用两阶段短锁：外部 route/ECS probe 不持有 source item 或 target WorkLine 行锁，最终短事务内重锁 source item、demand 和 target WorkLine 后再创建 sorting session 与内部 Inbox。
-- Claim 创建的 `SMT_SORTING_INBOUND` session 通过 `SortingInboundContext` 写入 `sorting.context_schema_version=1`、`source_pick_request`、source/target rack position evidence 和 `stations.scan_platform=EMPTY`。
+- Claim 创建的 `smt_sorting_inbound@smt_sorting_inbound.v1` session 通过 `SortingInboundContext` 写入 `sorting.context_schema_version=1`、`source_pick_request`、source/target rack position evidence 和 `stations.scan_platform=EMPTY`。
 - `SORTING_SOURCE_PICK SUCCESS` 通过 handoff service 统一写 `PICKED` ledger；`SORTING_TARGET_PLACE SUCCESS` / `SORTING_NG_PLACE SUCCESS` 统一写 `SORTED` / `SKIPPED` terminal ledger，并在首次 terminal success 后按 demand scope claim 下一条 READY item。
 - Celery 兜底扫描覆盖 due demand 重算、post-claim recovery 和 READY claim fallback，summary 增加 `claimed`，并将 `scan_limit` / `recovery_limit` / `claim_limit` 拆分。
 
@@ -495,7 +495,9 @@ CTU 投料任务必须同时维护授权候选集合与实际扫码集合：
 
 ## 11. 事件与命令边界
 
-所有会推动状态机的输入都必须进入 `WorklineInbox`。所有对设备或外部系统的副作用都必须通过 `SystemOutbox` 派发。
+所有会推动状态机的输入都必须先由公共接入层持久化到 `RuntimeInbox`，再经 claim/processor 进入
+generated dispatcher，由 Definition 与 `ROUTE_HANDLERS` 生成 typed intent/effect。所有对设备或外部系统的
+副作用都必须通过 `SystemOutbox` 派发。
 
 | 类型 | 来源 | 入口 | 说明 |
 |------|------|------|------|
@@ -511,7 +513,8 @@ CTU 投料任务必须同时维护授权候选集合与实际扫码集合：
 
 设备 ACK 只表示命令已被接收，不表示物理动作完成。推动流程继续的依据必须是命令结果、流水线事件或 WMS/RCS 外部回调。
 
-三类扫码事件必须使用不同事件类型，不依赖点位推断扫码主体。若现场协议只能上报通用扫码事件，接入层必须在进入 WorklineInbox 前映射为上述标准事件类型。
+三类扫码事件必须使用不同事件类型，不依赖点位推断扫码主体。若现场协议只能上报通用扫码事件，接入层必须在
+写入 `RuntimeInbox` 前映射为上述标准事件类型。
 
 WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回架、请求 CTU 投料/退箱等副作用，均必须通过 `SystemOutbox` 派发并保留幂等键。库存增量接收凭证必须能与目标货架回库请求关联。
 

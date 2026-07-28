@@ -1,16 +1,15 @@
 import uuid
+from dataclasses import dataclass, field
 from enum import Enum
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
-from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.services.device_command_gateway import (
     _DeviceCommandGovernanceError,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
     _enforce_device_command_governance,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
 )
 from src.app.runtime.workline_plugins.registry import get_workline_contract_version
-from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS, EXTERNAL_HTTP_DECISION_TYPE
+from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
@@ -179,6 +178,24 @@ async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) ->
     return await add_timeline_with_sequence(db, timeline, seq_no=seq_no)
 
 
+@dataclass(frozen=True, slots=True)
+class EffectFailure:
+    """Generated effect 失败证据。"""
+
+    domain: str
+    code: str
+    message: str
+
+
+@dataclass(slots=True)
+class EffectApplyState:
+    """Generated effect applier 在单次事务内允许修改的最小状态。"""
+
+    context_patch: dict[str, Any] = field(default_factory=dict)
+    failure: EffectFailure | None = None
+    skip_next_material_unit_intent: bool = False
+
+
 class EffectApplyContext(TypedDict):
     """Effect 执行上下文。"""
 
@@ -188,7 +205,7 @@ class EffectApplyContext(TypedDict):
     inbox: Any
     devices_by_role: dict[str, list[Any]]
     source_device: Any | None
-    orch_result: OrchestratorResult
+    effect_state: EffectApplyState
     current_status: str | None
     trace_id: str | None
     trace: TraceContext
@@ -219,48 +236,12 @@ async def _emit_timeline(ctx: EffectApplyContext, **kwargs: Any) -> None:
         ctx["next_timeline_seq_no"] = assigned_seq_no + 1
 
 
-def _build_effect_apply_context(
-    *,
-    db: Any,
-    session: Any,
-    workline: Any,
-    inbox: Any,
-    devices_by_role: dict[str, list[Any]],
-    source_device: Any | None,
-    orch_result: OrchestratorResult,
-) -> EffectApplyContext:
-    trace = TraceContext.from_runtime(
-        session=session,
-        workline=workline,
-        inbox=inbox,
-        trace_id=getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None),
-    )
-    return {
-        "db": db,
-        "session": session,
-        "workline": workline,
-        "inbox": inbox,
-        "devices_by_role": devices_by_role,
-        "source_device": source_device,
-        "orch_result": orch_result,
-        "current_status": getattr(session, "status", None),
-        "trace_id": trace.trace_id,
-        "trace": trace,
-        "session_ctx": _session_context(session),
-        "now": timezone.now_for_db(),
-        "awaiting_device_command_pk": None,
-        "awaiting_command_code": None,
-        "next_timeline_seq_no": None,
-    }
-
-
 def _apply_context_patch(ctx: EffectApplyContext) -> None:
     """先应用 context patch，再执行后续 effect。"""
-    orch_result = ctx["orch_result"]
     session = ctx["session"]
     workline = ctx["workline"]
     session_ctx = ctx["session_ctx"]
-    context_patch = getattr(orch_result, "context_patch", None)
+    context_patch = ctx["effect_state"].context_patch
     if context_patch:
         session_ctx.update(context_patch)
         _set_session_context(session, session_ctx)
@@ -292,28 +273,6 @@ def _effect_trace_payload(ctx: EffectApplyContext) -> dict[str, Any]:
     payload = payload_dict(getattr(ctx["inbox"], "payload_json", None))
     trace = ctx["trace"].with_inbox(ctx["inbox"]) if ctx.get("inbox") is not None else ctx["trace"]
     return trace.project_timeline_payload(canonical_event_type=canonical_event_type(payload))
-
-
-def _decision_timeline_payload(ctx: EffectApplyContext) -> dict[str, Any]:
-    """构造“插件做出决策”这一类 timeline payload。"""
-    orch_result = ctx["orch_result"]
-    return {
-        **_effect_trace_payload(ctx),
-        "transition": orch_result.transition,
-        "context_patch": orch_result.context_patch or {},
-    }
-
-
-def _business_decision_timeline_payload(ctx: EffectApplyContext, *, decision: Any) -> dict[str, Any]:
-    """构造业务判定 timeline payload。"""
-    return {
-        **_effect_trace_payload(ctx),
-        "classification": decision.classification,
-        "reason_code": decision.reason_code,
-        "message": decision.message,
-        "evidence": decision.evidence,
-        "business_key": decision.business_key,
-    }
 
 
 def _external_decision_timeline_payload(
@@ -370,108 +329,16 @@ def _failure_timeline_payload(ctx: EffectApplyContext, *, message: str) -> dict[
     }
 
 
-async def _apply_transition_timeline(ctx: EffectApplyContext) -> None:
-    """记录插件做出的 transition 决策。"""
-    from src.app.runtime.orchestration.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
-
-    orch_result = ctx["orch_result"]
-    if not getattr(orch_result, "transition", None):
-        return
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.DECISION,
-        action_type=TimelineActionType.DECISION_MADE,
-        payload=_decision_timeline_payload(ctx),
-        actor_type=TimelineActorType.PLUGIN,
-        actor_code=getattr(ctx["workline"], "plugin_key", None),
-        related_inbox_id=_timeline_inbox_id(ctx),
-    )
-
-
-async def _apply_business_decisions(ctx: EffectApplyContext) -> None:
-    """记录插件业务判定，不改变失败归因。"""
-    from src.app.runtime.orchestration.models.timeline import (
-        TimelineActionType,
-        TimelineActorType,
-        TimelineStage,
-        TimelineStatus,
-    )
-
-    for decision in getattr(ctx["orch_result"], "business_decisions", None) or []:
-        await _emit_timeline(
-            ctx,
-            stage=TimelineStage.DECISION,
-            action_type=TimelineActionType.DECISION_MADE,
-            payload=_business_decision_timeline_payload(ctx, decision=decision),
-            actor_type=TimelineActorType.PLUGIN,
-            actor_code=getattr(ctx["workline"], "plugin_key", None),
-            message=decision.message,
-            related_inbox_id=_timeline_inbox_id(ctx),
-            status=TimelineStatus.SUCCESS,
-        )
-
-
-async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
-    """应用 EXTERNAL_HTTP decisions。"""
-    from src.app.runtime.orchestration.models.timeline import (
-        TimelineActionType,
-        TimelineActorType,
-        TimelineStage,
-        TimelineStatus,
-    )
-
-    db = ctx["db"]
-    for decision in getattr(ctx["orch_result"], "decisions", None) or []:
-        if not isinstance(decision, dict):
-            continue
-        decision_type = string_value(decision.get("decision_type"))
-        if decision_type != EXTERNAL_HTTP_DECISION_TYPE:
-            continue
-        dispatch_key = string_value(decision.get("dispatch_key"))
-        target_code = string_value(decision.get("target_code"))
-        payload_json = payload_dict(decision.get("payload"))
-        source_system = string_value(decision.get("source_system"), "EXTERNAL_SYSTEM")
-        if not dispatch_key:
-            raise ValueError("EXTERNAL_HTTP decision missing dispatch_key")
-        if not target_code:
-            raise ValueError("EXTERNAL_HTTP decision missing target_code")
-        if not payload_json:
-            raise ValueError("EXTERNAL_HTTP decision missing payload")
-        db.add(
-            _build_external_http_outbox_model(
-                ctx,
-                dispatch_key=dispatch_key,
-                target_code=target_code,
-                payload_json=payload_json,
-            )
-        )
-        await _emit_timeline(
-            ctx,
-            stage=TimelineStage.DISPATCH_PREPARE,
-            action_type=TimelineActionType.EXTERNAL_CALL_STARTED,
-            payload=_external_decision_timeline_payload(
-                ctx,
-                dispatch_key=dispatch_key,
-                target_code=target_code,
-                payload_json=payload_json,
-            ),
-            actor_type=TimelineActorType.EXTERNAL_SYSTEM,
-            actor_code=source_system,
-            related_inbox_id=_timeline_inbox_id(ctx),
-            status=TimelineStatus.PENDING,
-        )
-
-
 def _build_command_create_payload(
     ctx: EffectApplyContext,
     *,
-    command_intent: Any,
+    action: str,
     vendor_payload: dict[str, Any],
     target_device_id: int,
     resolved_command_code: str,
 ) -> dict[str, Any]:
     """将 plugin command intent 转成 DeviceCommand 创建载荷。"""
-    vendor_task_type = string_value(vendor_payload.get("task_type"), command_intent.action)
+    vendor_task_type = string_value(vendor_payload.get("task_type"), action)
     priority_value = vendor_payload.get("priority")
     timeout_value = vendor_payload.get("timeout")
     business_params = payload_dict(vendor_payload.get("params"))
@@ -556,7 +423,7 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
         TimelineStatus,
     )
 
-    failure = getattr(ctx["orch_result"], "failure", None)
+    failure = ctx["effect_state"].failure
     if failure is None:
         return False
     session = ctx["session"]
@@ -598,25 +465,6 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
     return True
 
 
-async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.runtime.orchestration.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
-
-    if ctx["orch_result"].transition != "manual_cancel":
-        return False
-    session = ctx["session"]
-    workline_session_lifecycle_service.cancel(session, occurred_at=ctx["now"])
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.MANUAL,
-        action_type=TimelineActionType.SESSION_CANCELLED,
-        from_status=ctx["current_status"],
-        to_status="CANCELLED",
-        actor_type=TimelineActorType.ORCHESTRATOR,
-        related_inbox_id=_timeline_inbox_id(ctx),
-    )
-    return True
-
-
 async def _emit_completion_timeline(ctx: EffectApplyContext) -> None:
     from src.app.runtime.orchestration.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
 
@@ -647,8 +495,6 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
     from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import runtime_hold_creation_service
     from src.utils.value_normalization import resolve_required_pk
 
-    if not getattr(ctx["orch_result"], "complete", False):
-        return False
     session = ctx["session"]
     session_already_completed = string_value(getattr(session, "status", None)) == SessionStatus.COMPLETED.value
     try:
@@ -657,7 +503,7 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
             session=session,
             workline=ctx["workline"],
             inbox=ctx["inbox"],
-            transition=getattr(ctx["orch_result"], "transition", None),
+            transition=None,
             occurred_at=ctx["now"],
         )
     except NgMaterialConflictError as exc:
@@ -721,48 +567,6 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
     return True
 
 
-async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.runtime.orchestration.models.timeline import (
-        TimelineActionType,
-        TimelineActorType,
-        TimelineStage,
-        TimelineStatus,
-    )
-
-    wait = getattr(ctx["orch_result"], "wait", None)
-    if wait is None:
-        return False
-    session = ctx["session"]
-    resolved_wait_token = wait.wait_token
-    if wait.wait_type == "COMMAND_RESULT":
-        resolved_wait_token = ctx["awaiting_command_code"] or wait.wait_token
-    workline_session_lifecycle_service.start_wait(
-        session,
-        wait_type=wait.wait_type,
-        occurred_at=ctx["now"],
-        awaiting_device_command_code=ctx["awaiting_command_code"],
-        deadline_seconds=wait.deadline_seconds,
-    )
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.WAITING,
-        action_type=TimelineActionType.WAIT_STARTED,
-        payload=_wait_timeline_payload(
-            ctx,
-            wait_type=wait.wait_type,
-            wait_token=resolved_wait_token,
-            deadline_seconds=wait.deadline_seconds,
-        ),
-        from_status=ctx["current_status"],
-        to_status=session.status,
-        actor_type=TimelineActorType.ORCHESTRATOR,
-        related_inbox_id=_timeline_inbox_id(ctx),
-        related_command_id=ctx["awaiting_device_command_pk"],
-        status=TimelineStatus.PENDING,
-    )
-    return True
-
-
 def _ng_material_conflict_source_event_id(
     *,
     exc: Any,
@@ -781,62 +585,3 @@ def _ng_material_conflict_source_event_id(
     )
     identity_hash = sha256(string_value(exc.material_identity_key).encode("utf-8")).hexdigest()[:16]
     return f"ng-material-conflict:{getattr(session, 'id', 'unknown')}:{command_or_inbox_id}:{identity_hash}"
-
-
-def _apply_non_terminal_transition(ctx: EffectApplyContext) -> bool:
-    """应用非终态 transition。"""
-    session = ctx["session"]
-    transition = getattr(ctx["orch_result"], "transition", None)
-    if transition == "manual_hold":
-        workline_session_lifecycle_service.manual_hold(session, occurred_at=ctx["now"])
-        return True
-    if transition == "manual_resume":
-        workline_session_lifecycle_service.resume(session)
-        return True
-    return False
-
-
-def _apply_running_fallback(ctx: EffectApplyContext) -> None:
-    """在存在有效 effect 但没有进入终态/等待态时，保持 session 为 RUNNING。"""
-    orch_result = ctx["orch_result"]
-    session = ctx["session"]
-    if (
-        getattr(orch_result, "transition", None)
-        or getattr(orch_result, "context_patch", None)
-        or getattr(orch_result, "business_decisions", None)
-        or getattr(orch_result, "commands", None)
-        or getattr(orch_result, "decisions", None)
-    ):
-        workline_session_lifecycle_service.running(session)
-    _clear_session_wait(session)
-    session.ended_at = None
-
-
-class OrchestratorWriteBackService:
-    async def write_back(
-        self,
-        db: Any,
-        *,
-        session: Any,
-        workline: Any,
-        inbox: Any,
-        devices_by_role: dict[str, list[Any]],
-        source_device: Any | None,
-        orch_result: OrchestratorResult,
-    ) -> RuntimeIntentEffectResult:
-        """应用 OrchestratorResult 到 Session / Command / Outbox / Timeline。"""
-        ctx = _build_effect_apply_context(
-            db=db,
-            session=session,
-            workline=workline,
-            inbox=inbox,
-            devices_by_role=devices_by_role,
-            source_device=source_device,
-            orch_result=orch_result,
-        )
-        from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
-
-        return await RuntimeIntentEffectApplier().apply(ctx, orch_result.intents or [])
-
-
-orchestrator_write_back_service = OrchestratorWriteBackService()

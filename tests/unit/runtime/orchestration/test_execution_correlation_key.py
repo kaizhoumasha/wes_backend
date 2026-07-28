@@ -22,6 +22,7 @@ from src.app.runtime.orchestration.execution_correlation import (
 from src.app.runtime.orchestration.execution_session import (
     ExecutionSession,
 )
+from tests.support.runtime_binding import binding_pin_fields
 
 # ---- ExecutionSession (聚合根) ----
 
@@ -40,7 +41,9 @@ def test_execution_session_required_fields():
     """必填字段: workline_id + manifest_version + state。"""
     session = ExecutionSession(
         workline_id=1,
+        plugin_key="test-plugin",
         manifest_version="v1.0.0",
+        **binding_pin_fields(),
         state="CREATED",
     )
     assert session.workline_id == 1
@@ -65,7 +68,9 @@ def test_execution_session_orm_constructor_ignores_unknown_fields():
     """table=True ORM 构造器不负责 extra forbid; 契约验证走 model_validate。"""
     session = ExecutionSession(
         workline_id=1,
+        plugin_key="test-plugin",
         manifest_version="v1.0.0",
+        **binding_pin_fields(),
         state="CREATED",
         unknown_field="x",  # type: ignore[call-arg]
     )
@@ -77,7 +82,9 @@ def test_execution_session_model_validate_accepts_declared_fields():
     session = ExecutionSession.model_validate(
         {
             "workline_id": 1,
+            "plugin_key": "test-plugin",
             "manifest_version": "v1.0.0",
+            **binding_pin_fields(),
             "state": "CREATED",
         }
     )

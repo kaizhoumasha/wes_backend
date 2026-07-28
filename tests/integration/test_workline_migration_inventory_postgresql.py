@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import func, select, text, update
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from scripts import workline_migration_inventory as inventory_cli
@@ -87,6 +87,12 @@ class SeededInventory:
     foundation_workline_id: int
     linked_workline_id: int
     device_id: int
+    plugin_key: str
+    contract_version: str
+    plugin_binding_id: int
+    plugin_binding_version: int
+    plugin_config_hash: str
+    plugin_index_digest: str
 
 
 def _integration_environment() -> dict[str, str]:
@@ -204,7 +210,7 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     )
     db.add_all([foundation, linked])
     await db.flush()
-    binding = WorklinePluginBinding(
+    foundation_binding = WorklinePluginBinding(
         workline_id=foundation.id,
         plugin_key=definition.plugin_key,
         contract_version=definition.contract_version,
@@ -219,21 +225,41 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
         activated_by="integration-test",
         activated_reason="inventory-contract",
     )
-    db.add(binding)
+    linked_binding = WorklinePluginBinding(
+        workline_id=linked.id,
+        plugin_key=definition.plugin_key,
+        contract_version=definition.contract_version,
+        binding_version=1,
+        typed_config_json={},
+        typed_config_hash="b" * 64,
+        provider_profile_snapshot_json=[],
+        device_snapshot_json=[],
+        generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+        environment="production",
+        activated_at=datetime(2026, 7, 17, 8),
+        activated_by="integration-test",
+        activated_reason="inventory-contract",
+    )
+    db.add_all([foundation_binding, linked_binding])
     await db.flush()
-    foundation.active_plugin_binding_id = binding.id
-    foundation.active_plugin_binding_version = binding.binding_version
-    foundation.active_plugin_config_hash = binding.typed_config_hash
-    foundation.active_plugin_index_digest = binding.generated_index_digest
+    foundation.active_plugin_binding_id = foundation_binding.id
+    foundation.active_plugin_binding_version = foundation_binding.binding_version
+    foundation.active_plugin_config_hash = foundation_binding.typed_config_hash
+    foundation.active_plugin_index_digest = foundation_binding.generated_index_digest
     foundation.active_plugin_provider_requirements_json = ["WMS@v1"]
+    linked.active_plugin_binding_id = linked_binding.id
+    linked.active_plugin_binding_version = linked_binding.binding_version
+    linked.active_plugin_config_hash = linked_binding.typed_config_hash
+    linked.active_plugin_index_digest = linked_binding.generated_index_digest
+    linked.active_plugin_provider_requirements_json = []
     execution_session = ExecutionSession(
         workline_id=foundation.id,
-        plugin_key=binding.plugin_key,
-        manifest_version=binding.contract_version,
-        plugin_binding_id=binding.id,
-        plugin_binding_version=binding.binding_version,
-        plugin_config_hash=binding.typed_config_hash,
-        plugin_index_digest=binding.generated_index_digest,
+        plugin_key=foundation_binding.plugin_key,
+        manifest_version=foundation_binding.contract_version,
+        plugin_binding_id=foundation_binding.id,
+        plugin_binding_version=foundation_binding.binding_version,
+        plugin_config_hash=foundation_binding.typed_config_hash,
+        plugin_index_digest=foundation_binding.generated_index_digest,
     )
     db.add(execution_session)
     await db.flush()
@@ -249,11 +275,12 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
             ExecutionWorkItem(
                 execution_session_id=execution_session.id,
                 correlation_id=correlation.correlation_id,
-                plugin_key=binding.plugin_key,
-                plugin_binding_id=binding.id,
-                plugin_binding_version=binding.binding_version,
-                plugin_config_hash=binding.typed_config_hash,
-                plugin_index_digest=binding.generated_index_digest,
+                plugin_key=foundation_binding.plugin_key,
+                manifest_version=foundation_binding.contract_version,
+                plugin_binding_id=foundation_binding.id,
+                plugin_binding_version=foundation_binding.binding_version,
+                plugin_config_hash=foundation_binding.typed_config_hash,
+                plugin_index_digest=foundation_binding.generated_index_digest,
                 object_type="material",
                 object_key="IT-MATERIAL-1",
                 current_step="INGRESS",
@@ -279,15 +306,32 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     )
     db.add(device)
     await db.flush()
-    assert foundation.id is not None and linked.id is not None and device.id is not None
-    return SeededInventory(foundation.id, linked.id, device.id)
+    assert (
+        foundation.id is not None and linked.id is not None and device.id is not None and linked_binding.id is not None
+    )
+    return SeededInventory(
+        foundation_workline_id=foundation.id,
+        linked_workline_id=linked.id,
+        device_id=device.id,
+        plugin_key=linked_binding.plugin_key,
+        contract_version=linked_binding.contract_version,
+        plugin_binding_id=linked_binding.id,
+        plugin_binding_version=linked_binding.binding_version,
+        plugin_config_hash=linked_binding.typed_config_hash,
+        plugin_index_digest=linked_binding.generated_index_digest,
+    )
 
 
 def _session(seed: SeededInventory, status: SessionStatus, index: int) -> WorklineSession:
     return WorklineSession(
         session_code=f"IT-INV-SESSION-{status.value}-{index}",
         workline_id=seed.linked_workline_id,
-        plugin_key="inventory-test",
+        plugin_key=seed.plugin_key,
+        contract_version=seed.contract_version,
+        plugin_binding_id=seed.plugin_binding_id,
+        plugin_binding_version=seed.plugin_binding_version,
+        plugin_config_hash=seed.plugin_config_hash,
+        plugin_index_digest=seed.plugin_index_digest,
         status=status,
     )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import csv
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ STRICT_DISPOSITIONS = frozenset({"moved", "deleted", "test-only-migrated"})
 TARGET_CAPABILITY_NAMESPACES = frozenset({"runtime", "material-flow", "external", "workline-config"})
 FINAL_BLOCKED_REFERENCE_SCAN_STATUSES = frozenset({"pending", "blocked"})
 FINAL_BLOCKED_TARGET_CAPABILITY_STATUSES = frozenset({"blocked"})
+GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-fA-F]{7,40}$")
 LEDGER_MATRIX_FIELDS = (
     "entry_id",
     "entry_type",
@@ -334,7 +336,47 @@ def _row_required_field_failures(row: dict[str, str]) -> list[str]:
     return [f"{entry_id}:{field} is required" for field in LEDGER_REQUIRED_FIELDS if not row[field]]
 
 
-def _row_final_gate_failures(row: dict[str, str], mode: str) -> list[str]:
+def _git_commit_exists(repo_root: Path, commit: str) -> bool:
+    git_executable = which("git")
+    if git_executable is None:
+        return False
+    result = subprocess.run(  # noqa: S603 - fixed git executable and fixed rev-parse subcommand.
+        [git_executable, "rev-parse", "--verify", f"{commit}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _git_commit_deleted_path(repo_root: Path, commit: str, relative_path: str) -> bool:
+    git_executable = which("git")
+    if git_executable is None:
+        return False
+    result = subprocess.run(  # noqa: S603 - fixed git executable and fixed diff-tree subcommand.
+        [git_executable, "diff-tree", "--no-commit-id", "--name-status", "-r", commit, "--", relative_path],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and any(line.startswith(("D\t", "R")) for line in result.stdout.splitlines())
+
+
+def _row_evidence_path_failures(row: dict[str, str], repo_root: Path) -> list[str]:
+    entry_id = row["entry_id"]
+    failures: list[str] = []
+    for field in ("golden_fixture", "contract_tests"):
+        failures.extend(
+            f"{entry_id}:{field} path does not exist: {token}"
+            for token in (part.strip() for part in row[field].split(";"))
+            if token and not (repo_root / token).exists()
+        )
+    return failures
+
+
+def _row_final_gate_failures(row: dict[str, str], mode: str, repo_root: Path) -> list[str]:
     if mode != "final":
         return []
 
@@ -350,6 +392,14 @@ def _row_final_gate_failures(row: dict[str, str], mode: str) -> list[str]:
         failures.append(f"{entry_id}:{row['reference_scan_status']} reference scan cannot enter final gate")
     if row["cleanup_disposition"] in STRICT_DISPOSITIONS and not row["delete_commit"]:
         failures.append(f"{entry_id}:strict disposition requires delete_commit in final gate")
+    delete_commit = row["delete_commit"]
+    if delete_commit == "pending-current-pr":
+        failures.append(f"{entry_id}:pending-current-pr cannot enter final gate")
+    elif row["cleanup_disposition"] in STRICT_DISPOSITIONS:
+        if not GIT_COMMIT_PATTERN.fullmatch(delete_commit) or not _git_commit_exists(repo_root, delete_commit):
+            failures.append(f"{entry_id}:delete_commit must resolve to a real commit")
+        elif not _git_commit_deleted_path(repo_root, delete_commit, row["relative_path"]):
+            failures.append(f"{entry_id}:delete_commit does not delete or migrate {row['relative_path']}")
     return failures
 
 
@@ -373,7 +423,9 @@ def _ledger_row_failures(
     failures.extend(_row_state_failures(row, tracked_files, repo_root))
     failures.extend(_row_target_failures(row))
     failures.extend(_row_required_field_failures(row))
-    failures.extend(_row_final_gate_failures(row, mode))
+    if mode == "final":
+        failures.extend(_row_evidence_path_failures(row, repo_root))
+    failures.extend(_row_final_gate_failures(row, mode, repo_root))
     failures.extend(_row_alias_failures(row))
     return failures
 

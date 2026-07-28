@@ -13,6 +13,7 @@ from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEf
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, Success
 from src.app.runtime.workline_plugins.schema import ResourceBoundary, WorklinePluginSchema
+from src.app.workline.services.write_back_service import EffectApplyState
 
 
 class _RecordingReservationService:
@@ -66,7 +67,7 @@ def _effect_ctx() -> dict[str, Any]:
         "workline": SimpleNamespace(id=41, line_code="LINE-A"),
         "inbox": SimpleNamespace(id=501),
         "trace_id": "trace-runtime-effect-applier",
-        "orch_result": SimpleNamespace(),
+        "effect_state": EffectApplyState(),
     }
 
 

@@ -2,9 +2,6 @@
 
 from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition, NgReasonSource
 
-SMT_SORTING_INBOUND_PLUGIN_KEY = "SMT_SORTING_INBOUND"
-SMT_SORTING_INBOUND_CONTRACT_VERSION = "2026-06-21.p1"
-
 SORTING_CONTEXT_SCHEMA_VERSION = 1
 
 ROLE_SORTING_SOURCE_ARM = "SORTING_SOURCE_ARM"
@@ -30,15 +27,18 @@ NG_REASON_MATERIAL_CONFLICT = "NG_MATERIAL_CONFLICT"
 
 
 def list_smt_sorting_inbound_ng_reasons() -> tuple[NgReasonDefinition, ...]:
-    """仅为历史 SMT Hold 提供稳定解释；不构成 Plugin 激活声明。"""
+    """从 generated Definition 身份生成 SMT Hold 的稳定解释。"""
+
+    # 延迟导入避免 Definition 注册 ng resolver 时形成模块导入环。
+    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 
     return (
         NgReasonDefinition(
             canonical_code=NG_REASON_LOCAL_SORTING_NG,
             label="本地分拣 NG",
             source=NgReasonSource.PLUGIN,
-            plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
-            contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+            plugin_key=DEFINITION.plugin_key,
+            contract_version=DEFINITION.contract_version,
             maps_from=(NG_REASON_LOCAL_SORTING_NG,),
         ),
     )
@@ -60,8 +60,6 @@ __all__ = [
     "ROLE_SORTING_SOURCE_ARM",
     "ROLE_SORTING_TARGET_ARM",
     "ROLE_SORTING_WORKSTATION",
-    "SMT_SORTING_INBOUND_CONTRACT_VERSION",
-    "SMT_SORTING_INBOUND_PLUGIN_KEY",
     "SMT_SOURCE_PICK_WAIT_CONTEXT_STATE",
     "SORTING_CONTEXT_SCHEMA_VERSION",
     "list_smt_sorting_inbound_ng_reasons",

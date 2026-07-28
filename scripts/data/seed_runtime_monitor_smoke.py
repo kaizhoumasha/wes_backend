@@ -23,18 +23,26 @@ from scripts.data.sync_test_workline_devices import (
     TEST_SMT_SORTING_INBOUND_LINE_CODE,
     sync_test_workline_devices,
 )
+from src.app.device.repositories import device_repository
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
-from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
+from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION as SMT_SORTING_INBOUND_DEFINITION
+from src.app.workline.models import WorkLine, WorklinePluginBinding
+from src.app.workline.services.plugin_binding_service import (
+    PluginBindingAdmissionError,
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.core.conf import settings
 from src.utils.timezone import timezone
 
-FALLBACK_LINE_CODE = "WL-RUNTIME-MONITOR-FALLBACK-SMOKE"
-FALLBACK_PLUGIN_KEY = "runtime_monitor_smoke_missing_manifest"
 SMOKE_CONTRACT_VERSION = "runtime-monitor-smoke-v1"
+SMOKE_PROVIDER_PROFILE = "wms.2026-07-06.material-flow.sandbox"
 SINGLE_LAYER_SMOKE_POSITION_CODE = "SOURCE_STATION_A"
 
 
@@ -44,33 +52,14 @@ async def seed_runtime_monitor_smoke(db: AsyncSession, *, commit: bool = True) -
     await sync_test_workline_devices(db, commit=False)
 
     single_layer_workline = await _require_workline(db, TEST_SMT_SORTING_INBOUND_LINE_CODE)
-    fallback_workline = await _upsert_fallback_workline(db)
+    single_layer_workline.plugin_key = SMT_SORTING_INBOUND_DEFINITION.plugin_key
+    single_layer_workline.contract_version = SMT_SORTING_INBOUND_DEFINITION.contract_version
+    single_layer_workline.config = {"provider_profile": SMOKE_PROVIDER_PROFILE}
+    await db.flush()
     await _assert_seed_workline_safe(db, single_layer_workline)
-    await _assert_seed_workline_safe(db, fallback_workline)
     await _mark_ready(db, single_layer_workline)
-    await _mark_ready(db, fallback_workline)
 
     single_layer_sessions = await _seed_single_layer_sessions(db, single_layer_workline)
-    fallback_session = await _upsert_session(
-        db,
-        fallback_workline,
-        session_code="runtime-monitor-smoke:fallback:generic",
-        business_key="runtime-monitor-smoke:fallback:generic",
-        trace_id="runtime-monitor-smoke-fallback-generic",
-        context_json={
-            "resource_evidence": {
-                "resource_kind": "RACK",
-                "resource_code": "GENERIC-FALLBACK-001",
-                "display_label": "Generic evidence GENERIC-FALLBACK-001",
-                "evidence_kind": "GENERIC_EVIDENCE",
-                "position_code": "FALLBACK_POSITION",
-                "rack_code": "GENERIC-FALLBACK-001",
-                "source_system": "LOCAL_DEBUG",
-                "trace_id": "runtime-monitor-smoke-fallback-generic",
-                "occurred_at": timezone.now_for_db().isoformat(),
-            }
-        },
-    )
 
     if commit:
         await db.commit()
@@ -79,10 +68,8 @@ async def seed_runtime_monitor_smoke(db: AsyncSession, *, commit: bool = True) -
 
     return {
         "single_layer_workline": _workline_result(single_layer_workline),
-        "fallback_workline": _workline_result(fallback_workline),
         "sessions": {
             "single_layer": [session.session_code for session in single_layer_sessions],
-            "fallback": [fallback_session.session_code],
         },
     }
 
@@ -166,41 +153,6 @@ def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]
     return events
 
 
-async def _upsert_fallback_workline(db: AsyncSession) -> WorkLine:
-    result = await db.execute(
-        select(WorkLine).where(
-            WorkLine.line_code == FALLBACK_LINE_CODE,  # type: ignore[arg-type]
-            WorkLine.is_deleted.is_(False),  # type: ignore[arg-type]
-        )
-    )
-    workline = result.scalar_one_or_none()
-    values: dict[str, Any] = {
-        "line_code": FALLBACK_LINE_CODE,
-        "line_name": "Runtime monitor fallback smoke line",
-        "line_type": LineType.AUTO,
-        "zone_name": "开发库",
-        "plugin_key": FALLBACK_PLUGIN_KEY,
-        "contract_version": SMOKE_CONTRACT_VERSION,
-        "config": {"seed_source": "runtime-monitor-smoke"},
-        "runtime_config_json": {
-            "run_mode": WorkLineRunMode.SIMULATION.value,
-            "sandbox_enabled": True,
-        },
-        "run_mode": WorkLineRunMode.SIMULATION,
-        "diagnostic_profile": {"seed_source": "runtime-monitor-smoke"},
-        "description": "Runtime monitor smoke fallback line without plugin manifest.",
-        "is_active": True,
-    }
-    if workline is None:
-        workline = WorkLine(**values)
-        db.add(workline)
-    else:
-        for key, value in values.items():
-            setattr(workline, key, value)
-    await db.flush()
-    return workline
-
-
 async def _upsert_session(
     db: AsyncSession,
     workline: WorkLine,
@@ -210,20 +162,25 @@ async def _upsert_session(
     trace_id: str,
     context_json: dict[str, Any],
 ) -> WorklineSession:
+    binding = await _ensure_smoke_binding(db, workline)
     result = await db.execute(select(WorklineSession).where(WorklineSession.session_code == session_code))
     session = result.scalar_one_or_none()
     now = timezone.now_for_db()
     values: dict[str, Any] = {
         "session_code": session_code,
         "workline_id": workline.id,
-        "plugin_key": workline.plugin_key,
+        "plugin_key": binding.plugin_key,
         "run_mode": RunMode.SIMULATION,
         "business_key": business_key,
         "barcode": None,
         "status": SessionStatus.WAITING_EXTERNAL,
         "context_json": context_json,
         "context_schema_version": SMOKE_CONTRACT_VERSION,
-        "contract_version": workline.contract_version,
+        "contract_version": binding.contract_version,
+        "plugin_binding_id": binding.id,
+        "plugin_binding_version": binding.binding_version,
+        "plugin_config_hash": binding.typed_config_hash,
+        "plugin_index_digest": binding.generated_index_digest,
         "started_at": now,
         "ended_at": None,
         "trace_id": trace_id,
@@ -262,6 +219,84 @@ async def _upsert_session(
             setattr(session, key, value)
     await db.flush()
     return session
+
+
+async def _ensure_smoke_binding(db: AsyncSession, workline: WorkLine) -> WorklinePluginBinding:
+    """通过正式 generated-definition admission 建立或复用调试 binding。"""
+
+    if workline.id is None:
+        raise RuntimeError(f"workline id missing for runtime monitor smoke binding: {workline.line_code}")
+    environment = WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV)
+    devices = await device_repository.get_by_work_line_id(db, workline.id)
+    activation_plan = workline_plugin_binding_service.validate_activation_configuration(
+        workline=workline,
+        environment=environment,
+        devices=devices,
+    )
+    desired_config_hash = sha256_digest(activation_plan.typed_config)
+
+    if workline.active_plugin_binding_id is not None:
+        try:
+            binding = await workline_plugin_binding_service.get_pinned(
+                db,
+                binding_id=workline.active_plugin_binding_id,
+            )
+        except PluginBindingAdmissionError:
+            binding = None
+        if binding is not None:
+            active_pin = (
+                workline.active_plugin_binding_id,
+                workline.active_plugin_binding_version,
+                workline.active_plugin_config_hash,
+                workline.active_plugin_index_digest,
+            )
+            binding_pin = (
+                binding.id,
+                binding.binding_version,
+                binding.typed_config_hash,
+                binding.generated_index_digest,
+            )
+            if (
+                binding.workline_id == workline.id
+                and binding.plugin_key == workline.plugin_key
+                and binding.contract_version == workline.contract_version
+                and active_pin == binding_pin
+                and binding.typed_config_hash == desired_config_hash
+                and binding.generated_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
+            ):
+                try:
+                    workline_plugin_binding_service.assert_execution_admitted(
+                        binding,
+                        environment=environment,
+                        now=timezone.now_for_db(),
+                    )
+                except PluginBindingAdmissionError:
+                    pass
+                else:
+                    return binding
+
+    workline_version = workline.version
+    if not isinstance(workline_version, int):
+        raise TypeError(f"workline version missing for runtime monitor smoke binding: {workline.line_code}")
+    binding = await workline_plugin_binding_service.activate(
+        db,
+        workline=workline,
+        expected_workline_version=workline_version,
+        actor="runtime-monitor-smoke",
+        reason="本地运行监控调试种子",
+        environment=environment,
+        devices=devices,
+    )
+    workline.active_plugin_binding_id = binding.id
+    workline.active_plugin_binding_version = binding.binding_version
+    workline.active_plugin_config_hash = binding.typed_config_hash
+    workline.active_plugin_index_digest = binding.generated_index_digest
+    workline.active_plugin_provider_requirements_json = [
+        f"{profile['provider_code']}@{profile['contract_version']}#{profile['environment']}"
+        for profile in binding.provider_profile_snapshot_json
+    ]
+    await db.flush()
+    return binding
 
 
 async def _require_workline(db: AsyncSession, line_code: str) -> WorkLine:

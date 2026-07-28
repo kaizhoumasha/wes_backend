@@ -1096,7 +1096,7 @@ async def prepare_runtime_device_command_effect(
         raise ValueError("runtime device command requires execution correlation")
 
     try:
-        return await device_command_service.prepare_runtime_effect(
+        command, outbox = await device_command_service.prepare_runtime_effect(
             ctx["db"],
             request=request,
             target_device_id=target_device_id,
@@ -1111,6 +1111,7 @@ async def prepare_runtime_device_command_effect(
             trace_id=ctx.get("trace_id"),
             intent_log=intent_log,
         )
+        return command, outbox
     except StaleDeviceCommandPrecondition as exc:
         raise StaleRuntimeDeviceCommandAdmission("device fact changed") from exc
 

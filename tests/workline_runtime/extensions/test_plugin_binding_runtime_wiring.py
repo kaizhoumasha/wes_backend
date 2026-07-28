@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -119,25 +120,6 @@ class RuntimeRepository:
         work_item.execution_session_id = 31
         self.created = (execution_session, correlation, work_item)
         return execution_session, work_item
-
-
-@pytest.mark.asyncio
-async def test_runtime_session_pin_rejects_missing_resolved_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    binding_service = WorklinePluginBindingService(
-        repository=BindingRepository(),
-        runtime_repository=RuntimeRepository(),
-        plugin_index={("platform-test", "v1"): DEFINITION},
-        capability_index={},
-        plugin_index_digest="b" * 64,
-    )
-
-    async def _missing_binding(_db: object, *, binding_id: int) -> None:
-        assert binding_id == 8
-
-    monkeypatch.setattr(binding_service, "get_pinned", _missing_binding)
-
-    with pytest.raises(PluginBindingAdmissionError, match="pinned binding 不存在"):
-        await binding_service.pin_new_runtime_session(object(), workline=_workline(), session=SimpleNamespace())
 
 
 class ExecutionAnchorRepository:
@@ -441,6 +423,7 @@ async def test_session_resolver_pins_real_models_and_creates_runtime_aggregate_i
     assert inbox.correlation_id == work_item.correlation_id
     for record in (execution_session, work_item):
         assert record.plugin_key == "platform-test"
+        assert record.manifest_version == "v1"
         assert record.plugin_binding_id == session.plugin_binding_id
         assert record.plugin_config_hash == session.plugin_config_hash
         assert record.plugin_index_digest == session.plugin_index_digest
@@ -859,11 +842,25 @@ async def test_runtime_inbox_binding_admission_rejects_reassigned_role_device(
 
 @pytest.mark.asyncio
 async def test_repository_only_persists_service_constructed_runtime_aggregate() -> None:
-    execution_session = ExecutionSession(workline_id=7, plugin_key="platform-test", manifest_version="v1")
+    execution_session = ExecutionSession(
+        workline_id=7,
+        plugin_key="platform-test",
+        manifest_version="v1",
+        plugin_binding_id=8,
+        plugin_binding_version=2,
+        plugin_config_hash="a" * 64,
+        plugin_index_digest="b" * 64,
+    )
     correlation = ExecutionCorrelation(correlation_id="correlation-1", trace_id="trace-1")
     work_item = ExecutionWorkItem(
         execution_session_id=0,
         correlation_id="correlation-1",
+        plugin_key="platform-test",
+        manifest_version="v1",
+        plugin_binding_id=8,
+        plugin_binding_version=2,
+        plugin_config_hash="a" * 64,
+        plugin_index_digest="b" * 64,
         object_type="session",
         object_key="PKG-1",
         current_step="INGRESS",

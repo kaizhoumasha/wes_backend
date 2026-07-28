@@ -10,13 +10,15 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.device.models.command import DeviceCommand
-from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import SMT_SORTING_INBOUND_PLUGIN_KEY
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
     SmtInboundHandoffDemandStatus,
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
+)
+from src.app.runtime.orchestration.repositories.session_execution_anchor_repository import (
+    session_execution_anchor_repository,
 )
 from src.app.sys.models.outbox import SystemOutbox
 from src.app.workline.models.workline import WorkLine
@@ -31,9 +33,15 @@ if TYPE_CHECKING:
 class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
     """SMT 入库 handoff demand/source item 数据访问层。"""
 
-    def __init__(self, *, runtime_inbox_query: RuntimeInboxQueryPort) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_inbox_query: RuntimeInboxQueryPort,
+        execution_anchor_repository: Any = session_execution_anchor_repository,
+    ) -> None:
         super().__init__(SmtInboundHandoffDemand)
         self.runtime_inbox_query = runtime_inbox_query
+        self.execution_anchor_repository = execution_anchor_repository
 
     async def get_demand_by_release_id(
         self,
@@ -164,6 +172,85 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
 
         return await self.runtime_inbox_query.get_evidence_by_id(db, inbox_id)
 
+    async def source_pick_execution_anchor_matches(
+        self,
+        db: AsyncSession,
+        *,
+        inbox_id: int,
+        workline_session_id: int,
+        workline_id: int,
+        correlation_id: str,
+        plugin_key: str,
+        contract_version: str,
+        command_trace_id: str,
+        execution_session_id: int | None = None,
+    ) -> bool:
+        """按 WorklineSession 所有权交叉校验完整执行聚合。"""
+
+        inbox = await self.runtime_inbox_query.get_projection_by_id(db, inbox_id)
+        if inbox is None or not isinstance(inbox.execution_session_id, int):
+            return False
+        if execution_session_id is not None and inbox.execution_session_id != execution_session_id:
+            return False
+        if (
+            inbox.workline_session_ref != workline_session_id
+            or inbox.workline_id != workline_id
+            or inbox.correlation_id != correlation_id
+        ):
+            return False
+
+        session = await db.get(WorklineSession, workline_session_id)
+        if session is None:
+            return False
+        session_code = getattr(session, "session_code", None)
+        trace_id = getattr(session, "trace_id", None)
+        business_key = getattr(session, "business_key", None)
+        plugin_binding_id = getattr(session, "plugin_binding_id", None)
+        plugin_binding_version = getattr(session, "plugin_binding_version", None)
+        plugin_config_hash = getattr(session, "plugin_config_hash", None)
+        plugin_index_digest = getattr(session, "plugin_index_digest", None)
+        if not (
+            isinstance(session_code, str)
+            and session_code
+            and isinstance(trace_id, str)
+            and trace_id
+            and isinstance(business_key, str)
+            and business_key
+            and isinstance(plugin_binding_id, int)
+            and isinstance(plugin_binding_version, int)
+            and isinstance(plugin_config_hash, str)
+            and plugin_config_hash
+            and isinstance(plugin_index_digest, str)
+            and plugin_index_digest
+            and getattr(session, "workline_id", None) == workline_id
+            and getattr(session, "plugin_key", None) == plugin_key
+            and getattr(session, "contract_version", None) == contract_version
+            and inbox.trace_id == trace_id
+            and command_trace_id == trace_id
+        ):
+            return False
+
+        canonical_correlation_id = f"workline-session:{session_code}"
+        owned_anchor = await self.execution_anchor_repository.resolve_owned_anchor(
+            db,
+            correlation_id=canonical_correlation_id,
+            trace_id=trace_id,
+            workline_id=workline_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            plugin_binding_id=plugin_binding_id,
+            plugin_binding_version=plugin_binding_version,
+            plugin_config_hash=plugin_config_hash,
+            plugin_index_digest=plugin_index_digest,
+            business_key=business_key,
+        )
+        return (
+            owned_anchor is not None
+            and owned_anchor[0] == canonical_correlation_id
+            and correlation_id == canonical_correlation_id
+            and owned_anchor[1] == inbox.execution_session_id
+        )
+
     async def get_device_command_by_id(
         self,
         db: AsyncSession,
@@ -187,11 +274,14 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
     async def list_sorting_candidate_worklines(self, db: AsyncSession) -> list[WorkLine]:
         """读取 SMT 入库分拣 WorkLine 配置候选。"""
 
+        from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
         columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
             select(WorkLine)
             .where(
-                columns.plugin_key == "SMT_SORTING_INBOUND",
+                columns.plugin_key == DEFINITION.plugin_key,
+                columns.contract_version == DEFINITION.contract_version,
                 columns.is_active.is_(True),
             )
             .order_by(columns.line_code.asc(), columns.id.asc())
@@ -358,12 +448,15 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
     ) -> list[WorklineSession]:
         """读取目标 WorkLine 上仍打开 current_material 的 SMT sorting sessions。"""
 
+        from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
         columns = cast("Any", WorklineSession).__table__.c
         result = await db.execute(
             select(WorklineSession)
             .where(
                 columns.workline_id == workline_id,
-                columns.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY,
+                columns.plugin_key == DEFINITION.plugin_key,
+                columns.contract_version == DEFINITION.contract_version,
                 columns.status.in_(
                     [
                         SessionStatus.NEW.value,

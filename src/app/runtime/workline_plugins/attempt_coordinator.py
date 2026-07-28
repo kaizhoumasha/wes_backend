@@ -30,6 +30,7 @@ class AttemptSnapshot:
     binding_version: int | None = None
     plugin_config_hash: str | None = None
     index_digest: str | None = None
+    wait_anchor: tuple[str | None, str | None] | None = None
 
     @property
     def binding_identity(self) -> str | None:

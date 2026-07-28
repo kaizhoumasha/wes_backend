@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Protocol
 
@@ -45,12 +45,15 @@ class HandlerRegistration:
 
     handler: PluginHandler
     facts_model: type[BaseModel]
+    facts_builder: PluginFactsBuilder
 
     def __post_init__(self) -> None:
         if not callable(self.handler):
             raise TypeError("handler must be callable")
         if not isinstance(self.facts_model, type) or not issubclass(self.facts_model, BaseModel):
             raise TypeError("facts_model must be a Pydantic model class")
+        if not callable(self.facts_builder):
+            raise TypeError("facts_builder must be callable")
 
 
 class PinnedPluginSnapshot(BaseModel):
@@ -75,6 +78,24 @@ class PinnedPluginSnapshot(BaseModel):
         return self
 
 
+class PluginAttemptFactSource(BaseModel):
+    """route facts builder 的 immutable、ORM-free 通用输入。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    snapshot: PinnedPluginSnapshot
+    raw_input: dict[str, object] = Field(default_factory=dict)
+    session_context: dict[str, object] = Field(default_factory=dict)
+    material_fact: dict[str, object] = Field(default_factory=dict)
+    device_fact_versions: tuple[tuple[StableString, int, int], ...] = ()
+    correlation_matches: bool = True
+    replay_digest_matches: bool | None = None
+    route_diagnostic: StableString | None = None
+
+
+type PluginFactsBuilder = Callable[[PluginAttemptFactSource], BaseModel | Mapping[str, object]]
+
+
 class PluginDispatchRequest(BaseModel):
     """Stage 2 唯一 dispatcher 输入；仅携带 immutable typed snapshot 原料。"""
 
@@ -87,7 +108,7 @@ class PluginDispatchRequest(BaseModel):
     raw_state: dict[str, object]
     context_state: dict[str, object]
     raw_input: dict[str, object]
-    raw_facts: dict[str, object]
+    fact_source: PluginAttemptFactSource
     snapshot: PinnedPluginSnapshot
 
 
@@ -179,7 +200,10 @@ class WorklinePluginDispatcher:
             context_state = definition.state_model.model_validate(request.context_state)
             if state != context_state:
                 return _violation("STATE_CONTEXT_MISMATCH", "context state differs from parsed plugin state")
-            facts = registration.facts_model.model_validate(request.raw_facts)
+            # facts builder 可以做复杂的归一化；深拷贝隔离其原地修改。
+            # 这样不会污染 attempt 的共享原料。
+            facts_source = request.fact_source.model_copy(deep=True)
+            facts = registration.facts_model.model_validate(registration.facts_builder(facts_source))
             facts_violation = _validate_facts_snapshot(facts, request.snapshot)
             if facts_violation is not None:
                 return facts_violation
@@ -243,11 +267,21 @@ def _validate_facts_snapshot(facts: BaseModel, snapshot: PinnedPluginSnapshot) -
         snapshot.index_digest,
     )
     actual = (
-        getattr(facts_binding, "binding_id", None),
-        getattr(facts_binding, "binding_version", None),
-        getattr(facts_binding, "profile_identity", None),
-        getattr(facts_binding, "plugin_config_hash", None),
-        getattr(facts_binding, "generated_index_digest", None),
+        (
+            facts_binding.binding_id,
+            facts_binding.binding_version,
+            facts_binding.profile_identity,
+            facts_binding.config_hash,
+            facts_binding.index_digest,
+        )
+        if isinstance(facts_binding, PinnedPluginSnapshot)
+        else (
+            getattr(facts_binding, "binding_id", None),
+            getattr(facts_binding, "binding_version", None),
+            getattr(facts_binding, "profile_identity", None),
+            getattr(facts_binding, "plugin_config_hash", None),
+            getattr(facts_binding, "generated_index_digest", None),
+        )
     )
     if actual[:2] != expected[:2]:
         return _violation("PLUGIN_BINDING_IDENTITY_MISMATCH", "facts binding id/version differs from pinned binding")
@@ -265,6 +299,7 @@ __all__ = [
     "DeclaredCapabilityGateway",
     "HandlerRegistration",
     "PinnedPluginSnapshot",
+    "PluginAttemptFactSource",
     "PluginDispatchRequest",
     "PluginHandler",
     "WorklinePluginDispatcher",

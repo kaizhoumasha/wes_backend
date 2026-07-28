@@ -649,18 +649,131 @@ def scan_generic_orchestration(path: Path) -> None:
     tree = parse(path, "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION")
     if tree is None:
         return
-    business_tokens = ("plugin_key", "event_type", ".action", "BUSINESS_TIMEOUT", "ROUGH_SORTER", "SMT_")
-    source = path.read_text(encoding="utf-8")
+    business_literals = (
+        "SCAN_COMPLETED",
+        "BUSINESS_TIMEOUT",
+        "ROUGH_SORTER",
+        "SMT_SORTING",
+        "SORTING_SOURCE_PICK",
+    )
+    business_imports = ("rough_sorter", "smt_sorting_inbound", "smt_source_pick")
+    business_capability_keys = frozenset(
+        {
+            "material_flow.smt_source_pick_command",
+            "material_flow.smt_source_pick_ledger",
+        }
+    )
+
+    def business_literal(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            return None
+        normalized = node.value.upper()
+        return node.value if any(token in normalized for token in business_literals) else None
+
+    def constant_string(node: ast.AST, aliases: dict[str, str]) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = constant_string(node.left, aliases)
+            right = constant_string(node.right, aliases)
+            return left + right if left is not None and right is not None else None
+        return None
+
+    parent_by_node = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    scopes = [tree, *(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef))]
+    aliases_by_scope: dict[ast.AST, dict[str, str]] = {}
+    bound_names_by_scope: dict[ast.AST, set[str]] = {}
+    for scope in scopes:
+        aliases: dict[str, str] = {}
+        bound_names: set[str] = set()
+        if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+            arguments = scope.args
+            bound_names.update(argument.arg for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs))
+            if arguments.vararg is not None:
+                bound_names.add(arguments.vararg.arg)
+            if arguments.kwarg is not None:
+                bound_names.add(arguments.kwarg.arg)
+        for statement in scope.body:
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+                value = constant_string(statement.value, aliases)
+                if isinstance(target, ast.Name):
+                    bound_names.add(target.id)
+                    if value is not None:
+                        aliases[target.id] = value
+            elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                bound_names.add(statement.target.id)
+                value = constant_string(statement.value, aliases) if statement.value is not None else None
+                if value is not None:
+                    aliases[statement.target.id] = value
+        aliases_by_scope[scope] = aliases
+        bound_names_by_scope[scope] = bound_names
+
+    def aliases_for(node: ast.AST) -> dict[str, str]:
+        scope_chain: list[ast.AST] = []
+        current: ast.AST | None = node
+        while current is not None:
+            if current in aliases_by_scope:
+                scope_chain.append(current)
+            current = parent_by_node.get(current)
+        aliases: dict[str, str] = {}
+        for scope in reversed(scope_chain):
+            for name in bound_names_by_scope[scope]:
+                aliases.pop(name, None)
+            aliases.update(aliases_by_scope[scope])
+        return aliases
+
+    def capability_keys_in(node: ast.AST) -> set[str]:
+        aliases = aliases_for(node)
+        return {
+            value
+            for candidate in ast.walk(node)
+            if (value := constant_string(candidate, aliases)) in business_capability_keys
+        }
+
     for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = tuple(imported_modules(path, node))
+            if any(token in module.lower() for module in modules for token in business_imports):
+                emit(
+                    "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+                    path,
+                    node.lineno,
+                    "通用 Orchestrator/Effect/Gateway import Workline 专属 Plugin 或 System Capability",
+                    "业务 import 与处理逻辑迁入 Plugin 或 System Capability handler",
+                )
             continue
-        segment = ast.get_source_segment(source, node.test) or ""
-        if any(token in segment for token in business_tokens):
+        if isinstance(node, (ast.Dict, ast.Call)):
+            capability_keys = capability_keys_in(node)
+            if capability_keys:
+                emit(
+                    "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+                    path,
+                    node.lineno,
+                    f"通用 Orchestrator/Effect/Gateway 映射或派发 Workline 专属能力: {sorted(capability_keys)}",
+                    "能力身份分支迁入 Plugin 或 System Capability handler",
+                )
+            continue
+        if not isinstance(node, (ast.Compare, ast.MatchValue)):
+            continue
+        literals = {
+            literal
+            for candidate in ast.walk(node)
+            if (literal := business_literal(candidate)) is not None
+        }
+        literals.update(capability_keys_in(node))
+        if literals:
             emit(
                 "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
                 path,
                 node.lineno,
-                "Orchestrator/EffectApplier 包含 Workline key/event/action/business-timeout 分支",
+                f"通用 Orchestrator/Effect/Gateway 比较 Workline 业务字面量: {sorted(literals)}",
                 "业务分支迁入 Plugin 或 System Capability handler",
             )
 
@@ -709,8 +822,9 @@ if not FIXTURE_ONLY:
         if path.exists():
             scan_generated_index(path)
     for path in (
-        Path("src/app/runtime/orchestration/orchestrator_bridge.py"),
         Path("src/app/runtime/orchestration/runtime_intent_effects.py"),
+        Path("src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py"),
+        Path("src/app/runtime/orchestration/services/device_command_gateway.py"),
     ):
         if path.exists():
             scan_generic_orchestration(path)
@@ -728,7 +842,7 @@ if FIXTURE_ROOT:
             scan_generated_index(path)
         else:
             scan_capability(path)
-    for name in ("orchestrator_bridge.py", "runtime_intent_effects.py"):
+    for name in ("orchestrator_bridge.py", "runtime_intent_effects.py", "device_command_gateway.py"):
         path = fixture / "orchestration" / name
         if path.exists():
             scan_generic_orchestration(path)

@@ -46,6 +46,7 @@ from src.app.sys.models.outbox import SystemOutbox
 from src.app.sys.services import AuditLogService
 from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
+from tests.support.runtime_binding import bind_runtime_workline
 from tests.support.runtime_inbox_processing_postgresql import (
     RecordingTaskQueueGateway,
     assert_effects,
@@ -586,10 +587,21 @@ def test_operation_replay_rejects_source_ownership_change_after_initial_read() -
             )
             db.add(new_workline)
             await db.flush()
+            binding = await bind_runtime_workline(
+                db,
+                new_workline,
+                plugin_key="rough_sorter",
+                contract_version="rough_sorter.v2",
+            )
             new_session = WorklineSession(
                 session_code="PG-REPLAY-NEW-OWNER-SESSION",
                 workline_id=new_workline.id,
-                plugin_key="rough_sorter",
+                plugin_key=binding.plugin_key,
+                contract_version=binding.contract_version,
+                plugin_binding_id=binding.id,
+                plugin_binding_version=binding.binding_version,
+                plugin_config_hash=binding.typed_config_hash,
+                plugin_index_digest=binding.generated_index_digest,
                 status=SessionStatus.RUNNING,
             )
             db.add(new_session)
@@ -1285,10 +1297,16 @@ def test_manual_replay_waits_for_session_lock_and_rejects_new_pending_reconcilia
             )
             db.add(workline)
             await db.flush()
+            binding = await bind_runtime_workline(db, workline)
             session = WorklineSession(
                 session_code="IT-REPLAY-LOCK-SESSION",
                 workline_id=workline.id,
-                plugin_key="test",
+                plugin_key=binding.plugin_key,
+                contract_version=binding.contract_version,
+                plugin_binding_id=binding.id,
+                plugin_binding_version=binding.binding_version,
+                plugin_config_hash=binding.typed_config_hash,
+                plugin_index_digest=binding.generated_index_digest,
                 status=SessionStatus.RUNNING,
             )
             db.add(session)

@@ -1,6 +1,6 @@
 # Runtime/Orchestration 域最小骨架 SPEC
 
-> Phase 1 Packet C (CEO-007) 交付物 — 2026-06-27 代码落地，2026-07-03 文档补写
+> 当前 Runtime/Orchestration 实体、服务与边界合同
 > 父设计: `docs/architecture/workline-and-plugin-restructuring.md` §9.2
 
 ---
@@ -24,6 +24,7 @@
 - **SESSION AS AGGREGATE ROOT**: ExecutionSession 是聚合根，但不持有工作状态（工作状态归 ExecutionWorkItem）
 - **INTENT LOG ≠ STATE SOURCE**: RuntimeIntentLog 是 effect proposal / outbox log，不是下游状态源
 - **TYPED OVER UNTYPED**: 所有跨域交互使用 typed Pydantic 模型
+- **BOUND GENERATED EXECUTION**: WorklineSession、ExecutionSession 与 ExecutionWorkItem 创建时固定完整 Plugin Binding pins；RuntimeInbox 只进入 generated dispatcher
 
 ---
 
@@ -55,8 +56,11 @@ ConveyorQueueMembership (独立 active 投影)
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | int (PK) | 自增主键 |
-| `workline_id` | int | 关联 WorkLine（FK 到 `wes_biz.work_lines`） |
+| `workline_id` | int | WorkLine 逻辑归属与查询索引；不建立跨 schema WorkLine FK |
 | `manifest_version` | str(60) | RUNNING session 固定 manifest 版本（CEO-011） |
+| `plugin_key` | str(100) | generated plugin 固定 identity |
+| `plugin_binding_id` / `plugin_binding_version` | int | immutable binding 主键与版本；数据库 `NOT NULL`，binding ID 受 FK 保护 |
+| `plugin_config_hash` / `plugin_index_digest` | str(64) | 激活配置与 generated index 摘要快照 |
 | `state` | str(20) | 生命周期: `CREATED` / `RUNNING` / `HOLD` / `CLOSED` / `RECONCILING` |
 | `created_at` | datetime | 创建时间 (naive UTC) |
 | `updated_at` | datetime | 更新时间 (naive UTC) |
@@ -74,6 +78,7 @@ CREATED → RUNNING → CLOSED
 **不变量**:
 - Session 不持有工作状态（work item 是 ExecutionWorkItem 的责任）
 - `manifest_version` 在 RUNNING 期间不可变更
+- binding pins 从创建起完整且不可回退到未绑定执行
 - 跨域只持 `correlation_id`，不持强 session FK
 
 ### 2.3 ExecutionCorrelation — 跨域关联键
@@ -120,6 +125,9 @@ CREATED → RUNNING → CLOSED
 | `deadline_at` | datetime? | 截止时间 |
 | `lease_expires_at` | datetime? | 租约过期时间 |
 | `idempotency_key` | str(160)? | 幂等键 |
+| `plugin_key` / `manifest_version` | str | 与所属 Session 相同的 generated plugin identity |
+| `plugin_binding_id` / `plugin_binding_version` | int | immutable binding pins |
+| `plugin_config_hash` / `plugin_index_digest` | str(64) | 配置与 generated index 摘要 |
 
 **并发契约**:
 - ExecutionSession 不是整条 WorkLine 的串行锁
@@ -152,7 +160,7 @@ CREATED → RUNNING → CLOSED
 `event_type/kind=REPLAY_REQUEST`，以 `replay:{source_inbox_id}:{request_id}` 作为幂等身份；相同身份和
 canonical hash 返回既有 ACK，不重复写行或审计，内容变化则返回冲突。payload 使用单层 envelope，显式保存
 `request_id`、`actor`、`reason`、直接/根 source inbox、五种原业务 kind、原 payload 与原 source/业务证据；
-replay-of-replay 复用根业务语义，不递归嵌套。Processor 在 validation/context/orchestrator 前只解包这一层，
+replay-of-replay 复用根业务语义，不递归嵌套。Processor 在 validation/context/generated dispatch 前只解包这一层，
 继续使用原 claim/FIFO/token fencing/effect 幂等通道。
 
 **状态机**:
@@ -167,10 +175,46 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 ```
 
 **ACK-before-processing**: 入站消息先持久化并返回 ACK，再异步处理。处理失败可重试、死信和人工重放。
-`PRE_CUTOVER_AUDIT_ONLY` 使用 `DEAD_LETTER` 终态加稳定错误码表达，但不可 claim、retry 或 replay，
+标记为 `PRE_CUTOVER_AUDIT_ONLY` 的历史审计行使用 `DEAD_LETTER` 终态加稳定错误码表达，但不可 claim、retry 或 replay，
 也不计入可行动 dead-letter。
 
-### 2.6 RuntimeTimeline — 时间线
+### 2.6 RuntimeTimeline — ExecutionSession 执行轨迹
+
+**文件**: `src/app/runtime/orchestration/runtime_timeline.py`
+**表**: `wes_runtime.runtime_timelines`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | int (PK) | 自增主键 |
+| `execution_session_id` | int (FK) | 关联 ExecutionSession |
+| `trace_id` | str | 跨域 trace 标识 |
+| `correlation_id` | str? (FK) | 关联 ExecutionCorrelation |
+| `event_type` | str | append-only 事件类型 |
+| `occurred_at` | bigint | Unix 毫秒时间 |
+
+**用途**: ExecutionSession 的 append-only 执行轨迹，记录 runtime inbox、intent、hold、projection 与
+device 事件，不作为业务 owner 状态源。
+
+### 2.7 RuntimeHold — ExecutionSession effect 闸门
+
+**文件**: `src/app/runtime/orchestration/runtime_hold.py`
+**表**: `wes_runtime.runtime_holds`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | int (PK) | 自增主键 |
+| `execution_session_id` | int (FK) | 关联 ExecutionSession |
+| `correlation_id` | str? (FK) | 关联 ExecutionCorrelation |
+| `reason` | str | 原因描述 |
+| `hold_type` | str | `RESOURCE_WAIT` / `SAFETY` / `RECONCILING` / `MANUAL` / `TIMEOUT` |
+| `scope_type` / `scope_key` | str | object/device/resource/queue/session/workline scope |
+| `resolved_at` | bigint? | Unix 毫秒解除时间 |
+| `allowed_next_effect_scope` | str? | 解除时明确允许的下一步 effect 范围 |
+
+**用途**: ExecutionSession 内按 object/device/resource scope 暂停新 effect 的运行时闸门；只有影响整线安全时
+才使用 SESSION/WORKLINE scope。
+
+### 2.8 WorklineTimeline — WorklineSession 业务时间线
 
 **文件**: `src/app/runtime/orchestration/models/timeline.py`
 **表**: `wes_biz.workline_timelines`
@@ -178,17 +222,17 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | int (PK) | 自增主键 |
-| `session_id` | int (FK) | 关联 WorklineSession |
-| `stage` | TimelineStage | 阶段: `INGEST` / `ROUTE` / `DECISION` / `DISPATCH_PREPARE` / `WAITING` / `CALLBACK` / `MANUAL` / `TIMEOUT` / `COMPENSATION` / `COMPLETE` / `FAIL` |
-| `action_type` | TimelineActionType | 动作类型 |
-| `trace_id` | str? | trace 标识 |
-| `occurred_at` | datetime | 发生时间 |
-| `message` | str? | 描述 |
-| `metadata_json` | JSON? | 附加元数据 |
+| `session_id` / `workline_id` | int (FK) | 关联 WorklineSession 与 WorkLine |
+| `seq_no` | int | 同一 session 内单调递增，与 `session_id` 组成唯一约束 |
+| `stage` / `action_type` / `status` | enum | 业务阶段、动作与结果 |
+| `actor_type` / `actor_code` | enum / str? | 业务参与者 |
+| `related_inbox_id` / `related_command_id` | int? | 关联入站记录与设备命令 |
+| `payload_json` | JSON? | 业务排障证据 |
 
-**用途**: 排障主视图，记录会话执行的完整时间线。
+**用途**: WorklineSession 的业务排障与审计时间线，不替代 `wes_runtime.runtime_timelines` 的
+ExecutionSession append-only 轨迹。
 
-### 2.7 RuntimeHold — 暂停/冻结
+### 2.9 Business RuntimeHold — WorkLine 异常恢复事实
 
 **文件**: `src/app/runtime/orchestration/models/runtime_hold.py`
 **表**: `wes_biz.runtime_holds`
@@ -196,21 +240,16 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | int (PK) | 自增主键 |
-| `session_id` | int (FK) | 关联 WorklineSession |
-| `hold_type` | RuntimeHoldType | `RUNTIME_RECONCILIATION` / `SAFETY_ESTOP` / `MANUAL_HOLD` |
-| `status` | RuntimeHoldStatus | `OPEN` / `IN_PROGRESS` / `RESOLVED` / `VOIDED` / `REOPENED` |
-| `reason` | str | 原因描述 |
-| `scope_type` | str? | 影响范围类型 |
-| `scope_key` | str? | 影响范围键 |
-| `affected_work_item_id` | int? | 影响的 work item |
-| `affected_device_code` | str? | 影响的设备 |
-| `affected_resource_key` | str? | 影响的资源 |
-| `allowed_next_effect_scope` | JSON? | 允许的下一步 effect 范围 |
-| `created_at` / `resolved_at` | datetime | 时间戳 |
+| `workline_id` / `session_id` | int (FK) | 关联 WorkLine 与可选 WorklineSession |
+| `hold_type` / `status` / `blocking` | enum / bool | 业务 hold 类型、生命周期与阻断状态 |
+| `source_*` | str / int? | inbox/outbox/command/device 来源引用与幂等身份 |
+| `evidence_snapshot_json` / `release_evidence_json` | JSON | 触发与解除证据 |
+| `material_disposition` / `ng_reason_*` | enum / str? | 人工处置与 NG 归因 |
 
-**用途**: 对账冲突、安全急停、人工暂停的统一 hold 机制。hold 期间禁止下发新的 DeviceCommand / WMS transaction effect。
+**用途**: WorkLine 业务异常恢复与人工处置的权威事实，不替代 `wes_runtime.runtime_holds` 的
+ExecutionSession effect 闸门。
 
-### 2.8 RuntimeIntentLog — 出站意图记录
+### 2.10 RuntimeIntentLog — 出站意图记录
 
 **文件**: `src/app/runtime/orchestration/runtime_intent_log.py`
 **表**: `wes_runtime.runtime_intent_logs`
@@ -293,19 +332,22 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 
 | Schema | 用途 | 包含表 |
 |--------|------|--------|
-| `wes_runtime` | runtime/orchestration 域 schema | `runtime_inbox`, `execution_sessions`, `execution_correlations`, `execution_work_items`, `runtime_intent_logs`, `idempotency_keys`, `conveyor_queue_memberships`, `device_runtime_projections` |
+| `wes_runtime` | runtime/orchestration 域 schema | `runtime_inbox`, `execution_sessions`, `execution_correlations`, `execution_work_items`, `runtime_timelines`, `runtime_holds`, `runtime_intent_logs`, `idempotency_keys`, `conveyor_queue_memberships`, `device_runtime_projections` |
 | `wes_biz` | WorkLine 业务与投影数据 | `workline_sessions`, `workline_timelines`, `runtime_holds` |
 
 ### 4.2 迁移文件
 
 | 迁移 | 内容 |
 |------|------|
-| `20260626_1140_c0bccb9de6f3` | ExecutionSession + ExecutionCorrelation 建表 |
+| `20260626_1140_c0bccb9de6f3` | ExecutionSession + ExecutionCorrelation 建表；`workline_id` 仅建查询索引，不建立跨 schema WorkLine FK |
 | `20260626_1200_0e9de1e6c7e3` | Device FK ring dissolve |
-| `20260626_1719_f04718a3f04f` | 剩余 runtime/orchestration 表（ExecutionWorkItem, IdempotencyKey, RuntimeIntentLog, RuntimeTimeline, ConveyorQueueMembership, RuntimeHold） |
+| `20260626_1719_f04718a3f04f` | 新增 ExecutionWorkItem、RuntimeInbox、RuntimeIntentLog、RuntimeTimeline、RuntimeHold、ConveyorQueueMembership、IdempotencyKey |
 | `20260702_1913_f88092809f4b` | DeviceRuntimeProjection 建表 |
-| `20260711_1815_b8a28e1bfec8` | RuntimeInbox canonical envelope、五态 claim/fencing 字段与 hot indexes |
+| `20260711_1815_b8a28e1bfec8` | RuntimeInbox canonical envelope、五态 claim/fencing 字段与约束 |
 | `20260711_1819_ec426c628516` | 增加显式 WorklineSession FK，迁移依赖后删除旧 `wes_biz.workline_inbox` |
+| `20260714_1103_e0d58415afc9` | 在 Alembic autocommit block 中并发创建 RuntimeInbox hot indexes |
+| `20260717_0739_fa15ba0aef65` | WorklinePluginBinding 建表，并为三类运行态记录增加 Binding FK 与可空 snapshot pins |
+| `20260727_1742_be496b91f3e3` | 三类运行态记录的既有 binding snapshot pins 改为 NOT NULL；ExecutionWorkItem 新增 mandatory `manifest_version` |
 
 ---
 
@@ -313,7 +355,7 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 
 ### 5.1 为什么 ExecutionSession 和 WorklineSession 并存？
 
-`WorklineSession`（`wes_biz.workline_sessions`）承载 WorkLine 业务会话与设备等待字段；`ExecutionSession`（`wes_runtime.execution_sessions`）承载跨域执行生命周期和 manifest version。两者是并存的显式业务边界，不是兼容期主从表。RuntimeInbox 分别使用 `workline_session_id` 与 `execution_session_id`，相同数值也不得跨命名空间推导。
+`WorklineSession`（`wes_biz.workline_sessions`）承载 WorkLine 业务会话与设备等待字段；`ExecutionSession`（`wes_runtime.execution_sessions`）承载跨域执行生命周期和 manifest version。两者是并存的显式业务边界，不是主从或备用执行路径；两者及 ExecutionWorkItem 都必须固定同一完整 binding pins。RuntimeInbox 分别使用 `workline_session_id` 与 `execution_session_id`，相同数值也不得跨命名空间推导。
 
 ### 5.2 为什么 ExecutionCorrelation 允许 NULL execution_session_id？
 
@@ -343,7 +385,7 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 | Service | 文件 | 职责 |
 |---------|------|------|
 | `RuntimeInboxService` | `services/runtime_inbox/runtime_inbox_service.py` | ACK-before-processing、重试、死信、人工重放 |
-| `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | validation → orchestration → fenced write-back 三阶段处理 |
+| `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | binding/context validation → generated dispatch → typed effect + fenced write-back |
 | `DeviceCommandGateway` | `services/device_command_gateway.py` | 设备命令下发网关 |
 | `DeviceDispatchPolicy` | `services/device_dispatch_policy.py` | 设备调度策略（能力选择、优先级、deadline、限流） |
 | `ConveyorQueueMembershipWriterService` | `services/conveyor_queue_membership_writer_service.py` | 队列 membership 写入 |
@@ -363,8 +405,7 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 
 ### 7.2 单元测试
 
-- `tests/runtime/orchestration/` — runtime/orchestration 域测试
-- `tests/runtime/orchestration/test_phase3_*.py` — Phase 3 closure 测试
+- `tests/runtime/orchestration/` — RuntimeInbox、运行态实体与 service contract 测试
 
 ### 7.3 性能测试
 
@@ -388,8 +429,8 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 | 文档 | 说明 |
 |------|------|
 | `docs/architecture/workline-and-plugin-restructuring.md` | 父设计 §9.2 |
-| `docs/architecture/target-state-contract.md` | 目标态契约 |
-| `docs/architecture/session-correlation-matrix.md` | per-file session FK 迁移矩阵 |
+| `docs/architecture/target-state-contract.md` | Runtime 边界契约 |
+| `docs/architecture/session-correlation-matrix.md` | Session/correlation 关联矩阵 |
 | `docs/architecture/authority-matrix.md` | 外部事实权威来源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand ECS 合同 |
 | `docs/contracts/external-contract-profile.md` | ExternalContractProfile 合同 |

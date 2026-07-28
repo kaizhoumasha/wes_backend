@@ -18,6 +18,19 @@ from src.app.sys.services.event_stream_service import (
 )
 
 
+def _install_test_runner(bridge: RuntimeInboxProcessorBridge, runner: object) -> None:
+    bridge._generated_attempt_runner = runner  # type: ignore[assignment]
+
+    async def _build_request(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(snapshot=SimpleNamespace())
+
+    async def _pin_runtime(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    bridge._build_generated_dispatch_request = _build_request  # type: ignore[method-assign]
+    bridge._pin_attempt_runtime_to_dispatch_snapshot = _pin_runtime  # type: ignore[method-assign]
+
+
 @pytest.mark.asyncio
 async def test_platform_committed_writeback_defers_runtime_sse_event() -> None:
     class Db:
@@ -41,9 +54,9 @@ async def test_platform_committed_writeback_defers_runtime_sse_event() -> None:
 
     db = Db()
     bridge = RuntimeInboxProcessorBridge(
-        plugin_attempt_runner=Runner(),
         writeback_service=WriteBack(),  # type: ignore[arg-type]
     )
+    _install_test_runner(bridge, Runner())
     inbox = SimpleNamespace(
         id=91,
         kind="DEVICE_EVENT",
@@ -116,9 +129,9 @@ async def test_platform_terminal_failure_reports_failure_and_defers_runtime_sse_
 
     db = Db()
     bridge = RuntimeInboxProcessorBridge(
-        plugin_attempt_runner=Runner(),
         writeback_service=WriteBack(),  # type: ignore[arg-type]
     )
+    _install_test_runner(bridge, Runner())
     inbox = SimpleNamespace(
         id=91,
         kind="DEVICE_EVENT",

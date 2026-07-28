@@ -64,6 +64,7 @@ from src.app.wms_integration.ports.notify_pkg_binding_operation import (
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 from tests.support.external_http import StaticTestCredentialProvider, frozen_outbox_namespace
+from tests.support.runtime_binding import seed_runtime_binding
 from tests.support.runtime_inbox_processing_postgresql import with_temporary_runtime_database
 
 if TYPE_CHECKING:
@@ -175,7 +176,20 @@ def _engine(
 
 async def _seed_effect(db: AsyncSession, *, suffix: str) -> _SeededEffect:
     dispatch_key = f"effect-resilience-crash:{suffix}"
-    execution_session = ExecutionSession(workline_id=991, manifest_version="v1", state="RUNNING")
+    workline, binding = await seed_runtime_binding(
+        db,
+        line_code=f"EFFECT-RES-{suffix[-20:]}",
+    )
+    execution_session = ExecutionSession(
+        workline_id=workline.id,
+        plugin_key=binding.plugin_key,
+        manifest_version=binding.contract_version,
+        plugin_binding_id=binding.id,
+        plugin_binding_version=binding.binding_version,
+        plugin_config_hash=binding.typed_config_hash,
+        plugin_index_digest=binding.generated_index_digest,
+        state="RUNNING",
+    )
     db.add(execution_session)
     await db.flush()
     assert execution_session.id is not None
@@ -225,7 +239,20 @@ async def _seed_confirm_inbound_effect(db: AsyncSession, *, suffix: str) -> _See
     """通过 T9 adapter 写入真实 frozen outbox，而不是复制 dispatcher 数据形状。"""
 
     dispatch_key = f"wms-confirm-inbound:WMS:{suffix}"
-    execution_session = ExecutionSession(workline_id=992, manifest_version="v1", state="RUNNING")
+    workline, binding = await seed_runtime_binding(
+        db,
+        line_code=f"CONFIRM-IN-{suffix[-20:]}",
+    )
+    execution_session = ExecutionSession(
+        workline_id=workline.id,
+        plugin_key=binding.plugin_key,
+        manifest_version=binding.contract_version,
+        plugin_binding_id=binding.id,
+        plugin_binding_version=binding.binding_version,
+        plugin_config_hash=binding.typed_config_hash,
+        plugin_index_digest=binding.generated_index_digest,
+        state="RUNNING",
+    )
     db.add(execution_session)
     await db.flush()
     assert execution_session.id is not None
@@ -283,7 +310,20 @@ async def _seed_notify_package_binding_effect(db: AsyncSession, *, suffix: str) 
     package_id = f"PKG-{suffix}"
     pallet_id = f"PALLET-{suffix}"
     dispatch_key = f"wms-notify-pkg-binding:{provider_code}:{package_id}:{pallet_id}"
-    execution_session = ExecutionSession(workline_id=993, manifest_version="v1", state="RUNNING")
+    workline, binding = await seed_runtime_binding(
+        db,
+        line_code=f"NOTIFY-PKG-{suffix[-20:]}",
+    )
+    execution_session = ExecutionSession(
+        workline_id=workline.id,
+        plugin_key=binding.plugin_key,
+        manifest_version=binding.contract_version,
+        plugin_binding_id=binding.id,
+        plugin_binding_version=binding.binding_version,
+        plugin_config_hash=binding.typed_config_hash,
+        plugin_index_digest=binding.generated_index_digest,
+        state="RUNNING",
+    )
     db.add(execution_session)
     await db.flush()
     assert execution_session.id is not None

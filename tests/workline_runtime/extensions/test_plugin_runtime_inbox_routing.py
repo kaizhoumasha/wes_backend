@@ -60,11 +60,10 @@ from src.app.wms_integration.ports.query_inventory_operation import (
                 "result": "SUCCESS",
                 "data": {"diameter_mm": "10"},
             },
-            "PICK_AND_PUT_RESULT",
+            "COMMAND_RESULT",
             {
-                "route": "PICK_AND_PUT_RESULT",
+                "route": "COMMAND_RESULT",
                 "command_code": "CMD-1",
-                "command_type": "PICK_AND_PUT",
                 "result": "SUCCESS",
                 "data": {"diameter_mm": "10"},
                 "error_detail": {},
@@ -73,7 +72,14 @@ from src.app.wms_integration.ports.query_inventory_operation import (
         (
             "TIMER_TIMEOUT",
             "TIMER_TIMEOUT",
-            {"command_code": "CMD-1", "wait_type": "COMMAND_RESULT"},
+            {
+                "logical_route": "BUSINESS_TIMEOUT",
+                "input": {
+                    "route": "BUSINESS_TIMEOUT",
+                    "command_code": "CMD-1",
+                    "wait_type": "COMMAND_RESULT",
+                },
+            },
             "BUSINESS_TIMEOUT",
             {"route": "BUSINESS_TIMEOUT", "command_code": "CMD-1", "wait_type": "COMMAND_RESULT"},
         ),
@@ -285,33 +291,6 @@ async def test_logical_replay_requires_one_recorded_decision_with_logical_key(
         )
         is False
     )
-
-
-@pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
-def test_callback_transports_share_pick_and_put_result_canonical_input(kind: str) -> None:
-    route, raw_input = _canonical_plugin_input(
-        SimpleNamespace(
-            kind=kind,
-            event_type="PICK_AND_PUT_RESULT" if kind == "INTERNAL_EVENT" else "EXTERNAL_HTTP",
-            payload_json={
-                "logical_route": "PICK_AND_PUT_RESULT",
-                "command_code": "CMD-1",
-                "command_type": "PICK_AND_PUT",
-                "result": "SUCCESS",
-                "data": {"measurement_result": "OK"},
-            },
-        )
-    )
-
-    assert route == "PICK_AND_PUT_RESULT"
-    assert raw_input == {
-        "route": "PICK_AND_PUT_RESULT",
-        "command_code": "CMD-1",
-        "command_type": "PICK_AND_PUT",
-        "result": "SUCCESS",
-        "data": {"measurement_result": "OK"},
-        "error_detail": {},
-    }
 
 
 @pytest.mark.asyncio
@@ -567,7 +546,7 @@ async def test_generated_block_uses_pinned_waiting_status_and_session_version() 
         inbox_id=1,
         session_id=2,
         workline_id=3,
-        event_type="PICK_AND_PUT_RESULT",
+        event_type="COMMAND_RESULT",
         payload={},
         plugin_state={"phase": "WAITING_PICK_RESULT"},
         snapshot=AttemptSnapshot(
@@ -634,7 +613,7 @@ async def test_live_block_timeline_recorded_replay_restores_decision_without_ree
             inbox_id=91,
             session_id=41,
             workline_id=8,
-            event_type="PICK_AND_PUT_RESULT",
+            event_type="COMMAND_RESULT",
             payload={},
             plugin_state={"phase": "WAITING_PICK_RESULT"},
             snapshot=snapshot,
@@ -845,7 +824,7 @@ async def test_non_create_mark_ng_pins_material_identity_before_device_effect() 
         inbox_id=1,
         session_id=2,
         workline_id=3,
-        event_type="PICK_AND_PUT_RESULT",
+        event_type="COMMAND_RESULT",
         payload={},
         plugin_state={"phase": "WAITING_PICK_RESULT"},
         snapshot=AttemptSnapshot(
@@ -981,9 +960,12 @@ async def test_plugin_dispatch_prefers_persisted_material_identity_over_conflict
         object(), inbox=inbox, session=session, workline=SimpleNamespace(id=3), snapshot=snapshot
     )
 
-    assert request.raw_facts["business_key"] == "BUSINESS-PERSISTED"
-    assert request.raw_facts["hhpn"] == "HH-PERSISTED"
-    assert request.raw_facts["lot_code"] == "LOT-PERSISTED"
+    from src.app.runtime.workline_plugins.rough_sorter.handlers import build_facts
+
+    facts = build_facts(request.fact_source)
+    assert facts.business_key == "BUSINESS-PERSISTED"
+    assert facts.hhpn == "HH-PERSISTED"
+    assert facts.lot_code == "LOT-PERSISTED"
 
 
 @pytest.mark.asyncio
@@ -1062,7 +1044,9 @@ async def test_plugin_dispatch_uses_root_pkg_code_before_persisted_six_in_one_pk
         ),
     )
 
-    assert request.raw_facts["business_key"] == "PKG-ROOT"
+    from src.app.runtime.workline_plugins.rough_sorter.handlers import build_facts
+
+    assert build_facts(request.fact_source).business_key == "PKG-ROOT"
 
 
 @pytest.mark.asyncio
@@ -1161,9 +1145,206 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_id", "command", "command_code", "expected"),
+    [
+        (None, None, "SC-1", "COMMAND_ID_MISSING"),
+        (91, None, "SC-1", "COMMAND_NOT_FOUND"),
+        (91, SimpleNamespace(task_type=None), "SC-1", "COMMAND_TASK_TYPE_MISSING"),
+        (
+            91,
+            SimpleNamespace(
+                task_type="UNSUPPORTED_ACTION",
+                command_code="SC-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+                status="COMPLETED",
+                result="SUCCESS",
+                result_data={},
+                error_detail={},
+            ),
+            "SC-1",
+            "COMMAND_TASK_TYPE_UNSUPPORTED",
+        ),
+        (
+            91,
+            SimpleNamespace(
+                task_type="SORTING_SOURCE_PICK",
+                command_code="SC-OTHER",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+                status="COMPLETED",
+                result="SUCCESS",
+                result_data={},
+                error_detail={},
+            ),
+            "SC-1",
+            "COMMAND_RESULT_CORRELATION_MISMATCH",
+        ),
+        (
+            91,
+            SimpleNamespace(
+                task_type="SORTING_SOURCE_PICK",
+                command_code="SC-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+                status="COMPLETED",
+                result="SUCCESS",
+                result_data={"authority": "database"},
+                error_detail={},
+            ),
+            "SC-1",
+            "SOURCE_PICK_COMPLETED",
+        ),
+        (
+            91,
+            SimpleNamespace(
+                task_type="SORTING_SOURCE_PICK",
+                command_code="SC-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+                status="FAILED",
+                result="FAILED",
+                result_data={"authority": "database"},
+                error_detail={"error_code": "PERSISTED_COMMAND_FAILED"},
+            ),
+            "SC-1",
+            "HOLD",
+        ),
+        (
+            91,
+            SimpleNamespace(
+                task_type="SORTING_SOURCE_PICK",
+                command_code="SC-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+                status="SENT",
+                result=None,
+                result_data=None,
+                error_detail=None,
+            ),
+            "SC-1",
+            "COMMAND_RESULT_EVIDENCE_INVALID",
+        ),
+    ],
+)
+async def test_command_result_bridge_uses_persisted_command_and_returns_stable_zero_effect_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    command_id: int | None,
+    command: object | None,
+    command_code: str,
+    expected: str,
+) -> None:
+    """COMMAND_RESULT 必须经 command repository 后再进入 generated dispatcher。"""
+
+    from src.app.device.repositories import device_command_repository
+    from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
+
+    config = {"provider_profile": "runtime", "source_arm_role": "SORTING_SOURCE_ARM"}
+    monkeypatch.setattr(
+        workline_plugin_binding_service,
+        "get_pinned",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id=17,
+                binding_version=4,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+                typed_config_json=config,
+                typed_config_hash=sha256_digest(config),
+                is_enabled=True,
+                is_revoked=False,
+                environment="sandbox",
+                valid_from=None,
+                valid_until=None,
+            )
+        ),
+    )
+    get_by_id = AsyncMock(return_value=command)
+    monkeypatch.setattr(device_command_repository, "get_by_id", get_by_id)
+    snapshot = AttemptSnapshot(
+        processor_token="smt-command-result",
+        session_version=1,
+        plugin_state_version=0,
+        binding_id=17,
+        binding_version=4,
+        plugin_config_hash=sha256_digest(config),
+        index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+    )
+    inbox = SimpleNamespace(
+        id=91,
+        command_id=command_id,
+        correlation_id="workline-session:session-2",
+        workline_id=3,
+        workline_session_id=2,
+        kind="COMMAND_RESULT",
+        event_type="COMMAND_RESULT",
+        payload_json={
+            "command_code": command_code,
+            "command_type": "FORGED_CALLBACK_TYPE",
+            "result": "SUCCESS",
+        },
+    )
+    session = SimpleNamespace(
+        id=2,
+        session_code="session-2",
+        workline_id=3,
+        plugin_key="smt_sorting_inbound",
+        contract_version="smt_sorting_inbound.v1",
+        plugin_binding_id=17,
+        plugin_state_json={"phase": "WAITING_SOURCE_PICK", "current_correlation": "SC-1"},
+        context_json={},
+        current_material_unit_id=None,
+        awaiting_device_command_code="SC-1",
+    )
+
+    db = object()
+    request = await _build_plugin_dispatch_request(
+        db, inbox=inbox, session=session, workline=SimpleNamespace(id=3), snapshot=snapshot
+    )
+    write_set = await GeneratedPluginAttemptRunner().run(
+        PluginAttemptContext(
+            attempt_id="smt-command-result",
+            inbox_id=91,
+            session_id=2,
+            workline_id=3,
+            event_type="COMMAND_RESULT",
+            payload=inbox.payload_json,
+            plugin_state=session.plugin_state_json,
+            snapshot=snapshot,
+            runtime=SimpleNamespace(gateway=object()),
+            dispatch_request=request,
+        )
+    )
+
+    assert write_set.outcome_code == expected
+    if expected != "SOURCE_PICK_COMPLETED":
+        assert write_set.intents == ()
+    if getattr(command, "result", None) == "FAILED":
+        assert request.raw_input["result"] == "FAILED"
+        assert request.raw_input["data"] == {"authority": "database"}
+        assert request.raw_input["error_detail"] == {"error_code": "PERSISTED_COMMAND_FAILED"}
+    if command_id is None:
+        get_by_id.assert_not_awaited()
+    else:
+        get_by_id.assert_awaited_once_with(db, command_id)
+
+
+@pytest.mark.asyncio
 async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from src.app.device.repositories import device_command_repository
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
     config = {
@@ -1198,8 +1379,35 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
             )
         ),
     )
+    monkeypatch.setattr(
+        device_command_repository,
+        "get_by_id",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                task_type="PICK_AND_PUT",
+                command_code="CMD-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="rough_sorter",
+                contract_version="rough_sorter.v2",
+                status="COMPLETED",
+                result="SUCCESS",
+                result_data={
+                    "PkgID": "PKG-1",
+                    "HHPN": "HH-1",
+                    "LotCode": "LOT-1",
+                    "measurement_result": "OK",
+                    "reel_diameter": 180,
+                    "reel_thickness": 16,
+                },
+                error_detail={},
+            )
+        ),
+    )
     session = SimpleNamespace(
         id=2,
+        session_code="session-2",
+        workline_id=3,
         version=7,
         plugin_state_version=2,
         plugin_state_json={"phase": "PICK_TO_PIPELINE", "current_correlation": "CMD-1"},
@@ -1223,6 +1431,10 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     )
     inbox = SimpleNamespace(
         id=1,
+        command_id=91,
+        correlation_id="workline-session:session-2",
+        workline_id=3,
+        workline_session_id=2,
         kind="COMMAND_RESULT",
         event_type="COMMAND_RESULT",
         payload_json={

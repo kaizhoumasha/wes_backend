@@ -96,8 +96,6 @@ def test_file_index_lists_runtime_inbox_migrations_operations_ci_tests_and_respo
     index = _text(FILE_INDEX)
     required_paths = (
         "Jenkinsfile.backend-ci",
-        "20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py",
-        "20260711_1819_ec426c628516_retire_workline_inbox.py",
         "scripts/data/reset_runtime_data.py",
         "scripts/workline_inbox_retirement_guardrail.py",
         "scripts/run_runtime_inbox_postgresql_acceptance.py",
@@ -109,6 +107,9 @@ def test_file_index_lists_runtime_inbox_migrations_operations_ci_tests_and_respo
     )
 
     assert all(path in index for path in required_paths)
+    assert (
+        "Runtime schema revision canonical inventory：`docs/architecture/runtime-orchestration-spec.md` §4.2" in index
+    )
     navigable_index = index.split("## 2. 核心目录与文件索引", maxsplit=1)[1]
     missing_paths = sorted(
         path for path in _repo_paths_in_backticks(navigable_index) if not (REPO_ROOT / path).exists()

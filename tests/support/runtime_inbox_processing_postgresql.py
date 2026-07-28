@@ -204,6 +204,7 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
             execution_session_id=execution_session.id,
             correlation_id=correlation.correlation_id,
             plugin_key=session.plugin_key,
+            manifest_version=session.contract_version,
             plugin_binding_id=binding.id,
             plugin_binding_version=binding.binding_version,
             plugin_config_hash=config_hash,

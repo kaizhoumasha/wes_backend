@@ -7,6 +7,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _find_removed_chain_tokens(text: str, tokens: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(token for token in tokens if token in text)
+
+
 def test_observability_contract_declares_stable_runtime_signals() -> None:
     path = REPO_ROOT / "docs" / "contracts" / "observability-contract.md"
     text = path.read_text(encoding="utf-8")
@@ -73,3 +77,186 @@ def test_runtime_toggle_governance_declares_release_gate_entrypoint() -> None:
         "--passed-check",
     ):
         assert token in text
+
+
+def test_runtime_current_docs_match_execution_session_and_generated_plugin_contracts() -> None:
+    current_docs = {
+        path.relative_to(REPO_ROOT): path.read_text(encoding="utf-8")
+        for path in (REPO_ROOT / "docs").rglob("*.md")
+        if "archive" not in path.relative_to(REPO_ROOT / "docs").parts
+    }
+    file_index = current_docs[Path("docs/architecture/file_index.md")]
+
+    for false_uniqueness in (
+        "按 `trace_id`/`session_id`/`business_key` 唯一",
+        "按 `trace_id` / `business_key` 唯一",
+        "`workline_id` + `business_key` 业务唯一",
+    ):
+        assert all(false_uniqueness not in text for text in current_docs.values())
+    for legacy_decorator in ("@on_event()", "@on_command()", "@step()"):
+        assert all(legacy_decorator not in text for text in current_docs.values())
+    for current_dispatch_contract in ("Definition", "ROUTE_HANDLERS", "generated index", "handler registry"):
+        assert current_dispatch_contract in file_index
+
+
+def test_active_runtime_docs_do_not_describe_removed_plugin_execution_chain(tmp_path: Path) -> None:
+    active_runtime_docs = (
+        "docs/architecture/file_index.md",
+        "docs/architecture/runtime-orchestration-spec.md",
+        "docs/architecture/runtime-ownership-map.md",
+        "docs/business/workline_plugin_architecture_design.md",
+        "docs/business/workline_runtime_workflow_guide.md",
+        "docs/business/smt_sorter_inbound_workflow_guide.md",
+        "docs/plugin_development_guide.md",
+    )
+    removed_chain_tokens = (
+        "Workline" + chr(73) + "nbox",
+        "workline_" + "orchestrator",
+        "src." + "workline_runtime",
+        "Null" + "Plugin",
+        "Orchestrator" + "Service",
+        "Inbox" + "Consumer",
+        "src/" + "workline_plugins",
+    )
+    retired_plugin_identities = ("SMT_SORTING_" + "INBOUND",)
+
+    assert all("/archive/" not in relative_path for relative_path in active_runtime_docs)
+    fixture = tmp_path / "current-runtime-doc.md"
+    fixture.write_text("\n".join(removed_chain_tokens), encoding="utf-8")
+    fixture_text = fixture.read_text(encoding="utf-8")
+    assert _find_removed_chain_tokens(fixture_text, removed_chain_tokens) == removed_chain_tokens
+
+    for relative_path in active_runtime_docs:
+        text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        offenders = _find_removed_chain_tokens(text, removed_chain_tokens)
+        assert not offenders, f"{relative_path} 仍包含已删除链路 {offenders}"
+        retired_identities = tuple(identity for identity in retired_plugin_identities if identity in text)
+        assert not retired_identities, f"{relative_path} 仍包含已退役插件标识 {retired_identities}"
+
+
+def test_runtime_orchestration_spec_matches_canonical_migration_and_schema_facts() -> None:
+    runtime_spec = (REPO_ROOT / "docs" / "architecture" / "runtime-orchestration-spec.md").read_text(encoding="utf-8")
+    file_index = (REPO_ROOT / "docs" / "architecture" / "file_index.md").read_text(encoding="utf-8")
+
+    assert "FK 到 `wes_biz.work_lines`" not in runtime_spec
+    for expected_migration_fact in (
+        "`20260626_1140_c0bccb9de6f3` | ExecutionSession + ExecutionCorrelation 建表；"
+        "`workline_id` 仅建查询索引，不建立跨 schema WorkLine FK",
+        "`20260626_1719_f04718a3f04f` | 新增 ExecutionWorkItem、RuntimeInbox、RuntimeIntentLog、"
+        "RuntimeTimeline、RuntimeHold、ConveyorQueueMembership、IdempotencyKey",
+        "`20260702_1913_f88092809f4b` | DeviceRuntimeProjection 建表",
+        "`20260717_0739_fa15ba0aef65` | WorklinePluginBinding 建表，并为三类运行态记录增加 Binding FK 与"
+        "可空 snapshot pins",
+        "`20260727_1742_be496b91f3e3` | 三类运行态记录的既有 binding snapshot pins 改为 NOT NULL；"
+        "ExecutionWorkItem 新增 mandatory `manifest_version`",
+    ):
+        assert expected_migration_fact in runtime_spec
+    revision_1815_line = next(line for line in runtime_spec.splitlines() if "`20260711_1815_b8a28e1bfec8`" in line)
+    revision_1103_line = next(line for line in runtime_spec.splitlines() if "`20260714_1103_e0d58415afc9`" in line)
+    assert "canonical envelope、五态 claim/fencing 字段与约束" in revision_1815_line
+    assert "index" not in revision_1815_line.lower()
+    assert "autocommit block" in revision_1103_line
+    assert "RuntimeInbox hot indexes" in revision_1103_line
+
+    for expected_entity_fact in (
+        "**表**: `wes_runtime.runtime_timelines`",
+        "**用途**: ExecutionSession 的 append-only 执行轨迹",
+        "**表**: `wes_runtime.runtime_holds`",
+        "**用途**: ExecutionSession 内按 object/device/resource scope 暂停新 effect 的运行时闸门",
+        "**表**: `wes_biz.workline_timelines`",
+        "**用途**: WorklineSession 的业务排障与审计时间线",
+        "**表**: `wes_biz.runtime_holds`",
+        "**用途**: WorkLine 业务异常恢复与人工处置的权威事实",
+    ):
+        assert expected_entity_fact in runtime_spec
+    runtime_schema_line = next(line for line in runtime_spec.splitlines() if line.startswith("| `wes_runtime`"))
+    business_schema_line = next(line for line in runtime_spec.splitlines() if line.startswith("| `wes_biz`"))
+    assert "`runtime_timelines`" in runtime_schema_line
+    assert "`runtime_holds`" in runtime_schema_line
+    assert "`workline_timelines`" in business_schema_line
+    assert "`runtime_holds`" in business_schema_line
+
+    assert (
+        "Runtime schema revision canonical inventory：`docs/architecture/runtime-orchestration-spec.md` §4.2"
+        in file_index
+    )
+    assert "versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py" not in file_index
+
+    migration_root = REPO_ROOT / "migrations" / "versions"
+    revision_1140 = (migration_root / "20260626_1140_c0bccb9de6f3_add_execution_session_correlation.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"execution_sessions"' in revision_1140
+    assert '"execution_correlations"' in revision_1140
+    assert '"ix_wes_runtime_execution_sessions_workline_id"' in revision_1140
+    assert "wes_biz.work_lines" not in revision_1140
+
+    revision_1719 = (migration_root / "20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py").read_text(
+        encoding="utf-8"
+    )
+    for table_name in (
+        "execution_work_items",
+        "runtime_inbox",
+        "runtime_intent_logs",
+        "runtime_timelines",
+        "runtime_holds",
+        "conveyor_queue_memberships",
+        "idempotency_keys",
+    ):
+        assert f'op.create_table(\n        "{table_name}"' in revision_1719
+    assert 'op.create_table(\n        "execution_sessions"' not in revision_1719
+    assert 'op.create_table(\n        "execution_correlations"' not in revision_1719
+
+    revision_1815 = (migration_root / "20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py").read_text(encoding="utf-8")
+    assert "_INDEXES: tuple[tuple[str, tuple[str, ...], str | None], ...] = ()" in revision_1815
+    assert "热表索引由 Revision C" in revision_1815
+
+    revision_1103 = (migration_root / "20260714_1103_e0d58415afc9_create_runtime_inbox_indexes_.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_INDEXES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (" in revision_1103
+    assert "with op.get_context().autocommit_block():" in revision_1103
+    assert "postgresql_concurrently=True" in revision_1103
+
+    revision_1913 = (migration_root / "20260702_1913_f88092809f4b_add_device_runtime_projection.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'op.create_table(\n        "device_runtime_projections"' in revision_1913
+
+    revision_0739 = (migration_root / "20260717_0739_fa15ba0aef65_add_workline_plugin_runtime_binding.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"workline_plugin_bindings"' in revision_0739
+    assert "op.create_foreign_key(" in revision_0739
+    assert '["plugin_binding_id"]' in revision_0739
+
+    revision_1742 = (migration_root / "20260727_1742_be496b91f3e3_enforce_runtime_plugin_binding.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'sa.Column("manifest_version", sa.String(length=60), nullable=False)' in revision_1742
+    assert "op.create_foreign_key(" not in revision_1742
+    for table_name in ("workline_sessions", "execution_sessions", "execution_work_items"):
+        assert f'"{table_name}"' in revision_1742
+
+    runtime_timeline_model = (REPO_ROOT / "src/app/runtime/orchestration/runtime_timeline.py").read_text(
+        encoding="utf-8"
+    )
+    runtime_hold_model = (REPO_ROOT / "src/app/runtime/orchestration/runtime_hold.py").read_text(encoding="utf-8")
+    workline_timeline_model = (REPO_ROOT / "src/app/runtime/orchestration/models/timeline.py").read_text(
+        encoding="utf-8"
+    )
+    business_hold_model = (REPO_ROOT / "src/app/runtime/orchestration/models/runtime_hold.py").read_text(
+        encoding="utf-8"
+    )
+    assert '__tablename__ = "runtime_timelines"' in runtime_timeline_model
+    assert "__schema__ = RUNTIME_SCHEMA" in runtime_timeline_model
+    assert "execution_session_id: int" in runtime_timeline_model
+    assert '__tablename__ = "runtime_holds"' in runtime_hold_model
+    assert "__schema__ = RUNTIME_SCHEMA" in runtime_hold_model
+    assert "execution_session_id: int" in runtime_hold_model
+    assert '__tablename__: ClassVar[str] = "workline_timelines"' in workline_timeline_model
+    assert "__schema__ = SchemaType.BIZ.value" in workline_timeline_model
+    assert "session_id: int" in workline_timeline_model
+    assert '__tablename__: ClassVar[Literal["runtime_holds"]] = "runtime_holds"' in business_hold_model
+    assert "__schema__ = SchemaType.BIZ.value" in business_hold_model
+    assert "workline_id: int" in business_hold_model

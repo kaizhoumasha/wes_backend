@@ -1,4 +1,4 @@
-"""RuntimeInboxProcessorService composition (Task 5 三阶段 Processor 拆分).
+"""RuntimeInbox generated-only processor composition（Task 5 三阶段拆分）。
 
 组合 Validation → Orchestration → Write-back 三阶段.
 提供 RuntimeInbox 唯一生产入口 `process_claimed(db, claim)`，由 Celery task 调用。
@@ -7,7 +7,7 @@
 - claim 阶段: 由唯一 RuntimeInboxRepository.claim_received_with_token 持有
   (调用方负责).
 - validation 阶段: RuntimeInboxValidationService.
-- orchestration 阶段: RuntimeInboxProcessorService 委托 OrchestratorService.
+- orchestration 阶段: generated plugin runner 只返回 immutable write set.
 - write-back 阶段: RuntimeInboxWriteBackService.
 - ESTOP / TIMER_TIMEOUT / duplicate entry / late command / missing context
   均由 RuntimeInbox-owned 三阶段服务承载。
@@ -34,7 +34,6 @@ from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
 )
-from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.repositories.material_unit_repository import (
     MaterialUnitRepository,
 )
@@ -55,9 +54,6 @@ from src.app.runtime.orchestration.runtime_intent import (
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
     _canonical_workline_session_id,
 )
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
-    LegacyUnboundSessionProcessor,
-)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxReplaySourceValidation,
@@ -71,7 +67,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
-    WriteBackState,
     _build_runtime_session_updated_event_payload,
     _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
@@ -79,7 +74,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     _record_late_command_result_archive_timeline,
     _require_fenced_update,
     _session_status_value,
-    _session_write_snapshot,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
 from src.app.runtime.system_capabilities.gateway import AttemptCloseReport, SystemCapabilityGateway
@@ -92,7 +86,6 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptSnapshot,
     AttemptWriteSet,
     PluginAttemptContext,
-    PluginAttemptRunner,
     PluginWriteSetLimits,
     WriteDisposition,
     bound_attempt_write_set,
@@ -100,20 +93,22 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
 from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS, PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import (
     PinnedPluginSnapshot,
+    PluginAttemptFactSource,
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
-from src.app.runtime.workline_plugins.legacy_compatibility import is_supported_legacy_unbound_session
 from src.app.runtime.workline_plugins.registry import parse_workline_six_in_one
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
     WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
+from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.utils import payload_dict
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.value_normalization import (
+    optional_enum_str,
     optional_int,
     optional_str,
     resolve_entity_id,
@@ -414,7 +409,7 @@ def _bind_command_correlation(next_state: Any, intents: tuple[RuntimeIntent, ...
         intent.payload_json.get("command_code")
         for intent in intents
         if intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY
-        and intent.capability_key == "device.device_command_write"
+        and intent.payload_json.get("result_policy") == "COMMAND_RESULT"
         and isinstance(intent.payload_json.get("command_code"), str)
     ]
     if len(command_codes) != 1 or getattr(next_state, "current_correlation", None) is not None:
@@ -445,31 +440,16 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
     event_type = string_value(getattr(inbox, "event_type", None))
     declared_route = optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
     callback_route = declared_route or event_type
-    if kind == "COMMAND_RESULT" or (
-        kind in {"INTERNAL_EVENT", "EXTERNAL_HTTP"} and callback_route == "PICK_AND_PUT_RESULT"
-    ):
+    if kind == "COMMAND_RESULT":
         command_code = optional_str(payload.get("command_code"))
         if command_code is None:
             raise ValueError("command correlation is required")
-        return "PICK_AND_PUT_RESULT", {
-            "route": "PICK_AND_PUT_RESULT",
+        return "COMMAND_RESULT", {
+            "route": "COMMAND_RESULT",
             "command_code": command_code,
-            "command_type": optional_str(payload.get("command_type"))
-            or optional_str(payload.get("task_type"))
-            or "PICK_AND_PUT",
             "result": string_value(payload.get("result") or "ERROR").upper(),
             "data": payload_dict(payload.get("data")),
             "error_detail": payload_dict(payload.get("error_detail")),
-        }
-    if kind == "TIMER_TIMEOUT" or event_type == "TIMER_TIMEOUT":
-        data = payload_dict(payload.get("data")) or payload
-        command_code = optional_str(data.get("command_code"))
-        if command_code is None:
-            raise ValueError("command correlation is required")
-        return "BUSINESS_TIMEOUT", {
-            "route": "BUSINESS_TIMEOUT",
-            "command_code": command_code,
-            "wait_type": optional_str(data.get("wait_type")) or "COMMAND_RESULT",
         }
     if kind == "REPLAY_REQUEST" or (kind == "INTERNAL_EVENT" and callback_route == "REPLAY_REQUEST"):
         return "REPLAY_REQUEST", {
@@ -482,7 +462,8 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
         raise ValueError("raw SYSTEM_CAPABILITY_RESULT is not a plugin route")
     if not route:
         raise ValueError("plugin logical route is required")
-    return route, payload
+    declared_input = payload_dict(payload.get("input"))
+    return route, declared_input or payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -655,9 +636,6 @@ def _is_lifecycle_only_external_callback(inbox: Any, payload: dict[str, Any]) ->
     """识别已在 ingress 完成副作用、无需运行时能力编排的外部回调。"""
     if _kind_value(inbox) != "EXTERNAL_HTTP":
         return False
-    callback_route = optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
-    if callback_route == "PICK_AND_PUT_RESULT":
-        return False
     attributes = payload_dict(payload.get("attributes"))
     return (
         optional_str(payload.get("runtime_capability")) is None
@@ -686,10 +664,16 @@ def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
 
 
 def _plugin_write_set_requires_outbox_dispatch(write_set: AttemptWriteSet) -> bool:
-    """插件设备命令写入会创建 SystemOutbox，提交后必须即时触发派发。"""
+    """插件声明的 OUTBOX_ASYNC capability 提交后必须即时触发派发。"""
+
+    from src.app.runtime.system_capabilities.definition import EffectCompletionMode
+    from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 
     return any(
-        intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY and intent.capability_key == "device.device_command_write"
+        intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY
+        and (definition := SYSTEM_CAPABILITY_INDEX.get((intent.capability_key or "", intent.contract_version or "")))
+        is not None
+        and definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
         for intent in write_set.intents
     )
 
@@ -736,12 +720,11 @@ class RuntimeInboxProcessorBridge:
         inbox_service: RuntimeInboxService | None = None,
         inbox_repository: RuntimeInboxRepository | None = None,
         replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
-        plugin_attempt_runner: PluginAttemptRunner | None = None,
+        plugin_dispatcher: WorklinePluginDispatcher | None = None,
         recorded_replay_service: TimelineRecordedReplayService | None = None,
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
         material_unit_repository: MaterialUnitRepository | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
-        processor_service: LegacyUnboundSessionProcessor | Any | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._inbox_service = inbox_service or runtime_inbox_service
@@ -751,14 +734,11 @@ class RuntimeInboxProcessorBridge:
             self._inbox_repository
         )
         # 平台 binding 只进入 generated dispatcher；destructive switch 后禁止 legacy fallback。
-        self._plugin_attempt_runner = plugin_attempt_runner or GeneratedPluginAttemptRunner()
+        self._generated_attempt_runner = GeneratedPluginAttemptRunner(dispatcher=plugin_dispatcher)
         self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
         self._material_unit_repository = material_unit_repository or default_material_unit_repository
         self._queue_gateway = queue_gateway
-        # 仅未绑定迁移会话进入兼容 processor；任何已绑定会话始终由
-        # GeneratedPluginAttemptRunner fail closed，禁止跨路径回落。
-        self._processor_service = processor_service or LegacyUnboundSessionProcessor()
 
     def _enqueue_outbox_dispatch(self) -> None:
         """提交后的即时触发失败不撤销业务事务，Beat 继续承担兜底。"""
@@ -875,6 +855,25 @@ class RuntimeInboxProcessorBridge:
         )
         await runtime.replace_with(replacement)
         return provider_profile
+
+    async def _build_generated_dispatch_request(
+        self,
+        db: Any,
+        *,
+        inbox: Any,
+        session: Any,
+        workline: Any,
+        snapshot: AttemptSnapshot,
+    ) -> PluginDispatchRequest:
+        """构造 generated dispatcher 的不可变请求；生产路径不允许跳过。"""
+
+        return await _build_plugin_dispatch_request(
+            db,
+            inbox=inbox,
+            session=session,
+            workline=workline,
+            snapshot=snapshot,
+        )
 
     async def claim_and_process_batch(
         self,
@@ -1169,89 +1168,6 @@ class RuntimeInboxProcessorBridge:
         result["processed"] += 1
         return result
 
-    async def _process_legacy_unbound_attempt(
-        self,
-        db: AsyncSession,
-        *,
-        context: _ClaimedInboxContext,
-        devices_by_role: dict[str, list[Any]],
-        services: Any,
-    ) -> ProcessResult:
-        """处理迁移期未绑定 Session 的隔离兼容路径。"""
-        result = _empty_result()
-        if not is_supported_legacy_unbound_session(context.session, context.workline):
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
-                    inbox_id=context.inbox_pk,
-                    lease_token=context.processor_token,
-                    error_code="LEGACY_PLUGIN_IDENTITY_UNSUPPORTED",
-                    error_message="未绑定 Session 的插件 identity 不在迁移期兼容白名单",
-                    retryable=False,
-                ),
-                action="mark_failed",
-                inbox_id=context.inbox_pk,
-            )
-            await db.commit()
-            result["failed"] += 1
-            result["processed"] += 1
-            return result
-
-        write_state = WriteBackState()
-        session_snapshot = _session_write_snapshot(context.session)
-        write_callback = self._writeback_service.build_write_callback(
-            db,
-            session=context.session,
-            workline=context.workline,
-            inbox=context.inbox,
-            devices_by_role=devices_by_role,
-            device=context.device,
-            command=context.command,
-            inbox_pk=context.inbox_pk,
-            session_snapshot=session_snapshot,
-            sse_workline_id=resolve_entity_id(context.workline),
-            sse_session_id=resolve_entity_id(context.session),
-            processor_token=context.processor_token,
-            state=write_state,
-        )
-        orch_result = await self._processor_service.process(
-            db,
-            session=context.session,
-            workline=context.workline,
-            inbox=context.inbox,
-            devices_by_role=devices_by_role,
-            services=services,
-            trace_id=getattr(context.inbox, "trace_id", None) or "",
-            write_callback=write_callback,
-        )
-        if orch_result.success:
-            if not write_state.write_effects_applied:
-                raise RuntimeError("WRITE lock callback was not executed for successful legacy orchestrator result")
-            if write_state.disposition == WriteBackDisposition.RESOURCE_RETRY:
-                result["resource_wait"] += 1
-            else:
-                result["success"] += 1
-            if write_state.enqueue_outbox_dispatch:
-                self._enqueue_outbox_dispatch()
-        else:
-            error_msg = orch_result.error or "Unknown legacy orchestrator error"
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
-                    inbox_id=context.inbox_pk,
-                    lease_token=context.processor_token,
-                    error_code=orch_result.error_code or ErrorCode.PLUGIN_EXECUTION_FAILED.value,
-                    error_message=error_msg,
-                    retryable=True,
-                ),
-                action="mark_failed",
-                inbox_id=context.inbox_pk,
-            )
-            await db.commit()
-            result["failed"] += 1
-        result["processed"] += 1
-        return result
-
     @staticmethod
     async def _ensure_safety_checked(
         db: AsyncSession,
@@ -1413,27 +1329,18 @@ class RuntimeInboxProcessorBridge:
         if terminal_result is not None:
             return terminal_result
 
-        if isinstance(getattr(session, "plugin_binding_id", None), int):
-            return await self._process_platform_plugin_attempt(
-                db,
-                inbox=inbox,
-                session=session,
-                workline=workline,
-                resolved_event_type=resolved_event_type,
-                processor_token=processor_token,
-                attempt_runtime=attempt_runtime,
-                services=services,
-                devices_by_role=devices_by_role,
-            )
-
-        # ========== Stage 2/3: migration-period unbound compatibility ==========
-        # 迁移前 Session 没有 immutable binding；在 drain/backfill 完成前继续走
-        # 隔离兼容 processor，避免把已接收业务事件终止为不可重试失败。
-        return await self._process_legacy_unbound_attempt(
+        # ========== Stage 2/3: generated plugin attempt ==========
+        # Context loader 已强制校验 immutable binding；处理链不再保留未绑定分支。
+        return await self._process_platform_plugin_attempt(
             db,
-            context=context,
-            devices_by_role=devices_by_role,
+            inbox=inbox,
+            session=session,
+            workline=workline,
+            resolved_event_type=resolved_event_type,
+            processor_token=processor_token,
+            attempt_runtime=attempt_runtime,
             services=services,
+            devices_by_role=devices_by_role,
         )
 
     async def process_claimed(
@@ -1477,6 +1384,28 @@ class RuntimeInboxProcessorBridge:
                 processor_token=processor_token,
                 attempt_runtime=attempt_runtime,
             )
+
+        except PluginBindingAdmissionError as e:
+            diagnostic_error_code = e.error_code or ErrorCode.UNKNOWN
+            retryable = e.error_code is None
+            logger.warning(
+                f"Inbox {inbox_pk_text} plugin binding admission failed: "
+                f"code={diagnostic_error_code.value}, message={e}"
+            )
+            await self._record_processing_failure(
+                db,
+                diagnostic_inbox=diagnostic_inbox,
+                inbox_pk=inbox_pk,
+                processor_token=processor_token,
+                diagnostic_error_code=diagnostic_error_code,
+                failure_error_code=diagnostic_error_code.value,
+                diagnostic_message=str(e),
+                failure_message=str(e),
+                retryable=retryable,
+                mark_failure_log=f"Inbox {inbox_pk_text} plugin binding admission 失败补记失败",
+            )
+            result["failed"] += 1
+            result["processed"] += 1
 
         except SessionResolveError as e:
             logger.warning(f"Inbox {inbox_pk_text} session resolve failed: {e}")
@@ -1596,24 +1525,22 @@ class RuntimeInboxProcessorBridge:
             material_unit_version=material_fact_version,
             devices_by_role=devices_by_role,
         )
-        dispatch_request = None
-        if isinstance(self._plugin_attempt_runner, GeneratedPluginAttemptRunner):
-            dispatch_request = await _build_plugin_dispatch_request(
-                db,
-                inbox=inbox,
-                session=session,
-                workline=workline,
-                snapshot=snapshot,
-            )
-            await self._pin_attempt_runtime_to_dispatch_snapshot(
-                db,
-                runtime=attempt_runtime,
-                snapshot=dispatch_request.snapshot,
-            )
-            _configure_attempt_runtime_ports(
-                attempt_runtime,
-                services=services,
-            )
+        dispatch_request = await self._build_generated_dispatch_request(
+            db,
+            inbox=inbox,
+            session=session,
+            workline=workline,
+            snapshot=snapshot,
+        )
+        await self._pin_attempt_runtime_to_dispatch_snapshot(
+            db,
+            runtime=attempt_runtime,
+            snapshot=dispatch_request.snapshot,
+        )
+        _configure_attempt_runtime_ports(
+            attempt_runtime,
+            services=services,
+        )
         context = PluginAttemptContext(
             attempt_id=processor_token,
             inbox_id=inbox_id,
@@ -1637,7 +1564,7 @@ class RuntimeInboxProcessorBridge:
         # Stage 2 不接收 db/session/repository。Recorded replay 直接解码，
         # 因此不会调用 runner 或 Gateway handler。
         if replay_resolution is None:
-            write_set = await self._plugin_attempt_runner.run(context)
+            write_set = await self._generated_attempt_runner.run(context)
         else:
             write_set = _write_set_from_recorded_replay(replay_resolution, fallback_state=context.plugin_state)
         write_set = _bounded_plugin_write_set(
@@ -1730,10 +1657,6 @@ async def _build_plugin_dispatch_request(
     """在 Stage 1 固定 binding/config/facts，Stage 2 只消费 immutable request。"""
 
     _ = workline
-    from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
-        RoughSorterBindingSnapshot,
-    )
-    from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts
     from src.app.workline.services.plugin_binding_service import (
         WorklinePluginBindingService,
         workline_plugin_binding_service,
@@ -1771,14 +1694,45 @@ async def _build_plugin_dispatch_request(
         raise ValueError("plugin identity is required")
     route, raw_input = _canonical_plugin_input(inbox)
     command_id = optional_int(getattr(inbox, "command_id", None))
-    if route == "PICK_AND_PUT_RESULT" and command_id is not None:
+    route_diagnostic: str | None = None
+    if route == "COMMAND_RESULT" and command_id is None:
+        route_diagnostic = "COMMAND_ID_MISSING"
+    elif route == "COMMAND_RESULT":
         from src.app.device.repositories import device_command_repository
 
         command = await device_command_repository.get_by_id(db, command_id)
-        command_type = optional_str(getattr(command, "task_type", None))
-        if command_type in {"PICK_AND_PUT", "MOVE_FORWARD", "MOVE_TO_NG"}:
-            # 外部 callback 不负责声明动作类型；始终以 command_id 对应的权威命令为准。
-            raw_input = {**raw_input, "command_type": command_type}
+        command_type = optional_str(getattr(command, "task_type", None)) if command is not None else None
+        if command is None:
+            route_diagnostic = "COMMAND_NOT_FOUND"
+        elif command_type is None:
+            route_diagnostic = "COMMAND_TASK_TYPE_MISSING"
+        else:
+            command_status = optional_enum_str(getattr(command, "status", None))
+            command_result = optional_enum_str(getattr(command, "result", None))
+            # 外部 callback 只负责关联 command_id；动作类型和执行结果都来自已持久化命令。
+            # 对非法终态仍提供可解析的 ERROR 输入，但 route diagnostic 会保证插件零副作用。
+            raw_input = {
+                **raw_input,
+                "command_type": command_type,
+                "result": command_result if command_result in {"SUCCESS", "FAILED"} else "ERROR",
+                "data": deepcopy(payload_dict(getattr(command, "result_data", None))),
+                "error_detail": deepcopy(payload_dict(getattr(command, "error_detail", None))),
+            }
+            authority_matches = _command_result_authority_matches(
+                inbox=inbox,
+                session=session,
+                workline=workline,
+                binding=binding,
+                command=command,
+                payload_command_code=optional_str(raw_input.get("command_code")),
+            )
+            if not authority_matches:
+                route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
+            elif (command_status, command_result) not in {
+                ("COMPLETED", "SUCCESS"),
+                ("FAILED", "FAILED"),
+            }:
+                route_diagnostic = "COMMAND_RESULT_EVIDENCE_INVALID"
     replay_digest_matches = await _replay_digest_matches_source(
         db,
         inbox=inbox,
@@ -1786,45 +1740,25 @@ async def _build_plugin_dispatch_request(
         raw_input=raw_input,
     )
     state = deepcopy(dict(getattr(session, "plugin_state_json", {}) or {}))
-    data = payload_dict(raw_input.get("data"))
     session_context = payload_dict(getattr(session, "context_json", None))
-    six_in_one = payload_dict(session_context.get("six_in_one"))
     material_fact: dict[str, Any] = {}
     material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
     if material_unit_id is not None:
         material_fact = await default_material_unit_repository.get_plugin_fact_payload(db, material_unit_id) or {}
-    material_six_in_one = payload_dict(material_fact.get("six_in_one"))
-    # MaterialUnit 一旦持久化即成为业务身份权威；业务键严格按 root identity、
-    # root pkg_code、six_in_one.PkgID 取值，避免嵌套历史快照遮蔽根身份。
-    identity_sources = (material_six_in_one, material_fact) if material_fact else (data, six_in_one, session_context)
-    if material_fact:
-        business_key = (
-            optional_str(material_fact.get("material_identity_key"))
-            or optional_str(material_fact.get("pkg_code"))
-            or optional_str(material_six_in_one.get("PkgID"))
-        )
-    else:
-        business_key = _first_plugin_fact(
-            *identity_sources,
-            names=("material_identity_key", "business_key", "pkg_code", "PkgID"),
-        )
-    hhpn = _first_plugin_fact(*identity_sources, names=("HHPN", "hhpn"))
-    lot_code = _first_plugin_fact(*identity_sources, names=("LotCode", "lot_code"))
     command_code = optional_str(raw_input.get("command_code"))
     awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
-    facts = RoughSorterFacts(
-        business_key=business_key,
-        hhpn=hhpn,
-        lot_code=lot_code,
-        correlation_matches=command_code is None or (awaiting_code is not None and command_code == awaiting_code),
-        replay_digest_matches=replay_digest_matches,
-        binding_snapshot=RoughSorterBindingSnapshot(
-            binding_id=binding_id,
-            binding_version=snapshot.binding_version,
-            profile_identity=profile_identity,
-            plugin_config_hash=snapshot.plugin_config_hash,
-            generated_index_digest=snapshot.index_digest,
-        ),
+    correlation_matches = command_code is None or (awaiting_code is not None and command_code == awaiting_code)
+    if route == "COMMAND_RESULT" and route_diagnostic is None and not correlation_matches:
+        route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
+    pinned_snapshot = PinnedPluginSnapshot(
+        plugin_key=plugin_key,
+        contract_version=contract_version,
+        binding_identity=f"binding:{binding_id}:{snapshot.binding_version}",
+        binding_id=binding_id,
+        binding_version=snapshot.binding_version,
+        config_hash=snapshot.plugin_config_hash,
+        index_digest=snapshot.index_digest,
+        profile_identity=profile_identity,
     )
     return PluginDispatchRequest(
         plugin_key=plugin_key,
@@ -1834,17 +1768,62 @@ async def _build_plugin_dispatch_request(
         raw_state=state,
         context_state=state,
         raw_input=raw_input,
-        raw_facts=facts.model_dump(mode="json"),
-        snapshot=PinnedPluginSnapshot(
-            plugin_key=plugin_key,
-            contract_version=contract_version,
-            binding_identity=f"binding:{binding_id}:{snapshot.binding_version}",
-            binding_id=binding_id,
-            binding_version=snapshot.binding_version,
-            config_hash=snapshot.plugin_config_hash,
-            index_digest=snapshot.index_digest,
-            profile_identity=profile_identity,
+        fact_source=PluginAttemptFactSource(
+            snapshot=pinned_snapshot,
+            raw_input=raw_input,
+            session_context=session_context,
+            material_fact=material_fact,
+            device_fact_versions=snapshot.device_fact_versions,
+            correlation_matches=correlation_matches,
+            replay_digest_matches=replay_digest_matches,
+            route_diagnostic=route_diagnostic,
         ),
+        snapshot=pinned_snapshot,
+    )
+
+
+def _command_result_authority_matches(
+    *,
+    inbox: Any,
+    session: Any,
+    workline: Any,
+    binding: Any,
+    command: Any,
+    payload_command_code: str | None,
+) -> bool:
+    """校验 callback、持久命令、Session wait 与 binding 的同一执行归属。"""
+
+    command_code = optional_str(getattr(command, "command_code", None))
+    awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
+    command_correlation = optional_str(getattr(command, "correlation_id", None))
+    inbox_correlation = optional_str(getattr(inbox, "correlation_id", None))
+    session_code = optional_str(getattr(session, "session_code", None))
+    session_correlation = f"workline-session:{session_code}" if session_code is not None else None
+    workline_id = optional_int(getattr(workline, "id", None))
+    command_workline_id = optional_int(getattr(command, "workline_id", None))
+    inbox_workline_id = optional_int(getattr(inbox, "workline_id", None))
+    session_workline_id = optional_int(getattr(session, "workline_id", None))
+    session_id = optional_int(getattr(session, "id", None))
+    inbox_session_id = optional_int(getattr(inbox, "workline_session_id", None))
+    binding_plugin_key = optional_str(getattr(binding, "plugin_key", None))
+    binding_contract_version = optional_str(getattr(binding, "contract_version", None))
+    identity_pairs = (
+        (optional_str(getattr(command, "plugin_key", None)), binding_plugin_key),
+        (optional_str(getattr(command, "contract_version", None)), binding_contract_version),
+        (optional_str(getattr(session, "plugin_key", None)), binding_plugin_key),
+        (optional_str(getattr(session, "contract_version", None)), binding_contract_version),
+    )
+    return (
+        command_code is not None
+        and command_code == payload_command_code == awaiting_code
+        and command_correlation is not None
+        and command_correlation == inbox_correlation == session_correlation
+        and workline_id is not None
+        and workline_id == command_workline_id == inbox_workline_id == session_workline_id
+        and session_id is not None
+        and session_id == inbox_session_id
+        and optional_int(getattr(session, "plugin_binding_id", None)) == optional_int(getattr(binding, "id", None))
+        and all(actual is not None and actual == expected for actual, expected in identity_pairs)
     )
 
 
@@ -1995,6 +1974,10 @@ def _plugin_attempt_snapshot(
         binding_version=optional_int(getattr(session, "plugin_binding_version", None)),
         plugin_config_hash=optional_str(getattr(session, "plugin_config_hash", None)),
         index_digest=optional_str(getattr(session, "plugin_index_digest", None)),
+        wait_anchor=(
+            optional_str(getattr(session, "current_wait_type", None)),
+            optional_str(getattr(session, "awaiting_device_command_code", None)),
+        ),
     )
 
 
@@ -2433,12 +2416,7 @@ async def _handle_timer_timeout(
     )
 
 
-# Public alias used by callers.
-RuntimeInboxProcessorService = RuntimeInboxProcessorBridge
-
-
 __all__ = [
     "ProcessResult",
     "RuntimeInboxProcessorBridge",
-    "RuntimeInboxProcessorService",
 ]

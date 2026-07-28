@@ -10,10 +10,6 @@ from src.app.runtime.capabilities.material_flow.contracts.material_identity impo
     MaterialIdentityResolutionStatus,
     material_identity_input_to_hash,
 )
-from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-    list_smt_sorting_inbound_ng_reasons,
-)
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX
 
 if TYPE_CHECKING:
@@ -101,9 +97,6 @@ def list_workline_ng_reasons(
     resolver = None if definition is None else definition.ng_reason_resolver
     if resolver is not None:
         return tuple(resolver())
-    # 历史 SMT Hold 仍需稳定 reason 解释，但 SMT 不进入当前 generated Plugin index。
-    if plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY:
-        return list_smt_sorting_inbound_ng_reasons()
     return ()
 
 

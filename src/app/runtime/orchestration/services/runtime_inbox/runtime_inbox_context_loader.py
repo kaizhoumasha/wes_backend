@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.events_bridge import RESERVED_RUNTIME_EVENTS
 from src.app.workline.constants import EXTERNAL_HTTP_INBOX_KIND
 from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
 from src.app.workline.services.plugin_binding_service import (
+    PluginBindingAdmissionError,
     WorklinePluginBindingService,
     workline_plugin_binding_service,
 )
@@ -57,7 +59,13 @@ def _should_resolve_session(inbox: Any, *, session_id: int | None) -> bool:
     if kind == "DEVICE_EVENT":
         return bool(getattr(inbox, "device_id", None) or payload.get("device_code") or payload.get("business_key"))
     if kind == "COMMAND_RESULT":
-        return bool(getattr(inbox, "command_id", None) or payload.get("command_code"))
+        # payload command_code 只是不可信输入；
+        # Session 只能从持久 command_id 或显式 owner anchor 解析。
+        return bool(
+            getattr(inbox, "command_id", None)
+            or session_id is not None
+            or optional_str(getattr(inbox, "correlation_id", None))
+        )
     if kind == EXTERNAL_HTTP_INBOX_KIND:
         return bool(getattr(inbox, "trace_id", None))
     if kind == "INTERNAL_EVENT":
@@ -94,6 +102,8 @@ async def _load_command_entity(db: Any, inbox: Any, command_repo: Any) -> Any | 
     command_id = getattr(inbox, "command_id", None)
     if isinstance(command_id, int):
         return await command_repo.get_by_id(db, command_id)
+    if _kind_value(inbox) == "COMMAND_RESULT":
+        return None
     command_code = payload_dict(getattr(inbox, "payload_json", None)).get("command_code")
     if isinstance(command_code, str) and command_code:
         return await command_repo.get_by_command_code(db, command_code)
@@ -104,7 +114,7 @@ def _hydrate_inbox_from_command(inbox: Any, command: Any | None) -> None:
     if command is None:
         return
     command_pk = resolve_entity_id(command)
-    if command_pk is not None and not getattr(inbox, "command_id", None):
+    if _kind_value(inbox) != "COMMAND_RESULT" and command_pk is not None and not getattr(inbox, "command_id", None):
         inbox.command_id = command_pk
     workline_id = getattr(command, "workline_id", None)
     if isinstance(workline_id, int) and not getattr(inbox, "workline_id", None):
@@ -196,14 +206,11 @@ async def _assert_platform_plugin_binding_admitted(
     if workline is None or session is None:
         return
     binding_id = getattr(session, "plugin_binding_id", None)
-    active_binding_id = getattr(workline, "active_plugin_binding_id", None)
-    if not isinstance(binding_id, int) and not isinstance(active_binding_id, int):
-        # 迁移期 legacy WorkLine 从未生成 binding，继续沿用原执行路径。
-        return
     if not isinstance(binding_id, int):
-        from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
-
-        raise PluginBindingAdmissionError("平台 Session 缺少 immutable binding pin")
+        raise PluginBindingAdmissionError(
+            ErrorCode.PLUGIN_BINDING_REQUIRED.value,
+            error_code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+        )
     binding = await workline_plugin_binding_service.get_pinned(db, binding_id=binding_id)
     workline_plugin_binding_service.assert_pinned_identity(binding=binding, workline=workline, session=session)
     workline_plugin_binding_service.assert_execution_admitted(

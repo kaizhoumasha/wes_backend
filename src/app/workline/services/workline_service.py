@@ -9,10 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models import parse_device_capabilities
 from src.app.device.repositories import device_repository
-from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
-    SMT_SORTING_INBOUND_CONTRACT_VERSION,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-)
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
 from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
@@ -88,15 +84,6 @@ _ACTIVE_CONFIGURATION_FIELDS = frozenset(
 )
 _ACTIVE_IMMEDIATE_RUNTIME_FIELDS = frozenset(
     {"line_code", "line_type", "plugin_key", "contract_version", "run_mode", "runtime_config_json"}
-)
-_LEGACY_COMPATIBLE_PLUGIN_IDENTITIES = frozenset(
-    {(SMT_SORTING_INBOUND_PLUGIN_KEY, SMT_SORTING_INBOUND_CONTRACT_VERSION)}
-)
-_LEGACY_SMT_CONFIGURATION_SCHEMA = SimpleNamespace(
-    devices=[DeviceRequirement(role="SORTING_SOURCE_ARM", min_count=1, max_count=1)],
-    events=[],
-    commands=[CommandBinding(command="SORTING_SOURCE_PICK", target_device_role="SORTING_SOURCE_ARM")],
-    rack_positions=[],
 )
 
 
@@ -738,27 +725,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 )
             ]
         if definition is None:
-            if (plugin_key, getattr(workline, "contract_version", None)) in _LEGACY_COMPATIBLE_PLUGIN_IDENTITIES:
-                # SMT 尚未进入 generated index；迁移期仍由隔离的未绑定 Session
-                # 兼容 processor 承载。仍需校验其实际支持的首盘取盘设备与通信配置，
-                # 避免 legacy 身份绕过普通激活准入。
-                checks = [
-                    self._check(
-                        "PLUGIN_CONFIGURED",
-                        _OK,
-                        "WARNING",
-                        {"plugin_key": plugin_key, "message": "迁移期 legacy 插件兼容模式"},
-                    )
-                ]
-                checks.append(self._run_mode_check(workline))
-                topology = WorklineTopologyView.from_devices(devices)
-                checks.extend(self._role_requirement_checks(_LEGACY_SMT_CONFIGURATION_SCHEMA, topology))
-                checks.extend(self._command_target_checks(_LEGACY_SMT_CONFIGURATION_SCHEMA, topology))
-                checks.extend(self._command_target_capability_config_checks(_LEGACY_SMT_CONFIGURATION_SCHEMA, devices))
-                checks.extend(
-                    self._command_target_communication_checks(workline, _LEGACY_SMT_CONFIGURATION_SCHEMA, devices)
-                )
-                return checks
             return [
                 self._check(
                     "PLUGIN_CONFIGURED",

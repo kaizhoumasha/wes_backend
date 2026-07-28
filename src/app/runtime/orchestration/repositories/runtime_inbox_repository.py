@@ -338,6 +338,12 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             last_error_message=record.last_error_message,
         )
 
+    async def get_projection_by_id(self, db: AsyncSession, inbox_id: int) -> RuntimeInboxProjection | None:
+        """按显式主键返回包含 runtime 强锚点的冻结投影。"""
+
+        record = await self.get_by_id(db, inbox_id)
+        return self._to_projection(record) if record is not None else None
+
     async def count_unfinished_by_workline(self, db: AsyncSession, workline_id: int) -> int:
         """按显式 workline_id 统计非终态 RuntimeInbox。"""
 

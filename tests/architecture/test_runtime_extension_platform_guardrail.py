@@ -54,6 +54,36 @@ def _run_fixture(tmp_path: Path, relative_path: str, source: str) -> subprocess.
             "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
         ),
         (
+            "orchestration/device_command_gateway.py",
+            "if task_type == 'SORTING_SOURCE_PICK':\n    pass\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
+            "orchestration/device_command_gateway.py",
+            "from src.app.runtime.system_capabilities.material_flow.smt_source_pick_command import DEFINITION\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
+            "orchestration/runtime_intent_effects.py",
+            "routes = {'material_flow.smt_source_pick_command': dispatch}\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
+            "orchestration/device_command_gateway.py",
+            "dispatch('material_flow.smt_source_pick_ledger')\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
+            "orchestration/runtime_intent_effects.py",
+            "dispatch('material_flow.' + 'smt_' + 'source_pick_command')\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
+            "orchestration/device_command_gateway.py",
+            "def route(): capability = 'material_flow.' + 'smt_source_pick_ledger'; return dispatch(capability)\n",
+            "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+        ),
+        (
             "consumer.py",
             "from src.app.runtime.capability_catalog import get_workline_capability_definition\n",
             "LEGACY_CAPABILITY_ROUTING_IMPORT",
@@ -341,9 +371,11 @@ def test_active_sources_have_zero_legacy_runtime_catalog_references() -> None:
 
 
 def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> None:
+    removed_orchestrator = REPO_ROOT / "src/app/runtime/orchestration/orchestrator_bridge.py"
     routing_sources = (
-        REPO_ROOT / "src/app/runtime/orchestration/orchestrator_bridge.py",
         REPO_ROOT / "src/app/runtime/orchestration/runtime_intent_effects.py",
+        REPO_ROOT / "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py",
+        REPO_ROOT / "src/app/runtime/orchestration/services/device_command_gateway.py",
     )
     forbidden_tokens = (
         "ROUGH_SORTER_PLUGIN_KEY",
@@ -352,7 +384,12 @@ def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> 
         "EVENT_SOURCE_PICK_REQUESTED",
         "ACTION_PICK_AND_PUT",
         "ACTION_MOVE_TO_NG",
+        "SORTING_SOURCE_PICK_REQUESTED",
+        "SORTING_SOURCE_PICK",
+        "handoff_source_item_id",
         "BUSINESS_TIMEOUT",
+        "material_flow.smt_source_pick_command",
+        "material_flow.smt_source_pick_ledger",
     )
 
     violations = {
@@ -361,8 +398,8 @@ def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> 
         ]
         for path in routing_sources
     }
+    assert not removed_orchestrator.exists()
     assert {path: tokens for path, tokens in violations.items() if tokens} == {}
-    assert "runtime.workline_plugins" not in routing_sources[0].read_text(encoding="utf-8")
 
 
 def test_runtime_routing_has_one_generated_workline_plugin_dispatcher() -> None:
@@ -372,3 +409,24 @@ def test_runtime_routing_has_one_generated_workline_plugin_dispatcher() -> None:
     assert "from src.app.runtime.workline_plugins.generated_index import" in dispatcher_source
     assert sum("class WorklinePluginDispatcher" in path.read_text(encoding="utf-8") for path in runtime_sources) == 1
     assert sum("class RuntimeCapabilityDispatcher" in path.read_text(encoding="utf-8") for path in runtime_sources) == 0
+
+
+def test_generic_orchestration_guard_inherits_module_constant_aliases(tmp_path: Path) -> None:
+    result = _run_fixture(
+        tmp_path,
+        "orchestration/runtime_intent_effects.py",
+        "PREFIX = 'material_flow.'\nKEY = PREFIX + 'smt_source_pick_command'\ndef route():\n    return dispatch(KEY)\n",
+    )
+
+    assert result.returncode == 1
+    assert "[RUNTIME_EXTENSION_GENERIC_ORCHESTRATION]" in result.stderr
+
+
+def test_generic_orchestration_guard_respects_function_parameter_shadowing(tmp_path: Path) -> None:
+    result = _run_fixture(
+        tmp_path,
+        "orchestration/runtime_intent_effects.py",
+        "KEY = 'material_flow.smt_source_pick_command'\ndef route(KEY):\n    return dispatch(KEY)\n",
+    )
+
+    assert result.returncode == 0, result.stderr

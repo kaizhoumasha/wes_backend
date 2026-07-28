@@ -10,6 +10,7 @@ from src.app.runtime.orchestration.execution_correlation import ExecutionCorrela
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.services.device_command_gateway import prepare_runtime_device_command_effect
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from tests.support.runtime_binding import binding_pin_fields
 
 
 async def _seed_correlation(
@@ -18,7 +19,13 @@ async def _seed_correlation(
     correlation_id: str,
     trace_id: str,
 ) -> ExecutionCorrelation:
-    session = ExecutionSession(workline_id=1, manifest_version="v1", state="RUNNING")
+    session = ExecutionSession(
+        workline_id=1,
+        plugin_key="test-plugin",
+        manifest_version="v1",
+        **binding_pin_fields(),
+        state="RUNNING",
+    )
     db_session.add(session)
     await db_session.flush()
     correlation = ExecutionCorrelation(

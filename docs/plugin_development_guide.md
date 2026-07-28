@@ -1,402 +1,170 @@
-# WORKLINE 插件开发指南
+# WORKLINE Generated Plugin 开发指南
 
-本文面向后续 WORKLINE 插件开发者。插件只负责一种 WORKLINE 业务模板：把硬件设备角色、业务状态、业务判断和命令意图组织起来。插件架构负责提供运行态能力，减少每扩展一条业务线时的心智负担。
+本文面向当前 WORKLINE 插件开发者。生产插件统一位于
+`src/app/runtime/workline_plugins/`，通过 generated index、immutable Plugin Binding
+和 `WorklinePluginDispatcher` 执行。
 
-当前参考材料：
+当前参考实现：
 
-- `docs/templates/workline_plugin/`：沉淀通用插件结构的模板和 fixtures。
+- `rough_sorter/`：多 route、独立 config/input/state 的完整插件。
+- `smt_sorting_inbound/`：source-pick 最小业务切片。
+- `generated_index.py`：生成产物，只能由生成器更新。
 
 ## 核心边界
 
-### 插件负责什么
+插件负责：
 
-- 定义本业务线的 `plugin_key`、`contract_version` 和 manifest。
-- 用 pure-data manifest 声明设备、位置、拓扑、事件、命令和资源边界。
-- 在插件类成员上定义业务键解析、结果分类、context model、物料身份解析和 NG 原因目录。
-- 定义业务 payload 模型。
-- 定义类型化 context。
-- 通过 handler 把事件和命令结果转成 `RuntimeIntent` 或 `list[RuntimeIntent]`：更新上下文、下发命令、业务 NG、阻断或完成。
+- 固定 `plugin_key` 与 `contract_version`。
+- 用 typed schema 声明设备角色、命令、route 和 System Capability。
+- 为每个 route 注册 stable handler、facts model 与 facts builder。
+- 以纯函数根据 input、state、config、facts 产生 `PluginDecision`。
+- 只返回 intent，不直接落数据库或发送消息。
 
-### 插件不负责什么
+插件不负责：
 
-- 不直接写 Inbox / Outbox / DeviceCommand / WorklineSession。
-- 不查询数据库拼设备拓扑，启用前配置校验由平台根据 manifest 的角色、数量和能力要求完成；`Device.upstream_device_id` 只作为物理路径辅助信息。
-- 不把 sandbox 标志写入消息 payload。
-- 不生成、传入或覆盖 `command_code`；设备命令编码由 WES Runtime 统一生成，并作为设备幂等键下发。
-- 不在 runtime、callback、dispatcher 中为某个业务插件开私有分支。
-- 不维护插件私有状态机，不写 Session 状态，不维护物料当前位置。
-- 不处理命令幂等、ACK、Result、Timeout、Retry；这些属于 Runtime。
-
-## 白皮书包络
-
-`docs/integration/third_party_integration_whitepaper.md` 规定了事件、结果和命令的两层结构。业务字段只能放在业务层。
-
-| 流向 | 顶层字段 | 业务字段位置 |
-| --- | --- | --- |
-| 设备事件 event | `device_code`, `event_type`, `timestamp`, `data` | `data` |
-| 命令结果 result | `command_code`, `device_code`, `result`, `finish_time`, `data`, `error_detail` | `data` |
-| WES 下发命令 | `device_code`, `command_code`, `task_type`, `priority`, `timeout`, `timestamp`, `params` | `params` |
-
-示例：
-
-```json
-{
-  "device_code": "SCAN01",
-  "event_type": "TOTE_ARRIVED",
-  "timestamp": 1777046400000,
-  "data": {
-    "tote_id": "TOTE-20260425-001",
-    "station_code": "INBOUND_QC_01"
-  }
-}
-```
-
-不要这样写：
-
-```json
-{
-  "device_code": "SCAN01",
-  "event_type": "TOTE_ARRIVED",
-  "timestamp": 1777046400000,
-  "tote_id": "TOTE-20260425-001"
-}
-```
+- 不创建或修改 Session、Execution、RuntimeInbox、DeviceCommand、SystemOutbox、Timeline 或 Hold。
+- 不访问 Repository、SQL、HTTP Client、Celery 或 provider implementation。
+- 不生成或覆盖 `command_code`。
+- 不实现 ACK、重试、timeout、recovery scan、事务或幂等基础设施。
+- 不在 RuntimeInbox bridge、dispatcher 或 callback 中增加插件私有分支。
+- 不提供未绑定执行、备用 delegate、route alias 或运行时 fallback。
 
 ## 推荐目录
 
-新插件目录应从以下结构开始：
+最小插件使用四个文件：
 
 ```text
-src/workline_plugins/<plugin_key>/
+src/app/runtime/workline_plugins/<plugin_key>/
   __init__.py
-  contract.py
-  context.py
-  plugin.py
-tests/workline_plugins/test_<plugin_key>_plugin.py
+  contracts.py
+  handlers.py
+  definition.py
 ```
 
-模板见 `docs/templates/workline_plugin/`。模板抽象通用插件结构，不复制 SMT 的私有复杂度。
+复杂插件可像 `rough_sorter/` 一样拆分 `config.py`、`inputs.py`、`state.py` 和
+`domain_contract.py`，但只在文件确有独立职责时拆分。
 
-## Manifest 与 runtime helper
-
-manifest 是 pure data，只表达四类静态事实：
+对应测试放在：
 
 ```text
-设备角色及 COMMAND/EVENT 能力、货架位、物理拓扑、资源边界
+tests/workline_plugins/<plugin_key>/
 ```
 
-- 插件目录维护 `manifest.yaml`，使用 `device_roles` 合并声明设备角色、数量、硬件能力、COMMAND 和 EVENT 能力。
-- `rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
-- `topology` 是前端 CANVAS 可直接渲染的物理流程；设备相关物理连线使用 `OPERATION`。
-- `events` 声明 manifest 可识别的事件名、来源设备角色和事件分类，可包含设备通过 `/callback/event` 主动上报的事件以及 `INTERNAL` / `OPERATOR` / `SAFETY` 等运行时可见事件；命令结果通过 `/callback/result` 进入 `COMMAND_RESULT` Inbox，不写入 manifest events。
-- `commands` 只声明命令名和目标设备角色。
-- `resource_boundaries` 使用 `ResourceBoundary`，声明 rack/WMS/snapshot/lease 等资源编排边界。
-- 设备 payload 由插件业务代码、设备 profile、设备网关或 PLC 理解，不进入 manifest。
+不要在 `tests/` 根目录新增测试。真实 PostgreSQL 闭环放在
+`tests/integration/workline_capabilities/`。
 
-运行时行为不进入 manifest。registry helper 通过插件实例读取以下成员：
+## Definition 与 route registration
 
-- `resolve_business_key(payload_json)`
-- `classify_result(payload_json)`
-- 必须实现 `get_context_model()`
-- `resolve_material_identity(input_value)`
-- `list_ng_reasons()`
+`definition.py` 是插件静态合同入口，应包含：
 
-## contract.py
+- fixed plugin identity；
+- typed config/state；
+- 设备、命令与资源 schema；
+- allowed System Capabilities；
+- logical route 到 `HandlerRegistration` 的完整映射。
 
-`contract.py` 放协议边界和业务分类逻辑。
+每个 `HandlerRegistration` 必须同时提供：
 
-- 使用 Pydantic 定义 `event.data`、`result.data`、`command.params` 模型。
-- `resolve_business_key` 只从业务层读取稳定业务键。
-- `classify_result` 区分设备执行失败、数据非法和业务结果。
-- 命令参数通过 helper 构建，确保业务字段只进入 `params`。
+- `handler`：纯业务决策函数；
+- `facts_model`：该 route 接受的 typed facts；
+- `facts_builder`：从通用 `PluginAttemptFactSource` 构建 facts 的顶层稳定函数。
 
-最小示例：
+facts builder 的 import identity 会进入 generated index digest。lambda、局部函数、
+重复 registration 和不稳定 callable 会在生成阶段被拒绝。builder 输出还会在 dispatch
+前由 `facts_model` 再校验一次。
 
-```python
-from typing import Any, Literal
+## Config、State、Input 与 Facts
 
-from pydantic import BaseModel, ConfigDict, Field
+- Config 只表达插件业务配置，使用 Pydantic 严格校验。
+- State 只表达插件 decision 的 immutable 下一状态，不直接代表数据库写入。
+- Input 只表达 route 的 canonical 输入，不读取任意 callback payload fallback。
+- Facts 只包含平台已验证的 immutable 事实，不携带 ORM entity、Session 或 Repository。
+- 共享的 `CommandResultInput`、`CapabilityEffectResultInput` 等输入放在平台
+  `contracts.py`，不在各插件复制。
 
-from src.workline_runtime.plugin_base import EventPayload
+## Command 与 callback authority
 
-class ItemArrivedData(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+插件声明设备动作和业务参数；WES Runtime 统一生成 `command_code` 并持久化
+`DeviceCommand + SystemOutbox`。
 
-    business_key: str
-    station_code: str
-    expected_value: float = Field(gt=0)
-    tolerance: float = Field(gt=0)
+`COMMAND_RESULT` 必须携带有效 `RuntimeInbox.command_id`。Runtime 根据该 ID 读取
+权威 `DeviceCommand`，再校验 task type、command code、correlation 和业务 evidence。
+callback payload 不能覆盖这些权威字段。
 
+校验失败必须返回稳定 diagnostic，且 effect write set 为空。
 
-class ItemArrivedPayload(EventPayload):
-    data: ItemArrivedData
+## Binding 与 activation
 
+新执行只能来自 active immutable Plugin Binding。激活时平台校验：
 
-class MeasureCompletedData(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+- generated definition 与 contract version；
+- canonical config hash；
+- generated index digest；
+- provider profile identity（插件声明时必填并进入 snapshot）；
+- 环境、撤权、禁用和有效期。
 
-    business_key: str
-    actual_value: float = Field(gt=0)
+`WorklineSession`、`ExecutionSession` 与 `ExecutionWorkItem` 创建时固定：
 
-
-def resolve_business_key(payload: dict[str, Any]) -> str:
-    data = payload.get("data")
-    if not isinstance(data, dict) or not data.get("business_key"):
-        raise ValueError("ITEM_ARRIVED.data.business_key is required")
-    return str(data["business_key"])
-
-
-def classify_result(payload: dict[str, Any]) -> str | None:
-    if payload.get("result") == "FAILED":
-        return "hardware_failure"
-    return None
-
-
-def build_measure_params(*, business_key: str, station_code: str) -> dict[str, str]:
-    return {"business_key": business_key, "station_code": station_code}
+```text
+plugin_key
+contract/manifest_version
+plugin_binding_id
+plugin_binding_version
+plugin_config_hash
+plugin_index_digest
 ```
 
-## context.py
+这些字段在 ORM 和 PostgreSQL 都是必填；业务代码不得构造缺 pin 的运行态记录。
 
-`context.py` 定义插件自己的业务上下文。handler 不应散落读取 `ctx.session.context_json.get(...)`，应先解析成类型化对象。
+## System Capability
 
-```python
-from typing import Any
+插件只能调用 Definition 显式声明的 `(capability_key, version)`。平台 gateway 会拒绝：
 
-from pydantic import BaseModel, ConfigDict
+- 未声明 capability；
+- version 不匹配；
+- payload 不满足 typed contract；
+- effect evidence 与当前 attempt 不一致。
 
-from src.workline_runtime.plugin_context import PluginContext
+System Capability handler 拥有自己的 Service/Repository 边界；插件只表达调用意图，
+不直接 import 实现。
 
+## 生成与验证
 
-class ExampleContext(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    business_key: str | None = None
-    expected_value: float | None = None
-    tolerance: float | None = None
-    reason_code: str | None = None
-
-    @classmethod
-    def from_mapping(cls, value: dict[str, Any] | None) -> "ExampleContext":
-        return cls.model_validate(value or {})
-
-    @classmethod
-    def from_session(cls, ctx: PluginContext) -> "ExampleContext":
-        return cls.from_mapping(ctx.session.context_json)
-
-    def to_patch(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
-```
-
-## plugin.py
-
-插件入口必须加载 `manifest.yaml`，并把 runtime helper 和 handler 写清楚。示例只展示合同形状，完整业务判断放在插件自己的 handler 或 service 中。
-
-`manifest.yaml` 最小形状：
-
-```yaml
-plugin_key: example_plugin
-contract_version: "2026.04"
-
-device_roles:
-  ENTRY_SENSOR:
-    min_count: 1
-    max_count: 1
-    hardware_capabilities: [scan_item]
-    events:
-      - event: ITEM_ARRIVED
-        category: ENTRY_DEVICE
-  MEASURE_DEVICE:
-    min_count: 1
-    max_count: 1
-    commands: [MEASURE_ITEM]
-
-rack_positions:
-  - code: ENTRY_POSITION
-    role: ENTRY
-    station_code: ENTRY_STATION
-    carrier_capability:
-      allowed_rack_kinds: [SINGLE_LAYER]
-      allowed_slot_kinds: []
-      min_capacity: 1
-      max_capacity: 1
-  - code: MEASURE_POSITION
-    role: WORK
-    station_code: MEASURE_STATION
-    carrier_capability:
-      allowed_rack_kinds: [SINGLE_LAYER]
-      allowed_slot_kinds: []
-      min_capacity: 1
-      max_capacity: 1
-
-topology:
-  flow_edges:
-    - from: {kind: RACK_POSITION, ref: ENTRY_POSITION}
-      to: {kind: DEVICE_ROLE, ref: ENTRY_SENSOR}
-      type: OPERATION
-    - from: {kind: DEVICE_ROLE, ref: ENTRY_SENSOR}
-      to: {kind: DEVICE_ROLE, ref: MEASURE_DEVICE}
-      type: OPERATION
-    - from: {kind: DEVICE_ROLE, ref: MEASURE_DEVICE}
-      to: {kind: RACK_POSITION, ref: MEASURE_POSITION}
-      type: OPERATION
-
-resource_boundaries:
-  - rack_position_code: MEASURE_POSITION
-    rack_kind: SINGLE_LAYER
-    business_demand_type: MEASURE_WORK_RACK
-    wms_operation_type: SUPPLY_MEASURE_RACK
-    snapshot_kind: ACTIVE_MEASURE_RACK
-    lease_scope: STATION
-```
-
-```python
-from pathlib import Path
-from typing import Any
-
-from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityInput
-from src.workline_runtime.ng_reason import NgReasonDefinition
-from src.workline_runtime.plugin_base import WorklinePlugin, on_event
-from src.workline_runtime.plugin_manifest import WorklinePluginManifest
-
-from .context import ExampleContext
-from .contract import (
-    ItemArrivedPayload,
-    build_measure_params,
-    classify_result,
-    resolve_business_key,
-    resolve_material_identity,
-)
-
-
-class ExamplePlugin(WorklinePlugin):
-    plugin_key = "example_plugin"
-    contract_version = "2026.04"
-
-    manifest = WorklinePluginManifest.from_yaml_file(Path(__file__).with_name("manifest.yaml"))
-
-    def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
-        return resolve_business_key(payload_json)
-
-    def classify_result(self, payload_json: dict[str, Any]) -> str | None:
-        return classify_result(payload_json)
-
-    def get_context_model(self) -> type[ExampleContext]:
-        return ExampleContext
-
-    def resolve_material_identity(self, input_value: MaterialIdentityInput) -> MaterialIdentity:
-        return resolve_material_identity(input_value)
-
-    def list_ng_reasons(self) -> tuple[NgReasonDefinition, ...]:
-        return ()
-
-    @on_event("ITEM_ARRIVED")
-    async def handle_item_arrived(self, ctx, event: ItemArrivedPayload):
-        return ctx.next.command(
-            action="MEASURE_ITEM",
-            device_role="MEASURE_DEVICE",
-            destination_role="MEASURE_DEVICE",
-            payload=build_measure_params(
-                business_key=event.data.business_key,
-                station_code=event.data.station_code,
-            ),
-            timeout_seconds=120,
-        )
-```
-
-## 业务 NG、异常流与错误
-
-必须区分业务结果和系统错误，否则 trace、timeline、运营查询会混淆。第一性原则：
-
-> 只要系统知道下一步去哪，并且能自动推进，就不是错误。
-
-因此，错误只保留给“流程无法继续推进，需要人工、维修、对账或外部介入”的情况。NG 是物料的业务结果，不是系统失败；已建模异常流是非主路径，不是失败。
-
-| 类型 | 含义 | 是否算错误 | 插件表达 |
-| --- | --- | --- | --- |
-| OK | 业务判断通过，可走正常下游 | 否 | `RuntimeIntent.command(...)` 或 `RuntimeIntent.complete(...)` |
-| 业务 NG | 业务规则判断出的预期结果，例如重量超差、质检不合格、扫码判定 NG | 否 | `RuntimeIntent.mark_ng(...)`，再 `command(...)` 到 NG 设备/缓存位，或 `complete(...)` |
-| 已建模异常流 | 非主路径，但插件和 Runtime 已知道如何处理，例如返工、转 NG、人工复核前置动作 | 否 | `mark_ng(...)`、`command(...)`、`continue_next(...)`、`complete(...)` |
-| 阻断 | 当前自动流程不能继续，但可以由人工处理、恢复、重试或对账 | 是 | `RuntimeIntent.block(...)`，说明 `reason_code`、责任域和 evidence |
-| 硬件/通信故障 | 设备离线、动作失败、ACK/Result 超时、物料位置不确定 | 是 | 插件不要伪装成业务 NG；Runtime 进入阻断/对账路径 |
-| 数据非法 | payload 缺字段、业务数据类型错误、包络不符合协议 | 视边界而定 | 未入站由 callback/inbox 拒绝；已入 Session 但无法解释时 `block(...)` |
-| 系统异常 | 插件 bug、配置缺失、拓扑不可达、Runtime 校验失败 | 是 | 插件避免吞掉；Runtime 记录诊断并阻断 |
-
-插件开发硬规则：
-
-- 不把业务 NG 写入 `failure_code`、`error_code`、`FAILED` 或设备故障态。
-- 不用 `CommandResult.FAILED` 表达“检测结果 NG”。设备动作成功但业务结果 NG 时，设备应回 `result=SUCCESS`，并在 `data` 中携带 `inspection_result=NG`、`ng_reason` 等业务字段。
-- 只有设备动作未完成、位置不确定、通信失败、超时、拓扑不可达、插件意图非法等“无法自动推进”的情况，才进入错误/阻断。
-- 业务 NG 必须携带 `reason_code`、`message`、`business_key` 或可解析物料身份，以及 evidence，便于 trace/timeline 查询和统计。
-- 插件只做业务决策；Session 状态、设备状态、命令幂等、超时、重试、对账和阻断恢复由 Runtime 负责。
-
-## Sandbox 调试
-
-Sandbox 是 WORKLINE 级调试能力，不是 dry-run，也不是插件级 replay。
-
-### 行为
-
-- `WorkLine.run_mode=SIMULATION` 只能在 `APP_ENV=dev` 或 `APP_ENV=test` 使用。
-- 创建 Session 时会快照 WorkLine 的 `run_mode`，运行中的 Session 不受后续 WorkLine 配置修改影响。
-- `DEVICE_COMMAND` 和 `EXTERNAL_HTTP` 在 SIMULATION 下仍走真实编排链路，但派发出口切到 sandbox。
-- 消息 payload 尽量与 live 一致，不增加 `sandbox` 标志字段。
-- 调试人员从沙箱待处理列表处理指令，再按白皮书 result 包络手工回调，推进同一个 Session。
-
-### Happy path
-
-1. 在开发或测试环境创建 `run_mode=SIMULATION` 的 WorkLine。
-2. 绑定满足 manifest 的设备拓扑和能力。
-3. 发送事件回调，业务字段放在 `data`。
-4. Runtime 创建或解析 Session，插件 handler 产生命令，Outbox 进入 sandbox 派发。
-5. 调试人员读取沙箱待处理指令，按设备实际协议人工构造 result 回调。
-6. 回调仍走 callback 入口，业务字段放在 `data`，Session 继续推进。
-7. 重复处理后续沙箱指令，直到 Session `COMPLETED`、业务 NG 分流完成或进入阻断/错误。
-
-### 插件级诊断与 Sandbox 的区别
-
-插件级诊断工具只解释单条 payload 会命中哪个 handler、解析出什么 context、返回什么 `RuntimeIntent`。它不创建真实 Session，不写 Outbox，也不验证派发和手工 callback 闭环。
-
-WORKLINE 级调试必须用 sandbox，因为只有 sandbox 覆盖事件输入、命令派发、手工 callback 和 Session 推进。
-
-## 测试 Checklist
-
-每个新插件至少覆盖：
-
-- manifest：`manifest.yaml` 可被 loader 加载，设备角色能力、货架位、拓扑边和资源边界引用完整。
-- 包络：event/result 业务字段只在 `data`，下发命令业务字段只在 `params`。
-- 业务键：插件实例 `resolve_business_key` 不依赖 runtime 私有逻辑。
-- 当前事实：handler 只根据 Session context、设备事件和命令结果生成下一步 `RuntimeIntent`。
-- happy path：一个事件产生一个命令，等待一个回调，Session 能继续推进。
-- 业务 NG：表达为 `RuntimeIntent.mark_ng(...)`，不写成系统 failure，并验证后续 NG 分流或完成。
-- 已建模异常流：例如返工、转 NG、人工复核前置动作，必须验证不会污染 `failure_code` / 设备 `error_code`。
-- 系统错误：设备动作失败、payload 已入 Session 但无法解释、timeout 至少覆盖一个，必须进入 `block(...)` 或 Runtime 对账路径。
-- sandbox：`SIMULATION` 不改变消息 payload，派发到 sandbox，由手工 callback 推进。
-
-建议先运行：
+修改 Definition、registration、facts builder 或 handler identity 后运行：
 
 ```bash
-uv run pytest -q tests/workline_plugins/test_<plugin_key>_plugin.py
-uv run ruff format src/workline_plugins/<plugin_key> tests/workline_plugins/test_<plugin_key>_plugin.py
-uv run ruff check src/workline_plugins/<plugin_key> tests/workline_plugins/test_<plugin_key>_plugin.py
+uv run scripts/generate_runtime_extensions.py
+uv run scripts/generate_runtime_extensions.py --check
+uv run pytest tests/workline_plugins/<plugin_key> -q
+uv run pytest tests/workline_runtime/extensions -q
 ```
 
-涉及 callback、outbox、session resolver 或 sandbox 时，再补 runtime/API 相关测试。
+生成文件禁止手工编辑。提交前至少验证：
 
-## 开发顺序
+- identity 与 digest 稳定；
+- config/input/state/facts 成功和失败路径；
+- capability 声明隔离；
+- command/result authority；
+- mismatch/reject 零副作用；
+- 重复 input 的幂等 decision；
+- binding activation 与 digest mismatch fail closed。
 
-1. 从 `docs/templates/workline_plugin/` 复制模板。
-2. 先写 `contract.py`，锁定 `data` / `params` 和业务键。
-3. 写 `context.py`，明确插件需要读取和更新的业务事实。
-4. 写 manifest，声明设备、位置、拓扑、结构化事件、结构化命令和资源边界。
-5. 写第一个事件 handler，让它产生一个命令和 wait。
-6. 写第一个命令 result handler，让它推进状态或完成。
-7. 补业务 NG、已建模异常流和真正系统错误。
-8. 用插件级诊断检查 handler，再用 sandbox 跑完整 WORKLINE happy path。
+涉及数据库不变量、命令/Outbox、callback 或 recovery 时，再运行对应的隔离
+PostgreSQL integration suite。
 
-## 参考
+## SMT source-pick 参考闭环
 
-- 白皮书：`docs/integration/third_party_integration_whitepaper.md`
-- 重构计划：`docs/business/workline_plugin_refactor_next_phase_plan.md`
-- Runtime 基类：`src/workline_runtime/plugin_base.py`
-- Manifest：`src/workline_runtime/plugin_manifest.py`
-- 插件模板：`docs/templates/workline_plugin/`
+```text
+handoff request
+  → bound Session / Execution / WorkItem
+  → RuntimeInbox
+  → generated SMT route
+  → DeviceCommand + SystemOutbox
+  → COMMAND_RESULT(command_id)
+  → authoritative command validation
+  → unique recovery correlation
+  → source item PICKED
+```
+
+零候选、多候选、evidence mismatch、设备失败、重复 callback 和重复 recovery scan
+都必须 fail closed 或进入受控 Hold，不得猜测关联，也不得重复落 effect。

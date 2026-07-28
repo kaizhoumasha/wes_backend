@@ -80,16 +80,6 @@ async def test_plugin_attempt_lock_loads_effect_execution_identity() -> None:
 
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as db:
-        execution_session = ExecutionSession(
-            workline_id=8,
-            manifest_version="manifest-v1",
-            plugin_key="test_plugin",
-            plugin_binding_version=1,
-            plugin_config_hash=config_hash,
-            plugin_index_digest=digest,
-        )
-        db.add(execution_session)
-        await db.flush()
         binding = WorklinePluginBinding(
             workline_id=8,
             plugin_key="test_plugin",
@@ -104,7 +94,17 @@ async def test_plugin_attempt_lock_loads_effect_execution_identity() -> None:
         )
         db.add(binding)
         await db.flush()
-        execution_session.plugin_binding_id = binding.id
+        execution_session = ExecutionSession(
+            workline_id=8,
+            manifest_version="manifest-v1",
+            plugin_key="test_plugin",
+            plugin_binding_id=binding.id,
+            plugin_binding_version=1,
+            plugin_config_hash=config_hash,
+            plugin_index_digest=digest,
+        )
+        db.add(execution_session)
+        await db.flush()
         db.add(
             ExecutionCorrelation(
                 correlation_id="corr-real-1",
@@ -128,6 +128,7 @@ async def test_plugin_attempt_lock_loads_effect_execution_identity() -> None:
             execution_session_id=execution_session.id,
             correlation_id="corr-real-1",
             plugin_key="test_plugin",
+            manifest_version="manifest-v1",
             plugin_binding_id=binding.id,
             plugin_binding_version=1,
             plugin_config_hash=config_hash,
@@ -336,6 +337,7 @@ async def test_business_reject_rolls_back_attempt_and_emits_typed_internal_resul
         session_id=41,
         workline_id=8,
         trace_id="trace-1",
+        workline=SimpleNamespace(id=8),
         write_set=AttemptWriteSet(evidence=(), next_state={"phase": "MUST_NOT_ADVANCE"}, intents=("i1",)),
     )
 

@@ -6,7 +6,7 @@ WRITE 锁回调: stale session snapshot guard + 业务 effects + 重复/迟到�
 本服务只承担 write-back 职责，不关心 SCAN/ESTOP/TIMER 前置 gate。
 
 关键约束:
-- 必须在锁内执行 (OrchestratorService 已经获取 session lock).
+- 必须在 Stage 3 权威行锁内执行。
 - 必须用 lease_token fencing 写终态 (避免旧 owner 复活), 作用于
   RuntimeInbox 表 (RuntimeInboxService.mark_processed / mark_failed).
 - session snapshot guard: 锁内 session state 若与锁前 snapshot 不一致,
@@ -17,19 +17,12 @@ WRITE 锁回调: stale session snapshot guard + 业务 effects + 重复/迟到�
 
 from __future__ import annotations
 
-from contextlib import suppress
-from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from src.app.device.repositories import device_repository as default_device_repository
 from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.orchestration.effect_result import (
-    RuntimeIntentEffectResult,
-    WriteBackDisposition,
-)
 from src.app.runtime.orchestration.material_fact_version import material_unit_fact_version
 from src.app.runtime.orchestration.repositories.plugin_attempt_repository import (
     plugin_attempt_repository as default_plugin_attempt_repository,
@@ -38,7 +31,6 @@ from src.app.runtime.orchestration.repositories.runtime_intent_log_repository im
     runtime_intent_log_repository as default_runtime_intent_log_repository,
 )
 from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
-from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
 )
@@ -48,9 +40,6 @@ from src.app.runtime.orchestration.services.idempotency_guard import (
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxService,
     runtime_inbox_service,
-)
-from src.app.runtime.orchestration.services.session.session_resolver import (
-    reapply_pending_session_ingress_metadata,
 )
 from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptSnapshot,
@@ -63,31 +52,16 @@ from src.app.workline.services.plugin_binding_service import (
     WorklinePluginBindingService,
     workline_plugin_binding_service,
 )
-from src.app.workline.services.write_back_service import orchestrator_write_back_service
+from src.app.workline.services.write_back_service import EffectApplyState, _session_context
+from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
 from src.core.conf import settings
 from src.core.task_queue_gateway import task_queue_gateway
 from src.utils.timezone import timezone
-from src.utils.value_normalization import (
-    canonical_event_type,
-    optional_int,
-    string_value,
-)
+from src.utils.value_normalization import canonical_event_type, optional_int, optional_str, string_value
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
-
-
-@dataclass
-class WriteBackState:
-    """Write-back 阶段 state, 在 write_callback 闭包内外共享."""
-
-    write_effects_applied: bool = False
-    enqueue_outbox_dispatch: bool = False
-    disposition: WriteBackDisposition | None = None
 
 
 class RuntimeInboxLeaseLostError(RuntimeError):
@@ -98,14 +72,6 @@ def _require_fenced_update(updated: bool, *, action: str, inbox_id: int) -> None
     """拒绝继续提交已失去 RuntimeInbox lease 的事务。"""
     if not updated:
         raise RuntimeInboxLeaseLostError(f"RuntimeInbox {inbox_id} lease lost before {action}")
-
-
-def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
-    """提取写入前的最小 session 快照, 用于锁内防止 stale write."""
-    return (
-        getattr(session, "status", None),
-        getattr(session, "awaiting_device_command_code", None),
-    )
 
 
 def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> bool:
@@ -130,6 +96,14 @@ def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> b
         and getattr(session, "version", None) == expected.session_version
         and getattr(session, "plugin_state_version", None) == expected.plugin_state_version
         and (expected.session_status is None or _session_status_value(session) == expected.session_status)
+        and (
+            expected.wait_anchor is None
+            or (
+                optional_str(getattr(session, "current_wait_type", None)),
+                optional_str(getattr(session, "awaiting_device_command_code", None)),
+            )
+            == expected.wait_anchor
+        )
         and (
             expected.material_unit_id is None
             or (
@@ -205,11 +179,7 @@ def _is_late_or_duplicate_command_result_for_session(
 ) -> bool:
     """识别已消费过或迟到的 COMMAND_RESULT。"""
     kind = _kind_value(inbox)
-    declared_route = payload.get("logical_route") or payload.get("callback_type")
-    event_type = getattr(getattr(inbox, "event_type", None), "value", getattr(inbox, "event_type", None))
-    callback_route = declared_route or event_type
-    is_pick_result_callback = kind in {"INTERNAL_EVENT", "EXTERNAL_HTTP"} and callback_route == "PICK_AND_PUT_RESULT"
-    if kind != "COMMAND_RESULT" and not is_pick_result_callback:
+    if kind != "COMMAND_RESULT":
         return False
     if session is None:
         return False
@@ -220,7 +190,9 @@ def _is_late_or_duplicate_command_result_for_session(
     if not isinstance(awaiting_command_code, str) or callback_command_code != awaiting_command_code:
         return True
     if command is None:
-        return True
+        # payload 与当前 wait 匹配但 command_id 缺失/不存在时，交给 generated
+        # dispatcher 产出 COMMAND_ID_MISSING / COMMAND_NOT_FOUND 稳定零 effect 诊断。
+        return False
     terminal_command_statuses = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"}
     command_status = _command_status_value(command)
     if command_status not in terminal_command_statuses:
@@ -229,20 +201,6 @@ def _is_late_or_duplicate_command_result_for_session(
     if _session_status_value(session) in terminal_session_statuses:
         return True
     return not _is_current_wait_command_result(session=session, command=command, payload=payload)
-
-
-def _result_requires_outbox_dispatch(result: "OrchestratorResult") -> bool:  # noqa: UP037
-    """判断 OrchestratorResult 是否需要 outbox dispatch."""
-    for intent in result.intents or []:
-        if intent.kind in {
-            RuntimeIntentKind.COMMAND,
-            RuntimeIntentKind.EXTERNAL_REQUEST,
-            RuntimeIntentKind.RACK_OPERATION_REQUEST,
-        }:
-            return True
-        if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
-            return True
-    return False
 
 
 async def _record_late_command_result_archive_timeline(
@@ -361,13 +319,6 @@ def _payload_for_inbox(inbox: Any) -> dict[str, Any]:
     return payload_dict(getattr(inbox, "payload_json", None))
 
 
-def _payload_for_session(session: Any) -> dict[str, Any]:
-    raw = getattr(session, "context_json", None)
-    if isinstance(raw, dict):
-        return dict(raw)
-    return {}
-
-
 def _build_runtime_session_updated_event_payload(*, workline_id: int | None, session_id: int | None) -> dict[str, Any]:
     """构建工作线运行会话更新事件 payload。"""
     return {
@@ -384,14 +335,12 @@ def _build_runtime_session_updated_event_payload(*, workline_id: int | None, ses
 class RuntimeInboxWriteBackService:
     """RuntimeInbox write-back 服务.
 
-    单一职责: 在 OrchestratorService 锁内回调时, 执行 stale session guard
-    + 业务 effects + 重复/迟到检测 + fence terminal update.
+    单一职责: Stage 3 锁内重校验并原子落地 generated write set。
     """
 
     def __init__(
         self,
         *,
-        write_back_service: Any = None,
         inbox_service: RuntimeInboxService | None = None,
         plugin_attempt_repository: PluginAttemptRepository | Any | None = None,
         intent_log_repository: Any | None = None,
@@ -402,7 +351,6 @@ class RuntimeInboxWriteBackService:
         device_repository: Any | None = None,
         queue_gateway: Any | None = None,
     ) -> None:
-        self._write_back_service = write_back_service
         self._inbox_service = inbox_service
         self._plugin_attempt_repository = plugin_attempt_repository or default_plugin_attempt_repository
         self._intent_log_repository = intent_log_repository or default_runtime_intent_log_repository
@@ -412,12 +360,6 @@ class RuntimeInboxWriteBackService:
         self._workline_repository = workline_repository or default_workline_repository
         self._device_repository = device_repository or default_device_repository
         self._queue_gateway = queue_gateway or task_queue_gateway
-
-    @property
-    def write_back_service(self) -> Any:
-        if self._write_back_service is None:
-            return orchestrator_write_back_service
-        return self._write_back_service
 
     @property
     def inbox_service(self) -> RuntimeInboxService:
@@ -437,6 +379,65 @@ class RuntimeInboxWriteBackService:
 
             self._effect_applier = RuntimeIntentEffectApplier()
         return self._effect_applier
+
+    async def _persist_business_reject_after_rollback(
+        self,
+        db: Any,
+        *,
+        expected_snapshot: AttemptSnapshot,
+        inbox_id: int,
+        session_id: int,
+        workline_id: int,
+        trace_id: str,
+        effect_ctx: dict[str, Any],
+        evidence: dict[str, Any],
+    ) -> bool | None:
+        """重新锁定 attempt 后执行可选补偿；None 表示 fencing 已失效。"""
+
+        locked = await self._plugin_attempt_repository.lock_authoritative(
+            db,
+            inbox_id=inbox_id,
+            session_id=session_id,
+        )
+        if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
+            await db.rollback()
+            return None
+        compensation = getattr(self.effect_applier, "persist_business_reject", None)
+        compensation_persisted = False
+        if callable(compensation):
+            compensation_workline = await self._workline_repository.get_by_id(db, workline_id)
+            if compensation_workline is None:
+                raise RuntimeError(f"Workline {workline_id} missing during business reject compensation")
+            compensation_trace = TraceContext.from_runtime(
+                session=locked.session,
+                workline=compensation_workline,
+                inbox=locked.inbox,
+                trace_id=trace_id,
+            )
+            compensation_ctx = {
+                **effect_ctx,
+                "session": locked.session,
+                "workline": compensation_workline,
+                "inbox": locked.inbox,
+                "work_item": getattr(locked, "work_item", None),
+                "plugin_binding": getattr(locked, "plugin_binding", None),
+                "trace": compensation_trace,
+                "correlation_id": getattr(locked.inbox, "correlation_id", None) or trace_id,
+                "effect_state": EffectApplyState(),
+                "current_status": getattr(locked.session, "status", None),
+                "session_ctx": _session_context(locked.session),
+                "now": timezone.now_for_db(),
+            }
+            compensation_persisted = bool(await compensation(compensation_ctx, evidence))
+        reject_outcome = evidence.get("outcome")
+        reject_details = reject_outcome.get("details") if isinstance(reject_outcome, dict) else None
+        if (
+            isinstance(reject_details, dict)
+            and reject_details.get("durable_reject_required") is True
+            and not compensation_persisted
+        ):
+            raise RuntimeError("required business reject compensation was not persisted")
+        return compensation_persisted
 
     async def commit_plugin_attempt(
         self,
@@ -514,6 +515,8 @@ class RuntimeInboxWriteBackService:
         )
         try:
             if write_set.intents:
+                if workline is None:
+                    raise ValueError("generated plugin attempt requires a resolved workline")
                 prepared_intents = self._intent_log_repository.prepare_attempt_intents(
                     locked=locked,
                     snapshot=expected_snapshot,
@@ -527,21 +530,33 @@ class RuntimeInboxWriteBackService:
                     )
                     if claim_result is ClaimResult.NEW:
                         _ = self._intent_log_repository.add_prepared(db, prepared)
-                effect_result = await self.effect_applier.apply(
-                    {
-                        "db": db,
-                        "session": locked.session,
-                        "workline": workline or SimpleNamespace(id=workline_id),
-                        "inbox": locked.inbox,
-                        "work_item": getattr(locked, "work_item", None),
-                        "plugin_binding": getattr(locked, "plugin_binding", None),
-                        "devices_by_role": devices_by_role or {},
-                        "trace_id": trace_id,
-                        "correlation_id": getattr(locked.inbox, "correlation_id", None) or trace_id,
-                        "orch_result": SimpleNamespace(),
-                    },
-                    list(write_set.intents),
+                trace = TraceContext.from_runtime(
+                    session=locked.session,
+                    workline=workline,
+                    inbox=locked.inbox,
+                    trace_id=trace_id,
                 )
+                effect_ctx = {
+                    "db": db,
+                    "session": locked.session,
+                    "workline": workline,
+                    "inbox": locked.inbox,
+                    "work_item": getattr(locked, "work_item", None),
+                    "plugin_binding": getattr(locked, "plugin_binding", None),
+                    "devices_by_role": devices_by_role or {},
+                    "source_device": None,
+                    "trace_id": trace_id,
+                    "trace": trace,
+                    "correlation_id": getattr(locked.inbox, "correlation_id", None) or trace_id,
+                    "effect_state": EffectApplyState(),
+                    "current_status": getattr(locked.session, "status", None),
+                    "session_ctx": _session_context(locked.session),
+                    "now": timezone.now_for_db(),
+                    "awaiting_device_command_pk": None,
+                    "awaiting_command_code": None,
+                    "next_timeline_seq_no": None,
+                }
+                effect_result = await self.effect_applier.apply(effect_ctx, list(write_set.intents))
                 business_reject_evidence = getattr(effect_result, "business_reject_evidence", None)
                 if isinstance(business_reject_evidence, dict):
                     reject_source = {
@@ -553,6 +568,18 @@ class RuntimeInboxWriteBackService:
                         "correlation_id": getattr(locked.inbox, "correlation_id", None),
                     }
                     await db.rollback()
+                    compensation_result = await self._persist_business_reject_after_rollback(
+                        db,
+                        expected_snapshot=expected_snapshot,
+                        inbox_id=inbox_id,
+                        session_id=session_id,
+                        workline_id=workline_id,
+                        trace_id=trace_id,
+                        effect_ctx=effect_ctx,
+                        evidence=business_reject_evidence,
+                    )
+                    if compensation_result is None:
+                        return WriteDisposition.SAFE_RETRY
                     is_recursive_effect_reject = (
                         reject_source["payload_json"].get("logical_route") == "CAPABILITY_EFFECT_RESULT"
                     )
@@ -639,157 +666,12 @@ class RuntimeInboxWriteBackService:
             raise
         return WriteDisposition.COMMITTED
 
-    def build_write_callback(
-        self,
-        db: Any,
-        *,
-        session: Any,
-        workline: Any,
-        inbox: Any,
-        devices_by_role: dict[str, list[Any]],
-        device: Any | None,
-        command: Any | None,
-        inbox_pk: int,
-        session_snapshot: tuple[Any, Any],
-        sse_workline_id: int | None,
-        sse_session_id: int | None,
-        processor_token: str,
-        state: WriteBackState,
-    ) -> "Callable[[OrchestratorResult], Awaitable[None]]":  # noqa: UP037
-        """构造 OrchestratorService 写回调闭包."""
-
-        async def _write_callback(write_result: "OrchestratorResult") -> None:  # noqa: UP037
-            try:
-                await db.refresh(session)
-                payload = _payload_for_inbox(inbox)
-                if _is_late_or_duplicate_command_result_for_session(
-                    inbox=inbox,
-                    payload=payload,
-                    session=session,
-                    command=command,
-                ):
-                    await _record_late_command_result_archive_timeline(
-                        db,
-                        session=session,
-                        workline=workline,
-                        inbox=inbox,
-                        command=command,
-                        payload=payload,
-                        reason="COMMAND_RESULT_BECAME_STALE_BEFORE_WRITE",
-                    )
-                    _require_fenced_update(
-                        await self.inbox_service.mark_processed(
-                            db,
-                            inbox_id=inbox_pk,
-                            lease_token=processor_token,
-                        ),
-                        action="mark_processed",
-                        inbox_id=inbox_pk,
-                    )
-                    await db.commit()
-                    state.disposition = WriteBackDisposition.PROCESSED
-                    state.write_effects_applied = True
-                    state.enqueue_outbox_dispatch = False
-                    return
-
-                if _session_write_snapshot(session) != session_snapshot:
-                    raise RuntimeError("Session state changed before WRITE apply; refusing stale orchestrator effects")
-
-                _ = reapply_pending_session_ingress_metadata(session)
-
-                effect_result: RuntimeIntentEffectResult = await self.write_back_service.write_back(
-                    db,
-                    session=session,
-                    workline=workline,
-                    inbox=inbox,
-                    devices_by_role=devices_by_role,
-                    source_device=device,
-                    orch_result=write_result,
-                )
-                write_disposition = effect_result.disposition
-                state.disposition = write_disposition
-                if write_disposition == WriteBackDisposition.RESOURCE_RETRY:
-                    _require_fenced_update(
-                        await self.inbox_service.mark_failed(
-                            db,
-                            inbox_id=inbox_pk,
-                            lease_token=processor_token,
-                            error_code="RESOURCE_WAIT",
-                            error_message="RESOURCE_WAIT",
-                            retryable=True,
-                            consume_attempt=False,
-                        ),
-                        action="mark_failed",
-                        inbox_id=inbox_pk,
-                    )
-                elif write_disposition == WriteBackDisposition.PROCESSED:
-                    _require_fenced_update(
-                        await self.inbox_service.mark_processed(
-                            db,
-                            inbox_id=inbox_pk,
-                            lease_token=processor_token,
-                        ),
-                        action="mark_processed",
-                        inbox_id=inbox_pk,
-                    )
-                    session_context = dict(_payload_for_session(session))
-                    resource_wait_context = payload_dict(session_context.get("resource_wait"))
-                    if optional_int(resource_wait_context.get("inbox_id")) == inbox_pk and resource_wait_context.get(
-                        "subject_key"
-                    ):
-                        from src.app.workline.services.diagnostic_service import (
-                            workline_diagnostic_service,
-                        )
-
-                        _ = await workline_diagnostic_service.resolve_resource_wait_diagnostics(
-                            db,
-                            inbox_id=inbox_pk,
-                            subject_type=str(resource_wait_context["subject_type"]),
-                            subject_key=str(resource_wait_context["subject_key"]),
-                            projection_type=str(resource_wait_context["projection_type"]),
-                            auto_commit=False,
-                        )
-                        session_context.pop("resource_wait", None)
-                        session.context_json = session_context
-                else:
-                    raise RuntimeError(f"Unsupported write-back disposition: {write_disposition}")
-
-                await db.commit()
-                state.write_effects_applied = True
-                state.enqueue_outbox_dispatch = (
-                    write_disposition == WriteBackDisposition.PROCESSED
-                    and _result_requires_outbox_dispatch(write_result)
-                )
-
-                from src.app.sys.services.event_stream_service import (
-                    WORKLINE_RUNTIME_CHANGED_EVENT,
-                    defer_sse_event,
-                )
-
-                defer_sse_event(
-                    db,
-                    WORKLINE_RUNTIME_CHANGED_EVENT,
-                    _build_runtime_session_updated_event_payload(
-                        workline_id=sse_workline_id,
-                        session_id=sse_session_id,
-                    ),
-                )
-            except Exception:
-                with suppress(Exception):
-                    await db.rollback()
-                raise
-
-        return _write_callback
-
 
 __all__ = [
     "RuntimeInboxLeaseLostError",
     "RuntimeInboxWriteBackService",
-    "WriteBackState",
     "_is_late_or_duplicate_command_result_for_session",
     "_record_duplicate_entry_archive_timeline",
     "_record_late_command_result_archive_timeline",
-    "_result_requires_outbox_dispatch",
     "_session_status_value",
-    "_session_write_snapshot",
 ]

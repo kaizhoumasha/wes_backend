@@ -41,7 +41,7 @@ class ExecutionSession(BaseMixin, table=True):
         index=True,
         description="关联 WorkLine 配置 (保留 workline_id 引用)",
     )
-    plugin_key: str | None = Field(default=None, max_length=100, index=True)
+    plugin_key: str = Field(max_length=100, index=True)
 
     # manifest version pin (RUNNING session 固定版本)
     manifest_version: str = Field(
@@ -49,14 +49,13 @@ class ExecutionSession(BaseMixin, table=True):
         max_length=60,
         description="RUNNING session 固定 manifest_version, 新 manifest 只影响新 session",
     )
-    plugin_binding_id: int | None = Field(
-        default=None,
+    plugin_binding_id: int = Field(
         foreign_key="wes_biz.workline_plugin_bindings.id",
         index=True,
     )
-    plugin_binding_version: int | None = Field(default=None, ge=1)
-    plugin_config_hash: str | None = Field(default=None, max_length=64)
-    plugin_index_digest: str | None = Field(default=None, max_length=64)
+    plugin_binding_version: int = Field(ge=1)
+    plugin_config_hash: str = Field(max_length=64)
+    plugin_index_digest: str = Field(max_length=64)
     plugin_state_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
     plugin_state_version: int = Field(default=0, ge=0)
 

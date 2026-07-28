@@ -29,7 +29,7 @@
 | --- | ---: | --- |
 | moved | 53 | 旧 WorkLine business contracts / services 已迁入 material-flow contracts 或 runtime capability service |
 | test-only-migrated | 10 | 旧 `tests/workline_plugins` rough sorter 合同测试已迁入 `tests/contracts/workline` |
-| kept-config-only | 30 | `tests/workline_runtime` 目标态 runtime regression / contract tests 保留 |
+| kept-config-only | 30 | `tests/workline_runtime` 目标态 regression / contract tests 保留 |
 | already-removed | 20 | 前序 material-flow 迁移已移除的历史 WorkLine service rows，仅保留审计闭环 |
 
 ## Gate 链路
@@ -45,4 +45,4 @@ legacy-cleanup-matrix.csv
 ## 当前剩余风险
 
 - WorkLine 运行态物理字段已由 restructuring cleanup migration 迁入 runtime/orchestration 原生投影；本 ledger 当前无 schema-deferred 项。
-- `delete_commit=pending-current-pr` 表示当前工作区尚未落单独 packet commit；commit 后可替换为对应 hash。
+- `delete_commit=8c833610c08005005406b3a774c92519f69b7886` 是 63 个 strict disposition 行对应旧路径的真实历史删除/迁移证据；final gate 会校验该提交可解析且确实删除或迁移相应路径。
