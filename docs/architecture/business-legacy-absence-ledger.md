@@ -45,4 +45,4 @@ legacy-cleanup-matrix.csv
 ## 当前剩余风险
 
 - WorkLine 运行态物理字段已由 restructuring cleanup migration 迁入 runtime/orchestration 原生投影；本 ledger 当前无 schema-deferred 项。
-- `delete_commit=8c833610c08005005406b3a774c92519f69b7886` 表示当前工作区尚未落单独 packet commit；commit 后可替换为对应 hash。
+- `delete_commit=8c833610c08005005406b3a774c92519f69b7886` 是 63 个 strict disposition 行对应旧路径的真实历史删除/迁移证据；final gate 会校验该提交可解析且确实删除或迁移相应路径。

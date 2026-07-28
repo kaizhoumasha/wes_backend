@@ -862,12 +862,14 @@ class SmtInboundHandoffService:
         candidate: SmtInboundHandoffSourceItem,
         now: Any,
     ) -> tuple[SmtInboundHandoffDemand | None, SmtInboundHandoffSourceItem | None, Any | None]:
-        demand = await self.repository.lock_demand_by_id(db, demand_id=candidate.handoff_demand_id)
+        item, blocked_result = await self._lock_ready_candidate_or_retry(db, candidate=candidate, now=now)
+        if item is None or blocked_result is not None:
+            return None, item, blocked_result
+
+        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
         if demand is None or not self._demand_is_claimable(demand):
             return demand, None, self._claim_result("EMPTY")
-
-        item, blocked_result = await self._lock_ready_candidate_or_retry(db, candidate=candidate, now=now)
-        return demand, item, blocked_result
+        return demand, item, None
 
     async def _release_claim_candidate_for_retry(
         self,
@@ -950,9 +952,17 @@ class SmtInboundHandoffService:
         """释放 source-pick dead-letter item，使下一次 claim 使用新 attempt。"""
 
         _ = trace_id
-        item = await self.repository.get_source_item_by_id(db, source_item_id)
+        item = await self.repository.get_source_item_for_update(db, source_item_id)
         if item is None:
             raise ValueError(f"未找到 handoff source item: {source_item_id}")
+        if item.status != SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
+            raise ValueError("当前状态不可重试 source pick")
+        if "RETRY_SOURCE_PICK" not in self._available_actions(item):
+            raise ValueError("当前失败原因不可重试 source pick")
+        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
+        if demand is None:
+            raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
+
         item.claim_attempt_no += 1
         item.status = SmtInboundHandoffSourceItemStatus.READY
         item.source_pick_inbox_id = None
@@ -967,14 +977,10 @@ class SmtInboundHandoffService:
         item.claimed_at = None
         item.next_attempt_at = None
         db.add(item)
-        demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
-        if demand is not None:
-            demand.failure_code = None
-            demand.failure_message = None
-            db.add(demand)
-            _ = await self.recalculate_demand_status(db, demand, reason="release_source_pick_dead_letter_for_retry")
-        else:
-            await db.flush()
+        demand.failure_code = None
+        demand.failure_message = None
+        db.add(demand)
+        _ = await self.recalculate_demand_status(db, demand, reason="release_source_pick_dead_letter_for_retry")
         return item
 
     async def record_source_pick_command_correlation(
@@ -1142,7 +1148,7 @@ class SmtInboundHandoffService:
                 CommandStatus.FAILED.value,
                 CommandStatus.TIMEOUT.value,
                 CommandStatus.CANCELLED.value,
-            }:
+            } or (command_status == CommandStatus.COMPLETED.value and command_result != CommandResult.SUCCESS.value):
                 await self._manual_hold_source_pick_recovery(
                     db,
                     demand=demand,
@@ -1599,14 +1605,6 @@ class SmtInboundHandoffService:
     ) -> dict[str, Any]:
         """人工释放 source-pick 失败 item，允许后续 claim 重新创建内部事件和命令。"""
 
-        item = await self.repository.get_source_item_by_id(db, source_item_id)
-        if item is None:
-            raise ValueError(f"handoff source item 不存在: {source_item_id}")
-        if item.status != SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
-            raise ValueError("当前状态不可重试 source pick")
-        if "RETRY_SOURCE_PICK" not in self._available_actions(item):
-            raise ValueError("当前失败原因不可重试 source pick")
-
         released = await self.release_source_pick_dead_letter_for_retry(db, source_item_id=source_item_id)
         return {
             "id": released.id,
@@ -1719,7 +1717,7 @@ class SmtInboundHandoffService:
                 CommandStatus.FAILED.value,
                 CommandStatus.TIMEOUT.value,
                 CommandStatus.CANCELLED.value,
-            }:
+            } or (command_status == CommandStatus.COMPLETED.value and command_result != CommandResult.SUCCESS.value):
                 await self._manual_hold_source_pick_recovery(
                     db,
                     demand=demand,
@@ -1832,7 +1830,9 @@ class SmtInboundHandoffService:
                 command_id=command_id,
             )
             return "manual_hold" if result.outcome == "manual_hold" else "advanced"
-        if command_status in {"FAILED", "TIMEOUT", "CANCELLED"}:
+        if command_status in {"FAILED", "TIMEOUT", "CANCELLED"} or (
+            command_status == "COMPLETED" and command_result != "SUCCESS"
+        ):
             await self._manual_hold_source_pick_recovery(
                 db,
                 demand=demand,

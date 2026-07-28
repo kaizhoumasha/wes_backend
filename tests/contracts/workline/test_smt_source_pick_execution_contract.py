@@ -10,6 +10,7 @@ from src.app.runtime.orchestration.execution_correlation import ExecutionCorrela
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import SmtInboundHandoffSourceItemStatus
+from tests.workline_runtime.test_smt_command_correlation_recovery import _command, _recover, _RecoveryService
 from tests.workline_runtime.test_smt_generated_source_pick_lifecycle import _claim_and_process_source_pick
 
 
@@ -67,6 +68,20 @@ async def test_source_pick_success_rejects_each_corrupted_owned_anchor_field(
 
 
 @pytest.mark.asyncio
+async def test_unique_completed_failed_candidate_records_correlation_then_enters_manual_hold() -> None:
+    service = _RecoveryService([_command(status="COMPLETED", result="FAILED")])
+
+    outcome, item = await _recover(service)
+
+    assert outcome == "manual_hold"
+    assert len(service.correlations) == 1
+    assert service.successes == []
+    assert len(service.manual_holds) == 1
+    assert "失败终态" in str(service.manual_holds[0]["message"])
+    assert item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "result", "task_type", "expected"),
     [
@@ -106,3 +121,48 @@ async def test_source_pick_success_verifies_command_terminal_evidence(
         outcome = await service.record_source_pick_success(db_session, **kwargs)
         assert outcome.outcome == "manual_hold"
         assert source_item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+
+
+@pytest.mark.asyncio
+async def test_source_pick_success_persists_manual_hold_for_completed_failed_command(db_session: object) -> None:
+    service, source_item, source_inbox, command, _outbox = await _claim_and_process_source_pick(db_session)
+    command.status = CommandStatus.COMPLETED
+    command.result = CommandResult.FAILED
+    db_session.add(command)
+    await db_session.commit()
+
+    outcome = await service.record_source_pick_success(
+        db_session,
+        handoff_demand_id=source_item.handoff_demand_id,
+        source_item_id=source_item.id,
+        claim_attempt_no=source_item.claim_attempt_no,
+        source_pick_inbox_id=source_inbox.id,
+        command_id=command.id,
+    )
+
+    assert outcome.outcome == "manual_hold"
+    assert outcome.advanced is False
+    assert source_item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+    assert source_item.failure_code == "SOURCE_PICK_COMMAND_NOT_CREATED"
+
+
+@pytest.mark.asyncio
+async def test_associated_recovery_persists_manual_hold_for_completed_failed_command(db_session: object) -> None:
+    service, source_item, source_inbox, command, _outbox = await _claim_and_process_source_pick(db_session)
+    command.status = CommandStatus.COMPLETED
+    command.result = CommandResult.FAILED
+    db_session.add(command)
+    await db_session.commit()
+    await db_session.refresh(command)
+    await db_session.refresh(source_inbox)
+    assert command.status == CommandStatus.COMPLETED
+    assert command.result == CommandResult.FAILED
+    assert source_inbox.status == "PROCESSED"
+    locked_item = await service.repository.get_source_item_for_update(db_session, source_item.id)
+    assert locked_item is not None
+    outcome = await service._recover_stuck_source_item(db_session, locked_item, now=source_item.updated_at)
+    await db_session.commit()
+
+    await db_session.refresh(source_item)
+    assert outcome == "manual_hold"
+    assert source_item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
