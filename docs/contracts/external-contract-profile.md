@@ -103,12 +103,14 @@ security_profile:
 
 ## 5.1 当前 WMS 北向 operation profile
 
-| Mode | Operation identity | 交互 |
-| --- | --- | --- |
-| QUERY | `wms.inventory.query_inventory@v1` | 同步查询；保留预算、分页、typed evidence 和确定性 replay |
-| EFFECT | `wms.inventory.confirm_inbound@v1` | 幂等 submit + status query；callback hint 可选 |
-| EFFECT | `wms.fulfillment.full_box_exchange@v1` | 幂等 submit + status query；callback hint 可选 |
-| EFFECT | `wms.fulfillment.notify_pkg_binding@v1` | 幂等 submit + status query；callback hint 可选 |
+operation 清单只从 `src/app/wms_integration/operation_registry.py` 的 35 项静态 Definition 派生：
+
+- 19 项 QUERY：Q01–Q18 为 GET，Q19 为无副作用 POST；
+- 9 项同步 EFFECT：E01–E07/E15/E16 直接返回 typed terminal result；
+- 7 项异步 EFFECT：E08–E14 使用幂等 submit ACK + status query，callback hint 可选。
+
+profile 只绑定 Provider identity、endpoint/auth revision 和静态 operation，不复制或覆盖 method、完成模式、lane、
+预算、分页和拒绝码。profile 少于或多于 registry 任一 identity 时启动门禁必须 fail closed。
 
 WES 只定义并观测 submit、status query 和 callback hint。WMS 内部排队、任务状态机、库存处理和补偿逻辑不属于
 profile，也不能从 HTTP 状态或延迟推断。开发阶段由 mock/replay 提供这些交互能力；真实 WMS 上线前必须按

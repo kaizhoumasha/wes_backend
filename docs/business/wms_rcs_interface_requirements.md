@@ -1061,7 +1061,7 @@ class EventType(str, Enum):
 |------|------|------|
 | `GET /api/wms/inventory/query` | GET | 库存查询 |
 | `POST /api/wms/inventory/reserve` | POST | 库存预留 |
-| `DELETE /api/wms/inventory/reserve/{id}` | DELETE | 释放预留 |
+| `/api/wms/inventory/reservations/release` | POST | E02 释放预留 |
 | `POST /api/wms/inventory/transfer` | POST | 库存转移确认 |
 
 ---
@@ -1233,7 +1233,7 @@ sequenceDiagram
 | `/api/wes/transport-request` | POST | 满架搬运请求 | P0 |
 | `/api/wms/kitting/pkg-binding` | POST | PKG 绑定通知 | P0 |
 | `/api/wms/inventory/reserve` | POST | 库存预留 | P1 |
-| `/api/wms/inventory/reserve/{id}` | DELETE | 释放预留 | P1 |
+| `/api/wms/inventory/reservations/release` | POST | E02 释放预留 | P1 |
 | `/api/wms/inventory/transfer` | POST | 库存转移确认 | P1 |
 
 ### 7.3 需要新增的 Plugin Contract EventType

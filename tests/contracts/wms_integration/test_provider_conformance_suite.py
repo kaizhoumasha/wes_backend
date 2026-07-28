@@ -11,13 +11,13 @@ import pytest
 from pydantic import ValidationError
 
 from src.app.runtime.system_capabilities.wms.conformance_manifest import WMS_CONFORMANCE_MANIFEST
-from src.app.runtime.system_capabilities.wms.contracts import WmsOperationMode
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
     build_wms_conformance_report,
 )
 from src.app.wms_integration.adapters.effect_status_query_adapter import WmsEffectStatusQueryAdapter
+from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.ports.effect_status import (
     NotifyPackageBindingResultIdentity,
     WmsEffectStatusRequest,
@@ -167,15 +167,22 @@ def test_common_conformance_test_has_no_skip_or_xfail_escape_hatch() -> None:
 
 
 def test_every_effect_conformance_question_bank_contains_unsigned_status_query_case() -> None:
-    effect_requirements = tuple(
+    async_requirements = tuple(
         requirement
         for requirement in WMS_CONFORMANCE_MANIFEST.operations
-        if requirement.operation.mode is WmsOperationMode.EFFECT
+        if requirement.operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+    )
+    sync_requirements = tuple(
+        requirement
+        for requirement in WMS_CONFORMANCE_MANIFEST.operations
+        if requirement.operation.completion_mode is WmsCompletionMode.SYNC_RESULT
     )
 
-    assert len(effect_requirements) == 3
-    assert all("status_query" in requirement.required_cases for requirement in effect_requirements)
-    serialized = repr(tuple(requirement.required_cases for requirement in effect_requirements)).lower()
+    assert len(async_requirements) == 7
+    assert len(sync_requirements) == 9
+    assert all("status_query" in requirement.required_cases for requirement in async_requirements)
+    assert all("status_query" not in requirement.required_cases for requirement in sync_requirements)
+    serialized = repr(tuple(requirement.required_cases for requirement in async_requirements)).lower()
     assert "signature" not in serialized
     assert "credential" not in serialized
 

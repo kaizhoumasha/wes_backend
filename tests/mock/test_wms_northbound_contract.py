@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 
+from src.app.wms_integration.operation_contract import WmsOperationDefinition, WmsOperationMode
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from tests.mock import wms_mock_server
 from tests.mock.wms_northbound_contract import (
     ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
@@ -19,9 +19,7 @@ from tests.mock.wms_northbound_contract import (
     MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2,
     NorthboundAuthError,
     NorthboundOperationStore,
-    build_confirm_inbound_result,
-    build_full_box_exchange_result,
-    build_package_binding_result,
+    build_typed_result,
     canonical_status_string,
     canonical_submit_string,
     content_sha256,
@@ -29,6 +27,7 @@ from tests.mock.wms_northbound_contract import (
     verify_status_hmac,
     verify_submit_hmac,
 )
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
 
 def _submit_headers(*, body: bytes, secret: bytes, content_hash: str | None = None) -> dict[str, str]:
@@ -78,8 +77,10 @@ def _status_headers(*, secret: bytes, path: str) -> dict[str, str]:
 def _payload(*, station_code: str = "station-a") -> dict[str, str]:
     return {
         "dispatch_key": "dispatch-001",
-        "package_id": "package-001",
-        "pallet_id": "pallet-001",
+        "pkg_id": "package-001",
+        "bin_id": "bin-001",
+        "slot_id": "slot-001",
+        "rack_id": "rack-001",
         "station_code": station_code,
     }
 
@@ -216,8 +217,11 @@ def test_store_scopes_idempotency_by_operation_identity_and_replays_completed_ty
     assert [accepted.source_version, processing.source_version, completed.source_version] == [0, 1, 2]
     assert replay.status_code == 200
     assert replay.snapshot == completed
-    assert completed.result_payload == build_package_binding_result(
-        payload, source_version=2, completed_at=completed.updated_at
+    assert completed.result_payload == build_typed_result(
+        "wms.fulfillment.notify_pkg_binding@v1",
+        payload,
+        source_version=2,
+        completed_at=completed.updated_at,
     )
 
 
@@ -239,13 +243,13 @@ def test_store_replays_processing_and_can_record_rejection_and_not_found() -> No
     store.submit(operation_identity, "idem-001", "a" * 64, _payload())
 
     in_progress = store.submit(operation_identity, "idem-001", "a" * 64, _payload())
-    rejected = store.reject(operation_identity, "idem-001", reason_code="WMS_BUSINESS_REJECTED")
+    rejected = store.reject(operation_identity, "idem-001", reason_code="PACKAGE_NOT_FOUND")
     missing = store.query(operation_identity, "missing")
 
     assert in_progress.status_code == 409
     assert in_progress.error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
     assert rejected.state == "REJECTED"
-    assert rejected.reason_code == "WMS_BUSINESS_REJECTED"
+    assert rejected.reason_code == "PACKAGE_NOT_FOUND"
     assert rejected.result_payload is None
     assert missing.state == "NOT_FOUND"
     assert missing.source_version is None
@@ -253,60 +257,30 @@ def test_store_replays_processing_and_can_record_rejection_and_not_found() -> No
 
 
 @pytest.mark.parametrize(
-    ("fixture_name", "builder", "payload"),
-    (
-        (
-            "confirm_inbound_status_replay.v1.json",
-            build_confirm_inbound_result,
-            {
-                "dispatch_key": "dispatch-replay-confirm-inbound-001",
-                "inbound_key": "inbound-replay-001",
-                "document_no": "document-replay-001",
-            },
-        ),
-        (
-            "full_box_exchange_status_replay.v1.json",
-            build_full_box_exchange_result,
-            {
-                "dispatch_key": "dispatch-replay-full-box-exchange-001",
-                "rack_id": "rack-replay-001",
-                "empty_box_id": "empty-box-replay-001",
-                "full_box_id": "full-box-replay-001",
-                "exchange_request_code": "exchange-replay-001",
-            },
-        ),
-        (
-            "notify_pkg_binding_status_replay.v1.json",
-            build_package_binding_result,
-            {
-                "dispatch_key": "dispatch-replay-notify-pkg-binding-001",
-                "package_id": "package-replay-001",
-                "pallet_id": "pallet-replay-001",
-            },
-        ),
-    ),
+    "operation",
+    tuple(operation for operation in WMS_OPERATIONS if operation.mode is WmsOperationMode.EFFECT),
+    ids=lambda operation: operation.identity,
 )
-def test_completed_result_builders_match_frozen_status_replay_schema(
-    fixture_name: str,
-    builder: object,
-    payload: dict[str, str],
-) -> None:
-    fixture_path = Path(__file__).parents[1] / "fixtures" / "wms_provider_conformance" / fixture_name
-    fixture = json.loads(fixture_path.read_text())
-    expected = next(case for case in fixture["cases"] if case["case_id"] == "completed")["response"]["result_payload"]
-    assert callable(builder)
+def test_completed_result_builder_matches_every_frozen_effect_schema(operation: WmsOperationDefinition) -> None:
+    payload = REQUEST_FIXTURES[operation.identity]
 
-    result = builder(payload, source_version=3, completed_at="2026-07-24T00:00:02+00:00")
+    result = build_typed_result(
+        operation.identity,
+        payload,
+        source_version=3,
+        completed_at="2026-07-24T00:00:02+00:00",
+    )
 
-    assert result == expected
+    operation.result_model.model_validate(result)
+    assert result["dispatch_key"] == payload["dispatch_key"]
 
 
 @pytest.mark.parametrize(
     ("operation_identity", "reason_code"),
     (
         ("wms.inventory.confirm_inbound@v1", "MATERIAL_BLOCKED"),
-        ("wms.fulfillment.full_box_exchange@v1", "RACK_LOCKED"),
-        ("wms.fulfillment.notify_pkg_binding@v1", "WMS_BUSINESS_REJECTED"),
+        ("wms.fulfillment.full_box_exchange@v1", "RACK_NOT_AT_EXCHANGE_STATION"),
+        ("wms.fulfillment.notify_pkg_binding@v1", "PACKAGE_NOT_FOUND"),
     ),
 )
 def test_store_reject_accepts_only_reason_code_frozen_for_each_operation(
@@ -324,7 +298,7 @@ def test_store_reject_accepts_only_reason_code_frozen_for_each_operation(
 @pytest.mark.parametrize(
     ("operation_identity", "reason_code"),
     (
-        ("wms.inventory.confirm_inbound@v1", "RACK_LOCKED"),
+        ("wms.inventory.confirm_inbound@v1", "RACK_NOT_AT_EXCHANGE_STATION"),
         ("wms.fulfillment.full_box_exchange@v1", "MATERIAL_BLOCKED"),
         ("wms.fulfillment.notify_pkg_binding@v1", "MATERIAL_BLOCKED"),
     ),

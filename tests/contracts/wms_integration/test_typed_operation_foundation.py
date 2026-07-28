@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import importlib.util
 from decimal import Decimal
-from types import MappingProxyType
 
 import pytest
 from pydantic import ValidationError
@@ -224,15 +223,15 @@ def test_runtime_profile_is_identity_only_and_production_rejects_none_auth() -> 
         )
 
 
-def test_profile_manifest_and_generated_index_share_operation_contract_identity() -> None:
-    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+def test_provider_and_conformance_manifests_share_static_registry_identity() -> None:
+    registry = _load("src.app.wms_integration.operation_registry")
+    provider_manifest = _load("src.app.wms_integration.provider_manifest")
     manifest = _load("src.app.runtime.system_capabilities.wms.conformance_manifest")
-    generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
 
-    authored = tuple(binding.operation.identity for binding in catalog.WMS_PROVIDER_PROFILE.bindings)
+    authored = tuple(operation.identity for operation in registry.WMS_OPERATIONS)
+    provided = tuple(operation.identity for operation in provider_manifest.WMS_PROVIDER_OPERATION_MANIFEST)
     manifested = tuple(requirement.operation.identity for requirement in manifest.WMS_CONFORMANCE_MANIFEST.operations)
 
-    assert isinstance(generated.WMS_OPERATION_INDEX, MappingProxyType)
-    assert generated.WMS_OPERATION_IDENTITIES == authored == manifested
-    assert tuple(generated.WMS_OPERATION_INDEX) == authored
+    assert authored == provided == manifested
+    assert tuple(registry.WMS_OPERATION_BY_IDENTITY) == authored
     assert all("Port." not in identity for identity in authored)

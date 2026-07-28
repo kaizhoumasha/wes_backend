@@ -47,24 +47,24 @@ class _FakeFulfillmentPort:
             warehouse_code="WH-A",
         )
 
-    def full_box_exchange(self, rack_id, empty_box_id, full_box_id) -> WmsFulfillmentResult:
-        self.calls.append(("full_box_exchange", (rack_id, empty_box_id, full_box_id), {}))
+    def full_box_exchange(self, rack_id, rack_face, full_box_id) -> WmsFulfillmentResult:
+        self.calls.append(("full_box_exchange", (rack_id, rack_face, full_box_id), {}))
         return WmsFulfillmentResult(
             request_id="REQ-EXCHANGE-001",
             accepted=True,
             warehouse_code="WH-A",
         )
 
-    def move_bin_to_conveyor_entry(self, bin_id, conveyor_entry) -> WmsFulfillmentResult:
-        self.calls.append(("move_bin_to_conveyor_entry", (bin_id, conveyor_entry), {}))
+    def move_bins_to_conveyor_entry(self, batch_id, bin_ids) -> WmsFulfillmentResult:
+        self.calls.append(("move_bins_to_conveyor_entry", (batch_id, bin_ids), {}))
         return WmsFulfillmentResult(
             request_id="REQ-ENTRY-001",
             accepted=True,
             warehouse_code="WH-A",
         )
 
-    def move_bin_to_conveyor_exit(self, bin_id, conveyor_exit) -> WmsFulfillmentResult:
-        self.calls.append(("move_bin_to_conveyor_exit", (bin_id, conveyor_exit), {}))
+    def move_bins_from_conveyor_exit(self, batch_id, candidate_bin_ids) -> WmsFulfillmentResult:
+        self.calls.append(("move_bins_from_conveyor_exit", (batch_id, candidate_bin_ids), {}))
         return WmsFulfillmentResult(
             request_id="REQ-EXIT-001",
             accepted=True,
@@ -73,7 +73,7 @@ class _FakeFulfillmentPort:
 
 
 def test_wms_fulfillment_port_protocol_has_seven_effect_methods():
-    """happy path: WmsFulfillmentPort 仅保留尚未迁移的 6 个 family effect 方法。"""
+    """happy path: WmsFulfillmentPort 的 CTU 边界只暴露批量 E12/E13 方法。"""
     runtime_methods = {
         name
         for name in dir(WmsFulfillmentPort)
@@ -84,8 +84,8 @@ def test_wms_fulfillment_port_protocol_has_seven_effect_methods():
         "request_rack_transport",
         "change_rack_face",
         "full_box_exchange",
-        "move_bin_to_conveyor_entry",
-        "move_bin_to_conveyor_exit",
+        "move_bins_to_conveyor_entry",
+        "move_bins_from_conveyor_exit",
     }
     assert expected.issubset(runtime_methods)
 
@@ -140,9 +140,9 @@ def test_fake_port_implements_all_seven_effects():
     port.request_rack_supply("R1", "MAT-001", 5.0)
     port.request_rack_transport("R1", "ST-A", "ST-B")
     port.change_rack_face("R1", "B")
-    port.full_box_exchange("R1", "EMPTY-001", "FULL-001")
-    port.move_bin_to_conveyor_entry("BIN-001", "CV-IN-1")
-    port.move_bin_to_conveyor_exit("BIN-001", "CV-OUT-1")
+    port.full_box_exchange("R1", "A", "FULL-001")
+    port.move_bins_to_conveyor_entry("BATCH-ENTRY-001", ("BIN-001",))
+    port.move_bins_from_conveyor_exit("BATCH-EXIT-001", ("BIN-001",))
     assert len(port.calls) == 6
 
 

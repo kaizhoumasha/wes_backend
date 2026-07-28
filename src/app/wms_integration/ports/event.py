@@ -40,14 +40,17 @@ class InboundEventEnvelope(BaseModel):
 
 
 class WmsGrnReceivedEvent(BaseModel):
-    """WMS GRN 收货回调事件 (normalizer 输出)。"""
+    """WMS PO 行级 GRN 收货事件 (normalizer 输出)。"""
 
     model_config = ConfigDict(extra="forbid")
 
     envelope: InboundEventEnvelope = Field(description="共享 envelope")
     grn_id: str = Field(min_length=1, max_length=80, description="GRN 编号")
+    po_number: str = Field(min_length=1, max_length=120, description="采购订单号")
+    po_item: str = Field(min_length=1, max_length=120, description="采购订单行")
+    material_code: str = Field(min_length=1, max_length=120, description="物料编码")
+    received_quantity: float = Field(gt=0, description="本次收货数量")
     warehouse_code: str = Field(min_length=1, max_length=80, description="仓库编码")
-    item_count: int = Field(ge=0, description="收货明细行数")
 
 
 class WmsPalletArrivedEvent(BaseModel):

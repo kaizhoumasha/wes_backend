@@ -25,8 +25,8 @@ def test_wms_document_port_is_protocol():
 
 
 def test_wms_document_protocol_signatures():
-    """WmsDocumentPort 6 方法签名与主计划 §5.1 一致。"""
-    methods = ["get_grn", "list_grn_items", "get_pick_order", "get_outbound_order", "get_wave", "get_task_snapshot"]
+    """WmsDocumentPort 5 方法签名与 PO 行级 GRN 合同一致。"""
+    methods = ["get_grn", "get_pick_order", "get_outbound_order", "get_wave", "get_task_snapshot"]
     for name in methods:
         assert hasattr(WmsDocumentPort, name), f"missing method: {name}"
         method = getattr(WmsDocumentPort, name)
@@ -36,23 +36,22 @@ def test_wms_document_protocol_signatures():
 def test_wms_document_port_have_docstrings():
     """WmsDocumentPort 类和所有方法必须含 docstring。"""
     assert WmsDocumentPort.__doc__, "WmsDocumentPort class needs docstring"
-    for name in ["get_grn", "list_grn_items", "get_pick_order", "get_outbound_order", "get_wave", "get_task_snapshot"]:
+    for name in ["get_grn", "get_pick_order", "get_outbound_order", "get_wave", "get_task_snapshot"]:
         method = getattr(WmsDocumentPort, name)
         assert method.__doc__, f"method {name} needs docstring"
 
 
 def test_wms_document_data_classes_are_pydantic():
-    """WmsDocumentPort 关联的 6 数据类必须是 BaseModel 子类且含 docstring。"""
+    """WmsDocumentPort 关联的 5 数据类必须是 BaseModel 子类且含 docstring。"""
     from src.app.wms_integration.ports.document import (
         WmsGrnInfo,
-        WmsGrnItem,
         WmsOutboundOrder,
         WmsPickOrder,
         WmsTaskSnapshot,
         WmsWave,
     )
 
-    for cls in [WmsGrnInfo, WmsGrnItem, WmsPickOrder, WmsOutboundOrder, WmsWave, WmsTaskSnapshot]:
+    for cls in [WmsGrnInfo, WmsPickOrder, WmsOutboundOrder, WmsWave, WmsTaskSnapshot]:
         assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
         assert cls.__doc__, f"{cls.__name__} needs docstring"
 
@@ -67,8 +66,8 @@ def test_wms_fulfillment_protocol_signatures():
         "request_rack_transport",
         "change_rack_face",
         "full_box_exchange",
-        "move_bin_to_conveyor_entry",
-        "move_bin_to_conveyor_exit",
+        "move_bins_to_conveyor_entry",
+        "move_bins_from_conveyor_exit",
     ]
     for name in methods:
         assert hasattr(WmsFulfillmentPort, name), f"missing method: {name}"
@@ -83,8 +82,8 @@ def test_wms_fulfillment_port_have_docstrings():
         "request_rack_transport",
         "change_rack_face",
         "full_box_exchange",
-        "move_bin_to_conveyor_entry",
-        "move_bin_to_conveyor_exit",
+        "move_bins_to_conveyor_entry",
+        "move_bins_from_conveyor_exit",
     ]:
         method = getattr(WmsFulfillmentPort, name)
         assert method.__doc__, f"method {name} needs docstring"

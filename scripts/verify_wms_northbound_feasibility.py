@@ -49,48 +49,71 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
             "inbound_key": "inbound-probe-001",
             "material_code": "MATERIAL-001",
             "quantity": "1",
+            "pkg_id": "pkg-probe-001",
+            "location_code": "location-probe-001",
         },
-        "result_fields": {"accepted", "dispatch_key", "reason_code", "source_version", "inbound_key", "document_no"},
+        "result_fields": {
+            "dispatch_key",
+            "provider_reference",
+            "source_version",
+            "inbound_key",
+            "wms_document_no",
+            "inventory_source_version",
+        },
         "rejection": "MATERIAL_BLOCKED",
     },
     "wms.fulfillment.full_box_exchange@v1": {
         "submit_path": "/api/wms/fulfillment/full-box-exchange",
         "payload": {
             "dispatch_key": "probe-full-box-exchange",
+            "exchange_request_key": "exchange-probe-001",
+            "station_code": "full-box-exchange-probe",
             "rack_id": "rack-probe-001",
-            "empty_box_id": "empty-box-001",
+            "rack_face": "A",
             "full_box_id": "full-box-001",
+            "source_slot_id": "slot-probe-001",
+            "occupancies": [
+                {
+                    "occupancy_id": "occupancy-probe-001",
+                    "pkg_id": "pkg-probe-001",
+                    "material_code": "MATERIAL-001",
+                    "quantity": "1",
+                }
+            ],
         },
         "result_fields": {
-            "accepted",
             "dispatch_key",
-            "reason_code",
+            "provider_reference",
             "source_version",
-            "rack_id",
-            "empty_box_id",
+            "exchange_request_key",
             "full_box_id",
-            "exchange_request_code",
+            "selected_empty_box_id",
+            "full_box_destination",
+            "empty_box_destination",
+            "final_relations",
+            "task_outcome",
+            "inventory_source_version",
         },
-        "rejection": "RACK_LOCKED",
+        "rejection": "RACK_NOT_AT_EXCHANGE_STATION",
     },
     "wms.fulfillment.notify_pkg_binding@v1": {
         "submit_path": "/api/wms/fulfillment/package-binding",
         "payload": {
             "dispatch_key": "probe-package-binding",
-            "package_id": "package-probe-001",
-            "pallet_id": "pallet-probe-001",
+            "pkg_id": "package-probe-001",
+            "bin_id": "bin-probe-001",
+            "slot_id": "slot-probe-001",
+            "rack_id": "rack-probe-001",
             "station_code": "station-probe-001",
         },
         "result_fields": {
-            "accepted",
             "dispatch_key",
-            "reason_code",
+            "provider_reference",
             "source_version",
-            "bound_at",
-            "package_id",
-            "pallet_id",
+            "pkg_id",
+            "binding_reference",
         },
-        "rejection": "WMS_BUSINESS_REJECTED",
+        "rejection": "PACKAGE_NOT_FOUND",
     },
 }
 _TYPED_EFFECT_SUBMIT_DEADLINES = frozenset(
@@ -270,9 +293,9 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
     base_result_is_valid = (
         isinstance(result, dict)
         and set(result) == spec["result_fields"]
-        and result["accepted"] is True
         and result["dispatch_key"] == payload["dispatch_key"]
-        and result["reason_code"] is None
+        and isinstance(result["provider_reference"], str)
+        and bool(result["provider_reference"])
         and result["source_version"] == str(source_version)
     )
     if not base_result_is_valid:
@@ -280,22 +303,18 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
     if operation_identity == "wms.inventory.confirm_inbound@v1":
         return (
             result["inbound_key"] == payload["inbound_key"]
-            and result["document_no"] == payload["inbound_key"]
-            and bool(result["document_no"])
+            and isinstance(result["wms_document_no"], str)
+            and bool(result["wms_document_no"])
+            and isinstance(result["inventory_source_version"], str)
         )
     if operation_identity == "wms.fulfillment.full_box_exchange@v1":
         return (
-            result["rack_id"] == payload["rack_id"]
-            and result["empty_box_id"] == payload["empty_box_id"]
+            result["exchange_request_key"] == payload["exchange_request_key"]
             and result["full_box_id"] == payload["full_box_id"]
-            and result["exchange_request_code"] == payload["dispatch_key"]
-            and bool(result["exchange_request_code"])
+            and isinstance(result["selected_empty_box_id"], str)
+            and result["task_outcome"] in {"SUCCESS", "PARTIAL_FAILURE", "FAILED_AFTER_EXECUTION"}
         )
-    return (
-        _is_aware_rfc3339(result["bound_at"])
-        and result["package_id"] == payload["package_id"]
-        and result["pallet_id"] == payload["pallet_id"]
-    )
+    return result["pkg_id"] == payload["pkg_id"] and bool(result["binding_reference"])
 
 
 def _retry_after_is_valid(value: str | None) -> bool:

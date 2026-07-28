@@ -45,14 +45,14 @@ class WmsFulfillmentPort(Protocol):
         """请求 WMS 切换货架面 (face=A/B)。"""
         ...
 
-    def full_box_exchange(self, rack_id: str, empty_box_id: str, full_box_id: str) -> WmsFulfillmentResult:
-        """请求 WMS 满箱/空箱交换。"""
+    def full_box_exchange(self, rack_id: str, rack_face: str, full_box_id: str) -> WmsFulfillmentResult:
+        """请求 WMS 在固定交换位原子选择空箱和目标储位。"""
         ...
 
-    def move_bin_to_conveyor_entry(self, bin_id: str, conveyor_entry: str) -> WmsFulfillmentResult:
-        """请求 WMS 把料箱移到传送带入口。"""
+    def move_bins_to_conveyor_entry(self, batch_id: str, bin_ids: tuple[str, ...]) -> WmsFulfillmentResult:
+        """提交冻结成员的 CTU 入口批次。"""
         ...
 
-    def move_bin_to_conveyor_exit(self, bin_id: str, conveyor_exit: str) -> WmsFulfillmentResult:
-        """请求 WMS 把料箱移到传送带出口。"""
+    def move_bins_from_conveyor_exit(self, batch_id: str, candidate_bin_ids: tuple[str, ...]) -> WmsFulfillmentResult:
+        """提交有界 FIFO 候选窗口，由 WMS ACK 冻结接纳前缀。"""
         ...

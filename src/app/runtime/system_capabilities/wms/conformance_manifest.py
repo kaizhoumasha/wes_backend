@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.app.runtime.system_capabilities.wms.contracts import (  # noqa: TC001 - Pydantic 运行时解析字段类型。
-    WmsOperationContract,
-)
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
-from src.app.runtime.system_capabilities.wms.provider_conformance import QUERY_INVENTORY_CONFORMANCE_CASES
+from src.app.wms_integration.operation_contract import (  # noqa: TC001 - Pydantic 运行时解析字段类型。
+    WmsOperationDefinition,
+)
+from src.app.wms_integration.provider_manifest import WMS_CONFORMANCE_REQUIREMENTS
 
 
 class OperationConformanceRequirement(BaseModel):
@@ -16,7 +16,7 @@ class OperationConformanceRequirement(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    operation: WmsOperationContract
+    operation: WmsOperationDefinition
     required_cases: tuple[str, ...] = Field(min_length=1)
 
 
@@ -37,27 +37,15 @@ class WmsConformanceManifest(BaseModel):
         return self
 
 
-_CORE_QUERY_CASES = tuple(case.case_id for case in QUERY_INVENTORY_CONFORMANCE_CASES)
-_CORE_EFFECT_CASES = (
-    "success",
-    "reject",
-    "timeout",
-    "unavailable",
-    "malformed",
-    "idempotency",
-    "status_query",
-    "callback_timing",
-)
-
 WMS_CONFORMANCE_MANIFEST = WmsConformanceManifest(
     profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
     fixture_root="tests/fixtures/external_contracts/wms/northbound",
     operations=tuple(
         OperationConformanceRequirement(
-            operation=binding.operation,
-            required_cases=_CORE_QUERY_CASES if binding.operation.mode.value == "QUERY" else _CORE_EFFECT_CASES,
+            operation=requirement.operation,
+            required_cases=requirement.required_cases,
         )
-        for binding in WMS_PROVIDER_PROFILE.bindings
+        for requirement in WMS_CONFORMANCE_REQUIREMENTS
     ),
 )
 

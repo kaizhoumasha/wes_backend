@@ -50,14 +50,17 @@ def test_wms_event_normalizer_normalizes_grn_event() -> None:
     raw = {
         "envelope": _envelope_dict(),
         "grn_id": "GRN-001",
+        "po_number": "PO-001",
+        "po_item": "10",
+        "material_code": "MAT-001",
+        "received_quantity": 5,
         "warehouse_code": "WH-A",
-        "item_count": 5,
     }
     event = normalizer.normalize_wms_grn_received(raw)
     assert isinstance(event, WmsGrnReceivedEvent)
     assert event.grn_id == "GRN-001"
     assert event.warehouse_code == "WH-A"
-    assert event.item_count == 5
+    assert event.received_quantity == 5
     assert event.envelope.correlation_id == "corr-001"
 
 

@@ -71,7 +71,7 @@ instrumentation 不在本 Task 范围。
 
 ## 北向 Operation SLO 与 Trace
 
-- 可执行目录版本为 `northbound-operation-slo.v1`，覆盖全部四个 authored WMS operation。Provider binding authoring 时缺少目录条目必须阻塞。
+- 可执行目录版本为 `northbound-operation-slo.v1`，覆盖静态 registry 的全部 35 项 WMS operation。Provider binding authoring 时缺少目录条目必须阻塞。
 - 统一窗口为 30 天，可用性目标为 99.5%，UNKNOWN 比例上限为 0.1%，open reconciliation age 上限为 900 秒；各 operation 的 p95 延迟目标、burn rate 与告警责任人见
   [`northbound-operation-slo-catalog.md`](../operations/northbound-operation-slo-catalog.md)。
 - 当前可执行 Trace stage 闭集为：

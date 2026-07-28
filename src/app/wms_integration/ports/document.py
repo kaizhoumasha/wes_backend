@@ -22,28 +22,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class WmsGrnInfo(BaseModel):
-    """GRN (Goods Receipt Note) 主单据。"""
+    """GRN 是 WMS 从 SAP 获取的单条 PO 行到货记录。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    grn_id: str = Field(min_length=1, max_length=80, description="GRN 编号 (主键)")
-    grn_type: str = Field(description="GRN 类型 (PO/SUB/RETURN)")
-    status: str = Field(description="OPEN / IN_PROGRESS / COMPLETED / CLOSED")
-    received_at: str = Field(description="收货时间 ISO 8601")
-    total_items: int = Field(ge=0, description="GRN 明细总条数")
-    warehouse_code: str = Field(min_length=1, max_length=80, description="仓库编码")
-
-
-class WmsGrnItem(BaseModel):
-    """GRN 单据明细行 (WMS 权威)。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    grn_id: str = Field(min_length=1, max_length=80, description="所属 GRN")
+    grn_id: str = Field(min_length=1, max_length=120, description="GRN 编号")
+    po_number: str = Field(min_length=1, max_length=120, description="采购订单号")
+    po_item: str = Field(min_length=1, max_length=120, description="采购订单行")
     material_code: str = Field(min_length=1, max_length=80, description="物料编码")
-    quantity: float = Field(ge=0, description="收货数量")
+    planned_quantity: float = Field(ge=0, description="计划到货数量")
+    received_quantity: float = Field(ge=0, description="已收数量")
+    remaining_quantity: float = Field(ge=0, description="剩余数量")
     batch_no: str | None = Field(default=None, max_length=80, description="批次号")
-    package_id: str | None = Field(default=None, description="已绑定料盘 ID")
+    quality_status: str = Field(description="WMS 质检状态")
 
 
 class WmsPickOrder(BaseModel):
@@ -103,10 +94,6 @@ class WmsDocumentPort(Protocol):
 
     def get_grn(self, grn_id: str) -> WmsGrnInfo:
         """查询 GRN 主单据 (单条, 按 grn_id)。"""
-        ...
-
-    def list_grn_items(self, grn_id: str) -> list[WmsGrnItem]:
-        """查询 GRN 单据明细行列表 (按 grn_id)。"""
         ...
 
     def get_pick_order(self, pick_order_id: str) -> WmsPickOrder:

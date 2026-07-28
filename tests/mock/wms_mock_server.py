@@ -1118,35 +1118,13 @@ async def _submit_northbound_effect(
 
 
 def _northbound_response_data(operation_identity: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """从已校验 typed payload 构造各 operation 的兼容受理字段。"""
+    """从已校验 typed payload 构造不承诺终态的统一受理投影。"""
 
-    if operation_identity == "wms.inventory.confirm_inbound@v1":
-        return {
-            "dispatch_key": payload["dispatch_key"],
-            "inbound_key": payload["inbound_key"],
-            "accepted": True,
-        }
-    if operation_identity == "wms.fulfillment.notify_pkg_binding@v1":
-        return {
-            "request_id": payload["dispatch_key"],
-            "binding_key": f"{payload['package_id']}:{payload['pallet_id']}:{payload['station_code']}",
-            "package_id": payload["package_id"],
-            "pallet_id": payload["pallet_id"],
-            "station_code": payload["station_code"],
-            "accepted": True,
-        }
     return {
         "environment": "LOCAL_MOCK_ONLY",
         "production_write_path": False,
         "request_id": payload["dispatch_key"],
-        "fulfillment_action": "FULL_BOX_EXCHANGE",
-        "batch_key": payload["rack_id"],
-        "rack_id": payload["rack_id"],
-        "empty_box_id": payload["empty_box_id"],
-        "full_box_id": payload["full_box_id"],
-        "station_admission_blocked_until_exchange_completed": True,
-        "box_level_inventory_transaction_required": True,
-        "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
+        "operation_identity": operation_identity,
     }
 
 

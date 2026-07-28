@@ -1,0 +1,328 @@
+"""WMS 履约域 E07–E16 typed contracts 与静态 Definitions。"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import Field
+
+from src.app.wms_integration.operation_contract import (
+    WmsCompletionMode,
+    WmsExecutionLane,
+    effect_operation,
+)
+from src.app.wms_integration.ports.operation_common import (
+    EffectRequest,
+    EffectResult,
+    NonNegativeDecimal,
+    StableText,
+    StrictWmsModel,
+)
+
+
+class NotifyPkgBindingRequest(EffectRequest):
+    pkg_id: StableText = Field(max_length=160)
+    bin_id: StableText = Field(max_length=120)
+    slot_id: StableText = Field(max_length=120)
+    rack_id: StableText = Field(max_length=120)
+    station_code: StableText = Field(max_length=120)
+
+
+class NotifyPkgBindingResult(EffectResult):
+    pkg_id: StableText = Field(max_length=160)
+    binding_reference: StableText = Field(max_length=160)
+
+
+class RequestRackSupplyRequest(EffectRequest):
+    station_code: StableText = Field(max_length=120)
+    rack_type: StableText = Field(max_length=80)
+    demand_generation: int = Field(ge=1)
+
+
+class RequestRackSupplyResult(EffectResult):
+    station_code: StableText = Field(max_length=120)
+    rack_type: StableText = Field(max_length=80)
+    demand_generation: int = Field(ge=1)
+    rack_id: StableText = Field(max_length=120)
+    final_station_code: StableText = Field(max_length=120)
+    arrival_relation: StableText = Field(max_length=120)
+    task_outcome: Literal["SUCCESS", "FAILED_AFTER_EXECUTION"]
+
+
+class RequestRackTransportRequest(EffectRequest):
+    rack_id: StableText = Field(max_length=120)
+    source_location_code: StableText = Field(max_length=120)
+    destination_station_code: StableText = Field(max_length=120)
+
+
+class RequestRackTransportResult(EffectResult):
+    rack_id: StableText = Field(max_length=120)
+    source_location_code: StableText = Field(max_length=120)
+    destination_station_code: StableText = Field(max_length=120)
+    final_location_code: StableText = Field(max_length=120)
+    task_outcome: Literal["SUCCESS", "FAILED_AFTER_EXECUTION"]
+
+
+class ChangeRackFaceRequest(EffectRequest):
+    rack_id: StableText = Field(max_length=120)
+    station_code: StableText = Field(max_length=120)
+    requested_face: Literal["A", "B"]
+
+
+class ChangeRackFaceResult(EffectResult):
+    rack_id: StableText = Field(max_length=120)
+    authorized_face: Literal["A", "B"]
+    final_face: Literal["A", "B"]
+    task_outcome: Literal["SUCCESS", "FAILED_AFTER_EXECUTION"]
+
+
+class FrozenBinCellOccupancy(StrictWmsModel):
+    occupancy_id: StableText = Field(max_length=160)
+    pkg_id: StableText = Field(max_length=160)
+    material_code: StableText = Field(max_length=120)
+    quantity: NonNegativeDecimal
+
+
+class FullBoxExchangeRequest(EffectRequest):
+    exchange_request_key: StableText = Field(max_length=160)
+    station_code: StableText = Field(max_length=120)
+    rack_id: StableText = Field(max_length=120)
+    rack_face: Literal["A", "B"]
+    full_box_id: StableText = Field(max_length=120)
+    source_slot_id: StableText = Field(max_length=120)
+    occupancies: tuple[FrozenBinCellOccupancy, ...] = Field(min_length=1)
+
+
+class RackBinSlotRelation(StrictWmsModel):
+    rack_id: StableText = Field(max_length=120)
+    bin_id: StableText = Field(max_length=120)
+    slot_id: StableText = Field(max_length=120)
+
+
+class FullBoxExchangeResult(EffectResult):
+    exchange_request_key: StableText = Field(max_length=160)
+    full_box_id: StableText = Field(max_length=120)
+    selected_empty_box_id: StableText = Field(max_length=120)
+    full_box_destination: RackBinSlotRelation
+    empty_box_destination: RackBinSlotRelation
+    final_relations: tuple[RackBinSlotRelation, ...] = Field(min_length=2)
+    task_outcome: Literal["SUCCESS", "PARTIAL_FAILURE", "FAILED_AFTER_EXECUTION"]
+    inventory_source_version: StableText = Field(max_length=160)
+
+
+class ConveyorBatchItem(StrictWmsModel):
+    sequence_no: int = Field(ge=1)
+    route_instance_id: StableText = Field(max_length=160)
+    bin_id: StableText = Field(max_length=120)
+    source_rack_id: StableText = Field(max_length=120)
+    source_slot_id: StableText = Field(max_length=120)
+    reserved_queue_position: int = Field(ge=0)
+
+
+class MoveBinsToConveyorEntryRequest(EffectRequest):
+    batch_id: StableText = Field(max_length=160)
+    direction: Literal["TO_CONVEYOR_ENTRY"]
+    source_station_code: StableText = Field(max_length=120)
+    destination_station_code: StableText = Field(max_length=120)
+    capacity_snapshot_version: StableText = Field(max_length=160)
+    items: tuple[ConveyorBatchItem, ...] = Field(min_length=1)
+
+
+class BatchItemResult(StrictWmsModel):
+    sequence_no: int = Field(ge=1)
+    route_instance_id: StableText = Field(max_length=160)
+    bin_id: StableText = Field(max_length=120)
+    item_outcome: Literal["SUCCESS", "FAILED", "UNKNOWN"]
+    final_rack_id: StableText | None = Field(default=None, max_length=120)
+    final_slot_id: StableText | None = Field(default=None, max_length=120)
+    final_queue_position: int | None = Field(default=None, ge=0)
+
+
+class MoveBinsToConveyorEntryResult(EffectResult):
+    batch_id: StableText = Field(max_length=160)
+    accepted_object_keys: tuple[StableText, ...] = Field(min_length=1)
+    items: tuple[BatchItemResult, ...] = Field(min_length=1)
+    task_outcome: Literal["SUCCESS", "PARTIAL_FAILURE", "FAILED_AFTER_EXECUTION"]
+
+
+class ConveyorExitCandidate(StrictWmsModel):
+    sequence_no: int = Field(ge=1)
+    route_instance_id: StableText = Field(max_length=160)
+    bin_id: StableText = Field(max_length=120)
+    scan3_enqueued_at: StableText = Field(max_length=80)
+    queue_position: int = Field(ge=0)
+
+
+class MoveBinsFromConveyorExitRequest(EffectRequest):
+    batch_id: StableText = Field(max_length=160)
+    direction: Literal["FROM_CONVEYOR_EXIT"]
+    workline_id: int = Field(gt=0)
+    queue_code: StableText = Field(max_length=120)
+    candidate_digest: StableText = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_items: tuple[ConveyorExitCandidate, ...] = Field(min_length=1)
+
+
+class MoveBinsFromConveyorExitResult(EffectResult):
+    batch_id: StableText = Field(max_length=160)
+    accepted_object_keys: tuple[StableText, ...] = Field(min_length=1)
+    candidate_digest: StableText = Field(pattern=r"^[0-9a-f]{64}$")
+    items: tuple[BatchItemResult, ...] = Field(min_length=1)
+    task_outcome: Literal["SUCCESS", "PARTIAL_FAILURE", "FAILED_AFTER_EXECUTION"]
+
+
+class RequestLoadUnitTransportRequest(EffectRequest):
+    load_unit_id: StableText = Field(max_length=160)
+    load_unit_type: Literal["PALLET", "MAGAZINE", "OTHER"]
+    source_location_code: StableText = Field(max_length=120)
+    destination_location_code: StableText = Field(max_length=120)
+
+
+class RequestLoadUnitTransportResult(EffectResult):
+    load_unit_id: StableText = Field(max_length=160)
+    load_unit_type: Literal["PALLET", "MAGAZINE", "OTHER"]
+    final_location_code: StableText = Field(max_length=120)
+    task_outcome: Literal["SUCCESS", "FAILED_AFTER_EXECUTION"]
+
+
+class PublishManualTaskRequest(EffectRequest):
+    manual_task_key: StableText = Field(max_length=160)
+    task_type: StableText = Field(max_length=120)
+    object_keys: tuple[StableText, ...] = Field(min_length=1)
+    station_code: StableText = Field(max_length=120)
+    instructions: StableText = Field(max_length=2_000)
+
+
+class PublishManualTaskResult(EffectResult):
+    manual_task_key: StableText = Field(max_length=160)
+    manual_task_reference: StableText = Field(max_length=160)
+    publish_status: Literal["PUBLISHED"]
+
+
+class CancelRequestRequest(EffectRequest):
+    target_operation_identity: StableText = Field(max_length=160)
+    target_idempotency_key: StableText = Field(max_length=160)
+    target_provider_reference: StableText = Field(max_length=160)
+    cancellation_reason: StableText = Field(max_length=240)
+
+
+class CancelRequestResult(EffectResult):
+    target_operation_identity: StableText = Field(max_length=160)
+    target_idempotency_key: StableText = Field(max_length=160)
+    disposition: Literal["CANCELLED", "ALREADY_TERMINAL", "TOO_LATE"]
+
+
+NOTIFY_PKG_BINDING = effect_operation(
+    identity="wms.fulfillment.notify_pkg_binding@v1",
+    request_model=NotifyPkgBindingRequest,
+    result_model=NotifyPkgBindingResult,
+    path_template="/fulfillment/pkg-bindings",
+    target_code="WMS_FULFILLMENT_NOTIFY_PKG_BINDING",
+    reject_codes=("PACKAGE_NOT_FOUND", "BIN_NOT_FOUND", "SLOT_OCCUPIED"),
+    completion_mode=WmsCompletionMode.SYNC_RESULT,
+    execution_lane=WmsExecutionLane.WMS_DATA,
+)
+REQUEST_RACK_SUPPLY = effect_operation(
+    identity="wms.fulfillment.request_rack_supply@v1",
+    request_model=RequestRackSupplyRequest,
+    result_model=RequestRackSupplyResult,
+    path_template="/fulfillment/rack-supply",
+    target_code="WMS_FULFILLMENT_REQUEST_RACK_SUPPLY",
+    reject_codes=("NO_RACK_AVAILABLE", "STATION_BLOCKED", "DEMAND_CONFLICT"),
+    completion_mode=WmsCompletionMode.ASYNC_TASK,
+    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+)
+REQUEST_RACK_TRANSPORT = effect_operation(
+    identity="wms.fulfillment.request_rack_transport@v1",
+    request_model=RequestRackTransportRequest,
+    result_model=RequestRackTransportResult,
+    path_template="/fulfillment/rack-transport",
+    target_code="WMS_FULFILLMENT_REQUEST_RACK_TRANSPORT",
+    reject_codes=("RACK_NOT_FOUND", "RACK_LOCKED", "DESTINATION_BLOCKED"),
+    completion_mode=WmsCompletionMode.ASYNC_TASK,
+    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+)
+CHANGE_RACK_FACE = effect_operation(
+    identity="wms.fulfillment.change_rack_face@v1",
+    request_model=ChangeRackFaceRequest,
+    result_model=ChangeRackFaceResult,
+    path_template="/fulfillment/rack-face-change",
+    target_code="WMS_FULFILLMENT_CHANGE_RACK_FACE",
+    reject_codes=("RACK_NOT_FOUND", "RACK_NOT_AT_STATION", "FACE_CHANGE_BLOCKED"),
+    completion_mode=WmsCompletionMode.ASYNC_TASK,
+    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+)
+FULL_BOX_EXCHANGE = effect_operation(
+    identity="wms.fulfillment.full_box_exchange@v1",
+    request_model=FullBoxExchangeRequest,
+    result_model=FullBoxExchangeResult,
+    path_template="/fulfillment/full-box-exchange",
+    target_code="WMS_FULFILLMENT_FULL_BOX_EXCHANGE",
+    reject_codes=("RACK_NOT_AT_EXCHANGE_STATION", "FULL_BOX_NOT_FOUND", "NO_EMPTY_BOX_AVAILABLE"),
+    completion_mode=WmsCompletionMode.ASYNC_TASK,
+    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+)
+MOVE_BINS_TO_CONVEYOR_ENTRY = effect_operation(
+    identity="wms.fulfillment.move_bins_to_conveyor_entry@v1",
+    request_model=MoveBinsToConveyorEntryRequest,
+    result_model=MoveBinsToConveyorEntryResult,
+    path_template="/fulfillment/conveyor-entry-batches",
+    target_code="WMS_FULFILLMENT_MOVE_BINS_TO_CONVEYOR_ENTRY",
+    reject_codes=("BATCH_MEMBER_INVALID", "CONVEYOR_ENTRY_CAPACITY_CHANGED", "CTU_CAPACITY_EXCEEDED"),
+    completion_mode=WmsCompletionMode.ASYNC_TASK,
+    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+)
+MOVE_BINS_FROM_CONVEYOR_EXIT = effect_operation(
+    identity="wms.fulfillment.move_bins_from_conveyor_exit@v1",
+    request_model=MoveBinsFromConveyorExitRequest,
+    result_model=MoveBinsFromConveyorExitResult,
+    path_template="/fulfillment/conveyor-exit-batches",
+    target_code="WMS_FULFILLMENT_MOVE_BINS_FROM_CONVEYOR_EXIT",
+    reject_codes=("NO_DESTINATION_CAPACITY", "CANDIDATE_DIGEST_MISMATCH", "CANDIDATE_NOT_AVAILABLE"),
+    completion_mode=WmsCompletionMode.ASYNC_TASK,
+    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+)
+REQUEST_LOAD_UNIT_TRANSPORT = effect_operation(
+    identity="wms.fulfillment.request_load_unit_transport@v1",
+    request_model=RequestLoadUnitTransportRequest,
+    result_model=RequestLoadUnitTransportResult,
+    path_template="/fulfillment/load-unit-transport",
+    target_code="WMS_FULFILLMENT_REQUEST_LOAD_UNIT_TRANSPORT",
+    reject_codes=("LOAD_UNIT_NOT_FOUND", "LOAD_UNIT_LOCKED", "DESTINATION_BLOCKED"),
+    completion_mode=WmsCompletionMode.ASYNC_TASK,
+    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+)
+PUBLISH_MANUAL_TASK = effect_operation(
+    identity="wms.fulfillment.publish_manual_task@v1",
+    request_model=PublishManualTaskRequest,
+    result_model=PublishManualTaskResult,
+    path_template="/fulfillment/manual-tasks",
+    target_code="WMS_FULFILLMENT_PUBLISH_MANUAL_TASK",
+    reject_codes=("MANUAL_TASK_NOT_SUPPORTED", "STATION_NOT_FOUND", "OBJECT_NOT_FOUND"),
+    completion_mode=WmsCompletionMode.SYNC_RESULT,
+    execution_lane=WmsExecutionLane.WMS_DATA,
+)
+CANCEL_REQUEST = effect_operation(
+    identity="wms.fulfillment.cancel_request@v1",
+    request_model=CancelRequestRequest,
+    result_model=CancelRequestResult,
+    path_template="/fulfillment/requests/cancel",
+    target_code="WMS_FULFILLMENT_CANCEL_REQUEST",
+    reject_codes=("TARGET_REQUEST_NOT_FOUND", "TARGET_IDENTITY_MISMATCH"),
+    completion_mode=WmsCompletionMode.SYNC_RESULT,
+    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+)
+
+OPERATIONS = (
+    NOTIFY_PKG_BINDING,
+    REQUEST_RACK_SUPPLY,
+    REQUEST_RACK_TRANSPORT,
+    CHANGE_RACK_FACE,
+    FULL_BOX_EXCHANGE,
+    MOVE_BINS_TO_CONVEYOR_ENTRY,
+    MOVE_BINS_FROM_CONVEYOR_EXIT,
+    REQUEST_LOAD_UNIT_TRANSPORT,
+    PUBLISH_MANUAL_TASK,
+    CANCEL_REQUEST,
+)
+
+__all__ = ["OPERATIONS"]

@@ -1,6 +1,6 @@
-"""WMS 北向 Mock 的认证、幂等与状态机核心。
+"""WMS 北向 Mock 的认证、幂等、typed validator 与状态机核心。
 
-本模块只依赖 Python 标准库，Docker Mock 镜像可独立加载，不能导入 WES 运行时。
+Mock 镜像只复制静态 operation registry 与 typed ports，不导入 WES runtime。
 """
 
 from __future__ import annotations
@@ -11,11 +11,17 @@ import json
 import math
 import os
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
 from threading import RLock
 from typing import TYPE_CHECKING, Any
+
+from pydantic import ValidationError
+
+from src.app.wms_integration.operation_contract import WmsOperationMode
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
+from tests.mock.wms_operation_fixtures import RESULT_FIXTURES
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -30,54 +36,15 @@ _CREDENTIAL_ENV_BY_REFERENCE = {
     MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2: MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2,
 }
 _KNOWN_OPERATION_IDENTITIES = frozenset(
-    {
-        "wms.inventory.confirm_inbound@v1",
-        "wms.fulfillment.full_box_exchange@v1",
-        "wms.fulfillment.notify_pkg_binding@v1",
-    }
+    identity for identity, operation in WMS_OPERATION_BY_IDENTITY.items() if operation.mode is WmsOperationMode.EFFECT
 )
 _ALLOWED_REJECTION_REASON_CODES_BY_OPERATION = {
-    "wms.inventory.confirm_inbound@v1": frozenset({"MATERIAL_BLOCKED", "WMS_BUSINESS_REJECTED"}),
-    "wms.fulfillment.full_box_exchange@v1": frozenset({"RACK_LOCKED", "WMS_BUSINESS_REJECTED"}),
-    "wms.fulfillment.notify_pkg_binding@v1": frozenset({"WMS_BUSINESS_REJECTED"}),
+    identity: frozenset(operation.reject_codes)
+    for identity, operation in WMS_OPERATION_BY_IDENTITY.items()
+    if operation.mode is WmsOperationMode.EFFECT
 }
 _HMAC_CLOCK_SKEW_SECONDS = 30
 _HMAC_NONCE_TTL_SECONDS = 300
-_REQUEST_FIELDS_BY_OPERATION = {
-    "wms.inventory.confirm_inbound@v1": {
-        "required": frozenset({"dispatch_key", "inbound_key", "material_code", "quantity"}),
-        "optional": frozenset({"warehouse_code", "owner_code", "lot_no"}),
-        "max_lengths": {
-            "dispatch_key": 240,
-            "inbound_key": 120,
-            "material_code": 120,
-            "quantity": 120,
-            "warehouse_code": 120,
-            "owner_code": 120,
-            "lot_no": 120,
-        },
-    },
-    "wms.fulfillment.full_box_exchange@v1": {
-        "required": frozenset({"dispatch_key", "rack_id", "empty_box_id", "full_box_id"}),
-        "optional": frozenset(),
-        "max_lengths": {
-            "dispatch_key": 240,
-            "rack_id": 120,
-            "empty_box_id": 120,
-            "full_box_id": 120,
-        },
-    },
-    "wms.fulfillment.notify_pkg_binding@v1": {
-        "required": frozenset({"dispatch_key", "package_id", "pallet_id", "station_code"}),
-        "optional": frozenset(),
-        "max_lengths": {
-            "dispatch_key": 240,
-            "package_id": 120,
-            "pallet_id": 120,
-            "station_code": 120,
-        },
-    },
-}
 
 
 class NorthboundAuthError(ValueError):
@@ -259,30 +226,19 @@ def verify_status_hmac(headers: Mapping[str, str], body: bytes, *, method: str, 
 
 
 def validate_typed_request(operation_identity: str, payload: Mapping[str, Any]) -> dict[str, Any]:
-    """在幂等写入前校验 Mock 自包含的 operation-specific wire schema。"""
+    """在幂等写入前按静态 Definition 校验 operation-specific wire schema。"""
 
     try:
-        spec = _REQUEST_FIELDS_BY_OPERATION[operation_identity]
+        operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
     except KeyError as exc:
         raise NorthboundPayloadValidationError("unsupported operation_identity") from exc
-    fields = frozenset(payload)
-    required = spec["required"]
-    allowed = required | spec["optional"]
-    if not required <= fields or not fields <= allowed:
-        raise NorthboundPayloadValidationError("typed request fields are invalid")
-    for field_name, value in payload.items():
-        if not isinstance(value, str) or value != value.strip() or not value:
-            raise NorthboundPayloadValidationError("typed request string is invalid")
-        if len(value) > spec["max_lengths"][field_name]:
-            raise NorthboundPayloadValidationError("typed request string is too long")
-    if operation_identity == "wms.inventory.confirm_inbound@v1":
-        try:
-            quantity = Decimal(payload["quantity"])
-        except (InvalidOperation, ValueError) as exc:
-            raise NorthboundPayloadValidationError("quantity is not a decimal string") from exc
-        if not quantity.is_finite() or quantity <= 0:
-            raise NorthboundPayloadValidationError("quantity must be a positive finite decimal")
-    return dict(payload)
+    if operation.mode is not WmsOperationMode.EFFECT:
+        raise NorthboundPayloadValidationError("northbound submit only accepts EFFECT operation")
+    try:
+        validated = operation.request_model.model_validate(payload)
+    except ValidationError as exc:
+        raise NorthboundPayloadValidationError("typed request fields are invalid") from exc
+    return validated.model_dump(mode="json", exclude_none=True)
 
 
 def _normalized_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -574,64 +530,22 @@ def build_typed_result(
     source_version: int,
     completed_at: str,
 ) -> dict[str, Any]:
-    """为三个冻结 operation 构造与原请求关联的 completed result。"""
+    """从 35 项 fixture 清单构造与请求关联的 typed terminal result。"""
 
-    builders = {
-        "wms.inventory.confirm_inbound@v1": build_confirm_inbound_result,
-        "wms.fulfillment.full_box_exchange@v1": build_full_box_exchange_result,
-        "wms.fulfillment.notify_pkg_binding@v1": build_package_binding_result,
-    }
     try:
-        builder = builders[operation_identity]
+        result = deepcopy(RESULT_FIXTURES[operation_identity])
+        operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
     except KeyError as exc:
         raise ValueError("unsupported operation_identity") from exc
-    return builder(payload, source_version=source_version, completed_at=completed_at)
-
-
-def _result_base(payload: Mapping[str, Any], *, source_version: int) -> dict[str, Any]:
-    return {
-        "accepted": True,
-        "dispatch_key": str(payload.get("dispatch_key") or ""),
-        "reason_code": None,
-        "source_version": str(source_version),
-    }
-
-
-def build_confirm_inbound_result(
-    payload: Mapping[str, Any], *, source_version: int, completed_at: str
-) -> dict[str, Any]:
-    # Confirm inbound 的 frozen replay schema 不携带完成时间或原始物料明细。
     del completed_at
-    return {
-        **_result_base(payload, source_version=source_version),
-        "inbound_key": str(payload.get("inbound_key") or ""),
-        "document_no": str(payload.get("document_no") or payload.get("inbound_key") or ""),
-    }
-
-
-def build_full_box_exchange_result(
-    payload: Mapping[str, Any], *, source_version: int, completed_at: str
-) -> dict[str, Any]:
-    # Full-box exchange 的 frozen replay schema 不携带完成时间。
-    del completed_at
-    return {
-        **_result_base(payload, source_version=source_version),
-        "rack_id": str(payload.get("rack_id") or ""),
-        "empty_box_id": str(payload.get("empty_box_id") or ""),
-        "full_box_id": str(payload.get("full_box_id") or ""),
-        "exchange_request_code": str(payload.get("exchange_request_code") or payload.get("dispatch_key") or ""),
-    }
-
-
-def build_package_binding_result(
-    payload: Mapping[str, Any], *, source_version: int, completed_at: str
-) -> dict[str, Any]:
-    return {
-        **_result_base(payload, source_version=source_version),
-        "bound_at": completed_at,
-        "package_id": str(payload.get("package_id") or ""),
-        "pallet_id": str(payload.get("pallet_id") or ""),
-    }
+    for field_name in operation.result_model.model_fields:
+        if field_name in payload and not isinstance(payload[field_name], (dict, list)):
+            result[field_name] = payload[field_name]
+    if "source_version" in result:
+        result["source_version"] = str(source_version)
+    if "provider_reference" in result:
+        result["provider_reference"] = f"mock:{payload.get('dispatch_key', 'query')}"
+    return operation.result_model.model_validate(result).model_dump(mode="json")
 
 
 def _not_found_snapshot() -> NorthboundStatusSnapshot:
@@ -657,9 +571,6 @@ __all__ = [
     "NorthboundPayloadValidationError",
     "NorthboundStatusSnapshot",
     "NorthboundSubmission",
-    "build_confirm_inbound_result",
-    "build_full_box_exchange_result",
-    "build_package_binding_result",
     "build_typed_result",
     "canonical_payload_bytes",
     "canonical_status_string",
