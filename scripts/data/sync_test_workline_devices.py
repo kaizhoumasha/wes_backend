@@ -18,6 +18,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
 from src.app.device.models import Device, DeviceProtocol, DeviceStatus
 from src.app.resource.models import RackKind
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
@@ -42,16 +43,16 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound im
     ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
     ROLE_SORTING_WORKSTATION,
-    SMT_SORTING_INBOUND_CONTRACT_VERSION,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.runtime.orchestration.repositories.workline_runtime_status_projection_repository import (
     workline_runtime_status_projection_repository,
 )
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
+from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION as SMT_SORTING_INBOUND_DEFINITION
 from src.app.workline.domain.run_mode import SANDBOX_ALLOWED_ENVS
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.services.workline_service import WorkLineService
 from src.core.conf import settings
 from src.utils.device_cache import workline_device_cache
 
@@ -332,13 +333,21 @@ TEST_SMT_SORTING_INBOUND_SEED = TestWorklineSeed(
     line_name="测试 SMT 分拣入库作业线",
     line_type=LineType.AUTO,
     zone_name="开发库",
-    plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
-    contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
-    config={"seed_source": "local-dev"},
+    plugin_key=SMT_SORTING_INBOUND_DEFINITION.plugin_key,
+    contract_version=SMT_SORTING_INBOUND_DEFINITION.contract_version,
+    config={
+        "provider_profile": WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity,
+        "source_arm_role": ROLE_SORTING_SOURCE_ARM,
+    },
     runtime_config_json={
         "run_mode": WorkLineRunMode.SIMULATION.value,
         "sandbox_enabled": True,
         "device_status_timeout_seconds": 2.0,
+        "smt_inbound_handoff_route": {
+            "enabled": True,
+            "priority": 100,
+            "source_rack_position_code": "SOURCE_STATION_A",
+        },
     },
     run_mode=WorkLineRunMode.SIMULATION,
     runtime_status=WorkLineRuntimeStatus.STOPPED,
@@ -349,7 +358,6 @@ TEST_SMT_SORTING_INBOUND_SEED = TestWorklineSeed(
     description="本地开发环境自动同步的 SMT 分拣入库基础作业线",
     devices=TEST_SMT_SORTING_INBOUND_DEVICES,
     rack_positions=TEST_SMT_SORTING_INBOUND_RACK_POSITIONS,
-    is_active=False,
 )
 
 TEST_WORKLINE_SEEDS: tuple[TestWorklineSeed, ...] = (
@@ -447,12 +455,12 @@ async def _upsert_test_workline(db: AsyncSession, seed: TestWorklineSeed) -> tup
         "run_mode": seed.run_mode,
         "diagnostic_profile": seed.diagnostic_profile,
         "description": seed.description,
-        "is_active": seed.is_active,
     }
 
     workline = await _get_workline_by_code(db, seed.line_code)
     if workline is None:
-        workline = WorkLine(**values)
+        # 任何 generated plugin 都先以 inactive 落库，待设备/边界齐备后走正式激活与 binding。
+        workline = WorkLine(**values, is_active=False)
         db.add(workline)
         await db.flush()
         await _ensure_workline_runtime_projection(db, workline, seed)
@@ -462,6 +470,39 @@ async def _upsert_test_workline(db: AsyncSession, seed: TestWorklineSeed) -> tup
     await db.flush()
     await _ensure_workline_runtime_projection(db, workline, seed)
     return workline, "updated" if changed else "unchanged"
+
+
+async def _ensure_test_workline_activation(
+    db: AsyncSession,
+    *,
+    workline: WorkLine,
+    seed: TestWorklineSeed,
+    commit: bool,
+) -> WorkLine:
+    if not seed.is_active:
+        return workline
+    has_binding = isinstance(workline.active_plugin_binding_id, int)
+    if workline.is_active and has_binding:
+        return workline
+
+    # 修复旧开发库中直接 active 但没有 binding 的种子；先 fail closed，再走正式激活。
+    if workline.is_active:
+        workline.is_active = False
+        await db.flush()
+    if not commit:
+        return workline
+
+    activated = await WorkLineService().activate(
+        db,
+        workline.id,
+        version=workline.version,
+        actor="debug-seed",
+        reason="同步本地开发 WorkLine generated plugin binding",
+        environment="sandbox",
+    )
+    if activated is None:
+        raise RuntimeError(f"测试 WorkLine 激活失败: {seed.line_code}")
+    return activated
 
 
 async def _ensure_workline_runtime_projection(
@@ -620,6 +661,7 @@ async def sync_test_workline_devices(db: AsyncSession, *, commit: bool = True) -
         workline, workline_state = await _upsert_test_workline(db, seed)
         device_states = await _upsert_test_devices(db, workline, seed)
         rack_position_states = await _upsert_test_rack_positions(db, workline, seed)
+        workline = await _ensure_test_workline_activation(db, workline=workline, seed=seed, commit=commit)
         worklines_by_code[seed.line_code] = {
             "line_code": seed.line_code,
             "state": workline_state,

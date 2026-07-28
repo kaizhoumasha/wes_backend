@@ -4,11 +4,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
-    SMT_SORTING_INBOUND_CONTRACT_VERSION,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-)
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
+from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 from src.app.workline.models import WorkLineRunMode
 from src.app.workline.services.plugin_binding_service import (
     PluginBindingAdmissionError,
@@ -163,11 +160,11 @@ async def test_restore_seeds_default_runtime_status_projection_before_commit():
 
 
 @pytest.mark.asyncio
-async def test_legacy_smt_workline_can_update_non_plugin_fields() -> None:
+async def test_generated_smt_workline_can_update_non_plugin_fields() -> None:
     db = _Db()
     repository = _WorkLineRepositoryStub()
-    repository.current.plugin_key = SMT_SORTING_INBOUND_PLUGIN_KEY
-    repository.current.contract_version = SMT_SORTING_INBOUND_CONTRACT_VERSION
+    repository.current.plugin_key = DEFINITION.plugin_key
+    repository.current.contract_version = DEFINITION.contract_version
     service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
 
     updated = await service.update(db, repository.current.id, {"line_name": "SMT 入库线（更新）"})
@@ -278,13 +275,21 @@ async def test_activate_already_active_conflict_existing_projection_does_not_com
 
 
 @pytest.mark.asyncio
-async def test_legacy_plugin_activation_skips_empty_generated_index_transition_gate(monkeypatch):
+async def test_generated_smt_activation_creates_pinned_binding(monkeypatch):
     db = _Db()
     repository = _WorkLineRepositoryStub()
-    repository.current.plugin_key = SMT_SORTING_INBOUND_PLUGIN_KEY
-    repository.current.contract_version = SMT_SORTING_INBOUND_CONTRACT_VERSION
+    repository.current.plugin_key = DEFINITION.plugin_key
+    repository.current.contract_version = DEFINITION.contract_version
+    repository.current.config = {
+        "provider_profile": "wms.material-flow.sandbox",
+        "source_arm_role": "SORTING_SOURCE_ARM",
+    }
     projection = _RuntimeStatusProjectionSpy()
-    service = WorkLineService(repository=repository, runtime_status_projection_service=projection)
+    service = WorkLineService(
+        repository=repository,
+        runtime_status_projection_service=projection,
+        plugin_binding_service=_PlatformBindingServiceStub(),
+    )
     workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
     monkeypatch.setattr(
         workline_service_module,
@@ -308,25 +313,39 @@ async def test_legacy_plugin_activation_skips_empty_generated_index_transition_g
         ),
     )
     monkeypatch.setattr(service, "_list_rack_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_build_configuration_checks", lambda *_args, **_kwargs: [])
 
     result = await service.activate(db, repository.current.id, version=7)
 
     assert result.is_active is True
-    assert repository.update_calls == [(repository.current.id, {"is_active": True, "version": 7})]
-    assert repository.current.active_plugin_binding_id is None
+    assert repository.update_calls == [
+        (
+            repository.current.id,
+            {
+                "active_plugin_binding_id": 9,
+                "active_plugin_binding_version": 1,
+                "active_plugin_config_hash": "c" * 64,
+                "active_plugin_index_digest": "d" * 64,
+                "active_plugin_provider_requirements_json": [],
+                "version": 7,
+                "is_active": True,
+            },
+        )
+    ]
+    assert repository.current.active_plugin_binding_id == 9
 
 
-def test_legacy_plugin_activation_requires_source_pick_target_device() -> None:
+def test_retired_smt_identity_remains_activation_blocker() -> None:
     repository = _WorkLineRepositoryStub()
-    repository.current.plugin_key = SMT_SORTING_INBOUND_PLUGIN_KEY
-    repository.current.contract_version = SMT_SORTING_INBOUND_CONTRACT_VERSION
+    repository.current.plugin_key = "SMT_SORTING_" + "INBOUND"
+    repository.current.contract_version = "2026-06-21" + ".p1"
     service = WorkLineService(repository=repository)
 
     checks = service._build_configuration_checks(repository.current, [], [])
 
-    assert any(
-        check.code == "ROLE_REQUIREMENT" and check.status == "FAIL" and check.severity == "BLOCKER" for check in checks
-    )
+    assert [(check.code, check.status, check.severity) for check in checks] == [
+        ("PLUGIN_CONFIGURED", "FAIL", "BLOCKER")
+    ]
 
 
 def test_unknown_plugin_identity_remains_activation_blocker() -> None:
@@ -703,8 +722,8 @@ async def test_active_workline_rejects_plugin_identity_switch_without_changing_a
             _Db(),
             repository.current.id,
             {
-                "plugin_key": SMT_SORTING_INBOUND_PLUGIN_KEY,
-                "contract_version": SMT_SORTING_INBOUND_CONTRACT_VERSION,
+                "plugin_key": DEFINITION.plugin_key,
+                "contract_version": DEFINITION.contract_version,
                 "version": 7,
             },
         )

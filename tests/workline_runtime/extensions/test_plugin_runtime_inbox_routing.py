@@ -1151,9 +1151,45 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
         (None, None, "SC-1", "COMMAND_ID_MISSING"),
         (91, None, "SC-1", "COMMAND_NOT_FOUND"),
         (91, SimpleNamespace(task_type=None), "SC-1", "COMMAND_TASK_TYPE_MISSING"),
-        (91, SimpleNamespace(task_type="UNSUPPORTED_ACTION"), "SC-1", "COMMAND_TASK_TYPE_UNSUPPORTED"),
-        (91, SimpleNamespace(task_type="SORTING_SOURCE_PICK"), "SC-OTHER", "COMMAND_RESULT_CORRELATION_MISMATCH"),
-        (91, SimpleNamespace(task_type="SORTING_SOURCE_PICK"), "SC-1", "SOURCE_PICK_COMPLETED"),
+        (
+            91,
+            SimpleNamespace(
+                task_type="UNSUPPORTED_ACTION",
+                command_code="SC-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+            ),
+            "SC-1",
+            "COMMAND_TASK_TYPE_UNSUPPORTED",
+        ),
+        (
+            91,
+            SimpleNamespace(
+                task_type="SORTING_SOURCE_PICK",
+                command_code="SC-OTHER",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+            ),
+            "SC-1",
+            "COMMAND_RESULT_CORRELATION_MISMATCH",
+        ),
+        (
+            91,
+            SimpleNamespace(
+                task_type="SORTING_SOURCE_PICK",
+                command_code="SC-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+            ),
+            "SC-1",
+            "SOURCE_PICK_COMPLETED",
+        ),
     ],
 )
 async def test_command_result_bridge_uses_persisted_command_and_returns_stable_zero_effect_diagnostics(
@@ -1202,6 +1238,9 @@ async def test_command_result_bridge_uses_persisted_command_and_returns_stable_z
     inbox = SimpleNamespace(
         id=91,
         command_id=command_id,
+        correlation_id="workline-session:session-2",
+        workline_id=3,
+        workline_session_id=2,
         kind="COMMAND_RESULT",
         event_type="COMMAND_RESULT",
         payload_json={
@@ -1211,6 +1250,12 @@ async def test_command_result_bridge_uses_persisted_command_and_returns_stable_z
         },
     )
     session = SimpleNamespace(
+        id=2,
+        session_code="session-2",
+        workline_id=3,
+        plugin_key="smt_sorting_inbound",
+        contract_version="smt_sorting_inbound.v1",
+        plugin_binding_id=17,
         plugin_state_json={"phase": "WAITING_SOURCE_PICK", "current_correlation": "SC-1"},
         context_json={},
         current_material_unit_id=None,
@@ -1287,10 +1332,21 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     monkeypatch.setattr(
         device_command_repository,
         "get_by_id",
-        AsyncMock(return_value=SimpleNamespace(task_type="PICK_AND_PUT")),
+        AsyncMock(
+            return_value=SimpleNamespace(
+                task_type="PICK_AND_PUT",
+                command_code="CMD-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="rough_sorter",
+                contract_version="rough_sorter.v2",
+            )
+        ),
     )
     session = SimpleNamespace(
         id=2,
+        session_code="session-2",
+        workline_id=3,
         version=7,
         plugin_state_version=2,
         plugin_state_json={"phase": "PICK_TO_PIPELINE", "current_correlation": "CMD-1"},
@@ -1315,6 +1371,9 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     inbox = SimpleNamespace(
         id=1,
         command_id=91,
+        correlation_id="workline-session:session-2",
+        workline_id=3,
+        workline_session_id=2,
         kind="COMMAND_RESULT",
         event_type="COMMAND_RESULT",
         payload_json={

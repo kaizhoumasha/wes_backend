@@ -946,13 +946,15 @@ class RuntimeInboxService:
         event_type = source_event_type or "COMMAND_RESULT"
 
         canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
-        from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
+        command_correlation_id = None
+        if isinstance(command_id, int) and not isinstance(command_id, bool):
+            from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
 
-        command_correlation_id = await device_command_gateway.resolve_runtime_correlation_id(
-            db,
-            command_code=command_code,
-            command_id=command_id,
-        )
+            command_correlation_id = await device_command_gateway.resolve_runtime_correlation_id(
+                db,
+                command_code=command_code,
+                command_id=command_id,
+            )
         command_context = (
             await self.repository.resolve_correlation_context_by_id(db, correlation_id=command_correlation_id)
             if command_correlation_id is not None
@@ -962,17 +964,17 @@ class RuntimeInboxService:
             # 命令创建时固定的执行归属是权威来源；设备可缺失、替换或复用请求 trace。
             correlation_id, execution_session_id = command_context
         else:
-            correlation_context = await self._resolve_correlation_context_by_trace(db, trace_id=trace_id)
-            resolved_correlation_id = correlation_context[0] if correlation_context is not None else None
-            execution_session_id = correlation_context[1] if correlation_context is not None else None
-            if correlation_id is None:
-                correlation_id = resolved_correlation_id
-            elif resolved_correlation_id is not None and resolved_correlation_id != correlation_id:
-                if correlation_id.startswith("system-capability:"):
-                    # 兼容修复前把 capability 幂等键写入 DeviceCommand.correlation_id 的存量命令。
-                    correlation_id = resolved_correlation_id
-                else:
-                    raise RuntimeInboxCorrelationUnavailable(correlation_id=correlation_id)
+            explicit_context = (
+                await self.repository.resolve_correlation_context_by_id(db, correlation_id=correlation_id)
+                if correlation_id is not None
+                else None
+            )
+            if correlation_id is not None and explicit_context is None:
+                raise RuntimeInboxCorrelationUnavailable(correlation_id=correlation_id)
+            if explicit_context is not None:
+                correlation_id, execution_session_id = explicit_context
+            else:
+                execution_session_id = None
         result = await self.accept_received(
             db,
             provider_code=provider_code,

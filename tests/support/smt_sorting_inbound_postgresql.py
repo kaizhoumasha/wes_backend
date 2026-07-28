@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -12,6 +14,7 @@ from src.app.callback.models import CallbackLog
 from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
+from src.app.resource.models import RackKind
 from src.app.runtime.orchestration.device_runtime_projection import DeviceRuntimeProjection
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
@@ -19,6 +22,7 @@ from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
+from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
@@ -62,28 +66,30 @@ class NoopQueueGateway:
         _ = (outbox_id, limit)
 
 
-class SelectedRouteService:
-    """把 fixture 的目标 WorkLine 固定为 route selection 结果。"""
+@asynccontextmanager
+async def _idle_ecs_status_server() -> Any:
+    """提供真实 loopback HTTP ECS 状态端点，保留生产 probe 网络路径。"""
 
-    def __init__(self, *, workline_id: int, workline_code: str) -> None:
-        self.workline_id = workline_id
-        self.workline_code = workline_code
+    async def handle_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        body = b'{"state":{"mode":"AUTO","status":"IDLE","current_command_id":null}}'
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode()
+            + b"Connection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
 
-    async def resolve_route(self, _db: object, **_kwargs: object) -> Any:
-        return type(
-            "SelectedRoute",
-            (),
-            {
-                "kind": "SELECTED",
-                "selected_workline_id": self.workline_id,
-                "selected_workline_code": self.workline_code,
-                "route_evidence": {
-                    "source_rack_position_code": "SOURCE_STATION_A",
-                    "target_rack_position_code": "TARGET_STATION",
-                    "manifest_contract_version": DEFINITION.contract_version,
-                },
-            },
-        )()
+    server = await asyncio.start_server(handle_status, "127.0.0.1", 0)
+    try:
+        yield int(server.sockets[0].getsockname()[1])
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,7 +285,12 @@ async def snapshot_smt_write_set(db: AsyncSession) -> SmtWriteSetSnapshot:
     )
 
 
-async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> SeededSmtSourcePick:
+async def seed_smt_source_pick_claim(
+    db: AsyncSession,
+    *,
+    suffix: str,
+    route_priority: int = 100,
+) -> SeededSmtSourcePick:
     """从真实 binding activation 创建 request→bound aggregate→RuntimeInbox。"""
 
     config = SmtSortingInboundConfig(provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity)
@@ -290,6 +301,13 @@ async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> Seeded
         plugin_key=DEFINITION.plugin_key,
         contract_version=DEFINITION.contract_version,
         config=config.model_dump(mode="json"),
+        runtime_config_json={
+            "smt_inbound_handoff_route": {
+                "enabled": True,
+                "priority": route_priority,
+                "source_rack_position_code": "SOURCE_STATION_A",
+            }
+        },
         is_active=False,
     )
     db.add(workline)
@@ -305,7 +323,27 @@ async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> Seeded
         host="127.0.0.1",
         port=1,
     )
-    db.add(device)
+    rack_positions = [
+        WorklineRackPosition(
+            workline_id=workline.id,
+            workline_code=workline.line_code,
+            position_code=position_code,
+            position_name=f"SMT PostgreSQL {position_code}",
+            position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+            allowed_rack_kind=rack_kind,
+            capacity=1,
+            logic_location_code=f"{workline.line_code}:{position_code}",
+            external_location_code=position_code,
+            device_role=device_role,
+            enabled=True,
+        )
+        for position_code, rack_kind, device_role in (
+            ("SOURCE_STATION_A", RackKind.SINGLE_LAYER, "SORTING_SOURCE_ARM"),
+            ("SOURCE_STATION_B", RackKind.SINGLE_LAYER, "SORTING_SOURCE_ARM"),
+            ("TARGET_STATION", RackKind.FIVE_LAYER, None),
+        )
+    ]
+    db.add_all([device, *rack_positions])
     await db.flush()
     activated_workline = await workline_service.activate(
         db,
@@ -346,18 +384,16 @@ async def seed_smt_source_pick_claim(db: AsyncSession, *, suffix: str) -> Seeded
     db.add(source_item)
     await db.commit()
 
-    service = SmtInboundHandoffService(
-        route_service=SelectedRouteService(
-            workline_id=int(activated_workline.id),
-            workline_code=activated_workline.line_code,
+    service = SmtInboundHandoffService()
+    async with _idle_ecs_status_server() as ecs_port:
+        device.port = ecs_port
+        await db.commit()
+        claim_result = await service.claim_next_source_item(
+            db,
+            demand_id=demand.id,
+            trace_id=demand.trace_id,
         )
-    )
-    claim_result = await service.claim_next_source_item(
-        db,
-        demand_id=demand.id,
-        trace_id=demand.trace_id,
-    )
-    assert claim_result.kind == "CLAIMED"
+    assert claim_result.kind == "CLAIMED", claim_result
     await db.commit()
     [claim] = await RuntimeInboxService().claim_for_processing(
         db,

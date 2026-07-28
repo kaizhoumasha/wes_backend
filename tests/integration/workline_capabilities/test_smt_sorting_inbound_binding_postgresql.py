@@ -10,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
 from src.app.device.models.device import Device, DeviceStatus
+from src.app.resource.models import RackKind
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
 from src.app.runtime.workline_plugins.dispatcher import (
@@ -53,7 +55,27 @@ async def _seed_binding(db: AsyncSession) -> tuple[WorkLine, WorklinePluginBindi
         host="127.0.0.1",
         port=1,
     )
-    db.add(device)
+    rack_positions = [
+        WorklineRackPosition(
+            workline_id=workline.id,
+            workline_code=workline.line_code,
+            position_code=position_code,
+            position_name=f"SMT generated {position_code}",
+            position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+            allowed_rack_kind=rack_kind,
+            capacity=1,
+            logic_location_code=f"{workline.line_code}:{position_code}",
+            external_location_code=position_code,
+            device_role=device_role,
+            enabled=True,
+        )
+        for position_code, rack_kind, device_role in (
+            ("SOURCE_STATION_A", RackKind.SINGLE_LAYER, "SORTING_SOURCE_ARM"),
+            ("SOURCE_STATION_B", RackKind.SINGLE_LAYER, "SORTING_SOURCE_ARM"),
+            ("TARGET_STATION", RackKind.FIVE_LAYER, None),
+        )
+    ]
+    db.add_all([device, *rack_positions])
     await db.flush()
     activated = await workline_service.activate(
         db,

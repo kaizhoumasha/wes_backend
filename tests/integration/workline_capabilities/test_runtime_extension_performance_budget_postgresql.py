@@ -325,7 +325,11 @@ async def _measure_smt_source_pick_generated_attempt() -> list[float]:
     async def scenario(session_factory: Any, _queue_gateway: Any) -> None:
         async with session_factory() as db:
             for index in range(MEASURED_SAMPLE_COUNT + 1):
-                seeded = await seed_smt_source_pick_claim(db, suffix=f"attempt-perf-{index}")
+                seeded = await seed_smt_source_pick_claim(
+                    db,
+                    suffix=f"attempt-perf-{index}",
+                    route_priority=MEASURED_SAMPLE_COUNT - index,
+                )
                 started = time.perf_counter()
                 result = await RuntimeInboxProcessorBridge(queue_gateway=NoopQueueGateway()).process_claimed(
                     db,
@@ -355,7 +359,11 @@ def test_smt_source_pick_recovery_command_query_budget_for_100_items() -> None:
         source_item_ids: list[int] = []
         async with session_factory() as db:
             for index in range(SMT_RECOVERY_BATCH_SIZE):
-                seeded = await seed_smt_source_pick_claim(db, suffix=f"recovery-perf-{index:03d}")
+                seeded = await seed_smt_source_pick_claim(
+                    db,
+                    suffix=f"recovery-perf-{index:03d}",
+                    route_priority=SMT_RECOVERY_BATCH_SIZE - index,
+                )
                 result = await RuntimeInboxProcessorBridge(queue_gateway=NoopQueueGateway()).process_claimed(
                     db,
                     claim=seeded.claim,

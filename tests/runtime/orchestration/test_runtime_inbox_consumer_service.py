@@ -280,54 +280,45 @@ async def test_callback_result_writer_rejects_unknown_command_correlation(db_ses
 
 
 @pytest.mark.asyncio
-async def test_command_result_replaces_system_capability_business_correlation_with_trace_authority(db_session) -> None:
-    """下游 capability 幂等键不是 FK；唯一 trace 必须恢复权威 ExecutionCorrelation。"""
+async def test_command_result_rejects_system_capability_key_instead_of_using_trace_fallback(db_session) -> None:
+    """下游 capability 幂等键不是 ExecutionCorrelation，trace 不得替它兜底。"""
+
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxCorrelationUnavailable
 
     correlation = await _seed_execution_correlation(db_session, correlation_id="corr-command-authority")
     service = RuntimeInboxService()
 
-    accepted = await service.accept_command_result(
-        db_session,
-        command_code="CMD-SYSTEM-CAPABILITY",
-        source_event_id="evt-system-capability-result",
-        device_code="ARM-01",
-        correlation_id="system-capability:device.command_write@v1:session:1:work-item:2:pick",
-        trace_id=correlation.trace_id,
-        payload_json={"command_code": "CMD-SYSTEM-CAPABILITY", "result": "SUCCESS"},
-    )
-
-    assert accepted.record.correlation_id == correlation.correlation_id
-    assert accepted.record.execution_session_id == correlation.execution_session_id
+    with pytest.raises(RuntimeInboxCorrelationUnavailable, match="correlation is unavailable"):
+        await service.accept_command_result(
+            db_session,
+            command_code="CMD-SYSTEM-CAPABILITY",
+            source_event_id="evt-system-capability-result",
+            device_code="ARM-01",
+            correlation_id="system-capability:device.command_write@v1:session:1:work-item:2:pick",
+            trace_id=correlation.trace_id,
+            payload_json={"command_code": "CMD-SYSTEM-CAPABILITY", "result": "SUCCESS"},
+        )
 
 
 @pytest.mark.asyncio
-async def test_command_result_rejects_persisted_ordinary_correlation_conflicting_with_trace(db_session) -> None:
-    """普通 correlation 即使存在，也不能覆盖 trace 唯一解析出的执行归属。"""
-
-    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxCorrelationUnavailable
+async def test_command_result_preserves_explicit_correlation_when_trace_points_elsewhere(db_session) -> None:
+    """显式 correlation 是 owner hint；冲突 trace 不能替换它。"""
 
     authority = await _seed_execution_correlation(db_session, correlation_id="corr-command-trace-authority")
-    _ = await _seed_execution_correlation(db_session, correlation_id="corr-command-other")
+    explicit = await _seed_execution_correlation(db_session, correlation_id="corr-command-other")
 
-    with pytest.raises(RuntimeInboxCorrelationUnavailable, match="correlation is unavailable"):
-        await RuntimeInboxService().accept_command_result(
-            db_session,
-            command_code="CMD-ORDINARY-CONFLICT",
-            source_event_id="evt-ordinary-conflict",
-            device_code="ARM-01",
-            correlation_id="corr-command-other",
-            trace_id=authority.trace_id,
-            payload_json={"command_code": "CMD-ORDINARY-CONFLICT", "result": "SUCCESS"},
-        )
-
-    assert (
-        await db_session.scalar(
-            select(func.count())
-            .select_from(RuntimeInbox)
-            .where(RuntimeInbox.source_event_id == "evt-ordinary-conflict")
-        )
-        == 0
+    accepted = await RuntimeInboxService().accept_command_result(
+        db_session,
+        command_code="CMD-ORDINARY-CONFLICT",
+        source_event_id="evt-ordinary-conflict",
+        device_code="ARM-01",
+        correlation_id=explicit.correlation_id,
+        trace_id=authority.trace_id,
+        payload_json={"command_code": "CMD-ORDINARY-CONFLICT", "result": "SUCCESS"},
     )
+
+    assert accepted.record.correlation_id == explicit.correlation_id
+    assert accepted.record.execution_session_id == explicit.execution_session_id
 
 
 @pytest.mark.asyncio

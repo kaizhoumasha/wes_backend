@@ -10,7 +10,7 @@ Session 归属解析器
 
 规则（按 RuntimeInbox.kind）:
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
-- COMMAND_RESULT: 按 command_code -> awaiting_device_command_code 恢复 Session
+- COMMAND_RESULT: 按持久 command_id 或显式 execution correlation 恢复 Session
 - EXTERNAL_HTTP: 优先按 dispatch_key -> rack task operation 恢复 Session，回退 outbox/trace_id
 - INTERNAL_EVENT: 按 session_id 恢复 Session
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
@@ -767,41 +767,42 @@ class SessionResolver:
         inbox: Any,
     ) -> WorklineSession:
         """处理 COMMAND_RESULT 类型的 Session 解析。"""
-        payload_json = ensure_dict(inbox.payload_json)
-        command_code = payload_json.get("command_code")
-        if not isinstance(command_code, str) or not command_code:
-            raise ValueError("command_code is required for COMMAND_RESULT")
+        command_id = getattr(inbox, "command_id", None)
+        command = (
+            await self.command_repo.get_by_id(db, command_id)
+            if isinstance(command_id, int) and not isinstance(command_id, bool)
+            else None
+        )
+        if command is not None:
+            session = await self.session_repo.get_open_session_by_awaiting_device_command_code(db, command.command_code)
+            if session is not None:
+                return session
 
-        command = await self.command_repo.get_by_command_code(db, command_code)
-        if command is None:
-            raise ValueError(f"DeviceCommand not found for command_code: {command_code}")
-        if command.id is None:
-            raise ValueError(f"DeviceCommand id is missing for command_code: {command_code}")
+            # 已知迟到/错配指令仅可归属到同 WorkLine 的唯一开放 Session，
+            # 最终 command/wait/correlation 一致性由 generated bridge fail closed。
+            if command.workline_id is not None:
+                open_sessions = await self.session_repo.list_open_by_workline_id(
+                    db,
+                    workline_id=command.workline_id,
+                    limit=2,
+                )
+                if len(open_sessions) == 1:
+                    return open_sessions[0]
 
-        trace = TraceContext.from_runtime(inbox=inbox).with_command(command)
-        inbox.command_id = trace.command_id
-        inbox.device_id = trace.device_id or command.device_id
-        if trace.workline_id is not None:
-            inbox.workline_id = trace.workline_id
-        if trace.trace_id:
-            inbox.trace_id = trace.trace_id
-
-        session = await self.session_repo.get_open_session_by_awaiting_device_command_code(db, command.command_code)
-        if session:
-            return session
-
-        # 已知旧指令的迟到回调仍须归属到当前唯一开放会话，后续处理器会依据
-        # awaiting_device_command_code/correlation 锚点将其归档，而不是误执行。
-        if command.workline_id is not None:
-            open_sessions = await self.session_repo.list_open_by_workline_id(
-                db,
-                workline_id=command.workline_id,
-                limit=2,
-            )
-            if len(open_sessions) == 1:
-                return open_sessions[0]
-
-        raise ValueError(f"Session not found for command_code: {command_code}")
+        correlation_id = non_empty_str(getattr(inbox, "correlation_id", None))
+        prefix = "workline-session:"
+        if correlation_id is None or not correlation_id.startswith(prefix):
+            raise ValueError("COMMAND_RESULT requires persisted command_id or workline session correlation")
+        session_code = correlation_id.removeprefix(prefix)
+        if not session_code:
+            raise ValueError("COMMAND_RESULT workline session correlation is invalid")
+        session = await self.session_repo.get_by_session_code(db, session_code)
+        if session is None:
+            raise ValueError(f"Session not found for correlation: {correlation_id}")
+        inbox_workline_id = getattr(inbox, "workline_id", None)
+        if isinstance(inbox_workline_id, int) and inbox_workline_id != session.workline_id:
+            raise ValueError("COMMAND_RESULT correlation workline mismatch")
+        return session
 
     async def _resolve_external_http(
         self,

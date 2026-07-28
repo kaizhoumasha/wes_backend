@@ -36,8 +36,6 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound im
     ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
     ROLE_SORTING_WORKSTATION,
-    SMT_SORTING_INBOUND_CONTRACT_VERSION,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.runtime.orchestration.workline_runtime_status_projection import (
@@ -45,7 +43,9 @@ from src.app.runtime.orchestration.workline_runtime_status_projection import (
     WorklineRuntimeStatusProjection,
 )
 from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
+from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models.plugin_binding import WorklinePluginBinding
 from src.app.workline.services.workline_service import WorkLineService
 
 
@@ -354,18 +354,28 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
     monkeypatch.delenv("MOCK_ECS_PORT", raising=False)
 
     result = await sync_test_workline_devices(db_session)
-    assert TEST_SMT_SORTING_INBOUND_SEED.is_active is False
+    assert TEST_SMT_SORTING_INBOUND_SEED.is_active is True
 
     workline = (
         await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_SMT_SORTING_INBOUND_LINE_CODE))
     ).scalar_one()
     assert workline.line_name == "测试 SMT 分拣入库作业线"
     assert workline.line_type == LineType.AUTO
-    assert workline.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY
-    assert workline.contract_version == SMT_SORTING_INBOUND_CONTRACT_VERSION
+    assert workline.plugin_key == DEFINITION.plugin_key
+    assert workline.contract_version == DEFINITION.contract_version
     assert workline.run_mode == WorkLineRunMode.SIMULATION
     assert await _runtime_status_for(db_session, workline.id) == WorkLineRuntimeStatus.STOPPED.value
-    assert workline.is_active is False
+    assert workline.is_active is True
+    binding = (
+        await db_session.execute(
+            select(WorklinePluginBinding).where(
+                WorklinePluginBinding.id == workline.active_plugin_binding_id,
+                WorklinePluginBinding.workline_id == workline.id,
+            )
+        )
+    ).scalar_one()
+    assert binding.plugin_key == DEFINITION.plugin_key
+    assert binding.contract_version == DEFINITION.contract_version
 
     devices = (
         (
@@ -451,7 +461,7 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
 
 
 @pytest.mark.asyncio
-async def test_sync_test_workline_devices_smt_configuration_passes_legacy_compatibility_checks(
+async def test_sync_test_workline_devices_smt_configuration_passes_generated_plugin_checks(
     db_session, monkeypatch
 ) -> None:
     monkeypatch.setenv("APP_ENV", "test")
@@ -468,11 +478,7 @@ async def test_sync_test_workline_devices_smt_configuration_passes_legacy_compat
     assert any(
         check.code == "PLUGIN_CONFIGURED"
         and check.status == "PASS"
-        and check.context
-        == {
-            "plugin_key": SMT_SORTING_INBOUND_PLUGIN_KEY,
-            "message": "迁移期 legacy 插件兼容模式",
-        }
+        and check.context == {"plugin_key": DEFINITION.plugin_key}
         for check in status.checks
     )
     assert any(check.code == "ROLE_REQUIREMENT" and check.status == "PASS" for check in status.checks)

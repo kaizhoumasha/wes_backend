@@ -10,7 +10,6 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.device.models.command import DeviceCommand
-from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import SMT_SORTING_INBOUND_PLUGIN_KEY
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
@@ -275,11 +274,14 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
     async def list_sorting_candidate_worklines(self, db: AsyncSession) -> list[WorkLine]:
         """读取 SMT 入库分拣 WorkLine 配置候选。"""
 
+        from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
         columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
             select(WorkLine)
             .where(
-                columns.plugin_key == "SMT_SORTING_INBOUND",
+                columns.plugin_key == DEFINITION.plugin_key,
+                columns.contract_version == DEFINITION.contract_version,
                 columns.is_active.is_(True),
             )
             .order_by(columns.line_code.asc(), columns.id.asc())
@@ -446,12 +448,15 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
     ) -> list[WorklineSession]:
         """读取目标 WorkLine 上仍打开 current_material 的 SMT sorting sessions。"""
 
+        from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
         columns = cast("Any", WorklineSession).__table__.c
         result = await db.execute(
             select(WorklineSession)
             .where(
                 columns.workline_id == workline_id,
-                columns.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY,
+                columns.plugin_key == DEFINITION.plugin_key,
+                columns.contract_version == DEFINITION.contract_version,
                 columns.status.in_(
                     [
                         SessionStatus.NEW.value,

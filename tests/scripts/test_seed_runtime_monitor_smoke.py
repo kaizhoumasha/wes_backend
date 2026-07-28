@@ -136,9 +136,9 @@ async def test_seed_runtime_monitor_smoke_creates_runtime_projection_scenarios(d
     assert binding.generated_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
     assert binding.activated_by == "runtime-monitor-smoke"
     assert single_layer_projection.boundary.workline_readiness == "READY"
-    # Smoke seed 使用 generated plugin binding，但没有 Station Lease 事实；
-    # 平台边界必须保持 UNKNOWN，不从 session context 伪造权威状态。
-    assert single_layer_projection.boundary.station_lease == "UNKNOWN"
+    # Smoke seed 使用 SMT generated Definition 声明的 source station boundary；
+    # 监控投影应呈现 ACTIVE_DISPATCH_LEASE，而不是从 session context 推断临时状态。
+    assert single_layer_projection.boundary.station_lease == "ACTIVE_DISPATCH_LEASE"
     assert single_layer_projection.boundary.rack_operation_wait == "WAITING_WMS"
     assert single_layer_projection.resource_evidence.kind == "WMS_CALLBACK_EVIDENCE"
     assert single_layer_projection.resource_evidence.total_count > 50

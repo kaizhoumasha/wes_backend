@@ -14,7 +14,6 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_inbound_handoff_re
 )
 from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
     COMMAND_SOURCE_PICK,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
@@ -153,10 +152,13 @@ class SmtInboundHandoffRouteService:
         )
 
     def _ordered_config_candidates(self, candidate_worklines: Sequence[object]) -> list[object]:
+        from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
         candidates = [
             workline
             for workline in candidate_worklines
-            if getattr(workline, "plugin_key", None) == SMT_SORTING_INBOUND_PLUGIN_KEY
+            if getattr(workline, "plugin_key", None) == DEFINITION.plugin_key
+            and getattr(workline, "contract_version", None) == DEFINITION.contract_version
             and bool(getattr(workline, "is_active", True))
             and self._route_enabled(workline)
         ]
@@ -422,7 +424,8 @@ async def _real_ecs_status_probe(db: AsyncSession, *, workline: object, route: o
     try:
         import httpx
 
-        async with httpx.AsyncClient() as client:
+        # ECS 属于生产设备直连端点，不能被宿主机 HTTP(S)_PROXY 重定向。
+        async with httpx.AsyncClient(trust_env=False) as client:
             _ = await _ensure_realtime_device_status_ready(client=client, device=device, device_code=str(device_code))
     except Exception as exc:
         return _ProbeResult(available=False, reason_code=getattr(exc, "code", type(exc).__name__))

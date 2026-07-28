@@ -190,7 +190,9 @@ def _is_late_or_duplicate_command_result_for_session(
     if not isinstance(awaiting_command_code, str) or callback_command_code != awaiting_command_code:
         return True
     if command is None:
-        return True
+        # payload 与当前 wait 匹配但 command_id 缺失/不存在时，交给 generated
+        # dispatcher 产出 COMMAND_ID_MISSING / COMMAND_NOT_FOUND 稳定零 effect 诊断。
+        return False
     terminal_command_statuses = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"}
     command_status = _command_status_value(command)
     if command_status not in terminal_command_statuses:

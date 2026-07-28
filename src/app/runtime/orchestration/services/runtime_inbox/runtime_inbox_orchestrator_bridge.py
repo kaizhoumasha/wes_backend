@@ -1708,6 +1708,15 @@ async def _build_plugin_dispatch_request(
         else:
             # 外部 callback 不负责声明动作类型；始终以 command_id 对应的权威命令为准。
             raw_input = {**raw_input, "command_type": command_type}
+            if not _command_result_authority_matches(
+                inbox=inbox,
+                session=session,
+                workline=workline,
+                binding=binding,
+                command=command,
+                payload_command_code=optional_str(raw_input.get("command_code")),
+            ):
+                route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
     replay_digest_matches = await _replay_digest_matches_source(
         db,
         inbox=inbox,
@@ -1723,7 +1732,7 @@ async def _build_plugin_dispatch_request(
     command_code = optional_str(raw_input.get("command_code"))
     awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
     correlation_matches = command_code is None or (awaiting_code is not None and command_code == awaiting_code)
-    if route == "COMMAND_RESULT" and not correlation_matches:
+    if route == "COMMAND_RESULT" and route_diagnostic is None and not correlation_matches:
         route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
     pinned_snapshot = PinnedPluginSnapshot(
         plugin_key=plugin_key,
@@ -1754,6 +1763,51 @@ async def _build_plugin_dispatch_request(
             route_diagnostic=route_diagnostic,
         ),
         snapshot=pinned_snapshot,
+    )
+
+
+def _command_result_authority_matches(
+    *,
+    inbox: Any,
+    session: Any,
+    workline: Any,
+    binding: Any,
+    command: Any,
+    payload_command_code: str | None,
+) -> bool:
+    """校验 callback、持久命令、Session wait 与 binding 的同一执行归属。"""
+
+    command_code = optional_str(getattr(command, "command_code", None))
+    awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
+    command_correlation = optional_str(getattr(command, "correlation_id", None))
+    inbox_correlation = optional_str(getattr(inbox, "correlation_id", None))
+    session_code = optional_str(getattr(session, "session_code", None))
+    session_correlation = f"workline-session:{session_code}" if session_code is not None else None
+    workline_id = optional_int(getattr(workline, "id", None))
+    command_workline_id = optional_int(getattr(command, "workline_id", None))
+    inbox_workline_id = optional_int(getattr(inbox, "workline_id", None))
+    session_workline_id = optional_int(getattr(session, "workline_id", None))
+    session_id = optional_int(getattr(session, "id", None))
+    inbox_session_id = optional_int(getattr(inbox, "workline_session_id", None))
+    binding_plugin_key = optional_str(getattr(binding, "plugin_key", None))
+    binding_contract_version = optional_str(getattr(binding, "contract_version", None))
+    identity_pairs = (
+        (optional_str(getattr(command, "plugin_key", None)), binding_plugin_key),
+        (optional_str(getattr(command, "contract_version", None)), binding_contract_version),
+        (optional_str(getattr(session, "plugin_key", None)), binding_plugin_key),
+        (optional_str(getattr(session, "contract_version", None)), binding_contract_version),
+    )
+    return (
+        command_code is not None
+        and command_code == payload_command_code == awaiting_code
+        and command_correlation is not None
+        and command_correlation == inbox_correlation == session_correlation
+        and workline_id is not None
+        and workline_id == command_workline_id == inbox_workline_id == session_workline_id
+        and session_id is not None
+        and session_id == inbox_session_id
+        and optional_int(getattr(session, "plugin_binding_id", None)) == optional_int(getattr(binding, "id", None))
+        and all(actual is not None and actual == expected for actual, expected in identity_pairs)
     )
 
 

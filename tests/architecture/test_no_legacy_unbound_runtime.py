@@ -23,6 +23,10 @@ GENERATED_RUNTIME_SOURCES = (
     REPO_ROOT / "src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py",
     REPO_ROOT / "src/app/workline/services/write_back_service.py",
 )
+ACTIVE_RUNTIME_IDENTITY_ROOTS = (
+    REPO_ROOT / "src",
+    REPO_ROOT / "scripts",
+)
 BANNED_GENERATED_TOKENS = (
     "OrchestratorResult",
     "RuntimeInboxProcessorService",
@@ -64,3 +68,40 @@ def test_generated_runtime_has_no_legacy_effect_state_or_untyped_placeholder() -
             if hits:
                 offenders[source.relative_to(REPO_ROOT).as_posix()] = hits
     assert offenders == {}
+
+
+def test_active_runtime_sources_do_not_reference_retired_smt_identity() -> None:
+    retired_identity_tokens = (
+        "SMT_SORTING_" + "INBOUND",
+        "2026-06-21" + ".p1",
+    )
+    offenders: dict[str, list[str]] = {}
+    for root in ACTIVE_RUNTIME_IDENTITY_ROOTS:
+        for source in root.rglob("*.py"):
+            tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+            source_literals = {
+                node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            }
+            hits = [token for token in retired_identity_tokens if token in source_literals]
+            if hits:
+                offenders[source.relative_to(REPO_ROOT).as_posix()] = hits
+    assert offenders == {}
+
+
+def test_smt_generated_definition_declares_production_route_boundaries() -> None:
+    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
+    boundaries = {
+        (
+            boundary.rack_position_code,
+            boundary.rack_kind,
+            boundary.business_demand_type,
+        )
+        for boundary in DEFINITION.schema.resource_boundaries
+    }
+
+    assert boundaries == {
+        ("SOURCE_STATION_A", "SINGLE_LAYER", "SORTING_INBOUND_SOURCE"),
+        ("SOURCE_STATION_B", "SINGLE_LAYER", "SORTING_INBOUND_SOURCE"),
+        ("TARGET_STATION", "FIVE_LAYER", "SORTING_INBOUND_TARGET"),
+    }
