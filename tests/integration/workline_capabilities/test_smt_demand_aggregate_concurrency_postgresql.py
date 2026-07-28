@@ -17,6 +17,9 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
 )
+from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import (
+    SmtInboundHandoffRepository,
+)
 from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
     SmtInboundHandoffService,
     smt_inbound_handoff_service,
@@ -177,8 +180,10 @@ def test_stale_public_claim_and_real_correlation_share_item_then_demand_lock_ord
             route_entered = asyncio.Event()
             release_route = asyncio.Event()
             slow_item_lock_requested = asyncio.Event()
+            slow_demand_lock_acquired = asyncio.Event()
             correlation_item_locked = asyncio.Event()
             release_correlation_item_lock = asyncio.Event()
+            slow_lock_trace: list[str] = []
 
             class _SlowRouteService:
                 async def resolve_route(self, _db: object, **_kwargs: object) -> SimpleNamespace:
@@ -195,18 +200,35 @@ def test_stale_public_claim_and_real_correlation_share_item_then_demand_lock_ord
                         },
                     )
 
-            slow_service = SmtInboundHandoffService(route_service=_SlowRouteService())
-            original_slow_item_lock = slow_service.repository.lock_source_item_by_id
+            shared_repository = smt_inbound_handoff_service.repository
+            slow_repository = SmtInboundHandoffRepository(
+                runtime_inbox_query=shared_repository.runtime_inbox_query,
+                execution_anchor_repository=shared_repository.execution_anchor_repository,
+            )
+            slow_service = SmtInboundHandoffService(
+                repository=slow_repository,
+                route_service=_SlowRouteService(),
+            )
+            original_slow_item_lock = slow_repository.lock_source_item_by_id
+            original_slow_demand_lock = slow_repository.lock_demand_by_id
 
             async def signal_slow_item_lock(db: AsyncSession, *, source_item_id: int) -> object:
+                slow_lock_trace.append("item_requested")
                 slow_item_lock_requested.set()
                 return await original_slow_item_lock(db, source_item_id=source_item_id)
 
-            monkeypatch.setattr(slow_service.repository, "lock_source_item_by_id", signal_slow_item_lock)
+            async def signal_slow_demand_lock(db: AsyncSession, *, demand_id: int) -> object:
+                locked_demand = await original_slow_demand_lock(db, demand_id=demand_id)
+                slow_lock_trace.append("demand_acquired")
+                slow_demand_lock_acquired.set()
+                return locked_demand
+
+            monkeypatch.setattr(slow_repository, "lock_source_item_by_id", signal_slow_item_lock)
+            monkeypatch.setattr(slow_repository, "lock_demand_by_id", signal_slow_demand_lock)
 
             async def slow_claim() -> str:
                 async with session_factory() as db:
-                    await db.execute(text("SET LOCAL lock_timeout = '1500ms'"))
+                    await db.execute(text("SET LOCAL lock_timeout = '800ms'"))
                     result = await slow_service.claim_next_source_item(
                         db,
                         demand_id=demand.id,
@@ -232,6 +254,17 @@ def test_stale_public_claim_and_real_correlation_share_item_then_demand_lock_ord
                 assert fast_result.kind == "CLAIMED"
                 await fast_claim_db.commit()
 
+            # 模拟 fast claim 已落 item/session/inbox，但 parent aggregate projection
+            # 仍为可处理的 stale 状态。这样旧 demand→item 会真实取得 demand 锁，
+            # 而不是被 CLAIMED_BY_SORTING 的业务 guard 提前短路。
+            async with session_factory() as stale_projection_db:
+                await stale_projection_db.execute(
+                    update(SmtInboundHandoffDemand)
+                    .where(SmtInboundHandoffDemand.id == demand.id)
+                    .values(status=SmtInboundHandoffDemandStatus.READY_FOR_SORTING)
+                )
+                await stale_projection_db.commit()
+
             original_correlation_item_lock = smt_inbound_handoff_service.repository.get_source_item_for_update
 
             async def hold_correlation_after_item_lock(db: AsyncSession, source_item_id: int) -> object:
@@ -249,7 +282,7 @@ def test_stale_public_claim_and_real_correlation_share_item_then_demand_lock_ord
 
             async def correlate_from_public_runtime_inbox_entry() -> dict[str, int]:
                 async with session_factory() as db:
-                    await db.execute(text("SET LOCAL lock_timeout = '1500ms'"))
+                    await db.execute(text("SET LOCAL lock_timeout = '800ms'"))
                     [claim] = await RuntimeInboxService().claim_for_processing(
                         db,
                         limit=1,
@@ -257,7 +290,7 @@ def test_stale_public_claim_and_real_correlation_share_item_then_demand_lock_ord
                         stale_after_seconds=60,
                     )
                     await db.commit()
-                    await db.execute(text("SET LOCAL lock_timeout = '1500ms'"))
+                    await db.execute(text("SET LOCAL lock_timeout = '800ms'"))
                     processed = await RuntimeInboxProcessorBridge(queue_gateway=_NoopQueueGateway()).process_claimed(
                         db,
                         claim=claim,
@@ -268,16 +301,18 @@ def test_stale_public_claim_and_real_correlation_share_item_then_demand_lock_ord
             correlation_task = asyncio.create_task(correlate_from_public_runtime_inbox_entry())
             await asyncio.wait_for(correlation_item_locked.wait(), timeout=5)
             release_route.set()
-            # 两种锁序都会请求 item；旧 demand→item 在该点已经持有 demand，
-            # 当前 item→demand 则只会等待 correlation 释放 item。
+            # slow-only repository 确保该事件不可能被 fast/correlation 路径污染。
+            # 当前 item→demand 在此只等待 item；旧顺序会先记录 demand_acquired，
+            # 再等待 correlation 已持有的 item。
             await asyncio.wait_for(slow_item_lock_requested.wait(), timeout=5)
             release_correlation_item_lock.set()
-            processed, slow_kind = await asyncio.wait_for(
+            processed, _slow_kind = await asyncio.wait_for(
                 asyncio.gather(correlation_task, slow_task),
                 timeout=5,
             )
             assert processed["success"] == 1
-            assert slow_kind == "RETRY"
+            assert slow_lock_trace == ["item_requested"]
+            assert not slow_demand_lock_acquired.is_set()
 
             async with session_factory() as reopened_db:
                 reopened_item = await reopened_db.get(SmtInboundHandoffSourceItem, source_item.id)
