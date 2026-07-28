@@ -688,27 +688,46 @@ def scan_generic_orchestration(path: Path) -> None:
     }
     scopes = [tree, *(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef))]
     aliases_by_scope: dict[ast.AST, dict[str, str]] = {}
+    bound_names_by_scope: dict[ast.AST, set[str]] = {}
     for scope in scopes:
         aliases: dict[str, str] = {}
+        bound_names: set[str] = set()
+        if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+            arguments = scope.args
+            bound_names.update(argument.arg for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs))
+            if arguments.vararg is not None:
+                bound_names.add(arguments.vararg.arg)
+            if arguments.kwarg is not None:
+                bound_names.add(arguments.kwarg.arg)
         for statement in scope.body:
             if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
                 target = statement.targets[0]
                 value = constant_string(statement.value, aliases)
-                if isinstance(target, ast.Name) and value is not None:
-                    aliases[target.id] = value
+                if isinstance(target, ast.Name):
+                    bound_names.add(target.id)
+                    if value is not None:
+                        aliases[target.id] = value
             elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                bound_names.add(statement.target.id)
                 value = constant_string(statement.value, aliases) if statement.value is not None else None
                 if value is not None:
                     aliases[statement.target.id] = value
         aliases_by_scope[scope] = aliases
+        bound_names_by_scope[scope] = bound_names
 
     def aliases_for(node: ast.AST) -> dict[str, str]:
+        scope_chain: list[ast.AST] = []
         current: ast.AST | None = node
         while current is not None:
             if current in aliases_by_scope:
-                return aliases_by_scope[current]
+                scope_chain.append(current)
             current = parent_by_node.get(current)
-        return {}
+        aliases: dict[str, str] = {}
+        for scope in reversed(scope_chain):
+            for name in bound_names_by_scope[scope]:
+                aliases.pop(name, None)
+            aliases.update(aliases_by_scope[scope])
+        return aliases
 
     def capability_keys_in(node: ast.AST) -> set[str]:
         aliases = aliases_for(node)

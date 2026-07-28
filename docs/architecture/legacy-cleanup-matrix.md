@@ -31,7 +31,7 @@ note: |
 uv run python scripts/generate_legacy_matrix.py
 ```
 
-扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。最终扩展平台目录及精确目标态符号从 legacy cleanup 范围排除；Task 10 前仍存在的旧路由 import 与业务编排分支则按生产文件逐项登记独立 seed。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 technical cleanup scope 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；business legacy absence cleanup 后，已迁入 `src/app/runtime/capabilities/material_flow/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
+扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。最终扩展平台目录及精确目标态符号从 legacy cleanup 范围排除；Task 10 前仍存在的旧路由 import 与业务编排分支则按生产文件逐项登记独立 seed。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 technical cleanup scope 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已经删除的 WorkLine service shim 依据其历史正向 provenance 按旧入口记账；business legacy absence cleanup 后，已迁入 `src/app/runtime/capabilities/material_flow/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
 
 ## 3. 汇总（截至 generated-only runtime 复核 @ 2026-07-27）
 
@@ -178,7 +178,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | WorkLine 配置类（`models/workline.py:WorkLine/WorkLineBase`、manifest/topology/safety/rack_position） | move | 保留为配置域目标，Phase 2 调整 schema 对齐目标态 WorkLine manifest |
 | 执行状态模型（`models/session.py`、`inbox.py`、`timeline.py`、`runtime_hold*.py`、`runtime.py`） | rebuild | 整体 move 到 `src/app/runtime/orchestration/models/`，内部 session_id 保留为 execution_session_id（见 P0-004 §4.6） |
 | 业务流程模型（`smt_inbound_handoff.py`、`object_transition_event.py`） | rebuild | material-flow 按目标态 capability 重建 |
-| API routes（21 个，`v1/`） | rebuild | runtime 监控/handoff/trace/hold 路由迁 runtime 域；workline 配置 CRUD 路由保留 |
+| API routes（23 个，`v1/`） | rebuild | runtime 监控/handoff/trace/hold 路由迁 runtime 域；workline 配置 CRUD 路由保留 |
 | Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | `class` / `def` / `async def` 全量登记；执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
 | `single_layer_rack_orchestration_service` | rebuild | material-flow 单层机架编排，按目标态 capability 重建（WMS_INTEGRATION_BOUNDARY seed 关联） |
 
@@ -219,7 +219,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | 风险项 | phase | 说明 |
 | --- | --- | --- |
-| 执行状态迁移（219 条执行状态语义；phase2 rebuild 总计 261 条，phase2 全部 268 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
+| 执行状态迁移（228 条执行状态语义；phase2 rebuild 总计 261 条，phase2 全部 268 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
 | phase4 业务流程（113 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
 | `single_layer_rack_orchestration_service`（WMS_INTEGRATION_BOUNDARY seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
 | device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |

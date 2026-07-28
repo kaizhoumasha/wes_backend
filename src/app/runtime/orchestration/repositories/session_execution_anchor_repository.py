@@ -61,6 +61,7 @@ class SessionExecutionAnchorRepository:
                     execution_session_columns.plugin_config_hash == plugin_config_hash,
                     execution_session_columns.plugin_index_digest == plugin_index_digest,
                     work_item_columns.plugin_key == plugin_key,
+                    work_item_columns.manifest_version == contract_version,
                     work_item_columns.plugin_binding_id == plugin_binding_id,
                     work_item_columns.plugin_binding_version == plugin_binding_version,
                     work_item_columns.plugin_config_hash == plugin_config_hash,

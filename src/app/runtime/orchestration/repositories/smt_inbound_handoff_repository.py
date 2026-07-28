@@ -183,6 +183,7 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         correlation_id: str,
         plugin_key: str,
         contract_version: str,
+        command_trace_id: str,
         execution_session_id: int | None = None,
     ) -> bool:
         """按 WorklineSession 所有权交叉校验完整执行聚合。"""
@@ -225,6 +226,8 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
             and getattr(session, "workline_id", None) == workline_id
             and getattr(session, "plugin_key", None) == plugin_key
             and getattr(session, "contract_version", None) == contract_version
+            and inbox.trace_id == trace_id
+            and command_trace_id == trace_id
         ):
             return False
 

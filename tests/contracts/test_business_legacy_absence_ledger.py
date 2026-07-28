@@ -5,7 +5,12 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from scripts.check_business_legacy_absence_gate import LEDGER_HEADER, validate_ledger
+from scripts.check_business_legacy_absence_gate import (
+    LEDGER_HEADER,
+    STRICT_DISPOSITIONS,
+    _row_final_gate_failures,
+    validate_ledger,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER_PATH = REPO_ROOT / "docs" / "architecture" / "business-legacy-absence-ledger.csv"
@@ -46,3 +51,30 @@ def test_business_legacy_absence_ledger_tracks_current_surface_states() -> None:
     assert {"moved", "test-only-migrated", "kept-config-only", "already-removed"}.issubset(dispositions)
     assert "pending" not in dispositions
     assert all(row["target_capability_status"] == "mapped" for row in rows)
+
+
+def test_final_gate_rejects_pending_current_pr_provenance() -> None:
+    row = {
+        "entry_id": "legacy:example",
+        "cleanup_disposition": "deleted",
+        "semantic_status": "semantics-covered",
+        "target_capability_status": "mapped",
+        "reference_scan_status": "clean",
+        "delete_commit": "pending-current-pr",
+        "relative_path": "src/example.py",
+    }
+
+    failures = _row_final_gate_failures(row, "final", REPO_ROOT)
+
+    assert any("pending-current-pr cannot enter final gate" in failure for failure in failures)
+
+
+def test_final_ledger_has_real_delete_commits_and_existing_evidence_paths() -> None:
+    rows = _rows(LEDGER_PATH)
+
+    assert validate_ledger(REPO_ROOT, mode="final").valid
+    assert all(row["delete_commit"] != "pending-current-pr" for row in rows)
+    assert all(row["delete_commit"] for row in rows if row["cleanup_disposition"] in STRICT_DISPOSITIONS)
+    for row in rows:
+        for field in ("golden_fixture", "contract_tests"):
+            assert all((REPO_ROOT / path).exists() for path in row[field].split(";") if path)

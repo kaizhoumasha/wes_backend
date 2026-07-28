@@ -130,6 +130,21 @@ def test_generated_csv_contains_required_migration_columns():
     assert "blocking_tests" in (fieldnames or [])
 
 
+def test_matrix_narrative_counts_are_derived_from_committed_csv() -> None:
+    matrix_path = REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.csv"
+    narrative = (REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.md").read_text(encoding="utf-8")
+    with matrix_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    api_route_count = sum(row["entry_type"] == "api_route" for row in rows)
+    execution_semantics_count = sum("执行状态" in row["business_semantics"] for row in rows)
+
+    assert f"API routes（{api_route_count} 个" in narrative
+    assert f"执行状态迁移（{execution_semantics_count} 条执行状态语义" in narrative
+    assert "历史正向 provenance" in narrative
+    assert "从实现文件扫描符号" not in narrative
+
+
 def test_generated_csv_uses_lf_line_endings():
     """生成的 CSV 必须使用 LF，避免 git diff --check 将 CRLF 判成 trailing whitespace。"""
     matrix_path = REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.csv"

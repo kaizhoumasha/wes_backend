@@ -321,7 +321,10 @@ class WorklinePluginBindingService:
 
         binding = await self.repository.get_pinned(db, binding_id)
         if binding is None:
-            raise PluginBindingAdmissionError(f"pinned binding 不存在: {binding_id}")
+            raise PluginBindingAdmissionError(
+                f"pinned binding 不存在: {binding_id}",
+                error_code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+            )
         return binding
 
     async def resolve_new_session_binding(self, db: Any, *, workline: Any) -> Any:
@@ -329,11 +332,17 @@ class WorklinePluginBindingService:
 
         binding_id = getattr(workline, "active_plugin_binding_id", None)
         if not isinstance(binding_id, int):
-            raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value)
+            raise PluginBindingAdmissionError(
+                ErrorCode.PLUGIN_BINDING_REQUIRED.value,
+                error_code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+            )
         try:
             return await self.get_pinned(db, binding_id=binding_id)
         except PluginBindingAdmissionError as exc:
-            raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value) from exc
+            raise PluginBindingAdmissionError(
+                ErrorCode.PLUGIN_BINDING_REQUIRED.value,
+                error_code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+            ) from exc
 
     def assert_pinned_identity(self, *, binding: Any, workline: Any, session: Any) -> None:
         """历史 retry 只校验 session pin 与 binding 本身，不追随 WorkLine 当前 active pin。"""
@@ -365,14 +374,23 @@ class WorklinePluginBindingService:
 
         binding_id = getattr(workline, "active_plugin_binding_id", None)
         if not isinstance(binding_id, int):
-            raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value)
+            raise PluginBindingAdmissionError(
+                ErrorCode.PLUGIN_BINDING_REQUIRED.value,
+                error_code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+            )
         if binding is None:
             try:
                 binding = await self.get_pinned(db, binding_id=binding_id)
             except PluginBindingAdmissionError as exc:
-                raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value) from exc
+                raise PluginBindingAdmissionError(
+                    ErrorCode.PLUGIN_BINDING_REQUIRED.value,
+                    error_code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+                ) from exc
         if binding is None:
-            raise PluginBindingAdmissionError(ErrorCode.PLUGIN_BINDING_REQUIRED.value)
+            raise PluginBindingAdmissionError(
+                ErrorCode.PLUGIN_BINDING_REQUIRED.value,
+                error_code=ErrorCode.PLUGIN_BINDING_REQUIRED,
+            )
         if getattr(binding, "id", None) != binding_id:
             raise PluginBindingAdmissionError("预解析 binding 与 WorkLine active pin 不一致")
         active_identity = (

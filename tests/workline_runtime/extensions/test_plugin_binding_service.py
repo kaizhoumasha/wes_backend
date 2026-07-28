@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -715,3 +716,11 @@ def test_binding_activation_rejects_incomplete_plugin_identity(plugin_key: objec
 async def test_missing_pinned_binding_is_rejected() -> None:
     with pytest.raises(PluginBindingAdmissionError, match="pinned binding 不存在: 9"):
         await service(FakeRepository()).get_pinned(object(), binding_id=9)
+
+
+@pytest.mark.asyncio
+async def test_missing_pinned_binding_carries_typed_required_error_code() -> None:
+    with pytest.raises(PluginBindingAdmissionError) as caught:
+        await service(FakeRepository()).get_pinned(object(), binding_id=9)
+
+    assert caught.value.error_code is ErrorCode.PLUGIN_BINDING_REQUIRED

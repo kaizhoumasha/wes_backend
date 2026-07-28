@@ -409,3 +409,24 @@ def test_runtime_routing_has_one_generated_workline_plugin_dispatcher() -> None:
     assert "from src.app.runtime.workline_plugins.generated_index import" in dispatcher_source
     assert sum("class WorklinePluginDispatcher" in path.read_text(encoding="utf-8") for path in runtime_sources) == 1
     assert sum("class RuntimeCapabilityDispatcher" in path.read_text(encoding="utf-8") for path in runtime_sources) == 0
+
+
+def test_generic_orchestration_guard_inherits_module_constant_aliases(tmp_path: Path) -> None:
+    result = _run_fixture(
+        tmp_path,
+        "orchestration/runtime_intent_effects.py",
+        "PREFIX = 'material_flow.'\nKEY = PREFIX + 'smt_source_pick_command'\ndef route():\n    return dispatch(KEY)\n",
+    )
+
+    assert result.returncode == 1
+    assert "[RUNTIME_EXTENSION_GENERIC_ORCHESTRATION]" in result.stderr
+
+
+def test_generic_orchestration_guard_respects_function_parameter_shadowing(tmp_path: Path) -> None:
+    result = _run_fixture(
+        tmp_path,
+        "orchestration/runtime_intent_effects.py",
+        "KEY = 'material_flow.smt_source_pick_command'\ndef route(KEY):\n    return dispatch(KEY)\n",
+    )
+
+    assert result.returncode == 0, result.stderr

@@ -104,6 +104,7 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
 
         active_execution_session = inbox_execution_session
         active_correlation_id = correlation_id
+        active_trace_id = session.trace_id
         if execution_anchor_case != "owned":
             replacement_execution_session = ExecutionSession(
                 workline_id=7,
@@ -118,6 +119,7 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             seed_db.add(replacement_execution_session)
             await seed_db.flush()
             active_correlation_id = "workline-session:SMT-TASK-OTHER"
+            active_trace_id = "trace-other"
             replacement_correlation = ExecutionCorrelation(
                 correlation_id=active_correlation_id,
                 execution_session_id=replacement_execution_session.id,
@@ -147,6 +149,7 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             workline_session_id=session.id,
             execution_session_id=active_execution_session.id,
             correlation_id=active_correlation_id,
+            trace_id=active_trace_id,
             kind="INTERNAL_EVENT",
             workline_id=7,
             event_id=request_event_id,
@@ -193,6 +196,7 @@ async def test_recovery_task_commit_persists_correlation_and_picked_after_sessio
             task_type="SORTING_SOURCE_PICK",
             command_code=command_code,
             correlation_id=active_correlation_id,
+            trace_id=active_trace_id,
             workline_id=7,
             plugin_key=session.plugin_key,
             contract_version=session.contract_version,
