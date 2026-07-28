@@ -118,6 +118,7 @@ def test_active_runtime_docs_do_not_describe_removed_plugin_execution_chain(tmp_
         "Inbox" + "Consumer",
         "src/" + "workline_plugins",
     )
+    retired_plugin_identities = ("SMT_SORTING_" + "INBOUND",)
 
     assert all("/archive/" not in relative_path for relative_path in active_runtime_docs)
     fixture = tmp_path / "current-runtime-doc.md"
@@ -129,6 +130,8 @@ def test_active_runtime_docs_do_not_describe_removed_plugin_execution_chain(tmp_
         text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
         offenders = _find_removed_chain_tokens(text, removed_chain_tokens)
         assert not offenders, f"{relative_path} 仍包含已删除链路 {offenders}"
+        retired_identities = tuple(identity for identity in retired_plugin_identities if identity in text)
+        assert not retired_identities, f"{relative_path} 仍包含已退役插件标识 {retired_identities}"
 
 
 def test_runtime_orchestration_spec_matches_canonical_migration_and_schema_facts() -> None:

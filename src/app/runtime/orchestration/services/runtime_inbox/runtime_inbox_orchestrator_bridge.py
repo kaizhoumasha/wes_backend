@@ -108,6 +108,7 @@ from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.utils import payload_dict
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.value_normalization import (
+    optional_enum_str,
     optional_int,
     optional_str,
     resolve_entity_id,
@@ -1706,17 +1707,32 @@ async def _build_plugin_dispatch_request(
         elif command_type is None:
             route_diagnostic = "COMMAND_TASK_TYPE_MISSING"
         else:
-            # 外部 callback 不负责声明动作类型；始终以 command_id 对应的权威命令为准。
-            raw_input = {**raw_input, "command_type": command_type}
-            if not _command_result_authority_matches(
+            command_status = optional_enum_str(getattr(command, "status", None))
+            command_result = optional_enum_str(getattr(command, "result", None))
+            # 外部 callback 只负责关联 command_id；动作类型和执行结果都来自已持久化命令。
+            # 对非法终态仍提供可解析的 ERROR 输入，但 route diagnostic 会保证插件零副作用。
+            raw_input = {
+                **raw_input,
+                "command_type": command_type,
+                "result": command_result if command_result in {"SUCCESS", "FAILED"} else "ERROR",
+                "data": deepcopy(payload_dict(getattr(command, "result_data", None))),
+                "error_detail": deepcopy(payload_dict(getattr(command, "error_detail", None))),
+            }
+            authority_matches = _command_result_authority_matches(
                 inbox=inbox,
                 session=session,
                 workline=workline,
                 binding=binding,
                 command=command,
                 payload_command_code=optional_str(raw_input.get("command_code")),
-            ):
+            )
+            if not authority_matches:
                 route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
+            elif (command_status, command_result) not in {
+                ("COMPLETED", "SUCCESS"),
+                ("FAILED", "FAILED"),
+            }:
+                route_diagnostic = "COMMAND_RESULT_EVIDENCE_INVALID"
     replay_digest_matches = await _replay_digest_matches_source(
         db,
         inbox=inbox,

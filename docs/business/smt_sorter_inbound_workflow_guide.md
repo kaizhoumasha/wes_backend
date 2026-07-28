@@ -13,11 +13,11 @@ v0.7.0.0 已完成 SMT 分拣入库后端 handoff/manifest P0 闭环，范围是
 
 已落地合同：
 
-- `SMT_SORTING_INBOUND` manifest 只声明 WES 管理的 source 单层货架位和 target 五层货架位；NG 区、工作站、扫码平台、料箱码和料格码不再作为 manifest `RackPosition` 或 `ResourceBoundary`。
+- `smt_sorting_inbound@smt_sorting_inbound.v1` manifest 只声明 WES 管理的 source 单层货架位和 target 五层货架位；NG 区、工作站、扫码平台、料箱码和料格码不再作为 manifest `RackPosition` 或 `ResourceBoundary`。
 - Handoff route 从 manifest `SORTING_INBOUND_SOURCE` / `SORTING_INBOUND_TARGET` boundary 解析 source/target rack position，并默认使用真实 ECS realtime probe 作为 source-pick admission。
 - 粗分机 release fact 创建或更新 handoff demand 后，会先 `evaluate`，再按 demand scope 尝试 claim 一条 READY source item。
 - Claim 使用两阶段短锁：外部 route/ECS probe 不持有 source item 或 target WorkLine 行锁，最终短事务内重锁 source item、demand 和 target WorkLine 后再创建 sorting session 与内部 Inbox。
-- Claim 创建的 `SMT_SORTING_INBOUND` session 通过 `SortingInboundContext` 写入 `sorting.context_schema_version=1`、`source_pick_request`、source/target rack position evidence 和 `stations.scan_platform=EMPTY`。
+- Claim 创建的 `smt_sorting_inbound@smt_sorting_inbound.v1` session 通过 `SortingInboundContext` 写入 `sorting.context_schema_version=1`、`source_pick_request`、source/target rack position evidence 和 `stations.scan_platform=EMPTY`。
 - `SORTING_SOURCE_PICK SUCCESS` 通过 handoff service 统一写 `PICKED` ledger；`SORTING_TARGET_PLACE SUCCESS` / `SORTING_NG_PLACE SUCCESS` 统一写 `SORTED` / `SKIPPED` terminal ledger，并在首次 terminal success 后按 demand scope claim 下一条 READY item。
 - Celery 兜底扫描覆盖 due demand 重算、post-claim recovery 和 READY claim fallback，summary 增加 `claimed`，并将 `scan_limit` / `recovery_limit` / `claim_limit` 拆分。
 

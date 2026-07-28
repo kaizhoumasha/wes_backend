@@ -1160,6 +1160,10 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
                 workline_id=3,
                 plugin_key="smt_sorting_inbound",
                 contract_version="smt_sorting_inbound.v1",
+                status="COMPLETED",
+                result="SUCCESS",
+                result_data={},
+                error_detail={},
             ),
             "SC-1",
             "COMMAND_TASK_TYPE_UNSUPPORTED",
@@ -1173,6 +1177,10 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
                 workline_id=3,
                 plugin_key="smt_sorting_inbound",
                 contract_version="smt_sorting_inbound.v1",
+                status="COMPLETED",
+                result="SUCCESS",
+                result_data={},
+                error_detail={},
             ),
             "SC-1",
             "COMMAND_RESULT_CORRELATION_MISMATCH",
@@ -1186,9 +1194,47 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
                 workline_id=3,
                 plugin_key="smt_sorting_inbound",
                 contract_version="smt_sorting_inbound.v1",
+                status="COMPLETED",
+                result="SUCCESS",
+                result_data={"authority": "database"},
+                error_detail={},
             ),
             "SC-1",
             "SOURCE_PICK_COMPLETED",
+        ),
+        (
+            91,
+            SimpleNamespace(
+                task_type="SORTING_SOURCE_PICK",
+                command_code="SC-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+                status="FAILED",
+                result="FAILED",
+                result_data={"authority": "database"},
+                error_detail={"error_code": "PERSISTED_COMMAND_FAILED"},
+            ),
+            "SC-1",
+            "HOLD",
+        ),
+        (
+            91,
+            SimpleNamespace(
+                task_type="SORTING_SOURCE_PICK",
+                command_code="SC-1",
+                correlation_id="workline-session:session-2",
+                workline_id=3,
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+                status="SENT",
+                result=None,
+                result_data=None,
+                error_detail=None,
+            ),
+            "SC-1",
+            "COMMAND_RESULT_EVIDENCE_INVALID",
         ),
     ],
 )
@@ -1284,6 +1330,10 @@ async def test_command_result_bridge_uses_persisted_command_and_returns_stable_z
     assert write_set.outcome_code == expected
     if expected != "SOURCE_PICK_COMPLETED":
         assert write_set.intents == ()
+    if getattr(command, "result", None) == "FAILED":
+        assert request.raw_input["result"] == "FAILED"
+        assert request.raw_input["data"] == {"authority": "database"}
+        assert request.raw_input["error_detail"] == {"error_code": "PERSISTED_COMMAND_FAILED"}
     if command_id is None:
         get_by_id.assert_not_awaited()
     else:
@@ -1340,6 +1390,17 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
                 workline_id=3,
                 plugin_key="rough_sorter",
                 contract_version="rough_sorter.v2",
+                status="COMPLETED",
+                result="SUCCESS",
+                result_data={
+                    "PkgID": "PKG-1",
+                    "HHPN": "HH-1",
+                    "LotCode": "LOT-1",
+                    "measurement_result": "OK",
+                    "reel_diameter": 180,
+                    "reel_thickness": 16,
+                },
+                error_detail={},
             )
         ),
     )
