@@ -1,8 +1,8 @@
 # Workline Material Flow Runtime
 
-本文是 Workline 物料流 Runtime 的当前权威口径。旧的 2026-05-11 Material Flow Runtime 计划已归档，不再继续执行。
+本文是 Workline 物料流 Runtime 的当前权威口径。旧的 2026-05-11 Material Flow Runtime 计划已归档，不再作为实现入口。
 
-本轮收敛不新增 `RuntimeEvent` 持久化表，不新增 `MaterialRun` 表，不改变 API 合同，不生成数据库迁移。当前生产链路以现有事实源为准：`WorklineSession` 承载流程/物料运行状态，`RuntimeIntentEffectApplier` 将插件输出的 `RuntimeIntent` 落到命令、Outbox、Timeline、Hold 和资源事实中。
+当前生产链路以 immutable Plugin Binding、generated plugin dispatcher 和现有事实源为准：`WorklineSession`、`ExecutionSession` 与 `ExecutionWorkItem` 从创建起固定完整 binding pins；`RuntimeIntentEffectApplier` 将 generated decision 的 `RuntimeIntent` 落到命令、Outbox、Timeline、Hold 和资源事实中。
 
 ## Principle
 
@@ -10,11 +10,28 @@ Plugin owns business judgement. Runtime owns state.
 
 插件只判断业务含义和下一步意图；Runtime 统一拥有 Session lifecycle、持久化状态迁移、事实记录和副作用调度。
 
+## Generated-only Execution
+
+```text
+immutable Plugin Binding
+  → bound Session / Execution / WorkItem
+  → RuntimeInbox
+  → route facts builder + generated dispatcher
+  → PluginDecision / AttemptWriteSet
+  → typed RuntimeIntent effects
+```
+
+- `plugin_key`、contract/manifest version、binding ID/version、config hash 与 generated index digest 都是运行态必填 pins。
+- activation 必须先通过 generated definition、配置和 provider profile 校验；运行时不猜测插件 identity。
+- RuntimeInbox bridge 不识别具体插件 facts 类型，只调用 route registration 的 stable facts builder。
+- 任一 binding、digest、command authority 或 evidence 校验失败都 fail closed，且不产生 command、Outbox、Timeline 或状态推进。
+
 ## Current Source Of Truth
 
 | 维度 | 当前权威来源 | 说明 |
 | --- | --- | --- |
 | 插件输出源 | `RuntimeIntent` | 插件只返回运行时意图，不直接写命令、Outbox、Session 或 Timeline。 |
+| 插件执行身份 | immutable Plugin Binding + generated index digest | Session/Execution/WorkItem 共享同一完整 pins；激活和 dispatch 都校验摘要。 |
 | 流程/物料运行状态源 | `WorklineSession` | 当前生产链路中，一条业务链路的等待状态、完成/失败状态、上下文和追踪字段由 Session 承载。 |
 | 命令生命周期 | `DeviceCommand` | 设备命令业务主键、ACK、结果、错误和执行状态的权威记录。 |
 | 派发/ACK/重试证据 | `SystemOutbox` + `WorklineDispatchAttempt` | Outbox 是副作用出口，DispatchAttempt 是派发尝试、ACK 和重试证据。 |
@@ -54,3 +71,19 @@ Runtime 负责校验 `RuntimeIntent`、验证拓扑和设备执行关系，并�
 - `ResourceStateEvent` 和 active projections
 
 新增 Runtime 能力时应优先扩展 `RuntimeIntent` + `RuntimeIntentEffectApplier`，不要新增第二套 MaterialRun/RuntimeEvent 状态源。
+
+## SMT Source-pick Current Closure
+
+```text
+SMT handoff request
+  → bound Session / Execution / WorkItem
+  → RuntimeInbox
+  → generated SMT decision
+  → DeviceCommand + SystemOutbox
+  → COMMAND_RESULT RuntimeInbox(command_id)
+  → authoritative DeviceCommand validation
+  → unique recovery correlation
+  → source item PICKED
+```
+
+设备失败、重复 callback、重复 recovery scan、零/多候选和 evidence mismatch 都沿同一链路处理；失败路径不允许半写 command/outbox/timeline 或额外状态推进。

@@ -3,16 +3,36 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+import pytest
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+from src.app.device.models.command import CommandCallbackResult, CommandResult, DeviceCommand
+from src.app.device.services.device_command_service import DeviceCommandService
+from src.app.device.services.device_service import device_service
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import WorklineSession
+from src.app.runtime.orchestration.models.smt_inbound_handoff import (
+    SmtInboundHandoffSourceItem,
+    SmtInboundHandoffSourceItemStatus,
+)
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    RuntimeInboxProcessorBridge,
+)
+from src.app.runtime.system_capabilities.material_flow.smt_source_pick_command.handler import (
+    SmtSourcePickCommandHandler,
+)
 from src.app.runtime.workline_plugins.dispatcher import (
     PinnedPluginSnapshot,
     PluginAttemptFactSource,
@@ -22,11 +42,20 @@ from src.app.runtime.workline_plugins.dispatcher import (
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.smt_sorting_inbound.contracts import SmtSortingInboundConfig
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+from src.app.sys.models import SystemOutbox
 from src.app.workline.models import LineType, WorkLine, WorklinePluginBinding
 from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
 from src.core.conf import settings
 from src.utils.timezone import timezone
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
+from tests.support.smt_sorting_inbound_postgresql import (
+    NoopQueueGateway,
+    process_smt_source_pick_claim,
+    seed_smt_source_pick_claim,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 async def _seed_binding(db: AsyncSession) -> tuple[WorkLine, WorklinePluginBinding, SmtSortingInboundConfig]:
@@ -185,3 +214,212 @@ def test_smt_claim_binding_is_atomic_and_fresh_generated_dispatch_succeeds() -> 
                 await engine.dispose()
 
     asyncio.run(scenario())
+
+
+async def _run_postgresql_scenario(scenario: Callable[[Any], Awaitable[None]]) -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "head", database_url=database_url)
+        engine = create_async_engine(database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            await scenario(session_factory)
+        finally:
+            await engine.dispose()
+
+
+async def _persistent_effect_counts(db: AsyncSession) -> tuple[int, int, int]:
+    command_count = int(await db.scalar(select(func.count()).select_from(DeviceCommand)) or 0)
+    outbox_count = int(await db.scalar(select(func.count()).select_from(SystemOutbox)) or 0)
+    timeline_count = int(await db.scalar(select(func.count()).select_from(WorklineTimeline)) or 0)
+    return command_count, outbox_count, timeline_count
+
+
+async def _record_callback(
+    db: AsyncSession,
+    *,
+    processed: Any,
+    result: CommandResult,
+    source_event_id: str,
+) -> Any:
+    command_service = DeviceCommandService()
+    command_service.enable_cache = False
+    callback = CommandCallbackResult(
+        command_code=processed.command.command_code,
+        device_code=processed.seeded.device_code,
+        result=result,
+        finish_time=int(timezone.now_utc().timestamp() * 1_000),
+        source_event_id=source_event_id,
+        trace_id=processed.command.trace_id,
+        error_detail={"code": "DEVICE_FAILURE"} if result is CommandResult.FAILED else None,
+    )
+    service = CallbackOrchestrationService(queue_gateway=NoopQueueGateway())
+    first = await service.process_result(
+        db,
+        callback=callback,
+        existing_command=processed.command,
+        request_id=f"request-{source_event_id}",
+        resolved_contract_version=DEFINITION.contract_version,
+        command_service=command_service,
+        device_service=device_service,
+        enqueue_processing=lambda: None,
+    )
+    duplicate = await service.process_result(
+        db,
+        callback=callback,
+        existing_command=processed.command,
+        request_id=f"request-{source_event_id}-duplicate",
+        resolved_contract_version=DEFINITION.contract_version,
+        command_service=command_service,
+        device_service=device_service,
+        enqueue_processing=lambda: None,
+    )
+    assert first.is_duplicate is False
+    assert duplicate.is_duplicate is True
+    return first
+
+
+async def _clear_source_pick_correlation_for_recovery(
+    db: AsyncSession,
+    *,
+    source_item_id: int,
+) -> None:
+    await db.execute(
+        update(SmtInboundHandoffSourceItem)
+        .where(SmtInboundHandoffSourceItem.id == source_item_id)
+        .values(
+            source_pick_command_id=None,
+            source_pick_command_code=None,
+            source_pick_dispatch_key=None,
+            updated_at=timezone.now_for_db() - timedelta(minutes=10),
+        )
+    )
+    await db.commit()
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_status", "expected_summary_key"),
+    [
+        (CommandResult.SUCCESS, SmtInboundHandoffSourceItemStatus.PICKED, "advanced"),
+        (CommandResult.FAILED, SmtInboundHandoffSourceItemStatus.MANUAL_HOLD, "manual_hold"),
+    ],
+    ids=["success", "device-failure"],
+)
+def test_smt_request_callback_recovery_closes_once_without_extra_effects(
+    result: CommandResult,
+    expected_status: SmtInboundHandoffSourceItemStatus,
+    expected_summary_key: str,
+) -> None:
+    async def scenario(session_factory: Any) -> None:
+        async with session_factory() as db:
+            seeded = await seed_smt_source_pick_claim(db, suffix=f"closure-{result.value.lower()}")
+            processed = await process_smt_source_pick_claim(db, seeded)
+            assert processed.source_item.source_pick_command_id == processed.command.id
+            assert processed.source_inbox.status == "PROCESSED"
+            assert processed.outbox.dispatch_key == f"device-command:{processed.command.command_code}"
+
+            await _record_callback(
+                db,
+                processed=processed,
+                result=result,
+                source_event_id=f"smt-pg-callback-{result.value.lower()}",
+            )
+            callback_inboxes = list(
+                (
+                    await db.scalars(
+                        select(RuntimeInbox).where(
+                            RuntimeInbox.kind == "COMMAND_RESULT",
+                            RuntimeInbox.command_id == processed.command.id,
+                        )
+                    )
+                ).all()
+            )
+            assert len(callback_inboxes) == 1
+            callback_inbox = callback_inboxes[0]
+            assert callback_inbox.command_id == processed.command.id
+            assert callback_inbox.correlation_id == processed.command.correlation_id
+            assert callback_inbox.execution_session_id == processed.source_inbox.execution_session_id
+
+            await _clear_source_pick_correlation_for_recovery(
+                db,
+                source_item_id=seeded.source_item_id,
+            )
+            counts_before_recovery = await _persistent_effect_counts(db)
+            summary = await seeded.service.scan_smt_inbound_handoff_demands_batch(
+                db,
+                scan_limit=0,
+                recovery_limit=100,
+                claim_limit=0,
+                stale_after_seconds=1,
+            )
+            await db.commit()
+            recovered = await db.get(SmtInboundHandoffSourceItem, seeded.source_item_id)
+            assert recovered is not None
+            assert summary[expected_summary_key] == 1, summary
+            assert recovered.status == expected_status
+            assert recovered.source_pick_command_id == processed.command.id
+            assert await _persistent_effect_counts(db) == counts_before_recovery
+
+            repeated = await seeded.service.scan_smt_inbound_handoff_demands_batch(
+                db,
+                scan_limit=0,
+                recovery_limit=100,
+                claim_limit=0,
+                stale_after_seconds=1,
+            )
+            await db.commit()
+            assert repeated["advanced"] == 0
+            assert repeated["manual_hold"] == 0
+            assert await _persistent_effect_counts(db) == counts_before_recovery
+
+    asyncio.run(_run_postgresql_scenario(scenario))
+
+
+def test_smt_generated_attempt_transaction_retry_has_one_command_and_outbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario(session_factory: Any) -> None:
+        async with session_factory() as db:
+            seeded = await seed_smt_source_pick_claim(db, suffix="transaction-retry")
+            original_call = SmtSourcePickCommandHandler.__call__
+
+            async def fail_after_generated_decision(
+                _self: SmtSourcePickCommandHandler,
+                _request: object,
+                *,
+                execution: object,
+            ) -> object:
+                _ = execution
+                raise RuntimeError("forced-effect-transaction-retry")
+
+            monkeypatch.setattr(SmtSourcePickCommandHandler, "__call__", fail_after_generated_decision)
+            failed = await RuntimeInboxProcessorBridge(queue_gateway=NoopQueueGateway()).process_claimed(
+                db,
+                claim=seeded.claim,
+            )
+            assert failed["failed"] == 1, failed
+            assert await _persistent_effect_counts(db) == (0, 0, 0)
+
+            monkeypatch.setattr(SmtSourcePickCommandHandler, "__call__", original_call)
+            source_inbox = await db.get(RuntimeInbox, seeded.source_inbox_id)
+            assert source_inbox is not None
+            assert source_inbox.status == "FAILED"
+            source_inbox.next_retry_at = 0
+            db.add(source_inbox)
+            await db.commit()
+            [retry_claim] = await RuntimeInboxService().claim_for_processing(
+                db,
+                limit=1,
+                processor_token="lease-smt-pg-transaction-retry-second",
+                stale_after_seconds=60,
+            )
+            await db.commit()
+            retried = await RuntimeInboxProcessorBridge(queue_gateway=NoopQueueGateway()).process_claimed(
+                db,
+                claim=retry_claim,
+            )
+            assert retried["success"] == 1, retried
+            command_count, outbox_count, _timeline_count = await _persistent_effect_counts(db)
+            assert command_count == 1
+            assert outbox_count == 1
+
+    asyncio.run(_run_postgresql_scenario(scenario))

@@ -15,6 +15,12 @@ POSTGRESQL_HEAVY_BUDGETS_MS = {
     "formal_callback_wms_query": 800.0,
     "outbox_enqueue": 50.0,
     "recorded_replay": 20.0,
+    "smt_source_pick_generated_attempt": 500.0,
+}
+POSTGRESQL_SMT_RECOVERY_QUERY_BUDGET = {
+    "batch_size": 100,
+    "command_queries_per_item": 1,
+    "candidate_limit": 2,
 }
 
 
@@ -43,5 +49,11 @@ def test_performance_budget_contract_is_explicit_and_positive() -> None:
         "formal_callback_wms_query",
         "outbox_enqueue",
         "recorded_replay",
+        "smt_source_pick_generated_attempt",
     }
     assert all(0 < value <= 1_000 for value in POSTGRESQL_HEAVY_BUDGETS_MS.values())
+    assert POSTGRESQL_SMT_RECOVERY_QUERY_BUDGET == {
+        "batch_size": 100,
+        "command_queries_per_item": 1,
+        "candidate_limit": 2,
+    }

@@ -29,7 +29,6 @@ EXPECTED_ACTIVE_FOUNDATION_PATHS = frozenset(
 
 EXPECTED_ACTIVE_PLATFORM_PREFIXES = (
     "tests/workline_plugins/rough_sorter/",
-    "tests/workline_plugins/smt_sorting_inbound/",
     "tests/workline_runtime/extensions/",
     "tests/workline_runtime/system_capabilities/",
 )
@@ -189,12 +188,13 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
 
 
 @pytest.mark.parametrize(
-    ("business_semantics", "path", "symbol", "expected_capability"),
+    ("business_semantics", "path", "symbol", "expected_path", "expected_capability"),
     [
         pytest.param(
             "[phase" + "4] NG 退货/处理业务流程",
             "src/app/workline/services/ng_return_item_service.py",
             "NgReturnItemService",
+            "src/app/runtime/capabilities/material_flow/",
             "NgReturnCapability.process",
             id="ng-return",
         ),
@@ -202,6 +202,7 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             "[phase" + "4] 单层机架编排业务流程",
             "tests/workline_runtime/test_single_layer_rack_orchestration_service.py",
             "test_station_claim_active_status_accepts_system_outbox_status_enum",
+            "src/app/runtime/capabilities/material_flow/",
             "SingleLayerRackCapability.orchestrate",
             id="single-layer-rack",
         ),
@@ -209,8 +210,17 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             "[phase" + "4] Bin Cell 预约业务流程",
             "tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py",
             "test_reconciling_reservation_cannot_be_released_by_normal_failure_path",
+            "src/app/runtime/capabilities/material_flow/",
             "BinCellReservationCapability.reserve",
             id="bin-cell-reconciling",
+        ),
+        pytest.param(
+            "[phase" + "4] 分拣机入库业务流程",
+            "tests/workline_plugins/smt_sorting_inbound/test_smt_generated_plugin.py",
+            "test_smt_definition_uses_fixed_generated_identity",
+            "src/app/runtime/workline_plugins/smt_sorting_inbound/",
+            "WorklinePluginDispatcher.dispatch",
+            id="smt-generated-plugin",
         ),
     ],
 )
@@ -218,6 +228,7 @@ def test_material_flow_target_marker_classification(
     business_semantics: str,
     path: str,
     symbol: str,
+    expected_path: str,
     expected_capability: str,
 ) -> None:
     target_path, target_capability = generate_legacy_matrix.resolve_migration_target(
@@ -228,7 +239,7 @@ def test_material_flow_target_marker_classification(
         "rebuild",
     )
 
-    assert target_path == "src/app/runtime/capabilities/material_flow/"
+    assert target_path == expected_path
     assert target_capability == expected_capability
 
 

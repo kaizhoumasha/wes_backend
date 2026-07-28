@@ -24,6 +24,7 @@
 - **SESSION AS AGGREGATE ROOT**: ExecutionSession 是聚合根，但不持有工作状态（工作状态归 ExecutionWorkItem）
 - **INTENT LOG ≠ STATE SOURCE**: RuntimeIntentLog 是 effect proposal / outbox log，不是下游状态源
 - **TYPED OVER UNTYPED**: 所有跨域交互使用 typed Pydantic 模型
+- **BOUND GENERATED EXECUTION**: WorklineSession、ExecutionSession 与 ExecutionWorkItem 创建时固定完整 Plugin Binding pins；RuntimeInbox 只进入 generated dispatcher
 
 ---
 
@@ -57,6 +58,9 @@ ConveyorQueueMembership (独立 active 投影)
 | `id` | int (PK) | 自增主键 |
 | `workline_id` | int | 关联 WorkLine（FK 到 `wes_biz.work_lines`） |
 | `manifest_version` | str(60) | RUNNING session 固定 manifest 版本（CEO-011） |
+| `plugin_key` | str(100) | generated plugin 固定 identity |
+| `plugin_binding_id` / `plugin_binding_version` | int | immutable binding 主键与版本；数据库 `NOT NULL`，binding ID 受 FK 保护 |
+| `plugin_config_hash` / `plugin_index_digest` | str(64) | 激活配置与 generated index 摘要快照 |
 | `state` | str(20) | 生命周期: `CREATED` / `RUNNING` / `HOLD` / `CLOSED` / `RECONCILING` |
 | `created_at` | datetime | 创建时间 (naive UTC) |
 | `updated_at` | datetime | 更新时间 (naive UTC) |
@@ -74,6 +78,7 @@ CREATED → RUNNING → CLOSED
 **不变量**:
 - Session 不持有工作状态（work item 是 ExecutionWorkItem 的责任）
 - `manifest_version` 在 RUNNING 期间不可变更
+- binding pins 从创建起完整且不可回退到未绑定执行
 - 跨域只持 `correlation_id`，不持强 session FK
 
 ### 2.3 ExecutionCorrelation — 跨域关联键
@@ -120,6 +125,9 @@ CREATED → RUNNING → CLOSED
 | `deadline_at` | datetime? | 截止时间 |
 | `lease_expires_at` | datetime? | 租约过期时间 |
 | `idempotency_key` | str(160)? | 幂等键 |
+| `plugin_key` / `manifest_version` | str | 与所属 Session 相同的 generated plugin identity |
+| `plugin_binding_id` / `plugin_binding_version` | int | immutable binding pins |
+| `plugin_config_hash` / `plugin_index_digest` | str(64) | 配置与 generated index 摘要 |
 
 **并发契约**:
 - ExecutionSession 不是整条 WorkLine 的串行锁
@@ -152,7 +160,7 @@ CREATED → RUNNING → CLOSED
 `event_type/kind=REPLAY_REQUEST`，以 `replay:{source_inbox_id}:{request_id}` 作为幂等身份；相同身份和
 canonical hash 返回既有 ACK，不重复写行或审计，内容变化则返回冲突。payload 使用单层 envelope，显式保存
 `request_id`、`actor`、`reason`、直接/根 source inbox、五种原业务 kind、原 payload 与原 source/业务证据；
-replay-of-replay 复用根业务语义，不递归嵌套。Processor 在 validation/context/orchestrator 前只解包这一层，
+replay-of-replay 复用根业务语义，不递归嵌套。Processor 在 validation/context/generated dispatch 前只解包这一层，
 继续使用原 claim/FIFO/token fencing/effect 幂等通道。
 
 **状态机**:
@@ -167,7 +175,7 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 ```
 
 **ACK-before-processing**: 入站消息先持久化并返回 ACK，再异步处理。处理失败可重试、死信和人工重放。
-`PRE_CUTOVER_AUDIT_ONLY` 使用 `DEAD_LETTER` 终态加稳定错误码表达，但不可 claim、retry 或 replay，
+标记为 `PRE_CUTOVER_AUDIT_ONLY` 的历史审计行使用 `DEAD_LETTER` 终态加稳定错误码表达，但不可 claim、retry 或 replay，
 也不计入可行动 dead-letter。
 
 ### 2.6 RuntimeTimeline — 时间线
@@ -313,7 +321,7 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 
 ### 5.1 为什么 ExecutionSession 和 WorklineSession 并存？
 
-`WorklineSession`（`wes_biz.workline_sessions`）承载 WorkLine 业务会话与设备等待字段；`ExecutionSession`（`wes_runtime.execution_sessions`）承载跨域执行生命周期和 manifest version。两者是并存的显式业务边界，不是兼容期主从表。RuntimeInbox 分别使用 `workline_session_id` 与 `execution_session_id`，相同数值也不得跨命名空间推导。
+`WorklineSession`（`wes_biz.workline_sessions`）承载 WorkLine 业务会话与设备等待字段；`ExecutionSession`（`wes_runtime.execution_sessions`）承载跨域执行生命周期和 manifest version。两者是并存的显式业务边界，不是主从或备用执行路径；两者及 ExecutionWorkItem 都必须固定同一完整 binding pins。RuntimeInbox 分别使用 `workline_session_id` 与 `execution_session_id`，相同数值也不得跨命名空间推导。
 
 ### 5.2 为什么 ExecutionCorrelation 允许 NULL execution_session_id？
 
@@ -343,7 +351,7 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 | Service | 文件 | 职责 |
 |---------|------|------|
 | `RuntimeInboxService` | `services/runtime_inbox/runtime_inbox_service.py` | ACK-before-processing、重试、死信、人工重放 |
-| `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | validation → orchestration → fenced write-back 三阶段处理 |
+| `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | binding/context validation → generated dispatch → typed effect + fenced write-back |
 | `DeviceCommandGateway` | `services/device_command_gateway.py` | 设备命令下发网关 |
 | `DeviceDispatchPolicy` | `services/device_dispatch_policy.py` | 设备调度策略（能力选择、优先级、deadline、限流） |
 | `ConveyorQueueMembershipWriterService` | `services/conveyor_queue_membership_writer_service.py` | 队列 membership 写入 |

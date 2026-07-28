@@ -1627,10 +1627,18 @@ class SmtInboundHandoffService:
         demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
         if demand is None:
             raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
-        # source_pick_inbox_id 指向 RuntimeInbox；状态映射如下：
-        # - "in progress" = {RECEIVED, PROCESSING};
-        # - 可重试 = FAILED + next_retry_at 已设置；
-        #   终态失败 = DEAD_LETTER; 成功 = PROCESSED.
+        # source-pick recovery（每个 item 位于独立 savepoint）：
+        #
+        # RuntimeInbox
+        #   ├─ RECEIVED / PROCESSING ────────────────> 等待
+        #   ├─ FAILED ───────────────────────────────> 释放 item 后重试
+        #   ├─ DEAD_LETTER ──────────────────────────> MANUAL_HOLD
+        #   └─ PROCESSED
+        #        ├─ 已绑定 command ──────────────────> 成功 PICKED / 失败 MANUAL_HOLD
+        #        └─ 未绑定 command
+        #             ├─ 唯一且 evidence 匹配 ───────> 回写关联后按 command 终态推进
+        #             └─ 0/多候选或 evidence 不匹配 ─> MANUAL_HOLD
+        #
         # - next_retry_at 单位: RuntimeInbox 使用 Unix 毫秒, item.next_attempt_at 是
         #   naive datetime, 通过 timezone.to_utc() 转换。
         source_pick_inbox_id = item.source_pick_inbox_id

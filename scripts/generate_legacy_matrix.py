@@ -453,7 +453,6 @@ ACTIVE_FOUNDATION_PATHS = frozenset(
 # Task 9 起由最终扩展平台直接承载的实现与测试，不是待删除的 legacy 入口。
 ACTIVE_PLATFORM_PREFIXES = (
     "tests/workline_plugins/rough_sorter/",
-    "tests/workline_plugins/smt_sorting_inbound/",
     "tests/workline_runtime/extensions/",
     "tests/workline_runtime/system_capabilities/",
 )
@@ -769,7 +768,10 @@ def resolve_migration_target(
     if "执行状态" in business_semantics:
         return _target_runtime_capability(entry_type, path, text)
     if "[phase4]" in business_semantics:
-        return _target_phase4_capability(text)
+        target = _target_phase4_capability(text)
+        if path.startswith("tests/workline_plugins/smt_sorting_inbound/"):
+            target = "src/app/runtime/workline_plugins/smt_sorting_inbound/", "WorklinePluginDispatcher.dispatch"
+        return target
     return _target_runtime_path(entry_type, path), "RuntimeOrchestrationService.execute"
 
 

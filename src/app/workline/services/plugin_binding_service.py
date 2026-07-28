@@ -197,24 +197,25 @@ class WorklinePluginBindingService:
             capability for capability in capability_definitions if capability.admission != "runtime"
         )
         profiles: list[Any] = []
-        if provider_contract_definitions:
-            configured_profile = typed_config.get("provider_profile")
-            if not isinstance(configured_profile, str) or not configured_profile:
-                raise PluginBindingAdmissionError("provider_profile 缺失")
+        configured_profile = typed_config.get("provider_profile")
+        if provider_contract_definitions and (not isinstance(configured_profile, str) or not configured_profile):
+            raise PluginBindingAdmissionError("provider_profile 缺失")
+        if isinstance(configured_profile, str) and configured_profile:
             try:
                 profile = self.profile_catalog.resolve_identity(configured_profile)
-                if profile.environment != environment:
-                    raise LookupError("provider profile environment 与 binding environment 不一致")
-                admission_family = profile.identity.rpartition(".")[0]
-                unsupported_admissions = sorted(
-                    {
-                        capability.admission
-                        for capability in provider_contract_definitions
-                        if capability.admission not in {profile.identity, admission_family}
-                    }
-                )
-                if unsupported_admissions:
-                    raise LookupError("provider profile 与 capability admission 不一致")
+                if provider_contract_definitions:
+                    if profile.environment != environment:
+                        raise LookupError("provider profile environment 与 binding environment 不一致")
+                    admission_family = profile.identity.rpartition(".")[0]
+                    unsupported_admissions = sorted(
+                        {
+                            capability.admission
+                            for capability in provider_contract_definitions
+                            if capability.admission not in {profile.identity, admission_family}
+                        }
+                    )
+                    if unsupported_admissions:
+                        raise LookupError("provider profile 与 capability admission 不一致")
                 profiles.append(profile)
             except LookupError as exc:
                 raise PluginBindingAdmissionError(f"provider admission failed: {exc}") from exc

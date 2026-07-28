@@ -45,7 +45,7 @@
 | `IdempotencyGuard` | `services/idempotency_guard.py` | outbound effect 幂等闸门；`ClaimResult.NEW/MATCH` + `IdempotencyConflict` |
 | `RuntimeSnapshotAssembler` | `services/runtime_snapshot_assembler.py` | RuntimeSnapshot 装配：session + timeline + inbox + hold + intent log |
 | `RuntimeInboxService` | `services/runtime_inbox/runtime_inbox_service.py` | 六类 ingress 幂等接收、五态 claim/fencing、audit-only 排除与 `REPLAY_REQUEST` 审计 |
-| `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | validation → orchestration → fenced write-back 三阶段处理 |
+| `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | binding/context validation → generated dispatch → typed effect + fenced write-back |
 | `RuntimeReconciliationServiceImpl` | `services/reconciliation/runtime_reconciliation_service_impl.py` | runtime 域对账实现；调用方通过稳定 service contract 使用，不再经过 facade |
 
 旧 `RuntimeReconciliationFacade` 已物理删除；device/callback 不得因此回流 import WorkLine 实现，跨域仍遵循 runtime service/port 边界。
@@ -62,17 +62,16 @@
 
 RuntimeInbox 的六种 `kind` 为 `COMMAND_RESULT / DEVICE_EVENT / EXTERNAL_HTTP / INTERNAL_EVENT /
 TIMER_TIMEOUT / REPLAY_REQUEST`，数据库状态固定为 `RECEIVED / PROCESSING / PROCESSED / FAILED /
-DEAD_LETTER`。切换前 `PRE_CUTOVER_AUDIT_ONLY` 行只属于审计证据，不可 claim、retry 或 replay。
+DEAD_LETTER`。标记为 `PRE_CUTOVER_AUDIT_ONLY` 的历史行只属于审计证据，不可 claim、retry 或 replay。
 Replay 的 `request_id`、认证 `actor`、`reason`、直接/根 source inbox 和原业务 kind 由
 `RuntimeInboxService` 统一构造与审计，API/operation service 不复制该领域规则。
 
-## 7. Legacy Runtime Import Boundary
+## 7. 已删除运行时入口的 absence boundary
 
-`src.workline_runtime` 在 production code 中不允许直接 import。仅以下路径类别可保留历史或非生产引用：
+`src.workline_runtime` 已退出 production surface，生产代码不允许直接 import。仅以下路径类别可保留历史或非生产引用：
 
 | 入口 | 角色 |
 | --- | --- |
-| `src/workline_runtime/` 自身 | 历史自引用；目录删除后不再存在 |
 | `tests/` | 测试 |
 | `migrations/` | Alembic 数据迁移 |
 

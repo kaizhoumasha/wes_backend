@@ -224,6 +224,62 @@ async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required
 
 
 @pytest.mark.asyncio
+async def test_runtime_only_smt_activation_still_snapshots_declared_profile_identity() -> None:
+    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
+    repo = FakeRepository()
+    profile_identity = "wms.2026-07-06.material-flow.sandbox"
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key=DEFINITION.plugin_key,
+        contract_version=DEFINITION.contract_version,
+        config={"provider_profile": profile_identity},
+        version=4,
+    )
+
+    binding = await _real_rough_sorter_service(repo).activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator",
+        reason="generated-only-smt",
+        environment="sandbox",
+        devices=[],
+    )
+
+    assert [snapshot["provider_code"] for snapshot in binding.provider_profile_snapshot_json] == ["WMS"]
+    assert binding.typed_config_json["provider_profile"] == profile_identity
+
+
+@pytest.mark.asyncio
+async def test_runtime_only_smt_profile_snapshot_does_not_apply_external_admission_environment_gate() -> None:
+    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
+    repo = FakeRepository()
+    profile_identity = "wms.2026-07-06.material-flow.staging"
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key=DEFINITION.plugin_key,
+        contract_version=DEFINITION.contract_version,
+        config={"provider_profile": profile_identity},
+        version=4,
+    )
+
+    binding = await _real_rough_sorter_service(repo).activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator",
+        reason="runtime-only-profile-snapshot",
+        environment="sandbox",
+        devices=[],
+    )
+
+    assert binding.provider_profile_snapshot_json[0]["environment"] == "staging"
+    assert binding.typed_config_json["provider_profile"] == profile_identity
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("environment", ["staging", "production"])
 async def test_real_rough_sorter_deploy_activation_pins_configured_role_devices(environment: str) -> None:
     repo = FakeRepository()
