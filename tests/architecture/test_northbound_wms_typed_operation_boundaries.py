@@ -137,7 +137,7 @@ def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> No
 
 def test_removed_effect_handlers_cannot_bypass_the_shared_t5_boundary() -> None:
     services_root = REPO_ROOT / "src/app/runtime/orchestration/services"
-    assert (services_root / "wms_effect_preparation_service.py").exists()
+    assert not (services_root / "wms_effect_preparation_service.py").exists()
     assert all(
         not (services_root / legacy_name).exists()
         for legacy_name in (

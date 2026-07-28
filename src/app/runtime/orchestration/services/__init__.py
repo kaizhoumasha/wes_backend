@@ -50,10 +50,6 @@ from src.app.runtime.orchestration.services.system_outbox_cancellation_service i
     SystemOutboxCancellationService,
     system_outbox_cancellation_service,
 )
-from src.app.runtime.orchestration.services.wms_effect_preparation_service import (
-    WmsEffectPreparationService,
-    wms_effect_preparation_service,
-)
 from src.app.runtime.orchestration.services.wms_effect_status_service import (
     WmsEffectStatusCheckResult,
     WmsEffectStatusService,
@@ -91,7 +87,6 @@ __all__ = [
     "StaleMaterialUnitPrecondition",
     "StaleSessionPrecondition",
     "SystemOutboxCancellationService",
-    "WmsEffectPreparationService",
     "WmsEffectStatusCheckResult",
     "WmsEffectStatusService",
     "WorkLineRuntimeStatusProjectionService",
@@ -107,7 +102,6 @@ __all__ = [
     "runtime_snapshot_assembler",
     "session_hold_mutation_service",
     "system_outbox_cancellation_service",
-    "wms_effect_preparation_service",
     "wms_effect_status_service",
     "workline_runtime_status_projection_service",
 ]

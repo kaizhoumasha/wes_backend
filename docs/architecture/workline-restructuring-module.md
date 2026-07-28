@@ -377,9 +377,11 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 - session 进入 `HOLD` / `RECONCILING` / `CLOSED` 时，未下发命令必须取消或冻结；已下发命令只能等待 ECS callback 或人工 reconcile。
 - Runtime 不做 PLC 级抢占、急停复位或运动控制；这些只能由 ECS/现场安全系统处理后以事件形式回传 WES。
 
-**扫码平台互锁与预取约束**：
+**扫码平台互锁与取料因果约束**：
 
-分拣机北向机械臂把物料放到扫码平台后，Runtime 默认不允许立即下发下一条取料命令。`source_arm_prefetch_capacity` 默认为 0：只有扫码平台状态为 `FREE`、上一物料已被扫码平台或南向机械臂接管，且相关 work item 未处于 HOLD/RECONCILING 时，才允许北向机械臂取下一件。若现场 ECS 明确支持平台外暂存、手持等待或预取缓存，必须在 WorkLine manifest 中显式声明 `source_arm_prefetch_capacity > 0`，并通过 capability admission、设备状态、超时和行为契约测试验证；禁止靠经验默认开启预取。
+分拣机北向机械臂把物料放到扫码平台后，Runtime 不允许立即下发下一条取料命令。只有上一物料的南向
+`PICK` 已形成 `southbound_pick_acknowledged`，且相关 work item 未处于 `HOLD` / `RECONCILING`，
+才允许北向机械臂取下一件；扫码平台占用状态仅作诊断证据，不得替代南向 `PICK ACK` 因果或开启预取旁路。
 
 **WorkLine 启停门禁**：
 
@@ -465,4 +467,3 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 - 返入口真实 EVENT 若需要归因，只关联原 `ExecutionCorrelation` / material identity / external reference，不恢复旧 plugin session 语义。
 
 ---
-

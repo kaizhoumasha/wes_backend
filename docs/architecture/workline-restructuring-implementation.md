@@ -445,8 +445,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [x] 分拣机物料 work item 与料箱 work item 的 join 条件明确：南向机械臂投料前必须同时满足目标料箱处于滚筒线工作位、目标格位可预约、`CellReservation` 创建成功、相关等待有 deadline 或换箱触发条件（本机 MOCK 已覆盖 allowed/rejected gate）
 - [x] CTU 批量履约通过父批次、逐对象 evidence 和批次完成收敛测试；缺子项、乱序、重复或投影冲突必须进入 `RECONCILING`（本机 MOCK 已覆盖父成功但子项未收敛）
 - [x] CTU 父请求查询视图必须聚合子 `ExecutionWorkItem` 状态，展示子项缺失、乱序、未 resolve placeholder、部分失败和批次收敛结果；禁止运维界面只显示父批次成功
-- [x] 扫码平台默认 `source_arm_prefetch_capacity=0`；未显式声明预取能力时，北向机械臂必须等待扫码平台 FREE 后才能取下一件
-- [x] `source_arm_prefetch_capacity` 进入 WorkLine manifest schema 与 validator；未声明时默认 0，声明大于 0 时必须校验 ECS 能力、缓存容量和超时策略（本机 MOCK 已覆盖 capability/buffer/timeout 三项校验）
+- [x] 北向下一次取料只由上一物料的南向 `PICK ACK` 解锁；扫码平台占用状态不作为取料准入条件，也不提供预取旁路
 - [x] 本地物理完成与 WMS 同步状态显式拆分：`LOCAL_PHYSICAL_COMPLETED` 不等于业务完全完成；WMS 通知或库存事务失败时进入 `WMS_SYNC_PENDING` 或 `RECONCILING`（本机 MOCK 已覆盖）
 - [x] `RuntimeHold` 具备 object/device/resource/queue scope；单对象异常不得默认停整条 WorkLine，人工解除只释放声明的 `allowed_next_effect_scope`（本机 MOCK 已补 `runtime-hold-release-preview` scope-only release 合同）
 - [x] 分拣机/粗分机入库能力开发/测试 preview 按目标态 capability 边界沉淀：`Phase4SorterInboundPreviewService` 不访问 DB、不发 WMS/ECS effect、不复用旧 plugin 入口，覆盖粗分机、分拣机 join gate、满箱交换、换面和 CTU 父子视图合同

@@ -297,3 +297,45 @@ operation 的兼容入口。
 - worktree `gitnexus detect-changes --scope staged` → 56 indexed files / 108 symbols / 8 affected processes，
   risk HIGH；命中 sandbox callback 与资源调度 fail-closed 流程，属于用户已授权的 Final Audit 删除/
   封堵范围；未实现 T2/T5。
+
+## Final Gate Review（第八轮）修复
+
+- 物理删除 orphan `wms_effect_preparation_service.py` 及 services 导出，Task 1 不再公开接受调用方构造
+  `WmsOperationDefinition` 的通用 WMS `SystemOutbox` producer；T5 前没有生产 preparation 接线。
+- `tests/sys/test_system_outbox_engine.py` 与 `test_external_http_transport_mapping.py` 全部改用明确的
+  `tests.external-http.*` identity、`TEST_*` target 与 `external.test` endpoint；保留 dispatch、
+  transport evidence、lease fencing、UNKNOWN/retry 与 recovery 断言，但 generic transport 明确不得唤醒
+  WMS status queue。
+- removal guard 的负向证据放行从“文件存在即可放行”收紧为“文件 → 精确 literal 集”双向相等；新增 scoped
+  活跃文档/fixture 禁止词、generic sys 测试 WMS 正向接线、orphan producer、ingress allow-set 与 Rack
+  读侧覆盖守卫。
+- `callback_ingress_service.py` 直接复用 callback 域
+  `WMS_ALLOWED_CALLBACK_TYPES` / `WMS_ORDINARY_EVENT_TYPES`，删除手写普通事件与 status hint 并集。
+- 三份活跃架构文档删除 scanner `FREE` / `source_arm_prefetch_capacity` 准入口径，统一为上一物料
+  `southbound_pick_acknowledged` 因果；WMS `success/reject/timeout` fixture 删除
+  `transport_request_id/source_location/target_location`，改为当前 registry identity、dispatch 与幂等证据。
+- 恢复 Rack operation 仍存活读取/归约分支的 6 项测试：required task 聚合、resource projection 确认、
+  callback-trusted、callback-plus-reconciliation 回写、同位置逐 task 消耗投影、move-out source 未清理。
+  旧写入 producer 测试仍只保留 fail-closed，未恢复旧 transport。
+- 未实现 T2/T5，未增加兼容层、宽 allowlist、skip 或 xfail。
+
+## Final Gate Review（第八轮）TDD 与验证
+
+1. RED：新增 final-gate removal tests 后，16 项 guard 中 6 项按预期失败，分别命中 orphan producer、
+   generic sys WMS 正向接线、活跃文档/fixture 遗留、ingress 重复 allow-set、Rack 读侧覆盖缺失和
+   文件级宽放行。
+2. GREEN：五项 finding 收敛后，定点回归 `141 passed`；其中 removal guard `16 passed`、Rack operation
+   `7 passed`（1 个写入 fail-closed + 6 个读侧归约）。
+3. 默认全集 → `4178 passed, 5 existing skipped`（4183 collected），没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/` → `4178 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4183 tests collected`。
+- `uv run ruff format .` → 1077 files unchanged；`uv run ruff check .`、`git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  367 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- worktree `gitnexus detect-changes --scope staged` → 14 indexed files / 20 symbols / 0 affected processes，
+  risk LOW；删除 orphan producer、复用 callback allow-set、恢复 Rack 读侧测试均未引入 T2/T5 流程。

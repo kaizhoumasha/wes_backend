@@ -4,9 +4,9 @@
   "contract_version": "2026-06-25",
   "direction": "effect",
   "raw_request": {
-    "transport_request_id": "tr-reject-001",
-    "source_location": "INBOUND_A",
-    "target_location": "BLOCKED_CELL"
+    "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+    "dispatch_key": "rack-supply-reject-001",
+    "idempotency_key": "idem-rack-supply-reject-001"
   },
   "raw_response": {
     "accepted": false,

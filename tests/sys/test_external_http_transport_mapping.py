@@ -12,7 +12,6 @@ import pytest
 
 from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.dispatch_concurrency import (
     DispatchBucketKey,
@@ -57,12 +56,10 @@ def _outbox(*, operation_identity: str = "tests.external-http.effect@v1") -> Sim
         "lease_owner_token": "test-owner:1",
         "lease_expires_at": datetime(2027, 1, 1),
     }
-    if operation_identity == "wms.fulfillment.request_rack_supply@v1":
-        values["idempotency_key"] = "idem-status-001"
     return frozen_outbox_namespace(
         {"request_id": "REQ-001"},
-        target_code="WMS_INVENTORY_TRANSFER",
-        target_url="http://wms-rcs/api/wes/transport-request",
+        target_code="TEST_EXTERNAL_HTTP",
+        target_url="https://external.test/effects",
         operation_identity=operation_identity,
         **values,
     )
@@ -307,10 +304,10 @@ async def test_accepted_explicit_protocol_reject_is_transport_sent_without_retry
         ),
     ],
 )
-async def test_wms_effect_status_is_enqueued_only_after_transport_evidence_commit(
+async def test_generic_transport_does_not_enqueue_wms_effect_status(
     transport_result: ExternalHttpTransportResult,
 ) -> None:
-    outbox = _outbox(operation_identity="wms.fulfillment.request_rack_supply@v1")
+    outbox = _outbox()
     repository = _Repository(outbox)
     db = SimpleNamespace(commit=AsyncMock())
     enqueued: list[str] = []
@@ -333,19 +330,18 @@ async def test_wms_effect_status_is_enqueued_only_after_transport_evidence_commi
 
     await engine.dispatch(db, limit=1)
 
-    assert enqueued == ["dispatch-001"]
+    assert enqueued == []
 
 
 @pytest.mark.asyncio
-async def test_status_enqueue_broker_failure_does_not_rollback_committed_ledger_and_beat_remains_fallback() -> None:
-    outbox = _outbox(operation_identity="wms.fulfillment.request_rack_supply@v1")
+async def test_generic_transport_commit_does_not_call_wms_status_queue() -> None:
+    outbox = _outbox()
     repository = _Repository(outbox)
     db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
 
-    class FailingQueueGateway:
+    class ForbiddenQueueGateway:
         def enqueue_wms_effect_status(self, *, dispatch_key: str) -> None:
-            assert dispatch_key == "dispatch-001"
-            raise RuntimeError("broker unavailable")
+            raise AssertionError(f"generic transport must not enqueue WMS status: {dispatch_key}")
 
     engine = SystemOutboxEngine(
         outbox_repository=repository,  # type: ignore[arg-type]
@@ -360,7 +356,7 @@ async def test_status_enqueue_broker_failure_does_not_rollback_committed_ledger_
         dispatch_attempt_service=_AttemptService(),
         workline_domain_dispatcher=_no_workline_messages,
         effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
-        task_queue_gateway=FailingQueueGateway(),
+        task_queue_gateway=ForbiddenQueueGateway(),
     )
 
     stats = await engine.dispatch(db, limit=1)
@@ -368,13 +364,10 @@ async def test_status_enqueue_broker_failure_does_not_rollback_committed_ledger_
     assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
     assert repository.outbox.status is SystemOutboxStatus.SENT
     db.rollback.assert_not_awaited()
-    from src.celery_app.config import beat_schedule
-
-    assert "scan-wms-effect-status-batch" in beat_schedule
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation_domain", ["WMS_INVENTORY", "WMS_FULFILLMENT"])
+@pytest.mark.parametrize("operation_domain", ["TEST_INVENTORY", "TEST_FULFILLMENT"])
 async def test_generic_callback_winning_transport_race_still_finalizes_attempt(
     operation_domain: str,
 ) -> None:
@@ -452,7 +445,7 @@ async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -
         effect_transport_bridge=bridge,
         dispatch_key="dispatch-callback-race",
         attempt_no=2,
-        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+        operation_identity="tests.external-http.callback-race@v1",
     )
 
     assert recovered is callback_completed
@@ -465,7 +458,7 @@ async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -
         auto_commit=False,
     )
     assert bridge.record_result.await_args.kwargs["result"] is result
-    assert bridge.record_result.await_args.kwargs["operation_identity"] == "wms.fulfillment.notify_pkg_binding@v1"
+    assert bridge.record_result.await_args.kwargs["operation_identity"] == "tests.external-http.callback-race@v1"
     recovery_db.commit.assert_awaited_once()
 
 
@@ -660,17 +653,16 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
 
     canonical = CanonicalPayload.from_projection({"request_id": "REQ-RECOVERY-FAIL-LEASE"})
     frozen_binding = frozen_external_http_binding(
-        target_code="WMS_FULFILLMENT_REQUEST_RACK_SUPPLY",
-        target_url="http://wms/api/fulfillment/rack-supply",
-        provider_profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
-        operation_identity="wms.fulfillment.request_rack_supply@v1",
+        target_code="TEST_RECOVERY_EXTERNAL_HTTP",
+        target_url="https://external.test/recovery",
+        provider_profile_identity="tests.external-http.recovery.v1",
+        operation_identity="tests.external-http.recovery@v1",
     )
     outbox = SystemOutbox(
         **frozen_binding.as_persisted_fields(),
         operation_domain="HANDLING",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key="external-http-recovery-fail-lease",
-        idempotency_key="idem-external-http-recovery-fail-lease",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         payload_json={"request_id": "REQ-RECOVERY-FAIL-LEASE"},
         canonical_payload_bytes=canonical.body,

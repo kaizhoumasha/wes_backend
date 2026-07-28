@@ -4,9 +4,9 @@
   "contract_version": "2026-06-25",
   "direction": "effect",
   "raw_request": {
-    "transport_request_id": "tr-timeout-001",
-    "source_location": "INBOUND_A",
-    "target_location": "SORTER_01"
+    "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+    "dispatch_key": "rack-supply-timeout-001",
+    "idempotency_key": "idem-rack-supply-timeout-001"
   },
   "raw_response": {
     "timeout": true,

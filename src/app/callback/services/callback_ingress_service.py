@@ -20,6 +20,7 @@ from src.app.callback.contracts import (
     is_platform_control_event,
     is_production_event,
 )
+from src.app.callback.contracts.external_callbacks import WMS_ALLOWED_CALLBACK_TYPES, WMS_ORDINARY_EVENT_TYPES
 from src.app.callback.models import (
     CallbackEventIngressResponse,
     CallbackEventRequest,
@@ -53,7 +54,6 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,
 )
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_TYPED_EFFECT_CALLBACK_TYPES
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
 from src.app.wms_integration.services import callback_normalizer as _wms_callback_normalizer
@@ -112,17 +112,7 @@ _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
         "device_code",
     }
 )
-_EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES = (
-    frozenset(
-        {
-            "WMS_GRN_RECEIVED",
-            "WMS_PALLET_ARRIVED",
-            "WMS_INVENTORY_UPDATED",
-            "WMS_PDA_OPERATION_RECORDED",
-        }
-    )
-    | WMS_TYPED_EFFECT_CALLBACK_TYPES
-)
+_EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES = WMS_ALLOWED_CALLBACK_TYPES
 _EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES = frozenset(
     {
         "DEVICE_RESULT",
@@ -156,7 +146,9 @@ _EXTERNAL_CALLBACK_SOURCE_SYSTEMS_BY_CALLBACK_TYPE = {
     "CTU_BIN_MOVE_COMPLETED": frozenset({"CTU"}),
     "CTU_BIN_MOVE_FAILED": frozenset({"CTU"}),
 }
-_EXTERNAL_CALLBACK_RESULT_TYPES = frozenset({"AGV_TASK_RESULT", "DEVICE_RESULT"}) | WMS_TYPED_EFFECT_CALLBACK_TYPES
+_EXTERNAL_CALLBACK_RESULT_TYPES = frozenset({"AGV_TASK_RESULT", "DEVICE_RESULT"}) | (
+    WMS_ALLOWED_CALLBACK_TYPES - WMS_ORDINARY_EVENT_TYPES
+)
 # H4 拒绝的机器可读原因码: client 可通过 reason_code 字段区分
 # 顶层字段违规 vs 其他 schema 校验失败 (用于埋点和告警)。
 _CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE = "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"

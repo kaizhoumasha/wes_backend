@@ -105,6 +105,8 @@ REMOVED_EXTERNAL_FACADE_LITERALS = {
     "workline.external-http",
     "freeze_plugin_external_http_binding",
     "_build_external_http_outbox_model",
+    "WmsEffectPreparationService",
+    "wms_effect_preparation_service",
 }
 ACTIVE_SCAN_ROOTS = (
     "src",
@@ -121,14 +123,83 @@ ACTIVE_SCAN_FILES = (
     "docker-compose.yml",
     "docker-compose.deploy.yml",
 )
+_FULL_CALLBACK_NEGATIVE_EVIDENCE = frozenset(
+    {
+        "RCS_BIN_MOVE_COMPLETED",
+        "RCS_BIN_MOVE_FAILED",
+        "RCS_BIN_MOVE_PROGRESS",
+        "RCS_EMPTY_BOX_TRANSFER_RESULT",
+        "RCS_EXCHANGE_COMPLETED",
+        "RCS_FULL_BOX_EXCHANGE_RESULT",
+        "RCS_FULL_BOX_TRANSFER_RESULT",
+        "RCS_GRN_RECEIVED",
+        "RCS_HANDLING_TASK_RESULT",
+        "RCS_INVENTORY_UPDATED",
+        "RCS_PALLET_ARRIVED",
+        "RCS_PDA_OPERATION_RECORDED",
+        "RCS_RACK_ARRIVED",
+        "RCS_RACK_EXCHANGE_FAILED",
+        "RCS_RACK_EXCHANGE_PROGRESS",
+        "RCS_RACK_TASK_PROGRESS",
+        "RCS_RACK_TASK_RESULT",
+        "RCS_TASK_CHANGE",
+        "RCS_TRANSPORT_COMPLETED",
+        "WMS_BIN_MOVE_COMPLETED",
+        "WMS_BIN_MOVE_FAILED",
+        "WMS_BIN_MOVE_PROGRESS",
+        "WMS_EMPTY_BOX_TRANSFER_RESULT",
+        "WMS_EXCHANGE_COMPLETED",
+        "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "WMS_FULL_BOX_TRANSFER_RESULT",
+        "WMS_HANDLING_TASK_RESULT",
+        "WMS_RACK_ARRIVED",
+        "WMS_RACK_EXCHANGE_FAILED",
+        "WMS_RACK_EXCHANGE_PROGRESS",
+        "WMS_RACK_OPERATION_FAILED",
+        "WMS_RACK_TASK_PROGRESS",
+        "WMS_RACK_TASK_RESULT",
+        "WMS_ROUGH_SORTER_INBOUND",
+        "WMS_TASK_CHANGE",
+        "WMS_TRANSPORT_COMPLETED",
+    }
+)
 NEGATIVE_TEST_EVIDENCE_FILES = {
-    "tests/api/test_callback_external_api.py",
-    "tests/api/test_callback_route_contracts.py",
-    "tests/architecture/test_inbound_normalizer_profile_validation.py",
-    "tests/callback/test_callback_runtime_inbox_authority.py",
-    "tests/contracts/wms_integration/test_wms_operation_catalog.py",
-    "tests/wms_integration/test_callback_normalizer.py",
-    "tests/workline_runtime/test_operation_sandbox_external_idempotency.py",
+    "tests/api/test_callback_external_api.py": _FULL_CALLBACK_NEGATIVE_EVIDENCE,
+    "tests/api/test_callback_route_contracts.py": frozenset({"WMS_FULL_BOX_EXCHANGE_RESULT", "WMS_RACK_TASK_RESULT"}),
+    "tests/architecture/test_inbound_normalizer_profile_validation.py": frozenset(
+        {"WMS_FULL_BOX_EXCHANGE_RESULT", "WMS_RACK_ARRIVED"}
+    ),
+    "tests/architecture/test_northbound_wms_typed_operation_boundaries.py": frozenset(
+        {"wms_effect_preparation_service"}
+    ),
+    "tests/callback/test_callback_runtime_inbox_authority.py": frozenset({"WMS_RACK_TASK_RESULT"}),
+    "tests/contracts/wms_integration/test_wms_operation_catalog.py": frozenset(
+        {
+            "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "WMS_TRANSPORT_COMPLETED",
+            "wms.transport.handling@v1",
+            "wms.transport.rack@v1",
+        }
+    ),
+    "tests/wms_integration/test_callback_normalizer.py": _FULL_CALLBACK_NEGATIVE_EVIDENCE,
+    "tests/workline_runtime/test_operation_sandbox_external_idempotency.py": frozenset({"WMS_RACK_TASK_RESULT"}),
+}
+SCOPED_ACTIVE_FORBIDDEN_LITERALS = {
+    "docs/architecture/device-command-contract.md": frozenset(
+        {"source_arm_prefetch_capacity", "扫码平台状态为 `FREE`"}
+    ),
+    "docs/architecture/workline-restructuring-module.md": frozenset(
+        {"source_arm_prefetch_capacity", "扫码平台状态为 `FREE`"}
+    ),
+    "docs/architecture/workline-restructuring-implementation.md": frozenset(
+        {"source_arm_prefetch_capacity", "扫码平台 FREE"}
+    ),
+    **{
+        f"tests/fixtures/external_contracts/wms/default/{fixture_name}.json": frozenset(
+            {"transport_request_id", "source_location", "target_location"}
+        )
+        for fixture_name in ("success", "reject", "timeout")
+    },
 }
 
 
@@ -159,8 +230,9 @@ def test_active_artifacts_have_no_removed_callback_or_external_facade_literal() 
         if path.suffix not in {"", ".dev", ".json", ".md", ".prod", ".py", ".sh", ".test", ".yml"}:
             continue
         source = path.read_text(encoding="utf-8")
-        found = {literal for literal in forbidden if literal in source}
         relative_path = str(path.relative_to(REPO_ROOT))
+        scoped_forbidden = SCOPED_ACTIVE_FORBIDDEN_LITERALS.get(relative_path, frozenset())
+        found = {literal for literal in forbidden | scoped_forbidden if literal in source}
         if relative_path == "src/app/wms_integration/provider_manifest.py":
             found -= REMOVED_TRANSPORT_IDENTITIES
         if found:
@@ -178,9 +250,10 @@ def test_removed_literals_in_tests_are_explicit_negative_evidence_only() -> None
         relative_path = str(path.relative_to(REPO_ROOT))
         if relative_path == "tests/contracts/wms_integration/test_release_removal_guardrails.py":
             continue
-        found = {literal for literal in forbidden if literal in path.read_text(encoding="utf-8")}
-        if found and relative_path not in NEGATIVE_TEST_EVIDENCE_FILES:
-            offenders[relative_path] = found
+        found = frozenset(literal for literal in forbidden if literal in path.read_text(encoding="utf-8"))
+        allowed = NEGATIVE_TEST_EVIDENCE_FILES.get(relative_path, frozenset())
+        if found != allowed:
+            offenders[relative_path] = set(found ^ allowed)
 
     assert offenders == {}
 
@@ -267,3 +340,78 @@ def test_external_contract_profile_documents_only_registry_and_status_hint() -> 
         assert event_type in source
     assert "WmsFulfillmentPort.request_transport" not in source
     assert "WMS_TRANSPORT_COMPLETED" not in source
+
+
+def test_shared_wms_effect_system_outbox_producer_is_removed_until_t5() -> None:
+    services_root = REPO_ROOT / "src/app/runtime/orchestration/services"
+    assert not (services_root / "wms_effect_preparation_service.py").exists()
+    services_exports = (services_root / "__init__.py").read_text()
+    assert "WmsEffectPreparationService" not in services_exports
+    assert "wms_effect_preparation_service" not in services_exports
+
+
+def test_generic_system_outbox_tests_do_not_publish_wms_positive_wiring() -> None:
+    forbidden = {
+        "wms.fulfillment.request_rack_supply@v1",
+        "wms.fulfillment.notify_pkg_binding@v1",
+        "WMS_FULFILLMENT_REQUEST_RACK_SUPPLY",
+        "WMS_FULFILLMENT_REQUEST_RACK_TRANSPORT",
+        "WMS_INVENTORY_TRANSFER",
+        "http://wms-rcs/api/wes/transport-request",
+        "http://wms/api/fulfillment/rack-supply",
+    }
+    for relative_path in (
+        "tests/sys/test_system_outbox_engine.py",
+        "tests/sys/test_external_http_transport_mapping.py",
+    ):
+        source = (REPO_ROOT / relative_path).read_text()
+        assert {literal for literal in forbidden if literal in source} == set()
+
+
+def test_active_docs_and_wms_fixtures_do_not_publish_removed_prefetch_or_transport_contract() -> None:
+    for relative_path in (
+        "docs/architecture/device-command-contract.md",
+        "docs/architecture/workline-restructuring-module.md",
+        "docs/architecture/workline-restructuring-implementation.md",
+    ):
+        source = (REPO_ROOT / relative_path).read_text()
+        assert "source_arm_prefetch_capacity" not in source
+        assert "扫码平台状态为 `FREE`" not in source
+
+    for fixture_name in ("success.json", "reject.json", "timeout.json"):
+        source = (REPO_ROOT / "tests/fixtures/external_contracts/wms/default" / fixture_name).read_text()
+        assert "transport_request_id" not in source
+        assert "source_location" not in source
+        assert "target_location" not in source
+
+
+def test_callback_ingress_reuses_callback_domain_wms_allow_set() -> None:
+    from importlib import import_module
+
+    callback_ingress_module = import_module("src.app.callback.services.callback_ingress_service")
+
+    assert callback_ingress_module._EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES is WMS_ALLOWED_CALLBACK_TYPES
+    source = (REPO_ROOT / "src/app/callback/services/callback_ingress_service.py").read_text()
+    assert "from src.app.callback.contracts.external_callbacks import WMS_ALLOWED_CALLBACK_TYPES" in source
+    assert "WMS_TYPED_EFFECT_CALLBACK_TYPES" not in source
+
+
+def test_rack_operation_read_side_regression_coverage_is_preserved() -> None:
+    source = (REPO_ROOT / "tests/rack/test_rack_operation_service.py").read_text()
+    required_tests = {
+        "test_derive_operation_status_requires_all_required_tasks_succeeded",
+        "test_derive_operation_status_requires_resource_projection_confirmation",
+        "test_derive_operation_status_callback_trusted_skips_resource_projection_confirmation",
+        "test_sync_operation_status_marks_reconciliation_expected",
+        "test_derive_operation_status_consumes_projection_per_inbound_task",
+        "test_derive_operation_status_reconciles_when_move_out_rack_still_at_source_position",
+    }
+    assert {test_name for test_name in required_tests if f"def {test_name}" not in source} == set()
+
+
+def test_negative_evidence_allowlist_is_literal_scoped() -> None:
+    assert isinstance(NEGATIVE_TEST_EVIDENCE_FILES, dict)
+    assert all(
+        isinstance(relative_path, str) and isinstance(allowed_literals, frozenset)
+        for relative_path, allowed_literals in NEGATIVE_TEST_EVIDENCE_FILES.items()
+    )
