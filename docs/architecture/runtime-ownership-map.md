@@ -68,14 +68,14 @@ Replay 的 `request_id`、认证 `actor`、`reason`、直接/根 source inbox �
 
 ## 7. Production import boundary
 
-生产代码不允许 import `src.workline_runtime`。仅以下非生产路径类别允许引用：
+生产代码不允许 import 已删除的 legacy runtime package。仅以下非生产路径类别允许引用历史名称：
 
 | 入口 | 角色 |
 | --- | --- |
 | `tests/` | 测试 |
 | `migrations/` | Alembic 数据迁移 |
 
-其余 `src/` production code 若 import `src.workline_runtime`，由 `LEGACY_RUNTIME_IMPORT` 立即阻塞。
+其余 `src/` production code 若 import 该历史 package，由 `LEGACY_RUNTIME_IMPORT` 立即阻塞。
 
 ## 8. 验收
 

@@ -56,7 +56,7 @@ ConveyorQueueMembership (独立 active 投影)
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | int (PK) | 自增主键 |
-| `workline_id` | int | 关联 WorkLine（FK 到 `wes_biz.work_lines`） |
+| `workline_id` | int | WorkLine 逻辑归属与查询索引；不建立跨 schema WorkLine FK |
 | `manifest_version` | str(60) | RUNNING session 固定 manifest 版本（CEO-011） |
 | `plugin_key` | str(100) | generated plugin 固定 identity |
 | `plugin_binding_id` / `plugin_binding_version` | int | immutable binding 主键与版本；数据库 `NOT NULL`，binding ID 受 FK 保护 |
@@ -308,13 +308,15 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 
 | 迁移 | 内容 |
 |------|------|
-| `20260626_1140_c0bccb9de6f3` | ExecutionSession + ExecutionCorrelation 建表 |
+| `20260626_1140_c0bccb9de6f3` | ExecutionSession + ExecutionCorrelation 建表；`workline_id` 仅建查询索引，不建立跨 schema WorkLine FK |
 | `20260626_1200_0e9de1e6c7e3` | Device FK ring dissolve |
-| `20260626_1719_f04718a3f04f` | 剩余 runtime/orchestration 表（ExecutionWorkItem, IdempotencyKey, RuntimeIntentLog, RuntimeTimeline, ConveyorQueueMembership, RuntimeHold） |
+| `20260626_1719_f04718a3f04f` | 新增 ExecutionWorkItem、RuntimeInbox、RuntimeIntentLog、RuntimeTimeline、RuntimeHold、ConveyorQueueMembership、IdempotencyKey |
 | `20260702_1913_f88092809f4b` | DeviceRuntimeProjection 建表 |
 | `20260711_1815_b8a28e1bfec8` | RuntimeInbox canonical envelope、五态 claim/fencing 字段与 hot indexes |
 | `20260711_1819_ec426c628516` | 增加显式 WorklineSession FK，迁移依赖后删除旧 `wes_biz.workline_inbox` |
-| `20260727_1742_be496b91f3e3` | 三类运行态记录 mandatory binding pins：NOT NULL、Binding FK 与完整快照约束 |
+| `20260714_1103_e0d58415afc9` | 在 Alembic autocommit block 中并发创建 RuntimeInbox hot indexes |
+| `20260717_0739_fa15ba0aef65` | WorklinePluginBinding 建表，并为三类运行态记录增加 Binding FK 与可空 snapshot pins |
+| `20260727_1742_be496b91f3e3` | 三类运行态记录的既有 binding snapshot pins 改为 NOT NULL；ExecutionWorkItem 新增 mandatory `manifest_version` |
 
 ---
 

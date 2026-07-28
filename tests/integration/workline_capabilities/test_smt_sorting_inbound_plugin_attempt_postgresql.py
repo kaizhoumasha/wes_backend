@@ -7,7 +7,6 @@ import json
 import time
 from dataclasses import fields as dataclass_fields
 from datetime import timedelta
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -16,21 +15,18 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.app.callback.services.callback_ingress_service import CallbackIngressService
-from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
 from src.app.device.models.command import CommandResult, DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
 from src.app.device.services.device_command_service import DeviceCommandService
-from src.app.runtime.orchestration.execution_session import ExecutionSession
-from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
+    SmtInboundHandoffDemandStatus,
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
-from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
@@ -38,19 +34,8 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.system_capabilities.material_flow.smt_source_pick_command.handler import (
     SmtSourcePickCommandHandler,
 )
-from src.app.runtime.workline_plugins.dispatcher import (
-    PinnedPluginSnapshot,
-    PluginAttemptFactSource,
-    PluginDispatchRequest,
-    WorklinePluginDispatcher,
-)
-from src.app.runtime.workline_plugins.smt_sorting_inbound.contracts import SmtSortingInboundConfig
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 from src.app.sys.models import SystemOutbox
-from src.app.workline.models import LineType, WorkLine, WorklinePluginBinding
-from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
-from src.app.workline.services.workline_service import workline_service
-from src.core.conf import settings
 from src.utils.timezone import timezone
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 from tests.support.smt_sorting_inbound_postgresql import (
@@ -85,168 +70,43 @@ def _changed_row_fields(before: dict[str, object], after: dict[str, object]) -> 
     return {field for field in before if before[field] != after[field]}
 
 
-async def _seed_binding(db: AsyncSession) -> tuple[WorkLine, WorklinePluginBinding, SmtSortingInboundConfig]:
-    config = SmtSortingInboundConfig(provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity)
-    workline = WorkLine(
-        line_code="IT-SMT-GENERATED-BINDING",
-        line_name="SMT Generated Binding",
-        line_type=LineType.AUTO,
-        plugin_key=DEFINITION.plugin_key,
-        contract_version=DEFINITION.contract_version,
-        config=config.model_dump(mode="json"),
-        is_active=False,
+def _row_identity(row: dict[str, object]) -> object:
+    if row.get("id") is not None:
+        return row["id"]
+    return (
+        row.get("provider_code"),
+        row.get("operation_kind"),
+        row.get("idempotency_key"),
     )
-    db.add(workline)
-    await db.flush()
-    device = Device(
-        device_code="IT-SMT-GENERATED-BINDING-ARM",
-        device_name="SMT Generated Binding Arm",
-        work_line_id=workline.id,
-        device_role="SORTING_SOURCE_ARM",
-        vendor_type="ECS",
-        device_status=DeviceStatus.IDLE,
-        capabilities_json={"supports_command_types": ["SORTING_SOURCE_PICK"]},
-        host="127.0.0.1",
-        port=1,
-    )
-    db.add(device)
-    await db.flush()
-    activated = await workline_service.activate(
-        db,
-        int(workline.id),
-        version=workline.version,
-        actor="integration-test",
-        reason="mandatory-binding",
-        environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
-    )
-    assert activated is not None
-    assert activated.active_plugin_binding_id is not None
-    binding = await db.get(WorklinePluginBinding, activated.active_plugin_binding_id)
-    assert binding is not None
-    assert activated.active_plugin_binding_version == binding.binding_version
-    assert activated.active_plugin_config_hash == binding.typed_config_hash
-    assert activated.active_plugin_index_digest == binding.generated_index_digest
-    return activated, binding, config
 
 
-def test_smt_claim_binding_is_atomic_and_fresh_generated_dispatch_succeeds() -> None:
-    async def scenario() -> None:
-        async with temporary_database() as (_database, database_url):
-            run_alembic("upgrade", "head", database_url=database_url)
-            engine = create_async_engine(database_url, pool_pre_ping=True)
-            session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-            try:
-                async with session_factory() as db:
-                    workline, binding, config = await _seed_binding(db)
+def _row_delta(
+    before: RowSnapshot,
+    after: RowSnapshot,
+) -> tuple[dict[object, dict[str, object]], dict[object, set[str]], set[object]]:
+    before_by_id = {_row_identity(dict(row)): dict(row) for row in before}
+    after_by_id = {_row_identity(dict(row)): dict(row) for row in after}
+    added = {identity: after_by_id[identity] for identity in after_by_id.keys() - before_by_id.keys()}
+    changed = {
+        identity: _changed_row_fields(before_by_id[identity], after_by_id[identity])
+        for identity in before_by_id.keys() & after_by_id.keys()
+        if before_by_id[identity] != after_by_id[identity]
+    }
+    return added, changed, before_by_id.keys() - after_by_id.keys()
 
-                class FailingAfterAggregateService(SmtInboundHandoffService):
-                    async def _link_claim_session_material_unit(
-                        self,
-                        _db: AsyncSession,
-                        *,
-                        session: WorklineSession,
-                        item: object,
-                    ) -> None:
-                        _ = (session, item)
-                        raise RuntimeError("forced-after-runtime-aggregate")
 
-                demand = SimpleNamespace(id=11, demand_key="smt-demand-11", trace_id="trace-11")
-                item = SimpleNamespace(id=12, claim_attempt_no=1, pkg_code=None)
-                async with session_factory() as db:
-                    persisted_workline = await db.get(WorkLine, workline.id)
-                    persisted_binding = await db.get(WorklinePluginBinding, binding.id)
-                    assert persisted_workline is not None and persisted_binding is not None
-                    try:
-                        await FailingAfterAggregateService()._create_sorting_claim_session(
-                            db,
-                            workline=persisted_workline,
-                            binding=persisted_binding,
-                            workline_code=persisted_workline.line_code,
-                            demand=demand,
-                            item=item,
-                            trace_id="trace-rollback",
-                            route_evidence={
-                                "source_rack_position_code": "SOURCE_STATION_A",
-                                "target_rack_position_code": "TARGET_STATION",
-                            },
-                        )
-                    except RuntimeError as exc:
-                        assert str(exc) == "forced-after-runtime-aggregate"
-                        await db.rollback()
-                    else:
-                        raise AssertionError("创建中途失败必须传播并触发外层事务回滚")
-
-                async with session_factory() as db:
-                    for model in (WorklineSession, ExecutionSession, ExecutionWorkItem):
-                        assert await db.scalar(select(func.count()).select_from(model)) == 0
-
-                    persisted_workline = await db.get(WorkLine, workline.id)
-                    persisted_binding = await db.get(WorklinePluginBinding, binding.id)
-                    assert persisted_workline is not None and persisted_binding is not None
-                    claim_runtime = await SmtInboundHandoffService()._create_sorting_claim_session(
-                        db,
-                        workline=persisted_workline,
-                        binding=persisted_binding,
-                        workline_code=persisted_workline.line_code,
-                        demand=demand,
-                        item=item,
-                        trace_id="trace-success",
-                        route_evidence={
-                            "source_rack_position_code": "SOURCE_STATION_A",
-                            "target_rack_position_code": "TARGET_STATION",
-                        },
-                    )
-                    session = claim_runtime.session
-                    await db.commit()
-                    assert session.plugin_binding_id == persisted_binding.id
-                    execution_session = await db.scalar(select(ExecutionSession))
-                    work_item = await db.scalar(select(ExecutionWorkItem))
-                    assert execution_session is not None and work_item is not None
-                    assert claim_runtime.execution_session_id == execution_session.id
-                    assert claim_runtime.correlation_id == work_item.correlation_id
-                    assert execution_session.plugin_binding_id == session.plugin_binding_id
-                    assert work_item.plugin_binding_id == session.plugin_binding_id
-                    assert work_item.manifest_version == DEFINITION.contract_version
-
-                snapshot = PinnedPluginSnapshot(
-                    plugin_key=DEFINITION.plugin_key,
-                    contract_version=DEFINITION.contract_version,
-                    binding_identity=f"binding:{binding.id}:{binding.binding_version}",
-                    binding_id=binding.id,
-                    binding_version=binding.binding_version,
-                    config_hash=binding.typed_config_hash,
-                    index_digest=binding.generated_index_digest,
-                    profile_identity=config.provider_profile,
-                )
-                decision = await WorklinePluginDispatcher().dispatch(
-                    request=PluginDispatchRequest(
-                        plugin_key=DEFINITION.plugin_key,
-                        contract_version=DEFINITION.contract_version,
-                        logical_route="SOURCE_PICK_REQUESTED",
-                        raw_config=config.model_dump(mode="json"),
-                        raw_state={},
-                        context_state={},
-                        raw_input={
-                            "route": "SOURCE_PICK_REQUESTED",
-                            "handoff_demand_id": demand.id,
-                            "handoff_source_item_id": item.id,
-                            "claim_attempt_no": item.claim_attempt_no,
-                            "source_pick_request_event_id": "smt-source-pick-requested-13",
-                        },
-                        fact_source=PluginAttemptFactSource(
-                            snapshot=snapshot,
-                            device_fact_versions=(("SORTING_SOURCE_ARM", 31, 0),),
-                        ),
-                        snapshot=snapshot,
-                    ),
-                    gateway=object(),
-                )
-                assert getattr(decision, "kind", None) != "contract_violation", decision
-                assert decision.outcome_code == "SOURCE_PICK_REQUESTED"
-            finally:
-                await engine.dispose()
-
-    asyncio.run(scenario())
+def _assert_row_delta(
+    before: RowSnapshot,
+    after: RowSnapshot,
+    *,
+    added_count: int = 0,
+    changed: dict[object, set[str]] | None = None,
+) -> list[dict[str, object]]:
+    added_rows, changed_rows, removed_rows = _row_delta(before, after)
+    assert len(added_rows) == added_count
+    assert changed_rows == (changed or {})
+    assert removed_rows == set()
+    return list(added_rows.values())
 
 
 async def _run_postgresql_scenario(scenario: Callable[[Any], Awaitable[None]]) -> None:
@@ -398,28 +258,22 @@ async def _clear_source_pick_correlation_for_recovery(
 
 
 @pytest.mark.parametrize(
-    ("result", "expected_status", "expected_summary_key", "expected_generated_outcome"),
+    ("result", "expected_generated_outcome"),
     [
         (
             CommandResult.SUCCESS,
-            SmtInboundHandoffSourceItemStatus.PICKED,
-            "advanced",
             "SOURCE_PICK_COMPLETED",
         ),
         (
             CommandResult.FAILED,
-            SmtInboundHandoffSourceItemStatus.MANUAL_HOLD,
-            "manual_hold",
             "SOURCE_PICK_FAILED",
         ),
     ],
     ids=["success", "device-failure"],
 )
-def test_smt_request_callback_recovery_closes_once_without_extra_effects(
+def test_smt_public_callback_applies_exact_generated_effects(
     monkeypatch: pytest.MonkeyPatch,
     result: CommandResult,
-    expected_status: SmtInboundHandoffSourceItemStatus,
-    expected_summary_key: str,
     expected_generated_outcome: str,
 ) -> None:
     async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
@@ -484,6 +338,77 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
             )
             assert decision is not None
             assert decision.payload_json["decision"]["outcome_code"] == expected_generated_outcome
+            expected_command_fields = {
+                "status",
+                "result",
+                "result_data",
+                "completed_at",
+                "updated_at",
+            }
+            if result is CommandResult.FAILED:
+                expected_command_fields.add("error_detail")
+            _assert_row_delta(
+                before_callback.commands,
+                after_callback.commands,
+                changed={processed.command.id: expected_command_fields},
+            )
+            [callback_inbox_row] = _assert_row_delta(
+                before_callback.runtime_inboxes,
+                after_callback.runtime_inboxes,
+                added_count=1,
+            )
+            assert callback_inbox_row["id"] == callback_inbox.id
+            assert callback_inbox_row["status"] == "PROCESSED"
+            assert callback_inbox_row["command_id"] == processed.command.id
+            assert callback_inbox_row["correlation_id"] == processed.command.correlation_id
+            assert callback_inbox_row["execution_session_id"] == processed.source_inbox.execution_session_id
+
+            timeline_rows = _assert_row_delta(
+                before_callback.timelines,
+                after_callback.timelines,
+                added_count=2,
+            )
+            assert {getattr(row["action_type"], "value", row["action_type"]) for row in timeline_rows} == {
+                "COMMAND_ACKED",
+                "DECISION_MADE",
+            }
+            assert {row["related_inbox_id"] for row in timeline_rows} == {callback_inbox.id}
+            assert sum(row["related_command_id"] == processed.command.id for row in timeline_rows) == 1
+
+            expected_session_fields = {
+                "status",
+                "current_wait_type",
+                "awaiting_device_command_code",
+                "waiting_since",
+                "current_wait_timeout_seconds",
+                "last_inbox_id",
+                "plugin_state_version",
+                "updated_at",
+                "version",
+            }
+            if result is CommandResult.SUCCESS:
+                expected_session_fields.add("plugin_state_json")
+            else:
+                expected_session_fields.update(
+                    {
+                        "failure_code",
+                        "failure_message",
+                        "failure_domain",
+                    }
+                )
+            _assert_row_delta(
+                before_callback.sessions,
+                after_callback.sessions,
+                changed={processed.source_item.sorting_session_id: expected_session_fields},
+            )
+            [callback_log] = _assert_row_delta(
+                before_callback.callback_logs,
+                after_callback.callback_logs,
+                added_count=1,
+            )
+            assert callback_log["request_id"] == f"request-smt-pg-{result.value.lower()}"
+            assert callback_log["ingress_outcome"] == "ACCEPTED"
+            assert callback_log["response_status"] == 200
             persisted_after_callback = await db.get(
                 SmtInboundHandoffSourceItem,
                 seeded.source_item_id,
@@ -526,6 +451,29 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
                 ]
                 assert ledger_idempotency["execution_correlation_id"] == processed.command.correlation_id
                 assert ledger_idempotency["request_hash"]
+                _assert_row_delta(
+                    before_callback.source_items,
+                    after_callback.source_items,
+                    changed={seeded.source_item_id: {"status", "updated_at"}},
+                )
+                _assert_row_delta(
+                    before_callback.demands,
+                    after_callback.demands,
+                    changed={seeded.demand_id: {"status", "updated_at"}},
+                )
+                assert after_callback.attempt_evidence == (
+                    (
+                        seeded.source_item_id,
+                        processed.source_item.claim_attempt_no,
+                        seeded.source_inbox_id,
+                        processed.command.id,
+                        processed.command.command_code,
+                        processed.outbox.dispatch_key,
+                        SmtInboundHandoffSourceItemStatus.PICKED,
+                        None,
+                        None,
+                    ),
+                )
                 expected_callback_changes = {
                     "commands",
                     "timelines",
@@ -607,6 +555,9 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
                     "source": "device_service_runtime_update",
                     "changed_fields": ["device_status", "error_code"],
                 }
+                _assert_row_delta(before_callback.source_items, after_callback.source_items)
+                _assert_row_delta(before_callback.demands, after_callback.demands)
+                assert after_callback.attempt_evidence == before_callback.attempt_evidence
                 expected_callback_changes = {
                     "commands",
                     "timelines",
@@ -620,6 +571,30 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
                     "audit_logs",
                 }
             assert _changed_snapshot_attributes(before_callback, after_callback) == expected_callback_changes
+            [added_intent] = _assert_row_delta(
+                before_callback.runtime_intent_logs,
+                after_callback.runtime_intent_logs,
+                added_count=1,
+            )
+            assert added_intent["correlation_id"] == processed.command.correlation_id
+            [added_idempotency] = _assert_row_delta(
+                before_callback.idempotency_keys,
+                after_callback.idempotency_keys,
+                added_count=1,
+            )
+            assert added_idempotency["execution_correlation_id"] == processed.command.correlation_id
+            audit_rows = _assert_row_delta(
+                before_callback.audit_logs,
+                after_callback.audit_logs,
+                added_count=2 if result is CommandResult.SUCCESS else 3,
+            )
+            expected_audit_titles = {
+                f"UPDATE DeviceCommand (ID: {processed.command.id})",
+                "设备回调结果",
+            }
+            if result is CommandResult.FAILED:
+                expected_audit_titles.add(f"UPDATE Device (ID: {seeded.device_id})")
+            assert {row["title"] for row in audit_rows} == expected_audit_titles
 
             # 重复 ingress 允许新增一条 DUPLICATE callback diagnostic，不得产生新的
             # RuntimeInbox、effect 或任何 domain/runtime state advance。
@@ -635,90 +610,123 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
             assert duplicate_enqueue_count == 0
             after_duplicate = await snapshot_smt_write_set(db)
             assert after_duplicate.state_advance() == before_duplicate.state_advance()
-            assert len(after_duplicate.callback_logs) == len(before_duplicate.callback_logs) + 1
+            [duplicate_callback_log] = _assert_row_delta(
+                before_duplicate.callback_logs,
+                after_duplicate.callback_logs,
+                added_count=1,
+            )
+            assert duplicate_callback_log["ingress_outcome"] == "DUPLICATE"
+            assert duplicate_callback_log["request_id"] == f"request-smt-pg-{result.value.lower()}-duplicate"
             assert after_duplicate.audit_logs == before_duplicate.audit_logs
 
-            # Recovery 使用独立 aggregate：先只让正式 callback ingress 持久化权威 command terminal，
-            # 再制造“command 已完成、source correlation 尚未提交”的最小 crash window。
-            recovery_seeded = await seed_smt_source_pick_claim(
+    asyncio.run(_run_postgresql_scenario(scenario))
+
+
+def test_smt_success_recovery_uses_only_fresh_database_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(DeviceCommandService, "_invalidate_command_cache", invalidate_cache)
+
+    async def scenario(session_factory: Any) -> None:
+        async with session_factory() as db:
+            seeded = await seed_smt_source_pick_claim(db, suffix="recovery-success-fresh")
+            processed = await process_smt_source_pick_claim(db, seeded)
+            callback_inbox, enqueue_count = await _submit_public_callback(
                 db,
-                suffix=f"recovery-{result.value.lower()}",
+                processed=processed,
+                payload=_callback_payload(
+                    processed=processed,
+                    result=CommandResult.SUCCESS,
+                    source_event_id="smt-pg-recovery-success-fresh",
+                ),
+                request_id="request-smt-pg-recovery-success-fresh",
+                source_event_id="smt-pg-recovery-success-fresh",
             )
-            recovery_processed = await process_smt_source_pick_claim(db, recovery_seeded)
-            recovery_callback_payload = _callback_payload(
-                processed=recovery_processed,
-                result=result,
-                source_event_id=f"smt-pg-recovery-callback-{result.value.lower()}",
-            )
-            recovery_callback_inbox, recovery_enqueue_count = await _submit_public_callback(
-                db,
-                processed=recovery_processed,
-                payload=recovery_callback_payload,
-                request_id=f"request-smt-pg-recovery-{result.value.lower()}",
-                source_event_id=f"smt-pg-recovery-callback-{result.value.lower()}",
-            )
-            assert recovery_enqueue_count == 1
-            assert recovery_callback_inbox.status == "RECEIVED"
-            assert recovery_seeded.source_item_id != seeded.source_item_id
+            assert enqueue_count == 1
+            assert callback_inbox.status == "RECEIVED"
             await _clear_source_pick_correlation_for_recovery(
                 db,
-                source_item_id=recovery_seeded.source_item_id,
-                command_code=recovery_processed.command.command_code,
+                source_item_id=seeded.source_item_id,
+                command_code=processed.command.command_code,
             )
+
+        async with session_factory() as db:
+            candidates = await seeded.service.repository.list_stuck_source_items_for_recovery(
+                db,
+                now=timezone.now_for_db(),
+                limit=100,
+                stale_after_seconds=1,
+            )
+            assert [candidate.id for candidate in candidates] == [seeded.source_item_id]
             before_recovery = await snapshot_smt_write_set(db)
-            summary = await recovery_seeded.service.scan_smt_inbound_handoff_demands_batch(
+            summary = await seeded.service.scan_smt_inbound_handoff_demands_batch(
                 db,
                 scan_limit=0,
                 recovery_limit=100,
                 claim_limit=0,
                 stale_after_seconds=1,
             )
+            assert summary["advanced"] == 1
+            assert summary["manual_hold"] == 0
             await db.commit()
-            recovered = await db.get(SmtInboundHandoffSourceItem, recovery_seeded.source_item_id)
-            assert recovered is not None
-            assert summary[expected_summary_key] == 1, (
-                summary,
-                recovered.failure_code,
-                recovered.failure_message,
-            )
-            assert recovered.status == expected_status
-            assert recovered.source_pick_command_id == recovery_processed.command.id
-            after_recovery = await snapshot_smt_write_set(db)
-            recovery_changed_attributes = _changed_snapshot_attributes(before_recovery, after_recovery)
-            assert recovery_changed_attributes <= {"source_items", "demands", "attempt_evidence"}
-            assert "source_items" in recovery_changed_attributes
-            source_before = _snapshot_row_by_id(before_recovery.source_items, recovery_seeded.source_item_id)
-            source_after = _snapshot_row_by_id(after_recovery.source_items, recovery_seeded.source_item_id)
-            source_changed_fields = _changed_row_fields(source_before, source_after)
-            assert {
-                "status",
-                "source_pick_command_id",
-                "source_pick_command_code",
-                "source_pick_dispatch_key",
-            } <= source_changed_fields
-            assert source_changed_fields <= {
-                "status",
-                "source_pick_command_id",
-                "source_pick_command_code",
-                "source_pick_dispatch_key",
-                "failure_code",
-                "failure_message",
-                "next_attempt_at",
-                "completed_at",
-                "updated_at",
-            }
-            if "demands" in recovery_changed_attributes:
-                demand_before = _snapshot_row_by_id(before_recovery.demands, recovery_seeded.demand_id)
-                demand_after = _snapshot_row_by_id(after_recovery.demands, recovery_seeded.demand_id)
-                assert _changed_row_fields(demand_before, demand_after) <= {
-                    "status",
-                    "failure_code",
-                    "failure_message",
-                    "next_attempt_at",
-                    "updated_at",
-                }
 
-            repeated = await recovery_seeded.service.scan_smt_inbound_handoff_demands_batch(
+        async with session_factory() as db:
+            after_recovery = await snapshot_smt_write_set(db)
+            assert _changed_snapshot_attributes(before_recovery, after_recovery) == {
+                "source_items",
+                "demands",
+                "attempt_evidence",
+            }
+            _assert_row_delta(
+                before_recovery.source_items,
+                after_recovery.source_items,
+                changed={
+                    seeded.source_item_id: {
+                        "status",
+                        "source_pick_command_id",
+                        "source_pick_command_code",
+                        "source_pick_dispatch_key",
+                        "updated_at",
+                    }
+                },
+            )
+            recovered_source = _snapshot_row_by_id(after_recovery.source_items, seeded.source_item_id)
+            assert recovered_source["status"] == SmtInboundHandoffSourceItemStatus.PICKED
+            assert recovered_source["source_pick_command_id"] == processed.command.id
+            assert recovered_source["source_pick_command_code"] == processed.command.command_code
+            assert recovered_source["source_pick_dispatch_key"] == processed.outbox.dispatch_key
+            assert recovered_source["failure_code"] is None
+            assert recovered_source["failure_message"] is None
+            assert recovered_source["completed_at"] is None
+            assert recovered_source["next_attempt_at"] is None
+            _assert_row_delta(
+                before_recovery.demands,
+                after_recovery.demands,
+                changed={seeded.demand_id: {"status", "updated_at"}},
+            )
+            recovered_demand = _snapshot_row_by_id(after_recovery.demands, seeded.demand_id)
+            assert recovered_demand["status"] == SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS
+            assert recovered_demand["failure_code"] is None
+            assert recovered_demand["failure_message"] is None
+            assert recovered_demand["next_attempt_at"] is None
+            assert after_recovery.attempt_evidence == (
+                (
+                    seeded.source_item_id,
+                    processed.source_item.claim_attempt_no,
+                    seeded.source_inbox_id,
+                    processed.command.id,
+                    processed.command.command_code,
+                    processed.outbox.dispatch_key,
+                    SmtInboundHandoffSourceItemStatus.PICKED,
+                    None,
+                    None,
+                ),
+            )
+
+            repeated = await seeded.service.scan_smt_inbound_handoff_demands_batch(
                 db,
                 scan_limit=0,
                 recovery_limit=100,
@@ -728,8 +736,7 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
             await db.commit()
             assert repeated["advanced"] == 0
             assert repeated["manual_hold"] == 0
-            after_repeated_scan = await snapshot_smt_write_set(db)
-            assert after_repeated_scan == after_recovery
+            assert await snapshot_smt_write_set(db) == after_recovery
 
     asyncio.run(_run_postgresql_scenario(scenario))
 
@@ -752,8 +759,13 @@ def test_smt_generated_attempt_transaction_retry_has_one_command_and_outbox(
                 _ = await original_call(self, request, execution=execution)  # type: ignore[arg-type]
                 execution_db = execution.ctx["db"]  # type: ignore[attr-defined]
                 await execution_db.flush()
-                provisional["commands"] = await execution_db.scalar(select(func.count()).select_from(DeviceCommand))
-                provisional["outboxes"] = await execution_db.scalar(select(func.count()).select_from(SystemOutbox))
+                provisional_command = await execution_db.scalar(select(DeviceCommand))
+                provisional_outbox = await execution_db.scalar(select(SystemOutbox))
+                assert provisional_command is not None
+                assert provisional_outbox is not None
+                provisional["command_id"] = provisional_command.id
+                provisional["command_code"] = provisional_command.command_code
+                provisional["dispatch_key"] = provisional_outbox.dispatch_key
                 provisional_item = await execution_db.get(
                     SmtInboundHandoffSourceItem,
                     seeded.source_item_id,
@@ -761,6 +773,8 @@ def test_smt_generated_attempt_transaction_retry_has_one_command_and_outbox(
                 )
                 assert provisional_item is not None
                 provisional["source_pick_command_id"] = provisional_item.source_pick_command_id
+                provisional["source_pick_command_code"] = provisional_item.source_pick_command_code
+                provisional["source_pick_dispatch_key"] = provisional_item.source_pick_dispatch_key
                 raise RuntimeError("forced-effect-transaction-retry")
 
             before_failure = await snapshot_smt_write_set(db)
@@ -770,18 +784,44 @@ def test_smt_generated_attempt_transaction_retry_has_one_command_and_outbox(
                 claim=seeded.claim,
             )
             assert failed["failed"] == 1, failed
-            assert provisional["commands"] == 1
-            assert provisional["outboxes"] == 1
-            assert isinstance(provisional["source_pick_command_id"], int)
+            assert provisional["source_pick_command_id"] == provisional["command_id"]
+            assert provisional["source_pick_command_code"] == provisional["command_code"]
+            assert provisional["source_pick_dispatch_key"] == provisional["dispatch_key"]
 
         async with session_factory() as db:
             after_failure = await snapshot_smt_write_set(db)
-            assert after_failure.durable_effects() == before_failure.durable_effects()
-            assert len(after_failure.runtime_inboxes) == len(before_failure.runtime_inboxes)
-            assert len(after_failure.diagnostics) == len(before_failure.diagnostics) + 1
-            failure_diagnostic = dict(after_failure.diagnostics[-1])
+            assert after_failure.durable_effects(
+                allowed_runtime_inbox_id=seeded.source_inbox_id
+            ) == before_failure.durable_effects(allowed_runtime_inbox_id=seeded.source_inbox_id)
+            _assert_row_delta(
+                before_failure.runtime_inboxes,
+                after_failure.runtime_inboxes,
+                changed={
+                    seeded.source_inbox_id: {
+                        "status",
+                        "processor_token",
+                        "next_retry_at",
+                        "lease_until",
+                        "last_error_code",
+                        "last_error_message",
+                        "failed_at",
+                    }
+                },
+            )
+            [failure_diagnostic] = _assert_row_delta(
+                before_failure.diagnostics,
+                after_failure.diagnostics,
+                added_count=1,
+            )
             assert failure_diagnostic["inbox_id"] == seeded.source_inbox_id
             assert failure_diagnostic["diagnostic_code"] == "UNKNOWN"
+            assert failure_diagnostic["session_id"] == seeded.claim["workline_session_id"]
+            assert failure_diagnostic["workline_id"] == seeded.workline_id
+            assert failure_diagnostic["plugin_key"] is None
+            assert failure_diagnostic["status"].value == "ACTIVE"
+            assert after_failure.source_items == before_failure.source_items
+            assert after_failure.callback_logs == before_failure.callback_logs
+            assert after_failure.audit_logs == before_failure.audit_logs
 
             monkeypatch.setattr(SmtSourcePickCommandHandler, "__call__", original_call)
             source_inbox = await db.get(RuntimeInbox, seeded.source_inbox_id)
@@ -808,6 +848,9 @@ def test_smt_generated_attempt_transaction_retry_has_one_command_and_outbox(
             retried_item = await db.get(SmtInboundHandoffSourceItem, seeded.source_item_id, populate_existing=True)
             assert retried_item is not None
             assert retried_item.source_pick_command_id == dict(after_retry.commands[0])["id"]
+            assert retried_item.source_pick_command_code == dict(after_retry.commands[0])["command_code"]
             assert retried_item.source_pick_dispatch_key == dict(after_retry.outboxes[0])["dispatch_key"]
+            assert retried_item.source_pick_command_code == provisional["command_code"]
+            assert retried_item.source_pick_dispatch_key == provisional["dispatch_key"]
 
     asyncio.run(_run_postgresql_scenario(scenario))

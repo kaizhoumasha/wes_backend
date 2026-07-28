@@ -163,7 +163,7 @@ class SmtWriteSetSnapshot:
             self.attempt_evidence,
         )
 
-    def durable_effects(self) -> tuple[Any, ...]:
+    def durable_effects(self, *, allowed_runtime_inbox_id: int) -> tuple[Any, ...]:
         """失败 attempt 仅允许 RuntimeInbox terminal 与诊断变化，其余写集必须回滚。"""
 
         return (
@@ -176,7 +176,10 @@ class SmtWriteSetSnapshot:
             self.execution_sessions,
             self.execution_work_items,
             self.execution_correlations,
-            _normalize_runtime_inboxes(self.runtime_inboxes),
+            _normalize_runtime_inboxes(
+                self.runtime_inboxes,
+                allowed_runtime_inbox_id=allowed_runtime_inbox_id,
+            ),
             self.runtime_intent_logs,
             self.runtime_holds,
             self.idempotency_keys,
@@ -186,6 +189,8 @@ class SmtWriteSetSnapshot:
             self.source_items,
             self.demands,
             self.attempt_evidence,
+            self.callback_logs,
+            self.audit_logs,
         )
 
 
@@ -211,12 +216,18 @@ _RUNTIME_INBOX_TERMINAL_FIELDS = frozenset(
 )
 
 
-def _normalize_runtime_inboxes(rows: RowSnapshot) -> RowSnapshot:
-    """仅屏蔽合法 terminal/retry 字段，保留所有 binding/payload/session anchor。"""
+def _normalize_runtime_inboxes(
+    rows: RowSnapshot,
+    *,
+    allowed_runtime_inbox_id: int,
+) -> RowSnapshot:
+    """仅屏蔽目标 Inbox 合法 terminal/retry 字段，保留其它行和所有不可变 anchor。"""
 
     return tuple(
         tuple(
-            (field, "<allowed-runtime-inbox-terminal>") if field in _RUNTIME_INBOX_TERMINAL_FIELDS else (field, value)
+            (field, "<allowed-runtime-inbox-terminal>")
+            if dict(row).get("id") == allowed_runtime_inbox_id and field in _RUNTIME_INBOX_TERMINAL_FIELDS
+            else (field, value)
             for field, value in row
         )
         for row in rows
