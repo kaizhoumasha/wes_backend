@@ -28,8 +28,6 @@ from src.app.sys.models import (
     SystemOutboxUpdate,
 )
 from src.app.sys.services.endpoint_registry import EndpointRegistry
-from src.app.workline.external_http_profile import freeze_plugin_external_http_binding
-from src.core.conf import settings
 
 ROOT = Path(__file__).parents[3]
 
@@ -134,34 +132,6 @@ def test_production_profile_rejects_plain_http_target_before_freezing() -> None:
         )
 
 
-def test_runtime_profiles_allow_sandbox_http_and_reject_production_http(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry = EndpointRegistry(
-        {
-            "WMS_RCS_RACK_OPERATION": "http://mock-wms.test/rack",
-        }
-    )
-    monkeypatch.setattr(settings, "APP_ENV", "dev")
-
-    plugin_binding = freeze_plugin_external_http_binding(
-        "WMS_RCS_RACK_OPERATION",
-        registry=registry,
-    )
-
-    assert plugin_binding.provider_profile_identity == "workline.plugin-runtime.v1.sandbox"
-    monkeypatch.setattr(settings, "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1", "plugin-sandbox-secret")
-    credential_provider = build_environment_external_http_credential_provider()
-    assert credential_provider.resolve(plugin_binding.credential_reference) == b"plugin-sandbox-secret"
-
-    monkeypatch.setattr(settings, "APP_ENV", "prod")
-    with pytest.raises(ValueError, match="production EXTERNAL_HTTP endpoint requires HTTPS"):
-        freeze_plugin_external_http_binding(
-            "WMS_RCS_RACK_OPERATION",
-            registry=registry,
-        )
-
-
 def test_secret_provider_resolves_exact_version_and_revocation_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     reference = "secret://wms/effect-hmac@v1"
     provider = EnvironmentVersionedCredentialProvider(
@@ -185,13 +155,13 @@ def test_default_environment_provider_reads_explicit_mapping_and_revocation(
 ) -> None:
     from src.app.sys import external_http_credentials
 
-    reference = "secret://wms/legacy-transport-production-hmac@v1"
-    monkeypatch.delenv("WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1", raising=False)
+    reference = "secret://wms/material-flow-production-hmac@v1"
+    monkeypatch.delenv("WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1", raising=False)
     monkeypatch.setattr(
         external_http_credentials,
         "settings",
         SimpleNamespace(
-            WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
+            WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
             WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES="",
         ),
         raising=False,
@@ -203,7 +173,7 @@ def test_default_environment_provider_reads_explicit_mapping_and_revocation(
         external_http_credentials,
         "settings",
         SimpleNamespace(
-            WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
+            WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
             WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES=reference,
         ),
     )

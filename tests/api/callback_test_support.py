@@ -182,7 +182,7 @@ def create_external_payload(**overrides: object) -> JsonDict:
 
 def create_wms_external_payload(**overrides: object) -> JsonDict:
     payload: JsonDict = {
-        "callback_type": "WMS_RACK_ARRIVED",
+        "callback_type": "WMS_INVENTORY_UPDATED",
         "trace_id": "trace-wms-001",
         "dispatch_key": "external:test_workline_plugin:trace-wms-001:RACK_EXCHANGE_AND_SUPPLY",
         "status": "SUCCEEDED",

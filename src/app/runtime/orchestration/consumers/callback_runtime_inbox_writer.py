@@ -154,8 +154,12 @@ class CallbackRuntimeInboxWriter:
         event_id: str | None = None,
         causation_id: str | None = None,
     ) -> RuntimeInboxAcceptResult:
+        # 延迟导入避免 callback composition root 与 RuntimeInbox writer 相互初始化；
+        # 类型契约仍由 callback 域唯一持有。
+        from src.app.callback.contracts.external_callbacks import validate_external_callback_type
+
         provider_code = _resolve_first_str(payload, ("source_system",))
-        callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
+        callback_type = validate_external_callback_type(payload)
         normalized_provider = provider_code or callback_type.split("_", 1)[0] or "UNKNOWN"
         return await self._service.accept_received(
             db,

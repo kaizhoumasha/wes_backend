@@ -4,22 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.callback.contracts.external_callbacks import (
+    WMS_ALLOWED_CALLBACK_TYPES,
+    WMS_ORDINARY_EVENT_TYPES,
+    validate_external_callback_type,
+)
 from src.app.runtime.system_capabilities.wms.provider_catalog import (
     WMS_EFFECT_STATUS_HINT_CALLBACK,
     WMS_TYPED_EFFECT_CALLBACK_TYPES,
 )
 
 type JsonDict = dict[str, Any]
-
-WMS_ORDINARY_EVENT_TYPES = frozenset(
-    {
-        "WMS_GRN_RECEIVED",
-        "WMS_PALLET_ARRIVED",
-        "WMS_INVENTORY_UPDATED",
-        "WMS_PDA_OPERATION_RECORDED",
-    }
-)
-WMS_ALLOWED_CALLBACK_TYPES = WMS_ORDINARY_EVENT_TYPES | WMS_TYPED_EFFECT_CALLBACK_TYPES
 
 
 class WmsExecutionCallbackNormalizer:
@@ -38,12 +33,7 @@ class WmsExecutionCallbackNormalizer:
     def validate(self, payload: JsonDict, callback_type: str) -> None:
         """校验 WMS callback 的冻结允许集；非 WMS provider 沿用通用入口合同。"""
 
-        if not callback_type.startswith(("WMS_", "RCS_")):
-            return
-        if callback_type not in WMS_ALLOWED_CALLBACK_TYPES:
-            raise ValueError(f"callback_type is not allowed: {callback_type}")
-        if _resolve_first_str(payload, ("source_system",)) != "WMS":
-            raise ValueError("source_system must be WMS")
+        callback_type = validate_external_callback_type(payload, declared_callback_type=callback_type)
         if callback_type in WMS_TYPED_EFFECT_CALLBACK_TYPES:
             callback_data = payload.get("data")
             if not isinstance(callback_data, dict):

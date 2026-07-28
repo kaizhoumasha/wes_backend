@@ -112,7 +112,11 @@ async def test_process_external_writes_only_runtime_inbox() -> None:
     outcome = await service.process_external(
         SimpleNamespace(),  # type: ignore[arg-type]
         callback_type="WMS_INVENTORY_UPDATED",
-        payload={"callback_type": "WMS_INVENTORY_UPDATED", "source_event_id": "inventory-event-001"},
+        payload={
+            "callback_type": "WMS_INVENTORY_UPDATED",
+            "source_system": "WMS",
+            "source_event_id": "inventory-event-001",
+        },
         request_id="req-external-001",
         trace_id="trace-external-001",
         enqueue_processing=lambda: None,

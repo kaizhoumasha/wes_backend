@@ -268,7 +268,7 @@ def _outbox(**overrides: Any) -> SimpleNamespace:
         "dispatch_key": "handling:bin-operation:trace-001:move:1",
         "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP,
         "target_type": SystemOutboxTargetType.HTTP_ENDPOINT,
-        "target_code": "WMS_RCS_BIN_OPERATION",
+        "target_code": "WMS_INVENTORY_TRANSFER",
         "payload_json": {"operation_key": "bin-operation:trace-001"},
         "canonical_payload_bytes": canonical.body,
         "payload_hash": canonical.sha256,
@@ -286,7 +286,7 @@ def _outbox(**overrides: Any) -> SimpleNamespace:
         values.pop("payload_hash")
         target_url = (
             "http://wms-rcs/api/wes/transport-request"
-            if target_code == "WMS_RCS_BIN_OPERATION"
+            if target_code == "WMS_INVENTORY_TRANSFER"
             else "https://wms.example/effects"
         )
         return frozen_outbox_namespace(projection, target_code=target_code, target_url=target_url, **values)
@@ -537,7 +537,7 @@ async def test_system_outbox_dispatcher_delegates_workline_domain_to_workline_go
 
 @pytest.mark.asyncio
 async def test_system_outbox_dispatcher_excludes_rack_domain_from_generic_http_dispatch() -> None:
-    message = _outbox(id=5, operation_domain="RACK", target_code="WMS_RCS_RACK_OPERATION")
+    message = _outbox(id=5, operation_domain="RACK", target_code="WMS_FULFILLMENT_REQUEST_RACK_TRANSPORT")
     repo = FakeSystemOutboxRepository([message])
     sender = AsyncMock(
         return_value=ExternalHttpTransportResult.accepted(

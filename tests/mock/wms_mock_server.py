@@ -523,10 +523,27 @@ def _northbound_fault_response(fault: _NorthboundFault) -> Response:
     return StreamingResponse(stream_body(), status_code=fault.status, media_type="application/json", headers=headers)
 
 
+def _status_operation_identity_error(request: Request) -> JSONResponse | None:
+    """在任何测试 fault 前拒绝不属于 E08–E14 的 status identity。"""
+
+    if request.url.path != "/northbound/operations/status":
+        return None
+    operation_identity = request.query_params.get("operation_identity", "").strip()
+    operation = WMS_OPERATION_BY_IDENTITY.get(operation_identity)
+    if operation is None:
+        return JSONResponse(status_code=422, content={"code": "STATUS_OPERATION_UNKNOWN"})
+    if operation.completion_mode is not WmsCompletionMode.ASYNC_TASK:
+        return JSONResponse(status_code=422, content={"code": "STATUS_OPERATION_NOT_ASYNC_EFFECT"})
+    return None
+
+
 @app.middleware("http")
 async def fault_injection_middleware(request: Request, call_next):
     if request.url.path.startswith("/debug"):
         return await call_next(request)
+
+    if status_error := _status_operation_identity_error(request):
+        return status_error
 
     # 一次性 fault 必须在首个 await 前由同步锁原子认领，避免并发请求重复消费。
     claimed_fault: _NorthboundFault | None = None
@@ -761,6 +778,8 @@ async def northbound_contract():
 
 @app.get("/northbound/operations/status", summary="查询北向 typed EFFECT 权威状态")
 async def northbound_operation_status(request: Request, operation_identity: str, idempotency_key: str):
+    if status_error := _status_operation_identity_error(request):
+        return status_error
     raw_path = request.scope["path"]
     query_string = request.scope.get("query_string", b"")
     if query_string:

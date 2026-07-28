@@ -548,7 +548,7 @@ async def test_record_callback_marks_membership_reconciling_when_business_contex
     await service.record_callback_from_external_http(
         SimpleNamespace(add=lambda _obj: None),
         payload_json={
-            "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "dispatch_key": "handling:full-box:trace-reconcile:move:1",
             "exchange_status": "PHYSICAL_COMPLETED",
             "rack_release_id": "release-actual",
@@ -690,7 +690,7 @@ async def test_full_box_exchange_business_completed_can_resume_by_exchange_reque
     result = await service.record_callback_from_external_http(
         SimpleNamespace(add=lambda _obj: None),
         payload_json={
-            "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "exchange_request_code": "handling:full-box:release-001:move:1",
             "exchange_status": "BUSINESS_COMPLETED",
             "wms_rcs_task_id": "RCS-TASK-001",
@@ -760,7 +760,7 @@ async def test_full_box_exchange_physical_completed_without_relations_enters_rec
     result = await service.record_callback_from_external_http(
         SimpleNamespace(add=lambda _obj: None),
         payload_json={
-            "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "dispatch_key": "handling:full-box:release-002:move:1",
             "exchange_request_code": "handling:full-box:release-002:move:1",
             "exchange_status": "PHYSICAL_COMPLETED",
@@ -848,7 +848,7 @@ async def test_rack_bin_exchange_callback_conflict_enters_reconciling_projection
     result = await service.record_callback_from_external_http(
         SimpleNamespace(add=lambda _obj: None),
         payload_json={
-            "callback_type": "WMS_TRANSPORT_COMPLETED",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "dispatch_key": "handling:rack-bin:exchange-001:move:1",
             "exchange_request_code": "handling:rack-bin:exchange-001:move:1",
             "exchange_status": "PHYSICAL_COMPLETED",
@@ -888,7 +888,7 @@ async def test_reconciling_full_box_exchange_can_later_complete_business() -> No
         dispatch_key="handling:full-box:release-003:move:1",
         step_status=HandlingStepStatus.RECONCILING,
         callback_json={
-            "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "exchange_status": "PHYSICAL_COMPLETED",
             "source_version": "1",
         },
@@ -931,7 +931,7 @@ async def test_reconciling_full_box_exchange_can_later_complete_business() -> No
     result = await service.record_callback_from_external_http(
         SimpleNamespace(add=lambda _obj: None),
         payload_json={
-            "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "dispatch_key": "handling:full-box:release-003:move:1",
             "exchange_request_code": "handling:full-box:release-003:move:1",
             "rack_release_id": "rack-release-003",
@@ -1008,7 +1008,7 @@ async def test_full_box_exchange_rack_release_mismatch_enters_manual_hold() -> N
     result = await service.record_callback_from_external_http(
         SimpleNamespace(add=lambda _obj: None),
         payload_json={
-            "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "dispatch_key": "handling:full-box:release-004:move:1",
             "exchange_request_code": "handling:full-box:release-004:move:1",
             "rack_release_id": "rack-release-wrong",
@@ -1099,7 +1099,7 @@ async def test_stale_full_box_exchange_source_version_is_ignored() -> None:
         dispatch_key="handling:full-box:release-005:move:1",
         step_status=HandlingStepStatus.IN_PROGRESS,
         callback_json={
-            "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "exchange_status": "IN_PROGRESS",
             "source_version": "3",
         },
@@ -1120,7 +1120,7 @@ async def test_stale_full_box_exchange_source_version_is_ignored() -> None:
     result = await service.record_callback_from_external_http(
         SimpleNamespace(add=lambda _obj: None),
         payload_json={
-            "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "HANDLING_RECONCILIATION_EVIDENCE",
             "dispatch_key": "handling:full-box:release-005:move:1",
             "exchange_request_code": "handling:full-box:release-005:move:1",
             "rack_release_id": "rack-release-005",

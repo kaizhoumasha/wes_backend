@@ -4,16 +4,16 @@
   "contract_version": "2026-06-25",
   "direction": "event",
   "raw_callback": {
-    "event_type": "WMS_TRANSPORT_COMPLETED",
+    "event_type": "WMS_INVENTORY_UPDATED",
     "data": {
       "event_id": "evt-duplicate-001",
-      "transport_request_id": "tr-success-001",
+      "inventory_update_id": "inventory-update-001",
       "duplicate": true
     }
   },
   "expected_typed": {
     "source_event_id": "evt-duplicate-001",
-    "external_ref": "tr-success-001",
+    "external_ref": "inventory-update-001",
     "dedupe_action": "ACK_ONLY"
   }
 }

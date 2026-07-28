@@ -6,12 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from src.app.callback.services.callback_orchestration_service import _WMS_EXTERNAL_CALLBACK_TYPES
+from src.app.callback.contracts.external_callbacks import (
+    WMS_ALLOWED_CALLBACK_TYPES,
+    validate_external_callback_type,
+)
 from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import (
     sorter_inbound_runtime_service,
 )
 from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_IDENTITIES
-from src.app.wms_integration.services.callback_normalizer import WMS_ALLOWED_CALLBACK_TYPES
+from src.app.wms_integration.services.callback_normalizer import (
+    WMS_ALLOWED_CALLBACK_TYPES as NORMALIZER_WMS_ALLOWED_CALLBACK_TYPES,
+)
 
 REPO_ROOT = Path(__file__).parents[3]
 REMOVED_TRANSPORT_IDENTITIES = {
@@ -69,6 +74,8 @@ REMOVED_UNAMBIGUOUS_TERMINAL_CALLBACKS = REMOVED_TERMINAL_CALLBACKS - {
     "RCS_REJECTED",
     "WMS_FAILED",
     "RCS_FAILED",
+    # 仍作为既有 rack 生命周期失败 reason code 使用，不再作为 callback_type。
+    "RCS_RACK_OPERATION_FAILED",
 }
 REMOVED_TRANSPORT_SYMBOLS = {
     "WmsTransportContractService",
@@ -83,7 +90,46 @@ REMOVED_TRANSPORT_FILES = (
     "src/app/wms_integration/services/transport_contract.py",
     "src/app/rack/services/gateway.py",
     "src/app/handling/services/gateway.py",
+    "src/app/workline/external_http_profile.py",
 )
+REMOVED_EXTERNAL_FACADE_LITERALS = {
+    "WMS_RCS_RACK_OPERATION",
+    "WMS_RCS_BIN_OPERATION",
+    "WMS_RCS_FULL_BOX_EXCHANGE",
+    "WMS_RCS_RACK_OPERATION_URL",
+    "WMS_RCS_BIN_OPERATION_URL",
+    "WMS_RCS_FULL_BOX_EXCHANGE_URL",
+    "WMS_LEGACY_TRANSPORT",
+    "WORKLINE_PLUGIN_RUNTIME",
+    "workline.plugin-runtime",
+    "workline.external-http",
+    "freeze_plugin_external_http_binding",
+    "_build_external_http_outbox_model",
+}
+ACTIVE_SCAN_ROOTS = (
+    "src",
+    "scripts",
+    "tests/fixtures",
+    "tests/resilience/fixtures",
+    "docs/integration",
+    "docs/architecture",
+)
+ACTIVE_SCAN_FILES = (
+    ".env.dev",
+    ".env.test",
+    ".env.prod",
+    "docker-compose.yml",
+    "docker-compose.deploy.yml",
+)
+NEGATIVE_TEST_EVIDENCE_FILES = {
+    "tests/api/test_callback_external_api.py",
+    "tests/api/test_callback_route_contracts.py",
+    "tests/architecture/test_inbound_normalizer_profile_validation.py",
+    "tests/callback/test_callback_runtime_inbox_authority.py",
+    "tests/contracts/wms_integration/test_wms_operation_catalog.py",
+    "tests/wms_integration/test_callback_normalizer.py",
+    "tests/workline_runtime/test_operation_sandbox_external_idempotency.py",
+}
 
 
 def test_removed_transport_and_terminal_callbacks_exist_only_in_migration_manifest() -> None:
@@ -100,23 +146,80 @@ def test_removed_transport_and_terminal_callbacks_exist_only_in_migration_manife
     assert offenders == {}
 
 
+def test_active_artifacts_have_no_removed_callback_or_external_facade_literal() -> None:
+    """生产、部署、fixture、脚本和活跃文档必须全部零旧入口。"""
+
+    paths = [REPO_ROOT / relative_path for relative_path in ACTIVE_SCAN_FILES]
+    for relative_root in ACTIVE_SCAN_ROOTS:
+        paths.extend(path for path in (REPO_ROOT / relative_root).rglob("*") if path.is_file())
+
+    offenders: dict[str, set[str]] = {}
+    forbidden = REMOVED_UNAMBIGUOUS_TERMINAL_CALLBACKS | REMOVED_EXTERNAL_FACADE_LITERALS | REMOVED_TRANSPORT_IDENTITIES
+    for path in paths:
+        if path.suffix not in {"", ".dev", ".json", ".md", ".prod", ".py", ".sh", ".test", ".yml"}:
+            continue
+        source = path.read_text(encoding="utf-8")
+        found = {literal for literal in forbidden if literal in source}
+        relative_path = str(path.relative_to(REPO_ROOT))
+        if relative_path == "src/app/wms_integration/provider_manifest.py":
+            found -= REMOVED_TRANSPORT_IDENTITIES
+        if found:
+            offenders[relative_path] = found
+
+    assert offenders == {}
+
+
+def test_removed_literals_in_tests_are_explicit_negative_evidence_only() -> None:
+    offenders: dict[str, set[str]] = {}
+    forbidden = REMOVED_UNAMBIGUOUS_TERMINAL_CALLBACKS | REMOVED_EXTERNAL_FACADE_LITERALS | REMOVED_TRANSPORT_IDENTITIES
+    for path in (REPO_ROOT / "tests").rglob("*"):
+        if not path.is_file() or path.suffix not in {".json", ".py", ".yml"}:
+            continue
+        relative_path = str(path.relative_to(REPO_ROOT))
+        if relative_path == "tests/contracts/wms_integration/test_release_removal_guardrails.py":
+            continue
+        found = {literal for literal in forbidden if literal in path.read_text(encoding="utf-8")}
+        if found and relative_path not in NEGATIVE_TEST_EVIDENCE_FILES:
+            offenders[relative_path] = found
+
+    assert offenders == {}
+
+
 def test_removed_transport_facade_ports_and_handlers_are_absent() -> None:
     assert all(not (REPO_ROOT / relative_path).exists() for relative_path in REMOVED_TRANSPORT_FILES)
+    write_back_source = (REPO_ROOT / "src/app/workline/services/write_back_service.py").read_text()
+    intent_effect_source = (REPO_ROOT / "src/app/runtime/orchestration/runtime_intent_effects.py").read_text()
+    assert "_build_external_http_outbox_model" not in write_back_source
+    assert "WMS external HTTP facade is removed" in intent_effect_source
 
 
-def test_callback_orchestration_and_normalizer_share_the_same_wms_allow_set() -> None:
-    assert _WMS_EXTERNAL_CALLBACK_TYPES == WMS_ALLOWED_CALLBACK_TYPES
+def test_all_runtime_inbox_external_writers_use_callback_domain_allow_set() -> None:
+    assert NORMALIZER_WMS_ALLOWED_CALLBACK_TYPES is WMS_ALLOWED_CALLBACK_TYPES
+    writer_source = (REPO_ROOT / "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py").read_text()
+    orchestration_source = (REPO_ROOT / "src/app/callback/services/callback_orchestration_service.py").read_text()
+    sandbox_source = (REPO_ROOT / "src/app/runtime/orchestration/services/intent/operation_service.py").read_text()
+    for source in (writer_source, orchestration_source, sandbox_source):
+        assert "validate_external_callback_type" in source
+
+    for callback_type in ("WMS_RACK_TASK_RESULT", "RACK_OPERATION"):
+        with pytest.raises(ValueError, match="callback_type is not allowed"):
+            validate_external_callback_type(
+                {"callback_type": callback_type, "source_system": "WMS"},
+            )
 
 
 def test_active_wms_docs_do_not_publish_legacy_callback_or_transport_paths() -> None:
     for relative_path in (
         "docs/business/wms_rcs_interface_requirements.md",
         "docs/business/rough_sorter_runtime_flow.md",
+        "docs/integration/wms_rcs_interface_requirements.md",
+        "docs/architecture/SRS.md",
+        "docs/architecture/sorter-inbound-capability-spec.md",
     ):
         source = (REPO_ROOT / relative_path).read_text()
         assert all(callback_type not in source for callback_type in REMOVED_TERMINAL_CALLBACKS)
         assert "/api/v1/callback/result" not in source
-        assert "/api/wms/" not in source
+        assert "/api/wes/transport-request" not in source
 
 
 def test_legacy_wms_operation_contracts_and_handlers_are_removed() -> None:

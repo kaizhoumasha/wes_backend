@@ -14,12 +14,6 @@ HMAC_SECRET_NAMES = (
     "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
     "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2",
     "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2",
-    "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1",
-    "WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1",
-    "WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1",
-    "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1",
-    "WORKLINE_PLUGIN_RUNTIME_STAGING_HMAC_SECRET_V1",
-    "WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1",
 )
 REVOKED_CREDENTIAL_REFERENCES_NAME = "WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES"
 MOCK_WMS_MATERIAL_FLOW_SECRET_NAMES = (
@@ -32,11 +26,6 @@ ACCEPTANCE_CONTRACT_CONFIG_NAMES = (
     "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
     "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS",
     "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
-)
-LEGACY_ENDPOINT_NAMES = (
-    "WMS_RCS_RACK_OPERATION_URL",
-    "WMS_RCS_BIN_OPERATION_URL",
-    "WMS_RCS_FULL_BOX_EXCHANGE_URL",
 )
 STATUS_CONFIG_NAMES = (
     "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
@@ -67,10 +56,6 @@ def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
     mock_wms_env = services["mock_wms"]["environment"]
 
     assert api_env["WMS_SYNC_BASE_URL"] == "${CONTAINER_WMS_SYNC_BASE_URL:-}"
-    for endpoint_name in LEGACY_ENDPOINT_NAMES:
-        container_name = f"CONTAINER_{endpoint_name}"
-        assert api_env[endpoint_name] == f"${{{container_name}:-}}"
-        assert celery_env[endpoint_name] == api_env[endpoint_name]
     assert celery_env["WMS_SYNC_BASE_URL"] == api_env["WMS_SYNC_BASE_URL"]
     assert api_env["WMS_EFFECT_STATUS_URL"] == "${CONTAINER_WMS_EFFECT_STATUS_URL:-}"
     assert celery_env["WMS_EFFECT_STATUS_URL"] == api_env["WMS_EFFECT_STATUS_URL"]
@@ -180,9 +165,6 @@ def test_dev_and_test_env_declare_container_mock_urls() -> None:
         assert "WMS_EFFECT_STATUS_URL=http://localhost:8011/northbound/operations/status" in env_text
         for setting_name in STATUS_CONFIG_NAMES:
             assert f"{setting_name}=" in env_text
-        for endpoint_name in LEGACY_ENDPOINT_NAMES:
-            assert f"CONTAINER_{endpoint_name}=http://mock_wms:8011/" in env_text
-            assert f"{endpoint_name}=http://localhost:8011/" in env_text
         assert "CONTAINER_WES_EXTERNAL_CALLBACK_URL=http://api:8001/api/v1/callback/external" in env_text
         assert "API_APP_ID=app_local_mock" in env_text
         assert "API_APP_SECRET=local_mock_change_me" in env_text
@@ -191,12 +173,6 @@ def test_dev_and_test_env_declare_container_mock_urls() -> None:
         assert "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION=v2" in env_text
         assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1=" in env_text
         assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2=" in env_text
-        assert (
-            "CONTAINER_WMS_RCS_FULL_BOX_EXCHANGE_URL=http://mock_wms:8011/api/wms/legacy/full-box-exchange"
-        ) in env_text
-        assert "WMS_RCS_FULL_BOX_EXCHANGE_URL=http://localhost:8011/api/wms/legacy/full-box-exchange" in env_text
-        assert "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1=" in env_text
-        assert "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1=" in env_text
         assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text
 
 
@@ -208,14 +184,10 @@ def test_local_settings_load_all_active_wms_credentials_from_generated_dotenv() 
     assert local_settings.WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS >= (
         local_settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS + local_settings.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS
     )
-    for endpoint_name in LEGACY_ENDPOINT_NAMES:
-        assert getattr(local_settings, endpoint_name)
     assert local_settings.WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED is True
     assert local_settings.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION == "v2"
     assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1
     assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2
-    assert local_settings.WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1
-    assert local_settings.WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1
 
 
 def test_prod_env_requires_explicit_wms_https_and_production_hmac_secret() -> None:
@@ -227,13 +199,8 @@ def test_prod_env_requires_explicit_wms_https_and_production_hmac_secret() -> No
     assert "WMS_EFFECT_STATUS_URL=" in env_text
     for setting_name in STATUS_CONFIG_NAMES:
         assert f"{setting_name}=" in env_text
-    for endpoint_name in LEGACY_ENDPOINT_NAMES:
-        assert f"CONTAINER_{endpoint_name}=" in env_text
-        assert f"{endpoint_name}=" in env_text
     assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=false" in env_text
     assert "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION=v2" in env_text
     assert "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1=" in env_text
     assert "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2=" in env_text
-    assert "WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1=" in env_text
-    assert "WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1=" in env_text
     assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text

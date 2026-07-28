@@ -90,7 +90,7 @@ def _profile_with_declared_normalizers() -> ExternalContractProfile:
         contract_version="2026-06-25",
         environment="sandbox",
         inbound_normalizers_event=["WMS_GRN_RECEIVED"],
-        inbound_normalizers_result=["WMS_RACK_TASK_RESULT"],
+        inbound_normalizers_result=["WMS_EFFECT_STATUS_HINT"],
         timeout_retry_query_timeout_seconds=10,
         timeout_retry_effect_timeout_seconds=30,
         timeout_retry_retry_backoff_seconds=[1, 2, 4],

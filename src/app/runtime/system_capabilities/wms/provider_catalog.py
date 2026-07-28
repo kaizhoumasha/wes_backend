@@ -25,7 +25,7 @@ from src.app.sys.external_http_credentials import (
     CredentialResolutionError,
     build_environment_external_http_credential_provider,
 )
-from src.app.sys.services.endpoint_registry import ENDPOINT_SETTING_BY_TARGET_CODE, EndpointRegistry
+from src.app.sys.services.endpoint_registry import EndpointRegistry
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from src.app.wms_integration.provider_manifest import require_full_factory_registry
 from src.app.wms_integration.transport_url import validate_wms_base_url
@@ -137,16 +137,6 @@ def validate_wms_transport_configuration(*, settings_source: Any | None = None) 
     if environment == "production" and status_url.scheme.lower() != "https":
         raise ValueError("production WMS_EFFECT_STATUS_URL 必须使用 HTTPS")
     _validate_wms_sla_configuration(active_settings)
-
-    endpoint_registry = EndpointRegistry(settings_source=active_settings)
-    for target_code, setting_name in ENDPOINT_SETTING_BY_TARGET_CODE.items():
-        try:
-            endpoint = endpoint_registry.resolve(target_code)
-            parsed_endpoint = validate_wms_base_url(endpoint.url)
-        except ValueError as exc:
-            raise ValueError(f"{setting_name} 必须为活动运行环境显式配置为合法 HTTP(S) endpoint") from exc
-        if environment == "production" and parsed_endpoint.scheme.lower() != "https":
-            raise ValueError(f"production {setting_name} 必须使用 HTTPS")
 
     credential_provider = build_environment_external_http_credential_provider(settings_source=active_settings)
     credential_references = frozenset(

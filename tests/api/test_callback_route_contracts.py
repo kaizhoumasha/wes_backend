@@ -203,6 +203,7 @@ class TestCallbackEnqueueFallback:
         db = SimpleNamespace()
         payload = create_wms_external_payload(
             callback_type="CTU_BIN_MOVE_COMPLETED",
+            source_system="CTU",
             dispatch_key="handling:bin-operation:trace-001:move:1",
             status="SUCCEEDED",
         )
@@ -264,6 +265,7 @@ class TestCallbackEnqueueFallback:
             callback_type="CTU_BIN_MOVE_COMPLETED",
             payload=create_wms_external_payload(
                 callback_type="CTU_BIN_MOVE_COMPLETED",
+                source_system="CTU",
                 dispatch_key="handling:bin-operation:trace-001:move:1",
             ),
             request_id="req-duplicate-ctu",
@@ -325,6 +327,7 @@ class TestCallbackEnqueueFallback:
                 callback_type="CTU_BIN_MOVE_COMPLETED",
                 payload=create_wms_external_payload(
                     callback_type="CTU_BIN_MOVE_COMPLETED",
+                    source_system="CTU",
                     dispatch_key="handling:bin-operation:broker-fail",
                     status="SUCCEEDED",
                 ),

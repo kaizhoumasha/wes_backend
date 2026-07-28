@@ -1931,7 +1931,7 @@ async def test_platform_recorded_replay_precedes_late_callback_and_timer_routes(
     [
         ("COMMAND_RESULT", {"event_type": "COMMAND_RESULT", "command_code": "CMD-1"}),
         ("DEVICE_EVENT", {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "A"}}),
-        ("EXTERNAL_HTTP", {"event_type": "WMS_EXCHANGE_COMPLETED"}),
+        ("EXTERNAL_HTTP", {"event_type": "WMS_INVENTORY_UPDATED"}),
         ("INTERNAL_EVENT", {"event_type": "SESSION_RESUME", "data": {"session_id": 10}}),
         ("TIMER_TIMEOUT", {"event_type": "TIMER_TIMEOUT", "data": {"session_id": 10}}),
     ],

@@ -105,9 +105,9 @@ async def _seed_single_layer_sessions(db: AsyncSession, workline: WorkLine) -> l
         context_json={
             "rack_operation": {
                 "operation_key": "runtime-monitor-smoke:rack-op-callback",
-                "status": "ARRIVED",
+                "status": "UPDATED",
                 "source_system": "WMS",
-                "callback_type": "WMS_RACK_ARRIVED",
+                "callback_type": "WMS_INVENTORY_UPDATED",
                 "rack_kind": "SINGLE_LAYER",
                 "rack_code": "RACK-SMOKE-CALLBACK",
                 "bin_code": "BIN-SMOKE-CALLBACK",
@@ -145,7 +145,7 @@ def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]
                 "station_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "source_system": "WMS",
-                "callback_type": "WMS_RACK_ARRIVED",
+                "callback_type": "WMS_INVENTORY_UPDATED",
                 "trace_id": "runtime-monitor-smoke-wms-callback",
                 "occurred_at": now.isoformat(),
             }

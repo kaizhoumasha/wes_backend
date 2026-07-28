@@ -370,8 +370,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 * **装不进**: 若 ECS 反馈 `Put_Fail` (物理无法放入)，WES 标记该 Slot 异常，重新分配。
 * **初次无货架**: SMT 粗分机开工或当前 session 恢复时，如果粗分机工位没有 `active_bin_rack`，
-  SMT 插件只发起 `SMT_RACK_SUPPLY` 新货架补充请求，等待 WMS 回调 `WMS_RACK_ARRIVED` 后继续当前料盘分配；
-  此场景不触发满箱交换。
+  当前 T5 dispatcher 尚未实现，运行时必须以领域错误阻断，不得创建旧 transport Outbox。
 * **当前货架无可用料格**: 当 `active_bin_rack` 存在，但 4 个料箱中没有同 DC/LC 兼容格位，也没有满足料盘尺寸的空格时，
   SMT 插件同时执行两件事:
   * 向满箱交换插件发内部设备事件 `SINGLE_LAYER_RACK_RELEASED`，事件携带
@@ -379,8 +378,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     `release_reason_code=NO_COMPATIBLE_OR_EMPTY_CELL`、`bin_snapshots`。
   * 向 WMS 发起 `SMT_RACK_SUPPLY` 新货架补充请求，并在当前 SMT session 的 `rack_supply` 上下文中记录
     `dispatch_key`、`reason_code`、`pkg_id` 和恢复所需的设备信息。
-* **新货架到位恢复**: WMS 回调 `WMS_RACK_ARRIVED` 后，SMT 插件用回调中的 `active_bin_rack` 重新执行料格分配；
-  如果仍无可用料格，则再次按上述规则请求下一架。只有出料机械臂成功把当前料盘放入料格后，当前 SMT session 才完成。
+* **新货架到位恢复**: T5 只能在后续任务中通过 35-operation registry、权威 EFFECT status 与资源投影实现；
+  本阶段不接受旧货架到位终态回调。只有出料机械臂成功把当前料盘放入料格后，当前 SMT session 才完成。
 
 #### 3.3.2 混合入库策略 (Hybrid Inbound Strategy)
 
@@ -398,10 +397,10 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
      * WMS 负责判断五层货架空箱资源、交换区空位、排队和 CTU/AGV 动作闭环；WES 不本地锁定 `Empty_Bin`。
      * WES 生成交换外部请求 `FULL_BIN_EXCHANGE(Source_Single_Layer_Rack, RackReleaseSnapshot)` 并提交给 WMS，由 WMS 转发 RCS/CTU 执行原子动作。
-     * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、WMS 回调、资源投影和回写证据。
+     * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、权威 status、资源投影和回写证据。
      * **职责边界**: 满箱交换插件只消费 `SINGLE_LAYER_RACK_RELEASED` 事件，判断旧货架是否需要满箱交换并生成旧货架处理请求；
-       它不恢复 SMT 粗分机当前料盘 session，也不决定新货架补充。SMT 当前 session 的恢复只由 `SMT_RACK_SUPPLY`
-       对应的 `WMS_RACK_ARRIVED` 回调驱动。
+       它不恢复 SMT 粗分机当前料盘 session，也不决定新货架补充。SMT 当前 session 的恢复必须由后续
+       T5 typed operation 权威终态与资源投影共同驱动。
   3. **流水线零散入库 (Pipeline Picking Execution)**:
 
      * **调度**: WES 生成 Target Bin (从五层货架) 到流水线的搬运需求并提交 WMS，由 WMS 转发 RCS 执行。

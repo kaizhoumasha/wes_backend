@@ -47,7 +47,7 @@ class _InboxRepository:
 def _build_service(*, inbox_repo: Any, lifecycle: Any | None = None) -> tuple[WorklineOperationService, Any]:
     outbox = SimpleNamespace(
         id=71,
-        dispatch_key="external:smt:release-001:RACK_OPERATION:1",
+        dispatch_key="external:wms:inventory-updated:1",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         status=SystemOutboxStatus.SENT,
         sent_at=None,
@@ -56,13 +56,13 @@ def _build_service(*, inbox_repo: Any, lifecycle: Any | None = None) -> tuple[Wo
         session_id=53,
         workline_id=45,
         created_at=datetime(2026, 7, 6, 8, 0, 0, 456000),
-        payload_json={"trace_id": "trace-001", "callback_type": "RACK_OPERATION"},
+        payload_json={"trace_id": "trace-001", "callback_type": "WMS_INVENTORY_UPDATED"},
     )
     session = SimpleNamespace(
         id=53,
         workline_id=45,
         status=SessionStatus.WAITING_EXTERNAL,
-        current_wait_type="RACK_OPERATION",
+        current_wait_type="EXTERNAL_HTTP",
         trace_id="trace-001",
     )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
@@ -72,32 +72,51 @@ def _build_service(*, inbox_repo: Any, lifecycle: Any | None = None) -> tuple[Wo
         outbox_repo=cast("Any", SimpleNamespace(get_by_dispatch_key=AsyncMock(return_value=outbox))),
         session_repo=cast("Any", SimpleNamespace(get_by_id=AsyncMock(return_value=session))),
         workline_repo=cast("Any", SimpleNamespace(get_for_update=AsyncMock(return_value=workline))),
-        rack_task_lifecycle_service=cast("Any", lifecycle),
     )
     return service, lifecycle
 
 
 @pytest.mark.asyncio
-async def test_default_external_callback_retry_is_stable_and_records_lifecycle_once() -> None:
+async def test_sandbox_external_callback_rejects_removed_payload_type_before_runtime_inbox() -> None:
+    """沙箱不得用允许参数覆盖 payload 内的旧终态类型。"""
+
+    repo = _InboxRepository()
+    service, lifecycle = _build_service(inbox_repo=repo)
+
+    with pytest.raises(ValueError, match="callback_type does not match payload"):
+        await service.submit_sandbox_external_callback(
+            _Db(),
+            dispatch_key="external:wms:inventory-updated:1",
+            callback_type="WMS_INVENTORY_UPDATED",
+            payload={"callback_type": "WMS_RACK_TASK_RESULT"},
+            auto_commit=False,
+        )
+
+    assert repo.add_count == 0
+    lifecycle.record_callback_from_external_http.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_default_external_callback_retry_is_stable_without_legacy_lifecycle_side_effect() -> None:
     repo = _InboxRepository()
     service, lifecycle = _build_service(inbox_repo=repo)
 
     first = await service.submit_sandbox_external_callback(
         _Db(),
-        dispatch_key="external:smt:release-001:RACK_OPERATION:1",
-        callback_type="RACK_OPERATION",
+        dispatch_key="external:wms:inventory-updated:1",
+        callback_type="WMS_INVENTORY_UPDATED",
         auto_commit=False,
     )
     second = await service.submit_sandbox_external_callback(
         _Db(),
-        dispatch_key="external:smt:release-001:RACK_OPERATION:1",
-        callback_type="RACK_OPERATION",
+        dispatch_key="external:wms:inventory-updated:1",
+        callback_type="WMS_INVENTORY_UPDATED",
         auto_commit=False,
     )
 
     assert first is second
     assert repo.add_count == 1
-    lifecycle.record_callback_from_external_http.assert_awaited_once()
+    lifecycle.record_callback_from_external_http.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -112,7 +131,7 @@ async def test_external_callback_closes_dispatching_lease_shape() -> None:
     await service.submit_sandbox_external_callback(
         _Db(),
         dispatch_key=outbox.dispatch_key,
-        callback_type="RACK_OPERATION",
+        callback_type="WMS_INVENTORY_UPDATED",
         auto_commit=False,
     )
 
@@ -132,8 +151,8 @@ async def test_duplicate_accept_result_skips_external_lifecycle_side_effect() ->
 
     result = await service.submit_sandbox_external_callback(
         _Db(),
-        dispatch_key="external:smt:release-001:RACK_OPERATION:1",
-        callback_type="RACK_OPERATION",
+        dispatch_key="external:wms:inventory-updated:1",
+        callback_type="WMS_INVENTORY_UPDATED",
         auto_commit=False,
     )
 
@@ -154,7 +173,7 @@ async def test_accept_runtime_message_preserves_received_at_milliseconds() -> No
     result = await service._accept_runtime_message(
         _Db(),
         kind="EXTERNAL_HTTP",
-        event_type="RACK_OPERATION",
+        event_type="WMS_INVENTORY_UPDATED",
         payload={"message_type": "EXTERNAL_HTTP"},
         source_event_id="event-001",
         received_at=received_at,
@@ -177,8 +196,8 @@ async def test_external_callback_forwards_explicit_received_at_to_accept_helper(
 
     await service.submit_sandbox_external_callback(
         _Db(),
-        dispatch_key="external:smt:release-001:RACK_OPERATION:1",
-        callback_type="RACK_OPERATION",
+        dispatch_key="external:wms:inventory-updated:1",
+        callback_type="WMS_INVENTORY_UPDATED",
         timestamp=received_at,
         auto_commit=False,
     )

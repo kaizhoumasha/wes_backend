@@ -18,10 +18,10 @@
 | `WmsInventoryTransactionPort` | 库存预留、释放、转移确认等会改变 WMS 事务状态的能力 | **由现有 `WmsInventoryPort` mutation 能力迁出** | `reserve_inventory` / `release_reservation` / `confirm_transfer` |
 | `WmsFulfillmentPort` | 请求外部系统执行尚未迁移的搬运、补给、移出、换面、投箱、取箱和满箱交换 | **遗留 family Port** | `request_rack_supply` / `request_rack_transport` / `change_rack_face` / `full_box_exchange` / `move_bin_to_conveyor_entry` / `move_bin_from_conveyor_exit` |
 | `wms.fulfillment.notify_pkg_binding@v1` | 通知 WMS 料盘绑定结果 | operation-scoped typed EFFECT | `NotifyPackageBindingOperationRequest` / callback reducer |
-| `WmsEventPort` | 接收 WMS 状态变化、RCS 结果、任务结果、异常通知 | **新增**（部分实现于 callback_normalizer） | `WMS_GRN_RECEIVED` / `WMS_PALLET_ARRIVED` / `WMS_RACK_ARRIVED` / `WMS_TRANSPORT_COMPLETED` / `WMS_EXCHANGE_COMPLETED` |
+| `WmsEventPort` | 接收 WMS 普通事件与 EFFECT status hint | **已冻结**（callback_normalizer） | `WMS_GRN_RECEIVED` / `WMS_PALLET_ARRIVED` / `WMS_INVENTORY_UPDATED` / `WMS_PDA_OPERATION_RECORDED` / `WMS_EFFECT_STATUS_HINT` |
 | `WmsReconciliationQueryPort` | 只读拉取 WMS 权威事实、版本和 drift snapshot，用于对账 WES 作业期投影 | **新增** | `check_bin_drift` / `check_rack_drift` / `check_workline_drift` / `check_full_drift` |
 
-**任务变化边界**：WMS 任务变化推送（如 `WMS_TASK_CHANGE`）属于 `WmsEventPort` / `InboundNormalizerProfile`，只能经 callback API 写 `RuntimeInbox`；`WmsDocumentPort` 只提供当前单据/任务快照查询，不提供订阅、push 或入站事件入口。
+**任务变化边界**：WMS 普通事件属于 `WmsEventPort` / `InboundNormalizerProfile`，只能经 external callback API 写 `RuntimeInbox`；任务终态由 E08–E14 权威 status 提供，`WmsDocumentPort` 只提供当前单据/任务快照查询，不提供订阅、push 或入站事件入口。
 
 **对账端口边界**：`WmsReconciliationQueryPort` 是只读 QueryPort，不是 EffectPort。它只返回 WMS 权威事实、`source_version` 和 drift snapshot，不创建 `RuntimeIntentLog`，不向 WMS 写入确认/修正，不直接写 `ReconciliationRecord`。本地冲突登记、`RuntimeHold`、`resolution_decision` 和 audit log 归 `reconciliation` 域的 `ReconciliationManager`。若未来确需向 WMS 发起对账确认、库存更正或履约补偿，必须归入明确的 `WmsInventoryTransactionPort` 或 `WmsFulfillmentPort` action，并走 `RuntimeIntentLog + EffectPort`，不得把只读对账查询端口升级成通用副作用端口。
 
@@ -230,7 +230,7 @@ signature = HMAC-SHA256(secret, canonical)
 
 **callback_type allow-list**（实施细节在 Phase 3 SPEC 展开）：
 
-- WMS/RCS：`WMS_GRN_RECEIVED` / `WMS_PALLET_ARRIVED` / `WMS_RACK_ARRIVED` / `WMS_TRANSPORT_COMPLETED` / `WMS_EXCHANGE_COMPLETED` / `WMS_INVENTORY_UPDATED` / `WMS_TASK_CHANGE` / `WMS_REJECTED` / `WMS_FAILED`
+- WMS：`WMS_GRN_RECEIVED` / `WMS_PALLET_ARRIVED` / `WMS_INVENTORY_UPDATED` / `WMS_PDA_OPERATION_RECORDED` / `WMS_EFFECT_STATUS_HINT`
 - ECS/device：`DEVICE_RESULT` / `DEVICE_EVENT` / `DEVICE_STATUS_CHANGED` / `MATERIAL_ARRIVED` / `SCAN_COMPLETED` / `ESTOP_PRESSED` / `DEVICE_ERROR` / `DEVICE_ONLINE` / `DEVICE_OFFLINE`
 
 **统一入口约束**：WMS/RCS 事件沿用 `docs/integration/wms_rcs_interface_requirements.md` 的统一 callback 语义；ECS/device 事件沿用 `docs/integration/third_party_integration_whitepaper.md` 的 Command-Ack-Callback 语义。目标态中 callback API 只做签名校验、幂等校验、原始日志、normalizer 调用、ACK、写 `RuntimeInbox`，不得直接修改 `ExecutionSession`、`DeviceRuntime`、`MaterialUnit` 或投影表。

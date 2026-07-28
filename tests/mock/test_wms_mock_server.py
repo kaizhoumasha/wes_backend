@@ -488,7 +488,7 @@ def test_wms_mock_sync_effect_returns_terminal_result_without_status_or_hint(
     WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(submitted.json())
     assert "northbound_status" not in submitted.json()
     assert status.status_code == 422
-    assert status.json()["code"] == "status query only accepts ASYNC_TASK operation"
+    assert status.json()["code"] == "STATUS_OPERATION_NOT_ASYNC_EFFECT"
     assert hints.json() == {"hints": []}
     callback.assert_not_awaited()
 
@@ -1615,7 +1615,7 @@ def test_visible_then_lost_is_an_independent_one_shot_status_fault(
 
 
 def test_oversized_fault_response_is_streamed_as_an_independent_budget_case() -> None:
-    operation_identity = "wms.inventory.confirm_inbound@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-streamed-oversized-001"
     status_path = "/northbound/operations/status?" + urlencode(
         (("operation_identity", operation_identity), ("idempotency_key", idempotency_key))
@@ -1639,6 +1639,33 @@ def test_oversized_fault_response_is_streamed_as_an_independent_budget_case() ->
     assert oversized.status_code == 503
     assert "content-length" not in oversized.headers
     assert len(oversized.content) > max_response_bytes
+
+
+def test_sync_operation_status_rejected_before_matching_fault_is_consumed() -> None:
+    """E03 等同步 operation 不属于 E08–E14 status 合同，fault 不能覆盖该拒绝。"""
+
+    operation_identity = "wms.inventory.reserve_inventory@v1"
+    idempotency_key = "idem-sync-status-rejected-001"
+    status_path = "/northbound/operations/status?" + urlencode(
+        (("operation_identity", operation_identity), ("idempotency_key", idempotency_key))
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        configured = client.post(
+            "/debug/northbound/faults",
+            json={
+                "status": 503,
+                "target_path": "/northbound/operations/status",
+                "method": "GET",
+                "operation_identity": operation_identity,
+            },
+        )
+        rejected = client.get(status_path, headers=_status_headers(path=status_path))
+
+    assert configured.status_code == 200
+    assert rejected.status_code == 422
+    assert rejected.json()["code"] == "STATUS_OPERATION_NOT_ASYNC_EFFECT"
+    assert wms_mock_server.northbound_fault_state["next"] is not None
 
 
 @pytest.mark.asyncio

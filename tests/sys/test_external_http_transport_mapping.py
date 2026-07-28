@@ -61,7 +61,7 @@ def _outbox(*, operation_identity: str = "tests.external-http.effect@v1") -> Sim
         values["idempotency_key"] = "idem-status-001"
     return frozen_outbox_namespace(
         {"request_id": "REQ-001"},
-        target_code="WMS_RCS_BIN_OPERATION",
+        target_code="WMS_INVENTORY_TRANSFER",
         target_url="http://wms-rcs/api/wes/transport-request",
         operation_identity=operation_identity,
         **values,

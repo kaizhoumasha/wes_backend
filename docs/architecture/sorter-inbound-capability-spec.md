@@ -67,7 +67,8 @@
 8. 南向机械臂投料。
 9. 先落本地位置事实与格位占用，再通知 WMS PKG 绑定或库存事务。
 
-默认 `source_arm_prefetch_capacity=0`。未显式声明预取能力时，北向机械臂必须等待扫码平台 FREE 后才能取下一件。
+默认 `source_arm_prefetch_capacity=0`。未显式声明预取能力时，上一条南向 PICK command 的 ACK
+是下一次北向 PICK 的唯一推进因果；扫码平台状态、UI 预测和轮询结果均不得代替 ACK。
 
 ## 6. CellReservation 消费合同
 

@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from collections.abc import Mapping
 from typing import Any, cast
@@ -61,14 +59,6 @@ _TERMINAL_INTENT_KINDS = {
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.RESOURCE_WAIT,
 }
-_DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
-_FULFILLMENT_EXTERNAL_TARGET_CODES = frozenset(
-    {
-        "WMS_RCS_BIN_OPERATION",
-        "WMS_RCS_FULL_BOX_EXCHANGE",
-        "WMS_RCS_RACK_OPERATION",
-    }
-)
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
 _STATION_DISPATCH_LEASE_UNAVAILABLE = "station dispatch lease is not available"
 _RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID = "RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID"
@@ -82,7 +72,7 @@ def _normalize_rack_operation_target_code(value: Any) -> str:
     target_code = str(value or "")
     parsed = urlparse(target_code)
     if parsed.scheme in {"http", "https"} and parsed.netloc:
-        return _DEFAULT_RACK_OPERATION_TARGET_CODE
+        raise ValueError("legacy rack transport URL is removed; T5 dispatcher is not implemented")
     return target_code
 
 
@@ -197,70 +187,6 @@ def _rack_operation_key_from_resource_fact(ctx: Mapping[str, Any], payload_json:
             return None
         return context_operation_key
     return None
-
-
-def _mapping_text(value: Mapping[str, Any], *field_names: str) -> str | None:
-    for field_name in field_names:
-        if (text := coerce_optional_str(value.get(field_name))) is not None:
-            return text
-    return None
-
-
-def _is_fulfillment_external_request(*, target_code: str, payload_json: Mapping[str, Any]) -> bool:
-    operation_kind = _mapping_text(payload_json, "operation_kind")
-    if operation_kind is not None:
-        from src.app.runtime.orchestration.services.idempotency_guard import get_idempotency_operation_spec
-
-        return get_idempotency_operation_spec(operation_kind).operation_kind == "fulfillment"
-    return target_code in _FULFILLMENT_EXTERNAL_TARGET_CODES
-
-
-def _fulfillment_provider_code(intent: RuntimeIntent, *, target_code: str, payload_json: Mapping[str, Any]) -> str:
-    return (
-        _mapping_text(payload_json, "provider_code", "source_system", "provider")
-        or coerce_optional_str(intent.source_system)
-        or ("WMS" if target_code.startswith("WMS") else target_code)
-    )
-
-
-def _canonical_payload_hash(value: Mapping[str, Any]) -> str:
-    encoded = json.dumps(dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-async def _claim_external_fulfillment_idempotency_if_needed(
-    ctx: Mapping[str, Any],
-    intent: RuntimeIntent,
-    *,
-    dispatch_key: str,
-    target_code: str,
-    payload_json: Mapping[str, Any],
-) -> Any | None:
-    """在实际创建 fulfillment outbox 前 claim 幂等键；缺少 correlation 的 legacy 请求保持旧行为。"""
-
-    if not _is_fulfillment_external_request(target_code=target_code, payload_json=payload_json):
-        return None
-    correlation_id = _mapping_text(payload_json, "correlation_id", "execution_correlation_id")
-    if correlation_id is None:
-        return None
-
-    from src.app.runtime.orchestration.services.idempotency_guard import idempotency_guard
-    from src.utils.timezone import timezone as timezone_utils
-
-    idempotency_key = (
-        _mapping_text(payload_json, "idempotency_key", "request_id", "dispatch_key", "exchange_request_code")
-        or dispatch_key
-    )
-    return await idempotency_guard.claim_or_match(
-        ctx["db"],
-        provider_code=_fulfillment_provider_code(intent, target_code=target_code, payload_json=payload_json),
-        operation_kind="fulfillment",
-        idempotency_key=idempotency_key,
-        request_hash=_canonical_payload_hash(payload_json),
-        execution_correlation_id=correlation_id,
-        now_ms=int(timezone_utils.now_utc().timestamp() * 1000),
-        business_owner_key=f"fulfillment:{dispatch_key}",
-    )
 
 
 def _int_value(value: Any) -> int | None:
@@ -914,75 +840,12 @@ class RuntimeIntentEffectApplier:
         await self._apply_command_wait(ctx, intent)
 
     async def _apply_external_request(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.runtime.orchestration.models.timeline import (
-            TimelineActionType,
-            TimelineActorType,
-            TimelineStage,
-            TimelineStatus,
-        )
-        from src.app.workline.services import write_back_service as workline_effects
-
-        dispatch_key = str(intent.dispatch_key)
         target_code = str(intent.target_code)
-        payload_json = dict(intent.payload_json)
-        timeout_seconds = int(intent.timeout_seconds or 0)
-        session = ctx["session"]
-
-        claim_result = await _claim_external_fulfillment_idempotency_if_needed(
-            ctx,
-            intent,
-            dispatch_key=dispatch_key,
-            target_code=target_code,
-            payload_json=payload_json,
-        )
-        if claim_result == "MATCH":
-            return
-        outbox = workline_effects._build_external_http_outbox_model(
-            ctx,
-            dispatch_key=dispatch_key,
-            target_code=target_code,
-            payload_json=payload_json,
-        )
-        ctx["db"].add(outbox)
-        await workline_effects._emit_timeline(
-            ctx,
-            stage=TimelineStage.DISPATCH_PREPARE,
-            action_type=TimelineActionType.EXTERNAL_CALL_STARTED,
-            payload=workline_effects._external_decision_timeline_payload(
-                ctx,
-                dispatch_key=dispatch_key,
-                target_code=target_code,
-                payload_json=payload_json,
-            ),
-            actor_type=TimelineActorType.EXTERNAL_SYSTEM,
-            actor_code=intent.source_system or "EXTERNAL_SYSTEM",
-            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
-            status=TimelineStatus.PENDING,
-        )
-
-        workline_effects._clear_session_failure(session)
-        workline_effects.workline_session_lifecycle_service.start_wait(
-            session,
-            wait_type="EXTERNAL_HTTP",
-            occurred_at=ctx["now"],
-            deadline_seconds=timeout_seconds,
-        )
-        await workline_effects._emit_timeline(
-            ctx,
-            stage=TimelineStage.WAITING,
-            action_type=TimelineActionType.WAIT_STARTED,
-            payload=workline_effects._wait_timeline_payload(
-                ctx,
-                wait_type="EXTERNAL_HTTP",
-                wait_token=dispatch_key,
-                deadline_seconds=timeout_seconds,
-            ),
-            from_status=ctx["current_status"],
-            to_status=session.status,
-            actor_type=TimelineActorType.ORCHESTRATOR,
-            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
-            status=TimelineStatus.PENDING,
-        )
+        del ctx
+        source_system = str(intent.source_system or "")
+        if source_system in {"WMS", "RCS"} or target_code.startswith(("WMS", "RCS")):
+            raise RuntimeError("WMS external HTTP facade is removed; use the frozen 35-operation registry")
+        raise RuntimeError("generic workline external HTTP facade is removed")
 
     async def _apply_rack_operation_request(self, ctx: Any, intent: RuntimeIntent) -> RuntimeIntentEffectResult | None:
         from src.app.runtime.orchestration.models.timeline import (

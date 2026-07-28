@@ -31,7 +31,7 @@ Accepted - 2026-05-13
 
 | 字段 | 要求 |
 | --- | --- |
-| `callback_type` | 必填，例如 `WMS_FULL_BOX_EXCHANGE_RESULT`。 |
+| `callback_type` | 必填；普通事件使用四类冻结事件，异步 EFFECT 唤醒使用 `WMS_EFFECT_STATUS_HINT`。 |
 | `trace_id` | 必填，恢复 WES Runtime trace。 |
 | `exchange_request_code` / `dispatch_key` | 至少一个必填，用于定位外部请求。满箱交换两者都应携带。 |
 | `rack_release_id` | 满箱交换必填，必须与 Session context 一致。 |

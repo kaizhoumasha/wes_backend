@@ -169,14 +169,7 @@ def _configure_transport(
     app_env: str = "prod",
     sandbox_secret: str = "",
     production_secret: str = "",
-    legacy_sandbox_secret: str | None = None,
-    legacy_production_secret: str | None = None,
-    plugin_sandbox_secret: str | None = None,
-    plugin_production_secret: str | None = None,
     revoked_references: str = "",
-    rack_endpoint_url: str = "https://wms.example/api/rack-operation",
-    bin_endpoint_url: str = "https://wms.example/api/transport-request",
-    full_box_endpoint_url: str = "https://wms.example/api/full-box-exchange",
 ) -> None:
     monkeypatch.setattr(provider_catalog.settings, "APP_ENV", app_env)
     monkeypatch.setattr(provider_catalog.settings, "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED", False)
@@ -187,36 +180,8 @@ def _configure_transport(
         "https://wms.example/api/status" if app_env == "prod" else "http://localhost:8011/api/wms/status",
     )
     monkeypatch.setattr(provider_catalog.settings, "WMS_SYNC_BASE_URL", base_url)
-    monkeypatch.setattr(provider_catalog.settings, "WMS_RCS_RACK_OPERATION_URL", rack_endpoint_url, raising=False)
-    monkeypatch.setattr(provider_catalog.settings, "WMS_RCS_BIN_OPERATION_URL", bin_endpoint_url, raising=False)
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WMS_RCS_FULL_BOX_EXCHANGE_URL",
-        full_box_endpoint_url,
-        raising=False,
-    )
     monkeypatch.setattr(provider_catalog.settings, "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1", sandbox_secret)
     monkeypatch.setattr(provider_catalog.settings, "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1", production_secret)
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1",
-        sandbox_secret if legacy_sandbox_secret is None else legacy_sandbox_secret,
-    )
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1",
-        production_secret if legacy_production_secret is None else legacy_production_secret,
-    )
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1",
-        sandbox_secret if plugin_sandbox_secret is None else plugin_sandbox_secret,
-    )
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1",
-        production_secret if plugin_production_secret is None else plugin_production_secret,
-    )
     monkeypatch.setattr(
         provider_catalog.settings,
         "WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES",
@@ -245,12 +210,7 @@ def test_wms_transport_reads_url_and_hmac_from_pydantic_settings(
             WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=False,
             WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1",
             WMS_SYNC_BASE_URL="http://localhost:8011/api/wms",
-            WMS_RCS_RACK_OPERATION_URL="http://localhost:8011/api/wms/rack-operation",
-            WMS_RCS_BIN_OPERATION_URL="http://localhost:8011/api/wms/transport-request",
-            WMS_RCS_FULL_BOX_EXCHANGE_URL="http://localhost:8011/api/wms/fulfillment/full-box-exchange",
             WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="settings-material-flow-secret",
-            WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1="settings-legacy-secret",
-            WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1="settings-plugin-secret",
             WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES="",
             WMS_EFFECT_STATUS_URL="http://localhost:8011/api/wms/status",
             WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS=100,
@@ -300,29 +260,6 @@ def test_valid_active_profile_configuration_is_accepted(monkeypatch: pytest.Monk
     )
 
     provider_catalog.validate_wms_transport_configuration(settings_source=provider_catalog.settings)
-
-
-@pytest.mark.parametrize(
-    "endpoint_field",
-    (
-        "WMS_RCS_RACK_OPERATION_URL",
-        "WMS_RCS_BIN_OPERATION_URL",
-        "WMS_RCS_FULL_BOX_EXCHANGE_URL",
-    ),
-)
-def test_production_wms_transport_requires_https_for_every_external_http_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-    endpoint_field: str,
-) -> None:
-    _configure_transport(
-        monkeypatch,
-        base_url="https://wms.example/api",
-        production_secret="production-secret",
-    )
-    monkeypatch.setattr(provider_catalog.settings, endpoint_field, "http://wms.example/insecure", raising=False)
-
-    with pytest.raises(ValueError, match=endpoint_field):
-        provider_catalog.validate_wms_transport_configuration(settings_source=provider_catalog.settings)
 
 
 @pytest.mark.parametrize(

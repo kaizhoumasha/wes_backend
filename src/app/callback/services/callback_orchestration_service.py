@@ -10,7 +10,12 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from src.app.callback.contracts import TraceContext, timeline_generator
+from src.app.callback.contracts import (
+    WMS_ALLOWED_CALLBACK_TYPES,
+    TraceContext,
+    timeline_generator,
+    validate_external_callback_type,
+)
 from src.app.callback.utils import JsonDict, ensure_dict
 from src.app.device.services.device_command_service import DeviceCallbackResultOutcome
 from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import (
@@ -39,15 +44,7 @@ from src.core.logger import logger
 from src.utils.timezone import timezone
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
-_WMS_EXTERNAL_CALLBACK_TYPES = frozenset(
-    {
-        "WMS_GRN_RECEIVED",
-        "WMS_PALLET_ARRIVED",
-        "WMS_INVENTORY_UPDATED",
-        "WMS_PDA_OPERATION_RECORDED",
-        "WMS_EFFECT_STATUS_HINT",
-    }
-)
+_WMS_EXTERNAL_CALLBACK_TYPES = WMS_ALLOWED_CALLBACK_TYPES
 
 
 def _current_timestamp_ms() -> int:
@@ -491,10 +488,10 @@ class CallbackOrchestrationService:
         causation_id: str | None = None,
         enqueue_processing: Callable[[], None] | None = None,
     ) -> ExternalCallbackOutcome:
-        # Service 边界也要 fail closed，避免内部调用绕过 API ingress 后写入旧
-        # WMS/RCS terminal callback RuntimeInbox。
-        if callback_type.startswith(("WMS_", "RCS_")) and callback_type not in _WMS_EXTERNAL_CALLBACK_TYPES:
-            raise ValueError(f"callback_type is not allowed: {callback_type}")
+        callback_type = validate_external_callback_type(
+            payload,
+            declared_callback_type=callback_type,
+        )
 
         trace = self._build_trace_context(
             request_id=request_id,

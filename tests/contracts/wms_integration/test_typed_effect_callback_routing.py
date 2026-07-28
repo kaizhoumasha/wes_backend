@@ -222,8 +222,8 @@ async def test_non_hint_callback_keeps_existing_external_callback_path() -> None
 
     handled = await router.route(
         SimpleNamespace(),
-        callback_type="WMS_RACK_ARRIVED",
-        payload={"callback_type": "WMS_RACK_ARRIVED", "dispatch_key": "rack-001"},
+        callback_type="WMS_INVENTORY_UPDATED",
+        payload={"callback_type": "WMS_INVENTORY_UPDATED", "dispatch_key": "inventory-001"},
     )
 
     assert handled is False

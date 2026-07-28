@@ -39,7 +39,7 @@ note: |
 | `WmsFulfillmentPort.request_transport` | 接受请求，按 scenario 配置延迟回 callback |
 | `WmsInventoryTransactionPort.reserve_inventory` | 返回预留结果 |
 | `WmsReconciliationQueryPort.check_bin_drift` | 返回 drift snapshot |
-| `WmsEventPort`（callback） | 主动推送 `WMS_GRN_RECEIVED` / `WMS_TRANSPORT_COMPLETED` 等事件到 callback API |
+| `WmsEventPort`（callback） | 主动推送四类普通事件或 `WMS_EFFECT_STATUS_HINT` 到 external callback API |
 
 **约束**：
 - simulator 只能通过正式 port contract 进入系统；不得引入测试专用 domain service
