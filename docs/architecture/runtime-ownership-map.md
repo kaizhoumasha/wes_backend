@@ -19,13 +19,13 @@
 
 | Entity | `__tablename__` | 业务定位 | 唯一 / 索引约束 |
 | --- | --- | --- | --- |
-| `ExecutionSession` | `execution_sessions` | 会话聚合根，按 `trace_id` / `business_key` 唯一 | `workline_id` + `business_key` 业务唯一 |
+| `ExecutionSession` | `execution_sessions` | 会话聚合根，固定 WorkLine、plugin 与 Binding pins | `id` 主键；`workline_id` / `plugin_key` 索引；`plugin_binding_id` FK |
 | `ExecutionCorrelation` | `execution_correlations` | 跨实体一次性 correlation 锚点；执行关联边界的持久化载体 | `correlation_id` 唯一；跨域 session FK 收敛 |
 | `ExecutionWorkItem` | `execution_work_items` | runtime capability 最小推进单位 | 与 `ExecutionSession` 1:N |
 | `RuntimeInbox` | `runtime_inbox` | 入站持久化入口契约 | `provider_code` + `source_event_id` 唯一 |
 | `RuntimeTimeline` | `runtime_timelines` | 事件溯源 | `correlation_id` 索引 |
 | `RuntimeHold` | `runtime_holds` | Manual / Safety E-Stop / Material Conflict hold 状态机 | `correlation_id` + `scope_key` 索引 |
-| `RuntimeIntentLog` | `runtime_intent_logs` | plugin 产出 RuntimeIntent 的 ledger | `dispatch_status` |
+| `RuntimeIntentLog` | `runtime_intent_logs` | plugin 产出 RuntimeIntent 的 ledger | effect identity 与 `dispatch_key` 唯一；`effect_status` 索引 |
 | `IdempotencyKey` | `idempotency_keys` | `WES-{OPERATION_KIND}-{HASH}` 唯一约束 | `(provider_code, operation_kind, idempotency_key)` 唯一 |
 | `ConveyorQueueMembership` | `conveyor_queue_memberships` | 动态队列 active/history 投影 | `membership_status` `CheckConstraint` |
 

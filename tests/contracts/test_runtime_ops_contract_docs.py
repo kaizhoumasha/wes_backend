@@ -73,3 +73,30 @@ def test_runtime_toggle_governance_declares_release_gate_entrypoint() -> None:
         "--passed-check",
     ):
         assert token in text
+
+
+def test_runtime_current_docs_match_execution_session_and_generated_plugin_contracts() -> None:
+    current_docs = {
+        path.relative_to(REPO_ROOT): path.read_text(encoding="utf-8")
+        for path in (REPO_ROOT / "docs").rglob("*.md")
+        if "archive" not in path.relative_to(REPO_ROOT / "docs").parts
+    }
+    file_index = current_docs[Path("docs/architecture/file_index.md")]
+
+    for false_uniqueness in (
+        "按 `trace_id`/`session_id`/`business_key` 唯一",
+        "按 `trace_id` / `business_key` 唯一",
+        "`workline_id` + `business_key` 业务唯一",
+    ):
+        assert all(false_uniqueness not in text for text in current_docs.values())
+    for legacy_decorator in ("@on_event()", "@on_command()", "@step()"):
+        assert all(legacy_decorator not in text for text in current_docs.values())
+    for current_dispatch_contract in ("Definition", "ROUTE_HANDLERS", "generated index", "handler registry"):
+        assert current_dispatch_contract in file_index
+
+
+def test_runtime_orchestration_spec_lists_mandatory_binding_revision() -> None:
+    runtime_spec = (REPO_ROOT / "docs" / "architecture" / "runtime-orchestration-spec.md").read_text(encoding="utf-8")
+
+    assert "20260727_1742_be496b91f3e3" in runtime_spec
+    assert "mandatory binding" in runtime_spec.lower()

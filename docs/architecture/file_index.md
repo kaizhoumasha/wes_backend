@@ -427,7 +427,7 @@ Repository 和 Service 位于 `src/app/runtime/`。架构 guardrail 固化配置
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `execution_session.py` | ExecutionSession 实体（按 `trace_id`/`session_id`/`business_key` 唯一） | 🔧 架构核心 |
+| `execution_session.py` | ExecutionSession 会话聚合根；`id` 为唯一主键，`workline_id` / `plugin_key` 为查询索引，并固定完整 Binding pins | 🔧 架构核心 |
 | `execution_correlation.py` | ExecutionCorrelation 实体（一次性 correlation 跨实体锚点；含历史回填） | 🔧 架构核心 |
 | `execution_work_item.py` | ExecutionWorkItem 实体（work item 状态机） | 🔧 架构核心 |
 | `runtime_inbox.py` | RuntimeInbox 实体（持久化入口契约；H4 边界守门） | 🔧 架构核心 |
@@ -541,7 +541,7 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 - **旧 PluginResult 资料归档**：`docs/archive/legacy-plugin-result/README.md` 📚 历史对照
 
 **核心特性**：
-- **装饰器驱动**：`@on_event()`, `@on_command()` 类型化路由
+- **Generated 路由**：Definition 声明 route 与 typed input；`ROUTE_HANDLERS` 绑定纯 handler，generated index 固定身份与 digest，handler registry 执行注册校验
 - **Pydantic 自动验证**：Payload 自动解析和类型安全
 - **RuntimeIntent 输出**：插件只声明上下文更新、命令、等待、业务 NG、完成或阻断意图
 - **运行时拥有副作用**：拓扑解析、Session 生命周期、命令/outbox、等待状态和终态写入集中在 Runtime

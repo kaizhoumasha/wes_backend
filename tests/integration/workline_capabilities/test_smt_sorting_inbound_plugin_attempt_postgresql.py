@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import fields as dataclass_fields
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,7 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
 )
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
@@ -60,6 +62,27 @@ from tests.support.smt_sorting_inbound_postgresql import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from tests.support.smt_sorting_inbound_postgresql import RowSnapshot, SmtWriteSetSnapshot
+
+
+def _changed_snapshot_attributes(before: SmtWriteSetSnapshot, after: SmtWriteSetSnapshot) -> set[str]:
+    return {
+        field.name for field in dataclass_fields(before) if getattr(before, field.name) != getattr(after, field.name)
+    }
+
+
+def _snapshot_row_by_id(rows: RowSnapshot, row_id: int) -> dict[str, object]:
+    for row in rows:
+        values = dict(row)
+        if values.get("id") == row_id:
+            return values
+    raise AssertionError(f"snapshot row not found: id={row_id}")
+
+
+def _changed_row_fields(before: dict[str, object], after: dict[str, object]) -> set[str]:
+    assert before.keys() == after.keys()
+    return {field for field in before if before[field] != after[field]}
 
 
 async def _seed_binding(db: AsyncSession) -> tuple[WorkLine, WorklinePluginBinding, SmtSortingInboundConfig]:
@@ -420,6 +443,9 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
                 source_event_id=f"smt-pg-callback-{result.value.lower()}",
             )
             before_callback = await snapshot_smt_write_set(db)
+            assert isinstance(before_callback.idempotency_keys, tuple)
+            assert isinstance(before_callback.diagnostics, tuple)
+            assert isinstance(before_callback.runtime_status_projections, tuple)
             callback_inbox, first_enqueue_count = await _submit_public_callback(
                 db,
                 processed=processed,
@@ -433,9 +459,21 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
                 callback_inbox=callback_inbox,
                 processor_token=f"lease-public-callback-{result.value.lower()}",
             )
+            # Public processor 返回后立即提交并关闭当前 Session；所有 typed effect
+            # 断言必须来自新 Session 的数据库事实，不能依赖 identity map。
+            await db.commit()
+            callback_inbox_id = int(callback_inbox.id)
+
+        async with session_factory() as db:
             after_callback = await snapshot_smt_write_set(db)
             assert len(after_callback.commands) == len(before_callback.commands)
             assert len(after_callback.outboxes) == len(before_callback.outboxes)
+            callback_inbox = await db.get(RuntimeInbox, callback_inbox_id)
+            assert callback_inbox is not None
+            assert callback_inbox.status == "PROCESSED"
+            assert callback_inbox.command_id == processed.command.id
+            assert callback_inbox.correlation_id == processed.command.correlation_id
+            assert callback_inbox.execution_session_id == processed.source_inbox.execution_session_id
             decision = await db.scalar(
                 select(WorklineTimeline)
                 .where(
@@ -446,6 +484,142 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
             )
             assert decision is not None
             assert decision.payload_json["decision"]["outcome_code"] == expected_generated_outcome
+            persisted_after_callback = await db.get(
+                SmtInboundHandoffSourceItem,
+                seeded.source_item_id,
+                populate_existing=True,
+            )
+            assert persisted_after_callback is not None
+            if result is CommandResult.SUCCESS:
+                assert persisted_after_callback.status == SmtInboundHandoffSourceItemStatus.PICKED
+                ledger_intent = await db.scalar(
+                    select(RuntimeIntentLog).where(
+                        RuntimeIntentLog.capability_key == "material_flow.smt_source_pick_ledger"
+                    )
+                )
+                assert ledger_intent is not None
+                assert ledger_intent.effect_status == RuntimeIntentStatus.COMPLETED
+                assert ledger_intent.outcome_kind == "success"
+                assert ledger_intent.outcome_code == "SUCCESS"
+                assert ledger_intent.outcome_json["outcome"]["payload"]["status"] == "PICKED"
+                assert ledger_intent.outcome_json["outcome"]["payload"]["advanced"] is True
+                assert len(after_callback.runtime_intent_logs) == len(before_callback.runtime_intent_logs) + 1
+                assert len(after_callback.idempotency_keys) == len(before_callback.idempotency_keys) + 1
+                assert len(after_callback.audit_logs) == len(before_callback.audit_logs) + 2
+                previous_idempotency_identities = {
+                    (
+                        dict(row)["provider_code"],
+                        dict(row)["operation_kind"],
+                        dict(row)["idempotency_key"],
+                    )
+                    for row in before_callback.idempotency_keys
+                }
+                [ledger_idempotency] = [
+                    dict(row)
+                    for row in after_callback.idempotency_keys
+                    if (
+                        dict(row)["provider_code"],
+                        dict(row)["operation_kind"],
+                        dict(row)["idempotency_key"],
+                    )
+                    not in previous_idempotency_identities
+                ]
+                assert ledger_idempotency["execution_correlation_id"] == processed.command.correlation_id
+                assert ledger_idempotency["request_hash"]
+                expected_callback_changes = {
+                    "commands",
+                    "timelines",
+                    "sessions",
+                    "runtime_inboxes",
+                    "runtime_intent_logs",
+                    "idempotency_keys",
+                    "source_items",
+                    "demands",
+                    "attempt_evidence",
+                    "callback_logs",
+                    "audit_logs",
+                }
+            else:
+                assert persisted_after_callback.status == SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING
+                assert (
+                    await db.scalar(
+                        select(func.count())
+                        .select_from(RuntimeIntentLog)
+                        .where(RuntimeIntentLog.capability_key == "material_flow.smt_source_pick_ledger")
+                    )
+                    == 0
+                )
+                assert len(after_callback.runtime_intent_logs) == len(before_callback.runtime_intent_logs) + 1
+                assert len(after_callback.idempotency_keys) == len(before_callback.idempotency_keys) + 1
+                previous_intent_ids = {dict(row)["id"] for row in before_callback.runtime_intent_logs}
+                [failure_intent] = [
+                    dict(row)
+                    for row in after_callback.runtime_intent_logs
+                    if dict(row)["id"] not in previous_intent_ids
+                ]
+                assert failure_intent["correlation_id"] == processed.command.correlation_id
+                assert failure_intent["target_action"] == f"inbox:{callback_inbox.id}:0:block"
+                assert failure_intent["effect_status"] == RuntimeIntentStatus.COMPLETED
+                assert failure_intent["outcome_kind"] == "success"
+                assert failure_intent["outcome_code"] == "SUCCESS"
+                previous_idempotency_identities = {
+                    (
+                        dict(row)["provider_code"],
+                        dict(row)["operation_kind"],
+                        dict(row)["idempotency_key"],
+                    )
+                    for row in before_callback.idempotency_keys
+                }
+                [failure_idempotency] = [
+                    dict(row)
+                    for row in after_callback.idempotency_keys
+                    if (
+                        dict(row)["provider_code"],
+                        dict(row)["operation_kind"],
+                        dict(row)["idempotency_key"],
+                    )
+                    not in previous_idempotency_identities
+                ]
+                assert failure_idempotency["execution_correlation_id"] == processed.command.correlation_id
+                assert failure_idempotency["request_hash"]
+                assert len(after_callback.device_runtime_projections) == (
+                    len(before_callback.device_runtime_projections) + 1
+                )
+                assert len(after_callback.audit_logs) == len(before_callback.audit_logs) + 3
+                device_before = _snapshot_row_by_id(before_callback.devices, seeded.device_id)
+                device_after = _snapshot_row_by_id(after_callback.devices, seeded.device_id)
+                assert _changed_row_fields(device_before, device_after) == {
+                    "device_status",
+                    "error_code",
+                    "updated_at",
+                    "version",
+                }
+                [device_projection] = [
+                    dict(row)
+                    for row in after_callback.device_runtime_projections
+                    if dict(row).get("device_id") == seeded.device_id
+                ]
+                assert device_projection["device_code"] == seeded.device_code
+                assert device_projection["runtime_status"] == "ERROR"
+                assert device_projection["current_command_id"] is None
+                assert device_projection["error_code"] == "DEVICE_FAILURE"
+                assert device_projection["evidence_json"] == {
+                    "source": "device_service_runtime_update",
+                    "changed_fields": ["device_status", "error_code"],
+                }
+                expected_callback_changes = {
+                    "commands",
+                    "timelines",
+                    "sessions",
+                    "runtime_inboxes",
+                    "runtime_intent_logs",
+                    "idempotency_keys",
+                    "devices",
+                    "device_runtime_projections",
+                    "callback_logs",
+                    "audit_logs",
+                }
+            assert _changed_snapshot_attributes(before_callback, after_callback) == expected_callback_changes
 
             # 重复 ingress 允许新增一条 DUPLICATE callback diagnostic，不得产生新的
             # RuntimeInbox、effect 或任何 domain/runtime state advance。
@@ -464,13 +638,35 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
             assert len(after_duplicate.callback_logs) == len(before_duplicate.callback_logs) + 1
             assert after_duplicate.audit_logs == before_duplicate.audit_logs
 
+            # Recovery 使用独立 aggregate：先只让正式 callback ingress 持久化权威 command terminal，
+            # 再制造“command 已完成、source correlation 尚未提交”的最小 crash window。
+            recovery_seeded = await seed_smt_source_pick_claim(
+                db,
+                suffix=f"recovery-{result.value.lower()}",
+            )
+            recovery_processed = await process_smt_source_pick_claim(db, recovery_seeded)
+            recovery_callback_payload = _callback_payload(
+                processed=recovery_processed,
+                result=result,
+                source_event_id=f"smt-pg-recovery-callback-{result.value.lower()}",
+            )
+            recovery_callback_inbox, recovery_enqueue_count = await _submit_public_callback(
+                db,
+                processed=recovery_processed,
+                payload=recovery_callback_payload,
+                request_id=f"request-smt-pg-recovery-{result.value.lower()}",
+                source_event_id=f"smt-pg-recovery-callback-{result.value.lower()}",
+            )
+            assert recovery_enqueue_count == 1
+            assert recovery_callback_inbox.status == "RECEIVED"
+            assert recovery_seeded.source_item_id != seeded.source_item_id
             await _clear_source_pick_correlation_for_recovery(
                 db,
-                source_item_id=seeded.source_item_id,
-                command_code=processed.command.command_code,
+                source_item_id=recovery_seeded.source_item_id,
+                command_code=recovery_processed.command.command_code,
             )
             before_recovery = await snapshot_smt_write_set(db)
-            summary = await seeded.service.scan_smt_inbound_handoff_demands_batch(
+            summary = await recovery_seeded.service.scan_smt_inbound_handoff_demands_batch(
                 db,
                 scan_limit=0,
                 recovery_limit=100,
@@ -478,7 +674,7 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
                 stale_after_seconds=1,
             )
             await db.commit()
-            recovered = await db.get(SmtInboundHandoffSourceItem, seeded.source_item_id)
+            recovered = await db.get(SmtInboundHandoffSourceItem, recovery_seeded.source_item_id)
             assert recovered is not None
             assert summary[expected_summary_key] == 1, (
                 summary,
@@ -486,13 +682,43 @@ def test_smt_request_callback_recovery_closes_once_without_extra_effects(
                 recovered.failure_message,
             )
             assert recovered.status == expected_status
-            assert recovered.source_pick_command_id == processed.command.id
+            assert recovered.source_pick_command_id == recovery_processed.command.id
             after_recovery = await snapshot_smt_write_set(db)
-            assert after_recovery.commands == before_recovery.commands
-            assert after_recovery.outboxes == before_recovery.outboxes
-            assert after_recovery.timelines == before_recovery.timelines
+            recovery_changed_attributes = _changed_snapshot_attributes(before_recovery, after_recovery)
+            assert recovery_changed_attributes <= {"source_items", "demands", "attempt_evidence"}
+            assert "source_items" in recovery_changed_attributes
+            source_before = _snapshot_row_by_id(before_recovery.source_items, recovery_seeded.source_item_id)
+            source_after = _snapshot_row_by_id(after_recovery.source_items, recovery_seeded.source_item_id)
+            source_changed_fields = _changed_row_fields(source_before, source_after)
+            assert {
+                "status",
+                "source_pick_command_id",
+                "source_pick_command_code",
+                "source_pick_dispatch_key",
+            } <= source_changed_fields
+            assert source_changed_fields <= {
+                "status",
+                "source_pick_command_id",
+                "source_pick_command_code",
+                "source_pick_dispatch_key",
+                "failure_code",
+                "failure_message",
+                "next_attempt_at",
+                "completed_at",
+                "updated_at",
+            }
+            if "demands" in recovery_changed_attributes:
+                demand_before = _snapshot_row_by_id(before_recovery.demands, recovery_seeded.demand_id)
+                demand_after = _snapshot_row_by_id(after_recovery.demands, recovery_seeded.demand_id)
+                assert _changed_row_fields(demand_before, demand_after) <= {
+                    "status",
+                    "failure_code",
+                    "failure_message",
+                    "next_attempt_at",
+                    "updated_at",
+                }
 
-            repeated = await seeded.service.scan_smt_inbound_handoff_demands_batch(
+            repeated = await recovery_seeded.service.scan_smt_inbound_handoff_demands_batch(
                 db,
                 scan_limit=0,
                 recovery_limit=100,
@@ -515,14 +741,26 @@ def test_smt_generated_attempt_transaction_retry_has_one_command_and_outbox(
         async with session_factory() as db:
             seeded = await seed_smt_source_pick_claim(db, suffix="transaction-retry")
             original_call = SmtSourcePickCommandHandler.__call__
+            provisional: dict[str, object] = {}
 
             async def fail_after_generated_decision(
-                _self: SmtSourcePickCommandHandler,
-                _request: object,
+                self: SmtSourcePickCommandHandler,
+                request: object,
                 *,
                 execution: object,
             ) -> object:
-                _ = execution
+                _ = await original_call(self, request, execution=execution)  # type: ignore[arg-type]
+                execution_db = execution.ctx["db"]  # type: ignore[attr-defined]
+                await execution_db.flush()
+                provisional["commands"] = await execution_db.scalar(select(func.count()).select_from(DeviceCommand))
+                provisional["outboxes"] = await execution_db.scalar(select(func.count()).select_from(SystemOutbox))
+                provisional_item = await execution_db.get(
+                    SmtInboundHandoffSourceItem,
+                    seeded.source_item_id,
+                    populate_existing=True,
+                )
+                assert provisional_item is not None
+                provisional["source_pick_command_id"] = provisional_item.source_pick_command_id
                 raise RuntimeError("forced-effect-transaction-retry")
 
             before_failure = await snapshot_smt_write_set(db)
@@ -532,9 +770,18 @@ def test_smt_generated_attempt_transaction_retry_has_one_command_and_outbox(
                 claim=seeded.claim,
             )
             assert failed["failed"] == 1, failed
+            assert provisional["commands"] == 1
+            assert provisional["outboxes"] == 1
+            assert isinstance(provisional["source_pick_command_id"], int)
+
+        async with session_factory() as db:
             after_failure = await snapshot_smt_write_set(db)
             assert after_failure.durable_effects() == before_failure.durable_effects()
             assert len(after_failure.runtime_inboxes) == len(before_failure.runtime_inboxes)
+            assert len(after_failure.diagnostics) == len(before_failure.diagnostics) + 1
+            failure_diagnostic = dict(after_failure.diagnostics[-1])
+            assert failure_diagnostic["inbox_id"] == seeded.source_inbox_id
+            assert failure_diagnostic["diagnostic_code"] == "UNKNOWN"
 
             monkeypatch.setattr(SmtSourcePickCommandHandler, "__call__", original_call)
             source_inbox = await db.get(RuntimeInbox, seeded.source_inbox_id)
@@ -558,5 +805,9 @@ def test_smt_generated_attempt_transaction_retry_has_one_command_and_outbox(
             after_retry = await snapshot_smt_write_set(db)
             assert len(after_retry.commands) == 1
             assert len(after_retry.outboxes) == 1
+            retried_item = await db.get(SmtInboundHandoffSourceItem, seeded.source_item_id, populate_existing=True)
+            assert retried_item is not None
+            assert retried_item.source_pick_command_id == dict(after_retry.commands[0])["id"]
+            assert retried_item.source_pick_dispatch_key == dict(after_retry.outboxes[0])["dispatch_key"]
 
     asyncio.run(_run_postgresql_scenario(scenario))

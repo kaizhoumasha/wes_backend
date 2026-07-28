@@ -12,9 +12,13 @@ from src.app.callback.models import CallbackLog
 from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
+from src.app.runtime.orchestration.device_runtime_projection import DeviceRuntimeProjection
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
+from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
@@ -122,6 +126,11 @@ class SmtWriteSetSnapshot:
     runtime_inboxes: RowSnapshot
     runtime_intent_logs: RowSnapshot
     runtime_holds: RowSnapshot
+    idempotency_keys: RowSnapshot
+    diagnostics: RowSnapshot
+    runtime_status_projections: RowSnapshot
+    device_runtime_projections: RowSnapshot
+    dispatch_attempts: RowSnapshot
     source_items: RowSnapshot
     demands: RowSnapshot
     attempt_evidence: tuple[tuple[Any, ...], ...]
@@ -144,13 +153,18 @@ class SmtWriteSetSnapshot:
             self.runtime_inboxes,
             self.runtime_intent_logs,
             self.runtime_holds,
+            self.idempotency_keys,
+            self.diagnostics,
+            self.runtime_status_projections,
+            self.device_runtime_projections,
+            self.dispatch_attempts,
             self.source_items,
             self.demands,
             self.attempt_evidence,
         )
 
     def durable_effects(self) -> tuple[Any, ...]:
-        """失败 attempt 允许 RuntimeInbox terminal 元数据变化，其余写集必须回滚。"""
+        """失败 attempt 仅允许 RuntimeInbox terminal 与诊断变化，其余写集必须回滚。"""
 
         return (
             self.worklines,
@@ -162,8 +176,13 @@ class SmtWriteSetSnapshot:
             self.execution_sessions,
             self.execution_work_items,
             self.execution_correlations,
+            _normalize_runtime_inboxes(self.runtime_inboxes),
             self.runtime_intent_logs,
             self.runtime_holds,
+            self.idempotency_keys,
+            self.runtime_status_projections,
+            self.device_runtime_projections,
+            self.dispatch_attempts,
             self.source_items,
             self.demands,
             self.attempt_evidence,
@@ -171,9 +190,37 @@ class SmtWriteSetSnapshot:
 
 
 async def _snapshot_rows(db: AsyncSession, model: type[Any]) -> RowSnapshot:
-    rows = list((await db.scalars(select(model).order_by(model.id))).all())
+    primary_key_columns = tuple(model.__table__.primary_key.columns)
+    rows = list((await db.scalars(select(model).order_by(*primary_key_columns))).all())
     columns = tuple(model.__table__.columns)
     return tuple(tuple((column.key, deepcopy(getattr(row, column.key))) for column in columns) for row in rows)
+
+
+_RUNTIME_INBOX_TERMINAL_FIELDS = frozenset(
+    {
+        "status",
+        "processor_token",
+        "attempt_count",
+        "next_retry_at",
+        "lease_until",
+        "last_error_code",
+        "last_error_message",
+        "processed_at",
+        "failed_at",
+    }
+)
+
+
+def _normalize_runtime_inboxes(rows: RowSnapshot) -> RowSnapshot:
+    """仅屏蔽合法 terminal/retry 字段，保留所有 binding/payload/session anchor。"""
+
+    return tuple(
+        tuple(
+            (field, "<allowed-runtime-inbox-terminal>") if field in _RUNTIME_INBOX_TERMINAL_FIELDS else (field, value)
+            for field, value in row
+        )
+        for row in rows
+    )
 
 
 async def snapshot_smt_write_set(db: AsyncSession) -> SmtWriteSetSnapshot:
@@ -195,6 +242,11 @@ async def snapshot_smt_write_set(db: AsyncSession) -> SmtWriteSetSnapshot:
         runtime_inboxes=await _snapshot_rows(db, RuntimeInbox),
         runtime_intent_logs=await _snapshot_rows(db, RuntimeIntentLog),
         runtime_holds=await _snapshot_rows(db, RuntimeHold),
+        idempotency_keys=await _snapshot_rows(db, IdempotencyKey),
+        diagnostics=await _snapshot_rows(db, WorklineDiagnostic),
+        runtime_status_projections=await _snapshot_rows(db, WorklineRuntimeStatusProjection),
+        device_runtime_projections=await _snapshot_rows(db, DeviceRuntimeProjection),
+        dispatch_attempts=await _snapshot_rows(db, WorklineDispatchAttempt),
         source_items=await _snapshot_rows(db, SmtInboundHandoffSourceItem),
         demands=await _snapshot_rows(db, SmtInboundHandoffDemand),
         attempt_evidence=tuple(

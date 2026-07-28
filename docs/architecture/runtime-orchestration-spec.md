@@ -314,6 +314,7 @@ PROCESSING + expired lease ──claim(new token)──> PROCESSING
 | `20260702_1913_f88092809f4b` | DeviceRuntimeProjection 建表 |
 | `20260711_1815_b8a28e1bfec8` | RuntimeInbox canonical envelope、五态 claim/fencing 字段与 hot indexes |
 | `20260711_1819_ec426c628516` | 增加显式 WorklineSession FK，迁移依赖后删除旧 `wes_biz.workline_inbox` |
+| `20260727_1742_be496b91f3e3` | 三类运行态记录 mandatory binding pins：NOT NULL、Binding FK 与完整快照约束 |
 
 ---
 
