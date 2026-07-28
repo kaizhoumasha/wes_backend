@@ -7,6 +7,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _find_removed_chain_tokens(text: str, tokens: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(token for token in tokens if token in text)
+
+
 def test_observability_contract_declares_stable_runtime_signals() -> None:
     path = REPO_ROOT / "docs" / "contracts" / "observability-contract.md"
     text = path.read_text(encoding="utf-8")
@@ -95,13 +99,14 @@ def test_runtime_current_docs_match_execution_session_and_generated_plugin_contr
         assert current_dispatch_contract in file_index
 
 
-def test_active_runtime_docs_do_not_describe_removed_plugin_execution_chain() -> None:
+def test_active_runtime_docs_do_not_describe_removed_plugin_execution_chain(tmp_path: Path) -> None:
     active_runtime_docs = (
         "docs/architecture/file_index.md",
         "docs/architecture/runtime-orchestration-spec.md",
         "docs/architecture/runtime-ownership-map.md",
         "docs/business/workline_plugin_architecture_design.md",
         "docs/business/workline_runtime_workflow_guide.md",
+        "docs/business/smt_sorter_inbound_workflow_guide.md",
         "docs/plugin_development_guide.md",
     )
     removed_chain_tokens = (
@@ -114,10 +119,16 @@ def test_active_runtime_docs_do_not_describe_removed_plugin_execution_chain() ->
         "src/" + "workline_plugins",
     )
 
+    assert all("/archive/" not in relative_path for relative_path in active_runtime_docs)
+    fixture = tmp_path / "current-runtime-doc.md"
+    fixture.write_text("\n".join(removed_chain_tokens), encoding="utf-8")
+    fixture_text = fixture.read_text(encoding="utf-8")
+    assert _find_removed_chain_tokens(fixture_text, removed_chain_tokens) == removed_chain_tokens
+
     for relative_path in active_runtime_docs:
         text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-        for removed_token in removed_chain_tokens:
-            assert removed_token not in text, f"{relative_path} 仍包含已删除链路 {removed_token}"
+        offenders = _find_removed_chain_tokens(text, removed_chain_tokens)
+        assert not offenders, f"{relative_path} 仍包含已删除链路 {offenders}"
 
 
 def test_runtime_orchestration_spec_matches_canonical_migration_and_schema_facts() -> None:
@@ -137,6 +148,31 @@ def test_runtime_orchestration_spec_matches_canonical_migration_and_schema_facts
         "ExecutionWorkItem 新增 mandatory `manifest_version`",
     ):
         assert expected_migration_fact in runtime_spec
+    revision_1815_line = next(line for line in runtime_spec.splitlines() if "`20260711_1815_b8a28e1bfec8`" in line)
+    revision_1103_line = next(line for line in runtime_spec.splitlines() if "`20260714_1103_e0d58415afc9`" in line)
+    assert "canonical envelope、五态 claim/fencing 字段与约束" in revision_1815_line
+    assert "index" not in revision_1815_line.lower()
+    assert "autocommit block" in revision_1103_line
+    assert "RuntimeInbox hot indexes" in revision_1103_line
+
+    for expected_entity_fact in (
+        "**表**: `wes_runtime.runtime_timelines`",
+        "**用途**: ExecutionSession 的 append-only 执行轨迹",
+        "**表**: `wes_runtime.runtime_holds`",
+        "**用途**: ExecutionSession 内按 object/device/resource scope 暂停新 effect 的运行时闸门",
+        "**表**: `wes_biz.workline_timelines`",
+        "**用途**: WorklineSession 的业务排障与审计时间线",
+        "**表**: `wes_biz.runtime_holds`",
+        "**用途**: WorkLine 业务异常恢复与人工处置的权威事实",
+    ):
+        assert expected_entity_fact in runtime_spec
+    runtime_schema_line = next(line for line in runtime_spec.splitlines() if line.startswith("| `wes_runtime`"))
+    business_schema_line = next(line for line in runtime_spec.splitlines() if line.startswith("| `wes_biz`"))
+    assert "`runtime_timelines`" in runtime_schema_line
+    assert "`runtime_holds`" in runtime_schema_line
+    assert "`workline_timelines`" in business_schema_line
+    assert "`runtime_holds`" in business_schema_line
+
     assert (
         "Runtime schema revision canonical inventory：`docs/architecture/runtime-orchestration-spec.md` §4.2"
         in file_index
@@ -168,6 +204,17 @@ def test_runtime_orchestration_spec_matches_canonical_migration_and_schema_facts
     assert 'op.create_table(\n        "execution_sessions"' not in revision_1719
     assert 'op.create_table(\n        "execution_correlations"' not in revision_1719
 
+    revision_1815 = (migration_root / "20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py").read_text(encoding="utf-8")
+    assert "_INDEXES: tuple[tuple[str, tuple[str, ...], str | None], ...] = ()" in revision_1815
+    assert "热表索引由 Revision C" in revision_1815
+
+    revision_1103 = (migration_root / "20260714_1103_e0d58415afc9_create_runtime_inbox_indexes_.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_INDEXES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (" in revision_1103
+    assert "with op.get_context().autocommit_block():" in revision_1103
+    assert "postgresql_concurrently=True" in revision_1103
+
     revision_1913 = (migration_root / "20260702_1913_f88092809f4b_add_device_runtime_projection.py").read_text(
         encoding="utf-8"
     )
@@ -187,3 +234,26 @@ def test_runtime_orchestration_spec_matches_canonical_migration_and_schema_facts
     assert "op.create_foreign_key(" not in revision_1742
     for table_name in ("workline_sessions", "execution_sessions", "execution_work_items"):
         assert f'"{table_name}"' in revision_1742
+
+    runtime_timeline_model = (REPO_ROOT / "src/app/runtime/orchestration/runtime_timeline.py").read_text(
+        encoding="utf-8"
+    )
+    runtime_hold_model = (REPO_ROOT / "src/app/runtime/orchestration/runtime_hold.py").read_text(encoding="utf-8")
+    workline_timeline_model = (REPO_ROOT / "src/app/runtime/orchestration/models/timeline.py").read_text(
+        encoding="utf-8"
+    )
+    business_hold_model = (REPO_ROOT / "src/app/runtime/orchestration/models/runtime_hold.py").read_text(
+        encoding="utf-8"
+    )
+    assert '__tablename__ = "runtime_timelines"' in runtime_timeline_model
+    assert "__schema__ = RUNTIME_SCHEMA" in runtime_timeline_model
+    assert "execution_session_id: int" in runtime_timeline_model
+    assert '__tablename__ = "runtime_holds"' in runtime_hold_model
+    assert "__schema__ = RUNTIME_SCHEMA" in runtime_hold_model
+    assert "execution_session_id: int" in runtime_hold_model
+    assert '__tablename__: ClassVar[str] = "workline_timelines"' in workline_timeline_model
+    assert "__schema__ = SchemaType.BIZ.value" in workline_timeline_model
+    assert "session_id: int" in workline_timeline_model
+    assert '__tablename__: ClassVar[Literal["runtime_holds"]] = "runtime_holds"' in business_hold_model
+    assert "__schema__ = SchemaType.BIZ.value" in business_hold_model
+    assert "workline_id: int" in business_hold_model
