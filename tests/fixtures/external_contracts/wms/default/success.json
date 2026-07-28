@@ -9,12 +9,15 @@
     "idempotency_key": "idem-rack-supply-success-001"
   },
   "raw_response": {
-    "accepted": true,
-    "external_ref": "wms-task-001"
+    "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+    "idempotency_key": "idem-rack-supply-success-001",
+    "provider_reference": "wms-task-001",
+    "submission_state": "ACCEPTED"
   },
   "expected_typed": {
-    "accepted": true,
-    "external_ref": "wms-task-001",
-    "status": "ACCEPTED"
+    "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+    "idempotency_key": "idem-rack-supply-success-001",
+    "provider_reference": "wms-task-001",
+    "submission_state": "ACCEPTED"
   }
 }

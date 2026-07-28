@@ -58,7 +58,7 @@
 目标态流程：
 
 1. STATION A/B 与 FIVE STATION admission。
-2. WMS/CTU 批量投箱入线与逐箱 callback。
+2. 通过 WMS E12 提交 CTU 批量投箱履约；逐箱物理推进只消费 ECS `DEVICE_EVENT`。
 3. SCAN1 授权料箱 resolve；未授权或冲突进入 NG / RuntimeHold / RECONCILING。
 4. SCAN2/SCAN3 路由到工作位、退料线或 NG。
 5. 北向机械臂取料到扫码平台。
@@ -67,8 +67,8 @@
 8. 南向机械臂投料。
 9. 先落本地位置事实与格位占用，再通知 WMS PKG 绑定或库存事务。
 
-默认 `source_arm_prefetch_capacity=0`。未显式声明预取能力时，上一条南向 PICK command 的 ACK
-是下一次北向 PICK 的唯一推进因果；扫码平台状态、UI 预测和轮询结果均不得代替 ACK。
+北向下一次取料只由上一物料南向投放成功的 typed `COMMAND_RESULT` 解锁。扫码平台本地状态、
+UI 预测和轮询结果均不得成为取料准入条件。
 
 ## 6. CellReservation 消费合同
 
@@ -127,7 +127,7 @@ CTU 批量履约必须保留父请求和逐对象子 work item。查询视图展
 - 已满箱交换入库的物料不得进入逐件分拣候选集。
 - SCAN1 未授权料箱进入 NG / RuntimeHold / RECONCILING。
 - 物料 work item 与料箱 work item join 条件缺一不可。
-- source arm prefetch 未声明时容量为 0。
+- 北向下一次取料必须等待上一物料南向投放成功的 typed `COMMAND_RESULT`。
 - CTU 父请求不能掩盖子项缺失或部分失败。
 
 ### 8.1 characterization-to-target contract mapping
@@ -190,7 +190,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 步骤 | Runtime 实体 | 状态 |
 |------|-------------|------|
 | STATION A/B + FIVE STATION admission | `ExecutionSession` (start admission) | ✅ |
-| WMS/CTU 批量投箱入线 + 逐箱 callback | `WmsFulfillmentPort` → `RuntimeInbox` (ACK-before-processing) | ✅ |
+| WMS E12 批量投箱履约 + ECS 逐箱物理事件 | `WmsFulfillmentPort` + `RuntimeInbox` `DEVICE_EVENT` | ✅ |
 | SCAN1 授权料箱 resolve / 未授权 NG | `ConveyorQueueMembership` (placeholder→bin_code resolve) + `RuntimeHold` | ✅ |
 | SCAN2/SCAN3 路由到工作位/退料线/NG | `RuntimeIntentLog` → `DeviceCommandPort` (输送线路由命令) | ✅ |
 | 北向机械臂取料到扫码平台 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |

@@ -396,29 +396,21 @@ v1 采用全线单工作位口径——一次只有一个可信 AT_WORK 目标�
 | 目标料箱内容（各料格占用） | 每次 TARGET_ARM 放料完成 |
 | WMS 库存增量同步状态 | TARGET_ARM 放料成功后形成待同步增量；WMS 接收后记录 inventory_delta_ref，五层货架回库必须引用该凭证 |
 | 源货架快照（料盘身份） | 入口事件携带；单层货架到达 STATION 时一次性加载到 Redis 缓存（key=`source_rack:{rack_id}`，TTL=该货架处理周期） |
-| 扫码平台状态 | SOURCE_ARM 放盘/TARGET_ARM 取盘回调；状态机见第 8.1 节 |
+| 扫码平台占用 evidence | SOURCE_ARM/TARGET_ARM typed `COMMAND_RESULT`；不维护独立软件状态机 |
 | 退箱区占用数 | 料箱进入/离开退箱区事件 |
 | STATION 占用状态 | 单层货架到达/移出回调 |
 
 真实目标料箱状态不得使用“未知”语义。未扫码前，WES 只维护流水线临时占位；扫码成功后，临时占位绑定 `resolved_bin_id`，随后才更新对应目标料箱位置。扫码失败或无法扫码时，临时占位进入退箱/隔离或人工对账，不得猜测为某个授权 `bin_id`。
 
-### 8.1 扫码平台互锁状态机
+### 8.1 扫码平台设备证据与串行门禁
 
-扫码平台是 SOURCE_ARM 和 TARGET_ARM 的唯一同步点，WES 软件层面维护其业务状态（硬件层另有实时互锁保护）：
+扫码平台是 SOURCE_ARM 和 TARGET_ARM 的物理交接点，但 WES 不复制一套软件互锁状态机。硬件实时互锁由
+PLC/ECS 负责，WES 只持久化 typed command evidence，并按以下业务因果串行推进：
 
-```
-FREE ──(SOURCE_ARM放盘)──→ OCCUPIED_BY_SOURCE
-OCCUPIED_BY_SOURCE ──(扫码完成)──→ SCANNING
-SCANNING ──(有兼容目标格)──→ OCCUPIED_BY_TARGET
-SCANNING ──(无兼容目标格)──→ OCCUPIED_WAITING_BIN  // 料盘滞留，源侧暂停
-OCCUPIED_BY_TARGET ──(TARGET_ARM离开)──→ FREE
-OCCUPIED_WAITING_BIN ──(新料箱有兼容格/TARGET_ARM取走)──→ FREE 或 OCCUPIED_BY_TARGET
-```
-
-- `OCCUPIED_BY_SOURCE`：SOURCE_ARM 正在放盘，SOURCE_ARM 不得再取新盘
-- `OCCUPIED_BY_TARGET`：TARGET_ARM 正在取盘放格，SOURCE_ARM 不得放盘
-- `OCCUPIED_WAITING_BIN`：料盘滞留扫码平台等待新料箱兼容格，SOURCE_ARM 暂停取料
-- 只有 `FREE` 状态才允许 SOURCE_ARM 执行取料命令
+- SOURCE_ARM 放盘和 TARGET_ARM 取盘分别以对应 typed `COMMAND_RESULT` 作为物理动作证据。
+- 北向下一次取料只由上一物料南向投放成功的 typed `COMMAND_RESULT` 解锁。
+- UI、轮询快照或推测出的平台占用状态不得替代设备结果。
+- 设备结果不确定时进入 RuntimeHold/对账，不猜测平台已经腾空。
 
 ### 8.2 投影对账机制
 
@@ -508,10 +500,11 @@ generated dispatcher，由 Definition 与 `ROUTE_HANDLERS` 生成 typed intent/e
 | 源料盘扫码事件 | ECS/扫码平台 | `DEVICE_EVENT` | `SOURCE_REEL_SCAN_COMPLETED` |
 | 工作线状态事件 | ECS/PLC | `DEVICE_EVENT` | `WORKLINE_STOPPED`、`WORKLINE_RESUMED`、`NG_FULL`、`NG_CLEARED` |
 | 机械臂结果 | ECS/机械臂 | `COMMAND_RESULT` | 源侧/目标侧机械臂取放命令结果 |
-| WMS/RCS 回调 | WMS/RCS | `EXTERNAL_HTTP` / `/api/v1/callback/external` | 五层货架分配/到位/换面/回库、CTU 任务开始/完成/失败、目标料箱回架、库存增量接收、单层货架移出 |
+| WMS 异步履约 | WMS | `SystemOutbox` 出站 + typed 状态 QUERY / `WMS_EFFECT_STATUS_HINT` | E08–E14 只按任务级 ACK 与终态结果收敛；逐箱物理推进来自 ECS 设备事件 |
 | 超时/人工恢复 | Runtime/人工 | `TIMER_TIMEOUT` / `MANUAL_*` | 外部等待、设备等待和对账恢复 |
 
-设备 ACK 只表示命令已被接收，不表示物理动作完成。推动流程继续的依据必须是命令结果、流水线事件或 WMS/RCS 外部回调。
+设备 ACK 只表示命令已被接收，不表示物理动作完成。推动流程继续的依据必须是命令结果、流水线事件或
+WMS typed 终态结果/状态查询。
 
 三类扫码事件必须使用不同事件类型，不依赖点位推断扫码主体。若现场协议只能上报通用扫码事件，接入层必须在
 写入 `RuntimeInbox` 前映射为上述标准事件类型。
@@ -548,7 +541,7 @@ WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回�
 24. v1 同一时间只有一个可信 AT_WORK 目标料箱，多个工作位物理编码不启用并行分拣
 25. 目标料箱满格释放后，若无已通过准入的排队料箱，应触发 CTU 补充投料或等待 WMS 分配，同时启动工作位空闲计时器
 26. 每个源料盘离开源格时创建独立料盘分拣 Session，business_key 唯一标识，扫码/放入为等待点，终态不反向阻塞源货架释放
-27. 扫码平台业务状态机（FREE/OCCUPIED_BY_SOURCE/SCANNING/OCCUPIED_BY_TARGET/OCCUPIED_WAITING_BIN）正确流转，非 FREE 状态禁止 SOURCE_ARM 取料
+27. 扫码平台不维护独立软件状态机；北向下一次取料只由上一物料南向投放成功的 typed `COMMAND_RESULT` 解锁
 28. 定期对账（30 秒）和关键节点对账（换面/回库/移出）发现投影差异时，记录告警/RuntimeHold；未获得可信补证前不得基于推测修正投影
 29. CTU 投料任务失败（背篓装载后无法到达投料口、投料循环中连续失败等）→ 记录失败事实，投料链路进入 BLOCKED，等待人工处置
 30. CTU 投料阶段未扫码物理箱只生成流水线临时占位，不得提前绑定到真实 `bin_id`

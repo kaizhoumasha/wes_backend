@@ -57,6 +57,36 @@ def test_wms_default_fixtures_match_schema_and_profile_identity():
         assert fixture.case_id == case_path.stem
 
 
+def test_wms_async_e08_fixtures_use_typed_ack_or_explicit_no_response() -> None:
+    from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
+
+    fixtures = {
+        case_id: FixtureCase.model_validate(json.loads((FIXTURE_ROOT / f"{case_id}.json").read_text(encoding="utf-8")))
+        for case_id in ("success", "reject", "timeout")
+    }
+    for fixture in fixtures.values():
+        assert fixture.raw_request is not None
+        assert fixture.raw_request["operation_identity"] == "wms.fulfillment.request_rack_supply@v1"
+        assert fixture.raw_request["idempotency_key"]
+
+    success = fixtures["success"]
+    assert success.raw_response is not None
+    parsed_ack = WmsEffectAck.model_validate(success.raw_response)
+    assert parsed_ack.model_dump(mode="json", exclude_none=True) == success.expected_typed
+    assert parsed_ack.operation_identity == success.raw_request["operation_identity"]
+    assert parsed_ack.idempotency_key == success.raw_request["idempotency_key"]
+
+    reject = fixtures["reject"]
+    assert reject.raw_response is None
+    assert reject.expected_typed == {}
+    assert reject.expected_error == {"code": "NO_RACK_AVAILABLE", "retryable": False}
+
+    timeout = fixtures["timeout"]
+    assert timeout.raw_response is None
+    assert timeout.expected_typed == {}
+    assert timeout.expected_error == {"code": "WMS_TIMEOUT", "retryable": True}
+
+
 def test_wms_profile_validator_against_default_fixture_set():
     """默认 5 个 fixture 全部过 ExternalContractProfile Pydantic 校验。"""
     profile = _wms_profile()

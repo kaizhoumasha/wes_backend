@@ -222,19 +222,12 @@ MOCK_GRNS = {
         "grn_id": "GRN.0001",
         "po_number": "PO-2025-001",
         "po_item": "001",
-        "status": "PARTIAL_RECEIVED",
-        "dock_location": "DOCK-01",
-        "arrival_date": "2026-03-14",
-        "allow_mixed_pallet": True,
-        "items": [
-            {
-                "material_id": "CAP001",
-                "ordered_qty": 50000,
-                "received_qty": 25000,
-                "remaining_qty": 25000,
-                "unit": "PCS",
-            }
-        ],
+        "material_code": "CAP001",
+        "planned_quantity": "50000",
+        "received_quantity": "25000",
+        "remaining_quantity": "25000",
+        "batch_no": "LOT-2026-001",
+        "quality_status": "PARTIAL_RECEIVED",
     }
 }
 

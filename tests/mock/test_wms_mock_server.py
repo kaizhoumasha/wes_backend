@@ -244,6 +244,27 @@ def test_wms_mock_does_not_expose_legacy_transport_or_callback_routes() -> None:
     assert ("/api/wms/legacy/full-box-exchange", "POST") not in registered
 
 
+def test_debug_grn_endpoint_returns_direct_po_line_without_nested_items() -> None:
+    with TestClient(wms_mock_server.app) as client:
+        response = client.get("/debug/wms/grn/GRN.0001")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["code"] == 200
+    assert payload["data"] == {
+        "grn_id": "GRN.0001",
+        "po_number": "PO-2025-001",
+        "po_item": "001",
+        "material_code": "CAP001",
+        "planned_quantity": "50000",
+        "received_quantity": "25000",
+        "remaining_quantity": "25000",
+        "batch_no": "LOT-2026-001",
+        "quality_status": "PARTIAL_RECEIVED",
+    }
+    assert "items" not in payload["data"]
+
+
 def test_e02_uses_typed_post_without_legacy_envelope_or_delete_route() -> None:
     operation_identity = "wms.inventory.release_reservation@v1"
     path = "/api/wms/inventory/reservations/release"

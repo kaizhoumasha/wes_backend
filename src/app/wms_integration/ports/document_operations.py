@@ -147,6 +147,9 @@ class ValidateRoughSorterAdmissionResult(StrictWmsModel):
     def validate_decision(self) -> ValidateRoughSorterAdmissionResult:
         if self.decision == "ADMIT" and (self.reason_code is not None or self.measurement_decision != "PASS"):
             raise ValueError("ADMIT must have PASS measurement without reason_code")
+        matched_identity = (self.grn_id, self.po_number, self.po_item, self.material_code, self.pkg_id)
+        if self.decision == "ADMIT" and any(identity is None for identity in matched_identity):
+            raise ValueError("ADMIT requires complete matched identity")
         if self.decision == "REJECT" and self.reason_code is None:
             raise ValueError("REJECT requires a stable reason_code")
         return self

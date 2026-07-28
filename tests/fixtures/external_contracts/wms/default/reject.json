@@ -8,16 +8,8 @@
     "dispatch_key": "rack-supply-reject-001",
     "idempotency_key": "idem-rack-supply-reject-001"
   },
-  "raw_response": {
-    "accepted": false,
-    "reason_code": "TARGET_UNAVAILABLE"
-  },
-  "expected_typed": {
-    "accepted": false,
-    "reason_code": "TARGET_UNAVAILABLE"
-  },
   "expected_error": {
-    "code": "WMS_REJECTED",
+    "code": "NO_RACK_AVAILABLE",
     "retryable": false
   }
 }

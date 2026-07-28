@@ -339,3 +339,39 @@ operation 的兼容入口。
   topology 全通过）。
 - worktree `gitnexus detect-changes --scope staged` → 14 indexed files / 20 symbols / 0 affected processes，
   risk LOW；删除 orphan producer、复用 callback allow-set、恢复 Rack 读侧测试均未引入 T2/T5 流程。
+
+## Acceptance Review（第九轮）修复
+
+- Q19 `ADMIT` 新增完整匹配身份不变量：`grn_id / po_number / po_item / material_code / pkg_id`
+  任一缺失即拒绝；`REJECT` 仍按冻结合同要求稳定闭集 `reason_code`，不强制虚构匹配身份。
+- 活动 sorter 文档删除 scanner 软件状态机、prefetch 能力和 CTU 逐箱 callback 口径；统一为上一物料
+  南向投放成功的 typed `COMMAND_RESULT` 解锁北向取料、WMS E12 批量履约和 ECS 逐箱设备事件。
+  removal guard 新增 `docs/business` 全树扫描，并以文件级精确禁止词覆盖三份活动文档，不增加宽 allowlist。
+- WMS 默认 `success` fixture 改为可由 `WmsEffectAck` 直接解析的 E08 ACK；
+  `reject` 使用 E08 冻结拒绝码 `NO_RACK_AVAILABLE` 且无伪 ACK，`timeout` 明确无 `raw_response`。
+  新测试同时校验 operation identity、idempotency key、typed ACK 和无响应语义。
+- Mock debug GRN 删除 header → `items` 层，直接公开 Q08 PO 行字段，并新增公开 endpoint 精确响应测试。
+- 未实现 T2/T5，未新增兼容层、宽 allowlist、skip 或 xfail。
+
+## Acceptance Review（第九轮）TDD 与验证
+
+1. RED：四个新增定点测试分别确认 Q19 缺身份未拒绝、旧 fixture 无法解析为 `WmsEffectAck`、debug GRN
+   仍含 `items`、三份活动文档仍被 scanner/prefetch/逐箱 callback 禁止词命中。
+2. GREEN：四项定点测试全部通过；相关合同、fixture、removal guard 与 Mock 整文件回归
+   `126 passed`。
+3. 默认全集从头复验 → `4180 passed, 5 existing skipped`（4185 collected），没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4180 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4185 tests collected`。
+- `uv run ruff format --check .` → 1077 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  368 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：Q19 新类/validator 尚未被索引，risk UNKNOWN；Mock `get_grn` 为 LOW、
+  0 caller / 0 process。均无 HIGH/CRITICAL 风险。
+- worktree `gitnexus detect-changes --scope staged` → 13 files / 26 symbols / 0 affected processes，
+  risk LOW；变更仅覆盖本轮 Q19、活动文档、fixture、Mock GRN、守卫与验收报告，未引入 T2/T5 流程。

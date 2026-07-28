@@ -163,6 +163,34 @@ def test_query_method_pagination_and_q19_contract_are_closed() -> None:
         q19.result_model.model_validate(invalid_reject)
 
 
+def test_q19_admit_requires_complete_matched_identity_but_reject_does_not() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    registry = _load("src.app.wms_integration.operation_registry")
+    fixtures = _load("tests.mock.wms_operation_fixtures")
+    q19 = registry.WMS_OPERATION_BY_IDENTITY["wms.document.validate_rough_sorter_admission@v1"]
+    valid_admit = fixtures.RESULT_FIXTURES[q19.identity]
+
+    for missing_field in ("grn_id", "po_number", "po_item", "material_code", "pkg_id"):
+        invalid_admit = {**valid_admit, missing_field: None}
+        with pytest.raises(ValidationError, match="complete matched identity"):
+            q19.result_model.model_validate(invalid_admit)
+
+    reject_without_matched_identity = {
+        **valid_admit,
+        "decision": "REJECT",
+        "reason_code": "GRN_NOT_FOUND",
+        "measurement_decision": "REJECT",
+        "grn_id": None,
+        "po_number": None,
+        "po_item": None,
+        "material_code": None,
+        "pkg_id": None,
+    }
+    assert q19.result_model.model_validate(reject_without_matched_identity).decision == "REJECT"
+
+
 def test_effect_completion_modes_lanes_and_status_capability_are_static() -> None:
     registry = _load("src.app.wms_integration.operation_registry")
     contracts = _load("src.app.wms_integration.operation_contract")

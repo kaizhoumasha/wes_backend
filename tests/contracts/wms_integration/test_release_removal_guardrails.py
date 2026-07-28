@@ -113,6 +113,7 @@ ACTIVE_SCAN_ROOTS = (
     "scripts",
     "tests/fixtures",
     "tests/resilience/fixtures",
+    "docs/business",
     "docs/integration",
     "docs/architecture",
 )
@@ -192,7 +193,27 @@ SCOPED_ACTIVE_FORBIDDEN_LITERALS = {
         {"source_arm_prefetch_capacity", "扫码平台状态为 `FREE`"}
     ),
     "docs/architecture/workline-restructuring-implementation.md": frozenset(
-        {"source_arm_prefetch_capacity", "扫码平台 FREE"}
+        {
+            "source_arm_prefetch_capacity",
+            "扫码平台 FREE",
+            "WMS/CTU 批量投箱入线与逐箱 callback",
+            "扫码平台预取互锁及 manifest validator",
+            "预取",
+        }
+    ),
+    "docs/architecture/sorter-inbound-capability-spec.md": frozenset(
+        {
+            "source_arm_prefetch_capacity",
+            "source arm prefetch",
+            "WMS/CTU 批量投箱入线与逐箱 callback",
+        }
+    ),
+    "docs/business/smt_sorter_inbound_workflow_guide.md": frozenset(
+        {
+            "扫码平台互锁状态机",
+            "扫码平台业务状态机",
+            "WMS/RCS 回调 | WMS/RCS | `EXTERNAL_HTTP`",
+        }
     ),
     **{
         f"tests/fixtures/external_contracts/wms/default/{fixture_name}.json": frozenset(

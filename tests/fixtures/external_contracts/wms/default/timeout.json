@@ -8,14 +8,6 @@
     "dispatch_key": "rack-supply-timeout-001",
     "idempotency_key": "idem-rack-supply-timeout-001"
   },
-  "raw_response": {
-    "timeout": true,
-    "elapsed_seconds": 30
-  },
-  "expected_typed": {
-    "accepted": false,
-    "status": "TIMEOUT"
-  },
   "expected_error": {
     "code": "WMS_TIMEOUT",
     "retryable": true
