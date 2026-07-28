@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.20.4.0
+**Version**: 0.20.5.0
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
@@ -58,6 +58,8 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 
 - [RuntimeInbox 编排规格](docs/architecture/runtime-orchestration-spec.md)：说明六类 ingress、五态处理、claim/fencing、重放和 PostgreSQL 验收合同。
 - [Runtime 所有权地图](docs/architecture/runtime-ownership-map.md)：说明 RuntimeInbox、Repository、三阶段 Processor 与跨域访问边界。
+- [WorkLine generated plugin 当前架构](docs/business/workline_plugin_architecture_design.md)：说明 generated-only 执行链、Binding pins 与 Runtime-owned 副作用边界。
+- [WorkLine generated plugin 开发指南](docs/plugin_development_guide.md)：说明 Definition、typed facts、System Capability、命令权威和生成验证流程。
 - [工作线运行时工作流指南](docs/business/workline_runtime_workflow_guide.md)：说明 RuntimeInbox、Session、Outbox、ACK/Result、`RESOURCE_WAIT` 与 `BLOCKED_RESOURCE` 的运行边界。
 - [SMT 分拣入库工作流指南](docs/business/smt_sorter_inbound_workflow_guide.md)：说明 SMT 分拣入库的业务流程、资源边界、事件口径和恢复原则。
 - [SMT 分拣入库 handoff 后端闭环 SPEC](docs/superpowers/archive/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md)：记录 v0.7.0.0 的 manifest source boundary、两阶段 claim、source-pick/terminal ledger 和 READY claim recovery 合同。
