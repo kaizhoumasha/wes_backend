@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.device.models.command import CommandResult, CommandStatus
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import WorklineSession
-from src.app.runtime.orchestration.models.smt_inbound_handoff import SmtInboundHandoffSourceItemStatus
+from src.app.runtime.orchestration.models.smt_inbound_handoff import (
+    SmtInboundHandoffDemand,
+    SmtInboundHandoffDemandStatus,
+    SmtInboundHandoffSourceItem,
+    SmtInboundHandoffSourceItemStatus,
+)
 from tests.workline_runtime.test_smt_command_correlation_recovery import _command, _recover, _RecoveryService
 from tests.workline_runtime.test_smt_generated_source_pick_lifecycle import _claim_and_process_source_pick
 
@@ -126,6 +132,8 @@ async def test_source_pick_success_verifies_command_terminal_evidence(
 @pytest.mark.asyncio
 async def test_source_pick_success_persists_manual_hold_for_completed_failed_command(db_session: object) -> None:
     service, source_item, source_inbox, command, _outbox = await _claim_and_process_source_pick(db_session)
+    source_item_id = source_item.id
+    demand_id = source_item.handoff_demand_id
     command.status = CommandStatus.COMPLETED
     command.result = CommandResult.FAILED
     db_session.add(command)
@@ -139,11 +147,19 @@ async def test_source_pick_success_persists_manual_hold_for_completed_failed_com
         source_pick_inbox_id=source_inbox.id,
         command_id=command.id,
     )
+    await db_session.commit()
 
     assert outcome.outcome == "manual_hold"
     assert outcome.advanced is False
-    assert source_item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
-    assert source_item.failure_code == "SOURCE_PICK_COMMAND_NOT_CREATED"
+    reopened_session_factory = async_sessionmaker(db_session.bind, class_=AsyncSession, expire_on_commit=False)
+    async with reopened_session_factory() as reopened_db:
+        reopened_item = await reopened_db.get(SmtInboundHandoffSourceItem, source_item_id)
+        reopened_demand = await reopened_db.get(SmtInboundHandoffDemand, demand_id)
+        assert reopened_item is not None and reopened_demand is not None
+        assert reopened_item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+        assert reopened_item.failure_code == "SOURCE_PICK_COMMAND_NOT_CREATED"
+        assert reopened_demand.status == SmtInboundHandoffDemandStatus.MANUAL_HOLD
+        assert reopened_demand.failure_code == reopened_item.failure_code
 
 
 @pytest.mark.asyncio
