@@ -302,9 +302,9 @@ async def test_wms_status_enabled_intent_records_callback_without_advancing_term
     event_type: EffectReducerEventType,
 ) -> None:
     repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
-    repository.intent.capability_key = "wms.fulfillment.notify_pkg_binding"
+    repository.intent.capability_key = "wms.fulfillment.request_rack_supply"
     repository.intent.capability_contract_version = "v1"
-    repository.intent.operation_identity = "WMS:PKG-001:PALLET-001"
+    repository.intent.operation_identity = "STATION-001:FLOW_RACK:1"
     # callback authority 由 operation/status capability 身份决定，不依赖可损坏的 binding。
     repository.intent.status_binding_snapshot_hash = None
     repository.intent.status_binding_snapshot_json = None

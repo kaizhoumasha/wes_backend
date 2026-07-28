@@ -8,7 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from src.app.runtime.orchestration.effect_state_contract import (
     EffectReducerEvent,
@@ -28,14 +28,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportResult,
 )
 from src.app.wms_integration.ports.effect_status import (
-    CONFIRM_INBOUND_OPERATION_IDENTITY,
-    FULL_BOX_EXCHANGE_OPERATION_IDENTITY,
-    NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
-    ConfirmInboundResultIdentity,
     FrozenWmsEffectStatusBinding,
-    FullBoxExchangeResultIdentity,
-    NotifyPackageBindingResultIdentity,
-    OperationIdentity,
     WmsEffectStatus,
     WmsEffectStatusRequest,
     WmsEffectStatusSnapshot,
@@ -292,36 +285,11 @@ class WmsEffectStatusService:
             or not isinstance(outbox.payload_json, dict)
         ):
             raise ValueError("WMS status query identity differs from the frozen EFFECT pair")
-        payload = outbox.payload_json
-        identity_by_operation = {
-            CONFIRM_INBOUND_OPERATION_IDENTITY: lambda: ConfirmInboundResultIdentity(
-                dispatch_key=payload["dispatch_key"],
-                inbound_key=payload["inbound_key"],
-            ),
-            FULL_BOX_EXCHANGE_OPERATION_IDENTITY: lambda: FullBoxExchangeResultIdentity(
-                dispatch_key=payload["dispatch_key"],
-                rack_id=payload["rack_id"],
-                empty_box_id=payload["empty_box_id"],
-                full_box_id=payload["full_box_id"],
-            ),
-            NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY: lambda: NotifyPackageBindingResultIdentity(
-                dispatch_key=payload["dispatch_key"],
-                package_id=payload["package_id"],
-                pallet_id=payload["pallet_id"],
-            ),
-        }
-        identity_factory = identity_by_operation.get(outbox.operation_identity)
-        if identity_factory is None:
-            raise ValueError("paired outbox is not an authored WMS EFFECT operation")
-        try:
-            expected_result_identity = identity_factory()
-        except KeyError as exc:
-            raise ValueError("frozen WMS EFFECT payload is missing a status identity field") from exc
         return WmsEffectStatusRequest(
-            operation_identity=cast("OperationIdentity", outbox.operation_identity),
+            operation_identity=outbox.operation_identity,
             idempotency_key=intent.idempotency_key,
             attempt_count=max(1, int(intent.status_check_count or 1)),
-            expected_result_identity=expected_result_identity,
+            request_payload=outbox.payload_json,
         )
 
     async def _apply_snapshot(
@@ -471,7 +439,7 @@ class WmsEffectStatusService:
         result = snapshot.result
         if result is None:
             raise ValueError("WMS completed status is missing typed result")
-        expected = request.expected_result_identity.model_dump(mode="python")
+        expected = request.expected_result_fields
         if any(getattr(result, field_name, None) != expected_value for field_name, expected_value in expected.items()):
             raise ValueError("WMS status result correlation differs from the frozen EFFECT request")
 

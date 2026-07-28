@@ -189,9 +189,8 @@ callback ingress/调度结果、ReconciliationCase），并用联调采集证据
 ## 仓内可重复证据
 
 - QUERY：`tests/fixtures/wms_provider_conformance/query_inventory_replay.v1.json`
-- 入库确认状态：`tests/fixtures/wms_provider_conformance/confirm_inbound_status_replay.v1.json`
-- 满箱交换状态：`tests/fixtures/wms_provider_conformance/full_box_exchange_status_replay.v1.json`
-- 料盘绑定状态：`tests/fixtures/wms_provider_conformance/notify_pkg_binding_status_replay.v1.json`
+- E08–E14 status：由 35 项 registry 派生的共享 typed status contract 与测试内固定 payload 覆盖
 
-这些 fixture 只包含合成事实、规范化结果和 digest，可验证 WES parser/typed contract 的确定性；它们不包含生产
-密钥、真实业务数据或真实 WMS 验收结论。
+QUERY fixture 只包含合成事实、规范化结果和 digest，可验证 WES parser/typed contract 的确定性；它不包含生产
+密钥、真实业务数据或真实 WMS 验收结论。E03/E07 是同步 EFFECT，不保留 status replay；E11 与 E08–E10/E12–E14
+共用 registry 驱动的 status contract。

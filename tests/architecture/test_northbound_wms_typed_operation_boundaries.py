@@ -77,23 +77,24 @@ def test_generated_operation_index_has_no_runtime_discovery() -> None:
     assert "__import__(" not in source
 
 
-def test_every_authored_wms_effect_declares_status_query_capability() -> None:
-    contracts = _load("src.app.runtime.system_capabilities.wms.contracts")
+def test_authored_wms_effect_completion_modes_match_the_registry() -> None:
     catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
 
     effects = tuple(
         binding.operation
         for binding in catalog.WMS_PROVIDER_PROFILE.bindings
-        if binding.operation.mode is contracts.WmsOperationMode.EFFECT
+        if binding.operation.mode.value == "EFFECT"
     )
     queries = tuple(
         binding.operation
         for binding in catalog.WMS_PROVIDER_PROFILE.bindings
-        if binding.operation.mode is contracts.WmsOperationMode.QUERY
+        if binding.operation.mode.value == "QUERY"
     )
 
-    assert len(effects) == 3
-    assert all(operation.supports_status_query is True for operation in effects)
+    assert len(effects) == 16
+    assert sum(operation.supports_status_query for operation in effects) == 7
+    assert sum(not operation.supports_status_query for operation in effects) == 9
+    assert len(queries) == 19
     assert all(operation.supports_status_query is False for operation in queries)
 
 
@@ -173,7 +174,7 @@ def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalo
 
     assert sandbox.identity.environment == "sandbox"
     assert production.identity.environment == "production"
-    assert len(sandbox.bindings) == len(production.bindings) == 4
+    assert len(sandbox.bindings) == len(production.bindings) == 35
     assert {binding.profile for binding in sandbox.bindings} == {sandbox.identity}
     assert {binding.profile for binding in production.bindings} == {production.identity}
     assert not hasattr(catalog, "WMS_PROVIDER_PROFILES")

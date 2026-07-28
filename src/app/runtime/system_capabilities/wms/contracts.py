@@ -145,8 +145,6 @@ class WmsOperationContract(BaseModel):
             raise ValueError("EFFECT operation must not declare query row budget")
         if self.mode is WmsOperationMode.EFFECT and self.pagination is not None:
             raise ValueError("EFFECT operation must not declare pagination contract")
-        if self.mode is WmsOperationMode.EFFECT and not self.supports_status_query:
-            raise ValueError("EFFECT operation must declare status query capability")
         if self.mode is WmsOperationMode.QUERY and self.supports_status_query:
             raise ValueError("QUERY operation must not declare EFFECT status query capability")
         if self.outbound_auth_scheme is OutboundAuthScheme.NONE:

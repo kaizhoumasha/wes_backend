@@ -24,15 +24,23 @@ QUERY_OPERATIONS = (
 )
 EFFECT_OPERATIONS = (*INVENTORY_EFFECT_OPERATIONS, *FULFILLMENT_OPERATIONS)
 WMS_OPERATIONS = (*QUERY_OPERATIONS, *EFFECT_OPERATIONS)
+EFFECT_OPERATION_IDENTITIES = frozenset(operation.identity for operation in EFFECT_OPERATIONS)
+ASYNC_EFFECT_OPERATIONS = tuple(operation for operation in EFFECT_OPERATIONS if operation.supports_status_query)
+ASYNC_EFFECT_OPERATION_IDENTITIES = frozenset(operation.identity for operation in ASYNC_EFFECT_OPERATIONS)
 
 _identities = tuple(operation.identity for operation in WMS_OPERATIONS)
 if len(_identities) != 35 or len(_identities) != len(set(_identities)):
     raise RuntimeError("WMS operation registry must contain exactly 35 unique identities")
+if len(ASYNC_EFFECT_OPERATIONS) != 7:
+    raise RuntimeError("WMS operation registry must contain exactly 7 async EFFECT operations")
 
 WMS_OPERATION_BY_IDENTITY = MappingProxyType({operation.identity: operation for operation in WMS_OPERATIONS})
 
 __all__ = [
+    "ASYNC_EFFECT_OPERATIONS",
+    "ASYNC_EFFECT_OPERATION_IDENTITIES",
     "EFFECT_OPERATIONS",
+    "EFFECT_OPERATION_IDENTITIES",
     "QUERY_OPERATIONS",
     "WMS_OPERATIONS",
     "WMS_OPERATION_BY_IDENTITY",

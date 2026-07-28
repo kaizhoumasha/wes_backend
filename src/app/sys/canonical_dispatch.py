@@ -15,19 +15,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
+from src.app.wms_integration.operation_registry import EFFECT_OPERATION_IDENTITIES
 from src.utils.value_normalization import require_string
 
 if TYPE_CHECKING:
     from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 
 _CANONICAL_WMS_OPERATION_IDENTITY_RE = re.compile(r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")
-_WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
-    {
-        "wms.inventory.confirm_inbound@v1",
-        "wms.fulfillment.full_box_exchange@v1",
-        "wms.fulfillment.notify_pkg_binding@v1",
-    }
-)
+_WMS_EFFECT_OPERATION_IDENTITIES = EFFECT_OPERATION_IDENTITIES
 
 
 def _persisted_bytes(value: object, field_name: str) -> bytes:

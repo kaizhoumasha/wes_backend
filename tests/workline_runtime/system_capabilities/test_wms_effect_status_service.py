@@ -17,13 +17,12 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportResult,
 )
 from src.app.wms_integration.ports.effect_status import (
-    NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
     WMS_EFFECT_OPERATION_IDENTITIES,
     WmsEffectStatus,
     WmsEffectStatusSnapshot,
     build_wms_effect_status_binding,
 )
-from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
+from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupplyResult
 
 try:
     from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusClaim
@@ -35,6 +34,7 @@ else:
 
 
 NOW = datetime(2026, 7, 24, 12, 0, 0)
+RACK_SUPPLY_OPERATION_IDENTITY = "wms.fulfillment.request_rack_supply@v1"
 
 
 def _require_status_service() -> None:
@@ -102,14 +102,14 @@ def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any
         id=31,
         dispatch_key="dispatch-001",
         idempotency_key="idem-001",
-        operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+        operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
         provider_profile_identity=binding["snapshot"]["provider_profile_identity"],
         provider_profile_hash=binding["snapshot"]["provider_profile_hash"],
         payload_json={
             "dispatch_key": "dispatch-001",
-            "package_id": "PKG-001",
-            "pallet_id": "PALLET-001",
-            "station_code": "ST-001",
+            "station_code": "STATION-001",
+            "rack_type": "FLOW_RACK",
+            "demand_generation": 1,
         },
         status="SENT",
         attempt_count=4,
@@ -223,29 +223,33 @@ def _snapshot(state: WmsEffectStatus, *, source_version: int = 7) -> WmsEffectSt
     }
     if state is WmsEffectStatus.COMPLETED:
         return WmsEffectStatusSnapshot(
-            operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+            operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
             idempotency_key="idem-001",
             state=state,
-            result=NotifyPackageBindingOperationResult(
+            result=RequestRackSupplyResult(
                 dispatch_key="dispatch-001",
-                package_id="PKG-001",
-                pallet_id="PALLET-001",
-                accepted=True,
-                bound_at="2026-07-24T12:00:00Z",
+                provider_reference="wms-effect-001",
                 source_version=str(source_version),
+                station_code="STATION-001",
+                rack_type="FLOW_RACK",
+                demand_generation=1,
+                rack_id="RACK-001",
+                final_station_code="STATION-001",
+                arrival_relation="AT_STATION",
+                task_outcome="SUCCESS",
             ),
             **visible,
         )
     if state is WmsEffectStatus.REJECTED:
         return WmsEffectStatusSnapshot(
-            operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+            operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
             idempotency_key="idem-001",
             state=state,
-            reason_code="WMS_BUSINESS_REJECTED",
+            reason_code="NO_RACK_AVAILABLE",
             **visible,
         )
     return WmsEffectStatusSnapshot(
-        operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+        operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
         idempotency_key="idem-001",
         state=state,
         **visible,
@@ -321,13 +325,17 @@ async def test_completed_result_correlation_mismatch_fails_closed_before_termina
     reconciliation = _ReconciliationBridge()
     invalid = _snapshot(WmsEffectStatus.COMPLETED).model_copy(
         update={
-            "result": NotifyPackageBindingOperationResult(
+            "result": RequestRackSupplyResult(
                 dispatch_key="dispatch-001",
-                package_id="OTHER-PACKAGE",
-                pallet_id="PALLET-001",
-                accepted=True,
-                bound_at="2026-07-24T12:00:00Z",
+                provider_reference="wms-effect-001",
                 source_version="7",
+                station_code="OTHER-STATION",
+                rack_type="FLOW_RACK",
+                demand_generation=1,
+                rack_id="RACK-001",
+                final_station_code="STATION-001",
+                arrival_relation="AT_STATION",
+                task_outcome="SUCCESS",
             )
         }
     )
@@ -595,7 +603,7 @@ async def test_due_scanner_claims_missing_or_corrupt_binding_and_fails_closed_be
     claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
     claim.intent.status_binding_snapshot_json = snapshot
     claim.intent.status_binding_snapshot_hash = snapshot_hash
-    claim.intent.operation_identity = NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
+    claim.intent.operation_identity = RACK_SUPPLY_OPERATION_IDENTITY
     db = _Db()
     repository = _Repository(claim)
     reconciliation = _ReconciliationBridge()
@@ -625,8 +633,8 @@ async def test_due_scanner_claims_missing_or_corrupt_binding_and_fails_closed_be
 @pytest.mark.asyncio
 async def test_corrupt_frozen_payload_is_normalized_to_request_contract_reconciliation() -> None:
     claim = _claim()
-    claim.intent.operation_identity = NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
-    claim.outbox.payload_json.pop("package_id")
+    claim.intent.operation_identity = RACK_SUPPLY_OPERATION_IDENTITY
+    claim.outbox.payload_json.pop("station_code")
     db = _Db()
     reconciliation = _ReconciliationBridge()
     port_calls = 0
@@ -730,7 +738,7 @@ async def test_not_found_after_grace_resubmits_same_key_once_after_counter_commi
     assert result.outcome == "RESUBMITTED"
     assert repository.reserved == 1
     assert claim.intent.status_resubmit_count == 1
-    assert resubmit_calls == [(NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY, "idem-001", 1)]
+    assert resubmit_calls == [(RACK_SUPPLY_OPERATION_IDENTITY, "idem-001", 1)]
     assert (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at) == outbox_before
     assert reducer.events[0].event_type is EffectReducerEventType.STATUS_NOT_FOUND
     assert reconciliation.calls == []

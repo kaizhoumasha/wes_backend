@@ -242,19 +242,20 @@ def build_query_inventory_conformance_targets():
 
 
 async def _execute_adapter_case(case: ScriptedQueryCase, *, handler) -> ConformanceObservation:
-    contract = CONTRACT
+    binding = resolve_wms_operation_binding(
+        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        operation_identity=CONTRACT.identity,
+    )
+    operation = binding.operation
     if case.scenario is QueryConformanceScenario.BUDGET:
-        contract = contract.model_copy(
+        operation = operation.model_copy(
             update={
-                "budget": contract.budget.model_copy(
+                "budget": operation.budget.model_copy(
                     update={"max_wire_bytes": 64, "max_decoded_bytes": 128, "max_chunk_bytes": 64}
                 )
             }
         )
-    binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
-        operation_identity=CONTRACT.identity,
-    ).model_copy(update={"operation": contract})
+    binding = binding.model_copy(update={"operation": operation})
     executor = WmsQueryTransportExecutor(
         endpoint=WmsBoundQueryEndpoint(binding=binding, base_url="https://conformance.invalid"),
         transport=httpx.MockTransport(handler),

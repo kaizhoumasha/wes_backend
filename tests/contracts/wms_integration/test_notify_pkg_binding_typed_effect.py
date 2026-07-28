@@ -162,8 +162,8 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         b'{"dispatch_key":"wms-notify-pkg-binding:WMS:PKG-001:PALLET-001","package_id":"PKG-001",'
         b'"pallet_id":"PALLET-001","station_code":"STATION-001"}'
     )
-    assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
-    assert len(intent_log.status_binding_snapshot_hash) == 64
+    assert not hasattr(intent_log, "status_binding_snapshot_json")
+    assert not hasattr(intent_log, "status_binding_snapshot_hash")
     assert intent_log.operation_identity == "WMS:PKG-001:PALLET-001"
     assert pair_repository.calls == [(db, intent_log, outbox)]
 

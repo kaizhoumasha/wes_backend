@@ -1,7 +1,7 @@
 # WMS 北向 35 项 Operation 合同
 
-> 状态：Frozen  
-> 主真源：`src/app/wms_integration/operation_registry.py`  
+> 状态：Frozen
+> 主真源：`src/app/wms_integration/operation_registry.py`
 > 适用范围：单工厂、单 active WMS Provider 的 WES 北向交互
 
 ## 不变量

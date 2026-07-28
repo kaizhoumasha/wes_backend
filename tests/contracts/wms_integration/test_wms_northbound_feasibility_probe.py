@@ -250,7 +250,7 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
         } <= case_ids
     assert {
         "fault_matrix_rate_limit_and_fixed_5xx",
-        "northbound_fault_scope_excludes_health_inventory_and_legacy",
+        "northbound_fault_scope_excludes_health_inventory_and_unregistered_paths",
         "submit_deadline_ambiguous_retry_one_effect",
         "status_deadline",
         "response_body_budget_exceeded_without_remote_echo",

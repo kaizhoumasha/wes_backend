@@ -17,7 +17,7 @@ from src.app.runtime.orchestration.repositories.effect_reducer_repository import
     effect_reducer_repository,
 )
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
-from src.app.sys.models.outbox import WMS_EFFECT_OPERATION_IDENTITIES
+from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 
 
 class EffectIntentNotFound(LookupError):
@@ -264,7 +264,7 @@ class EffectReducer:
             has_open_case=open_case is not None,
             status_query_authoritative=(
                 f"{getattr(intent, 'capability_key', '')}@"
-                f"{getattr(intent, 'capability_contract_version', '')}" in WMS_EFFECT_OPERATION_IDENTITIES
+                f"{getattr(intent, 'capability_contract_version', '')}" in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
             ),
         )
         if target is not None and target is not current:

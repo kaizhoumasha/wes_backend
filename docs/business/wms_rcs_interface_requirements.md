@@ -15,8 +15,8 @@
 > **第零阶段口径冻结（2026-05-13）**:
 > SMT 运行时资源和满箱交换边界以
 > `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` 为准。
-> WMS/RCS 执行类回调统一走 `/api/v1/callback/external`，用于恢复
-> `WAITING_EXTERNAL` Session；`/api/v1/callback/event` 只保留给设备事件、
+> E08–E14 的终态统一由 status query 获取；`/api/v1/callback/external` 只接收
+> `WMS_EFFECT_STATUS_HINT` 并唤醒查询。`/api/v1/callback/event` 只保留给设备事件、
 > 历史业务通知或不承载同一运行时任务的非等待事件。
 
 ---
@@ -40,7 +40,7 @@
 
 ### 1.3 核心架构原则（遵循 workline_plugin_architecture_design.md）
 
-**WMS/RCS 作为"外部系统"调用 WES 时，必须区分执行回调与普通事件：**
+**WMS/RCS 作为“外部系统”调用 WES 时，必须区分状态提示与普通事件：**
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -56,7 +56,7 @@
 │  │              WorklineInbox (统一编排入口)                │ │
 │  │   - DEVICE_EVENT (设备事件)                              │ │
 │  │   - COMMAND_RESULT (指令结果)                            │ │
-│  │   - EXTERNAL_HTTP (外部系统执行回调 - WMS/RCS)           │ │
+│  │   - EXTERNAL_HTTP (外部系统状态提示 - WMS/RCS)           │ │
 │  │   - TIMEOUT (超时)                                       │ │
 │  │   - MANUAL_OPERATION (人工操作)                          │ │
 │  └─────────────────────────────────────────────────────────┘ │
@@ -77,7 +77,7 @@
 - **WES 不同步基础数据**: 所有需要用到的基础数据向 WMS 请求
 - **WMS 是库存唯一真实源**: 所有库存变动必须在 WMS 端事务提交成功后，物理动作方可视为完成
 - **不过度设计**: WES 只关注需要它完成的功能
-- **执行回调入口**: 所有需要恢复 Runtime 等待态的 WMS/RCS 执行结果通过 `/api/v1/callback/external` 进入 WES
+- **状态提示入口**: E08–E14 可通过 `/api/v1/callback/external` 唤醒 status query，但不得携带终态
 - **普通事件入口**: 设备事件和不承载同一运行时等待任务的历史业务通知可继续使用 `/api/v1/callback/event` 或专用北向接口
 
 ---
@@ -824,19 +824,19 @@ Authorization: Bearer <WES_TOKEN>
 
 ## 3. WMS/RCS → WES 标准回调接口
 
-> **重要**: WMS/RCS 作为外部执行系统调用 WES 时，必须区分运行时执行回调和普通业务通知。
-> 需要恢复 `WAITING_EXTERNAL` Session 的执行结果使用 `/api/v1/callback/external`；
+> **重要**: WMS/RCS 作为外部执行系统调用 WES 时，必须区分运行时状态提示和普通业务通知。
+> E08–E14 的提示使用 `/api/v1/callback/external`，终态只来自 status query；
 > GRN、栈板等不承载同一运行时等待任务的业务通知可继续使用 `/api/v1/callback/event`。
 
-### 3.1 运行时执行入口：POST /api/v1/callback/external
+### 3.1 运行时提示入口：POST /api/v1/callback/external
 
 **设计原则**（遵循 workline_plugin_architecture_design.md §6.1）:
 
 - 所有进入编排器的输入统一落为 `WorklineInbox`
 - Callback API 只做接收、校验、原始落库、ACK、写 Inbox
 - 不直接承载复杂业务逻辑
-- 满箱交换、货架到达、搬运完成等外部执行结果必须携带 `trace_id`、`dispatch_key`、`source_event_id` 和 `source_version`
-- 同一运行时任务不得同时通过 `/callback/event` 和 `/callback/external` 回传结果
+- E08–E14 的 callback 只能使用 `WMS_EFFECT_STATUS_HINT`，携带关联身份并唤醒 status query
+- hint 只追加 evidence，不携带、不决定、不覆盖终态；终态只能来自 typed status snapshot
 
 ### 3.2 扩展事件类型（需新增）
 
@@ -864,8 +864,6 @@ class EventType(str, Enum):
     WMS_PALLET_ARRIVED = "WMS_PALLET_ARRIVED"       # 栈板到达通知
     WMS_RACK_ARRIVED = "WMS_RACK_ARRIVED"           # 货架到达通知
     WMS_INVENTORY_UPDATED = "WMS_INVENTORY_UPDATED" # 库存更新通知
-    WMS_TRANSPORT_COMPLETED = "WMS_TRANSPORT_COMPLETED"  # 搬运任务执行结果
-    WMS_FULL_BOX_EXCHANGE_RESULT = "WMS_FULL_BOX_EXCHANGE_RESULT"  # 满箱交换执行结果
 ```
 
 ### 3.3 事件上报格式（遵循白皮书 3.2.2）
@@ -952,25 +950,22 @@ class EventType(str, Enum):
 }
 ```
 
-#### 3.3.4 搬运/交换任务完成通知
+#### 3.3.4 E08–E14 状态查询提示
 
 **请求**:
 
 ```json
 {
-  "device_code": "WMS_RCS",
-  "event_type": "WMS_TRANSPORT_COMPLETED",
-  "timestamp": 1702627300000,
+  "callback_type": "WMS_EFFECT_STATUS_HINT",
   "data": {
-    "rcs_task_id": "RCS-TASK-003",
-    "task_type": "TRANSPORT",
-    "status": "SUCCESS",
-    "rack_id": "RACK-001",
-    "from_location": "KITTING_AREA",
-    "to_location": "SMT_BUFFER"
+    "operation_identity": "wms.fulfillment.request_rack_transport@v1",
+    "idempotency_key": "intent-rack-transport-001"
   }
 }
 ```
+
+WES 校验 operation 必须属于唯一 registry 派生的 E08–E14 集合；集合外 identity fail closed。收到提示后仅触发
+`operation_identity + idempotency_key` 对应的 status query。
 
 ### 3.4 幂等性要求
 
@@ -988,81 +983,30 @@ class EventType(str, Enum):
 
 > **注意**: 这是 WES 主动调用 WMS 的接口，不属于白皮书回调接口范畴
 
-### 4.1 空架补给请求
+### 4.1 E08–E14 异步履约操作
 
-**接口**: `POST /api/wes/rack-supply-request`
+| 编号 | Identity | POST path |
+| --- | --- | --- |
+| E08 | `wms.fulfillment.request_rack_supply@v1` | `/fulfillment/rack-supply` |
+| E09 | `wms.fulfillment.request_rack_transport@v1` | `/fulfillment/rack-transport` |
+| E10 | `wms.fulfillment.change_rack_face@v1` | `/fulfillment/rack-face-change` |
+| E11 | `wms.fulfillment.full_box_exchange@v1` | `/fulfillment/full-box-exchange` |
+| E12 | `wms.fulfillment.move_bins_to_conveyor_entry@v1` | `/fulfillment/conveyor-entry-batches` |
+| E13 | `wms.fulfillment.move_bins_from_conveyor_exit@v1` | `/fulfillment/conveyor-exit-batches` |
+| E14 | `wms.fulfillment.request_load_unit_transport@v1` | `/fulfillment/load-unit-transport` |
 
-**请求**:
+提交请求必须携带稳定 `dispatch_key`，传输层以 `operation_identity + idempotency_key` 保证幂等。WMS 只返回
+typed ACK，表示受理或业务拒绝，不把 HTTP 成功当作业务终态。
 
-```json
-{
-  "request_id": "REQ-RACK-001",
-  "area": "KITTING_AREA",
-  "rack_type": "SINGLE_LAYER",
-  "urgency": "HIGH",
-  "reason": "EMPTY_RACK_THRESHOLD"
-}
-```
+### 4.2 状态查询与终态
 
-**响应**:
+WES 使用统一 status endpoint，query 参数为 `operation_identity + idempotency_key`。响应状态闭集为
+`ACCEPTED / PROCESSING / COMPLETED / REJECTED / NOT_FOUND`；`COMPLETED` 必须携带对应 operation 的 typed
+result，`REJECTED` 必须使用该 Definition 冻结的拒绝码。E08–E14 之外的 operation 不建立 status binding。
 
-```json
-{
-  "code": 200,
-  "data": {
-    "task_id": "RCS-TASK-002",
-    "estimated_arrival": "2026-03-14T10:50:00Z"
-  }
-}
-```
-
-### 4.2 满架搬运请求
-
-**接口**: `POST /api/wes/transport-request`
-
-**请求**:
-
-```json
-{
-  "request_id": "REQ-TRANS-001",
-  "rack_id": "RACK-001",
-  "rack_type": "SINGLE_LAYER",
-  "from_location": "KITTING_AREA",
-  "to_location": "SMT_BUFFER",
-  "priority": 8
-}
-```
-
-### 4.3 PKG 绑定通知
-
-**接口**: `POST /api/wms/kitting/pkg-binding`
-
-**请求**:
-
-```json
-{
-  "pkg_code": "CAP001-5000-PKG12345-LC01-DC02-V0001",
-  "bin_id": "BIN-001",
-  "slot_id": "SLOT-01",
-  "rack_id": "RACK-001",
-  "grn_id": "GRN.0001",
-  "material_id": "CAP001",
-  "qty": 5000,
-  "vendor": "V0001",
-  "lc": "LC01",
-  "dc": "DC02",
-  "thickness": 12.5
-}
-```
-
-### 4.4 库存相关接口
-
-| 接口 | 方法 | 用途 |
-|------|------|------|
-| `GET /api/wms/inventory/query` | GET | 库存查询 |
-| `POST /api/wms/inventory/reserve` | POST | 库存预留 |
-| `/api/wms/inventory/reservations/release` | POST | E02 释放预留 |
-| `POST /api/wms/inventory/transfer` | POST | 库存转移确认 |
+35 项完整 identity、method、typed request/result、完成模式和 lane 以
+[WMS 全工厂 Operation 顶层蓝图](wms_full_factory_operation_blueprint.md) 与
+[WMS 北向 35 项 Operation 合同](../contracts/wms-northbound-interaction-contract.md) 为准。
 
 ---
 
@@ -1143,11 +1087,10 @@ Callback API (`callback/external`, `callback/event`, `callback/result`) 只做�
 sequenceDiagram
     participant WMS
     participant WES_Event as WES /callback/event
-    participant WES_External as WES /callback/external
+    participant WES_Hint as WES /callback/external
     participant WES_Inbox as WES WorklineInbox
     participant WES_Orchestrator as WES Orchestrator
     participant ECS
-    participant RCS
 
     Note over WMS,WES_Event: 1. GRN 单据接入（普通业务通知）
     WMS->>WES_Event: POST /api/v1/callback/event {event_type: "WMS_GRN_RECEIVED", ...}
@@ -1161,32 +1104,23 @@ sequenceDiagram
 {event_type: "WMS_PALLET_ARRIVED", ...}
     WES_Event-->>WMS: 200 OK
 
-    Note over WES_Orchestrator,WMS: 3. 空架补给请求
-    WES_Orchestrator->>WMS: POST /api/wes/rack-supply-request
-    WMS->>RCS: 调度 AGV
-    RCS-->>WMS: 完成
+    Note over WES_Orchestrator,WMS: 3. E08–E14 提交
+    WES_Orchestrator->>WMS: POST operation path + idempotency key
+    WMS-->>WES_Orchestrator: typed ACK
+    WES_Orchestrator->>WMS: GET status by operation identity + idempotency key
+    WMS-->>WES_Orchestrator: ACCEPTED / PROCESSING
 
-    Note over WMS,WES_External: 4. 货架到达执行结果
-    WMS->>WES_External: POST /api/v1/callback/external
-{callback_type: "WMS_RACK_ARRIVED", trace_id, dispatch_key, source_event_id, ...}
-    WES_External-->>WMS: 200 OK
+    Note over WMS,WES_Hint: 4. 可选状态提示
+    WMS->>WES_Hint: WMS_EFFECT_STATUS_HINT
+    WES_Hint-->>WMS: 200 OK
+    WES_Orchestrator->>WMS: GET status
+    WMS-->>WES_Orchestrator: COMPLETED + typed result
 
     Note over ECS,WES_Event: 5. 设备事件（视觉扫描）
     ECS->>WES_Event: POST /api/v1/callback/event
 {event_type: "SCAN_COMPLETED", ...}
     WES_Event-->>ECS: 200 OK
 
-    Note over WES_Orchestrator,WMS: 6. PKG 绑定通知
-    WES_Orchestrator->>WMS: POST /api/wms/kitting/pkg-binding
-
-    Note over WES_Orchestrator,WMS: 7. 满架搬运请求
-    WES_Orchestrator->>WMS: POST /api/wes/transport-request
-    WMS->>RCS: 调度 AGV
-    RCS-->>WMS: 完成
-
-    Note over WMS,WES_External: 8. 搬运完成执行结果
-    WMS->>WES_External: POST /api/v1/callback/external
-{callback_type: "WMS_TRANSPORT_COMPLETED", trace_id, dispatch_key, source_event_id, ...}
 ```
 
 ---
@@ -1199,14 +1133,10 @@ sequenceDiagram
 |------|----------|------|--------|
 | `POST /api/v1/callback/event` | `WMS_GRN_RECEIVED` | GRN 单据接收 | P0 |
 | `POST /api/v1/callback/event` | `WMS_PALLET_ARRIVED` | 栈板到达通知 | P0 |
-| `POST /api/v1/callback/external` | `WMS_RACK_ARRIVED` | 货架到达执行结果；需要恢复 Runtime 等待态时使用 | P0 |
-| `POST /api/v1/callback/external` | `WMS_TRANSPORT_COMPLETED` | 搬运任务执行结果；需要恢复 Runtime 等待态时使用 | P0 |
-| `POST /api/v1/callback/external` | `WMS_FULL_BOX_EXCHANGE_RESULT` | 满箱交换排队、物理完成、WMS 确认、失败或对账结果 | P0 |
+| `POST /api/v1/callback/external` | `WMS_EFFECT_STATUS_HINT` | E08–E14 状态查询提示；不承载终态 | P0 |
 | `POST /api/v1/callback/result` | - | RCS 任务结果回传 | P0 |
 
-> 同一运行时任务只能选择一个回调入口。满箱交换、货架到达、搬运完成等需要命中
-> `WAITING_EXTERNAL` Session 的执行结果统一走 `/api/v1/callback/external`。
-> `/callback/event` 不再承载同一任务的并行结果回调。
+> E08–E14 的业务终态只认 status query。hint 可重放，只负责唤醒查询；非法或 registry 外 identity 必须拒绝。
 
 ### 7.2 WES 调用 WMS 的接口
 
@@ -1225,60 +1155,26 @@ sequenceDiagram
 | `/api/wms/grn/{grn_id}/packages` | GET | 查询 GRN 下的料盘列表 | P0 | PKG 校验时匹配物料 |
 | `/api/wms/inventory/query` | GET | 库存查询 | P0 | 发料决策、库存校验 |
 
-#### 7.2.2 业务指令接口
+#### 7.2.2 E08–E14 异步履约接口
 
-| 接口 | 方法 | 用途 | 优先级 |
-|------|------|------|--------|
-| `/api/wes/rack-supply-request` | POST | 空架补给请求 | P0 |
-| `/api/wes/transport-request` | POST | 满架搬运请求 | P0 |
-| `/api/wms/kitting/pkg-binding` | POST | PKG 绑定通知 | P0 |
-| `/api/wms/inventory/reserve` | POST | 库存预留 | P1 |
-| `/api/wms/inventory/reservations/release` | POST | E02 释放预留 | P1 |
-| `/api/wms/inventory/transfer` | POST | 库存转移确认 | P1 |
+接口与 identity 见 4.1。所有七项统一执行 `POST typed request → typed ACK → status query → typed terminal
+result`，不得新增 operation-specific terminal callback。
 
-### 7.3 需要新增的 Plugin Contract EventType
+### 7.3 Plugin Contract 状态提示
 
-```python
-# 在对应 plugin 的 contract.py 中新增
-WMS_GRN_RECEIVED = "WMS_GRN_RECEIVED"
-WMS_PALLET_ARRIVED = "WMS_PALLET_ARRIVED"
-WMS_RACK_ARRIVED = "WMS_RACK_ARRIVED"
-WMS_INVENTORY_UPDATED = "WMS_INVENTORY_UPDATED"
-WMS_TRANSPORT_COMPLETED = "WMS_TRANSPORT_COMPLETED"
-WMS_FULL_BOX_EXCHANGE_RESULT = "WMS_FULL_BOX_EXCHANGE_RESULT"
-```
+只声明 `WMS_EFFECT_STATUS_HINT`。合法 operation identity 必须由 35 项唯一 registry 中
+`supports_status_query=true` 的 Definition 派生，当前精确为 E08–E14。
 
-### 7.4 WMS/RCS 执行回调最小包络
+### 7.4 WMS 状态提示最小包络
 
 | 字段 | 要求 |
 |------|------|
-| `callback_type` | 必填，示例：`WMS_FULL_BOX_EXCHANGE_RESULT`。 |
-| `trace_id` | 必填，用于恢复 WES Trace 和 Session。 |
-| `dispatch_key` | 必填，WES `SystemOutbox(EXTERNAL_HTTP)` 派发键。 |
-| `exchange_request_code` | 满箱交换必填，与 `dispatch_key` 同源。 |
-| `rack_release_id` | 满箱交换必填，必须与 Session context 一致。 |
-| `wms_rcs_task_id` | 必填，WMS/RCS 侧任务 ID。 |
-| `source_system` | 必填，`WMS` 或 `RCS`。 |
-| `source_event_id` | 必填，来源侧稳定事件 ID；WES 幂等优先使用它。 |
-| `source_version` | 必填，来源侧单调版本或业务版本。 |
-| `occurred_at` | 必填，来源事实发生时间。 |
-| `request_id` | 必填，来源请求唯一 ID，用于重放防护。 |
-| `timestamp` | 必填，签名时间窗校验。 |
-| `signature` | 必填，按双方约定的 canonical payload 计算。 |
+| `callback_type` | 必填且只能是 `WMS_EFFECT_STATUS_HINT`。 |
+| `data.operation_identity` | 必填，必须是 E08–E14 identity。 |
+| `data.idempotency_key` | 必填，与原提交请求完全一致。 |
 
-满箱交换的 `exchange_status` 必须使用拆分状态：
-
-| 状态 | 含义 |
-|------|------|
-| `ACCEPTED` / `QUEUED` / `IN_PROGRESS` | 外部系统已受理、排队或执行中；WES 继续等待。 |
-| `PHYSICAL_COMPLETED` | 外部物理交换完成，但不代表 WES 投影或 WMS 库存确认完成。 |
-| `RESOURCE_PROJECTED` | WES 已根据可信交换后关系更新资源当前投影。 |
-| `WMS_CONFIRMED` | WMS 已完成库存、单据或业务版本确认。 |
-| `BUSINESS_COMPLETED` | 物理动作、资源投影和 WMS 确认全部完成。 |
-| `WMS_REJECTED` / `REJECTED` / `FAILED` / `CANCELLED` | 需要阻断、诊断或 RuntimeHold。 |
-
-`PHYSICAL_COMPLETED` 或 `RESOURCE_PROJECTED` 前必须携带可信 `post_exchange_relations`。
-缺失、冲突、迟到或旧版本只追加 evidence，不能覆盖 active `RackBinMount`。
+提示包络禁止携带业务终态或 operation result。WES 收到提示后按冻结 status binding 查询；重复、迟到提示只追加
+evidence。
 
 ---
 
@@ -1288,7 +1184,7 @@ WMS_FULL_BOX_EXCHANGE_RESULT = "WMS_FULL_BOX_EXCHANGE_RESULT"
 
 1. 以 `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` 作为 WES/WMS/RCS 权责边界。
 2. 修订 SRS 中 WES 锁空箱、交换库存属性、自动扣减库存等旧口径。
-3. 锁定 `/api/v1/callback/external` 作为运行时执行回调入口。
+3. 锁定 `/api/v1/callback/external` 只接收 E08–E14 状态提示，终态来自 status query。
 4. 锁定签名、时间窗、`request_id`、`source_event_id`、`source_version` 和 canonical hash 幂等规则。
 
 ### 8.2 第一阶段：扩展 plugin contract
@@ -1308,7 +1204,7 @@ WMS_FULL_BOX_EXCHANGE_RESULT = "WMS_FULL_BOX_EXCHANGE_RESULT"
 ### 8.4 第三阶段：WMS 适配
 
 1. WMS 侧定义虚拟设备：`WMS_SYSTEM`, `WMS_RCS`
-2. WMS/RCS 执行类结果调用 `/api/v1/callback/external`
+2. WMS 可用 `/api/v1/callback/external` 发送状态提示，但不得发送终态结果
 3. WMS 生成 `request_id` 和 `source_event_id` 作为来源消息幂等键；业务主链路追溯仍由 WES 侧 `trace_id` 统一维护
 
 ---

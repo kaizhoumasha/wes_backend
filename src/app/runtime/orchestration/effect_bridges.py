@@ -16,7 +16,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportOutcome,
     ExternalHttpTransportResult,
 )
-from src.app.wms_integration.ports.effect_status import WMS_EFFECT_OPERATION_IDENTITIES
+from src.app.wms_integration.operation_registry import EFFECT_OPERATION_IDENTITIES
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
@@ -61,7 +61,7 @@ class EffectTransportBridge:
         occurred_at_ms: int,
         operation_identity: str | None = None,
     ) -> tuple[Any, ...]:
-        is_wms_effect = operation_identity in WMS_EFFECT_OPERATION_IDENTITIES
+        is_wms_effect = operation_identity in EFFECT_OPERATION_IDENTITIES
         wms_protocol_rejection = is_wms_effect and result.protocol_result is ExternalHttpProtocolResult.REJECTED
         expected_idempotency_code = _expected_wms_idempotency_code(
             result,

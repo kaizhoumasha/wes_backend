@@ -56,7 +56,7 @@ def _outbox(*, operation_identity: str = "tests.external-http.effect@v1") -> Sim
         "lease_owner_token": "test-owner:1",
         "lease_expires_at": datetime(2027, 1, 1),
     }
-    if operation_identity == "wms.fulfillment.notify_pkg_binding@v1":
+    if operation_identity == "wms.fulfillment.request_rack_supply@v1":
         values["idempotency_key"] = "idem-status-001"
     return frozen_outbox_namespace(
         {"request_id": "REQ-001"},
@@ -309,7 +309,7 @@ async def test_accepted_explicit_protocol_reject_is_transport_sent_without_retry
 async def test_wms_effect_status_is_enqueued_only_after_transport_evidence_commit(
     transport_result: ExternalHttpTransportResult,
 ) -> None:
-    outbox = _outbox(operation_identity="wms.fulfillment.notify_pkg_binding@v1")
+    outbox = _outbox(operation_identity="wms.fulfillment.request_rack_supply@v1")
     repository = _Repository(outbox)
     db = SimpleNamespace(commit=AsyncMock())
     enqueued: list[str] = []
@@ -337,7 +337,7 @@ async def test_wms_effect_status_is_enqueued_only_after_transport_evidence_commi
 
 @pytest.mark.asyncio
 async def test_status_enqueue_broker_failure_does_not_rollback_committed_ledger_and_beat_remains_fallback() -> None:
-    outbox = _outbox(operation_identity="wms.fulfillment.notify_pkg_binding@v1")
+    outbox = _outbox(operation_identity="wms.fulfillment.request_rack_supply@v1")
     repository = _Repository(outbox)
     db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
 

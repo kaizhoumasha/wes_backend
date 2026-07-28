@@ -19,11 +19,10 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
 from src.app.wms_integration.adapters.effect_status_query_adapter import WmsEffectStatusQueryAdapter
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.ports.effect_status import (
-    NotifyPackageBindingResultIdentity,
     WmsEffectStatusRequest,
     build_wms_effect_status_binding,
 )
-from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
+from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupplyResult
 from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
@@ -44,12 +43,15 @@ EFFECT_STATUS_REPLAY_FIXTURE = {
     "source_version": 4,
     "result_payload": {
         "dispatch_key": "dispatch-conformance-001",
-        "package_id": "PKG-CONFORMANCE-001",
-        "pallet_id": "PALLET-CONFORMANCE-001",
-        "accepted": True,
-        "bound_at": "2026-07-24T00:00:00+00:00",
-        "reason_code": None,
+        "provider_reference": "wms-conformance-effect-001",
         "source_version": "4",
+        "station_code": "STATION-CONFORMANCE-001",
+        "rack_type": "FLOW_RACK",
+        "demand_generation": 1,
+        "rack_id": "RACK-CONFORMANCE-001",
+        "final_station_code": "STATION-CONFORMANCE-001",
+        "arrival_relation": "AT_STATION",
+        "task_outcome": "SUCCESS",
     },
 }
 
@@ -214,27 +216,28 @@ async def test_unsigned_effect_status_case_replays_the_same_interaction_contract
         max_backoff_seconds=8.0,
     )
     request = WmsEffectStatusRequest(
-        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
         idempotency_key="intent-conformance-001",
-        expected_result_identity=NotifyPackageBindingResultIdentity(
-            dispatch_key="dispatch-conformance-001",
-            package_id="PKG-CONFORMANCE-001",
-            pallet_id="PALLET-CONFORMANCE-001",
-        ),
+        request_payload={
+            "dispatch_key": "dispatch-conformance-001",
+            "station_code": "STATION-CONFORMANCE-001",
+            "rack_type": "FLOW_RACK",
+            "demand_generation": 1,
+        },
     )
 
     first = await adapter.query_status(request)
     second = await adapter.query_status(request)
 
     assert first == second
-    assert isinstance(first.result, NotifyPackageBindingOperationResult)
+    assert isinstance(first.result, RequestRackSupplyResult)
     assert observed_query_params == [
         {
-            "operation_identity": "wms.fulfillment.notify_pkg_binding@v1",
+            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
             "idempotency_key": "intent-conformance-001",
         },
         {
-            "operation_identity": "wms.fulfillment.notify_pkg_binding@v1",
+            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
             "idempotency_key": "intent-conformance-001",
         },
     ]

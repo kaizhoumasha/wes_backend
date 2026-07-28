@@ -55,12 +55,6 @@ class WmsOperationBudget(BaseModel):
     max_rows: int | None = Field(default=None, gt=0)
 
     @property
-    def timeout_seconds(self) -> float:
-        """兼容既有 transport 读取口径；唯一真源仍为整项总预算 deadline。"""
-
-        return self.deadline_seconds
-
-    @property
     def max_chunk_bytes(self) -> int:
         return min(262_144, self.max_wire_bytes)
 
@@ -123,18 +117,6 @@ class WmsOperationDefinition(BaseModel):
     pagination: WmsPaginationConstraint | None
     error_codes: tuple[StableCode, ...] = Field(min_length=1)
     reject_codes: tuple[StableCode, ...] = Field(min_length=1)
-
-    @property
-    def endpoint_path(self) -> str:
-        """兼容已投产 transport 的路径读取名。"""
-
-        return self.path_template
-
-    @property
-    def retry_policy(self) -> WmsOperationBudget:
-        """重试次数与 backoff 已并入同一总预算对象。"""
-
-        return self.budget
 
     @computed_field
     @property

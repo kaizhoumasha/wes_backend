@@ -30,9 +30,9 @@ class _StatusService:
 
 def _hint_payload(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
-        "operation_identity": "wms.inventory.confirm_inbound@v1",
-        "idempotency_key": "idem-confirm-001",
-        "dispatch_key": "confirm-inbound-001",
+        "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+        "idempotency_key": "idem-rack-supply-001",
+        "dispatch_key": "rack-supply-001",
     }
     data.update(overrides)
     return {
@@ -118,11 +118,40 @@ async def test_generic_hint_routes_only_frozen_correlation_to_status_service() -
     assert handled is True
     assert status_service.calls == [
         {
-            "operation_identity": "wms.inventory.confirm_inbound@v1",
-            "idempotency_key": "idem-confirm-001",
-            "dispatch_key": "confirm-inbound-001",
+            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+            "idempotency_key": "idem-rack-supply-001",
+            "dispatch_key": "rack-supply-001",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_hint_router_accepts_only_registry_async_effects() -> None:
+    from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+
+    async_identities = tuple(operation.identity for operation in WMS_OPERATIONS if operation.supports_status_query)
+    status_service = _StatusService()
+    router = WmsTypedEffectCallbackRouter(status_service=status_service)
+
+    for operation_identity in async_identities:
+        assert await router.route(
+            SimpleNamespace(),
+            callback_type="WMS_EFFECT_STATUS_HINT",
+            payload=_hint_payload(operation_identity=operation_identity),
+        )
+
+    for operation_identity in (
+        "wms.inventory.confirm_inbound@v1",
+        "wms.fulfillment.notify_pkg_binding@v1",
+    ):
+        with pytest.raises(ValueError, match="WMS_EFFECT_STATUS_HINT_OPERATION_UNKNOWN"):
+            await router.route(
+                SimpleNamespace(),
+                callback_type="WMS_EFFECT_STATUS_HINT",
+                payload=_hint_payload(operation_identity=operation_identity),
+            )
+
+    assert [call["operation_identity"] for call in status_service.calls] == list(async_identities)
 
 
 @pytest.mark.asyncio

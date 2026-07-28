@@ -1151,37 +1151,6 @@ def _northbound_response_data(
     return build_typed_ack(operation_identity, idempotency_key, payload)
 
 
-def _legacy_transport_callback_payload(
-    *,
-    callback_type: str,
-    request_payload: dict[str, Any],
-    exchange_status: str,
-) -> dict[str, Any]:
-    dispatch_key = str(request_payload.get("dispatch_key") or request_payload.get("request_id") or "")
-    source_event_hash = hashlib.sha256(f"{callback_type}:{dispatch_key}".encode()).hexdigest()[:16]
-    timestamp = _now_ms()
-    callback_payload = {
-        "callback_type": callback_type,
-        "dispatch_key": dispatch_key,
-        "exchange_request_code": dispatch_key,
-        "exchange_status": exchange_status,
-        "occurred_at": timestamp,
-        "request_id": dispatch_key,
-        "signature": "mock-signature",
-        "source_event_id": f"wms-mock:transport:{source_event_hash}",
-        "source_system": "WMS",
-        "source_version": "mock-wms.v1",
-        "status": "SUCCESS",
-        "timestamp": timestamp,
-        "trace_id": str(request_payload.get("trace_id") or f"wms-mock:{dispatch_key}"),
-        "wms_rcs_task_id": f"mock-transport:{dispatch_key}",
-    }
-    rack_release_id = request_payload.get("rack_release_id")
-    if rack_release_id is not None:
-        callback_payload["rack_release_id"] = rack_release_id
-    return callback_payload
-
-
 def _rack_operation_callback_payload(payload: dict[str, Any]) -> dict[str, Any]:
     dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
     operation_key = str(payload.get("operation_key") or "")
@@ -1368,11 +1337,6 @@ def _rack_operation_cell_capacity_depth(bin_type: str, cell_index: str) -> float
     return 20.0
 
 
-async def _report_rack_operation_callback(callback_payload: dict[str, Any]) -> None:
-    delivery = await _post_callback(WES_EXTERNAL_CALLBACK_URL, callback_payload)
-    logger.info("WMS Mock rack operation callback delivery: %s", delivery)
-
-
 # --- 主数据查询接口 (WMS Master Data) ---
 
 
@@ -1416,46 +1380,6 @@ async def get_rack(rack_id: str):
 @app.get("/api/wms/racks")
 async def get_racks(type: str | None = None):
     return {"code": 200, "data": await mock_wms_state.list_racks(type)}
-
-
-@app.post("/api/wms/rack-operation", summary="接收货架操作请求并回调 WES")
-async def rack_operation(payload: dict[str, Any], background_tasks: BackgroundTasks):
-    callback_payload = await mock_wms_state.apply_operation(payload)
-    background_tasks.add_task(_report_rack_operation_callback, callback_payload)
-    return {
-        "code": 200,
-        "data": {
-            "accepted": True,
-            "dispatch_key": payload.get("dispatch_key"),
-            "operation_key": payload.get("operation_key"),
-        },
-    }
-
-
-@app.post("/api/wms/transport-request", summary="接收料箱运输请求并回调 WES")
-async def transport_request(payload: dict[str, Any], background_tasks: BackgroundTasks):
-    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
-    callback_payload = _legacy_transport_callback_payload(
-        callback_type=str(payload.get("callback_type") or "WMS_TRANSPORT_COMPLETED"),
-        request_payload=payload,
-        exchange_status="PHYSICAL_COMPLETED",
-    )
-    background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
-    return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}
-
-
-@app.post("/api/wms/legacy/full-box-exchange", summary="兼容遗留满箱交换请求并回调 WES")
-async def legacy_full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks):
-    """遗留 family transport 保持同步 200 与完成 callback，不复用 typed EFFECT 语义。"""
-
-    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
-    callback_payload = _legacy_transport_callback_payload(
-        callback_type=str(payload.get("callback_type") or "WMS_FULL_BOX_EXCHANGE_RESULT"),
-        request_payload=payload,
-        exchange_status="BUSINESS_COMPLETED",
-    )
-    background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
-    return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}
 
 
 def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:

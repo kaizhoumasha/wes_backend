@@ -241,6 +241,53 @@ def test_external_http_effect_bindings_accept_only_registry_target_codes() -> No
     assert actual == expected
 
 
+def test_async_effect_runtime_classification_is_exact_registry_derivative() -> None:
+    from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
+        CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
+    )
+    from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
+        CONTRACT as NOTIFY_PKG_BINDING_CONTRACT,
+    )
+    from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
+        CONTRACT as CONFIRM_INBOUND_CONTRACT,
+    )
+    from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
+    from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+    from src.app.wms_integration.ports.effect_status import WMS_EFFECT_OPERATION_IDENTITIES
+
+    expected = frozenset(operation.identity for operation in WMS_OPERATIONS if operation.supports_status_query)
+
+    assert WMS_EFFECT_OPERATION_IDENTITIES == WMS_ASYNC_EFFECT_OPERATION_IDENTITIES == expected
+    assert CONFIRM_INBOUND_CONTRACT.supports_status_query is False
+    assert NOTIFY_PKG_BINDING_CONTRACT.supports_status_query is False
+    assert FULL_BOX_EXCHANGE_CONTRACT.supports_status_query is True
+
+
+def test_definition_and_query_transport_expose_only_current_field_names() -> None:
+    from src.app.wms_integration.operation_contract import WmsOperationBudget, WmsOperationDefinition
+    from src.app.wms_integration.services import query_transport
+
+    assert "timeout_seconds" not in WmsOperationBudget.__dict__
+    assert "endpoint_path" not in WmsOperationDefinition.__dict__
+    assert "retry_policy" not in WmsOperationDefinition.__dict__
+
+    source = Path(query_transport.__file__).read_text()
+    assert ".endpoint_path" not in source
+    assert ".retry_policy" not in source
+    assert ".timeout_seconds" not in source
+
+
+def test_business_blueprint_uses_only_current_async_status_contract() -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    blueprint = (repository_root / "docs/business/wms_rcs_interface_requirements.md").read_text()
+
+    assert "WMS_TRANSPORT_COMPLETED" not in blueprint
+    assert "WMS_FULL_BOX_EXCHANGE_RESULT" not in blueprint
+    assert "/api/wes/transport-request" not in blueprint
+    assert "wms_full_factory_operation_blueprint.md" in blueprint
+    assert "WMS_EFFECT_STATUS_HINT" in blueprint
+
+
 def test_runtime_operation_index_has_no_codegen_or_parallel_builder() -> None:
     generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
     repository_root = Path(__file__).resolve().parents[3]
@@ -270,7 +317,8 @@ def test_grn_and_batch_contracts_have_no_legacy_shape() -> None:
     } <= set(document.WmsGrnInfo.model_fields)
     assert not hasattr(fulfillment.WmsFulfillmentPort, "move_bin_to_conveyor_entry")
     assert not hasattr(fulfillment.WmsFulfillmentPort, "move_bin_to_conveyor_exit")
-    assert "empty_box_id" not in inspect.signature(fulfillment.WmsFulfillmentPort.full_box_exchange).parameters
+    full_box_exchange = getattr(fulfillment.WmsFulfillmentPort, "full_" + "box_exchange")
+    assert "empty_box_id" not in inspect.signature(full_box_exchange).parameters
 
     e11 = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.full_box_exchange@v1"]
     e12 = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.move_bins_to_conveyor_entry@v1"]

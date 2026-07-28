@@ -11,7 +11,7 @@ from sqlalchemy import and_, or_, select
 
 from src.app.effect_ledger_status import SystemOutboxStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
-from src.app.sys.models.outbox import WMS_EFFECT_OPERATION_IDENTITIES, SystemOutbox
+from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES, SystemOutbox
 
 _CLAIMABLE_INTENT_STATUSES = (
     RuntimeIntentStatus.PROPOSED,
@@ -25,7 +25,7 @@ _QUERYABLE_TRANSPORT_TERMINALS = (
 )
 _WMS_EFFECT_CAPABILITY_BINDINGS = tuple(
     (*operation_identity.rsplit("@", maxsplit=1), operation_identity)
-    for operation_identity in WMS_EFFECT_OPERATION_IDENTITIES
+    for operation_identity in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 )
 
 
@@ -71,7 +71,7 @@ class WmsEffectStatusRepository:
             operation_identity,
         )
         if (
-            operation_identity not in WMS_EFFECT_OPERATION_IDENTITIES
+            operation_identity not in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
             or getattr(outbox, "operation_identity", None) != operation_identity
             or capability_binding not in _WMS_EFFECT_CAPABILITY_BINDINGS
             or getattr(outbox, "idempotency_key", None) != idempotency_key
@@ -159,7 +159,7 @@ class WmsEffectStatusRepository:
                     intent_columns.status_check_lease_token.is_(None),
                     intent_columns.status_check_lease_until <= now,
                 ),
-                outbox_columns.operation_identity.in_(WMS_EFFECT_OPERATION_IDENTITIES),
+                outbox_columns.operation_identity.in_(WMS_ASYNC_EFFECT_OPERATION_IDENTITIES),
                 outbox_columns.status.in_(_QUERYABLE_TRANSPORT_TERMINALS),
             )
             .order_by(intent_columns.status_check_after.asc().nullsfirst(), intent_columns.id.asc())

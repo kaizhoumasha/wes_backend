@@ -16,13 +16,15 @@
 所有 Protocol 已落地，capability 可独立通过 typed contract 注入。
 """
 
-from .effect_status import (
-    FrozenWmsEffectStatusBinding,
-    WmsEffectStatus,
-    WmsEffectStatusQueryPort,
-    WmsEffectStatusRequest,
-    WmsEffectStatusSnapshot,
-    build_wms_effect_status_binding,
+_EFFECT_STATUS_EXPORTS = frozenset(
+    {
+        "FrozenWmsEffectStatusBinding",
+        "WmsEffectStatus",
+        "WmsEffectStatusQueryPort",
+        "WmsEffectStatusRequest",
+        "WmsEffectStatusSnapshot",
+        "build_wms_effect_status_binding",
+    }
 )
 
 __all__ = [
@@ -33,3 +35,13 @@ __all__ = [
     "WmsEffectStatusSnapshot",
     "build_wms_effect_status_binding",
 ]
+
+
+def __getattr__(name: str):
+    """延迟解析 status port，避免静态 operation registry 初始化时形成导入环。"""
+
+    if name not in _EFFECT_STATUS_EXPORTS:
+        raise AttributeError(name)
+    from . import effect_status
+
+    return getattr(effect_status, name)

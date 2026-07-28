@@ -57,7 +57,7 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
     for operation in _ASYNC_OPERATIONS
 }
 _TYPED_EFFECT_SUBMIT_DEADLINES = frozenset(
-    float(binding.operation.budget.timeout_seconds)
+    float(binding.operation.budget.deadline_seconds)
     for binding in WMS_PROVIDER_PROFILE.bindings
     if binding.operation.identity in _OPERATION_SPECS
 )
@@ -782,25 +782,25 @@ async def run_probe(
         request_timeout_seconds=request_timeout_seconds,
         max_response_bytes=max_response_bytes,
     )
-    legacy = await _request(
+    unregistered = await _request(
         client,
         "POST",
-        "/api/wms/legacy/full-box-exchange",
+        "/api/wms/fulfillment/unregistered-operation",
         request_timeout_seconds=request_timeout_seconds,
         max_response_bytes=max_response_bytes,
-        json={"dispatch_key": f"probe-legacy-scope-{uuid4().hex}"},
+        json={"dispatch_key": f"probe-unregistered-scope-{uuid4().hex}"},
     )
     scoped_fault = await status(fault_identity, fault_key)
     results.append(
         _result(
-            "northbound_fault_scope_excludes_health_inventory_and_legacy",
+            "northbound_fault_scope_excludes_health_inventory_and_unregistered_paths",
             scope_configured
             and health is not None
             and health.status_code == 200
             and inventory is not None
             and inventory.status_code in {200, 404}
-            and legacy is not None
-            and legacy.status_code == 200
+            and unregistered is not None
+            and unregistered.status_code == 404
             and scoped_fault is not None
             and scoped_fault.status_code == 503,
         )

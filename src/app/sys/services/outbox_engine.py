@@ -30,7 +30,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportResult,
 )
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
-from src.app.sys.models.outbox import WMS_EFFECT_OPERATION_IDENTITIES
+from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.core.logger import logger
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
@@ -487,7 +487,7 @@ class SystemOutboxEngine:
     ) -> None:
         """transport 证据提交后即时唤醒状态确认；失败由 Beat 扫描兜底。"""
 
-        if getattr(outbox, "operation_identity", None) not in WMS_EFFECT_OPERATION_IDENTITIES:
+        if getattr(outbox, "operation_identity", None) not in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES:
             return
         accepted_or_in_progress = result.outcome is ExternalHttpTransportOutcome.ACCEPTED and (
             result.protocol_result is ExternalHttpProtocolResult.ACCEPTED

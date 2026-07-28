@@ -25,6 +25,5 @@ CONTRACT = WmsOperationContract(
     budget=WmsTransportBudget(timeout_seconds=30, max_wire_bytes=262_144, max_decoded_bytes=262_144),
     retry_policy=WmsRetryPolicy(max_attempts=3, backoff_seconds=(1, 4)),
     outbound_auth_scheme=OutboundAuthScheme.HMAC_SHA256,
-    supports_status_query=True,
 )
 __all__ = ["CONTRACT"]

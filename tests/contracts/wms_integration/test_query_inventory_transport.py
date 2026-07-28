@@ -6,6 +6,7 @@ import asyncio
 import gzip
 import time
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import httpx
@@ -13,11 +14,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.app.runtime.system_capabilities.wms.contracts import WmsPaginationContract
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE, resolve_wms_operation_binding
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
 from src.app.wms_integration.models import WmsCallEvidence
+from src.app.wms_integration.operation_contract import WmsPaginationConstraint
 from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationRequest
 from src.app.wms_integration.ports.query_outcome import (
     QueryBusinessReject,
@@ -88,19 +89,36 @@ def _adapter(
     *,
     evidence_writer: RecordingEvidenceWriter | None = None,
     budget: dict[str, object] | None = None,
-    pagination: WmsPaginationContract | None = None,
+    pagination: WmsPaginationConstraint | None = None,
 ) -> InventoryQueryOperationAdapter:
-    effective_budget = CONTRACT.budget.model_copy(update=budget or {})
-    contract = CONTRACT.model_copy(
-        update={
-            "budget": effective_budget,
-            "pagination": pagination or CONTRACT.pagination,
-        }
-    )
     binding = resolve_wms_operation_binding(
         profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
         operation_identity=CONTRACT.identity,
-    ).model_copy(update={"operation": contract})
+    )
+    current_budget = binding.operation.budget
+    effective_budget = SimpleNamespace(
+        **{
+            "deadline_seconds": current_budget.deadline_seconds,
+            "max_attempts": current_budget.max_attempts,
+            "backoff_seconds": current_budget.backoff_seconds,
+            "max_wire_bytes": current_budget.max_wire_bytes,
+            "max_decoded_bytes": current_budget.max_decoded_bytes,
+            "max_rows": current_budget.max_rows,
+            "max_chunk_bytes": current_budget.max_chunk_bytes,
+            "max_compression_ratio": current_budget.max_compression_ratio,
+            "allowed_content_encodings": current_budget.allowed_content_encodings,
+            "max_json_depth": current_budget.max_json_depth,
+            "max_field_length": current_budget.max_field_length,
+            **(budget or {}),
+        }
+    )
+    operation = binding.operation.model_copy(
+        update={
+            "budget": effective_budget,
+            "pagination": pagination or binding.operation.pagination,
+        }
+    )
+    binding = binding.model_copy(update={"operation": operation})
     executor = WmsQueryTransportExecutor(
         endpoint=WmsBoundQueryEndpoint(binding=binding, base_url="https://wms.test"),
         transport=httpx.MockTransport(handler),
@@ -390,11 +408,13 @@ async def test_pagination_aggregates_once_and_enforces_cumulative_row_budget() -
             )
         return httpx.Response(200, json={"items": [{"sku": "MAT-2", "available_qty": "2"}]})
 
-    pagination = WmsPaginationContract(
+    pagination = WmsPaginationConstraint(
         request_cursor_field="cursor",
         response_cursor_field="next_cursor",
         response_items_field="items",
         max_pages=3,
+        max_rows=10_000,
+        max_page_size=500,
     )
     success = await _adapter(handler, pagination=pagination).execute(
         InventoryQueryOperationRequest(material_code="MAT-001")
@@ -416,7 +436,7 @@ async def test_total_deadline_covers_all_pages() -> None:
         return httpx.Response(200, json={"items": []})
 
     started_at = time.perf_counter()
-    outcome = await _adapter(handler, budget={"timeout_seconds": 0.01}).execute(
+    outcome = await _adapter(handler, budget={"deadline_seconds": 0.01}).execute(
         InventoryQueryOperationRequest(material_code="MAT-001")
     )
     elapsed = time.perf_counter() - started_at

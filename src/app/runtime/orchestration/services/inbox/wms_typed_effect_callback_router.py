@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_EFFECT_STATUS_HINT_CALLBACK
-from src.app.wms_integration.ports.effect_status import WMS_EFFECT_OPERATION_IDENTITIES
+from src.app.wms_integration.operation_registry import ASYNC_EFFECT_OPERATION_IDENTITIES
 
 
 class WmsEffectStatusHintValidationError(ValueError):
@@ -42,7 +42,7 @@ class WmsTypedEffectCallbackRouter:
             hint = WMS_EFFECT_STATUS_HINT_CALLBACK.payload_model.model_validate(callback_data)
         except (TypeError, ValueError) as exc:
             raise WmsEffectStatusHintValidationError("WMS_EFFECT_STATUS_HINT_SCHEMA_INVALID") from exc
-        if hint.operation_identity not in WMS_EFFECT_OPERATION_IDENTITIES:
+        if hint.operation_identity not in ASYNC_EFFECT_OPERATION_IDENTITIES:
             raise WmsEffectStatusHintValidationError("WMS_EFFECT_STATUS_HINT_OPERATION_UNKNOWN")
 
         _ = await self._resolve_status_service().request_status_check_hint(

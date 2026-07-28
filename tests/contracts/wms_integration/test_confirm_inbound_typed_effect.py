@@ -150,8 +150,8 @@ async def test_effect_adapter_freezes_provider_binding_and_adds_existing_t8_pair
         b'"material_code":"MAT-001",'
         b'"owner_code":"OWNER-01","quantity":"1.25","warehouse_code":"WH-01"}'
     )
-    assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
-    assert len(intent_log.status_binding_snapshot_hash) == 64
+    assert not hasattr(intent_log, "status_binding_snapshot_json")
+    assert not hasattr(intent_log, "status_binding_snapshot_hash")
     assert intent_log.operation_identity == "PKG-001"
     assert pair_repository.calls == [(db, intent_log, outbox)]
 

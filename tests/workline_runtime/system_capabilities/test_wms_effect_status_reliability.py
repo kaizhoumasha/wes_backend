@@ -80,7 +80,7 @@ class _ClaimableRepository(_Repository):
 @pytest.mark.asyncio
 async def test_wms_ambiguous_transport_is_enqueued_and_reaches_typed_terminal_without_open_case() -> None:
     claim = _claim()
-    claim.intent.capability_key = "wms.fulfillment.notify_pkg_binding"
+    claim.intent.capability_key = "wms.fulfillment.request_rack_supply"
     claim.intent.capability_contract_version = "v1"
     reducer_repository = _PersistentReducerRepository(claim.intent)
     reducer = EffectReducer(repository=reducer_repository)
@@ -328,8 +328,9 @@ def _batch_claim(suffix: str) -> Any:
     claim.outbox.payload_json = {
         **claim.outbox.payload_json,
         "dispatch_key": dispatch_key,
-        "package_id": f"PKG-{suffix}",
-        "pallet_id": f"PALLET-{suffix}",
+        "station_code": f"STATION-{suffix}",
+        "rack_type": "FLOW_RACK",
+        "demand_generation": 1,
     }
     return WmsEffectStatusClaim(intent=claim.intent, outbox=claim.outbox, lease_token="")
 
@@ -405,7 +406,7 @@ async def test_batch_claims_each_item_only_when_its_network_call_is_ready() -> N
 
     class BlockingPort:
         async def query_status(self, request: Any) -> WmsEffectStatusSnapshot:
-            dispatch_key = request.expected_result_identity.dispatch_key
+            dispatch_key = request.request_payload["dispatch_key"]
             query_order.append(dispatch_key)
             if dispatch_key == "dispatch-001":
                 first_started.set()

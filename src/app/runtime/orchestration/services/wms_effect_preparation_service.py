@@ -90,7 +90,8 @@ class WmsEffectPreparationService:
             payload_hash=envelope.payload_hash,
             trace_id=envelope.trace_id,
         )
-        freeze_wms_effect_status_binding(intent_log=intent_log, outbox=outbox)
+        if operation.supports_status_query:
+            freeze_wms_effect_status_binding(intent_log=intent_log, outbox=outbox)
         await self._intent_repository.add_proposed_pair(db, intent_log=intent_log, outbox=outbox)
         return outbox
 

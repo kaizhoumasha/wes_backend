@@ -9,22 +9,21 @@ from types import MappingProxyType
 from typing import Annotated, Any, Literal, Protocol
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializeAsAny,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256
-from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationResult
-from src.app.wms_integration.ports.full_box_exchange_operation import FullBoxExchangeOperationResult
-from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
-
-CONFIRM_INBOUND_OPERATION_IDENTITY = "wms.inventory.confirm_inbound@v1"
-FULL_BOX_EXCHANGE_OPERATION_IDENTITY = "wms.fulfillment.full_box_exchange@v1"
-NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY = "wms.fulfillment.notify_pkg_binding@v1"
-WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
-    {
-        CONFIRM_INBOUND_OPERATION_IDENTITY,
-        FULL_BOX_EXCHANGE_OPERATION_IDENTITY,
-        NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
-    }
+from src.app.wms_integration.operation_registry import (
+    ASYNC_EFFECT_OPERATION_IDENTITIES,
+    ASYNC_EFFECT_OPERATIONS,
 )
 
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -32,70 +31,14 @@ StableReasonCode = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=120, pattern=r"^[A-Z][A-Z0-9_]*$"),
 ]
-OperationIdentity = Literal[
-    "wms.inventory.confirm_inbound@v1",
-    "wms.fulfillment.full_box_exchange@v1",
-    "wms.fulfillment.notify_pkg_binding@v1",
-]
-
-
-class ConfirmInboundResultIdentity(BaseModel):
-    """入库确认结果中必须与原请求一致的关联字段。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    dispatch_key: StableText = Field(max_length=240)
-    inbound_key: StableText = Field(max_length=120)
-
-
-class FullBoxExchangeResultIdentity(BaseModel):
-    """满箱交换结果中必须与原请求一致的关联字段。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    dispatch_key: StableText = Field(max_length=240)
-    rack_id: StableText = Field(max_length=120)
-    empty_box_id: StableText = Field(max_length=120)
-    full_box_id: StableText = Field(max_length=120)
-
-
-class NotifyPackageBindingResultIdentity(BaseModel):
-    """料盘绑定结果中必须与原请求一致的关联字段。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    dispatch_key: StableText = Field(max_length=240)
-    package_id: StableText = Field(max_length=120)
-    pallet_id: StableText = Field(max_length=120)
-
-
-type WmsEffectResultIdentity = (
-    ConfirmInboundResultIdentity | FullBoxExchangeResultIdentity | NotifyPackageBindingResultIdentity
-)
-type WmsEffectOperationResult = (
-    ConfirmInboundOperationResult | FullBoxExchangeOperationResult | NotifyPackageBindingOperationResult
-)
-
-_IDENTITY_TYPE_BY_OPERATION = MappingProxyType(
-    {
-        CONFIRM_INBOUND_OPERATION_IDENTITY: ConfirmInboundResultIdentity,
-        FULL_BOX_EXCHANGE_OPERATION_IDENTITY: FullBoxExchangeResultIdentity,
-        NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY: NotifyPackageBindingResultIdentity,
-    }
-)
+OperationIdentity = Annotated[str, StringConstraints(pattern=r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")]
+WMS_EFFECT_OPERATION_IDENTITIES = ASYNC_EFFECT_OPERATION_IDENTITIES
+_OPERATION_BY_IDENTITY = MappingProxyType({operation.identity: operation for operation in ASYNC_EFFECT_OPERATIONS})
 _RESULT_TYPE_BY_OPERATION = MappingProxyType(
-    {
-        CONFIRM_INBOUND_OPERATION_IDENTITY: ConfirmInboundOperationResult,
-        FULL_BOX_EXCHANGE_OPERATION_IDENTITY: FullBoxExchangeOperationResult,
-        NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY: NotifyPackageBindingOperationResult,
-    }
+    {operation.identity: operation.result_model for operation in ASYNC_EFFECT_OPERATIONS}
 )
 _REJECTION_REASON_CODES_BY_OPERATION = MappingProxyType(
-    {
-        CONFIRM_INBOUND_OPERATION_IDENTITY: frozenset({"MATERIAL_BLOCKED", "WMS_BUSINESS_REJECTED"}),
-        FULL_BOX_EXCHANGE_OPERATION_IDENTITY: frozenset({"RACK_LOCKED", "WMS_BUSINESS_REJECTED"}),
-        NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY: frozenset({"WMS_BUSINESS_REJECTED"}),
-    }
+    {operation.identity: frozenset(operation.reject_codes) for operation in ASYNC_EFFECT_OPERATIONS}
 )
 _RFC3339_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\+00:00$")
 
@@ -107,20 +50,25 @@ def _preserve_opaque_idempotency_key(value: Any) -> str:
 
 
 class WmsEffectStatusRequest(BaseModel):
-    """本地 typed 查询请求；HTTP query string 只暴露两项冻结关联键。"""
+    """本地 typed 查询请求；原始 EFFECT payload 仅用于终态关联校验。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     operation_identity: OperationIdentity
     idempotency_key: str = Field(min_length=1, max_length=160)
     attempt_count: int = Field(default=1, ge=1, exclude=True)
-    expected_result_identity: WmsEffectResultIdentity = Field(exclude=True)
+    request_payload: dict[str, Any] = Field(exclude=True)
 
     @model_validator(mode="after")
-    def validate_expected_result_identity(self) -> WmsEffectStatusRequest:
-        expected_type = _IDENTITY_TYPE_BY_OPERATION[self.operation_identity]
-        if not isinstance(self.expected_result_identity, expected_type):
-            raise TypeError("expected result identity does not match operation_identity")
+    def validate_async_operation_request(self) -> WmsEffectStatusRequest:
+        operation = _OPERATION_BY_IDENTITY.get(self.operation_identity)
+        if operation is None:
+            raise ValueError("operation_identity is not an authored async WMS EFFECT")
+        try:
+            validated = operation.request_model.model_validate(self.request_payload)
+        except ValidationError as exc:
+            raise ValueError("request_payload violates the async operation request contract") from exc
+        object.__setattr__(self, "request_payload", validated.model_dump(mode="json"))
         return self
 
     @field_validator("idempotency_key", mode="before")
@@ -133,6 +81,16 @@ class WmsEffectStatusRequest(BaseModel):
         return {
             "operation_identity": self.operation_identity,
             "idempotency_key": self.idempotency_key,
+        }
+
+    @property
+    def expected_result_fields(self) -> dict[str, Any]:
+        operation = _OPERATION_BY_IDENTITY[self.operation_identity]
+        return {
+            field_name: self.request_payload[field_name]
+            for field_name in operation.result_model.model_fields
+            if field_name in self.request_payload
+            and not isinstance(self.request_payload[field_name], (dict, list, tuple))
         }
 
 
@@ -180,7 +138,7 @@ class WmsEffectStatusSnapshot(BaseModel):
     reason_code: StableReasonCode | None = None
     updated_at: datetime | None = None
     source_version: int | None = Field(default=None, ge=0, strict=True)
-    result: WmsEffectOperationResult | None = None
+    result: SerializeAsAny[BaseModel] | None = None
 
     @field_validator("idempotency_key", mode="before")
     @classmethod
@@ -213,9 +171,7 @@ class WmsEffectStatusSnapshot(BaseModel):
             expected_result_type = _RESULT_TYPE_BY_OPERATION[self.operation_identity]
             if not isinstance(self.result, expected_result_type):
                 raise ValueError("COMPLETED result does not match operation_identity")
-            if self.result.accepted is not True:
-                raise ValueError("COMPLETED result requires strict accepted=true")
-            inner_source_version = self.result.source_version
+            inner_source_version = getattr(self.result, "source_version", None)
             if inner_source_version is not None and inner_source_version != str(self.source_version):
                 raise ValueError("COMPLETED result source version conflicts with source_version")
         elif self.result is not None:
@@ -248,7 +204,7 @@ def _validate_result_identity(
     request: WmsEffectStatusRequest,
     result: BaseModel,
 ) -> None:
-    expected_fields = request.expected_result_identity.model_dump(mode="json")
+    expected_fields = request.expected_result_fields
     actual_fields = result.model_dump(mode="json")
     if any(actual_fields.get(field_name) != expected_value for field_name, expected_value in expected_fields.items()):
         raise ValueError("completed result identity differs from the original request")
@@ -259,19 +215,15 @@ def _parse_completed_result(
     request: WmsEffectStatusRequest,
     result_payload: dict[str, Any],
     source_version: int,
-) -> WmsEffectOperationResult:
+) -> BaseModel:
     result_model = _RESULT_TYPE_BY_OPERATION.get(request.operation_identity)
     if result_model is None:
         raise ValueError("unknown WMS EFFECT operation identity")
     try:
-        if result_payload.get("accepted") is not True:
-            raise ValueError("completed result_payload requires strict accepted=true")
         result = result_model.model_validate(result_payload)
     except ValidationError as exc:
         raise ValueError("completed result_payload violates the operation result contract") from exc
-    if result.accepted is not True:
-        raise ValueError("completed result_payload requires accepted=true")
-    inner_source_version = result.source_version
+    inner_source_version = getattr(result, "source_version", None)
     if inner_source_version is not None and inner_source_version != str(source_version):
         raise ValueError("completed result source version conflicts with the outer source_version")
     _validate_result_identity(request=request, result=result)
@@ -310,7 +262,7 @@ def parse_wms_effect_status_snapshot(
     if utc_offset is None or utc_offset.total_seconds() != 0:
         raise ValueError("visible WMS status updated_at must be offset-aware UTC")
 
-    result: WmsEffectOperationResult | None = None
+    result: BaseModel | None = None
     if state == WmsEffectStatus.COMPLETED:
         if wire.result_payload is None:
             raise ValueError("COMPLETED status requires result_payload")
@@ -496,14 +448,8 @@ class WmsEffectStatusQueryPort(Protocol):
 
 
 __all__ = [
-    "CONFIRM_INBOUND_OPERATION_IDENTITY",
-    "FULL_BOX_EXCHANGE_OPERATION_IDENTITY",
-    "NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY",
     "WMS_EFFECT_OPERATION_IDENTITIES",
-    "ConfirmInboundResultIdentity",
     "FrozenWmsEffectStatusBinding",
-    "FullBoxExchangeResultIdentity",
-    "NotifyPackageBindingResultIdentity",
     "WmsEffectStatus",
     "WmsEffectStatusQueryPort",
     "WmsEffectStatusRequest",

@@ -37,6 +37,10 @@ from sqlmodel import Field
 from src.app.effect_ledger_status import SystemOutboxStatus
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_binding import FrozenExternalHttpBinding
+from src.app.wms_integration.operation_registry import (
+    ASYNC_EFFECT_OPERATION_IDENTITIES,
+    EFFECT_OPERATION_IDENTITIES,
+)
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -62,13 +66,8 @@ class SystemOutboxTargetType(str, Enum):
 
 
 SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS = frozenset({"DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT"})
-WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
-    {
-        "wms.inventory.confirm_inbound@v1",
-        "wms.fulfillment.full_box_exchange@v1",
-        "wms.fulfillment.notify_pkg_binding@v1",
-    }
-)
+WMS_EFFECT_OPERATION_IDENTITIES = EFFECT_OPERATION_IDENTITIES
+WMS_ASYNC_EFFECT_OPERATION_IDENTITIES = ASYNC_EFFECT_OPERATION_IDENTITIES
 
 
 def _validate_wms_effect_idempotency(outbox: Any) -> None:
@@ -544,6 +543,8 @@ def _prevent_external_http_payload_update(_mapper: Any, _connection: Any, outbox
 
 __all__ = [
     "SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS",
+    "WMS_ASYNC_EFFECT_OPERATION_IDENTITIES",
+    "WMS_EFFECT_OPERATION_IDENTITIES",
     "DispatchEnvelope",
     "OperationCompletionPolicy",
     "SystemOutbox",

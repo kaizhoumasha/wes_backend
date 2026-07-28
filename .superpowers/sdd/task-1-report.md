@@ -127,3 +127,44 @@ operation 的兼容入口。
   guardrails 365 passed、process naming 11 passed、architecture/import-linter/topology 全通过）。
 - worktree `gitnexus detect-changes --scope all` → 13 indexed files / 62 symbols / 2 affected processes，
   risk MEDIUM；仅命中 Q14 Mock 查询/HMAC 流程，未实现 T2/T5 endpoint compiler/dispatcher。
+
+## Final Review 修复
+
+- 删除 E03/E07 的 status binding 与 hint 资格；E11 不再属于旧固定三项集合。status contract、scanner、
+  reducer 与 hint router 统一从 35 项 registry 派生 E08–E14 精确集合，集合外 fail closed。
+- 通用 status request 先按对应 Definition 校验冻结 EFFECT payload，再从 request/result 共享标量字段派生
+  correlation；`COMPLETED` 按 registry 的 operation-specific result model 解析，不再保留旧三项 parser、
+  identity alias 或 fallback。
+- 区分 16 项 EFFECT 的通用幂等分类与 7 项异步 status 分类，避免 E03/E07 同步化后丢失提交幂等校验。
+- 删除 Mock 的 `/api/wms/rack-operation`、`/api/wms/transport-request`、
+  `/api/wms/legacy/full-box-exchange` 及其终态 callback；删除只验证这些兼容行为的测试，未注册 path 保持
+  `404`。
+- 删除旧三项 status replay fixture 和基于 E07 preparation 的 PostgreSQL status 集成测试。E08–E14 的
+  PostgreSQL dispatcher 接线留给 T5，本任务未增加桥接、双写或临时兼容。
+- 删除 `timeout_seconds`、`endpoint_path`、`retry_policy` Definition alias；QUERY transport、黑盒探针
+  与测试直接读取 `deadline_seconds`、`path_template`、`max_attempts`、`backoff_seconds`。
+- 业务蓝图改为 E08–E14 的 `typed ACK → status query → typed terminal result`，callback 只保留
+  `WMS_EFFECT_STATUS_HINT`；同步更新北向验收/可行性文档并修复合同尾随空白。
+
+## Final Review TDD 与验证
+
+1. RED：新增五项合同测试，分别证明旧固定三项 status 分类、Definition alias、业务蓝图旧终态、
+   E08 hint 拒绝和 Mock 旧 route 仍可达。
+2. GREEN：五项合同全部转绿；旧三项专用 status parser/handler/fixture 引用归零，Mock 旧 path 仅保留
+   “未注册”断言。
+3. 扩大回归发现 QUERY 测试仍把旧 runtime contract 注入新 transport，以及 reducer/outbox 测试仍以 E07
+   代表异步 status；测试 fixture 分别迁移到 registry Definition 与 E08。
+4. 默认全集首次运行发现四项旧架构假设；更新为 19 QUERY、16 EFFECT、9 sync/7 async、35 Provider
+   bindings，并刷新零遗留报告后全部转绿。
+
+最终验证：
+
+- 受影响 WMS/runtime/Mock/contract 回归 → `582 passed`。
+- `uv run pytest tests/ -q` → `4272 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4277 tests collected`。
+- `uv run ruff format --check .`、`uv run ruff check .`、`git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime guardrails 365 passed、
+  process naming 11 passed、import-linter、architecture、topology 全通过）。
+- worktree `gitnexus detect-changes --scope staged` → 41 indexed files / 135 symbols / 6 affected processes，
+  risk HIGH；命中 QUERY transport 与 Mock/合同流程，属于已授权 Final Review 修复范围，未实现 T2/T5。

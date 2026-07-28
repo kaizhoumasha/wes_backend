@@ -124,7 +124,7 @@ class WmsBoundQueryEndpoint:
 
     @property
     def url(self) -> str:
-        return urljoin(self.base_url.rstrip("/") + "/", self.binding.operation.endpoint_path.lstrip("/"))
+        return urljoin(self.base_url.rstrip("/") + "/", self.binding.operation.path_template.lstrip("/"))
 
 
 class WmsCredentialProvider(Protocol):
@@ -299,9 +299,9 @@ class WmsQueryTransportExecutor:
                     started_at=started_at,
                 )
             try:
-                # timeout_seconds 是整次 QUERY（全部 attempts、分页与退避）的总预算。
-                async with asyncio.timeout(contract.budget.timeout_seconds):
-                    for attempt_index in range(contract.retry_policy.max_attempts):
+                # deadline_seconds 是整次 QUERY（全部 attempts、分页与退避）的总预算。
+                async with asyncio.timeout(contract.budget.deadline_seconds):
+                    for attempt_index in range(contract.budget.max_attempts):
                         try:
                             outcome = await self._execute_with_deadline(
                                 provider_payload=provider_payload,
@@ -321,9 +321,9 @@ class WmsQueryTransportExecutor:
                             )
                         if not isinstance(outcome, QueryTechnicalFailure) or not outcome.retryable:
                             break
-                        if attempt_index + 1 >= contract.retry_policy.max_attempts:
+                        if attempt_index + 1 >= contract.budget.max_attempts:
                             break
-                        await asyncio.sleep(contract.retry_policy.backoff_seconds[attempt_index])
+                        await asyncio.sleep(contract.budget.backoff_seconds[attempt_index])
             except TimeoutError:
                 outcome = QueryTechnicalFailure(
                     reason_code="WMS_PROVIDER_TIMEOUT",
@@ -417,11 +417,11 @@ class WmsQueryTransportExecutor:
         cumulative_wire_bytes = 0
         cumulative_decoded_bytes = 0
         cumulative_rows = 0
-        deadline = asyncio.get_running_loop().time() + contract.budget.timeout_seconds
+        deadline = asyncio.get_running_loop().time() + contract.budget.deadline_seconds
 
         async with open_wms_http_client(
             transport=self._transport,
-            timeout_seconds=contract.budget.timeout_seconds,
+            timeout_seconds=contract.budget.deadline_seconds,
             deadline=deadline,
         ) as client:
             for _page_number in range(1, pagination.max_pages + 1):

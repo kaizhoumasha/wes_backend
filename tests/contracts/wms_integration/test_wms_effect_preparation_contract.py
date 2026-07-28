@@ -216,8 +216,12 @@ async def test_shared_preparation_preserves_typed_operation_and_outbox_invariant
     assert outbox.target_snapshot_hash
     assert outbox.auth_scheme == "HMAC_SHA256"
     assert outbox.credential_reference == "secret://wms/material-flow-sandbox-hmac@v2"
-    assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
-    assert len(intent_log.status_binding_snapshot_hash) == 64
+    if case.contract.supports_status_query:
+        assert intent_log.status_binding_snapshot_json["provider_profile_identity"] == outbox.provider_profile_identity
+        assert len(intent_log.status_binding_snapshot_hash) == 64
+    else:
+        assert not hasattr(intent_log, "status_binding_snapshot_json")
+        assert not hasattr(intent_log, "status_binding_snapshot_hash")
     assert pair_repository.calls == [(db, intent_log, outbox)]
 
 
