@@ -57,6 +57,9 @@ runtime_capabilities:
 inbound_normalizers:
   event:
     - WMS_GRN_RECEIVED
+    - WMS_PALLET_ARRIVED
+    - WMS_INVENTORY_UPDATED
+    - WMS_PDA_OPERATION_RECORDED
   result:
     - callback_type: WMS_EFFECT_STATUS_HINT
       operation_scope: E08-E14

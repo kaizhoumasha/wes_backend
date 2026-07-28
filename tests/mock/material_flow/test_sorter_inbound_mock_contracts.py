@@ -60,8 +60,8 @@ def test_rough_sorter_mock_separates_local_physical_fact_from_wms_sync_failure()
     }
 
 
-def test_sorter_inbound_mock_enforces_join_gate_and_prefetch_policy() -> None:
-    """南向投料前必须同时满足料箱、格位预约和等待条件；未声明预取时默认不预取。"""
+def test_sorter_inbound_mock_enforces_join_gate_and_pick_ack_causality() -> None:
+    """南向投料 join gate 与下一北向取料只通过 PICK ACK 建立因果。"""
 
     with TestClient(wms_mock_server.app) as client:
         allowed_response = client.post(
@@ -74,8 +74,7 @@ def test_sorter_inbound_mock_enforces_join_gate_and_prefetch_policy() -> None:
                 "target_cell_reservable": True,
                 "cell_reservation_state": "RESERVED",
                 "waiting_deadline_declared": True,
-                "scanner_platform_state": "BUSY",
-                "manifest": {},
+                "southbound_pick_acknowledged": True,
             },
         )
         rejected_response = client.post(
@@ -88,18 +87,15 @@ def test_sorter_inbound_mock_enforces_join_gate_and_prefetch_policy() -> None:
                 "target_cell_reservable": False,
                 "cell_reservation_state": "NONE",
                 "waiting_deadline_declared": False,
-                "scanner_platform_state": "BUSY",
-                "manifest": {},
+                "southbound_pick_acknowledged": False,
             },
         )
 
     assert allowed_response.status_code == 200
     allowed = allowed_response.json()["data"]
-    assert allowed["prefetch_policy"] == {
-        "source_arm_prefetch_capacity": 0,
-        "can_pick_next_material": False,
-        "requires_scanner_platform_free": True,
-    }
+    assert allowed["next_northbound_pick_triggered"] is True
+    assert "prefetch_policy" not in allowed
+    assert "manifest_validation" not in allowed
     assert allowed["ordered_steps"] == [
         "STATION_ADMISSION",
         "WMS_CTU_BIN_INFEED",
@@ -123,63 +119,13 @@ def test_sorter_inbound_mock_enforces_join_gate_and_prefetch_policy() -> None:
     assert rejected["business_completion_state"] == "RECONCILING"
     assert rejected["ng_route_state"] == "NG_OR_RUNTIME_HOLD"
     assert rejected["runtime_hold_required"] is True
+    assert rejected["next_northbound_pick_triggered"] is False
     assert set(rejected["join_gate"]["missing_conditions"]) == {
         "AUTHORIZED_BIN_RESOLVED",
         "TARGET_BIN_AT_WORK_POSITION",
         "TARGET_CELL_RESERVABLE",
         "CELL_RESERVATION_RESERVED",
         "WAITING_DEADLINE_DECLARED",
-    }
-
-
-def test_sorter_inbound_mock_validates_positive_prefetch_manifest() -> None:
-    """显式开启扫码平台预取时，manifest 必须声明 ECS 能力、缓存容量和超时策略。"""
-
-    base_payload = {
-        "request_id": "mock-sorter-prefetch-001",
-        "expected_authorized_bin_ids": ["BIN-A-001"],
-        "actual_scanned_bin_id": "BIN-A-001",
-        "target_bin_position_state": "AT_WORK_POSITION",
-        "target_cell_reservable": True,
-        "cell_reservation_state": "RESERVED",
-        "waiting_deadline_declared": True,
-        "scanner_platform_state": "BUSY",
-    }
-    with TestClient(wms_mock_server.app) as client:
-        invalid_response = client.post(
-            "/debug/wms/fulfillment/sorter-inbound-preview",
-            json={**base_payload, "manifest": {"source_arm_prefetch_capacity": 2}},
-        )
-        valid_response = client.post(
-            "/debug/wms/fulfillment/sorter-inbound-preview",
-            json={
-                **base_payload,
-                "manifest": {
-                    "source_arm_prefetch_capacity": 2,
-                    "ecs_capabilities": ["SOURCE_ARM_PREFETCH"],
-                    "prefetch_buffer_capacity": 2,
-                    "prefetch_timeout_ms": 5000,
-                },
-            },
-        )
-
-    assert invalid_response.status_code == 200
-    invalid = invalid_response.json()["data"]
-    assert invalid["manifest_validation"]["allowed"] is False
-    assert set(invalid["manifest_validation"]["errors"]) == {
-        "ECS_SOURCE_ARM_PREFETCH_CAPABILITY_REQUIRED",
-        "PREFETCH_BUFFER_CAPACITY_TOO_SMALL",
-        "PREFETCH_TIMEOUT_REQUIRED",
-    }
-    assert invalid["prefetch_policy"]["can_pick_next_material"] is False
-
-    assert valid_response.status_code == 200
-    valid = valid_response.json()["data"]
-    assert valid["manifest_validation"] == {"allowed": True, "errors": []}
-    assert valid["prefetch_policy"] == {
-        "source_arm_prefetch_capacity": 2,
-        "can_pick_next_material": True,
-        "requires_scanner_platform_free": False,
     }
 
 

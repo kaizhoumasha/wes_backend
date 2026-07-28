@@ -308,13 +308,10 @@ def test_capability_implementation_import_device_seed_targets_device_command_por
     assert entry.target_capability == "DeviceCommandPort.dispatch"
 
 
-def test_capability_implementation_import_wms_seed_targets_wms_fulfillment_port():
-    """import wms_integration 实现的 CAPABILITY_IMPLEMENTATION_IMPORT seed 仍指向 WMS 履约 port。"""
+def test_removed_single_layer_transport_has_no_capability_implementation_import_seed():
+    """旧单层货架 transport 被删除后，不再保留 WMS compatibility seed。"""
     entry = _entry_by_id(
         "legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT"
     )
 
-    assert entry is not None
-    assert entry.business_semantics == "capability import wms_integration 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed)"
-    assert entry.target_path == "src/app/runtime/orchestration/ports/wms_fulfillment.py"
-    assert entry.target_capability == "WmsFulfillmentPort.request_transport"
+    assert entry is None

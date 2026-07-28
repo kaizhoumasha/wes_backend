@@ -28,7 +28,7 @@ from src.app.callback.models import (
 from src.app.callback.services import callback_ingress_service
 from src.core.api_security import RequireAPIPermission
 from src.core.logger import logger
-from src.core.response.response_code import ResourceErrorCode
+from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
 from src.core.task_queue_gateway import task_queue_gateway
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
@@ -111,6 +111,7 @@ async def callback_event(
     response_model=CallbackExternalIngressResponse,
     status_code=status.HTTP_200_OK,
     responses={
+        400: {"model": CallbackExternalIngressResponse, "description": "外部 callback 合同拒绝"},
         409: {"model": CallbackExternalIngressResponse, "description": "RuntimeInbox 幂等身份冲突"},
         413: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox payload 超限"},
     },
@@ -141,6 +142,8 @@ async def callback_external(
     )
     if cast("dict[str, Any]", result)["code"] == ResourceErrorCode.CONFLICT.code:
         return JSONResponse(status_code=409, content=jsonable_encoder(result))
+    if cast("dict[str, Any]", result)["code"] == ClientErrorCode.VALIDATION_ERROR.code:
+        return JSONResponse(status_code=400, content=jsonable_encoder(result))
     return result
 
 

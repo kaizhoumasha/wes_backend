@@ -39,24 +39,19 @@ from src.core.logger import logger
 from src.utils.timezone import timezone
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
-_HANDLING_CALLBACK_TYPES = frozenset(
+_WMS_EXTERNAL_CALLBACK_TYPES = frozenset(
     {
-        "RCS_FULL_BOX_EXCHANGE_RESULT",
+        "WMS_GRN_RECEIVED",
+        "WMS_PALLET_ARRIVED",
+        "WMS_INVENTORY_UPDATED",
+        "WMS_PDA_OPERATION_RECORDED",
+        "WMS_EFFECT_STATUS_HINT",
     }
 )
 
 
 def _current_timestamp_ms() -> int:
     return int(timezone.now_utc().timestamp() * 1000)
-
-
-def _is_handling_callback(callback_type: str, payload: JsonDict) -> bool:
-    dispatch_key = payload.get("dispatch_key") or payload.get("exchange_request_code")
-    if isinstance(dispatch_key, str) and dispatch_key.startswith("handling:"):
-        return True
-    if callback_type in _HANDLING_CALLBACK_TYPES:
-        return True
-    return callback_type.startswith(("CTU_BIN_", "WMS_BIN_", "RCS_BIN_"))
 
 
 @dataclass(frozen=True)
@@ -83,14 +78,10 @@ class CallbackOrchestrationService:
     def __init__(
         self,
         *,
-        rack_task_service: Any | None = None,
-        handling_operation_service: Any | None = None,
         typed_effect_callback_router: Any | None = None,
         runtime_inbox_writer: Any = callback_runtime_inbox_writer,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
-        self._rack_task_service = rack_task_service
-        self._handling_operation_service = handling_operation_service
         self._typed_effect_callback_router = typed_effect_callback_router
         self._runtime_inbox_writer = runtime_inbox_writer
         self._queue_gateway = queue_gateway
@@ -500,6 +491,11 @@ class CallbackOrchestrationService:
         causation_id: str | None = None,
         enqueue_processing: Callable[[], None] | None = None,
     ) -> ExternalCallbackOutcome:
+        # Service 边界也要 fail closed，避免内部调用绕过 API ingress 后写入旧
+        # WMS/RCS terminal callback RuntimeInbox。
+        if callback_type.startswith(("WMS_", "RCS_")) and callback_type not in _WMS_EXTERNAL_CALLBACK_TYPES:
+            raise ValueError(f"callback_type is not allowed: {callback_type}")
+
         trace = self._build_trace_context(
             request_id=request_id,
             trace_id=trace_id,
@@ -524,23 +520,11 @@ class CallbackOrchestrationService:
 
         # RuntimeInbox record 是 external callback 唯一 evidence/trace inbox。
         trace = trace.with_inbox(runtime_inbox_result.record)
-        typed_effect_handled = await self._resolve_typed_effect_callback_router().route(
+        _ = await self._resolve_typed_effect_callback_router().route(
             db,
             callback_type=callback_type,
             payload=payload,
         )
-        if not typed_effect_handled:
-            await self._resolve_rack_task_service().record_callback_from_external_http(
-                db=db,
-                payload_json=payload,
-                trace_id=trace.trace_id,
-            )
-            if _is_handling_callback(callback_type, payload):
-                await self._resolve_handling_operation_service().record_callback_from_external_http(
-                    db=db,
-                    payload_json=payload,
-                    trace_id=trace.trace_id,
-                )
 
         await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
 
@@ -548,13 +532,6 @@ class CallbackOrchestrationService:
             trace_id=trace.trace_id or "",
             is_duplicate=False,
         )
-
-    def _resolve_rack_task_service(self) -> Any:
-        if self._rack_task_service is None:
-            from src.app.rack.services import rack_task_lifecycle_service
-
-            self._rack_task_service = rack_task_lifecycle_service
-        return self._rack_task_service
 
     def _resolve_typed_effect_callback_router(self) -> Any:
         if self._typed_effect_callback_router is None:
@@ -564,13 +541,6 @@ class CallbackOrchestrationService:
 
             self._typed_effect_callback_router = wms_typed_effect_callback_router
         return self._typed_effect_callback_router
-
-    def _resolve_handling_operation_service(self) -> Any:
-        if self._handling_operation_service is None:
-            from src.app.handling.services import handling_operation_lifecycle_service
-
-            self._handling_operation_service = handling_operation_lifecycle_service
-        return self._handling_operation_service
 
 
 callback_orchestration_service = CallbackOrchestrationService()

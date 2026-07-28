@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import select
@@ -22,7 +21,7 @@ from tests.support.runtime_binding import binding_pin_fields
 
 @pytest.mark.asyncio
 async def test_external_callback_persists_claims_and_processes_without_repeating_lifecycle(db_session) -> None:
-    """真实 RuntimeInbox 行必须被 claim/processor 消费，lifecycle 直接副作用仅一次。"""
+    """真实 RuntimeInbox 行必须被 claim/processor 消费，且无领域 lifecycle 直写。"""
     workline = WorkLine(
         line_code="LINE-RUNTIME-INBOX-EXT",
         line_name="Runtime Inbox External Integration",
@@ -45,26 +44,20 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
     db_session.add(session)
     await db_session.commit()
 
-    rack_lifecycle = SimpleNamespace(record_callback_from_external_http=AsyncMock(return_value=None))
-    handling_lifecycle = SimpleNamespace(record_callback_from_external_http=AsyncMock(return_value=None))
     inbox_service = RuntimeInboxService()
     orchestration = CallbackOrchestrationService(
-        rack_task_service=rack_lifecycle,
-        handling_operation_service=handling_lifecycle,
         runtime_inbox_writer=CallbackRuntimeInboxWriter(service=inbox_service),
     )
     payload = {
-        "callback_type": "WMS_RACK_TASK_RESULT",
+        "callback_type": "WMS_INVENTORY_UPDATED",
         "source_system": "WMS",
         "source_event_id": "wms-runtime-inbox-ext-001",
-        "dispatch_key": "missing-rack-task:runtime-inbox-ext",
-        "status": "SUCCEEDED",
     }
     enqueue_processing = Mock()
 
     outcome = await orchestration.process_external(
         db_session,
-        callback_type="WMS_RACK_TASK_RESULT",
+        callback_type="WMS_INVENTORY_UPDATED",
         payload=payload,
         request_id="req-runtime-inbox-ext",
         trace_id="trace-runtime-inbox-ext",
@@ -72,7 +65,7 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
     )
     duplicate = await orchestration.process_external(
         db_session,
-        callback_type="WMS_RACK_TASK_RESULT",
+        callback_type="WMS_INVENTORY_UPDATED",
         payload=payload,
         request_id="req-runtime-inbox-ext-duplicate",
         trace_id="trace-runtime-inbox-ext",
@@ -82,8 +75,6 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
     assert outcome.is_duplicate is False
     assert duplicate.is_duplicate is True
     enqueue_processing.assert_called_once_with()
-    rack_lifecycle.record_callback_from_external_http.assert_awaited_once()
-    handling_lifecycle.record_callback_from_external_http.assert_not_awaited()
 
     claims = await inbox_service.claim_for_processing(
         db_session,
@@ -105,5 +96,3 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
     assert not hasattr(persisted, "session_id")
     assert persisted.status == "PROCESSED"
     assert persisted.last_error_message is None
-    rack_lifecycle.record_callback_from_external_http.assert_awaited_once()
-    handling_lifecycle.record_callback_from_external_http.assert_not_awaited()

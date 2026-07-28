@@ -6,8 +6,7 @@
 
 激活条件: WMS 全量集成或 WMS 主动推送事件需求明确。
 
-主计划 §5.1 7 port 之一: 入站事件 normalizer
-(WMS_GRN_RECEIVED / WMS_PALLET_ARRIVED / WMS_RACK_ARRIVED)。
+主计划 §5.1 7 port 之一: 入站事件 normalizer，覆盖冻结 SPEC 的四类普通事件。
 
 设计:
 - InboundEventPort 是所有入站 normalizer 的基协议, 不导出到业务 capability
@@ -63,14 +62,25 @@ class WmsPalletArrivedEvent(BaseModel):
     arrived_station: str = Field(min_length=1, max_length=80, description="到达工位编码")
 
 
-class WmsRackArrivedEvent(BaseModel):
-    """WMS 货架到达回调事件 (normalizer 输出)。"""
+class WmsInventoryUpdatedEvent(BaseModel):
+    """WMS 库存更新提示事件 (normalizer 输出)。"""
 
     model_config = ConfigDict(extra="forbid")
 
     envelope: InboundEventEnvelope = Field(description="共享 envelope")
-    rack_id: str = Field(min_length=1, max_length=80, description="货架 ID")
-    station_code: str = Field(min_length=1, max_length=80, description="到达工位编码")
+    inventory_reference: str = Field(min_length=1, max_length=120, description="库存变更事件引用")
+    material_code: str | None = Field(default=None, max_length=120, description="可选物料编码")
+
+
+class WmsPdaOperationRecordedEvent(BaseModel):
+    """WMS PDA/人工操作证据事件 (normalizer 输出)。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    envelope: InboundEventEnvelope = Field(description="共享 envelope")
+    operation_record_id: str = Field(min_length=1, max_length=120, description="人工操作记录 ID")
+    operation_type: str = Field(min_length=1, max_length=80, description="人工操作类型")
+    operator_code: str | None = Field(default=None, max_length=80, description="可选操作员编码")
 
 
 class InboundEventPort(Protocol):
@@ -88,7 +98,7 @@ class InboundEventPort(Protocol):
 class WmsEventPort(Protocol):
     """WMS 回调 normalizer。
 
-    3 个 normalizer 覆盖 WMS 主回调事件类型。normalizer 输出投递到
+    4 个 normalizer 覆盖 WMS 普通业务事件。normalizer 输出投递到
     RuntimeInbox；持久化后的 canonical payload 由 RuntimeInboxProcessorBridge 处理，
     normalizer 不直接调用业务 capability
     (主计划 §3.5.1 + H2 黑名单)。
@@ -102,6 +112,10 @@ class WmsEventPort(Protocol):
         """标准化 WMS_PALLET_ARRIVED 回调 → typed event + correlation_id。"""
         ...
 
-    def normalize_wms_rack_arrived(self, raw_payload: dict) -> WmsRackArrivedEvent:
-        """标准化 WMS_RACK_ARRIVED 回调 → typed event + correlation_id。"""
+    def normalize_wms_inventory_updated(self, raw_payload: dict) -> WmsInventoryUpdatedEvent:
+        """标准化 WMS_INVENTORY_UPDATED 回调 → typed event + correlation_id。"""
+        ...
+
+    def normalize_wms_pda_operation_recorded(self, raw_payload: dict) -> WmsPdaOperationRecordedEvent:
+        """标准化 WMS_PDA_OPERATION_RECORDED 回调 → typed event + correlation_id。"""
         ...

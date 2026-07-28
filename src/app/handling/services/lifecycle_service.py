@@ -49,7 +49,6 @@ class _BeginNestedCallable(Protocol):
     def __call__(self) -> _AsyncTransactionContext: ...
 
 
-_FULL_BOX_EXCHANGE_CALLBACK_TYPES = {"RCS_FULL_BOX_EXCHANGE_RESULT"}
 _POST_EXCHANGE_RELATIONS_REQUIRED_STATUSES = {"PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
 _PROGRESS_STATUSES = {
     "ACCEPTED",
@@ -470,9 +469,6 @@ def _version_sort_key(value: str) -> tuple[int, int | str]:
 def _business_context_error(session: Any | None, payload_json: Mapping[str, Any]) -> tuple[str, str] | None:
     if session is None:
         return None
-    callback_type = coerce_optional_str(payload_json.get("callback_type"))
-    if callback_type not in _FULL_BOX_EXCHANGE_CALLBACK_TYPES:
-        return None
     incoming_rack_release_id = coerce_optional_str(payload_json.get("rack_release_id"))
     if incoming_rack_release_id is None:
         return None
@@ -524,22 +520,18 @@ def _callback_step_status(payload_json: Mapping[str, Any]) -> tuple[HandlingStep
     )
     status = raw_status.upper() if raw_status is not None else None
 
-    if (
-        callback_type in _FULL_BOX_EXCHANGE_CALLBACK_TYPES
-        and status in _POST_EXCHANGE_RELATIONS_REQUIRED_STATUSES
-        and not _has_post_exchange_relations(payload_json)
-    ):
+    if status in _POST_EXCHANGE_RELATIONS_REQUIRED_STATUSES and not _has_post_exchange_relations(payload_json):
         return (
             HandlingStepStatus.RECONCILING,
             "POST_EXCHANGE_RELATIONS_MISSING",
             "满箱交换物理完成回调缺少 post_exchange_relations，已进入资源对账",
         )
 
-    if callback_type in {"CTU_BIN_MOVE_COMPLETED", "WMS_BIN_MOVE_COMPLETED", "RCS_BIN_MOVE_COMPLETED"}:
+    if callback_type == "CTU_BIN_MOVE_COMPLETED":
         return HandlingStepStatus.SUCCEEDED, None, None
-    if callback_type in {"CTU_BIN_MOVE_FAILED", "WMS_BIN_MOVE_FAILED", "RCS_BIN_MOVE_FAILED"}:
+    if callback_type == "CTU_BIN_MOVE_FAILED":
         return HandlingStepStatus.FAILED, _raw_error_code(payload_json), _raw_error_message(payload_json)
-    if callback_type in {"CTU_BIN_MOVE_PROGRESS", "WMS_BIN_MOVE_PROGRESS", "RCS_BIN_MOVE_PROGRESS"}:
+    if callback_type == "CTU_BIN_MOVE_PROGRESS":
         return HandlingStepStatus.IN_PROGRESS, None, None
 
     return _resolve_step_status(status), _raw_error_code(payload_json), _raw_error_message(payload_json)

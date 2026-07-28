@@ -95,7 +95,7 @@ _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
         "trace_id",
         "event_id",
         "causation_id",
-        # 兼容 WMS/RCS 协议 (WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS) 顶层元数据
+        # WMS 普通事件共享包络元数据。
         "source_system",
         "source_event_id",
         "source_version",
@@ -103,18 +103,6 @@ _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
         "request_id",
         "timestamp",
         "signature",
-        # WMS/RCS 协议业务追溯与状态字段 (合法顶层, 不视为业务污染):
-        # - dispatch_key / status: WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES 协议要求
-        # - exchange_* / rack_release_id / wms_rcs_task_id:
-        #   WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS 协议要求
-        # - active_bin_rack: WMS_RACK_ARRIVED 协议要求 (料架到位 payload)
-        "dispatch_key",
-        "status",
-        "exchange_request_code",
-        "rack_release_id",
-        "wms_rcs_task_id",
-        "exchange_status",
-        "active_bin_rack",
         # AGV/外部执行协议 (AGV_TASK_RESULT) 顶层追溯字段:
         # - command_code / result / finish_time / device_code:
         #   与 _RESULT_CALLBACK_TOP_LEVEL_FIELDS 一致的执行回执结构
@@ -122,77 +110,15 @@ _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
         "result",
         "finish_time",
         "device_code",
-        # WMS/RCS 任务失败 payload (RCS_RACK_TASK_RESULT 等) 顶层字段:
-        # - task_status: WMS_RCS_EXECUTION_STATUS_ALIASES 协议别名
-        # - reason_code / reason_message: 任务失败结构化原因 (用于诊断与回放)
-        "task_status",
-        "reason_code",
-        "reason_message",
-        # WMS 货架操作协议 (rack_operation) 顶层业务字段, 由 wms_mock 真实
-        # 集成测试覆盖, H4 边界设计时未枚举全, 现补齐。这些字段是 WMS
-        # 协议的合法顶层业务元数据, 不是 H4 关注的安全注入面; H4 子层守卫
-        # (_FORBIDDEN_PARAM_KEYS 递归扫描 callback.data) 仍阻断 plc_address /
-        # coordinate 等设备控制字段, 顶层白名单扩展不削弱 H4 安全语义。
-        # - actions / sequence_no / source / station / target: 操作步骤与角色
-        # - bin_mounts / material: 料箱与物料的子结构 (顶层是 schema 入口)
-        # - operation_key / operation_type: WMS 操作标识 (派发幂等键的来源)
-        # - position_code / source_position_code / target_position_code /
-        #   target_position_role: 工位与角色
-        # - rack_code / rack_kind: 货架标识与类型
-        # - task_type: WMS 任务类型 (与 device_commands.task_type 区分)
-        # - workline_code: 工作线标识
-        "actions",
-        "bin_mounts",
-        "material",
-        "operation_key",
-        "operation_type",
-        "position_code",
-        "rack_code",
-        "rack_kind",
-        "sequence_no",
-        "source",
-        "source_position_code",
-        "station",
-        "target",
-        "target_position_code",
-        "target_position_role",
-        "task_type",
-        "workline_code",
-        # WMS 失败 payload 顶层错误字段 (与 reason_code/reason_message 配对):
-        # - error_code / error_message: build_rack_operation_failure_payload
-        #   返回的诊断结构, 真实 WMS mock 集成测试必需。
-        "error_code",
-        "error_message",
     }
 )
-_EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_SUFFIXES = (
-    "GRN_RECEIVED",
-    "PALLET_ARRIVED",
-    "RACK_ARRIVED",
-    "EXCHANGE_COMPLETED",
-    "INVENTORY_UPDATED",
-    "TASK_CHANGE",
-    "REJECTED",
-    "FAILED",
-)
-_EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_TYPES = frozenset(
-    f"{provider}_{suffix}" for provider in ("WMS", "RCS") for suffix in _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_SUFFIXES
-)
-_EXTERNAL_CALLBACK_WMS_RCS_RUNTIME_TYPES = (
+_EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES = (
     frozenset(
         {
-            "WMS_ROUGH_SORTER_INBOUND",
-            "WMS_RACK_TASK_RESULT",
-            "RCS_RACK_TASK_RESULT",
-            "WMS_RACK_TASK_PROGRESS",
-            "RCS_RACK_TASK_PROGRESS",
-            "WMS_RACK_ARRIVED",
-            "RCS_RACK_ARRIVED",
-            "WMS_RACK_EXCHANGE_PROGRESS",
-            "RCS_RACK_EXCHANGE_PROGRESS",
-            "WMS_RACK_EXCHANGE_FAILED",
-            "RCS_RACK_EXCHANGE_FAILED",
-            "RCS_FULL_BOX_EXCHANGE_RESULT",
+            "WMS_GRN_RECEIVED",
+            "WMS_PALLET_ARRIVED",
+            "WMS_INVENTORY_UPDATED",
+            "WMS_PDA_OPERATION_RECORDED",
         }
     )
     | WMS_TYPED_EFFECT_CALLBACK_TYPES
@@ -219,8 +145,7 @@ _EXTERNAL_CALLBACK_PROVIDER_SPECIFIC_ALLOWED_TYPES = frozenset(
     }
 )
 _EXTERNAL_CALLBACK_ALLOWED_TYPES = (
-    _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_TYPES
-    | _EXTERNAL_CALLBACK_WMS_RCS_RUNTIME_TYPES
+    _EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES
     | _EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES
     | _EXTERNAL_CALLBACK_PROVIDER_SPECIFIC_ALLOWED_TYPES
 )
@@ -231,18 +156,7 @@ _EXTERNAL_CALLBACK_SOURCE_SYSTEMS_BY_CALLBACK_TYPE = {
     "CTU_BIN_MOVE_COMPLETED": frozenset({"CTU"}),
     "CTU_BIN_MOVE_FAILED": frozenset({"CTU"}),
 }
-_EXTERNAL_CALLBACK_RESULT_TYPES = (
-    frozenset(
-        {
-            "AGV_TASK_RESULT",
-            "DEVICE_RESULT",
-            "WMS_RACK_TASK_RESULT",
-            "RCS_RACK_TASK_RESULT",
-            "RCS_FULL_BOX_EXCHANGE_RESULT",
-        }
-    )
-    | WMS_TYPED_EFFECT_CALLBACK_TYPES
-)
+_EXTERNAL_CALLBACK_RESULT_TYPES = frozenset({"AGV_TASK_RESULT", "DEVICE_RESULT"}) | WMS_TYPED_EFFECT_CALLBACK_TYPES
 # H4 拒绝的机器可读原因码: client 可通过 reason_code 字段区分
 # 顶层字段违规 vs 其他 schema 校验失败 (用于埋点和告警)。
 _CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE = "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"
@@ -290,9 +204,6 @@ def _build_default_callback_provider_profiles() -> dict[str, ExternalContractPro
     wms_result_types = {
         callback_type for callback_type in _EXTERNAL_CALLBACK_RESULT_TYPES if callback_type.startswith("WMS_")
     }
-    rcs_result_types = {
-        callback_type for callback_type in _EXTERNAL_CALLBACK_RESULT_TYPES if callback_type.startswith("RCS_")
-    }
     return {
         "ECS": _build_callback_provider_profile(
             "ECS",
@@ -317,18 +228,6 @@ def _build_default_callback_provider_profiles() -> dict[str, ExternalContractPro
                 - wms_result_types
             ),
             result_types=wms_result_types,
-        ),
-        "RCS": _build_callback_provider_profile(
-            "RCS",
-            event_types=(
-                {
-                    callback_type
-                    for callback_type in _EXTERNAL_CALLBACK_ALLOWED_TYPES
-                    if callback_type.startswith("RCS_")
-                }
-                - rcs_result_types
-            ),
-            result_types=rcs_result_types,
         ),
         "AGV": _build_callback_provider_profile(
             "AGV",

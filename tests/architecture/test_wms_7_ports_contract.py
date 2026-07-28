@@ -109,7 +109,8 @@ def test_wms_event_port_normalizer_signatures():
     methods = [
         "normalize_wms_grn_received",
         "normalize_wms_pallet_arrived",
-        "normalize_wms_rack_arrived",
+        "normalize_wms_inventory_updated",
+        "normalize_wms_pda_operation_recorded",
     ]
     for name in methods:
         assert hasattr(WmsEventPort, name), f"missing normalizer: {name}"
@@ -121,7 +122,8 @@ def test_wms_event_port_have_docstrings():
     for name in [
         "normalize_wms_grn_received",
         "normalize_wms_pallet_arrived",
-        "normalize_wms_rack_arrived",
+        "normalize_wms_inventory_updated",
+        "normalize_wms_pda_operation_recorded",
     ]:
         method = getattr(WmsEventPort, name)
         assert method.__doc__, f"normalizer {name} needs docstring"
@@ -131,15 +133,17 @@ def test_wms_event_data_classes_are_pydantic():
     from src.app.wms_integration.ports.event import (
         InboundEventEnvelope,
         WmsGrnReceivedEvent,
+        WmsInventoryUpdatedEvent,
         WmsPalletArrivedEvent,
-        WmsRackArrivedEvent,
+        WmsPdaOperationRecordedEvent,
     )
 
     for cls in [
         InboundEventEnvelope,
         WmsGrnReceivedEvent,
         WmsPalletArrivedEvent,
-        WmsRackArrivedEvent,
+        WmsInventoryUpdatedEvent,
+        WmsPdaOperationRecordedEvent,
     ]:
         assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
         assert cls.__doc__, f"{cls.__name__} needs docstring"

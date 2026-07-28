@@ -1,6 +1,6 @@
 """WMS 入站事件 normalizer。
 
-实现 WMS 回调入站事件 3 类 typed 转换(GRN / Pallet / Rack):
+实现 WMS 回调入站事件 4 类 typed 转换:
 - 3 个 normalize_wms_* 方法把 WMS 原始回调 dict 转 typed event
 - dispatch(event_type, raw) 入口按 event_type 派发到对应 normalize_wms_*
 
@@ -18,8 +18,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from src.app.wms_integration.ports.event import (
     WmsGrnReceivedEvent,
+    WmsInventoryUpdatedEvent,
     WmsPalletArrivedEvent,
-    WmsRackArrivedEvent,
+    WmsPdaOperationRecordedEvent,
 )
 
 if TYPE_CHECKING:
@@ -29,7 +30,8 @@ if TYPE_CHECKING:
 _DISPATCH_TABLE: dict[str, str] = {
     "WMS_GRN_RECEIVED": "normalize_wms_grn_received",
     "WMS_PALLET_ARRIVED": "normalize_wms_pallet_arrived",
-    "WMS_RACK_ARRIVED": "normalize_wms_rack_arrived",
+    "WMS_INVENTORY_UPDATED": "normalize_wms_inventory_updated",
+    "WMS_PDA_OPERATION_RECORDED": "normalize_wms_pda_operation_recorded",
 }
 
 
@@ -42,7 +44,8 @@ class _WmsNormalizerPort(Protocol):
 
     def normalize_wms_grn_received(self, raw_payload: dict) -> WmsGrnReceivedEvent: ...
     def normalize_wms_pallet_arrived(self, raw_payload: dict) -> WmsPalletArrivedEvent: ...
-    def normalize_wms_rack_arrived(self, raw_payload: dict) -> WmsRackArrivedEvent: ...
+    def normalize_wms_inventory_updated(self, raw_payload: dict) -> WmsInventoryUpdatedEvent: ...
+    def normalize_wms_pda_operation_recorded(self, raw_payload: dict) -> WmsPdaOperationRecordedEvent: ...
 
 
 class WmsEventNormalizer:
@@ -56,9 +59,13 @@ class WmsEventNormalizer:
         """标准化 WMS_PALLET_ARRIVED 回调。"""
         return WmsPalletArrivedEvent(**raw_payload)
 
-    def normalize_wms_rack_arrived(self, raw_payload: dict) -> WmsRackArrivedEvent:
-        """标准化 WMS_RACK_ARRIVED 回调。"""
-        return WmsRackArrivedEvent(**raw_payload)
+    def normalize_wms_inventory_updated(self, raw_payload: dict) -> WmsInventoryUpdatedEvent:
+        """标准化 WMS_INVENTORY_UPDATED 回调。"""
+        return WmsInventoryUpdatedEvent(**raw_payload)
+
+    def normalize_wms_pda_operation_recorded(self, raw_payload: dict) -> WmsPdaOperationRecordedEvent:
+        """标准化 WMS_PDA_OPERATION_RECORDED 回调。"""
+        return WmsPdaOperationRecordedEvent(**raw_payload)
 
     def dispatch(self, event_type: str, raw_payload: dict[str, Any]) -> Any:
         """按 event_type 派发到对应 normalize_wms_* 方法, 未知 event_type 抛 ValueError。"""

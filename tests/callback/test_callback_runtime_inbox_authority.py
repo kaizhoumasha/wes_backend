@@ -718,7 +718,7 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
 
 @pytest.mark.asyncio
 async def test_process_external_uses_runtime_inbox_as_authority() -> None:
-    """external callback accepted 后仅以 RuntimeInbox record 作为证据并记录 lifecycle。"""
+    """external callback accepted 后仅以 RuntimeInbox record 作为证据。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
@@ -731,10 +731,7 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
             writer_kwargs.update(kwargs)
             return _runtime_accept_result(created=True, record_id=301)
 
-    rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
-        rack_task_service=rack_task_service,
-        handling_operation_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
         runtime_inbox_writer=WriterStub(),
     )
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
@@ -760,7 +757,6 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
     assert call_order == ["runtime"]
     assert writer_kwargs["payload"]["callback_type"] == "AGV_TASK_RESULT"
     assert writer_kwargs["trace_id"] == "trace-ext-001"
-    rack_task_service.record_callback_from_external_http.assert_awaited_once()
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
 
@@ -803,11 +799,7 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
     writer = SimpleNamespace(write_external_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
-    rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
-    handling_operation_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
-        rack_task_service=rack_task_service,
-        handling_operation_service=handling_operation_service,
         runtime_inbox_writer=writer,
     )
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
@@ -830,6 +822,4 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
 
     assert outcome.is_duplicate is True
     writer.write_external_callback.assert_awaited_once()
-    rack_task_service.record_callback_from_external_http.assert_not_awaited()
-    handling_operation_service.record_callback_from_external_http.assert_not_awaited()
     service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]

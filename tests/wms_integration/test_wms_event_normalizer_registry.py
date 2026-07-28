@@ -1,13 +1,13 @@
 """WmsEventPort 实现与 InboundNormalizerRegistry wms 域注册合同。
 
 验收:
-- WmsEventNormalizer 实现 WmsEventPort 的 3 个 normalize_wms_* 方法
+- WmsEventNormalizer 实现 WmsEventPort 的 4 个 normalize_wms_* 方法
 - register_inbound_normalizers(registry, port_protocol) 模块级函数把
   WmsEventNormalizer 注册到 registry 中,port_protocol 由调用方提供
   (避免 INBOUND_NORMALIZER_OWNERSHIP 在 wms_event_normalizer.py 文件中扫描 'WmsEventPort' 字符串)
 - 通过 registry get(port_protocol) 返回的实例调用 normalize_wms_grn_received
   拿到 typed WmsGrnReceivedEvent
-- 3 个事件类型字段映射正确(envelope 字段嵌套在 envelope 键下),
+- 4 个事件类型字段映射正确(envelope 字段嵌套在 envelope 键下),
   未知 event_type 通过 dispatch 入口抛 ValueError
 - WmsEventNormalizer 类自身不直接引用字符串 "WmsEventPort"(避免 INBOUND_NORMALIZER_OWNERSHIP 误报),
   Protocol 通过 registry.register() 在外部建立 type binding
@@ -26,8 +26,9 @@ from src.app.runtime.inbound_normalizer_registry import InboundNormalizerRegistr
 from src.app.wms_integration.ports.event import (
     WmsEventPort,
     WmsGrnReceivedEvent,
+    WmsInventoryUpdatedEvent,
     WmsPalletArrivedEvent,
-    WmsRackArrivedEvent,
+    WmsPdaOperationRecordedEvent,
 )
 
 
@@ -79,20 +80,37 @@ def test_wms_event_normalizer_normalizes_pallet_event() -> None:
     assert event.arrived_station == "ST-A"
 
 
-def test_wms_event_normalizer_normalizes_rack_event() -> None:
-    """happy path: normalize_wms_rack_arrived 返回 WmsRackArrivedEvent。"""
+def test_wms_event_normalizer_normalizes_inventory_updated_event() -> None:
+    """happy path: 库存更新提示只携带按需重读所需身份。"""
     from src.app.wms_integration.services.wms_event_normalizer import WmsEventNormalizer
 
     normalizer = WmsEventNormalizer()
     raw = {
         "envelope": _envelope_dict(),
-        "rack_id": "RACK-001",
-        "station_code": "ST-B",
+        "inventory_reference": "INV-EVT-001",
+        "material_code": "MAT-001",
     }
-    event = normalizer.normalize_wms_rack_arrived(raw)
-    assert isinstance(event, WmsRackArrivedEvent)
-    assert event.rack_id == "RACK-001"
-    assert event.station_code == "ST-B"
+    event = normalizer.normalize_wms_inventory_updated(raw)
+    assert isinstance(event, WmsInventoryUpdatedEvent)
+    assert event.inventory_reference == "INV-EVT-001"
+    assert event.material_code == "MAT-001"
+
+
+def test_wms_event_normalizer_normalizes_pda_operation_recorded_event() -> None:
+    """happy path: PDA 操作记录保留人工证据身份。"""
+    from src.app.wms_integration.services.wms_event_normalizer import WmsEventNormalizer
+
+    event = WmsEventNormalizer().normalize_wms_pda_operation_recorded(
+        {
+            "envelope": _envelope_dict(),
+            "operation_record_id": "PDA-OP-001",
+            "operation_type": "MANUAL_PUTAWAY",
+            "operator_code": "OP-001",
+        }
+    )
+
+    assert isinstance(event, WmsPdaOperationRecordedEvent)
+    assert event.operation_record_id == "PDA-OP-001"
 
 
 def test_wms_event_normalizer_rejects_unknown_event_type_via_dispatch() -> None:

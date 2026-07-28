@@ -92,7 +92,7 @@ class SorterInboundPreviewService:
         }
 
     def preview_sorter_inbound(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """预览分拣机入库 join gate 与扫码平台预取策略。"""
+        """预览分拣机入库 join gate 与南向 PICK ACK 因果链。"""
 
         expected_authorized_bin_ids = set(string_list(payload, "expected_authorized_bin_ids"))
         actual_scanned_bin_id = coerce_string_value(payload.get("actual_scanned_bin_id"))
@@ -106,21 +106,13 @@ class SorterInboundPreviewService:
         missing_conditions = [
             condition_name for condition_name in SORTER_JOIN_CONDITION_ORDER if not condition_results[condition_name]
         ]
-        capacity = _source_arm_prefetch_capacity(payload)
-        manifest_validation = _source_arm_prefetch_manifest_validation(payload, capacity)
-        scanner_platform_free = payload.get("scanner_platform_state") == "FREE"
-        can_pick_next_material = (capacity > 0 and manifest_validation["allowed"]) or scanner_platform_free
         allowed = not missing_conditions
 
         return {
             **_preview_boundary(),
             "request_id": payload.get("request_id", ""),
-            "prefetch_policy": {
-                "source_arm_prefetch_capacity": capacity,
-                "can_pick_next_material": can_pick_next_material,
-                "requires_scanner_platform_free": capacity == 0,
-            },
-            "manifest_validation": manifest_validation,
+            # 平台空闲与双臂防呆由 PLC/机器人保证；WES 仅依据南向 PICK ACK 触发下一次北向取料。
+            "next_northbound_pick_triggered": bool(payload.get("southbound_pick_acknowledged")),
             "ordered_steps": list(SORTER_INBOUND_ORDERED_STEPS),
             "join_gate": {
                 "allowed": allowed,
@@ -221,30 +213,6 @@ def _preview_boundary() -> dict[str, Any]:
         "production_write_path": False,
         "legacy_plugin_entry_used": False,
     }
-
-
-def _source_arm_prefetch_capacity(payload: Mapping[str, Any]) -> int:
-    manifest = payload.get("manifest")
-    if not isinstance(manifest, dict):
-        return 0
-    return max(_safe_int(manifest.get("source_arm_prefetch_capacity"), default=0), 0)
-
-
-def _source_arm_prefetch_manifest_validation(payload: Mapping[str, Any], capacity: int) -> dict[str, Any]:
-    if capacity <= 0:
-        return {"allowed": True, "errors": []}
-
-    manifest = payload.get("manifest")
-    manifest = manifest if isinstance(manifest, dict) else {}
-    errors: list[str] = []
-    ecs_capabilities = manifest.get("ecs_capabilities")
-    if not isinstance(ecs_capabilities, list) or "SOURCE_ARM_PREFETCH" not in ecs_capabilities:
-        errors.append("ECS_SOURCE_ARM_PREFETCH_CAPABILITY_REQUIRED")
-    if _safe_int(manifest.get("prefetch_buffer_capacity"), default=0) < capacity:
-        errors.append("PREFETCH_BUFFER_CAPACITY_TOO_SMALL")
-    if _safe_int(manifest.get("prefetch_timeout_ms"), default=0) <= 0:
-        errors.append("PREFETCH_TIMEOUT_REQUIRED")
-    return {"allowed": not errors, "errors": errors}
 
 
 def _safe_int(value: Any, *, default: int) -> int:

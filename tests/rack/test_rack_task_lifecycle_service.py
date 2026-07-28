@@ -370,7 +370,7 @@ async def test_record_callback_updates_single_task_status_only() -> None:
     updated = await service.record_callback_from_external_http(
         db,
         payload_json={
-            "callback_type": "WMS_RACK_TASK_RESULT",
+            "callback_type": "PROVIDER_TASK_RESULT",
             "dispatch_key": dispatch_key,
             "status": "SUCCEEDED",
             "active_bin_rack": {"rack_code": "RACK-001"},
@@ -416,7 +416,7 @@ async def test_record_callback_keeps_sent_outbox_open_for_progress_status() -> N
     await service.record_callback_from_external_http(
         db,
         payload_json={
-            "callback_type": "WMS_RACK_TASK_RESULT",
+            "callback_type": "PROVIDER_TASK_RESULT",
             "dispatch_key": dispatch_key,
             "status": "PHYSICAL_COMPLETED",
         },
@@ -455,7 +455,7 @@ async def test_record_callback_finishes_sent_outbox_for_existing_terminal_task()
     updated = await service.record_callback_from_external_http(
         db,
         payload_json={
-            "callback_type": "WMS_RACK_TASK_RESULT",
+            "callback_type": "PROVIDER_TASK_RESULT",
             "dispatch_key": dispatch_key,
             "status": "SUCCEEDED",
         },
@@ -467,8 +467,8 @@ async def test_record_callback_finishes_sent_outbox_for_existing_terminal_task()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("callback_type", ["WMS_RACK_EXCHANGE_FAILED", "RCS_RACK_EXCHANGE_FAILED"])
-async def test_record_callback_maps_rack_exchange_failed_to_failed_with_raw_error_code(
+@pytest.mark.parametrize("callback_type", ["PROVIDER_TASK_RESULT"])
+async def test_record_callback_maps_provider_failure_to_failed_with_raw_error_code(
     callback_type: str,
 ) -> None:
     repo = FakeRackTaskRepository()
@@ -499,6 +499,7 @@ async def test_record_callback_maps_rack_exchange_failed_to_failed_with_raw_erro
         payload_json={
             "callback_type": callback_type,
             "dispatch_key": dispatch_key,
+            "status": "FAILED",
             "reason_code": "RCS_RACK_OPERATION_FAILED",
             "reason_message": "外部系统拒绝",
         },
@@ -590,7 +591,7 @@ async def test_record_callback_does_not_regress_terminal_task_status() -> None:
     updated = await service.record_callback_from_external_http(
         db,
         payload_json={
-            "callback_type": "WMS_RACK_TASK_PROGRESS",
+            "callback_type": "PROVIDER_TASK_PROGRESS",
             "dispatch_key": dispatch_key,
             "status": "IN_PROGRESS",
         },
@@ -727,8 +728,8 @@ async def test_record_callback_resumes_session_only_when_operation_succeeded() -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("callback_type", ["WMS_RACK_ARRIVED", "RCS_RACK_ARRIVED"])
-async def test_record_callback_defers_arrived_operation_sync_until_resource_projection(
+@pytest.mark.parametrize("callback_type", ["PROVIDER_PHYSICAL_PROGRESS"])
+async def test_record_callback_does_not_terminalize_physical_progress(
     callback_type: str,
 ) -> None:
     repo = FakeRackTaskRepository()
@@ -783,18 +784,19 @@ async def test_record_callback_defers_arrived_operation_sync_until_resource_proj
         payload_json={
             "callback_type": callback_type,
             "dispatch_key": dispatch_key,
+            "status": "PHYSICAL_COMPLETED",
             "active_bin_rack": {"rack_code": "RACK-NEW"},
         },
         trace_id="trace-001",
     )
 
-    assert task.task_status == RackTaskStatus.SUCCEEDED
-    assert task.result_json == {"task_status": "SUCCEEDED"}
-    assert operation_service.calls == []
-    assert session.status == "WAITING_EXTERNAL"
-    assert session.current_wait_type == "RACK_OPERATION"
+    assert task.task_status == RackTaskStatus.IN_PROGRESS
+    assert task.result_json == {"task_status": "IN_PROGRESS"}
+    assert operation_service.calls == ["rack-op:trace-001"]
+    assert session.status.value == "MANUAL_HOLD"
+    assert session.current_wait_type is None
     assert session.context_json["waiting_rack_operation_key"] == "rack-op:trace-001"
-    assert session.context_json["rack_operation"]["status"] == "PENDING"
+    assert session.context_json["rack_operation"]["status"] == "RECONCILING"
 
 
 @pytest.mark.asyncio

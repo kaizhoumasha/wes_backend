@@ -44,8 +44,8 @@ def test_rough_sorter_preview_keeps_local_fact_and_splits_wms_effect_ports() -> 
     }
 
 
-def test_sorter_preview_enforces_join_gate_and_prefetch_manifest() -> None:
-    """南向投料 join gate 与扫码平台预取能力必须独立判断。"""
+def test_sorter_preview_enforces_join_gate_and_ack_causality_without_platform_inference() -> None:
+    """WES 只表达 PICK ACK 因果链，不推断扫码平台空闲或预取容量。"""
 
     service = SorterInboundPreviewService()
 
@@ -58,8 +58,7 @@ def test_sorter_preview_enforces_join_gate_and_prefetch_manifest() -> None:
             "target_cell_reservable": False,
             "cell_reservation_state": "NONE",
             "waiting_deadline_declared": False,
-            "scanner_platform_state": "BUSY",
-            "manifest": {"source_arm_prefetch_capacity": 2},
+            "southbound_pick_acknowledged": False,
         }
     )
     allowed = service.preview_sorter_inbound(
@@ -71,13 +70,7 @@ def test_sorter_preview_enforces_join_gate_and_prefetch_manifest() -> None:
             "target_cell_reservable": True,
             "cell_reservation_state": "RESERVED",
             "waiting_deadline_declared": True,
-            "scanner_platform_state": "BUSY",
-            "manifest": {
-                "source_arm_prefetch_capacity": 2,
-                "ecs_capabilities": ["SOURCE_ARM_PREFETCH"],
-                "prefetch_buffer_capacity": 2,
-                "prefetch_timeout_ms": 5000,
-            },
+            "southbound_pick_acknowledged": True,
         }
     )
 
@@ -90,21 +83,13 @@ def test_sorter_preview_enforces_join_gate_and_prefetch_manifest() -> None:
         "CELL_RESERVATION_RESERVED",
         "WAITING_DEADLINE_DECLARED",
     }
-    assert blocked["manifest_validation"]["allowed"] is False
-    assert set(blocked["manifest_validation"]["errors"]) == {
-        "ECS_SOURCE_ARM_PREFETCH_CAPABILITY_REQUIRED",
-        "PREFETCH_BUFFER_CAPACITY_TOO_SMALL",
-        "PREFETCH_TIMEOUT_REQUIRED",
-    }
+    assert blocked["next_northbound_pick_triggered"] is False
     assert blocked["runtime_hold_required"] is True
 
     assert allowed["join_gate"]["allowed"] is True
-    assert allowed["manifest_validation"] == {"allowed": True, "errors": []}
-    assert allowed["prefetch_policy"] == {
-        "source_arm_prefetch_capacity": 2,
-        "can_pick_next_material": True,
-        "requires_scanner_platform_free": False,
-    }
+    assert allowed["next_northbound_pick_triggered"] is True
+    assert "prefetch_policy" not in allowed
+    assert "manifest_validation" not in allowed
 
 
 def test_full_box_preview_pre_diverts_before_sorter_station_admission() -> None:

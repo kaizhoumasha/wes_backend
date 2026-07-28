@@ -366,8 +366,8 @@ def _is_terminal_task_status(value: Any) -> bool:
 
 
 def _should_sync_waiting_session_from_callback(payload_json: Mapping[str, Any]) -> bool:
-    # 到架回调还需要同一个 inbox 的插件先投影 RACK_ARRIVED/BIN_MOUNTED 资源事实。
-    return coerce_optional_str(payload_json.get("callback_type")) not in {"WMS_RACK_ARRIVED", "RCS_RACK_ARRIVED"}
+    del payload_json
+    return True
 
 
 def _apply_operation_status_to_session(
@@ -434,7 +434,6 @@ def _rack_task_type(value: str) -> str:
 
 
 def _callback_status(payload_json: Mapping[str, Any]) -> tuple[RackTaskStatus, str | None, str | None]:
-    callback_type = coerce_optional_str(payload_json.get("callback_type"))
     raw_status = coerce_optional_str(
         payload_json.get("task_status")
         or payload_json.get("status")
@@ -443,13 +442,6 @@ def _callback_status(payload_json: Mapping[str, Any]) -> tuple[RackTaskStatus, s
         or payload_json.get("exchange_status")
     )
     status = raw_status.upper() if raw_status is not None else None
-
-    if callback_type in {"WMS_RACK_ARRIVED", "RCS_RACK_ARRIVED"}:
-        return RackTaskStatus.SUCCEEDED, None, None
-    if callback_type in {"WMS_RACK_EXCHANGE_FAILED", "RCS_RACK_EXCHANGE_FAILED"}:
-        return RackTaskStatus.FAILED, _raw_error_code(payload_json), _raw_error_message(payload_json)
-    if callback_type in {"WMS_RACK_TASK_PROGRESS", "RCS_RACK_TASK_PROGRESS"}:
-        return RackTaskStatus.IN_PROGRESS, None, None
 
     task_status = _resolve_task_status(status)
     return task_status, _raw_error_code(payload_json), _raw_error_message(payload_json)

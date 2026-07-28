@@ -37,15 +37,9 @@ from .query_transport import (
     WmsQueryTransportExecutor,
 )
 from .redaction import REDACTED_VALUE, canonical_sha256, redact_sensitive
-from .transport_contract import (
-    DEFAULT_RACK_OPERATION_ENDPOINT,
-    WmsTransportContractService,
-    wms_transport_contract_service,
-)
 from .wms_event_normalizer import WmsEventNormalizer, register_inbound_normalizers
 
 __all__ = [
-    "DEFAULT_RACK_OPERATION_ENDPOINT",
     "REDACTED_VALUE",
     "WmsBusinessRejectedError",
     "WmsCallEvidenceQueryWriter",
@@ -67,7 +61,6 @@ __all__ = [
     "WmsQueryEvidenceWriter",
     "WmsQueryTransportExecutor",
     "WmsTimeoutError",
-    "WmsTransportContractService",
     "WmsUnavailableError",
     "canonical_sha256",
     "redact_sensitive",
@@ -76,5 +69,4 @@ __all__ = [
     "wms_circuit_breaker_service",
     "wms_execution_callback_normalizer",
     "wms_fulfillment_lifecycle_service",
-    "wms_transport_contract_service",
 ]

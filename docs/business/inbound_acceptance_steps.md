@@ -64,7 +64,7 @@ ADMIT / MOVE_FORWARD 正常主流程
 - WMS provider profile 已启用 fulfillment、inventory query、inventory transaction 和 event callback。
 - ECS/device provider profile 已启用 command、result callback、event callback 和 device status 查询。
 - 设备命令派发前必须校验 ECS 设备状态为 `IDLE` 或有效快照。
-- `source_arm_prefetch_capacity` 未显式声明时默认为 0。
+- WES 不推断扫码平台空闲或机械臂预取容量；平台与南北臂互锁由 PLC/机器人保证。
 
 ### 3.2 主数据与资源
 
@@ -242,7 +242,7 @@ STATION A/B，也不允许被分拣机北向机械臂取料。
 | S-22 | WES 下发南向机械臂投料命令 | 将物料投入指定料箱料格 | 命令关联物料 work item 和料箱 work item |
 | S-23 | 南向机械臂 SUCCESS callback | WES 消费预约，写入本地物理事实 | `BinMaterialMount`、`BinCellOccupancy`、`MaterialUnit.location_summary` 更新 |
 | S-24 | WES 通知 WMS PKG 绑定/库存事务 | WMS 成功后物料上架状态完成 | WMS 失败进入同步 hold/reconciliation |
-| S-25 | 扫码平台释放 | 北向机械臂可取下一件 | `source_arm_prefetch_capacity=0` 时必须等待平台 FREE 或上一物料已接管 |
+| S-25 | 南向 PICK ACK | WES 触发下一次北向取料 | 未收到南向 ACK 时不得由 WES 主动触发下一次北向取料 |
 
 ### 6.5 异常验收点
 

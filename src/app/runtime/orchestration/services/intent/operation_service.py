@@ -511,6 +511,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         current_wait_type: str,
         dispatch_key: str,
     ) -> str:
+        del current_wait_type
         resolved = self._first_non_empty_text(
             callback_type,
             raw_payload.get("callback_type"),
@@ -525,12 +526,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             resolved = self._first_non_empty_text(rack_operation.get("resume_callback_type"))
             if resolved is not None:
                 return resolved
-
-        actions = outbox_payload.get("actions")
-        action_type = actions.get("action") if isinstance(actions, dict) else None
-        rack_task_type = enum_str(outbox_payload.get("task_type") or action_type)
-        if current_wait_type == "RACK_OPERATION" and rack_task_type == "ALLOCATE_AND_MOVE_RACK":
-            return "WMS_RACK_ARRIVED"
 
         raise ValueError(f"Outbox 缺少外部回调类型: dispatch_key={dispatch_key}")
 

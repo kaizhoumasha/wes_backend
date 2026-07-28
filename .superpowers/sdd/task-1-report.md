@@ -213,3 +213,45 @@ operation 的兼容入口。
   `detect-changes --scope all` 成功检测 61 indexed files / 141 symbols / 15 affected processes，risk HIGH。
   命中旧 rack/handling/single-layer transport 与 callback/WMS 合同流程，属于已授权 Release Review
   fail-closed/删除范围；未实现 T2/T3/T5。
+
+## Release Re-review 修复
+
+- 外部 WMS/RCS callback 在 ingress、normalizer 与 orchestration 三层统一 fail closed；只允许四类普通事件和
+  `WMS_EFFECT_STATUS_HINT`。旧 rack/bin/handling/full-box/transport terminal callback 在写入
+  RuntimeInbox 前即被拒绝，且不再调用 rack/handling lifecycle。
+- removal guard 扩展为完整旧 callback family、transport identities、facade symbol/file、活跃文档和
+  operation allow-set 一致性检查；删除旧 transport facade、rack/handling gateway 与旧正向 facade 测试。
+- Handling、Rack 与单层货架尚未迁移的生产入口改为所属领域的明确 migration-required error；不保留异常后
+  的不可达 compatibility 实现。
+- Mock 以唯一 registry 参数化覆盖 9 项 `SYNC_RESULT` 的直接终态，以及 E08–E14 各自的 ACK/status/hint；
+  删除把多个 operation 覆盖成 E08 的假参数化和旧 rack terminal producer。E11 fixture 不包含
+  `empty_box_id`。
+- 分拣预览不再读取 `scanner_platform_state` 或计算 `source_arm_prefetch_capacity`；下一次北向取料只由
+  `southbound_pick_acknowledged` 触发。Mock、合同、业务文档与 legacy ledger 同步为 ACK 因果。
+- 活跃 WMS/RCS 文档只发布 35 项 registry、四类普通事件和 E08–E14 status hint；legacy mapping 测试改用
+  当前 Provider profile 与 canonical operation identity。
+
+## Release Re-review TDD 与验证
+
+1. RED：参数化旧 callback family 后，旧 ingress/orchestration 仍写 RuntimeInbox 并调用 lifecycle；
+   Mock 的多组参数实际覆盖为同一个 E08；预览仍依赖平台 FREE/预取字段。
+2. GREEN：三层 callback allow-set、Mock registry 参数化、ACK-only 预览与 facade 物理删除完成；直接调用
+   orchestration 也无法绕过 ingress。
+3. 默认全集首轮暴露 22 个旧 lifecycle/Event Port/ledger 假设；修复后第二轮为
+   `4159 passed, 5 skipped, 9 failed`，剩余均为跨域 import 和派生 ledger 统计；清理跨域 import 并刷新
+   账本后第三轮全部通过。
+
+最终验证：
+
+- `uv run pytest` → `4168 passed, 5 skipped`（4173 collected）。
+- 显式 Mock 重测试 → `88 passed`；callback/removal 聚焦回归 → `111 passed`，最终 removal guard
+  → `8 passed`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4173 tests collected`。
+- `uv run ruff format --check .` → 1078 files already formatted；`uv run ruff check .`、`git diff --check`
+  → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts 365 passed、
+  business legacy final、process naming 11 passed、import-linter、architecture enforced、topology 全通过）。
+- worktree `gitnexus detect-changes --scope all` → 45 files / 149 symbols / 8 affected processes，risk HIGH；
+  命中 callback、rack/handling/single-layer fail-closed 与 sandbox callback 流程，属于用户已授权的
+  Release Re-review 范围；未实现 T2/T3/T5。

@@ -104,19 +104,15 @@ async def test_process_external_writes_only_runtime_inbox() -> None:
     writer = SimpleNamespace(
         write_external_callback=AsyncMock(return_value=SimpleNamespace(created=True, record=runtime_record))
     )
-    rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
-    handling_operation_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
         runtime_inbox_writer=writer,
-        rack_task_service=rack_task_service,
-        handling_operation_service=handling_operation_service,
     )
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
 
     outcome = await service.process_external(
         SimpleNamespace(),  # type: ignore[arg-type]
-        callback_type="WMS_RACK_TASK_RESULT",
-        payload={"callback_type": "WMS_RACK_TASK_RESULT", "dispatch_key": "rack:001"},
+        callback_type="WMS_INVENTORY_UPDATED",
+        payload={"callback_type": "WMS_INVENTORY_UPDATED", "source_event_id": "inventory-event-001"},
         request_id="req-external-001",
         trace_id="trace-external-001",
         enqueue_processing=lambda: None,
@@ -124,8 +120,6 @@ async def test_process_external_writes_only_runtime_inbox() -> None:
 
     assert outcome.trace_id == "trace-external-001"
     writer.write_external_callback.assert_awaited_once()
-    rack_task_service.record_callback_from_external_http.assert_awaited_once()
-    handling_operation_service.record_callback_from_external_http.assert_not_awaited()
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()
 
 
@@ -142,7 +136,6 @@ async def test_process_external_routes_wms_effect_hint_without_changing_runtime_
     typed_router = SimpleNamespace(route=AsyncMock(return_value=True))
     service = CallbackOrchestrationService(
         runtime_inbox_writer=writer,
-        rack_task_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
     )
     service._typed_effect_callback_router = typed_router
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]

@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（653 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（652 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -37,7 +37,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **653** |
+| **total_entries** | **652** |
 | phase4_carrier（承载 Phase 4 业务语义） | 107 |
 | pending-review | 0 |
 
@@ -45,7 +45,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | entry_type | count |
 | --- | ---: |
-| service | 304 |
+| service | 303 |
 | domain_object | 60 |
 | test | 214 |
 | model | 44 |
@@ -57,7 +57,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 372 |
+| rebuild | 371 |
 | keep-contract | 260 |
 | delete | 14 |
 | move | 7 |
@@ -67,7 +67,7 @@ uv run python scripts/generate_legacy_matrix.py
 | drop_phase | count |
 | --- | ---: |
 | phase5-tech | 275 |
-| phase2 | 262 |
+| phase2 | 261 |
 | phase4 | 107 |
 | phase1 | 9 |
 
@@ -75,7 +75,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | current_owner | count |
 | --- | ---: |
-| workline | 414 |
+| workline | 413 |
 | workline_runtime | 204 |
 | workline_plugins | 11 |
 | runtime | 8 |
@@ -171,7 +171,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 ## 7. 按域说明
 
-### 7.1 workline（414 entries）
+### 7.1 workline（413 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
@@ -203,7 +203,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | `src/workline_plugins/*` | delete | technical cleanup scope 后不得继续存在于 `src/` 可 import 路径；旧代码只允许进入 `docs/archive/...` 等非运行路径 |
 | `docs/templates/workline_plugin/*` | delete | 旧 plugin 模板已移除，新增模板不得恢复旧 plugin authoring 入口 |
 
-### 7.5 guardrail_seed_scope（43 entries）
+### 7.5 guardrail_seed_scope（42 entries）
 
 跨域路径登记，供 P0-007 seed allowlist 追溯 `legacy_entry_id`：
 
@@ -211,7 +211,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | --- | --- | --- | --- |
 | WMS_INTEGRATION_BOUNDARY（WMS import，5 条） | callback_ingress_service.py、rack/gateway.py、handling/gateway.py、single_layer_rack_orchestration_service.py、`src/workline_runtime/services.py:build_workline_runtime_services` | callback/rack/handling/workline/workline_runtime | phase2/phase5-tech |
 | EXECUTION_CORRELATION_BOUNDARY（session FK，19 条） | handling/rack/resource/WMS/WorkLine 及已迁入 runtime 实现，逐文件明细见 CSV | handling/rack/resource/wms_integration/workline/runtime | phase1/phase2 |
-| CAPABILITY_IMPLEMENTATION_IMPORT（capability forbidden import，19 条） | workline services/repositories 及已迁入 runtime 实现中逐文件枚举的 device/wms_integration services/models import | workline/runtime | phase2 |
+| CAPABILITY_IMPLEMENTATION_IMPORT（capability forbidden import，18 条） | workline services/repositories 及已迁入 runtime 实现中逐文件枚举的 device/wms_integration services/models import | workline/runtime | phase2 |
 
 > seed_scope 非对应域完整清理矩阵，仅为 P0-007 seed allowlist 建立可追踪 `legacy_entry_id`。每条 seed allowlist 违规必须能反查本矩阵 entry，且 `drop_phase` 一致。CAPABILITY_IMPLEMENTATION_IMPORT allowlist 禁止目录前缀，必须逐文件枚举，避免未来新增违规被历史豁免吞掉。
 
@@ -219,14 +219,14 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | 风险项 | phase | 说明 |
 | --- | --- | --- |
-| 执行状态迁移（222 条执行状态语义；phase2 rebuild 总计 255 条，phase2 全部 262 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
+| 执行状态迁移（222 条执行状态语义；phase2 rebuild 总计 254 条，phase2 全部 261 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
 | phase4 业务流程（107 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
 | `single_layer_rack_orchestration_service`（WMS_INTEGRATION_BOUNDARY seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
 | device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 653 条，strategy 字段非空）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 652 条，strategy 字段非空）
 2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，107 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）

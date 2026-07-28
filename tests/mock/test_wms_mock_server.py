@@ -55,6 +55,21 @@ def _async_body() -> bytes:
     return json.dumps(_async_payload(), separators=(",", ":")).encode()
 
 
+def _wire_fixture_case(
+    operation_identity: str,
+    *,
+    remove: str | None = None,
+    update: dict[str, object] | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """在参数化阶段生成正反 wire fixture，测试体不覆写 operation 参数。"""
+
+    valid_payload = dict(REQUEST_FIXTURES[operation_identity])
+    invalid_payload = {**valid_payload, **(update or {})}
+    if remove is not None:
+        invalid_payload.pop(remove)
+    return valid_payload, invalid_payload
+
+
 @pytest.fixture(autouse=True)
 def reset_wms_mock_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1, "test-mock-northbound-secret-v1")
@@ -433,9 +448,10 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
 
 @pytest.mark.parametrize(
     ("path", "operation_identity"),
-    (
-        ("/api/wms/inventory/confirm-inbound", "wms.inventory.confirm_inbound@v1"),
-        ("/api/wms/fulfillment/pkg-bindings", "wms.fulfillment.notify_pkg_binding@v1"),
+    tuple(
+        (f"/api/wms{operation.path_template}", operation.identity)
+        for operation in WMS_OPERATIONS
+        if operation.completion_mode is WmsCompletionMode.SYNC_RESULT
     ),
 )
 def test_wms_mock_sync_effect_returns_terminal_result_without_status_or_hint(
@@ -1008,21 +1024,6 @@ def test_wms_mock_northbound_visibility_callback_evidence_and_large_body_are_pub
     assert visible_after_reset.json()["state"] == "ACCEPTED"
 
 
-def test_wms_mock_rack_operation_ignores_unknown_requested_rack_code() -> None:
-    callback_payload = wms_mock_server._rack_operation_callback_payload(
-        {
-            "request_id": "rack-operation:op-unknown-rack:1:ALLOCATE_AND_MOVE_RACK",
-            "dispatch_key": "rack-operation:op-unknown-rack:1:ALLOCATE_AND_MOVE_RACK",
-            "callback_type": "WMS_RACK_ARRIVED",
-            "operation_key": "op-unknown-rack",
-            "task_type": "ALLOCATE_AND_MOVE_RACK",
-            "rack_code": "RACK-DOES-NOT-EXIST",
-        }
-    )
-
-    assert callback_payload["rack_code"] == "RACK-001"
-
-
 def test_wms_mock_active_bin_rack_builder_does_not_read_or_mutate_state() -> None:
     removed_rack = wms_mock_server.mock_wms_state.rack_pool.pop("RACK-6CELL-001")
 
@@ -1190,79 +1191,6 @@ def test_wms_mock_inventory_query_rejects_legacy_post_and_sku_alias() -> None:
 
     assert post_response.status_code == 405
     assert sku_alias_response.status_code == 422
-
-
-@pytest.mark.parametrize(
-    ("path", "payload", "operation_identity"),
-    (
-        (
-            "/api/wms/inventory/confirm-inbound",
-            {
-                "dispatch_key": "confirm-inbound-001",
-                "inbound_key": "INBOUND-001",
-                "material_code": "MAT-001",
-                "quantity": "1",
-            },
-            "wms.inventory.confirm_inbound@v1",
-        ),
-        (
-            "/api/wms/fulfillment/pkg-bindings",
-            {
-                "dispatch_key": "package-binding-001",
-                "package_id": "PKG-001",
-                "pallet_id": "PALLET-001",
-                "station_code": "STATION-001",
-            },
-            "wms.fulfillment.notify_pkg_binding@v1",
-        ),
-        (
-            "/api/wms/fulfillment/full-box-exchange",
-            {
-                "dispatch_key": "full-box-001",
-                "rack_id": "RACK-001",
-                "empty_box_id": "EMPTY-001",
-                "full_box_id": "FULL-001",
-            },
-            "wms.fulfillment.full_box_exchange@v1",
-        ),
-    ),
-)
-def test_wms_mock_typed_effect_routes_deliver_declared_callback(
-    monkeypatch: pytest.MonkeyPatch,
-    path: str,
-    payload: dict[str, object],
-    operation_identity: str,
-) -> None:
-    path = ASYNC_OPERATION_PATH
-    operation_identity = ASYNC_OPERATION_IDENTITY
-    payload = _async_payload()
-    mock_post_callback = AsyncMock(return_value={"delivered": True})
-    monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
-    body = json.dumps(payload, separators=(",", ":")).encode()
-
-    with TestClient(wms_mock_server.app) as client:
-        response = client.post(
-            path,
-            content=body,
-            headers=_submit_headers(
-                body=body,
-                path=path,
-                operation_identity=operation_identity,
-                idempotency_key="idem-mock-001",
-            ),
-        )
-
-    assert response.status_code == 202
-    mock_post_callback.assert_awaited_once()
-    callback_payload = mock_post_callback.await_args.args[1]
-    assert callback_payload["callback_type"] == "WMS_EFFECT_STATUS_HINT"
-    assert callback_payload["source_system"] == "WMS"
-    assert callback_payload["source_event_id"].startswith("wms-mock:typed-effect:")
-    assert callback_payload["data"] == {
-        "operation_identity": operation_identity,
-        "idempotency_key": "idem-mock-001",
-        "dispatch_key": payload["dispatch_key"],
-    }
 
 
 def test_wms_mock_typed_effect_first_acceptances_use_unique_callback_event_ids(
@@ -1465,137 +1393,55 @@ def test_real_wes_submit_sender_and_status_signer_interoperate_with_mock_active_
             "confirm-missing",
             "/api/wms/inventory/confirm-inbound",
             "wms.inventory.confirm_inbound@v1",
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "1",
-            },
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-            },
+            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", remove="quantity"),
         ),
         (
             "confirm-extra",
             "/api/wms/inventory/confirm-inbound",
             "wms.inventory.confirm_inbound@v1",
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "1",
-            },
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "1",
-                "trace_id": "forbidden-wire-field",
-            },
+            *_wire_fixture_case(
+                "wms.inventory.confirm_inbound@v1",
+                update={"trace_id": "forbidden-wire-field"},
+            ),
         ),
         (
             "confirm-blank",
             "/api/wms/inventory/confirm-inbound",
             "wms.inventory.confirm_inbound@v1",
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "1",
-            },
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": " ",
-                "material_code": "material-valid",
-                "quantity": "1",
-            },
+            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", update={"inbound_key": " "}),
         ),
         (
-            "confirm-number-quantity",
+            "confirm-non-string-quantity",
             "/api/wms/inventory/confirm-inbound",
             "wms.inventory.confirm_inbound@v1",
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "1",
-            },
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": 1,
-            },
+            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", update={"quantity": []}),
         ),
         (
             "confirm-non-finite-quantity",
             "/api/wms/inventory/confirm-inbound",
             "wms.inventory.confirm_inbound@v1",
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "1",
-            },
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "NaN",
-            },
+            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", update={"quantity": "NaN"}),
         ),
         (
             "confirm-non-positive-quantity",
             "/api/wms/inventory/confirm-inbound",
             "wms.inventory.confirm_inbound@v1",
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "1",
-            },
-            {
-                "dispatch_key": "dispatch-confirm-valid",
-                "inbound_key": "inbound-valid",
-                "material_code": "material-valid",
-                "quantity": "0",
-            },
+            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", update={"quantity": "0"}),
         ),
         (
             "full-box-extra",
             "/api/wms/fulfillment/full-box-exchange",
             "wms.fulfillment.full_box_exchange@v1",
-            {
-                "dispatch_key": "dispatch-full-box-valid",
-                "rack_id": "rack-valid",
-                "empty_box_id": "empty-valid",
-                "full_box_id": "full-valid",
-            },
-            {
-                "dispatch_key": "dispatch-full-box-valid",
-                "provider_code": "WMS",
-                "rack_id": "rack-valid",
-                "empty_box_id": "empty-valid",
-                "full_box_id": "full-valid",
-            },
+            *_wire_fixture_case(
+                "wms.fulfillment.full_box_exchange@v1",
+                update={"provider_code": "WMS"},
+            ),
         ),
         (
             "package-binding-missing",
             "/api/wms/fulfillment/pkg-bindings",
             "wms.fulfillment.notify_pkg_binding@v1",
-            {
-                "dispatch_key": "dispatch-binding-valid",
-                "package_id": "package-valid",
-                "pallet_id": "pallet-valid",
-                "station_code": "station-valid",
-            },
-            {
-                "dispatch_key": "dispatch-binding-valid",
-                "package_id": "package-valid",
-                "pallet_id": "pallet-valid",
-            },
+            *_wire_fixture_case("wms.fulfillment.notify_pkg_binding@v1", remove="station_code"),
         ),
     ),
 )
@@ -1607,9 +1453,6 @@ def test_typed_submit_rejects_invalid_wire_body_before_idempotency_write(
     valid_payload: dict[str, object],
     invalid_payload: dict[str, object],
 ) -> None:
-    path = ASYNC_OPERATION_PATH
-    operation_identity = ASYNC_OPERATION_IDENTITY
-    valid_payload = _async_payload()
     monkeypatch.setattr(wms_mock_server, "_post_callback", AsyncMock(return_value={"delivered": True}))
     idempotency_key = f"idem-{case_id}"
     invalid_body = json.dumps(invalid_payload, separators=(",", ":")).encode()
@@ -1644,101 +1487,10 @@ def test_typed_submit_rejects_invalid_wire_body_before_idempotency_write(
     assert rejected.status_code == 422
     assert rejected.json() == {"code": "INVALID_TYPED_REQUEST"}
     assert effects_before_valid.json()["effect_count"] == 0
-    assert accepted.status_code == 202
-
-
-@pytest.mark.parametrize(
-    ("path", "operation_identity", "payload", "expected_result"),
-    (
-        (
-            "/api/wms/inventory/confirm-inbound",
-            "wms.inventory.confirm_inbound@v1",
-            {
-                "dispatch_key": "dispatch-result-confirm",
-                "inbound_key": "inbound-result-confirm",
-                "material_code": "material-result-confirm",
-                "quantity": "1",
-            },
-            {
-                "dispatch_key": "dispatch-result-confirm",
-                "inbound_key": "inbound-result-confirm",
-                "document_no": "inbound-result-confirm",
-            },
-        ),
-        (
-            "/api/wms/fulfillment/full-box-exchange",
-            "wms.fulfillment.full_box_exchange@v1",
-            {
-                "dispatch_key": "dispatch-result-full-box",
-                "rack_id": "rack-result-full-box",
-                "empty_box_id": "empty-result-full-box",
-                "full_box_id": "full-result-full-box",
-            },
-            {
-                "dispatch_key": "dispatch-result-full-box",
-                "rack_id": "rack-result-full-box",
-                "empty_box_id": "empty-result-full-box",
-                "full_box_id": "full-result-full-box",
-                "exchange_request_code": "dispatch-result-full-box",
-            },
-        ),
-        (
-            "/api/wms/fulfillment/pkg-bindings",
-            "wms.fulfillment.notify_pkg_binding@v1",
-            {
-                "dispatch_key": "dispatch-result-binding",
-                "package_id": "package-result-binding",
-                "pallet_id": "pallet-result-binding",
-                "station_code": "station-result-binding",
-            },
-            {
-                "dispatch_key": "dispatch-result-binding",
-                "package_id": "package-result-binding",
-                "pallet_id": "pallet-result-binding",
-            },
-        ),
-    ),
-)
-def test_completed_typed_result_has_non_empty_request_correlation(
-    monkeypatch: pytest.MonkeyPatch,
-    path: str,
-    operation_identity: str,
-    payload: dict[str, str],
-    expected_result: dict[str, str],
-) -> None:
-    path = ASYNC_OPERATION_PATH
-    operation_identity = ASYNC_OPERATION_IDENTITY
-    payload = _async_payload()
-    expected_result = {
-        "dispatch_key": str(payload["dispatch_key"]),
-        "station_code": str(payload["station_code"]),
-        "rack_type": str(payload["rack_type"]),
-    }
-    monkeypatch.setattr(wms_mock_server, "_post_callback", AsyncMock(return_value={"delivered": True}))
-    idempotency_key = f"idem-{payload['dispatch_key']}"
-    body = json.dumps(payload, separators=(",", ":")).encode()
-    status_path = "/northbound/operations/status?" + urlencode(
-        (("operation_identity", operation_identity), ("idempotency_key", idempotency_key))
+    expected_status = (
+        202 if WMS_OPERATION_BY_IDENTITY[operation_identity].completion_mode is WmsCompletionMode.ASYNC_TASK else 200
     )
-
-    with TestClient(wms_mock_server.app) as client:
-        submitted = client.post(
-            path,
-            content=body,
-            headers=_submit_headers(
-                body=body,
-                path=path,
-                operation_identity=operation_identity,
-                idempotency_key=idempotency_key,
-            ),
-        )
-        snapshots = [client.get(status_path, headers=_status_headers(path=status_path)).json() for _ in range(3)]
-
-    assert submitted.status_code == 202
-    assert snapshots[-1]["state"] == "COMPLETED"
-    for field_name, expected_value in expected_result.items():
-        assert snapshots[-1]["result_payload"][field_name] == expected_value
-        assert expected_value.strip()
+    assert accepted.status_code == expected_status
 
 
 def test_public_clock_drives_visibility_and_retention_boundaries(
@@ -1967,121 +1719,6 @@ async def test_concurrent_matching_requests_atomically_claim_one_shot_fault() ->
     assert inventory.status_code in {200, 404}
 
 
-def _rack_allocate_payload(
-    operation_key: str,
-    material: dict[str, str],
-    target_position_code: str = "SINGLE_LAYER_A",
-) -> dict[str, object]:
-    return {
-        "request_id": f"rack-operation:{operation_key}:1:ALLOCATE_AND_MOVE_RACK",
-        "dispatch_key": f"rack-operation:{operation_key}:1:ALLOCATE_AND_MOVE_RACK",
-        "callback_type": "WMS_RACK_ARRIVED",
-        "operation_key": operation_key,
-        "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
-        "sequence_no": 1,
-        "task_type": "ALLOCATE_AND_MOVE_RACK",
-        "workline_code": "WL-ROUGH-SORTER-TEST",
-        "rack_kind": "SINGLE_LAYER",
-        "target_position_code": target_position_code,
-        "trace_id": f"trace-{operation_key}",
-        "material": material,
-    }
-
-
-def _rack_replace_payload(operation_key: str) -> dict[str, object]:
-    payload = _rack_allocate_payload(operation_key, THIRTEEN_INCH_MATERIAL)
-    payload.pop("task_type")
-    payload.pop("sequence_no")
-    payload["rack_tasks"] = [
-        {
-            "sequence_no": 1,
-            "task_type": "MOVE_OUT_ACTIVE_RACK",
-            "rack_kind": "SINGLE_LAYER",
-            "rack_code": "RACK-001",
-            "source_position_code": "SINGLE_LAYER_A",
-            "target_position_role": "SMT_EMPTY_RACK_AREA",
-        },
-        {
-            "sequence_no": 2,
-            "task_type": "ALLOCATE_AND_MOVE_RACK",
-            "rack_kind": "SINGLE_LAYER",
-            "target_position_code": "SINGLE_LAYER_A",
-            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
-        },
-    ]
-    return payload
-
-
-SEVEN_INCH_MATERIAL = {
-    "HHPN": "RES001",
-    "LotCode": "LOT-R",
-    "DateCode": "20260407",
-    "PkgID": "PKG-RES001-LOT-R-001",
-}
-
-THIRTEEN_INCH_MATERIAL = {
-    "HHPN": "IC001",
-    "LotCode": "LOT-I",
-    "DateCode": "20260413",
-    "PkgID": "PKG-IC001-LOT-I-001",
-}
-
-
-def _assert_failure_callback_contract(
-    payload: dict[str, object],
-    *,
-    dispatch_key: str,
-    operation_key: str,
-    reason_code: str,
-    reason_message: str | None = None,
-) -> None:
-    assert payload["callback_type"] == "WMS_RACK_EXCHANGE_FAILED"
-    assert payload["dispatch_key"] == dispatch_key
-    assert payload["request_id"] == dispatch_key
-    assert payload["operation_key"] == operation_key
-    assert payload["status"] == "FAILED"
-    assert payload["task_status"] == "FAILED"
-    assert payload["result"] == "FAILED"
-    assert payload["reason_code"] == reason_code
-    assert payload["error_code"] == reason_code
-    if reason_message is not None:
-        assert payload["reason_message"] == reason_message
-        assert payload["error_message"] == reason_message
-    else:
-        assert isinstance(payload["reason_message"], str)
-        assert payload["reason_message"]
-        assert payload["error_message"] == payload["reason_message"]
-
-
-@pytest.mark.asyncio
-async def test_wms_mock_state_allocates_distinct_three_cell_racks_until_pool_exhaustion() -> None:
-    callback_payloads = []
-    for index in range(1, 5):
-        callback_payloads.append(
-            await wms_mock_server.mock_wms_state.allocate_rack_for_payload(
-                _rack_allocate_payload(f"op-13inch-{index}", THIRTEEN_INCH_MATERIAL)
-            )
-        )
-        wms_mock_server.mock_wms_state.work_positions["SINGLE_LAYER_A"] = None
-
-    exhausted_payload = await wms_mock_server.mock_wms_state.allocate_rack_for_payload(
-        _rack_allocate_payload("op-13inch-exhausted-natural", THIRTEEN_INCH_MATERIAL)
-    )
-
-    assert [payload["rack_code"] for payload in callback_payloads] == [
-        "RACK-3CELL-001",
-        "RACK-3CELL-002",
-        "RACK-3CELL-003",
-        "RACK-3CELL-004",
-    ]
-    assert exhausted_payload["callback_type"] == "WMS_RACK_EXCHANGE_FAILED"
-    assert exhausted_payload["reason_code"] == "NO_AVAILABLE_RACK"
-    assert all(
-        wms_mock_server.mock_wms_state.rack_pool[f"RACK-3CELL-{index:03d}"]["status"] == "ACTIVE"
-        for index in range(1, 5)
-    )
-
-
 def test_wms_mock_recent_operations_keeps_bounded_history() -> None:
     for index in range(wms_mock_server.RECENT_OPERATION_LIMIT + 5):
         wms_mock_server.mock_wms_state._record_operation({"operation_key": f"op-{index}"})
@@ -2126,171 +1763,6 @@ def test_wms_mock_rack_list_returns_copy_not_internal_state() -> None:
     assert wms_mock_server.mock_wms_state.rack_pool[rack_payload["rack_id"]]["status"] == "AVAILABLE"
 
 
-@pytest.mark.asyncio
-async def test_wms_mock_state_concurrent_allocate_and_move_rack_requests_do_not_share_rack() -> None:
-    async def allocate(operation_key: str, target_position_code: str) -> str:
-        callback_payload = await wms_mock_server.mock_wms_state.allocate_rack_for_payload(
-            _rack_allocate_payload(operation_key, SEVEN_INCH_MATERIAL, target_position_code=target_position_code)
-        )
-        return str(callback_payload["rack_code"])
-
-    first_rack_code, second_rack_code = await asyncio.gather(
-        allocate("op-concurrent-1", "SINGLE_LAYER_A"),
-        allocate("op-concurrent-2", "SINGLE_LAYER_B"),
-    )
-
-    assert first_rack_code != second_rack_code
-    assert {first_rack_code, second_rack_code} == {"RACK-001", "RACK-6CELL-001"}
-
-
-def test_wms_mock_rack_operation_supplies_three_cell_bins_for_13inch_material() -> None:
-    callback_payload = wms_mock_server._rack_operation_callback_payload(
-        {
-            "request_id": "rack-operation:op-13inch:1:ALLOCATE_AND_MOVE_RACK",
-            "dispatch_key": "rack-operation:op-13inch:1:ALLOCATE_AND_MOVE_RACK",
-            "callback_type": "WMS_RACK_ARRIVED",
-            "operation_key": "op-13inch",
-            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
-            "sequence_no": 1,
-            "task_type": "ALLOCATE_AND_MOVE_RACK",
-            "workline_code": "WL-ROUGH-SORTER-TEST",
-            "rack_kind": "SINGLE_LAYER",
-            "target_position_code": "SINGLE_LAYER_A",
-            "material": {
-                "HHPN": "IC001",
-                "LotCode": "LOT-I",
-                "DateCode": "20260413",
-                "PkgID": "PKG-IC001-LOT-I-001",
-            },
-        }
-    )
-
-    cells = callback_payload["active_bin_rack"]["cells"]
-    assert callback_payload["rack_code"] == "RACK-3CELL-001"
-    assert callback_payload["active_bin_rack"]["rack_code"] == "RACK-3CELL-001"
-    assert len(cells) == 12
-    assert {cell["bin_type"] for cell in cells} == {"3格箱"}
-    assert {cell["bin_cell_index"] for cell in cells if cell["rack_slot_code"] == "A"} == {"1", "2", "7"}
-    assert {cell["capacity_depth_mm"] for cell in cells if cell["bin_cell_index"] == "7"} == {80.0}
-
-
-def test_wms_mock_rack_operation_uses_distinct_bin_codes_per_rack() -> None:
-    six_cell_payload = wms_mock_server._rack_operation_callback_payload(
-        {
-            "request_id": "rack-operation:op-7inch:1:ALLOCATE_AND_MOVE_RACK",
-            "dispatch_key": "rack-operation:op-7inch:1:ALLOCATE_AND_MOVE_RACK",
-            "callback_type": "WMS_RACK_ARRIVED",
-            "operation_key": "op-7inch",
-            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
-            "sequence_no": 1,
-            "task_type": "ALLOCATE_AND_MOVE_RACK",
-            "workline_code": "WL-ROUGH-SORTER-TEST",
-            "rack_kind": "SINGLE_LAYER",
-            "target_position_code": "SINGLE_LAYER_A",
-            "material": {
-                "HHPN": "RES001",
-                "LotCode": "LOT-R",
-                "DateCode": "20260407",
-                "PkgID": "PKG-RES001-LOT-R-001",
-            },
-        }
-    )
-    three_cell_payload = wms_mock_server._rack_operation_callback_payload(
-        {
-            "request_id": "rack-operation:op-13inch:1:ALLOCATE_AND_MOVE_RACK",
-            "dispatch_key": "rack-operation:op-13inch:1:ALLOCATE_AND_MOVE_RACK",
-            "callback_type": "WMS_RACK_ARRIVED",
-            "operation_key": "op-13inch",
-            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
-            "sequence_no": 1,
-            "task_type": "ALLOCATE_AND_MOVE_RACK",
-            "workline_code": "WL-ROUGH-SORTER-TEST",
-            "rack_kind": "SINGLE_LAYER",
-            "target_position_code": "SINGLE_LAYER_A",
-            "material": {
-                "HHPN": "IC001",
-                "LotCode": "LOT-I",
-                "DateCode": "20260413",
-                "PkgID": "PKG-IC001-LOT-I-001",
-            },
-        }
-    )
-
-    six_cell_bins = {mount["bin_code"] for mount in six_cell_payload["bin_mounts"]}
-    three_cell_bins = {mount["bin_code"] for mount in three_cell_payload["bin_mounts"]}
-    assert six_cell_payload["rack_code"] == "RACK-001"
-    assert three_cell_payload["rack_code"] == "RACK-3CELL-001"
-    assert six_cell_bins.isdisjoint(three_cell_bins)
-
-
-def test_wms_mock_rack_operation_keeps_rack_bin_cell_physical_constraints() -> None:
-    six_cell_payload = wms_mock_server._rack_operation_callback_payload(
-        {
-            "request_id": "rack-operation:op-physical-7inch:1:ALLOCATE_AND_MOVE_RACK",
-            "dispatch_key": "rack-operation:op-physical-7inch:1:ALLOCATE_AND_MOVE_RACK",
-            "callback_type": "WMS_RACK_ARRIVED",
-            "operation_key": "op-physical-7inch",
-            "task_type": "ALLOCATE_AND_MOVE_RACK",
-            "rack_code": "RACK-3CELL-001",
-            "material": {
-                "HHPN": "CAP001",
-                "LotCode": "LOT-A",
-                "DateCode": "20260409",
-                "PkgID": "PKG-CAP001-LOT-A-001",
-            },
-        }
-    )
-    three_cell_payload = wms_mock_server._rack_operation_callback_payload(
-        {
-            "request_id": "rack-operation:op-physical-13inch:1:ALLOCATE_AND_MOVE_RACK",
-            "dispatch_key": "rack-operation:op-physical-13inch:1:ALLOCATE_AND_MOVE_RACK",
-            "callback_type": "WMS_RACK_ARRIVED",
-            "operation_key": "op-physical-13inch",
-            "task_type": "ALLOCATE_AND_MOVE_RACK",
-            "rack_code": "RACK-001",
-            "material": {
-                "HHPN": "IC001",
-                "LotCode": "LOT-I",
-                "DateCode": "20260413",
-                "PkgID": "PKG-IC001-LOT-I-001",
-            },
-        }
-    )
-
-    assert six_cell_payload["rack_code"] == "RACK-001"
-    assert {cell["bin_type"] for cell in six_cell_payload["active_bin_rack"]["cells"]} == {"6格箱", "3格箱"}
-    assert len(six_cell_payload["bin_mounts"]) == 4
-    assert len(six_cell_payload["active_bin_rack"]["cells"]) == 18
-    for mount in six_cell_payload["bin_mounts"]:
-        slot_cells = [
-            cell
-            for cell in six_cell_payload["active_bin_rack"]["cells"]
-            if cell["rack_slot_code"] == mount["rack_slot_code"]
-        ]
-        assert {cell["bin_code"] for cell in slot_cells} == {mount["bin_code"]}
-        if mount["rack_slot_code"] in {"A", "B"}:
-            assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "3", "4", "5", "6"}
-        else:
-            assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "7"}
-
-    assert three_cell_payload["rack_code"] == "RACK-001"
-    assert {cell["bin_type"] for cell in three_cell_payload["active_bin_rack"]["cells"]} == {"6格箱", "3格箱"}
-    assert len(three_cell_payload["bin_mounts"]) == 4
-    assert len(three_cell_payload["active_bin_rack"]["cells"]) == 18
-    for mount in three_cell_payload["bin_mounts"]:
-        slot_cells = [
-            cell
-            for cell in three_cell_payload["active_bin_rack"]["cells"]
-            if cell["rack_slot_code"] == mount["rack_slot_code"]
-        ]
-        assert {cell["bin_code"] for cell in slot_cells} == {mount["bin_code"]}
-        if mount["rack_slot_code"] in {"A", "B"}:
-            assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "3", "4", "5", "6"}
-        else:
-            assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "7"}
-            assert {cell["capacity_depth_mm"] for cell in slot_cells if cell["bin_cell_index"] == "7"} == {80.0}
-
-
 def test_wms_mock_large_reel_detection_does_not_match_dimension_substrings() -> None:
     assert wms_mock_server._has_large_reel_size({"reel_diameter": "13inch"}) is True
     assert wms_mock_server._has_large_reel_size({"reel_diameter": "330.0"}) is True
@@ -2309,97 +1781,3 @@ def test_wms_mock_cell_capacity_env_accepts_positive_finite_value(monkeypatch) -
     monkeypatch.setenv("MOCK_WMS_CELL_CAPACITY_DEPTH_MM", "30.5")
 
     assert wms_mock_server._positive_float_env("MOCK_WMS_CELL_CAPACITY_DEPTH_MM") == 30.5
-
-
-def test_wms_mock_rack_operation_source_event_id_keeps_wes_idempotency_key_short() -> None:
-    dispatch_key = (
-        "rack-operation:external:smt_rack_bin:rough-sorter-mock-scan-1780455233:RACK_OPERATION:1:ALLOCATE_AND_MOVE_RACK"
-    )
-
-    callback_payload = wms_mock_server._rack_operation_callback_payload(
-        {
-            "request_id": dispatch_key,
-            "dispatch_key": dispatch_key,
-            "callback_type": "WMS_RACK_ARRIVED",
-            "operation_key": "external:smt_rack_bin:rough-sorter-mock-scan-1780455233:RACK_OPERATION",
-            "trace_id": "rough-sorter-mock-scan-1780455233",
-        }
-    )
-
-    idempotency_key = (
-        f"external_http:{callback_payload['callback_type']}:{callback_payload['trace_id']}:"
-        f"source_event:{callback_payload['source_event_id']}"
-    )
-    assert len(callback_payload["source_event_id"]) <= 200
-    assert len(idempotency_key) <= 200
-
-
-def test_wms_mock_rack_operation_task_result_includes_required_status() -> None:
-    callback_payload = wms_mock_server._rack_operation_callback_payload(
-        {
-            "request_id": "rack-operation:op-002:2:MOVE_RACK",
-            "dispatch_key": "rack-operation:op-002:2:MOVE_RACK",
-            "callback_type": "WMS_RACK_TASK_RESULT",
-            "operation_key": "op-002",
-            "sequence_no": 2,
-            "task_type": "MOVE_RACK",
-            "workline_code": "WL-ROUGH-SORTER-TEST",
-            "trace_id": "trace-rack-002",
-        }
-    )
-
-    assert callback_payload["callback_type"] == "WMS_RACK_TASK_RESULT"
-    assert callback_payload["status"] == "SUCCESS"
-    assert callback_payload["task_status"] == "SUCCESS"
-    assert callback_payload["result"] == "SUCCESS"
-
-
-@pytest.mark.asyncio
-async def test_wms_mock_move_rack_updates_location_status_and_releases_position() -> None:
-    wms_mock_server.mock_wms_state.work_positions["SINGLE_LAYER_A"] = "RACK-001"
-    rack = wms_mock_server.mock_wms_state.rack_pool["RACK-001"]
-    rack["status"] = "ACTIVE"
-    rack["active_position_code"] = "SINGLE_LAYER_A"
-    rack["allocated_operation_key"] = "op-active"
-
-    callback_payload = await wms_mock_server.mock_wms_state.apply_operation(
-        {
-            "request_id": "rack-operation:op-002:2:MOVE_RACK",
-            "dispatch_key": "rack-operation:op-002:2:MOVE_RACK",
-            "callback_type": "WMS_RACK_TASK_RESULT",
-            "operation_key": "op-002",
-            "sequence_no": 2,
-            "task_type": "MOVE_RACK",
-            "rack_code": "RACK-001",
-            "target_position_code": "EMPTY_RACK_AREA",
-        }
-    )
-
-    assert callback_payload["callback_type"] == "WMS_RACK_TASK_RESULT"
-    assert wms_mock_server.mock_wms_state.rack_pool["RACK-001"]["current_location"] == "EMPTY_RACK_AREA"
-    assert wms_mock_server.mock_wms_state.rack_pool["RACK-001"]["status"] == "MOVED_OUT"
-    assert wms_mock_server.mock_wms_state.rack_pool["RACK-001"]["active_position_code"] is None
-    assert wms_mock_server.mock_wms_state.work_positions["SINGLE_LAYER_A"] is None
-
-
-@pytest.mark.asyncio
-async def test_wms_mock_move_rack_callback_preserves_requested_three_cell_rack() -> None:
-    wms_mock_server.mock_wms_state.rack_pool["RACK-3CELL-001"]["status"] = "ACTIVE"
-
-    callback_payload = await wms_mock_server.mock_wms_state.apply_operation(
-        {
-            "request_id": "rack-operation:op-3cell-move:2:MOVE_RACK",
-            "dispatch_key": "rack-operation:op-3cell-move:2:MOVE_RACK",
-            "callback_type": "WMS_RACK_TASK_RESULT",
-            "operation_key": "op-3cell-move",
-            "sequence_no": 2,
-            "task_type": "MOVE_RACK",
-            "rack_code": "RACK-3CELL-001",
-            "target_position_code": "EMPTY_RACK_AREA",
-        }
-    )
-
-    assert callback_payload["callback_type"] == "WMS_RACK_TASK_RESULT"
-    assert callback_payload["rack_code"] == "RACK-3CELL-001"
-    assert callback_payload["active_bin_rack"]["rack_code"] == "RACK-3CELL-001"
-    assert wms_mock_server.mock_wms_state.rack_pool["RACK-3CELL-001"]["current_location"] == "EMPTY_RACK_AREA"

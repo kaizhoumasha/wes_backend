@@ -12,6 +12,7 @@ import pytest
 
 from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
+from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.dispatch_concurrency import (
     DispatchBucketKey,
@@ -659,16 +660,17 @@ async def test_recovery_failure_then_expired_external_http_lease_never_sends_twi
 
     canonical = CanonicalPayload.from_projection({"request_id": "REQ-RECOVERY-FAIL-LEASE"})
     frozen_binding = frozen_external_http_binding(
-        target_code="WMS_RCS_BIN_OPERATION",
-        target_url="http://wms-rcs/api/wes/transport-request",
-        provider_profile_identity="wms.legacy-transport.production",
-        operation_identity="wms.transport.handling@v1",
+        target_code="WMS_FULFILLMENT_REQUEST_RACK_SUPPLY",
+        target_url="http://wms/api/fulfillment/rack-supply",
+        provider_profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
     )
     outbox = SystemOutbox(
         **frozen_binding.as_persisted_fields(),
         operation_domain="HANDLING",
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         dispatch_key="external-http-recovery-fail-lease",
+        idempotency_key="idem-external-http-recovery-fail-lease",
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
         payload_json={"request_id": "REQ-RECOVERY-FAIL-LEASE"},
         canonical_payload_bytes=canonical.body,
