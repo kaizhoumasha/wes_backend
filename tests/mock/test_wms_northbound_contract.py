@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.app.wms_integration.operation_contract import WmsOperationDefinition, WmsOperationMode
+from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsOperationDefinition, WmsOperationMode
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from tests.mock import wms_mock_server
 from tests.mock.wms_northbound_contract import (
@@ -28,6 +29,13 @@ from tests.mock.wms_northbound_contract import (
     verify_submit_hmac,
 )
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
+
+ASYNC_RACK_SUPPLY = "wms.fulfillment.request_rack_supply@v1"
+ASYNC_RACK_TRANSPORT = "wms.fulfillment.request_rack_transport@v1"
+
+
+def _operation_payload(operation_identity: str) -> dict[str, object]:
+    return deepcopy(REQUEST_FIXTURES[operation_identity])
 
 
 def _submit_headers(*, body: bytes, secret: bytes, content_hash: str | None = None) -> dict[str, str]:
@@ -94,20 +102,42 @@ def test_operation_store_accepts_fractional_visibility_sla() -> None:
     )
 
     store.configure_visibility_delay(
-        "wms.fulfillment.notify_pkg_binding@v1",
+        ASYNC_RACK_SUPPLY,
         "idem-fractional-visibility",
         delay_seconds=2.5,
     )
     store.submit(
-        "wms.fulfillment.notify_pkg_binding@v1",
+        ASYNC_RACK_SUPPLY,
         "idem-fractional-visibility",
         "a" * 64,
-        _payload(),
+        _operation_payload(ASYNC_RACK_SUPPLY),
     )
     clock["now"] += timedelta(seconds=2.49)
-    assert store.query("wms.fulfillment.notify_pkg_binding@v1", "idem-fractional-visibility").state == "NOT_FOUND"
+    assert store.query(ASYNC_RACK_SUPPLY, "idem-fractional-visibility").state == "NOT_FOUND"
     clock["now"] += timedelta(seconds=0.01)
-    assert store.query("wms.fulfillment.notify_pkg_binding@v1", "idem-fractional-visibility").state == "ACCEPTED"
+    assert store.query(ASYNC_RACK_SUPPLY, "idem-fractional-visibility").state == "ACCEPTED"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    tuple(operation for operation in WMS_OPERATIONS if operation.completion_mode is WmsCompletionMode.SYNC_RESULT),
+    ids=lambda operation: operation.identity,
+)
+def test_sync_effect_returns_terminal_result_without_status_or_callback_hint(
+    operation: WmsOperationDefinition,
+) -> None:
+    store = NorthboundOperationStore(clock=lambda: datetime(2026, 7, 25, tzinfo=UTC))
+    payload = REQUEST_FIXTURES[operation.identity]
+
+    submission = store.submit(operation.identity, "idem-sync", "a" * 64, payload)
+
+    assert submission.status_code == 200
+    assert submission.snapshot is not None
+    assert submission.snapshot.state == "COMPLETED"
+    operation.result_model.model_validate(submission.snapshot.result_payload)
+    assert store.register_callback_hint(operation.identity, "idem-sync") is False
+    with pytest.raises(ValueError, match="ASYNC_TASK"):
+        store.query(operation.identity, "idem-sync")
 
 
 def test_resolve_mock_credential_accepts_only_versioned_allowlisted_reference(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -201,15 +231,16 @@ def test_status_hmac_rejects_non_empty_body_even_when_hash_and_signature_match(
 
 def test_store_scopes_idempotency_by_operation_identity_and_replays_completed_typed_result() -> None:
     store = NorthboundOperationStore(clock=lambda: datetime(2026, 7, 25, tzinfo=UTC))
-    payload = _payload()
+    payload = _operation_payload(ASYNC_RACK_SUPPLY)
+    other_payload = _operation_payload(ASYNC_RACK_TRANSPORT)
     fingerprint = content_sha256(b'{"dispatch_key":"dispatch-001"}')
 
-    first = store.submit("wms.fulfillment.notify_pkg_binding@v1", "idem-001", fingerprint, payload)
-    other_operation = store.submit("wms.fulfillment.full_box_exchange@v1", "idem-001", fingerprint, payload)
-    accepted = store.query("wms.fulfillment.notify_pkg_binding@v1", "idem-001")
-    processing = store.query("wms.fulfillment.notify_pkg_binding@v1", "idem-001")
-    completed = store.query("wms.fulfillment.notify_pkg_binding@v1", "idem-001")
-    replay = store.submit("wms.fulfillment.notify_pkg_binding@v1", "idem-001", fingerprint, payload)
+    first = store.submit(ASYNC_RACK_SUPPLY, "idem-001", fingerprint, payload)
+    other_operation = store.submit(ASYNC_RACK_TRANSPORT, "idem-001", fingerprint, other_payload)
+    accepted = store.query(ASYNC_RACK_SUPPLY, "idem-001")
+    processing = store.query(ASYNC_RACK_SUPPLY, "idem-001")
+    completed = store.query(ASYNC_RACK_SUPPLY, "idem-001")
+    replay = store.submit(ASYNC_RACK_SUPPLY, "idem-001", fingerprint, payload)
 
     assert first.status_code == 202
     assert other_operation.status_code == 202
@@ -218,7 +249,7 @@ def test_store_scopes_idempotency_by_operation_identity_and_replays_completed_ty
     assert replay.status_code == 200
     assert replay.snapshot == completed
     assert completed.result_payload == build_typed_result(
-        "wms.fulfillment.notify_pkg_binding@v1",
+        ASYNC_RACK_SUPPLY,
         payload,
         source_version=2,
         completed_at=completed.updated_at,
@@ -227,10 +258,11 @@ def test_store_scopes_idempotency_by_operation_identity_and_replays_completed_ty
 
 def test_store_rejects_same_key_with_different_fingerprint_without_another_effect() -> None:
     store = NorthboundOperationStore()
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
-    store.submit(operation_identity, "idem-001", "a" * 64, _payload())
+    operation_identity = ASYNC_RACK_SUPPLY
+    payload = _operation_payload(operation_identity)
+    store.submit(operation_identity, "idem-001", "a" * 64, payload)
 
-    conflict = store.submit(operation_identity, "idem-001", "b" * 64, _payload(station_code="station-b"))
+    conflict = store.submit(operation_identity, "idem-001", "b" * 64, payload)
 
     assert conflict.status_code == 422
     assert conflict.error_code == "IDEMPOTENCY_CONFLICT"
@@ -239,17 +271,18 @@ def test_store_rejects_same_key_with_different_fingerprint_without_another_effec
 
 def test_store_replays_processing_and_can_record_rejection_and_not_found() -> None:
     store = NorthboundOperationStore()
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
-    store.submit(operation_identity, "idem-001", "a" * 64, _payload())
+    operation_identity = ASYNC_RACK_SUPPLY
+    payload = _operation_payload(operation_identity)
+    store.submit(operation_identity, "idem-001", "a" * 64, payload)
 
-    in_progress = store.submit(operation_identity, "idem-001", "a" * 64, _payload())
-    rejected = store.reject(operation_identity, "idem-001", reason_code="PACKAGE_NOT_FOUND")
+    in_progress = store.submit(operation_identity, "idem-001", "a" * 64, payload)
+    rejected = store.reject(operation_identity, "idem-001", reason_code="NO_RACK_AVAILABLE")
     missing = store.query(operation_identity, "missing")
 
     assert in_progress.status_code == 409
     assert in_progress.error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
     assert rejected.state == "REJECTED"
-    assert rejected.reason_code == "PACKAGE_NOT_FOUND"
+    assert rejected.reason_code == "NO_RACK_AVAILABLE"
     assert rejected.result_payload is None
     assert missing.state == "NOT_FOUND"
     assert missing.source_version is None
@@ -278,16 +311,16 @@ def test_completed_result_builder_matches_every_frozen_effect_schema(operation: 
 @pytest.mark.parametrize(
     ("operation_identity", "reason_code"),
     (
-        ("wms.inventory.confirm_inbound@v1", "MATERIAL_BLOCKED"),
-        ("wms.fulfillment.full_box_exchange@v1", "RACK_NOT_AT_EXCHANGE_STATION"),
-        ("wms.fulfillment.notify_pkg_binding@v1", "PACKAGE_NOT_FOUND"),
+        (ASYNC_RACK_SUPPLY, "NO_RACK_AVAILABLE"),
+        (ASYNC_RACK_TRANSPORT, "RACK_NOT_FOUND"),
+        ("wms.fulfillment.change_rack_face@v1", "FACE_CHANGE_BLOCKED"),
     ),
 )
 def test_store_reject_accepts_only_reason_code_frozen_for_each_operation(
     operation_identity: str, reason_code: str
 ) -> None:
     store = NorthboundOperationStore()
-    store.submit(operation_identity, "idem-reject", "a" * 64, _payload())
+    store.submit(operation_identity, "idem-reject", "a" * 64, _operation_payload(operation_identity))
 
     rejected = store.reject(operation_identity, "idem-reject", reason_code=reason_code)
 
@@ -298,16 +331,16 @@ def test_store_reject_accepts_only_reason_code_frozen_for_each_operation(
 @pytest.mark.parametrize(
     ("operation_identity", "reason_code"),
     (
-        ("wms.inventory.confirm_inbound@v1", "RACK_NOT_AT_EXCHANGE_STATION"),
-        ("wms.fulfillment.full_box_exchange@v1", "MATERIAL_BLOCKED"),
-        ("wms.fulfillment.notify_pkg_binding@v1", "MATERIAL_BLOCKED"),
+        (ASYNC_RACK_SUPPLY, "RACK_NOT_FOUND"),
+        (ASYNC_RACK_TRANSPORT, "NO_RACK_AVAILABLE"),
+        ("wms.fulfillment.change_rack_face@v1", "NO_RACK_AVAILABLE"),
     ),
 )
 def test_store_reject_rejects_reason_code_frozen_for_another_operation(
     operation_identity: str, reason_code: str
 ) -> None:
     store = NorthboundOperationStore()
-    store.submit(operation_identity, "idem-reject", "a" * 64, _payload())
+    store.submit(operation_identity, "idem-reject", "a" * 64, _operation_payload(operation_identity))
 
     with pytest.raises(ValueError, match="reason_code is not allowed"):
         store.reject(operation_identity, "idem-reject", reason_code=reason_code)
@@ -315,8 +348,8 @@ def test_store_reject_rejects_reason_code_frozen_for_another_operation(
 
 def test_callback_hint_is_registered_once_and_reset_removes_northbound_records() -> None:
     store = NorthboundOperationStore()
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
-    store.submit(operation_identity, "idem-001", "a" * 64, _payload())
+    operation_identity = ASYNC_RACK_SUPPLY
+    store.submit(operation_identity, "idem-001", "a" * 64, _operation_payload(operation_identity))
 
     assert store.register_callback_hint(operation_identity, "idem-001") is True
     assert store.register_callback_hint(operation_identity, "idem-001") is False
@@ -327,8 +360,13 @@ def test_callback_hint_is_registered_once_and_reset_removes_northbound_records()
 
 
 def test_wms_mock_reset_clears_shared_northbound_operation_store() -> None:
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
-    wms_mock_server.northbound_operation_store.submit(operation_identity, "idem-reset", "a" * 64, _payload())
+    operation_identity = ASYNC_RACK_SUPPLY
+    wms_mock_server.northbound_operation_store.submit(
+        operation_identity,
+        "idem-reset",
+        "a" * 64,
+        _operation_payload(operation_identity),
+    )
 
     wms_mock_server.reset_mock_wms_state()
 
@@ -351,7 +389,7 @@ def test_mock_credential_uses_material_flow_sandbox_rotation_references(
 
 
 def test_store_visibility_and_retention_follow_clock_boundaries() -> None:
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    operation_identity = ASYNC_RACK_SUPPLY
     idempotency_key = "idem-clock-boundary-001"
     started_at = datetime(2026, 7, 25, tzinfo=UTC)
     current = [started_at]
@@ -362,17 +400,18 @@ def test_store_visibility_and_retention_follow_clock_boundaries() -> None:
     )
     store.configure_visibility_delay(operation_identity, idempotency_key, delay_seconds=2)
 
-    first = store.submit(operation_identity, idempotency_key, "a" * 64, _payload())
+    payload = _operation_payload(operation_identity)
+    first = store.submit(operation_identity, idempotency_key, "a" * 64, payload)
     hidden_at_accept = store.query(operation_identity, idempotency_key)
     current[0] = started_at + timedelta(seconds=1)
     hidden_before_sla = store.query(operation_identity, idempotency_key)
     current[0] = started_at + timedelta(seconds=2)
     visible_at_sla = store.query(operation_identity, idempotency_key)
     current[0] = started_at + timedelta(seconds=8)
-    replay_before_boundary = store.submit(operation_identity, idempotency_key, "a" * 64, _payload())
+    replay_before_boundary = store.submit(operation_identity, idempotency_key, "a" * 64, payload)
     current[0] = started_at + timedelta(seconds=9)
     expired_at_boundary = store.query(operation_identity, idempotency_key)
-    recovered_at_boundary = store.submit(operation_identity, idempotency_key, "a" * 64, _payload())
+    recovered_at_boundary = store.submit(operation_identity, idempotency_key, "a" * 64, payload)
 
     assert first.status_code == 202
     assert hidden_at_accept.state == "NOT_FOUND"
@@ -390,18 +429,13 @@ def test_store_is_immediately_visible_without_mock_visibility_control() -> None:
         retention_seconds=9,
         visibility_sla_seconds=2,
     )
-    operation_identity = "wms.inventory.confirm_inbound@v1"
+    operation_identity = ASYNC_RACK_SUPPLY
 
     store.submit(
         operation_identity,
         "idem-immediately-visible",
         "a" * 64,
-        {
-            "dispatch_key": "dispatch-immediately-visible",
-            "inbound_key": "inbound-immediately-visible",
-            "material_code": "material-immediately-visible",
-            "quantity": "1",
-        },
+        _operation_payload(operation_identity),
     )
 
     assert store.query(operation_identity, "idem-immediately-visible").state == "ACCEPTED"

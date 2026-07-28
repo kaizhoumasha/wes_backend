@@ -29,6 +29,8 @@ from src.app.sys.external_http_binding import (
     freeze_external_http_binding,
 )
 from src.app.sys.services.endpoint_registry import EndpointRegistry
+from src.app.wms_integration.operation_contract import WmsCompletionMode
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
 from src.app.wms_integration.services.http_transport import sign_wms_hmac_request
 from src.core.api_security import calculate_body_hmac_signature
 from tests.mock import wms_mock_server
@@ -39,6 +41,18 @@ from tests.mock.wms_northbound_contract import (
     canonical_status_string,
     canonical_submit_string,
 )
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
+
+ASYNC_OPERATION_IDENTITY = "wms.fulfillment.request_rack_supply@v1"
+ASYNC_OPERATION_PATH = "/api/wms/fulfillment/rack-supply"
+
+
+def _async_payload() -> dict[str, object]:
+    return dict(REQUEST_FIXTURES[ASYNC_OPERATION_IDENTITY])
+
+
+def _async_body() -> bytes:
+    return json.dumps(_async_payload(), separators=(",", ":")).encode()
 
 
 @pytest.fixture(autouse=True)
@@ -244,49 +258,22 @@ def test_wms_mock_debug_reset_bypasses_pending_fault_injection_delay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("path", "operation_identity", "payload", "compatibility_field"),
-    (
+    ("path", "operation_identity", "payload"),
+    tuple(
         (
-            "/api/wms/inventory/confirm-inbound",
-            "wms.inventory.confirm_inbound@v1",
-            {
-                "dispatch_key": "dispatch-confirm",
-                "inbound_key": "inbound-001",
-                "material_code": "material-001",
-                "quantity": "1",
-            },
-            "inbound_key",
-        ),
-        (
-            "/api/wms/fulfillment/full-box-exchange",
-            "wms.fulfillment.full_box_exchange@v1",
-            {
-                "dispatch_key": "dispatch-exchange",
-                "rack_id": "rack-001",
-                "empty_box_id": "empty-001",
-                "full_box_id": "full-001",
-            },
-            "rack_id",
-        ),
-        (
-            "/api/wms/fulfillment/package-binding",
-            "wms.fulfillment.notify_pkg_binding@v1",
-            {
-                "dispatch_key": "dispatch-binding",
-                "package_id": "package-001",
-                "pallet_id": "pallet-001",
-                "station_code": "station-001",
-            },
-            "package_id",
-        ),
+            f"/api/wms{operation.path_template}",
+            operation.identity,
+            REQUEST_FIXTURES[operation.identity],
+        )
+        for operation in WMS_OPERATIONS
+        if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
     ),
 )
 def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     operation_identity: str,
-    payload: dict[str, str],
-    compatibility_field: str,
+    payload: dict[str, object],
 ) -> None:
     callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", callback)
@@ -333,7 +320,8 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
         )
 
     assert first.status_code == 202
-    assert first.json()["data"][compatibility_field] == payload[compatibility_field]
+    assert first.json()["data"]["operation_identity"] == operation_identity
+    assert first.json()["data"]["idempotency_key"] == "idem-submit-001"
     assert processing_replay.status_code == 409
     assert processing_replay.json()["code"] == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
     assert [accepted.json()["state"], processing.json()["state"], completed.json()["state"]] == [
@@ -341,13 +329,59 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
         "PROCESSING",
         "COMPLETED",
     ]
-    assert completed.json()["result_payload"][compatibility_field] == payload[compatibility_field]
+    WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(completed.json()["result_payload"])
     assert completed_replay.status_code == 200
-    assert completed_replay.json()["data"]["northbound_status"]["state"] == "COMPLETED"
+    assert completed_replay.json()["data"]["operation_identity"] == operation_identity
     assert conflict.status_code == 422
     assert conflict.json()["code"] == "IDEMPOTENCY_CONFLICT"
     assert effects.json()["effect_count"] == 1
     callback.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("path", "operation_identity"),
+    (
+        ("/api/wms/inventory/confirm-inbound", "wms.inventory.confirm_inbound@v1"),
+        ("/api/wms/fulfillment/package-binding", "wms.fulfillment.notify_pkg_binding@v1"),
+    ),
+)
+def test_wms_mock_sync_effect_returns_terminal_result_without_status_or_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    operation_identity: str,
+) -> None:
+    callback = AsyncMock(return_value={"delivered": True})
+    monkeypatch.setattr(wms_mock_server, "_post_callback", callback)
+    payload = REQUEST_FIXTURES[operation_identity]
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    status_path = "/northbound/operations/status?" + urlencode(
+        {"operation_identity": operation_identity, "idempotency_key": "idem-sync-001"}
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        submitted = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key="idem-sync-001",
+            ),
+        )
+        status = client.get(status_path, headers=_status_headers(path=status_path))
+        hints = client.get(
+            "/debug/northbound/callback-hints?"
+            + urlencode({"operation_identity": operation_identity, "idempotency_key": "idem-sync-001"})
+        )
+
+    assert submitted.status_code == 200
+    WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(submitted.json()["data"])
+    assert "northbound_status" not in submitted.json()["data"]
+    assert status.status_code == 422
+    assert status.json()["code"] == "status query only accepts ASYNC_TASK operation"
+    assert hints.json() == {"hints": []}
+    callback.assert_not_awaited()
 
 
 def test_wms_mock_northbound_submit_rejects_invalid_hmac() -> None:
@@ -393,13 +427,10 @@ def test_wms_mock_northbound_submit_rejects_stale_signed_timestamp() -> None:
 
 
 def test_wms_mock_northbound_submit_rejects_captured_request_after_idempotency_expiry() -> None:
-    operation_identity = "wms.inventory.confirm_inbound@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-captured-replay-001"
-    path = "/api/wms/inventory/confirm-inbound"
-    body = (
-        b'{"dispatch_key":"dispatch-captured","inbound_key":"inbound-captured",'
-        b'"material_code":"material-captured","quantity":"1"}'
-    )
+    path = ASYNC_OPERATION_PATH
+    body = _async_body()
     headers = _submit_headers(
         body=body,
         path=path,
@@ -427,7 +458,7 @@ def test_wms_mock_northbound_submit_rejects_captured_request_after_idempotency_e
 def test_wms_mock_northbound_status_rejects_reused_nonce() -> None:
     status_path = "/northbound/operations/status?" + urlencode(
         {
-            "operation_identity": "wms.inventory.confirm_inbound@v1",
+            "operation_identity": ASYNC_OPERATION_IDENTITY,
             "idempotency_key": "idem-status-replay-001",
         }
     )
@@ -444,19 +475,16 @@ def test_wms_mock_northbound_status_rejects_reused_nonce() -> None:
 
 def test_wms_mock_northbound_rejects_nonce_reused_across_submit_and_status() -> None:
     nonce = "shared-submit-status-nonce"
-    operation_identity = "wms.inventory.confirm_inbound@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-cross-channel-replay-001"
-    submit_path = "/api/wms/inventory/confirm-inbound"
+    submit_path = ASYNC_OPERATION_PATH
     status_path = "/northbound/operations/status?" + urlencode(
         {
             "operation_identity": operation_identity,
             "idempotency_key": idempotency_key,
         }
     )
-    body = (
-        b'{"dispatch_key":"dispatch-cross-channel","inbound_key":"inbound-cross-channel",'
-        b'"material_code":"material-cross-channel","quantity":"1"}'
-    )
+    body = _async_body()
 
     with TestClient(wms_mock_server.app) as client:
         accepted = client.post(
@@ -478,13 +506,10 @@ def test_wms_mock_northbound_rejects_nonce_reused_across_submit_and_status() -> 
 
 
 def test_typed_submit_rejects_whitespace_variant_before_idempotency_write() -> None:
-    path = "/api/wms/inventory/confirm-inbound"
-    operation_identity = "wms.inventory.confirm_inbound@v1"
+    path = ASYNC_OPERATION_PATH
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-authenticated-scope-001"
-    body = (
-        b'{"dispatch_key":"dispatch-authenticated-scope","inbound_key":"inbound-authenticated-scope",'
-        b'"material_code":"material-authenticated-scope","quantity":"1"}'
-    )
+    body = _async_body()
     clean_headers = _submit_headers(
         body=body,
         path=path,
@@ -516,7 +541,7 @@ def test_status_query_rejects_self_consistently_signed_non_empty_get_body() -> N
     body = b"unexpected"
     status_path = "/northbound/operations/status?" + urlencode(
         {
-            "operation_identity": "wms.inventory.confirm_inbound@v1",
+            "operation_identity": ASYNC_OPERATION_IDENTITY,
             "idempotency_key": "idem-non-empty-status-body-001",
         }
     )
@@ -544,7 +569,7 @@ async def test_status_query_handles_client_disconnect_without_raising() -> None:
             "method": "GET",
             "path": "/northbound/operations/status",
             "query_string": (
-                b"operation_identity=wms.inventory.confirm_inbound%40v1&idempotency_key=idem-disconnected-status-001"
+                b"operation_identity=wms.fulfillment.request_rack_supply%40v1&idempotency_key=idem-disconnected-status-001"
             ),
             "headers": [],
         },
@@ -553,7 +578,7 @@ async def test_status_query_handles_client_disconnect_without_raising() -> None:
 
     response = await wms_mock_server.northbound_operation_status(
         request,
-        operation_identity="wms.inventory.confirm_inbound@v1",
+        operation_identity=ASYNC_OPERATION_IDENTITY,
         idempotency_key="idem-disconnected-status-001",
     )
 
@@ -561,17 +586,11 @@ async def test_status_query_handles_client_disconnect_without_raising() -> None:
 
 
 def test_typed_submit_replay_uses_canonical_json_fingerprint() -> None:
-    path = "/api/wms/fulfillment/package-binding"
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    path = ASYNC_OPERATION_PATH
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-canonical-replay-001"
-    canonical_body = (
-        b'{"dispatch_key":"dispatch-canonical","package_id":"package-canonical",'
-        b'"pallet_id":"pallet-canonical","station_code":"station-canonical"}'
-    )
-    equivalent_body = (
-        b'{ "station_code": "station-canonical", "pallet_id": "pallet-canonical", '
-        b'"package_id": "package-canonical", "dispatch_key": "dispatch-canonical" }'
-    )
+    canonical_body = _async_body()
+    equivalent_body = json.dumps(_async_payload(), indent=2, sort_keys=True).encode()
 
     with TestClient(wms_mock_server.app) as client:
         first = client.post(
@@ -622,8 +641,8 @@ def test_typed_submit_rejects_non_object_malformed_or_wrong_content_type_with_fi
     body: bytes,
     content_type: str,
 ) -> None:
-    path = "/api/wms/fulfillment/package-binding"
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    path = ASYNC_OPERATION_PATH
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = f"idem-invalid-json-{hashlib.sha256(body + content_type.encode()).hexdigest()[:12]}"
     headers = _submit_headers(
         body=body,
@@ -671,14 +690,12 @@ def test_streaming_fault_response_does_not_allocate_the_declared_body_up_front()
 
 
 def test_wms_mock_northbound_status_exposes_not_found_and_rejected_states() -> None:
-    operation_identity = "wms.fulfillment.full_box_exchange@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     status_path = "/northbound/operations/status?" + urlencode(
         {"operation_identity": operation_identity, "idempotency_key": "idem-rejected-001"}
     )
-    path = "/api/wms/fulfillment/full-box-exchange"
-    body = (
-        b'{"dispatch_key":"dispatch-rejected","rack_id":"rack-001","empty_box_id":"empty-001","full_box_id":"full-001"}'
-    )
+    path = ASYNC_OPERATION_PATH
+    body = _async_body()
 
     with TestClient(wms_mock_server.app) as client:
         not_found = client.get(status_path, headers=_status_headers(path=status_path))
@@ -694,7 +711,7 @@ def test_wms_mock_northbound_status_exposes_not_found_and_rejected_states() -> N
             json={
                 "operation_identity": operation_identity,
                 "idempotency_key": "idem-rejected-001",
-                "reason_code": "RACK_LOCKED",
+                "reason_code": "NO_RACK_AVAILABLE",
             },
         )
         status = client.get(status_path, headers=_status_headers(path=status_path))
@@ -710,18 +727,18 @@ def test_wms_mock_northbound_status_exposes_not_found_and_rejected_states() -> N
     assert submit.status_code == 202
     assert rejected.status_code == 200
     assert status.json()["state"] == "REJECTED"
-    assert status.json()["reason_code"] == "RACK_LOCKED"
+    assert status.json()["reason_code"] == "NO_RACK_AVAILABLE"
     assert status.json()["result_payload"] is None
 
 
 def test_wms_mock_northbound_status_hmac_binds_exact_raw_query_path() -> None:
     signed_path = (
-        "/northbound/operations/status?operation_identity=wms.inventory.confirm_inbound%40v1"
+        "/northbound/operations/status?operation_identity=wms.fulfillment.request_rack_supply%40v1"
         "&idempotency_key=idem-raw-query-001"
     )
     semantically_equivalent_path = (
         "/northbound/operations/status?idempotency_key=idem-raw-query-001"
-        "&operation_identity=wms.inventory.confirm_inbound@v1"
+        "&operation_identity=wms.fulfillment.request_rack_supply@v1"
     )
     headers = _status_headers(path=signed_path)
 
@@ -736,12 +753,9 @@ def test_wms_mock_northbound_status_hmac_binds_exact_raw_query_path() -> None:
 
 
 def test_wms_mock_northbound_contract_faults_and_reset_are_publicly_controllable() -> None:
-    operation_identity = "wms.inventory.confirm_inbound@v1"
-    path = "/api/wms/inventory/confirm-inbound"
-    body = (
-        b'{"dispatch_key":"dispatch-reset","inbound_key":"inbound-reset",'
-        b'"material_code":"material-reset","quantity":"1"}'
-    )
+    operation_identity = ASYNC_OPERATION_IDENTITY
+    path = ASYNC_OPERATION_PATH
+    body = _async_body()
     headers = _submit_headers(
         body=body, path=path, operation_identity=operation_identity, idempotency_key="idem-reset-001"
     )
@@ -810,13 +824,10 @@ def test_wms_mock_northbound_contract_faults_and_reset_are_publicly_controllable
 def test_wms_mock_northbound_visibility_callback_evidence_and_large_body_are_publicly_controllable() -> None:
     """验收控制面只暴露脱敏投影，状态推进和效果计数仍通过公开 HTTP 观察。"""
 
-    operation_identity = "wms.inventory.confirm_inbound@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-public-evidence-001"
-    path = "/api/wms/inventory/confirm-inbound"
-    body = (
-        b'{"dispatch_key":"dispatch-public","inbound_key":"inbound-public",'
-        b'"material_code":"material-public","quantity":"1"}'
-    )
+    path = ASYNC_OPERATION_PATH
+    body = _async_body()
     headers = _submit_headers(
         body=body,
         path=path,
@@ -889,7 +900,7 @@ def test_wms_mock_northbound_visibility_callback_evidence_and_large_body_are_pub
         "hints": [
             {
                 "callback_type": "WMS_EFFECT_STATUS_HINT",
-                "dispatch_key": "dispatch-public",
+                "dispatch_key": _async_payload()["dispatch_key"],
                 "idempotency_key": idempotency_key,
                 "operation_identity": operation_identity,
             }
@@ -1169,6 +1180,9 @@ def test_wms_mock_typed_effect_routes_deliver_declared_callback(
     payload: dict[str, object],
     operation_identity: str,
 ) -> None:
+    path = ASYNC_OPERATION_PATH
+    operation_identity = ASYNC_OPERATION_IDENTITY
+    payload = _async_payload()
     mock_post_callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
     body = json.dumps(payload, separators=(",", ":")).encode()
@@ -1203,14 +1217,9 @@ def test_wms_mock_typed_effect_first_acceptances_use_unique_callback_event_ids(
 ) -> None:
     mock_post_callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
-    path = "/api/wms/fulfillment/package-binding"
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
-    payload = {
-        "dispatch_key": "package-binding-shared-dispatch",
-        "package_id": "PKG-001",
-        "pallet_id": "PALLET-001",
-        "station_code": "STATION-001",
-    }
+    path = ASYNC_OPERATION_PATH
+    operation_identity = ASYNC_OPERATION_IDENTITY
+    payload = _async_payload()
     body = json.dumps(payload, separators=(",", ":")).encode()
 
     with TestClient(wms_mock_server.app) as client:
@@ -1343,12 +1352,7 @@ def test_wms_mock_full_box_northbound_submit_never_sends_legacy_completion_callb
 ) -> None:
     mock_post_callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
-    payload = {
-        "dispatch_key": "handling:full-box-001:move:1",
-        "rack_id": "RACK-001",
-        "empty_box_id": "EMPTY-001",
-        "full_box_id": "FULL-001",
-    }
+    payload = dict(REQUEST_FIXTURES["wms.fulfillment.full_box_exchange@v1"])
     path = "/api/wms/fulfillment/full-box-exchange"
     body = json.dumps(payload, separators=(",", ":")).encode()
 
@@ -1380,17 +1384,12 @@ def test_real_wes_submit_sender_and_status_signer_interoperate_with_mock_active_
 ) -> None:
     """集成证据必须复用真实 WES sender/signer，不能由探针自创 credential reference。"""
 
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     credential_reference = "secret://wms/material-flow-sandbox-hmac@v2"
     secret = b"real-wes-material-flow-v2"
-    submit_path = "/api/wms/fulfillment/package-binding"
+    submit_path = ASYNC_OPERATION_PATH
     idempotency_key = "idem-real-wes-signer-001"
-    payload = {
-        "dispatch_key": "dispatch-real-wes-signer-001",
-        "package_id": "package-real-wes-signer-001",
-        "pallet_id": "pallet-real-wes-signer-001",
-        "station_code": "station-real-wes-signer-001",
-    }
+    payload = _async_payload()
     profile = ExternalHttpProviderProfileDefinition(
         identity="wms.material-flow.v1.sandbox",
         environment="sandbox",
@@ -1593,6 +1592,9 @@ def test_typed_submit_rejects_invalid_wire_body_before_idempotency_write(
     valid_payload: dict[str, object],
     invalid_payload: dict[str, object],
 ) -> None:
+    path = ASYNC_OPERATION_PATH
+    operation_identity = ASYNC_OPERATION_IDENTITY
+    valid_payload = _async_payload()
     monkeypatch.setattr(wms_mock_server, "_post_callback", AsyncMock(return_value={"delivered": True}))
     idempotency_key = f"idem-{case_id}"
     invalid_body = json.dumps(invalid_payload, separators=(",", ":")).encode()
@@ -1689,6 +1691,14 @@ def test_completed_typed_result_has_non_empty_request_correlation(
     payload: dict[str, str],
     expected_result: dict[str, str],
 ) -> None:
+    path = ASYNC_OPERATION_PATH
+    operation_identity = ASYNC_OPERATION_IDENTITY
+    payload = _async_payload()
+    expected_result = {
+        "dispatch_key": str(payload["dispatch_key"]),
+        "station_code": str(payload["station_code"]),
+        "rack_type": str(payload["rack_type"]),
+    }
     monkeypatch.setattr(wms_mock_server, "_post_callback", AsyncMock(return_value={"delivered": True}))
     idempotency_key = f"idem-{payload['dispatch_key']}"
     body = json.dumps(payload, separators=(",", ":")).encode()
@@ -1748,15 +1758,10 @@ def test_public_clock_drives_visibility_and_retention_boundaries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(wms_mock_server, "_post_callback", AsyncMock(return_value={"delivered": True}))
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-public-clock-boundary-001"
-    path = "/api/wms/fulfillment/package-binding"
-    payload = {
-        "dispatch_key": "dispatch-public-clock-boundary-001",
-        "package_id": "package-public-clock-boundary-001",
-        "pallet_id": "pallet-public-clock-boundary-001",
-        "station_code": "station-public-clock-boundary-001",
-    }
+    path = ASYNC_OPERATION_PATH
+    payload = _async_payload()
     body = json.dumps(payload, separators=(",", ":")).encode()
     headers = _submit_headers(
         body=body,
@@ -1865,15 +1870,10 @@ def test_visible_then_lost_is_an_independent_one_shot_status_fault(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(wms_mock_server, "_post_callback", AsyncMock(return_value={"delivered": True}))
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-visible-then-lost-001"
-    path = "/api/wms/fulfillment/package-binding"
-    payload = {
-        "dispatch_key": "dispatch-visible-then-lost-001",
-        "package_id": "package-visible-then-lost-001",
-        "pallet_id": "pallet-visible-then-lost-001",
-        "station_code": "station-visible-then-lost-001",
-    }
+    path = ASYNC_OPERATION_PATH
+    payload = _async_payload()
     body = json.dumps(payload, separators=(",", ":")).encode()
     status_path = "/northbound/operations/status?" + urlencode(
         (("operation_identity", operation_identity), ("idempotency_key", idempotency_key))
@@ -1943,15 +1943,10 @@ async def test_concurrent_identical_http_replay_creates_exactly_one_effect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(wms_mock_server, "_post_callback", AsyncMock(return_value={"delivered": True}))
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-concurrent-replay-001"
-    path = "/api/wms/fulfillment/package-binding"
-    payload = {
-        "dispatch_key": "dispatch-concurrent-replay-001",
-        "package_id": "package-concurrent-replay-001",
-        "pallet_id": "pallet-concurrent-replay-001",
-        "station_code": "station-concurrent-replay-001",
-    }
+    path = ASYNC_OPERATION_PATH
+    payload = _async_payload()
     body = json.dumps(payload, separators=(",", ":")).encode()
     request_headers = [
         _submit_headers(
@@ -1982,7 +1977,7 @@ async def test_concurrent_identical_http_replay_creates_exactly_one_effect(
 
 @pytest.mark.asyncio
 async def test_concurrent_matching_requests_atomically_claim_one_shot_fault() -> None:
-    operation_identity = "wms.inventory.confirm_inbound@v1"
+    operation_identity = ASYNC_OPERATION_IDENTITY
     idempotency_key = "idem-concurrent-fault-claim-001"
     status_path = "/northbound/operations/status?" + urlencode(
         (("operation_identity", operation_identity), ("idempotency_key", idempotency_key))

@@ -36,6 +36,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import ClientDisconnect
 from uvicorn import Config, Server
 
+from src.app.wms_integration.operation_contract import WmsCompletionMode
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
+
 # 添加项目根目录到 sys.path
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
@@ -48,12 +51,22 @@ from tests.mock.wms_northbound_contract import (
     NorthboundHmacReplayGuard,
     NorthboundOperationStore,
     NorthboundPayloadValidationError,
+    build_typed_ack,
     canonical_payload_bytes,
     content_sha256,
     validate_typed_request,
     verify_status_hmac,
     verify_submit_hmac,
 )
+
+_ASYNC_SUBMIT_DEADLINES = frozenset(
+    operation.budget.deadline_seconds
+    for operation in WMS_OPERATION_BY_IDENTITY.values()
+    if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+)
+if len(_ASYNC_SUBMIT_DEADLINES) != 1:
+    raise RuntimeError("frozen ASYNC_TASK operations must share one submit deadline")
+_DEFAULT_ASYNC_SUBMIT_DEADLINE = str(next(iter(_ASYNC_SUBMIT_DEADLINES)))
 
 
 def _load_sandbox_catalog() -> Any:
@@ -925,7 +938,10 @@ async def northbound_contract():
         "idempotency_retention_seconds": int(os.getenv("WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS", "9")),
         "status_visibility_sla_seconds": _positive_finite_env_float("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2"),
         "max_response_bytes": int(os.getenv("WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES", "4096")),
-        "submit_deadline_seconds": _positive_finite_env_float("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", "30"),
+        "submit_deadline_seconds": _positive_finite_env_float(
+            "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS",
+            _DEFAULT_ASYNC_SUBMIT_DEADLINE,
+        ),
         "status_deadline_seconds": _positive_finite_env_float("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", "2"),
     }
 
@@ -1092,9 +1108,16 @@ async def _submit_northbound_effect(
             },
         )
 
-    data = _northbound_response_data(operation_identity, validated_payload)
-    if submission.snapshot is not None:
-        data["northbound_status"] = submission.snapshot.as_dict()
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    if operation.completion_mode is WmsCompletionMode.SYNC_RESULT:
+        if submission.snapshot is None or submission.snapshot.result_payload is None:
+            return JSONResponse(status_code=500, content={"code": "MOCK_SYNC_RESULT_MISSING"})
+        return JSONResponse(
+            status_code=submission.status_code,
+            content={"code": submission.status_code, "data": submission.snapshot.result_payload},
+        )
+
+    data = _northbound_response_data(operation_identity, idempotency_key, validated_payload)
     if submission.status_code == 202 and northbound_operation_store.register_callback_hint(
         operation_identity, idempotency_key
     ):
@@ -1117,15 +1140,14 @@ async def _submit_northbound_effect(
     return JSONResponse(status_code=submission.status_code, content={"code": submission.status_code, "data": data})
 
 
-def _northbound_response_data(operation_identity: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """从已校验 typed payload 构造不承诺终态的统一受理投影。"""
+def _northbound_response_data(
+    operation_identity: str,
+    idempotency_key: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """从已校验 typed payload 构造 E08–E14 共用 ACK。"""
 
-    return {
-        "environment": "LOCAL_MOCK_ONLY",
-        "production_write_path": False,
-        "request_id": payload["dispatch_key"],
-        "operation_identity": operation_identity,
-    }
+    return build_typed_ack(operation_identity, idempotency_key, payload)
 
 
 def _legacy_transport_callback_payload(
@@ -1864,6 +1886,30 @@ async def confirm_outbound(payload: dict[str, Any]):
             "confirmed": True,
         },
     }
+
+
+@app.post("/api/wms/{operation_path:path}")
+async def frozen_effect_operation(
+    operation_path: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """为 16 项 frozen EFFECT 提供统一 Mock transport；不参与生产运行时编译。"""
+
+    request_path = f"/{operation_path}"
+    path_matches = tuple(
+        operation for operation in WMS_OPERATION_BY_IDENTITY.values() if operation.path_template == request_path
+    )
+    if len(path_matches) == 1 and path_matches[0].mode.value == "QUERY":
+        return JSONResponse(status_code=405, content={"code": "METHOD_NOT_ALLOWED"})
+    matches = tuple(operation for operation in path_matches if operation.mode.value == "EFFECT")
+    if len(matches) != 1:
+        return JSONResponse(status_code=404, content={"code": "UNKNOWN_WMS_EFFECT_OPERATION"})
+    return await _submit_northbound_effect(
+        request=request,
+        background_tasks=background_tasks,
+        operation_identity=matches[0].identity,
+    )
 
 
 @app.get("/")

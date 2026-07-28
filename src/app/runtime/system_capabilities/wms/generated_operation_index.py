@@ -1,14 +1,35 @@
-"""由 scripts/generate_wms_operation_index.py 生成；禁止手工编辑。"""
+"""WMS runtime 对静态 35 项 registry 的只读索引视图。"""
 
-from types import MappingProxyType
+from __future__ import annotations
 
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
+import hashlib
+import json
 
-WMS_OPERATION_IDENTITIES = tuple(binding.operation.identity for binding in WMS_PROVIDER_PROFILE.bindings)
-WMS_OPERATION_INDEX_DIGEST = "d4b9edc3b8e3d7e3b0b849203e92e42385a0f39ee24a645cb0d41fc1f65c74dc"
-WMS_OPERATION_INDEX = MappingProxyType(
-    {binding.operation.identity: binding.operation for binding in WMS_PROVIDER_PROFILE.bindings}
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
+
+WMS_OPERATION_IDENTITIES = tuple(operation.identity for operation in WMS_OPERATIONS)
+WMS_OPERATION_INDEX = WMS_OPERATION_BY_IDENTITY
+_digest_payload = tuple(
+    {
+        "budget": operation.budget.model_dump(mode="json"),
+        "completion_mode": operation.completion_mode.value if operation.completion_mode is not None else None,
+        "error_codes": operation.error_codes,
+        "execution_lane": operation.execution_lane.value,
+        "http_method": operation.http_method.value,
+        "identity": operation.identity,
+        "mode": operation.mode.value,
+        "pagination": operation.pagination.model_dump(mode="json") if operation.pagination is not None else None,
+        "path_template": operation.path_template,
+        "reject_codes": operation.reject_codes,
+        "request_model": f"{operation.request_model.__module__}.{operation.request_model.__qualname__}",
+        "result_model": f"{operation.result_model.__module__}.{operation.result_model.__qualname__}",
+        "target_code": operation.target_code,
+    }
+    for operation in WMS_OPERATIONS
 )
+WMS_OPERATION_INDEX_DIGEST = hashlib.sha256(
+    json.dumps(_digest_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+).hexdigest()
 
 __all__ = [
     "WMS_OPERATION_IDENTITIES",

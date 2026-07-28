@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import inspect
+from pathlib import Path
 
 EXPECTED_QUERY_IDENTITIES = (
     "wms.master_data.get_material@v1",
@@ -209,6 +210,29 @@ def test_provider_conformance_scenarios_and_mock_fixtures_derive_from_registry()
         "wms.transport.rack@v1",
         "wms.transport.handling@v1",
     }
+
+
+def test_active_provider_profile_and_runtime_index_are_exact_registry_derivatives() -> None:
+    registry = _load("src.app.wms_integration.operation_registry")
+    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+    generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
+
+    expected = tuple(operation.identity for operation in registry.WMS_OPERATIONS)
+    assert tuple(binding.operation.identity for binding in catalog.WMS_PROVIDER_PROFILE.bindings) == expected
+    assert expected == generated.WMS_OPERATION_IDENTITIES
+    assert tuple(generated.WMS_OPERATION_INDEX) == expected
+    assert all(generated.WMS_OPERATION_INDEX[operation.identity] is operation for operation in registry.WMS_OPERATIONS)
+
+
+def test_runtime_operation_index_has_no_codegen_or_parallel_builder() -> None:
+    generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
+    repository_root = Path(__file__).resolve().parents[3]
+
+    assert importlib.util.find_spec("src.app.runtime.system_capabilities.wms.operation_index_builder") is None
+    assert not (repository_root / "scripts/generate_wms_operation_index.py").exists()
+    source = inspect.getsource(generated)
+    assert "src.app.wms_integration.operation_registry" in source
+    assert "provider_catalog" not in source
 
 
 def test_grn_and_batch_contracts_have_no_legacy_shape() -> None:

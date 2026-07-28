@@ -2,30 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from src.app.runtime.orchestration.operation_observability import require_northbound_operation_slo
 from src.app.runtime.system_capabilities.wms.contracts import (
     ExternalContractProfile,
     InboundCallbackContract,
     OutboundAuthProfile,
     OutboundAuthScheme,
     WmsEffectStatusHint,
-    WmsOperationContract,
     WmsProviderOperationBinding,
     WmsProviderProfile,
-)
-from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
-    CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
-    CONTRACT as NOTIFY_PACKAGE_BINDING_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
-    CONTRACT as CONFIRM_INBOUND_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import (
-    CONTRACT as QUERY_INVENTORY_CONTRACT,
 )
 from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_MATERIAL_FLOW_CONTRACT_VERSION
 from src.app.sys.external_http_binding import (
@@ -40,21 +26,31 @@ from src.app.sys.external_http_credentials import (
     build_environment_external_http_credential_provider,
 )
 from src.app.sys.services.endpoint_registry import ENDPOINT_SETTING_BY_TARGET_CODE, EndpointRegistry
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+from src.app.wms_integration.provider_manifest import require_full_factory_registry
 from src.app.wms_integration.transport_url import validate_wms_base_url
 from src.core.conf import settings
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.operation_contract import WmsOperationDefinition
 
 WMS_EFFECT_STATUS_HINT_CALLBACK = InboundCallbackContract(
     callback_type="WMS_EFFECT_STATUS_HINT",
     payload_model=WmsEffectStatusHint,
 )
 
+_LEGACY_EFFECT_TARGET_CODES = {
+    "wms.inventory.confirm_inbound@v1": "WMS_INBOUND_CONFIRM",
+    "wms.fulfillment.notify_pkg_binding@v1": "WMS_PACKAGE_BINDING",
+    "wms.fulfillment.full_box_exchange@v1": "WMS_FULL_BOX_EXCHANGE",
+}
+
 
 def _binding(
     profile: ExternalContractProfile,
     outbound_auth: OutboundAuthProfile,
-    operation: WmsOperationContract,
+    operation: WmsOperationDefinition,
 ) -> WmsProviderOperationBinding:
-    _ = require_northbound_operation_slo(operation.identity)
     return WmsProviderOperationBinding(
         profile=profile,
         operation=operation,
@@ -88,19 +84,13 @@ def build_active_wms_provider_profile(settings_source: Any) -> WmsProviderProfil
         scheme=OutboundAuthScheme.HMAC_SHA256,
         credential_reference=f"secret://wms/material-flow-{environment}-hmac@{credential_version}",
     )
-    return WmsProviderProfile(
+    profile = WmsProviderProfile(
         identity=identity,
-        bindings=tuple(
-            _binding(identity, outbound_auth, operation)
-            for operation in (
-                QUERY_INVENTORY_CONTRACT,
-                CONFIRM_INBOUND_CONTRACT,
-                NOTIFY_PACKAGE_BINDING_CONTRACT,
-                FULL_BOX_EXCHANGE_CONTRACT,
-            )
-        ),
+        bindings=tuple(_binding(identity, outbound_auth, operation) for operation in WMS_OPERATIONS),
         callbacks=(WMS_EFFECT_STATUS_HINT_CALLBACK,),
     )
+    require_full_factory_registry(tuple(binding.operation.identity for binding in profile.bindings))
+    return profile
 
 
 # 进程 composition root 只构建一次；endpoint/credential rotation 由冻结 binding revision 表达，
@@ -184,13 +174,19 @@ def _typed_wms_endpoint_registry(
     settings_source: Any | None = None,
 ) -> EndpointRegistry:
     base_url = wms_sync_base_url(settings_source=settings_source)
-    return EndpointRegistry(
+    endpoints = {
+        binding.operation.target_code: f"{base_url}/{binding.operation.path_template.lstrip('/')}"
+        for binding in profile.bindings
+        if binding.operation.mode.value == "EFFECT"
+    }
+    endpoints.update(
         {
-            binding.operation.target_code: f"{base_url}/{binding.operation.endpoint_path.lstrip('/')}"
+            legacy_target_code: f"{base_url}/{binding.operation.path_template.lstrip('/')}"
             for binding in profile.bindings
-            if binding.operation.mode.value == "EFFECT"
+            if (legacy_target_code := _LEGACY_EFFECT_TARGET_CODES.get(binding.operation.identity)) is not None
         }
     )
+    return EndpointRegistry(endpoints)
 
 
 def _external_http_effect_profile(profile: WmsProviderProfile) -> ExternalHttpProviderProfileDefinition:
@@ -214,11 +210,17 @@ def _external_http_effect_binding(binding: WmsProviderOperationBinding) -> Exter
     auth_scheme = binding.outbound_auth.scheme.value
     if auth_scheme != "HMAC_SHA256":
         raise ValueError("WMS EXTERNAL_HTTP EFFECT binding requires HMAC_SHA256")
+    legacy_target_code = _LEGACY_EFFECT_TARGET_CODES.get(binding.operation.identity)
+    target_codes = (
+        (binding.operation.target_code, legacy_target_code)
+        if legacy_target_code is not None
+        else (binding.operation.target_code,)
+    )
     return ExternalHttpBindingDefinition(
         operation_identity=binding.operation.identity,
-        allowed_target_codes=(binding.operation.target_code,),
+        allowed_target_codes=target_codes,
         http_method=http_method,
-        timeout_seconds=binding.operation.budget.timeout_seconds,
+        timeout_seconds=binding.operation.budget.deadline_seconds,
         auth_scheme=auth_scheme,
         credential_reference=str(binding.outbound_auth.credential_reference),
     )

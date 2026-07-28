@@ -22,10 +22,7 @@ from src.app.runtime.orchestration.operation_observability import (
 )
 from src.app.runtime.system_capabilities.wms.contracts import (
     OutboundAuthScheme,
-    WmsHttpMethod,
-    WmsOperationMode,
     WmsProviderOperationBinding,
-    WmsTransportBudget,
 )
 from src.app.wms_integration.models import WmsEvidenceStatus
 from src.app.wms_integration.ports.query_outcome import (
@@ -50,7 +47,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
-    from src.app.runtime.system_capabilities.wms.contracts import WmsOperationContract
+    from src.app.wms_integration.operation_contract import WmsOperationBudget, WmsOperationDefinition
     from src.app.wms_integration.services.circuit_breaker_service import WmsCircuitBreakerService
     from src.app.wms_integration.services.evidence_service import WmsCallEvidenceService
 
@@ -117,9 +114,9 @@ class WmsBoundQueryEndpoint:
     base_url: str
 
     def __post_init__(self) -> None:
-        if self.binding.operation.mode is not WmsOperationMode.QUERY:
+        if self.binding.operation.mode.value != "QUERY":
             raise ValueError("query endpoint requires a QUERY operation binding")
-        if self.binding.operation.http_method is not WmsHttpMethod.GET:
+        if self.binding.operation.http_method.value != "GET":
             raise ValueError("WMS QUERY transport only supports GET")
         parsed = validate_wms_base_url(self.base_url)
         if self.binding.profile.environment == "production" and parsed.scheme.lower() != "https":
@@ -375,7 +372,7 @@ class WmsQueryTransportExecutor:
     async def _record_and_observe(
         self,
         *,
-        contract: WmsOperationContract,
+        contract: WmsOperationDefinition,
         request: BaseModel,
         outcome: WmsQueryOutcome[QueryResultT],
         permit: WmsQueryCallPermit,
@@ -535,7 +532,7 @@ class WmsQueryTransportExecutor:
     async def _record_evidence(
         self,
         *,
-        contract: WmsOperationContract,
+        contract: WmsOperationDefinition,
         request: BaseModel,
         outcome: WmsQueryOutcome[QueryResultT],
         permit: WmsQueryCallPermit,
@@ -705,7 +702,7 @@ def _parse_optional_failure_body(
     raw_body: bytes,
     *,
     content_encoding: str,
-    budget: WmsTransportBudget,
+    budget: WmsOperationBudget,
 ) -> Any | None:
     """4xx body 仅用于识别显式业务拒绝；任何解析失败都保持 technical。"""
 

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from src.app.runtime.system_capabilities.wms.operation_index_builder import WmsOperationIndexBuilder
+from src.app.runtime.system_capabilities.wms.generated_operation_index import WMS_OPERATION_INDEX_DIGEST
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 
 if TYPE_CHECKING:
@@ -310,7 +310,6 @@ def _evaluate_case(
 
 
 def _profile_digest(profile: WmsProviderProfile) -> str:
-    operation_index = WmsOperationIndexBuilder.build(profile)
     payload = {
         "callbacks": tuple(
             (
@@ -321,7 +320,7 @@ def _profile_digest(profile: WmsProviderProfile) -> str:
             for callback in profile.callbacks
         ),
         "identity": profile.identity.model_dump(mode="json"),
-        "operation_index_digest": operation_index.digest,
+        "operation_index_digest": WMS_OPERATION_INDEX_DIGEST,
         "outbound_auth": tuple(
             {
                 "credential_reference": binding.outbound_auth.credential_reference,

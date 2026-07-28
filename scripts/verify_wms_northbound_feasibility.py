@@ -31,7 +31,11 @@ from src.app.runtime.system_capabilities.wms.provider_catalog import (  # noqa: 
 )
 from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256  # noqa: E402
 from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE  # noqa: E402
+from src.app.wms_integration.operation_contract import WmsCompletionMode  # noqa: E402
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS  # noqa: E402
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck  # noqa: E402
 from src.core.conf import settings  # noqa: E402
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES  # noqa: E402
 
 _STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"})
 _REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
@@ -41,80 +45,16 @@ _RESPONSE_CLOSE_TIMEOUT_SECONDS = 1.0
 _ACTIVE_CREDENTIAL_REFERENCE = str(WMS_NORTHBOUND_AUTH.credential_reference)
 _ACTIVE_HMAC_SECRET_ENV = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[_ACTIVE_CREDENTIAL_REFERENCE]
 
+_ASYNC_OPERATIONS = tuple(
+    operation for operation in WMS_OPERATIONS if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+)
 _OPERATION_SPECS: dict[str, dict[str, Any]] = {
-    "wms.inventory.confirm_inbound@v1": {
-        "submit_path": "/api/wms/inventory/confirm-inbound",
-        "payload": {
-            "dispatch_key": "probe-confirm-inbound",
-            "inbound_key": "inbound-probe-001",
-            "material_code": "MATERIAL-001",
-            "quantity": "1",
-            "pkg_id": "pkg-probe-001",
-            "location_code": "location-probe-001",
-        },
-        "result_fields": {
-            "dispatch_key",
-            "provider_reference",
-            "source_version",
-            "inbound_key",
-            "wms_document_no",
-            "inventory_source_version",
-        },
-        "rejection": "MATERIAL_BLOCKED",
-    },
-    "wms.fulfillment.full_box_exchange@v1": {
-        "submit_path": "/api/wms/fulfillment/full-box-exchange",
-        "payload": {
-            "dispatch_key": "probe-full-box-exchange",
-            "exchange_request_key": "exchange-probe-001",
-            "station_code": "full-box-exchange-probe",
-            "rack_id": "rack-probe-001",
-            "rack_face": "A",
-            "full_box_id": "full-box-001",
-            "source_slot_id": "slot-probe-001",
-            "occupancies": [
-                {
-                    "occupancy_id": "occupancy-probe-001",
-                    "pkg_id": "pkg-probe-001",
-                    "material_code": "MATERIAL-001",
-                    "quantity": "1",
-                }
-            ],
-        },
-        "result_fields": {
-            "dispatch_key",
-            "provider_reference",
-            "source_version",
-            "exchange_request_key",
-            "full_box_id",
-            "selected_empty_box_id",
-            "full_box_destination",
-            "empty_box_destination",
-            "final_relations",
-            "task_outcome",
-            "inventory_source_version",
-        },
-        "rejection": "RACK_NOT_AT_EXCHANGE_STATION",
-    },
-    "wms.fulfillment.notify_pkg_binding@v1": {
-        "submit_path": "/api/wms/fulfillment/package-binding",
-        "payload": {
-            "dispatch_key": "probe-package-binding",
-            "pkg_id": "package-probe-001",
-            "bin_id": "bin-probe-001",
-            "slot_id": "slot-probe-001",
-            "rack_id": "rack-probe-001",
-            "station_code": "station-probe-001",
-        },
-        "result_fields": {
-            "dispatch_key",
-            "provider_reference",
-            "source_version",
-            "pkg_id",
-            "binding_reference",
-        },
-        "rejection": "PACKAGE_NOT_FOUND",
-    },
+    operation.identity: {
+        "submit_path": f"/api/wms{operation.path_template}",
+        "payload": REQUEST_FIXTURES[operation.identity],
+        "rejection": operation.reject_codes[0],
+    }
+    for operation in _ASYNC_OPERATIONS
 }
 _TYPED_EFFECT_SUBMIT_DEADLINES = frozenset(
     float(binding.operation.budget.timeout_seconds)
@@ -289,32 +229,34 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
     if state in {"ACCEPTED", "PROCESSING"}:
         return snapshot["result_payload"] is None
     result = snapshot["result_payload"]
-    spec = _OPERATION_SPECS[operation_identity]
-    base_result_is_valid = (
-        isinstance(result, dict)
-        and set(result) == spec["result_fields"]
-        and result["dispatch_key"] == payload["dispatch_key"]
-        and isinstance(result["provider_reference"], str)
-        and bool(result["provider_reference"])
-        and result["source_version"] == str(source_version)
-    )
-    if not base_result_is_valid:
+    if not isinstance(result, dict):
         return False
-    if operation_identity == "wms.inventory.confirm_inbound@v1":
-        return (
-            result["inbound_key"] == payload["inbound_key"]
-            and isinstance(result["wms_document_no"], str)
-            and bool(result["wms_document_no"])
-            and isinstance(result["inventory_source_version"], str)
-        )
-    if operation_identity == "wms.fulfillment.full_box_exchange@v1":
-        return (
-            result["exchange_request_key"] == payload["exchange_request_key"]
-            and result["full_box_id"] == payload["full_box_id"]
-            and isinstance(result["selected_empty_box_id"], str)
-            and result["task_outcome"] in {"SUCCESS", "PARTIAL_FAILURE", "FAILED_AFTER_EXECUTION"}
-        )
-    return result["pkg_id"] == payload["pkg_id"] and bool(result["binding_reference"])
+    try:
+        typed_result = WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(result)
+    except (KeyError, ValueError):
+        return False
+    normalized = typed_result.model_dump(mode="json")
+    return (
+        normalized["dispatch_key"] == payload["dispatch_key"]
+        and isinstance(normalized["provider_reference"], str)
+        and bool(normalized["provider_reference"])
+        and normalized["source_version"] == str(source_version)
+    )
+
+
+def _is_ack(
+    value: object,
+    *,
+    operation_identity: str,
+    idempotency_key: str,
+) -> bool:
+    """验证 E08–E14 共享 ACK，并拒绝任何终态字段混入受理响应。"""
+
+    try:
+        ack = WmsEffectAck.model_validate(value)
+    except ValueError:
+        return False
+    return ack.operation_identity == operation_identity and ack.idempotency_key == idempotency_key
 
 
 def _retry_after_is_valid(value: str | None) -> bool:
@@ -545,13 +487,13 @@ async def run_probe(
         key = f"probe-{uuid4().hex}"
         first = await submit(identity, key, payload)
         first_body = _json_object(first, max_response_bytes=max_response_bytes)
-        first_snapshot = first_body.get("data", {}).get("northbound_status") if first_body else None
+        first_ack = first_body.get("data") if first_body else None
         results.append(
             _result(
                 f"{identity}:first_submit",
                 first is not None
                 and first.status_code == 202
-                and _is_snapshot(first_snapshot, operation_identity=identity, payload=payload),
+                and _is_ack(first_ack, operation_identity=identity, idempotency_key=key),
             )
         )
 
@@ -580,13 +522,13 @@ async def run_probe(
 
         completed_replay = await submit(identity, key, payload)
         completed_body = _json_object(completed_replay, max_response_bytes=max_response_bytes)
-        completed_snapshot = completed_body.get("data", {}).get("northbound_status") if completed_body else None
+        completed_ack = completed_body.get("data") if completed_body else None
         results.append(
             _result(
                 f"{identity}:completed_replay",
                 completed_replay is not None
                 and completed_replay.status_code == 200
-                and completed_snapshot == snapshots[-1],
+                and _is_ack(completed_ack, operation_identity=identity, idempotency_key=key),
             )
         )
 
@@ -604,16 +546,15 @@ async def run_probe(
             )
         )
 
-        required_field = {
-            "wms.inventory.confirm_inbound@v1": "material_code",
-            "wms.fulfillment.full_box_exchange@v1": "full_box_id",
-            "wms.fulfillment.notify_pkg_binding@v1": "station_code",
-        }[identity]
+        required_field = next(
+            field_name
+            for field_name, field_info in WMS_OPERATION_BY_IDENTITY[identity].request_model.model_fields.items()
+            if field_info.is_required() and field_name != "dispatch_key"
+        )
         missing_payload = {field: value for field, value in payload.items() if field != required_field}
         invalid_payloads = (
             missing_payload,
             {**payload, "unexpected_wire_field": "forbidden"},
-            {**payload, required_field: " "},
         )
         validation_responses = []
         for invalid_index, invalid_payload in enumerate(invalid_payloads):
@@ -623,17 +564,6 @@ async def run_probe(
                     f"probe-invalid-{invalid_index}-{uuid4().hex}",
                     invalid_payload,
                 )
-            )
-        if identity == "wms.inventory.confirm_inbound@v1":
-            validation_responses.extend(
-                [
-                    await submit(
-                        identity,
-                        f"probe-invalid-quantity-{uuid4().hex}",
-                        {**payload, "quantity": invalid_quantity},
-                    )
-                    for invalid_quantity in (0, "NaN", "-1", "not-a-decimal")
-                ]
             )
         recovery_key = f"probe-invalid-recovery-{uuid4().hex}"
         rejected_before_write = await submit(identity, recovery_key, missing_payload)

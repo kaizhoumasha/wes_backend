@@ -54,6 +54,32 @@ class WmsOperationBudget(BaseModel):
     max_decoded_bytes: int = Field(gt=0)
     max_rows: int | None = Field(default=None, gt=0)
 
+    @property
+    def timeout_seconds(self) -> float:
+        """兼容既有 transport 读取口径；唯一真源仍为整项总预算 deadline。"""
+
+        return self.deadline_seconds
+
+    @property
+    def max_chunk_bytes(self) -> int:
+        return min(262_144, self.max_wire_bytes)
+
+    @property
+    def max_compression_ratio(self) -> float:
+        return 20.0
+
+    @property
+    def allowed_content_encodings(self) -> tuple[str, ...]:
+        return ("identity", "gzip", "deflate")
+
+    @property
+    def max_json_depth(self) -> int:
+        return 12
+
+    @property
+    def max_field_length(self) -> int:
+        return 16_384
+
     @model_validator(mode="after")
     def validate_attempt_budget(self) -> WmsOperationBudget:
         if len(self.backoff_seconds) != self.max_attempts - 1:
@@ -97,6 +123,18 @@ class WmsOperationDefinition(BaseModel):
     pagination: WmsPaginationConstraint | None
     error_codes: tuple[StableCode, ...] = Field(min_length=1)
     reject_codes: tuple[StableCode, ...] = Field(min_length=1)
+
+    @property
+    def endpoint_path(self) -> str:
+        """兼容已投产 transport 的路径读取名。"""
+
+        return self.path_template
+
+    @property
+    def retry_policy(self) -> WmsOperationBudget:
+        """重试次数与 backoff 已并入同一总预算对象。"""
+
+        return self.budget
 
     @computed_field
     @property

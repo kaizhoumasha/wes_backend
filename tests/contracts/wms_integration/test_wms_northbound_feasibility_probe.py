@@ -22,15 +22,8 @@ from fastapi.testclient import TestClient
 
 from scripts import verify_wms_northbound_feasibility as probe_module
 from scripts.verify_wms_northbound_feasibility import _contract_values, _status_headers, _submit_headers, run_probe
-from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
-    CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
-    CONTRACT as PACKAGE_BINDING_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
-    CONTRACT as CONFIRM_INBOUND_CONTRACT,
-)
+from src.app.wms_integration.operation_contract import WmsCompletionMode
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from src.core.conf import settings
 from tests.mock import wms_mock_server
 from tests.mock.wms_northbound_contract import (
@@ -38,15 +31,16 @@ from tests.mock.wms_northbound_contract import (
     MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V1,
     MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2,
 )
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-OPERATION_IDENTITIES = {
-    "wms.inventory.confirm_inbound@v1",
-    "wms.fulfillment.full_box_exchange@v1",
-    "wms.fulfillment.notify_pkg_binding@v1",
-}
+ASYNC_OPERATIONS = tuple(
+    operation for operation in WMS_OPERATIONS if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+)
+OPERATION_IDENTITIES = frozenset(operation.identity for operation in ASYNC_OPERATIONS)
+SAMPLE_ASYNC_OPERATION = ASYNC_OPERATIONS[0]
 
 
 def test_contract_values_reject_retention_shorter_than_wes_confirmation_window() -> None:
@@ -103,10 +97,7 @@ def test_contract_values_reject_non_finite_time_contract(invalid_value: float) -
 
 
 def test_mock_contract_deadlines_match_wes_transport_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
-    submit_deadlines = {
-        contract.budget.timeout_seconds
-        for contract in (CONFIRM_INBOUND_CONTRACT, FULL_BOX_EXCHANGE_CONTRACT, PACKAGE_BINDING_CONTRACT)
-    }
+    submit_deadlines = {operation.budget.deadline_seconds for operation in ASYNC_OPERATIONS}
     assert len(submit_deadlines) == 1
     expected_submit_deadline = float(submit_deadlines.pop())
     monkeypatch.setenv("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", str(expected_submit_deadline))
@@ -276,14 +267,15 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
 async def test_mock_rejects_raw_body_hash_tampering(
     northbound_mock_client: httpx.AsyncClient,
 ) -> None:
-    raw_body = b'{"dispatch_key":"dispatch-001","package_id":"package-001","pallet_id":"pallet-001","station_code":"station-a"}'
-    path = "/api/wms/fulfillment/package-binding"
+    operation_identity = SAMPLE_ASYNC_OPERATION.identity
+    raw_body = json.dumps(REQUEST_FIXTURES[operation_identity], separators=(",", ":")).encode()
+    path = f"/api/wms{SAMPLE_ASYNC_OPERATION.path_template}"
     headers = _submit_headers(
         secret=b"probe-material-flow-v2",
         credential_reference=ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
         path=path,
         body=raw_body,
-        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
+        operation_identity=operation_identity,
         key="tampered-content-hash",
     )
     headers["X-WES-Content-SHA256"] = "0" * 64
@@ -302,7 +294,7 @@ async def test_mock_rejects_raw_body_hash_tampering(
 async def test_feasibility_probe_reports_protocol_failure_without_response_body(
     northbound_mock_client: httpx.AsyncClient,
 ) -> None:
-    operation_identity = "wms.fulfillment.notify_pkg_binding@v1"
+    operation_identity = SAMPLE_ASYNC_OPERATION.identity
     raw_path = "/northbound/operations/status?" + urlencode(
         (("operation_identity", operation_identity), ("idempotency_key", "missing"))
     )
@@ -336,7 +328,7 @@ async def test_malicious_remote_body_never_reaches_probe_output(capsys: pytest.C
         base_url="http://malicious-wms.test",
     ) as client:
         report = await run_probe(
-            client, operation_identity="wms.fulfillment.notify_pkg_binding@v1", request_timeout_seconds=0.01
+            client, operation_identity=SAMPLE_ASYNC_OPERATION.identity, request_timeout_seconds=0.01
         )
 
     captured = capsys.readouterr()
@@ -377,7 +369,7 @@ async def test_malicious_200_contract_values_fail_without_traceback_or_remote_ec
         base_url="http://invalid-contract-wms.test",
     ) as client:
         report = await run_probe(
-            client, operation_identity="wms.fulfillment.notify_pkg_binding@v1", request_timeout_seconds=0.01
+            client, operation_identity=SAMPLE_ASYNC_OPERATION.identity, request_timeout_seconds=0.01
         )
 
     captured = capsys.readouterr()
@@ -420,12 +412,12 @@ async def test_total_deadline_includes_slow_streamed_response_body(
         base_url="http://slow-body-wms.test",
     ) as client:
         report = await run_probe(
-            client, operation_identity="wms.fulfillment.notify_pkg_binding@v1", request_timeout_seconds=0.01
+            client, operation_identity=SAMPLE_ASYNC_OPERATION.identity, request_timeout_seconds=0.01
         )
 
     captured = capsys.readouterr()
     first_submit = next(
-        case for case in report.cases if case.case_id == "wms.fulfillment.notify_pkg_binding@v1:first_submit"
+        case for case in report.cases if case.case_id == f"{SAMPLE_ASYNC_OPERATION.identity}:first_submit"
     )
     assert first_submit.passed is False
     assert captured.out == ""

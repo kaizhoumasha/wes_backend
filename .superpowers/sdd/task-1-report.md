@@ -37,8 +37,9 @@ conformance requirement、业务场景覆盖与 Mock fixture 均由该 registry 
 - `WmsGrnInfo`、`WmsDocumentPort`、`WmsFulfillmentPort`、`WmsGrnReceivedEvent` 等为 LOW。
 - `FullBoxExchangeOperationRequest`、`WmsEffectStatusRequest` 为 MEDIUM；本任务未改动旧 runtime status
   接线。
-- `WmsProviderOperationBinding` 为 HIGH、`build_active_wms_provider_profile` 为 CRITICAL；虽然控制器已确认
-  未发布系统允许优化，本任务仍未修改二者，避免提前实现 T2/T5。
+- `WmsProviderOperationBinding` 为 HIGH、`build_active_wms_provider_profile` 为 CRITICAL；首轮未修改，
+  第二轮审查明确要求 active Provider 直接消费 35 项 registry 后，在用户授权范围内完成静态组合修复，
+  未实现 T2/T5 endpoint compiler/dispatcher。
 - 索引刷新后运行 `gitnexus detect-changes --scope all`：21 files / 82 symbols，0 affected processes，
   risk level LOW。
 
@@ -58,3 +59,37 @@ conformance requirement、业务场景覆盖与 Mock fixture 均由该 registry 
 本任务只冻结目标合同与静态派生资产，不提前切换运行时 endpoint compiler/dispatcher。现有旧 runtime
 full-box/status/transport 执行路径由 T2/T5 按本 registry 迁移；它们不属于目标 Provider manifest，也不能作为新
 operation 的兼容入口。
+
+## 第二轮审查修复
+
+- active Provider profile、runtime index、SLO 与 signal registry 改为直接派生唯一 35 项
+  `WMS_OPERATIONS`；删除并行的 index builder 和生成脚本。
+- 保留既有 QUERY/EFFECT transport 的必要读取兼容，但目标 Provider binding 的 operation 对象严格引用
+  registry 原对象；旧 target code 仅用于已投产三项 transport 的冻结 binding，不进入目标 manifest。
+- Mock completion 口径收紧为：9 项 `SYNC_RESULT` 直接返回 200 typed result，拒绝 status query 与
+  callback hint；仅 E08–E14 返回 202/200 共用 ACK 并开放独立 status/hint。
+- E12 ACK 必须接纳完整冻结批次；E13 ACK 只能接纳有序前缀；两者均要求非空、唯一成员与 canonical
+  SHA-256 digest。terminal result 必须与 ACK 和原请求的 sequence、route、bin 身份逐项对应。
+- Mock Server 与 feasibility probe 直接遍历新 registry/fixture，未知 path fail closed；删除旧三项异步
+  语义，不提供旧 payload 或 identity fallback。
+
+## 第二轮 TDD 与验证
+
+1. RED：active Provider 仍只有旧 4 项，且运行时 index 仍依赖并行 builder。
+2. GREEN：Provider/index 精确覆盖 35 项并直接引用 registry；builder/codegen 已删除。
+3. RED：9 项同步 EFFECT 返回 202，仍可查询 status/hint。
+4. GREEN：同步 EFFECT 直接 200 typed result；E08–E14 独占异步状态机。
+5. RED：E12/E13 可接纳重复成员、非前缀/部分 ACK，且 terminal 未校验成员闭环。
+6. GREEN：新增 7 项批量 ACK 合同测试，覆盖完整批次、有序前缀、digest 和 terminal 对应。
+
+最终验证：
+
+- `uv run pytest tests/contracts/wms_integration tests/mock/test_wms_northbound_contract.py
+  tests/mock/test_wms_mock_server.py tests/runtime/orchestration/test_northbound_operation_observability.py -q`
+  → 421 passed。
+- `uv run pytest tests/contracts/wms_integration/test_wms_batch_ack_contract.py -q` → 7 passed。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime guardrails 365 passed、
+  process naming 11 passed、architecture/import-linter/topology 全通过）。
+- `gitnexus detect-changes --scope all` → 16 indexed files / 172 symbols / 10 affected processes，
+  risk HIGH；命中范围为预期的 QUERY observability 和 Mock status 流程，无 T2/T5 runtime
+  endpoint compiler/dispatcher。

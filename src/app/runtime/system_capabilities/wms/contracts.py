@@ -8,6 +8,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
+from src.app.wms_integration.operation_contract import WmsOperationDefinition  # noqa: TC001
+
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 OperationIdentity = Annotated[str, StringConstraints(pattern=r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")]
 FinitePositiveSeconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
@@ -177,15 +179,13 @@ class WmsProviderOperationBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     profile: ExternalContractProfile
-    operation: WmsOperationContract
+    operation: WmsOperationDefinition
     outbound_auth: OutboundAuthProfile
 
     @model_validator(mode="after")
     def enforce_outbound_auth(self) -> WmsProviderOperationBinding:
         if self.profile.environment == "production" and self.outbound_auth.scheme is OutboundAuthScheme.NONE:
             raise ValueError("production operation forbids outbound auth NONE")
-        if self.outbound_auth.scheme is not self.operation.outbound_auth_scheme:
-            raise ValueError("binding auth scheme must match operation contract")
         return self
 
 

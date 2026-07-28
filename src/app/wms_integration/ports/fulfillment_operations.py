@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from src.app.wms_integration.operation_contract import (
     WmsCompletionMode,
@@ -119,6 +121,13 @@ class ConveyorBatchItem(StrictWmsModel):
     reserved_queue_position: int = Field(ge=0)
 
 
+def _require_unique_batch_members(items: tuple[ConveyorBatchItem | ConveyorExitCandidate, ...]) -> None:
+    for field_name in ("sequence_no", "route_instance_id", "bin_id"):
+        values = tuple(getattr(item, field_name) for item in items)
+        if len(values) != len(set(values)):
+            raise ValueError(f"batch contains duplicate {field_name}")
+
+
 class MoveBinsToConveyorEntryRequest(EffectRequest):
     batch_id: StableText = Field(max_length=160)
     direction: Literal["TO_CONVEYOR_ENTRY"]
@@ -126,6 +135,11 @@ class MoveBinsToConveyorEntryRequest(EffectRequest):
     destination_station_code: StableText = Field(max_length=120)
     capacity_snapshot_version: StableText = Field(max_length=160)
     items: tuple[ConveyorBatchItem, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_frozen_members(self) -> MoveBinsToConveyorEntryRequest:
+        _require_unique_batch_members(self.items)
+        return self
 
 
 class BatchItemResult(StrictWmsModel):
@@ -144,6 +158,13 @@ class MoveBinsToConveyorEntryResult(EffectResult):
     items: tuple[BatchItemResult, ...] = Field(min_length=1)
     task_outcome: Literal["SUCCESS", "PARTIAL_FAILURE", "FAILED_AFTER_EXECUTION"]
 
+    @model_validator(mode="after")
+    def validate_member_correspondence(self) -> MoveBinsToConveyorEntryResult:
+        _require_unique_batch_result_members(self.items)
+        if tuple(item.bin_id for item in self.items) != self.accepted_object_keys:
+            raise ValueError("terminal items must match accepted_object_keys in order")
+        return self
+
 
 class ConveyorExitCandidate(StrictWmsModel):
     sequence_no: int = Field(ge=1)
@@ -161,6 +182,11 @@ class MoveBinsFromConveyorExitRequest(EffectRequest):
     candidate_digest: StableText = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_items: tuple[ConveyorExitCandidate, ...] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def validate_frozen_candidates(self) -> MoveBinsFromConveyorExitRequest:
+        _require_unique_batch_members(self.candidate_items)
+        return self
+
 
 class MoveBinsFromConveyorExitResult(EffectResult):
     batch_id: StableText = Field(max_length=160)
@@ -168,6 +194,129 @@ class MoveBinsFromConveyorExitResult(EffectResult):
     candidate_digest: StableText = Field(pattern=r"^[0-9a-f]{64}$")
     items: tuple[BatchItemResult, ...] = Field(min_length=1)
     task_outcome: Literal["SUCCESS", "PARTIAL_FAILURE", "FAILED_AFTER_EXECUTION"]
+
+    @model_validator(mode="after")
+    def validate_member_correspondence(self) -> MoveBinsFromConveyorExitResult:
+        _require_unique_batch_result_members(self.items)
+        if tuple(item.bin_id for item in self.items) != self.accepted_object_keys:
+            raise ValueError("terminal items must match accepted_object_keys in order")
+        return self
+
+
+def _require_unique_batch_result_members(items: tuple[BatchItemResult, ...]) -> None:
+    for field_name in ("sequence_no", "route_instance_id", "bin_id"):
+        values = tuple(getattr(item, field_name) for item in items)
+        if len(values) != len(set(values)):
+            raise ValueError(f"terminal result contains duplicate {field_name}")
+
+
+def accepted_scope_digest(object_keys: tuple[str, ...]) -> str:
+    """对有序接纳成员生成 canonical SHA-256；顺序属于 ACK 合同。"""
+
+    canonical = json.dumps(object_keys, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class WmsAcceptedScope(StrictWmsModel):
+    """异步批次 ACK 冻结的非空、有序、不可重复成员。"""
+
+    object_keys: tuple[StableText, ...] = Field(min_length=1)
+    scope_digest: StableText = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_unique_members(self) -> WmsAcceptedScope:
+        if len(self.object_keys) != len(set(self.object_keys)):
+            raise ValueError("accepted scope contains duplicate object_keys")
+        return self
+
+
+type AsyncFulfillmentOperationIdentity = Literal[
+    "wms.fulfillment.request_rack_supply@v1",
+    "wms.fulfillment.request_rack_transport@v1",
+    "wms.fulfillment.change_rack_face@v1",
+    "wms.fulfillment.full_box_exchange@v1",
+    "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+    "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+    "wms.fulfillment.request_load_unit_transport@v1",
+]
+
+
+class WmsEffectAck(StrictWmsModel):
+    """E08–E14 共用 ACK；批次项用 accepted_scope 冻结实际成员。"""
+
+    operation_identity: AsyncFulfillmentOperationIdentity
+    idempotency_key: StableText = Field(max_length=160)
+    provider_reference: StableText = Field(max_length=160)
+    submission_state: Literal["ACCEPTED", "IN_PROGRESS_REPLAY", "REPLAY"]
+    accepted_scope: WmsAcceptedScope | None = None
+
+    @model_validator(mode="after")
+    def validate_scope_presence(self) -> WmsEffectAck:
+        is_batch = self.operation_identity in {
+            "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+            "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+        }
+        if is_batch and self.accepted_scope is None:
+            raise ValueError("batch ACK requires accepted_scope")
+        if not is_batch and self.accepted_scope is not None:
+            raise ValueError("single-object ACK forbids accepted_scope")
+        return self
+
+
+type BatchFulfillmentRequest = MoveBinsToConveyorEntryRequest | MoveBinsFromConveyorExitRequest
+type BatchFulfillmentResult = MoveBinsToConveyorEntryResult | MoveBinsFromConveyorExitResult
+
+
+def validate_fulfillment_ack(request: BatchFulfillmentRequest, ack: WmsEffectAck) -> WmsEffectAck:
+    """校验 E12 整批 ACK 或 E13 有序前缀 ACK。"""
+
+    if ack.accepted_scope is None:
+        raise ValueError("batch ACK requires accepted_scope")
+    if isinstance(request, MoveBinsToConveyorEntryRequest):
+        expected_identity = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
+        frozen_keys = tuple(item.bin_id for item in request.items)
+        if ack.accepted_scope.object_keys != frozen_keys:
+            raise ValueError("E12 ACK must accept the entire frozen batch")
+    else:
+        expected_identity = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
+        candidate_keys = tuple(item.bin_id for item in request.candidate_items)
+        accepted_count = len(ack.accepted_scope.object_keys)
+        if ack.accepted_scope.object_keys != candidate_keys[:accepted_count]:
+            raise ValueError("E13 accepted_scope must be an ordered prefix")
+    if ack.operation_identity != expected_identity:
+        raise ValueError("ACK operation_identity does not match batch request")
+    if ack.accepted_scope.scope_digest != accepted_scope_digest(ack.accepted_scope.object_keys):
+        raise ValueError("accepted scope digest does not match canonical members")
+    return ack
+
+
+def validate_batch_terminal_result(
+    request: BatchFulfillmentRequest,
+    ack: WmsEffectAck,
+    result: BatchFulfillmentResult,
+) -> BatchFulfillmentResult:
+    """校验 terminal items 与 ACK 冻结成员、原请求身份一一对应。"""
+
+    validate_fulfillment_ack(request, ack)
+    accepted_scope = ack.accepted_scope
+    if accepted_scope is None:
+        raise ValueError("batch terminal result requires accepted_scope")
+    if result.accepted_object_keys != accepted_scope.object_keys:
+        raise ValueError("terminal accepted members do not match ACK")
+    request_items = request.items if isinstance(request, MoveBinsToConveyorEntryRequest) else request.candidate_items
+    frozen_items = request_items[: len(accepted_scope.object_keys)]
+    expected_identities = tuple((item.sequence_no, item.route_instance_id, item.bin_id) for item in frozen_items)
+    result_identities = tuple((item.sequence_no, item.route_instance_id, item.bin_id) for item in result.items)
+    if result_identities != expected_identities:
+        raise ValueError("terminal items do not match frozen request members")
+    if isinstance(request, MoveBinsFromConveyorExitRequest):
+        if not isinstance(result, MoveBinsFromConveyorExitResult):
+            raise TypeError("E13 request requires E13 terminal result")
+        if result.candidate_digest != request.candidate_digest:
+            raise ValueError("E13 terminal candidate_digest does not match request")
+    elif not isinstance(result, MoveBinsToConveyorEntryResult):
+        raise TypeError("E12 request requires E12 terminal result")
+    return result
 
 
 class RequestLoadUnitTransportRequest(EffectRequest):

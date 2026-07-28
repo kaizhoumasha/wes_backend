@@ -12,6 +12,8 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Protocol
 
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -833,22 +835,14 @@ def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySig
                 "outcome": frozenset({"RESOLVED", "REVOKED", "RESOLUTION_FAILED", "PROVIDER_ERROR"}),
             },
         ),
-        "northbound.operation.query_inventory": _northbound_operation_signal(
-            name="northbound.operation.query_inventory",
-            operation_identity="wms.inventory.query_inventory@v1",
-        ),
-        "northbound.operation.confirm_inbound": _northbound_operation_signal(
-            name="northbound.operation.confirm_inbound",
-            operation_identity="wms.inventory.confirm_inbound@v1",
-        ),
-        "northbound.operation.notify_pkg_binding": _northbound_operation_signal(
-            name="northbound.operation.notify_pkg_binding",
-            operation_identity="wms.fulfillment.notify_pkg_binding@v1",
-        ),
-        "northbound.operation.full_box_exchange": _northbound_operation_signal(
-            name="northbound.operation.full_box_exchange",
-            operation_identity="wms.fulfillment.full_box_exchange@v1",
-        ),
+        **{
+            signal_name: _northbound_operation_signal(
+                name=signal_name,
+                operation_identity=operation.identity,
+            )
+            for operation in WMS_OPERATIONS
+            if (signal_name := f"northbound.operation.{operation.identity.partition('@')[0].rsplit('.', 1)[-1]}")
+        },
     }
 
 
