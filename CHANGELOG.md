@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.5.0] - 2026-07-28
+
+### Added
+- SMT 分拣入库现在通过 generated plugin 完成 source-pick 请求、设备命令、Outbox、callback、恢复和 `PICKED` 账本闭环，并为命令与账本写入提供独立 system capability。
+- 三类运行态记录新增强制 plugin binding snapshot pins 与 PostgreSQL 约束，激活、Session 创建和执行阶段均固定插件、配置、索引及 Provider 身份。
+- 新增 SMT 并发恢复、完整 PostgreSQL 生命周期和运行时扩展性能预算，覆盖成功、失败、重复、回滚、迟到 callback 与 100 条恢复扫描。
+
+### Changed
+- RuntimeInbox 执行统一收敛到 generated dispatcher、route-level facts builder 和 typed effect state，rough sorter 与 SMT 使用同一套三阶段处理及写回边界。
+- SMT source-pick recovery 通过持久化 command correlation、执行锚点和稳定锁顺序恢复唯一候选；歧义、证据不匹配和失败终态进入人工处置。
+- 运行时架构、插件开发、SMT 业务流程、文件索引和 legacy cleanup 清单已同步到 generated-only 目标实现。
+
+### Fixed
+- `COMMAND_RESULT` 现在只信任 `RuntimeInbox.command_id` 对应的持久化 `DeviceCommand`；伪造 callback 无法覆盖命令类型、结果、数据或错误详情，非终态与矛盾证据保持零副作用。
+- 修复 SMT command correlation、成功账本、恢复事务、生产路由与执行归属的边界缺口，避免重复推进、跨 Session 覆盖和失败命令被当作成功处理。
+- 收紧 smoke seed、插件绑定准入、诊断来源和文档身份，防止未知插件、未绑定运行态或旧 SMT 标识重新进入活动链路。
+
+### Removed
+- 删除 legacy compatibility、未绑定 RuntimeInbox processor、备用 orchestrator delegate、旧 write-back callback 及其 legacy-only 测试，运行时不再保留双轨或 fallback。
+
 ## [0.20.4.0] - 2026-07-27
 
 ### Changed
