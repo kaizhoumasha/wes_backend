@@ -9,10 +9,11 @@ from __future__ import annotations
 from src.app.runtime.capabilities.material_flow.sorter_inbound_preview_service import (
     SorterInboundPreviewService,
 )
-from src.app.wms_integration.ports.confirm_inbound_operation import OPERATION_IDENTITY as CONFIRM_INBOUND_IDENTITY
-from src.app.wms_integration.ports.notify_pkg_binding_operation import (
-    OPERATION_IDENTITY as NOTIFY_PACKAGE_BINDING_IDENTITY,
-)
+from src.app.wms_integration.ports.fulfillment_operations import NOTIFY_PKG_BINDING
+from src.app.wms_integration.ports.inventory_operations import CONFIRM_INBOUND
+
+CONFIRM_INBOUND_IDENTITY = CONFIRM_INBOUND.identity
+NOTIFY_PACKAGE_BINDING_IDENTITY = NOTIFY_PKG_BINDING.identity
 
 
 def test_rough_sorter_preview_keeps_local_fact_and_splits_wms_effect_ports() -> None:

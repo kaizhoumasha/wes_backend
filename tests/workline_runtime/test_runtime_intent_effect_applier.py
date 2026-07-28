@@ -231,36 +231,21 @@ async def test_stale_material_effect_short_circuits_following_device_effects() -
 async def test_rough_sorter_reservation_intent_uses_bin_cell_claim_contract() -> None:
     """粗分机预约 intent 必须能被 RuntimeIntentEffectApplier 执行为 CLAIM_BIN_CELL。"""
 
-    from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import (
-        SorterInboundRuntimeService,
-    )
-
-    plan = SorterInboundRuntimeService().build_rough_sorter_inbound_plan(
-        {
-            "request_id": "rough-runtime-executable-001",
-            "correlation_id": "corr-rough-executable-001",
-            "provider_code": "WMS-A",
-            "object_key": "PKG-ROUGH-EXEC-001",
+    reservation_intent = RuntimeIntent.resource_reservation(
+        operation="CLAIM_BIN_CELL",
+        payload={
+            "pkg_code": "PKG-ROUGH-EXEC-001",
             "bin_code": "BIN-A-01",
             "bin_cell_index": "1",
-            "target_cell_code": "CELL-A-01",
-            "pkg_code": "PKG-ROUGH-EXEC-001",
-            "pallet_id": "PALLET-A-01",
-            "station_code": "ROUGH-OUT-01",
-            "material_code": "MAT-A",
-            "quantity": 1,
-            "warehouse_code": "WH-A",
-            "source_event_id": "ecs-scan-executable-001",
-            "source_version": "ecs.v1",
-            "plugin_binding_id": 23,
-            "plugin_binding_version": 5,
-        }
+            "bin_cell_code": "CELL-A-01",
+        },
+        idempotency_key="material-flow:rough-runtime-executable-001:cell-reservation",
     )
     reservation_service = _RecordingReservationService()
 
     await RuntimeIntentEffectApplier(bin_cell_reservation_service=reservation_service).apply(
         _effect_ctx(),
-        [plan.intents[0]],
+        [reservation_intent],
     )
 
     assert len(reservation_service.calls) == 1
@@ -311,38 +296,28 @@ async def test_resource_reservation_uses_runtime_material_flow_default_singleton
 async def test_runtime_location_event_fact_records_runtime_location_without_resource_projection(monkeypatch) -> None:
     """RUNTIME_LOCATION_EVENT 是 runtime 位置事实，不应进入资源投影枚举。"""
 
-    from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import (
-        SorterInboundRuntimeService,
-    )
     from src.app.runtime.orchestration.services import runtime_location_event_service as location_event_module
 
     location_event_service = _RecordingLocationEventService()
     monkeypatch.setattr(location_event_module, "runtime_location_event_service", location_event_service)
-    plan = SorterInboundRuntimeService().build_rough_sorter_inbound_plan(
-        {
-            "request_id": "rough-runtime-location-001",
-            "correlation_id": "corr-location-001",
-            "provider_code": "WMS-A",
+    location_intent = RuntimeIntent.resource_fact(
+        fact_type="RUNTIME_LOCATION_EVENT",
+        payload={
+            "object_type": "PACKAGE",
             "object_key": "PKG-LOCATION-001",
-            "bin_code": "BIN-A-01",
-            "bin_cell_index": "1",
-            "target_cell_code": "CELL-A-01",
-            "pkg_code": "PKG-LOCATION-001",
-            "pallet_id": "PALLET-A-01",
-            "station_code": "ROUGH-OUT-01",
-            "material_code": "MAT-A",
-            "quantity": 1,
-            "warehouse_code": "WH-A",
-            "source_event_id": "ecs-location-001",
-            "source_version": "ecs.v1",
-            "plugin_binding_id": 23,
-            "plugin_binding_version": 5,
-        }
+            "location_scope": "CELL",
+            "location_code": "CELL-A-01",
+            "business_step": "LOCAL_PHYSICAL_FACT",
+            "source": "MATERIAL_FLOW_SORTER_INBOUND",
+            "provider_code": "WMS-A",
+            "idempotency_key": "material-flow:rough-runtime-location-001:location-fact",
+        },
+        idempotency_key="material-flow:rough-runtime-location-001:location-fact",
     )
 
     await RuntimeIntentEffectApplier(resource_projection_service=_UnexpectedResourceProjectionService()).apply(
         _effect_ctx(),
-        [plan.intents[1]],
+        [location_intent],
     )
 
     assert len(location_event_service.calls) == 1

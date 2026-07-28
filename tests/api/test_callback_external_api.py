@@ -15,7 +15,6 @@ from tests.api.callback_test_support import (
     _await_kwargs,
     _response_data,
     create_external_payload,
-    create_full_box_exchange_external_payload,
     create_wms_external_payload,
 )
 
@@ -551,59 +550,8 @@ class TestCallbackExternalAPI:
         assert missing_field in str(log_kwargs["error_message"])
         mock_audit.assert_awaited_once()
 
-    @pytest.mark.parametrize(
-        "missing_field",
-        [
-            "dispatch_key",
-            "exchange_request_code",
-            "rack_release_id",
-            "wms_rcs_task_id",
-            "source_system",
-            "source_event_id",
-            "source_version",
-            "occurred_at",
-            "request_id",
-            "timestamp",
-            "signature",
-            "exchange_status",
-        ],
-    )
-    async def test_callback_external_rejects_full_box_exchange_missing_required_envelope_field(
-        self,
-        db_session: AsyncSession,
-        build_request: RequestFactory,
-        missing_field: str,
-    ) -> None:
-        payload = create_full_box_exchange_external_payload()
-        payload.pop(missing_field)
-        with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
-                new=AsyncMock(),
-            ) as mock_log_callback,
-            patch(
-                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ) as mock_audit,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-full-box-missing-field"),
-        ):
-            from src.app.callback.v1.callback import callback_external
-
-            response = await callback_external(
-                request=build_request(body=payload, path="/api/v1/callback/external"),
-                db=db_session,
-            )
-
-        assert response["code"] == "2004"
-        assert _response_data(response)["ack"] is False
-        mock_log_callback.assert_awaited_once()
-        log_kwargs = _await_kwargs(mock_log_callback)
-        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
-        assert missing_field in str(log_kwargs["error_message"])
-        mock_audit.assert_awaited_once()
-
     @pytest.mark.asyncio
-    async def test_callback_external_accepts_full_box_exchange_business_completed(
+    async def test_callback_external_rejects_removed_full_box_exchange_callback(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
@@ -629,20 +577,19 @@ class TestCallbackExternalAPI:
 
             response = await callback_external(
                 request=build_request(
-                    body=create_full_box_exchange_external_payload(),
+                    body=create_wms_external_payload(callback_type="WMS_FULL_BOX_EXCHANGE_RESULT"),
                     path="/api/v1/callback/external",
                 ),
                 db=db_session,
             )
 
-        assert response["code"] == "1000"
-        assert _response_data(response)["status"] == "submitted"
-        handling_service.record_callback_from_external_http.assert_awaited_once()
-        callback_kwargs = handling_service.record_callback_from_external_http.await_args.kwargs
-        assert callback_kwargs["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        handling_service.record_callback_from_external_http.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
-        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
-        mock_enqueue.assert_called_once()
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        mock_enqueue.assert_not_called()
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio

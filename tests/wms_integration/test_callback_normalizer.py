@@ -112,7 +112,6 @@ def test_callback_normalizer_rejects_invalid_wms_rcs_source_system() -> None:
     [
         ("WMS_RACK_TASK_RESULT", "WMS"),
         ("RCS_RACK_TASK_RESULT", "RCS"),
-        ("WMS_FULL_BOX_EXCHANGE_RESULT", "WMS"),
         ("RCS_FULL_BOX_EXCHANGE_RESULT", "RCS"),
     ],
 )
@@ -132,7 +131,6 @@ def test_callback_normalizer_accepts_provider_source_matrix(callback_type: str, 
     [
         ("WMS_RACK_TASK_RESULT", "RCS"),
         ("RCS_RACK_TASK_RESULT", "WMS"),
-        ("WMS_FULL_BOX_EXCHANGE_RESULT", "RCS"),
         ("RCS_FULL_BOX_EXCHANGE_RESULT", "WMS"),
     ],
 )
@@ -166,13 +164,13 @@ def _rack_payload(**overrides: object) -> dict[str, object]:
 
 def _full_box_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "callback_type": "RCS_FULL_BOX_EXCHANGE_RESULT",
         "trace_id": "trace-full-box-001",
         "dispatch_key": "handling:full-box:release-001:move:1",
         "exchange_request_code": "handling:full-box:release-001:move:1",
         "rack_release_id": "release-001",
         "wms_rcs_task_id": "task-wms-001",
-        "source_system": "WMS",
+        "source_system": "RCS",
         "source_event_id": "evt-full-box-001",
         "source_version": "1",
         "occurred_at": "2026-05-26T12:00:00Z",

@@ -80,11 +80,9 @@ class HandlingOperationService:
         carrier_code: str | None = None,
         timeout_seconds: int | None = None,
     ) -> Any:
-        """创建系统级 bin handling operation。
+        """旧 handling transport 已关闭；T5 dispatcher 实现前拒绝创建任何持久化状态。"""
 
-        调用方只传内部 move 语义；WMS/RCS 目标、dispatch_key 和 outbox 包络由本服务生成。
-        """
-
+        raise RuntimeError("legacy handling transport is removed; T5 dispatcher is not implemented")
         operation_key = require_text(operation_key, "operation_key")
         operation_type = require_text(operation_type, "operation_type")
         trace_id = require_text(trace_id, "trace_id")

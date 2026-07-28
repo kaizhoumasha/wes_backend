@@ -1,13 +1,13 @@
 """WmsEventPort 实现与 InboundNormalizerRegistry wms 域注册合同。
 
 验收:
-- WmsEventNormalizer 实现 WmsEventPort 的 4 个 normalize_wms_* 方法
+- WmsEventNormalizer 实现 WmsEventPort 的 3 个 normalize_wms_* 方法
 - register_inbound_normalizers(registry, port_protocol) 模块级函数把
   WmsEventNormalizer 注册到 registry 中,port_protocol 由调用方提供
   (避免 INBOUND_NORMALIZER_OWNERSHIP 在 wms_event_normalizer.py 文件中扫描 'WmsEventPort' 字符串)
 - 通过 registry get(port_protocol) 返回的实例调用 normalize_wms_grn_received
   拿到 typed WmsGrnReceivedEvent
-- 4 个事件类型字段映射正确(envelope 字段嵌套在 envelope 键下),
+- 3 个事件类型字段映射正确(envelope 字段嵌套在 envelope 键下),
   未知 event_type 通过 dispatch 入口抛 ValueError
 - WmsEventNormalizer 类自身不直接引用字符串 "WmsEventPort"(避免 INBOUND_NORMALIZER_OWNERSHIP 误报),
   Protocol 通过 registry.register() 在外部建立 type binding
@@ -28,7 +28,6 @@ from src.app.wms_integration.ports.event import (
     WmsGrnReceivedEvent,
     WmsPalletArrivedEvent,
     WmsRackArrivedEvent,
-    WmsTransportCompletedEvent,
 )
 
 
@@ -94,24 +93,6 @@ def test_wms_event_normalizer_normalizes_rack_event() -> None:
     assert isinstance(event, WmsRackArrivedEvent)
     assert event.rack_id == "RACK-001"
     assert event.station_code == "ST-B"
-
-
-def test_wms_event_normalizer_normalizes_transport_event() -> None:
-    """happy path: normalize_wms_transport_completed 返回 WmsTransportCompletedEvent。"""
-    from src.app.wms_integration.services.wms_event_normalizer import WmsEventNormalizer
-
-    normalizer = WmsEventNormalizer()
-    raw = {
-        "envelope": _envelope_dict(),
-        "request_id": "REQ-001",
-        "completed_at": "2026-06-29T10:05:00Z",
-        "result_code": "SUCCESS",
-    }
-    event = normalizer.normalize_wms_transport_completed(raw)
-    assert isinstance(event, WmsTransportCompletedEvent)
-    assert event.request_id == "REQ-001"
-    assert event.completed_at == "2026-06-29T10:05:00Z"
-    assert event.result_code == "SUCCESS"
 
 
 def test_wms_event_normalizer_rejects_unknown_event_type_via_dispatch() -> None:

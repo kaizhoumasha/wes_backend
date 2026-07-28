@@ -25,6 +25,11 @@ from src.app.wms_integration.operation_registry import (
     ASYNC_EFFECT_OPERATION_IDENTITIES,
     ASYNC_EFFECT_OPERATIONS,
 )
+from src.app.wms_integration.ports.fulfillment_operations import (
+    WmsEffectAck,
+    validate_batch_terminal_result,
+    validate_fulfillment_ack,
+)
 
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 StableReasonCode = Annotated[
@@ -41,6 +46,12 @@ _REJECTION_REASON_CODES_BY_OPERATION = MappingProxyType(
     {operation.identity: frozenset(operation.reject_codes) for operation in ASYNC_EFFECT_OPERATIONS}
 )
 _RFC3339_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\+00:00$")
+_BATCH_EFFECT_OPERATION_IDENTITIES = frozenset(
+    {
+        "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+        "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+    }
+)
 
 
 def _preserve_opaque_idempotency_key(value: Any) -> str:
@@ -69,6 +80,8 @@ class WmsEffectStatusRequest(BaseModel):
         except ValidationError as exc:
             raise ValueError("request_payload violates the async operation request contract") from exc
         object.__setattr__(self, "request_payload", validated.model_dump(mode="json"))
+        if self.operation_identity in _BATCH_EFFECT_OPERATION_IDENTITIES and type(self) is WmsEffectStatusRequest:
+            raise ValueError("batch status request requires frozen request and ACK context")
         return self
 
     @field_validator("idempotency_key", mode="before")
@@ -92,6 +105,23 @@ class WmsEffectStatusRequest(BaseModel):
             if field_name in self.request_payload
             and not isinstance(self.request_payload[field_name], (dict, list, tuple))
         }
+
+
+class WmsBatchEffectStatusRequest(WmsEffectStatusRequest):
+    """E12/E13 status parser 的完整冻结上下文；ACK 不允许缺省。"""
+
+    frozen_ack: WmsEffectAck = Field(exclude=True)
+
+    @model_validator(mode="after")
+    def validate_frozen_batch_context(self) -> WmsBatchEffectStatusRequest:
+        if self.operation_identity not in _BATCH_EFFECT_OPERATION_IDENTITIES:
+            raise ValueError("batch status context only supports E12/E13")
+        operation = _OPERATION_BY_IDENTITY[self.operation_identity]
+        batch_request = operation.request_model.model_validate(self.request_payload)
+        if self.frozen_ack.idempotency_key != self.idempotency_key:
+            raise ValueError("batch ACK idempotency_key differs from status request")
+        validate_fulfillment_ack(batch_request, self.frozen_ack)  # type: ignore[arg-type]
+        return self
 
 
 class WmsEffectStatus(str, Enum):
@@ -227,6 +257,16 @@ def _parse_completed_result(
     if inner_source_version is not None and inner_source_version != str(source_version):
         raise ValueError("completed result source version conflicts with the outer source_version")
     _validate_result_identity(request=request, result=result)
+    if request.operation_identity in _BATCH_EFFECT_OPERATION_IDENTITIES:
+        if not isinstance(request, WmsBatchEffectStatusRequest):
+            raise ValueError("batch terminal parsing requires frozen ACK context")
+        operation = _OPERATION_BY_IDENTITY[request.operation_identity]
+        batch_request = operation.request_model.model_validate(request.request_payload)
+        validate_batch_terminal_result(
+            batch_request,  # type: ignore[arg-type]
+            request.frozen_ack,
+            result,  # type: ignore[arg-type]
+        )
     return result  # type: ignore[return-value]
 
 
@@ -450,6 +490,7 @@ class WmsEffectStatusQueryPort(Protocol):
 __all__ = [
     "WMS_EFFECT_OPERATION_IDENTITIES",
     "FrozenWmsEffectStatusBinding",
+    "WmsBatchEffectStatusRequest",
     "WmsEffectStatus",
     "WmsEffectStatusQueryPort",
     "WmsEffectStatusRequest",

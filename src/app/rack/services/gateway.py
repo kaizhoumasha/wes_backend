@@ -9,7 +9,6 @@ from src.app.wms_integration.services.transport_contract import (
     WmsRackTaskRequest,
     WmsTransportContractService,
     freeze_legacy_transport_binding,
-    legacy_transport_profile_identity,
     wms_transport_contract_service,
 )
 
@@ -111,10 +110,9 @@ wms_rcs_rack_gateway = WmsRcsRackGateway()
 
 
 def freeze_rack_task_binding(target_code: str) -> FrozenExternalHttpBinding:
-    """通过 Rack gateway 边界冻结 legacy rack target binding。"""
+    """旧 Rack transport 已关闭；T5 dispatcher 实现前拒绝冻结 binding。"""
 
     return freeze_legacy_transport_binding(
-        operation_identity="wms.transport.rack@v1",
         target_code=target_code,
     )
 
@@ -123,6 +121,5 @@ __all__ = [
     "DEFAULT_RACK_OPERATION_ENDPOINT",
     "WmsRcsRackGateway",
     "freeze_rack_task_binding",
-    "legacy_transport_profile_identity",
     "wms_rcs_rack_gateway",
 ]

@@ -25,7 +25,6 @@ from src.app.rack.services.gateway import (
     DEFAULT_RACK_OPERATION_ENDPOINT,
     WmsRcsRackGateway,
     freeze_rack_task_binding,
-    legacy_transport_profile_identity,
     wms_rcs_rack_gateway,
 )
 from src.app.rack.services.task_lifecycle_service import (
@@ -64,6 +63,7 @@ if TYPE_CHECKING:
 
 
 DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS = 300
+_REMOVED_RACK_TRANSPORT_OPERATION = "removed.rack.transport"
 _RACK_TASK_TYPE_ALIASES = {
     "MOVE_OUT_ACTIVE_RACK": RackTaskType.MOVE_RACK.value,
 }
@@ -131,8 +131,9 @@ class RackOperationService:
         completion_policy: OperationCompletionPolicy | str | None = None,
         timeout_seconds: int = DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS,
     ) -> list[Any]:
-        """按插件给出的低级货架 task 描述创建可追踪的 operation 任务。"""
+        """旧 Rack transport 已关闭；T5 dispatcher 实现前拒绝创建任何持久化状态。"""
 
+        raise RuntimeError("legacy rack transport is removed; T5 dispatcher is not implemented")
         operation_key = require_text(operation_key, "operation_key")
         operation_type = require_text(operation_type, "operation_type")
         workline_code = coerce_optional_str(getattr(workline, "line_code", None))
@@ -269,6 +270,8 @@ class RackOperationService:
         spec: RackTaskSpec,
         released_station_position_codes: set[str],
     ) -> SystemOutbox:
+        raise RuntimeError("legacy rack transport is removed; T5 dispatcher is not implemented")
+
         payload_json = _outbox_payload(spec)
         existing = await self.outbox_repository.get_by_dispatch_key_for_update(db, spec.dispatch_key)
         if existing is not None:
@@ -299,7 +302,7 @@ class RackOperationService:
                             target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
                             target_code=spec.target_code,
                             provider_profile_identity=frozen_binding.provider_profile_identity,
-                            operation_identity="wms.transport.rack@v1",
+                            operation_identity=_REMOVED_RACK_TRANSPORT_OPERATION,
                             payload_json=payload_json,
                             canonical_payload_bytes=spec.canonical_payload_bytes,
                             payload_hash=spec.payload_hash,
@@ -337,7 +340,7 @@ class RackOperationService:
             target_code=spec.target_code,
             provider_profile_identity=frozen_binding.provider_profile_identity,
             provider_profile_hash=frozen_binding.provider_profile_hash,
-            operation_identity="wms.transport.rack@v1",
+            operation_identity=_REMOVED_RACK_TRANSPORT_OPERATION,
             binding_revision=frozen_binding.binding_revision,
             target_snapshot_json=frozen_binding.target_snapshot.as_json(),
             target_snapshot_hash=frozen_binding.target_snapshot_hash,
@@ -1079,9 +1082,7 @@ def _ensure_existing_outbox_shape(
         auth_scheme=outbox.auth_scheme,
         credential_reference=outbox.credential_reference,
     )
-    if frozen_binding.provider_profile_identity != legacy_transport_profile_identity():
-        raise ValueError("existing rack operation outbox provider profile differs from request")
-    if frozen_binding.operation_identity != "wms.transport.rack@v1":
+    if frozen_binding.operation_identity != _REMOVED_RACK_TRANSPORT_OPERATION:
         raise ValueError("existing rack operation outbox operation identity differs from request")
     canonical_payload_bytes = getattr(outbox, "canonical_payload_bytes", None)
     payload_hash = getattr(outbox, "payload_hash", None)

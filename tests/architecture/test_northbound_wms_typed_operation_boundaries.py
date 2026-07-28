@@ -113,13 +113,12 @@ def test_wms_effect_callback_is_optional_generic_hint_without_terminal_adapters(
 
     capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
     assert list(capability_root.rglob("callback_adapter.py")) == []
-    for operation_path in (
+    removed_operation_paths = (
         capability_root / "inventory/confirm_inbound",
         capability_root / "fulfillment/notify_pkg_binding",
         capability_root / "fulfillment/full_box_exchange",
-    ):
-        assert "CALLBACK_CONTRACT" not in (operation_path / "__init__.py").read_text(encoding="utf-8")
-        assert "CALLBACK_CONTRACT" not in (operation_path / "contract.py").read_text(encoding="utf-8")
+    )
+    assert all(not any(operation_path.glob("*.py")) for operation_path in removed_operation_paths)
 
 
 def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> None:
@@ -136,7 +135,7 @@ def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> No
     assert all(term not in source for term in forbidden)
 
 
-def test_wms_effect_preparation_has_one_shared_production_entry() -> None:
+def test_removed_effect_handlers_cannot_bypass_the_shared_t5_boundary() -> None:
     services_root = REPO_ROOT / "src/app/runtime/orchestration/services"
     assert (services_root / "wms_effect_preparation_service.py").exists()
     assert all(
@@ -149,17 +148,12 @@ def test_wms_effect_preparation_has_one_shared_production_entry() -> None:
     )
 
     capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
-    for operation_path in (
+    removed_operation_paths = (
         capability_root / "inventory/confirm_inbound",
         capability_root / "fulfillment/full_box_exchange",
         capability_root / "fulfillment/notify_pkg_binding",
-    ):
-        handler_source = (operation_path / "handler.py").read_text(encoding="utf-8")
-        adapter_source = (operation_path / "effect_adapter.py").read_text(encoding="utf-8")
-        assert "wms_effect_preparation_service.prepare(" in handler_source
-        assert "operation=CONTRACT" in handler_source
-        assert "def build_envelope(" in adapter_source
-        assert "SystemOutbox(" not in adapter_source
+    )
+    assert all(not any(operation_path.glob("*.py")) for operation_path in removed_operation_paths)
 
 
 def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalog() -> None:

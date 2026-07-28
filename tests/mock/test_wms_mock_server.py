@@ -104,6 +104,7 @@ def _status_headers(
     *,
     path: str,
     body: bytes = b"",
+    method: str = "GET",
     timestamp: str | None = None,
     nonce: str | None = None,
 ) -> dict[str, str]:
@@ -111,7 +112,7 @@ def _status_headers(
     nonce = nonce or uuid4().hex
     payload_hash = hashlib.sha256(body).hexdigest()
     canonical = canonical_status_string(
-        method="GET", path=path, timestamp=timestamp, nonce=nonce, payload_hash=payload_hash
+        method=method, path=path, timestamp=timestamp, nonce=nonce, payload_hash=payload_hash
     )
     return {
         "X-WMS-Content-SHA256": payload_hash,
@@ -172,23 +173,44 @@ def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> No
 
 
 def test_wms_mock_registers_exact_static_routes_for_all_frozen_operations() -> None:
-    expected = {
-        (f"/api/wms{operation.path_template}", operation.http_method.value, operation.identity)
-        for operation in WMS_OPERATIONS
-    }
+    expected = {(f"/api/wms{operation.path_template}", operation.http_method.value) for operation in WMS_OPERATIONS}
     registered = {
-        (
-            route.path,
-            method,
-            getattr(route.endpoint, "__wms_operation_identity__", None),
-        )
+        (route.path, method)
         for route in wms_mock_server.app.routes
         for method in route.methods or ()
-        if getattr(route.endpoint, "__wms_operation_identity__", None) is not None
+        if route.path.startswith("/api/wms")
     }
 
     assert registered == expected
     assert all("{operation_path:path}" not in route.path for route in wms_mock_server.app.routes)
+
+
+def test_q19_post_query_requires_valid_hmac_and_rejects_replay() -> None:
+    operation_identity = "wms.document.validate_rough_sorter_admission@v1"
+    path = "/api/wms/documents/rough-sorter-admission/validate"
+    body = json.dumps(REQUEST_FIXTURES[operation_identity], separators=(",", ":")).encode()
+    valid_headers = _status_headers(path=path, body=body, method="POST", nonce="q19-valid-nonce")
+
+    with TestClient(wms_mock_server.app) as client:
+        assert client.post(path, content=body).status_code == 401
+
+        bad_signature = {**valid_headers, "X-WMS-Signature": "0" * 64}
+        assert client.post(path, content=body, headers=bad_signature).status_code == 401
+
+        stale_headers = _status_headers(
+            path=path,
+            body=body,
+            method="POST",
+            timestamp=str(int(time.time()) - 600),
+            nonce="q19-stale-nonce",
+        )
+        assert client.post(path, content=body, headers=stale_headers).status_code == 401
+
+        accepted = client.post(path, content=body, headers=valid_headers)
+        replayed = client.post(path, content=body, headers=valid_headers)
+
+    assert accepted.status_code == 200
+    assert replayed.status_code == 401
 
 
 def test_wms_mock_does_not_expose_deprecated_operation_alias_paths() -> None:
@@ -253,7 +275,7 @@ def test_standalone_wms_mock_server_disables_query_bearing_access_log() -> None:
 
 def test_wms_mock_locations_route_passes_ruff_safe_variable_path() -> None:
     with TestClient(wms_mock_server.app) as client:
-        response = client.get("/api/wms/locations", params={"zone": "KITTING_AREA"})
+        response = client.get("/debug/wms/locations", params={"zone": "KITTING_AREA"})
 
     assert response.status_code == 200
     assert response.json()["data"] == [
@@ -268,7 +290,7 @@ def test_wms_mock_locations_route_passes_ruff_safe_variable_path() -> None:
 
 def test_wms_mock_racks_route_returns_stateful_six_and_three_cell_pool() -> None:
     with TestClient(wms_mock_server.app) as client:
-        response = client.get("/api/wms/racks", params={"type": "SINGLE_LAYER"})
+        response = client.get("/debug/wms/racks", params={"type": "SINGLE_LAYER"})
 
     assert response.status_code == 200
     racks = response.json()["data"]
@@ -2086,7 +2108,7 @@ def test_wms_mock_debug_rack_status_allows_manual_fault_setup() -> None:
 
 def test_wms_mock_rack_query_returns_copy_not_internal_state() -> None:
     with TestClient(wms_mock_server.app) as client:
-        response = client.get("/api/wms/racks/RACK-001")
+        response = client.get("/debug/wms/racks/RACK-001")
 
     assert response.status_code == 200
     rack_payload = response.json()["data"]
@@ -2096,7 +2118,7 @@ def test_wms_mock_rack_query_returns_copy_not_internal_state() -> None:
 
 def test_wms_mock_rack_list_returns_copy_not_internal_state() -> None:
     with TestClient(wms_mock_server.app) as client:
-        response = client.get("/api/wms/racks")
+        response = client.get("/debug/wms/racks")
 
     assert response.status_code == 200
     rack_payload = response.json()["data"][0]

@@ -230,3 +230,66 @@ def test_mock_multi_member_ack_and_terminal_result_preserve_frozen_correspondenc
     assert tuple(item.route_instance_id for item in result.items) == tuple(
         item.route_instance_id for item in (request.items if operation_identity == E12 else request.candidate_items)
     )
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "payload_factory"),
+    [(E12, _e12_payload), (E13, _e13_payload)],
+)
+def test_real_status_parser_requires_frozen_batch_ack_and_rejects_member_drift(
+    operation_identity: str,
+    payload_factory,
+) -> None:
+    from src.app.wms_integration.ports.effect_status import (
+        WmsBatchEffectStatusRequest,
+        WmsEffectStatusRequest,
+        parse_wms_effect_status_snapshot,
+    )
+    from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
+    from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
+
+    request_payload = payload_factory()
+    ack = WmsEffectAck.model_validate(build_typed_ack(operation_identity, "idem-batch", request_payload))
+    request = WmsBatchEffectStatusRequest(
+        operation_identity=operation_identity,
+        idempotency_key="idem-batch",
+        request_payload=request_payload,
+        frozen_ack=ack,
+    )
+    result_payload = build_typed_result(
+        operation_identity,
+        request_payload,
+        source_version=3,
+        completed_at="2026-07-29T00:00:03+00:00",
+    )
+    wire = {
+        "state": "COMPLETED",
+        "provider_reference": "provider-batch",
+        "reason_code": None,
+        "updated_at": "2026-07-29T00:00:03+00:00",
+        "source_version": 3,
+        "result_payload": result_payload,
+    }
+
+    snapshot = parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+    assert snapshot.result is not None
+
+    with pytest.raises(ValidationError, match="batch"):
+        WmsEffectStatusRequest(
+            operation_identity=operation_identity,
+            idempotency_key="idem-batch",
+            request_payload=request_payload,
+        )
+
+    forged = deepcopy(wire)
+    forged["result_payload"]["items"][0]["route_instance_id"] = "FORGED-ROUTE"
+    with pytest.raises(ValueError, match="frozen request members"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=forged)
+
+    reordered = deepcopy(wire)
+    reordered["result_payload"]["items"] = list(reversed(reordered["result_payload"]["items"]))
+    reordered["result_payload"]["accepted_object_keys"] = list(
+        reversed(reordered["result_payload"]["accepted_object_keys"])
+    )
+    with pytest.raises((ValueError, ValidationError), match=r"ACK|frozen request members"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=reordered)

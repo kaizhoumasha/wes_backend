@@ -1340,7 +1340,7 @@ def _rack_operation_cell_capacity_depth(bin_type: str, cell_index: str) -> float
 # --- 主数据查询接口 (WMS Master Data) ---
 
 
-@app.get("/api/wms/materials/{material_id}")
+@app.get("/debug/wms/materials/{material_id}")
 async def get_material(material_id: str):
     if material_id in MOCK_MATERIALS:
         return {"code": 200, "data": MOCK_MATERIALS[material_id]}
@@ -1349,25 +1349,25 @@ async def get_material(material_id: str):
     )
 
 
-@app.get("/api/wms/materials")
+@app.get("/debug/wms/materials")
 async def get_materials_batch(ids: str):
     id_list = ids.split(",")
     data = [MOCK_MATERIALS[m_id] for m_id in id_list if m_id in MOCK_MATERIALS]
     return {"code": 200, "data": data}
 
 
-@app.get("/api/wms/zones")
+@app.get("/debug/wms/zones")
 async def get_zones():
     return {"code": 200, "data": MOCK_ZONES}
 
 
-@app.get("/api/wms/locations")
+@app.get("/debug/wms/locations")
 async def get_locations(zone: str):
     locs = [location for location in MOCK_LOCATIONS if location["zone_code"] == zone]
     return {"code": 200, "data": locs}
 
 
-@app.get("/api/wms/racks/{rack_id}")
+@app.get("/debug/wms/racks/{rack_id}")
 async def get_rack(rack_id: str):
     rack = await mock_wms_state.get_rack(rack_id)
     if rack is not None:
@@ -1377,7 +1377,7 @@ async def get_rack(rack_id: str):
     )
 
 
-@app.get("/api/wms/racks")
+@app.get("/debug/wms/racks")
 async def get_racks(type: str | None = None):
     return {"code": 200, "data": await mock_wms_state.list_racks(type)}
 
@@ -1393,7 +1393,7 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
     return [str(item) for item in raw_value if str(item)]
 
 
-@app.post("/api/wms/fulfillment/change-rack-face", summary="本机 Mock: 货架换面履约")
+@app.post("/debug/wms/fulfillment/change-rack-face", summary="本机 Mock: 货架换面履约")
 async def change_rack_face(payload: dict[str, Any]):
     """模拟 WmsFulfillmentPort.change_rack_face, 与满箱交换完成语义解耦。"""
 
@@ -1415,7 +1415,7 @@ async def change_rack_face(payload: dict[str, Any]):
     }
 
 
-@app.post("/api/wms/fulfillment/rough-sorter-inbound-preview", summary="本机 Mock: 粗分机入库预览")
+@app.post("/debug/wms/fulfillment/rough-sorter-inbound-preview", summary="本机 Mock: 粗分机入库预览")
 async def rough_sorter_inbound_preview(payload: dict[str, Any]):
     """表达粗分机正常流合同，拆分本地物理事实与 WMS 同步状态。"""
 
@@ -1494,7 +1494,7 @@ def _source_arm_prefetch_manifest_validation(payload: dict[str, Any], capacity: 
     return {"allowed": not errors, "errors": errors}
 
 
-@app.post("/api/wms/fulfillment/sorter-inbound-preview", summary="本机 Mock: 分拣机入库预览")
+@app.post("/debug/wms/fulfillment/sorter-inbound-preview", summary="本机 Mock: 分拣机入库预览")
 async def sorter_inbound_preview(payload: dict[str, Any]):
     """表达分拣机入库 join gate 与扫码平台预取互锁合同。"""
 
@@ -1566,7 +1566,7 @@ def _duplicate_int_values(values: list[int]) -> list[int]:
     return sorted(duplicates)
 
 
-@app.post("/api/wms/fulfillment/ctu-batch-preview", summary="本机 Mock: CTU 父子批次预览")
+@app.post("/debug/wms/fulfillment/ctu-batch-preview", summary="本机 Mock: CTU 父子批次预览")
 async def ctu_batch_preview(payload: dict[str, Any]):
     """表达 CTU 父请求查询视图，父成功不能掩盖子项未收敛。"""
 
@@ -1609,7 +1609,7 @@ async def ctu_batch_preview(payload: dict[str, Any]):
     }
 
 
-@app.post("/api/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
+@app.post("/debug/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
 async def reconciliation_snapshot(payload: dict[str, Any]):
     """模拟 WmsReconciliationQueryPort 快照, 不产生生产写入副作用。"""
 
@@ -1636,7 +1636,7 @@ async def reconciliation_snapshot(payload: dict[str, Any]):
     }
 
 
-@app.post("/api/wms/reconciliation/runtime-hold-release-preview", summary="本机 Mock: RuntimeHold 解除预览")
+@app.post("/debug/wms/reconciliation/runtime-hold-release-preview", summary="本机 Mock: RuntimeHold 解除预览")
 async def runtime_hold_release_preview(payload: dict[str, Any]):
     """表达 RuntimeHold scope-only release 合同，不实际解除任何生产 hold。"""
 
@@ -1669,7 +1669,7 @@ async def runtime_hold_release_preview(payload: dict[str, Any]):
     }
 
 
-@app.get("/api/wms/grn/{grn_id}")
+@app.get("/debug/wms/grn/{grn_id}")
 async def get_grn(grn_id: str):
     if grn_id in MOCK_GRNS:
         return {"code": 200, "data": MOCK_GRNS[grn_id]}
@@ -1724,28 +1724,25 @@ def _typed_query_payload(request: Request, operation_identity: str) -> dict[str,
 def _static_query_handler(operation_identity: str):
     async def handler(request: Request):
         operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+        raw_path = request.scope["path"]
+        query_string = request.scope.get("query_string", b"")
+        if query_string:
+            raw_path = f"{raw_path}?{query_string.decode('ascii')}"
+        body = await _request_body_or_none(request)
+        if body is None:
+            return Response(status_code=499)
+        try:
+            verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
+            northbound_hmac_replay_guard.consume(
+                credential_reference=request.headers["X-WMS-Credential-Reference"],
+                timestamp=request.headers["X-WMS-Timestamp"],
+                nonce=request.headers["X-WMS-Nonce"],
+            )
+        except NorthboundAuthError as exc:
+            return JSONResponse(status_code=401, content={"code": exc.code})
         if request.method == "GET":
-            raw_path = request.scope["path"]
-            query_string = request.scope.get("query_string", b"")
-            if query_string:
-                raw_path = f"{raw_path}?{query_string.decode('ascii')}"
-            body = await _request_body_or_none(request)
-            if body is None:
-                return Response(status_code=499)
-            try:
-                verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
-                northbound_hmac_replay_guard.consume(
-                    credential_reference=request.headers["X-WMS-Credential-Reference"],
-                    timestamp=request.headers["X-WMS-Timestamp"],
-                    nonce=request.headers["X-WMS-Nonce"],
-                )
-            except NorthboundAuthError as exc:
-                return JSONResponse(status_code=401, content={"code": exc.code})
             payload = _typed_query_payload(request, operation_identity)
         else:
-            body = await _request_body_or_none(request)
-            if body is None:
-                return Response(status_code=499)
             try:
                 payload = json.loads(body)
             except (UnicodeDecodeError, json.JSONDecodeError):

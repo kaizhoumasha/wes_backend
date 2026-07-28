@@ -9,8 +9,8 @@ from src.app.runtime.orchestration.repositories.runtime_intent_log_repository im
     runtime_intent_log_repository,
 )
 from src.app.runtime.orchestration.services.wms_effect_status_service import freeze_wms_effect_status_binding
-from src.app.runtime.system_capabilities.wms.contracts import WmsOperationContract, WmsOperationMode
 from src.app.sys.models import SystemOutbox
+from src.app.wms_integration.operation_contract import WmsOperationDefinition, WmsOperationMode
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
@@ -37,7 +37,7 @@ class WmsEffectPreparationService:
         self,
         db: Any,
         *,
-        operation: WmsOperationContract,
+        operation: WmsOperationDefinition,
         request: Any,
         intent_log: RuntimeIntentLog,
         adapter: WmsEffectEnvelopeAdapter,

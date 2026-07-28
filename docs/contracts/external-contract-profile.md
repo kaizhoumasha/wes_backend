@@ -29,8 +29,8 @@ WMS 的当前部署约束是“一个工厂一个 Provider、一个 Provider 多
 | `provider_code` | string | yes | 稳定 provider ID，如 `WMS`、`ECS` |
 | `contract_version` | string | yes | 合同版本，建议 ISO date 或 semver |
 | `environment` | enum | yes | `sandbox` / `staging` / `production`；Phase 0 fixture 只能用 `sandbox` |
-| `runtime_capabilities.query` | string[] | yes | 只能列 query port method，例如 `WmsMasterDataPort.get_material` |
-| `runtime_capabilities.effect` | string[] | yes | 只能列 effect port method，例如 `WmsFulfillmentPort.request_transport` |
+| `operation_blueprint_count` | int | yes | 必须等于静态 registry 的 35 项 operation |
+| `operation_registry` | string | yes | 唯一 author-time registry 模块 |
 | `inbound_normalizers.event` | string[] | yes | provider 允许的 event type |
 | `inbound_normalizers.result` | string[] | yes | provider 允许的 result/callback type |
 | `field_mapping` | object | yes | event/result 到 typed envelope 字段的映射 |
@@ -50,16 +50,16 @@ provider_code: WMS
 contract_version: "2026-06-25"
 environment: sandbox
 runtime_capabilities:
-  query:
-    - WmsMasterDataPort.get_material
-    - InventoryQueryOperationPort.execute
-  effect:
-    - WmsFulfillmentPort.request_transport
+  operation_blueprint_count: 35
+  operation_registry: src.app.wms_integration.operation_registry.WMS_OPERATIONS
+  query_range: Q01-Q19
+  effect_range: E01-E16
 inbound_normalizers:
   event:
     - WMS_GRN_RECEIVED
-    - WMS_TRANSPORT_COMPLETED
-  result: []
+  result:
+    - callback_type: WMS_EFFECT_STATUS_HINT
+      operation_scope: E08-E14
 field_mapping:
   WMS_GRN_RECEIVED:
     source_event_id: data.event_id

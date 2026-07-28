@@ -41,7 +41,6 @@ from src.utils.timezone import timezone
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
 _HANDLING_CALLBACK_TYPES = frozenset(
     {
-        "WMS_FULL_BOX_EXCHANGE_RESULT",
         "RCS_FULL_BOX_EXCHANGE_RESULT",
     }
 )

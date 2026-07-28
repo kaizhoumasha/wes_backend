@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from src.app.wms_integration.ports.confirm_inbound_operation import OPERATION_IDENTITY as CONFIRM_INBOUND_IDENTITY
-from src.app.wms_integration.ports.notify_pkg_binding_operation import (
-    OPERATION_IDENTITY as NOTIFY_PACKAGE_BINDING_IDENTITY,
-)
+from src.app.wms_integration.ports.fulfillment_operations import NOTIFY_PKG_BINDING
+from src.app.wms_integration.ports.inventory_operations import CONFIRM_INBOUND
 from src.utils.value_normalization import coerce_string_value, string_list
 
 if TYPE_CHECKING:
@@ -22,6 +20,8 @@ if TYPE_CHECKING:
 
 
 LOCAL_PREVIEW_ENVIRONMENT = "LOCAL_MOCK_ONLY"
+CONFIRM_INBOUND_IDENTITY = CONFIRM_INBOUND.identity
+NOTIFY_PACKAGE_BINDING_IDENTITY = NOTIFY_PKG_BINDING.identity
 
 ROUGH_SORTER_ORDERED_STEPS = [
     "SCAN_AND_MEASURE",

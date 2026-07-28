@@ -197,24 +197,3 @@ def create_wms_external_payload(**overrides: object) -> JsonDict:
     }
     payload.update(overrides)
     return payload
-
-
-def create_full_box_exchange_external_payload(**overrides: object) -> JsonDict:
-    payload: JsonDict = {
-        "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
-        "trace_id": "trace-full-box-001",
-        "dispatch_key": "handling:full-box:release-001:move:1",
-        "exchange_request_code": "handling:full-box:release-001:move:1",
-        "rack_release_id": "rack-release-001",
-        "wms_rcs_task_id": "RCS-TASK-FULL-001",
-        "source_system": "WMS",
-        "source_event_id": "wms-full-box-event-001",
-        "source_version": "1",
-        "occurred_at": "2026-05-22T08:00:00Z",
-        "request_id": "REQ-FULL-BOX-001",
-        "timestamp": "2026-05-22T08:00:01Z",
-        "signature": "test-signature",
-        "exchange_status": "BUSINESS_COMPLETED",
-    }
-    payload.update(overrides)
-    return payload

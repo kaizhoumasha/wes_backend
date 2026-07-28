@@ -11,7 +11,7 @@ WORKLINE_PLUGIN_IDENTITIES = (
     ("rough_sorter", "rough_sorter.v2"),
     ("smt_sorting_inbound", "smt_sorting_inbound.v1"),
 )
-WORKLINE_PLUGIN_INDEX_DIGEST = "e3adadf43b0c8ac61a2cfacf95bde685b74c7817734de876735c59d55f97c9e7"
+WORKLINE_PLUGIN_INDEX_DIGEST = "da41fd382918199cbea200f7a6458ada335aef5b20554d5d712feda6c37e59ad"
 WORKLINE_PLUGIN_INDEX = MappingProxyType(
     {
         ("rough_sorter", "rough_sorter.v2"): _DEFINITION_0,

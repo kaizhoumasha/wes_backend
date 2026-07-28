@@ -174,16 +174,14 @@ def validate_mock_readiness(repo_root: Path) -> RuntimeEvidenceReadinessValidati
                 "RuntimeHold",
             ),
             RUNTIME_CAPABILITY_FILES[4]: (
-                "RuntimeIntent",
-                "wms.fulfillment.notify_pkg_binding@v1",
-                "wms.inventory.confirm_inbound@v1",
-                "provider-contract",
+                "T5 synchronous WMS runtime is not implemented",
+                "RuntimeIntent.resource_fact",
+                "SORTER_JOIN_GATE_NOT_SATISFIED",
             ),
             RUNTIME_CAPABILITY_FILES[5]: (
-                "RuntimeIntent",
-                "wms.fulfillment.notify_pkg_binding@v1",
-                "wms.inventory.confirm_inbound@v1",
-                "provider-contract",
+                "test_unmigrated_wms_runtime_builders_fail_closed",
+                "T5 synchronous WMS runtime is not implemented",
+                "test_sorter_runtime_blocks_join_gate_failure_as_object_scope_reconciliation",
             ),
             RUNTIME_CAPABILITY_FILES[6]: (
                 "RuntimeIntent",

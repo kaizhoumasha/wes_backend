@@ -242,25 +242,24 @@ def test_external_http_effect_bindings_accept_only_registry_target_codes() -> No
 
 
 def test_async_effect_runtime_classification_is_exact_registry_derivative() -> None:
-    from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
-        CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
-    )
-    from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
-        CONTRACT as NOTIFY_PKG_BINDING_CONTRACT,
-    )
-    from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
-        CONTRACT as CONFIRM_INBOUND_CONTRACT,
-    )
+    from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_IDENTITIES
     from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
-    from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+    from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
     from src.app.wms_integration.ports.effect_status import WMS_EFFECT_OPERATION_IDENTITIES
 
     expected = frozenset(operation.identity for operation in WMS_OPERATIONS if operation.supports_status_query)
 
     assert WMS_EFFECT_OPERATION_IDENTITIES == WMS_ASYNC_EFFECT_OPERATION_IDENTITIES == expected
-    assert CONFIRM_INBOUND_CONTRACT.supports_status_query is False
-    assert NOTIFY_PKG_BINDING_CONTRACT.supports_status_query is False
-    assert FULL_BOX_EXCHANGE_CONTRACT.supports_status_query is True
+    assert WMS_OPERATION_BY_IDENTITY["wms.inventory.confirm_inbound@v1"].supports_status_query is False
+    assert WMS_OPERATION_BY_IDENTITY["wms.fulfillment.notify_pkg_binding@v1"].supports_status_query is False
+    assert WMS_OPERATION_BY_IDENTITY["wms.fulfillment.full_box_exchange@v1"].supports_status_query is True
+    assert set(SYSTEM_CAPABILITY_IDENTITIES).isdisjoint(
+        {
+            ("wms.inventory.confirm_inbound", "v1"),
+            ("wms.fulfillment.notify_pkg_binding", "v1"),
+            ("wms.fulfillment.full_box_exchange", "v1"),
+        }
+    )
 
 
 def test_definition_and_query_transport_expose_only_current_field_names() -> None:

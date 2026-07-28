@@ -110,7 +110,6 @@ def test_wms_event_port_normalizer_signatures():
         "normalize_wms_grn_received",
         "normalize_wms_pallet_arrived",
         "normalize_wms_rack_arrived",
-        "normalize_wms_transport_completed",
     ]
     for name in methods:
         assert hasattr(WmsEventPort, name), f"missing normalizer: {name}"
@@ -123,7 +122,6 @@ def test_wms_event_port_have_docstrings():
         "normalize_wms_grn_received",
         "normalize_wms_pallet_arrived",
         "normalize_wms_rack_arrived",
-        "normalize_wms_transport_completed",
     ]:
         method = getattr(WmsEventPort, name)
         assert method.__doc__, f"normalizer {name} needs docstring"
@@ -135,7 +133,6 @@ def test_wms_event_data_classes_are_pydantic():
         WmsGrnReceivedEvent,
         WmsPalletArrivedEvent,
         WmsRackArrivedEvent,
-        WmsTransportCompletedEvent,
     )
 
     for cls in [
@@ -143,7 +140,6 @@ def test_wms_event_data_classes_are_pydantic():
         WmsGrnReceivedEvent,
         WmsPalletArrivedEvent,
         WmsRackArrivedEvent,
-        WmsTransportCompletedEvent,
     ]:
         assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
         assert cls.__doc__, f"{cls.__name__} needs docstring"

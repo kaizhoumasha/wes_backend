@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from src.app.wms_integration.ports.confirm_inbound_operation import OPERATION_IDENTITY as CONFIRM_INBOUND_IDENTITY
-from src.app.wms_integration.ports.notify_pkg_binding_operation import (
-    OPERATION_IDENTITY as NOTIFY_PACKAGE_BINDING_IDENTITY,
-)
+from src.app.wms_integration.ports.fulfillment_operations import NOTIFY_PKG_BINDING
+from src.app.wms_integration.ports.inventory_operations import CONFIRM_INBOUND
 from tests.mock import wms_mock_server
+
+CONFIRM_INBOUND_IDENTITY = CONFIRM_INBOUND.identity
+NOTIFY_PACKAGE_BINDING_IDENTITY = NOTIFY_PKG_BINDING.identity
 
 
 def setup_function() -> None:
@@ -23,7 +24,7 @@ def test_rough_sorter_mock_separates_local_physical_fact_from_wms_sync_failure()
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post(
-            "/api/wms/fulfillment/rough-sorter-inbound-preview",
+            "/debug/wms/fulfillment/rough-sorter-inbound-preview",
             json={
                 "request_id": "mock-rough-sorter-001",
                 "object_key": "PKG-ROUGH-001",
@@ -64,7 +65,7 @@ def test_sorter_inbound_mock_enforces_join_gate_and_prefetch_policy() -> None:
 
     with TestClient(wms_mock_server.app) as client:
         allowed_response = client.post(
-            "/api/wms/fulfillment/sorter-inbound-preview",
+            "/debug/wms/fulfillment/sorter-inbound-preview",
             json={
                 "request_id": "mock-sorter-inbound-001",
                 "expected_authorized_bin_ids": ["BIN-A-001"],
@@ -78,7 +79,7 @@ def test_sorter_inbound_mock_enforces_join_gate_and_prefetch_policy() -> None:
             },
         )
         rejected_response = client.post(
-            "/api/wms/fulfillment/sorter-inbound-preview",
+            "/debug/wms/fulfillment/sorter-inbound-preview",
             json={
                 "request_id": "mock-sorter-inbound-unauthorized-001",
                 "expected_authorized_bin_ids": ["BIN-A-001"],
@@ -146,11 +147,11 @@ def test_sorter_inbound_mock_validates_positive_prefetch_manifest() -> None:
     }
     with TestClient(wms_mock_server.app) as client:
         invalid_response = client.post(
-            "/api/wms/fulfillment/sorter-inbound-preview",
+            "/debug/wms/fulfillment/sorter-inbound-preview",
             json={**base_payload, "manifest": {"source_arm_prefetch_capacity": 2}},
         )
         valid_response = client.post(
-            "/api/wms/fulfillment/sorter-inbound-preview",
+            "/debug/wms/fulfillment/sorter-inbound-preview",
             json={
                 **base_payload,
                 "manifest": {
@@ -187,7 +188,7 @@ def test_ctu_batch_mock_parent_view_requires_child_convergence() -> None:
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post(
-            "/api/wms/fulfillment/ctu-batch-preview",
+            "/debug/wms/fulfillment/ctu-batch-preview",
             json={
                 "parent_request_id": "mock-ctu-parent-001",
                 "parent_callback_state": "SUCCESS",

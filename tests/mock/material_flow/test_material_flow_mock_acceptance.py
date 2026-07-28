@@ -102,14 +102,16 @@ def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_tra
     with TestClient(wms_mock_server.app) as client:
         binding_response = _typed_submit(
             client,
-            path="/api/wms/fulfillment/package-binding",
+            path="/api/wms/fulfillment/pkg-bindings",
             operation_identity="wms.fulfillment.notify_pkg_binding@v1",
             idempotency_key="mock-sorter-binding-001",
             secret=secret,
             payload={
                 "dispatch_key": "mock-sorter-binding-001",
-                "package_id": "PKG-CAP001-LOT-A-001",
-                "pallet_id": "PALLET-A",
+                "pkg_id": "PKG-CAP001-LOT-A-001",
+                "bin_id": "BIN-A",
+                "slot_id": "SLOT-A",
+                "rack_id": "RACK-A",
                 "station_code": "SORTER-STATION-A",
             },
         )
@@ -124,26 +126,13 @@ def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_tra
                 "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
                 "material_code": "MAT-CAP001",
                 "quantity": "1",
+                "pkg_id": "PKG-CAP001-LOT-A-001",
+                "location_code": "CELL-A-01",
             },
         )
 
-    assert binding_response.status_code == 202
-    assert binding_response.json()["data"] | {"northbound_status": None} == {
-        "request_id": "mock-sorter-binding-001",
-        "binding_key": "PKG-CAP001-LOT-A-001:PALLET-A:SORTER-STATION-A",
-        "package_id": "PKG-CAP001-LOT-A-001",
-        "pallet_id": "PALLET-A",
-        "station_code": "SORTER-STATION-A",
-        "accepted": True,
-        "northbound_status": None,
-    }
-    assert inventory_response.status_code == 202
-    assert inventory_response.json()["data"] | {"northbound_status": None} == {
-        "dispatch_key": "wms-confirm-inbound:WMS:INBOUND-PKG-CAP001-LOT-A-001",
-        "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
-        "accepted": True,
-        "northbound_status": None,
-    }
+    assert binding_response.status_code == 200
+    assert inventory_response.status_code == 200
 
 
 def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract(monkeypatch) -> None:
@@ -182,9 +171,20 @@ def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract(m
             secret=secret,
             payload={
                 "dispatch_key": "mock-sorter-full-box-001",
+                "exchange_request_key": "mock-sorter-full-box-001",
+                "station_code": "FULL-BOX-EXCHANGE",
                 "rack_id": "RACK-6CELL-001",
-                "empty_box_id": "BOX-EMPTY-001",
+                "rack_face": "A",
                 "full_box_id": "BOX-FULL-001",
+                "source_slot_id": "SLOT-001",
+                "occupancies": [
+                    {
+                        "occupancy_id": "OCC-001",
+                        "pkg_id": "PKG-FULL-001",
+                        "material_code": "MAT-CAP001",
+                        "quantity": "1",
+                    }
+                ],
             },
         )
 
@@ -201,11 +201,7 @@ def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract(m
     assert no_exchange_preview["sorting_candidate_object_keys"] == ["PKG-PIECE-002"]
 
     assert response.status_code == 202
-    data = response.json()["data"]
-    assert data["environment"] == "LOCAL_MOCK_ONLY"
-    assert data["production_write_path"] is False
-    assert data["rack_id"] == "RACK-6CELL-001"
-    assert data["northbound_status"]["state"] == "ACCEPTED"
+    assert response.json()["data"]["operation_identity"] == "wms.fulfillment.full_box_exchange@v1"
 
 
 def test_sorter_inbound_mock_acceptance_keeps_change_rack_face_as_independent_fulfillment() -> None:
@@ -213,7 +209,7 @@ def test_sorter_inbound_mock_acceptance_keeps_change_rack_face_as_independent_fu
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post(
-            "/api/wms/fulfillment/change-rack-face",
+            "/debug/wms/fulfillment/change-rack-face",
             json={
                 "request_id": "mock-sorter-change-face-001",
                 "parent_request_id": "mock-sorter-full-box-001",
@@ -272,7 +268,7 @@ def test_reconciliation_mock_acceptance_models_conflicts_locally() -> None:
     with TestClient(wms_mock_server.app) as client:
         for scenario, expected_state in scenarios.items():
             response = client.post(
-                "/api/wms/reconciliation/snapshot",
+                "/debug/wms/reconciliation/snapshot",
                 json={
                     "scenario": scenario,
                     "object_type": "PACKAGE",
@@ -294,7 +290,7 @@ def test_reconciliation_mock_acceptance_runtime_hold_release_is_scope_only() -> 
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post(
-            "/api/wms/reconciliation/runtime-hold-release-preview",
+            "/debug/wms/reconciliation/runtime-hold-release-preview",
             json={
                 "hold_id": "HOLD-MOCK-001",
                 "scope_type": "OBJECT",

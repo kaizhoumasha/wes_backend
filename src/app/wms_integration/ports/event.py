@@ -6,8 +6,8 @@
 
 激活条件: WMS 全量集成或 WMS 主动推送事件需求明确。
 
-主计划 §5.1 7 port 之一: 入站事件 normalizer (WMS_GRN_RECEIVED /
-WMS_PALLET_ARRIVED / WMS_RACK_ARRIVED / WMS_TRANSPORT_COMPLETED 等回调)。
+主计划 §5.1 7 port 之一: 入站事件 normalizer
+(WMS_GRN_RECEIVED / WMS_PALLET_ARRIVED / WMS_RACK_ARRIVED)。
 
 设计:
 - InboundEventPort 是所有入站 normalizer 的基协议, 不导出到业务 capability
@@ -73,17 +73,6 @@ class WmsRackArrivedEvent(BaseModel):
     station_code: str = Field(min_length=1, max_length=80, description="到达工位编码")
 
 
-class WmsTransportCompletedEvent(BaseModel):
-    """WMS 搬运完成回调事件 (normalizer 输出)。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    envelope: InboundEventEnvelope = Field(description="共享 envelope")
-    request_id: str = Field(min_length=1, max_length=80, description="WMS 履约请求号")
-    completed_at: str = Field(description="完成时间 ISO 8601")
-    result_code: str = Field(description="SUCCESS / FAILED / PARTIAL")
-
-
 class InboundEventPort(Protocol):
     """所有入站 normalizer 的基协议。
 
@@ -99,7 +88,7 @@ class InboundEventPort(Protocol):
 class WmsEventPort(Protocol):
     """WMS 回调 normalizer。
 
-    4 个 normalizer 覆盖 WMS 主回调事件类型。normalizer 输出投递到
+    3 个 normalizer 覆盖 WMS 主回调事件类型。normalizer 输出投递到
     RuntimeInbox；持久化后的 canonical payload 由 RuntimeInboxProcessorBridge 处理，
     normalizer 不直接调用业务 capability
     (主计划 §3.5.1 + H2 黑名单)。
@@ -115,8 +104,4 @@ class WmsEventPort(Protocol):
 
     def normalize_wms_rack_arrived(self, raw_payload: dict) -> WmsRackArrivedEvent:
         """标准化 WMS_RACK_ARRIVED 回调 → typed event + correlation_id。"""
-        ...
-
-    def normalize_wms_transport_completed(self, raw_payload: dict) -> WmsTransportCompletedEvent:
-        """标准化 WMS_TRANSPORT_COMPLETED 回调 → typed event + correlation_id。"""
         ...

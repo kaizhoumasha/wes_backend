@@ -20,7 +20,6 @@ from tests.api.callback_test_support import (
     RequestFactory,
     _get_route,
     callback_ingress_module,
-    create_full_box_exchange_external_payload,
     create_result_payload,
     create_wms_external_payload,
 )
@@ -245,7 +244,7 @@ class TestCallbackEnqueueFallback:
         assert calls[0]["trace_id"] == "trace-bin-001"
 
     @pytest.mark.asyncio
-    async def test_process_external_routes_full_box_exchange_result_to_handling_lifecycle(self) -> None:
+    async def test_process_external_does_not_route_removed_full_box_exchange_callback(self) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
         calls: list[dict[str, Any]] = []
@@ -261,7 +260,10 @@ class TestCallbackEnqueueFallback:
         )
         service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
-        payload = create_full_box_exchange_external_payload(dispatch_key="external:smt_full_box_exchange:release-001")
+        payload = create_wms_external_payload(
+            callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+            dispatch_key="removed-full-box-exchange:release-001",
+        )
 
         outcome = await service.process_external(
             db,  # type: ignore[arg-type]
@@ -273,9 +275,7 @@ class TestCallbackEnqueueFallback:
         )
 
         assert outcome.trace_id == "trace-full-box-001"
-        assert len(calls) == 1
-        assert calls[0]["db"] is db
-        assert calls[0]["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
+        assert calls == []
 
     @pytest.mark.asyncio
     async def test_process_external_runtime_duplicate_reports_duplicate_without_recording_handling_callback(

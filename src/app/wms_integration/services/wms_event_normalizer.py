@@ -1,7 +1,7 @@
 """WMS 入站事件 normalizer。
 
-实现 WMS 回调入站事件 4 类 typed 转换(GRN / Pallet / Rack / Transport):
-- 4 个 normalize_wms_* 方法把 WMS 原始回调 dict 转 typed event
+实现 WMS 回调入站事件 3 类 typed 转换(GRN / Pallet / Rack):
+- 3 个 normalize_wms_* 方法把 WMS 原始回调 dict 转 typed event
 - dispatch(event_type, raw) 入口按 event_type 派发到对应 normalize_wms_*
 
 设计边界:
@@ -20,7 +20,6 @@ from src.app.wms_integration.ports.event import (
     WmsGrnReceivedEvent,
     WmsPalletArrivedEvent,
     WmsRackArrivedEvent,
-    WmsTransportCompletedEvent,
 )
 
 if TYPE_CHECKING:
@@ -31,7 +30,6 @@ _DISPATCH_TABLE: dict[str, str] = {
     "WMS_GRN_RECEIVED": "normalize_wms_grn_received",
     "WMS_PALLET_ARRIVED": "normalize_wms_pallet_arrived",
     "WMS_RACK_ARRIVED": "normalize_wms_rack_arrived",
-    "WMS_TRANSPORT_COMPLETED": "normalize_wms_transport_completed",
 }
 
 
@@ -45,7 +43,6 @@ class _WmsNormalizerPort(Protocol):
     def normalize_wms_grn_received(self, raw_payload: dict) -> WmsGrnReceivedEvent: ...
     def normalize_wms_pallet_arrived(self, raw_payload: dict) -> WmsPalletArrivedEvent: ...
     def normalize_wms_rack_arrived(self, raw_payload: dict) -> WmsRackArrivedEvent: ...
-    def normalize_wms_transport_completed(self, raw_payload: dict) -> WmsTransportCompletedEvent: ...
 
 
 class WmsEventNormalizer:
@@ -62,10 +59,6 @@ class WmsEventNormalizer:
     def normalize_wms_rack_arrived(self, raw_payload: dict) -> WmsRackArrivedEvent:
         """标准化 WMS_RACK_ARRIVED 回调。"""
         return WmsRackArrivedEvent(**raw_payload)
-
-    def normalize_wms_transport_completed(self, raw_payload: dict) -> WmsTransportCompletedEvent:
-        """标准化 WMS_TRANSPORT_COMPLETED 回调。"""
-        return WmsTransportCompletedEvent(**raw_payload)
 
     def dispatch(self, event_type: str, raw_payload: dict[str, Any]) -> Any:
         """按 event_type 派发到对应 normalize_wms_* 方法, 未知 event_type 抛 ValueError。"""

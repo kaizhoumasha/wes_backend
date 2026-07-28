@@ -21,6 +21,7 @@ from src.app.wms_integration.adapters.effect_status_query_adapter import (
 from src.app.wms_integration.operation_registry import ASYNC_EFFECT_OPERATIONS
 from src.app.wms_integration.ports.effect_status import (
     FrozenWmsEffectStatusBinding,
+    WmsBatchEffectStatusRequest,
     WmsEffectStatus,
     WmsEffectStatusRequest,
     WmsEffectStatusSnapshot,
@@ -31,10 +32,15 @@ from src.app.wms_integration.ports.effect_status import (
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
 from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
 from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
+from tests.mock.wms_northbound_contract import build_typed_ack
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
 RACK_SUPPLY = "wms.fulfillment.request_rack_supply@v1"
 RACK_TRANSPORT = "wms.fulfillment.request_rack_transport@v1"
+_BATCH_OPERATIONS = {
+    "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+    "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+}
 
 
 def _binding(*, timeout_seconds: float = 2.0) -> FrozenWmsEffectStatusBinding:
@@ -59,6 +65,22 @@ def _rack_supply_request(*, attempt_count: int = 1) -> WmsEffectStatusRequest:
             "rack_type": "FLOW_RACK",
             "demand_generation": 1,
         },
+    )
+
+
+def _status_request(operation_identity: str) -> WmsEffectStatusRequest:
+    request_payload = REQUEST_FIXTURES[operation_identity]
+    if operation_identity in _BATCH_OPERATIONS:
+        return WmsBatchEffectStatusRequest(
+            operation_identity=operation_identity,
+            idempotency_key="intent-key",
+            request_payload=request_payload,
+            frozen_ack=build_typed_ack(operation_identity, "intent-key", request_payload),
+        )
+    return WmsEffectStatusRequest(
+        operation_identity=operation_identity,
+        idempotency_key="intent-key",
+        request_payload=request_payload,
     )
 
 
@@ -242,11 +264,7 @@ def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operatio
 
 @pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
 def test_completed_snapshot_selects_each_async_result_model_from_frozen_registry(operation) -> None:
-    request = WmsEffectStatusRequest(
-        operation_identity=operation.identity,
-        idempotency_key="intent-key",
-        request_payload=REQUEST_FIXTURES[operation.identity],
-    )
+    request = _status_request(operation.identity)
     result_payload = RESULT_FIXTURES[operation.identity]
     source_version = int(result_payload["source_version"])
     wire = {**_completed_wire(source_version=source_version), "result_payload": result_payload}

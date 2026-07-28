@@ -21,19 +21,15 @@ from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service i
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
-from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 from src.app.sys.models import (
     DispatchEnvelope,
     SystemOutbox,
-    SystemOutboxDispatchType,
     SystemOutboxStatus,
-    SystemOutboxTargetType,
 )
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, outbox_repository
 from src.app.wms_integration.services.transport_contract import (
     WmsTransportContractService,
-    freeze_legacy_transport_binding,
     wms_transport_contract_service,
 )
 from src.utils.value_normalization import coerce_optional_str, enum_value
@@ -113,12 +109,9 @@ class SingleLayerRackOrchestrationService:
         payload: Mapping[str, Any] | None = None,
         fact_payload: Mapping[str, Any] | None = None,
     ) -> SingleLayerRackOrchestrationDecision:
-        """规划单层货架派发。
+        """旧 Rack transport 已关闭；T5 dispatcher 实现前拒绝编排。"""
 
-        该服务只接受上游业务需求，不从货架 ready 事实反推业务；
-        Station claim 成功前不会返回 WMS dispatch。
-        """
-
+        raise RuntimeError("legacy rack transport is removed; T5 dispatcher is not implemented")
         workline_code = str(getattr(workline, "line_code", "") or "")
         workline_id = getattr(workline, "id", None)
         if not isinstance(workline_id, int) or not await workline_runtime_status_projection_service.is_ready(
@@ -408,40 +401,8 @@ class SingleLayerRackOrchestrationService:
         trace_id: str | None,
         frozen_binding: FrozenExternalHttpBinding | None = None,
     ) -> DispatchEnvelope:
-        payload = dict(rack_operation_request["payload"])
-        operation_key = str(rack_operation_request["operation_key"])
-        task = SingleLayerRackOrchestrationService._first_rack_task(payload)
-        dispatch_key = SingleLayerRackOrchestrationService._dispatch_key(rack_operation_request)
-        payload_json = SingleLayerRackOrchestrationService._rack_task_payload(
-            payload,
-            task,
-            dispatch_key=dispatch_key,
-            operation_key=operation_key,
-            operation_type=str(rack_operation_request["operation_type"]),
-        )
-        canonical = CanonicalPayload.from_projection(payload_json)
-        target_code = str(rack_operation_request["target_code"])
-        resolved_binding = frozen_binding or freeze_legacy_transport_binding(
-            operation_identity="wms.transport.rack@v1",
-            target_code=target_code,
-        )
-        return DispatchEnvelope(
-            dispatch_key=dispatch_key,
-            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
-            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-            target_code=target_code,
-            provider_profile_identity=resolved_binding.provider_profile_identity,
-            operation_identity="wms.transport.rack@v1",
-            payload_json=payload_json,
-            canonical_payload_bytes=canonical.body,
-            payload_hash=canonical.sha256,
-            frozen_binding=resolved_binding,
-            operation_domain="RACK",
-            operation_key=operation_key,
-            workline_id=workline_id,
-            session_id=session_id,
-            trace_id=trace_id,
-        )
+        del rack_operation_request, workline_id, session_id, trace_id, frozen_binding
+        raise RuntimeError("legacy rack transport is removed; T5 dispatcher is not implemented")
 
     @staticmethod
     def _session_id(session: Any | None) -> int | None:

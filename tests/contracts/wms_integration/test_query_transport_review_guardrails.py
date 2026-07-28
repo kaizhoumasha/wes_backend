@@ -25,11 +25,11 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityMode,
 )
 from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
-from src.app.runtime.system_capabilities.wms.contracts import WmsHttpMethod
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
 from src.app.wms_integration.models import WmsOperationName
+from src.app.wms_integration.operation_contract import WmsHttpMethod
 from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationRequest
 from src.app.wms_integration.ports.query_outcome import (
     QueryBusinessReject,

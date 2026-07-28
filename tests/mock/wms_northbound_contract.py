@@ -223,7 +223,7 @@ def verify_submit_hmac(headers: Mapping[str, str], body: bytes, *, method: str, 
 def verify_status_hmac(headers: Mapping[str, str], body: bytes, *, method: str, path: str) -> None:
     """验证 Status header 与收到的 raw request target 的五项 HMAC。"""
 
-    if body:
+    if method == "GET" and body:
         raise NorthboundAuthError("CONTENT_HASH_MISMATCH")
     normalized = _normalized_headers(headers)
     payload_hash = _verify_content_hash(normalized, "x-wms-content-sha256", body)

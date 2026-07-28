@@ -168,3 +168,48 @@ operation 的兼容入口。
   process naming 11 passed、import-linter、architecture、topology 全通过）。
 - worktree `gitnexus detect-changes --scope staged` → 41 indexed files / 135 symbols / 6 affected processes，
   risk HIGH；命中 QUERY transport 与 Mock/合同流程，属于已授权 Final Review 修复范围，未实现 T2/T5。
+
+## Release Review 修复
+
+- 旧 rack/handling/single-layer transport 与旧 terminal callback 全部 fail closed；生产源码中的旧 identity /
+  callback type 只允许出现在 migration manifest，删除 FullBox 旧 callback 正向消费与 transport completed
+  event surface。
+- 物理删除 E03/E07/E11 的重复 author-time capability、port、adapter、handler 与 PostgreSQL 正向测试；
+  E03/E07 同步执行器和 E11 新选箱执行器在 T5 落地前明确拒绝，不创建旧 SystemOutbox，也不提供 alias、
+  fallback 或 optional bypass。
+- E12/E13 status request 新增强制 `frozen_ack`；request、ACK、terminal result 必须逐项匹配 operation、
+  idempotency、批次成员、顺序与业务字段，通用 request 无 ACK 时 fail closed。
+- Mock `/api/wms` surface 精确等于 35 项 registry route；调试资源迁至 `/debug/wms`。Q19 POST 与 GET
+  统一执行 HMAC、时间窗、nonce replay 与 body 签名校验。
+- external contract profile、runtime readiness、legacy matrix/absence ledger 同步为当前 registry 和
+  fail-closed 边界；清理已删除测试的旧 evidence path 与派生统计。
+- heavy integration/resilience 测试移除已删除 typed EFFECT imports；通用 EXTERNAL_HTTP 冻结/崩溃合同
+  改用测试专用 identity，不再复活旧 transport producer。
+
+## Release Review TDD 与验证
+
+1. RED：新增 removal guardrail、E12/E13 冻结 ACK/parser、35 路由 surface、Q19 POST HMAC 合同后，
+   分别暴露旧生产 identity/callback、无 ACK batch parser、额外 `/api/wms` 路由和 POST 未验签。
+2. GREEN：六项 release finding 聚焦回归 `109 passed`；原默认全集暴露的 33 项陈旧正向测试和 evidence
+   引用全部收敛为 absence/fail-closed 合同，对应回归 `132 passed`。
+3. 默认全集首次复验为 `4137 passed, 5 skipped, 2 failed`，仅剩派生文档旧计数；同步 ledger/matrix
+   后 closure 合同 `33 passed`，最终全集全部通过。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4139 passed, 5 skipped`（4144 collected）。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4144 tests collected`。
+- `uv run pytest tests/contracts/wms_integration/test_release_removal_guardrails.py
+  tests/contracts/wms_integration/test_wms_batch_ack_contract.py tests/mock/test_wms_mock_server.py -q`
+  → `109 passed`。
+- `uv run python scripts/generate_runtime_extensions.py --check`、`uv run ruff format --check .`、
+  `uv run ruff check .`、`git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime guardrails 365 passed、
+  business legacy absence、process naming 11 passed、import-linter、architecture、topology 全通过）。
+- 受影响 heavy tests 14 项可完整收集；本机未配置 `INTEGRATION_DATABASE_URL`，实际执行为 11 skipped，
+  3 项在数据库初始化前由 heavy harness 以 `missing_url` 拒绝，未产生代码断言失败。
+- 当前 worktree GitNexus MCP 因 LadybugDB storage version 不兼容无法读取；重建索引后使用同版本 CLI
+  `detect-changes --scope all` 成功检测 61 indexed files / 141 symbols / 15 affected processes，risk HIGH。
+  命中旧 rack/handling/single-layer transport 与 callback/WMS 合同流程，属于已授权 Release Review
+  fail-closed/删除范围；未实现 T2/T3/T5。
