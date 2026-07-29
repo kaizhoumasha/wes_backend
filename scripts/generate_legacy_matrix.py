@@ -479,6 +479,10 @@ ACTIVE_PLATFORM_SYMBOLS = frozenset(
             "tests/workline_runtime/test_runtime_intent_effect_applier.py",
             "test_stale_material_effect_short_circuits_following_device_effects",
         ),
+        (
+            "tests/workline_runtime/test_runtime_intent_effect_applier.py",
+            "test_resource_reservation_uses_runtime_material_flow_default_singleton",
+        ),
     }
 )
 ACTIVE_PLATFORM_FORBIDDEN_IMPORTS = frozenset()
