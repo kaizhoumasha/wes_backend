@@ -1899,7 +1899,7 @@ QUERY 可在确认不会产生业务效果的前提下继续用于诊断和对�
 Synthesized from this review's findings. Each task derives from a specific finding above. Run with Claude Code or
 Codex; checkbox as you ship.
 
-- [ ] **T1（P1，human: \~1d / CC: \~2h）** — contracts — 冻结 35 项合同并修订顶层蓝图
+- [x] **T1（P1，human: \~1d / CC: \~2h）** — contracts — 冻结 35 项合同并修订顶层蓝图
   - Surfaced by: Architecture / Business acceptance — 删除虚构 GRN item 层级、增加 Q19、统一 E02 POST，
     冻结 E11/E12/E13 批次和部分失败语义；当前 SPEC supersede 旧三 operation 北向合同，必须先消除主真源分叉。
   - Files: `docs/business/`、`docs/contracts/`、WMS typed request/result/Definition/static registry、
@@ -1907,6 +1907,13 @@ Codex; checkbox as you ship.
   - Verify: 35 identity 无缺失/重复；Q19 为无副作用 QUERY；`list_grn_items/WmsGrnItem/item_count`、
     旧 DELETE route、旧 E12/E13 单箱 identity、旧 E11 必填 `empty_box_id` 及三 operation-only manifest
     引用为 0；T1 未通过时 T2–T10 的实现任务必须 fail closed。
+  - Completed: 2026-07-29，提交范围 `6944d92e..6b2a3a23`。35 项静态 registry、typed request/result、
+    Mock 合同、GRN PO 行、Q19、E11/E12/E13、同步/异步完成模式及旧 callback/transport/兼容端口移除均已闭合。
+  - Evidence: 最终合并批次分组回归 contract `146 passed`、runtime `64 passed`、legacy `61 passed`、
+    assets/guards `209 passed`；默认全集 `4201 passed, 5 skipped`，其余 2 项为同一生成矩阵 stale entry，
+    正式重生成后架构守卫 `24 passed`；topology、Ruff、Bandit、quality profile、GitNexus detect 均通过。
+  - Review: 独立增量验收 `382 passed`，结论 `Spec Compliance ✅`、Critical/Important/Minor 均无、
+    `Task quality: Approved`。
 - [ ] **T2（P1，human: \~2d / CC: \~4h）** — provider config — 实现 typed profile 与 endpoint 编译器
   - Surfaced by: Architecture / Code Quality — 一个 `server_url`、相对 path、严格 placeholder 闭集和 origin 约束。
   - Files: `src/core/conf.py`、WMS provider contracts/catalog、query transport。
