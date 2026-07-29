@@ -57,7 +57,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 写入需求 | 写哪里 | 不该写哪里 |
 | --- | --- | --- |
 | 库存预留/释放/转移确认 | `WmsInventoryTransactionPort`（经 RuntimeIntentLog + EffectPort） | 直接改 WES active projection 假装库存已变 |
-| 履约请求（搬运/补给/换面/满箱交换） | `WmsFulfillmentPort`（经 RuntimeIntentLog + EffectPort） | WES 内部域直连 RCS/AGV/CTU SDK |
+| 履约请求（搬运/补给/换面/满箱交换） | operation-specific WMS fulfillment contract（经 RuntimeIntentLog + EffectPort） | WES 内部域直连 RCS/AGV/CTU SDK |
 | 设备命令下发 | `DeviceCommandPort`（只面向 ECS API） | 下发 PLC/坐标/关节/安全回路指令 |
 | WMS callback 入站 | `WmsEventPort` normalizer → RuntimeInbox（只 ACK，不直接改 session） | callback API 直接改 ExecutionSession/投影 |
 | 位置投影更新 | `RuntimeLocationEvent` evidence → projection writer 重放 | API 层直接改投影表 |
@@ -94,11 +94,11 @@ WES 内部域（workline / runtime / handling / resource / material / device）*
 
 ### 4.3 反例 2：WES 直连 RCS（事实 7 违规）
 
-❌ **错误**：WES runtime 域直接调用 RCS SDK 查询 AGV 位置，跳过 `WmsFulfillmentPort`。
+❌ **错误**：WES runtime 域直接调用 RCS SDK 查询 AGV 位置，跳过 RuntimeIntentLog 与 operation-specific fulfillment contract。
 
 ✅ **正确**：
 - AGV/CTU 履约状态只能从 `WmsEventPort` 回调 evidence 获取
-- WES 只提交履约意图（`WmsFulfillmentPort.request_transport`），不调度车辆
+- WES 只提交具名履约意图（例如 `wms.fulfillment.request_load_unit_transport@v1`），不调度车辆
 - 直连 RCS/AGV/CTU 需满足主计划 §10.5 触发条件 + 独立 SPEC，生产前默认不触发
 
 ### 4.4 反例 3：API 层直接改投影（事实 10/11 违规）

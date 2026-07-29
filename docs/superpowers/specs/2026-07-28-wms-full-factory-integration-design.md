@@ -1256,7 +1256,7 @@ flowchart TD
 风险先向用户确认。
 
 现有 `WmsMasterDataPort`、`WmsDocumentPort`、`WmsReconciliationQueryPort`、`WmsInventoryTransactionPort`、
-`WmsFulfillmentPort` 及 operation-specific 单方法 Protocol 在共享泛型 Port 落地后直接删除；同步删除只验证旧
+旧粗粒度 fulfillment family Protocol 及 operation-specific 单方法 Protocol 在共享泛型 Port 落地后直接删除；同步删除只验证旧
 “七 Port”形状、旧方法数量或兼容入口的测试。业务能力通过明确 typed Definition 调用两个共享 Port，不建立第三套
 聚合 facade。
 

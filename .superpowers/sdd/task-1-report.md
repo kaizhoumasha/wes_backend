@@ -418,3 +418,41 @@ operation 的兼容入口。
 - worktree `gitnexus detect-changes --scope staged` → 23 files / 59 symbols / 6 affected processes，
   risk HIGH；命中 Mock 北向 effect handler 流程及本轮合同/文档/守卫，属于已授权 Final Acceptance Review
   范围，未引入 T2/T5 流程。
+
+## Release Acceptance Review（第十一轮）修复
+
+- E08–E14 同键处理中重放的 `409 + IDEMPOTENCY_REQUEST_IN_PROGRESS` 不再返回 status snapshot；
+  `data` 复用首次受理的 typed ACK builder，完整包含 `operation_identity`、`idempotency_key`、
+  `provider_reference`、`submission_state` 与 E12/E13 `accepted_scope`。status endpoint 继续独立返回
+  六字段 status snapshot，不复用 ACK wire shape。
+- 全部非 archive 活动 Markdown 删除粗粒度 fulfillment family Port 名称，并把旧
+  `/api/wes/rack-supply-request`、`/api/wes/transport-request`、`/api/wms/kitting/pkg-binding`
+  路径迁移为当前 typed operation path 或 canonical operation identity。
+- 新增全活动文档语义 guard：扫描 `docs/**/*.md`，仅排除项目既有明确归档约定
+  `docs/superpowers/archive/**`；不使用文件 allowlist，不删除或归档活动文档逃避修复。
+- 未实现 T2/T5，未新增兼容层、宽 allowlist、skip 或 xfail。
+
+## Release Acceptance Review（第十一轮）TDD 与验证
+
+1. RED：E08–E14 参数化 replay 共 7 项均因 409 `data` 是 status snapshot 而无法解析
+   `WmsEffectAck`；全活动文档 guard 命中 19 个非 archive 文档，共 `8 failed`。
+2. GREEN：409 in-progress replay 改用 typed ACK，19 个活动文档逐项迁移；定点回归
+   `8 passed`，Mock/store/removal guard 回归 `153 passed`，WMS contracts + Mock 扩展回归
+   `436 passed`。
+3. 默认全集从头复验 → `4181 passed, 5 existing skipped`（4186 collected），没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4181 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4186 tests collected`。
+- `uv run ruff format --check .` → 1075 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：Mock `_submit_northbound_effect` 为 LOW（1 direct handler / 1 Mock process）；
+  既有参数化测试为 LOW；新增活动文档 guard 尚未被索引，risk UNKNOWN。无 HIGH/CRITICAL 风险。
+- worktree `gitnexus detect-changes --scope staged` → 21 indexed files / 56 symbols /
+  1 affected process，risk MEDIUM；只命中 Mock handler request-body 流程与本轮活动文档/guard，
+  属于已授权 Release Acceptance Review 范围，未引入 T2/T5 流程。

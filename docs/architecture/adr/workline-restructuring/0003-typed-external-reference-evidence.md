@@ -32,7 +32,7 @@ resource 域的 `rack_code / bin_code / location_code` 等外部引用当前是�
 - `docs/architecture/specs/workline-restructuring/40-resource-projection.md` 发布。
 - `src/app/resource/models/` 引入 `ExternalReference` + `EvidenceEnvelope` Pydantic 模型。
 - Alembic 迁移加 GIN 索引。
-- `WmsReconciliationQueryPort` 只读实现 + 单元测试；任何 WMS 写入确认或补偿动作必须归入 `WmsInventoryTransactionPort` / `WmsFulfillmentPort`。
+- `WmsReconciliationQueryPort` 只读实现 + 单元测试；任何 WMS 写入确认或补偿动作必须归入 `WmsInventoryTransactionPort` / operation-specific fulfillment contract。
 - evidence-catalog.md 初始版发布。
 
 ## 引用

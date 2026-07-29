@@ -925,11 +925,14 @@ async def _submit_northbound_effect(
         return JSONResponse(status_code=422, content={"code": str(exc)})
 
     if submission.error_code is not None:
+        replay_data = None
+        if submission.error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS":
+            replay_data = _northbound_response_data(operation_identity, idempotency_key, validated_payload)
         return JSONResponse(
             status_code=submission.status_code,
             content={
                 "code": submission.error_code,
-                "data": submission.snapshot.as_dict() if submission.snapshot is not None else None,
+                "data": replay_data,
             },
         )
 

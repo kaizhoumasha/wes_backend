@@ -92,7 +92,7 @@ review_summary: |
 | EffectPort | Runtime 向 handling/device/resource/material/wms_integration 分发副作用的稳定接口 |
 | InboundEventPort | 外部 callback/event 入站标准接口；负责 normalizer、原始归档、typed evidence，写入 `RuntimeInbox`，不是 effect ledger |
 | ConveyorQueueMembership | 料箱在滚筒线队列中的 runtime active 投影；队列由 WorkLine manifest 动态定义 |
-| WmsFulfillmentPort | WMS 履约能力 port（11 态机） |
+| Operation-specific fulfillment contracts | WMS 具名履约 operation 与 typed request/result |
 | PlaneSceneView | WorkLine 平面态势场景读模型（manifest 派生） |
 | PlaneSnapshot | WorkLine 平面态势运行态读模型（active projection） |
 | RECONCILING | 投影/回调/现场状态冲突的"待对账"状态 |

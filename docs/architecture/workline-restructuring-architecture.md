@@ -111,7 +111,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 集成约束 | 来源章节 | 目标态落点 | 设计含义 |
 | --- | --- | --- | --- |
-| RCS 调度仍由 WMS 统一调度 | §1.2 | `WmsFulfillmentPort` | WES 生成搬运需求并提交 WMS；WMS 调 RCS，结果经 WMS 回传 |
+| RCS 调度仍由 WMS 统一调度 | §1.2 | operation-specific WMS fulfillment contract | WES 生成搬运需求并提交 WMS；WMS 调 RCS，结果经 WMS 回传 |
 | PDA 仅对接 WMS | §1.2 | `WmsEventPort` / `WmsDocumentPort` | WES 不做 PDA API；PDA 结果通过 WMS 事件或单据查询进入 |
 | 自动化设备只通过 WES 接入 | §1.2 | `device` 域 | WMS 不直连设备；设备 EVENT/COMMAND/RESULT 归 WES |
 | 标签打印按设备类型分流 | §1.2 | `device` 域 + `WmsDocumentPort` | 自动打印设备由 WES 下发；人工打印由 WMS 获取模板后回执 |
@@ -141,7 +141,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 类型 | 允许能力 | 约束 |
 | --- | --- | --- |
 | QueryPort | `WmsMasterDataPort` / `WmsDocumentPort` / typed inventory operation / `WmsReconciliationQueryPort` 只读查询 | 用于作业决策前的外部事实查询、WMS 权威事实拉取和 drift 检测；响应必须带 `scope/authority/source/evidence_at/source_version`；库存 QUERY 禁止跨请求缓存，不产生外部状态变更，不写 `RuntimeIntentLog` |
-| EffectPort | `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `DeviceCommandPort` | 所有会改变外部状态、触发履约或确认事件的出站动作必须先写 `RuntimeIntentLog`，再经 EffectPort dispatch；必须有幂等、evidence、timeline 和 callback 闭环。RCS/AGV/CTU 直连若被 §10.5 触发，也只能隐藏在 fulfillment provider 实现内，不新增 capability 可见端口 |
+| EffectPort | `WmsInventoryTransactionPort` / operation-specific fulfillment contracts / `DeviceCommandPort` | 所有会改变外部状态、触发履约或确认事件的出站动作必须先写 `RuntimeIntentLog`，再经 EffectPort dispatch；必须有幂等、evidence、timeline 和 callback 闭环。RCS/AGV/CTU 直连若被 §10.5 触发，也只能隐藏在 fulfillment provider 实现内，不新增 capability 可见端口 |
 | InboundEventPort | `WmsEventPort` / `DeviceEventPort` | 只负责外部 callback/event 的 normalizer、原始归档和 typed evidence 生成；必须写 `RuntimeInbox`，不得经 `RuntimeIntentLog` dispatch；不得注入 `RuntimeCapabilityContext` 给业务 capability 调用 |
 
 禁止规则：
@@ -182,7 +182,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
                                 │  ┌──────────────────────────────────────┐  │
                                 │  │  WmsMasterDataPort    WmsDocumentPort │  │
                                 │  │  InventoryQueryOperation WmsInventoryTxPort │
-                                │  │  WmsFulfillmentPort  WmsReconciliationQueryPort │
+                                │  │  Fulfillment operations  WmsReconciliationQueryPort │
                                 │  └──────────────────────────────────────┘  │
                                 │  InboundEventPort: WmsEventPort -> Inbox     │
                                 │  reuse/clean src/app/wms_integration/        │
@@ -268,7 +268,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 方案 | 范围 | 风险 | 回归保护 | 迁移成本 | 决定 |
 | --- | --- | --- | --- | --- | --- |
-| **A：workline 单体 + 端口化 WMS** | 仅抽 `WmsFulfillmentPort` | 低 | 中 | 小（1-2 周） | 不选 |
+| **A：workline 单体 + 端口化 WMS** | 仅抽粗粒度 fulfillment family port | 低 | 中 | 小（1-2 周） | 不选 |
 | **B（本设计）：目标态重写** | 拆 workline / runtime-orchestration / wms_integration ACL，清理 plugin 体系 | 中-高 | 行为契约测试 + 分阶段验证 | 大（XL，2-3 月） | **选择** |
 | **C：增量 ACL only** | 只增强 wms_integration 内部（补 5 套缺失 port） | 低 | 高 | 中（2-3 周） | 不单独选择；可复用其 ACL 工作 |
 | **D：port-only refactor** | 保持 runtime 在 workline 内 | 中 | 中 | 中（1-2 月） | 备选 |

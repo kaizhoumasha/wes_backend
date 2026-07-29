@@ -36,7 +36,7 @@ note: |
 | `WmsMasterDataPort.get_material` / `list_materials` | 返回 fixture 物料主数据 |
 | `WmsDocumentPort.get_grn` / `list_grn_packages` | 返回 fixture GRN 与料盘归属 |
 | `wms.inventory.query_inventory@v1` | 返回 typed fixture 库存快照（带 `source_version`） |
-| `WmsFulfillmentPort.request_transport` | 接受请求，按 scenario 配置延迟回 callback |
+| `wms.fulfillment.request_load_unit_transport@v1` | 接受请求，按 scenario 配置延迟形成 status 终态 |
 | `WmsInventoryTransactionPort.reserve_inventory` | 返回预留结果 |
 | `WmsReconciliationQueryPort.check_bin_drift` | 返回 drift snapshot |
 | `WmsEventPort`（callback） | 主动推送四类普通事件或 `WMS_EFFECT_STATUS_HINT` 到 external callback API |

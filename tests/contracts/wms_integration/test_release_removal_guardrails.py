@@ -238,6 +238,14 @@ SCOPED_ACTIVE_FORBIDDEN_LITERALS = {
         for fixture_name in ("success", "reject", "timeout")
     },
 }
+REMOVED_ACTIVE_DOC_LITERALS = frozenset(
+    {
+        "WmsFulfillmentPort",
+        "/api/wes/transport-request",
+        "/api/wes/rack-supply-request",
+        "/api/wms/kitting/pkg-binding",
+    }
+)
 
 
 def test_removed_transport_and_terminal_callbacks_exist_only_in_migration_manifest() -> None:
@@ -274,6 +282,23 @@ def test_active_artifacts_have_no_removed_callback_or_external_facade_literal() 
             found -= REMOVED_TRANSPORT_IDENTITIES
         if found:
             offenders[relative_path] = found
+
+    assert offenders == {}
+
+
+def test_all_active_documents_have_no_coarse_fulfillment_port_or_legacy_wms_paths() -> None:
+    """除明确 archive 外，全部活动 Markdown 都不得继续发布已删除的粗粒度履约合同。"""
+
+    offenders: dict[str, set[str]] = {}
+    docs_root = REPO_ROOT / "docs"
+    for path in docs_root.rglob("*.md"):
+        docs_relative_path = path.relative_to(docs_root)
+        if docs_relative_path.parts[:2] == ("superpowers", "archive"):
+            continue
+        source = path.read_text(encoding="utf-8")
+        found = {literal for literal in REMOVED_ACTIVE_DOC_LITERALS if literal in source}
+        if found:
+            offenders[str(path.relative_to(REPO_ROOT))] = found
 
     assert offenders == {}
 

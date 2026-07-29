@@ -101,7 +101,7 @@ CSV 列（对齐 SPEC P0-002 矩阵字段表）：
 | `classification_status` | enum | yes | `final`（Phase 0 PR merge 前 pending-review 归零） |
 | `strategy` | enum | yes | delete / rebuild / move / keep-contract |
 | `target_path` | string | conditional | `move` 或 `rebuild` 时必填；可指向目标目录或目标模块 |
-| `target_capability` | string | conditional | rebuild 时必填；例如 `RuntimeInboxService.process_one` / `WmsFulfillmentPort.request_transport` |
+| `target_capability` | string | conditional | rebuild 时必填；例如 `RuntimeInboxService.process_one` / `wms.fulfillment.request_load_unit_transport@v1` |
 | `blocking_tests` | string | yes | 删除、迁移或重建前必须通过的测试；多项用 `;` 分隔 |
 | `drop_phase` | enum | yes | phase1 / phase2 / phase3 / phase4 / phase5-tech / phase5-business |
 | `risk` | enum | yes | LOW / MEDIUM / HIGH |

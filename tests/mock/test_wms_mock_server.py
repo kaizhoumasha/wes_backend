@@ -31,6 +31,7 @@ from src.app.sys.external_http_binding import (
 from src.app.sys.services.endpoint_registry import EndpointRegistry
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.services.http_transport import sign_wms_hmac_request
 from src.core.api_security import calculate_body_hmac_signature
 from tests.mock import wms_mock_server
@@ -453,6 +454,18 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
     assert first.json()["data"]["idempotency_key"] == "idem-submit-001"
     assert processing_replay.status_code == 409
     assert processing_replay.json()["code"] == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+    replay_ack = WmsEffectAck.model_validate(processing_replay.json()["data"])
+    assert replay_ack.operation_identity == operation_identity
+    assert replay_ack.idempotency_key == "idem-submit-001"
+    assert replay_ack.provider_reference == first.json()["data"]["provider_reference"]
+    assert set(accepted.json()) == {
+        "state",
+        "provider_reference",
+        "reason_code",
+        "updated_at",
+        "source_version",
+        "result_payload",
+    }
     assert [accepted.json()["state"], processing.json()["state"], completed.json()["state"]] == [
         "ACCEPTED",
         "PROCESSING",

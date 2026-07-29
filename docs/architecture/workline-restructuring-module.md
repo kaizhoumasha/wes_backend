@@ -208,7 +208,7 @@ runtime 域内表使用 `execution_session_id` 作为 `ExecutionSession` FK；�
 
 滚筒线队列查询不挂在 Handling API 下。队列当前态由 runtime/orchestration 写入，WorkLine/plane 侧提供只读查询和展示入口。
 
-**WmsFulfillmentPort 集成**：
+**Operation-specific WMS fulfillment contract 集成**：
 
 Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11 态机的事实源归 `WmsFulfillmentRequest` / fulfillment adapter。Handling 可通过 `correlation_id`、`RuntimeIntentLog` 和 fulfillment evidence 派生粗粒度状态，但不得直接持有或双写 `SENT/ACCEPTED/RUNNING/BLOCKED_BY_CB/TIMEOUT` 等外部履约细态。
 
@@ -217,7 +217,7 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 | 状态层 | Owner | 允许写入方 | 说明 |
 | --- | --- | --- | --- |
 | 业务搬运意图 | `HandlingOperation` | handling service / runtime capability | 表达 WES 需要完成的业务动作及最终本地语义 |
-| 外部履约请求 11 态机 | `WmsFulfillmentRequest` | `WmsFulfillmentPort` adapter + callback worker | 表达 WMS/RCS/provider 是否接收、执行、拒绝、超时或被 CB 阻塞 |
+| 外部履约请求 11 态机 | operation-specific request/result | typed EFFECT adapter + status worker | 表达 WMS/provider 是否接收、执行、拒绝、超时或被 CB 阻塞 |
 | 作业位置事实 | `RuntimeLocationEvent` / active projection writer | runtime worker / reconciliation | 表达对象在 WES 作业期位置，不由 Handling 或 WMS ACL 直接改写 |
 
 `HandlingOperation.coarse_business_status` 只能由本地业务语义和 evidence 汇总推进：`PLANNED -> WAITING_FULFILLMENT -> IN_PROGRESS -> COMPLETED`，或进入 `REJECTED/FAILED/CANCELLED/RECONCILING`。若需要展示外部履约细态，查询层通过 `correlation_id` 联合 `WmsFulfillmentRequest.status` 返回派生视图，不落双份状态。
@@ -428,7 +428,7 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 | `/wms-integration/inventory/query` | POST | 查询库存 |
 | `/wms-integration/reconciliation/drift-check` | POST | 只读触发 WMS 权威事实拉取并返回 drift snapshot；不得写 WMS 或跨域 owner 状态 |
 
-**入口约束**：外部 callback 写入口只允许 §5.3 的统一 callback API；出站 WMS 履约、库存事务、PKG 绑定和补偿动作只能由 runtime/orchestration 在 admission、幂等和状态门禁通过后写 `RuntimeIntentLog`，再经 EffectPort dispatcher 调用 `WmsFulfillmentPort` / `WmsInventoryTransactionPort`。`wms_integration` 不提供公开创建履约请求的 POST API，不提供第二个外部 POST 写入口，只提供 normalizer、port 和只读查询。若调试期确需人工重放或补发 effect，入口必须放在受控 internal/admin runtime 路由，默认关闭并写审计，不得绕过 `RuntimeIntentLog`。
+**入口约束**：外部 callback 写入口只允许 §5.3 的统一 callback API；出站 WMS 履约、库存事务、PKG 绑定和补偿动作只能由 runtime/orchestration 在 admission、幂等和状态门禁通过后写 `RuntimeIntentLog`，再经 EffectPort dispatcher 调用 operation-specific fulfillment contract / `WmsInventoryTransactionPort`。`wms_integration` 不提供公开创建履约请求的 POST API，不提供第二个外部 POST 写入口，只提供 normalizer、port 和只读查询。若调试期确需人工重放或补发 effect，入口必须放在受控 internal/admin runtime 路由，默认关闭并写审计，不得绕过 `RuntimeIntentLog`。
 
 **目标态优先**：可复用 `src/app/wms_integration/` 已有 ACL 实现，但允许破坏性整理目录、模型和 import。
 

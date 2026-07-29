@@ -45,5 +45,5 @@
 
 - 新增 external reference 类型必须先新增 catalog entry，再允许 adapter / callback 写入 envelope。
 - source version 漂移只能追加 evidence 和诊断结果，不能覆盖当前投影。
-- drift job 是只读任务；任何 WMS 写入确认或补偿动作必须走 `WmsInventoryTransactionPort` 或 `WmsFulfillmentPort`。
+- drift job 是只读任务；任何 WMS 写入确认或补偿动作必须走 `WmsInventoryTransactionPort` 或 operation-specific WMS fulfillment contract。
 - 删除或重命名 schema 字段必须提供迁移路径和 replay fixture，不能静默兼容裸 JSON。
