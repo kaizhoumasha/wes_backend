@@ -495,11 +495,8 @@ def test_async_submit_can_never_generate_sync_terminal_events() -> None:
                 error_code="READ_TIMEOUT",
             ),
             False,
-            (
-                EffectReducerEventType.TRANSPORT_AMBIGUOUS,
-                EffectReducerEventType.RECONCILIATION_OPENED,
-            ),
-            EffectTransportAction.DEFAULT,
+            (),
+            EffectTransportAction.RETRY_SAME_REQUEST,
         ),
         (
             _response(409, {"protocol_error_code": "IDEMPOTENCY_REQUEST_IN_PROGRESS"}),

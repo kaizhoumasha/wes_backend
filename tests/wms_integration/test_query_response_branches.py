@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import gzip
+import inspect
 import json
 import zlib
 
 import pytest
 
+import src.core.bounded_http_response as bounded_http_response_module
 from src.app.wms_integration.operation_registry import QUERY_OPERATIONS
 from src.app.wms_integration.ports.query_outcome import QueryBusinessReject, QueryTechnicalFailure
 from src.app.wms_integration.query_response import (
@@ -19,8 +21,10 @@ from src.app.wms_integration.query_response import (
     parse_optional_failure_body,
 )
 from src.core.bounded_http_response import (
+    HttpCompressionRatioExceeded,
     HttpContentEncodingFailure,
-    HttpDecodedBudgetViolation,
+    HttpDecodedBodyBudgetExceeded,
+    HttpUnsupportedContentEncoding,
     decode_bounded_http_body,
 )
 
@@ -35,6 +39,17 @@ def _decode(raw_body: bytes, *, encoding: str = "identity", decoded_limit: int =
     )
 
 
+def test_core_bounded_http_primitives_are_domain_neutral_and_typed_by_failure_category() -> None:
+    source = inspect.getsource(bounded_http_response_module)
+
+    assert "WMS_" not in source
+    assert "WMS QUERY" not in source
+    assert hasattr(bounded_http_response_module, "HttpChunkBudgetExceeded")
+    assert hasattr(bounded_http_response_module, "HttpDecodedBodyBudgetExceeded")
+    assert hasattr(bounded_http_response_module, "HttpCompressionRatioExceeded")
+    assert hasattr(bounded_http_response_module, "HttpUnsupportedContentEncoding")
+
+
 def test_budget_violation_retains_reason_and_message() -> None:
     error = QueryBudgetViolation("BUDGET", "too large")
 
@@ -44,25 +59,22 @@ def test_budget_violation_retains_reason_and_message() -> None:
 
 
 def test_decode_rejects_unsupported_encoding_and_non_positive_budget() -> None:
-    with pytest.raises(HttpDecodedBudgetViolation, match="unsupported") as unsupported:
+    with pytest.raises(HttpUnsupportedContentEncoding, match="unsupported") as unsupported:
         _decode(b"{}", encoding="br")
-    assert unsupported.value.reason_code == "WMS_UNSUPPORTED_CONTENT_ENCODING"
+    assert unsupported.value.encoding == "br"
 
-    with pytest.raises(HttpDecodedBudgetViolation) as exhausted:
+    with pytest.raises(HttpDecodedBodyBudgetExceeded):
         _decode(b"{}", decoded_limit=0)
-    assert exhausted.value.reason_code == "WMS_DECODED_BUDGET_EXCEEDED"
 
 
 def test_decode_identity_enforces_decoded_and_ratio_budgets() -> None:
     assert _decode(b"{}", encoding="  ") == b"{}"
 
-    with pytest.raises(HttpDecodedBudgetViolation) as decoded:
+    with pytest.raises(HttpDecodedBodyBudgetExceeded):
         _decode(b"large", decoded_limit=2)
-    assert decoded.value.reason_code == "WMS_DECODED_BUDGET_EXCEEDED"
 
-    with pytest.raises(HttpDecodedBudgetViolation) as ratio:
+    with pytest.raises(HttpCompressionRatioExceeded):
         _decode(b"1234", ratio=0.5)
-    assert ratio.value.reason_code == "WMS_COMPRESSION_RATIO_EXCEEDED"
 
 
 @pytest.mark.parametrize(
@@ -85,9 +97,8 @@ def test_decode_rejects_corrupt_truncated_trailing_and_oversized_compression() -
         _decode(compressed[:-2], encoding="gzip")
     with pytest.raises(HttpContentEncodingFailure):
         _decode(compressed + b"trailing", encoding="gzip")
-    with pytest.raises(HttpDecodedBudgetViolation) as oversized:
+    with pytest.raises(HttpDecodedBodyBudgetExceeded):
         _decode(gzip.compress(b"x" * 512), encoding="gzip", decoded_limit=16)
-    assert oversized.value.reason_code == "WMS_DECODED_BUDGET_EXCEEDED"
 
 
 def test_parse_json_enforces_depth_string_and_key_lengths() -> None:

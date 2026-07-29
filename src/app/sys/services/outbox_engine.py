@@ -34,9 +34,12 @@ from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.core.bounded_http_response import (
+    HttpChunkBudgetExceeded,
+    HttpCompressionRatioExceeded,
     HttpContentEncodingFailure,
-    HttpDecodedBudgetViolation,
+    HttpDecodedBodyBudgetExceeded,
     HttpResponseContractError,
+    HttpUnsupportedContentEncoding,
     HttpWireBudgetExceeded,
     decode_bounded_http_body,
     read_bounded_wire_body,
@@ -575,13 +578,21 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                         max_wire_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
                         cumulative_wire_bytes=0,
                     )
-            except HttpWireBudgetExceeded as exc:
+            except HttpChunkBudgetExceeded:
                 return ExternalHttpTransportResult.ambiguous(
                     phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
                     protocol_result=ExternalHttpProtocolResult.UNKNOWN,
                     http_status_code=status_code,
-                    error_code=exc.reason_code,
-                    error_message=str(exc),
+                    error_code="WMS_CHUNK_BUDGET_EXCEEDED",
+                    error_message="outbound HTTP response chunk exceeded the bounded transport budget",
+                )
+            except HttpWireBudgetExceeded:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_WIRE_BUDGET_EXCEEDED",
+                    error_message="outbound HTTP response exceeded the bounded wire budget",
                 )
             except HttpResponseContractError:
                 return ExternalHttpTransportResult.ambiguous(
@@ -601,13 +612,29 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                     max_decoded_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
                     max_compression_ratio=20.0,
                 )
-            except HttpDecodedBudgetViolation as exc:
+            except HttpUnsupportedContentEncoding:
                 return ExternalHttpTransportResult.ambiguous(
                     phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
                     protocol_result=ExternalHttpProtocolResult.UNKNOWN,
                     http_status_code=status_code,
-                    error_code=exc.reason_code,
-                    error_message=str(exc),
+                    error_code="WMS_UNSUPPORTED_CONTENT_ENCODING",
+                    error_message="outbound HTTP response used an unsupported content encoding",
+                )
+            except HttpDecodedBodyBudgetExceeded:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_DECODED_BUDGET_EXCEEDED",
+                    error_message="decoded outbound HTTP response exceeded the bounded transport budget",
+                )
+            except HttpCompressionRatioExceeded:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_COMPRESSION_RATIO_EXCEEDED",
+                    error_message="outbound HTTP response exceeded the bounded compression ratio",
                 )
             except HttpContentEncodingFailure:
                 return ExternalHttpTransportResult.ambiguous(

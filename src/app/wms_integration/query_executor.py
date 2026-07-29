@@ -42,9 +42,12 @@ from src.app.wms_integration.query_response import (
 )
 from src.app.wms_integration.services.http_transport import send_bounded_wms_request
 from src.core.bounded_http_response import (
+    HttpChunkBudgetExceeded,
+    HttpCompressionRatioExceeded,
     HttpContentEncodingFailure,
-    HttpDecodedBudgetViolation,
+    HttpDecodedBodyBudgetExceeded,
     HttpResponseContractError,
+    HttpUnsupportedContentEncoding,
     HttpWireBudgetExceeded,
     decode_bounded_http_body,
 )
@@ -298,10 +301,18 @@ class WmsRegistryQueryExecutor:
                             message="WMS QUERY transport unavailable",
                             retryable=True,
                         )
-                    except (HttpDecodedBudgetViolation, QueryBudgetViolation) as exc:
+                    except QueryBudgetViolation as exc:
                         outcome = QueryContractFailure(reason_code=exc.reason_code, message=exc.message)
-                    except HttpWireBudgetExceeded as exc:
-                        outcome = QueryContractFailure(reason_code=exc.reason_code, message=str(exc))
+                    except HttpChunkBudgetExceeded:
+                        outcome = QueryContractFailure(
+                            reason_code="WMS_CHUNK_BUDGET_EXCEEDED",
+                            message="WMS QUERY response chunk exceeded the frozen budget",
+                        )
+                    except HttpWireBudgetExceeded:
+                        outcome = QueryContractFailure(
+                            reason_code="WMS_WIRE_BUDGET_EXCEEDED",
+                            message="WMS QUERY response exceeded the frozen wire budget",
+                        )
                     except HttpResponseContractError:
                         outcome = QueryContractFailure(
                             reason_code="WMS_MALFORMED_RESPONSE",
@@ -311,6 +322,21 @@ class WmsRegistryQueryExecutor:
                         outcome = QueryContractFailure(
                             reason_code="WMS_CONTENT_ENCODING_INVALID",
                             message="WMS QUERY response content encoding is malformed",
+                        )
+                    except HttpUnsupportedContentEncoding:
+                        outcome = QueryContractFailure(
+                            reason_code="WMS_UNSUPPORTED_CONTENT_ENCODING",
+                            message="WMS QUERY response used an unsupported content encoding",
+                        )
+                    except HttpDecodedBodyBudgetExceeded:
+                        outcome = QueryContractFailure(
+                            reason_code="WMS_DECODED_BUDGET_EXCEEDED",
+                            message="decoded WMS QUERY response exceeded the frozen budget",
+                        )
+                    except HttpCompressionRatioExceeded:
+                        outcome = QueryContractFailure(
+                            reason_code="WMS_COMPRESSION_RATIO_EXCEEDED",
+                            message="WMS QUERY response exceeded the frozen compression ratio",
                         )
                     except (
                         json.JSONDecodeError,

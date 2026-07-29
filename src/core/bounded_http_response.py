@@ -12,9 +12,9 @@ if TYPE_CHECKING:
 class HttpWireBudgetExceeded(ValueError):
     """响应 wire body 超过冻结预算。"""
 
-    def __init__(self, reason_code: str, message: str) -> None:
-        super().__init__(message)
-        self.reason_code = reason_code
+
+class HttpChunkBudgetExceeded(HttpWireBudgetExceeded):
+    """单个响应 chunk 超过冻结预算。"""
 
 
 class HttpResponseContractError(ValueError):
@@ -24,10 +24,21 @@ class HttpResponseContractError(ValueError):
 class HttpDecodedBudgetViolation(Exception):
     """响应解码后的资源使用超过冻结预算。"""
 
-    def __init__(self, reason_code: str, message: str) -> None:
-        super().__init__(message)
-        self.reason_code = reason_code
-        self.message = message
+
+class HttpDecodedBodyBudgetExceeded(HttpDecodedBudgetViolation):
+    """解码后的响应 body 超过冻结预算。"""
+
+
+class HttpCompressionRatioExceeded(HttpDecodedBudgetViolation):
+    """响应解码后的压缩比超过冻结预算。"""
+
+
+class HttpUnsupportedContentEncoding(HttpDecodedBudgetViolation):
+    """响应使用了调用边界未允许的 content encoding。"""
+
+    def __init__(self, encoding: str) -> None:
+        super().__init__(f"unsupported content encoding: {encoding}")
+        self.encoding = encoding
 
 
 class HttpContentEncodingFailure(Exception):
@@ -52,16 +63,16 @@ async def read_bounded_wire_body(
         if declared_length < 0:
             raise HttpResponseContractError("negative Content-Length")
         if cumulative_wire_bytes + declared_length > max_wire_bytes:
-            raise HttpWireBudgetExceeded("WMS_WIRE_BUDGET_EXCEEDED", "WMS HTTP wire budget exceeded")
+            raise HttpWireBudgetExceeded("HTTP response wire body exceeds budget")
 
     body = bytearray()
     chunks = (response.content,) if response.is_stream_consumed else response.aiter_raw()
     async for chunk in _as_async_chunks(chunks):
         if len(chunk) > max_chunk_bytes:
-            raise HttpWireBudgetExceeded("WMS_CHUNK_BUDGET_EXCEEDED", "WMS HTTP chunk budget exceeded")
+            raise HttpChunkBudgetExceeded("HTTP response chunk exceeds budget")
         cumulative_wire_bytes += len(chunk)
         if cumulative_wire_bytes > max_wire_bytes:
-            raise HttpWireBudgetExceeded("WMS_WIRE_BUDGET_EXCEEDED", "WMS HTTP wire budget exceeded")
+            raise HttpWireBudgetExceeded("HTTP response wire body exceeds budget")
         body.extend(chunk)
     return bytes(body), cumulative_wire_bytes
 
@@ -87,12 +98,9 @@ def decode_bounded_http_body(
 
     encoding = content_encoding.strip().lower() or "identity"
     if encoding not in allowed_content_encodings:
-        raise HttpDecodedBudgetViolation(
-            "WMS_UNSUPPORTED_CONTENT_ENCODING",
-            f"unsupported WMS content encoding: {encoding}",
-        )
+        raise HttpUnsupportedContentEncoding(encoding)
     if max_decoded_bytes <= 0:
-        raise HttpDecodedBudgetViolation("WMS_DECODED_BUDGET_EXCEEDED", "WMS QUERY decoded budget exceeded")
+        raise HttpDecodedBodyBudgetExceeded("decoded HTTP response body exceeds budget")
     if encoding == "identity":
         decoded = raw_body
     else:
@@ -101,29 +109,27 @@ def decode_bounded_http_body(
         try:
             decoded = decoder.decompress(raw_body, max_decoded_bytes + 1)
             if decoder.unconsumed_tail or len(decoded) > max_decoded_bytes:
-                raise HttpDecodedBudgetViolation(
-                    "WMS_DECODED_BUDGET_EXCEEDED",
-                    "WMS QUERY decoded budget exceeded",
-                )
+                raise HttpDecodedBodyBudgetExceeded("decoded HTTP response body exceeds budget")
             decoded += decoder.flush(max_decoded_bytes - len(decoded) + 1)
         except zlib.error as exc:
             raise HttpContentEncodingFailure from exc
         if not decoder.eof or decoder.unused_data:
             raise HttpContentEncodingFailure
     if len(decoded) > max_decoded_bytes:
-        raise HttpDecodedBudgetViolation("WMS_DECODED_BUDGET_EXCEEDED", "WMS QUERY decoded budget exceeded")
+        raise HttpDecodedBodyBudgetExceeded("decoded HTTP response body exceeds budget")
     if raw_body and len(decoded) / len(raw_body) > max_compression_ratio:
-        raise HttpDecodedBudgetViolation(
-            "WMS_COMPRESSION_RATIO_EXCEEDED",
-            "WMS QUERY compression ratio budget exceeded",
-        )
+        raise HttpCompressionRatioExceeded("HTTP response compression ratio exceeds budget")
     return decoded
 
 
 __all__ = [
+    "HttpChunkBudgetExceeded",
+    "HttpCompressionRatioExceeded",
     "HttpContentEncodingFailure",
+    "HttpDecodedBodyBudgetExceeded",
     "HttpDecodedBudgetViolation",
     "HttpResponseContractError",
+    "HttpUnsupportedContentEncoding",
     "HttpWireBudgetExceeded",
     "decode_bounded_http_body",
     "read_bounded_wire_body",

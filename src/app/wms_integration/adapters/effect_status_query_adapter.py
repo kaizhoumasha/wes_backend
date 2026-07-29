@@ -35,7 +35,11 @@ from src.app.wms_integration.services.http_transport import (
     send_bounded_wms_request,
     sign_wms_hmac_request,
 )
-from src.core.bounded_http_response import HttpResponseContractError, HttpWireBudgetExceeded
+from src.core.bounded_http_response import (
+    HttpChunkBudgetExceeded,
+    HttpResponseContractError,
+    HttpWireBudgetExceeded,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -198,7 +202,7 @@ class WmsEffectStatusQueryAdapter:
                 retryable=True,
                 retry_after_seconds=self._local_backoff(request.attempt_count),
             )
-        except HttpWireBudgetExceeded:
+        except (HttpChunkBudgetExceeded, HttpWireBudgetExceeded):
             return QueryContractFailure(
                 reason_code="WMS_STATUS_RESPONSE_TOO_LARGE",
                 message="WMS EFFECT status response exceeds the frozen response budget",

@@ -247,6 +247,80 @@ async def test_sync_in_progress_retries_frozen_request_then_opens_reconciliation
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "error_code"),
+    (
+        (outbox_engine_module.ExternalHttpTransportPhase.SENDING, "WRITE_TIMEOUT"),
+        (outbox_engine_module.ExternalHttpTransportPhase.AWAITING_RESPONSE, "READ_TIMEOUT"),
+        (outbox_engine_module.ExternalHttpTransportPhase.AWAITING_RESPONSE, "REMOTE_PROTOCOL_ERROR"),
+    ),
+)
+async def test_sync_ambiguous_transport_retries_exact_frozen_request_until_budget_exhausts(
+    phase,
+    error_code,
+) -> None:
+    operation = next(
+        operation for operation in EFFECT_OPERATIONS if operation.completion_mode is WmsCompletionMode.SYNC_RESULT
+    )
+    message = _outbox(
+        operation_domain="WMS",
+        operation_identity=operation.identity,
+        idempotency_key="frozen-idempotency-key",
+        payload_json=REQUEST_FIXTURES[operation.identity],
+    )
+    repository = _ExhaustingOutboxRepository([message])
+    reducer = _RecordingReducer()
+    bridge = EffectTransportBridge(reducer=reducer)
+    ambiguous = ExternalHttpTransportResult.ambiguous(
+        phase=phase,
+        error_code=error_code,
+        error_message="response delivery is uncertain",
+    )
+    sender = AsyncMock(side_effect=(ambiguous, ambiguous))
+    engine = SystemOutboxEngine(
+        outbox_repository=repository,
+        dispatch_scheduler=FakeFairDispatchScheduler(repository),
+        external_http_sender=sender,
+        credential_provider=StaticTestCredentialProvider(),
+        dispatch_attempt_service=_IncrementingAttemptService(),
+        effect_transport_bridge=bridge,
+        effect_transport_resolver=bridge.resolve_result,
+        workline_domain_dispatcher=AsyncMock(return_value={"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}),
+    )
+    db = SimpleNamespace(commit=AsyncMock())
+
+    first = await engine.dispatch(db, limit=1)
+    second = await engine.dispatch(db, limit=1)
+
+    assert first == {"dispatched": 1, "success": 0, "failed": 1, "skipped": 0}
+    assert second == {"dispatched": 1, "success": 0, "failed": 1, "skipped": 0}
+    frozen_requests = [
+        (
+            call.args[0].operation_identity,
+            call.args[0].idempotency_key,
+            call.args[0].payload_hash,
+            call.args[0].body,
+            call.args[0].endpoint,
+            call.args[0].method,
+            call.args[0].timeout_seconds,
+            call.args[0].credential_reference,
+            call.args[0].auth_scheme,
+        )
+        for call in sender.await_args_list
+    ]
+    assert frozen_requests == [frozen_requests[0], frozen_requests[0]]
+    assert frozen_requests[0][1:4] == (
+        "frozen-idempotency-key",
+        message.payload_hash,
+        message.canonical_payload_bytes,
+    )
+    assert [event.event_type for event, _required in reducer.events] == [
+        EffectReducerEventType.TRANSPORT_AMBIGUOUS,
+        EffectReducerEventType.RECONCILIATION_OPENED,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_lost_external_http_finalization_without_unknown_fence_skips_late_evidence() -> None:
     message = _outbox()
     repository = FakeSystemOutboxRepository([message])
@@ -519,6 +593,30 @@ async def test_sender_rejects_invalid_stream_metadata_before_body_interpretation
     assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
     assert result.phase is outbox_engine_module.ExternalHttpTransportPhase.RESPONSE_RECEIVED
     assert result.error_code == "WMS_RESPONSE_METADATA_INVALID"
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_sender_maps_neutral_chunk_budget_failure_at_the_sys_boundary(monkeypatch) -> None:
+    original_client = httpx.AsyncClient
+    stream = _WireStream(b"x" * (MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES + 1))
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            stream=stream,
+            request=request,
+        )
+    )
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    result = await _send_external_http(signed_external_http_request({"request_id": "REQ-1"}))
+
+    assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
+    assert result.error_code == "WMS_CHUNK_BUDGET_EXCEEDED"
     assert stream.closed is True
 
 

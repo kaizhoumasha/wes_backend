@@ -490,6 +490,29 @@ async def test_executor_total_deadline_fails_as_retryable_timeout() -> None:
             "WMS_WIRE_BUDGET_EXCEEDED",
         ),
         (
+            {"max_wire_bytes": 1},
+            lambda _operation: httpx.Response(200, stream=RawAsyncStream(b"{}")),
+            "WMS_CHUNK_BUDGET_EXCEEDED",
+        ),
+        (
+            {"max_decoded_bytes": 16},
+            lambda _operation: httpx.Response(
+                200,
+                headers={"content-encoding": "gzip"},
+                stream=RawAsyncStream(gzip.compress(b"x" * 512)),
+            ),
+            "WMS_DECODED_BUDGET_EXCEEDED",
+        ),
+        (
+            {},
+            lambda _operation: httpx.Response(
+                200,
+                headers={"content-encoding": "gzip"},
+                stream=RawAsyncStream(gzip.compress(b"x" * 4096)),
+            ),
+            "WMS_COMPRESSION_RATIO_EXCEEDED",
+        ),
+        (
             {},
             lambda _operation: httpx.Response(
                 200,
@@ -505,7 +528,7 @@ async def test_executor_total_deadline_fails_as_retryable_timeout() -> None:
     ],
 )
 async def test_executor_public_execute_enforces_wire_and_json_budgets(
-    budget_update: dict[str, int],
+    budget_update: dict[str, int | float],
     response_factory,
     reason_code: str,
 ) -> None:

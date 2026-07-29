@@ -264,7 +264,7 @@ def _default_transport_resolution(
                 evidence,
             ),
             attempt_no=attempt_no,
-            retry_exhausted=retry_exhausted,
+            retry_exhausted=retry_exhausted and event_type is EffectReducerEventType.TRANSPORT_NOT_SENT,
             reason_code=result.error_code,
             evidence_json=evidence,
         )
@@ -346,6 +346,8 @@ class EffectTransportBridge:
             and payload_json is not None
         ):
             if result.outcome is not ExternalHttpTransportOutcome.ACCEPTED:
+                if result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS and not retry_exhausted:
+                    return EffectTransportResolution(events=(), action=EffectTransportAction.RETRY_SAME_REQUEST)
                 return _default_transport_resolution(
                     dispatch_key=dispatch_key,
                     attempt_no=attempt_no,
