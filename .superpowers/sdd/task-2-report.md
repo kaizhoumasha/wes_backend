@@ -2,7 +2,7 @@
 
 ## 结论
 
-Task 2 与独立复审修复均已完成。当前分支为 `feature/wms-full-factory-integration`。部署入口收敛为绝对路径
+Task 2、独立复审与最终复审修复均已完成。当前分支为 `feature/wms-full-factory-integration`。部署入口收敛为绝对路径
 `WMS_PROVIDER_PROFILE_FILE`；同一次启动只编译一个 profile，catalog、conformance、readiness 与运维基线均显式消费
 该 compiled profile。旧模块级 profile、旧 active credential selector、旧 endpoint 环境变量及 fallback 已从 tracked
 tree 物理删除。
@@ -24,6 +24,8 @@ port 在未注入 compiled endpoint 时仅于实际 `execute()` 调用 fail clos
 - effect status、QUERY sandbox、feasibility probe、repository 与既有测试/重测试调用方均改为显式 compiled
   profile/catalog。
 - 全树门禁通过 `git ls-files` 扫描退役 endpoint 变量和 active HMAC selector，防止配置、脚本或文档回流。
+- 无消费者的 `runtime/system_capabilities/wms/effect_binding.py` lazy facade 已物理删除；catalog 内显式接收
+  compiled profile 的真实实现保持不变。
 
 ## 独立复审项关闭
 
@@ -33,7 +35,8 @@ port 在未注入 compiled endpoint 时仅于实际 `execute()` 调用 fail clos
 | compiled profile 非唯一 active 真源 | 已关闭；catalog/conformance/readiness/startup 共享显式实例 |
 | 旧 endpoint 配置残留 | 已关闭；init-env、reset fallback、配置、compose、文档及历史报告物理删除 |
 | 非法 hostname 字符 | 已关闭；DNS label/IP literal 严格验证 |
-| 默认全集证据 | 已按约束仅运行一次；25 个失败已完成根因修复与对应范围定向回归，未重复运行默认全集 |
+| 孤立 effect-binding lazy facade | 已关闭；刷新分支索引确认 0 消费者、0 执行流后物理删除 |
+| 默认全集证据 | 最终 staged 状态为 4269 passed、5 skipped、0 failed |
 | 报告 statement/branch/计数 | 已更新 |
 
 ## TDD 证据
@@ -52,6 +55,7 @@ port 在未注入 compiled endpoint 时仅于实际 `execute()` 调用 fail clos
 | 退役配置 tracked-tree guard | 2 failed | 2 passed；扩展 active selector 后继续通过 |
 | effect-status/external profile 迁移 | 24 failed、386 passed | 108 个精准节点通过 |
 | repository/status-service 迁移 | 39 failed、9 passed | 相关调用方全部通过 |
+| 孤立 effect-binding facade | 文件仍存在，架构守卫 1 failed | facade 物理删除；目标 1 passed、相关架构文件 13 passed |
 
 ## GitNexus 影响分析
 
@@ -66,6 +70,10 @@ port 在未注入 compiled endpoint 时仅于实际 `execute()` 调用 fail clos
 - `RuntimeInboxProcessorBridge.create_attempt_runtime`：CRITICAL，41 个受影响符号、10 个直接依赖；仅将默认 profile
   contract version 切换到唯一新版本。
 - 新增/未入索引的 endpoint、startup、probe、Repository 注入符号返回 `UNKNOWN`，均以定向合同测试覆盖。
+- `effect_binding.py::freeze_wms_effect_binding`：旧索引曾误报 3 个已不存在的 gateway 消费者；刷新当前
+  worktree 索引后，精确结果为 0 个直接/间接消费者、0 条执行流、LOW，因此选择物理删除而非保留 fallback。
+- 提交前 detect 已以 staged、all 和 compare-to-HEAD 三种 scope 执行；本次删除孤立文件和新增测试未映射到
+  受影响执行流，CLI 均返回 `No changes detected`。MCP runtime 为 storage v40，无法读取 CLI 生成的 v42 数据库。
 
 HIGH/CRITICAL 影响面已按任务授权汇报后继续。worktree 的 GitNexus 数据库由 CLI 42 版生成，检测阶段使用匹配版本的
 CLI。
@@ -78,8 +86,13 @@ CLI。
   `provider_catalog -> orchestration repository` 反向依赖，22 个失败来自旧 material-flow
   admission/profile version 残留。
 - 默认套件发现问题后的精准修复证据：架构边界 3 passed；版本/profile 失败组 135 passed；enforced
-  architecture guardrail 为 0 violations / 0 warnings。根据“默认套件只运行一次”的约束，未通过重复默认全集
-  隐藏该次真实结果。
+  architecture guardrail 为 0 violations / 0 warnings。
+- 最终复审定点回归：目标守卫 1 passed；完整相关架构文件 13 passed；tracked-tree guard 与相关架构文件合计
+  14 passed。
+- 最终复审默认全集第一次执行：`4274 collected, 4268 passed, 1 failed, 5 skipped`。唯一失败是 facade 已在
+  working tree 删除但尚未 staged，`git ls-files` 仍返回旧路径，tracked-tree guard 读取该路径时触发
+  `FileNotFoundError`。
+- 将物理删除写入 Git index 后，最终 staged 状态默认全集：`4274 collected, 4269 passed, 5 skipped`，0 failed。
 - 测试拓扑 guardrail：6 passed。
 - 默认 collect-only：4273 tests。
 - 变更 Python 文件 Ruff lint/format：passed。
@@ -92,4 +105,6 @@ CLI。
 
 初始实现提交：`3813615d feat(wms): 实现 Provider profile 与 endpoint 编译`。
 
-本轮复审修复将以新的中文 Conventional Commit 提交。
+独立复审修复提交：`6d931a43 fix(wms): 收敛 compiled profile 唯一真源`。
+
+最终复审修复将以新的中文 Conventional Commit 提交。

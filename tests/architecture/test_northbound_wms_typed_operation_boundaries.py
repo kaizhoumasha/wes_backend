@@ -214,3 +214,9 @@ def test_query_shadow_readiness_platform_is_absent_from_production_source() -> N
     for path in production_boundaries:
         source = path.read_text(encoding="utf-8")
         assert all(term not in source for term in forbidden), path.relative_to(REPO_ROOT)
+
+
+def test_orphaned_wms_effect_binding_facade_is_physically_absent() -> None:
+    capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
+
+    assert not (capability_root / "effect_binding.py").exists()
