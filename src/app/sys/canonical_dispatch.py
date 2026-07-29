@@ -124,7 +124,7 @@ class ExternalHttpDispatchRequest:
 
     endpoint: EndpointDefinition
     payload: CanonicalPayload
-    method: Literal["POST"]
+    method: Literal["GET", "POST"]
     timeout_seconds: float
     credential_reference: str | None
     auth_scheme: Literal["NONE", "HMAC_SHA256"]
@@ -195,8 +195,16 @@ class ExternalHttpDispatchRequest:
         )
 
     @property
-    def body(self) -> bytes:
-        return self.payload.body
+    def body(self) -> bytes | None:
+        """POST 发送冻结 JSON body；GET 明确保持无 body。"""
+
+        return self.payload.body if self.method == "POST" else None
+
+    @property
+    def query_params(self) -> dict[str, Any] | None:
+        """GET 从同一冻结 canonical bytes 恢复 query projection。"""
+
+        return self.payload.parse_projection() if self.method == "GET" else None
 
     @property
     def payload_hash(self) -> str:
@@ -206,10 +214,9 @@ class ExternalHttpDispatchRequest:
     def headers(self) -> dict[str, str]:
         """返回封闭的认证 header 集；调用方不能注入自由 header mapping。"""
 
-        headers = {
-            "Content-Type": "application/json",
-            "X-WES-Content-SHA256": self.payload_hash,
-        }
+        headers = {"X-WES-Content-SHA256": self.payload_hash}
+        if self.method == "POST":
+            headers["Content-Type"] = "application/json"
         if self.auth_scheme == "HMAC_SHA256":
             headers.update(
                 {

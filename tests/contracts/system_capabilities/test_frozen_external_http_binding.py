@@ -12,6 +12,7 @@ from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_binding import (
     ExternalHttpBindingDefinition,
     ExternalHttpProviderProfileDefinition,
+    ExternalHttpTargetSnapshot,
     FrozenExternalHttpBinding,
     freeze_external_http_binding,
 )
@@ -93,6 +94,54 @@ def test_none_binding_freezes_isolated_lan_without_credential() -> None:
     assert frozen.network_trust_mode == "isolated_lan"
     assert frozen.credential_reference is None
     assert FrozenExternalHttpBinding.from_persisted(**frozen.as_persisted_fields()) == frozen
+
+
+@pytest.mark.parametrize("http_method", ["GET", "POST"])
+def test_external_http_binding_and_target_snapshot_share_get_post_closed_set(http_method: str) -> None:
+    binding = ExternalHttpBindingDefinition(
+        operation_identity="tests.external-http.method@v1",
+        allowed_target_codes=("TEST_HTTP_METHOD",),
+        http_method=http_method,  # type: ignore[arg-type]
+        timeout_seconds=10,
+        auth_scheme="NONE",
+        credential_reference=None,
+    )
+    snapshot = ExternalHttpTargetSnapshot(
+        code="TEST_HTTP_METHOD",
+        url="http://factory-provider.example/resource",
+        http_method=http_method,  # type: ignore[arg-type]
+        timeout_seconds=10,
+    )
+
+    assert binding.http_method == snapshot.http_method == http_method
+    assert ExternalHttpTargetSnapshot.from_json(snapshot.as_json()) == snapshot
+
+
+@pytest.mark.parametrize("contract_type", [ExternalHttpBindingDefinition, ExternalHttpTargetSnapshot])
+def test_external_http_binding_and_target_snapshot_reject_methods_outside_closed_set(contract_type: type) -> None:
+    kwargs = {
+        "http_method": "DELETE",
+        "timeout_seconds": 10,
+    }
+    if contract_type is ExternalHttpBindingDefinition:
+        kwargs.update(
+            {
+                "operation_identity": "tests.external-http.method@v1",
+                "allowed_target_codes": ("TEST_HTTP_METHOD",),
+                "auth_scheme": "NONE",
+                "credential_reference": None,
+            }
+        )
+    else:
+        kwargs.update(
+            {
+                "code": "TEST_HTTP_METHOD",
+                "url": "http://factory-provider.example/resource",
+            }
+        )
+
+    with pytest.raises(ValueError, match="GET or POST"):
+        contract_type(**kwargs)
 
 
 @pytest.mark.parametrize(

@@ -13,6 +13,12 @@ import pytest
 
 from src.app.sys import canonical_dispatch
 from src.app.sys.canonical_dispatch import CanonicalPayload, ExternalHttpDispatchRequest
+from src.app.sys.external_http_binding import (
+    ExternalHttpBindingDefinition,
+    ExternalHttpProviderProfileDefinition,
+    FrozenExternalHttpBinding,
+    freeze_external_http_binding,
+)
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportOutcome,
@@ -25,7 +31,7 @@ from src.app.sys.models import (
     SystemOutboxDispatchType,
     SystemOutboxTargetType,
 )
-from src.app.sys.services.endpoint_registry import EndpointDefinition
+from src.app.sys.services.endpoint_registry import EndpointDefinition, EndpointRegistry
 from src.app.sys.services.outbox_delivery import dispatch_external_http
 from src.app.sys.services.outbox_engine import _send_external_http
 from tests.support.external_http import (
@@ -61,6 +67,31 @@ def _external_envelope(**overrides: Any) -> DispatchEnvelope:
     }
     values.update(overrides)
     return DispatchEnvelope(**values)
+
+
+def _frozen_get_binding(*, auth_scheme: str) -> FrozenExternalHttpBinding:
+    credential_reference = None if auth_scheme == "NONE" else "secret://provider/query@v1"
+    profile = ExternalHttpProviderProfileDefinition(
+        identity="provider.query.production",
+        environment="production",
+        network_trust_mode="isolated_lan",
+        bindings=(
+            ExternalHttpBindingDefinition(
+                operation_identity="provider.inventory.query@v1",
+                allowed_target_codes=("PROVIDER_QUERY",),
+                http_method="GET",
+                timeout_seconds=10,
+                auth_scheme=auth_scheme,  # type: ignore[arg-type]
+                credential_reference=credential_reference,
+            ),
+        ),
+    )
+    return freeze_external_http_binding(
+        profile=profile,
+        operation_identity="provider.inventory.query@v1",
+        target_code="PROVIDER_QUERY",
+        endpoint_registry=EndpointRegistry({"PROVIDER_QUERY": "http://factory-provider.example/inventory"}),
+    )
 
 
 def test_canonical_payload_uses_one_frozen_byte_sequence_for_hash_signature_and_body() -> None:
@@ -378,6 +409,33 @@ def test_none_effect_request_rejects_authentication_material(
         )
 
 
+@pytest.mark.parametrize("auth_scheme", ["NONE", "HMAC_SHA256"])
+def test_get_request_projects_frozen_payload_to_query_params_for_shared_auth_schemes(auth_scheme: str) -> None:
+    binding = _frozen_get_binding(auth_scheme=auth_scheme)
+    projection = {"cursor": "CURSOR-1", "limit": 25}
+    canonical = CanonicalPayload.from_projection(projection)
+
+    request = ExternalHttpDispatchRequest.from_persisted(
+        binding=binding,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        secret=None if auth_scheme == "NONE" else TEST_SECRET,
+        timestamp=None if auth_scheme == "NONE" else "2026-07-24T00:00:00+00:00",
+        nonce=None if auth_scheme == "NONE" else "query-nonce",
+    )
+
+    assert request.method == "GET"
+    assert request.body is None
+    assert request.query_params == projection
+    assert request.headers["X-WES-Content-SHA256"] == canonical.sha256
+    assert "Content-Type" not in request.headers
+    if auth_scheme == "NONE":
+        assert set(request.headers) == {"X-WES-Content-SHA256"}
+    else:
+        assert request.headers["X-WES-Signature-Algorithm"] == "HMAC_SHA256"
+        assert request.headers["X-WES-Credential-Reference"] == binding.credential_reference
+
+
 @pytest.mark.asyncio
 async def test_none_dispatch_uses_canonical_sender_without_resolving_credentials() -> None:
     canonical = CanonicalPayload.from_projection({"request_id": "REQ-NONE-DISPATCH"})
@@ -513,6 +571,49 @@ async def test_default_http_sender_posts_the_exact_frozen_body(monkeypatch: pyte
             "method": "POST",
             "url": "https://wms.example/inbound",
             "content": canonical.body,
+            "headers": request.headers,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_default_http_sender_sends_get_projection_as_query_params_without_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = _frozen_get_binding(auth_scheme="NONE")
+    projection = {"cursor": "CURSOR-1", "limit": 25}
+    canonical = CanonicalPayload.from_projection(projection)
+    request = ExternalHttpDispatchRequest.from_persisted(
+        binding=binding,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        secret=None,
+        timestamp=None,
+        nonce=None,
+    )
+    calls: list[dict[str, Any]] = []
+
+    class FakeClient:
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def request(self, method: str, url: str, **kwargs: Any) -> SimpleNamespace:
+            calls.append({"method": method, "url": url, **kwargs})
+            return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+
+    result = await _send_external_http(request)
+
+    assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
+    assert calls == [
+        {
+            "method": "GET",
+            "url": "http://factory-provider.example/inventory",
+            "params": projection,
             "headers": request.headers,
         }
     ]

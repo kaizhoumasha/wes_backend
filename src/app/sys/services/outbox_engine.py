@@ -514,11 +514,12 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
 
     try:
         async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=False) as client:
+            request_payload = {"params": request.query_params} if request.method == "GET" else {"content": request.body}
             response = await client.request(
                 request.method,
                 request.endpoint.url,
-                content=request.body,
                 headers=request.headers,
+                **request_payload,
             )
             status_code = int(response.status_code)
             protocol_error_code = _extract_protocol_error_code(

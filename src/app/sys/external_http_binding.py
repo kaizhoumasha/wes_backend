@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 _CREDENTIAL_REFERENCE_RE = re.compile(r"^[a-z][a-z0-9+.-]*://[^@\s]+@v[1-9][0-9]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SUPPORTED_AUTH_SCHEMES = frozenset({"NONE", "HMAC_SHA256"})
+_SUPPORTED_HTTP_METHODS = frozenset({"GET", "POST"})
 _SUPPORTED_NETWORK_TRUST_MODES = frozenset({"isolated_lan", "authenticated_network"})
 _TARGET_SNAPSHOT_FIELDS = frozenset({"code", "url", "http_method", "timeout_seconds"})
 
@@ -73,7 +74,7 @@ class ExternalHttpBindingDefinition:
 
     operation_identity: str
     allowed_target_codes: tuple[str, ...]
-    http_method: Literal["POST"]
+    http_method: Literal["GET", "POST"]
     timeout_seconds: float
     auth_scheme: Literal["NONE", "HMAC_SHA256"]
     credential_reference: str | None
@@ -84,8 +85,8 @@ class ExternalHttpBindingDefinition:
         if not target_codes or len(target_codes) != len(set(target_codes)):
             raise ValueError("binding requires unique authored target codes")
         object.__setattr__(self, "allowed_target_codes", target_codes)
-        if self.http_method != "POST":
-            raise ValueError("EXTERNAL_HTTP effect binding only supports POST")
+        if self.http_method not in _SUPPORTED_HTTP_METHODS:
+            raise ValueError("EXTERNAL_HTTP binding method must be GET or POST")
         if not isinstance(self.timeout_seconds, (int, float)) or self.timeout_seconds <= 0:
             raise ValueError("binding timeout_seconds must be positive")
         if self.auth_scheme not in _SUPPORTED_AUTH_SCHEMES:
@@ -158,7 +159,7 @@ class ExternalHttpTargetSnapshot:
 
     code: str
     url: str
-    http_method: Literal["POST"]
+    http_method: Literal["GET", "POST"]
     timeout_seconds: float
 
     def __post_init__(self) -> None:
@@ -174,8 +175,8 @@ class ExternalHttpTargetSnapshot:
             or bool(parsed.fragment)
         ):
             raise ValueError("target snapshot url must be a non-secret HTTP endpoint without userinfo/query/fragment")
-        if self.http_method != "POST":
-            raise ValueError("target snapshot only supports POST")
+        if self.http_method not in _SUPPORTED_HTTP_METHODS:
+            raise ValueError("target snapshot method must be GET or POST")
         if not isinstance(self.timeout_seconds, (int, float)) or self.timeout_seconds <= 0:
             raise ValueError("target snapshot timeout_seconds must be positive")
 

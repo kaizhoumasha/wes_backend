@@ -149,3 +149,63 @@ LadybugDB 报告索引存储版本 `42` 与当前运行时版本 `40` 不兼容�
 - 没有独立 NONE feature flag。
 - 没有实现 Task 4/Task 5 的 QUERY/EFFECT 业务执行、scanner 或双 client/pool。
 - callback 等其他 Provider/域的认证策略未被关闭。
+
+---
+
+## 最小复审修复：共享 GET/POST 与 compiled profile 冻结映射
+
+### 修复结论
+
+- `ExternalHttpBindingDefinition`、`ExternalHttpTargetSnapshot` 与
+  `ExternalHttpDispatchRequest` 的 method 闭集统一扩展为 `GET | POST`，闭集外方法继续 fail closed。
+- canonical dispatcher 对 GET 使用 query params 且不发送 body；POST 继续发送原冻结 canonical bytes。
+  NONE/HMAC 仍走同一 typed request、同一 sender 和同一 payload hash 合同。
+- 新增 compiled WMS profile 到 frozen binding 的纯结构映射：
+  - 19 项 QUERY 冻结 compiled endpoint、静态 method/budget、auth、network trust 与 credential reference。
+  - 7 项异步 EFFECT status 冻结 compiled status endpoint，并明确使用 GET。
+  - 同步 EFFECT 不得获得 status binding。
+- 未实现 QUERY/EFFECT 运行、业务 parser、WMS 专用 dispatcher 或 sender，Task 4/Task 5 边界未被提前侵入。
+
+### GitNexus 影响分析
+
+修改前已执行 upstream impact analysis，并在实施前报告 HIGH/CRITICAL 风险：
+
+| Symbol | 风险 | 受影响符号 | 直接调用者 |
+| --- | --- | ---: | ---: |
+| `ExternalHttpBindingDefinition` | CRITICAL | 236 | 16 |
+| `ExternalHttpTargetSnapshot` | CRITICAL | 237 | 17 |
+| `ExternalHttpDispatchRequest` | CRITICAL | 204 | 32 |
+| `_send_external_http` | MEDIUM | 6 | 6 |
+| `_external_http_effect_profile` | HIGH | 114 | 1 |
+| `_external_http_effect_binding` | LOW | 26 | 1 |
+
+### TDD 证据
+
+- RED：新增合同首次运行 `33 failed, 39 passed`，明确暴露 POST-only method、GET projection
+  与 compiled profile 冻结映射缺失。
+- GREEN：同一组合同 `72 passed`。
+- 结构合同覆盖全部 19 项 QUERY 与 7 项异步 EFFECT status，并包含同步 EFFECT 负例。
+
+### 回归与门禁
+
+| 验证 | 结果 |
+| --- | --- |
+| 共享 system capabilities + sys | `242 passed` |
+| WMS integration contracts | `408 passed` |
+| Workline runtime | `966 passed` |
+| 测试拓扑 guardrail | `6 passed` |
+| collect-only | `4321 tests collected` |
+| 默认全集（当前代码仅执行一次） | `4314 passed, 5 skipped, 2 failed`；失败均为上一轮新增 station recovery 测试未同步 legacy matrix |
+| legacy matrix 定点修复 | 仓库生成器仅补 1 条 CSV；两项原失败通过，完整 matrix 合同 `24 passed` |
+| 完整 quality profile（仅执行一次） | Ruff format/check、Bandit、runtime contracts、import-linter、架构与拓扑门禁全部通过 |
+
+默认全集的两项失败具有同一根因：
+`test_station_outbox_persists_none_network_trust_for_restart_recovery` 在上一轮 Task 3 新增后，
+legacy audit trace CSV 与 Markdown 派生统计未刷新。本轮使用
+`scripts/generate_legacy_matrix.py` 同步唯一缺失条目，并定点验证全部 24 项矩阵合同；
+未重复执行默认全集，也未把该生成物漂移误归因于 GET/POST 生产代码。
+
+提交前再次执行 `gitnexus_detect_changes(scope="all")`：索引仓库名仍返回
+`No changes detected`，当前 worktree 绝对路径仍因 LadybugDB 存储版本 `42/40`
+不兼容而无法分析。该结果与本地 diff 不一致，不能作为零影响证明；本轮仍以修改前的逐 symbol
+impact analysis、最终 diff、定点回归和完整 quality profile 作为提交范围依据。

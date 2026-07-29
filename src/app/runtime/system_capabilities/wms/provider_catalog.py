@@ -24,7 +24,7 @@ from src.app.wms_integration.provider_manifest import require_full_factory_regis
 from src.core.conf import settings
 
 if TYPE_CHECKING:
-    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsOperationEndpoint, CompiledWmsProviderProfile
     from src.app.wms_integration.provider_startup import WmsProviderStartupConfiguration
 
 WMS_EFFECT_STATUS_HINT_CALLBACK = InboundCallbackContract(
@@ -113,15 +113,26 @@ def validate_wms_transport_configuration(
 
 
 def _external_http_effect_profile(catalog: WmsProviderCatalog) -> ExternalHttpProviderProfileDefinition:
-    return ExternalHttpProviderProfileDefinition(
-        identity=catalog.profile_identity,
-        environment=catalog.identity.environment,
-        network_trust_mode=catalog.compiled_profile.profile.network_trust_mode,
+    return _external_http_profile(
+        catalog,
         bindings=tuple(
             _external_http_effect_binding(binding)
             for binding in catalog.bindings
             if binding.operation.mode.value == "EFFECT"
         ),
+    )
+
+
+def _external_http_profile(
+    catalog: WmsProviderCatalog,
+    *,
+    bindings: tuple[ExternalHttpBindingDefinition, ...],
+) -> ExternalHttpProviderProfileDefinition:
+    return ExternalHttpProviderProfileDefinition(
+        identity=catalog.profile_identity,
+        environment=catalog.identity.environment,
+        network_trust_mode=catalog.compiled_profile.profile.network_trust_mode,
+        bindings=bindings,
     )
 
 
@@ -131,6 +142,16 @@ def _external_http_effect_binding(binding: WmsProviderOperationBinding) -> Exter
     http_method = binding.operation.http_method.value
     if http_method != "POST":
         raise ValueError("WMS EXTERNAL_HTTP EFFECT binding only supports POST")
+    return _external_http_binding(binding, http_method=http_method)
+
+
+def _external_http_binding(
+    binding: WmsProviderOperationBinding,
+    *,
+    http_method: str,
+) -> ExternalHttpBindingDefinition:
+    """把静态 operation 和 compiled profile 安全事实映射为共享 HTTP binding。"""
+
     auth_scheme = binding.outbound_auth.scheme.value
     return ExternalHttpBindingDefinition(
         operation_identity=binding.operation.identity,
@@ -139,6 +160,107 @@ def _external_http_effect_binding(binding: WmsProviderOperationBinding) -> Exter
         timeout_seconds=binding.operation.budget.deadline_seconds,
         auth_scheme=auth_scheme,
         credential_reference=binding.outbound_auth.credential_reference,
+    )
+
+
+def _external_http_query_profile(catalog: WmsProviderCatalog) -> ExternalHttpProviderProfileDefinition:
+    return _external_http_profile(
+        catalog,
+        bindings=tuple(
+            _external_http_binding(binding, http_method=binding.operation.http_method.value)
+            for binding in catalog.bindings
+            if binding.operation.mode.value == "QUERY"
+        ),
+    )
+
+
+def _external_http_effect_status_profile(catalog: WmsProviderCatalog) -> ExternalHttpProviderProfileDefinition:
+    return _external_http_profile(
+        catalog,
+        bindings=tuple(
+            _external_http_binding(binding, http_method="GET")
+            for binding in catalog.bindings
+            if binding.operation.supports_status_query
+        ),
+    )
+
+
+def _compiled_operation_binding(
+    *,
+    catalog: WmsProviderCatalog,
+    operation_identity: str,
+) -> tuple[WmsProviderOperationBinding, CompiledWmsOperationEndpoint]:
+    bindings = tuple(binding for binding in catalog.bindings if binding.operation.identity == operation_identity)
+    if len(bindings) != 1:
+        raise ValueError("WMS operation binding must resolve exactly once from compiled profile")
+    try:
+        endpoint = catalog.compiled_profile.operations[operation_identity]
+    except KeyError as exc:
+        raise ValueError("WMS operation is absent from compiled profile") from exc
+    return bindings[0], endpoint
+
+
+def _freeze_wms_compiled_binding(
+    *,
+    catalog: WmsProviderCatalog,
+    operation_identity: str,
+    profile: ExternalHttpProviderProfileDefinition,
+    endpoint_url: str,
+    target_code: str,
+) -> FrozenExternalHttpBinding:
+    from src.app.sys.services.endpoint_registry import EndpointRegistry
+
+    return freeze_external_http_binding(
+        profile=profile,
+        operation_identity=operation_identity,
+        target_code=target_code,
+        endpoint_registry=EndpointRegistry({target_code: endpoint_url}),
+    )
+
+
+def freeze_wms_query_binding(
+    *,
+    catalog: WmsProviderCatalog,
+    operation_identity: str,
+) -> FrozenExternalHttpBinding:
+    """只从 compiled profile 冻结 QUERY endpoint/auth/method 结构。"""
+
+    binding, endpoint = _compiled_operation_binding(
+        catalog=catalog,
+        operation_identity=operation_identity,
+    )
+    if binding.operation.mode.value != "QUERY":
+        raise ValueError("query binding requires a QUERY operation")
+    return _freeze_wms_compiled_binding(
+        catalog=catalog,
+        operation_identity=operation_identity,
+        profile=_external_http_query_profile(catalog),
+        endpoint_url=endpoint.endpoint_template,
+        target_code=binding.operation.target_code,
+    )
+
+
+def freeze_wms_effect_status_binding(
+    *,
+    catalog: WmsProviderCatalog,
+    operation_identity: str,
+) -> FrozenExternalHttpBinding:
+    """只为 compiled profile 中的七项异步 EFFECT 冻结 GET status binding。"""
+
+    binding, endpoint = _compiled_operation_binding(
+        catalog=catalog,
+        operation_identity=operation_identity,
+    )
+    if binding.operation.mode.value != "EFFECT" or not binding.operation.supports_status_query:
+        raise ValueError("status binding requires an async EFFECT operation")
+    if endpoint.status_endpoint is None:
+        raise ValueError("async EFFECT compiled profile requires a status endpoint")
+    return _freeze_wms_compiled_binding(
+        catalog=catalog,
+        operation_identity=operation_identity,
+        profile=_external_http_effect_status_profile(catalog),
+        endpoint_url=endpoint.status_endpoint,
+        target_code=binding.operation.target_code,
     )
 
 
@@ -190,6 +312,8 @@ __all__ = [
     "WmsProviderCatalog",
     "build_wms_provider_catalog",
     "freeze_wms_effect_binding",
+    "freeze_wms_effect_status_binding",
+    "freeze_wms_query_binding",
     "resolve_wms_operation_binding",
     "validate_wms_transport_configuration",
 ]
