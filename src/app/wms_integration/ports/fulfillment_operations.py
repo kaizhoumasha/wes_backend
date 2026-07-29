@@ -35,6 +35,14 @@ class NotifyPkgBindingResult(EffectResult):
     binding_reference: StableText = Field(max_length=160)
 
 
+def validate_notify_pkg_binding_terminal_identity(
+    request: NotifyPkgBindingRequest,
+    result: NotifyPkgBindingResult,
+) -> None:
+    if request.pkg_id != result.pkg_id:
+        raise ValueError("package binding terminal identity differs from request")
+
+
 class RequestRackSupplyRequest(EffectRequest):
     station_code: StableText = Field(max_length=120)
     rack_type: StableText = Field(max_length=80)
@@ -449,6 +457,14 @@ class PublishManualTaskResult(EffectResult):
     publish_status: Literal["PUBLISHED"]
 
 
+def validate_publish_manual_task_terminal_identity(
+    request: PublishManualTaskRequest,
+    result: PublishManualTaskResult,
+) -> None:
+    if request.manual_task_key != result.manual_task_key:
+        raise ValueError("manual task terminal identity differs from request")
+
+
 class CancelRequestRequest(EffectRequest):
     target_operation_identity: StableText = Field(max_length=160)
     target_idempotency_key: StableText = Field(max_length=160)
@@ -469,6 +485,8 @@ def validate_cancel_terminal_result(
 ) -> CancelRequestResult:
     """E16 裁决必须回显同一取消目标，不得跨 provider task 串单。"""
 
+    if not isinstance(request, CancelRequestRequest) or not isinstance(result, CancelRequestResult):
+        raise TypeError("E16 request requires E16 terminal result")
     for field_name in (
         "target_operation_identity",
         "target_idempotency_key",
@@ -488,6 +506,7 @@ NOTIFY_PKG_BINDING = effect_operation(
     reject_codes=("PACKAGE_NOT_FOUND", "BIN_NOT_FOUND", "SLOT_OCCUPIED"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_DATA,
+    terminal_identity_validator=validate_notify_pkg_binding_terminal_identity,
 )
 REQUEST_RACK_SUPPLY = effect_operation(
     identity="wms.fulfillment.request_rack_supply@v1",
@@ -569,6 +588,7 @@ PUBLISH_MANUAL_TASK = effect_operation(
     reject_codes=("MANUAL_TASK_NOT_SUPPORTED", "STATION_NOT_FOUND", "OBJECT_NOT_FOUND"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_DATA,
+    terminal_identity_validator=validate_publish_manual_task_terminal_identity,
 )
 CANCEL_REQUEST = effect_operation(
     identity="wms.fulfillment.cancel_request@v1",
@@ -579,6 +599,7 @@ CANCEL_REQUEST = effect_operation(
     reject_codes=("TARGET_REQUEST_NOT_FOUND", "TARGET_IDENTITY_MISMATCH"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+    terminal_identity_validator=validate_cancel_terminal_result,
 )
 
 OPERATIONS = (

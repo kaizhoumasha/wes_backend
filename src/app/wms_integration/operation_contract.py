@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from enum import Enum
 from typing import Annotated
 
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, computed_f
 
 OperationIdentity = Annotated[str, StringConstraints(pattern=r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")]
 StableCode = Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]
+TerminalIdentityValidator = Callable[[BaseModel, BaseModel], object]
 
 
 class WmsOperationMode(str, Enum):
@@ -119,6 +121,7 @@ class WmsOperationDefinition(BaseModel):
     max_candidate_count: int | None = Field(default=None, gt=0)
     error_codes: tuple[StableCode, ...] = Field(min_length=1)
     reject_codes: tuple[StableCode, ...] = Field(min_length=1)
+    terminal_identity_validator: TerminalIdentityValidator | None = Field(default=None, exclude=True)
 
     @computed_field
     @property
@@ -126,7 +129,7 @@ class WmsOperationDefinition(BaseModel):
         return self.completion_mode is WmsCompletionMode.ASYNC_TASK
 
     @model_validator(mode="after")
-    def validate_static_semantics(self) -> WmsOperationDefinition:
+    def validate_static_semantics(self) -> WmsOperationDefinition:  # noqa: PLR0912 - 静态合同集中闭合
         if self.request_model is self.result_model:
             raise ValueError("request_model and result_model must be operation-specific")
         for model in (self.request_model, self.result_model):
@@ -139,6 +142,8 @@ class WmsOperationDefinition(BaseModel):
         if len(self.reject_codes) != len(set(self.reject_codes)):
             raise ValueError("reject_codes must not contain duplicates")
         if self.mode is WmsOperationMode.QUERY:
+            if self.terminal_identity_validator is not None:
+                raise ValueError("QUERY must not declare terminal_identity_validator")
             if self.max_candidate_count is not None:
                 raise ValueError("QUERY must not declare max_candidate_count")
             if self.completion_mode is not None or self.execution_lane is not WmsExecutionLane.WMS_DATA:
@@ -161,6 +166,10 @@ class WmsOperationDefinition(BaseModel):
             raise ValueError("EFFECT must use POST and may change WMS state")
         if self.completion_mode is None or self.pagination is not None or self.budget.max_rows is not None:
             raise ValueError("EFFECT requires completion_mode and forbids pagination")
+        if self.completion_mode is WmsCompletionMode.SYNC_RESULT and self.terminal_identity_validator is None:
+            raise ValueError("SYNC_RESULT EFFECT requires terminal_identity_validator")
+        if self.completion_mode is WmsCompletionMode.ASYNC_TASK and self.terminal_identity_validator is not None:
+            raise ValueError("ASYNC_TASK EFFECT must not declare terminal_identity_validator")
         is_e13 = self.identity == "wms.fulfillment.move_bins_from_conveyor_exit@v1"
         if is_e13 and self.max_candidate_count is None:
             raise ValueError("E13 requires max_candidate_count")
@@ -249,6 +258,7 @@ def effect_operation(
     completion_mode: WmsCompletionMode,
     execution_lane: WmsExecutionLane,
     max_candidate_count: int | None = None,
+    terminal_identity_validator: TerminalIdentityValidator | None = None,
 ) -> WmsOperationDefinition:
     """构造一项静态 EFFECT Definition。"""
 
@@ -268,6 +278,7 @@ def effect_operation(
         max_candidate_count=max_candidate_count,
         error_codes=EFFECT_ERROR_CODES,
         reject_codes=reject_codes,
+        terminal_identity_validator=terminal_identity_validator,
     )
 
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import Enum
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from src.app.runtime.orchestration.effect_state_contract import (
@@ -108,11 +110,24 @@ def _sync_transport_resolution(
     occurred_at_ms: int,
     operation_identity: str,
     result: ExternalHttpTransportResult,
+    retry_exhausted: bool,
     outcome: Success[Any] | BusinessReject | RetryableFailure | ContractViolation,
 ) -> EffectTransportResolution:
+    typed_outcome = outcome.model_dump(mode="json")
+    typed_result_hash = sha256(
+        json.dumps(
+            typed_outcome,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
     evidence = {
         **_transport_evidence(result, operation_identity=operation_identity),
-        "typed_outcome": outcome.model_dump(mode="json"),
+        "interpreted_outcome_kind": outcome.kind,
+        "typed_result_hash": typed_result_hash,
+        "typed_result_reference": f"runtime-intent-outcome:{dispatch_key}",
     }
     if isinstance(outcome, Success | BusinessReject):
         event_type = (
@@ -138,9 +153,41 @@ def _sync_transport_resolution(
                 "outcome_kind": outcome.kind,
                 "outcome_code": reason_code,
             },
+            terminal_outcome=typed_outcome,
         )
         return EffectTransportResolution(events=(event,))
     if isinstance(outcome, RetryableFailure) and outcome.error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS":
+        if retry_exhausted:
+            exhaustion_evidence = {
+                **evidence,
+                "outcome_kind": outcome.kind,
+                "outcome_code": "WMS_SYNC_CONFIRMATION_BUDGET_EXHAUSTED",
+            }
+            return EffectTransportResolution(
+                events=(
+                    EffectReducerEvent(
+                        event_type=EffectReducerEventType.TRANSPORT_AMBIGUOUS,
+                        dispatch_key=dispatch_key,
+                        occurred_at_ms=occurred_at_ms,
+                        source_event_id=generated_effect_source_event_id(
+                            "wms-sync-confirmation-exhausted",
+                            dispatch_key,
+                            attempt_no,
+                            exhaustion_evidence,
+                        ),
+                        attempt_no=attempt_no,
+                        reason_code="WMS_SYNC_CONFIRMATION_BUDGET_EXHAUSTED",
+                        evidence_json=exhaustion_evidence,
+                    ),
+                    _reconciliation_event(
+                        dispatch_key=dispatch_key,
+                        attempt_no=attempt_no,
+                        occurred_at_ms=occurred_at_ms,
+                        reason_code="WMS_SYNC_CONFIRMATION_BUDGET_EXHAUSTED",
+                        evidence_json=exhaustion_evidence,
+                    ),
+                )
+            )
         return EffectTransportResolution(events=(), action=EffectTransportAction.RETRY_SAME_REQUEST)
     if isinstance(outcome, ContractViolation) and outcome.error_code == "IDEMPOTENCY_CONFLICT":
         return EffectTransportResolution(
@@ -182,6 +229,7 @@ def _default_transport_resolution(
     retry_exhausted: bool,
     occurred_at_ms: int,
     operation_identity: str | None,
+    reconcile_wms_ambiguous: bool = False,
 ) -> EffectTransportResolution:
     is_wms_effect = operation_identity in EFFECT_OPERATION_IDENTITIES
     wms_protocol_rejection = is_wms_effect and result.protocol_result is ExternalHttpProtocolResult.REJECTED
@@ -221,7 +269,7 @@ def _default_transport_resolution(
             evidence_json=evidence,
         )
     ]
-    if result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS and not is_wms_effect:
+    if result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS and (not is_wms_effect or reconcile_wms_ambiguous):
         events.append(
             _reconciliation_event(
                 dispatch_key=dispatch_key,
@@ -297,6 +345,16 @@ class EffectTransportBridge:
             and operation.completion_mode is WmsCompletionMode.SYNC_RESULT
             and payload_json is not None
         ):
+            if result.outcome is not ExternalHttpTransportOutcome.ACCEPTED:
+                return _default_transport_resolution(
+                    dispatch_key=dispatch_key,
+                    attempt_no=attempt_no,
+                    result=result,
+                    retry_exhausted=retry_exhausted,
+                    occurred_at_ms=occurred_at_ms,
+                    operation_identity=operation_identity,
+                    reconcile_wms_ambiguous=True,
+                )
             try:
                 request = operation.request_model.model_validate(payload_json)
             except (TypeError, ValueError):
@@ -318,6 +376,7 @@ class EffectTransportBridge:
                 occurred_at_ms=occurred_at_ms,
                 operation_identity=operation_identity,
                 result=result,
+                retry_exhausted=retry_exhausted,
                 outcome=outcome,
             )
         return _default_transport_resolution(

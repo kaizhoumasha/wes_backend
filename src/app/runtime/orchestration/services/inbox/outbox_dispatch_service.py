@@ -1097,6 +1097,7 @@ class OutboxDispatchService:
                             dispatch_key=str(outbox.dispatch_key),
                             attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
                             operation_identity=getattr(outbox, "operation_identity", None),
+                            payload_json=payload_dict(getattr(outbox, "payload_json", None)),
                         )
                         logger.exception(f"Outbox {outbox_pk} 证据落库失败，已隔离收口为 UNKNOWN")
                         result["failed"] += 1

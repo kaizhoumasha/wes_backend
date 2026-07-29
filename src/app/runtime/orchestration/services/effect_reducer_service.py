@@ -447,9 +447,24 @@ class EffectReducer:
     @staticmethod
     def _write_current_outcome(intent: Any, *, event: EffectReducerEvent) -> None:
         evidence = dict(event.evidence_json)
-        intent.outcome_kind = str(evidence.get("outcome_kind") or event.event_type.value.lower())
-        intent.outcome_code = str(evidence.get("outcome_code") or event.reason_code or event.event_type.value)
-        intent.outcome_json = evidence
+        outcome_kind = str(evidence.get("outcome_kind") or event.event_type.value.lower())
+        outcome_code = str(evidence.get("outcome_code") or event.reason_code or event.event_type.value)
+        intent.outcome_kind = outcome_kind
+        intent.outcome_code = outcome_code
+        if event.terminal_outcome is None:
+            intent.outcome_json = evidence
+            return
+        intent.outcome_json = {
+            "capability_key": str(getattr(intent, "capability_key", "") or ""),
+            "contract_version": str(getattr(intent, "capability_contract_version", "") or ""),
+            "operation_key": str(getattr(intent, "operation_identity", "") or ""),
+            "idempotency_key": str(getattr(intent, "idempotency_key", "") or ""),
+            "payload_hash": str(getattr(intent, "payload_hash", None) or getattr(intent, "request_hash", "") or ""),
+            "outcome_kind": outcome_kind,
+            "outcome_code": outcome_code,
+            "outcome": dict(event.terminal_outcome),
+            "occurred_at_ms": event.occurred_at_ms,
+        }
 
     @staticmethod
     def _append_case_evidence(case: ReconciliationCase, evidence: dict[str, object]) -> None:

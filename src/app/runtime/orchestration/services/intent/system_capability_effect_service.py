@@ -117,10 +117,12 @@ class SystemCapabilityEffectService:
                 return SystemCapabilityEffectResult(
                     outcome=outcome,
                     completion_mode=definition.completion_mode,
-                    durably_accepted=definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC,
-                    # 已通过校验的 terminal success evidence 表示远端完成；这与
-                    # OUTBOX_ASYNC 的 PROPOSED/no-evidence durable acceptance 不同。
-                    remote_completed=True,
+                    durably_accepted=(
+                        isinstance(outcome, Success) and definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
+                    ),
+                    # 只有已通过 operation result_model 校验的 terminal success
+                    # 表示远端完成；稳定业务拒绝只重放拒绝事实。
+                    remote_completed=isinstance(outcome, Success),
                     idempotent_replay=True,
                     evidence=evidence,
                 )
@@ -284,8 +286,13 @@ class SystemCapabilityEffectService:
 
     async def _replay_success(
         self, ctx: dict[str, Any], *, intent: RuntimeIntent, prepared: Any
-    ) -> tuple[Success[Any], SystemCapabilityEffectEvidence] | None:
-        raw = await self._intent_service.get_success_evidence(ctx, prepared=prepared)
+    ) -> tuple[Success[Any] | BusinessReject, SystemCapabilityEffectEvidence] | None:
+        persisted_outcome = getattr(getattr(prepared, "intent_log", None), "outcome_json", None)
+        raw = (
+            dict(persisted_outcome)
+            if isinstance(persisted_outcome, dict) and persisted_outcome
+            else await self._intent_service.get_success_evidence(ctx, prepared=prepared)
+        )
         try:
             evidence = SystemCapabilityEffectEvidence.model_validate(raw)
         except ValidationError:
@@ -296,11 +303,17 @@ class SystemCapabilityEffectService:
             or evidence.operation_key != str(intent.operation_key)
             or evidence.idempotency_key != prepared.idempotency_key
             or evidence.payload_hash != prepared.payload_hash
-            or evidence.outcome_kind != "success"
         ):
             return None
-        outcome = parse_outcome(evidence.outcome, payload_type=prepared.definition.output_model)
-        if not isinstance(outcome, Success):
+        output_model = prepared.definition.output_model
+        if evidence.outcome_kind == "success":
+            from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
+
+            operation = WMS_OPERATION_BY_IDENTITY.get(f"{evidence.capability_key}@{evidence.contract_version}")
+            if operation is not None:
+                output_model = operation.result_model
+        outcome = parse_outcome(evidence.outcome, payload_type=output_model)
+        if not isinstance(outcome, Success | BusinessReject) or outcome.kind != evidence.outcome_kind:
             return None
         return outcome, evidence
 

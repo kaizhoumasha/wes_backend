@@ -33,6 +33,14 @@ from src.app.sys.external_http_transport import (
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
+from src.core.bounded_http_response import (
+    HttpContentEncodingFailure,
+    HttpDecodedBudgetViolation,
+    HttpResponseContractError,
+    HttpWireBudgetExceeded,
+    decode_bounded_http_body,
+    read_bounded_wire_body,
+)
 from src.core.logger import logger
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
@@ -311,6 +319,7 @@ class SystemOutboxEngine:
                         dispatch_key=str(outbox.dispatch_key),
                         attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
                         operation_identity=getattr(outbox, "operation_identity", None),
+                        payload_json=_payload_dict(getattr(outbox, "payload_json", None)),
                     )
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
@@ -323,7 +332,9 @@ class SystemOutboxEngine:
                         outbox=outbox,
                         result=dispatch_result,
                     )
-                    if dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
+                    if enum_value(transport_resolution.action) == "RETRY_SAME_REQUEST":
+                        result["failed"] += 1
+                    elif dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
                         result["success"] += 1
                     else:
                         result["failed"] += 1
@@ -539,6 +550,7 @@ class SystemOutboxEngine:
 async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须显式返回唯一分类
     request: ExternalHttpDispatchRequest,
 ) -> ExternalHttpTransportResult:
+    import asyncio
     import json
     import re
 
@@ -547,23 +559,63 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
     try:
         async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=False) as client:
             request_payload = {"params": request.query_params} if request.method == "GET" else {"content": request.body}
-            response = await client.request(
+            outbound = client.build_request(
                 request.method,
                 request.endpoint.url,
                 headers=request.headers,
                 **request_payload,
             )
+            response = await client.send(outbound, stream=True)
             status_code = int(response.status_code)
-            response_body = getattr(response, "content", None)
-            if not isinstance(response_body, bytes):
-                response_body = b""
-            if len(response_body) > MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES:
+            try:
+                async with asyncio.timeout(request.timeout_seconds):
+                    wire_body, _ = await read_bounded_wire_body(
+                        response,
+                        max_chunk_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
+                        max_wire_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
+                        cumulative_wire_bytes=0,
+                    )
+            except HttpWireBudgetExceeded as exc:
                 return ExternalHttpTransportResult.ambiguous(
                     phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
                     protocol_result=ExternalHttpProtocolResult.UNKNOWN,
                     http_status_code=status_code,
-                    error_code="WMS_WIRE_BUDGET_EXCEEDED",
-                    error_message="outbound HTTP response exceeded the bounded transport budget",
+                    error_code=exc.reason_code,
+                    error_message=str(exc),
+                )
+            except HttpResponseContractError:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_RESPONSE_METADATA_INVALID",
+                    error_message="outbound HTTP response metadata is invalid",
+                )
+            finally:
+                await response.aclose()
+            try:
+                response_body = decode_bounded_http_body(
+                    wire_body,
+                    content_encoding=response.headers.get("content-encoding", "identity"),
+                    allowed_content_encodings=("identity", "gzip", "deflate"),
+                    max_decoded_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
+                    max_compression_ratio=20.0,
+                )
+            except HttpDecodedBudgetViolation as exc:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code=exc.reason_code,
+                    error_message=str(exc),
+                )
+            except HttpContentEncodingFailure:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_CONTENT_ENCODING_INVALID",
+                    error_message="outbound HTTP response content encoding is invalid",
                 )
             protocol_error_code = _extract_protocol_error_code(
                 response_body,

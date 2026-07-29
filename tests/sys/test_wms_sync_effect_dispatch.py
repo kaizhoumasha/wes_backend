@@ -22,6 +22,8 @@ from src.app.runtime.system_capabilities.outcomes import (
 from src.app.sys.external_http_transport import (
     MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
     ExternalHttpProtocolResult,
+    ExternalHttpTransportOutcome,
+    ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
@@ -33,6 +35,24 @@ from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
 SYNC_OPERATIONS = tuple(
     operation for operation in EFFECT_OPERATIONS if operation.completion_mode is WmsCompletionMode.SYNC_RESULT
+)
+SYNC_IDENTITY_MUTATIONS = (
+    ("wms.inventory.reserve_inventory@v1", "material_code", "MAT-DRIFT"),
+    ("wms.inventory.reserve_inventory@v1", "reserved_quantity", "11"),
+    ("wms.inventory.release_reservation@v1", "reservation_id", "RES-DRIFT"),
+    ("wms.inventory.confirm_inbound@v1", "inbound_key", "IN-DRIFT"),
+    ("wms.inventory.confirm_outbound@v1", "outbound_key", "OUT-DRIFT"),
+    ("wms.inventory.transfer_inventory@v1", "transfer_key", "TRANSFER-DRIFT"),
+    ("wms.inventory.confirm_return_putaway@v1", "return_key", "RETURN-DRIFT"),
+    ("wms.fulfillment.notify_pkg_binding@v1", "pkg_id", "PKG-DRIFT"),
+    ("wms.fulfillment.publish_manual_task@v1", "manual_task_key", "MANUAL-DRIFT"),
+    (
+        "wms.fulfillment.cancel_request@v1",
+        "target_operation_identity",
+        "wms.fulfillment.request_rack_supply@v1",
+    ),
+    ("wms.fulfillment.cancel_request@v1", "target_idempotency_key", "idem-drift"),
+    ("wms.fulfillment.cancel_request@v1", "target_provider_reference", "provider-drift"),
 )
 
 
@@ -116,6 +136,29 @@ def test_sync_terminal_dispatch_identity_mismatch_fails_closed() -> None:
     request = operation.request_model.model_validate(REQUEST_FIXTURES[operation.identity])
     payload = {**RESULT_FIXTURES[operation.identity], "dispatch_key": "different-dispatch"}
 
+    outcome = interpret_sync_effect_response(operation, request, _response(200, payload))
+
+    assert isinstance(outcome, ContractViolation)
+    assert outcome.error_code == "WMS_RESULT_IDENTITY_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "result_field", "drifted_value"),
+    SYNC_IDENTITY_MUTATIONS,
+)
+def test_all_sync_definitions_reject_operation_specific_terminal_identity_drift(
+    operation_identity,
+    result_field,
+    drifted_value,
+) -> None:
+    operation = next(operation for operation in SYNC_OPERATIONS if operation.identity == operation_identity)
+    request = operation.request_model.model_validate(REQUEST_FIXTURES[operation.identity])
+    payload = {
+        **RESULT_FIXTURES[operation.identity],
+        result_field: drifted_value,
+    }
+
+    assert operation.terminal_identity_validator is not None
     outcome = interpret_sync_effect_response(operation, request, _response(200, payload))
 
     assert isinstance(outcome, ContractViolation)
@@ -206,6 +249,19 @@ def test_e16_terminal_validator_rejects_a_non_e16_result_model() -> None:
 
     with pytest.raises(TypeError, match="E16 request requires E16 terminal result"):
         effect_runtime_module.validate_effect_terminal_result(mismatched_operation, request, payload)
+
+
+def test_terminal_result_validation_fails_closed_when_static_validator_is_missing() -> None:
+    operation = SYNC_OPERATIONS[0]
+    request = operation.request_model.model_validate(REQUEST_FIXTURES[operation.identity])
+    invalid_operation = operation.model_copy(update={"terminal_identity_validator": None})
+
+    with pytest.raises(ValueError, match="terminal identity validator is missing"):
+        effect_runtime_module.validate_effect_terminal_result(
+            invalid_operation,
+            request,
+            RESULT_FIXTURES[operation.identity],
+        )
 
 
 def test_sync_unexpected_terminal_validator_error_is_malformed(
@@ -418,6 +474,93 @@ def test_async_submit_can_never_generate_sync_terminal_events() -> None:
 
     assert EffectReducerEventType.SYNC_COMPLETED not in {event.event_type for event in resolution.events}
     assert EffectReducerEventType.SYNC_REJECTED not in {event.event_type for event in resolution.events}
+
+
+@pytest.mark.parametrize(
+    ("result", "retry_exhausted", "expected_events", "expected_action"),
+    (
+        (
+            ExternalHttpTransportResult.not_sent(
+                phase=ExternalHttpTransportPhase.CONNECTING,
+                safe_to_retry=True,
+                error_code="CONNECT_ERROR",
+            ),
+            False,
+            (EffectReducerEventType.TRANSPORT_NOT_SENT,),
+            EffectTransportAction.DEFAULT,
+        ),
+        (
+            ExternalHttpTransportResult.ambiguous(
+                phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
+                error_code="READ_TIMEOUT",
+            ),
+            False,
+            (
+                EffectReducerEventType.TRANSPORT_AMBIGUOUS,
+                EffectReducerEventType.RECONCILIATION_OPENED,
+            ),
+            EffectTransportAction.DEFAULT,
+        ),
+        (
+            _response(409, {"protocol_error_code": "IDEMPOTENCY_REQUEST_IN_PROGRESS"}),
+            True,
+            (
+                EffectReducerEventType.TRANSPORT_AMBIGUOUS,
+                EffectReducerEventType.RECONCILIATION_OPENED,
+            ),
+            EffectTransportAction.DEFAULT,
+        ),
+    ),
+)
+def test_sync_transport_phase_precedes_body_interpretation_and_exhaustion_is_explicit(
+    result,
+    retry_exhausted,
+    expected_events,
+    expected_action,
+) -> None:
+    operation = SYNC_OPERATIONS[0]
+
+    resolution = EffectTransportBridge(reducer=_Reducer()).resolve_result(
+        operation_identity=operation.identity,
+        payload_json=REQUEST_FIXTURES[operation.identity],
+        result=result,
+        dispatch_key=REQUEST_FIXTURES[operation.identity]["dispatch_key"],
+        attempt_no=3 if retry_exhausted else 1,
+        retry_exhausted=retry_exhausted,
+        occurred_at_ms=3 if retry_exhausted else 1,
+    )
+
+    assert tuple(event.event_type for event in resolution.events) == expected_events
+    assert resolution.action is expected_action
+    if result.outcome is ExternalHttpTransportOutcome.NOT_SENT:
+        assert resolution.events[0].retry_exhausted is False
+
+
+def test_sync_terminal_event_separates_replay_envelope_from_hash_only_evidence() -> None:
+    operation = SYNC_OPERATIONS[0]
+    request_payload = REQUEST_FIXTURES[operation.identity]
+    expected_payload = RESULT_FIXTURES[operation.identity]
+
+    resolution = EffectTransportBridge(reducer=_Reducer()).resolve_result(
+        operation_identity=operation.identity,
+        payload_json=request_payload,
+        result=_response(200, expected_payload),
+        dispatch_key=request_payload["dispatch_key"],
+        attempt_no=1,
+        retry_exhausted=False,
+        occurred_at_ms=1,
+    )
+
+    event = resolution.events[0]
+    serialized_evidence = json.dumps(event.evidence_json, ensure_ascii=False)
+    assert event.terminal_outcome == {
+        "kind": "success",
+        "payload": expected_payload,
+    }
+    assert event.evidence_json["typed_result_hash"]
+    assert event.evidence_json["typed_result_reference"] == f"runtime-intent-outcome:{request_payload['dispatch_key']}"
+    assert "typed_outcome" not in event.evidence_json
+    assert expected_payload["provider_reference"] not in serialized_evidence
 
 
 class _OutboxRepository:

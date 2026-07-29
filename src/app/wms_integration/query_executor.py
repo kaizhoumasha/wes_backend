@@ -34,18 +34,19 @@ from src.app.wms_integration.query_projection import (
     project_wms_query_request,
 )
 from src.app.wms_integration.query_response import (
-    ContentEncodingFailure,
     MalformedProviderResponse,
     QueryBudgetViolation,
     classify_http_failure,
-    decode_bounded_body,
     parse_bounded_json,
     parse_optional_failure_body,
 )
-from src.app.wms_integration.services.http_transport import (
-    WmsHttpResponseContractError,
-    WmsHttpWireBudgetExceeded,
-    send_bounded_wms_request,
+from src.app.wms_integration.services.http_transport import send_bounded_wms_request
+from src.core.bounded_http_response import (
+    HttpContentEncodingFailure,
+    HttpDecodedBudgetViolation,
+    HttpResponseContractError,
+    HttpWireBudgetExceeded,
+    decode_bounded_http_body,
 )
 
 if TYPE_CHECKING:
@@ -297,16 +298,16 @@ class WmsRegistryQueryExecutor:
                             message="WMS QUERY transport unavailable",
                             retryable=True,
                         )
-                    except QueryBudgetViolation as exc:
+                    except (HttpDecodedBudgetViolation, QueryBudgetViolation) as exc:
                         outcome = QueryContractFailure(reason_code=exc.reason_code, message=exc.message)
-                    except WmsHttpWireBudgetExceeded as exc:
+                    except HttpWireBudgetExceeded as exc:
                         outcome = QueryContractFailure(reason_code=exc.reason_code, message=str(exc))
-                    except WmsHttpResponseContractError:
+                    except HttpResponseContractError:
                         outcome = QueryContractFailure(
                             reason_code="WMS_MALFORMED_RESPONSE",
                             message="WMS QUERY response metadata is malformed",
                         )
-                    except ContentEncodingFailure:
+                    except HttpContentEncodingFailure:
                         outcome = QueryContractFailure(
                             reason_code="WMS_CONTENT_ENCODING_INVALID",
                             message="WMS QUERY response content encoding is malformed",
@@ -473,7 +474,7 @@ class WmsRegistryQueryExecutor:
                 message="WMS QUERY provider returned a client error",
                 retryable=False,
             )
-        decoded = decode_bounded_body(
+        decoded = decode_bounded_http_body(
             response.body,
             content_encoding=response.headers.get("content-encoding", "identity"),
             allowed_content_encodings=self._operation.budget.allowed_content_encodings,

@@ -224,6 +224,47 @@ def test_effect_completion_modes_lanes_and_status_capability_are_static() -> Non
     )
 
 
+def test_terminal_identity_validator_is_static_and_only_authored_for_sync_effects() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    registry = _load("src.app.wms_integration.operation_registry")
+    contracts = _load("src.app.wms_integration.operation_contract")
+
+    def definition_payload(operation):
+        return operation.model_dump(exclude={"supports_status_query"})
+
+    query = registry.QUERY_OPERATIONS[0]
+    with pytest.raises(ValidationError, match="QUERY must not declare terminal_identity_validator"):
+        contracts.WmsOperationDefinition.model_validate(
+            {
+                **definition_payload(query),
+                "terminal_identity_validator": lambda _request, _result: None,
+            }
+        )
+
+    sync_effect = next(
+        operation
+        for operation in registry.EFFECT_OPERATIONS
+        if operation.completion_mode is contracts.WmsCompletionMode.SYNC_RESULT
+    )
+    with pytest.raises(ValidationError, match="SYNC_RESULT EFFECT requires terminal_identity_validator"):
+        contracts.WmsOperationDefinition.model_validate(definition_payload(sync_effect))
+
+    async_effect = next(
+        operation
+        for operation in registry.EFFECT_OPERATIONS
+        if operation.completion_mode is contracts.WmsCompletionMode.ASYNC_TASK
+    )
+    with pytest.raises(ValidationError, match="ASYNC_TASK EFFECT must not declare terminal_identity_validator"):
+        contracts.WmsOperationDefinition.model_validate(
+            {
+                **definition_payload(async_effect),
+                "terminal_identity_validator": lambda _request, _result: None,
+            }
+        )
+
+
 def test_provider_conformance_scenarios_and_mock_fixtures_derive_from_registry() -> None:
     registry = _load("src.app.wms_integration.operation_registry")
     manifest = _load("src.app.wms_integration.provider_manifest")
@@ -309,13 +350,11 @@ def test_async_effect_runtime_classification_is_exact_registry_derivative() -> N
     assert WMS_OPERATION_BY_IDENTITY["wms.inventory.confirm_inbound@v1"].supports_status_query is False
     assert WMS_OPERATION_BY_IDENTITY["wms.fulfillment.notify_pkg_binding@v1"].supports_status_query is False
     assert WMS_OPERATION_BY_IDENTITY["wms.fulfillment.full_box_exchange@v1"].supports_status_query is True
-    assert set(SYSTEM_CAPABILITY_IDENTITIES).isdisjoint(
-        {
-            ("wms.inventory.confirm_inbound", "v1"),
-            ("wms.fulfillment.notify_pkg_binding", "v1"),
-            ("wms.fulfillment.full_box_exchange", "v1"),
-        }
-    )
+    assert {
+        tuple(operation.identity.rsplit("@", maxsplit=1))
+        for operation in WMS_OPERATIONS
+        if operation.mode.value == "EFFECT"
+    } <= set(SYSTEM_CAPABILITY_IDENTITIES)
 
 
 def test_ack_and_batch_closed_sets_are_registry_derivatives() -> None:

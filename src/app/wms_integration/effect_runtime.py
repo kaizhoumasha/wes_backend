@@ -18,11 +18,6 @@ from src.app.wms_integration.operation_contract import (
     WmsOperationDefinition,
     WmsOperationMode,
 )
-from src.app.wms_integration.ports.fulfillment_operations import (
-    CancelRequestRequest,
-    CancelRequestResult,
-    validate_cancel_terminal_result,
-)
 from src.app.wms_integration.ports.operation_common import validate_json_payload
 
 if TYPE_CHECKING:
@@ -63,10 +58,10 @@ def validate_effect_terminal_result(
     result = validate_json_payload(operation.result_model, payload)
     if getattr(result, "dispatch_key", None) != getattr(request, "dispatch_key", None):
         raise ValueError("WMS terminal dispatch_key differs from the frozen request")
-    if isinstance(request, CancelRequestRequest):
-        if not isinstance(result, CancelRequestResult):
-            raise TypeError("E16 request requires E16 terminal result")
-        validate_cancel_terminal_result(request, result)
+    validator = operation.terminal_identity_validator
+    if validator is None:
+        raise ValueError("WMS terminal identity validator is missing from the static definition")
+    validator(request, result)
     return result
 
 

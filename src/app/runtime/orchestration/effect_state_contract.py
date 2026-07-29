@@ -230,6 +230,8 @@ class EffectReducerEvent(BaseModel):
     resolution: RuntimeIntentStatus | None = None
     reason_code: str | None = Field(default=None, max_length=120)
     evidence_json: dict[str, Any] = Field(default_factory=dict)
+    # 仅供 reducer 写当前 terminal envelope；禁止进入 append-only evidence 或日志序列化。
+    terminal_outcome: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
 
     @model_validator(mode="after")
     def validate_event_shape(self) -> EffectReducerEvent:

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
-import zlib
 from typing import TYPE_CHECKING, Any
 
 from src.app.wms_integration.ports.query_outcome import QueryBusinessReject, QueryTechnicalFailure
+from src.core.bounded_http_response import (
+    HttpContentEncodingFailure,
+    HttpDecodedBudgetViolation,
+    decode_bounded_http_body,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -15,6 +19,8 @@ if TYPE_CHECKING:
 
 
 class QueryBudgetViolation(Exception):
+    """WMS JSON 结构预算被违反。"""
+
     def __init__(self, reason_code: str, message: str) -> None:
         super().__init__(message)
         self.reason_code = reason_code
@@ -23,50 +29,6 @@ class QueryBudgetViolation(Exception):
 
 class MalformedProviderResponse(Exception):
     pass
-
-
-class ContentEncodingFailure(Exception):
-    pass
-
-
-def decode_bounded_body(
-    raw_body: bytes,
-    *,
-    content_encoding: str,
-    allowed_content_encodings: tuple[str, ...],
-    max_decoded_bytes: int,
-    max_compression_ratio: float,
-) -> bytes:
-    encoding = content_encoding.strip().lower() or "identity"
-    if encoding not in allowed_content_encodings:
-        raise QueryBudgetViolation(
-            "WMS_UNSUPPORTED_CONTENT_ENCODING",
-            f"unsupported WMS content encoding: {encoding}",
-        )
-    if max_decoded_bytes <= 0:
-        raise QueryBudgetViolation("WMS_DECODED_BUDGET_EXCEEDED", "WMS QUERY decoded budget exceeded")
-    if encoding == "identity":
-        decoded = raw_body
-    else:
-        window_bits = 16 + zlib.MAX_WBITS if encoding == "gzip" else zlib.MAX_WBITS
-        decoder = zlib.decompressobj(window_bits)
-        try:
-            decoded = decoder.decompress(raw_body, max_decoded_bytes + 1)
-            if decoder.unconsumed_tail or len(decoded) > max_decoded_bytes:
-                raise QueryBudgetViolation("WMS_DECODED_BUDGET_EXCEEDED", "WMS QUERY decoded budget exceeded")
-            decoded += decoder.flush(max_decoded_bytes - len(decoded) + 1)
-        except zlib.error as exc:
-            raise ContentEncodingFailure from exc
-        if not decoder.eof or decoder.unused_data:
-            raise ContentEncodingFailure
-    if len(decoded) > max_decoded_bytes:
-        raise QueryBudgetViolation("WMS_DECODED_BUDGET_EXCEEDED", "WMS QUERY decoded budget exceeded")
-    if raw_body and len(decoded) / len(raw_body) > max_compression_ratio:
-        raise QueryBudgetViolation(
-            "WMS_COMPRESSION_RATIO_EXCEEDED",
-            "WMS QUERY compression ratio budget exceeded",
-        )
-    return decoded
 
 
 def parse_bounded_json(decoded_body: bytes, *, max_depth: int, max_field_length: int) -> Any:
@@ -152,7 +114,7 @@ def parse_optional_failure_body(
     if not raw_body:
         return None
     try:
-        decoded = decode_bounded_body(
+        decoded = decode_bounded_http_body(
             raw_body,
             content_encoding=content_encoding,
             allowed_content_encodings=budget.allowed_content_encodings,
@@ -165,7 +127,8 @@ def parse_optional_failure_body(
             max_field_length=budget.max_field_length,
         )
     except (
-        ContentEncodingFailure,
+        HttpContentEncodingFailure,
+        HttpDecodedBudgetViolation,
         MalformedProviderResponse,
         QueryBudgetViolation,
         UnicodeDecodeError,
@@ -192,11 +155,9 @@ def _parse_retry_after(value: str | None) -> float | None:
 
 
 __all__ = [
-    "ContentEncodingFailure",
     "MalformedProviderResponse",
     "QueryBudgetViolation",
     "classify_http_failure",
-    "decode_bounded_body",
     "parse_bounded_json",
     "parse_optional_failure_body",
 ]

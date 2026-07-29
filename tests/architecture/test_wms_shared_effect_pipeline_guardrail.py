@@ -58,3 +58,21 @@ def test_sync_terminal_events_have_no_async_status_or_callback_producer() -> Non
     assert callback_source is not None
     assert "SYNC_COMPLETED" not in callback_source
     assert "SYNC_REJECTED" not in callback_source
+
+
+def test_shared_sync_interpreter_delegates_identity_without_operation_type_switches() -> None:
+    runtime_path = REPO_ROOT / "src/app/wms_integration/effect_runtime.py"
+    source = runtime_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    validator = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "validate_effect_terminal_result"
+    )
+
+    assert not any(isinstance(node, ast.Match) for node in ast.walk(validator))
+    assert not any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"isinstance", "type"}
+        for node in ast.walk(validator)
+    )
+    assert "operation.identity" not in (ast.get_source_segment(source, validator) or "")

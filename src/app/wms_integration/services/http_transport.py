@@ -11,21 +11,11 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from src.core.bounded_http_response import read_bounded_wire_body
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
     from datetime import datetime
-
-
-class WmsHttpWireBudgetExceeded(ValueError):
-    """响应 wire body 超过冻结预算。"""
-
-    def __init__(self, reason_code: str, message: str) -> None:
-        super().__init__(message)
-        self.reason_code = reason_code
-
-
-class WmsHttpResponseContractError(ValueError):
-    """响应 transport metadata 不满足解析前合同。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +126,7 @@ async def send_bounded_wms_request(
         async with asyncio.timeout_at(deadline):
             authenticate(request)
             response = await client.send(request, stream=True)
-            body, cumulative_wire_bytes = await _read_bounded_wire_body(
+            body, cumulative_wire_bytes = await read_bounded_wire_body(
                 response,
                 max_chunk_bytes=max_chunk_bytes,
                 max_wire_bytes=max_wire_bytes,
@@ -154,49 +144,8 @@ async def send_bounded_wms_request(
     return bounded, cumulative_wire_bytes
 
 
-async def _read_bounded_wire_body(
-    response: httpx.Response,
-    *,
-    max_chunk_bytes: int,
-    max_wire_bytes: int,
-    cumulative_wire_bytes: int,
-) -> tuple[bytes, int]:
-    content_length = response.headers.get("content-length")
-    if content_length is not None:
-        try:
-            declared_length = int(content_length)
-        except ValueError as exc:
-            raise WmsHttpResponseContractError("invalid Content-Length") from exc
-        if declared_length < 0:
-            raise WmsHttpResponseContractError("negative Content-Length")
-        if cumulative_wire_bytes + declared_length > max_wire_bytes:
-            raise WmsHttpWireBudgetExceeded("WMS_WIRE_BUDGET_EXCEEDED", "WMS HTTP wire budget exceeded")
-
-    body = bytearray()
-    chunks = (response.content,) if response.is_stream_consumed else response.aiter_raw()
-    async for chunk in _as_async_chunks(chunks):
-        if len(chunk) > max_chunk_bytes:
-            raise WmsHttpWireBudgetExceeded("WMS_CHUNK_BUDGET_EXCEEDED", "WMS HTTP chunk budget exceeded")
-        cumulative_wire_bytes += len(chunk)
-        if cumulative_wire_bytes > max_wire_bytes:
-            raise WmsHttpWireBudgetExceeded("WMS_WIRE_BUDGET_EXCEEDED", "WMS HTTP wire budget exceeded")
-        body.extend(chunk)
-    return bytes(body), cumulative_wire_bytes
-
-
-async def _as_async_chunks(chunks):
-    if hasattr(chunks, "__aiter__"):
-        async for chunk in chunks:
-            yield chunk
-        return
-    for chunk in chunks:
-        yield chunk
-
-
 __all__ = [
     "WmsBoundedHttpResponse",
-    "WmsHttpResponseContractError",
-    "WmsHttpWireBudgetExceeded",
     "open_wms_http_client",
     "send_bounded_wms_request",
     "sign_wms_hmac_request",

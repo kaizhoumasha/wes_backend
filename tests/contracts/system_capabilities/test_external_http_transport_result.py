@@ -273,9 +273,13 @@ async def test_http_response_classification_is_delivery_certain_and_protocol_awa
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, method: str, url: str, **kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
             calls.append({"method": method, "url": url, **kwargs})
-            return SimpleNamespace(status_code=status_code)
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, outbound: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
+            return httpx.Response(status_code, content=b"", request=outbound)
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
 
@@ -300,7 +304,11 @@ async def test_connect_error_is_confirmed_not_sent_and_retry_safe(monkeypatch: p
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, _outbound: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
             raise httpx.ConnectError("connection refused", request=httpx.Request("POST", request.endpoint.url))
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
@@ -324,7 +332,11 @@ async def test_connect_timeout_is_confirmed_not_sent_and_retry_safe(monkeypatch:
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, _outbound: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
             raise httpx.ConnectTimeout("connect timed out", request=httpx.Request("POST", request.endpoint.url))
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
@@ -359,7 +371,11 @@ async def test_timeout_and_reset_are_ambiguous_and_never_retry_safe(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, _outbound: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
             raise exception_type("transport interrupted", request=httpx.Request("POST", request.endpoint.url))
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())

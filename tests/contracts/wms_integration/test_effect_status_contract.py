@@ -810,6 +810,47 @@ async def test_adapter_maps_http_failures_without_interpreting_submit_conflicts(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("response_factory", "reason_code"),
+    (
+        (
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Length": "-1"},
+                content=b"",
+                request=request,
+            ),
+            "WMS_STATUS_CONTRACT_INVALID",
+        ),
+        (
+            lambda request: httpx.Response(
+                200,
+                stream=httpx.ByteStream(b"x" * 4097),
+                request=request,
+            ),
+            "WMS_STATUS_RESPONSE_TOO_LARGE",
+        ),
+    ),
+)
+async def test_adapter_maps_bounded_response_metadata_and_chunk_failures(response_factory, reason_code) -> None:
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
+        transport=httpx.MockTransport(lambda request: response_factory(request)),
+        jitter=lambda _upper: 0.0,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+
+    with pytest.raises(WmsEffectStatusQueryError) as raised:
+        await adapter.query_status(_rack_supply_request())
+
+    assert isinstance(raised.value.failure, QueryContractFailure)
+    assert raised.value.failure.reason_code == reason_code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("retry_after", "attempt_count", "expected_delay"),
     [
         ("12", 1, 12.0),

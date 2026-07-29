@@ -495,13 +495,11 @@ def test_legacy_wms_operation_contracts_and_handlers_are_removed() -> None:
     ):
         assert not (REPO_ROOT / "src/app/wms_integration/ports" / removed_port).exists()
 
-    assert set(SYSTEM_CAPABILITY_IDENTITIES).isdisjoint(
-        {
-            ("wms.inventory.confirm_inbound", "v1"),
-            ("wms.fulfillment.notify_pkg_binding", "v1"),
-            ("wms.fulfillment.full_box_exchange", "v1"),
-        }
-    )
+    assert {
+        ("wms.inventory.confirm_inbound", "v1"),
+        ("wms.fulfillment.notify_pkg_binding", "v1"),
+        ("wms.fulfillment.full_box_exchange", "v1"),
+    } <= set(SYSTEM_CAPABILITY_IDENTITIES)
 
 
 @pytest.mark.parametrize(

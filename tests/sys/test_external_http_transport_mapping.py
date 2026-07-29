@@ -433,6 +433,7 @@ async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -
     async def recovery_context():
         yield recovery_db
 
+    frozen_payload = {"dispatch_key": "dispatch-callback-race", "immutable": "payload"}
     recovered = await recover_external_http_evidence_failure_unknown(
         active_db,
         outbox_repository=repository,
@@ -446,6 +447,7 @@ async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -
         dispatch_key="dispatch-callback-race",
         attempt_no=2,
         operation_identity="tests.external-http.callback-race@v1",
+        payload_json=frozen_payload,
     )
 
     assert recovered is callback_completed
@@ -459,6 +461,7 @@ async def test_callback_winning_evidence_recovery_preserves_completed_outbox() -
     )
     assert bridge.record_result.await_args.kwargs["result"] is result
     assert bridge.record_result.await_args.kwargs["operation_identity"] == "tests.external-http.callback-race@v1"
+    assert bridge.record_result.await_args.kwargs["payload_json"] is frozen_payload
     recovery_db.commit.assert_awaited_once()
 
 
@@ -497,6 +500,7 @@ async def test_late_transport_evidence_recovery_preserves_unknown_ledgers() -> N
         effect_transport_bridge=bridge,
         dispatch_key="dispatch-late-result",
         attempt_no=3,
+        payload_json={},
     )
 
     assert recovered is fenced_unknown

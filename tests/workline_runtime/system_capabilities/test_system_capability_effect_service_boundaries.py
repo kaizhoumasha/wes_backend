@@ -259,7 +259,9 @@ async def test_replay_success_rejects_mismatched_identity_and_non_success_outcom
     )
     service = SystemCapabilityEffectService(intent_service=_ReplayService(reject))
 
-    assert await service._replay_success({}, intent=intent, prepared=prepared) is None
+    replayed = await service._replay_success({}, intent=intent, prepared=prepared)
+    assert replayed is not None
+    assert isinstance(replayed[0], BusinessReject)
 
 
 def test_normalize_outcome_covers_typed_passthrough_and_invalid_payloads() -> None:

@@ -141,6 +141,54 @@ class ConfirmReturnPutawayResult(EffectResult):
     inventory_source_version: StableText = Field(max_length=160)
 
 
+def validate_reserve_inventory_terminal_identity(
+    request: ReserveInventoryRequest,
+    result: ReserveInventoryResult,
+) -> None:
+    if request.material_code != result.material_code or request.quantity != result.reserved_quantity:
+        raise ValueError("reserve inventory terminal identity differs from request")
+
+
+def validate_release_reservation_terminal_identity(
+    request: ReleaseReservationRequest,
+    result: ReleaseReservationResult,
+) -> None:
+    if request.reservation_id != result.reservation_id:
+        raise ValueError("release reservation terminal identity differs from request")
+
+
+def validate_confirm_inbound_terminal_identity(
+    request: ConfirmInboundRequest,
+    result: ConfirmInboundResult,
+) -> None:
+    if request.inbound_key != result.inbound_key:
+        raise ValueError("confirm inbound terminal identity differs from request")
+
+
+def validate_confirm_outbound_terminal_identity(
+    request: ConfirmOutboundRequest,
+    result: ConfirmOutboundResult,
+) -> None:
+    if request.outbound_key != result.outbound_key:
+        raise ValueError("confirm outbound terminal identity differs from request")
+
+
+def validate_transfer_inventory_terminal_identity(
+    request: TransferInventoryRequest,
+    result: TransferInventoryResult,
+) -> None:
+    if request.transfer_key != result.transfer_key:
+        raise ValueError("transfer inventory terminal identity differs from request")
+
+
+def validate_confirm_return_putaway_terminal_identity(
+    request: ConfirmReturnPutawayRequest,
+    result: ConfirmReturnPutawayResult,
+) -> None:
+    if request.return_key != result.return_key:
+        raise ValueError("confirm return putaway terminal identity differs from request")
+
+
 QUERY_INVENTORY = query_operation(
     identity="wms.inventory.query_inventory@v1",
     request_model=InventorySnapshotQueryRequest,
@@ -167,6 +215,7 @@ RESERVE_INVENTORY = effect_operation(
     reject_codes=("INSUFFICIENT_STOCK", "MATERIAL_BLOCKED", "LOCATION_BLOCKED"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_DATA,
+    terminal_identity_validator=validate_reserve_inventory_terminal_identity,
 )
 RELEASE_RESERVATION = effect_operation(
     identity="wms.inventory.release_reservation@v1",
@@ -177,6 +226,7 @@ RELEASE_RESERVATION = effect_operation(
     reject_codes=("RESERVATION_NOT_FOUND", "RESERVATION_OWNER_MISMATCH"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_DATA,
+    terminal_identity_validator=validate_release_reservation_terminal_identity,
 )
 CONFIRM_INBOUND = effect_operation(
     identity="wms.inventory.confirm_inbound@v1",
@@ -187,6 +237,7 @@ CONFIRM_INBOUND = effect_operation(
     reject_codes=("MATERIAL_BLOCKED", "PACKAGE_NOT_FOUND", "LOCATION_BLOCKED"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_DATA,
+    terminal_identity_validator=validate_confirm_inbound_terminal_identity,
 )
 CONFIRM_OUTBOUND = effect_operation(
     identity="wms.inventory.confirm_outbound@v1",
@@ -197,6 +248,7 @@ CONFIRM_OUTBOUND = effect_operation(
     reject_codes=("INSUFFICIENT_STOCK", "RESERVATION_NOT_FOUND", "PACKAGE_NOT_FOUND"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_DATA,
+    terminal_identity_validator=validate_confirm_outbound_terminal_identity,
 )
 TRANSFER_INVENTORY = effect_operation(
     identity="wms.inventory.transfer_inventory@v1",
@@ -207,6 +259,7 @@ TRANSFER_INVENTORY = effect_operation(
     reject_codes=("INSUFFICIENT_STOCK", "SOURCE_LOCATION_MISMATCH", "DESTINATION_BLOCKED"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_DATA,
+    terminal_identity_validator=validate_transfer_inventory_terminal_identity,
 )
 CONFIRM_RETURN_PUTAWAY = effect_operation(
     identity="wms.inventory.confirm_return_putaway@v1",
@@ -217,6 +270,7 @@ CONFIRM_RETURN_PUTAWAY = effect_operation(
     reject_codes=("PACKAGE_NOT_FOUND", "MATERIAL_MISMATCH", "DESTINATION_BLOCKED"),
     completion_mode=WmsCompletionMode.SYNC_RESULT,
     execution_lane=WmsExecutionLane.WMS_DATA,
+    terminal_identity_validator=validate_confirm_return_putaway_terminal_identity,
 )
 
 QUERY_OPERATIONS = (QUERY_INVENTORY, GET_RESERVATION)
