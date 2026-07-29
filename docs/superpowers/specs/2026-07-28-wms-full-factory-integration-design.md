@@ -1927,10 +1927,19 @@ Codex; checkbox as you ship.
     `0 violations / 0 warnings`、topology 均通过。
   - Review: 独立复审确认旧 endpoint settings/fallback 与孤立 facade 已物理删除，未实现 T3 sender/transport；
     结论 `Spec Compliance ✅`、Critical/Important/Minor 均无、`Task quality: Approved`。
-- [ ] **T3（P1，human: \~3d / CC: \~6h）** — transport security — 扩展共享 EXTERNAL\_HTTP `NONE/HMAC`
+- [x] **T3（P1，human: \~3d / CC: \~6h）** — transport security — 扩展共享 EXTERNAL\_HTTP `NONE/HMAC`
   - Surfaced by: Architecture — `NONE` 必须由 frozen `isolated_lan` 事实证明，不能形成 WMS 专用 dispatcher。
   - Files: SYS external HTTP binding/canonical dispatch/outbox、WMS query/status transport、Alembic revision。
   - Verify: 应用模型和 PostgreSQL constraint 正反例、unsigned header 集、HMAC 回归、重启恢复。
+  - Completed: 2026-07-29，提交范围 `8fc4785e..0a37aa4d`。共享 frozen binding、SystemOutbox、
+    canonical dispatcher 支持 `NONE | HMAC_SHA256` 与 `GET | POST`；NONE 仅允许
+    `isolated_lan + empty credential`，HMAC 保持版本化 credential/nonce/timestamp/signature 合同。
+  - Evidence: Alembic revision `36aa187238cc` 的 fresh upgrade、PostgreSQL constraint 正反例、
+    downgrade/re-upgrade `2 passed`；GET/POST/NONE/HMAC 聚焦回归 `72 passed`；19 QUERY 与 7 个异步
+    status frozen binding 结构映射通过；默认全集 `4314 passed, 5 skipped`，其余 2 项为生成矩阵漂移，
+    正式重生成后 matrix 合同 `24 passed`；完整 quality profile 通过。
+  - Review: 独立复审确认同一 dispatcher 处理 GET/POST 与 NONE/HMAC，frozen recovery 不读取 live profile，
+    且未实现 T4/T5 runtime 或 WMS 专用 sender；结论 `Spec Compliance ✅`、无 findings、`Approved`。
 - [ ] **T4（P1，human: \~5d / CC: \~1d）** — QUERY — 接入 19 项 QUERY 并保持 transport 无 identity 分支
   - Surfaced by: Scope / Performance — typed operation 完整覆盖；Q19 由 WMS返回 GRN/测量准入，不复制 transport，
     不恢复跨请求缓存。
