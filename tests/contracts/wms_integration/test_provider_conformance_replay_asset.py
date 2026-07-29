@@ -22,7 +22,7 @@ from tests.support.wms_provider_conformance import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ASSET_PATH = REPO_ROOT / "tests/fixtures/wms_provider_conformance/query_inventory_replay.v1.json"
-PINNED_ASSET_DIGEST = "d396dce29e343138317e00ba8389a5d869c16c1262373e575a84cc5e5375bca5"
+PINNED_ASSET_DIGEST = "08df015c75436c478620df3bff3ebb22f9b6f8f265d2aef2c5d50f510ac3eef8"
 GENERATED_AT = datetime(2026, 7, 21, 8, 0, tzinfo=UTC)
 
 

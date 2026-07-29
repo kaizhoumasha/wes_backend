@@ -26,10 +26,9 @@ from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxSer
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
 from src.app.sys.models import SystemOutbox
 from src.app.sys.services import AuditLogService
-from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryResult,
 )
 from src.app.wms_integration.ports.query_outcome import QuerySuccess
 from src.utils.timezone import timezone
@@ -39,6 +38,7 @@ from tests.support.runtime_inbox_processing_postgresql import (
     seed_scan_flow,
     with_temporary_runtime_database,
 )
+from tests.support.wms_query_runtime import bind_stub_wms_query_runtime
 
 
 def _callback_request(payload: dict[str, object]) -> Request:
@@ -82,19 +82,19 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
         provider_calls = 0
         provider_material_codes: list[str] = []
 
-        async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
+        async def query_inventory(request):  # type: ignore[no-untyped-def]
             nonlocal provider_calls
             provider_calls += 1
             provider_material_codes.append(request.material_code)
             return QuerySuccess(
-                InventoryQueryOperationResult(
+                InventorySnapshotQueryResult(
                     items=(
-                        InventoryAuthorityItem(
+                        InventoryRecord(
                             material_code=request.material_code,
-                            warehouse_code=request.warehouse_code or "WH-IT",
-                            owner_code=request.owner_code,
-                            storage_location_code="A-01",
                             available_quantity=10,
+                            total_quantity=10,
+                            reserved_quantity=0,
+                            location_code="A-01",
                             lot_no="LOT-IT-001",
                         ),
                     ),
@@ -102,7 +102,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
                 )
             )
 
-        monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
+        bind_stub_wms_query_runtime(monkeypatch, query_inventory)
         service = RuntimeInboxService()
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
@@ -430,16 +430,16 @@ def test_missing_callback_becomes_visible_timeout_without_fake_success() -> None
 def test_followup_device_command_requires_terminal_result(action: str, terminal_result: str, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """后续设备命令的成功、失败、超时都经 RuntimeInbox 推进，不存在假完成。"""
 
-    async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
+    async def query_inventory(request):  # type: ignore[no-untyped-def]
         return QuerySuccess(
-            InventoryQueryOperationResult(
+            InventorySnapshotQueryResult(
                 items=(
-                    InventoryAuthorityItem(
+                    InventoryRecord(
                         material_code=request.material_code,
-                        warehouse_code=request.warehouse_code or "WH-IT",
-                        owner_code=request.owner_code,
-                        storage_location_code="A-01",
                         available_quantity=10,
+                        total_quantity=10,
+                        reserved_quantity=0,
+                        location_code="A-01",
                         lot_no="LOT-IT-001",
                     ),
                 ),
@@ -447,7 +447,7 @@ def test_followup_device_command_requires_terminal_result(action: str, terminal_
             )
         )
 
-    monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
+    bind_stub_wms_query_runtime(monkeypatch, query_inventory)
 
     async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
         return None

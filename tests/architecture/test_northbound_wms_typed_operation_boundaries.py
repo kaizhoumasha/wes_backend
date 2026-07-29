@@ -64,13 +64,11 @@ def test_runtime_profile_and_operation_contract_do_not_embed_build_fixtures_or_s
     assert all(term not in profile_source for term in forbidden)
 
 
-def test_provider_mapper_does_not_fabricate_missing_values() -> None:
-    adapter = _load("src.app.wms_integration.adapters.query_inventory_operation_adapter")
-    source = inspect.getsource(adapter.map_provider_query_inventory_response)
+def test_query_result_is_validated_directly_without_operation_adapter() -> None:
+    from src.app.wms_integration.ports.inventory_operations import InventorySnapshotQueryResult
 
-    assert '"UNKNOWN"' not in source
-    assert 'or ""' not in source
-    assert "float(" not in source
+    assert InventorySnapshotQueryResult.model_config["extra"] == "forbid"
+    assert not (REPO_ROOT / "src/app/wms_integration/adapters/query_inventory_operation_adapter.py").exists()
 
 
 def test_generated_operation_index_has_no_runtime_discovery() -> None:

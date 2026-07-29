@@ -23,7 +23,7 @@ from src.app.wms_integration.ports.effect_status import (
     build_wms_effect_status_binding,
 )
 from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupplyResult, WmsEffectAck
-from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
+from src.app.wms_integration.query_evidence import WmsQueryCallPermit
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
     WMS_CONFORMANCE_COMPILED_PROFILE,

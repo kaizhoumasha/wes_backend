@@ -8,8 +8,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from src.app.wms_integration.ports.query_inventory_operation import (  # noqa: TC001 - Pydantic 运行时需要具体类型。
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (  # noqa: TC001 - Pydantic 运行时需要具体类型。
+    InventorySnapshotQueryResult,
 )
 
 POLICY_VERSION = "rough-sorter-inventory-admission.v1"
@@ -48,7 +48,7 @@ class RoughSorterInventoryQuerySnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     outcome_kind: RoughSorterInventoryQueryOutcomeKind
-    result: InventoryQueryOperationResult | None = None
+    result: InventorySnapshotQueryResult | None = None
     evidence_key: StableString | None = None
     reason_code: StableString | None = None
     message: StableString | None = None

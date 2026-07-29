@@ -106,7 +106,7 @@ QUERY_INVENTORY_CONFORMANCE_CASES = (
     ConformanceCaseExpectation(
         case_id="reject",
         outcome_kind=ConformanceOutcomeKind.BUSINESS_REJECT,
-        reason_code="INSUFFICIENT_STOCK",
+        reason_code="INVALID_INVENTORY_FILTER",
         evidence_recorded=True,
         semantic_marker="BUSINESS_REJECT",
     ),

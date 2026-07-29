@@ -1,5 +1,5 @@
-"""库存查询 operation 合同。"""
+"""库存查询 System Capability。"""
 
-from .contract import CONTRACT
+from .definition import DEFINITION
 
-__all__ = ["CONTRACT"]
+__all__ = ["DEFINITION"]

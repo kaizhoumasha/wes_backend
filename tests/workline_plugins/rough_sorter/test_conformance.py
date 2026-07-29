@@ -25,10 +25,10 @@ from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
 from src.app.runtime.workline_plugins.rough_sorter.inputs import parse_scan_completed
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryRequest,
+    InventorySnapshotQueryResult,
 )
 from tests.workline_plugins.conformance import PluginConformanceFixture, PluginConformanceSuite
 
@@ -107,17 +107,17 @@ class _Gateway:
 
     async def execute(self, capability_key: str, contract_version: str, input_data: object) -> GatewayQueryResult:
         self.calls.append((capability_key, contract_version))
-        assert isinstance(input_data, InventoryQueryOperationRequest)
+        assert isinstance(input_data, InventorySnapshotQueryRequest)
         return GatewayQueryResult(
             outcome=Success(
-                payload=InventoryQueryOperationResult(
+                payload=InventorySnapshotQueryResult(
                     items=(
-                        InventoryAuthorityItem(
+                        InventoryRecord(
                             material_code=input_data.material_code,
-                            available_quantity=1,
+                            available_quantity="1",
+                            total_quantity="1",
+                            reserved_quantity="0",
                             lot_no=input_data.lot_no,
-                            warehouse_code=input_data.warehouse_code,
-                            owner_code=input_data.owner_code,
                         ),
                     ),
                     source_version="fixture-v1",

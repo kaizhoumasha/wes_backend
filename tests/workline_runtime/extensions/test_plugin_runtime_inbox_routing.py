@@ -34,10 +34,10 @@ from src.app.runtime.workline_plugins.dispatcher import PluginDispatchRequest
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryRequest,
+    InventorySnapshotQueryResult,
 )
 
 
@@ -1472,17 +1472,17 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
 
         async def execute(self, _capability_key: str, _contract_version: str, input_data: object) -> GatewayQueryResult:
             self.calls += 1
-            assert isinstance(input_data, InventoryQueryOperationRequest)
+            assert isinstance(input_data, InventorySnapshotQueryRequest)
             return GatewayQueryResult(
                 outcome=Success(
-                    payload=InventoryQueryOperationResult(
+                    payload=InventorySnapshotQueryResult(
                         items=(
-                            InventoryAuthorityItem(
+                            InventoryRecord(
                                 material_code=input_data.material_code,
-                                available_quantity=1,
+                                available_quantity="1",
+                                total_quantity="1",
+                                reserved_quantity="0",
                                 lot_no=input_data.lot_no,
-                                warehouse_code=input_data.warehouse_code,
-                                owner_code=input_data.owner_code,
                             ),
                         ),
                         source_version="v1",

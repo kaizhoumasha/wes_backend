@@ -40,7 +40,7 @@
     {
       "case_id": "reject",
       "outcome_kind": "BUSINESS_REJECT",
-      "reason_code": "INSUFFICIENT_STOCK",
+      "reason_code": "INVALID_INVENTORY_FILTER",
       "retryable": null,
       "retry_after_seconds": null,
       "evidence_recorded": true,
@@ -122,5 +122,5 @@
       "items": []
     }
   ],
-  "digest": "d396dce29e343138317e00ba8389a5d869c16c1262373e575a84cc5e5375bca5"
+  "digest": "08df015c75436c478620df3bff3ebb22f9b6f8f265d2aef2c5d50f510ac3eef8"
 }

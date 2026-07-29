@@ -13,20 +13,14 @@ Repository 或 SQL。未注入的能力必须由插件自身使用确定性领�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from src.app.runtime.orchestration.sandbox_catalog_bridge import query_sandbox_wms_inventory_rows
-from src.app.workline.domain.run_mode import is_simulation_run_mode
-from src.core.conf import settings
-
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Mapping
 
     from src.app.resource.models import RackKind
     from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
-    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
-    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
+    from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 
 
 @runtime_checkable
@@ -130,7 +124,7 @@ class WorklineRuntimeServices:
     active_rack_snapshot_provider: ActiveRackSnapshotProvider | None = None
     rack_operation_status_provider: RackOperationStatusProvider | None = None
     station_lease_status_provider: StationLeaseStatusProvider | None = None
-    inventory_query_port_factory: Callable[[], Callable[[], InventoryQueryOperationPort]] | None = None
+    wms_query_execution_port: WmsQueryExecutionPort | None = None
 
 
 def build_workline_runtime_services(
@@ -138,10 +132,11 @@ def build_workline_runtime_services(
     db: Any | None = None,
     workline: Any | None = None,
     session: Any | None = None,
-    compiled_wms_profile: CompiledWmsProviderProfile | None = None,
+    wms_query_execution_port: WmsQueryExecutionPort | None = None,
 ) -> WorklineRuntimeServices:
     """构建当前 worker 使用的运行时服务集合。"""
 
+    del session
     from src.app.resource.services.smt_rack_bin_scheduling_service import smt_rack_bin_scheduling_service
 
     active_rack_snapshot_provider = None
@@ -163,28 +158,17 @@ def build_workline_runtime_services(
             service=station_lease_service,
         )
 
-    inventory_query_port_factory = None
-    if db is not None:
-        from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
+    if wms_query_execution_port is None and db is not None:
+        from src.app.wms_integration.query_runtime import get_wms_data_lane_query_runtime
 
-        simulation_requested = is_simulation_run_mode(getattr(workline, "run_mode", None)) or is_simulation_run_mode(
-            getattr(session, "run_mode", None)
-        )
-        if simulation_requested and not settings.WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED:
-            raise ValueError("WMS QUERY in-process simulation is disabled for this deployment")
-        inventory_query_port_factory = partial(
-            build_inventory_query_port_factory,
-            simulation=simulation_requested,
-            sandbox_rows_provider=query_sandbox_wms_inventory_rows,
-            compiled_profile=compiled_wms_profile,
-        )
+        wms_query_execution_port = get_wms_data_lane_query_runtime()
 
     return WorklineRuntimeServices(
         bin_allocator=smt_rack_bin_scheduling_service,
         active_rack_snapshot_provider=active_rack_snapshot_provider,
         rack_operation_status_provider=rack_operation_status_provider,
         station_lease_status_provider=station_lease_status_provider,
-        inventory_query_port_factory=inventory_query_port_factory,
+        wms_query_execution_port=wms_query_execution_port,
     )
 
 

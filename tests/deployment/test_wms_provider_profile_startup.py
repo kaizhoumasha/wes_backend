@@ -98,5 +98,7 @@ def test_active_configuration_contains_no_legacy_wms_endpoint_settings() -> None
         if not relative_path:
             continue
         path = REPO_ROOT / relative_path
+        if not path.is_file():
+            continue
         source = path.read_text(encoding="utf-8", errors="ignore")
         assert all(name not in source for name in legacy_names), relative_path

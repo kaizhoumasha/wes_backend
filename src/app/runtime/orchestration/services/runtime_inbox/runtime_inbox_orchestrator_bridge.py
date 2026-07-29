@@ -1934,14 +1934,15 @@ def _configure_attempt_runtime_ports(
 ) -> None:
     """把当前 Inbox 的 typed operation factory 注册为 attempt-scoped QUERY Port。"""
 
-    factory_builder = getattr(services, "inventory_query_port_factory", None)
-    if factory_builder is None:
+    query_port = getattr(services, "wms_query_execution_port", None)
+    if query_port is None:
         return
-    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
+    from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 
     attempt_runtime.port_registry.register(
-        InventoryQueryOperationPort,
-        factory_builder(),
+        WmsQueryExecutionPort,
+        lambda: query_port,
+        cache_instance=True,
     )
 
 

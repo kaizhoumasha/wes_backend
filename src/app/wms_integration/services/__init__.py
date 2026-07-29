@@ -30,19 +30,12 @@ from .fulfillment_lifecycle import (
     WmsFulfillmentOpenResult,
     wms_fulfillment_lifecycle_service,
 )
-from .query_transport import (
-    WmsCallEvidenceQueryWriter,
-    WmsQueryCallPermit,
-    WmsQueryEvidenceWriter,
-    WmsQueryTransportExecutor,
-)
 from .redaction import REDACTED_VALUE, canonical_sha256, redact_sensitive
 from .wms_event_normalizer import WmsEventNormalizer, register_inbound_normalizers
 
 __all__ = [
     "REDACTED_VALUE",
     "WmsBusinessRejectedError",
-    "WmsCallEvidenceQueryWriter",
     "WmsCallEvidenceService",
     "WmsCircuitBreakerDecision",
     "WmsCircuitBreakerService",
@@ -57,9 +50,6 @@ __all__ = [
     "WmsFulfillmentLifecycleService",
     "WmsFulfillmentOpenResult",
     "WmsIntegrationError",
-    "WmsQueryCallPermit",
-    "WmsQueryEvidenceWriter",
-    "WmsQueryTransportExecutor",
     "WmsTimeoutError",
     "WmsUnavailableError",
     "canonical_sha256",

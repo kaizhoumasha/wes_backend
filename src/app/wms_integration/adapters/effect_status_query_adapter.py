@@ -42,7 +42,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from src.app.sys.external_http_credentials import VersionedCredentialProvider
-    from src.app.wms_integration.services.query_transport import WmsQueryCallPermit, WmsQueryEvidenceWriter
+    from src.app.wms_integration.query_evidence import (
+        WmsEffectStatusEvidenceWriter,
+        WmsQueryCallPermit,
+    )
 
 _BACKOFF_RANDOM = random.SystemRandom()
 _RETRY_AFTER_DELTA_SECONDS_RE = re.compile(r"^[0-9]+$", re.ASCII)
@@ -92,7 +95,7 @@ class WmsEffectStatusQueryAdapter:
         *,
         binding: FrozenWmsEffectStatusBinding,
         credential_provider: VersionedCredentialProvider,
-        evidence_writer: WmsQueryEvidenceWriter,
+        evidence_writer: WmsEffectStatusEvidenceWriter,
         transport: httpx.AsyncBaseTransport | None = None,
         now: Callable[[], datetime] | None = None,
         nonce_factory: Callable[[], str] | None = None,

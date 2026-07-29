@@ -17,6 +17,15 @@ async def scripted_query_inventory_response(
     """按命名故障点同步返回确定性响应，不启动服务或第二 transport。"""
 
     scenario = case.scenario.value
+
+    def item(material_code: str, available_quantity: str) -> dict[str, str]:
+        return {
+            "material_code": material_code,
+            "available_quantity": available_quantity,
+            "total_quantity": available_quantity,
+            "reserved_quantity": "0",
+        }
+
     if scenario == "timeout":
         raise httpx.ReadTimeout("scripted provider timeout", request=request)
     if scenario == "rate_limit":
@@ -28,7 +37,7 @@ async def scripted_query_inventory_response(
             409,
             json={
                 "classification": "BUSINESS_REJECT",
-                "reason_code": "INSUFFICIENT_STOCK",
+                "reason_code": "INVALID_INVENTORY_FILTER",
                 "message": "scripted business reject",
             },
         )
@@ -37,28 +46,41 @@ async def scripted_query_inventory_response(
     if scenario == "missing_field":
         return httpx.Response(200, json={"source_version": "SCRIPTED-V1"})
     if scenario == "invalid_decimal":
-        return httpx.Response(200, json={"items": [{"sku": "MAT-001", "available_qty": "not-decimal"}]})
+        return httpx.Response(
+            200,
+            json={"items": [item("MAT-001", "not-decimal")], "source_version": "SCRIPTED-V1"},
+        )
     if scenario == "pagination":
         if request.url.params.get("cursor") is None:
             return httpx.Response(
                 200,
-                json={"items": [{"sku": "MAT-001", "available_qty": "1"}], "next_cursor": "page-2"},
+                json={
+                    "items": [item("MAT-001", "1")],
+                    "next_cursor": "page-2",
+                    "source_version": "SCRIPTED-V1",
+                },
             )
-        return httpx.Response(200, json={"items": [{"sku": "MAT-002", "available_qty": "2"}]})
+        return httpx.Response(
+            200,
+            json={"items": [item("MAT-002", "2")], "source_version": "SCRIPTED-V1"},
+        )
     if scenario == "precision":
         return httpx.Response(
             200,
-            json={"items": [{"sku": "MAT-001", "available_qty": "9007199254740993.125"}]},
+            json={
+                "items": [item("MAT-001", "9007199254740993.125")],
+                "source_version": "SCRIPTED-V1",
+            },
         )
     if scenario == "budget":
         return httpx.Response(200, content=b'{"items":[],"padding":"' + b"x" * 80 + b'"}')
     if scenario in {"empty", "evidence_failure"}:
-        return httpx.Response(200, json={"items": []})
+        return httpx.Response(200, json={"items": [], "source_version": "SCRIPTED-V1"})
     if scenario == "success":
         return httpx.Response(
             200,
             json={
-                "items": [{"sku": "MAT-001", "available_qty": "7.25"}],
+                "items": [item("MAT-001", "7.25")],
                 "source_version": "SCRIPTED-V1",
             },
         )

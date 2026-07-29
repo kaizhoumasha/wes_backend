@@ -112,11 +112,11 @@ def test_remaining_wms_protocol_boundaries_are_present():
     """保留 5 个真实 Protocol；单据和履约由 operation-specific Definition 承接。"""
     from src.app.wms_integration.ports.inventory_transaction import WmsInventoryTransactionPort
     from src.app.wms_integration.ports.master_data import WmsMasterDataPort
-    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
+    from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 
     all_ports = [
         WmsMasterDataPort,
-        InventoryQueryOperationPort,
+        WmsQueryExecutionPort,
         WmsInventoryTransactionPort,
         WmsEventPort,
         WmsReconciliationQueryPort,

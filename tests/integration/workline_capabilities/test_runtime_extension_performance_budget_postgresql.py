@@ -34,19 +34,15 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service 
 from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteInput
 from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
 from src.app.sys.models import SystemOutbox
-from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
-from src.app.wms_integration.services import (
-    WmsCallEvidenceQueryWriter,
-    WmsCallEvidenceService,
-    WmsCircuitBreakerService,
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryRequest,
+    InventorySnapshotQueryResult,
 )
+from src.app.wms_integration.ports.query_outcome import QuerySuccess
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
 from src.utils.timezone import timezone
-from tests.contracts.wms_integration.provider_profile_support import (
-    build_compiled_provider_profile,
-    build_hmac_provider_profile_payload,
-)
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
     seed_scan_flow,
@@ -56,6 +52,7 @@ from tests.support.smt_sorting_inbound_postgresql import (
     NoopQueueGateway,
     seed_smt_source_pick_claim,
 )
+from tests.support.wms_query_runtime import bind_stub_wms_query_runtime
 
 if TYPE_CHECKING:
     import pytest
@@ -70,7 +67,6 @@ SMT_RECOVERY_BATCH_SIZE = 100
 SMT_RECOVERY_COMMAND_QUERIES_PER_ITEM = 1
 SMT_RECOVERY_CANDIDATE_LIMIT = 2
 MEASURED_SAMPLE_COUNT = 5
-PERFORMANCE_COMPILED_PROFILE = build_compiled_provider_profile(build_hmac_provider_profile_payload())
 
 
 def _callback_request(payload: dict[str, object]) -> Request:
@@ -103,42 +99,28 @@ async def _process_one(db: Any, service: RuntimeInboxService, queue_gateway: Any
     )
 
 
-def _inventory_query_port_factory_builder(session_factory: Any, http_calls: list[httpx.Request]):
-    async def handler(request: httpx.Request) -> httpx.Response:
-        http_calls.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "items": [
-                    {
-                        "sku": "MAT-IT-001",
-                        "warehouse_code": "WH-IT",
-                        "lot_no": "LOT-IT-001",
-                        "available_qty": "10",
-                        "total_qty": "10",
-                        "reserved_qty": "0",
-                    }
-                ],
-                "source_version": "performance-fixture-v1",
-            },
-        )
-
-    def builder(*, simulation: bool, sandbox_rows_provider: Any, settings_source: Any):
-        breaker_service = WmsCircuitBreakerService(failure_threshold=2, retry_after_seconds=60)
-        return build_inventory_query_port_factory(
-            simulation=simulation,
-            sandbox_rows_provider=sandbox_rows_provider,
-            transport=httpx.MockTransport(handler),
-            evidence_writer=WmsCallEvidenceQueryWriter(
-                session_factory=session_factory,
-                provider_profile_identity=PERFORMANCE_COMPILED_PROFILE.profile.profile.identity,
-                evidence_service=WmsCallEvidenceService(),
-                breaker_service=breaker_service,
+def _inventory_query_handler(http_calls: list[httpx.Request]):
+    async def handler(request: InventorySnapshotQueryRequest) -> QuerySuccess[InventorySnapshotQueryResult]:
+        assert isinstance(request, InventorySnapshotQueryRequest)
+        http_calls.append(httpx.Request("GET", "http://wms-performance.invalid/inventory/query"))
+        return QuerySuccess(
+            InventorySnapshotQueryResult(
+                items=(
+                    InventoryRecord(
+                        material_code=request.material_code,
+                        available_quantity=10,
+                        total_quantity=10,
+                        reserved_quantity=0,
+                        location_code="A-01",
+                        lot_no=request.lot_no,
+                    ),
+                ),
+                source_version="performance-fixture-v1",
             ),
-            compiled_profile=PERFORMANCE_COMPILED_PROFILE,
+            evidence_key="evidence:performance-fixture",
         )
 
-    return builder
+    return handler
 
 
 async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_query: bool, sample: int) -> float:
@@ -147,10 +129,7 @@ async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_
     async def scenario(session_factory: Any, queue_gateway: Any) -> None:
         nonlocal measured
         http_calls: list[httpx.Request] = []
-        monkeypatch.setattr(
-            "src.app.wms_integration.runtime_factory.build_inventory_query_port_factory",
-            _inventory_query_port_factory_builder(session_factory, http_calls),
-        )
+        bind_stub_wms_query_runtime(monkeypatch, _inventory_query_handler(http_calls))
         monkeypatch.setattr(settings, "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2", "performance-fixture-secret")
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)

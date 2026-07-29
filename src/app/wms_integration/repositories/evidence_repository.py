@@ -44,6 +44,29 @@ class WmsCallEvidenceRepository(BaseRepository[WmsCallEvidence]):
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_latest_query_success(
+        self,
+        db: AsyncSession,
+        *,
+        provider_profile_identity: str,
+        operation_name: str,
+        request_canonical_hash: str,
+    ) -> WmsCallEvidence | None:
+        """读取同 authority/request 最近一次成功快照，供 source_version 单调校验。"""
+
+        columns = cast("Any", WmsCallEvidence).__table__.c
+        stmt = (
+            select(WmsCallEvidence)
+            .where(columns.provider_profile_identity == provider_profile_identity)
+            .where(columns.operation_name == operation_name)
+            .where(columns.status == WmsEvidenceStatus.SUCCEEDED)
+            .where(columns.request_snapshot["request_canonical_hash"].as_string() == request_canonical_hash)
+            .order_by(columns.started_at.desc(), columns.id.desc())
+            .limit(1)
+        )
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list_expired_for_archive(
         self,
         db: AsyncSession,

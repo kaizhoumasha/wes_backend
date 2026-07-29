@@ -37,10 +37,10 @@ from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     parse_scan_completed,
 )
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryRequest,
+    InventorySnapshotQueryResult,
 )
 
 if TYPE_CHECKING:
@@ -224,19 +224,19 @@ class _Gateway:
 
     async def execute(self, capability_key: str, contract_version: str, input_data: object) -> GatewayQueryResult:
         assert (capability_key, contract_version) == ("wms.inventory.query_inventory", "v1")
-        assert isinstance(input_data, InventoryQueryOperationRequest)
+        assert isinstance(input_data, InventorySnapshotQueryRequest)
         self.calls += 1
         admission = self.discriminator.get("wms_admission")
         if admission == "ADMIT":
             outcome = Success(
-                payload=InventoryQueryOperationResult(
+                payload=InventorySnapshotQueryResult(
                     items=(
-                        InventoryAuthorityItem(
+                        InventoryRecord(
                             material_code=input_data.material_code,
                             lot_no=input_data.lot_no,
-                            warehouse_code=input_data.warehouse_code,
-                            owner_code=input_data.owner_code,
                             available_quantity="1",
+                            total_quantity="1",
+                            reserved_quantity="0",
                         ),
                     ),
                     source_version="fixture-v1",

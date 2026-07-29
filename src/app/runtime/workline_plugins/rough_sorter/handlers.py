@@ -39,10 +39,10 @@ from src.app.runtime.workline_plugins.contracts import (
     PluginDecision,
 )
 from src.app.runtime.workline_plugins.dispatcher import PluginAttemptFactSource  # noqa: TC001
-from src.app.wms_integration.ports.query_inventory_operation import (
-    OPERATION_IDENTITY,
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (
+    QUERY_INVENTORY,
+    InventorySnapshotQueryRequest,
+    InventorySnapshotQueryResult,
 )
 
 from .inputs import (
@@ -58,7 +58,7 @@ if TYPE_CHECKING:
 
     from .config import RoughSorterConfig
 
-WMS_QUERY_CAPABILITY_KEY, WMS_QUERY_CONTRACT_VERSION = OPERATION_IDENTITY.rsplit("@", maxsplit=1)
+WMS_QUERY_CAPABILITY_KEY, WMS_QUERY_CONTRACT_VERSION = QUERY_INVENTORY.identity.rsplit("@", maxsplit=1)
 WMS_QUERY_IDENTITY = (WMS_QUERY_CAPABILITY_KEY, WMS_QUERY_CONTRACT_VERSION)
 MATERIAL_EFFECT = "material_flow.material_unit_write@v1"
 DEVICE_EFFECT = "device.device_command_write@v1"
@@ -337,7 +337,7 @@ async def _pick_result_decision(
     if not facts.business_key or not facts.hhpn or not facts.lot_code:
         return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_ROUGH_SORTER_CONTEXT_MISSING)
     try:
-        query = InventoryQueryOperationRequest(
+        query = InventorySnapshotQueryRequest(
             material_code=facts.hhpn,
             warehouse_code=config.warehouse_code,
             owner_code=config.owner_code,
@@ -357,7 +357,7 @@ async def _pick_result_decision(
             # Gateway 已按 immutable binding/profile 对通用 Definition 完成 admission；
             # policy 显式携带该 pin，重放时不读取全局 catalog。
             supported_profile_identities=(facts.binding_snapshot.profile_identity,),
-            source_operation=OPERATION_IDENTITY,
+            source_operation=QUERY_INVENTORY.identity,
             query_snapshot=_inventory_query_snapshot(query_result, evidence_ref=evidence_ref),
         )
     )
@@ -403,7 +403,7 @@ def _inventory_query_snapshot(
     """把通用 capability outcome 归一化为 T4 纯 policy 输入。"""
 
     outcome = query_result.outcome
-    if isinstance(outcome, Success) and isinstance(outcome.payload, InventoryQueryOperationResult):
+    if isinstance(outcome, Success) and isinstance(outcome.payload, InventorySnapshotQueryResult):
         return RoughSorterInventoryQuerySnapshot(
             outcome_kind=RoughSorterInventoryQueryOutcomeKind.SUCCESS,
             result=outcome.payload,

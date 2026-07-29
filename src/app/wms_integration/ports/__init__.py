@@ -4,7 +4,7 @@
 
 活跃 (当前里程碑):
 1. WmsMasterDataPort (物料主数据, 包括 area/warehouse/storage_location/equipment)
-2. InventoryQueryOperationPort (库存只读 typed operation 查询)
+2. WmsQueryExecutionPort (19 项 registry-driven typed QUERY)
 3. WmsInventoryTransactionPort (库存事务: reserve/release/confirm/transfer)
 4. WmsEventPort (入站事件 normalizer)
 5. WmsReconciliationQueryPort (对账 drift 查询)

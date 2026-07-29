@@ -27,24 +27,16 @@ from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory
 from src.app.runtime.capabilities.material_flow.rough_sorter_inventory_admission_policy import (
     decide_rough_sorter_inventory_admission,
 )
-from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.provider_catalog import (
     build_wms_provider_catalog,
     resolve_wms_operation_binding,
 )
 from src.app.sys.canonical_dispatch import canonical_json_bytes
 from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE
-from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
-from src.app.wms_integration.ports.query_inventory_operation import (
-    OPERATION_IDENTITY,
-    InventoryQueryOperationRequest,
-)
+from src.app.wms_integration.ports.inventory_operations import QUERY_INVENTORY, InventorySnapshotQueryRequest
 from src.app.wms_integration.ports.query_outcome import QuerySuccess, QueryTechnicalFailure
-from src.app.wms_integration.services.query_transport import (
-    WmsBoundQueryEndpoint,
-    WmsQueryCallPermit,
-    WmsQueryTransportExecutor,
-)
+from src.app.wms_integration.query_evidence import WmsQueryCallPermit
+from src.app.wms_integration.query_runtime import WmsDataLaneQueryRuntime
 from src.core.conf import settings
 from tests.contracts.wms_integration.provider_profile_support import (
     build_compiled_provider_profile,
@@ -239,6 +231,9 @@ class _LiveQueryEvidenceWriter:
     async def before_call(self, *, operation_identity: str, target_code: str) -> WmsQueryCallPermit:
         return WmsQueryCallPermit(allowed=True)
 
+    async def validate_source_version(self, **_kwargs) -> None:
+        return None
+
     async def record(self, **_kwargs) -> str:
         return "evidence:docker-wms:rough-sorter-001"
 
@@ -254,17 +249,16 @@ class _LiveQueryCredentialProvider:
         return self._secret
 
 
-def _live_inventory_adapter(*, base_url: str, binding, credential_reference: str, secret: bytes):
-    return InventoryQueryOperationAdapter(
-        executor=WmsQueryTransportExecutor(
-            endpoint=WmsBoundQueryEndpoint(binding=binding, base_url=f"{base_url}/api/wms"),
-            transport=None,
-            evidence_writer=_LiveQueryEvidenceWriter(),
-            credential_provider=_LiveQueryCredentialProvider(
-                credential_reference=credential_reference,
-                secret=secret,
-            ),
-        )
+def _live_query_runtime(*, compiled_profile, catalog, credential_reference: str, secret: bytes):
+    return WmsDataLaneQueryRuntime(
+        compiled_profile=compiled_profile,
+        catalog=catalog,
+        client=httpx.AsyncClient(timeout=httpx.Timeout(2.0), trust_env=False),
+        evidence_writer=_LiveQueryEvidenceWriter(),
+        credential_provider=_LiveQueryCredentialProvider(
+            credential_reference=credential_reference,
+            secret=secret,
+        ),
     )
 
 
@@ -292,7 +286,7 @@ async def test_compose_mock_wms_northbound_live_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compose_mock_wms_inventory_query_matches_production_adapter_over_tcp() -> None:
+async def test_compose_mock_wms_inventory_query_matches_production_runtime_over_tcp() -> None:
     base_url, _timeout_seconds = _live_connection()
     async with httpx.AsyncClient(
         base_url=base_url,
@@ -305,74 +299,76 @@ async def test_compose_mock_wms_inventory_query_matches_production_adapter_over_
     binding = resolve_wms_operation_binding(
         catalog=catalog,
         profile_identity=catalog.profile_identity,
-        operation_identity=CONTRACT.identity,
+        operation_identity=QUERY_INVENTORY.identity,
     )
     assert binding.outbound_auth.credential_reference == credential_reference
-    adapter = _live_inventory_adapter(
-        base_url=base_url,
-        binding=binding,
+    runtime = _live_query_runtime(
+        compiled_profile=compiled_profile,
+        catalog=catalog,
         credential_reference=credential_reference,
         secret=secret,
     )
 
-    outcome = await adapter.execute(
-        InventoryQueryOperationRequest(
-            material_code="CAP001",
-            lot_no="LOT-A",
-            warehouse_code="WH-IT",
-            owner_code="OWNER-IT",
+    try:
+        outcome = await runtime.execute(
+            InventorySnapshotQueryRequest(
+                material_code="CAP001",
+                lot_no="LOT-A",
+                warehouse_code="WH-IT",
+                owner_code="OWNER-IT",
+            )
         )
-    )
 
-    assert isinstance(outcome, QuerySuccess), outcome
-    assert outcome.evidence_key == "evidence:docker-wms:rough-sorter-001"
-    assert outcome.value.source_version == "mock-inventory-v1"
-    assert len(outcome.value.items) == 1
-    item = outcome.value.items[0]
-    assert item.material_code == "CAP001"
-    assert item.lot_no == "LOT-A"
-    assert item.warehouse_code == "WH-IT"
-    assert item.owner_code == "OWNER-IT"
-    assert item.available_quantity > 0
+        assert isinstance(outcome, QuerySuccess), outcome
+        assert outcome.evidence_key == "evidence:docker-wms:rough-sorter-001"
+        assert outcome.value.source_version == "mock-inventory-v1"
+        assert len(outcome.value.items) == 1
+        item = outcome.value.items[0]
+        assert item.material_code == "CAP001"
+        assert item.lot_no == "LOT-A"
+        assert item.location_code is not None
+        assert item.available_quantity > 0
 
-    wrong_dimensions = await adapter.execute(
-        InventoryQueryOperationRequest(
-            material_code="CAP001",
-            lot_no="LOT-A",
-            warehouse_code="WH-IT",
-            owner_code="OWNER-WRONG",
+        wrong_dimensions = await runtime.execute(
+            InventorySnapshotQueryRequest(
+                material_code="CAP001",
+                lot_no="LOT-A",
+                warehouse_code="WH-IT",
+                owner_code="OWNER-WRONG",
+            )
         )
-    )
-    assert isinstance(wrong_dimensions, QuerySuccess), wrong_dimensions
-    assert wrong_dimensions.value.items == ()
-    assert wrong_dimensions.value.source_version == "mock-inventory-v1"
+        assert isinstance(wrong_dimensions, QuerySuccess), wrong_dimensions
+        assert wrong_dimensions.value.items == ()
+        assert wrong_dimensions.value.source_version == "mock-inventory-v1"
 
-    decision = decide_rough_sorter_inventory_admission(
-        RoughSorterInventoryAdmissionPolicyInput(
-            material_code="CAP001",
-            lot_no="LOT-A",
-            warehouse_code="WH-IT",
-            owner_code="OWNER-IT",
-            binding_snapshot=RoughSorterBindingSnapshot(
-                binding_id=1,
-                binding_version=1,
-                profile_identity=binding.profile.identity,
-                plugin_config_hash="a" * 64,
-                generated_index_digest="b" * 64,
+        decision = decide_rough_sorter_inventory_admission(
+            RoughSorterInventoryAdmissionPolicyInput(
+                material_code="CAP001",
+                lot_no="LOT-A",
+                warehouse_code="WH-IT",
+                owner_code="OWNER-IT",
+                binding_snapshot=RoughSorterBindingSnapshot(
+                    binding_id=1,
+                    binding_version=1,
+                    profile_identity=binding.profile.identity,
+                    plugin_config_hash="a" * 64,
+                    generated_index_digest="b" * 64,
+                ),
+                supported_profile_identities=(binding.profile.identity,),
+                source_operation=QUERY_INVENTORY.identity,
+                query_snapshot=RoughSorterInventoryQuerySnapshot(
+                    outcome_kind=RoughSorterInventoryQueryOutcomeKind.SUCCESS,
+                    result=outcome.value,
+                    evidence_key=outcome.evidence_key,
+                ),
             ),
-            supported_profile_identities=(binding.profile.identity,),
-            source_operation=OPERATION_IDENTITY,
-            query_snapshot=RoughSorterInventoryQuerySnapshot(
-                outcome_kind=RoughSorterInventoryQueryOutcomeKind.SUCCESS,
-                result=outcome.value,
-                evidence_key=outcome.evidence_key,
-            ),
         )
-    )
-    assert decision.decision == "ADMIT"
-    assert decision.reason_code == "WMS_ADMITTED"
-    assert decision.provenance.source.evidence_key == outcome.evidence_key
-    assert decision.provenance.source.source_version == "mock-inventory-v1"
+        assert decision.decision == "ADMIT"
+        assert decision.reason_code == "WMS_ADMITTED"
+        assert decision.provenance.source.evidence_key == outcome.evidence_key
+        assert decision.provenance.source.source_version == "mock-inventory-v1"
+    finally:
+        await runtime.aclose()
 
 
 @pytest.mark.asyncio
@@ -395,24 +391,23 @@ async def test_compose_mock_wms_inventory_query_hmac_fails_closed_over_tcp() -> 
         )
     compiled_profile = _live_compiled_profile(base_url=base_url, credential_reference=credential_reference)
     catalog = build_wms_provider_catalog(compiled_profile)
-    binding = resolve_wms_operation_binding(
+    runtime = _live_query_runtime(
+        compiled_profile=compiled_profile,
         catalog=catalog,
-        profile_identity=catalog.profile_identity,
-        operation_identity=CONTRACT.identity,
-    )
-    invalid_auth = await _live_inventory_adapter(
-        base_url=base_url,
-        binding=binding,
         credential_reference=credential_reference,
         secret=secret + b"-wrong",
-    ).execute(
-        InventoryQueryOperationRequest(
-            material_code="CAP001",
-            lot_no="LOT-A",
-            warehouse_code="WH-IT",
-            owner_code="OWNER-IT",
-        )
     )
+    try:
+        invalid_auth = await runtime.execute(
+            InventorySnapshotQueryRequest(
+                material_code="CAP001",
+                lot_no="LOT-A",
+                warehouse_code="WH-IT",
+                owner_code="OWNER-IT",
+            )
+        )
+    finally:
+        await runtime.aclose()
 
     assert unsigned.status_code == 401
     assert unsigned.json() == {"code": "MISSING_OR_INVALID_AUTH_HEADER"}

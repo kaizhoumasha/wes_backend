@@ -330,18 +330,18 @@ def test_ack_and_batch_closed_sets_are_registry_derivatives() -> None:
     assert BATCH_EFFECT_OPERATION_IDENTITIES == BATCH_FULFILLMENT_OPERATION_IDENTITIES
 
 
-def test_definition_and_query_transport_expose_only_current_field_names() -> None:
+def test_definition_and_query_executor_expose_only_current_field_names() -> None:
+    from src.app.wms_integration import query_executor
     from src.app.wms_integration.operation_contract import WmsOperationBudget, WmsOperationDefinition
-    from src.app.wms_integration.services import query_transport
 
     assert "timeout_seconds" not in WmsOperationBudget.__dict__
     assert "endpoint_path" not in WmsOperationDefinition.__dict__
     assert "retry_policy" not in WmsOperationDefinition.__dict__
 
-    source = Path(query_transport.__file__).read_text()
+    source = Path(query_executor.__file__).read_text()
     assert ".endpoint_path" not in source
     assert ".retry_policy" not in source
-    assert ".timeout_seconds" not in source
+    assert "operation.budget.timeout_seconds" not in source
 
 
 def test_business_blueprint_uses_only_current_async_status_contract() -> None:

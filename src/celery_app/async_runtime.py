@@ -125,6 +125,17 @@ class CeleryAsyncRuntime:
         await CeleryAsyncRuntime._wait_task_without_cancel_wait(init_db(), database_budget)
         progress["database"] = True
 
+        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+        from src.app.wms_integration.query_runtime import (
+            bind_wms_data_lane_query_runtime,
+            build_wms_data_lane_query_runtime,
+        )
+        from src.core.conf import settings
+
+        startup = validate_wms_transport_configuration(settings_source=settings)
+        bind_wms_data_lane_query_runtime(build_wms_data_lane_query_runtime(startup, settings_source=settings))
+        progress["wms_data_lane"] = True
+
         remaining = max(deadline - time.monotonic(), 0.0)
         if remaining <= 0:
             logger.warning("Worker Redis 初始化跳过：3 秒初始化预算已耗尽，进入降级模式")
@@ -193,7 +204,13 @@ class CeleryAsyncRuntime:
     @staticmethod
     async def _rollback_failed_initialization(deadline: float) -> None:
         """按 Redis → DB 顺序，在剩余初始化预算内回滚已发布资源。"""
-        for name, factory in (("Redis", redis_manager.close_redis), ("database", close_db)):
+        from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
+
+        for name, factory in (
+            ("Redis", redis_manager.close_redis),
+            ("wms-data", close_bound_wms_data_lane_query_runtime),
+            ("database", close_db),
+        ):
             remaining = max(deadline - time.monotonic(), 0.0)
             try:
                 await CeleryAsyncRuntime._wait_for_without_cancel_wait(factory(), remaining)
@@ -224,7 +241,7 @@ class CeleryAsyncRuntime:
 
         runner: asyncio.Runner | None = None
         deadline = time.monotonic() + INITIALIZATION_TIMEOUT_SECONDS
-        progress = {"database": False}
+        progress = {"database": False, "wms_data_lane": False}
         try:
             runner = asyncio.Runner()
             runner.run(self._initialize_infrastructure(deadline, progress), context=contextvars.Context())
@@ -355,6 +372,14 @@ class CeleryAsyncRuntime:
                 runner,
                 self._run_shutdown_stage(redis_manager.close_redis, "Redis"),
                 "Redis cleanup",
+                failure_result=None,
+            )
+            from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
+
+            self._run_runner_stage(
+                runner,
+                self._run_shutdown_stage(close_bound_wms_data_lane_query_runtime, "wms-data"),
+                "wms-data cleanup",
                 failure_result=None,
             )
             self._run_runner_stage(

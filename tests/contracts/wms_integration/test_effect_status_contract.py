@@ -31,8 +31,8 @@ from src.app.wms_integration.ports.effect_status import (
 )
 from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
+from src.app.wms_integration.query_evidence import WmsQueryCallPermit
 from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
-from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
 from tests.contracts.wms_integration.provider_profile_support import (
     build_compiled_provider_profile,
     build_hmac_provider_profile_payload,
@@ -678,7 +678,7 @@ def test_runtime_factory_wires_status_query_to_existing_shared_breaker(monkeypat
         captured.update(kwargs)
         return evidence_writer
 
-    monkeypatch.setattr(runtime_factory, "WmsCallEvidenceQueryWriter", build_writer)
+    monkeypatch.setattr(runtime_factory, "WmsEffectStatusCallEvidenceWriter", build_writer)
 
     factory = build_effect_status_query_port_factory(
         binding=binding,

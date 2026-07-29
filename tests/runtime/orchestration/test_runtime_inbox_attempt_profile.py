@@ -28,10 +28,8 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginAttemptFactSource,
     PluginDispatchRequest,
 )
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryQueryOperationPort,
-    InventoryQueryOperationRequest,
-)
+from src.app.wms_integration.ports.inventory_operations import InventorySnapshotQueryRequest
+from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 from src.app.workline import runtime_services as runtime_services_module
 from src.app.workline.runtime_services import build_workline_runtime_services
 from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
@@ -124,65 +122,42 @@ def test_attempt_runtime_exposes_registered_typed_port_contract() -> None:
     """RuntimeCapabilityContext 只负责 typed port 注入，不再维护字符串方法清单。"""
 
     registry = CapabilityPortRegistry()
-    registry.register(InventoryQueryOperationPort, _InventoryPort)
+    registry.register(WmsQueryExecutionPort, _InventoryPort)
     runtime = RuntimeInboxProcessorBridge().create_attempt_runtime(
         "lease-method-allowlist",
         base_registry=registry,
         definitions={},
         provider_profile=_profile(),
     )
-    inventory_port = runtime.context.get_query_port(InventoryQueryOperationPort)
+    inventory_port = runtime.context.get_query_port(WmsQueryExecutionPort)
 
     assert callable(inventory_port.execute)
     assert callable(inventory_port.undeclared_query)
 
 
-def test_attempt_runtime_registers_typed_inventory_factory_without_caching_instances() -> None:
+def test_attempt_runtime_registers_shared_data_lane_query_port() -> None:
     registry = CapabilityPortRegistry()
     runtime = SimpleNamespace(port_registry=registry)
 
     _configure_attempt_runtime_ports(
         runtime,
         services=SimpleNamespace(
-            inventory_query_port_factory=lambda: _InventoryPort,
+            wms_query_execution_port=_InventoryPort(),
         ),
     )
 
-    assert registry.get(InventoryQueryOperationPort) is not registry.get(InventoryQueryOperationPort)
+    assert registry.get(WmsQueryExecutionPort) is registry.get(WmsQueryExecutionPort)
 
 
 @pytest.mark.asyncio
-async def test_real_runtime_services_fail_closed_until_compiled_query_endpoint_is_injected() -> None:
-    """Task 2 仅负责编译 endpoint。
-
-    T3 注入 composition root 前，真实 QUERY runtime 必须 fail closed。
-    """
-
+async def test_real_runtime_services_leave_query_port_unregistered_without_lane_owner() -> None:
     runtime = SimpleNamespace(port_registry=CapabilityPortRegistry())
     services = build_workline_runtime_services(
         db=object(),
         session=SimpleNamespace(run_mode="NORMAL"),
     )
     _configure_attempt_runtime_ports(runtime, services=services)
-    inventory_port = runtime.port_registry.get(InventoryQueryOperationPort)
-
-    with pytest.raises(RuntimeError, match=r"compiled WMS QUERY endpoint injection.*T3"):
-        await inventory_port.execute(InventoryQueryOperationRequest(material_code="MAT-001"))
-
-
-def test_simulation_run_mode_requires_enabled_deployment_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        runtime_services_module,
-        "settings",
-        SimpleNamespace(WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=False),
-        raising=False,
-    )
-
-    with pytest.raises(ValueError, match=r"simulation.*disabled"):
-        build_workline_runtime_services(
-            db=object(),
-            session=SimpleNamespace(run_mode="SIMULATION"),
-        )
+    assert not runtime.port_registry.is_registered(WmsQueryExecutionPort)
 
 
 def test_pinned_binding_profile_uses_exact_snapshot_identity() -> None:
@@ -214,7 +189,7 @@ async def test_platform_attempt_pins_runtime_to_binding_profile_snapshot(monkeyp
     )
     monkeypatch.setattr(workline_plugin_binding_service, "get_pinned", AsyncMock(return_value=binding))
     registry = CapabilityPortRegistry()
-    registry.register(InventoryQueryOperationPort, _InventoryPort)
+    registry.register(WmsQueryExecutionPort, _InventoryPort)
     bridge = RuntimeInboxProcessorBridge()
     runtime = bridge.create_attempt_runtime("lease-pinned", base_registry=registry)
     snapshot = PinnedPluginSnapshot(
@@ -231,7 +206,7 @@ async def test_platform_attempt_pins_runtime_to_binding_profile_snapshot(monkeyp
     await bridge._pin_attempt_runtime_to_dispatch_snapshot(object(), runtime=runtime, snapshot=snapshot)
 
     assert runtime.gateway._admission_profile == profile.identity
-    inventory_port = runtime.context.get_query_port(InventoryQueryOperationPort)
+    inventory_port = runtime.context.get_query_port(WmsQueryExecutionPort)
     assert callable(inventory_port.execute)
     assert callable(inventory_port.undeclared_query)
 
@@ -283,7 +258,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
             input_model=_QueryInput,
             output_model=_QueryOutput,
             handler_factory=_ApprovedInventoryQueryHandler,
-            required_ports=(InventoryQueryOperationPort,),
+            required_ports=(WmsQueryExecutionPort,),
             admission="alternate.v1",
             timeout_seconds=1,
             completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
@@ -296,7 +271,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
             input_model=_QueryInput,
             output_model=_QueryOutput,
             handler_factory=_BlockedInventoryQueryHandler,
-            required_ports=(InventoryQueryOperationPort,),
+            required_ports=(WmsQueryExecutionPort,),
             admission="alternate.v1",
             timeout_seconds=1,
             completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
@@ -382,7 +357,7 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
 
     def configure_ports(runtime: object, *, services: object) -> None:
         _ = services
-        runtime.port_registry.register(InventoryQueryOperationPort, _InventoryPort)
+        runtime.port_registry.register(WmsQueryExecutionPort, _InventoryPort)
 
     monkeypatch.setattr(workline_plugin_binding_service, "get_pinned", AsyncMock(return_value=binding))
     monkeypatch.setattr(capability_index_module, "SYSTEM_CAPABILITY_INDEX", definitions)

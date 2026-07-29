@@ -220,7 +220,7 @@ def test_workline_item_exposes_derived_capability_and_port_requirements() -> Non
         contract_version="v1",
         mode="QUERY",
         admission="wms.2026-07-28.full-factory",
-        required_ports=("src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort",),
+        required_ports=("src.app.wms_integration.ports.query_execution.WmsQueryExecutionPort",),
     )
     item = WorklineMigrationInventoryItem(
         workline_id=1,
@@ -237,7 +237,7 @@ def test_workline_item_exposes_derived_capability_and_port_requirements() -> Non
 
     assert item.capability_requirements == (requirement,)
     assert item.model_dump(mode="json")["capability_requirements"][0]["required_ports"] == [
-        "src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort"
+        "src.app.wms_integration.ports.query_execution.WmsQueryExecutionPort"
     ]
 
 

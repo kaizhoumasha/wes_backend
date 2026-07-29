@@ -10,8 +10,6 @@ from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256
 from src.app.sys.external_http_credentials import build_environment_external_http_credential_provider
 from src.app.wms_integration.ports.effect_status import FrozenWmsEffectStatusBinding
-from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
-from src.app.wms_integration.services.query_transport import WmsBoundQueryEndpoint
 from src.core.conf import Settings
 from tests.contracts.wms_integration.provider_profile_support import (
     build_compiled_provider_profile,
@@ -213,24 +211,3 @@ def test_wms_transport_rejects_non_origin_base_urls(tmp_path, base_url: str) -> 
 
     with pytest.raises(ValueError, match=r"HTTP\(S\) origin"):
         provider_catalog.validate_wms_transport_configuration(settings_source=_profile_startup_settings(profile_file))
-
-
-def test_query_endpoint_rejects_missing_hostname() -> None:
-    catalog = build_provider_catalog(build_hmac_provider_profile_payload())
-    binding = provider_catalog.resolve_wms_operation_binding(
-        catalog=catalog,
-        profile_identity=catalog.profile_identity,
-        operation_identity="wms.inventory.query_inventory@v1",
-    )
-
-    with pytest.raises(ValueError, match="absolute"):
-        WmsBoundQueryEndpoint(binding=binding, base_url="https:///api")
-
-
-def test_production_runtime_rejects_explicit_in_process_simulation() -> None:
-    with pytest.raises(ValueError, match=r"production.*forbids.*simulation"):
-        build_inventory_query_port_factory(
-            simulation=True,
-            sandbox_rows_provider=lambda **_kwargs: [],
-            compiled_profile=build_compiled_provider_profile(),
-        )

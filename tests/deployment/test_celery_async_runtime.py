@@ -107,6 +107,8 @@ def _runtime_module() -> ModuleType:
 
 
 def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> SimpleNamespace:
+    from src.app.runtime.system_capabilities.wms import provider_catalog
+    from src.app.wms_integration import query_runtime
     from src.database import db as db_module
     from src.database import redis_client as redis_module
 
@@ -115,6 +117,10 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         close_db=AsyncMock(),
         init_redis=AsyncMock(),
         close_redis=AsyncMock(),
+        validate_wms_transport_configuration=MagicMock(return_value=SimpleNamespace()),
+        build_wms_data_lane_query_runtime=MagicMock(return_value=SimpleNamespace()),
+        bind_wms_data_lane_query_runtime=MagicMock(),
+        close_bound_wms_data_lane_query_runtime=AsyncMock(),
     )
     redis_manager = SimpleNamespace(
         init_redis=infra.init_redis,
@@ -127,6 +133,26 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     monkeypatch.setattr(module, "init_db", infra.init_db, raising=False)
     monkeypatch.setattr(module, "close_db", infra.close_db, raising=False)
     monkeypatch.setattr(module, "redis_manager", redis_manager, raising=False)
+    monkeypatch.setattr(
+        provider_catalog,
+        "validate_wms_transport_configuration",
+        infra.validate_wms_transport_configuration,
+    )
+    monkeypatch.setattr(
+        query_runtime,
+        "build_wms_data_lane_query_runtime",
+        infra.build_wms_data_lane_query_runtime,
+    )
+    monkeypatch.setattr(
+        query_runtime,
+        "bind_wms_data_lane_query_runtime",
+        infra.bind_wms_data_lane_query_runtime,
+    )
+    monkeypatch.setattr(
+        query_runtime,
+        "close_bound_wms_data_lane_query_runtime",
+        infra.close_bound_wms_data_lane_query_runtime,
+    )
     return infra
 
 
@@ -1155,7 +1181,7 @@ class _ShutdownFaultRunnerProbe(_RunnerProbe):
         return super().run(coroutine, context=context)
 
 
-@pytest.mark.parametrize("failure_call", [1, 2, 3, 4])
+@pytest.mark.parametrize("failure_call", [1, 2, 3, 4, 5])
 def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     failure_call: int,
@@ -1172,14 +1198,16 @@ def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     with _sync_watchdog(0.50, f"shutdown runner.run failure {failure_call}"):
         runtime.shutdown()
 
-    assert probe.shutdown_run_calls == 4
+    assert probe.shutdown_run_calls == 5
     if failure_call != 2:
         infra.close_redis.assert_awaited_once()
     if failure_call != 3:
+        infra.close_bound_wms_data_lane_query_runtime.assert_awaited_once()
+    if failure_call != 4:
         infra.close_db.assert_awaited_once()
     assert runtime.state is module.RuntimeState.CLOSED
     assert runtime._runner is None
     assert runtime._owner_pid is None
 
     runtime.shutdown()
-    assert probe.shutdown_run_calls == 4
+    assert probe.shutdown_run_calls == 5

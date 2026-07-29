@@ -29,6 +29,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     from src.database.db import close_db, init_db
     from src.database.redis_client import close_redis, init_redis
 
+    wms_data_lane_runtime = None
     try:
         logger.info("Initializing application resources...")
         from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
@@ -40,6 +41,16 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         northbound_operations_repository.bind_provider_catalog(startup.catalog)
         await init_db()
         await init_redis()
+
+        from src.app.wms_integration.query_runtime import (
+            bind_wms_data_lane_query_runtime,
+            build_wms_data_lane_query_runtime,
+        )
+
+        # 一个进程/事件循环/data lane 只持有一个长期 client；attempt/page 仅借用。
+        wms_data_lane_runtime = build_wms_data_lane_query_runtime(startup, settings_source=settings)
+        bind_wms_data_lane_query_runtime(wms_data_lane_runtime)
+        _app.state.wms_data_lane_query_runtime = wms_data_lane_runtime
 
         # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
         from src.core.health import system_health
@@ -64,6 +75,10 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         from src.app.runtime.orchestration.observability import runtime_observability_registry
 
         await asyncio.to_thread(runtime_observability_registry.close)
+        if wms_data_lane_runtime is not None:
+            from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
+
+            await close_bound_wms_data_lane_query_runtime()
         await close_db()
         await close_redis()
         logger.info("FastAPI 应用关闭")

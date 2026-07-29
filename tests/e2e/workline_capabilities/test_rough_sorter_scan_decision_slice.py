@@ -27,10 +27,9 @@ from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.sys.models import SystemOutbox
-from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryResult,
 )
 from src.app.wms_integration.ports.query_outcome import QueryBusinessReject, QuerySuccess, QueryTechnicalFailure
 from src.utils.timezone import timezone
@@ -40,6 +39,7 @@ from tests.support.runtime_inbox_processing_postgresql import (
     seed_scan_flow,
     with_temporary_runtime_database,
 )
+from tests.support.wms_query_runtime import bind_stub_wms_query_runtime
 
 FIXTURE_PATH = (
     Path(__file__).resolve().parents[2] / "fixtures" / "workline_contract" / "rough_sorter" / "scan_decision_cases.json"
@@ -244,7 +244,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
     provider_calls = 0
     provider_mode = case.get("trigger", {}).get("decision_discriminator", {}).get("wms_admission")
 
-    async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
+    async def query_inventory(request):  # type: ignore[no-untyped-def]
         nonlocal provider_calls
         provider_calls += 1
         if provider_mode == "TIMEOUT":
@@ -252,14 +252,14 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
         if provider_mode == "REJECT":
             return QueryBusinessReject("WMS_REJECTED", "fixture rejected")
         return QuerySuccess(
-            InventoryQueryOperationResult(
+            InventorySnapshotQueryResult(
                 items=(
-                    InventoryAuthorityItem(
+                    InventoryRecord(
                         material_code=request.material_code,
-                        warehouse_code=request.warehouse_code or "WH-IT",
-                        owner_code=request.owner_code,
-                        storage_location_code="A-01",
                         available_quantity=10,
+                        total_quantity=10,
+                        reserved_quantity=0,
+                        location_code="A-01",
                         lot_no="LOT-IT-001",
                     ),
                 ),
@@ -267,7 +267,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
             )
         )
 
-    monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
+    bind_stub_wms_query_runtime(monkeypatch, query_inventory)
 
     async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
         return None
