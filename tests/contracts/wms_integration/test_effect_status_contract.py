@@ -48,11 +48,13 @@ def _binding(*, timeout_seconds: float = 2.0) -> FrozenWmsEffectStatusBinding:
     settings = SimpleNamespace(
         APP_ENV="test",
         WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_EFFECT_STATUS_URL="https://wms.example/northbound/operations/status",
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=timeout_seconds,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
     )
-    return build_wms_effect_status_binding(settings_source=settings)
+    return build_wms_effect_status_binding(
+        settings_source=settings,
+        status_endpoint="https://wms.example/northbound/operations/status",
+    )
 
 
 def _rack_supply_request(*, attempt_count: int = 1) -> WmsEffectStatusRequest:

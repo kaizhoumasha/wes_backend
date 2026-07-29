@@ -16,7 +16,6 @@ def _settings_kwargs() -> dict[str, object]:
         "API_SECRET_ENCRYPTION_KEY": Fernet.generate_key().decode(),
         "DATABASE_RUNTIME_ROLE": "cli",
         "DATABASE_POOL_SIZE": 1,
-        "WMS_EFFECT_STATUS_URL": "https://wms.example/status",
         "WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 2,
         "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES": 4096,
         "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS": 9,

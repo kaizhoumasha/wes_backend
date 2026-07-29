@@ -201,10 +201,10 @@ async def test_unsigned_effect_status_case_replays_the_same_interaction_contract
         settings_source=SimpleNamespace(
             APP_ENV="test",
             WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-            WMS_EFFECT_STATUS_URL="https://conformance.invalid/northbound/operations/status",
             WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
             WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
-        )
+        ),
+        status_endpoint="https://conformance.invalid/northbound/operations/status",
     )
     adapter = WmsEffectStatusQueryAdapter(
         binding=binding,

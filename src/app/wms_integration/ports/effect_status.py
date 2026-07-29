@@ -490,9 +490,15 @@ class FrozenWmsEffectStatusBinding(BaseModel):
         return binding
 
 
-def build_wms_effect_status_binding(*, settings_source: Any) -> FrozenWmsEffectStatusBinding:
+def build_wms_effect_status_binding(
+    *,
+    settings_source: Any,
+    status_endpoint: str | None = None,
+) -> FrozenWmsEffectStatusBinding:
     """从当前唯一 active WMS profile 生成新 Intent 使用的状态 binding。"""
 
+    if status_endpoint is None:
+        raise RuntimeError("compiled WMS EFFECT status endpoint must be injected by the T3 runtime composition root")
     from src.app.runtime.system_capabilities.wms.provider_catalog import (
         WMS_EXTERNAL_HTTP_EFFECT_PROFILE,
         WMS_PROVIDER_PROFILE,
@@ -509,7 +515,7 @@ def build_wms_effect_status_binding(*, settings_source: Any) -> FrozenWmsEffectS
     if len(credential_references) != 1 or len(auth_schemes) != 1:
         raise ValueError("active WMS EFFECT profile must use one status credential revision")
     target = WmsEffectStatusTargetSnapshot(
-        url=settings_source.WMS_EFFECT_STATUS_URL,
+        url=status_endpoint,
         timeout_seconds=settings_source.WMS_EFFECT_STATUS_TIMEOUT_SECONDS,
         max_response_bytes=settings_source.WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES,
     )

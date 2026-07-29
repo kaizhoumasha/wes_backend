@@ -45,7 +45,6 @@ def _settings() -> SimpleNamespace:
     return SimpleNamespace(
         APP_ENV="test",
         WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_EFFECT_STATUS_URL="https://wms.example/northbound/operations/status",
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
         WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS=10.0,
@@ -77,7 +76,10 @@ def test_default_status_port_factory_receives_service_settings(monkeypatch: pyte
 
 
 def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any:
-    binding = build_wms_effect_status_binding(settings_source=_settings()).as_persisted()
+    binding = build_wms_effect_status_binding(
+        settings_source=_settings(),
+        status_endpoint="https://wms.example/northbound/operations/status",
+    ).as_persisted()
     intent = SimpleNamespace(
         id=17,
         dispatch_key="dispatch-001",

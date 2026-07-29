@@ -55,8 +55,6 @@ def _production_simulation_settings() -> SimpleNamespace:
         DOCS_URL="/docs",
         WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=True,
         WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_SYNC_BASE_URL="https://wms.example/api",
-        WMS_EFFECT_STATUS_URL="https://wms.example/api/status",
         WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1="old-secret",
         WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2="active-secret",
         WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS=100,

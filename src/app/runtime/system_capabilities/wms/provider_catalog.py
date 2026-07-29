@@ -20,19 +20,14 @@ from src.app.sys.external_http_binding import (
     FrozenExternalHttpBinding,
     freeze_external_http_binding,
 )
-from src.app.sys.external_http_credentials import (
-    EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE,
-    CredentialResolutionError,
-    build_environment_external_http_credential_provider,
-)
-from src.app.sys.services.endpoint_registry import EndpointRegistry
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from src.app.wms_integration.provider_manifest import require_full_factory_registry
-from src.app.wms_integration.transport_url import validate_wms_base_url
 from src.core.conf import settings
 
 if TYPE_CHECKING:
+    from src.app.sys.services.endpoint_registry import EndpointRegistry
     from src.app.wms_integration.operation_contract import WmsOperationDefinition
+    from src.app.wms_integration.provider_startup import WmsProviderStartupConfiguration
 
 WMS_EFFECT_STATUS_HINT_CALLBACK = InboundCallbackContract(
     callback_type="WMS_EFFECT_STATUS_HINT",
@@ -95,16 +90,6 @@ WMS_NORTHBOUND_AUTH = WMS_PROVIDER_PROFILE.bindings[0].outbound_auth
 WMS_TYPED_EFFECT_CALLBACK_TYPES = frozenset(callback.callback_type for callback in WMS_PROVIDER_PROFILE.callbacks)
 
 
-def wms_sync_base_url(*, settings_source: Any | None = None) -> str:
-    """返回当前部署 typed WMS operation 共用的唯一同步服务根地址。"""
-
-    active_settings = settings if settings_source is None else settings_source
-    base_url = active_settings.WMS_SYNC_BASE_URL.strip().rstrip("/")
-    if not base_url:
-        raise ValueError("WMS_SYNC_BASE_URL 必须显式配置")
-    return base_url
-
-
 def _validate_wms_sla_configuration(settings_source: Any) -> None:
     minimum_retention = (
         settings_source.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS
@@ -116,54 +101,23 @@ def _validate_wms_sla_configuration(settings_source: Any) -> None:
         raise ValueError("WMS EFFECT visibility SLA 不得大于 WES NOT_FOUND grace period")
 
 
-def validate_wms_transport_configuration(*, settings_source: Any | None = None) -> None:
-    """在 API/Celery 开始接收任务前校验同一 Settings 构建的 active profile。"""
+def validate_wms_transport_configuration(
+    *,
+    settings_source: Any | None = None,
+) -> WmsProviderStartupConfiguration:
+    """在 API/Celery 接收任务前编译并校验部署拥有的 Provider profile。"""
 
     active_settings = settings if settings_source is None else settings_source
-    active_profile = build_active_wms_provider_profile(active_settings)
-    environment = active_profile.identity.environment
-    if environment == "production" and getattr(
+    if active_settings.APP_ENV == "prod" and getattr(
         active_settings,
         "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED",
         False,
     ):
         raise ValueError("production WMS QUERY in-process simulation is forbidden")
-    base_url = wms_sync_base_url(settings_source=active_settings)
-    parsed = validate_wms_base_url(base_url)
-    if environment == "production" and parsed.scheme.lower() != "https":
-        raise ValueError("production WMS_SYNC_BASE_URL 必须使用 HTTPS")
-
-    status_url = validate_wms_base_url(active_settings.WMS_EFFECT_STATUS_URL)
-    if environment == "production" and status_url.scheme.lower() != "https":
-        raise ValueError("production WMS_EFFECT_STATUS_URL 必须使用 HTTPS")
     _validate_wms_sla_configuration(active_settings)
+    from src.app.wms_integration.provider_startup import assemble_wms_provider_startup
 
-    credential_provider = build_environment_external_http_credential_provider(settings_source=active_settings)
-    credential_references = frozenset(
-        str(binding.outbound_auth.credential_reference)
-        for binding in active_profile.bindings
-        if binding.outbound_auth.credential_reference is not None
-    )
-    for credential_reference in credential_references:
-        env_name = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[credential_reference]
-        try:
-            _ = credential_provider.resolve(credential_reference)
-        except (CredentialResolutionError, LookupError) as exc:
-            raise ValueError(f"{env_name} 必须为活动运行环境显式配置且未被撤销") from exc
-
-
-def _typed_wms_endpoint_registry(
-    profile: WmsProviderProfile,
-    *,
-    settings_source: Any | None = None,
-) -> EndpointRegistry:
-    base_url = wms_sync_base_url(settings_source=settings_source)
-    endpoints = {
-        binding.operation.target_code: f"{base_url}/{binding.operation.path_template.lstrip('/')}"
-        for binding in profile.bindings
-        if binding.operation.mode.value == "EFFECT"
-    }
-    return EndpointRegistry(endpoints)
+    return assemble_wms_provider_startup(active_settings)
 
 
 def _external_http_effect_profile(profile: WmsProviderProfile) -> ExternalHttpProviderProfileDefinition:
@@ -211,11 +165,13 @@ def freeze_wms_effect_binding(
 
     if profile_identity.strip().lower() != WMS_PROVIDER_PROFILE.identity.identity:
         raise ValueError("WMS EFFECT provider profile is not active in this deployment")
+    if registry is None:
+        raise RuntimeError("compiled WMS EFFECT endpoint registry must be injected by the T3 runtime composition root")
     return freeze_external_http_binding(
         profile=WMS_EXTERNAL_HTTP_EFFECT_PROFILE,
         operation_identity=operation_identity,
         target_code=target_code,
-        endpoint_registry=registry or _typed_wms_endpoint_registry(WMS_PROVIDER_PROFILE),
+        endpoint_registry=registry,
     )
 
 
@@ -248,5 +204,4 @@ __all__ = [
     "freeze_wms_effect_binding",
     "resolve_wms_operation_binding",
     "validate_wms_transport_configuration",
-    "wms_sync_base_url",
 ]

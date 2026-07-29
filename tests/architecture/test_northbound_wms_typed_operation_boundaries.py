@@ -184,13 +184,11 @@ def test_endpoint_or_secret_rotation_does_not_change_active_provider_identity() 
     first = SimpleNamespace(
         APP_ENV="test",
         WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1",
-        WMS_SYNC_BASE_URL="https://wms-one.invalid/api",
         WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="first-secret",
     )
     rotated = SimpleNamespace(
         APP_ENV="test",
         WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_SYNC_BASE_URL="https://wms-two.invalid/api",
         WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2="rotated-secret",
     )
 

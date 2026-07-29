@@ -28,7 +28,10 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginAttemptFactSource,
     PluginDispatchRequest,
 )
-from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
+from src.app.wms_integration.ports.query_inventory_operation import (
+    InventoryQueryOperationPort,
+    InventoryQueryOperationRequest,
+)
 from src.app.workline import runtime_services as runtime_services_module
 from src.app.workline.runtime_services import build_workline_runtime_services
 from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
@@ -148,19 +151,23 @@ def test_attempt_runtime_registers_typed_inventory_factory_without_caching_insta
     assert registry.get(InventoryQueryOperationPort) is not registry.get(InventoryQueryOperationPort)
 
 
-def test_real_runtime_services_register_current_deployment_inventory_query_port() -> None:
-    """真实 runtime services 与 attempt seam 必须共享无 Provider selector 的 callable contract。"""
+@pytest.mark.asyncio
+async def test_real_runtime_services_fail_closed_until_compiled_query_endpoint_is_injected() -> None:
+    """Task 2 仅负责编译 endpoint。
 
-    registry = CapabilityPortRegistry()
-    runtime = SimpleNamespace(port_registry=registry)
+    T3 注入 composition root 前，真实 QUERY runtime 必须 fail closed。
+    """
+
+    runtime = SimpleNamespace(port_registry=CapabilityPortRegistry())
     services = build_workline_runtime_services(
         db=object(),
         session=SimpleNamespace(run_mode="NORMAL"),
     )
-
     _configure_attempt_runtime_ports(runtime, services=services)
+    inventory_port = runtime.port_registry.get(InventoryQueryOperationPort)
 
-    assert callable(registry.get(InventoryQueryOperationPort).execute)
+    with pytest.raises(RuntimeError, match=r"compiled WMS QUERY endpoint injection.*T3"):
+        await inventory_port.execute(InventoryQueryOperationRequest(material_code="MAT-001"))
 
 
 def test_simulation_run_mode_requires_enabled_deployment_gate(monkeypatch: pytest.MonkeyPatch) -> None:

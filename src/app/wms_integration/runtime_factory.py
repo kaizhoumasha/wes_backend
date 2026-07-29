@@ -7,7 +7,7 @@ import hmac
 import json
 import secrets
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Never
 
 import httpx
 
@@ -16,7 +16,6 @@ from src.app.runtime.system_capabilities.wms.provider_catalog import (
     WMS_PROVIDER_PROFILE,
     build_active_wms_provider_profile,
     resolve_wms_operation_binding,
-    wms_sync_base_url,
 )
 from src.app.sys.external_http_credentials import AuditedVersionedCredentialProvider
 from src.app.sys.external_http_credentials import (
@@ -39,9 +38,19 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from src.app.wms_integration.ports.effect_status import FrozenWmsEffectStatusBinding, WmsEffectStatusQueryPort
-    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
+    from src.app.wms_integration.ports.query_inventory_operation import (
+        InventoryQueryOperationPort,
+        InventoryQueryOperationRequest,
+    )
 
     SandboxInventoryRowsProvider = Callable[..., list[dict[str, Any]]]
+
+
+class _T3UnboundInventoryQueryOperationPort:
+    """保持 attempt 装配可用，并在实际 QUERY 调用时 fail closed。"""
+
+    async def execute(self, _request: InventoryQueryOperationRequest) -> Never:
+        raise RuntimeError("compiled WMS QUERY endpoint injection belongs to the T3 runtime composition root")
 
 
 class _EphemeralCredentialProvider:
@@ -118,7 +127,6 @@ def build_inventory_query_port_factory(
     transport: httpx.AsyncBaseTransport | None = None,
     credential_provider: WmsCredentialProvider | None = None,
     evidence_writer: WmsQueryEvidenceWriter | None = None,
-    base_url: str | None = None,
     settings_source: Any | None = None,
 ) -> Callable[[], InventoryQueryOperationPort]:
     """以当前部署唯一 active profile 构建 QUERY executor factory。"""
@@ -134,13 +142,15 @@ def build_inventory_query_port_factory(
         profile_identity=profile_identity,
         operation_identity=CONTRACT.identity,
     )
+    if not simulation:
+        return _T3UnboundInventoryQueryOperationPort
     writer = evidence_writer or WmsCallEvidenceQueryWriter(
         session_factory=get_db_context,
         provider_profile_identity=profile_identity,
         evidence_service=wms_call_evidence_service,
         breaker_service=wms_circuit_breaker_service,
     )
-    resolved_base_url = base_url
+    resolved_base_url: str | None = None
     resolved_transport = transport
     resolved_credential_provider = credential_provider
     if simulation:
@@ -157,11 +167,6 @@ def build_inventory_query_port_factory(
         resolved_credential_provider = resolved_credential_provider or _EphemeralCredentialProvider(
             credential_reference=credential_reference,
             secret=secret,
-        )
-    else:
-        resolved_base_url = resolved_base_url or wms_sync_base_url(settings_source=active_settings)
-        resolved_credential_provider = resolved_credential_provider or build_environment_credential_provider(
-            settings_source=active_settings
         )
     if not isinstance(resolved_credential_provider, AuditedVersionedCredentialProvider):
         resolved_credential_provider = AuditedVersionedCredentialProvider(

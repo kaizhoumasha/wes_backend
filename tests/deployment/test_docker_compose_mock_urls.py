@@ -43,7 +43,7 @@ STATUS_CONFIG_NAMES = (
 )
 
 
-def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
+def test_docker_compose_uses_one_provider_profile_path_for_wms_processes() -> None:
     compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     acceptance_compose = yaml.safe_load(
         (BACKEND_ROOT / "docker-compose.wms-acceptance.yml").read_text(encoding="utf-8")
@@ -55,11 +55,9 @@ def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:
     celery_beat_env = services["celery_beat"]["environment"]
     mock_wms_env = services["mock_wms"]["environment"]
 
-    assert api_env["WMS_SYNC_BASE_URL"] == "${CONTAINER_WMS_SYNC_BASE_URL:-}"
-    assert celery_env["WMS_SYNC_BASE_URL"] == api_env["WMS_SYNC_BASE_URL"]
-    assert api_env["WMS_EFFECT_STATUS_URL"] == "${CONTAINER_WMS_EFFECT_STATUS_URL:-}"
-    assert celery_env["WMS_EFFECT_STATUS_URL"] == api_env["WMS_EFFECT_STATUS_URL"]
-    assert celery_beat_env["WMS_EFFECT_STATUS_URL"] == api_env["WMS_EFFECT_STATUS_URL"]
+    assert api_env["WMS_PROVIDER_PROFILE_FILE"] == "${WMS_PROVIDER_PROFILE_FILE:-}"
+    assert celery_env["WMS_PROVIDER_PROFILE_FILE"] == api_env["WMS_PROVIDER_PROFILE_FILE"]
+    assert celery_beat_env["WMS_PROVIDER_PROFILE_FILE"] == api_env["WMS_PROVIDER_PROFILE_FILE"]
     for setting_name in STATUS_CONFIG_NAMES:
         assert api_env[setting_name] == f"${{{setting_name}}}"
         assert celery_env[setting_name] == api_env[setting_name]
@@ -156,13 +154,11 @@ def test_mock_package_does_not_eagerly_import_peer_servers() -> None:
     assert "from tests.mock.wms_mock_server import" not in package_text
 
 
-def test_dev_and_test_env_declare_container_mock_urls() -> None:
+def test_dev_and_test_env_declare_the_provider_profile_entry() -> None:
     for env_file in (".env.dev", ".env.test"):
         env_text = (BACKEND_ROOT / env_file).read_text(encoding="utf-8")
 
-        assert "CONTAINER_WMS_SYNC_BASE_URL=http://mock_wms:8011/api/wms" in env_text
-        assert "CONTAINER_WMS_EFFECT_STATUS_URL=http://mock_wms:8011/northbound/operations/status" in env_text
-        assert "WMS_EFFECT_STATUS_URL=http://localhost:8011/northbound/operations/status" in env_text
+        assert "WMS_PROVIDER_PROFILE_FILE=" in env_text
         for setting_name in STATUS_CONFIG_NAMES:
             assert f"{setting_name}=" in env_text
         assert "CONTAINER_WES_EXTERNAL_CALLBACK_URL=http://api:8001/api/v1/callback/external" in env_text
@@ -176,11 +172,10 @@ def test_dev_and_test_env_declare_container_mock_urls() -> None:
         assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text
 
 
-def test_local_settings_load_all_active_wms_credentials_from_generated_dotenv() -> None:
+def test_local_settings_load_wms_budgets_and_credentials_from_generated_dotenv() -> None:
     local_settings = Settings(_env_file=BACKEND_ROOT / ".env.dev")  # pyright: ignore[reportCallIssue]
 
-    assert local_settings.WMS_SYNC_BASE_URL
-    assert local_settings.WMS_EFFECT_STATUS_URL
+    assert local_settings.WMS_PROVIDER_PROFILE_FILE is None
     assert local_settings.WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS >= (
         local_settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS + local_settings.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS
     )
@@ -190,13 +185,10 @@ def test_local_settings_load_all_active_wms_credentials_from_generated_dotenv() 
     assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2
 
 
-def test_prod_env_requires_explicit_wms_https_and_production_hmac_secret() -> None:
+def test_prod_env_requires_an_explicit_provider_profile_and_keeps_secret_slots() -> None:
     env_text = (BACKEND_ROOT / ".env.prod").read_text(encoding="utf-8")
 
-    assert "CONTAINER_WMS_SYNC_BASE_URL=" in env_text
-    assert "WMS_SYNC_BASE_URL=" in env_text
-    assert "CONTAINER_WMS_EFFECT_STATUS_URL=" in env_text
-    assert "WMS_EFFECT_STATUS_URL=" in env_text
+    assert "WMS_PROVIDER_PROFILE_FILE=" in env_text
     for setting_name in STATUS_CONFIG_NAMES:
         assert f"{setting_name}=" in env_text
     assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=false" in env_text

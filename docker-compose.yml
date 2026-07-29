@@ -44,7 +44,7 @@ x-external-http-credentials: &external-http-credentials
   WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES: ${WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES:-}
 
 x-wms-effect-status-config: &wms-effect-status-config
-  WMS_EFFECT_STATUS_URL: ${CONTAINER_WMS_EFFECT_STATUS_URL:-}
+  WMS_PROVIDER_PROFILE_FILE: ${WMS_PROVIDER_PROFILE_FILE:-}
   WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
   WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
   WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
@@ -101,9 +101,6 @@ services:
       # Celery 配置（使用服务名而非变量，确保容器内正确解析）
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
-
-      # WMS 同步接口配置（容器内使用 CONTAINER_*，避免宿主机 .env 的 localhost 覆盖）
-      WMS_SYNC_BASE_URL: ${CONTAINER_WMS_SYNC_BASE_URL:-}
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -190,9 +187,6 @@ services:
       # Celery 配置
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
-
-      # WMS 同步接口配置（容器内使用 CONTAINER_*，避免宿主机 .env 的 localhost 覆盖）
-      WMS_SYNC_BASE_URL: ${CONTAINER_WMS_SYNC_BASE_URL:-}
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

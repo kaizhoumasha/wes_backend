@@ -21,7 +21,6 @@ def _valid_settings(**overrides: object) -> dict[str, object]:
         "DATABASE_POOL_SIZE": 5,
         "DATABASE_MAX_OVERFLOW": 0,
         "DATABASE_APPLICATION_RUN_ID": "unit-run-unique",
-        "WMS_EFFECT_STATUS_URL": "https://wms.example/status",
         "WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 2,
         "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES": 4096,
         "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS": 9,

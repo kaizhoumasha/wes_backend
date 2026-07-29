@@ -33,7 +33,6 @@ def _base_kwargs() -> dict:
         "API_SECRET_ENCRYPTION_KEY": _fernet_key(),
         "DATABASE_RUNTIME_ROLE": "cli",
         "DATABASE_POOL_SIZE": 1,
-        "WMS_EFFECT_STATUS_URL": "https://wms.example/status",
         "WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 2,
         "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES": 4096,
         "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS": 9,
