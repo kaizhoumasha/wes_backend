@@ -16,6 +16,7 @@ from src.app.callback.models import CallbackLog
 from src.app.callback.services.callback_ingress_service import CallbackIngressService
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_command_service import DeviceCommandService
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
@@ -26,11 +27,13 @@ from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxSer
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
 from src.app.sys.models import SystemOutbox
 from src.app.sys.services import AuditLogService
+from src.app.wms_integration.ports.document_operations import ValidateRoughSorterAdmissionRequest
 from src.app.wms_integration.ports.inventory_operations import (
     InventoryRecord,
     InventorySnapshotQueryResult,
 )
 from src.app.wms_integration.ports.query_outcome import QuerySuccess
+from src.app.workline.models.workline import WorkLine
 from src.utils.timezone import timezone
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
@@ -39,6 +42,16 @@ from tests.support.runtime_inbox_processing_postgresql import (
     with_temporary_runtime_database,
 )
 from tests.support.wms_query_runtime import bind_stub_wms_query_runtime
+
+
+@pytest.fixture(autouse=True)
+def _bind_persisted_q19_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """成功路径必须具备 Q19 runtime，但已持久化决策不得再次访问 provider。"""
+
+    async def forbidden_query(*_args):  # type: ignore[no-untyped-def]
+        raise AssertionError("已持久化 Q19 同载荷回放不得再次访问 provider")
+
+    bind_stub_wms_query_runtime(monkeypatch, forbidden_query)
 
 
 def _callback_request(payload: dict[str, object]) -> Request:
@@ -424,11 +437,39 @@ def test_followup_device_command_requires_terminal_result(action: str, terminal_
             seeded = await seed_scan_flow(db)
             if action == "MOVE_TO_NG":
                 scan = await db.get(RuntimeInbox, seeded.inbox_id)
-                assert scan is not None
+                session = await db.get(WorklineSession, seeded.session_id)
+                workline = await db.get(WorkLine, seeded.workline_id)
+                assert scan is not None and session is not None and workline is not None
                 scan.payload_json = {
                     **scan.payload_json,
                     "data": {**scan.payload_json["data"], "PkgID": "PKG-SIZENG-FOLLOWUP"},
                 }
+                q19_request = ValidateRoughSorterAdmissionRequest.model_validate(
+                    {
+                        "raw_code": scan.payload_json["data"]["PkgID"],
+                        "six_in_one": {
+                            field_name: scan.payload_json["data"][field_name]
+                            for field_name in ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID")
+                        },
+                        "reel_diameter_mm": scan.payload_json["reel_diameter_mm"],
+                        "reel_thickness_mm": scan.payload_json["reel_thickness_mm"],
+                        "station_code": workline.line_code,
+                        "workline_id": workline.id,
+                        "session_id": session.id,
+                        "correlation_id": f"workline-session:{session.session_code}",
+                    }
+                )
+                persisted_decision = dict(session.context_json["wms_admission_decision"])
+                persisted_decision.update(
+                    {
+                        "request_canonical_hash": sha256_digest(q19_request.model_dump(mode="json", exclude_none=True)),
+                        "decision": "REJECT",
+                        "reason_code": "PACKAGE_NOT_ADMISSIBLE",
+                        "pkg_id": "PKG-SIZENG-FOLLOWUP",
+                        "measurement_decision": "REJECT",
+                    }
+                )
+                session.context_json = {"wms_admission_decision": persisted_decision}
                 await db.commit()
             await _process_seeded_scan(db, service, seeded)
 

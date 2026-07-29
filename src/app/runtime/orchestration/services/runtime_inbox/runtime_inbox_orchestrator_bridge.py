@@ -97,7 +97,10 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
-from src.app.runtime.workline_plugins.pre_attempt import resolve_plugin_pre_attempt_facts
+from src.app.runtime.workline_plugins.pre_attempt import (
+    PreAttemptStatus,
+    resolve_plugin_pre_attempt_facts,
+)
 from src.app.runtime.workline_plugins.registry import parse_workline_six_in_one
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -1533,14 +1536,14 @@ class RuntimeInboxProcessorBridge:
             workline=workline,
             snapshot=snapshot,
         )
-        pre_attempt_facts_changed = await resolve_plugin_pre_attempt_facts(
+        pre_attempt_resolution = await resolve_plugin_pre_attempt_facts(
             db,
             session=session,
             workline=workline,
             dispatch_request=dispatch_request,
             services=services,
         )
-        if pre_attempt_facts_changed:
+        if pre_attempt_resolution.status is PreAttemptStatus.FACTS_CHANGED:
             # 插件前置事实可能在同一 Stage 1 事务推进 Session 乐观版本；
             # 必须重新冻结完整 snapshot 与 facts，避免 Stage 3 把本 attempt
             # 自己刚完成的事实变更误判为并发漂移。
@@ -1589,7 +1592,17 @@ class RuntimeInboxProcessorBridge:
 
         # Stage 2 不接收 db/session/repository。Recorded replay 直接解码，
         # 因此不会调用 runner 或 Gateway handler。
-        if replay_resolution is None:
+        pre_attempt_blocked = pre_attempt_resolution.status is PreAttemptStatus.BLOCKED
+        if pre_attempt_blocked:
+            write_set = AttemptWriteSet(
+                evidence=(),
+                next_state=context.plugin_state,
+                intents=(),
+                outcome_code="HOLD",
+                hold_reason=pre_attempt_resolution.reason_code,
+                preserve_plugin_state=True,
+            )
+        elif replay_resolution is None:
             write_set = await self._generated_attempt_runner.run(context)
         else:
             write_set = _write_set_from_recorded_replay(replay_resolution, fallback_state=context.plugin_state)
@@ -1597,7 +1610,7 @@ class RuntimeInboxProcessorBridge:
             write_set,
             limits=self._plugin_write_set_limits,
             fallback_state=context.plugin_state,
-            allow_state_preservation=replay_resolution is not None,
+            allow_state_preservation=replay_resolution is not None or pre_attempt_blocked,
         )
 
         # Stage 3 在新短事务内锁权威行、重校验并原子写回。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.runtime.workline_plugins.pre_attempt import PreAttemptResolution
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import optional_int, optional_str, resolve_required_pk
 
@@ -15,11 +16,11 @@ async def resolve_pre_attempt_facts(
     workline: Any,
     dispatch_request: Any,
     services: Any,
-) -> bool:
+) -> PreAttemptResolution:
     """在粗分扫码 attempt 产生任何正常入料臂命令前锁定首次 Q19 decision。"""
 
     if getattr(dispatch_request, "logical_route", None) != "SCAN_COMPLETED":
-        return False
+        return PreAttemptResolution.not_applicable()
     raw_input = dispatch_request.raw_input
     data = payload_dict(raw_input.get("data"))
     reel_diameter = raw_input.get(
@@ -49,7 +50,7 @@ async def resolve_pre_attempt_facts(
         or reel_diameter is None
         or reel_thickness is None
     ):
-        return False
+        return PreAttemptResolution.blocked("WMS_Q19_REQUEST_FACTS_MISSING")
 
     from src.app.runtime.capabilities.material_flow.rough_sorter_q19_admission_service import (
         RoughSorterQ19AdmissionService,
@@ -71,15 +72,19 @@ async def resolve_pre_attempt_facts(
             }
         )
     except (TypeError, ValueError):
-        return False
+        return PreAttemptResolution.blocked("WMS_Q19_REQUEST_INVALID")
     q19_service = getattr(services, "rough_sorter_q19_admission_service", None)
     if q19_service is None:
         query_runtime = getattr(services, "wms_query_execution_port", None)
         if query_runtime is None or not callable(getattr(query_runtime, "project", None)):
-            return False
+            return PreAttemptResolution.blocked("WMS_Q19_RUNTIME_UNAVAILABLE")
         q19_service = RoughSorterQ19AdmissionService(query_runtime)
     outcome = await q19_service.resolve(db, session_id=session_id, request=request)
-    return isinstance(outcome, QuerySuccess)
+    if isinstance(outcome, QuerySuccess):
+        return PreAttemptResolution.facts_changed()
+    return PreAttemptResolution.blocked(
+        optional_str(getattr(outcome, "reason_code", None)) or "WMS_Q19_OUTCOME_INVALID"
+    )
 
 
 __all__ = ["resolve_pre_attempt_facts"]

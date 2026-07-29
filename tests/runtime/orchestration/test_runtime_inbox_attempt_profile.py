@@ -79,6 +79,11 @@ class _InventoryPort:
         return object()
 
 
+def _pre_attempt_status(value: object) -> str | None:
+    status = getattr(value, "status", None)
+    return getattr(status, "value", status)
+
+
 def _profile() -> ExternalContractProfile:
     return ExternalContractProfile(
         provider_code="ALTERNATE",
@@ -362,10 +367,12 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
 
     q19_hook_calls = 0
 
-    async def resolve_q19_before_plugin(*_args: object, **_kwargs: object) -> bool:
+    async def resolve_q19_before_plugin(*_args: object, **_kwargs: object) -> object:
+        from src.app.runtime.workline_plugins.pre_attempt import PreAttemptResolution
+
         nonlocal q19_hook_calls
         q19_hook_calls += 1
-        return False
+        return PreAttemptResolution.not_applicable()
 
     monkeypatch.setattr(workline_plugin_binding_service, "get_pinned", AsyncMock(return_value=binding))
     monkeypatch.setattr(capability_index_module, "SYSTEM_CAPABILITY_INDEX", definitions)
@@ -451,7 +458,7 @@ async def test_production_q19_hook_builds_request_from_scan_and_measurement_befo
         services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
     )
 
-    assert resolved is True
+    assert _pre_attempt_status(resolved) == "FACTS_CHANGED"
     request = q19_service.resolve.await_args.kwargs["request"]
     assert q19_service.resolve.await_args.kwargs["session_id"] == 19
     assert request.raw_code == "RAW-SESSION-Q19"
@@ -475,14 +482,16 @@ async def test_production_q19_hook_builds_request_from_scan_and_measurement_befo
         }
     )
     assert (
-        await module.resolve_pre_attempt_facts(
-            object(),
-            session=session,
-            workline=workline,
-            dispatch_request=late_command,
-            services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
+        _pre_attempt_status(
+            await module.resolve_pre_attempt_facts(
+                object(),
+                session=session,
+                workline=workline,
+                dispatch_request=late_command,
+                services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
+            )
         )
-        is False
+        == "NOT_APPLICABLE"
     )
     invalid_six_in_one = dispatch_request.model_copy(
         update={
@@ -492,30 +501,31 @@ async def test_production_q19_hook_builds_request_from_scan_and_measurement_befo
             }
         }
     )
-    assert (
-        await module.resolve_pre_attempt_facts(
-            object(),
-            session=session,
-            workline=workline,
-            dispatch_request=invalid_six_in_one,
-            services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
-        )
-        is False
+    invalid_resolution = await module.resolve_pre_attempt_facts(
+        object(),
+        session=session,
+        workline=workline,
+        dispatch_request=invalid_six_in_one,
+        services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
     )
+    assert _pre_attempt_status(invalid_resolution) == "BLOCKED"
+    assert getattr(invalid_resolution, "reason_code", None) == "WMS_Q19_REQUEST_INVALID"
 
     from src.app.runtime.capabilities.material_flow import rough_sorter_q19_admission_service as service_module
 
     fallback_service = SimpleNamespace(resolve=AsyncMock(return_value=QuerySuccess(object())))
     monkeypatch.setattr(service_module, "RoughSorterQ19AdmissionService", lambda _runtime: fallback_service)
     assert (
-        await module.resolve_pre_attempt_facts(
-            object(),
-            session=session,
-            workline=workline,
-            dispatch_request=dispatch_request,
-            services=SimpleNamespace(wms_query_execution_port=SimpleNamespace(project=lambda request: request)),
+        _pre_attempt_status(
+            await module.resolve_pre_attempt_facts(
+                object(),
+                session=session,
+                workline=workline,
+                dispatch_request=dispatch_request,
+                services=SimpleNamespace(wms_query_execution_port=SimpleNamespace(project=lambda request: request)),
+            )
         )
-        is True
+        == "FACTS_CHANGED"
     )
     assert q19_service.resolve.await_count == 1
 
@@ -524,27 +534,25 @@ async def test_production_q19_hook_builds_request_from_scan_and_measurement_befo
         QueryContractFailure("WMS_MALFORMED_RESPONSE", "invalid"),
     ):
         q19_service.resolve.return_value = failure
-        assert (
-            await module.resolve_pre_attempt_facts(
-                object(),
-                session=session,
-                workline=workline,
-                dispatch_request=dispatch_request,
-                services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
-            )
-            is False
-        )
-
-    assert (
-        await module.resolve_pre_attempt_facts(
+        blocked = await module.resolve_pre_attempt_facts(
             object(),
             session=session,
             workline=workline,
             dispatch_request=dispatch_request,
-            services=SimpleNamespace(),
+            services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
         )
-        is False
+        assert _pre_attempt_status(blocked) == "BLOCKED"
+        assert getattr(blocked, "reason_code", None) == failure.reason_code
+
+    missing_runtime = await module.resolve_pre_attempt_facts(
+        object(),
+        session=session,
+        workline=workline,
+        dispatch_request=dispatch_request,
+        services=SimpleNamespace(),
     )
+    assert _pre_attempt_status(missing_runtime) == "BLOCKED"
+    assert getattr(missing_runtime, "reason_code", None) == "WMS_Q19_RUNTIME_UNAVAILABLE"
     missing_measurement = dispatch_request.model_copy(
         update={
             "raw_input": {
@@ -553,16 +561,15 @@ async def test_production_q19_hook_builds_request_from_scan_and_measurement_befo
             }
         }
     )
-    assert (
-        await module.resolve_pre_attempt_facts(
-            object(),
-            session=session,
-            workline=workline,
-            dispatch_request=missing_measurement,
-            services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
-        )
-        is False
+    missing_facts = await module.resolve_pre_attempt_facts(
+        object(),
+        session=session,
+        workline=workline,
+        dispatch_request=missing_measurement,
+        services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
     )
+    assert _pre_attempt_status(missing_facts) == "BLOCKED"
+    assert getattr(missing_facts, "reason_code", None) == "WMS_Q19_REQUEST_FACTS_MISSING"
 
 
 @pytest.mark.asyncio
@@ -578,58 +585,88 @@ async def test_generic_pre_attempt_facade_is_generated_identity_scoped_and_optio
         "services": object(),
     }
     assert (
-        await module.resolve_plugin_pre_attempt_facts(
-            **common,
-            dispatch_request=SimpleNamespace(plugin_key=None, contract_version="v1"),
+        _pre_attempt_status(
+            await module.resolve_plugin_pre_attempt_facts(
+                **common,
+                dispatch_request=SimpleNamespace(plugin_key=None, contract_version="v1"),
+            )
         )
-        is False
+        == "NOT_APPLICABLE"
     )
     assert (
-        await module.resolve_plugin_pre_attempt_facts(
-            **common,
-            dispatch_request=SimpleNamespace(plugin_key="rough_sorter", contract_version=None),
+        _pre_attempt_status(
+            await module.resolve_plugin_pre_attempt_facts(
+                **common,
+                dispatch_request=SimpleNamespace(plugin_key="rough_sorter", contract_version=None),
+            )
         )
-        is False
+        == "NOT_APPLICABLE"
     )
     assert (
-        await module.resolve_plugin_pre_attempt_facts(
-            **common,
-            dispatch_request=SimpleNamespace(plugin_key="unknown", contract_version="v1"),
+        _pre_attempt_status(
+            await module.resolve_plugin_pre_attempt_facts(
+                **common,
+                dispatch_request=SimpleNamespace(plugin_key="unknown", contract_version="v1"),
+            )
         )
-        is False
+        == "NOT_APPLICABLE"
     )
     assert (
-        await module.resolve_plugin_pre_attempt_facts(
-            **common,
-            dispatch_request=SimpleNamespace(
-                plugin_key="smt_sorting_inbound",
-                contract_version="smt_sorting_inbound.v1",
-            ),
+        _pre_attempt_status(
+            await module.resolve_plugin_pre_attempt_facts(
+                **common,
+                dispatch_request=SimpleNamespace(
+                    plugin_key="smt_sorting_inbound",
+                    contract_version="smt_sorting_inbound.v1",
+                ),
+            )
         )
-        is False
+        == "NOT_APPLICABLE"
     )
 
     monkeypatch.setattr(module, "import_module", lambda _name: SimpleNamespace(resolve_pre_attempt_facts=None))
     rough_request = SimpleNamespace(plugin_key="rough_sorter", contract_version="rough_sorter.v2")
     assert (
-        await module.resolve_plugin_pre_attempt_facts(
-            **common,
-            dispatch_request=rough_request,
+        _pre_attempt_status(
+            await module.resolve_plugin_pre_attempt_facts(
+                **common,
+                dispatch_request=rough_request,
+            )
         )
-        is False
+        == "NOT_APPLICABLE"
     )
 
     async def resolver(*_args: object, **_kwargs: object) -> object:
         return object()
 
     monkeypatch.setattr(module, "import_module", lambda _name: SimpleNamespace(resolve_pre_attempt_facts=resolver))
+    invalid_result = await module.resolve_plugin_pre_attempt_facts(
+        **common,
+        dispatch_request=rough_request,
+    )
+    assert _pre_attempt_status(invalid_result) == "BLOCKED"
+    assert getattr(invalid_result, "reason_code", None) == "PLUGIN_PRE_ATTEMPT_RESULT_INVALID"
+
+    expected_resolution = module.PreAttemptResolution.facts_changed()
+
+    async def typed_resolver(*_args: object, **_kwargs: object) -> module.PreAttemptResolution:
+        return expected_resolution
+
+    monkeypatch.setattr(
+        module, "import_module", lambda _name: SimpleNamespace(resolve_pre_attempt_facts=typed_resolver)
+    )
     assert (
         await module.resolve_plugin_pre_attempt_facts(
             **common,
             dispatch_request=rough_request,
         )
-        is True
+        is expected_resolution
     )
+
+    with pytest.raises(ValueError, match="only BLOCKED"):
+        module.PreAttemptResolution(module.PreAttemptStatus.BLOCKED)
+    with pytest.raises(ValueError, match="only BLOCKED"):
+        module.PreAttemptResolution(module.PreAttemptStatus.NOT_APPLICABLE, reason_code="UNEXPECTED")
 
     def broken_import(_name: str) -> object:
         exc = ModuleNotFoundError("nested dependency missing")
