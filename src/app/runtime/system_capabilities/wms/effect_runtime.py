@@ -27,6 +27,9 @@ from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSI
 from src.core.task_queue_gateway import OutboxDispatchTarget
 
 if TYPE_CHECKING:
+    from src.app.runtime.orchestration.services.wms_fulfillment_domain_projector import (
+        WmsFulfillmentDomainProjector,
+    )
     from src.app.runtime.system_capabilities.wms.provider_catalog import WmsProviderCatalog
 
 _EFFECT_OPERATION_BY_REQUEST_MODEL = MappingProxyType(
@@ -93,8 +96,14 @@ def build_wms_effect_capability_definition(
 class WmsEffectPreparationRuntime:
     """在现有事务中构造唯一 SystemOutbox；不执行 HTTP，也不拥有 client。"""
 
-    def __init__(self, *, catalog: WmsProviderCatalog) -> None:
+    def __init__(
+        self,
+        *,
+        catalog: WmsProviderCatalog,
+        domain_projector: WmsFulfillmentDomainProjector | None = None,
+    ) -> None:
         self._catalog = catalog
+        self._domain_projector = domain_projector
 
     async def prepare(
         self,
@@ -128,6 +137,15 @@ class WmsEffectPreparationRuntime:
         ctx = getattr(execution, "ctx", None)
         if not isinstance(ctx, dict):
             raise TypeError("WMS EFFECT preparation requires the runtime execution context")
+        if operation.domain_projection_kind is not None:
+            if self._domain_projector is None:
+                raise RuntimeError("WMS EFFECT domain projector binding is missing")
+            await self._domain_projector.prepare_effect(
+                execution.db,
+                operation=operation,
+                request=request,
+                execution=execution,
+            )
         intent = getattr(execution, "intent", None)
         outbox = SystemOutbox(
             session_id=getattr(ctx.get("session"), "id", None),

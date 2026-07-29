@@ -95,6 +95,7 @@ def test_wms_rack_demand_freezes_one_active_e08_or_e09_root() -> None:
         "required_rack_code",
         "root_operation_identity",
         "root_intent_id",
+        "handoff_from_owner_id",
         "lifecycle_state",
         "opened_at_ms",
         "closed_at_ms",
@@ -106,6 +107,10 @@ def test_wms_rack_demand_freezes_one_active_e08_or_e09_root() -> None:
     assert _foreign_key_targets(model, "reconciliation_case_id") == {
         f"{RUNTIME_SCHEMA}.reconciliation_cases.id",
     }
+    assert _foreign_key_targets(model, "handoff_from_owner_id") == {
+        f"{RUNTIME_SCHEMA}.material_flow_owners.id",
+    }
+    assert model.__table__.c.handoff_from_owner_id.nullable is True
     checks = _check_sql(model)
     assert "wms.fulfillment.request_rack_supply@v1" in checks["ck_wms_rack_demands_root_shape"]
     assert "wms.fulfillment.request_rack_transport@v1" in checks["ck_wms_rack_demands_root_shape"]
@@ -120,7 +125,7 @@ def test_wms_rack_demand_freezes_one_active_e08_or_e09_root() -> None:
     assert active.unique is True
     # station_code 仅在工作线内稳定，故 workline_id 是需求键的一部分。
     assert _index_columns(active) == ("workline_id", "station_code", "rack_type")
-    assert "lifecycle_state IN ('ACTIVE', 'RECONCILING')" in _postgresql_where(active)
+    assert "lifecycle_state IN ('PREPARING', 'ACTIVE', 'RECONCILING')" in _postgresql_where(active)
     assert "uq_wms_rack_demands_root_intent" in _unique_constraints(model)
 
 

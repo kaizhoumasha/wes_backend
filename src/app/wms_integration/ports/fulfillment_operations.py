@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 
 from src.app.wms_integration.operation_contract import (
     WmsCompletionMode,
+    WmsDomainProjectionKind,
     WmsExecutionLane,
     effect_operation,
 )
@@ -527,6 +528,7 @@ REQUEST_RACK_SUPPLY = effect_operation(
     reject_codes=("NO_RACK_AVAILABLE", "STATION_BLOCKED", "DEMAND_CONFLICT"),
     completion_mode=WmsCompletionMode.ASYNC_TASK,
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+    domain_projection_kind=WmsDomainProjectionKind.RACK_SUPPLY_DEMAND,
 )
 REQUEST_RACK_TRANSPORT = effect_operation(
     identity="wms.fulfillment.request_rack_transport@v1",
@@ -537,6 +539,7 @@ REQUEST_RACK_TRANSPORT = effect_operation(
     reject_codes=("RACK_NOT_FOUND", "RACK_LOCKED", "DESTINATION_BLOCKED"),
     completion_mode=WmsCompletionMode.ASYNC_TASK,
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+    domain_projection_kind=WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND,
 )
 CHANGE_RACK_FACE = effect_operation(
     identity="wms.fulfillment.change_rack_face@v1",

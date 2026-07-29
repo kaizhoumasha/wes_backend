@@ -466,8 +466,14 @@ def build_wms_async_submit_reject_event(
 class EffectTransportBridge:
     """把已持久化 typed transport result 翻译为封闭 reducer event。"""
 
-    def __init__(self, *, reducer: EffectReducer = effect_reducer) -> None:
+    def __init__(
+        self,
+        *,
+        reducer: EffectReducer = effect_reducer,
+        domain_projector: Any | None = None,
+    ) -> None:
         self._reducer = reducer
+        self._domain_projector = domain_projector
 
     def resolve_result(
         self,
@@ -589,7 +595,27 @@ class EffectTransportBridge:
             idempotency_key=idempotency_key,
             payload_hash=payload_hash,
         )
-        return tuple([await self._reducer.reduce(db, event, require_intent=False) for event in resolved.events])
+        reductions = []
+        operation = WMS_OPERATION_BY_IDENTITY.get(operation_identity) if operation_identity is not None else None
+        for event in resolved.events:
+            reduction = await self._reducer.reduce(db, event, require_intent=False)
+            reductions.append(reduction)
+            if (
+                self._domain_projector is not None
+                and operation is not None
+                and operation.domain_projection_kind is not None
+                and event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
+            ):
+                if not isinstance(payload_json, dict):
+                    raise RuntimeError("WMS domain rejection projection requires frozen request payload")
+                await self._domain_projector.project_event(
+                    db,
+                    operation=operation,
+                    request_payload=payload_json,
+                    event=event,
+                    reduction=reduction,
+                )
+        return tuple(reductions)
 
 
 class EffectCallbackBridge:
@@ -703,7 +729,12 @@ class EffectReconciliationBridge:
         )
 
 
-effect_transport_bridge = EffectTransportBridge()
+# 组合根延迟导入，避免 services.__init__ 在 bridge 定义完成前形成循环依赖。
+from src.app.runtime.orchestration.services.wms_fulfillment_domain_projector import (  # noqa: E402
+    wms_fulfillment_domain_projector,
+)
+
+effect_transport_bridge = EffectTransportBridge(domain_projector=wms_fulfillment_domain_projector)
 effect_callback_bridge = EffectCallbackBridge()
 effect_reconciliation_bridge = EffectReconciliationBridge()
 

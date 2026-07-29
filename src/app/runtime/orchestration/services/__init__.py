@@ -36,6 +36,12 @@ from src.app.runtime.orchestration.services.material_unit_mutation_service impor
     StaleMaterialUnitPrecondition,
     material_unit_mutation_service,
 )
+from src.app.runtime.orchestration.services.rack_demand_service import (
+    RackDemandService,
+    WmsRackDemandClaim,
+    WmsRackDemandReservation,
+    rack_demand_service,
+)
 from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
     RuntimeSnapshotAssembler,
     RuntimeSnapshotInput,
@@ -54,6 +60,10 @@ from src.app.runtime.orchestration.services.wms_effect_status_service import (
     WmsEffectStatusCheckResult,
     WmsEffectStatusService,
     wms_effect_status_service,
+)
+from src.app.runtime.orchestration.services.wms_fulfillment_domain_projector import (
+    WmsFulfillmentDomainProjector,
+    wms_fulfillment_domain_projector,
 )
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusProjectionService,
@@ -80,6 +90,7 @@ __all__ = [
     "IdempotencyGuard",
     "InvalidReconciliationEvent",
     "MaterialUnitMutationService",
+    "RackDemandService",
     "ReconciliationResolutionConflict",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
@@ -89,6 +100,9 @@ __all__ = [
     "SystemOutboxCancellationService",
     "WmsEffectStatusCheckResult",
     "WmsEffectStatusService",
+    "WmsFulfillmentDomainProjector",
+    "WmsRackDemandClaim",
+    "WmsRackDemandReservation",
     "WorkLineRuntimeStatusProjectionService",
     "WorkLineRuntimeStatusSnapshot",
     "conveyor_queue_membership_writer_service",
@@ -99,9 +113,11 @@ __all__ = [
     "is_wes_internal_key",
     "make_wes_internal_key",
     "material_unit_mutation_service",
+    "rack_demand_service",
     "runtime_snapshot_assembler",
     "session_hold_mutation_service",
     "system_outbox_cancellation_service",
     "wms_effect_status_service",
+    "wms_fulfillment_domain_projector",
     "workline_runtime_status_projection_service",
 ]

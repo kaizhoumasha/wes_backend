@@ -109,6 +109,7 @@ async def _assert_schema_and_constraints(connection: asyncpg.Connection) -> None
     )
     assert {
         "ck_wms_rack_demands_root_shape",
+        "fk_wms_rack_demands_handoff_owner",
         "ux_material_flow_owners_active_object",
         "ck_bin_route_instances_location_shape",
         "fk_conveyor_queue_memberships_route_instance",
@@ -117,6 +118,18 @@ async def _assert_schema_and_constraints(connection: asyncpg.Connection) -> None
     } - {row["conname"] for row in constraint_names} == {
         "ux_material_flow_owners_active_object",
     }
+    assert (
+        await connection.fetchval(
+            """
+            SELECT is_nullable = 'YES'
+            FROM information_schema.columns
+            WHERE table_schema = 'wes_runtime'
+              AND table_name = 'wms_rack_demands'
+              AND column_name = 'handoff_from_owner_id'
+            """
+        )
+        is True
+    )
 
     index_names = {
         row["indexname"]
@@ -207,6 +220,75 @@ async def _assert_database_shapes(connection: asyncpg.Connection) -> None:
             )
             """
         )
+
+    preparing_id = await connection.fetchval(
+        """
+        INSERT INTO wes_runtime.wms_rack_demands (
+            workline_id,
+            station_code,
+            rack_type,
+            demand_generation,
+            root_operation_identity,
+            root_intent_id,
+            lifecycle_state,
+            opened_at_ms
+        )
+        VALUES (
+            10,
+            'STATION-PREPARING',
+            'FULL_BOX',
+            1,
+            'wms.fulfillment.request_rack_supply@v1',
+            NULL,
+            'PREPARING',
+            1002
+        )
+        RETURNING id
+        """
+    )
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await connection.execute(
+            """
+            INSERT INTO wes_runtime.wms_rack_demands (
+                workline_id,
+                station_code,
+                rack_type,
+                demand_generation,
+                root_operation_identity,
+                root_intent_id,
+                lifecycle_state,
+                opened_at_ms
+            )
+            VALUES (
+                10,
+                'STATION-PREPARING',
+                'FULL_BOX',
+                2,
+                'wms.fulfillment.request_rack_supply@v1',
+                1003,
+                'ACTIVE',
+                1003
+            )
+            """
+        )
+    with pytest.raises(asyncpg.CheckViolationError):
+        await connection.execute(
+            """
+            UPDATE wes_runtime.wms_rack_demands
+            SET lifecycle_state = 'ACTIVE'
+            WHERE id = $1
+            """,
+            preparing_id,
+        )
+    await connection.execute(
+        """
+        UPDATE wes_runtime.wms_rack_demands
+        SET root_intent_id = 1004,
+            lifecycle_state = 'ACTIVE'
+        WHERE id = $1
+        """,
+        preparing_id,
+    )
 
     await connection.execute(
         """
@@ -440,7 +522,7 @@ async def _cleanup_scenario_rows(connection: asyncpg.Connection) -> None:
     await connection.execute(
         """
         DELETE FROM wes_runtime.wms_rack_demands
-        WHERE root_intent_id IN (1001, 1002)
+        WHERE root_intent_id IN (1001, 1002, 1004)
         """
     )
     await connection.execute(

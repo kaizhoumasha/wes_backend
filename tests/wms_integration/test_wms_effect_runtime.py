@@ -242,6 +242,7 @@ async def test_concrete_preparation_runtime_writes_one_frozen_outbox_without_htt
                 operation
                 for operation in EFFECT_OPERATIONS
                 if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+                and operation.domain_projection_kind is None
             ),
             "WMS_FULFILLMENT",
         ),

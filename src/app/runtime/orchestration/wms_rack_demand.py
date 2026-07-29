@@ -27,6 +27,11 @@ class WmsRackDemand(BaseMixin, table=True):
             [f"{RUNTIME_SCHEMA}.reconciliation_cases.id"],
             name="fk_wms_rack_demands_reconciliation_case",
         ),
+        ForeignKeyConstraint(
+            ["handoff_from_owner_id"],
+            [f"{RUNTIME_SCHEMA}.material_flow_owners.id"],
+            name="fk_wms_rack_demands_handoff_owner",
+        ),
         UniqueConstraint("root_intent_id", name="uq_wms_rack_demands_root_intent"),
         UniqueConstraint(
             "workline_id",
@@ -48,11 +53,17 @@ class WmsRackDemand(BaseMixin, table=True):
         CheckConstraint("demand_generation > 0", name="generation"),
         CheckConstraint(
             "("
-            "lifecycle_state = 'ACTIVE' AND closed_at_ms IS NULL AND reconciliation_case_id IS NULL"
+            "lifecycle_state = 'PREPARING' AND root_intent_id IS NULL "
+            "AND closed_at_ms IS NULL AND reconciliation_case_id IS NULL"
             ") OR ("
-            "lifecycle_state = 'CLOSED' AND closed_at_ms IS NOT NULL AND reconciliation_case_id IS NULL"
+            "lifecycle_state = 'ACTIVE' AND root_intent_id IS NOT NULL "
+            "AND closed_at_ms IS NULL AND reconciliation_case_id IS NULL"
             ") OR ("
-            "lifecycle_state = 'RECONCILING' AND closed_at_ms IS NULL AND reconciliation_case_id IS NOT NULL"
+            "lifecycle_state = 'CLOSED' AND root_intent_id IS NOT NULL "
+            "AND closed_at_ms IS NOT NULL AND reconciliation_case_id IS NULL"
+            ") OR ("
+            "lifecycle_state = 'RECONCILING' AND root_intent_id IS NOT NULL "
+            "AND closed_at_ms IS NULL AND reconciliation_case_id IS NOT NULL"
             ")",
             name="lifecycle",
         ),
@@ -62,8 +73,8 @@ class WmsRackDemand(BaseMixin, table=True):
             "station_code",
             "rack_type",
             unique=True,
-            postgresql_where=text("lifecycle_state IN ('ACTIVE', 'RECONCILING')"),
-            sqlite_where=text("lifecycle_state IN ('ACTIVE', 'RECONCILING')"),
+            postgresql_where=text("lifecycle_state IN ('PREPARING', 'ACTIVE', 'RECONCILING')"),
+            sqlite_where=text("lifecycle_state IN ('PREPARING', 'ACTIVE', 'RECONCILING')"),
         ),
         {"schema": RUNTIME_SCHEMA},
     )
@@ -76,7 +87,10 @@ class WmsRackDemand(BaseMixin, table=True):
     demand_generation: int = Field(ge=1)
     required_rack_code: str | None = Field(default=None, max_length=100)
     root_operation_identity: str = Field(min_length=1, max_length=160)
-    root_intent_id: int
+    # PREPARING 先占 demand mutex；同事务 claim RuntimeIntent 后再绑定 root 并转 ACTIVE。
+    root_intent_id: int | None = None
+    # 出站 E09 冻结原 PIECE_SORTING owner，reject 只能按该稳定身份恢复。
+    handoff_from_owner_id: int | None = None
     lifecycle_state: str = Field(default="ACTIVE", min_length=1, max_length=20)
     opened_at_ms: int = Field(sa_type=BigInteger)
     closed_at_ms: int | None = Field(default=None, sa_type=BigInteger)

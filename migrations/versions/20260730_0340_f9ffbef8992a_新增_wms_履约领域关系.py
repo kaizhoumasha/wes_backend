@@ -32,7 +32,8 @@ def upgrade() -> None:
         sa.Column("demand_generation", sa.Integer(), nullable=False),
         sa.Column("required_rack_code", sa.String(length=100), nullable=True),
         sa.Column("root_operation_identity", sa.String(length=160), nullable=False),
-        sa.Column("root_intent_id", sa.Integer(), nullable=False),
+        sa.Column("root_intent_id", sa.Integer(), nullable=True),
+        sa.Column("handoff_from_owner_id", sa.Integer(), nullable=True),
         sa.Column("lifecycle_state", sa.String(length=20), nullable=False),
         sa.Column("opened_at_ms", sa.BigInteger(), nullable=False),
         sa.Column("closed_at_ms", sa.BigInteger(), nullable=True),
@@ -53,13 +54,16 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "("
-            "lifecycle_state = 'ACTIVE' AND closed_at_ms IS NULL "
+            "lifecycle_state = 'PREPARING' AND root_intent_id IS NULL "
+            "AND closed_at_ms IS NULL AND reconciliation_case_id IS NULL"
+            ") OR ("
+            "lifecycle_state = 'ACTIVE' AND root_intent_id IS NOT NULL AND closed_at_ms IS NULL "
             "AND reconciliation_case_id IS NULL"
             ") OR ("
-            "lifecycle_state = 'CLOSED' AND closed_at_ms IS NOT NULL "
+            "lifecycle_state = 'CLOSED' AND root_intent_id IS NOT NULL AND closed_at_ms IS NOT NULL "
             "AND reconciliation_case_id IS NULL"
             ") OR ("
-            "lifecycle_state = 'RECONCILING' AND closed_at_ms IS NULL "
+            "lifecycle_state = 'RECONCILING' AND root_intent_id IS NOT NULL AND closed_at_ms IS NULL "
             "AND reconciliation_case_id IS NOT NULL"
             ")",
             name=op.f("ck_wms_rack_demands_lifecycle"),
@@ -100,7 +104,7 @@ def upgrade() -> None:
         ["workline_id", "station_code", "rack_type"],
         unique=True,
         schema=SCHEMA,
-        postgresql_where=sa.text("lifecycle_state IN ('ACTIVE', 'RECONCILING')"),
+        postgresql_where=sa.text("lifecycle_state IN ('PREPARING', 'ACTIVE', 'RECONCILING')"),
     )
 
     op.create_table(
@@ -165,6 +169,15 @@ def upgrade() -> None:
         unique=True,
         schema=SCHEMA,
         postgresql_where=sa.text("lifecycle_state IN ('ACTIVE', 'RECONCILING')"),
+    )
+    op.create_foreign_key(
+        "fk_wms_rack_demands_handoff_owner",
+        "wms_rack_demands",
+        "material_flow_owners",
+        ["handoff_from_owner_id"],
+        ["id"],
+        source_schema=SCHEMA,
+        referent_schema=SCHEMA,
     )
 
     op.create_table(
@@ -525,5 +538,5 @@ def downgrade() -> None:
         op.drop_column("conveyor_queue_memberships", column_name, schema=SCHEMA)
 
     op.drop_table("bin_route_instances", schema=SCHEMA)
-    op.drop_table("material_flow_owners", schema=SCHEMA)
     op.drop_table("wms_rack_demands", schema=SCHEMA)
+    op.drop_table("material_flow_owners", schema=SCHEMA)

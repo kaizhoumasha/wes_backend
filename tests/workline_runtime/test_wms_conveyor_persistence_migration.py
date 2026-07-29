@@ -48,6 +48,8 @@ def test_upgrade_creates_four_relations_and_extends_queue_membership() -> None:
     ):
         assert f"CREATE TABLE wes_runtime.{table_name}" in sql
     assert "demand_key" not in sql
+    assert "handoff_from_owner_id INTEGER" in sql
+    assert "CONSTRAINT fk_wms_rack_demands_handoff_owner " in sql
     assert "current_queue_membership_id" not in sql
     assert "route_instance_id IS NOT NULL AND membership_status IN ('ACTIVE', 'RECONCILING')" in sql
     assert "ix_bin_route_instances_workline_node" not in sql
@@ -95,3 +97,6 @@ def test_downgrade_reverses_queue_extension_and_drops_four_relations() -> None:
         "wms_rack_demands",
     ):
         assert f"DROP TABLE wes_runtime.{table_name}" in sql
+    assert sql.index("DROP TABLE wes_runtime.wms_rack_demands") < sql.index(
+        "DROP TABLE wes_runtime.material_flow_owners"
+    )

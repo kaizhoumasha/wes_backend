@@ -95,6 +95,10 @@ from .wms_effect_status_repository import (
     WmsEffectStatusRepository,
     wms_effect_status_repository,
 )
+from .wms_fulfillment_domain_repository import (
+    WmsFulfillmentDomainRepository,
+    wms_fulfillment_domain_repository,
+)
 from .workline_runtime_status_projection_repository import (
     WorklineRuntimeStatusProjectionRepository,
     workline_runtime_status_projection_repository,
@@ -124,6 +128,7 @@ __all__ = [
     "TimelineSequenceRepository",
     "WmsEffectStatusClaim",
     "WmsEffectStatusRepository",
+    "WmsFulfillmentDomainRepository",
     "WorklineBinCellReservationRepository",
     "WorklineDiagnosticRepository",
     "WorklineDispatchAttemptRepository",
@@ -147,6 +152,7 @@ __all__ = [
     "timeline_recorded_replay_repository",
     "timeline_sequence_repository",
     "wms_effect_status_repository",
+    "wms_fulfillment_domain_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",

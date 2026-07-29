@@ -71,6 +71,13 @@ class WmsEffectStatusHintResult:
 
 
 _CONFIRMATION_BUDGET_EXHAUSTED = "WMS_STATUS_CONFIRMATION_BUDGET_EXHAUSTED"
+_FULFILLMENT_DOMAIN_OPERATIONS = frozenset(
+    {
+        "wms.fulfillment.request_rack_supply@v1",
+        "wms.fulfillment.request_rack_transport@v1",
+    }
+)
+_FULFILLMENT_TERMINAL_NON_SUCCESS = "WMS_FULFILLMENT_TERMINAL_NON_SUCCESS"
 
 
 def _emit_status_hint_enqueue_failure(
@@ -133,6 +140,7 @@ class WmsEffectStatusService:
         jitter: Any | None = None,
         random_source: Any | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
+        domain_projector: Any | None = None,
     ) -> None:
         self._repository = repository
         self._reducer = reducer
@@ -144,6 +152,7 @@ class WmsEffectStatusService:
         self._port_factory_builder = port_factory_builder or self._default_port_factory_builder
         self._resubmit_dispatcher = resubmit_dispatcher or self._default_resubmit_dispatcher
         self._queue_gateway = queue_gateway
+        self._domain_projector = domain_projector
 
     async def request_status_check_hint(
         self,
@@ -381,7 +390,8 @@ class WmsEffectStatusService:
             raise ValueError("persisted WMS EFFECT ACK evidence drifted across submit attempts")
         return frozen_ack
 
-    async def _apply_snapshot(
+    # 各 fenced/reconciliation 分支必须在自身事务终点显式返回，避免落入普通状态写回。
+    async def _apply_snapshot(  # noqa: PLR0911
         self,
         db: Any,
         *,
@@ -406,6 +416,7 @@ class WmsEffectStatusService:
                 reason_code="WMS_STATUS_RESULT_IDENTITY_INVALID",
                 evidence={"error_type": type(exc).__name__},
             )
+        operation = WMS_OPERATION_BY_IDENTITY[request.operation_identity]
         if request.frozen_ack is None and snapshot.recovered_ack is not None:
             await self._record_recovered_ack(
                 db,
@@ -450,6 +461,22 @@ class WmsEffectStatusService:
                 reason_code=version_conflict,
                 evidence=evidence,
             )
+        task_outcome = getattr(snapshot.result, "task_outcome", None)
+        if (
+            snapshot.state is WmsEffectStatus.COMPLETED
+            and request.operation_identity in _FULFILLMENT_DOMAIN_OPERATIONS
+            and task_outcome != "SUCCESS"
+        ):
+            return await self._open_reconciliation(
+                db,
+                claim=current_claim,
+                reason_code=_FULFILLMENT_TERMINAL_NON_SUCCESS,
+                evidence={
+                    **evidence,
+                    "operation_identity": request.operation_identity,
+                    "task_outcome": task_outcome,
+                },
+            )
         event_type = {
             WmsEffectStatus.ACCEPTED: EffectReducerEventType.STATUS_ACCEPTED,
             WmsEffectStatus.PROCESSING: EffectReducerEventType.STATUS_PROCESSING,
@@ -459,22 +486,36 @@ class WmsEffectStatusService:
         if event_type is None:
             return await self._record_not_found(db, claim=current_claim, evidence=evidence)
         occurred_at_ms = self._occurred_at_ms()
-        reduced = await self._reducer.reduce(
-            db,
-            EffectReducerEvent(
-                event_type=event_type,
-                dispatch_key=intent.dispatch_key,
-                occurred_at_ms=occurred_at_ms,
-                source_event_id=generated_effect_source_event_id(
-                    "wms-status",
-                    intent.dispatch_key,
-                    snapshot.source_version,
-                    snapshot_hash,
-                ),
-                reason_code=snapshot.reason_code,
-                evidence_json=evidence,
+        reducer_event = EffectReducerEvent(
+            event_type=event_type,
+            dispatch_key=intent.dispatch_key,
+            occurred_at_ms=occurred_at_ms,
+            source_event_id=generated_effect_source_event_id(
+                "wms-status",
+                intent.dispatch_key,
+                snapshot.source_version,
+                snapshot_hash,
             ),
+            reason_code=snapshot.reason_code,
+            evidence_json=evidence,
         )
+        reduced = await self._reducer.reduce(db, reducer_event)
+        if (
+            self._domain_projector is not None
+            and operation.domain_projection_kind is not None
+            and event_type
+            in {
+                EffectReducerEventType.STATUS_COMPLETED,
+                EffectReducerEventType.STATUS_REJECTED,
+            }
+        ):
+            await self._domain_projector.project_event(
+                db,
+                operation=operation,
+                request_payload=request.request_payload,
+                event=reducer_event,
+                reduction=reduced,
+            )
         contradictory_terminal = self._is_contradictory_terminal(intent, snapshot=snapshot)
         if not contradictory_terminal:
             intent.status_source_version = snapshot.source_version
@@ -878,13 +919,21 @@ class WmsEffectStatusService:
                 additional_evidence=evidence,
             )
             reduced = await self._reducer.reduce(db, reject_event)
+            reconciles = request.frozen_ack is not None or bool(getattr(reduced, "contradiction", False))
+            if not reconciles and self._domain_projector is not None and operation.domain_projection_kind is not None:
+                await self._domain_projector.project_event(
+                    db,
+                    operation=operation,
+                    request_payload=request.request_payload,
+                    event=reject_event,
+                    reduction=reduced,
+                )
             _ = await self._repository.release_claim(
                 db,
                 claim=current_claim,
                 status_check_after=None,
             )
             await db.commit()
-            reconciles = request.frozen_ack is not None or bool(getattr(reduced, "contradiction", False))
             return WmsEffectStatusCheckResult(
                 dispatch_key=claim.intent.dispatch_key,
                 outcome="RECONCILING" if reconciles else "REJECTED",
@@ -1073,7 +1122,14 @@ class WmsEffectStatusService:
         return result
 
 
-wms_effect_status_service = WmsEffectStatusService()
+# 组合根延迟导入，避免 services.__init__ 在状态服务定义完成前形成循环依赖。
+from src.app.runtime.orchestration.services.wms_fulfillment_domain_projector import (  # noqa: E402
+    wms_fulfillment_domain_projector,
+)
+
+wms_effect_status_service = WmsEffectStatusService(
+    domain_projector=wms_fulfillment_domain_projector,
+)
 
 __all__ = [
     "WmsEffectStatusCheckResult",

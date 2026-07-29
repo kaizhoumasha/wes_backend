@@ -45,6 +45,13 @@ class WmsExecutionLane(str, Enum):
     WMS_FULFILLMENT = "wms-fulfillment"
 
 
+class WmsDomainProjectionKind(str, Enum):
+    """仅 E08/E09 需要的本地履约投影类型。"""
+
+    RACK_SUPPLY_DEMAND = "RACK_SUPPLY_DEMAND"
+    RACK_TRANSPORT_DEMAND = "RACK_TRANSPORT_DEMAND"
+
+
 class WmsOperationBudget(BaseModel):
     """覆盖全部 attempts、分页和 backoff 的总预算。"""
 
@@ -122,6 +129,7 @@ class WmsOperationDefinition(BaseModel):
     error_codes: tuple[StableCode, ...] = Field(min_length=1)
     reject_codes: tuple[StableCode, ...] = Field(min_length=1)
     terminal_identity_validator: TerminalIdentityValidator | None = Field(default=None, exclude=True)
+    domain_projection_kind: WmsDomainProjectionKind | None = None
 
     @computed_field
     @property
@@ -142,6 +150,8 @@ class WmsOperationDefinition(BaseModel):
         if len(self.reject_codes) != len(set(self.reject_codes)):
             raise ValueError("reject_codes must not contain duplicates")
         if self.mode is WmsOperationMode.QUERY:
+            if self.domain_projection_kind is not None:
+                raise ValueError("QUERY must not declare domain_projection_kind")
             if self.terminal_identity_validator is not None:
                 raise ValueError("QUERY must not declare terminal_identity_validator")
             if self.max_candidate_count is not None:
@@ -170,6 +180,12 @@ class WmsOperationDefinition(BaseModel):
             raise ValueError("SYNC_RESULT EFFECT requires terminal_identity_validator")
         if self.completion_mode is WmsCompletionMode.ASYNC_TASK and self.terminal_identity_validator is not None:
             raise ValueError("ASYNC_TASK EFFECT must not declare terminal_identity_validator")
+        expected_domain_projection = {
+            "wms.fulfillment.request_rack_supply@v1": WmsDomainProjectionKind.RACK_SUPPLY_DEMAND,
+            "wms.fulfillment.request_rack_transport@v1": WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND,
+        }.get(self.identity)
+        if self.domain_projection_kind is not expected_domain_projection:
+            raise ValueError("domain_projection_kind is only valid for its authored E08/E09 operation")
         is_e13 = self.identity == "wms.fulfillment.move_bins_from_conveyor_exit@v1"
         if is_e13 and self.max_candidate_count is None:
             raise ValueError("E13 requires max_candidate_count")
@@ -259,6 +275,7 @@ def effect_operation(
     execution_lane: WmsExecutionLane,
     max_candidate_count: int | None = None,
     terminal_identity_validator: TerminalIdentityValidator | None = None,
+    domain_projection_kind: WmsDomainProjectionKind | None = None,
 ) -> WmsOperationDefinition:
     """构造一项静态 EFFECT Definition。"""
 
@@ -279,6 +296,7 @@ def effect_operation(
         error_codes=EFFECT_ERROR_CODES,
         reject_codes=reject_codes,
         terminal_identity_validator=terminal_identity_validator,
+        domain_projection_kind=domain_projection_kind,
     )
 
 
@@ -286,6 +304,7 @@ __all__ = [
     "COMMON_ERROR_CODES",
     "EFFECT_ERROR_CODES",
     "WmsCompletionMode",
+    "WmsDomainProjectionKind",
     "WmsExecutionLane",
     "WmsHttpMethod",
     "WmsOperationBudget",
