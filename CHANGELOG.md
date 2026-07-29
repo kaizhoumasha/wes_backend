@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.6.0] - 2026-07-29
+
+### Changed
+- Runtime 资源预占兜底现在直接使用 material-flow 域的真实默认服务，WorkLine service facade 只暴露仍受支持的配置域能力。
+
+### Fixed
+- 补齐未注入预占服务时的默认单例回归覆盖，并将该目标态测试精确排除在 legacy cleanup 矩阵之外。
+
+### Removed
+- 删除 WorkLine service facade 中已失效的 PEP 562 tombstone、延迟属性加载器和旧预占服务名称，不再保留未发布系统的兼容入口。
+- 清理 44 份未被引用的过期归档文档，同时保留仍被当前文档引用的归档根及其依赖闭包。
+
 ## [0.20.5.0] - 2026-07-28
 
 ### Added
