@@ -29,11 +29,13 @@ from src.app.sys.external_http_transport import (
 )
 from src.app.wms_integration.ports.effect_status import (
     FrozenWmsEffectStatusBinding,
+    WmsBatchEffectStatusRequest,
     WmsEffectStatus,
     WmsEffectStatusRequest,
     WmsEffectStatusSnapshot,
     build_wms_effect_status_binding,
 )
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.core.conf import settings
 from src.core.logger import logger
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
@@ -285,12 +287,41 @@ class WmsEffectStatusService:
             or not isinstance(outbox.payload_json, dict)
         ):
             raise ValueError("WMS status query identity differs from the frozen EFFECT pair")
-        return WmsEffectStatusRequest(
+        frozen_ack = WmsEffectStatusService._load_frozen_ack(intent)
+        request_type = WmsBatchEffectStatusRequest if frozen_ack.accepted_scope is not None else WmsEffectStatusRequest
+        return request_type(
             operation_identity=outbox.operation_identity,
             idempotency_key=intent.idempotency_key,
             attempt_count=max(1, int(intent.status_check_count or 1)),
             request_payload=outbox.payload_json,
+            frozen_ack=frozen_ack,
         )
+
+    @staticmethod
+    def _load_frozen_ack(intent: Any) -> WmsEffectAck:
+        """从 append-only reducer evidence 恢复 ACK；任何缺失或漂移都 fail closed。"""
+
+        raw_acks = [
+            item["wms_effect_ack"]
+            for item in (getattr(intent, "outcome_history_json", None) or ())
+            if isinstance(item, dict)
+            and item.get("event_type") == EffectReducerEventType.TRANSPORT_ACCEPTED.value
+            and "wms_effect_ack" in item
+        ]
+        if not raw_acks:
+            raise ValueError("persisted WMS EFFECT ACK evidence is required before status query")
+        try:
+            frozen_ack = WmsEffectAck.model_validate(raw_acks[0])
+            replayed_acks = tuple(WmsEffectAck.model_validate(raw_ack) for raw_ack in raw_acks[1:])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("persisted WMS EFFECT ACK evidence is invalid") from exc
+        frozen_identity = frozen_ack.model_dump(mode="json", exclude={"submission_state"})
+        if any(
+            replayed.model_dump(mode="json", exclude={"submission_state"}) != frozen_identity
+            for replayed in replayed_acks
+        ):
+            raise ValueError("persisted WMS EFFECT ACK evidence drifted across submit attempts")
+        return frozen_ack
 
     async def _apply_snapshot(
         self,

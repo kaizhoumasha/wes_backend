@@ -16,6 +16,7 @@ from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service i
     sorter_inbound_runtime_service,
 )
 from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_IDENTITIES
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.app.wms_integration.services.callback_normalizer import (
     WMS_ALLOWED_CALLBACK_TYPES as NORMALIZER_WMS_ALLOWED_CALLBACK_TYPES,
 )
@@ -307,6 +308,16 @@ REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
         r"\bCTU\b[^。\n|]{0,60}(?:投料|搬运|任务|执行)[^。\n|]{0,60}(?:callback|回调)",
         re.IGNORECASE,
     ),
+    "ctu-parent-child-staged-authority": re.compile(
+        r"(?:\bCTU\b[^。\n]{0,120})?(?:父(?:请求|任务)|子(?:项|对象|任务|work item))"
+        r"[^。\n]{0,120}(?:阶段状态|阶段结果|逐阶段|逐对象收敛)"
+        r"|\bCTU\b[^。\n]{0,80}(?:父子|父请求|子\s*work item)",
+        re.IGNORECASE,
+    ),
+    "ctu-batch-completion-callback": re.compile(
+        r"(?:CTU[^。\n]{0,80})?批次(?:完成|终态)[^。\n]{0,40}(?:callback|回调)",
+        re.IGNORECASE,
+    ),
     "fulfillment-object-callback-authority": re.compile(
         r"(?:货架|满箱交换|换面|回库|CTU)[^。\n|]{0,60}"
         r"(?:到达|移出|完成|任务|投料)[^。\n|]{0,40}(?:callback|回调)",
@@ -322,7 +333,13 @@ REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
         r"(?:\s*[/↔-]\s*(?:WMS|RCS|AGV|CTU))*[^。\n|]{0,40}(?:callback|回调)",
         re.IGNORECASE,
     ),
+    "wms-fulfillment-result-event-authority": re.compile(
+        r"\bWMS\b[^。\n]{0,100}(?:执行)?结果\s*/\s*事件[^。\n]{0,40}(?:回传|返回)\s*WES",
+        re.IGNORECASE,
+    ),
 }
+
+_WMS_OPERATION_IDENTITY_LITERAL = re.compile(r"\bwms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*\b")
 
 
 def test_removed_transport_and_terminal_callbacks_exist_only_in_migration_manifest() -> None:
@@ -386,6 +403,29 @@ def test_all_active_documents_have_no_coarse_fulfillment_port_or_legacy_wms_path
             offenders[str(path.relative_to(REPO_ROOT))] = found
 
     assert offenders == {}
+
+
+def test_active_document_operation_identities_are_derived_from_the_unique_registry() -> None:
+    registry_identities = frozenset(WMS_OPERATION_BY_IDENTITY)
+    offenders: dict[str, set[str]] = {}
+    active_adr_root = REPO_ROOT / "docs/architecture/adr"
+    for path in active_adr_root.rglob("*.md"):
+        documented = frozenset(_WMS_OPERATION_IDENTITY_LITERAL.findall(path.read_text(encoding="utf-8")))
+        unknown = documented - registry_identities
+        if unknown:
+            offenders[str(path.relative_to(REPO_ROOT))] = set(unknown)
+
+    assert offenders == {}
+
+    full_box_operation = next(
+        operation
+        for operation in WMS_OPERATION_BY_IDENTITY.values()
+        if operation.target_code == "WMS_FULFILLMENT_FULL_BOX_EXCHANGE"
+    )
+    boundary_adr = (REPO_ROOT / "docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md").read_text(
+        encoding="utf-8"
+    )
+    assert full_box_operation.identity in boundary_adr
 
 
 def test_removed_literals_in_tests_are_explicit_negative_evidence_only() -> None:

@@ -28,6 +28,8 @@ from src.app.wms_integration.operation_registry import (
 from src.app.wms_integration.ports.fulfillment_operations import (
     WmsEffectAck,
     validate_batch_terminal_result,
+    validate_effect_ack,
+    validate_effect_provider_reference,
     validate_fulfillment_ack,
 )
 
@@ -69,6 +71,7 @@ class WmsEffectStatusRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=160)
     attempt_count: int = Field(default=1, ge=1, exclude=True)
     request_payload: dict[str, Any] = Field(exclude=True)
+    frozen_ack: WmsEffectAck = Field(exclude=True)
 
     @model_validator(mode="after")
     def validate_async_operation_request(self) -> WmsEffectStatusRequest:
@@ -80,6 +83,11 @@ class WmsEffectStatusRequest(BaseModel):
         except ValidationError as exc:
             raise ValueError("request_payload violates the async operation request contract") from exc
         object.__setattr__(self, "request_payload", validated.model_dump(mode="json"))
+        validate_effect_ack(
+            operation_identity=self.operation_identity,
+            idempotency_key=self.idempotency_key,
+            ack=self.frozen_ack,
+        )
         if self.operation_identity in _BATCH_EFFECT_OPERATION_IDENTITIES and type(self) is WmsEffectStatusRequest:
             raise ValueError("batch status request requires frozen request and ACK context")
         return self
@@ -110,16 +118,12 @@ class WmsEffectStatusRequest(BaseModel):
 class WmsBatchEffectStatusRequest(WmsEffectStatusRequest):
     """E12/E13 status parser 的完整冻结上下文；ACK 不允许缺省。"""
 
-    frozen_ack: WmsEffectAck = Field(exclude=True)
-
     @model_validator(mode="after")
     def validate_frozen_batch_context(self) -> WmsBatchEffectStatusRequest:
         if self.operation_identity not in _BATCH_EFFECT_OPERATION_IDENTITIES:
             raise ValueError("batch status context only supports E12/E13")
         operation = _OPERATION_BY_IDENTITY[self.operation_identity]
         batch_request = operation.request_model.model_validate(self.request_payload)
-        if self.frozen_ack.idempotency_key != self.idempotency_key:
-            raise ValueError("batch ACK idempotency_key differs from status request")
         validate_fulfillment_ack(batch_request, self.frozen_ack)  # type: ignore[arg-type]
         return self
 
@@ -264,6 +268,11 @@ def _parse_completed_result(
     if inner_source_version is not None and inner_source_version != str(source_version):
         raise ValueError("completed result source version conflicts with the outer source_version")
     _validate_result_identity(request=request, result=result)
+    validate_effect_provider_reference(
+        request.frozen_ack,
+        result.provider_reference,
+        evidence_kind="terminal",
+    )
     if request.operation_identity in _BATCH_EFFECT_OPERATION_IDENTITIES:
         if not isinstance(request, WmsBatchEffectStatusRequest):
             raise ValueError("batch terminal parsing requires frozen ACK context")
@@ -305,11 +314,7 @@ def parse_wms_effect_status_snapshot(
 
     if wire.provider_reference is None or wire.updated_at is None or wire.source_version is None:
         raise ValueError("visible WMS status requires provider_reference, updated_at and source_version")
-    if (
-        isinstance(request, WmsBatchEffectStatusRequest)
-        and wire.provider_reference != request.frozen_ack.provider_reference
-    ):
-        raise ValueError("status provider_reference does not match ACK")
+    validate_effect_provider_reference(request.frozen_ack, wire.provider_reference, evidence_kind="status")
     utc_offset = wire.updated_at.utcoffset()
     if utc_offset is None or utc_offset.total_seconds() != 0:
         raise ValueError("visible WMS status updated_at must be offset-aware UTC")

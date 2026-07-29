@@ -796,3 +796,63 @@ operation 的兼容入口。
 - 当前 worktree `npx gitnexus detect-changes --scope staged` →
   13 files / 35 symbols / 0 affected processes，risk LOW；范围仅包含公开 example、活动文档、
   稳定语义 guard、派生文档合同与本报告。
+
+## Provider Reference Review（第二十轮）修复
+
+- `WmsEffectStatusRequest` 统一强制携带不可缺省的 `frozen_ack`，共享 validator 校验
+  `operation_identity + idempotency_key`；E12/E13 的 `WmsBatchEffectStatusRequest` 只追加
+  `accepted_scope` 与冻结成员规则，不再维护第二套 ACK 关联校验。
+- 唯一 `parse_wms_effect_status_snapshot` 对 E08–E14 七项统一校验 status
+  `provider_reference`，唯一 terminal parser 同样校验 typed result 的 reference；E12/E13
+  继续复用批次 terminal validator 校验完整成员、顺序、route identity 与 candidate digest。
+- status worker 只从 append-only `TRANSPORT_ACCEPTED.wms_effect_ack` 持久化 evidence
+  恢复 ACK；缺失、格式非法或多次 submit 的 operation/key/reference/scope 漂移均 fail closed。
+  本轮没有实现 submit/T5，也没有凭 idempotency key 推导 provider reference。
+- 活动资源边界 ADR 的 E11 identity 改为唯一 registry 中的
+  `wms.fulfillment.full_box_exchange@v1`。新增活动 ADR identity 集合守卫，从
+  `WMS_OPERATION_BY_IDENTITY` 派生合法集合与 E11 目标值，不在测试中复制 identity 真源。
+- SRS、workline interface/implementation、sorter inbound spec 与 readiness plan 统一为
+  typed ACK → status query → typed terminal result；E12/E13 只保留批次状态和 terminal
+  `items[]` 成员 evidence，不再发布 fulfillment callback 终态/恢复权威或 CTU 父子逐阶段状态。
+  稳定概念族 guard 同时覆盖 result/event 回传权威、批次完成 callback 与 CTU 父子阶段语义。
+- 未新增 alias、fallback、兼容默认、skip 或 xfail，未修改顶层 SPEC，未实现 T2/T5。
+
+## Provider Reference Review（第二十轮）TDD 与验证
+
+1. RED：
+   - E08–E11/E14 五个单项 status request 缺少 ACK 时均未拒绝；
+   - 五个单项 ACK key 漂移、五个 status provider 串单、五个 terminal provider 串单未被拒绝，
+     契约文件共出现 `20 failed`；
+   - status worker 的冻结 ACK 恢复与缺失 fail-closed 两项均因 request 缺字段失败；
+   - 活动文档 guard 命中 SRS 的 result/event 终态权威与 workline 批次 callback，registry
+     守卫同时命中 ADR 的错误 E11 identity；
+   - 首轮默认全集进一步暴露既有资源边界文档测试仍硬编码错误 E11 identity；该测试随后改为从
+     `WMS_OPERATION_BY_IDENTITY` 派生同一目标。
+2. GREEN：
+   - effect-status 全文件 `101 passed`；
+   - effect-status 与 status service/reliability 定点组合 `148 passed`；
+   - release removal/活动文档 guard `23 passed`；
+   - provider conformance 与 E12/E13 批次 ACK 回归 `25 passed`；
+   - WMS contracts 与 system-capability 相关域回归、全仓 Ruff 和 diff check 均通过。
+3. 默认全集从头复验 → `4229 passed, 5 existing skipped`（4234 collected）；相对第十九轮
+   仅增加本轮 ACK/reference/registry/运行态证据合同，没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4229 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4234 tests collected`。
+- `uv run ruff format --check .` → 1074 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：`WmsEffectStatusRequest` / `WmsBatchEffectStatusRequest` 为 MEDIUM
+  （12/11 direct）；`parse_wms_effect_status_snapshot`、`_parse_completed_result`、
+  `validate_fulfillment_ack` 与 `WmsEffectStatusService._build_request` 为 HIGH
+  （分别 11/1/6/5 direct，最多影响 4 个模块与 1 条 mock handler flow）。上述 HIGH
+  已在编辑前报告并获得明确确认。
+- 当前 worktree `npx gitnexus detect-changes --scope staged` →
+  17 files / 61 symbols / 0 affected processes，risk LOW；范围仅包含 ACK/reference
+  合同与运行态恢复、E11/CTU 活动文档、registry/稳定概念守卫、直接调用方测试及本报告，
+  不包含 T2/T5、兼容入口或顶层 SPEC。

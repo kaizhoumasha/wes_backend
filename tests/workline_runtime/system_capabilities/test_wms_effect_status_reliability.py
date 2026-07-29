@@ -122,6 +122,7 @@ async def test_wms_ambiguous_transport_is_enqueued_and_reaches_typed_terminal_wi
     assert result.outcome == WmsEffectStatus.COMPLETED.value
     assert claim.intent.effect_status is RuntimeIntentStatus.COMPLETED
     assert [item["event_type"] for item in claim.intent.outcome_history_json] == [
+        EffectReducerEventType.TRANSPORT_ACCEPTED.value,
         EffectReducerEventType.TRANSPORT_AMBIGUOUS.value,
         EffectReducerEventType.STATUS_COMPLETED.value,
     ]
@@ -331,6 +332,11 @@ def _batch_claim(suffix: str) -> Any:
         "station_code": f"STATION-{suffix}",
         "rack_type": "FLOW_RACK",
         "demand_generation": 1,
+    }
+    claim.intent.outcome_history_json[0]["wms_effect_ack"] = {
+        **claim.intent.outcome_history_json[0]["wms_effect_ack"],
+        "idempotency_key": idempotency_key,
+        "provider_reference": f"provider-{dispatch_key}",
     }
     return WmsEffectStatusClaim(intent=claim.intent, outbox=claim.outbox, lease_token="")
 

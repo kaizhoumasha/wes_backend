@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
+
 ROOT = Path(__file__).resolve().parents[2]
 SRS = ROOT / "docs/architecture/SRS.md"
 ADR = ROOT / "docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md"
@@ -300,13 +302,18 @@ def test_adr_and_spec_keep_wms_as_transport_and_inventory_authority():
     adr = read(ADR)
     spec = read(SPEC)
     combined = adr + "\n" + spec
+    full_box_operation = next(
+        operation
+        for operation in WMS_OPERATION_BY_IDENTITY.values()
+        if operation.target_code == "WMS_FULFILLMENT_FULL_BOX_EXCHANGE"
+    )
 
     assert_contains_all(
         adr,
         (
             "WMS 是库存、预留、扣减、账务、SAP 同步和空箱资源授权的唯一权威",
             "WES 不锁定五层货架空箱",
-            "WES 只提交 `wms.fulfillment.full_bin_exchange@v1`",
+            f"WES 只提交 `{full_box_operation.identity}`",
             "typed ACK、status query 与 typed terminal result 收敛结果",
         ),
     )

@@ -92,7 +92,18 @@ def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any
         status_check_lease_until=NOW + timedelta(seconds=10),
         status_binding_snapshot_json=binding["snapshot"],
         status_binding_snapshot_hash=binding["snapshot_hash"],
-        outcome_history_json=[],
+        outcome_history_json=[
+            {
+                "event_type": EffectReducerEventType.TRANSPORT_ACCEPTED.value,
+                "wms_effect_ack": {
+                    "operation_identity": RACK_SUPPLY_OPERATION_IDENTITY,
+                    "idempotency_key": "idem-001",
+                    "provider_reference": "wms-effect-001",
+                    "submission_state": "ACCEPTED",
+                    "accepted_scope": None,
+                },
+            }
+        ],
         outcome_kind=None,
         outcome_code=None,
         outcome_json={},
@@ -116,6 +127,39 @@ def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any
         next_retry_at=NOW + timedelta(minutes=5),
     )
     return WmsEffectStatusClaim(intent=intent, outbox=outbox, lease_token="lease-001")
+
+
+def test_status_request_recovers_the_frozen_ack_from_persisted_transport_evidence() -> None:
+    request = WmsEffectStatusService._build_request(_claim())
+
+    assert request.frozen_ack.provider_reference == "wms-effect-001"
+    assert request.frozen_ack.operation_identity == request.operation_identity
+    assert request.frozen_ack.idempotency_key == request.idempotency_key
+
+
+def test_status_request_rejects_missing_persisted_ack_evidence() -> None:
+    claim = _claim()
+    claim.intent.outcome_history_json = []
+
+    with pytest.raises(ValueError, match="persisted WMS EFFECT ACK"):
+        WmsEffectStatusService._build_request(claim)
+
+
+def test_status_request_rejects_provider_reference_drift_across_persisted_ack_evidence() -> None:
+    claim = _claim()
+    claim.intent.outcome_history_json.append(
+        {
+            "event_type": EffectReducerEventType.TRANSPORT_ACCEPTED.value,
+            "wms_effect_ack": {
+                **claim.intent.outcome_history_json[0]["wms_effect_ack"],
+                "provider_reference": "other-provider-reference",
+                "submission_state": "REPLAY",
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="ACK evidence drifted"):
+        WmsEffectStatusService._build_request(claim)
 
 
 class _Db:
@@ -387,11 +431,12 @@ async def test_same_source_version_with_different_snapshot_opens_reconciliation_
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
     claim.intent.status_source_version = 7
     claim.intent.outcome_history_json = [
+        *claim.intent.outcome_history_json,
         {
             "event_type": "STATUS_ACCEPTED",
             "source_version": 7,
             "snapshot_hash": "0" * 64,
-        }
+        },
     ]
     db = _Db()
     reducer = _Reducer()

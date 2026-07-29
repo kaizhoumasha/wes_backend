@@ -22,7 +22,7 @@ from src.app.wms_integration.ports.effect_status import (
     WmsEffectStatusRequest,
     build_wms_effect_status_binding,
 )
-from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupplyResult
+from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupplyResult, WmsEffectAck
 from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
@@ -224,6 +224,12 @@ async def test_unsigned_effect_status_case_replays_the_same_interaction_contract
             "rack_type": "FLOW_RACK",
             "demand_generation": 1,
         },
+        frozen_ack=WmsEffectAck(
+            operation_identity="wms.fulfillment.request_rack_supply@v1",
+            idempotency_key="intent-conformance-001",
+            provider_reference="wms-conformance-effect-001",
+            submission_state="ACCEPTED",
+        ),
     )
 
     first = await adapter.query_status(request)

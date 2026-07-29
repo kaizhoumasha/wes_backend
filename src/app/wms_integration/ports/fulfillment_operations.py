@@ -299,6 +299,33 @@ class WmsEffectAck(StrictWmsModel):
         return self
 
 
+def validate_effect_ack(
+    *,
+    operation_identity: str,
+    idempotency_key: str,
+    ack: WmsEffectAck,
+) -> WmsEffectAck:
+    """校验 E08–E14 status 查询与冻结 ACK 的公共关联身份。"""
+
+    if ack.operation_identity != operation_identity:
+        raise ValueError("ACK operation_identity differs from status request")
+    if ack.idempotency_key != idempotency_key:
+        raise ValueError("ACK idempotency_key differs from status request")
+    return ack
+
+
+def validate_effect_provider_reference(
+    ack: WmsEffectAck,
+    provider_reference: str,
+    *,
+    evidence_kind: Literal["status", "terminal"],
+) -> None:
+    """用 ACK 唯一冻结的 provider reference 拒绝 status/terminal 串单。"""
+
+    if provider_reference != ack.provider_reference:
+        raise ValueError(f"{evidence_kind} provider_reference does not match ACK")
+
+
 type BatchFulfillmentRequest = MoveBinsToConveyorEntryRequest | MoveBinsFromConveyorExitRequest
 type BatchFulfillmentResult = MoveBinsToConveyorEntryResult | MoveBinsFromConveyorExitResult
 
@@ -334,8 +361,7 @@ def validate_batch_terminal_result(
     """校验 terminal items 与 ACK 冻结成员、原请求身份一一对应。"""
 
     validate_fulfillment_ack(request, ack)
-    if result.provider_reference != ack.provider_reference:
-        raise ValueError("terminal provider_reference does not match ACK")
+    validate_effect_provider_reference(ack, result.provider_reference, evidence_kind="terminal")
     accepted_scope = ack.accepted_scope
     if accepted_scope is None:
         raise ValueError("batch terminal result requires accepted_scope")

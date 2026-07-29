@@ -29,6 +29,7 @@ from src.app.wms_integration.ports.effect_status import (
     build_wms_effect_status_binding,
     parse_wms_effect_status_snapshot,
 )
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
 from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
 from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
@@ -65,27 +66,28 @@ def _rack_supply_request(*, attempt_count: int = 1) -> WmsEffectStatusRequest:
             "rack_type": "FLOW_RACK",
             "demand_generation": 1,
         },
+        frozen_ack=WmsEffectAck(
+            operation_identity=RACK_SUPPLY,
+            idempotency_key="intent-idempotency-001",
+            provider_reference="wms-effect-001",
+            submission_state="ACCEPTED",
+        ),
     )
 
 
 def _status_request(operation_identity: str) -> WmsEffectStatusRequest:
     request_payload = REQUEST_FIXTURES[operation_identity]
-    if operation_identity in _BATCH_OPERATIONS:
-        return WmsBatchEffectStatusRequest(
-            operation_identity=operation_identity,
-            idempotency_key="intent-key",
-            request_payload=request_payload,
-            frozen_ack=build_typed_ack(
-                operation_identity,
-                "intent-key",
-                request_payload,
-                submission_state="ACCEPTED",
-            ),
-        )
-    return WmsEffectStatusRequest(
+    request_type = WmsBatchEffectStatusRequest if operation_identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
+    return request_type(
         operation_identity=operation_identity,
         idempotency_key="intent-key",
         request_payload=request_payload,
+        frozen_ack=build_typed_ack(
+            operation_identity,
+            "intent-key",
+            request_payload,
+            submission_state="ACCEPTED",
+        ),
     )
 
 
@@ -123,6 +125,7 @@ def test_status_request_accepts_only_authored_effect_identity_and_stable_key() -
         operation_identity=request.operation_identity,
         idempotency_key=" opaque-key ",
         request_payload=request.request_payload,
+        frozen_ack=request.frozen_ack.model_copy(update={"idempotency_key": " opaque-key "}),
     )
     assert opaque_key.idempotency_key == " opaque-key "
     assert opaque_key.query_params["idempotency_key"] == " opaque-key "
@@ -133,13 +136,137 @@ def test_status_request_accepts_only_authored_effect_identity_and_stable_key() -
             operation_identity="wms.unknown.operation@v1",
             idempotency_key="intent-idempotency-001",
             request_payload=request.request_payload,
+            frozen_ack=request.frozen_ack,
         )
     with pytest.raises(ValidationError, match="idempotency_key"):
         WmsEffectStatusRequest(
             operation_identity=RACK_SUPPLY,
             idempotency_key=" ",
             request_payload=request.request_payload,
+            frozen_ack=request.frozen_ack,
         )
+
+
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_every_async_status_request_requires_its_frozen_ack(operation) -> None:
+    request_type = WmsBatchEffectStatusRequest if operation.identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
+
+    with pytest.raises(ValidationError, match="frozen_ack"):
+        request_type(
+            operation_identity=operation.identity,
+            idempotency_key="intent-key",
+            request_payload=REQUEST_FIXTURES[operation.identity],
+        )
+
+
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_every_async_status_request_rejects_ack_idempotency_drift(operation) -> None:
+    request_type = WmsBatchEffectStatusRequest if operation.identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
+    request_payload = REQUEST_FIXTURES[operation.identity]
+    frozen_ack = build_typed_ack(
+        operation.identity,
+        "other-intent-key",
+        request_payload,
+        submission_state="ACCEPTED",
+    )
+
+    with pytest.raises(ValidationError, match="ACK idempotency_key"):
+        request_type(
+            operation_identity=operation.identity,
+            idempotency_key="intent-key",
+            request_payload=request_payload,
+            frozen_ack=frozen_ack,
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "other_operation_identity"),
+    (
+        (
+            "wms.fulfillment.request_rack_supply@v1",
+            "wms.fulfillment.request_rack_transport@v1",
+        ),
+        (
+            "wms.fulfillment.request_rack_transport@v1",
+            "wms.fulfillment.request_rack_supply@v1",
+        ),
+        (
+            "wms.fulfillment.change_rack_face@v1",
+            "wms.fulfillment.full_box_exchange@v1",
+        ),
+        (
+            "wms.fulfillment.full_box_exchange@v1",
+            "wms.fulfillment.change_rack_face@v1",
+        ),
+        (
+            "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+            "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+        ),
+        (
+            "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+            "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+        ),
+        (
+            "wms.fulfillment.request_load_unit_transport@v1",
+            "wms.fulfillment.request_rack_supply@v1",
+        ),
+    ),
+)
+def test_every_async_status_request_rejects_ack_operation_drift(
+    operation_identity: str,
+    other_operation_identity: str,
+) -> None:
+    request_type = WmsBatchEffectStatusRequest if operation_identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
+    frozen_ack = build_typed_ack(
+        other_operation_identity,
+        "intent-key",
+        REQUEST_FIXTURES[other_operation_identity],
+        submission_state="ACCEPTED",
+    )
+
+    with pytest.raises(ValidationError, match="ACK operation_identity"):
+        request_type(
+            operation_identity=operation_identity,
+            idempotency_key="intent-key",
+            request_payload=REQUEST_FIXTURES[operation_identity],
+            frozen_ack=frozen_ack,
+        )
+
+
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_every_async_status_snapshot_rejects_ack_provider_reference_drift(operation) -> None:
+    request = _status_request(operation.identity)
+    wire = {
+        "state": "PROCESSING",
+        "provider_reference": "other-provider-reference",
+        "reason_code": None,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": 3,
+        "result_payload": None,
+    }
+
+    with pytest.raises(ValueError, match="status provider_reference does not match ACK"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_every_async_terminal_rejects_ack_provider_reference_drift(operation) -> None:
+    request = _status_request(operation.identity)
+    result_payload = {
+        **RESULT_FIXTURES[operation.identity],
+        "provider_reference": "other-provider-reference",
+    }
+    wire = {
+        "state": "COMPLETED",
+        "provider_reference": request.frozen_ack.provider_reference,
+        "reason_code": None,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": int(result_payload["source_version"]),
+        "result_payload": result_payload,
+    }
+
+    with pytest.raises(ValueError, match="terminal provider_reference does not match ACK"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
 
 
 def test_status_binding_is_hashed_immutable_non_secret_and_strictly_round_trips() -> None:
@@ -310,10 +437,8 @@ def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operatio
 def test_completed_snapshot_selects_each_async_result_model_from_frozen_registry(operation) -> None:
     request = _status_request(operation.identity)
     result_payload = dict(RESULT_FIXTURES[operation.identity])
-    provider_reference = "wms-effect-001"
-    if isinstance(request, WmsBatchEffectStatusRequest):
-        provider_reference = request.frozen_ack.provider_reference
-        result_payload["provider_reference"] = provider_reference
+    provider_reference = request.frozen_ack.provider_reference
+    result_payload["provider_reference"] = provider_reference
     source_version = int(result_payload["source_version"])
     wire = {
         **_completed_wire(source_version=source_version),

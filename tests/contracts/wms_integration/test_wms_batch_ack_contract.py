@@ -316,6 +316,7 @@ def test_real_status_parser_requires_frozen_batch_ack_and_rejects_member_drift(
             operation_identity=operation_identity,
             idempotency_key="idem-batch",
             request_payload=request_payload,
+            frozen_ack=ack,
         )
 
     forged = deepcopy(wire)

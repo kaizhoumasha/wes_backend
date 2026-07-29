@@ -19,7 +19,7 @@ Accepted - 2026-05-13
 
 1. WMS 是库存、预留、扣减、账务、SAP 同步和空箱资源授权的唯一权威。
 2. WES 可以持久化执行事实、过程快照、资源关系投影、回写证据和对账证据，但这些事实不能作为库存可用性、库存属性交换、库存扣减或资源授权的本地主账。
-3. 满箱交换 v1 中，WES 不锁定五层货架空箱，不本地判断交换区空位，不交换两个容器库存属性。WES 只提交 `wms.fulfillment.full_bin_exchange@v1`，并以 typed ACK、status query 与 typed terminal result 收敛结果。
+3. 满箱交换 v1 中，WES 不锁定五层货架空箱，不本地判断交换区空位，不交换两个容器库存属性。WES 只提交 `wms.fulfillment.full_box_exchange@v1`，并以 typed ACK、status query 与 typed terminal result 收敛结果。
 4. 生产发料、Pick_Fail、退料和入库确认中，WES 不自动扣减库存。WES 记录设备失败、创建 RuntimeHold 或诊断，并等待 WMS 确认、拒绝或人工授权。
 5. E08–E14 的提交响应只产生 typed ACK，WES 通过 status query 取得 typed terminal result；可选 `WMS_EFFECT_STATUS_HINT` 只唤醒查询，不携带终态，也不直接推进资源投影。
 6. WMS 四类普通事件与 `WMS_EFFECT_STATUS_HINT` 统一走 `/api/v1/callback/external`。`/api/v1/callback/event` 保留给设备事件；同一个运行时任务不得建立平行终态入口。

@@ -82,15 +82,15 @@
 
 **批量履约语义**：
 
-CTU 入线、退线和货架补给以一次 operation-specific 请求提交多个对象；ACK 冻结接纳范围，status 与 typed
-terminal result 统一 `provider_reference`。WES 只消费批次级权威结果，并为每个被搬运对象生成可追踪的
-evidence，再把可信 evidence 投影为 `RuntimeLocationEvent`：
+CTU 入线、退线以 E12/E13 一次 operation-specific 请求提交多个对象；ACK 冻结接纳范围，status 与 typed
+terminal result 统一 `provider_reference`。WES 只消费批次级权威结果，并把 terminal `items[]` 中每个成员的最终
+事实记录为可追踪 evidence，再投影为 `RuntimeLocationEvent`：
 
-- 父请求记录批次级约束、幂等键、请求 hash、WMS/RCS 接收状态和批次完成结果。
-- 子 evidence 的 owner 是对应对象的 `ExecutionWorkItem`；不另建与 runtime 并列的子履约状态源。每个 CTU 子 work item 必须记录批次序号、placeholder_key、resolved_bin_id、阶段状态和 evidence。
-- 子 evidence 记录单个料箱/货架/料盘的阶段结果，例如从五层货架取出、进入 CTU 背篓、移动到入口、投入滚筒线、从退料线取出、放回货架。
-- 批次完成 callback 只能证明外部系统声明批次完成；Runtime 仍必须校验所有子对象 evidence、active projection 和队列 membership 已收敛后，才能关闭本地 `HandlingOperation`。
-- 子对象 evidence 缺失、重复、乱序或与 active projection 冲突时，父请求不得被本地标记为业务完成，必须进入 `RECONCILING` 或 `RuntimeHold`。
+- 批次请求记录约束、幂等键、请求 hash、冻结 ACK/`provider_reference`、status 和批次 typed terminal result。
+- 成员 evidence 直接来自 E12/E13 terminal `items[]`，记录批次序号、`route_instance_id`、`bin_id`、最终 outcome 和最终位置；不得建立成员级任务或阶段状态源。
+- Runtime 必须一次校验 ACK 冻结成员、terminal 完整成员、active projection 和队列 membership，全部收敛后才能关闭本地 `HandlingOperation`。
+- terminal 成员缺失、重复、乱序或与 active projection 冲突时，批次不得被本地标记为业务完成，必须进入 `RECONCILING` 或 `RuntimeHold`。
+- `WMS_EFFECT_STATUS_HINT` 仅唤醒同一 status query；callback 不携带或裁决批次终态。
 - 批次约束由 WES 按作业期投影和 WMS 查询结果计算，例如 `min(入口线空位, CTU 背篓容量, 五层货架可用料箱数)`；WMS/RCS 如何规划路径与调度车辆仍归外部系统。
 
 ### 5.2 plane 接口（运营敏感数据入口）

@@ -111,13 +111,13 @@ CellReservation 表示目标格位预约，不表示物理完成。它是 materi
 | WorklineActiveObjects | 通过 MaterialLocationQuery 间接消费 | active object 展示预约 deadline 和状态 |
 | SMT/NG/WMS Reconciliation | 预约冲突 → RECONCILING | WMS reject 或 drift 触发对账，不静默覆盖预约 |
 
-## 7. CTU 父子 work item 查询视图
+## 7. CTU 批次状态与成员 evidence 查询视图
 
-CTU 批量履约必须保留父请求和逐对象子 work item。查询视图展示：
+E12/E13 批量履约只保留批次请求、冻结 ACK、status 与 typed terminal result。查询视图展示：
 
-- 子项缺失、重复、乱序和未 resolve placeholder。
-- 部分失败与批次收敛状态。
-- 父请求成功但子项未收敛时，不得显示业务完成。
+- ACK 冻结成员与 terminal `items[]` 的完整性、顺序和最终位置。
+- `SUCCESS / PARTIAL_FAILURE / FAILED_AFTER_EXECUTION` 批次结论及逐成员最终 outcome。
+- 成员缺失、重复、乱序或投影冲突时，不得显示业务完成，必须展示 `RECONCILING` 或 `RuntimeHold`。
 
 ## 8. 行为契约测试
 
@@ -128,7 +128,7 @@ CTU 批量履约必须保留父请求和逐对象子 work item。查询视图展
 - SCAN1 未授权料箱进入 NG / RuntimeHold / RECONCILING。
 - 物料 work item 与料箱 work item join 条件缺一不可。
 - 北向下一次取料必须等待上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）。
-- CTU 父请求不能掩盖子项缺失或部分失败。
+- CTU 批次结论不能掩盖 terminal 成员缺失或部分失败。
 
 ### 8.1 characterization-to-target contract mapping
 
