@@ -533,3 +533,42 @@ operation 的兼容入口。
 - worktree `gitnexus detect-changes --scope staged` → 24 indexed files / 98 symbols /
   0 affected processes，risk LOW；变更仅覆盖旧 Document Port 删除、operation-specific 测试迁移、
   活动文档/归档和稳定概念门禁，未引入 T2/T5 流程。
+
+## Cleanliness Review（第十四轮）修复
+
+- 物理删除 `SorterInboundPreviewService.preview_ctu_batch`、其专用 `_safe_int` /
+  `_duplicate_int_values` 辅助函数、Mock `/debug/wms/fulfillment/ctu-batch-preview` 路由及专用
+  `_duplicate_int_values`，不保留 runtime/debug/fallback/alias/compat 替代壳。
+- 删除两项仅证明旧 CTU 父子阶段投影存在的正向测试；新增精确 absence guard，同时确认粗分机入库、
+  分拣机入库、满箱交换和换架面四项其他 sorter preview 能力仍可调用。
+- 清理活动 readiness 文档中的旧 CTU 父子批次预览声明；使用官方生成器刷新 legacy cleanup matrix，
+  并同步 business legacy absence ledger 与两份审计摘要。新事实为 matrix 651 条、phase4 carrier
+  106 条、workline_runtime owner 204 条，absence ledger 106 条且 0 pending。
+- 未实现 T2/T5，未新增兼容层、宽 allowlist、skip 或 xfail。
+
+## Cleanliness Review（第十四轮）TDD 与验证
+
+1. RED：新增物理删除 guard 首次运行命中 `preview_ctu_batch` 仍存在，结果 `1 failed`。
+2. GREEN：旧方法、Mock 路由、辅助函数和两项正向测试删除后，同一定点测试 `1 passed`；相关 runtime、
+   Mock、合同、readiness 与架构回归 `54 passed`。
+3. 默认全集前两轮分别暴露 generated matrix CSV 与其下游 ledger/Markdown 摘要漂移；使用官方生成器
+   刷新 CSV 并按实算值同步派生资产后，第三轮从头复验 → `4179 passed, 5 existing skipped`
+   （4184 collected），没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest` → `4179 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4184 tests collected`。
+- legacy matrix/absence ledger 合同回归 → `11 passed`；
+  `uv run python scripts/check_business_legacy_absence_gate.py --mode final` → PASS。
+- `uv run ruff format --check .` → 1074 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：`preview_ctu_batch`、其两个专用 helper、Mock route 与两项正向测试均为 LOW，
+  最多 1 个直接测试调用、0 production process；无 HIGH/CRITICAL 风险。
+- worktree `gitnexus detect-changes --scope staged` → 11 files / 17 symbols /
+  0 affected processes，risk LOW；变更仅覆盖旧 CTU 批次预览物理删除、精确 absence guard、
+  readiness 声明与对应治理资产同步，未引入 T2/T5 流程。

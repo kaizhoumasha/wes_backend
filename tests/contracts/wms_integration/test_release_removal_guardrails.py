@@ -565,6 +565,50 @@ def test_legacy_document_port_and_retention_contract_are_physically_removed() ->
     assert "WmsDocumentPort" not in ports_exports
 
 
+def test_ctu_stage_preview_and_debug_route_are_physically_removed() -> None:
+    from src.app.runtime.capabilities.material_flow.sorter_inbound_preview_service import (
+        SorterInboundPreviewService,
+    )
+    from tests.mock import wms_mock_server
+
+    assert not hasattr(SorterInboundPreviewService, "preview_ctu_batch")
+    for survivor in (
+        "preview_rough_sorter_inbound",
+        "preview_sorter_inbound",
+        "preview_full_box_exchange",
+        "preview_change_rack_face",
+    ):
+        assert callable(getattr(SorterInboundPreviewService, survivor))
+
+    removed_route = "/debug/wms/fulfillment/ctu-batch-preview"
+    assert removed_route not in {route.path for route in wms_mock_server.app.routes}
+
+    forbidden_sources = {
+        "src/app/runtime/capabilities/material_flow/sorter_inbound_preview_service.py": {
+            "def preview_ctu_batch",
+            "parent_callback_state",
+            "child_items",
+            "stage_status",
+            "def _safe_int",
+            "def _duplicate_int_values",
+        },
+        "tests/mock/wms_mock_server.py": {
+            removed_route,
+            "def ctu_batch_preview",
+            "def _duplicate_int_values",
+        },
+        "tests/workline_runtime/test_sorter_inbound_preview_service.py": {
+            "test_ctu_batch_preview_parent_success_does_not_hide_child_issues",
+        },
+        "tests/mock/material_flow/test_sorter_inbound_mock_contracts.py": {
+            "test_ctu_batch_mock_parent_view_requires_child_convergence",
+        },
+    }
+    for relative_path, forbidden_literals in forbidden_sources.items():
+        source = (REPO_ROOT / relative_path).read_text()
+        assert {literal for literal in forbidden_literals if literal in source} == set()
+
+
 def test_rack_operation_direct_kind_and_move_rack_projection_regressions_are_preserved() -> None:
     source = (REPO_ROOT / "tests/rack/test_rack_operation_service.py").read_text()
     required_tests = {

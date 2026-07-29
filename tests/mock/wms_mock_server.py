@@ -1219,59 +1219,6 @@ async def sorter_inbound_preview(payload: dict[str, Any]):
     }
 
 
-def _duplicate_int_values(values: list[int]) -> list[int]:
-    seen: set[int] = set()
-    duplicates: set[int] = set()
-    for value in values:
-        if value in seen:
-            duplicates.add(value)
-        seen.add(value)
-    return sorted(duplicates)
-
-
-@app.post("/debug/wms/fulfillment/ctu-batch-preview", summary="本机 Mock: CTU 父子批次预览")
-async def ctu_batch_preview(payload: dict[str, Any]):
-    """表达 CTU 父请求查询视图，父成功不能掩盖子项未收敛。"""
-
-    raw_child_items = payload.get("child_items")
-    child_items = raw_child_items if isinstance(raw_child_items, list) else []
-    sequence_nos = [int(item.get("sequence_no", 0)) for item in child_items if isinstance(item, dict)]
-    missing_resolved_placeholders = [
-        str(item.get("placeholder_key") or "")
-        for item in child_items
-        if isinstance(item, dict) and not item.get("resolved_bin_id")
-    ]
-    failed_child_placeholders = [
-        str(item.get("placeholder_key") or "")
-        for item in child_items
-        if isinstance(item, dict) and item.get("stage_status") != "COMPLETED"
-    ]
-    duplicate_sequence_nos = _duplicate_int_values(sequence_nos)
-    has_child_issues = bool(missing_resolved_placeholders or failed_child_placeholders or duplicate_sequence_nos)
-    parent_callback_state = str(payload.get("parent_callback_state") or "PENDING").upper()
-    parent_business_completed = parent_callback_state == "SUCCESS" and not has_child_issues
-    operator_summary_state = "COMPLETED" if parent_business_completed else "RECONCILING"
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "parent_request_id": payload.get("parent_request_id", ""),
-            "parent_callback_state": parent_callback_state,
-            "parent_business_completed": parent_business_completed,
-            "parent_projection_state": operator_summary_state,
-            "legacy_plugin_entry_used": False,
-            "query_view": {
-                "child_count": len(child_items),
-                "missing_resolved_placeholders": missing_resolved_placeholders,
-                "duplicate_sequence_nos": duplicate_sequence_nos,
-                "failed_child_placeholders": failed_child_placeholders,
-                "operator_summary_state": operator_summary_state,
-            },
-        },
-    }
-
-
 @app.post("/debug/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
 async def reconciliation_snapshot(payload: dict[str, Any]):
     """模拟 WmsReconciliationQueryPort 快照, 不产生生产写入副作用。"""

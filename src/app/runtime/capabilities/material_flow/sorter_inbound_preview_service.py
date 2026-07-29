@@ -169,43 +169,6 @@ class SorterInboundPreviewService:
             "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
         }
 
-    def preview_ctu_batch(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """预览 CTU 父子批次查询视图。"""
-
-        raw_child_items = payload.get("child_items")
-        child_items = raw_child_items if isinstance(raw_child_items, list) else []
-        sequence_nos = [_safe_int(item.get("sequence_no"), default=0) for item in child_items if isinstance(item, dict)]
-        missing_resolved_placeholders = [
-            coerce_string_value(item.get("placeholder_key"))
-            for item in child_items
-            if isinstance(item, dict) and not item.get("resolved_bin_id")
-        ]
-        failed_child_placeholders = [
-            coerce_string_value(item.get("placeholder_key"))
-            for item in child_items
-            if isinstance(item, dict) and item.get("stage_status") != "COMPLETED"
-        ]
-        duplicate_sequence_nos = _duplicate_int_values(sequence_nos)
-        has_child_issues = bool(missing_resolved_placeholders or failed_child_placeholders or duplicate_sequence_nos)
-        parent_callback_state = coerce_string_value(payload.get("parent_callback_state") or "PENDING").upper()
-        parent_business_completed = parent_callback_state == "SUCCESS" and not has_child_issues
-        operator_summary_state = "COMPLETED" if parent_business_completed else "RECONCILING"
-
-        return {
-            **_preview_boundary(),
-            "parent_request_id": payload.get("parent_request_id", ""),
-            "parent_callback_state": parent_callback_state,
-            "parent_business_completed": parent_business_completed,
-            "parent_projection_state": operator_summary_state,
-            "query_view": {
-                "child_count": len(child_items),
-                "missing_resolved_placeholders": missing_resolved_placeholders,
-                "duplicate_sequence_nos": duplicate_sequence_nos,
-                "failed_child_placeholders": failed_child_placeholders,
-                "operator_summary_state": operator_summary_state,
-            },
-        }
-
 
 def _preview_boundary() -> dict[str, Any]:
     return {
@@ -213,23 +176,6 @@ def _preview_boundary() -> dict[str, Any]:
         "production_write_path": False,
         "legacy_plugin_entry_used": False,
     }
-
-
-def _safe_int(value: Any, *, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _duplicate_int_values(values: list[int]) -> list[int]:
-    seen: set[int] = set()
-    duplicates: set[int] = set()
-    for value in values:
-        if value in seen:
-            duplicates.add(value)
-        seen.add(value)
-    return sorted(duplicates)
 
 
 sorter_inbound_preview_service = SorterInboundPreviewService()

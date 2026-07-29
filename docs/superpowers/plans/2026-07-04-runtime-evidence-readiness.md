@@ -19,11 +19,11 @@ sorter inbound 与 SMT/NG/WMS reconciliation 后续目标是 production-capable 
 
 2026-07-04 追加进展 3：深化 material-flow 本机 MOCK 验收，作为 provider contract 语义基线：WMS mock 增加 `full_box_exchange`、`change_rack_face` 与 `runtime-hold-release-preview` 合同；`tests/mock/material_flow` 覆盖满箱交换有/无需求分流、`CHANGE_RACK_FACE` 独立履约、已满箱对象排除逐件候选，以及 RuntimeHold 只释放声明 scope。
 
-2026-07-04 追加进展 4：补齐 sorter inbound preview 级本机 MOCK 合同：粗分机正常流拆分本地物理事实与 WMS 同步状态；分拣机入库覆盖 SCAN1/2/3、join gate、NG/RuntimeHold 路由、扫码平台预取默认 0 与显式开启 validator；CTU 父子批次视图覆盖父成功但子项缺失、重复 sequence、未 resolve placeholder 和部分失败进入 `RECONCILING`。
+2026-07-04 追加进展 4：补齐 sorter inbound preview 级本机 MOCK 合同：粗分机正常流拆分本地物理事实与 WMS 同步状态；分拣机入库覆盖 SCAN1/2/3、join gate 与 NG/RuntimeHold 路由。
 
 2026-07-04 追加进展 5：新增 `scripts/check_runtime_evidence_readiness_gate.py`，把 material-flow 开发/测试 readiness 固化为可执行门禁：默认 `development-mock` profile 验证 SPEC 状态、material-flow 本机 MOCK 合同与 preview 边界。该 gate 已接入 `./scripts/git-quality-gate.sh --profile quality`。
 
-2026-07-04 追加进展 6：新增 `Phase4SorterInboundPreviewService`，把粗分机正常流、分拣机 join gate、满箱交换前置分流、`CHANGE_RACK_FACE` 独立履约与 CTU 父子批次查询视图从 mock endpoint 语义沉淀为 runtime capability 级纯 preview service；该 service 不访问 DB、不发 WMS/ECS effect、不复用旧 plugin 入口，只用于开发/测试 MOCK 验收，并已纳入 Phase4 runtime readiness gate。
+2026-07-04 追加进展 6：新增 `Phase4SorterInboundPreviewService`，把粗分机正常流、分拣机 join gate、满箱交换前置分流与 `CHANGE_RACK_FACE` 独立履约从 mock endpoint 语义沉淀为 runtime capability 级纯 preview service；该 service 不访问 DB、不发 WMS/ECS effect、不复用旧 plugin 入口，只用于开发/测试 MOCK 验收，并已纳入 Phase4 runtime readiness gate。
 
 2026-07-04 追加进展 7：新增 `SmtNgWmsReconciliationPreviewService`，把 NG evidence、本地物理事实缺失、WMS reject、目标箱回写失败、重复/乱序 callback、source_version drift 与 RuntimeHold scope-only release 从 mock endpoint 语义沉淀为 runtime capability 级纯 preview service；该 service 不访问 DB、不发 WMS/NG/PDA effect、不复用旧 plugin 入口，只用于开发/测试 MOCK 验收，并已纳入 Phase4 runtime readiness gate。
 
