@@ -253,24 +253,8 @@ def test_workline_service_config_only_after_runtime_split():
 # WorkLine service facade 收口:workline.services.__init__ 仅保留当前 19 个真实
 # module export。已物理删除的运行态 service 不得继续作为包级导出或延迟加载入口。
 #
-# 来源:runtime inbox shim cleanup audit (2026-06-30),配置域 plane/manifest 导出同步
-#   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
-#   实际 module export (19):WorklineDiagnosticService, workline_diagnostic_service,
-#                           WorkLineSafetyBlocked, WorkLineSafetyService,
-#                           workline_safety_service, WorkLineService,
-#                           workline_service,
-#                           WorkLineManifestActivationValidator,
-#                           workline_manifest_activation_validator,
-#                           WorkLinePlaneService, workline_plane_service,
-#                           WorklineMigrationInventoryService,
-#                           WorklineMigrationInventoryInvariantError,
-#                           WorklineMigrationInventoryLimitExceeded,
-#                           workline_migration_inventory_service,
-#                           WorklineMigrationMatrixService,
-#                           WorklineMigrationMatrixInvariantError,
-#                           WorklineMigrationMatrixPreflightError,
-#                           workline_migration_matrix_service
-_RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
+# 来源:workline 配置域 facade 的实际模块导出,按 service 模块分组维护。
+_WORKLINE_SERVICE_REAL_EXPORTS = frozenset(
     {
         # diagnostic_service
         "WorklineDiagnosticService",
@@ -302,7 +286,7 @@ _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
 )
 
 
-def test_workline_services_init_all_exports_match_real_modules_and_live_callers():
+def test_workline_services_init_exports_only_real_modules():
     """WorkLine service facade 收口。
 
     `workline.services.__init__` 的 `__all__` 必须只包含实际 module export,
@@ -312,9 +296,9 @@ def test_workline_services_init_all_exports_match_real_modules_and_live_callers(
 
     workline_services = importlib.import_module("src.app.workline.services")
 
-    assert set(workline_services.__all__) == _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS, (
+    assert set(workline_services.__all__) == _WORKLINE_SERVICE_REAL_EXPORTS, (
         "WorkLine service facade 收口:__all__ 残留 dead entries。\n"
-        f"  期望: {sorted(_RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS)}\n"
+        f"  期望: {sorted(_WORKLINE_SERVICE_REAL_EXPORTS)}\n"
         f"  实际: {sorted(workline_services.__all__)}"
     )
 
