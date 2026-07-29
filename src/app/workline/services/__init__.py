@@ -3,28 +3,10 @@
 from __future__ import annotations
 
 # pyright: reportUnsupportedDunderAll=false
-from typing import Any
-
-# WorkLine 运行态迁出后,workline 域退化为纯配置域,运行态 service shim 已
-# 物理删除。保留 file 是配置域 service(diagnostic_service /
-# manifest_validator / plane_service / safety_service / workline_service /
-# write_back_service)。device_command_gateway 已迁出至
-# runtime/orchestration/services/。其余运行态 service 迁入 runtime/orchestration/
-# services 与 runtime/capabilities/material_flow/ 后已物理删除。
-#
-# WorkLine service facade 收口:__all__ / _LAZY_SHIM_MAP 收敛到当前真实 service export
-# 与尚未初始化的 bin cell reservation fallback tombstone。
+# WorkLine 运行态 service 已迁入 runtime/orchestration/services/ 与
+# runtime/capabilities/material_flow/,本包 facade 仅导出当前真实 service。
 # PlaneReadPrincipal / PlaneReadSecurityPolicy / plane_read_security_policy
 # 是 plane_service 的安全 helper,由具体模块直接导入,不放在 package facade。
-# 该符号历史上由 workline.services 域暴露,底层 module 已物理删除
-# (迁入 runtime/orchestration/services/ 与 repositories/)。caller 仍按
-# `from src.app.workline.services import ...` 旧路径访问:
-#   - runtime_intent_effects.py — `self._bin_cell_reservation_service`
-#     属性未注入时的 fallback import
-#     (属性注入后不触发,路径是活的防御性兜底,非死代码)
-# PEP 562 __getattr__ 命中 _LAZY_SHIM_MAP 后 import 旧路径,因 module 已删除
-# 抛 ModuleNotFoundError,让调用方明确感知"属性不可用"。其他 dead entries
-# 已物理删除。
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 from .manifest_validator import WorkLineManifestActivationValidator, workline_manifest_activation_validator
 from .migration_inventory_service import (
@@ -56,7 +38,6 @@ __all__ = [
     "WorklineMigrationMatrixInvariantError",
     "WorklineMigrationMatrixPreflightError",
     "WorklineMigrationMatrixService",
-    "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",
     "workline_manifest_activation_validator",
     "workline_migration_inventory_service",
@@ -65,24 +46,3 @@ __all__ = [
     "workline_safety_service",
     "workline_service",
 ]
-
-
-# WorkLine service facade 收口:未初始化 service 属性的 fallback tombstone。caller 命中时
-# 通过 importlib.import_module 触发 ModuleNotFoundError(旧 module 已物理
-# 删除),与 Python 默认 attribute lookup 抛 AttributeError 不同但对调用方
-# 语义一致(都是不可用)。不在表中的属性按 PEP 562 默认行为抛 AttributeError。
-_LAZY_SHIM_MAP = {
-    "workline_bin_cell_reservation_service": "bin_cell_reservation_service",
-}
-
-
-def __getattr__(name: str) -> Any:
-    module_name = _LAZY_SHIM_MAP.get(name)
-    if module_name is None:
-        raise AttributeError(name)
-    import importlib
-
-    module = importlib.import_module(f"src.app.workline.services.{module_name}")
-    value = getattr(module, name)
-    globals()[name] = value
-    return value

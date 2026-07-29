@@ -1396,9 +1396,11 @@ class RuntimeIntentEffectApplier:
     async def _apply_resource_reservation(self, ctx: Any, intent: RuntimeIntent) -> Any:
         service = self._bin_cell_reservation_service
         if service is None:
-            from src.app.workline.services import workline_bin_cell_reservation_service
+            from src.app.runtime.capabilities.material_flow.bin_cell_reservation_service import (
+                bin_cell_reservation_service,
+            )
 
-            service = workline_bin_cell_reservation_service
+            service = bin_cell_reservation_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
         return await service.apply_runtime_reservation(

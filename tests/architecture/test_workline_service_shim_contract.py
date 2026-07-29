@@ -250,15 +250,11 @@ def test_workline_service_config_only_after_runtime_split():
             )
 
 
-# WorkLine service facade 收口:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到
-# 当前 19 个真实 module export + 1 个死引用 tombstone,其余 dead entries
-# 必须删除。`runtime_intent_effects.py:1545/1627` 与
-# 1 处死引用保留(未触发,不爆),
-# 作为 lazy shim 兜底的最后一道闸,验证 `__all__` / `_LAZY_SHIM_MAP` 语义一致。
+# WorkLine service facade 收口:workline.services.__init__ 仅保留当前 19 个真实
+# module export。已物理删除的运行态 service 不得继续作为包级导出或延迟加载入口。
 #
 # 来源:runtime inbox shim cleanup audit (2026-06-30),配置域 plane/manifest 导出同步
 #   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
-#   DEAD 但 caller 仍存在 (1):workline_bin_cell_reservation_service
 #   实际 module export (19):WorklineDiagnosticService, workline_diagnostic_service,
 #                           WorkLineSafetyBlocked, WorkLineSafetyService,
 #                           workline_safety_service, WorkLineService,
@@ -274,8 +270,6 @@ def test_workline_service_config_only_after_runtime_split():
 #                           WorklineMigrationMatrixInvariantError,
 #                           WorklineMigrationMatrixPreflightError,
 #                           workline_migration_matrix_service
-#   shim 兜底死引用 (1):workline_bin_cell_reservation_service
-#                        → bin_cell_reservation_service
 _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
     {
         # diagnostic_service
@@ -307,69 +301,61 @@ _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
     }
 )
 
-_RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES = frozenset(
-    {
-        # runtime_intent_effects.py:1627 死引用 — shim fake 触发 ModuleNotFoundError
-        "workline_bin_cell_reservation_service",
-    }
-)
-
 
 def test_workline_services_init_all_exports_match_real_modules_and_live_callers():
     """WorkLine service facade 收口。
 
-    `workline.services.__init__` 的 `__all__` 必须只包含实际 module export
-    + live caller,不允许残留 dead entries。
+    `workline.services.__init__` 的 `__all__` 必须只包含实际 module export,
+    不允许残留已删除运行态 service。
     """
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
 
-    expected = _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS | _RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES
-    assert set(workline_services.__all__) == expected, (
+    assert set(workline_services.__all__) == _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS, (
         "WorkLine service facade 收口:__all__ 残留 dead entries。\n"
-        f"  期望: {sorted(expected)}\n"
+        f"  期望: {sorted(_RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS)}\n"
         f"  实际: {sorted(workline_services.__all__)}"
     )
 
 
-def test_workline_services_init_shim_map_contains_only_dead_caller_tombstones():
-    """WorkLine service facade 收口。
-
-    `_LAZY_SHIM_MAP` 必须只保留死引用 tombstones,其余 dead entries
-    物理删除,让未知属性按 PEP 562 默认抛 AttributeError。
-    """
+def test_workline_services_init_has_no_module_level_lazy_loader():
+    """已删除的运行态 service 不得通过包级延迟加载器继续暴露。"""
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
 
-    shim_map = getattr(workline_services, "_LAZY_SHIM_MAP", None)
-    assert shim_map is not None, "WorkLine service facade 收口:_LAZY_SHIM_MAP 必须保留(承载死引用 tombstones)"
-
-    assert set(shim_map.keys()) == _RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES, (
-        "WorkLine service facade 收口:_LAZY_SHIM_MAP 残留 dead entries。\n"
-        f"  期望 keys: {sorted(_RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES)}\n"
-        f"  实际 keys: {sorted(shim_map.keys())}"
-    )
+    assert "_LAZY_SHIM_MAP" not in vars(workline_services)
+    assert "__getattr__" not in vars(workline_services)
 
 
-def test_workline_services_init_getattr_returns_real_exports():
-    """WorkLine service facade 收口:`__getattr__` 必须仍能解析真实 module export。
+def test_workline_runtime_has_no_legacy_bin_cell_service_name():
+    """格位预占服务迁入 runtime 后不得保留带 workline 前缀的旧单例名。"""
+    from pathlib import Path
 
-    已退役的 Inbox export 与未知属性都按 PEP 562 默认行为抛 AttributeError。
-    """
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    legacy_name = "workline_bin_cell_" + "reservation_service"
+    residual_paths = [
+        path.relative_to(repo_root)
+        for root in ("src", "tests")
+        for path in (repo_root / root).rglob("*.py")
+        if legacy_name in path.read_text(encoding="utf-8")
+    ]
+
+    assert residual_paths == [], f"格位预占服务旧单例名仍有残留: {residual_paths}"
+
+
+def test_workline_services_init_keeps_real_exports_accessible():
+    """真实 module export 仍可直接访问,未知属性使用 Python 默认查找语义。"""
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
 
-    # Live export:__getattr__ 走 module re-export,正常工作
     diagnostic_class = workline_services.WorklineDiagnosticService
     assert diagnostic_class is not None
 
-    # 已退役 Inbox export 不再保留 tombstone。
     with pytest.raises(AttributeError):
         workline_services.inbox_service  # noqa: B018
 
-    # 未知属性:按 PEP 562 默认行为抛 AttributeError
     with pytest.raises(AttributeError):
         workline_services.never_existed_attribute  # noqa: B018
