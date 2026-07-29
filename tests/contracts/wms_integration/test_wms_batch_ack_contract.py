@@ -244,7 +244,9 @@ def test_mock_multi_member_ack_and_terminal_result_preserve_frozen_correspondenc
     payload = payload_factory()
     operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
     request = operation.request_model.model_validate(payload)
-    ack = WmsEffectAck.model_validate(build_typed_ack(operation_identity, "idem-batch", payload))
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(operation_identity, "idem-batch", payload, submission_state="ACCEPTED")
+    )
     result = operation.result_model.model_validate(
         build_typed_result(
             operation_identity,
@@ -281,7 +283,9 @@ def test_real_status_parser_requires_frozen_batch_ack_and_rejects_member_drift(
     from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
 
     request_payload = payload_factory()
-    ack = WmsEffectAck.model_validate(build_typed_ack(operation_identity, "idem-batch", request_payload))
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(operation_identity, "idem-batch", request_payload, submission_state="ACCEPTED")
+    )
     request = WmsBatchEffectStatusRequest(
         operation_identity=operation_identity,
         idempotency_key="idem-batch",
@@ -339,7 +343,9 @@ def test_batch_terminal_result_rejects_provider_reference_drift(operation_identi
     request_payload = payload_factory()
     operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
     request = operation.request_model.model_validate(request_payload)
-    ack = WmsEffectAck.model_validate(build_typed_ack(operation_identity, "idem-reference", request_payload))
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(operation_identity, "idem-reference", request_payload, submission_state="ACCEPTED")
+    )
     result_payload = build_typed_result(
         operation_identity,
         request_payload,
@@ -366,7 +372,9 @@ def test_batch_status_rejects_provider_reference_drift(operation_identity: str, 
     from tests.mock.wms_northbound_contract import build_typed_ack
 
     request_payload = payload_factory()
-    ack = WmsEffectAck.model_validate(build_typed_ack(operation_identity, "idem-reference", request_payload))
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(operation_identity, "idem-reference", request_payload, submission_state="ACCEPTED")
+    )
     request = WmsBatchEffectStatusRequest(
         operation_identity=operation_identity,
         idempotency_key="idem-reference",

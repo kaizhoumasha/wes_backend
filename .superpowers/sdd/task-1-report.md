@@ -572,3 +572,39 @@ operation 的兼容入口。
 - worktree `gitnexus detect-changes --scope staged` → 11 files / 17 symbols /
   0 affected processes，risk LOW；变更仅覆盖旧 CTU 批次预览物理删除、精确 absence guard、
   readiness 声明与对应治理资产同步，未引入 T2/T5 流程。
+
+## Replay State Review（第十五轮）修复
+
+- `build_typed_ack` 改为必须显式接收 `submission_state`，不再把 E08–E14 typed ACK 永久写死为
+  `ACCEPTED`；全部 6 个直接调用方均显式声明状态，没有默认值、兼容参数或新抽象。
+- Mock 北向 effect handler 按响应语义分别传递：首次 202 为 `ACCEPTED`、处理中同键重放 409 为
+  `IN_PROGRESS_REPLAY`、终态后同键重放 200 为 `REPLAY`。
+- 既有 7 项 ASYNC_TASK 参数化测试完整解析三次响应为 `WmsEffectAck`，同时断言 operation identity、
+  idempotency key、稳定 provider reference 与三种 submission state；status endpoint 继续独立断言
+  六字段 snapshot，不复用 ACK wire shape。
+- 未修改生产运行时代码，未实现 T2/T5，未新增兼容层、抽象、skip 或 xfail。
+
+## Replay State Review（第十五轮）TDD 与验证
+
+1. RED：先扩展 7 项参数化测试，全部在处理中 409 重放处得到旧值
+   `ACCEPTED != IN_PROGRESS_REPLAY`，结果 `7 failed`。
+2. GREEN：builder 与 Mock handler 最小修改后，同一组参数化测试 `7 passed`；WMS Mock、北向状态机及
+   全部 WMS integration 合同相关回归 `396 passed`。
+3. 默认全集从头复验 → `4179 passed, 5 existing skipped`（4184 collected），没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest` → `4179 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4184 tests collected`。
+- `uv run ruff format --check .` → 1074 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：`build_typed_ack` 为 HIGH（6 direct、1 Mock handler process、3 modules），
+  已在编辑前向控制器报告并获得明确确认；`_northbound_response_data`、`_submit_northbound_effect`、
+  5 个直接调用测试函数与 7 项参数化测试均为 LOW。
+- worktree `gitnexus detect-changes --scope staged` → 6 files / 9 symbols /
+  6 affected Mock handler flows，risk HIGH；命中范围均来自 `_submit_northbound_effect` 的 typed ACK
+  响应链和对应合同测试，属于已确认的本轮最小修复，不包含生产运行时或 T2/T5。

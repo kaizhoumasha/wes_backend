@@ -450,14 +450,17 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
         )
 
     assert first.status_code == 202
-    assert first.json()["data"]["operation_identity"] == operation_identity
-    assert first.json()["data"]["idempotency_key"] == "idem-submit-001"
+    first_ack = WmsEffectAck.model_validate(first.json()["data"])
+    assert first_ack.operation_identity == operation_identity
+    assert first_ack.idempotency_key == "idem-submit-001"
+    assert first_ack.submission_state == "ACCEPTED"
     assert processing_replay.status_code == 409
     assert processing_replay.json()["code"] == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
     replay_ack = WmsEffectAck.model_validate(processing_replay.json()["data"])
     assert replay_ack.operation_identity == operation_identity
     assert replay_ack.idempotency_key == "idem-submit-001"
-    assert replay_ack.provider_reference == first.json()["data"]["provider_reference"]
+    assert replay_ack.provider_reference == first_ack.provider_reference
+    assert replay_ack.submission_state == "IN_PROGRESS_REPLAY"
     assert set(accepted.json()) == {
         "state",
         "provider_reference",
@@ -473,7 +476,11 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
     ]
     WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(completed.json()["result_payload"])
     assert completed_replay.status_code == 200
-    assert completed_replay.json()["data"]["operation_identity"] == operation_identity
+    completed_ack = WmsEffectAck.model_validate(completed_replay.json()["data"])
+    assert completed_ack.operation_identity == operation_identity
+    assert completed_ack.idempotency_key == "idem-submit-001"
+    assert completed_ack.provider_reference == first_ack.provider_reference
+    assert completed_ack.submission_state == "REPLAY"
     assert conflict.status_code == 422
     assert conflict.json()["code"] == "IDEMPOTENCY_CONFLICT"
     assert effects.json()["effect_count"] == 1

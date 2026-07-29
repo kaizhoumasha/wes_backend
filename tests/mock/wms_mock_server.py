@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
 import httpx
@@ -927,7 +927,12 @@ async def _submit_northbound_effect(
     if submission.error_code is not None:
         replay_data = None
         if submission.error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS":
-            replay_data = _northbound_response_data(operation_identity, idempotency_key, validated_payload)
+            replay_data = _northbound_response_data(
+                operation_identity,
+                idempotency_key,
+                validated_payload,
+                submission_state="IN_PROGRESS_REPLAY",
+            )
         return JSONResponse(
             status_code=submission.status_code,
             content={
@@ -945,7 +950,13 @@ async def _submit_northbound_effect(
             content=submission.snapshot.result_payload,
         )
 
-    data = _northbound_response_data(operation_identity, idempotency_key, validated_payload)
+    submission_state = "ACCEPTED" if submission.status_code == 202 else "REPLAY"
+    data = _northbound_response_data(
+        operation_identity,
+        idempotency_key,
+        validated_payload,
+        submission_state=submission_state,
+    )
     if submission.status_code == 202 and northbound_operation_store.register_callback_hint(
         operation_identity, idempotency_key
     ):
@@ -972,10 +983,17 @@ def _northbound_response_data(
     operation_identity: str,
     idempotency_key: str,
     payload: dict[str, Any],
+    *,
+    submission_state: Literal["ACCEPTED", "IN_PROGRESS_REPLAY", "REPLAY"],
 ) -> dict[str, Any]:
     """从已校验 typed payload 构造 E08–E14 共用 ACK。"""
 
-    return build_typed_ack(operation_identity, idempotency_key, payload)
+    return build_typed_ack(
+        operation_identity,
+        idempotency_key,
+        payload,
+        submission_state=submission_state,
+    )
 
 
 def build_active_bin_rack_payload(rack_code: str, rack_kind: str = "SINGLE_LAYER") -> dict[str, Any]:

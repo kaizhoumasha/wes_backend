@@ -75,7 +75,12 @@ def _status_request(operation_identity: str) -> WmsEffectStatusRequest:
             operation_identity=operation_identity,
             idempotency_key="intent-key",
             request_payload=request_payload,
-            frozen_ack=build_typed_ack(operation_identity, "intent-key", request_payload),
+            frozen_ack=build_typed_ack(
+                operation_identity,
+                "intent-key",
+                request_payload,
+                submission_state="ACCEPTED",
+            ),
         )
     return WmsEffectStatusRequest(
         operation_identity=operation_identity,

@@ -15,7 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import RLock
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ValidationError
 
@@ -603,6 +603,8 @@ def build_typed_ack(
     operation_identity: str,
     idempotency_key: str,
     payload: Mapping[str, Any],
+    *,
+    submission_state: Literal["ACCEPTED", "IN_PROGRESS_REPLAY", "REPLAY"],
 ) -> dict[str, Any]:
     """从 frozen async request 构造共用 ACK；批次成员由 accepted_scope 显式冻结。"""
 
@@ -631,7 +633,7 @@ def build_typed_ack(
         operation_identity=operation_identity,
         idempotency_key=idempotency_key,
         provider_reference=f"mock-wms:{provider_digest}",
-        submission_state="ACCEPTED",
+        submission_state=submission_state,
         accepted_scope=accepted_scope,
     )
     if isinstance(request, (MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest)):
