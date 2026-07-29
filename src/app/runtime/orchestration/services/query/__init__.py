@@ -1,8 +1,7 @@
 """Query 子目录 — 运行监控中心只读聚合查询服务。
 
-从 workline/services/ 物理迁入。
-workline/services/runtime_query_service.py 改为 PEP 562 re-export shim,
-通过 src.app.workline.services._LAZY_SHIM_MAP + __getattr__ 推迟加载。
+服务已从 workline/services/ 迁入当前 runtime/orchestration 路径,
+调用方应从本包导入。
 """
 
 from src.app.runtime.orchestration.services.query.material_location_query_service import (

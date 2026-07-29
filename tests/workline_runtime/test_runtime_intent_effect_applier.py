@@ -273,6 +273,41 @@ async def test_rough_sorter_reservation_intent_uses_bin_cell_claim_contract() ->
 
 
 @pytest.mark.asyncio
+async def test_resource_reservation_uses_runtime_material_flow_default_singleton(monkeypatch) -> None:
+    """未注入 reservation service 时必须使用 runtime material-flow 的真实默认单例。"""
+    import importlib
+
+    from src.app.runtime.capabilities.material_flow.bin_cell_reservation_service import (
+        WorklineBinCellReservationService,
+        bin_cell_reservation_service,
+    )
+
+    reservation_module = importlib.import_module(
+        "src.app.runtime.capabilities.material_flow.bin_cell_reservation_service"
+    )
+    assert isinstance(bin_cell_reservation_service, WorklineBinCellReservationService)
+    assert "bin_cell_reservation_service" in reservation_module.__all__
+
+    recording_service = _RecordingReservationService()
+    monkeypatch.setattr(reservation_module, "bin_cell_reservation_service", recording_service)
+    intent = RuntimeIntent.resource_reservation(
+        operation="CLAIM_BIN_CELL",
+        payload={
+            "pkg_code": "PKG-DEFAULT-SINGLETON",
+            "bin_code": "BIN-DEFAULT-01",
+            "bin_cell_index": "1",
+        },
+        idempotency_key="reservation-default-singleton-001",
+    )
+
+    await RuntimeIntentEffectApplier().apply(_effect_ctx(), [intent])
+
+    assert len(recording_service.calls) == 1
+    assert recording_service.calls[0]["operation"] == "CLAIM_BIN_CELL"
+    assert recording_service.calls[0]["payload_json"]["pkg_code"] == "PKG-DEFAULT-SINGLETON"
+
+
+@pytest.mark.asyncio
 async def test_runtime_location_event_fact_records_runtime_location_without_resource_projection(monkeypatch) -> None:
     """RUNTIME_LOCATION_EVENT 是 runtime 位置事实，不应进入资源投影枚举。"""
 

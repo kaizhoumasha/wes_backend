@@ -545,7 +545,7 @@ class WorklineBinCellReservationService:
         )
 
 
-workline_bin_cell_reservation_service = WorklineBinCellReservationService()
+bin_cell_reservation_service = WorklineBinCellReservationService()
 
 
 def _build_reservation_key(
@@ -607,5 +607,5 @@ __all__ = [
     "BinCellReservationResult",
     "BinCellReservationStatusCode",
     "WorklineBinCellReservationService",
-    "workline_bin_cell_reservation_service",
+    "bin_cell_reservation_service",
 ]
