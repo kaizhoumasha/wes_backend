@@ -1940,13 +1940,25 @@ Codex; checkbox as you ship.
     正式重生成后 matrix 合同 `24 passed`；完整 quality profile 通过。
   - Review: 独立复审确认同一 dispatcher 处理 GET/POST 与 NONE/HMAC，frozen recovery 不读取 live profile，
     且未实现 T4/T5 runtime 或 WMS 专用 sender；结论 `Spec Compliance ✅`、无 findings、`Approved`。
-- [ ] **T4（P1，human: \~5d / CC: \~1d）** — QUERY — 接入 19 项 QUERY 并保持 transport 无 identity 分支
+- [x] **T4（P1，human: \~5d / CC: \~1d）** — QUERY — 接入 19 项 QUERY 并保持 transport 无 identity 分支
   - Surfaced by: Scope / Performance — typed operation 完整覆盖；Q19 由 WMS返回 GRN/测量准入，不复制 transport，
     不恢复跨请求缓存。
   - Files: WMS query ports/adapters/capabilities、query transport、evidence。
   - Verify: 19 项静态注册表驱动的参数化 QUERY 题库全过；Q19 全拒绝码、落库后崩溃/replay 零新查询、零副作用；
     18 项 GET 与 Q19 POST 由 method contract 驱动；Q19 URL/evidence 零 raw code/完整六码值；
     cache/TTL/operation identity transport switch guardrail 全过。
+  - Completed: `31f6f9bf`、`4f8fbaa6`、`234a5888`。19 项 QUERY 统一使用
+    `WmsQueryExecutionPort` 与 registry executor；18 GET/Q19 POST、长期 data-lane client、预算/分页/breaker、
+    evidence 与 source-version 原子 compare-and-record 均已落地，旧 Q14 专用 Port/Adapter/executor 与粗分
+    admission fallback 已物理删除。
+  - Business evidence: Q19 在 `SCAN_COMPLETED` 产生物理命令前完成首次事实锁定；ADMIT 唯一正常入料，
+    七类 REJECT 唯一 NG，异常稳定 Hold。PostgreSQL 覆盖同 Session 并发单查询、hash 漂移零 HTTP/零物理命令、
+    同载荷重放零 HTTP 同命令，以及 source-version 并发一成功一合同失败。
+  - Quality evidence: 核心 13 模块 `795 statements / 228 branches / 100%`；PostgreSQL Q19/replay/outbox
+    `12 passed`；默认全集 `4530 passed, 5 skipped`（`4535 collected`）；完整 quality profile 与
+    architecture `0 violations / 0 warnings` 通过；最终 GitNexus detect 为 LOW、0 affected processes。
+  - Review: 三轮独立复审逐项关闭 Repository/并发原子性、5xx allowlist、coverage、SCAN 前置顺序、Q14
+    fallback 与 crash-window hash 漂移问题；最终结论 `Spec Compliance ✅`、无 findings、`Approved`。
 - [ ] **T5（P1，human: \~5d / CC: \~1d）** — EFFECT — 接入 9 项同步 EFFECT、7 项异步 EFFECT 与双 WMS lane
   - Surfaced by: Architecture D1–D2 / DRY / Business acceptance — 共享静态 Gateway/Handler/IntentAdapter 执行管线和
     静态 completion mode；异步项使用 `WmsEffectAck`/`WmsAcceptedScope`；每项保留 typed contract/Definition 并仅为
