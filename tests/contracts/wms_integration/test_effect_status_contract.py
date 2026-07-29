@@ -264,6 +264,22 @@ def test_snapshot_direct_construction_enforces_domain_invariants(changes: dict[s
         )
 
 
+@pytest.mark.parametrize(
+    "operation_identity",
+    (
+        "wms.inventory.confirm_inbound@v1",
+        "wms.fulfillment.unknown_operation@v1",
+    ),
+)
+def test_snapshot_direct_construction_rejects_non_async_effect_identity(operation_identity: str) -> None:
+    with pytest.raises(ValidationError, match="authored async WMS EFFECT"):
+        WmsEffectStatusSnapshot(
+            operation_identity=operation_identity,
+            idempotency_key="intent-idempotency-001",
+            state=WmsEffectStatus.NOT_FOUND,
+        )
+
+
 def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operation() -> None:
     completed = parse_wms_effect_status_snapshot(request=_rack_supply_request(), raw_response=_completed_wire())
     visible_fields = {

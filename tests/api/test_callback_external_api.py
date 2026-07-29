@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -251,6 +252,75 @@ class TestCallbackExternalAPI:
         assert response.status_code == 400
         assert _response_body(response)["code"] == "2004"
         write_external_callback.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "operation_identity",
+        (
+            "wms.inventory.confirm_inbound@v1",
+            "wms.fulfillment.unknown_operation@v1",
+        ),
+    )
+    @pytest.mark.asyncio
+    async def test_callback_external_rejects_non_async_effect_hint_without_persistence(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+        operation_identity: str,
+    ) -> None:
+        payload = {
+            "callback_type": "WMS_EFFECT_STATUS_HINT",
+            "source_system": "WMS",
+            "source_event_id": "wms-invalid-effect-001",
+            "source_version": "1",
+            "occurred_at": "2026-07-29T08:00:00Z",
+            "request_id": "request-invalid-effect-001",
+            "trace_id": "trace-invalid-effect-001",
+            "data": {
+                "operation_identity": operation_identity,
+                "idempotency_key": "idem-invalid-effect-001",
+                "dispatch_key": "invalid-effect-001",
+            },
+        }
+        writer = callback_test_support.callback_ingress_module.callback_orchestration_service._runtime_inbox_writer
+        with (
+            patch.object(
+                writer,
+                "write_external_callback",
+                new=AsyncMock(
+                    return_value=SimpleNamespace(
+                        created=True,
+                        record=SimpleNamespace(
+                            id=46,
+                            trace_id="trace-invalid-effect-001",
+                            source_event_id="wms-invalid-effect-001",
+                        ),
+                    )
+                ),
+            ) as write_external_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as callback_log,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as audit_log,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-invalid-effect"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(body=payload, path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        assert _response_body(response)["code"] == "2004"
+        write_external_callback.assert_not_awaited()
+        callback_log.assert_not_awaited()
+        audit_log.assert_not_awaited()
+        db_session.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_callback_external_rejects_missing_trace_id_with_http_400(

@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_TYPED_EFFECT_CALLBACK_TYPES
+from src.app.wms_integration.operation_registry import ASYNC_EFFECT_OPERATION_IDENTITIES
 
 WMS_ORDINARY_EVENT_TYPES = frozenset(
     {
@@ -19,6 +20,10 @@ WMS_ORDINARY_EVENT_TYPES = frozenset(
     }
 )
 WMS_ALLOWED_CALLBACK_TYPES = WMS_ORDINARY_EVENT_TYPES | WMS_TYPED_EFFECT_CALLBACK_TYPES
+
+
+class WmsEffectStatusHintAdmissionError(ValueError):
+    """WMS EFFECT status hint 未命中异步操作闭集。"""
 
 
 def validate_external_callback_type(
@@ -67,6 +72,13 @@ def validate_external_callback_type(
         raise ValueError(f"callback_type is not allowed: {callback_type}")
     if source_system != "WMS":
         raise ValueError("source_system must be WMS")
+    if callback_type == "WMS_EFFECT_STATUS_HINT":
+        callback_data = payload.get("data")
+        operation_identity = callback_data.get("operation_identity") if isinstance(callback_data, dict) else None
+        if not isinstance(operation_identity, str):
+            raise WmsEffectStatusHintAdmissionError("operation_identity must identify an authored async WMS EFFECT")
+        if operation_identity not in ASYNC_EFFECT_OPERATION_IDENTITIES:
+            raise WmsEffectStatusHintAdmissionError("WMS_EFFECT_STATUS_HINT_OPERATION_UNKNOWN")
     return callback_type
 
 
@@ -79,5 +91,6 @@ def _first_non_empty_text(value: Any) -> str | None:
 __all__ = [
     "WMS_ALLOWED_CALLBACK_TYPES",
     "WMS_ORDINARY_EVENT_TYPES",
+    "WmsEffectStatusHintAdmissionError",
     "validate_external_callback_type",
 ]

@@ -148,9 +148,9 @@ async def test_process_external_routes_wms_effect_hint_without_changing_runtime_
         "source_system": "WMS",
         "source_event_id": "wms-event-001",
         "data": {
-            "operation_identity": "wms.inventory.confirm_inbound@v1",
-            "idempotency_key": "idem-confirm-inbound-001",
-            "dispatch_key": "confirm-inbound-001",
+            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+            "idempotency_key": "idem-rack-supply-001",
+            "dispatch_key": "rack-supply-001",
         },
     }
 
@@ -169,3 +169,57 @@ async def test_process_external_routes_wms_effect_hint_without_changing_runtime_
         payload=payload,
     )
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "operation_identity",
+    (
+        "wms.inventory.confirm_inbound@v1",
+        "wms.fulfillment.unknown_operation@v1",
+    ),
+)
+@pytest.mark.asyncio
+async def test_process_external_rejects_non_async_effect_hint_before_runtime_inbox(
+    operation_identity: str,
+) -> None:
+    writer = SimpleNamespace(
+        write_external_callback=AsyncMock(
+            return_value=SimpleNamespace(
+                created=True,
+                record=SimpleNamespace(
+                    id=45,
+                    trace_id="trace-invalid-effect-001",
+                    source_event_id="wms-invalid-effect-001",
+                ),
+            )
+        )
+    )
+    typed_router = SimpleNamespace(route=AsyncMock(return_value=True))
+    service = CallbackOrchestrationService(runtime_inbox_writer=writer)
+    service._typed_effect_callback_router = typed_router
+    service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
+    db = SimpleNamespace(commit=AsyncMock())
+
+    with pytest.raises(ValueError, match="WMS_EFFECT_STATUS_HINT_OPERATION_UNKNOWN"):
+        await service.process_external(
+            db,  # type: ignore[arg-type]
+            callback_type="WMS_EFFECT_STATUS_HINT",
+            payload={
+                "callback_type": "WMS_EFFECT_STATUS_HINT",
+                "source_system": "WMS",
+                "source_event_id": "wms-invalid-effect-001",
+                "data": {
+                    "operation_identity": operation_identity,
+                    "idempotency_key": "idem-invalid-effect-001",
+                    "dispatch_key": "invalid-effect-001",
+                },
+            },
+            request_id="req-invalid-effect-001",
+            trace_id="trace-invalid-effect-001",
+            enqueue_processing=lambda: None,
+        )
+
+    writer.write_external_callback.assert_not_awaited()
+    typed_router.route.assert_not_awaited()
+    service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()
+    db.commit.assert_not_awaited()

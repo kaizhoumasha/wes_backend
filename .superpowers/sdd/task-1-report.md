@@ -700,3 +700,51 @@ operation 的兼容入口。
 - 当前 worktree `gitnexus detect-changes --scope staged` → 20 files / 68 symbols /
   0 affected processes，risk LOW；变更仅覆盖本轮 matrix、callback ingress、effect status、
   活动文档/guard、测试与报告，不包含 T2/T5。
+
+## Status Hint Admission Review（第十八轮）修复
+
+- external callback 共享 admission 直接复用唯一
+  `ASYNC_EFFECT_OPERATION_IDENTITIES`：`WMS_EFFECT_STATUS_HINT` 的同步、未知或非字符串
+  operation identity 在任何 RuntimeInbox writer 前 fail closed；service 直接调用与 HTTP
+  标准化入口共享同一判断，没有第二套 allow-set。
+- HTTP 对该 admission 专用拒绝异常直接返回 400 validation response，不进入会提交当前业务
+  session 的 callback log/audit 通用拒绝路径。HTTP 合同同时锁定 RuntimeInbox writer、callback
+  log、audit log 与业务 `commit` 均为 0；service 合同锁定 writer、typed router、提交/入队和业务
+  `commit` 均为 0。
+- `WmsEffectStatusSnapshot` 的 operation identity field validator 复用同一注册表闭集，使直接领域
+  构造与 wire/request parser 一致仅接受 E08–E14；同步与未知 identity 均在领域边界拒绝。
+- 原 status hint 正向编排合同改用合法异步 E08 identity，不再把同步 E01 当作正向样本。未引入
+  独立审计事务、alias、fallback 或兼容路径，未实现 T2/T5，未新增 skip 或 xfail。
+
+## Status Hint Admission Review（第十八轮）TDD 与验证
+
+1. RED：
+   - service 同步/未知 identity 两项均 `DID NOT RAISE`，证明 writer 前 admission 缺失；
+   - HTTP 同步/未知 identity 两项均显示 RuntimeInbox writer 已 await 1 次；
+   - `WmsEffectStatusSnapshot` 同步/未知 identity 两项均 `DID NOT RAISE`。
+2. GREEN：
+   - 三组定点参数化合同共 `6 passed`；
+   - callback orchestration/API、typed routing、normalizer 与 effect-status 相关回归
+     `195 passed`；
+   - 首轮默认全集除 1 个冻结单行 import 文本格式的派生守卫外为
+     `4189 passed, 5 existing skipped`。该守卫改为 AST 精确验证 callback domain import
+     模块及符号并保留对象 identity 断言，定点 `1 passed`。
+3. 默认全集从头复验 → `4190 passed, 5 existing skipped`（4195 collected）；相对第十七轮
+   净增 6 项参数化合同，没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4190 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4195 tests collected`。
+- `uv run ruff format --check .` → 1074 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：`_admit_external_callback` 为 LOW（1 direct / 1 process）；
+  `WmsEffectStatusSnapshot` 为 MEDIUM（14 direct / 74 upstream / 0 process）；正向编排测试为
+  LOW。共享 validator 与派生源码守卫因当前索引未收录目标返回 UNKNOWN；无 HIGH/CRITICAL 风险。
+- 当前 worktree 完整刷新索引后，`npx gitnexus detect-changes --scope staged` →
+  8 files / 13 symbols / 2 affected processes，risk MEDIUM；两条流程均为
+  `Handle_callback_external`，变更范围只覆盖 admission、领域快照、精确合同与本报告。

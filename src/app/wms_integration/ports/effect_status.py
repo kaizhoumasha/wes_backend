@@ -170,6 +170,13 @@ class WmsEffectStatusSnapshot(BaseModel):
     source_version: int | None = Field(default=None, ge=0, strict=True)
     result: SerializeAsAny[BaseModel] | None = None
 
+    @field_validator("operation_identity")
+    @classmethod
+    def require_async_effect_identity(cls, value: str) -> str:
+        if value not in ASYNC_EFFECT_OPERATION_IDENTITIES:
+            raise ValueError("operation_identity is not an authored async WMS EFFECT")
+        return value
+
     @field_validator("idempotency_key", mode="before")
     @classmethod
     def preserve_opaque_idempotency_key(cls, value: Any) -> str:

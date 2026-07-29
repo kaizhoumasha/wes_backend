@@ -20,7 +20,11 @@ from src.app.callback.contracts import (
     is_platform_control_event,
     is_production_event,
 )
-from src.app.callback.contracts.external_callbacks import WMS_ALLOWED_CALLBACK_TYPES, WMS_ORDINARY_EVENT_TYPES
+from src.app.callback.contracts.external_callbacks import (
+    WMS_ALLOWED_CALLBACK_TYPES,
+    WMS_ORDINARY_EVENT_TYPES,
+    WmsEffectStatusHintAdmissionError,
+)
 from src.app.callback.models import (
     CallbackEventIngressResponse,
     CallbackEventRequest,
@@ -2328,6 +2332,14 @@ async def _admit_external_callback(
         normalized_payload = _normalize_external_callback_payload(callback_data)
         callback_type = cast("str", normalized_payload["callback_type"])
         external_trace_id = cast("str | None", normalized_payload["trace_id"])
+    except WmsEffectStatusHintAdmissionError as exc:
+        # 禁止的 status hint 必须在 RuntimeInbox 与业务 session 持久化之前拒绝；
+        # 当前边界不复用会提交该 session 的通用拒绝日志路径。
+        logger.error(f"WMS EFFECT status hint admission 失败: {exc}")
+        return None, cast(
+            "CallbackExternalIngressResponse",
+            _build_contract_fail(f"外部回调最小包络校验失败: {exc}"),
+        )
     except ValueError as exc:
         logger.error(f"外部回调最小包络校验失败: {exc}")
         return None, await _handle_external_validation_failure(
