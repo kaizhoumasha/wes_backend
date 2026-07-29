@@ -188,6 +188,24 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             assert rows[entry_id][field] == value
 
 
+def test_wms_boundary_seeds_target_current_rack_transport_operation() -> None:
+    """WMS boundary seed 只能指向现行 rack transport Definition，不得恢复粗粒度 Port。"""
+    from src.app.wms_integration.ports import fulfillment_operations
+
+    target_path = "src/app/wms_integration/ports/fulfillment_operations.py"
+    target_identity = "wms.fulfillment.request_rack_transport@v1"
+    legacy_target = "WmsFulfillmentPort.request_transport"
+    seed_entries = [entry for entry in parse_entries() if "WMS_INTEGRATION_BOUNDARY seed" in entry.business_semantics]
+
+    assert len(seed_entries) == 5
+    assert {(entry.target_path, entry.target_capability) for entry in seed_entries} == {(target_path, target_identity)}
+    assert (REPO_ROOT / target_path).is_file()
+    assert fulfillment_operations.REQUEST_RACK_TRANSPORT.identity == target_identity
+    assert not (REPO_ROOT / "src/app/runtime/orchestration/ports/wms_fulfillment.py").exists()
+    assert legacy_target not in (REPO_ROOT / "scripts/generate_legacy_matrix.py").read_text(encoding="utf-8")
+    assert legacy_target not in (REPO_ROOT / "docs/architecture/legacy-cleanup-matrix.csv").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     ("business_semantics", "path", "symbol", "expected_path", "expected_capability"),
     [

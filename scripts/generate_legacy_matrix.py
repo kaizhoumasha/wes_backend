@@ -767,7 +767,10 @@ def resolve_migration_target(
     if "跨域 session" in business_semantics:
         return "src/app/runtime/orchestration/models/execution_correlation.py", "ExecutionCorrelation.correlation_id"
     if "跨域 WMS import" in business_semantics or "wms_integration" in text:
-        return "src/app/runtime/orchestration/ports/wms_fulfillment.py", "WmsFulfillmentPort.request_transport"
+        return (
+            "src/app/wms_integration/ports/fulfillment_operations.py",
+            "wms.fulfillment.request_rack_transport@v1",
+        )
     if "import device" in text or "device." in text or "device_" in text or "device command" in text:
         return "src/app/runtime/orchestration/ports/device_command.py", "DeviceCommandPort.dispatch"
     if "执行状态" in business_semantics:

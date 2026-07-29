@@ -608,3 +608,41 @@ operation 的兼容入口。
 - worktree `gitnexus detect-changes --scope staged` → 6 files / 9 symbols /
   6 affected Mock handler flows，risk HIGH；命中范围均来自 `_submit_northbound_effect` 的 typed ACK
   响应链和对应合同测试，属于已确认的本轮最小修复，不包含生产运行时或 T2/T5。
+
+## Legacy Matrix Review（第十六轮）修复
+
+- `generate_legacy_matrix.resolve_migration_target` 中 5 条 `WMS_INTEGRATION_BOUNDARY` seed 不再指向
+  已删除的 `wms_fulfillment.py::WmsFulfillmentPort.request_transport`，统一迁到现行
+  `src/app/wms_integration/ports/fulfillment_operations.py` 与唯一 operation identity
+  `wms.fulfillment.request_rack_transport@v1`。
+- 通过正式 `uv run python scripts/generate_legacy_matrix.py` 重建 CSV，没有手工编辑生成物；汇总保持
+  651 entries、106 phase4 carrier、0 pending-review，只有目标字段对应的 5 行发生变化。
+- 新门禁验证恰好 5 条 WMS boundary seed 指向当前目标，目标模块与 `REQUEST_RACK_TRANSPORT`
+  Definition 实际存在，并禁止旧模块、旧 coarse Port 符号重新出现在生成规则或 CSV。
+- 未新增 alias、fallback 或兼容层，未实现 T2/T5，未新增 skip 或 xfail。
+
+## Legacy Matrix Review（第十六轮）TDD 与验证
+
+1. RED：新增门禁首次运行显示 5 行实际目标仍为旧模块/旧方法，而期望为 operation-specific
+   Definition/identity，结果 `1 failed`。
+2. GREEN：最小修改生成规则并正式重建 CSV 后，同一门禁 `1 passed`；legacy matrix、cleanup 一致性、
+   WMS boundary、business matrix/ledger 与 release removal 相关回归 `58 passed`，business legacy
+   final gate 通过。
+3. 默认全集从头复验 → `4180 passed, 5 existing skipped`（4185 collected）；净增 1 项为本轮治理门禁，
+   没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest` → `4180 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4185 tests collected`。
+- `uv run ruff format --check .` → 1074 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：`resolve_migration_target` 为 LOW（2 direct、17 upstream、0 process），
+  影响仅覆盖生成器、matrix 合同及其治理测试；无 HIGH/CRITICAL 风险。
+- worktree `gitnexus detect-changes --scope staged` → 4 files / 1 symbol /
+  0 affected processes，risk LOW；变更仅覆盖 WMS boundary seed 目标规则、正式生成 CSV、精确门禁与报告，
+  未包含手工 CSV 修改、兼容入口或 T2/T5。
