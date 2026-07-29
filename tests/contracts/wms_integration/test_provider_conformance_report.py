@@ -85,6 +85,7 @@ def test_report_is_bound_to_the_active_profile_and_deterministically_replayable(
 
     assert first == second
     assert first.profile_identity == WMS_PROVIDER_PROFILE.identity.identity
+    assert first.suite_version == "wms-provider-q14-query-inventory.v1"
     assert first.passed is True
     assert verify_wms_conformance_report(first.model_dump(mode="json")) == first
 

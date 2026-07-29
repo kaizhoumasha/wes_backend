@@ -354,6 +354,23 @@ class WmsEffectStatusService:
             "snapshot_hash": snapshot_hash,
             "source_version": snapshot.source_version,
         }
+        try:
+            current_status = RuntimeIntentStatus(intent.effect_status)
+        except (TypeError, ValueError):
+            current_status = None
+        if current_status in {
+            RuntimeIntentStatus.COMPLETED,
+            RuntimeIntentStatus.REJECTED,
+        } and snapshot.state in {
+            WmsEffectStatus.ACCEPTED,
+            WmsEffectStatus.PROCESSING,
+        }:
+            return await self._open_reconciliation(
+                db,
+                claim=current_claim,
+                reason_code="WMS_STATUS_TERMINAL_REGRESSION",
+                evidence=evidence,
+            )
         version_conflict = self._source_version_conflict(intent, snapshot=snapshot, snapshot_hash=snapshot_hash)
         if version_conflict == "WMS_STATUS_SOURCE_VERSION_REGRESSED":
             return await self._record_stale_snapshot(

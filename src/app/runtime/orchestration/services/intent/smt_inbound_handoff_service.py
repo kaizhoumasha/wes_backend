@@ -71,10 +71,6 @@ _PREFERRED_EXCHANGE_FALLBACK_DECISION = "PREFERRED_FULL_BOX_EXCHANGE_FALLBACK_SO
 _REQUIRED_EXCHANGE_REQUESTED_DECISION = "REQUIRED_FULL_BOX_EXCHANGE_REQUESTED"
 _FULL_BOX_EXCHANGED_DECISION = "FULL_BOX_EXCHANGED"
 _RECONCILING_DECISION = "RECONCILING"
-_REJECTED_OR_FAILED_STATUSES = {"FAILED", "FAILED_CTU", "WMS_REJECTED", "REJECTED", "ERROR", "UNKNOWN"}
-_TIMEOUT_STATUSES = {"TIMEOUT", "TIMED_OUT"}
-_SUCCESS_STATUSES = {"SUCCEEDED", "SUCCESS", "COMPLETED", "BUSINESS_COMPLETED"}
-_PHYSICAL_COMPLETED_STATUSES = {"PHYSICAL_COMPLETED", "RESOURCE_PROJECTED"}
 _RELATION_READY_STATUSES = {"READY", "REMAINING", "UNCHANGED", "NOT_EXCHANGED"}
 _TERMINAL_ITEM_STATUSES = {
     SmtInboundHandoffSourceItemStatus.SORTED,
@@ -294,84 +290,6 @@ class SmtInboundHandoffService:
             trace_id=trace_id,
         )
         return await self.recalculate_demand_status(db, demand, reason="evaluate")
-
-    async def handle_exchange_callback(
-        self,
-        db: AsyncSession,
-        *,
-        callback_payload: Mapping[str, Any],
-        handling_operation_key: str | None = None,
-        trace_id: str | None = None,
-    ) -> SmtInboundHandoffDemand:
-        """按 WMS/RCS full-box exchange 回调推进 handoff demand。"""
-
-        _ = trace_id
-        operation_key = self._resolve_handling_operation_key(handling_operation_key, callback_payload)
-        if operation_key is None:
-            raise ValueError("handling_operation_key 不能为空")
-        demand = await self.repository.get_demand_by_handling_operation_key(db, operation_key)
-        if demand is None:
-            raise ValueError(f"未找到满箱交换 handoff demand: {operation_key}")
-
-        incoming_release_id = self._text_or_none(callback_payload.get("rack_release_id"))
-        if incoming_release_id is not None and incoming_release_id != demand.rack_release_id:
-            self._apply_failure(
-                demand,
-                SmtInboundHandoffReasonCode.WMS_RCS_RACK_RELEASE_ID_MISMATCH.value,
-                message=(
-                    f"WMS/RCS 回调 rack_release_id={incoming_release_id} 与 demand {demand.rack_release_id} 不一致"
-                ),
-            )
-            return await self.recalculate_demand_status(db, demand, reason="exchange_callback")
-
-        status = self._exchange_callback_status(callback_payload)
-        if status in _SUCCESS_STATUSES or (
-            status in _PHYSICAL_COMPLETED_STATUSES and self._has_post_exchange_relations(callback_payload)
-        ):
-            await self._apply_post_exchange_relations(
-                db,
-                demand=demand,
-                post_exchange_relations=callback_payload.get("post_exchange_relations"),
-            )
-            demand.status = SmtInboundHandoffDemandStatus.FULL_BOX_EXCHANGED
-            demand.decision_status = _FULL_BOX_EXCHANGED_DECISION
-            demand.failure_code = None
-            demand.failure_message = None
-            db.add(demand)
-            return await self.recalculate_demand_status(db, demand, reason="exchange_callback")
-
-        if status in _PHYSICAL_COMPLETED_STATUSES:
-            self._apply_failure(demand, SmtInboundHandoffReasonCode.POST_EXCHANGE_RELATIONS_MISSING.value)
-            demand.status = SmtInboundHandoffDemandStatus.RECONCILING
-            demand.decision_status = _RECONCILING_DECISION
-            db.add(demand)
-            return await self.recalculate_demand_status(db, demand, reason="exchange_callback")
-
-        if status in _REJECTED_OR_FAILED_STATUSES and self._is_preferred_exchange(demand):
-            demand.status = SmtInboundHandoffDemandStatus.READY_FOR_SORTING
-            demand.decision_status = _PREFERRED_EXCHANGE_FALLBACK_DECISION
-            demand.failure_code = None
-            demand.failure_message = None
-            db.add(demand)
-            return await self.recalculate_demand_status(db, demand, reason="exchange_callback")
-
-        if status in _TIMEOUT_STATUSES:
-            self._apply_failure(
-                demand,
-                SmtInboundHandoffReasonCode.WMS_RCS_TIMEOUT.value,
-                message=self._callback_error_message(callback_payload),
-            )
-        elif status in _REJECTED_OR_FAILED_STATUSES:
-            self._apply_failure(
-                demand,
-                SmtInboundHandoffReasonCode.WMS_RCS_REJECTED.value,
-                message=self._callback_error_message(callback_payload),
-            )
-        else:
-            demand.decision_status = demand.decision_status or _REQUIRED_EXCHANGE_REQUESTED_DECISION
-            db.add(demand)
-            return await self.recalculate_demand_status(db, demand, reason="exchange_callback")
-        return await self.recalculate_demand_status(db, demand, reason="exchange_callback")
 
     async def manual_reconcile_exchange(
         self,
@@ -2662,54 +2580,6 @@ class SmtInboundHandoffService:
         demand.status = SmtInboundHandoffDemandStatus.MANUAL_HOLD
         demand.failure_code = reason.failure_code
         demand.failure_message = self._text_or_none(message) or reason.default_message
-
-    @classmethod
-    def _resolve_handling_operation_key(
-        cls,
-        handling_operation_key: str | None,
-        callback_payload: Mapping[str, Any],
-    ) -> str | None:
-        explicit_key = cls._text_or_none(handling_operation_key)
-        if explicit_key is not None:
-            return explicit_key
-        dispatch_key = (
-            cls._text_or_none(callback_payload.get("dispatch_key"))
-            or cls._text_or_none(callback_payload.get("exchange_request_code"))
-            or cls._text_or_none(callback_payload.get("request_code"))
-        )
-        if dispatch_key is None:
-            return None
-        if dispatch_key.startswith("handling:") and ":move:" in dispatch_key:
-            return dispatch_key[len("handling:") : dispatch_key.rfind(":move:")]
-        return dispatch_key
-
-    @classmethod
-    def _exchange_callback_status(cls, callback_payload: Mapping[str, Any]) -> str:
-        raw_status = (
-            cls._text_or_none(callback_payload.get("exchange_status"))
-            or cls._text_or_none(callback_payload.get("task_status"))
-            or cls._text_or_none(callback_payload.get("status"))
-            or cls._text_or_none(callback_payload.get("result"))
-            or cls._text_or_none(callback_payload.get("external_status"))
-        )
-        return raw_status.upper() if raw_status is not None else "IN_PROGRESS"
-
-    @classmethod
-    def _callback_error_message(cls, callback_payload: Mapping[str, Any]) -> str | None:
-        return (
-            cls._text_or_none(callback_payload.get("reason_message"))
-            or cls._text_or_none(callback_payload.get("error_message"))
-            or cls._text_or_none(callback_payload.get("message"))
-        )
-
-    @staticmethod
-    def _has_post_exchange_relations(callback_payload: Mapping[str, Any]) -> bool:
-        relations = callback_payload.get("post_exchange_relations")
-        if isinstance(relations, Mapping):
-            return bool(relations)
-        if isinstance(relations, Sequence) and not isinstance(relations, (str, bytes)):
-            return bool(relations)
-        return False
 
     async def _apply_post_exchange_relations(
         self,

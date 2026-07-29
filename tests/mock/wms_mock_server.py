@@ -1119,39 +1119,11 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
     return [str(item) for item in raw_value if str(item)]
 
 
-@app.post("/debug/wms/fulfillment/change-rack-face", summary="本机 Mock: 货架换面履约")
-async def change_rack_face(payload: dict[str, Any]):
-    """模拟 wms.fulfillment.change_rack_face@v1，与满箱交换完成语义解耦。"""
-
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "request_id": payload.get("request_id", ""),
-            "parent_request_id": payload.get("parent_request_id", ""),
-            "fulfillment_action": "CHANGE_RACK_FACE",
-            "rack_code": str(payload.get("rack_code") or ""),
-            "from_rack_side": str(payload.get("from_rack_side") or ""),
-            "to_rack_side": str(payload.get("to_rack_side") or ""),
-            "independent_fulfillment": True,
-            "does_not_mark_full_box_exchange_completed": True,
-            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
-        },
-    }
-
-
 @app.post("/debug/wms/fulfillment/rough-sorter-inbound-preview", summary="本机 Mock: 粗分机入库预览")
 async def rough_sorter_inbound_preview(payload: dict[str, Any]):
     """表达粗分机正常流合同，拆分本地物理事实与 WMS 同步状态。"""
 
     local_physical_completed = bool(payload.get("local_physical_completed"))
-    wms_pkg_binding_result = str(payload.get("wms_pkg_binding_result") or "ACCEPTED").upper()
-    wms_sync_state = "READY_TO_SYNC"
-    business_completion_state = "LOCAL_PHYSICAL_COMPLETED"
-    if local_physical_completed and wms_pkg_binding_result not in {"ACCEPTED", "CONFIRMED"}:
-        wms_sync_state = "WMS_SYNC_PENDING"
-        business_completion_state = "RECONCILING"
     return {
         "code": 200,
         "data": {
@@ -1162,7 +1134,6 @@ async def rough_sorter_inbound_preview(payload: dict[str, Any]):
             "target_cell_code": payload.get("target_cell_code", ""),
             "ordered_steps": [
                 "SCAN_AND_MEASURE",
-                "WMS_GRN_BINDING_CHECK",
                 "SOURCE_ARM_TO_CONVEYOR",
                 "ROUGH_SORTER_TO_OUTBOUND",
                 "CELL_RESERVATION",
@@ -1171,8 +1142,8 @@ async def rough_sorter_inbound_preview(payload: dict[str, Any]):
                 "WMS_SYNC",
             ],
             "local_position_state": "LOCAL_PHYSICAL_COMPLETED" if local_physical_completed else "PENDING",
-            "wms_sync_state": wms_sync_state,
-            "business_completion_state": business_completion_state,
+            "wms_sync_state": "READY_TO_SYNC",
+            "business_completion_state": "LOCAL_PHYSICAL_COMPLETED",
             "preserve_local_physical_fact": local_physical_completed,
             "next_object_admission_allowed": True,
             "legacy_plugin_entry_used": False,
@@ -1213,7 +1184,6 @@ async def sorter_inbound_preview(payload: dict[str, Any]):
             "next_northbound_pick_triggered": bool(payload.get("southbound_pick_acknowledged")),
             "ordered_steps": [
                 "STATION_ADMISSION",
-                "WMS_CTU_BIN_INFEED",
                 "SCAN1_AUTHORIZED_RESOLVE",
                 "SCAN2_ROUTE_DECISION",
                 "SCAN3_RETURN_OR_NG_ROUTE",
@@ -1345,7 +1315,17 @@ def _typed_query_payload(request: Request, operation_identity: str) -> dict[str,
     for field_name in operation.request_model.model_fields:
         values = request.query_params.getlist(field_name)
         if values:
-            payload[field_name] = values if len(values) > 1 else values[0]
+            if len(values) > 1:
+                payload[field_name] = values
+            elif operation.request_model.model_fields[field_name].annotation is int:
+                try:
+                    payload[field_name] = int(values[0])
+                except ValueError:
+                    payload[field_name] = values[0]
+            elif field_name == "batch_managed" and values[0].lower() in {"true", "false"}:
+                payload[field_name] = values[0].lower() == "true"
+            else:
+                payload[field_name] = values[0]
     return payload
 
 
@@ -1369,8 +1349,13 @@ def _static_query_handler(operation_identity: str):
         except NorthboundAuthError as exc:
             return JSONResponse(status_code=401, content={"code": exc.code})
         if request.method == "GET":
+            unknown_query_fields = set(request.query_params) - set(operation.request_model.model_fields)
+            if unknown_query_fields:
+                return JSONResponse(status_code=422, content={"code": "UNKNOWN_TYPED_QUERY_PARAMETER"})
             payload = _typed_query_payload(request, operation_identity)
         else:
+            if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+                return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST_CONTENT_TYPE"})
             try:
                 payload = json.loads(body)
             except (UnicodeDecodeError, json.JSONDecodeError):

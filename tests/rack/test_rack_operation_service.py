@@ -175,53 +175,6 @@ async def test_derive_operation_status_requires_resource_projection_confirmation
 
 
 @pytest.mark.asyncio
-async def test_derive_operation_status_callback_trusted_skips_resource_projection_confirmation() -> None:
-    operation_key = "op-callback-trusted"
-    service, _operations, _placements = _read_service(
-        operation_key=operation_key,
-        tasks=[
-            _task(
-                operation_key=operation_key,
-                task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
-                task_status=RackTaskStatus.SUCCEEDED,
-            )
-        ],
-        completion_policy=OperationCompletionPolicy.CALLBACK_TRUSTED,
-    )
-
-    assert (
-        await service.derive_operation_status(None, operation_key=operation_key) == RackOperationStatus.SUCCEEDED.value
-    )
-
-
-@pytest.mark.asyncio
-async def test_sync_operation_status_marks_reconciliation_expected() -> None:
-    operation_key = "op-callback-plus-reconciliation"
-    service, operations, _placements = _read_service(
-        operation_key=operation_key,
-        tasks=[
-            _task(
-                operation_key=operation_key,
-                task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
-                task_status=RackTaskStatus.SUCCEEDED,
-            )
-        ],
-        completion_policy=OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION,
-    )
-
-    status = await service.sync_operation_status(None, operation_key=operation_key)
-
-    assert status == RackOperationStatus.SUCCEEDED.value
-    assert operations.mark_calls == [
-        {
-            "operation_key": operation_key,
-            "operation_status": RackOperationStatus.SUCCEEDED.value,
-            "result_json_patch": {"reconciliation_expected": True},
-        }
-    ]
-
-
-@pytest.mark.asyncio
 async def test_derive_operation_status_consumes_projection_per_inbound_task() -> None:
     operation_key = "op-projection-count"
     tasks = [

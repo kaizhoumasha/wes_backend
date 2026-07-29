@@ -111,6 +111,17 @@ class FullBoxExchangeResult(EffectResult):
     task_outcome: Literal["SUCCESS", "PARTIAL_FAILURE", "FAILED_AFTER_EXECUTION"]
     inventory_source_version: StableText = Field(max_length=160)
 
+    @model_validator(mode="after")
+    def validate_final_relations(self) -> FullBoxExchangeResult:
+        if self.full_box_destination.bin_id != self.full_box_id:
+            raise ValueError("full_box_destination must identify full_box_id")
+        if self.empty_box_destination.bin_id != self.selected_empty_box_id:
+            raise ValueError("empty_box_destination must identify selected_empty_box_id")
+        expected = (self.full_box_destination, self.empty_box_destination)
+        if len(self.final_relations) != 2 or self.final_relations != expected or len(set(self.final_relations)) != 2:
+            raise ValueError("final_relations must uniquely equal the two authored destinations")
+        return self
+
 
 class ConveyorBatchItem(StrictWmsModel):
     sequence_no: int = Field(ge=1)
@@ -139,6 +150,11 @@ class MoveBinsToConveyorEntryRequest(EffectRequest):
     @model_validator(mode="after")
     def validate_frozen_members(self) -> MoveBinsToConveyorEntryRequest:
         _require_unique_batch_members(self.items)
+        if tuple(item.sequence_no for item in self.items) != tuple(range(1, len(self.items) + 1)):
+            raise ValueError("E12 sequence_no must be contiguous and ordered")
+        queue_positions = tuple(item.reserved_queue_position for item in self.items)
+        if len(queue_positions) != len(set(queue_positions)):
+            raise ValueError("E12 reserved_queue_position must be unique")
         return self
 
 
@@ -221,6 +237,14 @@ class MoveBinsFromConveyorExitRequest(EffectRequest):
         )
         if self.candidate_digest != expected_digest:
             raise ValueError("candidate_digest does not match ordered frozen candidates")
+        fifo_order = tuple(
+            sorted(
+                self.candidate_items,
+                key=lambda item: (item.scan3_enqueued_at, item.queue_position, item.bin_id),
+            )
+        )
+        if self.candidate_items != fifo_order:
+            raise ValueError("E13 candidate_items must preserve strict SCAN3 FIFO order")
         return self
 
 
@@ -266,15 +290,11 @@ class WmsAcceptedScope(StrictWmsModel):
         return self
 
 
-type AsyncFulfillmentOperationIdentity = Literal[
-    "wms.fulfillment.request_rack_supply@v1",
-    "wms.fulfillment.request_rack_transport@v1",
-    "wms.fulfillment.change_rack_face@v1",
-    "wms.fulfillment.full_box_exchange@v1",
-    "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-    "wms.fulfillment.move_bins_from_conveyor_exit@v1",
-    "wms.fulfillment.request_load_unit_transport@v1",
-]
+type AsyncFulfillmentOperationIdentity = StableText
+
+ASYNC_FULFILLMENT_OPERATION_IDENTITIES: frozenset[str]
+BATCH_FULFILLMENT_OPERATION_IDENTITIES: frozenset[str]
+BATCH_FULFILLMENT_IDENTITY_BY_REQUEST_MODEL: dict[type[EffectRequest], str]
 
 
 class WmsEffectAck(StrictWmsModel):
@@ -288,10 +308,9 @@ class WmsEffectAck(StrictWmsModel):
 
     @model_validator(mode="after")
     def validate_scope_presence(self) -> WmsEffectAck:
-        is_batch = self.operation_identity in {
-            "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-            "wms.fulfillment.move_bins_from_conveyor_exit@v1",
-        }
+        if self.operation_identity not in ASYNC_FULFILLMENT_OPERATION_IDENTITIES:
+            raise ValueError("ACK operation_identity is not an authored async fulfillment operation")
+        is_batch = self.operation_identity in BATCH_FULFILLMENT_OPERATION_IDENTITIES
         if is_batch and self.accepted_scope is None:
             raise ValueError("batch ACK requires accepted_scope")
         if not is_batch and self.accepted_scope is not None:
@@ -335,13 +354,12 @@ def validate_fulfillment_ack(request: BatchFulfillmentRequest, ack: WmsEffectAck
 
     if ack.accepted_scope is None:
         raise ValueError("batch ACK requires accepted_scope")
+    expected_identity = BATCH_FULFILLMENT_IDENTITY_BY_REQUEST_MODEL[type(request)]
     if isinstance(request, MoveBinsToConveyorEntryRequest):
-        expected_identity = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
         frozen_keys = tuple(item.bin_id for item in request.items)
         if ack.accepted_scope.object_keys != frozen_keys:
             raise ValueError("E12 ACK must accept the entire frozen batch")
     else:
-        expected_identity = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
         candidate_keys = tuple(item.bin_id for item in request.candidate_items)
         accepted_count = len(ack.accepted_scope.object_keys)
         if ack.accepted_scope.object_keys != candidate_keys[:accepted_count]:
@@ -373,6 +391,26 @@ def validate_batch_terminal_result(
     result_identities = tuple((item.sequence_no, item.route_instance_id, item.bin_id) for item in result.items)
     if result_identities != expected_identities:
         raise ValueError("terminal items do not match frozen request members")
+    expected_task_outcome = (
+        "SUCCESS"
+        if all(item.item_outcome == "SUCCESS" for item in result.items)
+        else "PARTIAL_FAILURE"
+        if any(item.item_outcome == "SUCCESS" for item in result.items)
+        else "FAILED_AFTER_EXECUTION"
+    )
+    if result.task_outcome != expected_task_outcome:
+        raise ValueError("task_outcome does not match member outcomes")
+    is_entry = isinstance(request, MoveBinsToConveyorEntryRequest)
+    for item in result.items:
+        if item.item_outcome == "UNKNOWN":
+            if any(value is not None for value in (item.final_rack_id, item.final_slot_id, item.final_queue_position)):
+                raise ValueError("UNKNOWN member must not claim final facts")
+            continue
+        if is_entry:
+            if item.final_queue_position is None or item.final_rack_id is not None or item.final_slot_id is not None:
+                raise ValueError("E12 known member requires only final_queue_position")
+        elif item.final_rack_id is None or item.final_slot_id is None or item.final_queue_position is not None:
+            raise ValueError("E13 known member requires only final rack and slot")
     if isinstance(request, MoveBinsFromConveyorExitRequest):
         if not isinstance(result, MoveBinsFromConveyorExitResult):
             raise TypeError("E13 request requires E13 terminal result")
@@ -421,7 +459,24 @@ class CancelRequestRequest(EffectRequest):
 class CancelRequestResult(EffectResult):
     target_operation_identity: StableText = Field(max_length=160)
     target_idempotency_key: StableText = Field(max_length=160)
+    target_provider_reference: StableText = Field(max_length=160)
     disposition: Literal["CANCELLED", "ALREADY_TERMINAL", "TOO_LATE"]
+
+
+def validate_cancel_terminal_result(
+    request: CancelRequestRequest,
+    result: CancelRequestResult,
+) -> CancelRequestResult:
+    """E16 裁决必须回显同一取消目标，不得跨 provider task 串单。"""
+
+    for field_name in (
+        "target_operation_identity",
+        "target_idempotency_key",
+        "target_provider_reference",
+    ):
+        if getattr(request, field_name) != getattr(result, field_name):
+            raise ValueError(f"E16 terminal {field_name} differs from request")
+    return result
 
 
 NOTIFY_PKG_BINDING = effect_operation(
@@ -539,4 +594,19 @@ OPERATIONS = (
     CANCEL_REQUEST,
 )
 
-__all__ = ["OPERATIONS", "frozen_candidate_digest"]
+ASYNC_FULFILLMENT_OPERATION_IDENTITIES = frozenset(
+    operation.identity for operation in OPERATIONS if operation.supports_status_query
+)
+BATCH_FULFILLMENT_IDENTITY_BY_REQUEST_MODEL = {
+    operation.request_model: operation.identity
+    for operation in OPERATIONS
+    if operation.request_model in {MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest}
+}
+BATCH_FULFILLMENT_OPERATION_IDENTITIES = frozenset(BATCH_FULFILLMENT_IDENTITY_BY_REQUEST_MODEL.values())
+
+__all__ = [
+    "ASYNC_FULFILLMENT_OPERATION_IDENTITIES",
+    "BATCH_FULFILLMENT_OPERATION_IDENTITIES",
+    "OPERATIONS",
+    "frozen_candidate_digest",
+]

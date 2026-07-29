@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import inspect
+import json
+from copy import deepcopy
 from pathlib import Path
 
 EXPECTED_QUERY_IDENTITIES = (
@@ -228,8 +230,8 @@ def test_provider_conformance_scenarios_and_mock_fixtures_derive_from_registry()
     assert set(fixtures.REQUEST_FIXTURES) == set(expected)
     assert set(fixtures.RESULT_FIXTURES) == set(expected)
     for operation in registry.WMS_OPERATIONS:
-        operation.request_model.model_validate(fixtures.REQUEST_FIXTURES[operation.identity])
-        operation.result_model.model_validate(fixtures.RESULT_FIXTURES[operation.identity])
+        operation.request_model.model_validate_json(json.dumps(fixtures.REQUEST_FIXTURES[operation.identity]))
+        operation.result_model.model_validate_json(json.dumps(fixtures.RESULT_FIXTURES[operation.identity]))
     assert set().union(*(scenario.operation_identities for scenario in manifest.WMS_BUSINESS_SCENARIO_MANIFEST)) == set(
         expected
     )
@@ -290,6 +292,18 @@ def test_async_effect_runtime_classification_is_exact_registry_derivative() -> N
     )
 
 
+def test_ack_and_batch_closed_sets_are_registry_derivatives() -> None:
+    from src.app.wms_integration.operation_registry import ASYNC_EFFECT_OPERATION_IDENTITIES
+    from src.app.wms_integration.ports.effect_status import BATCH_EFFECT_OPERATION_IDENTITIES
+    from src.app.wms_integration.ports.fulfillment_operations import (
+        ASYNC_FULFILLMENT_OPERATION_IDENTITIES,
+        BATCH_FULFILLMENT_OPERATION_IDENTITIES,
+    )
+
+    assert ASYNC_FULFILLMENT_OPERATION_IDENTITIES == ASYNC_EFFECT_OPERATION_IDENTITIES
+    assert BATCH_EFFECT_OPERATION_IDENTITIES == BATCH_FULFILLMENT_OPERATION_IDENTITIES
+
+
 def test_definition_and_query_transport_expose_only_current_field_names() -> None:
     from src.app.wms_integration.operation_contract import WmsOperationBudget, WmsOperationDefinition
     from src.app.wms_integration.services import query_transport
@@ -346,6 +360,124 @@ def test_e13_candidate_window_changes_operation_index_and_profile_digests(
     original_profile_digest = provider_conformance._profile_digest(provider_conformance.WMS_PROVIDER_PROFILE)
     monkeypatch.setattr(provider_conformance, "WMS_OPERATION_INDEX_DIGEST", drifted_index_digest)
     assert provider_conformance._profile_digest(provider_conformance.WMS_PROVIDER_PROFILE) != original_profile_digest
+
+
+def test_operation_index_digest_binds_complete_request_and_result_json_schema(monkeypatch) -> None:
+    registry = _load("src.app.wms_integration.operation_registry")
+    generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
+    operation = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.full_box_exchange@v1"]
+    original = generated._operation_index_digest((operation,))
+    original_schema = operation.result_model.model_json_schema()
+
+    monkeypatch.setattr(
+        operation.result_model,
+        "model_json_schema",
+        lambda *args, **kwargs: {**original_schema, "required": [*original_schema["required"], "schema_drift"]},
+    )
+
+    assert generated._operation_index_digest((operation,)) != original
+
+
+def test_all_wire_models_use_true_strict_validation_and_q19_decimal_is_json_string_only() -> None:
+    import json
+
+    import pytest
+    from pydantic import ValidationError
+
+    registry = _load("src.app.wms_integration.operation_registry")
+    fixtures = _load("tests.mock.wms_operation_fixtures")
+
+    for operation in registry.WMS_OPERATIONS:
+        assert operation.request_model.model_config["strict"] is True
+        assert operation.result_model.model_config["strict"] is True
+
+    e08 = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.request_rack_supply@v1"]
+    invalid_int = {**fixtures.REQUEST_FIXTURES[e08.identity], "demand_generation": "1"}
+    with pytest.raises(ValidationError):
+        e08.request_model.model_validate(invalid_int)
+    invalid_float = {**fixtures.REQUEST_FIXTURES[e08.identity], "demand_generation": 1.0}
+    with pytest.raises(ValidationError):
+        e08.request_model.model_validate(invalid_float)
+    invalid_bool = {**fixtures.REQUEST_FIXTURES[e08.identity], "demand_generation": True}
+    with pytest.raises(ValidationError):
+        e08.request_model.model_validate(invalid_bool)
+
+    q19 = registry.WMS_OPERATION_BY_IDENTITY["wms.document.validate_rough_sorter_admission@v1"]
+    q19.request_model.model_validate_json(json.dumps(fixtures.REQUEST_FIXTURES[q19.identity]))
+    numeric_decimal = deepcopy(fixtures.REQUEST_FIXTURES[q19.identity])
+    numeric_decimal["six_in_one"]["Qty"] = 10
+    with pytest.raises(ValidationError):
+        q19.request_model.model_validate_json(json.dumps(numeric_decimal))
+
+
+def test_backoff_budget_rejects_non_finite_values() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    contract = _load("src.app.wms_integration.operation_contract")
+    payload = contract.EFFECT_BUDGET.model_dump()
+    for invalid in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError, match="backoff_seconds"):
+            contract.WmsOperationBudget.model_validate({**payload, "backoff_seconds": (invalid, 2)})
+
+
+def test_provider_manifest_uses_explicit_master_data_operation_identities() -> None:
+    manifest = _load("src.app.wms_integration.provider_manifest")
+    source = inspect.getsource(manifest)
+
+    assert "WMS_OPERATIONS[:7]" not in source
+    master_data = next(
+        scenario
+        for scenario in manifest.WMS_BUSINESS_SCENARIO_MANIFEST
+        if scenario.scenario_code == "MASTER_DATA_AND_ROUTING"
+    )
+    assert master_data.operation_identities == frozenset(
+        {
+            "wms.master_data.get_material@v1",
+            "wms.master_data.list_materials@v1",
+            "wms.master_data.list_zones@v1",
+            "wms.master_data.list_locations@v1",
+            "wms.master_data.get_rack@v1",
+            "wms.master_data.list_racks@v1",
+            "wms.master_data.get_bin@v1",
+        }
+    )
+
+
+def test_e11_terminal_relations_and_e16_cancel_target_are_closed() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from src.app.wms_integration.ports.fulfillment_operations import validate_cancel_terminal_result
+
+    registry = _load("src.app.wms_integration.operation_registry")
+    fixtures = _load("tests.mock.wms_operation_fixtures")
+    e11 = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.full_box_exchange@v1"]
+    valid_e11 = fixtures.RESULT_FIXTURES[e11.identity]
+    e11.result_model.model_validate(valid_e11)
+
+    for mutation in (
+        {"full_box_destination": {**valid_e11["full_box_destination"], "bin_id": "OTHER"}},
+        {"empty_box_destination": {**valid_e11["empty_box_destination"], "bin_id": "OTHER"}},
+        {"final_relations": [valid_e11["full_box_destination"], valid_e11["full_box_destination"]]},
+        {
+            "final_relations": [
+                valid_e11["full_box_destination"],
+                valid_e11["empty_box_destination"],
+                {"rack_id": "R", "bin_id": "B", "slot_id": "S"},
+            ]
+        },
+    ):
+        with pytest.raises(ValidationError, match=r"destination|final_relations"):
+            e11.result_model.model_validate({**valid_e11, **mutation})
+
+    e16 = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.cancel_request@v1"]
+    request = e16.request_model.model_validate_json(json.dumps(fixtures.REQUEST_FIXTURES[e16.identity]))
+    result = e16.result_model.model_validate_json(json.dumps(fixtures.RESULT_FIXTURES[e16.identity]))
+    assert validate_cancel_terminal_result(request, result) is result
+    drifted = result.model_copy(update={"target_provider_reference": "provider-other"})
+    with pytest.raises(ValueError, match="target_provider_reference"):
+        validate_cancel_terminal_result(request, drifted)
 
 
 def test_grn_and_batch_contracts_have_no_legacy_shape() -> None:

@@ -29,6 +29,7 @@ from src.app.wms_integration.ports.fulfillment_operations import (
     accepted_scope_digest,
     validate_fulfillment_ack,
 )
+from src.app.wms_integration.ports.operation_common import validate_json_payload
 from tests.mock.wms_operation_fixtures import RESULT_FIXTURES
 
 if TYPE_CHECKING:
@@ -248,7 +249,7 @@ def validate_typed_request(operation_identity: str, payload: Mapping[str, Any]) 
     if operation.mode is not WmsOperationMode.EFFECT:
         raise NorthboundPayloadValidationError("northbound submit only accepts EFFECT operation")
     try:
-        validated = operation.request_model.model_validate(payload)
+        validated = validate_json_payload(operation.request_model, payload)
     except ValidationError as exc:
         raise NorthboundPayloadValidationError("typed request fields are invalid") from exc
     return validated.model_dump(mode="json", exclude_none=True)
@@ -568,8 +569,6 @@ def build_typed_result(
                 "route_instance_id": item["route_instance_id"],
                 "bin_id": item["bin_id"],
                 "item_outcome": "SUCCESS",
-                "final_rack_id": f"MOCK-RACK-{item['sequence_no']}",
-                "final_slot_id": f"MOCK-SLOT-{item['sequence_no']}",
                 "final_queue_position": item["reserved_queue_position"],
             }
             for item in payload["items"]
@@ -585,7 +584,6 @@ def build_typed_result(
                 "item_outcome": "SUCCESS",
                 "final_rack_id": f"MOCK-RACK-{item['sequence_no']}",
                 "final_slot_id": f"MOCK-SLOT-{item['sequence_no']}",
-                "final_queue_position": item["queue_position"],
             }
             for item in payload["candidate_items"]
         ]
@@ -596,7 +594,7 @@ def build_typed_result(
         result["source_version"] = str(source_version)
     if "provider_reference" in result:
         result["provider_reference"] = provider_reference or f"mock:{payload.get('dispatch_key', 'query')}"
-    return operation.result_model.model_validate(result).model_dump(mode="json")
+    return validate_json_payload(operation.result_model, result).model_dump(mode="json")
 
 
 def build_typed_ack(
@@ -614,7 +612,7 @@ def build_typed_ack(
         raise ValueError("unsupported operation_identity") from exc
     if operation.completion_mode is not WmsCompletionMode.ASYNC_TASK:
         raise ValueError("typed ACK only accepts ASYNC_TASK operation")
-    request = operation.request_model.model_validate(payload)
+    request = validate_json_payload(operation.request_model, payload)
     accepted_scope = None
     if isinstance(request, MoveBinsToConveyorEntryRequest):
         object_keys = tuple(item.bin_id for item in request.items)

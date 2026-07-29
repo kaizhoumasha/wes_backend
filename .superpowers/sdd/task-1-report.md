@@ -856,3 +856,63 @@ operation 的兼容入口。
   17 files / 61 symbols / 0 affected processes，risk LOW；范围仅包含 ACK/reference
   合同与运行态恢复、E11/CTU 活动文档、registry/稳定概念守卫、直接调用方测试及本报告，
   不包含 T2/T5、兼容入口或顶层 SPEC。
+
+## 最终合并扫尾（第二十一轮）修复
+
+- typed contract 完成 E11 两个箱体 destination 与唯一有序 `final_relations` 闭合、E12
+  连续 sequence/唯一 queue position、E13 按 `scan3_enqueued_at + queue_position + bin_id`
+  排序并绑定 digest，以及 E12/E13 成员 outcome、最终位置和 batch outcome 的闭集一致性。
+- `StrictWmsModel` 启用 strict wire 校验；精确 Decimal 只接收 JSON string，整数拒绝
+  string/float/bool；backoff 拒绝 NaN/Inf。operation/profile digest 绑定完整 request/result
+  JSON Schema。
+- E08/E09/E10/E14 成功终态 request-aware 校验目的站、位置与 rack face；E16 回显并校验
+  `target_provider_reference`。异步 status 拒绝 terminal 回退到 ACCEPTED/PROCESSING，runtime
+  进入 reconciliation 且不续排。
+- 物理删除 Handling callback lifecycle/completion policy、Rack callback reducers/sync、
+  SMT exchange callback helper，以及只维护这些兼容壳的正向测试；completion policy 只保留
+  resource projection 模式。同步清理旧 change-rack-face preview/debug、标量 pkg-binding
+  result、CTU stage token 与 callback completion policy。
+- 18 个 GET Mock route 在 typed model 前拒绝未知 query；Q19 POST 强制
+  `application/json`。异步 ACK/batch closed set 从 operation Definition 派生，删除 callback
+  ingress 的空 CTU profile；provider manifest 主数据集合不再依赖 registry 切片。
+- runtime monitor smoke 使用正式 `WmsInventoryUpdatedEvent`，不再以 rack operation callback
+  伪装库存事件；Q14 conformance suite 明示为 `wms-provider-q14-query-inventory.v1`，35 项
+  Definition/fixture/manifest 一致性继续由唯一 registry 驱动。
+- feasibility probe 使用当前 master-data route，要求旧 route 必须 404；活动 docs、scripts、
+  docker/nginx、deployment fixtures 与 generated assets 纳入发布守卫。同步重生成
+  cleanup matrix/absence ledger，移除已删除 preview 测试的 stale entry。
+- 未新增 alias、fallback、兼容入口、skip 或 xfail；未实现 T2/T5，顶层 SPEC 未修改。
+
+## 最终合并扫尾（第二十一轮）TDD 与验证
+
+1. RED：
+   - contract 精准组合首次 `15 failed, 131 passed`；
+   - runtime terminal regression 首次 `2 failed`；
+   - legacy 删除守卫首次因真实文件已删除而暴露守卫仍读取旧文件，随后改为 absence 断言；
+   - assets/guards 首次 `25 failed, 172 passed`，覆盖 smoke、Q14 命名、feasibility、
+     CTU profile、registry closed set、18 GET 与 Q19。
+2. GREEN：
+   - contract `146 passed`；runtime/reliability/repository `64 passed`；
+   - legacy/rack/handling/runtime/mock `61 passed`；
+   - assets/guards `209 passed`。
+3. 本批次唯一默认全集：
+   - `uv run pytest tests/ -q` → `4201 passed, 5 skipped, 2 failed`；两项均为同一个
+     `legacy-cleanup-matrix.csv` stale preview-test entry。
+   - 按“不重复默认全集”约束，重生成 matrix/ledger 后只跑精准架构守卫：
+     `tests/architecture/test_cleanup_matrix_guardrail.py`
+     + `tests/architecture/test_legacy_matrix_contract.py` → `24 passed`。
+
+最终门禁：
+
+- topology → `6 passed`；collect → `4208 tests collected`。
+- `uv run ruff format .`、`uv run ruff check .`、`git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit 最高风险为 `_apply_snapshot` HIGH 与 `OperationCompletionPolicy` CRITICAL；
+  前者直接调用 2，后者因全局 enum import 扩散至 222 个上游符号，均在编辑前报告并按本轮
+  明确授权继续。其余核心修改为 LOW/MEDIUM；新 typed 文件索引缺失项按 UNKNOWN 报告。
+- MCP detect 对同名主 worktree 误报无变更；指定当前 worktree 时因 LadybugDB
+  storage version 不兼容失败。改用当前 GitNexus CLI：
+  `npx gitnexus detect-changes --scope all --repo <current-worktree>` →
+  43 files / 185 symbols / 0 affected processes，risk LOW。

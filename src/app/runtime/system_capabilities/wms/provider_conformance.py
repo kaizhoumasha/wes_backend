@@ -21,7 +21,7 @@ StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=
 CaseId = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_]*$")]
 ConformanceCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Z][A-Z0-9_]*$")]
 Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-WMS_PROVIDER_CONFORMANCE_SUITE_VERSION = "wms-provider-conformance.v1"
+WMS_PROVIDER_CONFORMANCE_SUITE_VERSION = "wms-provider-q14-query-inventory.v1"
 
 
 class ConformanceOutcomeKind(str, Enum):
@@ -196,7 +196,7 @@ class WmsConformanceReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal["wms-conformance-report.v1"] = "wms-conformance-report.v1"
-    suite_version: Literal["wms-provider-conformance.v1"] = WMS_PROVIDER_CONFORMANCE_SUITE_VERSION
+    suite_version: Literal["wms-provider-q14-query-inventory.v1"] = WMS_PROVIDER_CONFORMANCE_SUITE_VERSION
     suite_digest: Sha256Digest
     profile_identity: StableText = Field(max_length=300)
     profile_digest: Sha256Digest

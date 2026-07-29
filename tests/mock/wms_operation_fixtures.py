@@ -438,6 +438,7 @@ RESULT_FIXTURES = {
         "source_version": "2",
         "target_operation_identity": "wms.fulfillment.request_rack_transport@v1",
         "target_idempotency_key": "idem-rack-001",
+        "target_provider_reference": "provider-rack-001",
         "disposition": "CANCELLED",
     },
 }

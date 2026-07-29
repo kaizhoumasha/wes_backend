@@ -81,7 +81,6 @@ note: |
 | `src/app/handling/models/operation.py:107` | `HandlingOperation.material_session_id` | handling | `correlation_id`（无 session FK，主计划 §3.3） | phase1 | replace | MEDIUM |
 | `src/app/handling/models/bin_transit_membership.py:83` | `BinTransitMembership.workline_session_id` | handling（legacy，主计划 §3.7 删除） | 删除（重建为 `ConveyorQueueMembership`） | phase2 | delete | HIGH |
 | `src/app/handling/services/bin_transit_membership_service.py` | `workline_session_id` 引用 | handling（legacy） | 随模型删除 | phase2 | delete | HIGH |
-| `src/app/handling/services/lifecycle_service.py` | `session_id` 引用 | handling | `correlation_id` | phase1 | replace | MEDIUM |
 | `src/app/handling/services/operation_service.py` | `session_id` 引用 | handling | `correlation_id` | phase1 | replace | MEDIUM |
 
 **收敛策略**：handling 域不持 session FK（主计划 §3.3），全部改为 `correlation_id`。旧 `BinTransitMembership` 在 Phase 2 删除重建为 `ConveyorQueueMembership`。

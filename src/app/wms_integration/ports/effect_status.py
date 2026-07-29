@@ -26,12 +26,22 @@ from src.app.wms_integration.operation_registry import (
     ASYNC_EFFECT_OPERATIONS,
 )
 from src.app.wms_integration.ports.fulfillment_operations import (
+    BATCH_FULFILLMENT_OPERATION_IDENTITIES,
+    ChangeRackFaceRequest,
+    ChangeRackFaceResult,
+    RequestLoadUnitTransportRequest,
+    RequestLoadUnitTransportResult,
+    RequestRackSupplyRequest,
+    RequestRackSupplyResult,
+    RequestRackTransportRequest,
+    RequestRackTransportResult,
     WmsEffectAck,
     validate_batch_terminal_result,
     validate_effect_ack,
     validate_effect_provider_reference,
     validate_fulfillment_ack,
 )
+from src.app.wms_integration.ports.operation_common import validate_json_payload
 
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 StableReasonCode = Annotated[
@@ -48,12 +58,7 @@ _REJECTION_REASON_CODES_BY_OPERATION = MappingProxyType(
     {operation.identity: frozenset(operation.reject_codes) for operation in ASYNC_EFFECT_OPERATIONS}
 )
 _RFC3339_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\+00:00$")
-_BATCH_EFFECT_OPERATION_IDENTITIES = frozenset(
-    {
-        "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-        "wms.fulfillment.move_bins_from_conveyor_exit@v1",
-    }
-)
+BATCH_EFFECT_OPERATION_IDENTITIES = BATCH_FULFILLMENT_OPERATION_IDENTITIES
 
 
 def _preserve_opaque_idempotency_key(value: Any) -> str:
@@ -79,7 +84,7 @@ class WmsEffectStatusRequest(BaseModel):
         if operation is None:
             raise ValueError("operation_identity is not an authored async WMS EFFECT")
         try:
-            validated = operation.request_model.model_validate(self.request_payload)
+            validated = validate_json_payload(operation.request_model, self.request_payload)
         except ValidationError as exc:
             raise ValueError("request_payload violates the async operation request contract") from exc
         object.__setattr__(self, "request_payload", validated.model_dump(mode="json"))
@@ -88,7 +93,7 @@ class WmsEffectStatusRequest(BaseModel):
             idempotency_key=self.idempotency_key,
             ack=self.frozen_ack,
         )
-        if self.operation_identity in _BATCH_EFFECT_OPERATION_IDENTITIES and type(self) is WmsEffectStatusRequest:
+        if self.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES and type(self) is WmsEffectStatusRequest:
             raise ValueError("batch status request requires frozen request and ACK context")
         return self
 
@@ -120,10 +125,10 @@ class WmsBatchEffectStatusRequest(WmsEffectStatusRequest):
 
     @model_validator(mode="after")
     def validate_frozen_batch_context(self) -> WmsBatchEffectStatusRequest:
-        if self.operation_identity not in _BATCH_EFFECT_OPERATION_IDENTITIES:
+        if self.operation_identity not in BATCH_EFFECT_OPERATION_IDENTITIES:
             raise ValueError("batch status context only supports E12/E13")
         operation = _OPERATION_BY_IDENTITY[self.operation_identity]
-        batch_request = operation.request_model.model_validate(self.request_payload)
+        batch_request = validate_json_payload(operation.request_model, self.request_payload)
         validate_fulfillment_ack(batch_request, self.frozen_ack)  # type: ignore[arg-type]
         return self
 
@@ -249,6 +254,38 @@ def _validate_result_identity(
     actual_fields = result.model_dump(mode="json")
     if any(actual_fields.get(field_name) != expected_value for field_name, expected_value in expected_fields.items()):
         raise ValueError("completed result identity differs from the original request")
+    operation = _OPERATION_BY_IDENTITY[request.operation_identity]
+    typed_request = validate_json_payload(operation.request_model, request.request_payload)
+    if (
+        isinstance(typed_request, RequestRackSupplyRequest)
+        and isinstance(result, RequestRackSupplyResult)
+        and result.task_outcome == "SUCCESS"
+        and result.final_station_code != typed_request.station_code
+    ):
+        raise ValueError("successful rack supply final station differs from request")
+    if (
+        isinstance(typed_request, RequestRackTransportRequest)
+        and isinstance(result, RequestRackTransportResult)
+        and result.task_outcome == "SUCCESS"
+        and result.final_location_code != typed_request.destination_station_code
+    ):
+        raise ValueError("successful rack transport final location differs from request")
+    if (
+        isinstance(typed_request, ChangeRackFaceRequest)
+        and isinstance(result, ChangeRackFaceResult)
+        and result.task_outcome == "SUCCESS"
+        and (
+            result.authorized_face != typed_request.requested_face or result.final_face != typed_request.requested_face
+        )
+    ):
+        raise ValueError("successful rack face authorized/final face differs from request")
+    if (
+        isinstance(typed_request, RequestLoadUnitTransportRequest)
+        and isinstance(result, RequestLoadUnitTransportResult)
+        and result.task_outcome == "SUCCESS"
+        and result.final_location_code != typed_request.destination_location_code
+    ):
+        raise ValueError("successful load unit final location differs from request")
 
 
 def _parse_completed_result(
@@ -261,7 +298,7 @@ def _parse_completed_result(
     if result_model is None:
         raise ValueError("unknown WMS EFFECT operation identity")
     try:
-        result = result_model.model_validate(result_payload)
+        result = validate_json_payload(result_model, result_payload)
     except ValidationError as exc:
         raise ValueError("completed result_payload violates the operation result contract") from exc
     inner_source_version = getattr(result, "source_version", None)
@@ -273,11 +310,11 @@ def _parse_completed_result(
         result.provider_reference,
         evidence_kind="terminal",
     )
-    if request.operation_identity in _BATCH_EFFECT_OPERATION_IDENTITIES:
+    if request.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES:
         if not isinstance(request, WmsBatchEffectStatusRequest):
             raise ValueError("batch terminal parsing requires frozen ACK context")
         operation = _OPERATION_BY_IDENTITY[request.operation_identity]
-        batch_request = operation.request_model.model_validate(request.request_payload)
+        batch_request = validate_json_payload(operation.request_model, request.request_payload)
         validate_batch_terminal_result(
             batch_request,  # type: ignore[arg-type]
             request.frozen_ack,
@@ -368,6 +405,11 @@ def assert_status_snapshot_progression(
         raise ValueError("NOT_FOUND must not clear a previously visible source_version")
     if previous.source_version is None:
         return current
+    if previous.state in {WmsEffectStatus.COMPLETED, WmsEffectStatus.REJECTED} and current.state in {
+        WmsEffectStatus.ACCEPTED,
+        WmsEffectStatus.PROCESSING,
+    }:
+        raise ValueError("terminal WMS status must not regress to a non-terminal state")
     if current.source_version is None or current.source_version < previous.source_version:
         raise ValueError("WMS status source_version must not regress")
     if current.source_version == previous.source_version and current.canonical_bytes != previous.canonical_bytes:
@@ -505,6 +547,7 @@ class WmsEffectStatusQueryPort(Protocol):
 
 
 __all__ = [
+    "BATCH_EFFECT_OPERATION_IDENTITIES",
     "WMS_EFFECT_OPERATION_IDENTITIES",
     "FrozenWmsEffectStatusBinding",
     "WmsBatchEffectStatusRequest",

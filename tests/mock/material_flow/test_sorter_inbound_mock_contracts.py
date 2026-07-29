@@ -31,7 +31,6 @@ def test_rough_sorter_mock_separates_local_physical_fact_from_wms_sync_failure()
                 "grn_id": "GRN-001",
                 "target_cell_code": "CELL-A-01",
                 "local_physical_completed": True,
-                "wms_pkg_binding_result": "REJECTED",
             },
         )
 
@@ -41,7 +40,6 @@ def test_rough_sorter_mock_separates_local_physical_fact_from_wms_sync_failure()
     assert data["production_write_path"] is False
     assert data["ordered_steps"] == [
         "SCAN_AND_MEASURE",
-        "WMS_GRN_BINDING_CHECK",
         "SOURCE_ARM_TO_CONVEYOR",
         "ROUGH_SORTER_TO_OUTBOUND",
         "CELL_RESERVATION",
@@ -50,8 +48,8 @@ def test_rough_sorter_mock_separates_local_physical_fact_from_wms_sync_failure()
         "WMS_SYNC",
     ]
     assert data["local_position_state"] == "LOCAL_PHYSICAL_COMPLETED"
-    assert data["wms_sync_state"] == "WMS_SYNC_PENDING"
-    assert data["business_completion_state"] == "RECONCILING"
+    assert data["wms_sync_state"] == "READY_TO_SYNC"
+    assert data["business_completion_state"] == "LOCAL_PHYSICAL_COMPLETED"
     assert data["preserve_local_physical_fact"] is True
     assert data["next_object_admission_allowed"] is True
     assert data["effect_ports"] == {
@@ -98,7 +96,6 @@ def test_sorter_inbound_mock_enforces_join_gate_and_pick_ack_causality() -> None
     assert "manifest_validation" not in allowed
     assert allowed["ordered_steps"] == [
         "STATION_ADMISSION",
-        "WMS_CTU_BIN_INFEED",
         "SCAN1_AUTHORIZED_RESOLVE",
         "SCAN2_ROUTE_DECISION",
         "SCAN3_RETURN_OR_NG_ROUTE",

@@ -224,13 +224,6 @@ def _build_default_callback_provider_profiles() -> dict[str, ExternalContractPro
             event_types=set(),
             result_types={"AGV_TASK_RESULT"},
         ),
-        "CTU": _build_callback_provider_profile(
-            "CTU",
-            event_types={
-                callback_type for callback_type in _EXTERNAL_CALLBACK_ALLOWED_TYPES if callback_type.startswith("CTU_")
-            },
-            result_types=set(),
-        ),
     }
 
 

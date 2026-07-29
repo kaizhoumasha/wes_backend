@@ -16,6 +16,10 @@ E12 = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
 E13 = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
 
 
+def _validate_json(model, payload):
+    return model.model_validate_json(json.dumps(payload))
+
+
 def _candidate_digest(payload: dict[str, object]) -> str:
     canonical = {
         "workline_id": payload["workline_id"],
@@ -112,26 +116,26 @@ def test_e13_candidate_window_is_bounded_by_unique_definition_and_provider_bindi
 
     assert operation.max_candidate_count == 12
     assert binding.max_candidate_count == operation.max_candidate_count
-    operation.request_model.model_validate(_e13_payload_with_candidate_count(operation.max_candidate_count))
+    _validate_json(operation.request_model, _e13_payload_with_candidate_count(operation.max_candidate_count))
     with pytest.raises(ValidationError, match="max_candidate_count"):
-        operation.request_model.model_validate(_e13_payload_with_candidate_count(operation.max_candidate_count + 1))
+        _validate_json(operation.request_model, _e13_payload_with_candidate_count(operation.max_candidate_count + 1))
 
 
 def test_e13_request_binds_digest_to_ordered_frozen_candidates() -> None:
     operation = WMS_OPERATION_BY_IDENTITY[E13]
     payload = _e13_payload()
 
-    operation.request_model.model_validate(payload)
+    _validate_json(operation.request_model, payload)
 
     forged = deepcopy(payload)
     forged["candidate_digest"] = "f" * 64
     with pytest.raises(ValidationError, match="candidate_digest"):
-        operation.request_model.model_validate(forged)
+        _validate_json(operation.request_model, forged)
 
     reordered = deepcopy(payload)
     reordered["candidate_items"] = list(reversed(reordered["candidate_items"]))
     with pytest.raises(ValidationError, match="candidate_digest"):
-        operation.request_model.model_validate(reordered)
+        _validate_json(operation.request_model, reordered)
 
 
 def test_accepted_scope_rejects_duplicate_members_and_invalid_digest_shape() -> None:
@@ -243,18 +247,19 @@ def test_mock_multi_member_ack_and_terminal_result_preserve_frozen_correspondenc
 
     payload = payload_factory()
     operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
-    request = operation.request_model.model_validate(payload)
+    request = _validate_json(operation.request_model, payload)
     ack = WmsEffectAck.model_validate(
         build_typed_ack(operation_identity, "idem-batch", payload, submission_state="ACCEPTED")
     )
-    result = operation.result_model.model_validate(
+    result = _validate_json(
+        operation.result_model,
         build_typed_result(
             operation_identity,
             payload,
             source_version=3,
             completed_at="2026-07-29T00:00:03+00:00",
             provider_reference=ack.provider_reference,
-        )
+        ),
     )
 
     validate_fulfillment_ack(request, ack)
@@ -343,7 +348,7 @@ def test_batch_terminal_result_rejects_provider_reference_drift(operation_identi
 
     request_payload = payload_factory()
     operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
-    request = operation.request_model.model_validate(request_payload)
+    request = _validate_json(operation.request_model, request_payload)
     ack = WmsEffectAck.model_validate(
         build_typed_ack(operation_identity, "idem-reference", request_payload, submission_state="ACCEPTED")
     )
@@ -354,10 +359,101 @@ def test_batch_terminal_result_rejects_provider_reference_drift(operation_identi
         completed_at="2026-07-29T00:00:03+00:00",
     )
     result_payload["provider_reference"] = "provider-reference-drift"
-    result = operation.result_model.model_validate(result_payload)
+    result = _validate_json(operation.result_model, result_payload)
 
     with pytest.raises(ValueError, match="provider_reference"):
         validate_batch_terminal_result(request, ack, result)
+
+
+def test_e12_requires_contiguous_sequence_and_unique_reserved_queue_positions() -> None:
+    operation = WMS_OPERATION_BY_IDENTITY[E12]
+    payload = _e12_payload()
+    payload["items"][1]["sequence_no"] = 3
+    with pytest.raises(ValidationError, match="sequence"):
+        _validate_json(operation.request_model, payload)
+
+    payload = _e12_payload()
+    payload["items"][1]["reserved_queue_position"] = payload["items"][0]["reserved_queue_position"]
+    with pytest.raises(ValidationError, match="reserved_queue_position"):
+        _validate_json(operation.request_model, payload)
+
+
+def test_e13_requires_strict_fifo_order_even_when_digest_is_recomputed() -> None:
+    operation = WMS_OPERATION_BY_IDENTITY[E13]
+    payload = _e13_payload()
+    payload["candidate_items"] = list(reversed(payload["candidate_items"]))
+    payload["candidate_digest"] = _candidate_digest(payload)
+
+    with pytest.raises(ValidationError, match="FIFO"):
+        _validate_json(operation.request_model, payload)
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "payload_factory", "success_location", "unknown_location"),
+    [
+        (
+            E12,
+            _e12_payload,
+            {"final_rack_id": None, "final_slot_id": None, "final_queue_position": 2},
+            {"final_rack_id": None, "final_slot_id": None, "final_queue_position": None},
+        ),
+        (
+            E13,
+            _e13_payload,
+            {"final_rack_id": "RACK-005", "final_slot_id": "SLOT-005", "final_queue_position": None},
+            {"final_rack_id": None, "final_slot_id": None, "final_queue_position": None},
+        ),
+    ],
+)
+def test_batch_terminal_outcome_and_member_final_facts_form_one_closed_contract(
+    operation_identity: str,
+    payload_factory,
+    success_location: dict[str, object],
+    unknown_location: dict[str, object],
+) -> None:
+    from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck, validate_batch_terminal_result
+    from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
+
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    request_payload = payload_factory()
+    request = _validate_json(operation.request_model, request_payload)
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(operation_identity, "idem-batch", request_payload, submission_state="ACCEPTED")
+    )
+    valid_payload = build_typed_result(
+        operation_identity,
+        request_payload,
+        source_version=3,
+        completed_at="2026-07-29T00:00:03+00:00",
+        provider_reference=ack.provider_reference,
+    )
+
+    missing_success_fact = deepcopy(valid_payload)
+    missing_success_fact["items"][0].update(unknown_location)
+    with pytest.raises((ValidationError, ValueError), match="final"):
+        result = _validate_json(operation.result_model, missing_success_fact)
+        validate_batch_terminal_result(request, ack, result)
+
+    inconsistent_task_outcome = deepcopy(valid_payload)
+    inconsistent_task_outcome["items"][0].update({"item_outcome": "UNKNOWN", **unknown_location})
+    inconsistent_task_outcome["task_outcome"] = "SUCCESS"
+    with pytest.raises((ValidationError, ValueError), match="task_outcome"):
+        result = _validate_json(operation.result_model, inconsistent_task_outcome)
+        validate_batch_terminal_result(request, ack, result)
+
+    known_failure = deepcopy(valid_payload)
+    for item in known_failure["items"]:
+        item.update({"item_outcome": "FAILED", **success_location})
+    known_failure["task_outcome"] = "FAILED_AFTER_EXECUTION"
+    result = _validate_json(operation.result_model, known_failure)
+    assert validate_batch_terminal_result(request, ack, result) is result
+
+    unknown_failure = deepcopy(valid_payload)
+    for item in unknown_failure["items"]:
+        item.update({"item_outcome": "UNKNOWN", **unknown_location})
+    unknown_failure["task_outcome"] = "FAILED_AFTER_EXECUTION"
+    result = _validate_json(operation.result_model, unknown_failure)
+    assert validate_batch_terminal_result(request, ack, result) is result
 
 
 @pytest.mark.parametrize(

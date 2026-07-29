@@ -251,6 +251,7 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
     assert {
         "fault_matrix_rate_limit_and_fixed_5xx",
         "northbound_fault_scope_excludes_health_inventory_and_unregistered_paths",
+        "current_master_data_route_is_live_and_legacy_route_is_removed",
         "submit_deadline_ambiguous_retry_one_effect",
         "status_deadline",
         "response_body_budget_exceeded_without_remote_echo",

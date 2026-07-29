@@ -192,7 +192,6 @@ def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract(m
     assert preview["batch_key"] == "RACK-6CELL-001:A"
     assert preview["station_admission_blocked_until_exchange_completed"] is True
     assert preview["box_level_inventory_transaction_required"] is True
-    assert preview["completion_policy"] == "CALLBACK_AND_RECONCILIATION_REQUIRED"
     assert preview["sorting_candidate_object_keys"] == ["PKG-PIECE-001"]
     assert not set(preview["full_box_object_keys"]) & set(preview["sorting_candidate_object_keys"])
     assert no_exchange_preview["fulfillment_action"] == "SORTER_STATION_ADMISSION"
@@ -202,31 +201,6 @@ def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract(m
 
     assert response.status_code == 202
     assert response.json()["data"]["operation_identity"] == "wms.fulfillment.full_box_exchange@v1"
-
-
-def test_sorter_inbound_mock_acceptance_keeps_change_rack_face_as_independent_fulfillment() -> None:
-    """CHANGE_RACK_FACE 是独立履约，不能被 full-box exchange 成功吞并。"""
-
-    with TestClient(wms_mock_server.app) as client:
-        response = client.post(
-            "/debug/wms/fulfillment/change-rack-face",
-            json={
-                "request_id": "mock-sorter-change-face-001",
-                "parent_request_id": "mock-sorter-full-box-001",
-                "rack_code": "RACK-6CELL-001",
-                "from_rack_side": "A",
-                "to_rack_side": "B",
-            },
-        )
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["environment"] == "LOCAL_MOCK_ONLY"
-    assert data["production_write_path"] is False
-    assert data["fulfillment_action"] == "CHANGE_RACK_FACE"
-    assert data["parent_request_id"] == "mock-sorter-full-box-001"
-    assert data["independent_fulfillment"] is True
-    assert data["does_not_mark_full_box_exchange_completed"] is True
 
 
 def test_sorter_inbound_mock_acceptance_uses_ecs_mock_without_production_callback(monkeypatch) -> None:

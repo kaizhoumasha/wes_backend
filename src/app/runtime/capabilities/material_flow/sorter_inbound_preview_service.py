@@ -25,7 +25,6 @@ NOTIFY_PACKAGE_BINDING_IDENTITY = NOTIFY_PKG_BINDING.identity
 
 ROUGH_SORTER_ORDERED_STEPS = [
     "SCAN_AND_MEASURE",
-    "WMS_GRN_BINDING_CHECK",
     "SOURCE_ARM_TO_CONVEYOR",
     "ROUGH_SORTER_TO_OUTBOUND",
     "CELL_RESERVATION",
@@ -36,7 +35,6 @@ ROUGH_SORTER_ORDERED_STEPS = [
 
 SORTER_INBOUND_ORDERED_STEPS = [
     "STATION_ADMISSION",
-    "WMS_CTU_BIN_INFEED",
     "SCAN1_AUTHORIZED_RESOLVE",
     "SCAN2_ROUTE_DECISION",
     "SCAN3_RETURN_OR_NG_ROUTE",
@@ -67,13 +65,6 @@ class SorterInboundPreviewService:
         """预览粗分机正常流，拆分本地物理事实与 WMS 同步状态。"""
 
         local_physical_completed = bool(payload.get("local_physical_completed"))
-        wms_pkg_binding_result = coerce_string_value(payload.get("wms_pkg_binding_result") or "ACCEPTED").upper()
-        wms_sync_state = "READY_TO_SYNC"
-        business_completion_state = "LOCAL_PHYSICAL_COMPLETED"
-        if local_physical_completed and wms_pkg_binding_result not in {"ACCEPTED", "CONFIRMED"}:
-            wms_sync_state = "WMS_SYNC_PENDING"
-            business_completion_state = "RECONCILING"
-
         return {
             **_preview_boundary(),
             "request_id": payload.get("request_id", ""),
@@ -81,8 +72,8 @@ class SorterInboundPreviewService:
             "target_cell_code": payload.get("target_cell_code", ""),
             "ordered_steps": list(ROUGH_SORTER_ORDERED_STEPS),
             "local_position_state": "LOCAL_PHYSICAL_COMPLETED" if local_physical_completed else "PENDING",
-            "wms_sync_state": wms_sync_state,
-            "business_completion_state": business_completion_state,
+            "wms_sync_state": "READY_TO_SYNC",
+            "business_completion_state": "LOCAL_PHYSICAL_COMPLETED",
             "preserve_local_physical_fact": local_physical_completed,
             "next_object_admission_allowed": True,
             "effect_ports": {
@@ -150,23 +141,6 @@ class SorterInboundPreviewService:
             "sorting_candidate_object_keys": sorting_candidate_object_keys,
             "station_admission_blocked_until_exchange_completed": exchange_required,
             "box_level_inventory_transaction_required": exchange_required,
-            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
-        }
-
-    def preview_change_rack_face(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """预览 CHANGE_RACK_FACE 独立履约。"""
-
-        return {
-            **_preview_boundary(),
-            "request_id": payload.get("request_id", ""),
-            "parent_request_id": payload.get("parent_request_id", ""),
-            "fulfillment_action": "CHANGE_RACK_FACE",
-            "rack_code": coerce_string_value(payload.get("rack_code")),
-            "from_rack_side": coerce_string_value(payload.get("from_rack_side")),
-            "to_rack_side": coerce_string_value(payload.get("to_rack_side")),
-            "independent_fulfillment": True,
-            "does_not_mark_full_box_exchange_completed": True,
-            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
         }
 
 

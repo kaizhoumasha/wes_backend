@@ -32,6 +32,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
 )
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION as SMT_SORTING_INBOUND_DEFINITION
+from src.app.wms_integration.ports.event import InboundEventEnvelope, WmsInventoryUpdatedEvent
 from src.app.workline.models import WorkLine, WorklinePluginBinding
 from src.app.workline.services.plugin_binding_service import (
     PluginBindingAdmissionError,
@@ -96,29 +97,29 @@ async def _seed_single_layer_sessions(db: AsyncSession, workline: WorkLine) -> l
             },
         },
     )
-    callback_session = await _upsert_session(
+    inventory_event = WmsInventoryUpdatedEvent(
+        envelope=InboundEventEnvelope(
+            source_event_id="runtime-monitor-smoke:inventory-updated",
+            provider_code="WMS",
+            occurred_at=now.isoformat(),
+            correlation_id="runtime-monitor-smoke-wms-inventory-updated",
+            raw_payload={"inventory_reference": "runtime-monitor-smoke:inventory-updated"},
+        ),
+        inventory_reference="runtime-monitor-smoke:inventory-updated",
+        material_code="620100L00-011-G",
+    )
+    inventory_updated_session = await _upsert_session(
         db,
         workline,
         session_code="runtime-monitor-smoke:single-layer:wms-callback",
         business_key="runtime-monitor-smoke:single-layer:wms-callback",
-        trace_id="runtime-monitor-smoke-wms-callback",
+        trace_id="runtime-monitor-smoke-wms-inventory-updated",
         context_json={
-            "rack_operation": {
-                "operation_key": "runtime-monitor-smoke:rack-op-callback",
-                "status": "UPDATED",
-                "source_system": "WMS",
-                "callback_type": "WMS_INVENTORY_UPDATED",
-                "rack_kind": "SINGLE_LAYER",
-                "rack_code": "RACK-SMOKE-CALLBACK",
-                "bin_code": "BIN-SMOKE-CALLBACK",
-                "target_position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
-                "work_position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
-                "occurred_at": now.isoformat(),
-            },
+            "wms_inventory_updated_event": inventory_event.model_dump(mode="json"),
             "resource_state_events": _trace_resource_events(now),
         },
     )
-    return [waiting_session, callback_session]
+    return [waiting_session, inventory_updated_session]
 
 
 def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]:
@@ -131,8 +132,8 @@ def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]
                 "resource_code": f"PKG-SMOKE-{index:03d}",
                 "display_label": f"PKG PKG-SMOKE-{index:03d}",
                 "pkg_code": f"PKG-SMOKE-{index:03d}",
-                "rack_code": "RACK-SMOKE-CALLBACK",
-                "bin_code": "BIN-SMOKE-CALLBACK",
+                "rack_code": "RACK-SMOKE-INVENTORY",
+                "bin_code": "BIN-SMOKE-INVENTORY",
                 "rack_slot_code": "A",
                 "bin_cell_code": f"CELL-SMOKE-{cell_index}",
                 "material_code": "620100L00-011-G",
@@ -141,12 +142,13 @@ def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]
                 "reel_count": 1,
                 "reel_code": f"REEL-SMOKE-{index:03d}",
                 "position_index": index,
-                "evidence_kind": "WMS_CALLBACK_EVIDENCE",
+                "evidence_kind": "TRACE_RESOURCE_EVIDENCE",
                 "station_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "source_system": "WMS",
-                "callback_type": "WMS_INVENTORY_UPDATED",
-                "trace_id": "runtime-monitor-smoke-wms-callback",
+                "event_type": "WMS_INVENTORY_UPDATED",
+                "inventory_reference": "runtime-monitor-smoke:inventory-updated",
+                "trace_id": "runtime-monitor-smoke-wms-inventory-updated",
                 "occurred_at": now.isoformat(),
             }
         )

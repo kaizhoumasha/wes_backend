@@ -114,9 +114,7 @@ def system_outbox_resource_wait_clause(columns: Any) -> Any:
 class OperationCompletionPolicy(str, Enum):
     """Operation 完成确认策略。"""
 
-    CALLBACK_TRUSTED = "CALLBACK_TRUSTED"
     RESOURCE_PROJECTION_REQUIRED = "RESOURCE_PROJECTION_REQUIRED"
-    CALLBACK_PLUS_RECONCILIATION = "CALLBACK_PLUS_RECONCILIATION"
 
 
 @dataclass(frozen=True)

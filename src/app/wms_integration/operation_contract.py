@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Annotated
 
@@ -78,8 +79,8 @@ class WmsOperationBudget(BaseModel):
     def validate_attempt_budget(self) -> WmsOperationBudget:
         if len(self.backoff_seconds) != self.max_attempts - 1:
             raise ValueError("backoff_seconds count must equal max_attempts - 1")
-        if any(value <= 0 for value in self.backoff_seconds):
-            raise ValueError("backoff_seconds must contain positive values")
+        if any(not math.isfinite(value) or value <= 0 for value in self.backoff_seconds):
+            raise ValueError("backoff_seconds must contain finite positive values")
         if self.max_decoded_bytes < self.max_wire_bytes:
             raise ValueError("max_decoded_bytes must cover max_wire_bytes")
         return self

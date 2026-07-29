@@ -21,13 +21,14 @@ from src.app.resource.repositories.resource_repository import (
     RackPlacementRepository,
     rack_placement_repository,
 )
-from src.app.sys.models.outbox import OperationCompletionPolicy
 from src.utils.value_normalization import coerce_optional_str, enum_value, require_text
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.sys.models.outbox import OperationCompletionPolicy
 
 
 DEFAULT_RACK_OPERATION_TIMEOUT_SECONDS = 300
@@ -124,20 +125,12 @@ class RackOperationService:
     async def sync_operation_status(self, db: AsyncSession, *, operation_key: str) -> str:
         """在同一事务中回写既有 RackOperation 的派生状态。"""
 
-        operation = await self.rack_operation_repository.get_by_operation_key(db, operation_key)
-        completion_policy = resolve_operation_completion_policy(operation)
         operation_status = await self.derive_operation_status(db, operation_key=operation_key)
-        result_json_patch = {}
-        if (
-            completion_policy == OperationCompletionPolicy.CALLBACK_PLUS_RECONCILIATION
-            and operation_status == RackOperationStatus.SUCCEEDED.value
-        ):
-            result_json_patch["reconciliation_expected"] = True
         _ = await self.rack_operation_repository.mark_status(
             db,
             operation_key=operation_key,
             operation_status=operation_status,
-            result_json_patch=result_json_patch,
+            result_json_patch={},
         )
         return operation_status
 

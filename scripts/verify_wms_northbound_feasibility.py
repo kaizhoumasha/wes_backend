@@ -359,6 +359,35 @@ async def run_probe(
     if not secret:
         return FeasibilityReport(cases=tuple(results))
     max_response_bytes = min(contract_values["max_response_bytes"], _MAX_SAFE_RESPONSE_BYTES)
+    current_material_path = "/api/wms/master-data/materials/MAT001"
+    current_material = await _request(
+        client,
+        "GET",
+        current_material_path,
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        headers=_status_headers(
+            secret=secret,
+            credential_reference=contract_values["credential_reference"],
+            raw_path=current_material_path,
+        ),
+    )
+    legacy_material = await _request(
+        client,
+        "GET",
+        "/api/wms/materials/MAT001",
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
+    results.append(
+        _result(
+            "current_master_data_route_is_live_and_legacy_route_is_removed",
+            current_material is not None
+            and current_material.status_code == 200
+            and legacy_material is not None
+            and legacy_material.status_code == 404,
+        )
+    )
     selected = (operation_identity,) if operation_identity else tuple(_OPERATION_SPECS)
     if any(identity not in _OPERATION_SPECS for identity in selected):
         results.append(_result("requested_operation_supported", False))
@@ -775,12 +804,17 @@ async def run_probe(
         request_timeout_seconds=request_timeout_seconds,
         max_response_bytes=max_response_bytes,
     )
-    inventory = await _request(
+    current_inventory = await _request(
         client,
         "GET",
-        "/api/wms/materials/MAT001",
+        current_material_path,
         request_timeout_seconds=request_timeout_seconds,
         max_response_bytes=max_response_bytes,
+        headers=_status_headers(
+            secret=secret,
+            credential_reference=contract_values["credential_reference"],
+            raw_path=current_material_path,
+        ),
     )
     unregistered = await _request(
         client,
@@ -797,8 +831,8 @@ async def run_probe(
             scope_configured
             and health is not None
             and health.status_code == 200
-            and inventory is not None
-            and inventory.status_code in {200, 404}
+            and current_inventory is not None
+            and current_inventory.status_code == 200
             and unregistered is not None
             and unregistered.status_code == 404
             and scoped_fault is not None

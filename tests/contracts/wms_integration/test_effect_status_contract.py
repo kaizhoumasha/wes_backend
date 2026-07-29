@@ -516,6 +516,52 @@ def test_status_progression_rejects_version_regression_and_same_version_drift() 
     assert assert_status_snapshot_progression(previous=current, current=current) is current
 
 
+def test_status_progression_rejects_terminal_to_non_terminal_regression() -> None:
+    request = _rack_supply_request()
+    terminal = parse_wms_effect_status_snapshot(request=request, raw_response=_completed_wire(source_version=3))
+
+    for state in (WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING):
+        regressed = terminal.model_copy(
+            update={
+                "state": state,
+                "source_version": 4,
+                "result": None,
+            }
+        )
+        with pytest.raises(ValueError, match="terminal"):
+            assert_status_snapshot_progression(previous=terminal, current=regressed)
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "field_name", "drifted_value"),
+    [
+        ("wms.fulfillment.request_rack_supply@v1", "final_station_code", "OTHER-STATION"),
+        ("wms.fulfillment.request_rack_transport@v1", "final_location_code", "OTHER-STATION"),
+        ("wms.fulfillment.change_rack_face@v1", "authorized_face", "A"),
+        ("wms.fulfillment.change_rack_face@v1", "final_face", "A"),
+        ("wms.fulfillment.request_load_unit_transport@v1", "final_location_code", "OTHER-LOCATION"),
+    ],
+)
+def test_success_terminal_requires_request_aware_final_facts(
+    operation_identity: str,
+    field_name: str,
+    drifted_value: str,
+) -> None:
+    request = _status_request(operation_identity)
+    result_payload = dict(RESULT_FIXTURES[operation_identity])
+    result_payload["provider_reference"] = request.frozen_ack.provider_reference
+    result_payload[field_name] = drifted_value
+    source_version = int(result_payload["source_version"])
+    wire = {
+        **_completed_wire(source_version=source_version),
+        "provider_reference": request.frozen_ack.provider_reference,
+        "result_payload": result_payload,
+    }
+
+    with pytest.raises(ValueError, match=r"final|authorized"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+
 class _CredentialProvider:
     def resolve(self, credential_reference: str) -> bytes:
         assert credential_reference.endswith("@v2")

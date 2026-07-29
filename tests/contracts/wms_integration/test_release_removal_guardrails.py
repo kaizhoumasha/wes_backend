@@ -114,7 +114,10 @@ REMOVED_EXTERNAL_FACADE_LITERALS = {
 ACTIVE_SCAN_ROOTS = (
     "src",
     "scripts",
+    "docker",
+    "nginx",
     "tests/fixtures",
+    "tests/deployment",
     "tests/resilience/fixtures",
     "docs/business",
     "docs/integration",
@@ -589,17 +592,59 @@ def test_callback_ingress_reuses_callback_domain_wms_allow_set() -> None:
     assert "WMS_TYPED_EFFECT_CALLBACK_TYPES" not in source
 
 
+def test_callback_ingress_has_no_empty_ctu_provider_profile() -> None:
+    from src.app.callback.services.callback_ingress_service import _build_default_callback_provider_profiles
+
+    assert "CTU" not in _build_default_callback_provider_profiles()
+
+
 def test_rack_operation_read_side_regression_coverage_is_preserved() -> None:
     source = (REPO_ROOT / "tests/rack/test_rack_operation_service.py").read_text()
     required_tests = {
         "test_derive_operation_status_requires_all_required_tasks_succeeded",
         "test_derive_operation_status_requires_resource_projection_confirmation",
-        "test_derive_operation_status_callback_trusted_skips_resource_projection_confirmation",
-        "test_sync_operation_status_marks_reconciliation_expected",
         "test_derive_operation_status_consumes_projection_per_inbound_task",
         "test_derive_operation_status_reconciles_when_move_out_rack_still_at_source_position",
     }
     assert {test_name for test_name in required_tests if f"def {test_name}" not in source} == set()
+
+
+def test_callback_terminal_lifecycle_and_completion_policy_are_physically_removed() -> None:
+    forbidden_sources = {
+        "src/app/rack/services/task_lifecycle_service.py": {
+            "record_callback_from_external_http",
+            "_callback_status",
+            "_sync_waiting_session_from_operation_status",
+        },
+        "src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py": {
+            "handle_exchange_callback",
+            "_exchange_callback_status",
+            "_callback_error_message",
+        },
+        "src/app/sys/models/outbox.py": {
+            "CALLBACK_TRUSTED",
+            "CALLBACK_PLUS_RECONCILIATION",
+        },
+        "src/app/runtime/capabilities/material_flow/sorter_inbound_preview_service.py": {
+            "WMS_GRN_BINDING_CHECK",
+            "WMS_CTU_BIN_INFEED",
+            "preview_change_rack_face",
+            "wms_pkg_binding_result",
+            "CALLBACK_AND_RECONCILIATION_REQUIRED",
+        },
+    }
+    for relative_path, forbidden_literals in forbidden_sources.items():
+        source = (REPO_ROOT / relative_path).read_text()
+        assert {literal for literal in forbidden_literals if literal in source} == set()
+
+    for removed_path in (
+        "src/app/handling/services/lifecycle_service.py",
+        "src/app/handling/services/completion_policy.py",
+        "tests/handling/test_handling_completion_policy.py",
+        "tests/handling/test_handling_operation_lifecycle.py",
+        "tests/rack/test_rack_completion_policy.py",
+    ):
+        assert not (REPO_ROOT / removed_path).exists()
 
 
 def test_final_acceptance_sorter_docs_freeze_pick_ack_and_batch_only_ctu_boundary() -> None:
@@ -653,7 +698,6 @@ def test_ctu_stage_preview_and_debug_route_are_physically_removed() -> None:
         "preview_rough_sorter_inbound",
         "preview_sorter_inbound",
         "preview_full_box_exchange",
-        "preview_change_rack_face",
     ):
         assert callable(getattr(SorterInboundPreviewService, survivor))
 

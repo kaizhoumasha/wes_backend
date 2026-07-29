@@ -31,8 +31,8 @@ def _operation_index_digest(operations: tuple[WmsOperationDefinition, ...]) -> s
             "pagination": operation.pagination.model_dump(mode="json") if operation.pagination is not None else None,
             "path_template": operation.path_template,
             "reject_codes": operation.reject_codes,
-            "request_model": f"{operation.request_model.__module__}.{operation.request_model.__qualname__}",
-            "result_model": f"{operation.result_model.__module__}.{operation.result_model.__qualname__}",
+            "request_schema": operation.request_model.model_json_schema(),
+            "result_schema": operation.result_model.model_json_schema(),
             "target_code": operation.target_code,
         }
         for operation in operations

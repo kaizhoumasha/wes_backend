@@ -206,6 +206,7 @@ def test_q19_post_query_requires_valid_hmac_and_rejects_replay() -> None:
     path = "/api/wms/documents/rough-sorter-admission/validate"
     body = json.dumps(REQUEST_FIXTURES[operation_identity], separators=(",", ":")).encode()
     valid_headers = _status_headers(path=path, body=body, method="POST", nonce="q19-valid-nonce")
+    valid_headers["Content-Type"] = "application/json"
 
     with TestClient(wms_mock_server.app) as client:
         assert client.post(path, content=body).status_code == 401
@@ -227,6 +228,41 @@ def test_q19_post_query_requires_valid_hmac_and_rejects_replay() -> None:
 
     assert accepted.status_code == 200
     assert replayed.status_code == 401
+
+
+def test_q19_post_query_requires_application_json_before_typed_validation() -> None:
+    operation_identity = "wms.document.validate_rough_sorter_admission@v1"
+    path = "/api/wms/documents/rough-sorter-admission/validate"
+    body = json.dumps(REQUEST_FIXTURES[operation_identity], separators=(",", ":")).encode()
+    headers = _status_headers(path=path, body=body, method="POST")
+    headers["Content-Type"] = "text/plain"
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(path, content=body, headers=headers)
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "INVALID_TYPED_REQUEST_CONTENT_TYPE"}
+
+
+@pytest.mark.parametrize(
+    "operation",
+    tuple(operation for operation in WMS_OPERATIONS if operation.http_method.value == "GET"),
+    ids=lambda operation: operation.identity,
+)
+def test_every_get_query_rejects_unknown_query_before_typed_validation(operation) -> None:
+    fixture = REQUEST_FIXTURES[operation.identity]
+    path = operation.path_template
+    for field_name in operation.request_model.model_fields:
+        token = f"{{{field_name}}}"
+        if token in path:
+            path = path.replace(token, str(fixture[field_name]))
+    raw_path = f"/api/wms{path}?{urlencode({'unexpected_query_parameter': '1'})}"
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.get(raw_path, headers=_status_headers(path=raw_path))
+
+    assert response.status_code == 422
+    assert response.json() == {"code": "UNKNOWN_TYPED_QUERY_PARAMETER"}
 
 
 def test_wms_mock_does_not_expose_deprecated_operation_alias_paths() -> None:

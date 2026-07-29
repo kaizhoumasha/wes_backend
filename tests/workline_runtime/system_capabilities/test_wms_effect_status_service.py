@@ -361,6 +361,36 @@ async def test_terminal_snapshot_clears_schedule_and_uses_unique_status_terminal
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", [WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING])
+async def test_terminal_intent_rejects_non_terminal_regression_without_rescheduling(
+    state: WmsEffectStatus,
+) -> None:
+    claim = _claim(status=RuntimeIntentStatus.COMPLETED)
+    claim.intent.status_source_version = 6
+    db = _Db()
+    repository = _Repository(claim)
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=repository,
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: lambda: _Port(_snapshot(state, source_version=7), db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RECONCILING"
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_TERMINAL_REGRESSION"
+    assert reducer.events == []
+    assert claim.intent.status_check_after is None
+    assert repository.released == 1
+
+
+@pytest.mark.asyncio
 async def test_completed_result_correlation_mismatch_fails_closed_before_terminal_reducer_event() -> None:
     _require_status_service()
     claim = _claim()

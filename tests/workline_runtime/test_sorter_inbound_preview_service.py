@@ -27,7 +27,6 @@ def test_rough_sorter_preview_keeps_local_fact_and_splits_wms_effect_ports() -> 
             "object_key": "PKG-ROUGH-001",
             "target_cell_code": "CELL-A-01",
             "local_physical_completed": True,
-            "wms_pkg_binding_result": "REJECTED",
         }
     )
 
@@ -35,8 +34,8 @@ def test_rough_sorter_preview_keeps_local_fact_and_splits_wms_effect_ports() -> 
     assert preview["production_write_path"] is False
     assert preview["legacy_plugin_entry_used"] is False
     assert preview["local_position_state"] == "LOCAL_PHYSICAL_COMPLETED"
-    assert preview["wms_sync_state"] == "WMS_SYNC_PENDING"
-    assert preview["business_completion_state"] == "RECONCILING"
+    assert preview["wms_sync_state"] == "READY_TO_SYNC"
+    assert preview["business_completion_state"] == "LOCAL_PHYSICAL_COMPLETED"
     assert preview["preserve_local_physical_fact"] is True
     assert preview["effect_ports"] == {
         "pkg_binding": NOTIFY_PACKAGE_BINDING_IDENTITY,
@@ -115,25 +114,3 @@ def test_full_box_preview_pre_diverts_before_sorter_station_admission() -> None:
     assert preview["station_admission_blocked_until_exchange_completed"] is True
     assert preview["box_level_inventory_transaction_required"] is True
     assert preview["sorting_candidate_object_keys"] == ["PKG-PIECE-001"]
-
-
-def test_change_rack_face_preview_is_independent_fulfillment() -> None:
-    """CHANGE_RACK_FACE 不能被 full-box exchange 成功语义吞并。"""
-
-    service = SorterInboundPreviewService()
-
-    preview = service.preview_change_rack_face(
-        {
-            "request_id": "preview-change-face-001",
-            "parent_request_id": "preview-full-box-001",
-            "rack_code": "RACK-6CELL-001",
-            "from_rack_side": "A",
-            "to_rack_side": "B",
-        }
-    )
-
-    assert preview["production_write_path"] is False
-    assert preview["legacy_plugin_entry_used"] is False
-    assert preview["fulfillment_action"] == "CHANGE_RACK_FACE"
-    assert preview["independent_fulfillment"] is True
-    assert preview["does_not_mark_full_box_exchange_completed"] is True

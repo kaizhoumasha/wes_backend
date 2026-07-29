@@ -78,7 +78,17 @@ class WmsBusinessScenario:
 WMS_BUSINESS_SCENARIO_MANIFEST = (
     WmsBusinessScenario(
         "MASTER_DATA_AND_ROUTING",
-        frozenset(operation.identity for operation in WMS_OPERATIONS[:7]),
+        frozenset(
+            {
+                "wms.master_data.get_material@v1",
+                "wms.master_data.list_materials@v1",
+                "wms.master_data.list_zones@v1",
+                "wms.master_data.list_locations@v1",
+                "wms.master_data.get_rack@v1",
+                "wms.master_data.list_racks@v1",
+                "wms.master_data.get_bin@v1",
+            }
+        ),
     ),
     WmsBusinessScenario(
         "RECEIVING_AND_ROUGH_SORTER",
