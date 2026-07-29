@@ -74,7 +74,7 @@
 | `MOVE_BIN_FROM_CONVEYOR_EXIT` | 请求 WMS 履约接口 | 从分拣机出口取料箱，送回工作位货架指定位置 |
 | `NOTIFY_PKG_BINDING` | 通知 WMS 作业结果 | 将 PKG 与料箱/料格/货架绑定结果通知 WMS；对应 `wms.fulfillment.notify_pkg_binding@v1` |
 
-**WES 只定义本系统侧的履约意图、请求字段、幂等证据、回调接收和状态处理**。外部 WMS 如何选择货架、计算箱位、规划库位或调度 AGV/CTU，不在本系统规划内。
+**WES 只定义本系统侧的履约意图、请求字段、幂等证据，以及 typed ACK/status/terminal result 的校验与状态收敛**。外部 WMS 如何选择货架、计算箱位、规划库位或调度 AGV/CTU，不在本系统规划内。
 
 **物理事实与 WMS 业务确认顺序**：
 

@@ -748,7 +748,7 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | `wms_integration/test_cache.py` | WMS read-only 短缓存、坏缓存清理和降级回源测试 | 🔄 常用功能 |
 | `wms_integration/test_callback_normalizer.py` | WMS/RCS 回调包络校验和字段标准化测试 | 🔧 架构核心 |
 | `wms_integration/test_transport_contract.py` | rack/handling WMS/RCS 派发 payload 合同防漂移测试 | 🔧 架构核心 |
-| `wms_integration/test_fulfillment_state_machine.py` | Fulfillment 11 态状态机、callback inbox requirement、终态保护和 CB-blocked late callback 测试 | 🔧 架构核心 |
+| `wms_integration/test_fulfillment_state_machine.py` | Fulfillment 11 态内部 evidence 状态机、typed ACK/status/terminal result 收敛、终态保护和 CB-blocked replay 测试 | 🔧 架构核心 |
 | `wms_integration/test_fulfillment_lifecycle_service.py` | Fulfillment lifecycle service 状态推进、终态忽略和 RuntimeInbox 需求测试 | 🔧 架构核心 |
 | `wms_integration/test_typed_evidence_envelope.py` | Typed EvidenceEnvelope / ExternalReference 字段和 extra forbid 合同测试 | 🔧 架构核心 |
 

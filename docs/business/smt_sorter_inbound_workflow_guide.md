@@ -399,7 +399,7 @@ v1 采用全线单工作位口径——一次只有一个可信 AT_WORK 目标�
 | 源货架快照（料盘身份） | 入口事件携带；单层货架到达 STATION 时一次性加载到 Redis 缓存（key=`source_rack:{rack_id}`，TTL=该货架处理周期） |
 | 南向 PICK ACK evidence | `southbound_pick_acknowledged`；是下一次北向取料的唯一业务解锁条件 |
 | 退箱区占用数 | 料箱进入/离开退箱区事件 |
-| STATION 占用状态 | 单层货架到达/移出回调 |
+| STATION 占用状态 | WMS E08/E09 typed terminal result 与 owner 投影校验通过后 |
 
 真实目标料箱状态不得使用“未知”语义。未扫码前，WES 只维护流水线临时占位；扫码成功后，临时占位绑定 `resolved_bin_id`，随后才更新对应目标料箱位置。扫码失败或无法扫码时，临时占位进入退箱/隔离或人工对账，不得猜测为某个授权 `bin_id`。
 
@@ -561,7 +561,7 @@ WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回�
 2. CTU 背篓容量、背篓槽位、可承载料箱类型和满载/空载状态口径
 3. 分拣机五层货架工作位状态字段，以及 WMS E08 分配请求、ACK/status/typed terminal result 字段
 4. 五层货架当前可操作面、目标料箱所在面，以及 WMS E10 换面请求、ACK/status/typed terminal result 字段
-5. 满箱交换后"整架置空"的判断字段，以及空架/空箱区目标位置和完成回调
+5. 满箱交换后"整架置空"的判断字段，以及 E11 ACK/status/typed terminal result 对空架/空箱区目标位置的权威结果
 6. 单层货架从分拣机排队位到 STATION 的请求、到位、活动面和队列序号合同
 7. 流水线步进电机点位事件、料箱到达/离开事件、挡停切换信号、轻量投料水位和保留出料容量配置项的现场默认值
 8. 三类扫码事件合同：`TARGET_BIN_SCAN_COMPLETED`、`WORK_BIN_SCAN_COMPLETED`、`SOURCE_REEL_SCAN_COMPLETED` 的必填字段、扫码失败错误码和兼容映射规则
@@ -579,7 +579,7 @@ WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回�
 20. 投影对账差异的告警阈值和升级策略：定期对账（30 秒）和关键节点对账（换面/回库/移出）发现不一致时的处理流程和人工介入条件
 21. 源货架快照和五层货架投影的缓存策略：Redis 缓存 key 格式、TTL、缓存加载时机（单层货架到达 STATION / 五层货架到位换面）、放料成功后异步更新投影的时序
 22. 流水线临时占位字段：placeholder_id、投料批次、入口/扫码位位置、identity_status、candidate_authorized_bin_ids、resolved_bin_id、resolved_at 和异常来源
-23. CTU 投料任务回调字段：expected_authorized_bin_ids、CTU 背篓槽位、实际投放计数、无法识别单箱身份时的占位映射规则
+23. E12 CTU 投料批次级 typed terminal result 字段：冻结成员、最终成员位置、实际投放计数与无法识别单箱身份时的占位映射规则
 24. 授权集合与实际扫码集合差异处理合同：未授权实际箱的退箱/隔离路径、授权未出现箱的 `MISSING_RECONCILING` 口径、WMS/RCS 补证字段
 25. WES 向 WMS 提交库存增量的接口字段：rack_id、bin_id、cell_id、reel_id/pkg_id、6 合 1 码解析结果、Material、Vendor、DateCode、LotCode、规格、source/target 位置、put_completed_at、trace/session/command、接收凭证号
 26. 五层货架回库请求携带字段：当前可信货架快照、库存增量凭证、未关闭资源对账引用，以及 WMS E09 ACK/status/typed terminal result 对当前快照的接受证据

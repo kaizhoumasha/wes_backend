@@ -18,7 +18,7 @@ WES 不是所有外部事实的唯一权威。plan 早期把所有外部事实�
 | 入库单 / 出库单 / 批次单 / 波次 / 业务任务 | WMS | 外部引用 + 执行上下文 | 不复制为 WES 单据主档 |
 | 设备到位信号（光电、接近开关、扫码） | PLC / device | 接收 + 转换 | evidence + transition events |
 | 设备命令结果（机械臂取放、滚筒线动作） | device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 |
-| AGV/CTU 实时位置与状态 | RCS / AGV-CTU SDK | 引用 fulfillment 回调 | 触发 handling 状态机，不复制为本地状态 |
+| AGV/CTU 履约状态与位置 evidence | WMS | E08–E14 typed ACK/status/terminal result；E12/E13 使用批次级结果 | 校验权威结果后由 owner 更新 handling 投影，不复制实时 SDK 状态 |
 | 货架/料箱/库位主数据 | WMS | 引用 + 作业期投影 | 不复制主数据，只维护 active projection |
 | WMS 回调事件（WMS 主动推送） | WMS callback | normalize + dispatch | typed evidence + correlation key |
 | 冲突、对账、RECONCILING 状态 | WES ReconciliationManager | 决定权威 | RECONCILING evidence + 恢复动作 |

@@ -80,7 +80,7 @@ review_summary: |
 | --- | --- |
 | WES | Warehouse Execution System，本系统，仓储现场自动化执行中台 |
 | WMS | Warehouse Management System，外部权威系统，持有库存/单据/库位主数据 |
-| RCS | Robot Control System，当前阶段由 WMS 统一调度；WES 只消费 WMS/RCS 履约回调 evidence；直连能力仅作条件触发扩展，生产前默认不做 |
+| RCS | Robot Control System，当前阶段由 WMS 统一调度；WES 只消费 WMS E08–E14 typed ACK/status/terminal result；直连能力仅作条件触发扩展，生产前默认不做 |
 | AGV / CTU | Automated Guided Vehicle / Container Transfer Unit，外部搬运设备 |
 | PLC | Programmable Logic Controller，ECS 内部控制组件；WES 不与 PLC 通讯 |
 | WorkLine | 工作线配置域的根实体；只拥有配置，不拥有运行状态 |
@@ -187,9 +187,9 @@ P0 必须支撑以下能力（每条都是验收项）：
 - Handoff：任何物料/料箱/货架交接必须以 External callback 或 RuntimeIntentLog evidence 推进，禁止 API 层直接改投影。
 - Resource projection：同一 object 在同一 WorkLine 内只能有一个可解释的 active 归属；瞬态冲突必须带 `transient_until`，超时进入 `RECONCILING`。
 - Device command：每个物理动作必须有 `command_code + idempotency_key + request_hash + callback result` 闭环。
-- WMS fulfillment：任何外部履约必须有 11 态机状态、timeout、callback/evidence 和失败恢复路径；批量履约必须显式区分父批次请求、逐对象 evidence 和批次完成 evidence。
+- WMS fulfillment：任何 E08–E14 外部履约必须有 typed ACK、status query、typed terminal result、timeout 和失败恢复路径；E12/E13 批量履约必须以 ACK 冻结成员，并只消费批次级权威结果。
 - Inbound flow baseline：分拣机/粗分机入库链路的业务语义必须被行为契约测试覆盖，包括对象级流水并发、扫码、测量或识别、WMS 校验、箱格分配/预约、滚筒线路由、满箱/换架、NG、投箱和完成；旧插件接口、旧 context 字段和旧 fake allocator 不进入目标态合同。
-- Full-box exchange：满箱、满货架、换空箱、换货架属于外部履约 + 对账闭环，必须走 callback + reconciliation 完成语义，不能按普通 `CALLBACK_TRUSTED` 搬运完成处理。
+- Full-box exchange：满箱、满货架、换空箱、换货架属于 E11 typed ACK/status/terminal result + 对账闭环；只有 terminal result 与 owner 投影均校验通过后才能完成。
 
 ### 2.3 明确不做
 

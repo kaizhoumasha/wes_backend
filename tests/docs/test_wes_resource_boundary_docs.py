@@ -306,7 +306,8 @@ def test_adr_and_spec_keep_wms_as_transport_and_inventory_authority():
         (
             "WMS 是库存、预留、扣减、账务、SAP 同步和空箱资源授权的唯一权威",
             "WES 不锁定五层货架空箱",
-            "WES 只提交 `FULL_BIN_EXCHANGE` 外部请求，等待 WMS/RCS 回调",
+            "WES 只提交 `wms.fulfillment.full_bin_exchange@v1`",
+            "typed ACK、status query 与 typed terminal result 收敛结果",
         ),
     )
     assert_contains_all(spec, ("WMS 是非单层资源和库存权威", "AGV/CTU/RCS", "WMS 转发"))

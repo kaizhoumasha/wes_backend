@@ -748,3 +748,51 @@ operation 的兼容入口。
 - 当前 worktree 完整刷新索引后，`npx gitnexus detect-changes --scope staged` →
   8 files / 13 symbols / 2 affected processes，risk MEDIUM；两条流程均为
   `Handle_callback_external`，变更范围只覆盖 admission、领域快照、精确合同与本报告。
+
+## Public Contract Assets Review（第十九轮）修复
+
+- 公开 `CallbackExternalRequest` OpenAPI example 从同步 E03 identity 改为合法异步 E08
+  `wms.fulfillment.request_rack_supply@v1`。回归测试不再只检查 callback type，而是从应用
+  OpenAPI schema 取出公开 example，并实际交给生产共用 `validate_external_callback_type`
+  admission 校验。
+- 资源边界 ADR、authority matrix/ADR、workline overview/interface/implementation、file index
+  与 SMT guide 共 8 份活动文档统一为 E08–E14 typed ACK → status query → typed terminal
+  result 权威链；E12/E13 明确只消费 ACK 冻结成员对应的批次级权威结果。可选
+  `WMS_EFFECT_STATUS_HINT` 只唤醒查询，不携带终态或直接推进 owner 投影。
+- 全活动 Markdown guard 新增稳定语义概念族，覆盖 provider fulfillment callback 权威、
+  CTU 投料/搬运任务回调和货架/满箱交换完成回调，不依赖文件 allowlist。guard 按目录类别排除
+  `docs/archive` 与 `docs/superpowers/archive`，并要求 provider、authority 或 terminal 语义，
+  避免误报 operation_kind 枚举、删除清单、文件路径和合法 status-hint 说明。
+- 核心 admission 未修改；未新增兼容、alias、fallback、skip 或 xfail，未实现 T2/T5。
+
+## Public Contract Assets Review（第十九轮）TDD 与验证
+
+1. RED：
+   - 公开 example 首次送入共用 admission 时抛出
+     `WMS_EFFECT_STATUS_HINT_OPERATION_UNKNOWN`；
+   - 全活动文档 guard 在排除 4 类非权威语义误报后，稳定命中 8 份真实活动文档。
+2. GREEN：
+   - OpenAPI example 与全活动文档 guard 定点 `2 passed`；
+   - callback OpenAPI/route、release removal、typed routing 与 normalizer 相关回归
+     `112 passed`；
+   - 首轮默认全集除 1 个仍冻结旧“等待 WMS/RCS 回调”句的派生文档合同外为
+     `4189 passed, 5 existing skipped`。派生合同改为校验 E11 identity 与
+     typed ACK/status/terminal result 后，三项定点 `3 passed`。
+3. 默认全集从头复验 → `4190 passed, 5 existing skipped`（4195 collected）；没有新增
+   测试、skip 或 xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4190 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4195 tests collected`。
+- `uv run ruff format --check .` → 1074 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：`CallbackExternalRequest` 为 MEDIUM（1 direct / 39 upstream /
+  0 process）；OpenAPI 测试、活动文档 guard 与派生文档合同均为 LOW；无 HIGH/CRITICAL 风险。
+- 当前 worktree `npx gitnexus detect-changes --scope staged` →
+  13 files / 35 symbols / 0 affected processes，risk LOW；范围仅包含公开 example、活动文档、
+  稳定语义 guard、派生文档合同与本报告。

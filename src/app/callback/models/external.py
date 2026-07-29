@@ -20,7 +20,7 @@ class CallbackExternalRequest(BaseModel):
                     "source_event_id": "wms-event-01JQA",
                     "source_system": "WMS",
                     "data": {
-                        "operation_identity": "wms.inventory.confirm_inbound@v1",
+                        "operation_identity": "wms.fulfillment.request_rack_supply@v1",
                         "idempotency_key": "idem-01JQA",
                         "dispatch_key": "dispatch-01JQA",
                     },

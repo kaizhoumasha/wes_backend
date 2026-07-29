@@ -9,12 +9,15 @@ from __future__ import annotations
 
 def test_external_callback_openapi_declares_request_body_contract() -> None:
     from main import app
+    from src.app.callback.contracts.external_callbacks import validate_external_callback_type
 
     operation = app.openapi()["paths"]["/api/v1/callback/external"]["post"]
     request_body = operation["requestBody"]
     schema = request_body["content"]["application/json"]["schema"]
+    public_example = schema["examples"][0]
 
     assert request_body["required"] is True
     assert "callback_type" in schema["required"]
     assert {"callback_type", "trace_id", "dispatch_key", "data"} <= schema["properties"].keys()
-    assert schema["examples"][0]["callback_type"] == "WMS_EFFECT_STATUS_HINT"
+    assert public_example["callback_type"] == "WMS_EFFECT_STATUS_HINT"
+    assert validate_external_callback_type(public_example) == "WMS_EFFECT_STATUS_HINT"

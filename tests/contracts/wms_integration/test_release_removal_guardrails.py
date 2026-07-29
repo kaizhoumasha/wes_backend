@@ -294,11 +294,32 @@ REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
         r"|WMS\s*/\s*CTU\s*(?:callback|回调)[^。\n]{0,100}(?:evidence|推进|membership|writer)",
         re.IGNORECASE,
     ),
+    "fulfillment-callback-authority": re.compile(
+        r"(?:WMS|RCS|AGV|CTU)(?:\s*[/↔-]\s*(?:WMS|RCS|AGV|CTU))*\s*"
+        r"(?:fulfillment|履约)[^。\n|]{0,40}(?:callback|回调)"
+        r"|(?:引用|消费|等待|依赖)[^。\n|]{0,24}(?:fulfillment|履约)"
+        r"[^。\n|]{0,24}(?:callback|回调)"
+        r"|(?:fulfillment|履约)[^。\n|]{0,80}(?:callback|回调)"
+        r"[^。\n|]{0,40}(?:completion|完成|终态|推进|状态|权威)",
+        re.IGNORECASE,
+    ),
+    "ctu-task-callback-contract": re.compile(
+        r"\bCTU\b[^。\n|]{0,60}(?:投料|搬运|任务|执行)[^。\n|]{0,60}(?:callback|回调)",
+        re.IGNORECASE,
+    ),
+    "fulfillment-object-callback-authority": re.compile(
+        r"(?:货架|满箱交换|换面|回库|CTU)[^。\n|]{0,60}"
+        r"(?:到达|移出|完成|任务|投料)[^。\n|]{0,40}(?:callback|回调)",
+        re.IGNORECASE,
+    ),
     "fulfillment-callback-terminal-authority": re.compile(
         r"(?:step\s*完成以[^。\n|]{0,80}|(?:WMS|RCS|AGV)(?:\s*/\s*(?:WMS|RCS|AGV))?[^。\n|]{0,40})"
-        r"(?:callback|回调)[^。\n|]{0,100}(?:为准|证明外部动作结果|更新|(?<!不)写入|释放|换面完成|回库完成|仍可推进)"
+        r"(?:callback|回调)[^。\n|]{0,100}"
+        r"(?:为准|证明外部动作结果|更新|(?<!不)写入|释放|换面完成|回库完成|仍可推进|恢复|(?<!不)推进)"
         r"|(?:WMS|RCS)(?:\s*/\s*(?:WMS|RCS|AGV))?\s*(?:callback|回调)"
-        r"[^。\n|]{0,100}触发\s*handling\s*派生状态",
+        r"[^。\n|]{0,100}触发\s*handling\s*派生状态"
+        r"|(?:等待|依赖|消费)[^。\n|]{0,80}(?:WMS|RCS|AGV|CTU)"
+        r"(?:\s*[/↔-]\s*(?:WMS|RCS|AGV|CTU))*[^。\n|]{0,40}(?:callback|回调)",
         re.IGNORECASE,
     ),
 }
@@ -349,7 +370,10 @@ def test_all_active_documents_have_no_coarse_fulfillment_port_or_legacy_wms_path
     docs_root = REPO_ROOT / "docs"
     for path in docs_root.rglob("*.md"):
         docs_relative_path = path.relative_to(docs_root)
-        if docs_relative_path.parts[:2] == ("superpowers", "archive"):
+        if docs_relative_path.parts[:1] == ("archive",) or docs_relative_path.parts[:2] == (
+            "superpowers",
+            "archive",
+        ):
             continue
         source = path.read_text(encoding="utf-8")
         found = {literal for literal in REMOVED_ACTIVE_DOC_LITERALS if literal in source}
