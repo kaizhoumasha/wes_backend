@@ -22,7 +22,21 @@ from tests.support.runtime_inbox_postgresql import run_alembic, temporary_databa
 
 
 async def _seed_generated_candidate(db: AsyncSession) -> WorkLine:
-    config = SmtSortingInboundConfig(provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity)
+    config = SmtSortingInboundConfig(
+        provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity,
+        ctu_basket_capacity=6,
+        conveyor_entry_queue={
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        return_queue={
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    )
     workline = WorkLine(
         line_code="IT-SMT-PRODUCTION-ROUTE",
         line_name="SMT production route",

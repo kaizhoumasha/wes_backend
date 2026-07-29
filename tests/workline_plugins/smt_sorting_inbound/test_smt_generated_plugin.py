@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
@@ -31,6 +32,31 @@ from src.app.runtime.workline_plugins.smt_sorting_inbound.contracts import (
 )
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 from src.app.runtime.workline_plugins.smt_sorting_inbound.handlers import build_facts, decide
+from src.app.wms_integration.ports.fulfillment_operations import MOVE_BINS_FROM_CONVEYOR_EXIT
+
+
+def _smt_config_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "provider_profile": "runtime",
+        "ctu_basket_capacity": 6,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _smt_config(**overrides: object) -> SmtSortingInboundConfig:
+    return SmtSortingInboundConfig.model_validate(_smt_config_payload(**overrides))
 
 
 def _facts(**overrides: object) -> SmtSortingInboundFacts:
@@ -66,7 +92,7 @@ async def test_source_pick_request_waits_for_its_command_result() -> None:
     decision = await decide(
         _source_pick_input(),
         state=SmtSortingInboundState(),
-        config=SmtSortingInboundConfig(provider_profile="runtime"),
+        config=_smt_config(),
         facts=_facts(),
         gateway=object(),
     )
@@ -88,7 +114,7 @@ async def test_source_pick_request_carries_strict_command_correlation_evidence()
     decision = await decide(
         source_pick,
         state=SmtSortingInboundState(),
-        config=SmtSortingInboundConfig(provider_profile="runtime"),
+        config=_smt_config(),
         facts=_facts(),
         gateway=object(),
     )
@@ -147,7 +173,7 @@ async def test_source_pick_request_is_idempotent_outside_initial_wait(state: Smt
     decision = await decide(
         _source_pick_input(),
         state=state,
-        config=SmtSortingInboundConfig(provider_profile="runtime"),
+        config=_smt_config(),
         facts=_facts(),
         gateway=object(),
     )
@@ -161,6 +187,102 @@ def test_smt_definition_uses_fixed_generated_identity() -> None:
     assert DEFINITION.contract_version == "smt_sorting_inbound.v1"
 
 
+def test_smt_factory_config_declares_frozen_typed_queues() -> None:
+    config = _smt_config()
+
+    assert config.ctu_basket_capacity == 6
+    assert config.conveyor_entry_queue.model_dump(mode="json") == {
+        "code": "SMT-CONVEYOR-ENTRY",
+        "role": "ENTRY",
+        "capacity": 8,
+        "order_policy": "FIFO",
+    }
+    assert config.return_queue.model_dump(mode="json") == {
+        "code": "SMT-RETURN",
+        "role": "RETURN_QUEUE",
+        "order_policy": "FIFO",
+    }
+    with pytest.raises(ValidationError):
+        config.conveyor_entry_queue.capacity = 9
+    with pytest.raises(ValidationError):
+        config.return_queue.code = "CHANGED"
+
+
+@pytest.mark.parametrize(
+    ("field_path", "invalid_capacity"),
+    [
+        (("ctu_basket_capacity",), True),
+        (("ctu_basket_capacity",), 0),
+        (("ctu_basket_capacity",), -1),
+        (("conveyor_entry_queue", "capacity"), True),
+        (("conveyor_entry_queue", "capacity"), 0),
+        (("conveyor_entry_queue", "capacity"), -1),
+    ],
+)
+def test_smt_factory_config_rejects_non_positive_and_boolean_capacities(
+    field_path: tuple[str, ...],
+    invalid_capacity: object,
+) -> None:
+    payload = _smt_config_payload()
+    target = payload
+    for segment in field_path[:-1]:
+        target = target[segment]  # type: ignore[assignment]
+    target[field_path[-1]] = invalid_capacity
+
+    with pytest.raises(ValidationError):
+        SmtSortingInboundConfig.model_validate(payload)
+
+
+def test_smt_factory_config_rejects_duplicate_queue_codes() -> None:
+    payload = _smt_config_payload(
+        return_queue={
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        }
+    )
+
+    with pytest.raises(ValidationError, match="code"):
+        SmtSortingInboundConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("queue_name", "field_name", "invalid_value"),
+    [
+        ("conveyor_entry_queue", "role", "RETURN_QUEUE"),
+        ("return_queue", "role", "ENTRY"),
+        ("conveyor_entry_queue", "order_policy", "LIFO"),
+        ("return_queue", "order_policy", "LIFO"),
+    ],
+)
+def test_smt_factory_config_rejects_invalid_queue_role_or_order_policy(
+    queue_name: str,
+    field_name: str,
+    invalid_value: str,
+) -> None:
+    payload = _smt_config_payload()
+    queue = payload[queue_name]
+    assert isinstance(queue, dict)
+    queue[field_name] = invalid_value
+
+    with pytest.raises(ValidationError):
+        SmtSortingInboundConfig.model_validate(payload)
+
+
+def test_smt_factory_config_reads_ctu_limit_from_typed_wms_operation_definition() -> None:
+    max_candidate_count = MOVE_BINS_FROM_CONVEYOR_EXIT.max_candidate_count
+    assert isinstance(max_candidate_count, int)
+    assert _smt_config(ctu_basket_capacity=max_candidate_count).ctu_basket_capacity == max_candidate_count
+
+    with pytest.raises(ValidationError, match="max_candidate_count"):
+        _smt_config(ctu_basket_capacity=max_candidate_count + 1)
+
+
+def test_smt_factory_config_forbids_pipeline_queue_dsl() -> None:
+    with pytest.raises(ValidationError, match="pipeline_queues"):
+        _smt_config(pipeline_queues=[])
+
+
 def test_smt_definition_declares_source_arm_command_and_effect_contract() -> None:
     assert DEFINITION.schema.devices[0].role == "SORTING_SOURCE_ARM"
     assert DEFINITION.schema.commands[0].command == "SORTING_SOURCE_PICK"
@@ -169,10 +291,12 @@ def test_smt_definition_declares_source_arm_command_and_effect_contract() -> Non
         ("material_flow.smt_source_pick_command", "v1"),
         ("material_flow.smt_source_pick_ledger", "v1"),
         ("runtime.session_hold", "v1"),
+        ("wms.fulfillment.move_bins_from_conveyor_exit", "v1"),
+        ("wms.fulfillment.move_bins_to_conveyor_entry", "v1"),
     )
 
     with pytest.raises(ValueError):
-        SmtSortingInboundConfig(provider_profile="runtime", source_arm_role="UNDECLARED_ARM")
+        _smt_config(source_arm_role="UNDECLARED_ARM")
 
 
 @pytest.mark.asyncio
@@ -198,7 +322,7 @@ async def test_other_plugin_cannot_invoke_smt_source_pick_command_capability() -
 
 @pytest.mark.asyncio
 async def test_smt_source_pick_binds_generated_command_code_for_command_result() -> None:
-    config = SmtSortingInboundConfig(provider_profile="runtime")
+    config = _smt_config()
     snapshot = PinnedPluginSnapshot(
         plugin_key=DEFINITION.plugin_key,
         contract_version=DEFINITION.contract_version,
@@ -281,7 +405,7 @@ async def test_smt_source_pick_binds_generated_command_code_for_command_result()
 
 @pytest.mark.asyncio
 async def test_smt_failed_command_result_converts_to_declared_session_hold() -> None:
-    config = SmtSortingInboundConfig(provider_profile="runtime")
+    config = _smt_config()
     snapshot = PinnedPluginSnapshot(
         plugin_key=DEFINITION.plugin_key,
         contract_version=DEFINITION.contract_version,
@@ -347,7 +471,7 @@ async def test_source_pick_result_has_stable_terminal_decision(result: str, expe
     decision = await decide(
         CommandResultInput(command_code="CMD-1", command_type="SORTING_SOURCE_PICK", result=result),
         state=SmtSortingInboundState(current_correlation="CMD-1"),
-        config=SmtSortingInboundConfig(provider_profile="runtime"),
+        config=_smt_config(),
         facts=_facts(),
         gateway=object(),
     )
@@ -361,7 +485,7 @@ async def test_source_pick_result_has_stable_terminal_decision(result: str, expe
 
 @pytest.mark.asyncio
 async def test_source_pick_correlation_mismatch_and_capability_reject_have_zero_effect() -> None:
-    config = SmtSortingInboundConfig(provider_profile="runtime")
+    config = _smt_config()
     state = SmtSortingInboundState(current_correlation="CMD-1")
     mismatch = await decide(
         CommandResultInput(command_code="CMD-OTHER", command_type="SORTING_SOURCE_PICK", result="SUCCESS"),

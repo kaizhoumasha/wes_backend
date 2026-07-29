@@ -1265,7 +1265,22 @@ async def test_command_result_bridge_uses_persisted_command_and_returns_stable_z
     from src.app.device.repositories import device_command_repository
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
-    config = {"provider_profile": "runtime", "source_arm_role": "SORTING_SOURCE_ARM"}
+    config = {
+        "provider_profile": "runtime",
+        "source_arm_role": "SORTING_SOURCE_ARM",
+        "ctu_basket_capacity": 6,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    }
     monkeypatch.setattr(
         workline_plugin_binding_service,
         "get_pinned",

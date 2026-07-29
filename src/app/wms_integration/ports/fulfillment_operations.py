@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -18,6 +19,7 @@ from src.app.wms_integration.ports.operation_common import (
     EffectRequest,
     EffectResult,
     NonNegativeDecimal,
+    Rfc3339UtcTimestamp,
     StableText,
     StrictWmsModel,
 )
@@ -171,7 +173,7 @@ class ConveyorBatchItem(StrictWmsModel):
     bin_id: StableText = Field(max_length=120)
     source_rack_id: StableText = Field(max_length=120)
     source_slot_id: StableText = Field(max_length=120)
-    reserved_queue_position: int = Field(ge=0)
+    reserved_queue_position: int = Field(ge=1)
 
 
 def _require_unique_batch_members(items: tuple[ConveyorBatchItem | ConveyorExitCandidate, ...]) -> None:
@@ -228,8 +230,8 @@ class ConveyorExitCandidate(StrictWmsModel):
     sequence_no: int = Field(ge=1)
     route_instance_id: StableText = Field(max_length=160)
     bin_id: StableText = Field(max_length=120)
-    scan3_enqueued_at: StableText = Field(max_length=80)
-    queue_position: int = Field(ge=0)
+    scan3_enqueued_at: Rfc3339UtcTimestamp = Field(max_length=80)
+    queue_position: int = Field(ge=1)
 
 
 def frozen_candidate_digest(
@@ -282,7 +284,11 @@ class MoveBinsFromConveyorExitRequest(EffectRequest):
         fifo_order = tuple(
             sorted(
                 self.candidate_items,
-                key=lambda item: (item.scan3_enqueued_at, item.queue_position, item.bin_id),
+                key=lambda item: (
+                    datetime.fromisoformat(item.scan3_enqueued_at),
+                    item.queue_position,
+                    item.bin_id,
+                ),
             )
         )
         if self.candidate_items != fifo_order:
@@ -453,7 +459,7 @@ def validate_batch_terminal_result(
     if result.task_outcome != expected_task_outcome:
         raise ValueError("task_outcome does not match member outcomes")
     is_entry = isinstance(request, MoveBinsToConveyorEntryRequest)
-    for item in result.items:
+    for request_item, item in zip(frozen_items, result.items, strict=True):
         if item.item_outcome == "UNKNOWN":
             if any(value is not None for value in (item.final_rack_id, item.final_slot_id, item.final_queue_position)):
                 raise ValueError("UNKNOWN member must not claim final facts")
@@ -461,8 +467,16 @@ def validate_batch_terminal_result(
         if is_entry:
             if item.final_queue_position is None or item.final_rack_id is not None or item.final_slot_id is not None:
                 raise ValueError("E12 known member requires only final_queue_position")
+            if item.final_queue_position != request_item.reserved_queue_position:
+                raise ValueError("E12 final_queue_position must match frozen reserved_queue_position")
         elif item.final_rack_id is None or item.final_slot_id is None or item.final_queue_position is not None:
             raise ValueError("E13 known member requires only final rack and slot")
+    if not is_entry:
+        known_destinations = tuple(
+            (item.final_rack_id, item.final_slot_id) for item in result.items if item.item_outcome != "UNKNOWN"
+        )
+        if len(known_destinations) != len(set(known_destinations)):
+            raise ValueError("E13 known members require unique final rack/slot targets")
     if isinstance(request, MoveBinsFromConveyorExitRequest):
         if not isinstance(result, MoveBinsFromConveyorExitResult):
             raise TypeError("E13 request requires E13 terminal result")

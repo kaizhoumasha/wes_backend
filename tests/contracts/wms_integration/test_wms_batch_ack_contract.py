@@ -476,6 +476,66 @@ def test_e12_requires_contiguous_sequence_and_unique_reserved_queue_positions() 
         _validate_json(operation.request_model, payload)
 
 
+@pytest.mark.parametrize(
+    ("operation_identity", "payload_factory", "items_field", "position_field"),
+    [
+        (E12, _e12_payload, "items", "reserved_queue_position"),
+        (E13, _e13_payload, "candidate_items", "queue_position"),
+    ],
+)
+def test_batch_request_queue_positions_are_strictly_positive(
+    operation_identity: str,
+    payload_factory,
+    items_field: str,
+    position_field: str,
+) -> None:
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    payload = payload_factory()
+    payload[items_field][0][position_field] = 0
+    if operation_identity == E13:
+        payload["candidate_digest"] = _candidate_digest(payload)
+
+    with pytest.raises(ValidationError, match=position_field):
+        _validate_json(operation.request_model, payload)
+
+
+@pytest.mark.parametrize(
+    "scan3_enqueued_at",
+    [
+        "2026-07-29T00:00:00",
+        "2026-07-29T08:00:00+08:00",
+        "2026-07-29T00:00:00Z",
+        "2026-07-29 00:00:00+00:00",
+    ],
+)
+def test_e13_scan3_enqueued_at_requires_canonical_rfc3339_utc(scan3_enqueued_at: str) -> None:
+    operation = WMS_OPERATION_BY_IDENTITY[E13]
+    payload = _e13_payload()
+    payload["candidate_items"][0]["scan3_enqueued_at"] = scan3_enqueued_at
+    payload["candidate_digest"] = _candidate_digest(payload)
+
+    with pytest.raises(ValidationError, match="scan3_enqueued_at"):
+        _validate_json(operation.request_model, payload)
+
+
+@pytest.mark.parametrize(
+    "scan3_enqueued_at",
+    [
+        "2026-07-29T00:00:00+00:00",
+        "2026-07-29T00:00:00.123456+00:00",
+    ],
+)
+def test_e13_scan3_enqueued_at_accepts_canonical_rfc3339_utc(scan3_enqueued_at: str) -> None:
+    operation = WMS_OPERATION_BY_IDENTITY[E13]
+    payload = _e13_payload()
+    payload["candidate_items"][0]["scan3_enqueued_at"] = scan3_enqueued_at
+    payload["candidate_digest"] = _candidate_digest(payload)
+
+    request = _validate_json(operation.request_model, payload)
+
+    assert request.candidate_items[0].scan3_enqueued_at == scan3_enqueued_at
+
+
 def test_e13_requires_strict_fifo_order_even_when_digest_is_recomputed() -> None:
     operation = WMS_OPERATION_BY_IDENTITY[E13]
     payload = _e13_payload()
@@ -487,18 +547,47 @@ def test_e13_requires_strict_fifo_order_even_when_digest_is_recomputed() -> None
 
 
 @pytest.mark.parametrize(
-    ("operation_identity", "payload_factory", "success_location", "unknown_location"),
+    ("first_timestamp", "second_timestamp"),
+    [
+        ("2026-07-29T00:00:00.1+00:00", "2026-07-29T00:00:00.100000+00:00"),
+        ("2026-07-29T00:00:00+00:00", "2026-07-29T00:00:00.000000+00:00"),
+    ],
+)
+def test_e13_equivalent_instants_use_queue_position_as_fifo_tiebreaker(
+    first_timestamp: str,
+    second_timestamp: str,
+) -> None:
+    operation = WMS_OPERATION_BY_IDENTITY[E13]
+    payload = _e13_payload()
+    payload["candidate_items"][0].update(
+        {
+            "scan3_enqueued_at": first_timestamp,
+            "queue_position": 2,
+        }
+    )
+    payload["candidate_items"][1].update(
+        {
+            "scan3_enqueued_at": second_timestamp,
+            "queue_position": 1,
+        }
+    )
+    payload["candidate_digest"] = _candidate_digest(payload)
+
+    with pytest.raises(ValidationError, match="FIFO"):
+        _validate_json(operation.request_model, payload)
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "payload_factory", "unknown_location"),
     [
         (
             E12,
             _e12_payload,
-            {"final_rack_id": None, "final_slot_id": None, "final_queue_position": 2},
             {"final_rack_id": None, "final_slot_id": None, "final_queue_position": None},
         ),
         (
             E13,
             _e13_payload,
-            {"final_rack_id": "RACK-005", "final_slot_id": "SLOT-005", "final_queue_position": None},
             {"final_rack_id": None, "final_slot_id": None, "final_queue_position": None},
         ),
     ],
@@ -506,7 +595,6 @@ def test_e13_requires_strict_fifo_order_even_when_digest_is_recomputed() -> None
 def test_batch_terminal_outcome_and_member_final_facts_form_one_closed_contract(
     operation_identity: str,
     payload_factory,
-    success_location: dict[str, object],
     unknown_location: dict[str, object],
 ) -> None:
     from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck, validate_batch_terminal_result
@@ -541,7 +629,7 @@ def test_batch_terminal_outcome_and_member_final_facts_form_one_closed_contract(
 
     known_failure = deepcopy(valid_payload)
     for item in known_failure["items"]:
-        item.update({"item_outcome": "FAILED", **success_location})
+        item["item_outcome"] = "FAILED"
     known_failure["task_outcome"] = "FAILED_AFTER_EXECUTION"
     result = _validate_json(operation.result_model, known_failure)
     assert validate_batch_terminal_result(request, ack, result) is result
@@ -551,6 +639,99 @@ def test_batch_terminal_outcome_and_member_final_facts_form_one_closed_contract(
         item.update({"item_outcome": "UNKNOWN", **unknown_location})
     unknown_failure["task_outcome"] = "FAILED_AFTER_EXECUTION"
     result = _validate_json(operation.result_model, unknown_failure)
+    assert validate_batch_terminal_result(request, ack, result) is result
+
+
+def test_e12_terminal_queue_position_must_match_each_frozen_reservation() -> None:
+    from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck, validate_batch_terminal_result
+    from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
+
+    operation = WMS_OPERATION_BY_IDENTITY[E12]
+    request_payload = _e12_payload()
+    request = _validate_json(operation.request_model, request_payload)
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(E12, "idem-e12-position", request_payload, submission_state="ACCEPTED")
+    )
+    result_payload = build_typed_result(
+        E12,
+        request_payload,
+        source_version=3,
+        completed_at="2026-07-29T00:00:03+00:00",
+        provider_reference=ack.provider_reference,
+    )
+    result_payload["items"][0]["final_queue_position"] = 99
+    result = _validate_json(operation.result_model, result_payload)
+
+    with pytest.raises(ValueError, match="reserved_queue_position"):
+        validate_batch_terminal_result(request, ack, result)
+
+
+def test_e13_terminal_known_members_require_unique_final_rack_slot_targets() -> None:
+    from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck, validate_batch_terminal_result
+    from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
+
+    operation = WMS_OPERATION_BY_IDENTITY[E13]
+    request_payload = _e13_payload()
+    request = _validate_json(operation.request_model, request_payload)
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(E13, "idem-e13-target", request_payload, submission_state="ACCEPTED")
+    )
+    result_payload = build_typed_result(
+        E13,
+        request_payload,
+        source_version=3,
+        completed_at="2026-07-29T00:00:03+00:00",
+        provider_reference=ack.provider_reference,
+    )
+    result_payload["items"][1].update(
+        {
+            "item_outcome": "FAILED",
+            "final_rack_id": result_payload["items"][0]["final_rack_id"],
+            "final_slot_id": result_payload["items"][0]["final_slot_id"],
+        }
+    )
+    result_payload["items"][2].update(
+        {
+            "item_outcome": "UNKNOWN",
+            "final_rack_id": None,
+            "final_slot_id": None,
+        }
+    )
+    result_payload["task_outcome"] = "PARTIAL_FAILURE"
+    result = _validate_json(operation.result_model, result_payload)
+
+    with pytest.raises(ValueError, match="unique final rack/slot"):
+        validate_batch_terminal_result(request, ack, result)
+
+
+def test_e13_terminal_allows_unique_partial_and_unknown_member_facts() -> None:
+    from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck, validate_batch_terminal_result
+    from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
+
+    operation = WMS_OPERATION_BY_IDENTITY[E13]
+    request_payload = _e13_payload()
+    request = _validate_json(operation.request_model, request_payload)
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(E13, "idem-e13-partial", request_payload, submission_state="ACCEPTED")
+    )
+    result_payload = build_typed_result(
+        E13,
+        request_payload,
+        source_version=3,
+        completed_at="2026-07-29T00:00:03+00:00",
+        provider_reference=ack.provider_reference,
+    )
+    result_payload["items"][1]["item_outcome"] = "FAILED"
+    result_payload["items"][2].update(
+        {
+            "item_outcome": "UNKNOWN",
+            "final_rack_id": None,
+            "final_slot_id": None,
+        }
+    )
+    result_payload["task_outcome"] = "PARTIAL_FAILURE"
+    result = _validate_json(operation.result_model, result_payload)
+
     assert validate_batch_terminal_result(request, ack, result) is result
 
 

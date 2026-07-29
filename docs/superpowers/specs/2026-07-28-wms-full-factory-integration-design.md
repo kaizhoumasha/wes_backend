@@ -1998,6 +1998,16 @@ Codex; checkbox as you ship.
     `468 passed`，独立终审定向 `27 passed`；Alembic upgrade/downgrade/re-upgrade、Ruff、Bandit、
     import-linter、architecture `0 violations / 0 warnings`、topology 与 quality profile 均通过，独立终审
     `Approved`、无 P0–P2。GitNexus impact/detect 因本地 LadybugDB 文件 v42 与工具存储 v40 不兼容未能给出风险级别。
+  - Verified checkpoint — G4.4a / E12–E13 合同与工厂配置：批次队列位置统一为 1-based；E13 以解析后的
+    RFC 3339 UTC instant、queue position、bin id 形成稳定 FIFO；E12 terminal 位置必须逐项等于冻结预约，
+    E13 known terminal 目标 rack-slot 必须一一唯一。工厂参数只通过
+    `WorkLine.config → SmtSortingInboundConfig → immutable WorklinePluginBinding` 冻结，运行时不得读取可变
+    WorkLine config 或静态 Definition summary；配置仅包含 CTU 背篓容量、入口队列 code/capacity/FIFO 和退料
+    队列 code/FIFO，退料线 capacity 因 WES 不管理而明确不建模。CTU 容量上限直接读取 E13 typed
+    Operation Definition，E12/E13 capability admission 已进入 SMT binding。
+  - G4.4a evidence：RED 精确暴露 8 项批次合同缺口和 12 项工厂配置缺口；最终 batch/status/operation
+    `175 passed`，配置/binding/batch 聚焦回归 `330 passed`，独立终审 `232 passed`；generator check、
+    Ruff 与 diff check 通过，独立终审 `Approved`、无 P0–P2。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

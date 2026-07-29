@@ -283,6 +283,18 @@ async def test_generated_smt_activation_creates_pinned_binding(monkeypatch):
     repository.current.config = {
         "provider_profile": "wms.material-flow.sandbox",
         "source_arm_role": "SORTING_SOURCE_ARM",
+        "ctu_basket_capacity": 6,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
     }
     projection = _RuntimeStatusProjectionSpy()
     service = WorkLineService(

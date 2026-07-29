@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, TypeVar, get_origin
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, model_validator
+
+_RFC3339_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\+00:00$")
 
 
 def _parse_json_decimal(value: Any) -> Decimal:
@@ -19,7 +23,20 @@ def _parse_json_decimal(value: Any) -> Decimal:
     return Decimal(value)
 
 
+def validate_rfc3339_utc_timestamp(value: Any) -> str:
+    """只接受规范且语义有效的 RFC 3339 UTC 时间文本。"""
+
+    if not isinstance(value, str) or not _RFC3339_UTC_TIMESTAMP_RE.fullmatch(value):
+        raise ValueError("timestamp must be an RFC 3339 UTC timestamp with +00:00 offset")
+    try:
+        datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("timestamp must be a valid RFC 3339 UTC timestamp") from exc
+    return value
+
+
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+Rfc3339UtcTimestamp = Annotated[str, BeforeValidator(validate_rfc3339_utc_timestamp)]
 DecimalValue = Annotated[Decimal, BeforeValidator(_parse_json_decimal), Field(allow_inf_nan=False)]
 PositiveDecimal = Annotated[Decimal, BeforeValidator(_parse_json_decimal), Field(gt=0, allow_inf_nan=False)]
 NonNegativeDecimal = Annotated[Decimal, BeforeValidator(_parse_json_decimal), Field(ge=0, allow_inf_nan=False)]
@@ -85,7 +102,9 @@ __all__ = [
     "EffectResult",
     "NonNegativeDecimal",
     "PositiveDecimal",
+    "Rfc3339UtcTimestamp",
     "StableText",
     "StrictWmsModel",
     "validate_json_payload",
+    "validate_rfc3339_utc_timestamp",
 ]

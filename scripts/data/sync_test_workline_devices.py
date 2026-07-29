@@ -338,6 +338,18 @@ TEST_SMT_SORTING_INBOUND_SEED = TestWorklineSeed(
     config={
         "provider_profile": WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity,
         "source_arm_role": ROLE_SORTING_SOURCE_ARM,
+        "ctu_basket_capacity": 6,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
     },
     runtime_config_json={
         "run_mode": WorkLineRunMode.SIMULATION.value,

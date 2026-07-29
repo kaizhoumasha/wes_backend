@@ -32,7 +32,21 @@ from tests.support.runtime_inbox_postgresql import run_alembic, temporary_databa
 
 
 async def _seed_binding(db: AsyncSession) -> tuple[WorkLine, WorklinePluginBinding, SmtSortingInboundConfig]:
-    config = SmtSortingInboundConfig(provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity)
+    config = SmtSortingInboundConfig(
+        provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity,
+        ctu_basket_capacity=6,
+        conveyor_entry_queue={
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        return_queue={
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    )
     workline = WorkLine(
         line_code="IT-SMT-GENERATED-BINDING",
         line_name="SMT Generated Binding",

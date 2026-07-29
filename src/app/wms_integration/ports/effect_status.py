@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime  # noqa: TC003 - Pydantic 运行时需要解析该类型
 from enum import Enum
 from types import MappingProxyType
@@ -42,7 +41,10 @@ from src.app.wms_integration.ports.fulfillment_operations import (
     validate_effect_provider_reference,
     validate_fulfillment_ack,
 )
-from src.app.wms_integration.ports.operation_common import validate_json_payload
+from src.app.wms_integration.ports.operation_common import (
+    validate_json_payload,
+    validate_rfc3339_utc_timestamp,
+)
 
 if TYPE_CHECKING:
     from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
@@ -61,7 +63,6 @@ _RESULT_TYPE_BY_OPERATION = MappingProxyType(
 _REJECTION_REASON_CODES_BY_OPERATION = MappingProxyType(
     {operation.identity: frozenset(operation.reject_codes) for operation in ASYNC_EFFECT_OPERATIONS}
 )
-_RFC3339_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\+00:00$")
 BATCH_EFFECT_OPERATION_IDENTITIES = BATCH_FULFILLMENT_OPERATION_IDENTITIES
 
 
@@ -167,9 +168,7 @@ class _WmsEffectStatusWireSnapshot(BaseModel):
     def require_rfc3339_utc_timestamp(cls, value: Any) -> Any:
         if value is None:
             return None
-        if not isinstance(value, str) or not _RFC3339_UTC_TIMESTAMP_RE.fullmatch(value):
-            raise ValueError("updated_at must be an RFC 3339 UTC timestamp with +00:00 offset")
-        return value
+        return validate_rfc3339_utc_timestamp(value)
 
 
 class WmsEffectStatusSnapshot(BaseModel):

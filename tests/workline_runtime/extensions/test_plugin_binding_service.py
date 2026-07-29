@@ -159,6 +159,28 @@ def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-28.full-factory
     }
 
 
+def _smt_factory_config(
+    *,
+    provider_profile: str = "wms.2026-07-28.full-factory.sandbox",
+    ctu_basket_capacity: int = 6,
+) -> dict[str, object]:
+    return {
+        "provider_profile": provider_profile,
+        "ctu_basket_capacity": ctu_basket_capacity,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    }
+
+
 def _rough_sorter_devices() -> list[SimpleNamespace]:
     return [
         SimpleNamespace(
@@ -224,7 +246,7 @@ async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required
 
 
 @pytest.mark.asyncio
-async def test_runtime_only_smt_activation_still_snapshots_declared_profile_identity() -> None:
+async def test_smt_wms_activation_snapshots_declared_profile_identity() -> None:
     from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 
     repo = FakeRepository()
@@ -233,7 +255,7 @@ async def test_runtime_only_smt_activation_still_snapshots_declared_profile_iden
         id=17,
         plugin_key=DEFINITION.plugin_key,
         contract_version=DEFINITION.contract_version,
-        config={"provider_profile": profile_identity},
+        config=_smt_factory_config(provider_profile=profile_identity),
         version=4,
     )
 
@@ -252,7 +274,7 @@ async def test_runtime_only_smt_activation_still_snapshots_declared_profile_iden
 
 
 @pytest.mark.asyncio
-async def test_runtime_only_smt_profile_snapshot_does_not_apply_external_admission_environment_gate() -> None:
+async def test_smt_wms_capabilities_apply_external_admission_environment_gate() -> None:
     from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 
     repo = FakeRepository()
@@ -261,22 +283,61 @@ async def test_runtime_only_smt_profile_snapshot_does_not_apply_external_admissi
         id=17,
         plugin_key=DEFINITION.plugin_key,
         contract_version=DEFINITION.contract_version,
-        config={"provider_profile": profile_identity},
+        config=_smt_factory_config(provider_profile=profile_identity),
         version=4,
     )
 
-    binding = await _real_rough_sorter_service(repo).activate(
+    with pytest.raises(PluginBindingAdmissionError, match="environment"):
+        await _real_rough_sorter_service(repo).activate(
+            object(),
+            workline=workline,
+            expected_workline_version=4,
+            actor="operator",
+            reason="wms-capability-profile-snapshot",
+            environment="sandbox",
+            devices=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_smt_factory_config_creates_distinct_immutable_binding_hashes() -> None:
+    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
+    repo = FakeRepository()
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key=DEFINITION.plugin_key,
+        contract_version=DEFINITION.contract_version,
+        config=_smt_factory_config(ctu_basket_capacity=6),
+        version=4,
+    )
+    binding_service = _real_rough_sorter_service(repo)
+
+    first = await binding_service.activate(
         object(),
         workline=workline,
         expected_workline_version=4,
-        actor="operator",
-        reason="runtime-only-profile-snapshot",
+        actor="operator-1",
+        reason="factory-config-v1",
+        environment="sandbox",
+        devices=[],
+    )
+    workline.config["ctu_basket_capacity"] = 7
+    second = await binding_service.activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator-2",
+        reason="factory-config-v2",
         environment="sandbox",
         devices=[],
     )
 
-    assert binding.provider_profile_snapshot_json[0]["environment"] == "staging"
-    assert binding.typed_config_json["provider_profile"] == profile_identity
+    assert (first.binding_version, second.binding_version) == (1, 2)
+    assert first.typed_config_json["ctu_basket_capacity"] == 6
+    assert second.typed_config_json["ctu_basket_capacity"] == 7
+    assert first.typed_config_hash != second.typed_config_hash
+    assert repo.rows[first.id].typed_config_json["ctu_basket_capacity"] == 6
 
 
 @pytest.mark.asyncio

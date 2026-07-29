@@ -44,6 +44,7 @@ from src.utils.timezone import timezone
 
 SMOKE_CONTRACT_VERSION = "runtime-monitor-smoke-v1"
 SMOKE_PROVIDER_PROFILE = "wms.2026-07-28.full-factory.sandbox"
+SMOKE_CTU_BASKET_CAPACITY = 6
 SINGLE_LAYER_SMOKE_POSITION_CODE = "SOURCE_STATION_A"
 
 
@@ -55,7 +56,21 @@ async def seed_runtime_monitor_smoke(db: AsyncSession, *, commit: bool = True) -
     single_layer_workline = await _require_workline(db, TEST_SMT_SORTING_INBOUND_LINE_CODE)
     single_layer_workline.plugin_key = SMT_SORTING_INBOUND_DEFINITION.plugin_key
     single_layer_workline.contract_version = SMT_SORTING_INBOUND_DEFINITION.contract_version
-    single_layer_workline.config = {"provider_profile": SMOKE_PROVIDER_PROFILE}
+    single_layer_workline.config = {
+        "provider_profile": SMOKE_PROVIDER_PROFILE,
+        "ctu_basket_capacity": SMOKE_CTU_BASKET_CAPACITY,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    }
     await db.flush()
     await _assert_seed_workline_safe(db, single_layer_workline)
     await _mark_ready(db, single_layer_workline)

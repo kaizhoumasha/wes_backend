@@ -78,8 +78,8 @@ async def test_seed_runtime_monitor_smoke_reactivates_non_admitted_or_stale_bind
         binding.environment = "production"
     elif stale_kind == "config-changed":
         monkeypatch.setattr(
-            "scripts.data.seed_runtime_monitor_smoke.SMOKE_PROVIDER_PROFILE",
-            "wms.2026-07-28.full-factory.staging",
+            "scripts.data.seed_runtime_monitor_smoke.SMOKE_CTU_BASKET_CAPACITY",
+            7,
         )
     else:
         workline.active_plugin_binding_version = binding.binding_version + 100
