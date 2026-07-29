@@ -326,6 +326,28 @@ def test_runtime_operation_index_has_no_codegen_or_parallel_builder() -> None:
     assert "provider_catalog" not in source
 
 
+def test_e13_candidate_window_changes_operation_index_and_profile_digests(
+    monkeypatch,
+) -> None:
+    registry = _load("src.app.wms_integration.operation_registry")
+    generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
+    provider_conformance = _load("src.app.runtime.system_capabilities.wms.provider_conformance")
+    e13_identity = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
+    e13 = registry.WMS_OPERATION_BY_IDENTITY[e13_identity]
+    drifted_e13 = e13.model_copy(update={"max_candidate_count": 13})
+    drifted_operations = tuple(
+        drifted_e13 if operation.identity == e13_identity else operation for operation in registry.WMS_OPERATIONS
+    )
+
+    assert generated._operation_index_digest(registry.WMS_OPERATIONS) == generated.WMS_OPERATION_INDEX_DIGEST
+    drifted_index_digest = generated._operation_index_digest(drifted_operations)
+    assert drifted_index_digest != generated.WMS_OPERATION_INDEX_DIGEST
+
+    original_profile_digest = provider_conformance._profile_digest(provider_conformance.WMS_PROVIDER_PROFILE)
+    monkeypatch.setattr(provider_conformance, "WMS_OPERATION_INDEX_DIGEST", drifted_index_digest)
+    assert provider_conformance._profile_digest(provider_conformance.WMS_PROVIDER_PROFILE) != original_profile_digest
+
+
 def test_grn_and_batch_contracts_have_no_legacy_shape() -> None:
     document = _load("src.app.wms_integration.ports.document")
     registry = _load("src.app.wms_integration.operation_registry")

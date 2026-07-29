@@ -108,7 +108,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 事实类型 | 权威系统 | WES 角色 | WES 写入 |
 | --- | --- | --- | --- |
-| 库存数量、批次、有效期 | WMS | 引用 + 作业期快照 | 只读 evidence + 短暂快照缓存（TTL 30s） |
+| 库存数量、批次、有效期 | WMS | 引用 + 作业期快照 | 单次 execution 的只读 authority snapshot；不跨请求缓存 |
 | 入库单 / 出库单 / 批次单 / 波次 / 业务任务 | WMS | 外部引用 + 执行上下文 | 不复制为 WES 单据主档 |
 | 设备到位信号（光电、接近开关、扫码） | ECS/device | 接收 + 转换 | evidence + transition events |
 | 设备业务命令结果 | ECS/device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 |
@@ -163,7 +163,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
   catalog、selector、按 payload 路由、热切换或 fallback。
 - 新 Intent 冻结 active profile 的 submit/status binding；存量 Intent 继续使用同一 WMS Provider 的历史
   binding/credential revision，缺失或撤销时进入人工对账。
-- 三个 EFFECT 的 wire body 仅为 typed canonical payload，operation identity 与 idempotency key 使用闭集 header；
+- E01–E16 EFFECT 的 wire body 仅为 typed canonical payload，operation identity 与 idempotency key 使用闭集 header；
   frozen binding 只在 WES 内部持久化并保证重试/重启仍使用原 endpoint/credential revision，绝不发送给 WMS。
   状态查询快照是唯一业务完成/拒绝事实；callback 缺失不影响正确性。
 - WES 只关心 submit、status query、callback hint 交互合同和可观察结果，不建模或推断 WMS 内部队列、流程、

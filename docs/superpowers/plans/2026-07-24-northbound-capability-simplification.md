@@ -52,7 +52,7 @@
 - `BoundedQueryShadowEvaluator` 没有生产构造点，shadow comparison 没有生产 enqueue 调用；但数据库表、Repository、Celery consumer、分区维护任务和 readiness API 已完整建设。
 - `WmsProviderProfile.validate_composition()` 强制每个 EFFECT 恰好一个 callback，而代码中不存在统一的 EFFECT 状态查询 Port。
 - `provider_catalog.py` 同时构建 sandbox、staging、production 三套 profile，但当前发布模型是每个工厂部署一个 Provider。
-- 三个 EFFECT operation 的 callback adapter、effect adapter 和 preparation service 大量重复，差异主要是 operation identity 与类型名。
+- 首批 EFFECT operation 的 callback adapter、effect adapter 和 preparation service 大量重复，差异主要是 operation identity 与类型名；当前 registry 已冻结 E01–E16。
 - 现有相关基线测试通过：`32 passed`。因此问题是需求与架构边界不匹配，不是当前代码无法自洽。
 
 ### 保留与删除
@@ -764,7 +764,7 @@ uv run pytest tests/integration/test_runtime_plugin_attempt_postgresql.py -q
 - 运行 GitNexus detect changes，确认变更没有越过 shadow 字段删除边界。
 - Commit：`refactor(runtime): 清理尝试写集中的影子残留`
 
-### Task 8：合并三个 EFFECT operation 的重复基础设施
+### Task 8：合并首批 EFFECT operation 的重复基础设施
 
 **Files:**
 
@@ -962,7 +962,7 @@ rg -n "callback.*(COMPLETED|REJECTED)|callback_adapter" src/app/runtime
 
 | 已有能力 | 现状 | 本计划处理 |
 | --- | --- | --- |
-| 三个 EFFECT typed request/result Port | `confirm_inbound`、`full_box_exchange`、`notify_pkg_binding` 已有冻结 Pydantic contract | 复用并将状态查询 `COMPLETED` 结果严格映射回既有 result model |
+| 首批 EFFECT typed request/result Port | `confirm_inbound`、`full_box_exchange`、`notify_pkg_binding` 已有冻结 Pydantic contract；当前 registry 为 E01–E16 | 复用并将状态查询 `COMPLETED` 结果严格映射回既有 result model |
 | `SystemOutbox`、`DispatchAttempt` 与 canonical payload | 已记录可靠 transport 事实、payload hash 和尝试证据 | 保留双账本，只补不可变幂等请求元数据和受控签名 header |
 | `FrozenExternalHttpBinding` | 已冻结 submit target、profile/binding hash 和版本化 credential reference | 沿用同一模式定义 status binding snapshot；不创建 Provider router |
 | HMAC canonical dispatch 与 credential resolver | 已支持闭集 header、nonce、时间戳和版本化 secret reference | 将 operation identity/idempotency key 纳入签名，并保留同一 Provider 的历史 credential revision |
@@ -1115,7 +1115,7 @@ Run with Claude Code or Codex; checkbox as you ship.
   - Files: attempt coordinator、query evidence/gateway、runtime inbox writeback
   - Verify: attempt/evidence contract tests 与 PostgreSQL integration test 通过。
 - [x] **T8 (P2, human: ~1–2d / CC: ~2–3h)** — WMS DRY — 在特征测试保护下合并三个 preparation 流程
-  - Surfaced by: Code-quality review — 三个 EFFECT preparation 大量重复但业务 payload 必须继续分离。
+  - Surfaced by: Code-quality review — 首批 EFFECT preparation 大量重复但业务 payload 必须继续分离。
   - Files: runtime orchestration preparation services、三个 WMS operation adapter package
   - Verify: system capability、三个 typed EFFECT contract 和 Ruff 检查通过。
 - [ ] **T9 (P1, human: ~2–3d + WMS coordination / CC: ~1–2h)** — Release — 完成真实联调、清数据和 forward-only 整体切换

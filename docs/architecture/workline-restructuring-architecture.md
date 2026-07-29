@@ -91,7 +91,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 事实类型 | 权威系统 | WES 角色 | WES 写入 |
 | --- | --- | --- | --- |
-| 库存数量、批次、有效期 | WMS | 引用 + 作业期快照 | 只读 evidence + 短暂快照缓存（TTL 30s） |
+| 库存数量、批次、有效期 | WMS | 引用 + 作业期快照 | 单次 execution 的只读 authority snapshot；不跨请求缓存 |
 | 入库单 / 出库单 / 批次单 / 波次 / 业务任务 | WMS | 外部引用 + 执行上下文 | 不复制为 WES 单据主档 |
 | 设备到位信号（光电、接近开关、扫码） | ECS/device | 接收 + 转换 | evidence + transition events |
 | 设备业务命令结果（机械臂取放、滚筒线动作） | ECS/device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 |

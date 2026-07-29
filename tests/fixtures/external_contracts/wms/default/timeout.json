@@ -4,12 +4,13 @@
   "contract_version": "2026-06-25",
   "direction": "effect",
   "raw_request": {
-    "operation_identity": "wms.fulfillment.request_rack_supply@v1",
     "dispatch_key": "rack-supply-timeout-001",
-    "idempotency_key": "idem-rack-supply-timeout-001"
+    "station_code": "STATION-A",
+    "rack_type": "FIVE_LAYER",
+    "demand_generation": 1
   },
   "expected_error": {
-    "code": "WMS_TIMEOUT",
+    "code": "WMS_PROVIDER_TIMEOUT",
     "retryable": true
   }
 }

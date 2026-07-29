@@ -848,11 +848,11 @@ inbound_auth:
   scheme: NONE
 operations:
   wms.master_data.get_material@v1:
-    path: /api/wms/materials/{material_id}
+    path: /api/wms/master-data/materials/{material_code}
   wms.inventory.confirm_inbound@v1:
     submit_path: /api/wms/inventory/confirm-inbound
   wms.fulfillment.move_bins_from_conveyor_exit@v1:
-    submit_path: /api/wms/fulfillment/move-bins-from-conveyor-exit
+    submit_path: /api/wms/fulfillment/conveyor-exit-batches
     max_candidate_count: 12
 ```
 

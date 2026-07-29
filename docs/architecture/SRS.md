@@ -432,7 +432,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 #### 3.4.1 执行状态追踪与库存协同 (Execution State Tracking & Inventory Coordination)
 
-* **架构定位**: WES 采用 **纯代理模式 (Pure Proxy Mode)**。WES **不维护库存主数据**，所有涉及库存的查询、预留、扣减操作均 **实时透传 (Passthrough)** 给现有 WMS。为优化性能，WES 允许对查询结果进行 **短时缓存 (TTL ≤ 30秒)**，但缓存失效后必须重新查询 WMS。
+* **架构定位**: WES 采用 **纯代理模式 (Pure Proxy Mode)**。WES **不维护库存主数据**，所有涉及库存的查询、预留、扣减操作均通过冻结 typed operation 访问现有 WMS。QUERY 不做跨请求缓存；单次 execution 只查询一次并复用同一 authority snapshot。
 * **职责划分 (Responsibility Division)**:
 
   * **现有 WMS (Existing WMS)**:
@@ -465,21 +465,20 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **1. 库存查询 (Inventory Query)**
 
   * **场景**: WES 需要决策时 (如: 分配发料任务)，查询现有 WMS 的库存。
-  * **接口**: `GET /api/wms/inventory?material=R001&location=SMT-A-01`
-  * **缓存策略**: WES 可对查询结果进行短时缓存 (TTL ≤ 30秒)，减少 API 调用频率，但不改变"WMS 为库存主数据源"的架构定位。
+  * **接口**: `GET /api/wms/inventory/query?material_code=R001&warehouse_code=SMT-A`
+  * **缓存策略**: 不做跨请求缓存；同一 execution 仅复用该次查询返回的 authority snapshot。
 
   **2. 库存预留 (Inventory Reservation)**
 
   * **场景**: WES 生成发料任务前，向现有 WMS 申请预留库存。
-  * **接口**: `POST /api/wms/inventory/reserve`
+  * **接口**: `POST /api/wms/inventory/reservations`
   * **请求**:
     ```json
     {
-      "material_id": "R001",
-      "qty": 100,
-      "work_order": "WO-12345",
-      "reserved_by": "P9_WES",
-      "expire_time": "2025-12-13T12:00:00Z"
+      "dispatch_key": "reserve-WO-12345",
+      "material_code": "R001",
+      "quantity": "100",
+      "warehouse_code": "SMT-A"
     }
     ```
   * **响应**: 现有 WMS 返回 `ReservationID`，并在 WMS 侧锁定库存；WES 只保存预留引用和执行证据。
@@ -491,28 +490,28 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **3. 库存确认 (Inventory Confirmation)**
 
   * **场景**: 物理动作完成后 (如: 装箱完成、发料完成)，WES 通知现有 WMS 更新库存。
-  * **入库确认**: `POST /api/wms/inventory/putaway`
+  * **入库确认**: `POST /api/wms/inventory/confirm-inbound`
     ```json
     {
-      "grn": "GRN-001",
-      "material_id": "R001",
-      "qty": 100,
-      "location": "SMT-A-01-03",
-      "pkg_code": "PKG-12345",
-      "timestamp": "2025-12-13T10:30:00Z"
+      "dispatch_key": "inbound-GRN-001",
+      "inbound_key": "GRN-001",
+      "material_code": "R001",
+      "quantity": "100",
+      "pkg_id": "PKG-12345",
+      "location_code": "SMT-A-01-03"
     }
     ```
-  * **出库确认**: `POST /api/wms/inventory/issue`
+  * **出库确认**: `POST /api/wms/inventory/confirm-outbound`
     ```json
     {
-      "reservation_id": "RSV-001",
-      "material_id": "R001",
-      "qty": 100,
-      "work_order": "WO-12345",
-      "timestamp": "2025-12-13T10:35:00Z"
+      "dispatch_key": "outbound-WO-12345",
+      "outbound_key": "WO-12345",
+      "material_code": "R001",
+      "quantity": "100",
+      "reservation_id": "RSV-001"
     }
     ```
-  * **幂等性保障**: 所有确认接口支持重复调用 (基于 `TaskID` 去重)。
+  * **幂等性保障**: 所有 EFFECT 使用闭集 operation identity 与 `Idempotency-Key` 去重。
 
   **4. 异常处理 (Exception Handling)**
 
@@ -941,28 +940,29 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **2. 库存预留接口 (Inventory Reservation)**
 
   ```
-  POST /api/wms/inventory/reserve
-  Body: { material_id, qty, work_order, reserved_by, expire_time }
-  Response: { reservation_id, status }
+  POST /api/wms/inventory/reservations
+  Body: { dispatch_key, material_code, quantity, warehouse_code, owner_code?, lot_no? }
+  Response: { dispatch_key, material_code, reservation_id, reserved_quantity, expires_at }
 
-  DELETE /api/wms/inventory/reserve/{reservation_id}
-  Response: { status }
+  POST /api/wms/inventory/reservations/release
+  Body: { dispatch_key, reservation_id, release_reason }
+  Response: { dispatch_key, reservation_id, release_reference, reservation_status }
   ```
 
   **3. 入库确认接口 (Putaway Confirmation)**
 
   ```
-  POST /api/wms/inventory/putaway
-  Body: { grn, material_id, qty, location, pkg_code, timestamp }
-  Response: { status, transaction_id }
+  POST /api/wms/inventory/confirm-inbound
+  Body: { dispatch_key, inbound_key, material_code, quantity, pkg_id, location_code }
+  Response: { dispatch_key, inbound_key, wms_document_no, inventory_source_version }
   ```
 
   **4. 出库确认接口 (Issue Confirmation)**
 
   ```
-  POST /api/wms/inventory/issue
-  Body: { reservation_id, material_id, qty, work_order, timestamp }
-  Response: { status, transaction_id }
+  POST /api/wms/inventory/confirm-outbound
+  Body: { dispatch_key, outbound_key, material_code, quantity, pkg_id?, reservation_id? }
+  Response: { dispatch_key, outbound_key, issue_reference, inventory_source_version }
   ```
 * **P9 WES 提供的接口 (APIs Provided by P9 WES)**:
 

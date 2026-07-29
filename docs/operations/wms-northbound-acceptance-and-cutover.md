@@ -145,7 +145,7 @@ callback ingress/调度结果、ReconciliationCase），并用联调采集证据
 
 全部前置条件：
 
-1. 真实联调验收全部 case 通过，三个 EFFECT 均已终结或对账关闭。
+1. 真实联调验收全部 case 通过，E01–E16 EFFECT 均已终结或对账关闭。
 2. 停止联调任务及对应 Celery worker，并证明双方没有新的 EFFECT receipt。
 3. 备份必要的脱敏诊断日志，解析 Intent、Outbox、inbox、reconciliation 及历史表的依赖顺序。
 4. WES 与 WMS 数据 owner 共同确认精确删除目标、恢复方法和执行窗口。

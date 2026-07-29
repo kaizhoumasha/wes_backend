@@ -456,3 +456,41 @@ operation 的兼容入口。
 - worktree `gitnexus detect-changes --scope staged` → 21 indexed files / 56 symbols /
   1 affected process，risk MEDIUM；只命中 Mock handler request-body 流程与本轮活动文档/guard，
   属于已授权 Release Acceptance Review 范围，未引入 T2/T5 流程。
+
+## Approval Review（第十二轮）修复
+
+- 全部非 archive 活动 Markdown 清理旧 master-data/document/inventory/fulfillment 路径、WMS 查询
+  30 秒跨请求缓存口径、E02 `DELETE` 释放语义与旧“三个 EFFECT”数量口径；removal guard 继续扫描
+  `docs/**/*.md` 且只排除既有 `docs/superpowers/archive/**`，以精确旧字面量阻止回归，不引入文件
+  allowlist。
+- WMS 默认 E08 `success/reject/timeout` fixture 的 `raw_request` 均可由真实
+  `WmsQueryRackAvailabilityRequest` 解析；success ACK 可由 `WmsEffectAck` 解析，reject/timeout
+  错误码分别受 Definition 的 `reject_codes/error_codes` 闭集约束。
+- operation index digest 纳入 `max_candidate_count`；外部合同 profile digest 继续组合 index digest。
+  新增回归证明 E13 上限由 `12` 改为 `13` 时两级摘要均发生变化，避免候选窗口合同漂移无法被发现。
+- 未实现 T2/T5，未新增兼容层、宽 allowlist、skip 或 xfail。
+
+## Approval Review（第十二轮）TDD 与验证
+
+1. RED：3 项定点测试分别命中 8 处活动文档旧语义、3 个 fixture 请求字段缺失且夹带 2 个非请求字段、
+   operation index 缺少可测试的 digest 生成函数，共 `3 failed`。
+2. GREEN：3 项定点测试全部通过；WMS 合同、外部合同 fixture 与 removal guard 相关回归
+   `270 passed`。
+3. 默认全集从头复验 → `4182 passed, 5 existing skipped`（4187 collected），没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4182 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4187 tests collected`。
+- `uv run ruff format --check .` → 1075 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：`WMS_OPERATION_INDEX_DIGEST` 为 LOW（0 upstream）；
+  `_profile_digest` 为 LOW（2 direct / 3 upstream / 0 process）；fixture 测试与新增 guard 字面量未被索引，
+  risk UNKNOWN。无 HIGH/CRITICAL 风险。
+- worktree `gitnexus detect-changes --scope staged` → 16 files / 33 symbols /
+  0 affected processes，risk LOW；变更仅覆盖本轮活动文档、fixture、摘要生成、守卫与验收报告，
+  未引入 T2/T5 流程。

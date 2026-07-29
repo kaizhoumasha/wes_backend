@@ -29,14 +29,14 @@
 
 | 来源接口/事件 | 目标 port | 目标态说明 |
 | --- | --- | --- |
-| `GET /api/wms/materials/{id}` / `GET /api/wms/materials?ids=...` | `WmsMasterDataPort` | 物料主数据按需查询；结果可 30s TTL 缓存 |
-| `GET /api/wms/zones` / `GET /api/wms/locations?zone=...` | `WmsMasterDataPort` | 区域/地码用于设备归属、资源边界和履约目标校验 |
-| `GET /api/wms/racks/{id}` / `GET /api/wms/bins/{id}` / `GET /api/wms/racks?type=...` | `WmsMasterDataPort` | 货架/料箱主数据与状态按需引用，不复制为 WES 主数据 |
-| `GET /api/wms/grn/{id}` / `GET /api/wms/grn/{id}/packages` | `WmsDocumentPort` | GRN 与料盘归属用于作业上下文和 PKG 校验 |
+| `GET /api/wms/master-data/materials/{material_code}` / `GET /api/wms/master-data/materials` | `WmsMasterDataPort` | 物料主数据按需查询；单次 execution 复用同一 authority snapshot，不跨请求缓存 |
+| `GET /api/wms/master-data/zones` / `GET /api/wms/master-data/locations` | `WmsMasterDataPort` | 区域/地码用于设备归属、资源边界和履约目标校验 |
+| `GET /api/wms/master-data/racks/{rack_id}` / `GET /api/wms/master-data/bins/{bin_id}` / `GET /api/wms/master-data/racks` | `WmsMasterDataPort` | 货架/料箱主数据与状态按需引用，不复制为 WES 主数据 |
+| `GET /api/wms/documents/grns/{grn_id}` / `GET /api/wms/documents/grns/{grn_id}/packages` | `WmsDocumentPort` | GRN 与料盘归属用于作业上下文和 PKG 校验 |
 | inventory QUERY runtime | `InventoryQueryOperationPort` | 每次 execution 查询一次 WMS；禁止跨请求缓存 |
 | `POST /api/wms/fulfillment/rack-supply` / `POST /api/wms/fulfillment/rack-transport` | E08/E09 typed operations | WES 生成搬运需求；WMS 统一调度 RCS |
 | `POST /api/wms/fulfillment/pkg-bindings` | E01 typed operation | WES 作业结果通知 WMS；属于出站 effect，必须走 `RuntimeIntentLog` + EffectPort，不允许进入只读 `WmsDocumentPort` |
-| `POST /api/wms/inventory/reserve` / `DELETE /api/wms/inventory/reserve/{id}` / `POST /api/wms/inventory/transfer` | `WmsInventoryTransactionPort` | 库存预留、释放、转移确认必须以 WMS 事务结果为准；必须走 `RuntimeIntentLog` + EffectPort，不允许作为查询能力直调 |
+| `POST /api/wms/inventory/reservations` / `POST /api/wms/inventory/reservations/release` / `POST /api/wms/inventory/transfers` | `WmsInventoryTransactionPort` | E01/E02/E05 库存预留、释放、转移确认必须以 WMS 事务结果为准；必须走 `RuntimeIntentLog` + EffectPort，不允许作为查询能力直调 |
 | `POST /api/v1/callback/event` / `POST /api/v1/callback/result` | `WmsEventPort` / `DeviceEventPort` → `RuntimeInbox` | 统一回调入口；按 source 路由到 WMS/RCS/ECS/device normalizer；ACK 后写 inbox，不直接改 session |
 
 **ExternalContractProfile（外部合同 profile）**：
