@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""部署前读取 live PostgreSQL 容量并校验 API/Celery 基础连接池预算。"""
+"""部署前读取 live PostgreSQL 容量并校验 API/全部 Celery worker 基础连接池预算。"""
 
 from __future__ import annotations
 
@@ -109,11 +109,11 @@ def _parse_scale(values: list[str]) -> dict[str, int]:
     scales: dict[str, int] = {}
     for value in values:
         service, separator, count = value.partition("=")
-        if not separator or service not in {"api", "celery_worker"}:
+        if not separator or service not in {"api", "celery"}:
             raise CapacityViolation(f"unsupported scale target: {value}")
         scales[service] = int(count)
-    if scales and set(scales) != {"api", "celery_worker"}:
-        raise CapacityViolation("scale requires complete target topology: api=<n> and celery_worker=<n>")
+    if scales and set(scales) != {"api", "celery"}:
+        raise CapacityViolation("scale requires complete target topology: api=<n> and celery=<n>")
     return scales
 
 
@@ -129,7 +129,8 @@ def build_capacity_plan(
         api_processes=API_UVICORN_WORKERS,
         api_pool_size=API_DATABASE_POOL_SIZE,
         celery_replicas=(
-            scales.get("celery_worker", _env_int("CELERY_WORKER_REPLICAS", 4)) if "celery_worker" in services else 0
+            (scales.get("celery", _env_int("CELERY_WORKER_REPLICAS", 4)) if "celery" in services else 0)
+            + (_env_int("WMS_FULFILLMENT_CELERY_REPLICAS", 1) if "celery-wms-fulfillment" in services else 0)
         ),
         celery_processes=_env_int("CELERY_CONCURRENCY", 4),
         celery_pool_size=CELERY_DATABASE_POOL_SIZE,
@@ -156,13 +157,13 @@ async def _read_max_connections() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--services", default="api,celery_worker")
+    parser.add_argument("--services", default="api,celery,celery-wms-fulfillment")
     parser.add_argument("--scale", action="append", default=[])
     parser.add_argument("--max-connections", type=int)
     parser.add_argument("--reserve", type=int, default=_env_int("DATABASE_CONNECTION_RESERVE", 10))
     args = parser.parse_args()
     services = {value.strip() for value in args.services.split(",") if value.strip()}
-    if not services <= {"api", "celery_worker"}:
+    if not services <= {"api", "celery", "celery-wms-fulfillment"}:
         raise CapacityViolation(f"unsupported services: {sorted(services)}")
     scales = _parse_scale(args.scale)
     plan = build_capacity_plan(services=services, scales=scales, reserve=args.reserve)

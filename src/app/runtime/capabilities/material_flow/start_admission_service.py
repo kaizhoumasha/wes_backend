@@ -24,7 +24,7 @@ from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repos
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.services.workline_service import WorkLineService, workline_service
 from src.core.logger import logger
-from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -562,7 +562,7 @@ class WorkLineStartAdmissionService:
         await db.commit()
         if released_outbox_count > 0:
             try:
-                self._queue_gateway.enqueue_outbox(limit=50)
+                self._queue_gateway.enqueue_outbox(targets=(OutboxDispatchTarget.SYSTEM,), limit=50)
             except Exception as exc:
                 logger.warning(f"START 准入已释放 Outbox，但即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
 

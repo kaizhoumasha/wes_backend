@@ -52,7 +52,7 @@ from src.app.workline.models.workline import WorkLineRunMode
 from src.app.workline.repositories.workline_repository import WorkLineRepository  # noqa: TC001
 from src.app.workline.trace_context import TraceContext
 from src.core.base_service import BaseService
-from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_str
 
@@ -136,7 +136,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         self._queue_gateway = queue_gateway
 
     def _enqueue_outbox_dispatch(self) -> None:
-        self._queue_gateway.enqueue_outbox(limit=50)
+        self._queue_gateway.enqueue_outbox(targets=(OutboxDispatchTarget.SYSTEM,), limit=50)
 
     async def _accept_runtime_message(
         self,

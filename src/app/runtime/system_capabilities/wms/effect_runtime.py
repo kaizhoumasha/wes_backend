@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -12,14 +13,18 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityDefinition,
     SystemCapabilityMode,
 )
-from src.app.runtime.system_capabilities.outcomes import Success
 from src.app.runtime.system_capabilities.wms.provider_catalog import freeze_wms_effect_binding
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
-from src.app.wms_integration.operation_contract import WmsOperationDefinition, WmsOperationMode
+from src.app.wms_integration.operation_contract import (
+    WmsExecutionLane,
+    WmsOperationDefinition,
+    WmsOperationMode,
+)
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
 from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
 from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSION
+from src.core.task_queue_gateway import OutboxDispatchTarget
 
 if TYPE_CHECKING:
     from src.app.runtime.system_capabilities.wms.provider_catalog import WmsProviderCatalog
@@ -38,6 +43,14 @@ class WmsEffectDispatchAccepted(BaseModel):
     dispatch_key: str = Field(min_length=1, max_length=240)
 
 
+@dataclass(frozen=True, slots=True)
+class WmsEffectPreparationResult:
+    """区分公开 accepted payload 与只在当前事务传播的唤醒 target。"""
+
+    accepted_payload: WmsEffectDispatchAccepted
+    dispatch_targets: frozenset[OutboxDispatchTarget]
+
+
 class WmsRegistryEffectCapabilityHandler:
     """把 16 项 typed request 委托给同一个事务内 preparation Port。"""
 
@@ -49,8 +62,7 @@ class WmsRegistryEffectCapabilityHandler:
             operation = _EFFECT_OPERATION_BY_REQUEST_MODEL[type(request)]
         except KeyError as exc:
             raise ValueError("WMS EFFECT request model is absent from the static registry") from exc
-        accepted = await self._preparation_port.prepare(operation, request, execution=execution)
-        return Success(payload=accepted)
+        return await self._preparation_port.prepare(operation, request, execution=execution)
 
 
 def build_wms_effect_capability_definition(
@@ -90,7 +102,7 @@ class WmsEffectPreparationRuntime:
         request: BaseModel,
         *,
         execution: Any,
-    ) -> WmsEffectDispatchAccepted:
+    ) -> WmsEffectPreparationResult:
         if operation.mode is not WmsOperationMode.EFFECT:
             raise ValueError("WMS preparation requires an EFFECT operation")
         if type(request) is not operation.request_model:
@@ -144,11 +156,20 @@ class WmsEffectPreparationRuntime:
         db = execution.db
         db.add(outbox)
         await db.flush()
-        return WmsEffectDispatchAccepted(dispatch_key=dispatch_key)
+        dispatch_target = (
+            OutboxDispatchTarget.WMS_DATA
+            if operation.execution_lane is WmsExecutionLane.WMS_DATA
+            else OutboxDispatchTarget.WMS_FULFILLMENT
+        )
+        return WmsEffectPreparationResult(
+            accepted_payload=WmsEffectDispatchAccepted(dispatch_key=dispatch_key),
+            dispatch_targets=frozenset({dispatch_target}),
+        )
 
 
 __all__ = [
     "WmsEffectDispatchAccepted",
+    "WmsEffectPreparationResult",
     "WmsEffectPreparationRuntime",
     "WmsRegistryEffectCapabilityHandler",
     "build_wms_effect_capability_definition",

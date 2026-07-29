@@ -42,6 +42,8 @@ class NonHttpLeaseExhaustionService:
         now: Any,
         operation_domains: tuple[str, ...] | None = None,
         exclude_operation_domains: tuple[str, ...] | None = None,
+        operation_identities: tuple[str, ...] | None = None,
+        exclude_operation_identities: tuple[str, ...] | None = None,
         repository: Any | None = None,
     ) -> int:
         selected_repository = repository or self.outbox_repository
@@ -55,6 +57,8 @@ class NonHttpLeaseExhaustionService:
                 now=now,
                 operation_domains=operation_domains,
                 exclude_operation_domains=exclude_operation_domains,
+                operation_identities=operation_identities,
+                exclude_operation_identities=exclude_operation_identities,
             )
         begin_nested = cast("Callable[[], AbstractAsyncContextManager[Any]]", begin_nested)
         async with begin_nested():
@@ -66,6 +70,8 @@ class NonHttpLeaseExhaustionService:
                 now=now,
                 operation_domains=operation_domains,
                 exclude_operation_domains=exclude_operation_domains,
+                operation_identities=operation_identities,
+                exclude_operation_identities=exclude_operation_identities,
             )
 
     async def _fence_in_transaction(
@@ -78,6 +84,8 @@ class NonHttpLeaseExhaustionService:
         now: Any,
         operation_domains: tuple[str, ...] | None,
         exclude_operation_domains: tuple[str, ...] | None,
+        operation_identities: tuple[str, ...] | None,
+        exclude_operation_identities: tuple[str, ...] | None,
     ) -> int:
         outboxes = await repository.fence_exhausted_non_http_leases_in_bucket(
             db,
@@ -86,6 +94,8 @@ class NonHttpLeaseExhaustionService:
             now=now,
             operation_domains=operation_domains,
             exclude_operation_domains=exclude_operation_domains,
+            operation_identities=operation_identities,
+            exclude_operation_identities=exclude_operation_identities,
         )
         for outbox in outboxes:
             outbox_id = getattr(outbox, "id", None)

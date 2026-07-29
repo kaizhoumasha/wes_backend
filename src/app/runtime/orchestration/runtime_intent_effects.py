@@ -481,6 +481,7 @@ class RuntimeIntentEffectApplier:
             await self._apply_noop_completion(ctx)
             return RuntimeIntentEffectResult.processed()
 
+        outbox_dispatch_targets = set()
         effect_state = ctx["effect_state"]
         for intent in intents:
             skip_material_unit_intent = effect_state.skip_next_material_unit_intent and intent.kind in {
@@ -497,6 +498,7 @@ class RuntimeIntentEffectApplier:
 
                     service = system_capability_effect_service
                 result = await service.apply(ctx, intent)
+                outbox_dispatch_targets.update(result.outbox_dispatch_targets)
                 ctx.setdefault("system_capability_outcomes", []).append(result)
                 from src.app.runtime.system_capabilities.outcomes import (
                     BusinessReject,
@@ -611,7 +613,9 @@ class RuntimeIntentEffectApplier:
 
             raise ValueError(f"unsupported RuntimeIntent kind: {intent.kind.value}")
 
-        return RuntimeIntentEffectResult.processed()
+        return RuntimeIntentEffectResult.processed(
+            outbox_dispatch_targets=frozenset(outbox_dispatch_targets),
+        )
 
     async def _apply_create_material_unit(self, ctx: Any, intent: RuntimeIntent) -> None:
         service = self._material_unit_mutation_service

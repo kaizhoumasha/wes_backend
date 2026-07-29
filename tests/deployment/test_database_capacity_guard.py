@@ -112,7 +112,7 @@ def test_environment_profiles_and_compose_declare_explicit_database_roles() -> N
             Loader=_ComposeSafeLoader,  # noqa: S506 -- 仅扩展 SafeLoader 解析 Compose 的 !override 标签。
         )
         api_env = compose["services"]["api"]["environment"]
-        worker_env = compose["services"]["celery_worker"]["environment"]
+        worker_env = compose["services"]["celery"]["environment"]
         assert api_env["DATABASE_RUNTIME_ROLE"] == "api"
         assert api_env["DATABASE_POOL_SIZE"] == API_DATABASE_POOL_SIZE
         assert api_env["DATABASE_MAX_OVERFLOW"] == 0
@@ -137,7 +137,7 @@ def test_production_compose_uses_image_source_without_host_override() -> None:
     deploy_text = (REPO_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
 
     assert "SOURCE_MOUNT=" not in prod_text
-    assert deploy_text.count("volumes: !override") == 4
+    assert deploy_text.count("volumes: !override") == 5
 
     env = os.environ.copy()
     env["BACKEND_IMAGE"] = "example.invalid/wes/wes_backend:test"
@@ -167,7 +167,7 @@ def test_production_compose_uses_image_source_without_host_override() -> None:
 
     assert completed.returncode == 0, completed.stderr
     merged = yaml.safe_load(completed.stdout)
-    for service_name in ("api", "celery_worker", "celery_beat", "flower"):
+    for service_name in ("api", "celery", "celery-wms-fulfillment", "celery_beat", "flower"):
         targets = {volume["target"] for volume in merged["services"][service_name].get("volumes", [])}
         assert "/app/src" not in targets
 
@@ -175,7 +175,7 @@ def test_production_compose_uses_image_source_without_host_override() -> None:
 def test_deployment_script_runs_live_guard_before_application_start_and_scale() -> None:
     script_text = (REPO_ROOT / "scripts/docker-deploy-simple.sh").read_text(encoding="utf-8")
 
-    assert "celery_worker=8" not in script_text
+    assert "celery=8" not in script_text
     assert "capacity_guard.py" in script_text
     cmd_up_body = script_text.split("cmd_up()", maxsplit=1)[1].split("cmd_down()", maxsplit=1)[0]
     assert "--wait db redis" in cmd_up_body
@@ -194,7 +194,7 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
         "-e DATABASE_RUNTIME_ROLE=cli "
         "-e DATABASE_POOL_SIZE=1 "
         "-e DATABASE_MAX_OVERFLOW=0 "
-        "api python scripts/capacity_guard.py --services api,celery_worker"
+        "api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment"
     )
 
     assert (
@@ -206,7 +206,7 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     infra_index = deploy_body.index("$COMPOSE_CMD up -d --wait db redis")
     application_command = "$COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}"
     first_guard_index = deploy_body.index("run_capacity_guard", infra_index)
-    quiesce_command = "$COMPOSE_CMD stop api celery_worker celery_beat"
+    quiesce_command = "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat"
     migration_command = (
         "$COMPOSE_CMD run --rm --no-deps "
         "-e DATABASE_RUNTIME_ROLE=cli "
@@ -232,12 +232,12 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
         "trap cleanup_failed_deploy EXIT", maxsplit=1
     )[0]
     assert 'if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]' in cleanup_body
-    assert "$COMPOSE_CMD stop api celery_worker celery_beat || true" in cleanup_body
+    assert "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat || true" in cleanup_body
     assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('if [ "$HEALTH_CHECK_PASSED" = false ]')
     assert "for service_name in ${DEPLOY_SERVICES}; do" in deploy_body
     assert 'case "$service_name" in' in deploy_body
-    assert "celery_worker|celery_beat)" in deploy_body
-    assert "$COMPOSE_CMD ps -q celery_worker celery_beat" not in deploy_body
+    assert "celery|celery-wms-fulfillment|celery_beat)" in deploy_body
+    assert "$COMPOSE_CMD ps -q celery celery_beat" not in deploy_body
     assert "${service_name} 容器未就绪" in deploy_body
     assert "CELERY_HEALTH_TIMEOUT_SECONDS" in deploy_body
     assert 'while [ "$container_health" != "healthy" ] && [ "$container_health" != "none" ]' in deploy_body
@@ -255,10 +255,12 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     assert "DATABASE_RUNTIME_ROLE=cli" in standard_release
     assert "DATABASE_POOL_SIZE=1" in standard_release
     assert "DATABASE_MAX_OVERFLOW=0" in standard_release
-    guard_index = standard_release.index("python scripts/capacity_guard.py --services api,celery_worker")
-    quiesce_index = standard_release.index("stop api celery_worker celery_beat")
+    guard_index = standard_release.index(
+        "python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment"
+    )
+    quiesce_index = standard_release.index("stop api celery celery-wms-fulfillment celery_beat")
     migration_index = standard_release.index("api alembic upgrade head")
-    application_index = standard_release.index("up -d api celery_worker celery_beat flower nginx")
+    application_index = standard_release.index("up -d api celery celery-wms-fulfillment celery_beat flower nginx")
     assert guard_index < quiesce_index < migration_index < application_index
     assert "迁移后禁止自动切回旧镜像" in rollback
     assert "PREVIOUS_IMAGE" not in rollback
@@ -294,7 +296,7 @@ def test_capacity_plan_does_not_accept_removed_topology_override_contract(
 ) -> None:
     monkeypatch.setenv(name, value)
 
-    plan = build_capacity_plan(services={"api", "celery_worker"}, scales={})
+    plan = build_capacity_plan(services={"api", "celery"}, scales={})
 
     assert plan.api_processes == API_UVICORN_WORKERS
     assert plan.api_pool_size == API_DATABASE_POOL_SIZE
@@ -310,7 +312,7 @@ def test_capacity_plan_uses_only_actual_docker_process_and_pool_constants(
     monkeypatch.setenv("CELERY_WORKER_REPLICAS", "4")
     monkeypatch.setenv("CELERY_CONCURRENCY", "4")
 
-    plan = build_capacity_plan(services={"api", "celery_worker"}, scales={})
+    plan = build_capacity_plan(services={"api", "celery"}, scales={})
 
     assert plan.api_processes == 4
     assert plan.api_pool_size == 5
@@ -354,19 +356,19 @@ def test_capacity_guard_cli_rejects_reserve_below_ten(
     assert "10" in completed.stderr
 
 
-@pytest.mark.parametrize("scale", [["api=3"], ["celery_worker=10"]])
+@pytest.mark.parametrize("scale", [["api=3"], ["celery=10"]])
 def test_scale_requires_complete_api_and_celery_target_topology(scale: list[str]) -> None:
-    with pytest.raises(CapacityViolation, match=r"complete.*api.*celery_worker"):
+    with pytest.raises(CapacityViolation, match=r"complete.*api.*celery"):
         _parse_scale(scale)
 
 
 def test_scale_calculates_complete_api_then_worker_target_without_prior_state() -> None:
-    scales = _parse_scale(["api=3", "celery_worker=10"])
+    scales = _parse_scale(["api=3", "celery=10"])
 
-    plan = build_capacity_plan(services={"api", "celery_worker"}, scales=scales)
+    plan = build_capacity_plan(services={"api", "celery"}, scales=scales)
     result = calculate_capacity(plan, max_connections=200)
 
-    assert scales == {"api": 3, "celery_worker": 10}
+    assert scales == {"api": 3, "celery": 10}
     assert result.api_connections == 60
     assert result.celery_connections == 40
     assert result.application_connections == 100
@@ -421,9 +423,9 @@ def _run_shell_scale_validation(arguments: list[str]) -> subprocess.CompletedPro
 @pytest.mark.parametrize(
     "arguments",
     [
-        ["api=1", "celery_worker=4"],
-        ["--scale=api=1", "--scale=celery_worker=4"],
-        ["--scale", "api=1", "--scale", "celery_worker=4"],
+        ["api=1", "celery=4"],
+        ["--scale=api=1", "--scale=celery=4"],
+        ["--scale", "api=1", "--scale", "celery=4"],
     ],
 )
 def test_shell_scale_validation_accepts_all_documented_complete_forms(arguments: list[str]) -> None:
@@ -432,9 +434,9 @@ def test_shell_scale_validation_accepts_all_documented_complete_forms(arguments:
     assert completed.returncode == 0, completed.stderr
 
 
-@pytest.mark.parametrize("arguments", [["--scale", "api=1"], ["--scale", "celery_worker=4"]])
+@pytest.mark.parametrize("arguments", [["--scale", "api=1"], ["--scale", "celery=4"]])
 def test_shell_scale_validation_rejects_each_incomplete_target(arguments: list[str]) -> None:
     completed = _run_shell_scale_validation(arguments)
 
     assert completed.returncode != 0
-    assert "api=<n> celery_worker=<n>" in completed.stdout
+    assert "api=<n> celery=<n>" in completed.stdout

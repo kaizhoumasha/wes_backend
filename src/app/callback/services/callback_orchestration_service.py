@@ -29,7 +29,7 @@ from src.app.runtime.orchestration.models.timeline import (
 )
 from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
-from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -114,7 +114,7 @@ class CallbackOrchestrationService:
 
     def _enqueue_outbox_dispatch(self) -> None:
         try:
-            self._queue_gateway.enqueue_outbox(limit=50)
+            self._queue_gateway.enqueue_outbox(targets=(OutboxDispatchTarget.SYSTEM,), limit=50)
         except Exception as exc:
             logger.warning(f"Callback 后续 Outbox 即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
 

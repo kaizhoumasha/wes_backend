@@ -16,6 +16,7 @@ from src.app.runtime.system_capabilities.definition import SystemCapabilityEffec
 from src.app.runtime.system_capabilities.outcomes import ContractViolation, Success
 from src.app.runtime.system_capabilities.wms.effect_runtime import (
     WmsEffectDispatchAccepted,
+    WmsEffectPreparationResult,
     WmsEffectPreparationRuntime,
     WmsRegistryEffectCapabilityHandler,
     build_wms_effect_capability_definition,
@@ -24,8 +25,9 @@ from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_transport import ExternalHttpProtocolResult, ExternalHttpTransportResult
 from src.app.sys.models import SystemOutbox
 from src.app.wms_integration.effect_runtime import interpret_async_effect_ack_response
-from src.app.wms_integration.operation_contract import WmsCompletionMode
+from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsExecutionLane
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS, QUERY_OPERATIONS
+from src.core.task_queue_gateway import OutboxDispatchTarget
 from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
 from tests.mock.wms_northbound_contract import build_typed_ack
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
@@ -43,7 +45,15 @@ class _PreparationPort:
                 "execution": execution,
             }
         )
-        return WmsEffectDispatchAccepted(dispatch_key=request.dispatch_key)
+        target = (
+            OutboxDispatchTarget.WMS_DATA
+            if operation.execution_lane is WmsExecutionLane.WMS_DATA
+            else OutboxDispatchTarget.WMS_FULFILLMENT
+        )
+        return WmsEffectPreparationResult(
+            accepted_payload=WmsEffectDispatchAccepted(dispatch_key=request.dispatch_key),
+            dispatch_targets=frozenset({target}),
+        )
 
 
 class _IntentService:
@@ -66,6 +76,9 @@ class _IntentService:
 
     async def prepare_and_claim(self, _ctx, _intent):
         return self.prepared
+
+    async def get_success_evidence(self, _ctx, *, prepared):
+        _ = prepared
 
 
 class _Db:
@@ -142,7 +155,13 @@ async def test_one_shared_handler_delegates_every_effect_to_the_preparation_port
 
     outcome = await handler(request, execution=execution)
 
-    assert outcome == Success(payload=WmsEffectDispatchAccepted(dispatch_key=request.dispatch_key))
+    assert outcome.accepted_payload == WmsEffectDispatchAccepted(dispatch_key=request.dispatch_key)
+    expected_target = (
+        OutboxDispatchTarget.WMS_DATA
+        if operation.execution_lane is WmsExecutionLane.WMS_DATA
+        else OutboxDispatchTarget.WMS_FULFILLMENT
+    )
+    assert outcome.dispatch_targets == frozenset({expected_target})
     assert port.calls == [
         {
             "operation": operation,
@@ -186,13 +205,14 @@ async def test_concrete_preparation_runtime_writes_one_frozen_outbox_without_htt
         idempotency_key="idempotency-key-1",
     )
 
-    accepted = await WmsEffectPreparationRuntime(catalog=build_provider_catalog()).prepare(
+    prepared = await WmsEffectPreparationRuntime(catalog=build_provider_catalog()).prepare(
         operation,
         request,
         execution=execution,
     )
 
-    assert accepted == WmsEffectDispatchAccepted(dispatch_key=request.dispatch_key)
+    assert prepared.accepted_payload == WmsEffectDispatchAccepted(dispatch_key=request.dispatch_key)
+    assert prepared.dispatch_targets == frozenset({OutboxDispatchTarget.WMS_DATA})
     assert db.flush_count == 1
     assert len(db.added) == 1
     outbox = db.added[0]
@@ -202,6 +222,65 @@ async def test_concrete_preparation_runtime_writes_one_frozen_outbox_without_htt
     assert outbox.payload_json == request.model_dump(mode="json")
     assert outbox.canonical_payload_bytes is not None
     assert outbox.provider_profile_identity == "wms.2026-07-28.full-factory.production"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "expected_target_name"),
+    (
+        (
+            next(
+                operation
+                for operation in EFFECT_OPERATIONS
+                if operation.completion_mode is WmsCompletionMode.SYNC_RESULT
+                and operation.execution_lane.value == "wms-data"
+            ),
+            "WMS_DATA",
+        ),
+        (
+            next(
+                operation
+                for operation in EFFECT_OPERATIONS
+                if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+            ),
+            "WMS_FULFILLMENT",
+        ),
+        (
+            next(
+                operation
+                for operation in EFFECT_OPERATIONS
+                if operation.identity == "wms.fulfillment.cancel_request@v1"
+            ),
+            "WMS_FULFILLMENT",
+        ),
+    ),
+    ids=("data-sync", "fulfillment-async", "fulfillment-sync"),
+)
+async def test_preparation_returns_transient_public_dispatch_target_from_static_definition(
+    operation,
+    expected_target_name: str,
+) -> None:
+    request = operation.request_model.model_validate(REQUEST_FIXTURES[operation.identity])
+    execution = SimpleNamespace(
+        db=_Db(),
+        ctx={"session": None, "workline": None, "trace_id": "trace-target"},
+        intent=SimpleNamespace(operation_key="operation-target"),
+        intent_log=SimpleNamespace(dispatch_key=request.dispatch_key),
+        idempotency_key="idempotency-target",
+    )
+
+    prepared = await WmsEffectPreparationRuntime(catalog=build_provider_catalog()).prepare(
+        operation,
+        request,
+        execution=execution,
+    )
+
+    assert hasattr(prepared, "accepted_payload"), (
+        "preparation must separate public accepted payload from transient targets"
+    )
+    assert prepared.accepted_payload == WmsEffectDispatchAccepted(dispatch_key=request.dispatch_key)
+    assert {target.name for target in prepared.dispatch_targets} == {expected_target_name}
+    assert "dispatch_targets" not in prepared.accepted_payload.model_dump(mode="json")
 
 
 def test_effect_capability_builder_rejects_query_operation() -> None:
@@ -278,6 +357,46 @@ async def test_effect_service_resolves_the_shared_preparation_port_without_chang
     assert result.durably_accepted is True
     assert result.remote_completed is False
     assert len(port.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_effect_service_propagates_only_new_preparation_targets_and_replay_has_none() -> None:
+    import src.app.runtime.system_capabilities.wms.effect_runtime as effect_runtime_module
+    import src.core.task_queue_gateway as task_queue_module
+
+    preparation_result_type = getattr(effect_runtime_module, "WmsEffectPreparationResult", None)
+    target_type = getattr(task_queue_module, "OutboxDispatchTarget", None)
+    assert preparation_result_type is not None, "G3 WmsEffectPreparationResult is missing"
+    assert target_type is not None, "G3 OutboxDispatchTarget is missing"
+    operation = EFFECT_OPERATIONS[0]
+    request = operation.request_model.model_validate(REQUEST_FIXTURES[operation.identity])
+
+    class _TargetPreparationPort(_PreparationPort):
+        async def prepare(self, prepared_operation, prepared_request, *, execution):
+            await super().prepare(prepared_operation, prepared_request, execution=execution)
+            return preparation_result_type(
+                accepted_payload=WmsEffectDispatchAccepted(dispatch_key=prepared_request.dispatch_key),
+                dispatch_targets=frozenset({target_type.WMS_DATA}),
+            )
+
+    intent_service = _IntentService(operation=operation, request=request)
+    service = SystemCapabilityEffectService(
+        intent_service=intent_service,
+        effect_port_resolver=lambda _port_type: _TargetPreparationPort(),
+    )
+
+    created = await service.apply({"db": SimpleNamespace(flush=lambda: None)}, SimpleNamespace(timeout_seconds=None))
+
+    assert created.outcome == Success(payload=WmsEffectDispatchAccepted(dispatch_key=request.dispatch_key))
+    assert created.outbox_dispatch_targets == frozenset({target_type.WMS_DATA})
+
+    intent_service.prepared.claim_result = ClaimResult.MATCH
+    intent_service.prepared.has_durable_outbox = True
+    intent_service.prepared.intent_log.effect_status = "PROPOSED"
+    replay = await service.apply({"db": SimpleNamespace(flush=lambda: None)}, SimpleNamespace(timeout_seconds=None))
+
+    assert replay.idempotent_replay is True
+    assert replay.outbox_dispatch_targets == frozenset()
 
 
 @pytest.mark.asyncio

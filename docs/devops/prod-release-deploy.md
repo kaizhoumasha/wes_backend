@@ -104,7 +104,7 @@ docker login 192.168.0.220:5050
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  pull api celery_worker celery_beat flower
+  pull api celery celery-wms-fulfillment celery_beat flower
 ```
 
 ### 4.5 启动基础设施
@@ -133,7 +133,7 @@ docker compose --env-file .env.prod \
   -e DATABASE_RUNTIME_ROLE=cli \
   -e DATABASE_POOL_SIZE=1 \
   -e DATABASE_MAX_OVERFLOW=0 \
-  api python scripts/capacity_guard.py --services api,celery_worker
+  api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment
 ```
 
 容量门禁失败时必须停止发布，不得停止、启动或重建任何应用服务；`db`、`redis` 基础设施保持在线，供排障和重试。
@@ -148,7 +148,7 @@ docker compose --env-file .env.prod \
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  stop api celery_worker celery_beat
+  stop api celery celery-wms-fulfillment celery_beat
 
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
@@ -170,7 +170,7 @@ docker compose --env-file .env.prod \
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  up -d api celery_worker celery_beat flower nginx
+  up -d api celery celery-wms-fulfillment celery_beat flower nginx
 ```
 
 ### 4.9 同步权限与菜单
@@ -235,7 +235,7 @@ docker compose --env-file .env.prod \
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  logs --tail=200 api celery_worker celery_beat nginx
+  logs --tail=200 api celery celery-wms-fulfillment celery_beat nginx
 ```
 
 菜单数量校验：

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -17,7 +18,7 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportResult,
 )
 from src.app.sys.services.outbox_delivery import dispatch_external_http
-from src.app.sys.services.outbox_engine import _send_external_http
+from src.app.sys.services.outbox_engine import _send_external_http, send_external_http_with_client
 from tests.support.external_http import (
     StaticTestCredentialProvider,
     frozen_outbox_namespace,
@@ -30,6 +31,65 @@ if TYPE_CHECKING:
 
 def _request() -> ExternalHttpDispatchRequest:
     return signed_external_http_request({"request_id": "REQ-001"})
+
+
+@pytest.mark.asyncio
+async def test_borrowed_lane_client_uses_operation_total_deadline_for_send_and_read() -> None:
+    async def delayed_send(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.08)
+        return httpx.Response(202, json={"accepted": True})
+
+    request = signed_external_http_request(
+        {"request_id": "REQ-DEADLINE"},
+        timeout_seconds=0.01,
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(delayed_send),
+        timeout=60.0,
+    )
+    started_at = asyncio.get_running_loop().time()
+
+    result = await send_external_http_with_client(request, client=client)
+
+    assert asyncio.get_running_loop().time() - started_at < 0.05
+    assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
+    assert result.phase is ExternalHttpTransportPhase.SENDING
+    assert result.error_code == "TOTAL_DEADLINE_EXCEEDED"
+    assert client.is_closed is False
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_borrowed_lane_client_total_deadline_expires_while_reading_response_body() -> None:
+    class SlowBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.sleep(0.08)
+            yield b'{"accepted":true}'
+
+        async def aclose(self) -> None:
+            await asyncio.sleep(0.08)
+
+    async def immediate_response(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, stream=SlowBody())
+
+    request = signed_external_http_request(
+        {"request_id": "REQ-BODY-DEADLINE"},
+        timeout_seconds=0.01,
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(immediate_response),
+        timeout=60.0,
+    )
+    started_at = asyncio.get_running_loop().time()
+
+    result = await send_external_http_with_client(request, client=client)
+
+    assert asyncio.get_running_loop().time() - started_at < 0.05
+    assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
+    assert result.phase is ExternalHttpTransportPhase.AWAITING_RESPONSE
+    assert result.error_code == "TOTAL_DEADLINE_EXCEEDED"
+    assert client.is_closed is False
+    await client.aclose()
 
 
 def test_transport_result_is_frozen_and_rejects_retryable_non_not_sent_outcome() -> None:

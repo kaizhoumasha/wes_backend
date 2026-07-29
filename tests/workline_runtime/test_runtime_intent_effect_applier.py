@@ -84,6 +84,7 @@ class _RecordingSystemCapabilityEffectService:
             remote_completed=True,
             idempotent_replay=False,
             retryable=False,
+            outbox_dispatch_targets=frozenset(),
         )
 
 
@@ -100,6 +101,7 @@ class _StaleMaterialEffectService(_RecordingSystemCapabilityEffectService):
             idempotent_replay=False,
             retryable=False,
             evidence=SimpleNamespace(outcome_kind="business_reject"),
+            outbox_dispatch_targets=frozenset(),
         )
 
 

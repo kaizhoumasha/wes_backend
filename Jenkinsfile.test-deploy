@@ -140,7 +140,7 @@ pipeline {
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \
-                            pull api celery_worker frontend
+                            pull api celery celery-wms-fulfillment frontend
 
                         echo "📄 从前端镜像提取菜单清单..."
                         MANIFEST_DIR="${WORKSPACE}/.ci-artifacts/frontend"
@@ -160,7 +160,7 @@ pipeline {
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \
-                            up -d --force-recreate api celery_worker frontend nginx
+                            up -d --force-recreate api celery celery-wms-fulfillment frontend nginx
 
                         NGINX_PORT=$(grep -E '^NGINX_HTTP_PORT=' "${DEPLOY_ENV_FILE}" | tail -n 1 | cut -d= -f2)
                         NGINX_PORT=${NGINX_PORT:-8080}
@@ -190,7 +190,7 @@ pipeline {
                             docker compose \
                                 --env-file "${DEPLOY_ENV_FILE}" \
                                 -f "${DEPLOY_COMPOSE_FILE}" \
-                                logs --tail=150 api celery_worker frontend nginx
+                                logs --tail=150 api celery celery-wms-fulfillment frontend nginx
                             exit 1
                         fi
 

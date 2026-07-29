@@ -62,8 +62,8 @@ class NoopQueueGateway:
     def enqueue_runtime_inbox(self, *, limit: int) -> None:
         _ = limit
 
-    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
-        _ = (outbox_id, limit)
+    def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+        _ = (targets, limit)
 
 
 @asynccontextmanager

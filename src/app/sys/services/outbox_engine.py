@@ -50,6 +50,8 @@ from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
 if TYPE_CHECKING:
+    import httpx
+
     from src.app.sys.canonical_dispatch import ExternalHttpDispatchRequest
 
 DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
@@ -98,6 +100,8 @@ class SystemOutboxEngine:
         dispatch_scheduler: Any | None = None,
         external_http_fault_hook: ExternalHttpDispatchFaultHook | None = None,
         task_queue_gateway: TaskQueueGateway = task_queue_gateway,
+        operation_identities: tuple[str, ...] | None = None,
+        exclude_operation_identities: tuple[str, ...] | None = None,
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
@@ -109,6 +113,8 @@ class SystemOutboxEngine:
         self.effect_transport_bridge = effect_transport_bridge
         self.effect_transport_resolver = effect_transport_resolver
         self.task_queue_gateway = task_queue_gateway
+        self.operation_identities = operation_identities
+        self.exclude_operation_identities = exclude_operation_identities
         # 仅通过构造器显式注入；生产 singleton 默认禁用，不提供环境变量或全局开关。
         self.external_http_fault_hook = external_http_fault_hook
         self.dispatch_scheduler = dispatch_scheduler or FairDispatchScheduler(
@@ -138,6 +144,8 @@ class SystemOutboxEngine:
             db,
             limit=remaining_limit,
             exclude_operation_domains=(WORKLINE_OPERATION_DOMAIN, RACK_OPERATION_DOMAIN),
+            operation_identities=self.operation_identities,
+            exclude_operation_identities=self.exclude_operation_identities,
         )
         logger.info(
             "SystemOutbox claim metrics: "
@@ -559,26 +567,39 @@ class SystemOutboxEngine:
 
 async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须显式返回唯一分类
     request: ExternalHttpDispatchRequest,
+    *,
+    client: httpx.AsyncClient | None = None,
 ) -> ExternalHttpTransportResult:
     import asyncio
     import json
     import re
+    from contextlib import asynccontextmanager
 
     import httpx
 
+    @asynccontextmanager
+    async def _client_scope() -> Any:
+        if client is not None:
+            yield client
+            return
+        async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=False) as owned_client:
+            yield owned_client
+
+    response: httpx.Response | None = None
     try:
-        async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=False) as client:
+        async with _client_scope() as active_client:
             request_payload = {"params": request.query_params} if request.method == "GET" else {"content": request.body}
-            outbound = client.build_request(
+            outbound = active_client.build_request(
                 request.method,
                 request.endpoint.url,
                 headers=request.headers,
                 **request_payload,
             )
-            response = await client.send(outbound, stream=True)
-            status_code = int(response.status_code)
+            deadline = asyncio.get_running_loop().time() + request.timeout_seconds
             try:
-                async with asyncio.timeout(request.timeout_seconds):
+                async with asyncio.timeout_at(deadline):
+                    response = await active_client.send(outbound, stream=True)
+                    status_code = int(response.status_code)
                     wire_body, _ = await read_bounded_wire_body(
                         response,
                         max_chunk_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
@@ -610,7 +631,12 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                     error_message="outbound HTTP response metadata is invalid",
                 )
             finally:
-                await response.aclose()
+                if response is not None:
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            await response.aclose()
+                    except TimeoutError:
+                        pass
             try:
                 response_body = decode_bounded_http_body(
                     wire_body,
@@ -681,6 +707,14 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                 error_message=f"HTTP {status_code} has ambiguous delivery semantics",
                 response_body=response_body,
             )
+    except TimeoutError:
+        phase = ExternalHttpTransportPhase.SENDING if response is None else ExternalHttpTransportPhase.AWAITING_RESPONSE
+        logger.error("SystemOutbox 外部 HTTP 超过 operation 总时限，送达状态不确定")
+        return ExternalHttpTransportResult.ambiguous(
+            phase=phase,
+            error_code="TOTAL_DEADLINE_EXCEEDED",
+            error_message="outbound HTTP operation total deadline exceeded",
+        )
     except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
         logger.error(f"SystemOutbox 外部 HTTP 请求配置无效: {type(exc).__name__}")
         return ExternalHttpTransportResult.not_sent(
@@ -733,6 +767,16 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
             error_code="UNCLASSIFIED_TRANSPORT_ERROR",
             error_message=f"unclassified outbound HTTP transport error: {type(exc).__name__}",
         )
+
+
+async def send_external_http_with_client(
+    request: ExternalHttpDispatchRequest,
+    *,
+    client: httpx.AsyncClient,
+) -> ExternalHttpTransportResult:
+    """使用 lane owner 的长期 client 复用统一 typed transport 映射。"""
+
+    return await _send_external_http(request, client=client)
 
 
 def _extract_protocol_error_code(
@@ -789,4 +833,10 @@ def _merge_dispatch_result(target: DispatchResult, source: DispatchResult) -> No
 system_outbox_engine = SystemOutboxEngine()
 system_outbox_dispatcher = system_outbox_engine
 
-__all__ = ["DispatchResult", "SystemOutboxEngine", "system_outbox_dispatcher", "system_outbox_engine"]
+__all__ = [
+    "DispatchResult",
+    "SystemOutboxEngine",
+    "send_external_http_with_client",
+    "system_outbox_dispatcher",
+    "system_outbox_engine",
+]

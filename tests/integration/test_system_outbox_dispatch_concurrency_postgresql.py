@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
@@ -28,8 +29,14 @@ from src.app.sys.models import (
     SystemOutboxTargetType,
 )
 from src.app.sys.repositories import SystemOutboxRepository
+from src.celery_app.outbox_dispatch_composition import (
+    OutboxClaimScope,
+    OutboxClaimScopeName,
+    build_outbox_claim_scopes,
+)
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
+from tests.support.external_http import frozen_outbox_namespace
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -329,5 +336,259 @@ async def test_postgresql_bucket_concurrency_budget_is_global_across_dispatcher_
             assert batch.metrics.backlog_count == 1
             assert batch.metrics.active_lease_count == 1
             await db.rollback()
+    finally:
+        await _cleanup(integration_session_factory, prefix)
+
+
+def _scoped_outbox(
+    *,
+    dispatch_key: str,
+    operation_domain: str,
+    provider_profile_identity: str,
+    operation_identity: str,
+) -> SystemOutbox:
+    return SystemOutbox(
+        operation_domain=operation_domain,
+        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+        dispatch_key=dispatch_key,
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="scoped-dispatch-integration",
+        provider_profile_identity=provider_profile_identity,
+        operation_identity=operation_identity,
+        idempotency_key=dispatch_key,
+        payload_json={},
+        status=SystemOutboxStatus.NEW,
+    )
+
+
+def _expired_external_http_outbox(
+    *,
+    dispatch_key: str,
+    operation_domain: str,
+    provider_profile_identity: str,
+    operation_identity: str,
+    lease_owner_token: str,
+) -> SystemOutbox:
+    projection = {"request_id": dispatch_key}
+    frozen = frozen_outbox_namespace(
+        projection,
+        provider_profile_identity=provider_profile_identity,
+        operation_identity=operation_identity,
+    )
+    return SystemOutbox(
+        **vars(frozen),
+        operation_domain=operation_domain,
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key=dispatch_key,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        idempotency_key=dispatch_key,
+        status=SystemOutboxStatus.DISPATCHING,
+        lease_owner_token=lease_owner_token,
+        lease_expires_at=timezone.now_for_db() - timedelta(seconds=1),
+    )
+
+
+def _claim_scope_kwargs(scope: OutboxClaimScope) -> dict[str, tuple[str, ...] | None]:
+    return {
+        "operation_identities": (
+            tuple(sorted(scope.included_operation_identities))
+            if scope.included_operation_identities is not None
+            else None
+        ),
+        "exclude_operation_identities": tuple(sorted(scope.excluded_operation_identities)),
+    }
+
+
+def _scope_scheduler(*, worker_identity: str, paused_profile: str | None = None) -> FairDispatchScheduler:
+    policy = DispatchBucketPolicy(max_concurrency=2, rate_limit=20, batch_size=2, lease_seconds=60)
+    return FairDispatchScheduler(
+        repository=SystemOutboxRepository(),
+        policy_registry=DispatchPolicyRegistry(
+            default_policy=policy,
+            paused_profiles=(() if paused_profile is None else (paused_profile,)),
+        ),
+        worker_identity=worker_identity,
+    )
+
+
+@pytest.mark.asyncio
+async def test_postgresql_three_scopes_concurrently_claim_one_ledger_without_overlap(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    prefix = f"scoped-ledger:{uuid4().hex}:"
+    operation_domain = f"SCOPED_LEDGER_{uuid4().hex}"
+    scopes = build_outbox_claim_scopes()
+    data_identity = min(scopes[OutboxClaimScopeName.WMS_DATA].included_operation_identities or ())
+    fulfillment_identity = min(scopes[OutboxClaimScopeName.WMS_DISPATCH].included_operation_identities or ())
+    scope_identities = {
+        OutboxClaimScopeName.SYSTEM: f"tests.system.dispatch@{uuid4().hex}",
+        OutboxClaimScopeName.WMS_DATA: data_identity,
+        OutboxClaimScopeName.WMS_DISPATCH: fulfillment_identity,
+    }
+    profiles = {scope_name: f"tests.scoped.{scope_name.value.lower()}.{uuid4().hex}" for scope_name in scopes}
+    schedulers = {
+        scope_name: _scope_scheduler(worker_identity=f"scoped-{scope_name.value.lower()}") for scope_name in scopes
+    }
+
+    async with integration_session_factory() as setup:
+        setup.add_all(
+            [
+                _scoped_outbox(
+                    dispatch_key=f"{prefix}{scope_name.value.lower()}-{index}",
+                    operation_domain=operation_domain,
+                    provider_profile_identity=profiles[scope_name],
+                    operation_identity=scope_identities[scope_name],
+                )
+                for scope_name in scopes
+                for index in range(2)
+            ]
+        )
+        await setup.commit()
+
+    async def claim(scope_name: OutboxClaimScopeName) -> object:
+        async with integration_session_factory() as db:
+            batch = await schedulers[scope_name].claim(
+                db,
+                limit=1,
+                operation_domains=(operation_domain,),
+                **_claim_scope_kwargs(scopes[scope_name]),
+            )
+            await db.commit()
+            return batch
+
+    try:
+        first_batches = dict(
+            zip(
+                scopes,
+                await asyncio.gather(*(claim(scope_name) for scope_name in scopes)),
+                strict=True,
+            )
+        )
+        first_claims = {scope_name: batch.claims[0] for scope_name, batch in first_batches.items()}
+
+        assert {
+            scope_name: first_claim.outbox.operation_identity for scope_name, first_claim in first_claims.items()
+        } == scope_identities
+        assert {batch.metrics.backlog_count for batch in first_batches.values()} == {2}
+        assert {batch.metrics.active_lease_count for batch in first_batches.values()} == {0}
+        assert len({claim.outbox.id for claim in first_claims.values()}) == len(scopes)
+
+        repository = SystemOutboxRepository()
+        scope_names = tuple(scopes)
+        async with integration_session_factory() as fencing:
+            for index, scope_name in enumerate(scope_names):
+                claimed = first_claims[scope_name]
+                foreign_owner = first_claims[scope_names[(index + 1) % len(scope_names)]].lease_owner_token
+                assert (
+                    await repository.mark_as_sent(
+                        fencing,
+                        claimed.outbox.id,
+                        lease_owner_token=foreign_owner,
+                    )
+                    is None
+                )
+                assert (
+                    await repository.mark_as_sent(
+                        fencing,
+                        claimed.outbox.id,
+                        lease_owner_token=claimed.lease_owner_token,
+                    )
+                    is not None
+                )
+            await fencing.commit()
+
+        second_batches = dict(
+            zip(
+                scopes,
+                await asyncio.gather(*(claim(scope_name) for scope_name in scopes)),
+                strict=True,
+            )
+        )
+        all_claimed_ids = {
+            claim.outbox.id for batch in (*first_batches.values(), *second_batches.values()) for claim in batch.claims
+        }
+
+        assert all(len(batch.claims) == 1 for batch in second_batches.values())
+        assert {batch.metrics.backlog_count for batch in second_batches.values()} == {1}
+        assert {batch.metrics.active_lease_count for batch in second_batches.values()} == {0}
+        assert len(all_claimed_ids) == 6
+    finally:
+        await _cleanup(integration_session_factory, prefix)
+
+
+@pytest.mark.asyncio
+async def test_postgresql_expired_http_lease_recovery_is_isolated_by_dispatch_scope(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    prefix = f"scoped-recovery:{uuid4().hex}:"
+    operation_domain = f"SCOPED_RECOVERY_{uuid4().hex}"
+    scopes = build_outbox_claim_scopes()
+    identities = {
+        OutboxClaimScopeName.SYSTEM: f"tests.system.recovery@{uuid4().hex}",
+        OutboxClaimScopeName.WMS_DATA: min(scopes[OutboxClaimScopeName.WMS_DATA].included_operation_identities or ()),
+        OutboxClaimScopeName.WMS_DISPATCH: min(
+            scopes[OutboxClaimScopeName.WMS_DISPATCH].included_operation_identities or ()
+        ),
+    }
+    profiles = {scope_name: f"tests.recovery.{scope_name.value.lower()}.{uuid4().hex}" for scope_name in scopes}
+    dispatch_keys = {scope_name: f"{prefix}{scope_name.value.lower()}" for scope_name in scopes}
+    schedulers = {
+        scope_name: _scope_scheduler(
+            worker_identity=f"recovery-{scope_name.value.lower()}",
+            paused_profile=profiles[scope_name],
+        )
+        for scope_name in scopes
+    }
+
+    async with integration_session_factory() as setup:
+        setup.add_all(
+            [
+                _expired_external_http_outbox(
+                    dispatch_key=dispatch_keys[scope_name],
+                    operation_domain=operation_domain,
+                    provider_profile_identity=profiles[scope_name],
+                    operation_identity=identities[scope_name],
+                    lease_owner_token=f"expired-{scope_name.value.lower()}",
+                )
+                for scope_name in scopes
+            ]
+        )
+        await setup.commit()
+
+    try:
+        expected_recovered: set[OutboxClaimScopeName] = set()
+        for scope_name in scopes:
+            async with integration_session_factory() as db:
+                batch = await schedulers[scope_name].claim(
+                    db,
+                    limit=1,
+                    operation_domains=(operation_domain,),
+                    **_claim_scope_kwargs(scopes[scope_name]),
+                )
+                assert batch.claims == ()
+                assert batch.metrics.backlog_count == 1
+                assert batch.metrics.lease_loss_count == 1
+                await db.commit()
+
+            expected_recovered.add(scope_name)
+            async with integration_session_factory() as inspection:
+                rows = (
+                    (
+                        await inspection.execute(
+                            select(SystemOutbox).where(SystemOutbox.dispatch_key.in_(tuple(dispatch_keys.values())))
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                by_key = {row.dispatch_key: row for row in rows}
+                for candidate_scope in scopes:
+                    row = by_key[dispatch_keys[candidate_scope]]
+                    if candidate_scope in expected_recovered:
+                        assert enum_value(row.status) == SystemOutboxStatus.RETRY_WAIT.value
+                        assert row.lease_expires_at is None
+                    else:
+                        assert enum_value(row.status) == SystemOutboxStatus.DISPATCHING.value
+                        assert row.lease_owner_token == f"expired-{candidate_scope.value.lower()}"
     finally:
         await _cleanup(integration_session_factory, prefix)

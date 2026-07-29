@@ -16,7 +16,11 @@ TASK_MODULES = ("core", "handling", "runtime_inbox", "sys", "workline")
 ASYNC_TASKS = {
     "core": ("health_check", "clear_cache", "send_notification"),
     "runtime_inbox": ("process_runtime_inbox_batch",),
-    "sys": ("dispatch_system_outbox_batch",),
+    "sys": (
+        "dispatch_system_outbox_batch",
+        "dispatch_wms_data_outbox_batch",
+        "dispatch_wms_fulfillment_outbox_batch",
+    ),
     "workline": (
         "scan_timeouts_batch",
         "scan_device_heartbeats_batch",
@@ -26,7 +30,7 @@ ASYNC_TASKS = {
 DB_TASKS = {
     "core": ("health_check", "send_notification"),
     "runtime_inbox": ("process_runtime_inbox_batch",),
-    "sys": ("dispatch_system_outbox_batch",),
+    "sys": ASYNC_TASKS["sys"],
     "workline": ASYNC_TASKS["workline"],
 }
 

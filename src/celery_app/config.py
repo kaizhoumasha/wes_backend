@@ -30,6 +30,16 @@ beat_schedule: dict[str, dict[str, str | float]] = {
         "task": "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
         "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
     },
+    # WMS data EFFECT Outbox - WES 通用 worker 实际拥有的 lane（兜底）
+    "dispatch-wms-data-outbox-batch": {
+        "task": "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch",
+        "schedule": 10.0,
+    },
+    # WMS fulfillment EFFECT Outbox - 只路由到专用 worker（兜底）
+    "dispatch-wms-fulfillment-outbox-batch": {
+        "task": "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
+        "schedule": 10.0,
+    },
     # WMS EFFECT 状态确认 - 即时任务由 dispatch key 触发，Beat 仅扫描遗漏/到期项。
     "scan-wms-effect-status-batch": {
         "task": "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
@@ -57,6 +67,13 @@ beat_schedule: dict[str, dict[str, str | float]] = {
 # ============================================
 
 task_routes = {
+    # 三个 Outbox dispatcher 必须直达静态队列，不能依赖 sys.* 通配路由推断 lane。
+    "src.celery_app.tasks.sys.dispatch_system_outbox_batch": {"queue": "celery"},
+    "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch": {"queue": "celery"},
+    "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch": {"queue": "wms-fulfillment"},
+    # WMS async EFFECT 状态查询复用 fulfillment worker 的 actual lane client。
+    "src.celery_app.tasks.workline.check_wms_effect_status": {"queue": "wms-fulfillment"},
+    "src.celery_app.tasks.workline.scan_wms_effect_status_batch": {"queue": "wms-fulfillment"},
     # 核心任务 -> default 队列
     "src.celery_app.tasks.core.*": {"queue": "default"},
     # RuntimeInbox 主链路任务 -> celery 队列

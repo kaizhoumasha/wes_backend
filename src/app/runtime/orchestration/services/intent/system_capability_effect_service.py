@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+    from src.core.task_queue_gateway import OutboxDispatchTarget
 
 type EffectOutcome = Success[Any] | BusinessReject | RetryableFailure | ContractViolation
 
@@ -58,6 +59,7 @@ class SystemCapabilityEffectResult:
     idempotent_replay: bool = False
     retryable: bool = False
     evidence: SystemCapabilityEffectEvidence | None = None
+    outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
 
 
 class SystemCapabilityEffectEvidence(BaseModel):
@@ -187,10 +189,16 @@ class SystemCapabilityEffectService:
                 completion_mode=definition.completion_mode,
             )
         try:
+            outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
             raw = await asyncio.wait_for(
                 handler(prepared.request, execution=execution),
                 timeout=min(float(intent.timeout_seconds or definition.timeout_seconds), definition.timeout_seconds),
             )
+            transient_targets = getattr(raw, "dispatch_targets", None)
+            accepted_payload = getattr(raw, "accepted_payload", None)
+            if isinstance(transient_targets, frozenset) and accepted_payload is not None:
+                outbox_dispatch_targets = transient_targets
+                raw = accepted_payload
             outcome = self._normalize_outcome(raw, output_model=definition.output_model)
         except DBAPIError:
             # PostgreSQL 数据库异常会使当前事务失效；必须交由外层统一 rollback，
@@ -225,6 +233,7 @@ class SystemCapabilityEffectService:
             ),
             retryable=isinstance(outcome, RetryableFailure),
             evidence=evidence,
+            outbox_dispatch_targets=(outbox_dispatch_targets if isinstance(outcome, Success) else frozenset()),
         )
 
     def _resolve_effect_port(self, port_type: type[Any]) -> Any:

@@ -1,11 +1,32 @@
 from __future__ import annotations
 
-from typing import Any, Protocol, cast
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 PROCESS_RUNTIME_INBOX_TASK = "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch"
 DISPATCH_SYSTEM_OUTBOX_TASK = "src.celery_app.tasks.sys.dispatch_system_outbox_batch"
+DISPATCH_WMS_DATA_OUTBOX_TASK = "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch"
+DISPATCH_WMS_FULFILLMENT_OUTBOX_TASK = "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch"
 PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE = "src.celery_app.tasks.{target_code}.process_signal"
 CHECK_WMS_EFFECT_STATUS_TASK = "src.celery_app.tasks.workline.check_wms_effect_status"
+
+
+class OutboxDispatchTarget(StrEnum):
+    """事务提交后可公开唤醒的瞬时 Outbox dispatcher target。"""
+
+    SYSTEM = "SYSTEM"
+    WMS_DATA = "WMS_DATA"
+    WMS_FULFILLMENT = "WMS_FULFILLMENT"
+
+
+_OUTBOX_TASK_BY_TARGET = {
+    OutboxDispatchTarget.SYSTEM: DISPATCH_SYSTEM_OUTBOX_TASK,
+    OutboxDispatchTarget.WMS_DATA: DISPATCH_WMS_DATA_OUTBOX_TASK,
+    OutboxDispatchTarget.WMS_FULFILLMENT: DISPATCH_WMS_FULFILLMENT_OUTBOX_TASK,
+}
 
 
 class TaskQueueGateway(Protocol):
@@ -13,7 +34,7 @@ class TaskQueueGateway(Protocol):
 
     def enqueue_runtime_inbox(self, *, limit: int = 10) -> None: ...
 
-    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None: ...
+    def enqueue_outbox(self, *, targets: Collection[OutboxDispatchTarget], limit: int = 50) -> None: ...
 
     def enqueue_internal_signal(self, target_code: str, payload: dict[str, Any]) -> None: ...
 
@@ -31,10 +52,10 @@ class CeleryTaskQueueGateway:
     def enqueue_runtime_inbox(self, *, limit: int = 10) -> None:
         self._send_task(PROCESS_RUNTIME_INBOX_TASK, kwargs={"limit": limit})
 
-    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
-        # 当前 Celery 任务是批量兜底模型；outbox_id 保留给单条队列后端使用。
-        _ = outbox_id
-        self._send_task(DISPATCH_SYSTEM_OUTBOX_TASK, kwargs={"limit": limit})
+    def enqueue_outbox(self, *, targets: Collection[OutboxDispatchTarget], limit: int = 50) -> None:
+        for target in OutboxDispatchTarget:
+            if target in targets:
+                self._send_task(_OUTBOX_TASK_BY_TARGET[target], kwargs={"limit": limit})
 
     def enqueue_internal_signal(self, target_code: str, payload: dict[str, Any]) -> None:
         self._send_task(
@@ -51,9 +72,12 @@ task_queue_gateway = CeleryTaskQueueGateway()
 __all__ = [
     "CHECK_WMS_EFFECT_STATUS_TASK",
     "DISPATCH_SYSTEM_OUTBOX_TASK",
+    "DISPATCH_WMS_DATA_OUTBOX_TASK",
+    "DISPATCH_WMS_FULFILLMENT_OUTBOX_TASK",
     "PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE",
     "PROCESS_RUNTIME_INBOX_TASK",
     "CeleryTaskQueueGateway",
+    "OutboxDispatchTarget",
     "TaskQueueGateway",
     "task_queue_gateway",
 ]

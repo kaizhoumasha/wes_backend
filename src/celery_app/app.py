@@ -4,6 +4,7 @@
 # 用途: Celery 应用配置和初始化
 # ============================================
 
+import os
 from typing import Any, cast
 
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
@@ -15,6 +16,7 @@ from celery.signals import (  # pyright: ignore[reportMissingTypeStubs]
     worker_process_shutdown,
 )
 
+from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
 from src.core.conf import settings
 from src.core.logger import setup_logger
 
@@ -43,10 +45,25 @@ celery_app = Celery(
 # ============================================
 
 
+def _validate_worker_role_queue_contract() -> None:
+    """部署角色与实际消费队列必须一一对应，配置漂移时阻止 worker 启动。"""
+
+    process_role = celery_async_runtime.process_role
+    default_queues = "default,celery,device" if process_role is WmsProviderProcessRole.WES else ""
+    queues = frozenset(
+        queue.strip() for queue in os.getenv("CELERY_WORKER_QUEUES", default_queues).split(",") if queue.strip()
+    )
+    if process_role is WmsProviderProcessRole.WES and "wms-fulfillment" in queues:
+        raise ValueError("WES worker must not consume the WMS fulfillment queue")
+    if process_role is WmsProviderProcessRole.FULFILLMENT and queues != {"wms-fulfillment"}:
+        raise ValueError("fulfillment worker must consume only the WMS fulfillment queue")
+
+
 @worker_init.connect
 def on_worker_init(*args: Any, **kwargs: Any) -> None:
     """Worker 主进程初始化同步配置门禁，禁止创建可被 fork 继承的异步资源。"""
     try:
+        _validate_worker_role_queue_contract()
         from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
             northbound_operations_repository,
         )

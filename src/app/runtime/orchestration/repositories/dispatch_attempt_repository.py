@@ -65,6 +65,8 @@ class WorklineDispatchAttemptRepository(BaseRepository[WorklineDispatchAttempt])
         now: Any,
         operation_domains: tuple[str, ...] | None = None,
         exclude_operation_domains: tuple[str, ...] | None = None,
+        operation_identities: tuple[str, ...] | None = None,
+        exclude_operation_identities: tuple[str, ...] | None = None,
         limit: int = 100,
     ) -> tuple[WorklineDispatchAttempt, ...]:
         """锁定终态 outbox 遗留的过期活动 attempt。"""
@@ -89,6 +91,10 @@ class WorklineDispatchAttemptRepository(BaseRepository[WorklineDispatchAttempt])
             predicates.append(outbox_columns.operation_domain.in_(operation_domains))
         if exclude_operation_domains:
             predicates.append(outbox_columns.operation_domain.not_in(exclude_operation_domains))
+        if operation_identities:
+            predicates.append(outbox_columns.operation_identity.in_(operation_identities))
+        if exclude_operation_identities:
+            predicates.append(outbox_columns.operation_identity.not_in(exclude_operation_identities))
         result = await db.execute(
             select(WorklineDispatchAttempt)
             .join(SystemOutbox, outbox_columns.id == attempt_columns.outbox_id)

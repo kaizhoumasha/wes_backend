@@ -105,7 +105,7 @@ pipeline {
                                 env.CHANNEL_IMAGE_TAG = 'develop'
                                 env.DEPLOY_NAME = 'testing'
                                 env.DEPLOY_ENV_FILE = '.env.test'
-                                env.DEPLOY_SERVICES = 'api celery_worker'
+                                env.DEPLOY_SERVICES = 'api celery celery-wms-fulfillment'
                                 env.DEPLOY_CONTAINER_NAME = 'wes_api_test'
                                 env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_test wes_redis_test'
                                 break
@@ -115,7 +115,7 @@ pipeline {
                                 env.CHANNEL_IMAGE_TAG = 'prod'
                                 env.DEPLOY_NAME = 'production'
                                 env.DEPLOY_ENV_FILE = '.env.prod'
-                                env.DEPLOY_SERVICES = 'api celery_worker celery_beat flower'
+                                env.DEPLOY_SERVICES = 'api celery celery-wms-fulfillment celery_beat flower'
                                 env.DEPLOY_CONTAINER_NAME = 'wes_api_prod'
                                 env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_prod wes_redis_prod'
                                 break
@@ -393,7 +393,7 @@ pipeline {
                                 exit_code=$?
                                 if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]; then
                                     echo -e "${YELLOW}⚠️  迁移后部署未完成，停止 API/Worker/Beat；禁止自动切回旧镜像${NC}"
-                                    $COMPOSE_CMD stop api celery_worker celery_beat || true
+                                    $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat || true
                                 fi
                                 docker logout ${REGISTRY_HOST} >/dev/null 2>&1 || true
                                 return $exit_code
@@ -402,7 +402,7 @@ pipeline {
 
                             # 始终由目标镜像中的唯一容量脚本读取 live PostgreSQL；失败由 set -e 阻断应用启动或回滚。
                             run_capacity_guard() {
-                                $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api python scripts/capacity_guard.py --services api,celery_worker
+                                $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment
                             }
 
                             echo "$REGISTRY_PASSWORD" | docker login ${REGISTRY_HOST} -u "$REGISTRY_USERNAME" --password-stdin
@@ -439,7 +439,7 @@ pipeline {
                             # 本版本包含 RuntimeInbox 破坏性切换。迁移前必须停止所有可能访问旧表的
                             # API/Worker/Beat；迁移使用目标镜像的一次性 CLI 容器，不能依赖尚未启动的 API。
                             echo -e "${GREEN}⏸️  静默应用进程，准备数据库迁移...${NC}"
-                            $COMPOSE_CMD stop api celery_worker celery_beat
+                            $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat
 
                             echo -e "${GREEN}🗄️  使用目标镜像运行数据库迁移...${NC}"
                             $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api alembic upgrade head
@@ -488,7 +488,7 @@ pipeline {
                             # testing 不部署 Beat；仅校验当前环境实际启动的 Celery 服务。
                             for service_name in ${DEPLOY_SERVICES}; do
                                 case "$service_name" in
-                                celery_worker|celery_beat)
+                                celery|celery-wms-fulfillment|celery_beat)
                                     service_container_ids=$($COMPOSE_CMD ps -q "$service_name")
                                     if [ -z "$service_container_ids" ]; then
                                         echo -e "${RED}❌ ${service_name} 容器未就绪${NC}"
@@ -518,11 +518,13 @@ pipeline {
                                 esac
                             done
 
-                            for container_id in $($COMPOSE_CMD ps -q celery_worker); do
-                                if ! docker exec "$container_id" sh -c 'celery -A src.celery_app.app inspect ping -d "celery@$(hostname)" --timeout=5 | grep -q pong'; then
-                                    echo -e "${RED}❌ celery_worker 子进程运行时未就绪: $container_id${NC}"
-                                    exit 1
-                                fi
+                            for celery_service in celery celery-wms-fulfillment; do
+                                for container_id in $($COMPOSE_CMD ps -q "$celery_service"); do
+                                    if ! docker exec "$container_id" sh -c 'celery -A src.celery_app.app inspect ping -d "celery@$(hostname)" --timeout=5 | grep -q pong'; then
+                                        echo -e "${RED}❌ ${celery_service} 子进程运行时未就绪: $container_id${NC}"
+                                        exit 1
+                                    fi
+                                done
                             done
 
                             DEPLOYMENT_HEALTHY=true

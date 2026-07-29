@@ -51,7 +51,7 @@ def test_docker_compose_uses_one_provider_profile_path_for_wms_processes() -> No
     services = compose["services"]
 
     api_env = services["api"]["environment"]
-    celery_env = services["celery_worker"]["environment"]
+    celery_env = services["celery"]["environment"]
     celery_beat_env = services["celery_beat"]["environment"]
     mock_wms_env = services["mock_wms"]["environment"]
 

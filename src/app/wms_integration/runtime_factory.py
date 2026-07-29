@@ -9,6 +9,7 @@ from src.app.sys.external_http_credentials import (
     build_environment_external_http_credential_provider as build_environment_credential_provider,
 )
 from src.app.wms_integration.adapters import WmsEffectStatusQueryAdapter
+from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
 from src.app.wms_integration.query_evidence import (
     WmsEffectStatusCallEvidenceWriter,
     WmsEffectStatusEvidenceWriter,
@@ -54,6 +55,16 @@ def build_effect_status_query_port_factory(
         evidence_service=wms_call_evidence_service,
         breaker_service=wms_circuit_breaker_service,
     )
+    borrowed_client: httpx.AsyncClient | None = None
+    if transport is None:
+        from src.app.wms_integration.effect_lane_runtime import get_wms_effect_lane_runtime
+
+        runtime = get_wms_effect_lane_runtime()
+        if runtime is None:
+            raise RuntimeError("WMS fulfillment EFFECT lane runtime is not initialized")
+        if runtime.process_role is not WmsProviderProcessRole.FULFILLMENT:
+            raise RuntimeError("WMS EFFECT status query must run on the fulfillment worker")
+        borrowed_client = runtime.client
 
     def factory() -> WmsEffectStatusQueryPort:
         return WmsEffectStatusQueryAdapter(
@@ -61,6 +72,8 @@ def build_effect_status_query_port_factory(
             credential_provider=resolved_credential_provider,
             evidence_writer=writer,
             transport=transport,
+            client=borrowed_client,
+            owns_client=False,
             initial_backoff_seconds=initial_backoff_seconds,
             max_backoff_seconds=max_backoff_seconds,
         )

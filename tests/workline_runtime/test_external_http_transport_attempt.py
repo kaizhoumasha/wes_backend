@@ -147,8 +147,12 @@ async def test_http_transport_extracts_only_bounded_top_level_protocol_error_cod
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
-            return SimpleNamespace(status_code=422, content=body)
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, request: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
+            return httpx.Response(status_code=422, content=body, request=request)
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
 

@@ -551,9 +551,13 @@ async def test_default_http_sender_posts_the_exact_frozen_body(monkeypatch: pyte
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, method: str, url: str, **kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
             calls.append({"method": method, "url": url, **kwargs})
-            return SimpleNamespace(status_code=202)
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, request: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
+            return httpx.Response(status_code=202, content=b"", request=request)
 
     def create_client(**kwargs: Any) -> FakeClient:
         client_options.append(kwargs)
@@ -600,9 +604,13 @@ async def test_default_http_sender_sends_get_projection_as_query_params_without_
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, method: str, url: str, **kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
             calls.append({"method": method, "url": url, **kwargs})
-            return SimpleNamespace(status_code=200)
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, request: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
+            return httpx.Response(status_code=200, content=b"", request=request)
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
 

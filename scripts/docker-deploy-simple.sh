@@ -53,7 +53,7 @@ Docker 部署管理脚本 (统一配置版本)
 示例:
   $0 dev up                       # 启动开发环境
   $0 prod up                      # 按已核准的 1 API / 4 Celery 拓扑启动生产环境
-  $0 prod scale --scale api=1 --scale celery_worker=4 # 每次必须声明完整目标拓扑
+  $0 prod scale --scale api=1 --scale celery=4 # 每次必须声明完整目标拓扑
   $0 dev logs api                 # 查看 API 日志
   $0 prod down                    # 停止生产环境
   $0 dev build --no-cache         # 无缓存重新构建
@@ -89,7 +89,7 @@ run_capacity_guard() {
             expect_scale_value=true
         elif [[ "$argument" == --scale=* ]]; then
             guard_args+=(--scale "${argument#--scale=}")
-        elif [[ "$argument" == api=* || "$argument" == celery_worker=* ]]; then
+        elif [[ "$argument" == api=* || "$argument" == celery=* ]]; then
             guard_args+=(--scale "$argument")
         fi
     done
@@ -98,13 +98,13 @@ run_capacity_guard() {
         -e DATABASE_RUNTIME_ROLE=cli \
         -e DATABASE_POOL_SIZE=1 \
         -e DATABASE_MAX_OVERFLOW=0 \
-        api python scripts/capacity_guard.py --services api,celery_worker "${guard_args[@]}"
+        api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment "${guard_args[@]}"
 }
 
 # 扩缩容不能依赖上一次命令的离线默认值；每次必须同时声明两个服务的完整目标。
 validate_complete_scale_targets() {
     local has_api=false
-    local has_celery_worker=false
+    local has_celery=false
     local expect_scale_value=false
     local scale_target=""
 
@@ -124,12 +124,12 @@ validate_complete_scale_targets() {
 
         case "$scale_target" in
             api=*) has_api=true ;;
-            celery_worker=*) has_celery_worker=true ;;
+            celery=*) has_celery=true ;;
         esac
     done
 
-    if [ "$has_api" != true ] || [ "$has_celery_worker" != true ]; then
-        print_error "scale 必须同时提供完整目标: api=<n> celery_worker=<n>"
+    if [ "$has_api" != true ] || [ "$has_celery" != true ]; then
+        print_error "scale 必须同时提供完整目标: api=<n> celery=<n>"
         return 1
     fi
 }
@@ -322,7 +322,7 @@ cmd_scale() {
             expect_scale_value=true
         elif [[ "$argument" == --scale=* ]]; then
             compose_scale_args+=(--scale "${argument#--scale=}")
-        elif [[ "$argument" == api=* || "$argument" == celery_worker=* ]]; then
+        elif [[ "$argument" == api=* || "$argument" == celery=* ]]; then
             compose_scale_args+=(--scale "$argument")
         fi
     done

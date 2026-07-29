@@ -51,6 +51,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
     _scan_completed_has_any_barcode_payload,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackResult,
     RuntimeInboxWriteBackService,
     _is_late_or_duplicate_command_result_for_session,
     _record_duplicate_entry_archive_timeline,
@@ -58,6 +59,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
 )
 from src.app.workline.constants import WORKLINE_INBOX_PROCESSING_STALE_SECONDS
 from src.app.workline.trace_context import TraceContext
+from src.core.task_queue_gateway import OutboxDispatchTarget
 from src.utils.timezone import timezone
 
 # ============================================================
@@ -86,6 +88,10 @@ def _write_set(**kwargs: Any) -> Any:
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
 
     return AttemptWriteSet(**kwargs)
+
+
+def _writeback_result(disposition: Any) -> RuntimeInboxWriteBackResult:
+    return RuntimeInboxWriteBackResult(disposition=disposition)
 
 
 class _DeadlineQueryInput(BaseModel):
@@ -438,7 +444,7 @@ async def test_platform_processor_returns_within_gateway_hard_deadline() -> None
 
     class WriteBack:
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
-            return WriteDisposition.COMMITTED
+            return _writeback_result(WriteDisposition.COMMITTED)
 
     session = SimpleNamespace(
         id=10,
@@ -963,7 +969,7 @@ async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_conte
             assert kwargs["inbox_id"] == 91
             assert kwargs["session_id"] == 10
             events.append("lock-revalidate-write")
-            return WriteDisposition.COMMITTED
+            return _writeback_result(WriteDisposition.COMMITTED)
 
     async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
         return session, workline, None, None, {}, object(), True
@@ -1049,7 +1055,7 @@ async def test_command_result_guards_dispatcher_before_plugin_writes(
     class WriteBack:
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
             calls["writeback"] += 1
-            return WriteDisposition.COMMITTED
+            return _writeback_result(WriteDisposition.COMMITTED)
 
     async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
         return session, SimpleNamespace(id=20), None, command, {}, object(), True
@@ -1227,6 +1233,11 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
             return SimpleNamespace(
                 outcome=Success(payload={"accepted": True}),
                 completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
+                outbox_dispatch_targets=(
+                    frozenset({OutboxDispatchTarget.SYSTEM})
+                    if capability_key == "device.device_command_write"
+                    else frozenset()
+                ),
             )
 
     class Runner:
@@ -1239,8 +1250,9 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
             return True
 
     class QueueGateway:
-        def enqueue_outbox(self, _outbox_id: int | None = None, *, limit: int = 50) -> None:
+        def enqueue_outbox(self, *, targets: frozenset[OutboxDispatchTarget], limit: int = 50) -> None:
             assert limit == 50
+            assert targets == frozenset({OutboxDispatchTarget.SYSTEM})
             events.append("enqueue-outbox")
 
     async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
@@ -1308,7 +1320,7 @@ async def test_platform_query_stage_releases_real_async_session_transaction() ->
 
     class WriteBack:
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
-            return WriteDisposition.COMMITTED
+            return _writeback_result(WriteDisposition.COMMITTED)
 
     runner = Runner()
     bridge = _bridge_with_test_runner(
@@ -1377,7 +1389,7 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
 
     class WriteBack:
         async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
-            return WriteDisposition.COMMITTED
+            return _writeback_result(WriteDisposition.COMMITTED)
 
     bridge = _bridge_with_test_runner(
         Runner(),
@@ -1411,7 +1423,14 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
 @pytest.mark.asyncio
 async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_writeback_service
     from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
+    from src.core import task_queue_gateway as task_queue_module
+
+    writeback_result_type = getattr(runtime_inbox_writeback_service, "RuntimeInboxWriteBackResult", None)
+    target_type = getattr(task_queue_module, "OutboxDispatchTarget", None)
+    assert writeback_result_type is not None, "G3 RuntimeInboxWriteBackResult is missing"
+    assert target_type is not None, "G3 OutboxDispatchTarget is missing"
 
     events: list[str] = []
 
@@ -1445,14 +1464,18 @@ async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None
             return _write_set(evidence=(), next_state={}, intents=(intent,), outcome_code="COMMAND_READY")
 
     class WriteBack:
-        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
+        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> object:
             await db.commit()
             events.append("writeback-committed")
-            return WriteDisposition.COMMITTED
+            return writeback_result_type(
+                disposition=WriteDisposition.COMMITTED,
+                outbox_dispatch_targets=frozenset({target_type.SYSTEM}),
+            )
 
     class FailingQueueGateway:
-        def enqueue_outbox(self, _outbox_id: int | None = None, *, limit: int = 50) -> None:
+        def enqueue_outbox(self, *, targets: frozenset[object], limit: int = 50) -> None:
             assert limit == 50
+            assert targets == frozenset({target_type.SYSTEM})
             events.append("enqueue-failed")
             raise RuntimeError("broker unavailable")
 
@@ -1488,8 +1511,11 @@ async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None
 
 @pytest.mark.asyncio
 async def test_platform_safe_retry_requeues_inbox_with_same_lease() -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_writeback_service
     from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
+    writeback_result_type = getattr(runtime_inbox_writeback_service, "RuntimeInboxWriteBackResult", None)
+    assert writeback_result_type is not None, "G3 RuntimeInboxWriteBackResult is missing"
     calls: list[tuple[str, object]] = []
 
     class Db:
@@ -1504,18 +1530,26 @@ async def test_platform_safe_retry_requeues_inbox_with_same_lease() -> None:
             return _write_set(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
-        async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
-            return WriteDisposition.SAFE_RETRY
+        async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> object:
+            return writeback_result_type(
+                disposition=WriteDisposition.SAFE_RETRY,
+                outbox_dispatch_targets=frozenset(),
+            )
 
     class InboxService:
         async def mark_failed(self, _db: object, **kwargs: object) -> bool:
             calls.append(("park", kwargs))
             return True
 
+    class NeverQueueGateway:
+        def enqueue_outbox(self, **_kwargs: object) -> None:
+            raise AssertionError("SAFE_RETRY rollback must not enqueue any Outbox target")
+
     bridge = _bridge_with_test_runner(
         Runner(),
         writeback_service=WriteBack(),  # type: ignore[arg-type]
         inbox_service=InboxService(),  # type: ignore[arg-type]
+        queue_gateway=NeverQueueGateway(),  # type: ignore[arg-type]
     )
     inbox = _make_inbox(inbox_id=91)
     inbox.event_type = "SCAN_COMPLETED"
@@ -1619,7 +1653,7 @@ async def test_generated_attempt_wait_anchor_change_safe_retries_then_next_round
         ),
     )
 
-    assert disposition is WriteDisposition.SAFE_RETRY
+    assert disposition.disposition is WriteDisposition.SAFE_RETRY
     assert events == ["authoritative-lock", "rollback"]
 
     async def _archive(*_args: object, **kwargs: object) -> None:
@@ -1774,7 +1808,7 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
         async def commit_plugin_attempt(self, _db: object, **kwargs: object) -> WriteDisposition:
             nonlocal captured_write_set
             captured_write_set = kwargs["write_set"]
-            return WriteDisposition.COMMITTED
+            return _writeback_result(WriteDisposition.COMMITTED)
 
     async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
         return session, workline, None, None, {}, object(), True
@@ -1879,7 +1913,7 @@ async def test_platform_recorded_replay_precedes_late_callback_and_timer_routes(
     class WriteBack:
         async def commit_plugin_attempt(self, *_args: object, **_kwargs: object) -> WriteDisposition:
             calls["writeback"] += 1
-            return WriteDisposition.COMMITTED
+            return _writeback_result(WriteDisposition.COMMITTED)
 
     session = SimpleNamespace(
         id=10,
@@ -2174,7 +2208,7 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
                 lease_token=kwargs["expected_snapshot"].processor_token,
             )
             await db.commit()
-            return WriteDisposition.COMMITTED
+            return _writeback_result(WriteDisposition.COMMITTED)
 
     monkeypatch.setattr(
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",

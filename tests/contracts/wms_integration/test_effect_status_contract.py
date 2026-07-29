@@ -31,6 +31,7 @@ from src.app.wms_integration.ports.effect_status import (
 )
 from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
+from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
 from src.app.wms_integration.query_evidence import WmsQueryCallPermit
 from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
 from tests.contracts.wms_integration.provider_profile_support import (
@@ -720,6 +721,98 @@ async def test_runtime_factory_builds_adapter_only_from_frozen_status_binding() 
     assert evidence_writer.before_calls == [(RACK_SUPPLY, "WMS_EFFECT_STATUS")]
 
 
+@pytest.mark.asyncio
+async def test_runtime_factory_borrows_fulfillment_lane_client_without_closing_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.wms_integration import effect_lane_runtime
+    from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
+
+    evidence_writer = _RecordingStatusEvidenceWriter()
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_completed_wire())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=60.0)
+    runtime = SimpleNamespace(
+        process_role=WmsProviderProcessRole.FULFILLMENT,
+        client=client,
+    )
+    monkeypatch.setattr(effect_lane_runtime, "get_wms_effect_lane_runtime", lambda: runtime)
+
+    factory = build_effect_status_query_port_factory(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=evidence_writer,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+    adapter = factory()
+
+    assert adapter._client is client
+    assert adapter._owns_client is False
+    assert (await adapter.query_status(_rack_supply_request())).state is WmsEffectStatus.COMPLETED
+    assert client.is_closed is False
+    await client.aclose()
+
+
+@pytest.mark.parametrize("owns_client", [False, True])
+@pytest.mark.asyncio
+async def test_status_adapter_respects_injected_client_ownership_contract(owns_client: bool) -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_completed_wire())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=60.0)
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
+        client=client,
+        owns_client=owns_client,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+
+    assert (await adapter.query_status(_rack_supply_request())).state is WmsEffectStatus.COMPLETED
+    await adapter.aclose()
+
+    assert client.is_closed is owns_client
+    if not client.is_closed:
+        await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("runtime", "expected_message"),
+    [
+        (None, "not initialized"),
+        (
+            SimpleNamespace(
+                process_role=WmsProviderProcessRole.WES,
+                client=object(),
+            ),
+            "fulfillment worker",
+        ),
+    ],
+)
+def test_runtime_factory_fails_closed_without_fulfillment_lane_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: object,
+    expected_message: str,
+) -> None:
+    from src.app.wms_integration import effect_lane_runtime
+
+    monkeypatch.setattr(effect_lane_runtime, "get_wms_effect_lane_runtime", lambda: runtime)
+
+    with pytest.raises(RuntimeError, match=expected_message):
+        build_effect_status_query_port_factory(
+            binding=_binding(),
+            credential_provider=_CredentialProvider(),
+            evidence_writer=_RecordingStatusEvidenceWriter(),
+            initial_backoff_seconds=1.0,
+            max_backoff_seconds=8.0,
+        )
+
+
 def test_runtime_factory_wires_status_query_to_existing_shared_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
     binding = _binding()
     evidence_writer = _RecordingStatusEvidenceWriter()
@@ -734,6 +827,7 @@ def test_runtime_factory_wires_status_query_to_existing_shared_breaker(monkeypat
     factory = build_effect_status_query_port_factory(
         binding=binding,
         credential_provider=_CredentialProvider(),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200)),
         initial_backoff_seconds=1.0,
         max_backoff_seconds=8.0,
     )

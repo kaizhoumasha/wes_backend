@@ -172,6 +172,8 @@ async def test_scheduler_recovers_exhausted_non_http_leases_before_claiming_buck
         now=now,
         operation_domains=None,
         exclude_operation_domains=None,
+        operation_identities=None,
+        exclude_operation_identities=None,
     )
     assert batch.metrics.lease_loss_count == 1
 

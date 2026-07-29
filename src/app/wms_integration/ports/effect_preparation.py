@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-    from src.app.runtime.system_capabilities.wms.effect_runtime import WmsEffectDispatchAccepted
+    from src.app.runtime.system_capabilities.wms.effect_runtime import WmsEffectPreparationResult
     from src.app.wms_integration.operation_contract import WmsOperationDefinition
 
 
@@ -20,7 +20,7 @@ class WmsEffectPreparationPort(Protocol):
         request: BaseModel,
         *,
         execution: Any,
-    ) -> WmsEffectDispatchAccepted: ...
+    ) -> WmsEffectPreparationResult: ...
 
 
 __all__ = ["WmsEffectPreparationPort"]

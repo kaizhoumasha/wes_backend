@@ -36,6 +36,7 @@ class WmsDataLaneQueryRuntime:
         client: httpx.AsyncClient,
         credential_provider: WmsQueryCredentialProvider,
         evidence_writer: WmsRegistryQueryEvidenceWriter,
+        owns_client: bool = True,
     ) -> None:
         if catalog.compiled_profile is not compiled_profile:
             raise ValueError("QUERY runtime requires one compiled profile snapshot")
@@ -57,6 +58,7 @@ class WmsDataLaneQueryRuntime:
         if len(executors) != 19 or len(request_identities) != 19:
             raise RuntimeError("wms-data QUERY runtime requires 19 unique identities and request models")
         self._client = client
+        self._owns_client = owns_client
         self._executors = MappingProxyType(executors)
         self._request_identities = MappingProxyType(request_identities)
         self._operations_by_request = MappingProxyType(
@@ -93,7 +95,8 @@ class WmsDataLaneQueryRuntime:
         )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._owns_client:
+            await self._client.aclose()
 
 
 _active_runtime: WmsDataLaneQueryRuntime | None = None
@@ -135,6 +138,7 @@ def build_wms_data_lane_query_runtime(
     startup: WmsProviderStartupConfiguration,
     *,
     settings_source: Any,
+    client: httpx.AsyncClient | None = None,
 ) -> WmsDataLaneQueryRuntime:
     """在 owner loop 内装配一个长期 client 与现有 credential/evidence 边界。"""
 
@@ -146,20 +150,23 @@ def build_wms_data_lane_query_runtime(
     from src.app.wms_integration.services.evidence_service import wms_call_evidence_service
     from src.database.db import get_db_context
 
+    owns_client = client is None
+    active_client = client or httpx.AsyncClient(
+        # operation 的 asyncio total deadline 更短；client timeout 仅作为底层 socket 兜底。
+        timeout=httpx.Timeout(60.0),
+        limits=httpx.Limits(max_connections=20, max_keepalive_connections=20),
+    )
     return WmsDataLaneQueryRuntime(
         compiled_profile=startup.compiled_profile,
         catalog=startup.catalog,
-        client=httpx.AsyncClient(
-            # operation 的 asyncio total deadline 更短；client timeout 仅作为底层 socket 兜底。
-            timeout=httpx.Timeout(60.0),
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=20),
-        ),
+        client=active_client,
         credential_provider=build_environment_external_http_credential_provider(settings_source=settings_source),
         evidence_writer=WmsRegistryCallEvidenceWriter(
             session_factory=get_db_context,
             evidence_service=wms_call_evidence_service,
             breaker_service=wms_circuit_breaker_service,
         ),
+        owns_client=owns_client,
     )
 
 

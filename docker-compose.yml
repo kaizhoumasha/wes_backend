@@ -146,7 +146,7 @@ services:
   # ============================================
   # Celery Worker - 异步任务处理
   # ============================================
-  celery_worker:
+  celery:
     build:
       context: .
       dockerfile: Dockerfile
@@ -159,7 +159,7 @@ services:
       if [ "${ENV:-prod}" = "dev" ]; then
         exec sh /app/src/celery_app/dev_worker_autoreload.sh;
       else
-        exec celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery,device;
+        exec celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=${CELERY_WORKER_QUEUES:-default,celery,device};
       fi
       '
     env_file:
@@ -186,6 +186,8 @@ services:
       # Celery 配置
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
+      CELERY_WORKER_QUEUES: default,celery,device
+      WMS_PROVIDER_PROCESS_ROLE: wes
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -229,6 +231,24 @@ services:
       - e2e
       - prod
       - celery
+
+  # ============================================
+  # Celery WMS Fulfillment Worker - 专用实际 lane
+  # ============================================
+  celery-wms-fulfillment:
+    extends:
+      service: celery
+    command: >
+      celery -A src.celery_app.app worker
+      --loglevel=${CELERY_LOG_LEVEL:-INFO}
+      --concurrency=${CELERY_CONCURRENCY:-4}
+      --max-tasks-per-child=${CELERY_MAX_TASKS:-1000}
+      --queues=wms-fulfillment
+    environment:
+      CELERY_WORKER_QUEUES: wms-fulfillment
+      WMS_PROVIDER_PROCESS_ROLE: fulfillment
+    deploy:
+      replicas: ${WMS_FULFILLMENT_CELERY_REPLICAS:-1}
 
   # ============================================
   # Celery Beat - 定时任务调度

@@ -59,10 +59,10 @@ class SeededScanFlow:
 class RecordingTaskQueueGateway:
     """记录出队唤醒请求，确保 heavy test 不接触真实 Celery broker。"""
 
-    outbox_enqueues: list[tuple[int | None, int]] = field(default_factory=list)
+    outbox_enqueues: list[tuple[object, int]] = field(default_factory=list)
 
-    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
-        self.outbox_enqueues.append((outbox_id, limit))
+    def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+        self.outbox_enqueues.append((targets, limit))
 
 
 def processor(service: RuntimeInboxService) -> RuntimeInboxProcessorBridge:

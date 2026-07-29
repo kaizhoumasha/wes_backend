@@ -27,8 +27,8 @@ class _FakeTaskQueueGateway:
     def enqueue_workline_inbox(self, *, limit: int = 10) -> None:
         _ = limit
 
-    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
-        _ = outbox_id, limit
+    def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+        _ = targets, limit
 
 
 @pytest.mark.asyncio

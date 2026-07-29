@@ -17,6 +17,7 @@ WRITE 锁回调: stale session snapshot guard + 业务 effects + 重复/迟到�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -56,7 +57,7 @@ from src.app.workline.services.write_back_service import EffectApplyState, _sess
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
 from src.core.conf import settings
-from src.core.task_queue_gateway import task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import canonical_event_type, optional_int, optional_str, string_value
 
@@ -66,6 +67,14 @@ if TYPE_CHECKING:
 
 class RuntimeInboxLeaseLostError(RuntimeError):
     """RuntimeInbox 终态 fencing 更新未命中，当前 processor lease 已失效。"""
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeInboxWriteBackResult:
+    """Stage 3 提交结果与仅对本次新建 Outbox 生效的瞬态唤醒目标。"""
+
+    disposition: WriteDisposition
+    outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
 
 
 def _require_fenced_update(updated: bool, *, action: str, inbox_id: int) -> None:
@@ -452,7 +461,7 @@ class RuntimeInboxWriteBackService:
         workline: Any | None = None,
         devices_by_role: dict[str, list[Any]] | None = None,
         trusted_state_preservation: bool = False,
-    ) -> WriteDisposition:
+    ) -> RuntimeInboxWriteBackResult:
         """锁定权威行后重校验，并在同一事务落完整 attempt 结果。"""
 
         locked = await self._plugin_attempt_repository.lock_authoritative(
@@ -462,7 +471,7 @@ class RuntimeInboxWriteBackService:
         )
         if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
             await db.rollback()
-            return WriteDisposition.SAFE_RETRY
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.SAFE_RETRY)
         try:
             locked_binding = getattr(locked, "plugin_binding", None)
             if locked_binding is not None:
@@ -501,7 +510,7 @@ class RuntimeInboxWriteBackService:
                     current_device_fact_versions = _device_fact_versions(current_devices_by_role)
                     if current_device_fact_versions != tuple(sorted(expected_snapshot.device_fact_versions)):
                         await db.rollback()
-                        return WriteDisposition.SAFE_RETRY
+                        return RuntimeInboxWriteBackResult(disposition=WriteDisposition.SAFE_RETRY)
         except Exception:
             await db.rollback()
             raise
@@ -513,6 +522,7 @@ class RuntimeInboxWriteBackService:
             fallback_state=dict(getattr(locked.session, "plugin_state_json", {}) or {}),
             allow_state_preservation=trusted_state_preservation,
         )
+        outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
         try:
             if write_set.intents:
                 if workline is None:
@@ -557,6 +567,7 @@ class RuntimeInboxWriteBackService:
                     "next_timeline_seq_no": None,
                 }
                 effect_result = await self.effect_applier.apply(effect_ctx, list(write_set.intents))
+                outbox_dispatch_targets = effect_result.outbox_dispatch_targets
                 business_reject_evidence = getattr(effect_result, "business_reject_evidence", None)
                 if isinstance(business_reject_evidence, dict):
                     reject_source = {
@@ -579,7 +590,7 @@ class RuntimeInboxWriteBackService:
                         evidence=business_reject_evidence,
                     )
                     if compensation_result is None:
-                        return WriteDisposition.SAFE_RETRY
+                        return RuntimeInboxWriteBackResult(disposition=WriteDisposition.SAFE_RETRY)
                     is_recursive_effect_reject = (
                         reject_source["payload_json"].get("logical_route") == "CAPABILITY_EFFECT_RESULT"
                     )
@@ -634,8 +645,8 @@ class RuntimeInboxWriteBackService:
                     )
                     await db.commit()
                     if is_recursive_effect_reject:
-                        return WriteDisposition.TERMINAL_FAILURE
-                    return WriteDisposition.COMMITTED
+                        return RuntimeInboxWriteBackResult(disposition=WriteDisposition.TERMINAL_FAILURE)
+                    return RuntimeInboxWriteBackResult(disposition=WriteDisposition.COMMITTED)
             _ = await self._plugin_attempt_repository.persist_locked_attempt(
                 db,
                 locked=locked,
@@ -664,11 +675,15 @@ class RuntimeInboxWriteBackService:
         except Exception:
             await db.rollback()
             raise
-        return WriteDisposition.COMMITTED
+        return RuntimeInboxWriteBackResult(
+            disposition=WriteDisposition.COMMITTED,
+            outbox_dispatch_targets=outbox_dispatch_targets,
+        )
 
 
 __all__ = [
     "RuntimeInboxLeaseLostError",
+    "RuntimeInboxWriteBackResult",
     "RuntimeInboxWriteBackService",
     "_is_late_or_duplicate_command_result_for_session",
     "_record_duplicate_entry_archive_timeline",
