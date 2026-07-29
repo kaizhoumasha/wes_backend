@@ -8,21 +8,22 @@ from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
 
 E08 = "wms.fulfillment.request_rack_supply@v1"
 E09 = "wms.fulfillment.request_rack_transport@v1"
+E11 = "wms.fulfillment.full_box_exchange@v1"
 
 
 def _operation(identity: str):
     return next(operation for operation in EFFECT_OPERATIONS if operation.identity == identity)
 
 
-def test_only_e08_and_e09_declare_a_domain_projection_kind() -> None:
+def test_only_e08_e09_and_e11_declare_a_domain_projection_kind() -> None:
     projected = {
         operation.identity: operation.domain_projection_kind
         for operation in EFFECT_OPERATIONS
         if operation.domain_projection_kind is not None
     }
 
-    assert set(projected) == {E08, E09}
-    assert projected[E08] != projected[E09]
+    assert set(projected) == {E08, E09, E11}
+    assert len(set(projected.values())) == 3
 
 
 def test_domain_projection_kind_is_part_of_the_frozen_definition_schema() -> None:

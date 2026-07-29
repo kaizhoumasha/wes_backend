@@ -103,6 +103,16 @@ class FullBoxExchangeRequest(EffectRequest):
     source_slot_id: StableText = Field(max_length=120)
     occupancies: tuple[FrozenBinCellOccupancy, ...] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def validate_frozen_occupancies(self) -> FullBoxExchangeRequest:
+        members = tuple((item.occupancy_id, item.pkg_id) for item in self.occupancies)
+        if len(members) != len(set(members)):
+            raise ValueError("occupancy/pkg frozen members must be unique")
+        pkg_ids = tuple(item.pkg_id for item in self.occupancies)
+        if len(pkg_ids) != len(set(pkg_ids)):
+            raise ValueError("pkg must not appear in different frozen occupancies")
+        return self
+
 
 class RackBinSlotRelation(StrictWmsModel):
     rack_id: StableText = Field(max_length=120)
@@ -122,14 +132,37 @@ class FullBoxExchangeResult(EffectResult):
 
     @model_validator(mode="after")
     def validate_final_relations(self) -> FullBoxExchangeResult:
+        if self.selected_empty_box_id == self.full_box_id:
+            raise ValueError("selected_empty_box_id must differ from full_box_id")
         if self.full_box_destination.bin_id != self.full_box_id:
             raise ValueError("full_box_destination must identify full_box_id")
         if self.empty_box_destination.bin_id != self.selected_empty_box_id:
             raise ValueError("empty_box_destination must identify selected_empty_box_id")
+        if (
+            self.full_box_destination.rack_id,
+            self.full_box_destination.slot_id,
+        ) == (
+            self.empty_box_destination.rack_id,
+            self.empty_box_destination.slot_id,
+        ):
+            raise ValueError("full and empty destinations must use different coordinates")
         expected = (self.full_box_destination, self.empty_box_destination)
         if len(self.final_relations) != 2 or self.final_relations != expected or len(set(self.final_relations)) != 2:
             raise ValueError("final_relations must uniquely equal the two authored destinations")
         return self
+
+
+def validate_full_box_exchange_terminal_identity(
+    request: FullBoxExchangeRequest,
+    result: FullBoxExchangeResult,
+) -> None:
+    if result.exchange_request_key != request.exchange_request_key or result.full_box_id != request.full_box_id:
+        raise ValueError("full box exchange terminal identity differs from request")
+    if (
+        result.empty_box_destination.rack_id != request.rack_id
+        or result.empty_box_destination.slot_id != request.source_slot_id
+    ):
+        raise ValueError("empty_box_destination must return to the frozen source_slot")
 
 
 class ConveyorBatchItem(StrictWmsModel):
@@ -560,6 +593,8 @@ FULL_BOX_EXCHANGE = effect_operation(
     reject_codes=("RACK_NOT_AT_EXCHANGE_STATION", "FULL_BOX_NOT_FOUND", "NO_EMPTY_BOX_AVAILABLE"),
     completion_mode=WmsCompletionMode.ASYNC_TASK,
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+    terminal_identity_validator=validate_full_box_exchange_terminal_identity,
+    domain_projection_kind=WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND,
 )
 MOVE_BINS_TO_CONVEYOR_ENTRY = effect_operation(
     identity="wms.fulfillment.move_bins_to_conveyor_entry@v1",

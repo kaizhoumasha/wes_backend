@@ -264,6 +264,31 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return list(result.scalars().all())
 
+    async def list_unfinished_for_workline_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        trace_id: str,
+    ) -> list[DeviceCommand]:
+        """批量锁定工作线未闭环指令，供跨域阶段门在同一事务内校验。"""
+
+        if not trace_id.strip():
+            raise ValueError("unfinished command query requires trace_id")
+        unfinished_statuses = [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(
+                columns.workline_id == workline_id,
+                columns.trace_id == trace_id,
+                columns.status.in_(unfinished_statuses),
+            )
+            .order_by(columns.id)
+            .with_for_update()
+        )
+        return list(result.scalars().all())
+
     async def get_commands_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[DeviceCommand]:
         """
         根据 Trace ID 查询所有相关指令

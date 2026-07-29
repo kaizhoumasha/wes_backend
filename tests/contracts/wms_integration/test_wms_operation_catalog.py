@@ -224,7 +224,7 @@ def test_effect_completion_modes_lanes_and_status_capability_are_static() -> Non
     )
 
 
-def test_terminal_identity_validator_is_static_and_only_authored_for_sync_effects() -> None:
+def test_terminal_identity_validator_is_static_and_only_authored_for_supported_effects() -> None:
     import pytest
     from pydantic import ValidationError
 
@@ -255,8 +255,9 @@ def test_terminal_identity_validator_is_static_and_only_authored_for_sync_effect
         operation
         for operation in registry.EFFECT_OPERATIONS
         if operation.completion_mode is contracts.WmsCompletionMode.ASYNC_TASK
+        and operation.identity != "wms.fulfillment.full_box_exchange@v1"
     )
-    with pytest.raises(ValidationError, match="ASYNC_TASK EFFECT must not declare terminal_identity_validator"):
+    with pytest.raises(ValidationError, match="ASYNC_TASK EFFECT terminal validator is only authored for E11"):
         contracts.WmsOperationDefinition.model_validate(
             {
                 **definition_payload(async_effect),

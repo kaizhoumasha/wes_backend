@@ -29,6 +29,12 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_inbound_handoff_re
     SmtInboundHandoffReasonCatalog,
     SmtInboundHandoffReasonCode,
 )
+from src.app.runtime.capabilities.material_flow.contracts.smt_usage_policy import (
+    PREFERRED_FULL_BOX_EXCHANGE_REQUESTED_DECISION as _PREFERRED_EXCHANGE_REQUESTED_DECISION,
+)
+from src.app.runtime.capabilities.material_flow.contracts.smt_usage_policy import (
+    REQUIRED_FULL_BOX_EXCHANGE_REQUESTED_DECISION as _REQUIRED_EXCHANGE_REQUESTED_DECISION,
+)
 from src.app.runtime.capabilities.material_flow.contracts.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
 from src.app.runtime.capabilities.material_flow.contracts.sorting_inbound_context import SortingInboundContext
 from src.app.runtime.capabilities.material_flow.smt_inbound_handoff_route_service import (
@@ -66,9 +72,7 @@ if TYPE_CHECKING:
 
 _FULL_BOX_EXCHANGE_OPERATION_TYPE = "SINGLE_LAYER_FULL_BOX_EXCHANGE"
 _DIRECT_SORTING_DECISION = "DIRECT_SORTING"
-_PREFERRED_EXCHANGE_REQUESTED_DECISION = "PREFERRED_FULL_BOX_EXCHANGE_REQUESTED"
 _PREFERRED_EXCHANGE_FALLBACK_DECISION = "PREFERRED_FULL_BOX_EXCHANGE_FALLBACK_SORTING"
-_REQUIRED_EXCHANGE_REQUESTED_DECISION = "REQUIRED_FULL_BOX_EXCHANGE_REQUESTED"
 _FULL_BOX_EXCHANGED_DECISION = "FULL_BOX_EXCHANGED"
 _RECONCILING_DECISION = "RECONCILING"
 _RELATION_READY_STATUSES = {"READY", "REMAINING", "UNCHANGED", "NOT_EXCHANGED"}

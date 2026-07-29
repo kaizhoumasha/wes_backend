@@ -1985,6 +1985,19 @@ Codex; checkbox as you ship.
     无差异操作不得新增 Gateway/Handler/IntentAdapter 类，禁止运行时反射 DSL 和代码生成器；
     旧聚合/单操作 Protocol、Rack/Handling/单层货架编排旧生产者、旧 transport service/profile/binding/identity
     引用为 0。
+  - Progress（2026-07-29，T5 尚未整体完成）：共享 EFFECT 双完成模式、异步状态归约、data/fulfillment
+    双 lane、严格异步提交拒绝、履约关系持久化，以及 E08/E09 demand/owner 边界已分别在
+    `884e92ef..aea0a774`、`04aea865`、`79b06f8e`、`fa0380eb` 检查点完成并验证。
+  - Verified checkpoint — G4.3 / E11 满箱交换：复用 handoff demand + RuntimeIntent/Outbox 作为唯一 root；
+    首个 root 持久冻结 REQUIRED/PREFERRED 阈值，后续 root 只从 parent 派生；WMS 独立返回空箱和目标储位，
+    WES 在 destination master 锁后重读 active mount，并按冻结 occupancy/material/source 精确集合投影交换结果。
+    `BinSlotTemplate.bin_slot_index` 是模板格权威序号，`(bin_type_code, bin_slot_index)` 唯一且大于零；
+    usage 按实例 `bin_cell_index` 一一映射全部 active 模板格，未映射、重复、失活或集合漂移均 fail closed。
+  - G4.3 evidence：PostgreSQL preparation/terminal `55 passed`，包含二次交换、跨货架、双事务同目标竞争、
+    未映射 occupancy、source identity/数量漂移和 statement budget；相关 WMS contract/status/projector
+    `468 passed`，独立终审定向 `27 passed`；Alembic upgrade/downgrade/re-upgrade、Ruff、Bandit、
+    import-linter、architecture `0 violations / 0 warnings`、topology 与 quality profile 均通过，独立终审
+    `Approved`、无 P0–P2。GitNexus impact/detect 因本地 LadybugDB 文件 v42 与工具存储 v40 不兼容未能给出风险级别。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

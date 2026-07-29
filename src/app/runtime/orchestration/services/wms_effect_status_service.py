@@ -75,6 +75,7 @@ _FULFILLMENT_DOMAIN_OPERATIONS = frozenset(
     {
         "wms.fulfillment.request_rack_supply@v1",
         "wms.fulfillment.request_rack_transport@v1",
+        "wms.fulfillment.full_box_exchange@v1",
     }
 )
 _FULFILLMENT_TERMINAL_NON_SUCCESS = "WMS_FULFILLMENT_TERMINAL_NON_SUCCESS"
@@ -999,6 +1000,13 @@ class WmsEffectStatusService:
                 evidence,
             ),
         )
+        operation_identity = getattr(claim.outbox, "operation_identity", None)
+        if operation_identity == "wms.fulfillment.full_box_exchange@v1" and self._domain_projector is not None:
+            await self._domain_projector.project_reconciliation_opened(
+                db,
+                operation=WMS_OPERATION_BY_IDENTITY[operation_identity],
+                dispatch_key=claim.intent.dispatch_key,
+            )
         _ = await self._repository.release_claim(db, claim=claim, status_check_after=None)
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="RECONCILING")

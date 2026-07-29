@@ -19,10 +19,66 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 SCHEMA = "wes_runtime"
+BIZ_SCHEMA = "wes_biz"
 
 
 def upgrade() -> None:
     """新增 WMS 履约领域关系，并扩展输送线队列 membership。"""
+    op.add_column(
+        "resource_bin_slot_templates",
+        sa.Column("bin_slot_index", sa.Integer(), nullable=False),
+        schema=BIZ_SCHEMA,
+    )
+    op.create_index(
+        "ux_resource_bin_slot_templates_type_index",
+        "resource_bin_slot_templates",
+        ["bin_type_code", "bin_slot_index"],
+        unique=True,
+        schema=BIZ_SCHEMA,
+    )
+    op.create_check_constraint(
+        op.f("ck_resource_bin_slot_templates_positive_index"),
+        "resource_bin_slot_templates",
+        "bin_slot_index > 0",
+        schema=BIZ_SCHEMA,
+    )
+    op.add_column(
+        "smt_inbound_handoff_demands",
+        sa.Column("full_box_exchange_station_code", sa.String(length=120), nullable=True),
+        schema=BIZ_SCHEMA,
+    )
+    op.add_column(
+        "smt_inbound_handoff_demands",
+        sa.Column("full_box_exchange_rack_face", sa.String(length=1), nullable=True),
+        schema=BIZ_SCHEMA,
+    )
+    op.add_column(
+        "smt_inbound_handoff_demands",
+        sa.Column("active_full_box_exchange_intent_id", sa.Integer(), nullable=True),
+        schema=BIZ_SCHEMA,
+    )
+    op.create_check_constraint(
+        "ck_smt_handoff_demands_exchange_rack_face",
+        "smt_inbound_handoff_demands",
+        "full_box_exchange_rack_face IN ('A', 'B')",
+        schema=BIZ_SCHEMA,
+    )
+    op.create_foreign_key(
+        "fk_smt_inbound_handoff_demands_active_full_box_exchange_intent",
+        "smt_inbound_handoff_demands",
+        "runtime_intent_logs",
+        ["active_full_box_exchange_intent_id"],
+        ["id"],
+        source_schema=BIZ_SCHEMA,
+        referent_schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_smt_handoff_demands_exchange_intent",
+        "smt_inbound_handoff_demands",
+        ["active_full_box_exchange_intent_id"],
+        schema=BIZ_SCHEMA,
+    )
+
     op.create_table(
         "wms_rack_demands",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -540,3 +596,38 @@ def downgrade() -> None:
     op.drop_table("bin_route_instances", schema=SCHEMA)
     op.drop_table("wms_rack_demands", schema=SCHEMA)
     op.drop_table("material_flow_owners", schema=SCHEMA)
+    op.drop_index(
+        "ix_smt_handoff_demands_exchange_intent",
+        table_name="smt_inbound_handoff_demands",
+        schema=BIZ_SCHEMA,
+    )
+    op.drop_constraint(
+        "fk_smt_inbound_handoff_demands_active_full_box_exchange_intent",
+        "smt_inbound_handoff_demands",
+        type_="foreignkey",
+        schema=BIZ_SCHEMA,
+    )
+    op.drop_constraint(
+        "ck_smt_handoff_demands_exchange_rack_face",
+        "smt_inbound_handoff_demands",
+        type_="check",
+        schema=BIZ_SCHEMA,
+    )
+    for column_name in (
+        "active_full_box_exchange_intent_id",
+        "full_box_exchange_rack_face",
+        "full_box_exchange_station_code",
+    ):
+        op.drop_column("smt_inbound_handoff_demands", column_name, schema=BIZ_SCHEMA)
+    op.drop_index(
+        "ux_resource_bin_slot_templates_type_index",
+        table_name="resource_bin_slot_templates",
+        schema=BIZ_SCHEMA,
+    )
+    op.drop_constraint(
+        op.f("ck_resource_bin_slot_templates_positive_index"),
+        "resource_bin_slot_templates",
+        type_="check",
+        schema=BIZ_SCHEMA,
+    )
+    op.drop_column("resource_bin_slot_templates", "bin_slot_index", schema=BIZ_SCHEMA)

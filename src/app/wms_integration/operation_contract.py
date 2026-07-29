@@ -46,10 +46,11 @@ class WmsExecutionLane(str, Enum):
 
 
 class WmsDomainProjectionKind(str, Enum):
-    """仅 E08/E09 需要的本地履约投影类型。"""
+    """需要本地履约投影的 WMS operation 类型。"""
 
     RACK_SUPPLY_DEMAND = "RACK_SUPPLY_DEMAND"
     RACK_TRANSPORT_DEMAND = "RACK_TRANSPORT_DEMAND"
+    FULL_BOX_EXCHANGE_DEMAND = "FULL_BOX_EXCHANGE_DEMAND"
 
 
 class WmsOperationBudget(BaseModel):
@@ -178,14 +179,20 @@ class WmsOperationDefinition(BaseModel):
             raise ValueError("EFFECT requires completion_mode and forbids pagination")
         if self.completion_mode is WmsCompletionMode.SYNC_RESULT and self.terminal_identity_validator is None:
             raise ValueError("SYNC_RESULT EFFECT requires terminal_identity_validator")
-        if self.completion_mode is WmsCompletionMode.ASYNC_TASK and self.terminal_identity_validator is not None:
-            raise ValueError("ASYNC_TASK EFFECT must not declare terminal_identity_validator")
+        allows_async_terminal_validator = self.identity == "wms.fulfillment.full_box_exchange@v1"
+        if (
+            self.completion_mode is WmsCompletionMode.ASYNC_TASK
+            and self.terminal_identity_validator is not None
+            and not allows_async_terminal_validator
+        ):
+            raise ValueError("ASYNC_TASK EFFECT terminal validator is only authored for E11")
         expected_domain_projection = {
             "wms.fulfillment.request_rack_supply@v1": WmsDomainProjectionKind.RACK_SUPPLY_DEMAND,
             "wms.fulfillment.request_rack_transport@v1": WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND,
+            "wms.fulfillment.full_box_exchange@v1": WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND,
         }.get(self.identity)
         if self.domain_projection_kind is not expected_domain_projection:
-            raise ValueError("domain_projection_kind is only valid for its authored E08/E09 operation")
+            raise ValueError("domain_projection_kind is only valid for its authored fulfillment operation")
         is_e13 = self.identity == "wms.fulfillment.move_bins_from_conveyor_exit@v1"
         if is_e13 and self.max_candidate_count is None:
             raise ValueError("E13 requires max_candidate_count")

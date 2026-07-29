@@ -277,6 +277,8 @@ def _validate_result_identity(
         raise ValueError("completed result identity differs from the original request")
     operation = _OPERATION_BY_IDENTITY[request.operation_identity]
     typed_request = validate_json_payload(operation.request_model, request.request_payload)
+    if operation.terminal_identity_validator is not None:
+        operation.terminal_identity_validator(typed_request, result)
     if (
         isinstance(typed_request, RequestRackSupplyRequest)
         and isinstance(result, RequestRackSupplyResult)

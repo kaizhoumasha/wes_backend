@@ -23,6 +23,10 @@ from src.app.runtime.orchestration.services.effect_reducer_service import (
     ReconciliationResolutionConflict,
     effect_reducer,
 )
+from src.app.runtime.orchestration.services.full_box_exchange_service import (
+    FullBoxExchangeService,
+    full_box_exchange_service,
+)
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
     IdempotencyConflict,
@@ -86,6 +90,7 @@ __all__ = [
     "EffectReconciliationResolutionService",
     "EffectReducer",
     "EffectReductionResult",
+    "FullBoxExchangeService",
     "IdempotencyConflict",
     "IdempotencyGuard",
     "InvalidReconciliationEvent",
@@ -109,6 +114,7 @@ __all__ = [
     "device_runtime_projection_writer_service",
     "effect_reconciliation_resolution_service",
     "effect_reducer",
+    "full_box_exchange_service",
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",

@@ -9,17 +9,25 @@ from src.app.resource.models import RackKind, ResourceSourceSystem
 from src.app.resource.services.projection_service import ResourceProjectionService, resource_projection_service
 from src.app.runtime.orchestration.effect_state_contract import EffectReducerEventType
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPositionRole
+from src.app.runtime.orchestration.models.smt_inbound_handoff import SmtInboundHandoffDemandStatus
 from src.app.runtime.orchestration.repositories.wms_fulfillment_domain_repository import (
     WmsFulfillmentDomainRepository,
     wms_fulfillment_domain_repository,
 )
 from src.app.runtime.orchestration.repository_wiring import workline_repository
+from src.app.runtime.orchestration.services.full_box_exchange_service import (
+    FullBoxExchangeClaim,
+    FullBoxExchangeService,
+    full_box_exchange_service,
+)
 from src.app.runtime.orchestration.services.rack_demand_service import WmsRackDemandClaim
 from src.app.wms_integration.operation_contract import (
     WmsDomainProjectionKind,
     WmsOperationDefinition,
 )
 from src.app.wms_integration.ports.fulfillment_operations import (
+    FullBoxExchangeRequest,
+    FullBoxExchangeResult,
     RequestRackSupplyRequest,
     RequestRackSupplyResult,
     RequestRackTransportRequest,
@@ -45,12 +53,14 @@ class WmsFulfillmentDomainProjector:
         self,
         *,
         repository: WmsFulfillmentDomainRepository = wms_fulfillment_domain_repository,
+        full_box_exchange: FullBoxExchangeService = full_box_exchange_service,
         resource_projection_service: ResourceProjectionService = resource_projection_service,
         station_role_resolver: Callable[..., Any] | None = None,
         workline_code_resolver: Callable[..., Any] | None = None,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._repository = repository
+        self._full_box_exchange = full_box_exchange
         self._resource_projection_service = resource_projection_service
         self._station_role_resolver = station_role_resolver or self._default_station_role
         self._workline_code_resolver = workline_code_resolver or self._default_workline_code
@@ -66,6 +76,20 @@ class WmsFulfillmentDomainProjector:
     ) -> None:
         """锁定 PREPARING demand，校验冻结 root，并在 Outbox 前绑定 ACTIVE root。"""
 
+        if operation.domain_projection_kind is WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
+            if not isinstance(request, FullBoxExchangeRequest):
+                raise TypeError("full box exchange demand requires its typed request")
+            claim = self._require_full_box_exchange_claim(execution)
+            intent_id = getattr(getattr(execution, "intent_log", None), "id", None)
+            if not isinstance(intent_id, int) or intent_id <= 0:
+                raise RuntimeError("full box exchange preparation requires claimed intent id")
+            await self._full_box_exchange.prepare_effect(
+                db,
+                claim=claim,
+                request=request,
+                intent_id=intent_id,
+            )
+            return
         claim = self._require_claim(execution)
         demand = await self._repository.get_demand_for_update(db, claim.demand_id)
         if demand is None:
@@ -127,10 +151,16 @@ class WmsFulfillmentDomainProjector:
             return
         if not bool(getattr(reduction, "state_changed", False)) or bool(getattr(reduction, "contradiction", False)):
             return
-        demand = await self._repository.get_demand_by_dispatch_for_update(
-            db,
-            dispatch_key=event.dispatch_key,
-        )
+        if operation.domain_projection_kind is WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
+            demand = await self._full_box_exchange.get_demand_by_dispatch_for_update(
+                db,
+                dispatch_key=event.dispatch_key,
+            )
+        else:
+            demand = await self._repository.get_demand_by_dispatch_for_update(
+                db,
+                dispatch_key=event.dispatch_key,
+            )
         if demand is None:
             raise RuntimeError("WMS fulfillment domain demand is missing")
         if event.event_type in {
@@ -163,8 +193,42 @@ class WmsFulfillmentDomainProjector:
             ):
                 raise TypeError("E09 fulfillment projection requires typed request/result")
             await self._project_e09_success(db, demand=demand, request=request, result=result, event=event)
+        elif operation.domain_projection_kind is WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
+            if not isinstance(request, FullBoxExchangeRequest) or not isinstance(result, FullBoxExchangeResult):
+                raise TypeError("E11 fulfillment projection requires typed request/result")
+            if not event.source_event_id:
+                raise ValueError("E11 terminal projection requires source_event_id")
+            await self._full_box_exchange.project_success(
+                db,
+                demand=demand,
+                request=request,
+                result=result,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+            )
+            return
         else:
             raise RuntimeError("WMS fulfillment domain projection kind is unbound")
+        await db.flush()
+
+    async def project_reconciliation_opened(
+        self,
+        db: AsyncSession,
+        *,
+        operation: WmsOperationDefinition,
+        dispatch_key: str,
+    ) -> None:
+        """仅为 E11 reconciliation 同事务冻结 parent；不释放 owner 或 active Intent。"""
+
+        if operation.domain_projection_kind is not WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
+            return
+        demand = await self._full_box_exchange.get_demand_by_dispatch_for_update(
+            db,
+            dispatch_key=dispatch_key,
+        )
+        if demand is None:
+            raise RuntimeError("full box exchange reconciliation parent demand is missing")
+        demand.status = SmtInboundHandoffDemandStatus.RECONCILING
         await db.flush()
 
     @staticmethod
@@ -175,6 +239,16 @@ class WmsFulfillmentDomainProjector:
         claim = ctx.get("wms_rack_demand_claim")
         if not isinstance(claim, WmsRackDemandClaim):
             raise TypeError("WMS rack demand preparation claim is missing")
+        return claim
+
+    @staticmethod
+    def _require_full_box_exchange_claim(execution: Any) -> FullBoxExchangeClaim:
+        ctx = getattr(execution, "ctx", None)
+        if not isinstance(ctx, dict):
+            raise TypeError("full box exchange preparation requires runtime execution context")
+        claim = ctx.get("wms_full_box_exchange_claim")
+        if not isinstance(claim, FullBoxExchangeClaim):
+            raise TypeError("full box exchange preparation claim is missing")
         return claim
 
     @staticmethod
@@ -226,6 +300,9 @@ class WmsFulfillmentDomainProjector:
         request_payload: dict[str, Any],
         event: EffectReducerEvent,
     ) -> None:
+        if operation.domain_projection_kind is WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
+            demand.status = SmtInboundHandoffDemandStatus.RECONCILING
+            return
         if operation.domain_projection_kind is WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND:
             request = validate_json_payload(RequestRackTransportRequest, request_payload)
             if demand.handoff_from_owner_id is not None:
