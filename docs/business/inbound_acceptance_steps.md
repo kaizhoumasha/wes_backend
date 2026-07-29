@@ -65,7 +65,7 @@ ADMIT / MOVE_FORWARD 正常主流程
 - ECS/device provider profile 已启用 command、result callback、event callback 和 device status 查询。
 - 设备命令派发前必须校验 ECS 设备状态为 `IDLE` 或有效快照。
 - WES 不推断扫码平台空闲或机械臂预取容量；平台与南北臂互锁由 PLC/机器人保证。
-- WMS↔CTU 的逐箱动作、阶段回调和实时位置属于 WMS 内部实现；WES 只消费 WMS 批次终态。
+- WMS↔CTU 的内部执行与实时位置属于 WMS 内部实现；WES 只消费 WMS 批次终态。
 
 ### 3.2 主数据与资源
 
@@ -87,7 +87,7 @@ ADMIT / MOVE_FORWARD 正常主流程
 | `RuntimeInbox` | WMS 普通事件/状态提示与 ECS device event/result 的入站记录 |
 | `RuntimeIntentLog` | WES 下发设备命令、WMS fulfillment、WMS 库存事务的 effect ledger |
 | `DeviceCommand` | 机械臂、流水线、扫码平台命令及 ACK/RESULT 状态 |
-| `WmsFulfillmentRequest` | 补架、移架、换面、满箱交换、CTU 投箱/退箱等外部履约状态 |
+| operation-specific ACK/status/terminal result | 补架、移架、换面、满箱交换、CTU 投箱/退箱等外部履约状态 |
 | `RuntimeLocationEvent` | 作业期物理位置事实 |
 | `RackPlacement` / `RackBinMount` / `BinPlacement` | 货架、料箱和工作位投影 |
 | `BinMaterialMount` / `BinCellOccupancy` | 物料与料格占用事实 |
@@ -174,7 +174,7 @@ STATION A/B，也不允许被分拣机北向机械臂取料。
 | F-09 | WMS 内部执行满箱取放和空箱补位 | WES 不接收逐箱阶段事件，也不回写推测位置 | E11 在批次终态前保持在途 |
 | F-10 | WMS 返回 E11 typed terminal result | WES 校验 ACK、status、terminal result 的同一 provider reference | result 完整返回最终 rack-bin-slot 关系 |
 | F-11 | E11 terminal result 校验通过 | WES 按最终关系更新本地物理事实和挂载投影 | 原满箱和换入空箱位置均可解释 |
-| F-12 | 当前面批次收敛 | Runtime 校验 terminal result、active projection 和资源收敛 | 不使用 CTU 内部阶段 callback 推进父请求 |
+| F-12 | 当前面批次收敛 | Runtime 校验 terminal result、active projection 和资源收敛 | 只使用批次级权威结果推进请求 |
 | F-13 | 另一面仍有满箱 | WES 创建 `CHANGE_RACK_FACE` fulfillment | 换面是独立 WMS/AGV 履约，不是 CTU 子步骤 |
 | F-14 | WMS/AGV 换面 SUCCESS callback | WES 更新货架当前可操作面投影 | 下一面 exchange work items 被释放执行 |
 | F-15 | 另一面满箱交换 | 重复 F-07 至 F-12 | 两面 E11 均完成或进入 scoped hold |
@@ -211,7 +211,7 @@ STATION A/B，也不允许被分拣机北向机械臂取料。
 | --- | --- | --- | --- |
 | S-01 | 分拣机开工 | WES 检测 STATION A/B、FIVE STATION、滚筒线容量 | 缺五层货架时请求 WMS/AGV 补入 |
 | S-02 | FIVE STATION 有可用料箱 | WES 创建 CTU 投箱批次 | 批次数量 = `min(入口线空位, CTU 背篓容量, 五层货架可用料箱数)` |
-| S-03 | WMS 内部调度 CTU 执行 E12 | WES 不接收逐箱阶段 callback 或实时位置 | WES 保持 ACK 冻结批次在途 |
+| S-03 | WMS 内部调度 CTU 执行 E12 | WES 只消费批次级 status 与 typed terminal result | WES 保持 ACK 冻结批次在途 |
 | S-04 | WMS 提示 E12 状态变化 | WES 只触发 typed status query | 状态 reference 必须与 ACK 一致 |
 | S-05 | WMS 返回 E12 typed terminal result | WES 校验冻结成员和逐成员最终事实 | 未扫码前不凭 WMS 内部阶段绑定新物理事实 |
 | S-06 | E12 批次收敛 | WES 校验 terminal items 和入口线本地 projection | 父请求查询视图展示批次终态 |

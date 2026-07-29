@@ -52,7 +52,7 @@ fixture 与 required cases 只属于测试/构建期 manifest。
 
 `docs/architecture/northbound-wms-operation-inventory.csv` 是 T1 的可执行清单。每个条目只有在目标 typed 路径生效、对应测试完成
 `KEEP/REWRITE/DELETE` 处置、旧 identity 与字符串字段扫描为零、生成物零差异、指标和文档完成后才可关闭。T12 必须按清单中
-真实 operation 展开任务；不得以首批三个 operation 为范围豁免，也不得在门禁外延期清理。
+真实 operation 展开任务；不得以任意局部 operation 切片为范围豁免，也不得在门禁外延期清理。
 
 ## 零兼容约束
 

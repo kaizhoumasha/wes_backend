@@ -106,7 +106,7 @@ review_summary: |
 **当前里程碑范围**（Active scope）：
 
 - **WMS Port 活跃**: WmsMasterDataPort / InventoryQueryOperationPort / WmsInventoryTransactionPort；履约侧使用 operation-specific typed contract。
-- **WMS Port @deferred**: WmsDocumentPort / WmsEventPort / WmsReconciliationQueryPort。
+- **WMS 边界 @deferred**: operation-specific document QUERY / WmsEventPort / WmsReconciliationQueryPort。
 - **能力域**: material-flow（rough_sorter / sorter_inbound / smt_inbound_handoff）。
 
 ---

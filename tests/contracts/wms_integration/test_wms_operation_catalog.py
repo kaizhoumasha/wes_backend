@@ -349,13 +349,14 @@ def test_e13_candidate_window_changes_operation_index_and_profile_digests(
 
 
 def test_grn_and_batch_contracts_have_no_legacy_shape() -> None:
-    document = _load("src.app.wms_integration.ports.document")
     registry = _load("src.app.wms_integration.operation_registry")
 
     assert importlib.util.find_spec("src.app.wms_integration.ports.fulfillment") is None
-    assert not hasattr(document, "WmsGrnItem")
-    assert not hasattr(document.WmsDocumentPort, "list_grn_items")
-    assert "item_count" not in document.WmsGrnInfo.model_fields
+    assert importlib.util.find_spec("src.app.wms_integration.ports.document") is None
+    get_grn = registry.WMS_OPERATION_BY_IDENTITY["wms.document.get_grn@v1"]
+    assert get_grn.request_model.__module__ == "src.app.wms_integration.ports.document_operations"
+    assert get_grn.result_model.__module__ == "src.app.wms_integration.ports.document_operations"
+    assert "item_count" not in get_grn.result_model.model_fields
     assert {
         "po_number",
         "po_item",
@@ -363,7 +364,7 @@ def test_grn_and_batch_contracts_have_no_legacy_shape() -> None:
         "planned_quantity",
         "received_quantity",
         "remaining_quantity",
-    } <= set(document.WmsGrnInfo.model_fields)
+    } <= set(get_grn.result_model.model_fields)
     e11 = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.full_box_exchange@v1"]
     e12 = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.move_bins_to_conveyor_entry@v1"]
     e13 = registry.WMS_OPERATION_BY_IDENTITY["wms.fulfillment.move_bins_from_conveyor_exit@v1"]

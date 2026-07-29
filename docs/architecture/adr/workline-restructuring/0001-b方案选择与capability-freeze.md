@@ -12,7 +12,9 @@ WORKLINE + PLUGIN 体系（workline 32,979 LOC + workline_plugins 3,085 LOC + wo
 
 1. **B 方案（目标态领域边界 + 增量 ACL）作为重构路径**，但**条件性**进入：完成 C 方案（增量 ACL 包装 wms_integration）+ capability freeze + 测试基线 + 4 个 critical path 任务后启动。
 2. **Capability Freeze**：v0.6–v0.8 公共契约（start admission / runtime monitor / SMT inbound handoff / C0 resource projection / YAML manifest / WMS typed port / BinTransitMembership 8 队列 + RECONCILING / WMS callback normalize + circuit breaker）**不可撤销**；B 方案修改必须走 breaking change 流程。
-3. **现有 typed port 包装不重建**：`wms_integration` 复用现有 `wms_integration`（实测 2,649 LOC，其中 typed_ports.py 609 行 + models/ports.py 151 行 = 760 行）；补全 `WmsMasterDataPort` / `WmsDocumentPort` / operation-specific fulfillment contracts / `WmsEventPort` / `WmsReconciliationQueryPort`。
+3. **现有 typed contract 不重建**：`wms_integration` 复用 operation registry；补全
+   `WmsMasterDataPort`、operation-specific document/fulfillment Definitions、`WmsEventPort` 与
+   `WmsReconciliationQueryPort`。
 4. **物理表名冻结**：`BinTransitMembership`（8 队列 + RECONCILING + 部分唯一索引）保持不变；新增 `ConveyorQueueProjectionPort` 接口层代替直接 import。
 5. **per-PR 兼容声明**：每个破坏性 PR 必须附带 `docs/architecture/capability-freeze.md` 条目（受影响 capability + breaking change + 迁移路径 + 失效窗口 + feature flag 回滚方案）。
 

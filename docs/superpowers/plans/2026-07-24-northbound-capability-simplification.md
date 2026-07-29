@@ -93,7 +93,7 @@ WES Intent/Outbox
 - `src/app/wms_integration/adapters/effect_status_query_adapter.py`：通过现有 HTTP transport 调用部署中的 WMS 状态查询端点。
 - `src/app/runtime/orchestration/services/wms_effect_status_service.py`：协调状态查询、reducer 和重查/对账决策。
 - `src/app/runtime/orchestration/repositories/wms_effect_status_repository.py`：只负责查找待确认 Intent/Outbox 及持久化轮询结果。
-- `src/app/runtime/orchestration/services/wms_effect_preparation_service.py`：承载三个 operation 完全一致的 EFFECT preparation/Outbox 组装流程。
+- operation-specific Definition 与 preparation builder：分别承载 typed payload 和 Outbox 组装，不保留共享旧 service。
 - `tests/contracts/wms_integration/test_effect_status_contract.py`：WMS 状态合同单元测试。
 - `tests/workline_runtime/system_capabilities/test_wms_effect_status_service.py`：状态流和失败路径测试。
 - `tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py`：真实事务下的重复查询、终态和对账测试。
@@ -118,7 +118,7 @@ WES Intent/Outbox
 - `src/app/runtime/workline_plugins/attempt_coordinator.py`：移除从未被生产赋值的 shadow write set。
 - `src/app/runtime/system_capabilities/evidence.py`：移除始终为 `None` 的 `shadow_expected`。
 - `src/app/runtime/orchestration/repositories/northbound_operations_repository.py`、`src/app/runtime/orchestration/services/query/northbound_operations_query_service.py`：移除 readiness 投影。
-- 三个 operation 的 `effect_adapter.py`、`intent_adapter.py` 及 `__init__.py`：接入共享 preparation；保留 operation 特有 payload 映射。
+- 适用 operation 的 `effect_adapter.py`、`intent_adapter.py` 及 `__init__.py`：接入共享不变量；保留 operation 特有 payload 映射。
 - `docs/superpowers/archive/specs/2026-07-21-northbound-capability-extraction-design.md`：标记被本 ADR 部分取代。
 - `docs/architecture/target-state-contract.md`、`docs/contracts/external-contract-profile.md`、`docs/contracts/observability-contract.md`、`docs/operations/northbound-operation-slo-catalog.md`、`docs/runbooks/northbound-operation-observability.md`：同步目标合同、指标和排障方式。
 
@@ -130,7 +130,7 @@ WES Intent/Outbox
 - `src/app/runtime/system_capabilities/shadow_repository.py`
 - `src/app/runtime/system_capabilities/shadow_service.py`
 - `src/app/runtime/system_capabilities/wms/conformance_trust_root.py`
-- 三个 operation 的 `callback_adapter.py`
+- 适用 operation 的 `callback_adapter.py`
 - 只验证 shadow/readiness、签名 attestation、动态多 profile 的测试和 fixture；有价值的 typed contract/conformance case 改写后保留。
 
 ---
@@ -141,7 +141,7 @@ WES Intent/Outbox
 WMS `sha256:ef142f2a47bd604f67c22802b22cd39b805f6f677c43e3a5e2f6e9e0e497348e` 与 ECS
 `sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`，共享镜像双入口、浮点覆盖与
 点时 digest 证据 `5 passed`；独立验收 Compose `mock_wms_acceptance` 在默认
-`http://127.0.0.1:18011` 通过三个 typed EFFECT 的真实 TCP 黑盒探针：heavy/live pytest `6 passed`，
+`http://127.0.0.1:18011` 通过当前已冻结 typed EFFECT 的真实 TCP 黑盒探针：heavy/live pytest `6 passed`，
 CLI 48 case 全部 `passed=true`。
 未来外部 WMS 联调模板保留，但不再构成当前 P0 进入门禁。
 
@@ -263,7 +263,7 @@ uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
 - Modify: `docker-compose.yml`
 - Modify: `docker-compose.deploy.yml`
 - Modify: `docker-compose.test-deploy.yml`
-- Modify: 三个 WMS EFFECT operation 的 `gateway.py`、`effect_adapter.py`、preparation service
+- Modify: 适用 WMS EFFECT operation 的 `gateway.py`、`effect_adapter.py`、preparation builder
 - Create: Alembic 生成的 SystemOutbox 幂等请求键 migration
 - Test: `tests/contracts/system_capabilities/test_canonical_external_http_dispatch.py`
 - Test: `tests/sys/test_system_outbox_repository.py`
@@ -276,7 +276,9 @@ uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
 
 **Step 1: 影响分析**
 
-对 `SystemOutbox`、`DispatchEnvelope`、`ExternalHttpDispatchRequest`、canonical signing 函数、`Settings`、`WmsIntegrationRuntimeFactory` 及三个 operation 的 adapter/preparation 符号执行 upstream impact。`SystemOutbox` 已知为 CRITICAL，实施本任务前必须报告直接调用者、execution flows 和迁移影响并再次等待确认。
+对 `SystemOutbox`、`DispatchEnvelope`、`ExternalHttpDispatchRequest`、canonical signing 函数、`Settings`、
+`WmsIntegrationRuntimeFactory` 及全部受影响 operation 的 adapter/preparation 符号执行 upstream impact。
+`SystemOutbox` 已知为 CRITICAL，实施本任务前必须报告直接调用者、execution flows 和迁移影响并再次等待确认。
 
 **Step 2: 写失败的 Port 合同测试**
 
@@ -316,7 +318,7 @@ uv run pytest tests/contracts/wms_integration/test_effect_status_contract.py -q
 - SystemOutbox 增加创建后不可变的 `idempotency_key` 请求元数据；通用模型为兼容非 WMS operation 可空，但 WMS EFFECT 路径强制非空。
 - preparation 只能从对应 RuntimeIntentLog 复制已持久化的幂等键，不允许 adapter、gateway 或重试路径重新生成。
 - DispatchEnvelope 与受控 external HTTP request 暴露该字段；canonical dispatch 将 `Idempotency-Key` 与 `X-WES-Operation-Identity` 纳入闭集 header 和签名输入。
-- 三个 WMS EFFECT gateway 发送上述 header，typed body 保持现有业务 schema。不得开放任意 header map。
+- 全部适用 WMS EFFECT gateway 发送上述 header，typed body 保持现有业务 schema。不得开放任意 header map。
 - 定义 immutable typed status binding snapshot/hash builder，覆盖当前唯一 active Provider 的状态 target、profile/binding revision、auth scheme 和版本化 credential reference；快照不得包含 secret material。Task 2 的 adapter 显式接收已验证 snapshot，不在本任务提前写入尚未迁移的 RuntimeIntentLog 字段。
 
 使用以下命令创建本任务独立 migration，并覆盖 upgrade/downgrade、既有非 WMS Outbox 记录和 WMS EFFECT 非空约束测试：
@@ -384,7 +386,7 @@ uv run ruff check src/app/wms_integration tests/contracts/wms_integration
 - Modify: `src/app/runtime/orchestration/runtime_intent.py`
 - Modify: `src/app/runtime/orchestration/runtime_intent_effects.py`
 - Modify: `src/app/runtime/orchestration/runtime_intent_log.py`
-- Modify: 三个现有 WMS EFFECT preparation service/effect adapter
+- Modify: 全部受影响 WMS EFFECT preparation builder/effect adapter
 - Modify: `src/celery_app/tasks/workline.py`
 - Modify: `src/celery_app/config.py`
 - Create: Alembic 生成的 WMS EFFECT 状态查询调度 migration
@@ -392,12 +394,14 @@ uv run ruff check src/app/wms_integration tests/contracts/wms_integration
 - Test: `tests/workline_runtime/system_capabilities/test_wms_effect_status_service.py`
 - Test: `tests/workline_runtime/test_external_http_transport_attempt.py`
 - Test: `tests/workline_runtime/test_external_http_workline_dispatcher.py`
-- Test: 三个 operation 的 typed EFFECT contract tests
+- Test: 全部受影响 operation 的 typed EFFECT contract tests
 - Test: `tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py`
 
 **Step 1: 影响分析**
 
-至少分析 `EffectReducer`、`ExternalHttpTransportResult`、`_send_external_http`、RuntimeIntent 的状态应用方法、三个 operation 的 preparation/effect adapter、Celery workline task 注册函数。当前已知 `EffectReducer` 为 MEDIUM；如新分析出现 HIGH/CRITICAL，先汇报并确认。
+至少分析 `EffectReducer`、`ExternalHttpTransportResult`、`_send_external_http`、RuntimeIntent 的状态应用方法、
+全部受影响 operation 的 preparation/effect adapter、Celery workline task 注册函数。当前已知
+`EffectReducer` 为 MEDIUM；如新分析出现 HIGH/CRITICAL，先汇报并确认。
 
 **Step 2: 写 reducer 和 service 的失败测试**
 
@@ -530,7 +534,7 @@ uv run pytest tests/contracts/wms_integration/test_confirm_inbound_typed_effect.
 - Delete: `src/app/runtime/system_capabilities/wms/inventory/confirm_inbound/callback_adapter.py`
 - Delete: `src/app/runtime/system_capabilities/wms/fulfillment/full_box_exchange/callback_adapter.py`
 - Delete: `src/app/runtime/system_capabilities/wms/fulfillment/notify_pkg_binding/callback_adapter.py`
-- Modify: 三个 operation 的 `__init__.py`
+- Modify: 全部受影响 operation 的 `__init__.py`
 - Test: `tests/contracts/wms_integration/test_typed_effect_callback_routing.py`
 - Test: `tests/workline_runtime/system_capabilities/test_wms_effect_status_service.py`
 - Test: `tests/architecture/test_northbound_wms_typed_operation_boundaries.py`
@@ -768,7 +772,7 @@ uv run pytest tests/integration/test_runtime_plugin_attempt_postgresql.py -q
 
 **Files:**
 
-- Create: `src/app/runtime/orchestration/services/wms_effect_preparation_service.py`
+- Delete: 已由 operation-specific Definition 取代的共享 preparation 模块
 - Modify: `src/app/runtime/orchestration/services/__init__.py`
 - Modify: `src/app/runtime/orchestration/services/confirm_inbound_effect_preparation_service.py`
 - Modify: `src/app/runtime/orchestration/services/full_box_exchange_effect_preparation_service.py`
@@ -788,11 +792,12 @@ uv run pytest tests/integration/test_runtime_plugin_attempt_postgresql.py -q
 
 **Step 1: 逐符号影响分析**
 
-对三个 preparation service、effect adapter 和 intent adapter 的公开符号分别运行 upstream impact。此任务只合并确认相同的基础设施流程，不抽象 operation 特有 payload 或业务字段。
+对全部受影响 preparation builder、effect adapter 和 intent adapter 的公开符号分别运行 upstream impact。
+此任务只合并确认相同的基础设施流程，不抽象 operation 特有 payload 或业务字段。
 
 **Step 2: 写参数化特征测试**
 
-以三个 operation 为参数，锁定共同不变量：
+以全部受影响 operation 为参数，锁定共同不变量：
 
 - canonical payload 与 payload hash 生成一致。
 - dispatch key、idempotency key、frozen binding 和 Outbox metadata 完整。
@@ -1040,7 +1045,7 @@ must replace PLAN with passing evidence. No LLM eval or browser E2E is applicabl
 | status claim | Worker claim 后崩溃 | PostgreSQL lease recovery test | lease 到期重领 | lease age/backlog 指标 |
 | fenced writeback | 旧 Worker 迟到覆盖新结果 | token mismatch race test | 丢弃迟到写回 | stale worker 计数 |
 | status snapshot | source version 回退或同版本异内容 | reducer unit/integration tests | 留证并对账，不覆盖终态 | contract conflict/reconciliation |
-| typed result | `COMPLETED` payload 缺字段或 correlation 不一致 | 三个 operation contract tests | 不终结，进入对账 | 命名 schema/correlation failure |
+| typed result | `COMPLETED` payload 缺字段或 correlation 不一致 | operation registry contract tests | 不终结，进入对账 | 命名 schema/correlation failure |
 | `NOT_FOUND` | 首次提交确实未到达 | grace/resubmit crash matrix | 同键同 payload 最多重提一次 | resubmit count/age 指标 |
 | resubmit fencing | 计数提交后进程在 HTTP 前崩溃 | crash-window integration test | 偏保守转人工，不二次自动重提 | open reconciliation |
 | 429/积压 | WMS 长时间限流导致任务惊群 | backoff/jitter/Retry-After tests | 小批量、顺序、breaker | backlog max age、429、实际退避 |
@@ -1097,7 +1102,7 @@ Run with Claude Code or Codex; checkbox as you ship.
 - [x] **T3 (P1, human: ~4–6d / CC: ~6–10h)** — Runtime reliability — 建立持久化状态确认、typed result、租约围栏和同键单次重提
   - Surfaced by: Architecture/test/performance review — 轮询状态、业务结果、崩溃恢复、乱序和 `NOT_FOUND` 恢复必须形成闭环。
   - Files: `src/app/runtime/orchestration/`, `src/celery_app/`, generated RuntimeIntent migration
-  - Verify: reducer/service unit tests、PostgreSQL integration、resilience crash matrix 和三类 typed EFFECT tests 通过。
+  - Verify: reducer/service unit tests、PostgreSQL integration、resilience crash matrix 和全部适用 typed EFFECT tests 通过。
 - [x] **T4 (P1, human: ~1–2d / CC: ~2–3h)** — Callback boundary — 将 callback 收敛为可恢复的查询提示
   - Surfaced by: Architecture review — callback 不能作为终态权威，broker 失败不能丢失确认。
   - Files: `src/app/callback/`, callback router/normalizer/registry, WMS contracts
@@ -1116,8 +1121,8 @@ Run with Claude Code or Codex; checkbox as you ship.
   - Verify: attempt/evidence contract tests 与 PostgreSQL integration test 通过。
 - [x] **T8 (P2, human: ~1–2d / CC: ~2–3h)** — WMS DRY — 在特征测试保护下合并三个 preparation 流程
   - Surfaced by: Code-quality review — 首批 EFFECT preparation 大量重复但业务 payload 必须继续分离。
-  - Files: runtime orchestration preparation services、三个 WMS operation adapter package
-  - Verify: system capability、三个 typed EFFECT contract 和 Ruff 检查通过。
+  - Files: runtime orchestration preparation builders、全部受影响 WMS operation adapter package
+  - Verify: system capability、全部适用 typed EFFECT contract 和 Ruff 检查通过。
 - [ ] **T9 (P1, human: ~2–3d + WMS coordination / CC: ~1–2h)** — Release — 完成真实联调、清数据和 forward-only 整体切换
   - Surfaced by: Architecture review — EFFECT 后回滚不安全，发布必须有明确不可逆点。
   - Files: observability/SLO/runbook/target-state docs、conformance fixtures、legacy removal report

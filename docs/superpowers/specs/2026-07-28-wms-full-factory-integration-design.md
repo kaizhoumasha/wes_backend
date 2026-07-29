@@ -61,7 +61,7 @@ Factory WMS Adapter。
 | RCS 边界        | WES 只向 WMS 提交搬运/交换需求，WMS 负责 RCS 调度闭环                                                                                       |
 | 粗分准入          | WES 将六合一码与测量摘要提交 WMS；WMS 以无副作用 QUERY 返回匹配 GRN 和准入结论                                                                        |
 | 粗分准入传输        | Q19 固定为无副作用 POST QUERY；完整六码/测量放 JSON body，evidence 只保留允许摘要与 canonical hash                                                 |
-| CTU 边界        | E12 提交冻结成员，E13 提交有界 FIFO 候选并由 WMS ACK 冻结接纳前缀；逐箱执行和回调仅发生在 WMS↔CTU 内部，WMS 任务终结后再提示 WES 查询完整结果                                |
+| CTU 边界        | E12 提交冻结成员，E13 提交有界 FIFO 候选并由 WMS ACK 冻结接纳前缀；箱级执行仅发生在 WMS↔CTU 内部，WMS 任务终结后再提示 WES 查询完整结果                                  |
 | 扫码平台流水        | 南向取料命令 ACK 后立即下发下一北向取料；取料 result 后执行扫码，WES 根据扫码 result 决策并下发投放命令；正常格/NG 位通过投放参数区分；扫码平台空闲和南北向防呆由机械臂/PLC控制 |
 | 工程原则          | 严格遵循 DRY/KISS/SOLID/YAGNI；不保留旧版本、旧配置、旧数据或旧测试兼容路径                                                                           |
 | QUERY 缓存      | 本期不做跨请求缓存；单次执行只复用同一 authority snapshot                                                                                     |
@@ -158,7 +158,7 @@ Outbox preparation 从静态 Operation Definition 派生 target，事务提交�
 | endpoint 主要由代码共享 base URL 派生                                           | Profile 配置一个 `server_url` 和 35 个合同约束 path                             |
 | EFFECT 共用一个 status URL                                                 | E01–E07/E15/E16 只冻结 submit endpoint；E08–E14 冻结 submit/status endpoint |
 | operation/auth 合同强制 HMAC，生产强制 HTTPS                                    | 允许 `isolated_lan + NONE + HTTP`                                       |
-| EFFECT status parser 写死 3 个 operation                                  | 只为 E08–E14 建立静态 status registry；同步 EFFECT 禁止进入 scanner                |
+| EFFECT status parser 写死局部 operation 子集                              | 为 E08–E14 建立静态 status registry；同步 EFFECT 禁止进入 scanner                  |
 | Master Data、Document、Transaction、Event、Reconciliation 多为 deferred Port | 建成真实 typed capability                                                 |
 | 历史回调可携带终态业务含义                                                          | 异步任务 callback 统一降为 status hint；同步 EFFECT 不注册 status hint              |
 | 真实外部 WMS 仍未全量验收                                                        | 建立 35 operation 的全量 conformance 与 GO 门禁                               |
@@ -271,7 +271,7 @@ idempotency claim
 8. 粗分准入 QUERY 只能校验并返回结论，不得预留、扣减、绑定或产生其他 WMS 副作用；物理投格后的绑定和入库仍由 E07/E03 完成。
 9. E12 在 submit 前冻结精确批次成员；E13 在 submit 前冻结有序 FIFO 候选窗口，实际批次成员由 WMS ACK
    的 `accepted_scope` 冻结，且只能是候选列表的有序前缀。
-10. CTU 批次是任务维度，料箱是操作对象维度。WES 不接收 CTU 逐箱进度 callback；批次状态负责 ACK、状态查询、
+10. CTU 批次是任务维度，料箱是操作对象维度。WES 只消费批次 ACK、状态查询与 typed terminal result；
     重试和任务终结，料箱状态只由本地 SCAN/设备事实及可信终态结果沿 route instance 单向推进。两者关联但不得互相覆盖。
 11. WES 不查询、不维护扫码平台 `FREE/BUSY` 作为调度条件；机械臂/PLC 对单位置扫码平台的互锁和防碰撞负责。
 12. 同一本地投格事实产生的 E07/E03 共享 `execution_work_item_id + correlation_id + fact_version`；两项可并行执行。
@@ -499,7 +499,7 @@ E12/E13 是批次 EFFECT，不允许退化为 WES 逐箱调用：
   的五层货架空储位投影触发。
 - E12 必须整批接受或在任何物理动作发生前整批 `REJECTED`；E13 只允许通过 ACK 的有序前缀缩小候选窗口，ACK
   冻结实际成员后不得静默增删、替换或重排。
-- WMS↔CTU 自行处理逐箱取放、阶段回调和内部恢复。WES 不接收逐箱 callback，也不在任务执行中推断实时位置。
+- WMS↔CTU 自行处理箱级取放、内部阶段和恢复。WES 只消费批次级权威结果，也不在任务执行中推断实时位置。
 - CTU 批次任务状态与料箱对象位置是两个投影。批次保持 `ACCEPTED/PROCESSING` 时，本地 SCAN 事实仍可推进料箱
   route instance；批次终态只能补充任务 evidence、关闭占用和填充尚未知的最终事实，不得覆盖更后的本地路线节点。
 - terminal typed result 必须回显 `batch_id`、ACK 冻结成员和
@@ -643,11 +643,10 @@ status claim 路径；只有成功取得对应 RuntimeIntent 的既有 `status_c
 已被其他 worker claim 或已终态时直接 no-op。不同 hint 不增加 debounce/coalescing 状态、缓存、时间窗口或新表；
 scanner 仍是 callback 丢失时的兜底。
 
-顶层蓝图中的 `WMS_RACK_ARRIVED`、`WMS_TRANSPORT_COMPLETED`、
-`WMS_FULL_BOX_EXCHANGE_RESULT` 等执行终态回调，在目标合同中由对应 EFFECT 的 typed status result 取代。
-不得保留一条能直接完成 Session 的平行回调路径。
+顶层蓝图中已删除的执行终态事件，在目标合同中由对应 EFFECT 的 typed status result 取代。
+不得保留一条能直接完成 Session 的平行入口。
 
-CTU 逐箱动作和阶段回调是 WMS/RCS 内部实现，不进入 WES callback/event 合同。E12/E13 整个批次终结后，WMS只发送
+CTU 箱级动作和内部阶段是 WMS/RCS 实现细节，不进入 WES event 合同。E12/E13 整个批次终结后，WMS只发送
 `WMS_EFFECT_STATUS_HINT`；WES随后查询 typed terminal result，并一次消费完整 `items[]` 更新资源关系投影。
 即使 status hint 丢失，scanner 仍必须能够取回同一结果。
 
@@ -774,7 +773,7 @@ SCAN2，SCAN3 是唯一物理末端分流点，对每个经过料箱只消费此
 E12 成员或朝向。
 SCAN1 的“箱号正确”指扫码值可解析且唯一映射到一个 `bin_id`；“有效搬运成员”指该箱属于当前入口提交前冻结且
 未被整批拒绝/取消的 E12 成员，并且该 route instance 尚未消费 SCAN1。SCAN1 到位事件本身就是料箱已到入口的
-本地物理证据，不依赖 WMS/CTU 逐箱 callback；E12 ACK/terminal 尚未到达时仍按该冻结集合判断，后到矛盾结果进入对账。
+本地物理证据，不依赖 WMS/CTU 箱级进度；E12 ACK/terminal 尚未到达时仍按该冻结集合判断，后到矛盾结果进入对账。
 
 WES 不维护 NG 线容量、位置预约或人工清退投影。SCAN3 下发 NG 路由后，仅对应设备 result 可以把该 route instance
 推进到 `NG_LINE` 终点；NG 料箱不得创建退料线 membership 或进入 E13。命令失败、重复/迟到 result 和设备阻塞按
@@ -1188,7 +1187,7 @@ flowchart TD
 
 - 激活 4 类普通 WMS 业务事件 normalizer。
 - 将 E08–E14 执行类回调统一收敛为 `WMS_EFFECT_STATUS_HINT`；同步 EFFECT 不注册 hint。
-- 不建立 CTU 逐箱 progress callback/event；逐箱执行只存在于 WMS/RCS 内部。
+- 不建立 CTU 箱级进度入口；箱级执行只存在于 WMS/RCS 内部。
 - 保留 scanner，使 callback 完全丢失时仍能完成。
 - 验收：callback 不含终态 payload，不直接推进 Session；同键异 hash 进入冲突审计。
 
@@ -1255,10 +1254,10 @@ flowchart TD
 任何函数、类或方法的实现变更前，必须按仓库规则执行 GitNexus upstream impact analysis；HIGH/CRITICAL
 风险先向用户确认。
 
-现有 `WmsMasterDataPort`、`WmsDocumentPort`、`WmsReconciliationQueryPort`、`WmsInventoryTransactionPort`、
-旧粗粒度 fulfillment family Protocol 及 operation-specific 单方法 Protocol 在共享泛型 Port 落地后直接删除；同步删除只验证旧
-“七 Port”形状、旧方法数量或兼容入口的测试。业务能力通过明确 typed Definition 调用两个共享 Port，不建立第三套
-聚合 facade。
+现有 `WmsMasterDataPort`、operation-specific document QUERY、`WmsReconciliationQueryPort`、
+`WmsInventoryTransactionPort`、旧粗粒度 fulfillment family Protocol 及 operation-specific 单方法
+Protocol 在共享泛型 Port 落地后直接删除；同步删除只验证旧 Port 数量、旧方法数量或兼容入口的测试。
+业务能力通过明确 typed Definition 调用两个共享 Port，不建立第三套聚合 facade。
 
 ## 14. 测试与验证
 
@@ -1366,7 +1365,7 @@ status reducer、callback normalizer，以及本次修改的 material-flow capab
   任一不可逆物理事实后晚到 `REJECTED` 必须进入对账而非普通业务拒绝。
 - E13 migration/performance 测试使用代表性 active/history 队列数据执行 `EXPLAIN (ANALYZE, BUFFERS)`；候选查询必须
   使用上述部分复合索引，不得出现 membership 全表扫描或额外 sort，锁定行数不得显著超过请求批量。
-- E12/E13 覆盖 status hint 丢失后的 scanner 恢复，并以门禁证明 WES 不注册、不消费 CTU 逐箱 progress callback。
+- E12/E13 覆盖 status hint 丢失后的 scanner 恢复，并以门禁证明 WES 只消费批次级权威结果。
 - status scanner 覆盖批量 claim 短事务、每条独立数据库会话、有界并发、部分查询异常隔离、租约过期恢复和多个
   scanner task 重叠；慢 WMS 时实际并发不得超过 `status_max_in_flight`，不得形成无界 Beat 任务积压。
 - 所有 WMS Celery task 必须通过现有 `src/celery_app/async_runtime.py` 的 `run_async` 执行；静态门禁禁止 task
@@ -1515,7 +1514,7 @@ status reducer、callback normalizer，以及本次修改的 material-flow capab
 | ---- | ------------------ | ---------------------------------------------------------------------------------------------------------------- |
 | S01  | 分拣机开工及持续资源检查       | 缺少单层/五层货架时合并 active demand；未知具体货架由 E08 请求 WMS 选架并送达，已知确定货架/起止位置才用 E09，同一 generation 二选一                      |
 | S02  | 入口、CTU 和五层货架资源可用   | 以 `min(已预约入口空位数, ctu_basket_capacity, 可用料箱数)` 冻结并提交 E12                                                          |
-| S03  | WMS 执行 E12         | CTU 逐箱取放和阶段 callback 仅存在于 WMS↔CTU；WES只消费整批 status hint/terminal result                                           |
+| S03  | WMS 执行 E12         | CTU 箱级取放和内部阶段仅存在于 WMS↔CTU；WES 只消费整批 status hint/terminal result                                                |
 | S04  | 料箱到达 SCAN1         | 检查箱号、有效 E12 搬运成员和朝向；三项均通过则进入工作位队列，任一不通过则只持久化 NG 并旁路工作位去往 SCAN3；只有设备 result 推进路线事实                 |
 | S05  | 料箱到达 SCAN2         | 调度器必须已在此前创建唯一 active work-item 绑定；有绑定则停留，关闭后重新判定；无绑定则流向 SCAN3；绑定与流出按同一 route instance 串行化                |
 | S06  | 料箱到达 SCAN3         | 对每个经过料箱读取已持久化 NG；有 NG 则下发进入 NG 线，否则下发进入退料线；只有退料线 result 写入 E13 候选队列                                   |
@@ -1540,7 +1539,7 @@ status reducer、callback normalizer，以及本次修改的 material-flow capab
   混写为同一物理事实。
 - SCAN2 work-item 绑定与单物料 CellReservation 是两个维度；关闭绑定前必须先停止新预约并等待既有预约/南向命令终结。
 - SCAN1 不预约 NG 位置，SCAN3 才根据持久化标记分流；NG result 不得创建退料线 membership 或 E13 候选。
-- WES 不注册、不消费 CTU 逐箱 progress callback，也不根据中间阶段推断料箱实时位置。
+- WES 只消费 CTU 批次级权威结果，也不根据中间阶段推断料箱实时位置。
 - E13 候选只来自 SCAN3 维护的退料线队列；E13 成员和顺序不继承 E12 的批次、`sequence_no` 或投料顺序。
 - 多 worker 并发触发 E13 时按 `scan3_enqueued_at + queue_position + bin_id` 确定性选择有界候选窗口；同一料箱和
   源位置同时最多属于一个 active/ACK-unknown 提交，WMS只能接纳候选有序前缀，未接纳成员继续留队。
@@ -1988,7 +1987,7 @@ Codex; checkbox as you ship.
     hint 只保留 evidence 并唤醒，hint worker/scanner 共享 `status_check_lease_token` claim；同一 EFFECT
     并发唤醒最多一个 HTTP 查询，未 claim/已终态 no-op，零 debounce/coalescing 新状态；
     同步 EFFECT 零 hint 路由；未知 handler
-    异常保持 retryable UNKNOWN 并覆盖恢复/dead-letter；旧 WMS 终态 route 和 CTU 逐箱 callback/event 引用为 0。
+    异常保持 retryable UNKNOWN 并覆盖恢复/dead-letter；已删除的 WMS 终态入口和 CTU 箱级进度入口引用为 0。
 - [ ] **T8（P1，human: \~4d / CC: \~1d）** — conformance — 建立 35 项静态注册表驱动的参数化合同矩阵
   - Surfaced by: Test Review — 共享题库参数化覆盖全部 operation，每项仅维护最小 typed fixture。
   - Files: `tests/contracts/wms_integration/`、`tests/wms_integration/`、conformance manifest/runner/fixtures。

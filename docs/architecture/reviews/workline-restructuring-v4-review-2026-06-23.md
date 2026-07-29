@@ -154,7 +154,8 @@
 
 **建议**: §6.6 补:
 - **货架维度**: 一旦 `RackPlacement` 状态进入 `IN_TRANSIT`，新 Placement 写入必须基于 WMS 确认；冲突进 RECONCILING
-- **命令维度**: 同 `correlation_id` 不可同时存在 `DeviceCommand.status=RUNNING` + `WmsFulfillmentRequest.status=SUCCEEDED` 的不一致组合
+- **命令维度**: 同 `correlation_id` 不可同时存在 `DeviceCommand.status=RUNNING` 与 WMS typed
+  terminal result 已完成的不可解释组合
 
 ### 🟡 M6. §9.6 DeviceRuntime 状态缺 UNKNOWN/MAINTENANCE
 

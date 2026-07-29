@@ -15,46 +15,8 @@ from typing import Protocol
 from pydantic import BaseModel
 
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
-from src.app.wms_integration.ports.document import WmsDocumentPort
 from src.app.wms_integration.ports.event import InboundEventPort, WmsEventPort
 from src.app.wms_integration.ports.reconciliation_query import WmsReconciliationQueryPort
-
-
-def test_wms_document_port_is_protocol():
-    """WmsDocumentPort 必须是 typing.Protocol 子类。"""
-    assert issubclass(WmsDocumentPort, Protocol)
-
-
-def test_wms_document_protocol_signatures():
-    """WmsDocumentPort 5 方法签名与 PO 行级 GRN 合同一致。"""
-    methods = ["get_grn", "get_pick_order", "get_outbound_order", "get_wave", "get_task_snapshot"]
-    for name in methods:
-        assert hasattr(WmsDocumentPort, name), f"missing method: {name}"
-        method = getattr(WmsDocumentPort, name)
-        assert callable(method)
-
-
-def test_wms_document_port_have_docstrings():
-    """WmsDocumentPort 类和所有方法必须含 docstring。"""
-    assert WmsDocumentPort.__doc__, "WmsDocumentPort class needs docstring"
-    for name in ["get_grn", "get_pick_order", "get_outbound_order", "get_wave", "get_task_snapshot"]:
-        method = getattr(WmsDocumentPort, name)
-        assert method.__doc__, f"method {name} needs docstring"
-
-
-def test_wms_document_data_classes_are_pydantic():
-    """WmsDocumentPort 关联的 5 数据类必须是 BaseModel 子类且含 docstring。"""
-    from src.app.wms_integration.ports.document import (
-        WmsGrnInfo,
-        WmsOutboundOrder,
-        WmsPickOrder,
-        WmsTaskSnapshot,
-        WmsWave,
-    )
-
-    for cls in [WmsGrnInfo, WmsPickOrder, WmsOutboundOrder, WmsWave, WmsTaskSnapshot]:
-        assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
-        assert cls.__doc__, f"{cls.__name__} needs docstring"
 
 
 def test_wms_fulfillment_uses_only_operation_specific_typed_definitions():
@@ -147,7 +109,7 @@ def test_wms_reconciliation_query_data_classes_are_pydantic():
 
 
 def test_remaining_wms_protocol_boundaries_are_present():
-    """保留 6 个真实 Protocol；履约由 operation-specific Definition 承接。"""
+    """保留 5 个真实 Protocol；单据和履约由 operation-specific Definition 承接。"""
     from src.app.wms_integration.ports.inventory_transaction import WmsInventoryTransactionPort
     from src.app.wms_integration.ports.master_data import WmsMasterDataPort
     from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
@@ -156,10 +118,9 @@ def test_remaining_wms_protocol_boundaries_are_present():
         WmsMasterDataPort,
         InventoryQueryOperationPort,
         WmsInventoryTransactionPort,
-        WmsDocumentPort,
         WmsEventPort,
         WmsReconciliationQueryPort,
     ]
-    assert len(all_ports) == 6
+    assert len(all_ports) == 5
     for port in all_ports:
         assert issubclass(port, Protocol)

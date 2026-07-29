@@ -210,7 +210,9 @@ runtime 域内表使用 `execution_session_id` 作为 `ExecutionSession` FK；�
 
 **Operation-specific WMS fulfillment contract 集成**：
 
-Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11 态机的事实源归 `WmsFulfillmentRequest` / fulfillment adapter。Handling 可通过 `correlation_id`、`RuntimeIntentLog` 和 fulfillment evidence 派生粗粒度状态，但不得直接持有或双写 `SENT/ACCEPTED/RUNNING/BLOCKED_BY_CB/TIMEOUT` 等外部履约细态。
+Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约事实源归 operation-specific
+ACK/status/terminal result。Handling 可通过 `correlation_id`、`RuntimeIntentLog` 和 fulfillment evidence
+派生粗粒度状态，但不得直接持有或双写外部履约细态。
 
 状态归属固定如下：
 
@@ -220,7 +222,10 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 | 外部履约请求 11 态机 | operation-specific request/result | typed EFFECT adapter + status worker | 表达 WMS/provider 是否接收、执行、拒绝、超时或被 CB 阻塞 |
 | 作业位置事实 | `RuntimeLocationEvent` / active projection writer | runtime worker / reconciliation | 表达对象在 WES 作业期位置，不由 Handling 或 WMS ACL 直接改写 |
 
-`HandlingOperation.coarse_business_status` 只能由本地业务语义和 evidence 汇总推进：`PLANNED -> WAITING_FULFILLMENT -> IN_PROGRESS -> COMPLETED`，或进入 `REJECTED/FAILED/CANCELLED/RECONCILING`。若需要展示外部履约细态，查询层通过 `correlation_id` 联合 `WmsFulfillmentRequest.status` 返回派生视图，不落双份状态。
+`HandlingOperation.coarse_business_status` 只能由本地业务语义和 evidence 汇总推进：
+`PLANNED -> WAITING_FULFILLMENT -> IN_PROGRESS -> COMPLETED`，或进入
+`REJECTED/FAILED/CANCELLED/RECONCILING`。若需要展示外部履约细态，查询层通过 `correlation_id`
+关联 operation-specific status 返回派生视图，不落双份状态。
 
 **满箱/换箱/换架完成语义**：
 
@@ -415,7 +420,7 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 
 | 数据 | 关键字段组 | 设计约束 |
 | --- | --- | --- |
-| `WmsFulfillmentRequest` | fulfillment kind, source/target, 11 态 `status`, immutable `request_hash`, `idempotency_key`, `correlation_id` | 外部履约状态 owner；WMS/RCS/provider callback 和 adapter 推进 |
+| operation-specific fulfillment evidence | operation identity, typed payload, immutable request hash, idempotency key, provider reference | 外部履约事实；由 ACK、权威 status 与 typed terminal result 单调推进 |
 | `WmsCallbackEnvelope` | callback type, `source_event_id`, `source_version`, signature/timestamp/nonce, raw body hash, normalized evidence, normalizer status | 外部 callback 原始归档与 normalize 结果；外部不直接写 envelope API |
 
 **API**：
@@ -456,7 +461,8 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 **API 写入约束**：
 
 - `/reconciliation/reconcile` 与 `/reconciliation/resolve` 只能写 `ReconciliationRecord.resolution_decision`、`owner_scope`、`allowed_next_effect_scope`、`resolved_at` 和 audit log。
-- API 不得直接修改 `WmsFulfillmentRequest`、`HandlingOperation`、`ExecutionSession`、`DeviceCommand` 或 active projection；这些 owner 只能根据 reconciliation evidence 自行转移。
+- API 不得直接修改 operation-specific fulfillment evidence、`HandlingOperation`、`ExecutionSession`、
+  `DeviceCommand` 或 active projection；这些 owner 只能根据 reconciliation evidence 自行转移。
 - 人工 resolve 必须记录操作者、依据、object scope、允许释放的 effect 范围和幂等键。
 
 **SMT / NG / WMS 对账语义**：

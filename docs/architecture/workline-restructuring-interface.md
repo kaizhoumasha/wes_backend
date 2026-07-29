@@ -13,7 +13,7 @@
 | Port | 职责 | 现状 | 关键方法 |
 | --- | --- | --- | --- |
 | `WmsMasterDataPort` | 查询/校验货架、料箱、库位、物料、区域、地码等元数据 | **新增** | `get_material` / `list_materials` / `get_zone` / `list_locations` / `get_rack` / `get_bin` / `validate_rack_bin` |
-| `WmsDocumentPort` | 只读查询 GRN、入库单、出库单、批次单、波次、业务任务快照 | **新增** | `get_grn` / `list_grn_packages` / `get_inbound_order` / `get_outbound_order` / `get_batch_order` / `get_task_snapshot` |
+| operation-specific document QUERY | 只读查询 GRN、料盘、拣货单、出库单、波次、业务任务快照 | **冻结** | `wms.document.get_grn@v1` / `list_grn_packages@v1` / `get_pick_order@v1` / `get_outbound_order@v1` / `get_wave@v1` / `get_task_snapshot@v1` |
 | `InventoryQueryOperationPort` | 查询库存 authority snapshot | operation-scoped typed QUERY | `execute` |
 | `WmsInventoryTransactionPort` | 库存预留、释放、转移确认等会改变 WMS 事务状态的能力 | **由现有 `WmsInventoryPort` mutation 能力迁出** | `reserve_inventory` / `release_reservation` / `confirm_transfer` |
 | E08–E14 typed fulfillment operations | 请求外部系统执行搬运、补给、移出、换面、投箱、取箱和满箱交换 | **operation-specific EFFECT contracts** | 以冻结 operation identity、typed request/result 和共用 ACK/status 交互 |
@@ -21,7 +21,7 @@
 | `WmsEventPort` | 接收 WMS 普通事件与 EFFECT status hint | **已冻结**（callback_normalizer） | `WMS_GRN_RECEIVED` / `WMS_PALLET_ARRIVED` / `WMS_INVENTORY_UPDATED` / `WMS_PDA_OPERATION_RECORDED` / `WMS_EFFECT_STATUS_HINT` |
 | `WmsReconciliationQueryPort` | 只读拉取 WMS 权威事实、版本和 drift snapshot，用于对账 WES 作业期投影 | **新增** | `check_bin_drift` / `check_rack_drift` / `check_workline_drift` / `check_full_drift` |
 
-**任务变化边界**：WMS 普通事件属于 `WmsEventPort` / `InboundNormalizerProfile`，只能经 external callback API 写 `RuntimeInbox`；任务终态由 E08–E14 权威 status 提供，`WmsDocumentPort` 只提供当前单据/任务快照查询，不提供订阅、push 或入站事件入口。
+**任务变化边界**：WMS 普通事件属于 `WmsEventPort` / `InboundNormalizerProfile`，只能经 external callback API 写 `RuntimeInbox`；任务终态由 E08–E14 权威 status 提供，operation-specific document QUERY 只提供当前单据/任务快照查询，不提供订阅、push 或入站事件入口。
 
 **对账端口边界**：`WmsReconciliationQueryPort` 是只读 QueryPort，不是 EffectPort。它只返回 WMS 权威事实、`source_version` 和 drift snapshot，不创建 `RuntimeIntentLog`，不向 WMS 写入确认/修正，不直接写 `ReconciliationRecord`。本地冲突登记、`RuntimeHold`、`resolution_decision` 和 audit log 归 `reconciliation` 域的 `ReconciliationManager`。若未来确需向 WMS 发起对账确认、库存更正或履约补偿，必须归入明确的 `WmsInventoryTransactionPort` 或 operation-specific fulfillment action，并走 `RuntimeIntentLog + EffectPort`，不得把只读对账查询端口升级成通用副作用端口。
 
@@ -32,10 +32,10 @@
 | `GET /api/wms/master-data/materials/{material_code}` / `GET /api/wms/master-data/materials` | `WmsMasterDataPort` | 物料主数据按需查询；单次 execution 复用同一 authority snapshot，不跨请求缓存 |
 | `GET /api/wms/master-data/zones` / `GET /api/wms/master-data/locations` | `WmsMasterDataPort` | 区域/地码用于设备归属、资源边界和履约目标校验 |
 | `GET /api/wms/master-data/racks/{rack_id}` / `GET /api/wms/master-data/bins/{bin_id}` / `GET /api/wms/master-data/racks` | `WmsMasterDataPort` | 货架/料箱主数据与状态按需引用，不复制为 WES 主数据 |
-| `GET /api/wms/documents/grns/{grn_id}` / `GET /api/wms/documents/grns/{grn_id}/packages` | `WmsDocumentPort` | GRN 与料盘归属用于作业上下文和 PKG 校验 |
+| `GET /api/wms/documents/grns/{grn_id}` / `GET /api/wms/documents/grns/{grn_id}/packages` | Q08/Q09 operation-specific Definition | GRN 与料盘归属用于作业上下文和 PKG 校验 |
 | inventory QUERY runtime | `InventoryQueryOperationPort` | 每次 execution 查询一次 WMS；禁止跨请求缓存 |
 | `POST /api/wms/fulfillment/rack-supply` / `POST /api/wms/fulfillment/rack-transport` | E08/E09 typed operations | WES 生成搬运需求；WMS 统一调度 RCS |
-| `POST /api/wms/fulfillment/pkg-bindings` | E01 typed operation | WES 作业结果通知 WMS；属于出站 effect，必须走 `RuntimeIntentLog` + EffectPort，不允许进入只读 `WmsDocumentPort` |
+| `POST /api/wms/fulfillment/pkg-bindings` | E01 typed operation | WES 作业结果通知 WMS；属于出站 effect，必须走 `RuntimeIntentLog` + EffectPort，不允许进入只读 document QUERY |
 | `POST /api/wms/inventory/reservations` / `POST /api/wms/inventory/reservations/release` / `POST /api/wms/inventory/transfers` | `WmsInventoryTransactionPort` | E01/E02/E05 库存预留、释放、转移确认必须以 WMS 事务结果为准；必须走 `RuntimeIntentLog` + EffectPort，不允许作为查询能力直调 |
 | `POST /api/v1/callback/event` / `POST /api/v1/callback/result` | `WmsEventPort` / `DeviceEventPort` → `RuntimeInbox` | 统一回调入口；按 source 路由到 WMS/RCS/ECS/device normalizer；ACK 后写 inbox，不直接改 session |
 
@@ -82,8 +82,9 @@
 
 **批量履约语义**：
 
-CTU 入线、退线和货架补给这类外部动作可能表现为“一次请求、多对象、多阶段回调”。目标态只建一个 `WmsFulfillmentRequest`
-父请求，但必须为每个被搬运对象生成可追踪的子 evidence，并把子 evidence 投影为 `RuntimeLocationEvent`：
+CTU 入线、退线和货架补给以一次 operation-specific 请求提交多个对象；ACK 冻结接纳范围，status 与 typed
+terminal result 统一 `provider_reference`。WES 只消费批次级权威结果，并为每个被搬运对象生成可追踪的
+evidence，再把可信 evidence 投影为 `RuntimeLocationEvent`：
 
 - 父请求记录批次级约束、幂等键、请求 hash、WMS/RCS 接收状态和批次完成结果。
 - 子 evidence 的 owner 是对应对象的 `ExecutionWorkItem`；不另建与 runtime 并列的子履约状态源。每个 CTU 子 work item 必须记录批次序号、placeholder_key、resolved_bin_id、阶段状态和 evidence。

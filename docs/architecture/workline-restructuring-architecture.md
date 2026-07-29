@@ -112,9 +112,9 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 集成约束 | 来源章节 | 目标态落点 | 设计含义 |
 | --- | --- | --- | --- |
 | RCS 调度仍由 WMS 统一调度 | §1.2 | operation-specific WMS fulfillment contract | WES 生成搬运需求并提交 WMS；WMS 调 RCS，结果经 WMS 回传 |
-| PDA 仅对接 WMS | §1.2 | `WmsEventPort` / `WmsDocumentPort` | WES 不做 PDA API；PDA 结果通过 WMS 事件或单据查询进入 |
+| PDA 仅对接 WMS | §1.2 | `WmsEventPort` / operation-specific document QUERY | WES 不做 PDA API；PDA 结果通过 WMS 事件或单据查询进入 |
 | 自动化设备只通过 WES 接入 | §1.2 | `device` 域 | WMS 不直连设备；设备 EVENT/COMMAND/RESULT 归 WES |
-| 标签打印按设备类型分流 | §1.2 | `device` 域 + `WmsDocumentPort` | 自动打印设备由 WES 下发；人工打印由 WMS 获取模板后回执 |
+| 标签打印按设备类型分流 | §1.2 | `device` 域 + operation-specific document QUERY | 自动打印设备由 WES 下发；人工打印由 WMS 获取模板后回执 |
 | WES 不同步基础数据 | §1.4 / §2 | `WmsMasterDataPort` / typed inventory operation | 物料、区域、地码、货架、料箱、GRN、库存均按需查询；库存 QUERY 禁止跨请求缓存 |
 | WMS 是库存唯一真实源 | §1.4 / §10.1 | Authority Matrix | 库存事务必须以 WMS 提交成功为准，WES 只维护作业期投影 |
 | 外部输入统一进入 callback | §1.3 / §3 / §5 | `callback` → `RuntimeInbox` | WMS/RCS/ECS/device 回调 API 只校验、落原始日志、ACK、写 inbox，不直接改 session |
@@ -140,7 +140,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 类型 | 允许能力 | 约束 |
 | --- | --- | --- |
-| QueryPort | `WmsMasterDataPort` / `WmsDocumentPort` / typed inventory operation / `WmsReconciliationQueryPort` 只读查询 | 用于作业决策前的外部事实查询、WMS 权威事实拉取和 drift 检测；响应必须带 `scope/authority/source/evidence_at/source_version`；库存 QUERY 禁止跨请求缓存，不产生外部状态变更，不写 `RuntimeIntentLog` |
+| QueryPort | `WmsMasterDataPort` / operation-specific document QUERY / typed inventory operation / `WmsReconciliationQueryPort` 只读查询 | 用于作业决策前的外部事实查询、WMS 权威事实拉取和 drift 检测；响应必须带 `scope/authority/source/evidence_at/source_version`；库存 QUERY 禁止跨请求缓存，不产生外部状态变更，不写 `RuntimeIntentLog` |
 | EffectPort | `WmsInventoryTransactionPort` / operation-specific fulfillment contracts / `DeviceCommandPort` | 所有会改变外部状态、触发履约或确认事件的出站动作必须先写 `RuntimeIntentLog`，再经 EffectPort dispatch；必须有幂等、evidence、timeline 和 callback 闭环。RCS/AGV/CTU 直连若被 §10.5 触发，也只能隐藏在 fulfillment provider 实现内，不新增 capability 可见端口 |
 | InboundEventPort | `WmsEventPort` / `DeviceEventPort` | 只负责外部 callback/event 的 normalizer、原始归档和 typed evidence 生成；必须写 `RuntimeInbox`，不得经 `RuntimeIntentLog` dispatch；不得注入 `RuntimeCapabilityContext` 给业务 capability 调用 |
 
@@ -180,7 +180,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
                                 ┌─────────────────────────────────────────────┐
                                 │            wms_integration (ACL)               │
                                 │  ┌──────────────────────────────────────┐  │
-                                │  │  WmsMasterDataPort    WmsDocumentPort │  │
+                                │  │  WmsMasterDataPort    Document QUERY  │  │
                                 │  │  InventoryQueryOperation WmsInventoryTxPort │
                                 │  │  Fulfillment operations  WmsReconciliationQueryPort │
                                 │  └──────────────────────────────────────┘  │

@@ -145,7 +145,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 集成约束 | 目标态落点 |
 | --- | --- |
 | RCS 调度仍由 WMS 统一调度 | operation-specific WMS fulfillment contract——WES 生成搬运需求并提交 WMS；WMS 调 RCS，结果经 WMS 回传 |
-| PDA 仅对接 WMS | `WmsEventPort` / `WmsDocumentPort`——WES 不做 PDA API |
+| PDA 仅对接 WMS | `WmsEventPort` / operation-specific document QUERY——WES 不做 PDA API |
 | 自动化设备只通过 WES 接入 | `device` 域——WMS 不直连设备 |
 | WES 不同步基础数据 | `WmsMasterDataPort` / `InventoryQueryOperationPort`——按需查询；库存禁止跨请求缓存 |
 | WMS 是库存唯一真实源 | Authority Matrix——库存事务必须以 WMS 提交成功为准 |
@@ -171,8 +171,10 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 - 开发阶段使用确定性 mock/replay；真实 WMS 的 Provider/build identity、SLA/保留期、全 operation case evidence
   和双方签字必须在联调环境另行验收。mock 通过不能把真实验收从 `PENDING` 改为通过。
 
-**7 个目标 WMS port**（主计划 §5.1，字段留 Phase 1 `wms-integration-ports-spec.md`）：
-`WmsMasterDataPort` / `WmsDocumentPort` / `InventoryQueryOperationPort` / `WmsInventoryTransactionPort` / operation-specific fulfillment contracts / `WmsEventPort` / `WmsReconciliationQueryPort`。
+**目标 WMS 边界**：
+`WmsMasterDataPort` / operation-specific document QUERY / `InventoryQueryOperationPort` /
+`WmsInventoryTransactionPort` / operation-specific fulfillment contracts / `WmsEventPort` /
+`WmsReconciliationQueryPort`。
 
 ## 7. 不做清单（来源主计划 §2.3）
 

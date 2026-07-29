@@ -494,3 +494,42 @@ operation 的兼容入口。
 - worktree `gitnexus detect-changes --scope staged` → 16 files / 33 symbols /
   0 affected processes，risk LOW；变更仅覆盖本轮活动文档、fixture、摘要生成、守卫与验收报告，
   未引入 T2/T5 流程。
+
+## Cleanliness Review（第十三轮）修复
+
+- 活动 Markdown 门禁从零散字面量扩展为 8 个稳定 regex 概念族，覆盖已删除 effect preparation
+  service、局部三个 EFFECT/operation 口径、旧生产 callback、rack-arrived callback、粗粒度
+  fulfillment request、CTU 箱级/分阶段回调消费及旧 document Port。门禁扫描 `docs/**/*.md`，
+  仅排除既有 `docs/superpowers/archive/**`，没有文件 allowlist。
+- 22 份命中文档逐项迁移到 operation-specific Definition、ACK/status/typed terminal result 和批次级
+  权威结果；`docs/archive/legacy-smt-classifier/` 的历史材料移入既有
+  `docs/superpowers/archive/legacy-smt-classifier/` 归档规则。
+- 物理删除无生产消费者的 `ports/document.py` 及 5 个重复模型；同步删除 4 个仅验证旧 Port 存活的测试，
+  ports 说明收敛为 5 个真实 Protocol。GRN 合同测试改为直接验证 operation registry 中
+  `document_operations.py` 的 Q08 Definition，不保留 alias、fallback 或跨请求缓存。
+- 未实现 T2/T5，未新增兼容层、宽 allowlist、skip 或 xfail。
+
+## Cleanliness Review（第十三轮）TDD 与验证
+
+1. RED：定点测试命中 22 份活动文档概念污染、旧 `document.py` 尚存及 catalog 仍能发现旧模块，
+   结果 `3 failed, 1 passed`。
+2. GREEN：文档迁移与旧 Port 删除后同一组定点测试 `4 passed`；WMS 合同与架构相关回归
+   `285 passed`。
+3. 默认全集从头复验 → `4179 passed, 5 existing skipped`（4184 collected）；净减 3 项来自删除
+   4 个旧保留性测试并新增 1 个物理删除 guard，没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4179 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4184 tests collected`。
+- `uv run ruff format --check .` → 1074 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：`WmsDocumentPort` 与 5 个旧模型均为 LOW；每个仅 1 个测试文件直接导入，
+  0 production process / 0 production module。相关测试函数为 LOW/UNKNOWN，无 HIGH/CRITICAL 风险。
+- worktree `gitnexus detect-changes --scope staged` → 24 indexed files / 98 symbols /
+  0 affected processes，risk LOW；变更仅覆盖旧 Document Port 删除、operation-specific 测试迁移、
+  活动文档/归档和稳定概念门禁，未引入 T2/T5 流程。

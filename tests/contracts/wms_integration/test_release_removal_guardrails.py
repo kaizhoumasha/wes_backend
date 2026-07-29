@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -266,6 +268,33 @@ REMOVED_ACTIVE_DOC_LITERALS = frozenset(
         "三个 EFFECT",
     }
 )
+REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
+    "removed-document-port": re.compile(r"\bWms\s*Document\s*Port\b", re.IGNORECASE),
+    "removed-effect-preparation-service": re.compile(
+        r"\b(?:WmsEffectPreparationService|wms[_-]effect[_-]preparation[_-]service(?:\.py)?)\b",
+        re.IGNORECASE,
+    ),
+    "bounded-three-effect-slice": re.compile(
+        r"(?:仅|只|共|首批|现有)?\s*(?:三个|三类|3\s*个)[^。\n]{0,24}(?:EFFECT|operation)",
+        re.IGNORECASE,
+    ),
+    "legacy-callback-production-path": re.compile(
+        r"(?:legacy|旧版|旧生产|遗留)[ -]*(?:callback|回调)",
+        re.IGNORECASE,
+    ),
+    "removed-rack-arrived-callback": re.compile(r"\b(?:WMS|RCS)[_-]RACK[_-]ARRIVED\b", re.IGNORECASE),
+    "coarse-fulfillment-request": re.compile(r"\bWms\s*Fulfillment\s*Request\b", re.IGNORECASE),
+    "ctu-per-bin-or-staged-callback": re.compile(
+        r"(?:CTU|WMS\s*[↔/]\s*CTU)[^。\n]{0,80}(?:逐箱|分阶段|阶段)[^。\n]{0,40}(?:callback|回调)",
+        re.IGNORECASE,
+    ),
+    "wes-consumed-wms-ctu-callback": re.compile(
+        r"(?:runtime event|device event|RuntimeInbox|membership|writer)[^。\n]{0,100}"
+        r"WMS\s*/\s*CTU\s*(?:callback|回调)"
+        r"|WMS\s*/\s*CTU\s*(?:callback|回调)[^。\n]{0,100}(?:evidence|推进|membership|writer)",
+        re.IGNORECASE,
+    ),
+}
 
 
 def test_removed_transport_and_terminal_callbacks_exist_only_in_migration_manifest() -> None:
@@ -317,6 +346,11 @@ def test_all_active_documents_have_no_coarse_fulfillment_port_or_legacy_wms_path
             continue
         source = path.read_text(encoding="utf-8")
         found = {literal for literal in REMOVED_ACTIVE_DOC_LITERALS if literal in source}
+        found.update(
+            concept_name
+            for concept_name, concept_pattern in REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS.items()
+            if concept_pattern.search(source)
+        )
         if found:
             offenders[str(path.relative_to(REPO_ROOT))] = found
 
@@ -519,11 +553,16 @@ def test_final_acceptance_sorter_docs_freeze_pick_ack_and_batch_only_ctu_boundar
 
 
 def test_coarse_fulfillment_port_and_positive_contract_tests_are_physically_removed() -> None:
-    import importlib.util
-
     assert importlib.util.find_spec("src.app.wms_integration.ports.fulfillment") is None
     assert not (REPO_ROOT / "src/app/wms_integration/ports/fulfillment.py").exists()
     assert not (REPO_ROOT / "tests/contracts/workline/test_wms_fulfillment_request_contract.py").exists()
+
+
+def test_legacy_document_port_and_retention_contract_are_physically_removed() -> None:
+    assert importlib.util.find_spec("src.app.wms_integration.ports.document") is None
+    assert not (REPO_ROOT / "src/app/wms_integration/ports/document.py").exists()
+    ports_exports = (REPO_ROOT / "src/app/wms_integration/ports/__init__.py").read_text()
+    assert "WmsDocumentPort" not in ports_exports
 
 
 def test_rack_operation_direct_kind_and_move_rack_projection_regressions_are_preserved() -> None:

@@ -6,12 +6,11 @@
 1. WmsMasterDataPort (物料主数据, 包括 area/warehouse/storage_location/equipment)
 2. InventoryQueryOperationPort (库存只读 typed operation 查询)
 3. WmsInventoryTransactionPort (库存事务: reserve/release/confirm/transfer)
-4. WmsDocumentPort (单据: GRN/拣货单/出库单/波次/任务快照)
-5. WmsEventPort (入站事件 normalizer)
-6. WmsReconciliationQueryPort (对账 drift 查询)
+4. WmsEventPort (入站事件 normalizer)
+5. WmsReconciliationQueryPort (对账 drift 查询)
 
-履约不再公开粗粒度 Protocol；E07–E16 只由 fulfillment_operations 的
-operation-specific Definition、ACK、status 与 terminal result 合同表达。
+单据和履约不再公开粗粒度 Protocol；Q08–Q13/Q19 与 E07–E16 分别只由
+document_operations、fulfillment_operations 的 operation-specific Definition 表达。
 """
 
 _EFFECT_STATUS_EXPORTS = frozenset(

@@ -574,7 +574,7 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 | `ports/` | `master_data.py` | WmsMasterDataPort Protocol + 6 typed data classes | 🔧 架构核心 |
 | | `query_inventory_operation.py` | InventoryQueryOperationPort + Decimal typed authority snapshot | 🔧 架构核心 |
 | | `inventory_transaction.py` | WmsInventoryTransactionPort Protocol + 3 typed data classes | 🔧 架构核心 |
-| | `document.py` | WmsDocumentPort Protocol + 6 typed data classes | 🔧 架构核心 |
+| | `document_operations.py` | Q08–Q13/Q19 operation-specific request/result 与 Definition | 🔧 架构核心 |
 | | `fulfillment_operations.py` | E07–E16 operation-specific request/result、ACK 与批次收敛合同 | 🔧 架构核心 |
 | | `event.py` | InboundEventPort 基协议 + WmsEventPort Protocol + 5 typed data classes | 🔧 架构核心 |
 | | `reconciliation_query.py` | WmsReconciliationQueryPort Protocol + 1 typed data class | 🔧 架构核心 |

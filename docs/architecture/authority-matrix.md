@@ -45,7 +45,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 数据需求 | 读哪里 | 不该读哪里 |
 | --- | --- | --- |
 | 库存可用量 | `InventoryQueryOperationPort`（每次执行读取一次） | WES active projection 或跨请求缓存冒充全局库存 |
-| GRN/入库单详情 | `WmsDocumentPort` | 复制为 WES 单据主档 |
+| GRN/入库单详情 | `wms.document.*` operation-specific QUERY Definition | 复制为 WES 单据主档 |
 | 物料主数据 | `WmsMasterDataPort` | WES 自建物料主数据 |
 | 货架/料箱/库位状态 | `WmsMasterDataPort`（主数据）+ WES active projection（作业期占用） | 把作业期投影当主数据写回 |
 | 设备到位/状态 | `device` 域 callback（ECS 推送） | WES 轮询 PLC 点位 |

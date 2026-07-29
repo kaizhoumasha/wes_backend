@@ -21,7 +21,7 @@
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
 | Callback admission 已关闭 | 所有 WMS/ECS callback 只描述目标态 normalizer admission，不假设旧 callback 可扩展 |
-| WorkLine runtime projection cleanup 已完成 | 入库流程状态归 ExecutionWorkItem、WmsFulfillmentRequest、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
+| WorkLine runtime projection cleanup 已完成 | 入库流程状态归 ExecutionWorkItem、operation-specific fulfillment ACK/status/terminal result、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
 | Runtime production closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 粗分机正常流
@@ -164,7 +164,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 入口扫码 → 条码决策 evidence | `ExecutionWorkItem` (object_type=material, step_status=PENDING→IN_PROGRESS) | ✅ |
 | `PICK_AND_PUT` 持久化与执行 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
 | `PICK_AND_PUT` 成功结果 → 测量 evidence | `RuntimeInbox` → 当前 `ExecutionWorkItem` / Session | ✅ |
-| 有效测量 → WMS 准入 QUERY | `WmsDocumentPort.get_grn()` (query-only, 不写 IntentLog) | ✅ |
+| 有效测量 → WMS 准入 QUERY | `wms.document.validate_rough_sorter_admission@v1`（query-only，不写 IntentLog） | ✅ |
 | 准入结果 → `MOVE_FORWARD` / `MOVE_TO_NG` | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
 | `MOVE_FORWARD` 推进到出料口 | `ConveyorQueueMembership` (queue_code 按 manifest) | ✅ |
 | 出料格位分配 → CellReservation | `CellReservation` (♻️ 复用 `WorklineBinCellReservation`，目标语义映射见 `cell-reservation-spec.md` §3) | ♻️ |

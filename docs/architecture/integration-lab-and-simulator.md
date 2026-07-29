@@ -34,7 +34,7 @@ note: |
 | 接口 | simulator 行为 |
 | --- | --- |
 | `WmsMasterDataPort.get_material` / `list_materials` | 返回 fixture 物料主数据 |
-| `WmsDocumentPort.get_grn` / `list_grn_packages` | 返回 fixture GRN 与料盘归属 |
+| `wms.document.get_grn@v1` / `wms.document.list_grn_packages@v1` | 返回 typed fixture GRN 与料盘归属 |
 | `wms.inventory.query_inventory@v1` | 返回 typed fixture 库存快照（带 `source_version`） |
 | `wms.fulfillment.request_load_unit_transport@v1` | 接受请求，按 scenario 配置延迟形成 status 终态 |
 | `WmsInventoryTransactionPort.reserve_inventory` | 返回预留结果 |
