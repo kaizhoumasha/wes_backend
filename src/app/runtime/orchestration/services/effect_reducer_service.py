@@ -64,6 +64,20 @@ EFFECT_REDUCER_TRANSITION_MATRIX = MappingProxyType(
                 RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.UNKNOWN,
             }
         ),
+        EffectReducerEventType.SYNC_COMPLETED: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.COMPLETED,
+                RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.COMPLETED,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.COMPLETED,
+            }
+        ),
+        EffectReducerEventType.SYNC_REJECTED: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.REJECTED,
+                RuntimeIntentStatus.ACCEPTED: RuntimeIntentStatus.REJECTED,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.REJECTED,
+            }
+        ),
         EffectReducerEventType.LOCAL_REDECISION_REQUIRED: MappingProxyType({}),
         EffectReducerEventType.DISPATCH_CANCELLED: MappingProxyType(
             {
@@ -157,6 +171,8 @@ _STATUS_TERMINAL_EVENTS = frozenset(
     {
         EffectReducerEventType.STATUS_COMPLETED,
         EffectReducerEventType.STATUS_REJECTED,
+        EffectReducerEventType.SYNC_COMPLETED,
+        EffectReducerEventType.SYNC_REJECTED,
     }
 )
 _CASE_OPENING_EVENTS = frozenset(
@@ -385,6 +401,10 @@ class EffectReducer:
                 (RuntimeIntentStatus.REJECTED, EffectReducerEventType.STATUS_COMPLETED),
                 (RuntimeIntentStatus.TECHNICAL_FAILED, EffectReducerEventType.STATUS_COMPLETED),
                 (RuntimeIntentStatus.TECHNICAL_FAILED, EffectReducerEventType.STATUS_REJECTED),
+                (RuntimeIntentStatus.COMPLETED, EffectReducerEventType.SYNC_REJECTED),
+                (RuntimeIntentStatus.REJECTED, EffectReducerEventType.SYNC_COMPLETED),
+                (RuntimeIntentStatus.TECHNICAL_FAILED, EffectReducerEventType.SYNC_COMPLETED),
+                (RuntimeIntentStatus.TECHNICAL_FAILED, EffectReducerEventType.SYNC_REJECTED),
             }
         if event_type in _CALLBACK_EVENTS:
             if current is RuntimeIntentStatus.TECHNICAL_FAILED:

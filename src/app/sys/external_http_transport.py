@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from src.app.sys.canonical_dispatch import ExternalHttpDispatchRequest
 
 _PROTOCOL_ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,119}$")
+MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES = 262_144
 
 
 class ExternalHttpTransportOutcome(str, Enum):
@@ -52,8 +53,11 @@ class ExternalHttpTransportResult:
     protocol_error_code: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    # 仅供同进程 typed interpreter 消费；严禁进入 repr、日志或持久化 evidence。
+    response_body: bytes | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
+        self._validate_response_body()
         if self.safe_to_retry and self.outcome is not ExternalHttpTransportOutcome.NOT_SENT:
             raise ValueError("safe_to_retry is only valid for NOT_SENT")
         if self.outcome is ExternalHttpTransportOutcome.NOT_SENT:
@@ -88,6 +92,15 @@ class ExternalHttpTransportResult:
                 raise ValueError("protocol_error_code requires RESPONSE_RECEIVED")
             if not _PROTOCOL_ERROR_CODE_RE.fullmatch(self.protocol_error_code):
                 raise ValueError("protocol_error_code must be a bounded stable code")
+
+    def _validate_response_body(self) -> None:
+        if self.response_body is not None:
+            if self.phase is not ExternalHttpTransportPhase.RESPONSE_RECEIVED:
+                raise ValueError("response body requires RESPONSE_RECEIVED")
+            if not isinstance(self.response_body, bytes):
+                raise TypeError("response body must be bytes")
+            if len(self.response_body) > MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES:
+                raise ValueError("response body exceeds the bounded transport budget")
 
     def _validate_ambiguous_evidence(self) -> None:
         if self.phase is ExternalHttpTransportPhase.SANDBOX:
@@ -130,6 +143,7 @@ class ExternalHttpTransportResult:
         protocol_error_code: str | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        response_body: bytes | None = None,
     ) -> ExternalHttpTransportResult:
         return cls(
             outcome=ExternalHttpTransportOutcome.ACCEPTED,
@@ -140,6 +154,7 @@ class ExternalHttpTransportResult:
             protocol_error_code=protocol_error_code,
             error_code=error_code,
             error_message=error_message,
+            response_body=response_body,
         )
 
     @classmethod
@@ -152,6 +167,7 @@ class ExternalHttpTransportResult:
         protocol_error_code: str | None = None,
         error_code: str,
         error_message: str | None = None,
+        response_body: bytes | None = None,
     ) -> ExternalHttpTransportResult:
         return cls(
             outcome=ExternalHttpTransportOutcome.AMBIGUOUS,
@@ -162,6 +178,7 @@ class ExternalHttpTransportResult:
             protocol_error_code=protocol_error_code,
             error_code=error_code,
             error_message=error_message,
+            response_body=response_body,
         )
 
     @classmethod
@@ -194,6 +211,7 @@ ExternalHttpSender = Callable[[ExternalHttpDispatchRequest], Awaitable[ExternalH
 
 
 __all__ = [
+    "MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES",
     "ExternalHttpProtocolResult",
     "ExternalHttpSender",
     "ExternalHttpTransportOutcome",

@@ -221,6 +221,8 @@ def test_effect_reducer_event_schema_is_closed_and_supports_reconciliation_resol
         "STATUS_NOT_FOUND",
         "STATUS_QUERY_FAILED",
         "STATUS_STALE",
+        "SYNC_COMPLETED",
+        "SYNC_REJECTED",
         "RECONCILIATION_OPENED",
         "RECONCILIATION_RESOLVED",
         "IDEMPOTENCY_CONFLICT",

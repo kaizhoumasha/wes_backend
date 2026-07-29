@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from src.app.sys.external_http_transport import (
+    MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
     ExternalHttpProtocolResult,
     ExternalHttpTransportOutcome,
     ExternalHttpTransportPhase,
@@ -51,6 +52,155 @@ def test_transport_result_is_frozen_and_rejects_retryable_non_not_sent_outcome()
             protocol_result=ExternalHttpProtocolResult.NOT_AVAILABLE,
             safe_to_retry=True,
             error_code="READ_TIMEOUT",
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"http_status_code": 503}, "NOT_SENT cannot carry http_status_code"),
+        (
+            {"protocol_result": ExternalHttpProtocolResult.ACCEPTED},
+            "NOT_SENT requires NOT_AVAILABLE",
+        ),
+        (
+            {"phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED},
+            "NOT_SENT cannot occur after RESPONSE_RECEIVED",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.UNKNOWN,
+                "safe_to_retry": False,
+                "http_status_code": 503,
+            },
+            "requires explicit protocol result",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+            },
+            "requires http_status_code",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.SANDBOX,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+            },
+            "sandbox ACCEPTED requires NOT_AVAILABLE",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.SANDBOX,
+                "protocol_result": ExternalHttpProtocolResult.NOT_AVAILABLE,
+                "safe_to_retry": False,
+                "http_status_code": 202,
+            },
+            "sandbox ACCEPTED cannot carry http_status_code",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.CONNECTING,
+                "protocol_result": ExternalHttpProtocolResult.NOT_AVAILABLE,
+                "safe_to_retry": False,
+            },
+            "requires RESPONSE_RECEIVED or SANDBOX",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+                "http_status_code": 99,
+            },
+            "between 100 and 599",
+        ),
+        (
+            {"protocol_error_code": "REMOTE_REJECTED"},
+            "protocol_error_code requires RESPONSE_RECEIVED",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+                "http_status_code": 202,
+                "protocol_error_code": "invalid-code",
+            },
+            "bounded stable code",
+        ),
+        ({"response_body": b"{}"}, "response body requires RESPONSE_RECEIVED"),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+                "http_status_code": 202,
+                "response_body": "not-bytes",
+            },
+            "response body must be bytes",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.AMBIGUOUS,
+                "phase": ExternalHttpTransportPhase.AWAITING_RESPONSE,
+                "protocol_result": ExternalHttpProtocolResult.NOT_AVAILABLE,
+                "safe_to_retry": False,
+                "http_status_code": 503,
+            },
+            "pre-response AMBIGUOUS cannot carry http_status_code",
+        ),
+    ),
+)
+def test_transport_result_rejects_each_contradictory_evidence_branch(overrides, message) -> None:
+    values = {
+        "outcome": ExternalHttpTransportOutcome.NOT_SENT,
+        "phase": ExternalHttpTransportPhase.CONNECTING,
+        "protocol_result": ExternalHttpProtocolResult.NOT_AVAILABLE,
+        "safe_to_retry": False,
+        "error_code": "TEST_EVIDENCE",
+    }
+    values.update(overrides)
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        ExternalHttpTransportResult(**values)
+
+
+def test_sandbox_transport_result_is_explicit_and_has_no_remote_http_evidence() -> None:
+    result = ExternalHttpTransportResult.sandbox_accepted()
+
+    assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
+    assert result.phase is ExternalHttpTransportPhase.SANDBOX
+    assert result.protocol_result is ExternalHttpProtocolResult.NOT_AVAILABLE
+    assert result.http_status_code is None
+    assert result.evidence_json()["transport_phase"] == "SANDBOX"
+
+
+def test_response_evidence_accepts_stable_protocol_code_and_enforces_body_budget() -> None:
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=409,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        protocol_error_code="IDEMPOTENCY_REQUEST_IN_PROGRESS",
+        response_body=b"{}",
+    )
+    assert result.protocol_error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+
+    with pytest.raises(ValueError, match="bounded transport budget"):
+        ExternalHttpTransportResult.accepted(
+            http_status_code=200,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+            response_body=b"x" * (MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES + 1),
         )
 
 

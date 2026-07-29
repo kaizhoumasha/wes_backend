@@ -26,6 +26,8 @@ from src.utils.timezone import timezone
 from .system_capability_intent_service import SystemCapabilityIntentService, system_capability_intent_service
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 
@@ -77,8 +79,14 @@ class SystemCapabilityEffectEvidence(BaseModel):
 class SystemCapabilityEffectService:
     """外层事务参与者；只 flush，绝不 commit/rollback 或执行外部 I/O。"""
 
-    def __init__(self, *, intent_service: SystemCapabilityIntentService = system_capability_intent_service) -> None:
+    def __init__(
+        self,
+        *,
+        intent_service: SystemCapabilityIntentService = system_capability_intent_service,
+        effect_port_resolver: Callable[[type[Any]], Any] | None = None,
+    ) -> None:
         self._intent_service = intent_service
+        self._effect_port_resolver = effect_port_resolver
 
     async def apply(self, ctx: dict[str, Any], intent: RuntimeIntent) -> SystemCapabilityEffectResult:
         try:
@@ -164,7 +172,19 @@ class SystemCapabilityEffectService:
             intent_log=prepared.intent_log,
         )
         try:
-            handler = definition.handler_factory()
+            ports = tuple(self._resolve_effect_port(port) for port in definition.required_ports)
+            handler = definition.handler_factory(*ports)
+        except (KeyError, PermissionError, TypeError, ValueError):
+            # G1 只注册静态 Definition；G3 composition root 接线前必须明确 fail closed，
+            # 禁止构造 unbound fallback 或绕过 Port 直接访问 transport/repository。
+            return SystemCapabilityEffectResult(
+                outcome=ContractViolation(
+                    error_code="CAPABILITY_EFFECT_PORT_UNBOUND",
+                    message="required system capability EFFECT Port is not bound",
+                ),
+                completion_mode=definition.completion_mode,
+            )
+        try:
             raw = await asyncio.wait_for(
                 handler(prepared.request, execution=execution),
                 timeout=min(float(intent.timeout_seconds or definition.timeout_seconds), definition.timeout_seconds),
@@ -204,6 +224,14 @@ class SystemCapabilityEffectService:
             retryable=isinstance(outcome, RetryableFailure),
             evidence=evidence,
         )
+
+    def _resolve_effect_port(self, port_type: type[Any]) -> Any:
+        if self._effect_port_resolver is None:
+            raise KeyError(f"EFFECT Port {port_type.__name__} is not bound")
+        port = self._effect_port_resolver(port_type)
+        if port is None:
+            raise KeyError(f"EFFECT Port {port_type.__name__} is not bound")
+        return port
 
     async def persist_business_reject(self, ctx: dict[str, Any], raw_evidence: object) -> bool:
         """在外层 rollback 后按 typed evidence 执行可选的拒绝补偿钩子。"""

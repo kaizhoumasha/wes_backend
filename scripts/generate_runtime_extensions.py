@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.app.runtime.system_capabilities.index_builder import SystemCapabilityIndexBuilder  # noqa: E402
 from src.app.runtime.workline_plugins.index_builder import WorklinePluginIndexBuilder  # noqa: E402
+from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort  # noqa: E402
 from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort  # noqa: E402
 
 PLUGIN_ROOT = REPO_ROOT / "src/app/runtime/workline_plugins"
@@ -23,7 +24,10 @@ SYSTEM_ROOT = REPO_ROOT / "src/app/runtime/system_capabilities"
 DEFAULT_PLUGIN_OUTPUT = PLUGIN_ROOT / "generated_index.py"
 DEFAULT_SYSTEM_OUTPUT = SYSTEM_ROOT / "generated_index.py"
 # Port catalog 是构建期显式 allowlist；后续新增真实 Port 时必须在同一提交登记。
-SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = (WmsQueryExecutionPort,)
+SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = (
+    WmsEffectPreparationPort,
+    WmsQueryExecutionPort,
+)
 SYSTEM_CAPABILITY_ADMISSION_CATALOG = (
     "runtime",
     "wms.2026-07-28.full-factory",

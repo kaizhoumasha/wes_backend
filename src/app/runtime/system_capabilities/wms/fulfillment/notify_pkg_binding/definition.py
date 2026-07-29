@@ -1,0 +1,4 @@
+from src.app.runtime.system_capabilities.wms.effect_runtime import build_wms_effect_capability_definition
+from src.app.wms_integration.ports.fulfillment_operations import NOTIFY_PKG_BINDING
+
+DEFINITION = build_wms_effect_capability_definition(NOTIFY_PKG_BINDING)
