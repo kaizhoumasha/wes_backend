@@ -20,6 +20,7 @@ from src.app.wms_integration.operation_contract import (
     WmsOperationMode,
 )
 from src.app.wms_integration.ports.fulfillment_operations import (
+    WmsAsyncSubmitReject,
     WmsEffectAck,
     validate_effect_ack,
     validate_fulfillment_ack,
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from src.app.sys.external_http_transport import ExternalHttpTransportResult
 
 type WmsSyncEffectOutcome = Success[Any] | BusinessReject | RetryableFailure | ContractViolation
-type WmsAsyncEffectAckOutcome = Success[WmsEffectAck] | ContractViolation
+type WmsAsyncEffectAckOutcome = Success[WmsEffectAck] | BusinessReject | ContractViolation
 
 
 def _decode_response_body(result: ExternalHttpTransportResult) -> dict[str, Any] | None:
@@ -92,24 +93,54 @@ def interpret_async_effect_ack_response(
             error_code="WMS_ASYNC_ACK_MALFORMED",
             message="WMS async submit ACK must be a bounded JSON object",
         )
-    stable_code = _stable_code(payload, transport_result)
+    protocol_error_code = transport_result.protocol_error_code
+    body_reason_code = payload.get("reason_code")
     expected_submission_state: str | None
+    direct_outcome: WmsAsyncEffectAckOutcome | None = None
     if transport_result.http_status_code == 202 and transport_result.protocol_result.value == "ACCEPTED":
         expected_submission_state = "ACCEPTED"
-    elif transport_result.http_status_code == 409 and stable_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS":
+    elif transport_result.http_status_code == 409 and protocol_error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS":
         expected_submission_state = "IN_PROGRESS_REPLAY"
     elif transport_result.http_status_code == 200 and transport_result.protocol_result.value == "ACCEPTED":
         expected_submission_state = "REPLAY"
-    elif transport_result.http_status_code == 422 and stable_code == "IDEMPOTENCY_CONFLICT":
+    elif transport_result.http_status_code == 422 and protocol_error_code == "IDEMPOTENCY_CONFLICT":
         return ContractViolation(
             error_code="IDEMPOTENCY_CONFLICT",
             message="WMS rejected reuse of the idempotency key with a different request",
         )
+    elif (
+        transport_result.http_status_code == 422
+        and transport_result.protocol_result.value == "REJECTED"
+        and body_reason_code in operation.reject_codes
+    ):
+        try:
+            reject = WmsAsyncSubmitReject.model_validate(payload)
+            if reject.operation_identity != operation.identity:
+                raise ValueError("async reject operation identity differs from the frozen request")
+            if reject.idempotency_key != idempotency_key:
+                raise ValueError("async reject idempotency key differs from the frozen request")
+            if reject.request_fingerprint != payload_hash:
+                raise ValueError("async reject fingerprint differs from the frozen request")
+        except (TypeError, ValueError, ValidationError):
+            direct_outcome = ContractViolation(
+                error_code="WMS_ASYNC_REJECT_IDENTITY_INVALID",
+                message="WMS async business reject differs from the frozen request identity",
+            )
+        else:
+            direct_outcome = BusinessReject(
+                reason_code=reject.reason_code,
+                message=reject.message,
+                details={
+                    "typed_reject_hash": CanonicalPayload.from_projection(reject.model_dump(mode="json")).sha256,
+                },
+            )
     else:
         return ContractViolation(
             error_code="WMS_ASYNC_ACK_UNCLASSIFIED",
             message="WMS async submit response status/code combination is not authored",
         )
+    if direct_outcome is not None:
+        return direct_outcome
     try:
         ack = WmsEffectAck.model_validate(payload)
         validate_effect_ack(

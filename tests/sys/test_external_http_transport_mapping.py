@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -31,9 +32,12 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportResult,
 )
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
+from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.utils.timezone import timezone
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 from tests.support.external_http import (
     StaticTestCredentialProvider,
     frozen_external_http_binding,
@@ -364,6 +368,72 @@ async def test_generic_transport_commit_does_not_call_wms_status_queue() -> None
     assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
     assert repository.outbox.status is SystemOutboxStatus.SENT
     db.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_initial_async_business_reject_finishes_without_retry_or_status_enqueue() -> None:
+    operation_identity = sorted(WMS_ASYNC_EFFECT_OPERATION_IDENTITIES)[0]
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    request_payload = REQUEST_FIXTURES[operation_identity]
+    outbox = frozen_outbox_namespace(
+        request_payload,
+        target_code="TEST_EXTERNAL_HTTP",
+        target_url="https://external.test/effects",
+        operation_identity=operation_identity,
+        id=1,
+        dispatch_key=request_payload["dispatch_key"],
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        status=SystemOutboxStatus.NEW,
+        attempt_count=0,
+        next_retry_at=None,
+        last_error=None,
+        finished_at=None,
+        operation_domain="HANDLING",
+        lease_owner_token="test-owner:1",
+        lease_expires_at=datetime(2027, 1, 1),
+        idempotency_key="intent-key",
+    )
+    reject = {
+        "operation_identity": operation_identity,
+        "idempotency_key": "intent-key",
+        "request_fingerprint": outbox.payload_hash,
+        "reason_code": operation.reject_codes[0],
+        "message": "rejected before provider task creation",
+    }
+    transport_result = ExternalHttpTransportResult.accepted(
+        http_status_code=422,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        error_code="HTTP_REJECTED",
+        response_body=json.dumps(reject, separators=(",", ":")).encode(),
+    )
+    repository = _Repository(outbox)
+    attempt_service = _AttemptService()
+    effect_bridge = SimpleNamespace(record_result=AsyncMock())
+    status_enqueues: list[str] = []
+    queue_gateway = SimpleNamespace(
+        enqueue_wms_effect_status=lambda *, dispatch_key: status_enqueues.append(dispatch_key),
+    )
+    engine = SystemOutboxEngine(
+        outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
+        external_http_sender=AsyncMock(return_value=transport_result),
+        credential_provider=StaticTestCredentialProvider(),
+        dispatch_attempt_service=attempt_service,
+        workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=effect_bridge,
+        task_queue_gateway=queue_gateway,
+    )
+
+    stats = await engine.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)
+
+    assert stats == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
+    assert repository.protocol_rejected_calls == 1
+    assert repository.retry_calls == 0
+    assert repository.terminal_failure_calls == 0
+    assert attempt_service.finalized[0]["outbox_finalization"] == "sent"
+    effect_bridge.record_result.assert_awaited_once()
+    assert status_enqueues == []
 
 
 @pytest.mark.asyncio

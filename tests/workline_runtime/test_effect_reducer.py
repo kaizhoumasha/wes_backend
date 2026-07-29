@@ -123,6 +123,7 @@ def _event(
         EffectReducerEventType.TRANSPORT_ACCEPTED,
         EffectReducerEventType.TRANSPORT_REJECTED,
         EffectReducerEventType.TRANSPORT_AMBIGUOUS,
+        EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
     }:
         kwargs["attempt_no"] = 1
     return EffectReducerEvent(**kwargs)
@@ -145,6 +146,18 @@ def _event(
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_REJECTED, False, RuntimeIntentStatus.REJECTED),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
         (RuntimeIntentStatus.ACCEPTED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
+        (
+            RuntimeIntentStatus.PROPOSED,
+            EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+            False,
+            RuntimeIntentStatus.REJECTED,
+        ),
+        (
+            RuntimeIntentStatus.UNKNOWN,
+            EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+            False,
+            RuntimeIntentStatus.REJECTED,
+        ),
         (
             RuntimeIntentStatus.PROPOSED,
             EffectReducerEventType.LOCAL_REDECISION_REQUIRED,
@@ -460,6 +473,26 @@ async def test_callback_completed_before_transport_rejected_opens_contradiction_
     assert contradiction is not None and contradiction.contradiction is True
     assert contradiction.case_created is True
     assert repository.intent.effect_status is RuntimeIntentStatus.COMPLETED
+    assert repository.cases[0].status is ReconciliationCaseStatus.OPEN
+
+
+@pytest.mark.asyncio
+async def test_async_submit_reject_after_typed_ack_opens_contradiction_case() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
+    reducer = EffectReducer(repository=repository)
+
+    contradiction = await reducer.reduce(
+        _Db(),
+        _event(
+            EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+            occurred_at_ms=1001,
+            reason_code="NO_RACK_AVAILABLE",
+        ),
+    )
+
+    assert contradiction is not None and contradiction.contradiction is True
+    assert contradiction.case_created is True
+    assert repository.intent.effect_status is RuntimeIntentStatus.ACCEPTED
     assert repository.cases[0].status is ReconciliationCaseStatus.OPEN
 
 
@@ -838,6 +871,45 @@ async def test_open_case_transport_evidence_replay_is_idempotent_and_conflict_is
     conflicting = transport.model_copy(update={"evidence_json": {"fact": "LEASE_EXPIRED"}})
     with pytest.raises(ReconciliationEvidenceConflict):
         await reducer.reduce(_Db(), conflicting)
+
+
+@pytest.mark.asyncio
+async def test_async_submit_reject_replay_drift_is_rejected() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.PROPOSED)
+    reducer = EffectReducer(repository=repository)
+    reject = _event(
+        EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+        reason_code="LOCATION_LOCKED",
+    ).model_copy(
+        update={
+            "source_event_id": "wms-async-submit-reject:stable",
+            "evidence_json": {"typed_reject_hash": "a" * 64},
+            "terminal_outcome": {
+                "kind": "business_reject",
+                "reason_code": "LOCATION_LOCKED",
+                "message": "first reject",
+                "retryable": False,
+                "details": {"typed_reject_hash": "a" * 64},
+            },
+        }
+    )
+
+    await reducer.reduce(_Db(), reject)
+    replay = await reducer.reduce(_Db(), reject.model_copy(update={"occurred_at_ms": 1100}))
+
+    assert replay is not None and replay.state_changed is False
+    drifted = reject.model_copy(
+        update={
+            "evidence_json": {"typed_reject_hash": "b" * 64},
+            "terminal_outcome": {
+                **reject.terminal_outcome,
+                "message": "drifted reject",
+                "details": {"typed_reject_hash": "b" * 64},
+            },
+        }
+    )
+    with pytest.raises(ReconciliationEvidenceConflict):
+        await reducer.reduce(_Db(), drifted)
 
 
 @pytest.mark.asyncio
@@ -1516,6 +1588,57 @@ async def test_workline_protocol_rejection_finishes_sent_outbox_with_rejection_r
     )
     outbox_repository.mark_as_sent.assert_not_awaited()
     bridge.record_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_workline_async_submit_reject_finishes_attempt_without_retry() -> None:
+    from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import OutboxDispatchService
+
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    service = OutboxDispatchService(effect_transport_bridge=bridge)
+    outbox = SimpleNamespace(dispatch_key="dispatch-async-rejected")
+    updated = SimpleNamespace(status="SENT", finished_at=object(), last_error="LOCATION_LOCKED")
+    outbox_repository = SimpleNamespace(
+        mark_as_sent=AsyncMock(),
+        mark_as_protocol_rejected=AsyncMock(return_value=updated),
+        mark_as_failed=AsyncMock(),
+        mark_as_terminal_failure=AsyncMock(),
+    )
+    attempt = SimpleNamespace(attempt_no=3)
+    attempt_service = SimpleNamespace(finalize_external_http_attempt_record=AsyncMock(return_value=attempt))
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=422,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        protocol_error_code="LOCATION_LOCKED",
+        error_code="HTTP_REJECTED",
+    )
+    db = _Db()
+
+    finalized = await service._finalize_external_http_result(
+        db,
+        outbox_repo=outbox_repository,
+        outbox=outbox,
+        outbox_id=1,
+        dispatch_attempt=attempt,
+        attempt_service=attempt_service,
+        result=result,
+        lease_owner_token="worker-1",
+        retry_budget=3,
+    )
+
+    assert finalized is updated
+    outbox_repository.mark_as_protocol_rejected.assert_awaited_once_with(
+        db,
+        1,
+        "HTTP_REJECTED",
+        lease_owner_token="worker-1",
+    )
+    outbox_repository.mark_as_sent.assert_not_awaited()
+    outbox_repository.mark_as_failed.assert_not_awaited()
+    outbox_repository.mark_as_terminal_failure.assert_not_awaited()
+    attempt_service.finalize_external_http_attempt_record.assert_awaited_once()
+    bridge.record_result.assert_awaited_once()
+    assert bridge.record_result.await_args.kwargs["retry_exhausted"] is False
 
 
 @pytest.mark.asyncio

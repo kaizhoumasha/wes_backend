@@ -326,6 +326,16 @@ class WmsEffectAck(StrictWmsModel):
         return self
 
 
+class WmsAsyncSubmitReject(StrictWmsModel):
+    """E08–E14 在远端任务创建前返回的共享业务拒绝信封。"""
+
+    operation_identity: AsyncFulfillmentOperationIdentity
+    idempotency_key: StableText = Field(max_length=160)
+    request_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason_code: StableText = Field(max_length=120)
+    message: StableText = Field(max_length=500)
+
+
 def validate_effect_ack(
     *,
     operation_identity: str,
@@ -629,5 +639,6 @@ __all__ = [
     "ASYNC_FULFILLMENT_OPERATION_IDENTITIES",
     "BATCH_FULFILLMENT_OPERATION_IDENTITIES",
     "OPERATIONS",
+    "WmsAsyncSubmitReject",
     "frozen_candidate_digest",
 ]

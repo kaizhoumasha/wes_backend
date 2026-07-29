@@ -209,6 +209,7 @@ def test_effect_reducer_event_schema_is_closed_and_supports_reconciliation_resol
         "TRANSPORT_ACCEPTED",
         "TRANSPORT_REJECTED",
         "TRANSPORT_AMBIGUOUS",
+        "ASYNC_SUBMIT_REJECTED",
         "LOCAL_REDECISION_REQUIRED",
         "DISPATCH_CANCELLED",
         "CALLBACK_ACCEPTED",

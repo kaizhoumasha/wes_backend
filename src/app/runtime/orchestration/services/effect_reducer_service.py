@@ -80,6 +80,12 @@ EFFECT_REDUCER_TRANSITION_MATRIX = MappingProxyType(
                 RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.REJECTED,
             }
         ),
+        EffectReducerEventType.ASYNC_SUBMIT_REJECTED: MappingProxyType(
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.REJECTED,
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.REJECTED,
+            }
+        ),
         EffectReducerEventType.LOCAL_REDECISION_REQUIRED: MappingProxyType({}),
         EffectReducerEventType.DISPATCH_CANCELLED: MappingProxyType(
             {
@@ -433,6 +439,13 @@ class EffectReducer:
         current: RuntimeIntentStatus,
         event_type: EffectReducerEventType,
     ) -> bool:
+        if event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED:
+            return current in {
+                RuntimeIntentStatus.ACCEPTED,
+                RuntimeIntentStatus.COMPLETED,
+                RuntimeIntentStatus.REJECTED,
+                RuntimeIntentStatus.TECHNICAL_FAILED,
+            }
         if event_type in _STATUS_TERMINAL_EVENTS:
             return (current, event_type) in {
                 (RuntimeIntentStatus.COMPLETED, EffectReducerEventType.STATUS_REJECTED),

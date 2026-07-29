@@ -22,7 +22,7 @@ from src.app.runtime.orchestration.repositories.wms_effect_status_repository imp
 )
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.effect_reducer_service import EffectReducer, effect_reducer
-from src.app.runtime.system_capabilities.outcomes import Success
+from src.app.runtime.system_capabilities.outcomes import BusinessReject, Success
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.wms_integration.effect_runtime import (
     interpret_async_effect_ack_response,
@@ -865,6 +865,31 @@ class WmsEffectStatusService:
             payload_hash=current_claim.outbox.payload_hash,
             transport_result=result,
         )
+        if isinstance(interpreted, BusinessReject):
+            from src.app.runtime.orchestration.effect_bridges import build_wms_async_submit_reject_event
+
+            reject_event = build_wms_async_submit_reject_event(
+                dispatch_key=current_claim.intent.dispatch_key,
+                attempt_no=max(1, int(current_claim.outbox.attempt_count or 0)),
+                occurred_at_ms=self._occurred_at_ms(),
+                operation_identity=operation.identity,
+                result=result,
+                outcome=interpreted,
+                additional_evidence=evidence,
+            )
+            reduced = await self._reducer.reduce(db, reject_event)
+            _ = await self._repository.release_claim(
+                db,
+                claim=current_claim,
+                status_check_after=None,
+            )
+            await db.commit()
+            reconciles = request.frozen_ack is not None or bool(getattr(reduced, "contradiction", False))
+            return WmsEffectStatusCheckResult(
+                dispatch_key=claim.intent.dispatch_key,
+                outcome="RECONCILING" if reconciles else "REJECTED",
+                state_changed=bool(getattr(reduced, "state_changed", False)),
+            )
         if not isinstance(interpreted, Success):
             return await self._open_reconciliation(
                 db,

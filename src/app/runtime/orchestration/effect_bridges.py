@@ -332,7 +332,7 @@ def _async_transport_resolution(
     operation_identity: str,
     result: ExternalHttpTransportResult,
     retry_exhausted: bool,
-    outcome: Success[Any] | ContractViolation,
+    outcome: Success[Any] | BusinessReject | ContractViolation,
 ) -> EffectTransportResolution:
     if isinstance(outcome, Success):
         ack = outcome.payload
@@ -362,6 +362,20 @@ def _async_transport_resolution(
                     reason_code="WMS_ASYNC_ACK_ACCEPTED",
                     evidence_json=evidence,
                     terminal_outcome=outcome.model_dump(mode="json"),
+                ),
+            )
+        )
+
+    if isinstance(outcome, BusinessReject):
+        return EffectTransportResolution(
+            events=(
+                build_wms_async_submit_reject_event(
+                    dispatch_key=dispatch_key,
+                    attempt_no=attempt_no,
+                    occurred_at_ms=occurred_at_ms,
+                    operation_identity=operation_identity,
+                    result=result,
+                    outcome=outcome,
                 ),
             )
         )
@@ -403,6 +417,52 @@ def _async_transport_resolution(
     )
 
 
+def build_wms_async_submit_reject_event(
+    *,
+    dispatch_key: str,
+    attempt_no: int,
+    occurred_at_ms: int,
+    operation_identity: str,
+    result: ExternalHttpTransportResult,
+    outcome: BusinessReject,
+    additional_evidence: dict[str, Any] | None = None,
+) -> EffectReducerEvent:
+    """把已校验的 async submit 业务拒绝冻结为可重放的 hash-only event。"""
+
+    typed_reject_hash = outcome.details.get("typed_reject_hash")
+    if (
+        not isinstance(typed_reject_hash, str)
+        or len(typed_reject_hash) != 64
+        or any(character not in "0123456789abcdef" for character in typed_reject_hash)
+    ):
+        raise ValueError("typed async submit reject requires the validated envelope hash")
+    typed_outcome = outcome.model_dump(mode="json")
+    evidence = {
+        **(additional_evidence or {}),
+        **_transport_evidence(result, operation_identity=operation_identity),
+        "interpreted_outcome_kind": outcome.kind,
+        "typed_reject_hash": typed_reject_hash,
+        "typed_reject_reference": f"runtime-intent-outcome:{dispatch_key}",
+        "outcome_kind": outcome.kind,
+        "outcome_code": outcome.reason_code,
+    }
+    return EffectReducerEvent(
+        event_type=EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+        dispatch_key=dispatch_key,
+        occurred_at_ms=occurred_at_ms,
+        source_event_id=generated_effect_source_event_id(
+            "wms-async-submit-reject",
+            dispatch_key,
+            attempt_no,
+            outcome.reason_code,
+        ),
+        attempt_no=attempt_no,
+        reason_code=outcome.reason_code,
+        evidence_json=evidence,
+        terminal_outcome=typed_outcome,
+    )
+
+
 class EffectTransportBridge:
     """把已持久化 typed transport result 翻译为封闭 reducer event。"""
 
@@ -432,7 +492,7 @@ class EffectTransportBridge:
             and result.outcome is ExternalHttpTransportOutcome.ACCEPTED
         ):
             if not isinstance(idempotency_key, str) or not idempotency_key or not isinstance(payload_hash, str):
-                outcome: Success[Any] | ContractViolation = ContractViolation(
+                outcome: Success[Any] | BusinessReject | ContractViolation = ContractViolation(
                     error_code="WMS_ASYNC_FROZEN_REQUEST_INVALID",
                     message="async ACK resolution requires the frozen idempotency key and payload fingerprint",
                 )
@@ -655,6 +715,7 @@ __all__ = [
     "EffectTransportAction",
     "EffectTransportBridge",
     "EffectTransportResolution",
+    "build_wms_async_submit_reject_event",
     "effect_callback_bridge",
     "effect_reconciliation_bridge",
     "effect_transport_bridge",
