@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -18,9 +20,14 @@ from src.app.runtime.system_capabilities.wms.effect_runtime import (
     WmsRegistryEffectCapabilityHandler,
     build_wms_effect_capability_definition,
 )
+from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.external_http_transport import ExternalHttpProtocolResult, ExternalHttpTransportResult
 from src.app.sys.models import SystemOutbox
+from src.app.wms_integration.effect_runtime import interpret_async_effect_ack_response
+from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS, QUERY_OPERATIONS
 from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
+from tests.mock.wms_northbound_contract import build_typed_ack
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
 
@@ -71,6 +78,58 @@ class _Db:
 
     async def flush(self) -> None:
         self.flush_count += 1
+
+
+@pytest.mark.parametrize(
+    ("invalid_case", "expected_code"),
+    (
+        ("non-async-operation", "WMS_ASYNC_OPERATION_INVALID"),
+        ("payload-fingerprint", "WMS_ASYNC_FROZEN_REQUEST_INVALID"),
+        ("frozen-request", "WMS_ASYNC_FROZEN_REQUEST_INVALID"),
+        ("malformed-body", "WMS_ASYNC_ACK_MALFORMED"),
+    ),
+)
+def test_async_ack_interpreter_fails_closed_before_persisting_authority(
+    invalid_case: str,
+    expected_code: str,
+) -> None:
+    operation = next(
+        candidate for candidate in EFFECT_OPERATIONS if candidate.completion_mode is WmsCompletionMode.ASYNC_TASK
+    )
+    request_payload = deepcopy(REQUEST_FIXTURES[operation.identity])
+    ack = build_typed_ack(operation.identity, "intent-key", request_payload, submission_state="ACCEPTED")
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        response_body=json.dumps(ack, ensure_ascii=False, separators=(",", ":")).encode(),
+    )
+    payload_hash = CanonicalPayload.from_projection(request_payload).sha256
+    if invalid_case == "non-async-operation":
+        operation = next(
+            candidate for candidate in EFFECT_OPERATIONS if candidate.completion_mode is WmsCompletionMode.SYNC_RESULT
+        )
+    elif invalid_case == "payload-fingerprint":
+        payload_hash = "0" * 64
+    elif invalid_case == "frozen-request":
+        request_payload.pop("dispatch_key")
+        payload_hash = CanonicalPayload.from_projection(request_payload).sha256
+    else:
+        result = ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+            response_body=b"[",
+        )
+
+    outcome = interpret_async_effect_ack_response(
+        operation,
+        request_payload,
+        idempotency_key="intent-key",
+        payload_hash=payload_hash,
+        transport_result=result,
+    )
+
+    assert isinstance(outcome, ContractViolation)
+    assert outcome.error_code == expected_code
 
 
 @pytest.mark.asyncio

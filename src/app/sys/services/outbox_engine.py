@@ -76,8 +76,9 @@ class SystemOutboxEngine:
                 |              +--clearly unsent--> RETRY_WAIT / FAILED
                 +--blocked by runtime/safety/device--> RETRY_WAIT
 
-    Engine 仅对明确 NOT_SENT 且安全的失败执行有界重试；已经送达或结果不确定时
-    不自动重放。下游仍以 dispatch_key/request_id 承担幂等防线。
+    Engine 默认仅对明确 NOT_SENT 且安全的失败执行有界重试；SYNC WMS 是静态例外，
+    对 authored 模糊结果或处理中响应按原 idempotency key、payload fingerprint 与
+    frozen binding 有界重放。其余已经送达或结果不确定的请求不自动重放。
     """
 
     MAX_RETRIES = 3
@@ -238,6 +239,8 @@ class SystemOutboxEngine:
                         occurred_at_ms=occurred_at_ms,
                         operation_identity=getattr(outbox, "operation_identity", None),
                         payload_json=_payload_dict(getattr(outbox, "payload_json", None)),
+                        idempotency_key=getattr(outbox, "idempotency_key", None),
+                        payload_hash=getattr(outbox, "payload_hash", None),
                     )
                     await self._emit_external_http_fault(
                         ExternalHttpDispatchFaultPoint.BEFORE_OUTBOX_EVIDENCE,
@@ -323,6 +326,8 @@ class SystemOutboxEngine:
                         attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
                         operation_identity=getattr(outbox, "operation_identity", None),
                         payload_json=_payload_dict(getattr(outbox, "payload_json", None)),
+                        idempotency_key=getattr(outbox, "idempotency_key", None),
+                        payload_hash=getattr(outbox, "payload_hash", None),
                     )
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
@@ -446,6 +451,8 @@ class SystemOutboxEngine:
             occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
             operation_identity=getattr(outbox, "operation_identity", None),
             payload_json=_payload_dict(getattr(outbox, "payload_json", None)),
+            idempotency_key=getattr(outbox, "idempotency_key", None),
+            payload_hash=getattr(outbox, "payload_hash", None),
         )
 
     async def _finalize_external_http_result(

@@ -16,13 +16,16 @@ from src.app.runtime.orchestration.repositories.wms_effect_status_repository imp
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.effect_reducer_service import EffectReducer
 from src.app.runtime.orchestration.services.wms_effect_status_service import WmsEffectStatusService
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
+from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
 from src.app.wms_integration.ports.effect_status import WmsEffectStatus, WmsEffectStatusSnapshot
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from tests.workline_runtime.system_capabilities.test_wms_effect_status_service import (
     NOW,
     _claim,
@@ -79,7 +82,7 @@ class _ClaimableRepository(_Repository):
 
 @pytest.mark.asyncio
 async def test_wms_ambiguous_transport_is_enqueued_and_reaches_typed_terminal_without_open_case() -> None:
-    claim = _claim()
+    claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
     claim.intent.capability_key = "wms.fulfillment.request_rack_supply"
     claim.intent.capability_contract_version = "v1"
     reducer_repository = _PersistentReducerRepository(claim.intent)
@@ -333,10 +336,20 @@ def _batch_claim(suffix: str) -> Any:
         "rack_type": "FLOW_RACK",
         "demand_generation": 1,
     }
-    claim.intent.outcome_history_json[0]["wms_effect_ack"] = {
-        **claim.intent.outcome_history_json[0]["wms_effect_ack"],
+    payload_hash = CanonicalPayload.from_projection(claim.outbox.payload_json).sha256
+    claim.intent.payload_hash = payload_hash
+    claim.outbox.payload_hash = payload_hash
+    frozen_ack = {
+        **claim.intent.outcome_json["outcome"]["payload"],
         "idempotency_key": idempotency_key,
         "provider_reference": f"provider-{dispatch_key}",
+    }
+    claim.intent.outcome_json["payload_hash"] = payload_hash
+    claim.intent.outcome_json["outcome"]["payload"] = frozen_ack
+    claim.intent.outcome_history_json[0] = {
+        "event_type": EffectReducerEventType.TRANSPORT_ACCEPTED.value,
+        "typed_ack_hash": typed_wms_effect_ack_hash(WmsEffectAck.model_validate(frozen_ack)),
+        "typed_ack_reference": f"runtime-intent-outcome:{dispatch_key}",
     }
     return WmsEffectStatusClaim(intent=claim.intent, outbox=claim.outbox, lease_token="")
 

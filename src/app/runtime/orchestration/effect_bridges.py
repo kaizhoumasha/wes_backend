@@ -20,7 +20,11 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportOutcome,
     ExternalHttpTransportResult,
 )
-from src.app.wms_integration.effect_runtime import interpret_sync_effect_response
+from src.app.wms_integration.effect_runtime import (
+    interpret_async_effect_ack_response,
+    interpret_sync_effect_response,
+    typed_wms_effect_ack_hash,
+)
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import (
     EFFECT_OPERATION_IDENTITIES,
@@ -320,6 +324,85 @@ def _default_transport_resolution(
     return EffectTransportResolution(events=tuple(events))
 
 
+def _async_transport_resolution(
+    *,
+    dispatch_key: str,
+    attempt_no: int,
+    occurred_at_ms: int,
+    operation_identity: str,
+    result: ExternalHttpTransportResult,
+    retry_exhausted: bool,
+    outcome: Success[Any] | ContractViolation,
+) -> EffectTransportResolution:
+    if isinstance(outcome, Success):
+        ack = outcome.payload
+        ack_hash = typed_wms_effect_ack_hash(ack)
+        evidence = {
+            **_transport_evidence(result, operation_identity=operation_identity),
+            "interpreted_outcome_kind": outcome.kind,
+            "typed_ack_hash": ack_hash,
+            "typed_ack_reference": f"runtime-intent-outcome:{dispatch_key}",
+            "outcome_kind": outcome.kind,
+            "outcome_code": "WMS_ASYNC_ACK_ACCEPTED",
+        }
+        return EffectTransportResolution(
+            events=(
+                EffectReducerEvent(
+                    event_type=EffectReducerEventType.TRANSPORT_ACCEPTED,
+                    dispatch_key=dispatch_key,
+                    occurred_at_ms=occurred_at_ms,
+                    source_event_id=generated_effect_source_event_id(
+                        "wms-async-ack",
+                        dispatch_key,
+                        attempt_no,
+                        ack_hash,
+                        evidence,
+                    ),
+                    attempt_no=attempt_no,
+                    reason_code="WMS_ASYNC_ACK_ACCEPTED",
+                    evidence_json=evidence,
+                    terminal_outcome=outcome.model_dump(mode="json"),
+                ),
+            )
+        )
+
+    default_resolution = _default_transport_resolution(
+        dispatch_key=dispatch_key,
+        attempt_no=attempt_no,
+        result=result,
+        retry_exhausted=retry_exhausted,
+        occurred_at_ms=occurred_at_ms,
+        operation_identity=operation_identity,
+    )
+    if any(
+        event.event_type
+        in {
+            EffectReducerEventType.IDEMPOTENCY_CONFLICT,
+            EffectReducerEventType.RECONCILIATION_OPENED,
+        }
+        for event in default_resolution.events
+    ):
+        return default_resolution
+    evidence = {
+        **_transport_evidence(result, operation_identity=operation_identity),
+        "interpreted_outcome_kind": outcome.kind,
+        "outcome_kind": outcome.kind,
+        "outcome_code": outcome.error_code,
+    }
+    return EffectTransportResolution(
+        events=(
+            *default_resolution.events,
+            _reconciliation_event(
+                dispatch_key=dispatch_key,
+                attempt_no=attempt_no,
+                occurred_at_ms=occurred_at_ms,
+                reason_code=outcome.error_code,
+                evidence_json=evidence,
+            ),
+        )
+    )
+
+
 class EffectTransportBridge:
     """把已持久化 typed transport result 翻译为封闭 reducer event。"""
 
@@ -336,10 +419,40 @@ class EffectTransportBridge:
         occurred_at_ms: int,
         operation_identity: str | None = None,
         payload_json: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        payload_hash: str | None = None,
     ) -> EffectTransportResolution:
         """先按静态 completion mode 解释，再生成互斥的 reducer event。"""
 
         operation = WMS_OPERATION_BY_IDENTITY.get(operation_identity) if operation_identity is not None else None
+        if (
+            operation is not None
+            and operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+            and payload_json is not None
+            and result.outcome is ExternalHttpTransportOutcome.ACCEPTED
+        ):
+            if not isinstance(idempotency_key, str) or not idempotency_key or not isinstance(payload_hash, str):
+                outcome: Success[Any] | ContractViolation = ContractViolation(
+                    error_code="WMS_ASYNC_FROZEN_REQUEST_INVALID",
+                    message="async ACK resolution requires the frozen idempotency key and payload fingerprint",
+                )
+            else:
+                outcome = interpret_async_effect_ack_response(
+                    operation,
+                    payload_json,
+                    idempotency_key=idempotency_key,
+                    payload_hash=payload_hash,
+                    transport_result=result,
+                )
+            return _async_transport_resolution(
+                dispatch_key=dispatch_key,
+                attempt_no=attempt_no,
+                occurred_at_ms=occurred_at_ms,
+                operation_identity=operation.identity,
+                result=result,
+                retry_exhausted=retry_exhausted,
+                outcome=outcome,
+            )
         if (
             operation is not None
             and operation.completion_mode is WmsCompletionMode.SYNC_RESULT
@@ -401,6 +514,8 @@ class EffectTransportBridge:
         occurred_at_ms: int,
         operation_identity: str | None = None,
         payload_json: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        payload_hash: str | None = None,
         resolution: EffectTransportResolution | None = None,
     ) -> tuple[Any, ...]:
         resolved = resolution or self.resolve_result(
@@ -411,6 +526,8 @@ class EffectTransportBridge:
             occurred_at_ms=occurred_at_ms,
             operation_identity=operation_identity,
             payload_json=payload_json,
+            idempotency_key=idempotency_key,
+            payload_hash=payload_hash,
         )
         return tuple([await self._reducer.reduce(db, event, require_intent=False) for event in resolved.events])
 

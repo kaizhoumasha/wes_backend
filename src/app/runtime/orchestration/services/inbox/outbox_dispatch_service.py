@@ -591,6 +591,9 @@ class OutboxDispatchService:
                         retry_exhausted=False,
                         occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
                         operation_identity=getattr(outbox, "operation_identity", None),
+                        payload_json=payload_dict(getattr(outbox, "payload_json", None)),
+                        idempotency_key=getattr(outbox, "idempotency_key", None),
+                        payload_hash=getattr(outbox, "payload_hash", None),
                     )
                     await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_REDUCER_EVIDENCE, outbox)
                 return None
@@ -619,6 +622,9 @@ class OutboxDispatchService:
                 retry_exhausted=enum_value(getattr(updated, "status", None)) == "FAILED",
                 occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
                 operation_identity=getattr(outbox, "operation_identity", None),
+                payload_json=payload_dict(getattr(outbox, "payload_json", None)),
+                idempotency_key=getattr(outbox, "idempotency_key", None),
+                payload_hash=getattr(outbox, "payload_hash", None),
             )
             await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_REDUCER_EVIDENCE, outbox)
         return updated
@@ -1098,6 +1104,8 @@ class OutboxDispatchService:
                             attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
                             operation_identity=getattr(outbox, "operation_identity", None),
                             payload_json=payload_dict(getattr(outbox, "payload_json", None)),
+                            idempotency_key=getattr(outbox, "idempotency_key", None),
+                            payload_hash=getattr(outbox, "payload_hash", None),
                         )
                         logger.exception(f"Outbox {outbox_pk} 证据落库失败，已隔离收口为 UNKNOWN")
                         result["failed"] += 1
