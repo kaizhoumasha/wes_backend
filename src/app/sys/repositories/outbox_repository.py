@@ -78,6 +78,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             "target_snapshot_json",
             "target_snapshot_hash",
             "auth_scheme",
+            "network_trust_mode",
             "credential_reference",
             "payload_json",
             "canonical_payload_bytes",

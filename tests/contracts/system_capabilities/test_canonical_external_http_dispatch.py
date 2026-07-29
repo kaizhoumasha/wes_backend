@@ -310,6 +310,112 @@ def test_effect_request_headers_are_closed_and_metadata_is_signed() -> None:
         assert new_hmac(TEST_SECRET, tampered_canonical, sha256).hexdigest() != expected_signature
 
 
+def test_none_effect_request_keeps_identity_and_hash_without_authentication_headers() -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-NONE-001"})
+    binding = frozen_external_http_binding(
+        target_code="WMS_INBOUND",
+        target_url="http://factory-wms/inbound",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        auth_scheme="NONE",
+        network_trust_mode="isolated_lan",
+        credential_reference=None,
+    )
+
+    request = ExternalHttpDispatchRequest.from_persisted(
+        binding=binding,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        idempotency_key="intent-none-001",
+        secret=None,
+        timestamp=None,
+        nonce=None,
+    )
+
+    assert request.headers == {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "intent-none-001",
+        "X-WES-Content-SHA256": canonical.sha256,
+        "X-WES-Operation-Identity": "wms.inventory.confirm_inbound@v1",
+    }
+    assert not any(
+        fragment in header_name.lower()
+        for header_name in request.headers
+        for fragment in ("credential", "nonce", "signature", "timestamp")
+    )
+
+
+@pytest.mark.parametrize(
+    ("secret", "timestamp", "nonce"),
+    [
+        (TEST_SECRET, None, None),
+        (None, "2026-07-29T00:00:00+00:00", None),
+        (None, None, "unexpected-nonce"),
+    ],
+)
+def test_none_effect_request_rejects_authentication_material(
+    secret: bytes | None,
+    timestamp: str | None,
+    nonce: str | None,
+) -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-NONE-INVALID"})
+    binding = frozen_external_http_binding(
+        target_url="http://factory-wms/inbound",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        auth_scheme="NONE",
+        network_trust_mode="isolated_lan",
+        credential_reference=None,
+    )
+
+    with pytest.raises(ValueError, match="NONE request must not carry authentication material"):
+        ExternalHttpDispatchRequest.from_persisted(
+            binding=binding,
+            canonical_payload_bytes=canonical.body,
+            payload_hash=canonical.sha256,
+            idempotency_key="intent-none-invalid",
+            secret=secret,
+            timestamp=timestamp,
+            nonce=nonce,
+        )
+
+
+@pytest.mark.asyncio
+async def test_none_dispatch_uses_canonical_sender_without_resolving_credentials() -> None:
+    canonical = CanonicalPayload.from_projection({"request_id": "REQ-NONE-DISPATCH"})
+    outbox = SimpleNamespace(
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        idempotency_key="intent-none-dispatch",
+    )
+    frozen_binding = frozen_external_http_binding(
+        target_url="http://factory-wms/inbound",
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        auth_scheme="NONE",
+        network_trust_mode="isolated_lan",
+        credential_reference=None,
+    )
+    for field_name, value in frozen_binding.as_persisted_fields().items():
+        setattr(outbox, field_name, value)
+
+    class CredentialProviderMustNotBeRead:
+        def resolve(self, _credential_reference: str) -> bytes:
+            raise AssertionError("NONE dispatch must not resolve credentials")
+
+    requests: list[ExternalHttpDispatchRequest] = []
+
+    async def sender(request: ExternalHttpDispatchRequest) -> ExternalHttpTransportResult:
+        requests.append(request)
+        return ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+
+    result = await dispatch_external_http(outbox, CredentialProviderMustNotBeRead(), sender)
+
+    assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
+    assert len(requests) == 1
+    assert requests[0].headers["X-WES-Content-SHA256"] == canonical.sha256
+
+
 def test_authored_wms_effect_request_rejects_missing_idempotency_key() -> None:
     canonical = CanonicalPayload.from_projection({"request_id": "REQ-001"})
     binding = frozen_external_http_binding(

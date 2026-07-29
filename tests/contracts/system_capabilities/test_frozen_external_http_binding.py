@@ -36,6 +36,7 @@ def _profile(*, credential_reference: str = "secret://wms/effect-hmac@v1") -> Ex
     return ExternalHttpProviderProfileDefinition(
         identity="wms.effect.production",
         environment="production",
+        network_trust_mode="authenticated_network",
         bindings=(
             ExternalHttpBindingDefinition(
                 operation_identity="wms.inventory.confirm_inbound@v1",
@@ -56,6 +57,96 @@ def _frozen_binding() -> FrozenExternalHttpBinding:
         target_code="WMS_CONFIRM_INBOUND",
         endpoint_registry=EndpointRegistry({"WMS_CONFIRM_INBOUND": "https://wms.example/effects/inbound"}),
     )
+
+
+def _none_profile(
+    *,
+    network_trust_mode: str = "isolated_lan",
+    credential_reference: str | None = None,
+) -> ExternalHttpProviderProfileDefinition:
+    return ExternalHttpProviderProfileDefinition(
+        identity="wms.full-factory.production",
+        environment="production",
+        network_trust_mode=network_trust_mode,
+        bindings=(
+            ExternalHttpBindingDefinition(
+                operation_identity="wms.inventory.confirm_inbound@v1",
+                allowed_target_codes=("WMS_CONFIRM_INBOUND",),
+                http_method="POST",
+                timeout_seconds=15,
+                auth_scheme="NONE",
+                credential_reference=credential_reference,
+            ),
+        ),
+    )
+
+
+def test_none_binding_freezes_isolated_lan_without_credential() -> None:
+    frozen = freeze_external_http_binding(
+        profile=_none_profile(),
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        target_code="WMS_CONFIRM_INBOUND",
+        endpoint_registry=EndpointRegistry({"WMS_CONFIRM_INBOUND": "http://factory-wms/effects/inbound"}),
+    )
+
+    assert frozen.auth_scheme == "NONE"
+    assert frozen.network_trust_mode == "isolated_lan"
+    assert frozen.credential_reference is None
+    assert FrozenExternalHttpBinding.from_persisted(**frozen.as_persisted_fields()) == frozen
+
+
+@pytest.mark.parametrize(
+    ("network_trust_mode", "credential_reference", "message"),
+    [
+        ("authenticated_network", None, "isolated_lan"),
+        ("isolated_lan", "secret://wms/effect-hmac@v1", "must not carry credential"),
+    ],
+)
+def test_none_binding_rejects_non_isolated_or_credential_bearing_profile(
+    network_trust_mode: str,
+    credential_reference: str | None,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _none_profile(
+            network_trust_mode=network_trust_mode,
+            credential_reference=credential_reference,
+        )
+
+
+def test_frozen_hmac_binding_requires_versioned_credential_reference() -> None:
+    frozen = _frozen_binding()
+    fields = frozen.as_persisted_fields()
+
+    with pytest.raises((TypeError, ValueError), match="versioned credential reference"):
+        FrozenExternalHttpBinding.from_persisted(**{**fields, "credential_reference": None})
+
+
+def test_system_outbox_none_binding_uses_same_combination_invariant() -> None:
+    frozen = freeze_external_http_binding(
+        profile=_none_profile(),
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        target_code="WMS_CONFIRM_INBOUND",
+        endpoint_registry=EndpointRegistry({"WMS_CONFIRM_INBOUND": "http://factory-wms/effects/inbound"}),
+    )
+    canonical = CanonicalPayload.from_projection({"inbound_key": "IN-NONE-001"})
+    common = {
+        **frozen.as_persisted_fields(),
+        "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP,
+        "dispatch_key": "effect:IN-NONE-001",
+        "idempotency_key": "intent:IN-NONE-001",
+        "target_type": SystemOutboxTargetType.HTTP_ENDPOINT,
+        "payload_json": {"inbound_key": "IN-NONE-001"},
+        "canonical_payload_bytes": canonical.body,
+        "payload_hash": canonical.sha256,
+        "operation_domain": "WMS_INVENTORY",
+    }
+
+    assert SystemOutbox(**common).network_trust_mode == "isolated_lan"
+    with pytest.raises(ValueError, match="frozen target and credential binding"):
+        SystemOutbox(**{**common, "network_trust_mode": "authenticated_network"})
+    with pytest.raises(ValueError, match="frozen target and credential binding"):
+        SystemOutbox(**{**common, "credential_reference": "secret://wms/effect-hmac@v1"})
 
 
 def test_target_and_credential_rotation_only_affect_new_frozen_binding() -> None:
@@ -259,6 +350,7 @@ def test_external_http_outbox_requires_frozen_fields_and_update_schema_hides_the
         "target_snapshot_json",
         "target_snapshot_hash",
         "auth_scheme",
+        "network_trust_mode",
         "credential_reference",
         "idempotency_key",
     }.isdisjoint(SystemOutboxUpdate.model_fields)

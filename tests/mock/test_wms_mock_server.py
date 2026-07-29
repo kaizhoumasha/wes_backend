@@ -1413,6 +1413,7 @@ def test_real_wes_submit_sender_and_status_signer_interoperate_with_mock_active_
     profile = ExternalHttpProviderProfileDefinition(
         identity="wms.material-flow.v1.sandbox",
         environment="sandbox",
+        network_trust_mode="authenticated_network",
         bindings=(
             ExternalHttpBindingDefinition(
                 operation_identity=operation_identity,

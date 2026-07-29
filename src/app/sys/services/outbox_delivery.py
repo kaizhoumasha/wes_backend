@@ -77,17 +77,27 @@ async def dispatch_external_http(
             target_snapshot_json=getattr(outbox, "target_snapshot_json", None),
             target_snapshot_hash=getattr(outbox, "target_snapshot_hash", None),
             auth_scheme=getattr(outbox, "auth_scheme", None),
+            network_trust_mode=getattr(outbox, "network_trust_mode", None),
             credential_reference=getattr(outbox, "credential_reference", None),
         )
-        secret = credential_provider.resolve(binding.credential_reference)
+        secret = None
+        timestamp = None
+        nonce = None
+        if binding.auth_scheme == "HMAC_SHA256":
+            credential_reference = binding.credential_reference
+            if credential_reference is None:
+                raise ValueError("HMAC_SHA256 frozen binding requires credential reference")
+            secret = credential_provider.resolve(credential_reference)
+            timestamp = timezone.now_utc().isoformat()
+            nonce = uuid4().hex
         request = ExternalHttpDispatchRequest.from_persisted(
             binding=binding,
             canonical_payload_bytes=getattr(outbox, "canonical_payload_bytes", None),
             payload_hash=getattr(outbox, "payload_hash", None),
             idempotency_key=getattr(outbox, "idempotency_key", None),
             secret=secret,
-            timestamp=timezone.now_utc().isoformat(),
-            nonce=uuid4().hex,
+            timestamp=timestamp,
+            nonce=nonce,
         )
     except CredentialResolutionError as exc:
         logger.warning(f"EXTERNAL_HTTP credential preparation failed: {exc.code}")

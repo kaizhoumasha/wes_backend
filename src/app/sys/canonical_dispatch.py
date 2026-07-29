@@ -126,12 +126,12 @@ class ExternalHttpDispatchRequest:
     payload: CanonicalPayload
     method: Literal["POST"]
     timeout_seconds: float
-    credential_reference: str
-    auth_scheme: Literal["HMAC_SHA256"]
-    timestamp: str
-    nonce: str
+    credential_reference: str | None
+    auth_scheme: Literal["NONE", "HMAC_SHA256"]
+    timestamp: str | None
+    nonce: str | None
     operation_identity: str
-    _signature: str = field(repr=False)
+    _signature: str | None = field(repr=False)
     idempotency_key: str | None = None
 
     @classmethod
@@ -141,21 +141,15 @@ class ExternalHttpDispatchRequest:
         binding: FrozenExternalHttpBinding,
         canonical_payload_bytes: object,
         payload_hash: object,
-        secret: bytes,
-        timestamp: str,
-        nonce: str,
+        secret: bytes | None,
+        timestamp: str | None,
+        nonce: str | None,
         idempotency_key: str | None = None,
     ) -> ExternalHttpDispatchRequest:
         payload = CanonicalPayload.from_persisted(
             canonical_payload_bytes=canonical_payload_bytes,
             payload_hash=payload_hash,
         )
-        if not isinstance(secret, bytes) or not secret:
-            raise ValueError("resolved credential material must be non-empty bytes")
-        timestamp = str(timestamp or "").strip()
-        nonce = str(nonce or "").strip()
-        if not timestamp or "\n" in timestamp or not nonce or "\n" in nonce:
-            raise ValueError("request authentication timestamp and nonce must be non-empty single-line values")
         if binding.operation_identity in _WMS_EFFECT_OPERATION_IDENTITIES and idempotency_key is None:
             raise ValueError("WMS EFFECT request requires a non-empty idempotency_key")
         if idempotency_key is not None:
@@ -169,12 +163,23 @@ class ExternalHttpDispatchRequest:
             if not _CANONICAL_WMS_OPERATION_IDENTITY_RE.fullmatch(binding.operation_identity):
                 raise ValueError("WMS EFFECT request requires a canonical operation identity")
         target = binding.target_snapshot
-        path = urlparse(target.url).path or "/"
-        signature_fields = [target.http_method, path, timestamp, nonce, payload.sha256]
-        if idempotency_key is not None:
-            signature_fields.extend((binding.operation_identity, idempotency_key))
-        signature_payload = "\n".join(signature_fields).encode()
-        signature = hmac.new(secret, signature_payload, hashlib.sha256).hexdigest()
+        if binding.auth_scheme == "NONE":
+            if secret is not None or timestamp is not None or nonce is not None:
+                raise ValueError("NONE request must not carry authentication material")
+            signature = None
+        else:
+            if not isinstance(secret, bytes) or not secret:
+                raise ValueError("resolved credential material must be non-empty bytes")
+            timestamp = str(timestamp or "").strip()
+            nonce = str(nonce or "").strip()
+            if not timestamp or "\n" in timestamp or not nonce or "\n" in nonce:
+                raise ValueError("request authentication timestamp and nonce must be non-empty single-line values")
+            path = urlparse(target.url).path or "/"
+            signature_fields = [target.http_method, path, timestamp, nonce, payload.sha256]
+            if idempotency_key is not None:
+                signature_fields.extend((binding.operation_identity, idempotency_key))
+            signature_payload = "\n".join(signature_fields).encode()
+            signature = hmac.new(secret, signature_payload, hashlib.sha256).hexdigest()
         return cls(
             endpoint=EndpointDefinition(code=target.code, url=target.url),
             payload=payload,
@@ -204,12 +209,17 @@ class ExternalHttpDispatchRequest:
         headers = {
             "Content-Type": "application/json",
             "X-WES-Content-SHA256": self.payload_hash,
-            "X-WES-Credential-Reference": self.credential_reference,
-            "X-WES-Nonce": self.nonce,
-            "X-WES-Signature": self._signature,
-            "X-WES-Signature-Algorithm": self.auth_scheme,
-            "X-WES-Timestamp": self.timestamp,
         }
+        if self.auth_scheme == "HMAC_SHA256":
+            headers.update(
+                {
+                    "X-WES-Credential-Reference": str(self.credential_reference),
+                    "X-WES-Nonce": str(self.nonce),
+                    "X-WES-Signature": str(self._signature),
+                    "X-WES-Signature-Algorithm": self.auth_scheme,
+                    "X-WES-Timestamp": str(self.timestamp),
+                }
+            )
         if self.idempotency_key is not None:
             headers["Idempotency-Key"] = self.idempotency_key
             headers["X-WES-Operation-Identity"] = self.operation_identity

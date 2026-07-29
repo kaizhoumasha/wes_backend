@@ -176,26 +176,17 @@ def test_async_status_path_is_required_and_must_be_a_safe_relative_path() -> Non
 
 
 @pytest.mark.asyncio
-async def test_pre_t3_runtime_entry_points_fail_closed_without_compiled_endpoint_injection() -> None:
-    from src.app.runtime.system_capabilities.wms import provider_catalog
+async def test_query_and_status_entry_points_fail_closed_without_compiled_endpoint_injection() -> None:
     from src.app.wms_integration.ports.effect_status import build_wms_effect_status_binding
     from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationRequest
     from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
     from src.core.conf import settings
 
-    catalog = provider_catalog.build_wms_provider_catalog(_compile())
     query_port = build_inventory_query_port_factory(
         simulation=False,
         sandbox_rows_provider=lambda **_kwargs: [],
     )()
     with pytest.raises(RuntimeError, match="compiled WMS QUERY endpoint"):
         await query_port.execute(InventoryQueryOperationRequest(material_code="MAT-001"))
-    with pytest.raises(RuntimeError, match="compiled WMS EFFECT endpoint registry"):
-        provider_catalog.freeze_wms_effect_binding(
-            catalog=catalog,
-            profile_identity=catalog.profile_identity,
-            operation_identity="wms.inventory.confirm_inbound@v1",
-            target_code="WMS_INVENTORY_CONFIRM_INBOUND",
-        )
     with pytest.raises(RuntimeError, match="compiled WMS EFFECT profile"):
         build_wms_effect_status_binding(settings_source=settings)

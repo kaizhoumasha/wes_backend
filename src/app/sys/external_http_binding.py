@@ -15,7 +15,8 @@ if TYPE_CHECKING:
 
 _CREDENTIAL_REFERENCE_RE = re.compile(r"^[a-z][a-z0-9+.-]*://[^@\s]+@v[1-9][0-9]*$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SUPPORTED_AUTH_SCHEMES = frozenset({"HMAC_SHA256"})
+_SUPPORTED_AUTH_SCHEMES = frozenset({"NONE", "HMAC_SHA256"})
+_SUPPORTED_NETWORK_TRUST_MODES = frozenset({"isolated_lan", "authenticated_network"})
 _TARGET_SNAPSHOT_FIELDS = frozenset({"code", "url", "http_method", "timeout_seconds"})
 
 
@@ -26,12 +27,40 @@ def _required_text(value: Any, field_name: str) -> str:
     return text
 
 
-def _persisted_auth_scheme(value: object) -> Literal["HMAC_SHA256"]:
+def _persisted_auth_scheme(value: object) -> Literal["NONE", "HMAC_SHA256"]:
     """恢复受支持的认证方案，同时保留闭集类型。"""
 
-    if value != "HMAC_SHA256":
+    if value not in _SUPPORTED_AUTH_SCHEMES:
         raise ValueError("unsupported frozen outbound auth scheme")
-    return "HMAC_SHA256"
+    return value  # type: ignore[return-value]
+
+
+def _persisted_network_trust_mode(value: object) -> Literal["isolated_lan", "authenticated_network"]:
+    """恢复冻结网络信任事实，同时保留闭集类型。"""
+
+    if value not in _SUPPORTED_NETWORK_TRUST_MODES:
+        raise ValueError("unsupported frozen network trust mode")
+    return value  # type: ignore[return-value]
+
+
+def _validate_auth_binding(
+    *,
+    auth_scheme: str,
+    network_trust_mode: str,
+    credential_reference: object,
+) -> None:
+    """验证共享 NONE/HMAC 与网络信任事实的封闭组合。"""
+
+    if auth_scheme == "NONE":
+        if network_trust_mode != "isolated_lan":
+            raise ValueError("NONE auth requires network_trust_mode=isolated_lan")
+        if credential_reference is not None:
+            raise ValueError("NONE auth must not carry credential reference")
+        return
+    if auth_scheme != "HMAC_SHA256":
+        raise ValueError("unsupported outbound auth scheme")
+    if not isinstance(credential_reference, str) or not _CREDENTIAL_REFERENCE_RE.fullmatch(credential_reference):
+        raise ValueError("HMAC_SHA256 binding requires a versioned credential reference")
 
 
 def _sha256_json(value: Any) -> str:
@@ -46,8 +75,8 @@ class ExternalHttpBindingDefinition:
     allowed_target_codes: tuple[str, ...]
     http_method: Literal["POST"]
     timeout_seconds: float
-    auth_scheme: Literal["HMAC_SHA256"]
-    credential_reference: str
+    auth_scheme: Literal["NONE", "HMAC_SHA256"]
+    credential_reference: str | None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "operation_identity", _required_text(self.operation_identity, "operation_identity"))
@@ -61,7 +90,12 @@ class ExternalHttpBindingDefinition:
             raise ValueError("binding timeout_seconds must be positive")
         if self.auth_scheme not in _SUPPORTED_AUTH_SCHEMES:
             raise ValueError("unsupported outbound auth scheme")
-        if not _CREDENTIAL_REFERENCE_RE.fullmatch(self.credential_reference):
+        if self.auth_scheme == "NONE":
+            if self.credential_reference is not None:
+                raise ValueError("NONE auth must not carry credential reference")
+        elif not isinstance(self.credential_reference, str) or not _CREDENTIAL_REFERENCE_RE.fullmatch(
+            self.credential_reference
+        ):
             raise ValueError("binding requires a versioned credential reference")
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -81,15 +115,24 @@ class ExternalHttpProviderProfileDefinition:
 
     identity: str
     environment: Literal["sandbox", "staging", "production"]
+    network_trust_mode: Literal["isolated_lan", "authenticated_network"]
     bindings: tuple[ExternalHttpBindingDefinition, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "identity", _required_text(self.identity, "provider profile identity"))
         if self.environment not in {"sandbox", "staging", "production"}:
             raise ValueError("provider profile environment is invalid")
+        if self.network_trust_mode not in _SUPPORTED_NETWORK_TRUST_MODES:
+            raise ValueError("provider profile network trust mode is invalid")
         identities = tuple(binding.operation_identity for binding in self.bindings)
         if not identities or len(identities) != len(set(identities)):
             raise ValueError("provider profile requires unique operation bindings")
+        for binding in self.bindings:
+            _validate_auth_binding(
+                auth_scheme=binding.auth_scheme,
+                network_trust_mode=self.network_trust_mode,
+                credential_reference=binding.credential_reference,
+            )
 
     @property
     def profile_hash(self) -> str:
@@ -98,6 +141,7 @@ class ExternalHttpProviderProfileDefinition:
                 "bindings": tuple(binding.canonical_payload() for binding in self.bindings),
                 "environment": self.environment,
                 "identity": self.identity,
+                "network_trust_mode": self.network_trust_mode,
             }
         )
 
@@ -165,8 +209,9 @@ class FrozenExternalHttpBinding:
     binding_revision: str
     target_snapshot: ExternalHttpTargetSnapshot
     target_snapshot_hash: str
-    auth_scheme: Literal["HMAC_SHA256"]
-    credential_reference: str
+    auth_scheme: Literal["NONE", "HMAC_SHA256"]
+    network_trust_mode: Literal["isolated_lan", "authenticated_network"]
+    credential_reference: str | None
 
     def __post_init__(self) -> None:
         _ = _required_text(self.provider_profile_identity, "provider_profile_identity")
@@ -179,16 +224,18 @@ class FrozenExternalHttpBinding:
             raise ValueError("target snapshot hash must be SHA-256")
         if _sha256_json(self.target_snapshot.as_json()) != self.target_snapshot_hash:
             raise ValueError("target snapshot hash does not match frozen target snapshot")
-        if self.auth_scheme not in _SUPPORTED_AUTH_SCHEMES:
-            raise ValueError("unsupported frozen outbound auth scheme")
-        if not _CREDENTIAL_REFERENCE_RE.fullmatch(self.credential_reference):
-            raise ValueError("frozen binding requires a versioned credential reference")
+        _validate_auth_binding(
+            auth_scheme=self.auth_scheme,
+            network_trust_mode=self.network_trust_mode,
+            credential_reference=self.credential_reference,
+        )
 
     def as_persisted_fields(self) -> dict[str, Any]:
         return {
             "auth_scheme": self.auth_scheme,
             "binding_revision": self.binding_revision,
             "credential_reference": self.credential_reference,
+            "network_trust_mode": self.network_trust_mode,
             "operation_identity": self.operation_identity,
             "provider_profile_hash": self.provider_profile_hash,
             "provider_profile_identity": self.provider_profile_identity,
@@ -209,12 +256,16 @@ class FrozenExternalHttpBinding:
         target_snapshot_json: Any,
         target_snapshot_hash: object,
         auth_scheme: object,
+        network_trust_mode: object,
         credential_reference: object,
     ) -> FrozenExternalHttpBinding:
         target_snapshot = ExternalHttpTargetSnapshot.from_json(target_snapshot_json)
         persisted_target_code = require_string(target_code, "target_code")
         if target_snapshot.code != persisted_target_code:
             raise ValueError("persisted target code differs from target snapshot")
+        persisted_credential_reference = (
+            None if credential_reference is None else require_string(credential_reference, "credential_reference")
+        )
         return cls(
             provider_profile_identity=require_string(provider_profile_identity, "provider_profile_identity"),
             provider_profile_hash=require_string(provider_profile_hash, "provider_profile_hash"),
@@ -223,7 +274,8 @@ class FrozenExternalHttpBinding:
             target_snapshot=target_snapshot,
             target_snapshot_hash=require_string(target_snapshot_hash, "target_snapshot_hash"),
             auth_scheme=_persisted_auth_scheme(auth_scheme),
-            credential_reference=require_string(credential_reference, "credential_reference"),
+            network_trust_mode=_persisted_network_trust_mode(network_trust_mode),
+            credential_reference=persisted_credential_reference,
         )
 
 
@@ -246,7 +298,11 @@ def freeze_external_http_binding(
         http_method=binding.http_method,
         timeout_seconds=binding.timeout_seconds,
     )
-    if profile.environment == "production" and urlparse(target_snapshot.url).scheme != "https":
+    if (
+        profile.environment == "production"
+        and profile.network_trust_mode != "isolated_lan"
+        and urlparse(target_snapshot.url).scheme != "https"
+    ):
         raise ValueError("production EXTERNAL_HTTP endpoint requires HTTPS")
     binding_revision = _sha256_json(
         {
@@ -262,6 +318,7 @@ def freeze_external_http_binding(
         target_snapshot=target_snapshot,
         target_snapshot_hash=_sha256_json(target_snapshot.as_json()),
         auth_scheme=binding.auth_scheme,
+        network_trust_mode=profile.network_trust_mode,
         credential_reference=binding.credential_reference,
     )
 

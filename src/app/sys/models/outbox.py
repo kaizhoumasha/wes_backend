@@ -248,6 +248,11 @@ class SystemOutboxBase(BaseMixin):
         max_length=50,
         description="冻结的封闭出站认证 scheme",
     )
+    network_trust_mode: str | None = Field(
+        default=None,
+        max_length=50,
+        description="冻结的网络信任事实",
+    )
     credential_reference: str | None = Field(
         default=None,
         max_length=240,
@@ -345,8 +350,11 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
             "AND binding_revision IS NOT NULL AND length(binding_revision) = 64 "
             "AND target_snapshot_json IS NOT NULL "
             "AND target_snapshot_hash IS NOT NULL AND length(target_snapshot_hash) = 64 "
-            "AND auth_scheme = 'HMAC_SHA256' "
-            "AND credential_reference IS NOT NULL)",
+            "AND ((auth_scheme = 'NONE' AND network_trust_mode = 'isolated_lan' "
+            "AND credential_reference IS NULL) "
+            "OR (auth_scheme = 'HMAC_SHA256' "
+            "AND network_trust_mode IN ('isolated_lan', 'authenticated_network') "
+            "AND credential_reference IS NOT NULL)))",
             name="ck_system_outbox_external_http_frozen_binding",
         ),
         CheckConstraint(
@@ -436,6 +444,7 @@ class SystemOutboxUpdate(
             "target_snapshot_json",
             "target_snapshot_hash",
             "auth_scheme",
+            "network_trust_mode",
             "credential_reference",
             "payload_json",
             "canonical_payload_bytes",
@@ -460,6 +469,7 @@ class SystemOutboxUpdate(
     target_snapshot_json: ClassVar[dict[str, Any]]
     target_snapshot_hash: ClassVar[str]
     auth_scheme: ClassVar[str]
+    network_trust_mode: ClassVar[str]
     credential_reference: ClassVar[str]
     lease_owner_token: ClassVar[str]
     lease_expires_at: ClassVar[datetime]
@@ -476,6 +486,7 @@ def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
             "target_snapshot_json",
             "target_snapshot_hash",
             "auth_scheme",
+            "network_trust_mode",
             "credential_reference",
         )
         if any(getattr(outbox, field_name, None) is not None for field_name in frozen_fields):
@@ -505,6 +516,7 @@ def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
             target_snapshot_json=getattr(outbox, "target_snapshot_json", None),
             target_snapshot_hash=getattr(outbox, "target_snapshot_hash", None),
             auth_scheme=getattr(outbox, "auth_scheme", None),
+            network_trust_mode=getattr(outbox, "network_trust_mode", None),
             credential_reference=getattr(outbox, "credential_reference", None),
         )
     except (TypeError, ValueError) as exc:
@@ -525,6 +537,7 @@ def _prevent_external_http_payload_update(_mapper: Any, _connection: Any, outbox
         "target_snapshot_json",
         "target_snapshot_hash",
         "auth_scheme",
+        "network_trust_mode",
         "credential_reference",
         "idempotency_key",
     )

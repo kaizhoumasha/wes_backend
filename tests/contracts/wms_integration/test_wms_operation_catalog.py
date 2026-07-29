@@ -278,6 +278,25 @@ def test_external_http_effect_bindings_accept_only_registry_target_codes() -> No
     assert actual == expected
 
 
+def test_compiled_none_profile_is_the_only_source_for_frozen_effect_security() -> None:
+    from src.app.runtime.system_capabilities.wms import provider_catalog
+
+    catalog = build_provider_catalog()
+    frozen = provider_catalog.freeze_wms_effect_binding(
+        catalog=catalog,
+        profile_identity=catalog.profile_identity,
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        target_code="WMS_INVENTORY_CONFIRM_INBOUND",
+    )
+
+    assert frozen.auth_scheme == "NONE"
+    assert frozen.network_trust_mode == "isolated_lan"
+    assert frozen.credential_reference is None
+    assert (
+        frozen.target_snapshot.url == catalog.compiled_profile.operations[frozen.operation_identity].endpoint_template
+    )
+
+
 def test_async_effect_runtime_classification_is_exact_registry_derivative() -> None:
     from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_IDENTITIES
     from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES

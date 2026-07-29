@@ -37,18 +37,22 @@ def frozen_external_http_binding(
     provider_profile_identity: str = "tests.external-http.v1",
     operation_identity: str = "tests.external-http.effect@v1",
     timeout_seconds: float = 30,
+    auth_scheme: str = "HMAC_SHA256",
+    network_trust_mode: str = "authenticated_network",
+    credential_reference: str | None = TEST_CREDENTIAL_REFERENCE,
 ) -> FrozenExternalHttpBinding:
     profile = ExternalHttpProviderProfileDefinition(
         identity=provider_profile_identity,
         environment="sandbox",
+        network_trust_mode=network_trust_mode,
         bindings=(
             ExternalHttpBindingDefinition(
                 operation_identity=operation_identity,
                 allowed_target_codes=(target_code,),
                 http_method="POST",
                 timeout_seconds=timeout_seconds,
-                auth_scheme="HMAC_SHA256",
-                credential_reference=TEST_CREDENTIAL_REFERENCE,
+                auth_scheme=auth_scheme,
+                credential_reference=credential_reference,
             ),
         ),
     )
