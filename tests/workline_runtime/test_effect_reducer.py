@@ -139,6 +139,7 @@ def _event(
             RuntimeIntentStatus.TECHNICAL_FAILED,
         ),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_ACCEPTED, False, RuntimeIntentStatus.ACCEPTED),
+        (RuntimeIntentStatus.UNKNOWN, EffectReducerEventType.TRANSPORT_ACCEPTED, False, RuntimeIntentStatus.ACCEPTED),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_REJECTED, False, RuntimeIntentStatus.REJECTED),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
         (RuntimeIntentStatus.ACCEPTED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
@@ -257,6 +258,41 @@ async def test_callback_before_transport_response_keeps_completed_terminal() -> 
         EffectReducerEventType.CALLBACK_COMPLETED.value,
         EffectReducerEventType.TRANSPORT_ACCEPTED.value,
     ]
+
+
+@pytest.mark.asyncio
+async def test_recovered_transport_ack_from_unknown_writes_existing_authoritative_envelope() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.UNKNOWN)
+    repository.intent.capability_key = "wms.fulfillment.request_rack_supply"
+    repository.intent.capability_contract_version = "v1"
+    repository.intent.operation_identity = "WMS:PKG-001"
+    repository.intent.idempotency_key = "idem-001"
+    repository.intent.payload_hash = "a" * 64
+    ack_outcome = {
+        "kind": "success",
+        "payload": {
+            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+            "idempotency_key": "idem-001",
+            "provider_reference": "provider-status-first",
+            "submission_state": "REPLAY",
+            "accepted_scope": None,
+        },
+    }
+    event = _event(EffectReducerEventType.TRANSPORT_ACCEPTED).model_copy(
+        update={
+            "evidence_json": {
+                "typed_ack_hash": "b" * 64,
+                "typed_ack_reference": "runtime-intent-outcome:dispatch-1",
+            },
+            "terminal_outcome": ack_outcome,
+        }
+    )
+
+    await EffectReducer(repository=repository).reduce(_Db(), event)
+
+    assert repository.intent.effect_status is RuntimeIntentStatus.ACCEPTED
+    assert repository.intent.outcome_json["outcome"] == ack_outcome
+    assert "payload" not in repository.intent.outcome_history_json[-1]
 
 
 @pytest.mark.asyncio

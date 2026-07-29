@@ -339,6 +339,104 @@ def test_real_status_parser_requires_frozen_batch_ack_and_rejects_member_drift(
 
 
 @pytest.mark.parametrize(
+    ("operation_identity", "payload_factory", "accepted_count"),
+    [(E12, _e12_payload, 3), (E13, _e13_payload, 2)],
+)
+def test_pre_ack_batch_status_recovers_only_authored_exact_or_prefix_scope(
+    operation_identity: str,
+    payload_factory,
+    accepted_count: int,
+) -> None:
+    from src.app.wms_integration.ports.effect_status import (
+        WmsBatchEffectStatusRequest,
+        parse_wms_effect_status_snapshot,
+    )
+    from src.app.wms_integration.ports.fulfillment_operations import accepted_scope_digest
+
+    request_payload = payload_factory()
+    members = request_payload["items"] if operation_identity == E12 else request_payload["candidate_items"]
+    accepted_keys = tuple(item["bin_id"] for item in members[:accepted_count])
+    request = WmsBatchEffectStatusRequest(
+        operation_identity=operation_identity,
+        idempotency_key="idem-status-first",
+        request_payload=request_payload,
+    )
+    wire = {
+        "state": "PROCESSING",
+        "provider_reference": "provider-status-first",
+        "accepted_scope": {
+            "object_keys": accepted_keys,
+            "scope_digest": accepted_scope_digest(accepted_keys),
+        },
+        "reason_code": None,
+        "updated_at": "2026-07-29T00:00:03+00:00",
+        "source_version": 1,
+        "result_payload": None,
+    }
+
+    snapshot = parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+    assert snapshot.recovered_ack is not None
+    assert snapshot.recovered_ack.accepted_scope is not None
+    assert snapshot.recovered_ack.accepted_scope.object_keys == accepted_keys
+
+    drifted_keys = ("BIN-001", "BIN-003") if operation_identity == E13 else accepted_keys[:-1]
+    wire["accepted_scope"] = {
+        "object_keys": drifted_keys,
+        "scope_digest": accepted_scope_digest(drifted_keys),
+    }
+    with pytest.raises(ValueError, match=r"ordered prefix|entire frozen batch"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "payload_factory"),
+    [(E12, _e12_payload), (E13, _e13_payload)],
+)
+def test_pre_ack_batch_completed_status_cross_checks_terminal_scope(
+    operation_identity: str,
+    payload_factory,
+) -> None:
+    from src.app.wms_integration.ports.effect_status import (
+        WmsBatchEffectStatusRequest,
+        parse_wms_effect_status_snapshot,
+    )
+    from src.app.wms_integration.ports.fulfillment_operations import accepted_scope_digest
+    from tests.mock.wms_northbound_contract import build_typed_result
+
+    request_payload = payload_factory()
+    result_payload = build_typed_result(
+        operation_identity,
+        request_payload,
+        source_version=3,
+        completed_at="2026-07-29T00:00:03+00:00",
+        provider_reference="provider-status-first",
+    )
+    accepted_keys = tuple(result_payload["accepted_object_keys"])
+    wire = {
+        "state": "COMPLETED",
+        "provider_reference": "provider-status-first",
+        "accepted_scope": {
+            "object_keys": accepted_keys,
+            "scope_digest": accepted_scope_digest(accepted_keys),
+        },
+        "reason_code": None,
+        "updated_at": "2026-07-29T00:00:03+00:00",
+        "source_version": 3,
+        "result_payload": result_payload,
+    }
+    request = WmsBatchEffectStatusRequest(
+        operation_identity=operation_identity,
+        idempotency_key="idem-status-first",
+        request_payload=request_payload,
+    )
+    wire["result_payload"]["accepted_object_keys"] = list(reversed(accepted_keys))
+
+    with pytest.raises((ValidationError, ValueError), match=r"result contract|accepted_object_keys|ACK"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+
+@pytest.mark.parametrize(
     ("operation_identity", "payload_factory"),
     [(E12, _e12_payload), (E13, _e13_payload)],
 )

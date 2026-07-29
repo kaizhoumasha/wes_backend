@@ -23,12 +23,14 @@ from src.app.runtime.orchestration.repositories.wms_effect_status_repository imp
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.effect_reducer_service import EffectReducer, effect_reducer
 from src.app.runtime.system_capabilities.outcomes import Success
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.wms_integration.effect_runtime import (
     interpret_async_effect_ack_response,
     typed_wms_effect_ack_hash,
 )
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.app.wms_integration.ports.effect_status import (
+    BATCH_EFFECT_OPERATION_IDENTITIES,
     FrozenWmsEffectStatusBinding,
     WmsBatchEffectStatusRequest,
     WmsEffectStatus,
@@ -36,7 +38,12 @@ from src.app.wms_integration.ports.effect_status import (
     WmsEffectStatusSnapshot,
     build_wms_effect_status_binding,
 )
-from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
+from src.app.wms_integration.ports.fulfillment_operations import (
+    WmsEffectAck,
+    validate_batch_terminal_result,
+    validate_effect_ack,
+    validate_fulfillment_ack,
+)
 from src.core.conf import settings
 from src.core.logger import logger
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
@@ -298,8 +305,30 @@ class WmsEffectStatusService:
             or not isinstance(outbox.payload_json, dict)
         ):
             raise ValueError("WMS status query identity differs from the frozen EFFECT pair")
+        capability_identity = (
+            f"{getattr(intent, 'capability_key', '')}@{getattr(intent, 'capability_contract_version', '')}"
+        )
+        if capability_identity != outbox.operation_identity:
+            raise ValueError("WMS status capability identity differs from the frozen EFFECT pair")
+        intent_payload_hash = getattr(intent, "payload_hash", None)
+        outbox_payload_hash = getattr(outbox, "payload_hash", None)
+        if (
+            not isinstance(intent_payload_hash, str)
+            or not isinstance(outbox_payload_hash, str)
+            or intent_payload_hash != outbox_payload_hash
+        ):
+            raise ValueError("WMS status payload fingerprint differs across the frozen EFFECT pair")
+        canonical_payload = CanonicalPayload.from_persisted(
+            canonical_payload_bytes=getattr(outbox, "canonical_payload_bytes", None),
+            payload_hash=outbox_payload_hash,
+        )
+        canonical_payload.validate_projection(outbox.payload_json)
         frozen_ack = WmsEffectStatusService._load_frozen_ack(intent)
-        request_type = WmsBatchEffectStatusRequest if frozen_ack.accepted_scope is not None else WmsEffectStatusRequest
+        request_type = (
+            WmsBatchEffectStatusRequest
+            if outbox.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES
+            else WmsEffectStatusRequest
+        )
         return request_type(
             operation_identity=outbox.operation_identity,
             idempotency_key=intent.idempotency_key,
@@ -309,19 +338,28 @@ class WmsEffectStatusService:
         )
 
     @staticmethod
-    def _load_frozen_ack(intent: Any) -> WmsEffectAck:
-        """从 append-only reducer evidence 恢复 ACK；任何缺失或漂移都 fail closed。"""
+    def _load_frozen_ack(intent: Any) -> WmsEffectAck | None:
+        """从 append-only reducer evidence 恢复 ACK；尚无 ACK 时允许 status-first。"""
 
-        ack_evidence = [
+        transport_acceptance_evidence = [
             item
             for item in (getattr(intent, "outcome_history_json", None) or ())
-            if isinstance(item, dict)
-            and item.get("event_type") == EffectReducerEventType.TRANSPORT_ACCEPTED.value
-            and "typed_ack_hash" in item
+            if isinstance(item, dict) and item.get("event_type") == EffectReducerEventType.TRANSPORT_ACCEPTED.value
         ]
-        if not ack_evidence:
-            raise ValueError("persisted WMS EFFECT ACK evidence is required before status query")
+        ack_evidence = [item for item in transport_acceptance_evidence if "typed_ack_hash" in item]
         authoritative = getattr(intent, "outcome_json", None)
+        if not transport_acceptance_evidence:
+            if isinstance(authoritative, dict):
+                typed_outcome = authoritative.get("outcome")
+                if isinstance(typed_outcome, dict) and typed_outcome.get("kind") == "success":
+                    try:
+                        WmsEffectAck.model_validate(typed_outcome.get("payload"))
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("persisted WMS EFFECT ACK evidence is invalid") from exc
+                    raise ValueError("persisted WMS EFFECT ACK evidence is missing")
+            return None
+        if len(ack_evidence) != len(transport_acceptance_evidence):
+            raise ValueError("persisted WMS EFFECT ACK evidence is invalid")
         try:
             if not isinstance(authoritative, dict):
                 raise TypeError("authoritative ACK envelope must be an object")
@@ -360,13 +398,20 @@ class WmsEffectStatusService:
             return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="FENCED")
         intent = current_claim.intent
         try:
-            self._validate_snapshot_matches_claim(current_claim, snapshot)
+            request = self._validate_snapshot_matches_claim(current_claim, snapshot)
         except (TypeError, ValueError) as exc:
             return await self._open_reconciliation(
                 db,
                 claim=current_claim,
                 reason_code="WMS_STATUS_RESULT_IDENTITY_INVALID",
                 evidence={"error_type": type(exc).__name__},
+            )
+        if request.frozen_ack is None and snapshot.recovered_ack is not None:
+            await self._record_recovered_ack(
+                db,
+                claim=current_claim,
+                ack=snapshot.recovered_ack,
+                source="status",
             )
         snapshot_hash = sha256(snapshot.canonical_bytes).hexdigest()
         evidence = {
@@ -495,21 +540,85 @@ class WmsEffectStatusService:
         cls,
         claim: WmsEffectStatusClaim,
         snapshot: WmsEffectStatusSnapshot,
-    ) -> None:
+    ) -> WmsEffectStatusRequest:
         request = cls._build_request(claim)
         if (
             snapshot.operation_identity != request.operation_identity
             or snapshot.idempotency_key != request.idempotency_key
         ):
             raise ValueError("WMS status snapshot identity differs from the frozen EFFECT request")
+        effective_ack = request.frozen_ack
+        if snapshot.recovered_ack is not None:
+            validate_effect_ack(
+                operation_identity=request.operation_identity,
+                idempotency_key=request.idempotency_key,
+                ack=snapshot.recovered_ack,
+            )
+            if effective_ack is not None and typed_wms_effect_ack_hash(
+                snapshot.recovered_ack
+            ) != typed_wms_effect_ack_hash(effective_ack):
+                raise ValueError("recovered WMS status ACK differs from the frozen ACK")
+            effective_ack = snapshot.recovered_ack
+        if snapshot.state is not WmsEffectStatus.NOT_FOUND and effective_ack is None:
+            raise ValueError("visible WMS status requires frozen or recovered ACK")
+        if effective_ack is not None and request.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES:
+            operation = WMS_OPERATION_BY_IDENTITY[request.operation_identity]
+            batch_request = operation.request_model.model_validate(request.request_payload)
+            validate_fulfillment_ack(batch_request, effective_ack)  # type: ignore[arg-type]
         if snapshot.state is not WmsEffectStatus.COMPLETED:
-            return
+            return request
         result = snapshot.result
         if result is None:
             raise ValueError("WMS completed status is missing typed result")
         expected = request.expected_result_fields
         if any(getattr(result, field_name, None) != expected_value for field_name, expected_value in expected.items()):
             raise ValueError("WMS status result correlation differs from the frozen EFFECT request")
+        if effective_ack is not None and request.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES:
+            operation = WMS_OPERATION_BY_IDENTITY[request.operation_identity]
+            batch_request = operation.request_model.model_validate(request.request_payload)
+            validate_batch_terminal_result(
+                batch_request,  # type: ignore[arg-type]
+                effective_ack,
+                result,  # type: ignore[arg-type]
+            )
+        return request
+
+    async def _record_recovered_ack(
+        self,
+        db: Any,
+        *,
+        claim: WmsEffectStatusClaim,
+        ack: WmsEffectAck,
+        source: str,
+    ) -> None:
+        """把 status-first/resubmit ACK 写入现有权威 envelope；evidence 只保留 hash/reference。"""
+
+        ack_hash = typed_wms_effect_ack_hash(ack)
+        typed_outcome = Success(payload=ack).model_dump(mode="json")
+        intent = claim.intent
+        evidence = {
+            "typed_ack_hash": ack_hash,
+            "typed_ack_reference": f"runtime-intent-outcome:{intent.dispatch_key}",
+            "outcome_kind": "success",
+            "outcome_code": "WMS_ASYNC_ACK_RECOVERED",
+        }
+        _ = await self._reducer.reduce(
+            db,
+            EffectReducerEvent(
+                event_type=EffectReducerEventType.TRANSPORT_ACCEPTED,
+                dispatch_key=intent.dispatch_key,
+                occurred_at_ms=self._occurred_at_ms(),
+                source_event_id=generated_effect_source_event_id(
+                    f"wms-{source}-ack",
+                    intent.dispatch_key,
+                    ack_hash,
+                ),
+                attempt_no=max(1, int(getattr(claim.outbox, "attempt_count", 1) or 1)),
+                reason_code="WMS_ASYNC_ACK_RECOVERED",
+                evidence_json=evidence,
+                terminal_outcome=typed_outcome,
+            ),
+        )
 
     async def _record_not_found(
         self,
@@ -731,27 +840,28 @@ class WmsEffectStatusService:
             await db.rollback()
             return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="FENCED")
         is_conflict = result.http_status_code == 422 and result.protocol_error_code == "IDEMPOTENCY_CONFLICT"
-        outbox = current_claim.outbox
-        operation = WMS_OPERATION_BY_IDENTITY.get(getattr(outbox, "operation_identity", None))
-        if (
-            is_conflict
-            or operation is None
-            or not isinstance(getattr(outbox, "payload_json", None), dict)
-            or not isinstance(getattr(outbox, "payload_hash", None), str)
-        ):
+        if is_conflict:
             return await self._open_reconciliation(
                 db,
                 claim=current_claim,
-                reason_code=(
-                    "WMS_STATUS_RESUBMIT_IDEMPOTENCY_CONFLICT" if is_conflict else "WMS_STATUS_RESUBMIT_INDETERMINATE"
-                ),
+                reason_code="WMS_STATUS_RESUBMIT_IDEMPOTENCY_CONFLICT",
                 evidence={**evidence, "transport": result.evidence_json()},
             )
+        try:
+            request = self._build_request(current_claim)
+        except (TypeError, ValueError):
+            return await self._open_reconciliation(
+                db,
+                claim=current_claim,
+                reason_code="WMS_STATUS_RESUBMIT_INDETERMINATE",
+                evidence={**evidence, "transport": result.evidence_json()},
+            )
+        operation = WMS_OPERATION_BY_IDENTITY[request.operation_identity]
         interpreted = interpret_async_effect_ack_response(
             operation,
-            outbox.payload_json,
+            request.request_payload,
             idempotency_key=current_claim.intent.idempotency_key,
-            payload_hash=outbox.payload_hash,
+            payload_hash=current_claim.outbox.payload_hash,
             transport_result=result,
         )
         if not isinstance(interpreted, Success):
@@ -761,21 +871,22 @@ class WmsEffectStatusService:
                 reason_code="WMS_STATUS_RESUBMIT_INDETERMINATE",
                 evidence={**evidence, "transport": result.evidence_json()},
             )
-        try:
-            frozen_ack = self._load_frozen_ack(current_claim.intent)
-        except (TypeError, ValueError):
+        frozen_ack = request.frozen_ack
+        if frozen_ack is not None and typed_wms_effect_ack_hash(interpreted.payload) != typed_wms_effect_ack_hash(
+            frozen_ack
+        ):
             return await self._open_reconciliation(
                 db,
                 claim=current_claim,
                 reason_code="WMS_STATUS_RESUBMIT_ACK_DRIFT",
                 evidence={**evidence, "transport": result.evidence_json()},
             )
-        if typed_wms_effect_ack_hash(interpreted.payload) != typed_wms_effect_ack_hash(frozen_ack):
-            return await self._open_reconciliation(
+        if frozen_ack is None:
+            await self._record_recovered_ack(
                 db,
                 claim=current_claim,
-                reason_code="WMS_STATUS_RESUBMIT_ACK_DRIFT",
-                evidence={**evidence, "transport": result.evidence_json()},
+                ack=interpreted.payload,
+                source="resubmit",
             )
         next_check = self._next_check_within_confirmation_budget(current_claim.intent)
         if next_check is None:

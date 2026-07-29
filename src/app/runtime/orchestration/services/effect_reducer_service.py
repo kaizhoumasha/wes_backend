@@ -53,7 +53,11 @@ EFFECT_REDUCER_TRANSITION_MATRIX = MappingProxyType(
         EffectReducerEventType.ATTEMPT_STARTED: MappingProxyType({}),
         EffectReducerEventType.TRANSPORT_NOT_SENT: MappingProxyType({}),
         EffectReducerEventType.TRANSPORT_ACCEPTED: MappingProxyType(
-            {RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.ACCEPTED}
+            {
+                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.ACCEPTED,
+                # 模糊传输后的 status-first / 同键重提 ACK 会恢复同一权威 envelope。
+                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.ACCEPTED,
+            }
         ),
         EffectReducerEventType.TRANSPORT_REJECTED: MappingProxyType(
             {RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.REJECTED}

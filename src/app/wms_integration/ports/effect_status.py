@@ -35,6 +35,7 @@ from src.app.wms_integration.ports.fulfillment_operations import (
     RequestRackSupplyResult,
     RequestRackTransportRequest,
     RequestRackTransportResult,
+    WmsAcceptedScope,
     WmsEffectAck,
     validate_batch_terminal_result,
     validate_effect_ack,
@@ -79,7 +80,7 @@ class WmsEffectStatusRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=160)
     attempt_count: int = Field(default=1, ge=1, exclude=True)
     request_payload: dict[str, Any] = Field(exclude=True)
-    frozen_ack: WmsEffectAck = Field(exclude=True)
+    frozen_ack: WmsEffectAck | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def validate_async_operation_request(self) -> WmsEffectStatusRequest:
@@ -91,11 +92,12 @@ class WmsEffectStatusRequest(BaseModel):
         except ValidationError as exc:
             raise ValueError("request_payload violates the async operation request contract") from exc
         object.__setattr__(self, "request_payload", validated.model_dump(mode="json"))
-        validate_effect_ack(
-            operation_identity=self.operation_identity,
-            idempotency_key=self.idempotency_key,
-            ack=self.frozen_ack,
-        )
+        if self.frozen_ack is not None:
+            validate_effect_ack(
+                operation_identity=self.operation_identity,
+                idempotency_key=self.idempotency_key,
+                ack=self.frozen_ack,
+            )
         if self.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES and type(self) is WmsEffectStatusRequest:
             raise ValueError("batch status request requires frozen request and ACK context")
         return self
@@ -124,7 +126,7 @@ class WmsEffectStatusRequest(BaseModel):
 
 
 class WmsBatchEffectStatusRequest(WmsEffectStatusRequest):
-    """E12/E13 status parser 的完整冻结上下文；ACK 不允许缺省。"""
+    """E12/E13 status parser 的完整冻结请求；ACK 可由首次可见状态恢复。"""
 
     @model_validator(mode="after")
     def validate_frozen_batch_context(self) -> WmsBatchEffectStatusRequest:
@@ -132,7 +134,8 @@ class WmsBatchEffectStatusRequest(WmsEffectStatusRequest):
             raise ValueError("batch status context only supports E12/E13")
         operation = _OPERATION_BY_IDENTITY[self.operation_identity]
         batch_request = validate_json_payload(operation.request_model, self.request_payload)
-        validate_fulfillment_ack(batch_request, self.frozen_ack)  # type: ignore[arg-type]
+        if self.frozen_ack is not None:
+            validate_fulfillment_ack(batch_request, self.frozen_ack)  # type: ignore[arg-type]
         return self
 
 
@@ -153,6 +156,7 @@ class _WmsEffectStatusWireSnapshot(BaseModel):
 
     state: Literal["ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"]
     provider_reference: StableText | None
+    accepted_scope: WmsAcceptedScope | None = None
     reason_code: StableReasonCode | None
     updated_at: datetime | None
     source_version: int | None = Field(ge=0, strict=True)
@@ -181,6 +185,8 @@ class WmsEffectStatusSnapshot(BaseModel):
     updated_at: datetime | None = None
     source_version: int | None = Field(default=None, ge=0, strict=True)
     result: SerializeAsAny[BaseModel] | None = None
+    # 仅供 orchestration 首次写入现有权威 ACK envelope；禁止进入状态 evidence。
+    recovered_ack: WmsEffectAck | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("operation_identity")
     @classmethod
@@ -202,6 +208,7 @@ class WmsEffectStatusSnapshot(BaseModel):
             self.updated_at,
             self.source_version,
             self.result,
+            self.recovered_ack,
         )
         if self.state == WmsEffectStatus.NOT_FOUND:
             if any(value is not None for value in visible_fields):
@@ -213,6 +220,17 @@ class WmsEffectStatusSnapshot(BaseModel):
         utc_offset = self.updated_at.utcoffset()
         if utc_offset is None or utc_offset.total_seconds() != 0:
             raise ValueError("visible WMS status updated_at must be offset-aware UTC")
+        if self.recovered_ack is not None:
+            validate_effect_ack(
+                operation_identity=self.operation_identity,
+                idempotency_key=self.idempotency_key,
+                ack=self.recovered_ack,
+            )
+            validate_effect_provider_reference(
+                self.recovered_ack,
+                self.provider_reference,
+                evidence_kind="status",
+            )
 
         if self.state == WmsEffectStatus.COMPLETED:
             if self.result is None:
@@ -343,6 +361,7 @@ def parse_wms_effect_status_snapshot(
             value is not None
             for value in (
                 wire.provider_reference,
+                wire.accepted_scope,
                 wire.reason_code,
                 wire.updated_at,
                 wire.source_version,
@@ -354,7 +373,25 @@ def parse_wms_effect_status_snapshot(
 
     if wire.provider_reference is None or wire.updated_at is None or wire.source_version is None:
         raise ValueError("visible WMS status requires provider_reference, updated_at and source_version")
-    validate_effect_provider_reference(request.frozen_ack, wire.provider_reference, evidence_kind="status")
+    recovered_ack: WmsEffectAck | None = None
+    effective_ack = request.frozen_ack
+    if effective_ack is None:
+        effective_ack = WmsEffectAck(
+            operation_identity=request.operation_identity,
+            idempotency_key=request.idempotency_key,
+            provider_reference=wire.provider_reference,
+            submission_state="REPLAY",
+            accepted_scope=wire.accepted_scope,
+        )
+        recovered_ack = effective_ack
+    elif wire.accepted_scope is not None and wire.accepted_scope != effective_ack.accepted_scope:
+        raise ValueError("status accepted_scope does not match ACK")
+    validate_effect_provider_reference(effective_ack, wire.provider_reference, evidence_kind="status")
+    effective_request = request.model_copy(update={"frozen_ack": effective_ack})
+    if request.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES:
+        operation = _OPERATION_BY_IDENTITY[request.operation_identity]
+        batch_request = validate_json_payload(operation.request_model, request.request_payload)
+        validate_fulfillment_ack(batch_request, effective_ack)  # type: ignore[arg-type]
     utc_offset = wire.updated_at.utcoffset()
     if utc_offset is None or utc_offset.total_seconds() != 0:
         raise ValueError("visible WMS status updated_at must be offset-aware UTC")
@@ -366,7 +403,7 @@ def parse_wms_effect_status_snapshot(
         if len(canonical_json_bytes(wire.result_payload)) > max_result_payload_bytes:
             raise ValueError("COMPLETED result_payload exceeds the configured size limit")
         result = _parse_completed_result(
-            request=request,
+            request=effective_request,
             result_payload=wire.result_payload,
             source_version=wire.source_version,
         )
@@ -390,6 +427,7 @@ def parse_wms_effect_status_snapshot(
         updated_at=wire.updated_at,
         source_version=wire.source_version,
         result=result,
+        recovered_ack=recovered_ack,
     )
 
 

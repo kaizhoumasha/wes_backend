@@ -157,15 +157,66 @@ def test_status_request_accepts_only_authored_effect_identity_and_stable_key() -
 
 
 @pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
-def test_every_async_status_request_requires_its_frozen_ack(operation) -> None:
+def test_every_async_status_request_allows_status_first_without_frozen_ack(operation) -> None:
     request_type = WmsBatchEffectStatusRequest if operation.identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
 
-    with pytest.raises(ValidationError, match="frozen_ack"):
-        request_type(
-            operation_identity=operation.identity,
-            idempotency_key="intent-key",
-            request_payload=REQUEST_FIXTURES[operation.identity],
-        )
+    request = request_type(
+        operation_identity=operation.identity,
+        idempotency_key="intent-key",
+        request_payload=REQUEST_FIXTURES[operation.identity],
+    )
+
+    assert request.frozen_ack is None
+
+
+def test_pre_ack_visible_single_status_recovers_typed_ack_and_forbids_scope() -> None:
+    request = WmsEffectStatusRequest(
+        operation_identity=RACK_SUPPLY,
+        idempotency_key="intent-idempotency-001",
+        request_payload=_rack_supply_request().request_payload,
+    )
+    wire = {
+        "state": "PROCESSING",
+        "provider_reference": "wms-status-first-001",
+        "accepted_scope": None,
+        "reason_code": None,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": 1,
+        "result_payload": None,
+    }
+
+    snapshot = parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+    assert snapshot.recovered_ack is not None
+    assert snapshot.recovered_ack.provider_reference == "wms-status-first-001"
+    assert snapshot.recovered_ack.accepted_scope is None
+
+    wire["accepted_scope"] = {
+        "object_keys": ["BIN-001"],
+        "scope_digest": "0" * 64,
+    }
+    with pytest.raises((ValidationError, ValueError), match="accepted_scope"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+
+def test_visible_status_rejects_scope_drift_from_existing_ack() -> None:
+    operation_identity = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
+    request = _status_request(operation_identity)
+    wire = {
+        "state": "PROCESSING",
+        "provider_reference": request.frozen_ack.provider_reference,
+        "accepted_scope": {
+            "object_keys": ["FORGED-BIN"],
+            "scope_digest": "0" * 64,
+        },
+        "reason_code": None,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": 1,
+        "result_payload": None,
+    }
+
+    with pytest.raises(ValueError, match="accepted_scope does not match ACK"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
 
 
 @pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)

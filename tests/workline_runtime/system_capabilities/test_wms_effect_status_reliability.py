@@ -336,9 +336,11 @@ def _batch_claim(suffix: str) -> Any:
         "rack_type": "FLOW_RACK",
         "demand_generation": 1,
     }
-    payload_hash = CanonicalPayload.from_projection(claim.outbox.payload_json).sha256
+    canonical_payload = CanonicalPayload.from_projection(claim.outbox.payload_json)
+    payload_hash = canonical_payload.sha256
     claim.intent.payload_hash = payload_hash
     claim.outbox.payload_hash = payload_hash
+    claim.outbox.canonical_payload_bytes = canonical_payload.body
     frozen_ack = {
         **claim.intent.outcome_json["outcome"]["payload"],
         "idempotency_key": idempotency_key,
