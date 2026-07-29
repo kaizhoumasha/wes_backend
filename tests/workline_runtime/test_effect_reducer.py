@@ -20,6 +20,8 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
+from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 
 try:
     from src.app.runtime.orchestration.effect_bridges import (
@@ -139,7 +141,7 @@ def _event(
             RuntimeIntentStatus.TECHNICAL_FAILED,
         ),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_ACCEPTED, False, RuntimeIntentStatus.ACCEPTED),
-        (RuntimeIntentStatus.UNKNOWN, EffectReducerEventType.TRANSPORT_ACCEPTED, False, RuntimeIntentStatus.ACCEPTED),
+        (RuntimeIntentStatus.UNKNOWN, EffectReducerEventType.TRANSPORT_ACCEPTED, False, RuntimeIntentStatus.UNKNOWN),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_REJECTED, False, RuntimeIntentStatus.REJECTED),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
         (RuntimeIntentStatus.ACCEPTED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
@@ -268,20 +270,18 @@ async def test_recovered_transport_ack_from_unknown_writes_existing_authoritativ
     repository.intent.operation_identity = "WMS:PKG-001"
     repository.intent.idempotency_key = "idem-001"
     repository.intent.payload_hash = "a" * 64
-    ack_outcome = {
-        "kind": "success",
-        "payload": {
-            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
-            "idempotency_key": "idem-001",
-            "provider_reference": "provider-status-first",
-            "submission_state": "REPLAY",
-            "accepted_scope": None,
-        },
-    }
+    ack = WmsEffectAck(
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
+        idempotency_key="idem-001",
+        provider_reference="provider-status-first",
+        submission_state="REPLAY",
+    )
+    ack_outcome = {"kind": "success", "payload": ack.model_dump(mode="json")}
     event = _event(EffectReducerEventType.TRANSPORT_ACCEPTED).model_copy(
         update={
             "evidence_json": {
-                "typed_ack_hash": "b" * 64,
+                "recovered_typed_ack": True,
+                "typed_ack_hash": typed_wms_effect_ack_hash(ack),
                 "typed_ack_reference": "runtime-intent-outcome:dispatch-1",
             },
             "terminal_outcome": ack_outcome,
@@ -293,6 +293,57 @@ async def test_recovered_transport_ack_from_unknown_writes_existing_authoritativ
     assert repository.intent.effect_status is RuntimeIntentStatus.ACCEPTED
     assert repository.intent.outcome_json["outcome"] == ack_outcome
     assert "payload" not in repository.intent.outcome_history_json[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "non_wms_capability",
+        "missing_validation_marker",
+        "forged_ack_hash",
+        "non_success_outcome",
+        "invalid_ack_identity",
+    ),
+)
+async def test_unknown_transport_acceptance_does_not_use_recovered_ack_bypass_for_unverified_evidence(
+    drift: str,
+) -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.UNKNOWN)
+    repository.intent.capability_key = "wms.fulfillment.request_rack_supply"
+    repository.intent.capability_contract_version = "v1"
+    repository.intent.operation_identity = "WMS:PKG-001"
+    repository.intent.idempotency_key = "idem-001"
+    repository.intent.payload_hash = "a" * 64
+    ack = WmsEffectAck(
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
+        idempotency_key="idem-001",
+        provider_reference="provider-status-first",
+        submission_state="REPLAY",
+    )
+    if drift == "non_wms_capability":
+        repository.intent.capability_key = "device.command.dispatch"
+    if drift == "invalid_ack_identity":
+        ack = ack.model_copy(update={"idempotency_key": "other-idempotency-key"})
+    evidence = {
+        "recovered_typed_ack": drift != "missing_validation_marker",
+        "typed_ack_hash": "b" * 64 if drift == "forged_ack_hash" else typed_wms_effect_ack_hash(ack),
+        "typed_ack_reference": "runtime-intent-outcome:dispatch-1",
+    }
+    event = _event(EffectReducerEventType.TRANSPORT_ACCEPTED).model_copy(
+        update={
+            "evidence_json": evidence,
+            "terminal_outcome": {
+                "kind": "contract_violation" if drift == "non_success_outcome" else "success",
+                "payload": ack.model_dump(mode="json"),
+            },
+        }
+    )
+
+    await EffectReducer(repository=repository).reduce(_Db(), event)
+
+    assert repository.intent.effect_status is RuntimeIntentStatus.UNKNOWN
+    assert repository.intent.outcome_json == {}
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,10 @@ from src.app.sys.external_http_binding import (
 from src.app.sys.services.endpoint_registry import EndpointRegistry
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
+from src.app.wms_integration.ports.effect_status import (
+    WmsBatchEffectStatusRequest,
+    parse_wms_effect_status_snapshot,
+)
 from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.services.http_transport import sign_wms_hmac_request
 from src.core.api_security import calculate_body_hmac_signature
@@ -500,11 +504,15 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
     assert set(accepted.json()) == {
         "state",
         "provider_reference",
+        "accepted_scope",
         "reason_code",
         "updated_at",
         "source_version",
         "result_payload",
     }
+    assert accepted.json()["accepted_scope"] == (
+        first_ack.accepted_scope.model_dump(mode="json") if first_ack.accepted_scope is not None else None
+    )
     assert [accepted.json()["state"], processing.json()["state"], completed.json()["state"]] == [
         "ACCEPTED",
         "PROCESSING",
@@ -521,6 +529,51 @@ def test_wms_mock_northbound_submit_is_idempotent_and_sends_one_callback_hint(
     assert conflict.json()["code"] == "IDEMPOTENCY_CONFLICT"
     assert effects.json()["effect_count"] == 1
     callback.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "operation_identity",
+    (
+        "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+        "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+    ),
+)
+def test_wms_mock_batch_visible_status_recovers_scope_when_submit_ack_is_lost(
+    operation_identity: str,
+) -> None:
+    payload = REQUEST_FIXTURES[operation_identity]
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    path = f"/api/wms{operation.path_template}"
+    idempotency_key = "idem-status-first-batch"
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    status_path = "/northbound/operations/status?" + urlencode(
+        {"operation_identity": operation_identity, "idempotency_key": idempotency_key}
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        submitted = client.post(
+            path,
+            content=body,
+            headers=_submit_headers(
+                body=body,
+                path=path,
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+            ),
+        )
+        visible = client.get(status_path, headers=_status_headers(path=status_path))
+
+    assert submitted.status_code == 202
+    request = WmsBatchEffectStatusRequest(
+        operation_identity=operation_identity,
+        idempotency_key=idempotency_key,
+        request_payload=payload,
+    )
+    snapshot = parse_wms_effect_status_snapshot(request=request, raw_response=visible.json())
+    submitted_ack = WmsEffectAck.model_validate(submitted.json()["data"])
+
+    assert snapshot.recovered_ack is not None
+    assert snapshot.recovered_ack.accepted_scope == submitted_ack.accepted_scope
 
 
 @pytest.mark.parametrize(
@@ -905,6 +958,7 @@ def test_wms_mock_northbound_status_exposes_not_found_and_rejected_states() -> N
     assert not_found.json() == {
         "state": "NOT_FOUND",
         "provider_reference": None,
+        "accepted_scope": None,
         "reason_code": None,
         "updated_at": None,
         "source_version": None,

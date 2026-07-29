@@ -18,6 +18,8 @@ from src.app.runtime.orchestration.repositories.effect_reducer_repository import
 )
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
+from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck, validate_effect_ack
 
 
 class EffectIntentNotFound(LookupError):
@@ -53,11 +55,7 @@ EFFECT_REDUCER_TRANSITION_MATRIX = MappingProxyType(
         EffectReducerEventType.ATTEMPT_STARTED: MappingProxyType({}),
         EffectReducerEventType.TRANSPORT_NOT_SENT: MappingProxyType({}),
         EffectReducerEventType.TRANSPORT_ACCEPTED: MappingProxyType(
-            {
-                RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.ACCEPTED,
-                # 模糊传输后的 status-first / 同键重提 ACK 会恢复同一权威 envelope。
-                RuntimeIntentStatus.UNKNOWN: RuntimeIntentStatus.ACCEPTED,
-            }
+            {RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.ACCEPTED}
         ),
         EffectReducerEventType.TRANSPORT_REJECTED: MappingProxyType(
             {RuntimeIntentStatus.PROPOSED: RuntimeIntentStatus.REJECTED}
@@ -286,6 +284,7 @@ class EffectReducer:
                 f"{getattr(intent, 'capability_key', '')}@"
                 f"{getattr(intent, 'capability_contract_version', '')}" in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
             ),
+            verified_recovered_typed_ack=self._is_verified_recovered_typed_ack(intent, event=event),
         )
         if target is not None and target is not current:
             transition_runtime_intent(intent, target)
@@ -370,6 +369,7 @@ class EffectReducer:
         event: EffectReducerEvent,
         has_open_case: bool,
         status_query_authoritative: bool,
+        verified_recovered_typed_ack: bool,
     ) -> RuntimeIntentStatus | None:
         if current in _TERMINAL_STATUSES:
             return None
@@ -390,7 +390,41 @@ class EffectReducer:
             and current is RuntimeIntentStatus.PROPOSED
         ):
             return RuntimeIntentStatus.TECHNICAL_FAILED
+        if current is RuntimeIntentStatus.UNKNOWN and event.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED:
+            return RuntimeIntentStatus.ACCEPTED if verified_recovered_typed_ack else None
         return EFFECT_REDUCER_TRANSITION_MATRIX[event.event_type].get(current)
+
+    @staticmethod
+    def _is_verified_recovered_typed_ack(intent: Any, *, event: EffectReducerEvent) -> bool:
+        """仅让静态 async WMS identity 的已验证恢复 ACK 解除 UNKNOWN。"""
+
+        if (
+            event.event_type is not EffectReducerEventType.TRANSPORT_ACCEPTED
+            or event.evidence_json.get("recovered_typed_ack") is not True
+        ):
+            return False
+        operation_identity = (
+            f"{getattr(intent, 'capability_key', '')}@{getattr(intent, 'capability_contract_version', '')}"
+        )
+        if operation_identity not in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES:
+            return False
+        typed_outcome = event.terminal_outcome
+        try:
+            if not isinstance(typed_outcome, dict) or typed_outcome.get("kind") != "success":
+                return False
+            ack = WmsEffectAck.model_validate(typed_outcome.get("payload"))
+            validate_effect_ack(
+                operation_identity=operation_identity,
+                idempotency_key=str(getattr(intent, "idempotency_key", "") or ""),
+                ack=ack,
+            )
+        except (TypeError, ValueError):
+            return False
+        expected_reference = f"runtime-intent-outcome:{getattr(intent, 'dispatch_key', '')}"
+        return (
+            event.evidence_json.get("typed_ack_hash") == typed_wms_effect_ack_hash(ack)
+            and event.evidence_json.get("typed_ack_reference") == expected_reference
+        )
 
     @staticmethod
     def _is_contradictory_evidence(

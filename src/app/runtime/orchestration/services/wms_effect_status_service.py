@@ -597,6 +597,7 @@ class WmsEffectStatusService:
         typed_outcome = Success(payload=ack).model_dump(mode="json")
         intent = claim.intent
         evidence = {
+            "recovered_typed_ack": True,
             "typed_ack_hash": ack_hash,
             "typed_ack_reference": f"runtime-intent-outcome:{intent.dispatch_key}",
             "outcome_kind": "success",

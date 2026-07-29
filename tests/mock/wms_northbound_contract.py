@@ -293,6 +293,7 @@ class NorthboundStatusSnapshot:
 
     state: str
     provider_reference: str | None
+    accepted_scope: WmsAcceptedScope | None
     reason_code: str | None
     updated_at: str | None
     source_version: int | None
@@ -302,6 +303,9 @@ class NorthboundStatusSnapshot:
         return {
             "state": self.state,
             "provider_reference": self.provider_reference,
+            "accepted_scope": (
+                self.accepted_scope.model_dump(mode="json") if self.accepted_scope is not None else None
+            ),
             "reason_code": self.reason_code,
             "updated_at": self.updated_at,
             "source_version": self.source_version,
@@ -323,6 +327,7 @@ class _OperationRecord:
     fingerprint: str
     payload: dict[str, Any]
     provider_reference: str
+    accepted_scope: WmsAcceptedScope | None
     accepted_at: datetime
     visible_at: datetime
     expires_at: datetime
@@ -372,10 +377,22 @@ class NorthboundOperationStore:
                 visibility_delay = self._pending_visibility_delays.pop(key, 0)
                 effect_count = self._effect_counts.get(key, 0) + 1
                 self._effect_counts[key] = effect_count
+                accepted_scope = None
+                if operation_identity in _ASYNC_OPERATION_IDENTITIES:
+                    ack = WmsEffectAck.model_validate(
+                        build_typed_ack(
+                            operation_identity,
+                            idempotency_key,
+                            payload,
+                            submission_state="ACCEPTED",
+                        )
+                    )
+                    accepted_scope = ack.accepted_scope
                 record = _OperationRecord(
                     fingerprint=fingerprint,
                     payload=dict(payload),
                     provider_reference=self._provider_reference(operation_identity, idempotency_key),
+                    accepted_scope=accepted_scope,
                     accepted_at=current,
                     visible_at=current + timedelta(seconds=visibility_delay),
                     expires_at=current + timedelta(seconds=self._retention_seconds),
@@ -507,6 +524,7 @@ class NorthboundOperationStore:
         return NorthboundStatusSnapshot(
             state=record.state,
             provider_reference=record.provider_reference,
+            accepted_scope=record.accepted_scope,
             reason_code=record.reason_code,
             updated_at=record.updated_at,
             source_version=record.source_version,
@@ -643,6 +661,7 @@ def _not_found_snapshot() -> NorthboundStatusSnapshot:
     return NorthboundStatusSnapshot(
         state="NOT_FOUND",
         provider_reference=None,
+        accepted_scope=None,
         reason_code=None,
         updated_at=None,
         source_version=None,
