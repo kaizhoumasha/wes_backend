@@ -1914,11 +1914,19 @@ Codex; checkbox as you ship.
     正式重生成后架构守卫 `24 passed`；topology、Ruff、Bandit、quality profile、GitNexus detect 均通过。
   - Review: 独立增量验收 `382 passed`，结论 `Spec Compliance ✅`、Critical/Important/Minor 均无、
     `Task quality: Approved`。
-- [ ] **T2（P1，human: \~2d / CC: \~4h）** — provider config — 实现 typed profile 与 endpoint 编译器
+- [x] **T2（P1，human: \~2d / CC: \~4h）** — provider config — 实现 typed profile 与 endpoint 编译器
   - Surfaced by: Architecture / Code Quality — 一个 `server_url`、相对 path、严格 placeholder 闭集和 origin 约束。
   - Files: `src/core/conf.py`、WMS provider contracts/catalog、query transport。
   - Verify: profile 缺失/未知/非法模板/逃逸 origin 均拒绝启动；现有 WES 进程与 fulfillment worker digest
     一致，lane-specific endpoint/readiness 集合精确。
+  - Completed: 2026-07-29，提交范围 `68f0b837..a3470f32`。已实现严格 typed profile、单一 YAML parser、
+    35 identity 精确覆盖、origin/path/placeholder 安全编译、segment 编码、稳定 profile/endpoint digest，
+    以及 WES/fulfillment 双 lane readiness；compiled profile 是 catalog/conformance/status/repository 唯一 active 真源。
+  - Evidence: profile/endpoint/startup 及受影响域回归通过；最终默认全集 `4269 passed, 5 skipped, 0 failed`
+    （`4274 collected`）；完整 quality profile、pre-commit hook、Ruff、Bandit、import-linter、architecture
+    `0 violations / 0 warnings`、topology 均通过。
+  - Review: 独立复审确认旧 endpoint settings/fallback 与孤立 facade 已物理删除，未实现 T3 sender/transport；
+    结论 `Spec Compliance ✅`、Critical/Important/Minor 均无、`Task quality: Approved`。
 - [ ] **T3（P1，human: \~3d / CC: \~6h）** — transport security — 扩展共享 EXTERNAL\_HTTP `NONE/HMAC`
   - Surfaced by: Architecture — `NONE` 必须由 frozen `isolated_lan` 事实证明，不能形成 WMS 专用 dispatcher。
   - Files: SYS external HTTP binding/canonical dispatch/outbox、WMS query/status transport、Alembic revision。
