@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import BaseModel
 
 from src.app.runtime.system_capabilities.wms.provider_catalog import (
     build_wms_provider_catalog,
@@ -50,32 +51,36 @@ class EvidenceWriter:
         module = importlib.import_module("src.app.wms_integration.query_evidence")
         return module.WmsQueryCallPermit(allowed=True)
 
-    async def validate_source_version(
-        self,
-        *,
-        operation_identity: str,
-        request_canonical_hash: str,
-        source_version: str,
-        response_hash: str,
-        **_kwargs,
-    ) -> str | None:
-        key = (operation_identity, request_canonical_hash)
-        previous = self.source_versions.get(key)
-        if previous is not None:
-            previous_version, previous_hash = previous
-            if source_version == previous_version and response_hash != previous_hash:
-                return "WMS_SOURCE_VERSION_PAYLOAD_CONFLICT"
-            if source_version.isdecimal() and previous_version.isdecimal():
-                if int(source_version) < int(previous_version):
-                    return "WMS_SOURCE_VERSION_REGRESSION"
-            elif source_version != previous_version:
-                return "WMS_SOURCE_VERSION_NOT_COMPARABLE"
-        self.source_versions[key] = (source_version, response_hash)
-        return None
+    async def record(self, **kwargs):
+        from src.app.wms_integration.query_evidence import WmsQueryEvidenceRecord
 
-    async def record(self, **kwargs) -> str:
         self.records.append(kwargs)
-        return f"evidence:{len(self.records)}"
+        outcome = kwargs["outcome"]
+        source_version = getattr(getattr(outcome, "value", None), "source_version", None)
+        response_hash = kwargs["response_hash"]
+        if source_version is not None and response_hash is not None:
+            key = (kwargs["operation_identity"], kwargs["request_canonical_hash"])
+            previous = self.source_versions.get(key)
+            reason_code = None
+            if previous is not None:
+                previous_version, previous_hash = previous
+                reason_code = classify_source_version(
+                    previous_version=previous_version,
+                    previous_response_hash=previous_hash,
+                    source_version=str(source_version),
+                    response_hash=response_hash,
+                )
+            if reason_code is None:
+                self.source_versions[key] = (str(source_version), response_hash)
+            else:
+                outcome = QueryContractFailure(
+                    reason_code=reason_code,
+                    message="source version conflict",
+                )
+        return WmsQueryEvidenceRecord(
+            evidence_key=f"evidence:{len(self.records)}",
+            outcome=outcome,
+        )
 
 
 class StaticCredentialProvider:
@@ -287,6 +292,47 @@ async def test_stateful_source_version_rejects_regression_and_same_version_paylo
 
 
 @pytest.mark.asyncio
+async def test_executor_uses_atomic_evidence_record_outcome_without_prevalidation_transaction() -> None:
+    operation = QUERY_OPERATIONS[14]
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=RESULT_FIXTURES[operation.identity])
+
+    class AtomicConflictWriter(EvidenceWriter):
+        async def record(self, **kwargs):  # type: ignore[no-untyped-def]
+            from src.app.wms_integration.query_evidence import WmsQueryEvidenceRecord
+
+            self.records.append(kwargs)
+            return WmsQueryEvidenceRecord(
+                evidence_key="evidence:atomic-conflict",
+                outcome=QueryContractFailure(
+                    reason_code="WMS_SOURCE_VERSION_PAYLOAD_CONFLICT",
+                    message="concurrent source version conflict",
+                ),
+            )
+
+    writer = AtomicConflictWriter()
+    client = httpx.AsyncClient(transport=TrackingTransport(handler), trust_env=False)
+    executor = _executor(
+        operation,
+        compiled_profile=build_compiled_provider_profile(),
+        client=client,
+        evidence_writer=writer,
+        credential_provider=StaticCredentialProvider(b"unused"),
+    )
+    request = operation.request_model.model_validate(REQUEST_FIXTURES[operation.identity])
+    try:
+        outcome = await executor.execute(request)
+    finally:
+        await client.aclose()
+
+    assert isinstance(outcome, QueryContractFailure)
+    assert outcome.reason_code == "WMS_SOURCE_VERSION_PAYLOAD_CONFLICT"
+    assert outcome.evidence_key == "evidence:atomic-conflict"
+    assert len(writer.records) == 1
+
+
+@pytest.mark.asyncio
 async def test_data_lane_runtime_owns_one_client_for_all_19_query_operations() -> None:
     compiled_profile = build_compiled_provider_profile()
     catalog = build_wms_provider_catalog(compiled_profile)
@@ -332,3 +378,146 @@ def test_source_version_history_classification(
         )
         == expected
     )
+
+
+class _UnknownQueryRequest(BaseModel):
+    value: str = "unknown"
+
+
+@pytest.mark.asyncio
+async def test_data_lane_runtime_rejects_mismatched_snapshot_and_unknown_lookups(monkeypatch) -> None:
+    module = importlib.import_module("src.app.wms_integration.query_runtime")
+    compiled_profile = build_compiled_provider_profile()
+    other_profile = build_compiled_provider_profile()
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
+    try:
+        with pytest.raises(ValueError, match="compiled profile snapshot"):
+            module.WmsDataLaneQueryRuntime(
+                compiled_profile=compiled_profile,
+                catalog=build_wms_provider_catalog(other_profile),
+                client=client,
+                credential_provider=StaticCredentialProvider(b"unused"),
+                evidence_writer=EvidenceWriter(),
+            )
+
+        duplicate = (QUERY_OPERATIONS[0],) * 19
+        monkeypatch.setattr(module, "QUERY_OPERATIONS", duplicate)
+        with pytest.raises(RuntimeError, match="19 unique"):
+            module.WmsDataLaneQueryRuntime(
+                compiled_profile=compiled_profile,
+                catalog=build_wms_provider_catalog(compiled_profile),
+                client=client,
+                credential_provider=StaticCredentialProvider(b"unused"),
+                evidence_writer=EvidenceWriter(),
+            )
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_data_lane_runtime_execute_project_and_unknown_request_guards() -> None:
+    compiled_profile = build_compiled_provider_profile()
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json=RESULT_FIXTURES[QUERY_OPERATIONS[0].identity])
+        )
+    )
+    runtime = WmsDataLaneQueryRuntime(
+        compiled_profile=compiled_profile,
+        catalog=build_wms_provider_catalog(compiled_profile),
+        client=client,
+        credential_provider=StaticCredentialProvider(b"unused"),
+        evidence_writer=EvidenceWriter(),
+    )
+    request = QUERY_OPERATIONS[0].request_model.model_validate(REQUEST_FIXTURES[QUERY_OPERATIONS[0].identity])
+    try:
+        assert isinstance(await runtime.execute(request), QuerySuccess)
+        assert runtime.project(request).operation_identity == QUERY_OPERATIONS[0].identity
+        with pytest.raises(LookupError, match="unknown"):
+            runtime.executor("unknown")
+        with pytest.raises(TypeError, match="unregistered"):
+            await runtime.execute(_UnknownQueryRequest())
+        with pytest.raises(TypeError, match="unregistered"):
+            runtime.project(_UnknownQueryRequest())
+    finally:
+        await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_data_lane_runtime_owner_binding_guards_and_close(monkeypatch) -> None:
+    module = importlib.import_module("src.app.wms_integration.query_runtime")
+    compiled_profile = build_compiled_provider_profile()
+
+    def build_runtime() -> WmsDataLaneQueryRuntime:
+        return WmsDataLaneQueryRuntime(
+            compiled_profile=compiled_profile,
+            catalog=build_wms_provider_catalog(compiled_profile),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+            credential_provider=StaticCredentialProvider(b"unused"),
+            evidence_writer=EvidenceWriter(),
+        )
+
+    first = build_runtime()
+    second = build_runtime()
+    module._active_runtime = None
+    module._active_loop = None
+    try:
+        assert module.get_wms_data_lane_query_runtime() is None
+        module.bind_wms_data_lane_query_runtime(first)
+        module.bind_wms_data_lane_query_runtime(first)
+        assert module.get_wms_data_lane_query_runtime() is first
+        with pytest.raises(RuntimeError, match="already bound"):
+            module.bind_wms_data_lane_query_runtime(second)
+        with pytest.raises(RuntimeError, match="different"):
+            module.unbind_wms_data_lane_query_runtime(second)
+
+        owner_loop = module._active_loop
+        monkeypatch.setattr(module.asyncio, "get_running_loop", lambda: object())
+        with pytest.raises(RuntimeError, match="event loop mismatch"):
+            module.get_wms_data_lane_query_runtime()
+        monkeypatch.setattr(module.asyncio, "get_running_loop", lambda: owner_loop)
+
+        await module.close_bound_wms_data_lane_query_runtime()
+        assert first._client.is_closed
+        await module.close_bound_wms_data_lane_query_runtime()
+    finally:
+        module._active_runtime = None
+        module._active_loop = None
+        if not first._client.is_closed:
+            await first.aclose()
+        await second.aclose()
+
+
+@pytest.mark.asyncio
+async def test_build_data_lane_runtime_assembles_production_dependencies(monkeypatch) -> None:
+    runtime_module = importlib.import_module("src.app.wms_integration.query_runtime")
+    credentials_module = importlib.import_module("src.app.sys.external_http_credentials")
+    evidence_module = importlib.import_module("src.app.wms_integration.query_evidence")
+    startup_module = importlib.import_module("src.app.wms_integration.provider_startup")
+    compiled_profile = build_compiled_provider_profile()
+    credential_provider = StaticCredentialProvider(b"unused")
+    captured: dict[str, object] = {}
+
+    class FakeEvidenceWriter:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        credentials_module,
+        "build_environment_external_http_credential_provider",
+        lambda *, settings_source: credential_provider,
+    )
+    monkeypatch.setattr(evidence_module, "WmsRegistryCallEvidenceWriter", FakeEvidenceWriter)
+    startup = startup_module.WmsProviderStartupConfiguration(
+        compiled_profile=compiled_profile,
+        catalog=build_wms_provider_catalog(compiled_profile),
+        wes_readiness=object(),
+        fulfillment_readiness=object(),
+    )
+
+    runtime = runtime_module.build_wms_data_lane_query_runtime(startup, settings_source=object())
+    try:
+        assert len(runtime.operation_identities) == 19
+        assert set(captured) == {"session_factory", "evidence_service", "breaker_service"}
+    finally:
+        await runtime.aclose()

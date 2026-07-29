@@ -18,15 +18,6 @@ import httpx
 import pytest
 
 from scripts.verify_wms_northbound_feasibility import _status_headers, _submit_headers, run_probe
-from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
-    RoughSorterBindingSnapshot,
-    RoughSorterInventoryAdmissionPolicyInput,
-    RoughSorterInventoryQueryOutcomeKind,
-    RoughSorterInventoryQuerySnapshot,
-)
-from src.app.runtime.capabilities.material_flow.rough_sorter_inventory_admission_policy import (
-    decide_rough_sorter_inventory_admission,
-)
 from src.app.runtime.system_capabilities.wms.provider_catalog import (
     build_wms_provider_catalog,
     resolve_wms_operation_binding,
@@ -231,11 +222,13 @@ class _LiveQueryEvidenceWriter:
     async def before_call(self, *, operation_identity: str, target_code: str) -> WmsQueryCallPermit:
         return WmsQueryCallPermit(allowed=True)
 
-    async def validate_source_version(self, **_kwargs) -> None:
-        return None
+    async def record(self, **kwargs):
+        from src.app.wms_integration.query_evidence import WmsQueryEvidenceRecord
 
-    async def record(self, **_kwargs) -> str:
-        return "evidence:docker-wms:rough-sorter-001"
+        return WmsQueryEvidenceRecord(
+            evidence_key="evidence:docker-wms:rough-sorter-001",
+            outcome=kwargs["outcome"],
+        )
 
 
 class _LiveQueryCredentialProvider:
@@ -341,32 +334,6 @@ async def test_compose_mock_wms_inventory_query_matches_production_runtime_over_
         assert wrong_dimensions.value.items == ()
         assert wrong_dimensions.value.source_version == "mock-inventory-v1"
 
-        decision = decide_rough_sorter_inventory_admission(
-            RoughSorterInventoryAdmissionPolicyInput(
-                material_code="CAP001",
-                lot_no="LOT-A",
-                warehouse_code="WH-IT",
-                owner_code="OWNER-IT",
-                binding_snapshot=RoughSorterBindingSnapshot(
-                    binding_id=1,
-                    binding_version=1,
-                    profile_identity=binding.profile.identity,
-                    plugin_config_hash="a" * 64,
-                    generated_index_digest="b" * 64,
-                ),
-                supported_profile_identities=(binding.profile.identity,),
-                source_operation=QUERY_INVENTORY.identity,
-                query_snapshot=RoughSorterInventoryQuerySnapshot(
-                    outcome_kind=RoughSorterInventoryQueryOutcomeKind.SUCCESS,
-                    result=outcome.value,
-                    evidence_key=outcome.evidence_key,
-                ),
-            ),
-        )
-        assert decision.decision == "ADMIT"
-        assert decision.reason_code == "WMS_ADMITTED"
-        assert decision.provenance.source.evidence_key == outcome.evidence_key
-        assert decision.provenance.source.source_version == "mock-inventory-v1"
     finally:
         await runtime.aclose()
 

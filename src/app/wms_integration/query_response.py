@@ -132,7 +132,7 @@ def classify_http_failure(  # noqa: PLR0911 - HTTP 状态封闭矩阵保持逐�
             "WMS QUERY provider returned a client error",
             False,
         )
-    if status_code >= 500:
+    if status_code in {500, 502, 503, 504}:
         return QueryTechnicalFailure("WMS_UNAVAILABLE", "WMS QUERY service unavailable", True)
     return QueryTechnicalFailure(
         "WMS_UNEXPECTED_HTTP_STATUS",

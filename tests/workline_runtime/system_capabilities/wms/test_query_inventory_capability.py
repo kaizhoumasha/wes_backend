@@ -103,3 +103,23 @@ async def test_handler_preserves_closed_query_outcome(
         code = getattr(outcome, "reason_code", None) or getattr(outcome, "error_code", None)
         assert code == stable_code
         assert outcome.details["query_outcome_kind"] == query_kind
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("port_outcome", "expected_kind"),
+    [
+        (QueryBusinessReject("NO", "rejected"), "BUSINESS_REJECT"),
+        (object(), "INVALID"),
+    ],
+)
+async def test_handler_omits_missing_evidence_and_rejects_unknown_outcome(
+    port_outcome: object,
+    expected_kind: str,
+) -> None:
+    outcome = await WmsRegistryQueryCapabilityHandler(_Port(port_outcome))(
+        InventorySnapshotQueryRequest(material_code="MAT-1")
+    )
+
+    assert isinstance(outcome, BusinessReject | ContractViolation)
+    assert outcome.details == {"query_outcome_kind": expected_kind}

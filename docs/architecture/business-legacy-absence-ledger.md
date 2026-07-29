@@ -9,9 +9,9 @@
 
 | 指标 | 数量 |
 | --- | ---: |
-| total_entries | 102 |
+| total_entries | 100 |
 | active-source | 0 |
-| test-only | 18 |
+| test-only | 16 |
 | already-removed | 84 |
 | schema-deferred | 0 |
 
@@ -29,7 +29,7 @@
 | --- | ---: | --- |
 | moved | 54 | 旧 WorkLine business contracts / services 已迁入 material-flow contracts 或 runtime capability service |
 | test-only-migrated | 10 | 旧 `tests/workline_plugins` rough sorter 合同测试已迁入 `tests/contracts/workline` |
-| kept-config-only | 18 | `tests/workline_runtime` 目标态 regression / contract tests 保留 |
+| kept-config-only | 16 | `tests/workline_runtime` 目标态 regression / contract tests 保留 |
 | already-removed | 20 | 前序 material-flow 迁移已移除的历史 WorkLine service rows，仅保留审计闭环 |
 
 ## Gate 链路

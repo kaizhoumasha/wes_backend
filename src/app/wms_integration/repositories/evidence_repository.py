@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from src.app.wms_integration.models import WmsCallEvidence, WmsCallEvidenceArchive, WmsEvidenceStatus
 from src.database.base_repository import BaseRepository
@@ -66,6 +67,20 @@ class WmsCallEvidenceRepository(BaseRepository[WmsCallEvidence]):
         )
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+    @staticmethod
+    async def lock_query_source_version(
+        db: AsyncSession,
+        *,
+        provider_profile_identity: str,
+        operation_name: str,
+        request_canonical_hash: str,
+    ) -> None:
+        """按 authority/operation/request 获取事务级 advisory lock。"""
+
+        lock_identity = f"{provider_profile_identity}\0{operation_name}\0{request_canonical_hash}"
+        lock_key = int.from_bytes(hashlib.sha256(lock_identity.encode()).digest()[:8], signed=True)
+        await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
 
     async def list_expired_for_archive(
         self,

@@ -14,6 +14,9 @@ import pytest
 from src.app.device.models.command import CommandCallbackResult, CommandResult, CommandStatus
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import normalize_six_in_one_payload
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_context import (
+    RoughSorterQ19AdmissionDecision,
+)
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
     RoughSorterBindingSnapshot,
 )
@@ -351,14 +354,36 @@ async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) 
             "provider_profile": "wms.2026-07-28.full-factory.sandbox",
         }
     )
+    q19_decision = (
+        RoughSorterQ19AdmissionDecision(
+            request_canonical_hash="a" * 64,
+            decision="ADMIT",
+            grn_id="GRN-001",
+            po_number="PO-001",
+            po_item="10",
+            material_code="MAT-001",
+            pkg_id="PKG-001",
+            measurement_decision="PASS",
+            standard_reel_diameter_mm="100",
+            reel_diameter_tolerance_mm="1",
+            standard_reel_thickness_mm="10",
+            reel_thickness_tolerance_mm="0.5",
+            rule_version="rule-1",
+            source_version="source-1",
+            evidence_reference="query:q19:spec",
+        )
+        if case_id == "RS-SD-001"
+        else None
+    )
     facts = RoughSorterFacts(
+        q19_admission_decision=q19_decision,
         binding_snapshot=RoughSorterBindingSnapshot(
             binding_id=1,
             binding_version=1,
             profile_identity="wms.2026-07-28.full-factory.sandbox",
             plugin_config_hash="0" * 64,
             generated_index_digest="1" * 64,
-        )
+        ),
     )
 
     class _NoQueryGateway:

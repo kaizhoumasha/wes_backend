@@ -562,17 +562,14 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 
 #### 🔌 WMS 能力面 ports (src/app/wms_integration/ports/)
 
-7 个 WMS port Protocol + typed data classes：
-- 3 query port: MasterData / InventoryQuery / ReconciliationQuery
-- 1 effect port: InventoryTransaction
-- 1 effect port: Fulfillment
-- 1 event normalizer port: Event（含 InboundEventPort 基协议 + WmsEventPort 4 normalizer）
-- 1 document port: Document
+19 项 QUERY 统一由 `WmsQueryExecutionPort` 执行；各领域模块只声明 operation-specific typed request/result。
+EFFECT 与事件 normalizer 继续使用各自 typed port。
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
+| `ports/` | `query_execution.py` | 19 项 registry QUERY 的唯一泛型执行 Port | 🔧 架构核心 |
 | `ports/` | `master_data.py` | WmsMasterDataPort Protocol + 6 typed data classes | 🔧 架构核心 |
-| | `query_inventory_operation.py` | InventoryQueryOperationPort + Decimal typed authority snapshot | 🔧 架构核心 |
+| | `inventory_operations.py` | 库存 QUERY operation-specific request/result 与 Definition | 🔧 架构核心 |
 | | `inventory_transaction.py` | WmsInventoryTransactionPort Protocol + 3 typed data classes | 🔧 架构核心 |
 | | `document_operations.py` | Q08–Q13/Q19 operation-specific request/result 与 Definition | 🔧 架构核心 |
 | | `fulfillment_operations.py` | E07–E16 operation-specific request/result、ACK 与批次收敛合同 | 🔧 架构核心 |
@@ -592,7 +589,6 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | | `circuit_breaker_repository.py` | WMS circuit breaker state Repository | 🔧 架构核心 |
 | `services/` | `http_client.py` | 同步 WMS HTTP client，暴露 typed exception hierarchy | 🔧 架构核心 |
 | | `typed_ports.py` | WMS effect typed ports 门面；不承载 QUERY | 🔧 架构核心 |
-| | `query_transport.py` | 无 operation 分支的 WMS QUERY HTTP、预算、分页与 evidence executor | 🔧 架构核心 |
 | | `fulfillment_lifecycle.py` | WMS fulfillment lifecycle service：基于状态机推进履约状态、保护终态、输出 RuntimeInbox 需求 | 🔧 架构核心 |
 | | `evidence_service.py` | WMS evidence 脱敏、hash 和记录服务 | 🔧 架构核心 |
 | | `circuit_breaker_service.py` | DB-backed WMS 熔断状态转换服务 | 🔧 架构核心 |
@@ -602,6 +598,11 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | | `redaction.py` | WMS request/response 脱敏规则 | 🔧 架构核心 |
 | | `exceptions.py` | WMS typed errors：timeout、5xx、business reject、circuit-open | 🔧 架构核心 |
 | `evidence/` | `envelope.py` | typed EvidenceEnvelope / ExternalReference，锁定外部事实证据 envelope 和 hash 字段 | 🔧 架构核心 |
+| 根目录 | `query_projection.py` | 统一 GET path/query 与 Q19 POST JSON request projection | 🔧 架构核心 |
+| | `query_response.py` | 有界 body 解码、严格 JSON 校验与 HTTP outcome 分类 | 🔧 架构核心 |
+| | `query_executor.py` | registry 驱动的预算、分页、重试与 typed outcome executor | 🔧 架构核心 |
+| | `query_evidence.py` | source_version 原子 compare-and-record 与现有 evidence/breaker 适配 | 🔧 架构核心 |
+| | `query_runtime.py` | 每进程/事件循环共享长期 AsyncClient 的 `wms-data` QUERY runtime | 🔧 架构核心 |
 | 根目录 | `state_machine.py` | WMS fulfillment 11 态状态机，保护 SUCCEEDED / REJECTED / FAILED / TIMEOUT / CANCELLED 等终态不被迟到事件覆盖 | 🔧 架构核心 |
 
 #### 📡 设备模块 (src/app/device/)

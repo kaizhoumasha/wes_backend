@@ -468,6 +468,7 @@ ACTIVE_PLATFORM_PATHS = frozenset(
         "src/app/workline/services/plugin_binding_service.py",
         "tests/workline_plugins/test_conformance_contract.py",
         "tests/workline_plugins/test_generated_facts_contract.py",
+        "tests/workline_runtime/material_flow/test_rough_sorter_q19_admission_service.py",
         "tests/workline_runtime/test_workline_session_repository_versioning.py",
     }
 )

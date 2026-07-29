@@ -18,9 +18,30 @@ class StubWmsQueryExecutionPort:
 
     def __init__(self, handler: Callable[[BaseModel], Awaitable[WmsQueryOutcome[Any]]]) -> None:
         self._handler = handler
+        from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
+
+        self._compiled_profile = build_compiled_provider_profile()
 
     async def execute(self, request: BaseModel) -> WmsQueryOutcome[Any]:
         return await self._handler(request)
+
+    def project(self, request: BaseModel):  # type: ignore[no-untyped-def]
+        """与生产 data-lane 使用相同 registry projection，保留 Q19 hash 语义。"""
+
+        from src.app.wms_integration.operation_registry import QUERY_OPERATIONS
+        from src.app.wms_integration.query_projection import project_wms_query_request
+
+        operation = next(
+            (candidate for candidate in QUERY_OPERATIONS if type(request) is candidate.request_model),
+            None,
+        )
+        if operation is None:
+            raise TypeError("unregistered WMS QUERY request model")
+        return project_wms_query_request(
+            operation=operation,
+            endpoint=self._compiled_profile.operations[operation.identity],
+            request=request,
+        )
 
 
 def bind_stub_wms_query_runtime(

@@ -97,6 +97,7 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
+from src.app.runtime.workline_plugins.pre_attempt import resolve_plugin_pre_attempt_facts
 from src.app.runtime.workline_plugins.registry import parse_workline_six_in_one
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -1532,6 +1533,31 @@ class RuntimeInboxProcessorBridge:
             workline=workline,
             snapshot=snapshot,
         )
+        pre_attempt_facts_changed = await resolve_plugin_pre_attempt_facts(
+            db,
+            session=session,
+            workline=workline,
+            dispatch_request=dispatch_request,
+            services=services,
+        )
+        if pre_attempt_facts_changed:
+            # 插件前置事实可能在同一 Stage 1 事务推进 Session 乐观版本；
+            # 必须重新冻结完整 snapshot 与 facts，避免 Stage 3 把本 attempt
+            # 自己刚完成的事实变更误判为并发漂移。
+            await db.flush()
+            snapshot = _plugin_attempt_snapshot(
+                session,
+                processor_token=processor_token,
+                material_unit_version=material_fact_version,
+                devices_by_role=devices_by_role,
+            )
+            dispatch_request = await self._build_generated_dispatch_request(
+                db,
+                inbox=inbox,
+                session=session,
+                workline=workline,
+                snapshot=snapshot,
+            )
         await self._pin_attempt_runtime_to_dispatch_snapshot(
             db,
             runtime=attempt_runtime,

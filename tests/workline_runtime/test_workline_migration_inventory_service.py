@@ -331,7 +331,7 @@ async def test_inventory_derives_each_workline_capability_provider_and_port_requ
         ("device.device_command_write", "v1"),
         ("material_flow.material_unit_write", "v1"),
         ("runtime.session_hold", "v1"),
-        ("wms.inventory.query_inventory", "v1"),
+        ("wms.document.validate_rough_sorter_admission", "v1"),
     )
     query_requirement = requirements[-1]
     assert query_requirement.mode == "QUERY"

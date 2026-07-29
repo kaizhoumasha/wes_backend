@@ -9,6 +9,7 @@ from uuid import uuid4
 from src.app.wms_integration.models import WmsEvidenceStatus
 from src.app.wms_integration.ports.query_outcome import (
     QueryBusinessReject,
+    QueryContractFailure,
     QuerySuccess,
     QueryTechnicalFailure,
 )
@@ -29,6 +30,14 @@ class WmsQueryCallPermit:
     reason: str | None = None
     retry_after_seconds: float | None = None
     probe_generation: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WmsQueryEvidenceRecord:
+    """原子 compare-and-record 后的 evidence key 与最终 outcome。"""
+
+    evidence_key: str
+    outcome: object
 
 
 class WmsEffectStatusEvidenceWriter(Protocol):
@@ -195,37 +204,6 @@ class WmsRegistryCallEvidenceWriter:
             probe_generation=decision.probe_generation,
         )
 
-    async def validate_source_version(
-        self,
-        *,
-        operation_identity: str,
-        target_code: str,
-        profile_identity: str,
-        request_canonical_hash: str,
-        source_version: str,
-        response_hash: str,
-    ) -> str | None:
-        del target_code
-        async with self._session_factory() as db:
-            previous = await self._evidence_service.repo.get_latest_query_success(
-                db,
-                provider_profile_identity=profile_identity,
-                operation_name=operation_identity,
-                request_canonical_hash=request_canonical_hash,
-            )
-        if previous is None:
-            return None
-        previous_version = previous.response_snapshot.get("source_version")
-        previous_response_hash = previous.response_snapshot.get("typed_response_hash")
-        if not isinstance(previous_version, str) or not isinstance(previous_response_hash, str):
-            return "WMS_SOURCE_VERSION_HISTORY_INVALID"
-        return classify_source_version(
-            previous_version=previous_version,
-            previous_response_hash=previous_response_hash,
-            source_version=source_version,
-            response_hash=response_hash,
-        )
-
     async def record(
         self,
         *,
@@ -241,29 +219,59 @@ class WmsRegistryCallEvidenceWriter:
         http_status: int | None,
         outcome: object,
         permit: WmsQueryCallPermit,
-    ) -> str:
+    ) -> WmsQueryEvidenceRecord:
         evidence_key = f"query:{operation_identity}:{uuid4().hex}"
-        status = WmsEvidenceStatus.SUCCEEDED if isinstance(outcome, QuerySuccess) else WmsEvidenceStatus.FAILED
-        response_snapshot: dict[str, object] = {
-            "outcome_kind": type(outcome).__name__,
-            "attempt_count": attempt_count,
-        }
-        if response_hash is not None:
-            response_snapshot["typed_response_hash"] = response_hash
-        if isinstance(outcome, QuerySuccess):
-            source_version = getattr(outcome.value, "source_version", None)
-            if source_version is not None:
-                response_snapshot["source_version"] = str(source_version)
+        source_version = getattr(outcome.value, "source_version", None) if isinstance(outcome, QuerySuccess) else None
+        effective_outcome = outcome
+        response_snapshot: dict[str, object]
         request_evidence = {
             **request_snapshot,
             "profile_digest": profile_digest,
             "endpoint_digest": endpoint_digest,
             "request_canonical_hash": request_canonical_hash,
         }
-        reason_code = getattr(outcome, "reason_code", None)
-        retryable = outcome.retryable if isinstance(outcome, QueryTechnicalFailure) else False
         async with self._session_factory() as db:
             try:
+                if source_version is not None and response_hash is not None:
+                    await self._evidence_service.repo.lock_query_source_version(
+                        db,
+                        provider_profile_identity=profile_identity,
+                        operation_name=operation_identity,
+                        request_canonical_hash=request_canonical_hash,
+                    )
+                    previous = await self._evidence_service.repo.get_latest_query_success(
+                        db,
+                        provider_profile_identity=profile_identity,
+                        operation_name=operation_identity,
+                        request_canonical_hash=request_canonical_hash,
+                    )
+                    reason_code = _source_version_conflict(
+                        previous=previous,
+                        source_version=str(source_version),
+                        response_hash=response_hash,
+                    )
+                    if reason_code is not None:
+                        effective_outcome = QueryContractFailure(
+                            reason_code=reason_code,
+                            message="WMS QUERY source version violates monotonic evidence history",
+                        )
+                status = (
+                    WmsEvidenceStatus.SUCCEEDED
+                    if isinstance(effective_outcome, QuerySuccess)
+                    else WmsEvidenceStatus.FAILED
+                )
+                response_snapshot = {
+                    "outcome_kind": type(effective_outcome).__name__,
+                    "attempt_count": attempt_count,
+                }
+                if response_hash is not None:
+                    response_snapshot["typed_response_hash"] = response_hash
+                if source_version is not None:
+                    response_snapshot["source_version"] = str(source_version)
+                reason_code = getattr(effective_outcome, "reason_code", None)
+                retryable = (
+                    effective_outcome.retryable if isinstance(effective_outcome, QueryTechnicalFailure) else False
+                )
                 evidence = await self._evidence_service.record_sync_call(
                     db,
                     evidence_key=evidence_key,
@@ -281,7 +289,7 @@ class WmsRegistryCallEvidenceWriter:
                 if permit.allowed:
                     record_breaker = (
                         self._breaker_service.record_success
-                        if isinstance(outcome, (QuerySuccess, QueryBusinessReject))
+                        if isinstance(effective_outcome, (QuerySuccess, QueryBusinessReject))
                         else self._breaker_service.record_failure
                     )
                     await record_breaker(
@@ -295,13 +303,32 @@ class WmsRegistryCallEvidenceWriter:
             except Exception:
                 await db.rollback()
                 raise
-        return evidence.evidence_key
+        return WmsQueryEvidenceRecord(evidence_key=evidence.evidence_key, outcome=effective_outcome)
+
+
+def _source_version_conflict(*, previous: object, source_version: str, response_hash: str) -> str | None:
+    if previous is None:
+        return None
+    response_snapshot = getattr(previous, "response_snapshot", None)
+    if not isinstance(response_snapshot, dict):
+        return "WMS_SOURCE_VERSION_HISTORY_INVALID"
+    previous_version = response_snapshot.get("source_version")
+    previous_response_hash = response_snapshot.get("typed_response_hash")
+    if not isinstance(previous_version, str) or not isinstance(previous_response_hash, str):
+        return "WMS_SOURCE_VERSION_HISTORY_INVALID"
+    return classify_source_version(
+        previous_version=previous_version,
+        previous_response_hash=previous_response_hash,
+        source_version=source_version,
+        response_hash=response_hash,
+    )
 
 
 __all__ = [
     "WmsEffectStatusCallEvidenceWriter",
     "WmsEffectStatusEvidenceWriter",
     "WmsQueryCallPermit",
+    "WmsQueryEvidenceRecord",
     "WmsRegistryCallEvidenceWriter",
     "classify_source_version",
 ]

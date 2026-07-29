@@ -30,6 +30,7 @@ from src.app.runtime.workline_plugins.dispatcher import (
 )
 from src.app.wms_integration.ports.inventory_operations import InventorySnapshotQueryRequest
 from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
+from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
 from src.app.workline import runtime_services as runtime_services_module
 from src.app.workline.runtime_services import build_workline_runtime_services
 from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
@@ -359,11 +360,19 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
         _ = services
         runtime.port_registry.register(WmsQueryExecutionPort, _InventoryPort)
 
+    q19_hook_calls = 0
+
+    async def resolve_q19_before_plugin(*_args: object, **_kwargs: object) -> bool:
+        nonlocal q19_hook_calls
+        q19_hook_calls += 1
+        return False
+
     monkeypatch.setattr(workline_plugin_binding_service, "get_pinned", AsyncMock(return_value=binding))
     monkeypatch.setattr(capability_index_module, "SYSTEM_CAPABILITY_INDEX", definitions)
     monkeypatch.setattr(module, "_load_related_entities", load_related)
     monkeypatch.setattr(module, "_build_plugin_dispatch_request", build_dispatch_request)
     monkeypatch.setattr(module, "_configure_attempt_runtime_ports", configure_ports)
+    monkeypatch.setattr(module, "resolve_plugin_pre_attempt_facts", resolve_q19_before_plugin)
 
     bridge = RuntimeInboxProcessorBridge(
         validation_service=Validation(),
@@ -384,5 +393,252 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
     result = await bridge.process_claimed(Db(), claim={"id": 91, "processor_token": "lease-production-path"})
 
     assert result["success"] == 1
+    assert q19_hook_calls == 1
     assert len(created_gateways) == 2
     assert all(gateway._closed for gateway in created_gateways)
+
+
+@pytest.mark.asyncio
+async def test_production_q19_hook_builds_request_from_scan_and_measurement_before_pick_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.workline_plugins.rough_sorter import pre_attempt as module
+
+    snapshot = PinnedPluginSnapshot(
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        binding_identity="binding:17:4",
+        binding_id=17,
+        binding_version=4,
+        config_hash="a" * 64,
+        index_digest="b" * 64,
+        profile_identity="wms.2026-07-28.full-factory.sandbox",
+    )
+    dispatch_request = PluginDispatchRequest(
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        logical_route="SCAN_COMPLETED",
+        raw_config={"provider_profile": snapshot.profile_identity},
+        raw_state={"phase": "READY"},
+        context_state={"phase": "READY"},
+        raw_input={
+            "data": {
+                "HHPN": "HHPN-Q19",
+                "MfrPN": "MFR-Q19",
+                "Qty": "2",
+                "DateCode": "20260729",
+                "LotCode": "LOT-Q19",
+                "PkgID": "PKG-Q19",
+            },
+            "reel_diameter_mm": "100.5",
+            "reel_thickness_mm": "10.25",
+        },
+        fact_source=PluginAttemptFactSource(
+            snapshot=snapshot,
+            raw_input={},
+        ),
+        snapshot=snapshot,
+    )
+    q19_service = SimpleNamespace(resolve=AsyncMock(return_value=QuerySuccess(object())))
+    session = SimpleNamespace(id=19, session_code="SESSION-Q19", barcode="RAW-SESSION-Q19")
+    workline = SimpleNamespace(id=29, line_code="ROUGH-SORTER-Q19")
+
+    resolved = await module.resolve_pre_attempt_facts(
+        object(),
+        session=session,
+        workline=workline,
+        dispatch_request=dispatch_request,
+        services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
+    )
+
+    assert resolved is True
+    request = q19_service.resolve.await_args.kwargs["request"]
+    assert q19_service.resolve.await_args.kwargs["session_id"] == 19
+    assert request.raw_code == "RAW-SESSION-Q19"
+    assert request.six_in_one.PkgID == "PKG-Q19"
+    assert str(request.reel_diameter_mm) == "100.5"
+    assert str(request.reel_thickness_mm) == "10.25"
+    assert request.station_code == "ROUGH-SORTER-Q19"
+    assert request.correlation_id == "workline-session:SESSION-Q19"
+
+    late_command = dispatch_request.model_copy(
+        update={
+            "logical_route": "COMMAND_RESULT",
+            "raw_input": {
+                "route": "COMMAND_RESULT",
+                "command_code": "CMD-Q19-1",
+                "command_type": "PICK_AND_PUT",
+                "result": "SUCCESS",
+                "data": {"reel_diameter": "100.5", "reel_thickness": "10.25"},
+                "error_detail": {},
+            },
+        }
+    )
+    assert (
+        await module.resolve_pre_attempt_facts(
+            object(),
+            session=session,
+            workline=workline,
+            dispatch_request=late_command,
+            services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
+        )
+        is False
+    )
+    invalid_six_in_one = dispatch_request.model_copy(
+        update={
+            "raw_input": {
+                **dispatch_request.raw_input,
+                "data": {key: value for key, value in dispatch_request.raw_input["data"].items() if key != "Qty"},
+            }
+        }
+    )
+    assert (
+        await module.resolve_pre_attempt_facts(
+            object(),
+            session=session,
+            workline=workline,
+            dispatch_request=invalid_six_in_one,
+            services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
+        )
+        is False
+    )
+
+    from src.app.runtime.capabilities.material_flow import rough_sorter_q19_admission_service as service_module
+
+    fallback_service = SimpleNamespace(resolve=AsyncMock(return_value=QuerySuccess(object())))
+    monkeypatch.setattr(service_module, "RoughSorterQ19AdmissionService", lambda _runtime: fallback_service)
+    assert (
+        await module.resolve_pre_attempt_facts(
+            object(),
+            session=session,
+            workline=workline,
+            dispatch_request=dispatch_request,
+            services=SimpleNamespace(wms_query_execution_port=SimpleNamespace(project=lambda request: request)),
+        )
+        is True
+    )
+    assert q19_service.resolve.await_count == 1
+
+    for failure in (
+        QueryTechnicalFailure("WMS_PROVIDER_TIMEOUT", "timeout", retryable=True),
+        QueryContractFailure("WMS_MALFORMED_RESPONSE", "invalid"),
+    ):
+        q19_service.resolve.return_value = failure
+        assert (
+            await module.resolve_pre_attempt_facts(
+                object(),
+                session=session,
+                workline=workline,
+                dispatch_request=dispatch_request,
+                services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
+            )
+            is False
+        )
+
+    assert (
+        await module.resolve_pre_attempt_facts(
+            object(),
+            session=session,
+            workline=workline,
+            dispatch_request=dispatch_request,
+            services=SimpleNamespace(),
+        )
+        is False
+    )
+    missing_measurement = dispatch_request.model_copy(
+        update={
+            "raw_input": {
+                **dispatch_request.raw_input,
+                "reel_thickness_mm": None,
+            }
+        }
+    )
+    assert (
+        await module.resolve_pre_attempt_facts(
+            object(),
+            session=session,
+            workline=workline,
+            dispatch_request=missing_measurement,
+            services=SimpleNamespace(rough_sorter_q19_admission_service=q19_service),
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_generic_pre_attempt_facade_is_generated_identity_scoped_and_optional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.workline_plugins import pre_attempt as module
+
+    common = {
+        "db": object(),
+        "session": object(),
+        "workline": object(),
+        "services": object(),
+    }
+    assert (
+        await module.resolve_plugin_pre_attempt_facts(
+            **common,
+            dispatch_request=SimpleNamespace(plugin_key=None, contract_version="v1"),
+        )
+        is False
+    )
+    assert (
+        await module.resolve_plugin_pre_attempt_facts(
+            **common,
+            dispatch_request=SimpleNamespace(plugin_key="rough_sorter", contract_version=None),
+        )
+        is False
+    )
+    assert (
+        await module.resolve_plugin_pre_attempt_facts(
+            **common,
+            dispatch_request=SimpleNamespace(plugin_key="unknown", contract_version="v1"),
+        )
+        is False
+    )
+    assert (
+        await module.resolve_plugin_pre_attempt_facts(
+            **common,
+            dispatch_request=SimpleNamespace(
+                plugin_key="smt_sorting_inbound",
+                contract_version="smt_sorting_inbound.v1",
+            ),
+        )
+        is False
+    )
+
+    monkeypatch.setattr(module, "import_module", lambda _name: SimpleNamespace(resolve_pre_attempt_facts=None))
+    rough_request = SimpleNamespace(plugin_key="rough_sorter", contract_version="rough_sorter.v2")
+    assert (
+        await module.resolve_plugin_pre_attempt_facts(
+            **common,
+            dispatch_request=rough_request,
+        )
+        is False
+    )
+
+    async def resolver(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    monkeypatch.setattr(module, "import_module", lambda _name: SimpleNamespace(resolve_pre_attempt_facts=resolver))
+    assert (
+        await module.resolve_plugin_pre_attempt_facts(
+            **common,
+            dispatch_request=rough_request,
+        )
+        is True
+    )
+
+    def broken_import(_name: str) -> object:
+        exc = ModuleNotFoundError("nested dependency missing")
+        exc.name = "nested_dependency"
+        raise exc
+
+    monkeypatch.setattr(module, "import_module", broken_import)
+    with pytest.raises(ModuleNotFoundError, match="nested dependency missing"):
+        await module.resolve_plugin_pre_attempt_facts(
+            **common,
+            dispatch_request=rough_request,
+        )

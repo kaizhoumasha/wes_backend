@@ -80,29 +80,13 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         provider_calls = 0
-        provider_material_codes: list[str] = []
 
-        async def query_inventory(request):  # type: ignore[no-untyped-def]
+        async def forbidden_query(*_args):  # type: ignore[no-untyped-def]
             nonlocal provider_calls
             provider_calls += 1
-            provider_material_codes.append(request.material_code)
-            return QuerySuccess(
-                InventorySnapshotQueryResult(
-                    items=(
-                        InventoryRecord(
-                            material_code=request.material_code,
-                            available_quantity=10,
-                            total_quantity=10,
-                            reserved_quantity=0,
-                            location_code="A-01",
-                            lot_no="LOT-IT-001",
-                        ),
-                    ),
-                    source_version="WMS-IT-1",
-                )
-            )
+            raise AssertionError("粗分 COMMAND_RESULT 必须消费已持久化 Q19，不得回查旧 Q14")
 
-        bind_stub_wms_query_runtime(monkeypatch, query_inventory)
+        bind_stub_wms_query_runtime(monkeypatch, forbidden_query)
         service = RuntimeInboxService()
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
@@ -195,8 +179,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             assert session.plugin_state_version == 2
             assert session.status == "WAITING_DEVICE_RESULT"
             assert session.current_wait_type == "COMMAND_RESULT"
-            assert provider_calls == 1
-            assert provider_material_codes == ["MAT-IT-001"]
+            assert provider_calls == 0
             material_unit = await db.get(MaterialUnit, session.current_material_unit_id)
             assert material_unit is not None
             assert (
@@ -205,7 +188,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
                     .select_from(WorklineTimeline)
                     .where(WorklineTimeline.related_inbox_id == callback.id)
                 )
-                == 3
+                == 2
             )
 
             conveyor_command = await db.scalar(
@@ -429,25 +412,6 @@ def test_missing_callback_becomes_visible_timeout_without_fake_success() -> None
 )
 def test_followup_device_command_requires_terminal_result(action: str, terminal_result: str, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """后续设备命令的成功、失败、超时都经 RuntimeInbox 推进，不存在假完成。"""
-
-    async def query_inventory(request):  # type: ignore[no-untyped-def]
-        return QuerySuccess(
-            InventorySnapshotQueryResult(
-                items=(
-                    InventoryRecord(
-                        material_code=request.material_code,
-                        available_quantity=10,
-                        total_quantity=10,
-                        reserved_quantity=0,
-                        location_code="A-01",
-                        lot_no="LOT-IT-001",
-                    ),
-                ),
-                source_version="WMS-IT-1",
-            )
-        )
-
-    bind_stub_wms_query_runtime(monkeypatch, query_inventory)
 
     async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
         return None

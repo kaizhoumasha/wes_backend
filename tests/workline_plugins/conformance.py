@@ -70,6 +70,7 @@ class PluginConformanceFixture:
     gateway_factory: Callable[[], RecordingGateway]
     replay: Callable[[RecordingGateway], Awaitable[PluginDecision[Any]]]
     effect_context: PluginAttemptContext
+    expects_query: bool = True
 
 
 def assert_system_capability_effect_contract(
@@ -176,9 +177,14 @@ class PluginConformanceSuite:
         result = await fixture.dispatcher.dispatch(request=fixture.query_request, gateway=gateway)
 
         assert isinstance(result, PluginDecision)
-        assert gateway.calls
-        assert all(identity in fixture.definition.allowed_capabilities for identity in gateway.calls)
-        assert all(SYSTEM_CAPABILITY_INDEX[identity].mode is SystemCapabilityMode.QUERY for identity in gateway.calls)
+        if fixture.expects_query:
+            assert gateway.calls
+            assert all(identity in fixture.definition.allowed_capabilities for identity in gateway.calls)
+            assert all(
+                SYSTEM_CAPABILITY_INDEX[identity].mode is SystemCapabilityMode.QUERY for identity in gateway.calls
+            )
+        else:
+            assert gateway.calls == []
         assert all(intent.kind is not RuntimeIntentKind.EXTERNAL_REQUEST for intent in result.intents)
 
     @pytest.mark.asyncio

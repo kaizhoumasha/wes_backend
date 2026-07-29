@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import DecimalException
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
 import httpx
@@ -52,8 +52,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
     from src.app.wms_integration.endpoint_compiler import CompiledWmsOperationEndpoint
-    from src.app.wms_integration.operation_contract import WmsOperationDefinition
-    from src.app.wms_integration.query_evidence import WmsQueryCallPermit
+    from src.app.wms_integration.operation_contract import WmsOperationDefinition, WmsPaginationConstraint
+    from src.app.wms_integration.query_evidence import WmsQueryCallPermit, WmsQueryEvidenceRecord
 
 
 class WmsQueryCredentialProvider(Protocol):
@@ -66,17 +66,6 @@ class WmsRegistryQueryEvidenceWriter(Protocol):
     """统一 QUERY evidence 与 breaker 写边界。"""
 
     async def before_call(self, *, operation_identity: str, target_code: str) -> WmsQueryCallPermit: ...
-
-    async def validate_source_version(
-        self,
-        *,
-        operation_identity: str,
-        target_code: str,
-        profile_identity: str,
-        request_canonical_hash: str,
-        source_version: str,
-        response_hash: str,
-    ) -> str | None: ...
 
     async def record(
         self,
@@ -93,7 +82,7 @@ class WmsRegistryQueryEvidenceWriter(Protocol):
         http_status: int | None,
         outcome: object,
         permit: WmsQueryCallPermit,
-    ) -> str: ...
+    ) -> WmsQueryEvidenceRecord: ...
 
 
 @dataclass(slots=True)
@@ -168,9 +157,8 @@ def _build_http_request(
     timestamp: str | None = None
     nonce: str | None = None
     if rendered_binding.auth_scheme == "HMAC_SHA256":
-        credential_reference = rendered_binding.credential_reference
-        if credential_reference is None:
-            raise ValueError("HMAC QUERY binding requires credential reference")
+        # FrozenExternalHttpBinding 已在构造时校验 HMAC 必须绑定 credential reference。
+        credential_reference = cast("str", rendered_binding.credential_reference)
         secret = credential_provider.resolve(credential_reference)
         timestamp = now().isoformat()
         nonce = nonce_factory()
@@ -269,12 +257,6 @@ class WmsRegistryQueryExecutor:
 
         outcome = await self._execute_attempts(
             request=request,
-            permit=permit,
-            state=state,
-        )
-        outcome = await self._validate_source_version(
-            projection=projection,
-            outcome=outcome,
             state=state,
         )
         return await self._record(
@@ -284,43 +266,12 @@ class WmsRegistryQueryExecutor:
             state=state,
         )
 
-    async def _validate_source_version(
-        self,
-        *,
-        projection: WmsQueryRequestProjection,
-        outcome: WmsQueryOutcome[Any],
-        state: _ExecutionBudgetState,
-    ) -> WmsQueryOutcome[Any]:
-        if not isinstance(outcome, QuerySuccess):
-            return outcome
-        source_version = getattr(outcome.value, "source_version", None)
-        if source_version is None:
-            return outcome
-        if state.response_hash is None:
-            raise RuntimeError("typed QUERY success must have a response hash")
-        reason_code = await self._evidence_writer.validate_source_version(
-            operation_identity=self._operation.identity,
-            target_code=self._operation.target_code,
-            profile_identity=self._frozen_binding.provider_profile_identity,
-            request_canonical_hash=projection.request_canonical_hash,
-            source_version=str(source_version),
-            response_hash=state.response_hash,
-        )
-        if reason_code is None:
-            return outcome
-        return QueryContractFailure(
-            reason_code=reason_code,
-            message="WMS QUERY source version violates monotonic evidence history",
-        )
-
     async def _execute_attempts(
         self,
         *,
         request: BaseModel,
-        permit: WmsQueryCallPermit,
         state: _ExecutionBudgetState,
     ) -> WmsQueryOutcome[Any]:
-        del permit
         outcome: WmsQueryOutcome[Any] | None = None
         try:
             async with asyncio.timeout(self._operation.budget.deadline_seconds):
@@ -378,19 +329,17 @@ class WmsRegistryQueryExecutor:
                         )
                     if not isinstance(outcome, QueryTechnicalFailure) or not outcome.retryable:
                         break
-                    if attempt_index + 1 >= self._operation.budget.max_attempts:
-                        break
-                    retry_after = outcome.retry_after_seconds or 0
-                    await self._sleep(max(self._operation.budget.backoff_seconds[attempt_index], retry_after))
+                    if attempt_index + 1 < self._operation.budget.max_attempts:
+                        retry_after = outcome.retry_after_seconds or 0
+                        await self._sleep(max(self._operation.budget.backoff_seconds[attempt_index], retry_after))
         except TimeoutError:
             outcome = QueryTechnicalFailure(
                 reason_code="WMS_PROVIDER_TIMEOUT",
                 message="WMS QUERY total deadline exceeded",
                 retryable=True,
             )
-        if outcome is None:
-            raise RuntimeError("validated QUERY attempt budget must execute at least once")
-        return outcome
+        # WmsOperationBudget 已保证 max_attempts >= 1。
+        return cast("WmsQueryOutcome[Any]", outcome)
 
     async def _execute_once(
         self,
@@ -418,9 +367,8 @@ class WmsRegistryQueryExecutor:
         request: BaseModel,
         state: _ExecutionBudgetState,
     ) -> WmsQueryOutcome[Any]:
-        pagination = self._operation.pagination
-        if pagination is None:
-            raise RuntimeError("paginated execution requires pagination semantics")
+        # 仅由 `_execute_once` 的 pagination 分支进入。
+        pagination = cast("WmsPaginationConstraint", self._operation.pagination)
         cursor = getattr(request, pagination.request_cursor_field, None)
         seen_cursors = {cursor} if cursor is not None else set()
         aggregate_items: list[Any] = []
@@ -551,7 +499,7 @@ class WmsRegistryQueryExecutor:
         state: _ExecutionBudgetState,
     ) -> WmsQueryOutcome[Any]:
         try:
-            evidence_key = await self._evidence_writer.record(
+            record = await self._evidence_writer.record(
                 operation_identity=self._operation.identity,
                 target_code=self._operation.target_code,
                 profile_identity=self._frozen_binding.provider_profile_identity,
@@ -572,12 +520,13 @@ class WmsRegistryQueryExecutor:
                 reason_code="WMS_EVIDENCE_WRITE_FAILED",
                 message="WMS QUERY evidence could not be persisted",
             )
+        evidence_key = record.evidence_key
         if not isinstance(evidence_key, str) or not evidence_key.strip():
             return QueryContractFailure(
                 reason_code="WMS_EVIDENCE_WRITE_FAILED",
                 message="WMS QUERY evidence writer returned no key",
             )
-        return replace(outcome, evidence_key=evidence_key)
+        return replace(record.outcome, evidence_key=evidence_key)
 
 
 __all__ = [

@@ -148,14 +148,16 @@ class _RecordingEvidenceWriter:
         *,
         operation_identity: str,
         target_code: str,
-        **_kwargs,
-    ) -> str:
+        **kwargs,
+    ) -> object:
+        from src.app.wms_integration.query_evidence import WmsQueryEvidenceRecord
+
         if self._fail:
             raise RuntimeError("scripted evidence failure")
-        return f"evidence:{operation_identity}:conformance"
-
-    async def validate_source_version(self, **_kwargs) -> str | None:
-        return None
+        return WmsQueryEvidenceRecord(
+            evidence_key=f"evidence:{operation_identity}:conformance",
+            outcome=kwargs["outcome"],
+        )
 
 
 class _TestCredentialProvider:

@@ -5,9 +5,11 @@ from __future__ import annotations
 import importlib
 import json
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
+from src.app.wms_integration.operation_contract import WmsHttpMethod, WmsOperationMode
 from src.app.wms_integration.operation_registry import QUERY_OPERATIONS
 from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
@@ -140,3 +142,32 @@ def test_projection_rejects_identity_and_typed_request_mismatch() -> None:
             endpoint=COMPILED_PROFILE.operations[operation.identity],
             request=QUERY_OPERATIONS[1].request_model(),
         )
+
+
+def test_projection_rejects_non_query_and_compiled_semantic_drift() -> None:
+    operation = QUERY_OPERATIONS[0]
+    endpoint = COMPILED_PROFILE.operations[operation.identity]
+    request = operation.request_model.model_validate(REQUEST_FIXTURES[operation.identity])
+    module = importlib.import_module("src.app.wms_integration.query_projection")
+
+    with pytest.raises(ValueError, match="QUERY operation semantics"):
+        module.project_wms_query_request(
+            operation=operation.model_copy(update={"mode": WmsOperationMode.EFFECT}),
+            endpoint=endpoint,
+            request=request,
+        )
+    with pytest.raises(ValueError, match="semantics differ"):
+        module.project_wms_query_request(
+            operation=operation,
+            endpoint=replace(endpoint, http_method=WmsHttpMethod.POST),
+            request=request,
+        )
+
+
+def test_projection_private_guards_reject_non_scalar_and_non_object_six_in_one() -> None:
+    module = importlib.import_module("src.app.wms_integration.query_projection")
+
+    with pytest.raises(TypeError, match="typed scalar"):
+        module._query_scalar({"not": "scalar"})
+    with pytest.raises(TypeError, match="six_in_one"):
+        module._post_query_evidence({"six_in_one": "invalid"}, "hash")
