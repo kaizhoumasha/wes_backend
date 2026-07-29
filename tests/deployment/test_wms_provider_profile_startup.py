@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +41,8 @@ def test_startup_assembly_loads_one_profile_for_both_lane_readiness(tmp_path) ->
     path = write_provider_profile(tmp_path / "provider.yaml")
     startup = assemble_wms_provider_startup(SimpleNamespace(WMS_PROVIDER_PROFILE_FILE=path))
 
+    assert startup.catalog.compiled_profile is startup.compiled_profile
+    assert startup.catalog.profile_digest == startup.compiled_profile.profile_digest
     assert startup.compiled_profile.profile_digest == startup.wes_readiness.profile_digest
     assert startup.compiled_profile.profile_digest == startup.fulfillment_readiness.profile_digest
     assert startup.wes_readiness.process_role is WmsProviderProcessRole.WES
@@ -66,27 +70,33 @@ def test_transport_startup_gate_uses_compiled_profile_instead_of_legacy_endpoint
     startup = provider_catalog.validate_wms_transport_configuration(settings_source=settings_source)
 
     assert startup.compiled_profile.profile.server_url == "http://factory-wms.example:8080"
-    assert not hasattr(settings_source, "WMS_SYNC_BASE_URL")
-    assert not hasattr(settings_source, "WMS_EFFECT_STATUS_URL")
+    assert not hasattr(settings_source, "WMS_SYNC_" + "BASE_URL")
+    assert not hasattr(settings_source, "WMS_EFFECT_" + "STATUS_URL")
 
 
 def test_active_configuration_contains_no_legacy_wms_endpoint_settings() -> None:
-    assert "WMS_SYNC_BASE_URL" not in Settings.model_fields
-    assert "WMS_EFFECT_STATUS_URL" not in Settings.model_fields
-
-    active_paths = (
-        REPO_ROOT / "src/core/conf.py",
-        REPO_ROOT / "src/app/runtime/system_capabilities/wms/provider_catalog.py",
-        REPO_ROOT / "src/app/wms_integration/runtime_factory.py",
-        REPO_ROOT / "src/app/wms_integration/ports/effect_status.py",
-        REPO_ROOT / ".env.dev",
-        REPO_ROOT / ".env.test",
-        REPO_ROOT / ".env.prod",
-        REPO_ROOT / "docker-compose.yml",
-        REPO_ROOT / "docker-compose.deploy.yml",
-        REPO_ROOT / "docker-compose.test-deploy.yml",
+    legacy_names = (
+        "WMS_SYNC_" + "BASE_URL",
+        "WMS_EFFECT_" + "STATUS_URL",
+        "WMS_MATERIAL_FLOW_" + "ACTIVE_HMAC_VERSION",
     )
-    legacy_names = ("WMS_SYNC_BASE_URL", "WMS_EFFECT_STATUS_URL")
-    for path in active_paths:
-        source = path.read_text(encoding="utf-8")
-        assert all(name not in source for name in legacy_names), path.relative_to(REPO_ROOT)
+    assert all(name not in Settings.model_fields for name in legacy_names)
+
+    git_executable = shutil.which("git")
+    assert git_executable is not None
+    tracked_files = (
+        subprocess.run(
+            [git_executable, "ls-files", "-z"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode()
+        .split("\0")
+    )
+    for relative_path in tracked_files:
+        if not relative_path:
+            continue
+        path = REPO_ROOT / relative_path
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        assert all(name not in source for name in legacy_names), relative_path

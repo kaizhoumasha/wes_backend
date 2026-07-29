@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.wms_integration.operation_contract import (  # noqa: TC001 - Pydantic 运行时解析字段类型。
     WmsOperationDefinition,
 )
 from src.app.wms_integration.provider_manifest import WMS_CONFORMANCE_REQUIREMENTS
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
 
 
 class OperationConformanceRequirement(BaseModel):
@@ -37,16 +41,24 @@ class WmsConformanceManifest(BaseModel):
         return self
 
 
-WMS_CONFORMANCE_MANIFEST = WmsConformanceManifest(
-    profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
-    fixture_root="tests/fixtures/external_contracts/wms/northbound",
-    operations=tuple(
-        OperationConformanceRequirement(
-            operation=requirement.operation,
-            required_cases=requirement.required_cases,
-        )
-        for requirement in WMS_CONFORMANCE_REQUIREMENTS
-    ),
-)
+def build_wms_conformance_manifest(compiled_profile: CompiledWmsProviderProfile) -> WmsConformanceManifest:
+    """从显式 compiled profile 构造 conformance manifest。"""
 
-__all__ = ["WMS_CONFORMANCE_MANIFEST", "OperationConformanceRequirement", "WmsConformanceManifest"]
+    return WmsConformanceManifest(
+        profile_identity=compiled_profile.profile.profile.identity,
+        fixture_root="tests/fixtures/external_contracts/wms/northbound",
+        operations=tuple(
+            OperationConformanceRequirement(
+                operation=requirement.operation,
+                required_cases=requirement.required_cases,
+            )
+            for requirement in WMS_CONFORMANCE_REQUIREMENTS
+        ),
+    )
+
+
+__all__ = [
+    "OperationConformanceRequirement",
+    "WmsConformanceManifest",
+    "build_wms_conformance_manifest",
+]

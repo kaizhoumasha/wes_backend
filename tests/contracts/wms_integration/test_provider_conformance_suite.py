@@ -10,7 +10,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from src.app.runtime.system_capabilities.wms.conformance_manifest import WMS_CONFORMANCE_MANIFEST
+from src.app.runtime.system_capabilities.wms.conformance_manifest import build_wms_conformance_manifest
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
@@ -26,6 +26,7 @@ from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupp
 from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
+    WMS_CONFORMANCE_COMPILED_PROFILE,
     RecordingConformanceTarget,
     build_query_inventory_conformance_targets,
 )
@@ -54,6 +55,7 @@ EFFECT_STATUS_REPLAY_FIXTURE = {
         "task_outcome": "SUCCESS",
     },
 }
+CONFORMANCE_MANIFEST = build_wms_conformance_manifest(WMS_CONFORMANCE_COMPILED_PROFILE)
 
 
 class _EffectStatusConformanceCredentialProvider:
@@ -79,6 +81,7 @@ async def test_every_target_runs_the_same_core_question_bank_without_override(ta
     observations = tuple([await target_factory.execute(case) for case in QUERY_INVENTORY_SCRIPT_FIXTURE.cases])
 
     report = build_wms_conformance_report(
+        compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
         cases=QUERY_INVENTORY_CONFORMANCE_CASES,
         observations=observations,
         target=target_factory.target,
@@ -171,12 +174,12 @@ def test_common_conformance_test_has_no_skip_or_xfail_escape_hatch() -> None:
 def test_every_effect_conformance_question_bank_contains_unsigned_status_query_case() -> None:
     async_requirements = tuple(
         requirement
-        for requirement in WMS_CONFORMANCE_MANIFEST.operations
+        for requirement in CONFORMANCE_MANIFEST.operations
         if requirement.operation.completion_mode is WmsCompletionMode.ASYNC_TASK
     )
     sync_requirements = tuple(
         requirement
-        for requirement in WMS_CONFORMANCE_MANIFEST.operations
+        for requirement in CONFORMANCE_MANIFEST.operations
         if requirement.operation.completion_mode is WmsCompletionMode.SYNC_RESULT
     )
 
@@ -198,13 +201,12 @@ async def test_unsigned_effect_status_case_replays_the_same_interaction_contract
         return httpx.Response(200, json=EFFECT_STATUS_REPLAY_FIXTURE)
 
     binding = build_wms_effect_status_binding(
+        compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
         settings_source=SimpleNamespace(
             APP_ENV="test",
-            WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
             WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
             WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
         ),
-        status_endpoint="https://conformance.invalid/northbound/operations/status",
     )
     adapter = WmsEffectStatusQueryAdapter(
         binding=binding,

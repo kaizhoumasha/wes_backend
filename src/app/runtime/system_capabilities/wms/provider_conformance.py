@@ -11,11 +11,8 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from src.app.runtime.system_capabilities.wms.generated_operation_index import WMS_OPERATION_INDEX_DIGEST
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
-
 if TYPE_CHECKING:
-    from src.app.runtime.system_capabilities.wms.contracts import WmsProviderProfile
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
 
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 CaseId = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_]*$")]
@@ -226,6 +223,7 @@ class WmsConformanceReport(BaseModel):
 
 def build_wms_conformance_report(
     *,
+    compiled_profile: CompiledWmsProviderProfile,
     cases: tuple[ConformanceCaseExpectation, ...],
     observations: tuple[ConformanceObservation, ...],
     target: ConformanceTarget,
@@ -246,8 +244,8 @@ def build_wms_conformance_report(
         "schema_version": "wms-conformance-report.v1",
         "suite_version": WMS_PROVIDER_CONFORMANCE_SUITE_VERSION,
         "suite_digest": QUERY_INVENTORY_CONFORMANCE_SUITE_DIGEST,
-        "profile_identity": WMS_PROVIDER_PROFILE.identity.identity,
-        "profile_digest": _profile_digest(WMS_PROVIDER_PROFILE),
+        "profile_identity": compiled_profile.profile.profile.identity,
+        "profile_digest": compiled_profile.profile_digest,
         "target": target.value,
         "fixture_digest": fixture_digest,
         "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
@@ -257,7 +255,11 @@ def build_wms_conformance_report(
     return WmsConformanceReport.model_validate({**payload, "report_digest": _digest(payload)})
 
 
-def verify_wms_conformance_report(payload: dict[str, object]) -> WmsConformanceReport:
+def verify_wms_conformance_report(
+    payload: dict[str, object],
+    *,
+    compiled_profile: CompiledWmsProviderProfile,
+) -> WmsConformanceReport:
     """从持久化 JSON 重建，并按当前 active profile 与固定题库重新验算。"""
 
     report = WmsConformanceReport.model_validate(payload)
@@ -267,9 +269,9 @@ def verify_wms_conformance_report(payload: dict[str, object]) -> WmsConformanceR
     expected_ids = tuple(case.case_id for case in QUERY_INVENTORY_CONFORMANCE_CASES)
     if tuple(case.case_id for case in report.cases) != expected_ids:
         raise ValueError("conformance report case identity order or count mismatch")
-    if report.profile_identity != WMS_PROVIDER_PROFILE.identity.identity or not hmac.compare_digest(
+    if report.profile_identity != compiled_profile.profile.profile.identity or not hmac.compare_digest(
         report.profile_digest,
-        _profile_digest(WMS_PROVIDER_PROFILE),
+        compiled_profile.profile_digest,
     ):
         raise ValueError("conformance report profile identity or digest mismatch")
 
@@ -307,30 +309,6 @@ def _evaluate_case(
         semantic_marker=observed.semantic_marker,
         failure_evidence_digest=failure_digest,
     )
-
-
-def _profile_digest(profile: WmsProviderProfile) -> str:
-    payload = {
-        "callbacks": tuple(
-            (
-                callback.callback_type,
-                callback.payload_model.__module__,
-                callback.payload_model.__qualname__,
-            )
-            for callback in profile.callbacks
-        ),
-        "identity": profile.identity.model_dump(mode="json"),
-        "operation_index_digest": WMS_OPERATION_INDEX_DIGEST,
-        "outbound_auth": tuple(
-            {
-                "credential_reference": binding.outbound_auth.credential_reference,
-                "operation_identity": binding.operation.identity,
-                "scheme": binding.outbound_auth.scheme.value,
-            }
-            for binding in profile.bindings
-        ),
-    }
-    return _digest(payload)
 
 
 def _digest(payload: object) -> str:

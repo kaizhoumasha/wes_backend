@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -29,11 +30,23 @@ if TYPE_CHECKING:
     from src.app.wms_integration.provider_profile import WmsProviderProfileSettings
 
 _PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_HOST_LABEL_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
 
 def _stable_digest(payload: object) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_valid_hostname(hostname: str) -> bool:
+    if not hostname.isascii() or "%" in hostname or len(hostname) > 253:
+        return False
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        labels = hostname.removesuffix(".").split(".")
+        return bool(labels) and all(_HOST_LABEL_PATTERN.fullmatch(label) for label in labels)
+    return True
 
 
 def _compile_origin(server_url: str) -> str:
@@ -48,6 +61,7 @@ def _compile_origin(server_url: str) -> str:
     if (
         parsed.scheme.lower() not in {"http", "https"}
         or not hostname
+        or not _is_valid_hostname(hostname)
         or parsed.netloc.endswith(":")
         or parsed.username is not None
         or parsed.password is not None
@@ -133,10 +147,28 @@ class CompiledWmsOperationEndpoint:
             raise TypeError(f"{self.identity} endpoint requires its operation-specific typed request")
 
         def encode_placeholder(match: re.Match[str]) -> str:
-            value = getattr(request, match.group(1))
+            value = str(getattr(request, match.group(1)))
+            decoded = value
+            while True:
+                if any(segment in {".", ".."} for segment in re.split(r"[/\\]", decoded)):
+                    raise ValueError("typed path value must not resolve to a dot segment")
+                next_decoded = unquote(decoded)
+                if next_decoded == decoded:
+                    break
+                decoded = next_decoded
             return quote(str(value), safe="")
 
-        return _PLACEHOLDER_PATTERN.sub(encode_placeholder, self.endpoint_template)
+        rendered = _PLACEHOLDER_PATTERN.sub(encode_placeholder, self.endpoint_template)
+        compiled_origin = urlsplit(self.endpoint_template)
+        rendered_endpoint = urlsplit(rendered)
+        if (
+            rendered_endpoint.scheme != compiled_origin.scheme
+            or rendered_endpoint.netloc != compiled_origin.netloc
+            or rendered_endpoint.query
+            or rendered_endpoint.fragment
+        ):
+            raise ValueError("rendered endpoint must preserve the compiled origin")
+        return rendered
 
 
 @dataclass(frozen=True, slots=True)

@@ -10,9 +10,14 @@ from pydantic import ValidationError
 
 from src.app.runtime.orchestration.services.inbox.wms_typed_effect_callback_router import WmsTypedEffectCallbackRouter
 from src.app.runtime.system_capabilities.wms import provider_catalog
-from src.app.runtime.system_capabilities.wms.contracts import InboundCallbackContract, WmsEffectStatusHint
+from src.app.runtime.system_capabilities.wms.contracts import (
+    InboundCallbackContract,
+    WmsEffectStatusHint,
+    WmsProviderProfile,
+)
+from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
 
-WMS_PROVIDER_PROFILE = provider_catalog.WMS_PROVIDER_PROFILE
+PROVIDER_CATALOG = build_provider_catalog()
 
 
 class _StatusService:
@@ -45,9 +50,9 @@ def _hint_payload(**overrides: object) -> dict[str, object]:
 
 
 def test_effect_profile_can_omit_callback_contract() -> None:
-    profile_without_callback = type(WMS_PROVIDER_PROFILE)(
-        identity=WMS_PROVIDER_PROFILE.identity,
-        bindings=WMS_PROVIDER_PROFILE.bindings,
+    profile_without_callback = WmsProviderProfile(
+        identity=PROVIDER_CATALOG.identity,
+        bindings=PROVIDER_CATALOG.bindings,
     )
 
     assert profile_without_callback.callbacks == ()
@@ -56,7 +61,7 @@ def test_effect_profile_can_omit_callback_contract() -> None:
 def test_provider_registers_one_generic_status_hint_contract() -> None:
     hint_contract = getattr(provider_catalog, "WMS_EFFECT_STATUS_HINT_CALLBACK", None)
 
-    assert WMS_PROVIDER_PROFILE.callbacks == (hint_contract,)
+    assert PROVIDER_CATALOG.callbacks == (hint_contract,)
     assert hint_contract.callback_type == "WMS_EFFECT_STATUS_HINT"
     assert set(hint_contract.payload_model.model_fields) == {
         "operation_identity",

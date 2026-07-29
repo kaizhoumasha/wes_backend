@@ -25,9 +25,9 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_MATERIAL_FLOW_CONTRACT_VERSION
 from src.app.runtime.workline_plugins.rough_sorter.domain_contract import resolve_rough_sorter_business_key
 from src.app.sys.models import SystemOutbox
+from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSION
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.plugin_binding_service import (
     WorklinePluginBindingService,
@@ -39,7 +39,7 @@ from tests.support.runtime_inbox_postgresql import run_alembic, temporary_databa
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-PROFILE_IDENTITY = f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.sandbox"
+PROFILE_IDENTITY = f"wms.{WMS_PROVIDER_CONTRACT_VERSION}.sandbox"
 
 
 @dataclass(frozen=True, slots=True)

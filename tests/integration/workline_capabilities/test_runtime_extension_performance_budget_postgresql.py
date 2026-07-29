@@ -33,7 +33,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteInput
 from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.sys.models import SystemOutbox
 from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
 from src.app.wms_integration.services import (
@@ -44,6 +43,10 @@ from src.app.wms_integration.services import (
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
 from src.utils.timezone import timezone
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+)
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
     seed_scan_flow,
@@ -67,6 +70,7 @@ SMT_RECOVERY_BATCH_SIZE = 100
 SMT_RECOVERY_COMMAND_QUERIES_PER_ITEM = 1
 SMT_RECOVERY_CANDIDATE_LIMIT = 2
 MEASURED_SAMPLE_COUNT = 5
+PERFORMANCE_COMPILED_PROFILE = build_compiled_provider_profile(build_hmac_provider_profile_payload())
 
 
 def _callback_request(payload: dict[str, object]) -> Request:
@@ -127,11 +131,11 @@ def _inventory_query_port_factory_builder(session_factory: Any, http_calls: list
             transport=httpx.MockTransport(handler),
             evidence_writer=WmsCallEvidenceQueryWriter(
                 session_factory=session_factory,
-                provider_profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+                provider_profile_identity=PERFORMANCE_COMPILED_PROFILE.profile.profile.identity,
                 evidence_service=WmsCallEvidenceService(),
                 breaker_service=breaker_service,
             ),
-            settings_source=settings_source,
+            compiled_profile=PERFORMANCE_COMPILED_PROFILE,
         )
 
     return builder

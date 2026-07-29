@@ -25,6 +25,10 @@ from scripts.verify_wms_northbound_feasibility import _contract_values, _status_
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from src.core.conf import settings
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+)
 from tests.mock import wms_mock_server
 from tests.mock.wms_northbound_contract import (
     ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
@@ -41,6 +45,10 @@ ASYNC_OPERATIONS = tuple(
 )
 OPERATION_IDENTITIES = frozenset(operation.identity for operation in ASYNC_OPERATIONS)
 SAMPLE_ASYNC_OPERATION = ASYNC_OPERATIONS[0]
+PROBE_PROFILE_PAYLOAD = build_hmac_provider_profile_payload()
+PROBE_PROFILE_PAYLOAD["outbound_auth"]["credential_reference"] = ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE
+PROBE_PROFILE_PAYLOAD["effect_status_path"] = "/northbound/operations/status"
+PROBE_COMPILED_PROFILE = build_compiled_provider_profile(PROBE_PROFILE_PAYLOAD)
 
 
 def test_contract_values_reject_retention_shorter_than_wes_confirmation_window() -> None:
@@ -53,7 +61,7 @@ def test_contract_values_reject_retention_shorter_than_wes_confirmation_window()
         "status_deadline_seconds": 2,
     }
 
-    assert _contract_values(contract) is None
+    assert _contract_values(contract, compiled_profile=PROBE_COMPILED_PROFILE) is None
 
 
 def test_contract_values_reject_visibility_slower_than_wes_not_found_grace() -> None:
@@ -66,7 +74,7 @@ def test_contract_values_reject_visibility_slower_than_wes_not_found_grace() -> 
         "status_deadline_seconds": 2,
     }
 
-    assert _contract_values(contract) is None
+    assert _contract_values(contract, compiled_profile=PROBE_COMPILED_PROFILE) is None
 
 
 def test_contract_values_accept_finite_fractional_time_contract() -> None:
@@ -79,7 +87,7 @@ def test_contract_values_accept_finite_fractional_time_contract() -> None:
         "status_deadline_seconds": 2.5,
     }
 
-    assert _contract_values(contract) == contract
+    assert _contract_values(contract, compiled_profile=PROBE_COMPILED_PROFILE) == contract
 
 
 @pytest.mark.parametrize("invalid_value", [float("inf"), float("-inf"), float("nan")])
@@ -93,7 +101,7 @@ def test_contract_values_reject_non_finite_time_contract(invalid_value: float) -
         "status_deadline_seconds": 2,
     }
 
-    assert _contract_values(contract) is None
+    assert _contract_values(contract, compiled_profile=PROBE_COMPILED_PROFILE) is None
 
 
 def test_mock_contract_deadlines_match_wes_transport_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,7 +135,11 @@ def test_mock_contract_accepts_fractional_time_overrides(monkeypatch: pytest.Mon
 
 @pytest.mark.asyncio
 async def test_probe_reports_public_deadline_alignment(northbound_mock_client: httpx.AsyncClient) -> None:
-    report = await run_probe(northbound_mock_client, request_timeout_seconds=1.0)
+    report = await run_probe(
+        northbound_mock_client,
+        compiled_profile=PROBE_COMPILED_PROFILE,
+        request_timeout_seconds=1.0,
+    )
 
     case = next((case for case in report.cases if case.case_id == "public_contract_deadline_alignment"), None)
     assert case is not None
@@ -175,6 +187,11 @@ async def test_feasibility_probe_cli_ignores_host_proxy_environment(monkeypatch:
         ),
     )
     monkeypatch.setattr(probe_module.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(
+        probe_module,
+        "validate_wms_transport_configuration",
+        lambda *, settings_source: SimpleNamespace(compiled_profile=PROBE_COMPILED_PROFILE),
+    )
     monkeypatch.setattr(
         probe_module,
         "run_probe",
@@ -226,6 +243,7 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
 ) -> None:
     report = await run_probe(
         northbound_mock_client,
+        compiled_profile=PROBE_COMPILED_PROFILE,
         request_timeout_seconds=1.0,
     )
 
@@ -329,7 +347,10 @@ async def test_malicious_remote_body_never_reaches_probe_output(capsys: pytest.C
         base_url="http://malicious-wms.test",
     ) as client:
         report = await run_probe(
-            client, operation_identity=SAMPLE_ASYNC_OPERATION.identity, request_timeout_seconds=0.01
+            client,
+            compiled_profile=PROBE_COMPILED_PROFILE,
+            operation_identity=SAMPLE_ASYNC_OPERATION.identity,
+            request_timeout_seconds=0.01,
         )
 
     captured = capsys.readouterr()
@@ -370,7 +391,10 @@ async def test_malicious_200_contract_values_fail_without_traceback_or_remote_ec
         base_url="http://invalid-contract-wms.test",
     ) as client:
         report = await run_probe(
-            client, operation_identity=SAMPLE_ASYNC_OPERATION.identity, request_timeout_seconds=0.01
+            client,
+            compiled_profile=PROBE_COMPILED_PROFILE,
+            operation_identity=SAMPLE_ASYNC_OPERATION.identity,
+            request_timeout_seconds=0.01,
         )
 
     captured = capsys.readouterr()
@@ -413,7 +437,10 @@ async def test_total_deadline_includes_slow_streamed_response_body(
         base_url="http://slow-body-wms.test",
     ) as client:
         report = await run_probe(
-            client, operation_identity=SAMPLE_ASYNC_OPERATION.identity, request_timeout_seconds=0.01
+            client,
+            compiled_profile=PROBE_COMPILED_PROFILE,
+            operation_identity=SAMPLE_ASYNC_OPERATION.identity,
+            request_timeout_seconds=0.01,
         )
 
     captured = capsys.readouterr()

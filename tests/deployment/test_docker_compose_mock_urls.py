@@ -166,7 +166,6 @@ def test_dev_and_test_env_declare_the_provider_profile_entry() -> None:
         assert "API_APP_SECRET=local_mock_change_me" in env_text
         assert "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1=" not in env_text
         assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=true" in env_text
-        assert "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION=v2" in env_text
         assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1=" in env_text
         assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2=" in env_text
         assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text
@@ -180,7 +179,6 @@ def test_local_settings_load_wms_budgets_and_credentials_from_generated_dotenv()
         local_settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS + local_settings.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS
     )
     assert local_settings.WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED is True
-    assert local_settings.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION == "v2"
     assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1
     assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2
 
@@ -192,7 +190,6 @@ def test_prod_env_requires_an_explicit_provider_profile_and_keeps_secret_slots()
     for setting_name in STATUS_CONFIG_NAMES:
         assert f"{setting_name}=" in env_text
     assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=false" in env_text
-    assert "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION=v2" in env_text
     assert "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1=" in env_text
     assert "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2=" in env_text
     assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text

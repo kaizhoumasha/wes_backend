@@ -29,7 +29,7 @@ from src.app.runtime.capabilities.material_flow.rough_sorter_inventory_admission
 )
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.provider_catalog import (
-    WMS_PROVIDER_PROFILE,
+    build_wms_provider_catalog,
     resolve_wms_operation_binding,
 )
 from src.app.sys.canonical_dispatch import canonical_json_bytes
@@ -46,6 +46,10 @@ from src.app.wms_integration.services.query_transport import (
     WmsQueryTransportExecutor,
 )
 from src.core.conf import settings
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+)
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ACCEPTANCE_COMPOSE_FILE = BACKEND_ROOT / "docker-compose.wms-acceptance.yml"
@@ -223,6 +227,14 @@ async def _reset_and_active_credential(client: httpx.AsyncClient) -> tuple[str, 
     return credential_reference, configured_secret.encode("utf-8")
 
 
+def _live_compiled_profile(*, base_url: str, credential_reference: str):
+    payload = build_hmac_provider_profile_payload()
+    payload["server_url"] = base_url
+    payload["effect_status_path"] = "/northbound/operations/status"
+    payload["outbound_auth"]["credential_reference"] = credential_reference
+    return build_compiled_provider_profile(payload)
+
+
 class _LiveQueryEvidenceWriter:
     async def before_call(self, *, operation_identity: str, target_code: str) -> WmsQueryCallPermit:
         return WmsQueryCallPermit(allowed=True)
@@ -265,8 +277,16 @@ async def test_compose_mock_wms_northbound_live_contract() -> None:
         timeout=httpx.Timeout(timeout_seconds),
         trust_env=False,
     ) as client:
-        await _reset_and_active_credential(client)
-        report = await run_probe(client, request_timeout_seconds=timeout_seconds)
+        credential_reference, _secret = await _reset_and_active_credential(client)
+        compiled_profile = _live_compiled_profile(
+            base_url=base_url,
+            credential_reference=credential_reference,
+        )
+        report = await run_probe(
+            client,
+            compiled_profile=compiled_profile,
+            request_timeout_seconds=timeout_seconds,
+        )
 
     assert report.passed is True, report.cases
 
@@ -280,8 +300,11 @@ async def test_compose_mock_wms_inventory_query_matches_production_adapter_over_
         trust_env=False,
     ) as client:
         credential_reference, secret = await _reset_and_active_credential(client)
+    compiled_profile = _live_compiled_profile(base_url=base_url, credential_reference=credential_reference)
+    catalog = build_wms_provider_catalog(compiled_profile)
     binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        catalog=catalog,
+        profile_identity=catalog.profile_identity,
         operation_identity=CONTRACT.identity,
     )
     assert binding.outbound_auth.credential_reference == credential_reference
@@ -370,8 +393,11 @@ async def test_compose_mock_wms_inventory_query_hmac_fails_closed_over_tcp() -> 
                 "owner_code": "OWNER-IT",
             },
         )
+    compiled_profile = _live_compiled_profile(base_url=base_url, credential_reference=credential_reference)
+    catalog = build_wms_provider_catalog(compiled_profile)
     binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        catalog=catalog,
+        profile_identity=catalog.profile_identity,
         operation_identity=CONTRACT.identity,
     )
     invalid_auth = await _live_inventory_adapter(

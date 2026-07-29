@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.app.wms_integration.endpoint_compiler import (
     CompiledWmsProviderProfile,
@@ -17,12 +17,16 @@ from src.app.wms_integration.provider_readiness import (
     build_wms_provider_readiness,
 )
 
+if TYPE_CHECKING:
+    from src.app.runtime.system_capabilities.wms.provider_catalog import WmsProviderCatalog
+
 
 @dataclass(frozen=True, slots=True)
 class WmsProviderStartupConfiguration:
     """同一次 profile 编译派生的 WES 与 fulfillment 启动快照。"""
 
     compiled_profile: CompiledWmsProviderProfile
+    catalog: WmsProviderCatalog
     wes_readiness: WmsProviderReadiness
     fulfillment_readiness: WmsProviderReadiness
 
@@ -37,8 +41,11 @@ def assemble_wms_provider_startup(settings_source: Any) -> WmsProviderStartupCon
     if not profile_path.is_absolute():
         raise ValueError("WMS_PROVIDER_PROFILE_FILE must be an absolute path")
     compiled_profile = compile_wms_provider_profile(load_wms_provider_profile(profile_path))
+    from src.app.runtime.system_capabilities.wms.provider_catalog import build_wms_provider_catalog
+
     return WmsProviderStartupConfiguration(
         compiled_profile=compiled_profile,
+        catalog=build_wms_provider_catalog(compiled_profile),
         wes_readiness=build_wms_provider_readiness(
             compiled_profile,
             process_role=WmsProviderProcessRole.WES,

@@ -43,6 +43,7 @@ from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.effect_bridges import EffectReconciliationBridge
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,10 +84,18 @@ def _emit_status_hint_enqueue_failure(
     )
 
 
-def freeze_wms_effect_status_binding(*, intent_log: Any, outbox: Any) -> None:
+def freeze_wms_effect_status_binding(
+    *,
+    intent_log: Any,
+    outbox: Any,
+    compiled_profile: CompiledWmsProviderProfile,
+) -> None:
     """在 Intent/Outbox 同一短事务加入前冻结非秘密 status binding。"""
 
-    binding = build_wms_effect_status_binding(settings_source=settings)
+    binding = build_wms_effect_status_binding(
+        settings_source=settings,
+        compiled_profile=compiled_profile,
+    )
     if binding.provider_profile_identity != getattr(outbox, "provider_profile_identity", None):
         raise ValueError("WMS EFFECT status binding must match the frozen outbound provider profile")
     capability_identity = (

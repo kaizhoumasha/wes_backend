@@ -15,8 +15,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlencode
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -25,10 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.app.runtime.system_capabilities.wms.provider_catalog import (  # noqa: E402
-    WMS_NORTHBOUND_AUTH,
-    WMS_PROVIDER_PROFILE,
-)
+from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration  # noqa: E402
 from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256  # noqa: E402
 from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE  # noqa: E402
 from src.app.wms_integration.operation_contract import WmsCompletionMode  # noqa: E402
@@ -37,33 +34,24 @@ from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck  #
 from src.core.conf import settings  # noqa: E402
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES  # noqa: E402
 
+if TYPE_CHECKING:
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
+
 _STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"})
 _REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _MAX_SAFE_RESPONSE_BYTES = 1024 * 1024
 _RESPONSE_CLOSE_TIMEOUT_SECONDS = 1.0
-_ACTIVE_CREDENTIAL_REFERENCE = str(WMS_NORTHBOUND_AUTH.credential_reference)
-_ACTIVE_HMAC_SECRET_ENV = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[_ACTIVE_CREDENTIAL_REFERENCE]
-
 _ASYNC_OPERATIONS = tuple(
     operation for operation in WMS_OPERATIONS if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
 )
 _OPERATION_SPECS: dict[str, dict[str, Any]] = {
     operation.identity: {
-        "submit_path": f"/api/wms{operation.path_template}",
         "payload": REQUEST_FIXTURES[operation.identity],
         "rejection": operation.reject_codes[0],
     }
     for operation in _ASYNC_OPERATIONS
 }
-_TYPED_EFFECT_SUBMIT_DEADLINES = frozenset(
-    float(binding.operation.budget.deadline_seconds)
-    for binding in WMS_PROVIDER_PROFILE.bindings
-    if binding.operation.identity in _OPERATION_SPECS
-)
-if len(_TYPED_EFFECT_SUBMIT_DEADLINES) != 1:
-    raise RuntimeError("typed WMS EFFECT operations must share one submit deadline")
-_EXPECTED_SUBMIT_DEADLINE_SECONDS = next(iter(_TYPED_EFFECT_SUBMIT_DEADLINES))
 _EXPECTED_STATUS_DEADLINE_SECONDS = float(settings.WMS_EFFECT_STATUS_TIMEOUT_SECONDS)
 
 
@@ -148,7 +136,11 @@ def _is_aware_rfc3339(value: object) -> bool:
     return parsed.tzinfo is not None and parsed.utcoffset() == UTC.utcoffset(parsed)
 
 
-def _contract_values(contract: object) -> dict[str, Any] | None:
+def _contract_values(
+    contract: object,
+    *,
+    compiled_profile: CompiledWmsProviderProfile,
+) -> dict[str, Any] | None:
     """仅接受实际 Mock 声明且覆盖 WES 安全窗口的公开承诺参数。"""
 
     if not isinstance(contract, dict):
@@ -184,7 +176,8 @@ def _contract_values(contract: object) -> dict[str, Any] | None:
         return None
     if values["status_visibility_sla_seconds"] > settings.WES_EFFECT_NOT_FOUND_GRACE_SECONDS:
         return None
-    if credential_reference != _ACTIVE_CREDENTIAL_REFERENCE or not credential_reference.endswith("@v2"):
+    active_credential_reference = compiled_profile.profile.outbound_auth.credential_reference
+    if credential_reference != active_credential_reference:
         return None
     return {**values, "credential_reference": credential_reference}
 
@@ -325,6 +318,7 @@ def _status_headers(*, secret: bytes, credential_reference: str, raw_path: str) 
 async def run_probe(
     client: httpx.AsyncClient,
     *,
+    compiled_profile: CompiledWmsProviderProfile,
     operation_identity: str | None = None,
     request_timeout_seconds: float = 2.0,
     submit_timeout_seconds: float | None = None,
@@ -334,13 +328,41 @@ async def run_probe(
 
     effective_submit_timeout = submit_timeout_seconds or request_timeout_seconds
     effective_status_timeout = status_timeout_seconds or request_timeout_seconds
+    active_credential_reference = compiled_profile.profile.outbound_auth.credential_reference
+    if active_credential_reference is None:
+        raise ValueError("WMS northbound feasibility probe requires outbound HMAC authentication")
+    try:
+        active_hmac_secret_env = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[active_credential_reference]
+    except KeyError as exc:
+        raise ValueError("WMS northbound feasibility probe credential reference is not resolvable") from exc
+    operation_specs = {
+        identity: {
+            **spec,
+            "submit_path": urlsplit(compiled_profile.operations[identity].endpoint_template).path,
+        }
+        for identity, spec in _OPERATION_SPECS.items()
+    }
+    typed_effect_submit_deadlines = {
+        float(compiled_profile.operations[identity].budget.deadline_seconds) for identity in operation_specs
+    }
+    if len(typed_effect_submit_deadlines) != 1:
+        raise RuntimeError("typed WMS EFFECT operations must share one submit deadline")
+    expected_submit_deadline_seconds = next(iter(typed_effect_submit_deadlines))
+    status_endpoints = {
+        endpoint.status_endpoint
+        for identity, endpoint in compiled_profile.operations.items()
+        if identity in operation_specs
+    }
+    if len(status_endpoints) != 1 or None in status_endpoints:
+        raise RuntimeError("typed WMS EFFECT operations must share one status endpoint")
+    status_target = urlsplit(next(iter(status_endpoints))).path
     results: list[ProbeCaseResult] = []
     bootstrap_limit = 64 * 1024
     contract_response = await _request(
         client, "GET", "/northbound/contract", request_timeout_seconds=request_timeout_seconds
     )
     contract = _json_object(contract_response, max_response_bytes=bootstrap_limit)
-    contract_values = _contract_values(contract)
+    contract_values = _contract_values(contract, compiled_profile=compiled_profile)
     contract_ok = contract_response is not None and contract_response.status_code == 200 and contract_values is not None
     results.append(_result("public_contract_parameters", contract_ok))
     if contract_values is None:
@@ -348,12 +370,12 @@ async def run_probe(
     results.append(
         _result(
             "public_contract_deadline_alignment",
-            contract_values["submit_deadline_seconds"] == _EXPECTED_SUBMIT_DEADLINE_SECONDS
+            contract_values["submit_deadline_seconds"] == expected_submit_deadline_seconds
             and contract_values["status_deadline_seconds"] == _EXPECTED_STATUS_DEADLINE_SECONDS,
         )
     )
 
-    configured_secret = os.getenv(_ACTIVE_HMAC_SECRET_ENV) or getattr(settings, _ACTIVE_HMAC_SECRET_ENV, "")
+    configured_secret = os.getenv(active_hmac_secret_env) or getattr(settings, active_hmac_secret_env, "")
     secret = configured_secret.encode("utf-8")
     results.append(_result("active_v2_hmac_secret_available", bool(secret)))
     if not secret:
@@ -388,15 +410,15 @@ async def run_probe(
             and legacy_material.status_code == 404,
         )
     )
-    selected = (operation_identity,) if operation_identity else tuple(_OPERATION_SPECS)
-    if any(identity not in _OPERATION_SPECS for identity in selected):
+    selected = (operation_identity,) if operation_identity else tuple(operation_specs)
+    if any(identity not in operation_specs for identity in selected):
         results.append(_result("requested_operation_supported", False))
         return FeasibilityReport(cases=tuple(results))
 
     async def submit(
         identity: str, key: str, payload: dict[str, Any], *, header_overrides: dict[str, str] | None = None
     ) -> httpx.Response | None:
-        spec = _OPERATION_SPECS[identity]
+        spec = operation_specs[identity]
         body = canonical_json_bytes(payload)
         headers = _submit_headers(
             secret=secret,
@@ -418,9 +440,7 @@ async def run_probe(
         )
 
     async def status(identity: str, key: str) -> httpx.Response | None:
-        raw_path = "/northbound/operations/status?" + urlencode(
-            (("operation_identity", identity), ("idempotency_key", key))
-        )
+        raw_path = status_target + "?" + urlencode((("operation_identity", identity), ("idempotency_key", key)))
         return await _request(
             client,
             "GET",
@@ -511,7 +531,7 @@ async def run_probe(
         return _json_object(response, max_response_bytes=max_response_bytes)
 
     for identity in selected:
-        spec = _OPERATION_SPECS[identity]
+        spec = operation_specs[identity]
         payload = dict(spec["payload"])
         key = f"probe-{uuid4().hex}"
         first = await submit(identity, key, payload)
@@ -723,7 +743,7 @@ async def run_probe(
 
         visible_then_lost_configured = await configure_fault(
             status=200,
-            target_path="/northbound/operations/status",
+            target_path=status_target,
             method="GET",
             operation_identity=identity,
             not_found=True,
@@ -758,9 +778,8 @@ async def run_probe(
 
     fault_identity = selected[0]
     fault_key = f"probe-fault-{uuid4().hex}"
-    fault_payload = dict(_OPERATION_SPECS[fault_identity]["payload"])
+    fault_payload = dict(operation_specs[fault_identity]["payload"])
     await submit(fault_identity, fault_key, fault_payload)
-    status_target = "/northbound/operations/status"
     rate_configured = await configure_fault(
         status=429,
         retry_after=2,
@@ -843,7 +862,7 @@ async def run_probe(
     submit_deadline_key = f"probe-submit-deadline-{uuid4().hex}"
     submit_deadline_configured = await configure_fault(
         status=200,
-        target_path=_OPERATION_SPECS[fault_identity]["submit_path"],
+        target_path=operation_specs[fault_identity]["submit_path"],
         method="POST",
         operation_identity=fault_identity,
         delay=max(effective_submit_timeout * 2, 0.05),
@@ -891,7 +910,7 @@ async def run_probe(
         )
     )
 
-    stale_submit_path = _OPERATION_SPECS[fault_identity]["submit_path"]
+    stale_submit_path = operation_specs[fault_identity]["submit_path"]
     stale_submit_body = canonical_json_bytes(fault_payload)
     stale_submit_key = f"probe-stale-submit-{uuid4().hex}"
     stale_submit = await _request(
@@ -921,8 +940,8 @@ async def run_probe(
         )
     )
 
-    replay_raw_path = "/northbound/operations/status?" + urlencode(
-        (("operation_identity", fault_identity), ("idempotency_key", fault_key))
+    replay_raw_path = (
+        status_target + "?" + urlencode((("operation_identity", fault_identity), ("idempotency_key", fault_key)))
     )
     replay_headers = _status_headers(
         secret=secret,
@@ -957,8 +976,8 @@ async def run_probe(
         )
     )
 
-    tampered_raw_path = "/northbound/operations/status?" + urlencode(
-        (("operation_identity", fault_identity), ("idempotency_key", fault_key))
+    tampered_raw_path = (
+        status_target + "?" + urlencode((("operation_identity", fault_identity), ("idempotency_key", fault_key)))
     )
     tampered_headers = _status_headers(
         secret=secret, credential_reference=contract_values["credential_reference"], raw_path=tampered_raw_path
@@ -1030,6 +1049,7 @@ async def _main() -> int:
     args = _parse_args()
     if not args.base_url:
         raise SystemExit("需要 --base-url 或 WMS_NORTHBOUND_STUB_BASE_URL；不得将认证信息写入命令行。")
+    startup = validate_wms_transport_configuration(settings_source=settings)
     client_timeout = max(
         args.timeout_seconds,
         args.submit_timeout_seconds or 0,
@@ -1042,6 +1062,7 @@ async def _main() -> int:
     ) as client:
         report = await run_probe(
             client,
+            compiled_profile=startup.compiled_profile,
             operation_identity=args.operation_identity,
             request_timeout_seconds=args.timeout_seconds,
             submit_timeout_seconds=args.submit_timeout_seconds,

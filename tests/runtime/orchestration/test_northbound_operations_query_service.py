@@ -18,7 +18,7 @@ async def test_tenant_principal_reads_only_owner_scoped_operational_snapshot() -
     )
 
     bucket = SimpleNamespace(
-        provider_profile_identity="wms.2026-07-06.material-flow.production",
+        provider_profile_identity="wms.2026-07-28.full-factory.production",
         operation_identity="wms.inventory.query_inventory@v1",
         mode="QUERY",
         backlog_count=1,

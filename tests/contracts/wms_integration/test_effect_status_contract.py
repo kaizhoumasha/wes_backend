@@ -33,6 +33,10 @@ from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
 from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
 from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+)
 from tests.mock.wms_northbound_contract import build_typed_ack
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
@@ -47,13 +51,16 @@ _BATCH_OPERATIONS = {
 def _binding(*, timeout_seconds: float = 2.0) -> FrozenWmsEffectStatusBinding:
     settings = SimpleNamespace(
         APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=timeout_seconds,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
     )
+    profile_payload = build_hmac_provider_profile_payload()
+    profile_payload["server_url"] = "https://wms.example"
+    profile_payload["effect_status_path"] = "/northbound/operations/status"
+    profile_payload["outbound_auth"]["credential_reference"] = "secret://wms/material-flow-sandbox-hmac@v2"
     return build_wms_effect_status_binding(
         settings_source=settings,
-        status_endpoint="https://wms.example/northbound/operations/status",
+        compiled_profile=build_compiled_provider_profile(profile_payload),
     )
 
 

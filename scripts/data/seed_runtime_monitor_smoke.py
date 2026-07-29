@@ -43,7 +43,7 @@ from src.core.conf import settings
 from src.utils.timezone import timezone
 
 SMOKE_CONTRACT_VERSION = "runtime-monitor-smoke-v1"
-SMOKE_PROVIDER_PROFILE = "wms.2026-07-06.material-flow.sandbox"
+SMOKE_PROVIDER_PROFILE = "wms.2026-07-28.full-factory.sandbox"
 SINGLE_LAYER_SMOKE_POSITION_CODE = "SOURCE_STATION_A"
 
 

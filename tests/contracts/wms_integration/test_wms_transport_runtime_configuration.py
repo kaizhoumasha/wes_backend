@@ -14,6 +14,9 @@ from src.app.wms_integration.runtime_factory import build_inventory_query_port_f
 from src.app.wms_integration.services.query_transport import WmsBoundQueryEndpoint
 from src.core.conf import Settings
 from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+    build_provider_catalog,
     build_provider_profile_payload,
     write_provider_profile,
 )
@@ -45,28 +48,23 @@ def test_wms_effect_status_runtime_configuration_exposes_all_frozen_budgets() ->
 
 
 def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_frozen_revisions() -> None:
-    old_settings = SimpleNamespace(APP_ENV="test", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1")
     active_settings = SimpleNamespace(
         APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
         WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="old-secret",
         WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2="new-secret",
         WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES="",
     )
 
-    old_profile = provider_catalog.build_active_wms_provider_profile(old_settings)
-    active_profile = provider_catalog.build_active_wms_provider_profile(active_settings)
-    old_reference = old_profile.bindings[0].outbound_auth.credential_reference
-    active_reference = active_profile.bindings[0].outbound_auth.credential_reference
+    old_payload = build_hmac_provider_profile_payload()
+    active_payload = build_hmac_provider_profile_payload()
+    old_payload["outbound_auth"]["credential_reference"] = "secret://wms/material-flow-sandbox-hmac@v1"
+    active_payload["outbound_auth"]["credential_reference"] = "secret://wms/material-flow-sandbox-hmac@v2"
+    old_profile = build_compiled_provider_profile(old_payload)
+    active_profile = build_compiled_provider_profile(active_payload)
+    old_reference = old_profile.profile.outbound_auth.credential_reference
+    active_reference = active_profile.profile.outbound_auth.credential_reference
     credential_provider = build_environment_external_http_credential_provider(settings_source=active_settings)
-    old_profile_hash = payload_sha256(
-        canonical_json_bytes(
-            {
-                "credential_reference": old_reference,
-                "provider_profile_identity": old_profile.identity.identity,
-            }
-        )
-    )
+    old_profile_hash = old_profile.profile_digest
     target = {
         "url": "https://old-wms.example.test/status",
         "http_method": "GET",
@@ -88,7 +86,7 @@ def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_
         ),
         "credential_reference": old_reference,
         "provider_profile_hash": old_profile_hash,
-        "provider_profile_identity": old_profile.identity.identity,
+        "provider_profile_identity": old_profile.profile.profile.identity,
         "target": target,
         "target_hash": target_hash,
     }
@@ -97,7 +95,8 @@ def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_
         snapshot_hash=payload_sha256(canonical_json_bytes(old_binding_snapshot)),
     )
 
-    assert old_profile.identity.identity == active_profile.identity.identity
+    assert old_profile.profile.profile.identity == active_profile.profile.profile.identity
+    assert old_profile.profile_digest != active_profile.profile_digest
     assert old_reference == "secret://wms/material-flow-sandbox-hmac@v1"
     assert active_reference == "secret://wms/material-flow-sandbox-hmac@v2"
     assert credential_provider.resolve(frozen_old_binding.credential_reference) == b"old-secret"
@@ -217,8 +216,10 @@ def test_wms_transport_rejects_non_origin_base_urls(tmp_path, base_url: str) -> 
 
 
 def test_query_endpoint_rejects_missing_hostname() -> None:
+    catalog = build_provider_catalog(build_hmac_provider_profile_payload())
     binding = provider_catalog.resolve_wms_operation_binding(
-        profile_identity=provider_catalog.WMS_PROVIDER_PROFILE.identity.identity,
+        catalog=catalog,
+        profile_identity=catalog.profile_identity,
         operation_identity="wms.inventory.query_inventory@v1",
     )
 
@@ -231,8 +232,5 @@ def test_production_runtime_rejects_explicit_in_process_simulation() -> None:
         build_inventory_query_port_factory(
             simulation=True,
             sandbox_rows_provider=lambda **_kwargs: [],
-            settings_source=SimpleNamespace(
-                APP_ENV="prod",
-                WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-            ),
+            compiled_profile=build_compiled_provider_profile(),
         )

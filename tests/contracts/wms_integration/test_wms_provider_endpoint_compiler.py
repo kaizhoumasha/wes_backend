@@ -39,6 +39,13 @@ def _compile(payload: dict | None = None):
         "http://factory-wms.example:notaport",
         "http://[::1",
         "http://factory wms.example",
+        "http://factory\\wms.example",
+        "http://factory|wms.example",
+        "http://factory<wms.example",
+        "http://factory>wms.example",
+        "http://factory^wms.example",
+        "http://factory`wms.example",
+        "http://factory_wms.example",
         "http://",
     ],
 )
@@ -87,6 +94,25 @@ def test_compiler_percent_encodes_each_typed_path_segment_without_mapping_format
     )
     with pytest.raises(TypeError, match="typed request"):
         endpoint.render_endpoint(GetRackRequest(rack_id="RACK-1"))
+
+
+@pytest.mark.parametrize(
+    "material_code",
+    [".", "..", "%2e", "%2E%2E", "%252e%252e", "%2f..%2fadmin", "%252f..%252fadmin", "safe%2f.."],
+)
+def test_compiler_rejects_typed_dot_segments_before_http_url_normalization(material_code: str) -> None:
+    endpoint = _compile().operations["wms.master_data.get_material@v1"]
+
+    with pytest.raises(ValueError, match="dot segment"):
+        endpoint.render_endpoint(GetMaterialRequest(material_code=material_code))
+
+
+def test_rendered_endpoint_preserves_the_compiled_origin_invariant() -> None:
+    endpoint = _compile().operations["wms.master_data.get_material@v1"]
+    rendered = endpoint.render_endpoint(GetMaterialRequest(material_code="MAT/合法"))
+
+    assert rendered.startswith("http://factory-wms.example:8080/")
+    assert rendered == "http://factory-wms.example:8080/api/wms/master-data/materials/MAT%2F%E5%90%88%E6%B3%95"
 
 
 def test_compiler_derives_all_endpoint_semantics_from_static_registry() -> None:
@@ -157,18 +183,19 @@ async def test_pre_t3_runtime_entry_points_fail_closed_without_compiled_endpoint
     from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
     from src.core.conf import settings
 
+    catalog = provider_catalog.build_wms_provider_catalog(_compile())
     query_port = build_inventory_query_port_factory(
         simulation=False,
         sandbox_rows_provider=lambda **_kwargs: [],
-        settings_source=settings,
     )()
     with pytest.raises(RuntimeError, match="compiled WMS QUERY endpoint"):
         await query_port.execute(InventoryQueryOperationRequest(material_code="MAT-001"))
     with pytest.raises(RuntimeError, match="compiled WMS EFFECT endpoint registry"):
         provider_catalog.freeze_wms_effect_binding(
-            profile_identity=provider_catalog.WMS_PROVIDER_PROFILE.identity.identity,
+            catalog=catalog,
+            profile_identity=catalog.profile_identity,
             operation_identity="wms.inventory.confirm_inbound@v1",
             target_code="WMS_INVENTORY_CONFIRM_INBOUND",
         )
-    with pytest.raises(RuntimeError, match="compiled WMS EFFECT status endpoint"):
+    with pytest.raises(RuntimeError, match="compiled WMS EFFECT profile"):
         build_wms_effect_status_binding(settings_source=settings)

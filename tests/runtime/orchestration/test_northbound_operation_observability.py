@@ -59,7 +59,7 @@ def test_northbound_metric_projects_only_closed_labels_and_measurements() -> Non
 
     event = emit_northbound_operation_observation(
         operation_identity="wms.inventory.query_inventory@v1",
-        provider_profile_identity="wms.2026-07-06.material-flow.production",
+        provider_profile_identity="wms.2026-07-28.full-factory.production",
         outcome="SUCCESS",
         latency_ms=12.5,
         trace_id="trace-high-cardinality-1",
@@ -74,7 +74,7 @@ def test_northbound_metric_projects_only_closed_labels_and_measurements() -> Non
     assert metric == {
         "capability_identity": "wms.inventory.query_inventory@v1",
         "operation_identity": "wms.inventory.query_inventory@v1",
-        "provider_profile_identity": "wms.2026-07-06.material-flow.production",
+        "provider_profile_identity": "wms.2026-07-28.full-factory.production",
         "outcome": "SUCCESS",
         "policy_version": "northbound-observability.v1",
         "latency_ms": 12.5,
@@ -106,7 +106,7 @@ def test_northbound_metric_guard_fails_closed_for_dynamic_or_sensitive_attribute
 
     registry = RuntimeObservabilityRegistry()
     valid = {
-        "provider_profile_identity": "wms.2026-07-06.material-flow.production",
+        "provider_profile_identity": "wms.2026-07-28.full-factory.production",
         "outcome": "SUCCESS",
         "latency_ms": 3.0,
         "sample_count": 1,
@@ -139,7 +139,7 @@ def test_northbound_trace_stage_and_outcome_are_closed_sets() -> None:
         "RECONCILIATION",
     }
     attributes = {
-        "provider_profile_identity": "wms.2026-07-06.material-flow.production",
+        "provider_profile_identity": "wms.2026-07-28.full-factory.production",
         "outcome": "SUCCESS",
         "latency_ms": 1.0,
         "sample_count": 1,

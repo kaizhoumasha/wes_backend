@@ -42,6 +42,36 @@ def changed_profile_payload(**changes: Any) -> dict[str, Any]:
     return payload
 
 
+def build_hmac_provider_profile_payload(*, environment: str = "sandbox") -> dict[str, Any]:
+    payload = build_provider_profile_payload()
+    payload["profile"]["environment"] = environment
+    payload["network_trust_mode"] = "authenticated_network"
+    payload["outbound_auth"] = {
+        "scheme": "HMAC_SHA256",
+        "credential_reference": f"secret://wms/factory-{environment}@v1",
+    }
+    payload["inbound_auth"] = {
+        "scheme": "HMAC_SHA256",
+        "credential_reference": f"secret://wms/factory-{environment}-inbound@v1",
+    }
+    return payload
+
+
+def build_compiled_provider_profile(payload: dict[str, Any] | None = None):
+    from src.app.wms_integration.endpoint_compiler import compile_wms_provider_profile
+    from src.app.wms_integration.provider_profile import WmsProviderProfileSettings
+
+    return compile_wms_provider_profile(
+        WmsProviderProfileSettings.model_validate(payload or build_provider_profile_payload())
+    )
+
+
+def build_provider_catalog(payload: dict[str, Any] | None = None):
+    from src.app.runtime.system_capabilities.wms.provider_catalog import build_wms_provider_catalog
+
+    return build_wms_provider_catalog(build_compiled_provider_profile(payload))
+
+
 def write_provider_profile(path: Path, payload: dict[str, Any] | None = None) -> Path:
     path.write_text(
         yaml.safe_dump(payload or build_provider_profile_payload(), allow_unicode=True, sort_keys=False),
@@ -50,4 +80,11 @@ def write_provider_profile(path: Path, payload: dict[str, Any] | None = None) ->
     return path
 
 
-__all__ = ["build_provider_profile_payload", "changed_profile_payload", "write_provider_profile"]
+__all__ = [
+    "build_compiled_provider_profile",
+    "build_hmac_provider_profile_payload",
+    "build_provider_catalog",
+    "build_provider_profile_payload",
+    "changed_profile_payload",
+    "write_provider_profile",
+]

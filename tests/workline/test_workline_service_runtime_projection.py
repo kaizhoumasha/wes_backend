@@ -528,7 +528,7 @@ async def test_real_rough_sorter_activation_pins_profile_port_and_generated_inde
         "ng_location": "NG-01",
         "warehouse_code": "WH-01",
         "owner_code": "OWNER-01",
-        "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+        "provider_profile": "wms.2026-07-28.full-factory.sandbox",
     }
     binding_repository = _ImmutableBindingRepository()
     binding_service = WorklinePluginBindingService(
@@ -572,7 +572,7 @@ async def test_real_rough_sorter_activation_pins_profile_port_and_generated_inde
     assert result.active_plugin_binding_id == 21
     assert result.active_plugin_binding_version == 1
     assert result.active_plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
-    assert result.active_plugin_provider_requirements_json == ["WMS@2026-07-06.material-flow#sandbox"]
+    assert result.active_plugin_provider_requirements_json == ["WMS@2026-07-28.full-factory#sandbox"]
     assert {entry["device_code"] for entry in binding_repository.created[0]["device_snapshot_json"]} == {
         "RS-IN-01",
         "RS-CONVEYOR-01",

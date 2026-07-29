@@ -9,6 +9,12 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+    build_provider_catalog,
+)
+
 EXPECTED_QUERY_IDENTITIES = (
     "wms.master_data.get_material@v1",
     "wms.master_data.list_materials@v1",
@@ -225,8 +231,10 @@ def test_provider_conformance_scenarios_and_mock_fixtures_derive_from_registry()
     fixtures = _load("tests.mock.wms_operation_fixtures")
 
     expected = tuple(item.identity for item in registry.WMS_OPERATIONS)
+    compiled_profile = build_compiled_provider_profile()
+    conformance_manifest = conformance.build_wms_conformance_manifest(compiled_profile)
     assert tuple(item.identity for item in manifest.WMS_PROVIDER_OPERATION_MANIFEST) == expected
-    assert tuple(item.operation.identity for item in conformance.WMS_CONFORMANCE_MANIFEST.operations) == expected
+    assert tuple(item.operation.identity for item in conformance_manifest.operations) == expected
     assert set(fixtures.REQUEST_FIXTURES) == set(expected)
     assert set(fixtures.RESULT_FIXTURES) == set(expected)
     for operation in registry.WMS_OPERATIONS:
@@ -244,11 +252,11 @@ def test_provider_conformance_scenarios_and_mock_fixtures_derive_from_registry()
 
 def test_active_provider_profile_and_runtime_index_are_exact_registry_derivatives() -> None:
     registry = _load("src.app.wms_integration.operation_registry")
-    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
     generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
 
     expected = tuple(operation.identity for operation in registry.WMS_OPERATIONS)
-    assert tuple(binding.operation.identity for binding in catalog.WMS_PROVIDER_PROFILE.bindings) == expected
+    active_catalog = build_provider_catalog()
+    assert tuple(binding.operation.identity for binding in active_catalog.bindings) == expected
     assert expected == generated.WMS_OPERATION_IDENTITIES
     assert tuple(generated.WMS_OPERATION_INDEX) == expected
     assert all(generated.WMS_OPERATION_INDEX[operation.identity] is operation for operation in registry.WMS_OPERATIONS)
@@ -263,10 +271,9 @@ def test_external_http_effect_bindings_accept_only_registry_target_codes() -> No
         for operation in registry.WMS_OPERATIONS
         if operation.mode.value == "EFFECT"
     }
-    actual = {
-        binding.operation_identity: binding.allowed_target_codes
-        for binding in provider_catalog.WMS_EXTERNAL_HTTP_EFFECT_PROFILE.bindings
-    }
+    catalog = build_provider_catalog(build_hmac_provider_profile_payload())
+    effect_profile = provider_catalog._external_http_effect_profile(catalog)
+    actual = {binding.operation_identity: binding.allowed_target_codes for binding in effect_profile.bindings}
 
     assert actual == expected
 
@@ -340,12 +347,9 @@ def test_runtime_operation_index_has_no_codegen_or_parallel_builder() -> None:
     assert "provider_catalog" not in source
 
 
-def test_e13_candidate_window_changes_operation_index_and_profile_digests(
-    monkeypatch,
-) -> None:
+def test_e13_candidate_window_changes_operation_index_digest() -> None:
     registry = _load("src.app.wms_integration.operation_registry")
     generated = _load("src.app.runtime.system_capabilities.wms.generated_operation_index")
-    provider_conformance = _load("src.app.runtime.system_capabilities.wms.provider_conformance")
     e13_identity = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
     e13 = registry.WMS_OPERATION_BY_IDENTITY[e13_identity]
     drifted_e13 = e13.model_copy(update={"max_candidate_count": 13})
@@ -356,10 +360,6 @@ def test_e13_candidate_window_changes_operation_index_and_profile_digests(
     assert generated._operation_index_digest(registry.WMS_OPERATIONS) == generated.WMS_OPERATION_INDEX_DIGEST
     drifted_index_digest = generated._operation_index_digest(drifted_operations)
     assert drifted_index_digest != generated.WMS_OPERATION_INDEX_DIGEST
-
-    original_profile_digest = provider_conformance._profile_digest(provider_conformance.WMS_PROVIDER_PROFILE)
-    monkeypatch.setattr(provider_conformance, "WMS_OPERATION_INDEX_DIGEST", drifted_index_digest)
-    assert provider_conformance._profile_digest(provider_conformance.WMS_PROVIDER_PROFILE) != original_profile_digest
 
 
 def test_operation_index_digest_binds_complete_request_and_result_json_schema(monkeypatch) -> None:

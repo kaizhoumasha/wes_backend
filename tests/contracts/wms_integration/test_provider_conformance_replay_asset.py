@@ -15,7 +15,10 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
     ConformanceTarget,
     build_wms_conformance_report,
 )
-from tests.support.wms_provider_conformance import verify_query_inventory_replay_report
+from tests.support.wms_provider_conformance import (
+    WMS_CONFORMANCE_COMPILED_PROFILE,
+    verify_query_inventory_replay_report,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ASSET_PATH = REPO_ROOT / "tests/fixtures/wms_provider_conformance/query_inventory_replay.v1.json"
@@ -70,6 +73,7 @@ async def test_replay_report_carries_and_verifies_the_actual_asset_digest() -> N
     observations = tuple([await factory.execute(case) for case in QUERY_INVENTORY_CONFORMANCE_CASES])
 
     report = build_wms_conformance_report(
+        compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
         cases=QUERY_INVENTORY_CONFORMANCE_CASES,
         observations=observations,
         target=ConformanceTarget.REPLAY,

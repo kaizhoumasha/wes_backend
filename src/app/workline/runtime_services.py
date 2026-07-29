@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from src.app.resource.models import RackKind
     from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
     from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
 
 
@@ -137,6 +138,7 @@ def build_workline_runtime_services(
     db: Any | None = None,
     workline: Any | None = None,
     session: Any | None = None,
+    compiled_wms_profile: CompiledWmsProviderProfile | None = None,
 ) -> WorklineRuntimeServices:
     """构建当前 worker 使用的运行时服务集合。"""
 
@@ -174,7 +176,7 @@ def build_workline_runtime_services(
             build_inventory_query_port_factory,
             simulation=simulation_requested,
             sandbox_rows_provider=query_sandbox_wms_inventory_rows,
-            settings_source=settings,
+            compiled_profile=compiled_wms_profile,
         )
 
     return WorklineRuntimeServices(

@@ -23,6 +23,10 @@ from src.app.wms_integration.ports.effect_status import (
     build_wms_effect_status_binding,
 )
 from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupplyResult
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+)
 
 try:
     from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusClaim
@@ -35,6 +39,10 @@ else:
 
 NOW = datetime(2026, 7, 24, 12, 0, 0)
 RACK_SUPPLY_OPERATION_IDENTITY = "wms.fulfillment.request_rack_supply@v1"
+_STATUS_PROFILE_PAYLOAD = build_hmac_provider_profile_payload()
+_STATUS_PROFILE_PAYLOAD["server_url"] = "https://wms.example"
+_STATUS_PROFILE_PAYLOAD["effect_status_path"] = "/northbound/operations/status"
+_STATUS_COMPILED_PROFILE = build_compiled_provider_profile(_STATUS_PROFILE_PAYLOAD)
 
 
 def _require_status_service() -> None:
@@ -44,7 +52,6 @@ def _require_status_service() -> None:
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
         APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
         WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS=10.0,
@@ -78,7 +85,7 @@ def test_default_status_port_factory_receives_service_settings(monkeypatch: pyte
 def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any:
     binding = build_wms_effect_status_binding(
         settings_source=_settings(),
-        status_endpoint="https://wms.example/northbound/operations/status",
+        compiled_profile=_STATUS_COMPILED_PROFILE,
     ).as_persisted()
     intent = SimpleNamespace(
         id=17,

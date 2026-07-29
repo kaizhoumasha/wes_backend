@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE, resolve_wms_operation_binding
+from src.app.runtime.system_capabilities.wms.provider_catalog import resolve_wms_operation_binding
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
 from src.app.wms_integration.models import WmsCallEvidence
 from src.app.wms_integration.operation_contract import WmsPaginationConstraint
@@ -33,6 +33,12 @@ from src.app.wms_integration.services.query_transport import (
     WmsQueryCallPermit,
     WmsQueryTransportExecutor,
 )
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_hmac_provider_profile_payload,
+    build_provider_catalog,
+)
+
+PROVIDER_CATALOG = build_provider_catalog(build_hmac_provider_profile_payload())
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -92,7 +98,8 @@ def _adapter(
     pagination: WmsPaginationConstraint | None = None,
 ) -> InventoryQueryOperationAdapter:
     binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        catalog=PROVIDER_CATALOG,
+        profile_identity=PROVIDER_CATALOG.profile_identity,
         operation_identity=CONTRACT.identity,
     )
     current_budget = binding.operation.budget
@@ -456,7 +463,8 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
     executor = WmsQueryTransportExecutor(
         endpoint=WmsBoundQueryEndpoint(
             binding=resolve_wms_operation_binding(
-                profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+                catalog=PROVIDER_CATALOG,
+                profile_identity=PROVIDER_CATALOG.profile_identity,
                 operation_identity=CONTRACT.identity,
             ),
             base_url="https://wms.test",
@@ -464,7 +472,7 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
         transport=httpx.MockTransport(handler),
         evidence_writer=WmsCallEvidenceQueryWriter(
             session_factory=session_factory,
-            provider_profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+            provider_profile_identity=PROVIDER_CATALOG.profile_identity,
             evidence_service=wms_call_evidence_service,
             breaker_service=WmsCircuitBreakerService(),
         ),
@@ -480,6 +488,6 @@ async def test_real_evidence_writer_persists_query_outcome_before_return(db_engi
         result = await db.execute(select(WmsCallEvidence).where(WmsCallEvidence.evidence_key == outcome.evidence_key))
         evidence = result.scalar_one()
     assert evidence.operation_name == CONTRACT.identity
-    assert evidence.provider_profile_identity == WMS_PROVIDER_PROFILE.identity.identity
+    assert evidence.provider_profile_identity == PROVIDER_CATALOG.profile_identity
     assert evidence.status == "SUCCEEDED"
     assert evidence.response_snapshot["source_version"] == "WMS-42"

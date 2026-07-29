@@ -26,7 +26,7 @@ DEFAULT_SYSTEM_OUTPUT = SYSTEM_ROOT / "generated_index.py"
 SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = (InventoryQueryOperationPort,)
 SYSTEM_CAPABILITY_ADMISSION_CATALOG = (
     "runtime",
-    "wms.2026-07-06.material-flow",
+    "wms.2026-07-28.full-factory",
 )
 
 

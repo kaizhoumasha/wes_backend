@@ -35,7 +35,7 @@ def _config_payload() -> dict[str, object]:
         "ng_location": "NG-01",
         "warehouse_code": "WH-01",
         "owner_code": "OWNER-01",
-        "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+        "provider_profile": "wms.2026-07-28.full-factory.sandbox",
     }
 
 
@@ -45,7 +45,7 @@ def test_config_locks_roles_locations_and_provider_profile() -> None:
     assert config.device_roles.input_arm == "ROUGH_SORTER_INPUT_ARM"
     assert config.pipeline_input_location == "PIPELINE-IN-01"
     assert config.warehouse_code == "WH-01"
-    assert config.provider_profile == "wms.2026-07-06.material-flow.sandbox"
+    assert config.provider_profile == "wms.2026-07-28.full-factory.sandbox"
 
 
 @pytest.mark.parametrize(
@@ -157,7 +157,7 @@ def _facts_payload() -> dict[str, object]:
         "binding_snapshot": RoughSorterBindingSnapshot(
             binding_id=1,
             binding_version=1,
-            profile_identity="wms.2026-07-06.material-flow.sandbox",
+            profile_identity="wms.2026-07-28.full-factory.sandbox",
             plugin_config_hash="a" * 64,
             generated_index_digest="b" * 64,
         ),

@@ -26,7 +26,7 @@ from src.app.wms_integration.ports.query_inventory_operation import (
 )
 
 
-def _binding(*, profile_identity: str = "wms.2026-07-06.material-flow.sandbox") -> RoughSorterBindingSnapshot:
+def _binding(*, profile_identity: str = "wms.2026-07-28.full-factory.sandbox") -> RoughSorterBindingSnapshot:
     return RoughSorterBindingSnapshot(
         binding_id=9,
         binding_version=2,
@@ -74,9 +74,9 @@ def _policy_input(
         binding_snapshot=binding or _binding(),
         supported_profile_identities=frozenset(
             {
-                "wms.2026-07-06.material-flow.sandbox",
-                "wms.2026-07-06.material-flow.staging",
-                "wms.2026-07-06.material-flow.production",
+                "wms.2026-07-28.full-factory.sandbox",
+                "wms.2026-07-28.full-factory.staging",
+                "wms.2026-07-28.full-factory.production",
             }
         ),
         source_operation=OPERATION_IDENTITY,
@@ -167,7 +167,7 @@ MISSING_OWNER = InventoryAuthorityItem(
         ),
         (
             "binding-profile-version-mismatch",
-            _policy_input(binding=_binding(profile_identity="wms.2026-07-06.material-flow.future")),
+            _policy_input(binding=_binding(profile_identity="wms.2026-07-28.full-factory.future")),
             "HOLD",
             "WMS_PROFILE_MISMATCH",
             None,

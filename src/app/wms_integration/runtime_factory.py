@@ -13,8 +13,7 @@ import httpx
 
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
 from src.app.runtime.system_capabilities.wms.provider_catalog import (
-    WMS_PROVIDER_PROFILE,
-    build_active_wms_provider_profile,
+    build_wms_provider_catalog,
     resolve_wms_operation_binding,
 )
 from src.app.sys.external_http_credentials import AuditedVersionedCredentialProvider
@@ -37,6 +36,7 @@ from src.database.db import get_db_context
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
     from src.app.wms_integration.ports.effect_status import FrozenWmsEffectStatusBinding, WmsEffectStatusQueryPort
     from src.app.wms_integration.ports.query_inventory_operation import (
         InventoryQueryOperationPort,
@@ -124,26 +124,26 @@ def build_inventory_query_port_factory(
     *,
     simulation: bool,
     sandbox_rows_provider: SandboxInventoryRowsProvider,
+    compiled_profile: CompiledWmsProviderProfile | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     credential_provider: WmsCredentialProvider | None = None,
     evidence_writer: WmsQueryEvidenceWriter | None = None,
-    settings_source: Any | None = None,
 ) -> Callable[[], InventoryQueryOperationPort]:
     """以当前部署唯一 active profile 构建 QUERY executor factory。"""
 
-    active_settings = settings if settings_source is None else settings_source
-    configured_profile = build_active_wms_provider_profile(active_settings)
-    if simulation and configured_profile.identity.environment == "production":
+    if not simulation:
+        return _T3UnboundInventoryQueryOperationPort
+    if compiled_profile is None:
+        raise RuntimeError("compiled WMS QUERY profile must be injected for in-process simulation")
+    catalog = build_wms_provider_catalog(compiled_profile)
+    if catalog.identity.environment == "production":
         raise ValueError("production WMS runtime forbids in-process simulation")
-    if configured_profile != WMS_PROVIDER_PROFILE:
-        raise ValueError("runtime factory Settings must match the process active WMS provider profile")
-    profile_identity = WMS_PROVIDER_PROFILE.identity.identity
+    profile_identity = catalog.profile_identity
     binding = resolve_wms_operation_binding(
+        catalog=catalog,
         profile_identity=profile_identity,
         operation_identity=CONTRACT.identity,
     )
-    if not simulation:
-        return _T3UnboundInventoryQueryOperationPort
     writer = evidence_writer or WmsCallEvidenceQueryWriter(
         session_factory=get_db_context,
         provider_profile_identity=profile_identity,
@@ -153,21 +153,20 @@ def build_inventory_query_port_factory(
     resolved_base_url: str | None = None
     resolved_transport = transport
     resolved_credential_provider = credential_provider
-    if simulation:
-        credential_reference = binding.outbound_auth.credential_reference
-        if credential_reference is None:
-            raise ValueError("sandbox QUERY binding requires credential reference")
-        secret = secrets.token_bytes(32)
-        resolved_base_url = resolved_base_url or "https://wms-sandbox.invalid"
-        resolved_transport = resolved_transport or _sandbox_transport(
-            rows_provider=sandbox_rows_provider,
-            credential_reference=credential_reference,
-            secret=secret,
-        )
-        resolved_credential_provider = resolved_credential_provider or _EphemeralCredentialProvider(
-            credential_reference=credential_reference,
-            secret=secret,
-        )
+    credential_reference = binding.outbound_auth.credential_reference
+    if credential_reference is None:
+        raise ValueError("sandbox QUERY binding requires credential reference")
+    secret = secrets.token_bytes(32)
+    resolved_base_url = "https://wms-sandbox.invalid"
+    resolved_transport = resolved_transport or _sandbox_transport(
+        rows_provider=sandbox_rows_provider,
+        credential_reference=credential_reference,
+        secret=secret,
+    )
+    resolved_credential_provider = resolved_credential_provider or _EphemeralCredentialProvider(
+        credential_reference=credential_reference,
+        secret=secret,
+    )
     if not isinstance(resolved_credential_provider, AuditedVersionedCredentialProvider):
         resolved_credential_provider = AuditedVersionedCredentialProvider(
             resolved_credential_provider,

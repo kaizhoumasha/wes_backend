@@ -6,7 +6,12 @@ import importlib
 import importlib.util
 import inspect
 from pathlib import Path
-from types import SimpleNamespace
+
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_provider_catalog,
+    build_provider_profile_payload,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -78,18 +83,10 @@ def test_generated_operation_index_has_no_runtime_discovery() -> None:
 
 
 def test_authored_wms_effect_completion_modes_match_the_registry() -> None:
-    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+    catalog = build_provider_catalog()
 
-    effects = tuple(
-        binding.operation
-        for binding in catalog.WMS_PROVIDER_PROFILE.bindings
-        if binding.operation.mode.value == "EFFECT"
-    )
-    queries = tuple(
-        binding.operation
-        for binding in catalog.WMS_PROVIDER_PROFILE.bindings
-        if binding.operation.mode.value == "QUERY"
-    )
+    effects = tuple(binding.operation for binding in catalog.bindings if binding.operation.mode.value == "EFFECT")
+    queries = tuple(binding.operation for binding in catalog.bindings if binding.operation.mode.value == "QUERY")
 
     assert len(effects) == 16
     assert sum(operation.supports_status_query for operation in effects) == 7
@@ -99,17 +96,15 @@ def test_authored_wms_effect_completion_modes_match_the_registry() -> None:
 
 
 def test_wms_effect_callback_is_optional_generic_hint_without_terminal_adapters() -> None:
-    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+    catalog = build_provider_catalog()
     contracts = _load("src.app.runtime.system_capabilities.wms.contracts")
 
     profile_without_callback = contracts.WmsProviderProfile(
-        identity=catalog.WMS_PROVIDER_PROFILE.identity,
-        bindings=catalog.WMS_PROVIDER_PROFILE.bindings,
+        identity=catalog.identity,
+        bindings=catalog.bindings,
     )
     assert profile_without_callback.callbacks == ()
-    assert tuple(callback.callback_type for callback in catalog.WMS_PROVIDER_PROFILE.callbacks) == (
-        "WMS_EFFECT_STATUS_HINT",
-    )
+    assert tuple(callback.callback_type for callback in catalog.callbacks) == ("WMS_EFFECT_STATUS_HINT",)
 
     capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
     assert list(capability_root.rglob("callback_adapter.py")) == []
@@ -159,15 +154,13 @@ def test_removed_effect_handlers_cannot_bypass_the_shared_t5_boundary() -> None:
 def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalog() -> None:
     catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
 
-    sandbox = catalog.build_active_wms_provider_profile(
-        SimpleNamespace(APP_ENV="test", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2")
-    )
-    production = catalog.build_active_wms_provider_profile(
-        SimpleNamespace(APP_ENV="prod", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2")
-    )
+    sandbox_payload = build_provider_profile_payload()
+    sandbox_payload["profile"]["environment"] = "sandbox"
+    sandbox = catalog.build_wms_provider_catalog(build_compiled_provider_profile(sandbox_payload))
+    production = build_provider_catalog()
 
-    assert sandbox.identity.environment == "sandbox"
-    assert production.identity.environment == "production"
+    assert sandbox.compiled_profile.profile.profile.environment == "sandbox"
+    assert production.compiled_profile.profile.profile.environment == "production"
     assert len(sandbox.bindings) == len(production.bindings) == 35
     assert {binding.profile for binding in sandbox.bindings} == {sandbox.identity}
     assert {binding.profile for binding in production.bindings} == {production.identity}
@@ -180,22 +173,15 @@ def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalo
 
 
 def test_endpoint_or_secret_rotation_does_not_change_active_provider_identity() -> None:
-    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
-    first = SimpleNamespace(
-        APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1",
-        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="first-secret",
-    )
-    rotated = SimpleNamespace(
-        APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2="rotated-secret",
-    )
+    first_payload = build_provider_profile_payload()
+    rotated_payload = build_provider_profile_payload()
+    rotated_payload["server_url"] = "https://rotated-wms.example"
 
-    assert (
-        catalog.build_active_wms_provider_profile(first).identity
-        == catalog.build_active_wms_provider_profile(rotated).identity
-    )
+    first = build_provider_catalog(first_payload)
+    rotated = build_provider_catalog(rotated_payload)
+
+    assert first.identity == rotated.identity
+    assert first.profile_digest != rotated.profile_digest
 
 
 def test_query_shadow_readiness_platform_is_absent_from_production_source() -> None:

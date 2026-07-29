@@ -13,7 +13,10 @@ import httpx
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE, resolve_wms_operation_binding
+from src.app.runtime.system_capabilities.wms.provider_catalog import (
+    build_wms_provider_catalog,
+    resolve_wms_operation_binding,
+)
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
@@ -39,10 +42,17 @@ from src.app.wms_integration.services.query_transport import (
     WmsQueryCallPermit,
     WmsQueryTransportExecutor,
 )
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+)
 from tests.support.wms_provider_replay import (
     QUERY_INVENTORY_REPLAY_ASSET_DIGEST,
     QueryInventoryReplayFactory,
 )
+
+WMS_CONFORMANCE_COMPILED_PROFILE = build_compiled_provider_profile(build_hmac_provider_profile_payload())
+WMS_CONFORMANCE_PROVIDER_CATALOG = build_wms_provider_catalog(WMS_CONFORMANCE_COMPILED_PROFILE)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -243,7 +253,8 @@ def build_query_inventory_conformance_targets():
 
 async def _execute_adapter_case(case: ScriptedQueryCase, *, handler) -> ConformanceObservation:
     binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        catalog=WMS_CONFORMANCE_PROVIDER_CATALOG,
+        profile_identity=WMS_CONFORMANCE_PROVIDER_CATALOG.profile_identity,
         operation_identity=CONTRACT.identity,
     )
     operation = binding.operation
@@ -314,7 +325,10 @@ def observe_query_inventory_outcome(
 def verify_query_inventory_replay_report(payload: dict[str, object]) -> WmsConformanceReport:
     """在外层验证 runtime 报告来自当前代码 pin 的 replay asset。"""
 
-    report = verify_wms_conformance_report(payload)
+    report = verify_wms_conformance_report(
+        payload,
+        compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+    )
     if report.target is not ConformanceTarget.REPLAY:
         raise ValueError("query inventory replay verifier requires a REPLAY report")
     if not hmac.compare_digest(report.fixture_digest, QUERY_INVENTORY_REPLAY_ASSET_DIGEST):
@@ -334,6 +348,8 @@ def _success_marker(result: InventoryQueryOperationResult) -> str:
 
 __all__ = [
     "QUERY_INVENTORY_SCRIPT_FIXTURE",
+    "WMS_CONFORMANCE_COMPILED_PROFILE",
+    "WMS_CONFORMANCE_PROVIDER_CATALOG",
     "QueryInventoryAdapterFactory",
     "QueryInventoryReplayConformanceFactory",
     "QueryInventoryScriptFixture",

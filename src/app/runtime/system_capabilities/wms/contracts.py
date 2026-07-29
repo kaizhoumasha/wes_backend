@@ -76,12 +76,6 @@ class WmsProviderOperationBinding(BaseModel):
 
         return self.operation.max_candidate_count
 
-    @model_validator(mode="after")
-    def enforce_outbound_auth(self) -> WmsProviderOperationBinding:
-        if self.profile.environment == "production" and self.outbound_auth.scheme is OutboundAuthScheme.NONE:
-            raise ValueError("production operation forbids outbound auth NONE")
-        return self
-
 
 class InboundCallbackContract(BaseModel):
     """Provider 可选的通用 EFFECT 状态查询提示合同。"""

@@ -125,25 +125,25 @@ def service(repo: FakeRepository) -> WorklinePluginBindingService:
 def test_default_binding_service_wires_runtime_provider_profiles_by_full_identity() -> None:
     resolved = workline_plugin_binding_service.profile_catalog.resolve(
         provider_code="WMS",
-        contract_version="2026-07-06.material-flow",
+        contract_version="2026-07-28.full-factory",
         environment="sandbox",
     )
 
-    assert resolved.identity == "wms.2026-07-06.material-flow.sandbox"
+    assert resolved.identity == "wms.2026-07-28.full-factory.sandbox"
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
 def test_default_binding_service_exposes_rough_sorter_profile_for_deploy_environment(environment: str) -> None:
     resolved = workline_plugin_binding_service.profile_catalog.resolve(
         provider_code="WMS",
-        contract_version="2026-07-06.material-flow",
+        contract_version="2026-07-28.full-factory",
         environment=environment,
     )
 
-    assert resolved.identity == f"wms.2026-07-06.material-flow.{environment}"
+    assert resolved.identity == f"wms.2026-07-28.full-factory.{environment}"
 
 
-def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-06.material-flow.sandbox") -> dict[str, object]:
+def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-28.full-factory.sandbox") -> dict[str, object]:
     return {
         "device_roles": {
             "input_arm": "ROUGH_SORTER_INPUT_ARM",
@@ -219,7 +219,7 @@ async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required
     )
 
     assert [profile["provider_code"] for profile in binding.provider_profile_snapshot_json] == ["WMS"]
-    assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-06.material-flow"
+    assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-28.full-factory"
     assert binding.provider_profile_snapshot_json[0]["environment"] == "sandbox"
 
 
@@ -228,7 +228,7 @@ async def test_runtime_only_smt_activation_still_snapshots_declared_profile_iden
     from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 
     repo = FakeRepository()
-    profile_identity = "wms.2026-07-06.material-flow.sandbox"
+    profile_identity = "wms.2026-07-28.full-factory.sandbox"
     workline = SimpleNamespace(
         id=17,
         plugin_key=DEFINITION.plugin_key,
@@ -256,7 +256,7 @@ async def test_runtime_only_smt_profile_snapshot_does_not_apply_external_admissi
     from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 
     repo = FakeRepository()
-    profile_identity = "wms.2026-07-06.material-flow.staging"
+    profile_identity = "wms.2026-07-28.full-factory.staging"
     workline = SimpleNamespace(
         id=17,
         plugin_key=DEFINITION.plugin_key,
@@ -287,7 +287,7 @@ async def test_real_rough_sorter_deploy_activation_pins_configured_role_devices(
         id=17,
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
-        config=_rough_sorter_config(provider_profile=f"wms.2026-07-06.material-flow.{environment}"),
+        config=_rough_sorter_config(provider_profile=f"wms.2026-07-28.full-factory.{environment}"),
         version=4,
     )
 
@@ -412,7 +412,7 @@ async def test_real_rough_sorter_activation_rejects_profile_from_other_environme
         id=17,
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
-        config=_rough_sorter_config(provider_profile="wms.2026-07-06.material-flow.sandbox"),
+        config=_rough_sorter_config(provider_profile="wms.2026-07-28.full-factory.sandbox"),
         version=4,
     )
 

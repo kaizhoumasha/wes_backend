@@ -108,7 +108,6 @@ class Settings(BaseSettings):
     WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS: float = Field(gt=0)
     WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED: bool = False
     # 兼容未迁移的离线 Settings 构造；各部署 profile 必须显式声明当前 active revision。
-    WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION: Literal["v1", "v2"] = "v1"
     WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)

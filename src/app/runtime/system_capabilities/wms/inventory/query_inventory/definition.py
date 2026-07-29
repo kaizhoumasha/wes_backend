@@ -5,13 +5,13 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityDefinition,
     SystemCapabilityMode,
 )
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_MATERIAL_FLOW_CONTRACT_VERSION
 from src.app.wms_integration.ports.query_inventory_operation import (
     OPERATION_IDENTITY,
     InventoryQueryOperationPort,
     InventoryQueryOperationRequest,
     InventoryQueryOperationResult,
 )
+from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSION
 
 from .handler import InventoryQueryCapabilityHandler
 
@@ -25,7 +25,7 @@ DEFINITION = SystemCapabilityDefinition(
     output_model=InventoryQueryOperationResult,
     handler_factory=InventoryQueryCapabilityHandler,
     required_ports=(InventoryQueryOperationPort,),
-    admission=f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}",
+    admission=f"wms.{WMS_PROVIDER_CONTRACT_VERSION}",
     timeout_seconds=10,
     completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
     audit_policy="metadata",

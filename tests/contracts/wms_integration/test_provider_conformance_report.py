@@ -9,8 +9,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from src.app.runtime.system_capabilities.wms.conformance_manifest import WMS_CONFORMANCE_MANIFEST
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
+from src.app.runtime.system_capabilities.wms.conformance_manifest import build_wms_conformance_manifest
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
@@ -18,9 +17,11 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
     build_wms_conformance_report,
     verify_wms_conformance_report,
 )
+from tests.support.wms_provider_conformance import WMS_CONFORMANCE_COMPILED_PROFILE
 
 FIXTURE_DIGEST = "a" * 64
 GENERATED_AT = datetime(2026, 7, 21, 8, 0, tzinfo=UTC)
+CONFORMANCE_MANIFEST = build_wms_conformance_manifest(WMS_CONFORMANCE_COMPILED_PROFILE)
 
 
 def _matching_observations() -> tuple[ConformanceObservation, ...]:
@@ -46,6 +47,7 @@ def _redigest_report_payload(payload: dict[str, object]) -> dict[str, object]:
 
 def _build_report():
     return build_wms_conformance_report(
+        compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
         cases=QUERY_INVENTORY_CONFORMANCE_CASES,
         observations=_matching_observations(),
         target=ConformanceTarget.REPLAY,
@@ -57,7 +59,7 @@ def _build_report():
 def test_manifest_query_requirement_is_the_single_complete_question_bank() -> None:
     query_requirement = next(
         item
-        for item in WMS_CONFORMANCE_MANIFEST.operations
+        for item in CONFORMANCE_MANIFEST.operations
         if item.operation.identity == "wms.inventory.query_inventory@v1"
     )
 
@@ -84,10 +86,16 @@ def test_report_is_bound_to_the_active_profile_and_deterministically_replayable(
     second = _build_report()
 
     assert first == second
-    assert first.profile_identity == WMS_PROVIDER_PROFILE.identity.identity
+    assert first.profile_identity == WMS_CONFORMANCE_COMPILED_PROFILE.profile.profile.identity
     assert first.suite_version == "wms-provider-q14-query-inventory.v1"
     assert first.passed is True
-    assert verify_wms_conformance_report(first.model_dump(mode="json")) == first
+    assert (
+        verify_wms_conformance_report(
+            first.model_dump(mode="json"),
+            compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+        )
+        == first
+    )
 
 
 def test_report_schema_has_no_staging_signature_trust_or_secret_surface() -> None:
@@ -108,7 +116,10 @@ def test_report_verify_rejects_a_redigested_noncanonical_suite_digest() -> None:
     payload["suite_digest"] = "f" * 64
 
     with pytest.raises(ValueError, match="suite digest"):
-        verify_wms_conformance_report(_redigest_report_payload(payload))
+        verify_wms_conformance_report(
+            _redigest_report_payload(payload),
+            compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+        )
 
 
 @pytest.mark.parametrize("mutation", ("reordered", "duplicated", "missing"))
@@ -124,7 +135,10 @@ def test_report_verify_rejects_redigested_case_identity_order_or_count_drift(mut
     payload["cases"] = cases
 
     with pytest.raises(ValueError, match="case identity"):
-        verify_wms_conformance_report(_redigest_report_payload(payload))
+        verify_wms_conformance_report(
+            _redigest_report_payload(payload),
+            compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+        )
 
 
 def test_report_verify_rejects_a_redigested_incorrect_case_verdict() -> None:
@@ -134,7 +148,10 @@ def test_report_verify_rejects_a_redigested_incorrect_case_verdict() -> None:
     payload["cases"] = cases
 
     with pytest.raises(ValueError, match="case result"):
-        verify_wms_conformance_report(_redigest_report_payload(payload))
+        verify_wms_conformance_report(
+            _redigest_report_payload(payload),
+            compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+        )
 
 
 def test_report_verify_rejects_a_redigested_non_active_profile() -> None:
@@ -142,7 +159,10 @@ def test_report_verify_rejects_a_redigested_non_active_profile() -> None:
     payload["profile_identity"] = "wms.unconfigured-provider"
 
     with pytest.raises(ValueError, match="profile identity"):
-        verify_wms_conformance_report(_redigest_report_payload(payload))
+        verify_wms_conformance_report(
+            _redigest_report_payload(payload),
+            compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+        )
 
 
 @pytest.mark.parametrize(
@@ -174,6 +194,7 @@ def test_report_rejects_missing_duplicate_or_unknown_case_observations() -> None
     ):
         with pytest.raises(ValueError, match="exactly once"):
             build_wms_conformance_report(
+                compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
                 cases=QUERY_INVENTORY_CONFORMANCE_CASES,
                 observations=invalid,
                 target=ConformanceTarget.REPLAY,
@@ -185,6 +206,7 @@ def test_report_rejects_missing_duplicate_or_unknown_case_observations() -> None
 def test_report_builder_rejects_provider_attempt_to_override_or_shrink_core_bank() -> None:
     with pytest.raises(ValueError, match="cannot be overridden"):
         build_wms_conformance_report(
+            compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
             cases=QUERY_INVENTORY_CONFORMANCE_CASES[:-1],
             observations=_matching_observations()[:-1],
             target=ConformanceTarget.REPLAY,

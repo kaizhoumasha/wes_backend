@@ -31,7 +31,7 @@ RuntimeInbox 以 payload 自身的 `callback_type` 为权威；路由参数、�
 
 WES 根据 35-operation registry 解析 endpoint：
 
-- QUERY operation 从部署唯一 `WMS_SYNC_BASE_URL` 派生目标。
+- QUERY operation 从部署唯一 Provider profile 编译目标 endpoint。
 - EFFECT operation 以同一 registry 冻结 target、认证、预算与 canonical payload。
 - E08–E14 返回 ACK 后进入权威 status 轮询，直到业务终态或预算耗尽。
 - 未注册 identity、target、裸 URL 或通用 External HTTP facade 请求必须在创建 Outbox 前失败。

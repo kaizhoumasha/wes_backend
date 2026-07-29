@@ -26,7 +26,6 @@ from src.app.runtime.system_capabilities.definition import (
 )
 from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
 from src.app.wms_integration.models import WmsOperationName
 from src.app.wms_integration.operation_contract import WmsHttpMethod
@@ -38,6 +37,14 @@ from src.app.wms_integration.ports.query_outcome import (
 )
 from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
 from src.app.wms_integration.services.query_transport import WmsQueryCallPermit, WmsQueryTransportExecutor
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+    build_provider_catalog,
+)
+
+COMPILED_PROFILE = build_compiled_provider_profile(build_hmac_provider_profile_payload())
+PROVIDER_CATALOG = build_provider_catalog(build_hmac_provider_profile_payload())
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -98,7 +105,8 @@ def _adapter(
 ) -> InventoryQueryOperationAdapter:
     WmsBoundQueryEndpoint, resolve_wms_operation_binding = _query_transport_contracts()
     binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        catalog=PROVIDER_CATALOG,
+        profile_identity=PROVIDER_CATALOG.profile_identity,
         operation_identity=CONTRACT.identity,
     )
     binding = binding.model_copy(
@@ -127,7 +135,8 @@ def _adapter(
 def test_query_transport_rejects_speculative_post_contract() -> None:
     WmsBoundQueryEndpoint, resolve_wms_operation_binding = _query_transport_contracts()
     binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        catalog=PROVIDER_CATALOG,
+        profile_identity=PROVIDER_CATALOG.profile_identity,
         operation_identity=CONTRACT.identity,
     )
     post_binding = binding.model_copy(
@@ -151,7 +160,8 @@ async def test_production_query_consumes_pinned_binding_and_signs_exact_http_req
     credential_provider = _CredentialProvider(secret)
     evidence_writer = _EvidenceWriter()
     binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
+        catalog=PROVIDER_CATALOG,
+        profile_identity=PROVIDER_CATALOG.profile_identity,
         operation_identity=CONTRACT.identity,
     )
     executor = WmsQueryTransportExecutor(
@@ -270,13 +280,14 @@ def test_sandbox_factory_reuses_closed_transport_executor_and_pinned_profile() -
     factory = build_inventory_query_port_factory(
         simulation=True,
         sandbox_rows_provider=lambda **_kwargs: [],
+        compiled_profile=COMPILED_PROFILE,
     )
 
     port = factory()
 
     assert isinstance(port, InventoryQueryOperationAdapter)
     assert isinstance(port._executor, WmsQueryTransportExecutor)
-    assert port._executor.binding.profile.identity == WMS_PROVIDER_PROFILE.identity.identity
+    assert port._executor.binding.profile.identity == PROVIDER_CATALOG.profile_identity
     runtime_factory_source = inspect.getsource(build_inventory_query_port_factory)
     assert "before_call(" not in runtime_factory_source
     assert "evidence_writer.record(" not in runtime_factory_source

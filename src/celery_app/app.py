@@ -47,9 +47,13 @@ celery_app = Celery(
 def on_worker_init(*args: Any, **kwargs: Any) -> None:
     """Worker 主进程初始化同步配置门禁，禁止创建可被 fork 继承的异步资源。"""
     try:
+        from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
+            northbound_operations_repository,
+        )
         from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
 
-        validate_wms_transport_configuration(settings_source=settings)
+        startup = validate_wms_transport_configuration(settings_source=settings)
+        northbound_operations_repository.bind_provider_catalog(startup.catalog)
     except Exception as exc:
         # Celery Signal.send 会吞掉普通 Exception；配置非法时必须阻止主进程进入消费阶段。
         raise WorkerTerminate("WMS transport configuration rejected") from exc

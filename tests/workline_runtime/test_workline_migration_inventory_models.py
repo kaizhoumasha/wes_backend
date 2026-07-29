@@ -219,7 +219,7 @@ def test_workline_item_exposes_derived_capability_and_port_requirements() -> Non
         capability_key="wms.inventory.query_inventory",
         contract_version="v1",
         mode="QUERY",
-        admission="wms.2026-07-06.material-flow",
+        admission="wms.2026-07-28.full-factory",
         required_ports=("src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort",),
     )
     item = WorklineMigrationInventoryItem(

@@ -335,7 +335,7 @@ async def test_inventory_derives_each_workline_capability_provider_and_port_requ
     )
     query_requirement = requirements[-1]
     assert query_requirement.mode == "QUERY"
-    assert query_requirement.admission == "wms.2026-07-06.material-flow"
+    assert query_requirement.admission == "wms.2026-07-28.full-factory"
     assert query_requirement.required_ports == (
         "src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort",
     )

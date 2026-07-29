@@ -45,7 +45,7 @@ brainstorming 选择“显式调度列 + PostgreSQL 桶事务锁 + 单行 SKIP L
 
 ## 调度身份与生产写入口
 
-- canonical WMS profile 使用 `wms.2026-07-06.material-flow.production` 与 typed operation contract identity。
+- canonical WMS profile 使用 `wms.2026-07-28.full-factory.production` 与 typed operation contract identity。
 - legacy handling/rack transport 使用 `wms.legacy-transport.production` 与各自 typed operation identity。
 - device command 使用 `ecs.device-command.v1 + device.command`。
 - plugin runtime 使用 `workline.plugin-runtime.v1 + workline.external-http.v1` 固定低基数桶；`target_code` 在

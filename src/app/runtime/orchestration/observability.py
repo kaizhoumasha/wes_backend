@@ -559,9 +559,9 @@ _NORTHBOUND_TRACE_STAGES = frozenset(
 )
 _WMS_PROVIDER_PROFILE_IDENTITIES = frozenset(
     {
-        "wms.2026-07-06.material-flow.sandbox",
-        "wms.2026-07-06.material-flow.staging",
-        "wms.2026-07-06.material-flow.production",
+        "wms.2026-07-28.full-factory.sandbox",
+        "wms.2026-07-28.full-factory.staging",
+        "wms.2026-07-28.full-factory.production",
     }
 )
 

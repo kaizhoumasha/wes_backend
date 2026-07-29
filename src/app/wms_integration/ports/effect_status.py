@@ -6,7 +6,7 @@ import re
 from datetime import datetime  # noqa: TC003 - Pydantic 运行时需要解析该类型
 from enum import Enum
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -42,6 +42,9 @@ from src.app.wms_integration.ports.fulfillment_operations import (
     validate_fulfillment_ack,
 )
 from src.app.wms_integration.ports.operation_common import validate_json_payload
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
 
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 StableReasonCode = Annotated[
@@ -493,27 +496,24 @@ class FrozenWmsEffectStatusBinding(BaseModel):
 def build_wms_effect_status_binding(
     *,
     settings_source: Any,
-    status_endpoint: str | None = None,
+    compiled_profile: CompiledWmsProviderProfile | None = None,
 ) -> FrozenWmsEffectStatusBinding:
     """从当前唯一 active WMS profile 生成新 Intent 使用的状态 binding。"""
 
-    if status_endpoint is None:
-        raise RuntimeError("compiled WMS EFFECT status endpoint must be injected by the T3 runtime composition root")
-    from src.app.runtime.system_capabilities.wms.provider_catalog import (
-        WMS_EXTERNAL_HTTP_EFFECT_PROFILE,
-        WMS_PROVIDER_PROFILE,
-        build_active_wms_provider_profile,
+    if compiled_profile is None:
+        raise RuntimeError("compiled WMS EFFECT profile must be injected by the T3 runtime composition root")
+    profile_identity = compiled_profile.profile.profile.identity
+    outbound_auth = compiled_profile.profile.outbound_auth
+    if outbound_auth.scheme.value != "HMAC_SHA256" or outbound_auth.credential_reference is None:
+        raise ValueError("WMS EFFECT status runtime requires compiled HMAC_SHA256 auth")
+    status_endpoints = frozenset(
+        endpoint.status_endpoint
+        for endpoint in compiled_profile.operations.values()
+        if endpoint.status_endpoint is not None
     )
-
-    configured_profile = build_active_wms_provider_profile(settings_source)
-    profile = WMS_EXTERNAL_HTTP_EFFECT_PROFILE
-    profile_identity = WMS_PROVIDER_PROFILE.identity.identity
-    if configured_profile != WMS_PROVIDER_PROFILE:
-        raise ValueError("status binding Settings must match the process active WMS provider profile")
-    credential_references = frozenset(binding.credential_reference for binding in profile.bindings)
-    auth_schemes = frozenset(binding.auth_scheme for binding in profile.bindings)
-    if len(credential_references) != 1 or len(auth_schemes) != 1:
-        raise ValueError("active WMS EFFECT profile must use one status credential revision")
+    if len(status_endpoints) != 1:
+        raise ValueError("compiled WMS EFFECT profile must expose one shared status endpoint")
+    status_endpoint = next(iter(status_endpoints))
     target = WmsEffectStatusTargetSnapshot(
         url=status_endpoint,
         timeout_seconds=settings_source.WMS_EFFECT_STATUS_TIMEOUT_SECONDS,
@@ -524,18 +524,18 @@ def build_wms_effect_status_binding(
     binding_revision = payload_sha256(
         canonical_json_bytes(
             {
-                "auth_scheme": next(iter(auth_schemes)),
-                "credential_reference": next(iter(credential_references)),
-                "provider_profile_hash": profile.profile_hash,
+                "auth_scheme": outbound_auth.scheme.value,
+                "credential_reference": outbound_auth.credential_reference,
+                "provider_profile_hash": compiled_profile.profile_digest,
                 "target_hash": target_hash,
             }
         )
     )
     snapshot = {
-        "auth_scheme": next(iter(auth_schemes)),
+        "auth_scheme": outbound_auth.scheme.value,
         "binding_revision": binding_revision,
-        "credential_reference": next(iter(credential_references)),
-        "provider_profile_hash": profile.profile_hash,
+        "credential_reference": outbound_auth.credential_reference,
+        "provider_profile_hash": compiled_profile.profile_digest,
         "provider_profile_identity": profile_identity,
         "target": target_json,
         "target_hash": target_hash,

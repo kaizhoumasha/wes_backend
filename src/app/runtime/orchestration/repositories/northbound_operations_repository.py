@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import case, column, func, select, table, tuple_
 
@@ -14,6 +14,9 @@ from src.app.sys.models.outbox import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from src.app.runtime.system_capabilities.wms.provider_catalog import WmsProviderCatalog
 
 _WMS_CALL_EVIDENCE = table(
     "wms_call_evidence",
@@ -39,24 +42,32 @@ class NorthboundOperationHealthRow:
     reconciliation_open_count: int
 
 
-def _active_catalog_operations() -> tuple[tuple[str, str, Literal["QUERY", "EFFECT"]], ...]:
+def _active_catalog_operations(
+    catalog: WmsProviderCatalog,
+) -> tuple[tuple[str, str, Literal["QUERY", "EFFECT"]], ...]:
     """从当前运行环境的 provider binding 生成空账本运维基线和 operation mode。"""
-    from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 
-    profile = WMS_PROVIDER_PROFILE
     return tuple(
         (
-            profile.identity.identity,
+            catalog.profile_identity,
             binding.operation.identity,
             cast("Literal['QUERY', 'EFFECT']", binding.operation.mode.value),
         )
-        for binding in profile.bindings
+        for binding in catalog.bindings
         if binding.operation.identity in NORTHBOUND_OPERATION_SLO_CATALOG
     )
 
 
 class NorthboundOperationsRepository:
     """只从 typed columns 聚合 SLI；不读取 payload、header、trace 或 secret ref。"""
+
+    def __init__(self, *, provider_catalog: WmsProviderCatalog | None = None) -> None:
+        self._provider_catalog = provider_catalog
+
+    def bind_provider_catalog(self, provider_catalog: WmsProviderCatalog) -> None:
+        """由启动 composition root 注入本进程唯一 compiled catalog。"""
+
+        self._provider_catalog = provider_catalog
 
     async def workline_is_owned_by(self, db: Any, *, workline_id: int, tenant_id: int) -> bool:
         workline_columns = cast("Any", WorkLine).__table__.c
@@ -123,7 +134,9 @@ class NorthboundOperationsRepository:
         evidence_keys = (
             await self._load_sync_query_evidence_keys(db) if tenant_id is None and workline_id is None else ()
         )
-        catalog_operations = _active_catalog_operations()
+        if self._provider_catalog is None:
+            raise RuntimeError("compiled WMS provider catalog must be injected before northbound queries")
+        catalog_operations = _active_catalog_operations(self._provider_catalog)
         operation_modes: dict[str, Literal["QUERY", "EFFECT"]] = {
             operation_identity: mode for _, operation_identity, mode in catalog_operations
         }

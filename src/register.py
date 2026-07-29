@@ -31,9 +31,13 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
     try:
         logger.info("Initializing application resources...")
+        from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
+            northbound_operations_repository,
+        )
         from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
 
-        validate_wms_transport_configuration(settings_source=settings)
+        startup = validate_wms_transport_configuration(settings_source=settings)
+        northbound_operations_repository.bind_provider_catalog(startup.catalog)
         await init_db()
         await init_redis()
 

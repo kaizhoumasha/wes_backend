@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
+from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
 E12 = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
@@ -109,10 +110,9 @@ def _e13_payload_with_candidate_count(candidate_count: int) -> dict[str, object]
 
 
 def test_e13_candidate_window_is_bounded_by_unique_definition_and_provider_binding() -> None:
-    from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
-
     operation = WMS_OPERATION_BY_IDENTITY[E13]
-    binding = next(binding for binding in WMS_PROVIDER_PROFILE.bindings if binding.operation.identity == E13)
+    catalog = build_provider_catalog()
+    binding = next(binding for binding in catalog.bindings if binding.operation.identity == E13)
 
     assert operation.max_candidate_count == 12
     assert binding.max_candidate_count == operation.max_candidate_count

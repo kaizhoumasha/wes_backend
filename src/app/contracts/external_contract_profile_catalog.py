@@ -73,7 +73,7 @@ def _canonical_profile_identity(profile: ExternalContractProfile) -> str:
 
 WMS_MATERIAL_FLOW_SANDBOX_PROFILE = ExternalContractProfile(
     provider_code="WMS",
-    contract_version="2026-07-06.material-flow",
+    contract_version="2026-07-28.full-factory",
     environment="sandbox",
     inbound_normalizers_event=[
         "WMS_GRN_RECEIVED",
@@ -95,7 +95,7 @@ WMS_MATERIAL_FLOW_STAGING_PROFILE = ExternalContractProfile.model_validate(
 WMS_MATERIAL_FLOW_PRODUCTION_KID = "wms-material-flow-production"
 WMS_MATERIAL_FLOW_PRODUCTION_PROFILE = ExternalContractProfile(
     provider_code="WMS",
-    contract_version="2026-07-06.material-flow",
+    contract_version="2026-07-28.full-factory",
     environment="production",
     inbound_normalizers_event=[
         "WMS_GRN_RECEIVED",
