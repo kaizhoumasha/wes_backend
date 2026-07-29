@@ -575,7 +575,7 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 | | `query_inventory_operation.py` | InventoryQueryOperationPort + Decimal typed authority snapshot | 🔧 架构核心 |
 | | `inventory_transaction.py` | WmsInventoryTransactionPort Protocol + 3 typed data classes | 🔧 架构核心 |
 | | `document.py` | WmsDocumentPort Protocol + 6 typed data classes | 🔧 架构核心 |
-| | `fulfillment.py` | WmsFulfillmentPort Protocol + 2 typed data classes | 🔧 架构核心 |
+| | `fulfillment_operations.py` | E07–E16 operation-specific request/result、ACK 与批次收敛合同 | 🔧 架构核心 |
 | | `event.py` | InboundEventPort 基协议 + WmsEventPort Protocol + 5 typed data classes | 🔧 架构核心 |
 | | `reconciliation_query.py` | WmsReconciliationQueryPort Protocol + 1 typed data class | 🔧 架构核心 |
 
@@ -735,7 +735,6 @@ WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发
 | `contracts/workline/test_runtime_timeline_query_contract.py` | BC-XX RuntimeTimeline 按 trace_id/correlation_id/event_type 过滤 + append-only 不持 owner 状态 | 🔧 架构核心 |
 | `contracts/workline/test_runtime_hold_contract.py` | BC-XX RuntimeHold NARROW_SCOPES (WORK_ITEM/OBJECT/DEVICE/RESOURCE/QUEUE) 默认 + WIDE_SCOPES 仅整线安全 | 🔧 架构核心 |
 | `contracts/workline/test_device_command_dispatch_contract.py` | BC-XX DeviceCommand 状态机 PENDING → SENT → ACK_RECEIVED → COMPLETED + H4 反注入 10 字段阻断 + correlation_id 跨域稳定 | 🔧 架构核心 |
-| `contracts/workline/test_wms_fulfillment_request_contract.py` | BC-XX WmsFulfillmentPort 7 effect 方法全实现 + accepted/reason 互斥语义 + pallet binding 全字段必填 | 🔧 架构核心 |
 | `contracts/workline/test_manual_replay_audit_contract.py` | BC-XX DEAD_LETTER 终态不可就地重置 + 重放新建 inbox + H5 审计 (actor + reason 必填) + causation_id 因果链 | 🔧 架构核心 |
 
 **WMS 对接辅助域测试文件**：

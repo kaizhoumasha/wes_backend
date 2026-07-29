@@ -67,8 +67,8 @@
 8. 南向机械臂投料。
 9. 先落本地位置事实与格位占用，再通知 WMS PKG 绑定或库存事务。
 
-北向下一次取料只由上一物料南向投放成功的 typed `COMMAND_RESULT` 解锁。扫码平台本地状态、
-UI 预测和轮询结果均不得成为取料准入条件。
+北向下一次取料只由上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）解锁。扫码平台本地状态、
+南向投放 `COMMAND_RESULT`、UI 预测和轮询结果均不得成为该取料准入条件。
 
 ## 6. CellReservation 消费合同
 
@@ -127,7 +127,7 @@ CTU 批量履约必须保留父请求和逐对象子 work item。查询视图展
 - 已满箱交换入库的物料不得进入逐件分拣候选集。
 - SCAN1 未授权料箱进入 NG / RuntimeHold / RECONCILING。
 - 物料 work item 与料箱 work item join 条件缺一不可。
-- 北向下一次取料必须等待上一物料南向投放成功的 typed `COMMAND_RESULT`。
+- 北向下一次取料必须等待上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）。
 - CTU 父请求不能掩盖子项缺失或部分失败。
 
 ### 8.1 characterization-to-target contract mapping

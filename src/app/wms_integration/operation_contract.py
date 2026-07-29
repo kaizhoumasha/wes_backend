@@ -115,6 +115,7 @@ class WmsOperationDefinition(BaseModel):
     side_effect_free: bool
     budget: WmsOperationBudget
     pagination: WmsPaginationConstraint | None
+    max_candidate_count: int | None = Field(default=None, gt=0)
     error_codes: tuple[StableCode, ...] = Field(min_length=1)
     reject_codes: tuple[StableCode, ...] = Field(min_length=1)
 
@@ -137,6 +138,8 @@ class WmsOperationDefinition(BaseModel):
         if len(self.reject_codes) != len(set(self.reject_codes)):
             raise ValueError("reject_codes must not contain duplicates")
         if self.mode is WmsOperationMode.QUERY:
+            if self.max_candidate_count is not None:
+                raise ValueError("QUERY must not declare max_candidate_count")
             if self.completion_mode is not None or self.execution_lane is not WmsExecutionLane.WMS_DATA:
                 raise ValueError("QUERY must use wms-data without completion_mode")
             if not self.side_effect_free:
@@ -157,6 +160,11 @@ class WmsOperationDefinition(BaseModel):
             raise ValueError("EFFECT must use POST and may change WMS state")
         if self.completion_mode is None or self.pagination is not None or self.budget.max_rows is not None:
             raise ValueError("EFFECT requires completion_mode and forbids pagination")
+        is_e13 = self.identity == "wms.fulfillment.move_bins_from_conveyor_exit@v1"
+        if is_e13 and self.max_candidate_count is None:
+            raise ValueError("E13 requires max_candidate_count")
+        if not is_e13 and self.max_candidate_count is not None:
+            raise ValueError("max_candidate_count is only valid for E13")
         return self
 
 
@@ -239,6 +247,7 @@ def effect_operation(
     reject_codes: tuple[str, ...],
     completion_mode: WmsCompletionMode,
     execution_lane: WmsExecutionLane,
+    max_candidate_count: int | None = None,
 ) -> WmsOperationDefinition:
     """构造一项静态 EFFECT Definition。"""
 
@@ -255,6 +264,7 @@ def effect_operation(
         side_effect_free=False,
         budget=EFFECT_BUDGET,
         pagination=None,
+        max_candidate_count=max_candidate_count,
         error_codes=EFFECT_ERROR_CODES,
         reject_codes=reject_codes,
     )

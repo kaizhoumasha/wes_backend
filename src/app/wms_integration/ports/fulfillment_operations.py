@@ -210,6 +210,9 @@ class MoveBinsFromConveyorExitRequest(EffectRequest):
 
     @model_validator(mode="after")
     def validate_frozen_candidates(self) -> MoveBinsFromConveyorExitRequest:
+        max_candidate_count = MOVE_BINS_FROM_CONVEYOR_EXIT.max_candidate_count
+        if max_candidate_count is None or len(self.candidate_items) > max_candidate_count:
+            raise ValueError("E13 candidate_items exceeds max_candidate_count")
         _require_unique_batch_members(self.candidate_items)
         expected_digest = frozen_candidate_digest(
             workline_id=self.workline_id,
@@ -331,6 +334,8 @@ def validate_batch_terminal_result(
     """校验 terminal items 与 ACK 冻结成员、原请求身份一一对应。"""
 
     validate_fulfillment_ack(request, ack)
+    if result.provider_reference != ack.provider_reference:
+        raise ValueError("terminal provider_reference does not match ACK")
     accepted_scope = ack.accepted_scope
     if accepted_scope is None:
         raise ValueError("batch terminal result requires accepted_scope")
@@ -462,6 +467,7 @@ MOVE_BINS_FROM_CONVEYOR_EXIT = effect_operation(
     reject_codes=("NO_DESTINATION_CAPACITY", "CANDIDATE_DIGEST_MISMATCH", "CANDIDATE_NOT_AVAILABLE"),
     completion_mode=WmsCompletionMode.ASYNC_TASK,
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+    max_candidate_count=12,
 )
 REQUEST_LOAD_UNIT_TRANSPORT = effect_operation(
     identity="wms.fulfillment.request_load_unit_transport@v1",

@@ -199,6 +199,7 @@ SCOPED_ACTIVE_FORBIDDEN_LITERALS = {
             "WMS/CTU 批量投箱入线与逐箱 callback",
             "扫码平台预取互锁及 manifest validator",
             "预取",
+            "南向投放成功的 typed `COMMAND_RESULT`",
         }
     ),
     "docs/architecture/sorter-inbound-capability-spec.md": frozenset(
@@ -206,6 +207,7 @@ SCOPED_ACTIVE_FORBIDDEN_LITERALS = {
             "source_arm_prefetch_capacity",
             "source arm prefetch",
             "WMS/CTU 批量投箱入线与逐箱 callback",
+            "typed `COMMAND_RESULT` 解锁",
         }
     ),
     "docs/business/smt_sorter_inbound_workflow_guide.md": frozenset(
@@ -213,6 +215,20 @@ SCOPED_ACTIVE_FORBIDDEN_LITERALS = {
             "扫码平台互锁状态机",
             "扫码平台业务状态机",
             "WMS/RCS 回调 | WMS/RCS | `EXTERNAL_HTTP`",
+            "扫码平台业务投影：是否空闲",
+            "硬件互锁：扫码平台空",
+            "typed `COMMAND_RESULT` 解锁",
+        }
+    ),
+    "docs/business/inbound_acceptance_steps.md": frozenset(
+        {
+            "RuntimeInbox` | WMS/ECS/CTU/AGV callback",
+            "CTU 逐箱取出满箱 callback",
+            "CTU 逐箱放入五层货架 callback",
+            "CTU 将空箱补回单层货架 callback",
+            "WMS/CTU 从五层货架逐箱取出",
+            "CTU 从退料线逐箱取出并放回五层货架",
+            "WES 更新料箱在途位置",
         }
     ),
     **{
@@ -426,6 +442,50 @@ def test_rack_operation_read_side_regression_coverage_is_preserved() -> None:
         "test_sync_operation_status_marks_reconciliation_expected",
         "test_derive_operation_status_consumes_projection_per_inbound_task",
         "test_derive_operation_status_reconciles_when_move_out_rack_still_at_source_position",
+    }
+    assert {test_name for test_name in required_tests if f"def {test_name}" not in source} == set()
+
+
+def test_final_acceptance_sorter_docs_freeze_pick_ack_and_batch_only_ctu_boundary() -> None:
+    required_pick_ack_docs = (
+        "docs/business/smt_sorter_inbound_workflow_guide.md",
+        "docs/architecture/sorter-inbound-capability-spec.md",
+        "docs/architecture/workline-restructuring-implementation.md",
+    )
+    for relative_path in required_pick_ack_docs:
+        source = (REPO_ROOT / relative_path).read_text()
+        assert "southbound_pick_acknowledged" in source
+        assert "扫码平台业务投影：是否空闲" not in source
+        assert "typed `COMMAND_RESULT` 解锁" not in source
+        assert "南向投放成功的 typed `COMMAND_RESULT`" not in source
+
+    acceptance_source = (REPO_ROOT / "docs/business/inbound_acceptance_steps.md").read_text()
+    for forbidden in (
+        "RuntimeInbox` | WMS/ECS/CTU/AGV callback",
+        "CTU 逐箱取出满箱 callback",
+        "CTU 逐箱放入五层货架 callback",
+        "CTU 将空箱补回单层货架 callback",
+        "WMS/CTU 从五层货架逐箱取出",
+        "CTU 从退料线逐箱取出并放回五层货架",
+        "WES 更新料箱在途位置",
+    ):
+        assert forbidden not in acceptance_source
+    assert "WES 只消费 WMS 批次终态" in acceptance_source
+
+
+def test_coarse_fulfillment_port_and_positive_contract_tests_are_physically_removed() -> None:
+    import importlib.util
+
+    assert importlib.util.find_spec("src.app.wms_integration.ports.fulfillment") is None
+    assert not (REPO_ROOT / "src/app/wms_integration/ports/fulfillment.py").exists()
+    assert not (REPO_ROOT / "tests/contracts/workline/test_wms_fulfillment_request_contract.py").exists()
+
+
+def test_rack_operation_direct_kind_and_move_rack_projection_regressions_are_preserved() -> None:
+    source = (REPO_ROOT / "tests/rack/test_rack_operation_service.py").read_text()
+    required_tests = {
+        "test_derive_operation_status_requires_matching_rack_kind_projection",
+        "test_derive_operation_status_requires_move_rack_target_projection",
     }
     assert {test_name for test_name in required_tests if f"def {test_name}" not in source} == set()
 

@@ -6,7 +6,7 @@ import re
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, computed_field, field_validator, model_validator
 
 from src.app.wms_integration.operation_contract import WmsOperationDefinition  # noqa: TC001
 
@@ -68,6 +68,13 @@ class WmsProviderOperationBinding(BaseModel):
     profile: ExternalContractProfile
     operation: WmsOperationDefinition
     outbound_auth: OutboundAuthProfile
+
+    @computed_field
+    @property
+    def max_candidate_count(self) -> int | None:
+        """只读透出 Definition 的 E13 候选窗口上限，避免 Provider 形成第二真源。"""
+
+        return self.operation.max_candidate_count
 
     @model_validator(mode="after")
     def enforce_outbound_auth(self) -> WmsProviderOperationBinding:

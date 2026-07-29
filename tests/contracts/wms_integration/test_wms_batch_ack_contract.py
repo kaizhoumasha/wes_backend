@@ -86,6 +86,37 @@ def _e13_payload() -> dict[str, object]:
     return payload
 
 
+def _e13_payload_with_candidate_count(candidate_count: int) -> dict[str, object]:
+    payload = deepcopy(REQUEST_FIXTURES[E13])
+    first = payload["candidate_items"][0]
+    payload["candidate_items"] = [
+        {
+            **first,
+            "sequence_no": index,
+            "route_instance_id": f"ROUTE-{index:03d}",
+            "bin_id": f"BIN-{index:03d}",
+            "scan3_enqueued_at": f"2026-07-29T00:00:{index - 1:02d}+00:00",
+            "queue_position": index,
+        }
+        for index in range(1, candidate_count + 1)
+    ]
+    payload["candidate_digest"] = _candidate_digest(payload)
+    return payload
+
+
+def test_e13_candidate_window_is_bounded_by_unique_definition_and_provider_binding() -> None:
+    from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
+
+    operation = WMS_OPERATION_BY_IDENTITY[E13]
+    binding = next(binding for binding in WMS_PROVIDER_PROFILE.bindings if binding.operation.identity == E13)
+
+    assert operation.max_candidate_count == 12
+    assert binding.max_candidate_count == operation.max_candidate_count
+    operation.request_model.model_validate(_e13_payload_with_candidate_count(operation.max_candidate_count))
+    with pytest.raises(ValidationError, match="max_candidate_count"):
+        operation.request_model.model_validate(_e13_payload_with_candidate_count(operation.max_candidate_count + 1))
+
+
 def test_e13_request_binds_digest_to_ordered_frozen_candidates() -> None:
     operation = WMS_OPERATION_BY_IDENTITY[E13]
     payload = _e13_payload()
@@ -220,6 +251,7 @@ def test_mock_multi_member_ack_and_terminal_result_preserve_frozen_correspondenc
             payload,
             source_version=3,
             completed_at="2026-07-29T00:00:03+00:00",
+            provider_reference=ack.provider_reference,
         )
     )
 
@@ -261,10 +293,11 @@ def test_real_status_parser_requires_frozen_batch_ack_and_rejects_member_drift(
         request_payload,
         source_version=3,
         completed_at="2026-07-29T00:00:03+00:00",
+        provider_reference=ack.provider_reference,
     )
     wire = {
         "state": "COMPLETED",
-        "provider_reference": "provider-batch",
+        "provider_reference": ack.provider_reference,
         "reason_code": None,
         "updated_at": "2026-07-29T00:00:03+00:00",
         "source_version": 3,
@@ -293,3 +326,61 @@ def test_real_status_parser_requires_frozen_batch_ack_and_rejects_member_drift(
     )
     with pytest.raises((ValueError, ValidationError), match=r"ACK|frozen request members"):
         parse_wms_effect_status_snapshot(request=request, raw_response=reordered)
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "payload_factory"),
+    [(E12, _e12_payload), (E13, _e13_payload)],
+)
+def test_batch_terminal_result_rejects_provider_reference_drift(operation_identity: str, payload_factory) -> None:
+    from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck, validate_batch_terminal_result
+    from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
+
+    request_payload = payload_factory()
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    request = operation.request_model.model_validate(request_payload)
+    ack = WmsEffectAck.model_validate(build_typed_ack(operation_identity, "idem-reference", request_payload))
+    result_payload = build_typed_result(
+        operation_identity,
+        request_payload,
+        source_version=3,
+        completed_at="2026-07-29T00:00:03+00:00",
+    )
+    result_payload["provider_reference"] = "provider-reference-drift"
+    result = operation.result_model.model_validate(result_payload)
+
+    with pytest.raises(ValueError, match="provider_reference"):
+        validate_batch_terminal_result(request, ack, result)
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "payload_factory"),
+    [(E12, _e12_payload), (E13, _e13_payload)],
+)
+def test_batch_status_rejects_provider_reference_drift(operation_identity: str, payload_factory) -> None:
+    from src.app.wms_integration.ports.effect_status import (
+        WmsBatchEffectStatusRequest,
+        parse_wms_effect_status_snapshot,
+    )
+    from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
+    from tests.mock.wms_northbound_contract import build_typed_ack
+
+    request_payload = payload_factory()
+    ack = WmsEffectAck.model_validate(build_typed_ack(operation_identity, "idem-reference", request_payload))
+    request = WmsBatchEffectStatusRequest(
+        operation_identity=operation_identity,
+        idempotency_key="idem-reference",
+        request_payload=request_payload,
+        frozen_ack=ack,
+    )
+    wire = {
+        "state": "PROCESSING",
+        "provider_reference": "provider-reference-drift",
+        "reason_code": None,
+        "updated_at": "2026-07-29T00:00:03+00:00",
+        "source_version": 3,
+        "result_payload": None,
+    }
+
+    with pytest.raises(ValueError, match="provider_reference"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)

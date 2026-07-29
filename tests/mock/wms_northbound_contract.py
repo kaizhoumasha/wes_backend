@@ -497,6 +497,7 @@ class NorthboundOperationStore:
                 record.payload,
                 source_version=record.source_version,
                 completed_at=record.updated_at,
+                provider_reference=record.provider_reference,
             )
         else:
             record.result_payload = None
@@ -549,6 +550,7 @@ def build_typed_result(
     *,
     source_version: int,
     completed_at: str,
+    provider_reference: str | None = None,
 ) -> dict[str, Any]:
     """从 35 项 fixture 清单构造与请求关联的 typed terminal result。"""
 
@@ -593,7 +595,7 @@ def build_typed_result(
     if "source_version" in result:
         result["source_version"] = str(source_version)
     if "provider_reference" in result:
-        result["provider_reference"] = f"mock:{payload.get('dispatch_key', 'query')}"
+        result["provider_reference"] = provider_reference or f"mock:{payload.get('dispatch_key', 'query')}"
     return operation.result_model.model_validate(result).model_dump(mode="json")
 
 

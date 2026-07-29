@@ -265,9 +265,17 @@ def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operatio
 @pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
 def test_completed_snapshot_selects_each_async_result_model_from_frozen_registry(operation) -> None:
     request = _status_request(operation.identity)
-    result_payload = RESULT_FIXTURES[operation.identity]
+    result_payload = dict(RESULT_FIXTURES[operation.identity])
+    provider_reference = "wms-effect-001"
+    if isinstance(request, WmsBatchEffectStatusRequest):
+        provider_reference = request.frozen_ack.provider_reference
+        result_payload["provider_reference"] = provider_reference
     source_version = int(result_payload["source_version"])
-    wire = {**_completed_wire(source_version=source_version), "result_payload": result_payload}
+    wire = {
+        **_completed_wire(source_version=source_version),
+        "provider_reference": provider_reference,
+        "result_payload": result_payload,
+    }
 
     snapshot = parse_wms_effect_status_snapshot(request=request, raw_response=wire)
 

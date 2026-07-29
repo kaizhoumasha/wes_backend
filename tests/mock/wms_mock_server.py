@@ -1100,7 +1100,7 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
 
 @app.post("/debug/wms/fulfillment/change-rack-face", summary="本机 Mock: 货架换面履约")
 async def change_rack_face(payload: dict[str, Any]):
-    """模拟 WmsFulfillmentPort.change_rack_face, 与满箱交换完成语义解耦。"""
+    """模拟 wms.fulfillment.change_rack_face@v1，与满箱交换完成语义解耦。"""
 
     return {
         "code": 200,

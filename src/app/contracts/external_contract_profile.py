@@ -164,7 +164,7 @@ class RuntimeCapabilityProfile(BaseModel):
     )
     effect_ports: list[str] = Field(
         default_factory=list,
-        description="只允许 abstract Protocol 引用, e.g. WmsFulfillmentPort",
+        description="只允许当前出站合同引用，不允许已删除的粗粒度 fulfillment port",
     )
     forbidden_injection_types: list[str] = Field(
         default_factory=list,

@@ -114,7 +114,7 @@ class RuntimeCapabilityContext:
 
     capability 只能拿到:
     - query_ports: 只读事实查询 port (WmsMasterDataPort / typed operation query port)
-    - effect_ports: 出站副作用 port (WmsFulfillmentPort / WmsInventoryTransactionPort)
+    - effect_ports: 出站副作用 port（库存事务或 operation-specific WMS effect contract）
 
     capability 不能拿到:
     - inbound normalizer (WmsEventPort / DeviceEventPort / RuntimeInbox)

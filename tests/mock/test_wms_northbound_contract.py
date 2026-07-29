@@ -253,6 +253,7 @@ def test_store_scopes_idempotency_by_operation_identity_and_replays_completed_ty
         payload,
         source_version=2,
         completed_at=completed.updated_at,
+        provider_reference=completed.provider_reference,
     )
 
 

@@ -9,10 +9,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_IDENTITY = "wms.fulfillment.notify_pkg_binding@v1"
 
 LEGACY_SOURCE_MARKERS = {
-    Path("src/app/wms_integration/ports/fulfillment.py"): (
-        "class WmsPalletBindingResult(",
-        "def notify_pkg_binding(",
-    ),
     Path("src/app/contracts/external_contract_profile_catalog.py"): ("WmsFulfillmentPort.notify_pkg_binding",),
     Path("src/app/runtime/capabilities/material_flow/sorter_inbound_runtime_service.py"): (
         "WmsFulfillmentPort.notify_pkg_binding",

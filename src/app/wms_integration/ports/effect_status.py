@@ -298,6 +298,11 @@ def parse_wms_effect_status_snapshot(
 
     if wire.provider_reference is None or wire.updated_at is None or wire.source_version is None:
         raise ValueError("visible WMS status requires provider_reference, updated_at and source_version")
+    if (
+        isinstance(request, WmsBatchEffectStatusRequest)
+        and wire.provider_reference != request.frozen_ack.provider_reference
+    ):
+        raise ValueError("status provider_reference does not match ACK")
     utc_offset = wire.updated_at.utcoffset()
     if utc_offset is None or utc_offset.total_seconds() != 0:
         raise ValueError("visible WMS status updated_at must be offset-aware UTC")

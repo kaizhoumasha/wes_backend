@@ -375,3 +375,46 @@ operation 的兼容入口。
   0 caller / 0 process。均无 HIGH/CRITICAL 风险。
 - worktree `gitnexus detect-changes --scope staged` → 13 files / 26 symbols / 0 affected processes，
   risk LOW；变更仅覆盖本轮 Q19、活动文档、fixture、Mock GRN、守卫与验收报告，未引入 T2/T5 流程。
+
+## Final Acceptance Review（第十轮）修复
+
+- E13 候选窗口上限以规格冻结值 `12` 写入唯一 `WmsOperationDefinition.max_candidate_count`；Provider
+  binding 只读派生该字段，不维护第二真源。E13 typed request 同样从 Definition 取值并拒绝第 13 个候选，
+  其他 operation 与 QUERY 均禁止声明该字段。
+- E12/E13 的 ACK、可见 status 和 batch terminal result 强制使用同一 `provider_reference`；Mock operation
+  store 也从已接受记录向 typed terminal result 传递该引用，避免测试实现制造漂移。
+- 三份 sorter 活动文档统一为上一物料的真实南向 `PICK ACK`
+  （`southbound_pick_acknowledged`）解锁下一次北向取料；scanner 本地空闲投影和
+  `COMMAND_RESULT` 均不是业务解锁条件。语义守卫按文件精确禁止旧口径。
+- 入库验收步骤冻结 WMS↔CTU 内部边界：WES 只消费 WMS 批次终态，不接收 CTU/AGV 逐箱 callback，
+  不直接写逐箱位置；E11–E13 验收步骤与文档守卫同步收敛。
+- 物理删除旧粗粒度 `ports/fulfillment.py`、`WmsFulfillmentPort/WmsFulfillmentResult` 和对应正向合同测试；
+  当前 fulfillment 只保留 operation-specific request/result/definition。恢复 Rack 类型匹配和
+  `MOVE_RACK` 目标位置投影两项直接回归。
+- 未实现 T2/T5，未新增兼容层、宽 allowlist、skip 或 xfail。
+
+## Final Acceptance Review（第十轮）TDD 与验证
+
+1. RED：8 项定点测试分别命中 E13 无上限、E12/E13 status/terminal 引用漂移未拒绝、sorter 文档仍用错误
+   因果、粗粒度 fulfillment 文件仍存在以及 Rack 直接回归缺失。
+2. GREEN：8 项定点测试全部通过；相关合同、workline、Mock、架构与 Rack 扩展回归
+   `638 passed`。扩展回归首轮额外暴露 2 个旧 fixture 的 ACK/status 引用漂移；仅统一夹具引用后，
+   对应参数化测试 `7 passed`，扩展回归从头复验全部通过。
+3. 默认全集从头复验 → `4180 passed, 5 existing skipped`（4185 collected），没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4180 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4185 tests collected`。
+- `uv run ruff format --check .` → 1075 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：Definition、Provider binding、typed request、status parser、terminal validator 与
+  Mock result builder 为 HIGH；旧粗粒度 Port 为 LOW；provider catalog `_binding` 为 CRITICAL，因此未修改
+  该符号，改用 Definition 派生字段避免第二真源。所有 HIGH 变更均属于本轮明确授权验收范围。
+- worktree `gitnexus detect-changes --scope staged` → 23 files / 59 symbols / 6 affected processes，
+  risk HIGH；命中 Mock 北向 effect handler 流程及本轮合同/文档/守卫，属于已授权 Final Acceptance Review
+  范围，未引入 T2/T5 流程。

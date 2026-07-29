@@ -249,15 +249,16 @@ SOURCE_ARM 和 TARGET_ARM **并行工作**，扫码平台是唯一的同步点�
 T0: SOURCE_ARM 取料盘 A → 放扫码平台
 T1: 扫码平台扫码 A → 分箱算法 → 分配目标料格
 T2: 有兼容目标格 → TARGET_ARM 从扫码平台取走 A → 放入目标料格
-T3: SOURCE_ARM 可同时取料盘 B（硬件互锁：扫码平台空 → 允许放）
+T3: 收到 A 的南向 PICK ACK 后，WES 可触发 SOURCE_ARM 取料盘 B；PLC/机器人仍独立执行平台物理互锁
 ```
 
-若 A 扫码成功但暂时无兼容目标格，扫码平台保持占用，SOURCE_ARM 不再取 B，直到 WES 释放当前工作位料箱、流水线自动补入新料箱后 A 获得目标格或人工处置完成。
+若 A 扫码成功但暂时无兼容目标格，A 不会产生南向 PICK ACK，因此 WES 不触发 B；平台物理占用只由
+PLC/机器人互锁，不成为 WES 的业务准入投影。
 
 ```
 6.1 WES 按 LIFO 顺序选择当前活动料格中下一个待处理源料盘（料盘级严格 LIFO，不跳过）
-6.2 检查扫码平台业务投影：是否空闲？
-6.3 空闲 → 向 SOURCE_ARM 下发取料命令
+6.2 首件由 Session 启动；后续物料检查上一件 `southbound_pick_acknowledged`
+6.3 已收到上一件南向 PICK ACK → 向 SOURCE_ARM 下发取料命令
 6.4 SOURCE_ARM 取料 → 放扫码平台 → 回调 WES
 6.5 扫码平台扫码 → SOURCE_REEL_SCAN_COMPLETED 事件 → WES 收到
 6.6 WES 校验扫码身份 = 预期身份（基于源货架快照）
@@ -268,7 +269,7 @@ T3: SOURCE_ARM 可同时取料盘 B（硬件互锁：扫码平台空 → 允许�
 6.9 无兼容目标格 → 释放当前工作位目标料箱（流程同第 6.9 节目标料箱释放）→ 流水线自动将排队位下一个料箱推入工作位 → 料盘留在扫码平台等待新料箱的可兼容料格 → 源侧暂停继续取料
 6.10 有兼容目标格 → 向 TARGET_ARM 下发放料命令（目标料箱 + 目标料格）
 6.11 TARGET_ARM 取料 → 放目标料格 → 回调 WES → 更新投影（料格占用 + 料盘身份）
-6.12 扫码平台释放后，下一个源料盘（回到 6.1）
+6.12 南向 PICK ACK 到达后，下一个源料盘回到 6.1；平台物理互锁仍由 PLC/机器人负责
 ```
 
 ### 6.7 继续处理同料格
@@ -396,7 +397,7 @@ v1 采用全线单工作位口径——一次只有一个可信 AT_WORK 目标�
 | 目标料箱内容（各料格占用） | 每次 TARGET_ARM 放料完成 |
 | WMS 库存增量同步状态 | TARGET_ARM 放料成功后形成待同步增量；WMS 接收后记录 inventory_delta_ref，五层货架回库必须引用该凭证 |
 | 源货架快照（料盘身份） | 入口事件携带；单层货架到达 STATION 时一次性加载到 Redis 缓存（key=`source_rack:{rack_id}`，TTL=该货架处理周期） |
-| 扫码平台占用 evidence | SOURCE_ARM/TARGET_ARM typed `COMMAND_RESULT`；不维护独立软件状态机 |
+| 南向 PICK ACK evidence | `southbound_pick_acknowledged`；是下一次北向取料的唯一业务解锁条件 |
 | 退箱区占用数 | 料箱进入/离开退箱区事件 |
 | STATION 占用状态 | 单层货架到达/移出回调 |
 
@@ -407,9 +408,9 @@ v1 采用全线单工作位口径——一次只有一个可信 AT_WORK 目标�
 扫码平台是 SOURCE_ARM 和 TARGET_ARM 的物理交接点，但 WES 不复制一套软件互锁状态机。硬件实时互锁由
 PLC/ECS 负责，WES 只持久化 typed command evidence，并按以下业务因果串行推进：
 
-- SOURCE_ARM 放盘和 TARGET_ARM 取盘分别以对应 typed `COMMAND_RESULT` 作为物理动作证据。
-- 北向下一次取料只由上一物料南向投放成功的 typed `COMMAND_RESULT` 解锁。
-- UI、轮询快照或推测出的平台占用状态不得替代设备结果。
+- SOURCE_ARM 放盘和 TARGET_ARM 投放仍分别持久化 typed ACK/RESULT evidence。
+- 北向下一次取料只由上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）解锁。
+- UI、轮询快照、推测的平台占用状态或南向投放 `COMMAND_RESULT` 均不得替代该 ACK 因果。
 - 设备结果不确定时进入 RuntimeHold/对账，不猜测平台已经腾空。
 
 ### 8.2 投影对账机制
@@ -541,7 +542,7 @@ WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回�
 24. v1 同一时间只有一个可信 AT_WORK 目标料箱，多个工作位物理编码不启用并行分拣
 25. 目标料箱满格释放后，若无已通过准入的排队料箱，应触发 CTU 补充投料或等待 WMS 分配，同时启动工作位空闲计时器
 26. 每个源料盘离开源格时创建独立料盘分拣 Session，business_key 唯一标识，扫码/放入为等待点，终态不反向阻塞源货架释放
-27. 扫码平台不维护独立软件状态机；北向下一次取料只由上一物料南向投放成功的 typed `COMMAND_RESULT` 解锁
+27. 扫码平台不维护独立软件状态机；北向下一次取料只由上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）解锁
 28. 定期对账（30 秒）和关键节点对账（换面/回库/移出）发现投影差异时，记录告警/RuntimeHold；未获得可信补证前不得基于推测修正投影
 29. CTU 投料任务失败（背篓装载后无法到达投料口、投料循环中连续失败等）→ 记录失败事实，投料链路进入 BLOCKED，等待人工处置
 30. CTU 投料阶段未扫码物理箱只生成流水线临时占位，不得提前绑定到真实 `bin_id`

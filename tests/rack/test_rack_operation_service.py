@@ -286,3 +286,61 @@ async def test_derive_operation_status_reconciles_when_move_out_rack_still_at_so
     assert (
         await service.derive_operation_status(None, operation_key=operation_key) == RackOperationStatus.SUCCEEDED.value
     )
+
+
+@pytest.mark.asyncio
+async def test_derive_operation_status_requires_matching_rack_kind_projection() -> None:
+    operation_key = "op-rack-kind"
+    tasks = [
+        _task(
+            operation_key=operation_key,
+            task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+            task_status=RackTaskStatus.SUCCEEDED,
+            rack_kind=RackKind.SINGLE_LAYER,
+        )
+    ]
+    service, _operations, placements = _read_service(
+        operation_key=operation_key,
+        tasks=tasks,
+        placements_by_position={"CLASSIFIER-WORK": [_placement("RACK-FIVE", RackKind.FIVE_LAYER)]},
+    )
+
+    assert (
+        await service.derive_operation_status(None, operation_key=operation_key)
+        == RackOperationStatus.RECONCILING.value
+    )
+
+    placements.placements_by_position["CLASSIFIER-WORK"] = [_placement("RACK-SINGLE", RackKind.SINGLE_LAYER)]
+    assert (
+        await service.derive_operation_status(None, operation_key=operation_key) == RackOperationStatus.SUCCEEDED.value
+    )
+
+
+@pytest.mark.asyncio
+async def test_derive_operation_status_requires_move_rack_target_projection() -> None:
+    operation_key = "op-move-rack-target"
+    tasks = [
+        _task(
+            operation_key=operation_key,
+            task_type=RackTaskType.MOVE_RACK,
+            task_status=RackTaskStatus.SUCCEEDED,
+            rack_code="RACK-MOVED",
+            source_position_code=None,
+            target_position_code="TARGET",
+        )
+    ]
+    service, _operations, placements = _read_service(
+        operation_key=operation_key,
+        tasks=tasks,
+        placements_by_position={"TARGET": [_placement("RACK-OTHER")]},
+    )
+
+    assert (
+        await service.derive_operation_status(None, operation_key=operation_key)
+        == RackOperationStatus.RECONCILING.value
+    )
+
+    placements.placements_by_position["TARGET"] = [_placement("RACK-MOVED")]
+    assert (
+        await service.derive_operation_status(None, operation_key=operation_key) == RackOperationStatus.SUCCEEDED.value
+    )
