@@ -208,6 +208,29 @@ def test_completed_snapshot_returns_only_operation_specific_typed_result() -> No
     assert not hasattr(snapshot, "raw_payload")
 
 
+def test_completed_snapshot_direct_construction_rejects_reason_code() -> None:
+    completed = parse_wms_effect_status_snapshot(request=_rack_supply_request(), raw_response=_completed_wire())
+
+    with pytest.raises(ValidationError, match="only REJECTED status may carry reason_code"):
+        WmsEffectStatusSnapshot(
+            operation_identity=completed.operation_identity,
+            idempotency_key=completed.idempotency_key,
+            state=completed.state,
+            provider_reference=completed.provider_reference,
+            reason_code="NO_RACK_AVAILABLE",
+            updated_at=completed.updated_at,
+            source_version=completed.source_version,
+            result=completed.result,
+        )
+
+
+def test_completed_status_wire_rejects_reason_code() -> None:
+    wire = {**_completed_wire(), "reason_code": "NO_RACK_AVAILABLE"}
+
+    with pytest.raises(ValueError, match="only REJECTED status may carry reason_code"):
+        parse_wms_effect_status_snapshot(request=_rack_supply_request(), raw_response=wire)
+
+
 @pytest.mark.parametrize(
     "changes",
     [

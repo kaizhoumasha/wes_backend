@@ -510,7 +510,6 @@ def _post_exchange_relations_error(operation: Any | None, payload_json: Mapping[
 
 
 def _callback_step_status(payload_json: Mapping[str, Any]) -> tuple[HandlingStepStatus, str | None, str | None]:
-    callback_type = coerce_optional_str(payload_json.get("callback_type"))
     raw_status = coerce_optional_str(
         payload_json.get("exchange_status")
         or payload_json.get("task_status")
@@ -526,13 +525,6 @@ def _callback_step_status(payload_json: Mapping[str, Any]) -> tuple[HandlingStep
             "POST_EXCHANGE_RELATIONS_MISSING",
             "满箱交换物理完成回调缺少 post_exchange_relations，已进入资源对账",
         )
-
-    if callback_type == "CTU_BIN_MOVE_COMPLETED":
-        return HandlingStepStatus.SUCCEEDED, None, None
-    if callback_type == "CTU_BIN_MOVE_FAILED":
-        return HandlingStepStatus.FAILED, _raw_error_code(payload_json), _raw_error_message(payload_json)
-    if callback_type == "CTU_BIN_MOVE_PROGRESS":
-        return HandlingStepStatus.IN_PROGRESS, None, None
 
     return _resolve_step_status(status), _raw_error_code(payload_json), _raw_error_message(payload_json)
 

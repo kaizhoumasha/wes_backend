@@ -646,3 +646,57 @@ operation 的兼容入口。
 - worktree `gitnexus detect-changes --scope staged` → 4 files / 1 symbol /
   0 affected processes，risk LOW；变更仅覆盖 WMS boundary seed 目标规则、正式生成 CSV、精确门禁与报告，
   未包含手工 CSV 修改、兼容入口或 T2/T5。
+
+## Boundary Review（第十七轮）修复
+
+- legacy matrix 的 5 条 `WMS_INTEGRATION_BOUNDARY` seed 按真实旧入口职责拆分：
+  callback ingress 采用 `delete` 且目标为空；rack gateway 由冻结 manifest 映射 E08–E11；
+  handling gateway 映射 E12–E14；single-layer orchestration 映射 E08；runtime services 映射
+  `wms.inventory.query_inventory@v1`。生成器直接复用 `LEGACY_TRANSPORT_MIGRATION_MANIFEST`，
+  并通过正式 `uv run python scripts/generate_legacy_matrix.py` 再生 CSV。
+- 生产 external callback 边界拒绝 `source_system=CTU` 与全部 `CTU_*` 外部族；移除 ingress allow-list /
+  source map 中三项 per-bin callback，并删除 handling lifecycle 的三条 CTU 专用 consumer 分支。
+  fail-closed 合同逐项验证 writer、commit、enqueue 均无副作用；原 duplicate/broker 通用行为改用合法
+  `AGV_TASK_RESULT` 验证，不保留 CTU 正向入口。
+- `WmsEffectStatusSnapshot` 与 wire parser 统一只允许 `REJECTED` 携带 `reason_code`；
+  `COMPLETED + reason_code` 在领域直接构造和 wire parse 两层均拒绝。
+- 活动文档统一改为 E08–E14 ACK/status/typed terminal result 终态权威，可选
+  `WMS_EFFECT_STATUS_HINT` 只唤醒查询。新增稳定概念族 guard，禁止 WMS/RCS/AGV callback
+  继续作为完成依据或直接更新、写入、释放、推进 owner 投影。
+- matrix 汇总同步为 651 entries、370 rebuild、14 delete、106 phase4 carrier、0 pending-review；
+  phase2 rebuild 为 254。未实现 T2/T5，未新增 alias、fallback、兼容层、skip 或 xfail。
+
+## Boundary Review（第十七轮）TDD 与验证
+
+1. RED：
+   - 5 行 matrix 精确语义合同失败，证明当时仍全部落到 E09/rebuild；
+   - CTU per-bin 三项 fail-closed 参数均 `DID NOT RAISE`；
+   - `COMPLETED + reason_code` 的领域与 wire 两项均 `DID NOT RAISE`；
+   - 活动文档概念 guard 命中 SRS、module、inbound acceptance、SMT workflow guide 共 4 个文件。
+2. GREEN：
+   - matrix 正式再生与精确合同 `2 passed`；
+   - callback/handling 直接调用方相关回归 `60 passed`；
+   - effect-status 全文件 `64 passed`；
+   - removal guard 与 matrix 合同 `24 passed`；
+   - 本轮相关总集 `170 passed`，topology `6 passed`。
+3. 默认全集首轮暴露 2 个派生摘要/文档合同漂移，定点修复后从头复验：
+   `4184 passed, 5 existing skipped`（4189 collected），没有新增 skip/xfail。
+
+最终验证：
+
+- `uv run pytest tests/ -q` → `4184 passed, 5 skipped`。
+- `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` → `6 passed`。
+- `uv run pytest --collect-only -q -o addopts=''` → `4189 tests collected`。
+- `uv run ruff format --check .` → 1074 files already formatted；`uv run ruff check .`、
+  `git diff --check` → PASS。
+- `uv run python scripts/check_business_legacy_absence_gate.py --mode final` → PASS。
+- `./scripts/git-quality-gate.sh --profile quality` → PASS（Bandit 0 issue、runtime contracts
+  361 passed、business legacy final、process naming 11 passed、import-linter、architecture enforced、
+  topology 全通过）。
+- GitNexus pre-edit：matrix 两个函数与 handling callback mapper 为 LOW；effect domain validator 为 LOW，
+  wire parser 为 MEDIUM（8 direct / 19 upstream / 0 process）；`process_external` 为 HIGH
+  （12 direct / 1 production process / 4 modules），已在编辑前报告并获得明确确认。
+  GitNexus 索引落后且增量刷新因内部 FTS inconsistency 失败，已保留错误证据。
+- 当前 worktree `gitnexus detect-changes --scope staged` → 20 files / 68 symbols /
+  0 affected processes，risk LOW；变更仅覆盖本轮 matrix、callback ingress、effect status、
+  活动文档/guard、测试与报告，不包含 T2/T5。

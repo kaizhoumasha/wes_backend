@@ -188,22 +188,52 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             assert rows[entry_id][field] == value
 
 
-def test_wms_boundary_seeds_target_current_rack_transport_operation() -> None:
-    """WMS boundary seed 只能指向现行 rack transport Definition，不得恢复粗粒度 Port。"""
-    from src.app.wms_integration.ports import fulfillment_operations
+def test_wms_boundary_seeds_follow_each_legacy_source_semantics() -> None:
+    """WMS boundary seed 必须按旧入口真实职责迁移，物理删除入口不得伪造承载者。"""
+    from src.app.wms_integration.provider_manifest import LEGACY_TRANSPORT_MIGRATION_MANIFEST
 
-    target_path = "src/app/wms_integration/ports/fulfillment_operations.py"
-    target_identity = "wms.fulfillment.request_rack_transport@v1"
-    legacy_target = "WmsFulfillmentPort.request_transport"
+    fulfillment_path = "src/app/wms_integration/ports/fulfillment_operations.py"
+    rack_targets = next(
+        targets
+        for legacy_identity, targets in LEGACY_TRANSPORT_MIGRATION_MANIFEST.items()
+        if legacy_identity.endswith(".rack@v1")
+    )
+    handling_targets = next(
+        targets
+        for legacy_identity, targets in LEGACY_TRANSPORT_MIGRATION_MANIFEST.items()
+        if legacy_identity.endswith(".handling@v1")
+    )
+    expected = {
+        "src/app/callback/services/callback_ingress_service.py": ("delete", "", ""),
+        "src/app/rack/services/gateway.py": (
+            "rebuild",
+            fulfillment_path,
+            ";".join(rack_targets),
+        ),
+        "src/app/handling/services/gateway.py": (
+            "rebuild",
+            fulfillment_path,
+            ";".join(handling_targets),
+        ),
+        "src/app/workline/services/single_layer_rack_orchestration_service.py": (
+            "rebuild",
+            fulfillment_path,
+            "wms.fulfillment.request_rack_supply@v1",
+        ),
+        "src/workline_runtime/services.py": (
+            "rebuild",
+            "src/app/wms_integration/ports/inventory_operations.py",
+            "wms.inventory.query_inventory@v1",
+        ),
+    }
     seed_entries = [entry for entry in parse_entries() if "WMS_INTEGRATION_BOUNDARY seed" in entry.business_semantics]
 
     assert len(seed_entries) == 5
-    assert {(entry.target_path, entry.target_capability) for entry in seed_entries} == {(target_path, target_identity)}
-    assert (REPO_ROOT / target_path).is_file()
-    assert fulfillment_operations.REQUEST_RACK_TRANSPORT.identity == target_identity
+    assert {
+        entry.relative_path: (entry.strategy, entry.target_path, entry.target_capability) for entry in seed_entries
+    } == expected
+    assert all(not target_path or (REPO_ROOT / target_path).is_file() for _, target_path, _ in expected.values())
     assert not (REPO_ROOT / "src/app/runtime/orchestration/ports/wms_fulfillment.py").exists()
-    assert legacy_target not in (REPO_ROOT / "scripts/generate_legacy_matrix.py").read_text(encoding="utf-8")
-    assert legacy_target not in (REPO_ROOT / "docs/architecture/legacy-cleanup-matrix.csv").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

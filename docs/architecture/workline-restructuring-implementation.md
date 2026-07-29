@@ -56,7 +56,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `ReconciliationManager` 落地 owner-scoped resolution decision、hold/freeze action 和人工恢复审计的最小合同，不直接覆盖 owner 终态。
 - `ActiveObjectRegistry` 落地跨投影 active 归属仲裁读模型，覆盖多来源 active object 冲突 policy。
 - DeviceCommand 落地可过期 lease 和 recovery 策略，为 per-device in-flight、重放/取消和后续 dispatch policy 提供基础。
-- WMS fulfillment 落地 11 态状态机、终态保护、CB / late callback 语义和 typed evidence envelope，避免迟到事件覆盖成功、拒绝、失败、超时、取消等终态。
+- WMS fulfillment 落地 E08–E14 ACK/status/typed terminal result 状态收敛、终态保护、CB 语义和 typed evidence envelope；可选 callback hint 只唤醒 status query，不得覆盖成功或拒绝终态。
 - WorkLine plane 落地 `PlaneSceneView` / `PlaneSnapshot` 读模型、scene/snapshot 分离 route 和 manifest activation validator。
 - 运维合同新增 `docs/contracts/observability-contract.md` 与 `docs/contracts/runtime-toggle-governance.md`，明确 runtime observability signal、toggle owner/expiry/scope/default/rollback/test matrix 和安全绕过禁令。
 
@@ -71,7 +71,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `RuntimeProductionClosureGate`：补齐 runtime production closure 总门禁与 `scripts/check_runtime_production_closure_gate.py`；当前开发/测试默认使用 MOCK closure，无 artifact 可通过并标记 `MOCK_PRODUCTION_CLOSURE`。生产发布前显式切 `--closure-profile production` 时，仍要求生产 P0 E2E artifact 和 production-scale benchmark artifact 存在并通过各自 gate，并校验 artifact 引用的 trace、异常路径和 benchmark scenario evidence 文件真实存在且内容与 artifact 一致；缺任一 artifact、缺引用 evidence 文件、引用 evidence 内容不一致、benchmark 不是 `production-scale`，或 benchmark environment 属于 lightweight / sandbox，都不能通过 production closure profile。
 - WMS fulfillment 状态机补齐 4 类 timeout 事件合同与 current-state-aware 可观察转移矩阵，避免 provider/callback 事件越级改状态；并修正 circuit breaker open/half-open 只阻断出站请求、不覆盖已在途 fulfillment 状态；typed port 集成矩阵覆盖 OPEN fast-fail 与 HALF_OPEN trial-in-progress 二次 effect 不打 HTTP。
 - WMS evidence retention/archive 补齐 `wms_call_evidence_archive` 归档表、过期 finished evidence 迁移服务和保留期合同；in-flight `STARTED` evidence 不归档，避免清理仍在途调用诊断。
-- External callback allow-list 补齐 Phase 3 矩阵：WMS/RCS normalizer enforce `WMS_*`→`WMS`、`RCS_*`→`RCS`；统一 external callback 入口拒绝未登记 `callback_type`，并校验 ECS/device 与 provider-specific source mismatch，避免跨 provider callback_type/source 混用。
+- External callback allow-list 补齐 Phase 3 矩阵：WMS 仅接收普通事件与 `WMS_EFFECT_STATUS_HINT`，EFFECT hint 只唤醒 status query；统一 external callback 入口拒绝未登记 `callback_type`，并校验 ECS/device 与 AGV source mismatch，避免跨 provider callback_type/source 混用。
 - `ExternalReferenceCatalog` 补齐 typed external reference 与 `source_version` drift 分类合同；`WmsCallEvidence` request/response snapshot 升级为 JSONB 并声明 GIN 索引；`WmsCallEvidenceService.run_external_reference_drift_job()` 只读扫描 evidence envelope 并输出 drift report；`docs/contracts/evidence-catalog.md` 固化 schema、索引和 drift 分类口径。
 - full-box / RACK_BIN exchange 行为合同从 strict xfail 转为真实合同：验证 exchange 外部履约、typed evidence、callback+reconciliation completion policy、生产 outbox 包络和本地冲突进入 ReconciliationManager / membership RECONCILING 投影的语义。
 - ReconciliationManager 新增 `register_conflict_idempotent()` 生产登记入口，并已接入 runtime reconciliation `TIMER_TIMEOUT` 与 dispatch ACK exhausted 热路径：登记 owner-scoped decision 前先通过 `IdempotencyGuard` claim `operation_kind=reconciliation`，同 key 同 hash 返回 MATCH，同 key 不同 hash 抛 409 `IdempotencyConflict` 并暴露 reconciliation 域审计 payload；缺少 `correlation_id` 的 legacy 路径保持原行为。
@@ -332,7 +332,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | **ENG-003** WorkLine 启动 manifest validator | M | `src/app/workline/` | 集合差检测 + RuntimeHold 拒写 |
 | **ENG-004** 11 态机补 4 条 timeout + CB `BLOCKED_BY_CB` | M | `src/app/wms_integration/state_machine.py` | 4 timeout 转移 + CB 出站阻塞集成测试；CB `open/half-open` 期间 late callback 仍写 inbox/evidence 并进入幂等合并或 RECONCILING；RuntimeInbox 热路径迁移另列剩余缺口 |
 | **ENG-006** `ActiveObjectRegistry` 跨投影 active 归属仲裁读模型 | M | `src/app/active_objects/` | 3 路 UNION 冲突 policy 单元测试 |
-| **ENG-008** External callback body HMAC + nonce TTL + allow-list | M | `src/app/callback/`, `src/app/wms_integration/`, `src/app/device/`, `src/core/api_security.py` | WMS/RCS/ECS/device 重放 + 篡改 + 时钟偏差 + allow-list 测试 |
+| **ENG-008** External callback body HMAC + nonce TTL + allow-list | M | `src/app/callback/`, `src/app/wms_integration/`, `src/app/device/`, `src/core/api_security.py` | WMS ordinary event/status hint、ECS/device 与 AGV 重放 + 篡改 + 时钟偏差 + allow-list 测试 |
 | **ENG-009** idempotency_key 复合主键 + request_hash + session 审计 | M | `src/app/runtime/`, `src/app/wms_integration/`, `src/app/device/` | callback / fulfillment / device_command / device_event / reconciliation 409 + 安全审计事件 |
 | **ENG-010** typed `ExternalReference` + typed evidence envelope + WMS drift job | M | `src/app/wms_integration/evidence/`, `docs/contracts/evidence-catalog.md` | GIN 索引 + drift 分类 |
 | **ENG-011** RuntimeInbox backpressure + DeviceCommand lease | M | `src/app/runtime/`, `src/app/device/` | inbox 积压降级、死信/人工重放、per-device in-flight 限制、过期 lease 重放/取消测试 |
@@ -355,7 +355,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | ENG-003 | ✅ 已完成 | WorkLine manifest activation validator，防止已知 queue_code typo 污染 active projection |
 | ENG-004 | ✅ 已完成 | 11 态状态机、终态保护、CB / late callback 合同已落地；本分支补齐 4 类 timeout 与 current-state-aware 可观察转移矩阵，并覆盖 CB open/half-open 只阻断出站 effect、不覆盖在途状态、OPEN fast-fail 与 HALF_OPEN trial-in-progress 二次 effect 不打 HTTP 的集成矩阵 |
 | ENG-006 | ✅ 已完成 | `ActiveObjectRegistry` 跨投影 active 归属仲裁读模型 |
-| ENG-008 | ✅ 已完成 | callback body HMAC、nonce 原子消费、body hash、`API_PATH` 前缀和 fail-closed 已落地；本分支补齐 WMS/RCS provider/source 矩阵（`WMS_*`→`WMS`, `RCS_*`→`RCS`），并在统一 external callback 入口补齐 WMS/RCS、ECS/device 与 AGV/CTU provider-specific callback_type allow-list/source mismatch 拒绝矩阵 |
+| ENG-008 | ✅ 已完成 | callback body HMAC、nonce 原子消费、body hash、`API_PATH` 前缀和 fail-closed 已落地；WMS 仅保留普通事件与 `WMS_EFFECT_STATUS_HINT`，EFFECT hint 不写终态；统一 external callback 入口校验 WMS、ECS/device 与 AGV allow-list/source mismatch，并物理关闭 WMS↔CTU 逐箱入站族 |
 | ENG-009 | ✅ 已完成 | RuntimeInbox source event 幂等、payload hash 冲突、唯一冲突重读和审计已覆盖；本分支补齐 `IdempotencyOperationSpec` canonical/alias 审计矩阵、`IdempotencyConflict` 409 payload、ReconciliationManager `register_conflict_idempotent()`、runtime reconciliation `TIMER_TIMEOUT` / dispatch ACK exhausted 热路径 claim、WMS fulfillment `open_request_idempotent()` opening 入口、RuntimeIntent `EXTERNAL_REQUEST` fulfillment 实际发起热路径 claim 与 RuntimeInbox device_event `IdempotencyKey` claim |
 | ENG-010 | ✅ 已完成 | typed evidence envelope 已落地；本分支补齐 typed `ExternalReference` catalog、source-version drift 分类合同、`WmsCallEvidence` JSONB GIN 索引、只读 WMS drift job 和 `docs/contracts/evidence-catalog.md` |
 | ENG-011 | ✅ 已完成 | RuntimeInbox backpressure、死信/人工重放审计、DeviceCommand 可过期 lease 和 recovery 策略 |
@@ -377,7 +377,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [x] WorkLine 启动时已知 queue_code typo 不会污染 active projection。
 - [x] 11 态机覆盖所有可观察转移。PR #73 已覆盖 11 态枚举、终态保护和核心 CB / late callback 语义；本分支补齐 4 类 timeout 与 current-state-aware 可观察转移矩阵。
 - [x] CB `open/half-open` 只阻断出站 effect；late callback 不得被标记为 `BLOCKED_BY_CB`，必须经 RuntimeInbox 幂等合并 evidence，冲突时进入 RECONCILING。RuntimeInbox 已成为唯一事实源：callback/device/internal/timer producer 统一持久化后即时 enqueue，Celery 顺序 claim 并走三阶段 processor；旧 WorklineInbox 表、InboxBatchProcessor、RuntimeInboxConsumer facade、`enqueue_workline_inbox` 与 lifecycle-only 兼容路径均已物理删除，不保留双写或兼容 shim。
-- [x] External callback 鉴权从"字段级"升级为"body 完整性级"，覆盖 WMS/RCS/ECS/device 的统一校验路径。
+- [x] External callback 鉴权从"字段级"升级为"body 完整性级"，覆盖 WMS ordinary event/status hint、ECS/device 与 AGV 的统一校验路径。
 - [x] idempotency 跨域语义统一，覆盖 callback / fulfillment / device_command / device_event / reconciliation。PR #73 已覆盖 callback / RuntimeInbox source event 幂等与 payload hash conflict；本分支补齐 canonical/alias 审计矩阵、409 audit payload、ReconciliationManager 幂等登记入口、runtime reconciliation `TIMER_TIMEOUT` / dispatch ACK exhausted 热路径 claim、WMS fulfillment 幂等 opening 入口、RuntimeIntent `EXTERNAL_REQUEST` fulfillment 实际发起热路径 claim 与 RuntimeInbox device_event claim。
 - [x] RECONCILING 具备软件禁发、投影冻结和人工恢复审计。
 - [x] DeviceCommand lease 与 RuntimeInbox backpressure 已覆盖。
@@ -818,7 +818,7 @@ WorkLine 配置
   | manifest/config pin
   v
 inbound callback lane
-  WMS/RCS/ECS/device callback
+  WMS ordinary event / EFFECT status hint / ECS-device callback / AGV result
         |
         v
   InboundEventPort (WmsEventPort / DeviceEventPort normalizer)
@@ -828,7 +828,7 @@ inbound callback lane
 
 runtime/orchestration
   +-- ExecutionSession (session aggregate / PK owner)
-  |     +-- RuntimeInbox        <- WMS/RCS/ECS/device callback evidence
+  |     +-- RuntimeInbox        <- ordinary event / status hint / device callback evidence
   |     +-- RuntimeTimeline
   |     +-- RuntimeHold
   |     +-- ExecutionCorrelation

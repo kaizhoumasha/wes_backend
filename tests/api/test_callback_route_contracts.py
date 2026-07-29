@@ -192,7 +192,14 @@ class TestCallbackEnqueueFallback:
         runtime_writer.write_external_callback.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_process_external_writes_ctu_callback_without_lifecycle_side_effect(self) -> None:
+    @pytest.mark.parametrize(
+        "callback_type",
+        ("CTU_BIN_MOVE_PROGRESS", "CTU_BIN_MOVE_COMPLETED", "CTU_BIN_MOVE_FAILED"),
+    )
+    async def test_process_external_rejects_removed_ctu_bin_callback_without_side_effect(
+        self,
+        callback_type: str,
+    ) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
         runtime_writer = _runtime_inbox_writer_stub()
@@ -200,25 +207,27 @@ class TestCallbackEnqueueFallback:
             runtime_inbox_writer=runtime_writer,
         )
         service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
-        db = SimpleNamespace()
+        db = SimpleNamespace(commit=AsyncMock())
         payload = create_wms_external_payload(
-            callback_type="CTU_BIN_MOVE_COMPLETED",
+            callback_type=callback_type,
             source_system="CTU",
             dispatch_key="handling:bin-operation:trace-001:move:1",
             status="SUCCEEDED",
         )
 
-        outcome = await service.process_external(
-            db,  # type: ignore[arg-type]
-            callback_type="CTU_BIN_MOVE_COMPLETED",
-            payload=payload,
-            request_id="req-ctu-bin-completed",
-            trace_id="trace-bin-001",
-            enqueue_processing=lambda: None,
-        )
+        with pytest.raises(ValueError, match="callback_type is not allowed"):
+            await service.process_external(
+                db,  # type: ignore[arg-type]
+                callback_type=callback_type,
+                payload=payload,
+                request_id="req-removed-ctu-bin-callback",
+                trace_id="trace-bin-001",
+                enqueue_processing=lambda: None,
+            )
 
-        assert outcome.trace_id == "trace-bin-001"
-        runtime_writer.write_external_callback.assert_awaited_once()
+        runtime_writer.write_external_callback.assert_not_awaited()
+        db.commit.assert_not_awaited()
+        service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_process_external_does_not_route_removed_full_box_exchange_callback(self) -> None:
@@ -262,14 +271,14 @@ class TestCallbackEnqueueFallback:
 
         outcome = await service.process_external(
             db,  # type: ignore[arg-type]
-            callback_type="CTU_BIN_MOVE_COMPLETED",
+            callback_type="AGV_TASK_RESULT",
             payload=create_wms_external_payload(
-                callback_type="CTU_BIN_MOVE_COMPLETED",
-                source_system="CTU",
-                dispatch_key="handling:bin-operation:trace-001:move:1",
+                callback_type="AGV_TASK_RESULT",
+                source_system="AGV",
+                dispatch_key="agv:transport:trace-001",
             ),
-            request_id="req-duplicate-ctu",
-            trace_id="trace-bin-001",
+            request_id="req-duplicate-agv",
+            trace_id="trace-agv-001",
             enqueue_processing=lambda: None,
         )
 
@@ -324,15 +333,15 @@ class TestCallbackEnqueueFallback:
         ):
             outcome = await service.process_external(
                 db,  # type: ignore[arg-type]
-                callback_type="CTU_BIN_MOVE_COMPLETED",
+                callback_type="AGV_TASK_RESULT",
                 payload=create_wms_external_payload(
-                    callback_type="CTU_BIN_MOVE_COMPLETED",
-                    source_system="CTU",
-                    dispatch_key="handling:bin-operation:broker-fail",
+                    callback_type="AGV_TASK_RESULT",
+                    source_system="AGV",
+                    dispatch_key="agv:transport:broker-fail",
                     status="SUCCEEDED",
                 ),
-                request_id="req-wms-broker-fail",
-                trace_id="trace-wms-broker-fail",
+                request_id="req-agv-broker-fail",
+                trace_id="trace-agv-broker-fail",
                 enqueue_processing=enqueue_processing,
             )
 

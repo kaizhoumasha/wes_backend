@@ -53,6 +53,9 @@ def validate_external_callback_type(
         raise ValueError("source_system does not match payload")
     source_system = payload_source_system or declared_source
 
+    if source_system == "CTU" or callback_type.startswith("CTU_"):
+        raise ValueError(f"callback_type is not allowed: {callback_type}")
+
     is_wms_family = (
         source_system in {"WMS", "RCS"}
         or callback_type.startswith(("WMS_", "RCS_"))

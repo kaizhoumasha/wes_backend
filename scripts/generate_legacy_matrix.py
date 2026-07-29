@@ -24,6 +24,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# 生成器以脚本路径直接执行时，Python 默认只把 scripts/ 放入 import path。
+sys.path.insert(0, str(REPO_ROOT))
+
+from src.app.wms_integration.provider_manifest import LEGACY_TRANSPORT_MIGRATION_MANIFEST  # noqa: E402
 
 # 扫描目标
 SCAN_DIRS = {
@@ -746,6 +750,29 @@ def _target_runtime_capability(entry_type: str, path: str, text: str) -> tuple[s
     return _target_runtime_path(entry_type, path), capability
 
 
+def _target_wms_integration_boundary(path: str) -> tuple[str, str]:
+    fulfillment_path = "src/app/wms_integration/ports/fulfillment_operations.py"
+    if path == "src/app/rack/services/gateway.py":
+        targets = next(
+            targets
+            for legacy_identity, targets in LEGACY_TRANSPORT_MIGRATION_MANIFEST.items()
+            if legacy_identity.endswith(".rack@v1")
+        )
+        return fulfillment_path, ";".join(targets)
+    if path == "src/app/handling/services/gateway.py":
+        targets = next(
+            targets
+            for legacy_identity, targets in LEGACY_TRANSPORT_MIGRATION_MANIFEST.items()
+            if legacy_identity.endswith(".handling@v1")
+        )
+        return fulfillment_path, ";".join(targets)
+    if path == "src/app/workline/services/single_layer_rack_orchestration_service.py":
+        return fulfillment_path, "wms.fulfillment.request_rack_supply@v1"
+    if path == "src/workline_runtime/services.py":
+        return "src/app/wms_integration/ports/inventory_operations.py", "wms.inventory.query_inventory@v1"
+    return "", ""
+
+
 def resolve_migration_target(
     business_semantics: str,
     entry_type: str,
@@ -767,10 +794,7 @@ def resolve_migration_target(
     if "跨域 session" in business_semantics:
         return "src/app/runtime/orchestration/models/execution_correlation.py", "ExecutionCorrelation.correlation_id"
     if "跨域 WMS import" in business_semantics or "wms_integration" in text:
-        return (
-            "src/app/wms_integration/ports/fulfillment_operations.py",
-            "wms.fulfillment.request_rack_transport@v1",
-        )
+        return _target_wms_integration_boundary(path)
     if "import device" in text or "device." in text or "device_" in text or "device command" in text:
         return "src/app/runtime/orchestration/ports/device_command.py", "DeviceCommandPort.dispatch"
     if "执行状态" in business_semantics:
@@ -971,8 +995,9 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
         if eid in seen:
             continue
         seen.add(eid)
-        target_path, target_capability = resolve_migration_target(bs, etype, path, sym, "rebuild")
-        blocking_tests = resolve_blocking_tests(bs, etype, path, "rebuild")
+        strategy = "delete" if path == "src/app/callback/services/callback_ingress_service.py" else "rebuild"
+        target_path, target_capability = resolve_migration_target(bs, etype, path, sym, strategy)
+        blocking_tests = resolve_blocking_tests(bs, etype, path, strategy)
         entries.append(
             Entry(
                 entry_id=eid,
@@ -983,7 +1008,7 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
                 business_semantics=bs,
                 phase4_carrier=False,
                 classification_status="final",
-                strategy="rebuild",
+                strategy=strategy,
                 target_path=target_path,
                 target_capability=target_capability,
                 blocking_tests=blocking_tests,

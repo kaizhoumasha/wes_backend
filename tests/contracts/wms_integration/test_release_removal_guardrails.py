@@ -294,6 +294,13 @@ REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
         r"|WMS\s*/\s*CTU\s*(?:callback|回调)[^。\n]{0,100}(?:evidence|推进|membership|writer)",
         re.IGNORECASE,
     ),
+    "fulfillment-callback-terminal-authority": re.compile(
+        r"(?:step\s*完成以[^。\n|]{0,80}|(?:WMS|RCS|AGV)(?:\s*/\s*(?:WMS|RCS|AGV))?[^。\n|]{0,40})"
+        r"(?:callback|回调)[^。\n|]{0,100}(?:为准|证明外部动作结果|更新|(?<!不)写入|释放|换面完成|回库完成|仍可推进)"
+        r"|(?:WMS|RCS)(?:\s*/\s*(?:WMS|RCS|AGV))?\s*(?:callback|回调)"
+        r"[^。\n|]{0,100}触发\s*handling\s*派生状态",
+        re.IGNORECASE,
+    ),
 }
 
 

@@ -119,7 +119,7 @@ runtime 域内表使用 `execution_session_id` 作为 `ExecutionSession` FK；�
 - `ExecutionSession` 表示一条 WorkLine 或一次作业上下文的运行会话，不代表同一时间只能处理一个料盘、物料或料箱。
 - `ExecutionWorkItem` 或等价模型是 runtime capability 的最小推进单位；粗分机单个料盘、分拣机单个物料、滚筒线单个料箱、CTU 批次中的单个料箱都必须有独立 correlation。
 - 设备串行只按 `DeviceDispatchPolicy` 和设备 `concurrency_limit` 控制；它不能把业务流串成“物料 N 完成入格后才允许处理 N+1”。
-- step 完成以对应 DeviceResult / WMS callback / RuntimeLocationEvent evidence 为准。某设备完成当前 step 并释放后，Runtime 可以为同一设备派发下一个 work item 的命令，即使前一个 work item 仍在下游设备或 WMS 履约中。
+- step 完成以对应 DeviceResult / WMS typed terminal result / RuntimeLocationEvent evidence 为准。某设备完成当前 step 并释放后，Runtime 可以为同一设备派发下一个 work item 的命令，即使前一个 work item 仍在下游设备或 WMS 履约中。
 - 父子 work item 只用于追溯和批次收敛，不允许子项失败静默污染父项成功；父项关闭必须校验子项终态、投影收敛和冲突状态。
 - WorkLine manifest 的 `workflow_steps` 只声明 capability 模板绑定；具体 step 转移、并发窗口、等待条件和异常恢复由 runtime capability 与 Phase SPEC 定义，并由行为契约测试锁定。
 
@@ -230,7 +230,7 @@ ACK/status/terminal result。Handling 可通过 `correlation_id`、`RuntimeInten
 **满箱/换箱/换架完成语义**：
 
 - `FULL_BOX_EXCHANGE` / `RACK_BIN_EXCHANGE` / 满货架换架不按普通单步 `BIN_MOVE` 处理。
-- 这类 operation 必须显式进入 callback + reconciliation 完成语义：WMS/RCS/ECS callback 只能证明外部动作结果，WES 还必须校验 active projection、queue membership 和目标箱/货架 evidence 后才能关闭。
+- 这类 operation 必须显式进入 ACK + status + typed terminal result + reconciliation 完成语义：E08–E14 只有 status query 返回且与 ACK 同 reference 的 typed terminal result 能证明外部履约结果；可选 callback hint 只唤醒 status query。WES 还必须校验 active projection、queue membership 和目标箱/货架 evidence 后才能关闭。
 - 若外部 callback 成功但本地投影冲突，operation 进入 `RECONCILING`，不得覆盖 active projection 或直接标记完成。
 - 目标态不要求保留旧 `completion_policy` 字段名；可以用枚举、状态机或 policy object 表达，但语义必须可查询、可测试、可审计。
 
@@ -298,7 +298,7 @@ ACK/status/terminal result。Handling 可通过 `correlation_id`、`RuntimeInten
 - 下发机械臂投放命令前必须创建 `CellReservation` 或等价预约记录，唯一约束覆盖 `workline_id + target_cell + active_status` 与 `object_identity + correlation_id`。
 - 同一预约重复请求必须按 `idempotency_key + request_hash` 返回既有预约；不同对象竞争同一格位必须失败并重新分配，无法重新分配时进入 `RECONCILING`。
 - 机械臂成功回调后，预约转为 `BinMaterialMount / BinCellOccupancy` 事实；机械臂失败、超时或人工取消时，预约必须释放或进入 `RECONCILING`，不能长期占用。
-- 粗分机出料货架位没有单层货架、没有可用料箱或没有可用格位时，Runtime 只能请求 `SUPPLY_EMPTY_SINGLE_LAYER_RACK` 等 WMS fulfillment，并等待 callback/evidence 后重新计算。
+- 粗分机出料货架位没有单层货架、没有可用料箱或没有可用格位时，Runtime 只能请求 `SUPPLY_EMPTY_SINGLE_LAYER_RACK` 等 WMS fulfillment，并等待 ACK/status/typed terminal result evidence 后重新计算。
 
 ### 9.5 material 物料根实体域
 
@@ -469,7 +469,7 @@ ACK/status/terminal result。Handling 可通过 `correlation_id`、`RuntimeInten
 
 - SMT 入库 P0 可以先保证 WES 本地可信最终去向，但完整目标态必须把目标箱回写失败、WMS 确认/拒绝、NG evidence 消费、WMS confirmation version 和 session 结算材料纳入统一对账。
 - NG 周转箱、NG 库位、返工工单主档不归 WES 维护；WES 只保存 typed `ExternalReference`、RuntimeHold、物理交接 evidence、解除条件和回调归因。
-- WMS 版本冲突或目标箱回写失败时，不允许本地 projection 冒充 WMS 事实成功；必须写 `ReconciliationRecord`，等待 WMS 重试、人工 reconcile 或 provider callback。
+- WMS 版本冲突或目标箱回写失败时，不允许本地 projection 冒充 WMS 事实成功；必须写 `ReconciliationRecord`，等待 WMS status query 重试、typed terminal result 或人工 reconcile。
 - 返入口真实 EVENT 若需要归因，只关联原 `ExecutionCorrelation` / material identity / external reference，不恢复旧 plugin session 语义。
 
 ---

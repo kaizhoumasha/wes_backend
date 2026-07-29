@@ -57,9 +57,9 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 371 |
+| rebuild | 370 |
 | keep-contract | 260 |
-| delete | 13 |
+| delete | 14 |
 | move | 7 |
 
 ### total_entries_by_drop_phase
@@ -209,7 +209,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | seed rule | 路径 | owner | drop_phase |
 | --- | --- | --- | --- |
-| WMS_INTEGRATION_BOUNDARY（WMS import，5 条） | callback_ingress_service.py、rack/gateway.py、handling/gateway.py、single_layer_rack_orchestration_service.py、`src/workline_runtime/services.py:build_workline_runtime_services` | callback/rack/handling/workline/workline_runtime | phase2/phase5-tech |
+| WMS_INTEGRATION_BOUNDARY（WMS import，5 条） | callback ingress 物理删除；rack/handling gateway 按冻结 manifest 迁移；single-layer 迁 E08；runtime services 迁 inventory query | callback/rack/handling/workline/workline_runtime | phase2/phase5-tech |
 | EXECUTION_CORRELATION_BOUNDARY（session FK，19 条） | handling/rack/resource/WMS/WorkLine 及已迁入 runtime 实现，逐文件明细见 CSV | handling/rack/resource/wms_integration/workline/runtime | phase1/phase2 |
 | CAPABILITY_IMPLEMENTATION_IMPORT（capability forbidden import，18 条） | workline services/repositories 及已迁入 runtime 实现中逐文件枚举的 device/wms_integration services/models import | workline/runtime | phase2 |
 
@@ -219,7 +219,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | 风险项 | phase | 说明 |
 | --- | --- | --- |
-| 执行状态迁移（223 条执行状态语义；phase2 rebuild 总计 255 条，phase2 全部 262 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
+| 执行状态迁移（223 条执行状态语义；phase2 rebuild 总计 254 条，phase2 全部 262 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
 | phase4 业务流程（106 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
 | `single_layer_rack_orchestration_service`（WMS_INTEGRATION_BOUNDARY seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
 | device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |

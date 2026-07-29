@@ -854,9 +854,10 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
 
     outcome = await service.process_external(
         SimpleNamespace(),  # type: ignore[arg-type]
-        callback_type="CTU_BIN_MOVE_COMPLETED",
+        callback_type="AGV_TASK_RESULT",
         payload={
-            "callback_type": "CTU_BIN_MOVE_COMPLETED",
+            "callback_type": "AGV_TASK_RESULT",
+            "source_system": "AGV",
             "trace_id": "trace-ext-dup",
             "request_id": "REQ-EXT-DUP-001",
             "command_code": "AGV-REQ-DUP-001",

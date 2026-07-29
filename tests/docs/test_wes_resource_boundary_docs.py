@@ -105,7 +105,7 @@ def test_srs_keeps_empty_single_layer_rack_authority_in_wms():
     assert matched_phrases
     for phrase in matched_phrases:
         context = nearby_text(srs, phrase)
-        assert_contains_all(context, ("active 执行快照", "WMS 授权", "回调证据"))
+        assert_contains_all(context, ("active 执行快照", "WMS 授权", "typed status evidence"))
         assert_contains_any(
             context,
             (

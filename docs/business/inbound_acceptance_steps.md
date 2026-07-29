@@ -119,7 +119,7 @@ ADMIT / MOVE_FORWARD 正常主流程
 | R-08 | 所选 case 的后续流水线命令 SUCCESS callback | WES 写入料盘到达出料口事实 | work item 随后进入出料分配 step |
 | R-09 | 出料 step admission | WES 查询单层货架、料箱和可用格位投影 | 缺少关键事实时进入 scoped `RuntimeHold` |
 | R-10 | 出料位无可用格位 | WES 请求 WMS 补充空箱货架或换架 | 只 hold 当前出料 work item，入口侧按缓冲容量自然反压 |
-| R-11 | WMS/AGV 补架 callback | WES 更新 `RackPlacement`、`RackBinMount` 和可用料格投影 | callback 入站经 `RuntimeInbox`，不直接改 owner 状态 |
+| R-11 | WMS E08 status query 返回 typed terminal result | WES 校验 ACK/reference 后更新 `RackPlacement`、`RackBinMount` 和可用料格投影 | 可选 callback hint 只唤醒查询，不直接改 owner 状态 |
 | R-12 | WES 计算目标料格 | 创建 `CellReservation` 或等价预约 | 唯一约束防止并发双占 |
 | R-13 | WES 下发出料机械臂命令 | 指示将料盘投入指定料箱料格 | 命令包含业务对象、目标料箱、目标料格和幂等键 |
 | R-14 | 出料机械臂 SUCCESS callback | WES 消费预约，写入投格物理事实 | `BinMaterialMount`、`BinCellOccupancy`、`MaterialUnit.location_summary` 更新 |
@@ -164,7 +164,7 @@ STATION A/B，也不允许被分拣机北向机械臂取料。
 | 步骤 | 触发/操作 | 预期 WES 行为 | 通过标准 |
 | --- | --- | --- | --- |
 | F-01 | 粗分机判定单层货架需要移出 | WES 创建 `REMOVE_LOADED_SINGLE_LAYER_RACK` fulfillment | 目标是满箱交换区或交换决策点，不直接进入分拣机 STATION |
-| F-02 | WMS/AGV 回调货架到达满箱交换区 | WES 写入 `RuntimeLocationEvent` 并更新 `RackPlacement` | `RackPlacement.work_position_code` 表示满箱交换区 |
+| F-02 | WMS E09 status query 返回货架到达 typed terminal result | WES 校验 ACK/reference 后写入 `RuntimeLocationEvent` 并更新 `RackPlacement` | `RackPlacement.work_position_code` 表示满箱交换区 |
 | F-03 | WES 扫描该单层货架料箱占用 | 计算达到阈值的满箱集合和未满箱集合 | 判断基于本地投影和 WMS 查询 evidence |
 | F-04 | 无满箱交换需求 | WES 创建进入分拣机 STATION A/B 或排队区的履约请求 | 货架未进入满箱交换 work item |
 | F-05 | 有满箱交换需求 | WES 创建箱级 `ExecutionWorkItem` 和 `FULL_BOX_EXCHANGE` operation | 每个满箱有独立 correlation，可追踪子 evidence |
@@ -176,7 +176,7 @@ STATION A/B，也不允许被分拣机北向机械臂取料。
 | F-11 | E11 terminal result 校验通过 | WES 按最终关系更新本地物理事实和挂载投影 | 原满箱和换入空箱位置均可解释 |
 | F-12 | 当前面批次收敛 | Runtime 校验 terminal result、active projection 和资源收敛 | 只使用批次级权威结果推进请求 |
 | F-13 | 另一面仍有满箱 | WES 创建 `CHANGE_RACK_FACE` fulfillment | 换面是独立 WMS/AGV 履约，不是 CTU 子步骤 |
-| F-14 | WMS/AGV 换面 SUCCESS callback | WES 更新货架当前可操作面投影 | 下一面 exchange work items 被释放执行 |
+| F-14 | WMS E10 status query 返回换面 typed terminal result | WES 校验 ACK/reference 后更新货架当前可操作面投影 | 下一面 exchange work items 被释放执行 |
 | F-15 | 另一面满箱交换 | 重复 F-07 至 F-12 | 两面 E11 均完成或进入 scoped hold |
 | F-16 | 满箱交换完成 | WES 将满箱内物料标记为箱级入库物理完成，随后通知 WMS 库存事务 | WMS 失败进入同步 hold/reconciliation，不抹掉本地事实 |
 | F-17 | 剩余未满箱料箱处理 | WES 创建进入分拣机 STATION A/B 或排队区的履约请求 | 已满箱交换的物料不再进入分拣机逐件流程 |
@@ -260,7 +260,7 @@ STATION A/B，也不允许被分拣机北向机械臂取料。
 - 三个场景的成功流全部通过，且每个关键物理动作都有 callback/evidence。
 - `PlaneSnapshot` 能展示粗分机、满箱交换区、分拣机 STATION、滚筒线、料箱、物料和 hold 状态。
 - 任一对象异常不会默认停止整条 WorkLine，除非安全门、急停或共享设备不可用明确要求整线 hold。
-- WMS、ECS、CTU、AGV callback 重复、乱序、超时均能进入幂等处理、dead letter、hold 或 reconciliation。
+- WMS EFFECT status hint 与 ECS/device/AGV callback 重复、乱序、超时均能进入幂等处理、dead letter、hold 或 reconciliation；hint 不直接写 E08–E14 终态。
 - 已满箱交换入库的物料不会再次进入分拣机逐件流程。
 - 剩余未满箱料箱的物料能继续进入分拣机 STATION A/B 或排队区。
 - WMS 同步失败时，本地物理事实、审计 evidence 和人工恢复路径可观测。

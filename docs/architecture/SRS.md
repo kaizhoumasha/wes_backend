@@ -161,7 +161,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * 生产发料: 料箱 -> 人工拆箱 -> 料盘放至生产货架 -> 产线上料。
   * 生产退料: 产线下料 -> 料盘放至退货货架 -> 拆飞达 -> 装入料箱 -> 退库。
 * **管理特点**：
-  * **料盘级执行证据**: WES 保存检测、贴标、人工确认和 WMS 回调形成的 PKG、Rack_ID、Side、Slot_ID 执行投影或证据；真实储位归属、库存可用性和 A/B 面资源授权以 WMS 为准。
+  * **料盘级执行证据**: WES 保存检测、贴标、人工确认，以及 WMS ACK/status/typed terminal result 形成的 PKG、Rack_ID、Side、Slot_ID 执行投影或证据；真实储位归属、库存可用性和 A/B 面资源授权以 WMS 为准。
   * **A/B 面证据投影**: WES 可展示不同产线或工单的执行证据分布，但不作为生产货架或退货货架 A/B 面真实占用主账。
 
 ---
@@ -341,7 +341,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   **Step 1: 空架补给 (Empty Rack Supply)**
 
-  * **监控**: WES 基于单层货架 active 执行快照、WMS 授权结果和回调证据判断装箱区是否已有可执行空单层货架 (4 个料箱位)；空架资源主账和物理占用仍由 WMS/RCS 持有。
+  * **监控**: WES 基于单层货架 active 执行快照、WMS 授权结果和 typed status evidence 判断装箱区是否已有可执行空单层货架 (4 个料箱位)；空架资源主账和物理占用仍由 WMS/RCS 持有。
   * **决策**: 若无，WES 生成搬运需求从 "单层货架存放区" 补给空架并提交 WMS，由 WMS 转发 RCS 执行。
   * **ECS 握手**:
     * ECS 机械臂扫描空架所有箱号。
@@ -585,7 +585,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **3. 冷热区存储优化策略 (Hot/Cold Zone Optimization)**
 
   * **热区定义**: 近 7 天出库频次 > 10 次的物料 -> 向 WMS 提交靠近产线侧资源的策略建议或需求。
-    * **五层货架**: A 面、B 面、冷热区和 CTU 路径由 WMS/RCS 判断，WES 只保存授权结果、回调和对账证据。
+    * **五层货架**: A 面、B 面、冷热区和 CTU 路径由 WMS/RCS 判断，WES 只保存授权结果、typed status result 和对账证据。
   * **冷区定义**: 近 30 天无出库记录 -> 向 WMS 提交远端资源的策略建议或需求。
     * **五层货架**: WES 不以本地主账判断 A/B 面容量、空箱资源或真实占用。
   * **动态调整**: WES 可生成冷热度计算结果、策略建议或搬运需求并提交 WMS；是否执行、如何排队和降级由 WMS/RCS 决定。
@@ -684,7 +684,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * **回收流程**:
     * `ECS -> WES: Pallet_Empty(PalletID)`。
     * WES 生成 `Transport_Task(To Empty_Pallet_Zone)` 搬运需求并提交 WMS。
-    * WES 记录空栈板回收执行投影与 WMS 回调证据；真实位置和占用以 WMS/RCS 为准。
+    * WES 记录空栈板回收执行投影与 WMS ACK/status/typed terminal result evidence；真实位置和占用以 WMS/RCS 为准。
   * **统一边界**: 转运、补给、空架回流和空栈板回收均表达为 WMS 搬运需求；AGV/CTU/RCS 任务由 WMS 转发并闭环。
 
 ---
@@ -779,7 +779,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     ```
   * **退料货架管理** (基于 3.1.2 定义的退货货架规格):
     * WES 维护退料执行投影或证据视图，例如 `Return_Rack_Execution_View(RackID, Side, SlotID, PKG, Qty, WMS_Confirmation)`；退料库存主账由 WMS 持有。
-    * **料盘级执行证据**: 每个 WMS 授权储位可对应单个料盘，WES 只保存检测、贴标、人工确认和 WMS 回调证据；真实储位归属、库存可用性和 Side/Slot 授权以 WMS 为准。
+    * **料盘级执行证据**: 每个 WMS 授权储位可对应单个料盘，WES 只保存检测、贴标、人工确认，以及 WMS ACK/status/typed terminal result evidence；真实储位归属、库存可用性和 Side/Slot 授权以 WMS 为准。
     * **A 面装满**: WES 根据执行证据提示现场或向 WMS 请求转向货架；是否可转向、目标面和目标货架由 WMS 授权。
     * **全部装满**: WES 提交退料货架转运或补空架需求给 WMS；是否搬运、目标区域和空架补给由 WMS 授权并转发执行。
     * **A/B 面隔离**: 不同产线或工单的退料隔离策略由 WES 提交建议或需求，WMS 返回授权、拒绝或实际执行结果。
@@ -860,7 +860,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **3. 设备恢复 (Device Recovery)**
 
   * ECS 恢复在线 -> WES 自动检测 (心跳机制)。
-  * RCS/AGV/CTU 任务恢复或完成 -> WMS 回传任务状态，WES 根据回调或对账结果恢复挂起任务。
+  * RCS/AGV/CTU 任务恢复或完成 -> WMS status query 返回任务状态与 typed terminal result，WES 根据校验后的结果或对账决议恢复挂起任务。
   * WES 执行 `Health_Check(DeviceID)` 或 WMS 任务状态查询 -> 若通过，自动恢复挂起任务。
 
   **4. 上游 WMS 断连处理 (WMS Disconnection Handling)**
@@ -1017,10 +1017,10 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 ## 4. 接口需求 (Interface Requirements)
 
 > **运行时资源边界 ADR（2026-05-13）**:
-> SMT 运行时资源、满箱交换、WMS 转发的 RCS/AGV/CTU 回调和库存权责边界以
-> `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` 为准。
-> 该 ADR 明确：WES 不锁定五层空箱、不交换库存属性、不自动扣减库存；WMS 转发的执行类回调统一走
-> `/api/v1/callback/external`，WES 只保存执行事实、资源投影、回写证据和对账证据。
+> SMT 运行时资源、满箱交换、WMS E08–E14 typed fulfillment 和库存权责边界以
+> `docs/architecture/target-state-contract.md` 与 `docs/business/wms_rcs_interface_requirements.md` 为准。
+> WES 不锁定五层空箱、不交换库存属性、不自动扣减库存；E08–E14 由 ACK/status/typed terminal result
+> 收敛，可选 `WMS_EFFECT_STATUS_HINT` 只唤醒查询。WES 只保存执行事实、资源投影、回写证据和对账证据。
 
 ### 4.1 北向接口 (Northbound API - To Existing WMS)
 

@@ -212,8 +212,8 @@ class WmsEffectStatusSnapshot(BaseModel):
                 raise ValueError("REJECTED status requires a stable reason_code")
             if self.reason_code not in _REJECTION_REASON_CODES_BY_OPERATION[self.operation_identity]:
                 raise ValueError("REJECTED reason_code is not authored for the operation")
-        elif self.state in {WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING} and self.reason_code is not None:
-            raise ValueError("non-terminal status must not carry reason_code")
+        elif self.reason_code is not None:
+            raise ValueError("only REJECTED status may carry reason_code")
         return self
 
     @classmethod
@@ -326,8 +326,8 @@ def parse_wms_effect_status_snapshot(
             raise ValueError("REJECTED status requires a stable reason_code")
         if wire.reason_code not in _REJECTION_REASON_CODES_BY_OPERATION[request.operation_identity]:
             raise ValueError("REJECTED reason_code is not authored for the operation")
-    elif state in {WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING} and wire.reason_code is not None:
-        raise ValueError("non-terminal status must not carry reason_code")
+    elif wire.reason_code is not None:
+        raise ValueError("only REJECTED status may carry reason_code")
 
     return WmsEffectStatusSnapshot(
         operation_identity=request.operation_identity,

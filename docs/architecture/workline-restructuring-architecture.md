@@ -97,7 +97,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 设备业务命令结果（机械臂取放、滚筒线动作） | ECS/device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 |
 | 硬件防呆、安全回路、急停、复位、物理坐标/关节控制 | ECS/现场安全系统 | 只感知，不控制 | 只写 event/evidence/hold，不下发安全控制或坐标级指令 |
 | 设备事件/任务结果回调 | ECS/device callback | normalize + dispatch | typed evidence + RuntimeInbox + device projection |
-| AGV/CTU 履约状态与位置 evidence | WMS/RCS fulfillment callback（直连 provider adapter 仅作条件触发扩展） | 引用履约回调 evidence | 触发 handling 派生状态，不复制实时位置或 SDK 状态 |
+| AGV/CTU 履约状态与位置 evidence | WMS fulfillment ACK/status/typed terminal result（直连 provider adapter 仅作条件触发扩展） | 校验并引用任务级终态 evidence | 由 owner 校验后派生 handling 状态，不复制实时位置或 SDK 状态 |
 | 货架/料箱/库位主数据 | WMS | 引用 + 作业期投影 | 不复制主数据，只维护 active projection |
 | WMS 回调事件（WMS 主动推送） | WMS callback | normalize + dispatch | typed evidence + correlation key |
 | 冲突、对账、RECONCILING 决议 | WES ReconciliationManager | 冲突记录 + 决议权威 | RECONCILING evidence + resolution_decision；恢复动作由各 owner 按 evidence 执行 |
@@ -117,7 +117,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 标签打印按设备类型分流 | §1.2 | `device` 域 + operation-specific document QUERY | 自动打印设备由 WES 下发；人工打印由 WMS 获取模板后回执 |
 | WES 不同步基础数据 | §1.4 / §2 | `WmsMasterDataPort` / typed inventory operation | 物料、区域、地码、货架、料箱、GRN、库存均按需查询；库存 QUERY 禁止跨请求缓存 |
 | WMS 是库存唯一真实源 | §1.4 / §10.1 | Authority Matrix | 库存事务必须以 WMS 提交成功为准，WES 只维护作业期投影 |
-| 外部输入统一进入 callback | §1.3 / §3 / §5 | `callback` → `RuntimeInbox` | WMS/RCS/ECS/device 回调 API 只校验、落原始日志、ACK、写 inbox，不直接改 session |
+| 外部输入统一进入 callback | §1.3 / §3 / §5 | `callback` → `RuntimeInbox` | WMS ordinary event/status hint、ECS/device 与 AGV 回调 API 只校验、落原始日志、ACK、写 inbox，不直接改 session |
 | WMS 事件必须幂等 | §3.4 / §10.1 | `idempotency_keys` | `request_id` 映射为 `source_event_id` / `idempotency_key` |
 | WMS 调用超时与资源预算 | §2.6 / §10.2 | `wms_integration` adapter | WMS 调用总 deadline、指数退避、wire/decoded/结构预算、熔断告警；inventory 禁止跨请求缓存 |
 
@@ -149,7 +149,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 - `runtime capability` / `plugin` 直接 import `src.app.wms_integration.*` / `src.app.device.*` 的 DTO、异常、HTTP client、service locator、`WmsEventPort`、`DeviceEventPort` 或 `RuntimeInbox` consumer
 - Runtime 直接调用 WMS HTTP client 绕过 QueryPort、`RuntimeIntentLog` 或 EffectPort
 - `wms_integration` adapter 反向调用 Runtime domain service 修改 session/projection
-- WMS/RCS/ECS/device callback 在 API 层直接修改 session/projection；callback 只能 normalize、校验、ACK、写 `RuntimeInbox`
+- WMS ordinary event/status hint、ECS/device 与 AGV callback 在 API 层直接修改 session/projection；callback 只能 normalize、校验、ACK、写 `RuntimeInbox`
 - Runtime capability 直接调用 `WmsEventPort` / `DeviceEventPort`、自行消费 `RuntimeInbox` 或把入站 event 当作出站 effect 处理
 
 **外部系统 ACL 命名约束（M7 回归）**：条件触发后新增的外部系统（`rcs_integration` / `agv_integration` / `ctu_integration` / provider-specific integration）一律以 `src/app/<system>_integration/` 镜像命名建立 ACL 域；禁止建立 `src/app/external/` 父目录，避免外部协议对象跨系统混放。本规则不代表当前阶段提前建包或占位。
