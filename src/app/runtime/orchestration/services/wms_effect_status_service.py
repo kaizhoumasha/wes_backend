@@ -78,6 +78,7 @@ _FULFILLMENT_DOMAIN_OPERATIONS = frozenset(
         "wms.fulfillment.request_rack_transport@v1",
         "wms.fulfillment.full_box_exchange@v1",
         "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+        "wms.fulfillment.move_bins_from_conveyor_exit@v1",
     }
 )
 _FULFILLMENT_TERMINAL_NON_SUCCESS = "WMS_FULFILLMENT_TERMINAL_NON_SUCCESS"
@@ -410,6 +411,7 @@ class WmsEffectStatusService:
             await db.rollback()
             return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="FENCED")
         intent = current_claim.intent
+        snapshot_hash = sha256(snapshot.canonical_bytes).hexdigest()
         try:
             request = self._validate_snapshot_matches_claim(current_claim, snapshot)
         except (TypeError, ValueError) as exc:
@@ -420,6 +422,7 @@ class WmsEffectStatusService:
                 evidence={"error_type": type(exc).__name__},
             )
         operation = WMS_OPERATION_BY_IDENTITY[request.operation_identity]
+        frozen_ack = request.frozen_ack
         if request.frozen_ack is None and snapshot.recovered_ack is not None:
             recovered_result = await self._record_recovered_ack(
                 db,
@@ -429,7 +432,7 @@ class WmsEffectStatusService:
             )
             if recovered_result is not None:
                 return recovered_result
-        snapshot_hash = sha256(snapshot.canonical_bytes).hexdigest()
+            frozen_ack = snapshot.recovered_ack
         evidence = {
             "snapshot": snapshot.model_dump(mode="json", exclude_none=False),
             "snapshot_hash": snapshot_hash,
@@ -467,23 +470,35 @@ class WmsEffectStatusService:
                 evidence=evidence,
             )
         task_outcome = getattr(snapshot.result, "task_outcome", None)
-        if (
-            snapshot.state is WmsEffectStatus.REJECTED
-            and operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
-        ):
+        if snapshot.state is WmsEffectStatus.REJECTED and operation.domain_projection_kind in {
+            WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH,
+            WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH,
+        }:
             if self._domain_projector is None:
-                raise RuntimeError("E12 status reject requires domain projector")
+                raise RuntimeError("conveyor status reject requires domain projector")
             if await self._domain_projector.should_reconcile_status_reject(
                 db,
                 operation=operation,
                 dispatch_key=intent.dispatch_key,
                 request_payload=request.request_payload,
+                frozen_ack=frozen_ack,
             ):
+                operation_label = (
+                    "E13"
+                    if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+                    else "E12"
+                )
+                evidence_kind = (
+                    "ACK_OR_PHYSICAL_EVIDENCE"
+                    if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+                    else "PHYSICAL_EVIDENCE"
+                )
                 return await self._open_reconciliation(
                     db,
                     claim=current_claim,
-                    reason_code="WMS_E12_REJECT_AFTER_PHYSICAL_EVIDENCE",
+                    reason_code=f"WMS_{operation_label}_REJECT_AFTER_{evidence_kind}",
                     evidence=evidence,
+                    frozen_ack=frozen_ack,
                 )
         if (
             snapshot.state is WmsEffectStatus.COMPLETED
@@ -499,6 +514,7 @@ class WmsEffectStatusService:
                     "operation_identity": request.operation_identity,
                     "task_outcome": task_outcome,
                 },
+                frozen_ack=frozen_ack,
             )
         event_type = {
             WmsEffectStatus.ACCEPTED: EffectReducerEventType.STATUS_ACCEPTED,
@@ -538,6 +554,7 @@ class WmsEffectStatusService:
                 request_payload=request.request_payload,
                 event=reducer_event,
                 reduction=reduced,
+                frozen_ack=frozen_ack,
             )
         contradictory_terminal = self._is_contradictory_terminal(intent, snapshot=snapshot)
         if not contradictory_terminal:
@@ -1073,6 +1090,7 @@ class WmsEffectStatusService:
         claim: WmsEffectStatusClaim,
         reason_code: str,
         evidence: dict[str, Any],
+        frozen_ack: WmsEffectAck | None = None,
     ) -> WmsEffectStatusCheckResult:
         _ = await self._resolve_reconciliation_bridge().open(
             db,
@@ -1105,6 +1123,7 @@ class WmsEffectStatusService:
                 dispatch_key=claim.intent.dispatch_key,
                 reason_code=reason_code,
                 evidence_json=evidence,
+                frozen_ack=frozen_ack,
             )
         _ = await self._repository.release_claim(db, claim=claim, status_check_after=None)
         await db.commit()

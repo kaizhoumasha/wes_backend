@@ -59,11 +59,19 @@ class _ReturnBatch:
 
 
 class _Projector:
-    def __init__(self, events: list[str], *, ack_conflict: bool = False) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        ack_conflict: bool = False,
+        transport_failure_requires_reconciliation: bool = False,
+    ) -> None:
         self.events = events
         self.ack_conflict = ack_conflict
+        self.transport_failure_requires_reconciliation = transport_failure_requires_reconciliation
         self.event_calls: list[dict[str, Any]] = []
         self.reconciliation_calls: list[dict[str, Any]] = []
+        self.transport_not_sent_calls: list[dict[str, Any]] = []
 
     async def should_reconcile_ack(self, _db: Any, **_kwargs: Any) -> bool:
         self.events.append("projector:ack-preflight")
@@ -76,6 +84,14 @@ class _Projector:
     async def project_reconciliation_opened(self, db: Any, **kwargs: Any) -> None:
         self.events.append("projector:reconciliation")
         self.reconciliation_calls.append({"db": db, **kwargs})
+
+    async def should_reconcile_transport_failure(self, _db: Any, **_kwargs: Any) -> bool:
+        self.events.append("projector:reject-preflight")
+        return self.transport_failure_requires_reconciliation
+
+    async def project_transport_not_sent_exhausted(self, db: Any, **kwargs: Any) -> None:
+        self.events.append("projector:not-sent-release")
+        self.transport_not_sent_calls.append({"db": db, **kwargs})
 
 
 class _ReplayReducer:
@@ -119,9 +135,32 @@ class _PhysicalResubmitProjector(_Projector):
         return True
 
 
+class _UnchangedReducer(_Reducer):
+    async def reduce(self, _db: Any, event: EffectReducerEvent, **_kwargs: Any) -> SimpleNamespace:
+        self.events.append(f"reducer:{event.event_type.value}")
+        self.reduced.append(event)
+        return SimpleNamespace(state_changed=False, contradiction=False, case_created=False)
+
+
 class _StatusDb:
     async def commit(self) -> None:
         return None
+
+
+class _PreparedReturnRepository:
+    def __init__(self, prepared: Any) -> None:
+        self.prepared = prepared
+
+    async def lock_prepared_batch(self, _db: Any, **_kwargs: Any) -> Any:
+        return self.prepared
+
+
+class _FlushDb:
+    def __init__(self) -> None:
+        self.flush_count = 0
+
+    async def flush(self) -> None:
+        self.flush_count += 1
 
 
 def _request_payload() -> dict[str, Any]:
@@ -398,6 +437,159 @@ async def test_e13_transport_contract_drift_delegates_reconciliation_without_rel
     )
 
     assert events == ["reducer:RECONCILIATION_OPENED", "projector:reconciliation"]
+
+
+@pytest.mark.asyncio
+async def test_e13_pristine_exhausted_not_sent_releases_even_without_intent_state_change() -> None:
+    events: list[str] = []
+    projector = _Projector(events)
+    event = EffectReducerEvent(
+        event_type=EffectReducerEventType.TRANSPORT_NOT_SENT,
+        dispatch_key=_request_payload()["dispatch_key"],
+        occurred_at_ms=104,
+        source_event_id="e13-not-sent",
+        attempt_no=2,
+        retry_exhausted=True,
+        reason_code="CONNECT_TIMEOUT",
+        evidence_json={},
+    )
+
+    await EffectTransportBridge(reducer=_UnchangedReducer(events), domain_projector=projector).record_result(
+        SimpleNamespace(),
+        dispatch_key=event.dispatch_key,
+        attempt_no=2,
+        result=SimpleNamespace(),
+        retry_exhausted=True,
+        occurred_at_ms=event.occurred_at_ms,
+        operation_identity=E13,
+        payload_json=_request_payload(),
+        resolution=EffectTransportResolution(events=(event,)),
+    )
+
+    assert events == [
+        "reducer:TRANSPORT_NOT_SENT",
+        "projector:reject-preflight",
+        "projector:not-sent-release",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_e13_late_exhausted_not_sent_after_ack_opens_case_even_when_reducer_is_unchanged() -> None:
+    events: list[str] = []
+    projector = _Projector(events, transport_failure_requires_reconciliation=True)
+    event = EffectReducerEvent(
+        event_type=EffectReducerEventType.TRANSPORT_NOT_SENT,
+        dispatch_key=_request_payload()["dispatch_key"],
+        occurred_at_ms=105,
+        source_event_id="e13-late-not-sent",
+        attempt_no=2,
+        retry_exhausted=True,
+        reason_code="CONNECT_TIMEOUT",
+        evidence_json={},
+    )
+
+    await EffectTransportBridge(reducer=_UnchangedReducer(events), domain_projector=projector).record_result(
+        SimpleNamespace(),
+        dispatch_key=event.dispatch_key,
+        attempt_no=2,
+        result=SimpleNamespace(),
+        retry_exhausted=True,
+        occurred_at_ms=event.occurred_at_ms,
+        operation_identity=E13,
+        payload_json=_request_payload(),
+        resolution=EffectTransportResolution(events=(event,)),
+    )
+
+    assert events == [
+        "reducer:TRANSPORT_NOT_SENT",
+        "projector:reject-preflight",
+        "reducer:RECONCILIATION_OPENED",
+        "projector:reconciliation",
+    ]
+    assert projector.transport_not_sent_calls == []
+
+
+@pytest.mark.asyncio
+async def test_e13_same_pristine_not_sent_replay_is_domain_noop_without_opening_case() -> None:
+    request_payload = _request_payload()
+    intent = SimpleNamespace(id=71, dispatch_key=request_payload["dispatch_key"])
+    members = []
+    routes = []
+    memberships = []
+    for item in request_payload["candidate_items"]:
+        membership_id = 100 + item["sequence_no"]
+        members.append(
+            SimpleNamespace(
+                sequence_no=item["sequence_no"],
+                route_instance_id=item["route_instance_id"],
+                bin_code=item["bin_id"],
+                source_queue_membership_id=membership_id,
+                member_state="CANDIDATE",
+                reservation_released_at_ms=None,
+            )
+        )
+        routes.append(
+            SimpleNamespace(
+                route_instance_id=item["route_instance_id"],
+                bin_code=item["bin_id"],
+                workline_id=request_payload["workline_id"],
+                current_node="RETURN_QUEUE",
+            )
+        )
+        memberships.append(
+            SimpleNamespace(
+                id=membership_id,
+                route_instance_id=item["route_instance_id"],
+                bin_code=item["bin_id"],
+                workline_id=request_payload["workline_id"],
+                queue_code=request_payload["queue_code"],
+                queue_role="RETURN_QUEUE",
+                membership_status="ACTIVE",
+                left_at=None,
+                e13_claim_intent_id=71,
+                e13_claim_token="claim-token",
+                e13_claim_until=object(),
+            )
+        )
+    prepared = SimpleNamespace(
+        intent=intent,
+        outbox=SimpleNamespace(payload_json=request_payload),
+        members=tuple(members),
+        routes=tuple(routes),
+        memberships=tuple(memberships),
+    )
+    return_batch = WmsConveyorReturnBatchService(repository=_PreparedReturnRepository(prepared))
+    projector = WmsFulfillmentDomainProjector(conveyor_return_batch=return_batch)
+    events: list[str] = []
+    bridge = EffectTransportBridge(reducer=_UnchangedReducer(events), domain_projector=projector)
+    event = EffectReducerEvent(
+        event_type=EffectReducerEventType.TRANSPORT_NOT_SENT,
+        dispatch_key=request_payload["dispatch_key"],
+        occurred_at_ms=106,
+        source_event_id="e13-not-sent-replay",
+        attempt_no=2,
+        retry_exhausted=True,
+        reason_code="CONNECT_TIMEOUT",
+        evidence_json={},
+    )
+    db = _FlushDb()
+    kwargs = {
+        "dispatch_key": event.dispatch_key,
+        "attempt_no": 2,
+        "result": SimpleNamespace(),
+        "retry_exhausted": True,
+        "occurred_at_ms": event.occurred_at_ms,
+        "operation_identity": E13,
+        "payload_json": request_payload,
+        "resolution": EffectTransportResolution(events=(event,)),
+    }
+
+    await bridge.record_result(db, **kwargs)
+    await bridge.record_result(db, **kwargs)
+
+    assert all(member.member_state == "RELEASED" for member in members)
+    assert all(membership.e13_claim_intent_id is None for membership in memberships)
+    assert db.flush_count == 1
 
 
 def test_e13_reconciling_return_queue_is_not_physical_action() -> None:

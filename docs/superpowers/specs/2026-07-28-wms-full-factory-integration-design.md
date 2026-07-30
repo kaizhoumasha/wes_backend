@@ -2091,6 +2091,20 @@ Codex; checkbox as you ship.
     generic ambiguity、pristine reject/not-sent、ACK/physical 后拒绝、duplicate/late status 和事务回滚；
     校验 reducer/case/domain 顺序、同键零回退、single transaction rollback，并完成 E12 targeted regression、
     默认回归、quality profile 与独立终审。
+  - Verified checkpoint — G4.4d E / E13 production convergence wiring：status scanner 是 terminal
+    authority，transport bridge 只处理首次提交边；两条入口均由唯一 E13 domain delegate 收敛。terminal reducer
+    前冻结 typed ACK，并强制其 provider reference/digest 与 append-only `TRANSPORT_ACCEPTED` evidence
+    一致；status-first recovered ACK 先补齐同一 reducer/domain ACK 链，再执行终态。`SUCCESS` 走唯一终态投影；
+    partial/failed 先创建或复用 OPEN case；无 typed result 的 generic ambiguity 只冻结仍 ACTIVE 的
+    route/source membership 并保留 claim，不回退 LEFT 或首次物理事实。pristine
+    `STATUS_REJECTED`/`TRANSPORT_NOT_SENT` 释放候选，已有 ACK 或物理 evidence 时只开对账。重复 dispatch
+    通过公开入口返回 `SKIPPED`，旧 worker 继续由 fence 拒绝；bridge 同事件重放保持资源投影幂等。
+  - G4.4d E evidence：最终简化后 E13 focused unit `29 passed`，加共享 E12/status 的 7 个测试文件合计
+    `104 passed`；实现阶段真实 PostgreSQL ACK/terminal/status `18 passed`，最终变更再定向复跑 status
+    公开重放 `3 passed`、physical-first generic freeze `2 passed`，独立 E12 PostgreSQL 回归
+    `13 passed`。实现阶段默认回归通过并收集 `5084 tests`；最终 diff 的 topology `6 passed`、完整
+    quality profile、Ruff format/check、Bandit、architecture 与 `git diff --check` 通过。实现未新增
+    模型、状态或 migration。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

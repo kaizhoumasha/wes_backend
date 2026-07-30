@@ -613,7 +613,10 @@ class EffectTransportBridge:
                     )
                     or (
                         operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
-                        and event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
+                        and (
+                            event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
+                            or (event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT and event.retry_exhausted)
+                        )
                     )
                 )
             )
@@ -623,7 +626,12 @@ class EffectTransportBridge:
                 reduction_changed = bool(
                     getattr(reduction, "state_changed", False) or getattr(reduction, "case_created", False)
                 )
-                if not reduction_changed:
+                is_e13_exhausted_not_sent = (
+                    operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+                    and event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT
+                    and event.retry_exhausted
+                )
+                if not reduction_changed and not is_e13_exhausted_not_sent:
                     continue
                 should_reconcile = bool(getattr(reduction, "case_created", False))
                 if not should_reconcile:
@@ -667,7 +675,11 @@ class EffectTransportBridge:
                     )
                     continue
                 if (
-                    operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
+                    operation.domain_projection_kind
+                    in {
+                        WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH,
+                        WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH,
+                    }
                     and event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT
                 ):
                     await self._domain_projector.project_transport_not_sent_exhausted(

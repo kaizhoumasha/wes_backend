@@ -193,6 +193,7 @@ class WmsFulfillmentDomainProjector:
         request_payload: dict[str, Any],
         event: EffectReducerEvent,
         reduction: Any,
+        frozen_ack: WmsEffectAck | None = None,
     ) -> None:
         """在唯一 reducer 后投影 domain facts；UNKNOWN/矛盾/reconciliation 保持 owner。"""
 
@@ -205,6 +206,7 @@ class WmsFulfillmentDomainProjector:
                 db,
                 request_payload=request_payload,
                 event=event,
+                frozen_ack=frozen_ack,
             )
             return
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
@@ -332,8 +334,9 @@ class WmsFulfillmentDomainProjector:
         *,
         request_payload: dict[str, Any],
         event: EffectReducerEvent,
+        frozen_ack: WmsEffectAck | None = None,
     ) -> None:
-        """C 组只收敛 E13 typed ACK 与 task-before-create reject。"""
+        """E13 submit 与 status terminal 统一分派到 return-batch 领域服务。"""
 
         request = validate_json_payload(MoveBinsFromConveyorExitRequest, request_payload)
         if event.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED:
@@ -355,6 +358,25 @@ class WmsFulfillmentDomainProjector:
                 source_event_id=event.source_event_id,
             )
             return
+        if event.event_type is EffectReducerEventType.STATUS_REJECTED:
+            await self._conveyor_return_batch.project_reject(
+                db,
+                request=request,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+            )
+            return
+        if event.event_type is EffectReducerEventType.STATUS_COMPLETED:
+            await self.project_conveyor_return_terminal_result(
+                db,
+                operation=MOVE_BINS_FROM_CONVEYOR_EXIT,
+                request_payload=request_payload,
+                result_payload=self._terminal_result_payload(event),
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id or "",
+                frozen_ack=frozen_ack,
+            )
+            return
         raise RuntimeError("E13 terminal/status projection is not bound")
 
     async def project_conveyor_return_terminal_result(
@@ -366,8 +388,9 @@ class WmsFulfillmentDomainProjector:
         result_payload: dict[str, Any],
         occurred_at_ms: int,
         source_event_id: str,
+        frozen_ack: WmsEffectAck | None = None,
     ) -> None:
-        """D1 direct API：只分派 E13 all-success terminal，不接 shared status/bridge。"""
+        """E13 all-success terminal 唯一 delegate；由 status scanner 与显式领域调用复用。"""
 
         if (
             operation.identity != MOVE_BINS_FROM_CONVEYOR_EXIT.identity
@@ -384,6 +407,7 @@ class WmsFulfillmentDomainProjector:
             result=result,
             occurred_at_ms=occurred_at_ms,
             source_event_id=source_event_id,
+            frozen_ack=frozen_ack,
         )
 
     async def project_conveyor_return_reconciliation_result(
@@ -397,8 +421,9 @@ class WmsFulfillmentDomainProjector:
         occurred_at_ms: int,
         source_event_id: str,
         reason_code: str,
+        frozen_ack: WmsEffectAck | None = None,
     ) -> None:
-        """D1 direct API：只分派已有 OPEN case 的 E13 非成功 terminal。"""
+        """E13 非成功 terminal 唯一 delegate；只接受已有 OPEN case。"""
 
         if (
             operation.identity != MOVE_BINS_FROM_CONVEYOR_EXIT.identity
@@ -417,6 +442,7 @@ class WmsFulfillmentDomainProjector:
             occurred_at_ms=occurred_at_ms,
             source_event_id=source_event_id,
             reason_code=reason_code,
+            frozen_ack=frozen_ack,
         )
 
     async def project_reconciliation_opened(
@@ -427,15 +453,28 @@ class WmsFulfillmentDomainProjector:
         dispatch_key: str,
         reason_code: str | None = None,
         evidence_json: dict[str, Any] | None = None,
+        frozen_ack: WmsEffectAck | None = None,
     ) -> None:
-        """仅为 E11 reconciliation 同事务冻结 parent；不释放 owner 或 active Intent。"""
+        """按 projection kind 在同事务冻结或收敛 E11/E12/E13 对账事实。"""
 
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
+            if not reason_code or not isinstance(evidence_json, dict):
+                raise ValueError("E13 reconciliation projection requires reason and evidence")
+            result_payload = self._optional_terminal_result_from_evidence(evidence_json)
+            result = (
+                validate_json_payload(MoveBinsFromConveyorExitResult, result_payload)
+                if result_payload is not None
+                else None
+            )
+            if result is not None and result.task_outcome == "SUCCESS":
+                raise ValueError("E13 reconciliation projection requires non-success result")
             await self._conveyor_return_batch.project_reconciliation_opened(
                 db,
                 dispatch_key=dispatch_key,
                 reason_code=reason_code,
                 evidence_json=evidence_json,
+                result=result,
+                frozen_ack=frozen_ack,
             )
             return
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
@@ -475,17 +514,26 @@ class WmsFulfillmentDomainProjector:
         operation: WmsOperationDefinition,
         dispatch_key: str,
         request_payload: dict[str, Any],
+        frozen_ack: WmsEffectAck | None = None,
     ) -> bool:
-        """E12 STATUS_REJECTED 在 reducer 前检查是否已有更后的本地物理事实。"""
+        """E12/E13 STATUS_REJECTED 在 reducer 前检查 ACK 或更后的本地事实。"""
 
-        if operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
-            return False
-        request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
-        return await self._conveyor_batch.should_reconcile_status_reject(
-            db,
-            dispatch_key=dispatch_key,
-            queue_code=request.destination_station_code,
-        )
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
+            return await self._conveyor_batch.should_reconcile_status_reject(
+                db,
+                dispatch_key=dispatch_key,
+                queue_code=request.destination_station_code,
+            )
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
+            if frozen_ack is not None:
+                return True
+            request = validate_json_payload(MoveBinsFromConveyorExitRequest, request_payload)
+            return await self._conveyor_return_batch.should_reconcile_transport_failure(
+                db,
+                request=request,
+            )
+        return False
 
     async def should_reconcile_ack(
         self,
@@ -538,19 +586,27 @@ class WmsFulfillmentDomainProjector:
         request_payload: dict[str, Any],
         event: EffectReducerEvent,
     ) -> None:
-        """E12 明确未发送且重试耗尽时释放未被消费的预约。"""
+        """E12/E13 明确未发送且重试耗尽时释放未被消费的预约。"""
 
-        if operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
-            return
         if event.event_type is not EffectReducerEventType.TRANSPORT_NOT_SENT or not event.retry_exhausted:
-            raise ValueError("E12 transport release requires exhausted TRANSPORT_NOT_SENT")
-        request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
-        await self._conveyor_batch.project_transport_not_sent_exhausted(
-            db,
-            request=request,
-            occurred_at_ms=event.occurred_at_ms,
-            source_event_id=event.source_event_id,
-        )
+            raise ValueError("conveyor transport release requires exhausted TRANSPORT_NOT_SENT")
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
+            await self._conveyor_batch.project_transport_not_sent_exhausted(
+                db,
+                request=request,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+            )
+            return
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
+            request = validate_json_payload(MoveBinsFromConveyorExitRequest, request_payload)
+            await self._conveyor_return_batch.project_reject(
+                db,
+                request=request,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+            )
 
     @staticmethod
     def _require_claim(execution: Any) -> WmsRackDemandClaim:

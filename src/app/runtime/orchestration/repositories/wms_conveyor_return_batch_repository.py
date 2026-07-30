@@ -390,6 +390,23 @@ class WmsConveyorReturnBatchRepository:
             .with_for_update()
         )
 
+    async def resolve_open_reconciliation_case_id(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+    ) -> int | None:
+        """按 E13 dispatch 锁定当前 OPEN case 身份。"""
+
+        return await db.scalar(
+            select(ReconciliationCase.id)
+            .where(
+                ReconciliationCase.dispatch_key == dispatch_key,
+                ReconciliationCase.status == ReconciliationCaseStatus.OPEN,
+            )
+            .with_for_update()
+        )
+
 
 wms_conveyor_return_batch_repository = WmsConveyorReturnBatchRepository()
 

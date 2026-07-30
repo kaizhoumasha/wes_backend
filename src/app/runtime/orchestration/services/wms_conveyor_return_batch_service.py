@@ -13,6 +13,7 @@ from src.app.resource.models import (
     ResourceSourceSystem,
 )
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.effect_state_contract import generated_effect_source_event_id
 from src.app.runtime.orchestration.repositories.wms_conveyor_return_batch_repository import (
     WmsConveyorReturnBatchRepository,
     WmsConveyorReturnCandidateRow,
@@ -20,6 +21,7 @@ from src.app.runtime.orchestration.repositories.wms_conveyor_return_batch_reposi
     WmsConveyorReturnTerminalResources,
     wms_conveyor_return_batch_repository,
 )
+from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
 from src.app.wms_integration.ports.fulfillment_operations import (
     MOVE_BINS_FROM_CONVEYOR_EXIT,
     BatchItemResult,
@@ -286,7 +288,7 @@ class WmsConveyorReturnBatchService:
             prepared = await self._lock_and_validate_prepared(db, request=request)
         except (RuntimeError, TypeError, ValueError):
             return True
-        return any(member.member_state != "CANDIDATE" for member in prepared.members) or any(
+        return any(member.member_state in {"ACCEPTED", "TERMINAL"} for member in prepared.members) or any(
             self._member_has_observed_physical_action(prepared, member) for member in prepared.members
         )
 
@@ -303,9 +305,12 @@ class WmsConveyorReturnBatchService:
         if not source_event_id:
             raise ValueError("E13 reject projection requires source_event_id")
         prepared = await self._lock_and_validate_prepared(db, request=request)
-        if any(member.member_state != "CANDIDATE" for member in prepared.members) or any(
+        has_physical_action = any(
             self._member_has_observed_physical_action(prepared, member) for member in prepared.members
-        ):
+        )
+        if all(member.member_state == "RELEASED" for member in prepared.members) and not has_physical_action:
+            return
+        if any(member.member_state != "CANDIDATE" for member in prepared.members) or has_physical_action:
             raise ValueError("E13 reject conflicts with accepted or physical candidate facts")
         memberships_by_id = {membership.id: membership for membership in prepared.memberships}
         for member in prepared.members:
@@ -327,6 +332,7 @@ class WmsConveyorReturnBatchService:
         result: MoveBinsFromConveyorExitResult,
         occurred_at_ms: int,
         source_event_id: str | None,
+        frozen_ack: WmsEffectAck | None = None,
     ) -> None:
         """全成功 terminal 原子关闭 source mount，并落到当前 TARGET 五层架。"""
 
@@ -340,6 +346,7 @@ class WmsConveyorReturnBatchService:
             occurred_at_ms=occurred_at_ms,
             source_event_id=source_event_id,
             reason_code=None,
+            frozen_ack=frozen_ack,
         )
 
     async def project_reconciliation(
@@ -352,6 +359,7 @@ class WmsConveyorReturnBatchService:
         occurred_at_ms: int | None,
         source_event_id: str | None,
         reason_code: str,
+        frozen_ack: WmsEffectAck | None = None,
     ) -> None:
         """非成功 terminal 仅对 known 成员收敛位置，UNKNOWN 冻结当前事实。"""
 
@@ -365,6 +373,7 @@ class WmsConveyorReturnBatchService:
             occurred_at_ms=occurred_at_ms,
             source_event_id=source_event_id,
             reason_code=reason_code,
+            frozen_ack=frozen_ack,
         )
 
     async def _project_terminal(
@@ -377,6 +386,7 @@ class WmsConveyorReturnBatchService:
         occurred_at_ms: int | None,
         source_event_id: str | None,
         reason_code: str | None,
+        frozen_ack: WmsEffectAck | None,
     ) -> None:
         if not source_event_id:
             raise ValueError("E13 terminal projection requires source_event_id")
@@ -388,6 +398,7 @@ class WmsConveyorReturnBatchService:
             request=request,
             result=result,
             prepared=prepared,
+            frozen_ack=frozen_ack,
         )
         accepted_members = self._validate_terminal_identity(
             request=request,
@@ -507,13 +518,55 @@ class WmsConveyorReturnBatchService:
         dispatch_key: str,
         reason_code: str | None,
         evidence_json: dict[str, object] | None,
+        result: MoveBinsFromConveyorExitResult | None = None,
+        frozen_ack: WmsEffectAck | None = None,
     ) -> None:
-        """只验证 E13 root 存在；case 由 reducer 持有，不改对象位置或 claim。"""
+        """使用既有 OPEN case 收敛 typed result；无结果时只冻结仍由本 intent claimed 的成员。"""
 
         if not reason_code or not isinstance(evidence_json, dict):
             raise ValueError("E13 reconciliation projection requires reason and evidence")
-        if await self._repository.lock_prepared_batch(db, dispatch_key=dispatch_key) is None:
+        prepared = await self._repository.lock_prepared_batch(db, dispatch_key=dispatch_key)
+        if prepared is None:
             raise RuntimeError("E13 prepared batch is missing")
+        reconciliation_case_id = await self._repository.resolve_open_reconciliation_case_id(
+            db,
+            dispatch_key=dispatch_key,
+        )
+        if reconciliation_case_id is None:
+            raise RuntimeError("E13 OPEN reconciliation case is missing")
+        if result is not None:
+            request = validate_json_payload(MoveBinsFromConveyorExitRequest, prepared.outbox.payload_json)
+            await self.project_reconciliation(
+                db,
+                request=request,
+                result=result,
+                reconciliation_case_id=reconciliation_case_id,
+                occurred_at_ms=None,
+                source_event_id=generated_effect_source_event_id(
+                    "wms-e13-reconciliation-projection",
+                    dispatch_key,
+                    reason_code,
+                    evidence_json,
+                ),
+                reason_code=reason_code,
+                frozen_ack=frozen_ack,
+            )
+            return
+
+        routes_by_id = {route.route_instance_id: route for route in prepared.routes}
+        memberships_by_id = {membership.id: membership for membership in prepared.memberships}
+        for member in prepared.members:
+            if member.member_state not in {"CANDIDATE", "ACCEPTED"}:
+                continue
+            source = memberships_by_id[member.source_queue_membership_id]
+            route = routes_by_id[member.route_instance_id]
+            if route.lifecycle_state == "ACTIVE":
+                route.lifecycle_state = "RECONCILING"
+                route.closed_at_ms = None
+                route.reconciliation_case_id = reconciliation_case_id
+            if source.membership_status == "ACTIVE":
+                source.membership_status = "RECONCILING"
+        await db.flush()
 
     @staticmethod
     def has_observed_physical_action(
@@ -628,13 +681,30 @@ class WmsConveyorReturnBatchService:
         request: MoveBinsFromConveyorExitRequest,
         result: MoveBinsFromConveyorExitResult,
         prepared: WmsConveyorReturnPreparedRows,
+        frozen_ack: WmsEffectAck | None,
     ) -> None:
-        current_outcome = prepared.intent.outcome_json
-        envelope = current_outcome.get("outcome") if isinstance(current_outcome, dict) else None
-        payload = envelope.get("payload") if isinstance(envelope, dict) and envelope.get("kind") == "success" else None
-        if not isinstance(payload, dict):
-            raise TypeError("E13 terminal requires persisted ACK authority")
-        ack = validate_json_payload(WmsEffectAck, payload)
+        ack = frozen_ack
+        if ack is None:
+            current_outcome = prepared.intent.outcome_json
+            envelope = current_outcome.get("outcome") if isinstance(current_outcome, dict) else None
+            payload = (
+                envelope.get("payload") if isinstance(envelope, dict) and envelope.get("kind") == "success" else None
+            )
+            if not isinstance(payload, dict):
+                raise TypeError("E13 terminal requires persisted ACK authority")
+            ack = validate_json_payload(WmsEffectAck, payload)
+        ack_hash = typed_wms_effect_ack_hash(ack)
+        expected_reference = f"runtime-intent-outcome:{prepared.intent.dispatch_key}"
+        acceptance_evidence = [
+            item
+            for item in (prepared.intent.outcome_history_json or ())
+            if isinstance(item, dict) and item.get("event_type") == "TRANSPORT_ACCEPTED"
+        ]
+        if not acceptance_evidence or any(
+            item.get("typed_ack_hash") != ack_hash or item.get("typed_ack_reference") != expected_reference
+            for item in acceptance_evidence
+        ):
+            raise ValueError("E13 terminal ACK differs from persisted acceptance evidence")
         validate_batch_terminal_result(request, ack, result)
 
     @staticmethod

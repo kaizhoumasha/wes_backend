@@ -40,6 +40,25 @@ class _Repository:
         self.claim_calls.append({"db": db, **kwargs})
 
 
+class _ReconciliationRepository:
+    def __init__(self, prepared: Any) -> None:
+        self.prepared = prepared
+
+    async def lock_prepared_batch(self, _db: Any, **_kwargs: Any) -> Any:
+        return self.prepared
+
+    async def resolve_open_reconciliation_case_id(self, _db: Any, **_kwargs: Any) -> int:
+        return 91
+
+
+class _FlushDb:
+    def __init__(self) -> None:
+        self.flush_count = 0
+
+    async def flush(self) -> None:
+        self.flush_count += 1
+
+
 def _candidate_rows(row_type: type[Any]) -> tuple[Any, ...]:
     return (
         row_type(
@@ -196,7 +215,7 @@ def test_e13_wire_timestamp_is_normalized_from_naive_utc_storage() -> None:
 
 
 @pytest.mark.asyncio
-async def test_e13_unimplemented_event_projection_fails_closed_without_rack_demand_fallback() -> None:
+async def test_e13_terminal_event_without_typed_result_fails_closed_without_rack_demand_fallback() -> None:
     event_type = EffectReducerEventType.STATUS_COMPLETED
     event = EffectReducerEvent(
         event_type=event_type,
@@ -206,7 +225,7 @@ async def test_e13_unimplemented_event_projection_fails_closed_without_rack_dema
         evidence_json={},
     )
 
-    with pytest.raises(RuntimeError, match="E13 terminal/status projection is not bound"):
+    with pytest.raises(TypeError, match="terminal result evidence is missing"):
         await WmsFulfillmentDomainProjector().project_event(
             SimpleNamespace(),
             operation=WMS_OPERATION_BY_IDENTITY[E13],
@@ -214,3 +233,87 @@ async def test_e13_unimplemented_event_projection_fails_closed_without_rack_dema
             event=event,
             reduction=SimpleNamespace(state_changed=True, contradiction=False),
         )
+
+
+@pytest.mark.asyncio
+async def test_e13_generic_reconciliation_freezes_only_members_still_claimed_by_this_intent() -> None:
+    service_type, _row_type = _return_types()
+    intent = SimpleNamespace(id=71)
+    claimed_member = SimpleNamespace(
+        member_state="ACCEPTED",
+        source_queue_membership_id=21,
+        route_instance_id="route-claimed",
+    )
+    released_suffix = SimpleNamespace(
+        member_state="RELEASED",
+        source_queue_membership_id=22,
+        route_instance_id="route-released",
+    )
+    physical_first_member = SimpleNamespace(
+        member_state="ACCEPTED",
+        source_queue_membership_id=23,
+        route_instance_id="route-physical-first",
+    )
+    claimed_route = SimpleNamespace(
+        route_instance_id="route-claimed",
+        lifecycle_state="ACTIVE",
+        closed_at_ms=None,
+        reconciliation_case_id=None,
+    )
+    released_route = SimpleNamespace(
+        route_instance_id="route-released",
+        lifecycle_state="ACTIVE",
+        closed_at_ms=None,
+        reconciliation_case_id=None,
+    )
+    physical_first_route = SimpleNamespace(
+        route_instance_id="route-physical-first",
+        lifecycle_state="ACTIVE",
+        closed_at_ms=None,
+        reconciliation_case_id=None,
+    )
+    claimed_source = SimpleNamespace(
+        id=21,
+        e13_claim_intent_id=71,
+        membership_status="ACTIVE",
+    )
+    released_source = SimpleNamespace(
+        id=22,
+        e13_claim_intent_id=None,
+        membership_status="ACTIVE",
+    )
+    physical_first_source = SimpleNamespace(
+        id=23,
+        e13_claim_intent_id=None,
+        membership_status="LEFT",
+    )
+    prepared = SimpleNamespace(
+        intent=intent,
+        members=(claimed_member, released_suffix, physical_first_member),
+        routes=(claimed_route, released_route, physical_first_route),
+        memberships=(claimed_source, released_source, physical_first_source),
+    )
+    db = _FlushDb()
+    service = service_type(repository=_ReconciliationRepository(prepared))
+
+    await service.project_reconciliation_opened(
+        db,
+        dispatch_key="e13-dispatch",
+        reason_code="TRANSPORT_AMBIGUOUS",
+        evidence_json={"transport": "ambiguous"},
+    )
+
+    assert claimed_member.member_state == "ACCEPTED"
+    assert claimed_route.lifecycle_state == "RECONCILING"
+    assert claimed_route.reconciliation_case_id == 91
+    assert claimed_source.membership_status == "RECONCILING"
+    assert released_suffix.member_state == "RELEASED"
+    assert released_route.lifecycle_state == "ACTIVE"
+    assert released_route.reconciliation_case_id is None
+    assert released_source.membership_status == "ACTIVE"
+    assert physical_first_member.member_state == "ACCEPTED"
+    assert physical_first_route.lifecycle_state == "RECONCILING"
+    assert physical_first_route.reconciliation_case_id == 91
+    assert physical_first_source.membership_status == "LEFT"
+    assert physical_first_source.e13_claim_intent_id is None
+    assert db.flush_count == 1

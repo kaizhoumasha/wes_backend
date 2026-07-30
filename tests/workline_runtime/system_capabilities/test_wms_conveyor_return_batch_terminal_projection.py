@@ -8,11 +8,16 @@ from typing import Any
 
 import pytest
 
+from src.app.runtime.orchestration.services.wms_conveyor_return_batch_service import (
+    WmsConveyorReturnBatchService,
+)
 from src.app.runtime.orchestration.services.wms_fulfillment_domain_projector import (
     WmsFulfillmentDomainProjector,
 )
+from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
-from tests.mock.wms_northbound_contract import build_typed_result
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
+from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
 E13 = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
@@ -90,3 +95,35 @@ async def test_e13_direct_reconciliation_delegate_requires_non_success_and_open_
     assert call["reconciliation_case_id"] == 71
     assert call["result"].task_outcome == "FAILED_AFTER_EXECUTION"
     assert return_batch.success_calls == []
+
+
+def test_e13_forged_explicit_ack_cannot_bypass_persisted_acceptance_authority() -> None:
+    request = WMS_OPERATION_BY_IDENTITY[E13].request_model.model_validate(REQUEST_FIXTURES[E13])
+    persisted_ack = WmsEffectAck.model_validate(
+        build_typed_ack(E13, "idem-e13-forged", REQUEST_FIXTURES[E13], submission_state="ACCEPTED")
+    )
+    forged_ack = persisted_ack.model_copy(update={"provider_reference": "forged-provider-reference"})
+    result_payload = _success_result_payload()
+    result_payload["provider_reference"] = forged_ack.provider_reference
+    result = WMS_OPERATION_BY_IDENTITY[E13].result_model.model_validate(result_payload)
+    prepared = SimpleNamespace(
+        intent=SimpleNamespace(
+            dispatch_key=request.dispatch_key,
+            outcome_json={"outcome": {"kind": "success", "payload": persisted_ack.model_dump(mode="json")}},
+            outcome_history_json=[
+                {
+                    "event_type": "TRANSPORT_ACCEPTED",
+                    "typed_ack_hash": typed_wms_effect_ack_hash(persisted_ack),
+                    "typed_ack_reference": f"runtime-intent-outcome:{request.dispatch_key}",
+                }
+            ],
+        )
+    )
+
+    with pytest.raises(ValueError, match="differs from persisted acceptance evidence"):
+        WmsConveyorReturnBatchService._validate_persisted_ack(
+            request=request,
+            result=result,
+            prepared=prepared,
+            frozen_ack=forged_ack,
+        )

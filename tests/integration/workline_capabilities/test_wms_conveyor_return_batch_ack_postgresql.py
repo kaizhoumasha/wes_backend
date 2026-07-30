@@ -78,8 +78,22 @@ def _ack_event(request: Any, ack: WmsEffectAck, *, event_suffix: str) -> EffectR
         evidence_json={
             "operation_identity": E13,
             "typed_ack_hash": typed_wms_effect_ack_hash(ack),
+            "typed_ack_reference": f"runtime-intent-outcome:{request.dispatch_key}",
         },
         terminal_outcome=Success(payload=ack).model_dump(mode="json"),
+    )
+
+
+def _not_sent_event(request: Any, *, event_suffix: str) -> EffectReducerEvent:
+    return EffectReducerEvent(
+        event_type=EffectReducerEventType.TRANSPORT_NOT_SENT,
+        dispatch_key=request.dispatch_key,
+        occurred_at_ms=7_320,
+        source_event_id=f"e13-not-sent:{event_suffix}",
+        attempt_no=2,
+        retry_exhausted=True,
+        reason_code="CONNECT_TIMEOUT",
+        evidence_json={"operation_identity": E13},
     )
 
 
@@ -523,6 +537,15 @@ def test_e13_left_member_with_released_claim_is_valid_only_when_in_ack_prefix(
             if expects_reconciliation:
                 assert case is not None
                 assert {member.member_state for member in members} == {"CANDIDATE"}
+                physical_member = members[1]
+                route = await verify_db.get(BinRouteInstance, physical_member.route_instance_id)
+                source = await verify_db.get(ConveyorQueueMembership, physical_member.source_queue_membership_id)
+                assert route is not None
+                assert route.lifecycle_state == "RECONCILING"
+                assert route.reconciliation_case_id == case.id
+                assert source is not None
+                assert source.membership_status == "LEFT"
+                assert source.e13_claim_intent_id is None
             else:
                 assert case is None
                 assert tuple(member.member_state for member in members) == (
@@ -530,6 +553,220 @@ def test_e13_left_member_with_released_claim_is_valid_only_when_in_ack_prefix(
                     "ACCEPTED",
                     "RELEASED",
                 )
+
+    asyncio.run(with_database(scenario))
+
+
+@pytest.mark.integration
+def test_e13_pristine_not_sent_replay_releases_once_without_opening_case() -> None:
+    async def scenario(session_factory) -> None:  # type: ignore[no-untyped-def]
+        async with session_factory() as db:
+            _graph, _fifo_items, service, pair = await _prepare_batch(
+                db,
+                graph_index=951,
+                bin_count=3,
+            )
+            reservation, prepared = pair
+            intent_id = prepared.intent_log.id
+            await db.commit()
+
+        request = reservation.request
+        event = _not_sent_event(request, event_suffix="pristine-replay")
+        projector = WmsFulfillmentDomainProjector(conveyor_return_batch=service)
+        async with session_factory() as db:
+            await _record_ack(db, projector=projector, request=request, event=event)
+            await db.commit()
+        async with session_factory() as replay_db:
+            await _record_ack(replay_db, projector=projector, request=request, event=event)
+            await replay_db.commit()
+
+        async with session_factory() as verify_db:
+            members = tuple(
+                (
+                    await verify_db.execute(
+                        select(WmsConveyorBatchMember).where(WmsConveyorBatchMember.runtime_intent_log_id == intent_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert {member.member_state for member in members} == {"RELEASED"}
+            assert (
+                await verify_db.scalar(
+                    select(func.count())
+                    .select_from(ReconciliationCase)
+                    .where(ReconciliationCase.dispatch_key == request.dispatch_key)
+                )
+            ) == 0
+
+    asyncio.run(with_database(scenario))
+
+
+@pytest.mark.integration
+def test_e13_late_not_sent_after_full_ack_opens_case_and_freezes_claimed_members() -> None:
+    async def scenario(session_factory) -> None:  # type: ignore[no-untyped-def]
+        async with session_factory() as db:
+            _graph, _fifo_items, service, pair = await _prepare_batch(
+                db,
+                graph_index=952,
+                bin_count=3,
+            )
+            reservation, prepared = pair
+            intent_id = prepared.intent_log.id
+            request = reservation.request
+            ack = _prefix_ack(request, idempotency_key=prepared.idempotency_key, prefix_count=3)
+            projector = WmsFulfillmentDomainProjector(conveyor_return_batch=service)
+            await _record_ack(
+                db,
+                projector=projector,
+                request=request,
+                event=_ack_event(request, ack, event_suffix="before-late-not-sent"),
+            )
+            await db.commit()
+
+        async with session_factory() as db:
+            await _record_ack(
+                db,
+                projector=projector,
+                request=request,
+                event=_not_sent_event(request, event_suffix="after-ack"),
+            )
+            await db.commit()
+
+        async with session_factory() as verify_db:
+            members = tuple(
+                (
+                    await verify_db.execute(
+                        select(WmsConveyorBatchMember)
+                        .where(WmsConveyorBatchMember.runtime_intent_log_id == intent_id)
+                        .order_by(WmsConveyorBatchMember.sequence_no)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            routes = tuple(
+                (
+                    await verify_db.execute(
+                        select(BinRouteInstance).where(
+                            BinRouteInstance.route_instance_id.in_(
+                                tuple(member.route_instance_id for member in members)
+                            )
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            memberships = tuple(
+                (
+                    await verify_db.execute(
+                        select(ConveyorQueueMembership).where(
+                            ConveyorQueueMembership.id.in_(
+                                tuple(member.source_queue_membership_id for member in members)
+                            )
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert {member.member_state for member in members} == {"ACCEPTED"}
+            assert {route.lifecycle_state for route in routes} == {"RECONCILING"}
+            assert {membership.membership_status for membership in memberships} == {"RECONCILING"}
+            assert all(membership.e13_claim_intent_id == intent_id for membership in memberships)
+            assert (
+                await verify_db.scalar(
+                    select(func.count())
+                    .select_from(ReconciliationCase)
+                    .where(
+                        ReconciliationCase.dispatch_key == request.dispatch_key,
+                        ReconciliationCase.status == ReconciliationCaseStatus.OPEN,
+                    )
+                )
+            ) == 1
+
+    asyncio.run(with_database(scenario))
+
+
+@pytest.mark.integration
+def test_e13_generic_reconciliation_replay_freezes_claimed_candidates_without_terminalizing() -> None:
+    async def scenario(session_factory) -> None:  # type: ignore[no-untyped-def]
+        async with session_factory() as db:
+            _graph, _fifo_items, service, pair = await _prepare_batch(
+                db,
+                graph_index=953,
+                bin_count=3,
+            )
+            reservation, prepared = pair
+            intent_id = prepared.intent_log.id
+            await db.commit()
+
+        request = reservation.request
+        event = EffectReducerEvent(
+            event_type=EffectReducerEventType.RECONCILIATION_OPENED,
+            dispatch_key=request.dispatch_key,
+            occurred_at_ms=7_330,
+            source_event_id="e13-generic-ambiguity:953",
+            reason_code="TRANSPORT_AMBIGUOUS",
+            evidence_json={"operation_identity": E13},
+        )
+        projector = WmsFulfillmentDomainProjector(conveyor_return_batch=service)
+        async with session_factory() as db:
+            await _record_ack(db, projector=projector, request=request, event=event)
+            await db.commit()
+        async with session_factory() as replay_db:
+            await _record_ack(replay_db, projector=projector, request=request, event=event)
+            await replay_db.commit()
+
+        async with session_factory() as verify_db:
+            members = tuple(
+                (
+                    await verify_db.execute(
+                        select(WmsConveyorBatchMember).where(WmsConveyorBatchMember.runtime_intent_log_id == intent_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            routes = tuple(
+                (
+                    await verify_db.execute(
+                        select(BinRouteInstance).where(
+                            BinRouteInstance.route_instance_id.in_(
+                                tuple(member.route_instance_id for member in members)
+                            )
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            memberships = tuple(
+                (
+                    await verify_db.execute(
+                        select(ConveyorQueueMembership).where(
+                            ConveyorQueueMembership.id.in_(
+                                tuple(member.source_queue_membership_id for member in members)
+                            )
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert {member.member_state for member in members} == {"CANDIDATE"}
+            assert {member.terminal_outcome for member in members} == {None}
+            assert {route.lifecycle_state for route in routes} == {"RECONCILING"}
+            assert {membership.membership_status for membership in memberships} == {"RECONCILING"}
+            assert all(membership.e13_claim_intent_id == intent_id for membership in memberships)
+            assert (
+                await verify_db.scalar(
+                    select(func.count())
+                    .select_from(ReconciliationCase)
+                    .where(ReconciliationCase.dispatch_key == request.dispatch_key)
+                )
+            ) == 1
 
     asyncio.run(with_database(scenario))
 

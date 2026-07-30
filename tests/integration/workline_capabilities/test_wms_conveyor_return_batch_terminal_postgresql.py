@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -25,14 +26,23 @@ from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
 from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
+from src.app.runtime.orchestration.services.wms_effect_status_service import WmsEffectStatusService
+from src.app.runtime.orchestration.services.wms_fulfillment_domain_projector import (
+    WmsFulfillmentDomainProjector,
+)
 from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember
+from src.app.sys.models.outbox import SystemOutbox
+from src.app.wms_integration.ports.effect_status import WmsEffectStatus, WmsEffectStatusSnapshot
 from src.app.wms_integration.ports.fulfillment_operations import (
     MoveBinsFromConveyorExitResult,
     accepted_scope_digest,
 )
 from tests.integration.workline_capabilities.test_wms_conveyor_return_batch_ack_postgresql import (
+    _ack_event,
     _prefix_ack,
     _prepare_batch,
+    _record_ack,
+    _StatusClaimRepository,
 )
 from tests.mock.wms_northbound_contract import build_typed_result
 from tests.support.wms_conveyor_batch_postgresql import NOW, with_database
@@ -53,19 +63,12 @@ async def _prepare_acked_batch(db: Any, *, graph_index: int) -> tuple[Any, Any, 
         idempotency_key=prepared.idempotency_key,
         prefix_count=3,
     )
-    await service.project_ack(
+    await _record_ack(
         db,
+        projector=WmsFulfillmentDomainProjector(conveyor_return_batch=service),
         request=request,
-        ack=ack,
-        occurred_at_ms=12_000,
-        source_event_id=f"e13-terminal-ack:{graph_index}",
+        event=_ack_event(request, ack, event_suffix=f"terminal-{graph_index}"),
     )
-    prepared.intent_log.outcome_json = {
-        "outcome": {
-            "kind": "success",
-            "payload": ack.model_dump(mode="json"),
-        }
-    }
 
     current_placement = await db.scalar(
         select(RackPlacement).where(
@@ -165,6 +168,39 @@ async def _members(db: Any, *, intent_id: int) -> tuple[WmsConveyorBatchMember, 
         )
         .scalars()
         .all()
+    )
+
+
+async def _apply_status_terminal(
+    db: Any,
+    *,
+    service: Any,
+    prepared: Any,
+    request: Any,
+    result: MoveBinsFromConveyorExitResult,
+    ack: Any,
+) -> Any:
+    intent = await db.get(RuntimeIntentLog, prepared.intent_log.id)
+    outbox = await db.scalar(select(SystemOutbox).where(SystemOutbox.dispatch_key == request.dispatch_key))
+    assert intent is not None and outbox is not None
+    claim = type("_Claim", (), {"intent": intent, "outbox": outbox, "lease_token": "e13-status-lease"})()
+    snapshot = WmsEffectStatusSnapshot(
+        operation_identity=E13,
+        idempotency_key=prepared.idempotency_key,
+        state=WmsEffectStatus.COMPLETED,
+        provider_reference=ack.provider_reference,
+        updated_at=NOW.replace(tzinfo=UTC),
+        source_version=int(result.source_version),
+        result=result,
+    )
+    return await WmsEffectStatusService(
+        repository=_StatusClaimRepository(claim),
+        domain_projector=WmsFulfillmentDomainProjector(conveyor_return_batch=service),
+        now=lambda: NOW,
+    )._apply_snapshot(
+        db,
+        claim=claim,
+        snapshot=snapshot,
     )
 
 
@@ -511,7 +547,7 @@ def test_e13_target_slot_conflict_rolls_back_every_domain_fact() -> None:
                 destination_rack_code=destination_rack,
                 provider_reference=ack.provider_reference,
             )
-            with pytest.raises(ValueError, match=r"accepted members do not match ACK"):
+            with pytest.raises(ValueError, match=r"differs from persisted acceptance evidence"):
                 await service.project_success(
                     db,
                     request=request,
@@ -652,5 +688,123 @@ def test_e13_duplicate_and_late_conflicting_terminal_preserve_first_result() -> 
                     )
                 )
             ) == 3
+
+    asyncio.run(with_database(scenario))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("graph_index", "outcomes", "expected_status"),
+    [
+        (948, ("SUCCESS", "SUCCESS", "SUCCESS"), RuntimeIntentStatus.COMPLETED),
+        (949, ("SUCCESS", "FAILED", "UNKNOWN"), RuntimeIntentStatus.RECONCILING),
+    ],
+)
+def test_e13_status_scanner_uses_frozen_ack_for_success_and_partial_after_reducer(
+    graph_index: int,
+    outcomes: tuple[str, str, str],
+    expected_status: RuntimeIntentStatus,
+) -> None:
+    async def scenario(session_factory) -> None:  # type: ignore[no-untyped-def]
+        async with session_factory() as db:
+            _graph, service, request, prepared, ack, destination_rack = await _prepare_acked_batch(
+                db,
+                graph_index=graph_index,
+            )
+            result = _terminal_result(
+                request,
+                destination_rack_code=destination_rack,
+                provider_reference=ack.provider_reference,
+                outcomes=outcomes,
+            )
+
+            recorded = await _apply_status_terminal(
+                db,
+                service=service,
+                prepared=prepared,
+                request=request,
+                result=result,
+                ack=ack,
+            )
+
+            assert recorded.outcome == (
+                "COMPLETED" if expected_status is RuntimeIntentStatus.COMPLETED else "RECONCILING"
+            )
+            duplicate_scan = await WmsEffectStatusService(
+                domain_projector=WmsFulfillmentDomainProjector(conveyor_return_batch=service),
+                now=lambda: NOW,
+            ).check_dispatch(
+                db,
+                dispatch_key=request.dispatch_key,
+            )
+            assert duplicate_scan.outcome == "SKIPPED"
+
+        async with session_factory() as verify_db:
+            intent = await verify_db.get(RuntimeIntentLog, prepared.intent_log.id)
+            assert intent is not None and intent.effect_status == expected_status
+            members = await _members(verify_db, intent_id=prepared.intent_log.id)
+            assert tuple(member.terminal_outcome for member in members) == outcomes
+            if expected_status is RuntimeIntentStatus.RECONCILING:
+                case = await verify_db.scalar(
+                    select(ReconciliationCase).where(
+                        ReconciliationCase.runtime_intent_log_id == prepared.intent_log.id,
+                        ReconciliationCase.status == ReconciliationCaseStatus.OPEN,
+                    )
+                )
+                assert case is not None
+                unknown = members[2]
+                route = await verify_db.get(BinRouteInstance, unknown.route_instance_id)
+                source = await verify_db.get(ConveyorQueueMembership, unknown.source_queue_membership_id)
+                assert route is not None and route.lifecycle_state == "RECONCILING"
+                assert source is not None and source.membership_status == "RECONCILING"
+
+    asyncio.run(with_database(scenario))
+
+
+@pytest.mark.integration
+def test_e13_status_terminal_domain_failure_rolls_back_reducer_and_all_domain_facts() -> None:
+    async def scenario(session_factory) -> None:  # type: ignore[no-untyped-def]
+        async with session_factory() as db:
+            _graph, service, request, prepared, ack, destination_rack = await _prepare_acked_batch(
+                db,
+                graph_index=950,
+            )
+            intent_id = prepared.intent_log.id
+            await db.commit()
+            db.add(
+                RackBinMount(
+                    rack_code=destination_rack,
+                    rack_slot_code="RETURN-2",
+                    bin_code="E13-STATUS-CONFLICT-950",
+                    mount_status=RackBinMountStatus.MOUNTED,
+                    source_system=ResourceSourceSystem.WMS,
+                    source_event_id="e13-status-target-conflict:950",
+                    started_at=NOW,
+                )
+            )
+            await db.flush()
+            result = _terminal_result(
+                request,
+                destination_rack_code=destination_rack,
+                provider_reference=ack.provider_reference,
+            )
+
+            with pytest.raises(ValueError, match=r"target.*occupied|destination.*occupied"):
+                await _apply_status_terminal(
+                    db,
+                    service=service,
+                    prepared=prepared,
+                    request=request,
+                    result=result,
+                    ack=ack,
+                )
+            await db.rollback()
+
+        async with session_factory() as verify_db:
+            intent = await verify_db.get(RuntimeIntentLog, intent_id)
+            assert intent is not None and intent.effect_status == RuntimeIntentStatus.ACCEPTED
+            members = await _members(verify_db, intent_id=intent_id)
+            assert {member.member_state for member in members} == {"ACCEPTED"}
+            assert {member.terminal_outcome for member in members} == {None}
 
     asyncio.run(with_database(scenario))
