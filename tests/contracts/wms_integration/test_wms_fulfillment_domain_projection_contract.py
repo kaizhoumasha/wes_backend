@@ -1,4 +1,4 @@
-"""E08/E09 履约域投影的静态 operation 合同。"""
+"""履约域投影的静态 operation 合同。"""
 
 from __future__ import annotations
 
@@ -10,21 +10,22 @@ E08 = "wms.fulfillment.request_rack_supply@v1"
 E09 = "wms.fulfillment.request_rack_transport@v1"
 E11 = "wms.fulfillment.full_box_exchange@v1"
 E12 = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
+E13 = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
 
 
 def _operation(identity: str):
     return next(operation for operation in EFFECT_OPERATIONS if operation.identity == identity)
 
 
-def test_only_e08_e09_e11_and_e12_declare_a_domain_projection_kind() -> None:
+def test_only_authored_fulfillment_operations_declare_a_domain_projection_kind() -> None:
     projected = {
         operation.identity: operation.domain_projection_kind
         for operation in EFFECT_OPERATIONS
         if operation.domain_projection_kind is not None
     }
 
-    assert set(projected) == {E08, E09, E11, E12}
-    assert len(set(projected.values())) == 4
+    assert set(projected) == {E08, E09, E11, E12, E13}
+    assert len(set(projected.values())) == 5
 
 
 def test_domain_projection_kind_is_part_of_the_frozen_definition_schema() -> None:
