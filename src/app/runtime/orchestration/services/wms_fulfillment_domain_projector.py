@@ -36,9 +36,11 @@ from src.app.wms_integration.operation_contract import (
     WmsOperationDefinition,
 )
 from src.app.wms_integration.ports.fulfillment_operations import (
+    MOVE_BINS_FROM_CONVEYOR_EXIT,
     FullBoxExchangeRequest,
     FullBoxExchangeResult,
     MoveBinsFromConveyorExitRequest,
+    MoveBinsFromConveyorExitResult,
     MoveBinsToConveyorEntryRequest,
     MoveBinsToConveyorEntryResult,
     RequestRackSupplyRequest,
@@ -354,6 +356,68 @@ class WmsFulfillmentDomainProjector:
             )
             return
         raise RuntimeError("E13 terminal/status projection is not bound")
+
+    async def project_conveyor_return_terminal_result(
+        self,
+        db: AsyncSession,
+        *,
+        operation: WmsOperationDefinition,
+        request_payload: dict[str, Any],
+        result_payload: dict[str, Any],
+        occurred_at_ms: int,
+        source_event_id: str,
+    ) -> None:
+        """D1 direct API：只分派 E13 all-success terminal，不接 shared status/bridge。"""
+
+        if (
+            operation.identity != MOVE_BINS_FROM_CONVEYOR_EXIT.identity
+            or operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+        ):
+            raise ValueError("conveyor return terminal delegate requires E13 operation")
+        request = validate_json_payload(MoveBinsFromConveyorExitRequest, request_payload)
+        result = validate_json_payload(MoveBinsFromConveyorExitResult, result_payload)
+        if result.task_outcome != "SUCCESS":
+            raise ValueError("E13 direct success delegate requires all-success result")
+        await self._conveyor_return_batch.project_success(
+            db,
+            request=request,
+            result=result,
+            occurred_at_ms=occurred_at_ms,
+            source_event_id=source_event_id,
+        )
+
+    async def project_conveyor_return_reconciliation_result(
+        self,
+        db: AsyncSession,
+        *,
+        operation: WmsOperationDefinition,
+        request_payload: dict[str, Any],
+        result_payload: dict[str, Any],
+        reconciliation_case_id: int,
+        occurred_at_ms: int,
+        source_event_id: str,
+        reason_code: str,
+    ) -> None:
+        """D1 direct API：只分派已有 OPEN case 的 E13 非成功 terminal。"""
+
+        if (
+            operation.identity != MOVE_BINS_FROM_CONVEYOR_EXIT.identity
+            or operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+        ):
+            raise ValueError("conveyor return reconciliation delegate requires E13 operation")
+        request = validate_json_payload(MoveBinsFromConveyorExitRequest, request_payload)
+        result = validate_json_payload(MoveBinsFromConveyorExitResult, result_payload)
+        if result.task_outcome == "SUCCESS":
+            raise ValueError("E13 direct reconciliation delegate requires non-success result")
+        await self._conveyor_return_batch.project_reconciliation(
+            db,
+            request=request,
+            result=result,
+            reconciliation_case_id=reconciliation_case_id,
+            occurred_at_ms=occurred_at_ms,
+            source_event_id=source_event_id,
+            reason_code=reason_code,
+        )
 
     async def project_reconciliation_opened(
         self,

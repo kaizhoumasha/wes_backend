@@ -2063,6 +2063,20 @@ Codex; checkbox as you ship.
     prefix/suffix、下一批立即调度、零容量、LEFT 后 claim 清理、事务故障回滚和同事件重放；共享
     E12/status/contracts/topology 回归 `125 passed`，E12 convergence PostgreSQL `10 passed`，完整 quality
     profile、Ruff format/check 和 `git diff --check` 通过。独立终审结论 `Approved`、无 P0–P2。
+  - Verified checkpoint — G4.4d D1 / E13 direct terminal convergence：direct domain projector 只消费
+    persisted ACK 的 provider reference、accepted scope/digest 与精确 member prefix；known terminal 在独立
+    E13 aggregate 内按固定顺序锁定 root/member/source membership/route、当前 workline
+    `TARGET_STATION` 的 active FIVE_LAYER rack、RackType、BIN_SLOT 和 active mount，先全量校验再统一变更并
+    single flush。`SUCCESS` 批量关闭旧 mount、创建 WMS 返回的 authoritative mount、source membership
+    `LEFT` 并清 claim、旧 route `CLOSED@FIVE_RACK`；FAILED-known 同样收敛明确 rack-slot 和 source 离队事实，
+    但 route 在 `FIVE_RACK` 冻结为 `RECONCILING`；UNKNOWN 不伪造 target/mount，只冻结当前精确事实。
+    RETURN_QUEUE 上同槽 stale mount 仍按新到达事实 close+recreate；physical-first 同目标只补 evidence，异目标
+    保留首次位置并进入对账，任何晚到 terminal 均不得回退 route 或覆盖 mount。
+  - G4.4d D1 evidence：direct/unit/contracts `49 passed`；真实 PostgreSQL terminal `8 passed`，
+    preparation/ACK 回归 `10 passed`，覆盖 ACK scope/provider drift 零写、stale 同槽 authoritative
+    close+new、partial 三态、目标占用整体回滚及 physical-first 同/异目标；Ruff format/check 和
+    `git diff --check` 通过。独立终审结论 `Approved`、无 P0–P2。此检查点尚未接入 transport bridge/status，
+    对应生产入口继续 fail closed。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

@@ -6,10 +6,26 @@ from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003 - dataclass 运行时需要字段类型
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, tuple_
 
+from src.app.resource.models import (
+    Rack,
+    RackBinMount,
+    RackKind,
+    RackPlacement,
+    RackPlacementStatus,
+    RackSlotKind,
+    RackSlotTemplate,
+    RackType,
+    ResourceMasterStatus,
+)
 from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.models.rack_position import (
+    WorklineRackPosition,
+    WorklineRackPositionRole,
+)
+from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember
 from src.app.sys.models.outbox import SystemOutbox
@@ -44,6 +60,25 @@ class WmsConveyorReturnPreparedRows:
     members: tuple[WmsConveyorBatchMember, ...]
     routes: tuple[BinRouteInstance, ...]
     memberships: tuple[ConveyorQueueMembership, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WmsConveyorReturnTargetRow:
+    """一个已锁定且满足 E13 work-face 资格的目标 rack-slot。"""
+
+    placement: RackPlacement
+    rack: Rack
+    rack_type: RackType
+    slot: RackSlotTemplate
+
+
+@dataclass(frozen=True, slots=True)
+class WmsConveyorReturnTerminalResources:
+    """E13 终态一次批量锁定的 manifest、目标与 active mount 全集。"""
+
+    target_position: WorklineRackPosition | None
+    targets: tuple[WmsConveyorReturnTargetRow, ...]
+    active_mounts: tuple[RackBinMount, ...]
 
 
 class WmsConveyorReturnBatchRepository:
@@ -248,6 +283,113 @@ class WmsConveyorReturnBatchRepository:
             memberships=memberships,
         )
 
+    async def lock_terminal_resources(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        accepted_bin_codes: Sequence[str],
+        target_keys: Sequence[tuple[str, str]],
+    ) -> WmsConveyorReturnTerminalResources:
+        """按 manifest→目标资源→active mount 的稳定顺序锁定终态聚合。"""
+
+        target_position = await db.scalar(
+            select(WorklineRackPosition)
+            .where(
+                WorklineRackPosition.workline_id == workline_id,
+                WorklineRackPosition.position_code == "TARGET_STATION",
+                WorklineRackPosition.position_role == WorklineRackPositionRole.SMT_SORTER_STATION,
+                WorklineRackPosition.allowed_rack_kind == RackKind.FIVE_LAYER,
+                WorklineRackPosition.enabled.is_(True),
+            )
+            .order_by(WorklineRackPosition.id)
+            .with_for_update()
+        )
+        target_pairs = tuple(sorted(set(target_keys)))
+        targets: tuple[WmsConveyorReturnTargetRow, ...] = ()
+        if target_pairs:
+            rows = (
+                await db.execute(
+                    select(RackPlacement, Rack, RackType, RackSlotTemplate)
+                    .join(Rack, Rack.rack_code == RackPlacement.rack_code)
+                    .join(RackType, RackType.rack_type_code == Rack.rack_type_code)
+                    .join(
+                        RackSlotTemplate,
+                        and_(
+                            RackSlotTemplate.rack_type_code == RackType.rack_type_code,
+                            tuple_(Rack.rack_code, RackSlotTemplate.slot_code).in_(target_pairs),
+                        ),
+                    )
+                    .where(
+                        RackPlacement.workline_id == workline_id,
+                        RackPlacement.position_code == "TARGET_STATION",
+                        RackPlacement.rack_kind == RackKind.FIVE_LAYER,
+                        RackPlacement.placement_status == RackPlacementStatus.ARRIVED,
+                        RackPlacement.ended_at.is_(None),
+                        Rack.status == ResourceMasterStatus.ACTIVE,
+                        RackType.rack_kind == RackKind.FIVE_LAYER,
+                        RackType.active.is_(True),
+                        RackSlotTemplate.slot_kind == RackSlotKind.BIN_SLOT,
+                        RackSlotTemplate.active.is_(True),
+                    )
+                    .order_by(Rack.rack_code, RackSlotTemplate.slot_code)
+                    .with_for_update(of=[RackPlacement, Rack, RackType, RackSlotTemplate])
+                )
+            ).all()
+            targets = tuple(
+                WmsConveyorReturnTargetRow(
+                    placement=placement,
+                    rack=rack,
+                    rack_type=rack_type,
+                    slot=slot,
+                )
+                for placement, rack, rack_type, slot in rows
+            )
+
+        mount_filter = RackBinMount.bin_code.in_(tuple(accepted_bin_codes))
+        if target_pairs:
+            mount_filter = or_(
+                mount_filter,
+                tuple_(RackBinMount.rack_code, RackBinMount.rack_slot_code).in_(target_pairs),
+            )
+        active_mounts = tuple(
+            (
+                await db.execute(
+                    select(RackBinMount)
+                    .where(
+                        mount_filter,
+                        RackBinMount.ended_at.is_(None),
+                    )
+                    .order_by(RackBinMount.rack_code, RackBinMount.rack_slot_code, RackBinMount.bin_code)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return WmsConveyorReturnTerminalResources(
+            target_position=target_position,
+            targets=targets,
+            active_mounts=active_mounts,
+        )
+
+    async def get_open_reconciliation_case_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        reconciliation_case_id: int,
+    ) -> ReconciliationCase | None:
+        """锁定与 E13 root 绑定的 OPEN reconciliation case。"""
+
+        return await db.scalar(
+            select(ReconciliationCase)
+            .where(
+                ReconciliationCase.id == reconciliation_case_id,
+                ReconciliationCase.status == ReconciliationCaseStatus.OPEN,
+            )
+            .with_for_update()
+        )
+
 
 wms_conveyor_return_batch_repository = WmsConveyorReturnBatchRepository()
 
@@ -255,5 +397,7 @@ __all__ = [
     "WmsConveyorReturnBatchRepository",
     "WmsConveyorReturnCandidateRow",
     "WmsConveyorReturnPreparedRows",
+    "WmsConveyorReturnTargetRow",
+    "WmsConveyorReturnTerminalResources",
     "wms_conveyor_return_batch_repository",
 ]
