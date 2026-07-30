@@ -16,6 +16,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
     _runtime_profile_from_pinned_binding,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackResult,
     RuntimeInboxWriteBackService,
 )
 from src.app.runtime.system_capabilities.definition import (
@@ -397,8 +398,8 @@ async def test_process_claimed_uses_pinned_profile_before_generated_stage_two_an
             return ValidationOutcome.continue_orchestrator()
 
     class WriteBack:
-        async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
-            return WriteDisposition.COMMITTED
+        async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> RuntimeInboxWriteBackResult:
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.COMMITTED)
 
     class Db:
         async def flush(self) -> None:

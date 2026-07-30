@@ -9,6 +9,9 @@ import pytest
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
 )
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackResult,
+)
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
 from src.app.sys.services.event_stream_service import (
     DEFERRED_SSE_EVENTS_KEY,
@@ -48,9 +51,9 @@ async def test_platform_committed_writeback_defers_runtime_sse_event() -> None:
             return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
-        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
+        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> RuntimeInboxWriteBackResult:
             await db.commit()
-            return WriteDisposition.COMMITTED
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.COMMITTED)
 
     db = Db()
     bridge = RuntimeInboxProcessorBridge(
@@ -123,9 +126,9 @@ async def test_platform_terminal_failure_reports_failure_and_defers_runtime_sse_
             return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
-        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
+        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> RuntimeInboxWriteBackResult:
             await db.commit()
-            return WriteDisposition.TERMINAL_FAILURE
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.TERMINAL_FAILURE)
 
     db = Db()
     bridge = RuntimeInboxProcessorBridge(
@@ -193,10 +196,10 @@ async def test_pre_attempt_blocked_skips_runner_and_commits_fail_closed_hold(
     captured: list[AttemptWriteSet] = []
 
     class WriteBack:
-        async def commit_plugin_attempt(self, db: Db, **kwargs: object) -> WriteDisposition:
+        async def commit_plugin_attempt(self, db: Db, **kwargs: object) -> RuntimeInboxWriteBackResult:
             captured.append(kwargs["write_set"])  # type: ignore[arg-type]
             await db.commit()
-            return WriteDisposition.COMMITTED
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.COMMITTED)
 
     async def blocked(*_args: object, **_kwargs: object) -> object:
         from src.app.runtime.workline_plugins.pre_attempt import PreAttemptResolution
