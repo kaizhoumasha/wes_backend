@@ -21,7 +21,7 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
 - Task 2: complete — `68f0b837..a3470f32`，独立验收 `Spec Compliance ✅ / Approved`
 - Task 3: complete — `8fc4785e..0a37aa4d`，独立验收 `Spec Compliance ✅ / Approved`
 - Task 4: complete — `d59215da..234a5888`，独立验收 `Spec Compliance ✅ / Approved`
-- Task 5: in progress — 接入 16 项 EFFECT 与双 WMS lane
+- Task 5: complete — `884e92ef..0131e662`，接入 16 项 EFFECT 与双 WMS lane，独立验收 `Approved`
   - G4.5a verified（2026-07-30）：RuntimeInbox attempt 可分别注册 QUERY 与
     `WmsEffectPreparationPort`；Stage 3 为当前 attempt 注入 effect Port resolver，避免
     `CAPABILITY_EFFECT_PORT_UNBOUND`，不缓存 registry/DB session。API 与 Celery 均从同一已校验
@@ -42,15 +42,21 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     demand 会排除后继续处理健康 demand。缺 correlation、阶段门漂移或未绑定 runtime 全部 rollback/fail closed。
     真实 PostgreSQL scanner happy/missing-correlation 与两满箱 terminal 串行回归通过；不创建 release fact，T6
     仍负责粗分机移出事实与 demand producer。
-  - legacy cleanup verified（2026-07-30，待独立复审）：删除 generic Rack/Handling RuntimeIntent 全链、
+  - legacy cleanup verified（2026-07-30）：删除 generic Rack/Handling RuntimeIntent 全链、
     旧聚合模型/服务/回调 fallback、SingleLayer façade、E11 manual/retry 旁路及 legacy manifest；生成
     `46f11dd0a874` drop migration。独立临时 PostgreSQL cold-start 到 head 后五张旧表均为 0；
     `tests/workline_runtime/` `1128 passed`，WMS/E11/粗分合同 `457 passed`，架构/absence/topology
     `52 passed`，默认收集 `5102 tests`，quality profile 通过。首轮复审要求把 batch ACK 绑定原 typed request
     与首次 ACK；4 类 forged/drift RED 精确复现后，E12 全量、E13 有序前缀及跨状态 provider/scope 冻结均已
-    复用生产 validator 收口，reviewer/guardrail 定向 `50 passed` 且 quality 再次通过。当前只记录 verified
-    checkpoint，不提前完成 T5。
-- Task 6: pending — 固化粗分和分拣对象级流水
+    复用生产 validator 收口；随后将所有非 `NOT_FOUND` status 绑定首次 ACK，status-first 路径复用生产
+    `validate_fulfillment_ack`。两轮独立复审最终均为 `Approved`，probe `26 passed`、相关门禁 `64 passed`。
+  - final acceptance（2026-07-30）：默认全集执行 `5107 collected`，得到
+    `5092 passed, 5 skipped, 10 failed`；失败全部精确收敛到三个 RuntimeInbox 测试文件仍返回旧裸
+    `WriteDisposition`。仅同步为生产 `RuntimeInboxWriteBackResult` 后，原成功、资源等待、终态失败、fencing、
+    rollback、SSE 与 parity 断言均保留；失败集及 topology 门禁复跑 `48 passed`，独立复审无
+    Critical/Important/Minor、结论 `Approved`。未为测试通过修改生产逻辑，也未重复执行无新增诊断价值的
+    7 分钟默认全集。
+- Task 6: blocked — 缺少厂商取料/扫码/投放真实命令合同与脱敏 fixture；按已批准 entry gate 禁止猜测实现
 - Task 7: pending — 替换 WMS 普通事件与 status hint
 - Task 8: pending — 建立 35 项参数化合同矩阵
 - Task 9: pending — 关闭状态恢复和对账门禁
@@ -59,6 +65,7 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
 ## Baseline
 
 - `uv run pytest tests/`: 4253 passed, 5 skipped
+- T5 final baseline：5107 collected；5092 passed、5 skipped，10 个旧夹具失败已由精确失败集回归 48 passed 收口
 
 ## Minor Findings
 

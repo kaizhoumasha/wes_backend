@@ -1959,7 +1959,7 @@ Codex; checkbox as you ship.
     architecture `0 violations / 0 warnings` 通过；最终 GitNexus detect 为 LOW、0 affected processes。
   - Review: 三轮独立复审逐项关闭 Repository/并发原子性、5xx allowlist、coverage、SCAN 前置顺序、Q14
     fallback 与 crash-window hash 漂移问题；最终结论 `Spec Compliance ✅`、无 findings、`Approved`。
-- [ ] **T5（P1，human: \~5d / CC: \~1d）** — EFFECT — 接入 9 项同步 EFFECT、7 项异步 EFFECT 与双 WMS lane
+- [x] **T5（P1，human: \~5d / CC: \~1d）** — EFFECT — 接入 9 项同步 EFFECT、7 项异步 EFFECT 与双 WMS lane
   - Surfaced by: Architecture D1–D2 / DRY / Business acceptance — 共享静态 Gateway/Handler/IntentAdapter 执行管线和
     静态 completion mode；异步项使用 `WmsEffectAck`/`WmsAcceptedScope`；每项保留 typed contract/Definition 并仅为
     真实差异增加显式 hook；system/data/fulfillment 三个静态 claim scope 复用同一引擎，commit 后按实际 target
@@ -2158,7 +2158,15 @@ Codex; checkbox as you ship.
     forged member、E13 非前缀、E12 非全量、跨状态 provider/scope 漂移先以 `5 failed` 复现，最终 reviewer
     定向 probe/architecture/migration 组合 `50 passed`，完整 quality profile 再次通过；同步修正的 guardrail
     只允许每项 operation 保留静态 `definition.py` 并复用共享 EFFECT pipeline，未删除 typed Definition。
-    本检查点只记录实现验证；T5 仍保持 in progress，必须经独立复审且完整 Task 5 acceptance 通过后才能勾选。
+    随后继续关闭其唯一 Important：所有非 `NOT_FOUND` status 都绑定首次 ACK；status-first 必须携带原 typed
+    request 并复用生产 `validate_fulfillment_ack`。REJECTED、visibility、status-deadline 三路径及伪造 scope
+    负向用例通过，probe `26 passed`、相关门禁 `64 passed`，独立复审无 findings、`Approved`。
+  - T5 final acceptance（2026-07-30）：默认全集实际执行 `5107 collected`，结果为
+    `5092 passed, 5 skipped, 10 failed`；10 项失败全部来自三个 RuntimeInbox 测试夹具仍返回旧裸
+    `WriteDisposition`，与已落地的 `RuntimeInboxWriteBackResult` 合同不一致。修复仅同步测试返回包装，未修改
+    生产逻辑，且保留成功、资源等待、终态失败、fencing、rollback、SSE 和 parity 断言；精确失败集加 topology
+    门禁复跑 `48 passed`。独立复审确认无断言弱化及无 Critical/Important/Minor，最终结论 `Approved`。
+    T5 至此完成；为避免重复 7 分钟且无新增诊断价值的执行，未再次运行完整默认全集。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION
