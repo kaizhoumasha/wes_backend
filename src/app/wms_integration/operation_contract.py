@@ -52,6 +52,7 @@ class WmsDomainProjectionKind(str, Enum):
     RACK_TRANSPORT_DEMAND = "RACK_TRANSPORT_DEMAND"
     FULL_BOX_EXCHANGE_DEMAND = "FULL_BOX_EXCHANGE_DEMAND"
     CONVEYOR_INBOUND_BATCH = "CONVEYOR_INBOUND_BATCH"
+    CONVEYOR_RETURN_BATCH = "CONVEYOR_RETURN_BATCH"
 
 
 class WmsOperationBudget(BaseModel):
@@ -192,6 +193,7 @@ class WmsOperationDefinition(BaseModel):
             "wms.fulfillment.request_rack_transport@v1": WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND,
             "wms.fulfillment.full_box_exchange@v1": WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND,
             "wms.fulfillment.move_bins_to_conveyor_entry@v1": WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH,
+            "wms.fulfillment.move_bins_from_conveyor_exit@v1": WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH,
         }.get(self.identity)
         if self.domain_projection_kind is not expected_domain_projection:
             raise ValueError("domain_projection_kind is only valid for its authored fulfillment operation")

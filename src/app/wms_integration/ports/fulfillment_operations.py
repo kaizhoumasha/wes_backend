@@ -631,6 +631,7 @@ MOVE_BINS_FROM_CONVEYOR_EXIT = effect_operation(
     completion_mode=WmsCompletionMode.ASYNC_TASK,
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
     max_candidate_count=12,
+    domain_projection_kind=WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH,
 )
 REQUEST_LOAD_UNIT_TRANSPORT = effect_operation(
     identity="wms.fulfillment.request_load_unit_transport@v1",

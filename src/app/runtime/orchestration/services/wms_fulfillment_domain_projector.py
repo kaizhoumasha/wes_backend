@@ -26,6 +26,11 @@ from src.app.runtime.orchestration.services.wms_conveyor_batch_service import (
     WmsConveyorBatchService,
     wms_conveyor_batch_service,
 )
+from src.app.runtime.orchestration.services.wms_conveyor_return_batch_service import (
+    WmsConveyorReturnBatchClaim,
+    WmsConveyorReturnBatchService,
+    wms_conveyor_return_batch_service,
+)
 from src.app.wms_integration.operation_contract import (
     WmsDomainProjectionKind,
     WmsOperationDefinition,
@@ -33,6 +38,7 @@ from src.app.wms_integration.operation_contract import (
 from src.app.wms_integration.ports.fulfillment_operations import (
     FullBoxExchangeRequest,
     FullBoxExchangeResult,
+    MoveBinsFromConveyorExitRequest,
     MoveBinsToConveyorEntryRequest,
     MoveBinsToConveyorEntryResult,
     RequestRackSupplyRequest,
@@ -64,6 +70,7 @@ class WmsFulfillmentDomainProjector:
         repository: WmsFulfillmentDomainRepository = wms_fulfillment_domain_repository,
         full_box_exchange: FullBoxExchangeService = full_box_exchange_service,
         conveyor_batch: WmsConveyorBatchService = wms_conveyor_batch_service,
+        conveyor_return_batch: WmsConveyorReturnBatchService = wms_conveyor_return_batch_service,
         resource_projection_service: ResourceProjectionService = resource_projection_service,
         station_role_resolver: Callable[..., Any] | None = None,
         workline_code_resolver: Callable[..., Any] | None = None,
@@ -72,6 +79,7 @@ class WmsFulfillmentDomainProjector:
         self._repository = repository
         self._full_box_exchange = full_box_exchange
         self._conveyor_batch = conveyor_batch
+        self._conveyor_return_batch = conveyor_return_batch
         self._resource_projection_service = resource_projection_service
         self._station_role_resolver = station_role_resolver or self._default_station_role
         self._workline_code_resolver = workline_code_resolver or self._default_workline_code
@@ -87,6 +95,20 @@ class WmsFulfillmentDomainProjector:
     ) -> None:
         """锁定 PREPARING demand，校验冻结 root，并在 Outbox 前绑定 ACTIVE root。"""
 
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
+            if not isinstance(request, MoveBinsFromConveyorExitRequest):
+                raise TypeError("conveyor return batch requires its typed request")
+            claim = self._require_conveyor_return_batch_claim(execution)
+            intent_id = getattr(getattr(execution, "intent_log", None), "id", None)
+            if not isinstance(intent_id, int) or intent_id <= 0:
+                raise RuntimeError("conveyor return batch preparation requires claimed intent id")
+            await self._conveyor_return_batch.prepare_effect(
+                db,
+                claim=claim,
+                request=request,
+                intent_id=intent_id,
+            )
+            return
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
             if not isinstance(request, MoveBinsToConveyorEntryRequest):
                 raise TypeError("conveyor inbound batch requires its typed request")
@@ -176,6 +198,9 @@ class WmsFulfillmentDomainProjector:
             return
         if not bool(getattr(reduction, "state_changed", False)) or bool(getattr(reduction, "contradiction", False)):
             return
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
+            # E13 本阶段只绑定 reserve/preparation；禁止误落入 rack-demand 投影。
+            raise RuntimeError("E13 event projection is not bound")
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
             await self._project_e12_event(
                 db,
@@ -306,6 +331,9 @@ class WmsFulfillmentDomainProjector:
     ) -> None:
         """仅为 E11 reconciliation 同事务冻结 parent；不释放 owner 或 active Intent。"""
 
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
+            # E13 对账收敛将在 ACK/terminal 阶段显式绑定，当前必须 fail closed。
+            raise RuntimeError("E13 reconciliation projection is not bound")
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
             if not reason_code or not isinstance(evidence_json, dict):
                 raise ValueError("E12 reconciliation projection requires reason and evidence")
@@ -422,6 +450,16 @@ class WmsFulfillmentDomainProjector:
         claim = ctx.get("wms_conveyor_batch_claim")
         if not isinstance(claim, WmsConveyorBatchClaim):
             raise TypeError("conveyor inbound batch preparation claim is missing")
+        return claim
+
+    @staticmethod
+    def _require_conveyor_return_batch_claim(execution: Any) -> WmsConveyorReturnBatchClaim:
+        ctx = getattr(execution, "ctx", None)
+        if not isinstance(ctx, dict):
+            raise TypeError("conveyor return batch preparation requires runtime execution context")
+        claim = ctx.get("wms_conveyor_return_batch_claim")
+        if not isinstance(claim, WmsConveyorReturnBatchClaim):
+            raise TypeError("conveyor return batch preparation claim is missing")
         return claim
 
     @staticmethod

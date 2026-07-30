@@ -2039,6 +2039,18 @@ Codex; checkbox as you ship.
     Alembic upgrade/downgrade/re-upgrade、topology `6 passed`、默认收集 `5053 tests`、targeted Ruff 与
     `git diff --check` 通过。独立终审复跑 focused `28 passed`、PostgreSQL `13 passed` 和 migration
     round-trip，结论 `Approved`、无 P0–P2。
+  - Verified checkpoint — G4.4d A+B / E13 candidate preparation：E13 已绑定独立
+    `CONVEYOR_RETURN_BATCH` 投影类型；只从指定 workline/queue 的
+    `ACTIVE + RETURN_QUEUE + unclaimed + ACTIVE@RETURN_QUEUE route` 读取候选，按
+    `scan3_enqueued_at + queue_position + bin_id` 使用 PostgreSQL `FOR UPDATE SKIP LOCKED` 冻结有界 FIFO
+    窗口，沿用既有 route identity 并生成稳定 candidate digest。reserve、RuntimeIntent、Outbox、
+    source membership claim 和 `RETURN/CANDIDATE` member 在调用方同一短事务内落库；ACK 前候选不是实际成员，
+    不读取 WES 五层货架容量，不选择或预留 rack-slot，也不修改物理 route。未实现的 E13 ACK、terminal 和
+    reconciliation 路径继续显式 fail closed，禁止误落通用 rack-demand 投影或静默吞结果。
+  - G4.4d A+B evidence：E13 unit `9 passed`，合同/既有投影回归 `76 passed`；真实 PostgreSQL
+    preparation `2 passed`，覆盖混合无效候选过滤、双 worker `SKIP LOCKED` 不重叠，以及
+    claim/member/Intent/Outbox 原子回滚后原 FIFO 可重选；topology `6 passed`、targeted Ruff 和
+    `git diff --check` 通过。独立增量复审结论 `Approved`、无 P0–P2。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

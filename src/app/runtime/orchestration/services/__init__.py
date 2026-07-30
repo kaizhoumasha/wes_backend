@@ -64,6 +64,10 @@ from src.app.runtime.orchestration.services.wms_conveyor_batch_service import (
     WmsConveyorBatchService,
     wms_conveyor_batch_service,
 )
+from src.app.runtime.orchestration.services.wms_conveyor_return_batch_service import (
+    WmsConveyorReturnBatchService,
+    wms_conveyor_return_batch_service,
+)
 from src.app.runtime.orchestration.services.wms_effect_status_service import (
     WmsEffectStatusCheckResult,
     WmsEffectStatusService,
@@ -108,6 +112,7 @@ __all__ = [
     "StaleSessionPrecondition",
     "SystemOutboxCancellationService",
     "WmsConveyorBatchService",
+    "WmsConveyorReturnBatchService",
     "WmsEffectStatusCheckResult",
     "WmsEffectStatusService",
     "WmsFulfillmentDomainProjector",
@@ -129,6 +134,7 @@ __all__ = [
     "session_hold_mutation_service",
     "system_outbox_cancellation_service",
     "wms_conveyor_batch_service",
+    "wms_conveyor_return_batch_service",
     "wms_effect_status_service",
     "wms_fulfillment_domain_projector",
     "workline_runtime_status_projection_service",
