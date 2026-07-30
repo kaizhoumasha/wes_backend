@@ -196,6 +196,8 @@ def _is_snapshot(  # noqa: PLR0911
     operation_identity: str,
     payload: dict[str, Any],
     frozen_ack: WmsEffectAck | None = None,
+    status_first_request: MoveBinsToConveyorEntryRequest | MoveBinsFromConveyorExitRequest | None = None,
+    idempotency_key: str | None = None,
 ) -> bool:
     """严格验证五态快照及对应 operation 的 typed completed result。"""
 
@@ -233,6 +235,29 @@ def _is_snapshot(  # noqa: PLR0911
             return False
         if accepted_scope.scope_digest != accepted_scope_digest(accepted_scope.object_keys):
             return False
+        if frozen_ack is None:
+            if (
+                not isinstance(
+                    status_first_request,
+                    (MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest),
+                )
+                or idempotency_key is None
+            ):
+                return False
+            recovered_ack = _validated_ack(
+                {
+                    "operation_identity": operation_identity,
+                    "idempotency_key": idempotency_key,
+                    "provider_reference": snapshot["provider_reference"],
+                    "submission_state": "REPLAY",
+                    "accepted_scope": accepted_scope_payload,
+                },
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+                request=status_first_request,
+            )
+            if recovered_ack is None:
+                return False
     elif accepted_scope_payload is not None:
         return False
     if frozen_ack is not None and (
@@ -735,7 +760,14 @@ async def run_probe(
         )
 
         rejected_key = f"probe-rejected-{uuid4().hex}"
-        await submit(identity, rejected_key, payload)
+        rejected_submit = await submit(identity, rejected_key, payload)
+        rejected_submit_body = _json_object(rejected_submit, max_response_bytes=max_response_bytes)
+        rejected_ack = _validated_ack(
+            rejected_submit_body.get("data") if rejected_submit_body else None,
+            operation_identity=identity,
+            idempotency_key=rejected_key,
+            request=typed_request,
+        )
         rejected = await _request(
             client,
             "POST",
@@ -750,10 +782,18 @@ async def run_probe(
         results.append(
             _result(
                 f"{identity}:rejected_stable_reason",
-                rejected is not None
+                rejected_submit is not None
+                and rejected_submit.status_code == 202
+                and rejected_ack is not None
+                and rejected is not None
                 and rejected.status_code == 200
                 and all(
-                    _is_snapshot(snapshot, operation_identity=identity, payload=payload)
+                    _is_snapshot(
+                        snapshot,
+                        operation_identity=identity,
+                        payload=payload,
+                        frozen_ack=rejected_ack,
+                    )
                     for snapshot in rejected_snapshots
                 )
                 and rejected_snapshots[0] == rejected_snapshots[1]
@@ -800,6 +840,13 @@ async def run_probe(
             delay_seconds=visibility_sla,
         )
         first_visibility_submit = await submit(identity, visibility_key, payload)
+        first_visibility_body = _json_object(first_visibility_submit, max_response_bytes=max_response_bytes)
+        first_visibility_ack = _validated_ack(
+            first_visibility_body.get("data") if first_visibility_body else None,
+            operation_identity=identity,
+            idempotency_key=visibility_key,
+            request=typed_request,
+        )
         hidden_at_accept = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
         before_sla_clock = await configure_clock(accepted_at + timedelta(seconds=max(visibility_sla - 1, 0)))
         hidden_before_sla = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
@@ -822,13 +869,19 @@ async def run_probe(
                 and visibility_configured
                 and first_visibility_submit is not None
                 and first_visibility_submit.status_code == 202
+                and first_visibility_ack is not None
                 and _is_snapshot(hidden_at_accept, operation_identity=identity, payload=payload)
                 and hidden_at_accept["state"] == "NOT_FOUND"
                 and before_sla_clock
                 and _is_snapshot(hidden_before_sla, operation_identity=identity, payload=payload)
                 and hidden_before_sla["state"] == "NOT_FOUND"
                 and at_sla_clock
-                and _is_snapshot(visible_at_sla, operation_identity=identity, payload=payload)
+                and _is_snapshot(
+                    visible_at_sla,
+                    operation_identity=identity,
+                    payload=payload,
+                    frozen_ack=first_visibility_ack,
+                )
                 and visible_at_sla["state"] == "ACCEPTED"
                 and before_retention_clock
                 and replay_before_retention is not None
@@ -881,6 +934,7 @@ async def run_probe(
     fault_identity = selected[0]
     fault_key = f"probe-fault-{uuid4().hex}"
     fault_payload = dict(operation_specs[fault_identity]["payload"])
+    fault_typed_request = WMS_OPERATION_BY_IDENTITY[fault_identity].request_model.model_validate(fault_payload)
     await submit(fault_identity, fault_key, fault_payload)
     rate_configured = await configure_fault(
         status=429,
@@ -988,6 +1042,13 @@ async def run_probe(
 
     status_deadline_key = f"probe-status-deadline-{uuid4().hex}"
     status_deadline_submit = await submit(fault_identity, status_deadline_key, fault_payload)
+    status_deadline_body = _json_object(status_deadline_submit, max_response_bytes=max_response_bytes)
+    status_deadline_ack = _validated_ack(
+        status_deadline_body.get("data") if status_deadline_body else None,
+        operation_identity=fault_identity,
+        idempotency_key=status_deadline_key,
+        request=fault_typed_request,
+    )
     status_deadline_configured = await configure_fault(
         status=200,
         target_path=status_target,
@@ -1005,9 +1066,15 @@ async def run_probe(
             "status_deadline",
             status_deadline_submit is not None
             and status_deadline_submit.status_code == 202
+            and status_deadline_ack is not None
             and status_deadline_configured
             and timed_out_status is None
-            and _is_snapshot(status_after_timeout, operation_identity=fault_identity, payload=fault_payload)
+            and _is_snapshot(
+                status_after_timeout,
+                operation_identity=fault_identity,
+                payload=fault_payload,
+                frozen_ack=status_deadline_ack,
+            )
             and status_after_timeout["state"] == "ACCEPTED",
         )
     )

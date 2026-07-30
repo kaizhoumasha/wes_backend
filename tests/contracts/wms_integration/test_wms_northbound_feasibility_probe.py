@@ -209,6 +209,64 @@ def test_probe_snapshot_rejects_cross_state_ack_drift(drift_field: str) -> None:
     )
 
 
+def test_probe_rejected_snapshot_rejects_self_consistent_forged_scope_without_first_ack() -> None:
+    request = _batch_request(E13)
+    forged_keys = (request.candidate_items[0].bin_id, "FORGED-BIN")
+    forged_scope = WmsAcceptedScope(
+        object_keys=forged_keys,
+        scope_digest=accepted_scope_digest(forged_keys),
+    )
+    snapshot = {
+        "state": "REJECTED",
+        "provider_reference": "provider-status-first",
+        "accepted_scope": forged_scope.model_dump(mode="json"),
+        "reason_code": "NO_STORAGE_SLOT",
+        "updated_at": datetime.now(UTC).isoformat(),
+        "source_version": 1,
+        "result_payload": None,
+    }
+
+    assert (
+        _is_snapshot(
+            snapshot,
+            operation_identity=E13,
+            payload=request.model_dump(mode="json"),
+            status_first_request=request,
+            idempotency_key="status-first-rejected",
+        )
+        is False
+    )
+
+
+def test_probe_status_first_snapshot_validates_recovered_ack_against_original_request() -> None:
+    request = _batch_request(E13)
+    accepted_keys = tuple(item.bin_id for item in request.candidate_items[:2])
+    accepted_scope = WmsAcceptedScope(
+        object_keys=accepted_keys,
+        scope_digest=accepted_scope_digest(accepted_keys),
+    )
+    snapshot = {
+        "state": "ACCEPTED",
+        "provider_reference": "provider-status-first",
+        "accepted_scope": accepted_scope.model_dump(mode="json"),
+        "reason_code": None,
+        "updated_at": datetime.now(UTC).isoformat(),
+        "source_version": 0,
+        "result_payload": None,
+    }
+
+    assert (
+        _is_snapshot(
+            snapshot,
+            operation_identity=E13,
+            payload=request.model_dump(mode="json"),
+            status_first_request=request,
+            idempotency_key="status-first-accepted",
+        )
+        is True
+    )
+
+
 def test_contract_values_reject_retention_shorter_than_wes_confirmation_window() -> None:
     contract = {
         "credential_reference": ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
@@ -438,6 +496,26 @@ async def test_feasibility_probe_verifies_minimal_wms_contract_over_http(
     } <= case_ids
     assert all(case.passed for case in report.cases)
     assert all("secret" not in case.detail.lower() for case in report.cases)
+
+
+@pytest.mark.asyncio
+async def test_batch_probe_binds_rejected_visible_and_deadline_status_to_first_ack(
+    northbound_mock_client: httpx.AsyncClient,
+) -> None:
+    report = await run_probe(
+        northbound_mock_client,
+        compiled_profile=PROBE_COMPILED_PROFILE,
+        operation_identity=E13,
+        request_timeout_seconds=1.0,
+    )
+
+    required_cases = {
+        f"{E13}:rejected_stable_reason",
+        f"{E13}:visibility_sla_and_retention_boundaries",
+        "status_deadline",
+    }
+    assert all(case.passed for case in report.cases if case.case_id in required_cases)
+    assert required_cases <= {case.case_id for case in report.cases}
 
 
 @pytest.mark.asyncio
