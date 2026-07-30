@@ -2246,6 +2246,23 @@ Codex; checkbox as you ship.
   - Files: effect status service、RuntimeHold/Reconciliation bridge、metrics/runbook。
   - Verify: PostgreSQL/Celery integration 与 resilience case；CTU 任务/料箱双投影不互相覆盖；E07/E03
     completed-or-reconciled 同步义务只读取 typed resolution 且不改写原 Intent；`wms_effect.*` 真实信号映射可观测。
+  - T9.1 Verified（2026-07-30）：status scanner 已改为单次短事务批量 `SKIP LOCKED` claim 并立即提交，
+    每条查询使用独立数据库会话，固定 worker 数将实际 HTTP 并发限制为
+    `WES_EFFECT_STATUS_MAX_IN_FLIGHT`，单项异常 rollback 且不取消其他项；Celery 入口不再接受可变
+    `limit`。配置 fail-fast 校验 batch/max-in-flight/timeout/10s scan QPS、数据库会话预算、
+    lease 与 soft/hard time limit；fulfillment worker 固定 `concurrency=1`、`replicas=1`，旧副本变量与
+    scale 入口均拒绝，不引入跨副本分布式限流。真实 PostgreSQL 覆盖重叠 scanner 的 `SKIP LOCKED`、
+    过期 lease replacement/旧 token fencing、hint/scanner 到 HTTP 边界最多一次；根节点定向回归
+    `201 passed`、PostgreSQL `3 passed`、部署边界 `86 passed`。
+  - T9.2 Verified（2026-07-30）：已注册并真实发射
+    `wms_effect.submit/status_query/status_backlog/status_backpressure/recovery/callback_hint`；属性使用
+    低基数闭集，dispatch key 仅以摘要进入 span/log，不进入 metric。backlog 分离
+    `max_overdue_age_ms` 与 `max_confirmation_age_ms`；breaker state 只在取得真实状态时发射；
+    submit 只在 Outbox/Attempt/Reducer evidence 成功提交后发射，观测失败不改变业务事务。合同与
+    runbook 已同步阈值、查询、处置和恢复判据；独立工程复审结论 `Approved`。
+  - Remaining blocker：E07/E03 completed-or-reconciled typed 双义务屏障依赖 T6 的投格事实、Hold 与两项
+    Intent/Outbox 原子接线。T6 厂商命令合同未交付前，不臆造 obligation owner、新表或通用状态机；因此 T9
+    保持未完成。
 - [ ] **T10（P1，human: \~2d + 外部联调 / CC: \~4h）** — cutover — 执行单 revision 冷启动与协议 GO
   - Surfaced by: Deployment / Test Review — 无滚动兼容；物理实机未预验收的风险必须由四方显式接受。
   - Files: deploy profile、acceptance/cutover docs、smoke scripts、目标工厂 workload envelope 与 `tests/load/`。

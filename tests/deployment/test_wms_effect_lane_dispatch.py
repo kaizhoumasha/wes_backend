@@ -56,6 +56,7 @@ def test_fulfillment_worker_deployment_consumes_only_the_public_fulfillment_queu
         fulfillment_command = str(services["celery-wms-fulfillment"]["command"])
         general_command = str(services["celery"]["command"])
         assert "--queues=wms-fulfillment" in fulfillment_command
+        assert "--concurrency=1" in fulfillment_command
         assert "wms-fulfillment" not in general_command
 
 
@@ -86,12 +87,15 @@ def test_all_compose_profiles_and_test_deploy_pipeline_define_both_worker_roles(
         assert fulfillment["extends"]["service"] == "celery"
         assert fulfillment["environment"] == {
             "CELERY_WORKER_QUEUES": "wms-fulfillment",
+            "CELERY_WORKER_CONCURRENCY": "1",
             "WMS_PROVIDER_PROCESS_ROLE": "fulfillment",
         }
 
     test_entrypoint = (REPO_ROOT / "docker/test/celery.entrypoint.sh").read_text(encoding="utf-8")
     assert "${CELERY_WORKER_QUEUES:?CELERY_WORKER_QUEUES is required}" in test_entrypoint
+    assert "${CELERY_WORKER_CONCURRENCY:?CELERY_WORKER_CONCURRENCY is required}" in test_entrypoint
     assert "${WMS_PROVIDER_PROCESS_ROLE:?WMS_PROVIDER_PROCESS_ROLE is required}" in test_entrypoint
+    assert '--concurrency="${CELERY_WORKER_CONCURRENCY}"' in test_entrypoint
     assert '--queues="${CELERY_WORKER_QUEUES}"' in test_entrypoint
 
     pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
@@ -100,12 +104,71 @@ def test_all_compose_profiles_and_test_deploy_pipeline_define_both_worker_roles(
     assert "logs --tail=150 api celery celery-wms-fulfillment frontend nginx" in pipeline
 
 
-@pytest.mark.parametrize("missing_variable", ["CELERY_WORKER_QUEUES", "WMS_PROVIDER_PROCESS_ROLE"])
+def test_fulfillment_worker_has_no_replica_override_in_any_compose_contract() -> None:
+    import yaml
+
+    class _ComposeSafeLoader(yaml.SafeLoader):
+        pass
+
+    _ComposeSafeLoader.add_constructor(
+        "!override",
+        lambda loader, node: loader.construct_sequence(node, deep=True),
+    )
+    for compose_name in ("docker-compose.yml", "docker-compose.deploy.yml", "docker-compose.test-deploy.yml"):
+        compose_path = REPO_ROOT / compose_name
+        compose_text = compose_path.read_text(encoding="utf-8")
+        compose = yaml.load(
+            compose_text,
+            Loader=_ComposeSafeLoader,  # noqa: S506 -- 仅扩展 SafeLoader 解析 Compose 的 !override。
+        )
+
+        assert "WMS_FULFILLMENT_CELERY_REPLICAS" not in compose_text
+        assert compose["services"]["celery-wms-fulfillment"]["deploy"]["replicas"] == 1
+
+
+def test_fulfillment_worker_startup_rejects_non_single_celery_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.celery_app import app as celery_app_module
+
+    monkeypatch.setattr(
+        celery_app_module.celery_async_runtime,
+        "_process_role",
+        WmsProviderProcessRole.FULFILLMENT,
+    )
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
+    monkeypatch.setenv("CELERY_WORKER_CONCURRENCY", "2")
+
+    with pytest.raises(ValueError, match="concurrency=1"):
+        celery_app_module._validate_worker_role_queue_contract()
+
+
+def test_fulfillment_worker_startup_accepts_single_celery_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.celery_app import app as celery_app_module
+
+    monkeypatch.setattr(
+        celery_app_module.celery_async_runtime,
+        "_process_role",
+        WmsProviderProcessRole.FULFILLMENT,
+    )
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
+    monkeypatch.setenv("CELERY_WORKER_CONCURRENCY", "1")
+
+    celery_app_module._validate_worker_role_queue_contract()
+
+
+@pytest.mark.parametrize(
+    "missing_variable",
+    ["CELERY_WORKER_QUEUES", "CELERY_WORKER_CONCURRENCY", "WMS_PROVIDER_PROCESS_ROLE"],
+)
 def test_test_worker_entrypoint_fails_closed_without_explicit_worker_config(missing_variable: str) -> None:
     import subprocess
 
     environment = os.environ.copy()
     environment["CELERY_WORKER_QUEUES"] = "default,celery,device"
+    environment["CELERY_WORKER_CONCURRENCY"] = "4"
     environment["WMS_PROVIDER_PROCESS_ROLE"] = "wes"
     environment.pop(missing_variable)
     environment["PATH"] = "/bin:/usr/bin"

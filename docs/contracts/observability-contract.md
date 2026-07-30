@@ -25,6 +25,12 @@
 | `northbound.operation.confirm_inbound` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
 | `northbound.operation.notify_pkg_binding` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
 | `northbound.operation.full_box_exchange` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
+| `wms_effect.submit` | span + metric + log event | operation、submit outcome、latency、retry count、dispatch key hash |
+| `wms_effect.status_query` | span + metric + log event | operation、五态、latency、retry count、age、dispatch key hash |
+| `wms_effect.status_backlog` | metric + log event | backlog、max age、claimed count、batch duration |
+| `wms_effect.status_backpressure` | span + metric + log event | operation、backpressure outcome、Retry-After、actual backoff、dispatch key hash；已知真实熔断状态可选 |
+| `wms_effect.recovery` | span + metric + log event | operation、recovery outcome、age、dispatch key hash |
+| `wms_effect.callback_hint` | span + metric + log event | callback outcome；已校验提示可附 operation 与 dispatch key hash |
 
 ## Exact Allow-list 与 Metric Projection
 
@@ -36,38 +42,41 @@
 - 每个部署只有一个 active `provider_profile_identity`；它是部署级低基数常量，不能由 payload 选择，也不能建立
   profile catalog/router/fallback。`outcome` 仅允许
   `SUCCESS`、`BUSINESS_REJECT`、`TECHNICAL_FAILURE`、`CONTRACT_FAILURE`、`UNKNOWN`、`RECONCILING`。
-- 若目标 WMS EFFECT 口径后续映射为新 signal，只允许额外使用低基数 `state`、`reason_code` 与
-  `breaker_state` 标签；`state` 仅为五态，
-  `reason_code` 仅为合同登记的稳定码，breaker 仅为 OPEN/HALF_OPEN/CLOSED。Submit outcome 仅为
+- WMS EFFECT signal 只允许额外使用低基数 `state` 与 `reason_code` 标签；`state` 仅为五态，
+  `reason_code` 仅为合同登记的稳定码。`breaker_state` 只允许作为 span/log 的可选诊断属性，
+  且必须来自真实熔断器状态，不能为补齐合同而臆造；当前仅 `CIRCUIT_OPEN` 发射 `OPEN`。Submit outcome 仅为
   `ACCEPTED/AMBIGUOUS/NOT_SENT`；callback hint outcome 仅为
   `RECEIVED/REJECTED/DUPLICATE/QUERY_TRIGGERED/ENQUEUE_DEGRADED`。
-- 通用北向 operation 数值只包含 `latency_ms`、`sample_count`、`unknown_count`；目标映射可增加
-  `retry_count`、`age_ms`、`backlog_count`、`max_age_ms`、`claimed_count`、`duration_ms`、
+- 通用北向 operation 数值只包含 `latency_ms`、`sample_count`、`unknown_count`；WMS EFFECT signal 可增加
+  `retry_count`、`age_ms`、`backlog_count`、`max_overdue_age_ms`、`max_confirmation_age_ms`、
+  `claimed_count`、`duration_ms`、
   `retry_after_ms`、`actual_backoff_ms`。所有值必须非负有限；不得携带 bucket、关联键或业务 ID。
 
-## WMS EFFECT 目标采集口径
+## WMS EFFECT 可执行采集口径
 
-以下名称是联调报告与切换门禁使用的目标口径，尚未成为当前 `RuntimeObservabilityRegistry` 的可执行 signal；
-不得把本节解释为生产代码已经发射这些 metric、只读 API 已返回这些字段或告警已配置。统一运营看板和新增生产
-instrumentation 不在本 Task 范围。
+以下六类名称已进入 `RuntimeObservabilityRegistry` allow-list，并由 submit、status worker、reconciliation 与
+callback hint 边界真实发射。沿用既有 `RuntimeOpenTelemetryBridge` 和
+`northbound-operation-day1` 运营面，不建设第二套看板或 exporter 框架。
 
-| 目标口径 | 期望事实 | 当前可执行真源 |
+| Signal | 观测事实 | 发射边界 |
 | --- | --- | --- |
-| `wms_effect.submit` | accepted/ambiguous/not-sent 数量与延迟 | DispatchAttempt、submit bridge 分类、authored `northbound.operation.*` |
-| `wms_effect.status_query` | 五态数量、延迟、重试次数和 age | RuntimeIntentLog 状态确认字段、status worker 结果 |
-| `wms_effect.status_backlog` | backlog、最大 age、单批领取量/耗时 | status claim repository/worker 批次结果 |
-| `wms_effect.status_backpressure` | 429、`Retry-After`、circuit-open、实际退避 | query evidence、status adapter 结果、既有 breaker |
-| `wms_effect.recovery` | 超宽限期 `NOT_FOUND`、耗尽、幂等冲突、open reconciliation | RuntimeIntentLog + ReconciliationCase |
-| `wms_effect.callback_hint` | 接收、拒绝、重复、触发查询、enqueue 降级 | callback ingress、到期调度、enqueue/scanner 结果 |
+| `wms_effect.submit` | accepted/ambiguous/not-sent 数量与延迟 | Outbox、Attempt、Reducer evidence 成功提交后 |
+| `wms_effect.status_query` | 五态数量、延迟、重试次数和 age | status worker 获得并校验 typed snapshot 后 |
+| `wms_effect.status_backlog` | backlog、最大逾期 age、最大确认 age、单批领取量/耗时 | status scanner 单批 claim/执行完成后 |
+| `wms_effect.status_backpressure` | 429、`Retry-After`、circuit-open、实际退避 | status query failure 归约并计算下次到期时间后 |
+| `wms_effect.recovery` | 超宽限期 `NOT_FOUND`、耗尽、幂等冲突、open reconciliation | recovery/reconciliation 事务提交后 |
+| `wms_effect.callback_hint` | 接收、拒绝、重复、触发查询、enqueue 降级 | typed callback router 与持久化 hint 调度边界 |
 
-- 目标采集必须记录 submit accepted/ambiguous/not-sent 数量与延迟；三类结果只说明 WES 观察到的传输边界，不解释 WMS
+- Submit 记录 accepted/ambiguous/not-sent 数量与延迟；三类结果只说明 WES 观察到的传输边界，不解释 WMS
   内部是否排队、执行或补偿。
-- 目标采集必须记录 status query 五态数量、延迟、重试次数和 age；backlog 记录数量、最大 age、单批领取量和批次耗时。
-- 目标采集对 429 记录合法 `Retry-After` 与实际退避时长；timeout/5xx/circuit-open 记录闭集 outcome、breaker 状态和实际
-  backoff，不保存任意远端 body。
-- 目标恢复/对账口径包含 `NOT_FOUND` 超宽限期、查询耗尽、幂等冲突和 open reconciliation 数量。
-- 目标 callback hint 口径包含接收、拒绝、重复、触发查询和 enqueue 降级数量。Callback 不记录或推动业务终态。
+- Status query 记录五态数量、延迟、重试次数和 age；backlog 记录数量、最大 age、单批领取量和批次耗时。
+- 429 记录合法 `Retry-After` 与实际退避时长；timeout/5xx 记录闭集 outcome 和实际 backoff；
+  circuit-open 仅在已知真实状态时附带 breaker 状态，不保存任意远端 body。
+- 恢复/对账口径包含 `NOT_FOUND` 超宽限期、查询耗尽、幂等冲突和 open reconciliation 数量。
+- Callback hint 口径包含接收、拒绝、重复、触发查询和 enqueue 降级数量。Callback 不记录或推动业务终态。
 - 指标和日志只陈述 WES 可观察的 submit/status/callback 交互事实，禁止推断 WMS 内部状态机、队列或根因。
+- `dispatch_key` 只能由统一 helper 投影为 16 位 SHA-256 摘要，且该摘要只进入 span/log，不进入 metric；原值、
+  idempotency key、业务 payload 和远端响应体禁止进入观测属性。
 
 ## 北向 Operation SLO 与 Trace
 
@@ -76,9 +85,10 @@ instrumentation 不在本 Task 范围。
   [`northbound-operation-slo-catalog.md`](../operations/northbound-operation-slo-catalog.md)。
 - 当前可执行 Trace stage 闭集为：
   `PLUGIN_EXECUTION → QUERY_EVIDENCE → POLICY_DECISION → RUNTIME_INTENT_LOG → DISPATCH_ATTEMPT → CALLBACK → RECONCILIATION`。
-  Status query/callback hint 的目标采集映射不得擅自发送未登记的 `STATUS_QUERY/CALLBACK_HINT` stage；若未来新增，
+  Status query/callback hint 的专用 signal 不得擅自发送未登记的 `STATUS_QUERY/CALLBACK_HINT` stage；若未来新增，
   必须先修改 `NorthboundTraceStage` 与 registry 合同测试。
-- QUERY 在 typed evidence 落库后发射；EFFECT 在 typed dispatch result 固化后发射。后续 callback/reconciliation 复用既有稳定 correlation/evidence 锚点，禁止从 payload 推导追踪或权限。
+- QUERY 在 typed evidence 落库后发射；EFFECT submit 在 Outbox、Attempt、Reducer evidence 成功提交后发射。
+  后续 callback/reconciliation 复用既有稳定 correlation/evidence 锚点，禁止从 payload 推导追踪或权限。
 
 ## Attribute Rules
 
@@ -117,11 +127,11 @@ instrumentation 不在本 Task 范围。
 - WMS 成功响应后的本地 evidence/breaker 留痕失败使用 `wms_evidence.persistence_failure`；该事件必须保留原始 `trace_id` 和 `evidence_key`，供系统诊断而非业务 HOLD。
 - `northbound.dispatch.health` 在 claim 扫描事务完成后发射平台级队列/lease/rate-limit 摘要；观测失败不得改变公平调度或 lease/fencing 决策。
 - 北向 QUERY transport 与 EXTERNAL_HTTP outbox delivery 分别在 typed evidence / typed result 固化后发射 operation signal；观测失败不得改变 delivery、retry、UNKNOWN 或 reconciliation 语义。
-- 当前 WMS EFFECT 只能从既有 authored operation signal、DispatchAttempt、RuntimeIntentLog 状态确认字段、
-  callback ingress/调度结果和 ReconciliationCase 组合生成联调证据；在新增 signal 进入 registry allow-list 并有
-  测试前，禁止调用或宣称已发射 `wms_effect.*`。
-- Callback best-effort enqueue 失败仍由持久化到期调度和 scanner 接管；当前须从任务结果/日志形成脱敏联调证据，
-  不能声称已有 `wms_effect.callback_hint{outcome=ENQUEUE_DEGRADED}` metric。
+- WMS EFFECT 六类 signal 统一经薄 projection/helper 补齐静态 operation、闭集 outcome/state、数值测量与
+  dispatch key hash；helper 或 exporter 故障只写脱敏 warning，不改变 transport result、callback ACK、status
+  事务、重试到期时间或 reconciliation 结果。
+- Callback best-effort enqueue 失败发射
+  `wms_effect.callback_hint{outcome=ENQUEUE_DEGRADED}`；持久化到期调度和 scanner 仍是恢复真源，指标不得替代恢复机制。
 - 凭据 Provider 统一由审计 wrapper 包裹，只允许发射闭集 `provider_kind/outcome`；凭据 ref、secret material、header 与异常文本不得进入日志或指标。
 - 具体 backend（Jaeger / Tempo / SkyWalking 等）必须通过 `RuntimeOpenTelemetryBridge` 后方的 HTTP adapter / collector endpoint 挂载，不能新增临时字段替代稳定 attributes。
 

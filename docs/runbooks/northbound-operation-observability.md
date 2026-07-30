@@ -5,23 +5,33 @@
 不要用 tenant、业务单号、payload、trace ID 或凭据引用作为指标标签。以下判断只依据 WES 可见的 HTTP
 响应、deadline、账本、租约和调度事实，不推断 WMS 内部队列、阶段、失败原因或补偿步骤。
 
-本 Runbook 同时列出现有操作面与 Task 9 切换前目标。目标口径不是已存在的生产指标：
-`wms_effect.*` 尚未注册，submit/status/callback 细分尚未由当前只读 API 返回，status backlog/enqueue degraded
-新告警也尚未配置。操作者必须先从当前 authored `northbound.operation.*`、DispatchAttempt、
-RuntimeIntentLog、worker/adapter 结果、callback ingress 和 ReconciliationCase 形成脱敏联调证据；没有映射
-evidence 时不得把下列目标步骤用于 cutover GO。
+六类 `wms_effect.*` 已注册并在 submit、status worker、reconciliation 与 callback hint 边界真实发射。
+查询沿用现有 OpenTelemetry backend 与 `northbound-operation-day1`，按 signal name、静态 operation identity、
+闭集 outcome/state 和 policy version 聚合；不得把 dispatch key hash、trace 或业务键提升为 metric label，也不建设
+第二套看板框架。
 
 ## EFFECT 提交与状态总览
 
-1. 从 DispatchAttempt 与 submit bridge 结果复算 accepted/ambiguous/not-sent 数量、延迟；`not-sent` 才能继续
+1. 查询 `wms_effect.submit` 的 accepted/ambiguous/not-sent 数量、p95 延迟和 retry count；`not-sent` 才能继续
    普通 transport retry，accepted/ambiguous 必须进入 status query。
-2. 从 RuntimeIntentLog 和 status worker 结果按 operation 复算五态数量、延迟、重试次数和 age。只有规范化状态快照能推进业务终态；
+2. 查询 `wms_effect.status_query`，按 operation/state 聚合五态数量、p95 延迟、retry count 和 age。只有规范化状态快照能推进业务终态；
    SystemOutbox/DispatchAttempt 仍只描述 transport。
-3. 从 claim/worker、query evidence 和 breaker 结果复算 status query backlog 数量、最大 age、单批领取量/耗时、
+3. 查询 `wms_effect.status_backlog` 与 `wms_effect.status_backpressure` 的 backlog 数量、最大 age、单批领取量/耗时、
    429、`Retry-After`、circuit-open 和实际退避时长。禁止在限流窗口手工高频重放。
-4. 从 RuntimeIntentLog/ReconciliationCase 复算 `NOT_FOUND` 超过宽限期、查询耗尽、幂等冲突和 open
-   reconciliation 数量；不能把
+4. 查询 `wms_effect.recovery` 的 `NOT_FOUND_GRACE_EXHAUSTED`、`QUERY_BUDGET_EXHAUSTED`、
+   `IDEMPOTENCY_CONFLICT`、`RECONCILIATION_OPENED` 和 open reconciliation age；不能把
    `NOT_FOUND` 直接解释为 WMS 未处理。
+
+## 阈值、动作与恢复判据
+
+| Signal / 条件 | 阈值 | 处置 | 恢复判据 |
+| --- | --- | --- | --- |
+| `wms_effect.submit` 非 `ACCEPTED` | 5 分钟窗口触发现有 operation SLO `14.4` fast burn，或 p95 超过 catalog 对应阈值 | 暂停对应 operation 新提交，保留 status/reconciliation worker | 连续一个 SLO 快窗口低于阈值，且既有 accepted/ambiguous 均可由 status/reconciliation 解释 |
+| `wms_effect.status_backlog.max_overdue_age_ms` | 连续两个扫描周期大于 `2 × WES_EFFECT_STATUS_SCAN_PERIOD_SECONDS × 1000` 为 warning；持续达到 `WES_EFFECT_STATUS_SCAN_BATCH_BUDGET_SECONDS × 1000` 为 stop-admission | 先检查 scanner/lease，再暂停新 EFFECT；禁止通过扩大并发绕过 WMS 限流 | 连续三个扫描周期低于 `WES_EFFECT_STATUS_SCAN_PERIOD_SECONDS × 1000`，且无超预算 intent |
+| `wms_effect.status_backlog.max_confirmation_age_ms` | 达到 `WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS × 800` 为 warning；达到 `WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS × 1000` 为 stop-admission | 暂停新 EFFECT，保留 status/reconciliation worker，检查 WMS 确认链路 | 连续三个扫描周期低于 warning 阈值，且无超预算 intent 或未关闭 reconciliation |
+| `wms_effect.status_backpressure` | 任一 `RATE_LIMITED`/`CIRCUIT_OPEN` 进入诊断；连续三个扫描周期仍出现或 backlog 达 stop-admission 阈值则暂停准入 | 遵守 `Retry-After` 和 actual backoff，保留 status worker；不手工抢跑 | 连续三个扫描周期无 `RATE_LIMITED`/`CIRCUIT_OPEN`，且 backlog age 持续下降 |
+| `wms_effect.recovery` | 任一 recovery outcome 必须留痕；open reconciliation age 达 900 秒必须升级人工处置 | 按 UNKNOWN/对账步骤核对 typed evidence，禁止换幂等键重提 | case 已由 typed resolution 收口，且 RuntimeIntentLog/SystemOutbox/attempt ledger 可解释 |
+| `wms_effect.callback_hint{outcome=ENQUEUE_DEGRADED}` | 任一事件触发 broker/scanner 检查 | 不改变 callback ACK；确认持久化到期行仍在并由 scanner 接管 | 连续两个扫描周期无新增降级，且对应到期行已被 claim 或已终态 |
 
 <a id="pause-resume"></a>
 ## 暂停与恢复

@@ -125,6 +125,10 @@ validate_complete_scale_targets() {
         case "$scale_target" in
             api=*) has_api=true ;;
             celery=*) has_celery=true ;;
+            celery-wms-fulfillment=*)
+                print_error "celery-wms-fulfillment 固定为单副本，禁止 scale"
+                return 1
+                ;;
         esac
     done
 

@@ -320,6 +320,20 @@ def test_capacity_plan_uses_only_actual_docker_process_and_pool_constants(
     assert calculate_capacity(plan, max_connections=100).application_connections == 36
 
 
+def test_capacity_plan_fixes_fulfillment_worker_to_one_replica_and_rejects_removed_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WMS_FULFILLMENT_CELERY_REPLICAS", raising=False)
+
+    plan = build_capacity_plan(services={"celery-wms-fulfillment"}, scales={})
+
+    assert plan.celery_replicas == 1
+
+    monkeypatch.setenv("WMS_FULFILLMENT_CELERY_REPLICAS", "2")
+    with pytest.raises(CapacityViolation, match=r"WMS_FULFILLMENT_CELERY_REPLICAS.*removed"):
+        build_capacity_plan(services={"celery-wms-fulfillment"}, scales={})
+
+
 def test_capacity_plan_rejects_reserve_below_ten() -> None:
     with pytest.raises(CapacityViolation, match=r"reserve.*10"):
         CapacityPlan(
@@ -440,3 +454,18 @@ def test_shell_scale_validation_rejects_each_incomplete_target(arguments: list[s
 
     assert completed.returncode != 0
     assert "api=<n> celery=<n>" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["api=1", "celery=4", "celery-wms-fulfillment=2"],
+        ["--scale=api=1", "--scale=celery=4", "--scale=celery-wms-fulfillment=2"],
+        ["--scale", "api=1", "--scale", "celery=4", "--scale", "celery-wms-fulfillment=2"],
+    ],
+)
+def test_shell_scale_validation_rejects_fulfillment_replica_target(arguments: list[str]) -> None:
+    completed = _run_shell_scale_validation(arguments)
+
+    assert completed.returncode != 0
+    assert "celery-wms-fulfillment" in completed.stdout

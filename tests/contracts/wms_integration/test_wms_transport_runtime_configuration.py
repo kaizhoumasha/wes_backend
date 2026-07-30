@@ -40,7 +40,14 @@ def test_wms_effect_status_runtime_configuration_exposes_all_frozen_budgets() ->
     assert configured.WES_EFFECT_NOT_FOUND_GRACE_SECONDS > 0
     assert configured.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS > 0
     assert configured.WES_EFFECT_STATUS_SCAN_BATCH_SIZE > 0
-    assert configured.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS >= configured.WMS_EFFECT_STATUS_TIMEOUT_SECONDS
+    assert 0 < configured.WES_EFFECT_STATUS_MAX_IN_FLIGHT <= configured.DATABASE_POOL_SIZE
+    assert configured.WES_EFFECT_STATUS_SCAN_PERIOD_SECONDS > 0
+    assert configured.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS > configured.WES_EFFECT_STATUS_SCAN_BATCH_BUDGET_SECONDS
+    assert (
+        configured.WES_EFFECT_STATUS_TASK_HARD_TIME_LIMIT_SECONDS
+        > configured.WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS
+        > configured.WES_EFFECT_STATUS_SCAN_BATCH_BUDGET_SECONDS
+    )
     assert configured.WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS > 0
     assert 0 < configured.WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS <= configured.WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS
 
@@ -105,7 +112,9 @@ def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_
     ("overrides", "message"),
     [
         ({"WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 0}, "WMS_EFFECT_STATUS_TIMEOUT_SECONDS"),
-        ({"WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS": 1, "WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 2}, "lease"),
+        ({"WES_EFFECT_STATUS_MAX_IN_FLIGHT": 2}, "session"),
+        ({"WES_EFFECT_STATUS_SCAN_BATCH_SIZE": 50}, "QPS"),
+        ({"WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS": 15}, "lease"),
         (
             {
                 "WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS": 9,

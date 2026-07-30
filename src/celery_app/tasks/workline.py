@@ -24,6 +24,7 @@ from src.celery_app.async_runtime import run_async
 from src.celery_app.constants import (
     DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
 )
+from src.core.conf import settings
 from src.core.logger import logger
 from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.database.db import get_db_context
@@ -509,13 +510,11 @@ def check_wms_effect_status(dispatch_key: str) -> dict[str, object]:
 @celery_app.task(
     name="src.celery_app.tasks.workline.scan_wms_effect_status_batch",
     base=celery_app.Task,
+    soft_time_limit=settings.WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=settings.WES_EFFECT_STATUS_TASK_HARD_TIME_LIMIT_SECONDS,
 )
-def scan_wms_effect_status_batch(limit: int | None = None) -> list[dict[str, object]]:
-    """小批量顺序确认到期 WMS EFFECT，Beat 只负责兜底扫描。"""
-
-    from src.core.conf import settings
-
-    batch_limit = int(limit or settings.WES_EFFECT_STATUS_SCAN_BATCH_SIZE)
+def scan_wms_effect_status_batch() -> list[dict[str, object]]:
+    """小批量有界并发确认到期 WMS EFFECT，Beat 只负责兜底扫描。"""
 
     async def _scan() -> list[dict[str, object]]:
         from src.app.runtime.orchestration.services.wms_effect_status_service import (
@@ -523,7 +522,7 @@ def scan_wms_effect_status_batch(limit: int | None = None) -> list[dict[str, obj
         )
 
         async with get_db_context() as db:
-            results = await wms_effect_status_service.check_due_batch(db, limit=batch_limit)
+            results = await wms_effect_status_service.check_due_batch(db)
             return [asdict(item) for item in results]
 
     return cast("list[dict[str, object]]", run_async(_scan))

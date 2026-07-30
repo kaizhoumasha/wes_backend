@@ -33,6 +33,7 @@ def _observed_external_http_result(
 
     from src.app.runtime.orchestration.operation_observability import emit_northbound_operation_observation
 
+    latency_ms = (time.perf_counter() - started_at) * 1_000
     if result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
         outcome = "UNKNOWN"
     elif result.outcome is ExternalHttpTransportOutcome.NOT_SENT:
@@ -50,7 +51,7 @@ def _observed_external_http_result(
             operation_identity=str(getattr(outbox, "operation_identity", "")),
             provider_profile_identity=str(getattr(outbox, "provider_profile_identity", "")),
             outcome=outcome,
-            latency_ms=(time.perf_counter() - started_at) * 1_000,
+            latency_ms=latency_ms,
             trace_id=str(trace_id),
             correlation_id=str(correlation_id),
             evidence_ref=evidence_ref,
@@ -58,6 +59,7 @@ def _observed_external_http_result(
         )
     except Exception as exc:  # pragma: no cover - 观测失败不改变 transport 结果
         logger.warning(f"EXTERNAL_HTTP observability emission failed: {type(exc).__name__}")
+
     return result
 
 

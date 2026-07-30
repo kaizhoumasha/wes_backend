@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import random
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,6 +18,7 @@ from src.app.runtime.orchestration.effect_state_contract import (
     generated_effect_source_event_id,
 )
 from src.app.runtime.orchestration.repositories.wms_effect_status_repository import (
+    WmsEffectStatusBacklogSnapshot,
     WmsEffectStatusClaim,
     WmsEffectStatusRepository,
     wms_effect_status_repository,
@@ -87,20 +90,17 @@ _FULFILLMENT_TERMINAL_NON_SUCCESS = "WMS_FULFILLMENT_TERMINAL_NON_SUCCESS"
 def _emit_status_hint_enqueue_failure(
     *,
     operation_identity: str,
-    dispatch_key_hash: str,
-    error_type: str,
+    dispatch_key: str,
 ) -> None:
-    """发射命名失败指标；观测失败不能反向改变 callback ACK。"""
+    """发射 enqueue 降级；观测失败不能反向改变 callback ACK。"""
 
-    from src.app.runtime.orchestration.observability import runtime_observability_registry
+    from src.app.runtime.orchestration.wms_effect_observability import emit_wms_effect_observation
 
-    _ = runtime_observability_registry.emit(
-        "wms_effect_status_hint.enqueue_failed",
-        {
-            "operation_identity": operation_identity,
-            "dispatch_key_hash": dispatch_key_hash,
-            "error_type": error_type,
-        },
+    _ = emit_wms_effect_observation(
+        "wms_effect.callback_hint",
+        operation_identity=operation_identity,
+        dispatch_key=dispatch_key,
+        attributes={"outcome": "ENQUEUE_DEGRADED"},
     )
 
 
@@ -145,6 +145,7 @@ class WmsEffectStatusService:
         random_source: Any | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
         domain_projector: Any | None = None,
+        db_context_factory: Any | None = None,
     ) -> None:
         self._repository = repository
         self._reducer = reducer
@@ -157,6 +158,7 @@ class WmsEffectStatusService:
         self._resubmit_dispatcher = resubmit_dispatcher or self._default_resubmit_dispatcher
         self._queue_gateway = queue_gateway
         self._domain_projector = domain_projector
+        self._db_context_factory = db_context_factory
 
     async def request_status_check_hint(
         self,
@@ -190,8 +192,7 @@ class WmsEffectStatusService:
             with suppress(Exception):
                 _emit_status_hint_enqueue_failure(
                     operation_identity=operation_identity,
-                    dispatch_key_hash=dispatch_key_hash,
-                    error_type=error_type,
+                    dispatch_key=dispatch_key,
                 )
             logger.warning(
                 "metric=wms_effect_status_hint_enqueue_failed_total "
@@ -229,57 +230,145 @@ class WmsEffectStatusService:
                 error=exc,
             )
         try:
-            port = self._port_factory_builder(binding)()
-            snapshot = await port.query_status(request)
+            snapshot = await self._query_status(claim=claim, binding=binding, request=request)
         except Exception as exc:
             return await self._record_query_failure(db, claim=claim, error=exc)
         return await self._apply_snapshot(db, claim=claim, snapshot=snapshot)
 
-    async def check_due_batch(self, db: Any, *, limit: int) -> tuple[WmsEffectStatusCheckResult, ...]:
-        results: list[WmsEffectStatusCheckResult] = []
-        # 每条记录只在其网络调用即将开始时 claim，避免前项 HTTP 占用后排记录的 lease。
-        for _ in range(max(0, limit)):
-            claims = await self._repository.claim_due_batch(
-                db,
-                now=self._now(),
-                lease_seconds=float(self._settings.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS),
-                limit=1,
+    async def check_due_batch(self, db: Any) -> tuple[WmsEffectStatusCheckResult, ...]:
+        batch_started_at = time.perf_counter()
+        scan_now = self._now()
+        backlog: WmsEffectStatusBacklogSnapshot | None = None
+        try:
+            backlog = await self._repository.get_due_backlog_snapshot(db, now=scan_now)
+        except Exception:
+            with suppress(Exception):
+                await db.rollback()
+        claims = await self._repository.claim_due_batch(
+            db,
+            now=scan_now,
+            lease_seconds=float(self._settings.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS),
+            limit=int(self._settings.WES_EFFECT_STATUS_SCAN_BATCH_SIZE),
+        )
+        if not claims:
+            self._emit_status_backlog(
+                backlog=backlog,
+                claimed_count=0,
+                duration_ms=(time.perf_counter() - batch_started_at) * 1_000,
             )
-            if not claims:
-                break
-            claim = claims[0]
-            await db.commit()
-            try:
-                binding = self._load_binding(claim)
-            except (TypeError, ValueError) as exc:
-                results.append(
-                    await self._record_contract_failure(
-                        db,
-                        claim=claim,
-                        reason_code="WMS_STATUS_BINDING_INVALID",
-                        error=exc,
+            return ()
+        await db.commit()
+
+        results: list[WmsEffectStatusCheckResult | None] = [None] * len(claims)
+        next_index = iter(enumerate(claims))
+        worker_count = min(int(self._settings.WES_EFFECT_STATUS_MAX_IN_FLIGHT), len(claims))
+
+        async def worker() -> None:
+            for index, claim in next_index:
+                try:
+                    async with self._open_db_context() as item_db:
+                        try:
+                            results[index] = await self._check_claim(item_db, claim=claim)
+                        except Exception:
+                            with suppress(Exception):
+                                await item_db.rollback()
+                            raise
+                except Exception:
+                    logger.exception(
+                        f"WMS EFFECT status batch item failed unexpectedly; dispatch_key={claim.intent.dispatch_key}"
                     )
-                )
-                continue
-            try:
-                request = self._build_request(claim)
-            except (TypeError, ValueError) as exc:
-                results.append(
-                    await self._record_contract_failure(
-                        db,
-                        claim=claim,
-                        reason_code="WMS_STATUS_REQUEST_INVALID",
-                        error=exc,
+                    # 不清除 lease；当前 worker 失去写回能力时，由 lease 到期后的 scanner 恢复。
+                    results[index] = WmsEffectStatusCheckResult(
+                        dispatch_key=claim.intent.dispatch_key,
+                        outcome="WORKER_FAILED",
                     )
-                )
-                continue
-            try:
-                snapshot = await self._port_factory_builder(binding)().query_status(request)
-            except Exception as exc:
-                results.append(await self._record_query_failure(db, claim=claim, error=exc))
-            else:
-                results.append(await self._apply_snapshot(db, claim=claim, snapshot=snapshot))
-        return tuple(results)
+
+        await asyncio.gather(*(worker() for _ in range(worker_count)))
+        completed = tuple(result for result in results if result is not None)
+        self._emit_status_backlog(
+            backlog=backlog,
+            claimed_count=len(claims),
+            duration_ms=(time.perf_counter() - batch_started_at) * 1_000,
+        )
+        return completed
+
+    def _open_db_context(self) -> Any:
+        if self._db_context_factory is not None:
+            return self._db_context_factory()
+        from src.database.db import get_db_context
+
+        return get_db_context()
+
+    async def _check_claim(self, db: Any, *, claim: WmsEffectStatusClaim) -> WmsEffectStatusCheckResult:
+        try:
+            binding = self._load_binding(claim)
+        except (TypeError, ValueError) as exc:
+            return await self._record_contract_failure(
+                db,
+                claim=claim,
+                reason_code="WMS_STATUS_BINDING_INVALID",
+                error=exc,
+            )
+        try:
+            request = self._build_request(claim)
+        except (TypeError, ValueError) as exc:
+            return await self._record_contract_failure(
+                db,
+                claim=claim,
+                reason_code="WMS_STATUS_REQUEST_INVALID",
+                error=exc,
+            )
+        try:
+            snapshot = await self._query_status(claim=claim, binding=binding, request=request)
+        except Exception as exc:
+            return await self._record_query_failure(db, claim=claim, error=exc)
+        return await self._apply_snapshot(db, claim=claim, snapshot=snapshot)
+
+    async def _query_status(
+        self,
+        *,
+        claim: WmsEffectStatusClaim,
+        binding: FrozenWmsEffectStatusBinding,
+        request: WmsEffectStatusRequest | WmsBatchEffectStatusRequest,
+    ) -> WmsEffectStatusSnapshot:
+        from src.app.runtime.orchestration.wms_effect_observability import emit_wms_effect_observation
+
+        started_at = time.perf_counter()
+        snapshot = await self._port_factory_builder(binding)().query_status(request)
+        _ = emit_wms_effect_observation(
+            "wms_effect.status_query",
+            operation_identity=claim.outbox.operation_identity,
+            dispatch_key=claim.intent.dispatch_key,
+            attributes={
+                "state": snapshot.state.value,
+                "latency_ms": (time.perf_counter() - started_at) * 1_000,
+                "retry_count": max(0, int(claim.intent.status_check_count or 0) - 1),
+                "age_ms": self._confirmation_age_ms(claim.intent),
+            },
+        )
+        return snapshot
+
+    @staticmethod
+    def _emit_status_backlog(
+        *,
+        backlog: WmsEffectStatusBacklogSnapshot | None,
+        claimed_count: int,
+        duration_ms: float,
+    ) -> None:
+        if backlog is None:
+            return
+        from src.app.runtime.orchestration.wms_effect_observability import emit_wms_effect_observation
+
+        _ = emit_wms_effect_observation(
+            "wms_effect.status_backlog",
+            attributes={
+                "backlog_count": backlog.backlog_count,
+                "max_overdue_age_ms": backlog.max_overdue_age_ms,
+                "max_confirmation_age_ms": backlog.max_confirmation_age_ms,
+                "claimed_count": claimed_count,
+                "duration_ms": duration_ms,
+            },
+        )
 
     def _default_port_factory_builder(self, binding: FrozenWmsEffectStatusBinding) -> Any:
         # 延迟加载 transport factory，避免 wms_integration adapters
@@ -803,6 +892,7 @@ class WmsEffectStatusService:
                 )
             # 崩溃时宁可留下 count=1，也不能在下一次 delivery 再发第二次。
             await db.commit()
+            self._emit_recovery(claim, outcome="NOT_FOUND_GRACE_EXHAUSTED")
             try:
                 result = await self._resubmit_dispatcher(claim)
             except Exception as exc:
@@ -887,7 +977,55 @@ class WmsEffectStatusService:
             status_check_after=next_check,
         )
         await db.commit()
+        self._emit_status_backpressure(
+            current_claim,
+            reason_code=reason_code if isinstance(reason_code, str) else None,
+            retry_after_seconds=retry_after_seconds,
+            next_check=next_check,
+        )
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="RETRY_SCHEDULED")
+
+    def _emit_status_backpressure(
+        self,
+        claim: WmsEffectStatusClaim,
+        *,
+        reason_code: str | None,
+        retry_after_seconds: object,
+        next_check: datetime,
+    ) -> None:
+        from src.app.runtime.orchestration.wms_effect_observability import emit_wms_effect_observation
+
+        outcome = (
+            "RATE_LIMITED"
+            if reason_code == "WMS_RATE_LIMITED"
+            else "CIRCUIT_OPEN"
+            if reason_code == "WMS_CIRCUIT_OPEN"
+            else "TIMEOUT"
+            if reason_code == "WMS_PROVIDER_TIMEOUT"
+            else "RETRYABLE_FAILURE"
+        )
+        retry_after_ms = (
+            float(retry_after_seconds) * 1_000
+            if isinstance(retry_after_seconds, (int, float)) and retry_after_seconds >= 0
+            else 0.0
+        )
+        actual_backoff_ms = max(
+            0.0,
+            (self._as_db_utc(next_check) - self._as_db_utc(self._now())).total_seconds() * 1_000,
+        )
+        attributes: dict[str, object] = {
+            "outcome": outcome,
+            "retry_after_ms": retry_after_ms,
+            "actual_backoff_ms": actual_backoff_ms,
+        }
+        if outcome == "CIRCUIT_OPEN":
+            attributes["breaker_state"] = "OPEN"
+        _ = emit_wms_effect_observation(
+            "wms_effect.status_backpressure",
+            operation_identity=claim.outbox.operation_identity,
+            dispatch_key=claim.intent.dispatch_key,
+            attributes=attributes,
+        )
 
     async def _record_contract_failure(
         self,
@@ -1127,7 +1265,25 @@ class WmsEffectStatusService:
             )
         _ = await self._repository.release_claim(db, claim=claim, status_check_after=None)
         await db.commit()
+        self._emit_recovery(claim, outcome="RECONCILIATION_OPENED")
+        if reason_code == _CONFIRMATION_BUDGET_EXHAUSTED:
+            self._emit_recovery(claim, outcome="QUERY_BUDGET_EXHAUSTED")
+        elif "IDEMPOTENCY_CONFLICT" in reason_code:
+            self._emit_recovery(claim, outcome="IDEMPOTENCY_CONFLICT")
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="RECONCILING")
+
+    def _emit_recovery(self, claim: WmsEffectStatusClaim, *, outcome: str) -> None:
+        from src.app.runtime.orchestration.wms_effect_observability import emit_wms_effect_observation
+
+        _ = emit_wms_effect_observation(
+            "wms_effect.recovery",
+            operation_identity=claim.outbox.operation_identity,
+            dispatch_key=claim.intent.dispatch_key,
+            attributes={
+                "outcome": outcome,
+                "age_ms": self._confirmation_age_ms(claim.intent),
+            },
+        )
 
     async def _open_confirmation_budget_reconciliation(
         self,
@@ -1210,6 +1366,11 @@ class WmsEffectStatusService:
             "max_confirmation_age_seconds": float(self._settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS),
             "deadline": deadline.isoformat(),
         }
+
+    def _confirmation_age_ms(self, intent: Any) -> float:
+        current = self._as_db_utc(self._now())
+        started = self._as_db_utc(getattr(intent, "status_check_started_at", None) or current)
+        return max(0.0, (current - started).total_seconds() * 1_000)
 
     @staticmethod
     def _as_db_utc(value: datetime) -> datetime:

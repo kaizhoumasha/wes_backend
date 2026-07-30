@@ -132,6 +132,55 @@ async def test_generic_hint_routes_only_frozen_correlation_to_status_service() -
 
 
 @pytest.mark.asyncio
+async def test_hint_router_emits_received_and_query_triggered_observations(monkeypatch) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    status_service = _StatusService()
+    router = WmsTypedEffectCallbackRouter(status_service=status_service)
+    emissions: list[dict[str, Any]] = []
+
+    def record(_name: str, **kwargs: Any) -> None:
+        emissions.append({"name": _name, **kwargs})
+
+    monkeypatch.setattr(wms_effect_observability, "emit_wms_effect_observation", record)
+
+    handled = await router.route(
+        SimpleNamespace(),
+        callback_type="WMS_EFFECT_STATUS_HINT",
+        payload=_hint_payload(),
+    )
+
+    assert handled is True
+    assert [emission["attributes"]["outcome"] for emission in emissions] == ["RECEIVED", "QUERY_TRIGGERED"]
+    assert {emission["name"] for emission in emissions} == {"wms_effect.callback_hint"}
+    assert {emission["dispatch_key"] for emission in emissions} == {"rack-supply-001"}
+
+
+@pytest.mark.asyncio
+async def test_hint_router_emits_rejected_observation_for_unknown_operation(monkeypatch) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    status_service = _StatusService()
+    router = WmsTypedEffectCallbackRouter(status_service=status_service)
+    emissions: list[dict[str, Any]] = []
+
+    def record(_name: str, **kwargs: Any) -> None:
+        emissions.append({"name": _name, **kwargs})
+
+    monkeypatch.setattr(wms_effect_observability, "emit_wms_effect_observation", record)
+
+    with pytest.raises(ValueError, match="WMS_EFFECT_STATUS_HINT_OPERATION_UNKNOWN"):
+        await router.route(
+            SimpleNamespace(),
+            callback_type="WMS_EFFECT_STATUS_HINT",
+            payload=_hint_payload(operation_identity="wms.inventory.unknown@v1"),
+        )
+
+    assert [emission["attributes"]["outcome"] for emission in emissions] == ["REJECTED"]
+    assert status_service.calls == []
+
+
+@pytest.mark.asyncio
 async def test_hint_router_accepts_only_registry_async_effects() -> None:
     from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 
@@ -204,6 +253,29 @@ async def test_unknown_or_mismatched_correlation_is_propagated_as_named_failure(
             callback_type="WMS_EFFECT_STATUS_HINT",
             payload=_hint_payload(),
         )
+
+
+@pytest.mark.asyncio
+async def test_correlation_rejection_is_observed_without_changing_named_failure(monkeypatch) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    status_service = _StatusService(error=ValueError("WMS_EFFECT_STATUS_HINT_CORRELATION_MISMATCH"))
+    router = WmsTypedEffectCallbackRouter(status_service=status_service)
+    outcomes: list[str] = []
+
+    def record(_name: str, **kwargs: Any) -> None:
+        outcomes.append(str(kwargs["attributes"]["outcome"]))
+
+    monkeypatch.setattr(wms_effect_observability, "emit_wms_effect_observation", record)
+
+    with pytest.raises(ValueError, match="WMS_EFFECT_STATUS_HINT_CORRELATION_MISMATCH"):
+        await router.route(
+            SimpleNamespace(),
+            callback_type="WMS_EFFECT_STATUS_HINT",
+            payload=_hint_payload(),
+        )
+
+    assert outcomes == ["RECEIVED", "REJECTED"]
 
 
 @pytest.mark.asyncio

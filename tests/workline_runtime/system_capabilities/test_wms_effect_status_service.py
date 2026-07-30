@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from types import SimpleNamespace
@@ -64,12 +66,19 @@ def _settings() -> SimpleNamespace:
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
         WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS=10.0,
+        WES_EFFECT_STATUS_SCAN_BATCH_SIZE=3,
+        WES_EFFECT_STATUS_MAX_IN_FLIGHT=2,
         WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS=2.0,
         WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS=30.0,
         WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS=3,
         WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS=300.0,
         WES_EFFECT_NOT_FOUND_GRACE_SECONDS=60.0,
     )
+
+
+@asynccontextmanager
+async def _open_db(db: Any):
+    yield db
 
 
 def test_default_status_port_factory_receives_service_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -596,6 +605,13 @@ class _Repository:
         self.batch_claimed = True
         return (self.claim,)
 
+    async def get_due_backlog_snapshot(self, _db: Any, **_kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            backlog_count=0 if self.batch_claimed else 1,
+            max_overdue_age_ms=0.0,
+            max_confirmation_age_ms=0.0,
+        )
+
     async def get_claim_for_update(self, _db: Any, **_kwargs: Any) -> Any:
         return None if self.fence_writeback else self.claim
 
@@ -946,7 +962,11 @@ async def test_lower_version_contradictory_terminal_is_reduced_for_reconciliatio
 
 
 @pytest.mark.asyncio
-async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_outcome_history() -> None:
+async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_outcome_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
     _require_status_service()
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
     db = _Db()
@@ -967,6 +987,12 @@ async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_out
         now=lambda: NOW,
         jitter=lambda _upper: 0.0,
     )
+    emissions: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda name, **kwargs: emissions.append((name, kwargs)),
+    )
 
     result = await service.check_dispatch(db, dispatch_key="dispatch-001")
 
@@ -974,6 +1000,12 @@ async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_out
     assert claim.intent.status_check_after == NOW + timedelta(seconds=20)
     assert reducer.events[0].event_type is EffectReducerEventType.STATUS_QUERY_FAILED
     assert reducer.events[0].reason_code == "WMS_RATE_LIMITED"
+    assert emissions[0][0] == "wms_effect.status_backpressure"
+    assert emissions[0][1]["attributes"] == {
+        "outcome": "RATE_LIMITED",
+        "retry_after_ms": 20_000,
+        "actual_backoff_ms": 20_000,
+    }
 
 
 @pytest.mark.asyncio
@@ -1003,7 +1035,11 @@ async def test_retry_after_above_local_max_remains_the_schedule_lower_bound() ->
 
 
 @pytest.mark.asyncio
-async def test_non_retryable_query_contract_failure_opens_reconciliation_immediately() -> None:
+async def test_non_retryable_query_contract_failure_opens_reconciliation_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
     _require_status_service()
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
     db = _Db()
@@ -1022,6 +1058,12 @@ async def test_non_retryable_query_contract_failure_opens_reconciliation_immedia
         now=lambda: NOW,
         jitter=lambda _upper: 0.0,
     )
+    emissions: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda name, **kwargs: emissions.append((name, kwargs)),
+    )
 
     result = await service.check_dispatch(db, dispatch_key="dispatch-001")
 
@@ -1029,6 +1071,8 @@ async def test_non_retryable_query_contract_failure_opens_reconciliation_immedia
     assert reducer.events[0].event_type is EffectReducerEventType.STATUS_QUERY_FAILED
     assert reconciliation.calls[0]["reason_code"] == "WMS_CREDENTIAL_UNAVAILABLE"
     assert claim.intent.status_check_after is None
+    assert emissions[0][0] == "wms_effect.recovery"
+    assert emissions[0][1]["attributes"]["outcome"] == "RECONCILIATION_OPENED"
 
 
 @pytest.mark.asyncio
@@ -1098,12 +1142,44 @@ async def test_due_scanner_claims_missing_or_corrupt_binding_and_fails_closed_be
         settings_source=_settings(),
         now=lambda: NOW,
         jitter=lambda _upper: 0.0,
-    ).check_due_batch(db, limit=10)
+        db_context_factory=lambda: _open_db(db),
+    ).check_due_batch(db)
 
     assert [result.outcome for result in results] == ["RECONCILING"]
     assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_BINDING_INVALID"
     assert repository.released == 1
     assert port_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_due_scanner_emits_status_query_and_batch_backlog(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
+    db = _Db()
+    emissions: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda name, **kwargs: emissions.append((name, kwargs)),
+    )
+
+    results = await WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=_Reducer(),
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: lambda: _Port(_snapshot(WmsEffectStatus.ACCEPTED), db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+        db_context_factory=lambda: _open_db(db),
+    ).check_due_batch(db)
+
+    assert [result.outcome for result in results] == ["ACCEPTED"]
+    assert [name for name, _kwargs in emissions] == ["wms_effect.status_query", "wms_effect.status_backlog"]
+    assert emissions[0][1]["attributes"]["state"] == "ACCEPTED"
+    assert emissions[1][1]["attributes"]["backlog_count"] == 1
+    assert emissions[1][1]["attributes"]["claimed_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -1231,6 +1307,8 @@ def test_wms_effect_status_immediate_and_fallback_tasks_are_registered() -> None
 
     assert "check_wms_effect_status" in workline.__all__
     assert "scan_wms_effect_status_batch" in workline.__all__
+    assert tuple(inspect.signature(workline.scan_wms_effect_status_batch).parameters) == ()
+    assert tuple(inspect.signature(WmsEffectStatusService.check_due_batch).parameters) == ("self", "db")
     assert beat_schedule["scan-wms-effect-status-batch"] == {
         "task": "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
         "schedule": 10.0,
@@ -1319,7 +1397,11 @@ async def test_status_hint_persists_due_time_and_commits_before_immediate_enqueu
 
 
 @pytest.mark.asyncio
-async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_row_for_beat() -> None:
+async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_row_for_beat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
     claim.intent.status_check_after = NOW + timedelta(minutes=5)
     db = _Db()
@@ -1332,6 +1414,12 @@ async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_r
         queue_gateway=queue,
         settings_source=_settings(),
         now=lambda: NOW,
+    )
+    emissions: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda name, **kwargs: emissions.append((name, kwargs)),
     )
 
     with patch("src.app.runtime.orchestration.services.wms_effect_status_service.logger.warning") as warning:
@@ -1354,6 +1442,16 @@ async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_r
     assert sha256(b"dispatch-001").hexdigest()[:16] in warning_text
     assert "dispatch-001" not in warning_text
     assert "secret-token" not in warning_text
+    assert emissions == [
+        (
+            "wms_effect.callback_hint",
+            {
+                "operation_identity": claim.outbox.operation_identity,
+                "dispatch_key": "dispatch-001",
+                "attributes": {"outcome": "ENQUEUE_DEGRADED"},
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

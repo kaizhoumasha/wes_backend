@@ -52,6 +52,7 @@ x-wms-effect-status-config: &wms-effect-status-config
   WES_EFFECT_NOT_FOUND_GRACE_SECONDS: ${WES_EFFECT_NOT_FOUND_GRACE_SECONDS}
   WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS: ${WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS}
   WES_EFFECT_STATUS_SCAN_BATCH_SIZE: ${WES_EFFECT_STATUS_SCAN_BATCH_SIZE}
+  WES_EFFECT_STATUS_MAX_IN_FLIGHT: ${WES_EFFECT_STATUS_MAX_IN_FLIGHT}
   WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS: ${WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS}
   WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS: ${WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS}
   WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS: ${WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS}
@@ -241,14 +242,15 @@ services:
     command: >
       celery -A src.celery_app.app worker
       --loglevel=${CELERY_LOG_LEVEL:-INFO}
-      --concurrency=${CELERY_CONCURRENCY:-4}
+      --concurrency=1
       --max-tasks-per-child=${CELERY_MAX_TASKS:-1000}
       --queues=wms-fulfillment
     environment:
       CELERY_WORKER_QUEUES: wms-fulfillment
+      CELERY_WORKER_CONCURRENCY: "1"
       WMS_PROVIDER_PROCESS_ROLE: fulfillment
     deploy:
-      replicas: ${WMS_FULFILLMENT_CELERY_REPLICAS:-1}
+      replicas: 1
 
   # ============================================
   # Celery Beat - 定时任务调度

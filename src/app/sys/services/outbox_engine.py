@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from socket import gethostname
@@ -33,6 +34,7 @@ from src.app.sys.external_http_transport import (
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
+from src.app.wms_integration.operation_registry import EFFECT_OPERATION_IDENTITIES
 from src.core.bounded_http_response import (
     HttpChunkBudgetExceeded,
     HttpCompressionRatioExceeded,
@@ -206,6 +208,7 @@ class SystemOutboxEngine:
             # 发送边界必须先持久化并释放行锁，允许同步 callback 在 sender 返回前推进账本。
             await _commit_if_supported(db)
 
+            dispatch_started_at = time.perf_counter()
             try:
                 dispatch_result = await self.dispatch_single(db, outbox)
             except RuntimeError as exc:
@@ -340,6 +343,12 @@ class SystemOutboxEngine:
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
                 else:
+                    self._emit_wms_effect_submit_observation(
+                        outbox=outbox,
+                        result=dispatch_result,
+                        attempt_no=attempt_no,
+                        latency_ms=(time.perf_counter() - dispatch_started_at) * 1_000,
+                    )
                     await self._emit_external_http_fault(
                         ExternalHttpDispatchFaultPoint.AFTER_EVIDENCE_COMMIT,
                         outbox,
@@ -539,6 +548,35 @@ class SystemOutboxEngine:
         outbox: Any | None = None,
     ) -> None:
         await emit_external_http_dispatch_fault(self.external_http_fault_hook, point, outbox)
+
+    @staticmethod
+    def _emit_wms_effect_submit_observation(
+        *,
+        outbox: Any,
+        result: ExternalHttpTransportResult,
+        attempt_no: int,
+        latency_ms: float,
+    ) -> None:
+        """Outbox、Attempt 与 Reducer 证据提交后，best-effort 发射 submit 观测。"""
+
+        operation_identity = str(getattr(outbox, "operation_identity", ""))
+        if operation_identity not in EFFECT_OPERATION_IDENTITIES:
+            return
+        try:
+            from src.app.runtime.orchestration.wms_effect_observability import emit_wms_effect_observation
+
+            _ = emit_wms_effect_observation(
+                "wms_effect.submit",
+                operation_identity=operation_identity,
+                dispatch_key=getattr(outbox, "dispatch_key", None),
+                attributes={
+                    "outcome": result.outcome.value,
+                    "latency_ms": latency_ms,
+                    "retry_count": max(0, attempt_no - 1),
+                },
+            )
+        except Exception as exc:  # pragma: no cover - 观测失败不得改变证据事务结果
+            logger.warning(f"WMS EFFECT submit observability emission failed: {type(exc).__name__}")
 
     def _enqueue_wms_effect_status_if_needed(
         self,

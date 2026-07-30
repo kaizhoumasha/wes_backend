@@ -558,6 +558,27 @@ _NORTHBOUND_TRACE_STAGES = frozenset(
     }
 )
 _WMS_PROVIDER_PROFILE_IDENTITIES = frozenset({"wms.2026-07-28.full-factory"})
+_WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
+    operation.identity for operation in WMS_OPERATIONS if operation.mode.value == "EFFECT"
+)
+_WMS_ASYNC_EFFECT_OPERATION_IDENTITIES = frozenset(
+    operation.identity for operation in WMS_OPERATIONS if operation.supports_status_query
+)
+_WMS_EFFECT_SUBMIT_OUTCOMES = frozenset({"ACCEPTED", "AMBIGUOUS", "NOT_SENT"})
+_WMS_EFFECT_STATUS_STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"})
+_WMS_EFFECT_BACKPRESSURE_OUTCOMES = frozenset({"RATE_LIMITED", "TIMEOUT", "RETRYABLE_FAILURE", "CIRCUIT_OPEN"})
+_WMS_EFFECT_RECOVERY_OUTCOMES = frozenset(
+    {
+        "NOT_FOUND_GRACE_EXHAUSTED",
+        "QUERY_BUDGET_EXHAUSTED",
+        "IDEMPOTENCY_CONFLICT",
+        "RECONCILIATION_OPENED",
+    }
+)
+_WMS_EFFECT_CALLBACK_HINT_OUTCOMES = frozenset(
+    {"RECEIVED", "REJECTED", "DUPLICATE", "QUERY_TRIGGERED", "ENQUEUE_DEGRADED"}
+)
+_WMS_BREAKER_STATES = frozenset({"OPEN", "HALF_OPEN", "CLOSED"})
 
 
 def _runtime_signal(
@@ -666,10 +687,101 @@ def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySig
             "span+metric+log",
             common | {"provider_code", "source_event_id"},
         ),
-        "wms_effect_status_hint.enqueue_failed": _runtime_signal(
-            "wms_effect_status_hint.enqueue_failed",
+        "wms_effect.submit": _runtime_signal(
+            "wms_effect.submit",
+            "span+metric+log",
+            frozenset({"operation_identity", "outcome", "latency_ms", "retry_count", "dispatch_key_hash"}),
+            metric_labels=frozenset({"operation_identity", "outcome"}),
+            metric_measurements=frozenset({"latency_ms", "retry_count"}),
+            allowed_values={
+                "operation_identity": _WMS_EFFECT_OPERATION_IDENTITIES,
+                "outcome": _WMS_EFFECT_SUBMIT_OUTCOMES,
+            },
+        ),
+        "wms_effect.status_query": _runtime_signal(
+            "wms_effect.status_query",
+            "span+metric+log",
+            frozenset(
+                {
+                    "operation_identity",
+                    "state",
+                    "latency_ms",
+                    "retry_count",
+                    "age_ms",
+                    "dispatch_key_hash",
+                }
+            ),
+            metric_labels=frozenset({"operation_identity", "state"}),
+            metric_measurements=frozenset({"latency_ms", "retry_count", "age_ms"}),
+            allowed_values={
+                "operation_identity": _WMS_ASYNC_EFFECT_OPERATION_IDENTITIES,
+                "state": _WMS_EFFECT_STATUS_STATES,
+            },
+        ),
+        "wms_effect.status_backlog": _runtime_signal(
+            "wms_effect.status_backlog",
             "metric+log",
-            frozenset({"operation_identity", "dispatch_key_hash", "error_type"}),
+            frozenset(
+                {
+                    "backlog_count",
+                    "max_overdue_age_ms",
+                    "max_confirmation_age_ms",
+                    "claimed_count",
+                    "duration_ms",
+                }
+            ),
+            metric_measurements=frozenset(
+                {
+                    "backlog_count",
+                    "max_overdue_age_ms",
+                    "max_confirmation_age_ms",
+                    "claimed_count",
+                    "duration_ms",
+                }
+            ),
+        ),
+        "wms_effect.status_backpressure": _runtime_signal(
+            "wms_effect.status_backpressure",
+            "span+metric+log",
+            frozenset(
+                {
+                    "operation_identity",
+                    "outcome",
+                    "retry_after_ms",
+                    "actual_backoff_ms",
+                    "dispatch_key_hash",
+                }
+            ),
+            optional_attributes=frozenset({"breaker_state"}),
+            metric_labels=frozenset({"operation_identity", "outcome"}),
+            metric_measurements=frozenset({"retry_after_ms", "actual_backoff_ms"}),
+            allowed_values={
+                "operation_identity": _WMS_ASYNC_EFFECT_OPERATION_IDENTITIES,
+                "outcome": _WMS_EFFECT_BACKPRESSURE_OUTCOMES,
+                "breaker_state": _WMS_BREAKER_STATES,
+            },
+        ),
+        "wms_effect.recovery": _runtime_signal(
+            "wms_effect.recovery",
+            "span+metric+log",
+            frozenset({"operation_identity", "outcome", "age_ms", "dispatch_key_hash"}),
+            metric_labels=frozenset({"operation_identity", "outcome"}),
+            metric_measurements=frozenset({"age_ms"}),
+            allowed_values={
+                "operation_identity": _WMS_ASYNC_EFFECT_OPERATION_IDENTITIES,
+                "outcome": _WMS_EFFECT_RECOVERY_OUTCOMES,
+            },
+        ),
+        "wms_effect.callback_hint": _runtime_signal(
+            "wms_effect.callback_hint",
+            "span+metric+log",
+            frozenset({"outcome"}),
+            optional_attributes=frozenset({"operation_identity", "dispatch_key_hash"}),
+            metric_labels=frozenset({"outcome"}),
+            allowed_values={
+                "operation_identity": _WMS_ASYNC_EFFECT_OPERATION_IDENTITIES,
+                "outcome": _WMS_EFFECT_CALLBACK_HINT_OUTCOMES,
+            },
         ),
         "runtime_inbox.claim_batch": _runtime_signal(
             "runtime_inbox.claim_batch",

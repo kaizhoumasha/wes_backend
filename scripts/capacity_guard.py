@@ -124,13 +124,15 @@ def build_capacity_plan(
     reserve: int | None = None,
 ) -> CapacityPlan:
     """从可扩缩容维度和固定镜像/Compose 维度构造唯一容量计划。"""
+    if "celery-wms-fulfillment" in services and "WMS_FULFILLMENT_CELERY_REPLICAS" in os.environ:
+        raise CapacityViolation("WMS_FULFILLMENT_CELERY_REPLICAS has been removed; fulfillment replicas are fixed to 1")
     return CapacityPlan(
         api_replicas=scales.get("api", _env_int("API_REPLICAS", 1)) if "api" in services else 0,
         api_processes=API_UVICORN_WORKERS,
         api_pool_size=API_DATABASE_POOL_SIZE,
         celery_replicas=(
             (scales.get("celery", _env_int("CELERY_WORKER_REPLICAS", 4)) if "celery" in services else 0)
-            + (_env_int("WMS_FULFILLMENT_CELERY_REPLICAS", 1) if "celery-wms-fulfillment" in services else 0)
+            + (1 if "celery-wms-fulfillment" in services else 0)
         ),
         celery_processes=_env_int("CELERY_CONCURRENCY", 4),
         celery_pool_size=CELERY_DATABASE_POOL_SIZE,

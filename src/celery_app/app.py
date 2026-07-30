@@ -57,6 +57,8 @@ def _validate_worker_role_queue_contract() -> None:
         raise ValueError("WES worker must not consume the WMS fulfillment queue")
     if process_role is WmsProviderProcessRole.FULFILLMENT and queues != {"wms-fulfillment"}:
         raise ValueError("fulfillment worker must consume only the WMS fulfillment queue")
+    if process_role is WmsProviderProcessRole.FULFILLMENT and os.getenv("CELERY_WORKER_CONCURRENCY", "").strip() != "1":
+        raise ValueError("fulfillment worker must use concurrency=1")
 
 
 @worker_init.connect

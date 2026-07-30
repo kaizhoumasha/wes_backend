@@ -37,6 +37,7 @@ from src.app.sys.repositories import SystemOutboxRepository
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.utils.timezone import timezone
+from tests.mock.wms_northbound_contract import build_typed_ack
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 from tests.support.external_http import (
     StaticTestCredentialProvider,
@@ -67,6 +68,31 @@ def _outbox(*, operation_identity: str = "tests.external-http.effect@v1") -> Sim
         operation_identity=operation_identity,
         **values,
     )
+
+
+def _async_wms_outbox() -> tuple[SimpleNamespace, str, dict[str, Any]]:
+    operation_identity = sorted(WMS_ASYNC_EFFECT_OPERATION_IDENTITIES)[0]
+    request_payload = REQUEST_FIXTURES[operation_identity]
+    outbox = frozen_outbox_namespace(
+        request_payload,
+        target_code="TEST_EXTERNAL_HTTP",
+        target_url="https://external.test/effects",
+        operation_identity=operation_identity,
+        id=1,
+        dispatch_key=request_payload["dispatch_key"],
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        status=SystemOutboxStatus.NEW,
+        attempt_count=0,
+        next_retry_at=None,
+        last_error=None,
+        finished_at=None,
+        operation_domain="HANDLING",
+        lease_owner_token="test-owner:1",
+        lease_expires_at=datetime(2027, 1, 1),
+        idempotency_key="intent-key",
+    )
+    return outbox, operation_identity, request_payload
 
 
 def _scheduler(outbox: Any) -> SimpleNamespace:
@@ -371,29 +397,13 @@ async def test_generic_transport_commit_does_not_call_wms_status_queue() -> None
 
 
 @pytest.mark.asyncio
-async def test_initial_async_business_reject_finishes_without_retry_or_status_enqueue() -> None:
-    operation_identity = sorted(WMS_ASYNC_EFFECT_OPERATION_IDENTITIES)[0]
+async def test_initial_async_business_reject_finishes_without_retry_or_status_enqueue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    outbox, operation_identity, _request_payload = _async_wms_outbox()
     operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
-    request_payload = REQUEST_FIXTURES[operation_identity]
-    outbox = frozen_outbox_namespace(
-        request_payload,
-        target_code="TEST_EXTERNAL_HTTP",
-        target_url="https://external.test/effects",
-        operation_identity=operation_identity,
-        id=1,
-        dispatch_key=request_payload["dispatch_key"],
-        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
-        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        status=SystemOutboxStatus.NEW,
-        attempt_count=0,
-        next_retry_at=None,
-        last_error=None,
-        finished_at=None,
-        operation_domain="HANDLING",
-        lease_owner_token="test-owner:1",
-        lease_expires_at=datetime(2027, 1, 1),
-        idempotency_key="intent-key",
-    )
     reject = {
         "operation_identity": operation_identity,
         "idempotency_key": "intent-key",
@@ -413,6 +423,12 @@ async def test_initial_async_business_reject_finishes_without_retry_or_status_en
     status_enqueues: list[str] = []
     queue_gateway = SimpleNamespace(
         enqueue_wms_effect_status=lambda *, dispatch_key: status_enqueues.append(dispatch_key),
+    )
+    emissions: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda signal_name, **kwargs: emissions.append((signal_name, kwargs)),
     )
     engine = SystemOutboxEngine(
         outbox_repository=repository,  # type: ignore[arg-type]
@@ -434,6 +450,68 @@ async def test_initial_async_business_reject_finishes_without_retry_or_status_en
     assert attempt_service.finalized[0]["outbox_finalization"] == "sent"
     effect_bridge.record_result.assert_awaited_once()
     assert status_enqueues == []
+    assert len(emissions) == 1
+    assert emissions[0][0] == "wms_effect.submit"
+    assert emissions[0][1]["operation_identity"] == operation_identity
+    assert emissions[0][1]["dispatch_key"] == outbox.dispatch_key
+    assert emissions[0][1]["attributes"]["outcome"] == "ACCEPTED"
+    assert emissions[0][1]["attributes"]["retry_count"] == 0
+    assert emissions[0][1]["attributes"]["latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_async_wms_submit_observation_is_not_emitted_when_evidence_commit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    outbox, operation_identity, request_payload = _async_wms_outbox()
+    ack = build_typed_ack(
+        operation_identity,
+        "intent-key",
+        request_payload,
+        submission_state="ACCEPTED",
+    )
+    transport_result = ExternalHttpTransportResult.accepted(
+        http_status_code=202,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        response_body=json.dumps(ack, separators=(",", ":")).encode(),
+    )
+    repository = _Repository(outbox)
+    current_db = SimpleNamespace(
+        commit=AsyncMock(side_effect=[None, None, RuntimeError("evidence commit failed"), None]),
+        rollback=AsyncMock(side_effect=lambda: setattr(outbox, "status", SystemOutboxStatus.DISPATCHING)),
+    )
+    recovery_db = SimpleNamespace(commit=AsyncMock())
+
+    @asynccontextmanager
+    async def recovery_context():
+        yield recovery_db
+
+    emissions: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda signal_name, **kwargs: emissions.append((signal_name, kwargs)),
+    )
+    engine = SystemOutboxEngine(
+        outbox_repository=repository,  # type: ignore[arg-type]
+        dispatch_scheduler=_scheduler(outbox),
+        external_http_sender=AsyncMock(return_value=transport_result),
+        credential_provider=StaticTestCredentialProvider(),
+        dispatch_attempt_service=_AttemptService(),
+        external_http_recovery_context_factory=recovery_context,
+        workline_domain_dispatcher=_no_workline_messages,
+        effect_transport_bridge=SimpleNamespace(record_result=AsyncMock()),
+    )
+
+    stats = await engine.dispatch(current_db, limit=1)
+
+    assert stats == {"dispatched": 1, "success": 0, "failed": 1, "skipped": 0}
+    assert outbox.status is SystemOutboxStatus.UNKNOWN
+    assert emissions == []
+    current_db.rollback.assert_awaited_once()
+    recovery_db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -69,6 +69,35 @@ async def test_claim_uses_paired_wms_operation_identity_and_never_filters_corrup
     assert db.flushes == 1
 
 
+@pytest.mark.asyncio
+async def test_due_backlog_snapshot_separates_overdue_and_confirmation_age() -> None:
+    now = datetime(2026, 7, 24, 12, 0)
+
+    class Result:
+        @staticmethod
+        def one() -> tuple[int, datetime, datetime]:
+            return 7, now - timedelta(seconds=12), now - timedelta(seconds=90)
+
+    class Db:
+        statement: Any | None = None
+
+        async def execute(self, statement: Any) -> Result:
+            self.statement = statement
+            return Result()
+
+    db = Db()
+    snapshot = await WmsEffectStatusRepository().get_due_backlog_snapshot(db, now=now)
+
+    assert snapshot.backlog_count == 7
+    assert snapshot.max_overdue_age_ms == 12_000
+    assert snapshot.max_confirmation_age_ms == 90_000
+    compiled = str(db.statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "count(*)" in compiled
+    assert "min(coalesce(wes_runtime.runtime_intent_logs.status_check_after" in compiled
+    assert "min(coalesce(wes_runtime.runtime_intent_logs.status_check_started_at" in compiled
+    assert "status_check_lease_until" in compiled
+
+
 class _HintResult:
     def __init__(self, row: tuple[Any, Any] | None) -> None:
         self.row = row
