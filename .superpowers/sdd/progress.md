@@ -66,6 +66,11 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     复审无 Critical/Important。
 - Task 8: pending — 建立 35 项参数化合同矩阵
 - Task 9: pending — 关闭状态恢复和对账门禁
+  - status recovery / observability checkpoint complete — `0b5f42ad`
+  - E03/E07 typed 双义务屏障内核 checkpoint complete — `81ba4b7e`：对象资格 Hold 使用
+    `blocking=false`，缺失或不一致 fail closed；真实 bridge/reducer PostgreSQL 并发 `8 passed`。
+    独立复审确认屏障逻辑与并发 finding 已关闭，但生产投格事务尚未创建该 Hold、对象下游 eligibility
+    尚未消费，因此 Task 9 不标 complete；该激活接线属于 T6 内部流水且不依赖厂商 wire 合同。
 - Task 10: pending — 执行单 revision 冷启动与协议 GO
 
 ## Baseline

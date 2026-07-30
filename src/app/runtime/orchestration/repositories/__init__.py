@@ -104,6 +104,12 @@ from .wms_fulfillment_domain_repository import (
     WmsFulfillmentDomainRepository,
     wms_fulfillment_domain_repository,
 )
+from .wms_putaway_sync_barrier_repository import (
+    WmsPutawaySyncBarrierRepository,
+    WmsPutawaySyncBarrierSnapshot,
+    WmsPutawaySyncObligation,
+    wms_putaway_sync_barrier_repository,
+)
 from .workline_runtime_status_projection_repository import (
     WorklineRuntimeStatusProjectionRepository,
     workline_runtime_status_projection_repository,
@@ -136,6 +142,9 @@ __all__ = [
     "WmsEffectStatusClaim",
     "WmsEffectStatusRepository",
     "WmsFulfillmentDomainRepository",
+    "WmsPutawaySyncBarrierRepository",
+    "WmsPutawaySyncBarrierSnapshot",
+    "WmsPutawaySyncObligation",
     "WorklineBinCellReservationRepository",
     "WorklineDiagnosticRepository",
     "WorklineDispatchAttemptRepository",
@@ -161,6 +170,7 @@ __all__ = [
     "timeline_sequence_repository",
     "wms_effect_status_repository",
     "wms_fulfillment_domain_repository",
+    "wms_putaway_sync_barrier_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",

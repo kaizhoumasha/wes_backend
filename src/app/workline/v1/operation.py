@@ -316,6 +316,7 @@ async def resolve_effect_reconciliation(
             dispatch_key=dispatch_key,
             request_id=payload.request_id,
             resolution=payload.resolution,
+            obligation_resolution=payload.obligation_resolution,
             operator_note=payload.operator_note,
             operator_id=current_user_id,
             is_superuser=bool(getattr(request.state, "is_superuser", False)),

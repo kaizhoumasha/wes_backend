@@ -2260,9 +2260,26 @@ Codex; checkbox as you ship.
     `max_overdue_age_ms` 与 `max_confirmation_age_ms`；breaker state 只在取得真实状态时发射；
     submit 只在 Outbox/Attempt/Reducer evidence 成功提交后发射，观测失败不改变业务事务。合同与
     runbook 已同步阈值、查询、处置和恢复判据；独立工程复审结论 `Approved`。
-  - Remaining blocker：E07/E03 completed-or-reconciled typed 双义务屏障依赖 T6 的投格事实、Hold 与两项
-    Intent/Outbox 原子接线。T6 厂商命令合同未交付前，不臆造 obligation owner、新表或通用状态机；因此 T9
-    保持未完成。
+  - Verified checkpoint — E07/E03 completed-or-reconciled typed 双义务屏障内核（2026-07-30）：
+    共享 frozen typed resolution 只允许精确的 E03/E07 operation identity、fact version、稳定 source event
+    和 evidence reference；关闭对账只写既有 `ReconciliationCase.decision_json`，不改写原 RuntimeIntent
+    终态、当前 outcome 或 append-only history。屏障按
+    `execution_work_item_id + correlation_id + fact_version` 精确读取两项义务；OPEN case 始终阻断，
+    `COMPLETED/COMPLETED`、`COMPLETED/typed reconciled`、`typed reconciled/COMPLETED` 和
+    `typed reconciled/typed reconciled` 四种组合均满足后才允许解除。
+  - 屏障并发入口只接入 E03/E07 `SYNC_COMPLETED` 和 typed reconciliation：先锁共享
+    `ExecutionWorkItem` 作为组 mutex，再按固定 operation identity 顺序锁 Intent/Case，reducer 后在同一事务
+    评估。对象资格 Hold 明确为 `blocking=false + hold_scope=OBJECT_ELIGIBILITY`，不得进入 WorkLine 整线
+    blocking 聚合；Hold 缺失、VOIDED、错误 scope/blocking 或 evidence 不匹配均 fail closed，已解除 Hold
+    只有在两项义务仍真实满足时才允许幂等 replay。
+  - Evidence：屏障、typed resolution、reducer 与 API 定向回归由主控复跑 `209 passed`；真实 PostgreSQL
+    `8 passed`，覆盖两事务从非终态分别通过真实 transport/reconciliation bridge 竞争、共享 WorkItem 锁无死锁、
+    第一项零释放、第二项恰好一次释放，以及 typed reconciliation 对原 Intent/outcome/history 零改写。
+    实现未新增表、状态或通用工作流，也不依赖南向机械臂 `task_type`、params 或厂商 fixture。
+  - Activation gate：当前 T6 尚无投格物理事实 producer，`create_hold()` 也没有生产调用者，对象下游资格入口
+    尚未消费该 OPEN Hold。因此不得宣称生产闭环，也不得单独启动 E03/E07；T6 必须在既有外层数据库工作单元中
+    原子提交投格事实、该对象 Hold、E07/E03 Intent/Outbox，并在该对象的下游 eligibility 入口按同一 group
+    读取 Hold。此接线是 WES 内部流水职责，不依赖硬件厂商 wire 合同；未完成前 T9 保持未完成。
 - [ ] **T10（P1，human: \~2d + 外部联调 / CC: \~4h）** — cutover — 执行单 revision 冷启动与协议 GO
   - Surfaced by: Deployment / Test Review — 无滚动兼容；物理实机未预验收的风险必须由四方显式接受。
   - Files: deploy profile、acceptance/cutover docs、smoke scripts、目标工厂 workload envelope 与 `tests/load/`。

@@ -300,12 +300,62 @@ async def test_resolve_effect_reconciliation_uses_authenticated_operator(
         dispatch_key="dispatch-1",
         request_id="manual-resolution-1",
         resolution="COMPLETED",
+        obligation_resolution=None,
         operator_note="WMS 侧已核验完成",
         operator_id=88,
         is_superuser=False,
     )
     assert response["code"] == "1000"
     assert response["data"]["dispatch_key"] == "dispatch-1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_effect_reconciliation_forwards_typed_wms_obligation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value={
+                "dispatch_key": "dispatch-1",
+                "resolution": "OBLIGATION_SATISFIED",
+                "request_id": "manual-resolution-1",
+            }
+        )
+    )
+    monkeypatch.setattr(operation_api, "effect_reconciliation_resolution_service", service)
+    obligation_resolution = {
+        "resolved_operation_identity": "wms.inventory.confirm_inbound@v1",
+        "resolved_fact_version": "material-fact:v3",
+        "resolution": "OBLIGATION_SATISFIED",
+        "source_event_id": "manual-resolution-1",
+        "evidence_reference": "wms-audit:E03:document-17",
+    }
+    payload = operation_api.ResolveEffectReconciliationRequest(
+        obligation_resolution=obligation_resolution,
+        operator_note="WMS 侧已核验义务满足",
+    )
+
+    response = await operation_api.resolve_effect_reconciliation(
+        dispatch_key="dispatch-1",
+        payload=payload,
+        db=SimpleNamespace(),  # type: ignore[arg-type]
+        current_user_id=88,
+        request=SimpleNamespace(state=SimpleNamespace(is_superuser=False)),  # type: ignore[arg-type]
+        response=operation_api.Response(),
+    )
+
+    service.resolve.assert_awaited_once_with(
+        ANY,
+        dispatch_key="dispatch-1",
+        request_id=None,
+        resolution=None,
+        obligation_resolution=payload.obligation_resolution,
+        operator_note="WMS 侧已核验义务满足",
+        operator_id=88,
+        is_superuser=False,
+    )
+    assert response["code"] == "1000"
+    assert response["data"]["resolution"] == "OBLIGATION_SATISFIED"
 
 
 @pytest.mark.asyncio

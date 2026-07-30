@@ -27,6 +27,12 @@ from src.app.runtime.orchestration.services.full_box_exchange_service import (
     FullBoxExchangeService,
     full_box_exchange_service,
 )
+from src.app.runtime.orchestration.services.hold.wms_putaway_sync_barrier_service import (
+    WmsPutawaySyncBarrierEvaluation,
+    WmsPutawaySyncBarrierGroup,
+    WmsPutawaySyncBarrierService,
+    wms_putaway_sync_barrier_service,
+)
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
     IdempotencyConflict,
@@ -116,6 +122,9 @@ __all__ = [
     "WmsEffectStatusCheckResult",
     "WmsEffectStatusService",
     "WmsFulfillmentDomainProjector",
+    "WmsPutawaySyncBarrierEvaluation",
+    "WmsPutawaySyncBarrierGroup",
+    "WmsPutawaySyncBarrierService",
     "WmsRackDemandClaim",
     "WmsRackDemandReservation",
     "WorkLineRuntimeStatusProjectionService",
@@ -137,5 +146,6 @@ __all__ = [
     "wms_conveyor_return_batch_service",
     "wms_effect_status_service",
     "wms_fulfillment_domain_projector",
+    "wms_putaway_sync_barrier_service",
     "workline_runtime_status_projection_service",
 ]

@@ -14,6 +14,7 @@ from src.app.runtime.orchestration.effect_state_contract import (
     generated_effect_source_event_id,
 )
 from src.app.runtime.orchestration.services.effect_reducer_service import EffectReducer, effect_reducer
+from src.app.runtime.orchestration.wms_sync_obligation import WMS_SYNC_OBLIGATION_OPERATION_IDENTITIES
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
@@ -33,6 +34,7 @@ from src.app.wms_integration.operation_registry import (
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+    from src.app.runtime.orchestration.wms_sync_obligation import WmsSyncObligationResolution
 
 
 class EffectCallbackOutcome(str, Enum):
@@ -595,6 +597,19 @@ class EffectTransportBridge:
             idempotency_key=idempotency_key,
             payload_hash=payload_hash,
         )
+        barrier_group = None
+        barrier_service = None
+        if operation_identity in WMS_SYNC_OBLIGATION_OPERATION_IDENTITIES and any(
+            event.event_type is EffectReducerEventType.SYNC_COMPLETED for event in resolved.events
+        ):
+            from src.app.runtime.orchestration.services.hold.wms_putaway_sync_barrier_service import (
+                wms_putaway_sync_barrier_service,
+            )
+
+            barrier_service = wms_putaway_sync_barrier_service
+            barrier_group = await barrier_service.lock_group_for_dispatch(db, dispatch_key=dispatch_key)
+            if barrier_group is None:
+                raise RuntimeError("E03/E07 dispatch must resolve to a WMS sync barrier group")
         reductions = []
         operation = WMS_OPERATION_BY_IDENTITY.get(operation_identity) if operation_identity is not None else None
         for event in resolved.events:
@@ -781,6 +796,12 @@ class EffectTransportBridge:
                     reason_code=event.reason_code,
                     evidence_json=event.evidence_json,
                 )
+        if barrier_service is not None and barrier_group is not None:
+            await barrier_service.evaluate_dispatch(
+                db,
+                dispatch_key=dispatch_key,
+                locked_group=barrier_group,
+            )
         return tuple(reductions)
 
 
@@ -853,14 +874,26 @@ class EffectReconciliationBridge:
         *,
         dispatch_key: str,
         occurred_at_ms: int,
-        resolution: RuntimeIntentStatus,
+        resolution: RuntimeIntentStatus | None,
         reason_code: str,
         evidence_json: dict[str, Any],
         source_event_id: str,
+        obligation_resolution: WmsSyncObligationResolution | None = None,
     ) -> Any:
         if not source_event_id.strip():
             raise ValueError("RECONCILIATION_RESOLVED requires a stable source_event_id")
-        return await self._reducer.reduce(
+        barrier_group = None
+        barrier_service = None
+        if obligation_resolution is not None:
+            from src.app.runtime.orchestration.services.hold.wms_putaway_sync_barrier_service import (
+                wms_putaway_sync_barrier_service,
+            )
+
+            barrier_service = wms_putaway_sync_barrier_service
+            barrier_group = await barrier_service.lock_group_for_dispatch(db, dispatch_key=dispatch_key)
+            if barrier_group is None:
+                raise RuntimeError("typed E03/E07 resolution must resolve to a WMS sync barrier group")
+        reduction = await self._reducer.reduce(
             db,
             EffectReducerEvent(
                 event_type=EffectReducerEventType.RECONCILIATION_RESOLVED,
@@ -868,10 +901,18 @@ class EffectReconciliationBridge:
                 occurred_at_ms=occurred_at_ms,
                 source_event_id=source_event_id,
                 resolution=resolution,
+                obligation_resolution=obligation_resolution,
                 reason_code=reason_code,
                 evidence_json=evidence_json,
             ),
         )
+        if barrier_service is not None and barrier_group is not None:
+            await barrier_service.evaluate_dispatch(
+                db,
+                dispatch_key=dispatch_key,
+                locked_group=barrier_group,
+            )
+        return reduction
 
     async def record_idempotency_conflict(
         self,

@@ -17,13 +17,23 @@ from src.app.runtime.orchestration.services.hold.runtime_hold_release_service im
     RuntimeHoldReleaseService,
     runtime_hold_release_service,
 )
+from src.app.runtime.orchestration.services.hold.wms_putaway_sync_barrier_service import (
+    WmsPutawaySyncBarrierEvaluation,
+    WmsPutawaySyncBarrierGroup,
+    WmsPutawaySyncBarrierService,
+    wms_putaway_sync_barrier_service,
+)
 
 __all__ = [
     "RuntimeHoldCreationService",
     "RuntimeHoldQueryService",
     "RuntimeHoldReleaseError",
     "RuntimeHoldReleaseService",
+    "WmsPutawaySyncBarrierEvaluation",
+    "WmsPutawaySyncBarrierGroup",
+    "WmsPutawaySyncBarrierService",
     "runtime_hold_creation_service",
     "runtime_hold_query_service",
     "runtime_hold_release_service",
+    "wms_putaway_sync_barrier_service",
 ]

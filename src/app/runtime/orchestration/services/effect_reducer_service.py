@@ -17,6 +17,10 @@ from src.app.runtime.orchestration.repositories.effect_reducer_repository import
     effect_reducer_repository,
 )
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+from src.app.runtime.orchestration.wms_sync_obligation import (
+    WMS_SYNC_OBLIGATION_OPERATION_IDENTITIES,
+    WmsSyncObligationResolution,
+)
 from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
 from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck, validate_effect_ack
@@ -212,6 +216,7 @@ class EffectReducer:
             return None
         open_case = await self._repository.get_open_case_for_update(db, event.dispatch_key)
         current = RuntimeIntentStatus(intent.effect_status)
+        obligation_resolution = self._validate_obligation_resolution(intent, event=event)
         evidence = self._serialize_evidence(event)
         if (
             open_case is not None
@@ -271,6 +276,15 @@ class EffectReducer:
             if open_case is None:
                 raise InvalidReconciliationEvent("RECONCILIATION_RESOLVED requires an OPEN case")
             self._resolve_case(open_case, event=event, evidence=evidence)
+            if obligation_resolution is not None:
+                await db.flush()
+                return EffectReductionResult(
+                    intent_status=current,
+                    case_status=ReconciliationCaseStatus.RESOLVED,
+                    state_changed=False,
+                    case_created=False,
+                    contradiction=False,
+                )
         elif event.event_type in _CASE_OPENING_EVENTS or contradiction:
             if open_case is None:
                 open_case = self._new_case(intent, event=event, evidence=evidence, contradiction=contradiction)
@@ -315,10 +329,39 @@ class EffectReducer:
         decision = dict(case.decision_json or {})
         if not decision.get("source_event_id") or decision.get("source_event_id") != event.source_event_id:
             return False
+        if event.obligation_resolution is not None:
+            if decision != event.obligation_resolution.model_dump(mode="json"):
+                raise ReconciliationResolutionConflict("source_event_id cannot be reused with a different resolution")
+            return True
         resolution = event.resolution.value if event.resolution is not None else None
         if decision.get("resolution") != resolution:
             raise ReconciliationResolutionConflict("source_event_id cannot be reused with a different resolution")
         return True
+
+    @staticmethod
+    def _validate_obligation_resolution(
+        intent: Any,
+        *,
+        event: EffectReducerEvent,
+    ) -> WmsSyncObligationResolution | None:
+        if event.event_type is not EffectReducerEventType.RECONCILIATION_RESOLVED:
+            return None
+        operation_identity = (
+            f"{getattr(intent, 'capability_key', '')}@{getattr(intent, 'capability_contract_version', '')}"
+        )
+        resolution = event.obligation_resolution
+        if operation_identity in WMS_SYNC_OBLIGATION_OPERATION_IDENTITIES:
+            if resolution is None:
+                raise InvalidReconciliationEvent("E03/E07 reconciliation requires typed obligation resolution")
+            validated = WmsSyncObligationResolution.model_validate(resolution)
+            if validated.resolved_operation_identity != operation_identity:
+                raise InvalidReconciliationEvent("typed obligation resolution operation identity differs from intent")
+            if validated.resolved_fact_version != getattr(intent, "fact_version", None):
+                raise InvalidReconciliationEvent("typed obligation resolution fact version differs from intent")
+            return validated
+        if resolution is not None:
+            raise InvalidReconciliationEvent("typed obligation resolution is restricted to E03/E07")
+        return None
 
     @staticmethod
     def _is_case_evidence_replay(
@@ -486,6 +529,9 @@ class EffectReducer:
             "attempt_no": event.attempt_no,
             "retry_exhausted": event.retry_exhausted,
             "resolution": event.resolution.value if event.resolution is not None else None,
+            "obligation_resolution": (
+                event.obligation_resolution.model_dump(mode="json") if event.obligation_resolution is not None else None
+            ),
             "reason_code": event.reason_code,
         }
 
@@ -554,12 +600,15 @@ class EffectReducer:
     ) -> None:
         cls._append_case_evidence(case, evidence)
         case.status = ReconciliationCaseStatus.RESOLVED
-        case.decision_json = {
-            "source_event_id": event.source_event_id,
-            "resolution": event.resolution.value if event.resolution is not None else None,
-            "reason_code": event.reason_code,
-            "evidence": dict(event.evidence_json),
-        }
+        if event.obligation_resolution is not None:
+            case.decision_json = event.obligation_resolution.model_dump(mode="json")
+        else:
+            case.decision_json = {
+                "source_event_id": event.source_event_id,
+                "resolution": event.resolution.value if event.resolution is not None else None,
+                "reason_code": event.reason_code,
+                "evidence": dict(event.evidence_json),
+            }
         case.resolved_at_ms = event.occurred_at_ms
 
 

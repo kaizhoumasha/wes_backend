@@ -16,6 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.app.effect_ledger_status import DispatchAttemptStatus, SystemOutboxStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+from src.app.runtime.orchestration.wms_sync_obligation import (  # noqa: TC001 - Pydantic 运行时解析字段类型
+    WmsSyncObligationResolution,
+)
 
 
 class EffectReducerEventType(str, Enum):
@@ -230,6 +233,7 @@ class EffectReducerEvent(BaseModel):
     attempt_no: int | None = Field(default=None, ge=1)
     retry_exhausted: bool = False
     resolution: RuntimeIntentStatus | None = None
+    obligation_resolution: WmsSyncObligationResolution | None = None
     reason_code: str | None = Field(default=None, max_length=120)
     evidence_json: dict[str, Any] = Field(default_factory=dict)
     # 仅供 reducer 写当前 terminal envelope；禁止进入 append-only evidence 或日志序列化。
@@ -242,10 +246,19 @@ class EffectReducerEvent(BaseModel):
         if self.event_type not in _ATTEMPT_EVENTS and self.attempt_no is not None:
             raise ValueError(f"{self.event_type.value} does not accept attempt_no")
         if self.event_type is EffectReducerEventType.RECONCILIATION_RESOLVED:
-            if self.resolution not in _RECONCILIATION_TERMINALS:
+            has_generic_resolution = self.resolution in _RECONCILIATION_TERMINALS
+            has_obligation_resolution = self.obligation_resolution is not None
+            if has_generic_resolution == has_obligation_resolution:
                 raise ValueError("RECONCILIATION_RESOLVED requires COMPLETED or REJECTED resolution")
+            if (
+                self.obligation_resolution is not None
+                and self.source_event_id != self.obligation_resolution.source_event_id
+            ):
+                raise ValueError("typed obligation resolution source_event_id differs from reducer event")
         elif self.resolution is not None:
             raise ValueError(f"{self.event_type.value} does not accept resolution")
+        elif self.obligation_resolution is not None:
+            raise ValueError(f"{self.event_type.value} does not accept obligation_resolution")
         if self.retry_exhausted and self.event_type is not EffectReducerEventType.TRANSPORT_NOT_SENT:
             raise ValueError("retry_exhausted is only valid for TRANSPORT_NOT_SENT")
         return self
