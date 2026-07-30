@@ -214,6 +214,69 @@ class FullBoxExchangeService:
             request=request,
         )
 
+    async def reserve_next_root(
+        self,
+        ctx: dict[str, Any],
+        *,
+        handoff_demand_id: int,
+        prefer_full_box_exchange: bool | None = None,
+    ) -> FullBoxExchangeReservation:
+        """按锁定货架挂载的稳定顺序，只 reserve 一个满足阈值的满箱。"""
+
+        db, _workline_id, _workline_code = self._validate_execution_context(ctx)
+        demand = await self._repository.get_demand_for_update(db, handoff_demand_id)
+        if demand is None:
+            raise RuntimeError("full box exchange handoff demand is missing")
+        if demand.active_full_box_exchange_intent_id is not None:
+            return FullBoxExchangeReservation(
+                demand=demand,
+                claim=None,
+                created=False,
+                operation=None,
+                request=None,
+            )
+        self._validate_demand(
+            demand,
+            workline_id=_workline_id,
+            workline_code=_workline_code,
+        )
+        resolved_preference = self._resolve_preference(
+            demand=demand,
+            requested_preference=prefer_full_box_exchange,
+        )
+        mounts = await self._repository.list_active_rack_mounts_for_update(
+            db,
+            rack_code=demand.single_layer_rack_code,
+        )
+        bin_codes = tuple(mount.bin_code for mount in mounts)
+        locked_occupancies = await self._repository.list_occupancies_for_bins_for_update(
+            db,
+            bin_codes=bin_codes,
+        )
+        usage_cells_by_bin = await self._load_usage_cells(
+            db,
+            bin_codes=bin_codes,
+            locked_occupancies=locked_occupancies,
+        )
+        for mount in mounts:
+            usage_band = self._usage_band(usage_cells_by_bin[mount.bin_code])
+            if usage_band == "REQUIRE_FULL_BOX_EXCHANGE" or (
+                usage_band == "PREFERRED_FULL_BOX_EXCHANGE" and resolved_preference
+            ):
+                return await self.reserve_root(
+                    ctx,
+                    handoff_demand_id=handoff_demand_id,
+                    full_box_id=mount.bin_code,
+                    prefer_full_box_exchange=resolved_preference,
+                )
+        return FullBoxExchangeReservation(
+            demand=demand,
+            claim=None,
+            created=False,
+            operation=None,
+            request=None,
+        )
+
     async def prepare_effect(
         self,
         db: AsyncSession,
@@ -259,6 +322,9 @@ class FullBoxExchangeService:
         if demand.decision_status in _PREFERENCE_BY_DECISION and demand.decision_status != frozen_decision:
             raise ValueError("full box exchange threshold conflicts with frozen parent decision")
         demand.decision_status = frozen_decision
+        demand.status = SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+        demand.failure_code = None
+        demand.failure_message = None
         await db.flush()
 
     async def get_demand_by_dispatch_for_update(
@@ -445,6 +511,9 @@ class FullBoxExchangeService:
             demand.status = SmtInboundHandoffDemandStatus.EVALUATING
             await db.flush()
             return
+        # 最后一只满箱 terminal success 后解除 E11 waiting gate，再由既有摘要归约决定
+        # READY_FOR_SORTING/COMPLETED；不能让 WAITING 状态短路该归约。
+        demand.status = SmtInboundHandoffDemandStatus.EVALUATING
         handoff_service = self._handoff_service
         if handoff_service is None:
             # 延迟加载 intent 子包，避免 service registry 初始化时形成 projector 环。
@@ -575,8 +644,8 @@ class FullBoxExchangeService:
 
     @staticmethod
     def _validate_execution_context(ctx: dict[str, Any]) -> tuple[AsyncSession, int, str]:
-        if not isinstance(ctx, dict) or ctx.get("db") is None or ctx.get("session") is None:
-            raise ValueError("full box exchange requires existing db/session execution context")
+        if not isinstance(ctx, dict) or ctx.get("db") is None:
+            raise ValueError("full box exchange requires existing db execution context")
         workline = ctx.get("workline")
         workline_id = getattr(workline, "id", None)
         workline_code = getattr(workline, "line_code", None)

@@ -9,9 +9,20 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from sqlalchemy import event, func, select, text
 
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.material_flow_owner import MaterialFlowOwner
+from src.app.runtime.orchestration.models.smt_inbound_handoff import SmtInboundHandoffDemandStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
 from src.app.sys.models.outbox import SystemOutbox
+from src.app.wms_integration.effect_preparation_runtime import (
+    bind_wms_effect_preparation_runtime,
+    build_wms_effect_preparation_runtime,
+    unbind_wms_effect_preparation_runtime,
+)
+from src.celery_app.tasks.workline import _scan_smt_inbound_handoff_demands_in_transaction
+from src.core.task_queue_gateway import OutboxDispatchTarget
+from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
 from tests.support.wms_full_box_exchange_postgresql import (
     REVISION,
     domain_types,
@@ -228,6 +239,95 @@ def test_e11_demand_row_lock_allows_one_active_root_then_suppresses_loser() -> N
             assert await verify_db.scalar(select(func.count()).select_from(MaterialFlowOwner)) == 4
 
     asyncio.run(with_database(scenario))
+
+
+@pytest.mark.integration
+def test_existing_handoff_demand_produces_one_domain_e11_intent_and_outbox() -> None:
+    async def scenario(session_factory: async_sessionmaker[AsyncSession]) -> None:
+        async with session_factory() as db:
+            graph = await seed_exchange_graph(db)
+            graph.demand.bin_snapshots_json = {"bins": [{"bin_code": "FULL-1", "usage": 0.9}]}
+            assert graph.demand.id is not None
+            db.add(
+                ExecutionCorrelation(
+                    correlation_id=f"smt-inbound-handoff:{graph.demand.id}",
+                    execution_session_id=None,
+                    trace_id=graph.demand.trace_id,
+                    source_event_id=graph.demand.rack_release_id,
+                    business_owner_key=graph.demand.demand_key,
+                )
+            )
+            await db.commit()
+
+        runtime = build_wms_effect_preparation_runtime(catalog=build_provider_catalog())
+        bind_wms_effect_preparation_runtime(runtime)
+        try:
+
+            class _Gateway:
+                def __init__(self) -> None:
+                    self.targets: list[frozenset[OutboxDispatchTarget]] = []
+
+                def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+                    assert targets == frozenset({OutboxDispatchTarget.WMS_FULFILLMENT})
+                    self.targets.append(frozenset(targets))
+
+            gateway = _Gateway()
+            async with session_factory() as db:
+                summary = await _scan_smt_inbound_handoff_demands_in_transaction(
+                    db,
+                    service=SmtInboundHandoffService(),
+                    scan_limit=1,
+                    recovery_limit=0,
+                    claim_limit=0,
+                    stale_after_seconds=1,
+                    legacy_limit=None,
+                    queue_gateway=gateway,
+                )
+                assert summary["advanced"] == 1
+                assert gateway.targets == [frozenset({OutboxDispatchTarget.WMS_FULFILLMENT})]
+        finally:
+            unbind_wms_effect_preparation_runtime(runtime)
+
+        async with session_factory() as verify_db:
+            demand = await verify_db.get(type(graph.demand), graph.demand.id)
+            assert demand is not None
+            assert demand.status == SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+            assert demand.active_full_box_exchange_intent_id is not None
+            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 1
+            assert await verify_db.scalar(select(func.count()).select_from(SystemOutbox)) == 1
+
+    asyncio.run(with_database(scenario, revision="head"))
+
+
+@pytest.mark.integration
+def test_e11_scanner_missing_persisted_correlation_rolls_back_without_intent_or_outbox() -> None:
+    async def scenario(session_factory: async_sessionmaker[AsyncSession]) -> None:
+        async with session_factory() as db:
+            graph = await seed_exchange_graph(db)
+            graph.demand.bin_snapshots_json = {"bins": [{"bin_code": "FULL-1", "usage": 0.9}]}
+            await db.commit()
+
+        async with session_factory() as db:
+            summary = await _scan_smt_inbound_handoff_demands_in_transaction(
+                db,
+                service=SmtInboundHandoffService(),
+                scan_limit=1,
+                recovery_limit=0,
+                claim_limit=0,
+                stale_after_seconds=1,
+                legacy_limit=None,
+            )
+            assert summary["recovery_errors"] == 1
+
+        async with session_factory() as verify_db:
+            demand = await verify_db.get(type(graph.demand), graph.demand.id)
+            assert demand is not None
+            assert demand.active_full_box_exchange_intent_id is None
+            assert demand.status == SmtInboundHandoffDemandStatus.EVALUATING
+            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 0
+            assert await verify_db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
+
+    asyncio.run(with_database(scenario, revision="head"))
 
 
 @pytest.mark.integration
@@ -451,6 +551,7 @@ def test_e11_prepare_freezes_requested_usage_threshold_on_parent(
             )
             assert reservation.claim.prefer_full_box_exchange is (prefer_full_box_exchange is True)
             assert graph.demand.decision_status == decision_status
+            assert graph.demand.status == SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
             await db.rollback()
 
     asyncio.run(with_database(scenario))

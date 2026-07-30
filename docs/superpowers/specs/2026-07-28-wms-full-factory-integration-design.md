@@ -2133,6 +2133,12 @@ Codex; checkbox as you ship.
     精确 MATCH、producer 冒充拒绝、异 hash conflict，以及同 payload 不同 correlation/owner/workline
     conflict；domain MATCH 必须同时精确匹配 `correlation_id + binding_snapshot_json`。T5 仍未整体完成，
     scanner、handoff、FullBoxExchange、Celery 及 Handling/Rack producer 未在本检查点修改。
+  - Verified checkpoint — G4.5b2 / existing handoff demand E11 producer：只消费已持久化、阶段门完整且已有
+    `smt-inbound-handoff:<demand-id>` correlation 的 demand；scanner 每个候选独立事务调用 domain authority、
+    typed E11 reserve、System Capability claim/preparation/Outbox，提交后仅唤醒 `WMS_FULFILLMENT`。每轮稳定
+    只选一个合格满箱，terminal success 清 active root 并回到 `EVALUATING` 后才可选择下一箱；缺 correlation、
+    stage fence 漂移、异常 target 或未绑定 runtime 均 fail closed。此检查点不生成粗分机 release fact、不补写
+    station/rack-face，也不代表 T5/T6 整体完成。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

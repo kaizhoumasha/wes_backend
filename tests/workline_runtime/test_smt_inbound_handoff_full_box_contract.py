@@ -1,27 +1,21 @@
 from types import SimpleNamespace
 
-from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
+import pytest
+
+from src.app.runtime.orchestration.services.full_box_exchange_service import FullBoxExchangeService
 
 
-def test_full_box_exchange_move_preserves_rack_release_identity() -> None:
-    service = SmtInboundHandoffService()
-    demand = SimpleNamespace(rack_release_id="release-001", single_layer_rack_code="RACK-001")
+def test_e11_domain_context_requires_persisted_workline_but_not_plugin_session() -> None:
+    db = object()
+    workline = SimpleNamespace(id=13, line_code="SMT-ROUGH-1")
 
-    moves = service._full_box_exchange_moves(
-        demand=demand,
-        snapshots=[{"usage": 0.9, "rack_slot_code": "A", "bin_code": "BIN-001"}],
+    assert FullBoxExchangeService._validate_execution_context({"db": db, "workline": workline}) == (
+        db,
+        13,
+        "SMT-ROUGH-1",
     )
 
-    assert moves == [
-        {
-            "source_type": "RACK_SLOT",
-            "source_code": "RACK-001:A",
-            "target_type": "FULL_BOX_EXCHANGE_BUFFER",
-            "target_code": "SMT_FULL_BOX_EXCHANGE",
-            "rack_release_id": "release-001",
-            "rack_code": "RACK-001",
-            "rack_slot_code": "A",
-            "bin_code": "BIN-001",
-            "required": True,
-        }
-    ]
+
+def test_e11_domain_context_rejects_missing_persisted_workline() -> None:
+    with pytest.raises(ValueError, match="workline"):
+        FullBoxExchangeService._validate_execution_context({"db": object()})

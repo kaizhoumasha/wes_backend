@@ -84,9 +84,11 @@ def domain_types() -> tuple[type[Any], type[Any]]:
 
 async def with_database(
     scenario: Callable[[async_sessionmaker[AsyncSession]], Awaitable[None]],
+    *,
+    revision: str = REVISION,
 ) -> None:
     async with temporary_database() as (_database, database_url):
-        run_alembic("upgrade", REVISION, database_url=database_url)
+        run_alembic("upgrade", revision, database_url=database_url)
         engine = create_async_engine(database_url, pool_pre_ping=True, pool_size=8, max_overflow=0)
         session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
@@ -98,8 +100,8 @@ async def with_database(
 def execution_ctx(db: AsyncSession, graph: ExchangeGraph) -> dict[str, Any]:
     return {
         "db": db,
-        # E11 root 复用 RuntimeIntent + SystemOutbox；本集成夹具不伪造另一个 workline session。
-        "session": SimpleNamespace(id=None),
+        # E11 domain authority 不承载 plugin session/work-item/inbox/binding；
+        # 只传递本事务与已持久化 WorkLine 锚点。
         "workline": graph.workline,
         "trace_id": graph.demand.trace_id,
     }

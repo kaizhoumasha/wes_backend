@@ -49,7 +49,19 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
 )
-from src.app.runtime.orchestration.repository_wiring import smt_inbound_handoff_repository
+from src.app.runtime.orchestration.repository_wiring import smt_inbound_handoff_repository, workline_repository
+from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+from src.app.runtime.orchestration.services.full_box_exchange_service import (
+    FullBoxExchangeService,
+    full_box_exchange_service,
+)
+from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
+    SystemCapabilityEffectService,
+)
+from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.definition import (
+    DEFINITION as FULL_BOX_EXCHANGE_DEFINITION,
+)
+from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
 from src.app.workline.services.plugin_binding_service import (
     WorklinePluginBindingService,
     workline_plugin_binding_service,
@@ -66,11 +78,10 @@ _TERMINAL_MATERIAL_OWNER_SESSION_STATUSES = {
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.handling.services import HandlingOperationService
     from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import SmtInboundHandoffRepository
+    from src.core.task_queue_gateway import OutboxDispatchTarget
 
 
-_FULL_BOX_EXCHANGE_OPERATION_TYPE = "SINGLE_LAYER_FULL_BOX_EXCHANGE"
 _DIRECT_SORTING_DECISION = "DIRECT_SORTING"
 _PREFERRED_EXCHANGE_FALLBACK_DECISION = "PREFERRED_FULL_BOX_EXCHANGE_FALLBACK_SORTING"
 _FULL_BOX_EXCHANGED_DECISION = "FULL_BOX_EXCHANGED"
@@ -94,16 +105,6 @@ _CLAIMABLE_DEMAND_STATUSES = {
     SmtInboundHandoffDemandStatus.READY_FOR_SORTING,
 }
 _RouteProbeCache = dict[tuple[Any, ...], tuple[Any, Any]]
-_FORBIDDEN_EXTERNAL_MOVE_FIELDS = {
-    "dispatch_key",
-    "external_target_code",
-    "outbox_id",
-    "payload_json",
-    "http_headers",
-    "url",
-    "auth",
-    "retry",
-}
 _SOURCE_PICK_REQUESTED_EVENT = "SORTING_SOURCE_PICK_REQUESTED"
 _SORTING_TARGET_RACK_POSITION_CODE = "TARGET_STATION"
 _CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS = 5
@@ -145,6 +146,23 @@ class SmtInboundHandoffLedgerResult:
     session: Any | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SmtInboundHandoffE11ScanResult:
+    """单个 due demand 的短事务 E11 producer 结果。"""
+
+    scanned: bool
+    advanced: bool
+    outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
+
+
+class SmtInboundHandoffE11EvaluationError(RuntimeError):
+    """已锁定 demand 的 E11 评价失败；scanner 据此在本轮排除该 demand。"""
+
+    def __init__(self, demand_id: int) -> None:
+        self.demand_id = demand_id
+        super().__init__(f"typed E11 evaluation failed for demand {demand_id}")
+
+
 class SmtInboundHandoffService:
     """处理粗分机 release fact 到 handoff demand 的幂等入口。"""
 
@@ -154,18 +172,18 @@ class SmtInboundHandoffService:
         repository: SmtInboundHandoffRepository = smt_inbound_handoff_repository,
         usage_policy: SmtUsagePolicy = SMT_USAGE_POLICY,
         reason_catalog: SmtInboundHandoffReasonCatalog = SMT_INBOUND_HANDOFF_REASON_CATALOG,
-        handling_operation_service: HandlingOperationService | None = None,
         route_service: SmtInboundHandoffRouteService = smt_inbound_handoff_route_service,
         plugin_binding_service: WorklinePluginBindingService = workline_plugin_binding_service,
         command_repository: DeviceCommandRepository = device_command_repository,
+        full_box_exchange_service: FullBoxExchangeService = full_box_exchange_service,
     ) -> None:
         self.repository = repository
         self.usage_policy = usage_policy
         self.reason_catalog = reason_catalog
-        self.handling_operation_service = handling_operation_service
         self.route_service = route_service
         self.plugin_binding_service = plugin_binding_service
         self.command_repository = command_repository
+        self.full_box_exchange_service = full_box_exchange_service
 
     async def create_or_get_from_release(
         self,
@@ -259,11 +277,19 @@ class SmtInboundHandoffService:
         demand: SmtInboundHandoffDemand,
         prefer_full_box_exchange: bool = False,
         trace_id: str | None = None,
+        outbox_dispatch_targets: set[OutboxDispatchTarget] | None = None,
     ) -> SmtInboundHandoffDemand:
         """按 release usage 决定直接分拣或发起满箱交换。"""
 
-        if demand.status == SmtInboundHandoffDemandStatus.MANUAL_HOLD:
-            return await self.recalculate_demand_status(db, demand, reason="evaluate")
+        if (
+            demand.status
+            in {
+                SmtInboundHandoffDemandStatus.MANUAL_HOLD,
+                SmtInboundHandoffDemandStatus.RECONCILING,
+            }
+            or demand.active_full_box_exchange_intent_id is not None
+        ):
+            return demand
 
         snapshots = self._snapshots_from_demand(demand)
         usage_decision = self._usage_band_from_snapshots(snapshots)
@@ -285,15 +311,111 @@ class SmtInboundHandoffService:
             if band == "PREFERRED_FULL_BOX_EXCHANGE"
             else _REQUIRED_EXCHANGE_REQUESTED_DECISION
         )
-        await self._request_full_box_exchange(
+        dispatch_targets = await self._request_typed_full_box_exchange(
             db,
             demand=demand,
-            snapshots=snapshots,
-            operation_key=self._full_box_exchange_operation_key(demand),
-            decision_status=decision_status,
+            prefer_full_box_exchange=(decision_status == _PREFERRED_EXCHANGE_REQUESTED_DECISION),
             trace_id=trace_id,
         )
-        return await self.recalculate_demand_status(db, demand, reason="evaluate")
+        if outbox_dispatch_targets is not None:
+            outbox_dispatch_targets.update(dispatch_targets)
+        return demand
+
+    async def evaluate_next_due_e11_demand(
+        self,
+        db: AsyncSession,
+        *,
+        now: Any | None = None,
+        excluded_demand_ids: frozenset[int] = frozenset(),
+    ) -> SmtInboundHandoffE11ScanResult:
+        """锁定一个 due demand 后评价；调用方负责本次短事务 commit/rollback。"""
+
+        demand = await self.repository.lock_next_due_e11_demand(
+            db,
+            now=now or timezone.now_for_db(),
+            excluded_demand_ids=excluded_demand_ids,
+        )
+        if demand is None:
+            return SmtInboundHandoffE11ScanResult(scanned=False, advanced=False)
+        before_status = demand.status
+        dispatch_targets: set[OutboxDispatchTarget] = set()
+        try:
+            await self.evaluate(db, demand=demand, outbox_dispatch_targets=dispatch_targets)
+        except Exception as exc:
+            raise SmtInboundHandoffE11EvaluationError(demand.id) from exc
+        return SmtInboundHandoffE11ScanResult(
+            scanned=True,
+            advanced=demand.status != before_status,
+            outbox_dispatch_targets=frozenset(dispatch_targets),
+        )
+
+    async def _request_typed_full_box_exchange(
+        self,
+        db: AsyncSession,
+        *,
+        demand: SmtInboundHandoffDemand,
+        prefer_full_box_exchange: bool,
+        trace_id: str | None,
+    ) -> frozenset[OutboxDispatchTarget]:
+        """在一个事务内 reserve E11 root、写 Intent/Outbox；缺少权威锚点立即失败。"""
+
+        demand_id = getattr(demand, "id", None)
+        workline_id = getattr(demand, "source_workline_id", None)
+        if not isinstance(demand_id, int) or not isinstance(workline_id, int):
+            raise TypeError("typed E11 requires persisted handoff demand and source workline")
+        workline = await workline_repository.get_for_update(db, workline_id)
+        if workline is None:
+            raise ValueError("typed E11 source workline is missing")
+        correlation_id = f"smt-inbound-handoff:{demand_id}"
+        ctx: dict[str, Any] = {
+            "db": db,
+            "workline": workline,
+            "trace_id": self._text_or_none(trace_id) or demand.trace_id,
+            "correlation_id": correlation_id,
+        }
+        reservation = await self.full_box_exchange_service.reserve_next_root(
+            ctx,
+            handoff_demand_id=demand_id,
+            prefer_full_box_exchange=prefer_full_box_exchange,
+        )
+        if not reservation.created:
+            return frozenset()
+        if reservation.request is None:
+            raise RuntimeError("typed E11 reservation request is missing")
+
+        # Intent 的 domain binding snapshot 只能来自锁定的 correlation/demand/workline 权威链，
+        # 不携带或伪造 plugin session/work-item/inbox/binding。
+        from src.app.runtime.orchestration.services.intent.runtime_domain_capability_authority_resolver import (
+            runtime_domain_capability_authority_resolver,
+        )
+        from src.app.wms_integration.effect_preparation_runtime import get_wms_effect_preparation_runtime
+
+        authority = await runtime_domain_capability_authority_resolver.resolve(db, correlation_id=correlation_id)
+        preparation_runtime = get_wms_effect_preparation_runtime()
+        if preparation_runtime is None:
+            raise RuntimeError("typed E11 WMS preparation runtime is not bound")
+        intent = RuntimeIntent.system_capability(
+            capability_key="wms.fulfillment.full_box_exchange",
+            contract_version="v1",
+            operation_key=reservation.request.exchange_request_key,
+            dispatch_key=reservation.request.dispatch_key,
+            payload=reservation.request,
+            precondition={"handoff_demand_id": demand_id},
+            fact_version=f"handoff-demand:{demand_id}:e11",
+            timeout_seconds=FULL_BOX_EXCHANGE_DEFINITION.timeout_seconds,
+            creator_authority="RUNTIME_DOMAIN_SERVICE",
+            authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
+            binding_snapshot=authority.binding_snapshot,
+            provider_snapshot={"provider_code": "RUNTIME", "profile": FULL_BOX_EXCHANGE_DEFINITION.admission},
+        )
+        result = await SystemCapabilityEffectService(
+            effect_port_resolver=lambda port_type: (
+                preparation_runtime if port_type is WmsEffectPreparationPort else None
+            ),
+        ).apply(ctx, intent)
+        if not result.durably_accepted:
+            raise RuntimeError("typed E11 intent/outbox preparation failed closed")
+        return result.outbox_dispatch_targets
 
     async def manual_reconcile_exchange(
         self,
@@ -303,20 +425,10 @@ class SmtInboundHandoffService:
         post_exchange_relations: Mapping[str, Any] | Sequence[Mapping[str, Any]],
         trace_id: str | None = None,
     ) -> SmtInboundHandoffDemand:
-        """人工补充满箱交换对账 evidence 后推进 demand。"""
+        """E11 只能由 typed terminal projector 完成，禁止人工绕过。"""
 
-        _ = trace_id
-        await self._apply_post_exchange_relations(
-            db,
-            demand=demand,
-            post_exchange_relations=post_exchange_relations,
-        )
-        demand.status = SmtInboundHandoffDemandStatus.FULL_BOX_EXCHANGED
-        demand.decision_status = _FULL_BOX_EXCHANGED_DECISION
-        demand.failure_code = None
-        demand.failure_message = None
-        db.add(demand)
-        return await self.recalculate_demand_status(db, demand, reason="manual_reconcile_exchange")
+        _ = (db, demand, post_exchange_relations, trace_id)
+        raise RuntimeError("manual E11 completion bypass is forbidden")
 
     async def retry_exchange(
         self,
@@ -325,18 +437,10 @@ class SmtInboundHandoffService:
         demand: SmtInboundHandoffDemand,
         trace_id: str | None = None,
     ) -> SmtInboundHandoffDemand:
-        """人工重试满箱交换，使用独立重试幂等 key。"""
+        """E11 重试由 durable Outbox/Beat 处理，禁止创建独立重试 root。"""
 
-        snapshots = self._snapshots_from_demand(demand)
-        await self._request_full_box_exchange(
-            db,
-            demand=demand,
-            snapshots=snapshots,
-            operation_key=f"{self._full_box_exchange_operation_key(demand)}:retry",
-            decision_status=_REQUIRED_EXCHANGE_REQUESTED_DECISION,
-            trace_id=trace_id,
-        )
-        return await self.recalculate_demand_status(db, demand, reason="retry_exchange")
+        _ = (db, demand, trace_id)
+        raise RuntimeError("manual E11 retry bypass is forbidden")
 
     async def recalculate_demand_status(
         self,
@@ -2472,85 +2576,6 @@ class SmtInboundHandoffService:
             "reel_thickness_mm": self._decimal_or_none(cell.get("reel_thickness_mm") or cell.get("reel_thickness")),
         }
 
-    async def _request_full_box_exchange(
-        self,
-        db: AsyncSession,
-        *,
-        demand: SmtInboundHandoffDemand,
-        snapshots: Sequence[Mapping[str, Any]],
-        operation_key: str,
-        decision_status: str,
-        trace_id: str | None,
-    ) -> None:
-        moves = self._full_box_exchange_moves(demand=demand, snapshots=snapshots)
-        if not moves:
-            self._apply_failure(demand, SmtInboundHandoffReasonCode.RELEASE_SNAPSHOT_INVALID.value)
-            return
-
-        for move in moves:
-            leaked = _FORBIDDEN_EXTERNAL_MOVE_FIELDS.intersection(move)
-            if leaked:
-                raise ValueError(f"满箱交换 move 泄漏外部派发字段: {', '.join(sorted(leaked))}")
-
-        await self._handling_operation_service().request_bin_operation(
-            db,
-            operation_type=_FULL_BOX_EXCHANGE_OPERATION_TYPE,
-            operation_key=operation_key,
-            moves=moves,
-            trace_id=self._text_or_none(trace_id) or self._text_or_none(demand.trace_id) or demand.rack_release_id,
-            workline_id=demand.source_workline_id,
-            workline_code=demand.source_workline_code,
-            carrier_type="CTU",
-            carrier_code=demand.single_layer_rack_code,
-        )
-        demand.handling_operation_key = operation_key
-        demand.status = SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
-        demand.decision_status = decision_status
-        demand.failure_code = None
-        demand.failure_message = None
-        db.add(demand)
-
-    def _handling_operation_service(self) -> HandlingOperationService:
-        if self.handling_operation_service is None:
-            from src.app.handling.services.operation_service import handling_operation_service
-
-            self.handling_operation_service = handling_operation_service
-        return self.handling_operation_service
-
-    def _full_box_exchange_moves(
-        self,
-        *,
-        demand: SmtInboundHandoffDemand,
-        snapshots: Sequence[Mapping[str, Any]],
-    ) -> list[dict[str, Any]]:
-        moves: list[dict[str, Any]] = []
-        for index, snapshot in enumerate(snapshots, start=1):
-            usage_result = self.usage_policy.resolve_release_bin_usage(snapshot)
-            if not usage_result.valid or usage_result.usage is None:
-                continue
-            if self.usage_policy.usage_band(usage_result.usage) == "DIRECT_SORTING":
-                continue
-            slot_code = self._snapshot_slot_code(snapshot, fallback=index)
-            bin_code = self._text_or_none(snapshot.get("bin_code") or snapshot.get("bin_id"))
-            moves.append(
-                {
-                    "source_type": "RACK_SLOT",
-                    "source_code": f"{demand.single_layer_rack_code}:{slot_code}",
-                    "target_type": "FULL_BOX_EXCHANGE_BUFFER",
-                    "target_code": "SMT_FULL_BOX_EXCHANGE",
-                    "rack_release_id": demand.rack_release_id,
-                    "rack_code": demand.single_layer_rack_code,
-                    "rack_slot_code": slot_code,
-                    "bin_code": bin_code,
-                    "required": True,
-                }
-            )
-        return moves
-
-    @staticmethod
-    def _full_box_exchange_operation_key(demand: SmtInboundHandoffDemand) -> str:
-        return f"smt-inbound-handoff:{demand.rack_release_id}:full-box-exchange"
-
     def _usage_band_from_snapshots(
         self,
         snapshots: Sequence[Mapping[str, Any]],
@@ -2768,6 +2793,8 @@ smt_inbound_handoff_service = SmtInboundHandoffService()
 
 
 __all__ = [
+    "SmtInboundHandoffE11EvaluationError",
+    "SmtInboundHandoffE11ScanResult",
     "SmtInboundHandoffService",
     "smt_inbound_handoff_service",
 ]

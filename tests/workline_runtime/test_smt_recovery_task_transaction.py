@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,9 +20,116 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
+from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
+    SmtInboundHandoffE11EvaluationError,
+    SmtInboundHandoffE11ScanResult,
+    SmtInboundHandoffService,
+)
 from src.celery_app.tasks.workline import _scan_smt_inbound_handoff_demands_in_transaction
+from src.core.task_queue_gateway import OutboxDispatchTarget
 from src.utils.timezone import timezone
+
+
+class _E11ScanDb:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+@pytest.mark.asyncio
+async def test_e11_scan_commits_before_only_fulfillment_enqueue_and_keeps_outbox_when_enqueue_fails() -> None:
+    db = _E11ScanDb()
+
+    class _Service:
+        async def evaluate_next_due_e11_demand(self, _db: object, **_kwargs: object) -> SmtInboundHandoffE11ScanResult:
+            return SmtInboundHandoffE11ScanResult(
+                scanned=True,
+                advanced=True,
+                outbox_dispatch_targets=frozenset({OutboxDispatchTarget.WMS_FULFILLMENT}),
+            )
+
+        async def scan_smt_inbound_handoff_demands_batch(self, _db: object, **_kwargs: object) -> dict[str, int]:
+            return {
+                "scanned": 0,
+                "claimed": 0,
+                "advanced": 0,
+                "retry_scheduled": 0,
+                "manual_hold": 0,
+                "recovery_errors": 0,
+            }
+
+    class _FailingGateway:
+        def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+            assert targets == frozenset({OutboxDispatchTarget.WMS_FULFILLMENT})
+            assert db.commits == 1
+            assert db.rollbacks == 0
+            raise RuntimeError("queue unavailable")
+
+    summary = await _scan_smt_inbound_handoff_demands_in_transaction(
+        db,
+        service=_Service(),
+        scan_limit=1,
+        recovery_limit=0,
+        claim_limit=0,
+        stale_after_seconds=1,
+        legacy_limit=None,
+        queue_gateway=_FailingGateway(),
+    )
+
+    assert summary["advanced"] == 1
+    assert db.commits == 2
+    assert db.rollbacks == 0
+
+
+@pytest.mark.asyncio
+async def test_e11_scan_excludes_failed_due_demand_and_advances_next_healthy_demand() -> None:
+    db = _E11ScanDb()
+
+    class _Service:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate_next_due_e11_demand(self, _db: object, **kwargs: object) -> SmtInboundHandoffE11ScanResult:
+            self.calls += 1
+            if self.calls == 1:
+                assert kwargs["excluded_demand_ids"] == frozenset()
+                raise SmtInboundHandoffE11EvaluationError(17)
+            if self.calls == 2:
+                assert kwargs["excluded_demand_ids"] == frozenset({17})
+                return SmtInboundHandoffE11ScanResult(scanned=True, advanced=True)
+            return SmtInboundHandoffE11ScanResult(scanned=False, advanced=False)
+
+        async def scan_smt_inbound_handoff_demands_batch(self, _db: object, **_kwargs: object) -> dict[str, int]:
+            return {
+                "scanned": 0,
+                "claimed": 0,
+                "advanced": 0,
+                "retry_scheduled": 0,
+                "manual_hold": 0,
+                "recovery_errors": 0,
+            }
+
+    service = _Service()
+    summary = await _scan_smt_inbound_handoff_demands_in_transaction(
+        db,
+        service=service,
+        scan_limit=10,
+        recovery_limit=0,
+        claim_limit=0,
+        stale_after_seconds=1,
+        legacy_limit=None,
+    )
+
+    assert service.calls == 3
+    assert summary["advanced"] == 1
+    assert summary["recovery_errors"] == 1
+    assert db.rollbacks == 1
 
 
 @pytest.mark.parametrize("execution_anchor_case", ["owned", "split_execution", "complete_replacement"])

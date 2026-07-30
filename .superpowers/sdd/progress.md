@@ -35,6 +35,13 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     `correlation_id + binding_snapshot_json` 做精确 reconciliation，拒绝同 payload 的 owner/workline/
     correlation 漂移。`RuntimeIntentLog.execution_session_id` 仅放宽 nullability 且保留 FK；真实
     PostgreSQL effect 回归 `5 passed`。scanner、handoff/FullBoxExchange、Celery、Handling/Rack 均未修改。
+  - G4.5b2 verified（2026-07-30）：仅对已持久化且具备 `smt-inbound-handoff:<demand-id>` correlation 的
+    handoff demand，scanner 逐条短事务通过 runtime domain authority 创建 typed E11。候选一次锁定并稳定只选
+    一个满箱；preparation 原子写 owner、active root、Outbox 并置 parent 为
+    `WAITING_FULL_BOX_EXCHANGE`。提交后仅唤醒 `WMS_FULFILLMENT`，入队失败保留 durable Outbox；本轮坏
+    demand 会排除后继续处理健康 demand。缺 correlation、阶段门漂移或未绑定 runtime 全部 rollback/fail closed。
+    真实 PostgreSQL scanner happy/missing-correlation 与两满箱 terminal 串行回归通过；不创建 release fact，T6
+    仍负责粗分机移出事实与 demand producer。
 - Task 6: pending — 固化粗分和分拣对象级流水
 - Task 7: pending — 替换 WMS 普通事件与 status hint
 - Task 8: pending — 建立 35 项参数化合同矩阵
