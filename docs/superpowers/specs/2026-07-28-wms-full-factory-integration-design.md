@@ -2345,6 +2345,17 @@ Codex; checkbox as you ship.
     独立工程复审最终 `Approved`。
     该检查点只关闭仓内四角色制品/profile/runtime 部署漂移，不替代现场网络隔离、REAL_TCP、数据库容量、
     35 项 conformance 和 GO 签字，因此 T10 保持未完成。
+  - WMS evidence archive deviation removal checkpoint（2026-07-30）：按本 SPEC “不建 WMS 专用
+    清理/归档任务或第二套 retention”的边界，删除无生产调用的 180 天常量、archive model/repository/
+    service/table、对应 exports/tests/合同表面和未发布建表 revision；下游 migration 直接重接，后续
+    provider identity revision 只保留热表 column/index，不新增 drop-table 兼容迁移或旧数据迁移。
+    `wms_call_evidence` 的写入、脱敏、hash、查询、provider identity 索引与 ExternalReference drift
+    保持不变，记录保留继续服从项目统一 retention、运维与容量策略。absence guardrail 扫描生产源码、
+    migrations、活跃 architecture/contracts，7 类已删除标识引用为 0。WMS 有效 evidence 与 guardrail
+    定向回归 `435 passed`，测试拓扑 `6 passed`，默认收集 `5405`，完整 quality profile 通过；
+    Alembic 单 head，空 PostgreSQL 从零升级成功并证明热表/列/索引存在、archive 表不存在；独立工程
+    复审最终 `Approved`。该检查点只清理仓内 SPEC/YAGNI 偏离，不替代
+    项目统一保留策略、现场容量周期证据或 GO 签字，因此 T10 保持未完成。
 
 ## 21. 完成定义
 

@@ -1,7 +1,7 @@
 """add device runtime projection
 
 Revision ID: f88092809f4b
-Revises: c03c89cce981
+Revises: 629d8e64eb13
 Create Date: 2026-07-02 19:13:16.245980+08:00
 
 """
@@ -16,7 +16,7 @@ SCHEMA = "wes_runtime"
 
 # revision identifiers, used by Alembic.
 revision: str = "f88092809f4b"
-down_revision: Union[str, Sequence[str], None] = "c03c89cce981"
+down_revision: Union[str, Sequence[str], None] = "629d8e64eb13"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -1,11 +1,9 @@
 import json
-from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy.dialects.postgresql import JSONB
 
-from src.app.wms_integration.models import WmsCallEvidence, WmsCallEvidenceArchive, WmsEvidenceStatus
-from src.app.wms_integration.repositories import wms_call_evidence_archive_repository
+from src.app.wms_integration.models import WmsCallEvidence, WmsEvidenceStatus
 from src.app.wms_integration.services import (
     WmsCallEvidenceService,
     canonical_sha256,
@@ -242,7 +240,6 @@ def test_evidence_model_declares_required_indexes() -> None:
     assert indexes["ix_wms_call_evidence_response_snapshot_gin"] == ("response_snapshot",)
 
     assert table.c.provider_profile_identity.type.length == 240
-    assert WmsCallEvidenceArchive.__table__.c.provider_profile_identity.type.length == 240
     assert isinstance(table.c.request_snapshot.type, JSONB)
     assert isinstance(table.c.response_snapshot.type, JSONB)
 
@@ -331,73 +328,3 @@ async def test_wms_external_reference_drift_job_classifies_evidence_envelopes(db
     assert report.drift_items[0].kind == ExternalReferenceDriftKind.SOURCE_VERSION_MISMATCH
     assert report.drift_items[0].reference.code == "PKG-DRIFT"
     assert report.drift_items[0].expected_source_version == "wms-42"
-
-
-@pytest.mark.asyncio
-async def test_wms_evidence_retention_archives_expired_finished_rows(db_session) -> None:
-    now = datetime(2026, 7, 2, 12, 0, 0)
-    expired_started_at = now - timedelta(days=181)
-    fresh_started_at = now - timedelta(days=7)
-
-    expired = await wms_call_evidence_service.record_sync_call(
-        db_session,
-        evidence_key="sync:retention:expired",
-        provider_profile_identity="wms.test.production",
-        operation_name="query_inventory",
-        target_code="WMS_INVENTORY",
-        status=WmsEvidenceStatus.SUCCEEDED,
-        request_snapshot={"sku": "EXPIRED"},
-        response_snapshot={"qty": 1},
-        started_at=expired_started_at,
-        finished_at=expired_started_at + timedelta(seconds=1),
-    )
-    fresh = await wms_call_evidence_service.record_sync_call(
-        db_session,
-        evidence_key="sync:retention:fresh",
-        provider_profile_identity="wms.test.production",
-        operation_name="query_inventory",
-        target_code="WMS_INVENTORY",
-        status=WmsEvidenceStatus.SUCCEEDED,
-        request_snapshot={"sku": "FRESH"},
-        response_snapshot={"qty": 2},
-        started_at=fresh_started_at,
-        finished_at=fresh_started_at + timedelta(seconds=1),
-    )
-    in_flight = await wms_call_evidence_service.record_sync_call(
-        db_session,
-        evidence_key="sync:retention:in-flight",
-        provider_profile_identity="wms.test.production",
-        operation_name="query_inventory",
-        target_code="WMS_INVENTORY",
-        status=WmsEvidenceStatus.STARTED,
-        request_snapshot={"sku": "IN-FLIGHT"},
-        response_snapshot=None,
-        started_at=expired_started_at,
-        finished_at=None,
-    )
-
-    report = await wms_call_evidence_service.archive_expired_evidence(
-        db_session,
-        now=now,
-        retention_days=180,
-        limit=10,
-    )
-
-    assert report.scanned_count == 1
-    assert report.archived_count == 1
-    assert report.deleted_count == 1
-    assert report.cutoff_at == now - timedelta(days=180)
-
-    assert await wms_call_evidence_service.repo.get_by_evidence_key(db_session, expired.evidence_key) is None
-    assert await wms_call_evidence_service.repo.get_by_evidence_key(db_session, fresh.evidence_key) is not None
-    assert await wms_call_evidence_service.repo.get_by_evidence_key(db_session, in_flight.evidence_key) is not None
-
-    archived = await wms_call_evidence_archive_repository.get_by_evidence_key(db_session, expired.evidence_key)
-    assert archived is not None
-    assert archived.original_evidence_id == expired.id
-    assert archived.evidence_key == expired.evidence_key
-    assert archived.request_hash == expired.request_hash
-    assert archived.response_hash == expired.response_hash
-    assert archived.request_snapshot == expired.request_snapshot
-    assert archived.response_snapshot == expired.response_snapshot
-    assert archived.archived_at == now

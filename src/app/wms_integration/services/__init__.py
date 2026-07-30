@@ -11,7 +11,6 @@ from .circuit_breaker_service import (
 )
 from .evidence_service import (
     WmsCallEvidenceService,
-    WmsEvidenceArchiveReport,
     WmsExternalReferenceDriftItem,
     WmsExternalReferenceDriftReport,
     wms_call_evidence_service,
@@ -41,7 +40,6 @@ __all__ = [
     "WmsCircuitBreakerService",
     "WmsCircuitOpenError",
     "WmsEventNormalizer",
-    "WmsEvidenceArchiveReport",
     "WmsEvidencePersistenceError",
     "WmsExecutionCallbackNormalizer",
     "WmsExternalReferenceDriftItem",

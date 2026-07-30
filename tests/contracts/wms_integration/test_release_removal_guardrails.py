@@ -368,6 +368,39 @@ REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
 }
 
 _WMS_OPERATION_IDENTITY_LITERAL = re.compile(r"\bwms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*\b")
+REMOVED_WMS_EVIDENCE_ARCHIVE_LITERALS = frozenset(
+    {
+        "WMS_CALL_EVIDENCE_RETENTION_DAYS",
+        "WmsCallEvidenceArchive",
+        "WmsCallEvidenceArchiveRepository",
+        "wms_call_evidence_archive",
+        "archive_expired_evidence",
+        "archive_wms_call_evidence",
+        "archive-wms-call-evidence",
+    }
+)
+WMS_EVIDENCE_ARCHIVE_SCAN_ROOTS = (
+    "src",
+    "migrations/versions",
+    "docs/architecture",
+    "docs/contracts",
+)
+
+
+def test_wms_evidence_archive_surface_is_absent_from_active_artifacts() -> None:
+    """WMS 不得维护专用 evidence archive/retention 生产表面。"""
+
+    offenders: dict[str, set[str]] = {}
+    for relative_root in WMS_EVIDENCE_ARCHIVE_SCAN_ROOTS:
+        for path in (REPO_ROOT / relative_root).rglob("*"):
+            if not path.is_file() or path.suffix not in {".md", ".py", ".yml"}:
+                continue
+            source = path.read_text(encoding="utf-8")
+            found = {literal for literal in REMOVED_WMS_EVIDENCE_ARCHIVE_LITERALS if literal in source}
+            if found:
+                offenders[str(path.relative_to(REPO_ROOT))] = found
+
+    assert offenders == {}
 
 
 def test_removed_transport_and_terminal_callbacks_are_absent_from_production() -> None:

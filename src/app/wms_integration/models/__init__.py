@@ -1,7 +1,7 @@
 """WMS 对接辅助域模型导出。"""
 
 from .circuit_breaker import WmsCircuitBreakerState, WmsCircuitBreakerStatus
-from .evidence import WMS_CALL_EVIDENCE_RETENTION_DAYS, WmsCallEvidence, WmsCallEvidenceArchive, WmsEvidenceStatus
+from .evidence import WmsCallEvidence, WmsEvidenceStatus
 from .ports import (
     ConfirmOutboundRequest,
     ConfirmOutboundResponse,
@@ -15,7 +15,6 @@ from .ports import (
 )
 
 __all__ = [
-    "WMS_CALL_EVIDENCE_RETENTION_DAYS",
     "ConfirmOutboundRequest",
     "ConfirmOutboundResponse",
     "ReleaseReservationRequest",
@@ -23,7 +22,6 @@ __all__ = [
     "ReserveInventoryRequest",
     "ReserveInventoryResponse",
     "WmsCallEvidence",
-    "WmsCallEvidenceArchive",
     "WmsCircuitBreakerState",
     "WmsCircuitBreakerStatus",
     "WmsEvidenceStatus",

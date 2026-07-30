@@ -18,18 +18,13 @@
 | `ix_wms_call_evidence_request_snapshot_gin` | `request_snapshot` | 查询出站 request envelope 内的 `external_refs`、`source_event_id`、`payload_hash` |
 | `ix_wms_call_evidence_response_snapshot_gin` | `response_snapshot` | 查询入站/响应 envelope 内的 `external_refs`、`source_event_id`、`payload_hash` |
 
-## Retention And Archive
+## Retention
 
-`WMS_CALL_EVIDENCE_RETENTION_DAYS` 默认 180 天。`WmsCallEvidenceService.archive_expired_evidence()` 只迁移超过保留期且非 `STARTED` 的 evidence：
+`wms_call_evidence` 是供 trace、callback、breaker、drift job 和现场诊断查询的热 evidence 表。
+WMS 不维护专用保留周期或清理任务，记录保留服从项目统一保留策略或经核准的运维方案。
 
-| Table | Purpose | Notes |
-| --- | --- | --- |
-| `wms_call_evidence` | 热 evidence 表 | 供 trace、callback、breaker、drift job 和现场诊断查询 |
-| `wms_call_evidence_archive` | 归档 evidence 表 | 保留原 `evidence_key`、hash、snapshot、状态、时间和 `original_evidence_id` |
-
-- `STARTED` 表示仍可能在途，不能被 retention job 归档或删除。
-- archive 写入成功后才允许删除热表记录。
-- archive 表只保存脱敏快照，不恢复或复制原始 provider payload。
+在统一策略明确前，active、结果不明确、Hold 或 Reconciliation 关联记录不得进入普通清理集合；
+容量边界通过生产容量规划和周期性复核闭环。
 
 ## Drift Classification
 

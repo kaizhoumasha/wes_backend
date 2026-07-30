@@ -462,5 +462,4 @@ async def test_evidence_repository_query_lock_and_optional_branches() -> None:
         operation_name="query",
         request_canonical_hash="hash",
     )
-    assert await repository.delete_by_ids(db, []) == 0
     assert len(db.statements) == 3
