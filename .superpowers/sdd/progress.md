@@ -42,6 +42,11 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     demand 会排除后继续处理健康 demand。缺 correlation、阶段门漂移或未绑定 runtime 全部 rollback/fail closed。
     真实 PostgreSQL scanner happy/missing-correlation 与两满箱 terminal 串行回归通过；不创建 release fact，T6
     仍负责粗分机移出事实与 demand producer。
+  - legacy cleanup verified（2026-07-30，待独立复审）：删除 generic Rack/Handling RuntimeIntent 全链、
+    旧聚合模型/服务/回调 fallback、SingleLayer façade、E11 manual/retry 旁路及 legacy manifest；生成
+    `46f11dd0a874` drop migration。独立临时 PostgreSQL cold-start 到 head 后五张旧表均为 0；
+    `tests/workline_runtime/` `1128 passed`，WMS/E11/粗分合同 `457 passed`，架构/absence/topology
+    `52 passed`，默认收集 `5102 tests`，quality profile 通过。当前只记录 verified checkpoint，不提前完成 T5。
 - Task 6: pending — 固化粗分和分拣对象级流水
 - Task 7: pending — 替换 WMS 普通事件与 status hint
 - Task 8: pending — 建立 35 项参数化合同矩阵

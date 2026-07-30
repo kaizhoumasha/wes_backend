@@ -30,7 +30,12 @@ from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256 
 from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE  # noqa: E402
 from src.app.wms_integration.operation_contract import WmsCompletionMode  # noqa: E402
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS  # noqa: E402
-from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck  # noqa: E402
+from src.app.wms_integration.ports.fulfillment_operations import (  # noqa: E402
+    BATCH_FULFILLMENT_OPERATION_IDENTITIES,
+    WmsAcceptedScope,
+    WmsEffectAck,
+    accepted_scope_digest,
+)
 from src.core.conf import settings  # noqa: E402
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES  # noqa: E402
 
@@ -188,6 +193,7 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
     if not isinstance(snapshot, dict) or set(snapshot) != {
         "state",
         "provider_reference",
+        "accepted_scope",
         "reason_code",
         "updated_at",
         "source_version",
@@ -200,8 +206,25 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
     if state == "NOT_FOUND":
         return all(
             snapshot[field] is None
-            for field in ("provider_reference", "reason_code", "updated_at", "source_version", "result_payload")
+            for field in (
+                "provider_reference",
+                "accepted_scope",
+                "reason_code",
+                "updated_at",
+                "source_version",
+                "result_payload",
+            )
         )
+    accepted_scope_payload = snapshot["accepted_scope"]
+    if operation_identity in BATCH_FULFILLMENT_OPERATION_IDENTITIES:
+        try:
+            accepted_scope = WmsAcceptedScope.model_validate(accepted_scope_payload)
+        except ValueError:
+            return False
+        if accepted_scope.scope_digest != accepted_scope_digest(accepted_scope.object_keys):
+            return False
+    elif accepted_scope_payload is not None:
+        return False
     source_version = snapshot["source_version"]
     if isinstance(source_version, bool) or not isinstance(source_version, int) or not 0 <= source_version < 2**63:
         return False
@@ -690,7 +713,8 @@ async def run_probe(
         visibility_key = f"probe-visibility-{uuid4().hex}"
         visibility_sla = contract_values["status_visibility_sla_seconds"]
         retention = contract_values["idempotency_retention_seconds"]
-        accepted_at = datetime(2026, 7, 25, tzinfo=UTC)
+        # 使用探针执行时刻，避免固定历史时钟复位后让本轮更早创建的记录被误判为已过保留期。
+        accepted_at = datetime.now(UTC)
         clock_started = await configure_clock(accepted_at)
         visibility_configured = await configure_visibility(
             identity,

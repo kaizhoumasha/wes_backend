@@ -478,6 +478,7 @@ def _northbound_not_found_payload() -> dict[str, Any]:
     return {
         "state": "NOT_FOUND",
         "provider_reference": None,
+        "accepted_scope": None,
         "reason_code": None,
         "updated_at": None,
         "source_version": None,

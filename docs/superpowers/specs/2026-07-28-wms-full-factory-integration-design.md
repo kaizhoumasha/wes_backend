@@ -2144,6 +2144,15 @@ Codex; checkbox as you ship.
     generated-index 直接以静态 `WMS_OPERATIONS` 验证 40 项 capability。定向 181 项 extensions 回归、13 项
     WMS domain projector 回归及完整 `tests/workline_runtime/` 均实测通过，后者结果为 `1129 passed`。该证据只说明
     既有测试合同已同步，不改变 Task 5 的 in-progress 状态，也不替代其剩余实现、独立审查和总体验收。
+  - Verified checkpoint — T5 旧 Rack / Handling / SingleLayer transport 死链清理（2026-07-30，待独立复审）：
+    三种 generic RuntimeIntent、旧 operation/task lifecycle、SessionResolver callback fallback、RackTask deadline
+    cancel、runtime rack-status provider、SingleLayer façade、E11 manual/retry 旁路及 legacy manifest 已物理删除；
+    typed E08–E16、E11 domain projector/FullBoxExchange、Resource projection 与 T6 料格分配语义保持不变。
+    Alembic generator 产生 `46f11dd0a874`，独立临时 PostgreSQL 从空库 upgrade 到 head 后五张旧表均不存在；
+    新环境不恢复旧 schema，downgrade 明确拒绝。absence/architecture/topology 定向 `52 passed`，
+    `tests/workline_runtime/` `1128 passed`，WMS/E11/粗分合同组合 `457 passed`，默认收集 `5102 tests`，
+    quality profile、Ruff、Bandit、import-linter、architecture `0 violations / 0 warnings` 均通过。
+    本检查点只记录实现验证；T5 仍保持 in progress，必须经独立复审且完整 Task 5 acceptance 通过后才能勾选。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION
