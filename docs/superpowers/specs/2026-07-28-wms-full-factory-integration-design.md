@@ -2119,6 +2119,20 @@ Codex; checkbox as you ship.
     保存 candidate，回滚/关闭均按该 candidate 解绑，bind 失败不能影响既有 owner。生命周期顺序明确为
     WMS data → EFFECT preparation → WMS effect。跨 loop、bind-failure 和 owner-only cleanup 覆盖的
     deployment/startup 组合 `67 passed`，Ruff、diff check 与 quality profile 通过。
+  - Verified checkpoint — G4.5b1 / E11 runtime domain authority：唯一 System Capability pipeline
+    新增与 plugin authority 互斥的 `RUNTIME_DOMAIN_SERVICE + DOMAIN_CAPABILITY_ALLOWLIST` 分支；runtime
+    静态 allowlist 只允许 `SMT_INBOUND_HANDOFF → wms.fulfillment.full_box_exchange@v1`，并要求已持久化、
+    `execution_session_id = NULL` 的 ExecutionCorrelation、稳定 business owner 和当前 workline。domain
+    claim 的 session/work-item/plugin/binding identity 均为空，producer 与 operation identity 冻结进入既有
+    RuntimeIntentLog，幂等键固定为
+    `system-capability:<capability>@<version>:domain:<producer>:<operation_key>`；plugin admission 未放宽。
+    `RuntimeIntentLog.execution_session_id` 仅放宽 nullability，FK 保留，未新增 intent/outbox/dispatcher。
+  - G4.5b1 evidence：authority/model/migration 与既有 plugin coordinator 定向覆盖 `71 passed`，真实
+    PostgreSQL cold-start effect 文件 `5 passed`，覆盖 nullable FK、持久 correlation、首次 claim、同 hash
+    MATCH 与异 hash conflict；目标模型 `100%`、目标 service 总体 line/branch `88%`（本检查点新增 domain
+    分支全覆盖），topology `6 passed`、默认收集 `5110 tests`、完整 quality profile、Ruff 与 diff check
+    通过。T5 仍未整体完成，scanner、handoff、FullBoxExchange、Celery 及 Handling/Rack producer 未在本
+    检查点修改。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

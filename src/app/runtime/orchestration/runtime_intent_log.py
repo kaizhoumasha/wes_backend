@@ -66,7 +66,8 @@ class RuntimeIntentLog(BaseMixin, table=True):
     id: int | None = Field(default=None, primary_key=True)
 
     # runtime 域内强 FK
-    execution_session_id: int = Field(
+    execution_session_id: int | None = Field(
+        default=None,
         foreign_key=f"{RUNTIME_SCHEMA}.execution_sessions.id",
         index=True,
     )

@@ -32,6 +32,13 @@ if TYPE_CHECKING:
     from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 
 
+_RUNTIME_DOMAIN_AUTHORITY = ("RUNTIME_DOMAIN_SERVICE", "DOMAIN_CAPABILITY_ALLOWLIST")
+_RUNTIME_DOMAIN_AUTHORITY_MARKERS = frozenset(_RUNTIME_DOMAIN_AUTHORITY)
+_RUNTIME_DOMAIN_CAPABILITY_ALLOWLIST = {
+    "SMT_INBOUND_HANDOFF": frozenset({("wms.fulfillment.full_box_exchange", "v1")}),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedSystemCapabilityIntent:
     definition: SystemCapabilityDefinition
@@ -127,7 +134,7 @@ class SystemCapabilityIntentService:
             raise ValueError("system capability typed payload validation failed") from exc
 
         final_key = self._final_idempotency_key(ctx, intent)
-        correlation_id = self._correlation_id(ctx)
+        correlation_id = execution_identity.get("correlation_id") or self._correlation_id(ctx)
         claim = {
             "provider_code": "RUNTIME",
             "operation_kind": "system_capability_effect",
@@ -154,6 +161,17 @@ class SystemCapabilityIntentService:
             "dispatch_key": intent.dispatch_key,
             "updated_at_ms": int(timezone.now_utc().timestamp() * 1000),
         }
+        producer = execution_identity.get("producer")
+        if isinstance(producer, str):
+            # domain effect 的 owner/workline 已由持久 correlation 与当前 workline 校验；
+            # 这些稳定事实只随 claim 传递，producer 本身仍冻结在 ledger binding snapshot。
+            claim.update(
+                {
+                    "producer": producer,
+                    "business_owner_key": execution_identity["business_owner_key"],
+                    "workline_id": execution_identity["workline_id"],
+                }
+            )
         claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
         intent_log = None
         has_durable_outbox = False
@@ -270,6 +288,12 @@ class SystemCapabilityIntentService:
     def _validate_execution_identity(
         self, ctx: Mapping[str, Any], intent: RuntimeIntent, *, definition: SystemCapabilityDefinition
     ) -> dict[str, Any]:
+        authority = (intent.creator_authority, intent.authorization_policy)
+        if authority == _RUNTIME_DOMAIN_AUTHORITY:
+            return self._validate_runtime_domain_execution_identity(ctx, intent, definition=definition)
+        if any(marker in _RUNTIME_DOMAIN_AUTHORITY_MARKERS for marker in authority):
+            raise PermissionError("runtime domain system capability authority contract mismatch")
+
         session = ctx.get("session")
         work_item = ctx.get("work_item")
         inbox = ctx.get("inbox")
@@ -339,14 +363,69 @@ class SystemCapabilityIntentService:
         }
 
     @staticmethod
+    def _validate_runtime_domain_execution_identity(
+        ctx: Mapping[str, Any],
+        intent: RuntimeIntent,
+        *,
+        definition: SystemCapabilityDefinition,
+    ) -> dict[str, Any]:
+        if any(ctx.get(key) is not None for key in ("session", "work_item", "inbox", "plugin_binding")):
+            raise PermissionError("runtime domain system capability cannot carry plugin execution identity")
+        if set(intent.binding_snapshot) != {"producer"}:
+            raise PermissionError("runtime domain system capability binding snapshot mismatch")
+        producer = intent.binding_snapshot.get("producer")
+        if not isinstance(producer, str) or not producer:
+            raise PermissionError("runtime domain system capability producer is missing")
+        allowed_capabilities = _RUNTIME_DOMAIN_CAPABILITY_ALLOWLIST.get(producer, frozenset())
+        identity = (str(intent.capability_key), str(intent.contract_version))
+        if identity not in allowed_capabilities:
+            raise PermissionError("runtime domain system capability is not allowlisted for producer")
+        expected_provider = {"provider_code": "RUNTIME", "profile": definition.admission}
+        if intent.provider_snapshot != expected_provider:
+            raise PermissionError("runtime domain system capability provider snapshot mismatch")
+
+        correlation = ctx.get("execution_correlation")
+        correlation_row_id = getattr(correlation, "id", None)
+        correlation_id = getattr(correlation, "correlation_id", None)
+        correlation_session_id = getattr(correlation, "execution_session_id", None)
+        business_owner_key = getattr(correlation, "business_owner_key", None)
+        if not isinstance(correlation_row_id, int) or not isinstance(correlation_id, str) or not correlation_id:
+            raise ValueError("runtime domain system capability requires persisted execution correlation")
+        if correlation_session_id is not None:
+            raise PermissionError("runtime domain system capability correlation must not claim plugin session")
+        if not isinstance(business_owner_key, str) or not business_owner_key:
+            raise ValueError("runtime domain system capability requires stable business owner key")
+        workline_id = getattr(ctx.get("workline"), "id", None)
+        if not isinstance(workline_id, int):
+            raise TypeError("runtime domain system capability requires current workline")
+        return {
+            "execution_session_id": None,
+            "execution_work_item_id": None,
+            "plugin_key": None,
+            "plugin_contract_version": None,
+            "binding_id": None,
+            "binding_version": None,
+            "correlation_id": correlation_id,
+            "business_owner_key": business_owner_key,
+            "workline_id": workline_id,
+            "producer": producer,
+        }
+
+    @staticmethod
     def _final_idempotency_key(ctx: Mapping[str, Any], intent: RuntimeIntent) -> str:
-        session_id = getattr(ctx.get("session"), "id", None)
-        work_item = ctx.get("work_item")
-        work_item_id = getattr(work_item, "id", None)
-        raw = (
-            f"system-capability:{intent.capability_key}@{intent.contract_version}:"
-            f"session:{session_id}:work-item:{work_item_id}:{intent.operation_key}"
-        )
+        if (intent.creator_authority, intent.authorization_policy) == _RUNTIME_DOMAIN_AUTHORITY:
+            raw = (
+                f"system-capability:{intent.capability_key}@{intent.contract_version}:"
+                f"domain:{intent.binding_snapshot.get('producer')}:{intent.operation_key}"
+            )
+        else:
+            session_id = getattr(ctx.get("session"), "id", None)
+            work_item = ctx.get("work_item")
+            work_item_id = getattr(work_item, "id", None)
+            raw = (
+                f"system-capability:{intent.capability_key}@{intent.contract_version}:"
+                f"session:{session_id}:work-item:{work_item_id}:{intent.operation_key}"
+            )
         if len(raw) <= 160:
             return raw
         digest = sha256(raw.encode("utf-8")).hexdigest()[:20]

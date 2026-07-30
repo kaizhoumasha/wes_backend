@@ -7,7 +7,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import event, func
+from sqlalchemy import event, func, text
 from sqlmodel import select
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
@@ -22,11 +22,21 @@ from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, R
 from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
     SystemCapabilityEffectService,
 )
+from src.app.runtime.orchestration.services.intent.system_capability_intent_service import (
+    SystemCapabilityIntentService,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
 )
+from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityClaimResult,
+    SystemCapabilityIdempotencyConflict,
+)
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, Success
+from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.definition import (
+    DEFINITION as FULL_BOX_EXCHANGE_DEFINITION,
+)
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.workline.models.plugin_binding import WorklinePluginBinding
@@ -109,6 +119,145 @@ def _hold_intent(ctx: Mapping[str, object], *, operation: str = "hold-1", reason
         },
         provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
     )
+
+
+def _domain_full_box_exchange_intent(*, occupancy_id: str = "OCC-1") -> RuntimeIntent:
+    operation_key = "wms-e11:handoff-17:box-23"
+    return RuntimeIntent.system_capability(
+        capability_key=FULL_BOX_EXCHANGE_DEFINITION.capability_key,
+        contract_version=FULL_BOX_EXCHANGE_DEFINITION.contract_version,
+        operation_key=operation_key,
+        dispatch_key=operation_key,
+        payload={
+            "dispatch_key": operation_key,
+            "exchange_request_key": operation_key,
+            "station_code": "SMT-EXCHANGE",
+            "rack_id": "RACK-1",
+            "rack_face": "A",
+            "full_box_id": "BOX-23",
+            "source_slot_id": "SLOT-1",
+            "occupancies": [
+                {
+                    "occupancy_id": occupancy_id,
+                    "pkg_id": "PKG-1",
+                    "material_code": "MAT-1",
+                    "quantity": "1",
+                }
+            ],
+        },
+        precondition={"handoff_demand_id": 17},
+        fact_version="handoff-demand:17:v1",
+        timeout_seconds=FULL_BOX_EXCHANGE_DEFINITION.timeout_seconds,
+        creator_authority="RUNTIME_DOMAIN_SERVICE",
+        authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
+        binding_snapshot={"producer": "SMT_INBOUND_HANDOFF"},
+        provider_snapshot={
+            "provider_code": "RUNTIME",
+            "profile": FULL_BOX_EXCHANGE_DEFINITION.admission,
+        },
+    )
+
+
+def test_domain_effect_nullable_fk_and_postgresql_claim_replay_conflict() -> None:
+    """持久 domain correlation 的 NULL session claim、MATCH 与异 hash conflict 共用唯一 ledger。"""
+
+    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
+        service = SystemCapabilityIntentService()
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            workline = await db.get(WorkLine, seeded.workline_id)
+            assert workline is not None
+            correlation = ExecutionCorrelation(
+                correlation_id="smt-inbound-handoff:17",
+                execution_session_id=None,
+                trace_id="trace-rack-release-11",
+                source_event_id="rack-release-11",
+                business_owner_key="smt-inbound-handoff-demand:17",
+            )
+            db.add(correlation)
+            await db.flush()
+            assert correlation.id is not None
+
+            prepared = await service.prepare_and_claim(
+                {
+                    "db": db,
+                    "execution_correlation": correlation,
+                    "workline": workline,
+                },
+                _domain_full_box_exchange_intent(),
+            )
+            assert prepared.claim_result is SystemCapabilityClaimResult.NEW
+            await db.commit()
+
+        async with session_factory() as db:
+            nullable = await db.scalar(
+                text(
+                    """
+                    SELECT is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'wes_runtime'
+                      AND table_name = 'runtime_intent_logs'
+                      AND column_name = 'execution_session_id'
+                    """
+                )
+            )
+            foreign_key_count = await db.scalar(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                     AND tc.constraint_schema = kcu.constraint_schema
+                    WHERE tc.table_schema = 'wes_runtime'
+                      AND tc.table_name = 'runtime_intent_logs'
+                      AND tc.constraint_type = 'FOREIGN KEY'
+                      AND kcu.column_name = 'execution_session_id'
+                    """
+                )
+            )
+            correlation = await db.scalar(
+                select(ExecutionCorrelation).where(ExecutionCorrelation.correlation_id == "smt-inbound-handoff:17")
+            )
+            workline = await db.scalar(select(WorkLine).where(WorkLine.id == seeded.workline_id))
+            assert nullable == "YES"
+            assert foreign_key_count == 1
+            assert correlation is not None and correlation.execution_session_id is None
+            assert correlation.business_owner_key == "smt-inbound-handoff-demand:17"
+            assert workline is not None
+
+            replay = await service.prepare_and_claim(
+                {
+                    "db": db,
+                    "execution_correlation": correlation,
+                    "workline": workline,
+                },
+                _domain_full_box_exchange_intent(),
+            )
+            assert replay.claim_result is SystemCapabilityClaimResult.MATCH
+            with pytest.raises(SystemCapabilityIdempotencyConflict):
+                await service.prepare_and_claim(
+                    {
+                        "db": db,
+                        "execution_correlation": correlation,
+                        "workline": workline,
+                    },
+                    _domain_full_box_exchange_intent(occupancy_id="OCC-DIFFERENT"),
+                )
+
+            ledgers = list((await db.execute(select(RuntimeIntentLog))).scalars())
+            assert len(ledgers) == 1
+            [ledger] = ledgers
+            assert ledger.execution_session_id is None
+            assert ledger.execution_work_item_id is None
+            assert ledger.plugin_key is None
+            assert ledger.plugin_contract_version is None
+            assert ledger.correlation_id == correlation.correlation_id
+            assert ledger.binding_snapshot_json == {"producer": "SMT_INBOUND_HANDOFF"}
+            assert ledger.operation_identity == "wms-e11:handoff-17:box-23"
+            assert "None" not in ledger.idempotency_key
+
+    asyncio.run(with_temporary_runtime_database(scenario))
 
 
 def test_local_effect_and_ledger_commit_atomically_without_handler_transaction_ownership() -> None:
