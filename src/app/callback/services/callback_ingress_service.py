@@ -511,6 +511,10 @@ async def _read_request_json(request: Request) -> JsonDict:
             raise TypeError("request body must be an object")
         return cast("JsonDict", payload)
 
+    cached_payload = getattr(request.state, "callback_request_json", None)
+    if isinstance(cached_payload, dict):
+        return cast("JsonDict", cached_payload)
+
     max_bytes = settings.callback_request_body_max_bytes
     content_length = request.headers.get("content-length")
     if content_length is not None:
@@ -529,9 +533,14 @@ async def _read_request_json(request: Request) -> JsonDict:
             raise HTTPException(status_code=413, detail=f"callback payload exceeds {max_bytes} bytes")
         chunks.append(chunk)
 
-    payload = json.loads(b"".join(chunks))
+    raw_body = b"".join(chunks)
+    # 认证依赖已使用同一有界读取语义完成预读；缓存 raw body 供原有 HMAC verifier
+    # 与后续 ingress 复用，避免第二次无界读取或耗尽 ASGI stream。
+    request._body = raw_body  # pyright: ignore[reportPrivateUsage]
+    payload = json.loads(raw_body)
     if not isinstance(payload, dict):
         raise TypeError("request body must be an object")
+    request.state.callback_request_json = payload
     return cast("JsonDict", payload)
 
 

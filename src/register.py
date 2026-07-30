@@ -33,12 +33,17 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     wms_effect_preparation_runtime = None
     try:
         logger.info("Initializing application resources...")
+        from src.app.callback.services.wms_inbound_auth import WmsInboundAuthPolicy
         from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
             northbound_operations_repository,
         )
         from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
 
+        # 先清空前一轮 lifecycle 可能遗留的策略；profile 编译失败时必须 fail closed。
+        _app.state.wms_inbound_auth_policy = None
         startup = validate_wms_transport_configuration(settings_source=settings)
+        wms_inbound_auth_policy = WmsInboundAuthPolicy.from_compiled_profile(startup.compiled_profile)
+        _app.state.wms_inbound_auth_policy = wms_inbound_auth_policy
         northbound_operations_repository.bind_provider_catalog(startup.catalog)
         await init_db()
         await init_redis()
@@ -87,6 +92,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         from src.app.runtime.orchestration.observability import runtime_observability_registry
 
+        _app.state.wms_inbound_auth_policy = None
         await asyncio.to_thread(runtime_observability_registry.close)
         if wms_data_lane_runtime is not None:
             from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime

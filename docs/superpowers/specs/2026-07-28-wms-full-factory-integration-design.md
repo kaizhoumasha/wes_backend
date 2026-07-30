@@ -2323,6 +2323,15 @@ Codex; checkbox as you ship.
     `isolated_lan + NONE` 不被误拦截。部署定向回归由主控复跑 `40 passed`，独立复审 `Approved`。
     该检查点只关闭“profile 文件无法进入容器”的仓内缺口，不替代现场文件权限 smoke、进程 digest attestation、
     REAL_TCP、容量和 GO 签字，因此 T10 保持未完成。
+  - WMS inbound auth checkpoint（2026-07-30）：FastAPI 启动从同一次已校验的 compiled Provider profile
+    为当前 App 冻结入站策略；仅 `isolated_lan + inbound_auth.NONE` 下的 4 类普通 WMS 事件和
+    `WMS_EFFECT_STATUS_HINT` 可免 API Application/HMAC，其他 source/type、非字符串 discriminator、
+    缺失策略及 HMAC profile 全部 fail closed 到既有 `api:callback:event` 门禁。策略按 App 隔离，重叠
+    lifecycle 不互相覆盖；`/callback/result` 不变，权限扫描元数据、请求体大小上限、H4、RuntimeInbox
+    幂等/冲突及真实 body HMAC/nonce replay 均保持原合同。实现方 ASGI/权限/H4/幂等/HMAC 定向回归
+    `126 passed`；主控独立复跑认证与权限组合 `42 passed`、测试拓扑 `6 passed`、Ruff 通过，独立复审
+    最终 `Approved`。该检查点只关闭最低安全模式的仓内入站接线，不替代现场网络隔离验收、权限 smoke、
+    REAL_TCP、容量和 GO 签字，因此 T10 保持未完成。
 
 ## 21. 完成定义
 
