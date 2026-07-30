@@ -32,9 +32,12 @@ from src.app.wms_integration.operation_contract import WmsCompletionMode  # noqa
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS  # noqa: E402
 from src.app.wms_integration.ports.fulfillment_operations import (  # noqa: E402
     BATCH_FULFILLMENT_OPERATION_IDENTITIES,
+    MoveBinsFromConveyorExitRequest,
+    MoveBinsToConveyorEntryRequest,
     WmsAcceptedScope,
     WmsEffectAck,
     accepted_scope_digest,
+    validate_fulfillment_ack,
 )
 from src.core.conf import settings  # noqa: E402
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES  # noqa: E402
@@ -187,7 +190,13 @@ def _contract_values(
     return {**values, "credential_reference": credential_reference}
 
 
-def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str, Any]) -> bool:  # noqa: PLR0911
+def _is_snapshot(  # noqa: PLR0911
+    snapshot: object,
+    *,
+    operation_identity: str,
+    payload: dict[str, Any],
+    frozen_ack: WmsEffectAck | None = None,
+) -> bool:
     """严格验证五态快照及对应 operation 的 typed completed result。"""
 
     if not isinstance(snapshot, dict) or set(snapshot) != {
@@ -216,6 +225,7 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
             )
         )
     accepted_scope_payload = snapshot["accepted_scope"]
+    accepted_scope: WmsAcceptedScope | None = None
     if operation_identity in BATCH_FULFILLMENT_OPERATION_IDENTITIES:
         try:
             accepted_scope = WmsAcceptedScope.model_validate(accepted_scope_payload)
@@ -224,6 +234,12 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
         if accepted_scope.scope_digest != accepted_scope_digest(accepted_scope.object_keys):
             return False
     elif accepted_scope_payload is not None:
+        return False
+    if frozen_ack is not None and (
+        frozen_ack.operation_identity != operation_identity
+        or snapshot["provider_reference"] != frozen_ack.provider_reference
+        or accepted_scope != frozen_ack.accepted_scope
+    ):
         return False
     source_version = snapshot["source_version"]
     if isinstance(source_version, bool) or not isinstance(source_version, int) or not 0 <= source_version < 2**63:
@@ -265,14 +281,51 @@ def _is_ack(
     *,
     operation_identity: str,
     idempotency_key: str,
+    request: object,
 ) -> bool:
-    """验证 E08–E14 共享 ACK，并拒绝任何终态字段混入受理响应。"""
+    """验证 E08–E14 共享 ACK，并把批次接纳范围绑定到原始 typed request。"""
 
+    return (
+        _validated_ack(
+            value,
+            operation_identity=operation_identity,
+            idempotency_key=idempotency_key,
+            request=request,
+        )
+        is not None
+    )
+
+
+def _validated_ack(
+    value: object,
+    *,
+    operation_identity: str,
+    idempotency_key: str,
+    request: object,
+) -> WmsEffectAck | None:
     try:
         ack = WmsEffectAck.model_validate(value)
     except ValueError:
-        return False
-    return ack.operation_identity == operation_identity and ack.idempotency_key == idempotency_key
+        return None
+    if ack.operation_identity != operation_identity or ack.idempotency_key != idempotency_key:
+        return None
+    if isinstance(request, (MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest)):
+        try:
+            validate_fulfillment_ack(request, ack)
+        except ValueError:
+            return None
+    return ack
+
+
+def _same_ack_binding(first: WmsEffectAck | None, replay: WmsEffectAck | None) -> bool:
+    """跨 submit replay/status 冻结 provider reference 与接纳范围。"""
+
+    return (
+        first is not None
+        and replay is not None
+        and replay.provider_reference == first.provider_reference
+        and replay.accepted_scope == first.accepted_scope
+    )
 
 
 def _retry_after_is_valid(value: str | None) -> bool:
@@ -556,28 +609,39 @@ async def run_probe(
     for identity in selected:
         spec = operation_specs[identity]
         payload = dict(spec["payload"])
+        typed_request = WMS_OPERATION_BY_IDENTITY[identity].request_model.model_validate(payload)
         key = f"probe-{uuid4().hex}"
         first = await submit(identity, key, payload)
         first_body = _json_object(first, max_response_bytes=max_response_bytes)
-        first_ack = first_body.get("data") if first_body else None
+        first_ack = _validated_ack(
+            first_body.get("data") if first_body else None,
+            operation_identity=identity,
+            idempotency_key=key,
+            request=typed_request,
+        )
         results.append(
             _result(
                 f"{identity}:first_submit",
-                first is not None
-                and first.status_code == 202
-                and _is_ack(first_ack, operation_identity=identity, idempotency_key=key),
+                first is not None and first.status_code == 202 and first_ack is not None,
             )
         )
 
         processing_replay = await submit(identity, key, payload)
         processing_body = _json_object(processing_replay, max_response_bytes=max_response_bytes)
+        processing_ack = _validated_ack(
+            processing_body.get("data") if processing_body else None,
+            operation_identity=identity,
+            idempotency_key=key,
+            request=typed_request,
+        )
         results.append(
             _result(
                 f"{identity}:in_progress_replay",
                 processing_replay is not None
                 and processing_replay.status_code == 409
                 and processing_body is not None
-                and processing_body.get("code") == "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+                and processing_body.get("code") == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+                and _same_ack_binding(first_ack, processing_ack),
             )
         )
         hint_evidence = await callback_hints(identity, key)
@@ -586,7 +650,16 @@ async def run_probe(
         results.append(
             _result(
                 f"{identity}:five_state_progression_and_typed_result",
-                all(_is_snapshot(snapshot, operation_identity=identity, payload=payload) for snapshot in snapshots)
+                first_ack is not None
+                and all(
+                    _is_snapshot(
+                        snapshot,
+                        operation_identity=identity,
+                        payload=payload,
+                        frozen_ack=first_ack,
+                    )
+                    for snapshot in snapshots
+                )
                 and [snapshot["state"] for snapshot in snapshots] == ["ACCEPTED", "PROCESSING", "COMPLETED"]
                 and snapshots[0]["source_version"] < snapshots[1]["source_version"] < snapshots[2]["source_version"],
             )
@@ -594,13 +667,18 @@ async def run_probe(
 
         completed_replay = await submit(identity, key, payload)
         completed_body = _json_object(completed_replay, max_response_bytes=max_response_bytes)
-        completed_ack = completed_body.get("data") if completed_body else None
+        completed_ack = _validated_ack(
+            completed_body.get("data") if completed_body else None,
+            operation_identity=identity,
+            idempotency_key=key,
+            request=typed_request,
+        )
         results.append(
             _result(
                 f"{identity}:completed_replay",
                 completed_replay is not None
                 and completed_replay.status_code == 200
-                and _is_ack(completed_ack, operation_identity=identity, idempotency_key=key),
+                and _same_ack_binding(first_ack, completed_ack),
             )
         )
 

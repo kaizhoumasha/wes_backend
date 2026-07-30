@@ -6,6 +6,7 @@ import asyncio
 import json
 import subprocess
 import sys
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,9 +22,23 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 
 from scripts import verify_wms_northbound_feasibility as probe_module
-from scripts.verify_wms_northbound_feasibility import _contract_values, _status_headers, _submit_headers, run_probe
+from scripts.verify_wms_northbound_feasibility import (
+    _contract_values,
+    _is_ack,
+    _is_snapshot,
+    _status_headers,
+    _submit_headers,
+    run_probe,
+)
 from src.app.wms_integration.operation_contract import WmsCompletionMode
-from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
+from src.app.wms_integration.ports.fulfillment_operations import (
+    ConveyorExitCandidate,
+    WmsAcceptedScope,
+    WmsEffectAck,
+    accepted_scope_digest,
+    frozen_candidate_digest,
+)
 from src.core.conf import settings
 from tests.contracts.wms_integration.provider_profile_support import (
     build_compiled_provider_profile,
@@ -49,6 +64,149 @@ PROBE_PROFILE_PAYLOAD = build_hmac_provider_profile_payload()
 PROBE_PROFILE_PAYLOAD["outbound_auth"]["credential_reference"] = ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE
 PROBE_PROFILE_PAYLOAD["effect_status_path"] = "/northbound/operations/status"
 PROBE_COMPILED_PROFILE = build_compiled_provider_profile(PROBE_PROFILE_PAYLOAD)
+E12 = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
+E13 = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
+
+
+def _batch_request(operation_identity: str) -> Any:
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    payload = deepcopy(REQUEST_FIXTURES[operation_identity])
+    if operation_identity == E12:
+        first = payload["items"][0]
+        payload["items"] = [
+            first,
+            {
+                **first,
+                "sequence_no": 2,
+                "route_instance_id": "ROUTE-002",
+                "bin_id": "BIN-002",
+                "source_slot_id": "SLOT-002",
+                "reserved_queue_position": 2,
+            },
+        ]
+    else:
+        first = payload["candidate_items"][0]
+        payload["candidate_items"] = [
+            first,
+            {
+                **first,
+                "sequence_no": 2,
+                "route_instance_id": "ROUTE-002",
+                "bin_id": "BIN-002",
+                "scan3_enqueued_at": "2026-07-29T00:00:01+00:00",
+                "queue_position": 2,
+            },
+            {
+                **first,
+                "sequence_no": 3,
+                "route_instance_id": "ROUTE-003",
+                "bin_id": "BIN-003",
+                "scan3_enqueued_at": "2026-07-29T00:00:02+00:00",
+                "queue_position": 3,
+            },
+        ]
+        candidate_items = tuple(ConveyorExitCandidate.model_validate(item) for item in payload["candidate_items"])
+        payload["candidate_digest"] = frozen_candidate_digest(
+            workline_id=payload["workline_id"],
+            queue_code=payload["queue_code"],
+            candidate_items=candidate_items,
+        )
+    return operation.request_model.model_validate(payload)
+
+
+def _batch_ack(operation_identity: str, object_keys: tuple[str, ...]) -> WmsEffectAck:
+    return WmsEffectAck(
+        operation_identity=operation_identity,
+        idempotency_key=f"probe-{operation_identity}",
+        provider_reference=f"provider-{operation_identity}",
+        submission_state="ACCEPTED",
+        accepted_scope=WmsAcceptedScope(
+            object_keys=object_keys,
+            scope_digest=accepted_scope_digest(object_keys),
+        ),
+    )
+
+
+def test_probe_ack_rejects_forged_batch_member() -> None:
+    request = _batch_request(E13)
+    forged_keys = (request.candidate_items[0].bin_id, "FORGED-BIN")
+    ack = _batch_ack(E13, forged_keys)
+
+    assert (
+        _is_ack(
+            ack.model_dump(mode="json"),
+            operation_identity=E13,
+            idempotency_key=ack.idempotency_key,
+            request=request,
+        )
+        is False
+    )
+
+
+def test_probe_ack_rejects_e13_non_prefix_members() -> None:
+    request = _batch_request(E13)
+    non_prefix_keys = (request.candidate_items[1].bin_id,)
+    ack = _batch_ack(E13, non_prefix_keys)
+
+    assert (
+        _is_ack(
+            ack.model_dump(mode="json"),
+            operation_identity=E13,
+            idempotency_key=ack.idempotency_key,
+            request=request,
+        )
+        is False
+    )
+
+
+def test_probe_ack_rejects_e12_partial_batch() -> None:
+    request = _batch_request(E12)
+    partial_keys = tuple(item.bin_id for item in request.items[:-1])
+    ack = _batch_ack(E12, partial_keys)
+
+    assert (
+        _is_ack(
+            ack.model_dump(mode="json"),
+            operation_identity=E12,
+            idempotency_key=ack.idempotency_key,
+            request=request,
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize("drift_field", ["provider_reference", "accepted_scope"])
+def test_probe_snapshot_rejects_cross_state_ack_drift(drift_field: str) -> None:
+    request = _batch_request(E13)
+    accepted_keys = tuple(item.bin_id for item in request.candidate_items[:2])
+    ack = _batch_ack(E13, accepted_keys)
+    snapshot = {
+        "state": "PROCESSING",
+        "provider_reference": ack.provider_reference,
+        "accepted_scope": ack.accepted_scope.model_dump(mode="json"),
+        "reason_code": None,
+        "updated_at": datetime.now(UTC).isoformat(),
+        "source_version": 1,
+        "result_payload": None,
+    }
+    if drift_field == "provider_reference":
+        snapshot[drift_field] = "provider-drift"
+    else:
+        drift_keys = (request.candidate_items[0].bin_id,)
+        snapshot[drift_field] = WmsAcceptedScope(
+            object_keys=drift_keys,
+            scope_digest=accepted_scope_digest(drift_keys),
+        ).model_dump(mode="json")
+
+    assert (
+        _is_snapshot(
+            snapshot,
+            operation_identity=E13,
+            payload=REQUEST_FIXTURES[E13],
+            frozen_ack=ack,
+        )
+        is False
+    )
 
 
 def test_contract_values_reject_retention_shorter_than_wes_confirmation_window() -> None:

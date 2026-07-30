@@ -2152,6 +2152,12 @@ Codex; checkbox as you ship.
     新环境不恢复旧 schema，downgrade 明确拒绝。absence/architecture/topology 定向 `52 passed`，
     `tests/workline_runtime/` `1128 passed`，WMS/E11/粗分合同组合 `457 passed`，默认收集 `5102 tests`，
     quality profile、Ruff、Bandit、import-linter、architecture `0 violations / 0 warnings` 均通过。
+    首轮独立复审指出 northbound probe 只校验 `accepted_scope` 自洽、未绑定原 request/首次 ACK；修复后
+    `_is_ack` 复用生产 `validate_fulfillment_ack`，E12 必须全量、E13 必须非空有序前缀，且
+    PROCESSING/COMPLETED/status replay 的 provider reference 与 accepted scope 必须和首次 ACK 精确一致。
+    forged member、E13 非前缀、E12 非全量、跨状态 provider/scope 漂移先以 `5 failed` 复现，最终 reviewer
+    定向 probe/architecture/migration 组合 `50 passed`，完整 quality profile 再次通过；同步修正的 guardrail
+    只允许每项 operation 保留静态 `definition.py` 并复用共享 EFFECT pipeline，未删除 typed Definition。
     本检查点只记录实现验证；T5 仍保持 in progress，必须经独立复审且完整 Task 5 acceptance 通过后才能勾选。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；

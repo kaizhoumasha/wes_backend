@@ -16,6 +16,20 @@ from tests.contracts.wms_integration.provider_profile_support import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _assert_shared_effect_definition_only(operation_paths: tuple[Path, ...]) -> None:
+    """每项 operation 只保留静态 Definition，不得恢复专用执行类。"""
+
+    for operation_path in operation_paths:
+        sources = {path.name for path in operation_path.glob("*.py")}
+        assert sources == {"definition.py"}
+        definition_source = (operation_path / "definition.py").read_text(encoding="utf-8")
+        assert "build_wms_effect_capability_definition" in definition_source
+        assert all(
+            legacy_module not in definition_source
+            for legacy_module in ("handler", "gateway", "effect_adapter", "intent_adapter")
+        )
+
+
 def _load(module_name: str):
     assert importlib.util.find_spec(module_name) is not None, f"缺少 T2 架构模块: {module_name}"
     return importlib.import_module(module_name)
@@ -106,12 +120,12 @@ def test_wms_effect_callback_is_optional_generic_hint_without_terminal_adapters(
 
     capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
     assert list(capability_root.rglob("callback_adapter.py")) == []
-    removed_operation_paths = (
+    shared_operation_paths = (
         capability_root / "inventory/confirm_inbound",
         capability_root / "fulfillment/notify_pkg_binding",
         capability_root / "fulfillment/full_box_exchange",
     )
-    assert all(not any(operation_path.glob("*.py")) for operation_path in removed_operation_paths)
+    _assert_shared_effect_definition_only(shared_operation_paths)
 
 
 def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> None:
@@ -141,12 +155,12 @@ def test_removed_effect_handlers_cannot_bypass_the_shared_t5_boundary() -> None:
     )
 
     capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
-    removed_operation_paths = (
+    shared_operation_paths = (
         capability_root / "inventory/confirm_inbound",
         capability_root / "fulfillment/full_box_exchange",
         capability_root / "fulfillment/notify_pkg_binding",
     )
-    assert all(not any(operation_path.glob("*.py")) for operation_path in removed_operation_paths)
+    _assert_shared_effect_definition_only(shared_operation_paths)
 
 
 def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalog() -> None:
