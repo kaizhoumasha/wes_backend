@@ -191,36 +191,8 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
 
 def test_wms_boundary_seeds_follow_each_legacy_source_semantics() -> None:
     """WMS boundary seed 必须按旧入口真实职责迁移，物理删除入口不得伪造承载者。"""
-    from src.app.wms_integration.provider_manifest import LEGACY_TRANSPORT_MIGRATION_MANIFEST
-
-    fulfillment_path = "src/app/wms_integration/ports/fulfillment_operations.py"
-    rack_targets = next(
-        targets
-        for legacy_identity, targets in LEGACY_TRANSPORT_MIGRATION_MANIFEST.items()
-        if legacy_identity.endswith(".rack@v1")
-    )
-    handling_targets = next(
-        targets
-        for legacy_identity, targets in LEGACY_TRANSPORT_MIGRATION_MANIFEST.items()
-        if legacy_identity.endswith(".handling@v1")
-    )
     expected = {
         "src/app/callback/services/callback_ingress_service.py": ("delete", "", ""),
-        "src/app/rack/services/gateway.py": (
-            "rebuild",
-            fulfillment_path,
-            ";".join(rack_targets),
-        ),
-        "src/app/handling/services/gateway.py": (
-            "rebuild",
-            fulfillment_path,
-            ";".join(handling_targets),
-        ),
-        "src/app/workline/services/single_layer_rack_orchestration_service.py": (
-            "rebuild",
-            fulfillment_path,
-            "wms.fulfillment.request_rack_supply@v1",
-        ),
         "src/workline_runtime/services.py": (
             "rebuild",
             "src/app/wms_integration/ports/inventory_operations.py",
@@ -229,7 +201,7 @@ def test_wms_boundary_seeds_follow_each_legacy_source_semantics() -> None:
     }
     seed_entries = [entry for entry in parse_entries() if "WMS_INTEGRATION_BOUNDARY seed" in entry.business_semantics]
 
-    assert len(seed_entries) == 5
+    assert len(seed_entries) == 2
     assert {
         entry.relative_path: (entry.strategy, entry.target_path, entry.target_capability) for entry in seed_entries
     } == expected
@@ -247,14 +219,6 @@ def test_wms_boundary_seeds_follow_each_legacy_source_semantics() -> None:
             "src/app/runtime/capabilities/material_flow/",
             "NgReturnCapability.process",
             id="ng-return",
-        ),
-        pytest.param(
-            "[phase" + "4] 单层机架编排业务流程",
-            "tests/workline_runtime/test_single_layer_rack_orchestration_service.py",
-            "test_station_claim_active_status_accepts_system_outbox_status_enum",
-            "src/app/runtime/capabilities/material_flow/",
-            "SingleLayerRackCapability.orchestrate",
-            id="single-layer-rack",
         ),
         pytest.param(
             "[phase" + "4] Bin Cell 预约业务流程",

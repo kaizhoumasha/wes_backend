@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from typing import Any, cast
-from urllib.parse import urlparse
 
 from pydantic import BaseModel
 from sqlmodel import select
@@ -39,9 +38,6 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.MARK_NG,
     RuntimeIntentKind.COMMAND,
     RuntimeIntentKind.EXTERNAL_REQUEST,
-    RuntimeIntentKind.RACK_OPERATION_REQUEST,
-    RuntimeIntentKind.BIN_OPERATION_REQUEST,
-    RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST,
     RuntimeIntentKind.DEVICE_EVENT,
     RuntimeIntentKind.RESOURCE_FACT,
     RuntimeIntentKind.RESOURCE_RESERVATION,
@@ -60,20 +56,11 @@ _TERMINAL_INTENT_KINDS = {
     RuntimeIntentKind.RESOURCE_WAIT,
 }
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
-_STATION_DISPATCH_LEASE_UNAVAILABLE = "station dispatch lease is not available"
 _RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID = "RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID"
 
 
 def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
     return [device for devices in devices_by_role.values() for device in devices]
-
-
-def _normalize_rack_operation_target_code(value: Any) -> str:
-    target_code = str(value or "")
-    parsed = urlparse(target_code)
-    if parsed.scheme in {"http", "https"} and parsed.netloc:
-        raise ValueError("legacy rack transport URL is removed; T5 dispatcher is not implemented")
-    return target_code
 
 
 def _merge_context_patch(ctx: Any, patch: dict[str, Any]) -> None:
@@ -87,9 +74,6 @@ def _is_command_producing_intent(intent: RuntimeIntent) -> bool:
     return intent.kind in {
         RuntimeIntentKind.COMMAND,
         RuntimeIntentKind.EXTERNAL_REQUEST,
-        RuntimeIntentKind.RACK_OPERATION_REQUEST,
-        RuntimeIntentKind.BIN_OPERATION_REQUEST,
-        RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST,
     }
 
 
@@ -169,26 +153,6 @@ def _ctx_trace_id(ctx: Mapping[str, Any]) -> Any | None:
     return getattr(trace, "trace_id", None) or ctx.get("trace_id")
 
 
-def _rack_operation_key_from_resource_fact(ctx: Mapping[str, Any], payload_json: Mapping[str, Any]) -> str | None:
-    session = ctx.get("session")
-    context_json = getattr(session, "context_json", None)
-    context = context_json if isinstance(context_json, Mapping) else {}
-    waiting_operation_key = coerce_optional_str(context.get("waiting_rack_operation_key"))
-    payload_operation_key = coerce_optional_str(payload_json.get("operation_key"))
-    if waiting_operation_key is not None and (
-        payload_operation_key is None or payload_operation_key == waiting_operation_key
-    ):
-        return waiting_operation_key
-
-    rack_operation = context.get("rack_operation")
-    if isinstance(rack_operation, Mapping):
-        context_operation_key = coerce_optional_str(rack_operation.get("operation_key"))
-        if payload_operation_key is not None and payload_operation_key != context_operation_key:
-            return None
-        return context_operation_key
-    return None
-
-
 def _int_value(value: Any) -> int | None:
     return optional_int(value)
 
@@ -204,120 +168,6 @@ def _resolve_command_result_timeout_seconds(intent: RuntimeIntent) -> int:
         return max(1, (max(0, timeout_ms) + 999) // 1000)
 
     return _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS
-
-
-def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str, Any]]:
-    raw_specs = payload_json.get("rack_tasks") or payload_json.get("task_specs")
-    if not isinstance(raw_specs, list) or not raw_specs:
-        raise ValueError("RACK_OPERATION_REQUEST intent requires payload.rack_tasks")
-
-    material_context = payload_json.get("material")
-    specs: list[dict[str, Any]] = []
-    for index, raw_spec in enumerate(raw_specs, start=1):
-        if not isinstance(raw_spec, Mapping):
-            raise TypeError(f"RACK_OPERATION_REQUEST payload.rack_tasks[{index}] must be a mapping")
-        spec = dict(cast("Mapping[str, Any]", raw_spec))
-        if isinstance(material_context, Mapping):
-            request_json = spec.get("request_json")
-            merged_request_json = dict(request_json) if isinstance(request_json, Mapping) else {}
-            merged_request_json.setdefault("material", dict(material_context))
-            spec["request_json"] = merged_request_json
-        specs.append(spec)
-    return specs
-
-
-def _station_position_code_from_mapping(value: Mapping[str, Any]) -> str | None:
-    for key in ("target_position_code", "work_position_code", "position_code", "endpoint_code"):
-        if (position_code := coerce_optional_str(value.get(key))) is not None:
-            return position_code
-
-    station = value.get("station")
-    if isinstance(station, Mapping):
-        return _station_position_code_from_mapping(cast("Mapping[str, Any]", station))
-    return None
-
-
-def _station_position_code_from_rack_operation_request(
-    payload_json: Mapping[str, Any],
-    task_specs: list[dict[str, Any]],
-) -> str | None:
-    if (position_code := _station_position_code_from_mapping(payload_json)) is not None:
-        return position_code
-
-    for task_spec in task_specs:
-        if (position_code := _station_position_code_from_mapping(task_spec)) is not None:
-            return position_code
-        request_json = task_spec.get("request_json")
-        if (
-            isinstance(request_json, Mapping)
-            and (position_code := _station_position_code_from_mapping(cast("Mapping[str, Any]", request_json)))
-            is not None
-        ):
-            return position_code
-    return None
-
-
-def _is_station_dispatch_lease_unavailable(exc: ValueError) -> bool:
-    return str(exc) == _STATION_DISPATCH_LEASE_UNAVAILABLE
-
-
-def _required_handling_move_specs(payload_json: Mapping[str, Any], kind: RuntimeIntentKind) -> list[dict[str, Any]]:
-    raw_specs = payload_json.get("moves")
-    if not isinstance(raw_specs, list) or not raw_specs:
-        raise ValueError(f"{kind.value} intent requires payload.moves")
-
-    specs: list[dict[str, Any]] = []
-    for index, raw_spec in enumerate(raw_specs, start=1):
-        if not isinstance(raw_spec, Mapping):
-            raise TypeError(f"{kind.value} payload.moves[{index}] must be a mapping")
-        specs.append(dict(cast("Mapping[str, Any]", raw_spec)))
-    return specs
-
-
-def _rack_task_sequence_no(task: Any) -> int | None:
-    value = getattr(task, "sequence_no", None)
-    return int(value) if value is not None else None
-
-
-def _rack_task_type(task: Any) -> str | None:
-    value = getattr(task, "task_type", None)
-    raw_value = getattr(value, "value", value)
-    return str(raw_value) if raw_value is not None else None
-
-
-def _rack_task_dispatch_key(task: Any) -> str | None:
-    return coerce_optional_str(getattr(task, "dispatch_key", None))
-
-
-def _rack_task_rack_code(task: Any) -> str | None:
-    return coerce_optional_str(getattr(task, "rack_code", None))
-
-
-def _rack_task_required(task: Any) -> bool:
-    actions_json = getattr(task, "actions_json", None)
-    if isinstance(actions_json, Mapping) and "required" in actions_json:
-        return bool(actions_json["required"])
-    return True
-
-
-def _rack_task_is_releasing_source(task: Any) -> bool:
-    return (
-        _rack_task_required(task)
-        and _rack_task_type(task) == "MOVE_RACK"
-        and coerce_optional_str(getattr(task, "source_position_code", None)) is not None
-        and coerce_optional_str(getattr(task, "target_position_code", None)) is None
-    )
-
-
-def _rack_operation_target_position_code(tasks: list[Any]) -> str | None:
-    target_position_codes = {
-        target_position_code
-        for task in tasks
-        if (target_position_code := coerce_optional_str(getattr(task, "target_position_code", None))) is not None
-    }
-    if len(target_position_codes) != 1:
-        return None
-    return next(iter(target_position_codes))
 
 
 def _result_status_value(result: Any) -> str | None:
@@ -447,15 +297,11 @@ class RuntimeIntentEffectApplier:
     def __init__(
         self,
         *,
-        rack_operation_service: Any | None = None,
-        handling_operation_service: Any | None = None,
         resource_projection_service: Any | None = None,
         bin_cell_reservation_service: Any | None = None,
         system_capability_effect_service: Any | None = None,
         material_unit_mutation_service: Any | None = None,
     ) -> None:
-        self._rack_operation_service = rack_operation_service
-        self._handling_operation_service = handling_operation_service
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
         self._system_capability_effect_service = system_capability_effect_service
@@ -543,16 +389,6 @@ class RuntimeIntentEffectApplier:
 
             if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
                 await self._apply_external_request(ctx, intent)
-                continue
-
-            if intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
-                result = await self._apply_rack_operation_request(ctx, intent)
-                if result is not None:
-                    return result
-                continue
-
-            if intent.kind in {RuntimeIntentKind.BIN_OPERATION_REQUEST, RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST}:
-                await self._apply_handling_operation_request(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.DEVICE_EVENT:
@@ -851,272 +687,6 @@ class RuntimeIntentEffectApplier:
             raise RuntimeError("WMS external HTTP facade is removed; use the frozen 35-operation registry")
         raise RuntimeError("generic workline external HTTP facade is removed")
 
-    async def _apply_rack_operation_request(self, ctx: Any, intent: RuntimeIntent) -> RuntimeIntentEffectResult | None:
-        from src.app.runtime.orchestration.models.timeline import (
-            TimelineActionType,
-            TimelineActorType,
-            TimelineStage,
-            TimelineStatus,
-        )
-        from src.app.workline.services import write_back_service as workline_effects
-
-        payload_json = dict(intent.payload_json)
-        operation_type = str(intent.action)
-        operation_key = str(intent.idempotency_key)
-        target_code = _normalize_rack_operation_target_code(intent.target_code)
-        timeout_seconds = int(intent.timeout_seconds or 0)
-        session = ctx["session"]
-
-        service = self._rack_operation_service
-        if service is None:
-            from src.app.rack.services import rack_operation_service
-
-            service = rack_operation_service
-
-        ctx_map = cast("Mapping[str, Any]", ctx)
-        trace_id = coerce_optional_str(payload_json.get("trace_id")) or coerce_optional_str(_ctx_trace_id(ctx_map))
-        if trace_id is None:
-            raise ValueError("RACK_OPERATION_REQUEST intent requires trace_id")
-        task_specs = _required_rack_task_specs(payload_json)
-        try:
-            tasks = await service.request_operation_tasks(
-                ctx_map["db"],
-                operation_key=operation_key,
-                operation_type=operation_type,
-                workline=ctx_map["workline"],
-                session=session,
-                target_code=target_code,
-                trace_id=trace_id,
-                task_specs=task_specs,
-                timeout_seconds=timeout_seconds,
-            )
-        except ValueError as exc:
-            if not _is_station_dispatch_lease_unavailable(exc):
-                raise
-            position_code = _station_position_code_from_rack_operation_request(payload_json, task_specs)
-            if position_code is None:
-                raise
-            return await self._apply_resource_wait(
-                ctx,
-                RuntimeIntent.resource_wait(
-                    subject_type=position_code,
-                    subject_key=f"station:{position_code}",
-                    projection_type="STATION_LEASE",
-                    reason_code="STATION_LEASE_CLAIM_FAILED",
-                    message="目标 Station dispatch lease 已被其它会话占用，等待资源释放后自动重试",
-                    suggested_action="等待目标 Station dispatch lease 释放，或检查当前 rack operation/session 占用",
-                    payload={
-                        "position_code": position_code,
-                        "operation_key": operation_key,
-                        "operation_type": operation_type,
-                        "target_code": target_code,
-                        "trace_id": trace_id,
-                    },
-                ),
-            )
-
-        self._mark_session_waiting_for_rack_operation(
-            ctx,
-            operation_key=operation_key,
-            operation_type=operation_type,
-            tasks=list(tasks),
-            timeout_seconds=timeout_seconds,
-        )
-        await self._persist_session_waiting_for_rack_operation(ctx, timeout_seconds=timeout_seconds)
-
-        workline_effects._clear_session_failure(session)
-        await workline_effects._emit_timeline(
-            ctx,
-            stage=TimelineStage.WAITING,
-            action_type=TimelineActionType.WAIT_STARTED,
-            payload=workline_effects._wait_timeline_payload(
-                ctx,
-                wait_type="RACK_OPERATION",
-                wait_token=operation_key,
-                deadline_seconds=timeout_seconds,
-            ),
-            from_status=ctx["current_status"],
-            to_status=session.status,
-            actor_type=TimelineActorType.EXTERNAL_SYSTEM,
-            actor_code="WMS_RCS",
-            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
-            status=TimelineStatus.PENDING,
-        )
-        return None
-
-    def _mark_session_waiting_for_rack_operation(
-        self,
-        ctx: Any,
-        *,
-        operation_key: str,
-        operation_type: str,
-        tasks: list[Any],
-        timeout_seconds: int,
-    ) -> None:
-        from src.app.workline.services import write_back_service as workline_effects
-
-        session = ctx["session"]
-        context_json = dict(getattr(session, "context_json", None) or {})
-        existing_operation = context_json.get("rack_operation")
-        rack_operation = dict(existing_operation) if isinstance(existing_operation, Mapping) else {}
-        required_tasks = [task for task in tasks if _rack_task_required(task)]
-        task_dispatch_keys = [_rack_task_dispatch_key(task) for task in tasks]
-        required_task_dispatch_keys = [_rack_task_dispatch_key(task) for task in required_tasks]
-        released_rack_codes = [
-            rack_code
-            for task in tasks
-            if _rack_task_is_releasing_source(task) and (rack_code := _rack_task_rack_code(task)) is not None
-        ]
-        target_position_code = _rack_operation_target_position_code(tasks)
-        rack_operation.update(
-            {
-                "operation_key": operation_key,
-                "operation_type": operation_type,
-                "status": "PENDING",
-                "task_count": len(tasks),
-                "required_task_count": len(required_tasks),
-                "task_sequences": [_rack_task_sequence_no(task) for task in tasks],
-                "task_dispatch_keys": task_dispatch_keys,
-                "required_task_dispatch_keys": required_task_dispatch_keys,
-                "released_rack_codes": released_rack_codes,
-            }
-        )
-        if target_position_code is not None:
-            rack_operation["target_position_code"] = target_position_code
-            rack_operation["work_position_code"] = target_position_code
-        context_json["waiting_rack_operation_key"] = operation_key
-        context_json["rack_operation"] = rack_operation
-        session.context_json = context_json
-        ctx["session_ctx"] = dict(context_json)
-        workline_effects.workline_session_lifecycle_service.start_wait(
-            session,
-            wait_type="RACK_OPERATION",
-            occurred_at=ctx["now"],
-            deadline_seconds=timeout_seconds,
-        )
-
-    async def _persist_session_waiting_for_rack_operation(self, ctx: Any, *, timeout_seconds: int) -> None:
-        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
-
-        session = ctx["session"]
-        await WorklineSessionRepository().persist_external_wait(
-            ctx["db"],
-            session_id=resolve_required_pk(session, "session"),
-            wait_type="RACK_OPERATION",
-            occurred_at=ctx["now"],
-            timeout_seconds=timeout_seconds,
-            context_json=getattr(session, "context_json", None),
-        )
-
-    async def _apply_handling_operation_request(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.runtime.orchestration.models.timeline import (
-            TimelineActionType,
-            TimelineActorType,
-            TimelineStage,
-            TimelineStatus,
-        )
-        from src.app.workline.services import write_back_service as workline_effects
-
-        payload_json = dict(intent.payload_json)
-        operation_type = str(intent.action)
-        operation_key = str(intent.idempotency_key)
-        timeout_seconds = int(intent.timeout_seconds or 0)
-        session = ctx["session"]
-
-        service = self._handling_operation_service
-        if service is None:
-            from src.app.handling.services import handling_operation_service
-
-            service = handling_operation_service
-
-        ctx_map = cast("Mapping[str, Any]", ctx)
-        trace_id = coerce_optional_str(payload_json.get("trace_id")) or coerce_optional_str(_ctx_trace_id(ctx_map))
-        if trace_id is None:
-            raise ValueError(f"{intent.kind.value} intent requires trace_id")
-        moves = _required_handling_move_specs(payload_json, intent.kind)
-
-        _ = await service.request_bin_operation(
-            ctx_map["db"],
-            operation_key=operation_key,
-            operation_type=operation_type,
-            workline_id=optional_int(getattr(ctx_map["workline"], "id", None)),
-            workline_code=coerce_optional_str(
-                getattr(ctx_map["workline"], "line_code", None) or getattr(ctx_map["workline"], "workline_code", None)
-            ),
-            material_session_id=optional_int(getattr(session, "id", None)),
-            trace_id=trace_id,
-            moves=moves,
-            carrier_type=str(payload_json["carrier_type"]),
-            carrier_code=coerce_optional_str(payload_json.get("carrier_code")),
-            timeout_seconds=timeout_seconds,
-        )
-
-        self._mark_session_waiting_for_handling_operation(
-            ctx,
-            operation_key=operation_key,
-            operation_type=operation_type,
-            moves=moves,
-            rack_code=coerce_optional_str(payload_json.get("rack_code")),
-            timeout_seconds=timeout_seconds,
-        )
-
-        workline_effects._clear_session_failure(session)
-        await workline_effects._emit_timeline(
-            ctx,
-            stage=TimelineStage.WAITING,
-            action_type=TimelineActionType.WAIT_STARTED,
-            payload=workline_effects._wait_timeline_payload(
-                ctx,
-                wait_type="HANDLING_OPERATION",
-                wait_token=operation_key,
-                deadline_seconds=timeout_seconds,
-            ),
-            from_status=ctx["current_status"],
-            to_status=session.status,
-            actor_type=TimelineActorType.EXTERNAL_SYSTEM,
-            actor_code="WMS_RCS",
-            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
-            status=TimelineStatus.PENDING,
-        )
-
-    def _mark_session_waiting_for_handling_operation(
-        self,
-        ctx: Any,
-        *,
-        operation_key: str,
-        operation_type: str,
-        moves: list[dict[str, Any]],
-        rack_code: str | None,
-        timeout_seconds: int,
-    ) -> None:
-        from src.app.workline.services import write_back_service as workline_effects
-
-        session = ctx["session"]
-        context_json = dict(getattr(session, "context_json", None) or {})
-        existing_operation = context_json.get("handling_operation")
-        handling_operation = dict(existing_operation) if isinstance(existing_operation, Mapping) else {}
-        handling_operation.update(
-            {
-                "operation_key": operation_key,
-                "operation_type": operation_type,
-                "status": "PENDING",
-                "move_count": len(moves),
-                "move_sequences": [move.get("sequence_no") for move in moves],
-            }
-        )
-        if rack_code is not None:
-            handling_operation["rack_code"] = rack_code
-        context_json["waiting_handling_operation_key"] = operation_key
-        context_json["handling_operation"] = handling_operation
-        session.context_json = context_json
-        ctx["session_ctx"] = dict(context_json)
-        workline_effects.workline_session_lifecycle_service.start_wait(
-            session,
-            wait_type="HANDLING_OPERATION",
-            occurred_at=ctx["now"],
-            deadline_seconds=timeout_seconds,
-        )
-
     async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
         ctx_map = cast("Mapping[str, Any]", ctx)
         payload = dict(intent.payload_json)
@@ -1159,7 +729,7 @@ class RuntimeIntentEffectApplier:
             service = resource_projection_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
-        result = await service.record_resource_fact(
+        return await service.record_resource_fact(
             db=ctx_map["db"],
             session=ctx_map["session"],
             workline=ctx_map["workline"],
@@ -1168,8 +738,6 @@ class RuntimeIntentEffectApplier:
             idempotency_key=intent.idempotency_key,
             trace_id=_ctx_trace_id(ctx_map),
         )
-        await self._sync_rack_operation_after_resource_fact(ctx, dict(intent.payload_json))
-        return result
 
     async def _apply_runtime_location_event_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
         from src.app.runtime.orchestration.services import runtime_location_event_service as location_event_module
@@ -1224,19 +792,6 @@ class RuntimeIntentEffectApplier:
             provider_code=coerce_optional_str(payload.get("provider_code")),
             auto_commit=False,
         )
-
-    async def _sync_rack_operation_after_resource_fact(self, ctx: Any, payload_json: dict[str, Any]) -> None:
-        operation_key = _rack_operation_key_from_resource_fact(ctx, payload_json)
-        if operation_key is None:
-            return
-
-        service = self._rack_operation_service
-        if service is None:
-            from src.app.rack.services import rack_operation_service
-
-            service = rack_operation_service
-
-        _ = await service.sync_operation_status(ctx["db"], operation_key=operation_key)
 
     async def _apply_resource_reconciliation_hold(self, ctx: Any, result: Any) -> None:
         from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository

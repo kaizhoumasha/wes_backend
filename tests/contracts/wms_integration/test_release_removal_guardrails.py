@@ -95,6 +95,33 @@ REMOVED_TRANSPORT_FILES = (
     "src/app/handling/services/gateway.py",
     "src/app/workline/external_http_profile.py",
 )
+REMOVED_LEGACY_RUNTIME_FILES = (
+    "src/app/handling/models/operation.py",
+    "src/app/handling/repositories/operation_repository.py",
+    "src/app/handling/services/operation_service.py",
+    "src/app/rack/models/operation.py",
+    "src/app/rack/repositories/operation_repository.py",
+    "src/app/rack/services/completion_policy.py",
+    "src/app/rack/services/operation_service.py",
+    "src/app/rack/services/task_lifecycle_service.py",
+    "src/app/runtime/capabilities/material_flow/single_layer_rack_orchestration_service.py",
+)
+REMOVED_LEGACY_RUNTIME_LITERALS = frozenset(
+    {
+        "RuntimeIntentKind.RACK_OPERATION_REQUEST",
+        "RuntimeIntentKind.BIN_OPERATION_REQUEST",
+        "RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST",
+        "def rack_operation_request(",
+        "def bin_operation_request(",
+        "def rack_bin_exchange_request(",
+        "HandlingOperationService",
+        "RackOperationService",
+        "SingleLayerRackOrchestrationService",
+        "manual_reconcile_exchange",
+        "retry_exchange",
+        "LEGACY_TRANSPORT_MIGRATION_MANIFEST",
+    }
+)
 REMOVED_EXTERNAL_FACADE_LITERALS = {
     "WMS_RCS_RACK_OPERATION",
     "WMS_RCS_BIN_OPERATION",
@@ -184,8 +211,6 @@ NEGATIVE_TEST_EVIDENCE_FILES = {
         {
             "WMS_FULL_BOX_EXCHANGE_RESULT",
             "WMS_TRANSPORT_COMPLETED",
-            "wms.transport.handling@v1",
-            "wms.transport.rack@v1",
         }
     ),
     "tests/wms_integration/test_callback_normalizer.py": _FULL_CALLBACK_NEGATIVE_EVIDENCE,
@@ -345,13 +370,12 @@ REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
 _WMS_OPERATION_IDENTITY_LITERAL = re.compile(r"\bwms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*\b")
 
 
-def test_removed_transport_and_terminal_callbacks_exist_only_in_migration_manifest() -> None:
+def test_removed_transport_and_terminal_callbacks_are_absent_from_production() -> None:
     offenders: dict[str, set[str]] = {}
     for path in (REPO_ROOT / "src").rglob("*.py"):
         source = path.read_text()
         forbidden = REMOVED_UNAMBIGUOUS_TERMINAL_CALLBACKS | REMOVED_TRANSPORT_SYMBOLS
-        if path.name != "provider_manifest.py":
-            forbidden |= REMOVED_TRANSPORT_IDENTITIES
+        forbidden |= REMOVED_TRANSPORT_IDENTITIES
         found = {removed for removed in forbidden if removed in source}
         if found:
             offenders[str(path.relative_to(REPO_ROOT))] = found
@@ -375,8 +399,6 @@ def test_active_artifacts_have_no_removed_callback_or_external_facade_literal() 
         relative_path = str(path.relative_to(REPO_ROOT))
         scoped_forbidden = SCOPED_ACTIVE_FORBIDDEN_LITERALS.get(relative_path, frozenset())
         found = {literal for literal in forbidden | scoped_forbidden if literal in source}
-        if relative_path == "src/app/wms_integration/provider_manifest.py":
-            found -= REMOVED_TRANSPORT_IDENTITIES
         if found:
             offenders[relative_path] = found
 
@@ -596,24 +618,21 @@ def test_callback_ingress_has_no_empty_ctu_provider_profile() -> None:
     assert "CTU" not in _build_default_callback_provider_profiles()
 
 
-def test_rack_operation_read_side_regression_coverage_is_preserved() -> None:
-    source = (REPO_ROOT / "tests/rack/test_rack_operation_service.py").read_text()
-    required_tests = {
-        "test_derive_operation_status_requires_all_required_tasks_succeeded",
-        "test_derive_operation_status_requires_resource_projection_confirmation",
-        "test_derive_operation_status_consumes_projection_per_inbound_task",
-        "test_derive_operation_status_reconciles_when_move_out_rack_still_at_source_position",
-    }
-    assert {test_name for test_name in required_tests if f"def {test_name}" not in source} == set()
+def test_legacy_runtime_transport_dead_chain_is_physically_removed() -> None:
+    assert all(not (REPO_ROOT / relative_path).exists() for relative_path in REMOVED_LEGACY_RUNTIME_FILES)
+
+    offenders: dict[str, set[str]] = {}
+    for root in ("src/app", "src/celery_app"):
+        for path in (REPO_ROOT / root).rglob("*.py"):
+            found = {literal for literal in REMOVED_LEGACY_RUNTIME_LITERALS if literal in path.read_text()}
+            if found:
+                offenders[str(path.relative_to(REPO_ROOT))] = found
+
+    assert offenders == {}
 
 
 def test_callback_terminal_lifecycle_and_completion_policy_are_physically_removed() -> None:
     forbidden_sources = {
-        "src/app/rack/services/task_lifecycle_service.py": {
-            "record_callback_from_external_http",
-            "_callback_status",
-            "_sync_waiting_session_from_operation_status",
-        },
         "src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py": {
             "handle_exchange_callback",
             "_exchange_callback_status",
@@ -638,6 +657,7 @@ def test_callback_terminal_lifecycle_and_completion_policy_are_physically_remove
     for removed_path in (
         "src/app/handling/services/lifecycle_service.py",
         "src/app/handling/services/completion_policy.py",
+        "src/app/rack/services/task_lifecycle_service.py",
         "tests/handling/test_handling_completion_policy.py",
         "tests/handling/test_handling_operation_lifecycle.py",
         "tests/rack/test_rack_completion_policy.py",
@@ -728,13 +748,22 @@ def test_ctu_stage_preview_and_debug_route_are_physically_removed() -> None:
         assert {literal for literal in forbidden_literals if literal in source} == set()
 
 
-def test_rack_operation_direct_kind_and_move_rack_projection_regressions_are_preserved() -> None:
-    source = (REPO_ROOT / "tests/rack/test_rack_operation_service.py").read_text()
-    required_tests = {
-        "test_derive_operation_status_requires_matching_rack_kind_projection",
-        "test_derive_operation_status_requires_move_rack_target_projection",
-    }
-    assert {test_name for test_name in required_tests if f"def {test_name}" not in source} == set()
+def test_legacy_runtime_models_are_not_reexported_by_surviving_packages() -> None:
+    for relative_path in (
+        "src/app/handling/__init__.py",
+        "src/app/handling/models/__init__.py",
+        "src/app/handling/repositories/__init__.py",
+        "src/app/handling/services/__init__.py",
+        "src/app/rack/__init__.py",
+        "src/app/rack/models/__init__.py",
+        "src/app/rack/repositories/__init__.py",
+        "src/app/rack/services/__init__.py",
+        "src/app/workline/models/__init__.py",
+        "src/app/workline/repositories/__init__.py",
+    ):
+        source = (REPO_ROOT / relative_path).read_text()
+        assert all(literal not in source for literal in ("HandlingOperation", "HandlingMove", "HandlingStep"))
+        assert all(literal not in source for literal in ("RackOperation", "RackTask"))
 
 
 def test_negative_evidence_allowlist_is_literal_scoped() -> None:

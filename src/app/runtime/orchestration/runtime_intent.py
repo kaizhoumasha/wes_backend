@@ -19,16 +19,6 @@ from pydantic import BaseModel, Field, model_validator
 from src.app.runtime.extension_identity import sha256_digest, validate_key_version
 from src.utils.timezone import timezone
 
-_HANDLING_TRANSPORT_FIELDS = {
-    "dispatch_key",
-    "external_target_code",
-    "outbox_id",
-    "payload_json",
-    "http_headers",
-    "url",
-    "auth",
-    "retry",
-}
 _SYSTEM_CAPABILITY_OPERATION_KEY_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}"
 
 
@@ -44,9 +34,6 @@ class RuntimeIntentKind(str, Enum):
     SYSTEM_CAPABILITY = "SYSTEM_CAPABILITY"
     COMMAND = "COMMAND"
     EXTERNAL_REQUEST = "EXTERNAL_REQUEST"
-    RACK_OPERATION_REQUEST = "RACK_OPERATION_REQUEST"
-    BIN_OPERATION_REQUEST = "BIN_OPERATION_REQUEST"
-    RACK_BIN_EXCHANGE_REQUEST = "RACK_BIN_EXCHANGE_REQUEST"
     DEVICE_EVENT = "DEVICE_EVENT"
     RESOURCE_FACT = "RESOURCE_FACT"
     RESOURCE_RESERVATION = "RESOURCE_RESERVATION"
@@ -228,78 +215,6 @@ class RuntimeIntent(BaseModel):
             target_code=target_code,
             source_system=source_system,
             payload_json=deepcopy(payload) if payload is not None else {},
-            timeout_seconds=timeout_seconds,
-        )
-
-    @classmethod
-    def rack_operation_request(
-        cls,
-        *,
-        operation_type: str,
-        operation_key: str,
-        target_code: str,
-        payload: dict[str, Any],
-        timeout_seconds: int | None,
-    ) -> RuntimeIntent:
-        return cls(
-            kind=RuntimeIntentKind.RACK_OPERATION_REQUEST,
-            action=operation_type,
-            idempotency_key=operation_key,
-            target_code=target_code,
-            payload_json=deepcopy(payload),
-            timeout_seconds=timeout_seconds,
-        )
-
-    @classmethod
-    def bin_operation_request(
-        cls,
-        *,
-        operation_type: str,
-        operation_key: str,
-        moves: list[dict[str, Any]],
-        carrier_type: str = "CTU",
-        carrier_code: str | None = None,
-        timeout_seconds: int | None = None,
-    ) -> RuntimeIntent:
-        payload_json: dict[str, Any] = {
-            "moves": deepcopy(moves),
-            "carrier_type": carrier_type,
-        }
-        if carrier_code is not None:
-            payload_json["carrier_code"] = carrier_code
-        return cls(
-            kind=RuntimeIntentKind.BIN_OPERATION_REQUEST,
-            action=operation_type,
-            idempotency_key=operation_key,
-            payload_json=payload_json,
-            timeout_seconds=timeout_seconds,
-        )
-
-    @classmethod
-    def rack_bin_exchange_request(
-        cls,
-        *,
-        operation_type: str,
-        operation_key: str,
-        moves: list[dict[str, Any]],
-        rack_code: str | None = None,
-        carrier_type: str = "CTU",
-        carrier_code: str | None = None,
-        timeout_seconds: int | None = None,
-    ) -> RuntimeIntent:
-        payload_json: dict[str, Any] = {
-            "moves": deepcopy(moves),
-            "carrier_type": carrier_type,
-        }
-        if carrier_code is not None:
-            payload_json["carrier_code"] = carrier_code
-        if rack_code is not None:
-            payload_json["rack_code"] = rack_code
-        return cls(
-            kind=RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST,
-            action=operation_type,
-            idempotency_key=operation_key,
-            payload_json=payload_json,
             timeout_seconds=timeout_seconds,
         )
 
@@ -536,19 +451,6 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("EXTERNAL_REQUEST intent requires payload")
             if self.timeout_seconds is None or self.timeout_seconds <= 0:
                 raise ValueError("EXTERNAL_REQUEST intent requires timeout_seconds")
-        if self.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
-            if not self.action:
-                raise ValueError("RACK_OPERATION_REQUEST intent requires operation_type")
-            if not self.idempotency_key:
-                raise ValueError("RACK_OPERATION_REQUEST intent requires operation_key")
-            if not self.target_code:
-                raise ValueError("RACK_OPERATION_REQUEST intent requires target_code")
-            if not self.payload_json:
-                raise ValueError("RACK_OPERATION_REQUEST intent requires payload")
-            if self.timeout_seconds is None or self.timeout_seconds <= 0:
-                raise ValueError("RACK_OPERATION_REQUEST intent requires timeout_seconds")
-        if self.kind in {RuntimeIntentKind.BIN_OPERATION_REQUEST, RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST}:
-            self._validate_handling_operation_request()
         if self.kind == RuntimeIntentKind.DEVICE_EVENT:
             if not self.payload_json.get("device_code"):
                 raise ValueError("DEVICE_EVENT intent requires device_code")
@@ -693,27 +595,6 @@ class RuntimeIntent(BaseModel):
             raise ValueError(
                 f"{self.kind.value} intent {field_name} must be a valid MaterialUnitStatus, got: {raw!r}"
             ) from exc
-
-    def _validate_handling_operation_request(self) -> None:
-        kind = self.kind.value
-        if not self.action:
-            raise ValueError(f"{kind} intent requires operation_type")
-        if not self.idempotency_key:
-            raise ValueError(f"{kind} intent requires operation_key")
-        if self.dispatch_key or self.target_code:
-            raise ValueError(f"{kind} intent must not expose transport fields")
-        if not self.payload_json.get("carrier_type"):
-            raise ValueError(f"{kind} intent requires carrier_type")
-        moves = self.payload_json.get("moves")
-        if not isinstance(moves, list) or not moves:
-            raise ValueError(f"{kind} intent requires payload.moves")
-        for index, move in enumerate(moves, start=1):
-            if not isinstance(move, dict):
-                raise TypeError(f"{kind} intent requires payload.moves[{index}] mapping")
-            if _HANDLING_TRANSPORT_FIELDS.intersection(move):
-                raise ValueError(f"{kind} intent must not expose transport fields")
-        if self.timeout_seconds is None or self.timeout_seconds <= 0:
-            raise ValueError(f"{kind} intent requires timeout_seconds")
 
 
 __all__ = [

@@ -26,13 +26,6 @@ if TYPE_CHECKING:
 
 
 _DEVICE_INTENTS = frozenset({RuntimeIntentKind.COMMAND, RuntimeIntentKind.DEVICE_EVENT})
-_HANDLING_INTENTS = frozenset(
-    {
-        RuntimeIntentKind.RACK_OPERATION_REQUEST,
-        RuntimeIntentKind.BIN_OPERATION_REQUEST,
-        RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST,
-    }
-)
 _WMS_INTENTS = frozenset({RuntimeIntentKind.EXTERNAL_REQUEST})
 
 
@@ -373,8 +366,6 @@ def _target_domain(kind: RuntimeIntentKind, *, capability_key: str | None = None
         return capability_key.split(".", maxsplit=1)[0]
     if kind in _DEVICE_INTENTS:
         return "device"
-    if kind in _HANDLING_INTENTS:
-        return "handling"
     if kind in _WMS_INTENTS:
         return "wms_integration"
     return "runtime"

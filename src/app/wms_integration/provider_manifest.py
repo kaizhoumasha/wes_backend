@@ -166,20 +166,6 @@ _scenario_coverage = set().union(*(scenario.operation_identities for scenario in
 if _scenario_coverage != set(WMS_OPERATION_BY_IDENTITY):
     raise RuntimeError("WMS business scenario manifest must cover every registered operation")
 
-LEGACY_TRANSPORT_MIGRATION_MANIFEST = {
-    "wms.transport.rack@v1": (
-        "wms.fulfillment.request_rack_supply@v1",
-        "wms.fulfillment.request_rack_transport@v1",
-        "wms.fulfillment.change_rack_face@v1",
-        "wms.fulfillment.full_box_exchange@v1",
-    ),
-    "wms.transport.handling@v1": (
-        "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-        "wms.fulfillment.move_bins_from_conveyor_exit@v1",
-        "wms.fulfillment.request_load_unit_transport@v1",
-    ),
-}
-
 
 def require_full_factory_registry(operation_identities: tuple[str, ...]) -> None:
     """在 T2/T5 接线前 fail closed，禁止旧四项 profile 冒充全工厂合同。"""
@@ -190,7 +176,6 @@ def require_full_factory_registry(operation_identities: tuple[str, ...]) -> None
 
 
 __all__ = [
-    "LEGACY_TRANSPORT_MIGRATION_MANIFEST",
     "WMS_BUSINESS_SCENARIO_MANIFEST",
     "WMS_CONFORMANCE_REQUIREMENTS",
     "WMS_PROVIDER_OPERATION_MANIFEST",

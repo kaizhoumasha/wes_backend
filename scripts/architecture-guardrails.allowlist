@@ -14,24 +14,9 @@
 #
 # 删除任意一行后, --mode enforced 必须对对应历史违规返回非零 (证明 enforcement 生效)
 
-# WMS_INTEGRATION_BOUNDARY: 跨域 WMS import (6 文件, drop_phase=phase2/phase5-tech)
+# WMS_INTEGRATION_BOUNDARY: 跨域 WMS import (2 文件, drop_phase=phase2/phase5-tech)
 WMS_INTEGRATION_BOUNDARY|src/app/callback/services/callback_ingress_service.py|legacy WMS normalizer import, Phase 2 迁 runtime|2026-09-30|legacy:src/app/callback/services/callback_ingress_service.py:<file>|phase2
-WMS_INTEGRATION_BOUNDARY|src/app/rack/services/gateway.py|legacy WMS transport_contract import, rack 域 Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/gateway.py:<file>|phase2
-WMS_INTEGRATION_BOUNDARY|src/app/handling/services/gateway.py|legacy WMS transport_contract import, handling 域 Phase 2 迁移|2026-09-30|legacy:src/app/handling/services/gateway.py:<file>|phase2
-WMS_INTEGRATION_BOUNDARY|src/app/runtime/capabilities/material_flow/single_layer_rack_orchestration_service.py|legacy WMS import, Phase 4 重建|2026-12-31|legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>|phase2
 WMS_INTEGRATION_BOUNDARY|src/app/workline/runtime_services.py|legacy runtime services 镜像 business identity bridge 引入 3 处 wms_integration import, 与 legacy runtime services 同源 phase5-tech 时消除|2026-09-30|legacy:src/workline_runtime/services.py:build_workline_runtime_services|phase5-tech
-
-# EXECUTION_CORRELATION_BOUNDARY 补充: 同时含 EXECUTION_CORRELATION_BOUNDARY 跨域 session FK 的 WMS_INTEGRATION_BOUNDARY 文件
-EXECUTION_CORRELATION_BOUNDARY|src/app/rack/services/gateway.py|legacy session FK, rack 域 Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/gateway.py:<file>|phase2
-
-# EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (handling/rack, drop_phase=phase1/phase2)
-EXECUTION_CORRELATION_BOUNDARY|src/app/handling/models/operation.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/models/operation.py:<file>|phase1
-EXECUTION_CORRELATION_BOUNDARY|src/app/handling/services/lifecycle_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/services/lifecycle_service.py:<file>|phase1
-EXECUTION_CORRELATION_BOUNDARY|src/app/handling/services/operation_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/services/operation_service.py:<file>|phase1
-EXECUTION_CORRELATION_BOUNDARY|src/app/rack/models/operation.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/models/operation.py:<file>|phase2
-EXECUTION_CORRELATION_BOUNDARY|src/app/rack/repositories/operation_repository.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/repositories/operation_repository.py:<file>|phase2
-EXECUTION_CORRELATION_BOUNDARY|src/app/rack/services/operation_service.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/operation_service.py:<file>|phase2
-EXECUTION_CORRELATION_BOUNDARY|src/app/rack/services/task_lifecycle_service.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/task_lifecycle_service.py:<file>|phase2
 
 # EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (resource/wms_integration, drop_phase=phase1)
 EXECUTION_CORRELATION_BOUNDARY|src/app/resource/services/projection_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_service.py:<file>|phase1

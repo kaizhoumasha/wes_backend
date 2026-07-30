@@ -286,10 +286,7 @@ def test_provider_conformance_scenarios_and_mock_fixtures_derive_from_registry()
         expected
     )
     assert all("wms.transport." not in identity for identity in expected)
-    assert set(manifest.LEGACY_TRANSPORT_MIGRATION_MANIFEST) == {
-        "wms.transport.rack@v1",
-        "wms.transport.handling@v1",
-    }
+    assert not hasattr(manifest, "LEGACY_TRANSPORT_MIGRATION_MANIFEST")
 
 
 def test_active_provider_profile_and_runtime_index_are_exact_registry_derivatives() -> None:

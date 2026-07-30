@@ -80,10 +80,6 @@ def test_business_carrier_rows_remain_auditable_before_business_cleanup() -> Non
         "[phase4] NG 退货/处理业务流程": {
             "material-flow:ng_return_item_service.NgReturnItemService",
         },
-        "[phase4] 单层机架编排业务流程": {
-            "material-flow:single_layer_rack_orchestration_service.SingleLayerRackOrchestrationService",
-            "material-flow:single_layer_rack_orchestration_service._is_active_station_claim_outbox",
-        },
         "[phase4] Bin Cell 预约业务流程": {
             "material-flow:bin_cell_reservation_service.WorklineBinCellReservationService",
         },

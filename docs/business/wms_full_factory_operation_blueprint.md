@@ -39,7 +39,7 @@ QUERY 由调用进程直接执行。EFFECT 先写 RuntimeIntent/Outbox：
 
 ## 迁移与验收
 
-旧 transport 生产者必须按 `provider_manifest.LEGACY_TRANSPORT_MIGRATION_MANIFEST` 迁移到 E08–E14。迁移是替换，
+旧 transport 生产者必须直接替换为 E08–E14 typed Port；已完成替换的旧入口和迁移清单均物理删除，
 不提供 facade、alias、双写或 fallback。
 
 上线前必须证明：35 项无缺失/重复、业务场景全覆盖、Q19 无副作用、9/7 完成模式精确、Mock fixture 完整、旧

@@ -151,12 +151,6 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         "cancel_active_by_session",
         cancel_outbox,
     )
-    cancel_rack_task = AsyncMock(return_value=0)
-    monkeypatch.setattr(
-        workline_runtime_reconciliation_service.rack_task_repository,
-        "cancel_active_by_material_session",
-        cancel_rack_task,
-    )
 
     class _CommandRepo:
         async def get_by_command_code(self, _db, _command_code):
@@ -190,11 +184,6 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     cancel_outbox.assert_awaited_once_with(
         db_session,
         session_id=runtime_session.id,
-        reason="CALLBACK_DEADLINE_EXPIRED",
-    )
-    cancel_rack_task.assert_awaited_once_with(
-        db_session,
-        material_session_id=runtime_session.id,
         reason="CALLBACK_DEADLINE_EXPIRED",
     )
 

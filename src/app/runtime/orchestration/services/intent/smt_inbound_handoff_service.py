@@ -84,9 +84,6 @@ if TYPE_CHECKING:
 
 _DIRECT_SORTING_DECISION = "DIRECT_SORTING"
 _PREFERRED_EXCHANGE_FALLBACK_DECISION = "PREFERRED_FULL_BOX_EXCHANGE_FALLBACK_SORTING"
-_FULL_BOX_EXCHANGED_DECISION = "FULL_BOX_EXCHANGED"
-_RECONCILING_DECISION = "RECONCILING"
-_RELATION_READY_STATUSES = {"READY", "REMAINING", "UNCHANGED", "NOT_EXCHANGED"}
 _TERMINAL_ITEM_STATUSES = {
     SmtInboundHandoffSourceItemStatus.SORTED,
     SmtInboundHandoffSourceItemStatus.EXCHANGED,
@@ -418,31 +415,6 @@ class SmtInboundHandoffService:
         if not result.durably_accepted:
             raise RuntimeError("typed E11 intent/outbox preparation failed closed")
         return result.outbox_dispatch_targets
-
-    async def manual_reconcile_exchange(
-        self,
-        db: AsyncSession,
-        *,
-        demand: SmtInboundHandoffDemand,
-        post_exchange_relations: Mapping[str, Any] | Sequence[Mapping[str, Any]],
-        trace_id: str | None = None,
-    ) -> SmtInboundHandoffDemand:
-        """E11 只能由 typed terminal projector 完成，禁止人工绕过。"""
-
-        _ = (db, demand, post_exchange_relations, trace_id)
-        raise RuntimeError("manual E11 completion bypass is forbidden")
-
-    async def retry_exchange(
-        self,
-        db: AsyncSession,
-        *,
-        demand: SmtInboundHandoffDemand,
-        trace_id: str | None = None,
-    ) -> SmtInboundHandoffDemand:
-        """E11 重试由 durable Outbox/Beat 处理，禁止创建独立重试 root。"""
-
-        _ = (db, demand, trace_id)
-        raise RuntimeError("manual E11 retry bypass is forbidden")
 
     async def recalculate_demand_status(
         self,
@@ -2611,107 +2583,6 @@ class SmtInboundHandoffService:
         demand.status = SmtInboundHandoffDemandStatus.MANUAL_HOLD
         demand.failure_code = reason.failure_code
         demand.failure_message = self._text_or_none(message) or reason.default_message
-
-    async def _apply_post_exchange_relations(
-        self,
-        db: AsyncSession,
-        *,
-        demand: SmtInboundHandoffDemand,
-        post_exchange_relations: Any,
-    ) -> None:
-        demand_id = getattr(demand, "id", None)
-        if not isinstance(demand_id, int):
-            return
-        relations = self._relation_records(post_exchange_relations)
-        items = await self.repository.list_source_items(db, demand_id)
-        for item in items:
-            relation = self._matching_relation(item, relations)
-            if relation is None:
-                if item.status not in _TERMINAL_ITEM_STATUSES:
-                    item.status = SmtInboundHandoffSourceItemStatus.READY
-            elif self._relation_marks_ready(relation):
-                item.status = SmtInboundHandoffSourceItemStatus.READY
-            else:
-                item.status = SmtInboundHandoffSourceItemStatus.EXCHANGED
-            item.failure_code = None
-            item.failure_message = None
-            db.add(item)
-        await db.flush()
-
-    @classmethod
-    def _relation_records(cls, post_exchange_relations: Any) -> list[Mapping[str, Any]]:
-        if isinstance(post_exchange_relations, Sequence) and not isinstance(post_exchange_relations, (str, bytes)):
-            return [item for item in post_exchange_relations if isinstance(item, Mapping)]
-        if not isinstance(post_exchange_relations, Mapping):
-            return []
-        records: list[Mapping[str, Any]] = []
-        for key in ("items", "relations", "exchanged_items", "post_exchange_relations"):
-            value = post_exchange_relations.get(key)
-            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-                records.extend(item for item in value if isinstance(item, Mapping))
-        if records:
-            return records
-        return [post_exchange_relations] if cls._relation_has_identity(post_exchange_relations) else []
-
-    @staticmethod
-    def _relation_has_identity(relation: Mapping[str, Any]) -> bool:
-        return any(
-            key in relation
-            for key in (
-                "item_key",
-                "source_item_key",
-                "material_identity_key",
-                "pkg_code",
-                "source_pkg_code",
-                "bin_code",
-            )
-        )
-
-    def _matching_relation(
-        self,
-        item: SmtInboundHandoffSourceItem,
-        relations: Sequence[Mapping[str, Any]],
-    ) -> Mapping[str, Any] | None:
-        for relation in relations:
-            if self._relation_matches_item(item, relation):
-                return relation
-        return None
-
-    def _relation_matches_item(
-        self,
-        item: SmtInboundHandoffSourceItem,
-        relation: Mapping[str, Any],
-    ) -> bool:
-        relation_item_key = self._text_or_none(relation.get("item_key") or relation.get("source_item_key"))
-        if relation_item_key is not None and relation_item_key == item.item_key:
-            return True
-        material_key = self._text_or_none(relation.get("material_identity_key"))
-        if material_key is not None and material_key == item.material_identity_key:
-            return True
-        pkg_code = self._text_or_none(relation.get("pkg_code") or relation.get("source_pkg_code"))
-        if pkg_code is not None and pkg_code == item.pkg_code:
-            return True
-        bin_code = self._text_or_none(relation.get("bin_code") or relation.get("source_bin_code"))
-        if bin_code is None or bin_code != item.bin_code:
-            return False
-        cell_code = self._text_or_none(relation.get("bin_cell_code") or relation.get("source_bin_cell_code"))
-        if cell_code is not None:
-            return cell_code == item.bin_cell_code
-        cell_index = self._int_or_none(relation.get("bin_cell_index") or relation.get("source_bin_cell_index"))
-        return cell_index is not None and cell_index == item.bin_cell_index
-
-    @classmethod
-    def _relation_marks_ready(cls, relation: Mapping[str, Any]) -> bool:
-        raw_status = (
-            cls._text_or_none(relation.get("exchange_result"))
-            or cls._text_or_none(relation.get("status"))
-            or cls._text_or_none(relation.get("result"))
-        )
-        return raw_status is not None and raw_status.upper() in _RELATION_READY_STATUSES
-
-    @staticmethod
-    def _is_preferred_exchange(demand: SmtInboundHandoffDemand) -> bool:
-        return str(demand.decision_status or "").startswith("PREFERRED_FULL_BOX_EXCHANGE")
 
     @classmethod
     def _snapshot_slot_code(cls, snapshot: Mapping[str, Any], *, fallback: int) -> str:

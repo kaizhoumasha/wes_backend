@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_service import DeviceService
-from src.app.rack.repositories import RackTaskRepository
 from src.app.reconciliation.manager import (
     ReconciliationConflictInput,
     ReconciliationManager,
@@ -166,7 +165,6 @@ class WorklineRuntimeReconciliationService:
         runtime_hold_creation_service: Any | None = None,
         runtime_hold_repository: RuntimeHoldRepository | None = None,
         runtime_hold_release_service: RuntimeHoldReleaseService | None = None,
-        rack_task_repository: RackTaskRepository | None = None,
         reconciliation_manager: ReconciliationManager | None = None,
         workline_status_projection_service: Any | None = None,
     ) -> None:
@@ -186,7 +184,6 @@ class WorklineRuntimeReconciliationService:
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
         self.runtime_hold_repository = runtime_hold_repository or default_runtime_hold_repository
         self.runtime_hold_release_service = runtime_hold_release_service or default_runtime_hold_release_service
-        self.rack_task_repository = rack_task_repository or RackTaskRepository()
         self.reconciliation_manager = reconciliation_manager or ReconciliationManager()
         self.workline_status_projection_service = (
             workline_status_projection_service or workline_runtime_status_projection_service
@@ -318,12 +315,6 @@ class WorklineRuntimeReconciliationService:
                 session_id=session.id,
                 reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
             )
-            _ = await self.rack_task_repository.cancel_active_by_material_session(
-                db,
-                material_session_id=session.id,
-                reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
-            )
-
         runtime_hold = await self.runtime_hold_creation_service.create_for_callback_deadline_expired(
             db,
             session=session,

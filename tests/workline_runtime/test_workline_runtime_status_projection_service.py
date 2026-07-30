@@ -602,7 +602,6 @@ async def test_dispatch_ack_exhausted_uses_projection_without_overwriting_estop(
         runtime_hold_creation_service=SimpleNamespace(
             create_for_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=9904))
         ),
-        rack_task_repository=SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=0)),
         workline_status_projection_service=projection,
     )
 

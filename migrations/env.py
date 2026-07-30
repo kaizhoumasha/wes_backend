@@ -31,12 +31,6 @@ from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
 )
-from src.app.handling.models import (  # noqa: F401
-    HandlingMove,
-    HandlingOperation,
-    HandlingStep,
-)
-from src.app.rack.models import RackOperation, RackTask  # noqa: F401
 from src.app.resource.models import (  # noqa: F401
     Bin,
     BinCellOccupancy,

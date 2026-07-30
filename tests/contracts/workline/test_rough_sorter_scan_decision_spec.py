@@ -660,7 +660,6 @@ async def test_timer_timeout_facade_holds_session_with_approved_reason(
         system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0)),
         device_service=SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None)),
         runtime_hold_creation_service=SimpleNamespace(create_for_callback_deadline_expired=runtime_hold_creation),
-        rack_task_repository=SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=0)),
         workline_status_projection_service=SimpleNamespace(project_reconciling=AsyncMock(return_value=True)),
     )
     timeout_payload = {
