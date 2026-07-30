@@ -2051,6 +2051,18 @@ Codex; checkbox as you ship.
     preparation `2 passed`，覆盖混合无效候选过滤、双 worker `SKIP LOCKED` 不重叠，以及
     claim/member/Intent/Outbox 原子回滚后原 FIFO 可重选；topology `6 passed`、targeted Ruff 和
     `git diff --check` 通过。独立增量复审结论 `Approved`、无 P0–P2。
+  - Verified checkpoint — G4.4d C / E13 ACK prefix：首次 typed ACK 与 status-first 恢复 ACK 复用同一
+    E13 投影；只允许非空有序接纳前缀，前缀 member 提升为 `ACCEPTED` 并保留 source claim，后缀 member
+    `RELEASED`、清理 claim 并立即回到可调度 FIFO，不等待本批 terminal。`NO_DESTINATION_CAPACITY` 作为稳定
+    BusinessReject 全量释放候选且不创建空任务、不调度 status。物理事实早于 ACK 时，accepted scope 必须覆盖
+    已动作候选；route/membership 仅为 `RECONCILING` 不视为物理动作，明确节点变化或 `LEFT + left_at` 才是离队
+    evidence。ACK 漂移、漏接已动作候选和 ACK 丢失后原键重放返回拒绝均只开 OPEN reconciliation，保留既有
+    route/member/source claim；相同 ACK 重放由 reducer `state_changed` 门控为零投影。E13 terminal 与
+    rack-slot 收敛仍显式 fail closed。
+  - G4.4d C evidence：E13 ACK unit `18 passed`，真实 PostgreSQL preparation/ACK `10 passed`，覆盖
+    prefix/suffix、下一批立即调度、零容量、LEFT 后 claim 清理、事务故障回滚和同事件重放；共享
+    E12/status/contracts/topology 回归 `125 passed`，E12 convergence PostgreSQL `10 passed`，完整 quality
+    profile、Ruff format/check 和 `git diff --check` 通过。独立终审结论 `Approved`、无 P0–P2。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

@@ -196,42 +196,21 @@ def test_e13_wire_timestamp_is_normalized_from_naive_utc_storage() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "event_type",
-    [
-        EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
-        EffectReducerEventType.STATUS_COMPLETED,
-    ],
-)
-async def test_e13_unimplemented_event_projection_fails_closed_without_rack_demand_fallback(
-    event_type: EffectReducerEventType,
-) -> None:
+async def test_e13_unimplemented_event_projection_fails_closed_without_rack_demand_fallback() -> None:
+    event_type = EffectReducerEventType.STATUS_COMPLETED
     event = EffectReducerEvent(
         event_type=event_type,
         dispatch_key=REQUEST_FIXTURES[E13]["dispatch_key"],
         occurred_at_ms=1,
         source_event_id=f"e13-unbound:{event_type.value}",
-        attempt_no=1 if event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED else None,
         evidence_json={},
     )
 
-    with pytest.raises(RuntimeError, match="E13 event projection is not bound"):
+    with pytest.raises(RuntimeError, match="E13 terminal/status projection is not bound"):
         await WmsFulfillmentDomainProjector().project_event(
             SimpleNamespace(),
             operation=WMS_OPERATION_BY_IDENTITY[E13],
             request_payload=REQUEST_FIXTURES[E13],
             event=event,
             reduction=SimpleNamespace(state_changed=True, contradiction=False),
-        )
-
-
-@pytest.mark.asyncio
-async def test_e13_unimplemented_reconciliation_projection_fails_closed() -> None:
-    with pytest.raises(RuntimeError, match="E13 reconciliation projection is not bound"):
-        await WmsFulfillmentDomainProjector().project_reconciliation_opened(
-            SimpleNamespace(),
-            operation=WMS_OPERATION_BY_IDENTITY[E13],
-            dispatch_key=REQUEST_FIXTURES[E13]["dispatch_key"],
-            reason_code="TEST_E13_RECONCILIATION",
-            evidence_json={},
         )

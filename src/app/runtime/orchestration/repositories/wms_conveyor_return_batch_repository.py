@@ -10,7 +10,9 @@ from sqlalchemy import select
 
 from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember
+from src.app.sys.models.outbox import SystemOutbox
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,6 +33,17 @@ class WmsConveyorReturnCandidateRow:
     bin_code: str
     scan3_enqueued_at: datetime
     queue_position: int
+
+
+@dataclass(frozen=True, slots=True)
+class WmsConveyorReturnPreparedRows:
+    """同一 RuntimeIntent 根下锁定的 E13 request/member/route/membership。"""
+
+    intent: RuntimeIntentLog
+    outbox: SystemOutbox
+    members: tuple[WmsConveyorBatchMember, ...]
+    routes: tuple[BinRouteInstance, ...]
+    memberships: tuple[ConveyorQueueMembership, ...]
 
 
 class WmsConveyorReturnBatchRepository:
@@ -163,11 +176,84 @@ class WmsConveyorReturnBatchRepository:
         db.add_all(members)
         await db.flush()
 
+    async def lock_prepared_batch(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+    ) -> WmsConveyorReturnPreparedRows | None:
+        """按 root→member→membership→route 锁序读取 ACK/reject 权威事实。"""
+
+        intent = await db.scalar(
+            select(RuntimeIntentLog).where(RuntimeIntentLog.dispatch_key == dispatch_key).with_for_update()
+        )
+        outbox = await db.scalar(
+            select(SystemOutbox).where(SystemOutbox.dispatch_key == dispatch_key).with_for_update()
+        )
+        if intent is None or intent.id is None or outbox is None:
+            return None
+        members = tuple(
+            (
+                await db.execute(
+                    select(WmsConveyorBatchMember)
+                    .where(
+                        WmsConveyorBatchMember.runtime_intent_log_id == intent.id,
+                        WmsConveyorBatchMember.direction == "RETURN",
+                    )
+                    .order_by(WmsConveyorBatchMember.sequence_no)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        route_ids = tuple(member.route_instance_id for member in members)
+        memberships = (
+            tuple(
+                (
+                    await db.execute(
+                        select(ConveyorQueueMembership)
+                        .where(ConveyorQueueMembership.route_instance_id.in_(route_ids))
+                        .order_by(ConveyorQueueMembership.id)
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if route_ids
+            else ()
+        )
+        routes = (
+            tuple(
+                (
+                    await db.execute(
+                        select(BinRouteInstance)
+                        .where(BinRouteInstance.route_instance_id.in_(route_ids))
+                        .order_by(BinRouteInstance.route_instance_id)
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if route_ids
+            else ()
+        )
+        return WmsConveyorReturnPreparedRows(
+            intent=intent,
+            outbox=outbox,
+            members=members,
+            routes=routes,
+            memberships=memberships,
+        )
+
 
 wms_conveyor_return_batch_repository = WmsConveyorReturnBatchRepository()
 
 __all__ = [
     "WmsConveyorReturnBatchRepository",
     "WmsConveyorReturnCandidateRow",
+    "WmsConveyorReturnPreparedRows",
     "wms_conveyor_return_batch_repository",
 ]

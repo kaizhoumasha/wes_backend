@@ -40,13 +40,18 @@ def _return_service_type() -> type[Any]:
     return import_module(RETURN_SERVICE_MODULE).WmsConveyorReturnBatchService
 
 
-async def _seed_return_queue(db: Any, *, graph_index: int) -> tuple[Any, tuple[Any, ...], int]:
+async def _seed_return_queue(
+    db: Any,
+    *,
+    graph_index: int,
+    bin_count: int = 3,
+) -> tuple[Any, tuple[Any, ...], int]:
     graph = await seed_batch_graph(
         db,
         graph_index=graph_index,
-        entry_capacity=3,
-        ctu_capacity=3,
-        bin_count=3,
+        entry_capacity=bin_count,
+        ctu_capacity=bin_count,
+        bin_count=bin_count,
     )
     inbound_service = WmsConveyorBatchService(id_factory=lambda: f"e13-source-{graph_index}")
     reservation = await reserve_batch(inbound_service, db, graph)
@@ -75,7 +80,7 @@ async def _seed_return_queue(db: Any, *, graph_index: int) -> tuple[Any, tuple[A
     fifo_items = (
         reservation.request.items[1],
         reservation.request.items[0],
-        reservation.request.items[2],
+        *reservation.request.items[2:],
     )
     for queue_position, item in enumerate(fifo_items, start=1):
         route = by_id[item.route_instance_id]

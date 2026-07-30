@@ -421,12 +421,14 @@ class WmsEffectStatusService:
             )
         operation = WMS_OPERATION_BY_IDENTITY[request.operation_identity]
         if request.frozen_ack is None and snapshot.recovered_ack is not None:
-            await self._record_recovered_ack(
+            recovered_result = await self._record_recovered_ack(
                 db,
                 claim=current_claim,
                 ack=snapshot.recovered_ack,
                 source="status",
             )
+            if recovered_result is not None:
+                return recovered_result
         snapshot_hash = sha256(snapshot.canonical_bytes).hexdigest()
         evidence = {
             "snapshot": snapshot.model_dump(mode="json", exclude_none=False),
@@ -652,7 +654,7 @@ class WmsEffectStatusService:
         claim: WmsEffectStatusClaim,
         ack: WmsEffectAck,
         source: str,
-    ) -> None:
+    ) -> WmsEffectStatusCheckResult | None:
         """把 status-first/resubmit ACK 写入现有权威 envelope；evidence 只保留 hash/reference。"""
 
         ack_hash = typed_wms_effect_ack_hash(ack)
@@ -679,24 +681,52 @@ class WmsEffectStatusService:
             evidence_json=evidence,
             terminal_outcome=typed_outcome,
         )
+        operation = WMS_OPERATION_BY_IDENTITY.get(getattr(claim.outbox, "operation_identity", None))
+        request_payload = getattr(claim.outbox, "payload_json", None)
+        if (
+            self._domain_projector is not None
+            and operation is not None
+            and operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+            and isinstance(request_payload, dict)
+            and await self._domain_projector.should_reconcile_ack(
+                db,
+                operation=operation,
+                request_payload=request_payload,
+                event=event,
+            )
+        ):
+            return await self._open_reconciliation(
+                db,
+                claim=claim,
+                reason_code="WMS_E13_ACK_CONFLICTS_WITH_LOCAL_FACT",
+                evidence={
+                    **evidence,
+                    "trigger_event_type": event.event_type.value,
+                    "trigger_source_event_id": event.source_event_id,
+                },
+            )
         reduced = await self._reducer.reduce(
             db,
             event,
         )
-        operation = WMS_OPERATION_BY_IDENTITY.get(getattr(claim.outbox, "operation_identity", None))
         if (
             self._domain_projector is not None
             and operation is not None
-            and operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
-            and isinstance(getattr(claim.outbox, "payload_json", None), dict)
+            and operation.domain_projection_kind
+            in {
+                WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH,
+                WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH,
+            }
+            and isinstance(request_payload, dict)
         ):
             await self._domain_projector.project_event(
                 db,
                 operation=operation,
-                request_payload=claim.outbox.payload_json,
+                request_payload=request_payload,
                 event=event,
                 reduction=reduced,
             )
+        return None
 
     async def _record_not_found(
         self,
@@ -901,7 +931,7 @@ class WmsEffectStatusService:
         await db.commit()
         return WmsEffectStatusCheckResult(dispatch_key=claim.intent.dispatch_key, outcome="STALE")
 
-    async def _record_resubmit_result(
+    async def _record_resubmit_result(  # noqa: PLR0911
         self,
         db: Any,
         *,
@@ -954,6 +984,26 @@ class WmsEffectStatusService:
                 outcome=interpreted,
                 additional_evidence=evidence,
             )
+            if (
+                request.frozen_ack is None
+                and self._domain_projector is not None
+                and operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+                and await self._domain_projector.should_reconcile_transport_failure(
+                    db,
+                    operation=operation,
+                    request_payload=request.request_payload,
+                )
+            ):
+                return await self._open_reconciliation(
+                    db,
+                    claim=current_claim,
+                    reason_code=reject_event.reason_code or "WMS_E13_TRANSPORT_FAILURE_AFTER_LOCAL_FACT",
+                    evidence={
+                        **reject_event.evidence_json,
+                        "trigger_event_type": reject_event.event_type.value,
+                        "trigger_source_event_id": reject_event.source_event_id,
+                    },
+                )
             reduced = await self._reducer.reduce(db, reject_event)
             reconciles = request.frozen_ack is not None or bool(getattr(reduced, "contradiction", False))
             if not reconciles and self._domain_projector is not None and operation.domain_projection_kind is not None:
@@ -993,12 +1043,14 @@ class WmsEffectStatusService:
                 evidence={**evidence, "transport": result.evidence_json()},
             )
         if frozen_ack is None:
-            await self._record_recovered_ack(
+            recovered_result = await self._record_recovered_ack(
                 db,
                 claim=current_claim,
                 ack=interpreted.payload,
                 source="resubmit",
             )
+            if recovered_result is not None:
+                return recovered_result
         next_check = self._next_check_within_confirmation_budget(current_claim.intent)
         if next_check is None:
             return await self._open_confirmation_budget_reconciliation(
@@ -1043,6 +1095,7 @@ class WmsEffectStatusService:
             in {
                 WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND,
                 WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH,
+                WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH,
             }
             and self._domain_projector is not None
         ):

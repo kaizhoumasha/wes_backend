@@ -199,8 +199,12 @@ class WmsFulfillmentDomainProjector:
         if not bool(getattr(reduction, "state_changed", False)) or bool(getattr(reduction, "contradiction", False)):
             return
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
-            # E13 本阶段只绑定 reserve/preparation；禁止误落入 rack-demand 投影。
-            raise RuntimeError("E13 event projection is not bound")
+            await self._project_e13_event(
+                db,
+                request_payload=request_payload,
+                event=event,
+            )
+            return
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
             await self._project_e12_event(
                 db,
@@ -320,6 +324,37 @@ class WmsFulfillmentDomainProjector:
             source_event_id=event.source_event_id,
         )
 
+    async def _project_e13_event(
+        self,
+        db: AsyncSession,
+        *,
+        request_payload: dict[str, Any],
+        event: EffectReducerEvent,
+    ) -> None:
+        """C 组只收敛 E13 typed ACK 与 task-before-create reject。"""
+
+        request = validate_json_payload(MoveBinsFromConveyorExitRequest, request_payload)
+        if event.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED:
+            ack = self._typed_ack(event)
+            validate_fulfillment_ack(request, ack)
+            await self._conveyor_return_batch.project_ack(
+                db,
+                request=request,
+                ack=ack,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+            )
+            return
+        if event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED:
+            await self._conveyor_return_batch.project_reject(
+                db,
+                request=request,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+            )
+            return
+        raise RuntimeError("E13 terminal/status projection is not bound")
+
     async def project_reconciliation_opened(
         self,
         db: AsyncSession,
@@ -332,8 +367,13 @@ class WmsFulfillmentDomainProjector:
         """仅为 E11 reconciliation 同事务冻结 parent；不释放 owner 或 active Intent。"""
 
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
-            # E13 对账收敛将在 ACK/terminal 阶段显式绑定，当前必须 fail closed。
-            raise RuntimeError("E13 reconciliation projection is not bound")
+            await self._conveyor_return_batch.project_reconciliation_opened(
+                db,
+                dispatch_key=dispatch_key,
+                reason_code=reason_code,
+                evidence_json=evidence_json,
+            )
+            return
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
             if not reason_code or not isinstance(evidence_json, dict):
                 raise ValueError("E12 reconciliation projection requires reason and evidence")
@@ -383,6 +423,26 @@ class WmsFulfillmentDomainProjector:
             queue_code=request.destination_station_code,
         )
 
+    async def should_reconcile_ack(
+        self,
+        db: AsyncSession,
+        *,
+        operation: WmsOperationDefinition,
+        request_payload: dict[str, Any],
+        event: EffectReducerEvent,
+    ) -> bool:
+        """E13 ACK prefix 在领域写入前检查是否遗漏已动作候选。"""
+
+        if operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
+            return False
+        request = validate_json_payload(MoveBinsFromConveyorExitRequest, request_payload)
+        ack = self._typed_ack(event)
+        return await self._conveyor_return_batch.should_reconcile_ack(
+            db,
+            request=request,
+            ack=ack,
+        )
+
     async def should_reconcile_transport_failure(
         self,
         db: AsyncSession,
@@ -392,13 +452,19 @@ class WmsFulfillmentDomainProjector:
     ) -> bool:
         """E12 transport 失败在写领域结果前检查 ACK/物理事实。"""
 
-        if operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
-            return False
-        request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
-        return await self._conveyor_batch.should_reconcile_transport_failure(
-            db,
-            request=request,
-        )
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
+            return await self._conveyor_batch.should_reconcile_transport_failure(
+                db,
+                request=request,
+            )
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH:
+            request = validate_json_payload(MoveBinsFromConveyorExitRequest, request_payload)
+            return await self._conveyor_return_batch.should_reconcile_transport_failure(
+                db,
+                request=request,
+            )
+        return False
 
     async def project_transport_not_sent_exhausted(
         self,

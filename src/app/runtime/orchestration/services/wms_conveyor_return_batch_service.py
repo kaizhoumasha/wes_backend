@@ -11,13 +11,16 @@ from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.repositories.wms_conveyor_return_batch_repository import (
     WmsConveyorReturnBatchRepository,
     WmsConveyorReturnCandidateRow,
+    WmsConveyorReturnPreparedRows,
     wms_conveyor_return_batch_repository,
 )
 from src.app.wms_integration.ports.fulfillment_operations import (
     MOVE_BINS_FROM_CONVEYOR_EXIT,
     ConveyorExitCandidate,
     MoveBinsFromConveyorExitRequest,
+    WmsEffectAck,
     frozen_candidate_digest,
+    validate_fulfillment_ack,
 )
 from src.utils.timezone import timezone
 
@@ -190,6 +193,139 @@ class WmsConveyorReturnBatchService:
             staged_at_ms=self._now_ms(),
         )
 
+    async def should_reconcile_ack(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsFromConveyorExitRequest,
+        ack: WmsEffectAck,
+    ) -> bool:
+        """ACK 前缀遗漏任何已观察物理动作时只允许进入 reconciliation。"""
+
+        try:
+            validate_fulfillment_ack(request, ack)
+            prepared = await self._lock_and_validate_prepared(db, request=request)
+        except (RuntimeError, TypeError, ValueError):
+            return True
+        accepted_count = len(ack.accepted_scope.object_keys) if ack.accepted_scope is not None else 0
+        if any(member.member_state != "CANDIDATE" for member in prepared.members):
+            return True
+        return any(
+            self._member_has_observed_physical_action(prepared, member) for member in prepared.members[accepted_count:]
+        )
+
+    async def project_ack(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsFromConveyorExitRequest,
+        ack: WmsEffectAck,
+        occurred_at_ms: int,
+        source_event_id: str | None,
+    ) -> None:
+        """提升非空有序 prefix，并释放 suffix source claim；不写 rack-slot/route。"""
+
+        validate_fulfillment_ack(request, ack)
+        if not source_event_id:
+            raise ValueError("E13 ACK projection requires source_event_id")
+        prepared = await self._lock_and_validate_prepared(db, request=request)
+        accepted_count = len(ack.accepted_scope.object_keys) if ack.accepted_scope is not None else 0
+        if any(member.member_state != "CANDIDATE" for member in prepared.members):
+            raise ValueError("E13 ACK member is not pending acceptance")
+        if any(
+            self._member_has_observed_physical_action(prepared, member) for member in prepared.members[accepted_count:]
+        ):
+            raise ValueError("E13 ACK prefix omits a candidate with observed physical action")
+        memberships_by_id = {membership.id: membership for membership in prepared.memberships}
+        for index, member in enumerate(prepared.members):
+            source = memberships_by_id[member.source_queue_membership_id]
+            if index < accepted_count:
+                member.member_state = "ACCEPTED"
+                member.accepted_at_ms = occurred_at_ms
+                continue
+            member.member_state = "RELEASED"
+            member.reservation_released_at_ms = occurred_at_ms
+            source.e13_claim_intent_id = None
+            source.e13_claim_token = None
+            source.e13_claim_until = None
+            if source.membership_status == "RECONCILING" and source.left_at is None:
+                source.membership_status = "ACTIVE"
+        await db.flush()
+
+    async def should_reconcile_transport_failure(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsFromConveyorExitRequest,
+    ) -> bool:
+        try:
+            prepared = await self._lock_and_validate_prepared(db, request=request)
+        except (RuntimeError, TypeError, ValueError):
+            return True
+        return any(member.member_state != "CANDIDATE" for member in prepared.members) or any(
+            self._member_has_observed_physical_action(prepared, member) for member in prepared.members
+        )
+
+    async def project_reject(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsFromConveyorExitRequest,
+        occurred_at_ms: int,
+        source_event_id: str | None,
+    ) -> None:
+        """NO_DESTINATION_CAPACITY 等 task-before-create 拒绝释放全部候选。"""
+
+        if not source_event_id:
+            raise ValueError("E13 reject projection requires source_event_id")
+        prepared = await self._lock_and_validate_prepared(db, request=request)
+        if any(member.member_state != "CANDIDATE" for member in prepared.members) or any(
+            self._member_has_observed_physical_action(prepared, member) for member in prepared.members
+        ):
+            raise ValueError("E13 reject conflicts with accepted or physical candidate facts")
+        memberships_by_id = {membership.id: membership for membership in prepared.memberships}
+        for member in prepared.members:
+            source = memberships_by_id[member.source_queue_membership_id]
+            member.member_state = "RELEASED"
+            member.reservation_released_at_ms = occurred_at_ms
+            source.e13_claim_intent_id = None
+            source.e13_claim_token = None
+            source.e13_claim_until = None
+            if source.membership_status == "RECONCILING" and source.left_at is None:
+                source.membership_status = "ACTIVE"
+        await db.flush()
+
+    async def project_reconciliation_opened(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+        reason_code: str | None,
+        evidence_json: dict[str, object] | None,
+    ) -> None:
+        """只验证 E13 root 存在；case 由 reducer 持有，不改对象位置或 claim。"""
+
+        if not reason_code or not isinstance(evidence_json, dict):
+            raise ValueError("E13 reconciliation projection requires reason and evidence")
+        if await self._repository.lock_prepared_batch(db, dispatch_key=dispatch_key) is None:
+            raise RuntimeError("E13 prepared batch is missing")
+
+    @staticmethod
+    def has_observed_physical_action(
+        *,
+        route: object,
+        source_membership: object,
+        current_membership: object | None,
+    ) -> bool:
+        """仅位置事实代表已动作；RECONCILING 状态本身不是物理证据。"""
+
+        return (
+            getattr(route, "current_node", None) != "RETURN_QUEUE"
+            or getattr(source_membership, "membership_status", None) == "LEFT"
+            or getattr(source_membership, "left_at", None) is not None
+            or current_membership is not None
+        )
+
     @staticmethod
     def batch_identity(*, workline_id: int, queue_code: str, claim_token: str) -> str:
         digest = sha256_digest(
@@ -216,6 +352,98 @@ class WmsConveyorReturnBatchService:
             bin_code=row.bin_code,
             scan3_enqueued_at=row.scan3_enqueued_at,
             queue_position=row.queue_position,
+        )
+
+    async def _lock_and_validate_prepared(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsFromConveyorExitRequest,
+    ) -> WmsConveyorReturnPreparedRows:
+        prepared = await self._repository.lock_prepared_batch(db, dispatch_key=request.dispatch_key)
+        if prepared is None or prepared.intent.id is None:
+            raise RuntimeError("E13 prepared batch is missing")
+        if prepared.outbox.payload_json != request.model_dump(mode="json"):
+            raise ValueError("E13 frozen Outbox request drifted")
+        expected = tuple((item.sequence_no, item.route_instance_id, item.bin_id) for item in request.candidate_items)
+        actual = tuple((member.sequence_no, member.route_instance_id, member.bin_code) for member in prepared.members)
+        if actual != expected:
+            raise ValueError("E13 prepared members differ from frozen candidates")
+        routes_by_id = {route.route_instance_id: route for route in prepared.routes}
+        memberships_by_id = {membership.id: membership for membership in prepared.memberships}
+        for member, item in zip(prepared.members, request.candidate_items, strict=True):
+            source = memberships_by_id.get(member.source_queue_membership_id)
+            route = routes_by_id.get(member.route_instance_id)
+            current = next(
+                (
+                    membership
+                    for membership in prepared.memberships
+                    if membership.route_instance_id == member.route_instance_id
+                    and membership.id != member.source_queue_membership_id
+                    and membership.membership_status in {"ACTIVE", "RECONCILING"}
+                ),
+                None,
+            )
+            claim_fields = (
+                getattr(source, "e13_claim_intent_id", None),
+                getattr(source, "e13_claim_token", None),
+                getattr(source, "e13_claim_until", None),
+            )
+            has_active_claim = (
+                claim_fields[0] == prepared.intent.id
+                and isinstance(claim_fields[1], str)
+                and bool(claim_fields[1])
+                and claim_fields[2] is not None
+            )
+            has_released_claim_after_physical_action = (
+                claim_fields == (None, None, None)
+                and source is not None
+                and route is not None
+                and self.has_observed_physical_action(
+                    route=route,
+                    source_membership=source,
+                    current_membership=current,
+                )
+            )
+            if (
+                source is None
+                or route is None
+                or not (has_active_claim or has_released_claim_after_physical_action)
+                or source.route_instance_id != item.route_instance_id
+                or source.bin_code != item.bin_id
+                or source.workline_id != request.workline_id
+                or source.queue_code != request.queue_code
+                or source.queue_role != "RETURN_QUEUE"
+                or route.bin_code != item.bin_id
+                or route.workline_id != request.workline_id
+            ):
+                raise ValueError("E13 source claim/member/route drifted")
+        return prepared
+
+    def _member_has_observed_physical_action(
+        self,
+        prepared: WmsConveyorReturnPreparedRows,
+        member: object,
+    ) -> bool:
+        routes_by_id = {route.route_instance_id: route for route in prepared.routes}
+        memberships_by_id = {membership.id: membership for membership in prepared.memberships}
+        source_membership_id = member.source_queue_membership_id  # type: ignore[attr-defined]
+        route_instance_id = member.route_instance_id  # type: ignore[attr-defined]
+        source = memberships_by_id[source_membership_id]
+        current = next(
+            (
+                membership
+                for membership in prepared.memberships
+                if membership.route_instance_id == route_instance_id
+                and membership.id != source.id
+                and membership.membership_status in {"ACTIVE", "RECONCILING"}
+            ),
+            None,
+        )
+        return self.has_observed_physical_action(
+            route=routes_by_id[route_instance_id],
+            source_membership=source,
+            current_membership=current,
         )
 
     @staticmethod

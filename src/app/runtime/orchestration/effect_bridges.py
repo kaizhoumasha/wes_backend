@@ -600,16 +600,24 @@ class EffectTransportBridge:
         for event in resolved.events:
             reduction = await self._reducer.reduce(db, event, require_intent=False)
             reductions.append(reduction)
-            is_e12_transport_failure = (
+            is_conveyor_transport_failure = (
                 self._domain_projector is not None
                 and operation is not None
-                and operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
                 and (
-                    event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
-                    or (event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT and event.retry_exhausted)
+                    (
+                        operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
+                        and (
+                            event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
+                            or (event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT and event.retry_exhausted)
+                        )
+                    )
+                    or (
+                        operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+                        and event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
+                    )
                 )
             )
-            if is_e12_transport_failure:
+            if is_conveyor_transport_failure:
                 if not isinstance(payload_json, dict):
                     raise RuntimeError("WMS domain projection requires frozen request payload")
                 reduction_changed = bool(
@@ -625,7 +633,12 @@ class EffectTransportBridge:
                         request_payload=payload_json,
                     )
                 if should_reconcile:
-                    reason_code = event.reason_code or "WMS_E12_TRANSPORT_FAILURE_AFTER_LOCAL_FACT"
+                    operation_label = (
+                        "E13"
+                        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+                        else "E12"
+                    )
+                    reason_code = event.reason_code or f"WMS_{operation_label}_TRANSPORT_FAILURE_AFTER_LOCAL_FACT"
                     evidence_json = {
                         **event.evidence_json,
                         "trigger_event_type": event.event_type.value,
@@ -653,7 +666,10 @@ class EffectTransportBridge:
                         evidence_json=evidence_json,
                     )
                     continue
-                if event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT:
+                if (
+                    operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
+                    and event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT
+                ):
                     await self._domain_projector.project_transport_not_sent_exhausted(
                         db,
                         operation=operation,
@@ -668,7 +684,11 @@ class EffectTransportBridge:
                 and (
                     event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
                     or (
-                        operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
+                        operation.domain_projection_kind
+                        in {
+                            WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH,
+                            WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH,
+                        }
                         and event.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED
                         and event.terminal_outcome is not None
                         and event.evidence_json.get("typed_ack_hash") is not None
@@ -677,6 +697,49 @@ class EffectTransportBridge:
             ):
                 if not isinstance(payload_json, dict):
                     raise RuntimeError("WMS domain projection requires frozen request payload")
+                if (
+                    operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+                    and event.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED
+                    and not bool(getattr(reduction, "state_changed", False))
+                ):
+                    continue
+                if (
+                    operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH
+                    and event.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED
+                    and await self._domain_projector.should_reconcile_ack(
+                        db,
+                        operation=operation,
+                        request_payload=payload_json,
+                        event=event,
+                    )
+                ):
+                    reason_code = "WMS_E13_ACK_CONFLICTS_WITH_LOCAL_FACT"
+                    evidence_json = {
+                        **event.evidence_json,
+                        "trigger_event_type": event.event_type.value,
+                        "trigger_source_event_id": event.source_event_id,
+                    }
+                    reconciliation_event = _reconciliation_event(
+                        dispatch_key=event.dispatch_key,
+                        attempt_no=event.attempt_no or attempt_no,
+                        occurred_at_ms=event.occurred_at_ms,
+                        reason_code=reason_code,
+                        evidence_json=evidence_json,
+                    )
+                    reconciliation_reduction = await self._reducer.reduce(
+                        db,
+                        reconciliation_event,
+                        require_intent=False,
+                    )
+                    reductions.append(reconciliation_reduction)
+                    await self._domain_projector.project_reconciliation_opened(
+                        db,
+                        operation=operation,
+                        dispatch_key=event.dispatch_key,
+                        reason_code=reason_code,
+                        evidence_json=evidence_json,
+                    )
+                    continue
                 await self._domain_projector.project_event(
                     db,
                     operation=operation,
@@ -687,7 +750,11 @@ class EffectTransportBridge:
             if (
                 self._domain_projector is not None
                 and operation is not None
-                and operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
+                and operation.domain_projection_kind
+                in {
+                    WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH,
+                    WmsDomainProjectionKind.CONVEYOR_RETURN_BATCH,
+                }
                 and event.event_type
                 in {
                     EffectReducerEventType.RECONCILIATION_OPENED,
