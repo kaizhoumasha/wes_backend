@@ -29,12 +29,12 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     定向 runtime/startup 回归 `70 passed`，Ruff 与 diff check 通过；完整 runtime inbox 文件仍有 1 项既有
     fixture 与 `RuntimeInboxWriteBackResult` 返回合同不一致，留在 T5 final blocker。
   - G4.5b1 verified（2026-07-30）：在唯一 System Capability / RuntimeIntentLog / SystemOutbox 管线内增加
-    极窄 domain authority；静态 allowlist 仅允许 `SMT_INBOUND_HANDOFF → E11`，要求持久
-    ExecutionCorrelation、稳定 owner 和当前 workline，拒绝 caller 自报 allowlist、伪 plugin pin 与混合
-    authority。domain 幂等键不含空 session/work-item；`RuntimeIntentLog.execution_session_id` 仅放宽
-    nullability 且保留 FK。authority/model/migration 定向覆盖 `71 passed`，真实 PostgreSQL effect 回归
-    `5 passed`，topology `6 passed`、默认收集 `5110 tests`、完整 quality profile、Ruff 与 diff check
-    通过；scanner、handoff/FullBoxExchange、Celery、Handling/Rack 均未修改。
+    极窄 domain authority；静态 allowlist 仅允许 `SMT_INBOUND_HANDOFF → E11`。review fix 后由 production
+    resolver 以 `FOR UPDATE` 锁定 correlation/handoff demand/workline，并从持久化 owner/release/workline
+    事实派生 producer 与完整 binding snapshot，caller ORM-like 对象不再具备授权效力。domain MATCH 对
+    `correlation_id + binding_snapshot_json` 做精确 reconciliation，拒绝同 payload 的 owner/workline/
+    correlation 漂移。`RuntimeIntentLog.execution_session_id` 仅放宽 nullability 且保留 FK；真实
+    PostgreSQL effect 回归 `5 passed`。scanner、handoff/FullBoxExchange、Celery、Handling/Rack 均未修改。
 - Task 6: pending — 固化粗分和分拣对象级流水
 - Task 7: pending — 替换 WMS 普通事件与 status hint
 - Task 8: pending — 建立 35 项参数化合同矩阵

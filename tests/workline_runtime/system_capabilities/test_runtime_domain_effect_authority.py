@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,6 +22,43 @@ _PRODUCER = "SMT_INBOUND_HANDOFF"
 _CAPABILITY = "wms.fulfillment.full_box_exchange"
 _OPERATION_KEY = "wms-e11:handoff-17:box-23"
 _BUSINESS_OWNER_KEY = "smt-inbound-handoff-demand:17"
+_CORRELATION_ID = "smt-inbound-handoff:17"
+_WORKLINE_ID = 13
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedDomainAuthority:
+    producer: str = _PRODUCER
+    correlation_id: str = _CORRELATION_ID
+    business_owner_key: str = _BUSINESS_OWNER_KEY
+    workline_id: int = _WORKLINE_ID
+
+    @property
+    def binding_snapshot(self) -> dict[str, object]:
+        return {
+            "producer": self.producer,
+            "business_owner_key": self.business_owner_key,
+            "workline_id": self.workline_id,
+            "correlation_id": self.correlation_id,
+        }
+
+
+class _DomainAuthorityResolver:
+    def __init__(
+        self,
+        authority: _ResolvedDomainAuthority | None = None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.authority = authority or _ResolvedDomainAuthority()
+        self.error = error
+        self.calls: list[tuple[object, str]] = []
+
+    async def resolve(self, db: object, *, correlation_id: str) -> _ResolvedDomainAuthority:
+        self.calls.append((db, correlation_id))
+        if self.error is not None:
+            raise self.error
+        return self.authority
 
 
 class _RecordingEffectRepository:
@@ -43,18 +80,7 @@ class _RecordingEffectRepository:
 
 
 def _ctx() -> dict[str, object]:
-    return {
-        "db": object(),
-        "execution_correlation": SimpleNamespace(
-            id=71,
-            correlation_id="smt-inbound-handoff:17",
-            execution_session_id=None,
-            trace_id="trace-release-11",
-            source_event_id="rack-release-11",
-            business_owner_key=_BUSINESS_OWNER_KEY,
-        ),
-        "workline": SimpleNamespace(id=13),
-    }
+    return {"db": object(), "correlation_id": _CORRELATION_ID}
 
 
 def _intent(
@@ -96,7 +122,16 @@ def _intent(
         timeout_seconds=FULL_BOX_EXCHANGE_DEFINITION.timeout_seconds,
         creator_authority=creator_authority,
         authorization_policy=authorization_policy,
-        binding_snapshot=binding_snapshot if binding_snapshot is not None else {"producer": producer},
+        binding_snapshot=(
+            binding_snapshot
+            if binding_snapshot is not None
+            else {
+                "producer": producer,
+                "business_owner_key": _BUSINESS_OWNER_KEY,
+                "workline_id": _WORKLINE_ID,
+                "correlation_id": _CORRELATION_ID,
+            }
+        ),
         provider_snapshot=(
             provider_snapshot if provider_snapshot is not None else {"provider_code": "RUNTIME", "profile": profile}
         ),
@@ -107,6 +142,7 @@ def _service(
     repository: _RecordingEffectRepository,
     *,
     include_other_capability: bool = False,
+    resolver: _DomainAuthorityResolver | None = None,
 ) -> SystemCapabilityIntentService:
     definitions = {(_CAPABILITY, "v1"): FULL_BOX_EXCHANGE_DEFINITION}
     if include_other_capability:
@@ -121,14 +157,17 @@ def _service(
         effect_repository=repository,
         effect_reducer=object(),
         effect_reconciliation_bridge=object(),
+        domain_authority_resolver=resolver or _DomainAuthorityResolver(),
     )
 
 
 @pytest.mark.asyncio
 async def test_smt_handoff_domain_authority_claims_e11_with_frozen_domain_identity() -> None:
     repository = _RecordingEffectRepository()
+    resolver = _DomainAuthorityResolver()
+    ctx = _ctx()
 
-    prepared = await _service(repository).prepare_and_claim(_ctx(), _intent())
+    prepared = await _service(repository, resolver=resolver).prepare_and_claim(ctx, _intent())
 
     assert prepared.idempotency_key == (
         "system-capability:wms.fulfillment.full_box_exchange@v1:domain:SMT_INBOUND_HANDOFF:wms-e11:handoff-17:box-23"
@@ -141,98 +180,63 @@ async def test_smt_handoff_domain_authority_claims_e11_with_frozen_domain_identi
     assert claim["plugin_contract_version"] is None
     assert claim["binding_id"] is None
     assert claim["binding_version"] is None
-    assert claim["correlation_id"] == "smt-inbound-handoff:17"
-    assert claim["business_owner_key"] == _BUSINESS_OWNER_KEY
-    assert claim["workline_id"] == 13
-    assert claim["producer"] == _PRODUCER
+    assert claim["correlation_id"] == _CORRELATION_ID
     assert claim["operation_identity"] == _OPERATION_KEY
-    assert claim["binding_snapshot_json"] == {"producer": _PRODUCER}
+    assert claim["binding_snapshot_json"] == resolver.authority.binding_snapshot
+    assert "producer" not in claim
+    assert "business_owner_key" not in claim
+    assert "workline_id" not in claim
+    assert resolver.calls == [(ctx["db"], _CORRELATION_ID)]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("case", "ctx_mutation", "intent_kwargs", "include_other_capability"),
+    ("case", "intent_kwargs", "include_other_capability"),
     [
-        ("other producer", None, {"producer": "OTHER_PRODUCER"}, False),
-        ("empty producer", None, {"producer": ""}, False),
+        ("other producer", {"producer": "OTHER_PRODUCER"}, False),
+        ("empty producer", {"producer": ""}, False),
         (
             "other capability",
-            None,
             {"capability_key": "wms.fulfillment.other"},
             True,
         ),
         (
             "self asserted allowlist",
-            lambda ctx: ctx.update(
-                {"allowed_capabilities": {"OTHER_PRODUCER": (("wms.fulfillment.full_box_exchange", "v1"),)}}
-            ),
             {"producer": "OTHER_PRODUCER"},
             False,
         ),
         (
-            "missing correlation",
-            lambda ctx: ctx.pop("execution_correlation"),
-            {},
+            "wrong business owner",
+            {"binding_snapshot": {**_ResolvedDomainAuthority().binding_snapshot, "business_owner_key": "forged"}},
             False,
         ),
         (
-            "unpersisted correlation",
-            lambda ctx: setattr(ctx["execution_correlation"], "id", None),
-            {},
+            "wrong workline",
+            {"binding_snapshot": {**_ResolvedDomainAuthority().binding_snapshot, "workline_id": 999}},
             False,
         ),
         (
-            "missing business owner",
-            lambda ctx: setattr(ctx["execution_correlation"], "business_owner_key", None),
-            {},
-            False,
-        ),
-        (
-            "correlation claims plugin session",
-            lambda ctx: setattr(ctx["execution_correlation"], "execution_session_id", 31),
-            {},
-            False,
-        ),
-        (
-            "missing workline",
-            lambda ctx: ctx.pop("workline"),
-            {},
-            False,
-        ),
-        (
-            "fake plugin pin",
-            lambda ctx: ctx.update(
-                {
-                    "session": SimpleNamespace(id=31),
-                    "work_item": SimpleNamespace(id=41),
-                    "inbox": SimpleNamespace(id=51),
-                    "plugin_binding": SimpleNamespace(id=61),
-                }
-            ),
-            {},
+            "wrong correlation anchor",
+            {"binding_snapshot": {**_ResolvedDomainAuthority().binding_snapshot, "correlation_id": "forged"}},
             False,
         ),
         (
             "mixed creator authority",
-            None,
             {"creator_authority": "WORKLINE_PLUGIN"},
             False,
         ),
         (
             "mixed authorization policy",
-            None,
             {"authorization_policy": "PLUGIN_DECLARED_CAPABILITY"},
             False,
         ),
         (
             "wrong binding snapshot",
-            None,
             {"binding_snapshot": {"producer": _PRODUCER, "allowed": True}},
             False,
         ),
         (
             "wrong provider snapshot",
-            None,
             {"provider_snapshot": {"provider_code": "RUNTIME", "profile": "caller-owned"}},
             False,
         ),
@@ -240,14 +244,13 @@ async def test_smt_handoff_domain_authority_claims_e11_with_frozen_domain_identi
 )
 async def test_domain_authority_rejects_invalid_identity_without_claim_side_effect(
     case: str,
-    ctx_mutation: Any,
     intent_kwargs: dict[str, object],
     include_other_capability: bool,
 ) -> None:
     repository = _RecordingEffectRepository()
     ctx = _ctx()
-    if ctx_mutation is not None:
-        ctx_mutation(ctx)
+    if case == "self asserted allowlist":
+        ctx["allowed_capabilities"] = {"OTHER_PRODUCER": (("wms.fulfillment.full_box_exchange", "v1"),)}
 
     with pytest.raises((PermissionError, TypeError, ValueError), match="runtime domain"):
         await _service(repository, include_other_capability=include_other_capability).prepare_and_claim(
@@ -258,10 +261,30 @@ async def test_domain_authority_rejects_invalid_identity_without_claim_side_effe
     assert repository.calls == [], case
 
 
+@pytest.mark.asyncio
+async def test_domain_authority_rejects_missing_or_unpersisted_correlation_without_claim() -> None:
+    for ctx, resolver in (
+        ({"db": object()}, _DomainAuthorityResolver()),
+        (
+            {
+                **_ctx(),
+                "execution_correlation": SimpleNamespace(id=71),
+                "workline": SimpleNamespace(id=_WORKLINE_ID),
+            },
+            _DomainAuthorityResolver(error=PermissionError("runtime domain authority is not persisted")),
+        ),
+    ):
+        repository = _RecordingEffectRepository()
+        with pytest.raises((PermissionError, ValueError), match="runtime domain"):
+            await _service(repository, resolver=resolver).prepare_and_claim(ctx, _intent())
+        assert repository.calls == []
+
+
 def test_domain_idempotency_key_is_bounded_without_session_placeholders() -> None:
     key = SystemCapabilityIntentService._final_idempotency_key(
         _ctx(),
         _intent(operation_key="x" * 160),
+        domain_producer=_PRODUCER,
     )
 
     assert len(key) == 160

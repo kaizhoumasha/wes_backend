@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import event, func, text
+from sqlalchemy.exc import DBAPIError
 from sqlmodel import select
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
+from src.app.runtime.orchestration.models.smt_inbound_handoff import SmtInboundHandoffDemand
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
@@ -121,7 +123,11 @@ def _hold_intent(ctx: Mapping[str, object], *, operation: str = "hold-1", reason
     )
 
 
-def _domain_full_box_exchange_intent(*, occupancy_id: str = "OCC-1") -> RuntimeIntent:
+def _domain_full_box_exchange_intent(
+    *,
+    binding_snapshot: Mapping[str, object],
+    occupancy_id: str = "OCC-1",
+) -> RuntimeIntent:
     operation_key = "wms-e11:handoff-17:box-23"
     return RuntimeIntent.system_capability(
         capability_key=FULL_BOX_EXCHANGE_DEFINITION.capability_key,
@@ -150,7 +156,7 @@ def _domain_full_box_exchange_intent(*, occupancy_id: str = "OCC-1") -> RuntimeI
         timeout_seconds=FULL_BOX_EXCHANGE_DEFINITION.timeout_seconds,
         creator_authority="RUNTIME_DOMAIN_SERVICE",
         authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
-        binding_snapshot={"producer": "SMT_INBOUND_HANDOFF"},
+        binding_snapshot=binding_snapshot,
         provider_snapshot={
             "provider_code": "RUNTIME",
             "profile": FULL_BOX_EXCHANGE_DEFINITION.admission,
@@ -159,7 +165,7 @@ def _domain_full_box_exchange_intent(*, occupancy_id: str = "OCC-1") -> RuntimeI
 
 
 def test_domain_effect_nullable_fk_and_postgresql_claim_replay_conflict() -> None:
-    """持久 domain correlation 的 NULL session claim、MATCH 与异 hash conflict 共用唯一 ledger。"""
+    """数据库权限链锁定解析，且 domain MATCH 拒绝 producer/owner/workline 漂移。"""
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         service = SystemCapabilityIntentService()
@@ -167,26 +173,62 @@ def test_domain_effect_nullable_fk_and_postgresql_claim_replay_conflict() -> Non
             seeded = await seed_scan_flow(db)
             workline = await db.get(WorkLine, seeded.workline_id)
             assert workline is not None
-            correlation = ExecutionCorrelation(
-                correlation_id="smt-inbound-handoff:17",
-                execution_session_id=None,
+            demand = SmtInboundHandoffDemand(
+                demand_key="smt-inbound-handoff-demand:17",
+                rack_release_id="rack-release-11",
+                source_workline_id=workline.id,
+                source_workline_code=workline.line_code,
+                single_layer_rack_code="SL-RACK-1",
                 trace_id="trace-rack-release-11",
-                source_event_id="rack-release-11",
-                business_owner_key="smt-inbound-handoff-demand:17",
+            )
+            db.add(demand)
+            await db.flush()
+            assert demand.id is not None
+            correlation = ExecutionCorrelation(
+                correlation_id=f"smt-inbound-handoff:{demand.id}",
+                execution_session_id=None,
+                trace_id=str(demand.trace_id),
+                source_event_id=demand.rack_release_id,
+                business_owner_key=demand.demand_key,
             )
             db.add(correlation)
             await db.flush()
             assert correlation.id is not None
+            binding_snapshot = {
+                "producer": "SMT_INBOUND_HANDOFF",
+                "business_owner_key": demand.demand_key,
+                "workline_id": workline.id,
+                "correlation_id": correlation.correlation_id,
+            }
+            correlation_row_id = correlation.id
+            demand_row_id = demand.id
+            workline_row_id = workline.id
+            await db.commit()
 
+        async with session_factory() as db:
             prepared = await service.prepare_and_claim(
-                {
-                    "db": db,
-                    "execution_correlation": correlation,
-                    "workline": workline,
-                },
-                _domain_full_box_exchange_intent(),
+                {"db": db, "correlation_id": str(binding_snapshot["correlation_id"])},
+                _domain_full_box_exchange_intent(binding_snapshot=binding_snapshot),
             )
             assert prepared.claim_result is SystemCapabilityClaimResult.NEW
+
+            # resolver 与 ledger claim 尚未提交时，三张权限事实表均持有行锁。
+            for statement, row_id in (
+                (
+                    "UPDATE wes_runtime.execution_correlations SET trace_id = trace_id WHERE id = :id",
+                    correlation_row_id,
+                ),
+                (
+                    "UPDATE wes_biz.smt_inbound_handoff_demands SET demand_key = demand_key WHERE id = :id",
+                    demand_row_id,
+                ),
+                ("UPDATE wes_biz.work_lines SET line_code = line_code WHERE id = :id", workline_row_id),
+            ):
+                async with session_factory() as contender:
+                    await contender.execute(text("SET LOCAL lock_timeout = '100ms'"))
+                    with pytest.raises(DBAPIError):
+                        await contender.execute(text(statement), {"id": row_id})
+                    await contender.rollback()
             await db.commit()
 
         async with session_factory() as db:
@@ -217,7 +259,9 @@ def test_domain_effect_nullable_fk_and_postgresql_claim_replay_conflict() -> Non
                 )
             )
             correlation = await db.scalar(
-                select(ExecutionCorrelation).where(ExecutionCorrelation.correlation_id == "smt-inbound-handoff:17")
+                select(ExecutionCorrelation).where(
+                    ExecutionCorrelation.correlation_id == binding_snapshot["correlation_id"]
+                )
             )
             workline = await db.scalar(select(WorkLine).where(WorkLine.id == seeded.workline_id))
             assert nullable == "YES"
@@ -227,22 +271,64 @@ def test_domain_effect_nullable_fk_and_postgresql_claim_replay_conflict() -> Non
             assert workline is not None
 
             replay = await service.prepare_and_claim(
-                {
-                    "db": db,
-                    "execution_correlation": correlation,
-                    "workline": workline,
-                },
-                _domain_full_box_exchange_intent(),
+                {"db": db, "correlation_id": correlation.correlation_id},
+                _domain_full_box_exchange_intent(binding_snapshot=binding_snapshot),
             )
             assert replay.claim_result is SystemCapabilityClaimResult.MATCH
+
+            forged_snapshot = {**binding_snapshot, "producer": "OTHER_PRODUCER"}
+            with pytest.raises(PermissionError, match="binding snapshot mismatch"):
+                await service.prepare_and_claim(
+                    {"db": db, "correlation_id": correlation.correlation_id},
+                    _domain_full_box_exchange_intent(binding_snapshot=forged_snapshot),
+                )
+
             with pytest.raises(SystemCapabilityIdempotencyConflict):
                 await service.prepare_and_claim(
-                    {
-                        "db": db,
-                        "execution_correlation": correlation,
-                        "workline": workline,
-                    },
-                    _domain_full_box_exchange_intent(occupancy_id="OCC-DIFFERENT"),
+                    {"db": db, "correlation_id": correlation.correlation_id},
+                    _domain_full_box_exchange_intent(
+                        binding_snapshot=binding_snapshot,
+                        occupancy_id="OCC-DIFFERENT",
+                    ),
+                )
+
+            other_workline = WorkLine(
+                line_code="DOMAIN-AUTHORITY-OTHER",
+                line_name="domain authority other",
+                line_type=workline.line_type,
+            )
+            db.add(other_workline)
+            await db.flush()
+            other_demand = SmtInboundHandoffDemand(
+                demand_key="smt-inbound-handoff-demand:other",
+                rack_release_id="rack-release-other",
+                source_workline_id=other_workline.id,
+                source_workline_code=other_workline.line_code,
+                single_layer_rack_code="SL-RACK-OTHER",
+                trace_id="trace-rack-release-other",
+            )
+            db.add(other_demand)
+            await db.flush()
+            assert other_demand.id is not None
+            other_correlation = ExecutionCorrelation(
+                correlation_id=f"smt-inbound-handoff:{other_demand.id}",
+                execution_session_id=None,
+                trace_id=str(other_demand.trace_id),
+                source_event_id=other_demand.rack_release_id,
+                business_owner_key=other_demand.demand_key,
+            )
+            db.add(other_correlation)
+            await db.flush()
+            other_snapshot = {
+                "producer": "SMT_INBOUND_HANDOFF",
+                "business_owner_key": other_demand.demand_key,
+                "workline_id": other_workline.id,
+                "correlation_id": other_correlation.correlation_id,
+            }
+            with pytest.raises(SystemCapabilityIdempotencyConflict):
+                await service.prepare_and_claim(
+                    {"db": db, "correlation_id": other_correlation.correlation_id},
+                    _domain_full_box_exchange_intent(binding_snapshot=other_snapshot),
                 )
 
             ledgers = list((await db.execute(select(RuntimeIntentLog))).scalars())
@@ -253,7 +339,7 @@ def test_domain_effect_nullable_fk_and_postgresql_claim_replay_conflict() -> Non
             assert ledger.plugin_key is None
             assert ledger.plugin_contract_version is None
             assert ledger.correlation_id == correlation.correlation_id
-            assert ledger.binding_snapshot_json == {"producer": "SMT_INBOUND_HANDOFF"}
+            assert ledger.binding_snapshot_json == binding_snapshot
             assert ledger.operation_identity == "wms-e11:handoff-17:box-23"
             assert "None" not in ledger.idempotency_key
 

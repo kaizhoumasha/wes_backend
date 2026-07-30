@@ -58,6 +58,27 @@ def _claim() -> dict[str, object]:
     }
 
 
+def _domain_claim() -> dict[str, object]:
+    return {
+        **_claim(),
+        "execution_session_id": None,
+        "execution_work_item_id": None,
+        "correlation_id": "corr-domain-1",
+        "plugin_key": None,
+        "plugin_contract_version": None,
+        "capability_key": "wms.fulfillment.full_box_exchange",
+        "operation_identity": "wms-e11:handoff-17:box-23",
+        "creator_authority": "RUNTIME_DOMAIN_SERVICE",
+        "authorization_policy": "DOMAIN_CAPABILITY_ALLOWLIST",
+        "binding_snapshot_json": {
+            "producer": "SMT_INBOUND_HANDOFF",
+            "business_owner_key": "handoff-demand:17",
+            "workline_id": 13,
+            "correlation_id": "corr-domain-1",
+        },
+    }
+
+
 def _evidence(kind: str, *, occurred_at_ms: int) -> SimpleNamespace:
     code = "SUCCESS" if kind == "success" else "STALE_PRECONDITION"
     payload = {"kind": "success", "payload": {"held": True, "reason_code": "REVIEW"}}
@@ -241,6 +262,38 @@ async def test_production_repository_matches_existing_proposed_claim_and_locks_i
     assert replay.id == proposed.id
     assert replay.dispatch_key == claim["dispatch_key"]
     assert replay.effect_status is RuntimeIntentStatus.PROPOSED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"correlation_id": "corr-domain-2"},
+        {
+            "binding_snapshot_json": {
+                "producer": "SMT_INBOUND_HANDOFF",
+                "business_owner_key": "handoff-demand:other",
+                "workline_id": 13,
+                "correlation_id": "corr-domain-1",
+            }
+        },
+        {
+            "binding_snapshot_json": {
+                "producer": "SMT_INBOUND_HANDOFF",
+                "business_owner_key": "handoff-demand:17",
+                "workline_id": 99,
+                "correlation_id": "corr-domain-1",
+            }
+        },
+    ],
+)
+async def test_domain_match_rejects_correlation_owner_or_workline_drift(db_session, changed) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _domain_claim()
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+    with pytest.raises(SystemCapabilityIdempotencyConflict):
+        await repository.claim_or_match(db_session, **{**claim, **changed})
 
 
 @pytest.mark.asyncio

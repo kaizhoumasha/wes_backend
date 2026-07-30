@@ -64,6 +64,7 @@ class SystemCapabilityIntentService:
         effect_repository: Any | None = None,
         effect_reducer: Any | None = None,
         effect_reconciliation_bridge: Any | None = None,
+        domain_authority_resolver: Any | None = None,
     ) -> None:
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
@@ -93,6 +94,13 @@ class SystemCapabilityIntentService:
             from src.app.runtime.orchestration.effect_bridges import effect_reconciliation_bridge
 
         self._effect_reconciliation_bridge = effect_reconciliation_bridge
+        if domain_authority_resolver is None:
+            from src.app.runtime.orchestration.services.intent.runtime_domain_capability_authority_resolver import (
+                runtime_domain_capability_authority_resolver,
+            )
+
+            domain_authority_resolver = runtime_domain_capability_authority_resolver
+        self._domain_authority_resolver = domain_authority_resolver
         self._plugin_definitions = dict(plugin_definitions)
         self._plugin_index_digest = plugin_index_digest
 
@@ -119,7 +127,7 @@ class SystemCapabilityIntentService:
         if not isinstance(intent.dispatch_key, str) or not intent.dispatch_key:
             raise ValueError("SYSTEM_CAPABILITY effect requires explicit dispatch_key")
         _ = validate_system_capability_operation_key(intent.operation_key)
-        execution_identity = self._validate_execution_identity(ctx, intent, definition=definition)
+        execution_identity = await self._resolve_execution_identity(ctx, intent, definition=definition)
         if intent.payload_hash != sha256_digest(intent.payload_json):
             raise ValueError("SYSTEM_CAPABILITY payload_hash mismatch")
         try:
@@ -133,7 +141,11 @@ class SystemCapabilityIntentService:
         except ValidationError as exc:
             raise ValueError("system capability typed payload validation failed") from exc
 
-        final_key = self._final_idempotency_key(ctx, intent)
+        final_key = self._final_idempotency_key(
+            ctx,
+            intent,
+            domain_producer=execution_identity.get("producer"),
+        )
         correlation_id = execution_identity.get("correlation_id") or self._correlation_id(ctx)
         claim = {
             "provider_code": "RUNTIME",
@@ -152,7 +164,7 @@ class SystemCapabilityIntentService:
             "operation_identity": str(intent.operation_key),
             "creator_authority": intent.creator_authority,
             "authorization_policy": intent.authorization_policy,
-            "binding_snapshot_json": dict(intent.binding_snapshot),
+            "binding_snapshot_json": dict(execution_identity.get("binding_snapshot", intent.binding_snapshot)),
             "provider_snapshot_json": dict(intent.provider_snapshot),
             "precondition_json": dict(intent.precondition_json),
             "fact_version": str(intent.fact_version),
@@ -161,17 +173,6 @@ class SystemCapabilityIntentService:
             "dispatch_key": intent.dispatch_key,
             "updated_at_ms": int(timezone.now_utc().timestamp() * 1000),
         }
-        producer = execution_identity.get("producer")
-        if isinstance(producer, str):
-            # domain effect 的 owner/workline 已由持久 correlation 与当前 workline 校验；
-            # 这些稳定事实只随 claim 传递，producer 本身仍冻结在 ledger binding snapshot。
-            claim.update(
-                {
-                    "producer": producer,
-                    "business_owner_key": execution_identity["business_owner_key"],
-                    "workline_id": execution_identity["workline_id"],
-                }
-            )
         claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
         intent_log = None
         has_durable_outbox = False
@@ -290,7 +291,7 @@ class SystemCapabilityIntentService:
     ) -> dict[str, Any]:
         authority = (intent.creator_authority, intent.authorization_policy)
         if authority == _RUNTIME_DOMAIN_AUTHORITY:
-            return self._validate_runtime_domain_execution_identity(ctx, intent, definition=definition)
+            raise RuntimeError("runtime domain system capability requires async authority resolution")
         if any(marker in _RUNTIME_DOMAIN_AUTHORITY_MARKERS for marker in authority):
             raise PermissionError("runtime domain system capability authority contract mismatch")
 
@@ -362,42 +363,34 @@ class SystemCapabilityIntentService:
             "binding_version": binding_version,
         }
 
-    @staticmethod
-    def _validate_runtime_domain_execution_identity(
+    async def _resolve_execution_identity(
+        self,
         ctx: Mapping[str, Any],
         intent: RuntimeIntent,
         *,
         definition: SystemCapabilityDefinition,
     ) -> dict[str, Any]:
+        authority = (intent.creator_authority, intent.authorization_policy)
+        if authority != _RUNTIME_DOMAIN_AUTHORITY:
+            return self._validate_execution_identity(ctx, intent, definition=definition)
         if any(ctx.get(key) is not None for key in ("session", "work_item", "inbox", "plugin_binding")):
             raise PermissionError("runtime domain system capability cannot carry plugin execution identity")
-        if set(intent.binding_snapshot) != {"producer"}:
-            raise PermissionError("runtime domain system capability binding snapshot mismatch")
-        producer = intent.binding_snapshot.get("producer")
-        if not isinstance(producer, str) or not producer:
-            raise PermissionError("runtime domain system capability producer is missing")
-        allowed_capabilities = _RUNTIME_DOMAIN_CAPABILITY_ALLOWLIST.get(producer, frozenset())
+        correlation_id = ctx.get("correlation_id")
+        if not isinstance(correlation_id, str) or not correlation_id:
+            raise ValueError("runtime domain system capability requires correlation_id")
+        resolved = await self._domain_authority_resolver.resolve(
+            ctx["db"],
+            correlation_id=correlation_id,
+        )
+        producer = resolved.producer
         identity = (str(intent.capability_key), str(intent.contract_version))
-        if identity not in allowed_capabilities:
+        if identity not in _RUNTIME_DOMAIN_CAPABILITY_ALLOWLIST.get(producer, frozenset()):
             raise PermissionError("runtime domain system capability is not allowlisted for producer")
+        if dict(intent.binding_snapshot) != resolved.binding_snapshot:
+            raise PermissionError("runtime domain system capability binding snapshot mismatch")
         expected_provider = {"provider_code": "RUNTIME", "profile": definition.admission}
         if intent.provider_snapshot != expected_provider:
             raise PermissionError("runtime domain system capability provider snapshot mismatch")
-
-        correlation = ctx.get("execution_correlation")
-        correlation_row_id = getattr(correlation, "id", None)
-        correlation_id = getattr(correlation, "correlation_id", None)
-        correlation_session_id = getattr(correlation, "execution_session_id", None)
-        business_owner_key = getattr(correlation, "business_owner_key", None)
-        if not isinstance(correlation_row_id, int) or not isinstance(correlation_id, str) or not correlation_id:
-            raise ValueError("runtime domain system capability requires persisted execution correlation")
-        if correlation_session_id is not None:
-            raise PermissionError("runtime domain system capability correlation must not claim plugin session")
-        if not isinstance(business_owner_key, str) or not business_owner_key:
-            raise ValueError("runtime domain system capability requires stable business owner key")
-        workline_id = getattr(ctx.get("workline"), "id", None)
-        if not isinstance(workline_id, int):
-            raise TypeError("runtime domain system capability requires current workline")
         return {
             "execution_session_id": None,
             "execution_work_item_id": None,
@@ -405,18 +398,24 @@ class SystemCapabilityIntentService:
             "plugin_contract_version": None,
             "binding_id": None,
             "binding_version": None,
-            "correlation_id": correlation_id,
-            "business_owner_key": business_owner_key,
-            "workline_id": workline_id,
+            "correlation_id": resolved.correlation_id,
             "producer": producer,
+            "binding_snapshot": resolved.binding_snapshot,
         }
 
     @staticmethod
-    def _final_idempotency_key(ctx: Mapping[str, Any], intent: RuntimeIntent) -> str:
+    def _final_idempotency_key(
+        ctx: Mapping[str, Any],
+        intent: RuntimeIntent,
+        *,
+        domain_producer: Any = None,
+    ) -> str:
         if (intent.creator_authority, intent.authorization_policy) == _RUNTIME_DOMAIN_AUTHORITY:
+            if not isinstance(domain_producer, str) or not domain_producer:
+                raise PermissionError("runtime domain system capability producer is unresolved")
             raw = (
                 f"system-capability:{intent.capability_key}@{intent.contract_version}:"
-                f"domain:{intent.binding_snapshot.get('producer')}:{intent.operation_key}"
+                f"domain:{domain_producer}:{intent.operation_key}"
             )
         else:
             session_id = getattr(ctx.get("session"), "id", None)

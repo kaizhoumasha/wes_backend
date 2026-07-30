@@ -55,6 +55,11 @@ from .rough_sorter_q19_admission_repository import (
     RoughSorterQ19AdmissionRepository,
     rough_sorter_q19_admission_repository,
 )
+from .runtime_domain_capability_authority_repository import (
+    LockedRuntimeDomainCapabilityFacts,
+    RuntimeDomainCapabilityAuthorityRepository,
+    runtime_domain_capability_authority_repository,
+)
 from .runtime_hold_repository import (
     RuntimeHoldRepository,
     runtime_hold_repository,
@@ -109,6 +114,7 @@ __all__ = [
     "DeviceRuntimeProjectionRepository",
     "EffectReducerRepository",
     "IdempotencyKeyRepository",
+    "LockedRuntimeDomainCapabilityFacts",
     "MaterialUnitRepository",
     "NorthboundOperationHealthRow",
     "NorthboundOperationsRepository",
@@ -116,6 +122,7 @@ __all__ = [
     "PluginAttemptRepository",
     "PreparedRuntimeIntentLog",
     "RoughSorterQ19AdmissionRepository",
+    "RuntimeDomainCapabilityAuthorityRepository",
     "RuntimeHoldRepository",
     "RuntimeInboxRepository",
     "RuntimeInboxRetryMetadata",
@@ -144,6 +151,7 @@ __all__ = [
     "object_transition_event_repository",
     "plugin_attempt_repository",
     "rough_sorter_q19_admission_repository",
+    "runtime_domain_capability_authority_repository",
     "runtime_hold_repository",
     "runtime_inbox_repository",
     "runtime_intent_log_repository",

@@ -179,6 +179,21 @@ class RuntimeIntentLogRepository:
                 incoming_request_hash=values["request_hash"],
                 correlation_id=row.correlation_id,
             )
+        is_runtime_domain_claim = (
+            row.creator_authority == "RUNTIME_DOMAIN_SERVICE" or values["creator_authority"] == "RUNTIME_DOMAIN_SERVICE"
+        )
+        if is_runtime_domain_claim and (
+            row.correlation_id != values["correlation_id"]
+            or dict(row.binding_snapshot_json) != dict(values["binding_snapshot_json"])
+        ):
+            # domain 幂等键故意不含 owner/workline/correlation；命中时必须对权威快照
+            # 做完整 identity reconciliation，禁止同 payload 借旧 ledger 越权重放。
+            raise SystemCapabilityIdempotencyConflict(
+                **identity,
+                existing_request_hash=row.request_hash,
+                incoming_request_hash=values["request_hash"],
+                correlation_id=row.correlation_id,
+            )
         if row.dispatch_key != dispatch_key:
             raise ValueError("RuntimeIntentLog.dispatch_key 持久化后不可变")
         if row.effect_status in {
