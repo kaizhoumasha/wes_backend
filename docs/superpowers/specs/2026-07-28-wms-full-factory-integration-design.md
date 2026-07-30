@@ -2077,6 +2077,20 @@ Codex; checkbox as you ship.
     close+new、partial 三态、目标占用整体回滚及 physical-first 同/异目标；Ruff format/check 和
     `git diff --check` 通过。独立终审结论 `Approved`、无 P0–P2。此检查点尚未接入 transport bridge/status，
     对应生产入口继续 fail closed。
+  - Approved design — G4.4d E / E13 production convergence wiring：复用 D1 direct terminal APIs，
+    由 `WmsFulfillmentDomainProjector` 作为唯一 E13 delegate；`EffectTransportBridge` 与
+    `WmsEffectStatusService` 只编排 reducer、OPEN case 和事务顺序，不重复解释 E13 资源事实。typed
+    `SUCCESS` 必须先通过 ACK/result identity 校验，再走既有 success；typed partial/failed 必须先创建或复用
+    OPEN case，再走 reconciliation；generic ambiguity 没有 typed result 时不得 terminalize member 或伪造
+    rack-slot，只把仍 ACTIVE 的 route/source membership 绑定到现有 OPEN case 并保留 claim，LEFT 和首次终态
+    事实不回退。`STATUS_REJECTED` 与明确 `TRANSPORT_NOT_SENT + retry_exhausted` 仅在 C 组 pristine
+    preflight 通过时释放候选，已有 ACK 或物理 evidence 时只进入对账。首次 transport terminal、status scanner、
+    status-first recovered ACK 和原 dispatch key 重放必须复用同一 delegate；status hint 只提前查询，
+    不作为 terminal authority。不得新增模型、状态或 migration，E12 既有收敛语义必须保持不变。
+  - G4.4d E acceptance：unit 与真实 PostgreSQL 覆盖 bridge/status 的 all-success、partial/unknown、
+    generic ambiguity、pristine reject/not-sent、ACK/physical 后拒绝、duplicate/late status 和事务回滚；
+    校验 reducer/case/domain 顺序、同键零回退、single transaction rollback，并完成 E12 targeted regression、
+    默认回归、quality profile 与独立终审。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION
