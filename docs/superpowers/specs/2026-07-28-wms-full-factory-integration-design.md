@@ -2112,9 +2112,8 @@ Codex; checkbox as you ship.
     发布同一 deployment runtime；未初始化时保持 fail closed，关闭仅校验 owner 后解绑，不新增资源回收。
     未改动 QUERY、状态机、HTTP transport、models/migration 或旧 Rack/Handling producer。
   - G4.5a evidence：RED 先确认 EFFECT-only/combined registration 缺失，以及 Stage 3 没有 attempt resolver；
-    GREEN 后 runtime/startup 定向组合 `70 passed`，Ruff format/check 与 `git diff --check` 通过。
-    `test_runtime_inbox_attempt_profile.py` 全文件有 1 项既有 fixture 仍返回旧 `WriteDisposition`，而当前
-    production contract 已为 `RuntimeInboxWriteBackResult`；该 T5 final blocker 未在本检查点混修。
+    GREEN 后 runtime/startup 定向组合 `70 passed`，Ruff format/check 与 `git diff --check` 通过。当时记录的
+    `RuntimeInboxWriteBackResult` fixture 合同漂移已由后续 T5 fixture-contract checkpoint 独立收口。
   - G4.5a lifecycle review fix：解绑同时验证 candidate runtime 与 owner event loop；API/Celery 只在成功 bind 后
     保存 candidate，回滚/关闭均按该 candidate 解绑，bind 失败不能影响既有 owner。生命周期顺序明确为
     WMS data → EFFECT preparation → WMS effect。跨 loop、bind-failure 和 owner-only cleanup 覆盖的
@@ -2139,6 +2138,12 @@ Codex; checkbox as you ship.
     只选一个合格满箱，terminal success 清 active root 并回到 `EVALUATING` 后才可选择下一箱；缺 correlation、
     stage fence 漂移、异常 target 或未绑定 runtime 均 fail closed。此检查点不生成粗分机 release fact、不补写
     station/rack-face，也不代表 T5/T6 整体完成。
+  - T5 fixture-contract final-gate evidence（2026-07-30，非 Task 5 完成标记）：仅调整 runtime 测试夹具以匹配
+    已上线代码合同；writeback 使用 `RuntimeInboxWriteBackResult.disposition`，effect fake 返回真实
+    `RuntimeIntentEffectResult` 并包含 outbox target 合同，WMS domain projector fake 接收 frozen ACK；
+    generated-index 直接以静态 `WMS_OPERATIONS` 验证 40 项 capability。定向 181 项 extensions 回归、13 项
+    WMS domain projector 回归及完整 `tests/workline_runtime/` 均实测通过，后者结果为 `1129 passed`。该证据只说明
+    既有测试合同已同步，不改变 Task 5 的 in-progress 状态，也不替代其剩余实现、独立审查和总体验收。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

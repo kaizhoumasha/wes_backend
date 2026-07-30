@@ -82,6 +82,7 @@ class _ReconciliationProjector:
         dispatch_key: str,
         reason_code: str | None = None,
         evidence_json: dict[str, Any] | None = None,
+        frozen_ack: Any = None,
     ) -> None:
         assert db.commits == 1, "parent demand 必须与 reconciliation case 在最终 commit 前同事务投影"
         self.calls.append(
@@ -90,6 +91,7 @@ class _ReconciliationProjector:
                 "dispatch_key": dispatch_key,
                 "reason_code": reason_code,
                 "evidence_json": evidence_json,
+                "frozen_ack": frozen_ack,
             }
         )
 
@@ -245,6 +247,12 @@ async def test_e11_non_success_opens_reconciliation_before_reducer() -> None:
             "dispatch_key": claim.intent.dispatch_key,
             "reason_code": "WMS_FULFILLMENT_TERMINAL_NON_SUCCESS",
             "evidence_json": reconciliation.calls[0]["evidence_json"],
+            "frozen_ack": WmsEffectAck(
+                operation_identity=E11,
+                idempotency_key="idem-e11",
+                provider_reference="provider-e11",
+                submission_state="ACCEPTED",
+            ),
         }
     ]
     assert db.commits == 2

@@ -71,6 +71,7 @@ class _RecordingProjector:
         request_payload: dict[str, Any],
         event: EffectReducerEvent,
         reduction: Any,
+        frozen_ack: Any = None,
     ) -> None:
         self.events.append("domain:project")
         self.calls.append(
@@ -79,6 +80,7 @@ class _RecordingProjector:
                 "request_payload": request_payload,
                 "event": event,
                 "reduction": reduction,
+                "frozen_ack": frozen_ack,
                 "db": db,
             }
         )

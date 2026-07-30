@@ -723,7 +723,7 @@ async def test_live_block_timeline_recorded_replay_restores_decision_without_ree
     assert replayed.preserve_plugin_state is True
     assert replayed.evidence == source_write_set.evidence
     assert replayed.intents == ()
-    assert disposition is WriteDisposition.COMMITTED
+    assert disposition.disposition is WriteDisposition.COMMITTED
     effect_applier.apply.assert_not_awaited()
 
 

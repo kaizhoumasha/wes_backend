@@ -26,8 +26,8 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     `WmsEffectPreparationPort`；Stage 3 为当前 attempt 注入 effect Port resolver，避免
     `CAPABILITY_EFFECT_PORT_UNBOUND`，不缓存 registry/DB session。API 与 Celery 均从同一已校验
     `startup.catalog` 构造并发布 preparation runtime；关闭只解绑 owner，不回收外部资源。
-    定向 runtime/startup 回归 `70 passed`，Ruff 与 diff check 通过；完整 runtime inbox 文件仍有 1 项既有
-    fixture 与 `RuntimeInboxWriteBackResult` 返回合同不一致，留在 T5 final blocker。
+    定向 runtime/startup 回归 `70 passed`，Ruff 与 diff check 通过；当时遗留的 fixture 返回合同漂移已在
+    后续 T5 fixture-contract checkpoint 单独收口。
   - G4.5b1 verified（2026-07-30）：在唯一 System Capability / RuntimeIntentLog / SystemOutbox 管线内增加
     极窄 domain authority；静态 allowlist 仅允许 `SMT_INBOUND_HANDOFF → E11`。review fix 后由 production
     resolver 以 `FOR UPDATE` 锁定 correlation/handoff demand/workline，并从持久化 owner/release/workline
@@ -54,8 +54,9 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
 
 ## Minor Findings
 
-- T5 final blocker（不得豁免）：当前 `tests/workline_runtime/` 全量为 `1019 passed, 14 failed`。
-  - plugin-attempt writeback 测试仍按旧 `WriteDisposition` 枚举/旧 fixture 断言，生产路径已返回
-    `RuntimeInboxWriteBackResult`，部分 fixture 缺 `outbox_dispatch_targets`。
-  - generated system-capability index 测试仍冻结 `count=24`，当前 registry 为 `count=40`。
-  - G4.1 持久化模型批次不跨界修复以上既有合同；T5 final gate 必须同步合同并清零，不能标记为 existing/ignored。
+- Verified checkpoint — T5 runtime fixture-contract synchronization（2026-07-30，非 Task 5 完成标记）：仅同步测试
+  夹具与已落地生产合同。writeback 统一断言 `RuntimeInboxWriteBackResult.disposition`，effect fake 使用真实
+  `RuntimeIntentEffectResult`（包含 `outbox_dispatch_targets`），WMS projector fake 接收并断言 frozen ACK，
+  generated-index 由静态 `WMS_OPERATIONS` 注册表验证全部 40 项 capability（不再冻结旧 24 项计数）。
+  `uv run pytest tests/workline_runtime/ -q` 实测 `1129 passed`；Task 5 仍为 in progress，后续实现/审查门禁不因
+  本测试收口而跳过。

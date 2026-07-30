@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
+
 
 class _RepoChainEffectInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -300,7 +302,7 @@ async def test_business_reject_rolls_back_attempt_and_emits_typed_internal_resul
         async def apply(self, *_args: object, **_kwargs: object) -> object:
             pending_side_effects.append("domain-write")
             events.append("effect-reject")
-            return SimpleNamespace(business_reject_evidence=evidence)
+            return RuntimeIntentEffectResult.business_rejected(evidence)
 
     class InboxService:
         async def accept_internal_event(self, _db: object, **kwargs: object) -> object:
@@ -342,7 +344,7 @@ async def test_business_reject_rolls_back_attempt_and_emits_typed_internal_resul
     )
 
     expected_disposition = "TERMINAL_FAILURE" if original_route == "CAPABILITY_EFFECT_RESULT" else "COMMITTED"
-    assert disposition.value == expected_disposition
+    assert disposition.disposition.value == expected_disposition
     assert pending_side_effects == []
     if original_route == "CAPABILITY_EFFECT_RESULT":
         assert events == ["ledger", "effect-reject", "rollback", "terminal-failed", "commit"]
