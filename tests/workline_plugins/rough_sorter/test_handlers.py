@@ -57,7 +57,7 @@ EXPECTED_PHASE = {
     "RS-SD-007": "PICK_TO_PIPELINE",
     "RS-SD-008": "PICK_TO_PIPELINE",
     "RS-SD-009": "PICK_TO_PIPELINE",
-    "RS-SD-010": "PICK_TO_PIPELINE",
+    "RS-SD-010": "READY",
     "RS-SD-011": "PICK_TO_PIPELINE",
     "RS-SD-012": "PICK_TO_PIPELINE",
     "RS-SD-013": "PICK_TO_PIPELINE",
@@ -125,6 +125,8 @@ def _logical_input(case: dict[str, Any]) -> object:
 def _facts(case: dict[str, Any]) -> RoughSorterFacts:
     data = case["trigger"]["payload"].get("data", {})
     discriminator = case["trigger"]["decision_discriminator"]
+    q19_fact = case.get("q19_admission_fact")
+    q19_decision = q19_fact.get("decision") if isinstance(q19_fact, dict) else None
     return RoughSorterFacts(
         business_key=data.get("PkgID", "PKG-AUTHORITATIVE"),
         hhpn=data.get("HHPN", "HH-AUTHORITATIVE"),
@@ -132,11 +134,7 @@ def _facts(case: dict[str, Any]) -> RoughSorterFacts:
         correlation_matches=discriminator.get("correlation") != "LATE_OR_UNKNOWN_MISMATCH",
         replay_digest_matches=discriminator.get("duplicate_digest") != "DIFFERENT",
         q19_admission_decision=(
-            _q19_decision("REJECT")
-            if case["case_id"] == "RS-SD-006"
-            else _q19_decision("ADMIT")
-            if case["case_id"] in {"RS-SD-001", "RS-SD-004"}
-            else None
+            RoughSorterQ19AdmissionDecision.model_validate(q19_decision) if q19_decision is not None else None
         ),
         binding_snapshot=RoughSorterBindingSnapshot(
             binding_id=1,
@@ -267,7 +265,11 @@ def _q19_decision(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", _cases(), ids=lambda case: case["case_id"])
+@pytest.mark.parametrize(
+    "case",
+    [case for case in _cases() if case["implementation_status"] == "covered"],
+    ids=lambda case: case["case_id"],
+)
 async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any]) -> None:
     logical_input = _logical_input(case)
     discriminator = case["trigger"]["decision_discriminator"]
@@ -313,6 +315,15 @@ async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any])
             "RS-SD-010": "ROUGH_SORTER_Q19_ADMISSION_UNAVAILABLE",
         }.get(case["case_id"], case["expected_outcome"]["reason_code"])
         assert decision.reason_code == expected_reason
+
+
+def test_q19_provider_failure_fixture_stops_before_plugin_handler() -> None:
+    case = next(case for case in _cases() if case["case_id"] == "RS-SD-010")
+
+    assert case["implementation_status"] == "blocked"
+    assert case["expected_processing_result"] == {"success": 0, "failed": 1}
+    assert case["expected_intents"] == []
+    assert case["q19_admission_fact"]["failure_reason_code"] == "WMS_PROVIDER_TIMEOUT"
 
 
 @pytest.mark.asyncio

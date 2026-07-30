@@ -70,7 +70,14 @@ class _RecordingEffectRepository:
             dispatch_key=_OPERATION_KEY,
         )
 
-    async def claim_or_match(self, _db: object, **claim: Any) -> SystemCapabilityClaimResult:
+    async def claim_or_match(
+        self,
+        _db: object,
+        *,
+        allow_insert: bool = True,
+        **claim: Any,
+    ) -> SystemCapabilityClaimResult:
+        assert allow_insert is True
         self.calls.append(claim)
         return SystemCapabilityClaimResult.NEW
 

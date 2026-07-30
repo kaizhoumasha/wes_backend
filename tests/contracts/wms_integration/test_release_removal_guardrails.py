@@ -304,7 +304,7 @@ REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
         re.IGNORECASE,
     ),
     "bounded-three-effect-slice": re.compile(
-        r"(?:仅|只|共|首批|现有)?\s*(?:三个|三类|3\s*个)[^。\n]{0,24}(?:EFFECT|operation)",
+        r"(?:仅|只|共|首批|现有)?\s*(?:三个|三类|3\s*个)\s*(?:WMS\s*)?(?:EFFECT|operation)",
         re.IGNORECASE,
     ),
     "legacy-callback-production-path": re.compile(
@@ -352,13 +352,14 @@ REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS = {
         re.IGNORECASE,
     ),
     "fulfillment-callback-terminal-authority": re.compile(
-        r"(?:step\s*完成以[^。\n|]{0,80}|(?:WMS|RCS|AGV)(?:\s*/\s*(?:WMS|RCS|AGV))?[^。\n|]{0,40})"
+        r"(?:step\s*完成以[^。\n|]{0,80}|\b(?:WMS|RCS|AGV)\b"
+        r"(?:\s*/\s*\b(?:WMS|RCS|AGV)\b)?[^。\n|]{0,40})"
         r"(?:callback|回调)[^。\n|]{0,100}"
         r"(?:为准|证明外部动作结果|更新|(?<!不)写入|释放|换面完成|回库完成|仍可推进|恢复|(?<!不)推进)"
-        r"|(?:WMS|RCS)(?:\s*/\s*(?:WMS|RCS|AGV))?\s*(?:callback|回调)"
+        r"|\b(?:WMS|RCS)\b(?:\s*/\s*\b(?:WMS|RCS|AGV)\b)?\s*(?:callback|回调)"
         r"[^。\n|]{0,100}触发\s*handling\s*派生状态"
-        r"|(?:等待|依赖|消费)[^。\n|]{0,80}(?:WMS|RCS|AGV|CTU)"
-        r"(?:\s*[/↔-]\s*(?:WMS|RCS|AGV|CTU))*[^。\n|]{0,40}(?:callback|回调)",
+        r"|(?:等待|依赖|消费)[^。\n|]{0,80}\b(?:WMS|RCS|AGV|CTU)\b"
+        r"(?:\s*[/↔-]\s*\b(?:WMS|RCS|AGV|CTU)\b)*[^。\n|]{0,40}(?:callback|回调)",
         re.IGNORECASE,
     ),
     "wms-fulfillment-result-event-authority": re.compile(
@@ -414,6 +415,20 @@ WMS_AGGREGATE_PORT_ACTIVE_DOC_ROOTS = (
     "docs/operations",
     "docs/runbooks",
 )
+
+
+def test_removed_active_document_patterns_distinguish_current_observability_wording() -> None:
+    """旧履约口径必须命中，现行扫描周期与 callback hint 恢复口径不得误报。"""
+
+    bounded_effect_pattern = REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS["bounded-three-effect-slice"]
+    callback_authority_pattern = REMOVED_ACTIVE_DOC_CONCEPT_PATTERNS["fulfillment-callback-terminal-authority"]
+
+    assert bounded_effect_pattern.search("现有三个 EFFECT operation 形成固定履约切片")
+    assert not bounded_effect_pattern.search("连续三个扫描周期低于 WES_EFFECT_STATUS_SCAN_PERIOD_SECONDS")
+    assert callback_authority_pattern.search("WMS fulfillment callback 完成结果为准")
+    assert not callback_authority_pattern.search(
+        "wms_effect.callback_hint 入队降级时，持久化到期调度和 scanner 仍是恢复真源"
+    )
 
 
 def test_legacy_wms_aggregate_ports_are_absent_from_active_surfaces() -> None:

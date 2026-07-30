@@ -3,7 +3,7 @@ title: WMS 全场景配置化接入实施 SPEC
 status: Approved
 created_at: 2026-07-28
 reviewed_at: 2026-07-28
-implementation_status: Not Started
+implementation_status: In Progress
 scope: 单工厂、单原生 WMS、全场景一次性启用
 reviewed_inputs:
   - docs/business/wms_rcs_interface_requirements.md
@@ -2219,6 +2219,11 @@ Codex; checkbox as you ship.
     并行及 station generation 幂等；
     E13 确定性 FIFO、多 worker 有界候选 lease、ACK 接纳前缀及 active/unreserved 部分复合索引执行计划；
     `scanner_platform_state/source_arm_prefetch_capacity/prefetch_buffer_capacity/SCANNER_PLATFORM_CLEARED` 引用为 0。
+  - Q19 前置合同检查点（2026-07-31）：批准 fixture 已由 `SCAN_COMPLETED` 自带六码、卷盘直径和厚度，
+    不再依赖 E2E seed 隐式补值；Q19 `ADMIT` 后才创建正常入料命令，`REJECT` 直接创建入料机械臂 NG 命令。
+    合同/Plugin 定向回归 `104 passed`，隔离 PostgreSQL 的 ADMIT、后续复用、REJECT、provider failure
+    四场景 `4 passed`。provider failure 当前只保留稳定 failure evidence，并以零业务 Intent
+    fail closed；尚未形成 Session Hold EFFECT，因此对应 fixture 明确为 `blocked`，T6 继续保持未完成。
 - [x] **T7（P1，human: \~2d / CC: \~4h）** — inbound — 替换 WMS 普通事件与 status hint
   - Surfaced by: Data flow — GRN 使用 PO 行身份；Rack/Transport 等旧终态 callback 不得推进 Session。
   - Files: callback admission、WMS event contracts/normalizer、RuntimeInbox tests。

@@ -189,7 +189,13 @@ def test_deployment_script_runs_live_guard_before_application_start_and_scale() 
 
 def test_jenkins_and_production_runbook_require_guard_and_migration_before_application_start() -> None:
     jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    pipeline_environment = jenkins_text.split("    environment {", maxsplit=1)[1].split("    options {", maxsplit=1)[0]
     deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+    profile_path_declaration = "WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'"
+    profile_path_preflight = 'if [ -z "${WMS_PROVIDER_PROFILE_HOST_FILE:-}" ]'
+    profile_file_preflight = '[ ! -f "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]'
+    profile_readable_preflight = '[ ! -r "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]'
+    profile_path_export = 'export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"'
     guard_command = (
         "run --rm --no-deps "
         "-e DATABASE_RUNTIME_ROLE=cli "
@@ -198,9 +204,24 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
         "api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment"
     )
 
+    assert profile_path_declaration in {line.strip() for line in pipeline_environment.splitlines()}
+    assert profile_path_preflight in deploy_body
+    assert profile_file_preflight in deploy_body
+    assert profile_readable_preflight in deploy_body
+    assert profile_path_export in deploy_body
     assert (
         'COMPOSE_CMD="docker compose -f docker-compose.yml -f ${DEPLOY_COMPOSE_FILE} '
         '--env-file ${DEPLOY_ENV_FILE}"' in deploy_body
+    )
+    compose_command_index = deploy_body.index('COMPOSE_CMD="docker compose')
+    first_compose_execution_index = deploy_body.index("$COMPOSE_CMD ", compose_command_index)
+    assert (
+        deploy_body.index(profile_path_preflight)
+        < deploy_body.index(profile_file_preflight)
+        < deploy_body.index(profile_readable_preflight)
+        < deploy_body.index(profile_path_export)
+        < compose_command_index
+        < first_compose_execution_index
     )
     assert "$COMPOSE_CMD up -d --wait db redis" in deploy_body
     assert guard_command in deploy_body

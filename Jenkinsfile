@@ -19,6 +19,7 @@ pipeline {
         // 部署配置（在 Jenkins Node 上执行拉镜像部署）
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_COMPOSE_FILE = 'docker-compose.deploy.yml'
+        WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'
         HEALTH_CHECK_RETRIES = '5'
 
         // 镜像配置
@@ -381,8 +382,22 @@ pipeline {
                             git checkout --detach ${CI_COMMIT_SHA}
                             echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
 
+                            if [ -z "${WMS_PROVIDER_PROFILE_HOST_FILE:-}" ]; then
+                                echo -e "${RED}❌ 未配置 WMS Provider profile 宿主机路径${NC}"
+                                exit 1
+                            fi
+                            if [ ! -f "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
+                                echo -e "${RED}❌ WMS Provider profile 不是普通文件: ${WMS_PROVIDER_PROFILE_HOST_FILE}${NC}"
+                                exit 1
+                            fi
+                            if [ ! -r "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
+                                echo -e "${RED}❌ WMS Provider profile 当前用户不可读: ${WMS_PROVIDER_PROFILE_HOST_FILE}${NC}"
+                                exit 1
+                            fi
+
                             export BACKEND_ENV_FILE=${DEPLOY_ENV_FILE}
                             export BACKEND_IMAGE=${RUNTIME_IMAGE}
+                            export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"
                             COMPOSE_CMD="docker compose -f docker-compose.yml -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE}"
                             HEALTH_ENDPOINT='http://127.0.0.1:8001/health'
                             MIGRATION_APPLIED=false

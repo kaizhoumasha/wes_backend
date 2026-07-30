@@ -74,6 +74,16 @@ def _build_service(*, inbox_repo: Any) -> WorklineOperationService:
     )
 
 
+def _status_hint_payload() -> dict[str, object]:
+    return {
+        "data": {
+            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+            "idempotency_key": "idem-rack-supply-001",
+            "dispatch_key": "external:wms:inventory-updated:1",
+        }
+    }
+
+
 @pytest.mark.asyncio
 async def test_sandbox_external_callback_rejects_removed_payload_type_before_runtime_inbox() -> None:
     """沙箱不得用允许参数覆盖 payload 内的旧终态类型。"""
@@ -101,13 +111,15 @@ async def test_default_external_callback_retry_is_stable_without_legacy_lifecycl
     first = await service.submit_sandbox_external_callback(
         _Db(),
         dispatch_key="external:wms:inventory-updated:1",
-        callback_type="WMS_INVENTORY_UPDATED",
+        callback_type="WMS_EFFECT_STATUS_HINT",
+        payload=_status_hint_payload(),
         auto_commit=False,
     )
     second = await service.submit_sandbox_external_callback(
         _Db(),
         dispatch_key="external:wms:inventory-updated:1",
-        callback_type="WMS_INVENTORY_UPDATED",
+        callback_type="WMS_EFFECT_STATUS_HINT",
+        payload=_status_hint_payload(),
         auto_commit=False,
     )
 
@@ -127,7 +139,8 @@ async def test_external_callback_closes_dispatching_lease_shape() -> None:
     await service.submit_sandbox_external_callback(
         _Db(),
         dispatch_key=outbox.dispatch_key,
-        callback_type="WMS_INVENTORY_UPDATED",
+        callback_type="WMS_EFFECT_STATUS_HINT",
+        payload=_status_hint_payload(),
         auto_commit=False,
     )
 
@@ -148,7 +161,8 @@ async def test_duplicate_accept_result_skips_external_lifecycle_side_effect() ->
     result = await service.submit_sandbox_external_callback(
         _Db(),
         dispatch_key="external:wms:inventory-updated:1",
-        callback_type="WMS_INVENTORY_UPDATED",
+        callback_type="WMS_EFFECT_STATUS_HINT",
+        payload=_status_hint_payload(),
         auto_commit=False,
     )
 
@@ -192,7 +206,8 @@ async def test_external_callback_forwards_explicit_received_at_to_accept_helper(
     await service.submit_sandbox_external_callback(
         _Db(),
         dispatch_key="external:wms:inventory-updated:1",
-        callback_type="WMS_INVENTORY_UPDATED",
+        callback_type="WMS_EFFECT_STATUS_HINT",
+        payload=_status_hint_payload(),
         timestamp=received_at,
         auto_commit=False,
     )

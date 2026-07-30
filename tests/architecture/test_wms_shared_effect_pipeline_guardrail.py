@@ -46,13 +46,20 @@ def test_sync_terminal_events_have_no_async_status_or_callback_producer() -> Non
         encoding="utf-8"
     )
     bridge_tree = ast.parse(bridge_source)
+    sync_resolution = next(
+        node
+        for node in bridge_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_sync_transport_resolution"
+    )
     callback_class = next(
         node for node in bridge_tree.body if isinstance(node, ast.ClassDef) and node.name == "EffectCallbackBridge"
     )
+    sync_resolution_source = ast.get_source_segment(bridge_source, sync_resolution)
     callback_source = ast.get_source_segment(bridge_source, callback_class)
 
-    assert bridge_source.count("EffectReducerEventType.SYNC_COMPLETED") == 1
-    assert bridge_source.count("EffectReducerEventType.SYNC_REJECTED") == 1
+    assert sync_resolution_source is not None
+    assert sync_resolution_source.count("EffectReducerEventType.SYNC_COMPLETED") == 1
+    assert sync_resolution_source.count("EffectReducerEventType.SYNC_REJECTED") == 1
     assert "SYNC_COMPLETED" not in status_source
     assert "SYNC_REJECTED" not in status_source
     assert callback_source is not None
