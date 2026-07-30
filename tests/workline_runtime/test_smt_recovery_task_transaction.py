@@ -51,6 +51,7 @@ async def test_e11_scan_commits_before_only_fulfillment_enqueue_and_keeps_outbox
             return SmtInboundHandoffE11ScanResult(
                 scanned=True,
                 advanced=True,
+                demand_id=16,
                 outbox_dispatch_targets=frozenset({OutboxDispatchTarget.WMS_FULFILLMENT}),
             )
 
@@ -102,7 +103,7 @@ async def test_e11_scan_excludes_failed_due_demand_and_advances_next_healthy_dem
                 raise SmtInboundHandoffE11EvaluationError(17)
             if self.calls == 2:
                 assert kwargs["excluded_demand_ids"] == frozenset({17})
-                return SmtInboundHandoffE11ScanResult(scanned=True, advanced=True)
+                return SmtInboundHandoffE11ScanResult(scanned=True, advanced=True, demand_id=18)
             return SmtInboundHandoffE11ScanResult(scanned=False, advanced=False)
 
         async def scan_smt_inbound_handoff_demands_batch(self, _db: object, **_kwargs: object) -> dict[str, int]:
@@ -130,6 +131,52 @@ async def test_e11_scan_excludes_failed_due_demand_and_advances_next_healthy_dem
     assert summary["advanced"] == 1
     assert summary["recovery_errors"] == 1
     assert db.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_e11_scan_excludes_successful_unreserved_demand_before_advancing_next_healthy_demand() -> None:
+    db = _E11ScanDb()
+
+    class _Service:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate_next_due_e11_demand(self, _db: object, **kwargs: object) -> SmtInboundHandoffE11ScanResult:
+            self.calls += 1
+            if self.calls == 1:
+                assert kwargs["excluded_demand_ids"] == frozenset()
+                return SmtInboundHandoffE11ScanResult(scanned=True, advanced=False, demand_id=17)
+            if self.calls == 2:
+                assert kwargs["excluded_demand_ids"] == frozenset({17})
+                return SmtInboundHandoffE11ScanResult(scanned=True, advanced=True, demand_id=18)
+            assert kwargs["excluded_demand_ids"] == frozenset({17, 18})
+            return SmtInboundHandoffE11ScanResult(scanned=False, advanced=False)
+
+        async def scan_smt_inbound_handoff_demands_batch(self, _db: object, **_kwargs: object) -> dict[str, int]:
+            return {
+                "scanned": 0,
+                "claimed": 0,
+                "advanced": 0,
+                "retry_scheduled": 0,
+                "manual_hold": 0,
+                "recovery_errors": 0,
+            }
+
+    service = _Service()
+    summary = await _scan_smt_inbound_handoff_demands_in_transaction(
+        db,
+        service=service,
+        scan_limit=10,
+        recovery_limit=0,
+        claim_limit=0,
+        stale_after_seconds=1,
+        legacy_limit=None,
+    )
+
+    assert service.calls == 3
+    assert summary["scanned"] == 2
+    assert summary["advanced"] == 1
+    assert db.commits == 3
 
 
 @pytest.mark.parametrize("execution_anchor_case", ["owned", "split_execution", "complete_replacement"])

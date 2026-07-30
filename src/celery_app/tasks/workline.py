@@ -121,6 +121,8 @@ async def _scan_smt_inbound_handoff_demands_in_transaction(
             )
             if not e11_result.scanned:
                 break
+            if not isinstance(e11_result.demand_id, int):
+                raise TypeError("SMT E11 scanned demand is missing its durable identifier")
             expected_targets = frozenset({OutboxDispatchTarget.WMS_FULFILLMENT})
             if e11_result.outbox_dispatch_targets not in {frozenset(), expected_targets}:
                 raise RuntimeError("SMT E11 returned an invalid outbox dispatch target")
@@ -129,6 +131,9 @@ async def _scan_smt_inbound_handoff_demands_in_transaction(
                 summary["advanced"] += 1
             # 每个 E11 root 独立提交；提交成功后才公开唤醒唯一 fulfillment target。
             await db.commit()
+            # 已完成本轮评价但未创建 root 的 demand 仍是 due；必须排除，防止它占满
+            # scan_limit 而饿死后续健康 demand。下一轮扫描仍会重新审视该 demand。
+            excluded_demand_ids.add(e11_result.demand_id)
         except SmtInboundHandoffE11EvaluationError as exc:
             await db.rollback()
             summary["recovery_errors"] += 1

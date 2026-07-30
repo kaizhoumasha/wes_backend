@@ -152,6 +152,7 @@ class SmtInboundHandoffE11ScanResult:
 
     scanned: bool
     advanced: bool
+    demand_id: int | None = None
     outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
 
 
@@ -346,6 +347,7 @@ class SmtInboundHandoffService:
         return SmtInboundHandoffE11ScanResult(
             scanned=True,
             advanced=demand.status != before_status,
+            demand_id=demand.id,
             outbox_dispatch_targets=frozenset(dispatch_targets),
         )
 
