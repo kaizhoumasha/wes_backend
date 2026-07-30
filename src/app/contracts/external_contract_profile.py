@@ -186,7 +186,7 @@ class RuntimeCapabilityProfile(BaseModel):
     capability_name: str = Field(min_length=1, max_length=80, description="capability 名")
     query_ports: list[str] = Field(
         default_factory=list,
-        description="只允许 abstract Protocol 引用, e.g. WmsMasterDataPort",
+        description="只允许当前共享 query Protocol 引用, e.g. WmsQueryExecutionPort",
     )
     effect_ports: list[str] = Field(
         default_factory=list,

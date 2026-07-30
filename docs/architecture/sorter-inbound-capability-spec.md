@@ -171,7 +171,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | WMS 补空箱货架 | `wms.fulfillment.request_rack_supply@v1` → `RuntimeIntentLog` | ✅ |
 | 出料机械臂投格 → 本地位置事实 | `RuntimeLocationEvent` (🆕 目标态位置事实表；实现前需新增，或明确由 `ObjectTransitionEvent` 演进承载并补迁移合同) → `BinCellOccupancy` / `MaterialUnit.location_summary` | 🆕 |
 | WMS PKG 绑定通知 | `RuntimeIntentLog` → `wms.fulfillment.notify_pkg_binding@v1` | ✅ |
-| WMS 库存事务 | `RuntimeIntentLog` → `WmsInventoryTransactionPort` | ✅ |
+| WMS 库存事务 | `RuntimeIntentLog` → inventory EFFECT Definition → `WmsEffectPreparationPort` | ✅ |
 | WMS 失败 → WMS_SYNC_PENDING / RECONCILING | `RuntimeHold` + `ReconciliationManager` | ✅ |
 
 ### 10.2 满箱交换前置分流
@@ -182,7 +182,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 满箱需求判断 → FULL_BOX_EXCHANGE | `wms.fulfillment.full_box_exchange@v1` → `RuntimeIntentLog` | ✅ |
 | rack_code + rack_side 分批 | `ExecutionWorkItem` (parent_correlation_id 批次追溯) | ✅ |
 | CHANGE_RACK_FACE 独立履约 | `wms.fulfillment.change_rack_face@v1` → `RuntimeIntentLog` | ✅ |
-| 满箱物料箱级入库 + WMS 同步 | `RuntimeIntentLog` → `WmsInventoryTransactionPort` | ✅ |
+| 满箱物料箱级入库 + WMS 同步 | `RuntimeIntentLog` → inventory EFFECT Definition → `WmsEffectPreparationPort` | ✅ |
 | 剩余未满箱物料 → 分拣机逐件 | `ExecutionWorkItem` (新 work item, parent 指向满箱批次) | ✅ |
 
 ### 10.3 分拣机入库正常流
@@ -199,7 +199,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 南向机械臂投料 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
 | 本地位置事实 + 格位占用 | `RuntimeLocationEvent` (🆕 目标态位置事实表；实现前需新增，或明确由 `ObjectTransitionEvent` 演进承载并补迁移合同) → `BinCellOccupancy` | 🆕 |
 | WMS PKG 绑定通知 | `RuntimeIntentLog` → `wms.fulfillment.notify_pkg_binding@v1` | ✅ |
-| WMS 库存事务 | `RuntimeIntentLog` → `WmsInventoryTransactionPort` | ✅ |
+| WMS 库存事务 | `RuntimeIntentLog` → inventory EFFECT Definition → `WmsEffectPreparationPort` | ✅ |
 
 ## 11. 实时决策延迟预算
 

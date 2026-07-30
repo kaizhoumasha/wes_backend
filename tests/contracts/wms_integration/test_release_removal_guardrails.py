@@ -385,6 +385,65 @@ WMS_EVIDENCE_ARCHIVE_SCAN_ROOTS = (
     "docs/architecture",
     "docs/contracts",
 )
+REMOVED_WMS_AGGREGATE_PORT_FILES = (
+    "src/app/wms_integration/ports/master_data.py",
+    "src/app/wms_integration/ports/inventory_transaction.py",
+    "src/app/wms_integration/ports/reconciliation_query.py",
+    "tests/architecture/test_wms_7_ports_contract.py",
+    "tests/contracts/wms_integration/test_wms_master_data_port_contract.py",
+    "tests/contracts/wms_integration/test_wms_inventory_transaction_port_contract.py",
+)
+REMOVED_WMS_AGGREGATE_PORT_LITERALS = frozenset(
+    {
+        "WmsMasterDataPort",
+        "WmsInventoryTransactionPort",
+        "WmsReconciliationQueryPort",
+        "WmsInventoryTxPort",
+        "InventoryQueryOperationPort",
+    }
+)
+REMOVED_WMS_AGGREGATE_PORT_COUNT_PATTERN = re.compile(
+    r"\b7(?:[ -]+|\s*个(?:目标)?\s*)(?:WMS\s+)?ports?\b",
+    re.IGNORECASE,
+)
+WMS_AGGREGATE_PORT_ACTIVE_DOC_ROOTS = (
+    "docs/architecture",
+    "docs/business",
+    "docs/contracts",
+    "docs/integration",
+    "docs/operations",
+    "docs/runbooks",
+)
+
+
+def test_legacy_wms_aggregate_ports_are_absent_from_active_surfaces() -> None:
+    """旧聚合 Port、facade 测试和数量口径不得回流。"""
+
+    assert all(not (REPO_ROOT / relative_path).exists() for relative_path in REMOVED_WMS_AGGREGATE_PORT_FILES)
+    assert all(
+        REMOVED_WMS_AGGREGATE_PORT_COUNT_PATTERN.search(label)
+        for label in ("7 ports", "7-port", "7 WMS port", "7 个目标 WMS port", "7 个目标 port")
+    )
+
+    offenders: dict[str, set[str]] = {}
+    paths = list((REPO_ROOT / "src").rglob("*.py"))
+    for relative_root in WMS_AGGREGATE_PORT_ACTIVE_DOC_ROOTS:
+        paths.extend((REPO_ROOT / relative_root).rglob("*.md"))
+    for path in paths:
+        relative_path = path.relative_to(REPO_ROOT)
+        if relative_path.parts[:3] in {
+            ("docs", "architecture", "adr"),
+            ("docs", "architecture", "reviews"),
+        } or relative_path == Path("docs/architecture/workline-restructuring-implementation.md"):
+            continue
+        source = path.read_text(encoding="utf-8")
+        found = {literal for literal in REMOVED_WMS_AGGREGATE_PORT_LITERALS if literal in source}
+        if REMOVED_WMS_AGGREGATE_PORT_COUNT_PATTERN.search(source):
+            found.add("7 WMS Ports")
+        if found:
+            offenders[str(relative_path)] = found
+
+    assert offenders == {}
 
 
 def test_wms_evidence_archive_surface_is_absent_from_active_artifacts() -> None:

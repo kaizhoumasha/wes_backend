@@ -63,7 +63,7 @@ review_summary: |
 
 - WORKLINE + PLUGIN 体系全面重构的**顶层设计**（含概要 + 详细）
 - 8 个域的边界与责任：workline（配置域）/ runtime/orchestration（执行域）/ handling（搬运意图）/ resource（运行投影）/ material（WES 根实体）/ device（设备接入）/ wms_integration（WMS ACL）/ reconciliation（对账）
-- 7 个目标 WMS port（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery）
+- operation-specific typed Definition + `WmsQueryExecutionPort` / `WmsEffectPreparationPort` 的 WMS ACL 目标边界
 - Phase 0-5 六阶段实施路线图
 
 **本文档不包含**（实施 SPEC 阶段展开）：
@@ -229,7 +229,7 @@ P0 必须支撑以下能力（每条都是验收项）：
 | # | 子目标 | 关键产出 |
 | --- | --- | --- |
 | 1 | WES 顶层领域边界 | 拆 workline（配置域）+ runtime/orchestration（执行域）+ handling + resource + material + device + wms_integration |
-| 2 | WMS 反腐层 (wms_integration ACL) | 7 个目标 port：MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery |
+| 2 | WMS 反腐层 (wms_integration ACL) | operation-specific typed Definition + `WmsQueryExecutionPort` / `WmsEffectPreparationPort`；入站事件保持窄边界 |
 | 3 | Authority Matrix | 外部事实按事实类型拆分权威来源；WES material 域是唯一自有根实体 |
 | 4 | 目标态契约 | 锁定目标业务能力、域边界、状态所有权和外部 port；不锁定旧 API/旧表 |
 | 5 | 4 方案决策表 | A（workline 单体）/ B（本设计）/ C（增量 ACL）/ D（port-only）；选择 B，C 的可复用部分并入 B |

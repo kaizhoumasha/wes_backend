@@ -568,13 +568,13 @@ EFFECT 与事件 normalizer 继续使用各自 typed port。
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
 | `ports/` | `query_execution.py` | 19 项 registry QUERY 的唯一泛型执行 Port | 🔧 架构核心 |
-| `ports/` | `master_data.py` | WmsMasterDataPort Protocol + 6 typed data classes | 🔧 架构核心 |
+| | `effect_preparation.py` | 16 项 registry EFFECT 的唯一事务内准备 Port | 🔧 架构核心 |
+| | `master_data_operations.py` | 主数据 QUERY operation-specific request/result 与 Definition | 🔧 架构核心 |
 | | `inventory_operations.py` | 库存 QUERY operation-specific request/result 与 Definition | 🔧 架构核心 |
-| | `inventory_transaction.py` | WmsInventoryTransactionPort Protocol + 3 typed data classes | 🔧 架构核心 |
 | | `document_operations.py` | Q08–Q13/Q19 operation-specific request/result 与 Definition | 🔧 架构核心 |
 | | `fulfillment_operations.py` | E07–E16 operation-specific request/result、ACK 与批次收敛合同 | 🔧 架构核心 |
 | | `event.py` | InboundEventPort 基协议 + WmsEventPort Protocol + 5 typed data classes | 🔧 架构核心 |
-| | `reconciliation_query.py` | WmsReconciliationQueryPort Protocol + 1 typed data class | 🔧 架构核心 |
+| | `reconciliation_operations.py` | 对账 QUERY operation-specific request/result 与 Definition | 🔧 架构核心 |
 
 #### 🔗 WMS 对接辅助域 (src/app/wms_integration/)
 

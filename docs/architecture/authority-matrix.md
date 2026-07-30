@@ -44,19 +44,19 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 数据需求 | 读哪里 | 不该读哪里 |
 | --- | --- | --- |
-| 库存可用量 | `InventoryQueryOperationPort`（每次执行读取一次） | WES active projection 或跨请求缓存冒充全局库存 |
+| 库存可用量 | operation-specific inventory QUERY Definition + `WmsQueryExecutionPort`（每次执行读取一次） | WES active projection 或跨请求缓存冒充全局库存 |
 | GRN/入库单详情 | `wms.document.*` operation-specific QUERY Definition | 复制为 WES 单据主档 |
-| 物料主数据 | `WmsMasterDataPort` | WES 自建物料主数据 |
-| 货架/料箱/库位状态 | `WmsMasterDataPort`（主数据）+ WES active projection（作业期占用） | 把作业期投影当主数据写回 |
+| 物料主数据 | operation-specific master-data QUERY Definition + `WmsQueryExecutionPort` | WES 自建物料主数据 |
+| 货架/料箱/库位状态 | operation-specific master-data QUERY Definition + `WmsQueryExecutionPort`（主数据）+ WES active projection（作业期占用） | 把作业期投影当主数据写回 |
 | 设备到位/状态 | `device` 域 callback（ECS 推送） | WES 轮询 PLC 点位 |
 | WES 料盘位置 | `RuntimeLocationEvent` 投影（事实 11） | 直接写 material_units.location_summary |
-| 对账 drift | `WmsReconciliationQueryPort`（只读拉取 WMS 权威） | 把对账查询端口升级为副作用端口 |
+| 对账 drift | operation-specific reconciliation QUERY Definition + `WmsQueryExecutionPort`（只读拉取 WMS 权威） | 把对账查询升级为副作用 |
 
 ### 3.2 数据写入：该写哪里？
 
 | 写入需求 | 写哪里 | 不该写哪里 |
 | --- | --- | --- |
-| 库存预留/释放/转移确认 | `WmsInventoryTransactionPort`（经 RuntimeIntentLog + EffectPort） | 直接改 WES active projection 假装库存已变 |
+| 库存预留/释放/转移确认 | operation-specific inventory EFFECT Definition + `WmsEffectPreparationPort`（经 RuntimeIntentLog） | 直接改 WES active projection 假装库存已变 |
 | 履约请求（搬运/补给/换面/满箱交换） | operation-specific WMS fulfillment contract（经 RuntimeIntentLog + EffectPort） | WES 内部域直连 RCS/AGV/CTU SDK |
 | 设备命令下发 | `DeviceCommandPort`（只面向 ECS API） | 下发 PLC/坐标/关节/安全回路指令 |
 | WMS callback 入站 | `WmsEventPort` normalizer → RuntimeInbox（只 ACK，不直接改 session） | callback API 直接改 ExecutionSession/投影 |
@@ -78,7 +78,7 @@ WES 内部域（workline / runtime / handling / resource / material / device）*
 | 步骤 | 事实类型 | 权威 | WES 动作 |
 | --- | --- | --- | --- |
 | 扫码到位 | 事实 3（设备到位信号） | ECS/device | `device` 域接收 callback → RuntimeInbox → evidence |
-| WMS 校验物料 | 事实 1（库存）/ 事实 8（物料主数据） | WMS | `WmsMasterDataPort.get_material` + `wms.inventory.query_inventory@v1`（带 source_version） |
+| WMS 校验物料 | 事实 1（库存）/ 事实 8（物料主数据） | WMS | `wms.master_data.get_material@v1` + `wms.inventory.query_inventory@v1`（带 source_version） |
 | 建料盘实体 | 事实 11（WES 作业期根实体） | WES | material 域写 material_units（WES 自有） |
 | 箱格分配 | 事实 10（WES 投影） | WES | resource 域写 BinCellOccupancy（作业期投影） |
 | PKG 绑定通知 WMS | 事实 2（业务任务） | WMS | `wms.fulfillment.notify_pkg_binding@v1` 同步 typed EFFECT，提交响应直接返回 typed terminal result |

@@ -1,15 +1,8 @@
 """wms_integration ports — Protocol 边界与 operation-specific typed contracts。
 
-按主计划 §3.5.1 + §5.1 拆分:
-
-活跃 (当前里程碑):
-1. WmsMasterDataPort (物料主数据, 包括 area/warehouse/storage_location/equipment)
-2. WmsQueryExecutionPort (19 项 registry-driven typed QUERY)
-3. WmsInventoryTransactionPort (库存事务: reserve/release/confirm/transfer)
-4. WmsReconciliationQueryPort (对账 drift 查询)
-
-单据和履约不再公开粗粒度 Protocol；Q08–Q13/Q19 与 E07–E16 分别只由
-document_operations、fulfillment_operations 的 operation-specific Definition 表达。
+QUERY 由 operation-specific typed Definition + WmsQueryExecutionPort 执行，
+EFFECT 由 operation-specific typed Definition + WmsEffectPreparationPort 准备。
+effect status 与 inbound event 保留各自独立的窄边界，不再公开领域聚合 facade。
 """
 
 _EFFECT_STATUS_EXPORTS = frozenset(

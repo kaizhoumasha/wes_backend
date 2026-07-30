@@ -123,7 +123,7 @@ ADMIT / MOVE_FORWARD 正常主流程
 | R-12 | WES 计算目标料格 | 创建 `CellReservation` 或等价预约 | 唯一约束防止并发双占 |
 | R-13 | WES 下发出料机械臂命令 | 指示将料盘投入指定料箱料格 | 命令包含业务对象、目标料箱、目标料格和幂等键 |
 | R-14 | 出料机械臂 SUCCESS callback | WES 消费预约，写入投格物理事实 | `BinMaterialMount`、`BinCellOccupancy`、`MaterialUnit.location_summary` 更新 |
-| R-15 | WES 通知 WMS PKG 绑定/库存事务 | 通过 `RuntimeIntentLog + WmsInventoryTransactionPort` 发起 | WMS 成功后 work item 业务闭环完成 |
+| R-15 | WES 通知 WMS PKG 绑定/库存事务 | 通过 `RuntimeIntentLog` + operation-specific typed EFFECT Definition + `WmsEffectPreparationPort` 发起 | WMS 成功后 work item 业务闭环完成 |
 | R-16 | 继续投入后续料盘 | 入料机械臂、流水线、出料机械臂按设备能力并行处理不同对象 | 料盘 N 未完成入格时，入料机械臂可处理料盘 N+1 |
 
 ### 4.3 异常验收点

@@ -2356,6 +2356,16 @@ Codex; checkbox as you ship.
     Alembic 单 head，空 PostgreSQL 从零升级成功并证明热表/列/索引存在、archive 表不存在；独立工程
     复审最终 `Approved`。该检查点只清理仓内 SPEC/YAGNI 偏离，不替代
     项目统一保留策略、现场容量周期证据或 GO 签字，因此 T10 保持未完成。
+  - WMS typed Port boundary cleanup checkpoint（2026-07-30）：按本 SPEC 的破坏性收口约定，删除无生产
+    消费者的三个遗留领域聚合 Port、旧 facade/数量契约测试及对应导出，能力边界统一为
+    operation-specific typed Definition + `WmsQueryExecutionPort` / `WmsEffectPreparationPort`；
+    Runtime capability registry 的通用行为测试改用测试内 Protocol，不新增兼容入口或第三套抽象。
+    活跃架构、业务与合同文档已同步到同一口径，历史 ADR/review/implementation 保留原始事实；absence
+    guardrail 同时阻止旧全名、缩写、退役库存查询抽象和“7 Ports”中英文变体回流。主控与独立复审定向
+    回归 `47 passed`，测试拓扑 `6 passed`，默认收集 `5386`，完整 quality profile 通过，独立工程复审
+    最终 `Approved`（Critical/Important/Minor 均为 0）。该检查点关闭最后一个无需设备合同或目标工厂
+    环境即可完成的仓内 WMS 边界缺口；REAL_TCP、35 项 conformance、统一保留/容量证据及 GO 签字仍由
+    T8/T10 门禁管理，因此 T10 保持未完成。
 
 ## 21. 完成定义
 

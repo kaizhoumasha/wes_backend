@@ -85,7 +85,7 @@ evidence，不能因为出站 breaker 处于 `open/half-open` 被标成 `BLOCKED
 | 投影冲突 | 同 object 在 2+ 投影源 | `RECONCILING` + `RuntimeHold` |
 | External callback 与本地 projection 不一致 | callback normalize + drift detector | `RECONCILING` + audit log |
 | device 事件与 handling 业务意图状态不一致 | runtime event monitor | `RECONCILING` + `RuntimeHold` |
-| WMS master-data drift | `WmsReconciliationQueryPort` + `ReconciliationManager` | `RECONCILING` 分类处理（详见 §6.5） |
+| WMS master-data drift | reconciliation QUERY Definition + `WmsQueryExecutionPort` + `ReconciliationManager` | `RECONCILING` 分类处理（详见 §6.5） |
 | `RuntimeHold` 关联的现场异常 | runtime intent effects | 创建 `RECONCILING` evidence |
 | 传感器抖动 | ECS/device event 去抖窗口 | N 秒内同 sensor 同 object 合并 evidence；超阈值 `RuntimeHold` |
 | 通信丢包或 callback 延迟 | deadline + provider query | 超过 TTL 后主动 query WMS/ECS；不可确认时 `RECONCILING` |
@@ -143,7 +143,8 @@ owner 按 evidence 自己转移。
 
 ### 6.5 WMS master-data drift 分类
 
-`WmsReconciliationQueryPort.check_*_drift` 定期只读拉取 WMS 权威事实，并由 `ReconciliationManager` 分类处理：
+operation-specific reconciliation QUERY 定期通过 `WmsQueryExecutionPort` 只读拉取 WMS 权威事实，
+并由 `ReconciliationManager` 分类处理：
 
 | drift 类型 | WES 处理 |
 | --- | --- |

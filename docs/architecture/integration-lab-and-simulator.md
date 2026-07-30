@@ -33,12 +33,12 @@ note: |
 
 | 接口 | simulator 行为 |
 | --- | --- |
-| `WmsMasterDataPort.get_material` / `list_materials` | 返回 fixture 物料主数据 |
+| `wms.master_data.get_material@v1` / `wms.master_data.list_materials@v1` | 返回 fixture 物料主数据 |
 | `wms.document.get_grn@v1` / `wms.document.list_grn_packages@v1` | 返回 typed fixture GRN 与料盘归属 |
 | `wms.inventory.query_inventory@v1` | 返回 typed fixture 库存快照（带 `source_version`） |
 | `wms.fulfillment.request_load_unit_transport@v1` | 接受请求，按 scenario 配置延迟形成 status 终态 |
-| `WmsInventoryTransactionPort.reserve_inventory` | 返回预留结果 |
-| `WmsReconciliationQueryPort.check_bin_drift` | 返回 drift snapshot |
+| `wms.inventory.reserve_inventory@v1` | 返回预留结果 |
+| `wms.reconciliation.check_bin_drift@v1` | 返回 drift snapshot |
 | `WmsEventPort`（callback） | 主动推送四类普通事件或 `WMS_EFFECT_STATUS_HINT` 到 external callback API |
 
 **约束**：

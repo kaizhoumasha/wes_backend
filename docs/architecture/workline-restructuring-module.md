@@ -178,7 +178,13 @@ runtime 域内表使用 `execution_session_id` 作为 `ExecutionSession` FK；�
 | `clock` | 统一时间来源 |
 | `idempotency` | 跨域幂等检查与审计 |
 
-`readonly_facts` 可注入 WMS 主数据/单据/库存查询端口和 `WmsReconciliationQueryPort`，也可在测试中替换为 fake provider。`WmsReconciliationQueryPort` 只能返回 drift snapshot / `source_version` / WMS 权威事实，不创建 `RuntimeIntentLog`，不写 `ReconciliationRecord`，不触发 WMS 写入确认或补偿动作。`effects` 是唯一允许触发 WMS 履约/库存事务和设备命令副作用的出口。`InboundEventPort` 不属于 `RuntimeCapabilityContext`：capability 不允许持有 `WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer、`wms_integration` service locator、HTTP client、供应商 DTO 或 provider exception。
+`readonly_facts` 可注入 operation-specific WMS 主数据/单据/库存/对账 QUERY Definition 对应的
+`WmsQueryExecutionPort`，也可在测试中替换为 fake provider。对账 QUERY 只能返回 drift snapshot /
+`source_version` / WMS 权威事实，不创建 `RuntimeIntentLog`，不写 `ReconciliationRecord`，不触发 WMS
+写入确认或补偿动作。`effects` 是唯一允许触发 WMS 履约/库存事务和设备命令副作用的出口。
+`InboundEventPort` 不属于 `RuntimeCapabilityContext`：capability 不允许持有 `WmsEventPort`、
+`DeviceEventPort`、`RuntimeInbox` consumer、`wms_integration` service locator、HTTP client、供应商 DTO
+或 provider exception。
 
 **Effect ledger 约束**：
 
@@ -278,7 +284,8 @@ ACK/status/terminal result。Handling 可通过 `correlation_id`、`RuntimeInten
 
 - `work_position_code` 是 WES 内部工作位编号，例如 `WP-KITTING-01`，用于运行投影、plane 展示和设备调度。
 - WMS `location_code` 是外部库位/区域编码；二者通过 WorkLine manifest 或 WorkLine 配置中的映射关系关联，不允许混用。
-- 映射关系来源于 `WmsMasterDataPort.list_locations()` / `list_zones()` 的只读结果，经配置发布流程写入 WorkLine manifest；运行时只引用 pin 住的 `manifest_version`。
+- 映射关系来源于 `wms.master_data.list_locations@v1` / `wms.master_data.list_zones@v1` 的只读结果，
+  经配置发布流程写入 WorkLine manifest；运行时只引用 pin 住的 `manifest_version`。
 - WES 内部查询默认暴露 `work_position_code`；需要回传 WMS 时，通过映射表转换为 WMS `location_code` 并写入 evidence。
 
 **位置事实契约**：
@@ -433,7 +440,12 @@ ACK/status/terminal result。Handling 可通过 `correlation_id`、`RuntimeInten
 | `/wms-integration/inventory/query` | POST | 查询库存 |
 | `/wms-integration/reconciliation/drift-check` | POST | 只读触发 WMS 权威事实拉取并返回 drift snapshot；不得写 WMS 或跨域 owner 状态 |
 
-**入口约束**：外部 callback 写入口只允许 §5.3 的统一 callback API；出站 WMS 履约、库存事务、PKG 绑定和补偿动作只能由 runtime/orchestration 在 admission、幂等和状态门禁通过后写 `RuntimeIntentLog`，再经 EffectPort dispatcher 调用 operation-specific fulfillment contract / `WmsInventoryTransactionPort`。`wms_integration` 不提供公开创建履约请求的 POST API，不提供第二个外部 POST 写入口，只提供 normalizer、port 和只读查询。若调试期确需人工重放或补发 effect，入口必须放在受控 internal/admin runtime 路由，默认关闭并写审计，不得绕过 `RuntimeIntentLog`。
+**入口约束**：外部 callback 写入口只允许 §5.3 的统一 callback API；出站 WMS 履约、库存事务、PKG
+绑定和补偿动作只能由 runtime/orchestration 在 admission、幂等和状态门禁通过后写
+`RuntimeIntentLog`，再经 operation-specific typed EFFECT Definition + `WmsEffectPreparationPort`。
+`wms_integration` 不提供公开创建履约请求的 POST API，不提供第二个外部 POST 写入口，只提供
+normalizer、shared port 和只读查询。若调试期确需人工重放或补发 effect，入口必须放在受控
+internal/admin runtime 路由，默认关闭并写审计，不得绕过 `RuntimeIntentLog`。
 
 **目标态优先**：可复用 `src/app/wms_integration/` 已有 ACL 实现，但允许破坏性整理目录、模型和 import。
 
