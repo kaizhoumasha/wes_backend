@@ -2026,6 +2026,19 @@ Codex; checkbox as you ship.
     topology `6 passed`，默认收集 `5039 tests`，完整 quality profile、Ruff、Bandit、architecture 和
     `git diff --check` 通过。独立终审另行验证 focused `42 passed`、PostgreSQL `11 passed`，结论
     `Approved`、无 P0–P2。
+  - Verified checkpoint — G4.4c / E12 ACK 与终态收敛：首次 ACK 和 status-first 恢复 ACK 只推进批次
+    member 接纳，不推进料箱路线；整批 submit/status 拒绝、明确 `NOT_SENT` 重试耗尽和已存在物理事实的晚到
+    拒绝分别收敛为释放、已知终态或 OPEN 对账，不覆盖更后的本地位置。`SUCCESS` 在同一入口锁和事务内完成
+    member reservation 到精确 ENTRY membership 的 handoff；部分失败和未知结果逐箱收敛，已知终态释放入口
+    预约，`FIVE_RACK` 且无后续位置事实的 `UNKNOWN` 继续占用预约，已到 SCAN/NG/RETURN_QUEUE 的
+    `UNKNOWN` 则释放旧预约并冻结当前位置。批次任务终态与料箱路线事实保持正交；晚到 terminal、reject 或
+    矛盾结果只补充 evidence/OPEN case，不回退 SCAN 路线、不重开 `CLOSED@NG_LINE`，也不改写既有
+    `TERMINAL/SUCCESS`。
+  - G4.4c evidence：受影响 WMS unit/model `123 passed`；真实 PostgreSQL preparation/convergence/
+    reconciliation `24 passed`，覆盖并发预约交接、事务回滚重放、晚到事实、终态矛盾和 UNKNOWN 位置占用；
+    Alembic upgrade/downgrade/re-upgrade、topology `6 passed`、默认收集 `5053 tests`、targeted Ruff 与
+    `git diff --check` 通过。独立终审复跑 focused `28 passed`、PostgreSQL `13 passed` 和 migration
+    round-trip，结论 `Approved`、无 P0–P2。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

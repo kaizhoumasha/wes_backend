@@ -247,7 +247,7 @@ def test_wms_conveyor_batch_member_uses_runtime_intent_as_the_only_batch_root() 
         "member_state",
         "staged_at_ms",
         "accepted_at_ms",
-        "released_at_ms",
+        "reservation_released_at_ms",
         "terminal_at_ms",
         "terminal_outcome",
     }.issubset(model.model_fields)
@@ -295,7 +295,10 @@ def test_wms_conveyor_batch_member_uses_runtime_intent_as_the_only_batch_root() 
         "reserved_queue_position",
     )
     assert _index_columns(source_membership) == ("source_queue_membership_id",)
-    assert "member_state IN ('CANDIDATE', 'ACCEPTED')" in _postgresql_where(inbound_position)
+    inbound_position_where = _postgresql_where(inbound_position)
+    assert "member_state IN ('CANDIDATE', 'ACCEPTED')" in inbound_position_where
+    assert "member_state = 'TERMINAL' AND terminal_outcome = 'UNKNOWN'" in inbound_position_where
+    assert "reservation_released_at_ms IS NULL" in inbound_position_where
     assert "member_state IN ('CANDIDATE', 'ACCEPTED')" in _postgresql_where(source_membership)
 
 

@@ -8,18 +8,26 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.effect_state_contract import generated_effect_source_event_id
 from src.app.runtime.orchestration.repositories.wms_conveyor_batch_repository import (
     WmsConveyorAvailabilityFacts,
     WmsConveyorBatchRepository,
+    WmsConveyorPreparedBatchRows,
     WmsConveyorSourceRow,
     wms_conveyor_batch_repository,
 )
 from src.app.runtime.workline_plugins.smt_sorting_inbound.contracts import SmtSortingInboundConfig
 from src.app.wms_integration.ports.fulfillment_operations import (
     MOVE_BINS_TO_CONVEYOR_ENTRY,
+    BatchItemResult,
     ConveyorBatchItem,
     MoveBinsToConveyorEntryRequest,
+    MoveBinsToConveyorEntryResult,
+    WmsEffectAck,
+    validate_fulfillment_ack,
 )
+from src.app.wms_integration.ports.operation_common import validate_json_payload
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -306,6 +314,578 @@ class WmsConveyorBatchService:
             candidates=claim.candidates,
             staged_at_ms=self._now_ms(),
         )
+
+    async def project_ack(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        ack: WmsEffectAck,
+        occurred_at_ms: int,
+        source_event_id: str | None,
+    ) -> None:
+        """整批 ACK 只冻结接纳成员，不推进任何物理 route。"""
+
+        validate_fulfillment_ack(request, ack)
+        if not source_event_id:
+            raise ValueError("E12 ACK projection requires source_event_id")
+        workline_id = await self._repository.resolve_prepared_batch_workline_id(
+            db,
+            dispatch_key=request.dispatch_key,
+        )
+        if workline_id is None:
+            raise RuntimeError("E12 prepared batch is missing")
+        await self._repository.lock_entry_queue(
+            db,
+            workline_id=workline_id,
+            queue_code=request.destination_station_code,
+        )
+        prepared = await self._repository.lock_prepared_batch(db, dispatch_key=request.dispatch_key)
+        if prepared is None:
+            raise RuntimeError("E12 prepared batch is missing")
+        self._validate_prepared_rows(request=request, prepared=prepared)
+        for member in prepared.members:
+            if member.member_state == "ACCEPTED":
+                continue
+            if member.member_state != "CANDIDATE":
+                raise ValueError("E12 ACK member is not pending acceptance")
+            member.member_state = "ACCEPTED"
+            member.accepted_at_ms = occurred_at_ms
+        await db.flush()
+
+    async def project_reject(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        occurred_at_ms: int,
+        source_event_id: str | None,
+    ) -> None:
+        """物理动作前的整批拒绝释放预约并关闭初始 source route。"""
+
+        await self._release_pristine_batch(
+            db,
+            request=request,
+            occurred_at_ms=occurred_at_ms,
+            source_event_id=source_event_id,
+            transition_source="E12_REJECTED",
+        )
+
+    async def project_transport_not_sent_exhausted(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        occurred_at_ms: int,
+        source_event_id: str | None,
+    ) -> None:
+        """明确未发送且重试耗尽时释放仍处于初始态的批次预约。"""
+
+        await self._release_pristine_batch(
+            db,
+            request=request,
+            occurred_at_ms=occurred_at_ms,
+            source_event_id=source_event_id,
+            transition_source="E12_TRANSPORT_NOT_SENT_EXHAUSTED",
+        )
+
+    async def should_reconcile_transport_failure(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+    ) -> bool:
+        """判断 transport 失败是否已与 ACK 或本地物理事实冲突。"""
+
+        prepared, memberships = await self._lock_terminal_projection(db, request=request)
+        return (
+            bool(memberships)
+            or any(member.member_state != "CANDIDATE" for member in prepared.members)
+            or any(
+                route.current_node != "FIVE_RACK" or route.lifecycle_state != "ACTIVE" or route.route_version != 1
+                for route in prepared.routes
+            )
+        )
+
+    async def _release_pristine_batch(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        occurred_at_ms: int,
+        source_event_id: str | None,
+        transition_source: str,
+    ) -> None:
+        if not source_event_id:
+            raise ValueError("E12 transport failure projection requires source_event_id")
+        workline_id = await self._repository.resolve_prepared_batch_workline_id(
+            db,
+            dispatch_key=request.dispatch_key,
+        )
+        if workline_id is None:
+            raise RuntimeError("E12 prepared batch is missing")
+        await self._repository.lock_entry_queue(
+            db,
+            workline_id=workline_id,
+            queue_code=request.destination_station_code,
+        )
+        prepared = await self._repository.lock_prepared_batch(db, dispatch_key=request.dispatch_key)
+        if prepared is None:
+            raise RuntimeError("E12 prepared batch is missing")
+        self._validate_prepared_rows(request=request, prepared=prepared)
+        routes_by_id = {route.route_instance_id: route for route in prepared.routes}
+        for member in prepared.members:
+            route = routes_by_id[member.route_instance_id]
+            if (
+                member.member_state != "CANDIDATE"
+                or route.lifecycle_state != "ACTIVE"
+                or route.current_node != "FIVE_RACK"
+                or route.route_version != 1
+                or route.current_rack_code is None
+                or route.current_slot_code is None
+            ):
+                raise ValueError("E12 transport failure conflicts with later local physical evidence")
+            member.member_state = "RELEASED"
+            member.reservation_released_at_ms = occurred_at_ms
+            route.lifecycle_state = "CLOSED"
+            route.closed_at_ms = occurred_at_ms
+            route.route_version += 1
+            route.last_transition_source = transition_source
+            route.last_transition_source_event_id = source_event_id
+        await db.flush()
+
+    async def project_status_reject(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        occurred_at_ms: int,
+        source_event_id: str | None,
+        reason_code: str | None,
+    ) -> None:
+        """ACK 后、物理动作前的 STATUS_REJECTED 终结成员并关闭 source route。"""
+
+        if not source_event_id or not reason_code:
+            raise ValueError("E12 status reject projection requires stable evidence")
+        prepared, memberships = await self._lock_terminal_projection(db, request=request)
+        if memberships:
+            raise ValueError("E12 status reject conflicts with entry membership evidence")
+        routes_by_id = {route.route_instance_id: route for route in prepared.routes}
+        for member in prepared.members:
+            route = routes_by_id[member.route_instance_id]
+            if (
+                member.member_state != "ACCEPTED"
+                or member.accepted_at_ms is None
+                or route.lifecycle_state != "ACTIVE"
+                or route.current_node != "FIVE_RACK"
+                or route.route_version != 1
+            ):
+                raise ValueError("E12 status reject conflicts with later local physical evidence")
+            member.member_state = "TERMINAL"
+            member.terminal_at_ms = occurred_at_ms
+            member.terminal_outcome = "REJECTED"
+            member.reservation_released_at_ms = occurred_at_ms
+            route.lifecycle_state = "CLOSED"
+            route.closed_at_ms = occurred_at_ms
+            route.route_version += 1
+            route.last_transition_source = "E12_STATUS_REJECTED"
+            route.last_transition_source_event_id = source_event_id
+        await db.flush()
+
+    async def should_reconcile_status_reject(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+        queue_code: str,
+    ) -> bool:
+        """锁定批次后判断 STATUS_REJECTED 是否与后续物理事实冲突。"""
+
+        workline_id = await self._repository.resolve_prepared_batch_workline_id(
+            db,
+            dispatch_key=dispatch_key,
+        )
+        if workline_id is None:
+            raise RuntimeError("E12 prepared batch is missing")
+        await self._repository.lock_entry_queue(db, workline_id=workline_id, queue_code=queue_code)
+        prepared = await self._repository.lock_prepared_batch(db, dispatch_key=dispatch_key)
+        if prepared is None:
+            raise RuntimeError("E12 prepared batch is missing")
+        return any(
+            route.current_node != "FIVE_RACK" or route.lifecycle_state != "ACTIVE" or route.route_version != 1
+            for route in prepared.routes
+        )
+
+    async def project_success(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        result: MoveBinsToConveyorEntryResult,
+        occurred_at_ms: int,
+        source_event_id: str | None,
+    ) -> None:
+        """SUCCESS terminal 将未消费预约原子 handoff 为 ACTIVE ENTRY。"""
+
+        if result.task_outcome != "SUCCESS" or any(item.item_outcome != "SUCCESS" for item in result.items):
+            raise ValueError("E12 success projection requires all-success terminal result")
+        prepared, memberships = await self._lock_terminal_projection(db, request=request)
+        self._validate_terminal_rows(request=request, result=result, prepared=prepared)
+        if not source_event_id:
+            raise ValueError("E12 terminal projection requires source_event_id")
+        memberships_by_route = {membership.route_instance_id: membership for membership in memberships}
+        routes_by_id = {route.route_instance_id: route for route in prepared.routes}
+        for member, item in zip(prepared.members, result.items, strict=True):
+            route = routes_by_id[member.route_instance_id]
+            self._terminalize_member(member, item=item, occurred_at_ms=occurred_at_ms)
+            self._project_known_entry(
+                db,
+                member=member,
+                route=route,
+                item=item,
+                membership=memberships_by_route.get(member.route_instance_id),
+                membership_status="ACTIVE",
+                reconciliation_case_id=None,
+                occurred_at_ms=occurred_at_ms,
+                source_event_id=source_event_id,
+            )
+            member.reservation_released_at_ms = occurred_at_ms
+        await db.flush()
+
+    async def project_reconciliation(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        result: MoveBinsToConveyorEntryResult,
+        reconciliation_case_id: int,
+        occurred_at_ms: int | None,
+        source_event_id: str | None,
+        reason_code: str,
+    ) -> None:
+        """非成功 terminal 在 OPEN case 下逐成员收敛，UNKNOWN 继续占用预约。"""
+
+        if result.task_outcome == "SUCCESS":
+            raise ValueError("E12 reconciliation projection requires non-success terminal result")
+        prepared, memberships = await self._lock_terminal_projection(db, request=request)
+        self._validate_terminal_rows(request=request, result=result, prepared=prepared)
+        case = await self._repository.get_open_reconciliation_case_for_update(
+            db,
+            reconciliation_case_id=reconciliation_case_id,
+        )
+        if case is None or case.runtime_intent_log_id != prepared.intent.id:
+            raise ValueError("E12 reconciliation case differs from batch root")
+        if not source_event_id or not reason_code:
+            raise ValueError("E12 reconciliation projection requires stable evidence identity")
+        terminal_at_ms = case.opened_at_ms if occurred_at_ms is None else occurred_at_ms
+        memberships_by_route = {membership.route_instance_id: membership for membership in memberships}
+        routes_by_id = {route.route_instance_id: route for route in prepared.routes}
+        for member, item in zip(prepared.members, result.items, strict=True):
+            route = routes_by_id[member.route_instance_id]
+            membership = memberships_by_route.get(member.route_instance_id)
+            if member.member_state == "TERMINAL":
+                if member.terminal_at_ms is None or not member.terminal_outcome:
+                    raise ValueError("E12 persisted terminal member fact is incomplete")
+                self._freeze_reconciliation_projection(
+                    route=route,
+                    membership=membership,
+                    reconciliation_case_id=reconciliation_case_id,
+                )
+                continue
+            if member.member_state == "RELEASED":
+                if member.reservation_released_at_ms is None:
+                    raise ValueError("E12 persisted released member fact is incomplete")
+                self._freeze_reconciliation_projection(
+                    route=route,
+                    membership=membership,
+                    reconciliation_case_id=reconciliation_case_id,
+                )
+                continue
+            if item.item_outcome == "UNKNOWN":
+                self._terminalize_member(member, item=item, occurred_at_ms=terminal_at_ms)
+                if self._has_later_position_fact(route=route, membership=membership):
+                    member.reservation_released_at_ms = terminal_at_ms
+                self._freeze_reconciliation_projection(
+                    route=route,
+                    membership=membership,
+                    reconciliation_case_id=reconciliation_case_id,
+                )
+                continue
+            self._terminalize_member(member, item=item, occurred_at_ms=terminal_at_ms)
+            member.reservation_released_at_ms = terminal_at_ms
+            self._project_known_entry(
+                db,
+                member=member,
+                route=route,
+                item=item,
+                membership=membership,
+                membership_status=("ACTIVE" if item.item_outcome == "SUCCESS" else "RECONCILING"),
+                reconciliation_case_id=(None if item.item_outcome == "SUCCESS" else reconciliation_case_id),
+                occurred_at_ms=terminal_at_ms,
+                source_event_id=source_event_id,
+            )
+        await db.flush()
+
+    async def project_reconciliation_opened(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+        result: MoveBinsToConveyorEntryResult | None,
+        reason_code: str,
+        evidence_json: dict[str, Any],
+    ) -> None:
+        """从现有 Outbox 冻结 request 与 OPEN case 收敛非成功 terminal。"""
+
+        payload = await self._repository.get_frozen_request_payload(db, dispatch_key=dispatch_key)
+        if payload is None:
+            raise RuntimeError("E12 frozen outbox request is missing")
+        request = validate_json_payload(MoveBinsToConveyorEntryRequest, payload)
+        case_id = await self._repository.resolve_open_reconciliation_case_id(
+            db,
+            dispatch_key=dispatch_key,
+        )
+        if case_id is None:
+            raise RuntimeError("E12 OPEN reconciliation case is missing")
+        source_event_id = generated_effect_source_event_id(
+            "wms-e12-reconciliation-projection",
+            dispatch_key,
+            reason_code,
+            evidence_json,
+        )
+        if result is not None:
+            await self.project_reconciliation(
+                db,
+                request=request,
+                result=result,
+                reconciliation_case_id=case_id,
+                occurred_at_ms=None,
+                source_event_id=source_event_id,
+                reason_code=reason_code,
+            )
+            return
+        await self._freeze_reconciliation(
+            db,
+            request=request,
+            reconciliation_case_id=case_id,
+        )
+
+    async def _freeze_reconciliation(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        reconciliation_case_id: int,
+    ) -> None:
+        prepared, memberships = await self._lock_terminal_projection(db, request=request)
+        case = await self._repository.get_open_reconciliation_case_for_update(
+            db,
+            reconciliation_case_id=reconciliation_case_id,
+        )
+        if case is None or case.runtime_intent_log_id != prepared.intent.id:
+            raise ValueError("E12 reconciliation case differs from batch root")
+        for member in prepared.members:
+            if member.member_state not in {"CANDIDATE", "ACCEPTED", "TERMINAL", "RELEASED"}:
+                raise ValueError("E12 generic reconciliation found unknown member state")
+        memberships_by_route = {membership.route_instance_id: membership for membership in memberships}
+        for route in prepared.routes:
+            self._freeze_reconciliation_projection(
+                route=route,
+                membership=memberships_by_route.get(route.route_instance_id),
+                reconciliation_case_id=reconciliation_case_id,
+            )
+        await db.flush()
+
+    async def _lock_terminal_projection(
+        self,
+        db: AsyncSession,
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+    ) -> tuple[WmsConveyorPreparedBatchRows, tuple[ConveyorQueueMembership, ...]]:
+        workline_id = await self._repository.resolve_prepared_batch_workline_id(
+            db,
+            dispatch_key=request.dispatch_key,
+        )
+        if workline_id is None:
+            raise RuntimeError("E12 prepared batch is missing")
+        await self._repository.lock_entry_queue(
+            db,
+            workline_id=workline_id,
+            queue_code=request.destination_station_code,
+        )
+        prepared = await self._repository.lock_prepared_batch(db, dispatch_key=request.dispatch_key)
+        if prepared is None:
+            raise RuntimeError("E12 prepared batch is missing")
+        self._validate_prepared_rows(request=request, prepared=prepared)
+        memberships = await self._repository.lock_entry_memberships(
+            db,
+            route_instance_ids=tuple(item.route_instance_id for item in request.items),
+        )
+        return prepared, memberships
+
+    @staticmethod
+    def _validate_terminal_rows(
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        result: MoveBinsToConveyorEntryResult,
+        prepared: WmsConveyorPreparedBatchRows,
+    ) -> None:
+        expected = tuple((item.sequence_no, item.route_instance_id, item.bin_id) for item in request.items)
+        actual = tuple((item.sequence_no, item.route_instance_id, item.bin_id) for item in result.items)
+        if (
+            result.batch_id != request.batch_id
+            or result.accepted_object_keys != tuple(item.bin_id for item in request.items)
+            or actual != expected
+        ):
+            raise ValueError("E12 terminal members differ from frozen batch")
+        WmsConveyorBatchService._validate_prepared_rows(request=request, prepared=prepared)
+
+    @staticmethod
+    def _terminalize_member(
+        member: Any,
+        *,
+        item: BatchItemResult,
+        occurred_at_ms: int,
+    ) -> None:
+        if member.member_state == "TERMINAL":
+            if member.terminal_outcome != item.item_outcome:
+                raise ValueError("E12 terminal replay conflicts with persisted member outcome")
+            return
+        if member.member_state != "ACCEPTED" or member.accepted_at_ms is None:
+            raise ValueError("E12 terminal member was not accepted")
+        member.member_state = "TERMINAL"
+        member.terminal_at_ms = occurred_at_ms
+        member.terminal_outcome = item.item_outcome
+
+    @staticmethod
+    def _project_known_entry(
+        db: AsyncSession,
+        *,
+        member: Any,
+        route: Any,
+        item: BatchItemResult,
+        membership: ConveyorQueueMembership | None,
+        membership_status: str,
+        reconciliation_case_id: int | None,
+        occurred_at_ms: int,
+        source_event_id: str,
+    ) -> None:
+        if item.final_queue_position != member.reserved_queue_position:
+            raise ValueError("E12 terminal queue position differs from reservation")
+        if route.current_node == "FIVE_RACK" and route.lifecycle_state == "ACTIVE" and route.route_version == 1:
+            if membership is not None:
+                raise ValueError("E12 initial route already has an entry membership")
+            membership = ConveyorQueueMembership(
+                bin_code=member.bin_code,
+                workline_id=member.workline_id,
+                conveyor_code=member.queue_code,
+                queue_code=member.queue_code,
+                queue_role="ENTRY",
+                membership_status=membership_status,
+                entered_at=occurred_at_ms,
+                route_instance_id=member.route_instance_id,
+                queue_position=member.reserved_queue_position,
+                evidence_json={
+                    "source": "WMS_E12_TERMINAL",
+                    "source_event_id": source_event_id,
+                    "item_outcome": item.item_outcome,
+                },
+            )
+            db.add(membership)
+            route.current_node = "CONVEYOR_ENTRY"
+            route.current_rack_code = None
+            route.current_slot_code = None
+            route.route_version += 1
+            route.last_transition_source = "WMS_E12_TERMINAL"
+            route.last_transition_source_event_id = source_event_id
+        elif route.current_node == "CONVEYOR_ENTRY":
+            if (
+                membership is None
+                or membership.bin_code != member.bin_code
+                or membership.queue_code != member.queue_code
+                or membership.queue_position != member.reserved_queue_position
+            ):
+                raise ValueError("E12 entry route membership drifted")
+            membership.membership_status = membership_status
+        elif route.current_node not in {
+            "SCAN1",
+            "SCAN2_WORK",
+            "SCAN3",
+            "NG_LINE",
+            "RETURN_QUEUE",
+            "CTU_RETURN_IN_FLIGHT",
+        } and not (route.current_node == "FIVE_RACK" and route.lifecycle_state == "CLOSED"):
+            raise ValueError("E12 terminal conflicts with current route node")
+        if reconciliation_case_id is not None:
+            WmsConveyorBatchService._freeze_reconciliation_projection(
+                route=route,
+                membership=membership,
+                reconciliation_case_id=reconciliation_case_id,
+            )
+
+    @staticmethod
+    def _freeze_reconciliation_projection(
+        *,
+        route: Any,
+        membership: ConveyorQueueMembership | None,
+        reconciliation_case_id: int,
+    ) -> None:
+        """只冻结仍可调度的投影；CLOSED route 保留既有终态事实。"""
+
+        if route.lifecycle_state == "ACTIVE":
+            route.lifecycle_state = "RECONCILING"
+            route.reconciliation_case_id = reconciliation_case_id
+        elif route.lifecycle_state == "RECONCILING":
+            if route.reconciliation_case_id != reconciliation_case_id:
+                raise ValueError("E12 route is bound to a different reconciliation case")
+        elif route.lifecycle_state != "CLOSED":
+            raise ValueError("E12 route contains unknown lifecycle state")
+        if membership is not None and membership.membership_status == "ACTIVE":
+            membership.membership_status = "RECONCILING"
+
+    @staticmethod
+    def _has_later_position_fact(
+        *,
+        route: Any,
+        membership: ConveyorQueueMembership | None,
+    ) -> bool:
+        return membership is not None or route.current_node != "FIVE_RACK"
+
+    @staticmethod
+    def _validate_prepared_rows(
+        *,
+        request: MoveBinsToConveyorEntryRequest,
+        prepared: WmsConveyorPreparedBatchRows,
+    ) -> None:
+        if not prepared.members or len(prepared.members) != len(request.items):
+            raise ValueError("E12 persisted batch members drifted")
+        routes_by_id = {route.route_instance_id: route for route in prepared.routes}
+        expected = tuple(
+            (
+                item.sequence_no,
+                item.route_instance_id,
+                item.bin_id,
+                item.reserved_queue_position,
+            )
+            for item in request.items
+        )
+        actual = tuple(
+            (
+                member.sequence_no,
+                member.route_instance_id,
+                member.bin_code,
+                member.reserved_queue_position,
+            )
+            for member in prepared.members
+        )
+        if actual != expected or set(routes_by_id) != {item.route_instance_id for item in request.items}:
+            raise ValueError("E12 persisted batch identity drifted")
+        if any(
+            routes_by_id[item.route_instance_id].bin_code != item.bin_id
+            or routes_by_id[item.route_instance_id].created_by_e12_intent_id != prepared.intent.id
+            for item in request.items
+        ):
+            raise ValueError("E12 persisted route identity drifted")
 
     @classmethod
     def _validate_frozen_request(

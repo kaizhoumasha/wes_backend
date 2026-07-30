@@ -1,4 +1,4 @@
-"""E12 只接 preparation hook；ACK/terminal 在后续任务前必须显式 fail-closed。"""
+"""E12 preparation hook 与 terminal 输入边界合同。"""
 
 from __future__ import annotations
 
@@ -72,17 +72,17 @@ async def test_e12_projector_delegates_preparation_before_outbox() -> None:
 
 
 @pytest.mark.asyncio
-async def test_e12_reducer_event_fails_closed_until_terminal_projection_is_implemented() -> None:
+async def test_e12_terminal_projection_fails_closed_without_typed_result_evidence() -> None:
     operation = WMS_OPERATION_BY_IDENTITY[E12]
     event = EffectReducerEvent(
         event_type=EffectReducerEventType.STATUS_COMPLETED,
         dispatch_key=REQUEST_FIXTURES[E12]["dispatch_key"],
         occurred_at_ms=1,
-        source_event_id="e12-terminal-not-yet-supported",
+        source_event_id="e12-terminal-result-missing",
         evidence_json={},
     )
 
-    with pytest.raises(RuntimeError, match=r"E12 ACK/terminal convergence is not bound"):
+    with pytest.raises(TypeError, match=r"WMS terminal result evidence is missing"):
         await WmsFulfillmentDomainProjector().project_event(
             SimpleNamespace(),
             operation=operation,

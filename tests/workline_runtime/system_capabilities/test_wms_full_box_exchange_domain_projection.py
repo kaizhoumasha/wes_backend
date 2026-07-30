@@ -80,9 +80,18 @@ class _ReconciliationProjector:
         *,
         operation: Any,
         dispatch_key: str,
+        reason_code: str | None = None,
+        evidence_json: dict[str, Any] | None = None,
     ) -> None:
         assert db.commits == 1, "parent demand 必须与 reconciliation case 在最终 commit 前同事务投影"
-        self.calls.append({"operation": operation, "dispatch_key": dispatch_key})
+        self.calls.append(
+            {
+                "operation": operation,
+                "dispatch_key": dispatch_key,
+                "reason_code": reason_code,
+                "evidence_json": evidence_json,
+            }
+        )
 
 
 def _e11_preparation() -> tuple[Any, Any, SimpleNamespace]:
@@ -234,6 +243,8 @@ async def test_e11_non_success_opens_reconciliation_before_reducer() -> None:
         {
             "operation": WMS_OPERATION_BY_IDENTITY[E11],
             "dispatch_key": claim.intent.dispatch_key,
+            "reason_code": "WMS_FULFILLMENT_TERMINAL_NON_SUCCESS",
+            "evidence_json": reconciliation.calls[0]["evidence_json"],
         }
     ]
     assert db.commits == 2

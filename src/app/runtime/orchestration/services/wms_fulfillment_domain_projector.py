@@ -34,10 +34,13 @@ from src.app.wms_integration.ports.fulfillment_operations import (
     FullBoxExchangeRequest,
     FullBoxExchangeResult,
     MoveBinsToConveyorEntryRequest,
+    MoveBinsToConveyorEntryResult,
     RequestRackSupplyRequest,
     RequestRackSupplyResult,
     RequestRackTransportRequest,
     RequestRackTransportResult,
+    WmsEffectAck,
+    validate_fulfillment_ack,
 )
 from src.app.wms_integration.ports.operation_common import validate_json_payload
 from src.utils.timezone import timezone
@@ -174,7 +177,12 @@ class WmsFulfillmentDomainProjector:
         if not bool(getattr(reduction, "state_changed", False)) or bool(getattr(reduction, "contradiction", False)):
             return
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
-            raise RuntimeError("E12 ACK/terminal convergence is not bound")
+            await self._project_e12_event(
+                db,
+                request_payload=request_payload,
+                event=event,
+            )
+            return
         if operation.domain_projection_kind is WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
             demand = await self._full_box_exchange.get_demand_by_dispatch_for_update(
                 db,
@@ -235,17 +243,88 @@ class WmsFulfillmentDomainProjector:
             raise RuntimeError("WMS fulfillment domain projection kind is unbound")
         await db.flush()
 
+    async def _project_e12_event(
+        self,
+        db: AsyncSession,
+        *,
+        request_payload: dict[str, Any],
+        event: EffectReducerEvent,
+    ) -> None:
+        request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
+        if event.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED:
+            ack = self._typed_ack(event)
+            validate_fulfillment_ack(request, ack)
+            await self._conveyor_batch.project_ack(
+                db,
+                request=request,
+                ack=ack,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+            )
+            return
+        if event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED:
+            await self._conveyor_batch.project_reject(
+                db,
+                request=request,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+            )
+            return
+        if event.event_type is EffectReducerEventType.STATUS_REJECTED:
+            await self._conveyor_batch.project_status_reject(
+                db,
+                request=request,
+                occurred_at_ms=event.occurred_at_ms,
+                source_event_id=event.source_event_id,
+                reason_code=event.reason_code,
+            )
+            return
+        if event.event_type is not EffectReducerEventType.STATUS_COMPLETED:
+            raise RuntimeError("E12 ACK/terminal convergence is not bound")
+        result = validate_json_payload(
+            MoveBinsToConveyorEntryResult,
+            self._terminal_result_payload(event),
+        )
+        if result.task_outcome != "SUCCESS":
+            raise RuntimeError("E12 non-success terminal requires reconciliation projection")
+        await self._conveyor_batch.project_success(
+            db,
+            request=request,
+            result=result,
+            occurred_at_ms=event.occurred_at_ms,
+            source_event_id=event.source_event_id,
+        )
+
     async def project_reconciliation_opened(
         self,
         db: AsyncSession,
         *,
         operation: WmsOperationDefinition,
         dispatch_key: str,
+        reason_code: str | None = None,
+        evidence_json: dict[str, Any] | None = None,
     ) -> None:
         """仅为 E11 reconciliation 同事务冻结 parent；不释放 owner 或 active Intent。"""
 
         if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
-            raise RuntimeError("E12 reconciliation convergence is not bound")
+            if not reason_code or not isinstance(evidence_json, dict):
+                raise ValueError("E12 reconciliation projection requires reason and evidence")
+            result_payload = self._optional_terminal_result_from_evidence(evidence_json)
+            result = (
+                validate_json_payload(MoveBinsToConveyorEntryResult, result_payload)
+                if result_payload is not None
+                else None
+            )
+            if result is not None and result.task_outcome == "SUCCESS":
+                raise ValueError("E12 reconciliation projection requires non-success result")
+            await self._conveyor_batch.project_reconciliation_opened(
+                db,
+                dispatch_key=dispatch_key,
+                result=result,
+                reason_code=reason_code,
+                evidence_json=evidence_json,
+            )
+            return
         if operation.domain_projection_kind is not WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
             return
         demand = await self._full_box_exchange.get_demand_by_dispatch_for_update(
@@ -256,6 +335,64 @@ class WmsFulfillmentDomainProjector:
             raise RuntimeError("full box exchange reconciliation parent demand is missing")
         demand.status = SmtInboundHandoffDemandStatus.RECONCILING
         await db.flush()
+
+    async def should_reconcile_status_reject(
+        self,
+        db: AsyncSession,
+        *,
+        operation: WmsOperationDefinition,
+        dispatch_key: str,
+        request_payload: dict[str, Any],
+    ) -> bool:
+        """E12 STATUS_REJECTED 在 reducer 前检查是否已有更后的本地物理事实。"""
+
+        if operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            return False
+        request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
+        return await self._conveyor_batch.should_reconcile_status_reject(
+            db,
+            dispatch_key=dispatch_key,
+            queue_code=request.destination_station_code,
+        )
+
+    async def should_reconcile_transport_failure(
+        self,
+        db: AsyncSession,
+        *,
+        operation: WmsOperationDefinition,
+        request_payload: dict[str, Any],
+    ) -> bool:
+        """E12 transport 失败在写领域结果前检查 ACK/物理事实。"""
+
+        if operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            return False
+        request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
+        return await self._conveyor_batch.should_reconcile_transport_failure(
+            db,
+            request=request,
+        )
+
+    async def project_transport_not_sent_exhausted(
+        self,
+        db: AsyncSession,
+        *,
+        operation: WmsOperationDefinition,
+        request_payload: dict[str, Any],
+        event: EffectReducerEvent,
+    ) -> None:
+        """E12 明确未发送且重试耗尽时释放未被消费的预约。"""
+
+        if operation.domain_projection_kind is not WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            return
+        if event.event_type is not EffectReducerEventType.TRANSPORT_NOT_SENT or not event.retry_exhausted:
+            raise ValueError("E12 transport release requires exhausted TRANSPORT_NOT_SENT")
+        request = validate_json_payload(MoveBinsToConveyorEntryRequest, request_payload)
+        await self._conveyor_batch.project_transport_not_sent_exhausted(
+            db,
+            request=request,
+            occurred_at_ms=event.occurred_at_ms,
+            source_event_id=event.source_event_id,
+        )
 
     @staticmethod
     def _require_claim(execution: Any) -> WmsRackDemandClaim:
@@ -531,11 +668,30 @@ class WmsFulfillmentDomainProjector:
 
     @staticmethod
     def _terminal_result_payload(event: EffectReducerEvent) -> dict[str, Any]:
-        snapshot = event.evidence_json.get("snapshot")
-        result = snapshot.get("result") if isinstance(snapshot, dict) else None
-        if not isinstance(result, dict):
+        return WmsFulfillmentDomainProjector._terminal_result_from_evidence(event.evidence_json)
+
+    @staticmethod
+    def _terminal_result_from_evidence(evidence_json: dict[str, Any]) -> dict[str, Any]:
+        result = WmsFulfillmentDomainProjector._optional_terminal_result_from_evidence(evidence_json)
+        if result is None:
             raise TypeError("WMS terminal result evidence is missing")
         return result
+
+    @staticmethod
+    def _optional_terminal_result_from_evidence(evidence_json: dict[str, Any]) -> dict[str, Any] | None:
+        snapshot = evidence_json.get("snapshot")
+        result = snapshot.get("result") if isinstance(snapshot, dict) else None
+        return result if isinstance(result, dict) else None
+
+    @staticmethod
+    def _typed_ack(event: EffectReducerEvent) -> WmsEffectAck:
+        typed_outcome = event.terminal_outcome
+        if not isinstance(typed_outcome, dict):
+            raise TypeError("E12 ACK evidence is missing")
+        payload = typed_outcome.get("payload")
+        if typed_outcome.get("kind") != "success" or not isinstance(payload, dict):
+            raise TypeError("E12 ACK evidence is missing")
+        return validate_json_payload(WmsEffectAck, payload)
 
     @staticmethod
     def _close_demand(demand: WmsRackDemand, *, occurred_at_ms: int) -> None:

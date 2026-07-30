@@ -58,16 +58,16 @@ class WmsConveyorBatchMember(BaseMixin, table=True):
         ),
         CheckConstraint(
             "("
-            "member_state = 'CANDIDATE' AND accepted_at_ms IS NULL AND released_at_ms IS NULL "
+            "member_state = 'CANDIDATE' AND accepted_at_ms IS NULL AND reservation_released_at_ms IS NULL "
             "AND terminal_at_ms IS NULL AND terminal_outcome IS NULL"
             ") OR ("
-            "member_state = 'ACCEPTED' AND accepted_at_ms IS NOT NULL AND released_at_ms IS NULL "
+            "member_state = 'ACCEPTED' AND accepted_at_ms IS NOT NULL AND reservation_released_at_ms IS NULL "
             "AND terminal_at_ms IS NULL AND terminal_outcome IS NULL"
             ") OR ("
-            "member_state = 'RELEASED' AND accepted_at_ms IS NULL AND released_at_ms IS NOT NULL "
+            "member_state = 'RELEASED' AND accepted_at_ms IS NULL AND reservation_released_at_ms IS NOT NULL "
             "AND terminal_at_ms IS NULL AND terminal_outcome IS NULL"
             ") OR ("
-            "member_state = 'TERMINAL' AND accepted_at_ms IS NOT NULL AND released_at_ms IS NULL "
+            "member_state = 'TERMINAL' AND accepted_at_ms IS NOT NULL "
             "AND terminal_at_ms IS NOT NULL AND terminal_outcome IS NOT NULL"
             ")",
             name="lifecycle",
@@ -78,8 +78,20 @@ class WmsConveyorBatchMember(BaseMixin, table=True):
             "queue_code",
             "reserved_queue_position",
             unique=True,
-            postgresql_where=text("direction = 'INBOUND' AND member_state IN ('CANDIDATE', 'ACCEPTED')"),
-            sqlite_where=text("direction = 'INBOUND' AND member_state IN ('CANDIDATE', 'ACCEPTED')"),
+            postgresql_where=text(
+                "direction = 'INBOUND' AND ("
+                "member_state IN ('CANDIDATE', 'ACCEPTED') "
+                "OR (member_state = 'TERMINAL' AND terminal_outcome = 'UNKNOWN' "
+                "AND reservation_released_at_ms IS NULL)"
+                ")"
+            ),
+            sqlite_where=text(
+                "direction = 'INBOUND' AND ("
+                "member_state IN ('CANDIDATE', 'ACCEPTED') "
+                "OR (member_state = 'TERMINAL' AND terminal_outcome = 'UNKNOWN' "
+                "AND reservation_released_at_ms IS NULL)"
+                ")"
+            ),
         ),
         Index(
             "ux_wms_conveyor_batch_members_active_source_membership",
@@ -106,7 +118,7 @@ class WmsConveyorBatchMember(BaseMixin, table=True):
     member_state: str = Field(default="CANDIDATE", min_length=1, max_length=20)
     staged_at_ms: int = Field(sa_type=BigInteger)
     accepted_at_ms: int | None = Field(default=None, sa_type=BigInteger)
-    released_at_ms: int | None = Field(default=None, sa_type=BigInteger)
+    reservation_released_at_ms: int | None = Field(default=None, sa_type=BigInteger)
     terminal_at_ms: int | None = Field(default=None, sa_type=BigInteger)
     terminal_outcome: str | None = Field(default=None, max_length=80)
 

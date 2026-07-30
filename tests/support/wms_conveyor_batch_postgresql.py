@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 
 NOW = datetime(2026, 7, 30, 9, 0)
 E12 = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
-REVISION = "8612c6926f4c"
+REVISION = "9cc0848560c6"
 
 
 @dataclass(frozen=True, slots=True)

@@ -25,7 +25,7 @@ from src.app.wms_integration.effect_runtime import (
     interpret_sync_effect_response,
     typed_wms_effect_ack_hash,
 )
-from src.app.wms_integration.operation_contract import WmsCompletionMode
+from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsDomainProjectionKind
 from src.app.wms_integration.operation_registry import (
     EFFECT_OPERATION_IDENTITIES,
     WMS_OPERATION_BY_IDENTITY,
@@ -600,20 +600,107 @@ class EffectTransportBridge:
         for event in resolved.events:
             reduction = await self._reducer.reduce(db, event, require_intent=False)
             reductions.append(reduction)
+            is_e12_transport_failure = (
+                self._domain_projector is not None
+                and operation is not None
+                and operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
+                and (
+                    event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
+                    or (event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT and event.retry_exhausted)
+                )
+            )
+            if is_e12_transport_failure:
+                if not isinstance(payload_json, dict):
+                    raise RuntimeError("WMS domain projection requires frozen request payload")
+                reduction_changed = bool(
+                    getattr(reduction, "state_changed", False) or getattr(reduction, "case_created", False)
+                )
+                if not reduction_changed:
+                    continue
+                should_reconcile = bool(getattr(reduction, "case_created", False))
+                if not should_reconcile:
+                    should_reconcile = await self._domain_projector.should_reconcile_transport_failure(
+                        db,
+                        operation=operation,
+                        request_payload=payload_json,
+                    )
+                if should_reconcile:
+                    reason_code = event.reason_code or "WMS_E12_TRANSPORT_FAILURE_AFTER_LOCAL_FACT"
+                    evidence_json = {
+                        **event.evidence_json,
+                        "trigger_event_type": event.event_type.value,
+                        "trigger_source_event_id": event.source_event_id,
+                    }
+                    if not bool(getattr(reduction, "case_created", False)):
+                        reconciliation_event = _reconciliation_event(
+                            dispatch_key=event.dispatch_key,
+                            attempt_no=event.attempt_no or attempt_no,
+                            occurred_at_ms=event.occurred_at_ms,
+                            reason_code=reason_code,
+                            evidence_json=evidence_json,
+                        )
+                        reconciliation_reduction = await self._reducer.reduce(
+                            db,
+                            reconciliation_event,
+                            require_intent=False,
+                        )
+                        reductions.append(reconciliation_reduction)
+                    await self._domain_projector.project_reconciliation_opened(
+                        db,
+                        operation=operation,
+                        dispatch_key=event.dispatch_key,
+                        reason_code=reason_code,
+                        evidence_json=evidence_json,
+                    )
+                    continue
+                if event.event_type is EffectReducerEventType.TRANSPORT_NOT_SENT:
+                    await self._domain_projector.project_transport_not_sent_exhausted(
+                        db,
+                        operation=operation,
+                        request_payload=payload_json,
+                        event=event,
+                    )
+                    continue
             if (
                 self._domain_projector is not None
                 and operation is not None
                 and operation.domain_projection_kind is not None
-                and event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
+                and (
+                    event.event_type is EffectReducerEventType.ASYNC_SUBMIT_REJECTED
+                    or (
+                        operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
+                        and event.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED
+                        and event.terminal_outcome is not None
+                        and event.evidence_json.get("typed_ack_hash") is not None
+                    )
+                )
             ):
                 if not isinstance(payload_json, dict):
-                    raise RuntimeError("WMS domain rejection projection requires frozen request payload")
+                    raise RuntimeError("WMS domain projection requires frozen request payload")
                 await self._domain_projector.project_event(
                     db,
                     operation=operation,
                     request_payload=payload_json,
                     event=event,
                     reduction=reduction,
+                )
+            if (
+                self._domain_projector is not None
+                and operation is not None
+                and operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH
+                and event.event_type
+                in {
+                    EffectReducerEventType.RECONCILIATION_OPENED,
+                    EffectReducerEventType.IDEMPOTENCY_CONFLICT,
+                }
+                and bool(getattr(reduction, "state_changed", False) or getattr(reduction, "case_created", False))
+            ):
+                await self._domain_projector.project_reconciliation_opened(
+                    db,
+                    operation=operation,
+                    dispatch_key=event.dispatch_key,
+                    reason_code=event.reason_code,
+                    evidence_json=event.evidence_json,
                 )
         return tuple(reductions)
 

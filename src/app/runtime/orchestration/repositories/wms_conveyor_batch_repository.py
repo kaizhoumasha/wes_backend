@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 
 from src.app.resource.models import (
     Bin,
@@ -31,7 +31,10 @@ from src.app.runtime.orchestration.models.rack_position import (
     WorklineRackPosition,
     WorklineRackPositionRole,
 )
+from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember
+from src.app.sys.models.outbox import SystemOutbox
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -67,6 +70,15 @@ class WmsConveyorAvailabilityFacts:
     owned_bin_codes: frozenset[str]
 
 
+@dataclass(frozen=True, slots=True)
+class WmsConveyorPreparedBatchRows:
+    """同一 RuntimeIntent 根下按 sequence 锁定的 E12 投影。"""
+
+    intent: RuntimeIntentLog
+    members: tuple[WmsConveyorBatchMember, ...]
+    routes: tuple[BinRouteInstance, ...]
+
+
 class WmsConveyorBatchRepository:
     """集中持有 E12 的 PostgreSQL 锁序与批量候选读取。"""
 
@@ -90,7 +102,14 @@ class WmsConveyorBatchRepository:
                     WmsConveyorBatchMember.workline_id == workline_id,
                     WmsConveyorBatchMember.queue_code == queue_code,
                     WmsConveyorBatchMember.direction == "INBOUND",
-                    WmsConveyorBatchMember.member_state.in_(("CANDIDATE", "ACCEPTED")),
+                    or_(
+                        WmsConveyorBatchMember.member_state.in_(("CANDIDATE", "ACCEPTED")),
+                        and_(
+                            WmsConveyorBatchMember.member_state == "TERMINAL",
+                            WmsConveyorBatchMember.terminal_outcome == "UNKNOWN",
+                            WmsConveyorBatchMember.reservation_released_at_ms.is_(None),
+                        ),
+                    ),
                 )
                 .with_for_update()
             )
@@ -117,6 +136,130 @@ class WmsConveyorBatchRepository:
             )
         ).scalars()
         return frozenset(int(value) for value in rows if value is not None)
+
+    async def lock_prepared_batch(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+    ) -> WmsConveyorPreparedBatchRows | None:
+        """锁定唯一 Intent root 及其 E12 member/route，不复制 batch root。"""
+
+        intent = await db.scalar(
+            select(RuntimeIntentLog).where(RuntimeIntentLog.dispatch_key == dispatch_key).with_for_update()
+        )
+        if intent is None or intent.id is None:
+            return None
+        members = tuple(
+            (
+                await db.execute(
+                    select(WmsConveyorBatchMember)
+                    .where(WmsConveyorBatchMember.runtime_intent_log_id == intent.id)
+                    .order_by(WmsConveyorBatchMember.sequence_no)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        route_ids = tuple(member.route_instance_id for member in members)
+        routes = (
+            tuple(
+                (
+                    await db.execute(
+                        select(BinRouteInstance)
+                        .where(BinRouteInstance.route_instance_id.in_(route_ids))
+                        .order_by(BinRouteInstance.route_instance_id)
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if route_ids
+            else ()
+        )
+        return WmsConveyorPreparedBatchRows(intent=intent, members=members, routes=routes)
+
+    async def resolve_prepared_batch_workline_id(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+    ) -> int | None:
+        """在 advisory lock 前只解析稳定 WorkLine identity，不读取可变批次状态。"""
+
+        return await db.scalar(
+            select(WmsConveyorBatchMember.workline_id)
+            .join(
+                RuntimeIntentLog,
+                RuntimeIntentLog.id == WmsConveyorBatchMember.runtime_intent_log_id,
+            )
+            .where(RuntimeIntentLog.dispatch_key == dispatch_key)
+            .order_by(WmsConveyorBatchMember.sequence_no)
+            .limit(1)
+        )
+
+    async def lock_entry_memberships(
+        self,
+        db: AsyncSession,
+        *,
+        route_instance_ids: Sequence[str],
+    ) -> tuple[ConveyorQueueMembership, ...]:
+        if not route_instance_ids:
+            return ()
+        return tuple(
+            (
+                await db.execute(
+                    select(ConveyorQueueMembership)
+                    .where(
+                        ConveyorQueueMembership.route_instance_id.in_(tuple(route_instance_ids)),
+                        ConveyorQueueMembership.membership_status.in_(("ACTIVE", "RECONCILING")),
+                    )
+                    .order_by(ConveyorQueueMembership.route_instance_id)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def get_open_reconciliation_case_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        reconciliation_case_id: int,
+    ) -> ReconciliationCase | None:
+        return await db.scalar(
+            select(ReconciliationCase)
+            .where(
+                ReconciliationCase.id == reconciliation_case_id,
+                ReconciliationCase.status == ReconciliationCaseStatus.OPEN,
+            )
+            .with_for_update()
+        )
+
+    async def resolve_open_reconciliation_case_id(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+    ) -> int | None:
+        return await db.scalar(
+            select(ReconciliationCase.id).where(
+                ReconciliationCase.dispatch_key == dispatch_key,
+                ReconciliationCase.status == ReconciliationCaseStatus.OPEN,
+            )
+        )
+
+    async def get_frozen_request_payload(
+        self,
+        db: AsyncSession,
+        *,
+        dispatch_key: str,
+    ) -> dict[str, object] | None:
+        payload = await db.scalar(select(SystemOutbox.payload_json).where(SystemOutbox.dispatch_key == dispatch_key))
+        return dict(payload) if isinstance(payload, dict) else None
 
     async def lock_first_target_placement(
         self,
@@ -436,6 +579,7 @@ wms_conveyor_batch_repository = WmsConveyorBatchRepository()
 __all__ = [
     "WmsConveyorAvailabilityFacts",
     "WmsConveyorBatchRepository",
+    "WmsConveyorPreparedBatchRows",
     "WmsConveyorSourceRow",
     "wms_conveyor_batch_repository",
 ]
