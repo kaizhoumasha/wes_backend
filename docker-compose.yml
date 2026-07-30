@@ -93,6 +93,7 @@ services:
       DATABASE_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT: 30
       DATABASE_APPLICATION_NAME: ${ENV:-prod}
+      WMS_DEPLOYMENT_ROLE: api
 
       # Redis 配置 ${REDIS_HOST}
       REDIS_HOST: redis
@@ -161,7 +162,7 @@ services:
       if [ "${ENV:-prod}" = "dev" ]; then
         exec sh /app/src/celery_app/dev_worker_autoreload.sh;
       else
-        exec celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=${CELERY_WORKER_QUEUES:-default,celery,device};
+        exec celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=$${CELERY_WORKER_CONCURRENCY} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=$${CELERY_WORKER_QUEUES};
       fi
       '
     env_file:
@@ -189,7 +190,9 @@ services:
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
       CELERY_WORKER_QUEUES: default,celery,device
+      CELERY_WORKER_CONCURRENCY: ${CELERY_CONCURRENCY:-4}
       WMS_PROVIDER_PROCESS_ROLE: wes
+      WMS_DEPLOYMENT_ROLE: wes-worker
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -250,6 +253,7 @@ services:
       CELERY_WORKER_QUEUES: wms-fulfillment
       CELERY_WORKER_CONCURRENCY: "1"
       WMS_PROVIDER_PROCESS_ROLE: fulfillment
+      WMS_DEPLOYMENT_ROLE: fulfillment-worker
     deploy:
       replicas: 1
 
@@ -280,6 +284,7 @@ services:
       DATABASE_RUNTIME_ROLE: cli
       DATABASE_POOL_SIZE: 1
       DATABASE_MAX_OVERFLOW: 0
+      WMS_DEPLOYMENT_ROLE: beat
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}

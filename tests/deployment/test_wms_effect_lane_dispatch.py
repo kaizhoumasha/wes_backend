@@ -92,6 +92,7 @@ def test_all_compose_profiles_and_test_deploy_pipeline_define_both_worker_roles(
             "CELERY_WORKER_QUEUES": "wms-fulfillment",
             "CELERY_WORKER_CONCURRENCY": "1",
             "WMS_PROVIDER_PROCESS_ROLE": "fulfillment",
+            "WMS_DEPLOYMENT_ROLE": "fulfillment-worker",
         }
 
     test_entrypoint = (REPO_ROOT / "docker/test/celery.entrypoint.sh").read_text(encoding="utf-8")

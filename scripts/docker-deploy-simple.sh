@@ -66,11 +66,22 @@ Docker 部署管理脚本 (统一配置版本)
 EOF
 }
 
+# 生产命令统一使用只读 profile mount overlay，避免容量、attestation 与实际启动目标漂移。
+get_deployment_compose_files() {
+    local env=$1
+    if [ "$env" = "prod" ]; then
+        echo "-f docker-compose.yml -f docker-compose.deploy.yml"
+    else
+        echo "-f docker-compose.yml"
+    fi
+}
+
 # 使用目标应用拓扑在 live PostgreSQL 上校验容量。CLI 短连接由 reserve 覆盖。
 run_capacity_guard() {
     local env=$1
     shift
     local compose_cmd=$(get_compose_cmd)
+    local compose_files=$(get_deployment_compose_files "$env")
     local env_file=""
     local guard_args=()
     local expect_scale_value=false
@@ -94,11 +105,30 @@ run_capacity_guard() {
         fi
     done
 
-    $compose_cmd -f docker-compose.yml $env_file --profile "$env" run --rm --no-deps \
+    $compose_cmd $compose_files $env_file --profile "$env" run --rm --no-deps \
         -e DATABASE_RUNTIME_ROLE=cli \
         -e DATABASE_POOL_SIZE=1 \
         -e DATABASE_MAX_OVERFLOW=0 \
         api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment "${guard_args[@]}"
+}
+
+# 使用共享 runner 从四个实际临时容器生成并验证脱敏 artifact。
+run_wms_deployment_attestation() {
+    local env=$1
+    local env_file=""
+    local runner_args=(--compose-file docker-compose.yml)
+
+    if [ -f ".env.$env" ]; then
+        env_file=".env.$env"
+    elif [ -f ".env" ]; then
+        env_file=".env"
+    fi
+    if [ "$env" = "prod" ]; then
+        runner_args+=(--compose-file docker-compose.deploy.yml)
+    fi
+    [ -z "$env_file" ] || runner_args+=(--env-file "$env_file")
+    runner_args+=(--profile "$env")
+    bash scripts/run_wms_deployment_attestation.sh "${runner_args[@]}"
 }
 
 # 扩缩容不能依赖上一次命令的离线默认值；每次必须同时声明两个服务的完整目标。
@@ -178,6 +208,7 @@ cmd_up() {
     print_info "启动 $env 环境..."
 
     local compose_cmd=$(get_compose_cmd)
+    local compose_files=$(get_deployment_compose_files "$env")
     local env_file=""
 
     # 确定环境文件
@@ -187,14 +218,15 @@ cmd_up() {
         env_file="--env-file .env"
     fi
 
-    # 生产环境分两阶段启动：基础设施健康和 live 容量门禁均通过后才允许应用启动。
+    # 生产环境分阶段启动：容量与 WMS 四角色门禁通过后才允许应用启动。
     if [ "$env" = "prod" ]; then
-        $compose_cmd -f docker-compose.yml $env_file --profile "$env" up -d --wait db redis
+        $compose_cmd $compose_files $env_file --profile "$env" up -d --wait db redis
         run_capacity_guard "$env" "$@"
+        run_wms_deployment_attestation "$env"
+        $compose_cmd $compose_files $env_file --profile "$env" up -d "$@"
+    else
+        $compose_cmd $compose_files $env_file --profile "$env" up -d "$@"
     fi
-
-    # 执行命令
-    $compose_cmd -f docker-compose.yml $env_file --profile $env up -d "$@"
 
     print_success "$env 环境已启动"
     print_info "查看状态: $0 $env ps"

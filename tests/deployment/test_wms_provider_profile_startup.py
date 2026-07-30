@@ -6,10 +6,14 @@ import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
+from celery.exceptions import WorkerTerminate
 from pydantic import ValidationError
 
+from src.app.runtime.system_capabilities.wms import provider_catalog
+from src.celery_app import app as celery_app_module
 from src.core.conf import Settings
 from tests.contracts.wms_integration.provider_profile_support import write_provider_profile
 
@@ -108,3 +112,20 @@ def test_active_configuration_contains_no_legacy_wms_endpoint_settings() -> None
             continue
         source = path.read_text(encoding="utf-8", errors="ignore")
         assert all(name not in source for name in legacy_names), relative_path
+
+
+def test_celery_beat_startup_rejects_invalid_wms_transport_before_logger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setup_logger = MagicMock()
+    monkeypatch.setattr(celery_app_module, "setup_logger", setup_logger)
+    monkeypatch.setattr(
+        provider_catalog,
+        "validate_wms_transport_configuration",
+        MagicMock(side_effect=ValueError("invalid profile or SLA")),
+    )
+
+    with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
+        celery_app_module.on_beat_init()
+
+    setup_logger.assert_not_called()

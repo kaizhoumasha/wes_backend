@@ -436,6 +436,12 @@ pipeline {
                             echo -e "${GREEN}🧮 校验 live PostgreSQL 连接容量...${NC}"
                             run_capacity_guard
 
+                            echo -e "${GREEN}🔏 校验 WMS 四角色部署一致性...${NC}"
+                            bash scripts/run_wms_deployment_attestation.sh \
+                                --compose-file docker-compose.yml \
+                                --compose-file ${DEPLOY_COMPOSE_FILE} \
+                                --env-file ${DEPLOY_ENV_FILE}
+
                             # 本版本包含 RuntimeInbox 破坏性切换。迁移前必须停止所有可能访问旧表的
                             # API/Worker/Beat；迁移使用目标镜像的一次性 CLI 容器，不能依赖尚未启动的 API。
                             echo -e "${GREEN}⏸️  静默应用进程，准备数据库迁移...${NC}"

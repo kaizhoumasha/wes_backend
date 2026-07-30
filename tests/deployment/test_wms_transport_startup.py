@@ -13,6 +13,7 @@ from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.celery_app import app as celery_app_module
 from src.core.conf import settings
 from src.register import register_init
+from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
 
 
 @pytest.mark.asyncio
@@ -38,7 +39,7 @@ async def test_startup_rejects_invalid_wms_transport_before_database_init(
     monkeypatch.setattr(provider_catalog, "validate_wms_transport_configuration", reject_wms_transport)
 
     with pytest.raises(ValueError, match="WMS production transport"):
-        async with register_init(object()):
+        async with register_init(SimpleNamespace(state=SimpleNamespace())):
             pytest.fail("无效 WMS transport 配置不得进入 serving 状态")
 
     init_db.assert_not_awaited()
@@ -80,7 +81,7 @@ async def test_fastapi_startup_rejects_production_in_process_simulation_before_d
     monkeypatch.setattr(redis_client, "close_redis", AsyncMock())
 
     with pytest.raises(ValueError, match=r"production.*simulation"):
-        async with register_init(object()):
+        async with register_init(SimpleNamespace(state=SimpleNamespace())):
             pytest.fail("production simulator 配置不得进入 serving 状态")
 
     init_db.assert_not_awaited()
@@ -95,7 +96,7 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     from src.database import db as database
     from src.database import redis_client
 
-    startup = SimpleNamespace(catalog=object())
+    startup = SimpleNamespace(catalog=object(), compiled_profile=build_compiled_provider_profile())
     data_runtime = object()
     preparation_runtime = object()
     build_preparation = MagicMock(return_value=preparation_runtime)
@@ -123,7 +124,10 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     async with register_init(app):
         assert app.state.wms_effect_preparation_runtime is preparation_runtime
 
-    build_preparation.assert_called_once_with(catalog=startup.catalog)
+    build_preparation.assert_called_once_with(
+        catalog=startup.catalog,
+        admission_enabled=settings.WMS_EFFECT_ADMISSION_ENABLED,
+    )
     bind_preparation.assert_called_once_with(preparation_runtime)
     close_preparation.assert_awaited_once_with(preparation_runtime)
 
@@ -142,7 +146,12 @@ async def test_fastapi_preparation_bind_failure_does_not_close_existing_owner(
     monkeypatch.setattr(
         provider_catalog,
         "validate_wms_transport_configuration",
-        MagicMock(return_value=SimpleNamespace(catalog=object())),
+        MagicMock(
+            return_value=SimpleNamespace(
+                catalog=object(),
+                compiled_profile=build_compiled_provider_profile(),
+            )
+        ),
     )
     monkeypatch.setattr(database, "init_db", AsyncMock())
     monkeypatch.setattr(database, "close_db", AsyncMock())

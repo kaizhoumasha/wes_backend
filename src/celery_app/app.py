@@ -101,8 +101,18 @@ def on_worker_process_shutdown(*args: Any, **kwargs: Any) -> None:
 
 @beat_init.connect
 def on_beat_init(*args: Any, **kwargs: Any) -> None:
-    """Beat 启动时初始化日志"""
-    setup_logger()
+    """Beat 启动时先执行 WMS 配置门禁，再初始化日志。"""
+    try:
+        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+
+        validate_wms_transport_configuration(settings_source=settings)
+    except Exception as exc:
+        # Celery Signal.send 会吞掉普通 Exception；非法 profile/SLA 必须阻止 Beat 调度任务。
+        raise WorkerTerminate("WMS transport configuration rejected") from exc
+    try:
+        setup_logger()
+    except Exception as exc:
+        raise WorkerTerminate("beat logging initialization rejected") from exc
 
 
 # ============================================

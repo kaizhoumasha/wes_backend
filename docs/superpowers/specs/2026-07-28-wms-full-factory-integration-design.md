@@ -2332,6 +2332,19 @@ Codex; checkbox as you ship.
     `126 passed`；主控独立复跑认证与权限组合 `42 passed`、测试拓扑 `6 passed`、Ruff 通过，独立复审
     最终 `Approved`。该检查点只关闭最低安全模式的仓内入站接线，不替代现场网络隔离验收、权限 smoke、
     REAL_TCP、容量和 GO 签字，因此 T10 保持未完成。
+  - WMS four-role deployment attestation checkpoint（2026-07-30）：生产发布在容量门禁之后、迁移和应用
+    启动之前，统一调用共享 runner 拉取目标镜像，并为 API、通用 Celery、WMS fulfillment worker 与 Beat
+    创建一次性实际 Compose 容器；runner 从每个 container ID 校验固化角色与实际 image，在同一容器生成
+    单行脱敏 artifact，再由同一个 API 容器通过 stdin 以本地 transport 编译结果和实际 API image 建立
+    可信基准进行复验。四份一致伪造的 provider/profile/operation/endpoint/admission/runtime/image 事实、
+    角色或 Worker queue/concurrency 漂移均 fail closed。通用 Worker 命令只展开容器内
+    `CELERY_WORKER_QUEUES` / `CELERY_WORKER_CONCURRENCY`，宿主同名影子变量不能改写实际消费队列；
+    fulfillment 保持单进程、仅消费 `wms-fulfillment`。Jenkins 与本地生产部署复用同一 runner，失败时
+    清理已创建容器，不依赖 jq、宿主临时目录或 bind mount，也不访问 WMS、数据库或 Redis。合并 WMS
+    定向回归 `218 passed`，测试拓扑 `6 passed`，默认收集 `5405`，完整 quality profile 通过，
+    独立工程复审最终 `Approved`。
+    该检查点只关闭仓内四角色制品/profile/runtime 部署漂移，不替代现场网络隔离、REAL_TCP、数据库容量、
+    35 项 conformance 和 GO 签字，因此 T10 保持未完成。
 
 ## 21. 完成定义
 
