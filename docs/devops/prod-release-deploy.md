@@ -31,6 +31,11 @@
   - `SNOWFLAKE_WORKER_ID`
 - `.env.prod` 已确认 RuntimeInbox canonical payload 上限：
   - `RUNTIME_INBOX_PAYLOAD_MAX_BYTES=1048576`（默认 1 MiB；超过上限的 payload 会在入站边界被拒绝）
+- 生产机已准备当前工厂唯一的 WMS Provider profile，并在 `.env.prod` 配置其宿主机绝对路径：
+  - `WMS_PROVIDER_PROFILE_HOST_FILE=/etc/wes/wms-provider.yaml`
+  - 该文件会只读挂载到 API、通用 Celery、WMS fulfillment Worker 与 Beat 的
+    `/run/wes/wms-provider.yaml`
+  - HTTP/HTTPS 与认证要求由 profile 的安全策略决定；`isolated_lan + NONE` 允许 HTTP
 - 首次生产部署前，已准备 `BOOTSTRAP_ADMIN_USERNAME` 与 `BOOTSTRAP_ADMIN_PASSWORD`
 
 前后端分开维护 `.env` 文件是正常做法，不会影响部署。后端发布只依赖：
@@ -53,6 +58,7 @@
 
 ```bash
 BACKEND_IMAGE=example.invalid/wes/wes_backend:prod \
+WMS_PROVIDER_PROFILE_HOST_FILE=/etc/wes/wms-provider.yaml \
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
@@ -93,6 +99,9 @@ git pull --ff-only origin main
 cd /opt/wes_backend
 cp -f .env.prod .env
 ```
+
+将 `WMS_PROVIDER_PROFILE_HOST_FILE` 设置为部署机上实际存在且当前部署用户可读的 profile 文件。
+该变量缺失或留空时，Compose 在生成配置阶段即失败，不会以空 profile 启动部分服务。
 
 如使用外部注入方式，也可以直接保留 `.env.prod`，后续命令统一显式带 `--env-file .env.prod`。
 

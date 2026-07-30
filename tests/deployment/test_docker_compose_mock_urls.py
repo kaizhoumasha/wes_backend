@@ -187,7 +187,8 @@ def test_local_settings_load_wms_budgets_and_credentials_from_generated_dotenv()
 def test_prod_env_requires_an_explicit_provider_profile_and_keeps_secret_slots() -> None:
     env_text = (BACKEND_ROOT / ".env.prod").read_text(encoding="utf-8")
 
-    assert "WMS_PROVIDER_PROFILE_FILE=" in env_text
+    assert "WMS_PROVIDER_PROFILE_HOST_FILE=" in env_text
+    assert "\nWMS_PROVIDER_PROFILE_FILE=" not in env_text
     for setting_name in STATUS_CONFIG_NAMES:
         assert f"{setting_name}=" in env_text
     assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=false" in env_text

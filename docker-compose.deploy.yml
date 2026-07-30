@@ -25,7 +25,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
-      WMS_PROVIDER_PROFILE_FILE: ${WMS_PROVIDER_PROFILE_FILE:-}
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
       WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
       WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
       WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
@@ -44,6 +44,7 @@ services:
     # 生产运行只使用镜像内代码；显式替换基础 Compose 的开发源码挂载。
     volumes: !override
       - ./logs:/app/logs
+      - "${WMS_PROVIDER_PROFILE_HOST_FILE:?WMS_PROVIDER_PROFILE_HOST_FILE is required}:/run/wes/wms-provider.yaml:ro"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -89,7 +90,7 @@ services:
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
       CELERY_WORKER_QUEUES: default,celery,device
       WMS_PROVIDER_PROCESS_ROLE: wes
-      WMS_PROVIDER_PROFILE_FILE: ${WMS_PROVIDER_PROFILE_FILE:-}
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
       WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
       WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
       WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
@@ -108,6 +109,7 @@ services:
     # 生产运行只使用镜像内代码；显式替换基础 Compose 的开发源码挂载。
     volumes: !override
       - ./logs:/app/logs
+      - "${WMS_PROVIDER_PROFILE_HOST_FILE:?WMS_PROVIDER_PROFILE_HOST_FILE is required}:/run/wes/wms-provider.yaml:ro"
     networks:
       - wesp9-network
     stop_grace_period: 30s
@@ -133,6 +135,7 @@ services:
     # 生产运行只使用镜像内代码；显式替换基础 Compose 的开发源码挂载。
     volumes: !override
       - ./logs:/app/logs
+      - "${WMS_PROVIDER_PROFILE_HOST_FILE:?WMS_PROVIDER_PROFILE_HOST_FILE is required}:/run/wes/wms-provider.yaml:ro"
     deploy:
       replicas: 1
 
@@ -167,7 +170,7 @@ services:
       WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2:-}
       WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2:-}
       WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES: ${WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES:-}
-      WMS_PROVIDER_PROFILE_FILE: ${WMS_PROVIDER_PROFILE_FILE:-}
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
       WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
       WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
       WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
@@ -186,6 +189,7 @@ services:
     # 生产运行只使用镜像内代码；显式替换基础 Compose 的开发源码挂载。
     volumes: !override
       - ./logs:/app/logs
+      - "${WMS_PROVIDER_PROFILE_HOST_FILE:?WMS_PROVIDER_PROFILE_HOST_FILE is required}:/run/wes/wms-provider.yaml:ro"
     healthcheck:
       test:
         [

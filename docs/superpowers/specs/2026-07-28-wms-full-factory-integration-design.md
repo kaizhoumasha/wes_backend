@@ -2240,6 +2240,12 @@ Codex; checkbox as you ship.
     `isolated_lan + NONE + HTTP` 与 `authenticated_network + HMAC + HTTPS` 定向路径通过。WMS、
     callback/runtime、WorkLine、迁移投影、observability、架构和启动定向回归 `1283 passed`，
     测试拓扑 `6 passed`，默认收集 `5179 tests`。
+  - T8 release fail-closed checkpoint（2026-07-30）：普通 conformance builder/verifier 仍允许保存并验证
+    `passed=false` 的 NO-GO 诊断报告；release builder/verifier 则必须同时满足 `REAL_TCP` 和全题 PASS，
+    任一 case 失败即拒绝发布资格。测试以摘要有效、profile/endpoint/题库完整且仅业务 verdict 失败的自洽报告
+    证明不存在 `REAL_TCP + passed=false` 旁路；`ConformanceTarget` 架构闭集已包含正式 REAL_TCP 执行面。
+    主控复跑 conformance/CLI/架构组合 `93 passed`，独立复审 `Approved`。目标工厂真实执行证据仍未取得，
+    因此 T8 继续保持未完成。
 - [ ] **T9（P1，human: \~3d / CC: \~6h）** — recovery/observability — 关闭状态恢复和对账门禁
   - Surfaced by: Failure modes — callback 丢失、已见状态后 NOT\_FOUND、ACK 前物理事件和物理事实后晚到拒绝必须
     可恢复或精确冻结。
@@ -2287,6 +2293,14 @@ Codex; checkbox as you ship.
     现场值守和 stop-admission 演练；API/通用 Celery/fulfillment Celery/Beat 的进程级及全局数据库连接预算、status
     lease/time-limit 不变量通过 preflight；统一数据保留策略/运维方案具有 owner、周期和执行责任，负载数据量
     达到容量周期末端，未落清理能力时数据库容量覆盖该周期，且 active/不明确/Hold/Reconciliation 记录零普通清理路径。
+  - Provider profile deployment checkpoint（2026-07-30）：生产部署只要求宿主机配置一份
+    `WMS_PROVIDER_PROFILE_HOST_FILE`，Compose 将其只读挂载到 API、通用 Celery、WMS fulfillment worker 与
+    Beat 的固定容器路径 `/run/wes/wms-provider.yaml`，四个角色的 `WMS_PROVIDER_PROFILE_FILE` 不再接受各自
+    漂移。test-deploy 对实际存在的三个角色保持同一合同；生产 fulfillment 的 `extends + !override` 显式保留
+    该挂载。缺失或空 host 变量在 Compose 渲染阶段 fail closed；HTTP/HTTPS 继续由 profile 的安全策略决定，
+    `isolated_lan + NONE` 不被误拦截。部署定向回归由主控复跑 `40 passed`，独立复审 `Approved`。
+    该检查点只关闭“profile 文件无法进入容器”的仓内缺口，不替代现场文件权限 smoke、进程 digest attestation、
+    REAL_TCP、容量和 GO 签字，因此 T10 保持未完成。
 
 ## 21. 完成定义
 

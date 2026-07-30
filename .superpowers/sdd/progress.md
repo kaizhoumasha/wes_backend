@@ -65,6 +65,9 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     相关回归 `215 passed`、复审回归 `211 + 32 passed`，架构违规 0、Ruff/quality profile 通过；
     复审无 Critical/Important。
 - Task 8: pending — 建立 35 项参数化合同矩阵
+  - release fail-closed checkpoint verified（2026-07-30）：release builder/verifier 拒绝
+    `REAL_TCP + passed=false`，普通 builder/verifier 保留 NO-GO 诊断报告；conformance/CLI/架构组合
+    `93 passed`，独立复审 `Approved`。仍等待目标工厂 REAL_TCP 外部证据。
 - Task 9: pending — 关闭状态恢复和对账门禁
   - status recovery / observability checkpoint complete — `0b5f42ad`
   - E03/E07 typed 双义务屏障内核 checkpoint complete — `81ba4b7e`：对象资格 Hold 使用
@@ -72,6 +75,10 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     独立复审确认屏障逻辑与并发 finding 已关闭，但生产投格事务尚未创建该 Hold、对象下游 eligibility
     尚未消费，因此 Task 9 不标 complete；该激活接线属于 T6 内部流水且不依赖厂商 wire 合同。
 - Task 10: pending — 执行单 revision 冷启动与协议 GO
+  - Provider profile production mount checkpoint verified（2026-07-30）：生产 4 角色与 test-deploy
+    现有 3 角色共享宿主机唯一 profile、固定容器路径和只读挂载；缺失/空 host 变量 fail closed。
+    deployment 定向 `40 passed`，独立复审 `Approved`。现场权限 smoke、digest attestation、REAL_TCP、
+    admission、容量和 GO 签字仍未完成。
 
 ## Baseline
 

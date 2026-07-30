@@ -98,4 +98,5 @@ def test_conformance_report_uses_only_the_active_profile_and_local_targets() -> 
         provider_conformance.ConformanceTarget.CI_ADAPTER,
         provider_conformance.ConformanceTarget.SIMULATOR,
         provider_conformance.ConformanceTarget.REPLAY,
+        provider_conformance.ConformanceTarget.REAL_TCP,
     }

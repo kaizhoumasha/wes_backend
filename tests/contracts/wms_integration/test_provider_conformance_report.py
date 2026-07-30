@@ -15,7 +15,9 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
     ConformanceTarget,
     OperationConformanceObservation,
     build_wms_conformance_report,
+    build_wms_release_conformance_report,
     verify_wms_conformance_report,
+    verify_wms_release_conformance_report,
 )
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from src.app.wms_integration.provider_manifest import conformance_cases_for_operation
@@ -55,6 +57,12 @@ def _build_report():
     )
 
 
+def _mismatched_observations() -> tuple[OperationConformanceObservation, ...]:
+    observations = list(_matching_observations())
+    observations[0] = observations[0].model_copy(update={"semantic_marker": "MISMATCH"})
+    return tuple(observations)
+
+
 def test_manifest_uses_the_reviewed_mode_family_question_banks() -> None:
     manifest = build_wms_conformance_manifest(WMS_CONFORMANCE_COMPILED_PROFILE)
 
@@ -78,6 +86,40 @@ def test_report_is_bound_to_active_profile_and_deterministically_verifiable() ->
         )
         == first
     )
+
+
+def test_release_builder_rejects_self_consistent_failed_real_tcp_report() -> None:
+    with pytest.raises(ValueError, match="all cases to pass"):
+        build_wms_release_conformance_report(
+            compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+            cases=WMS_PROVIDER_CONFORMANCE_CASES,
+            observations=_mismatched_observations(),
+            target=ConformanceTarget.REAL_TCP,
+            fixture_digest=FIXTURE_DIGEST,
+            generated_at=GENERATED_AT,
+            **REPORT_METADATA,
+        )
+
+
+def test_release_verifier_rejects_self_consistent_failed_real_tcp_report() -> None:
+    report = build_wms_conformance_report(
+        compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+        cases=WMS_PROVIDER_CONFORMANCE_CASES,
+        observations=_mismatched_observations(),
+        target=ConformanceTarget.REAL_TCP,
+        fixture_digest=FIXTURE_DIGEST,
+        generated_at=GENERATED_AT,
+        **REPORT_METADATA,
+    )
+    payload = report.model_dump(mode="json")
+
+    assert report.passed is False
+    assert verify_wms_conformance_report(payload, compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE) == report
+    with pytest.raises(ValueError, match="all cases to pass"):
+        verify_wms_release_conformance_report(
+            payload,
+            compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
+        )
 
 
 def test_report_schema_has_no_signature_trust_or_secret_surface() -> None:

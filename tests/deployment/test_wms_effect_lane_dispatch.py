@@ -83,7 +83,10 @@ def test_all_compose_profiles_and_test_deploy_pipeline_define_both_worker_roles(
         fulfillment = services["celery-wms-fulfillment"]
         assert general["environment"]["CELERY_WORKER_QUEUES"] == "default,celery,device"
         assert general["environment"]["WMS_PROVIDER_PROCESS_ROLE"] == "wes"
-        assert general["environment"]["WMS_PROVIDER_PROFILE_FILE"] == "${WMS_PROVIDER_PROFILE_FILE:-}"
+        expected_profile_path = (
+            "${WMS_PROVIDER_PROFILE_FILE:-}" if compose_name == "docker-compose.yml" else "/run/wes/wms-provider.yaml"
+        )
+        assert general["environment"]["WMS_PROVIDER_PROFILE_FILE"] == expected_profile_path
         assert fulfillment["extends"]["service"] == "celery"
         assert fulfillment["environment"] == {
             "CELERY_WORKER_QUEUES": "wms-fulfillment",

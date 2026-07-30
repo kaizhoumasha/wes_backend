@@ -252,7 +252,10 @@ def build_wms_release_conformance_report(**kwargs: object) -> WmsConformanceRepo
         raise ValueError("release conformance report requires REAL_TCP provenance")
     if not kwargs.get("execution_safety_confirmed"):
         raise ValueError("WMS execution safety confirmation is required")
-    return build_wms_conformance_report(**kwargs)
+    report = build_wms_conformance_report(**kwargs)
+    if not report.passed:
+        raise ValueError("WMS release conformance requires all cases to pass")
+    return report
 
 
 def verify_wms_conformance_report(
@@ -299,6 +302,8 @@ def verify_wms_release_conformance_report(
     report = verify_wms_conformance_report(payload, compiled_profile=compiled_profile)
     if report.target != "REAL_TCP":
         raise ValueError("release conformance report requires REAL_TCP provenance")
+    if not report.passed:
+        raise ValueError("WMS release conformance requires all cases to pass")
     return report
 
 
