@@ -221,7 +221,7 @@ async def test_concrete_preparation_runtime_writes_one_frozen_outbox_without_htt
     assert outbox.idempotency_key == "idempotency-key-1"
     assert outbox.payload_json == request.model_dump(mode="json")
     assert outbox.canonical_payload_bytes is not None
-    assert outbox.provider_profile_identity == "wms.2026-07-28.full-factory.production"
+    assert outbox.provider_profile_identity == "wms.2026-07-28.full-factory"
 
 
 @pytest.mark.asyncio

@@ -42,7 +42,7 @@ def _config() -> RoughSorterConfig:
             "ng_location": "NG-01",
             "warehouse_code": "WH-01",
             "owner_code": "OWNER-01",
-            "provider_profile": "wms.2026-07-28.full-factory.sandbox",
+            "provider_profile": "wms.2026-07-28.full-factory",
         }
     )
 

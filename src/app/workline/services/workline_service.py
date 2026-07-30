@@ -4,9 +4,10 @@ from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any, cast
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.contracts.external_contract_profile import ExternalContractProfile, ExternalContractProfileDefinition
 from src.app.device.models import parse_device_capabilities
 from src.app.device.repositories import device_repository
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
@@ -70,6 +71,7 @@ _BLOCKER = "BLOCKER"
 _FAIL = "FAIL"
 _OK = "PASS"
 _WARN = "WARN"
+_EXTERNAL_CONTRACT_PROFILE_ADAPTER = TypeAdapter(ExternalContractProfileDefinition)
 _DEFAULT_DEVICE_STATUS_PATH = "/api/v1/device/status"
 _ACTIVE_CONFIGURATION_FIELDS = frozenset(
     {
@@ -555,9 +557,14 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
     @staticmethod
     def _binding_pin_update(binding: Any, *, version: int) -> dict[str, Any]:
-        provider_requirements = [
-            f"{profile['provider_code']}@{profile['contract_version']}#{profile['environment']}"
+        profiles = tuple(
+            _EXTERNAL_CONTRACT_PROFILE_ADAPTER.validate_python(profile)
             for profile in getattr(binding, "provider_profile_snapshot_json", ())
+        )
+        provider_requirements = [
+            f"{profile.provider_code}@{profile.contract_version}"
+            + (f"#{profile.environment}" if isinstance(profile, ExternalContractProfile) else "")
+            for profile in profiles
         ]
         return {
             "active_plugin_binding_id": binding.id,

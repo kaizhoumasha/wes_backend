@@ -32,7 +32,7 @@ def _outbox(*, suffix: str, workline_id: int, created_at_offset_seconds: int) ->
         dispatch_key=f"northbound-operations:{suffix}:{uuid4().hex}",
         target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
         target_code="northbound-operations-integration",
-        provider_profile_identity="wms.2026-07-28.full-factory.production",
+        provider_profile_identity="wms.2026-07-28.full-factory",
         operation_identity="wms.inventory.confirm_inbound@v1",
         payload_json={"must_not_be_read": f"tenant-secret-{suffix}"},
         status=SystemOutboxStatus.NEW,

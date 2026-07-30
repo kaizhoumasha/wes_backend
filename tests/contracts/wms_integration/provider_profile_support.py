@@ -25,7 +25,6 @@ def build_provider_profile_payload() -> dict[str, Any]:
         "profile": {
             "provider_code": "WMS",
             "contract_version": "2026-07-28.full-factory",
-            "environment": "production",
         },
         "server_url": "http://factory-wms.example:8080",
         "effect_status_path": "/api/wms/operations/status",
@@ -42,17 +41,17 @@ def changed_profile_payload(**changes: Any) -> dict[str, Any]:
     return payload
 
 
-def build_hmac_provider_profile_payload(*, environment: str = "sandbox") -> dict[str, Any]:
+def build_hmac_provider_profile_payload() -> dict[str, Any]:
     payload = build_provider_profile_payload()
-    payload["profile"]["environment"] = environment
+    payload["server_url"] = "https://factory-wms.example"
     payload["network_trust_mode"] = "authenticated_network"
     payload["outbound_auth"] = {
         "scheme": "HMAC_SHA256",
-        "credential_reference": f"secret://wms/factory-{environment}@v1",
+        "credential_reference": "secret://wms/factory@v1",
     }
     payload["inbound_auth"] = {
         "scheme": "HMAC_SHA256",
-        "credential_reference": f"secret://wms/factory-{environment}-inbound@v1",
+        "credential_reference": "secret://wms/factory-inbound@v1",
     }
     return payload
 

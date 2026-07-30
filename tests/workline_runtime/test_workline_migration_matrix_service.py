@@ -38,11 +38,10 @@ PROVIDER_PROFILE_CATALOG = tuple(
             WorklineProviderProfileInventoryItem(
                 provider_code=profile.provider_code,
                 contract_version=profile.contract_version,
-                environment=profile.environment,
             )
             for profile in list_external_contract_profiles()
         ),
-        key=lambda item: (item.provider_code, item.contract_version, item.environment),
+        key=lambda item: (item.provider_code, item.contract_version),
     )
 )
 

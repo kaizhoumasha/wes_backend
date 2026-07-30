@@ -9,7 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.app.wms_integration.operation_contract import (  # noqa: TC001 - Pydantic 运行时解析字段类型。
     WmsOperationDefinition,
 )
-from src.app.wms_integration.provider_manifest import WMS_CONFORMANCE_REQUIREMENTS
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+from src.app.wms_integration.provider_manifest import (
+    WMS_CONFORMANCE_REQUIREMENTS,
+    conformance_cases_for_operation,
+)
 
 if TYPE_CHECKING:
     from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
@@ -38,6 +42,10 @@ class WmsConformanceManifest(BaseModel):
         identities = tuple(item.operation.identity for item in self.operations)
         if len(identities) != len(set(identities)):
             raise ValueError("conformance manifest contains duplicate operation identity")
+        if identities != tuple(operation.identity for operation in WMS_OPERATIONS):
+            raise ValueError("conformance manifest must cover the exact 35-operation registry")
+        if any(item.required_cases != conformance_cases_for_operation(item.operation) for item in self.operations):
+            raise ValueError("conformance manifest operation question bank differs from its mode family")
         return self
 
 

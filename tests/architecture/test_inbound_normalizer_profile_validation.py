@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.app.contracts.external_contract_profile import ExternalContractProfile, InboundNormalizerProfile
+from src.app.contracts.external_contract_profile import InboundNormalizerProfile, WmsExternalContractProfile
 
 
 def test_inbound_normalizer_profile_accepts_valid_wms():
@@ -84,11 +84,10 @@ def test_inbound_normalizer_profile_rejects_invalid_correlation_resolution():
     assert "correlation_resolution 必为" in str(exc_info.value)
 
 
-def _profile_with_declared_normalizers() -> ExternalContractProfile:
-    return ExternalContractProfile(
+def _profile_with_declared_normalizers() -> WmsExternalContractProfile:
+    return WmsExternalContractProfile(
         provider_code="WMS",
         contract_version="2026-06-25",
-        environment="sandbox",
         inbound_normalizers_event=["WMS_GRN_RECEIVED"],
         inbound_normalizers_result=["WMS_EFFECT_STATUS_HINT"],
         timeout_retry_query_timeout_seconds=10,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictInt, StringConstraints
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictInt, StringConstraints, model_validator
 
 _NonBlankString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 _NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0)]
@@ -127,7 +127,16 @@ class WorklineProviderProfileInventoryItem(_FrozenInventoryModel):
 
     provider_code: _NonBlankString
     contract_version: _NonBlankString
-    environment: _NonBlankString
+    environment: _NonBlankString | None = None
+
+    @model_validator(mode="after")
+    def _validate_closed_identity(self) -> WorklineProviderProfileInventoryItem:
+        is_wms = self.provider_code.lower() == "wms"
+        if is_wms and self.environment is not None:
+            raise ValueError("WMS provider profile identity 不包含 environment")
+        if not is_wms and self.environment is None:
+            raise ValueError("generic provider profile identity 必须包含 environment")
+        return self
 
 
 class WorklineMigrationInventoryReport(_FrozenInventoryModel):

@@ -557,13 +557,7 @@ _NORTHBOUND_TRACE_STAGES = frozenset(
         "RECONCILIATION",
     }
 )
-_WMS_PROVIDER_PROFILE_IDENTITIES = frozenset(
-    {
-        "wms.2026-07-28.full-factory.sandbox",
-        "wms.2026-07-28.full-factory.staging",
-        "wms.2026-07-28.full-factory.production",
-    }
-)
+_WMS_PROVIDER_PROFILE_IDENTITIES = frozenset({"wms.2026-07-28.full-factory"})
 
 
 def _runtime_signal(

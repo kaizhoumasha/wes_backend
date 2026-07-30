@@ -59,7 +59,6 @@ def build_wms_provider_catalog(compiled_profile: CompiledWmsProviderProfile) -> 
     identity = ExternalContractProfile(
         provider_code=profile_settings.profile.provider_code,
         contract_version=profile_settings.profile.contract_version,
-        environment=profile_settings.profile.environment,
     )
     outbound_auth = OutboundAuthProfile(
         scheme=OutboundAuthScheme(profile_settings.outbound_auth.scheme.value),
@@ -128,9 +127,10 @@ def _external_http_profile(
     *,
     bindings: tuple[ExternalHttpBindingDefinition, ...],
 ) -> ExternalHttpProviderProfileDefinition:
+    # 该字段只承接通用 EXTERNAL_HTTP 的内部安全策略，不表示 WMS 外部环境。
     return ExternalHttpProviderProfileDefinition(
         identity=catalog.profile_identity,
-        environment=catalog.identity.environment,
+        environment="production",
         network_trust_mode=catalog.compiled_profile.profile.network_trust_mode,
         bindings=bindings,
     )

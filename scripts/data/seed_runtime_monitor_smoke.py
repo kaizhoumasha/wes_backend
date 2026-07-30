@@ -32,7 +32,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
 )
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION as SMT_SORTING_INBOUND_DEFINITION
-from src.app.wms_integration.ports.event import InboundEventEnvelope, WmsInventoryUpdatedEvent
+from src.app.wms_integration.ports.event import WmsInventoryUpdatedEvent
 from src.app.workline.models import WorkLine, WorklinePluginBinding
 from src.app.workline.services.plugin_binding_service import (
     PluginBindingAdmissionError,
@@ -43,7 +43,7 @@ from src.core.conf import settings
 from src.utils.timezone import timezone
 
 SMOKE_CONTRACT_VERSION = "runtime-monitor-smoke-v1"
-SMOKE_PROVIDER_PROFILE = "wms.2026-07-28.full-factory.sandbox"
+SMOKE_PROVIDER_PROFILE = "wms.2026-07-28.full-factory"
 SMOKE_CTU_BASKET_CAPACITY = 6
 SINGLE_LAYER_SMOKE_POSITION_CODE = "SOURCE_STATION_A"
 
@@ -113,15 +113,17 @@ async def _seed_single_layer_sessions(db: AsyncSession, workline: WorkLine) -> l
         },
     )
     inventory_event = WmsInventoryUpdatedEvent(
-        envelope=InboundEventEnvelope(
-            source_event_id="runtime-monitor-smoke:inventory-updated",
-            provider_code="WMS",
-            occurred_at=now.isoformat(),
-            correlation_id="runtime-monitor-smoke-wms-inventory-updated",
-            raw_payload={"inventory_reference": "runtime-monitor-smoke:inventory-updated"},
-        ),
-        inventory_reference="runtime-monitor-smoke:inventory-updated",
-        material_code="620100L00-011-G",
+        source_system="WMS",
+        event_type="WMS_INVENTORY_UPDATED",
+        source_event_id="runtime-monitor-smoke:inventory-updated",
+        source_version="1",
+        occurred_at=timezone.now_utc(),
+        request_id="runtime-monitor-smoke-wms-inventory-updated",
+        correlation_id="runtime-monitor-smoke-wms-inventory-updated",
+        data={
+            "inventory_reference": "runtime-monitor-smoke:inventory-updated",
+            "material_code": "620100L00-011-G",
+        },
     )
     inventory_updated_session = await _upsert_session(
         db,
@@ -309,7 +311,7 @@ async def _ensure_smoke_binding(db: AsyncSession, workline: WorkLine) -> Worklin
     workline.active_plugin_config_hash = binding.typed_config_hash
     workline.active_plugin_index_digest = binding.generated_index_digest
     workline.active_plugin_provider_requirements_json = [
-        f"{profile['provider_code']}@{profile['contract_version']}#{profile['environment']}"
+        f"{profile['provider_code']}@{profile['contract_version']}"
         for profile in binding.provider_profile_snapshot_json
     ]
     await db.flush()

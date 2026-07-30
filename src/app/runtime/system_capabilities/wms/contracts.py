@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, computed_field, field_validator, model_validator
 
 from src.app.wms_integration.operation_contract import WmsOperationDefinition  # noqa: TC001
+from src.app.wms_integration.provider_profile import build_wms_provider_identity
 
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 OperationIdentity = Annotated[str, StringConstraints(pattern=r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")]
@@ -23,13 +24,12 @@ class OutboundAuthScheme(str, Enum):
 
 
 class ExternalContractProfile(BaseModel):
-    """只表达 provider/version/environment 的运行时 identity。"""
+    """只表达 provider/version 的运行时 identity。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider_code: StableText = Field(max_length=80)
     contract_version: StableText = Field(max_length=120)
-    environment: Literal["sandbox", "staging", "production"]
 
     @field_validator("provider_code")
     @classmethod
@@ -38,7 +38,7 @@ class ExternalContractProfile(BaseModel):
 
     @property
     def identity(self) -> str:
-        return f"{self.provider_code}.{self.contract_version}.{self.environment}"
+        return build_wms_provider_identity(self.provider_code, self.contract_version)
 
 
 class OutboundAuthProfile(BaseModel):

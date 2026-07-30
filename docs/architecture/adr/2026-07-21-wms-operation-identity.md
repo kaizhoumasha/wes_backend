@@ -44,7 +44,7 @@ author-time 单一真源由 typed operation contract、System Capability Definit
 
 ### Provider 资料
 
-Provider profile 只声明 provider/version/environment 身份以及对 operation identity 的兼容资料；endpoint、预算、retry 与出站认证
+Provider profile 只声明 provider/version 身份以及对 operation identity 的兼容资料；endpoint、预算、retry 与出站认证
 属于相应 operation contract/binding，credential 仅保存版本化 reference。Provider DTO 和 ACL 映射不进入 operation identity，
 fixture 与 required cases 只属于测试/构建期 manifest。
 

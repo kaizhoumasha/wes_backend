@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.app.contracts.external_contract_profile import ExternalContractProfile
+from src.app.contracts.external_contract_profile import ExternalContractProfile, parse_external_contract_profile
 from src.app.runtime.orchestration.scenario_replay import (
     ScenarioRecorder,
     ScenarioReplayResult,
@@ -88,8 +88,9 @@ class IntegrationLabScenarioRunner:
         profiles = _mapping_list(raw_profiles, field_name="provider_profiles")
         registries: dict[str, ProviderSimulatorRegistry] = {}
         for raw_profile in profiles:
-            profile = ExternalContractProfile.model_validate(raw_profile)
-            _require_sandbox(profile.environment, f"profile {profile.provider_code}")
+            profile = parse_external_contract_profile(raw_profile)
+            if isinstance(profile, ExternalContractProfile):
+                _require_sandbox(profile.environment, f"profile {profile.provider_code}")
             registry = ProviderSimulatorRegistry(profile, repo_root=self._repo_root)
             registry.load()
             registries[profile.provider_code] = registry

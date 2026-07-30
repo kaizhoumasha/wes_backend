@@ -351,7 +351,7 @@ async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) 
             "ng_location": "NG-01",
             "warehouse_code": "WH-01",
             "owner_code": "OWNER-01",
-            "provider_profile": "wms.2026-07-28.full-factory.sandbox",
+            "provider_profile": "wms.2026-07-28.full-factory",
         }
     )
     q19_decision = (
@@ -380,7 +380,7 @@ async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) 
         binding_snapshot=RoughSorterBindingSnapshot(
             binding_id=1,
             binding_version=1,
-            profile_identity="wms.2026-07-28.full-factory.sandbox",
+            profile_identity="wms.2026-07-28.full-factory",
             plugin_config_hash="0" * 64,
             generated_index_digest="1" * 64,
         ),

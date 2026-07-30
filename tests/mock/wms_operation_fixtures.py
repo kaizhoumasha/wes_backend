@@ -3,6 +3,9 @@
 本文件是 Mock WMS 的独立测试资产；覆盖测试会按静态 registry fail closed 校验键集合与模型。
 """
 
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+from tests.support.wms_conformance_runner import build_operation_fixture_matrix
+
 REQUEST_FIXTURES = {
     "wms.master_data.get_material@v1": {"material_code": "MAT-001"},
     "wms.master_data.list_materials@v1": {"page_size": 100},
@@ -443,4 +446,37 @@ RESULT_FIXTURES = {
     },
 }
 
-__all__ = ["REQUEST_FIXTURES", "RESULT_FIXTURES"]
+REJECT_FIXTURES = {
+    operation.identity: {
+        "operation_identity": operation.identity,
+        "reason_code": operation.reject_codes[0],
+    }
+    for operation in WMS_OPERATIONS
+}
+
+_operation_identities = tuple(operation.identity for operation in WMS_OPERATIONS)
+IDENTITY_MISMATCH_FIXTURES = {
+    identity: {
+        "expected_operation_identity": identity,
+        "actual_operation_identity": _operation_identities[(index + 1) % len(_operation_identities)],
+    }
+    for index, identity in enumerate(_operation_identities)
+}
+
+# pytest parameter generation imports this module before collection; any fixture
+# identity/type drift therefore aborts collection instead of becoming a skipped case.
+WMS_OPERATION_FIXTURE_MATRIX = build_operation_fixture_matrix(
+    operations=WMS_OPERATIONS,
+    request_fixtures=tuple(REQUEST_FIXTURES.items()),
+    result_fixtures=tuple(RESULT_FIXTURES.items()),
+    reject_fixtures=tuple(REJECT_FIXTURES.items()),
+    identity_mismatch_fixtures=tuple(IDENTITY_MISMATCH_FIXTURES.items()),
+)
+
+__all__ = [
+    "IDENTITY_MISMATCH_FIXTURES",
+    "REJECT_FIXTURES",
+    "REQUEST_FIXTURES",
+    "RESULT_FIXTURES",
+    "WMS_OPERATION_FIXTURE_MATRIX",
+]

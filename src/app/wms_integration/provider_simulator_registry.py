@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 from src.app.contracts.external_contract_profile import (
-    ExternalContractProfile,
+    ExternalContractProfileDefinition,
     FixtureCase,
 )
 
@@ -36,7 +36,7 @@ class ProviderSimulatorRegistry:
     - sandbox profile 跨域引用拦截
     """
 
-    def __init__(self, profile: ExternalContractProfile, repo_root: Path | None = None) -> None:
+    def __init__(self, profile: ExternalContractProfileDefinition, repo_root: Path | None = None) -> None:
         self._profile = profile
         self._repo_root = repo_root or Path.cwd()
         self._cases: dict[str, FixtureCase] = {}
@@ -99,5 +99,5 @@ class ProviderSimulatorRegistry:
         return case_id in self._cases
 
     @property
-    def profile(self) -> ExternalContractProfile:
+    def profile(self) -> ExternalContractProfileDefinition:
         return self._profile

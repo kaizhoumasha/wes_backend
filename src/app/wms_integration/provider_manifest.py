@@ -50,18 +50,24 @@ _ASYNC_EFFECT_CASES = (
     "status_query",
     "partial_failure",
 )
+
+
+def conformance_cases_for_operation(operation: WmsOperationDefinition) -> tuple[str, ...]:
+    """按 operation mode family 返回已评审题库，不允许 Provider 自定义弱化。"""
+
+    if operation.identity == "wms.inventory.query_inventory@v1":
+        return _INVENTORY_QUERY_CASES
+    if operation.completion_mode is None:
+        return _QUERY_CASES
+    if operation.completion_mode is WmsCompletionMode.ASYNC_TASK:
+        return _ASYNC_EFFECT_CASES
+    return _SYNC_EFFECT_CASES
+
+
 WMS_CONFORMANCE_REQUIREMENTS = tuple(
     WmsConformanceRequirement(
         operation=operation,
-        required_cases=(
-            _INVENTORY_QUERY_CASES
-            if operation.identity == "wms.inventory.query_inventory@v1"
-            else _QUERY_CASES
-            if operation.completion_mode is None
-            else _ASYNC_EFFECT_CASES
-            if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
-            else _SYNC_EFFECT_CASES
-        ),
+        required_cases=conformance_cases_for_operation(operation),
     )
     for operation in WMS_OPERATIONS
 )
@@ -181,5 +187,6 @@ __all__ = [
     "WMS_PROVIDER_OPERATION_MANIFEST",
     "WmsBusinessScenario",
     "WmsConformanceRequirement",
+    "conformance_cases_for_operation",
     "require_full_factory_registry",
 ]

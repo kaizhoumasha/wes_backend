@@ -23,7 +23,6 @@
     {
       "provider_code": "WMS",
       "contract_version": "2026-06-25",
-      "environment": "sandbox",
       "inbound_normalizers_event": [
         "WMS_INVENTORY_UPDATED"
       ],

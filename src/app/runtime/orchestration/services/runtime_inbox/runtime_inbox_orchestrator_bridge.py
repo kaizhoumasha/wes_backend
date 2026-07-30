@@ -670,7 +670,7 @@ def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
 def _runtime_profile_from_pinned_binding(binding: Any, *, expected_identity: str) -> Any:
     """从 immutable binding snapshot 重建本 attempt 的最小 provider profile。"""
 
-    from src.app.contracts.external_contract_profile import ExternalContractProfile
+    from src.app.contracts.external_contract_profile import parse_external_contract_profile
 
     raw_config = getattr(binding, "typed_config_json", None)
     configured_identity = optional_str(raw_config.get("provider_profile")) if isinstance(raw_config, dict) else None
@@ -684,7 +684,7 @@ def _runtime_profile_from_pinned_binding(binding: Any, *, expected_identity: str
         matched_profiles = [
             profile
             for raw_profile in raw_snapshots
-            if (profile := ExternalContractProfile.model_validate(raw_profile)).identity == expected_identity
+            if (profile := parse_external_contract_profile(raw_profile)).identity == expected_identity
         ]
     except ValidationError as exc:
         raise ValueError("binding provider profile snapshot is invalid") from exc

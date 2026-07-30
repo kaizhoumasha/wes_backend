@@ -417,6 +417,45 @@ async def test_configuration_status_blocks_typed_binding_admission_failure(monke
 
 
 @pytest.mark.asyncio
+async def test_configuration_status_uses_normalized_deployment_environment_for_shared_preflight(monkeypatch) -> None:
+    class _BindingAdmissionSpy:
+        def __init__(self) -> None:
+            self.environments: list[str] = []
+
+        def manages(self, _workline: object) -> bool:
+            return True
+
+        def validate_activation_configuration(
+            self,
+            *,
+            workline: object,
+            environment: str,
+            devices: list[object],
+        ) -> None:
+            _ = workline, devices
+            self.environments.append(environment)
+            raise PluginBindingAdmissionError("generic profile environment mismatch")
+
+    repository = _WorkLineRepositoryStub()
+    binding_service = _BindingAdmissionSpy()
+    service = WorkLineService(repository=repository, plugin_binding_service=binding_service)
+    workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
+    monkeypatch.setattr(workline_service_module.settings, "APP_ENV", "prod")
+    monkeypatch.setattr(
+        workline_service_module,
+        "device_repository",
+        SimpleNamespace(get_by_work_line_id=AsyncMock(return_value=[])),
+    )
+    monkeypatch.setattr(service, "_list_rack_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_build_configuration_checks", lambda *_args, **_kwargs: [])
+
+    status = await service.configuration_status(object(), repository.current.id)
+
+    assert binding_service.environments == ["production"]
+    assert status.can_activate is False
+
+
+@pytest.mark.asyncio
 async def test_active_platform_plugin_reapproval_appends_binding_and_switches_pin_atomically(monkeypatch):
     db = _Db()
     repository = _WorkLineRepositoryStub()
@@ -540,7 +579,7 @@ async def test_real_rough_sorter_activation_pins_profile_port_and_generated_inde
         "ng_location": "NG-01",
         "warehouse_code": "WH-01",
         "owner_code": "OWNER-01",
-        "provider_profile": "wms.2026-07-28.full-factory.sandbox",
+        "provider_profile": "wms.2026-07-28.full-factory",
     }
     binding_repository = _ImmutableBindingRepository()
     binding_service = WorklinePluginBindingService(
@@ -584,12 +623,57 @@ async def test_real_rough_sorter_activation_pins_profile_port_and_generated_inde
     assert result.active_plugin_binding_id == 21
     assert result.active_plugin_binding_version == 1
     assert result.active_plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
-    assert result.active_plugin_provider_requirements_json == ["WMS@2026-07-28.full-factory#sandbox"]
+    assert result.active_plugin_provider_requirements_json == ["WMS@2026-07-28.full-factory"]
     assert {entry["device_code"] for entry in binding_repository.created[0]["device_snapshot_json"]} == {
         "RS-IN-01",
         "RS-CONVEYOR-01",
         "RS-OUT-01",
     }
+
+
+def test_binding_pin_projection_keeps_closed_provider_profile_identity() -> None:
+    binding = SimpleNamespace(
+        id=21,
+        binding_version=1,
+        typed_config_hash="a" * 64,
+        generated_index_digest="b" * 64,
+        provider_profile_snapshot_json=[
+            {
+                "provider_code": "WMS",
+                "contract_version": "wms-v1",
+                "timeout_retry_query_timeout_seconds": 3,
+                "timeout_retry_retry_backoff_seconds": [1],
+                "fixture_set_path": "tests/fixtures/external_contracts/wms/v1",
+                "fixture_set_required_cases": ["success"],
+            },
+            {
+                "provider_code": "ECS",
+                "contract_version": "ecs-v1",
+                "environment": "sandbox",
+                "timeout_retry_query_timeout_seconds": 3,
+                "timeout_retry_retry_backoff_seconds": [1],
+                "fixture_set_path": "tests/fixtures/external_contracts/ecs/v1",
+                "fixture_set_required_cases": ["success"],
+            },
+            {
+                "provider_code": "ECS",
+                "contract_version": "ecs-v1",
+                "environment": "production",
+                "timeout_retry_query_timeout_seconds": 3,
+                "timeout_retry_retry_backoff_seconds": [1],
+                "fixture_set_path": "tests/fixtures/external_contracts/ecs/v1",
+                "fixture_set_required_cases": ["success"],
+            },
+        ],
+    )
+
+    projection = WorkLineService._binding_pin_update(binding, version=7)
+
+    assert projection["active_plugin_provider_requirements_json"] == [
+        "WMS@wms-v1",
+        "ECS@ecs-v1#sandbox",
+        "ECS@ecs-v1#production",
+    ]
 
 
 def _prepare_platform_activation(monkeypatch, repository, binding_service):

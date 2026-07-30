@@ -68,7 +68,10 @@ note: |
 | 用途 | 联调、contract test、scenario replay |
 | 禁止 | 被 `staging` / `production` profile 引用；作为生产 fallback |
 
-**sandbox profile 注册**：sandbox provider profile 通过 `ExternalContractProfile`（`environment=sandbox`）注册到 provider registry；Runtime capability admission 和 callback normalizer 按 sandbox profile 合同工作，与生产 profile 路径一致。
+**sandbox profile 注册**：simulator provider profile 通过 generic `ExternalContractProfile`
+（`environment=sandbox`）注册到 provider registry；Runtime capability admission 和 callback normalizer
+按 sandbox profile 合同工作。WMS 真实部署使用独立的 `WmsExternalContractProfile`，不经过 simulator
+environment 或 generic production 入站认证校验。
 
 ## 6. scenario runner
 
@@ -86,7 +89,8 @@ note: |
 - scenario 必须基于 fixture，不依赖生产数据
 - scenario replay 必须验证 active projection diff、RuntimeTimeline 顺序、outbox/effect 幂等和 ReconciliationRecord 结果（主计划 §3.5.1 联调不变量）
 - 场景回放必须 deterministic（同输入同输出）
-- Phase 3 runner 使用 `IntegrationLabScenarioRunner`：先通过 `ExternalContractProfile` / `ProviderSimulatorRegistry` 校验 WMS/ECS sandbox profile 与 fixture case，再交给 `ScenarioRecorder` / `ScenarioReplayRunner` 断言完整链路 replay。
+- Phase 3 runner 使用 `IntegrationLabScenarioRunner`：先通过 `ExternalContractProfile` / `ProviderSimulatorRegistry`
+  校验 WMS/ECS sandbox profile 与 fixture case，再交给 `ScenarioRecorder` / `ScenarioReplayRunner` 断言完整链路 replay。
 
 ## 7. ScenarioRecorder / ScenarioReplayRunner（来源主计划 §3.5.1）
 

@@ -44,7 +44,7 @@ def test_concurrent_same_source_version_with_different_payload_has_exactly_one_s
                 return await writer.record(
                     operation_identity="wms.inventory.query_inventory@v1",
                     target_code="WMS_INVENTORY_QUERY_INVENTORY",
-                    profile_identity="wms.2026-07-28.full-factory.sandbox",
+                    profile_identity="wms.2026-07-28.full-factory",
                     profile_digest="a" * 64,
                     endpoint_digest="b" * 64,
                     request_snapshot={"material_hash": "c" * 64},

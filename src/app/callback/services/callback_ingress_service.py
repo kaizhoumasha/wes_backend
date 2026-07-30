@@ -39,7 +39,10 @@ from src.app.callback.models import (
 from src.app.callback.services.callback_log_service import callback_log_service
 from src.app.callback.services.callback_orchestration_service import callback_orchestration_service
 from src.app.callback.utils import JsonDict, resolve_first_str
-from src.app.contracts.external_contract_profile import ExternalContractProfile
+from src.app.contracts.external_contract_profile import (
+    ExternalContractProfileDefinition,
+    parse_external_contract_profile,
+)
 from src.app.device.models import DeviceCapabilityProfile, parse_device_capabilities
 from src.app.device.models.command import (
     _FORBIDDEN_PARAM_KEYS,
@@ -187,7 +190,7 @@ class CallbackProviderProfileAdmissionService:
     event/result normalizer，不能只依赖 callback_type allow-list。
     """
 
-    def __init__(self, profiles_by_provider: dict[str, ExternalContractProfile] | None = None) -> None:
+    def __init__(self, profiles_by_provider: dict[str, ExternalContractProfileDefinition] | None = None) -> None:
         self._profiles_by_provider = profiles_by_provider or _build_default_callback_provider_profiles()
 
     def admit(
@@ -204,7 +207,7 @@ class CallbackProviderProfileAdmissionService:
         profile.ensure_inbound_normalizer_declared(callback_type, direction=direction)
 
 
-def _build_default_callback_provider_profiles() -> dict[str, ExternalContractProfile]:
+def _build_default_callback_provider_profiles() -> dict[str, ExternalContractProfileDefinition]:
     wms_result_types = {
         callback_type for callback_type in _EXTERNAL_CALLBACK_RESULT_TYPES if callback_type.startswith("WMS_")
     }
@@ -246,19 +249,21 @@ def _build_callback_provider_profile(
     *,
     event_types: set[str] | frozenset[str],
     result_types: set[str] | frozenset[str],
-) -> ExternalContractProfile:
+) -> ExternalContractProfileDefinition:
     fixture_provider = provider_code.lower() if provider_code in {"ECS", "WMS"} else "wms"
-    return ExternalContractProfile(
-        provider_code=provider_code,
-        contract_version="default",
-        environment="sandbox",
-        inbound_normalizers_event=sorted(event_types),
-        inbound_normalizers_result=sorted(result_types),
-        timeout_retry_query_timeout_seconds=5,
-        timeout_retry_retry_backoff_seconds=[1],
-        fixture_set_path=f"tests/fixtures/external_contracts/{fixture_provider}/default",
-        fixture_set_required_cases=["success", "timeout", "duplicate", "missing_event_id"],
-    )
+    profile_fields = {
+        "provider_code": provider_code,
+        "contract_version": "default",
+        "inbound_normalizers_event": sorted(event_types),
+        "inbound_normalizers_result": sorted(result_types),
+        "timeout_retry_query_timeout_seconds": 5,
+        "timeout_retry_retry_backoff_seconds": [1],
+        "fixture_set_path": f"tests/fixtures/external_contracts/{fixture_provider}/default",
+        "fixture_set_required_cases": ["success", "timeout", "duplicate", "missing_event_id"],
+    }
+    if provider_code != "WMS":
+        profile_fields["environment"] = "sandbox"
+    return parse_external_contract_profile(profile_fields)
 
 
 def _external_callback_normalizer_direction(callback_type: str) -> Literal["event", "result"]:

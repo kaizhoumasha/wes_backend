@@ -15,7 +15,7 @@ from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.runtime.orchestration import repository_wiring
 from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX_DIGEST
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
-from src.app.workline.models import WorkLine
+from src.app.workline.models import WorkLine, WorklineProviderProfileInventoryItem
 from src.app.workline.services import (
     WorklineMigrationInventoryInvariantError,
     WorklineMigrationInventoryLimitExceeded,
@@ -100,7 +100,7 @@ def _definition(key: str = "known", version: str = "current") -> SimpleNamespace
 
 
 def _profile(
-    provider_code: str = "WMS",
+    provider_code: str = "ECS",
     *,
     version: str = "v1",
     environment: str = "sandbox",
@@ -746,7 +746,7 @@ async def test_zero_total_rejects_sample_but_positive_total_allows_none() -> Non
     ("definitions", "profiles"),
     [
         ([_definition(), _definition()], []),
-        ([], [_profile("WMS"), _profile("WMS")]),
+        ([], [_profile("ECS"), _profile("ECS")]),
     ],
 )
 async def test_duplicate_catalog_keys_fail_closed(definitions: list[Any], profiles: list[Any]) -> None:
@@ -772,11 +772,11 @@ async def test_provider_profile_is_filtered_to_stable_identity_and_sorted() -> N
 
 
 @pytest.mark.asyncio
-async def test_provider_catalog_allows_same_code_across_version_and_environment_and_sorts_by_triple() -> None:
+async def test_provider_catalog_keeps_generic_environments_distinct_and_sorts_by_closed_identity() -> None:
     profiles = [
-        _profile("WMS", version="v2", environment="production"),
-        _profile("WMS", version="v1", environment="production"),
-        _profile("WMS", version="v1", environment="sandbox"),
+        _profile("ECS", version="v2", environment="production"),
+        _profile("ECS", version="v1", environment="production"),
+        _profile("ECS", version="v1", environment="sandbox"),
     ]
 
     report = await _service(FakeRepository(), profiles=list(reversed(profiles))).build_report(
@@ -786,10 +786,22 @@ async def test_provider_catalog_allows_same_code_across_version_and_environment_
     assert [
         (item.provider_code, item.contract_version, item.environment) for item in report.provider_profile_catalog
     ] == [
-        ("WMS", "v1", "production"),
-        ("WMS", "v1", "sandbox"),
-        ("WMS", "v2", "production"),
+        ("ECS", "v1", "production"),
+        ("ECS", "v1", "sandbox"),
+        ("ECS", "v2", "production"),
     ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"provider_code": "WMS", "contract_version": "v1", "environment": "sandbox"},
+        {"provider_code": "ECS", "contract_version": "v1"},
+    ],
+)
+def test_provider_inventory_item_rejects_identity_outside_closed_union(payload: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match="environment"):
+        WorklineProviderProfileInventoryItem.model_validate(payload)
 
 
 @pytest.mark.asyncio
@@ -816,8 +828,7 @@ async def test_provider_loader_programming_type_error_propagates_unchanged() -> 
 async def test_invalid_dynamic_profile_and_workline_fields_become_invariant_errors() -> None:
     invalid_profile = SimpleNamespace(
         provider_code="WMS",
-        contract_version="v1",
-        environment=" ",
+        contract_version=" ",
     )
     with pytest.raises(WorklineMigrationInventoryInvariantError):
         await _service(FakeRepository(), profiles=[invalid_profile]).build_report(object(), environment="production")
@@ -825,12 +836,9 @@ async def test_invalid_dynamic_profile_and_workline_fields_become_invariant_erro
     minimal_profile = SimpleNamespace(
         provider_code="MINIMAL",
         contract_version="v1",
-        environment="sandbox",
     )
-    minimal_report = await _service(FakeRepository(), profiles=[minimal_profile]).build_report(
-        object(), environment="production"
-    )
-    assert minimal_report.provider_profile_catalog[0].provider_code == "MINIMAL"
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository(), profiles=[minimal_profile]).build_report(object(), environment="production")
 
     invalid_workline = _workline(1, " ")
     with pytest.raises(WorklineMigrationInventoryInvariantError):

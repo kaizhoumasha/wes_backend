@@ -337,3 +337,22 @@ def test_private_base_is_not_exported_from_package_facade() -> None:
 
     assert "_FrozenInventoryModel" not in models.__all__
     assert not hasattr(models, "_FrozenInventoryModel")
+
+
+@pytest.mark.parametrize(
+    ("payload", "accepted"),
+    [
+        ({"provider_code": "WMS", "contract_version": "v1"}, True),
+        ({"provider_code": "WMS", "contract_version": "v1", "environment": "sandbox"}, False),
+        ({"provider_code": "ECS", "contract_version": "v1"}, False),
+        ({"provider_code": "ECS", "contract_version": "v1", "environment": "sandbox"}, True),
+    ],
+)
+def test_provider_profile_inventory_item_enforces_closed_identity(payload: dict[str, object], accepted: bool) -> None:
+    if accepted:
+        item = WorklineProviderProfileInventoryItem.model_validate(payload)
+        assert item.provider_code == payload["provider_code"]
+        return
+
+    with pytest.raises(ValidationError):
+        WorklineProviderProfileInventoryItem.model_validate(payload)

@@ -5,10 +5,9 @@ parent: docs/architecture/workline-and-plugin-restructuring.md
 spec: docs/superpowers/archive/specs/2026-06-25-workline-restructuring-phase-0-spec.md
 related: docs/architecture/target-state-contract.md, docs/architecture/integration-lab-and-simulator.md
 note: |
-  本文件定义 WMS/ECS provider 的外部合同 profile。
-  Pydantic 校验模型在 tests/support/external_contract_profile.py（Phase 0 测试专用，
-  禁止 src/app/ import；Phase 1 CEO-013 升级到 src/app/wms_integration/models/）。
-  security_profile（HMAC canonical）Phase 0 只占位，留 Phase 3 external-callback-auth-spec.md。
+  本文件定义 generic provider 与 WMS-only 外部合同 profile。
+  Pydantic 校验模型在 src/app/contracts/external_contract_profile.py。
+  generic profile 保留 environment；WMS-only profile 不包含该维度。
 ---
 
 # 外部合同 Profile（P0-006）
@@ -18,9 +17,11 @@ note: |
 
 ## 1. 编写目的
 
-按 `provider_code + contract_version` 描述 WMS/ECS/RCS provider 的能力、字段映射、超时、重试、fixture set 和不支持动作，使 Runtime capability admission 和 callback normalizer 能在合同约束下工作，不依赖供应商 DTO/SDK。
-WMS 的当前部署约束是“一个工厂一个 Provider、一个 Provider 多个 typed operation”；本文中的环境示例不是运行时
-多 Provider catalog，也不允许按 operation/payload 路由或 fallback。
+按稳定身份描述外部 provider 的能力、字段映射、超时、重试、fixture set 和不支持动作，
+使 Runtime capability admission 和 callback normalizer 能在合同约束下工作，不依赖供应商 DTO/SDK。
+WMS 的当前部署约束是“一个工厂一个 Provider、一个 Provider 多个 typed operation”；WES 部署环境不参与 WMS
+合同选择，也不允许按 operation/payload 路由或 fallback。ECS/simulator 等 generic profile 继续使用
+`provider_code + contract_version + environment` 做环境隔离。
 
 ## 2. ExternalContractProfile 字段表
 
@@ -28,7 +29,7 @@ WMS 的当前部署约束是“一个工厂一个 Provider、一个 Provider 多
 | --- | --- | --- | --- |
 | `provider_code` | string | yes | 稳定 provider ID，如 `WMS`、`ECS` |
 | `contract_version` | string | yes | 合同版本，建议 ISO date 或 semver |
-| `environment` | enum | yes | `sandbox` / `staging` / `production`；Phase 0 fixture 只能用 `sandbox` |
+| `environment` | enum | generic yes / WMS no | generic 使用 `sandbox` / `staging` / `production`；WMS-only 拒绝该字段 |
 | `operation_blueprint_count` | int | yes | 必须等于静态 registry 的 35 项 operation |
 | `operation_registry` | string | yes | 唯一 author-time registry 模块 |
 | `inbound_normalizers.event` | string[] | yes | provider 允许的 event type |
@@ -94,6 +95,9 @@ security_profile:
 ## 5. 合同版本规则（来源主计划 §3.5.1）
 
 - WES 内部域只识别 typed port contract；外部合同变化只能落在 `ExternalContractProfile` 和 adapter/normalizer
+- generic profile identity 固定为 `provider_code + contract_version + environment`，production 入站合同必须声明
+  `secret_kid + signature_algo`
+- WMS-only profile identity 固定为 `provider_code + contract_version`；`environment` 属于未知字段并 fail closed
 - 合同 profile 可破坏性替换，不保留旧中台兼容入口；但同一 `ExecutionSession` 固定 `provider_code + contract_version`，不在 RUNNING 期间热切
 - 每个 provider profile 必须配套 contract tests、sample callback、error fixture 和 replay scenario
 - 未声明的 `runtime_capabilities` 不得进入 `RuntimeCapabilityContext`；未声明的 `inbound_normalizers` 不得被 callback API 接收

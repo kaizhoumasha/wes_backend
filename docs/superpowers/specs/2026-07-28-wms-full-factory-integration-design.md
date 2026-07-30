@@ -837,7 +837,6 @@ CTU 在 E11 内部的逐箱/逐阶段执行仍由 WMS负责，WES只消费最终
 profile:
   provider_code: WMS
   contract_version: 2026-07-28.full-factory
-  environment: production
 server_url: http://factory-wms
 effect_status_path: /api/wms/operations/status
 network_trust_mode: isolated_lan
@@ -2222,6 +2221,25 @@ Codex; checkbox as you ship.
     WMS build/version、合同版本和 WMS 责任人执行安全确认；WES profile/model/request 不增加外部
     environment/tenant/RCS switch/`dry_run` 字段；
     T0 冻结的新增/实质修改模块达到 100% branch coverage，零临时 omit/`pragma: no cover`。
+  - T8-A Implementation Verified（2026-07-30，REAL_TCP 待执行）：35 项静态 operation 由 mode-family
+    共享题库展开为 217 个有序 case；QUERY、同步 EFFECT、异步 EFFECT submit/status 分别使用生产 typed
+    request/result/status 合同。真实 TCP scenario asset 必须逐项、同序、摘要一致，异步
+    `status_query/partial_failure` 强制使用 status endpoint 并经正式 status snapshot 解析；runner 不发送测试
+    控制 header，支持现有 `NONE/HMAC` 签名与有界响应链路。报告绑定 suite、profile、35 项 endpoint、fixture、
+    WMS build/version、责任人和执行安全确认；本地 CI/SIMULATOR/REPLAY 报告不能充当发布证据。10 个实质逻辑
+    target 的独立门禁为 `217 passed`，`848 statements / 228 branches = 100%`；关键合同、准入、迁移和
+    closed-union 回归 `250 passed`，独立工程复审结论 `Approved`。尚未取得目标工厂 WMS endpoint、目标
+    build、责任人安全确认及完整外部 scenario asset，因此本任务保持未完成，不伪造 REAL_TCP PASS。
+  - T8-B Verified（2026-07-30）：WMS Provider profile、WMS-only `WmsExternalContractProfile`、catalog、digest、
+    WorkLine binding 和迁移投影统一使用 `provider_code + contract_version` 身份；已删除 WMS
+    sandbox/staging/production profile 及 environment admission，不保留兼容 alias。generic
+    `ExternalContractProfile` 仍以 `provider_code + contract_version + environment` 隔离 ECS/simulator，
+    并保留 production 入站认证门禁。WorkLine binding 的
+    `environment` 只记录 WES 自身部署环境，不参与 WMS profile 选择。共享 EXTERNAL_HTTP 的
+    `environment` 仅保留为内部安全策略实现字段，WMS 配置、身份和摘要均不读取或暴露它；
+    `isolated_lan + NONE + HTTP` 与 `authenticated_network + HMAC + HTTPS` 定向路径通过。WMS、
+    callback/runtime、WorkLine、迁移投影、observability、架构和启动定向回归 `1283 passed`，
+    测试拓扑 `6 passed`，默认收集 `5179 tests`。
 - [ ] **T9（P1，human: \~3d / CC: \~6h）** — recovery/observability — 关闭状态恢复和对账门禁
   - Surfaced by: Failure modes — callback 丢失、已见状态后 NOT\_FOUND、ACK 前物理事件和物理事实后晚到拒绝必须
     可恢复或精确冻结。

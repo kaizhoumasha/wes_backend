@@ -14,7 +14,6 @@ from src.app.runtime.system_capabilities.wms.conformance_manifest import build_w
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
-    build_wms_conformance_report,
 )
 from src.app.wms_integration.adapters.effect_status_query_adapter import WmsEffectStatusQueryAdapter
 from src.app.wms_integration.operation_contract import WmsCompletionMode
@@ -23,6 +22,7 @@ from src.app.wms_integration.ports.effect_status import (
     build_wms_effect_status_binding,
 )
 from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupplyResult, WmsEffectAck
+from src.app.wms_integration.provider_manifest import _ASYNC_EFFECT_CASES, _SYNC_EFFECT_CASES
 from src.app.wms_integration.query_evidence import WmsQueryCallPermit
 from tests.support.wms_provider_conformance import (
     QUERY_INVENTORY_SCRIPT_FIXTURE,
@@ -80,20 +80,13 @@ class _EffectStatusConformanceEvidenceWriter:
 async def test_every_target_runs_the_same_core_question_bank_without_override(target_factory) -> None:
     observations = tuple([await target_factory.execute(case) for case in QUERY_INVENTORY_SCRIPT_FIXTURE.cases])
 
-    report = build_wms_conformance_report(
-        compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
-        cases=QUERY_INVENTORY_CONFORMANCE_CASES,
-        observations=observations,
-        target=target_factory.target,
-        fixture_digest=target_factory.asset_digest,
-        generated_at=GENERATED_AT,
-    )
-
     expected_ids = tuple(case.case_id for case in QUERY_INVENTORY_CONFORMANCE_CASES)
     assert tuple(case.case_id for case in QUERY_INVENTORY_SCRIPT_FIXTURE.cases) == expected_ids
     assert target_factory.executed_case_ids == expected_ids
-    assert report.passed is True
-    assert all(case.passed for case in report.cases)
+    assert observations == tuple(
+        ConformanceObservation.model_validate(case.model_dump(mode="json"))
+        for case in QUERY_INVENTORY_CONFORMANCE_CASES
+    )
 
 
 @pytest.mark.asyncio
@@ -171,7 +164,7 @@ def test_common_conformance_test_has_no_skip_or_xfail_escape_hatch() -> None:
     assert "pytest.skip(" not in source
 
 
-def test_every_effect_conformance_question_bank_contains_unsigned_status_query_case() -> None:
+def test_every_effect_conformance_requirement_uses_its_mode_family_case_bank() -> None:
     async_requirements = tuple(
         requirement
         for requirement in CONFORMANCE_MANIFEST.operations
@@ -185,8 +178,8 @@ def test_every_effect_conformance_question_bank_contains_unsigned_status_query_c
 
     assert len(async_requirements) == 7
     assert len(sync_requirements) == 9
-    assert all("status_query" in requirement.required_cases for requirement in async_requirements)
-    assert all("status_query" not in requirement.required_cases for requirement in sync_requirements)
+    assert all(requirement.required_cases == _ASYNC_EFFECT_CASES for requirement in async_requirements)
+    assert all(requirement.required_cases == _SYNC_EFFECT_CASES for requirement in sync_requirements)
     serialized = repr(tuple(requirement.required_cases for requirement in async_requirements)).lower()
     assert "signature" not in serialized
     assert "credential" not in serialized

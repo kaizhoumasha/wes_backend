@@ -495,7 +495,7 @@ async def test_production_q19_hook_builds_request_from_scan_and_measurement_befo
         binding_version=4,
         config_hash="a" * 64,
         index_digest="b" * 64,
-        profile_identity="wms.2026-07-28.full-factory.sandbox",
+        profile_identity="wms.2026-07-28.full-factory",
     )
     dispatch_request = PluginDispatchRequest(
         plugin_key="rough_sorter",

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, ValidationError
 
+from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.contracts.external_contract_profile_catalog import (
     ExternalContractProfileCatalog,
     external_contract_profile_catalog,
@@ -203,15 +204,14 @@ class WorklinePluginBindingService:
         if isinstance(configured_profile, str) and configured_profile:
             try:
                 profile = self.profile_catalog.resolve_identity(configured_profile)
+                if isinstance(profile, ExternalContractProfile) and profile.environment != environment:
+                    raise LookupError("provider profile environment 与 binding environment 不一致")
                 if provider_contract_definitions:
-                    if profile.environment != environment:
-                        raise LookupError("provider profile environment 与 binding environment 不一致")
-                    admission_family = profile.identity.rpartition(".")[0]
                     unsupported_admissions = sorted(
                         {
                             capability.admission
                             for capability in provider_contract_definitions
-                            if capability.admission not in {profile.identity, admission_family}
+                            if capability.admission != profile.identity
                         }
                     )
                     if unsupported_admissions:

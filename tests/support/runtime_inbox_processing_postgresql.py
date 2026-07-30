@@ -41,7 +41,7 @@ from tests.support.runtime_inbox_postgresql import run_alembic, temporary_databa
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-PROFILE_IDENTITY = f"wms.{WMS_PROVIDER_CONTRACT_VERSION}.sandbox"
+PROFILE_IDENTITY = f"wms.{WMS_PROVIDER_CONTRACT_VERSION}"
 
 
 @dataclass(frozen=True, slots=True)

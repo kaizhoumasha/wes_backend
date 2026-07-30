@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
+from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_PROFILE
 from src.app.device.models.device import Device, DeviceStatus
 from src.app.resource.models import RackKind
 from src.app.runtime.orchestration.execution_session import ExecutionSession
@@ -33,7 +33,7 @@ from tests.support.runtime_inbox_postgresql import run_alembic, temporary_databa
 
 async def _seed_binding(db: AsyncSession) -> tuple[WorkLine, WorklinePluginBinding, SmtSortingInboundConfig]:
     config = SmtSortingInboundConfig(
-        provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity,
+        provider_profile=WMS_MATERIAL_FLOW_PROFILE.identity,
         ctu_basket_capacity=6,
         conveyor_entry_queue={
             "code": "SMT-CONVEYOR-ENTRY",

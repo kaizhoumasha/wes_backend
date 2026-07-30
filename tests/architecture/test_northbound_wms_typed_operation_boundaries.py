@@ -166,16 +166,12 @@ def test_removed_effect_handlers_cannot_bypass_the_shared_t5_boundary() -> None:
 def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalog() -> None:
     catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
 
-    sandbox_payload = build_provider_profile_payload()
-    sandbox_payload["profile"]["environment"] = "sandbox"
-    sandbox = catalog.build_wms_provider_catalog(build_compiled_provider_profile(sandbox_payload))
-    production = build_provider_catalog()
+    active_provider = catalog.build_wms_provider_catalog(build_compiled_provider_profile())
 
-    assert sandbox.compiled_profile.profile.profile.environment == "sandbox"
-    assert production.compiled_profile.profile.profile.environment == "production"
-    assert len(sandbox.bindings) == len(production.bindings) == 35
-    assert {binding.profile for binding in sandbox.bindings} == {sandbox.identity}
-    assert {binding.profile for binding in production.bindings} == {production.identity}
+    assert active_provider.identity.identity == "wms.2026-07-28.full-factory"
+    assert not hasattr(active_provider.compiled_profile.profile.profile, "environment")
+    assert len(active_provider.bindings) == 35
+    assert {binding.profile for binding in active_provider.bindings} == {active_provider.identity}
     assert not hasattr(catalog, "WMS_PROVIDER_PROFILES")
     assert not hasattr(catalog, "WMS_EXTERNAL_HTTP_EFFECT_PROFILES")
 

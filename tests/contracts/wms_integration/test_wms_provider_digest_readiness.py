@@ -18,7 +18,7 @@ def _compile(payload: dict | None = None):
     )
 
 
-def test_profile_revision_and_digest_are_stable_and_cover_all_profile_fields() -> None:
+def test_profile_revision_and_digest_are_stable_and_cover_all_supported_profile_fields() -> None:
     first = _compile()
     second = _compile(deepcopy(build_provider_profile_payload()))
 
@@ -32,10 +32,6 @@ def test_profile_revision_and_digest_are_stable_and_cover_all_profile_fields() -
         "credential_reference": "secret://wms/factory@v3",
     }
     assert _compile(changed_auth).profile_digest != first.profile_digest
-
-    changed_environment = build_provider_profile_payload()
-    changed_environment["profile"]["environment"] = "staging"
-    assert _compile(changed_environment).profile_digest != first.profile_digest
 
 
 def test_endpoint_drift_changes_only_the_affected_operation_digest() -> None:

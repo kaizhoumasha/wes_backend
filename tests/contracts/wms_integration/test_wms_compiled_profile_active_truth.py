@@ -8,9 +8,9 @@ import pytest
 
 from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
-    QUERY_INVENTORY_CONFORMANCE_CASES,
-    ConformanceObservation,
+    WMS_PROVIDER_CONFORMANCE_CASES,
     ConformanceTarget,
+    OperationConformanceObservation,
     build_wms_conformance_report,
     verify_wms_conformance_report,
 )
@@ -44,23 +44,53 @@ def test_catalog_is_a_projection_of_one_explicit_compiled_profile_without_legacy
     assert not hasattr(provider_catalog, "build_active_wms_provider_profile")
 
 
+def test_wms_runtime_profile_identity_has_no_application_environment_dimension() -> None:
+    from src.app.runtime.system_capabilities.wms.scheduling_identity import wms_runtime_profile_identity
+
+    assert wms_runtime_profile_identity() == "wms.2026-07-28.full-factory"
+
+
+def test_catalog_external_contract_identity_rejects_environment_field() -> None:
+    from pydantic import ValidationError
+
+    from src.app.runtime.system_capabilities.wms.contracts import ExternalContractProfile
+
+    profile = ExternalContractProfile(
+        provider_code="WMS",
+        contract_version="2026-07-28.full-factory",
+    )
+    assert profile.identity == "wms.2026-07-28.full-factory"
+
+    with pytest.raises(ValidationError, match="environment"):
+        ExternalContractProfile.model_validate(
+            {
+                "provider_code": "WMS",
+                "contract_version": "2026-07-28.full-factory",
+                "environment": "production",
+            }
+        )
+
+
 def test_conformance_report_and_manifest_bind_the_explicit_compiled_profile() -> None:
     from src.app.runtime.system_capabilities.wms import conformance_manifest
 
     compiled_profile = _compiled_profile()
     observations = tuple(
-        ConformanceObservation.model_validate(case.model_dump(mode="python"))
-        for case in QUERY_INVENTORY_CONFORMANCE_CASES
+        OperationConformanceObservation.model_validate(case.model_dump(mode="python"))
+        for case in WMS_PROVIDER_CONFORMANCE_CASES
     )
 
     manifest = conformance_manifest.build_wms_conformance_manifest(compiled_profile)
     report = build_wms_conformance_report(
         compiled_profile=compiled_profile,
-        cases=QUERY_INVENTORY_CONFORMANCE_CASES,
+        cases=WMS_PROVIDER_CONFORMANCE_CASES,
         observations=observations,
-        target=ConformanceTarget.REPLAY,
+        target=ConformanceTarget.REAL_TCP,
         fixture_digest="a" * 64,
         generated_at=datetime(2026, 7, 29, tzinfo=UTC),
+        wms_build_version="wms-build-2026.07.30",
+        responsible_person="WMS-OWNER-001",
+        execution_safety_confirmed=True,
     )
 
     assert manifest.profile_identity == compiled_profile.profile.profile.identity

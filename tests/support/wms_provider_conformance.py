@@ -21,8 +21,6 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
     ConformanceObservation,
     ConformanceOutcomeKind,
     ConformanceTarget,
-    WmsConformanceReport,
-    verify_wms_conformance_report,
 )
 from src.app.wms_integration.ports.inventory_operations import (
     QUERY_INVENTORY,
@@ -47,7 +45,9 @@ from tests.support.wms_provider_replay import (
     QueryInventoryReplayFactory,
 )
 
-WMS_CONFORMANCE_COMPILED_PROFILE = build_compiled_provider_profile(build_hmac_provider_profile_payload())
+_conformance_profile_payload = build_hmac_provider_profile_payload()
+_conformance_profile_payload["server_url"] = "https://factory-wms.example"
+WMS_CONFORMANCE_COMPILED_PROFILE = build_compiled_provider_profile(_conformance_profile_payload)
 WMS_CONFORMANCE_PROVIDER_CATALOG = build_wms_provider_catalog(WMS_CONFORMANCE_COMPILED_PROFILE)
 
 if TYPE_CHECKING:
@@ -250,6 +250,10 @@ def build_query_inventory_conformance_targets():
     )
 
 
+async def _no_wait(_seconds: float) -> None:
+    """Mock conformance 保留重试次数，不消耗真实退避时间。"""
+
+
 async def _execute_adapter_case(case: ScriptedQueryCase, *, handler) -> ConformanceObservation:
     operation = QUERY_INVENTORY
     if case.scenario is QueryConformanceScenario.BUDGET:
@@ -271,6 +275,7 @@ async def _execute_adapter_case(case: ScriptedQueryCase, *, handler) -> Conforma
         client=client,
         evidence_writer=_RecordingEvidenceWriter(fail=case.scenario is QueryConformanceScenario.EVIDENCE_FAILURE),
         credential_provider=_TestCredentialProvider(),
+        sleep=_no_wait,
     )
     try:
         outcome = await executor.execute(InventorySnapshotQueryRequest(material_code="MAT-001"))
@@ -322,20 +327,6 @@ def observe_query_inventory_outcome(
     )
 
 
-def verify_query_inventory_replay_report(payload: dict[str, object]) -> WmsConformanceReport:
-    """在外层验证 runtime 报告来自当前代码 pin 的 replay asset。"""
-
-    report = verify_wms_conformance_report(
-        payload,
-        compiled_profile=WMS_CONFORMANCE_COMPILED_PROFILE,
-    )
-    if report.target is not ConformanceTarget.REPLAY:
-        raise ValueError("query inventory replay verifier requires a REPLAY report")
-    if not hmac.compare_digest(report.fixture_digest, QUERY_INVENTORY_REPLAY_ASSET_DIGEST):
-        raise ValueError("query inventory replay report asset digest mismatch")
-    return report
-
-
 def _success_marker(result: InventorySnapshotQueryResult) -> str:
     if not result.items:
         return "EMPTY"
@@ -358,5 +349,4 @@ __all__ = [
     "ScriptedQueryCase",
     "build_query_inventory_conformance_targets",
     "observe_query_inventory_outcome",
-    "verify_query_inventory_replay_report",
 ]

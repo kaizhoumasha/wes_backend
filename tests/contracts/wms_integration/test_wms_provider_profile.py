@@ -23,11 +23,21 @@ def test_profile_accepts_exact_static_registry_and_rejects_unknown_fields() -> N
     profile = WmsProviderProfileSettings.model_validate(build_provider_profile_payload())
     assert tuple(profile.operations) == tuple(operation.identity for operation in WMS_OPERATIONS)
     assert len(profile.operations) == 35
-    assert profile.profile.identity == "wms.2026-07-28.full-factory.production"
+    assert profile.profile.identity == "wms.2026-07-28.full-factory"
 
     invalid = changed_profile_payload(legacy_endpoint="/forbidden")
     with pytest.raises(ValidationError, match="legacy_endpoint"):
         WmsProviderProfileSettings.model_validate(invalid)
+
+
+def test_profile_rejects_external_environment_dimension() -> None:
+    from src.app.wms_integration.provider_profile import WmsProviderProfileSettings
+
+    payload = build_provider_profile_payload()
+    payload["profile"]["environment"] = "production"
+
+    with pytest.raises(ValidationError, match="environment"):
+        WmsProviderProfileSettings.model_validate(payload)
 
 
 def test_profile_coverage_does_not_depend_on_yaml_mapping_order() -> None:
@@ -76,6 +86,20 @@ def test_profile_parser_rejects_duplicate_operation_identity(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="duplicate key"):
         load_wms_provider_profile(profile_file)
+
+
+def test_profile_loader_returns_validated_provider_profile(tmp_path) -> None:
+    from src.app.wms_integration.provider_profile import load_wms_provider_profile
+
+    profile_file = write_provider_profile(
+        tmp_path / "provider.yaml",
+        build_provider_profile_payload(),
+    )
+
+    profile = load_wms_provider_profile(profile_file)
+
+    assert profile.profile.identity == "wms.2026-07-28.full-factory"
+    assert tuple(profile.operations) == tuple(operation.identity for operation in WMS_OPERATIONS)
 
 
 def test_profile_rejects_contract_drift_and_mode_specific_path_fields() -> None:

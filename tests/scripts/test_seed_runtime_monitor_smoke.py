@@ -149,7 +149,10 @@ async def test_seed_runtime_monitor_smoke_creates_runtime_projection_scenarios(d
         )
     ).scalar_one()
     event = WmsInventoryUpdatedEvent.model_validate(callback_session.context_json["wms_inventory_updated_event"])
-    assert event.inventory_reference == "runtime-monitor-smoke:inventory-updated"
+    assert event.source_system == "WMS"
+    assert event.event_type == "WMS_INVENTORY_UPDATED"
+    assert event.source_version == "1"
+    assert event.data.inventory_reference == "runtime-monitor-smoke:inventory-updated"
     assert "rack_operation" not in callback_session.context_json
     assert single_layer_projection.resource_evidence.total_count > 50
     assert single_layer_projection.resource_evidence.truncated is True

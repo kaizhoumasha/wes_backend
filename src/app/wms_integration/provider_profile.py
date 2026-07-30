@@ -22,6 +22,12 @@ NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_lengt
 _CREDENTIAL_REFERENCE_PATTERN = re.compile(r"^[a-z][a-z0-9+.-]*://[^@\s]+@v[1-9][0-9]*$")
 
 
+def build_wms_provider_identity(provider_code: str, contract_version: str) -> str:
+    """构造不含应用环境维度的 WMS 部署身份。"""
+
+    return f"{provider_code.strip().lower()}.{contract_version}"
+
+
 class WmsProviderAuthScheme(str, Enum):
     """Provider profile 支持的封闭认证方案。"""
 
@@ -36,11 +42,10 @@ class WmsProviderIdentitySettings(BaseModel):
 
     provider_code: Literal["WMS"]
     contract_version: Literal[WMS_PROVIDER_CONTRACT_VERSION]
-    environment: Literal["sandbox", "staging", "production"]
 
     @property
     def identity(self) -> str:
-        return f"wms.{self.contract_version}.{self.environment}"
+        return build_wms_provider_identity(self.provider_code, self.contract_version)
 
 
 class WmsProviderAuthSettings(BaseModel):
@@ -166,5 +171,6 @@ __all__ = [
     "WmsProviderIdentitySettings",
     "WmsProviderOperationPathSettings",
     "WmsProviderProfileSettings",
+    "build_wms_provider_identity",
     "load_wms_provider_profile",
 ]

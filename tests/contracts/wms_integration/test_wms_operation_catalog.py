@@ -314,6 +314,7 @@ def test_external_http_effect_bindings_accept_only_registry_target_codes() -> No
     effect_profile = provider_catalog._external_http_effect_profile(catalog)
     actual = {binding.operation_identity: binding.allowed_target_codes for binding in effect_profile.bindings}
 
+    assert effect_profile.environment == "production"
     assert actual == expected
 
 
