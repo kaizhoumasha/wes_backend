@@ -54,8 +54,16 @@ def unbind_wms_effect_preparation_runtime(runtime: WmsEffectPreparationRuntime) 
     global _active_loop, _active_runtime
     if _active_runtime is not runtime:
         raise RuntimeError("cannot unbind a different WMS EFFECT preparation runtime")
+    if _active_loop is not asyncio.get_running_loop():
+        raise RuntimeError("WMS EFFECT preparation runtime event loop mismatch during unbind")
     _active_runtime = None
     _active_loop = None
+
+
+async def close_wms_effect_preparation_runtime(runtime: WmsEffectPreparationRuntime) -> None:
+    """仅撤销本次成功绑定的 owner runtime；不拥有外部资源。"""
+
+    unbind_wms_effect_preparation_runtime(runtime)
 
 
 async def close_bound_wms_effect_preparation_runtime() -> None:
@@ -70,6 +78,7 @@ __all__ = [
     "bind_wms_effect_preparation_runtime",
     "build_wms_effect_preparation_runtime",
     "close_bound_wms_effect_preparation_runtime",
+    "close_wms_effect_preparation_runtime",
     "get_wms_effect_preparation_runtime",
     "unbind_wms_effect_preparation_runtime",
 ]

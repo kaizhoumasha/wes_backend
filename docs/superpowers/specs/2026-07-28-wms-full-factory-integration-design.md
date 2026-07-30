@@ -2115,6 +2115,10 @@ Codex; checkbox as you ship.
     GREEN 后 runtime/startup 定向组合 `70 passed`，Ruff format/check 与 `git diff --check` 通过。
     `test_runtime_inbox_attempt_profile.py` 全文件有 1 项既有 fixture 仍返回旧 `WriteDisposition`，而当前
     production contract 已为 `RuntimeInboxWriteBackResult`；该 T5 final blocker 未在本检查点混修。
+  - G4.5a lifecycle review fix：解绑同时验证 candidate runtime 与 owner event loop；API/Celery 只在成功 bind 后
+    保存 candidate，回滚/关闭均按该 candidate 解绑，bind 失败不能影响既有 owner。生命周期顺序明确为
+    WMS data → EFFECT preparation → WMS effect。跨 loop、bind-failure 和 owner-only cleanup 覆盖的
+    deployment/startup 组合 `67 passed`，Ruff、diff check 与 quality profile 通过。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

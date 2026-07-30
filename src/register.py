@@ -57,8 +57,9 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         bind_wms_data_lane_query_runtime(wms_data_lane_runtime)
         _app.state.wms_data_lane_query_runtime = wms_data_lane_runtime
 
-        wms_effect_preparation_runtime = build_wms_effect_preparation_runtime(catalog=startup.catalog)
-        bind_wms_effect_preparation_runtime(wms_effect_preparation_runtime)
+        effect_preparation_candidate = build_wms_effect_preparation_runtime(catalog=startup.catalog)
+        bind_wms_effect_preparation_runtime(effect_preparation_candidate)
+        wms_effect_preparation_runtime = effect_preparation_candidate
         _app.state.wms_effect_preparation_runtime = wms_effect_preparation_runtime
 
         # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
@@ -89,9 +90,9 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
             await close_bound_wms_data_lane_query_runtime()
         if wms_effect_preparation_runtime is not None:
-            from src.app.wms_integration.effect_preparation_runtime import close_bound_wms_effect_preparation_runtime
+            from src.app.wms_integration.effect_preparation_runtime import close_wms_effect_preparation_runtime
 
-            await close_bound_wms_effect_preparation_runtime()
+            await close_wms_effect_preparation_runtime(wms_effect_preparation_runtime)
         await close_db()
         await close_redis()
         logger.info("FastAPI 应用关闭")

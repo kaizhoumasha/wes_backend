@@ -43,3 +43,12 @@ DONE_WITH_CONCERNS
 - 全文件 `tests/runtime/orchestration/test_runtime_inbox_attempt_profile.py -q` 仍有 1 项既有失败：fixture
   返回旧 `WriteDisposition.COMMITTED`，production path 现在要求 `RuntimeInboxWriteBackResult.disposition`。
   此项已列为 T5 final blocker，本切片没有扩展到该旧 fixture 迁移。
+
+## 评审修复追加
+
+- `unbind_wms_effect_preparation_runtime` 现在同时验证 candidate runtime 与当前 event loop；跨 loop 解绑明确拒绝。
+- API/Celery 仅在本次 candidate 成功 bind 后保存引用；初始化 bind 失败不会调用无参 close。
+  回滚与正常 shutdown 均按该 candidate 解绑，不能误清理已有 owner；EFFECT preparation 不拥有外部资源。
+- 生命周期顺序注释同步为 data → EFFECT preparation → effect。
+- RED：跨 loop 解绑用例先出现 `DID NOT RAISE`；GREEN 后 deployment/startup 组合
+  `67 passed`，Ruff、`git diff --check` 与 `./scripts/git-quality-gate.sh --profile quality` 通过。

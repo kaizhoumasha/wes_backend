@@ -161,6 +161,33 @@ async def test_effect_preparation_runtime_is_single_loop_owned_and_has_no_resour
     assert runtime_module.get_wms_effect_preparation_runtime() is None
 
 
+@pytest.mark.asyncio
+async def test_effect_preparation_runtime_rejects_cross_loop_unbind_and_closes_only_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.app.wms_integration.effect_preparation_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_active_runtime", None)
+    monkeypatch.setattr(runtime_module, "_active_loop", None)
+    owner = runtime_module.build_wms_effect_preparation_runtime(catalog=object())
+    candidate = runtime_module.build_wms_effect_preparation_runtime(catalog=object())
+    runtime_module.bind_wms_effect_preparation_runtime(owner)
+
+    async def unbind_from_other_loop() -> str:
+        with pytest.raises(RuntimeError, match="event loop mismatch"):
+            runtime_module.unbind_wms_effect_preparation_runtime(owner)
+        return "rejected"
+
+    assert await asyncio.to_thread(lambda: asyncio.run(unbind_from_other_loop())) == "rejected"
+    assert runtime_module.get_wms_effect_preparation_runtime() is owner
+    with pytest.raises(RuntimeError, match="different"):
+        await runtime_module.close_wms_effect_preparation_runtime(candidate)
+    assert runtime_module.get_wms_effect_preparation_runtime() is owner
+
+    await runtime_module.close_wms_effect_preparation_runtime(owner)
+    assert runtime_module.get_wms_effect_preparation_runtime() is None
+
+
 def test_celery_async_runtime_requires_an_explicit_wms_process_role() -> None:
     from src.celery_app.async_runtime import CeleryAsyncRuntime
 

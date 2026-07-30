@@ -129,6 +129,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         build_wms_effect_preparation_runtime=MagicMock(),
         bind_wms_effect_preparation_runtime=MagicMock(),
         close_bound_wms_effect_preparation_runtime=AsyncMock(),
+        close_wms_effect_preparation_runtime=AsyncMock(),
         build_wms_data_lane_query_runtime=MagicMock(return_value=SimpleNamespace()),
         bind_wms_data_lane_query_runtime=MagicMock(),
         close_bound_wms_data_lane_query_runtime=AsyncMock(),
@@ -183,6 +184,11 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         infra.close_bound_wms_effect_preparation_runtime,
     )
     monkeypatch.setattr(
+        effect_preparation_runtime,
+        "close_wms_effect_preparation_runtime",
+        infra.close_wms_effect_preparation_runtime,
+    )
+    monkeypatch.setattr(
         query_runtime,
         "build_wms_data_lane_query_runtime",
         infra.build_wms_data_lane_query_runtime,
@@ -221,7 +227,7 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     assert first_runtime.runner_generation == first_generation
     first_runtime.shutdown()
     infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
-    infra.close_bound_wms_effect_preparation_runtime.assert_awaited_once()
+    infra.close_wms_effect_preparation_runtime.assert_awaited_once_with(infra.effect_preparation_runtime)
     assert first_runtime.runner_generation is None
 
     second_runtime = module.CeleryAsyncRuntime(process_role=WmsProviderProcessRole.WES)
@@ -242,6 +248,18 @@ def test_fulfillment_role_initializes_only_its_actual_effect_lane(monkeypatch: p
     infra.bind_wms_data_lane_query_runtime.assert_not_called()
     runtime.shutdown()
     infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
+
+
+def test_preparation_bind_failure_does_not_unbind_an_existing_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    infra.bind_wms_effect_preparation_runtime.side_effect = RuntimeError("already bound")
+
+    with pytest.raises(RuntimeError, match="already bound"):
+        runtime.initialize()
+
+    infra.close_wms_effect_preparation_runtime.assert_not_awaited()
 
 
 def test_runner_generation_failure_rolls_back_all_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1266,7 +1284,7 @@ def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     if failure_call != 3:
         infra.close_bound_wms_data_lane_query_runtime.assert_awaited_once()
     if failure_call != 4:
-        infra.close_bound_wms_effect_preparation_runtime.assert_awaited_once()
+        infra.close_wms_effect_preparation_runtime.assert_awaited_once_with(infra.effect_preparation_runtime)
     if failure_call != 5:
         infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
     if failure_call != 6:
