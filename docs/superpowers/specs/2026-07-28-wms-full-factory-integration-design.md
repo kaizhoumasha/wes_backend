@@ -2008,6 +2008,24 @@ Codex; checkbox as you ship.
   - G4.4a evidence：RED 精确暴露 8 项批次合同缺口和 12 项工厂配置缺口；最终 batch/status/operation
     `175 passed`，配置/binding/batch 聚焦回归 `330 passed`，独立终审 `232 passed`；generator check、
     Ruff 与 diff check 通过，独立终审 `Approved`、无 P0–P2。
+  - Verified checkpoint — G4.4b / E12 submit 与 preparation：只从当前
+    `smt_sorting_inbound@v1` immutable binding 读取 CTU 背篓容量和入口队列配置；单批稳定选择
+    `TARGET_STATION` 上首个 active 五层货架且不跨架，可用料箱必须至少存在一个空格或
+    `OCCUPIED + remaining_depth > 0` 的 active 模板格，并排除 active/reconciling 的格位预占、route、
+    queue membership 和 BIN flow owner。批量固定为入口 member 预约与 ENTRY membership 位置集合并集后的
+    空位、CTU 容量、可用料箱数三者最小值；无候选时不创建 Intent/Outbox。
+  - G4.4b preparation 以 `RuntimeIntentLog` 为唯一批次根，在同一事务中冻结新 `batch_id`、每箱新
+    `route_instance_id`、入口位置和完整 request，并原子写入 route/member/outbox。route 初始物理事实保持
+    `FIVE_RACK + source rack/slot`，不得因 submit 或 ACK 臆断 CTU 已开始逐箱搬运。ENTRY
+    ACTIVE/RECONCILING membership 增加完整 shape 和
+    `(workline_id, queue_code, queue_position)` PostgreSQL 部分唯一约束；同工作线入口批次通过事务锁串行重读，
+    双 worker 不重箱、不重位置。ACK、terminal 和 reconciliation 收敛仍属于后续 G4.4c，在完成前显式
+    fail closed，不静默吞结果。
+  - G4.4b evidence：纯合同、domain projection、受影响 WMS 合同/状态回归 `98 passed`；真实 PostgreSQL
+    reserve/preparation、双 worker、逐故障点回滚及 migration upgrade/downgrade/re-upgrade `11 passed`；
+    topology `6 passed`，默认收集 `5039 tests`，完整 quality profile、Ruff、Bandit、architecture 和
+    `git diff --check` 通过。独立终审另行验证 focused `42 passed`、PostgreSQL `11 passed`，结论
+    `Approved`、无 P0–P2。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

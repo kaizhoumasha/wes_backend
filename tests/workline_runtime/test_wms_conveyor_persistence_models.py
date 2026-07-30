@@ -322,6 +322,12 @@ def test_conveyor_queue_membership_freezes_return_fifo_and_claim_as_one_shape() 
     assert "scan3_enqueued_at IS NOT NULL" in return_shape
     assert "queue_position IS NOT NULL" in return_shape
     assert "bin_code IS NOT NULL" in return_shape
+    entry_shape = checks["ck_conveyor_queue_memberships_entry_shape"]
+    assert "membership_status IN ('ACTIVE', 'RECONCILING')" in entry_shape
+    assert "queue_role = 'ENTRY'" in entry_shape
+    assert "route_instance_id IS NOT NULL" in entry_shape
+    assert "queue_position IS NOT NULL" in entry_shape
+    assert "bin_code IS NOT NULL" in entry_shape
     claim_shape = checks["ck_conveyor_queue_memberships_claim_shape"]
     assert "e13_claim_intent_id IS NULL" in claim_shape
     assert "e13_claim_token IS NULL" in claim_shape
@@ -334,9 +340,14 @@ def test_conveyor_queue_membership_freezes_return_fifo_and_claim_as_one_shape() 
     assert "ix_wes_runtime_conveyor_queue_memberships_scan3_enqueued_at" not in indexes
     active_route = indexes["ux_wes_runtime_conveyor_queue_memberships_active_route"]
     fifo = indexes["ix_wes_runtime_conveyor_queue_memberships_return_fifo_unclaimed"]
+    active_entry_position = indexes["ux_wes_runtime_conveyor_queue_memberships_active_entry_position"]
     assert active_route.unique is True
     assert _index_columns(active_route) == ("route_instance_id",)
     assert "membership_status IN ('ACTIVE', 'RECONCILING')" in _postgresql_where(active_route)
+    assert active_entry_position.unique is True
+    assert _index_columns(active_entry_position) == ("workline_id", "queue_code", "queue_position")
+    assert "membership_status IN ('ACTIVE', 'RECONCILING')" in _postgresql_where(active_entry_position)
+    assert "queue_role = 'ENTRY'" in _postgresql_where(active_entry_position)
     assert _index_columns(fifo) == (
         "workline_id",
         "queue_code",

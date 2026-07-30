@@ -75,6 +75,15 @@ class ConveyorQueueMembership(BaseMixin, table=True):
                 "membership_status = 'ACTIVE' AND queue_role = 'RETURN_QUEUE' AND e13_claim_intent_id IS NULL"
             ),
         ),
+        Index(
+            "ux_wes_runtime_conveyor_queue_memberships_active_entry_position",
+            "workline_id",
+            "queue_code",
+            "queue_position",
+            unique=True,
+            postgresql_where=text("membership_status IN ('ACTIVE', 'RECONCILING') AND queue_role = 'ENTRY'"),
+            sqlite_where=text("membership_status IN ('ACTIVE', 'RECONCILING') AND queue_role = 'ENTRY'"),
+        ),
         # DB 端 membership_status 强约束: 防止 case/whitespace 漂移导致
         # partial unique index 的 postgresql_where='membership_status = ''ACTIVE'''
         # 漏匹配, 破坏 ACTIVE 唯一性。
@@ -92,6 +101,16 @@ class ConveyorQueueMembership(BaseMixin, table=True):
             "AND bin_code IS NOT NULL"
             ")",
             name="return_shape",
+        ),
+        CheckConstraint(
+            "NOT (membership_status IN ('ACTIVE', 'RECONCILING') "
+            "AND queue_role = 'ENTRY') OR ("
+            "route_instance_id IS NOT NULL "
+            "AND queue_position IS NOT NULL "
+            "AND queue_position > 0 "
+            "AND bin_code IS NOT NULL"
+            ")",
+            name="entry_shape",
         ),
         CheckConstraint(
             "("

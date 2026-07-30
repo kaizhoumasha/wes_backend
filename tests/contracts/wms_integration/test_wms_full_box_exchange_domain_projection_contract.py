@@ -20,6 +20,7 @@ from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 E08 = "wms.fulfillment.request_rack_supply@v1"
 E09 = "wms.fulfillment.request_rack_transport@v1"
 E11 = "wms.fulfillment.full_box_exchange@v1"
+E12 = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
 
 
 def _operation(identity: str) -> Any:
@@ -33,7 +34,7 @@ def test_e11_declares_its_own_domain_projection_kind() -> None:
         if operation.domain_projection_kind is not None
     }
 
-    assert set(projected) == {E08, E09, E11}
+    assert set(projected) == {E08, E09, E11, E12}
     assert projected[E11].value == "FULL_BOX_EXCHANGE_DEMAND"
 
 

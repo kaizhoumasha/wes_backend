@@ -21,6 +21,11 @@ from src.app.runtime.orchestration.services.full_box_exchange_service import (
     full_box_exchange_service,
 )
 from src.app.runtime.orchestration.services.rack_demand_service import WmsRackDemandClaim
+from src.app.runtime.orchestration.services.wms_conveyor_batch_service import (
+    WmsConveyorBatchClaim,
+    WmsConveyorBatchService,
+    wms_conveyor_batch_service,
+)
 from src.app.wms_integration.operation_contract import (
     WmsDomainProjectionKind,
     WmsOperationDefinition,
@@ -28,6 +33,7 @@ from src.app.wms_integration.operation_contract import (
 from src.app.wms_integration.ports.fulfillment_operations import (
     FullBoxExchangeRequest,
     FullBoxExchangeResult,
+    MoveBinsToConveyorEntryRequest,
     RequestRackSupplyRequest,
     RequestRackSupplyResult,
     RequestRackTransportRequest,
@@ -54,6 +60,7 @@ class WmsFulfillmentDomainProjector:
         *,
         repository: WmsFulfillmentDomainRepository = wms_fulfillment_domain_repository,
         full_box_exchange: FullBoxExchangeService = full_box_exchange_service,
+        conveyor_batch: WmsConveyorBatchService = wms_conveyor_batch_service,
         resource_projection_service: ResourceProjectionService = resource_projection_service,
         station_role_resolver: Callable[..., Any] | None = None,
         workline_code_resolver: Callable[..., Any] | None = None,
@@ -61,6 +68,7 @@ class WmsFulfillmentDomainProjector:
     ) -> None:
         self._repository = repository
         self._full_box_exchange = full_box_exchange
+        self._conveyor_batch = conveyor_batch
         self._resource_projection_service = resource_projection_service
         self._station_role_resolver = station_role_resolver or self._default_station_role
         self._workline_code_resolver = workline_code_resolver or self._default_workline_code
@@ -76,6 +84,20 @@ class WmsFulfillmentDomainProjector:
     ) -> None:
         """锁定 PREPARING demand，校验冻结 root，并在 Outbox 前绑定 ACTIVE root。"""
 
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            if not isinstance(request, MoveBinsToConveyorEntryRequest):
+                raise TypeError("conveyor inbound batch requires its typed request")
+            claim = self._require_conveyor_batch_claim(execution)
+            intent_id = getattr(getattr(execution, "intent_log", None), "id", None)
+            if not isinstance(intent_id, int) or intent_id <= 0:
+                raise RuntimeError("conveyor inbound batch preparation requires claimed intent id")
+            await self._conveyor_batch.prepare_effect(
+                db,
+                claim=claim,
+                request=request,
+                intent_id=intent_id,
+            )
+            return
         if operation.domain_projection_kind is WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
             if not isinstance(request, FullBoxExchangeRequest):
                 raise TypeError("full box exchange demand requires its typed request")
@@ -151,6 +173,8 @@ class WmsFulfillmentDomainProjector:
             return
         if not bool(getattr(reduction, "state_changed", False)) or bool(getattr(reduction, "contradiction", False)):
             return
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            raise RuntimeError("E12 ACK/terminal convergence is not bound")
         if operation.domain_projection_kind is WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
             demand = await self._full_box_exchange.get_demand_by_dispatch_for_update(
                 db,
@@ -220,6 +244,8 @@ class WmsFulfillmentDomainProjector:
     ) -> None:
         """仅为 E11 reconciliation 同事务冻结 parent；不释放 owner 或 active Intent。"""
 
+        if operation.domain_projection_kind is WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH:
+            raise RuntimeError("E12 reconciliation convergence is not bound")
         if operation.domain_projection_kind is not WmsDomainProjectionKind.FULL_BOX_EXCHANGE_DEMAND:
             return
         demand = await self._full_box_exchange.get_demand_by_dispatch_for_update(
@@ -249,6 +275,16 @@ class WmsFulfillmentDomainProjector:
         claim = ctx.get("wms_full_box_exchange_claim")
         if not isinstance(claim, FullBoxExchangeClaim):
             raise TypeError("full box exchange preparation claim is missing")
+        return claim
+
+    @staticmethod
+    def _require_conveyor_batch_claim(execution: Any) -> WmsConveyorBatchClaim:
+        ctx = getattr(execution, "ctx", None)
+        if not isinstance(ctx, dict):
+            raise TypeError("conveyor inbound batch preparation requires runtime execution context")
+        claim = ctx.get("wms_conveyor_batch_claim")
+        if not isinstance(claim, WmsConveyorBatchClaim):
+            raise TypeError("conveyor inbound batch preparation claim is missing")
         return claim
 
     @staticmethod

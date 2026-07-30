@@ -619,6 +619,7 @@ MOVE_BINS_TO_CONVEYOR_ENTRY = effect_operation(
     reject_codes=("BATCH_MEMBER_INVALID", "CONVEYOR_ENTRY_CAPACITY_CHANGED", "CTU_CAPACITY_EXCEEDED"),
     completion_mode=WmsCompletionMode.ASYNC_TASK,
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
+    domain_projection_kind=WmsDomainProjectionKind.CONVEYOR_INBOUND_BATCH,
 )
 MOVE_BINS_FROM_CONVEYOR_EXIT = effect_operation(
     identity="wms.fulfillment.move_bins_from_conveyor_exit@v1",
