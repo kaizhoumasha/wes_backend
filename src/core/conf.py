@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     # ==================== 北向 Transport 配置 ====================
 
     WMS_PROVIDER_PROFILE_FILE: Path | None = None
+    WMS_EFFECT_ADMISSION_ENABLED: bool = False
     WMS_EFFECT_STATUS_TIMEOUT_SECONDS: float = Field(gt=0)
     WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: int = Field(gt=0)
     WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: int = Field(gt=0)

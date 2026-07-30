@@ -421,6 +421,7 @@ async def prepare_reservation(
     _ctx, prepared, execution = await claim_reservation(db=db, graph=graph, reservation=reservation)
     await WmsEffectPreparationRuntime(
         catalog=build_provider_catalog(),
+        allow_new_claim=lambda _definition: True,
         domain_projector=projector,
     ).prepare(
         reservation.operation,

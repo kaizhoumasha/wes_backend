@@ -10,6 +10,13 @@ class SystemCapabilityClaimResult(str, Enum):
     MATCH = "MATCH"
 
 
+class SystemCapabilityAdmissionClosed(ValueError):
+    """新建 SYSTEM_CAPABILITY claim 被部署级准入策略拒绝。"""
+
+    def __init__(self) -> None:
+        super().__init__("system capability admission is closed for new claims")
+
+
 class SystemCapabilityIdempotencyConflict(Exception):
     """同一 runtime-owned effect identity 出现不同 payload。"""
 
@@ -32,4 +39,8 @@ class SystemCapabilityIdempotencyConflict(Exception):
         self.correlation_id = correlation_id
 
 
-__all__ = ["SystemCapabilityClaimResult", "SystemCapabilityIdempotencyConflict"]
+__all__ = [
+    "SystemCapabilityAdmissionClosed",
+    "SystemCapabilityClaimResult",
+    "SystemCapabilityIdempotencyConflict",
+]

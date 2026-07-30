@@ -215,6 +215,7 @@ async def _prepare_return_reservation(
     )()
     await WmsEffectPreparationRuntime(
         catalog=build_provider_catalog(),
+        allow_new_claim=lambda _definition: True,
         domain_projector=WmsFulfillmentDomainProjector(conveyor_return_batch=return_service),
     ).prepare(
         reservation.operation,

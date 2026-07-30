@@ -20,6 +20,7 @@ from src.app.runtime.orchestration.services.intent.system_capability_effect_serv
     SystemCapabilityEffectService,
 )
 from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityAdmissionClosed,
     SystemCapabilityClaimResult,
     SystemCapabilityIdempotencyConflict,
 )
@@ -262,6 +263,40 @@ async def test_production_repository_matches_existing_proposed_claim_and_locks_i
     assert replay.id == proposed.id
     assert replay.dispatch_key == claim["dispatch_key"]
     assert replay.effect_status is RuntimeIntentStatus.PROPOSED
+
+
+@pytest.mark.asyncio
+async def test_existing_only_claim_rejects_absent_row_without_inserting(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+
+    with pytest.raises(SystemCapabilityAdmissionClosed):
+        await repository.claim_or_match(db_session, allow_insert=False, **claim)
+
+    assert await repository.get_claimed_intent(db_session, claim=claim) is None
+
+
+@pytest.mark.asyncio
+async def test_existing_only_claim_matches_exact_existing_row(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+    assert await repository.claim_or_match(db_session, allow_insert=False, **claim) is SystemCapabilityClaimResult.MATCH
+
+
+@pytest.mark.asyncio
+async def test_existing_only_claim_preserves_idempotency_conflict(db_session) -> None:
+    repository = RuntimeIntentLogRepository()
+    claim = _claim()
+    assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
+
+    with pytest.raises(SystemCapabilityIdempotencyConflict):
+        await repository.claim_or_match(
+            db_session,
+            allow_insert=False,
+            **{**claim, "request_hash": "b" * 64},
+        )
 
 
 @pytest.mark.asyncio

@@ -389,20 +389,33 @@ class RuntimeInboxWriteBackService:
             self._effect_applier = RuntimeIntentEffectApplier()
         return self._effect_applier
 
-    def effect_applier_for_attempt(self, *, effect_port_resolver: Any | None = None) -> Any:
+    def effect_applier_for_attempt(
+        self,
+        *,
+        effect_port_resolver: Any | None = None,
+        allow_new_claim: Any | None = None,
+    ) -> Any:
         """为当前 attempt 构造携带 typed EFFECT Port resolver 的 Stage 3 applier。"""
 
+        if allow_new_claim is not None and self._effect_applier is not None:
+            raise RuntimeError("attempt admission policy cannot be combined with a custom effect applier")
+        if allow_new_claim is not None and effect_port_resolver is None:
+            raise RuntimeError("attempt admission policy requires an effect port resolver")
         if self._effect_applier is not None or effect_port_resolver is None:
             return self.effect_applier
         from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
         from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
             SystemCapabilityEffectService,
         )
+        from src.app.runtime.orchestration.services.intent.system_capability_intent_service import (
+            SystemCapabilityIntentService,
+        )
 
         # resolver 仅由本次 attempt 的 CapabilityPortRegistry 提供；不得缓存到 service，
         # 否则会把 registry 中可能持有的 attempt-scoped Port 泄漏给下一次处理。
         return RuntimeIntentEffectApplier(
             system_capability_effect_service=SystemCapabilityEffectService(
+                intent_service=SystemCapabilityIntentService(allow_new_claim=allow_new_claim),
                 effect_port_resolver=effect_port_resolver,
             )
         )
@@ -481,6 +494,7 @@ class RuntimeInboxWriteBackService:
         devices_by_role: dict[str, list[Any]] | None = None,
         trusted_state_preservation: bool = False,
         effect_port_resolver: Any | None = None,
+        allow_new_claim: Any | None = None,
     ) -> RuntimeInboxWriteBackResult:
         """锁定权威行后重校验，并在同一事务落完整 attempt 结果。"""
 
@@ -543,7 +557,10 @@ class RuntimeInboxWriteBackService:
             allow_state_preservation=trusted_state_preservation,
         )
         outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
-        effect_applier = self.effect_applier_for_attempt(effect_port_resolver=effect_port_resolver)
+        effect_applier = self.effect_applier_for_attempt(
+            effect_port_resolver=effect_port_resolver,
+            allow_new_claim=allow_new_claim,
+        )
         try:
             if write_set.intents:
                 if workline is None:

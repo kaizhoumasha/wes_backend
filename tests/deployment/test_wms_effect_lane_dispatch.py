@@ -107,6 +107,39 @@ def test_all_compose_profiles_and_test_deploy_pipeline_define_both_worker_roles(
     assert "logs --tail=150 api celery celery-wms-fulfillment frontend nginx" in pipeline
 
 
+def test_wms_effect_admission_switch_is_consistent_across_profiles_and_effect_creators() -> None:
+    import yaml
+
+    class _ComposeSafeLoader(yaml.SafeLoader):
+        pass
+
+    _ComposeSafeLoader.add_constructor(
+        "!override",
+        lambda loader, node: loader.construct_sequence(node, deep=True),
+    )
+    expected_profiles = {
+        ".env": "true",
+        ".env.dev": "true",
+        ".env.test": "true",
+        ".env.prod": "false",
+    }
+    for profile_name, expected in expected_profiles.items():
+        profile = (REPO_ROOT / profile_name).read_text(encoding="utf-8")
+        assert f"WMS_EFFECT_ADMISSION_ENABLED={expected}" in profile
+
+    for compose_name, roles in (
+        ("docker-compose.yml", ("api", "celery", "celery_beat")),
+        ("docker-compose.deploy.yml", ("api", "celery", "celery_beat")),
+        ("docker-compose.test-deploy.yml", ("api", "celery")),
+    ):
+        compose = yaml.load(
+            (REPO_ROOT / compose_name).read_text(encoding="utf-8"),
+            Loader=_ComposeSafeLoader,  # noqa: S506 -- 仅扩展 SafeLoader 解析 Compose 的 !override。
+        )
+        values = {compose["services"][role]["environment"]["WMS_EFFECT_ADMISSION_ENABLED"] for role in roles}
+        assert values == {"${WMS_EFFECT_ADMISSION_ENABLED:-false}"}
+
+
 def test_fulfillment_worker_has_no_replica_override_in_any_compose_contract() -> None:
     import yaml
 
@@ -212,8 +245,8 @@ async def test_effect_preparation_runtime_is_single_loop_owned_and_has_no_resour
     monkeypatch.setattr(runtime_module, "_active_runtime", None)
     monkeypatch.setattr(runtime_module, "_active_loop", None)
     catalog = object()
-    owner = runtime_module.build_wms_effect_preparation_runtime(catalog=catalog)
-    other = runtime_module.build_wms_effect_preparation_runtime(catalog=catalog)
+    owner = runtime_module.build_wms_effect_preparation_runtime(catalog=catalog, admission_enabled=True)
+    other = runtime_module.build_wms_effect_preparation_runtime(catalog=catalog, admission_enabled=True)
 
     runtime_module.bind_wms_effect_preparation_runtime(owner)
     runtime_module.bind_wms_effect_preparation_runtime(owner)
@@ -235,8 +268,8 @@ async def test_effect_preparation_runtime_rejects_cross_loop_unbind_and_closes_o
 
     monkeypatch.setattr(runtime_module, "_active_runtime", None)
     monkeypatch.setattr(runtime_module, "_active_loop", None)
-    owner = runtime_module.build_wms_effect_preparation_runtime(catalog=object())
-    candidate = runtime_module.build_wms_effect_preparation_runtime(catalog=object())
+    owner = runtime_module.build_wms_effect_preparation_runtime(catalog=object(), admission_enabled=True)
+    candidate = runtime_module.build_wms_effect_preparation_runtime(catalog=object(), admission_enabled=True)
     runtime_module.bind_wms_effect_preparation_runtime(owner)
 
     async def unbind_from_other_loop() -> str:

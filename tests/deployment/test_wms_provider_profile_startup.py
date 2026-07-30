@@ -25,6 +25,12 @@ def test_settings_accepts_only_absolute_provider_profile_file(tmp_path) -> None:
         Settings(WMS_PROVIDER_PROFILE_FILE="config/provider.yaml")  # pyright: ignore[reportCallIssue]
 
 
+def test_wms_effect_admission_defaults_closed_and_accepts_boolean_override() -> None:
+    assert Settings.model_fields["WMS_EFFECT_ADMISSION_ENABLED"].default is False
+    configured = Settings(WMS_EFFECT_ADMISSION_ENABLED="true")  # pyright: ignore[reportCallIssue]
+    assert configured.WMS_EFFECT_ADMISSION_ENABLED is True
+
+
 def test_startup_assembly_rejects_missing_profile_path() -> None:
     from src.app.wms_integration.provider_startup import assemble_wms_provider_startup
 

@@ -126,6 +126,7 @@ async def test_e11_preparation_uses_existing_domain_hook_before_outbox() -> None
 
     await WmsEffectPreparationRuntime(
         catalog=build_provider_catalog(),
+        allow_new_claim=lambda _definition: True,
         domain_projector=projector,
     ).prepare(operation, request, execution=execution)
 

@@ -259,7 +259,10 @@ def test_existing_handoff_demand_produces_one_domain_e11_intent_and_outbox() -> 
             )
             await db.commit()
 
-        runtime = build_wms_effect_preparation_runtime(catalog=build_provider_catalog())
+        runtime = build_wms_effect_preparation_runtime(
+            catalog=build_provider_catalog(),
+            admission_enabled=True,
+        )
         bind_wms_effect_preparation_runtime(runtime)
         try:
 
@@ -295,6 +298,70 @@ def test_existing_handoff_demand_produces_one_domain_e11_intent_and_outbox() -> 
             assert demand.active_full_box_exchange_intent_id is not None
             assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 1
             assert await verify_db.scalar(select(func.count()).select_from(SystemOutbox)) == 1
+
+    asyncio.run(with_database(scenario, revision="head"))
+
+
+@pytest.mark.integration
+def test_e11_closed_admission_rolls_back_reservation_domain_and_double_ledger() -> None:
+    async def scenario(session_factory: async_sessionmaker[AsyncSession]) -> None:
+        async with session_factory() as db:
+            graph = await seed_exchange_graph(db)
+            graph.demand.bin_snapshots_json = {"bins": [{"bin_code": "FULL-1", "usage": 0.9}]}
+            assert graph.demand.id is not None
+            db.add(
+                ExecutionCorrelation(
+                    correlation_id=f"smt-inbound-handoff:{graph.demand.id}",
+                    execution_session_id=None,
+                    trace_id=graph.demand.trace_id,
+                    source_event_id=graph.demand.rack_release_id,
+                    business_owner_key=graph.demand.demand_key,
+                )
+            )
+            await db.commit()
+            owner_count_before = int(await db.scalar(select(func.count()).select_from(MaterialFlowOwner)) or 0)
+
+        runtime = build_wms_effect_preparation_runtime(
+            catalog=build_provider_catalog(),
+            admission_enabled=False,
+        )
+        bind_wms_effect_preparation_runtime(runtime)
+        try:
+
+            class _Gateway:
+                def __init__(self) -> None:
+                    self.enqueue_count = 0
+
+                def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+                    _ = targets, limit
+                    self.enqueue_count += 1
+
+            gateway = _Gateway()
+            async with session_factory() as db:
+                summary = await _scan_smt_inbound_handoff_demands_in_transaction(
+                    db,
+                    service=SmtInboundHandoffService(),
+                    scan_limit=1,
+                    recovery_limit=0,
+                    claim_limit=0,
+                    stale_after_seconds=1,
+                    legacy_limit=None,
+                    queue_gateway=gateway,
+                )
+                assert summary["advanced"] == 0
+                assert summary["recovery_errors"] == 1
+                assert gateway.enqueue_count == 0
+        finally:
+            unbind_wms_effect_preparation_runtime(runtime)
+
+        async with session_factory() as verify_db:
+            demand = await verify_db.get(type(graph.demand), graph.demand.id)
+            assert demand is not None
+            assert demand.status == SmtInboundHandoffDemandStatus.EVALUATING
+            assert demand.active_full_box_exchange_intent_id is None
+            assert await verify_db.scalar(select(func.count()).select_from(MaterialFlowOwner)) == owner_count_before
+            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 0
+            assert await verify_db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
 
     asyncio.run(with_database(scenario, revision="head"))
 

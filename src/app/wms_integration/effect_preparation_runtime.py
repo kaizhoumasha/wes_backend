@@ -9,8 +9,12 @@ from src.app.runtime.orchestration.services.wms_fulfillment_domain_projector imp
     wms_fulfillment_domain_projector,
 )
 from src.app.runtime.system_capabilities.wms.effect_runtime import WmsEffectPreparationRuntime
+from src.app.wms_integration.operation_registry import EFFECT_OPERATION_IDENTITIES
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition
     from src.app.runtime.system_capabilities.wms.provider_catalog import WmsProviderCatalog
 
 
@@ -18,12 +22,31 @@ _active_runtime: WmsEffectPreparationRuntime | None = None
 _active_loop: asyncio.AbstractEventLoop | None = None
 
 
-def build_wms_effect_preparation_runtime(*, catalog: WmsProviderCatalog) -> WmsEffectPreparationRuntime:
+def freeze_wms_effect_admission_policy(
+    admission_enabled: bool,
+) -> Callable[[SystemCapabilityDefinition], bool]:
+    """冻结仅控制 16 项 WMS EFFECT 的新 claim policy。"""
+
+    enabled = bool(admission_enabled)
+
+    def allow_new_claim(definition: SystemCapabilityDefinition) -> bool:
+        identity = f"{definition.capability_key}@{definition.contract_version}"
+        return identity not in EFFECT_OPERATION_IDENTITIES or enabled
+
+    return allow_new_claim
+
+
+def build_wms_effect_preparation_runtime(
+    *,
+    catalog: WmsProviderCatalog,
+    admission_enabled: bool,
+) -> WmsEffectPreparationRuntime:
     """从已经校验的部署 catalog 构造事务内 EFFECT preparation runtime。"""
 
     return WmsEffectPreparationRuntime(
         catalog=catalog,
         domain_projector=wms_fulfillment_domain_projector,
+        allow_new_claim=freeze_wms_effect_admission_policy(admission_enabled),
     )
 
 
@@ -79,6 +102,7 @@ __all__ = [
     "build_wms_effect_preparation_runtime",
     "close_bound_wms_effect_preparation_runtime",
     "close_wms_effect_preparation_runtime",
+    "freeze_wms_effect_admission_policy",
     "get_wms_effect_preparation_runtime",
     "unbind_wms_effect_preparation_runtime",
 ]

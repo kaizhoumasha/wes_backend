@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityAdmissionClosed,
     SystemCapabilityClaimResult,
     SystemCapabilityIdempotencyConflict,
 )
@@ -101,7 +102,13 @@ class RuntimeIntentLogRepository:
         db.add_all((intent_log, outbox))
         await db.flush()
 
-    async def claim_or_match(self, db: Any, **values: Any) -> SystemCapabilityClaimResult:
+    async def claim_or_match(
+        self,
+        db: Any,
+        *,
+        allow_insert: bool = True,
+        **values: Any,
+    ) -> SystemCapabilityClaimResult:
         """在唯一 RuntimeIntentLog ledger 上执行 provisional claim。"""
 
         table = cast("Any", RuntimeIntentLog).__table__
@@ -117,6 +124,16 @@ class RuntimeIntentLogRepository:
         dispatch_key = values.get("dispatch_key")
         if not isinstance(dispatch_key, str) or not dispatch_key:
             raise ValueError("runtime intent effect claim 必须显式提供 dispatch_key")
+        if not allow_insert:
+            row = await self._get_effect_for_update(db, **identity)
+            if row is None:
+                raise SystemCapabilityAdmissionClosed
+            return self._match_existing_claim(
+                row,
+                values=values,
+                identity=identity,
+                dispatch_key=dispatch_key,
+            )
         updated_at_ms = values["updated_at_ms"]
         insert_values = {
             "execution_session_id": values["execution_session_id"],
@@ -165,6 +182,23 @@ class RuntimeIntentLogRepository:
         row = await self._get_effect_for_update(db, **identity)
         if row is None:
             raise RuntimeError("runtime intent effect claim conflict row disappeared")
+        return self._match_existing_claim(
+            row,
+            values=values,
+            identity=identity,
+            dispatch_key=dispatch_key,
+        )
+
+    @staticmethod
+    def _match_existing_claim(
+        row: RuntimeIntentLog,
+        *,
+        values: dict[str, Any],
+        identity: dict[str, Any],
+        dispatch_key: str,
+    ) -> SystemCapabilityClaimResult:
+        """统一校验 insert-conflict 与 existing-only 命中的不可变 claim。"""
+
         if row.request_hash != values["request_hash"]:
             raise SystemCapabilityIdempotencyConflict(
                 **identity,

@@ -16,10 +16,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from src.app.resource.models import RackKind
     from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
+    from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition
     from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
     from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 
@@ -106,6 +107,7 @@ class WorklineRuntimeServices:
     station_lease_status_provider: StationLeaseStatusProvider | None = None
     wms_query_execution_port: WmsQueryExecutionPort | None = None
     wms_effect_preparation_port: WmsEffectPreparationPort | None = None
+    allow_new_system_capability_claim: Callable[[SystemCapabilityDefinition], bool] | None = None
 
 
 def build_workline_runtime_services(
@@ -142,6 +144,9 @@ def build_workline_runtime_services(
         from src.app.wms_integration.effect_preparation_runtime import get_wms_effect_preparation_runtime
 
         wms_effect_preparation_port = get_wms_effect_preparation_runtime()
+    allow_new_claim = getattr(wms_effect_preparation_port, "allow_new_claim", None)
+    if wms_effect_preparation_port is not None and not callable(allow_new_claim):
+        raise RuntimeError("bound WMS EFFECT preparation port requires callable allow_new_claim policy")
 
     return WorklineRuntimeServices(
         bin_allocator=smt_rack_bin_scheduling_service,
@@ -149,6 +154,7 @@ def build_workline_runtime_services(
         station_lease_status_provider=station_lease_status_provider,
         wms_query_execution_port=wms_query_execution_port,
         wms_effect_preparation_port=wms_effect_preparation_port,
+        allow_new_system_capability_claim=allow_new_claim,
     )
 
 

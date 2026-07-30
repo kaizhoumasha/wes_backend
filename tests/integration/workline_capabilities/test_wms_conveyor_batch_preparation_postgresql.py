@@ -14,18 +14,31 @@ from src.app.resource.models import Bin, RackSlotTemplate
 from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
+from src.app.runtime.orchestration.models.session import WorklineSession
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackService,
+)
 from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember
+from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
+from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION as SMT_DEFINITION
 from src.app.sys.models.outbox import SystemOutbox
+from src.app.wms_integration.effect_preparation_runtime import build_wms_effect_preparation_runtime
+from src.app.workline.models.plugin_binding import WorklinePluginBinding
 from src.app.workline.models.workline import WorkLine
+from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 from tests.support.wms_conveyor_batch_postgresql import (
     REVISION,
     claim_reservation,
     domain_types,
+    execution_ctx,
     mark_bin_unavailable,
     prepare_reservation,
     reserve_batch,
+    runtime_intent,
     seed_batch_graph,
     seed_reserved_positions,
     with_database,
@@ -278,6 +291,87 @@ def test_e12_claim_member_route_and_outbox_are_one_transaction() -> None:
                 for item in sorted(reservation.request.items, key=lambda item: item.route_instance_id)
             )
             assert await verify_db.scalar(select(func.count()).select_from(SystemOutbox)) == 1
+
+    asyncio.run(with_database(scenario))
+
+
+@pytest.mark.integration
+def test_e12_stage_three_closed_admission_rolls_back_domain_and_double_ledger() -> None:
+    async def scenario(session_factory) -> None:  # type: ignore[no-untyped-def]
+        inbox_service = RuntimeInboxService()
+        service_type, _projector_type = domain_types()
+        async with session_factory() as setup_db:
+            graph = await seed_batch_graph(
+                setup_db,
+                graph_index=64,
+                entry_capacity=2,
+                ctu_capacity=2,
+                bin_count=2,
+            )
+            binding = await setup_db.get(WorklinePluginBinding, graph.binding_id)
+            assert binding is not None
+            binding.environment = "sandbox"
+            await setup_db.commit()
+
+        async with session_factory() as claim_db:
+            [claim] = await inbox_service.claim_for_processing(
+                claim_db,
+                limit=1,
+                processor_token="e12-admission-closed",
+                stale_after_seconds=60,
+            )
+            assert claim["id"] == graph.inbox_id
+            await claim_db.commit()
+
+        runtime = build_wms_effect_preparation_runtime(
+            catalog=build_provider_catalog(),
+            admission_enabled=False,
+        )
+        async with session_factory() as db:
+            ctx = await execution_ctx(db, graph)
+            session = ctx["session"]
+            inbox = ctx["inbox"]
+            workline = ctx["workline"]
+            assert isinstance(session, WorklineSession)
+            assert isinstance(inbox, RuntimeInbox)
+            reservation = await reserve_batch(service_type(now_ms=lambda: 1234), db, graph)
+            intent = runtime_intent(ctx, reservation)
+            snapshot = AttemptSnapshot(
+                processor_token=str(claim["processor_token"]),
+                session_version=session.version,
+                plugin_state_version=session.plugin_state_version,
+                session_status=session.status.value,
+                definition_identity=SMT_DEFINITION.identity,
+                binding_id=session.plugin_binding_id,
+                binding_version=session.plugin_binding_version,
+                plugin_config_hash=session.plugin_config_hash,
+                index_digest=session.plugin_index_digest,
+                device_fact_versions=(),
+            )
+            with pytest.raises(ValueError, match="SYSTEM_CAPABILITY_EFFECT_ADMISSION_CLOSED"):
+                await RuntimeInboxWriteBackService(inbox_service=inbox_service).commit_plugin_attempt(
+                    db,
+                    expected_snapshot=snapshot,
+                    inbox_id=graph.inbox_id,
+                    session_id=graph.session_id,
+                    workline_id=graph.workline_id,
+                    trace_id=str(inbox.trace_id),
+                    write_set=AttemptWriteSet(
+                        evidence=(),
+                        next_state={"phase": "WAITING_SOURCE_PICK", "current_correlation": None},
+                        intents=(intent,),
+                        outcome_code="WMS_E12_RESERVE",
+                    ),
+                    workline=workline,
+                    effect_port_resolver=lambda _port_type: runtime,
+                    allow_new_claim=runtime.allow_new_claim,
+                )
+
+        async with session_factory() as verify_db:
+            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 0
+            assert await verify_db.scalar(select(func.count()).select_from(BinRouteInstance)) == 0
+            assert await verify_db.scalar(select(func.count()).select_from(WmsConveyorBatchMember)) == 0
+            assert await verify_db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
 
     asyncio.run(with_database(scenario))
 

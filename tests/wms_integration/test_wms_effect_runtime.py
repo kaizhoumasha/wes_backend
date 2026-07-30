@@ -24,6 +24,7 @@ from src.app.runtime.system_capabilities.wms.effect_runtime import (
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_transport import ExternalHttpProtocolResult, ExternalHttpTransportResult
 from src.app.sys.models import SystemOutbox
+from src.app.wms_integration.effect_preparation_runtime import freeze_wms_effect_admission_policy
 from src.app.wms_integration.effect_runtime import interpret_async_effect_ack_response
 from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsExecutionLane
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS, QUERY_OPERATIONS
@@ -91,6 +92,38 @@ class _Db:
 
     async def flush(self) -> None:
         self.flush_count += 1
+
+
+@pytest.mark.parametrize("operation", EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_closed_wms_effect_admission_rejects_every_effect_definition(operation) -> None:
+    policy = freeze_wms_effect_admission_policy(False)
+
+    assert policy(build_wms_effect_capability_definition(operation)) is False
+
+
+@pytest.mark.parametrize("operation", EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_enabled_wms_effect_admission_allows_every_effect_definition(operation) -> None:
+    policy = freeze_wms_effect_admission_policy(True)
+
+    assert policy(build_wms_effect_capability_definition(operation)) is True
+
+
+def test_closed_wms_effect_admission_does_not_block_non_wms_definition() -> None:
+    policy = freeze_wms_effect_admission_policy(False)
+
+    assert policy(SimpleNamespace(capability_key="runtime.session_hold", contract_version="v1")) is True
+
+
+def test_wms_effect_runtime_exposes_frozen_policy_as_read_only_property() -> None:
+    policy = freeze_wms_effect_admission_policy(False)
+    runtime = WmsEffectPreparationRuntime(
+        catalog=build_provider_catalog(),
+        allow_new_claim=policy,
+    )
+
+    assert runtime.allow_new_claim is policy
+    with pytest.raises(AttributeError):
+        runtime.allow_new_claim = lambda _definition: True  # type: ignore[misc]
 
 
 @pytest.mark.parametrize(
@@ -205,7 +238,10 @@ async def test_concrete_preparation_runtime_writes_one_frozen_outbox_without_htt
         idempotency_key="idempotency-key-1",
     )
 
-    prepared = await WmsEffectPreparationRuntime(catalog=build_provider_catalog()).prepare(
+    prepared = await WmsEffectPreparationRuntime(
+        catalog=build_provider_catalog(),
+        allow_new_claim=lambda _definition: True,
+    ).prepare(
         operation,
         request,
         execution=execution,
@@ -270,7 +306,10 @@ async def test_preparation_returns_transient_public_dispatch_target_from_static_
         idempotency_key="idempotency-target",
     )
 
-    prepared = await WmsEffectPreparationRuntime(catalog=build_provider_catalog()).prepare(
+    prepared = await WmsEffectPreparationRuntime(
+        catalog=build_provider_catalog(),
+        allow_new_claim=lambda _definition: True,
+    ).prepare(
         operation,
         request,
         execution=execution,
@@ -331,7 +370,10 @@ async def test_concrete_preparation_runtime_fails_closed_before_writing_outbox(
         execution.ctx = None
 
     with pytest.raises(expected_exception, match=message):
-        await WmsEffectPreparationRuntime(catalog=build_provider_catalog()).prepare(
+        await WmsEffectPreparationRuntime(
+            catalog=build_provider_catalog(),
+            allow_new_claim=lambda _definition: True,
+        ).prepare(
             operation,
             request,
             execution=execution,

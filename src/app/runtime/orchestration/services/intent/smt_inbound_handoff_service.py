@@ -387,6 +387,9 @@ class SmtInboundHandoffService:
         from src.app.runtime.orchestration.services.intent.runtime_domain_capability_authority_resolver import (
             runtime_domain_capability_authority_resolver,
         )
+        from src.app.runtime.orchestration.services.intent.system_capability_intent_service import (
+            SystemCapabilityIntentService,
+        )
         from src.app.wms_integration.effect_preparation_runtime import get_wms_effect_preparation_runtime
 
         authority = await runtime_domain_capability_authority_resolver.resolve(db, correlation_id=correlation_id)
@@ -408,6 +411,9 @@ class SmtInboundHandoffService:
             provider_snapshot={"provider_code": "RUNTIME", "profile": FULL_BOX_EXCHANGE_DEFINITION.admission},
         )
         result = await SystemCapabilityEffectService(
+            intent_service=SystemCapabilityIntentService(
+                allow_new_claim=preparation_runtime.allow_new_claim,
+            ),
             effect_port_resolver=lambda port_type: (
                 preparation_runtime if port_type is WmsEffectPreparationPort else None
             ),

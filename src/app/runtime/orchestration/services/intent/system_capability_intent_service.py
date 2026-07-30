@@ -19,13 +19,17 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntentKind,
     validate_system_capability_operation_key,
 )
-from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityAdmissionClosed,
+    SystemCapabilityClaimResult,
+)
 from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition, SystemCapabilityMode
 from src.core.logger import logger
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
     from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
@@ -65,6 +69,7 @@ class SystemCapabilityIntentService:
         effect_reducer: Any | None = None,
         effect_reconciliation_bridge: Any | None = None,
         domain_authority_resolver: Any | None = None,
+        allow_new_claim: Callable[[SystemCapabilityDefinition], bool] | None = None,
     ) -> None:
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
@@ -103,6 +108,9 @@ class SystemCapabilityIntentService:
         self._domain_authority_resolver = domain_authority_resolver
         self._plugin_definitions = dict(plugin_definitions)
         self._plugin_index_digest = plugin_index_digest
+        if allow_new_claim is not None and not callable(allow_new_claim):
+            raise TypeError("allow_new_claim must be callable")
+        self._allow_new_claim = allow_new_claim if allow_new_claim is not None else (lambda _definition: True)
 
     def get_effect_definition(self, capability_key: str, contract_version: str) -> SystemCapabilityDefinition | None:
         """按生成索引身份读取 EFFECT 定义，供事务补偿复用同一 handler 合同。"""
@@ -173,7 +181,12 @@ class SystemCapabilityIntentService:
             "dispatch_key": intent.dispatch_key,
             "updated_at_ms": int(timezone.now_utc().timestamp() * 1000),
         }
-        claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
+        allow_insert = self._allow_new_claim(definition)
+        claim_result = await self._effect_repository.claim_or_match(
+            ctx["db"],
+            allow_insert=allow_insert,
+            **claim,
+        )
         intent_log = None
         has_durable_outbox = False
         is_match = getattr(claim_result, "value", claim_result) == SystemCapabilityClaimResult.MATCH.value
@@ -185,6 +198,12 @@ class SystemCapabilityIntentService:
                 raise RuntimeError("system capability effect claim row is missing")
             if definition.completion_mode.value == "OUTBOX_ASYNC" and is_match:
                 has_durable_outbox = await self._effect_repository.has_claimed_outbox(ctx["db"], claim=claim)
+                if (
+                    not allow_insert
+                    and intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+                    and not has_durable_outbox
+                ):
+                    raise SystemCapabilityAdmissionClosed
         return PreparedSystemCapabilityIntent(
             definition=definition,
             request=request,

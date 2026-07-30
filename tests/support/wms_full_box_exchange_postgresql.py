@@ -410,6 +410,7 @@ async def prepare_reservation(
     )
     await WmsEffectPreparationRuntime(
         catalog=build_provider_catalog(),
+        allow_new_claim=lambda _definition: True,
         domain_projector=projector,
     ).prepare(
         reservation.operation,

@@ -66,6 +66,7 @@ Factory WMS Adapter。
 | 工程原则          | 严格遵循 DRY/KISS/SOLID/YAGNI；不保留旧版本、旧配置、旧数据或旧测试兼容路径                                                                           |
 | QUERY 缓存      | 本期不做跨请求缓存；单次执行只复用同一 authority snapshot                                                                                     |
 | 发布方式          | 停止 admission 后协调冷启动；不建设滚动 revision 协调器                                                                                     |
+| EFFECT 发布准入  | 仅使用一个进程启动级布尔开关控制 16 项 EFFECT 新建 Intent；生产默认关闭，QUERY 与既有 EFFECT 恢复不受影响，不提供按 operation 开关                               |
 | 上线前 EFFECT 验收 | 16 项均要求真实 TCP 协议黑盒；不要求在 GO 前完成 E08–E14 七项异步物理任务实机演练                                                                        |
 | 外部验收环境责任      | WES 只调用验收 profile 配置的 endpoint；环境/租户隔离、RCS 开关及避免真实物理调度由 WMS 方负责，WES 不建模也不控制                                                        |
 
@@ -899,7 +900,22 @@ Operation contract 声明允许的 path 参数；启动时必须编译并验证 
 fulfillment 专属检查失败只阻断 fulfillment worker。fulfillment 不可用不得耗尽数据 lane 的连接池、breaker
 或恢复预算，但依赖其业务结果的具体流程仍须等待或进入 scoped Hold。
 
-### 8.3 endpoint 更新
+### 8.3 WMS EFFECT 新建准入
+
+- `WMS_EFFECT_ADMISSION_ENABLED` 是唯一准入开关，默认值和生产配置均为 `false`；开发/测试环境可显式设为
+  `true`。开关在进程启动时冻结，不支持运行时数据库配置、管理 API、审批流或按 operation 独立开关。
+- 开关只控制 16 项 WMS EFFECT 的**新建** `RuntimeIntentLog`。关闭时 claim 进入 existing-only 模式：
+  不存在的 identity 在写入 Intent/Outbox 前稳定拒绝；既有同 identity 不同 payload、dispatch 或领域权威快照
+  仍被稳定拒绝，不得借既有 ledger 越权重放。
+- 既有 exact-match EFFECT 继续使用冻结 binding 恢复：已有 durable Outbox、已接受或已终结的请求可重放，
+  不重复执行 handler；`PROPOSED` 但缺少 Outbox 的孤立 Intent 不允许借重放补写 Outbox。
+- 19 项 QUERY、E08–E14 status scanner、callback status hint、reconciliation 和既有 Outbox 派发均不读取该
+  开关。WMS preparation port 存在但没有可调用的冻结 policy，或 policy 会被自定义 applier 忽略时，composition
+  必须 fail closed。
+- API、通用 Celery、`wms-fulfillment` 和 Beat 使用同一部署值；切换时必须协调冷启动全部可能创建 WMS
+  Intent 的进程，禁止新旧开关值并存。
+
+### 8.4 endpoint 更新
 
 - 本系统尚未发布，不建设滚动 revision 协调器，也不保留旧配置 fallback。
 - 关闭 WMS admission，停止所有可创建新 Intent 的 API/Celery 进程后替换 profile。
@@ -1210,7 +1226,8 @@ flowchart TD
 
 ### T10：单工厂整体切换
 
-- 关闭 WMS admission，停止全部新 Intent producer；不处理旧版本或旧开发/测试数据。
+- 设置唯一 WMS EFFECT admission 为关闭并协调冷启动全部新 Intent producer；关闭后新请求在双账本写入前
+  fail closed，既有 exact-match EFFECT 继续恢复；不处理旧版本或旧开发/测试数据。
 - 以同一构建/profile 冷启动现有 WES 进程和独立 `wms-fulfillment` worker，核对 digest 后执行
   QUERY/数据 EFFECT smoke、fulfillment EFFECT/status worker 和 callback smoke。
 - 确认 WMS 侧零残留测试 effect 后，一次性开放全场景 admission。
@@ -1304,6 +1321,11 @@ status reducer、callback normalizer，以及本次修改的 material-flow capab
 ### 14.3 每个 EFFECT 的必测题
 
 - 静态注册表驱动的参数化矩阵必须遍历 16 项 EFFECT；每项提供合法 request/result、拒绝码与 identity mismatch fixture。
+- 单一 admission 关闭矩阵必须遍历 16 项 EFFECT，并证明新请求在 handler 前拒绝且零
+  `RuntimeIntentLog/SystemOutbox`；同一 WMS policy 不得阻断非 WMS EFFECT 或 19 项 QUERY。
+- 标准 Plugin Stage 3 与 E11 领域旁路必须各有真实 PostgreSQL 事务测试，证明关闭时领域预留、双账本和入队
+  原子回滚；既有 durable exact-match 可恢复，孤立 `PROPOSED` 不补写 Outbox，同键异 payload/dispatch/
+  领域快照仍被拒绝。
 - 静态门禁精确断言 E01–E07/E15/E16 为 9 项 `SYNC_RESULT`，E08–E14 为 7 项 `ASYNC_TASK`；Profile
   不存在 completion mode 字段，任一分类漂移、缺失或重复均使测试收集失败。
 - 16 项共同覆盖首次请求、处理中/已完成同 key 同 payload 重放、同 key 异 fingerprint 冲突、真实 deadline

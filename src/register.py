@@ -57,7 +57,10 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         bind_wms_data_lane_query_runtime(wms_data_lane_runtime)
         _app.state.wms_data_lane_query_runtime = wms_data_lane_runtime
 
-        effect_preparation_candidate = build_wms_effect_preparation_runtime(catalog=startup.catalog)
+        effect_preparation_candidate = build_wms_effect_preparation_runtime(
+            catalog=startup.catalog,
+            admission_enabled=settings.WMS_EFFECT_ADMISSION_ENABLED,
+        )
         bind_wms_effect_preparation_runtime(effect_preparation_candidate)
         wms_effect_preparation_runtime = effect_preparation_candidate
         _app.state.wms_effect_preparation_runtime = wms_effect_preparation_runtime

@@ -158,7 +158,10 @@ class CeleryAsyncRuntime:
         )
         bind_wms_effect_lane_runtime(effect_runtime)
         progress["wms_effect_lane"] = True
-        effect_preparation_candidate = build_wms_effect_preparation_runtime(catalog=startup.catalog)
+        effect_preparation_candidate = build_wms_effect_preparation_runtime(
+            catalog=startup.catalog,
+            admission_enabled=settings.WMS_EFFECT_ADMISSION_ENABLED,
+        )
         bind_wms_effect_preparation_runtime(effect_preparation_candidate)
         progress["wms_effect_preparation"] = effect_preparation_candidate
         if process_role is WmsProviderProcessRole.WES:

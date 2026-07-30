@@ -27,6 +27,8 @@ from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSI
 from src.core.task_queue_gateway import OutboxDispatchTarget
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from src.app.runtime.orchestration.services.wms_fulfillment_domain_projector import (
         WmsFulfillmentDomainProjector,
     )
@@ -100,10 +102,18 @@ class WmsEffectPreparationRuntime:
         self,
         *,
         catalog: WmsProviderCatalog,
+        allow_new_claim: Callable[[SystemCapabilityDefinition], bool],
         domain_projector: WmsFulfillmentDomainProjector | None = None,
     ) -> None:
         self._catalog = catalog
         self._domain_projector = domain_projector
+        self._allow_new_claim = allow_new_claim
+
+    @property
+    def allow_new_claim(self) -> Callable[[SystemCapabilityDefinition], bool]:
+        """返回 composition root 冻结的 EFFECT 新 claim 准入策略。"""
+
+        return self._allow_new_claim
 
     async def prepare(
         self,

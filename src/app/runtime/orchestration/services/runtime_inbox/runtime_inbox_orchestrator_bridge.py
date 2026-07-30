@@ -1668,6 +1668,7 @@ class RuntimeInboxProcessorBridge:
             devices_by_role=devices_by_role,
             trusted_state_preservation=True,
             effect_port_resolver=attempt_runtime.context.get_effect_port,
+            allow_new_claim=getattr(services, "allow_new_system_capability_claim", None),
         )
         disposition = writeback_result.disposition
         if disposition in {WriteDisposition.COMMITTED, WriteDisposition.TERMINAL_FAILURE}:

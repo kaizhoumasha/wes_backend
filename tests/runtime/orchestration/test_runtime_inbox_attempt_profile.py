@@ -218,6 +218,56 @@ def test_stage_three_effect_applier_resolves_attempt_scoped_effect_port() -> Non
     )
 
 
+def test_stage_three_effect_applier_injects_frozen_admission_policy() -> None:
+    def policy(_definition) -> bool:
+        return False
+
+    effect_applier = RuntimeInboxWriteBackService().effect_applier_for_attempt(
+        effect_port_resolver=lambda _port_type: object(),
+        allow_new_claim=policy,
+    )
+
+    intent_service = effect_applier._system_capability_effect_service._intent_service
+    assert intent_service._allow_new_claim is policy
+
+
+def test_runtime_services_expose_the_bound_effect_runtime_policy() -> None:
+    def policy(_definition) -> bool:
+        return False
+
+    effect_port = SimpleNamespace(allow_new_claim=policy)
+
+    services = build_workline_runtime_services(
+        wms_effect_preparation_port=effect_port,
+    )
+
+    assert services.allow_new_system_capability_claim is policy
+
+
+def test_runtime_services_reject_effect_port_without_admission_policy() -> None:
+    with pytest.raises(RuntimeError, match="allow_new_claim"):
+        build_workline_runtime_services(
+            wms_effect_preparation_port=object(),
+        )
+
+
+def test_stage_three_rejects_policy_when_custom_effect_applier_would_ignore_it() -> None:
+    service = RuntimeInboxWriteBackService(effect_applier=object())
+
+    with pytest.raises(RuntimeError, match="custom effect applier"):
+        service.effect_applier_for_attempt(
+            effect_port_resolver=lambda _port_type: object(),
+            allow_new_claim=lambda _definition: False,
+        )
+
+
+def test_stage_three_rejects_policy_without_effect_port_resolver() -> None:
+    with pytest.raises(RuntimeError, match="effect port resolver"):
+        RuntimeInboxWriteBackService().effect_applier_for_attempt(
+            allow_new_claim=lambda _definition: False,
+        )
+
+
 @pytest.mark.asyncio
 async def test_real_runtime_services_leave_query_port_unregistered_without_lane_owner() -> None:
     runtime = SimpleNamespace(port_registry=CapabilityPortRegistry())

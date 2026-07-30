@@ -77,8 +77,12 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
 - Task 10: pending — 执行单 revision 冷启动与协议 GO
   - Provider profile production mount checkpoint verified（2026-07-30）：生产 4 角色与 test-deploy
     现有 3 角色共享宿主机唯一 profile、固定容器路径和只读挂载；缺失/空 host 变量 fail closed。
-    deployment 定向 `40 passed`，独立复审 `Approved`。现场权限 smoke、digest attestation、REAL_TCP、
-    admission、容量和 GO 签字仍未完成。
+    deployment 定向 `40 passed`，独立复审 `Approved`。
+  - Single WMS EFFECT admission checkpoint verified（2026-07-30）：唯一进程启动级开关生产默认关闭，
+    一次控制 16 项 EFFECT 新建 Intent；关闭时 existing-only claim、exact durable replay、冲突和 orphan
+    语义已收敛，19 项 QUERY 与既有 status/callback/reconciliation 不受影响。标准 E12 Stage 3 与 E11
+    旁路真实 PostgreSQL 事务均验证零残留双账本/领域预留/入队；核心与部署定向 `211 passed`，独立复审
+    `Approved`。现场权限 smoke、digest attestation、REAL_TCP、容量和 GO 签字仍未完成。
 
 ## Baseline
 

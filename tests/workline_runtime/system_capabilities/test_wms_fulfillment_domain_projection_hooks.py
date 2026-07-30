@@ -126,6 +126,7 @@ async def test_domain_preparation_runs_after_intent_claim_and_before_outbox_writ
 
     await WmsEffectPreparationRuntime(
         catalog=build_provider_catalog(),
+        allow_new_claim=lambda _definition: True,
         domain_projector=projector,
     ).prepare(operation, request, execution=execution)
 
@@ -144,7 +145,10 @@ async def test_domain_operation_without_a_projector_binding_fails_before_outbox(
     operation, request, execution = _e08_preparation()
 
     with pytest.raises(RuntimeError, match="domain projector"):
-        await WmsEffectPreparationRuntime(catalog=build_provider_catalog()).prepare(
+        await WmsEffectPreparationRuntime(
+            catalog=build_provider_catalog(),
+            allow_new_claim=lambda _definition: True,
+        ).prepare(
             operation,
             request,
             execution=execution,

@@ -12,7 +12,10 @@ from sqlalchemy.exc import DBAPIError
 
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
-from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
+from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityAdmissionClosed,
+    SystemCapabilityIdempotencyConflict,
+)
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode
 from src.app.runtime.system_capabilities.outcomes import (
     BusinessReject,
@@ -99,6 +102,14 @@ class SystemCapabilityEffectService:
                 outcome=ContractViolation(
                     error_code="IDEMPOTENCY_CONFLICT",
                     message="same operation identity was claimed with a different payload",
+                ),
+                completion_mode=None,
+            )
+        except SystemCapabilityAdmissionClosed:
+            return SystemCapabilityEffectResult(
+                outcome=ContractViolation(
+                    error_code="SYSTEM_CAPABILITY_EFFECT_ADMISSION_CLOSED",
+                    message="system capability EFFECT admission is closed for new claims",
                 ),
                 completion_mode=None,
             )
