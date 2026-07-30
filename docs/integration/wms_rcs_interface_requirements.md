@@ -13,19 +13,27 @@ External HTTP Outbox 和请求期 provider 选择均已删除，不是可恢复�
 
 ## 2. WMS 调用 WES
 
-统一入口为 `POST /api/v1/callback/external`。允许的普通事件只有：
+普通业务事件统一进入 `POST /api/v1/callback/event`，只允许：
 
 - `WMS_GRN_RECEIVED`
 - `WMS_PALLET_ARRIVED`
 - `WMS_INVENTORY_UPDATED`
 - `WMS_PDA_OPERATION_RECORDED`
 
-异步 EFFECT 只允许 `WMS_EFFECT_STATUS_HINT`。Hint 必须携带已注册的 E08–E14
-`operation_identity`、`idempotency_key` 与 `dispatch_key`，不得携带或声明业务终态。
+普通事件顶层必须包含 `source_system=WMS`、`event_type`、`source_event_id`、`source_version`、
+offset-aware `occurred_at`、`request_id`、可选 `correlation_id` 和 event-specific `data`。
+`WMS_GRN_RECEIVED.data` 的业务身份是 `grn_id + po_number + po_item + material_code`，不得包含
+`item_count` 或 `items[]`。
 
-所有回调必须包含稳定 `source_event_id`、`source_system=WMS`、`trace_id` 和版本信息。
-RuntimeInbox 以 payload 自身的 `callback_type` 为权威；路由参数、内部参数和沙箱参数不能覆盖 payload
-中的类型。未在冻结允许集内的 WMS/RCS 类型一律拒绝，且不得写入 RuntimeInbox。
+异步 EFFECT 提示只进入 `POST /api/v1/callback/external`，且只允许
+`WMS_EFFECT_STATUS_HINT`。Hint 顶层只允许必填 `source_system=WMS`、`callback_type`、
+`source_event_id`（最长 160 字符）、offset-aware `occurred_at`、`data` 和可选 `trace_id`；
+`data` 只允许已注册 E08–E14 的 `operation_identity`、`idempotency_key` 与 `dispatch_key`。
+不得携带 `command_code`、`device_code`、`finish_time`、`status`、`result` 或其它额外字段。
+
+RuntimeInbox 以 payload 自身的事件类型为权威；路由参数、内部参数和沙箱参数不能覆盖 payload
+中的类型。普通事件提交到 `/external`、hint 提交到 `/event`、未在冻结允许集内的 WMS/RCS 类型均拒绝，
+且不得写入 RuntimeInbox。
 
 ## 3. WES 调用 WMS
 
@@ -42,7 +50,8 @@ operation 的完整字段、35 条清单和 E01–E14 编号以
 ## 4. RuntimeInbox 与幂等
 
 - WMS 为每条普通事件和 status hint 生成全局唯一 `source_event_id`。
-- WES 以 provider、event type、source event identity 与 canonical payload hash 判定重复或冲突。
+- 四类普通事件以 `source_system + source_event_id` 判定身份；同一 ID 不能跨 event type 复用。
+- status hint 以 `source_system + callback_type + source_event_id` 判定身份。
 - 完全相同的重复消息只 ACK，不重复执行业务副作用。
 - 同一 identity 对应不同 payload 必须记录冲突并拒绝处理。
 - Callback API 只负责认证、合同校验、RuntimeInbox 落库与快速 ACK；业务处理由编排消费者执行。
@@ -57,7 +66,7 @@ UI 预测或本地轮询不得代替 ACK，也不得自行触发下一次 PICK�
 
 ## 6. 沙箱与 Mock
 
-- 沙箱 external callback 只接受上述四类普通事件和 `WMS_EFFECT_STATUS_HINT`。
+- 沙箱普通事件与 status hint 仍按生产端点分流，不提供 `/external` 普通事件兼容入口。
 - 沙箱不能构造旧 WMS/RCS 终态，也不能生成旧 transport Outbox。
 - Mock status route 只接受 E08–E14 identity；同步 operation 或未知 identity 必须在 fault injection、
   delay 和 hook 之前合同拒绝。

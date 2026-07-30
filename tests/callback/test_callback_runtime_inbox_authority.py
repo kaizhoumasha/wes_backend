@@ -228,8 +228,8 @@ async def test_callback_runtime_inbox_writer_does_not_synthesize_unverified_corr
 
 
 @pytest.mark.asyncio
-async def test_callback_runtime_inbox_writer_external_uses_data_source_event_id_before_request_id() -> None:
-    """external writer 必须优先使用 payload.data.source_event_id，避免 request_id 塌缩幂等键。"""
+async def test_callback_runtime_inbox_writer_wms_event_uses_top_source_event_id_before_request_id() -> None:
+    """普通 WMS event 必须使用公开顶层 source_event_id，不能退回 HTTP request_id。"""
 
     from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
 
@@ -243,20 +243,25 @@ async def test_callback_runtime_inbox_writer_external_uses_data_source_event_id_
     writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
 
     payload = {
-        "callback_type": "WMS_INVENTORY_UPDATED",
         "source_system": "WMS",
+        "event_type": "WMS_INVENTORY_UPDATED",
+        "source_event_id": "biz-source-evt-001",
+        "source_version": "1",
+        "occurred_at": "2026-07-30T08:00:00Z",
         "request_id": "REQ-EXT-001",
-        "data": {"source_event_id": "biz-source-evt-001"},
+        "data": {"inventory_reference": "inventory-001"},
     }
-    _ = await writer.write_external_callback(
+    _ = await writer.write_wms_event_callback(
         SimpleNamespace(),
         payload=payload,
         request_id="req-external-001",
+        event_type="WMS_INVENTORY_UPDATED",
     )
-    _ = await writer.write_external_callback(
+    _ = await writer.write_wms_event_callback(
         SimpleNamespace(),
         payload={**payload, "request_id": "REQ-EXT-002"},
         request_id="req-external-002",
+        event_type="WMS_INVENTORY_UPDATED",
     )
 
     assert [call["source_event_id"] for call in accepted_calls] == [
@@ -352,10 +357,15 @@ async def test_callback_runtime_inbox_writer_external_record_is_canonical_proces
 
     writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
     payload = {
-        "callback_type": "WMS_INVENTORY_UPDATED",
+        "callback_type": "WMS_EFFECT_STATUS_HINT",
         "source_system": "WMS",
         "source_event_id": "wms-event-001",
-        "dispatch_key": "rack:001",
+        "occurred_at": "2026-07-30T08:00:00Z",
+        "data": {
+            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+            "idempotency_key": "idem-rack-001",
+            "dispatch_key": "rack:001",
+        },
     }
 
     result = await writer.write_external_callback(

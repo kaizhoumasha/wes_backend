@@ -35,6 +35,11 @@ _KIND_CHECK_SQL = (
     "kind IN ('COMMAND_RESULT', 'DEVICE_EVENT', 'EXTERNAL_HTTP', 'INTERNAL_EVENT', 'TIMER_TIMEOUT', 'REPLAY_REQUEST')"
 )
 _STATUS_CHECK_SQL = "status IN ('RECEIVED', 'PROCESSING', 'PROCESSED', 'FAILED', 'DEAD_LETTER')"
+_WMS_BUSINESS_EVENT_INDEX_WHERE = text(
+    "provider_code = 'WMS' AND event_type IN "
+    "('WMS_GRN_RECEIVED', 'WMS_PALLET_ARRIVED', "
+    "'WMS_INVENTORY_UPDATED', 'WMS_PDA_OPERATION_RECORDED')"
+)
 _CONDITIONAL_ENVELOPE_CHECK_SQL = f"""
 (
     status = 'DEAD_LETTER'
@@ -102,6 +107,14 @@ class RuntimeInbox(BaseMixin, table=True):
             "source_event_id",
             unique=True,
             postgresql_where=text("source_event_id IS NOT NULL"),
+        ),
+        Index(
+            "ux_wes_runtime_runtime_inbox_wms_business_event",
+            "provider_code",
+            "source_event_id",
+            unique=True,
+            postgresql_where=_WMS_BUSINESS_EVENT_INDEX_WHERE,
+            sqlite_where=_WMS_BUSINESS_EVENT_INDEX_WHERE,
         ),
         Index(
             "ix_wes_runtime_runtime_inbox_status_received",

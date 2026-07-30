@@ -714,6 +714,7 @@ class RuntimeInboxProcessorBridge:
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
         material_unit_repository: MaterialUnitRepository | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
+        wms_inbound_handler: Any | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._inbox_service = inbox_service or runtime_inbox_service
@@ -728,6 +729,52 @@ class RuntimeInboxProcessorBridge:
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
         self._material_unit_repository = material_unit_repository or default_material_unit_repository
         self._queue_gateway = queue_gateway
+        self._wms_inbound_handler = wms_inbound_handler
+
+    def _resolve_wms_inbound_handler(self) -> Any:
+        if self._wms_inbound_handler is None:
+            from src.app.runtime.orchestration.services.inbox.wms_runtime_inbox_handler import (
+                WmsRuntimeInboxHandler,
+            )
+
+            self._wms_inbound_handler = WmsRuntimeInboxHandler()
+        return self._wms_inbound_handler
+
+    async def _process_wms_inbound(
+        self,
+        db: AsyncSession,
+        *,
+        inbox: Any,
+        inbox_pk: int,
+        processor_token: str,
+        payload: dict[str, Any],
+        event_type: str,
+    ) -> ProcessResult | None:
+        """消费普通 WMS event 或 status hint，不进入设备/工作线编排。"""
+
+        handled = await self._resolve_wms_inbound_handler().handle(
+            db,
+            provider_code=optional_str(getattr(inbox, "provider_code", None)),
+            event_type=event_type,
+            payload=payload,
+        )
+        if not handled:
+            return None
+
+        _require_fenced_update(
+            await self.inbox_service.mark_processed(
+                db,
+                inbox_id=inbox_pk,
+                lease_token=processor_token,
+            ),
+            action="mark_processed",
+            inbox_id=inbox_pk,
+        )
+        await db.commit()
+        result = _empty_result()
+        result["success"] += 1
+        result["processed"] += 1
+        return result
 
     def _enqueue_outbox_dispatch(self, targets: frozenset[OutboxDispatchTarget]) -> None:
         """提交后的即时触发失败不撤销业务事务，Beat 继续承担兜底。"""
@@ -1194,6 +1241,16 @@ class RuntimeInboxProcessorBridge:
             raise ValueError("RuntimeInbox event_type is required")
 
         result = _empty_result()
+        wms_result = await self._process_wms_inbound(
+            db,
+            inbox=inbox,
+            inbox_pk=inbox_pk,
+            processor_token=processor_token,
+            payload=payload,
+            event_type=resolved_event_type,
+        )
+        if wms_result is not None:
+            return wms_result
         if _is_lifecycle_only_external_callback(inbox, payload):
             # ingress 已在同一事务完成 lifecycle 副作用；processor 只负责
             # 以 lease fencing 收束 RuntimeInbox 终态，不重复加载会话或执行安全门禁。

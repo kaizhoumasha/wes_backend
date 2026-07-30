@@ -15,7 +15,6 @@ from typing import Protocol
 from pydantic import BaseModel
 
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
-from src.app.wms_integration.ports.event import InboundEventPort, WmsEventPort
 from src.app.wms_integration.ports.reconciliation_query import WmsReconciliationQueryPort
 
 
@@ -28,38 +27,6 @@ def test_wms_fulfillment_uses_only_operation_specific_typed_definitions():
     assert all(operation.request_model is not operation.result_model for operation in fulfillment_operations)
     assert all(operation.request_model.model_config["extra"] == "forbid" for operation in fulfillment_operations)
     assert all(operation.result_model.model_config["extra"] == "forbid" for operation in fulfillment_operations)
-
-
-def test_inbound_event_port_is_protocol():
-    assert issubclass(InboundEventPort, Protocol)
-
-
-def test_wms_event_port_is_protocol():
-    assert issubclass(WmsEventPort, Protocol)
-
-
-def test_wms_event_port_normalizer_signatures():
-    methods = [
-        "normalize_wms_grn_received",
-        "normalize_wms_pallet_arrived",
-        "normalize_wms_inventory_updated",
-        "normalize_wms_pda_operation_recorded",
-    ]
-    for name in methods:
-        assert hasattr(WmsEventPort, name), f"missing normalizer: {name}"
-
-
-def test_wms_event_port_have_docstrings():
-    assert WmsEventPort.__doc__, "WmsEventPort class needs docstring"
-    assert InboundEventPort.__doc__, "InboundEventPort class needs docstring"
-    for name in [
-        "normalize_wms_grn_received",
-        "normalize_wms_pallet_arrived",
-        "normalize_wms_inventory_updated",
-        "normalize_wms_pda_operation_recorded",
-    ]:
-        method = getattr(WmsEventPort, name)
-        assert method.__doc__, f"normalizer {name} needs docstring"
 
 
 def test_wms_event_data_classes_are_pydantic():
@@ -109,7 +76,7 @@ def test_wms_reconciliation_query_data_classes_are_pydantic():
 
 
 def test_remaining_wms_protocol_boundaries_are_present():
-    """保留 5 个真实 Protocol；单据和履约由 operation-specific Definition 承接。"""
+    """保留 4 个真实 Protocol；入站 normalizer 由 callback admission 直接组合。"""
     from src.app.wms_integration.ports.inventory_transaction import WmsInventoryTransactionPort
     from src.app.wms_integration.ports.master_data import WmsMasterDataPort
     from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
@@ -118,9 +85,8 @@ def test_remaining_wms_protocol_boundaries_are_present():
         WmsMasterDataPort,
         WmsQueryExecutionPort,
         WmsInventoryTransactionPort,
-        WmsEventPort,
         WmsReconciliationQueryPort,
     ]
-    assert len(all_ports) == 5
+    assert len(all_ports) == 4
     for port in all_ports:
         assert issubclass(port, Protocol)

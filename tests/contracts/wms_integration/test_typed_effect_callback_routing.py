@@ -44,6 +44,7 @@ def _hint_payload(**overrides: object) -> dict[str, object]:
         "callback_type": "WMS_EFFECT_STATUS_HINT",
         "source_system": "WMS",
         "source_event_id": "wms-hint-001",
+        "occurred_at": "2026-07-30T08:00:00Z",
         "trace_id": "trace-hint-001",
         "data": data,
     }

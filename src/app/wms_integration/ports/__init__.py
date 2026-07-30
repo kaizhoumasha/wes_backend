@@ -6,8 +6,7 @@
 1. WmsMasterDataPort (物料主数据, 包括 area/warehouse/storage_location/equipment)
 2. WmsQueryExecutionPort (19 项 registry-driven typed QUERY)
 3. WmsInventoryTransactionPort (库存事务: reserve/release/confirm/transfer)
-4. WmsEventPort (入站事件 normalizer)
-5. WmsReconciliationQueryPort (对账 drift 查询)
+4. WmsReconciliationQueryPort (对账 drift 查询)
 
 单据和履约不再公开粗粒度 Protocol；Q08–Q13/Q19 与 E07–E16 分别只由
 document_operations、fulfillment_operations 的 operation-specific Definition 表达。

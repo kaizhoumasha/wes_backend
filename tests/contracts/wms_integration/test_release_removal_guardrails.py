@@ -595,13 +595,16 @@ def test_active_docs_and_wms_fixtures_do_not_publish_removed_prefetch_or_transpo
         assert "target_location" not in source
 
 
-def test_callback_ingress_reuses_callback_domain_wms_allow_set() -> None:
+def test_callback_ingress_derives_external_wms_allow_set_from_callback_contract() -> None:
     import ast
     from importlib import import_module
 
     callback_ingress_module = import_module("src.app.callback.services.callback_ingress_service")
 
-    assert callback_ingress_module._EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES is WMS_ALLOWED_CALLBACK_TYPES
+    assert {
+        "WMS_EFFECT_STATUS_HINT",
+    } == callback_ingress_module._EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES
+    assert callback_ingress_module._EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES < WMS_ALLOWED_CALLBACK_TYPES
     source = (REPO_ROOT / "src/app/callback/services/callback_ingress_service.py").read_text()
     assert any(
         isinstance(node, ast.ImportFrom)

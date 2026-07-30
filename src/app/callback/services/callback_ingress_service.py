@@ -80,7 +80,21 @@ _TRACE_TOP_LEVEL_FIELDS = frozenset({"trace_id", "event_id", "causation_id"})
 _RUNTIME_INBOX_TRACE_IDENTIFIER_MAX_LENGTH = 120
 _REDACTED_SECRET = "***REDACTED***"  # noqa: S105  # nosec B105 -- 固定脱敏占位符，不是凭据。
 _EVENT_CALLBACK_TOP_LEVEL_FIELDS = (
-    frozenset({"device_code", "event_type", "timestamp", "data"}) | _TRACE_TOP_LEVEL_FIELDS
+    frozenset(
+        {
+            "device_code",
+            "event_type",
+            "timestamp",
+            "data",
+            "source_system",
+            "source_event_id",
+            "source_version",
+            "occurred_at",
+            "request_id",
+            "correlation_id",
+        }
+    )
+    | _TRACE_TOP_LEVEL_FIELDS
 )
 _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
     {"command_code", "device_code", "result", "finish_time", "source_event_id", "data", "error_detail"}
@@ -116,7 +130,7 @@ _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
         "device_code",
     }
 )
-_EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES = WMS_ALLOWED_CALLBACK_TYPES
+_EXTERNAL_CALLBACK_WMS_ALLOWED_TYPES = WMS_ALLOWED_CALLBACK_TYPES - WMS_ORDINARY_EVENT_TYPES
 _EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES = frozenset(
     {
         "DEVICE_RESULT",
@@ -1794,13 +1808,21 @@ class _EventCallbackContext:
     canonical_event_type: str
 
 
+@dataclass(frozen=True, slots=True)
+class _WmsEventCallbackContext:
+    """已通过 event-specific model 校验的普通 WMS 业务事件。"""
+
+    event_data: JsonDict
+    event_type: str
+
+
 async def _admit_event_callback(
     request: Request,
     db: AsyncSessionDep,
     *,
     request_id: str | None,
     start_time: float,
-) -> tuple[_EventCallbackContext | None, CallbackEventIngressDecision | None]:
+) -> tuple[_EventCallbackContext | _WmsEventCallbackContext | None, CallbackEventIngressDecision | None]:
     """完成 event 的包络、H4、设备上下文、canonical 与 provider 校验。"""
     event_data: JsonDict = {}
     try:
@@ -1820,6 +1842,34 @@ async def _admit_event_callback(
                 failure_stage=_FAILURE_STAGE_REQUEST_PARSE,
             )
         )
+
+    raw_event_type = resolve_first_str(event_data, ("event_type",))
+    raw_source_system = resolve_first_str(event_data, ("source_system",))
+    is_wms_event = raw_event_type in WMS_ORDINARY_EVENT_TYPES or raw_source_system == "WMS"
+    if is_wms_event:
+        try:
+            _validate_top_level_fields(event_data, _EVENT_CALLBACK_TOP_LEVEL_FIELDS, "event")
+            if raw_event_type is None:
+                raise ValueError("event_type is required")
+            from src.app.wms_integration.services.wms_event_normalizer import WmsEventNormalizer
+
+            normalized = WmsEventNormalizer().dispatch(raw_event_type, event_data)
+            canonical_payload = cast("JsonDict", normalized.model_dump(mode="json"))
+            return _WmsEventCallbackContext(event_data=canonical_payload, event_type=raw_event_type), None
+        except (ValidationError, ValueError) as exc:
+            detail = _summarize_validation_error(exc) if isinstance(exc, ValidationError) else str(exc)
+            return None, CallbackEventIngressDecision(
+                body=await _handle_event_validation_failure(
+                    db,
+                    request,
+                    request_id=request_id,
+                    event_data=event_data,
+                    message=f"WMS 事件包络校验失败: {detail}",
+                    response_time_ms=_response_time_ms(start_time),
+                    failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
+                ),
+                http_status=400,
+            )
 
     try:
         # event 是统一硬件事件入口：这里只做最小包络校验，
@@ -2117,6 +2167,80 @@ async def handle_callback_event(
     )
     if rejection is not None:
         return rejection
+    if isinstance(event_context, _WmsEventCallbackContext):
+        event_data = event_context.event_data
+        event_type = event_context.event_type
+        try:
+            outcome = await callback_orchestration_service.process_wms_event(
+                db,
+                payload=event_data,
+                event_type=event_type,
+                request_id=request_id,
+                trace_id=_resolve_callback_trace_id(event_data),
+                event_id=resolve_first_str(event_data, ("source_event_id",)),
+                causation_id=None,
+                correlation_id=resolve_first_str(event_data, ("correlation_id",)),
+                enqueue_processing=enqueue_processing,
+            )
+            await _log_callback_outcome(
+                db,
+                request,
+                callback_type="event",
+                subject_code=event_type,
+                request_body=event_data,
+                request_id=request_id,
+                trace_id=outcome.trace_id,
+                event_id=resolve_first_str(event_data, ("source_event_id",)),
+                causation_id=None,
+                response_status=200,
+                response_time_ms=_response_time_ms(start_time),
+                success=not outcome.is_duplicate,
+                record_audit=not outcome.is_duplicate,
+                audit_title="WMS 普通事件",
+                error_message="幂等重复: 已存在相同事件" if outcome.is_duplicate else None,
+                ingress_outcome=_INGRESS_OUTCOME_DUPLICATE if outcome.is_duplicate else _INGRESS_OUTCOME_ACCEPTED,
+            )
+            return CallbackEventIngressDecision(
+                body=cast(
+                    "CallbackEventIngressResponse",
+                    response_builder.success(
+                        message="Event received",
+                        data=build_callback_event_accepted_response(
+                            status="duplicate" if outcome.is_duplicate else "submitted",
+                            device_code=None,
+                            source_system="WMS",
+                            event_type=event_type,
+                            request_id=request_id,
+                            trace_id=outcome.trace_id,
+                            event_id=resolve_first_str(event_data, ("source_event_id",)),
+                            causation_id=None,
+                        ),
+                    ),
+                )
+            )
+        except RuntimeInboxConflict as exc:
+            return CallbackEventIngressDecision(
+                body=cast(
+                    "CallbackEventIngressResponse",
+                    await _handle_runtime_inbox_conflict(
+                        db,
+                        request,
+                        callback_type="event",
+                        request_id=request_id,
+                        request_body=event_data,
+                        message=str(exc),
+                        response_time_ms=_response_time_ms(start_time),
+                        trace_id=_resolve_callback_trace_id(event_data),
+                        event_id=resolve_first_str(event_data, ("source_event_id",)),
+                        causation_id=None,
+                    ),
+                ),
+                http_status=409,
+            )
+        except RuntimeInboxPayloadTooLarge as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except RuntimeInboxCorrelationUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     admitted_context = cast("_EventCallbackContext", event_context)
     event_data = admitted_context.event_data
     normalized_event_request = admitted_context.event_request
@@ -2325,6 +2449,7 @@ async def _admit_external_callback(
         normalized_payload = _normalize_external_callback_payload(callback_data)
         callback_type = cast("str", normalized_payload["callback_type"])
         external_trace_id = cast("str | None", normalized_payload["trace_id"])
+        callback_data = cast("JsonDict", normalized_payload["payload"])
     except WmsEffectStatusHintAdmissionError as exc:
         # 禁止的 status hint 必须在 RuntimeInbox 与业务 session 持久化之前拒绝；
         # 当前边界不复用会提交该 session 的通用拒绝日志路径。

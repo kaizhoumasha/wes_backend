@@ -154,6 +154,26 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_source_event_identity_family(
+        self,
+        db: AsyncSession,
+        *,
+        provider_code: str,
+        source_event_id: str,
+        event_types: frozenset[str],
+    ) -> RuntimeInbox | None:
+        """按调用方声明的 event type 闭集读取共享源事件身份。"""
+
+        columns = cast("Any", RuntimeInbox).__table__.c
+        result = await db.execute(
+            select(RuntimeInbox).where(
+                columns.provider_code == provider_code,
+                columns.source_event_id == source_event_id,
+                columns.event_type.in_(tuple(sorted(event_types))),
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def resolve_unique_correlation_id_by_trace(self, db: AsyncSession, *, trace_id: str) -> str | None:
         """按 trace_id 查唯一关联；零条或多条命中均返回未关联。"""
 

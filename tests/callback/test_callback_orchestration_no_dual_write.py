@@ -111,11 +111,17 @@ async def test_process_external_writes_only_runtime_inbox() -> None:
 
     outcome = await service.process_external(
         SimpleNamespace(),  # type: ignore[arg-type]
-        callback_type="WMS_INVENTORY_UPDATED",
+        callback_type="WMS_EFFECT_STATUS_HINT",
         payload={
-            "callback_type": "WMS_INVENTORY_UPDATED",
+            "callback_type": "WMS_EFFECT_STATUS_HINT",
             "source_system": "WMS",
-            "source_event_id": "inventory-event-001",
+            "source_event_id": "hint-event-001",
+            "occurred_at": "2026-07-30T08:00:00Z",
+            "data": {
+                "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+                "idempotency_key": "idem-001",
+                "dispatch_key": "dispatch-001",
+            },
         },
         request_id="req-external-001",
         trace_id="trace-external-001",
@@ -128,7 +134,7 @@ async def test_process_external_writes_only_runtime_inbox() -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_external_routes_wms_effect_hint_without_changing_runtime_inbox_flow() -> None:
+async def test_process_external_defers_wms_effect_hint_to_runtime_inbox() -> None:
     runtime_record = SimpleNamespace(
         id=44,
         trace_id="trace-typed-effect-001",
@@ -137,16 +143,15 @@ async def test_process_external_routes_wms_effect_hint_without_changing_runtime_
     writer = SimpleNamespace(
         write_external_callback=AsyncMock(return_value=SimpleNamespace(created=True, record=runtime_record))
     )
-    typed_router = SimpleNamespace(route=AsyncMock(return_value=True))
     service = CallbackOrchestrationService(
         runtime_inbox_writer=writer,
     )
-    service._typed_effect_callback_router = typed_router
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
     payload = {
         "callback_type": "WMS_EFFECT_STATUS_HINT",
         "source_system": "WMS",
         "source_event_id": "wms-event-001",
+        "occurred_at": "2026-07-30T08:00:00Z",
         "data": {
             "operation_identity": "wms.fulfillment.request_rack_supply@v1",
             "idempotency_key": "idem-rack-supply-001",
@@ -163,11 +168,6 @@ async def test_process_external_routes_wms_effect_hint_without_changing_runtime_
         enqueue_processing=lambda: None,
     )
 
-    typed_router.route.assert_awaited_once_with(
-        ANY,
-        callback_type="WMS_EFFECT_STATUS_HINT",
-        payload=payload,
-    )
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()
 
 
@@ -194,9 +194,7 @@ async def test_process_external_rejects_non_async_effect_hint_before_runtime_inb
             )
         )
     )
-    typed_router = SimpleNamespace(route=AsyncMock(return_value=True))
     service = CallbackOrchestrationService(runtime_inbox_writer=writer)
-    service._typed_effect_callback_router = typed_router
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
     db = SimpleNamespace(commit=AsyncMock())
 
@@ -208,6 +206,7 @@ async def test_process_external_rejects_non_async_effect_hint_before_runtime_inb
                 "callback_type": "WMS_EFFECT_STATUS_HINT",
                 "source_system": "WMS",
                 "source_event_id": "wms-invalid-effect-001",
+                "occurred_at": "2026-07-30T08:00:00Z",
                 "data": {
                     "operation_identity": operation_identity,
                     "idempotency_key": "idem-invalid-effect-001",
@@ -220,6 +219,5 @@ async def test_process_external_rejects_non_async_effect_hint_before_runtime_inb
         )
 
     writer.write_external_callback.assert_not_awaited()
-    typed_router.route.assert_not_awaited()
     service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()
     db.commit.assert_not_awaited()

@@ -57,7 +57,13 @@ Plan: `docs/superpowers/specs/2026-07-28-wms-full-factory-integration-design.md`
     Critical/Important/Minor、结论 `Approved`。未为测试通过修改生产逻辑，也未重复执行无新增诊断价值的
     7 分钟默认全集。
 - Task 6: blocked — 缺少厂商取料/扫码/投放真实命令合同与脱敏 fixture；按已批准 entry gate 禁止猜测实现
-- Task 7: pending — 替换 WMS 普通事件与 status hint
+- Task 7: complete — 替换 WMS 普通事件与 status hint，独立验收 `Approved`
+  - verified（2026-07-30）：4 类普通事件严格收敛到 `/callback/event`，event-specific typed contract
+    拒绝空白身份且 GRN 使用 PO 行语义；`source_system + source_event_id` 跨类型幂等，migration 单 head
+    `7fadfb5469ee`。可选 correlation 全链透传；hint 使用严格顶层包络并由 RuntimeInbox worker 唯一消费，
+    UNKNOWN/retry/dead-letter 与既有 status claim/scanner 保持同一恢复面。核心独立复跑 `107 passed`，
+    相关回归 `215 passed`、复审回归 `211 + 32 passed`，架构违规 0、Ruff/quality profile 通过；
+    复审无 Critical/Important。
 - Task 8: pending — 建立 35 项参数化合同矩阵
 - Task 9: pending — 关闭状态恢复和对账门禁
 - Task 10: pending — 执行单 revision 冷启动与协议 GO

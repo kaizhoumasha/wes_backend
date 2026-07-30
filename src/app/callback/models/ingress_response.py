@@ -32,10 +32,12 @@ class CallbackResultAcceptedResponse(BaseModel):
 
 
 class CallbackEventAcceptedResponse(BaseModel):
-    """设备事件回调接收响应数据。"""
+    """设备或普通外部事件回调接收响应数据。"""
 
     status: Literal["submitted", "duplicate", "accepted"] = Field(description="入口处理状态")
-    device_code: str = Field(description="设备编码")
+    device_code: str | None = Field(default=None, description="设备事件的设备编码")
+    source_system: str | None = Field(default=None, description="外部普通事件来源系统")
+    event_type: str | None = Field(default=None, description="外部普通事件类型")
     request_id: str | None = Field(default=None, description="入口请求 ID")
     trace_id: str | None = Field(default=None, description="Trace ID")
     event_id: str | None = Field(default=None, description="供应商事件 ID")
@@ -85,7 +87,9 @@ def build_callback_result_accepted_response(
 def build_callback_event_accepted_response(
     *,
     status: Literal["submitted", "duplicate", "accepted"],
-    device_code: str,
+    device_code: str | None,
+    source_system: str | None = None,
+    event_type: str | None = None,
     request_id: str | None,
     trace_id: str | None,
     event_id: str | None,
@@ -95,6 +99,8 @@ def build_callback_event_accepted_response(
     return CallbackEventAcceptedResponse(
         status=status,
         device_code=device_code,
+        source_system=source_system,
+        event_type=event_type,
         request_id=request_id,
         trace_id=trace_id,
         event_id=event_id,

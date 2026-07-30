@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from src.app.callback.contracts import (
-    WMS_ALLOWED_CALLBACK_TYPES,
     TraceContext,
     timeline_generator,
     validate_external_callback_type,
@@ -44,7 +43,6 @@ from src.core.logger import logger
 from src.utils.timezone import timezone
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
-_WMS_EXTERNAL_CALLBACK_TYPES = WMS_ALLOWED_CALLBACK_TYPES
 
 
 def _current_timestamp_ms() -> int:
@@ -75,11 +73,9 @@ class CallbackOrchestrationService:
     def __init__(
         self,
         *,
-        typed_effect_callback_router: Any | None = None,
         runtime_inbox_writer: Any = callback_runtime_inbox_writer,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
-        self._typed_effect_callback_router = typed_effect_callback_router
         self._runtime_inbox_writer = runtime_inbox_writer
         self._queue_gateway = queue_gateway
 
@@ -515,13 +511,9 @@ class CallbackOrchestrationService:
         if not runtime_inbox_result.created:
             return ExternalCallbackOutcome(trace_id=trace.trace_id or "", is_duplicate=True)
 
-        # RuntimeInbox record 是 external callback 唯一 evidence/trace inbox。
+        # RuntimeInbox record 是 external callback 唯一 evidence/trace inbox；
+        # 业务提示由 worker 消费，API 事务内不得执行 status 路由。
         trace = trace.with_inbox(runtime_inbox_result.record)
-        _ = await self._resolve_typed_effect_callback_router().route(
-            db,
-            callback_type=callback_type,
-            payload=payload,
-        )
 
         await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
 
@@ -530,14 +522,36 @@ class CallbackOrchestrationService:
             is_duplicate=False,
         )
 
-    def _resolve_typed_effect_callback_router(self) -> Any:
-        if self._typed_effect_callback_router is None:
-            from src.app.runtime.orchestration.services.inbox.wms_typed_effect_callback_router import (
-                wms_typed_effect_callback_router,
-            )
+    async def process_wms_event(
+        self,
+        db: AsyncSession,
+        *,
+        payload: JsonDict,
+        event_type: str,
+        request_id: str | None,
+        trace_id: str | None,
+        event_id: str | None,
+        causation_id: str | None,
+        correlation_id: str | None = None,
+        enqueue_processing: Callable[[], None] | None = None,
+    ) -> EventCallbackOutcome:
+        """普通 WMS event 仅持久化并唤醒 RuntimeInbox worker。"""
 
-            self._typed_effect_callback_router = wms_typed_effect_callback_router
-        return self._typed_effect_callback_router
+        resolved_trace_id = trace_id or request_id or f"trace_{uuid.uuid4().hex}"
+        result = await self._runtime_inbox_writer.write_wms_event_callback(
+            db,
+            payload=payload,
+            request_id=request_id,
+            event_type=event_type,
+            trace_id=resolved_trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+        )
+        if not result.created:
+            return EventCallbackOutcome(trace_id=resolved_trace_id, is_duplicate=True)
+        await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
+        return EventCallbackOutcome(trace_id=resolved_trace_id, is_duplicate=False)
 
 
 callback_orchestration_service = CallbackOrchestrationService()

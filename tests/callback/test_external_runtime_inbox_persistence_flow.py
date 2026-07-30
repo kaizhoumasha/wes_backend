@@ -20,7 +20,7 @@ from tests.support.runtime_binding import binding_pin_fields
 
 
 @pytest.mark.asyncio
-async def test_external_callback_persists_claims_and_processes_without_repeating_lifecycle(db_session) -> None:
+async def test_wms_event_persists_claims_and_processes_without_device_flow(db_session) -> None:
     """真实 RuntimeInbox 行必须被 claim/processor 消费，且无领域 lifecycle 直写。"""
     workline = WorkLine(
         line_code="LINE-RUNTIME-INBOX-EXT",
@@ -49,26 +49,34 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
         runtime_inbox_writer=CallbackRuntimeInboxWriter(service=inbox_service),
     )
     payload = {
-        "callback_type": "WMS_INVENTORY_UPDATED",
         "source_system": "WMS",
+        "event_type": "WMS_INVENTORY_UPDATED",
         "source_event_id": "wms-runtime-inbox-ext-001",
+        "source_version": "1",
+        "occurred_at": "2026-07-30T08:00:00Z",
+        "request_id": "req-runtime-inbox-ext",
+        "data": {"inventory_reference": "inventory-runtime-001"},
     }
     enqueue_processing = Mock()
 
-    outcome = await orchestration.process_external(
+    outcome = await orchestration.process_wms_event(
         db_session,
-        callback_type="WMS_INVENTORY_UPDATED",
         payload=payload,
+        event_type="WMS_INVENTORY_UPDATED",
         request_id="req-runtime-inbox-ext",
         trace_id="trace-runtime-inbox-ext",
+        event_id="wms-runtime-inbox-ext-001",
+        causation_id=None,
         enqueue_processing=enqueue_processing,
     )
-    duplicate = await orchestration.process_external(
+    duplicate = await orchestration.process_wms_event(
         db_session,
-        callback_type="WMS_INVENTORY_UPDATED",
         payload=payload,
+        event_type="WMS_INVENTORY_UPDATED",
         request_id="req-runtime-inbox-ext-duplicate",
         trace_id="trace-runtime-inbox-ext",
+        event_id="wms-runtime-inbox-ext-001",
+        causation_id=None,
         enqueue_processing=enqueue_processing,
     )
 

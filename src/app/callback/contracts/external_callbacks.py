@@ -8,17 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.contracts.wms_inbound import WMS_BUSINESS_EVENT_TYPES
 from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_TYPED_EFFECT_CALLBACK_TYPES
 from src.app.wms_integration.operation_registry import ASYNC_EFFECT_OPERATION_IDENTITIES
 
-WMS_ORDINARY_EVENT_TYPES = frozenset(
-    {
-        "WMS_GRN_RECEIVED",
-        "WMS_PALLET_ARRIVED",
-        "WMS_INVENTORY_UPDATED",
-        "WMS_PDA_OPERATION_RECORDED",
-    }
-)
+WMS_ORDINARY_EVENT_TYPES = WMS_BUSINESS_EVENT_TYPES
 WMS_ALLOWED_CALLBACK_TYPES = WMS_ORDINARY_EVENT_TYPES | WMS_TYPED_EFFECT_CALLBACK_TYPES
 
 
@@ -72,6 +66,8 @@ def validate_external_callback_type(
         raise ValueError(f"callback_type is not allowed: {callback_type}")
     if source_system != "WMS":
         raise ValueError("source_system must be WMS")
+    if callback_type in WMS_ORDINARY_EVENT_TYPES:
+        raise ValueError(f"ordinary WMS event must use /api/v1/callback/event: {callback_type}")
     if callback_type == "WMS_EFFECT_STATUS_HINT":
         callback_data = payload.get("data")
         operation_identity = callback_data.get("operation_identity") if isinstance(callback_data, dict) else None

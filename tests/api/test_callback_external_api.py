@@ -172,7 +172,7 @@ class TestCallbackExternalAPI:
 
     @pytest.mark.parametrize("callback_type", WMS_ORDINARY_EVENT_TYPES)
     @pytest.mark.asyncio
-    async def test_callback_external_accepts_only_declared_ordinary_wms_events(
+    async def test_callback_external_rejects_ordinary_wms_events(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
@@ -207,7 +207,10 @@ class TestCallbackExternalAPI:
                 db=db_session,
             )
 
-        assert _response_body(response)["code"] == "1000"
+        body = _response_body(response)
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == 400
+        assert body["code"] == "2004"
 
     @pytest.mark.parametrize("callback_type", REMOVED_WMS_RCS_CALLBACK_TYPES)
     @pytest.mark.asyncio
@@ -271,9 +274,7 @@ class TestCallbackExternalAPI:
             "callback_type": "WMS_EFFECT_STATUS_HINT",
             "source_system": "WMS",
             "source_event_id": "wms-invalid-effect-001",
-            "source_version": "1",
             "occurred_at": "2026-07-29T08:00:00Z",
-            "request_id": "request-invalid-effect-001",
             "trace_id": "trace-invalid-effect-001",
             "data": {
                 "operation_identity": operation_identity,

@@ -31,7 +31,7 @@ from .fulfillment_lifecycle import (
     wms_fulfillment_lifecycle_service,
 )
 from .redaction import REDACTED_VALUE, canonical_sha256, redact_sensitive
-from .wms_event_normalizer import WmsEventNormalizer, register_inbound_normalizers
+from .wms_event_normalizer import WmsEventNormalizer
 
 __all__ = [
     "REDACTED_VALUE",
@@ -54,7 +54,6 @@ __all__ = [
     "WmsUnavailableError",
     "canonical_sha256",
     "redact_sensitive",
-    "register_inbound_normalizers",
     "wms_call_evidence_service",
     "wms_circuit_breaker_service",
     "wms_execution_callback_normalizer",

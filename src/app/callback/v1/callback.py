@@ -83,6 +83,7 @@ async def callback_result(
     responses={
         409: {"model": CallbackEventIngressResponse, "description": "RuntimeInbox 幂等身份冲突"},
         413: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox payload 超限"},
+        503: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox 关联暂不可用"},
     },
     summary="设备事件上报",
     dependencies=[

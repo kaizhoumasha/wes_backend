@@ -872,6 +872,7 @@ def _typed_effect_callback_payload(
         "callback_type": "WMS_EFFECT_STATUS_HINT",
         "source_system": "WMS",
         "source_event_id": f"wms-mock:typed-effect:{uuid4().hex}",
+        "occurred_at": datetime.now(UTC).isoformat(),
         "trace_id": str(request_payload.get("trace_id") or f"wms-mock:{dispatch_key}"),
         "data": {
             "operation_identity": operation_identity,

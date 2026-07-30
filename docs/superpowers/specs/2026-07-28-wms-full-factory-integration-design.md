@@ -2198,7 +2198,7 @@ Codex; checkbox as you ship.
     并行及 station generation 幂等；
     E13 确定性 FIFO、多 worker 有界候选 lease、ACK 接纳前缀及 active/unreserved 部分复合索引执行计划；
     `scanner_platform_state/source_arm_prefetch_capacity/prefetch_buffer_capacity/SCANNER_PLATFORM_CLEARED` 引用为 0。
-- [ ] **T7（P1，human: \~2d / CC: \~4h）** — inbound — 替换 WMS 普通事件与 status hint
+- [x] **T7（P1，human: \~2d / CC: \~4h）** — inbound — 替换 WMS 普通事件与 status hint
   - Surfaced by: Data flow — GRN 使用 PO 行身份；Rack/Transport 等旧终态 callback 不得推进 Session。
   - Files: callback admission、WMS event contracts/normalizer、RuntimeInbox tests。
   - Verify: 4 类事件、E08–E14 hint 逻辑事件 ID 生命周期、丢失/重复/冲突/enqueue failure/scanner 接管全过；
@@ -2206,6 +2206,15 @@ Codex; checkbox as you ship.
     并发唤醒最多一个 HTTP 查询，未 claim/已终态 no-op，零 debounce/coalescing 新状态；
     同步 EFFECT 零 hint 路由；未知 handler
     异常保持 retryable UNKNOWN 并覆盖恢复/dead-letter；已删除的 WMS 终态入口和 CTU 箱级进度入口引用为 0。
+  - Verified（2026-07-30）：4 类普通 WMS 事件仅由 `/callback/event` 接纳，经 event-specific typed
+    contract 标准化后写入 RuntimeInbox；GRN 使用 PO 行身份并拒绝 `item_count/items[]`，稳定文本拒绝空白。
+    `source_system + source_event_id` 在 4 类事件间共享幂等身份，partial unique migration 保持单一 head
+    `7fadfb5469ee`；可选 `correlation_id` 全链透传，未知显式关联稳定拒绝。`WMS_EFFECT_STATUS_HINT` 使用
+    `extra=forbid` 完整包络，稳定 `source_event_id + occurred_at`，不携带终态字段；API 仅持久化并唤醒，
+    RuntimeInbox worker 是唯一执行点，未知异常按 UNKNOWN 重试并进入 dead-letter，状态查询继续复用既有
+    claim/scanner。核心独立复跑 `107 passed`，实现方相关回归 `215 passed`，复审方业务/契约
+    `211 passed`、架构/OpenAPI `32 passed`，架构违规 0、Ruff/quality profile 通过；独立结论
+    `Approved`，无 Critical/Important。
 - [ ] **T8（P1，human: \~4d / CC: \~1d）** — conformance — 建立 35 项静态注册表驱动的参数化合同矩阵
   - Surfaced by: Test Review — 共享题库参数化覆盖全部 operation，每项仅维护最小 typed fixture。
   - Files: `tests/contracts/wms_integration/`、`tests/wms_integration/`、conformance manifest/runner/fixtures。
