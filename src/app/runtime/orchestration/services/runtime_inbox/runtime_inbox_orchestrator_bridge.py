@@ -1610,6 +1610,7 @@ class RuntimeInboxProcessorBridge:
             workline=workline,
             devices_by_role=devices_by_role,
             trusted_state_preservation=True,
+            effect_port_resolver=attempt_runtime.context.get_effect_port,
         )
         disposition = writeback_result.disposition
         if disposition in {WriteDisposition.COMMITTED, WriteDisposition.TERMINAL_FAILURE}:
@@ -1957,18 +1958,27 @@ def _configure_attempt_runtime_ports(
     *,
     services: Any,
 ) -> None:
-    """把当前 Inbox 的 typed operation factory 注册为 attempt-scoped QUERY Port。"""
+    """把当前 Inbox 的 typed QUERY 与 EFFECT Port 注册为 attempt-scoped runtime。"""
 
     query_port = getattr(services, "wms_query_execution_port", None)
-    if query_port is None:
-        return
-    from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
+    if query_port is not None:
+        from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 
-    attempt_runtime.port_registry.register(
-        WmsQueryExecutionPort,
-        lambda: query_port,
-        cache_instance=True,
-    )
+        attempt_runtime.port_registry.register(
+            WmsQueryExecutionPort,
+            lambda: query_port,
+            cache_instance=True,
+        )
+
+    effect_port = getattr(services, "wms_effect_preparation_port", None)
+    if effect_port is not None:
+        from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
+
+        attempt_runtime.port_registry.register(
+            WmsEffectPreparationPort,
+            lambda: effect_port,
+            cache_instance=True,
+        )
 
 
 def _plugin_attempt_snapshot(

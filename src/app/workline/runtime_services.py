@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from src.app.resource.models import RackKind
     from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
+    from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
     from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 
 
@@ -125,6 +126,7 @@ class WorklineRuntimeServices:
     rack_operation_status_provider: RackOperationStatusProvider | None = None
     station_lease_status_provider: StationLeaseStatusProvider | None = None
     wms_query_execution_port: WmsQueryExecutionPort | None = None
+    wms_effect_preparation_port: WmsEffectPreparationPort | None = None
 
 
 def build_workline_runtime_services(
@@ -133,6 +135,7 @@ def build_workline_runtime_services(
     workline: Any | None = None,
     session: Any | None = None,
     wms_query_execution_port: WmsQueryExecutionPort | None = None,
+    wms_effect_preparation_port: WmsEffectPreparationPort | None = None,
 ) -> WorklineRuntimeServices:
     """构建当前 worker 使用的运行时服务集合。"""
 
@@ -162,6 +165,10 @@ def build_workline_runtime_services(
         from src.app.wms_integration.query_runtime import get_wms_data_lane_query_runtime
 
         wms_query_execution_port = get_wms_data_lane_query_runtime()
+    if wms_effect_preparation_port is None and db is not None:
+        from src.app.wms_integration.effect_preparation_runtime import get_wms_effect_preparation_runtime
+
+        wms_effect_preparation_port = get_wms_effect_preparation_runtime()
 
     return WorklineRuntimeServices(
         bin_allocator=smt_rack_bin_scheduling_service,
@@ -169,6 +176,7 @@ def build_workline_runtime_services(
         rack_operation_status_provider=rack_operation_status_provider,
         station_lease_status_provider=station_lease_status_provider,
         wms_query_execution_port=wms_query_execution_port,
+        wms_effect_preparation_port=wms_effect_preparation_port,
     )
 
 

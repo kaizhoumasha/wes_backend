@@ -86,6 +86,48 @@ async def test_fastapi_startup_rejects_production_in_process_simulation_before_d
     init_db.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import observability
+    from src.app.wms_integration import effect_preparation_runtime, query_runtime
+    from src.database import db as database
+    from src.database import redis_client
+
+    startup = SimpleNamespace(catalog=object())
+    data_runtime = object()
+    preparation_runtime = object()
+    build_preparation = MagicMock(return_value=preparation_runtime)
+    bind_preparation = MagicMock()
+    close_preparation = AsyncMock()
+    monkeypatch.setattr(
+        provider_catalog,
+        "validate_wms_transport_configuration",
+        MagicMock(return_value=startup),
+    )
+    monkeypatch.setattr(database, "init_db", AsyncMock())
+    monkeypatch.setattr(database, "close_db", AsyncMock())
+    monkeypatch.setattr(redis_client, "init_redis", AsyncMock())
+    monkeypatch.setattr(redis_client, "close_redis", AsyncMock())
+    monkeypatch.setattr(query_runtime, "build_wms_data_lane_query_runtime", MagicMock(return_value=data_runtime))
+    monkeypatch.setattr(query_runtime, "bind_wms_data_lane_query_runtime", MagicMock())
+    monkeypatch.setattr(query_runtime, "close_bound_wms_data_lane_query_runtime", AsyncMock())
+    monkeypatch.setattr(effect_preparation_runtime, "build_wms_effect_preparation_runtime", build_preparation)
+    monkeypatch.setattr(effect_preparation_runtime, "bind_wms_effect_preparation_runtime", bind_preparation)
+    monkeypatch.setattr(effect_preparation_runtime, "close_bound_wms_effect_preparation_runtime", close_preparation)
+    monkeypatch.setattr(observability, "configure_runtime_open_telemetry_backend", MagicMock(return_value=False))
+    monkeypatch.setattr(observability.runtime_observability_registry, "close", MagicMock())
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with register_init(app):
+        assert app.state.wms_effect_preparation_runtime is preparation_runtime
+
+    build_preparation.assert_called_once_with(catalog=startup.catalog)
+    bind_preparation.assert_called_once_with(preparation_runtime)
+    close_preparation.assert_awaited_once_with()
+
+
 def test_celery_startup_rejects_production_in_process_simulation_before_logger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

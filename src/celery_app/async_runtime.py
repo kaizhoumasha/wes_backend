@@ -140,6 +140,10 @@ class CeleryAsyncRuntime:
             bind_wms_effect_lane_runtime,
             build_wms_effect_lane_runtime,
         )
+        from src.app.wms_integration.effect_preparation_runtime import (
+            bind_wms_effect_preparation_runtime,
+            build_wms_effect_preparation_runtime,
+        )
         from src.app.wms_integration.query_runtime import (
             bind_wms_data_lane_query_runtime,
             build_wms_data_lane_query_runtime,
@@ -153,6 +157,8 @@ class CeleryAsyncRuntime:
         )
         bind_wms_effect_lane_runtime(effect_runtime)
         progress["wms_effect_lane"] = True
+        bind_wms_effect_preparation_runtime(build_wms_effect_preparation_runtime(catalog=startup.catalog))
+        progress["wms_effect_preparation"] = True
         if process_role is WmsProviderProcessRole.WES:
             bind_wms_data_lane_query_runtime(
                 build_wms_data_lane_query_runtime(
@@ -232,11 +238,13 @@ class CeleryAsyncRuntime:
     async def _rollback_failed_initialization(deadline: float) -> None:
         """按 Redis → WMS data → WMS effect → DB 顺序，在剩余初始化预算内回滚已发布资源。"""
         from src.app.wms_integration.effect_lane_runtime import close_bound_wms_effect_lane_runtime
+        from src.app.wms_integration.effect_preparation_runtime import close_bound_wms_effect_preparation_runtime
         from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
 
         for name, factory in (
             ("Redis", redis_manager.close_redis),
             ("wms-data", close_bound_wms_data_lane_query_runtime),
+            ("wms-effect-preparation", close_bound_wms_effect_preparation_runtime),
             ("wms-effect", close_bound_wms_effect_lane_runtime),
             ("database", close_db),
         ):
@@ -274,6 +282,7 @@ class CeleryAsyncRuntime:
             "database": False,
             "wms_data_query_lane": False,
             "wms_effect_lane": False,
+            "wms_effect_preparation": False,
         }
         try:
             runner = asyncio.Runner()
@@ -413,12 +422,19 @@ class CeleryAsyncRuntime:
                 "Redis cleanup",
                 failure_result=None,
             )
+            from src.app.wms_integration.effect_preparation_runtime import close_bound_wms_effect_preparation_runtime
             from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
 
             self._run_runner_stage(
                 runner,
                 self._run_shutdown_stage(close_bound_wms_data_lane_query_runtime, "wms-data"),
                 "wms-data cleanup",
+                failure_result=None,
+            )
+            self._run_runner_stage(
+                runner,
+                self._run_shutdown_stage(close_bound_wms_effect_preparation_runtime, "wms-effect-preparation"),
+                "wms-effect-preparation cleanup",
                 failure_result=None,
             )
             from src.app.wms_integration.effect_lane_runtime import close_bound_wms_effect_lane_runtime

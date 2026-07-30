@@ -2105,6 +2105,16 @@ Codex; checkbox as you ship.
     `13 passed`。实现阶段默认回归通过并收集 `5084 tests`；最终 diff 的 topology `6 passed`、完整
     quality profile、Ruff format/check、Bandit、architecture 与 `git diff --check` 通过。实现未新增
     模型、状态或 migration。
+  - Verified checkpoint — G4.5a / EFFECT preparation Port production wiring：RuntimeInbox attempt 的 QUERY 与
+    EFFECT typed Port 独立注册；Stage 3 只为当前 attempt 构造带 `get_effect_port` resolver 的
+    `RuntimeIntentEffectApplier`，不缓存 registry 或 DB session，因而 WMS `WmsEffectPreparationPort`
+    可在既有事务内完成 Intent/Outbox preparation。API 与 Celery 均从一次已校验的 `startup.catalog`
+    发布同一 deployment runtime；未初始化时保持 fail closed，关闭仅校验 owner 后解绑，不新增资源回收。
+    未改动 QUERY、状态机、HTTP transport、models/migration 或旧 Rack/Handling producer。
+  - G4.5a evidence：RED 先确认 EFFECT-only/combined registration 缺失，以及 Stage 3 没有 attempt resolver；
+    GREEN 后 runtime/startup 定向组合 `70 passed`，Ruff format/check 与 `git diff --check` 通过。
+    `test_runtime_inbox_attempt_profile.py` 全文件有 1 项既有 fixture 仍返回旧 `WriteDisposition`，而当前
+    production contract 已为 `RuntimeInboxWriteBackResult`；该 T5 final blocker 未在本检查点混修。
 - [ ] **T6（P1，human: \~3d / CC: \~6h）** — material-flow runtime — 固化粗分和分拣对象级流水
   - Surfaced by: Business acceptance — Q19 拒绝由入料机械臂投入 NG；设备完成自身步骤即可处理下一对象；
     SCAN1/2/3 分点路由；南向机械臂扫码、WES 决策；STATION A/B 对侧优先；满箱交换位于粗分移出和 STATION

@@ -137,6 +137,30 @@ def test_lane_runtime_module_exposes_data_and_fulfillment_owner_lifecycles() -> 
     assert expected_exports <= set(module.__all__)
 
 
+@pytest.mark.asyncio
+async def test_effect_preparation_runtime_is_single_loop_owned_and_has_no_resource_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.app.wms_integration.effect_preparation_runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "_active_runtime", None)
+    monkeypatch.setattr(runtime_module, "_active_loop", None)
+    catalog = object()
+    owner = runtime_module.build_wms_effect_preparation_runtime(catalog=catalog)
+    other = runtime_module.build_wms_effect_preparation_runtime(catalog=catalog)
+
+    runtime_module.bind_wms_effect_preparation_runtime(owner)
+    runtime_module.bind_wms_effect_preparation_runtime(owner)
+    assert runtime_module.get_wms_effect_preparation_runtime() is owner
+    with pytest.raises(RuntimeError, match="already bound"):
+        runtime_module.bind_wms_effect_preparation_runtime(other)
+    with pytest.raises(RuntimeError, match="different"):
+        runtime_module.unbind_wms_effect_preparation_runtime(other)
+
+    await runtime_module.close_bound_wms_effect_preparation_runtime()
+    assert runtime_module.get_wms_effect_preparation_runtime() is None
+
+
 def test_celery_async_runtime_requires_an_explicit_wms_process_role() -> None:
     from src.celery_app.async_runtime import CeleryAsyncRuntime
 

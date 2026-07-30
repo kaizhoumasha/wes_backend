@@ -389,6 +389,24 @@ class RuntimeInboxWriteBackService:
             self._effect_applier = RuntimeIntentEffectApplier()
         return self._effect_applier
 
+    def effect_applier_for_attempt(self, *, effect_port_resolver: Any | None = None) -> Any:
+        """为当前 attempt 构造携带 typed EFFECT Port resolver 的 Stage 3 applier。"""
+
+        if self._effect_applier is not None or effect_port_resolver is None:
+            return self.effect_applier
+        from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
+        from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
+            SystemCapabilityEffectService,
+        )
+
+        # resolver 仅由本次 attempt 的 CapabilityPortRegistry 提供；不得缓存到 service，
+        # 否则会把 registry 中可能持有的 attempt-scoped Port 泄漏给下一次处理。
+        return RuntimeIntentEffectApplier(
+            system_capability_effect_service=SystemCapabilityEffectService(
+                effect_port_resolver=effect_port_resolver,
+            )
+        )
+
     async def _persist_business_reject_after_rollback(
         self,
         db: Any,
@@ -400,6 +418,7 @@ class RuntimeInboxWriteBackService:
         trace_id: str,
         effect_ctx: dict[str, Any],
         evidence: dict[str, Any],
+        effect_applier: Any,
     ) -> bool | None:
         """重新锁定 attempt 后执行可选补偿；None 表示 fencing 已失效。"""
 
@@ -411,7 +430,7 @@ class RuntimeInboxWriteBackService:
         if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
             await db.rollback()
             return None
-        compensation = getattr(self.effect_applier, "persist_business_reject", None)
+        compensation = getattr(effect_applier, "persist_business_reject", None)
         compensation_persisted = False
         if callable(compensation):
             compensation_workline = await self._workline_repository.get_by_id(db, workline_id)
@@ -461,6 +480,7 @@ class RuntimeInboxWriteBackService:
         workline: Any | None = None,
         devices_by_role: dict[str, list[Any]] | None = None,
         trusted_state_preservation: bool = False,
+        effect_port_resolver: Any | None = None,
     ) -> RuntimeInboxWriteBackResult:
         """锁定权威行后重校验，并在同一事务落完整 attempt 结果。"""
 
@@ -523,6 +543,7 @@ class RuntimeInboxWriteBackService:
             allow_state_preservation=trusted_state_preservation,
         )
         outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
+        effect_applier = self.effect_applier_for_attempt(effect_port_resolver=effect_port_resolver)
         try:
             if write_set.intents:
                 if workline is None:
@@ -566,7 +587,7 @@ class RuntimeInboxWriteBackService:
                     "awaiting_command_code": None,
                     "next_timeline_seq_no": None,
                 }
-                effect_result = await self.effect_applier.apply(effect_ctx, list(write_set.intents))
+                effect_result = await effect_applier.apply(effect_ctx, list(write_set.intents))
                 outbox_dispatch_targets = effect_result.outbox_dispatch_targets
                 business_reject_evidence = getattr(effect_result, "business_reject_evidence", None)
                 if isinstance(business_reject_evidence, dict):
@@ -588,6 +609,7 @@ class RuntimeInboxWriteBackService:
                         trace_id=trace_id,
                         effect_ctx=effect_ctx,
                         evidence=business_reject_evidence,
+                        effect_applier=effect_applier,
                     )
                     if compensation_result is None:
                         return RuntimeInboxWriteBackResult(disposition=WriteDisposition.SAFE_RETRY)

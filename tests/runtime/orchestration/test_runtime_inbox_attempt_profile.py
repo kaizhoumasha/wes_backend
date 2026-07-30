@@ -15,6 +15,9 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
     _configure_attempt_runtime_ports,
     _runtime_profile_from_pinned_binding,
 )
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackService,
+)
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -28,6 +31,7 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginAttemptFactSource,
     PluginDispatchRequest,
 )
+from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
 from src.app.wms_integration.ports.inventory_operations import InventorySnapshotQueryRequest
 from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
@@ -76,6 +80,11 @@ class _InventoryPort:
         return object()
 
     async def undeclared_query(self, **_kwargs: object) -> object:
+        return object()
+
+
+class _EffectPreparationPort:
+    async def prepare(self, *_args: object, **_kwargs: object) -> object:
         return object()
 
 
@@ -155,6 +164,59 @@ def test_attempt_runtime_registers_shared_data_lane_query_port() -> None:
     assert registry.get(WmsQueryExecutionPort) is registry.get(WmsQueryExecutionPort)
 
 
+def test_attempt_runtime_registers_effect_port_without_query_port() -> None:
+    registry = CapabilityPortRegistry()
+    runtime = SimpleNamespace(port_registry=registry)
+    effect_port = _EffectPreparationPort()
+
+    _configure_attempt_runtime_ports(
+        runtime,
+        services=SimpleNamespace(
+            wms_query_execution_port=None,
+            wms_effect_preparation_port=effect_port,
+        ),
+    )
+
+    assert not registry.is_registered(WmsQueryExecutionPort)
+    assert registry.get(WmsEffectPreparationPort) is effect_port
+
+
+def test_attempt_runtime_registers_query_and_effect_ports_independently() -> None:
+    registry = CapabilityPortRegistry()
+    runtime = SimpleNamespace(port_registry=registry)
+    query_port = _InventoryPort()
+    effect_port = _EffectPreparationPort()
+
+    _configure_attempt_runtime_ports(
+        runtime,
+        services=SimpleNamespace(
+            wms_query_execution_port=query_port,
+            wms_effect_preparation_port=effect_port,
+        ),
+    )
+
+    assert registry.get(WmsQueryExecutionPort) is query_port
+    assert registry.get(WmsEffectPreparationPort) is effect_port
+
+
+def test_stage_three_effect_applier_resolves_attempt_scoped_effect_port() -> None:
+    registry = CapabilityPortRegistry()
+    runtime = SimpleNamespace(port_registry=registry)
+    effect_port = _EffectPreparationPort()
+    _configure_attempt_runtime_ports(
+        runtime,
+        services=SimpleNamespace(wms_query_execution_port=None, wms_effect_preparation_port=effect_port),
+    )
+
+    effect_applier = RuntimeInboxWriteBackService().effect_applier_for_attempt(
+        effect_port_resolver=registry.get,
+    )
+
+    assert (
+        effect_applier._system_capability_effect_service._resolve_effect_port(WmsEffectPreparationPort) is effect_port
+    )
+
+
 @pytest.mark.asyncio
 async def test_real_runtime_services_leave_query_port_unregistered_without_lane_owner() -> None:
     runtime = SimpleNamespace(port_registry=CapabilityPortRegistry())
@@ -164,6 +226,19 @@ async def test_real_runtime_services_leave_query_port_unregistered_without_lane_
     )
     _configure_attempt_runtime_ports(runtime, services=services)
     assert not runtime.port_registry.is_registered(WmsQueryExecutionPort)
+
+
+@pytest.mark.asyncio
+async def test_real_runtime_services_leave_effect_port_unregistered_without_owner() -> None:
+    runtime = SimpleNamespace(port_registry=CapabilityPortRegistry())
+    services = build_workline_runtime_services(
+        db=object(),
+        session=SimpleNamespace(run_mode="NORMAL"),
+    )
+
+    _configure_attempt_runtime_ports(runtime, services=services)
+
+    assert not runtime.port_registry.is_registered(WmsEffectPreparationPort)
 
 
 def test_pinned_binding_profile_uses_exact_snapshot_identity() -> None:
