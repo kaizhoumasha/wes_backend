@@ -133,7 +133,7 @@ def test_jenkins_uses_shared_attestation_runner_before_migration_and_start() -> 
     attestation_index = deploy_body.index(runner_call, capacity_index)
     migration_index = deploy_body.index("api alembic upgrade head", attestation_index)
     application_index = deploy_body.index(
-        "$COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}",
+        "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}",
         migration_index,
     )
     assert capacity_index < attestation_index < migration_index < application_index

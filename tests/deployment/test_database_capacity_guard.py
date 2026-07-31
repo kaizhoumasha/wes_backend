@@ -226,7 +226,7 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     assert "$COMPOSE_CMD up -d --wait db redis" in deploy_body
     assert guard_command in deploy_body
     infra_index = deploy_body.index("$COMPOSE_CMD up -d --wait db redis")
-    application_command = "$COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}"
+    application_command = "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}"
     first_guard_index = deploy_body.index("run_capacity_guard", infra_index)
     quiesce_command = "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat"
     migration_command = (
@@ -282,13 +282,47 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     )
     quiesce_index = standard_release.index("stop api celery celery-wms-fulfillment celery_beat")
     migration_index = standard_release.index("api alembic upgrade head")
-    application_index = standard_release.index("up -d api celery celery-wms-fulfillment celery_beat flower nginx")
+    application_index = standard_release.index(
+        "up -d --remove-orphans api celery celery-wms-fulfillment celery_beat flower nginx"
+    )
     assert guard_index < quiesce_index < migration_index < application_index
+    assert "label=com.docker.compose.service=celery_worker" in standard_release
+    assert 'docker rm -f "$legacy_worker_id"' in standard_release
     assert "迁移后禁止自动切回旧镜像" in rollback
     assert "PREVIOUS_IMAGE" not in rollback
     assert "ROLLBACK_IMAGE" not in rollback
     assert "基础设施保持在线" in rollback
     assert "数据修复方案" in rollback
+
+
+def test_jenkins_removes_legacy_celery_worker_before_destructive_migration() -> None:
+    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+    cleanup_body = deploy_body.split("cleanup_failed_deploy()", maxsplit=1)[1].split(
+        "trap cleanup_failed_deploy EXIT", maxsplit=1
+    )[0]
+
+    assert "remove_legacy_celery_worker()" in deploy_body
+    legacy_cleanup = deploy_body.split("remove_legacy_celery_worker()", maxsplit=1)[1].split(
+        "cleanup_failed_deploy()", maxsplit=1
+    )[0]
+    assert "label=com.docker.compose.project=${compose_project_name}" in legacy_cleanup
+    assert "label=com.docker.compose.service=celery_worker" in legacy_cleanup
+    assert 'docker rm -f "$legacy_worker_id"' in legacy_cleanup
+    assert "遗留 celery_worker 容器仍然存在" in legacy_cleanup
+    assert "remove_legacy_celery_worker || true" in cleanup_body
+
+    cleanup_call = (
+        "remove_legacy_celery_worker\n"
+        "                            $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat"
+    )
+    cleanup_call_index = deploy_body.index(cleanup_call)
+    quiesce_index = deploy_body.index(
+        "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat", cleanup_call_index
+    )
+    migration_index = deploy_body.index("api alembic upgrade head", quiesce_index)
+    assert cleanup_call_index < quiesce_index < migration_index
+    assert "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}" in deploy_body
 
 
 def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:

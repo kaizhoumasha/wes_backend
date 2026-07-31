@@ -154,6 +154,17 @@ docker compose --env-file .env.prod \
 因此迁移前必须停止所有会访问运行时表的 API、Worker 和 Beat，并使用目标镜像的一次性 CLI 容器执行迁移：
 
 ```bash
+# 首次从旧 celery_worker 服务名升级时，先按当前 Compose project 清理遗留容器。
+compose_project_name=${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}
+for legacy_worker_id in $(docker ps -aq \
+  --filter "label=com.docker.compose.project=${compose_project_name}" \
+  --filter "label=com.docker.compose.service=celery_worker"); do
+  docker rm -f "$legacy_worker_id"
+done
+test -z "$(docker ps -aq \
+  --filter "label=com.docker.compose.project=${compose_project_name}" \
+  --filter "label=com.docker.compose.service=celery_worker")"
+
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
@@ -179,7 +190,7 @@ docker compose --env-file .env.prod \
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  up -d api celery celery-wms-fulfillment celery_beat flower nginx
+  up -d --remove-orphans api celery celery-wms-fulfillment celery_beat flower nginx
 ```
 
 ### 4.9 同步权限与菜单

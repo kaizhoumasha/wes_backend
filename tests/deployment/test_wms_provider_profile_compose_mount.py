@@ -122,3 +122,26 @@ def test_prod_env_exposes_only_the_host_profile_path_and_documents_profile_drive
     assert "WMS_PROVIDER_PROFILE_HOST_FILE=" in env_lines
     assert "WMS_PROVIDER_PROFILE_FILE=" not in env_lines
     assert any("isolated_lan + NONE" in line and "HTTP" in line for line in env_lines)
+
+
+def test_test_deploy_pipeline_validates_and_exports_the_host_profile_before_compose() -> None:
+    pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+    pipeline_environment = pipeline.split("    environment {", maxsplit=1)[1].split("    options {", maxsplit=1)[0]
+    deploy_body = pipeline.split("stage('Deploy Test Environment')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+
+    assert "WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'" in {
+        line.strip() for line in pipeline_environment.splitlines()
+    }
+    profile_path_preflight = 'if [ -z "${WMS_PROVIDER_PROFILE_HOST_FILE:-}" ]'
+    profile_file_preflight = '[ ! -f "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]'
+    profile_readable_preflight = '[ ! -r "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]'
+    profile_path_export = 'export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"'
+    first_compose_index = deploy_body.index("docker compose")
+
+    assert (
+        deploy_body.index(profile_path_preflight)
+        < deploy_body.index(profile_file_preflight)
+        < deploy_body.index(profile_readable_preflight)
+        < deploy_body.index(profile_path_export)
+        < first_compose_index
+    )

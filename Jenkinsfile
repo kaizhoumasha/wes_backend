@@ -403,9 +403,32 @@ pipeline {
                             MIGRATION_APPLIED=false
                             DEPLOYMENT_HEALTHY=false
 
+                            # celery_worker 已重命名为 celery。首次升级必须按 Compose 标签清理旧服务容器，
+                            # 避免遗留 Worker 在破坏性迁移期间继续访问数据库或消费默认队列。
+                            remove_legacy_celery_worker() {
+                                compose_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "${DEPLOY_ENV_FILE}" | tail -n 1)
+                                compose_project_name=${compose_project_name:-$(basename "$PWD")}
+                                legacy_worker_ids=$(docker ps -aq \
+                                    --filter "label=com.docker.compose.project=${compose_project_name}" \
+                                    --filter "label=com.docker.compose.service=celery_worker")
+
+                                for legacy_worker_id in $legacy_worker_ids; do
+                                    echo -e "${YELLOW}🧹 清理遗留 celery_worker 容器: ${legacy_worker_id}${NC}"
+                                    docker rm -f "$legacy_worker_id"
+                                done
+
+                                if docker ps -aq \
+                                    --filter "label=com.docker.compose.project=${compose_project_name}" \
+                                    --filter "label=com.docker.compose.service=celery_worker" | grep -q .; then
+                                    echo -e "${RED}❌ 遗留 celery_worker 容器仍然存在，禁止执行迁移${NC}"
+                                    return 1
+                                fi
+                            }
+
                             # 迁移成功后的任意失败都必须停止新应用，覆盖容器部分启动、testing 数据同步和健康检查失败。
                             cleanup_failed_deploy() {
                                 exit_code=$?
+                                remove_legacy_celery_worker || true
                                 if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]; then
                                     echo -e "${YELLOW}⚠️  迁移后部署未完成，停止 API/Worker/Beat；禁止自动切回旧镜像${NC}"
                                     $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat || true
@@ -460,6 +483,7 @@ pipeline {
                             # 本版本包含 RuntimeInbox 破坏性切换。迁移前必须停止所有可能访问旧表的
                             # API/Worker/Beat；迁移使用目标镜像的一次性 CLI 容器，不能依赖尚未启动的 API。
                             echo -e "${GREEN}⏸️  静默应用进程，准备数据库迁移...${NC}"
+                            remove_legacy_celery_worker
                             $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat
 
                             echo -e "${GREEN}🗄️  使用目标镜像运行数据库迁移...${NC}"
@@ -467,7 +491,7 @@ pipeline {
                             MIGRATION_APPLIED=true
 
                             echo -e "${GREEN}⚙️  启动新容器...${NC}"
-                            $COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES} || {
+                            $COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES} || {
                                 echo -e "${RED}❌ 容器启动失败${NC}"
                                 exit 1
                             }
