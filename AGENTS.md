@@ -1,3 +1,4 @@
+DO NOT send optional commentary
 # Repository Guidelines
 
 > 本文件适用于所有 AI Agent（Claude Code、Codex、Cursor、Windsurf 等），确保统一的架构约束和开发规范。
