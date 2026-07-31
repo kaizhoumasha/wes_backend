@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.7.0] - 2026-07-31
+
+### Added
+- 新增配置化 WMS 全工厂接入能力，冻结 35 项类型化北向合同，并通过 Provider profile、参数化 endpoint 编译、启动检查和一致性门禁实现兼容合同下的直接连接。
+- 建立 19 项 QUERY 与 16 项 EFFECT 的统一运行时：查询和 WMS 数据修改使用同步 REST，只有 AGV/CTU 调度任务使用异步 ACK、状态查询、回调提示、证据记录、重放与对账闭环。
+- 接通 Q19 GRN 准入、E11 货架调度、E12 上料批次、E13 退料批次、满箱交换以及入站事件等业务能力，覆盖粗分机和分拣机仓内流程。
+- 新增部署证明、合同一致性、运行可观测性和发布前准入门禁，支持 API、Worker、Beat 与迁移角色使用同一 Provider 配置。
+
+### Changed
+- 明确隔离 WMS 数据操作与 AGV/CTU 调度边界：QUERY 和同步修改直接返回结果，调度 EFFECT 才进入 ACK 生命周期和独立 Outbox 通道。
+- 收敛 RuntimeInbox、履约状态、批次投影和状态恢复的所有权，E12 与 E13 分别维护上料对象和由 SCAN3 形成的退料候选队列。
+- 生产部署统一校验 WMS Provider profile，并隔离 Celery Worker 拓扑；未发布系统仅保留目标合同，不提供旧配置、旧回调或旧数据路径兼容。
+
+### Fixed
+- 修复查询并发与预算、幂等重放、同步模糊传输、异步 ACK 恢复、超时轮询及终态投影中的边界问题，避免旧事实复用、重复推进和状态漂移。
+- 修复 Q19 拒绝、E11 候选饥饿、E12/E13 批次准备与收敛、满箱交换履约及回调准入中的合同偏差。
+- 发布脚本在数据库迁移前清理并验证遗留 `celery_worker`，Compose 启动清除孤儿容器；测试部署在首次启动前强制验证 Provider profile。
+
+### Removed
+- 删除旧单据端口、聚合端口、专用证据归档、终态回调、transport facade、CTU 批次预览以及 Mock/legacy 兼容路径，避免双轨实现。
+
+### Documentation
+- 更新全工厂 WMS 接入 SPEC、分阶段验收记录、部署与联调 Runbook，记录已验证任务及仍需真实 WMS 联调和工厂切换确认的外部验收项。
+
 ## [0.20.6.0] - 2026-07-29
 
 ### Changed
