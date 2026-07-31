@@ -9,7 +9,7 @@
   ECS Docker image `sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`
 - WES 确认状态：实际 Compose Mock TCP 黑盒探针 `PASS`
 - 开发 Mock WMS 确认状态：E08–E14 七个 typed EFFECT 公开 HTTP 路由 `PASS`
-- 依据：[WMS 北向最小交互合同](../contracts/wms-northbound-interaction-contract.md)
+- 依据：[WMS 北向 35 项 Operation 合同](../contracts/wms-northbound-interaction-contract.md)
 
 ## 范围与限制
 

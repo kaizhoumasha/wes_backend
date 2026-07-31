@@ -2,8 +2,8 @@
 
 > 本文件顶部版本记录保留历史变更说明；正文目录只描述当前代码和文档职责。
 
-**最后更新**: 2026年7月26日（WorkLine 插件跨环境 migration matrix、digest-bound 批准与 preflight 输入）
-**同步状态**: ✅ RuntimeInbox 与 WorkLine 插件 inventory 当前架构已同步；历史版本日志保留当时路径，不代表当前入口
+**最后更新**: 2026年7月31日（WMS 35 项 Operation Gateway、Provider profile、双履约 lane 与发布证明）
+**同步状态**: ✅ RuntimeInbox、WorkLine 插件与 WMS Gateway 当前架构已同步；历史版本日志保留当时路径，不代表当前入口
 
 ---
 
@@ -11,6 +11,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-07-31 | 0.20.7.0 / wms-full-factory-integration | WMS Gateway 冻结 19 项 QUERY 与 16 项 EFFECT；Provider profile、endpoint 编译、同步数据 lane、异步 AGV/CTU ACK lane、部署证明和 35 项合同矩阵已落地。真实 WMS REAL_TCP、现场观测和整体切换仍由外部 GO 门禁约束。 |
 | 2026-07-26 | workline-plugin-inventory-t1 | 单环境 inventory 增加 generated Plugin/System Capability digest，并从静态 capability index 派生逐 WorkLine Provider admission 与 Port requirement；新增跨环境 migration matrix、digest-bound 批准证据、稳定 matrix digest、fail-closed preflight 复用服务和 CLI。 |
 | 2026-07-13 | runtime-inbox-acceptance-closure T1–T10 | 固化 audit-only 数据库合同、正式 Service/replay 边界、reset 与 current-doc scanner；补齐隔离 PostgreSQL migration/processing/crash/benchmark runner、commit-bound evidence 和 `Jenkinsfile.backend-ci` artifact 归档。T10 默认全量、静态/质量门禁与隔离 PostgreSQL 正式验收均已完成，artifact 在最终 HEAD 上生成且不提交。 |
 | 2026-07-11 | runtime-inbox-single-source-of-truth | callback/device/internal/timer producer 统一写入 `wes_runtime.runtime_inbox`；唯一 repository、五态 claim/fencing 与三阶段 processor 落地；旧 inbox 模型、批处理器、consumer facade 与 enqueue shim 物理删除；补齐 Revision A/B 回环、两个 crash window、1000 backlog/4 worker benchmark、SLI snapshot 与稳定观测 signal。 |
@@ -101,6 +102,9 @@
 | `docs/architecture/legacy-runtime-migration-spec.md` | 运行时物理迁移历史记录；不作为当前实现或插件开发入口 | 📚 历史对照 |
 | `docs/architecture/legacy-cleanup-execution-plan.md` | technical cleanup scope 旧 plugin runtime/import 框架清理执行记录：顺序、范围、验收、business blocker 与回滚 | 📖 必读文档 |
 | `docs/contracts/observability-contract.md` | Runtime 稳定观测合同：callback / RuntimeInbox / intent / device command / WMS breaker 的 span、metric、log event 和 attribute 口径 | 📖 必读文档 |
+| `docs/contracts/wms-northbound-interaction-contract.md` | WMS 北向 35 项 Operation 冻结合同：19 QUERY、9 项同步 EFFECT、7 项 ACK/status EFFECT | 📖 必读文档 |
+| `docs/business/wms_full_factory_operation_blueprint.md` | WMS Gateway 边界、粗分/分拣业务冻结和接入验收要点 | 📖 必读文档 |
+| `docs/operations/wms-northbound-acceptance-and-cutover.md` | 真实 WMS 35 项 REAL_TCP 联调、现场观测和整体切换 GO 模板 | 📖 必读文档 |
 | `docs/contracts/runtime-toggle-governance.md` | Runtime toggle 治理合同：owner、expiry、scope、default、rollback、test_matrix 与安全边界 | 📖 必读文档 |
 | `docs/integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：RuntimeHold/诊断、错误处理和证据传播要求 | 📖 必读文档 |
 | `docs/business/smt_sorter_inbound_workflow_guide.md` | SMT 分拣入库工作流指南，含 v0.7.0.0 后端 handoff/manifest P0 闭环状态 | 📖 必读文档 |
@@ -578,32 +582,20 @@ EFFECT 与事件 normalizer 继续使用各自 typed port。
 
 #### 🔗 WMS 对接辅助域 (src/app/wms_integration/)
 
-WMS Anti-Corruption Layer，统一 typed QUERY transport、异步 WMS/RCS 派发合同、回调标准化、DB-backed 熔断、脱敏证据留痕和调用方错误合同。QUERY 禁止跨请求缓存。该域不提供公开 `/api/v1/wms/...` 代理接口，也不接管库存主账、SystemOutbox 派发或 RuntimeHold 创建。
+WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT 和 7 项 ACK/status EFFECT；一个部署只允许一个 active Provider profile。该域负责 endpoint 编译、transport、evidence、状态归约与发布证明，不负责 WorkLine 编排、库存主账、RCS 调度或设备防呆，也不提供公开 `/api/v1/wms/...` 代理接口。
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
-| `models/` | `evidence.py` | WMS 调用证据模型：脱敏快照、canonical hash、trace/correlation 字段 | 🔧 架构核心 |
-| | `circuit_breaker.py` | WMS 熔断状态模型：operation 级共享失败计数、OPEN/HALF_OPEN/CLOSED 状态 | 🔧 架构核心 |
-| | `ports.py` | WMS typed ports 请求/响应合同模型 | 🔧 架构核心 |
-| `repositories/` | `evidence_repository.py` | WMS evidence Repository | 🔧 架构核心 |
-| | `circuit_breaker_repository.py` | WMS circuit breaker state Repository | 🔧 架构核心 |
-| `services/` | `http_client.py` | 同步 WMS HTTP client，暴露 typed exception hierarchy | 🔧 架构核心 |
-| | `typed_ports.py` | WMS effect typed ports 门面；不承载 QUERY | 🔧 架构核心 |
-| | `fulfillment_lifecycle.py` | WMS fulfillment lifecycle service：基于状态机推进履约状态、保护终态、输出 RuntimeInbox 需求 | 🔧 架构核心 |
-| | `evidence_service.py` | WMS evidence 脱敏、hash 和记录服务 | 🔧 架构核心 |
-| | `circuit_breaker_service.py` | DB-backed WMS 熔断状态转换服务 | 🔧 架构核心 |
-| | `callback_normalizer.py` | WMS/RCS 回调最小包络校验和字段标准化 | 🔧 架构核心 |
-| | `transport_contract.py` | rack/handling WMS/RCS 外部派发 payload 合同辅助 | 🔧 架构核心 |
-| | `endpoint_config.py` | WMS endpoint operation path、timeout 和 operation name 配置 | 🔧 架构核心 |
-| | `redaction.py` | WMS request/response 脱敏规则 | 🔧 架构核心 |
-| | `exceptions.py` | WMS typed errors：timeout、5xx、business reject、circuit-open | 🔧 架构核心 |
-| `evidence/` | `envelope.py` | typed EvidenceEnvelope / ExternalReference，锁定外部事实证据 envelope 和 hash 字段 | 🔧 架构核心 |
-| 根目录 | `query_projection.py` | 统一 GET path/query 与 Q19 POST JSON request projection | 🔧 架构核心 |
-| | `query_response.py` | 有界 body 解码、严格 JSON 校验与 HTTP outcome 分类 | 🔧 架构核心 |
-| | `query_executor.py` | registry 驱动的预算、分页、重试与 typed outcome executor | 🔧 架构核心 |
-| | `query_evidence.py` | source_version 原子 compare-and-record 与现有 evidence/breaker 适配 | 🔧 架构核心 |
-| | `query_runtime.py` | 每进程/事件循环共享长期 AsyncClient 的 `wms-data` QUERY runtime | 🔧 架构核心 |
-| 根目录 | `state_machine.py` | WMS fulfillment 11 态状态机，保护 SUCCEEDED / REJECTED / FAILED / TIMEOUT / CANCELLED 等终态不被迟到事件覆盖 | 🔧 架构核心 |
+| 根目录 | `operation_contract.py` / `operation_registry.py` | 35 项 operation 的静态 Definition、identity、完成模式和 typed request/result 唯一真源 | 🔧 架构核心 |
+| | `provider_profile.py` / `endpoint_compiler.py` / `provider_readiness.py` | 单 active Provider 的 profile 校验、参数化 endpoint 编译与启动准入 | 🔧 架构核心 |
+| | `query_executor.py` / `query_runtime.py` / `query_projection.py` | QUERY 的预算、分页、GET/Q19 POST 投影、受限 transport 与 typed outcome | 🔧 架构核心 |
+| | `effect_preparation_runtime.py` / `effect_runtime.py` / `effect_lane_runtime.py` | 同步数据 EFFECT 与异步 AGV/CTU 履约 EFFECT 的准备、结果归约和 lane 隔离 | 🔧 架构核心 |
+| | `deployment_attestation.py` | 部署 profile、合同 digest 和运行角色的发布前证明 | 🔧 架构核心 |
+| `models/` | `evidence.py` / `circuit_breaker.py` / `ports.py` | WMS 调用证据、熔断状态与共享 Port 模型 | 🔧 架构核心 |
+| `ports/` | `*_operations.py` / `query_execution.py` / `effect_preparation.py` / `effect_status.py` | operation-specific typed Port 与统一 QUERY/EFFECT 执行合同 | 🔧 架构核心 |
+| `repositories/` | `evidence_repository.py` / `circuit_breaker_repository.py` | 脱敏 evidence 与熔断状态持久化 | 🔧 架构核心 |
+| `services/` | `http_transport.py` / `callback_normalizer.py` / `wms_event_normalizer.py` | 共享 HTTP transport、callback hint 与普通 WMS 事件标准化 | 🔧 架构核心 |
+| `evidence/` | `envelope.py` / `catalog.py` | 外部事实 evidence envelope、hash 与允许字段目录 | 🔧 架构核心 |
 
 #### 📡 设备模块 (src/app/device/)
 
