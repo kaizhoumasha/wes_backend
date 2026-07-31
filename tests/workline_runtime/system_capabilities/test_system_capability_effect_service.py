@@ -18,7 +18,10 @@ from src.app.runtime.orchestration.services.intent.system_capability_effect_serv
 from src.app.runtime.orchestration.services.intent.system_capability_intent_service import (
     SystemCapabilityIntentService,
 )
-from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
+from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityAdmissionClosed,
+    SystemCapabilityIdempotencyConflict,
+)
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -36,6 +39,7 @@ from src.app.runtime.system_capabilities.material_flow.material_unit_write.defin
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
 from src.app.runtime.system_capabilities.runtime.session_hold.contracts import SessionHoldOutput
 from src.app.runtime.system_capabilities.runtime.session_hold.definition import DEFINITION as HOLD_DEFINITION
+from src.app.wms_integration.effect_preparation_runtime import freeze_wms_effect_admission_policy
 
 
 class _Input(BaseModel):
@@ -304,6 +308,7 @@ def _service(
     repository: _EffectRepository,
     *,
     reconciliation_bridge: _ReconciliationBridge | None = None,
+    allow_new_claim: Any | None = None,
 ) -> SystemCapabilityEffectService:
     plugin_definition = SimpleNamespace(
         plugin_key="test_plugin",
@@ -317,6 +322,7 @@ def _service(
         effect_repository=repository,
         effect_reducer=_EffectReducer(repository),
         effect_reconciliation_bridge=reconciliation_bridge or _ReconciliationBridge(),
+        allow_new_claim=allow_new_claim,
     )
     return SystemCapabilityEffectService(intent_service=intent_service)
 
@@ -418,6 +424,72 @@ async def test_outbox_async_match_replays_transport_accepted_intent_without_hand
     assert replay.evidence is None
     assert _RecordingHandler.calls == []
     assert repository.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_closed_admission_allows_exact_durable_outbox_replay_without_handler() -> None:
+    definition = _definition(completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _EffectRepository(ClaimResult.MATCH, claimed_outbox_exists=True)
+    _RecordingHandler.calls.clear()
+
+    replay = await _service(
+        definition,
+        repository,
+        allow_new_claim=lambda _definition: False,
+    ).apply(_ctx(), _intent())
+
+    assert isinstance(replay.outcome, Success)
+    assert replay.durably_accepted is True
+    assert replay.idempotent_replay is True
+    assert _RecordingHandler.calls == []
+    assert repository.calls[0]["allow_insert"] is False
+
+
+@pytest.mark.asyncio
+async def test_closed_admission_rejects_proposed_orphan_without_handler_or_outbox_repair() -> None:
+    definition = _definition(completion_mode=EffectCompletionMode.OUTBOX_ASYNC)
+    repository = _EffectRepository(ClaimResult.MATCH, claimed_outbox_exists=False)
+    _RecordingHandler.calls.clear()
+
+    result = await _service(
+        definition,
+        repository,
+        allow_new_claim=lambda _definition: False,
+    ).apply(_ctx(), _intent())
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "SYSTEM_CAPABILITY_EFFECT_ADMISSION_CLOSED"
+    assert _RecordingHandler.calls == []
+    assert repository.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_admission_closed_exception_keeps_stable_effect_error_code() -> None:
+    class _ClosedIntentService:
+        async def prepare_and_claim(self, _ctx, _intent):
+            raise SystemCapabilityAdmissionClosed
+
+    result = await SystemCapabilityEffectService(intent_service=_ClosedIntentService()).apply(_ctx(), _intent())
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "SYSTEM_CAPABILITY_EFFECT_ADMISSION_CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_closed_wms_policy_allows_non_wms_effect_to_claim_and_execute() -> None:
+    repository = _EffectRepository(ClaimResult.NEW)
+    _RecordingHandler.calls.clear()
+
+    result = await _service(
+        _definition(),
+        repository,
+        allow_new_claim=freeze_wms_effect_admission_policy(False),
+    ).apply(_ctx(), _intent())
+
+    assert isinstance(result.outcome, Success)
+    assert repository.calls[0]["allow_insert"] is True
+    assert len(_RecordingHandler.calls) == 1
+    assert _RecordingHandler.calls[0][0].value == "A"
 
 
 @pytest.mark.asyncio

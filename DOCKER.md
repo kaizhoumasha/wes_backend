@@ -43,7 +43,7 @@ open http://localhost:5555       # Celery 监控
 ./scripts/docker-deploy-simple.sh prod up
 
 # 扩展服务
-./scripts/docker-deploy-simple.sh prod up --scale api=5 --scale celery_worker=8
+./scripts/docker-deploy-simple.sh prod up --scale api=5 --scale celery=8
 ```
 
 ### 停止服务
@@ -222,7 +222,7 @@ docker-compose --profile prod up -d
 docker-compose --profile infra up -d
 
 # 服务器 B：Celery（异步任务）
-docker-compose --profile celery up -d --scale celery_worker=4
+docker-compose --profile celery up -d --scale celery=4
 
 # 服务器 C：FastAPI（API 服务）
 docker-compose --profile api up -d --scale api=3
@@ -392,10 +392,10 @@ python3 -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token
 docker-compose --profile prod up -d --scale api=5
 
 # 扩展 Celery Worker 到 8 个实例
-docker-compose --profile celery up -d --scale celery_worker=8
+docker-compose --profile celery up -d --scale celery=8
 
 # 组合扩展
-docker-compose --profile prod up -d --scale api=3 --scale celery_worker=6
+docker-compose --profile prod up -d --scale api=3 --scale celery=6
 ```
 
 ### 灵活组合 profiles
@@ -419,7 +419,7 @@ docker-compose logs -f
 
 # 查看特定服务
 docker-compose logs -f api
-docker-compose logs -f celery_worker
+docker-compose logs -f celery
 docker-compose logs -f celery_beat
 
 # 查看最近 100 行
@@ -433,7 +433,7 @@ docker-compose logs --tail=100 api
 docker exec -it wes_api_prod bash
 
 # 进入 Celery Worker 容器
-docker exec -it wes_celery_worker_prod_1 bash
+docker exec -it wes_celery_prod_1 bash
 
 # 进入数据库
 docker exec -it wes_postgres_prod psql -U wesuser -d wesdb
@@ -449,7 +449,7 @@ docker-compose --profile test run pytest pytest
 docker-compose --profile dev run api alembic upgrade head
 
 # 执行 Celery 任务
-docker-compose --profile dev exec celery_worker celery -A src.core.celery_app call src.app.warehousing.tasks.process_inbound
+docker-compose --profile dev exec celery celery -A src.core.celery_app call src.app.warehousing.tasks.process_inbound
 ```
 
 ### 数据备份
@@ -475,7 +475,7 @@ docker cp wes_redis_prod:/data/dump.rdb ./redis_backup.rdb
 **检查日志**：
 ```bash
 docker-compose logs api
-docker-compose logs celery_worker
+docker-compose logs celery
 ```
 
 **常见问题**：
@@ -585,7 +585,7 @@ docker-compose --profile dev up -d
 docker-compose --profile prod up -d
 
 # 扩展
-docker-compose --profile prod up -d --scale api=5 --scale celery_worker=8
+docker-compose --profile prod up -d --scale api=5 --scale celery=8
 
 # 查看状态
 docker-compose ps

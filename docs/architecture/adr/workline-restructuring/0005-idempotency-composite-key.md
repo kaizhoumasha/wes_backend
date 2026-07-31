@@ -2,7 +2,7 @@
 
 **状态**: Accepted
 **日期**: 2026-06-23
-**适用范围**: WmsFulfillmentPort + 跨域履约请求幂等
+**适用范围**: operation-specific WMS fulfillment contract + 跨域履约请求幂等
 
 ## 背景
 

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from src.app.callback.models import CallbackLog
-from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
+from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_PROFILE
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
 from src.app.resource.models import RackKind
@@ -62,8 +62,8 @@ class NoopQueueGateway:
     def enqueue_runtime_inbox(self, *, limit: int) -> None:
         _ = limit
 
-    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
-        _ = (outbox_id, limit)
+    def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+        _ = (targets, limit)
 
 
 @asynccontextmanager
@@ -293,7 +293,21 @@ async def seed_smt_source_pick_claim(
 ) -> SeededSmtSourcePick:
     """从真实 binding activation 创建 request→bound aggregate→RuntimeInbox。"""
 
-    config = SmtSortingInboundConfig(provider_profile=WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity)
+    config = SmtSortingInboundConfig(
+        provider_profile=WMS_MATERIAL_FLOW_PROFILE.identity,
+        ctu_basket_capacity=6,
+        conveyor_entry_queue={
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        return_queue={
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    )
     workline = WorkLine(
         line_code=f"IT-SMT-PG-{suffix}",
         line_name=f"SMT PostgreSQL {suffix}",

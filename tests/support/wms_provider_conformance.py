@@ -12,20 +12,20 @@ from typing import TYPE_CHECKING, Annotated
 import httpx
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
-from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import CONTRACT
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE, resolve_wms_operation_binding
+from src.app.runtime.system_capabilities.wms.provider_catalog import (
+    build_wms_provider_catalog,
+    freeze_wms_query_binding,
+)
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
     ConformanceObservation,
     ConformanceOutcomeKind,
     ConformanceTarget,
-    WmsConformanceReport,
-    verify_wms_conformance_report,
 )
-from src.app.wms_integration.adapters.query_inventory_operation_adapter import InventoryQueryOperationAdapter
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (
+    QUERY_INVENTORY,
+    InventorySnapshotQueryRequest,
+    InventorySnapshotQueryResult,
 )
 from src.app.wms_integration.ports.query_outcome import (
     QueryBusinessReject,
@@ -34,15 +34,21 @@ from src.app.wms_integration.ports.query_outcome import (
     QueryTechnicalFailure,
     WmsQueryOutcome,
 )
-from src.app.wms_integration.services.query_transport import (
-    WmsBoundQueryEndpoint,
-    WmsQueryCallPermit,
-    WmsQueryTransportExecutor,
+from src.app.wms_integration.query_evidence import WmsQueryCallPermit
+from src.app.wms_integration.query_executor import WmsRegistryQueryExecutor
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
 )
 from tests.support.wms_provider_replay import (
     QUERY_INVENTORY_REPLAY_ASSET_DIGEST,
     QueryInventoryReplayFactory,
 )
+
+_conformance_profile_payload = build_hmac_provider_profile_payload()
+_conformance_profile_payload["server_url"] = "https://factory-wms.example"
+WMS_CONFORMANCE_COMPILED_PROFILE = build_compiled_provider_profile(_conformance_profile_payload)
+WMS_CONFORMANCE_PROVIDER_CATALOG = build_wms_provider_catalog(WMS_CONFORMANCE_COMPILED_PROFILE)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -142,13 +148,16 @@ class _RecordingEvidenceWriter:
         *,
         operation_identity: str,
         target_code: str,
-        request_snapshot: Mapping[str, object],
-        outcome: object,
-        permit: WmsQueryCallPermit,
-    ) -> str:
+        **kwargs,
+    ) -> object:
+        from src.app.wms_integration.query_evidence import WmsQueryEvidenceRecord
+
         if self._fail:
             raise RuntimeError("scripted evidence failure")
-        return f"evidence:{operation_identity}:conformance"
+        return WmsQueryEvidenceRecord(
+            evidence_key=f"evidence:{operation_identity}:conformance",
+            outcome=kwargs["outcome"],
+        )
 
 
 class _TestCredentialProvider:
@@ -241,34 +250,42 @@ def build_query_inventory_conformance_targets():
     )
 
 
+async def _no_wait(_seconds: float) -> None:
+    """Mock conformance 保留重试次数，不消耗真实退避时间。"""
+
+
 async def _execute_adapter_case(case: ScriptedQueryCase, *, handler) -> ConformanceObservation:
-    contract = CONTRACT
+    operation = QUERY_INVENTORY
     if case.scenario is QueryConformanceScenario.BUDGET:
-        contract = contract.model_copy(
+        operation = operation.model_copy(
             update={
-                "budget": contract.budget.model_copy(
+                "budget": operation.budget.model_copy(
                     update={"max_wire_bytes": 64, "max_decoded_bytes": 128, "max_chunk_bytes": 64}
                 )
             }
         )
-    binding = resolve_wms_operation_binding(
-        profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
-        operation_identity=CONTRACT.identity,
-    ).model_copy(update={"operation": contract})
-    executor = WmsQueryTransportExecutor(
-        endpoint=WmsBoundQueryEndpoint(binding=binding, base_url="https://conformance.invalid"),
-        transport=httpx.MockTransport(handler),
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
+    executor = WmsRegistryQueryExecutor(
+        operation=operation,
+        endpoint=WMS_CONFORMANCE_COMPILED_PROFILE.operations[operation.identity],
+        frozen_binding=freeze_wms_query_binding(
+            catalog=WMS_CONFORMANCE_PROVIDER_CATALOG,
+            operation_identity=operation.identity,
+        ),
+        client=client,
         evidence_writer=_RecordingEvidenceWriter(fail=case.scenario is QueryConformanceScenario.EVIDENCE_FAILURE),
         credential_provider=_TestCredentialProvider(),
+        sleep=_no_wait,
     )
-    outcome = await InventoryQueryOperationAdapter(executor=executor).execute(
-        InventoryQueryOperationRequest(material_code="MAT-001")
-    )
+    try:
+        outcome = await executor.execute(InventorySnapshotQueryRequest(material_code="MAT-001"))
+    finally:
+        await client.aclose()
     return observe_query_inventory_outcome(outcome, case_id=case.case_id)
 
 
 def observe_query_inventory_outcome(
-    outcome: WmsQueryOutcome[InventoryQueryOperationResult],
+    outcome: WmsQueryOutcome[InventorySnapshotQueryResult],
     *,
     case_id: str,
 ) -> ConformanceObservation:
@@ -310,18 +327,7 @@ def observe_query_inventory_outcome(
     )
 
 
-def verify_query_inventory_replay_report(payload: dict[str, object]) -> WmsConformanceReport:
-    """在外层验证 runtime 报告来自当前代码 pin 的 replay asset。"""
-
-    report = verify_wms_conformance_report(payload)
-    if report.target is not ConformanceTarget.REPLAY:
-        raise ValueError("query inventory replay verifier requires a REPLAY report")
-    if not hmac.compare_digest(report.fixture_digest, QUERY_INVENTORY_REPLAY_ASSET_DIGEST):
-        raise ValueError("query inventory replay report asset digest mismatch")
-    return report
-
-
-def _success_marker(result: InventoryQueryOperationResult) -> str:
+def _success_marker(result: InventorySnapshotQueryResult) -> str:
     if not result.items:
         return "EMPTY"
     if len(result.items) == 2:
@@ -333,6 +339,8 @@ def _success_marker(result: InventoryQueryOperationResult) -> str:
 
 __all__ = [
     "QUERY_INVENTORY_SCRIPT_FIXTURE",
+    "WMS_CONFORMANCE_COMPILED_PROFILE",
+    "WMS_CONFORMANCE_PROVIDER_CATALOG",
     "QueryInventoryAdapterFactory",
     "QueryInventoryReplayConformanceFactory",
     "QueryInventoryScriptFixture",
@@ -341,5 +349,4 @@ __all__ = [
     "ScriptedQueryCase",
     "build_query_inventory_conformance_targets",
     "observe_query_inventory_outcome",
-    "verify_query_inventory_replay_report",
 ]

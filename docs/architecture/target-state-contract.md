@@ -108,7 +108,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 事实类型 | 权威系统 | WES 角色 | WES 写入 |
 | --- | --- | --- | --- |
-| 库存数量、批次、有效期 | WMS | 引用 + 作业期快照 | 只读 evidence + 短暂快照缓存（TTL 30s） |
+| 库存数量、批次、有效期 | WMS | 引用 + 作业期快照 | 单次 execution 的只读 authority snapshot；不跨请求缓存 |
 | 入库单 / 出库单 / 批次单 / 波次 / 业务任务 | WMS | 外部引用 + 执行上下文 | 不复制为 WES 单据主档 |
 | 设备到位信号（光电、接近开关、扫码） | ECS/device | 接收 + 转换 | evidence + transition events |
 | 设备业务命令结果 | ECS/device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 |
@@ -144,10 +144,10 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | 集成约束 | 目标态落点 |
 | --- | --- |
-| RCS 调度仍由 WMS 统一调度 | `WmsFulfillmentPort`——WES 生成搬运需求并提交 WMS；WMS 调 RCS，结果经 WMS 回传 |
-| PDA 仅对接 WMS | `WmsEventPort` / `WmsDocumentPort`——WES 不做 PDA API |
+| RCS 调度仍由 WMS 统一调度 | operation-specific WMS fulfillment contract——WES 生成搬运需求并提交 WMS；WMS 调 RCS，结果经 WMS 回传 |
+| PDA 仅对接 WMS | `WmsEventPort` / operation-specific document QUERY——WES 不做 PDA API |
 | 自动化设备只通过 WES 接入 | `device` 域——WMS 不直连设备 |
-| WES 不同步基础数据 | `WmsMasterDataPort` / `InventoryQueryOperationPort`——按需查询；库存禁止跨请求缓存 |
+| WES 不同步基础数据 | operation-specific typed QUERY Definition + `WmsQueryExecutionPort`——按需查询；库存禁止跨请求缓存 |
 | WMS 是库存唯一真实源 | Authority Matrix——库存事务必须以 WMS 提交成功为准 |
 | WMS EFFECT 终态来自查询 | submit 受理/结果不明后由 status query 闭环；callback 只提示查询，不直接改终态 |
 
@@ -163,7 +163,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
   catalog、selector、按 payload 路由、热切换或 fallback。
 - 新 Intent 冻结 active profile 的 submit/status binding；存量 Intent 继续使用同一 WMS Provider 的历史
   binding/credential revision，缺失或撤销时进入人工对账。
-- 三个 EFFECT 的 wire body 仅为 typed canonical payload，operation identity 与 idempotency key 使用闭集 header；
+- E01–E16 EFFECT 的 wire body 仅为 typed canonical payload，operation identity 与 idempotency key 使用闭集 header；
   frozen binding 只在 WES 内部持久化并保证重试/重启仍使用原 endpoint/credential revision，绝不发送给 WMS。
   状态查询快照是唯一业务完成/拒绝事实；callback 缺失不影响正确性。
 - WES 只关心 submit、status query、callback hint 交互合同和可观察结果，不建模或推断 WMS 内部队列、流程、
@@ -171,8 +171,9 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 - 开发阶段使用确定性 mock/replay；真实 WMS 的 Provider/build identity、SLA/保留期、全 operation case evidence
   和双方签字必须在联调环境另行验收。mock 通过不能把真实验收从 `PENDING` 改为通过。
 
-**7 个目标 WMS port**（主计划 §5.1，字段留 Phase 1 `wms-integration-ports-spec.md`）：
-`WmsMasterDataPort` / `WmsDocumentPort` / `InventoryQueryOperationPort` / `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `WmsEventPort` / `WmsReconciliationQueryPort`。
+**目标 WMS 边界**：
+operation-specific master-data/document/inventory/reconciliation QUERY Definition + `WmsQueryExecutionPort` /
+operation-specific inventory/fulfillment EFFECT Definition + `WmsEffectPreparationPort` / `WmsEventPort`。
 
 ## 7. 不做清单（来源主计划 §2.3）
 
@@ -236,7 +237,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 | Phase | 触发 SPEC | 本合同锁定项 |
 | --- | --- | --- |
-| Phase 1 | `wms-integration-ports-spec.md`、`runtime-orchestration-spec.md` | 7 WMS port、ExecutionCorrelation、域边界 |
+| Phase 1 | `wms-integration-ports-spec.md`、`runtime-orchestration-spec.md` | operation-specific typed Definition + `WmsQueryExecutionPort` / `WmsEffectPreparationPort`、ExecutionCorrelation、域边界 |
 | Phase 3 | `fulfillment-state-machine-spec.md`、`plane-read-model-spec.md`、`external-callback-auth-spec.md`、`reconciliation-manager-spec.md` | 11 态机、Plane schema、HMAC、RECONCILING |
 | Phase 4 | `material-location-query-spec.md`、`sorter-inbound-capability-spec.md` | 作业对象查询、分拣机入库语义 |
 | Phase 5 | `legacy-cleanup-execution-plan.md` | 破坏性删除范围 |

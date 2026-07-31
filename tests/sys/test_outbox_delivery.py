@@ -27,8 +27,8 @@ class _FakeTaskQueueGateway:
     def enqueue_workline_inbox(self, *, limit: int = 10) -> None:
         _ = limit
 
-    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
-        _ = outbox_id, limit
+    def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+        _ = targets, limit
 
 
 @pytest.mark.asyncio
@@ -79,6 +79,57 @@ async def test_dispatch_external_http_sender_failure() -> None:
     request = sender.await_args.args[0]
     assert isinstance(request, ExternalHttpDispatchRequest)
     assert request.body == outbox.canonical_payload_bytes
+
+
+@pytest.mark.asyncio
+async def test_dispatch_external_http_does_not_emit_submit_before_evidence_commit(monkeypatch) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    outbox = frozen_outbox_namespace(
+        {"k": "v"},
+        target_code="WMS_TEST",
+        operation_identity="wms.fulfillment.request_rack_transport@v1",
+        dispatch_key="dispatch-business-key",
+        idempotency_key="idempotency-key",
+        attempt_count=2,
+    )
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
+    emissions: list[dict[str, Any]] = []
+
+    def record(_name: str, **kwargs: Any) -> None:
+        emissions.append({"name": _name, **kwargs})
+
+    monkeypatch.setattr(wms_effect_observability, "emit_wms_effect_observation", record)
+
+    result = await dispatch_external_http(outbox, StaticTestCredentialProvider(), sender)
+
+    assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
+    assert emissions == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_external_http_does_not_emit_wms_effect_submit_for_non_wms_operation(monkeypatch) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    outbox = frozen_outbox_namespace({"k": "v"})
+    sender = AsyncMock(
+        return_value=ExternalHttpTransportResult.accepted(
+            http_status_code=202,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        )
+    )
+    record = AsyncMock()
+    monkeypatch.setattr(wms_effect_observability, "emit_wms_effect_observation", record)
+
+    result = await dispatch_external_http(outbox, StaticTestCredentialProvider(), sender)
+
+    assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
+    record.assert_not_called()
 
 
 @pytest.mark.asyncio

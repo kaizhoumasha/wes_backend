@@ -13,6 +13,7 @@ from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.celery_app import app as celery_app_module
 from src.core.conf import settings
 from src.register import register_init
+from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
 
 
 @pytest.mark.asyncio
@@ -38,7 +39,7 @@ async def test_startup_rejects_invalid_wms_transport_before_database_init(
     monkeypatch.setattr(provider_catalog, "validate_wms_transport_configuration", reject_wms_transport)
 
     with pytest.raises(ValueError, match="WMS production transport"):
-        async with register_init(object()):
+        async with register_init(SimpleNamespace(state=SimpleNamespace())):
             pytest.fail("无效 WMS transport 配置不得进入 serving 状态")
 
     init_db.assert_not_awaited()
@@ -54,12 +55,6 @@ def _production_simulation_settings() -> SimpleNamespace:
         APP_PORT=8001,
         DOCS_URL="/docs",
         WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=True,
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_SYNC_BASE_URL="https://wms.example/api",
-        WMS_EFFECT_STATUS_URL="https://wms.example/api/status",
-        WMS_RCS_RACK_OPERATION_URL="https://wms.example/api/rack-operation",
-        WMS_RCS_BIN_OPERATION_URL="https://wms.example/api/bin-operation",
-        WMS_RCS_FULL_BOX_EXCHANGE_URL="https://wms.example/api/full-box-exchange",
         WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1="old-secret",
         WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2="active-secret",
         WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS=100,
@@ -86,10 +81,101 @@ async def test_fastapi_startup_rejects_production_in_process_simulation_before_d
     monkeypatch.setattr(redis_client, "close_redis", AsyncMock())
 
     with pytest.raises(ValueError, match=r"production.*simulation"):
-        async with register_init(object()):
+        async with register_init(SimpleNamespace(state=SimpleNamespace())):
             pytest.fail("production simulator 配置不得进入 serving 状态")
 
     init_db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import observability
+    from src.app.wms_integration import effect_preparation_runtime, query_runtime
+    from src.database import db as database
+    from src.database import redis_client
+
+    startup = SimpleNamespace(catalog=object(), compiled_profile=build_compiled_provider_profile())
+    data_runtime = object()
+    preparation_runtime = object()
+    build_preparation = MagicMock(return_value=preparation_runtime)
+    bind_preparation = MagicMock()
+    close_preparation = AsyncMock()
+    monkeypatch.setattr(
+        provider_catalog,
+        "validate_wms_transport_configuration",
+        MagicMock(return_value=startup),
+    )
+    monkeypatch.setattr(database, "init_db", AsyncMock())
+    monkeypatch.setattr(database, "close_db", AsyncMock())
+    monkeypatch.setattr(redis_client, "init_redis", AsyncMock())
+    monkeypatch.setattr(redis_client, "close_redis", AsyncMock())
+    monkeypatch.setattr(query_runtime, "build_wms_data_lane_query_runtime", MagicMock(return_value=data_runtime))
+    monkeypatch.setattr(query_runtime, "bind_wms_data_lane_query_runtime", MagicMock())
+    monkeypatch.setattr(query_runtime, "close_bound_wms_data_lane_query_runtime", AsyncMock())
+    monkeypatch.setattr(effect_preparation_runtime, "build_wms_effect_preparation_runtime", build_preparation)
+    monkeypatch.setattr(effect_preparation_runtime, "bind_wms_effect_preparation_runtime", bind_preparation)
+    monkeypatch.setattr(effect_preparation_runtime, "close_wms_effect_preparation_runtime", close_preparation)
+    monkeypatch.setattr(observability, "configure_runtime_open_telemetry_backend", MagicMock(return_value=False))
+    monkeypatch.setattr(observability.runtime_observability_registry, "close", MagicMock())
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    async with register_init(app):
+        assert app.state.wms_effect_preparation_runtime is preparation_runtime
+
+    build_preparation.assert_called_once_with(
+        catalog=startup.catalog,
+        admission_enabled=settings.WMS_EFFECT_ADMISSION_ENABLED,
+    )
+    bind_preparation.assert_called_once_with(preparation_runtime)
+    close_preparation.assert_awaited_once_with(preparation_runtime)
+
+
+@pytest.mark.asyncio
+async def test_fastapi_preparation_bind_failure_does_not_close_existing_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import observability
+    from src.app.wms_integration import effect_preparation_runtime, query_runtime
+    from src.database import db as database
+    from src.database import redis_client
+
+    candidate = object()
+    unbind_candidate = AsyncMock()
+    monkeypatch.setattr(
+        provider_catalog,
+        "validate_wms_transport_configuration",
+        MagicMock(
+            return_value=SimpleNamespace(
+                catalog=object(),
+                compiled_profile=build_compiled_provider_profile(),
+            )
+        ),
+    )
+    monkeypatch.setattr(database, "init_db", AsyncMock())
+    monkeypatch.setattr(database, "close_db", AsyncMock())
+    monkeypatch.setattr(redis_client, "init_redis", AsyncMock())
+    monkeypatch.setattr(redis_client, "close_redis", AsyncMock())
+    monkeypatch.setattr(query_runtime, "build_wms_data_lane_query_runtime", MagicMock(return_value=object()))
+    monkeypatch.setattr(query_runtime, "bind_wms_data_lane_query_runtime", MagicMock())
+    monkeypatch.setattr(query_runtime, "close_bound_wms_data_lane_query_runtime", AsyncMock())
+    monkeypatch.setattr(
+        effect_preparation_runtime, "build_wms_effect_preparation_runtime", MagicMock(return_value=candidate)
+    )
+    monkeypatch.setattr(
+        effect_preparation_runtime,
+        "bind_wms_effect_preparation_runtime",
+        MagicMock(side_effect=RuntimeError("already bound")),
+    )
+    monkeypatch.setattr(effect_preparation_runtime, "close_wms_effect_preparation_runtime", unbind_candidate)
+    monkeypatch.setattr(observability.runtime_observability_registry, "close", MagicMock())
+
+    with pytest.raises(RuntimeError, match="already bound"):
+        async with register_init(SimpleNamespace(state=SimpleNamespace())):
+            pytest.fail("绑定失败不得进入 serving 状态")
+
+    unbind_candidate.assert_not_awaited()
 
 
 def test_celery_startup_rejects_production_in_process_simulation_before_logger(

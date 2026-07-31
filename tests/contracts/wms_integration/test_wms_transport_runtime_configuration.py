@@ -3,39 +3,21 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
-import httpx
 import pytest
 
 from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256
 from src.app.sys.external_http_credentials import build_environment_external_http_credential_provider
 from src.app.wms_integration.ports.effect_status import FrozenWmsEffectStatusBinding
-from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationRequest
-from src.app.wms_integration.ports.query_outcome import QueryContractFailure
-from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
-from src.app.wms_integration.services.query_transport import WmsBoundQueryEndpoint, WmsQueryCallPermit
 from src.core.conf import Settings
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-
-class _EvidenceWriter:
-    async def before_call(self, *, operation_identity: str, target_code: str) -> WmsQueryCallPermit:
-        return WmsQueryCallPermit(allowed=True)
-
-    async def record(
-        self,
-        *,
-        operation_identity: str,
-        target_code: str,
-        request_snapshot: Mapping[str, object],
-        outcome: object,
-        permit: WmsQueryCallPermit,
-    ) -> str:
-        return "evidence-1"
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+    build_provider_catalog,
+    build_provider_profile_payload,
+    write_provider_profile,
+)
 
 
 def _status_settings(**overrides: object) -> Settings:
@@ -50,7 +32,6 @@ def _status_settings(**overrides: object) -> Settings:
 def test_wms_effect_status_runtime_configuration_exposes_all_frozen_budgets() -> None:
     configured = _status_settings()
 
-    assert configured.WMS_EFFECT_STATUS_URL
     assert configured.WMS_EFFECT_STATUS_TIMEOUT_SECONDS > 0
     assert configured.WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES > 0
     assert configured.WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS > 0
@@ -59,34 +40,36 @@ def test_wms_effect_status_runtime_configuration_exposes_all_frozen_budgets() ->
     assert configured.WES_EFFECT_NOT_FOUND_GRACE_SECONDS > 0
     assert configured.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS > 0
     assert configured.WES_EFFECT_STATUS_SCAN_BATCH_SIZE > 0
-    assert configured.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS >= configured.WMS_EFFECT_STATUS_TIMEOUT_SECONDS
+    assert 0 < configured.WES_EFFECT_STATUS_MAX_IN_FLIGHT <= configured.DATABASE_POOL_SIZE
+    assert configured.WES_EFFECT_STATUS_SCAN_PERIOD_SECONDS > 0
+    assert configured.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS > configured.WES_EFFECT_STATUS_SCAN_BATCH_BUDGET_SECONDS
+    assert (
+        configured.WES_EFFECT_STATUS_TASK_HARD_TIME_LIMIT_SECONDS
+        > configured.WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS
+        > configured.WES_EFFECT_STATUS_SCAN_BATCH_BUDGET_SECONDS
+    )
     assert configured.WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS > 0
     assert 0 < configured.WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS <= configured.WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS
 
 
 def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_frozen_revisions() -> None:
-    old_settings = SimpleNamespace(APP_ENV="test", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1")
     active_settings = SimpleNamespace(
         APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
         WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="old-secret",
         WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2="new-secret",
         WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES="",
     )
 
-    old_profile = provider_catalog.build_active_wms_provider_profile(old_settings)
-    active_profile = provider_catalog.build_active_wms_provider_profile(active_settings)
-    old_reference = old_profile.bindings[0].outbound_auth.credential_reference
-    active_reference = active_profile.bindings[0].outbound_auth.credential_reference
+    old_payload = build_hmac_provider_profile_payload()
+    active_payload = build_hmac_provider_profile_payload()
+    old_payload["outbound_auth"]["credential_reference"] = "secret://wms/material-flow-sandbox-hmac@v1"
+    active_payload["outbound_auth"]["credential_reference"] = "secret://wms/material-flow-sandbox-hmac@v2"
+    old_profile = build_compiled_provider_profile(old_payload)
+    active_profile = build_compiled_provider_profile(active_payload)
+    old_reference = old_profile.profile.outbound_auth.credential_reference
+    active_reference = active_profile.profile.outbound_auth.credential_reference
     credential_provider = build_environment_external_http_credential_provider(settings_source=active_settings)
-    old_profile_hash = payload_sha256(
-        canonical_json_bytes(
-            {
-                "credential_reference": old_reference,
-                "provider_profile_identity": old_profile.identity.identity,
-            }
-        )
-    )
+    old_profile_hash = old_profile.profile_digest
     target = {
         "url": "https://old-wms.example.test/status",
         "http_method": "GET",
@@ -108,7 +91,7 @@ def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_
         ),
         "credential_reference": old_reference,
         "provider_profile_hash": old_profile_hash,
-        "provider_profile_identity": old_profile.identity.identity,
+        "provider_profile_identity": old_profile.profile.profile.identity,
         "target": target,
         "target_hash": target_hash,
     }
@@ -117,7 +100,8 @@ def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_
         snapshot_hash=payload_sha256(canonical_json_bytes(old_binding_snapshot)),
     )
 
-    assert old_profile.identity.identity == active_profile.identity.identity
+    assert old_profile.profile.profile.identity == active_profile.profile.profile.identity
+    assert old_profile.profile_digest != active_profile.profile_digest
     assert old_reference == "secret://wms/material-flow-sandbox-hmac@v1"
     assert active_reference == "secret://wms/material-flow-sandbox-hmac@v2"
     assert credential_provider.resolve(frozen_old_binding.credential_reference) == b"old-secret"
@@ -127,9 +111,10 @@ def test_material_flow_credential_rotation_keeps_provider_identity_and_resolves_
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"WMS_EFFECT_STATUS_URL": ""}, "WMS_EFFECT_STATUS_URL"),
         ({"WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 0}, "WMS_EFFECT_STATUS_TIMEOUT_SECONDS"),
-        ({"WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS": 1, "WMS_EFFECT_STATUS_TIMEOUT_SECONDS": 2}, "lease"),
+        ({"WES_EFFECT_STATUS_MAX_IN_FLIGHT": 2}, "session"),
+        ({"WES_EFFECT_STATUS_SCAN_BATCH_SIZE": 50}, "QPS"),
+        ({"WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS": 15}, "lease"),
         (
             {
                 "WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS": 9,
@@ -162,167 +147,52 @@ def test_wms_effect_status_runtime_configuration_fails_fast(
         _status_settings(**overrides)
 
 
-def _configure_transport(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    base_url: str,
-    app_env: str = "prod",
-    sandbox_secret: str = "",
-    production_secret: str = "",
-    legacy_sandbox_secret: str | None = None,
-    legacy_production_secret: str | None = None,
-    plugin_sandbox_secret: str | None = None,
-    plugin_production_secret: str | None = None,
-    revoked_references: str = "",
-    rack_endpoint_url: str = "https://wms.example/api/rack-operation",
-    bin_endpoint_url: str = "https://wms.example/api/transport-request",
-    full_box_endpoint_url: str = "https://wms.example/api/full-box-exchange",
-) -> None:
-    monkeypatch.setattr(provider_catalog.settings, "APP_ENV", app_env)
-    monkeypatch.setattr(provider_catalog.settings, "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED", False)
-    monkeypatch.setattr(provider_catalog.settings, "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION", "v1")
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WMS_EFFECT_STATUS_URL",
-        "https://wms.example/api/status" if app_env == "prod" else "http://localhost:8011/api/wms/status",
-    )
-    monkeypatch.setattr(provider_catalog.settings, "WMS_SYNC_BASE_URL", base_url)
-    monkeypatch.setattr(provider_catalog.settings, "WMS_RCS_RACK_OPERATION_URL", rack_endpoint_url, raising=False)
-    monkeypatch.setattr(provider_catalog.settings, "WMS_RCS_BIN_OPERATION_URL", bin_endpoint_url, raising=False)
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WMS_RCS_FULL_BOX_EXCHANGE_URL",
-        full_box_endpoint_url,
-        raising=False,
-    )
-    monkeypatch.setattr(provider_catalog.settings, "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1", sandbox_secret)
-    monkeypatch.setattr(provider_catalog.settings, "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1", production_secret)
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1",
-        sandbox_secret if legacy_sandbox_secret is None else legacy_sandbox_secret,
-    )
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1",
-        production_secret if legacy_production_secret is None else legacy_production_secret,
-    )
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1",
-        sandbox_secret if plugin_sandbox_secret is None else plugin_sandbox_secret,
-    )
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1",
-        production_secret if plugin_production_secret is None else plugin_production_secret,
-    )
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES",
-        revoked_references,
+def _profile_startup_settings(profile_file) -> SimpleNamespace:
+    return SimpleNamespace(
+        APP_ENV="prod",
+        WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=False,
+        WMS_PROVIDER_PROFILE_FILE=profile_file,
+        WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS=100,
+        WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS=2,
+        WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS=80,
+        WES_EFFECT_NOT_FOUND_GRACE_SECONDS=3,
+        WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS=20,
     )
 
 
-def test_wms_sync_base_url_has_no_implicit_http_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("WMS_SYNC_BASE_URL", raising=False)
-    monkeypatch.setattr(provider_catalog, "settings", SimpleNamespace(WMS_SYNC_BASE_URL=""), raising=False)
+def test_wms_transport_reads_the_deployment_owned_profile_file(tmp_path) -> None:
+    profile_file = write_provider_profile(tmp_path / "provider.yaml")
 
-    with pytest.raises(ValueError, match="WMS_SYNC_BASE_URL"):
-        provider_catalog.wms_sync_base_url()
-
-
-def test_wms_transport_reads_url_and_hmac_from_pydantic_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("WMS_SYNC_BASE_URL", raising=False)
-    monkeypatch.delenv("WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1", raising=False)
-    monkeypatch.setattr(
-        provider_catalog,
-        "settings",
-        SimpleNamespace(
-            APP_ENV="dev",
-            WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=False,
-            WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1",
-            WMS_SYNC_BASE_URL="http://localhost:8011/api/wms",
-            WMS_RCS_RACK_OPERATION_URL="http://localhost:8011/api/wms/rack-operation",
-            WMS_RCS_BIN_OPERATION_URL="http://localhost:8011/api/wms/transport-request",
-            WMS_RCS_FULL_BOX_EXCHANGE_URL="http://localhost:8011/api/wms/fulfillment/full-box-exchange",
-            WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="settings-material-flow-secret",
-            WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1="settings-legacy-secret",
-            WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1="settings-plugin-secret",
-            WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES="",
-            WMS_EFFECT_STATUS_URL="http://localhost:8011/api/wms/status",
-            WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS=100,
-            WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS=2,
-            WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS=80,
-            WES_EFFECT_NOT_FOUND_GRACE_SECONDS=3,
-            WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS=20,
-        ),
-        raising=False,
+    startup = provider_catalog.validate_wms_transport_configuration(
+        settings_source=_profile_startup_settings(profile_file)
     )
 
-    provider_catalog.validate_wms_transport_configuration(settings_source=provider_catalog.settings)
+    assert startup.compiled_profile.profile.server_url == "http://factory-wms.example:8080"
 
 
-def test_production_wms_transport_requires_explicit_https_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    _configure_transport(
-        monkeypatch,
-        base_url="http://wms.example/api",
-        production_secret="production-secret",
+def test_production_wms_transport_allows_http_with_isolated_lan_none_auth(tmp_path) -> None:
+    profile_file = write_provider_profile(tmp_path / "provider.yaml")
+
+    startup = provider_catalog.validate_wms_transport_configuration(
+        settings_source=_profile_startup_settings(profile_file)
     )
 
-    with pytest.raises(ValueError, match="HTTPS"):
-        provider_catalog.validate_wms_transport_configuration(settings_source=provider_catalog.settings)
+    assert startup.compiled_profile.profile.outbound_auth.scheme == "NONE"
 
 
-@pytest.mark.parametrize("missing_field", ("WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1",))
-def test_wms_transport_requires_every_active_hmac_secret(
-    monkeypatch: pytest.MonkeyPatch,
-    missing_field: str,
-) -> None:
-    _configure_transport(
-        monkeypatch,
-        base_url="https://wms.example/api",
-        production_secret="production-secret",
-    )
-    monkeypatch.setattr(provider_catalog.settings, missing_field, "")
+def test_hmac_profile_requires_only_a_versioned_reference_not_an_embedded_secret(tmp_path) -> None:
+    payload = build_provider_profile_payload()
+    payload["outbound_auth"] = {
+        "scheme": "HMAC_SHA256",
+        "credential_reference": "secret://wms/factory-hmac@v1",
+    }
+    profile_file = write_provider_profile(tmp_path / "provider.yaml", payload)
 
-    with pytest.raises(ValueError, match=missing_field):
-        provider_catalog.validate_wms_transport_configuration(settings_source=provider_catalog.settings)
-
-
-def test_valid_active_profile_configuration_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
-    _configure_transport(
-        monkeypatch,
-        base_url="https://wms.example/api",
-        production_secret="production-secret",
+    startup = provider_catalog.validate_wms_transport_configuration(
+        settings_source=_profile_startup_settings(profile_file)
     )
 
-    provider_catalog.validate_wms_transport_configuration(settings_source=provider_catalog.settings)
-
-
-@pytest.mark.parametrize(
-    "endpoint_field",
-    (
-        "WMS_RCS_RACK_OPERATION_URL",
-        "WMS_RCS_BIN_OPERATION_URL",
-        "WMS_RCS_FULL_BOX_EXCHANGE_URL",
-    ),
-)
-def test_production_wms_transport_requires_https_for_every_external_http_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-    endpoint_field: str,
-) -> None:
-    _configure_transport(
-        monkeypatch,
-        base_url="https://wms.example/api",
-        production_secret="production-secret",
-    )
-    monkeypatch.setattr(provider_catalog.settings, endpoint_field, "http://wms.example/insecure", raising=False)
-
-    with pytest.raises(ValueError, match=endpoint_field):
-        provider_catalog.validate_wms_transport_configuration(settings_source=provider_catalog.settings)
+    assert startup.compiled_profile.profile.outbound_auth.credential_reference == "secret://wms/factory-hmac@v1"
 
 
 @pytest.mark.parametrize(
@@ -343,78 +213,10 @@ def test_production_wms_transport_requires_https_for_every_external_http_endpoin
         "https://wms.example/api#",
     ),
 )
-def test_wms_transport_rejects_non_origin_base_urls(
-    monkeypatch: pytest.MonkeyPatch,
-    base_url: str,
-) -> None:
-    _configure_transport(
-        monkeypatch,
-        base_url=base_url,
-        production_secret="production-secret",
-    )
+def test_wms_transport_rejects_non_origin_base_urls(tmp_path, base_url: str) -> None:
+    payload = build_provider_profile_payload()
+    payload["server_url"] = base_url
+    profile_file = write_provider_profile(tmp_path / "provider.yaml", payload)
 
-    with pytest.raises(ValueError, match=r"absolute|userinfo|query|fragment"):
-        provider_catalog.validate_wms_transport_configuration(settings_source=provider_catalog.settings)
-
-
-def test_query_endpoint_rejects_missing_hostname() -> None:
-    binding = provider_catalog.resolve_wms_operation_binding(
-        profile_identity=provider_catalog.WMS_PROVIDER_PROFILE.identity.identity,
-        operation_identity="wms.inventory.query_inventory@v1",
-    )
-
-    with pytest.raises(ValueError, match="absolute"):
-        WmsBoundQueryEndpoint(binding=binding, base_url="https:///api")
-
-
-def test_production_runtime_rejects_explicit_in_process_simulation() -> None:
-    with pytest.raises(ValueError, match=r"production.*forbids.*simulation"):
-        build_inventory_query_port_factory(
-            simulation=True,
-            sandbox_rows_provider=lambda **_kwargs: [],
-            settings_source=SimpleNamespace(
-                APP_ENV="prod",
-                WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-            ),
-        )
-
-
-@pytest.mark.asyncio
-async def test_query_factory_honors_shared_credential_revocation_before_http(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    reference = "secret://wms/material-flow-sandbox-hmac@v2"
-    _configure_transport(
-        monkeypatch,
-        base_url="https://wms.example/api",
-        app_env="test",
-        sandbox_secret="sandbox-secret",
-        revoked_references=reference,
-    )
-    monkeypatch.setattr(provider_catalog.settings, "WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION", "v2")
-    monkeypatch.setattr(
-        provider_catalog.settings,
-        "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
-        "sandbox-secret-v2",
-    )
-    calls = 0
-
-    async def handler(_request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        return httpx.Response(200, json={"items": []})
-
-    factory = build_inventory_query_port_factory(
-        simulation=False,
-        sandbox_rows_provider=lambda **_kwargs: [],
-        transport=httpx.MockTransport(handler),
-        evidence_writer=_EvidenceWriter(),
-        base_url="https://wms.example/api",
-        settings_source=provider_catalog.settings,
-    )
-
-    outcome = await factory().execute(InventoryQueryOperationRequest(material_code="MAT-001"))
-
-    assert isinstance(outcome, QueryContractFailure)
-    assert outcome.reason_code == "WMS_CREDENTIAL_UNAVAILABLE"
-    assert calls == 0
+    with pytest.raises(ValueError, match=r"HTTP\(S\) origin"):
+        provider_catalog.validate_wms_transport_configuration(settings_source=_profile_startup_settings(profile_file))

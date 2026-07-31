@@ -12,7 +12,10 @@ from sqlalchemy.exc import DBAPIError
 
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
-from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
+from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityAdmissionClosed,
+    SystemCapabilityIdempotencyConflict,
+)
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode
 from src.app.runtime.system_capabilities.outcomes import (
     BusinessReject,
@@ -26,8 +29,11 @@ from src.utils.timezone import timezone
 from .system_capability_intent_service import SystemCapabilityIntentService, system_capability_intent_service
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+    from src.core.task_queue_gateway import OutboxDispatchTarget
 
 type EffectOutcome = Success[Any] | BusinessReject | RetryableFailure | ContractViolation
 
@@ -56,6 +62,7 @@ class SystemCapabilityEffectResult:
     idempotent_replay: bool = False
     retryable: bool = False
     evidence: SystemCapabilityEffectEvidence | None = None
+    outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
 
 
 class SystemCapabilityEffectEvidence(BaseModel):
@@ -77,8 +84,14 @@ class SystemCapabilityEffectEvidence(BaseModel):
 class SystemCapabilityEffectService:
     """外层事务参与者；只 flush，绝不 commit/rollback 或执行外部 I/O。"""
 
-    def __init__(self, *, intent_service: SystemCapabilityIntentService = system_capability_intent_service) -> None:
+    def __init__(
+        self,
+        *,
+        intent_service: SystemCapabilityIntentService = system_capability_intent_service,
+        effect_port_resolver: Callable[[type[Any]], Any] | None = None,
+    ) -> None:
         self._intent_service = intent_service
+        self._effect_port_resolver = effect_port_resolver
 
     async def apply(self, ctx: dict[str, Any], intent: RuntimeIntent) -> SystemCapabilityEffectResult:
         try:
@@ -89,6 +102,14 @@ class SystemCapabilityEffectService:
                 outcome=ContractViolation(
                     error_code="IDEMPOTENCY_CONFLICT",
                     message="same operation identity was claimed with a different payload",
+                ),
+                completion_mode=None,
+            )
+        except SystemCapabilityAdmissionClosed:
+            return SystemCapabilityEffectResult(
+                outcome=ContractViolation(
+                    error_code="SYSTEM_CAPABILITY_EFFECT_ADMISSION_CLOSED",
+                    message="system capability EFFECT admission is closed for new claims",
                 ),
                 completion_mode=None,
             )
@@ -109,10 +130,12 @@ class SystemCapabilityEffectService:
                 return SystemCapabilityEffectResult(
                     outcome=outcome,
                     completion_mode=definition.completion_mode,
-                    durably_accepted=definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC,
-                    # 已通过校验的 terminal success evidence 表示远端完成；这与
-                    # OUTBOX_ASYNC 的 PROPOSED/no-evidence durable acceptance 不同。
-                    remote_completed=True,
+                    durably_accepted=(
+                        isinstance(outcome, Success) and definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
+                    ),
+                    # 只有已通过 operation result_model 校验的 terminal success
+                    # 表示远端完成；稳定业务拒绝只重放拒绝事实。
+                    remote_completed=isinstance(outcome, Success),
                     idempotent_replay=True,
                     evidence=evidence,
                 )
@@ -164,11 +187,29 @@ class SystemCapabilityEffectService:
             intent_log=prepared.intent_log,
         )
         try:
-            handler = definition.handler_factory()
+            ports = tuple(self._resolve_effect_port(port) for port in definition.required_ports)
+            handler = definition.handler_factory(*ports)
+        except (KeyError, PermissionError, TypeError, ValueError):
+            # G1 只注册静态 Definition；G3 composition root 接线前必须明确 fail closed，
+            # 禁止构造 unbound fallback 或绕过 Port 直接访问 transport/repository。
+            return SystemCapabilityEffectResult(
+                outcome=ContractViolation(
+                    error_code="CAPABILITY_EFFECT_PORT_UNBOUND",
+                    message="required system capability EFFECT Port is not bound",
+                ),
+                completion_mode=definition.completion_mode,
+            )
+        try:
+            outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
             raw = await asyncio.wait_for(
                 handler(prepared.request, execution=execution),
                 timeout=min(float(intent.timeout_seconds or definition.timeout_seconds), definition.timeout_seconds),
             )
+            transient_targets = getattr(raw, "dispatch_targets", None)
+            accepted_payload = getattr(raw, "accepted_payload", None)
+            if isinstance(transient_targets, frozenset) and accepted_payload is not None:
+                outbox_dispatch_targets = transient_targets
+                raw = accepted_payload
             outcome = self._normalize_outcome(raw, output_model=definition.output_model)
         except DBAPIError:
             # PostgreSQL 数据库异常会使当前事务失效；必须交由外层统一 rollback，
@@ -203,7 +244,16 @@ class SystemCapabilityEffectService:
             ),
             retryable=isinstance(outcome, RetryableFailure),
             evidence=evidence,
+            outbox_dispatch_targets=(outbox_dispatch_targets if isinstance(outcome, Success) else frozenset()),
         )
+
+    def _resolve_effect_port(self, port_type: type[Any]) -> Any:
+        if self._effect_port_resolver is None:
+            raise KeyError(f"EFFECT Port {port_type.__name__} is not bound")
+        port = self._effect_port_resolver(port_type)
+        if port is None:
+            raise KeyError(f"EFFECT Port {port_type.__name__} is not bound")
+        return port
 
     async def persist_business_reject(self, ctx: dict[str, Any], raw_evidence: object) -> bool:
         """在外层 rollback 后按 typed evidence 执行可选的拒绝补偿钩子。"""
@@ -256,8 +306,13 @@ class SystemCapabilityEffectService:
 
     async def _replay_success(
         self, ctx: dict[str, Any], *, intent: RuntimeIntent, prepared: Any
-    ) -> tuple[Success[Any], SystemCapabilityEffectEvidence] | None:
-        raw = await self._intent_service.get_success_evidence(ctx, prepared=prepared)
+    ) -> tuple[Success[Any] | BusinessReject, SystemCapabilityEffectEvidence] | None:
+        persisted_outcome = getattr(getattr(prepared, "intent_log", None), "outcome_json", None)
+        raw = (
+            dict(persisted_outcome)
+            if isinstance(persisted_outcome, dict) and persisted_outcome
+            else await self._intent_service.get_success_evidence(ctx, prepared=prepared)
+        )
         try:
             evidence = SystemCapabilityEffectEvidence.model_validate(raw)
         except ValidationError:
@@ -268,11 +323,17 @@ class SystemCapabilityEffectService:
             or evidence.operation_key != str(intent.operation_key)
             or evidence.idempotency_key != prepared.idempotency_key
             or evidence.payload_hash != prepared.payload_hash
-            or evidence.outcome_kind != "success"
         ):
             return None
-        outcome = parse_outcome(evidence.outcome, payload_type=prepared.definition.output_model)
-        if not isinstance(outcome, Success):
+        output_model = prepared.definition.output_model
+        if evidence.outcome_kind == "success":
+            from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
+
+            operation = WMS_OPERATION_BY_IDENTITY.get(f"{evidence.capability_key}@{evidence.contract_version}")
+            if operation is not None:
+                output_model = operation.result_model
+        outcome = parse_outcome(evidence.outcome, payload_type=output_model)
+        if not isinstance(outcome, Success | BusinessReject) or outcome.kind != evidence.outcome_kind:
             return None
         return outcome, evidence
 

@@ -18,12 +18,10 @@ from src.app.wms_integration.adapters.effect_status_query_adapter import (
     WmsEffectStatusQueryAdapter,
     WmsEffectStatusQueryError,
 )
-from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationResult
+from src.app.wms_integration.operation_registry import ASYNC_EFFECT_OPERATIONS
 from src.app.wms_integration.ports.effect_status import (
-    ConfirmInboundResultIdentity,
     FrozenWmsEffectStatusBinding,
-    FullBoxExchangeResultIdentity,
-    NotifyPackageBindingResultIdentity,
+    WmsBatchEffectStatusRequest,
     WmsEffectStatus,
     WmsEffectStatusRequest,
     WmsEffectStatusSnapshot,
@@ -31,37 +29,74 @@ from src.app.wms_integration.ports.effect_status import (
     build_wms_effect_status_binding,
     parse_wms_effect_status_snapshot,
 )
-from src.app.wms_integration.ports.full_box_exchange_operation import FullBoxExchangeOperationResult
-from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.ports.query_outcome import QueryContractFailure, QuerySuccess, QueryTechnicalFailure
+from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
+from src.app.wms_integration.query_evidence import WmsQueryCallPermit
 from src.app.wms_integration.runtime_factory import build_effect_status_query_port_factory
-from src.app.wms_integration.services.query_transport import WmsQueryCallPermit
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+)
+from tests.mock.wms_northbound_contract import build_typed_ack
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
-CONFIRM_INBOUND = "wms.inventory.confirm_inbound@v1"
-FULL_BOX_EXCHANGE = "wms.fulfillment.full_box_exchange@v1"
-NOTIFY_PACKAGE_BINDING = "wms.fulfillment.notify_pkg_binding@v1"
+RACK_SUPPLY = "wms.fulfillment.request_rack_supply@v1"
+RACK_TRANSPORT = "wms.fulfillment.request_rack_transport@v1"
+_BATCH_OPERATIONS = {
+    "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+    "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+}
 
 
 def _binding(*, timeout_seconds: float = 2.0) -> FrozenWmsEffectStatusBinding:
     settings = SimpleNamespace(
         APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_EFFECT_STATUS_URL="https://wms.example/northbound/operations/status",
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=timeout_seconds,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
     )
-    return build_wms_effect_status_binding(settings_source=settings)
+    profile_payload = build_hmac_provider_profile_payload()
+    profile_payload["server_url"] = "https://wms.example"
+    profile_payload["effect_status_path"] = "/northbound/operations/status"
+    profile_payload["outbound_auth"]["credential_reference"] = "secret://wms/material-flow-sandbox-hmac@v2"
+    return build_wms_effect_status_binding(
+        settings_source=settings,
+        compiled_profile=build_compiled_provider_profile(profile_payload),
+    )
 
 
-def _notify_request(*, attempt_count: int = 1) -> WmsEffectStatusRequest:
+def _rack_supply_request(*, attempt_count: int = 1) -> WmsEffectStatusRequest:
     return WmsEffectStatusRequest(
-        operation_identity=NOTIFY_PACKAGE_BINDING,
+        operation_identity=RACK_SUPPLY,
         idempotency_key="intent-idempotency-001",
         attempt_count=attempt_count,
-        expected_result_identity=NotifyPackageBindingResultIdentity(
-            dispatch_key="dispatch-001",
-            package_id="PKG-001",
-            pallet_id="PALLET-001",
+        request_payload={
+            "dispatch_key": "dispatch-001",
+            "station_code": "STATION-001",
+            "rack_type": "FLOW_RACK",
+            "demand_generation": 1,
+        },
+        frozen_ack=WmsEffectAck(
+            operation_identity=RACK_SUPPLY,
+            idempotency_key="intent-idempotency-001",
+            provider_reference="wms-effect-001",
+            submission_state="ACCEPTED",
+        ),
+    )
+
+
+def _status_request(operation_identity: str) -> WmsEffectStatusRequest:
+    request_payload = REQUEST_FIXTURES[operation_identity]
+    request_type = WmsBatchEffectStatusRequest if operation_identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
+    return request_type(
+        operation_identity=operation_identity,
+        idempotency_key="intent-key",
+        request_payload=request_payload,
+        frozen_ack=build_typed_ack(
+            operation_identity,
+            "intent-key",
+            request_payload,
+            submission_state="ACCEPTED",
         ),
     )
 
@@ -75,28 +110,32 @@ def _completed_wire(*, source_version: int = 3) -> dict[str, object]:
         "source_version": source_version,
         "result_payload": {
             "dispatch_key": "dispatch-001",
-            "package_id": "PKG-001",
-            "pallet_id": "PALLET-001",
-            "accepted": True,
-            "bound_at": "2026-07-24T00:00:00Z",
-            "reason_code": None,
+            "provider_reference": "wms-effect-001",
             "source_version": str(source_version),
+            "station_code": "STATION-001",
+            "rack_type": "FLOW_RACK",
+            "demand_generation": 1,
+            "rack_id": "RACK-001",
+            "final_station_code": "STATION-001",
+            "arrival_relation": "AT_STATION",
+            "task_outcome": "SUCCESS",
         },
     }
 
 
 def test_status_request_accepts_only_authored_effect_identity_and_stable_key() -> None:
-    request = _notify_request()
+    request = _rack_supply_request()
 
     assert request.query_params == {
-        "operation_identity": NOTIFY_PACKAGE_BINDING,
+        "operation_identity": RACK_SUPPLY,
         "idempotency_key": "intent-idempotency-001",
     }
     assert "dispatch_key" not in request.query_params
     opaque_key = WmsEffectStatusRequest(
         operation_identity=request.operation_identity,
         idempotency_key=" opaque-key ",
-        expected_result_identity=request.expected_result_identity,
+        request_payload=request.request_payload,
+        frozen_ack=request.frozen_ack.model_copy(update={"idempotency_key": " opaque-key "}),
     )
     assert opaque_key.idempotency_key == " opaque-key "
     assert opaque_key.query_params["idempotency_key"] == " opaque-key "
@@ -106,14 +145,189 @@ def test_status_request_accepts_only_authored_effect_identity_and_stable_key() -
         WmsEffectStatusRequest(
             operation_identity="wms.unknown.operation@v1",
             idempotency_key="intent-idempotency-001",
-            expected_result_identity=request.expected_result_identity,
+            request_payload=request.request_payload,
+            frozen_ack=request.frozen_ack,
         )
     with pytest.raises(ValidationError, match="idempotency_key"):
         WmsEffectStatusRequest(
-            operation_identity=NOTIFY_PACKAGE_BINDING,
+            operation_identity=RACK_SUPPLY,
             idempotency_key=" ",
-            expected_result_identity=request.expected_result_identity,
+            request_payload=request.request_payload,
+            frozen_ack=request.frozen_ack,
         )
+
+
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_every_async_status_request_allows_status_first_without_frozen_ack(operation) -> None:
+    request_type = WmsBatchEffectStatusRequest if operation.identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
+
+    request = request_type(
+        operation_identity=operation.identity,
+        idempotency_key="intent-key",
+        request_payload=REQUEST_FIXTURES[operation.identity],
+    )
+
+    assert request.frozen_ack is None
+
+
+def test_pre_ack_visible_single_status_recovers_typed_ack_and_forbids_scope() -> None:
+    request = WmsEffectStatusRequest(
+        operation_identity=RACK_SUPPLY,
+        idempotency_key="intent-idempotency-001",
+        request_payload=_rack_supply_request().request_payload,
+    )
+    wire = {
+        "state": "PROCESSING",
+        "provider_reference": "wms-status-first-001",
+        "accepted_scope": None,
+        "reason_code": None,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": 1,
+        "result_payload": None,
+    }
+
+    snapshot = parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+    assert snapshot.recovered_ack is not None
+    assert snapshot.recovered_ack.provider_reference == "wms-status-first-001"
+    assert snapshot.recovered_ack.accepted_scope is None
+
+    wire["accepted_scope"] = {
+        "object_keys": ["BIN-001"],
+        "scope_digest": "0" * 64,
+    }
+    with pytest.raises((ValidationError, ValueError), match="accepted_scope"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+
+def test_visible_status_rejects_scope_drift_from_existing_ack() -> None:
+    operation_identity = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
+    request = _status_request(operation_identity)
+    wire = {
+        "state": "PROCESSING",
+        "provider_reference": request.frozen_ack.provider_reference,
+        "accepted_scope": {
+            "object_keys": ["FORGED-BIN"],
+            "scope_digest": "0" * 64,
+        },
+        "reason_code": None,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": 1,
+        "result_payload": None,
+    }
+
+    with pytest.raises(ValueError, match="accepted_scope does not match ACK"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_every_async_status_request_rejects_ack_idempotency_drift(operation) -> None:
+    request_type = WmsBatchEffectStatusRequest if operation.identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
+    request_payload = REQUEST_FIXTURES[operation.identity]
+    frozen_ack = build_typed_ack(
+        operation.identity,
+        "other-intent-key",
+        request_payload,
+        submission_state="ACCEPTED",
+    )
+
+    with pytest.raises(ValidationError, match="ACK idempotency_key"):
+        request_type(
+            operation_identity=operation.identity,
+            idempotency_key="intent-key",
+            request_payload=request_payload,
+            frozen_ack=frozen_ack,
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "other_operation_identity"),
+    (
+        (
+            "wms.fulfillment.request_rack_supply@v1",
+            "wms.fulfillment.request_rack_transport@v1",
+        ),
+        (
+            "wms.fulfillment.request_rack_transport@v1",
+            "wms.fulfillment.request_rack_supply@v1",
+        ),
+        (
+            "wms.fulfillment.change_rack_face@v1",
+            "wms.fulfillment.full_box_exchange@v1",
+        ),
+        (
+            "wms.fulfillment.full_box_exchange@v1",
+            "wms.fulfillment.change_rack_face@v1",
+        ),
+        (
+            "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+            "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+        ),
+        (
+            "wms.fulfillment.move_bins_from_conveyor_exit@v1",
+            "wms.fulfillment.move_bins_to_conveyor_entry@v1",
+        ),
+        (
+            "wms.fulfillment.request_load_unit_transport@v1",
+            "wms.fulfillment.request_rack_supply@v1",
+        ),
+    ),
+)
+def test_every_async_status_request_rejects_ack_operation_drift(
+    operation_identity: str,
+    other_operation_identity: str,
+) -> None:
+    request_type = WmsBatchEffectStatusRequest if operation_identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
+    frozen_ack = build_typed_ack(
+        other_operation_identity,
+        "intent-key",
+        REQUEST_FIXTURES[other_operation_identity],
+        submission_state="ACCEPTED",
+    )
+
+    with pytest.raises(ValidationError, match="ACK operation_identity"):
+        request_type(
+            operation_identity=operation_identity,
+            idempotency_key="intent-key",
+            request_payload=REQUEST_FIXTURES[operation_identity],
+            frozen_ack=frozen_ack,
+        )
+
+
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_every_async_status_snapshot_rejects_ack_provider_reference_drift(operation) -> None:
+    request = _status_request(operation.identity)
+    wire = {
+        "state": "PROCESSING",
+        "provider_reference": "other-provider-reference",
+        "reason_code": None,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": 3,
+        "result_payload": None,
+    }
+
+    with pytest.raises(ValueError, match="status provider_reference does not match ACK"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
+
+
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_every_async_terminal_rejects_ack_provider_reference_drift(operation) -> None:
+    request = _status_request(operation.identity)
+    result_payload = {
+        **RESULT_FIXTURES[operation.identity],
+        "provider_reference": "other-provider-reference",
+    }
+    wire = {
+        "state": "COMPLETED",
+        "provider_reference": request.frozen_ack.provider_reference,
+        "reason_code": None,
+        "updated_at": "2026-07-24T00:00:00+00:00",
+        "source_version": int(result_payload["source_version"]),
+        "result_payload": result_payload,
+    }
+
+    with pytest.raises(ValueError, match="terminal provider_reference does not match ACK"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
 
 
 def test_status_binding_is_hashed_immutable_non_secret_and_strictly_round_trips() -> None:
@@ -134,14 +348,14 @@ def test_status_binding_is_hashed_immutable_non_secret_and_strictly_round_trips(
 
 @pytest.mark.parametrize("state", ("ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"))
 def test_snapshot_state_is_a_closed_five_value_set(state: str) -> None:
-    request = _notify_request()
+    request = _rack_supply_request()
     if state == "COMPLETED":
         wire = _completed_wire()
     elif state == "REJECTED":
         wire = {
             "state": state,
             "provider_reference": "wms-effect-001",
-            "reason_code": "WMS_BUSINESS_REJECTED",
+            "reason_code": "NO_RACK_AVAILABLE",
             "updated_at": "2026-07-24T00:00:00+00:00",
             "source_version": 3,
             "result_payload": None,
@@ -173,13 +387,36 @@ def test_snapshot_state_is_a_closed_five_value_set(state: str) -> None:
 
 
 def test_completed_snapshot_returns_only_operation_specific_typed_result() -> None:
-    request = _notify_request()
+    request = _rack_supply_request()
 
     snapshot = parse_wms_effect_status_snapshot(request=request, raw_response=_completed_wire())
 
-    assert isinstance(snapshot.result, NotifyPackageBindingOperationResult)
-    assert snapshot.result.package_id == "PKG-001"
+    assert isinstance(snapshot.result, ASYNC_EFFECT_OPERATIONS[0].result_model)
+    assert snapshot.result.rack_id == "RACK-001"
     assert not hasattr(snapshot, "raw_payload")
+
+
+def test_completed_snapshot_direct_construction_rejects_reason_code() -> None:
+    completed = parse_wms_effect_status_snapshot(request=_rack_supply_request(), raw_response=_completed_wire())
+
+    with pytest.raises(ValidationError, match="only REJECTED status may carry reason_code"):
+        WmsEffectStatusSnapshot(
+            operation_identity=completed.operation_identity,
+            idempotency_key=completed.idempotency_key,
+            state=completed.state,
+            provider_reference=completed.provider_reference,
+            reason_code="NO_RACK_AVAILABLE",
+            updated_at=completed.updated_at,
+            source_version=completed.source_version,
+            result=completed.result,
+        )
+
+
+def test_completed_status_wire_rejects_reason_code() -> None:
+    wire = {**_completed_wire(), "reason_code": "NO_RACK_AVAILABLE"}
+
+    with pytest.raises(ValueError, match="only REJECTED status may carry reason_code"):
+        parse_wms_effect_status_snapshot(request=_rack_supply_request(), raw_response=wire)
 
 
 @pytest.mark.parametrize(
@@ -195,7 +432,7 @@ def test_completed_snapshot_returns_only_operation_specific_typed_result() -> No
             "provider_reference": "wms-effect-001",
             "updated_at": datetime(2026, 7, 24, tzinfo=UTC),
             "source_version": 3,
-            "reason_code": "WMS_BUSINESS_REJECTED",
+            "reason_code": "NO_RACK_AVAILABLE",
         },
         {
             "state": WmsEffectStatus.REJECTED,
@@ -209,14 +446,30 @@ def test_completed_snapshot_returns_only_operation_specific_typed_result() -> No
 def test_snapshot_direct_construction_enforces_domain_invariants(changes: dict[str, object]) -> None:
     with pytest.raises(ValidationError, match=r"visible|NOT_FOUND|reason|result"):
         WmsEffectStatusSnapshot(
-            operation_identity=NOTIFY_PACKAGE_BINDING,
+            operation_identity=RACK_SUPPLY,
             idempotency_key="intent-idempotency-001",
             **changes,
         )
 
 
+@pytest.mark.parametrize(
+    "operation_identity",
+    (
+        "wms.inventory.confirm_inbound@v1",
+        "wms.fulfillment.unknown_operation@v1",
+    ),
+)
+def test_snapshot_direct_construction_rejects_non_async_effect_identity(operation_identity: str) -> None:
+    with pytest.raises(ValidationError, match="authored async WMS EFFECT"):
+        WmsEffectStatusSnapshot(
+            operation_identity=operation_identity,
+            idempotency_key="intent-idempotency-001",
+            state=WmsEffectStatus.NOT_FOUND,
+        )
+
+
 def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operation() -> None:
-    completed = parse_wms_effect_status_snapshot(request=_notify_request(), raw_response=_completed_wire())
+    completed = parse_wms_effect_status_snapshot(request=_rack_supply_request(), raw_response=_completed_wire())
     visible_fields = {
         "provider_reference": "wms-effect-001",
         "updated_at": datetime(2026, 7, 24, tzinfo=UTC),
@@ -225,7 +478,7 @@ def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operatio
 
     with pytest.raises(ValidationError, match="COMPLETED"):
         WmsEffectStatusSnapshot(
-            operation_identity=NOTIFY_PACKAGE_BINDING,
+            operation_identity=RACK_SUPPLY,
             idempotency_key="intent-idempotency-001",
             state=WmsEffectStatus.PROCESSING,
             result=completed.result,
@@ -233,7 +486,7 @@ def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operatio
         )
     with pytest.raises(ValidationError, match="operation"):
         WmsEffectStatusSnapshot(
-            operation_identity=CONFIRM_INBOUND,
+            operation_identity=RACK_TRANSPORT,
             idempotency_key="intent-idempotency-001",
             state=WmsEffectStatus.COMPLETED,
             result=completed.result,
@@ -241,71 +494,33 @@ def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operatio
         )
 
 
-@pytest.mark.parametrize(
-    ("operation_identity", "identity", "payload", "result_type"),
-    [
-        (
-            CONFIRM_INBOUND,
-            ConfirmInboundResultIdentity(dispatch_key="dispatch-confirm", inbound_key="IN-001"),
-            {
-                "dispatch_key": "dispatch-confirm",
-                "inbound_key": "IN-001",
-                "accepted": True,
-                "document_no": "GRN-001",
-                "reason_code": None,
-                "source_version": "7",
-            },
-            ConfirmInboundOperationResult,
-        ),
-        (
-            FULL_BOX_EXCHANGE,
-            FullBoxExchangeResultIdentity(
-                dispatch_key="dispatch-box",
-                rack_id="RACK-001",
-                empty_box_id="EMPTY-001",
-                full_box_id="FULL-001",
-            ),
-            {
-                "dispatch_key": "dispatch-box",
-                "rack_id": "RACK-001",
-                "empty_box_id": "EMPTY-001",
-                "full_box_id": "FULL-001",
-                "accepted": True,
-                "exchange_request_code": "EX-001",
-                "reason_code": None,
-                "source_version": "7",
-            },
-            FullBoxExchangeOperationResult,
-        ),
-    ],
-)
-def test_completed_snapshot_selects_result_model_from_frozen_registry(
-    operation_identity: str,
-    identity: object,
-    payload: dict[str, object],
-    result_type: type[object],
-) -> None:
-    request = WmsEffectStatusRequest(
-        operation_identity=operation_identity,
-        idempotency_key="intent-key",
-        expected_result_identity=identity,
-    )
-    wire = {**_completed_wire(source_version=7), "result_payload": payload}
+@pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
+def test_completed_snapshot_selects_each_async_result_model_from_frozen_registry(operation) -> None:
+    request = _status_request(operation.identity)
+    result_payload = dict(RESULT_FIXTURES[operation.identity])
+    provider_reference = request.frozen_ack.provider_reference
+    result_payload["provider_reference"] = provider_reference
+    source_version = int(result_payload["source_version"])
+    wire = {
+        **_completed_wire(source_version=source_version),
+        "provider_reference": provider_reference,
+        "result_payload": result_payload,
+    }
 
     snapshot = parse_wms_effect_status_snapshot(request=request, raw_response=wire)
 
-    assert isinstance(snapshot.result, result_type)
+    assert isinstance(snapshot.result, operation.result_model)
 
 
 @pytest.mark.parametrize(
     "wire",
     [
         {**_completed_wire(), "result_payload": None},
-        {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "accepted": False}},
-        {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "accepted": 1}},
-        {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "accepted": "yes"}},
+        {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "rack_id": None}},
+        {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "task_outcome": "UNKNOWN"}},
+        {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "demand_generation": 0}},
         {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "extra": "forbidden"}},
-        {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "package_id": "OTHER"}},
+        {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "station_code": "OTHER"}},
         {**_completed_wire(), "result_payload": {**_completed_wire()["result_payload"], "source_version": "4"}},
         {**_completed_wire(), "source_version": "3"},
         {**_completed_wire(), "updated_at": 0},
@@ -331,7 +546,7 @@ def test_completed_snapshot_selects_result_model_from_frozen_registry(
         {
             "state": "REJECTED",
             "provider_reference": "wms-effect-001",
-            "reason_code": "PALLET_LOCKED",
+            "reason_code": "RACK_LOCKED",
             "updated_at": "2026-07-24T00:00:00+00:00",
             "source_version": 4,
             "result_payload": None,
@@ -341,13 +556,13 @@ def test_completed_snapshot_selects_result_model_from_frozen_registry(
 def test_snapshot_rejects_malformed_terminal_or_correlation_contract(wire: dict[str, object]) -> None:
     with pytest.raises(
         (ValueError, ValidationError),
-        match=r"result|accepted|identity|version|reason|NOT_FOUND|updated_at|timestamp",
+        match=r"result|identity|version|reason|NOT_FOUND|updated_at|timestamp",
     ):
-        parse_wms_effect_status_snapshot(request=_notify_request(), raw_response=wire)
+        parse_wms_effect_status_snapshot(request=_rack_supply_request(), raw_response=wire)
 
 
 def test_status_progression_rejects_version_regression_and_same_version_drift() -> None:
-    request = _notify_request()
+    request = _rack_supply_request()
     current = parse_wms_effect_status_snapshot(request=request, raw_response=_completed_wire(source_version=3))
     older = current.model_copy(update={"source_version": 2})
     drifted = current.model_copy(update={"provider_reference": "other"})
@@ -360,6 +575,52 @@ def test_status_progression_rejects_version_regression_and_same_version_drift() 
     with pytest.raises(ValueError, match="NOT_FOUND"):
         assert_status_snapshot_progression(previous=current, current=missing)
     assert assert_status_snapshot_progression(previous=current, current=current) is current
+
+
+def test_status_progression_rejects_terminal_to_non_terminal_regression() -> None:
+    request = _rack_supply_request()
+    terminal = parse_wms_effect_status_snapshot(request=request, raw_response=_completed_wire(source_version=3))
+
+    for state in (WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING):
+        regressed = terminal.model_copy(
+            update={
+                "state": state,
+                "source_version": 4,
+                "result": None,
+            }
+        )
+        with pytest.raises(ValueError, match="terminal"):
+            assert_status_snapshot_progression(previous=terminal, current=regressed)
+
+
+@pytest.mark.parametrize(
+    ("operation_identity", "field_name", "drifted_value"),
+    [
+        ("wms.fulfillment.request_rack_supply@v1", "final_station_code", "OTHER-STATION"),
+        ("wms.fulfillment.request_rack_transport@v1", "final_location_code", "OTHER-STATION"),
+        ("wms.fulfillment.change_rack_face@v1", "authorized_face", "A"),
+        ("wms.fulfillment.change_rack_face@v1", "final_face", "A"),
+        ("wms.fulfillment.request_load_unit_transport@v1", "final_location_code", "OTHER-LOCATION"),
+    ],
+)
+def test_success_terminal_requires_request_aware_final_facts(
+    operation_identity: str,
+    field_name: str,
+    drifted_value: str,
+) -> None:
+    request = _status_request(operation_identity)
+    result_payload = dict(RESULT_FIXTURES[operation_identity])
+    result_payload["provider_reference"] = request.frozen_ack.provider_reference
+    result_payload[field_name] = drifted_value
+    source_version = int(result_payload["source_version"])
+    wire = {
+        **_completed_wire(source_version=source_version),
+        "provider_reference": request.frozen_ack.provider_reference,
+        "result_payload": result_payload,
+    }
+
+    with pytest.raises(ValueError, match=r"final|authorized"):
+        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
 
 
 class _CredentialProvider:
@@ -420,18 +681,18 @@ async def test_adapter_uses_only_frozen_query_key_and_returns_typed_snapshot() -
         max_backoff_seconds=8.0,
     )
 
-    first = await adapter.query_status(_notify_request())
-    second = await adapter.query_status(_notify_request())
+    first = await adapter.query_status(_rack_supply_request())
+    second = await adapter.query_status(_rack_supply_request())
 
     assert first == second
-    assert isinstance(first.result, NotifyPackageBindingOperationResult)
+    assert isinstance(first.result, ASYNC_EFFECT_OPERATIONS[0].result_model)
     assert dict(requests[0].url.params) == {
-        "operation_identity": NOTIFY_PACKAGE_BINDING,
+        "operation_identity": RACK_SUPPLY,
         "idempotency_key": "intent-idempotency-001",
     }
     assert requests[0].headers["X-WMS-Credential-Reference"].endswith("@v2")
     assert requests[0].headers["X-WMS-Signature"]
-    assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")] * 2
+    assert evidence_writer.before_calls == [(RACK_SUPPLY, "WMS_EFFECT_STATUS")] * 2
     assert all(isinstance(record["outcome"], QuerySuccess) for record in evidence_writer.records)
 
 
@@ -453,11 +714,103 @@ async def test_runtime_factory_builds_adapter_only_from_frozen_status_binding() 
         max_backoff_seconds=8.0,
     )
 
-    snapshot = await factory().query_status(_notify_request())
+    snapshot = await factory().query_status(_rack_supply_request())
 
     assert snapshot.state is WmsEffectStatus.COMPLETED
     assert observed_urls == ["https://wms.example/northbound/operations/status"]
-    assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")]
+    assert evidence_writer.before_calls == [(RACK_SUPPLY, "WMS_EFFECT_STATUS")]
+
+
+@pytest.mark.asyncio
+async def test_runtime_factory_borrows_fulfillment_lane_client_without_closing_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.wms_integration import effect_lane_runtime
+    from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
+
+    evidence_writer = _RecordingStatusEvidenceWriter()
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_completed_wire())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=60.0)
+    runtime = SimpleNamespace(
+        process_role=WmsProviderProcessRole.FULFILLMENT,
+        client=client,
+    )
+    monkeypatch.setattr(effect_lane_runtime, "get_wms_effect_lane_runtime", lambda: runtime)
+
+    factory = build_effect_status_query_port_factory(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=evidence_writer,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+    adapter = factory()
+
+    assert adapter._client is client
+    assert adapter._owns_client is False
+    assert (await adapter.query_status(_rack_supply_request())).state is WmsEffectStatus.COMPLETED
+    assert client.is_closed is False
+    await client.aclose()
+
+
+@pytest.mark.parametrize("owns_client", [False, True])
+@pytest.mark.asyncio
+async def test_status_adapter_respects_injected_client_ownership_contract(owns_client: bool) -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_completed_wire())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=60.0)
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
+        client=client,
+        owns_client=owns_client,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+
+    assert (await adapter.query_status(_rack_supply_request())).state is WmsEffectStatus.COMPLETED
+    await adapter.aclose()
+
+    assert client.is_closed is owns_client
+    if not client.is_closed:
+        await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("runtime", "expected_message"),
+    [
+        (None, "not initialized"),
+        (
+            SimpleNamespace(
+                process_role=WmsProviderProcessRole.WES,
+                client=object(),
+            ),
+            "fulfillment worker",
+        ),
+    ],
+)
+def test_runtime_factory_fails_closed_without_fulfillment_lane_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: object,
+    expected_message: str,
+) -> None:
+    from src.app.wms_integration import effect_lane_runtime
+
+    monkeypatch.setattr(effect_lane_runtime, "get_wms_effect_lane_runtime", lambda: runtime)
+
+    with pytest.raises(RuntimeError, match=expected_message):
+        build_effect_status_query_port_factory(
+            binding=_binding(),
+            credential_provider=_CredentialProvider(),
+            evidence_writer=_RecordingStatusEvidenceWriter(),
+            initial_backoff_seconds=1.0,
+            max_backoff_seconds=8.0,
+        )
 
 
 def test_runtime_factory_wires_status_query_to_existing_shared_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -469,11 +822,12 @@ def test_runtime_factory_wires_status_query_to_existing_shared_breaker(monkeypat
         captured.update(kwargs)
         return evidence_writer
 
-    monkeypatch.setattr(runtime_factory, "WmsCallEvidenceQueryWriter", build_writer)
+    monkeypatch.setattr(runtime_factory, "WmsEffectStatusCallEvidenceWriter", build_writer)
 
     factory = build_effect_status_query_port_factory(
         binding=binding,
         credential_provider=_CredentialProvider(),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200)),
         initial_backoff_seconds=1.0,
         max_backoff_seconds=8.0,
     )
@@ -510,13 +864,13 @@ async def test_status_breaker_open_fast_fails_without_calling_transport() -> Non
     )
 
     with pytest.raises(WmsEffectStatusQueryError) as raised:
-        await adapter.query_status(_notify_request())
+        await adapter.query_status(_rack_supply_request())
 
     assert transport_calls == 0
     assert isinstance(raised.value.failure, QueryTechnicalFailure)
     assert raised.value.failure.reason_code == "WMS_CIRCUIT_OPEN"
     assert raised.value.failure.retry_after_seconds == 7
-    assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")]
+    assert evidence_writer.before_calls == [(RACK_SUPPLY, "WMS_EFFECT_STATUS")]
     assert evidence_writer.records[0]["outcome"].reason_code == raised.value.failure.reason_code
 
 
@@ -553,14 +907,14 @@ async def test_status_query_records_shared_breaker_outcome(
     )
 
     if scenario == "success":
-        snapshot = await adapter.query_status(_notify_request())
+        snapshot = await adapter.query_status(_rack_supply_request())
         assert snapshot.state is WmsEffectStatus.COMPLETED
     else:
         with pytest.raises(WmsEffectStatusQueryError):
-            await adapter.query_status(_notify_request())
+            await adapter.query_status(_rack_supply_request())
 
-    assert evidence_writer.before_calls == [(NOTIFY_PACKAGE_BINDING, "WMS_EFFECT_STATUS")]
-    assert evidence_writer.records[0]["operation_identity"] == NOTIFY_PACKAGE_BINDING
+    assert evidence_writer.before_calls == [(RACK_SUPPLY, "WMS_EFFECT_STATUS")]
+    assert evidence_writer.records[0]["operation_identity"] == RACK_SUPPLY
     assert evidence_writer.records[0]["target_code"] == "WMS_EFFECT_STATUS"
     outcome = evidence_writer.records[0]["outcome"]
     assert isinstance(outcome, expected_outcome_type)
@@ -593,9 +947,50 @@ async def test_adapter_maps_http_failures_without_interpreting_submit_conflicts(
     )
 
     with pytest.raises(WmsEffectStatusQueryError) as raised:
-        await adapter.query_status(_notify_request())
+        await adapter.query_status(_rack_supply_request())
 
     assert isinstance(raised.value.failure, failure_type)
+    assert raised.value.failure.reason_code == reason_code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_factory", "reason_code"),
+    (
+        (
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Length": "-1"},
+                content=b"",
+                request=request,
+            ),
+            "WMS_STATUS_CONTRACT_INVALID",
+        ),
+        (
+            lambda request: httpx.Response(
+                200,
+                stream=httpx.ByteStream(b"x" * 4097),
+                request=request,
+            ),
+            "WMS_STATUS_RESPONSE_TOO_LARGE",
+        ),
+    ),
+)
+async def test_adapter_maps_bounded_response_metadata_and_chunk_failures(response_factory, reason_code) -> None:
+    adapter = WmsEffectStatusQueryAdapter(
+        binding=_binding(),
+        credential_provider=_CredentialProvider(),
+        evidence_writer=_RecordingStatusEvidenceWriter(),
+        transport=httpx.MockTransport(lambda request: response_factory(request)),
+        jitter=lambda _upper: 0.0,
+        initial_backoff_seconds=1.0,
+        max_backoff_seconds=8.0,
+    )
+
+    with pytest.raises(WmsEffectStatusQueryError) as raised:
+        await adapter.query_status(_rack_supply_request())
+
+    assert isinstance(raised.value.failure, QueryContractFailure)
     assert raised.value.failure.reason_code == reason_code
 
 
@@ -632,7 +1027,7 @@ async def test_rate_limit_uses_valid_retry_after_or_bounded_exponential_fallback
     )
 
     with pytest.raises(WmsEffectStatusQueryError) as raised:
-        await adapter.query_status(_notify_request(attempt_count=attempt_count))
+        await adapter.query_status(_rack_supply_request(attempt_count=attempt_count))
 
     assert isinstance(raised.value.failure, QueryTechnicalFailure)
     assert raised.value.failure.reason_code == "WMS_RATE_LIMITED"
@@ -658,7 +1053,7 @@ async def test_default_rate_limit_backoff_adds_bounded_random_jitter(monkeypatch
     )
 
     with pytest.raises(WmsEffectStatusQueryError) as raised:
-        await adapter.query_status(_notify_request(attempt_count=2))
+        await adapter.query_status(_rack_supply_request(attempt_count=2))
 
     assert sampled_bounds == [(0.0, 1.0)]
     assert isinstance(raised.value.failure, QueryTechnicalFailure)
@@ -702,7 +1097,7 @@ async def test_provider_retry_after_above_local_max_is_not_capped() -> None:
     )
 
     with pytest.raises(WmsEffectStatusQueryError) as raised:
-        await adapter.query_status(_notify_request())
+        await adapter.query_status(_rack_supply_request())
 
     assert isinstance(raised.value.failure, QueryTechnicalFailure)
     assert raised.value.failure.retry_after_seconds == 120.0
@@ -730,7 +1125,7 @@ async def test_status_timeout_is_one_absolute_deadline_including_stream_read() -
 
     started_at = asyncio.get_running_loop().time()
     with pytest.raises(WmsEffectStatusQueryError) as raised:
-        await adapter.query_status(_notify_request())
+        await adapter.query_status(_rack_supply_request())
     elapsed = asyncio.get_running_loop().time() - started_at
 
     assert isinstance(raised.value.failure, QueryTechnicalFailure)
@@ -776,8 +1171,8 @@ async def test_repeated_status_queries_do_not_close_the_injected_transport() -> 
         max_backoff_seconds=8.0,
     )
 
-    first = await adapter.query_status(_notify_request())
-    second = await adapter.query_status(_notify_request())
+    first = await adapter.query_status(_rack_supply_request())
+    second = await adapter.query_status(_rack_supply_request())
 
     assert first == second
     assert transport.calls == 2

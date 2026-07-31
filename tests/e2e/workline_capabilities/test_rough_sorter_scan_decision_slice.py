@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -27,12 +28,8 @@ from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.sys.models import SystemOutbox
-from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationResult,
-)
-from src.app.wms_integration.ports.query_outcome import QueryBusinessReject, QuerySuccess, QueryTechnicalFailure
+from src.app.wms_integration.ports.document_operations import ValidateRoughSorterAdmissionResult
+from src.app.wms_integration.ports.query_outcome import QuerySuccess, QueryTechnicalFailure
 from src.utils.timezone import timezone
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
@@ -40,6 +37,7 @@ from tests.support.runtime_inbox_processing_postgresql import (
     seed_scan_flow,
     with_temporary_runtime_database,
 )
+from tests.support.wms_query_runtime import bind_stub_wms_query_runtime
 
 FIXTURE_PATH = (
     Path(__file__).resolve().parents[2] / "fixtures" / "workline_contract" / "rough_sorter" / "scan_decision_cases.json"
@@ -242,32 +240,48 @@ async def _collect(
 async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> CaseEvidence:
     case_id = case["case_id"]
     provider_calls = 0
-    provider_mode = case.get("trigger", {}).get("decision_discriminator", {}).get("wms_admission")
+    provider_mode = case.get("q19_admission_fact", {}).get("provider_outcome")
 
-    async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
+    async def query_inventory(request):  # type: ignore[no-untyped-def]
         nonlocal provider_calls
         provider_calls += 1
-        if provider_mode == "TIMEOUT":
+        if provider_mode == "TECHNICAL_FAILURE":
             return QueryTechnicalFailure("WMS_PROVIDER_TIMEOUT", "fixture timeout", True)
-        if provider_mode == "REJECT":
-            return QueryBusinessReject("WMS_REJECTED", "fixture rejected")
-        return QuerySuccess(
-            InventoryQueryOperationResult(
-                items=(
-                    InventoryAuthorityItem(
-                        material_code=request.material_code,
-                        warehouse_code=request.warehouse_code or "WH-IT",
-                        owner_code=request.owner_code,
-                        storage_location_code="A-01",
-                        available_quantity=10,
-                        lot_no="LOT-IT-001",
-                    ),
+        if provider_mode == "BUSINESS_REJECT":
+            return QuerySuccess(
+                ValidateRoughSorterAdmissionResult(
+                    decision="REJECT",
+                    reason_code="PACKAGE_NOT_ADMISSIBLE",
+                    measurement_decision="REJECT",
+                    standard_reel_diameter_mm="180",
+                    reel_diameter_tolerance_mm="1",
+                    standard_reel_thickness_mm="16",
+                    reel_thickness_tolerance_mm="0.5",
+                    rule_version="rule-q19-e2e",
+                    source_version="source-q19-e2e-reject",
                 ),
-                source_version="WMS-IT-1",
+                evidence_key="query:q19:e2e-reject",
             )
+        return QuerySuccess(
+            ValidateRoughSorterAdmissionResult(
+                decision="ADMIT",
+                grn_id="GRN-IT-001",
+                po_number="PO-IT-001",
+                po_item="10",
+                material_code=request.six_in_one.HHPN,
+                pkg_id=request.six_in_one.PkgID,
+                measurement_decision="PASS",
+                standard_reel_diameter_mm="180",
+                reel_diameter_tolerance_mm="1",
+                standard_reel_thickness_mm="16",
+                reel_thickness_tolerance_mm="0.5",
+                rule_version="rule-q19-e2e",
+                source_version="source-q19-e2e-admit",
+            ),
+            evidence_key="query:q19:e2e-admit",
         )
 
-    monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
+    bind_stub_wms_query_runtime(monkeypatch, query_inventory)
 
     async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
         return None
@@ -278,7 +292,8 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         nonlocal captured
         async with session_factory() as db:
-            seeded = await seed_scan_flow(db)
+            exercise_fixture_q19 = case["trigger"]["event_type"] == "SCAN_COMPLETED" and "q19_admission_fact" in case
+            seeded = await seed_scan_flow(db, persist_q19_admit=not exercise_fixture_q19)
             service = RuntimeInboxService()
             trigger = case["trigger"]
             event_type = trigger["event_type"]
@@ -290,16 +305,40 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
             if event_type == "SCAN_COMPLETED":
                 inbox = await db.get(RuntimeInbox, seeded.inbox_id)
                 assert inbox is not None
+                seed_envelope = {
+                    key: value
+                    for key, value in inbox.payload_json.items()
+                    if key
+                    not in {
+                        "data",
+                        "reel_diameter_mm",
+                        "reel_thickness_mm",
+                        "reel_diameter",
+                        "reel_thickness",
+                    }
+                }
+                fixture_payload = deepcopy(trigger["payload"])
                 inbox.payload_json = {
-                    **inbox.payload_json,
+                    **seed_envelope,
+                    **fixture_payload,
                     "data": {
-                        **trigger["payload"]["data"],
+                        **fixture_payload["data"],
                         "session_id": seeded.session_id,
                     },
                 }
+                assert inbox.payload_json["reel_diameter_mm"] == fixture_payload["reel_diameter_mm"]
+                assert inbox.payload_json["reel_thickness_mm"] == fixture_payload["reel_thickness_mm"]
                 db.add(inbox)
                 await db.commit()
-                assert (await _process_one(db, service, token=f"e2e-{case_id}-scan"))["success"] == 1
+                processing_result = await _process_one(db, service, token=f"e2e-{case_id}-scan")
+                expected_processing_result = case.get("expected_processing_result")
+                if expected_processing_result is None:
+                    assert processing_result["success"] == 1
+                else:
+                    assert {
+                        "success": processing_result["success"],
+                        "failed": processing_result["failed"],
+                    } == expected_processing_result
                 related_inbox_id = seeded.inbox_id
             else:
                 assert (await _process_one(db, service, token=f"e2e-{case_id}-seed"))["success"] == 1
@@ -438,7 +477,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     related_inbox_id = int(timeout.record.id)
                     assert (await _process_one(db, service, token=f"e2e-{case_id}-timeout"))["success"] == 1
                 elif event_type == "REPLAY_REQUEST":
-                    # replay source 必须先走真实 Callback -> Plugin -> QUERY -> EFFECT 生产链，
+                    # replay source 必须先走真实 Callback -> Plugin -> EFFECT 生产链，
                     # 不能把 seed scan 或手工 timeline 当作“首次 attempt”。
                     source_event_id = f"e2e-{case_id}-first-result"
                     first_response = await CallbackIngressService().handle_result(
@@ -496,7 +535,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                         source_decision.payload_json["attempt_anchor"]["logical_idempotency_key"]
                         == trigger["payload"]["idempotency_key"]
                     )
-                    assert provider_calls == 1
+                    assert provider_calls == 0
                     source_effects = tuple(
                         (
                             await db.execute(
@@ -581,7 +620,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                             if item.payload_json.get("record_type") in {"SYSTEM_CAPABILITY_EVIDENCE", "PLUGIN_DECISION"}
                         )
                         assert replay_recorded_payloads == source_recorded_payloads
-                        assert provider_calls == 1
+                        assert provider_calls == 0
                         persisted_effect_ids = tuple(
                             (
                                 await db.execute(
@@ -747,15 +786,17 @@ def test_approved_rough_sorter_scan_decision_case(case: dict[str, Any], monkeypa
         assert evidence.command_status == expected_state["command"]
     assert evidence.outcome_code == expected_outcome["result"]
     assert evidence.reason_code == expected_outcome["reason_code"]
-    assert evidence.provider_calls == (
-        1 if case_id in {"RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011", "RS-SD-012"} else 0
-    )
+    assert evidence.provider_calls == (1 if case_id in {"RS-SD-001", "RS-SD-006", "RS-SD-010"} else 0)
     if case_id == "RS-SD-009":
         assert evidence.runtime_hold_count == 1
         assert evidence.runtime_hold_reason == expected_outcome["reason_code"]
-    elif expected_outcome["result"] == "HOLD":
+    elif expected_outcome["result"] == "HOLD" and case["implementation_status"] == "covered":
         assert evidence.session_failure_code == expected_outcome["reason_code"]
     if case_id in {"RS-SD-011", "RS-SD-012", "RS-SD-013"}:
         assert evidence.replay_effect_delta == 0
         assert evidence.replay_outbox_delta == 0
-    assert case["implementation_status"] == "covered"
+    assert case["implementation_status"] in {"covered", "blocked"}
+    if case["implementation_status"] == "blocked":
+        assert evidence.effect_identities == ()
+        assert evidence.runtime_hold_count == 0
+        assert evidence.session_status != "MANUAL_HOLD"

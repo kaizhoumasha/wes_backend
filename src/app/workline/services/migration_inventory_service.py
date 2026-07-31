@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
+from src.app.contracts.external_contract_profile import ExternalContractProfile, WmsExternalContractProfile
 from src.app.contracts.external_contract_profile_catalog import list_external_contract_profiles
 from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.system_capabilities.generated_index import (
@@ -292,12 +293,20 @@ class WorklineMigrationInventoryService:
     @staticmethod
     def _build_provider_catalog(profiles: Iterable[Any]) -> tuple[WorklineProviderProfileInventoryItem, ...]:
         items: list[WorklineProviderProfileInventoryItem] = []
-        provider_identities: set[tuple[str, str, str]] = set()
+        provider_identities: set[tuple[str, str, str | None]] = set()
         for profile in profiles:
+            if isinstance(profile, WmsExternalContractProfile):
+                environment = None
+            elif isinstance(profile, ExternalContractProfile):
+                environment = profile.environment
+            else:
+                raise WorklineMigrationInventoryInvariantError(
+                    f"provider profile 类型不在 closed union: {type(profile).__name__}"
+                )
             source = {
-                "provider_code": getattr(profile, "provider_code", _MISSING),
-                "contract_version": getattr(profile, "contract_version", _MISSING),
-                "environment": getattr(profile, "environment", _MISSING),
+                "provider_code": profile.provider_code,
+                "contract_version": profile.contract_version,
+                "environment": environment,
             }
             try:
                 item = WorklineProviderProfileInventoryItem.model_validate(source)
@@ -308,7 +317,12 @@ class WorklineMigrationInventoryService:
                 raise WorklineMigrationInventoryInvariantError(f"provider profile 重复 identity: {identity}")
             provider_identities.add(identity)
             items.append(item)
-        return tuple(sorted(items, key=lambda item: (item.provider_code, item.contract_version, item.environment)))
+        return tuple(
+            sorted(
+                items,
+                key=lambda item: (item.provider_code, item.contract_version, item.environment or ""),
+            )
+        )
 
     @classmethod
     def derive_provider_profile_catalog(

@@ -51,6 +51,15 @@ from .rack_position_repository import (
     WorklineRackPositionRepository,
     workline_rack_position_repository,
 )
+from .rough_sorter_q19_admission_repository import (
+    RoughSorterQ19AdmissionRepository,
+    rough_sorter_q19_admission_repository,
+)
+from .runtime_domain_capability_authority_repository import (
+    LockedRuntimeDomainCapabilityFacts,
+    RuntimeDomainCapabilityAuthorityRepository,
+    runtime_domain_capability_authority_repository,
+)
 from .runtime_hold_repository import (
     RuntimeHoldRepository,
     runtime_hold_repository,
@@ -91,6 +100,16 @@ from .wms_effect_status_repository import (
     WmsEffectStatusRepository,
     wms_effect_status_repository,
 )
+from .wms_fulfillment_domain_repository import (
+    WmsFulfillmentDomainRepository,
+    wms_fulfillment_domain_repository,
+)
+from .wms_putaway_sync_barrier_repository import (
+    WmsPutawaySyncBarrierRepository,
+    WmsPutawaySyncBarrierSnapshot,
+    WmsPutawaySyncObligation,
+    wms_putaway_sync_barrier_repository,
+)
 from .workline_runtime_status_projection_repository import (
     WorklineRuntimeStatusProjectionRepository,
     workline_runtime_status_projection_repository,
@@ -101,12 +120,15 @@ __all__ = [
     "DeviceRuntimeProjectionRepository",
     "EffectReducerRepository",
     "IdempotencyKeyRepository",
+    "LockedRuntimeDomainCapabilityFacts",
     "MaterialUnitRepository",
     "NorthboundOperationHealthRow",
     "NorthboundOperationsRepository",
     "ObjectTransitionEventRepository",
     "PluginAttemptRepository",
     "PreparedRuntimeIntentLog",
+    "RoughSorterQ19AdmissionRepository",
+    "RuntimeDomainCapabilityAuthorityRepository",
     "RuntimeHoldRepository",
     "RuntimeInboxRepository",
     "RuntimeInboxRetryMetadata",
@@ -119,6 +141,10 @@ __all__ = [
     "TimelineSequenceRepository",
     "WmsEffectStatusClaim",
     "WmsEffectStatusRepository",
+    "WmsFulfillmentDomainRepository",
+    "WmsPutawaySyncBarrierRepository",
+    "WmsPutawaySyncBarrierSnapshot",
+    "WmsPutawaySyncObligation",
     "WorklineBinCellReservationRepository",
     "WorklineDiagnosticRepository",
     "WorklineDispatchAttemptRepository",
@@ -133,6 +159,8 @@ __all__ = [
     "northbound_operations_repository",
     "object_transition_event_repository",
     "plugin_attempt_repository",
+    "rough_sorter_q19_admission_repository",
+    "runtime_domain_capability_authority_repository",
     "runtime_hold_repository",
     "runtime_inbox_repository",
     "runtime_intent_log_repository",
@@ -141,6 +169,8 @@ __all__ = [
     "timeline_recorded_replay_repository",
     "timeline_sequence_repository",
     "wms_effect_status_repository",
+    "wms_fulfillment_domain_repository",
+    "wms_putaway_sync_barrier_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",

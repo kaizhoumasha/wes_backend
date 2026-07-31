@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import statistics
 import subprocess
 import sys
@@ -12,11 +11,9 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from fastapi import Request
 from sqlalchemy import func, update
 from sqlmodel import select
 
-from src.app.callback.services.callback_ingress_service import CallbackIngressService
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.device.repositories.command_repository import device_command_repository
@@ -33,14 +30,12 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteInput
 from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
 from src.app.sys.models import SystemOutbox
-from src.app.wms_integration.runtime_factory import build_inventory_query_port_factory
-from src.app.wms_integration.services import (
-    WmsCallEvidenceQueryWriter,
-    WmsCallEvidenceService,
-    WmsCircuitBreakerService,
+from src.app.wms_integration.ports.document_operations import (
+    ValidateRoughSorterAdmissionRequest,
+    ValidateRoughSorterAdmissionResult,
 )
+from src.app.wms_integration.ports.query_outcome import QuerySuccess
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
 from src.utils.timezone import timezone
@@ -53,6 +48,7 @@ from tests.support.smt_sorting_inbound_postgresql import (
     NoopQueueGateway,
     seed_smt_source_pick_claim,
 )
+from tests.support.wms_query_runtime import bind_stub_wms_query_runtime
 
 if TYPE_CHECKING:
     import pytest
@@ -69,29 +65,6 @@ SMT_RECOVERY_CANDIDATE_LIMIT = 2
 MEASURED_SAMPLE_COUNT = 5
 
 
-def _callback_request(payload: dict[str, object]) -> Request:
-    body = json.dumps(payload).encode("utf-8")
-    sent = False
-
-    async def receive() -> dict[str, object]:
-        nonlocal sent
-        if sent:
-            return {"type": "http.disconnect"}
-        sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    return Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/api/v1/callback/result",
-            "headers": [(b"content-type", b"application/json")],
-            "client": ("127.0.0.1", 12345),
-        },
-        receive=receive,
-    )
-
-
 async def _process_one(db: Any, service: RuntimeInboxService, queue_gateway: Any, *, token: str) -> dict[str, int]:
     claimed = await claim(db, service, token=token)
     return await RuntimeInboxProcessorBridge(inbox_service=service, queue_gateway=queue_gateway).process_claimed(
@@ -99,42 +72,32 @@ async def _process_one(db: Any, service: RuntimeInboxService, queue_gateway: Any
     )
 
 
-def _inventory_query_port_factory_builder(session_factory: Any, http_calls: list[httpx.Request]):
-    async def handler(request: httpx.Request) -> httpx.Response:
-        http_calls.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "items": [
-                    {
-                        "sku": "MAT-IT-001",
-                        "warehouse_code": "WH-IT",
-                        "lot_no": "LOT-IT-001",
-                        "available_qty": "10",
-                        "total_qty": "10",
-                        "reserved_qty": "0",
-                    }
-                ],
-                "source_version": "performance-fixture-v1",
-            },
-        )
-
-    def builder(*, simulation: bool, sandbox_rows_provider: Any, settings_source: Any):
-        breaker_service = WmsCircuitBreakerService(failure_threshold=2, retry_after_seconds=60)
-        return build_inventory_query_port_factory(
-            simulation=simulation,
-            sandbox_rows_provider=sandbox_rows_provider,
-            transport=httpx.MockTransport(handler),
-            evidence_writer=WmsCallEvidenceQueryWriter(
-                session_factory=session_factory,
-                provider_profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
-                evidence_service=WmsCallEvidenceService(),
-                breaker_service=breaker_service,
+def _q19_query_handler(http_calls: list[httpx.Request]):
+    async def handler(
+        request: ValidateRoughSorterAdmissionRequest,
+    ) -> QuerySuccess[ValidateRoughSorterAdmissionResult]:
+        assert isinstance(request, ValidateRoughSorterAdmissionRequest)
+        http_calls.append(httpx.Request("POST", "http://wms-performance.invalid/documents/rough-sorter/admission"))
+        return QuerySuccess(
+            ValidateRoughSorterAdmissionResult(
+                decision="ADMIT",
+                grn_id="GRN-PERF-001",
+                po_number="PO-PERF-001",
+                po_item="10",
+                material_code=request.six_in_one.HHPN,
+                pkg_id=request.six_in_one.PkgID,
+                measurement_decision="PASS",
+                standard_reel_diameter_mm=request.reel_diameter_mm,
+                reel_diameter_tolerance_mm="1",
+                standard_reel_thickness_mm=request.reel_thickness_mm,
+                reel_thickness_tolerance_mm="0.5",
+                rule_version="performance-fixture-rule",
+                source_version="performance-fixture-v1",
             ),
-            settings_source=settings_source,
+            evidence_key="evidence:performance-fixture",
         )
 
-    return builder
+    return handler
 
 
 async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_query: bool, sample: int) -> float:
@@ -143,13 +106,10 @@ async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_
     async def scenario(session_factory: Any, queue_gateway: Any) -> None:
         nonlocal measured
         http_calls: list[httpx.Request] = []
-        monkeypatch.setattr(
-            "src.app.wms_integration.runtime_factory.build_inventory_query_port_factory",
-            _inventory_query_port_factory_builder(session_factory, http_calls),
-        )
+        bind_stub_wms_query_runtime(monkeypatch, _q19_query_handler(http_calls))
         monkeypatch.setattr(settings, "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2", "performance-fixture-secret")
         async with session_factory() as db:
-            seeded = await seed_scan_flow(db)
+            seeded = await seed_scan_flow(db, persist_q19_admit=not with_wms_query)
             service = RuntimeInboxService()
             if not with_wms_query:
                 started = time.perf_counter()
@@ -168,50 +128,16 @@ async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_
                 assert evidence_count == 0
                 return
 
-            assert (await _process_one(db, service, queue_gateway, token=f"perf-query-seed-{sample}"))["success"] == 1
-            command = await db.scalar(
-                select(DeviceCommand).where(
-                    DeviceCommand.workline_id == seeded.workline_id,
-                    DeviceCommand.task_type == "PICK_AND_PUT",
-                )
-            )
-            assert command is not None
-            source_event_id = f"perf-wms-result-{sample}"
-            response = await CallbackIngressService().handle_result(
-                _callback_request(
-                    {
-                        "command_code": command.command_code,
-                        "device_code": "IT-ARM-01",
-                        "result": "SUCCESS",
-                        "finish_time": int(time.time() * 1000),
-                        "source_event_id": source_event_id,
-                        "trace_id": seeded.trace_id,
-                        "data": {"reel_diameter": 100, "reel_thickness": 10},
-                    }
-                ),
-                db,
-                request_id=f"perf-wms-request-{sample}",
-                start_time=time.time(),
-                enqueue_processing=lambda: None,
-            )
-            assert response["code"] == "1000"
-            callback = await db.scalar(select(RuntimeInbox).where(RuntimeInbox.source_event_id == source_event_id))
-            assert callback is not None
-
             started = time.perf_counter()
-            result = await _process_one(db, service, queue_gateway, token=f"perf-query-{sample}")
+            result = await _process_one(db, service, queue_gateway, token=f"perf-q19-{sample}")
             measured = time.perf_counter() - started
-            assert result["success"] == 1
+            assert result["success"] == 1, result
             assert len(http_calls) == 1
-            evidence = await db.scalar(
-                select(WorklineTimeline).where(
-                    WorklineTimeline.related_inbox_id == callback.id,
-                    WorklineTimeline.payload_json["record_type"].as_string() == "SYSTEM_CAPABILITY_EVIDENCE",
-                )
-            )
-            assert evidence is not None
-            assert evidence.payload_json["evidence"]["capability_key"] == "wms.inventory.query_inventory"
-            assert evidence.payload_json["evidence"]["contract_version"] == "v1"
+            session = await db.get(WorklineSession, seeded.session_id)
+            assert session is not None
+            persisted_q19 = session.context_json["wms_admission_decision"]
+            assert isinstance(persisted_q19, dict)
+            assert persisted_q19["evidence_reference"] == "evidence:performance-fixture"
 
     await with_temporary_runtime_database(scenario)
     assert measured is not None

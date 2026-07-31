@@ -24,7 +24,9 @@ from src.celery_app.async_runtime import run_async
 from src.celery_app.constants import (
     DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
 )
+from src.core.conf import settings
 from src.core.logger import logger
+from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.database.db import get_db_context
 from src.utils.value_normalization import (
     enum_value,
@@ -102,25 +104,74 @@ async def _scan_smt_inbound_handoff_demands_in_transaction(
     claim_limit: int,
     stale_after_seconds: int,
     legacy_limit: int | None,
+    queue_gateway: TaskQueueGateway = task_queue_gateway,
 ) -> SmtInboundHandoffRecoveryResult:
-    """执行一次 SMT recovery，并在 task-local Session 上提交完整批次。"""
+    """先逐项提交 E11 root，再执行既有 source-pick recovery 批次。"""
+
+    from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
+        SmtInboundHandoffE11EvaluationError,
+    )
+
+    summary = _empty_smt_inbound_handoff_recovery_result()
+    excluded_demand_ids: set[int] = set()
+    for _ in range(max(scan_limit, 0)):
+        try:
+            e11_result = await service.evaluate_next_due_e11_demand(
+                db,
+                excluded_demand_ids=frozenset(excluded_demand_ids),
+            )
+            if not e11_result.scanned:
+                break
+            if not isinstance(e11_result.demand_id, int):
+                raise TypeError("SMT E11 scanned demand is missing its durable identifier")
+            expected_targets = frozenset({OutboxDispatchTarget.WMS_FULFILLMENT})
+            if e11_result.outbox_dispatch_targets not in {frozenset(), expected_targets}:
+                raise RuntimeError("SMT E11 returned an invalid outbox dispatch target")
+            summary["scanned"] += 1
+            if e11_result.advanced:
+                summary["advanced"] += 1
+            # 每个 E11 root 独立提交；提交成功后才公开唤醒唯一 fulfillment target。
+            await db.commit()
+            # 已完成本轮评价但未创建 root 的 demand 仍是 due；必须排除，防止它占满
+            # scan_limit 而饿死后续健康 demand。下一轮扫描仍会重新审视该 demand。
+            excluded_demand_ids.add(e11_result.demand_id)
+        except SmtInboundHandoffE11EvaluationError as exc:
+            await db.rollback()
+            summary["recovery_errors"] += 1
+            excluded_demand_ids.add(exc.demand_id)
+            continue
+        except Exception:
+            await db.rollback()
+            summary["recovery_errors"] += 1
+            break
+        targets = e11_result.outbox_dispatch_targets
+        if targets:
+            try:
+                queue_gateway.enqueue_outbox(targets=targets)
+            except Exception:
+                # durable Outbox 已提交；由 Beat 对 fulfillment scope 兜底，不能回滚。
+                logger.exception("SMT E11 fulfillment outbox enqueue failed after commit")
 
     if legacy_limit is not None:
         recovery_result = await service.scan_smt_inbound_handoff_demands_batch(
             db,
             stale_after_seconds=stale_after_seconds,
-            limit=legacy_limit,
+            scan_limit=0,
+            recovery_limit=legacy_limit,
+            claim_limit=0,
         )
     else:
         recovery_result = await service.scan_smt_inbound_handoff_demands_batch(
             db,
             stale_after_seconds=stale_after_seconds,
-            scan_limit=scan_limit,
+            scan_limit=0,
             recovery_limit=recovery_limit,
             claim_limit=claim_limit,
         )
     await db.commit()
-    return cast("SmtInboundHandoffRecoveryResult", recovery_result)
+    for key, value in recovery_result.items():
+        summary[key] += value
+    return summary
 
 
 class TimeoutScanner:
@@ -459,13 +510,11 @@ def check_wms_effect_status(dispatch_key: str) -> dict[str, object]:
 @celery_app.task(
     name="src.celery_app.tasks.workline.scan_wms_effect_status_batch",
     base=celery_app.Task,
+    soft_time_limit=settings.WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=settings.WES_EFFECT_STATUS_TASK_HARD_TIME_LIMIT_SECONDS,
 )
-def scan_wms_effect_status_batch(limit: int | None = None) -> list[dict[str, object]]:
-    """小批量顺序确认到期 WMS EFFECT，Beat 只负责兜底扫描。"""
-
-    from src.core.conf import settings
-
-    batch_limit = int(limit or settings.WES_EFFECT_STATUS_SCAN_BATCH_SIZE)
+def scan_wms_effect_status_batch() -> list[dict[str, object]]:
+    """小批量有界并发确认到期 WMS EFFECT，Beat 只负责兜底扫描。"""
 
     async def _scan() -> list[dict[str, object]]:
         from src.app.runtime.orchestration.services.wms_effect_status_service import (
@@ -473,7 +522,7 @@ def scan_wms_effect_status_batch(limit: int | None = None) -> list[dict[str, obj
         )
 
         async with get_db_context() as db:
-            results = await wms_effect_status_service.check_due_batch(db, limit=batch_limit)
+            results = await wms_effect_status_service.check_due_batch(db)
             return [asdict(item) for item in results]
 
     return cast("list[dict[str, object]]", run_async(_scan))

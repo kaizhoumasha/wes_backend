@@ -26,7 +26,7 @@ credential、工作线、环境或 Provider 名称。handler、Port 方法与 Pr
 | `wms.inventory.query_inventory@v1` | QUERY | `InventoryQueryOperationPort.execute` | inventory query typed contract | 通用 transport 与 typed authority snapshot 已接线；纯 policy 后续独立迁移 |
 | `wms.inventory.confirm_inbound@v1` | EFFECT | `WmsInventoryTransactionPort.confirm_inbound` | inventory transaction typed contract | T9 typed EFFECT 与 reconciliation 闭合后删除字符串路径 |
 | `wms.fulfillment.notify_pkg_binding@v1` | EFFECT | family Port 旧入口（已删除） | fulfillment typed contract | T10 已闭合 OUTBOX_ASYNC、callback reducer 与遗留删除门禁 |
-| `wms.fulfillment.full_box_exchange@v1` | EFFECT | `WmsFulfillmentPort.full_box_exchange` | fulfillment typed contract | T12 独立迁移任务闭合后删除字符串路径 |
+| `wms.fulfillment.full_box_exchange@v1` | EFFECT | operation-specific typed contract | fulfillment typed contract | T12 独立迁移任务闭合后删除字符串路径 |
 
 ## 边界
 
@@ -44,7 +44,7 @@ author-time 单一真源由 typed operation contract、System Capability Definit
 
 ### Provider 资料
 
-Provider profile 只声明 provider/version/environment 身份以及对 operation identity 的兼容资料；endpoint、预算、retry 与出站认证
+Provider profile 只声明 provider/version 身份以及对 operation identity 的兼容资料；endpoint、预算、retry 与出站认证
 属于相应 operation contract/binding，credential 仅保存版本化 reference。Provider DTO 和 ACL 映射不进入 operation identity，
 fixture 与 required cases 只属于测试/构建期 manifest。
 
@@ -52,7 +52,7 @@ fixture 与 required cases 只属于测试/构建期 manifest。
 
 `docs/architecture/northbound-wms-operation-inventory.csv` 是 T1 的可执行清单。每个条目只有在目标 typed 路径生效、对应测试完成
 `KEEP/REWRITE/DELETE` 处置、旧 identity 与字符串字段扫描为零、生成物零差异、指标和文档完成后才可关闭。T12 必须按清单中
-真实 operation 展开任务；不得以首批三个 operation 为范围豁免，也不得在门禁外延期清理。
+真实 operation 展开任务；不得以任意局部 operation 切片为范围豁免，也不得在门禁外延期清理。
 
 ## 零兼容约束
 

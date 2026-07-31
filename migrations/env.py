@@ -31,12 +31,6 @@ from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
 )
-from src.app.handling.models import (  # noqa: F401
-    HandlingMove,
-    HandlingOperation,
-    HandlingStep,
-)
-from src.app.rack.models import RackOperation, RackTask  # noqa: F401
 from src.app.resource.models import (  # noqa: F401
     Bin,
     BinCellOccupancy,
@@ -53,6 +47,7 @@ from src.app.resource.models import (  # noqa: F401
     RackType,
     ResourceStateEvent,
 )
+from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance  # noqa: F401
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership  # noqa: F401
 from src.app.runtime.orchestration.device_runtime_projection import DeviceRuntimeProjection  # noqa: F401
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
@@ -61,6 +56,7 @@ from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem 
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey  # noqa: F401
 
 # 导入所有 workline 配置域模型 + runtime/orchestration 运行态模型(阶段 6 物理迁移后)
+from src.app.runtime.orchestration.material_flow_owner import MaterialFlowOwner  # noqa: F401
 from src.app.runtime.orchestration.models import (  # noqa: F401
     WorklineBinCellReservation,
     WorklineRackPosition,
@@ -72,6 +68,8 @@ from src.app.runtime.orchestration.runtime_hold import RuntimeHold as Orchestrat
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox  # noqa: F401
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog  # noqa: F401
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline  # noqa: F401
+from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember  # noqa: F401
+from src.app.runtime.orchestration.wms_rack_demand import WmsRackDemand  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 from src.app.wms_integration.models import WmsCallEvidence, WmsCircuitBreakerState  # noqa: F401
 from src.app.workline.models import WorkLine  # noqa: F401

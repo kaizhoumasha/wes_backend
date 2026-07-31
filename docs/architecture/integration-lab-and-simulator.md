@@ -33,13 +33,13 @@ note: |
 
 | 接口 | simulator 行为 |
 | --- | --- |
-| `WmsMasterDataPort.get_material` / `list_materials` | 返回 fixture 物料主数据 |
-| `WmsDocumentPort.get_grn` / `list_grn_packages` | 返回 fixture GRN 与料盘归属 |
+| `wms.master_data.get_material@v1` / `wms.master_data.list_materials@v1` | 返回 fixture 物料主数据 |
+| `wms.document.get_grn@v1` / `wms.document.list_grn_packages@v1` | 返回 typed fixture GRN 与料盘归属 |
 | `wms.inventory.query_inventory@v1` | 返回 typed fixture 库存快照（带 `source_version`） |
-| `WmsFulfillmentPort.request_transport` | 接受请求，按 scenario 配置延迟回 callback |
-| `WmsInventoryTransactionPort.reserve_inventory` | 返回预留结果 |
-| `WmsReconciliationQueryPort.check_bin_drift` | 返回 drift snapshot |
-| `WmsEventPort`（callback） | 主动推送 `WMS_GRN_RECEIVED` / `WMS_TRANSPORT_COMPLETED` 等事件到 callback API |
+| `wms.fulfillment.request_load_unit_transport@v1` | 接受请求，按 scenario 配置延迟形成 status 终态 |
+| `wms.inventory.reserve_inventory@v1` | 返回预留结果 |
+| `wms.reconciliation.check_bin_drift@v1` | 返回 drift snapshot |
+| `WmsEventPort`（callback） | 主动推送四类普通事件或 `WMS_EFFECT_STATUS_HINT` 到 external callback API |
 
 **约束**：
 - simulator 只能通过正式 port contract 进入系统；不得引入测试专用 domain service
@@ -68,7 +68,10 @@ note: |
 | 用途 | 联调、contract test、scenario replay |
 | 禁止 | 被 `staging` / `production` profile 引用；作为生产 fallback |
 
-**sandbox profile 注册**：sandbox provider profile 通过 `ExternalContractProfile`（`environment=sandbox`）注册到 provider registry；Runtime capability admission 和 callback normalizer 按 sandbox profile 合同工作，与生产 profile 路径一致。
+**sandbox profile 注册**：simulator provider profile 通过 generic `ExternalContractProfile`
+（`environment=sandbox`）注册到 provider registry；Runtime capability admission 和 callback normalizer
+按 sandbox profile 合同工作。WMS 真实部署使用独立的 `WmsExternalContractProfile`，不经过 simulator
+environment 或 generic production 入站认证校验。
 
 ## 6. scenario runner
 
@@ -86,7 +89,8 @@ note: |
 - scenario 必须基于 fixture，不依赖生产数据
 - scenario replay 必须验证 active projection diff、RuntimeTimeline 顺序、outbox/effect 幂等和 ReconciliationRecord 结果（主计划 §3.5.1 联调不变量）
 - 场景回放必须 deterministic（同输入同输出）
-- Phase 3 runner 使用 `IntegrationLabScenarioRunner`：先通过 `ExternalContractProfile` / `ProviderSimulatorRegistry` 校验 WMS/ECS sandbox profile 与 fixture case，再交给 `ScenarioRecorder` / `ScenarioReplayRunner` 断言完整链路 replay。
+- Phase 3 runner 使用 `IntegrationLabScenarioRunner`：先通过 `ExternalContractProfile` / `ProviderSimulatorRegistry`
+  校验 WMS/ECS sandbox profile 与 fixture case，再交给 `ScenarioRecorder` / `ScenarioReplayRunner` 断言完整链路 replay。
 
 ## 7. ScenarioRecorder / ScenarioReplayRunner（来源主计划 §3.5.1）
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -16,13 +17,16 @@ from src.app.runtime.orchestration.repositories.wms_effect_status_repository imp
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.effect_reducer_service import EffectReducer
 from src.app.runtime.orchestration.services.wms_effect_status_service import WmsEffectStatusService
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
+from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
 from src.app.wms_integration.ports.effect_status import WmsEffectStatus, WmsEffectStatusSnapshot
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from tests.workline_runtime.system_capabilities.test_wms_effect_status_service import (
     NOW,
     _claim,
@@ -79,8 +83,8 @@ class _ClaimableRepository(_Repository):
 
 @pytest.mark.asyncio
 async def test_wms_ambiguous_transport_is_enqueued_and_reaches_typed_terminal_without_open_case() -> None:
-    claim = _claim()
-    claim.intent.capability_key = "wms.fulfillment.notify_pkg_binding"
+    claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
+    claim.intent.capability_key = "wms.fulfillment.request_rack_supply"
     claim.intent.capability_contract_version = "v1"
     reducer_repository = _PersistentReducerRepository(claim.intent)
     reducer = EffectReducer(repository=reducer_repository)
@@ -122,6 +126,7 @@ async def test_wms_ambiguous_transport_is_enqueued_and_reaches_typed_terminal_wi
     assert result.outcome == WmsEffectStatus.COMPLETED.value
     assert claim.intent.effect_status is RuntimeIntentStatus.COMPLETED
     assert [item["event_type"] for item in claim.intent.outcome_history_json] == [
+        EffectReducerEventType.TRANSPORT_ACCEPTED.value,
         EffectReducerEventType.TRANSPORT_AMBIGUOUS.value,
         EffectReducerEventType.STATUS_COMPLETED.value,
     ]
@@ -328,8 +333,26 @@ def _batch_claim(suffix: str) -> Any:
     claim.outbox.payload_json = {
         **claim.outbox.payload_json,
         "dispatch_key": dispatch_key,
-        "package_id": f"PKG-{suffix}",
-        "pallet_id": f"PALLET-{suffix}",
+        "station_code": f"STATION-{suffix}",
+        "rack_type": "FLOW_RACK",
+        "demand_generation": 1,
+    }
+    canonical_payload = CanonicalPayload.from_projection(claim.outbox.payload_json)
+    payload_hash = canonical_payload.sha256
+    claim.intent.payload_hash = payload_hash
+    claim.outbox.payload_hash = payload_hash
+    claim.outbox.canonical_payload_bytes = canonical_payload.body
+    frozen_ack = {
+        **claim.intent.outcome_json["outcome"]["payload"],
+        "idempotency_key": idempotency_key,
+        "provider_reference": f"provider-{dispatch_key}",
+    }
+    claim.intent.outcome_json["payload_hash"] = payload_hash
+    claim.intent.outcome_json["outcome"]["payload"] = frozen_ack
+    claim.intent.outcome_history_json[0] = {
+        "event_type": EffectReducerEventType.TRANSPORT_ACCEPTED.value,
+        "typed_ack_hash": typed_wms_effect_ack_hash(WmsEffectAck.model_validate(frozen_ack)),
+        "typed_ack_reference": f"runtime-intent-outcome:{dispatch_key}",
     }
     return WmsEffectStatusClaim(intent=claim.intent, outbox=claim.outbox, lease_token="")
 
@@ -366,6 +389,18 @@ class _MultiClaimRepository:
             selected.append(current)
         return tuple(selected)
 
+    async def get_due_backlog_snapshot(self, _db: Any, *, now: datetime) -> SimpleNamespace:
+        due = [
+            claim
+            for claim in self.claims
+            if claim.intent.status_check_lease_token is None and claim.intent.status_check_after <= now
+        ]
+        return SimpleNamespace(
+            backlog_count=len(due),
+            max_overdue_age_ms=0.0,
+            max_confirmation_age_ms=0.0,
+        )
+
     async def get_claim_for_update(
         self,
         _db: Any,
@@ -396,20 +431,25 @@ class _MultiClaimRepository:
 
 
 @pytest.mark.asyncio
-async def test_batch_claims_each_item_only_when_its_network_call_is_ready() -> None:
-    claims = [_batch_claim("001"), _batch_claim("002")]
+async def test_batch_claims_in_one_short_transaction_and_limits_concurrent_queries() -> None:
+    claims = [_batch_claim("001"), _batch_claim("002"), _batch_claim("003")]
     repository = _MultiClaimRepository(claims)
-    first_started = asyncio.Event()
-    release_first = asyncio.Event()
-    query_order: list[str] = []
+    two_started = asyncio.Event()
+    release_queries = asyncio.Event()
+    active_queries = 0
+    max_active_queries = 0
+    opened_sessions: list[Any] = []
 
     class BlockingPort:
         async def query_status(self, request: Any) -> WmsEffectStatusSnapshot:
-            dispatch_key = request.expected_result_identity.dispatch_key
-            query_order.append(dispatch_key)
-            if dispatch_key == "dispatch-001":
-                first_started.set()
-                await release_first.wait()
+            nonlocal active_queries, max_active_queries
+            active_queries += 1
+            max_active_queries = max(max_active_queries, active_queries)
+            if active_queries == 2:
+                two_started.set()
+            await release_queries.wait()
+            active_queries -= 1
+            dispatch_key = request.request_payload["dispatch_key"]
             return WmsEffectStatusSnapshot(
                 operation_identity=request.operation_identity,
                 idempotency_key=request.idempotency_key,
@@ -419,26 +459,86 @@ async def test_batch_claims_each_item_only_when_its_network_call_is_ready() -> N
                 source_version=1,
             )
 
-    def service() -> WmsEffectStatusService:
-        return WmsEffectStatusService(
-            repository=repository,
-            reducer=_Reducer(),
-            reconciliation_bridge=_ReconciliationBridge(),
-            port_factory_builder=lambda _binding: BlockingPort,
-            settings_source=_settings(),
-            now=lambda: NOW,
-            jitter=lambda _upper: 0.0,
-        )
+    @asynccontextmanager
+    async def open_db():
+        db = _Db()
+        opened_sessions.append(db)
+        yield db
 
-    first_worker = asyncio.create_task(service().check_due_batch(_Db(), limit=2))
-    await asyncio.wait_for(first_started.wait(), timeout=1)
-    claimed_while_first_http_blocked = list(repository.claimed_order)
-    second_worker_results = await service().check_due_batch(_Db(), limit=2)
-    release_first.set()
-    first_worker_results = await first_worker
+    service = WmsEffectStatusService(
+        repository=repository,
+        reducer=_Reducer(),
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: BlockingPort,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+        db_context_factory=open_db,
+    )
 
-    assert claimed_while_first_http_blocked == ["dispatch-001"]
-    assert repository.claim_limits and set(repository.claim_limits) == {1}
-    assert [result.dispatch_key for result in first_worker_results] == ["dispatch-001"]
-    assert [result.dispatch_key for result in second_worker_results] == ["dispatch-002"]
-    assert sorted(query_order) == ["dispatch-001", "dispatch-002"]
+    scan = asyncio.create_task(service.check_due_batch(_Db()))
+    await asyncio.wait_for(two_started.wait(), timeout=1)
+    assert repository.claimed_order == ["dispatch-001", "dispatch-002", "dispatch-003"]
+    assert repository.claim_limits == [3]
+    assert len(opened_sessions) == 2
+    assert max_active_queries == 2
+
+    release_queries.set()
+    results = await scan
+
+    assert [result.dispatch_key for result in results] == [
+        "dispatch-001",
+        "dispatch-002",
+        "dispatch-003",
+    ]
+    assert len(opened_sessions) == 3
+    assert max_active_queries == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_isolates_one_unexpected_writeback_failure() -> None:
+    claims = [_batch_claim("001"), _batch_claim("002"), _batch_claim("003")]
+
+    class FailingWritebackRepository(_MultiClaimRepository):
+        async def get_claim_for_update(self, db: Any, *, dispatch_key: str, lease_token: str) -> Any:
+            if dispatch_key == "dispatch-002":
+                raise RuntimeError("database writeback failed")
+            return await super().get_claim_for_update(
+                db,
+                dispatch_key=dispatch_key,
+                lease_token=lease_token,
+            )
+
+    repository = FailingWritebackRepository(claims)
+    opened_sessions: list[_Db] = []
+
+    @asynccontextmanager
+    async def open_db():
+        db = _Db()
+        opened_sessions.append(db)
+        yield db
+
+    class AcceptedPort:
+        async def query_status(self, request: Any) -> WmsEffectStatusSnapshot:
+            return WmsEffectStatusSnapshot(
+                operation_identity=request.operation_identity,
+                idempotency_key=request.idempotency_key,
+                state=WmsEffectStatus.ACCEPTED,
+                provider_reference=f"provider-{request.request_payload['dispatch_key']}",
+                updated_at=NOW.replace(tzinfo=UTC),
+                source_version=1,
+            )
+
+    results = await WmsEffectStatusService(
+        repository=repository,
+        reducer=_Reducer(),
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: AcceptedPort,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+        db_context_factory=open_db,
+    ).check_due_batch(_Db())
+
+    assert [result.outcome for result in results] == ["ACCEPTED", "WORKER_FAILED", "ACCEPTED"]
+    assert sum(db.rollbacks for db in opened_sessions) == 1

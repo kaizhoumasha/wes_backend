@@ -8,16 +8,16 @@ from src.app.runtime import orchestration
 from src.app.runtime.orchestration import repositories, services
 
 ROOT = Path(__file__).parents[3]
+RECONCILIATION_CASE_MIGRATION = (
+    ROOT / "migrations" / "versions" / "20260723_0027_c325aab03400_add_effect_reconciliation_cases.py"
+)
 
 
 def _migration_source() -> str:
-    matches = [
-        path
-        for path in (ROOT / "migrations" / "versions").glob("*.py")
-        if "reconciliation_cases" in path.read_text(encoding="utf-8")
-    ]
-    assert len(matches) == 1
-    return matches[0].read_text(encoding="utf-8")
+    assert RECONCILIATION_CASE_MIGRATION.is_file()
+    source = RECONCILIATION_CASE_MIGRATION.read_text(encoding="utf-8")
+    assert 'revision: str = "c325aab03400"' in source
+    return source
 
 
 def test_effect_reducer_runtime_symbols_are_exported_from_their_owner_modules() -> None:

@@ -56,7 +56,10 @@ async def recover_external_http_evidence_failure_unknown(
     effect_transport_bridge: Any,
     dispatch_key: str,
     attempt_no: int,
+    payload_json: dict[str, Any] | None,
     operation_identity: str | None = None,
+    idempotency_key: str | None = None,
+    payload_hash: str | None = None,
 ) -> Any:
     """回滚原事务，并用独立短事务把 outbox、attempt 与 intent 收口为 UNKNOWN。"""
 
@@ -139,6 +142,9 @@ async def recover_external_http_evidence_failure_unknown(
                 retry_exhausted=False,
                 occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
                 operation_identity=operation_identity,
+                payload_json=payload_json,
+                idempotency_key=idempotency_key,
+                payload_hash=payload_hash,
             )
             commit = getattr(recovery_db, "commit", None)
             if not callable(commit):

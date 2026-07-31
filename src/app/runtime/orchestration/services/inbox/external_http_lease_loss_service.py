@@ -50,6 +50,8 @@ class ExternalHttpLeaseLossService:
         now: Any,
         operation_domains: tuple[str, ...] | None = None,
         exclude_operation_domains: tuple[str, ...] | None = None,
+        operation_identities: tuple[str, ...] | None = None,
+        exclude_operation_identities: tuple[str, ...] | None = None,
         outbox_repository: Any | None = None,
     ) -> int:
         """原子写入 lease-loss 的三账本证据；任一步失败都回滚本批闭环。"""
@@ -63,6 +65,8 @@ class ExternalHttpLeaseLossService:
                 now=now,
                 operation_domains=operation_domains,
                 exclude_operation_domains=exclude_operation_domains,
+                operation_identities=operation_identities,
+                exclude_operation_identities=exclude_operation_identities,
             )
         begin_nested = cast("Callable[[], AbstractAsyncContextManager[Any]]", begin_nested)
         async with begin_nested():
@@ -72,6 +76,8 @@ class ExternalHttpLeaseLossService:
                 now=now,
                 operation_domains=operation_domains,
                 exclude_operation_domains=exclude_operation_domains,
+                operation_identities=operation_identities,
+                exclude_operation_identities=exclude_operation_identities,
             )
 
     async def _fence_in_transaction(
@@ -82,12 +88,16 @@ class ExternalHttpLeaseLossService:
         now: Any,
         operation_domains: tuple[str, ...] | None,
         exclude_operation_domains: tuple[str, ...] | None,
+        operation_identities: tuple[str, ...] | None,
+        exclude_operation_identities: tuple[str, ...] | None,
     ) -> int:
         fences = await repository.fence_expired_external_http_leases(
             db,
             now=now,
             operation_domains=operation_domains,
             exclude_operation_domains=exclude_operation_domains,
+            operation_identities=operation_identities,
+            exclude_operation_identities=exclude_operation_identities,
         )
         result = ExternalHttpTransportResult.ambiguous(
             phase=ExternalHttpTransportPhase.AWAITING_RESPONSE,
@@ -147,6 +157,8 @@ class ExternalHttpLeaseLossService:
                 now=now,
                 operation_domains=operation_domains,
                 exclude_operation_domains=exclude_operation_domains,
+                operation_identities=operation_identities,
+                exclude_operation_identities=exclude_operation_identities,
             )
         )
         for attempt in orphan_attempts:

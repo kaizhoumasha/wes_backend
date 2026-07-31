@@ -62,7 +62,10 @@ def test_celery_worker_healthcheck_uses_process_probe() -> None:
 
 def test_deploy_overlay_inherits_local_worker_healthcheck() -> None:
     deploy_compose_text = (BACKEND_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
-    worker_section = deploy_compose_text.split("  celery_worker:", maxsplit=1)[1].split("  celery_beat:", maxsplit=1)[0]
+    worker_section = deploy_compose_text.split("  celery:", maxsplit=1)[1].split(
+        "  celery-wms-fulfillment:",
+        maxsplit=1,
+    )[0]
 
     assert "healthcheck:" not in worker_section
     assert "inspect ping" not in worker_section

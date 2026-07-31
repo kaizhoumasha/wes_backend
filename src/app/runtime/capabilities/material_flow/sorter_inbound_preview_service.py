@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from src.app.wms_integration.ports.confirm_inbound_operation import OPERATION_IDENTITY as CONFIRM_INBOUND_IDENTITY
-from src.app.wms_integration.ports.notify_pkg_binding_operation import (
-    OPERATION_IDENTITY as NOTIFY_PACKAGE_BINDING_IDENTITY,
-)
+from src.app.wms_integration.ports.fulfillment_operations import NOTIFY_PKG_BINDING
+from src.app.wms_integration.ports.inventory_operations import CONFIRM_INBOUND
 from src.utils.value_normalization import coerce_string_value, string_list
 
 if TYPE_CHECKING:
@@ -22,10 +20,11 @@ if TYPE_CHECKING:
 
 
 LOCAL_PREVIEW_ENVIRONMENT = "LOCAL_MOCK_ONLY"
+CONFIRM_INBOUND_IDENTITY = CONFIRM_INBOUND.identity
+NOTIFY_PACKAGE_BINDING_IDENTITY = NOTIFY_PKG_BINDING.identity
 
 ROUGH_SORTER_ORDERED_STEPS = [
     "SCAN_AND_MEASURE",
-    "WMS_GRN_BINDING_CHECK",
     "SOURCE_ARM_TO_CONVEYOR",
     "ROUGH_SORTER_TO_OUTBOUND",
     "CELL_RESERVATION",
@@ -36,7 +35,6 @@ ROUGH_SORTER_ORDERED_STEPS = [
 
 SORTER_INBOUND_ORDERED_STEPS = [
     "STATION_ADMISSION",
-    "WMS_CTU_BIN_INFEED",
     "SCAN1_AUTHORIZED_RESOLVE",
     "SCAN2_ROUTE_DECISION",
     "SCAN3_RETURN_OR_NG_ROUTE",
@@ -67,13 +65,6 @@ class SorterInboundPreviewService:
         """预览粗分机正常流，拆分本地物理事实与 WMS 同步状态。"""
 
         local_physical_completed = bool(payload.get("local_physical_completed"))
-        wms_pkg_binding_result = coerce_string_value(payload.get("wms_pkg_binding_result") or "ACCEPTED").upper()
-        wms_sync_state = "READY_TO_SYNC"
-        business_completion_state = "LOCAL_PHYSICAL_COMPLETED"
-        if local_physical_completed and wms_pkg_binding_result not in {"ACCEPTED", "CONFIRMED"}:
-            wms_sync_state = "WMS_SYNC_PENDING"
-            business_completion_state = "RECONCILING"
-
         return {
             **_preview_boundary(),
             "request_id": payload.get("request_id", ""),
@@ -81,8 +72,8 @@ class SorterInboundPreviewService:
             "target_cell_code": payload.get("target_cell_code", ""),
             "ordered_steps": list(ROUGH_SORTER_ORDERED_STEPS),
             "local_position_state": "LOCAL_PHYSICAL_COMPLETED" if local_physical_completed else "PENDING",
-            "wms_sync_state": wms_sync_state,
-            "business_completion_state": business_completion_state,
+            "wms_sync_state": "READY_TO_SYNC",
+            "business_completion_state": "LOCAL_PHYSICAL_COMPLETED",
             "preserve_local_physical_fact": local_physical_completed,
             "next_object_admission_allowed": True,
             "effect_ports": {
@@ -92,7 +83,7 @@ class SorterInboundPreviewService:
         }
 
     def preview_sorter_inbound(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """预览分拣机入库 join gate 与扫码平台预取策略。"""
+        """预览分拣机入库 join gate 与南向 PICK ACK 因果链。"""
 
         expected_authorized_bin_ids = set(string_list(payload, "expected_authorized_bin_ids"))
         actual_scanned_bin_id = coerce_string_value(payload.get("actual_scanned_bin_id"))
@@ -106,21 +97,13 @@ class SorterInboundPreviewService:
         missing_conditions = [
             condition_name for condition_name in SORTER_JOIN_CONDITION_ORDER if not condition_results[condition_name]
         ]
-        capacity = _source_arm_prefetch_capacity(payload)
-        manifest_validation = _source_arm_prefetch_manifest_validation(payload, capacity)
-        scanner_platform_free = payload.get("scanner_platform_state") == "FREE"
-        can_pick_next_material = (capacity > 0 and manifest_validation["allowed"]) or scanner_platform_free
         allowed = not missing_conditions
 
         return {
             **_preview_boundary(),
             "request_id": payload.get("request_id", ""),
-            "prefetch_policy": {
-                "source_arm_prefetch_capacity": capacity,
-                "can_pick_next_material": can_pick_next_material,
-                "requires_scanner_platform_free": capacity == 0,
-            },
-            "manifest_validation": manifest_validation,
+            # 平台空闲与双臂防呆由 PLC/机器人保证；WES 仅依据南向 PICK ACK 触发下一次北向取料。
+            "next_northbound_pick_triggered": bool(payload.get("southbound_pick_acknowledged")),
             "ordered_steps": list(SORTER_INBOUND_ORDERED_STEPS),
             "join_gate": {
                 "allowed": allowed,
@@ -158,60 +141,6 @@ class SorterInboundPreviewService:
             "sorting_candidate_object_keys": sorting_candidate_object_keys,
             "station_admission_blocked_until_exchange_completed": exchange_required,
             "box_level_inventory_transaction_required": exchange_required,
-            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
-        }
-
-    def preview_change_rack_face(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """预览 CHANGE_RACK_FACE 独立履约。"""
-
-        return {
-            **_preview_boundary(),
-            "request_id": payload.get("request_id", ""),
-            "parent_request_id": payload.get("parent_request_id", ""),
-            "fulfillment_action": "CHANGE_RACK_FACE",
-            "rack_code": coerce_string_value(payload.get("rack_code")),
-            "from_rack_side": coerce_string_value(payload.get("from_rack_side")),
-            "to_rack_side": coerce_string_value(payload.get("to_rack_side")),
-            "independent_fulfillment": True,
-            "does_not_mark_full_box_exchange_completed": True,
-            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
-        }
-
-    def preview_ctu_batch(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """预览 CTU 父子批次查询视图。"""
-
-        raw_child_items = payload.get("child_items")
-        child_items = raw_child_items if isinstance(raw_child_items, list) else []
-        sequence_nos = [_safe_int(item.get("sequence_no"), default=0) for item in child_items if isinstance(item, dict)]
-        missing_resolved_placeholders = [
-            coerce_string_value(item.get("placeholder_key"))
-            for item in child_items
-            if isinstance(item, dict) and not item.get("resolved_bin_id")
-        ]
-        failed_child_placeholders = [
-            coerce_string_value(item.get("placeholder_key"))
-            for item in child_items
-            if isinstance(item, dict) and item.get("stage_status") != "COMPLETED"
-        ]
-        duplicate_sequence_nos = _duplicate_int_values(sequence_nos)
-        has_child_issues = bool(missing_resolved_placeholders or failed_child_placeholders or duplicate_sequence_nos)
-        parent_callback_state = coerce_string_value(payload.get("parent_callback_state") or "PENDING").upper()
-        parent_business_completed = parent_callback_state == "SUCCESS" and not has_child_issues
-        operator_summary_state = "COMPLETED" if parent_business_completed else "RECONCILING"
-
-        return {
-            **_preview_boundary(),
-            "parent_request_id": payload.get("parent_request_id", ""),
-            "parent_callback_state": parent_callback_state,
-            "parent_business_completed": parent_business_completed,
-            "parent_projection_state": operator_summary_state,
-            "query_view": {
-                "child_count": len(child_items),
-                "missing_resolved_placeholders": missing_resolved_placeholders,
-                "duplicate_sequence_nos": duplicate_sequence_nos,
-                "failed_child_placeholders": failed_child_placeholders,
-                "operator_summary_state": operator_summary_state,
-            },
         }
 
 
@@ -221,47 +150,6 @@ def _preview_boundary() -> dict[str, Any]:
         "production_write_path": False,
         "legacy_plugin_entry_used": False,
     }
-
-
-def _source_arm_prefetch_capacity(payload: Mapping[str, Any]) -> int:
-    manifest = payload.get("manifest")
-    if not isinstance(manifest, dict):
-        return 0
-    return max(_safe_int(manifest.get("source_arm_prefetch_capacity"), default=0), 0)
-
-
-def _source_arm_prefetch_manifest_validation(payload: Mapping[str, Any], capacity: int) -> dict[str, Any]:
-    if capacity <= 0:
-        return {"allowed": True, "errors": []}
-
-    manifest = payload.get("manifest")
-    manifest = manifest if isinstance(manifest, dict) else {}
-    errors: list[str] = []
-    ecs_capabilities = manifest.get("ecs_capabilities")
-    if not isinstance(ecs_capabilities, list) or "SOURCE_ARM_PREFETCH" not in ecs_capabilities:
-        errors.append("ECS_SOURCE_ARM_PREFETCH_CAPABILITY_REQUIRED")
-    if _safe_int(manifest.get("prefetch_buffer_capacity"), default=0) < capacity:
-        errors.append("PREFETCH_BUFFER_CAPACITY_TOO_SMALL")
-    if _safe_int(manifest.get("prefetch_timeout_ms"), default=0) <= 0:
-        errors.append("PREFETCH_TIMEOUT_REQUIRED")
-    return {"allowed": not errors, "errors": errors}
-
-
-def _safe_int(value: Any, *, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _duplicate_int_values(values: list[int]) -> list[int]:
-    seen: set[int] = set()
-    duplicates: set[int] = set()
-    for value in values:
-        if value in seen:
-            duplicates.add(value)
-        seen.add(value)
-    return sorted(duplicates)
 
 
 sorter_inbound_preview_service = SorterInboundPreviewService()

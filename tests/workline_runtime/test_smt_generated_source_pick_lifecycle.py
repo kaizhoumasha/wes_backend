@@ -58,8 +58,8 @@ class _NoopQueueGateway:
     def enqueue_runtime_inbox(self, *, limit: int) -> None:
         _ = limit
 
-    def enqueue_outbox(self, *, limit: int) -> None:
-        _ = limit
+    def enqueue_outbox(self, *, targets: object, limit: int) -> None:
+        _ = targets, limit
 
 
 class _SelectedRouteService:
@@ -98,7 +98,21 @@ async def _seed_source_pick(
     trace_id: str | None = "trace-generated-source-pick",
 ) -> tuple[WorkLine, Device, SmtInboundHandoffDemand, SmtInboundHandoffSourceItem]:
     profile = _provider_profile()
-    config = SmtSortingInboundConfig(provider_profile=profile.identity)
+    config = SmtSortingInboundConfig(
+        provider_profile=profile.identity,
+        ctu_basket_capacity=6,
+        conveyor_entry_queue={
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        return_queue={
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    )
     config_json = config.model_dump(mode="json")
     workline = WorkLine(
         line_code="SMT-GENERATED-LIFECYCLE",

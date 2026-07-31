@@ -8,22 +8,24 @@ RuntimeCapabilityContext / CapabilityPortRegistry:
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import pytest
 
 from src.app.runtime.capability_port_registry import (
     CapabilityPortRegistry,
     RuntimeCapabilityContext,
 )
-from src.app.wms_integration.ports.master_data import WmsMasterDataPort
-from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
+from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 
 
-class _FakeMasterDataPort:
-    def get_material(self, material_code: str):
+class _LocalQueryPort(Protocol):
+    def lookup(self, object_key: str): ...
+
+
+class _FakeLocalQueryPort:
+    def lookup(self, object_key: str):
         return None
-
-    def list_materials(self, *, batch_managed=None):
-        return []
 
 
 class _FakeInventoryQueryPort:
@@ -78,41 +80,40 @@ def test_registry_rejects_inbound_event_port():
 def test_registry_register_and_get_query_port():
     """正常注册 query port + get 返回 factory 构造的实例。"""
     registry = CapabilityPortRegistry()
-    registry.register(WmsMasterDataPort, _FakeMasterDataPort)
-    port = registry.get(WmsMasterDataPort)
-    assert hasattr(port, "get_material")
-    assert hasattr(port, "list_materials")
+    registry.register(_LocalQueryPort, _FakeLocalQueryPort)
+    port = registry.get(_LocalQueryPort)
+    assert hasattr(port, "lookup")
 
 
 def test_registry_get_unregistered_raises():
     """获取未注册 port 抛 KeyError。"""
     registry = CapabilityPortRegistry()
     with pytest.raises(KeyError, match="未注册"):
-        registry.get(InventoryQueryOperationPort)
+        registry.get(WmsQueryExecutionPort)
 
 
 def test_registry_rejects_legacy_sync_implementation_for_async_protocol_method():
     registry = CapabilityPortRegistry()
-    registry.register(InventoryQueryOperationPort, _LegacySyncInventoryQueryPort)
+    registry.register(WmsQueryExecutionPort, _LegacySyncInventoryQueryPort)
 
     with pytest.raises(TypeError, match="async Port contract"):
-        registry.get(InventoryQueryOperationPort)
+        registry.get(WmsQueryExecutionPort)
 
 
 def test_registry_list_registered():
     """list_registered 返回已注册 port 名称列表。"""
     registry = CapabilityPortRegistry()
-    registry.register(WmsMasterDataPort, _FakeMasterDataPort)
-    registry.register(InventoryQueryOperationPort, _FakeInventoryQueryPort)
-    assert sorted(registry.list_registered()) == ["InventoryQueryOperationPort", "WmsMasterDataPort"]
+    registry.register(_LocalQueryPort, _FakeLocalQueryPort)
+    registry.register(WmsQueryExecutionPort, _FakeInventoryQueryPort)
+    assert sorted(registry.list_registered()) == ["WmsQueryExecutionPort", "_LocalQueryPort"]
 
 
 def test_registry_is_registered():
     """is_registered 检查 port 是否已注册。"""
     registry = CapabilityPortRegistry()
-    registry.register(WmsMasterDataPort, _FakeMasterDataPort)
-    assert registry.is_registered(WmsMasterDataPort)
-    assert not registry.is_registered(InventoryQueryOperationPort)
+    registry.register(_LocalQueryPort, _FakeLocalQueryPort)
+    assert registry.is_registered(_LocalQueryPort)
+    assert not registry.is_registered(WmsQueryExecutionPort)
 
 
 # ---- RuntimeCapabilityContext ----
@@ -121,16 +122,16 @@ def test_registry_is_registered():
 def test_capability_context_get_query_port():
     """RuntimeCapabilityContext.get_query_port 返回注册的 port 实例。"""
     registry = CapabilityPortRegistry()
-    registry.register(WmsMasterDataPort, _FakeMasterDataPort)
+    registry.register(_LocalQueryPort, _FakeLocalQueryPort)
     ctx = RuntimeCapabilityContext(registry)
-    port = ctx.get_query_port(WmsMasterDataPort)
-    assert hasattr(port, "get_material")
+    port = ctx.get_query_port(_LocalQueryPort)
+    assert hasattr(port, "lookup")
 
 
 def test_capability_context_get_effect_port():
     """RuntimeCapabilityContext.get_effect_port 返回注册的 port 实例。"""
     registry = CapabilityPortRegistry()
-    registry.register(InventoryQueryOperationPort, _FakeInventoryQueryPort)
+    registry.register(WmsQueryExecutionPort, _FakeInventoryQueryPort)
     ctx = RuntimeCapabilityContext(registry)
-    port = ctx.get_effect_port(InventoryQueryOperationPort)
+    port = ctx.get_effect_port(WmsQueryExecutionPort)
     assert hasattr(port, "execute")

@@ -584,6 +584,33 @@ class RuntimeInboxService:
         self.idempotency_guard = idempotency_guard
         self.replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(repository)
 
+    async def _get_existing_source_event(
+        self,
+        db: AsyncSession,
+        *,
+        provider_code: str,
+        event_type: str,
+        source_event_id: str,
+        source_event_identity_types: frozenset[str] | None,
+    ) -> RuntimeInbox | None:
+        """可选 event type 闭集共享源事件身份；默认保持既有语义。"""
+
+        if source_event_identity_types is not None:
+            if event_type not in source_event_identity_types:
+                raise ValueError("event_type must belong to source_event_identity_types")
+            return await self.repository.get_by_source_event_identity_family(
+                db,
+                provider_code=provider_code,
+                source_event_id=source_event_id,
+                event_types=source_event_identity_types,
+            )
+        return await self.repository.get_by_source_event_identity(
+            db,
+            provider_code=provider_code,
+            event_type=event_type,
+            source_event_id=source_event_id,
+        )
+
     async def accept_received(
         self,
         db: AsyncSession,
@@ -606,6 +633,7 @@ class RuntimeInboxService:
         correlation_id: str | None = None,
         max_retries: int = 5,
         processing_required: bool = True,
+        source_event_identity_types: frozenset[str] | None = None,
         now_ms: int | None = None,
     ) -> RuntimeInboxAcceptResult:
         """持久化入站消息并返回 ACK 语义结果。
@@ -655,11 +683,12 @@ class RuntimeInboxService:
         }
 
         if source_event_id:
-            existing = await self.repository.get_by_source_event_identity(
+            existing = await self._get_existing_source_event(
                 db,
                 provider_code=provider_code,
                 event_type=event_type,
                 source_event_id=source_event_id,
+                source_event_identity_types=source_event_identity_types,
             )
             if existing is not None:
                 _require_same_workline_session_owner(
@@ -685,11 +714,12 @@ class RuntimeInboxService:
                     correlation_id = await self._require_existing_correlation_id(db, correlation_id=correlation_id)
                 except RuntimeInboxCorrelationUnavailable:
                     # 查询与关联校验之间可能已有并发方插入；再次按既有 identity 语义收敛。
-                    existing = await self.repository.get_by_source_event_identity(
+                    existing = await self._get_existing_source_event(
                         db,
                         provider_code=provider_code,
                         event_type=event_type,
                         source_event_id=source_event_id,
+                        source_event_identity_types=source_event_identity_types,
                     )
                     if existing is None:
                         raise
@@ -723,11 +753,12 @@ class RuntimeInboxService:
                         now_ms=now_ms,
                     )
             except IntegrityError:
-                existing = await self.repository.get_by_source_event_identity(
+                existing = await self._get_existing_source_event(
                     db,
                     provider_code=provider_code,
                     event_type=event_type,
                     source_event_id=source_event_id,
+                    source_event_identity_types=source_event_identity_types,
                 )
                 if existing is None:
                     raise

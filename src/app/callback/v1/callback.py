@@ -14,7 +14,7 @@
 import time
 from typing import Any, cast
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
@@ -26,11 +26,13 @@ from src.app.callback.models import (
     CallbackResultIngressResponse,
 )
 from src.app.callback.services import callback_ingress_service
-from src.core.api_security import RequireAPIPermission
+from src.app.callback.services.callback_ingress_service import _read_request_json
+from src.app.callback.services.wms_inbound_auth import WmsInboundAuthPolicy
+from src.core.api_security import RequireAPIPermission, require_api_auth, verify_api_auth
 from src.core.logger import logger
-from src.core.response.response_code import ResourceErrorCode
+from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
 from src.core.task_queue_gateway import task_queue_gateway
-from src.database.dependencies import AsyncSessionDep
+from src.database.dependencies import AsyncSessionDep, CacheDep
 from src.utils.audit import get_request_id
 
 router = APIRouter()
@@ -43,6 +45,51 @@ def _enqueue_runtime_inbox_processing() -> None:
         task_queue_gateway.enqueue_runtime_inbox(limit=10)
     except Exception as exc:
         logger.warning(f"Callback 已入库，但即时触发 Runtime Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
+
+
+async def _require_callback_event_auth(
+    request: Request,
+    db: AsyncSessionDep,
+    cache: CacheDep,
+) -> None:
+    """仅允许冻结的 WMS NONE event 绕过原有 API Application/HMAC 门禁。"""
+
+    try:
+        payload = await _read_request_json(request)
+    except HTTPException:
+        raise
+    except Exception:
+        payload = None
+    policy = getattr(request.app.state, "wms_inbound_auth_policy", None)
+    if isinstance(policy, WmsInboundAuthPolicy) and payload is not None and policy.permits_unsigned_event(payload):
+        return
+    app_ctx = await require_api_auth(await verify_api_auth(request, db, cache))
+    RequireAPIPermission("api:callback:event")(app_ctx)
+
+
+async def _require_callback_external_auth(
+    request: Request,
+    db: AsyncSessionDep,
+    cache: CacheDep,
+) -> None:
+    """仅允许冻结的 WMS NONE status hint 绕过原有 API Application/HMAC 门禁。"""
+
+    try:
+        payload = await _read_request_json(request)
+    except HTTPException:
+        raise
+    except Exception:
+        payload = None
+    policy = getattr(request.app.state, "wms_inbound_auth_policy", None)
+    if isinstance(policy, WmsInboundAuthPolicy) and payload is not None and policy.permits_unsigned_external(payload):
+        return
+    app_ctx = await require_api_auth(await verify_api_auth(request, db, cache))
+    RequireAPIPermission("api:callback:event")(app_ctx)
+
+
+for _conditional_callback_auth_dependency in (_require_callback_event_auth, _require_callback_external_auth):
+    _conditional_callback_auth_dependency.permission_required = "api:callback:event"  # type: ignore[attr-defined]
+    _conditional_callback_auth_dependency.is_api_auth = True  # type: ignore[attr-defined]
 
 
 @router.post(
@@ -83,11 +130,10 @@ async def callback_result(
     responses={
         409: {"model": CallbackEventIngressResponse, "description": "RuntimeInbox 幂等身份冲突"},
         413: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox payload 超限"},
+        503: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox 关联暂不可用"},
     },
     summary="设备事件上报",
-    dependencies=[
-        Depends(RequireAPIPermission("api:callback:event")),
-    ],
+    dependencies=[Depends(_require_callback_event_auth)],
     description=("设备发生状态变更或传感器触发业务信号时，调用此接口上报事件（白皮书 3.2.2）"),
 )
 async def callback_event(
@@ -111,11 +157,12 @@ async def callback_event(
     response_model=CallbackExternalIngressResponse,
     status_code=status.HTTP_200_OK,
     responses={
+        400: {"model": CallbackExternalIngressResponse, "description": "外部 callback 合同拒绝"},
         409: {"model": CallbackExternalIngressResponse, "description": "RuntimeInbox 幂等身份冲突"},
         413: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox payload 超限"},
     },
     summary="外部系统回调",
-    dependencies=[Depends(RequireAPIPermission("api:callback:event"))],
+    dependencies=[Depends(_require_callback_external_auth)],
     description="WMS 状态查询提示、库位分配、AGV 等外部系统异步回调入口",
     openapi_extra={
         "requestBody": {
@@ -141,6 +188,8 @@ async def callback_external(
     )
     if cast("dict[str, Any]", result)["code"] == ResourceErrorCode.CONFLICT.code:
         return JSONResponse(status_code=409, content=jsonable_encoder(result))
+    if cast("dict[str, Any]", result)["code"] == ClientErrorCode.VALIDATION_ERROR.code:
+        return JSONResponse(status_code=400, content=jsonable_encoder(result))
     return result
 
 

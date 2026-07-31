@@ -4,9 +4,9 @@
   "contract_version": "2026-06-25",
   "direction": "event",
   "raw_callback": {
-    "event_type": "WMS_TRANSPORT_COMPLETED",
+    "event_type": "WMS_INVENTORY_UPDATED",
     "data": {
-      "transport_request_id": "tr-missing-event-id-001"
+      "inventory_update_id": "inventory-missing-event-id-001"
     }
   },
   "expected_typed": {

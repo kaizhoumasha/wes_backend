@@ -43,7 +43,8 @@ def test_simulator_is_test_only_in_process_and_does_not_copy_production_lifecycl
             "FastAPI",
             "uvicorn",
             "AsyncClient",
-            "WmsQueryTransportExecutor",
+            "WmsRegistryQueryExecutor",
+            "WmsDataLaneQueryRuntime",
             "EnvironmentWmsCredentialProvider",
             "create_engine",
             "create_task",
@@ -97,4 +98,5 @@ def test_conformance_report_uses_only_the_active_profile_and_local_targets() -> 
         provider_conformance.ConformanceTarget.CI_ADAPTER,
         provider_conformance.ConformanceTarget.SIMULATOR,
         provider_conformance.ConformanceTarget.REPLAY,
+        provider_conformance.ConformanceTarget.REAL_TCP,
     }

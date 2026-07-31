@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
 import httpx
@@ -35,6 +35,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import ClientDisconnect
 from uvicorn import Config, Server
+
+from src.app.wms_integration.operation_contract import WmsCompletionMode
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
 
 # 添加项目根目录到 sys.path
 project_root = Path(__file__).parent.parent.parent
@@ -48,12 +51,23 @@ from tests.mock.wms_northbound_contract import (
     NorthboundHmacReplayGuard,
     NorthboundOperationStore,
     NorthboundPayloadValidationError,
+    build_typed_ack,
+    build_typed_result,
     canonical_payload_bytes,
     content_sha256,
     validate_typed_request,
     verify_status_hmac,
     verify_submit_hmac,
 )
+
+_ASYNC_SUBMIT_DEADLINES = frozenset(
+    operation.budget.deadline_seconds
+    for operation in WMS_OPERATION_BY_IDENTITY.values()
+    if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+)
+if len(_ASYNC_SUBMIT_DEADLINES) != 1:
+    raise RuntimeError("frozen ASYNC_TASK operations must share one submit deadline")
+_DEFAULT_ASYNC_SUBMIT_DEADLINE = str(next(iter(_ASYNC_SUBMIT_DEADLINES)))
 
 
 def _load_sandbox_catalog() -> Any:
@@ -158,15 +172,6 @@ WES_EXTERNAL_CALLBACK_URL = os.getenv(
     "WES_EXTERNAL_CALLBACK_URL",
     "http://localhost:8001/api/v1/callback/external",
 )
-RACK_STATUS_CALLBACK_TYPES = {
-    "WMS_RACK_TASK_RESULT",
-    "RCS_RACK_TASK_RESULT",
-    "WMS_RACK_TASK_PROGRESS",
-    "RCS_RACK_TASK_PROGRESS",
-    "WMS_RACK_EXCHANGE_PROGRESS",
-    "RCS_RACK_EXCHANGE_PROGRESS",
-}
-RACK_STATUS_FIELDS = ("task_status", "status", "result", "external_status")
 SEVEN_INCH_BIN_CELL_INDEXES = ("1", "2", "3", "4", "5", "6")
 THREE_CELL_BIN_CELL_INDEXES = ("1", "2", "7")
 THREE_CELL_LARGE_BIN_CELL_INDEX = "7"
@@ -217,19 +222,12 @@ MOCK_GRNS = {
         "grn_id": "GRN.0001",
         "po_number": "PO-2025-001",
         "po_item": "001",
-        "status": "PARTIAL_RECEIVED",
-        "dock_location": "DOCK-01",
-        "arrival_date": "2026-03-14",
-        "allow_mixed_pallet": True,
-        "items": [
-            {
-                "material_id": "CAP001",
-                "ordered_qty": 50000,
-                "received_qty": 25000,
-                "remaining_qty": 25000,
-                "unit": "PCS",
-            }
-        ],
+        "material_code": "CAP001",
+        "planned_quantity": "50000",
+        "received_quantity": "25000",
+        "remaining_quantity": "25000",
+        "batch_no": "LOT-2026-001",
+        "quality_status": "PARTIAL_RECEIVED",
     }
 }
 
@@ -374,147 +372,6 @@ class MockWmsState:
                 rack["current_location"] = current_location
             return dict(rack)
 
-    async def apply_operation(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self.lock:
-            callback_payload: dict[str, Any] | None = None
-            for task in _rack_operation_tasks(payload):
-                task_type = str(task.get("task_type") or "")
-                task_payload = _rack_operation_task_payload(
-                    payload, task, derive_dispatch_key=_has_rack_operation_tasks(payload)
-                )
-                if task_type == "MOVE_OUT_ACTIVE_RACK":
-                    failure_payload = self._move_out_active_rack(task_payload)
-                    if failure_payload is not None:
-                        return failure_payload
-                    continue
-                if task_type == "ALLOCATE_AND_MOVE_RACK":
-                    callback_payload = self._allocate_rack_for_payload_unlocked(task_payload)
-                    if callback_payload["callback_type"] == "WMS_RACK_EXCHANGE_FAILED":
-                        return callback_payload
-                    continue
-                if task_type == "MOVE_RACK":
-                    self._move_rack(task_payload)
-                    callback_payload = _rack_operation_callback_payload(task_payload)
-
-            if callback_payload is not None:
-                return callback_payload
-            return _rack_operation_callback_payload(payload)
-
-    async def allocate_rack_for_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self.lock:
-            return self._allocate_rack_for_payload_unlocked(payload)
-
-    def _allocate_rack_for_payload_unlocked(self, payload: dict[str, Any]) -> dict[str, Any]:
-        target_position_code = str(payload.get("target_position_code") or "SINGLE_LAYER_A")
-        active_rack_code = self.work_positions.get(target_position_code)
-        if active_rack_code:
-            return build_rack_operation_failure_payload(
-                payload,
-                reason_code="TARGET_POSITION_OCCUPIED",
-                reason_message=f"目标工位 {target_position_code} 已有活动货架 {active_rack_code}",
-            )
-
-        required_bin_type = _rack_operation_supplied_bin_type(payload)
-        requested_rack_code = str(payload.get("rack_code") or "").strip()
-        if requested_rack_code:
-            requested_layout = _known_rack_layout(requested_rack_code)
-            if requested_layout is None or not _rack_layout_supports_bin_type(requested_layout, required_bin_type):
-                return build_rack_operation_failure_payload(
-                    payload,
-                    reason_code="RACK_LAYOUT_MISMATCH",
-                    reason_message=f"指定货架 {requested_rack_code} 不匹配 {required_bin_type}",
-                )
-
-        rack_code = self._next_available_rack_code(required_bin_type, preferred_rack_code=requested_rack_code or None)
-        if rack_code is None:
-            return build_rack_operation_failure_payload(
-                payload,
-                reason_code="NO_AVAILABLE_RACK",
-                reason_message=f"没有可用的 {required_bin_type} 货架",
-            )
-
-        allocated_payload = dict(payload)
-        allocated_payload["rack_code"] = rack_code
-        allocated_payload["callback_type"] = "WMS_RACK_ARRIVED"
-        callback_payload = _rack_operation_callback_payload(allocated_payload)
-
-        operation_key = str(callback_payload.get("operation_key") or "")
-        rack = self.rack_pool[rack_code]
-        rack["status"] = "ACTIVE"
-        rack["active_position_code"] = target_position_code
-        rack["allocated_operation_key"] = operation_key
-        self.work_positions[target_position_code] = rack_code
-        self._record_operation(
-            {
-                "operation_key": operation_key,
-                "dispatch_key": callback_payload["dispatch_key"],
-                "task_type": callback_payload.get("task_type"),
-                "rack_code": rack_code,
-                "target_position_code": target_position_code,
-            }
-        )
-
-        return callback_payload
-
-    def _move_out_active_rack(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        source_position_code = str(
-            payload.get("source_position_code") or payload.get("target_position_code") or "SINGLE_LAYER_A"
-        )
-        rack_code = str(payload.get("rack_code") or self.work_positions.get(source_position_code) or "")
-        if not rack_code or rack_code not in self.rack_pool:
-            return build_rack_operation_failure_payload(
-                payload,
-                reason_code="ACTIVE_RACK_NOT_FOUND",
-                reason_message=f"工位 {source_position_code} 没有可移出的活动货架 {rack_code or ''}".strip(),
-            )
-        active_rack_code = self.work_positions.get(source_position_code)
-        if active_rack_code != rack_code:
-            active_rack_message = active_rack_code or "无"
-            return build_rack_operation_failure_payload(
-                payload,
-                reason_code="MOVE_OUT_RACK_MISMATCH",
-                reason_message=f"工位 {source_position_code} 当前活动货架为 {active_rack_message}，不是 {rack_code}",
-            )
-        rack = self.rack_pool[rack_code]
-        rack["status"] = "MOVED_OUT"
-        rack["active_position_code"] = None
-        rack["allocated_operation_key"] = None
-        if self.work_positions.get(source_position_code) == rack_code:
-            self.work_positions[source_position_code] = None
-        self._record_operation(
-            {
-                "operation_key": payload.get("operation_key"),
-                "dispatch_key": payload.get("dispatch_key"),
-                "task_type": "MOVE_OUT_ACTIVE_RACK",
-                "rack_code": rack_code,
-                "source_position_code": source_position_code,
-            }
-        )
-        return None
-
-    def _move_rack(self, payload: dict[str, Any]) -> None:
-        rack_code = str(payload.get("rack_code") or "")
-        if rack_code not in self.rack_pool:
-            return
-        rack = self.rack_pool[rack_code]
-        target_position_code = payload.get("target_position_code")
-        if isinstance(target_position_code, str) and target_position_code:
-            rack["current_location"] = target_position_code
-            rack["status"] = "MOVED_OUT"
-            rack["active_position_code"] = None
-            for position_code, active_rack_code in self.work_positions.items():
-                if active_rack_code == rack_code:
-                    self.work_positions[position_code] = None
-            self._record_operation(
-                {
-                    "operation_key": payload.get("operation_key"),
-                    "dispatch_key": payload.get("dispatch_key"),
-                    "task_type": "MOVE_RACK",
-                    "rack_code": rack_code,
-                    "target_position_code": target_position_code,
-                }
-            )
-
     def _record_operation(self, operation: dict[str, Any]) -> None:
         self.recent_operations.append(operation)
         if len(self.recent_operations) > RECENT_OPERATION_LIMIT:
@@ -601,44 +458,6 @@ def _mock_wms_debug_snapshot() -> dict[str, Any]:
     return mock_wms_state.snapshot_unlocked()
 
 
-def _rack_operation_tasks(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_tasks = payload.get("rack_tasks") or payload.get("task_specs")
-    if isinstance(raw_tasks, list):
-        tasks = [dict(task) for task in raw_tasks if isinstance(task, dict)]
-        return sorted(tasks, key=lambda task: int(task.get("sequence_no") or 0))
-    return [
-        {
-            "sequence_no": payload.get("sequence_no"),
-            "task_type": payload.get("task_type"),
-            "rack_code": payload.get("rack_code"),
-            "rack_kind": payload.get("rack_kind"),
-            "target_position_code": payload.get("target_position_code"),
-            "source_position_code": payload.get("source_position_code"),
-        }
-    ]
-
-
-def _has_rack_operation_tasks(payload: dict[str, Any]) -> bool:
-    return isinstance(payload.get("rack_tasks") or payload.get("task_specs"), list)
-
-
-def _rack_operation_task_payload(
-    payload: dict[str, Any],
-    task: dict[str, Any],
-    *,
-    derive_dispatch_key: bool,
-) -> dict[str, Any]:
-    task_payload = {**payload, **task}
-    task_type = str(task_payload.get("task_type") or "")
-    sequence_no = task_payload.get("sequence_no")
-    operation_key = str(task_payload.get("operation_key") or "")
-    if derive_dispatch_key and operation_key and sequence_no is not None and task_type:
-        task_dispatch_key = f"rack-operation:{operation_key}:{sequence_no}:{task_type}"
-        task_payload["dispatch_key"] = task.get("dispatch_key") or task_dispatch_key
-        task_payload["request_id"] = task.get("request_id") or task_payload["dispatch_key"]
-    return task_payload
-
-
 # ============================================
 # FastAPI 应用
 # ============================================
@@ -659,6 +478,7 @@ def _northbound_not_found_payload() -> dict[str, Any]:
     return {
         "state": "NOT_FOUND",
         "provider_reference": None,
+        "accepted_scope": None,
         "reason_code": None,
         "updated_at": None,
         "source_version": None,
@@ -697,10 +517,27 @@ def _northbound_fault_response(fault: _NorthboundFault) -> Response:
     return StreamingResponse(stream_body(), status_code=fault.status, media_type="application/json", headers=headers)
 
 
+def _status_operation_identity_error(request: Request) -> JSONResponse | None:
+    """在任何测试 fault 前拒绝不属于 E08–E14 的 status identity。"""
+
+    if request.url.path != "/northbound/operations/status":
+        return None
+    operation_identity = request.query_params.get("operation_identity", "").strip()
+    operation = WMS_OPERATION_BY_IDENTITY.get(operation_identity)
+    if operation is None:
+        return JSONResponse(status_code=422, content={"code": "STATUS_OPERATION_UNKNOWN"})
+    if operation.completion_mode is not WmsCompletionMode.ASYNC_TASK:
+        return JSONResponse(status_code=422, content={"code": "STATUS_OPERATION_NOT_ASYNC_EFFECT"})
+    return None
+
+
 @app.middleware("http")
 async def fault_injection_middleware(request: Request, call_next):
     if request.url.path.startswith("/debug"):
         return await call_next(request)
+
+    if status_error := _status_operation_identity_error(request):
+        return status_error
 
     # 一次性 fault 必须在首个 await 前由同步锁原子认领，避免并发请求重复消费。
     claimed_fault: _NorthboundFault | None = None
@@ -925,13 +762,18 @@ async def northbound_contract():
         "idempotency_retention_seconds": int(os.getenv("WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS", "9")),
         "status_visibility_sla_seconds": _positive_finite_env_float("WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS", "2"),
         "max_response_bytes": int(os.getenv("WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES", "4096")),
-        "submit_deadline_seconds": _positive_finite_env_float("WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS", "30"),
+        "submit_deadline_seconds": _positive_finite_env_float(
+            "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS",
+            _DEFAULT_ASYNC_SUBMIT_DEADLINE,
+        ),
         "status_deadline_seconds": _positive_finite_env_float("WMS_EFFECT_STATUS_TIMEOUT_SECONDS", "2"),
     }
 
 
 @app.get("/northbound/operations/status", summary="查询北向 typed EFFECT 权威状态")
 async def northbound_operation_status(request: Request, operation_identity: str, idempotency_key: str):
+    if status_error := _status_operation_identity_error(request):
+        return status_error
     raw_path = request.scope["path"]
     query_string = request.scope.get("query_string", b"")
     if query_string:
@@ -1030,6 +872,7 @@ def _typed_effect_callback_payload(
         "callback_type": "WMS_EFFECT_STATUS_HINT",
         "source_system": "WMS",
         "source_event_id": f"wms-mock:typed-effect:{uuid4().hex}",
+        "occurred_at": datetime.now(UTC).isoformat(),
         "trace_id": str(request_payload.get("trace_id") or f"wms-mock:{dispatch_key}"),
         "data": {
             "operation_identity": operation_identity,
@@ -1084,17 +927,38 @@ async def _submit_northbound_effect(
         return JSONResponse(status_code=422, content={"code": str(exc)})
 
     if submission.error_code is not None:
+        replay_data = None
+        if submission.error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS":
+            replay_data = _northbound_response_data(
+                operation_identity,
+                idempotency_key,
+                validated_payload,
+                submission_state="IN_PROGRESS_REPLAY",
+            )
         return JSONResponse(
             status_code=submission.status_code,
             content={
                 "code": submission.error_code,
-                "data": submission.snapshot.as_dict() if submission.snapshot is not None else None,
+                "data": replay_data,
             },
         )
 
-    data = _northbound_response_data(operation_identity, validated_payload)
-    if submission.snapshot is not None:
-        data["northbound_status"] = submission.snapshot.as_dict()
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    if operation.completion_mode is WmsCompletionMode.SYNC_RESULT:
+        if submission.snapshot is None or submission.snapshot.result_payload is None:
+            return JSONResponse(status_code=500, content={"code": "MOCK_SYNC_RESULT_MISSING"})
+        return JSONResponse(
+            status_code=submission.status_code,
+            content=submission.snapshot.result_payload,
+        )
+
+    submission_state = "ACCEPTED" if submission.status_code == 202 else "REPLAY"
+    data = _northbound_response_data(
+        operation_identity,
+        idempotency_key,
+        validated_payload,
+        submission_state=submission_state,
+    )
     if submission.status_code == 202 and northbound_operation_store.register_callback_hint(
         operation_identity, idempotency_key
     ):
@@ -1117,143 +981,21 @@ async def _submit_northbound_effect(
     return JSONResponse(status_code=submission.status_code, content={"code": submission.status_code, "data": data})
 
 
-def _northbound_response_data(operation_identity: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """从已校验 typed payload 构造各 operation 的兼容受理字段。"""
-
-    if operation_identity == "wms.inventory.confirm_inbound@v1":
-        return {
-            "dispatch_key": payload["dispatch_key"],
-            "inbound_key": payload["inbound_key"],
-            "accepted": True,
-        }
-    if operation_identity == "wms.fulfillment.notify_pkg_binding@v1":
-        return {
-            "request_id": payload["dispatch_key"],
-            "binding_key": f"{payload['package_id']}:{payload['pallet_id']}:{payload['station_code']}",
-            "package_id": payload["package_id"],
-            "pallet_id": payload["pallet_id"],
-            "station_code": payload["station_code"],
-            "accepted": True,
-        }
-    return {
-        "environment": "LOCAL_MOCK_ONLY",
-        "production_write_path": False,
-        "request_id": payload["dispatch_key"],
-        "fulfillment_action": "FULL_BOX_EXCHANGE",
-        "batch_key": payload["rack_id"],
-        "rack_id": payload["rack_id"],
-        "empty_box_id": payload["empty_box_id"],
-        "full_box_id": payload["full_box_id"],
-        "station_admission_blocked_until_exchange_completed": True,
-        "box_level_inventory_transaction_required": True,
-        "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
-    }
-
-
-def _legacy_transport_callback_payload(
-    *,
-    callback_type: str,
-    request_payload: dict[str, Any],
-    exchange_status: str,
-) -> dict[str, Any]:
-    dispatch_key = str(request_payload.get("dispatch_key") or request_payload.get("request_id") or "")
-    source_event_hash = hashlib.sha256(f"{callback_type}:{dispatch_key}".encode()).hexdigest()[:16]
-    timestamp = _now_ms()
-    callback_payload = {
-        "callback_type": callback_type,
-        "dispatch_key": dispatch_key,
-        "exchange_request_code": dispatch_key,
-        "exchange_status": exchange_status,
-        "occurred_at": timestamp,
-        "request_id": dispatch_key,
-        "signature": "mock-signature",
-        "source_event_id": f"wms-mock:transport:{source_event_hash}",
-        "source_system": "WMS",
-        "source_version": "mock-wms.v1",
-        "status": "SUCCESS",
-        "timestamp": timestamp,
-        "trace_id": str(request_payload.get("trace_id") or f"wms-mock:{dispatch_key}"),
-        "wms_rcs_task_id": f"mock-transport:{dispatch_key}",
-    }
-    rack_release_id = request_payload.get("rack_release_id")
-    if rack_release_id is not None:
-        callback_payload["rack_release_id"] = rack_release_id
-    return callback_payload
-
-
-def _rack_operation_callback_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
-    operation_key = str(payload.get("operation_key") or "")
-    rack_kind = payload.get("rack_kind") or "SINGLE_LAYER"
-    target_position_code = payload.get("target_position_code") or "SINGLE_LAYER_A"
-    callback_type = str(payload.get("callback_type") or "WMS_RACK_ARRIVED")
-    timestamp = _now_ms()
-    source_key = dispatch_key or operation_key or repr(sorted(payload.items()))
-    source_event_hash = hashlib.sha256(source_key.encode()).hexdigest()[:16]
-    required_bin_type = _rack_operation_supplied_bin_type(payload)
-    rack_code = _rack_operation_rack_code(payload, required_bin_type)
-    rack_physical_payload = build_active_bin_rack_payload(rack_code=rack_code, rack_kind=rack_kind)
-    callback_payload = {
-        **payload,
-        "callback_type": callback_type,
-        "dispatch_key": dispatch_key,
-        "request_id": str(payload.get("request_id") or dispatch_key),
-        "operation_key": operation_key,
-        "source_system": "WMS",
-        "source_event_id": payload.get("source_event_id") or f"wms-mock:rack-operation:{source_event_hash}",
-        "source_version": "mock-wms.v1",
-        "occurred_at": timestamp,
-        "timestamp": timestamp,
-        "signature": "mock-signature",
-        "rack_code": rack_code,
-        "rack_kind": rack_kind,
-        "position_code": target_position_code,
-        "target_position_code": target_position_code,
-        **rack_physical_payload,
-    }
-    if callback_type in RACK_STATUS_CALLBACK_TYPES and not any(
-        str(callback_payload.get(field) or "").strip() for field in RACK_STATUS_FIELDS
-    ):
-        callback_payload["status"] = "SUCCESS"
-        callback_payload["task_status"] = "SUCCESS"
-        callback_payload["result"] = "SUCCESS"
-    return callback_payload
-
-
-def build_rack_operation_failure_payload(
+def _northbound_response_data(
+    operation_identity: str,
+    idempotency_key: str,
     payload: dict[str, Any],
     *,
-    reason_code: str,
-    reason_message: str,
+    submission_state: Literal["ACCEPTED", "IN_PROGRESS_REPLAY", "REPLAY"],
 ) -> dict[str, Any]:
-    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
-    operation_key = str(payload.get("operation_key") or "")
-    timestamp = _now_ms()
-    source_key = dispatch_key or operation_key or repr(sorted(payload.items()))
-    source_event_hash = hashlib.sha256(source_key.encode()).hexdigest()[:16]
-    target_position_code = payload.get("target_position_code") or "SINGLE_LAYER_A"
-    return {
-        **payload,
-        "callback_type": "WMS_RACK_EXCHANGE_FAILED",
-        "dispatch_key": dispatch_key,
-        "request_id": str(payload.get("request_id") or dispatch_key),
-        "operation_key": operation_key,
-        "source_system": "WMS",
-        "source_event_id": payload.get("source_event_id") or f"wms-mock:rack-operation:{source_event_hash}",
-        "source_version": "mock-wms.v1",
-        "occurred_at": timestamp,
-        "timestamp": timestamp,
-        "signature": "mock-signature",
-        "position_code": target_position_code,
-        "target_position_code": target_position_code,
-        "status": "FAILED",
-        "task_status": "FAILED",
-        "result": "FAILED",
-        "reason_code": reason_code,
-        "reason_message": reason_message,
-        "error_code": reason_code,
-        "error_message": reason_message,
-    }
+    """从已校验 typed payload 构造 E08–E14 共用 ACK。"""
+
+    return build_typed_ack(
+        operation_identity,
+        idempotency_key,
+        payload,
+        submission_state=submission_state,
+    )
 
 
 def build_active_bin_rack_payload(rack_code: str, rack_kind: str = "SINGLE_LAYER") -> dict[str, Any]:
@@ -1295,50 +1037,6 @@ def build_active_bin_rack_payload(rack_code: str, rack_kind: str = "SINGLE_LAYER
     }
 
 
-def _rack_operation_supplied_bin_type(payload: dict[str, Any]) -> str:
-    material = payload.get("material")
-    if isinstance(material, dict) and _is_large_reel_material(material):
-        return "3格箱"
-    return "6格箱"
-
-
-def _rack_operation_default_rack_code(bin_type: str) -> str:
-    if bin_type == "3格箱":
-        return "RACK-3CELL-001"
-    return "RACK-001"
-
-
-def _rack_operation_rack_code(payload: dict[str, Any], required_bin_type: str) -> str:
-    requested_rack_code = str(payload.get("rack_code") or "").strip()
-    if requested_rack_code:
-        layout = _known_rack_layout(requested_rack_code)
-        has_material_constraints = isinstance(payload.get("material"), dict)
-        if layout is not None and (
-            _rack_layout_supports_bin_type(layout, required_bin_type) or not has_material_constraints
-        ):
-            return requested_rack_code
-    return _rack_operation_default_rack_code(required_bin_type)
-
-
-def _is_large_reel_material(material: dict[str, Any]) -> bool:
-    if _has_large_reel_size(material):
-        return True
-
-    material_id = (
-        material.get("material_id")
-        or material.get("material_code")
-        or material.get("sku")
-        or material.get("HHPN")
-        or material.get("hhpn")
-    )
-    if material_id is not None:
-        catalog_material = MOCK_MATERIALS.get(str(material_id))
-        if isinstance(catalog_material, dict) and _has_large_reel_size(catalog_material):
-            return True
-
-    return False
-
-
 def _has_large_reel_size(material: dict[str, Any]) -> bool:
     value = material.get("reel_diameter") or material.get("standard_reel_diameter") or material.get("diameter")
     if value is None:
@@ -1367,15 +1065,10 @@ def _rack_operation_cell_capacity_depth(bin_type: str, cell_index: str) -> float
     return 20.0
 
 
-async def _report_rack_operation_callback(callback_payload: dict[str, Any]) -> None:
-    delivery = await _post_callback(WES_EXTERNAL_CALLBACK_URL, callback_payload)
-    logger.info("WMS Mock rack operation callback delivery: %s", delivery)
-
-
 # --- 主数据查询接口 (WMS Master Data) ---
 
 
-@app.get("/api/wms/materials/{material_id}")
+@app.get("/debug/wms/materials/{material_id}")
 async def get_material(material_id: str):
     if material_id in MOCK_MATERIALS:
         return {"code": 200, "data": MOCK_MATERIALS[material_id]}
@@ -1384,25 +1077,25 @@ async def get_material(material_id: str):
     )
 
 
-@app.get("/api/wms/materials")
+@app.get("/debug/wms/materials")
 async def get_materials_batch(ids: str):
     id_list = ids.split(",")
     data = [MOCK_MATERIALS[m_id] for m_id in id_list if m_id in MOCK_MATERIALS]
     return {"code": 200, "data": data}
 
 
-@app.get("/api/wms/zones")
+@app.get("/debug/wms/zones")
 async def get_zones():
     return {"code": 200, "data": MOCK_ZONES}
 
 
-@app.get("/api/wms/locations")
+@app.get("/debug/wms/locations")
 async def get_locations(zone: str):
     locs = [location for location in MOCK_LOCATIONS if location["zone_code"] == zone]
     return {"code": 200, "data": locs}
 
 
-@app.get("/api/wms/racks/{rack_id}")
+@app.get("/debug/wms/racks/{rack_id}")
 async def get_rack(rack_id: str):
     rack = await mock_wms_state.get_rack(rack_id)
     if rack is not None:
@@ -1412,60 +1105,9 @@ async def get_rack(rack_id: str):
     )
 
 
-@app.get("/api/wms/racks")
+@app.get("/debug/wms/racks")
 async def get_racks(type: str | None = None):
     return {"code": 200, "data": await mock_wms_state.list_racks(type)}
-
-
-@app.post("/api/wms/rack-operation", summary="接收货架操作请求并回调 WES")
-async def rack_operation(payload: dict[str, Any], background_tasks: BackgroundTasks):
-    callback_payload = await mock_wms_state.apply_operation(payload)
-    background_tasks.add_task(_report_rack_operation_callback, callback_payload)
-    return {
-        "code": 200,
-        "data": {
-            "accepted": True,
-            "dispatch_key": payload.get("dispatch_key"),
-            "operation_key": payload.get("operation_key"),
-        },
-    }
-
-
-@app.post("/api/wms/transport-request", summary="接收料箱运输请求并回调 WES")
-async def transport_request(payload: dict[str, Any], background_tasks: BackgroundTasks):
-    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
-    callback_payload = _legacy_transport_callback_payload(
-        callback_type=str(payload.get("callback_type") or "WMS_TRANSPORT_COMPLETED"),
-        request_payload=payload,
-        exchange_status="PHYSICAL_COMPLETED",
-    )
-    background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
-    return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}
-
-
-@app.post("/api/wms/legacy/full-box-exchange", summary="兼容遗留满箱交换请求并回调 WES")
-async def legacy_full_box_exchange(payload: dict[str, Any], background_tasks: BackgroundTasks):
-    """遗留 family transport 保持同步 200 与完成 callback，不复用 typed EFFECT 语义。"""
-
-    dispatch_key = str(payload.get("dispatch_key") or payload.get("request_id") or "")
-    callback_payload = _legacy_transport_callback_payload(
-        callback_type=str(payload.get("callback_type") or "WMS_FULL_BOX_EXCHANGE_RESULT"),
-        request_payload=payload,
-        exchange_status="BUSINESS_COMPLETED",
-    )
-    background_tasks.add_task(_post_callback, WES_EXTERNAL_CALLBACK_URL, callback_payload)
-    return {"code": 200, "data": {"accepted": True, "dispatch_key": dispatch_key}}
-
-
-@app.post("/api/wms/fulfillment/package-binding", summary="本机 Mock: typed PKG 绑定通知")
-async def notify_pkg_binding(request: Request, background_tasks: BackgroundTasks):
-    """模拟 `wms.fulfillment.notify_pkg_binding@v1` 的已认证幂等受理。"""
-
-    return await _submit_northbound_effect(
-        request=request,
-        background_tasks=background_tasks,
-        operation_identity="wms.fulfillment.notify_pkg_binding@v1",
-    )
 
 
 def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
@@ -1479,50 +1121,11 @@ def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
     return [str(item) for item in raw_value if str(item)]
 
 
-@app.post("/api/wms/fulfillment/full-box-exchange", summary="本机 Mock: 满箱交换履约")
-async def full_box_exchange(request: Request, background_tasks: BackgroundTasks):
-    """模拟满箱交换 typed EFFECT，不触发生产写路径。"""
-
-    return await _submit_northbound_effect(
-        request=request,
-        background_tasks=background_tasks,
-        operation_identity="wms.fulfillment.full_box_exchange@v1",
-    )
-
-
-@app.post("/api/wms/fulfillment/change-rack-face", summary="本机 Mock: 货架换面履约")
-async def change_rack_face(payload: dict[str, Any]):
-    """模拟 WmsFulfillmentPort.change_rack_face, 与满箱交换完成语义解耦。"""
-
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "request_id": payload.get("request_id", ""),
-            "parent_request_id": payload.get("parent_request_id", ""),
-            "fulfillment_action": "CHANGE_RACK_FACE",
-            "rack_code": str(payload.get("rack_code") or ""),
-            "from_rack_side": str(payload.get("from_rack_side") or ""),
-            "to_rack_side": str(payload.get("to_rack_side") or ""),
-            "independent_fulfillment": True,
-            "does_not_mark_full_box_exchange_completed": True,
-            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
-        },
-    }
-
-
-@app.post("/api/wms/fulfillment/rough-sorter-inbound-preview", summary="本机 Mock: 粗分机入库预览")
+@app.post("/debug/wms/fulfillment/rough-sorter-inbound-preview", summary="本机 Mock: 粗分机入库预览")
 async def rough_sorter_inbound_preview(payload: dict[str, Any]):
     """表达粗分机正常流合同，拆分本地物理事实与 WMS 同步状态。"""
 
     local_physical_completed = bool(payload.get("local_physical_completed"))
-    wms_pkg_binding_result = str(payload.get("wms_pkg_binding_result") or "ACCEPTED").upper()
-    wms_sync_state = "READY_TO_SYNC"
-    business_completion_state = "LOCAL_PHYSICAL_COMPLETED"
-    if local_physical_completed and wms_pkg_binding_result not in {"ACCEPTED", "CONFIRMED"}:
-        wms_sync_state = "WMS_SYNC_PENDING"
-        business_completion_state = "RECONCILING"
     return {
         "code": 200,
         "data": {
@@ -1533,7 +1136,6 @@ async def rough_sorter_inbound_preview(payload: dict[str, Any]):
             "target_cell_code": payload.get("target_cell_code", ""),
             "ordered_steps": [
                 "SCAN_AND_MEASURE",
-                "WMS_GRN_BINDING_CHECK",
                 "SOURCE_ARM_TO_CONVEYOR",
                 "ROUGH_SORTER_TO_OUTBOUND",
                 "CELL_RESERVATION",
@@ -1542,8 +1144,8 @@ async def rough_sorter_inbound_preview(payload: dict[str, Any]):
                 "WMS_SYNC",
             ],
             "local_position_state": "LOCAL_PHYSICAL_COMPLETED" if local_physical_completed else "PENDING",
-            "wms_sync_state": wms_sync_state,
-            "business_completion_state": business_completion_state,
+            "wms_sync_state": "READY_TO_SYNC",
+            "business_completion_state": "LOCAL_PHYSICAL_COMPLETED",
             "preserve_local_physical_fact": local_physical_completed,
             "next_object_admission_allowed": True,
             "legacy_plugin_entry_used": False,
@@ -1555,45 +1157,9 @@ async def rough_sorter_inbound_preview(payload: dict[str, Any]):
     }
 
 
-def _source_arm_prefetch_capacity(payload: dict[str, Any]) -> int:
-    manifest = payload.get("manifest")
-    if not isinstance(manifest, dict):
-        return 0
-    raw_capacity = manifest.get("source_arm_prefetch_capacity", 0)
-    try:
-        capacity = int(raw_capacity)
-    except (TypeError, ValueError):
-        return 0
-    return max(capacity, 0)
-
-
-def _source_arm_prefetch_manifest_validation(payload: dict[str, Any], capacity: int) -> dict[str, Any]:
-    if capacity <= 0:
-        return {"allowed": True, "errors": []}
-    manifest = payload.get("manifest")
-    manifest = manifest if isinstance(manifest, dict) else {}
-    errors: list[str] = []
-    ecs_capabilities = manifest.get("ecs_capabilities")
-    if not isinstance(ecs_capabilities, list) or "SOURCE_ARM_PREFETCH" not in ecs_capabilities:
-        errors.append("ECS_SOURCE_ARM_PREFETCH_CAPABILITY_REQUIRED")
-    try:
-        prefetch_buffer_capacity = int(manifest.get("prefetch_buffer_capacity", 0))
-    except (TypeError, ValueError):
-        prefetch_buffer_capacity = 0
-    if prefetch_buffer_capacity < capacity:
-        errors.append("PREFETCH_BUFFER_CAPACITY_TOO_SMALL")
-    try:
-        prefetch_timeout_ms = int(manifest.get("prefetch_timeout_ms", 0))
-    except (TypeError, ValueError):
-        prefetch_timeout_ms = 0
-    if prefetch_timeout_ms <= 0:
-        errors.append("PREFETCH_TIMEOUT_REQUIRED")
-    return {"allowed": not errors, "errors": errors}
-
-
-@app.post("/api/wms/fulfillment/sorter-inbound-preview", summary="本机 Mock: 分拣机入库预览")
+@app.post("/debug/wms/fulfillment/sorter-inbound-preview", summary="本机 Mock: 分拣机入库预览")
 async def sorter_inbound_preview(payload: dict[str, Any]):
-    """表达分拣机入库 join gate 与扫码平台预取互锁合同。"""
+    """表达分拣机入库 join gate 与南向 PICK ACK 因果链。"""
 
     expected_authorized_bin_ids = set(_string_list(payload, "expected_authorized_bin_ids"))
     actual_scanned_bin_id = str(payload.get("actual_scanned_bin_id") or "")
@@ -1609,10 +1175,6 @@ async def sorter_inbound_preview(payload: dict[str, Any]):
         "WAITING_DEADLINE_DECLARED": waiting_deadline_declared,
     }
     missing_conditions = [name for name, passed in condition_results.items() if not passed]
-    capacity = _source_arm_prefetch_capacity(payload)
-    manifest_validation = _source_arm_prefetch_manifest_validation(payload, capacity)
-    scanner_platform_free = payload.get("scanner_platform_state") == "FREE"
-    can_pick_next_material = (capacity > 0 and manifest_validation["allowed"]) or scanner_platform_free
     allowed = not missing_conditions
     return {
         "code": 200,
@@ -1621,15 +1183,9 @@ async def sorter_inbound_preview(payload: dict[str, Any]):
             "production_write_path": False,
             "request_id": payload.get("request_id", ""),
             "legacy_plugin_entry_used": False,
-            "prefetch_policy": {
-                "source_arm_prefetch_capacity": capacity,
-                "can_pick_next_material": can_pick_next_material,
-                "requires_scanner_platform_free": capacity == 0,
-            },
-            "manifest_validation": manifest_validation,
+            "next_northbound_pick_triggered": bool(payload.get("southbound_pick_acknowledged")),
             "ordered_steps": [
                 "STATION_ADMISSION",
-                "WMS_CTU_BIN_INFEED",
                 "SCAN1_AUTHORIZED_RESOLVE",
                 "SCAN2_ROUTE_DECISION",
                 "SCAN3_RETURN_OR_NG_ROUTE",
@@ -1653,60 +1209,7 @@ async def sorter_inbound_preview(payload: dict[str, Any]):
     }
 
 
-def _duplicate_int_values(values: list[int]) -> list[int]:
-    seen: set[int] = set()
-    duplicates: set[int] = set()
-    for value in values:
-        if value in seen:
-            duplicates.add(value)
-        seen.add(value)
-    return sorted(duplicates)
-
-
-@app.post("/api/wms/fulfillment/ctu-batch-preview", summary="本机 Mock: CTU 父子批次预览")
-async def ctu_batch_preview(payload: dict[str, Any]):
-    """表达 CTU 父请求查询视图，父成功不能掩盖子项未收敛。"""
-
-    raw_child_items = payload.get("child_items")
-    child_items = raw_child_items if isinstance(raw_child_items, list) else []
-    sequence_nos = [int(item.get("sequence_no", 0)) for item in child_items if isinstance(item, dict)]
-    missing_resolved_placeholders = [
-        str(item.get("placeholder_key") or "")
-        for item in child_items
-        if isinstance(item, dict) and not item.get("resolved_bin_id")
-    ]
-    failed_child_placeholders = [
-        str(item.get("placeholder_key") or "")
-        for item in child_items
-        if isinstance(item, dict) and item.get("stage_status") != "COMPLETED"
-    ]
-    duplicate_sequence_nos = _duplicate_int_values(sequence_nos)
-    has_child_issues = bool(missing_resolved_placeholders or failed_child_placeholders or duplicate_sequence_nos)
-    parent_callback_state = str(payload.get("parent_callback_state") or "PENDING").upper()
-    parent_business_completed = parent_callback_state == "SUCCESS" and not has_child_issues
-    operator_summary_state = "COMPLETED" if parent_business_completed else "RECONCILING"
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "parent_request_id": payload.get("parent_request_id", ""),
-            "parent_callback_state": parent_callback_state,
-            "parent_business_completed": parent_business_completed,
-            "parent_projection_state": operator_summary_state,
-            "legacy_plugin_entry_used": False,
-            "query_view": {
-                "child_count": len(child_items),
-                "missing_resolved_placeholders": missing_resolved_placeholders,
-                "duplicate_sequence_nos": duplicate_sequence_nos,
-                "failed_child_placeholders": failed_child_placeholders,
-                "operator_summary_state": operator_summary_state,
-            },
-        },
-    }
-
-
-@app.post("/api/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
+@app.post("/debug/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
 async def reconciliation_snapshot(payload: dict[str, Any]):
     """模拟 WmsReconciliationQueryPort 快照, 不产生生产写入副作用。"""
 
@@ -1733,7 +1236,7 @@ async def reconciliation_snapshot(payload: dict[str, Any]):
     }
 
 
-@app.post("/api/wms/reconciliation/runtime-hold-release-preview", summary="本机 Mock: RuntimeHold 解除预览")
+@app.post("/debug/wms/reconciliation/runtime-hold-release-preview", summary="本机 Mock: RuntimeHold 解除预览")
 async def runtime_hold_release_preview(payload: dict[str, Any]):
     """表达 RuntimeHold scope-only release 合同，不实际解除任何生产 hold。"""
 
@@ -1766,7 +1269,7 @@ async def runtime_hold_release_preview(payload: dict[str, Any]):
     }
 
 
-@app.get("/api/wms/grn/{grn_id}")
+@app.get("/debug/wms/grn/{grn_id}")
 async def get_grn(grn_id: str):
     if grn_id in MOCK_GRNS:
         return {"code": 200, "data": MOCK_GRNS[grn_id]}
@@ -1795,97 +1298,124 @@ def _inventory_items(
     ]
 
 
-@app.get("/api/wms/inventory/query", summary="查询库存 (GET)")
-async def query_inventory_get(
-    request: Request,
-    material_id: str,
-    lot_no: str | None = None,
-    warehouse_code: str | None = None,
-    owner_code: str | None = None,
-):
-    """返回 production QUERY wire contract，不暴露 legacy envelope 或参数别名。"""
-
-    raw_path = request.scope["path"]
-    query_string = request.scope.get("query_string", b"")
-    if query_string:
-        raw_path = f"{raw_path}?{query_string.decode('ascii')}"
-    body = await _request_body_or_none(request)
-    if body is None:
-        return Response(status_code=499)
-    try:
-        verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
-        northbound_hmac_replay_guard.consume(
-            credential_reference=request.headers["X-WMS-Credential-Reference"],
-            timestamp=request.headers["X-WMS-Timestamp"],
-            nonce=request.headers["X-WMS-Nonce"],
+def _static_effect_handler(operation_identity: str):
+    async def handler(request: Request, background_tasks: BackgroundTasks):
+        return await _submit_northbound_effect(
+            request=request,
+            background_tasks=background_tasks,
+            operation_identity=operation_identity,
         )
-    except NorthboundAuthError as exc:
-        return JSONResponse(status_code=401, content={"code": exc.code})
-    return {
-        "items": _inventory_items(
-            sku=material_id,
-            lot_no=lot_no,
-            warehouse_code=warehouse_code,
-            owner_code=owner_code,
-        ),
-        "source_version": "mock-inventory-v1",
-    }
+
+    handler.__name__ = f"northbound_{operation_identity.replace('.', '_').replace('@', '_')}"
+    handler.__wms_operation_identity__ = operation_identity
+    return handler
 
 
-@app.post("/api/wms/inventory/reserve")
-async def reserve_inventory(payload: dict[str, Any]):
-    return {
-        "code": 200,
-        "data": {
-            "request_id": payload.get("request_id", ""),
-            "reservation_key": payload.get("reservation_key", "RES-001"),
-            "accepted": True,
-        },
-    }
+def _typed_query_payload(request: Request, operation_identity: str) -> dict[str, Any]:
+    operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+    payload: dict[str, Any] = dict(request.path_params)
+    for field_name in operation.request_model.model_fields:
+        values = request.query_params.getlist(field_name)
+        if values:
+            if len(values) > 1:
+                payload[field_name] = values
+            elif operation.request_model.model_fields[field_name].annotation is int:
+                try:
+                    payload[field_name] = int(values[0])
+                except ValueError:
+                    payload[field_name] = values[0]
+            elif field_name == "batch_managed" and values[0].lower() in {"true", "false"}:
+                payload[field_name] = values[0].lower() == "true"
+            else:
+                payload[field_name] = values[0]
+    return payload
 
 
-@app.post("/api/wms/inventory/reservations/release")
-async def release_reservation(payload: dict[str, Any]):
-    return {
-        "code": 200,
-        "data": {
-            "request_id": payload.get("request_id", ""),
-            "reservation_key": payload.get("reservation_key", ""),
-            "released": True,
-        },
-    }
+def _static_query_handler(operation_identity: str):
+    async def handler(request: Request):
+        operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
+        raw_path = request.scope["path"]
+        query_string = request.scope.get("query_string", b"")
+        if query_string:
+            raw_path = f"{raw_path}?{query_string.decode('ascii')}"
+        body = await _request_body_or_none(request)
+        if body is None:
+            return Response(status_code=499)
+        try:
+            verify_status_hmac(request.headers, body, method=request.method, path=raw_path)
+            northbound_hmac_replay_guard.consume(
+                credential_reference=request.headers["X-WMS-Credential-Reference"],
+                timestamp=request.headers["X-WMS-Timestamp"],
+                nonce=request.headers["X-WMS-Nonce"],
+            )
+        except NorthboundAuthError as exc:
+            return JSONResponse(status_code=401, content={"code": exc.code})
+        if request.method == "GET":
+            unknown_query_fields = set(request.query_params) - set(operation.request_model.model_fields)
+            if unknown_query_fields:
+                return JSONResponse(status_code=422, content={"code": "UNKNOWN_TYPED_QUERY_PARAMETER"})
+            payload = _typed_query_payload(request, operation_identity)
+        else:
+            if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+                return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST_CONTENT_TYPE"})
+            try:
+                payload = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST"})
+        try:
+            validated = operation.request_model.model_validate(payload).model_dump(mode="json")
+            if operation_identity == "wms.inventory.query_inventory@v1":
+                inventory_items = _inventory_items(
+                    sku=validated["material_code"],
+                    lot_no=validated.get("lot_no"),
+                    warehouse_code=validated.get("warehouse_code"),
+                    owner_code=validated.get("owner_code"),
+                )
+                result = {
+                    "items": [
+                        {
+                            "material_code": item["sku"],
+                            "available_quantity": str(item["available_qty"]),
+                            "total_quantity": str(item["total_qty"]),
+                            "reserved_quantity": str(item["reserved_qty"]),
+                            "lot_no": item.get("lot_no"),
+                        }
+                        for item in inventory_items
+                    ],
+                    "next_cursor": None,
+                    "source_version": "mock-inventory-v1",
+                }
+                result = operation.result_model.model_validate(result).model_dump(mode="json")
+            else:
+                result = build_typed_result(
+                    operation_identity,
+                    validated,
+                    source_version=0,
+                    completed_at=datetime.now(UTC).isoformat(),
+                )
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST"})
+        return JSONResponse(status_code=200, content=result)
+
+    handler.__name__ = f"northbound_{operation_identity.replace('.', '_').replace('@', '_')}"
+    handler.__wms_operation_identity__ = operation_identity
+    return handler
 
 
-@app.delete("/api/wms/inventory/reserve/{reservation_key}")
-async def delete_reservation(reservation_key: str):
-    return {
-        "code": 200,
-        "data": {
-            "reservation_key": reservation_key,
-            "released": True,
-        },
-    }
+def _register_frozen_operation_routes() -> None:
+    """启动期从唯一 registry 一次性注册 35 条明确 route。"""
+
+    for operation in WMS_OPERATIONS:
+        handler_factory = _static_query_handler if operation.mode.value == "QUERY" else _static_effect_handler
+        app.add_api_route(
+            f"/api/wms{operation.path_template}",
+            handler_factory(operation.identity),
+            methods=[operation.http_method.value],
+            name=f"northbound:{operation.identity}",
+        )
 
 
-@app.post("/api/wms/inventory/confirm-inbound")
-async def confirm_inbound_effect(request: Request, background_tasks: BackgroundTasks):
-    return await _submit_northbound_effect(
-        request=request,
-        background_tasks=background_tasks,
-        operation_identity="wms.inventory.confirm_inbound@v1",
-    )
-
-
-@app.post("/api/wms/outbound/confirm")
-async def confirm_outbound(payload: dict[str, Any]):
-    return {
-        "code": 200,
-        "data": {
-            "request_id": payload.get("request_id", ""),
-            "outbound_key": payload.get("outbound_key", ""),
-            "confirmed": True,
-        },
-    }
+_register_frozen_operation_routes()
 
 
 @app.get("/")

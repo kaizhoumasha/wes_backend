@@ -19,6 +19,7 @@ from src.app.runtime.orchestration.services.query.runtime_query_service import R
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX, WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION as SMT_SORTING_INBOUND_DEFINITION
+from src.app.wms_integration.ports.event import WmsInventoryUpdatedEvent
 from src.app.workline.models import LineType, WorkLine, WorklinePluginBinding, WorkLineRunMode
 from src.app.workline.services.plugin_binding_service import (
     WorklinePluginBindingService,
@@ -77,8 +78,8 @@ async def test_seed_runtime_monitor_smoke_reactivates_non_admitted_or_stale_bind
         binding.environment = "production"
     elif stale_kind == "config-changed":
         monkeypatch.setattr(
-            "scripts.data.seed_runtime_monitor_smoke.SMOKE_PROVIDER_PROFILE",
-            "wms.2026-07-06.material-flow.staging",
+            "scripts.data.seed_runtime_monitor_smoke.SMOKE_CTU_BASKET_CAPACITY",
+            7,
         )
     else:
         workline.active_plugin_binding_version = binding.binding_version + 100
@@ -140,20 +141,32 @@ async def test_seed_runtime_monitor_smoke_creates_runtime_projection_scenarios(d
     # 监控投影应呈现 ACTIVE_DISPATCH_LEASE，而不是从 session context 推断临时状态。
     assert single_layer_projection.boundary.station_lease == "ACTIVE_DISPATCH_LEASE"
     assert single_layer_projection.boundary.rack_operation_wait == "WAITING_WMS"
-    assert single_layer_projection.resource_evidence.kind == "WMS_CALLBACK_EVIDENCE"
+    callback_session = (
+        await db_session.execute(
+            select(WorklineSession).where(
+                WorklineSession.session_code == "runtime-monitor-smoke:single-layer:wms-callback"
+            )
+        )
+    ).scalar_one()
+    event = WmsInventoryUpdatedEvent.model_validate(callback_session.context_json["wms_inventory_updated_event"])
+    assert event.source_system == "WMS"
+    assert event.event_type == "WMS_INVENTORY_UPDATED"
+    assert event.source_version == "1"
+    assert event.data.inventory_reference == "runtime-monitor-smoke:inventory-updated"
+    assert "rack_operation" not in callback_session.context_json
     assert single_layer_projection.resource_evidence.total_count > 50
     assert single_layer_projection.resource_evidence.truncated is True
     assert len(single_layer_projection.resource_evidence.items) == 50
     assert any(
-        item.evidence_kind == "WMS_CALLBACK_EVIDENCE" for item in single_layer_projection.resource_evidence.items
+        item.evidence_kind == "TRACE_RESOURCE_EVIDENCE" for item in single_layer_projection.resource_evidence.items
     )
     assert any(item.slot_code == "A" for item in single_layer_projection.resource_evidence.items)
     assert any(item.cell_code == "CELL-SMOKE-1" for item in single_layer_projection.resource_evidence.items)
     smoke_pkg = next(
         item for item in single_layer_projection.resource_evidence.items if item.resource_code == "PKG-SMOKE-001"
     )
-    assert smoke_pkg.rack_code == "RACK-SMOKE-CALLBACK"
-    assert smoke_pkg.bin_code == "BIN-SMOKE-CALLBACK"
+    assert smoke_pkg.rack_code == "RACK-SMOKE-INVENTORY"
+    assert smoke_pkg.bin_code == "BIN-SMOKE-INVENTORY"
     assert smoke_pkg.slot_code == "A"
     assert smoke_pkg.cell_code == "CELL-SMOKE-1"
     assert smoke_pkg.material_code == "620100L00-011-G"

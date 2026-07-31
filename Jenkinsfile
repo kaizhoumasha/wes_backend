@@ -19,6 +19,7 @@ pipeline {
         // 部署配置（在 Jenkins Node 上执行拉镜像部署）
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_COMPOSE_FILE = 'docker-compose.deploy.yml'
+        WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'
         HEALTH_CHECK_RETRIES = '5'
 
         // 镜像配置
@@ -105,7 +106,7 @@ pipeline {
                                 env.CHANNEL_IMAGE_TAG = 'develop'
                                 env.DEPLOY_NAME = 'testing'
                                 env.DEPLOY_ENV_FILE = '.env.test'
-                                env.DEPLOY_SERVICES = 'api celery_worker'
+                                env.DEPLOY_SERVICES = 'api celery celery-wms-fulfillment'
                                 env.DEPLOY_CONTAINER_NAME = 'wes_api_test'
                                 env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_test wes_redis_test'
                                 break
@@ -115,7 +116,7 @@ pipeline {
                                 env.CHANNEL_IMAGE_TAG = 'prod'
                                 env.DEPLOY_NAME = 'production'
                                 env.DEPLOY_ENV_FILE = '.env.prod'
-                                env.DEPLOY_SERVICES = 'api celery_worker celery_beat flower'
+                                env.DEPLOY_SERVICES = 'api celery celery-wms-fulfillment celery_beat flower'
                                 env.DEPLOY_CONTAINER_NAME = 'wes_api_prod'
                                 env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_prod wes_redis_prod'
                                 break
@@ -381,19 +382,56 @@ pipeline {
                             git checkout --detach ${CI_COMMIT_SHA}
                             echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
 
+                            if [ -z "${WMS_PROVIDER_PROFILE_HOST_FILE:-}" ]; then
+                                echo -e "${RED}❌ 未配置 WMS Provider profile 宿主机路径${NC}"
+                                exit 1
+                            fi
+                            if [ ! -f "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
+                                echo -e "${RED}❌ WMS Provider profile 不是普通文件: ${WMS_PROVIDER_PROFILE_HOST_FILE}${NC}"
+                                exit 1
+                            fi
+                            if [ ! -r "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
+                                echo -e "${RED}❌ WMS Provider profile 当前用户不可读: ${WMS_PROVIDER_PROFILE_HOST_FILE}${NC}"
+                                exit 1
+                            fi
+
                             export BACKEND_ENV_FILE=${DEPLOY_ENV_FILE}
                             export BACKEND_IMAGE=${RUNTIME_IMAGE}
+                            export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"
                             COMPOSE_CMD="docker compose -f docker-compose.yml -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE}"
                             HEALTH_ENDPOINT='http://127.0.0.1:8001/health'
                             MIGRATION_APPLIED=false
                             DEPLOYMENT_HEALTHY=false
 
+                            # celery_worker 已重命名为 celery。首次升级必须按 Compose 标签清理旧服务容器，
+                            # 避免遗留 Worker 在破坏性迁移期间继续访问数据库或消费默认队列。
+                            remove_legacy_celery_worker() {
+                                compose_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "${DEPLOY_ENV_FILE}" | tail -n 1)
+                                compose_project_name=${compose_project_name:-$(basename "$PWD")}
+                                legacy_worker_ids=$(docker ps -aq \
+                                    --filter "label=com.docker.compose.project=${compose_project_name}" \
+                                    --filter "label=com.docker.compose.service=celery_worker")
+
+                                for legacy_worker_id in $legacy_worker_ids; do
+                                    echo -e "${YELLOW}🧹 清理遗留 celery_worker 容器: ${legacy_worker_id}${NC}"
+                                    docker rm -f "$legacy_worker_id"
+                                done
+
+                                if docker ps -aq \
+                                    --filter "label=com.docker.compose.project=${compose_project_name}" \
+                                    --filter "label=com.docker.compose.service=celery_worker" | grep -q .; then
+                                    echo -e "${RED}❌ 遗留 celery_worker 容器仍然存在，禁止执行迁移${NC}"
+                                    return 1
+                                fi
+                            }
+
                             # 迁移成功后的任意失败都必须停止新应用，覆盖容器部分启动、testing 数据同步和健康检查失败。
                             cleanup_failed_deploy() {
                                 exit_code=$?
+                                remove_legacy_celery_worker || true
                                 if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]; then
                                     echo -e "${YELLOW}⚠️  迁移后部署未完成，停止 API/Worker/Beat；禁止自动切回旧镜像${NC}"
-                                    $COMPOSE_CMD stop api celery_worker celery_beat || true
+                                    $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat || true
                                 fi
                                 docker logout ${REGISTRY_HOST} >/dev/null 2>&1 || true
                                 return $exit_code
@@ -402,7 +440,7 @@ pipeline {
 
                             # 始终由目标镜像中的唯一容量脚本读取 live PostgreSQL；失败由 set -e 阻断应用启动或回滚。
                             run_capacity_guard() {
-                                $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api python scripts/capacity_guard.py --services api,celery_worker
+                                $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment
                             }
 
                             echo "$REGISTRY_PASSWORD" | docker login ${REGISTRY_HOST} -u "$REGISTRY_USERNAME" --password-stdin
@@ -436,17 +474,24 @@ pipeline {
                             echo -e "${GREEN}🧮 校验 live PostgreSQL 连接容量...${NC}"
                             run_capacity_guard
 
+                            echo -e "${GREEN}🔏 校验 WMS 四角色部署一致性...${NC}"
+                            bash scripts/run_wms_deployment_attestation.sh \
+                                --compose-file docker-compose.yml \
+                                --compose-file ${DEPLOY_COMPOSE_FILE} \
+                                --env-file ${DEPLOY_ENV_FILE}
+
                             # 本版本包含 RuntimeInbox 破坏性切换。迁移前必须停止所有可能访问旧表的
                             # API/Worker/Beat；迁移使用目标镜像的一次性 CLI 容器，不能依赖尚未启动的 API。
                             echo -e "${GREEN}⏸️  静默应用进程，准备数据库迁移...${NC}"
-                            $COMPOSE_CMD stop api celery_worker celery_beat
+                            remove_legacy_celery_worker
+                            $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat
 
                             echo -e "${GREEN}🗄️  使用目标镜像运行数据库迁移...${NC}"
                             $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api alembic upgrade head
                             MIGRATION_APPLIED=true
 
                             echo -e "${GREEN}⚙️  启动新容器...${NC}"
-                            $COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES} || {
+                            $COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES} || {
                                 echo -e "${RED}❌ 容器启动失败${NC}"
                                 exit 1
                             }
@@ -488,7 +533,7 @@ pipeline {
                             # testing 不部署 Beat；仅校验当前环境实际启动的 Celery 服务。
                             for service_name in ${DEPLOY_SERVICES}; do
                                 case "$service_name" in
-                                celery_worker|celery_beat)
+                                celery|celery-wms-fulfillment|celery_beat)
                                     service_container_ids=$($COMPOSE_CMD ps -q "$service_name")
                                     if [ -z "$service_container_ids" ]; then
                                         echo -e "${RED}❌ ${service_name} 容器未就绪${NC}"
@@ -518,11 +563,13 @@ pipeline {
                                 esac
                             done
 
-                            for container_id in $($COMPOSE_CMD ps -q celery_worker); do
-                                if ! docker exec "$container_id" sh -c 'celery -A src.celery_app.app inspect ping -d "celery@$(hostname)" --timeout=5 | grep -q pong'; then
-                                    echo -e "${RED}❌ celery_worker 子进程运行时未就绪: $container_id${NC}"
-                                    exit 1
-                                fi
+                            for celery_service in celery celery-wms-fulfillment; do
+                                for container_id in $($COMPOSE_CMD ps -q "$celery_service"); do
+                                    if ! docker exec "$container_id" sh -c 'celery -A src.celery_app.app inspect ping -d "celery@$(hostname)" --timeout=5 | grep -q pong'; then
+                                        echo -e "${RED}❌ ${celery_service} 子进程运行时未就绪: $container_id${NC}"
+                                        exit 1
+                                    fi
+                                done
                             done
 
                             DEPLOYMENT_HEALTHY=true

@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityAdmissionClosed,
     SystemCapabilityClaimResult,
     SystemCapabilityIdempotencyConflict,
 )
@@ -26,13 +27,6 @@ if TYPE_CHECKING:
 
 
 _DEVICE_INTENTS = frozenset({RuntimeIntentKind.COMMAND, RuntimeIntentKind.DEVICE_EVENT})
-_HANDLING_INTENTS = frozenset(
-    {
-        RuntimeIntentKind.RACK_OPERATION_REQUEST,
-        RuntimeIntentKind.BIN_OPERATION_REQUEST,
-        RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST,
-    }
-)
 _WMS_INTENTS = frozenset({RuntimeIntentKind.EXTERNAL_REQUEST})
 
 
@@ -108,7 +102,13 @@ class RuntimeIntentLogRepository:
         db.add_all((intent_log, outbox))
         await db.flush()
 
-    async def claim_or_match(self, db: Any, **values: Any) -> SystemCapabilityClaimResult:
+    async def claim_or_match(
+        self,
+        db: Any,
+        *,
+        allow_insert: bool = True,
+        **values: Any,
+    ) -> SystemCapabilityClaimResult:
         """在唯一 RuntimeIntentLog ledger 上执行 provisional claim。"""
 
         table = cast("Any", RuntimeIntentLog).__table__
@@ -124,6 +124,16 @@ class RuntimeIntentLogRepository:
         dispatch_key = values.get("dispatch_key")
         if not isinstance(dispatch_key, str) or not dispatch_key:
             raise ValueError("runtime intent effect claim 必须显式提供 dispatch_key")
+        if not allow_insert:
+            row = await self._get_effect_for_update(db, **identity)
+            if row is None:
+                raise SystemCapabilityAdmissionClosed
+            return self._match_existing_claim(
+                row,
+                values=values,
+                identity=identity,
+                dispatch_key=dispatch_key,
+            )
         updated_at_ms = values["updated_at_ms"]
         insert_values = {
             "execution_session_id": values["execution_session_id"],
@@ -172,7 +182,39 @@ class RuntimeIntentLogRepository:
         row = await self._get_effect_for_update(db, **identity)
         if row is None:
             raise RuntimeError("runtime intent effect claim conflict row disappeared")
+        return self._match_existing_claim(
+            row,
+            values=values,
+            identity=identity,
+            dispatch_key=dispatch_key,
+        )
+
+    @staticmethod
+    def _match_existing_claim(
+        row: RuntimeIntentLog,
+        *,
+        values: dict[str, Any],
+        identity: dict[str, Any],
+        dispatch_key: str,
+    ) -> SystemCapabilityClaimResult:
+        """统一校验 insert-conflict 与 existing-only 命中的不可变 claim。"""
+
         if row.request_hash != values["request_hash"]:
+            raise SystemCapabilityIdempotencyConflict(
+                **identity,
+                existing_request_hash=row.request_hash,
+                incoming_request_hash=values["request_hash"],
+                correlation_id=row.correlation_id,
+            )
+        is_runtime_domain_claim = (
+            row.creator_authority == "RUNTIME_DOMAIN_SERVICE" or values["creator_authority"] == "RUNTIME_DOMAIN_SERVICE"
+        )
+        if is_runtime_domain_claim and (
+            row.correlation_id != values["correlation_id"]
+            or dict(row.binding_snapshot_json) != dict(values["binding_snapshot_json"])
+        ):
+            # domain 幂等键故意不含 owner/workline/correlation；命中时必须对权威快照
+            # 做完整 identity reconciliation，禁止同 payload 借旧 ledger 越权重放。
             raise SystemCapabilityIdempotencyConflict(
                 **identity,
                 existing_request_hash=row.request_hash,
@@ -358,8 +400,6 @@ def _target_domain(kind: RuntimeIntentKind, *, capability_key: str | None = None
         return capability_key.split(".", maxsplit=1)[0]
     if kind in _DEVICE_INTENTS:
         return "device"
-    if kind in _HANDLING_INTENTS:
-        return "handling"
     if kind in _WMS_INTENTS:
         return "wms_integration"
     return "runtime"

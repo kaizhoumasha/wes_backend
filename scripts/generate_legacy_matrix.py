@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# 生成器以脚本路径直接执行时，Python 默认只把 scripts/ 放入 import path。
+sys.path.insert(0, str(REPO_ROOT))
 
 # 扫描目标
 SCAN_DIRS = {
@@ -72,9 +74,6 @@ MIGRATED_SERVICE_IMPLS = {
     ),
     "src/app/workline/services/runtime_reconciliation_service.py": (
         "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
-    ),
-    "src/app/workline/services/single_layer_rack_orchestration_service.py": (
-        "src/app/runtime/capabilities/material_flow/single_layer_rack_orchestration_service.py"
     ),
     "src/app/workline/services/smt_inbound_handoff_service.py": (
         "src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py"
@@ -282,16 +281,6 @@ MIGRATED_SERVICE_SYMBOL_PROVENANCE: dict[str, tuple[str, ...]] = {
         "_payload_str",
         "_resolve_id",
     ),
-    "src/app/workline/services/single_layer_rack_orchestration_service.py": (
-        "SingleLayerRackOrchestrationDecision",
-        "SingleLayerRackOrchestrationDecisionCode",
-        "SingleLayerRackOrchestrationService",
-        "_ensure_existing_station_claim_outbox_shape",
-        "_enum_text",
-        "_is_active_station_claim_outbox",
-        "_non_empty_text",
-        "_station_position_from_payload",
-    ),
     "src/app/workline/services/smt_inbound_handoff_service.py": ("SmtInboundHandoffService",),
     "src/app/workline/services/start_admission_service.py": (
         "StartAdmissionResult",
@@ -464,6 +453,7 @@ ACTIVE_PLATFORM_PATHS = frozenset(
         "src/app/workline/services/plugin_binding_service.py",
         "tests/workline_plugins/test_conformance_contract.py",
         "tests/workline_plugins/test_generated_facts_contract.py",
+        "tests/workline_runtime/material_flow/test_rough_sorter_q19_admission_service.py",
         "tests/workline_runtime/test_workline_session_repository_versioning.py",
     }
 )
@@ -746,6 +736,12 @@ def _target_runtime_capability(entry_type: str, path: str, text: str) -> tuple[s
     return _target_runtime_path(entry_type, path), capability
 
 
+def _target_wms_integration_boundary(path: str) -> tuple[str, str]:
+    if path == "src/workline_runtime/services.py":
+        return "src/app/wms_integration/ports/inventory_operations.py", "wms.inventory.query_inventory@v1"
+    return "", ""
+
+
 def resolve_migration_target(
     business_semantics: str,
     entry_type: str,
@@ -767,7 +763,7 @@ def resolve_migration_target(
     if "跨域 session" in business_semantics:
         return "src/app/runtime/orchestration/models/execution_correlation.py", "ExecutionCorrelation.correlation_id"
     if "跨域 WMS import" in business_semantics or "wms_integration" in text:
-        return "src/app/runtime/orchestration/ports/wms_fulfillment.py", "WmsFulfillmentPort.request_transport"
+        return _target_wms_integration_boundary(path)
     if "import device" in text or "device." in text or "device_" in text or "device command" in text:
         return "src/app/runtime/orchestration/ports/device_command.py", "DeviceCommandPort.dispatch"
     if "执行状态" in business_semantics:
@@ -968,8 +964,9 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
         if eid in seen:
             continue
         seen.add(eid)
-        target_path, target_capability = resolve_migration_target(bs, etype, path, sym, "rebuild")
-        blocking_tests = resolve_blocking_tests(bs, etype, path, "rebuild")
+        strategy = "delete" if path == "src/app/callback/services/callback_ingress_service.py" else "rebuild"
+        target_path, target_capability = resolve_migration_target(bs, etype, path, sym, strategy)
+        blocking_tests = resolve_blocking_tests(bs, etype, path, strategy)
         entries.append(
             Entry(
                 entry_id=eid,
@@ -980,7 +977,7 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
                 business_semantics=bs,
                 phase4_carrier=False,
                 classification_status="final",
-                strategy="rebuild",
+                strategy=strategy,
                 target_path=target_path,
                 target_capability=target_capability,
                 blocking_tests=blocking_tests,
@@ -1128,30 +1125,6 @@ def parse_entries() -> list[Entry]:
             "MEDIUM",
         ),
         (
-            "src/app/rack/services/gateway.py",
-            "rack",
-            "service",
-            "跨域 WMS import (WMS_INTEGRATION_BOUNDARY seed)",
-            "phase2",
-            "MEDIUM",
-        ),
-        (
-            "src/app/handling/services/gateway.py",
-            "handling",
-            "service",
-            "跨域 WMS import (WMS_INTEGRATION_BOUNDARY seed)",
-            "phase2",
-            "MEDIUM",
-        ),
-        (
-            "src/app/workline/services/single_layer_rack_orchestration_service.py",
-            "workline",
-            "service",
-            "跨域 WMS import (WMS_INTEGRATION_BOUNDARY seed)",
-            "phase2",
-            "MEDIUM",
-        ),
-        (
             "src/workline_runtime/services.py",
             "workline_runtime",
             "runtime_helper",
@@ -1160,62 +1133,6 @@ def parse_entries() -> list[Entry]:
             "LOW",
         ),
         # EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK
-        (
-            "src/app/handling/models/operation.py",
-            "handling",
-            "model",
-            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
-            "phase1",
-            "MEDIUM",
-        ),
-        (
-            "src/app/handling/services/lifecycle_service.py",
-            "handling",
-            "service",
-            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
-            "phase1",
-            "MEDIUM",
-        ),
-        (
-            "src/app/handling/services/operation_service.py",
-            "handling",
-            "service",
-            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
-            "phase1",
-            "MEDIUM",
-        ),
-        (
-            "src/app/rack/models/operation.py",
-            "rack",
-            "model",
-            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
-            "phase2",
-            "HIGH",
-        ),
-        (
-            "src/app/rack/repositories/operation_repository.py",
-            "rack",
-            "repository",
-            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
-            "phase2",
-            "MEDIUM",
-        ),
-        (
-            "src/app/rack/services/operation_service.py",
-            "rack",
-            "service",
-            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
-            "phase2",
-            "MEDIUM",
-        ),
-        (
-            "src/app/rack/services/task_lifecycle_service.py",
-            "rack",
-            "service",
-            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
-            "phase2",
-            "MEDIUM",
-        ),
         (
             "src/app/resource/services/projection_service.py",
             "resource",

@@ -16,10 +16,9 @@ from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.sys.models import SystemOutbox
-from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryResult,
 )
 from src.app.wms_integration.ports.query_outcome import QuerySuccess
 from tests.integration.workline_capabilities.test_rough_sorter_outbox_result_flow import (
@@ -32,34 +31,21 @@ from tests.support.runtime_inbox_processing_postgresql import (
     seed_scan_flow,
     with_temporary_runtime_database,
 )
+from tests.support.wms_query_runtime import bind_stub_wms_query_runtime
 
 
-def test_recorded_replay_of_successful_query_never_calls_provider_or_creates_effect(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """首次 callback 走真实 QUERY；manual recorded replay 复用决策且零 provider/新 effect。"""
+def test_recorded_replay_of_persisted_q19_never_calls_provider_or_creates_effect(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """首次 callback 与 recorded replay 都消费 SCAN 已持久化的 Q19，零 provider/新 effect。"""
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         provider_calls = 0
 
-        async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
+        async def forbidden_query(*_args):  # type: ignore[no-untyped-def]
             nonlocal provider_calls
             provider_calls += 1
-            return QuerySuccess(
-                InventoryQueryOperationResult(
-                    items=(
-                        InventoryAuthorityItem(
-                            material_code=request.material_code,
-                            warehouse_code=request.warehouse_code or "WH-IT",
-                            owner_code=request.owner_code,
-                            storage_location_code="A-01",
-                            available_quantity=10,
-                            lot_no="LOT-IT-001",
-                        ),
-                    ),
-                    source_version="WMS-IT-1",
-                )
-            )
+            raise AssertionError("Q19 持久化后不得回查 provider")
 
-        monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
+        bind_stub_wms_query_runtime(monkeypatch, forbidden_query)
 
         async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
             return None
@@ -107,7 +93,7 @@ def test_recorded_replay_of_successful_query_never_calls_provider_or_creates_eff
                 await db.commit()
                 callback_claim = await claim(db, service, token="replay-live-callback-retry")
                 live_result = await processor(service).process_claimed(db, claim=callback_claim)
-            assert live_result["success"] == 1 and provider_calls == 1
+            assert live_result["success"] == 1 and provider_calls == 0
             baseline_intents = await db.scalar(select(func.count()).select_from(RuntimeIntentLog))
             baseline_outbox = await db.scalar(select(func.count()).select_from(SystemOutbox))
             recorded_decision_count = await db.scalar(
@@ -138,7 +124,7 @@ def test_recorded_replay_of_successful_query_never_calls_provider_or_creates_eff
             replay_claim = await claim(db, service, token="recorded-success-replay-owner")
             replay_result = await processor(service).process_claimed(db, claim=replay_claim)
             assert replay_result["success"] == 1
-            assert provider_calls == 1
+            assert provider_calls == 0
             assert await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == baseline_intents
             assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == baseline_outbox
             db.expire_all()

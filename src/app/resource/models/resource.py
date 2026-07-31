@@ -10,7 +10,7 @@ from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
-from sqlalchemy import JSON, Column, Index, Numeric, text
+from sqlalchemy import JSON, CheckConstraint, Column, Index, Numeric, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -285,6 +285,7 @@ class BinSlotTemplateBase(BaseMixin):
     """料箱内部槽位模板基础字段。"""
 
     bin_type_code: str = Field(min_length=1, max_length=50, index=True, description="所属料箱类型编码")
+    bin_slot_index: int = Field(ge=1, description="料箱内槽位权威序号")
     bin_slot_code: str = Field(min_length=1, max_length=50, description="料箱内槽位编码")
     slot_size: BinSlotSize = Field(
         sa_type=cast(
@@ -316,6 +317,16 @@ class BinSlotTemplate(BinSlotTemplateBase, DataTableMixin, table=True):
             "bin_type_code",
             "bin_slot_code",
             unique=True,
+        ),
+        Index(
+            "ux_resource_bin_slot_templates_type_index",
+            "bin_type_code",
+            "bin_slot_index",
+            unique=True,
+        ),
+        CheckConstraint(
+            "bin_slot_index > 0",
+            name="positive_index",
         ),
     )
 

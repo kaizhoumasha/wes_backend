@@ -18,7 +18,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_SANDBOX_PROFILE
+from src.app.contracts.external_contract_profile_catalog import WMS_MATERIAL_FLOW_PROFILE
 from src.app.device.models import Device, DeviceProtocol, DeviceStatus
 from src.app.resource.models import RackKind
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
@@ -310,7 +310,7 @@ TEST_ROUGH_SORTER_SEED = TestWorklineSeed(
         "ng_location": "NG-01",
         "warehouse_code": "WH-01",
         "owner_code": "OWNER-01",
-        "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+        "provider_profile": "wms.2026-07-28.full-factory",
     },
     runtime_config_json={
         "run_mode": WorkLineRunMode.AUTO.value,
@@ -336,8 +336,20 @@ TEST_SMT_SORTING_INBOUND_SEED = TestWorklineSeed(
     plugin_key=SMT_SORTING_INBOUND_DEFINITION.plugin_key,
     contract_version=SMT_SORTING_INBOUND_DEFINITION.contract_version,
     config={
-        "provider_profile": WMS_MATERIAL_FLOW_SANDBOX_PROFILE.identity,
+        "provider_profile": WMS_MATERIAL_FLOW_PROFILE.identity,
         "source_arm_role": ROLE_SORTING_SOURCE_ARM,
+        "ctu_basket_capacity": 6,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
     },
     runtime_config_json={
         "run_mode": WorkLineRunMode.SIMULATION.value,

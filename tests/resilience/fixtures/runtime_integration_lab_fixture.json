@@ -23,12 +23,11 @@
     {
       "provider_code": "WMS",
       "contract_version": "2026-06-25",
-      "environment": "sandbox",
       "inbound_normalizers_event": [
-        "WMS_TRANSPORT_COMPLETED"
+        "WMS_INVENTORY_UPDATED"
       ],
       "inbound_normalizers_result": [
-        "WMS_TRANSPORT_RESULT"
+        "WMS_EFFECT_STATUS_HINT"
       ],
       "timeout_retry_query_timeout_seconds": 10,
       "timeout_retry_effect_timeout_seconds": 30,

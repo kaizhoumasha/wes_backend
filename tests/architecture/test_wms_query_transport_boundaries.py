@@ -14,7 +14,7 @@ from src.app.wms_integration.ports.query_outcome import (
     QueryTechnicalFailure,
     WmsQueryOutcome,
 )
-from src.app.wms_integration.services.query_transport import WmsQueryTransportExecutor
+from src.app.wms_integration.query_executor import WmsRegistryQueryExecutor
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -55,7 +55,7 @@ def test_query_outcome_is_closed_four_branch_union() -> None:
 
 
 def test_query_transport_has_no_operation_switch_or_catch_all_retryable() -> None:
-    source = inspect.getsource(WmsQueryTransportExecutor)
+    source = inspect.getsource(WmsRegistryQueryExecutor)
     tree = ast.parse(source)
 
     assert "wms.inventory." not in source
@@ -67,3 +67,24 @@ def test_query_transport_has_no_operation_switch_or_catch_all_retryable() -> Non
             handler_source = ast.unparse(ast.Module(body=node.body, type_ignores=[]))
             assert "QueryTechnicalFailure" not in handler_source
             assert "retryable=True" not in handler_source
+
+
+def test_operation_specific_query_port_adapter_and_old_executor_are_deleted() -> None:
+    assert not (REPO_ROOT / "src/app/wms_integration/ports/query_inventory_operation.py").exists()
+    assert not (REPO_ROOT / "src/app/wms_integration/adapters/query_inventory_operation_adapter.py").exists()
+    assert not (REPO_ROOT / "src/app/wms_integration/services/query_transport.py").exists()
+
+
+def test_rough_sorter_handler_has_no_q14_admission_fallback() -> None:
+    source = (REPO_ROOT / "src/app/runtime/workline_plugins/rough_sorter/handlers.py").read_text(encoding="utf-8")
+
+    forbidden = (
+        "QUERY_INVENTORY",
+        "WMS_QUERY_IDENTITY",
+        "RoughSorterInventoryAdmissionPolicyInput",
+        "decide_rough_sorter_inventory_admission",
+    )
+    assert [token for token in forbidden if token in source] == []
+    assert not (
+        REPO_ROOT / "src/app/runtime/capabilities/material_flow/rough_sorter_inventory_admission_policy.py"
+    ).exists()

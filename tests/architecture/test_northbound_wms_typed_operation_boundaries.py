@@ -6,9 +6,28 @@ import importlib
 import importlib.util
 import inspect
 from pathlib import Path
-from types import SimpleNamespace
+
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_provider_catalog,
+    build_provider_profile_payload,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _assert_shared_effect_definition_only(operation_paths: tuple[Path, ...]) -> None:
+    """每项 operation 只保留静态 Definition，不得恢复专用执行类。"""
+
+    for operation_path in operation_paths:
+        sources = {path.name for path in operation_path.glob("*.py")}
+        assert sources == {"definition.py"}
+        definition_source = (operation_path / "definition.py").read_text(encoding="utf-8")
+        assert "build_wms_effect_capability_definition" in definition_source
+        assert all(
+            legacy_module not in definition_source
+            for legacy_module in ("handler", "gateway", "effect_adapter", "intent_adapter")
+        )
 
 
 def _load(module_name: str):
@@ -59,13 +78,11 @@ def test_runtime_profile_and_operation_contract_do_not_embed_build_fixtures_or_s
     assert all(term not in profile_source for term in forbidden)
 
 
-def test_provider_mapper_does_not_fabricate_missing_values() -> None:
-    adapter = _load("src.app.wms_integration.adapters.query_inventory_operation_adapter")
-    source = inspect.getsource(adapter.map_provider_query_inventory_response)
+def test_query_result_is_validated_directly_without_operation_adapter() -> None:
+    from src.app.wms_integration.ports.inventory_operations import InventorySnapshotQueryResult
 
-    assert '"UNKNOWN"' not in source
-    assert 'or ""' not in source
-    assert "float(" not in source
+    assert InventorySnapshotQueryResult.model_config["extra"] == "forbid"
+    assert not (REPO_ROOT / "src/app/wms_integration/adapters/query_inventory_operation_adapter.py").exists()
 
 
 def test_generated_operation_index_has_no_runtime_discovery() -> None:
@@ -77,48 +94,38 @@ def test_generated_operation_index_has_no_runtime_discovery() -> None:
     assert "__import__(" not in source
 
 
-def test_every_authored_wms_effect_declares_status_query_capability() -> None:
-    contracts = _load("src.app.runtime.system_capabilities.wms.contracts")
-    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+def test_authored_wms_effect_completion_modes_match_the_registry() -> None:
+    catalog = build_provider_catalog()
 
-    effects = tuple(
-        binding.operation
-        for binding in catalog.WMS_PROVIDER_PROFILE.bindings
-        if binding.operation.mode is contracts.WmsOperationMode.EFFECT
-    )
-    queries = tuple(
-        binding.operation
-        for binding in catalog.WMS_PROVIDER_PROFILE.bindings
-        if binding.operation.mode is contracts.WmsOperationMode.QUERY
-    )
+    effects = tuple(binding.operation for binding in catalog.bindings if binding.operation.mode.value == "EFFECT")
+    queries = tuple(binding.operation for binding in catalog.bindings if binding.operation.mode.value == "QUERY")
 
-    assert len(effects) == 3
-    assert all(operation.supports_status_query is True for operation in effects)
+    assert len(effects) == 16
+    assert sum(operation.supports_status_query for operation in effects) == 7
+    assert sum(not operation.supports_status_query for operation in effects) == 9
+    assert len(queries) == 19
     assert all(operation.supports_status_query is False for operation in queries)
 
 
 def test_wms_effect_callback_is_optional_generic_hint_without_terminal_adapters() -> None:
-    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
+    catalog = build_provider_catalog()
     contracts = _load("src.app.runtime.system_capabilities.wms.contracts")
 
     profile_without_callback = contracts.WmsProviderProfile(
-        identity=catalog.WMS_PROVIDER_PROFILE.identity,
-        bindings=catalog.WMS_PROVIDER_PROFILE.bindings,
+        identity=catalog.identity,
+        bindings=catalog.bindings,
     )
     assert profile_without_callback.callbacks == ()
-    assert tuple(callback.callback_type for callback in catalog.WMS_PROVIDER_PROFILE.callbacks) == (
-        "WMS_EFFECT_STATUS_HINT",
-    )
+    assert tuple(callback.callback_type for callback in catalog.callbacks) == ("WMS_EFFECT_STATUS_HINT",)
 
     capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
     assert list(capability_root.rglob("callback_adapter.py")) == []
-    for operation_path in (
+    shared_operation_paths = (
         capability_root / "inventory/confirm_inbound",
         capability_root / "fulfillment/notify_pkg_binding",
         capability_root / "fulfillment/full_box_exchange",
-    ):
-        assert "CALLBACK_CONTRACT" not in (operation_path / "__init__.py").read_text(encoding="utf-8")
-        assert "CALLBACK_CONTRACT" not in (operation_path / "contract.py").read_text(encoding="utf-8")
+    )
+    _assert_shared_effect_definition_only(shared_operation_paths)
 
 
 def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> None:
@@ -135,9 +142,9 @@ def test_wms_effect_hint_router_cannot_write_terminal_or_transport_state() -> No
     assert all(term not in source for term in forbidden)
 
 
-def test_wms_effect_preparation_has_one_shared_production_entry() -> None:
+def test_removed_effect_handlers_cannot_bypass_the_shared_t5_boundary() -> None:
     services_root = REPO_ROOT / "src/app/runtime/orchestration/services"
-    assert (services_root / "wms_effect_preparation_service.py").exists()
+    assert not (services_root / "wms_effect_preparation_service.py").exists()
     assert all(
         not (services_root / legacy_name).exists()
         for legacy_name in (
@@ -148,34 +155,23 @@ def test_wms_effect_preparation_has_one_shared_production_entry() -> None:
     )
 
     capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
-    for operation_path in (
+    shared_operation_paths = (
         capability_root / "inventory/confirm_inbound",
         capability_root / "fulfillment/full_box_exchange",
         capability_root / "fulfillment/notify_pkg_binding",
-    ):
-        handler_source = (operation_path / "handler.py").read_text(encoding="utf-8")
-        adapter_source = (operation_path / "effect_adapter.py").read_text(encoding="utf-8")
-        assert "wms_effect_preparation_service.prepare(" in handler_source
-        assert "operation=CONTRACT" in handler_source
-        assert "def build_envelope(" in adapter_source
-        assert "SystemOutbox(" not in adapter_source
+    )
+    _assert_shared_effect_definition_only(shared_operation_paths)
 
 
 def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalog() -> None:
     catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
 
-    sandbox = catalog.build_active_wms_provider_profile(
-        SimpleNamespace(APP_ENV="test", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2")
-    )
-    production = catalog.build_active_wms_provider_profile(
-        SimpleNamespace(APP_ENV="prod", WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2")
-    )
+    active_provider = catalog.build_wms_provider_catalog(build_compiled_provider_profile())
 
-    assert sandbox.identity.environment == "sandbox"
-    assert production.identity.environment == "production"
-    assert len(sandbox.bindings) == len(production.bindings) == 4
-    assert {binding.profile for binding in sandbox.bindings} == {sandbox.identity}
-    assert {binding.profile for binding in production.bindings} == {production.identity}
+    assert active_provider.identity.identity == "wms.2026-07-28.full-factory"
+    assert not hasattr(active_provider.compiled_profile.profile.profile, "environment")
+    assert len(active_provider.bindings) == 35
+    assert {binding.profile for binding in active_provider.bindings} == {active_provider.identity}
     assert not hasattr(catalog, "WMS_PROVIDER_PROFILES")
     assert not hasattr(catalog, "WMS_EXTERNAL_HTTP_EFFECT_PROFILES")
 
@@ -185,24 +181,15 @@ def test_single_deployment_builds_one_active_wms_provider_without_runtime_catalo
 
 
 def test_endpoint_or_secret_rotation_does_not_change_active_provider_identity() -> None:
-    catalog = _load("src.app.runtime.system_capabilities.wms.provider_catalog")
-    first = SimpleNamespace(
-        APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v1",
-        WMS_SYNC_BASE_URL="https://wms-one.invalid/api",
-        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1="first-secret",
-    )
-    rotated = SimpleNamespace(
-        APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_SYNC_BASE_URL="https://wms-two.invalid/api",
-        WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2="rotated-secret",
-    )
+    first_payload = build_provider_profile_payload()
+    rotated_payload = build_provider_profile_payload()
+    rotated_payload["server_url"] = "https://rotated-wms.example"
 
-    assert (
-        catalog.build_active_wms_provider_profile(first).identity
-        == catalog.build_active_wms_provider_profile(rotated).identity
-    )
+    first = build_provider_catalog(first_payload)
+    rotated = build_provider_catalog(rotated_payload)
+
+    assert first.identity == rotated.identity
+    assert first.profile_digest != rotated.profile_digest
 
 
 def test_query_shadow_readiness_platform_is_absent_from_production_source() -> None:
@@ -235,3 +222,9 @@ def test_query_shadow_readiness_platform_is_absent_from_production_source() -> N
     for path in production_boundaries:
         source = path.read_text(encoding="utf-8")
         assert all(term not in source for term in forbidden), path.relative_to(REPO_ROOT)
+
+
+def test_orphaned_wms_effect_binding_facade_is_physically_absent() -> None:
+    capability_root = REPO_ROOT / "src/app/runtime/system_capabilities/wms"
+
+    assert not (capability_root / "effect_binding.py").exists()

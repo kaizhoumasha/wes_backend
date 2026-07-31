@@ -1,0 +1,4 @@
+from src.app.runtime.system_capabilities.wms.query_definition import build_wms_query_capability_definition
+from src.app.wms_integration.ports.master_data_operations import LIST_MATERIALS
+
+DEFINITION = build_wms_query_capability_definition(LIST_MATERIALS)

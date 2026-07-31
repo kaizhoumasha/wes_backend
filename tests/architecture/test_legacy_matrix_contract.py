@@ -41,6 +41,7 @@ EXPECTED_ACTIVE_PLATFORM_PATHS = frozenset(
         "src/app/workline/services/plugin_binding_service.py",
         "tests/workline_plugins/test_conformance_contract.py",
         "tests/workline_plugins/test_generated_facts_contract.py",
+        "tests/workline_runtime/material_flow/test_rough_sorter_q19_admission_service.py",
         "tests/workline_runtime/test_workline_session_repository_versioning.py",
     }
 )
@@ -188,6 +189,26 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             assert rows[entry_id][field] == value
 
 
+def test_wms_boundary_seeds_follow_each_legacy_source_semantics() -> None:
+    """WMS boundary seed 必须按旧入口真实职责迁移，物理删除入口不得伪造承载者。"""
+    expected = {
+        "src/app/callback/services/callback_ingress_service.py": ("delete", "", ""),
+        "src/workline_runtime/services.py": (
+            "rebuild",
+            "src/app/wms_integration/ports/inventory_operations.py",
+            "wms.inventory.query_inventory@v1",
+        ),
+    }
+    seed_entries = [entry for entry in parse_entries() if "WMS_INTEGRATION_BOUNDARY seed" in entry.business_semantics]
+
+    assert len(seed_entries) == 2
+    assert {
+        entry.relative_path: (entry.strategy, entry.target_path, entry.target_capability) for entry in seed_entries
+    } == expected
+    assert all(not target_path or (REPO_ROOT / target_path).is_file() for _, target_path, _ in expected.values())
+    assert not (REPO_ROOT / "src/app/runtime/orchestration/ports/wms_fulfillment.py").exists()
+
+
 @pytest.mark.parametrize(
     ("business_semantics", "path", "symbol", "expected_path", "expected_capability"),
     [
@@ -198,14 +219,6 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             "src/app/runtime/capabilities/material_flow/",
             "NgReturnCapability.process",
             id="ng-return",
-        ),
-        pytest.param(
-            "[phase" + "4] 单层机架编排业务流程",
-            "tests/workline_runtime/test_single_layer_rack_orchestration_service.py",
-            "test_station_claim_active_status_accepts_system_outbox_status_enum",
-            "src/app/runtime/capabilities/material_flow/",
-            "SingleLayerRackCapability.orchestrate",
-            id="single-layer-rack",
         ),
         pytest.param(
             "[phase" + "4] Bin Cell 预约业务流程",
@@ -308,13 +321,10 @@ def test_capability_implementation_import_device_seed_targets_device_command_por
     assert entry.target_capability == "DeviceCommandPort.dispatch"
 
 
-def test_capability_implementation_import_wms_seed_targets_wms_fulfillment_port():
-    """import wms_integration 实现的 CAPABILITY_IMPLEMENTATION_IMPORT seed 仍指向 WMS 履约 port。"""
+def test_removed_single_layer_transport_has_no_capability_implementation_import_seed():
+    """旧单层货架 transport 被删除后，不再保留 WMS compatibility seed。"""
     entry = _entry_by_id(
         "legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT"
     )
 
-    assert entry is not None
-    assert entry.business_semantics == "capability import wms_integration 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed)"
-    assert entry.target_path == "src/app/runtime/orchestration/ports/wms_fulfillment.py"
-    assert entry.target_capability == "WmsFulfillmentPort.request_transport"
+    assert entry is None

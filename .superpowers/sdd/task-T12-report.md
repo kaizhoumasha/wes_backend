@@ -44,7 +44,7 @@ TDD 首轮 full-box 合同/consumer 测试为 6 failed、1 passed；最小实现
 孤立且无生产调用方的 `WmsTypedPortService`、`WmsEndpointConfig`、旧 HTTP client、service locator
 及其专属测试已删除。QUERY factory 和 EFFECT gateway 统一使用 typed Provider catalog：
 
-- `WMS_SYNC_BASE_URL` 是 WMS typed operation 唯一根地址；
+- Provider profile 的 `server_url` 是 WMS typed operation 唯一根地址；
 - operation 自身声明 `endpoint_path / target_code / http_method / budget`；
 - EFFECT 冻结时按 pinned provider profile 构造 typed endpoint registry；
 - 通用 `sys.EndpointRegistry` 仅保留 RCS target，不再重复声明 WMS 北向 operation target；

@@ -1,18 +1,8 @@
 """WorkLine 模型导出。
 
-WorkLine 运行态迁出后收缩为纯配置域 model 聚合:workline 配置域 model + safety 跨域 enum +
-rack.model 透传。运行态 model 已物理迁入 runtime/orchestration/models/。
+WorkLine 运行态迁出后收缩为纯配置域 model 聚合：workline 配置域 model + safety 跨域 enum。
+运行态 model 已物理迁入 runtime/orchestration/models/。
 """
-
-from src.app.rack.models import (
-    RackTask,
-    RackTaskBase,
-    RackTaskCreate,
-    RackTaskResponse,
-    RackTaskStatus,
-    RackTaskType,
-    RackTaskUpdate,
-)
 
 from .migration_inventory import (
     WorklineCapabilityRequirementInventoryItem,
@@ -72,13 +62,6 @@ __all__ = [
     "PlaneObjectSnapshot",
     "PlaneSceneView",
     "PlaneSnapshot",
-    "RackTask",
-    "RackTaskBase",
-    "RackTaskCreate",
-    "RackTaskResponse",
-    "RackTaskStatus",
-    "RackTaskType",
-    "RackTaskUpdate",
     "WorkLine",
     "WorkLineActivationRequest",
     "WorkLineBase",

@@ -8,8 +8,8 @@
   `sha256:ef142f2a47bd604f67c22802b22cd39b805f6f677c43e3a5e2f6e9e0e497348e`；
   ECS Docker image `sha256:e65a6bc07c5e8150e87de43c8cf041e8dd1773acd172ca6f35383403047ab2bf`
 - WES 确认状态：实际 Compose Mock TCP 黑盒探针 `PASS`
-- 开发 Mock WMS 确认状态：三个 typed EFFECT 公开 HTTP 路由 `PASS`
-- 依据：[WMS 北向最小交互合同](../contracts/wms-northbound-interaction-contract.md)
+- 开发 Mock WMS 确认状态：E08–E14 七个 typed EFFECT 公开 HTTP 路由 `PASS`
+- 依据：[WMS 北向 35 项 Operation 合同](../contracts/wms-northbound-interaction-contract.md)
 
 ## 范围与限制
 
@@ -23,7 +23,7 @@
 | --- | ---: | --- |
 | WMS 幂等记录保留期 | 9 秒 | `/northbound/contract.idempotency_retention_seconds` |
 | WMS 状态可见性 SLA | 2 秒 | `/northbound/contract.status_visibility_sla_seconds` |
-| Submit deadline | 30 秒 | `/northbound/contract.submit_deadline_seconds`，与三个 typed EFFECT author-time budget 一致 |
+| Submit deadline | 30 秒 | `/northbound/contract.submit_deadline_seconds`，与 E08–E14 author-time budget 一致 |
 | Status deadline | 2 秒 | `/northbound/contract.status_deadline_seconds` |
 | 最大响应体 | 4096 bytes | `/northbound/contract.max_response_bytes` 与有界读取负测 |
 
@@ -42,15 +42,12 @@ timestamp、重复 nonce、错误 content hash 或签名篡改；探针不记录
 
 | 项目 | 值 |
 | --- | --- |
-| confirm inbound submit | `POST /api/wms/inventory/confirm-inbound` |
-| full box exchange submit | `POST /api/wms/fulfillment/full-box-exchange` |
-| legacy full box exchange | `POST /api/wms/legacy/full-box-exchange`，仅该路由发送 `BUSINESS_COMPLETED` 历史完成 callback |
-| package binding submit | `POST /api/wms/fulfillment/package-binding` |
+| E08–E14 submit | registry 冻结的七个 `/api/wms/fulfillment/*` path |
 | status endpoint | `GET /northbound/operations/status` |
 | 公开效果观察面 | `GET /debug/northbound/effects`，仅返回 effect count |
 | Mock-only 控制面 | `POST /debug/northbound/faults`、`/debug/northbound/visibility`、`/debug/northbound/reject`、`/debug/northbound/clock`、`/debug/reset` |
 | Mock-only callback evidence | `GET /debug/northbound/callback-hints`，仅含关联键与 callback type 的脱敏投影 |
-| operation | `wms.inventory.confirm_inbound@v1`、`wms.fulfillment.full_box_exchange@v1`、`wms.fulfillment.notify_pkg_binding@v1` |
+| operation | `wms.fulfillment.request_rack_supply@v1` 至 `wms.fulfillment.request_load_unit_transport@v1` 的 E08–E14 精确集合 |
 
 `/debug/northbound/*` 与 `/debug/reset` 只供开发 Mock 探针使用，绝不属于未来外部 WMS 接口。
 
@@ -93,10 +90,10 @@ ASGI 公共路由测试代替。所有强制 case 通过：
 
 | case | 结果 |
 | --- | --- |
-| 三个 operation 的首次提交、并发同键重放、已完成重放、同 key 冲突与单一 effect | PASS |
-| 三个 operation 的 required/extra/blank/type/finite-positive typed body 负测，失败无记录 | PASS |
+| 七个 operation 的首次提交、并发同键重放、已完成重放、同 key 冲突与单一 effect | PASS |
+| 七个 operation 的 required/extra/blank/type/finite-positive typed body 负测，失败无记录 | PASS |
 | 非对象、畸形 JSON、错误 Content-Type 固定返回 `INVALID_TYPED_REQUEST`；同 payload 不同字段顺序/空白安全重放 | PASS |
-| 三个 operation 的 ACCEPTED → PROCESSING → COMPLETED、单调版本、非空 typed result 关联字段、REJECTED、NOT_FOUND | PASS |
+| 七个 operation 的 ACCEPTED → PROCESSING → COMPLETED、单调版本、非空 typed result 关联字段、REJECTED、NOT_FOUND | PASS |
 | `t0 / visibility_sla-1 / visibility_sla` 可见性边界、`retention-1 / retention` 过期边界与边界后 effect=2 | PASS |
 | Submit content hash、真实 WES sender/signature、过期 timestamp、重复 nonce、Status signature 篡改拒绝 | PASS |
 | 精确 path/method/operation fault scope；并发匹配请求恰好一个 claim，health/inventory/legacy 不消费 | PASS |

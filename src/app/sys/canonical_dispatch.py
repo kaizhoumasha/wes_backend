@@ -15,19 +15,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
+from src.app.wms_integration.operation_registry import EFFECT_OPERATION_IDENTITIES
 from src.utils.value_normalization import require_string
 
 if TYPE_CHECKING:
     from src.app.sys.external_http_binding import FrozenExternalHttpBinding
 
 _CANONICAL_WMS_OPERATION_IDENTITY_RE = re.compile(r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")
-_WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
-    {
-        "wms.inventory.confirm_inbound@v1",
-        "wms.fulfillment.full_box_exchange@v1",
-        "wms.fulfillment.notify_pkg_binding@v1",
-    }
-)
+_WMS_EFFECT_OPERATION_IDENTITIES = EFFECT_OPERATION_IDENTITIES
 
 
 def _persisted_bytes(value: object, field_name: str) -> bytes:
@@ -129,14 +124,14 @@ class ExternalHttpDispatchRequest:
 
     endpoint: EndpointDefinition
     payload: CanonicalPayload
-    method: Literal["POST"]
+    method: Literal["GET", "POST"]
     timeout_seconds: float
-    credential_reference: str
-    auth_scheme: Literal["HMAC_SHA256"]
-    timestamp: str
-    nonce: str
+    credential_reference: str | None
+    auth_scheme: Literal["NONE", "HMAC_SHA256"]
+    timestamp: str | None
+    nonce: str | None
     operation_identity: str
-    _signature: str = field(repr=False)
+    _signature: str | None = field(repr=False)
     idempotency_key: str | None = None
 
     @classmethod
@@ -146,21 +141,15 @@ class ExternalHttpDispatchRequest:
         binding: FrozenExternalHttpBinding,
         canonical_payload_bytes: object,
         payload_hash: object,
-        secret: bytes,
-        timestamp: str,
-        nonce: str,
+        secret: bytes | None,
+        timestamp: str | None,
+        nonce: str | None,
         idempotency_key: str | None = None,
     ) -> ExternalHttpDispatchRequest:
         payload = CanonicalPayload.from_persisted(
             canonical_payload_bytes=canonical_payload_bytes,
             payload_hash=payload_hash,
         )
-        if not isinstance(secret, bytes) or not secret:
-            raise ValueError("resolved credential material must be non-empty bytes")
-        timestamp = str(timestamp or "").strip()
-        nonce = str(nonce or "").strip()
-        if not timestamp or "\n" in timestamp or not nonce or "\n" in nonce:
-            raise ValueError("request authentication timestamp and nonce must be non-empty single-line values")
         if binding.operation_identity in _WMS_EFFECT_OPERATION_IDENTITIES and idempotency_key is None:
             raise ValueError("WMS EFFECT request requires a non-empty idempotency_key")
         if idempotency_key is not None:
@@ -174,12 +163,23 @@ class ExternalHttpDispatchRequest:
             if not _CANONICAL_WMS_OPERATION_IDENTITY_RE.fullmatch(binding.operation_identity):
                 raise ValueError("WMS EFFECT request requires a canonical operation identity")
         target = binding.target_snapshot
-        path = urlparse(target.url).path or "/"
-        signature_fields = [target.http_method, path, timestamp, nonce, payload.sha256]
-        if idempotency_key is not None:
-            signature_fields.extend((binding.operation_identity, idempotency_key))
-        signature_payload = "\n".join(signature_fields).encode()
-        signature = hmac.new(secret, signature_payload, hashlib.sha256).hexdigest()
+        if binding.auth_scheme == "NONE":
+            if secret is not None or timestamp is not None or nonce is not None:
+                raise ValueError("NONE request must not carry authentication material")
+            signature = None
+        else:
+            if not isinstance(secret, bytes) or not secret:
+                raise ValueError("resolved credential material must be non-empty bytes")
+            timestamp = str(timestamp or "").strip()
+            nonce = str(nonce or "").strip()
+            if not timestamp or "\n" in timestamp or not nonce or "\n" in nonce:
+                raise ValueError("request authentication timestamp and nonce must be non-empty single-line values")
+            path = urlparse(target.url).path or "/"
+            signature_fields = [target.http_method, path, timestamp, nonce, payload.sha256]
+            if idempotency_key is not None:
+                signature_fields.extend((binding.operation_identity, idempotency_key))
+            signature_payload = "\n".join(signature_fields).encode()
+            signature = hmac.new(secret, signature_payload, hashlib.sha256).hexdigest()
         return cls(
             endpoint=EndpointDefinition(code=target.code, url=target.url),
             payload=payload,
@@ -195,8 +195,16 @@ class ExternalHttpDispatchRequest:
         )
 
     @property
-    def body(self) -> bytes:
-        return self.payload.body
+    def body(self) -> bytes | None:
+        """POST 发送冻结 JSON body；GET 明确保持无 body。"""
+
+        return self.payload.body if self.method == "POST" else None
+
+    @property
+    def query_params(self) -> dict[str, Any] | None:
+        """GET 从同一冻结 canonical bytes 恢复 query projection。"""
+
+        return self.payload.parse_projection() if self.method == "GET" else None
 
     @property
     def payload_hash(self) -> str:
@@ -206,15 +214,19 @@ class ExternalHttpDispatchRequest:
     def headers(self) -> dict[str, str]:
         """返回封闭的认证 header 集；调用方不能注入自由 header mapping。"""
 
-        headers = {
-            "Content-Type": "application/json",
-            "X-WES-Content-SHA256": self.payload_hash,
-            "X-WES-Credential-Reference": self.credential_reference,
-            "X-WES-Nonce": self.nonce,
-            "X-WES-Signature": self._signature,
-            "X-WES-Signature-Algorithm": self.auth_scheme,
-            "X-WES-Timestamp": self.timestamp,
-        }
+        headers = {"X-WES-Content-SHA256": self.payload_hash}
+        if self.method == "POST":
+            headers["Content-Type"] = "application/json"
+        if self.auth_scheme == "HMAC_SHA256":
+            headers.update(
+                {
+                    "X-WES-Credential-Reference": str(self.credential_reference),
+                    "X-WES-Nonce": str(self.nonce),
+                    "X-WES-Signature": str(self._signature),
+                    "X-WES-Signature-Algorithm": self.auth_scheme,
+                    "X-WES-Timestamp": str(self.timestamp),
+                }
+            )
         if self.idempotency_key is not None:
             headers["Idempotency-Key"] = self.idempotency_key
             headers["X-WES-Operation-Identity"] = self.operation_identity

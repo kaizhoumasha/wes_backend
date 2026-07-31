@@ -17,6 +17,7 @@ pipeline {
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_ENV_FILE = '.env.test'
         DEPLOY_COMPOSE_FILE = 'docker-compose.test-deploy.yml'
+        WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'
         HEALTH_CHECK_URL = 'http://127.0.0.1:8001/health'
         HEALTH_CHECK_RETRIES = '36'
         IMAGE_PULL_RETRIES = '24'
@@ -101,7 +102,21 @@ pipeline {
                         git clean -fd
                         cp -f "${DEPLOY_ENV_FILE}" .env
 
+                        if [ -z "${WMS_PROVIDER_PROFILE_HOST_FILE:-}" ]; then
+                            echo "❌ 未配置 WMS Provider profile 宿主机路径"
+                            exit 1
+                        fi
+                        if [ ! -f "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
+                            echo "❌ WMS Provider profile 不是普通文件: ${WMS_PROVIDER_PROFILE_HOST_FILE}"
+                            exit 1
+                        fi
+                        if [ ! -r "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
+                            echo "❌ WMS Provider profile 当前用户不可读: ${WMS_PROVIDER_PROFILE_HOST_FILE}"
+                            exit 1
+                        fi
+
                         export REGISTRY_URL="${REGISTRY_URL}"
+                        export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"
                         sh ./docker/test/registry-login.sh
 
                         export BACKEND_IMAGE="${DEPLOY_BACKEND_IMAGE}"
@@ -140,7 +155,7 @@ pipeline {
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \
-                            pull api celery_worker frontend
+                            pull api celery celery-wms-fulfillment frontend
 
                         echo "📄 从前端镜像提取菜单清单..."
                         MANIFEST_DIR="${WORKSPACE}/.ci-artifacts/frontend"
@@ -160,7 +175,7 @@ pipeline {
                         docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \
-                            up -d --force-recreate api celery_worker frontend nginx
+                            up -d --force-recreate api celery celery-wms-fulfillment frontend nginx
 
                         NGINX_PORT=$(grep -E '^NGINX_HTTP_PORT=' "${DEPLOY_ENV_FILE}" | tail -n 1 | cut -d= -f2)
                         NGINX_PORT=${NGINX_PORT:-8080}
@@ -190,7 +205,7 @@ pipeline {
                             docker compose \
                                 --env-file "${DEPLOY_ENV_FILE}" \
                                 -f "${DEPLOY_COMPOSE_FILE}" \
-                                logs --tail=150 api celery_worker frontend nginx
+                                logs --tail=150 api celery celery-wms-fulfillment frontend nginx
                             exit 1
                         fi
 

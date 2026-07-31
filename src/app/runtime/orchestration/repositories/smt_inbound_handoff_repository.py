@@ -535,6 +535,37 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         result = await db.execute(self.build_due_recovery_demand_statement(now=now, limit=limit))
         return list(result.scalars().all())
 
+    async def lock_next_due_e11_demand(
+        self,
+        db: AsyncSession,
+        *,
+        now: Any,
+        excluded_demand_ids: frozenset[int] = frozenset(),
+    ) -> SmtInboundHandoffDemand | None:
+        """SKIP LOCKED 取得一个尚未拥有 E11 root 的 due demand，供短事务 producer 使用。"""
+
+        columns = cast("Any", SmtInboundHandoffDemand).__table__.c
+        predicates = [
+            columns.status.in_(
+                [
+                    SmtInboundHandoffDemandStatus.CREATED.value,
+                    SmtInboundHandoffDemandStatus.EVALUATING.value,
+                ]
+            ),
+            columns.active_full_box_exchange_intent_id.is_(None),
+            or_(columns.next_attempt_at.is_(None), columns.next_attempt_at <= now),
+        ]
+        if excluded_demand_ids:
+            predicates.append(columns.id.not_in(tuple(sorted(excluded_demand_ids))))
+        result = await db.execute(
+            select(SmtInboundHandoffDemand)
+            .where(*predicates)
+            .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.updated_at.asc(), columns.id.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        return result.scalar_one_or_none()
+
     def build_stuck_source_item_recovery_statement(
         self,
         *,

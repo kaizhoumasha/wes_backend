@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.core.task_queue_gateway import OutboxDispatchTarget
 
 
 class WriteBackDisposition(str, Enum):
@@ -23,10 +26,18 @@ class RuntimeIntentEffectResult:
 
     disposition: WriteBackDisposition = WriteBackDisposition.PROCESSED
     business_reject_evidence: dict[str, Any] | None = None
+    outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
 
     @classmethod
-    def processed(cls) -> RuntimeIntentEffectResult:
-        return cls(disposition=WriteBackDisposition.PROCESSED)
+    def processed(
+        cls,
+        *,
+        outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset(),
+    ) -> RuntimeIntentEffectResult:
+        return cls(
+            disposition=WriteBackDisposition.PROCESSED,
+            outbox_dispatch_targets=outbox_dispatch_targets,
+        )
 
     @classmethod
     def resource_retry(cls) -> RuntimeIntentEffectResult:

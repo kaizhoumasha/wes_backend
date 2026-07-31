@@ -9,7 +9,7 @@ from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from src.app.device.models.command import CommandResult, CommandStatus
 from src.app.device.repositories import (
@@ -52,13 +52,9 @@ from src.app.workline.models.workline import WorkLineRunMode
 from src.app.workline.repositories.workline_repository import WorkLineRepository  # noqa: TC001
 from src.app.workline.trace_context import TraceContext
 from src.core.base_service import BaseService
-from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_str
-
-if TYPE_CHECKING:
-    from src.app.rack.services import RackTaskLifecycleService
-
 
 _OPEN_SESSION_STATUSES = {
     SessionStatus.NEW,
@@ -126,7 +122,6 @@ class WorklineOperationService(BaseService[Any, Any]):
         device_repo: DeviceRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
         runtime_hold_repo: RuntimeHoldRepository | None = None,
-        rack_task_lifecycle_service: RackTaskLifecycleService | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         super().__init__(inbox_repo or runtime_inbox_repository, enable_cache=False)
@@ -138,19 +133,10 @@ class WorklineOperationService(BaseService[Any, Any]):
         self.device_repo = device_repo or device_repository
         self.command_repo = command_repo or device_command_repository
         self.runtime_hold_repo = runtime_hold_repo or runtime_hold_repository
-        self._rack_task_lifecycle_service = rack_task_lifecycle_service
         self._queue_gateway = queue_gateway
 
-    @property
-    def rack_task_lifecycle_service(self) -> Any:
-        if self._rack_task_lifecycle_service is not None:
-            return self._rack_task_lifecycle_service
-        from src.app.rack.services import rack_task_lifecycle_service as default_rack_task_lifecycle_service
-
-        return default_rack_task_lifecycle_service
-
     def _enqueue_outbox_dispatch(self) -> None:
-        self._queue_gateway.enqueue_outbox(limit=50)
+        self._queue_gateway.enqueue_outbox(targets=(OutboxDispatchTarget.SYSTEM,), limit=50)
 
     async def _accept_runtime_message(
         self,
@@ -511,6 +497,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         current_wait_type: str,
         dispatch_key: str,
     ) -> str:
+        del current_wait_type
         resolved = self._first_non_empty_text(
             callback_type,
             raw_payload.get("callback_type"),
@@ -525,12 +512,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             resolved = self._first_non_empty_text(rack_operation.get("resume_callback_type"))
             if resolved is not None:
                 return resolved
-
-        actions = outbox_payload.get("actions")
-        action_type = actions.get("action") if isinstance(actions, dict) else None
-        rack_task_type = enum_str(outbox_payload.get("task_type") or action_type)
-        if current_wait_type == "RACK_OPERATION" and rack_task_type == "ALLOCATE_AND_MOVE_RACK":
-            return "WMS_RACK_ARRIVED"
 
         raise ValueError(f"Outbox 缺少外部回调类型: dispatch_key={dispatch_key}")
 
@@ -808,6 +789,13 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if source_system not in {"WMS", "RCS"}:
             raise ValueError(f"外部来源系统不支持: source_system={source_system}")
+        from src.app.callback.contracts.external_callbacks import validate_external_callback_type
+
+        resolved_callback_type = validate_external_callback_type(
+            raw_payload,
+            declared_callback_type=resolved_callback_type,
+            declared_source_system=source_system,
+        )
 
         trace_id = getattr(session, "trace_id", None) or outbox_payload.get("trace_id") or raw_payload.get("trace_id")
         if not isinstance(trace_id, str) or not trace_id.strip():
@@ -868,13 +856,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             received_at=callback_received_at,
             payload=inbox_payload,
         )
-
-        if inbox_result.created:
-            await self.rack_task_lifecycle_service.record_callback_from_external_http(
-                db=db,
-                payload_json=inbox_payload,
-                trace_id=trace_id,
-            )
 
         _transition_sandbox_outbox_to_sent(outbox)
         if getattr(outbox, "sent_at", None) is None:

@@ -32,6 +32,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
 )
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION as SMT_SORTING_INBOUND_DEFINITION
+from src.app.wms_integration.ports.event import WmsInventoryUpdatedEvent
 from src.app.workline.models import WorkLine, WorklinePluginBinding
 from src.app.workline.services.plugin_binding_service import (
     PluginBindingAdmissionError,
@@ -42,7 +43,8 @@ from src.core.conf import settings
 from src.utils.timezone import timezone
 
 SMOKE_CONTRACT_VERSION = "runtime-monitor-smoke-v1"
-SMOKE_PROVIDER_PROFILE = "wms.2026-07-06.material-flow.sandbox"
+SMOKE_PROVIDER_PROFILE = "wms.2026-07-28.full-factory"
+SMOKE_CTU_BASKET_CAPACITY = 6
 SINGLE_LAYER_SMOKE_POSITION_CODE = "SOURCE_STATION_A"
 
 
@@ -54,7 +56,21 @@ async def seed_runtime_monitor_smoke(db: AsyncSession, *, commit: bool = True) -
     single_layer_workline = await _require_workline(db, TEST_SMT_SORTING_INBOUND_LINE_CODE)
     single_layer_workline.plugin_key = SMT_SORTING_INBOUND_DEFINITION.plugin_key
     single_layer_workline.contract_version = SMT_SORTING_INBOUND_DEFINITION.contract_version
-    single_layer_workline.config = {"provider_profile": SMOKE_PROVIDER_PROFILE}
+    single_layer_workline.config = {
+        "provider_profile": SMOKE_PROVIDER_PROFILE,
+        "ctu_basket_capacity": SMOKE_CTU_BASKET_CAPACITY,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    }
     await db.flush()
     await _assert_seed_workline_safe(db, single_layer_workline)
     await _mark_ready(db, single_layer_workline)
@@ -96,29 +112,31 @@ async def _seed_single_layer_sessions(db: AsyncSession, workline: WorkLine) -> l
             },
         },
     )
-    callback_session = await _upsert_session(
+    inventory_event = WmsInventoryUpdatedEvent(
+        source_system="WMS",
+        event_type="WMS_INVENTORY_UPDATED",
+        source_event_id="runtime-monitor-smoke:inventory-updated",
+        source_version="1",
+        occurred_at=timezone.now_utc(),
+        request_id="runtime-monitor-smoke-wms-inventory-updated",
+        correlation_id="runtime-monitor-smoke-wms-inventory-updated",
+        data={
+            "inventory_reference": "runtime-monitor-smoke:inventory-updated",
+            "material_code": "620100L00-011-G",
+        },
+    )
+    inventory_updated_session = await _upsert_session(
         db,
         workline,
         session_code="runtime-monitor-smoke:single-layer:wms-callback",
         business_key="runtime-monitor-smoke:single-layer:wms-callback",
-        trace_id="runtime-monitor-smoke-wms-callback",
+        trace_id="runtime-monitor-smoke-wms-inventory-updated",
         context_json={
-            "rack_operation": {
-                "operation_key": "runtime-monitor-smoke:rack-op-callback",
-                "status": "ARRIVED",
-                "source_system": "WMS",
-                "callback_type": "WMS_RACK_ARRIVED",
-                "rack_kind": "SINGLE_LAYER",
-                "rack_code": "RACK-SMOKE-CALLBACK",
-                "bin_code": "BIN-SMOKE-CALLBACK",
-                "target_position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
-                "work_position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
-                "occurred_at": now.isoformat(),
-            },
+            "wms_inventory_updated_event": inventory_event.model_dump(mode="json"),
             "resource_state_events": _trace_resource_events(now),
         },
     )
-    return [waiting_session, callback_session]
+    return [waiting_session, inventory_updated_session]
 
 
 def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]:
@@ -131,8 +149,8 @@ def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]
                 "resource_code": f"PKG-SMOKE-{index:03d}",
                 "display_label": f"PKG PKG-SMOKE-{index:03d}",
                 "pkg_code": f"PKG-SMOKE-{index:03d}",
-                "rack_code": "RACK-SMOKE-CALLBACK",
-                "bin_code": "BIN-SMOKE-CALLBACK",
+                "rack_code": "RACK-SMOKE-INVENTORY",
+                "bin_code": "BIN-SMOKE-INVENTORY",
                 "rack_slot_code": "A",
                 "bin_cell_code": f"CELL-SMOKE-{cell_index}",
                 "material_code": "620100L00-011-G",
@@ -141,12 +159,13 @@ def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]
                 "reel_count": 1,
                 "reel_code": f"REEL-SMOKE-{index:03d}",
                 "position_index": index,
-                "evidence_kind": "WMS_CALLBACK_EVIDENCE",
+                "evidence_kind": "TRACE_RESOURCE_EVIDENCE",
                 "station_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "source_system": "WMS",
-                "callback_type": "WMS_RACK_ARRIVED",
-                "trace_id": "runtime-monitor-smoke-wms-callback",
+                "event_type": "WMS_INVENTORY_UPDATED",
+                "inventory_reference": "runtime-monitor-smoke:inventory-updated",
+                "trace_id": "runtime-monitor-smoke-wms-inventory-updated",
                 "occurred_at": now.isoformat(),
             }
         )
@@ -292,7 +311,7 @@ async def _ensure_smoke_binding(db: AsyncSession, workline: WorkLine) -> Worklin
     workline.active_plugin_config_hash = binding.typed_config_hash
     workline.active_plugin_index_digest = binding.generated_index_digest
     workline.active_plugin_provider_requirements_json = [
-        f"{profile['provider_code']}@{profile['contract_version']}#{profile['environment']}"
+        f"{profile['provider_code']}@{profile['contract_version']}"
         for profile in binding.provider_profile_snapshot_json
     ]
     await db.flush()

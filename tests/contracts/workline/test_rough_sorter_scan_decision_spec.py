@@ -14,6 +14,9 @@ import pytest
 from src.app.device.models.command import CommandCallbackResult, CommandResult, CommandStatus
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import normalize_six_in_one_payload
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_context import (
+    RoughSorterQ19AdmissionDecision,
+)
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
     RoughSorterBindingSnapshot,
 )
@@ -71,7 +74,7 @@ EXPECTED_CASE_OVERVIEW = {
     # trigger(event, discriminator), outcome, state(material, command, session, context_phase),
     # intents(kind, action, scope), implementation status, reason code
     "RS-SD-001": (
-        ("SCAN_COMPLETED", (("barcode_decision", "OK"), ("pkg_id_condition", "PRESENT"))),
+        ("SCAN_COMPLETED", (("pkg_id_condition", "PRESENT"), ("q19_decision", "ADMIT"))),
         "PICK_AND_PUT_PERSISTED",
         ("IN_TRANSIT", None, "WAITING_DEVICE_RESULT", "PICK_TO_PIPELINE"),
         (
@@ -106,7 +109,7 @@ EXPECTED_CASE_OVERVIEW = {
     "RS-SD-004": (
         (
             "COMMAND_RESULT",
-            (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "ADMIT")),
+            (("command_result", "SUCCESS"), ("measurement", "OK"), ("q19_fact", "ADMIT_RECORDED")),
         ),
         "MOVE_FORWARD_PERSISTED",
         ("IN_TRANSIT", None, "WAITING_DEVICE_RESULT", "MOVING_FORWARD"),
@@ -117,7 +120,7 @@ EXPECTED_CASE_OVERVIEW = {
     "RS-SD-005": (
         (
             "COMMAND_RESULT",
-            (("command_result", "SUCCESS"), ("measurement", "NG"), ("wms_admission", "NOT_QUERIED")),
+            (("command_result", "SUCCESS"), ("measurement", "NG")),
         ),
         "MOVE_TO_NG_PERSISTED",
         ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
@@ -127,14 +130,19 @@ EXPECTED_CASE_OVERVIEW = {
     ),
     "RS-SD-006": (
         (
-            "COMMAND_RESULT",
-            (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "REJECT")),
+            "SCAN_COMPLETED",
+            (("q19_decision", "REJECT"), ("q19_reason_code", "PACKAGE_NOT_ADMISSIBLE")),
         ),
         "MOVE_TO_NG_PERSISTED",
         ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
-        (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
+        (
+            ("CREATE_MATERIAL_UNIT", None, None),
+            ("UPDATE_CONTEXT", None, None),
+            ("MARK_NG", None, None),
+            ("COMMAND", "MOVE_TO_NG", None),
+        ),
         "covered",
-        "WMS_REJECTED",
+        "PACKAGE_NOT_ADMISSIBLE",
     ),
     "RS-SD-007": (
         (
@@ -142,7 +150,6 @@ EXPECTED_CASE_OVERVIEW = {
             (
                 ("command_result", "SUCCESS"),
                 ("measurement_contract", "INVALID"),
-                ("wms_admission", "NOT_QUERIED"),
             ),
         ),
         "HOLD",
@@ -169,14 +176,14 @@ EXPECTED_CASE_OVERVIEW = {
     ),
     "RS-SD-010": (
         (
-            "COMMAND_RESULT",
-            (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "TIMEOUT")),
+            "SCAN_COMPLETED",
+            (("q19_failure", "TIMEOUT"), ("q19_provider_outcome", "TECHNICAL_FAILURE")),
         ),
         "HOLD",
-        ("IN_TRANSIT", "COMPLETED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
-        (("BLOCK", None, "MATERIAL"),),
-        "covered",
-        "WMS_TIMEOUT",
+        ("NOT_CREATED", "NOT_CREATED", "RUNNING", "READY"),
+        (),
+        "blocked",
+        None,
     ),
     "RS-SD-011": (
         ("REPLAY_REQUEST", (("duplicate_digest", "SAME"),)),
@@ -219,7 +226,7 @@ REQUIRED_CASE_FIELDS = {
 ALLOWED_TRIGGER_TYPES = {"SCAN_COMPLETED", "COMMAND_RESULT", "TIMER_TIMEOUT", "REPLAY_REQUEST"}
 ALLOWED_STATE_VALUES = {
     "material": {status.value for status in MaterialUnitStatus} | {"NOT_CREATED", "UNCHANGED"},
-    "context_phase": {"PICK_TO_PIPELINE", "NG_MOVING", "MOVING_FORWARD", "UNCHANGED"},
+    "context_phase": {"READY", "PICK_TO_PIPELINE", "NG_MOVING", "MOVING_FORWARD", "UNCHANGED"},
     "command": {status.value for status in CommandStatus} | {"NOT_CREATED", "UNCHANGED"},
     "session": {status.value for status in SessionStatus} | {"UNCHANGED"},
     "runtime_hold": {status.value for status in RuntimeHoldStatus} | {"NOT_CREATED", "UNCHANGED"},
@@ -235,7 +242,8 @@ ALLOWED_OUTCOMES = {
     "REPLAY_ACCEPTED_NOOP",
     "ARCHIVED_EVIDENCE",
 }
-QUERY_REPLAY_CASES = {"RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011"}
+ALLOWED_IMPLEMENTATION_STATUSES = {"covered", "blocked"}
+QUERY_REPLAY_CASES = {"RS-SD-001", "RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011"}
 CURRENT_IMPLEMENTATION_STATUS = {
     "RS-SD-001": "covered",
     "RS-SD-002": "covered",
@@ -348,17 +356,24 @@ async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) 
             "ng_location": "NG-01",
             "warehouse_code": "WH-01",
             "owner_code": "OWNER-01",
-            "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+            "provider_profile": "wms.2026-07-28.full-factory",
         }
     )
+    q19_fact = case.get("q19_admission_fact")
+    q19_decision = (
+        RoughSorterQ19AdmissionDecision.model_validate(q19_fact["decision"])
+        if q19_fact is not None and q19_fact.get("decision") is not None
+        else None
+    )
     facts = RoughSorterFacts(
+        q19_admission_decision=q19_decision,
         binding_snapshot=RoughSorterBindingSnapshot(
             binding_id=1,
             binding_version=1,
-            profile_identity="wms.2026-07-06.material-flow.sandbox",
+            profile_identity="wms.2026-07-28.full-factory",
             plugin_config_hash="0" * 64,
             generated_index_digest="1" * 64,
-        )
+        ),
     )
 
     class _NoQueryGateway:
@@ -635,7 +650,6 @@ async def test_timer_timeout_facade_holds_session_with_approved_reason(
         system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0)),
         device_service=SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None)),
         runtime_hold_creation_service=SimpleNamespace(create_for_callback_deadline_expired=runtime_hold_creation),
-        rack_task_repository=SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=0)),
         workline_status_projection_service=SimpleNamespace(project_reconciling=AsyncMock(return_value=True)),
     )
     timeout_payload = {
@@ -809,6 +823,53 @@ def test_fixture_has_fixed_case_semantic_signatures() -> None:
         assert actual_signature == expected_signature, case_id
 
 
+def test_q19_admission_cases_are_scan_owned_and_self_contained() -> None:
+    cases = {case["case_id"]: case for case in _load_fixture()["cases"]}
+    expected = {
+        "RS-SD-001": ("ADMIT", "SUCCESS"),
+        "RS-SD-006": ("REJECT", "BUSINESS_REJECT"),
+        "RS-SD-010": (None, "TECHNICAL_FAILURE"),
+    }
+
+    for case_id, (decision, provider_outcome) in expected.items():
+        case = cases[case_id]
+        fact = case["q19_admission_fact"]
+        trigger_payload = case["trigger"]["payload"]
+        assert case["trigger"]["event_type"] == "SCAN_COMPLETED"
+        assert trigger_payload["reel_diameter_mm"] == "180"
+        assert trigger_payload["reel_thickness_mm"] == "16"
+        assert fact["operation_identity"] == "wms.document.validate_rough_sorter_admission@v1"
+        assert fact["provider_outcome"] == provider_outcome
+        assert fact["decision"] is None if decision is None else fact["decision"]["decision"] == decision
+        assert fact["evidence_reference"].startswith(
+            "provider-failure:q19:" if provider_outcome == "TECHNICAL_FAILURE" else "query:q19:"
+        )
+        assert all(intent.get("action") != "PICK_AND_PUT" for intent in case["expected_intents"]) is (
+            decision != "ADMIT"
+        )
+
+    unavailable = cases["RS-SD-010"]
+    assert unavailable["expected_intents"] == []
+    assert unavailable["expected_state"] == {
+        "material": "NOT_CREATED",
+        "command": "NOT_CREATED",
+        "session": "RUNNING",
+        "context_phase": "READY",
+    }
+    assert unavailable["expected_processing_result"] == {"success": 0, "failed": 1}
+    assert unavailable["expected_outcome"] == {"result": "HOLD", "reason_code": None}
+    assert unavailable["q19_admission_fact"]["failure_reason_code"] == "WMS_PROVIDER_TIMEOUT"
+    assert unavailable["implementation_status"] == "blocked"
+    assert "provider_failure_evidence" in unavailable["recorded_evidence"]["first_attempt"]
+
+    command_result_discriminators = (
+        case["trigger"]["decision_discriminator"]
+        for case in cases.values()
+        if case["trigger"]["event_type"] == "COMMAND_RESULT"
+    )
+    assert all("wms_admission" not in discriminator for discriminator in command_result_discriminators)
+
+
 def test_case_fields_use_closed_non_empty_structures() -> None:
     for case in _load_fixture()["cases"]:
         case_id = case["case_id"]
@@ -844,6 +905,7 @@ def test_case_fields_use_closed_non_empty_structures() -> None:
         assert isinstance(case["expected_intents"], list), case_id
         assert set(case["expected_outcome"]) == {"result", "reason_code"}, case_id
         assert case["expected_outcome"]["result"] in ALLOWED_OUTCOMES, case_id
+        assert case["implementation_status"] in ALLOWED_IMPLEMENTATION_STATUSES, case_id
         assert isinstance(case["replay_expectation"], str) and case["replay_expectation"].strip(), case_id
         assert set(case["replay_policy"]) == {"query", "effect", "session_progress"}, case_id
         assert case["replay_policy"]["query"] in {"NOT_APPLICABLE", "REUSE_RECORDED"}, case_id
@@ -866,7 +928,7 @@ def test_block_cases_preserve_persisted_entity_states() -> None:
             assert case["expected_state"]["command"] != "MANUAL_HOLD", case["case_id"]
             assert case["expected_state"]["session"] == "MANUAL_HOLD", case["case_id"]
 
-    for case_id in ("RS-SD-007", "RS-SD-010"):
+    for case_id in ("RS-SD-007",):
         assert cases[case_id]["trigger"]["payload"]["result"] == "SUCCESS"
         assert cases[case_id]["expected_state"]["command"] == CommandStatus.COMPLETED.value
 
@@ -881,7 +943,7 @@ def test_measurement_cases_follow_authoritative_payload_contract() -> None:
     cases = {case["case_id"]: case for case in _load_fixture()["cases"]}
     measurement_fields = ("reel_diameter", "reel_thickness")
 
-    for case_id in ("RS-SD-004", "RS-SD-005", "RS-SD-006", "RS-SD-010"):
+    for case_id in ("RS-SD-004", "RS-SD-005"):
         data = cases[case_id]["trigger"]["payload"]["data"]
         assert all(is_positive_number(data.get(field)) for field in measurement_fields), case_id
 
@@ -908,6 +970,9 @@ def test_intents_outcomes_and_replay_policies_are_consistent() -> None:
         elif outcome == "HOLD":
             if case["trigger"]["event_type"] == "TIMER_TIMEOUT":
                 assert not intents, case_id
+            elif case_id == "RS-SD-010":
+                assert not intents, case_id
+                assert case["implementation_status"] == "blocked"
             else:
                 assert intent_kinds == ["BLOCK"], case_id
         else:
@@ -957,7 +1022,7 @@ def test_case_categories_retain_required_evidence_ownership() -> None:
                 "zero_new_hold_write",
             } <= set(case["recorded_evidence"][subsequent_replay_phase]), case["case_id"]
 
-    for case_id in ("RS-SD-001", "RS-SD-002", "RS-SD-003"):
+    for case_id in ("RS-SD-002", "RS-SD-003"):
         evidence = cases[case_id]["recorded_evidence"]
         assert {
             "normalized_input_snapshot",
@@ -969,17 +1034,19 @@ def test_case_categories_retain_required_evidence_ownership() -> None:
         } <= set(evidence["first_attempt"]), case_id
         assert "payload_digest" in evidence["replay"], case_id
 
-    for case_id in ("RS-SD-004", "RS-SD-005", "RS-SD-006", "RS-SD-007", "RS-SD-010"):
+    for case_id in ("RS-SD-004", "RS-SD-005", "RS-SD-007"):
         assert "command_result_snapshot" in cases[case_id]["recorded_evidence"]["first_attempt"], case_id
     assert "measurement_snapshot" in cases["RS-SD-005"]["recorded_evidence"]["first_attempt"]
     assert "measurement_validation_errors" in cases["RS-SD-007"]["recorded_evidence"]["first_attempt"]
-    for case_id in ("RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011"):
+    for case_id in ("RS-SD-001", "RS-SD-006"):
         evidence = cases[case_id]["recorded_evidence"]
-        assert {"wms_query_identity", "wms_request_summary"} <= set(evidence["first_attempt"]), case_id
-    for case_id in ("RS-SD-004", "RS-SD-006"):
+        assert {"q19_operation_identity", "q19_request_summary", "q19_evidence_reference"} <= set(
+            evidence["first_attempt"]
+        ), case_id
+    for case_id in ("RS-SD-001", "RS-SD-006"):
         evidence = cases[case_id]["recorded_evidence"]
-        assert "wms_response_summary" in evidence["first_attempt"], case_id
-        assert "original_wms_response_summary" in evidence["replay"], case_id
+        assert {"q19_response_summary", "q19_typed_decision"} <= set(evidence["first_attempt"]), case_id
+        assert "original_q19_typed_decision" in evidence["replay"], case_id
 
     for case_id in ("RS-SD-001", "RS-SD-002", "RS-SD-004", "RS-SD-005", "RS-SD-006"):
         assert {
@@ -994,8 +1061,15 @@ def test_case_categories_retain_required_evidence_ownership() -> None:
             "command_wait_deadline",
         } <= set(cases[case_id]["recorded_evidence"]["first_attempt"]), case_id
 
-    assert {"wms_timeout_summary", "payload_digest"} <= set(cases["RS-SD-010"]["recorded_evidence"]["first_attempt"])
-    assert {"original_timeout_summary", "no_successful_wms_evidence"} <= set(
+    assert {
+        "q19_operation_identity",
+        "q19_request_summary",
+        "provider_failure_evidence",
+        "q19_failure_summary",
+        "no_successful_q19_decision",
+        "payload_digest",
+    } <= set(cases["RS-SD-010"]["recorded_evidence"]["first_attempt"])
+    assert {"original_provider_failure_evidence", "original_q19_failure_summary", "zero_new_business_effect"} <= set(
         cases["RS-SD-010"]["recorded_evidence"]["replay"]
     )
     assert {"incoming_payload_digest", "digest_mismatch", "conflict_audit"} <= set(

@@ -152,14 +152,12 @@ def _build_service(*, session: Any, workline: Any, reconciliation_manager: Any) 
     )
     workline_status_projection_service = SimpleNamespace(project_reconciling=AsyncMock(return_value=True))
     system_outbox_cancellation_service = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0))
-    rack_task_repository = SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=0))
     return WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
         system_outbox_cancellation_service=system_outbox_cancellation_service,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
-        rack_task_repository=rack_task_repository,
         reconciliation_manager=reconciliation_manager,
         workline_status_projection_service=workline_status_projection_service,
     )

@@ -19,17 +19,28 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntentKind,
     validate_system_capability_operation_key,
 )
-from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityClaimResult
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+from src.app.runtime.orchestration.system_capability_effect_claim import (
+    SystemCapabilityAdmissionClosed,
+    SystemCapabilityClaimResult,
+)
 from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition, SystemCapabilityMode
 from src.core.logger import logger
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
     from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
     from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
+
+
+_RUNTIME_DOMAIN_AUTHORITY = ("RUNTIME_DOMAIN_SERVICE", "DOMAIN_CAPABILITY_ALLOWLIST")
+_RUNTIME_DOMAIN_AUTHORITY_MARKERS = frozenset(_RUNTIME_DOMAIN_AUTHORITY)
+_RUNTIME_DOMAIN_CAPABILITY_ALLOWLIST = {
+    "SMT_INBOUND_HANDOFF": frozenset({("wms.fulfillment.full_box_exchange", "v1")}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +68,8 @@ class SystemCapabilityIntentService:
         effect_repository: Any | None = None,
         effect_reducer: Any | None = None,
         effect_reconciliation_bridge: Any | None = None,
+        domain_authority_resolver: Any | None = None,
+        allow_new_claim: Callable[[SystemCapabilityDefinition], bool] | None = None,
     ) -> None:
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
@@ -86,8 +99,18 @@ class SystemCapabilityIntentService:
             from src.app.runtime.orchestration.effect_bridges import effect_reconciliation_bridge
 
         self._effect_reconciliation_bridge = effect_reconciliation_bridge
+        if domain_authority_resolver is None:
+            from src.app.runtime.orchestration.services.intent.runtime_domain_capability_authority_resolver import (
+                runtime_domain_capability_authority_resolver,
+            )
+
+            domain_authority_resolver = runtime_domain_capability_authority_resolver
+        self._domain_authority_resolver = domain_authority_resolver
         self._plugin_definitions = dict(plugin_definitions)
         self._plugin_index_digest = plugin_index_digest
+        if allow_new_claim is not None and not callable(allow_new_claim):
+            raise TypeError("allow_new_claim must be callable")
+        self._allow_new_claim = allow_new_claim if allow_new_claim is not None else (lambda _definition: True)
 
     def get_effect_definition(self, capability_key: str, contract_version: str) -> SystemCapabilityDefinition | None:
         """按生成索引身份读取 EFFECT 定义，供事务补偿复用同一 handler 合同。"""
@@ -112,7 +135,7 @@ class SystemCapabilityIntentService:
         if not isinstance(intent.dispatch_key, str) or not intent.dispatch_key:
             raise ValueError("SYSTEM_CAPABILITY effect requires explicit dispatch_key")
         _ = validate_system_capability_operation_key(intent.operation_key)
-        execution_identity = self._validate_execution_identity(ctx, intent, definition=definition)
+        execution_identity = await self._resolve_execution_identity(ctx, intent, definition=definition)
         if intent.payload_hash != sha256_digest(intent.payload_json):
             raise ValueError("SYSTEM_CAPABILITY payload_hash mismatch")
         try:
@@ -126,8 +149,12 @@ class SystemCapabilityIntentService:
         except ValidationError as exc:
             raise ValueError("system capability typed payload validation failed") from exc
 
-        final_key = self._final_idempotency_key(ctx, intent)
-        correlation_id = self._correlation_id(ctx)
+        final_key = self._final_idempotency_key(
+            ctx,
+            intent,
+            domain_producer=execution_identity.get("producer"),
+        )
+        correlation_id = execution_identity.get("correlation_id") or self._correlation_id(ctx)
         claim = {
             "provider_code": "RUNTIME",
             "operation_kind": "system_capability_effect",
@@ -145,7 +172,7 @@ class SystemCapabilityIntentService:
             "operation_identity": str(intent.operation_key),
             "creator_authority": intent.creator_authority,
             "authorization_policy": intent.authorization_policy,
-            "binding_snapshot_json": dict(intent.binding_snapshot),
+            "binding_snapshot_json": dict(execution_identity.get("binding_snapshot", intent.binding_snapshot)),
             "provider_snapshot_json": dict(intent.provider_snapshot),
             "precondition_json": dict(intent.precondition_json),
             "fact_version": str(intent.fact_version),
@@ -154,7 +181,12 @@ class SystemCapabilityIntentService:
             "dispatch_key": intent.dispatch_key,
             "updated_at_ms": int(timezone.now_utc().timestamp() * 1000),
         }
-        claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
+        allow_insert = self._allow_new_claim(definition)
+        claim_result = await self._effect_repository.claim_or_match(
+            ctx["db"],
+            allow_insert=allow_insert,
+            **claim,
+        )
         intent_log = None
         has_durable_outbox = False
         is_match = getattr(claim_result, "value", claim_result) == SystemCapabilityClaimResult.MATCH.value
@@ -166,6 +198,12 @@ class SystemCapabilityIntentService:
                 raise RuntimeError("system capability effect claim row is missing")
             if definition.completion_mode.value == "OUTBOX_ASYNC" and is_match:
                 has_durable_outbox = await self._effect_repository.has_claimed_outbox(ctx["db"], claim=claim)
+                if (
+                    not allow_insert
+                    and intent_log.effect_status is RuntimeIntentStatus.PROPOSED
+                    and not has_durable_outbox
+                ):
+                    raise SystemCapabilityAdmissionClosed
         return PreparedSystemCapabilityIntent(
             definition=definition,
             request=request,
@@ -270,6 +308,12 @@ class SystemCapabilityIntentService:
     def _validate_execution_identity(
         self, ctx: Mapping[str, Any], intent: RuntimeIntent, *, definition: SystemCapabilityDefinition
     ) -> dict[str, Any]:
+        authority = (intent.creator_authority, intent.authorization_policy)
+        if authority == _RUNTIME_DOMAIN_AUTHORITY:
+            raise RuntimeError("runtime domain system capability requires async authority resolution")
+        if any(marker in _RUNTIME_DOMAIN_AUTHORITY_MARKERS for marker in authority):
+            raise PermissionError("runtime domain system capability authority contract mismatch")
+
         session = ctx.get("session")
         work_item = ctx.get("work_item")
         inbox = ctx.get("inbox")
@@ -338,15 +382,68 @@ class SystemCapabilityIntentService:
             "binding_version": binding_version,
         }
 
-    @staticmethod
-    def _final_idempotency_key(ctx: Mapping[str, Any], intent: RuntimeIntent) -> str:
-        session_id = getattr(ctx.get("session"), "id", None)
-        work_item = ctx.get("work_item")
-        work_item_id = getattr(work_item, "id", None)
-        raw = (
-            f"system-capability:{intent.capability_key}@{intent.contract_version}:"
-            f"session:{session_id}:work-item:{work_item_id}:{intent.operation_key}"
+    async def _resolve_execution_identity(
+        self,
+        ctx: Mapping[str, Any],
+        intent: RuntimeIntent,
+        *,
+        definition: SystemCapabilityDefinition,
+    ) -> dict[str, Any]:
+        authority = (intent.creator_authority, intent.authorization_policy)
+        if authority != _RUNTIME_DOMAIN_AUTHORITY:
+            return self._validate_execution_identity(ctx, intent, definition=definition)
+        if any(ctx.get(key) is not None for key in ("session", "work_item", "inbox", "plugin_binding")):
+            raise PermissionError("runtime domain system capability cannot carry plugin execution identity")
+        correlation_id = ctx.get("correlation_id")
+        if not isinstance(correlation_id, str) or not correlation_id:
+            raise ValueError("runtime domain system capability requires correlation_id")
+        resolved = await self._domain_authority_resolver.resolve(
+            ctx["db"],
+            correlation_id=correlation_id,
         )
+        producer = resolved.producer
+        identity = (str(intent.capability_key), str(intent.contract_version))
+        if identity not in _RUNTIME_DOMAIN_CAPABILITY_ALLOWLIST.get(producer, frozenset()):
+            raise PermissionError("runtime domain system capability is not allowlisted for producer")
+        if dict(intent.binding_snapshot) != resolved.binding_snapshot:
+            raise PermissionError("runtime domain system capability binding snapshot mismatch")
+        expected_provider = {"provider_code": "RUNTIME", "profile": definition.admission}
+        if intent.provider_snapshot != expected_provider:
+            raise PermissionError("runtime domain system capability provider snapshot mismatch")
+        return {
+            "execution_session_id": None,
+            "execution_work_item_id": None,
+            "plugin_key": None,
+            "plugin_contract_version": None,
+            "binding_id": None,
+            "binding_version": None,
+            "correlation_id": resolved.correlation_id,
+            "producer": producer,
+            "binding_snapshot": resolved.binding_snapshot,
+        }
+
+    @staticmethod
+    def _final_idempotency_key(
+        ctx: Mapping[str, Any],
+        intent: RuntimeIntent,
+        *,
+        domain_producer: Any = None,
+    ) -> str:
+        if (intent.creator_authority, intent.authorization_policy) == _RUNTIME_DOMAIN_AUTHORITY:
+            if not isinstance(domain_producer, str) or not domain_producer:
+                raise PermissionError("runtime domain system capability producer is unresolved")
+            raw = (
+                f"system-capability:{intent.capability_key}@{intent.contract_version}:"
+                f"domain:{domain_producer}:{intent.operation_key}"
+            )
+        else:
+            session_id = getattr(ctx.get("session"), "id", None)
+            work_item = ctx.get("work_item")
+            work_item_id = getattr(work_item, "id", None)
+            raw = (
+                f"system-capability:{intent.capability_key}@{intent.contract_version}:"
+                f"session:{session_id}:work-item:{work_item_id}:{intent.operation_key}"
+            )
         if len(raw) <= 160:
             return raw
         digest = sha256(raw.encode("utf-8")).hexdigest()[:20]

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
+import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from types import SimpleNamespace
@@ -12,18 +15,29 @@ import pytest
 
 from src.app.runtime.orchestration.effect_state_contract import EffectReducerEventType
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_transport import (
     ExternalHttpProtocolResult,
     ExternalHttpTransportResult,
 )
+from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.app.wms_integration.ports.effect_status import (
-    NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
     WMS_EFFECT_OPERATION_IDENTITIES,
+    WmsBatchEffectStatusRequest,
     WmsEffectStatus,
+    WmsEffectStatusRequest,
     WmsEffectStatusSnapshot,
     build_wms_effect_status_binding,
+    parse_wms_effect_status_snapshot,
 )
-from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
+from src.app.wms_integration.ports.fulfillment_operations import RequestRackSupplyResult, WmsEffectAck
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_compiled_provider_profile,
+    build_hmac_provider_profile_payload,
+)
+from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
 try:
     from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusClaim
@@ -35,6 +49,11 @@ else:
 
 
 NOW = datetime(2026, 7, 24, 12, 0, 0)
+RACK_SUPPLY_OPERATION_IDENTITY = "wms.fulfillment.request_rack_supply@v1"
+_STATUS_PROFILE_PAYLOAD = build_hmac_provider_profile_payload()
+_STATUS_PROFILE_PAYLOAD["server_url"] = "https://wms.example"
+_STATUS_PROFILE_PAYLOAD["effect_status_path"] = "/northbound/operations/status"
+_STATUS_COMPILED_PROFILE = build_compiled_provider_profile(_STATUS_PROFILE_PAYLOAD)
 
 
 def _require_status_service() -> None:
@@ -44,17 +63,22 @@ def _require_status_service() -> None:
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
         APP_ENV="test",
-        WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION="v2",
-        WMS_EFFECT_STATUS_URL="https://wms.example/northbound/operations/status",
         WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.0,
         WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES=4096,
         WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS=10.0,
+        WES_EFFECT_STATUS_SCAN_BATCH_SIZE=3,
+        WES_EFFECT_STATUS_MAX_IN_FLIGHT=2,
         WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS=2.0,
         WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS=30.0,
         WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS=3,
         WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS=300.0,
         WES_EFFECT_NOT_FOUND_GRACE_SECONDS=60.0,
     )
+
+
+@asynccontextmanager
+async def _open_db(db: Any):
+    yield db
 
 
 def test_default_status_port_factory_receives_service_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,7 +101,26 @@ def test_default_status_port_factory_receives_service_settings(monkeypatch: pyte
 
 
 def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any:
-    binding = build_wms_effect_status_binding(settings_source=_settings()).as_persisted()
+    binding = build_wms_effect_status_binding(
+        settings_source=_settings(),
+        compiled_profile=_STATUS_COMPILED_PROFILE,
+    ).as_persisted()
+    request_payload = {
+        "dispatch_key": "dispatch-001",
+        "station_code": "STATION-001",
+        "rack_type": "FLOW_RACK",
+        "demand_generation": 1,
+    }
+    canonical_payload = CanonicalPayload.from_projection(request_payload)
+    payload_hash = canonical_payload.sha256
+    frozen_ack = {
+        "operation_identity": RACK_SUPPLY_OPERATION_IDENTITY,
+        "idempotency_key": "idem-001",
+        "provider_reference": "wms-effect-001",
+        "submission_state": "ACCEPTED",
+        "accepted_scope": None,
+    }
+    ack_hash = typed_wms_effect_ack_hash(WmsEffectAck.model_validate(frozen_ack))
     intent = SimpleNamespace(
         id=17,
         dispatch_key="dispatch-001",
@@ -92,30 +135,441 @@ def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any
         status_check_lease_until=NOW + timedelta(seconds=10),
         status_binding_snapshot_json=binding["snapshot"],
         status_binding_snapshot_hash=binding["snapshot_hash"],
-        outcome_history_json=[],
+        outcome_history_json=[
+            {
+                "event_type": EffectReducerEventType.TRANSPORT_ACCEPTED.value,
+                "typed_ack_hash": ack_hash,
+                "typed_ack_reference": "runtime-intent-outcome:dispatch-001",
+            }
+        ],
         outcome_kind=None,
         outcome_code=None,
-        outcome_json={},
+        outcome_json={
+            "payload_hash": payload_hash,
+            "outcome": {"kind": "success", "payload": frozen_ack},
+        },
+        capability_key="wms.fulfillment.request_rack_supply",
+        capability_contract_version="v1",
+        operation_identity="WMS:PKG-001",
+        payload_hash=payload_hash,
         effect_updated_at_ms=None,
     )
     outbox = SimpleNamespace(
         id=31,
         dispatch_key="dispatch-001",
         idempotency_key="idem-001",
-        operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+        operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
         provider_profile_identity=binding["snapshot"]["provider_profile_identity"],
         provider_profile_hash=binding["snapshot"]["provider_profile_hash"],
-        payload_json={
-            "dispatch_key": "dispatch-001",
-            "package_id": "PKG-001",
-            "pallet_id": "PALLET-001",
-            "station_code": "ST-001",
-        },
+        payload_json=request_payload,
+        payload_hash=payload_hash,
+        canonical_payload_bytes=canonical_payload.body,
         status="SENT",
         attempt_count=4,
         next_retry_at=NOW + timedelta(minutes=5),
     )
     return WmsEffectStatusClaim(intent=intent, outbox=outbox, lease_token="lease-001")
+
+
+def test_status_request_recovers_the_frozen_ack_from_persisted_transport_evidence() -> None:
+    request = WmsEffectStatusService._build_request(_claim())
+
+    assert request.frozen_ack.provider_reference == "wms-effect-001"
+    assert request.frozen_ack.operation_identity == request.operation_identity
+    assert request.frozen_ack.idempotency_key == request.idempotency_key
+
+
+def test_status_request_allows_status_first_when_persisted_ack_does_not_exist() -> None:
+    claim = _claim()
+    claim.intent.outcome_history_json = []
+    claim.intent.outcome_json = None
+
+    request = WmsEffectStatusService._build_request(claim)
+
+    assert request.frozen_ack is None
+
+
+def test_status_request_rejects_authoritative_ack_without_append_only_evidence() -> None:
+    claim = _claim()
+    claim.intent.outcome_history_json = []
+
+    with pytest.raises(ValueError, match="ACK evidence is missing"):
+        WmsEffectStatusService._build_request(claim)
+
+
+def test_status_request_rejects_invalid_authoritative_ack_without_append_only_evidence() -> None:
+    claim = _claim()
+    claim.intent.outcome_history_json = []
+    claim.intent.outcome_json["outcome"]["payload"] = {}
+
+    with pytest.raises(ValueError, match="ACK evidence is invalid"):
+        WmsEffectStatusService._build_request(claim)
+
+
+def test_status_request_does_not_treat_non_success_outcome_as_an_ack() -> None:
+    claim = _claim()
+    claim.intent.outcome_history_json = []
+    claim.intent.outcome_json = {"outcome": {"kind": "contract_violation", "payload": {}}}
+
+    request = WmsEffectStatusService._build_request(claim)
+
+    assert request.frozen_ack is None
+
+
+def test_status_request_rejects_transport_acceptance_without_typed_ack_hash() -> None:
+    claim = _claim()
+    claim.intent.outcome_history_json[0].pop("typed_ack_hash")
+
+    with pytest.raises(ValueError, match="ACK evidence is invalid"):
+        WmsEffectStatusService._build_request(claim)
+
+
+@pytest.mark.parametrize(
+    ("drift", "expected"),
+    (
+        ("operation_identity", "capability identity"),
+        ("intent_payload_hash", "payload fingerprint"),
+        ("canonical_hash", "canonical_payload_bytes"),
+        ("canonical_projection", "canonical payload projection"),
+    ),
+)
+def test_status_request_rejects_any_frozen_intent_outbox_pair_drift(drift: str, expected: str) -> None:
+    claim = _claim()
+    claim.intent.outcome_history_json = []
+    claim.intent.outcome_json = None
+    if drift == "operation_identity":
+        claim.intent.capability_contract_version = "v2"
+    elif drift == "intent_payload_hash":
+        claim.intent.payload_hash = "f" * 64
+    elif drift == "canonical_hash":
+        claim.outbox.canonical_payload_bytes = b'{"forged":true}'
+    else:
+        claim.outbox.payload_json = {**claim.outbox.payload_json, "station_code": "FORGED"}
+
+    with pytest.raises(ValueError, match=expected):
+        WmsEffectStatusService._build_request(claim)
+
+
+def test_status_request_rejects_provider_reference_drift_across_persisted_ack_evidence() -> None:
+    claim = _claim()
+    drifted_ack = {
+        **claim.intent.outcome_json["outcome"]["payload"],
+        "provider_reference": "other-provider-reference",
+        "submission_state": "REPLAY",
+    }
+    claim.intent.outcome_history_json.append(
+        {
+            "event_type": EffectReducerEventType.TRANSPORT_ACCEPTED.value,
+            "typed_ack_hash": typed_wms_effect_ack_hash(WmsEffectAck.model_validate(drifted_ack)),
+            "typed_ack_reference": "runtime-intent-outcome:dispatch-001",
+        }
+    )
+
+    with pytest.raises(ValueError, match="ACK evidence drifted"):
+        WmsEffectStatusService._build_request(claim)
+
+
+@pytest.mark.asyncio
+async def test_status_first_visible_snapshot_freezes_ack_before_status_evidence() -> None:
+    claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
+    claim.intent.outcome_history_json = []
+    claim.intent.outcome_json = None
+    db = _Db()
+    reducer = _Reducer()
+    request = WmsEffectStatusService._build_request(claim)
+    snapshot = parse_wms_effect_status_snapshot(
+        request=request,
+        raw_response={
+            "state": "PROCESSING",
+            "provider_reference": "provider-status-first",
+            "accepted_scope": None,
+            "reason_code": None,
+            "updated_at": "2026-07-24T12:00:00+00:00",
+            "source_version": 1,
+            "result_payload": None,
+        },
+    )
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: lambda: _Port(snapshot, db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key=claim.intent.dispatch_key)
+
+    assert result.outcome == "PROCESSING"
+    assert [event.event_type for event in reducer.events] == [
+        EffectReducerEventType.TRANSPORT_ACCEPTED,
+        EffectReducerEventType.STATUS_PROCESSING,
+    ]
+    recovered = reducer.events[0]
+    assert recovered.terminal_outcome["payload"]["provider_reference"] == "provider-status-first"
+    assert recovered.evidence_json.keys() >= {"typed_ack_hash", "typed_ack_reference"}
+    assert "payload" not in recovered.evidence_json
+    assert "recovered_ack" not in reducer.events[1].evidence_json["snapshot"]
+
+
+def test_visible_snapshot_without_frozen_or_recovered_ack_fails_closed() -> None:
+    claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
+    claim.intent.outcome_history_json = []
+    claim.intent.outcome_json = None
+
+    with pytest.raises(ValueError, match="frozen or recovered ACK"):
+        WmsEffectStatusService._validate_snapshot_matches_claim(
+            claim,
+            WmsEffectStatusSnapshot(
+                operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
+                idempotency_key="idem-001",
+                state=WmsEffectStatus.PROCESSING,
+                provider_reference="provider-unfrozen",
+                updated_at=NOW.replace(tzinfo=UTC),
+                source_version=1,
+            ),
+        )
+
+
+def test_visible_snapshot_rejects_recovered_ack_drift_from_existing_authority() -> None:
+    claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
+    recovered_ack = WmsEffectAck(
+        operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
+        idempotency_key="idem-001",
+        provider_reference="provider-drift",
+        submission_state="REPLAY",
+    )
+
+    with pytest.raises(ValueError, match="recovered WMS status ACK differs"):
+        WmsEffectStatusService._validate_snapshot_matches_claim(
+            claim,
+            WmsEffectStatusSnapshot(
+                operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
+                idempotency_key="idem-001",
+                state=WmsEffectStatus.PROCESSING,
+                provider_reference=recovered_ack.provider_reference,
+                updated_at=NOW.replace(tzinfo=UTC),
+                source_version=1,
+                recovered_ack=recovered_ack,
+            ),
+        )
+
+
+@pytest.mark.parametrize("state", [WmsEffectStatus.PROCESSING, WmsEffectStatus.COMPLETED])
+def test_batch_snapshot_validation_reuses_frozen_scope_for_nonterminal_and_terminal(state: WmsEffectStatus) -> None:
+    operation_identity = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
+    request_payload = REQUEST_FIXTURES[operation_identity]
+    ack = WmsEffectAck.model_validate(
+        build_typed_ack(operation_identity, "idem-batch", request_payload, submission_state="ACCEPTED")
+    )
+    request = WmsBatchEffectStatusRequest(
+        operation_identity=operation_identity,
+        idempotency_key="idem-batch",
+        request_payload=request_payload,
+        frozen_ack=ack,
+    )
+    snapshot_kwargs: dict[str, Any] = {}
+    if state is WmsEffectStatus.COMPLETED:
+        snapshot_kwargs["result"] = WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(
+            build_typed_result(
+                operation_identity,
+                request_payload,
+                source_version=3,
+                completed_at="2026-07-24T12:00:00+00:00",
+                provider_reference=ack.provider_reference,
+            )
+        )
+    snapshot = WmsEffectStatusSnapshot(
+        operation_identity=operation_identity,
+        idempotency_key="idem-batch",
+        state=state,
+        provider_reference=ack.provider_reference,
+        updated_at=NOW.replace(tzinfo=UTC),
+        source_version=3,
+        **snapshot_kwargs,
+    )
+
+    with patch.object(WmsEffectStatusService, "_build_request", return_value=request):
+        validated = WmsEffectStatusService._validate_snapshot_matches_claim(_claim(), snapshot)
+
+    assert validated is request
+
+
+@pytest.mark.parametrize("cross_wire", ("idempotency-key", "payload-fingerprint", "provider-reference"))
+def test_status_request_rejects_frozen_ack_cross_wire(cross_wire: str) -> None:
+    claim = _claim()
+    if cross_wire == "idempotency-key":
+        claim.intent.outcome_json["outcome"]["payload"]["idempotency_key"] = "other-key"
+    elif cross_wire == "payload-fingerprint":
+        claim.intent.outcome_json["payload_hash"] = "0" * 64
+    else:
+        drifted_ack = {
+            **claim.intent.outcome_json["outcome"]["payload"],
+            "provider_reference": "other-provider-reference",
+            "submission_state": "REPLAY",
+        }
+        claim.intent.outcome_history_json.append(
+            {
+                "event_type": EffectReducerEventType.TRANSPORT_ACCEPTED.value,
+                "typed_ack_hash": typed_wms_effect_ack_hash(WmsEffectAck.model_validate(drifted_ack)),
+                "typed_ack_reference": "runtime-intent-outcome:dispatch-001",
+            }
+        )
+
+    with pytest.raises(ValueError, match=r"ACK|fingerprint|payload_hash"):
+        WmsEffectStatusService._build_request(claim)
+
+
+@pytest.mark.parametrize(
+    "authoritative",
+    (
+        None,
+        {"outcome": {"kind": "contract_violation", "payload": {}}},
+        {"outcome": {"kind": "success", "payload": {}}},
+    ),
+)
+def test_status_request_rejects_invalid_authoritative_ack_envelope(authoritative: object) -> None:
+    claim = _claim()
+    claim.intent.outcome_json = authoritative
+
+    with pytest.raises(ValueError, match="ACK evidence is invalid"):
+        WmsEffectStatusService._build_request(claim)
+
+
+@pytest.mark.asyncio
+async def test_original_key_resubmit_rejects_an_invalid_typed_ack() -> None:
+    claim = _claim()
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=_Reducer(),
+        reconciliation_bridge=reconciliation,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=200,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        response_body=b"{}",
+    )
+
+    recorded = await service._record_resubmit_result(
+        _Db(),
+        claim=claim,
+        result=result,
+        evidence={"recovery": "original-key"},
+    )
+
+    assert recorded.outcome == "RECONCILING"
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_RESUBMIT_INDETERMINATE"
+
+
+@pytest.mark.asyncio
+async def test_original_key_resubmit_rejects_idempotency_conflict() -> None:
+    claim = _claim()
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=_Reducer(),
+        reconciliation_bridge=reconciliation,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=422,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        protocol_error_code="IDEMPOTENCY_CONFLICT",
+        response_body=b'{"protocol_error_code":"IDEMPOTENCY_CONFLICT"}',
+    )
+
+    recorded = await service._record_resubmit_result(
+        _Db(),
+        claim=claim,
+        result=result,
+        evidence={"recovery": "original-key"},
+    )
+
+    assert recorded.outcome == "RECONCILING"
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_RESUBMIT_IDEMPOTENCY_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_original_key_resubmit_rejects_frozen_pair_drift_before_ack_interpretation() -> None:
+    claim = _claim()
+    claim.outbox.canonical_payload_bytes = b'{"forged":true}'
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=_Reducer(),
+        reconciliation_bridge=reconciliation,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=200,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        response_body=json.dumps(
+            claim.intent.outcome_json["outcome"]["payload"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode(),
+    )
+
+    recorded = await service._record_resubmit_result(
+        _Db(),
+        claim=claim,
+        result=result,
+        evidence={"recovery": "original-key"},
+    )
+
+    assert recorded.outcome == "RECONCILING"
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_RESUBMIT_INDETERMINATE"
+
+
+@pytest.mark.asyncio
+async def test_original_key_resubmit_freezes_first_authoritative_ack() -> None:
+    claim = _claim()
+    replay_ack = {
+        **claim.intent.outcome_json["outcome"]["payload"],
+        "submission_state": "REPLAY",
+    }
+    claim.intent.outcome_history_json = []
+    claim.intent.outcome_json = None
+    reconciliation = _ReconciliationBridge()
+    reducer = _Reducer()
+    service = WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=200,
+        protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+        response_body=json.dumps(replay_ack, ensure_ascii=False, separators=(",", ":")).encode(),
+    )
+
+    recorded = await service._record_resubmit_result(
+        _Db(),
+        claim=claim,
+        result=result,
+        evidence={"recovery": "original-key"},
+    )
+
+    assert recorded.outcome == "RESUBMITTED"
+    assert reconciliation.calls == []
+    assert len(reducer.events) == 1
+    recovered = reducer.events[0]
+    assert recovered.event_type is EffectReducerEventType.TRANSPORT_ACCEPTED
+    assert recovered.evidence_json.keys() >= {"typed_ack_hash", "typed_ack_reference"}
+    assert "payload" not in recovered.evidence_json
+    assert recovered.terminal_outcome == {"kind": "success", "payload": replay_ack}
 
 
 class _Db:
@@ -150,6 +604,13 @@ class _Repository:
             return ()
         self.batch_claimed = True
         return (self.claim,)
+
+    async def get_due_backlog_snapshot(self, _db: Any, **_kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            backlog_count=0 if self.batch_claimed else 1,
+            max_overdue_age_ms=0.0,
+            max_confirmation_age_ms=0.0,
+        )
 
     async def get_claim_for_update(self, _db: Any, **_kwargs: Any) -> Any:
         return None if self.fence_writeback else self.claim
@@ -223,29 +684,33 @@ def _snapshot(state: WmsEffectStatus, *, source_version: int = 7) -> WmsEffectSt
     }
     if state is WmsEffectStatus.COMPLETED:
         return WmsEffectStatusSnapshot(
-            operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+            operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
             idempotency_key="idem-001",
             state=state,
-            result=NotifyPackageBindingOperationResult(
+            result=RequestRackSupplyResult(
                 dispatch_key="dispatch-001",
-                package_id="PKG-001",
-                pallet_id="PALLET-001",
-                accepted=True,
-                bound_at="2026-07-24T12:00:00Z",
+                provider_reference="wms-effect-001",
                 source_version=str(source_version),
+                station_code="STATION-001",
+                rack_type="FLOW_RACK",
+                demand_generation=1,
+                rack_id="RACK-001",
+                final_station_code="STATION-001",
+                arrival_relation="AT_STATION",
+                task_outcome="SUCCESS",
             ),
             **visible,
         )
     if state is WmsEffectStatus.REJECTED:
         return WmsEffectStatusSnapshot(
-            operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+            operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
             idempotency_key="idem-001",
             state=state,
-            reason_code="WMS_BUSINESS_REJECTED",
+            reason_code="NO_RACK_AVAILABLE",
             **visible,
         )
     return WmsEffectStatusSnapshot(
-        operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
+        operation_identity=RACK_SUPPLY_OPERATION_IDENTITY,
         idempotency_key="idem-001",
         state=state,
         **visible,
@@ -313,6 +778,36 @@ async def test_terminal_snapshot_clears_schedule_and_uses_unique_status_terminal
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", [WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING])
+async def test_terminal_intent_rejects_non_terminal_regression_without_rescheduling(
+    state: WmsEffectStatus,
+) -> None:
+    claim = _claim(status=RuntimeIntentStatus.COMPLETED)
+    claim.intent.status_source_version = 6
+    db = _Db()
+    repository = _Repository(claim)
+    reducer = _Reducer()
+    reconciliation = _ReconciliationBridge()
+    service = WmsEffectStatusService(
+        repository=repository,
+        reducer=reducer,
+        reconciliation_bridge=reconciliation,
+        port_factory_builder=lambda _binding: lambda: _Port(_snapshot(state, source_version=7), db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+    )
+
+    result = await service.check_dispatch(db, dispatch_key="dispatch-001")
+
+    assert result.outcome == "RECONCILING"
+    assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_TERMINAL_REGRESSION"
+    assert reducer.events == []
+    assert claim.intent.status_check_after is None
+    assert repository.released == 1
+
+
+@pytest.mark.asyncio
 async def test_completed_result_correlation_mismatch_fails_closed_before_terminal_reducer_event() -> None:
     _require_status_service()
     claim = _claim()
@@ -321,13 +816,17 @@ async def test_completed_result_correlation_mismatch_fails_closed_before_termina
     reconciliation = _ReconciliationBridge()
     invalid = _snapshot(WmsEffectStatus.COMPLETED).model_copy(
         update={
-            "result": NotifyPackageBindingOperationResult(
+            "result": RequestRackSupplyResult(
                 dispatch_key="dispatch-001",
-                package_id="OTHER-PACKAGE",
-                pallet_id="PALLET-001",
-                accepted=True,
-                bound_at="2026-07-24T12:00:00Z",
+                provider_reference="wms-effect-001",
                 source_version="7",
+                station_code="OTHER-STATION",
+                rack_type="FLOW_RACK",
+                demand_generation=1,
+                rack_id="RACK-001",
+                final_station_code="STATION-001",
+                arrival_relation="AT_STATION",
+                task_outcome="SUCCESS",
             )
         }
     )
@@ -379,11 +878,12 @@ async def test_same_source_version_with_different_snapshot_opens_reconciliation_
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
     claim.intent.status_source_version = 7
     claim.intent.outcome_history_json = [
+        *claim.intent.outcome_history_json,
         {
             "event_type": "STATUS_ACCEPTED",
             "source_version": 7,
             "snapshot_hash": "0" * 64,
-        }
+        },
     ]
     db = _Db()
     reducer = _Reducer()
@@ -462,7 +962,11 @@ async def test_lower_version_contradictory_terminal_is_reduced_for_reconciliatio
 
 
 @pytest.mark.asyncio
-async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_outcome_history() -> None:
+async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_outcome_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
     _require_status_service()
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
     db = _Db()
@@ -483,6 +987,12 @@ async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_out
         now=lambda: NOW,
         jitter=lambda _upper: 0.0,
     )
+    emissions: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda name, **kwargs: emissions.append((name, kwargs)),
+    )
 
     result = await service.check_dispatch(db, dispatch_key="dispatch-001")
 
@@ -490,6 +1000,12 @@ async def test_retry_after_is_a_lower_bound_and_query_failure_is_recorded_in_out
     assert claim.intent.status_check_after == NOW + timedelta(seconds=20)
     assert reducer.events[0].event_type is EffectReducerEventType.STATUS_QUERY_FAILED
     assert reducer.events[0].reason_code == "WMS_RATE_LIMITED"
+    assert emissions[0][0] == "wms_effect.status_backpressure"
+    assert emissions[0][1]["attributes"] == {
+        "outcome": "RATE_LIMITED",
+        "retry_after_ms": 20_000,
+        "actual_backoff_ms": 20_000,
+    }
 
 
 @pytest.mark.asyncio
@@ -519,7 +1035,11 @@ async def test_retry_after_above_local_max_remains_the_schedule_lower_bound() ->
 
 
 @pytest.mark.asyncio
-async def test_non_retryable_query_contract_failure_opens_reconciliation_immediately() -> None:
+async def test_non_retryable_query_contract_failure_opens_reconciliation_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
     _require_status_service()
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
     db = _Db()
@@ -538,6 +1058,12 @@ async def test_non_retryable_query_contract_failure_opens_reconciliation_immedia
         now=lambda: NOW,
         jitter=lambda _upper: 0.0,
     )
+    emissions: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda name, **kwargs: emissions.append((name, kwargs)),
+    )
 
     result = await service.check_dispatch(db, dispatch_key="dispatch-001")
 
@@ -545,6 +1071,8 @@ async def test_non_retryable_query_contract_failure_opens_reconciliation_immedia
     assert reducer.events[0].event_type is EffectReducerEventType.STATUS_QUERY_FAILED
     assert reconciliation.calls[0]["reason_code"] == "WMS_CREDENTIAL_UNAVAILABLE"
     assert claim.intent.status_check_after is None
+    assert emissions[0][0] == "wms_effect.recovery"
+    assert emissions[0][1]["attributes"]["outcome"] == "RECONCILIATION_OPENED"
 
 
 @pytest.mark.asyncio
@@ -595,7 +1123,7 @@ async def test_due_scanner_claims_missing_or_corrupt_binding_and_fails_closed_be
     claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
     claim.intent.status_binding_snapshot_json = snapshot
     claim.intent.status_binding_snapshot_hash = snapshot_hash
-    claim.intent.operation_identity = NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
+    claim.intent.operation_identity = RACK_SUPPLY_OPERATION_IDENTITY
     db = _Db()
     repository = _Repository(claim)
     reconciliation = _ReconciliationBridge()
@@ -614,7 +1142,8 @@ async def test_due_scanner_claims_missing_or_corrupt_binding_and_fails_closed_be
         settings_source=_settings(),
         now=lambda: NOW,
         jitter=lambda _upper: 0.0,
-    ).check_due_batch(db, limit=10)
+        db_context_factory=lambda: _open_db(db),
+    ).check_due_batch(db)
 
     assert [result.outcome for result in results] == ["RECONCILING"]
     assert reconciliation.calls[0]["reason_code"] == "WMS_STATUS_BINDING_INVALID"
@@ -623,10 +1152,41 @@ async def test_due_scanner_claims_missing_or_corrupt_binding_and_fails_closed_be
 
 
 @pytest.mark.asyncio
+async def test_due_scanner_emits_status_query_and_batch_backlog(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
+    claim = _claim(status=RuntimeIntentStatus.UNKNOWN)
+    db = _Db()
+    emissions: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda name, **kwargs: emissions.append((name, kwargs)),
+    )
+
+    results = await WmsEffectStatusService(
+        repository=_Repository(claim),
+        reducer=_Reducer(),
+        reconciliation_bridge=_ReconciliationBridge(),
+        port_factory_builder=lambda _binding: lambda: _Port(_snapshot(WmsEffectStatus.ACCEPTED), db),
+        settings_source=_settings(),
+        now=lambda: NOW,
+        jitter=lambda _upper: 0.0,
+        db_context_factory=lambda: _open_db(db),
+    ).check_due_batch(db)
+
+    assert [result.outcome for result in results] == ["ACCEPTED"]
+    assert [name for name, _kwargs in emissions] == ["wms_effect.status_query", "wms_effect.status_backlog"]
+    assert emissions[0][1]["attributes"]["state"] == "ACCEPTED"
+    assert emissions[1][1]["attributes"]["backlog_count"] == 1
+    assert emissions[1][1]["attributes"]["claimed_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_corrupt_frozen_payload_is_normalized_to_request_contract_reconciliation() -> None:
     claim = _claim()
-    claim.intent.operation_identity = NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY
-    claim.outbox.payload_json.pop("package_id")
+    claim.intent.operation_identity = RACK_SUPPLY_OPERATION_IDENTITY
+    claim.outbox.payload_json.pop("station_code")
     db = _Db()
     reconciliation = _ReconciliationBridge()
     port_calls = 0
@@ -707,9 +1267,14 @@ async def test_not_found_after_grace_resubmits_same_key_once_after_counter_commi
                 current_claim.intent.status_resubmit_count,
             )
         )
+        replay_ack = {
+            **current_claim.intent.outcome_json["outcome"]["payload"],
+            "submission_state": "ACCEPTED",
+        }
         return ExternalHttpTransportResult.accepted(
             http_status_code=202,
             protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+            response_body=json.dumps(replay_ack, ensure_ascii=False, separators=(",", ":")).encode(),
         )
 
     not_found = WmsEffectStatusSnapshot.not_found(WmsEffectStatusService._build_request(claim))
@@ -730,7 +1295,7 @@ async def test_not_found_after_grace_resubmits_same_key_once_after_counter_commi
     assert result.outcome == "RESUBMITTED"
     assert repository.reserved == 1
     assert claim.intent.status_resubmit_count == 1
-    assert resubmit_calls == [(NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY, "idem-001", 1)]
+    assert resubmit_calls == [(RACK_SUPPLY_OPERATION_IDENTITY, "idem-001", 1)]
     assert (claim.outbox.status, claim.outbox.attempt_count, claim.outbox.next_retry_at) == outbox_before
     assert reducer.events[0].event_type is EffectReducerEventType.STATUS_NOT_FOUND
     assert reconciliation.calls == []
@@ -742,6 +1307,8 @@ def test_wms_effect_status_immediate_and_fallback_tasks_are_registered() -> None
 
     assert "check_wms_effect_status" in workline.__all__
     assert "scan_wms_effect_status_batch" in workline.__all__
+    assert tuple(inspect.signature(workline.scan_wms_effect_status_batch).parameters) == ()
+    assert tuple(inspect.signature(WmsEffectStatusService.check_due_batch).parameters) == ("self", "db")
     assert beat_schedule["scan-wms-effect-status-batch"] == {
         "task": "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
         "schedule": 10.0,
@@ -830,7 +1397,11 @@ async def test_status_hint_persists_due_time_and_commits_before_immediate_enqueu
 
 
 @pytest.mark.asyncio
-async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_row_for_beat() -> None:
+async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_row_for_beat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration import wms_effect_observability
+
     claim = _claim(status=RuntimeIntentStatus.ACCEPTED)
     claim.intent.status_check_after = NOW + timedelta(minutes=5)
     db = _Db()
@@ -843,6 +1414,12 @@ async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_r
         queue_gateway=queue,
         settings_source=_settings(),
         now=lambda: NOW,
+    )
+    emissions: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        wms_effect_observability,
+        "emit_wms_effect_observation",
+        lambda name, **kwargs: emissions.append((name, kwargs)),
     )
 
     with patch("src.app.runtime.orchestration.services.wms_effect_status_service.logger.warning") as warning:
@@ -865,6 +1442,16 @@ async def test_broker_failure_after_hint_commit_returns_success_and_leaves_due_r
     assert sha256(b"dispatch-001").hexdigest()[:16] in warning_text
     assert "dispatch-001" not in warning_text
     assert "secret-token" not in warning_text
+    assert emissions == [
+        (
+            "wms_effect.callback_hint",
+            {
+                "operation_identity": claim.outbox.operation_identity,
+                "dispatch_key": "dispatch-001",
+                "attributes": {"outcome": "ENQUEUE_DEGRADED"},
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

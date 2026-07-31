@@ -1,9 +1,10 @@
 """ExternalContractProfile 生产路径 — @yagni: 全量联调前为占位合同。
 
-当前状态: 由 external_contract_profile_catalog 统一读取，所有 WMS/ECS provider
-使用默认 profile。当前里程碑的粗分机/分拣机流程不需要动态合同切换能力。
+当前状态: 外部 provider 共用严格合同模型；
+generic provider 保留环境隔离，WMS 部署合同使用无环境维度的窄 profile。
+当前里程碑的粗分机/分拣机流程不需要动态合同切换能力。
 
-激活条件: 多 provider 并行联调或 WMS/ECS 合同版本差异需要运行时切换。
+激活条件: 多 provider 并行联调或合同版本差异需要运行时切换。
 
 从 tests/support/external_contract_profile.py 升级到 src/app/contracts/
 共享层, 供 wms_integration / device / runtime/orchestration 域 import 使用。
@@ -15,17 +16,17 @@
   capability implementation import boundaries。
 - 三个 typed DTO 共享同一包, 避免 InboundNormalizerProfile 与 RuntimeCapabilityProfile
   分散在不同域导致 capability dependency type guard 难以统一维护
-- sandbox/staging 的 security_profile 可保留占位；production 必须固定密钥标识和签名算法
+- generic production 入站 profile 必须声明实际认证材料
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-Environment = Literal["sandbox", "staging", "production"]
 Direction = Literal["event", "result"]
+Environment = Literal["sandbox", "staging", "production"]
 
 
 class SecurityProfile(BaseModel):
@@ -62,21 +63,13 @@ class SecurityProfile(BaseModel):
     )
 
 
-class ExternalContractProfile(BaseModel):
-    """按 provider_code + contract_version 描述 WMS/ECS provider 外部合同。
-
-    本合同只保留 provider/version/environment identity 与 inbound normalizer
-    元数据；北向 operation、transport 与 auth 由 typed WMS Provider catalog 唯一声明。
-
-    environment=production 且声明入站 callback 时，security_profile 必须固定
-    密钥标识和签名算法。
-    """
+class _ExternalContractProfileBase(BaseModel):
+    """外部 provider 合同的共享字段与 normalizer admission。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider_code: str = Field(min_length=1, max_length=60, description="稳定 provider ID")
     contract_version: str = Field(min_length=1, max_length=60, description="合同版本")
-    environment: Environment
     inbound_normalizers_event: list[str] = Field(
         default_factory=list,
         description="provider 允许的 event type, e.g. WMS_GRN_RECEIVED",
@@ -114,25 +107,6 @@ class ExternalContractProfile(BaseModel):
     security_profile: SecurityProfile = Field(default_factory=SecurityProfile)
     notes: str | None = Field(default=None, max_length=2000)
 
-    @property
-    def identity(self) -> str:
-        """返回 Definition 可引用、且不携带 profile 实例的稳定身份。"""
-
-        return f"{self.provider_code.strip().lower()}.{self.contract_version}.{self.environment}"
-
-    @model_validator(mode="after")
-    def _production_security_required_after(self) -> ExternalContractProfile:
-        """生产入站 callback profile 不允许沿用无认证材料的 sandbox 占位配置。"""
-        has_inbound_callbacks = bool(self.inbound_normalizers_event or self.inbound_normalizers_result)
-        if self.environment != "production" or not has_inbound_callbacks:
-            return self
-        security = self.security_profile
-        if not (security.secret_kid or "").strip() or security.signature_algo is None:
-            raise ValueError(
-                "production external contract profile 的 security_profile 必须固定 secret_kid 和 signature_algo"
-            )
-        return self
-
     def ensure_inbound_normalizer_declared(
         self,
         callback_type: str,
@@ -145,6 +119,58 @@ class ExternalContractProfile(BaseModel):
         if callback_type in declared:
             return
         raise PermissionError(f"provider={self.provider_code} 未声明 {direction} normalizer: {callback_type}")
+
+
+class ExternalContractProfile(_ExternalContractProfileBase):
+    """generic provider 合同，环境隔离属于稳定身份。"""
+
+    environment: Environment
+
+    @model_validator(mode="after")
+    def _wms_requires_narrow_profile_after(self) -> ExternalContractProfile:
+        """WMS 合同必须使用无 environment 维度的窄 profile。"""
+
+        if self.provider_code.strip().lower() == "wms":
+            raise ValueError("WMS provider 必须使用 WmsExternalContractProfile")
+        return self
+
+    @property
+    def identity(self) -> str:
+        return f"{self.provider_code.strip().lower()}.{self.contract_version}.{self.environment}"
+
+    @model_validator(mode="after")
+    def _production_security_required_after(self) -> ExternalContractProfile:
+        """production 入站 profile 必须固定密钥标识和签名算法。"""
+
+        has_inbound_callbacks = bool(self.inbound_normalizers_event or self.inbound_normalizers_result)
+        if self.environment != "production" or not has_inbound_callbacks:
+            return self
+        security = self.security_profile
+        if not (security.secret_kid or "").strip() or security.signature_algo is None:
+            raise ValueError(
+                "production external contract profile 的 security_profile 必须固定 secret_kid 和 signature_algo"
+            )
+        return self
+
+
+class WmsExternalContractProfile(_ExternalContractProfileBase):
+    """WMS 单工厂部署合同，身份仅由 provider 与合同版本组成。"""
+
+    provider_code: Literal["WMS"]
+
+    @property
+    def identity(self) -> str:
+        return f"wms.{self.contract_version}"
+
+
+type ExternalContractProfileDefinition = ExternalContractProfile | WmsExternalContractProfile
+_EXTERNAL_CONTRACT_PROFILE_ADAPTER = TypeAdapter(ExternalContractProfileDefinition)
+
+
+def parse_external_contract_profile(raw_profile: Any) -> ExternalContractProfileDefinition:
+    """按 provider closed union 收敛通用与 WMS 外部合同。"""
+
+    return _EXTERNAL_CONTRACT_PROFILE_ADAPTER.validate_python(raw_profile)
 
 
 class RuntimeCapabilityProfile(BaseModel):
@@ -160,11 +186,11 @@ class RuntimeCapabilityProfile(BaseModel):
     capability_name: str = Field(min_length=1, max_length=80, description="capability 名")
     query_ports: list[str] = Field(
         default_factory=list,
-        description="只允许 abstract Protocol 引用, e.g. WmsMasterDataPort",
+        description="只允许当前共享 query Protocol 引用, e.g. WmsQueryExecutionPort",
     )
     effect_ports: list[str] = Field(
         default_factory=list,
-        description="只允许 abstract Protocol 引用, e.g. WmsFulfillmentPort",
+        description="只允许当前出站合同引用，不允许已删除的粗粒度 fulfillment port",
     )
     forbidden_injection_types: list[str] = Field(
         default_factory=list,
@@ -260,9 +286,12 @@ class FixtureCase(BaseModel):
 __all__ = [
     "Environment",
     "ExternalContractProfile",
+    "ExternalContractProfileDefinition",
     "FixtureCase",
     "FixtureSet",
     "InboundNormalizerProfile",
     "RuntimeCapabilityProfile",
     "SecurityProfile",
+    "WmsExternalContractProfile",
+    "parse_external_contract_profile",
 ]

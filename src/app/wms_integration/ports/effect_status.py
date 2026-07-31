@@ -2,102 +2,68 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime  # noqa: TC003 - Pydantic 运行时需要解析该类型
 from enum import Enum
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializeAsAny,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256
-from src.app.wms_integration.ports.confirm_inbound_operation import ConfirmInboundOperationResult
-from src.app.wms_integration.ports.full_box_exchange_operation import FullBoxExchangeOperationResult
-from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationResult
-
-CONFIRM_INBOUND_OPERATION_IDENTITY = "wms.inventory.confirm_inbound@v1"
-FULL_BOX_EXCHANGE_OPERATION_IDENTITY = "wms.fulfillment.full_box_exchange@v1"
-NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY = "wms.fulfillment.notify_pkg_binding@v1"
-WMS_EFFECT_OPERATION_IDENTITIES = frozenset(
-    {
-        CONFIRM_INBOUND_OPERATION_IDENTITY,
-        FULL_BOX_EXCHANGE_OPERATION_IDENTITY,
-        NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
-    }
+from src.app.wms_integration.operation_registry import (
+    ASYNC_EFFECT_OPERATION_IDENTITIES,
+    ASYNC_EFFECT_OPERATIONS,
 )
+from src.app.wms_integration.ports.fulfillment_operations import (
+    BATCH_FULFILLMENT_OPERATION_IDENTITIES,
+    ChangeRackFaceRequest,
+    ChangeRackFaceResult,
+    RequestLoadUnitTransportRequest,
+    RequestLoadUnitTransportResult,
+    RequestRackSupplyRequest,
+    RequestRackSupplyResult,
+    RequestRackTransportRequest,
+    RequestRackTransportResult,
+    WmsAcceptedScope,
+    WmsEffectAck,
+    validate_batch_terminal_result,
+    validate_effect_ack,
+    validate_effect_provider_reference,
+    validate_fulfillment_ack,
+)
+from src.app.wms_integration.ports.operation_common import (
+    validate_json_payload,
+    validate_rfc3339_utc_timestamp,
+)
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
 
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 StableReasonCode = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=120, pattern=r"^[A-Z][A-Z0-9_]*$"),
 ]
-OperationIdentity = Literal[
-    "wms.inventory.confirm_inbound@v1",
-    "wms.fulfillment.full_box_exchange@v1",
-    "wms.fulfillment.notify_pkg_binding@v1",
-]
-
-
-class ConfirmInboundResultIdentity(BaseModel):
-    """入库确认结果中必须与原请求一致的关联字段。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    dispatch_key: StableText = Field(max_length=240)
-    inbound_key: StableText = Field(max_length=120)
-
-
-class FullBoxExchangeResultIdentity(BaseModel):
-    """满箱交换结果中必须与原请求一致的关联字段。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    dispatch_key: StableText = Field(max_length=240)
-    rack_id: StableText = Field(max_length=120)
-    empty_box_id: StableText = Field(max_length=120)
-    full_box_id: StableText = Field(max_length=120)
-
-
-class NotifyPackageBindingResultIdentity(BaseModel):
-    """料盘绑定结果中必须与原请求一致的关联字段。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    dispatch_key: StableText = Field(max_length=240)
-    package_id: StableText = Field(max_length=120)
-    pallet_id: StableText = Field(max_length=120)
-
-
-type WmsEffectResultIdentity = (
-    ConfirmInboundResultIdentity | FullBoxExchangeResultIdentity | NotifyPackageBindingResultIdentity
-)
-type WmsEffectOperationResult = (
-    ConfirmInboundOperationResult | FullBoxExchangeOperationResult | NotifyPackageBindingOperationResult
-)
-
-_IDENTITY_TYPE_BY_OPERATION = MappingProxyType(
-    {
-        CONFIRM_INBOUND_OPERATION_IDENTITY: ConfirmInboundResultIdentity,
-        FULL_BOX_EXCHANGE_OPERATION_IDENTITY: FullBoxExchangeResultIdentity,
-        NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY: NotifyPackageBindingResultIdentity,
-    }
-)
+OperationIdentity = Annotated[str, StringConstraints(pattern=r"^wms\.[a-z0-9_]+\.[a-z0-9_]+@v[1-9][0-9]*$")]
+WMS_EFFECT_OPERATION_IDENTITIES = ASYNC_EFFECT_OPERATION_IDENTITIES
+_OPERATION_BY_IDENTITY = MappingProxyType({operation.identity: operation for operation in ASYNC_EFFECT_OPERATIONS})
 _RESULT_TYPE_BY_OPERATION = MappingProxyType(
-    {
-        CONFIRM_INBOUND_OPERATION_IDENTITY: ConfirmInboundOperationResult,
-        FULL_BOX_EXCHANGE_OPERATION_IDENTITY: FullBoxExchangeOperationResult,
-        NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY: NotifyPackageBindingOperationResult,
-    }
+    {operation.identity: operation.result_model for operation in ASYNC_EFFECT_OPERATIONS}
 )
 _REJECTION_REASON_CODES_BY_OPERATION = MappingProxyType(
-    {
-        CONFIRM_INBOUND_OPERATION_IDENTITY: frozenset({"MATERIAL_BLOCKED", "WMS_BUSINESS_REJECTED"}),
-        FULL_BOX_EXCHANGE_OPERATION_IDENTITY: frozenset({"RACK_LOCKED", "WMS_BUSINESS_REJECTED"}),
-        NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY: frozenset({"WMS_BUSINESS_REJECTED"}),
-    }
+    {operation.identity: frozenset(operation.reject_codes) for operation in ASYNC_EFFECT_OPERATIONS}
 )
-_RFC3339_UTC_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\+00:00$")
+BATCH_EFFECT_OPERATION_IDENTITIES = BATCH_FULFILLMENT_OPERATION_IDENTITIES
 
 
 def _preserve_opaque_idempotency_key(value: Any) -> str:
@@ -107,20 +73,34 @@ def _preserve_opaque_idempotency_key(value: Any) -> str:
 
 
 class WmsEffectStatusRequest(BaseModel):
-    """本地 typed 查询请求；HTTP query string 只暴露两项冻结关联键。"""
+    """本地 typed 查询请求；原始 EFFECT payload 仅用于终态关联校验。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     operation_identity: OperationIdentity
     idempotency_key: str = Field(min_length=1, max_length=160)
     attempt_count: int = Field(default=1, ge=1, exclude=True)
-    expected_result_identity: WmsEffectResultIdentity = Field(exclude=True)
+    request_payload: dict[str, Any] = Field(exclude=True)
+    frozen_ack: WmsEffectAck | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
-    def validate_expected_result_identity(self) -> WmsEffectStatusRequest:
-        expected_type = _IDENTITY_TYPE_BY_OPERATION[self.operation_identity]
-        if not isinstance(self.expected_result_identity, expected_type):
-            raise TypeError("expected result identity does not match operation_identity")
+    def validate_async_operation_request(self) -> WmsEffectStatusRequest:
+        operation = _OPERATION_BY_IDENTITY.get(self.operation_identity)
+        if operation is None:
+            raise ValueError("operation_identity is not an authored async WMS EFFECT")
+        try:
+            validated = validate_json_payload(operation.request_model, self.request_payload)
+        except ValidationError as exc:
+            raise ValueError("request_payload violates the async operation request contract") from exc
+        object.__setattr__(self, "request_payload", validated.model_dump(mode="json"))
+        if self.frozen_ack is not None:
+            validate_effect_ack(
+                operation_identity=self.operation_identity,
+                idempotency_key=self.idempotency_key,
+                ack=self.frozen_ack,
+            )
+        if self.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES and type(self) is WmsEffectStatusRequest:
+            raise ValueError("batch status request requires frozen request and ACK context")
         return self
 
     @field_validator("idempotency_key", mode="before")
@@ -134,6 +114,30 @@ class WmsEffectStatusRequest(BaseModel):
             "operation_identity": self.operation_identity,
             "idempotency_key": self.idempotency_key,
         }
+
+    @property
+    def expected_result_fields(self) -> dict[str, Any]:
+        operation = _OPERATION_BY_IDENTITY[self.operation_identity]
+        return {
+            field_name: self.request_payload[field_name]
+            for field_name in operation.result_model.model_fields
+            if field_name in self.request_payload
+            and not isinstance(self.request_payload[field_name], (dict, list, tuple))
+        }
+
+
+class WmsBatchEffectStatusRequest(WmsEffectStatusRequest):
+    """E12/E13 status parser 的完整冻结请求；ACK 可由首次可见状态恢复。"""
+
+    @model_validator(mode="after")
+    def validate_frozen_batch_context(self) -> WmsBatchEffectStatusRequest:
+        if self.operation_identity not in BATCH_EFFECT_OPERATION_IDENTITIES:
+            raise ValueError("batch status context only supports E12/E13")
+        operation = _OPERATION_BY_IDENTITY[self.operation_identity]
+        batch_request = validate_json_payload(operation.request_model, self.request_payload)
+        if self.frozen_ack is not None:
+            validate_fulfillment_ack(batch_request, self.frozen_ack)  # type: ignore[arg-type]
+        return self
 
 
 class WmsEffectStatus(str, Enum):
@@ -153,6 +157,7 @@ class _WmsEffectStatusWireSnapshot(BaseModel):
 
     state: Literal["ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"]
     provider_reference: StableText | None
+    accepted_scope: WmsAcceptedScope | None = None
     reason_code: StableReasonCode | None
     updated_at: datetime | None
     source_version: int | None = Field(ge=0, strict=True)
@@ -163,9 +168,7 @@ class _WmsEffectStatusWireSnapshot(BaseModel):
     def require_rfc3339_utc_timestamp(cls, value: Any) -> Any:
         if value is None:
             return None
-        if not isinstance(value, str) or not _RFC3339_UTC_TIMESTAMP_RE.fullmatch(value):
-            raise ValueError("updated_at must be an RFC 3339 UTC timestamp with +00:00 offset")
-        return value
+        return validate_rfc3339_utc_timestamp(value)
 
 
 class WmsEffectStatusSnapshot(BaseModel):
@@ -180,7 +183,16 @@ class WmsEffectStatusSnapshot(BaseModel):
     reason_code: StableReasonCode | None = None
     updated_at: datetime | None = None
     source_version: int | None = Field(default=None, ge=0, strict=True)
-    result: WmsEffectOperationResult | None = None
+    result: SerializeAsAny[BaseModel] | None = None
+    # 仅供 orchestration 首次写入现有权威 ACK envelope；禁止进入状态 evidence。
+    recovered_ack: WmsEffectAck | None = Field(default=None, exclude=True, repr=False)
+
+    @field_validator("operation_identity")
+    @classmethod
+    def require_async_effect_identity(cls, value: str) -> str:
+        if value not in ASYNC_EFFECT_OPERATION_IDENTITIES:
+            raise ValueError("operation_identity is not an authored async WMS EFFECT")
+        return value
 
     @field_validator("idempotency_key", mode="before")
     @classmethod
@@ -195,6 +207,7 @@ class WmsEffectStatusSnapshot(BaseModel):
             self.updated_at,
             self.source_version,
             self.result,
+            self.recovered_ack,
         )
         if self.state == WmsEffectStatus.NOT_FOUND:
             if any(value is not None for value in visible_fields):
@@ -206,6 +219,17 @@ class WmsEffectStatusSnapshot(BaseModel):
         utc_offset = self.updated_at.utcoffset()
         if utc_offset is None or utc_offset.total_seconds() != 0:
             raise ValueError("visible WMS status updated_at must be offset-aware UTC")
+        if self.recovered_ack is not None:
+            validate_effect_ack(
+                operation_identity=self.operation_identity,
+                idempotency_key=self.idempotency_key,
+                ack=self.recovered_ack,
+            )
+            validate_effect_provider_reference(
+                self.recovered_ack,
+                self.provider_reference,
+                evidence_kind="status",
+            )
 
         if self.state == WmsEffectStatus.COMPLETED:
             if self.result is None:
@@ -213,9 +237,7 @@ class WmsEffectStatusSnapshot(BaseModel):
             expected_result_type = _RESULT_TYPE_BY_OPERATION[self.operation_identity]
             if not isinstance(self.result, expected_result_type):
                 raise ValueError("COMPLETED result does not match operation_identity")
-            if self.result.accepted is not True:
-                raise ValueError("COMPLETED result requires strict accepted=true")
-            inner_source_version = self.result.source_version
+            inner_source_version = getattr(self.result, "source_version", None)
             if inner_source_version is not None and inner_source_version != str(self.source_version):
                 raise ValueError("COMPLETED result source version conflicts with source_version")
         elif self.result is not None:
@@ -226,8 +248,8 @@ class WmsEffectStatusSnapshot(BaseModel):
                 raise ValueError("REJECTED status requires a stable reason_code")
             if self.reason_code not in _REJECTION_REASON_CODES_BY_OPERATION[self.operation_identity]:
                 raise ValueError("REJECTED reason_code is not authored for the operation")
-        elif self.state in {WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING} and self.reason_code is not None:
-            raise ValueError("non-terminal status must not carry reason_code")
+        elif self.reason_code is not None:
+            raise ValueError("only REJECTED status may carry reason_code")
         return self
 
     @classmethod
@@ -248,10 +270,44 @@ def _validate_result_identity(
     request: WmsEffectStatusRequest,
     result: BaseModel,
 ) -> None:
-    expected_fields = request.expected_result_identity.model_dump(mode="json")
+    expected_fields = request.expected_result_fields
     actual_fields = result.model_dump(mode="json")
     if any(actual_fields.get(field_name) != expected_value for field_name, expected_value in expected_fields.items()):
         raise ValueError("completed result identity differs from the original request")
+    operation = _OPERATION_BY_IDENTITY[request.operation_identity]
+    typed_request = validate_json_payload(operation.request_model, request.request_payload)
+    if operation.terminal_identity_validator is not None:
+        operation.terminal_identity_validator(typed_request, result)
+    if (
+        isinstance(typed_request, RequestRackSupplyRequest)
+        and isinstance(result, RequestRackSupplyResult)
+        and result.task_outcome == "SUCCESS"
+        and result.final_station_code != typed_request.station_code
+    ):
+        raise ValueError("successful rack supply final station differs from request")
+    if (
+        isinstance(typed_request, RequestRackTransportRequest)
+        and isinstance(result, RequestRackTransportResult)
+        and result.task_outcome == "SUCCESS"
+        and result.final_location_code != typed_request.destination_station_code
+    ):
+        raise ValueError("successful rack transport final location differs from request")
+    if (
+        isinstance(typed_request, ChangeRackFaceRequest)
+        and isinstance(result, ChangeRackFaceResult)
+        and result.task_outcome == "SUCCESS"
+        and (
+            result.authorized_face != typed_request.requested_face or result.final_face != typed_request.requested_face
+        )
+    ):
+        raise ValueError("successful rack face authorized/final face differs from request")
+    if (
+        isinstance(typed_request, RequestLoadUnitTransportRequest)
+        and isinstance(result, RequestLoadUnitTransportResult)
+        and result.task_outcome == "SUCCESS"
+        and result.final_location_code != typed_request.destination_location_code
+    ):
+        raise ValueError("successful load unit final location differs from request")
 
 
 def _parse_completed_result(
@@ -259,22 +315,33 @@ def _parse_completed_result(
     request: WmsEffectStatusRequest,
     result_payload: dict[str, Any],
     source_version: int,
-) -> WmsEffectOperationResult:
+) -> BaseModel:
     result_model = _RESULT_TYPE_BY_OPERATION.get(request.operation_identity)
     if result_model is None:
         raise ValueError("unknown WMS EFFECT operation identity")
     try:
-        if result_payload.get("accepted") is not True:
-            raise ValueError("completed result_payload requires strict accepted=true")
-        result = result_model.model_validate(result_payload)
+        result = validate_json_payload(result_model, result_payload)
     except ValidationError as exc:
         raise ValueError("completed result_payload violates the operation result contract") from exc
-    if result.accepted is not True:
-        raise ValueError("completed result_payload requires accepted=true")
-    inner_source_version = result.source_version
+    inner_source_version = getattr(result, "source_version", None)
     if inner_source_version is not None and inner_source_version != str(source_version):
         raise ValueError("completed result source version conflicts with the outer source_version")
     _validate_result_identity(request=request, result=result)
+    validate_effect_provider_reference(
+        request.frozen_ack,
+        result.provider_reference,
+        evidence_kind="terminal",
+    )
+    if request.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES:
+        if not isinstance(request, WmsBatchEffectStatusRequest):
+            raise ValueError("batch terminal parsing requires frozen ACK context")
+        operation = _OPERATION_BY_IDENTITY[request.operation_identity]
+        batch_request = validate_json_payload(operation.request_model, request.request_payload)
+        validate_batch_terminal_result(
+            batch_request,  # type: ignore[arg-type]
+            request.frozen_ack,
+            result,  # type: ignore[arg-type]
+        )
     return result  # type: ignore[return-value]
 
 
@@ -295,6 +362,7 @@ def parse_wms_effect_status_snapshot(
             value is not None
             for value in (
                 wire.provider_reference,
+                wire.accepted_scope,
                 wire.reason_code,
                 wire.updated_at,
                 wire.source_version,
@@ -306,18 +374,37 @@ def parse_wms_effect_status_snapshot(
 
     if wire.provider_reference is None or wire.updated_at is None or wire.source_version is None:
         raise ValueError("visible WMS status requires provider_reference, updated_at and source_version")
+    recovered_ack: WmsEffectAck | None = None
+    effective_ack = request.frozen_ack
+    if effective_ack is None:
+        effective_ack = WmsEffectAck(
+            operation_identity=request.operation_identity,
+            idempotency_key=request.idempotency_key,
+            provider_reference=wire.provider_reference,
+            submission_state="REPLAY",
+            accepted_scope=wire.accepted_scope,
+        )
+        recovered_ack = effective_ack
+    elif wire.accepted_scope is not None and wire.accepted_scope != effective_ack.accepted_scope:
+        raise ValueError("status accepted_scope does not match ACK")
+    validate_effect_provider_reference(effective_ack, wire.provider_reference, evidence_kind="status")
+    effective_request = request.model_copy(update={"frozen_ack": effective_ack})
+    if request.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES:
+        operation = _OPERATION_BY_IDENTITY[request.operation_identity]
+        batch_request = validate_json_payload(operation.request_model, request.request_payload)
+        validate_fulfillment_ack(batch_request, effective_ack)  # type: ignore[arg-type]
     utc_offset = wire.updated_at.utcoffset()
     if utc_offset is None or utc_offset.total_seconds() != 0:
         raise ValueError("visible WMS status updated_at must be offset-aware UTC")
 
-    result: WmsEffectOperationResult | None = None
+    result: BaseModel | None = None
     if state == WmsEffectStatus.COMPLETED:
         if wire.result_payload is None:
             raise ValueError("COMPLETED status requires result_payload")
         if len(canonical_json_bytes(wire.result_payload)) > max_result_payload_bytes:
             raise ValueError("COMPLETED result_payload exceeds the configured size limit")
         result = _parse_completed_result(
-            request=request,
+            request=effective_request,
             result_payload=wire.result_payload,
             source_version=wire.source_version,
         )
@@ -329,8 +416,8 @@ def parse_wms_effect_status_snapshot(
             raise ValueError("REJECTED status requires a stable reason_code")
         if wire.reason_code not in _REJECTION_REASON_CODES_BY_OPERATION[request.operation_identity]:
             raise ValueError("REJECTED reason_code is not authored for the operation")
-    elif state in {WmsEffectStatus.ACCEPTED, WmsEffectStatus.PROCESSING} and wire.reason_code is not None:
-        raise ValueError("non-terminal status must not carry reason_code")
+    elif wire.reason_code is not None:
+        raise ValueError("only REJECTED status may carry reason_code")
 
     return WmsEffectStatusSnapshot(
         operation_identity=request.operation_identity,
@@ -341,6 +428,7 @@ def parse_wms_effect_status_snapshot(
         updated_at=wire.updated_at,
         source_version=wire.source_version,
         result=result,
+        recovered_ack=recovered_ack,
     )
 
 
@@ -359,6 +447,11 @@ def assert_status_snapshot_progression(
         raise ValueError("NOT_FOUND must not clear a previously visible source_version")
     if previous.source_version is None:
         return current
+    if previous.state in {WmsEffectStatus.COMPLETED, WmsEffectStatus.REJECTED} and current.state in {
+        WmsEffectStatus.ACCEPTED,
+        WmsEffectStatus.PROCESSING,
+    }:
+        raise ValueError("terminal WMS status must not regress to a non-terminal state")
     if current.source_version is None or current.source_version < previous.source_version:
         raise ValueError("WMS status source_version must not regress")
     if current.source_version == previous.source_version and current.canonical_bytes != previous.canonical_bytes:
@@ -439,26 +532,29 @@ class FrozenWmsEffectStatusBinding(BaseModel):
         return binding
 
 
-def build_wms_effect_status_binding(*, settings_source: Any) -> FrozenWmsEffectStatusBinding:
+def build_wms_effect_status_binding(
+    *,
+    settings_source: Any,
+    compiled_profile: CompiledWmsProviderProfile | None = None,
+) -> FrozenWmsEffectStatusBinding:
     """从当前唯一 active WMS profile 生成新 Intent 使用的状态 binding。"""
 
-    from src.app.runtime.system_capabilities.wms.provider_catalog import (
-        WMS_EXTERNAL_HTTP_EFFECT_PROFILE,
-        WMS_PROVIDER_PROFILE,
-        build_active_wms_provider_profile,
+    if compiled_profile is None:
+        raise RuntimeError("compiled WMS EFFECT profile must be injected by the T3 runtime composition root")
+    profile_identity = compiled_profile.profile.profile.identity
+    outbound_auth = compiled_profile.profile.outbound_auth
+    if outbound_auth.scheme.value != "HMAC_SHA256" or outbound_auth.credential_reference is None:
+        raise ValueError("WMS EFFECT status runtime requires compiled HMAC_SHA256 auth")
+    status_endpoints = frozenset(
+        endpoint.status_endpoint
+        for endpoint in compiled_profile.operations.values()
+        if endpoint.status_endpoint is not None
     )
-
-    configured_profile = build_active_wms_provider_profile(settings_source)
-    profile = WMS_EXTERNAL_HTTP_EFFECT_PROFILE
-    profile_identity = WMS_PROVIDER_PROFILE.identity.identity
-    if configured_profile != WMS_PROVIDER_PROFILE:
-        raise ValueError("status binding Settings must match the process active WMS provider profile")
-    credential_references = frozenset(binding.credential_reference for binding in profile.bindings)
-    auth_schemes = frozenset(binding.auth_scheme for binding in profile.bindings)
-    if len(credential_references) != 1 or len(auth_schemes) != 1:
-        raise ValueError("active WMS EFFECT profile must use one status credential revision")
+    if len(status_endpoints) != 1:
+        raise ValueError("compiled WMS EFFECT profile must expose one shared status endpoint")
+    status_endpoint = next(iter(status_endpoints))
     target = WmsEffectStatusTargetSnapshot(
-        url=settings_source.WMS_EFFECT_STATUS_URL,
+        url=status_endpoint,
         timeout_seconds=settings_source.WMS_EFFECT_STATUS_TIMEOUT_SECONDS,
         max_response_bytes=settings_source.WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES,
     )
@@ -467,18 +563,18 @@ def build_wms_effect_status_binding(*, settings_source: Any) -> FrozenWmsEffectS
     binding_revision = payload_sha256(
         canonical_json_bytes(
             {
-                "auth_scheme": next(iter(auth_schemes)),
-                "credential_reference": next(iter(credential_references)),
-                "provider_profile_hash": profile.profile_hash,
+                "auth_scheme": outbound_auth.scheme.value,
+                "credential_reference": outbound_auth.credential_reference,
+                "provider_profile_hash": compiled_profile.profile_digest,
                 "target_hash": target_hash,
             }
         )
     )
     snapshot = {
-        "auth_scheme": next(iter(auth_schemes)),
+        "auth_scheme": outbound_auth.scheme.value,
         "binding_revision": binding_revision,
-        "credential_reference": next(iter(credential_references)),
-        "provider_profile_hash": profile.profile_hash,
+        "credential_reference": outbound_auth.credential_reference,
+        "provider_profile_hash": compiled_profile.profile_digest,
         "provider_profile_identity": profile_identity,
         "target": target_json,
         "target_hash": target_hash,
@@ -496,14 +592,10 @@ class WmsEffectStatusQueryPort(Protocol):
 
 
 __all__ = [
-    "CONFIRM_INBOUND_OPERATION_IDENTITY",
-    "FULL_BOX_EXCHANGE_OPERATION_IDENTITY",
-    "NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY",
+    "BATCH_EFFECT_OPERATION_IDENTITIES",
     "WMS_EFFECT_OPERATION_IDENTITIES",
-    "ConfirmInboundResultIdentity",
     "FrozenWmsEffectStatusBinding",
-    "FullBoxExchangeResultIdentity",
-    "NotifyPackageBindingResultIdentity",
+    "WmsBatchEffectStatusRequest",
     "WmsEffectStatus",
     "WmsEffectStatusQueryPort",
     "WmsEffectStatusRequest",

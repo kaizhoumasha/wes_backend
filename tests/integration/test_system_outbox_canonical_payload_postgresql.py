@@ -10,7 +10,7 @@ from sqlmodel import select
 
 from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
-from src.app.wms_integration.services.transport_contract import freeze_legacy_transport_binding
+from tests.support.external_http import frozen_external_http_binding
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,9 +24,9 @@ async def test_external_http_canonical_bytes_round_trip_exactly(integration_db_s
         "labels": ["入库", "📦"],
     }
     canonical = CanonicalPayload.from_projection(projection)
-    frozen_binding = freeze_legacy_transport_binding(
-        operation_identity="wms.transport.handling@v1",
-        target_code="WMS_RCS_BIN_OPERATION",
+    frozen_binding = frozen_external_http_binding(
+        operation_identity="tests.canonical-roundtrip.effect@v1",
+        target_code="WMS_TEST_CANONICAL_ROUNDTRIP",
     )
     dispatch_key = f"canonical-roundtrip:{uuid4().hex}"
     idempotency_key = f"intent:{uuid4().hex}"
@@ -69,9 +69,9 @@ async def test_external_http_frozen_binding_cannot_change_after_insert(
 ) -> None:
     projection = {"request_id": f"IMMUTABLE-{uuid4().hex}"}
     canonical = CanonicalPayload.from_projection(projection)
-    frozen_binding = freeze_legacy_transport_binding(
-        operation_identity="wms.transport.handling@v1",
-        target_code="WMS_RCS_BIN_OPERATION",
+    frozen_binding = frozen_external_http_binding(
+        operation_identity="tests.frozen-binding.effect@v1",
+        target_code="WMS_TEST_FROZEN_BINDING",
     )
     outbox = SystemOutbox(
         **frozen_binding.as_persisted_fields(),
@@ -98,9 +98,9 @@ async def test_external_http_idempotency_key_cannot_change_after_insert(
 ) -> None:
     projection = {"request_id": f"IMMUTABLE-IDEMPOTENCY-{uuid4().hex}"}
     canonical = CanonicalPayload.from_projection(projection)
-    frozen_binding = freeze_legacy_transport_binding(
-        operation_identity="wms.transport.handling@v1",
-        target_code="WMS_RCS_BIN_OPERATION",
+    frozen_binding = frozen_external_http_binding(
+        operation_identity="tests.idempotency-immutable.effect@v1",
+        target_code="WMS_TEST_IDEMPOTENCY_IMMUTABLE",
     )
     outbox = SystemOutbox(
         **frozen_binding.as_persisted_fields(),

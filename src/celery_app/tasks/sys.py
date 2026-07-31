@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import run_async
+from src.celery_app.outbox_dispatch_composition import OutboxClaimScopeName
 from src.core.logger import logger
 from src.database.db import get_db_context
 
@@ -24,10 +25,10 @@ def dispatch_system_outbox_batch(self: Any, limit: int = 50) -> DispatchResult:
     """批量派发 SystemOutbox 消息。"""
 
     async def _dispatch() -> DispatchResult:
-        from src.app.sys.services import system_outbox_engine
+        from src.celery_app.outbox_dispatch_composition import build_scoped_outbox_engine
 
         async with get_db_context() as db:
-            return await system_outbox_engine.dispatch(db, limit=limit)
+            return await build_scoped_outbox_engine(OutboxClaimScopeName.SYSTEM).dispatch(db, limit=limit)
 
     try:
         result = run_async(_dispatch)
@@ -40,7 +41,66 @@ def dispatch_system_outbox_batch(self: Any, limit: int = 50) -> DispatchResult:
         raise self.retry(exc=exc, countdown=countdown) from None
 
 
-__all__ = ["dispatch_system_outbox_batch", "process_signal"]
+@celery_app.task(
+    name="src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch",
+    base=celery_app.Task,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=10,
+)
+def dispatch_wms_data_outbox_batch(self: Any, limit: int = 50) -> DispatchResult:
+    """批量派发 WES 进程拥有的 WMS data EFFECT lane。"""
+
+    async def _dispatch() -> DispatchResult:
+        from src.celery_app.outbox_dispatch_composition import build_scoped_outbox_engine
+
+        async with get_db_context() as db:
+            return await build_scoped_outbox_engine(OutboxClaimScopeName.WMS_DATA).dispatch(db, limit=limit)
+
+    try:
+        result = run_async(_dispatch)
+        if result.get("dispatched", 0) > 0:
+            logger.info(f"WMS data Outbox 派发完成: {result}")
+        return result
+    except Exception as exc:
+        logger.error(f"WMS data Outbox 派发失败: {exc}")
+        countdown = 10 * (2**self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown) from None
+
+
+@celery_app.task(
+    name="src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
+    base=celery_app.Task,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=10,
+)
+def dispatch_wms_fulfillment_outbox_batch(self: Any, limit: int = 50) -> DispatchResult:
+    """批量派发 fulfillment 进程拥有的 WMS fulfillment EFFECT lane。"""
+
+    async def _dispatch() -> DispatchResult:
+        from src.celery_app.outbox_dispatch_composition import build_scoped_outbox_engine
+
+        async with get_db_context() as db:
+            return await build_scoped_outbox_engine(OutboxClaimScopeName.WMS_DISPATCH).dispatch(db, limit=limit)
+
+    try:
+        result = run_async(_dispatch)
+        if result.get("dispatched", 0) > 0:
+            logger.info(f"WMS fulfillment Outbox 派发完成: {result}")
+        return result
+    except Exception as exc:
+        logger.error(f"WMS fulfillment Outbox 派发失败: {exc}")
+        countdown = 10 * (2**self.request.retries)
+        raise self.retry(exc=exc, countdown=countdown) from None
+
+
+__all__ = [
+    "dispatch_system_outbox_batch",
+    "dispatch_wms_data_outbox_batch",
+    "dispatch_wms_fulfillment_outbox_batch",
+    "process_signal",
+]
 
 
 @celery_app.task(

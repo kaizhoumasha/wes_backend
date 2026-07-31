@@ -161,12 +161,12 @@ DeviceCommand / manifest / runtime schema **不得包含**以下字段（来源�
 | session HOLD | session 进入 `HOLD` / `RECONCILING` / `CLOSED` 时，未下发命令必须取消或冻结；已下发命令只能等待 ECS callback 或人工 reconcile |
 | PLC 级抢占 | Runtime **不做** PLC 级抢占、急停复位或运动控制；这些只能由 ECS/现场安全系统处理后以事件形式回传 WES |
 
-### 7.4 扫码平台互锁与预取（来源主计划 §9.6）
+### 7.4 扫码平台互锁与取料因果（来源主计划 §9.6）
 
 - 分拣机北向机械臂把物料放到扫码平台后，Runtime 默认**不允许立即下发下一条取料命令**
-- `source_arm_prefetch_capacity` 默认为 0：只有扫码平台状态为 `FREE`、上一物料已被扫码平台或南向机械臂接管，且相关 work item 未处于 HOLD/RECONCILING 时，才允许北向机械臂取下一件
-- 若现场 ECS 支持平台外暂存、手持等待或预取缓存，必须在 WorkLine manifest 中显式声明 `source_arm_prefetch_capacity > 0`，并通过 capability admission、设备状态、超时和行为契约测试验证
-- **禁止靠经验默认开启预取**
+- 只有上一物料的南向 `PICK` 已形成 `southbound_pick_acknowledged`，且相关 work item 未处于
+  `HOLD` / `RECONCILING`，才允许北向机械臂取下一件
+- 扫码平台占用状态只作为诊断证据，不得替代南向 `PICK ACK` 因果或开启旁路预取
 
 ## 8. WorkLine 启停门禁（来源主计划 §9.6）
 

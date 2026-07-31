@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.app.runtime.system_capabilities.wms.contracts import (  # noqa: TC001 - Pydantic 运行时解析字段类型。
-    WmsOperationContract,
+from src.app.wms_integration.operation_contract import (  # noqa: TC001 - Pydantic 运行时解析字段类型。
+    WmsOperationDefinition,
 )
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_PROVIDER_PROFILE
-from src.app.runtime.system_capabilities.wms.provider_conformance import QUERY_INVENTORY_CONFORMANCE_CASES
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+from src.app.wms_integration.provider_manifest import (
+    WMS_CONFORMANCE_REQUIREMENTS,
+    conformance_cases_for_operation,
+)
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
 
 
 class OperationConformanceRequirement(BaseModel):
@@ -16,7 +24,7 @@ class OperationConformanceRequirement(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    operation: WmsOperationContract
+    operation: WmsOperationDefinition
     required_cases: tuple[str, ...] = Field(min_length=1)
 
 
@@ -34,31 +42,31 @@ class WmsConformanceManifest(BaseModel):
         identities = tuple(item.operation.identity for item in self.operations)
         if len(identities) != len(set(identities)):
             raise ValueError("conformance manifest contains duplicate operation identity")
+        if identities != tuple(operation.identity for operation in WMS_OPERATIONS):
+            raise ValueError("conformance manifest must cover the exact 35-operation registry")
+        if any(item.required_cases != conformance_cases_for_operation(item.operation) for item in self.operations):
+            raise ValueError("conformance manifest operation question bank differs from its mode family")
         return self
 
 
-_CORE_QUERY_CASES = tuple(case.case_id for case in QUERY_INVENTORY_CONFORMANCE_CASES)
-_CORE_EFFECT_CASES = (
-    "success",
-    "reject",
-    "timeout",
-    "unavailable",
-    "malformed",
-    "idempotency",
-    "status_query",
-    "callback_timing",
-)
+def build_wms_conformance_manifest(compiled_profile: CompiledWmsProviderProfile) -> WmsConformanceManifest:
+    """从显式 compiled profile 构造 conformance manifest。"""
 
-WMS_CONFORMANCE_MANIFEST = WmsConformanceManifest(
-    profile_identity=WMS_PROVIDER_PROFILE.identity.identity,
-    fixture_root="tests/fixtures/external_contracts/wms/northbound",
-    operations=tuple(
-        OperationConformanceRequirement(
-            operation=binding.operation,
-            required_cases=_CORE_QUERY_CASES if binding.operation.mode.value == "QUERY" else _CORE_EFFECT_CASES,
-        )
-        for binding in WMS_PROVIDER_PROFILE.bindings
-    ),
-)
+    return WmsConformanceManifest(
+        profile_identity=compiled_profile.profile.profile.identity,
+        fixture_root="tests/fixtures/external_contracts/wms/northbound",
+        operations=tuple(
+            OperationConformanceRequirement(
+                operation=requirement.operation,
+                required_cases=requirement.required_cases,
+            )
+            for requirement in WMS_CONFORMANCE_REQUIREMENTS
+        ),
+    )
 
-__all__ = ["WMS_CONFORMANCE_MANIFEST", "OperationConformanceRequirement", "WmsConformanceManifest"]
+
+__all__ = [
+    "OperationConformanceRequirement",
+    "WmsConformanceManifest",
+    "build_wms_conformance_manifest",
+]

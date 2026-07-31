@@ -36,7 +36,6 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from sqlalchemy import text
@@ -150,16 +149,12 @@ def _qualified(target: TableTarget) -> str:
 def _mock_wms_reset_url() -> str:
     """推导 Mock WMS 的 /debug/reset 地址。
 
-    优先级:``WES_MOCK_WMS_URL`` 环境变量 > 从 ``WMS_SYNC_BASE_URL`` 取 host
-    (剥掉 /api/wms 前缀)> 默认 localhost:8011。
+    优先级：``WES_MOCK_WMS_URL`` 显式覆盖，否则使用本地 Mock 默认地址。
     """
     explicit = os.environ.get("WES_MOCK_WMS_URL")
     if explicit:
         return explicit.rstrip("/").removesuffix("/debug/reset") + "/debug/reset"
-    base = os.environ.get("WMS_SYNC_BASE_URL", "http://localhost:8011/api/wms")
-    parts = urlsplit(base)
-    # 丢掉 api path,只保留 scheme://host:port
-    return urlunsplit((parts.scheme, parts.netloc, "/debug/reset", "", ""))
+    return "http://localhost:8011/debug/reset"
 
 
 async def reset_mock_wms() -> dict[str, Any]:

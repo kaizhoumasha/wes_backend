@@ -6,6 +6,7 @@ import json
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
+from src.app.contracts.wms_inbound import WMS_BUSINESS_EVENT_TYPES
 from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxAcceptResult,
     RuntimeInboxService,
@@ -60,6 +61,11 @@ def _require_result_source_event_id(payload: dict[str, Any]) -> str:
 def _resolve_external_source_event_id(payload: dict[str, Any], request_id: str | None) -> str | None:
     _ = request_id
     callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
+    if callback_type == "WMS_EFFECT_STATUS_HINT":
+        source_event_id = _resolve_first_str(payload, ("source_event_id",))
+        if source_event_id is None:
+            raise CallbackPayloadValidationError("WMS_EFFECT_STATUS_HINT source_event_id is required")
+        return source_event_id
     return (
         _resolve_first_str(payload, ("event_id", "source_event_id"))
         or _resolve_nested_str(payload, ("data", "source_event_id"))
@@ -144,6 +150,40 @@ class CallbackRuntimeInboxWriter:
             processing_required=processing_required,
         )
 
+    async def write_wms_event_callback(
+        self,
+        db: AsyncSession,
+        *,
+        payload: dict[str, Any],
+        request_id: str | None,
+        event_type: str,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> RuntimeInboxAcceptResult:
+        """持久化已由 WMS typed normalizer 验证的普通业务事件。"""
+
+        _ = request_id
+        source_event_id = _resolve_first_str(payload, ("source_event_id",))
+        if source_event_id is None:
+            raise CallbackPayloadValidationError("WMS ordinary event source_event_id is required")
+        return await self._service.accept_received(
+            db,
+            provider_code="WMS",
+            event_type=event_type,
+            source_event_id=source_event_id,
+            payload_hash=_canonical_payload_hash(payload),
+            kind="EXTERNAL_HTTP",
+            payload_json=dict(payload),
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+            source_event_identity_types=WMS_BUSINESS_EVENT_TYPES,
+        )
+
     async def write_external_callback(
         self,
         db: AsyncSession,
@@ -154,8 +194,12 @@ class CallbackRuntimeInboxWriter:
         event_id: str | None = None,
         causation_id: str | None = None,
     ) -> RuntimeInboxAcceptResult:
+        # 延迟导入避免 callback composition root 与 RuntimeInbox writer 相互初始化；
+        # 类型契约仍由 callback 域唯一持有。
+        from src.app.callback.contracts.external_callbacks import validate_external_callback_type
+
         provider_code = _resolve_first_str(payload, ("source_system",))
-        callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
+        callback_type = validate_external_callback_type(payload)
         normalized_provider = provider_code or callback_type.split("_", 1)[0] or "UNKNOWN"
         return await self._service.accept_received(
             db,

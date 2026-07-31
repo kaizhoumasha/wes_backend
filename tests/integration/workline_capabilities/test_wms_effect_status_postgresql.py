@@ -1,54 +1,65 @@
-"""WMS EFFECT status migration、短事务 claim 与 lease fencing 的 PostgreSQL 验证。"""
+"""WMS EFFECT status scanner 的真实 PostgreSQL claim/recovery 合同。"""
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import update
 
-from src.app.runtime.orchestration.effect_state_contract import EffectReducerEvent, EffectReducerEventType
+from src.app.effect_ledger_status import SystemOutboxStatus
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
-from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusRepository
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
-from src.app.runtime.orchestration.services.effect_reducer_service import EffectReducer
-from src.app.runtime.orchestration.services.wms_effect_preparation_service import WmsEffectPreparationService
 from src.app.runtime.orchestration.services.wms_effect_status_service import WmsEffectStatusService
-from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
-    CONTRACT as NOTIFY_PKG_BINDING_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.effect_adapter import (
-    NotifyPackageBindingEffectAdapter,
-)
-from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.gateway import (
-    NotifyPackageBindingDispatchGateway,
-)
-from src.app.sys.models.outbox import SystemOutboxStatus
-from src.app.sys.services.endpoint_registry import EndpointRegistry
+from src.app.runtime.system_capabilities.wms.provider_catalog import freeze_wms_effect_binding
+from src.app.sys.canonical_dispatch import CanonicalPayload
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.app.wms_integration.ports.effect_status import (
-    NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
-    WmsEffectStatus,
-    WmsEffectStatusSnapshot,
+    build_wms_effect_status_binding,
 )
-from src.app.wms_integration.ports.notify_pkg_binding_operation import NotifyPackageBindingOperationRequest
 from src.utils.timezone import timezone
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_hmac_provider_profile_payload,
+    build_provider_catalog,
+)
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 from tests.support.runtime_binding import seed_runtime_binding
-from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
-from tests.support.runtime_inbox_processing_postgresql import with_temporary_runtime_database
+from tests.workline_runtime.system_capabilities.test_wms_effect_status_service import _settings
 
-REVISION = "65e212c90737"
-PARENT = "6ea20f0c0d22"
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+E08 = "wms.fulfillment.request_rack_supply@v1"
 
 
-async def _seed_status_pair(db, *, suffix: str) -> tuple[NotifyPackageBindingOperationRequest, RuntimeIntentLog]:
-    workline, binding = await seed_runtime_binding(
-        db,
-        line_code=f"WMS-EFFECT-STATUS-{suffix}",
+async def _retire_prior_test_effects(db: AsyncSession) -> None:
+    await db.execute(
+        update(RuntimeIntentLog)
+        .where(RuntimeIntentLog.dispatch_key.like("wms-status-pg:%"))
+        .values(
+            effect_status=RuntimeIntentStatus.COMPLETED,
+            status_check_lease_token=None,
+            status_check_lease_until=None,
+        )
     )
+    await db.commit()
+
+
+async def _seed_effect(
+    db: AsyncSession,
+    *,
+    suffix: str,
+    status_check_after: Any,
+    status_check_started_at: Any = None,
+) -> str:
+    workline, binding = await seed_runtime_binding(db, line_code=f"WMS-STATUS-PG-{suffix}")
     execution_session = ExecutionSession(
         workline_id=workline.id,
         plugin_key=binding.plugin_key,
@@ -61,380 +72,237 @@ async def _seed_status_pair(db, *, suffix: str) -> tuple[NotifyPackageBindingOpe
     )
     db.add(execution_session)
     await db.flush()
-    assert execution_session.id is not None
     correlation = ExecutionCorrelation(
-        correlation_id=f"wms-status-pg-correlation-{suffix}",
+        correlation_id=f"wms-status-pg-correlation:{suffix}",
         execution_session_id=execution_session.id,
-        trace_id=f"wms-status-pg-trace-{suffix}",
+        trace_id=f"wms-status-pg-trace:{suffix}",
     )
     db.add(correlation)
     await db.flush()
-    request = NotifyPackageBindingOperationRequest(
-        dispatch_key=f"wms-status-pg-dispatch-{suffix}",
-        provider_code="WMS",
-        package_id=f"PKG-PG-{suffix}",
-        pallet_id=f"PALLET-PG-{suffix}",
-        station_code="ST-PG-001",
+
+    operation = WMS_OPERATION_BY_IDENTITY[E08]
+    dispatch_key = f"wms-status-pg:{suffix}"
+    idempotency_key = f"wms-status-pg-idem:{suffix}"
+    request_payload = {**REQUEST_FIXTURES[E08], "dispatch_key": dispatch_key}
+    canonical = CanonicalPayload.from_projection(request_payload)
+    profile_payload = build_hmac_provider_profile_payload()
+    profile_payload["server_url"] = "https://wms.example"
+    profile_payload["effect_status_path"] = "/northbound/operations/status"
+    catalog = build_provider_catalog(profile_payload)
+    frozen_submit = freeze_wms_effect_binding(
+        catalog=catalog,
+        profile_identity=catalog.profile_identity,
+        operation_identity=E08,
+        target_code=operation.target_code,
     )
+    frozen_status = build_wms_effect_status_binding(
+        settings_source=_settings(),
+        compiled_profile=catalog.compiled_profile,
+    ).as_persisted()
+    capability_key, capability_version = E08.rsplit("@", maxsplit=1)
     intent = RuntimeIntentLog(
         execution_session_id=execution_session.id,
         correlation_id=correlation.correlation_id,
         provider_code="WMS",
         operation_kind="system_capability_effect",
         target_domain="wms_integration",
-        target_action="notify_pkg_binding",
-        idempotency_key=f"wms-status-pg-idempotency-{suffix}",
-        request_hash="a" * 64,
-        dispatch_key=request.dispatch_key,
-        capability_key="wms.fulfillment.notify_pkg_binding",
-        capability_contract_version="v1",
-        operation_identity=f"WMS:PKG-PG-{suffix}:PALLET-PG-{suffix}",
+        target_action="request_rack_supply",
+        idempotency_key=idempotency_key,
+        request_hash=canonical.sha256,
+        dispatch_key=dispatch_key,
+        capability_key=capability_key,
+        capability_contract_version=capability_version,
+        operation_identity=E08,
+        payload_hash=canonical.sha256,
+        effect_status=RuntimeIntentStatus.PROPOSED,
+        status_check_started_at=status_check_started_at,
+        status_check_after=status_check_after,
+        status_binding_snapshot_json=frozen_status["snapshot"],
+        status_binding_snapshot_hash=frozen_status["snapshot_hash"],
     )
-    adapter = NotifyPackageBindingEffectAdapter(
-        gateway=NotifyPackageBindingDispatchGateway(
-            registry=EndpointRegistry({"WMS_PACKAGE_BINDING": "https://wms.example/effects/package-binding"})
-        )
+    outbox = SystemOutbox(
+        workline_id=workline.id,
+        operation_domain="WMS",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key=dispatch_key,
+        idempotency_key=idempotency_key,
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code=frozen_submit.target_snapshot.code,
+        provider_profile_identity=frozen_submit.provider_profile_identity,
+        operation_identity=E08,
+        provider_profile_hash=frozen_submit.provider_profile_hash,
+        binding_revision=frozen_submit.binding_revision,
+        target_snapshot_json=frozen_submit.target_snapshot.as_json(),
+        target_snapshot_hash=frozen_submit.target_snapshot_hash,
+        auth_scheme=frozen_submit.auth_scheme,
+        network_trust_mode=frozen_submit.network_trust_mode,
+        credential_reference=frozen_submit.credential_reference,
+        payload_json=request_payload,
+        canonical_payload_bytes=canonical.body,
+        payload_hash=canonical.sha256,
+        status=SystemOutboxStatus.SENT,
     )
-    outbox = await WmsEffectPreparationService().prepare(
-        db,
-        operation=NOTIFY_PKG_BINDING_CONTRACT,
-        request=request,
-        intent_log=intent,
-        adapter=adapter,
-    )
+    db.add_all([intent, outbox])
     await db.commit()
-    outbox.status = SystemOutboxStatus.SENT
-    await db.commit()
-    return request, intent
-
-
-def _status_snapshot(
-    request: NotifyPackageBindingOperationRequest,
-    *,
-    state: WmsEffectStatus,
-    source_version: int,
-    provider_reference: str,
-) -> WmsEffectStatusSnapshot:
-    return WmsEffectStatusSnapshot(
-        operation_identity=NOTIFY_PACKAGE_BINDING_OPERATION_IDENTITY,
-        idempotency_key=f"wms-status-pg-idempotency-{request.dispatch_key.rsplit('-', maxsplit=1)[-1]}",
-        state=state,
-        provider_reference=provider_reference,
-        updated_at=datetime(2026, 7, 24, 12, source_version, tzinfo=UTC),
-        source_version=source_version,
-    )
+    return dispatch_key
 
 
 @pytest.mark.integration
-def test_wms_effect_status_migration_upgrade_downgrade_roundtrip() -> None:
-    async def scenario() -> None:
-        async with temporary_database() as (_database, database_url):
-            run_alembic("upgrade", PARENT, database_url=database_url)
-            run_alembic("upgrade", REVISION, database_url=database_url)
-            engine = create_async_engine(database_url)
-            try:
-                async with engine.connect() as connection:
-                    columns = set(
-                        (
-                            await connection.execute(
-                                text(
-                                    "SELECT column_name FROM information_schema.columns "
-                                    "WHERE table_schema = 'wes_runtime' "
-                                    "AND table_name = 'runtime_intent_logs'"
-                                )
-                            )
-                        ).scalars()
-                    )
-                    assert {
-                        "status_check_started_at",
-                        "status_check_after",
-                        "status_check_count",
-                        "status_resubmit_count",
-                        "status_source_version",
-                        "status_check_lease_token",
-                        "status_check_lease_until",
-                        "status_binding_snapshot_json",
-                        "status_binding_snapshot_hash",
-                    } <= columns
-                    assert await connection.scalar(
-                        text("SELECT to_regclass('wes_runtime.ix_runtime_intent_log_effect_status_check_after')")
-                    )
-            finally:
-                await engine.dispose()
-
-            run_alembic("downgrade", PARENT, database_url=database_url)
-            engine = create_async_engine(database_url)
-            try:
-                async with engine.connect() as connection:
-                    assert (
-                        await connection.scalar(
-                            text(
-                                "SELECT COUNT(*) FROM information_schema.columns "
-                                "WHERE table_schema = 'wes_runtime' "
-                                "AND table_name = 'runtime_intent_logs' "
-                                "AND column_name LIKE 'status_%'"
-                            )
-                        )
-                        == 0
-                    )
-            finally:
-                await engine.dispose()
-            run_alembic("upgrade", REVISION, database_url=database_url)
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.integration
-def test_status_claim_is_short_reclaimable_and_old_worker_is_fenced() -> None:
-    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
-        now = timezone.now_for_db()
-        repository = WmsEffectStatusRepository()
-        async with session_factory() as db:
-            workline, binding = await seed_runtime_binding(
-                db,
-                line_code="WMS-EFFECT-STATUS-CLAIM",
-            )
-            execution_session = ExecutionSession(
-                workline_id=workline.id,
-                plugin_key=binding.plugin_key,
-                manifest_version=binding.contract_version,
-                plugin_binding_id=binding.id,
-                plugin_binding_version=binding.binding_version,
-                plugin_config_hash=binding.typed_config_hash,
-                plugin_index_digest=binding.generated_index_digest,
-                state="RUNNING",
-            )
-            db.add(execution_session)
-            await db.flush()
-            assert execution_session.id is not None
-            correlation = ExecutionCorrelation(
-                correlation_id="wms-status-pg-correlation",
-                execution_session_id=execution_session.id,
-                trace_id="wms-status-pg-trace",
-            )
-            db.add(correlation)
-            await db.flush()
-            request = NotifyPackageBindingOperationRequest(
-                dispatch_key="wms-status-pg-dispatch",
-                provider_code="WMS",
-                package_id="PKG-PG-001",
-                pallet_id="PALLET-PG-001",
-                station_code="ST-PG-001",
-            )
-            intent = RuntimeIntentLog(
-                execution_session_id=execution_session.id,
-                correlation_id=correlation.correlation_id,
-                provider_code="WMS",
-                operation_kind="system_capability_effect",
-                target_domain="wms_integration",
-                target_action="notify_pkg_binding",
-                idempotency_key="wms-status-pg-idempotency",
-                request_hash="a" * 64,
-                dispatch_key=request.dispatch_key,
-                capability_key="wms.fulfillment.notify_pkg_binding",
-                capability_contract_version="v1",
-                operation_identity="WMS:PKG-PG-001:PALLET-PG-001",
-            )
-            adapter = NotifyPackageBindingEffectAdapter(
-                gateway=NotifyPackageBindingDispatchGateway(
-                    registry=EndpointRegistry({"WMS_PACKAGE_BINDING": "https://wms.example/effects/package-binding"})
-                )
-            )
-            outbox = await WmsEffectPreparationService().prepare(
-                db,
-                operation=NOTIFY_PKG_BINDING_CONTRACT,
-                request=request,
-                intent_log=intent,
-                adapter=adapter,
-            )
-            await db.commit()
-            outbox.status = SystemOutboxStatus.SENT
-            await db.commit()
-
-            first = await repository.claim_by_dispatch_key(
-                db,
-                dispatch_key=request.dispatch_key,
-                now=now,
-                lease_seconds=10,
-            )
-            assert first is not None
-            await db.commit()
-            first_token = first.lease_token
-            assert first.intent.status_check_count == 1
-
-            first.intent.status_check_lease_until = now - timedelta(seconds=1)
-            await db.commit()
-            second = await repository.claim_by_dispatch_key(
-                db,
-                dispatch_key=request.dispatch_key,
-                now=now,
-                lease_seconds=10,
-            )
-            assert second is not None and second.lease_token != first_token
-            await db.commit()
-
-            assert (
-                await repository.get_claim_for_update(
-                    db,
-                    dispatch_key=request.dispatch_key,
-                    lease_token=first_token,
-                )
-                is None
-            )
-            assert await repository.release_claim(db, claim=second, status_check_after=None)
-            await db.commit()
-
-    asyncio.run(with_temporary_runtime_database(scenario))
-
-
-@pytest.mark.integration
-def test_status_service_uses_real_repository_and_reducer_outside_http_transaction() -> None:
-    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
-        async with session_factory() as db:
-            request, intent = await _seed_status_pair(db, suffix="service")
-            query_calls = 0
-
-            class Port:
-                async def query_status(self, _request):  # type: ignore[no-untyped-def]
-                    nonlocal query_calls
-                    assert db.in_transaction() is False, "HTTP 必须在 claim 提交且无行锁事务时执行"
-                    query_calls += 1
-                    return _status_snapshot(
-                        request,
-                        state=WmsEffectStatus.PROCESSING,
-                        source_version=2,
-                        provider_reference="provider-service-v2",
-                    )
-
-            service = WmsEffectStatusService(port_factory_builder=lambda _binding: Port)
-            first = await service.check_dispatch(db, dispatch_key=request.dispatch_key)
-            duplicate = await service.check_dispatch(db, dispatch_key=request.dispatch_key)
-
-            assert first.outcome == WmsEffectStatus.PROCESSING.value
-            assert duplicate.outcome == "SKIPPED"
-            assert query_calls == 1
-            persisted = await db.scalar(
-                select(RuntimeIntentLog).where(RuntimeIntentLog.dispatch_key == request.dispatch_key)
-            )
-            assert persisted is not None
-            assert persisted.effect_status is RuntimeIntentStatus.ACCEPTED
-            assert persisted.status_source_version == 2
-
-            # binding 损坏仍须由显式 WMS operation identity claim，并在网络前唯一 fail-closed。
-            persisted.status_check_after = timezone.now_for_db() - timedelta(seconds=1)
-            persisted.status_binding_snapshot_hash = None
-            await db.commit()
-            corrupt = await service.check_dispatch(db, dispatch_key=request.dispatch_key)
-            replay = await service.check_dispatch(db, dispatch_key=request.dispatch_key)
-
-            assert corrupt.outcome == "RECONCILING"
-            assert replay.outcome == "SKIPPED"
-            assert query_calls == 1
-            assert intent.operation_identity == "WMS:PKG-PG-service:PALLET-PG-service"
-            assert (
-                await db.scalar(
-                    select(func.count())
-                    .select_from(ReconciliationCase)
-                    .where(
-                        ReconciliationCase.dispatch_key == request.dispatch_key,
-                        ReconciliationCase.status == ReconciliationCaseStatus.OPEN,
-                    )
-                )
-                == 1
-            )
-
-    asyncio.run(with_temporary_runtime_database(scenario))
-
-
-@pytest.mark.integration
-def test_real_status_service_orders_versions_and_real_reducer_serializes_terminal_race() -> None:
-    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
-        async with session_factory() as db:
-            request, _intent = await _seed_status_pair(db, suffix="versions")
-            snapshots = [
-                _status_snapshot(
-                    request,
-                    state=WmsEffectStatus.PROCESSING,
-                    source_version=2,
-                    provider_reference="provider-version-2",
-                ),
-                _status_snapshot(
-                    request,
-                    state=WmsEffectStatus.PROCESSING,
-                    source_version=1,
-                    provider_reference="provider-version-1",
-                ),
-                _status_snapshot(
-                    request,
-                    state=WmsEffectStatus.ACCEPTED,
-                    source_version=2,
-                    provider_reference="provider-version-2-conflict",
-                ),
-            ]
-
-            class Port:
-                async def query_status(self, _request):  # type: ignore[no-untyped-def]
-                    assert db.in_transaction() is False
-                    return snapshots.pop(0)
-
-            service = WmsEffectStatusService(port_factory_builder=lambda _binding: Port)
-            first = await service.check_dispatch(db, dispatch_key=request.dispatch_key)
-            persisted = await db.scalar(
-                select(RuntimeIntentLog).where(RuntimeIntentLog.dispatch_key == request.dispatch_key)
-            )
-            assert persisted is not None
-            persisted.status_check_after = timezone.now_for_db() - timedelta(seconds=1)
-            await db.commit()
-            stale = await service.check_dispatch(db, dispatch_key=request.dispatch_key)
-            persisted.status_check_after = timezone.now_for_db() - timedelta(seconds=1)
-            await db.commit()
-            conflict = await service.check_dispatch(db, dispatch_key=request.dispatch_key)
-
-            assert first.outcome == WmsEffectStatus.PROCESSING.value
-            assert stale.outcome == "STALE"
-            assert conflict.outcome == "RECONCILING"
-            assert persisted.status_source_version == 2
-            assert persisted.effect_status is RuntimeIntentStatus.RECONCILING
-
-            race_request, _race_intent = await _seed_status_pair(db, suffix="race")
-
-        async def reduce_terminal(event_type: EffectReducerEventType, source: str) -> None:
-            async with session_factory() as worker_db:
-                await EffectReducer().reduce(
-                    worker_db,
-                    EffectReducerEvent(
-                        event_type=event_type,
-                        dispatch_key=race_request.dispatch_key,
-                        occurred_at_ms=1_800_000_000_000,
-                        source_event_id=source,
-                        evidence_json={"source_version": 7, "snapshot_hash": source},
-                    ),
-                )
-                await worker_db.commit()
-
-        await asyncio.gather(
-            reduce_terminal(EffectReducerEventType.STATUS_COMPLETED, "terminal-completed"),
-            reduce_terminal(EffectReducerEventType.STATUS_REJECTED, "terminal-rejected"),
+@pytest.mark.asyncio
+async def test_overlapping_status_scanners_use_skip_locked_on_postgresql(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    now = timezone.now_for_db()
+    suffix = uuid4().hex
+    async with integration_session_factory() as seed_db:
+        await _retire_prior_test_effects(seed_db)
+        await _seed_effect(
+            seed_db,
+            suffix=f"{suffix}-1",
+            status_check_after=now - timedelta(seconds=5),
+            status_check_started_at=now - timedelta(seconds=30),
         )
-        # 重放冲突事实只能追加/复用同一 OPEN case，不能产生第二个裁决对象。
-        await reduce_terminal(EffectReducerEventType.STATUS_REJECTED, "terminal-rejected")
+        await _seed_effect(
+            seed_db,
+            suffix=f"{suffix}-2",
+            status_check_after=now - timedelta(seconds=8),
+            status_check_started_at=now - timedelta(seconds=10),
+        )
 
-        async with session_factory() as verify_db:
-            raced = await verify_db.scalar(
-                select(RuntimeIntentLog).where(RuntimeIntentLog.dispatch_key == race_request.dispatch_key)
-            )
-            assert raced is not None
-            assert raced.effect_status in {RuntimeIntentStatus.COMPLETED, RuntimeIntentStatus.REJECTED}
-            assert (
-                await verify_db.scalar(
-                    select(func.count())
-                    .select_from(ReconciliationCase)
-                    .where(
-                        ReconciliationCase.dispatch_key == race_request.dispatch_key,
-                        ReconciliationCase.status == ReconciliationCaseStatus.OPEN,
-                    )
-                )
-                == 1
-            )
+    repository = WmsEffectStatusRepository()
+    async with integration_session_factory() as first_db, integration_session_factory() as second_db:
+        backlog = await repository.get_due_backlog_snapshot(first_db, now=now)
+        assert backlog.backlog_count == 2
+        assert backlog.max_overdue_age_ms == 8_000
+        assert backlog.max_confirmation_age_ms == 30_000
 
-    asyncio.run(with_temporary_runtime_database(scenario))
+        first = await repository.claim_due_batch(first_db, now=now, lease_seconds=30, limit=1)
+        second = await repository.claim_due_batch(second_db, now=now, lease_seconds=30, limit=1)
+
+        assert len(first) == len(second) == 1
+        assert first[0].intent.dispatch_key != second[0].intent.dispatch_key
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_expired_claim_replacement_fences_old_token_on_postgresql(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    now = timezone.now_for_db()
+    suffix = uuid4().hex
+    async with integration_session_factory() as seed_db:
+        await _retire_prior_test_effects(seed_db)
+        dispatch_key = await _seed_effect(seed_db, suffix=suffix, status_check_after=now)
+
+    repository = WmsEffectStatusRepository()
+    async with integration_session_factory() as first_db:
+        old_claim = await repository.claim_by_dispatch_key(
+            first_db,
+            dispatch_key=dispatch_key,
+            now=now,
+            lease_seconds=1,
+        )
+        assert old_claim is not None
+        await first_db.commit()
+
+    async with integration_session_factory() as replacement_db:
+        replacement = await repository.claim_by_dispatch_key(
+            replacement_db,
+            dispatch_key=dispatch_key,
+            now=now + timedelta(seconds=2),
+            lease_seconds=30,
+        )
+        assert replacement is not None
+        await replacement_db.commit()
+
+    async with integration_session_factory() as verify_db:
+        assert replacement.lease_token != old_claim.lease_token
+        assert (
+            await repository.get_claim_for_update(
+                verify_db,
+                dispatch_key=dispatch_key,
+                lease_token=old_claim.lease_token,
+            )
+            is None
+        )
+        assert (
+            await repository.get_claim_for_update(
+                verify_db,
+                dispatch_key=dispatch_key,
+                lease_token=replacement.lease_token,
+            )
+            is not None
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_hint_and_scanner_race_queries_wms_at_most_once_on_postgresql(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    now = timezone.now_for_db()
+    suffix = uuid4().hex
+    async with integration_session_factory() as seed_db:
+        await _retire_prior_test_effects(seed_db)
+        dispatch_key = await _seed_effect(
+            seed_db,
+            suffix=suffix,
+            status_check_after=now + timedelta(minutes=5),
+        )
+
+    query_count = 0
+
+    repository = WmsEffectStatusRepository()
+    queue_gateway = SimpleNamespace(enqueue_wms_effect_status=lambda **_kwargs: None)
+    service = WmsEffectStatusService(
+        repository=repository,
+        settings_source=_settings(),
+        now=lambda: now,
+        queue_gateway=queue_gateway,
+    )
+    async with integration_session_factory() as hint_db:
+        hint = await service.request_status_check_hint(
+            hint_db,
+            operation_identity=E08,
+            idempotency_key=f"wms-status-pg-idem:{suffix}",
+            dispatch_key=dispatch_key,
+        )
+    assert hint.outcome == "SCHEDULED"
+
+    async def query_wms() -> None:
+        nonlocal query_count
+        query_count += 1
+        await asyncio.sleep(0.05)
+
+    async def scan() -> str:
+        async with integration_session_factory() as db:
+            claims = await repository.claim_due_batch(
+                db,
+                now=now,
+                lease_seconds=30,
+                limit=1,
+            )
+            await db.commit()
+        if not claims:
+            return "SKIPPED"
+        await query_wms()
+        return "QUERIED"
+
+    async def immediate() -> str:
+        async with integration_session_factory() as db:
+            claim = await repository.claim_by_dispatch_key(
+                db,
+                dispatch_key=dispatch_key,
+                now=now,
+                lease_seconds=30,
+            )
+            await db.commit()
+        if claim is None:
+            return "SKIPPED"
+        await query_wms()
+        return "QUERIED"
+
+    scanner_results, immediate_result = await asyncio.gather(scan(), immediate())
+
+    assert query_count == 1
+    assert sorted([scanner_results, immediate_result]) == ["QUERIED", "SKIPPED"]

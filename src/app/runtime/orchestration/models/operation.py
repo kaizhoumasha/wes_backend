@@ -5,7 +5,11 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 - Pydantic requires runtime type access
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from src.app.runtime.orchestration.wms_sync_obligation import (  # noqa: TC001 - Pydantic 运行时解析字段类型
+    WmsSyncObligationResolution,
+)
 
 
 class SandboxEventRequest(BaseModel):
@@ -91,8 +95,16 @@ class ResolveEffectReconciliationRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    request_id: str = Field(min_length=1, max_length=100, description="稳定幂等请求 ID")
-    resolution: str = Field(pattern="^(COMPLETED|REJECTED)$", description="EFFECT 最终决议")
+    request_id: str | None = Field(default=None, min_length=1, max_length=100, description="通用决议稳定幂等请求 ID")
+    resolution: str | None = Field(
+        default=None,
+        pattern="^(COMPLETED|REJECTED)$",
+        description="非 E03/E07 EFFECT 最终决议",
+    )
+    obligation_resolution: WmsSyncObligationResolution | None = Field(
+        default=None,
+        description="E03/E07 同步义务 typed 对账裁决",
+    )
     operator_note: str = Field(min_length=1, max_length=1000, description="人工核验说明")
 
     @field_validator("request_id", mode="before")
@@ -101,6 +113,17 @@ class ResolveEffectReconciliationRequest(BaseModel):
         """规范化人工决议的稳定幂等身份。"""
 
         return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_resolution_variant(self) -> ResolveEffectReconciliationRequest:
+        has_generic = self.request_id is not None or self.resolution is not None
+        if self.obligation_resolution is not None:
+            if has_generic:
+                raise ValueError("typed obligation resolution cannot mix with generic EFFECT resolution")
+            return self
+        if self.request_id is None or self.resolution is None:
+            raise ValueError("generic EFFECT resolution requires request_id and resolution")
+        return self
 
 
 class SandboxResultRequest(BaseModel):

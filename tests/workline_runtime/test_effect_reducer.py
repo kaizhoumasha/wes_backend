@@ -20,6 +20,8 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
+from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 
 try:
     from src.app.runtime.orchestration.effect_bridges import (
@@ -121,6 +123,7 @@ def _event(
         EffectReducerEventType.TRANSPORT_ACCEPTED,
         EffectReducerEventType.TRANSPORT_REJECTED,
         EffectReducerEventType.TRANSPORT_AMBIGUOUS,
+        EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
     }:
         kwargs["attempt_no"] = 1
     return EffectReducerEvent(**kwargs)
@@ -139,9 +142,22 @@ def _event(
             RuntimeIntentStatus.TECHNICAL_FAILED,
         ),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_ACCEPTED, False, RuntimeIntentStatus.ACCEPTED),
+        (RuntimeIntentStatus.UNKNOWN, EffectReducerEventType.TRANSPORT_ACCEPTED, False, RuntimeIntentStatus.UNKNOWN),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_REJECTED, False, RuntimeIntentStatus.REJECTED),
         (RuntimeIntentStatus.PROPOSED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
         (RuntimeIntentStatus.ACCEPTED, EffectReducerEventType.TRANSPORT_AMBIGUOUS, False, RuntimeIntentStatus.UNKNOWN),
+        (
+            RuntimeIntentStatus.PROPOSED,
+            EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+            False,
+            RuntimeIntentStatus.REJECTED,
+        ),
+        (
+            RuntimeIntentStatus.UNKNOWN,
+            EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+            False,
+            RuntimeIntentStatus.REJECTED,
+        ),
         (
             RuntimeIntentStatus.PROPOSED,
             EffectReducerEventType.LOCAL_REDECISION_REQUIRED,
@@ -260,6 +276,90 @@ async def test_callback_before_transport_response_keeps_completed_terminal() -> 
 
 
 @pytest.mark.asyncio
+async def test_recovered_transport_ack_from_unknown_writes_existing_authoritative_envelope() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.UNKNOWN)
+    repository.intent.capability_key = "wms.fulfillment.request_rack_supply"
+    repository.intent.capability_contract_version = "v1"
+    repository.intent.operation_identity = "WMS:PKG-001"
+    repository.intent.idempotency_key = "idem-001"
+    repository.intent.payload_hash = "a" * 64
+    ack = WmsEffectAck(
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
+        idempotency_key="idem-001",
+        provider_reference="provider-status-first",
+        submission_state="REPLAY",
+    )
+    ack_outcome = {"kind": "success", "payload": ack.model_dump(mode="json")}
+    event = _event(EffectReducerEventType.TRANSPORT_ACCEPTED).model_copy(
+        update={
+            "evidence_json": {
+                "recovered_typed_ack": True,
+                "typed_ack_hash": typed_wms_effect_ack_hash(ack),
+                "typed_ack_reference": "runtime-intent-outcome:dispatch-1",
+            },
+            "terminal_outcome": ack_outcome,
+        }
+    )
+
+    await EffectReducer(repository=repository).reduce(_Db(), event)
+
+    assert repository.intent.effect_status is RuntimeIntentStatus.ACCEPTED
+    assert repository.intent.outcome_json["outcome"] == ack_outcome
+    assert "payload" not in repository.intent.outcome_history_json[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "non_wms_capability",
+        "missing_validation_marker",
+        "forged_ack_hash",
+        "non_success_outcome",
+        "invalid_ack_identity",
+    ),
+)
+async def test_unknown_transport_acceptance_does_not_use_recovered_ack_bypass_for_unverified_evidence(
+    drift: str,
+) -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.UNKNOWN)
+    repository.intent.capability_key = "wms.fulfillment.request_rack_supply"
+    repository.intent.capability_contract_version = "v1"
+    repository.intent.operation_identity = "WMS:PKG-001"
+    repository.intent.idempotency_key = "idem-001"
+    repository.intent.payload_hash = "a" * 64
+    ack = WmsEffectAck(
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
+        idempotency_key="idem-001",
+        provider_reference="provider-status-first",
+        submission_state="REPLAY",
+    )
+    if drift == "non_wms_capability":
+        repository.intent.capability_key = "device.command.dispatch"
+    if drift == "invalid_ack_identity":
+        ack = ack.model_copy(update={"idempotency_key": "other-idempotency-key"})
+    evidence = {
+        "recovered_typed_ack": drift != "missing_validation_marker",
+        "typed_ack_hash": "b" * 64 if drift == "forged_ack_hash" else typed_wms_effect_ack_hash(ack),
+        "typed_ack_reference": "runtime-intent-outcome:dispatch-1",
+    }
+    event = _event(EffectReducerEventType.TRANSPORT_ACCEPTED).model_copy(
+        update={
+            "evidence_json": evidence,
+            "terminal_outcome": {
+                "kind": "contract_violation" if drift == "non_success_outcome" else "success",
+                "payload": ack.model_dump(mode="json"),
+            },
+        }
+    )
+
+    await EffectReducer(repository=repository).reduce(_Db(), event)
+
+    assert repository.intent.effect_status is RuntimeIntentStatus.UNKNOWN
+    assert repository.intent.outcome_json == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("event_type_value", "expected"),
     [
@@ -302,9 +402,9 @@ async def test_wms_status_enabled_intent_records_callback_without_advancing_term
     event_type: EffectReducerEventType,
 ) -> None:
     repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
-    repository.intent.capability_key = "wms.fulfillment.notify_pkg_binding"
+    repository.intent.capability_key = "wms.fulfillment.request_rack_supply"
     repository.intent.capability_contract_version = "v1"
-    repository.intent.operation_identity = "WMS:PKG-001:PALLET-001"
+    repository.intent.operation_identity = "STATION-001:FLOW_RACK:1"
     # callback authority 由 operation/status capability 身份决定，不依赖可损坏的 binding。
     repository.intent.status_binding_snapshot_hash = None
     repository.intent.status_binding_snapshot_json = None
@@ -373,6 +473,26 @@ async def test_callback_completed_before_transport_rejected_opens_contradiction_
     assert contradiction is not None and contradiction.contradiction is True
     assert contradiction.case_created is True
     assert repository.intent.effect_status is RuntimeIntentStatus.COMPLETED
+    assert repository.cases[0].status is ReconciliationCaseStatus.OPEN
+
+
+@pytest.mark.asyncio
+async def test_async_submit_reject_after_typed_ack_opens_contradiction_case() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.ACCEPTED)
+    reducer = EffectReducer(repository=repository)
+
+    contradiction = await reducer.reduce(
+        _Db(),
+        _event(
+            EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+            occurred_at_ms=1001,
+            reason_code="NO_RACK_AVAILABLE",
+        ),
+    )
+
+    assert contradiction is not None and contradiction.contradiction is True
+    assert contradiction.case_created is True
+    assert repository.intent.effect_status is RuntimeIntentStatus.ACCEPTED
     assert repository.cases[0].status is ReconciliationCaseStatus.OPEN
 
 
@@ -751,6 +871,45 @@ async def test_open_case_transport_evidence_replay_is_idempotent_and_conflict_is
     conflicting = transport.model_copy(update={"evidence_json": {"fact": "LEASE_EXPIRED"}})
     with pytest.raises(ReconciliationEvidenceConflict):
         await reducer.reduce(_Db(), conflicting)
+
+
+@pytest.mark.asyncio
+async def test_async_submit_reject_replay_drift_is_rejected() -> None:
+    repository = _ReducerRepository(RuntimeIntentStatus.PROPOSED)
+    reducer = EffectReducer(repository=repository)
+    reject = _event(
+        EffectReducerEventType.ASYNC_SUBMIT_REJECTED,
+        reason_code="LOCATION_LOCKED",
+    ).model_copy(
+        update={
+            "source_event_id": "wms-async-submit-reject:stable",
+            "evidence_json": {"typed_reject_hash": "a" * 64},
+            "terminal_outcome": {
+                "kind": "business_reject",
+                "reason_code": "LOCATION_LOCKED",
+                "message": "first reject",
+                "retryable": False,
+                "details": {"typed_reject_hash": "a" * 64},
+            },
+        }
+    )
+
+    await reducer.reduce(_Db(), reject)
+    replay = await reducer.reduce(_Db(), reject.model_copy(update={"occurred_at_ms": 1100}))
+
+    assert replay is not None and replay.state_changed is False
+    drifted = reject.model_copy(
+        update={
+            "evidence_json": {"typed_reject_hash": "b" * 64},
+            "terminal_outcome": {
+                **reject.terminal_outcome,
+                "message": "drifted reject",
+                "details": {"typed_reject_hash": "b" * 64},
+            },
+        }
+    )
+    with pytest.raises(ReconciliationEvidenceConflict):
+        await reducer.reduce(_Db(), drifted)
 
 
 @pytest.mark.asyncio
@@ -1429,6 +1588,57 @@ async def test_workline_protocol_rejection_finishes_sent_outbox_with_rejection_r
     )
     outbox_repository.mark_as_sent.assert_not_awaited()
     bridge.record_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_workline_async_submit_reject_finishes_attempt_without_retry() -> None:
+    from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import OutboxDispatchService
+
+    bridge = SimpleNamespace(record_result=AsyncMock())
+    service = OutboxDispatchService(effect_transport_bridge=bridge)
+    outbox = SimpleNamespace(dispatch_key="dispatch-async-rejected")
+    updated = SimpleNamespace(status="SENT", finished_at=object(), last_error="LOCATION_LOCKED")
+    outbox_repository = SimpleNamespace(
+        mark_as_sent=AsyncMock(),
+        mark_as_protocol_rejected=AsyncMock(return_value=updated),
+        mark_as_failed=AsyncMock(),
+        mark_as_terminal_failure=AsyncMock(),
+    )
+    attempt = SimpleNamespace(attempt_no=3)
+    attempt_service = SimpleNamespace(finalize_external_http_attempt_record=AsyncMock(return_value=attempt))
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=422,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        protocol_error_code="LOCATION_LOCKED",
+        error_code="HTTP_REJECTED",
+    )
+    db = _Db()
+
+    finalized = await service._finalize_external_http_result(
+        db,
+        outbox_repo=outbox_repository,
+        outbox=outbox,
+        outbox_id=1,
+        dispatch_attempt=attempt,
+        attempt_service=attempt_service,
+        result=result,
+        lease_owner_token="worker-1",
+        retry_budget=3,
+    )
+
+    assert finalized is updated
+    outbox_repository.mark_as_protocol_rejected.assert_awaited_once_with(
+        db,
+        1,
+        "HTTP_REJECTED",
+        lease_owner_token="worker-1",
+    )
+    outbox_repository.mark_as_sent.assert_not_awaited()
+    outbox_repository.mark_as_failed.assert_not_awaited()
+    outbox_repository.mark_as_terminal_failure.assert_not_awaited()
+    attempt_service.finalize_external_http_attempt_record.assert_awaited_once()
+    bridge.record_result.assert_awaited_once()
+    assert bridge.record_result.await_args.kwargs["retry_exhausted"] is False
 
 
 @pytest.mark.asyncio

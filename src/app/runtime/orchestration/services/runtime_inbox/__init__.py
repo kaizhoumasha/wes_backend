@@ -23,6 +23,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
     ValidationOutcome,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackResult,
     RuntimeInboxWriteBackService,
 )
 
@@ -40,6 +41,7 @@ __all__ = [
     "RuntimeInboxService",
     "RuntimeInboxSessionOwnershipConflict",
     "RuntimeInboxValidationService",
+    "RuntimeInboxWriteBackResult",
     "RuntimeInboxWriteBackService",
     "ValidationOutcome",
     "runtime_inbox_service",

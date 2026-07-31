@@ -90,6 +90,13 @@ def test_validate_table_sets_rejects_duplicate_target() -> None:
         reset_module._validate_table_sets((*reset_module.RUNTIME_TABLES, duplicate))
 
 
+def test_mock_wms_reset_url_ignores_retired_sync_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WES_MOCK_WMS_URL", raising=False)
+    monkeypatch.setenv("WMS_SYNC_" + "BASE_URL", "http://retired.example:9999/api/wms")
+
+    assert reset_module._mock_wms_reset_url() == "http://localhost:8011/debug/reset"
+
+
 @pytest.mark.asyncio
 async def test_dry_run_lists_schema_qualified_targets_without_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _FakeSession(row_count=4)

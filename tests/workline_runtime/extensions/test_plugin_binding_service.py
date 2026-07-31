@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
+from inspect import signature
 from types import SimpleNamespace
 from typing import Protocol
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from src.app.contracts.external_contract_profile import ExternalContractProfile
+from src.app.contracts.external_contract_profile import ExternalContractProfile, WmsExternalContractProfile
 from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
 from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.system_capabilities.definition import (
@@ -73,18 +75,17 @@ CAPABILITY = SystemCapabilityDefinition(
     output_model=CapabilityOutput,
     handler_factory=build_handler,
     required_ports=(InventoryPort,),
-    admission="wms.v1.production",
+    admission="wms.v1",
     timeout_seconds=3,
     completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
     audit_policy="standard",
 )
 
 
-def profile() -> ExternalContractProfile:
-    return ExternalContractProfile(
+def profile() -> WmsExternalContractProfile:
+    return WmsExternalContractProfile(
         provider_code="WMS",
         contract_version="v1",
-        environment="production",
         timeout_retry_query_timeout_seconds=3,
         timeout_retry_retry_backoff_seconds=[1],
         fixture_set_path="tests/fixtures/external_contracts/wms/v1",
@@ -111,39 +112,48 @@ class FakeRepository:
         return self.rows.get(binding_id)
 
 
-def service(repo: FakeRepository) -> WorklinePluginBindingService:
+def generic_profile(environment: str) -> ExternalContractProfile:
+    return ExternalContractProfile(
+        provider_code="ECS",
+        contract_version="v1",
+        environment=environment,
+        timeout_retry_query_timeout_seconds=3,
+        timeout_retry_retry_backoff_seconds=[1],
+        fixture_set_path="tests/fixtures/external_contracts/ecs/v1",
+        fixture_set_required_cases=["success"],
+    )
+
+
+def service(
+    repo: FakeRepository,
+    *,
+    external_profile: ExternalContractProfile | WmsExternalContractProfile | None = None,
+) -> WorklinePluginBindingService:
+    selected_profile = external_profile or profile()
+    capability = replace(CAPABILITY, admission=selected_profile.identity)
     return WorklinePluginBindingService(
         repository=repo,
         plugin_index={(PLUGIN.plugin_key, PLUGIN.contract_version): PLUGIN},
-        capability_index={(CAPABILITY.capability_key, CAPABILITY.contract_version): CAPABILITY},
+        capability_index={(capability.capability_key, capability.contract_version): capability},
         plugin_index_digest="a" * 64,
-        profile_catalog=ExternalContractProfileCatalog([profile()]),
+        profile_catalog=ExternalContractProfileCatalog([selected_profile]),
         clock=lambda: datetime(2026, 7, 17, 8, tzinfo=UTC),
     )
 
 
 def test_default_binding_service_wires_runtime_provider_profiles_by_full_identity() -> None:
-    resolved = workline_plugin_binding_service.profile_catalog.resolve(
-        provider_code="WMS",
-        contract_version="2026-07-06.material-flow",
-        environment="sandbox",
-    )
+    resolved = workline_plugin_binding_service.profile_catalog.resolve_identity("wms.2026-07-28.full-factory")
 
-    assert resolved.identity == "wms.2026-07-06.material-flow.sandbox"
+    assert resolved.identity == "wms.2026-07-28.full-factory"
 
 
-@pytest.mark.parametrize("environment", ["staging", "production"])
-def test_default_binding_service_exposes_rough_sorter_profile_for_deploy_environment(environment: str) -> None:
-    resolved = workline_plugin_binding_service.profile_catalog.resolve(
-        provider_code="WMS",
-        contract_version="2026-07-06.material-flow",
-        environment=environment,
-    )
+def test_binding_activation_preflight_requires_deployment_environment() -> None:
+    parameters = signature(WorklinePluginBindingService.validate_activation_configuration).parameters
 
-    assert resolved.identity == f"wms.2026-07-06.material-flow.{environment}"
+    assert "environment" in parameters
 
 
-def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-06.material-flow.sandbox") -> dict[str, object]:
+def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-28.full-factory") -> dict[str, object]:
     return {
         "device_roles": {
             "input_arm": "ROUGH_SORTER_INPUT_ARM",
@@ -156,6 +166,28 @@ def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-06.material-flo
         "warehouse_code": "WH-01",
         "owner_code": "OWNER-01",
         "provider_profile": provider_profile,
+    }
+
+
+def _smt_factory_config(
+    *,
+    provider_profile: str = "wms.2026-07-28.full-factory",
+    ctu_basket_capacity: int = 6,
+) -> dict[str, object]:
+    return {
+        "provider_profile": provider_profile,
+        "ctu_basket_capacity": ctu_basket_capacity,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
     }
 
 
@@ -219,21 +251,21 @@ async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required
     )
 
     assert [profile["provider_code"] for profile in binding.provider_profile_snapshot_json] == ["WMS"]
-    assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-06.material-flow"
-    assert binding.provider_profile_snapshot_json[0]["environment"] == "sandbox"
+    assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-28.full-factory"
+    assert "environment" not in binding.provider_profile_snapshot_json[0]
 
 
 @pytest.mark.asyncio
-async def test_runtime_only_smt_activation_still_snapshots_declared_profile_identity() -> None:
+async def test_smt_wms_activation_snapshots_declared_profile_identity() -> None:
     from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 
     repo = FakeRepository()
-    profile_identity = "wms.2026-07-06.material-flow.sandbox"
+    profile_identity = "wms.2026-07-28.full-factory"
     workline = SimpleNamespace(
         id=17,
         plugin_key=DEFINITION.plugin_key,
         contract_version=DEFINITION.contract_version,
-        config={"provider_profile": profile_identity},
+        config=_smt_factory_config(provider_profile=profile_identity),
         version=4,
     )
 
@@ -252,16 +284,17 @@ async def test_runtime_only_smt_activation_still_snapshots_declared_profile_iden
 
 
 @pytest.mark.asyncio
-async def test_runtime_only_smt_profile_snapshot_does_not_apply_external_admission_environment_gate() -> None:
+@pytest.mark.parametrize("environment", ["sandbox", "production"])
+async def test_smt_wms_capabilities_use_same_profile_across_wes_environments(environment: str) -> None:
     from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
 
     repo = FakeRepository()
-    profile_identity = "wms.2026-07-06.material-flow.staging"
+    profile_identity = "wms.2026-07-28.full-factory"
     workline = SimpleNamespace(
         id=17,
         plugin_key=DEFINITION.plugin_key,
         contract_version=DEFINITION.contract_version,
-        config={"provider_profile": profile_identity},
+        config=_smt_factory_config(provider_profile=profile_identity),
         version=4,
     )
 
@@ -270,13 +303,79 @@ async def test_runtime_only_smt_profile_snapshot_does_not_apply_external_admissi
         workline=workline,
         expected_workline_version=4,
         actor="operator",
-        reason="runtime-only-profile-snapshot",
+        reason="wms-capability-profile-snapshot",
+        environment=environment,
+        devices=[],
+    )
+
+    assert binding.typed_config_json["provider_profile"] == profile_identity
+    assert "environment" not in binding.provider_profile_snapshot_json[0]
+
+
+@pytest.mark.parametrize(
+    ("profile_environment", "deployment_environment"),
+    [("production", "sandbox"), ("sandbox", "production")],
+)
+def test_generic_profile_preflight_rejects_other_wes_deployment_environment(
+    profile_environment: str,
+    deployment_environment: str,
+) -> None:
+    external_profile = generic_profile(profile_environment)
+    workline = SimpleNamespace(
+        id=7,
+        plugin_key="rough_sorter",
+        contract_version="v1",
+        config={"provider_profile": external_profile.identity, "required_device_codes": []},
+        version=4,
+    )
+
+    with pytest.raises(PluginBindingAdmissionError, match="environment"):
+        service(FakeRepository(), external_profile=external_profile).validate_activation_configuration(
+            workline=workline,
+            environment=deployment_environment,
+            devices=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_smt_factory_config_creates_distinct_immutable_binding_hashes() -> None:
+    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
+
+    repo = FakeRepository()
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key=DEFINITION.plugin_key,
+        contract_version=DEFINITION.contract_version,
+        config=_smt_factory_config(ctu_basket_capacity=6),
+        version=4,
+    )
+    binding_service = _real_rough_sorter_service(repo)
+
+    first = await binding_service.activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator-1",
+        reason="factory-config-v1",
+        environment="sandbox",
+        devices=[],
+    )
+    workline.config["ctu_basket_capacity"] = 7
+    second = await binding_service.activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator-2",
+        reason="factory-config-v2",
         environment="sandbox",
         devices=[],
     )
 
-    assert binding.provider_profile_snapshot_json[0]["environment"] == "staging"
-    assert binding.typed_config_json["provider_profile"] == profile_identity
+    assert (first.binding_version, second.binding_version) == (1, 2)
+    assert first.typed_config_json["ctu_basket_capacity"] == 6
+    assert second.typed_config_json["ctu_basket_capacity"] == 7
+    assert first.typed_config_hash != second.typed_config_hash
+    assert repo.rows[first.id].typed_config_json["ctu_basket_capacity"] == 6
 
 
 @pytest.mark.asyncio
@@ -287,7 +386,7 @@ async def test_real_rough_sorter_deploy_activation_pins_configured_role_devices(
         id=17,
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
-        config=_rough_sorter_config(provider_profile=f"wms.2026-07-06.material-flow.{environment}"),
+        config=_rough_sorter_config(),
         version=4,
     )
 
@@ -301,7 +400,8 @@ async def test_real_rough_sorter_deploy_activation_pins_configured_role_devices(
         devices=_rough_sorter_devices(),
     )
 
-    assert binding.provider_profile_snapshot_json[0]["environment"] == environment
+    assert binding.environment == environment
+    assert "environment" not in binding.provider_profile_snapshot_json[0]
     assert binding.device_snapshot_json == [
         {
             "device_id": 2,
@@ -407,25 +507,27 @@ def test_execution_rejects_device_topology_drift_from_immutable_binding(
 
 
 @pytest.mark.asyncio
-async def test_real_rough_sorter_activation_rejects_profile_from_other_environment() -> None:
+async def test_real_rough_sorter_activation_does_not_bind_wms_profile_to_wes_environment() -> None:
     workline = SimpleNamespace(
         id=17,
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
-        config=_rough_sorter_config(provider_profile="wms.2026-07-06.material-flow.sandbox"),
+        config=_rough_sorter_config(),
         version=4,
     )
 
-    with pytest.raises(PluginBindingAdmissionError, match="environment"):
-        await _real_rough_sorter_service(FakeRepository()).activate(
-            object(),
-            workline=workline,
-            expected_workline_version=4,
-            actor="operator",
-            reason="production-cutover",
-            environment="production",
-            devices=_rough_sorter_devices(),
-        )
+    binding = await _real_rough_sorter_service(FakeRepository()).activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator",
+        reason="production-cutover",
+        environment="production",
+        devices=_rough_sorter_devices(),
+    )
+
+    assert binding.environment == "production"
+    assert binding.typed_config_json["provider_profile"] == "wms.2026-07-28.full-factory"
 
 
 @pytest.mark.asyncio
@@ -434,7 +536,7 @@ async def test_real_rough_sorter_activation_rejects_profile_mismatch() -> None:
         id=17,
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
-        config=_rough_sorter_config(provider_profile="wms.other.sandbox"),
+        config=_rough_sorter_config(provider_profile="wms.other"),
         version=4,
     )
 
@@ -480,7 +582,7 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
         id=7,
         plugin_key="rough_sorter",
         contract_version="v1",
-        config={"required_device_codes": ["PLC-01"], "provider_profile": "wms.v1.production"},
+        config={"required_device_codes": ["PLC-01"], "provider_profile": "wms.v1"},
         version=4,
     )
     devices = [SimpleNamespace(device_code="PLC-01", provider_code="ECS")]
@@ -494,7 +596,7 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
         environment="production",
         devices=devices,
     )
-    workline.config = {"provider_profile": "wms.v1.production", "required_device_codes": ("PLC-01",)}
+    workline.config = {"provider_profile": "wms.v1", "required_device_codes": ("PLC-01",)}
     second = await binding_service.activate(
         object(),
         workline=workline,
@@ -513,7 +615,7 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
     assert first.activated_by == "operator-1"
     assert first.activated_reason == "go-live"
     assert not hasattr(workline, "active_plugin_binding_id")
-    assert first.provider_profile_snapshot_json[0]["environment"] == "production"
+    assert "environment" not in first.provider_profile_snapshot_json[0]
     assert repo.rows[1].binding_version == 1
 
 
@@ -521,9 +623,9 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
 @pytest.mark.parametrize(
     ("config", "devices", "message"),
     [
-        ({"provider_profile": "wms.v1.production", "required_device_codes": ["MISSING"]}, [], "device"),
-        ({"provider_profile": "wms.unknown.production", "required_device_codes": []}, [], "provider"),
-        ({"provider_profile": "wms.v1.production", "required_device_codes": [], "extra": True}, [], "config"),
+        ({"provider_profile": "wms.v1", "required_device_codes": ["MISSING"]}, [], "device"),
+        ({"provider_profile": "wms.unknown", "required_device_codes": []}, [], "provider"),
+        ({"provider_profile": "wms.v1", "required_device_codes": [], "extra": True}, [], "config"),
     ],
 )
 async def test_activation_fails_closed_for_invalid_config_device_provider_or_port(
@@ -551,7 +653,7 @@ async def test_pinned_retry_reads_disabled_row_but_rechecks_runtime_admission() 
         id=7,
         plugin_key="rough_sorter",
         contract_version="v1",
-        config={"provider_profile": "wms.v1.production", "required_device_codes": []},
+        config={"provider_profile": "wms.v1", "required_device_codes": []},
         version=4,
     )
     row = await binding_service.activate(

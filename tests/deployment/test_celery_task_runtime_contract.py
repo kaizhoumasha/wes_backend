@@ -16,7 +16,11 @@ TASK_MODULES = ("core", "handling", "runtime_inbox", "sys", "workline")
 ASYNC_TASKS = {
     "core": ("health_check", "clear_cache", "send_notification"),
     "runtime_inbox": ("process_runtime_inbox_batch",),
-    "sys": ("dispatch_system_outbox_batch",),
+    "sys": (
+        "dispatch_system_outbox_batch",
+        "dispatch_wms_data_outbox_batch",
+        "dispatch_wms_fulfillment_outbox_batch",
+    ),
     "workline": (
         "scan_timeouts_batch",
         "scan_device_heartbeats_batch",
@@ -26,7 +30,7 @@ ASYNC_TASKS = {
 DB_TASKS = {
     "core": ("health_check", "send_notification"),
     "runtime_inbox": ("process_runtime_inbox_batch",),
-    "sys": ("dispatch_system_outbox_batch",),
+    "sys": ASYNC_TASKS["sys"],
     "workline": ASYNC_TASKS["workline"],
 }
 
@@ -225,3 +229,14 @@ def test_task_names_routes_retry_ack_and_time_limit_contracts_are_preserved() ->
         assert task.default_retry_delay == retry_delay
         assert task.time_limit is None
         assert task.soft_time_limit is None
+
+
+def test_wms_effect_status_scanner_has_a_budgeted_soft_and_hard_time_limit() -> None:
+    from src.celery_app.app import celery_app
+    from src.core.conf import settings
+
+    celery_app.loader.import_default_modules()
+    task = celery_app.tasks["src.celery_app.tasks.workline.scan_wms_effect_status_batch"]
+
+    assert task.soft_time_limit == settings.WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS
+    assert task.time_limit == settings.WES_EFFECT_STATUS_TASK_HARD_TIME_LIMIT_SECONDS

@@ -28,6 +28,7 @@ def _outbox() -> SimpleNamespace:
         profile=ExternalHttpProviderProfileDefinition(
             identity="wms.effect.production",
             environment="production",
+            network_trust_mode="authenticated_network",
             bindings=(
                 ExternalHttpBindingDefinition(
                     operation_identity="wms.inventory.confirm_inbound@v1",

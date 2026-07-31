@@ -11,6 +11,8 @@ from src.app.runtime.orchestration.observability import (
     RuntimeObservabilityRegistry,
     runtime_observability_registry,
 )
+from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsOperationMode
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -89,26 +91,24 @@ def _slo(
 
 NORTHBOUND_OPERATION_SLO_CATALOG = MappingProxyType(
     {
-        "wms.inventory.query_inventory@v1": _slo(
-            "wms.inventory.query_inventory@v1",
-            latency_p95_ms=1_500,
-            runbook_anchor="unknown-reconciliation",
-        ),
-        "wms.inventory.confirm_inbound@v1": _slo(
-            "wms.inventory.confirm_inbound@v1",
-            latency_p95_ms=2_000,
-            runbook_anchor="callback-diagnostics",
-        ),
-        "wms.fulfillment.notify_pkg_binding@v1": _slo(
-            "wms.fulfillment.notify_pkg_binding@v1",
-            latency_p95_ms=2_000,
-            runbook_anchor="credential-revoked",
-        ),
-        "wms.fulfillment.full_box_exchange@v1": _slo(
-            "wms.fulfillment.full_box_exchange@v1",
-            latency_p95_ms=3_000,
-            runbook_anchor="pause-resume",
-        ),
+        operation.identity: _slo(
+            operation.identity,
+            latency_p95_ms=(
+                1_500
+                if operation.mode is WmsOperationMode.QUERY
+                else 3_000
+                if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+                else 2_000
+            ),
+            runbook_anchor=(
+                "unknown-reconciliation"
+                if operation.mode is WmsOperationMode.QUERY
+                else "pause-resume"
+                if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+                else "callback-diagnostics"
+            ),
+        )
+        for operation in WMS_OPERATIONS
     }
 )
 
@@ -159,10 +159,8 @@ NORTHBOUND_OPERATION_ALERT_CATALOG = MappingProxyType(
 
 _OPERATION_SIGNAL_NAMES = MappingProxyType(
     {
-        "wms.inventory.query_inventory@v1": "northbound.operation.query_inventory",
-        "wms.inventory.confirm_inbound@v1": "northbound.operation.confirm_inbound",
-        "wms.fulfillment.notify_pkg_binding@v1": "northbound.operation.notify_pkg_binding",
-        "wms.fulfillment.full_box_exchange@v1": "northbound.operation.full_box_exchange",
+        operation.identity: f"northbound.operation.{operation.identity.partition('@')[0].rsplit('.', 1)[-1]}"
+        for operation in WMS_OPERATIONS
     }
 )
 

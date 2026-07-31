@@ -34,11 +34,26 @@ from src.app.runtime.workline_plugins.dispatcher import PluginDispatchRequest
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
-)
+
+_Q19_ADMISSION_CONTEXT = {
+    "wms_admission_decision": {
+        "request_canonical_hash": "a" * 64,
+        "decision": "ADMIT",
+        "grn_id": "GRN-001",
+        "po_number": "PO-001",
+        "po_item": "10",
+        "material_code": "MAT-001",
+        "pkg_id": "PKG-1",
+        "measurement_decision": "PASS",
+        "standard_reel_diameter_mm": "180",
+        "reel_diameter_tolerance_mm": "1",
+        "standard_reel_thickness_mm": "16",
+        "reel_thickness_tolerance_mm": "0.5",
+        "rule_version": "rule-q19",
+        "source_version": "source-q19",
+        "evidence_reference": "query:q19:routing",
+    }
+}
 
 
 @pytest.mark.parametrize(
@@ -708,7 +723,7 @@ async def test_live_block_timeline_recorded_replay_restores_decision_without_ree
     assert replayed.preserve_plugin_state is True
     assert replayed.evidence == source_write_set.evidence
     assert replayed.intents == ()
-    assert disposition is WriteDisposition.COMMITTED
+    assert disposition.disposition is WriteDisposition.COMMITTED
     effect_applier.apply.assert_not_awaited()
 
 
@@ -1088,7 +1103,7 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
         version=7,
         plugin_state_version=0,
         plugin_state_json={"phase": "READY"},
-        context_json={},
+        context_json=deepcopy(_Q19_ADMISSION_CONTEXT),
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
         plugin_binding_id=17,
@@ -1250,7 +1265,22 @@ async def test_command_result_bridge_uses_persisted_command_and_returns_stable_z
     from src.app.device.repositories import device_command_repository
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
-    config = {"provider_profile": "runtime", "source_arm_role": "SORTING_SOURCE_ARM"}
+    config = {
+        "provider_profile": "runtime",
+        "source_arm_role": "SORTING_SOURCE_ARM",
+        "ctu_basket_capacity": 6,
+        "conveyor_entry_queue": {
+            "code": "SMT-CONVEYOR-ENTRY",
+            "role": "ENTRY",
+            "capacity": 8,
+            "order_policy": "FIFO",
+        },
+        "return_queue": {
+            "code": "SMT-RETURN",
+            "role": "RETURN_QUEUE",
+            "order_policy": "FIFO",
+        },
+    }
     monkeypatch.setattr(
         workline_plugin_binding_service,
         "get_pinned",
@@ -1341,7 +1371,7 @@ async def test_command_result_bridge_uses_persisted_command_and_returns_stable_z
 
 
 @pytest.mark.asyncio
-async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
+async def test_command_result_consumes_persisted_q19_without_requery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.app.device.repositories import device_command_repository
@@ -1411,7 +1441,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
         version=7,
         plugin_state_version=2,
         plugin_state_json={"phase": "PICK_TO_PIPELINE", "current_correlation": "CMD-1"},
-        context_json={},
+        context_json=deepcopy(_Q19_ADMISSION_CONTEXT),
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
         plugin_binding_id=17,
@@ -1454,42 +1484,13 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     request = await _build_plugin_dispatch_request(
         object(), inbox=inbox, session=session, workline=SimpleNamespace(id=3), snapshot=snapshot
     )
-    evidence = QueryEvidence(
-        capability_key="wms.inventory.query_inventory",
-        contract_version="v1",
-        input_hash="a" * 64,
-        output_hash="b" * 64,
-        authority="WMS",
-        source="test",
-        evidence_at="2026-07-18T00:00:00Z",
-        source_version="v1",
-        admission_snapshot={"profile": "runtime"},
-        summary={"outcome": {"type": "Success"}},
-    )
 
     class Gateway:
         calls = 0
 
-        async def execute(self, _capability_key: str, _contract_version: str, input_data: object) -> GatewayQueryResult:
+        async def execute(self, *_args: object) -> GatewayQueryResult:
             self.calls += 1
-            assert isinstance(input_data, InventoryQueryOperationRequest)
-            return GatewayQueryResult(
-                outcome=Success(
-                    payload=InventoryQueryOperationResult(
-                        items=(
-                            InventoryAuthorityItem(
-                                material_code=input_data.material_code,
-                                available_quantity=1,
-                                lot_no=input_data.lot_no,
-                                warehouse_code=input_data.warehouse_code,
-                                owner_code=input_data.owner_code,
-                            ),
-                        ),
-                        source_version="v1",
-                    )
-                ),
-                evidence=evidence,
-            )
+            raise AssertionError("粗分机 COMMAND_RESULT 必须消费 SCAN 阶段持久化的 Q19，不得回退调用旧 Q14")
 
     gateway = Gateway()
     write_set = await GeneratedPluginAttemptRunner().run(
@@ -1507,8 +1508,8 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
         )
     )
 
-    assert gateway.calls == 1
-    assert write_set.evidence == (evidence,)
+    assert gateway.calls == 0
+    assert write_set.evidence == ()
     assert write_set.outcome_code == "MOVE_FORWARD_PERSISTED"
     assert len(write_set.intents) == 1
     assert write_set.intents[0].kind is RuntimeIntentKind.SYSTEM_CAPABILITY

@@ -4,6 +4,7 @@
 # 用途: Celery 应用配置和初始化
 # ============================================
 
+import os
 from typing import Any, cast
 
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
@@ -15,6 +16,7 @@ from celery.signals import (  # pyright: ignore[reportMissingTypeStubs]
     worker_process_shutdown,
 )
 
+from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
 from src.core.conf import settings
 from src.core.logger import setup_logger
 
@@ -43,13 +45,34 @@ celery_app = Celery(
 # ============================================
 
 
+def _validate_worker_role_queue_contract() -> None:
+    """部署角色与实际消费队列必须一一对应，配置漂移时阻止 worker 启动。"""
+
+    process_role = celery_async_runtime.process_role
+    default_queues = "default,celery,device" if process_role is WmsProviderProcessRole.WES else ""
+    queues = frozenset(
+        queue.strip() for queue in os.getenv("CELERY_WORKER_QUEUES", default_queues).split(",") if queue.strip()
+    )
+    if process_role is WmsProviderProcessRole.WES and "wms-fulfillment" in queues:
+        raise ValueError("WES worker must not consume the WMS fulfillment queue")
+    if process_role is WmsProviderProcessRole.FULFILLMENT and queues != {"wms-fulfillment"}:
+        raise ValueError("fulfillment worker must consume only the WMS fulfillment queue")
+    if process_role is WmsProviderProcessRole.FULFILLMENT and os.getenv("CELERY_WORKER_CONCURRENCY", "").strip() != "1":
+        raise ValueError("fulfillment worker must use concurrency=1")
+
+
 @worker_init.connect
 def on_worker_init(*args: Any, **kwargs: Any) -> None:
     """Worker 主进程初始化同步配置门禁，禁止创建可被 fork 继承的异步资源。"""
     try:
+        _validate_worker_role_queue_contract()
+        from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
+            northbound_operations_repository,
+        )
         from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
 
-        validate_wms_transport_configuration(settings_source=settings)
+        startup = validate_wms_transport_configuration(settings_source=settings)
+        northbound_operations_repository.bind_provider_catalog(startup.catalog)
     except Exception as exc:
         # Celery Signal.send 会吞掉普通 Exception；配置非法时必须阻止主进程进入消费阶段。
         raise WorkerTerminate("WMS transport configuration rejected") from exc
@@ -78,8 +101,18 @@ def on_worker_process_shutdown(*args: Any, **kwargs: Any) -> None:
 
 @beat_init.connect
 def on_beat_init(*args: Any, **kwargs: Any) -> None:
-    """Beat 启动时初始化日志"""
-    setup_logger()
+    """Beat 启动时先执行 WMS 配置门禁，再初始化日志。"""
+    try:
+        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+
+        validate_wms_transport_configuration(settings_source=settings)
+    except Exception as exc:
+        # Celery Signal.send 会吞掉普通 Exception；非法 profile/SLA 必须阻止 Beat 调度任务。
+        raise WorkerTerminate("WMS transport configuration rejected") from exc
+    try:
+        setup_logger()
+    except Exception as exc:
+        raise WorkerTerminate("beat logging initialization rejected") from exc
 
 
 # ============================================

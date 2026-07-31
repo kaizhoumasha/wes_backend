@@ -6,12 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_context import (
+    RoughSorterQ19AdmissionDecision,
+)
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
     RoughSorterBindingSnapshot,
 )
 from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
-from src.app.runtime.system_capabilities.outcomes import Success
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, PluginAttemptContext
 from src.app.runtime.workline_plugins.dispatcher import (
     PinnedPluginSnapshot,
@@ -25,11 +26,6 @@ from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
 from src.app.runtime.workline_plugins.rough_sorter.inputs import parse_scan_completed
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
-)
 from tests.workline_plugins.conformance import PluginConformanceFixture, PluginConformanceSuite
 
 
@@ -46,7 +42,7 @@ def _config() -> RoughSorterConfig:
             "ng_location": "NG-01",
             "warehouse_code": "WH-01",
             "owner_code": "OWNER-01",
-            "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+            "provider_profile": "wms.2026-07-28.full-factory",
         }
     )
 
@@ -71,6 +67,7 @@ def _facts() -> RoughSorterFacts:
         business_key="PKG-001",
         hhpn="HH-001",
         lot_code="LOT-001",
+        q19_admission_decision=_q19_decision(),
         binding_snapshot=RoughSorterBindingSnapshot(
             binding_id=snapshot.binding_id,
             binding_version=snapshot.binding_version,
@@ -78,6 +75,26 @@ def _facts() -> RoughSorterFacts:
             plugin_config_hash=snapshot.config_hash,
             generated_index_digest=snapshot.index_digest,
         ),
+    )
+
+
+def _q19_decision() -> RoughSorterQ19AdmissionDecision:
+    return RoughSorterQ19AdmissionDecision(
+        request_canonical_hash="a" * 64,
+        decision="ADMIT",
+        grn_id="GRN-001",
+        po_number="PO-001",
+        po_item="10",
+        material_code="MAT-001",
+        pkg_id="PKG-001",
+        measurement_decision="PASS",
+        standard_reel_diameter_mm="100",
+        reel_diameter_tolerance_mm="1",
+        standard_reel_thickness_mm="10",
+        reel_thickness_tolerance_mm="0.5",
+        rule_version="rule-1",
+        source_version="source-1",
+        evidence_reference="query:q19:conformance",
     )
 
 
@@ -96,6 +113,7 @@ def _request(*, route: str, state: RoughSorterState, raw_input: dict[str, object
                 "material_identity_key": "PKG-001",
                 "six_in_one": {"HHPN": "HH-001", "LotCode": "LOT-001"},
             },
+            session_context={"wms_admission_decision": _q19_decision().model_dump(mode="json")},
         ),
         snapshot=_snapshot(),
     )
@@ -105,26 +123,9 @@ class _Gateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    async def execute(self, capability_key: str, contract_version: str, input_data: object) -> GatewayQueryResult:
+    async def execute(self, capability_key: str, contract_version: str, input_data: object) -> object:
         self.calls.append((capability_key, contract_version))
-        assert isinstance(input_data, InventoryQueryOperationRequest)
-        return GatewayQueryResult(
-            outcome=Success(
-                payload=InventoryQueryOperationResult(
-                    items=(
-                        InventoryAuthorityItem(
-                            material_code=input_data.material_code,
-                            available_quantity=1,
-                            lot_no=input_data.lot_no,
-                            warehouse_code=input_data.warehouse_code,
-                            owner_code=input_data.owner_code,
-                        ),
-                    ),
-                    source_version="fixture-v1",
-                )
-            ),
-            evidence=SimpleNamespace(reference="timeline:wms:1"),
-        )
+        raise AssertionError(f"粗分机 Q19 持久化后不得调用 attempt QUERY gateway: {input_data!r}")
 
 
 class TestRoughSorterConformance(PluginConformanceSuite):
@@ -191,6 +192,7 @@ class TestRoughSorterConformance(PluginConformanceSuite):
             gateway_factory=_Gateway,
             replay=replay,
             effect_context=conversion_context,
+            expects_query=False,
         )
 
     @pytest.mark.asyncio

@@ -31,6 +31,11 @@
   - `SNOWFLAKE_WORKER_ID`
 - `.env.prod` 已确认 RuntimeInbox canonical payload 上限：
   - `RUNTIME_INBOX_PAYLOAD_MAX_BYTES=1048576`（默认 1 MiB；超过上限的 payload 会在入站边界被拒绝）
+- 生产机已准备当前工厂唯一的 WMS Provider profile，并在 `.env.prod` 配置其宿主机绝对路径：
+  - `WMS_PROVIDER_PROFILE_HOST_FILE=/etc/wes/wms-provider.yaml`
+  - 该文件会只读挂载到 API、通用 Celery、WMS fulfillment Worker 与 Beat 的
+    `/run/wes/wms-provider.yaml`
+  - HTTP/HTTPS 与认证要求由 profile 的安全策略决定；`isolated_lan + NONE` 允许 HTTP
 - 首次生产部署前，已准备 `BOOTSTRAP_ADMIN_USERNAME` 与 `BOOTSTRAP_ADMIN_PASSWORD`
 
 前后端分开维护 `.env` 文件是正常做法，不会影响部署。后端发布只依赖：
@@ -53,6 +58,7 @@
 
 ```bash
 BACKEND_IMAGE=example.invalid/wes/wes_backend:prod \
+WMS_PROVIDER_PROFILE_HOST_FILE=/etc/wes/wms-provider.yaml \
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
@@ -94,6 +100,9 @@ cd /opt/wes_backend
 cp -f .env.prod .env
 ```
 
+将 `WMS_PROVIDER_PROFILE_HOST_FILE` 设置为部署机上实际存在且当前部署用户可读的 profile 文件。
+该变量缺失或留空时，Compose 在生成配置阶段即失败，不会以空 profile 启动部分服务。
+
 如使用外部注入方式，也可以直接保留 `.env.prod`，后续命令统一显式带 `--env-file .env.prod`。
 
 ### 4.4 登录镜像仓库并拉取镜像
@@ -104,7 +113,7 @@ docker login 192.168.0.220:5050
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  pull api celery_worker celery_beat flower
+  pull api celery celery-wms-fulfillment celery_beat flower
 ```
 
 ### 4.5 启动基础设施
@@ -133,7 +142,7 @@ docker compose --env-file .env.prod \
   -e DATABASE_RUNTIME_ROLE=cli \
   -e DATABASE_POOL_SIZE=1 \
   -e DATABASE_MAX_OVERFLOW=0 \
-  api python scripts/capacity_guard.py --services api,celery_worker
+  api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment
 ```
 
 容量门禁失败时必须停止发布，不得停止、启动或重建任何应用服务；`db`、`redis` 基础设施保持在线，供排障和重试。
@@ -145,10 +154,21 @@ docker compose --env-file .env.prod \
 因此迁移前必须停止所有会访问运行时表的 API、Worker 和 Beat，并使用目标镜像的一次性 CLI 容器执行迁移：
 
 ```bash
+# 首次从旧 celery_worker 服务名升级时，先按当前 Compose project 清理遗留容器。
+compose_project_name=${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}
+for legacy_worker_id in $(docker ps -aq \
+  --filter "label=com.docker.compose.project=${compose_project_name}" \
+  --filter "label=com.docker.compose.service=celery_worker"); do
+  docker rm -f "$legacy_worker_id"
+done
+test -z "$(docker ps -aq \
+  --filter "label=com.docker.compose.project=${compose_project_name}" \
+  --filter "label=com.docker.compose.service=celery_worker")"
+
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  stop api celery_worker celery_beat
+  stop api celery celery-wms-fulfillment celery_beat
 
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
@@ -170,7 +190,7 @@ docker compose --env-file .env.prod \
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  up -d api celery_worker celery_beat flower nginx
+  up -d --remove-orphans api celery celery-wms-fulfillment celery_beat flower nginx
 ```
 
 ### 4.9 同步权限与菜单
@@ -235,7 +255,7 @@ docker compose --env-file .env.prod \
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
-  logs --tail=200 api celery_worker celery_beat nginx
+  logs --tail=200 api celery celery-wms-fulfillment celery_beat nginx
 ```
 
 菜单数量校验：

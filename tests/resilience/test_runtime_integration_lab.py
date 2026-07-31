@@ -52,7 +52,7 @@ def test_runtime_integration_lab_fixture_runs_full_wms_ecs_chain() -> None:
 
 def test_runtime_integration_lab_rejects_non_sandbox_provider_profile() -> None:
     fixture = _load_fixture()
-    fixture["provider_profiles"][0]["environment"] = "production"
+    fixture["provider_profiles"][1]["environment"] = "staging"
 
     runner = IntegrationLabScenarioRunner(repo_root=REPO_ROOT)
 

@@ -53,7 +53,7 @@ v0.7.0.0 已完成 SMT 分拣入库后端 handoff/manifest P0 闭环，范围是
 |---|------|---------|
 | 1 | 触发机制 | **事件驱动**为主触发，Celery BEAT 每 **1 分钟** 兜底扫描 |
 | 2 | 五层货架可用 | 工作位有货架 **且** 当前活动面至少 **1 个含空料格** 的目标料箱 |
-| 3 | WMS 分配 | **同步等待**，无可用货架时持续等待直到 AGV 回调到达 |
+| 3 | WMS 分配 | **同步等待**，无可用货架时持续等待 E08 ACK 后的 status query 返回 typed terminal result |
 | 4 | CTU 任务 | 投料/退箱为**两个独立任务**，串行调度，事件驱动触发 |
 | 5 | 投料握手 | **每投一个料箱前都确认**（等步进电机移走 → 确认缓存位空 → 投下一个） |
 | 6 | 流水线拒绝投料 | CTU **等待重试**，不退回五层货架 |
@@ -69,8 +69,8 @@ v0.7.0.0 已完成 SMT 分拣入库后端 handoff/manifest P0 闭环，范围是
 | 16 | 退箱区 | **4~5 个**料箱位置，满时**自动停机**，CTU 搬走后**自动恢复** |
 | 17 | 源货架释放 | 最后一个待处理源料盘离开源格后，单层货架即可请求移入空架/空箱区 |
 | 18 | 货架切换 | 新货架**提前在排队位等待**，旧货架移出后立即推入 |
-| 19 | 五层货架双面数据 | WMS 分配/换面回调时推送每面料箱列表（bin_id + 各料格占用情况），WES 本地自行维护在途状态并计算可投数 |
-| 20 | 外部等待超时 | **无超时取消**，达到阈值后记录告警/RuntimeHold，迟到可信回调仍可推进 |
+| 19 | 五层货架双面数据 | E08/E10 typed terminal result 返回每面料箱列表（bin_id + 各料格占用情况），WES 本地自行维护在途状态并计算可投数 |
+| 20 | 外部等待超时 | **无超时取消**，达到阈值后记录告警/RuntimeHold；迟到 status result 仍须通过 ACK/reference 与版本校验后才能推进 |
 | 21 | 五层货架回库 | 回库和请求新货架是**两个独立任务**，WES 重新请求，无可用时**隔段时间重试** |
 | 22 | 料盘闭环 | 单个源料盘后续独立进入 COMPLETED、NG_RECORDED 或 BLOCKED，不反向阻塞源货架释放 |
 | 23 | CTU 投料身份 | CTU 投料阶段不默认知道真实 `bin_id`，未扫码前只追踪批次、槽位或流水线临时占位 |
@@ -95,7 +95,7 @@ v0.7.0.0 已完成 SMT 分拣入库后端 handoff/manifest P0 闭环，范围是
 | 单层货架 | RACK_QUEUE 控制链路 + 资源状态 | 控制链路负责搬运与 STATION 释放；资源状态表达当前位置和占用 |
 | 单层货架上的源料箱 | 随单层货架保持挂载 | 在分拣机流程中不脱离单层货架，只更新料箱内源料盘处理进度 |
 | 源料盘 | 料盘分拣执行链路 | 每个源料盘独立取料、扫码、分格、放入或阻断 |
-| 五层货架 | 五层货架管理链路 + 资源状态 | 负责工作位检查、WMS 分配请求、AGV 到位回调、当前操作面和换面；资源状态表达货架位置和朝向 |
+| 五层货架 | 五层货架管理链路 + 资源状态 | 负责工作位检查、WMS E08 分配请求、E08/E10 typed terminal result、当前操作面和换面；资源状态表达货架位置和朝向 |
 | CTU 搬运任务 | CTU 搬运链路 | 负责一次单向批量投料或一次单向批量退箱/回架 |
 | CTU 背篓空闲槽数 | CTU 搬运链路 | 投料数量计算输入 = 背篓总槽数 - 已装载槽数 |
 | 五层货架目标料箱 | 流水线控制链路 + 资源状态 | 负责单个目标料箱生命周期和位置投影 |
@@ -171,8 +171,8 @@ v1 的控制原则是"硬件负责实时防呆与挡停切换，WES 负责业务
 2.2 有可用货架 → 跳到 6.3
 2.3 无可用货架 → 向 WMS 请求分配可用五层货架
 2.4 流程进入等待状态（同步等待）
-2.5 WMS/RCS 回调：五层货架到位 + 当前操作面 + 各面可用料箱清单 + 资源授权版本
-2.6 WES 更新本地资源投影
+2.5 WMS E08 status query 返回 typed terminal result：五层货架到位 + 当前操作面 + 各面可用料箱清单 + 资源授权版本
+2.6 WES 校验 ACK/reference 与版本后更新本地资源投影
 ```
 
 ### 6.3 CTU 搬运
@@ -249,15 +249,16 @@ SOURCE_ARM 和 TARGET_ARM **并行工作**，扫码平台是唯一的同步点�
 T0: SOURCE_ARM 取料盘 A → 放扫码平台
 T1: 扫码平台扫码 A → 分箱算法 → 分配目标料格
 T2: 有兼容目标格 → TARGET_ARM 从扫码平台取走 A → 放入目标料格
-T3: SOURCE_ARM 可同时取料盘 B（硬件互锁：扫码平台空 → 允许放）
+T3: 收到 A 的南向 PICK ACK 后，WES 可触发 SOURCE_ARM 取料盘 B；PLC/机器人仍独立执行平台物理互锁
 ```
 
-若 A 扫码成功但暂时无兼容目标格，扫码平台保持占用，SOURCE_ARM 不再取 B，直到 WES 释放当前工作位料箱、流水线自动补入新料箱后 A 获得目标格或人工处置完成。
+若 A 扫码成功但暂时无兼容目标格，A 不会产生南向 PICK ACK，因此 WES 不触发 B；平台物理占用只由
+PLC/机器人互锁，不成为 WES 的业务准入投影。
 
 ```
 6.1 WES 按 LIFO 顺序选择当前活动料格中下一个待处理源料盘（料盘级严格 LIFO，不跳过）
-6.2 检查扫码平台业务投影：是否空闲？
-6.3 空闲 → 向 SOURCE_ARM 下发取料命令
+6.2 首件由 Session 启动；后续物料检查上一件 `southbound_pick_acknowledged`
+6.3 已收到上一件南向 PICK ACK → 向 SOURCE_ARM 下发取料命令
 6.4 SOURCE_ARM 取料 → 放扫码平台 → 回调 WES
 6.5 扫码平台扫码 → SOURCE_REEL_SCAN_COMPLETED 事件 → WES 收到
 6.6 WES 校验扫码身份 = 预期身份（基于源货架快照）
@@ -268,7 +269,7 @@ T3: SOURCE_ARM 可同时取料盘 B（硬件互锁：扫码平台空 → 允许�
 6.9 无兼容目标格 → 释放当前工作位目标料箱（流程同第 6.9 节目标料箱释放）→ 流水线自动将排队位下一个料箱推入工作位 → 料盘留在扫码平台等待新料箱的可兼容料格 → 源侧暂停继续取料
 6.10 有兼容目标格 → 向 TARGET_ARM 下发放料命令（目标料箱 + 目标料格）
 6.11 TARGET_ARM 取料 → 放目标料格 → 回调 WES → 更新投影（料格占用 + 料盘身份）
-6.12 扫码平台释放后，下一个源料盘（回到 6.1）
+6.12 南向 PICK ACK 到达后，下一个源料盘回到 6.1；平台物理互锁仍由 PLC/机器人负责
 ```
 
 ### 6.7 继续处理同料格
@@ -320,7 +321,7 @@ v1 采用全线单工作位口径——一次只有一个可信 AT_WORK 目标�
 10.1 WES 判定：源货架快照中最后一个待处理源料盘已离开源格
 10.2 WES 向 WMS/RCS 请求：将单层货架移入空架/空箱区
 10.3 新单层货架可提前在排队位等待（不必等旧货架完全移出 STATION）
-10.4 等待 WMS/RCS 回调：单层货架已移出 → STATION 释放
+10.4 等待 WMS E09 status query 返回 typed terminal result：单层货架已移出 → STATION 释放
 10.5 STATION 释放 → 调度排队位下一架单层货架移入 STATION
 10.6 若无后续单层货架任务 → 进入 6.12 末任务收口
 10.7 若仍有后续任务 → 跳到 6.2
@@ -338,14 +339,14 @@ v1 采用全线单工作位口径——一次只有一个可信 AT_WORK 目标�
 11.5 仍有后续分拣任务时，检查当前操作面可投目标料箱数
 11.6 当前面可投目标料箱数 > 0 → 跳到 6.3 继续 CTU 投料
 11.7 当前面可投目标料箱数 = 0，且另一面可投目标料箱数 > 0 → 请求 WMS/RCS 执行 AGV 换面
-11.8 等待 WMS/RCS 回调：换面完成 + 新 current_operable_side + 各面可用料箱清单
+11.8 等待 WMS E10 status query 返回 typed terminal result：换面完成 + 新 current_operable_side + 各面可用料箱清单
 11.9 换面超时报警（不中断，设置报警阈值）
 11.10 换面成功 → 跳到 6.3
 11.11 当前面可投目标料箱数 = 0，且另一面也无可投目标料箱 → 准备五层货架回库
 11.12 WES 汇总本轮写入该五层货架/目标料箱的库存增量，向 WMS 提交新增料盘清单
 11.13 WMS 接收库存增量并返回凭证；若 WMS 支持合并请求，回库请求必须携带等价库存增量凭证
 11.14 WES 请求 WMS/RCS 将该五层货架回库，回库请求携带当前可信货架快照、库存增量凭证和未关闭资源对账引用
-11.15 等待 WMS/RCS 回调：回库完成
+11.15 等待 WMS E09 status query 返回 typed terminal result：回库完成
 11.16 判断是否还有后续分拣任务：
     - 有 → WES 重新请求分配新五层货架 → 跳到 6.2
     - 无 → 流程结束
@@ -388,37 +389,29 @@ v1 采用全线单工作位口径——一次只有一个可信 AT_WORK 目标�
 
 | 投影对象 | 更新时机 |
 |---------|---------|
-| 五层货架工作位状态 | WMS 分配/回库/换面回调 |
-| 五层货架双面料箱分布 | WMS 分配/换面回调 |
-| 五层货架每面可投目标料箱数 | WMS/换面回调 + 每次料箱状态变化（ON_RACK/IN_CTU/AT_WORK 等）；计算公式：当前可信快照中 ON_RACK 且状态不属于冻结、缺失或独立对账的目标箱数 - 已预约但尚未离架的投料任务数 |
+| 五层货架工作位状态 | WMS E08/E09/E10 typed terminal result 校验通过后 |
+| 五层货架双面料箱分布 | WMS E08/E10 typed terminal result 校验通过后 |
+| 五层货架每面可投目标料箱数 | WMS E08/E10 typed terminal result + 每次料箱状态变化（ON_RACK/IN_CTU/AT_WORK 等）；计算公式：当前可信快照中 ON_RACK 且状态不属于冻结、缺失或独立对账的目标箱数 - 已预约但尚未离架的投料任务数 |
 | 目标料箱位置 | 真实 bin_id 已知后更新；至少区分 ON_RACK、IN_CTU、IN_PIPELINE、AT_WORK、OUTPUT_READY、RETURNING、RETURNED、MISSING_RECONCILING |
 | 流水线临时占位 | CTU 投料、BIN_ARRIVED/BIN_DEPARTED、TARGET_BIN_SCAN_COMPLETED；用于未扫码物理箱，字段至少包含 placeholder_id、position、identity_status、candidate_authorized_bin_ids、resolved_bin_id |
 | 目标料箱内容（各料格占用） | 每次 TARGET_ARM 放料完成 |
 | WMS 库存增量同步状态 | TARGET_ARM 放料成功后形成待同步增量；WMS 接收后记录 inventory_delta_ref，五层货架回库必须引用该凭证 |
 | 源货架快照（料盘身份） | 入口事件携带；单层货架到达 STATION 时一次性加载到 Redis 缓存（key=`source_rack:{rack_id}`，TTL=该货架处理周期） |
-| 扫码平台状态 | SOURCE_ARM 放盘/TARGET_ARM 取盘回调；状态机见第 8.1 节 |
+| 南向 PICK ACK evidence | `southbound_pick_acknowledged`；是下一次北向取料的唯一业务解锁条件 |
 | 退箱区占用数 | 料箱进入/离开退箱区事件 |
-| STATION 占用状态 | 单层货架到达/移出回调 |
+| STATION 占用状态 | WMS E08/E09 typed terminal result 与 owner 投影校验通过后 |
 
 真实目标料箱状态不得使用“未知”语义。未扫码前，WES 只维护流水线临时占位；扫码成功后，临时占位绑定 `resolved_bin_id`，随后才更新对应目标料箱位置。扫码失败或无法扫码时，临时占位进入退箱/隔离或人工对账，不得猜测为某个授权 `bin_id`。
 
-### 8.1 扫码平台互锁状态机
+### 8.1 扫码平台设备证据与串行门禁
 
-扫码平台是 SOURCE_ARM 和 TARGET_ARM 的唯一同步点，WES 软件层面维护其业务状态（硬件层另有实时互锁保护）：
+扫码平台是 SOURCE_ARM 和 TARGET_ARM 的物理交接点，但 WES 不复制一套软件互锁状态机。硬件实时互锁由
+PLC/ECS 负责，WES 只持久化 typed command evidence，并按以下业务因果串行推进：
 
-```
-FREE ──(SOURCE_ARM放盘)──→ OCCUPIED_BY_SOURCE
-OCCUPIED_BY_SOURCE ──(扫码完成)──→ SCANNING
-SCANNING ──(有兼容目标格)──→ OCCUPIED_BY_TARGET
-SCANNING ──(无兼容目标格)──→ OCCUPIED_WAITING_BIN  // 料盘滞留，源侧暂停
-OCCUPIED_BY_TARGET ──(TARGET_ARM离开)──→ FREE
-OCCUPIED_WAITING_BIN ──(新料箱有兼容格/TARGET_ARM取走)──→ FREE 或 OCCUPIED_BY_TARGET
-```
-
-- `OCCUPIED_BY_SOURCE`：SOURCE_ARM 正在放盘，SOURCE_ARM 不得再取新盘
-- `OCCUPIED_BY_TARGET`：TARGET_ARM 正在取盘放格，SOURCE_ARM 不得放盘
-- `OCCUPIED_WAITING_BIN`：料盘滞留扫码平台等待新料箱兼容格，SOURCE_ARM 暂停取料
-- 只有 `FREE` 状态才允许 SOURCE_ARM 执行取料命令
+- SOURCE_ARM 放盘和 TARGET_ARM 投放仍分别持久化 typed ACK/RESULT evidence。
+- 北向下一次取料只由上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）解锁。
+- UI、轮询快照、推测的平台占用状态或南向投放 `COMMAND_RESULT` 均不得替代该 ACK 因果。
+- 设备结果不确定时进入 RuntimeHold/对账，不猜测平台已经腾空。
 
 ### 8.2 投影对账机制
 
@@ -426,7 +419,7 @@ WES 本地投影必须与物理状态保持一致。对账分为定期对账和�
 
 | 对账类型 | 触发时机 | 对账内容 | 差异处理 |
 |---------|---------|---------|---------|
-| 定期对账 | Celery BEAT 每 30 秒 | 五层货架每面料箱数 vs WMS 回调快照 | 差异 ≥ 1 → 告警 + RuntimeHold |
+| 定期对账 | Celery BEAT 每 30 秒 | 五层货架每面料箱数 vs WMS status query 快照 | 差异 ≥ 1 → 告警 + RuntimeHold |
 | 定期对账 | Celery BEAT 每 30 秒 | 目标料箱在途状态汇总 vs 流水线/ECS 上报 | 不一致 → 告警 + 人工对账 |
 | 关键节点对账 | 五层货架换面前 | 当前面所有料箱位置状态全量比对 | 不一致 → 暂停换面 + 人工处置 |
 | 关键节点对账 | 五层货架回库前 | 当前货架实际箱清单、在途目标箱、库存增量凭证 | 当前货架快照不可信或仍有在途箱 → BLOCKED；单个目标箱缺失但当前货架快照可信 → 目标箱独立 MISSING_RECONCILING |
@@ -466,8 +459,8 @@ CTU 投料任务必须同时维护授权候选集合与实际扫码集合：
 | WMS 库存增量接收失败 | 五层货架不得按正常完成回库；保留已放料事实与目标格计划，进入库存同步对账/RuntimeHold |
 | 退箱区满 | 流水线自动停机 → WES 消费 WORKLINE_STOPPED → 优先调度 CTU 清理退箱区 → 恢复后继续 |
 | NG 位满 | 硬件上报 NG_FULL + WORKLINE_STOPPED → WES 记录停线事实 → 相关链路进入 BLOCKED → 人工清理后硬件自动恢复 |
-| WMS/RCS 分配超时 | Owner 链路保持等待态，无超时取消；达到阈值后记录告警/RuntimeHold，迟到可信回调仍可推进 |
-| AGV 换面超时 | Owner 链路保持等待态，无超时取消；达到阈值后记录告警/RuntimeHold，迟到可信回调仍可推进 |
+| WMS 分配 status 超时 | Owner 链路保持等待态，无超时取消；达到阈值后记录告警/RuntimeHold，迟到 typed terminal result 通过 ACK/reference 与版本校验后才可推进 |
+| WMS E10 换面 status 超时 | Owner 链路保持等待态，无超时取消；达到阈值后记录告警/RuntimeHold，迟到 typed terminal result 通过 ACK/reference 与版本校验后才可推进 |
 | 流水线拒绝投料 | CTU 等待重试，不退回五层货架 |
 | CTU 投料/退箱任务失败 | 记录失败事实 → 进入 BLOCKED → 等待人工处置 |
 | CTU 投料后 BIN_DEPARTED 超时 | 料箱已投入缓存位但流水线停线/步进电机故障导致 BIN_DEPARTED 未到达 → 达到超时阈值后记录告警/RuntimeHold → 投料链路进入 BLOCKED → 等待人工处置 |
@@ -508,10 +501,11 @@ generated dispatcher，由 Definition 与 `ROUTE_HANDLERS` 生成 typed intent/e
 | 源料盘扫码事件 | ECS/扫码平台 | `DEVICE_EVENT` | `SOURCE_REEL_SCAN_COMPLETED` |
 | 工作线状态事件 | ECS/PLC | `DEVICE_EVENT` | `WORKLINE_STOPPED`、`WORKLINE_RESUMED`、`NG_FULL`、`NG_CLEARED` |
 | 机械臂结果 | ECS/机械臂 | `COMMAND_RESULT` | 源侧/目标侧机械臂取放命令结果 |
-| WMS/RCS 回调 | WMS/RCS | `EXTERNAL_HTTP` / `/api/v1/callback/external` | 五层货架分配/到位/换面/回库、CTU 任务开始/完成/失败、目标料箱回架、库存增量接收、单层货架移出 |
+| WMS 异步履约 | WMS | `SystemOutbox` 出站 + typed 状态 QUERY / `WMS_EFFECT_STATUS_HINT` | E08–E14 只按任务级 ACK 与终态结果收敛；逐箱物理推进来自 ECS 设备事件 |
 | 超时/人工恢复 | Runtime/人工 | `TIMER_TIMEOUT` / `MANUAL_*` | 外部等待、设备等待和对账恢复 |
 
-设备 ACK 只表示命令已被接收，不表示物理动作完成。推动流程继续的依据必须是命令结果、流水线事件或 WMS/RCS 外部回调。
+设备 ACK 只表示命令已被接收，不表示物理动作完成。推动流程继续的依据必须是命令结果、流水线事件或
+WMS typed 终态结果/状态查询。
 
 三类扫码事件必须使用不同事件类型，不依赖点位推断扫码主体。若现场协议只能上报通用扫码事件，接入层必须在
 写入 `RuntimeInbox` 前映射为上述标准事件类型。
@@ -530,7 +524,7 @@ WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回�
 6. 源料盘扫码成功但暂时无兼容目标格，WES 释放当前工作位目标料箱，流水线自动将排队位下一个料箱推入工作位，料盘留在扫码平台等待，源侧暂停继续取料
 7. CTU 背篓满导致无法继续投料
 8. 流水线出料口堵塞导致目标料箱无法取回
-9. WMS/RCS 回调迟到、缺字段或版本旧，WES 不静默推进；达到等待阈值后有告警/RuntimeHold 证据
+9. WMS status/typed terminal result 迟到、缺字段、reference 不一致或版本旧，WES 不静默推进；达到等待阈值后有告警/RuntimeHold 证据
 10. 满箱交换后单层货架所有料箱均为空时，不进入分拣机排队位，而是调度至空架/空箱区
 11. 当前操作面可用目标料箱取完后，先等待当前面在途目标料箱全部回架，再在另一面仍有可用目标料箱时提交 AGV 换面需求
 12. 单层货架最后一个待处理源料盘离开源格后，AGV 即可将该货架移入空架/空箱区，STATION 释放后补入后续单层货架
@@ -548,7 +542,7 @@ WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回�
 24. v1 同一时间只有一个可信 AT_WORK 目标料箱，多个工作位物理编码不启用并行分拣
 25. 目标料箱满格释放后，若无已通过准入的排队料箱，应触发 CTU 补充投料或等待 WMS 分配，同时启动工作位空闲计时器
 26. 每个源料盘离开源格时创建独立料盘分拣 Session，business_key 唯一标识，扫码/放入为等待点，终态不反向阻塞源货架释放
-27. 扫码平台业务状态机（FREE/OCCUPIED_BY_SOURCE/SCANNING/OCCUPIED_BY_TARGET/OCCUPIED_WAITING_BIN）正确流转，非 FREE 状态禁止 SOURCE_ARM 取料
+27. 扫码平台不维护独立软件状态机；北向下一次取料只由上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）解锁
 28. 定期对账（30 秒）和关键节点对账（换面/回库/移出）发现投影差异时，记录告警/RuntimeHold；未获得可信补证前不得基于推测修正投影
 29. CTU 投料任务失败（背篓装载后无法到达投料口、投料循环中连续失败等）→ 记录失败事实，投料链路进入 BLOCKED，等待人工处置
 30. CTU 投料阶段未扫码物理箱只生成流水线临时占位，不得提前绑定到真实 `bin_id`
@@ -563,11 +557,11 @@ WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回�
 
 当前硬件和外部系统资料仍不足以直接进入代码实现。进入实施前必须补齐：
 
-1. WMS/RCS 对"五层货架到位、CTU 任务完成/失败、料箱回架"的最小回调字段
+1. WMS E08–E14 ACK/status/typed terminal result 对“货架到位、批量任务完成/拒绝、料箱回架”的字段与 reference/version 约束
 2. CTU 背篓容量、背篓槽位、可承载料箱类型和满载/空载状态口径
-3. 分拣机五层货架工作位状态字段，以及 WMS 分配可用五层货架的请求/回调字段
-4. 五层货架当前可操作面、目标料箱所在面、AGV 换面请求和到达/切换回调字段
-5. 满箱交换后"整架置空"的判断字段，以及空架/空箱区目标位置和完成回调
+3. 分拣机五层货架工作位状态字段，以及 WMS E08 分配请求、ACK/status/typed terminal result 字段
+4. 五层货架当前可操作面、目标料箱所在面，以及 WMS E10 换面请求、ACK/status/typed terminal result 字段
+5. 满箱交换后"整架置空"的判断字段，以及 E11 ACK/status/typed terminal result 对空架/空箱区目标位置的权威结果
 6. 单层货架从分拣机排队位到 STATION 的请求、到位、活动面和队列序号合同
 7. 流水线步进电机点位事件、料箱到达/离开事件、挡停切换信号、轻量投料水位和保留出料容量配置项的现场默认值
 8. 三类扫码事件合同：`TARGET_BIN_SCAN_COMPLETED`、`WORK_BIN_SCAN_COMPLETED`、`SOURCE_REEL_SCAN_COMPLETED` 的必填字段、扫码失败错误码和兼容映射规则
@@ -585,8 +579,8 @@ WES 向 WMS 提交库存增量、请求五层货架回库、请求目标箱回�
 20. 投影对账差异的告警阈值和升级策略：定期对账（30 秒）和关键节点对账（换面/回库/移出）发现不一致时的处理流程和人工介入条件
 21. 源货架快照和五层货架投影的缓存策略：Redis 缓存 key 格式、TTL、缓存加载时机（单层货架到达 STATION / 五层货架到位换面）、放料成功后异步更新投影的时序
 22. 流水线临时占位字段：placeholder_id、投料批次、入口/扫码位位置、identity_status、candidate_authorized_bin_ids、resolved_bin_id、resolved_at 和异常来源
-23. CTU 投料任务回调字段：expected_authorized_bin_ids、CTU 背篓槽位、实际投放计数、无法识别单箱身份时的占位映射规则
+23. E12 CTU 投料批次级 typed terminal result 字段：冻结成员、最终成员位置、实际投放计数与无法识别单箱身份时的占位映射规则
 24. 授权集合与实际扫码集合差异处理合同：未授权实际箱的退箱/隔离路径、授权未出现箱的 `MISSING_RECONCILING` 口径、WMS/RCS 补证字段
 25. WES 向 WMS 提交库存增量的接口字段：rack_id、bin_id、cell_id、reel_id/pkg_id、6 合 1 码解析结果、Material、Vendor、DateCode、LotCode、规格、source/target 位置、put_completed_at、trace/session/command、接收凭证号
-26. 五层货架回库请求携带字段：当前可信货架快照、库存增量凭证、未关闭资源对账引用、WMS/RCS 对当前快照的接受回调
+26. 五层货架回库请求携带字段：当前可信货架快照、库存增量凭证、未关闭资源对账引用，以及 WMS E09 ACK/status/typed terminal result 对当前快照的接受证据
 27. 末任务收口合同：无后续源料盘时工作位目标箱释放、扫码区前未知占位推进/扫码/退箱、CTU 背篓未投箱直接回架、不可推进时 RuntimeHold 字段

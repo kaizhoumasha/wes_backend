@@ -8,11 +8,11 @@ import pytest
 
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
 from src.app.runtime.system_capabilities.wms.inventory.query_inventory.definition import DEFINITION
-from src.app.runtime.system_capabilities.wms.inventory.query_inventory.handler import InventoryQueryCapabilityHandler
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
+from src.app.runtime.system_capabilities.wms.query_handler import WmsRegistryQueryCapabilityHandler
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryRequest,
+    InventorySnapshotQueryResult,
 )
 from src.app.wms_integration.ports.query_outcome import (
     QueryBusinessReject,
@@ -22,14 +22,15 @@ from src.app.wms_integration.ports.query_outcome import (
 )
 
 
-def _result() -> InventoryQueryOperationResult:
-    return InventoryQueryOperationResult(
+def _result() -> InventorySnapshotQueryResult:
+    return InventorySnapshotQueryResult(
         items=(
-            InventoryAuthorityItem(
+            InventoryRecord(
                 material_code="MAT-1",
                 lot_no="LOT-1",
-                warehouse_code="WH-1",
                 available_quantity=Decimal("1.25"),
+                total_quantity=Decimal("1.25"),
+                reserved_quantity=Decimal("0"),
             ),
         ),
         source_version="provider-v1",
@@ -39,17 +40,17 @@ def _result() -> InventoryQueryOperationResult:
 class _Port:
     def __init__(self, outcome: object) -> None:
         self.outcome = outcome
-        self.requests: list[InventoryQueryOperationRequest] = []
+        self.requests: list[InventorySnapshotQueryRequest] = []
 
-    async def execute(self, request: InventoryQueryOperationRequest) -> object:
+    async def execute(self, request: InventorySnapshotQueryRequest) -> object:
         self.requests.append(request)
         return self.outcome
 
 
 def test_definition_uses_generic_operation_identity_and_typed_contract() -> None:
     assert (DEFINITION.capability_key, DEFINITION.contract_version) == ("wms.inventory.query_inventory", "v1")
-    assert DEFINITION.input_model is InventoryQueryOperationRequest
-    assert DEFINITION.output_model is InventoryQueryOperationResult
+    assert DEFINITION.input_model is InventorySnapshotQueryRequest
+    assert DEFINITION.output_model is InventorySnapshotQueryResult
 
 
 @pytest.mark.asyncio
@@ -90,9 +91,9 @@ async def test_handler_preserves_closed_query_outcome(
     query_kind: str | None,
 ) -> None:
     port = _Port(port_outcome)
-    request = InventoryQueryOperationRequest(material_code="MAT-1", warehouse_code="WH-1", lot_no="LOT-1")
+    request = InventorySnapshotQueryRequest(material_code="MAT-1", warehouse_code="WH-1", lot_no="LOT-1")
 
-    outcome = await InventoryQueryCapabilityHandler(port)(request)
+    outcome = await WmsRegistryQueryCapabilityHandler(port)(request)
 
     assert isinstance(outcome, outcome_type)
     assert port.requests == [request]
@@ -102,3 +103,23 @@ async def test_handler_preserves_closed_query_outcome(
         code = getattr(outcome, "reason_code", None) or getattr(outcome, "error_code", None)
         assert code == stable_code
         assert outcome.details["query_outcome_kind"] == query_kind
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("port_outcome", "expected_kind"),
+    [
+        (QueryBusinessReject("NO", "rejected"), "BUSINESS_REJECT"),
+        (object(), "INVALID"),
+    ],
+)
+async def test_handler_omits_missing_evidence_and_rejects_unknown_outcome(
+    port_outcome: object,
+    expected_kind: str,
+) -> None:
+    outcome = await WmsRegistryQueryCapabilityHandler(_Port(port_outcome))(
+        InventorySnapshotQueryRequest(material_code="MAT-1")
+    )
+
+    assert isinstance(outcome, BusinessReject | ContractViolation)
+    assert outcome.details == {"query_outcome_kind": expected_kind}

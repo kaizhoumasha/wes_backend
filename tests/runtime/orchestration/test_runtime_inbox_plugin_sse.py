@@ -9,6 +9,9 @@ import pytest
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
 )
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackResult,
+)
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
 from src.app.sys.services.event_stream_service import (
     DEFERRED_SSE_EVENTS_KEY,
@@ -48,9 +51,9 @@ async def test_platform_committed_writeback_defers_runtime_sse_event() -> None:
             return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
-        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
+        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> RuntimeInboxWriteBackResult:
             await db.commit()
-            return WriteDisposition.COMMITTED
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.COMMITTED)
 
     db = Db()
     bridge = RuntimeInboxProcessorBridge(
@@ -123,9 +126,9 @@ async def test_platform_terminal_failure_reports_failure_and_defers_runtime_sse_
             return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
-        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
+        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> RuntimeInboxWriteBackResult:
             await db.commit()
-            return WriteDisposition.TERMINAL_FAILURE
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.TERMINAL_FAILURE)
 
     db = Db()
     bridge = RuntimeInboxProcessorBridge(
@@ -168,6 +171,83 @@ async def test_platform_terminal_failure_reports_failure_and_defers_runtime_sse_
     assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
     assert _processing_outcome(result) == "failed"
     assert db.info[DEFERRED_SSE_EVENTS_KEY][0][0] == WORKLINE_RUNTIME_CHANGED_EVENT
+
+
+@pytest.mark.asyncio
+async def test_pre_attempt_blocked_skips_runner_and_commits_fail_closed_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as module
+
+    class Db:
+        def __init__(self) -> None:
+            self.info: dict[str, object] = {}
+
+        async def flush(self) -> None:
+            pass
+
+        async def commit(self) -> None:
+            pass
+
+    class Runner:
+        async def run(self, _context: object) -> AttemptWriteSet:
+            raise AssertionError("BLOCKED pre-attempt must skip Stage 2 plugin runner")
+
+    captured: list[AttemptWriteSet] = []
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, db: Db, **kwargs: object) -> RuntimeInboxWriteBackResult:
+            captured.append(kwargs["write_set"])  # type: ignore[arg-type]
+            await db.commit()
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.COMMITTED)
+
+    async def blocked(*_args: object, **_kwargs: object) -> object:
+        from src.app.runtime.workline_plugins.pre_attempt import PreAttemptResolution
+
+        return PreAttemptResolution.blocked("WMS_Q19_REPLAY_REQUEST_MISMATCH")
+
+    monkeypatch.setattr(module, "resolve_plugin_pre_attempt_facts", blocked)
+    bridge = RuntimeInboxProcessorBridge(writeback_service=WriteBack())  # type: ignore[arg-type]
+    _install_test_runner(bridge, Runner())
+    inbox = SimpleNamespace(
+        id=91,
+        kind="DEVICE_EVENT",
+        payload_json={"event_type": "SCAN_COMPLETED"},
+        trace_id="trace-test",
+        event_id="evt-test",
+        causation_id=None,
+        workline_id=20,
+        execution_session_id=10,
+        device_id=None,
+        command_id=None,
+        attempt_count=0,
+        event_type="SCAN_COMPLETED",
+    )
+
+    result = await bridge._process_platform_plugin_attempt(
+        Db(),  # type: ignore[arg-type]
+        inbox=inbox,
+        session=SimpleNamespace(
+            id=10,
+            version=7,
+            plugin_state_version=3,
+            plugin_state_json={"phase": "READY"},
+            plugin_binding_id=17,
+            current_material_unit_id=None,
+            status="RUNNING",
+        ),
+        workline=SimpleNamespace(id=20),
+        resolved_event_type="SCAN_COMPLETED",
+        processor_token="lease-blocked",
+        attempt_runtime=bridge.create_attempt_runtime("lease-blocked"),
+    )
+
+    assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+    assert len(captured) == 1
+    assert captured[0].outcome_code == "HOLD"
+    assert captured[0].hold_reason == "WMS_Q19_REPLAY_REQUEST_MISMATCH"
+    assert captured[0].intents == ()
+    assert captured[0].preserve_plugin_state is True
 
 
 @pytest.mark.asyncio

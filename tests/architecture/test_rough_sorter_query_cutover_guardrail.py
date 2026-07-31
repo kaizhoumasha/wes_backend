@@ -28,10 +28,13 @@ def test_legacy_identity_and_import_are_absent_from_executable_python() -> None:
     assert offenders == []
 
 
-def test_generated_and_plugin_indexes_use_only_generic_query_identity() -> None:
+def test_generated_and_plugin_indexes_bind_q19_without_q14_plugin_dependency() -> None:
     from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_IDENTITIES
     from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 
-    generic_identity = ("wms.inventory.query_inventory", "v1")
-    assert generic_identity in SYSTEM_CAPABILITY_IDENTITIES
-    assert generic_identity in DEFINITION.allowed_capabilities
+    q14_identity = ("wms.inventory.query_inventory", "v1")
+    q19_identity = ("wms.document.validate_rough_sorter_admission", "v1")
+    assert q14_identity in SYSTEM_CAPABILITY_IDENTITIES
+    assert q19_identity in SYSTEM_CAPABILITY_IDENTITIES
+    assert q14_identity not in DEFINITION.allowed_capabilities
+    assert q19_identity in DEFINITION.allowed_capabilities

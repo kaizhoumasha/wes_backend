@@ -21,7 +21,6 @@ SmtRackBinSchedulingDecisionKind = Literal[
     "BLOCKED",
 ]
 SmtReelSizeKind = Literal["SEVEN_INCH", "LARGE"]
-WMS_RCS_RACK_OPERATION_ENDPOINT = "WMS_RCS_RACK_OPERATION"
 SMT_USAGE_POLICY: Any | None = None
 
 
@@ -874,33 +873,9 @@ class SmtRackBinSchedulingService:
         return self._cell_status(cell) in self.EMPTY_CELL_STATUSES
 
     def _target_code(self, context: Mapping[str, Any]) -> str | None:
-        endpoint_code_keys = (
-            "rack_operation_target_code",
-            "wms_rcs_target_code",
-        )
-        legacy_url_keys = (
-            "wms_rcs_rack_operation_url",
-            "wms_rcs_rack_supply_url",
-        )
-        value = self._first_text(context, endpoint_code_keys)
-        if value is not None:
-            return value
-
-        config = context.get("config")
-        if isinstance(config, Mapping):
-            value = self._first_text(cast("Mapping[str, Any]", config), endpoint_code_keys)
-            if value is not None:
-                return value
-
-        if self._first_text(context, legacy_url_keys) is not None:
-            return WMS_RCS_RACK_OPERATION_ENDPOINT
-        if (
-            isinstance(config, Mapping)
-            and self._first_text(cast("Mapping[str, Any]", config), legacy_url_keys) is not None
-        ):
-            return WMS_RCS_RACK_OPERATION_ENDPOINT
-        # SANDBOX 可能不携带物理 WMS/RCS URL，实际派发由端点注册表解析逻辑端点。
-        return WMS_RCS_RACK_OPERATION_ENDPOINT
+        # T5 dispatcher 尚未实现；旧 rack transport target 已删除，规划阶段直接领域阻断。
+        del context
+        return None
 
     def _rack_bin_snapshots(self, active_rack: Mapping[str, Any]) -> list[dict[str, Any]]:
         raw_bins = active_rack.get("bins") or active_rack.get("bin_snapshots")

@@ -49,7 +49,7 @@ def _external_http_outbox(
     projection = {"request_id": dispatch_key}
     frozen = frozen_outbox_namespace(
         projection,
-        target_code="WMS_RCS_BIN_OPERATION",
+        target_code="WMS_INVENTORY_TRANSFER",
         target_url="https://wms.example/rack-operation",
         provider_profile_identity=provider_profile_identity,
         operation_identity=operation_identity,
@@ -75,8 +75,8 @@ async def test_ambiguous_external_http_attempt_evidence_round_trips(integration_
         dispatch_key=dispatch_key,
         status=SystemOutboxStatus.DISPATCHING,
         operation_domain="HANDLING",
-        provider_profile_identity="wms.legacy-transport.production",
-        operation_identity="wms.transport.handling@v1",
+        provider_profile_identity="tests.attempt-evidence.external-http.v1",
+        operation_identity="tests.attempt-evidence.effect@v1",
         lease_owner_token="integration-attempt-owner",
         lease_expires_at=timezone.now_for_db() + timedelta(minutes=5),
     )

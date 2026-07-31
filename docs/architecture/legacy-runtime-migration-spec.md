@@ -99,7 +99,7 @@ Phase 2 burn-down 重构 814 行代码时,8 个 contract 提供回归保护。�
 | 4 | Timeline query(trace_id/correlation_id/event_type) | `test_runtime_timeline_query_contract.py` | 6 | RuntimeTimelineQueryService.query / 主计划 §9.2 |
 | 5 | Hold scoped block/release(NARROW/WIDE scopes) | `test_runtime_hold_contract.py` | 7 | RuntimeHoldService.evaluate / 主计划 §7.5 C3 |
 | 6 | Device command dispatch + ACK/result correlation | `test_device_command_dispatch_contract.py` | 24 | DeviceCommandPort.dispatch / 主计划 §7.5 C4 |
-| 7 | WMS fulfillment request + callback correlation | `test_wms_fulfillment_request_contract.py` | 10 | WmsFulfillmentPort.request_* / 主计划 §5.1 + H4 |
+| 7 | Operation-specific ACK/status correlation | `test_wms_batch_ack_contract.py` | operation-specific | E08–E14 typed fulfillment contracts / 主计划 §5.1 + H4 |
 | 8 | Manual replay from dead-letter / audit chain | `test_manual_replay_audit_contract.py` | 8 | RuntimeInboxService.process_one + H5 / 主计划 §9.2 |
 
 **Mock 边界**:仅允许 `src/app/runtime/orchestration/` 内的 skeleton 实体(Phase 1 已 100% coverage),`tests/support/runtime_inbox_contract.py` + `tests/support/workline_contracts.py` 复用 fixture;不依赖 DB session / DB migration,确保 contract 在 burn-down 任何阶段都可独立运行。

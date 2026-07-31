@@ -21,7 +21,9 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
-      WMS_EFFECT_STATUS_URL: ${CONTAINER_WMS_EFFECT_STATUS_URL:-}
+      WMS_DEPLOYMENT_ROLE: api
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
+      WMS_EFFECT_ADMISSION_ENABLED: ${WMS_EFFECT_ADMISSION_ENABLED:-false}
       WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
       WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
       WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
@@ -30,6 +32,7 @@ services:
       WES_EFFECT_NOT_FOUND_GRACE_SECONDS: ${WES_EFFECT_NOT_FOUND_GRACE_SECONDS}
       WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS: ${WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS}
       WES_EFFECT_STATUS_SCAN_BATCH_SIZE: ${WES_EFFECT_STATUS_SCAN_BATCH_SIZE}
+      WES_EFFECT_STATUS_MAX_IN_FLIGHT: ${WES_EFFECT_STATUS_MAX_IN_FLIGHT}
       WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS: ${WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS}
       WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS: ${WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS}
       WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS: ${WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS}
@@ -38,6 +41,7 @@ services:
       LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
     volumes:
       - ./logs:/app/logs:z
+      - "${WMS_PROVIDER_PROFILE_HOST_FILE:?WMS_PROVIDER_PROFILE_HOST_FILE is required}:/run/wes/wms-provider.yaml:ro"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -52,9 +56,9 @@ services:
     networks:
       - wesp9-network
 
-  celery_worker:
+  celery:
     image: ${BACKEND_IMAGE:-wes-backend:local}
-    container_name: wes_backend_test-celery_worker-1
+    container_name: wes_backend_test-celery-1
     restart: ${RESTART_POLICY:-unless-stopped}
     entrypoint: ["/app/docker/test/celery.entrypoint.sh"]
     env_file:
@@ -70,7 +74,12 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
-      WMS_EFFECT_STATUS_URL: ${CONTAINER_WMS_EFFECT_STATUS_URL:-}
+      CELERY_WORKER_QUEUES: default,celery,device
+      CELERY_WORKER_CONCURRENCY: ${CELERY_CONCURRENCY:-4}
+      WMS_PROVIDER_PROCESS_ROLE: wes
+      WMS_DEPLOYMENT_ROLE: wes-worker
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
+      WMS_EFFECT_ADMISSION_ENABLED: ${WMS_EFFECT_ADMISSION_ENABLED:-false}
       WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
       WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
       WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
@@ -79,6 +88,7 @@ services:
       WES_EFFECT_NOT_FOUND_GRACE_SECONDS: ${WES_EFFECT_NOT_FOUND_GRACE_SECONDS}
       WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS: ${WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS}
       WES_EFFECT_STATUS_SCAN_BATCH_SIZE: ${WES_EFFECT_STATUS_SCAN_BATCH_SIZE}
+      WES_EFFECT_STATUS_MAX_IN_FLIGHT: ${WES_EFFECT_STATUS_MAX_IN_FLIGHT}
       WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS: ${WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS}
       WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS: ${WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS}
       WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS: ${WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS}
@@ -87,6 +97,7 @@ services:
       LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
     volumes:
       - ./logs:/app/logs:z
+      - "${WMS_PROVIDER_PROFILE_HOST_FILE:?WMS_PROVIDER_PROFILE_HOST_FILE is required}:/run/wes/wms-provider.yaml:ro"
     healthcheck:
       test: ["CMD-SHELL", "celery -A src.celery_app.app inspect ping || exit 1"]
       interval: 30s
@@ -99,6 +110,19 @@ services:
         condition: service_healthy
     networks:
       - wesp9-network
+
+  # WMS fulfillment EFFECT 专用 worker；继承同一 profile/readiness 配置，只收专用队列。
+  celery-wms-fulfillment:
+    extends:
+      service: celery
+    container_name: wes_backend_test-celery-wms-fulfillment-1
+    environment:
+      CELERY_WORKER_QUEUES: wms-fulfillment
+      CELERY_WORKER_CONCURRENCY: "1"
+      WMS_PROVIDER_PROCESS_ROLE: fulfillment
+      WMS_DEPLOYMENT_ROLE: fulfillment-worker
+    deploy:
+      replicas: 1
 
   frontend:
     image: ${FRONTEND_IMAGE:-wes-frontend:local}

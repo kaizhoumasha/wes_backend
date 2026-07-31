@@ -9,6 +9,10 @@ from src.app.runtime.orchestration.repositories.northbound_operations_repository
 )
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
 from src.app.runtime.orchestration.services.effect_reducer_service import EffectIntentNotFound
+from src.app.runtime.orchestration.wms_sync_obligation import (
+    WMS_SYNC_OBLIGATION_OPERATION_IDENTITIES,
+    WmsSyncObligationResolution,
+)
 from src.app.sys.repositories import system_outbox_repository
 from src.core.exceptions import PermissionException
 from src.utils.timezone import timezone
@@ -43,15 +47,13 @@ class EffectReconciliationResolutionService:
         db: Any,
         *,
         dispatch_key: str,
-        request_id: str,
-        resolution: str,
+        request_id: str | None,
+        resolution: str | None,
         operator_note: str,
         operator_id: int,
         is_superuser: bool,
+        obligation_resolution: WmsSyncObligationResolution | None = None,
     ) -> dict[str, Any]:
-        normalized_request_id = request_id.strip()
-        if not normalized_request_id:
-            raise ValueError("request_id 不能为空")
         outbox = await self._outbox_repository.get_by_dispatch_key(db, dispatch_key)
         if outbox is None:
             raise EffectIntentNotFound(f"dispatch_key={dispatch_key} 对应的 EFFECT outbox 不存在")
@@ -71,12 +73,31 @@ class EffectReconciliationResolutionService:
                     "dispatch_key": dispatch_key,
                 },
             )
-        target = RuntimeIntentStatus(resolution)
+        operation_identity = str(getattr(outbox, "operation_identity", "") or "")
+        if operation_identity in WMS_SYNC_OBLIGATION_OPERATION_IDENTITIES:
+            if obligation_resolution is None or request_id is not None or resolution is not None:
+                raise ValueError("E03/E07 reconciliation requires typed obligation resolution")
+            if obligation_resolution.resolved_operation_identity != operation_identity:
+                raise ValueError("typed obligation resolution operation identity differs from outbox")
+            normalized_request_id = obligation_resolution.source_event_id
+            target = None
+            response_resolution = obligation_resolution.resolution
+        else:
+            if obligation_resolution is not None:
+                raise ValueError("typed obligation resolution is restricted to E03/E07")
+            normalized_request_id = request_id.strip() if isinstance(request_id, str) else ""
+            if not normalized_request_id:
+                raise ValueError("request_id 不能为空")
+            target = RuntimeIntentStatus(resolution)
+            if target not in {RuntimeIntentStatus.COMPLETED, RuntimeIntentStatus.REJECTED}:
+                raise ValueError("generic EFFECT resolution requires COMPLETED or REJECTED")
+            response_resolution = target.value
         result = await self._resolve_reconciliation_bridge().resolve(
             db,
             dispatch_key=dispatch_key,
             occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
             resolution=target,
+            obligation_resolution=obligation_resolution,
             reason_code="MANUAL_EFFECT_RECONCILIATION_RESOLUTION",
             source_event_id=normalized_request_id,
             evidence_json={
@@ -88,7 +109,7 @@ class EffectReconciliationResolutionService:
         await db.commit()
         return {
             "dispatch_key": dispatch_key,
-            "resolution": target.value,
+            "resolution": response_resolution,
             "request_id": normalized_request_id,
             "intent_status": result.intent_status.value,
             "case_status": result.case_status.value if result.case_status is not None else None,

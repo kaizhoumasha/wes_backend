@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
     NorthboundOperationsRepository,
 )
+from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
 
 # Regression: ISSUE-004 — 平台空账本快照必须显示 SLO catalog 中的同步 QUERY
 # Found by /qa on 2026-07-24
@@ -24,7 +25,8 @@ class _EmptyDatabase:
 
 
 async def test_platform_snapshot_includes_query_operation_without_runtime_rows() -> None:
-    rows = await NorthboundOperationsRepository().load_snapshot(
+    catalog = build_provider_catalog()
+    rows = await NorthboundOperationsRepository(provider_catalog=catalog).load_snapshot(
         _EmptyDatabase(),
         tenant_id=None,
         workline_id=None,
@@ -32,5 +34,5 @@ async def test_platform_snapshot_includes_query_operation_without_runtime_rows()
 
     query_rows = tuple(row for row in rows if row.operation_identity == _QUERY_OPERATION)
     assert len(query_rows) == 1
-    assert query_rows[0].provider_profile_identity.endswith(".sandbox")
+    assert query_rows[0].provider_profile_identity == catalog.profile_identity
     assert query_rows[0].mode == "QUERY"

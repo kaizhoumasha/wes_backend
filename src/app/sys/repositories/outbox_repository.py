@@ -78,6 +78,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             "target_snapshot_json",
             "target_snapshot_hash",
             "auth_scheme",
+            "network_trust_mode",
             "credential_reference",
             "payload_json",
             "canonical_payload_bytes",
@@ -176,6 +177,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         now: Any,
         operation_domains: Sequence[str] | None = None,
         exclude_operation_domains: Sequence[str] | None = None,
+        operation_identities: Sequence[str] | None = None,
+        exclude_operation_identities: Sequence[str] | None = None,
         limit: int = 100,
     ) -> tuple[ExpiredExternalHttpLeaseFence, ...]:
         """锁定并收口过期 HTTP lease，返回同事务证据闭环快照。"""
@@ -194,6 +197,11 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                     columns,
                     operation_domains=operation_domains,
                     exclude_operation_domains=exclude_operation_domains,
+                ),
+                *self._operation_identity_predicates(
+                    columns,
+                    operation_identities=operation_identities,
+                    exclude_operation_identities=exclude_operation_identities,
                 ),
             )
             .order_by(columns.lease_expires_at, columns.id)
@@ -248,6 +256,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         now: Any,
         operation_domains: Sequence[str] | None = None,
         exclude_operation_domains: Sequence[str] | None = None,
+        operation_identities: Sequence[str] | None = None,
+        exclude_operation_identities: Sequence[str] | None = None,
     ) -> tuple[DispatchBucketKey, ...]:
         """只按显式调度列返回当前有 durable backlog 的活跃桶。"""
 
@@ -260,6 +270,11 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                     columns,
                     operation_domains=operation_domains,
                     exclude_operation_domains=exclude_operation_domains,
+                ),
+                *self._operation_identity_predicates(
+                    columns,
+                    operation_identities=operation_identities,
+                    exclude_operation_identities=exclude_operation_identities,
                 ),
             )
             .group_by(columns.provider_profile_identity, columns.operation_identity)
@@ -286,6 +301,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         rate_window_seconds: int = 60,
         operation_domains: Sequence[str] | None = None,
         exclude_operation_domains: Sequence[str] | None = None,
+        operation_identities: Sequence[str] | None = None,
+        exclude_operation_identities: Sequence[str] | None = None,
     ) -> DispatchBucketState:
         """从索引列与 attempt ledger 汇总 backlog/rate/lease/UNKNOWN SLI。"""
 
@@ -303,6 +320,11 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                 columns,
                 operation_domains=operation_domains,
                 exclude_operation_domains=exclude_operation_domains,
+            ),
+            *self._operation_identity_predicates(
+                columns,
+                operation_identities=operation_identities,
+                exclude_operation_identities=exclude_operation_identities,
             ),
         )
         claimable = self._dispatch_claimable_clause(columns, now=now, retry_budget=None)
@@ -365,6 +387,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         now: Any,
         operation_domains: Sequence[str] | None = None,
         exclude_operation_domains: Sequence[str] | None = None,
+        operation_identities: Sequence[str] | None = None,
+        exclude_operation_identities: Sequence[str] | None = None,
     ) -> Any:
         """构建单桶原子 claim；候选选择只读取可索引的 typed columns。"""
 
@@ -423,6 +447,11 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                     operation_domains=operation_domains,
                     exclude_operation_domains=exclude_operation_domains,
                 ),
+                *self._operation_identity_predicates(
+                    cc,
+                    operation_identities=operation_identities,
+                    exclude_operation_identities=exclude_operation_identities,
+                ),
             )
             .order_by(cc.created_at, cc.id)
             .limit(1)
@@ -468,6 +497,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         now: Any,
         operation_domains: Sequence[str] | None = None,
         exclude_operation_domains: Sequence[str] | None = None,
+        operation_identities: Sequence[str] | None = None,
+        exclude_operation_identities: Sequence[str] | None = None,
     ) -> SystemOutbox | None:
         """在已持有 bucket transaction lock 时领取一条消息。"""
 
@@ -480,6 +511,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                 now=now,
                 operation_domains=operation_domains,
                 exclude_operation_domains=exclude_operation_domains,
+                operation_identities=operation_identities,
+                exclude_operation_identities=exclude_operation_identities,
             )
         )
         return result.scalar_one_or_none()
@@ -493,6 +526,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         now: Any,
         operation_domains: Sequence[str] | None = None,
         exclude_operation_domains: Sequence[str] | None = None,
+        operation_identities: Sequence[str] | None = None,
+        exclude_operation_identities: Sequence[str] | None = None,
         limit: int = 100,
     ) -> tuple[SystemOutbox, ...]:
         """锁定并终结单桶内耗尽预算的非 HTTP 过期 lease。"""
@@ -514,6 +549,11 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                     columns,
                     operation_domains=operation_domains,
                     exclude_operation_domains=exclude_operation_domains,
+                ),
+                *self._operation_identity_predicates(
+                    columns,
+                    operation_identities=operation_identities,
+                    exclude_operation_identities=exclude_operation_identities,
                 ),
             )
             .order_by(columns.lease_expires_at, columns.id)
@@ -1929,6 +1969,22 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         if exclude_operation_domains:
             domain_predicates.append(columns.operation_domain.not_in(tuple(exclude_operation_domains)))
         return domain_predicates
+
+    @staticmethod
+    def _operation_identity_predicates(
+        columns: Any,
+        *,
+        operation_identities: Sequence[str] | None,
+        exclude_operation_identities: Sequence[str] | None,
+    ) -> list[Any]:
+        """在既有 operation_identity 索引列上构造显式 include/exclude scope。"""
+
+        identity_predicates: list[Any] = []
+        if operation_identities:
+            identity_predicates.append(columns.operation_identity.in_(tuple(operation_identities)))
+        if exclude_operation_identities:
+            identity_predicates.append(columns.operation_identity.not_in(tuple(exclude_operation_identities)))
+        return identity_predicates
 
 
 system_outbox_repository = SystemOutboxRepository()

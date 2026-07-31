@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from socket import gethostname
@@ -23,6 +24,7 @@ from src.app.sys.external_http_evidence import (
     recover_external_http_evidence_failure_unknown,
 )
 from src.app.sys.external_http_transport import (
+    MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
     ExternalHttpProtocolResult,
     ExternalHttpSender,
     ExternalHttpTransportOutcome,
@@ -30,14 +32,28 @@ from src.app.sys.external_http_transport import (
     ExternalHttpTransportResult,
 )
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
-from src.app.sys.models.outbox import WMS_EFFECT_OPERATION_IDENTITIES
+from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
+from src.app.wms_integration.operation_registry import EFFECT_OPERATION_IDENTITIES
+from src.core.bounded_http_response import (
+    HttpChunkBudgetExceeded,
+    HttpCompressionRatioExceeded,
+    HttpContentEncodingFailure,
+    HttpDecodedBodyBudgetExceeded,
+    HttpResponseContractError,
+    HttpUnsupportedContentEncoding,
+    HttpWireBudgetExceeded,
+    decode_bounded_http_body,
+    read_bounded_wire_body,
+)
 from src.core.logger import logger
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
 if TYPE_CHECKING:
+    import httpx
+
     from src.app.sys.canonical_dispatch import ExternalHttpDispatchRequest
 
 DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
@@ -64,8 +80,9 @@ class SystemOutboxEngine:
                 |              +--clearly unsent--> RETRY_WAIT / FAILED
                 +--blocked by runtime/safety/device--> RETRY_WAIT
 
-    Engine 仅对明确 NOT_SENT 且安全的失败执行有界重试；已经送达或结果不确定时
-    不自动重放。下游仍以 dispatch_key/request_id 承担幂等防线。
+    Engine 默认仅对明确 NOT_SENT 且安全的失败执行有界重试；SYNC WMS 是静态例外，
+    对 authored 模糊结果或处理中响应按原 idempotency key、payload fingerprint 与
+    frozen binding 有界重放。其余已经送达或结果不确定的请求不自动重放。
     """
 
     MAX_RETRIES = 3
@@ -81,9 +98,12 @@ class SystemOutboxEngine:
         dispatch_attempt_service: Any | None = None,
         external_http_recovery_context_factory: Callable[[], Any] | None = None,
         effect_transport_bridge: Any | None = None,
+        effect_transport_resolver: Callable[..., Any] | None = None,
         dispatch_scheduler: Any | None = None,
         external_http_fault_hook: ExternalHttpDispatchFaultHook | None = None,
         task_queue_gateway: TaskQueueGateway = task_queue_gateway,
+        operation_identities: tuple[str, ...] | None = None,
+        exclude_operation_identities: tuple[str, ...] | None = None,
     ) -> None:
         self.outbox_repository = outbox_repository
         self.external_http_sender = external_http_sender or _send_external_http
@@ -93,7 +113,10 @@ class SystemOutboxEngine:
         self.dispatch_attempt_service = dispatch_attempt_service
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
         self.effect_transport_bridge = effect_transport_bridge
+        self.effect_transport_resolver = effect_transport_resolver
         self.task_queue_gateway = task_queue_gateway
+        self.operation_identities = operation_identities
+        self.exclude_operation_identities = exclude_operation_identities
         # 仅通过构造器显式注入；生产 singleton 默认禁用，不提供环境变量或全局开关。
         self.external_http_fault_hook = external_http_fault_hook
         self.dispatch_scheduler = dispatch_scheduler or FairDispatchScheduler(
@@ -123,6 +146,8 @@ class SystemOutboxEngine:
             db,
             limit=remaining_limit,
             exclude_operation_domains=(WORKLINE_OPERATION_DOMAIN, RACK_OPERATION_DOMAIN),
+            operation_identities=self.operation_identities,
+            exclude_operation_identities=self.exclude_operation_identities,
         )
         logger.info(
             "SystemOutbox claim metrics: "
@@ -183,6 +208,7 @@ class SystemOutboxEngine:
             # 发送边界必须先持久化并释放行锁，允许同步 callback 在 sender 返回前推进账本。
             await _commit_if_supported(db)
 
+            dispatch_started_at = time.perf_counter()
             try:
                 dispatch_result = await self.dispatch_single(db, outbox)
             except RuntimeError as exc:
@@ -214,6 +240,19 @@ class SystemOutboxEngine:
                 continue
             if isinstance(dispatch_result, ExternalHttpTransportResult):
                 try:
+                    attempt_no = int(getattr(dispatch_attempt, "attempt_no", None) or 1)
+                    occurred_at_ms = int(timezone.now_utc().timestamp() * 1000)
+                    transport_resolution = self._resolve_effect_transport_resolver()(
+                        dispatch_key=str(outbox.dispatch_key),
+                        attempt_no=attempt_no,
+                        result=dispatch_result,
+                        retry_exhausted=False,
+                        occurred_at_ms=occurred_at_ms,
+                        operation_identity=getattr(outbox, "operation_identity", None),
+                        payload_json=_payload_dict(getattr(outbox, "payload_json", None)),
+                        idempotency_key=getattr(outbox, "idempotency_key", None),
+                        payload_hash=getattr(outbox, "payload_hash", None),
+                    )
                     await self._emit_external_http_fault(
                         ExternalHttpDispatchFaultPoint.BEFORE_OUTBOX_EVIDENCE,
                         outbox,
@@ -224,6 +263,7 @@ class SystemOutboxEngine:
                         result=dispatch_result,
                         lease_owner_token=claim.lease_owner_token,
                         retry_budget=claim.policy.retry_budget,
+                        transport_action=transport_resolution.action,
                     )
                     await self._emit_external_http_fault(
                         ExternalHttpDispatchFaultPoint.AFTER_OUTBOX_EVIDENCE,
@@ -296,10 +336,19 @@ class SystemOutboxEngine:
                         dispatch_key=str(outbox.dispatch_key),
                         attempt_no=int(getattr(dispatch_attempt, "attempt_no", None) or 1),
                         operation_identity=getattr(outbox, "operation_identity", None),
+                        payload_json=_payload_dict(getattr(outbox, "payload_json", None)),
+                        idempotency_key=getattr(outbox, "idempotency_key", None),
+                        payload_hash=getattr(outbox, "payload_hash", None),
                     )
                     logger.exception(f"SystemOutbox {outbox_id} 证据落库失败，已隔离收口为 UNKNOWN")
                     result["failed"] += 1
                 else:
+                    self._emit_wms_effect_submit_observation(
+                        outbox=outbox,
+                        result=dispatch_result,
+                        attempt_no=attempt_no,
+                        latency_ms=(time.perf_counter() - dispatch_started_at) * 1_000,
+                    )
                     await self._emit_external_http_fault(
                         ExternalHttpDispatchFaultPoint.AFTER_EVIDENCE_COMMIT,
                         outbox,
@@ -308,7 +357,9 @@ class SystemOutboxEngine:
                         outbox=outbox,
                         result=dispatch_result,
                     )
-                    if dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
+                    if enum_value(transport_resolution.action) == "RETRY_SAME_REQUEST":
+                        result["failed"] += 1
+                    elif dispatch_result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
                         result["success"] += 1
                     else:
                         result["failed"] += 1
@@ -389,6 +440,13 @@ class SystemOutboxEngine:
             self.effect_transport_bridge = effect_transport_bridge
         return self.effect_transport_bridge
 
+    def _resolve_effect_transport_resolver(self) -> Callable[..., Any]:
+        if self.effect_transport_resolver is None:
+            from src.app.runtime.orchestration.effect_bridges import effect_transport_bridge
+
+            self.effect_transport_resolver = effect_transport_bridge.resolve_result
+        return self.effect_transport_resolver
+
     async def _record_effect_transport_result(
         self,
         db: Any,
@@ -409,6 +467,9 @@ class SystemOutboxEngine:
             retry_exhausted=enum_value(getattr(updated, "status", None)) == "FAILED",
             occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
             operation_identity=getattr(outbox, "operation_identity", None),
+            payload_json=_payload_dict(getattr(outbox, "payload_json", None)),
+            idempotency_key=getattr(outbox, "idempotency_key", None),
+            payload_hash=getattr(outbox, "payload_hash", None),
         )
 
     async def _finalize_external_http_result(
@@ -419,8 +480,17 @@ class SystemOutboxEngine:
         result: ExternalHttpTransportResult,
         lease_owner_token: str,
         retry_budget: int,
+        transport_action: Any | None = None,
     ) -> Any | None:
         error = result.error_message or result.error_code or result.outcome.value
+        if enum_value(transport_action) == "RETRY_SAME_REQUEST":
+            return await self.outbox_repository.mark_as_failed(
+                db,
+                outbox_id,
+                error,
+                retry_budget,
+                lease_owner_token=lease_owner_token,
+            )
         if result.outcome is ExternalHttpTransportOutcome.ACCEPTED:
             if result.protocol_result is ExternalHttpProtocolResult.REJECTED:
                 return await self.outbox_repository.mark_as_protocol_rejected(
@@ -479,6 +549,35 @@ class SystemOutboxEngine:
     ) -> None:
         await emit_external_http_dispatch_fault(self.external_http_fault_hook, point, outbox)
 
+    @staticmethod
+    def _emit_wms_effect_submit_observation(
+        *,
+        outbox: Any,
+        result: ExternalHttpTransportResult,
+        attempt_no: int,
+        latency_ms: float,
+    ) -> None:
+        """Outbox、Attempt 与 Reducer 证据提交后，best-effort 发射 submit 观测。"""
+
+        operation_identity = str(getattr(outbox, "operation_identity", ""))
+        if operation_identity not in EFFECT_OPERATION_IDENTITIES:
+            return
+        try:
+            from src.app.runtime.orchestration.wms_effect_observability import emit_wms_effect_observation
+
+            _ = emit_wms_effect_observation(
+                "wms_effect.submit",
+                operation_identity=operation_identity,
+                dispatch_key=getattr(outbox, "dispatch_key", None),
+                attributes={
+                    "outcome": result.outcome.value,
+                    "latency_ms": latency_ms,
+                    "retry_count": max(0, attempt_no - 1),
+                },
+            )
+        except Exception as exc:  # pragma: no cover - 观测失败不得改变证据事务结果
+            logger.warning(f"WMS EFFECT submit observability emission failed: {type(exc).__name__}")
+
     def _enqueue_wms_effect_status_if_needed(
         self,
         *,
@@ -487,7 +586,7 @@ class SystemOutboxEngine:
     ) -> None:
         """transport 证据提交后即时唤醒状态确认；失败由 Beat 扫描兜底。"""
 
-        if getattr(outbox, "operation_identity", None) not in WMS_EFFECT_OPERATION_IDENTITIES:
+        if getattr(outbox, "operation_identity", None) not in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES:
             return
         accepted_or_in_progress = result.outcome is ExternalHttpTransportOutcome.ACCEPTED and (
             result.protocol_result is ExternalHttpProtocolResult.ACCEPTED
@@ -506,23 +605,118 @@ class SystemOutboxEngine:
 
 async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须显式返回唯一分类
     request: ExternalHttpDispatchRequest,
+    *,
+    client: httpx.AsyncClient | None = None,
 ) -> ExternalHttpTransportResult:
+    import asyncio
     import json
     import re
+    from contextlib import asynccontextmanager
 
     import httpx
 
+    @asynccontextmanager
+    async def _client_scope() -> Any:
+        if client is not None:
+            yield client
+            return
+        async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=False) as owned_client:
+            yield owned_client
+
+    response: httpx.Response | None = None
     try:
-        async with httpx.AsyncClient(timeout=request.timeout_seconds, trust_env=False) as client:
-            response = await client.request(
+        async with _client_scope() as active_client:
+            request_payload = {"params": request.query_params} if request.method == "GET" else {"content": request.body}
+            outbound = active_client.build_request(
                 request.method,
                 request.endpoint.url,
-                content=request.body,
                 headers=request.headers,
+                **request_payload,
             )
-            status_code = int(response.status_code)
+            deadline = asyncio.get_running_loop().time() + request.timeout_seconds
+            try:
+                async with asyncio.timeout_at(deadline):
+                    response = await active_client.send(outbound, stream=True)
+                    status_code = int(response.status_code)
+                    wire_body, _ = await read_bounded_wire_body(
+                        response,
+                        max_chunk_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
+                        max_wire_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
+                        cumulative_wire_bytes=0,
+                    )
+            except HttpChunkBudgetExceeded:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_CHUNK_BUDGET_EXCEEDED",
+                    error_message="outbound HTTP response chunk exceeded the bounded transport budget",
+                )
+            except HttpWireBudgetExceeded:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_WIRE_BUDGET_EXCEEDED",
+                    error_message="outbound HTTP response exceeded the bounded wire budget",
+                )
+            except HttpResponseContractError:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_RESPONSE_METADATA_INVALID",
+                    error_message="outbound HTTP response metadata is invalid",
+                )
+            finally:
+                if response is not None:
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            await response.aclose()
+                    except TimeoutError:
+                        pass
+            try:
+                response_body = decode_bounded_http_body(
+                    wire_body,
+                    content_encoding=response.headers.get("content-encoding", "identity"),
+                    allowed_content_encodings=("identity", "gzip", "deflate"),
+                    max_decoded_bytes=MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
+                    max_compression_ratio=20.0,
+                )
+            except HttpUnsupportedContentEncoding:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_UNSUPPORTED_CONTENT_ENCODING",
+                    error_message="outbound HTTP response used an unsupported content encoding",
+                )
+            except HttpDecodedBodyBudgetExceeded:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_DECODED_BUDGET_EXCEEDED",
+                    error_message="decoded outbound HTTP response exceeded the bounded transport budget",
+                )
+            except HttpCompressionRatioExceeded:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_COMPRESSION_RATIO_EXCEEDED",
+                    error_message="outbound HTTP response exceeded the bounded compression ratio",
+                )
+            except HttpContentEncodingFailure:
+                return ExternalHttpTransportResult.ambiguous(
+                    phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                    protocol_result=ExternalHttpProtocolResult.UNKNOWN,
+                    http_status_code=status_code,
+                    error_code="WMS_CONTENT_ENCODING_INVALID",
+                    error_message="outbound HTTP response content encoding is invalid",
+                )
             protocol_error_code = _extract_protocol_error_code(
-                getattr(response, "content", None),
+                response_body,
                 json_module=json,
                 stable_code_pattern=re.compile(r"^[A-Z][A-Z0-9_]{0,119}$"),
             )
@@ -531,6 +725,7 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                     http_status_code=status_code,
                     protocol_result=ExternalHttpProtocolResult.ACCEPTED,
                     protocol_error_code=protocol_error_code,
+                    response_body=response_body,
                 )
             if 300 <= status_code < 500:
                 return ExternalHttpTransportResult.accepted(
@@ -539,6 +734,7 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                     protocol_error_code=protocol_error_code,
                     error_code="HTTP_REJECTED",
                     error_message=f"HTTP {status_code} explicitly rejected request",
+                    response_body=response_body,
                 )
             return ExternalHttpTransportResult.ambiguous(
                 phase=ExternalHttpTransportPhase.RESPONSE_RECEIVED,
@@ -547,7 +743,16 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
                 protocol_error_code=protocol_error_code,
                 error_code="HTTP_RESPONSE_AMBIGUOUS",
                 error_message=f"HTTP {status_code} has ambiguous delivery semantics",
+                response_body=response_body,
             )
+    except TimeoutError:
+        phase = ExternalHttpTransportPhase.SENDING if response is None else ExternalHttpTransportPhase.AWAITING_RESPONSE
+        logger.error("SystemOutbox 外部 HTTP 超过 operation 总时限，送达状态不确定")
+        return ExternalHttpTransportResult.ambiguous(
+            phase=phase,
+            error_code="TOTAL_DEADLINE_EXCEEDED",
+            error_message="outbound HTTP operation total deadline exceeded",
+        )
     except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
         logger.error(f"SystemOutbox 外部 HTTP 请求配置无效: {type(exc).__name__}")
         return ExternalHttpTransportResult.not_sent(
@@ -600,6 +805,16 @@ async def _send_external_http(  # noqa: PLR0911 - 每个 transport 阶段必须�
             error_code="UNCLASSIFIED_TRANSPORT_ERROR",
             error_message=f"unclassified outbound HTTP transport error: {type(exc).__name__}",
         )
+
+
+async def send_external_http_with_client(
+    request: ExternalHttpDispatchRequest,
+    *,
+    client: httpx.AsyncClient,
+) -> ExternalHttpTransportResult:
+    """使用 lane owner 的长期 client 复用统一 typed transport 映射。"""
+
+    return await _send_external_http(request, client=client)
 
 
 def _extract_protocol_error_code(
@@ -656,4 +871,10 @@ def _merge_dispatch_result(target: DispatchResult, source: DispatchResult) -> No
 system_outbox_engine = SystemOutboxEngine()
 system_outbox_dispatcher = system_outbox_engine
 
-__all__ = ["DispatchResult", "SystemOutboxEngine", "system_outbox_dispatcher", "system_outbox_engine"]
+__all__ = [
+    "DispatchResult",
+    "SystemOutboxEngine",
+    "send_external_http_with_client",
+    "system_outbox_dispatcher",
+    "system_outbox_engine",
+]

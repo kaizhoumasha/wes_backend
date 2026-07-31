@@ -36,6 +36,8 @@ RUN pip install --no-cache-dir \
 # 复制 mock 服务代码
 WORKDIR /app
 COPY tests/mock/ /app/tests/mock/
+# WMS Mock 只读取静态 registry 与 typed models，确保 validator 不维护第二份 operation schema。
+COPY src/app/wms_integration/ /app/src/app/wms_integration/
 # Mock 仅复用沙箱目录的纯数据桥接模块，不引入完整 WES 运行时依赖。
 COPY src/app/runtime/orchestration/sandbox_catalog_bridge.py /app/src/app/runtime/orchestration/sandbox_catalog_bridge.py
 # ECS Mock 仅复用 callback 域无外部依赖的事件分类常量与判定函数。

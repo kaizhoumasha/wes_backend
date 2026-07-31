@@ -35,7 +35,7 @@ runtime 域内表可使用 `execution_session_id` 作为 `ExecutionSession` FK�
 | resource | RuntimeLocationEvent | id, workline_id, object_type, object_key, location_scope, location_code, business_step, source, evidence_json, occurred_at |
 | material | material_units | id, pkg_code, material_identity_key, status, location_summary, current_session_correlation_id |
 | device | DeviceRuntime | id, device_code, role, last_event_at, last_result_at, diagnostic_state |
-| wms_integration | WmsFulfillmentRequest | id, fulfillment_kind, source, target, status, request_hash, idempotency_key, correlation_id |
+| wms_integration | operation-specific fulfillment evidence | operation_identity, idempotency_key, provider_reference, status, typed terminal result |
 | wms_integration | WmsCallbackEnvelope | id, callback_type, source_event_id, source_version, signature, timestamp, raw_body_hash, normalized_evidence_json |
 | reconciliation | ReconciliationRecord | id, conflict_type, detected_at, resolution_decision, owner_scope, allowed_next_effect_scope, resolved_at, evidence |
 
@@ -99,7 +99,9 @@ runtime 域内表可使用 `execution_session_id` 作为 `ExecutionSession` FK�
 - active 唯一约束保留业务语义：同一 `bin_code` 或 `placeholder_key` 在同一 WorkLine 下最多一个 active membership
 - 旧 `BinTransitMembership` / `BinTransitQueue` 允许删除、重命名或迁移到一次性迁移脚本，不进入目标态模型
 - 不定义系统级“7 队列”或“8 队列”常量；入口缓冲、扫码点、工位、出口路由、回收等待、NG 等队列只作为 manifest `pipeline_queues[]` 的配置实例存在。
-- 多扫码点、Gate3/Gate4、出口路由扫码、回收扫码和多料箱并发写入由 `ConveyorQueueMembershipWriter` 按 pinned manifest 解析；writer 只依赖 runtime event、device event、WMS/CTU callback 和 `ExecutionCorrelation`。
+- 多扫码点、Gate3/Gate4、出口路由扫码、回收扫码和多料箱并发写入由
+  `ConveyorQueueMembershipWriter` 按 pinned manifest 解析；writer 只依赖 runtime/device event、
+  operation-specific typed terminal result 和 `ExecutionCorrelation`。
 - 并发写入必须使用 PostgreSQL 行级锁、savepoint/upsert 或等价 CAS；唯一冲突只允许两种结果：幂等重读成功，或写入 `RECONCILING` evidence。禁止让唯一冲突回滚主 callback ACK。
 - placeholder resolve、terminal leave、queue switch 必须在同一事务内保证 active membership 收敛；跨事务重复事件依靠 `idempotency_key + request_hash` 识别。
 - 投影失败分三类记录：预期并发冲突、外部合同缺字段、内部编程错误。生产默认 best-effort + diagnostic；测试/预发可启用严格模式，对非预期异常 re-raise。
@@ -110,7 +112,8 @@ runtime 域内表可使用 `execution_session_id` 作为 `ExecutionSession` FK�
 
 - SCAN 事件只来自 ECS/device callback，进入 `RuntimeInbox` 后由 worker 解析 correlation，不允许 callback API 同步返回下一步动作。
 - 路由决策必须写 `RuntimeTimeline` 和 `RuntimeIntentLog`，再通过 `DeviceCommandPort` 下发滚筒线业务命令，例如进入工作位、进入 NG、进入退料线或等待换箱。
-- 队列 membership 的变化必须由 DeviceResult、WMS/CTU callback 或可信 RuntimeLocationEvent evidence 推进，不能由“已下发命令”直接假定成功。
+- 队列 membership 的变化必须由 DeviceResult、operation-specific typed terminal result 或可信
+  RuntimeLocationEvent evidence 推进，不能由“已下发命令”直接假定成功。
 - CTU/WMS 授权进入滚筒线的料箱必须先记录 `expected_authorized_bin_ids`；SCAN1 扫码结果写入 `actual_scanned_bin_ids`，只有命中授权集合时才允许 placeholder resolve 为 `bin_code` 并进入后续队列。未授权、重复、缺失或码制冲突的料箱进入 NG / RuntimeHold / RECONCILING，不得被静默接收。
 - NG、退料、换箱、等待下一料箱都必须是可观测状态；等待状态必须有 deadline 或解除条件，不能无限等待。
 - 行为契约测试必须覆盖 SCAN1 授权料箱入工作位/未授权进 NG、SCAN2 工作位到位、SCAN3 退料线/NG、重复扫码、乱序扫码、placeholder resolve 和 queue_code typo 不污染 active projection。
@@ -144,4 +147,3 @@ runtime 域内表可使用 `execution_session_id` 作为 `ExecutionSession` FK�
 **schema 选择准则**：系统未发布，默认采用 drop/recreate 或新表重建，避免为旧字段形态设计兼容层。只有需要保留 evidence、审计链、外部 request id 或人工对账依据时，才执行 data reshape；普通配置、enum、旧 API 路径和旧插件状态不做 rename 兼容。
 
 ---
-

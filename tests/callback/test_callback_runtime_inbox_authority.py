@@ -228,8 +228,8 @@ async def test_callback_runtime_inbox_writer_does_not_synthesize_unverified_corr
 
 
 @pytest.mark.asyncio
-async def test_callback_runtime_inbox_writer_external_uses_data_source_event_id_before_request_id() -> None:
-    """external writer 必须优先使用 payload.data.source_event_id，避免 request_id 塌缩幂等键。"""
+async def test_callback_runtime_inbox_writer_wms_event_uses_top_source_event_id_before_request_id() -> None:
+    """普通 WMS event 必须使用公开顶层 source_event_id，不能退回 HTTP request_id。"""
 
     from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
 
@@ -243,20 +243,25 @@ async def test_callback_runtime_inbox_writer_external_uses_data_source_event_id_
     writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
 
     payload = {
-        "callback_type": "WMS_RACK_TASK_RESULT",
         "source_system": "WMS",
+        "event_type": "WMS_INVENTORY_UPDATED",
+        "source_event_id": "biz-source-evt-001",
+        "source_version": "1",
+        "occurred_at": "2026-07-30T08:00:00Z",
         "request_id": "REQ-EXT-001",
-        "data": {"source_event_id": "biz-source-evt-001"},
+        "data": {"inventory_reference": "inventory-001"},
     }
-    _ = await writer.write_external_callback(
+    _ = await writer.write_wms_event_callback(
         SimpleNamespace(),
         payload=payload,
         request_id="req-external-001",
+        event_type="WMS_INVENTORY_UPDATED",
     )
-    _ = await writer.write_external_callback(
+    _ = await writer.write_wms_event_callback(
         SimpleNamespace(),
         payload={**payload, "request_id": "REQ-EXT-002"},
         request_id="req-external-002",
+        event_type="WMS_INVENTORY_UPDATED",
     )
 
     assert [call["source_event_id"] for call in accepted_calls] == [
@@ -305,6 +310,29 @@ async def test_callback_runtime_inbox_writer_external_fallback_source_event_id_i
 
 
 @pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_rejects_removed_wms_terminal_type_before_persist() -> None:
+    """通用 writer 自身必须拒绝旧 WMS 终态，不能依赖上游 API 校验。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    runtime_inbox_service = SimpleNamespace(accept_received=AsyncMock())
+    writer = CallbackRuntimeInboxWriter(service=runtime_inbox_service)
+
+    with pytest.raises(ValueError, match="callback_type is not allowed"):
+        await writer.write_external_callback(
+            SimpleNamespace(),
+            payload={
+                "callback_type": "WMS_RACK_TASK_RESULT",
+                "source_system": "WMS",
+                "source_event_id": "legacy-wms-terminal-001",
+            },
+            request_id="req-legacy-wms-terminal-001",
+        )
+
+    runtime_inbox_service.accept_received.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_callback_runtime_inbox_writer_external_record_is_canonical_processing_evidence() -> None:
     """新 external RuntimeInbox record 必须携带 processor 所需 payload 与 trace 证据。"""
 
@@ -329,9 +357,15 @@ async def test_callback_runtime_inbox_writer_external_record_is_canonical_proces
 
     writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
     payload = {
-        "callback_type": "WMS_RACK_TASK_RESULT",
+        "callback_type": "WMS_EFFECT_STATUS_HINT",
+        "source_system": "WMS",
         "source_event_id": "wms-event-001",
-        "dispatch_key": "rack:001",
+        "occurred_at": "2026-07-30T08:00:00Z",
+        "data": {
+            "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+            "idempotency_key": "idem-rack-001",
+            "dispatch_key": "rack:001",
+        },
     }
 
     result = await writer.write_external_callback(
@@ -718,7 +752,7 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
 
 @pytest.mark.asyncio
 async def test_process_external_uses_runtime_inbox_as_authority() -> None:
-    """external callback accepted 后仅以 RuntimeInbox record 作为证据并记录 lifecycle。"""
+    """external callback accepted 后仅以 RuntimeInbox record 作为证据。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
@@ -731,10 +765,7 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
             writer_kwargs.update(kwargs)
             return _runtime_accept_result(created=True, record_id=301)
 
-    rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
-        rack_task_service=rack_task_service,
-        handling_operation_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
         runtime_inbox_writer=WriterStub(),
     )
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
@@ -760,8 +791,31 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
     assert call_order == ["runtime"]
     assert writer_kwargs["payload"]["callback_type"] == "AGV_TASK_RESULT"
     assert writer_kwargs["trace_id"] == "trace-ext-001"
-    rack_task_service.record_callback_from_external_http.assert_awaited_once()
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_process_external_rejects_allowed_argument_with_removed_payload_type() -> None:
+    """Service 必须校验 payload 自身类型，禁止“合法参数 + 旧 payload”绕过。"""
+
+    from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+    writer = SimpleNamespace(write_external_callback=AsyncMock())
+    service = CallbackOrchestrationService(runtime_inbox_writer=writer)
+
+    with pytest.raises(ValueError, match="callback_type does not match payload"):
+        await service.process_external(
+            SimpleNamespace(),  # type: ignore[arg-type]
+            callback_type="WMS_INVENTORY_UPDATED",
+            payload={
+                "callback_type": "WMS_RACK_TASK_RESULT",
+                "source_system": "WMS",
+                "trace_id": "trace-bypass-001",
+            },
+            request_id="req-bypass-001",
+        )
+
+    writer.write_external_callback.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -803,20 +857,17 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
     writer = SimpleNamespace(write_external_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
-    rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
-    handling_operation_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
-        rack_task_service=rack_task_service,
-        handling_operation_service=handling_operation_service,
         runtime_inbox_writer=writer,
     )
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
 
     outcome = await service.process_external(
         SimpleNamespace(),  # type: ignore[arg-type]
-        callback_type="CTU_BIN_MOVE_COMPLETED",
+        callback_type="AGV_TASK_RESULT",
         payload={
-            "callback_type": "CTU_BIN_MOVE_COMPLETED",
+            "callback_type": "AGV_TASK_RESULT",
+            "source_system": "AGV",
             "trace_id": "trace-ext-dup",
             "request_id": "REQ-EXT-DUP-001",
             "command_code": "AGV-REQ-DUP-001",
@@ -830,6 +881,4 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
 
     assert outcome.is_duplicate is True
     writer.write_external_callback.assert_awaited_once()
-    rack_task_service.record_callback_from_external_http.assert_not_awaited()
-    handling_operation_service.record_callback_from_external_http.assert_not_awaited()
     service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]

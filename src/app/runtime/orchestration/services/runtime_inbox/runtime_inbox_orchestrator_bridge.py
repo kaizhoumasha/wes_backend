@@ -97,6 +97,10 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
+from src.app.runtime.workline_plugins.pre_attempt import (
+    PreAttemptStatus,
+    resolve_plugin_pre_attempt_facts,
+)
 from src.app.runtime.workline_plugins.registry import parse_workline_six_in_one
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -106,7 +110,7 @@ from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.utils import payload_dict
-from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.utils.value_normalization import (
     optional_enum_str,
     optional_int,
@@ -663,25 +667,10 @@ def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
     target["resource_wait"] += source.get("resource_wait", 0)
 
 
-def _plugin_write_set_requires_outbox_dispatch(write_set: AttemptWriteSet) -> bool:
-    """插件声明的 OUTBOX_ASYNC capability 提交后必须即时触发派发。"""
-
-    from src.app.runtime.system_capabilities.definition import EffectCompletionMode
-    from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
-
-    return any(
-        intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY
-        and (definition := SYSTEM_CAPABILITY_INDEX.get((intent.capability_key or "", intent.contract_version or "")))
-        is not None
-        and definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC
-        for intent in write_set.intents
-    )
-
-
 def _runtime_profile_from_pinned_binding(binding: Any, *, expected_identity: str) -> Any:
     """从 immutable binding snapshot 重建本 attempt 的最小 provider profile。"""
 
-    from src.app.contracts.external_contract_profile import ExternalContractProfile
+    from src.app.contracts.external_contract_profile import parse_external_contract_profile
 
     raw_config = getattr(binding, "typed_config_json", None)
     configured_identity = optional_str(raw_config.get("provider_profile")) if isinstance(raw_config, dict) else None
@@ -695,7 +684,7 @@ def _runtime_profile_from_pinned_binding(binding: Any, *, expected_identity: str
         matched_profiles = [
             profile
             for raw_profile in raw_snapshots
-            if (profile := ExternalContractProfile.model_validate(raw_profile)).identity == expected_identity
+            if (profile := parse_external_contract_profile(raw_profile)).identity == expected_identity
         ]
     except ValidationError as exc:
         raise ValueError("binding provider profile snapshot is invalid") from exc
@@ -725,6 +714,7 @@ class RuntimeInboxProcessorBridge:
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
         material_unit_repository: MaterialUnitRepository | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
+        wms_inbound_handler: Any | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._inbox_service = inbox_service or runtime_inbox_service
@@ -739,12 +729,58 @@ class RuntimeInboxProcessorBridge:
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
         self._material_unit_repository = material_unit_repository or default_material_unit_repository
         self._queue_gateway = queue_gateway
+        self._wms_inbound_handler = wms_inbound_handler
 
-    def _enqueue_outbox_dispatch(self) -> None:
+    def _resolve_wms_inbound_handler(self) -> Any:
+        if self._wms_inbound_handler is None:
+            from src.app.runtime.orchestration.services.inbox.wms_runtime_inbox_handler import (
+                WmsRuntimeInboxHandler,
+            )
+
+            self._wms_inbound_handler = WmsRuntimeInboxHandler()
+        return self._wms_inbound_handler
+
+    async def _process_wms_inbound(
+        self,
+        db: AsyncSession,
+        *,
+        inbox: Any,
+        inbox_pk: int,
+        processor_token: str,
+        payload: dict[str, Any],
+        event_type: str,
+    ) -> ProcessResult | None:
+        """消费普通 WMS event 或 status hint，不进入设备/工作线编排。"""
+
+        handled = await self._resolve_wms_inbound_handler().handle(
+            db,
+            provider_code=optional_str(getattr(inbox, "provider_code", None)),
+            event_type=event_type,
+            payload=payload,
+        )
+        if not handled:
+            return None
+
+        _require_fenced_update(
+            await self.inbox_service.mark_processed(
+                db,
+                inbox_id=inbox_pk,
+                lease_token=processor_token,
+            ),
+            action="mark_processed",
+            inbox_id=inbox_pk,
+        )
+        await db.commit()
+        result = _empty_result()
+        result["success"] += 1
+        result["processed"] += 1
+        return result
+
+    def _enqueue_outbox_dispatch(self, targets: frozenset[OutboxDispatchTarget]) -> None:
         """提交后的即时触发失败不撤销业务事务，Beat 继续承担兜底。"""
 
         try:
-            self._queue_gateway.enqueue_outbox(limit=50)
+            self._queue_gateway.enqueue_outbox(targets=targets, limit=50)
         except Exception as exc:
             logger.warning(f"插件 attempt 已提交，但 Outbox 即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
 
@@ -796,12 +832,12 @@ class RuntimeInboxProcessorBridge:
         if admission_profile is None and pinned_profile_identity is not None:
             admission_profile = pinned_profile_identity
         elif admission_profile is None:
-            from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_MATERIAL_FLOW_CONTRACT_VERSION
+            from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSION
             from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
             from src.core.conf import settings
 
             environment = WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV)
-            admission_profile = f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.{environment}"
+            admission_profile = f"wms.{WMS_PROVIDER_CONTRACT_VERSION}.{environment}"
         gateway = SystemCapabilityGateway(
             attempt_id=processor_token,
             definitions=resolved_definitions,
@@ -1205,6 +1241,16 @@ class RuntimeInboxProcessorBridge:
             raise ValueError("RuntimeInbox event_type is required")
 
         result = _empty_result()
+        wms_result = await self._process_wms_inbound(
+            db,
+            inbox=inbox,
+            inbox_pk=inbox_pk,
+            processor_token=processor_token,
+            payload=payload,
+            event_type=resolved_event_type,
+        )
+        if wms_result is not None:
+            return wms_result
         if _is_lifecycle_only_external_callback(inbox, payload):
             # ingress 已在同一事务完成 lifecycle 副作用；processor 只负责
             # 以 lease fencing 收束 RuntimeInbox 终态，不重复加载会话或执行安全门禁。
@@ -1532,6 +1578,31 @@ class RuntimeInboxProcessorBridge:
             workline=workline,
             snapshot=snapshot,
         )
+        pre_attempt_resolution = await resolve_plugin_pre_attempt_facts(
+            db,
+            session=session,
+            workline=workline,
+            dispatch_request=dispatch_request,
+            services=services,
+        )
+        if pre_attempt_resolution.status is PreAttemptStatus.FACTS_CHANGED:
+            # 插件前置事实可能在同一 Stage 1 事务推进 Session 乐观版本；
+            # 必须重新冻结完整 snapshot 与 facts，避免 Stage 3 把本 attempt
+            # 自己刚完成的事实变更误判为并发漂移。
+            await db.flush()
+            snapshot = _plugin_attempt_snapshot(
+                session,
+                processor_token=processor_token,
+                material_unit_version=material_fact_version,
+                devices_by_role=devices_by_role,
+            )
+            dispatch_request = await self._build_generated_dispatch_request(
+                db,
+                inbox=inbox,
+                session=session,
+                workline=workline,
+                snapshot=snapshot,
+            )
         await self._pin_attempt_runtime_to_dispatch_snapshot(
             db,
             runtime=attempt_runtime,
@@ -1563,7 +1634,17 @@ class RuntimeInboxProcessorBridge:
 
         # Stage 2 不接收 db/session/repository。Recorded replay 直接解码，
         # 因此不会调用 runner 或 Gateway handler。
-        if replay_resolution is None:
+        pre_attempt_blocked = pre_attempt_resolution.status is PreAttemptStatus.BLOCKED
+        if pre_attempt_blocked:
+            write_set = AttemptWriteSet(
+                evidence=(),
+                next_state=context.plugin_state,
+                intents=(),
+                outcome_code="HOLD",
+                hold_reason=pre_attempt_resolution.reason_code,
+                preserve_plugin_state=True,
+            )
+        elif replay_resolution is None:
             write_set = await self._generated_attempt_runner.run(context)
         else:
             write_set = _write_set_from_recorded_replay(replay_resolution, fallback_state=context.plugin_state)
@@ -1571,11 +1652,11 @@ class RuntimeInboxProcessorBridge:
             write_set,
             limits=self._plugin_write_set_limits,
             fallback_state=context.plugin_state,
-            allow_state_preservation=replay_resolution is not None,
+            allow_state_preservation=replay_resolution is not None or pre_attempt_blocked,
         )
 
         # Stage 3 在新短事务内锁权威行、重校验并原子写回。
-        disposition = await self._writeback_service.commit_plugin_attempt(
+        writeback_result = await self._writeback_service.commit_plugin_attempt(
             db,
             expected_snapshot=snapshot,
             inbox_id=inbox_id,
@@ -1586,7 +1667,10 @@ class RuntimeInboxProcessorBridge:
             workline=workline,
             devices_by_role=devices_by_role,
             trusted_state_preservation=True,
+            effect_port_resolver=attempt_runtime.context.get_effect_port,
+            allow_new_claim=getattr(services, "allow_new_system_capability_claim", None),
         )
+        disposition = writeback_result.disposition
         if disposition in {WriteDisposition.COMMITTED, WriteDisposition.TERMINAL_FAILURE}:
             from src.app.sys.services.event_stream_service import (
                 WORKLINE_RUNTIME_CHANGED_EVENT,
@@ -1624,8 +1708,8 @@ class RuntimeInboxProcessorBridge:
             result["failed"] = 1
         else:
             result["success"] = 1
-            if _plugin_write_set_requires_outbox_dispatch(write_set):
-                self._enqueue_outbox_dispatch()
+            if writeback_result.outbox_dispatch_targets:
+                self._enqueue_outbox_dispatch(writeback_result.outbox_dispatch_targets)
         return result
 
     async def _load_recorded_replay(
@@ -1932,17 +2016,27 @@ def _configure_attempt_runtime_ports(
     *,
     services: Any,
 ) -> None:
-    """把当前 Inbox 的 typed operation factory 注册为 attempt-scoped QUERY Port。"""
+    """把当前 Inbox 的 typed QUERY 与 EFFECT Port 注册为 attempt-scoped runtime。"""
 
-    factory_builder = getattr(services, "inventory_query_port_factory", None)
-    if factory_builder is None:
-        return
-    from src.app.wms_integration.ports.query_inventory_operation import InventoryQueryOperationPort
+    query_port = getattr(services, "wms_query_execution_port", None)
+    if query_port is not None:
+        from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
 
-    attempt_runtime.port_registry.register(
-        InventoryQueryOperationPort,
-        factory_builder(),
-    )
+        attempt_runtime.port_registry.register(
+            WmsQueryExecutionPort,
+            lambda: query_port,
+            cache_instance=True,
+        )
+
+    effect_port = getattr(services, "wms_effect_preparation_port", None)
+    if effect_port is not None:
+        from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
+
+        attempt_runtime.port_registry.register(
+            WmsEffectPreparationPort,
+            lambda: effect_port,
+            cache_instance=True,
+        )
 
 
 def _plugin_attempt_snapshot(

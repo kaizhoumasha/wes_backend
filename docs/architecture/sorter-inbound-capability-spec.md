@@ -21,7 +21,7 @@
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
 | Callback admission 已关闭 | 所有 WMS/ECS callback 只描述目标态 normalizer admission，不假设旧 callback 可扩展 |
-| WorkLine runtime projection cleanup 已完成 | 入库流程状态归 ExecutionWorkItem、WmsFulfillmentRequest、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
+| WorkLine runtime projection cleanup 已完成 | 入库流程状态归 ExecutionWorkItem、operation-specific fulfillment ACK/status/terminal result、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
 | Runtime production closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 粗分机正常流
@@ -58,7 +58,7 @@
 目标态流程：
 
 1. STATION A/B 与 FIVE STATION admission。
-2. WMS/CTU 批量投箱入线与逐箱 callback。
+2. 通过 WMS E12 提交 CTU 批量投箱履约；逐箱物理推进只消费 ECS `DEVICE_EVENT`。
 3. SCAN1 授权料箱 resolve；未授权或冲突进入 NG / RuntimeHold / RECONCILING。
 4. SCAN2/SCAN3 路由到工作位、退料线或 NG。
 5. 北向机械臂取料到扫码平台。
@@ -67,7 +67,8 @@
 8. 南向机械臂投料。
 9. 先落本地位置事实与格位占用，再通知 WMS PKG 绑定或库存事务。
 
-默认 `source_arm_prefetch_capacity=0`。未显式声明预取能力时，北向机械臂必须等待扫码平台 FREE 后才能取下一件。
+北向下一次取料只由上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）解锁。扫码平台本地状态、
+南向投放 `COMMAND_RESULT`、UI 预测和轮询结果均不得成为该取料准入条件。
 
 ## 6. CellReservation 消费合同
 
@@ -110,13 +111,13 @@ CellReservation 表示目标格位预约，不表示物理完成。它是 materi
 | WorklineActiveObjects | 通过 MaterialLocationQuery 间接消费 | active object 展示预约 deadline 和状态 |
 | SMT/NG/WMS Reconciliation | 预约冲突 → RECONCILING | WMS reject 或 drift 触发对账，不静默覆盖预约 |
 
-## 7. CTU 父子 work item 查询视图
+## 7. CTU 批次状态与成员 evidence 查询视图
 
-CTU 批量履约必须保留父请求和逐对象子 work item。查询视图展示：
+E12/E13 批量履约只保留批次请求、冻结 ACK、status 与 typed terminal result。查询视图展示：
 
-- 子项缺失、重复、乱序和未 resolve placeholder。
-- 部分失败与批次收敛状态。
-- 父请求成功但子项未收敛时，不得显示业务完成。
+- ACK 冻结成员与 terminal `items[]` 的完整性、顺序和最终位置。
+- `SUCCESS / PARTIAL_FAILURE / FAILED_AFTER_EXECUTION` 批次结论及逐成员最终 outcome。
+- 成员缺失、重复、乱序或投影冲突时，不得显示业务完成，必须展示 `RECONCILING` 或 `RuntimeHold`。
 
 ## 8. 行为契约测试
 
@@ -126,8 +127,8 @@ CTU 批量履约必须保留父请求和逐对象子 work item。查询视图展
 - 已满箱交换入库的物料不得进入逐件分拣候选集。
 - SCAN1 未授权料箱进入 NG / RuntimeHold / RECONCILING。
 - 物料 work item 与料箱 work item join 条件缺一不可。
-- source arm prefetch 未声明时容量为 0。
-- CTU 父请求不能掩盖子项缺失或部分失败。
+- 北向下一次取料必须等待上一物料的 `southbound_pick_acknowledged`（南向 `PICK ACK`）。
+- CTU 批次结论不能掩盖 terminal 成员缺失或部分失败。
 
 ### 8.1 characterization-to-target contract mapping
 
@@ -136,7 +137,7 @@ Material-flow runtime capability 接入前，旧业务 characterization 只能�
 | characterization | 旧能力语义 | 目标合同 |
 | --- | --- | --- |
 | BC-05 | 粗分机正常入库 | 本地投格先写 `RuntimeLocationEvent`，格位预约复用 `WorklineBinCellReservation`；PKG 绑定只走 `wms.fulfillment.notify_pkg_binding@v1`，库存事务只走独立 typed operation |
-| BC-06 | 满箱交换前置分流 | `FULL_BOX_EXCHANGE` 与 `CHANGE_RACK_FACE` 分别进入 `WmsFulfillmentPort`，父子 `ExecutionWorkItem` 保留批次和逐对象收敛状态 |
+| BC-06 | 满箱交换前置分流 | `FULL_BOX_EXCHANGE` 与 `CHANGE_RACK_FACE` 分别进入对应 operation-specific fulfillment contract，父子 `ExecutionWorkItem` 保留批次和逐对象收敛状态 |
 | BC-07 | 分拣机入库 | SCAN 授权、NG/RuntimeHold、CellReservation、`RuntimeLocationEvent` 和 WMS 同步按对象级合同串联；未覆盖语义保留 characterization tests，不进入 legacy cleanup |
 
 ## 9. 实施前置条件
@@ -163,25 +164,25 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 入口扫码 → 条码决策 evidence | `ExecutionWorkItem` (object_type=material, step_status=PENDING→IN_PROGRESS) | ✅ |
 | `PICK_AND_PUT` 持久化与执行 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
 | `PICK_AND_PUT` 成功结果 → 测量 evidence | `RuntimeInbox` → 当前 `ExecutionWorkItem` / Session | ✅ |
-| 有效测量 → WMS 准入 QUERY | `WmsDocumentPort.get_grn()` (query-only, 不写 IntentLog) | ✅ |
+| 有效测量 → WMS 准入 QUERY | `wms.document.validate_rough_sorter_admission@v1`（query-only，不写 IntentLog） | ✅ |
 | 准入结果 → `MOVE_FORWARD` / `MOVE_TO_NG` | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
 | `MOVE_FORWARD` 推进到出料口 | `ConveyorQueueMembership` (queue_code 按 manifest) | ✅ |
 | 出料格位分配 → CellReservation | `CellReservation` (♻️ 复用 `WorklineBinCellReservation`，目标语义映射见 `cell-reservation-spec.md` §3) | ♻️ |
-| WMS 补空箱货架 | `WmsFulfillmentPort.request_rack_supply()` → `RuntimeIntentLog` | ✅ |
+| WMS 补空箱货架 | `wms.fulfillment.request_rack_supply@v1` → `RuntimeIntentLog` | ✅ |
 | 出料机械臂投格 → 本地位置事实 | `RuntimeLocationEvent` (🆕 目标态位置事实表；实现前需新增，或明确由 `ObjectTransitionEvent` 演进承载并补迁移合同) → `BinCellOccupancy` / `MaterialUnit.location_summary` | 🆕 |
 | WMS PKG 绑定通知 | `RuntimeIntentLog` → `wms.fulfillment.notify_pkg_binding@v1` | ✅ |
-| WMS 库存事务 | `RuntimeIntentLog` → `WmsInventoryTransactionPort` | ✅ |
+| WMS 库存事务 | `RuntimeIntentLog` → inventory EFFECT Definition → `WmsEffectPreparationPort` | ✅ |
 | WMS 失败 → WMS_SYNC_PENDING / RECONCILING | `RuntimeHold` + `ReconciliationManager` | ✅ |
 
 ### 10.2 满箱交换前置分流
 
 | 步骤 | Runtime 实体 | 状态 |
 |------|-------------|------|
-| 粗分机移出单层货架 | `WmsFulfillmentPort.request_rack_transport()` → `RuntimeIntentLog` | ✅ |
-| 满箱需求判断 → FULL_BOX_EXCHANGE | `WmsFulfillmentPort.full_box_exchange()` → `RuntimeIntentLog` | ✅ |
+| 粗分机移出单层货架 | `wms.fulfillment.request_rack_transport@v1` → `RuntimeIntentLog` | ✅ |
+| 满箱需求判断 → FULL_BOX_EXCHANGE | `wms.fulfillment.full_box_exchange@v1` → `RuntimeIntentLog` | ✅ |
 | rack_code + rack_side 分批 | `ExecutionWorkItem` (parent_correlation_id 批次追溯) | ✅ |
-| CHANGE_RACK_FACE 独立履约 | `WmsFulfillmentPort.change_rack_face()` → `RuntimeIntentLog` | ✅ |
-| 满箱物料箱级入库 + WMS 同步 | `RuntimeIntentLog` → `WmsInventoryTransactionPort` | ✅ |
+| CHANGE_RACK_FACE 独立履约 | `wms.fulfillment.change_rack_face@v1` → `RuntimeIntentLog` | ✅ |
+| 满箱物料箱级入库 + WMS 同步 | `RuntimeIntentLog` → inventory EFFECT Definition → `WmsEffectPreparationPort` | ✅ |
 | 剩余未满箱物料 → 分拣机逐件 | `ExecutionWorkItem` (新 work item, parent 指向满箱批次) | ✅ |
 
 ### 10.3 分拣机入库正常流
@@ -189,7 +190,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 步骤 | Runtime 实体 | 状态 |
 |------|-------------|------|
 | STATION A/B + FIVE STATION admission | `ExecutionSession` (start admission) | ✅ |
-| WMS/CTU 批量投箱入线 + 逐箱 callback | `WmsFulfillmentPort` → `RuntimeInbox` (ACK-before-processing) | ✅ |
+| WMS E12 批量投箱履约 + ECS 逐箱物理事件 | `wms.fulfillment.move_bins_to_conveyor_entry@v1` + `RuntimeInbox` `DEVICE_EVENT` | ✅ |
 | SCAN1 授权料箱 resolve / 未授权 NG | `ConveyorQueueMembership` (placeholder→bin_code resolve) + `RuntimeHold` | ✅ |
 | SCAN2/SCAN3 路由到工作位/退料线/NG | `RuntimeIntentLog` → `DeviceCommandPort` (输送线路由命令) | ✅ |
 | 北向机械臂取料到扫码平台 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
@@ -198,7 +199,7 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 | 南向机械臂投料 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
 | 本地位置事实 + 格位占用 | `RuntimeLocationEvent` (🆕 目标态位置事实表；实现前需新增，或明确由 `ObjectTransitionEvent` 演进承载并补迁移合同) → `BinCellOccupancy` | 🆕 |
 | WMS PKG 绑定通知 | `RuntimeIntentLog` → `wms.fulfillment.notify_pkg_binding@v1` | ✅ |
-| WMS 库存事务 | `RuntimeIntentLog` → `WmsInventoryTransactionPort` | ✅ |
+| WMS 库存事务 | `RuntimeIntentLog` → inventory EFFECT Definition → `WmsEffectPreparationPort` | ✅ |
 
 ## 11. 实时决策延迟预算
 

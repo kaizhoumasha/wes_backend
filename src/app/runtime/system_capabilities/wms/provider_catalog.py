@@ -2,123 +2,83 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.orchestration.operation_observability import require_northbound_operation_slo
 from src.app.runtime.system_capabilities.wms.contracts import (
     ExternalContractProfile,
     InboundCallbackContract,
     OutboundAuthProfile,
     OutboundAuthScheme,
     WmsEffectStatusHint,
-    WmsOperationContract,
     WmsProviderOperationBinding,
-    WmsProviderProfile,
 )
-from src.app.runtime.system_capabilities.wms.fulfillment.full_box_exchange.contract import (
-    CONTRACT as FULL_BOX_EXCHANGE_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.fulfillment.notify_pkg_binding.contract import (
-    CONTRACT as NOTIFY_PACKAGE_BINDING_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.inventory.confirm_inbound.contract import (
-    CONTRACT as CONFIRM_INBOUND_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.inventory.query_inventory.contract import (
-    CONTRACT as QUERY_INVENTORY_CONTRACT,
-)
-from src.app.runtime.system_capabilities.wms.scheduling_identity import WMS_MATERIAL_FLOW_CONTRACT_VERSION
 from src.app.sys.external_http_binding import (
     ExternalHttpBindingDefinition,
     ExternalHttpProviderProfileDefinition,
     FrozenExternalHttpBinding,
     freeze_external_http_binding,
 )
-from src.app.sys.external_http_credentials import (
-    EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE,
-    CredentialResolutionError,
-    build_environment_external_http_credential_provider,
-)
-from src.app.sys.services.endpoint_registry import ENDPOINT_SETTING_BY_TARGET_CODE, EndpointRegistry
-from src.app.wms_integration.transport_url import validate_wms_base_url
+from src.app.wms_integration.operation_registry import WMS_OPERATIONS
+from src.app.wms_integration.provider_manifest import require_full_factory_registry
 from src.core.conf import settings
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsOperationEndpoint, CompiledWmsProviderProfile
+    from src.app.wms_integration.provider_startup import WmsProviderStartupConfiguration
 
 WMS_EFFECT_STATUS_HINT_CALLBACK = InboundCallbackContract(
     callback_type="WMS_EFFECT_STATUS_HINT",
     payload_model=WmsEffectStatusHint,
 )
+WMS_TYPED_EFFECT_CALLBACK_TYPES = frozenset({WMS_EFFECT_STATUS_HINT_CALLBACK.callback_type})
 
 
-def _binding(
-    profile: ExternalContractProfile,
-    outbound_auth: OutboundAuthProfile,
-    operation: WmsOperationContract,
-) -> WmsProviderOperationBinding:
-    _ = require_northbound_operation_slo(operation.identity)
-    return WmsProviderOperationBinding(
-        profile=profile,
-        operation=operation,
-        outbound_auth=outbound_auth,
-    )
+@dataclass(frozen=True, slots=True)
+class WmsProviderCatalog:
+    """由一个 compiled profile 派生的 typed operation catalog。"""
+
+    compiled_profile: CompiledWmsProviderProfile
+    identity: ExternalContractProfile
+    bindings: tuple[WmsProviderOperationBinding, ...]
+    callbacks: tuple[InboundCallbackContract, ...]
+
+    @property
+    def profile_identity(self) -> str:
+        return self.compiled_profile.profile.profile.identity
+
+    @property
+    def profile_digest(self) -> str:
+        return self.compiled_profile.profile_digest
 
 
-def _deployment_provider_environment(app_env: object) -> Literal["sandbox", "production"]:
-    """把部署环境收敛为一个 Provider profile；不提供请求期选择能力。"""
+def build_wms_provider_catalog(compiled_profile: CompiledWmsProviderProfile) -> WmsProviderCatalog:
+    """只从显式 compiled profile 派生 catalog，不读取 Settings 或模块级默认。"""
 
-    if app_env in {"dev", "test"}:
-        return "sandbox"
-    if app_env == "prod":
-        return "production"
-    raise ValueError("APP_ENV must be dev, test or prod")
-
-
-def build_active_wms_provider_profile(settings_source: Any) -> WmsProviderProfile:
-    """仅从当前部署 Settings 构建一个 active WMS Provider profile。"""
-
-    environment = _deployment_provider_environment(settings_source.APP_ENV)
-    credential_version = settings_source.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION
-    if credential_version not in {"v1", "v2"}:
-        raise ValueError("WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION must be v1 or v2")
+    profile_settings = compiled_profile.profile
     identity = ExternalContractProfile(
-        provider_code="WMS",
-        contract_version=WMS_MATERIAL_FLOW_CONTRACT_VERSION,
-        environment=environment,
+        provider_code=profile_settings.profile.provider_code,
+        contract_version=profile_settings.profile.contract_version,
     )
     outbound_auth = OutboundAuthProfile(
-        scheme=OutboundAuthScheme.HMAC_SHA256,
-        credential_reference=f"secret://wms/material-flow-{environment}-hmac@{credential_version}",
+        scheme=OutboundAuthScheme(profile_settings.outbound_auth.scheme.value),
+        credential_reference=profile_settings.outbound_auth.credential_reference,
     )
-    return WmsProviderProfile(
+    bindings = tuple(
+        WmsProviderOperationBinding(
+            profile=identity,
+            operation=operation,
+            outbound_auth=outbound_auth,
+        )
+        for operation in WMS_OPERATIONS
+    )
+    require_full_factory_registry(tuple(binding.operation.identity for binding in bindings))
+    return WmsProviderCatalog(
+        compiled_profile=compiled_profile,
         identity=identity,
-        bindings=tuple(
-            _binding(identity, outbound_auth, operation)
-            for operation in (
-                QUERY_INVENTORY_CONTRACT,
-                CONFIRM_INBOUND_CONTRACT,
-                NOTIFY_PACKAGE_BINDING_CONTRACT,
-                FULL_BOX_EXCHANGE_CONTRACT,
-            )
-        ),
+        bindings=bindings,
         callbacks=(WMS_EFFECT_STATUS_HINT_CALLBACK,),
     )
-
-
-# 进程 composition root 只构建一次；endpoint/credential rotation 由冻结 binding revision 表达，
-# 不创建可路由的 Provider catalog。
-WMS_PROVIDER_PROFILE = build_active_wms_provider_profile(settings)
-WMS_NORTHBOUND_IDENTITY = WMS_PROVIDER_PROFILE.identity
-WMS_NORTHBOUND_AUTH = WMS_PROVIDER_PROFILE.bindings[0].outbound_auth
-WMS_TYPED_EFFECT_CALLBACK_TYPES = frozenset(callback.callback_type for callback in WMS_PROVIDER_PROFILE.callbacks)
-
-
-def wms_sync_base_url(*, settings_source: Any | None = None) -> str:
-    """返回当前部署 typed WMS operation 共用的唯一同步服务根地址。"""
-
-    active_settings = settings if settings_source is None else settings_source
-    base_url = active_settings.WMS_SYNC_BASE_URL.strip().rstrip("/")
-    if not base_url:
-        raise ValueError("WMS_SYNC_BASE_URL 必须显式配置")
-    return base_url
 
 
 def _validate_wms_sla_configuration(settings_source: Any) -> None:
@@ -132,132 +92,215 @@ def _validate_wms_sla_configuration(settings_source: Any) -> None:
         raise ValueError("WMS EFFECT visibility SLA 不得大于 WES NOT_FOUND grace period")
 
 
-def validate_wms_transport_configuration(*, settings_source: Any | None = None) -> None:
-    """在 API/Celery 开始接收任务前校验同一 Settings 构建的 active profile。"""
+def validate_wms_transport_configuration(
+    *,
+    settings_source: Any | None = None,
+) -> WmsProviderStartupConfiguration:
+    """在 API/Celery 接收任务前编译并校验部署拥有的 Provider profile。"""
 
     active_settings = settings if settings_source is None else settings_source
-    active_profile = build_active_wms_provider_profile(active_settings)
-    environment = active_profile.identity.environment
-    if environment == "production" and getattr(
+    if active_settings.APP_ENV == "prod" and getattr(
         active_settings,
         "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED",
         False,
     ):
         raise ValueError("production WMS QUERY in-process simulation is forbidden")
-    base_url = wms_sync_base_url(settings_source=active_settings)
-    parsed = validate_wms_base_url(base_url)
-    if environment == "production" and parsed.scheme.lower() != "https":
-        raise ValueError("production WMS_SYNC_BASE_URL 必须使用 HTTPS")
-
-    status_url = validate_wms_base_url(active_settings.WMS_EFFECT_STATUS_URL)
-    if environment == "production" and status_url.scheme.lower() != "https":
-        raise ValueError("production WMS_EFFECT_STATUS_URL 必须使用 HTTPS")
     _validate_wms_sla_configuration(active_settings)
+    from src.app.wms_integration.provider_startup import assemble_wms_provider_startup
 
-    endpoint_registry = EndpointRegistry(settings_source=active_settings)
-    for target_code, setting_name in ENDPOINT_SETTING_BY_TARGET_CODE.items():
-        try:
-            endpoint = endpoint_registry.resolve(target_code)
-            parsed_endpoint = validate_wms_base_url(endpoint.url)
-        except ValueError as exc:
-            raise ValueError(f"{setting_name} 必须为活动运行环境显式配置为合法 HTTP(S) endpoint") from exc
-        if environment == "production" and parsed_endpoint.scheme.lower() != "https":
-            raise ValueError(f"production {setting_name} 必须使用 HTTPS")
-
-    credential_provider = build_environment_external_http_credential_provider(settings_source=active_settings)
-    credential_references = frozenset(
-        str(binding.outbound_auth.credential_reference)
-        for binding in active_profile.bindings
-        if binding.outbound_auth.credential_reference is not None
-    )
-    for credential_reference in credential_references:
-        env_name = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[credential_reference]
-        try:
-            _ = credential_provider.resolve(credential_reference)
-        except (CredentialResolutionError, LookupError) as exc:
-            raise ValueError(f"{env_name} 必须为活动运行环境显式配置且未被撤销") from exc
+    return assemble_wms_provider_startup(active_settings)
 
 
-def _typed_wms_endpoint_registry(
-    profile: WmsProviderProfile,
-    *,
-    settings_source: Any | None = None,
-) -> EndpointRegistry:
-    base_url = wms_sync_base_url(settings_source=settings_source)
-    return EndpointRegistry(
-        {
-            binding.operation.target_code: f"{base_url}/{binding.operation.endpoint_path.lstrip('/')}"
-            for binding in profile.bindings
-            if binding.operation.mode.value == "EFFECT"
-        }
-    )
-
-
-def _external_http_effect_profile(profile: WmsProviderProfile) -> ExternalHttpProviderProfileDefinition:
-    return ExternalHttpProviderProfileDefinition(
-        identity=profile.identity.identity,
-        environment=profile.identity.environment,
+def _external_http_effect_profile(catalog: WmsProviderCatalog) -> ExternalHttpProviderProfileDefinition:
+    return _external_http_profile(
+        catalog,
         bindings=tuple(
             _external_http_effect_binding(binding)
-            for binding in profile.bindings
+            for binding in catalog.bindings
             if binding.operation.mode.value == "EFFECT"
         ),
     )
 
 
+def _external_http_profile(
+    catalog: WmsProviderCatalog,
+    *,
+    bindings: tuple[ExternalHttpBindingDefinition, ...],
+) -> ExternalHttpProviderProfileDefinition:
+    # 该字段只承接通用 EXTERNAL_HTTP 的内部安全策略，不表示 WMS 外部环境。
+    return ExternalHttpProviderProfileDefinition(
+        identity=catalog.profile_identity,
+        environment="production",
+        network_trust_mode=catalog.compiled_profile.profile.network_trust_mode,
+        bindings=bindings,
+    )
+
+
 def _external_http_effect_binding(binding: WmsProviderOperationBinding) -> ExternalHttpBindingDefinition:
-    """把通用 WMS binding 收窄为 EXTERNAL_HTTP EFFECT 支持的 POST/HMAC 合同。"""
+    """把通用 WMS binding 收窄为共享 EXTERNAL_HTTP EFFECT 合同。"""
 
     http_method = binding.operation.http_method.value
     if http_method != "POST":
         raise ValueError("WMS EXTERNAL_HTTP EFFECT binding only supports POST")
+    return _external_http_binding(binding, http_method=http_method)
+
+
+def _external_http_binding(
+    binding: WmsProviderOperationBinding,
+    *,
+    http_method: str,
+) -> ExternalHttpBindingDefinition:
+    """把静态 operation 和 compiled profile 安全事实映射为共享 HTTP binding。"""
+
     auth_scheme = binding.outbound_auth.scheme.value
-    if auth_scheme != "HMAC_SHA256":
-        raise ValueError("WMS EXTERNAL_HTTP EFFECT binding requires HMAC_SHA256")
     return ExternalHttpBindingDefinition(
         operation_identity=binding.operation.identity,
         allowed_target_codes=(binding.operation.target_code,),
         http_method=http_method,
-        timeout_seconds=binding.operation.budget.timeout_seconds,
+        timeout_seconds=binding.operation.budget.deadline_seconds,
         auth_scheme=auth_scheme,
-        credential_reference=str(binding.outbound_auth.credential_reference),
+        credential_reference=binding.outbound_auth.credential_reference,
     )
 
 
-WMS_EXTERNAL_HTTP_EFFECT_PROFILE = _external_http_effect_profile(WMS_PROVIDER_PROFILE)
+def _external_http_query_profile(catalog: WmsProviderCatalog) -> ExternalHttpProviderProfileDefinition:
+    return _external_http_profile(
+        catalog,
+        bindings=tuple(
+            _external_http_binding(binding, http_method=binding.operation.http_method.value)
+            for binding in catalog.bindings
+            if binding.operation.mode.value == "QUERY"
+        ),
+    )
+
+
+def _external_http_effect_status_profile(catalog: WmsProviderCatalog) -> ExternalHttpProviderProfileDefinition:
+    return _external_http_profile(
+        catalog,
+        bindings=tuple(
+            _external_http_binding(binding, http_method="GET")
+            for binding in catalog.bindings
+            if binding.operation.supports_status_query
+        ),
+    )
+
+
+def _compiled_operation_binding(
+    *,
+    catalog: WmsProviderCatalog,
+    operation_identity: str,
+) -> tuple[WmsProviderOperationBinding, CompiledWmsOperationEndpoint]:
+    bindings = tuple(binding for binding in catalog.bindings if binding.operation.identity == operation_identity)
+    if len(bindings) != 1:
+        raise ValueError("WMS operation binding must resolve exactly once from compiled profile")
+    try:
+        endpoint = catalog.compiled_profile.operations[operation_identity]
+    except KeyError as exc:
+        raise ValueError("WMS operation is absent from compiled profile") from exc
+    return bindings[0], endpoint
+
+
+def _freeze_wms_compiled_binding(
+    *,
+    catalog: WmsProviderCatalog,
+    operation_identity: str,
+    profile: ExternalHttpProviderProfileDefinition,
+    endpoint_url: str,
+    target_code: str,
+) -> FrozenExternalHttpBinding:
+    from src.app.sys.services.endpoint_registry import EndpointRegistry
+
+    return freeze_external_http_binding(
+        profile=profile,
+        operation_identity=operation_identity,
+        target_code=target_code,
+        endpoint_registry=EndpointRegistry({target_code: endpoint_url}),
+    )
+
+
+def freeze_wms_query_binding(
+    *,
+    catalog: WmsProviderCatalog,
+    operation_identity: str,
+) -> FrozenExternalHttpBinding:
+    """只从 compiled profile 冻结 QUERY endpoint/auth/method 结构。"""
+
+    binding, endpoint = _compiled_operation_binding(
+        catalog=catalog,
+        operation_identity=operation_identity,
+    )
+    if binding.operation.mode.value != "QUERY":
+        raise ValueError("query binding requires a QUERY operation")
+    return _freeze_wms_compiled_binding(
+        catalog=catalog,
+        operation_identity=operation_identity,
+        profile=_external_http_query_profile(catalog),
+        endpoint_url=endpoint.endpoint_template,
+        target_code=binding.operation.target_code,
+    )
+
+
+def freeze_wms_effect_status_binding(
+    *,
+    catalog: WmsProviderCatalog,
+    operation_identity: str,
+) -> FrozenExternalHttpBinding:
+    """只为 compiled profile 中的七项异步 EFFECT 冻结 GET status binding。"""
+
+    binding, endpoint = _compiled_operation_binding(
+        catalog=catalog,
+        operation_identity=operation_identity,
+    )
+    if binding.operation.mode.value != "EFFECT" or not binding.operation.supports_status_query:
+        raise ValueError("status binding requires an async EFFECT operation")
+    if endpoint.status_endpoint is None:
+        raise ValueError("async EFFECT compiled profile requires a status endpoint")
+    return _freeze_wms_compiled_binding(
+        catalog=catalog,
+        operation_identity=operation_identity,
+        profile=_external_http_effect_status_profile(catalog),
+        endpoint_url=endpoint.status_endpoint,
+        target_code=binding.operation.target_code,
+    )
 
 
 def freeze_wms_effect_binding(
     *,
+    catalog: WmsProviderCatalog,
     profile_identity: str,
     operation_identity: str,
     target_code: str,
-    registry: EndpointRegistry | None = None,
 ) -> FrozenExternalHttpBinding:
     """从当前部署 profile 冻结新 Intent 的 submit target/auth binding。"""
 
-    if profile_identity.strip().lower() != WMS_PROVIDER_PROFILE.identity.identity:
+    if profile_identity.strip().lower() != catalog.profile_identity:
         raise ValueError("WMS EFFECT provider profile is not active in this deployment")
+    from src.app.sys.services.endpoint_registry import EndpointRegistry
+
+    try:
+        endpoint = catalog.compiled_profile.operations[operation_identity]
+    except KeyError as exc:
+        raise ValueError("WMS EFFECT operation is absent from compiled profile") from exc
+    registry = EndpointRegistry({target_code: endpoint.endpoint_template})
     return freeze_external_http_binding(
-        profile=WMS_EXTERNAL_HTTP_EFFECT_PROFILE,
+        profile=_external_http_effect_profile(catalog),
         operation_identity=operation_identity,
         target_code=target_code,
-        endpoint_registry=registry or _typed_wms_endpoint_registry(WMS_PROVIDER_PROFILE),
+        endpoint_registry=registry,
     )
 
 
 def resolve_wms_operation_binding(
     *,
+    catalog: WmsProviderCatalog,
     profile_identity: str,
     operation_identity: str,
 ) -> WmsProviderOperationBinding:
     """只在当前部署 active profile 内解析唯一 operation binding。"""
 
-    if profile_identity.strip().lower() != WMS_PROVIDER_PROFILE.identity.identity:
+    if profile_identity.strip().lower() != catalog.profile_identity:
         raise LookupError("pinned WMS provider profile is not active in this deployment")
-    bindings = tuple(
-        binding for binding in WMS_PROVIDER_PROFILE.bindings if binding.operation.identity == operation_identity
-    )
+    bindings = tuple(binding for binding in catalog.bindings if binding.operation.identity == operation_identity)
     if len(bindings) != 1:
         raise LookupError("pinned WMS operation binding must resolve exactly once")
     return bindings[0]
@@ -265,15 +308,12 @@ def resolve_wms_operation_binding(
 
 __all__ = [
     "WMS_EFFECT_STATUS_HINT_CALLBACK",
-    "WMS_EXTERNAL_HTTP_EFFECT_PROFILE",
-    "WMS_MATERIAL_FLOW_CONTRACT_VERSION",
-    "WMS_NORTHBOUND_AUTH",
-    "WMS_NORTHBOUND_IDENTITY",
-    "WMS_PROVIDER_PROFILE",
     "WMS_TYPED_EFFECT_CALLBACK_TYPES",
-    "build_active_wms_provider_profile",
+    "WmsProviderCatalog",
+    "build_wms_provider_catalog",
     "freeze_wms_effect_binding",
+    "freeze_wms_effect_status_binding",
+    "freeze_wms_query_binding",
     "resolve_wms_operation_binding",
     "validate_wms_transport_configuration",
-    "wms_sync_base_url",
 ]

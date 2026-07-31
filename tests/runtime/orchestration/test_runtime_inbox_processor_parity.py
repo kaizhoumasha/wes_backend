@@ -17,6 +17,9 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
 )
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackResult,
+)
 from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
 
 
@@ -489,12 +492,12 @@ async def _run_case(
             return AttemptWriteSet(evidence=(), next_state={"phase": "READY"}, intents=(), outcome_code="ROUTE_A")
 
     class _PlatformWriteBack:
-        async def commit_plugin_attempt(self, db: object, **kwargs: object) -> WriteDisposition:
+        async def commit_plugin_attempt(self, db: object, **kwargs: object) -> RuntimeInboxWriteBackResult:
             if case.stale_session_on_write:
                 raise RuntimeError("Session state changed before WRITE apply")
             interactions.append({"kind": "writeback", "source_device_id": case.device_id})
             if case.writeback == "resource_wait":
-                return WriteDisposition.SAFE_RETRY
+                return RuntimeInboxWriteBackResult(disposition=WriteDisposition.SAFE_RETRY)
             accepted = await terminal.mark_processed(
                 db,
                 inbox_id=1,
@@ -503,7 +506,7 @@ async def _run_case(
             if not accepted:
                 raise RuntimeError("RuntimeInbox lost fencing during plugin writeback")
             await db.commit()  # type: ignore[attr-defined]
-            return WriteDisposition.COMMITTED
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.COMMITTED)
 
     class _RecordedReplay:
         async def load(self, *_args: object, **_kwargs: object) -> object:

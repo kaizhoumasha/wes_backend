@@ -7,6 +7,7 @@ import json
 import math
 import random
 import re
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -31,18 +32,24 @@ from src.app.wms_integration.ports.query_outcome import (
     WmsQueryOutcome,
 )
 from src.app.wms_integration.services.http_transport import (
-    WmsHttpResponseContractError,
-    WmsHttpWireBudgetExceeded,
     open_wms_http_client,
     send_bounded_wms_request,
     sign_wms_hmac_request,
 )
+from src.core.bounded_http_response import (
+    HttpChunkBudgetExceeded,
+    HttpResponseContractError,
+    HttpWireBudgetExceeded,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
     from src.app.sys.external_http_credentials import VersionedCredentialProvider
-    from src.app.wms_integration.services.query_transport import WmsQueryCallPermit, WmsQueryEvidenceWriter
+    from src.app.wms_integration.query_evidence import (
+        WmsEffectStatusEvidenceWriter,
+        WmsQueryCallPermit,
+    )
 
 _BACKOFF_RANDOM = random.SystemRandom()
 _RETRY_AFTER_DELTA_SECONDS_RE = re.compile(r"^[0-9]+$", re.ASCII)
@@ -92,8 +99,10 @@ class WmsEffectStatusQueryAdapter:
         *,
         binding: FrozenWmsEffectStatusBinding,
         credential_provider: VersionedCredentialProvider,
-        evidence_writer: WmsQueryEvidenceWriter,
+        evidence_writer: WmsEffectStatusEvidenceWriter,
         transport: httpx.AsyncBaseTransport | None = None,
+        client: httpx.AsyncClient | None = None,
+        owns_client: bool = False,
         now: Callable[[], datetime] | None = None,
         nonce_factory: Callable[[], str] | None = None,
         jitter: Callable[[float], float] | None = None,
@@ -106,11 +115,29 @@ class WmsEffectStatusQueryAdapter:
         self._credential_provider = credential_provider
         self._evidence_writer = evidence_writer
         self._transport = transport
+        self._client = client
+        self._owns_client = owns_client
         self._now = now or (lambda: datetime.now(UTC))
         self._nonce_factory = nonce_factory or (lambda: uuid4().hex)
         self._jitter = jitter or (lambda upper: _BACKOFF_RANDOM.uniform(0.0, upper))
         self._initial_backoff_seconds = initial_backoff_seconds
         self._max_backoff_seconds = max_backoff_seconds
+
+    @asynccontextmanager
+    async def _client_scope(self, *, deadline: float) -> AsyncIterator[httpx.AsyncClient]:
+        if self._client is not None:
+            yield self._client
+            return
+        async with open_wms_http_client(
+            transport=self._transport,
+            timeout_seconds=self._binding.target.timeout_seconds,
+            deadline=deadline,
+        ) as client:
+            yield client
+
+    async def aclose(self) -> None:
+        if self._owns_client and self._client is not None:
+            await self._client.aclose()
 
     async def query_status(self, request: WmsEffectStatusRequest) -> WmsEffectStatusSnapshot:
         try:
@@ -162,11 +189,7 @@ class WmsEffectStatusQueryAdapter:
 
         deadline = asyncio.get_running_loop().time() + self._binding.target.timeout_seconds
         try:
-            async with open_wms_http_client(
-                transport=self._transport,
-                timeout_seconds=self._binding.target.timeout_seconds,
-                deadline=deadline,
-            ) as client:
+            async with self._client_scope(deadline=deadline) as client:
                 # operation-specific adapter 只构建请求；
                 # 签名、发送、预算和关闭统一委托给共享 transport。
                 outbound = client.build_request(
@@ -196,12 +219,12 @@ class WmsEffectStatusQueryAdapter:
                 retryable=True,
                 retry_after_seconds=self._local_backoff(request.attempt_count),
             )
-        except WmsHttpWireBudgetExceeded:
+        except (HttpChunkBudgetExceeded, HttpWireBudgetExceeded):
             return QueryContractFailure(
                 reason_code="WMS_STATUS_RESPONSE_TOO_LARGE",
                 message="WMS EFFECT status response exceeds the frozen response budget",
             )
-        except WmsHttpResponseContractError:
+        except HttpResponseContractError:
             return QueryContractFailure(
                 reason_code="WMS_STATUS_CONTRACT_INVALID",
                 message="WMS EFFECT status response metadata violates the typed contract",

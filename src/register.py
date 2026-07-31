@@ -29,13 +29,46 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     from src.database.db import close_db, init_db
     from src.database.redis_client import close_redis, init_redis
 
+    wms_data_lane_runtime = None
+    wms_effect_preparation_runtime = None
     try:
         logger.info("Initializing application resources...")
+        from src.app.callback.services.wms_inbound_auth import WmsInboundAuthPolicy
+        from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
+            northbound_operations_repository,
+        )
         from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
 
-        validate_wms_transport_configuration(settings_source=settings)
+        # 先清空前一轮 lifecycle 可能遗留的策略；profile 编译失败时必须 fail closed。
+        _app.state.wms_inbound_auth_policy = None
+        startup = validate_wms_transport_configuration(settings_source=settings)
+        wms_inbound_auth_policy = WmsInboundAuthPolicy.from_compiled_profile(startup.compiled_profile)
+        _app.state.wms_inbound_auth_policy = wms_inbound_auth_policy
+        northbound_operations_repository.bind_provider_catalog(startup.catalog)
         await init_db()
         await init_redis()
+
+        from src.app.wms_integration.effect_preparation_runtime import (
+            bind_wms_effect_preparation_runtime,
+            build_wms_effect_preparation_runtime,
+        )
+        from src.app.wms_integration.query_runtime import (
+            bind_wms_data_lane_query_runtime,
+            build_wms_data_lane_query_runtime,
+        )
+
+        # 一个进程/事件循环/data lane 只持有一个长期 client；attempt/page 仅借用。
+        wms_data_lane_runtime = build_wms_data_lane_query_runtime(startup, settings_source=settings)
+        bind_wms_data_lane_query_runtime(wms_data_lane_runtime)
+        _app.state.wms_data_lane_query_runtime = wms_data_lane_runtime
+
+        effect_preparation_candidate = build_wms_effect_preparation_runtime(
+            catalog=startup.catalog,
+            admission_enabled=settings.WMS_EFFECT_ADMISSION_ENABLED,
+        )
+        bind_wms_effect_preparation_runtime(effect_preparation_candidate)
+        wms_effect_preparation_runtime = effect_preparation_candidate
+        _app.state.wms_effect_preparation_runtime = wms_effect_preparation_runtime
 
         # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
         from src.core.health import system_health
@@ -59,7 +92,16 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         from src.app.runtime.orchestration.observability import runtime_observability_registry
 
+        _app.state.wms_inbound_auth_policy = None
         await asyncio.to_thread(runtime_observability_registry.close)
+        if wms_data_lane_runtime is not None:
+            from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
+
+            await close_bound_wms_data_lane_query_runtime()
+        if wms_effect_preparation_runtime is not None:
+            from src.app.wms_integration.effect_preparation_runtime import close_wms_effect_preparation_runtime
+
+            await close_wms_effect_preparation_runtime(wms_effect_preparation_runtime)
         await close_db()
         await close_redis()
         logger.info("FastAPI 应用关闭")

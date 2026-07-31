@@ -15,8 +15,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlencode
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -25,82 +25,41 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.app.runtime.system_capabilities.wms.provider_catalog import (  # noqa: E402
-    WMS_NORTHBOUND_AUTH,
-    WMS_PROVIDER_PROFILE,
-)
+from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration  # noqa: E402
 from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256  # noqa: E402
 from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE  # noqa: E402
+from src.app.wms_integration.operation_contract import WmsCompletionMode  # noqa: E402
+from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS  # noqa: E402
+from src.app.wms_integration.ports.fulfillment_operations import (  # noqa: E402
+    BATCH_FULFILLMENT_OPERATION_IDENTITIES,
+    MoveBinsFromConveyorExitRequest,
+    MoveBinsToConveyorEntryRequest,
+    WmsAcceptedScope,
+    WmsEffectAck,
+    accepted_scope_digest,
+    validate_fulfillment_ack,
+)
 from src.core.conf import settings  # noqa: E402
+from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES  # noqa: E402
+
+if TYPE_CHECKING:
+    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
 
 _STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"})
 _REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _MAX_SAFE_RESPONSE_BYTES = 1024 * 1024
 _RESPONSE_CLOSE_TIMEOUT_SECONDS = 1.0
-_ACTIVE_CREDENTIAL_REFERENCE = str(WMS_NORTHBOUND_AUTH.credential_reference)
-_ACTIVE_HMAC_SECRET_ENV = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[_ACTIVE_CREDENTIAL_REFERENCE]
-
-_OPERATION_SPECS: dict[str, dict[str, Any]] = {
-    "wms.inventory.confirm_inbound@v1": {
-        "submit_path": "/api/wms/inventory/confirm-inbound",
-        "payload": {
-            "dispatch_key": "probe-confirm-inbound",
-            "inbound_key": "inbound-probe-001",
-            "material_code": "MATERIAL-001",
-            "quantity": "1",
-        },
-        "result_fields": {"accepted", "dispatch_key", "reason_code", "source_version", "inbound_key", "document_no"},
-        "rejection": "MATERIAL_BLOCKED",
-    },
-    "wms.fulfillment.full_box_exchange@v1": {
-        "submit_path": "/api/wms/fulfillment/full-box-exchange",
-        "payload": {
-            "dispatch_key": "probe-full-box-exchange",
-            "rack_id": "rack-probe-001",
-            "empty_box_id": "empty-box-001",
-            "full_box_id": "full-box-001",
-        },
-        "result_fields": {
-            "accepted",
-            "dispatch_key",
-            "reason_code",
-            "source_version",
-            "rack_id",
-            "empty_box_id",
-            "full_box_id",
-            "exchange_request_code",
-        },
-        "rejection": "RACK_LOCKED",
-    },
-    "wms.fulfillment.notify_pkg_binding@v1": {
-        "submit_path": "/api/wms/fulfillment/package-binding",
-        "payload": {
-            "dispatch_key": "probe-package-binding",
-            "package_id": "package-probe-001",
-            "pallet_id": "pallet-probe-001",
-            "station_code": "station-probe-001",
-        },
-        "result_fields": {
-            "accepted",
-            "dispatch_key",
-            "reason_code",
-            "source_version",
-            "bound_at",
-            "package_id",
-            "pallet_id",
-        },
-        "rejection": "WMS_BUSINESS_REJECTED",
-    },
-}
-_TYPED_EFFECT_SUBMIT_DEADLINES = frozenset(
-    float(binding.operation.budget.timeout_seconds)
-    for binding in WMS_PROVIDER_PROFILE.bindings
-    if binding.operation.identity in _OPERATION_SPECS
+_ASYNC_OPERATIONS = tuple(
+    operation for operation in WMS_OPERATIONS if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
 )
-if len(_TYPED_EFFECT_SUBMIT_DEADLINES) != 1:
-    raise RuntimeError("typed WMS EFFECT operations must share one submit deadline")
-_EXPECTED_SUBMIT_DEADLINE_SECONDS = next(iter(_TYPED_EFFECT_SUBMIT_DEADLINES))
+_OPERATION_SPECS: dict[str, dict[str, Any]] = {
+    operation.identity: {
+        "payload": REQUEST_FIXTURES[operation.identity],
+        "rejection": operation.reject_codes[0],
+    }
+    for operation in _ASYNC_OPERATIONS
+}
 _EXPECTED_STATUS_DEADLINE_SECONDS = float(settings.WMS_EFFECT_STATUS_TIMEOUT_SECONDS)
 
 
@@ -185,7 +144,11 @@ def _is_aware_rfc3339(value: object) -> bool:
     return parsed.tzinfo is not None and parsed.utcoffset() == UTC.utcoffset(parsed)
 
 
-def _contract_values(contract: object) -> dict[str, Any] | None:
+def _contract_values(
+    contract: object,
+    *,
+    compiled_profile: CompiledWmsProviderProfile,
+) -> dict[str, Any] | None:
     """仅接受实际 Mock 声明且覆盖 WES 安全窗口的公开承诺参数。"""
 
     if not isinstance(contract, dict):
@@ -221,17 +184,27 @@ def _contract_values(contract: object) -> dict[str, Any] | None:
         return None
     if values["status_visibility_sla_seconds"] > settings.WES_EFFECT_NOT_FOUND_GRACE_SECONDS:
         return None
-    if credential_reference != _ACTIVE_CREDENTIAL_REFERENCE or not credential_reference.endswith("@v2"):
+    active_credential_reference = compiled_profile.profile.outbound_auth.credential_reference
+    if credential_reference != active_credential_reference:
         return None
     return {**values, "credential_reference": credential_reference}
 
 
-def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str, Any]) -> bool:  # noqa: PLR0911
+def _is_snapshot(  # noqa: PLR0911
+    snapshot: object,
+    *,
+    operation_identity: str,
+    payload: dict[str, Any],
+    frozen_ack: WmsEffectAck | None = None,
+    status_first_request: MoveBinsToConveyorEntryRequest | MoveBinsFromConveyorExitRequest | None = None,
+    idempotency_key: str | None = None,
+) -> bool:
     """严格验证五态快照及对应 operation 的 typed completed result。"""
 
     if not isinstance(snapshot, dict) or set(snapshot) != {
         "state",
         "provider_reference",
+        "accepted_scope",
         "reason_code",
         "updated_at",
         "source_version",
@@ -244,8 +217,55 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
     if state == "NOT_FOUND":
         return all(
             snapshot[field] is None
-            for field in ("provider_reference", "reason_code", "updated_at", "source_version", "result_payload")
+            for field in (
+                "provider_reference",
+                "accepted_scope",
+                "reason_code",
+                "updated_at",
+                "source_version",
+                "result_payload",
+            )
         )
+    accepted_scope_payload = snapshot["accepted_scope"]
+    accepted_scope: WmsAcceptedScope | None = None
+    if operation_identity in BATCH_FULFILLMENT_OPERATION_IDENTITIES:
+        try:
+            accepted_scope = WmsAcceptedScope.model_validate(accepted_scope_payload)
+        except ValueError:
+            return False
+        if accepted_scope.scope_digest != accepted_scope_digest(accepted_scope.object_keys):
+            return False
+        if frozen_ack is None:
+            if (
+                not isinstance(
+                    status_first_request,
+                    (MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest),
+                )
+                or idempotency_key is None
+            ):
+                return False
+            recovered_ack = _validated_ack(
+                {
+                    "operation_identity": operation_identity,
+                    "idempotency_key": idempotency_key,
+                    "provider_reference": snapshot["provider_reference"],
+                    "submission_state": "REPLAY",
+                    "accepted_scope": accepted_scope_payload,
+                },
+                operation_identity=operation_identity,
+                idempotency_key=idempotency_key,
+                request=status_first_request,
+            )
+            if recovered_ack is None:
+                return False
+    elif accepted_scope_payload is not None:
+        return False
+    if frozen_ack is not None and (
+        frozen_ack.operation_identity != operation_identity
+        or snapshot["provider_reference"] != frozen_ack.provider_reference
+        or accepted_scope != frozen_ack.accepted_scope
+    ):
+        return False
     source_version = snapshot["source_version"]
     if isinstance(source_version, bool) or not isinstance(source_version, int) or not 0 <= source_version < 2**63:
         return False
@@ -266,35 +286,70 @@ def _is_snapshot(snapshot: object, *, operation_identity: str, payload: dict[str
     if state in {"ACCEPTED", "PROCESSING"}:
         return snapshot["result_payload"] is None
     result = snapshot["result_payload"]
-    spec = _OPERATION_SPECS[operation_identity]
-    base_result_is_valid = (
-        isinstance(result, dict)
-        and set(result) == spec["result_fields"]
-        and result["accepted"] is True
-        and result["dispatch_key"] == payload["dispatch_key"]
-        and result["reason_code"] is None
-        and result["source_version"] == str(source_version)
-    )
-    if not base_result_is_valid:
+    if not isinstance(result, dict):
         return False
-    if operation_identity == "wms.inventory.confirm_inbound@v1":
-        return (
-            result["inbound_key"] == payload["inbound_key"]
-            and result["document_no"] == payload["inbound_key"]
-            and bool(result["document_no"])
-        )
-    if operation_identity == "wms.fulfillment.full_box_exchange@v1":
-        return (
-            result["rack_id"] == payload["rack_id"]
-            and result["empty_box_id"] == payload["empty_box_id"]
-            and result["full_box_id"] == payload["full_box_id"]
-            and result["exchange_request_code"] == payload["dispatch_key"]
-            and bool(result["exchange_request_code"])
-        )
+    try:
+        typed_result = WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(result)
+    except (KeyError, ValueError):
+        return False
+    normalized = typed_result.model_dump(mode="json")
     return (
-        _is_aware_rfc3339(result["bound_at"])
-        and result["package_id"] == payload["package_id"]
-        and result["pallet_id"] == payload["pallet_id"]
+        normalized["dispatch_key"] == payload["dispatch_key"]
+        and isinstance(normalized["provider_reference"], str)
+        and bool(normalized["provider_reference"])
+        and normalized["source_version"] == str(source_version)
+    )
+
+
+def _is_ack(
+    value: object,
+    *,
+    operation_identity: str,
+    idempotency_key: str,
+    request: object,
+) -> bool:
+    """验证 E08–E14 共享 ACK，并把批次接纳范围绑定到原始 typed request。"""
+
+    return (
+        _validated_ack(
+            value,
+            operation_identity=operation_identity,
+            idempotency_key=idempotency_key,
+            request=request,
+        )
+        is not None
+    )
+
+
+def _validated_ack(
+    value: object,
+    *,
+    operation_identity: str,
+    idempotency_key: str,
+    request: object,
+) -> WmsEffectAck | None:
+    try:
+        ack = WmsEffectAck.model_validate(value)
+    except ValueError:
+        return None
+    if ack.operation_identity != operation_identity or ack.idempotency_key != idempotency_key:
+        return None
+    if isinstance(request, (MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest)):
+        try:
+            validate_fulfillment_ack(request, ack)
+        except ValueError:
+            return None
+    return ack
+
+
+def _same_ack_binding(first: WmsEffectAck | None, replay: WmsEffectAck | None) -> bool:
+    """跨 submit replay/status 冻结 provider reference 与接纳范围。"""
+
+    return (
+        first is not None
+        and replay is not None
+        and replay.provider_reference == first.provider_reference
+        and replay.accepted_scope == first.accepted_scope
     )
 
 
@@ -364,6 +419,7 @@ def _status_headers(*, secret: bytes, credential_reference: str, raw_path: str) 
 async def run_probe(
     client: httpx.AsyncClient,
     *,
+    compiled_profile: CompiledWmsProviderProfile,
     operation_identity: str | None = None,
     request_timeout_seconds: float = 2.0,
     submit_timeout_seconds: float | None = None,
@@ -373,13 +429,41 @@ async def run_probe(
 
     effective_submit_timeout = submit_timeout_seconds or request_timeout_seconds
     effective_status_timeout = status_timeout_seconds or request_timeout_seconds
+    active_credential_reference = compiled_profile.profile.outbound_auth.credential_reference
+    if active_credential_reference is None:
+        raise ValueError("WMS northbound feasibility probe requires outbound HMAC authentication")
+    try:
+        active_hmac_secret_env = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[active_credential_reference]
+    except KeyError as exc:
+        raise ValueError("WMS northbound feasibility probe credential reference is not resolvable") from exc
+    operation_specs = {
+        identity: {
+            **spec,
+            "submit_path": urlsplit(compiled_profile.operations[identity].endpoint_template).path,
+        }
+        for identity, spec in _OPERATION_SPECS.items()
+    }
+    typed_effect_submit_deadlines = {
+        float(compiled_profile.operations[identity].budget.deadline_seconds) for identity in operation_specs
+    }
+    if len(typed_effect_submit_deadlines) != 1:
+        raise RuntimeError("typed WMS EFFECT operations must share one submit deadline")
+    expected_submit_deadline_seconds = next(iter(typed_effect_submit_deadlines))
+    status_endpoints = {
+        endpoint.status_endpoint
+        for identity, endpoint in compiled_profile.operations.items()
+        if identity in operation_specs
+    }
+    if len(status_endpoints) != 1 or None in status_endpoints:
+        raise RuntimeError("typed WMS EFFECT operations must share one status endpoint")
+    status_target = urlsplit(next(iter(status_endpoints))).path
     results: list[ProbeCaseResult] = []
     bootstrap_limit = 64 * 1024
     contract_response = await _request(
         client, "GET", "/northbound/contract", request_timeout_seconds=request_timeout_seconds
     )
     contract = _json_object(contract_response, max_response_bytes=bootstrap_limit)
-    contract_values = _contract_values(contract)
+    contract_values = _contract_values(contract, compiled_profile=compiled_profile)
     contract_ok = contract_response is not None and contract_response.status_code == 200 and contract_values is not None
     results.append(_result("public_contract_parameters", contract_ok))
     if contract_values is None:
@@ -387,26 +471,55 @@ async def run_probe(
     results.append(
         _result(
             "public_contract_deadline_alignment",
-            contract_values["submit_deadline_seconds"] == _EXPECTED_SUBMIT_DEADLINE_SECONDS
+            contract_values["submit_deadline_seconds"] == expected_submit_deadline_seconds
             and contract_values["status_deadline_seconds"] == _EXPECTED_STATUS_DEADLINE_SECONDS,
         )
     )
 
-    configured_secret = os.getenv(_ACTIVE_HMAC_SECRET_ENV) or getattr(settings, _ACTIVE_HMAC_SECRET_ENV, "")
+    configured_secret = os.getenv(active_hmac_secret_env) or getattr(settings, active_hmac_secret_env, "")
     secret = configured_secret.encode("utf-8")
     results.append(_result("active_v2_hmac_secret_available", bool(secret)))
     if not secret:
         return FeasibilityReport(cases=tuple(results))
     max_response_bytes = min(contract_values["max_response_bytes"], _MAX_SAFE_RESPONSE_BYTES)
-    selected = (operation_identity,) if operation_identity else tuple(_OPERATION_SPECS)
-    if any(identity not in _OPERATION_SPECS for identity in selected):
+    current_material_path = "/api/wms/master-data/materials/MAT001"
+    current_material = await _request(
+        client,
+        "GET",
+        current_material_path,
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        headers=_status_headers(
+            secret=secret,
+            credential_reference=contract_values["credential_reference"],
+            raw_path=current_material_path,
+        ),
+    )
+    legacy_material = await _request(
+        client,
+        "GET",
+        "/api/wms/materials/MAT001",
+        request_timeout_seconds=request_timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
+    results.append(
+        _result(
+            "current_master_data_route_is_live_and_legacy_route_is_removed",
+            current_material is not None
+            and current_material.status_code == 200
+            and legacy_material is not None
+            and legacy_material.status_code == 404,
+        )
+    )
+    selected = (operation_identity,) if operation_identity else tuple(operation_specs)
+    if any(identity not in operation_specs for identity in selected):
         results.append(_result("requested_operation_supported", False))
         return FeasibilityReport(cases=tuple(results))
 
     async def submit(
         identity: str, key: str, payload: dict[str, Any], *, header_overrides: dict[str, str] | None = None
     ) -> httpx.Response | None:
-        spec = _OPERATION_SPECS[identity]
+        spec = operation_specs[identity]
         body = canonical_json_bytes(payload)
         headers = _submit_headers(
             secret=secret,
@@ -428,9 +541,7 @@ async def run_probe(
         )
 
     async def status(identity: str, key: str) -> httpx.Response | None:
-        raw_path = "/northbound/operations/status?" + urlencode(
-            (("operation_identity", identity), ("idempotency_key", key))
-        )
+        raw_path = status_target + "?" + urlencode((("operation_identity", identity), ("idempotency_key", key)))
         return await _request(
             client,
             "GET",
@@ -521,30 +632,41 @@ async def run_probe(
         return _json_object(response, max_response_bytes=max_response_bytes)
 
     for identity in selected:
-        spec = _OPERATION_SPECS[identity]
+        spec = operation_specs[identity]
         payload = dict(spec["payload"])
+        typed_request = WMS_OPERATION_BY_IDENTITY[identity].request_model.model_validate(payload)
         key = f"probe-{uuid4().hex}"
         first = await submit(identity, key, payload)
         first_body = _json_object(first, max_response_bytes=max_response_bytes)
-        first_snapshot = first_body.get("data", {}).get("northbound_status") if first_body else None
+        first_ack = _validated_ack(
+            first_body.get("data") if first_body else None,
+            operation_identity=identity,
+            idempotency_key=key,
+            request=typed_request,
+        )
         results.append(
             _result(
                 f"{identity}:first_submit",
-                first is not None
-                and first.status_code == 202
-                and _is_snapshot(first_snapshot, operation_identity=identity, payload=payload),
+                first is not None and first.status_code == 202 and first_ack is not None,
             )
         )
 
         processing_replay = await submit(identity, key, payload)
         processing_body = _json_object(processing_replay, max_response_bytes=max_response_bytes)
+        processing_ack = _validated_ack(
+            processing_body.get("data") if processing_body else None,
+            operation_identity=identity,
+            idempotency_key=key,
+            request=typed_request,
+        )
         results.append(
             _result(
                 f"{identity}:in_progress_replay",
                 processing_replay is not None
                 and processing_replay.status_code == 409
                 and processing_body is not None
-                and processing_body.get("code") == "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+                and processing_body.get("code") == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+                and _same_ack_binding(first_ack, processing_ack),
             )
         )
         hint_evidence = await callback_hints(identity, key)
@@ -553,7 +675,16 @@ async def run_probe(
         results.append(
             _result(
                 f"{identity}:five_state_progression_and_typed_result",
-                all(_is_snapshot(snapshot, operation_identity=identity, payload=payload) for snapshot in snapshots)
+                first_ack is not None
+                and all(
+                    _is_snapshot(
+                        snapshot,
+                        operation_identity=identity,
+                        payload=payload,
+                        frozen_ack=first_ack,
+                    )
+                    for snapshot in snapshots
+                )
                 and [snapshot["state"] for snapshot in snapshots] == ["ACCEPTED", "PROCESSING", "COMPLETED"]
                 and snapshots[0]["source_version"] < snapshots[1]["source_version"] < snapshots[2]["source_version"],
             )
@@ -561,13 +692,18 @@ async def run_probe(
 
         completed_replay = await submit(identity, key, payload)
         completed_body = _json_object(completed_replay, max_response_bytes=max_response_bytes)
-        completed_snapshot = completed_body.get("data", {}).get("northbound_status") if completed_body else None
+        completed_ack = _validated_ack(
+            completed_body.get("data") if completed_body else None,
+            operation_identity=identity,
+            idempotency_key=key,
+            request=typed_request,
+        )
         results.append(
             _result(
                 f"{identity}:completed_replay",
                 completed_replay is not None
                 and completed_replay.status_code == 200
-                and completed_snapshot == snapshots[-1],
+                and _same_ack_binding(first_ack, completed_ack),
             )
         )
 
@@ -585,16 +721,15 @@ async def run_probe(
             )
         )
 
-        required_field = {
-            "wms.inventory.confirm_inbound@v1": "material_code",
-            "wms.fulfillment.full_box_exchange@v1": "full_box_id",
-            "wms.fulfillment.notify_pkg_binding@v1": "station_code",
-        }[identity]
+        required_field = next(
+            field_name
+            for field_name, field_info in WMS_OPERATION_BY_IDENTITY[identity].request_model.model_fields.items()
+            if field_info.is_required() and field_name != "dispatch_key"
+        )
         missing_payload = {field: value for field, value in payload.items() if field != required_field}
         invalid_payloads = (
             missing_payload,
             {**payload, "unexpected_wire_field": "forbidden"},
-            {**payload, required_field: " "},
         )
         validation_responses = []
         for invalid_index, invalid_payload in enumerate(invalid_payloads):
@@ -604,17 +739,6 @@ async def run_probe(
                     f"probe-invalid-{invalid_index}-{uuid4().hex}",
                     invalid_payload,
                 )
-            )
-        if identity == "wms.inventory.confirm_inbound@v1":
-            validation_responses.extend(
-                [
-                    await submit(
-                        identity,
-                        f"probe-invalid-quantity-{uuid4().hex}",
-                        {**payload, "quantity": invalid_quantity},
-                    )
-                    for invalid_quantity in (0, "NaN", "-1", "not-a-decimal")
-                ]
             )
         recovery_key = f"probe-invalid-recovery-{uuid4().hex}"
         rejected_before_write = await submit(identity, recovery_key, missing_payload)
@@ -636,7 +760,14 @@ async def run_probe(
         )
 
         rejected_key = f"probe-rejected-{uuid4().hex}"
-        await submit(identity, rejected_key, payload)
+        rejected_submit = await submit(identity, rejected_key, payload)
+        rejected_submit_body = _json_object(rejected_submit, max_response_bytes=max_response_bytes)
+        rejected_ack = _validated_ack(
+            rejected_submit_body.get("data") if rejected_submit_body else None,
+            operation_identity=identity,
+            idempotency_key=rejected_key,
+            request=typed_request,
+        )
         rejected = await _request(
             client,
             "POST",
@@ -651,10 +782,18 @@ async def run_probe(
         results.append(
             _result(
                 f"{identity}:rejected_stable_reason",
-                rejected is not None
+                rejected_submit is not None
+                and rejected_submit.status_code == 202
+                and rejected_ack is not None
+                and rejected is not None
                 and rejected.status_code == 200
                 and all(
-                    _is_snapshot(snapshot, operation_identity=identity, payload=payload)
+                    _is_snapshot(
+                        snapshot,
+                        operation_identity=identity,
+                        payload=payload,
+                        frozen_ack=rejected_ack,
+                    )
                     for snapshot in rejected_snapshots
                 )
                 and rejected_snapshots[0] == rejected_snapshots[1]
@@ -692,7 +831,8 @@ async def run_probe(
         visibility_key = f"probe-visibility-{uuid4().hex}"
         visibility_sla = contract_values["status_visibility_sla_seconds"]
         retention = contract_values["idempotency_retention_seconds"]
-        accepted_at = datetime(2026, 7, 25, tzinfo=UTC)
+        # 使用探针执行时刻，避免固定历史时钟复位后让本轮更早创建的记录被误判为已过保留期。
+        accepted_at = datetime.now(UTC)
         clock_started = await configure_clock(accepted_at)
         visibility_configured = await configure_visibility(
             identity,
@@ -700,6 +840,13 @@ async def run_probe(
             delay_seconds=visibility_sla,
         )
         first_visibility_submit = await submit(identity, visibility_key, payload)
+        first_visibility_body = _json_object(first_visibility_submit, max_response_bytes=max_response_bytes)
+        first_visibility_ack = _validated_ack(
+            first_visibility_body.get("data") if first_visibility_body else None,
+            operation_identity=identity,
+            idempotency_key=visibility_key,
+            request=typed_request,
+        )
         hidden_at_accept = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
         before_sla_clock = await configure_clock(accepted_at + timedelta(seconds=max(visibility_sla - 1, 0)))
         hidden_before_sla = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
@@ -722,13 +869,19 @@ async def run_probe(
                 and visibility_configured
                 and first_visibility_submit is not None
                 and first_visibility_submit.status_code == 202
+                and first_visibility_ack is not None
                 and _is_snapshot(hidden_at_accept, operation_identity=identity, payload=payload)
                 and hidden_at_accept["state"] == "NOT_FOUND"
                 and before_sla_clock
                 and _is_snapshot(hidden_before_sla, operation_identity=identity, payload=payload)
                 and hidden_before_sla["state"] == "NOT_FOUND"
                 and at_sla_clock
-                and _is_snapshot(visible_at_sla, operation_identity=identity, payload=payload)
+                and _is_snapshot(
+                    visible_at_sla,
+                    operation_identity=identity,
+                    payload=payload,
+                    frozen_ack=first_visibility_ack,
+                )
                 and visible_at_sla["state"] == "ACCEPTED"
                 and before_retention_clock
                 and replay_before_retention is not None
@@ -745,7 +898,7 @@ async def run_probe(
 
         visible_then_lost_configured = await configure_fault(
             status=200,
-            target_path="/northbound/operations/status",
+            target_path=status_target,
             method="GET",
             operation_identity=identity,
             not_found=True,
@@ -780,9 +933,9 @@ async def run_probe(
 
     fault_identity = selected[0]
     fault_key = f"probe-fault-{uuid4().hex}"
-    fault_payload = dict(_OPERATION_SPECS[fault_identity]["payload"])
+    fault_payload = dict(operation_specs[fault_identity]["payload"])
+    fault_typed_request = WMS_OPERATION_BY_IDENTITY[fault_identity].request_model.model_validate(fault_payload)
     await submit(fault_identity, fault_key, fault_payload)
-    status_target = "/northbound/operations/status"
     rate_configured = await configure_fault(
         status=429,
         retry_after=2,
@@ -826,32 +979,37 @@ async def run_probe(
         request_timeout_seconds=request_timeout_seconds,
         max_response_bytes=max_response_bytes,
     )
-    inventory = await _request(
+    current_inventory = await _request(
         client,
         "GET",
-        "/api/wms/materials/MAT001",
+        current_material_path,
         request_timeout_seconds=request_timeout_seconds,
         max_response_bytes=max_response_bytes,
+        headers=_status_headers(
+            secret=secret,
+            credential_reference=contract_values["credential_reference"],
+            raw_path=current_material_path,
+        ),
     )
-    legacy = await _request(
+    unregistered = await _request(
         client,
         "POST",
-        "/api/wms/legacy/full-box-exchange",
+        "/api/wms/fulfillment/unregistered-operation",
         request_timeout_seconds=request_timeout_seconds,
         max_response_bytes=max_response_bytes,
-        json={"dispatch_key": f"probe-legacy-scope-{uuid4().hex}"},
+        json={"dispatch_key": f"probe-unregistered-scope-{uuid4().hex}"},
     )
     scoped_fault = await status(fault_identity, fault_key)
     results.append(
         _result(
-            "northbound_fault_scope_excludes_health_inventory_and_legacy",
+            "northbound_fault_scope_excludes_health_inventory_and_unregistered_paths",
             scope_configured
             and health is not None
             and health.status_code == 200
-            and inventory is not None
-            and inventory.status_code in {200, 404}
-            and legacy is not None
-            and legacy.status_code == 200
+            and current_inventory is not None
+            and current_inventory.status_code == 200
+            and unregistered is not None
+            and unregistered.status_code == 404
             and scoped_fault is not None
             and scoped_fault.status_code == 503,
         )
@@ -860,7 +1018,7 @@ async def run_probe(
     submit_deadline_key = f"probe-submit-deadline-{uuid4().hex}"
     submit_deadline_configured = await configure_fault(
         status=200,
-        target_path=_OPERATION_SPECS[fault_identity]["submit_path"],
+        target_path=operation_specs[fault_identity]["submit_path"],
         method="POST",
         operation_identity=fault_identity,
         delay=max(effective_submit_timeout * 2, 0.05),
@@ -884,6 +1042,13 @@ async def run_probe(
 
     status_deadline_key = f"probe-status-deadline-{uuid4().hex}"
     status_deadline_submit = await submit(fault_identity, status_deadline_key, fault_payload)
+    status_deadline_body = _json_object(status_deadline_submit, max_response_bytes=max_response_bytes)
+    status_deadline_ack = _validated_ack(
+        status_deadline_body.get("data") if status_deadline_body else None,
+        operation_identity=fault_identity,
+        idempotency_key=status_deadline_key,
+        request=fault_typed_request,
+    )
     status_deadline_configured = await configure_fault(
         status=200,
         target_path=status_target,
@@ -901,14 +1066,20 @@ async def run_probe(
             "status_deadline",
             status_deadline_submit is not None
             and status_deadline_submit.status_code == 202
+            and status_deadline_ack is not None
             and status_deadline_configured
             and timed_out_status is None
-            and _is_snapshot(status_after_timeout, operation_identity=fault_identity, payload=fault_payload)
+            and _is_snapshot(
+                status_after_timeout,
+                operation_identity=fault_identity,
+                payload=fault_payload,
+                frozen_ack=status_deadline_ack,
+            )
             and status_after_timeout["state"] == "ACCEPTED",
         )
     )
 
-    stale_submit_path = _OPERATION_SPECS[fault_identity]["submit_path"]
+    stale_submit_path = operation_specs[fault_identity]["submit_path"]
     stale_submit_body = canonical_json_bytes(fault_payload)
     stale_submit_key = f"probe-stale-submit-{uuid4().hex}"
     stale_submit = await _request(
@@ -938,8 +1109,8 @@ async def run_probe(
         )
     )
 
-    replay_raw_path = "/northbound/operations/status?" + urlencode(
-        (("operation_identity", fault_identity), ("idempotency_key", fault_key))
+    replay_raw_path = (
+        status_target + "?" + urlencode((("operation_identity", fault_identity), ("idempotency_key", fault_key)))
     )
     replay_headers = _status_headers(
         secret=secret,
@@ -974,8 +1145,8 @@ async def run_probe(
         )
     )
 
-    tampered_raw_path = "/northbound/operations/status?" + urlencode(
-        (("operation_identity", fault_identity), ("idempotency_key", fault_key))
+    tampered_raw_path = (
+        status_target + "?" + urlencode((("operation_identity", fault_identity), ("idempotency_key", fault_key)))
     )
     tampered_headers = _status_headers(
         secret=secret, credential_reference=contract_values["credential_reference"], raw_path=tampered_raw_path
@@ -1047,6 +1218,7 @@ async def _main() -> int:
     args = _parse_args()
     if not args.base_url:
         raise SystemExit("需要 --base-url 或 WMS_NORTHBOUND_STUB_BASE_URL；不得将认证信息写入命令行。")
+    startup = validate_wms_transport_configuration(settings_source=settings)
     client_timeout = max(
         args.timeout_seconds,
         args.submit_timeout_seconds or 0,
@@ -1059,6 +1231,7 @@ async def _main() -> int:
     ) as client:
         report = await run_probe(
             client,
+            compiled_profile=startup.compiled_profile,
             operation_identity=args.operation_identity,
             request_timeout_seconds=args.timeout_seconds,
             submit_timeout_seconds=args.submit_timeout_seconds,

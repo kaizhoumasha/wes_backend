@@ -17,6 +17,7 @@ WRITE 锁回调: stale session snapshot guard + 业务 effects + 重复/迟到�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -56,7 +57,7 @@ from src.app.workline.services.write_back_service import EffectApplyState, _sess
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
 from src.core.conf import settings
-from src.core.task_queue_gateway import task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import canonical_event_type, optional_int, optional_str, string_value
 
@@ -66,6 +67,14 @@ if TYPE_CHECKING:
 
 class RuntimeInboxLeaseLostError(RuntimeError):
     """RuntimeInbox 终态 fencing 更新未命中，当前 processor lease 已失效。"""
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeInboxWriteBackResult:
+    """Stage 3 提交结果与仅对本次新建 Outbox 生效的瞬态唤醒目标。"""
+
+    disposition: WriteDisposition
+    outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
 
 
 def _require_fenced_update(updated: bool, *, action: str, inbox_id: int) -> None:
@@ -380,6 +389,37 @@ class RuntimeInboxWriteBackService:
             self._effect_applier = RuntimeIntentEffectApplier()
         return self._effect_applier
 
+    def effect_applier_for_attempt(
+        self,
+        *,
+        effect_port_resolver: Any | None = None,
+        allow_new_claim: Any | None = None,
+    ) -> Any:
+        """为当前 attempt 构造携带 typed EFFECT Port resolver 的 Stage 3 applier。"""
+
+        if allow_new_claim is not None and self._effect_applier is not None:
+            raise RuntimeError("attempt admission policy cannot be combined with a custom effect applier")
+        if allow_new_claim is not None and effect_port_resolver is None:
+            raise RuntimeError("attempt admission policy requires an effect port resolver")
+        if self._effect_applier is not None or effect_port_resolver is None:
+            return self.effect_applier
+        from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
+        from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
+            SystemCapabilityEffectService,
+        )
+        from src.app.runtime.orchestration.services.intent.system_capability_intent_service import (
+            SystemCapabilityIntentService,
+        )
+
+        # resolver 仅由本次 attempt 的 CapabilityPortRegistry 提供；不得缓存到 service，
+        # 否则会把 registry 中可能持有的 attempt-scoped Port 泄漏给下一次处理。
+        return RuntimeIntentEffectApplier(
+            system_capability_effect_service=SystemCapabilityEffectService(
+                intent_service=SystemCapabilityIntentService(allow_new_claim=allow_new_claim),
+                effect_port_resolver=effect_port_resolver,
+            )
+        )
+
     async def _persist_business_reject_after_rollback(
         self,
         db: Any,
@@ -391,6 +431,7 @@ class RuntimeInboxWriteBackService:
         trace_id: str,
         effect_ctx: dict[str, Any],
         evidence: dict[str, Any],
+        effect_applier: Any,
     ) -> bool | None:
         """重新锁定 attempt 后执行可选补偿；None 表示 fencing 已失效。"""
 
@@ -402,7 +443,7 @@ class RuntimeInboxWriteBackService:
         if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
             await db.rollback()
             return None
-        compensation = getattr(self.effect_applier, "persist_business_reject", None)
+        compensation = getattr(effect_applier, "persist_business_reject", None)
         compensation_persisted = False
         if callable(compensation):
             compensation_workline = await self._workline_repository.get_by_id(db, workline_id)
@@ -452,7 +493,9 @@ class RuntimeInboxWriteBackService:
         workline: Any | None = None,
         devices_by_role: dict[str, list[Any]] | None = None,
         trusted_state_preservation: bool = False,
-    ) -> WriteDisposition:
+        effect_port_resolver: Any | None = None,
+        allow_new_claim: Any | None = None,
+    ) -> RuntimeInboxWriteBackResult:
         """锁定权威行后重校验，并在同一事务落完整 attempt 结果。"""
 
         locked = await self._plugin_attempt_repository.lock_authoritative(
@@ -462,7 +505,7 @@ class RuntimeInboxWriteBackService:
         )
         if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
             await db.rollback()
-            return WriteDisposition.SAFE_RETRY
+            return RuntimeInboxWriteBackResult(disposition=WriteDisposition.SAFE_RETRY)
         try:
             locked_binding = getattr(locked, "plugin_binding", None)
             if locked_binding is not None:
@@ -501,7 +544,7 @@ class RuntimeInboxWriteBackService:
                     current_device_fact_versions = _device_fact_versions(current_devices_by_role)
                     if current_device_fact_versions != tuple(sorted(expected_snapshot.device_fact_versions)):
                         await db.rollback()
-                        return WriteDisposition.SAFE_RETRY
+                        return RuntimeInboxWriteBackResult(disposition=WriteDisposition.SAFE_RETRY)
         except Exception:
             await db.rollback()
             raise
@@ -512,6 +555,11 @@ class RuntimeInboxWriteBackService:
             limits=self._plugin_write_set_limits,
             fallback_state=dict(getattr(locked.session, "plugin_state_json", {}) or {}),
             allow_state_preservation=trusted_state_preservation,
+        )
+        outbox_dispatch_targets: frozenset[OutboxDispatchTarget] = frozenset()
+        effect_applier = self.effect_applier_for_attempt(
+            effect_port_resolver=effect_port_resolver,
+            allow_new_claim=allow_new_claim,
         )
         try:
             if write_set.intents:
@@ -556,7 +604,8 @@ class RuntimeInboxWriteBackService:
                     "awaiting_command_code": None,
                     "next_timeline_seq_no": None,
                 }
-                effect_result = await self.effect_applier.apply(effect_ctx, list(write_set.intents))
+                effect_result = await effect_applier.apply(effect_ctx, list(write_set.intents))
+                outbox_dispatch_targets = effect_result.outbox_dispatch_targets
                 business_reject_evidence = getattr(effect_result, "business_reject_evidence", None)
                 if isinstance(business_reject_evidence, dict):
                     reject_source = {
@@ -577,9 +626,10 @@ class RuntimeInboxWriteBackService:
                         trace_id=trace_id,
                         effect_ctx=effect_ctx,
                         evidence=business_reject_evidence,
+                        effect_applier=effect_applier,
                     )
                     if compensation_result is None:
-                        return WriteDisposition.SAFE_RETRY
+                        return RuntimeInboxWriteBackResult(disposition=WriteDisposition.SAFE_RETRY)
                     is_recursive_effect_reject = (
                         reject_source["payload_json"].get("logical_route") == "CAPABILITY_EFFECT_RESULT"
                     )
@@ -634,8 +684,8 @@ class RuntimeInboxWriteBackService:
                     )
                     await db.commit()
                     if is_recursive_effect_reject:
-                        return WriteDisposition.TERMINAL_FAILURE
-                    return WriteDisposition.COMMITTED
+                        return RuntimeInboxWriteBackResult(disposition=WriteDisposition.TERMINAL_FAILURE)
+                    return RuntimeInboxWriteBackResult(disposition=WriteDisposition.COMMITTED)
             _ = await self._plugin_attempt_repository.persist_locked_attempt(
                 db,
                 locked=locked,
@@ -664,11 +714,15 @@ class RuntimeInboxWriteBackService:
         except Exception:
             await db.rollback()
             raise
-        return WriteDisposition.COMMITTED
+        return RuntimeInboxWriteBackResult(
+            disposition=WriteDisposition.COMMITTED,
+            outbox_dispatch_targets=outbox_dispatch_targets,
+        )
 
 
 __all__ = [
     "RuntimeInboxLeaseLostError",
+    "RuntimeInboxWriteBackResult",
     "RuntimeInboxWriteBackService",
     "_is_late_or_duplicate_command_result_for_session",
     "_record_duplicate_entry_archive_timeline",

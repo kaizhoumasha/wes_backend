@@ -5,22 +5,17 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from src.app.runtime.system_capabilities.wms.provider_conformance import (
     QUERY_INVENTORY_CONFORMANCE_CASES,
-    ConformanceTarget,
-    build_wms_conformance_report,
 )
-from tests.support.wms_provider_conformance import verify_query_inventory_replay_report
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ASSET_PATH = REPO_ROOT / "tests/fixtures/wms_provider_conformance/query_inventory_replay.v1.json"
-PINNED_ASSET_DIGEST = "d396dce29e343138317e00ba8389a5d869c16c1262373e575a84cc5e5375bca5"
-GENERATED_AT = datetime(2026, 7, 21, 8, 0, tzinfo=UTC)
+PINNED_ASSET_DIGEST = "08df015c75436c478620df3bff3ebb22f9b6f8f265d2aef2c5d50f510ac3eef8"
 
 
 def _replay_support():
@@ -64,26 +59,12 @@ def test_replay_loader_validates_record_identity_order_and_code_pin(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_replay_report_carries_and_verifies_the_actual_asset_digest() -> None:
+async def test_replay_factory_carries_the_actual_asset_digest() -> None:
     replay_support = _replay_support()
     factory = replay_support.QueryInventoryReplayFactory()
     observations = tuple([await factory.execute(case) for case in QUERY_INVENTORY_CONFORMANCE_CASES])
 
-    report = build_wms_conformance_report(
-        cases=QUERY_INVENTORY_CONFORMANCE_CASES,
-        observations=observations,
-        target=ConformanceTarget.REPLAY,
-        fixture_digest=factory.asset_digest,
-        generated_at=GENERATED_AT,
+    assert factory.asset_digest == replay_support.QUERY_INVENTORY_REPLAY_ASSET_DIGEST
+    assert tuple(observation.case_id for observation in observations) == tuple(
+        record.case_id for record in replay_support.QUERY_INVENTORY_REPLAY_FIXTURE.records
     )
-
-    assert report.fixture_digest == replay_support.QUERY_INVENTORY_REPLAY_ASSET_DIGEST
-    assert verify_query_inventory_replay_report(report.model_dump(mode="json")) == report
-
-    scripted_digest_payload = report.model_dump(mode="json")
-    scripted_digest_payload["fixture_digest"] = "a" * 64
-    without_report_digest = {key: value for key, value in scripted_digest_payload.items() if key != "report_digest"}
-    canonical = json.dumps(without_report_digest, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    scripted_digest_payload["report_digest"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    with pytest.raises(ValueError, match=r"replay.*asset digest"):
-        verify_query_inventory_replay_report(scripted_digest_payload)

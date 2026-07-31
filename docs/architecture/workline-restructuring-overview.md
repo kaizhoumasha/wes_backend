@@ -63,7 +63,7 @@ review_summary: |
 
 - WORKLINE + PLUGIN 体系全面重构的**顶层设计**（含概要 + 详细）
 - 8 个域的边界与责任：workline（配置域）/ runtime/orchestration（执行域）/ handling（搬运意图）/ resource（运行投影）/ material（WES 根实体）/ device（设备接入）/ wms_integration（WMS ACL）/ reconciliation（对账）
-- 7 个目标 WMS port（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery）
+- operation-specific typed Definition + `WmsQueryExecutionPort` / `WmsEffectPreparationPort` 的 WMS ACL 目标边界
 - Phase 0-5 六阶段实施路线图
 
 **本文档不包含**（实施 SPEC 阶段展开）：
@@ -80,7 +80,7 @@ review_summary: |
 | --- | --- |
 | WES | Warehouse Execution System，本系统，仓储现场自动化执行中台 |
 | WMS | Warehouse Management System，外部权威系统，持有库存/单据/库位主数据 |
-| RCS | Robot Control System，当前阶段由 WMS 统一调度；WES 只消费 WMS/RCS 履约回调 evidence；直连能力仅作条件触发扩展，生产前默认不做 |
+| RCS | Robot Control System，当前阶段由 WMS 统一调度；WES 只消费 WMS E08–E14 typed ACK/status/terminal result；直连能力仅作条件触发扩展，生产前默认不做 |
 | AGV / CTU | Automated Guided Vehicle / Container Transfer Unit，外部搬运设备 |
 | PLC | Programmable Logic Controller，ECS 内部控制组件；WES 不与 PLC 通讯 |
 | WorkLine | 工作线配置域的根实体；只拥有配置，不拥有运行状态 |
@@ -92,7 +92,7 @@ review_summary: |
 | EffectPort | Runtime 向 handling/device/resource/material/wms_integration 分发副作用的稳定接口 |
 | InboundEventPort | 外部 callback/event 入站标准接口；负责 normalizer、原始归档、typed evidence，写入 `RuntimeInbox`，不是 effect ledger |
 | ConveyorQueueMembership | 料箱在滚筒线队列中的 runtime active 投影；队列由 WorkLine manifest 动态定义 |
-| WmsFulfillmentPort | WMS 履约能力 port（11 态机） |
+| Operation-specific fulfillment contracts | WMS 具名履约 operation 与 typed request/result |
 | PlaneSceneView | WorkLine 平面态势场景读模型（manifest 派生） |
 | PlaneSnapshot | WorkLine 平面态势运行态读模型（active projection） |
 | RECONCILING | 投影/回调/现场状态冲突的"待对账"状态 |
@@ -187,9 +187,9 @@ P0 必须支撑以下能力（每条都是验收项）：
 - Handoff：任何物料/料箱/货架交接必须以 External callback 或 RuntimeIntentLog evidence 推进，禁止 API 层直接改投影。
 - Resource projection：同一 object 在同一 WorkLine 内只能有一个可解释的 active 归属；瞬态冲突必须带 `transient_until`，超时进入 `RECONCILING`。
 - Device command：每个物理动作必须有 `command_code + idempotency_key + request_hash + callback result` 闭环。
-- WMS fulfillment：任何外部履约必须有 11 态机状态、timeout、callback/evidence 和失败恢复路径；批量履约必须显式区分父批次请求、逐对象 evidence 和批次完成 evidence。
+- WMS fulfillment：任何 E08–E14 外部履约必须有 typed ACK、status query、typed terminal result、timeout 和失败恢复路径；E12/E13 批量履约必须以 ACK 冻结成员，并只消费批次级权威结果。
 - Inbound flow baseline：分拣机/粗分机入库链路的业务语义必须被行为契约测试覆盖，包括对象级流水并发、扫码、测量或识别、WMS 校验、箱格分配/预约、滚筒线路由、满箱/换架、NG、投箱和完成；旧插件接口、旧 context 字段和旧 fake allocator 不进入目标态合同。
-- Full-box exchange：满箱、满货架、换空箱、换货架属于外部履约 + 对账闭环，必须走 callback + reconciliation 完成语义，不能按普通 `CALLBACK_TRUSTED` 搬运完成处理。
+- Full-box exchange：满箱、满货架、换空箱、换货架属于 E11 typed ACK/status/terminal result + 对账闭环；只有 terminal result 与 owner 投影均校验通过后才能完成。
 
 ### 2.3 明确不做
 
@@ -229,7 +229,7 @@ P0 必须支撑以下能力（每条都是验收项）：
 | # | 子目标 | 关键产出 |
 | --- | --- | --- |
 | 1 | WES 顶层领域边界 | 拆 workline（配置域）+ runtime/orchestration（执行域）+ handling + resource + material + device + wms_integration |
-| 2 | WMS 反腐层 (wms_integration ACL) | 7 个目标 port：MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery |
+| 2 | WMS 反腐层 (wms_integration ACL) | operation-specific typed Definition + `WmsQueryExecutionPort` / `WmsEffectPreparationPort`；入站事件保持窄边界 |
 | 3 | Authority Matrix | 外部事实按事实类型拆分权威来源；WES material 域是唯一自有根实体 |
 | 4 | 目标态契约 | 锁定目标业务能力、域边界、状态所有权和外部 port；不锁定旧 API/旧表 |
 | 5 | 4 方案决策表 | A（workline 单体）/ B（本设计）/ C（增量 ACL）/ D（port-only）；选择 B，C 的可复用部分并入 B |

@@ -1,8 +1,9 @@
 # 在类定义外先加载环境变量
 import json
+import math
 from functools import lru_cache
-from typing import Literal
-from urllib.parse import urlparse
+from pathlib import Path
+from typing import ClassVar, Literal
 
 from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -93,11 +94,8 @@ class Settings(BaseSettings):
 
     # ==================== 北向 Transport 配置 ====================
 
-    WMS_SYNC_BASE_URL: str = ""
-    WMS_RCS_RACK_OPERATION_URL: str = ""
-    WMS_RCS_BIN_OPERATION_URL: str = ""
-    WMS_RCS_FULL_BOX_EXCHANGE_URL: str = ""
-    WMS_EFFECT_STATUS_URL: str
+    WMS_PROVIDER_PROFILE_FILE: Path | None = None
+    WMS_EFFECT_ADMISSION_ENABLED: bool = False
     WMS_EFFECT_STATUS_TIMEOUT_SECONDS: float = Field(gt=0)
     WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: int = Field(gt=0)
     WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: int = Field(gt=0)
@@ -106,26 +104,58 @@ class Settings(BaseSettings):
     WES_EFFECT_NOT_FOUND_GRACE_SECONDS: float = Field(gt=0)
     WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS: int = Field(gt=0)
     WES_EFFECT_STATUS_SCAN_BATCH_SIZE: int = Field(gt=0)
+    WES_EFFECT_STATUS_MAX_IN_FLIGHT: int = Field(gt=0)
     WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS: float = Field(gt=0)
     WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS: int = Field(gt=0)
     WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS: float = Field(gt=0)
     WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS: float = Field(gt=0)
     WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED: bool = False
+    WES_EFFECT_STATUS_SCAN_PERIOD_SECONDS: ClassVar[float] = 10.0
+    WES_EFFECT_STATUS_DB_MARGIN_SECONDS: ClassVar[float] = 5.0
+    WES_EFFECT_STATUS_TASK_LIMIT_MARGIN_SECONDS: ClassVar[float] = 5.0
     # 兼容未迁移的离线 Settings 构造；各部署 profile 必须显式声明当前 active revision。
-    WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION: Literal["v1", "v2"] = "v1"
     WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2: str = Field(default="", repr=False)
     WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2: str = Field(default="", repr=False)
-    WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
-    WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
-    WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
-    WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1: str = Field(default="", repr=False)
-    WORKLINE_PLUGIN_RUNTIME_STAGING_HMAC_SECRET_V1: str = Field(default="", repr=False)
-    WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1: str = Field(default="", repr=False)
     WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES: str = ""
+
+    @property
+    def WES_EFFECT_STATUS_SCAN_BATCH_BUDGET_SECONDS(self) -> float:
+        """单批最坏执行预算：有界并发波次 + 一次最大限流等待 + 数据库收尾。"""
+
+        waves = math.ceil(self.WES_EFFECT_STATUS_SCAN_BATCH_SIZE / self.WES_EFFECT_STATUS_MAX_IN_FLIGHT)
+        return (
+            waves * self.WMS_EFFECT_STATUS_TIMEOUT_SECONDS
+            + self.WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS
+            + self.WES_EFFECT_STATUS_DB_MARGIN_SECONDS
+        )
+
+    @property
+    def WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS(self) -> int:
+        return math.ceil(
+            self.WES_EFFECT_STATUS_SCAN_BATCH_BUDGET_SECONDS + self.WES_EFFECT_STATUS_TASK_LIMIT_MARGIN_SECONDS
+        )
+
+    @property
+    def WES_EFFECT_STATUS_TASK_HARD_TIME_LIMIT_SECONDS(self) -> int:
+        return math.ceil(
+            self.WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS + self.WES_EFFECT_STATUS_TASK_LIMIT_MARGIN_SECONDS
+        )
+
+    @field_validator("WMS_PROVIDER_PROFILE_FILE", mode="before")
+    @classmethod
+    def validate_wms_provider_profile_file(cls, value: str | Path | None) -> Path | None:
+        """Provider profile 只能从部署提供的绝对文件路径加载。"""
+
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        profile_path = Path(value)
+        if not profile_path.is_absolute():
+            raise ValueError("WMS_PROVIDER_PROFILE_FILE must be an absolute path")
+        return profile_path
 
     # ==================== 日志配置 ====================
 
@@ -303,22 +333,16 @@ class Settings(BaseSettings):
     def validate_wms_effect_status_settings(self):
         """启动时冻结状态查询预算并验证跨系统承诺。"""
 
-        parsed_status_url = urlparse(self.WMS_EFFECT_STATUS_URL)
-        if (
-            parsed_status_url.scheme not in {"http", "https"}
-            or not parsed_status_url.netloc
-            or parsed_status_url.username is not None
-            or parsed_status_url.password is not None
-            or parsed_status_url.query
-            or parsed_status_url.fragment
-        ):
-            raise ValueError("WMS_EFFECT_STATUS_URL 必须是无 userinfo/query/fragment 的合法 HTTP(S) endpoint")
-        if self.APP_ENV == "prod" and parsed_status_url.scheme != "https":
-            raise ValueError("production WMS_EFFECT_STATUS_URL 必须使用 HTTPS")
-        if self.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS < self.WMS_EFFECT_STATUS_TIMEOUT_SECONDS:
-            raise ValueError("WMS EFFECT status claim lease 必须覆盖单次 transport timeout")
+        if self.WES_EFFECT_STATUS_MAX_IN_FLIGHT > self.DATABASE_POOL_SIZE + self.DATABASE_MAX_OVERFLOW:
+            raise ValueError("WMS EFFECT status max-in-flight 不得超过 fulfillment 独立 database session 预算")
+        configured_qps = self.WES_EFFECT_STATUS_SCAN_BATCH_SIZE / self.WES_EFFECT_STATUS_SCAN_PERIOD_SECONDS
+        bounded_qps = self.WES_EFFECT_STATUS_MAX_IN_FLIGHT / self.WMS_EFFECT_STATUS_TIMEOUT_SECONDS
+        if configured_qps > bounded_qps:
+            raise ValueError("WMS EFFECT status scanner QPS 超过 timeout/max-in-flight 有界处理能力")
         if self.WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS > self.WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS:
             raise ValueError("WMS EFFECT status backoff 下限不得大于上限")
+        if self.WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS <= self.WES_EFFECT_STATUS_SCAN_BATCH_BUDGET_SECONDS:
+            raise ValueError("WMS EFFECT status claim lease 必须大于单批最坏执行预算")
         minimum_retention = self.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS + self.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS
         if minimum_retention > self.WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS:
             raise ValueError("WMS EFFECT idempotency retention 不得小于 WES confirmation age 与 safety margin 之和")
@@ -326,13 +350,6 @@ class Settings(BaseSettings):
             raise ValueError("WMS EFFECT visibility SLA 不得大于 WES NOT_FOUND grace period")
         if self.APP_ENV == "prod" and self.WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED:
             raise ValueError("production WMS QUERY in-process simulation 必须在启动前禁用")
-        active_secret_name = (
-            f"WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_{self.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION.upper()}"
-            if self.APP_ENV == "prod"
-            else f"WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_{self.WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION.upper()}"
-        )
-        if not getattr(self, active_secret_name):
-            raise ValueError(f"{active_secret_name} 必须为 WMS EFFECT status 查询显式配置")
         return self
 
     @model_validator(mode="after")

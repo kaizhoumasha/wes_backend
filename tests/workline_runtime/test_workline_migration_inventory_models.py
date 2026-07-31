@@ -219,8 +219,8 @@ def test_workline_item_exposes_derived_capability_and_port_requirements() -> Non
         capability_key="wms.inventory.query_inventory",
         contract_version="v1",
         mode="QUERY",
-        admission="wms.2026-07-06.material-flow",
-        required_ports=("src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort",),
+        admission="wms.2026-07-28.full-factory",
+        required_ports=("src.app.wms_integration.ports.query_execution.WmsQueryExecutionPort",),
     )
     item = WorklineMigrationInventoryItem(
         workline_id=1,
@@ -237,7 +237,7 @@ def test_workline_item_exposes_derived_capability_and_port_requirements() -> Non
 
     assert item.capability_requirements == (requirement,)
     assert item.model_dump(mode="json")["capability_requirements"][0]["required_ports"] == [
-        "src.app.wms_integration.ports.query_inventory_operation.InventoryQueryOperationPort"
+        "src.app.wms_integration.ports.query_execution.WmsQueryExecutionPort"
     ]
 
 
@@ -337,3 +337,22 @@ def test_private_base_is_not_exported_from_package_facade() -> None:
 
     assert "_FrozenInventoryModel" not in models.__all__
     assert not hasattr(models, "_FrozenInventoryModel")
+
+
+@pytest.mark.parametrize(
+    ("payload", "accepted"),
+    [
+        ({"provider_code": "WMS", "contract_version": "v1"}, True),
+        ({"provider_code": "WMS", "contract_version": "v1", "environment": "sandbox"}, False),
+        ({"provider_code": "ECS", "contract_version": "v1"}, False),
+        ({"provider_code": "ECS", "contract_version": "v1", "environment": "sandbox"}, True),
+    ],
+)
+def test_provider_profile_inventory_item_enforces_closed_identity(payload: dict[str, object], accepted: bool) -> None:
+    if accepted:
+        item = WorklineProviderProfileInventoryItem.model_validate(payload)
+        assert item.provider_code == payload["provider_code"]
+        return
+
+    with pytest.raises(ValidationError):
+        WorklineProviderProfileInventoryItem.model_validate(payload)

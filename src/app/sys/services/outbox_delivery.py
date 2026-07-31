@@ -33,6 +33,7 @@ def _observed_external_http_result(
 
     from src.app.runtime.orchestration.operation_observability import emit_northbound_operation_observation
 
+    latency_ms = (time.perf_counter() - started_at) * 1_000
     if result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS:
         outcome = "UNKNOWN"
     elif result.outcome is ExternalHttpTransportOutcome.NOT_SENT:
@@ -50,7 +51,7 @@ def _observed_external_http_result(
             operation_identity=str(getattr(outbox, "operation_identity", "")),
             provider_profile_identity=str(getattr(outbox, "provider_profile_identity", "")),
             outcome=outcome,
-            latency_ms=(time.perf_counter() - started_at) * 1_000,
+            latency_ms=latency_ms,
             trace_id=str(trace_id),
             correlation_id=str(correlation_id),
             evidence_ref=evidence_ref,
@@ -58,6 +59,7 @@ def _observed_external_http_result(
         )
     except Exception as exc:  # pragma: no cover - 观测失败不改变 transport 结果
         logger.warning(f"EXTERNAL_HTTP observability emission failed: {type(exc).__name__}")
+
     return result
 
 
@@ -77,17 +79,27 @@ async def dispatch_external_http(
             target_snapshot_json=getattr(outbox, "target_snapshot_json", None),
             target_snapshot_hash=getattr(outbox, "target_snapshot_hash", None),
             auth_scheme=getattr(outbox, "auth_scheme", None),
+            network_trust_mode=getattr(outbox, "network_trust_mode", None),
             credential_reference=getattr(outbox, "credential_reference", None),
         )
-        secret = credential_provider.resolve(binding.credential_reference)
+        secret = None
+        timestamp = None
+        nonce = None
+        if binding.auth_scheme == "HMAC_SHA256":
+            credential_reference = binding.credential_reference
+            if credential_reference is None:
+                raise ValueError("HMAC_SHA256 frozen binding requires credential reference")
+            secret = credential_provider.resolve(credential_reference)
+            timestamp = timezone.now_utc().isoformat()
+            nonce = uuid4().hex
         request = ExternalHttpDispatchRequest.from_persisted(
             binding=binding,
             canonical_payload_bytes=getattr(outbox, "canonical_payload_bytes", None),
             payload_hash=getattr(outbox, "payload_hash", None),
             idempotency_key=getattr(outbox, "idempotency_key", None),
             secret=secret,
-            timestamp=timezone.now_utc().isoformat(),
-            nonce=uuid4().hex,
+            timestamp=timestamp,
+            nonce=nonce,
         )
     except CredentialResolutionError as exc:
         logger.warning(f"EXTERNAL_HTTP credential preparation failed: {exc.code}")

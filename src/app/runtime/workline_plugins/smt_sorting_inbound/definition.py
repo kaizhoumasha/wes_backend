@@ -78,6 +78,8 @@ DEFINITION = WorklinePluginDefinition(
         ("material_flow.smt_source_pick_command", "v1"),
         ("material_flow.smt_source_pick_ledger", "v1"),
         ("runtime.session_hold", "v1"),
+        ("wms.fulfillment.move_bins_to_conveyor_entry", "v1"),
+        ("wms.fulfillment.move_bins_from_conveyor_exit", "v1"),
     ),
     parsers={
         "SOURCE_PICK_REQUESTED": SourcePickRequestInput.model_validate,

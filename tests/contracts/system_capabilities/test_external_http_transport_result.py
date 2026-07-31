@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -10,13 +11,14 @@ import httpx
 import pytest
 
 from src.app.sys.external_http_transport import (
+    MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES,
     ExternalHttpProtocolResult,
     ExternalHttpTransportOutcome,
     ExternalHttpTransportPhase,
     ExternalHttpTransportResult,
 )
 from src.app.sys.services.outbox_delivery import dispatch_external_http
-from src.app.sys.services.outbox_engine import _send_external_http
+from src.app.sys.services.outbox_engine import _send_external_http, send_external_http_with_client
 from tests.support.external_http import (
     StaticTestCredentialProvider,
     frozen_outbox_namespace,
@@ -29,6 +31,65 @@ if TYPE_CHECKING:
 
 def _request() -> ExternalHttpDispatchRequest:
     return signed_external_http_request({"request_id": "REQ-001"})
+
+
+@pytest.mark.asyncio
+async def test_borrowed_lane_client_uses_operation_total_deadline_for_send_and_read() -> None:
+    async def delayed_send(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.08)
+        return httpx.Response(202, json={"accepted": True})
+
+    request = signed_external_http_request(
+        {"request_id": "REQ-DEADLINE"},
+        timeout_seconds=0.01,
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(delayed_send),
+        timeout=60.0,
+    )
+    started_at = asyncio.get_running_loop().time()
+
+    result = await send_external_http_with_client(request, client=client)
+
+    assert asyncio.get_running_loop().time() - started_at < 0.05
+    assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
+    assert result.phase is ExternalHttpTransportPhase.SENDING
+    assert result.error_code == "TOTAL_DEADLINE_EXCEEDED"
+    assert client.is_closed is False
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_borrowed_lane_client_total_deadline_expires_while_reading_response_body() -> None:
+    class SlowBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.sleep(0.08)
+            yield b'{"accepted":true}'
+
+        async def aclose(self) -> None:
+            await asyncio.sleep(0.08)
+
+    async def immediate_response(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, stream=SlowBody())
+
+    request = signed_external_http_request(
+        {"request_id": "REQ-BODY-DEADLINE"},
+        timeout_seconds=0.01,
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(immediate_response),
+        timeout=60.0,
+    )
+    started_at = asyncio.get_running_loop().time()
+
+    result = await send_external_http_with_client(request, client=client)
+
+    assert asyncio.get_running_loop().time() - started_at < 0.05
+    assert result.outcome is ExternalHttpTransportOutcome.AMBIGUOUS
+    assert result.phase is ExternalHttpTransportPhase.AWAITING_RESPONSE
+    assert result.error_code == "TOTAL_DEADLINE_EXCEEDED"
+    assert client.is_closed is False
+    await client.aclose()
 
 
 def test_transport_result_is_frozen_and_rejects_retryable_non_not_sent_outcome() -> None:
@@ -51,6 +112,155 @@ def test_transport_result_is_frozen_and_rejects_retryable_non_not_sent_outcome()
             protocol_result=ExternalHttpProtocolResult.NOT_AVAILABLE,
             safe_to_retry=True,
             error_code="READ_TIMEOUT",
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"http_status_code": 503}, "NOT_SENT cannot carry http_status_code"),
+        (
+            {"protocol_result": ExternalHttpProtocolResult.ACCEPTED},
+            "NOT_SENT requires NOT_AVAILABLE",
+        ),
+        (
+            {"phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED},
+            "NOT_SENT cannot occur after RESPONSE_RECEIVED",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.UNKNOWN,
+                "safe_to_retry": False,
+                "http_status_code": 503,
+            },
+            "requires explicit protocol result",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+            },
+            "requires http_status_code",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.SANDBOX,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+            },
+            "sandbox ACCEPTED requires NOT_AVAILABLE",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.SANDBOX,
+                "protocol_result": ExternalHttpProtocolResult.NOT_AVAILABLE,
+                "safe_to_retry": False,
+                "http_status_code": 202,
+            },
+            "sandbox ACCEPTED cannot carry http_status_code",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.CONNECTING,
+                "protocol_result": ExternalHttpProtocolResult.NOT_AVAILABLE,
+                "safe_to_retry": False,
+            },
+            "requires RESPONSE_RECEIVED or SANDBOX",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+                "http_status_code": 99,
+            },
+            "between 100 and 599",
+        ),
+        (
+            {"protocol_error_code": "REMOTE_REJECTED"},
+            "protocol_error_code requires RESPONSE_RECEIVED",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+                "http_status_code": 202,
+                "protocol_error_code": "invalid-code",
+            },
+            "bounded stable code",
+        ),
+        ({"response_body": b"{}"}, "response body requires RESPONSE_RECEIVED"),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.ACCEPTED,
+                "phase": ExternalHttpTransportPhase.RESPONSE_RECEIVED,
+                "protocol_result": ExternalHttpProtocolResult.ACCEPTED,
+                "safe_to_retry": False,
+                "http_status_code": 202,
+                "response_body": "not-bytes",
+            },
+            "response body must be bytes",
+        ),
+        (
+            {
+                "outcome": ExternalHttpTransportOutcome.AMBIGUOUS,
+                "phase": ExternalHttpTransportPhase.AWAITING_RESPONSE,
+                "protocol_result": ExternalHttpProtocolResult.NOT_AVAILABLE,
+                "safe_to_retry": False,
+                "http_status_code": 503,
+            },
+            "pre-response AMBIGUOUS cannot carry http_status_code",
+        ),
+    ),
+)
+def test_transport_result_rejects_each_contradictory_evidence_branch(overrides, message) -> None:
+    values = {
+        "outcome": ExternalHttpTransportOutcome.NOT_SENT,
+        "phase": ExternalHttpTransportPhase.CONNECTING,
+        "protocol_result": ExternalHttpProtocolResult.NOT_AVAILABLE,
+        "safe_to_retry": False,
+        "error_code": "TEST_EVIDENCE",
+    }
+    values.update(overrides)
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        ExternalHttpTransportResult(**values)
+
+
+def test_sandbox_transport_result_is_explicit_and_has_no_remote_http_evidence() -> None:
+    result = ExternalHttpTransportResult.sandbox_accepted()
+
+    assert result.outcome is ExternalHttpTransportOutcome.ACCEPTED
+    assert result.phase is ExternalHttpTransportPhase.SANDBOX
+    assert result.protocol_result is ExternalHttpProtocolResult.NOT_AVAILABLE
+    assert result.http_status_code is None
+    assert result.evidence_json()["transport_phase"] == "SANDBOX"
+
+
+def test_response_evidence_accepts_stable_protocol_code_and_enforces_body_budget() -> None:
+    result = ExternalHttpTransportResult.accepted(
+        http_status_code=409,
+        protocol_result=ExternalHttpProtocolResult.REJECTED,
+        protocol_error_code="IDEMPOTENCY_REQUEST_IN_PROGRESS",
+        response_body=b"{}",
+    )
+    assert result.protocol_error_code == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+
+    with pytest.raises(ValueError, match="bounded transport budget"):
+        ExternalHttpTransportResult.accepted(
+            http_status_code=200,
+            protocol_result=ExternalHttpProtocolResult.ACCEPTED,
+            response_body=b"x" * (MAX_EXTERNAL_HTTP_RESPONSE_BODY_BYTES + 1),
         )
 
 
@@ -123,9 +333,13 @@ async def test_http_response_classification_is_delivery_certain_and_protocol_awa
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, method: str, url: str, **kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
             calls.append({"method": method, "url": url, **kwargs})
-            return SimpleNamespace(status_code=status_code)
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, outbound: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
+            return httpx.Response(status_code, content=b"", request=outbound)
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
 
@@ -150,7 +364,11 @@ async def test_connect_error_is_confirmed_not_sent_and_retry_safe(monkeypatch: p
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, _outbound: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
             raise httpx.ConnectError("connection refused", request=httpx.Request("POST", request.endpoint.url))
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
@@ -174,7 +392,11 @@ async def test_connect_timeout_is_confirmed_not_sent_and_retry_safe(monkeypatch:
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, _outbound: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
             raise httpx.ConnectTimeout("connect timed out", request=httpx.Request("POST", request.endpoint.url))
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())
@@ -209,7 +431,11 @@ async def test_timeout_and_reset_are_ambiguous_and_never_retry_safe(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, _method: str, _url: str, **_kwargs: Any) -> SimpleNamespace:
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
+            return httpx.Request(method, url, **kwargs)
+
+        async def send(self, _outbound: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream is True
             raise exception_type("transport interrupted", request=httpx.Request("POST", request.endpoint.url))
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeClient())

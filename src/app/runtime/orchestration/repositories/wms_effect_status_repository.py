@@ -7,11 +7,11 @@ from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from src.app.effect_ledger_status import SystemOutboxStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
-from src.app.sys.models.outbox import WMS_EFFECT_OPERATION_IDENTITIES, SystemOutbox
+from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES, SystemOutbox
 
 _CLAIMABLE_INTENT_STATUSES = (
     RuntimeIntentStatus.PROPOSED,
@@ -25,7 +25,7 @@ _QUERYABLE_TRANSPORT_TERMINALS = (
 )
 _WMS_EFFECT_CAPABILITY_BINDINGS = tuple(
     (*operation_identity.rsplit("@", maxsplit=1), operation_identity)
-    for operation_identity in WMS_EFFECT_OPERATION_IDENTITIES
+    for operation_identity in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 )
 
 
@@ -36,6 +36,15 @@ class WmsEffectStatusClaim:
     intent: RuntimeIntentLog
     outbox: SystemOutbox
     lease_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class WmsEffectStatusBacklogSnapshot:
+    """单次 scanner claim 前的待查询积压快照。"""
+
+    backlog_count: int
+    max_overdue_age_ms: float
+    max_confirmation_age_ms: float
 
 
 class WmsEffectStatusRepository:
@@ -71,7 +80,7 @@ class WmsEffectStatusRepository:
             operation_identity,
         )
         if (
-            operation_identity not in WMS_EFFECT_OPERATION_IDENTITIES
+            operation_identity not in WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
             or getattr(outbox, "operation_identity", None) != operation_identity
             or capability_binding not in _WMS_EFFECT_CAPABILITY_BINDINGS
             or getattr(outbox, "idempotency_key", None) != idempotency_key
@@ -123,6 +132,30 @@ class WmsEffectStatusRepository:
             dispatch_key=None,
         )
 
+    async def get_due_backlog_snapshot(self, db: Any, *, now: datetime) -> WmsEffectStatusBacklogSnapshot:
+        base = self._eligible_statement(now)
+        result = await db.execute(
+            base.with_only_columns(
+                func.count(),
+                func.min(func.coalesce(RuntimeIntentLog.status_check_after, now)),
+                func.min(func.coalesce(RuntimeIntentLog.status_check_started_at, now)),
+            ).order_by(None)
+        )
+        backlog_count, oldest_due_at, oldest_confirmation_at = result.one()
+        max_overdue_age_ms = (
+            max(0.0, (now - oldest_due_at).total_seconds() * 1_000) if oldest_due_at is not None else 0.0
+        )
+        max_confirmation_age_ms = (
+            max(0.0, (now - oldest_confirmation_at).total_seconds() * 1_000)
+            if oldest_confirmation_at is not None
+            else 0.0
+        )
+        return WmsEffectStatusBacklogSnapshot(
+            backlog_count=int(backlog_count or 0),
+            max_overdue_age_ms=max_overdue_age_ms,
+            max_confirmation_age_ms=max_confirmation_age_ms,
+        )
+
     async def _claim(
         self,
         db: Any,
@@ -135,8 +168,34 @@ class WmsEffectStatusRepository:
         if lease_seconds <= 0 or limit <= 0:
             raise ValueError("WMS EFFECT status claim bounds must be positive")
         intent_columns = cast("Any", RuntimeIntentLog).__table__.c
-        outbox_columns = cast("Any", SystemOutbox).__table__.c
         statement = (
+            self._eligible_statement(now)
+            .order_by(intent_columns.status_check_after.asc().nullsfirst(), intent_columns.id.asc())
+            .limit(limit)
+            .with_for_update(of=RuntimeIntentLog, skip_locked=True)
+        )
+        if dispatch_key is not None:
+            statement = statement.where(intent_columns.dispatch_key == dispatch_key)
+        result = await db.execute(statement)
+        claimed: list[WmsEffectStatusClaim] = []
+        lease_until = now + timedelta(seconds=lease_seconds)
+        for intent, outbox in result.all():
+            token = uuid4().hex
+            if intent.status_check_started_at is None:
+                intent.status_check_started_at = now
+            intent.status_check_count = int(intent.status_check_count or 0) + 1
+            intent.status_check_lease_token = token
+            intent.status_check_lease_until = lease_until
+            claimed.append(WmsEffectStatusClaim(intent=intent, outbox=outbox, lease_token=token))
+        if claimed:
+            await db.flush()
+        return tuple(claimed)
+
+    @staticmethod
+    def _eligible_statement(now: datetime) -> Any:
+        intent_columns = cast("Any", RuntimeIntentLog).__table__.c
+        outbox_columns = cast("Any", SystemOutbox).__table__.c
+        return (
             select(RuntimeIntentLog, SystemOutbox)
             .join(SystemOutbox, outbox_columns.dispatch_key == intent_columns.dispatch_key)
             .where(
@@ -159,29 +218,10 @@ class WmsEffectStatusRepository:
                     intent_columns.status_check_lease_token.is_(None),
                     intent_columns.status_check_lease_until <= now,
                 ),
-                outbox_columns.operation_identity.in_(WMS_EFFECT_OPERATION_IDENTITIES),
+                outbox_columns.operation_identity.in_(WMS_ASYNC_EFFECT_OPERATION_IDENTITIES),
                 outbox_columns.status.in_(_QUERYABLE_TRANSPORT_TERMINALS),
             )
-            .order_by(intent_columns.status_check_after.asc().nullsfirst(), intent_columns.id.asc())
-            .limit(limit)
-            .with_for_update(of=RuntimeIntentLog, skip_locked=True)
         )
-        if dispatch_key is not None:
-            statement = statement.where(intent_columns.dispatch_key == dispatch_key)
-        result = await db.execute(statement)
-        claimed: list[WmsEffectStatusClaim] = []
-        lease_until = now + timedelta(seconds=lease_seconds)
-        for intent, outbox in result.all():
-            token = uuid4().hex
-            if intent.status_check_started_at is None:
-                intent.status_check_started_at = now
-            intent.status_check_count = int(intent.status_check_count or 0) + 1
-            intent.status_check_lease_token = token
-            intent.status_check_lease_until = lease_until
-            claimed.append(WmsEffectStatusClaim(intent=intent, outbox=outbox, lease_token=token))
-        if claimed:
-            await db.flush()
-        return tuple(claimed)
 
     async def get_claim_for_update(
         self,
@@ -235,6 +275,7 @@ class WmsEffectStatusRepository:
 wms_effect_status_repository = WmsEffectStatusRepository()
 
 __all__ = [
+    "WmsEffectStatusBacklogSnapshot",
     "WmsEffectStatusClaim",
     "WmsEffectStatusRepository",
     "wms_effect_status_repository",

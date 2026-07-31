@@ -5,10 +5,9 @@ parent: docs/architecture/workline-and-plugin-restructuring.md
 spec: docs/superpowers/archive/specs/2026-06-25-workline-restructuring-phase-0-spec.md
 related: docs/architecture/target-state-contract.md, docs/architecture/integration-lab-and-simulator.md
 note: |
-  本文件定义 WMS/ECS provider 的外部合同 profile。
-  Pydantic 校验模型在 tests/support/external_contract_profile.py（Phase 0 测试专用，
-  禁止 src/app/ import；Phase 1 CEO-013 升级到 src/app/wms_integration/models/）。
-  security_profile（HMAC canonical）Phase 0 只占位，留 Phase 3 external-callback-auth-spec.md。
+  本文件定义 generic provider 与 WMS-only 外部合同 profile。
+  Pydantic 校验模型在 src/app/contracts/external_contract_profile.py。
+  generic profile 保留 environment；WMS-only profile 不包含该维度。
 ---
 
 # 外部合同 Profile（P0-006）
@@ -18,9 +17,11 @@ note: |
 
 ## 1. 编写目的
 
-按 `provider_code + contract_version` 描述 WMS/ECS/RCS provider 的能力、字段映射、超时、重试、fixture set 和不支持动作，使 Runtime capability admission 和 callback normalizer 能在合同约束下工作，不依赖供应商 DTO/SDK。
-WMS 的当前部署约束是“一个工厂一个 Provider、一个 Provider 多个 typed operation”；本文中的环境示例不是运行时
-多 Provider catalog，也不允许按 operation/payload 路由或 fallback。
+按稳定身份描述外部 provider 的能力、字段映射、超时、重试、fixture set 和不支持动作，
+使 Runtime capability admission 和 callback normalizer 能在合同约束下工作，不依赖供应商 DTO/SDK。
+WMS 的当前部署约束是“一个工厂一个 Provider、一个 Provider 多个 typed operation”；WES 部署环境不参与 WMS
+合同选择，也不允许按 operation/payload 路由或 fallback。ECS/simulator 等 generic profile 继续使用
+`provider_code + contract_version + environment` 做环境隔离。
 
 ## 2. ExternalContractProfile 字段表
 
@@ -28,9 +29,9 @@ WMS 的当前部署约束是“一个工厂一个 Provider、一个 Provider 多
 | --- | --- | --- | --- |
 | `provider_code` | string | yes | 稳定 provider ID，如 `WMS`、`ECS` |
 | `contract_version` | string | yes | 合同版本，建议 ISO date 或 semver |
-| `environment` | enum | yes | `sandbox` / `staging` / `production`；Phase 0 fixture 只能用 `sandbox` |
-| `runtime_capabilities.query` | string[] | yes | 只能列 query port method，例如 `WmsMasterDataPort.get_material` |
-| `runtime_capabilities.effect` | string[] | yes | 只能列 effect port method，例如 `WmsFulfillmentPort.request_transport` |
+| `environment` | enum | generic yes / WMS no | generic 使用 `sandbox` / `staging` / `production`；WMS-only 拒绝该字段 |
+| `operation_blueprint_count` | int | yes | 必须等于静态 registry 的 35 项 operation |
+| `operation_registry` | string | yes | 唯一 author-time registry 模块 |
 | `inbound_normalizers.event` | string[] | yes | provider 允许的 event type |
 | `inbound_normalizers.result` | string[] | yes | provider 允许的 result/callback type |
 | `field_mapping` | object | yes | event/result 到 typed envelope 字段的映射 |
@@ -50,16 +51,19 @@ provider_code: WMS
 contract_version: "2026-06-25"
 environment: sandbox
 runtime_capabilities:
-  query:
-    - WmsMasterDataPort.get_material
-    - InventoryQueryOperationPort.execute
-  effect:
-    - WmsFulfillmentPort.request_transport
+  operation_blueprint_count: 35
+  operation_registry: src.app.wms_integration.operation_registry.WMS_OPERATIONS
+  query_range: Q01-Q19
+  effect_range: E01-E16
 inbound_normalizers:
   event:
     - WMS_GRN_RECEIVED
-    - WMS_TRANSPORT_COMPLETED
-  result: []
+    - WMS_PALLET_ARRIVED
+    - WMS_INVENTORY_UPDATED
+    - WMS_PDA_OPERATION_RECORDED
+  result:
+    - callback_type: WMS_EFFECT_STATUS_HINT
+      operation_scope: E08-E14
 field_mapping:
   WMS_GRN_RECEIVED:
     source_event_id: data.event_id
@@ -91,6 +95,9 @@ security_profile:
 ## 5. 合同版本规则（来源主计划 §3.5.1）
 
 - WES 内部域只识别 typed port contract；外部合同变化只能落在 `ExternalContractProfile` 和 adapter/normalizer
+- generic profile identity 固定为 `provider_code + contract_version + environment`，production 入站合同必须声明
+  `secret_kid + signature_algo`
+- WMS-only profile identity 固定为 `provider_code + contract_version`；`environment` 属于未知字段并 fail closed
 - 合同 profile 可破坏性替换，不保留旧中台兼容入口；但同一 `ExecutionSession` 固定 `provider_code + contract_version`，不在 RUNNING 期间热切
 - 每个 provider profile 必须配套 contract tests、sample callback、error fixture 和 replay scenario
 - 未声明的 `runtime_capabilities` 不得进入 `RuntimeCapabilityContext`；未声明的 `inbound_normalizers` 不得被 callback API 接收
@@ -103,12 +110,14 @@ security_profile:
 
 ## 5.1 当前 WMS 北向 operation profile
 
-| Mode | Operation identity | 交互 |
-| --- | --- | --- |
-| QUERY | `wms.inventory.query_inventory@v1` | 同步查询；保留预算、分页、typed evidence 和确定性 replay |
-| EFFECT | `wms.inventory.confirm_inbound@v1` | 幂等 submit + status query；callback hint 可选 |
-| EFFECT | `wms.fulfillment.full_box_exchange@v1` | 幂等 submit + status query；callback hint 可选 |
-| EFFECT | `wms.fulfillment.notify_pkg_binding@v1` | 幂等 submit + status query；callback hint 可选 |
+operation 清单只从 `src/app/wms_integration/operation_registry.py` 的 35 项静态 Definition 派生：
+
+- 19 项 QUERY：Q01–Q18 为 GET，Q19 为无副作用 POST；
+- 9 项同步 EFFECT：E01–E07/E15/E16 直接返回 typed terminal result；
+- 7 项异步 EFFECT：E08–E14 使用幂等 submit ACK + status query，callback hint 可选。
+
+profile 只绑定 Provider identity、endpoint/auth revision 和静态 operation，不复制或覆盖 method、完成模式、lane、
+预算、分页和拒绝码。profile 少于或多于 registry 任一 identity 时启动门禁必须 fail closed。
 
 WES 只定义并观测 submit、status query 和 callback hint。WMS 内部排队、任务状态机、库存处理和补偿逻辑不属于
 profile，也不能从 HTTP 状态或延迟推断。开发阶段由 mock/replay 提供这些交互能力；真实 WMS 上线前必须按

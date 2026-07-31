@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -107,6 +109,8 @@ def _runtime_module() -> ModuleType:
 
 
 def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> SimpleNamespace:
+    from src.app.runtime.system_capabilities.wms import provider_catalog
+    from src.app.wms_integration import effect_lane_runtime, effect_preparation_runtime, query_runtime
     from src.database import db as db_module
     from src.database import redis_client as redis_module
 
@@ -115,7 +119,24 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         close_db=AsyncMock(),
         init_redis=AsyncMock(),
         close_redis=AsyncMock(),
+        startup=SimpleNamespace(catalog=object()),
+        validate_wms_transport_configuration=MagicMock(),
+        effect_runtime=SimpleNamespace(client=object()),
+        build_wms_effect_lane_runtime=MagicMock(),
+        bind_wms_effect_lane_runtime=MagicMock(),
+        close_bound_wms_effect_lane_runtime=AsyncMock(),
+        effect_preparation_runtime=object(),
+        build_wms_effect_preparation_runtime=MagicMock(),
+        bind_wms_effect_preparation_runtime=MagicMock(),
+        close_bound_wms_effect_preparation_runtime=AsyncMock(),
+        close_wms_effect_preparation_runtime=AsyncMock(),
+        build_wms_data_lane_query_runtime=MagicMock(return_value=SimpleNamespace()),
+        bind_wms_data_lane_query_runtime=MagicMock(),
+        close_bound_wms_data_lane_query_runtime=AsyncMock(),
     )
+    infra.validate_wms_transport_configuration.return_value = infra.startup
+    infra.build_wms_effect_lane_runtime.return_value = infra.effect_runtime
+    infra.build_wms_effect_preparation_runtime.return_value = infra.effect_preparation_runtime
     redis_manager = SimpleNamespace(
         init_redis=infra.init_redis,
         close_redis=infra.close_redis,
@@ -127,33 +148,118 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     monkeypatch.setattr(module, "init_db", infra.init_db, raising=False)
     monkeypatch.setattr(module, "close_db", infra.close_db, raising=False)
     monkeypatch.setattr(module, "redis_manager", redis_manager, raising=False)
+    monkeypatch.setattr(
+        provider_catalog,
+        "validate_wms_transport_configuration",
+        infra.validate_wms_transport_configuration,
+    )
+    monkeypatch.setattr(
+        effect_lane_runtime,
+        "build_wms_effect_lane_runtime",
+        infra.build_wms_effect_lane_runtime,
+    )
+    monkeypatch.setattr(
+        effect_lane_runtime,
+        "bind_wms_effect_lane_runtime",
+        infra.bind_wms_effect_lane_runtime,
+    )
+    monkeypatch.setattr(
+        effect_lane_runtime,
+        "close_bound_wms_effect_lane_runtime",
+        infra.close_bound_wms_effect_lane_runtime,
+    )
+    monkeypatch.setattr(
+        effect_preparation_runtime,
+        "build_wms_effect_preparation_runtime",
+        infra.build_wms_effect_preparation_runtime,
+    )
+    monkeypatch.setattr(
+        effect_preparation_runtime,
+        "bind_wms_effect_preparation_runtime",
+        infra.bind_wms_effect_preparation_runtime,
+    )
+    monkeypatch.setattr(
+        effect_preparation_runtime,
+        "close_bound_wms_effect_preparation_runtime",
+        infra.close_bound_wms_effect_preparation_runtime,
+    )
+    monkeypatch.setattr(
+        effect_preparation_runtime,
+        "close_wms_effect_preparation_runtime",
+        infra.close_wms_effect_preparation_runtime,
+    )
+    monkeypatch.setattr(
+        query_runtime,
+        "build_wms_data_lane_query_runtime",
+        infra.build_wms_data_lane_query_runtime,
+    )
+    monkeypatch.setattr(
+        query_runtime,
+        "bind_wms_data_lane_query_runtime",
+        infra.bind_wms_data_lane_query_runtime,
+    )
+    monkeypatch.setattr(
+        query_runtime,
+        "close_bound_wms_data_lane_query_runtime",
+        infra.close_bound_wms_data_lane_query_runtime,
+    )
     return infra
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> Any:
-    runtime = module.CeleryAsyncRuntime()
+    runtime = module.CeleryAsyncRuntime(process_role=WmsProviderProcessRole.WES)
     monkeypatch.setattr(module, "celery_async_runtime", runtime, raising=False)
     return runtime
 
 
 def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
-    _patch_infrastructure(monkeypatch, module)
+    infra = _patch_infrastructure(monkeypatch, module)
     first_runtime = _install_runtime(monkeypatch, module)
     assert first_runtime.runner_generation is None
 
     first_runtime.initialize()
+    assert infra.build_wms_data_lane_query_runtime.call_args.kwargs["client"] is infra.effect_runtime.client
+    assert infra.build_wms_effect_preparation_runtime.call_args.kwargs["catalog"] is infra.startup.catalog
     first_generation = first_runtime.runner_generation
     assert isinstance(first_generation, str) and first_generation
     first_runtime.initialize()
     assert first_runtime.runner_generation == first_generation
     first_runtime.shutdown()
+    infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
+    infra.close_wms_effect_preparation_runtime.assert_awaited_once_with(infra.effect_preparation_runtime)
     assert first_runtime.runner_generation is None
 
-    second_runtime = module.CeleryAsyncRuntime()
+    second_runtime = module.CeleryAsyncRuntime(process_role=WmsProviderProcessRole.WES)
     second_runtime.initialize()
     assert second_runtime.runner_generation != first_generation
     second_runtime.shutdown()
+
+
+def test_fulfillment_role_initializes_only_its_actual_effect_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = module.CeleryAsyncRuntime(process_role=WmsProviderProcessRole.FULFILLMENT)
+
+    runtime.initialize()
+
+    assert infra.build_wms_effect_lane_runtime.call_args.kwargs["process_role"] is WmsProviderProcessRole.FULFILLMENT
+    infra.build_wms_data_lane_query_runtime.assert_not_called()
+    infra.bind_wms_data_lane_query_runtime.assert_not_called()
+    runtime.shutdown()
+    infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
+
+
+def test_preparation_bind_failure_does_not_unbind_an_existing_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    infra.bind_wms_effect_preparation_runtime.side_effect = RuntimeError("already bound")
+
+    with pytest.raises(RuntimeError, match="already bound"):
+        runtime.initialize()
+
+    infra.close_wms_effect_preparation_runtime.assert_not_awaited()
 
 
 def test_runner_generation_failure_rolls_back_all_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1155,7 +1261,7 @@ class _ShutdownFaultRunnerProbe(_RunnerProbe):
         return super().run(coroutine, context=context)
 
 
-@pytest.mark.parametrize("failure_call", [1, 2, 3, 4])
+@pytest.mark.parametrize("failure_call", [1, 2, 3, 4, 5, 6, 7])
 def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     failure_call: int,
@@ -1172,14 +1278,20 @@ def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     with _sync_watchdog(0.50, f"shutdown runner.run failure {failure_call}"):
         runtime.shutdown()
 
-    assert probe.shutdown_run_calls == 4
+    assert probe.shutdown_run_calls == 7
     if failure_call != 2:
         infra.close_redis.assert_awaited_once()
     if failure_call != 3:
+        infra.close_bound_wms_data_lane_query_runtime.assert_awaited_once()
+    if failure_call != 4:
+        infra.close_wms_effect_preparation_runtime.assert_awaited_once_with(infra.effect_preparation_runtime)
+    if failure_call != 5:
+        infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
+    if failure_call != 6:
         infra.close_db.assert_awaited_once()
     assert runtime.state is module.RuntimeState.CLOSED
     assert runtime._runner is None
     assert runtime._owner_pid is None
 
     runtime.shutdown()
-    assert probe.shutdown_run_calls == 4
+    assert probe.shutdown_run_calls == 7

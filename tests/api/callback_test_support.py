@@ -182,7 +182,7 @@ def create_external_payload(**overrides: object) -> JsonDict:
 
 def create_wms_external_payload(**overrides: object) -> JsonDict:
     payload: JsonDict = {
-        "callback_type": "WMS_RACK_ARRIVED",
+        "callback_type": "WMS_INVENTORY_UPDATED",
         "trace_id": "trace-wms-001",
         "dispatch_key": "external:test_workline_plugin:trace-wms-001:RACK_EXCHANGE_AND_SUPPLY",
         "status": "SUCCEEDED",
@@ -194,27 +194,6 @@ def create_wms_external_payload(**overrides: object) -> JsonDict:
         "timestamp": "2026-05-16T08:00:01Z",
         "signature": "test-signature",
         "active_bin_rack": {"rack_id": "RACK-001", "cells": []},
-    }
-    payload.update(overrides)
-    return payload
-
-
-def create_full_box_exchange_external_payload(**overrides: object) -> JsonDict:
-    payload: JsonDict = {
-        "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
-        "trace_id": "trace-full-box-001",
-        "dispatch_key": "handling:full-box:release-001:move:1",
-        "exchange_request_code": "handling:full-box:release-001:move:1",
-        "rack_release_id": "rack-release-001",
-        "wms_rcs_task_id": "RCS-TASK-FULL-001",
-        "source_system": "WMS",
-        "source_event_id": "wms-full-box-event-001",
-        "source_version": "1",
-        "occurred_at": "2026-05-22T08:00:00Z",
-        "request_id": "REQ-FULL-BOX-001",
-        "timestamp": "2026-05-22T08:00:01Z",
-        "signature": "test-signature",
-        "exchange_status": "BUSINESS_COMPLETED",
     }
     payload.update(overrides)
     return payload

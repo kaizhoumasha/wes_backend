@@ -5,18 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_context import (
+    RoughSorterQ19AdmissionDecision,
+)
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_inventory_admission import (
     RoughSorterBindingSnapshot,
 )
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.runtime_intent import BlockScope
-from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
-from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
+from src.app.runtime.system_capabilities.outcomes import ContractViolation
 from src.app.runtime.workline_plugins.contracts import PluginDecision
 from src.app.runtime.workline_plugins.dispatcher import (
     HandlerRegistration,
@@ -37,11 +38,6 @@ from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     parse_scan_completed,
 )
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationRequest,
-    InventoryQueryOperationResult,
-)
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
@@ -61,7 +57,7 @@ EXPECTED_PHASE = {
     "RS-SD-007": "PICK_TO_PIPELINE",
     "RS-SD-008": "PICK_TO_PIPELINE",
     "RS-SD-009": "PICK_TO_PIPELINE",
-    "RS-SD-010": "PICK_TO_PIPELINE",
+    "RS-SD-010": "READY",
     "RS-SD-011": "PICK_TO_PIPELINE",
     "RS-SD-012": "PICK_TO_PIPELINE",
     "RS-SD-013": "PICK_TO_PIPELINE",
@@ -110,7 +106,7 @@ def _config() -> RoughSorterConfig:
             "ng_location": "NG-01",
             "warehouse_code": "WH-01",
             "owner_code": "OWNER-01",
-            "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+            "provider_profile": "wms.2026-07-28.full-factory",
         }
     )
 
@@ -129,12 +125,17 @@ def _logical_input(case: dict[str, Any]) -> object:
 def _facts(case: dict[str, Any]) -> RoughSorterFacts:
     data = case["trigger"]["payload"].get("data", {})
     discriminator = case["trigger"]["decision_discriminator"]
+    q19_fact = case.get("q19_admission_fact")
+    q19_decision = q19_fact.get("decision") if isinstance(q19_fact, dict) else None
     return RoughSorterFacts(
         business_key=data.get("PkgID", "PKG-AUTHORITATIVE"),
         hhpn=data.get("HHPN", "HH-AUTHORITATIVE"),
         lot_code=data.get("LotCode", "LOT-AUTHORITATIVE"),
         correlation_matches=discriminator.get("correlation") != "LATE_OR_UNKNOWN_MISMATCH",
         replay_digest_matches=discriminator.get("duplicate_digest") != "DIFFERENT",
+        q19_admission_decision=(
+            RoughSorterQ19AdmissionDecision.model_validate(q19_decision) if q19_decision is not None else None
+        ),
         binding_snapshot=RoughSorterBindingSnapshot(
             binding_id=1,
             binding_version=1,
@@ -197,6 +198,11 @@ def _fact_source(case: dict[str, Any]) -> PluginAttemptFactSource:
             "material_identity_key": facts.business_key,
             "six_in_one": {"HHPN": facts.hhpn, "LotCode": facts.lot_code},
         },
+        session_context=(
+            {"wms_admission_decision": facts.q19_admission_decision.model_dump(mode="json")}
+            if facts.q19_admission_decision is not None
+            else {}
+        ),
         correlation_matches=facts.correlation_matches,
         replay_digest_matches=facts.replay_digest_matches,
     )
@@ -222,35 +228,48 @@ class _Gateway:
         self.discriminator = discriminator
         self.calls = 0
 
-    async def execute(self, capability_key: str, contract_version: str, input_data: object) -> GatewayQueryResult:
-        assert (capability_key, contract_version) == ("wms.inventory.query_inventory", "v1")
-        assert isinstance(input_data, InventoryQueryOperationRequest)
+    async def execute(self, capability_key: str, contract_version: str, input_data: object) -> object:
         self.calls += 1
-        admission = self.discriminator.get("wms_admission")
-        if admission == "ADMIT":
-            outcome = Success(
-                payload=InventoryQueryOperationResult(
-                    items=(
-                        InventoryAuthorityItem(
-                            material_code=input_data.material_code,
-                            lot_no=input_data.lot_no,
-                            warehouse_code=input_data.warehouse_code,
-                            owner_code=input_data.owner_code,
-                            available_quantity="1",
-                        ),
-                    ),
-                    source_version="fixture-v1",
-                )
-            )
-        elif admission == "REJECT":
-            outcome = BusinessReject(reason_code="WMS_REJECTED", message="WMS rejected")
-        else:
-            outcome = RetryableFailure(error_code="TIMEOUT", message="WMS timeout")
-        return GatewayQueryResult(outcome=outcome, evidence=SimpleNamespace(reference="timeline:wms"))
+        raise AssertionError(f"粗分机 handler 不得调用 Q14 gateway: {(capability_key, contract_version, input_data)!r}")
+
+
+class _ForbiddenGateway:
+    async def execute(self, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("已持久化 Q19 decision 时不得回落 Q14 QUERY")
+
+
+def _q19_decision(
+    decision: str,
+    *,
+    reason_code: str = "PACKAGE_NOT_ADMISSIBLE",
+) -> RoughSorterQ19AdmissionDecision:
+    admitted = decision == "ADMIT"
+    return RoughSorterQ19AdmissionDecision(
+        request_canonical_hash="a" * 64,
+        decision=decision,
+        reason_code=None if admitted else reason_code,
+        grn_id="GRN-Q19" if admitted else None,
+        po_number="PO-Q19" if admitted else None,
+        po_item="10" if admitted else None,
+        material_code="MAT-Q19" if admitted else None,
+        pkg_id="PKG-Q19" if admitted else None,
+        measurement_decision="PASS" if admitted else "REJECT",
+        standard_reel_diameter_mm="100",
+        reel_diameter_tolerance_mm="1",
+        standard_reel_thickness_mm="10",
+        reel_thickness_tolerance_mm="0.5",
+        rule_version="rule-q19",
+        source_version="source-q19",
+        evidence_reference="query:q19:persisted",
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", _cases(), ids=lambda case: case["case_id"])
+@pytest.mark.parametrize(
+    "case",
+    [case for case in _cases() if case["implementation_status"] == "covered"],
+    ids=lambda case: case["case_id"],
+)
 async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any]) -> None:
     logical_input = _logical_input(case)
     discriminator = case["trigger"]["decision_discriminator"]
@@ -283,21 +302,137 @@ async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any])
         assert decision.next_state == state
     elif case["case_id"] == "RS-SD-004":
         assert decision.next_state.measurement_evidence_ref == "measurement:CMD-PICK-004"
-        assert decision.next_state.wms_evidence_ref == "timeline:wms"
+        assert decision.next_state.wms_evidence_ref == "query:q19:persisted"
     elif case["case_id"] == "RS-SD-006":
-        assert decision.next_state.wms_evidence_ref == "timeline:wms"
-    else:
+        assert decision.next_state.wms_evidence_ref == "query:q19:persisted"
+    elif case["case_id"] != "RS-SD-001":
         assert decision.next_state.measurement_evidence_ref == state.measurement_evidence_ref
         assert decision.next_state.wms_evidence_ref == state.wms_evidence_ref
-    assert gateway.calls == (1 if case["case_id"] in {"RS-SD-004", "RS-SD-006", "RS-SD-010"} else 0)
+    assert gateway.calls == 0
     if case["expected_outcome"]["reason_code"]:
-        assert decision.reason_code == case["expected_outcome"]["reason_code"]
+        expected_reason = {
+            "RS-SD-006": "PACKAGE_NOT_ADMISSIBLE",
+            "RS-SD-010": "ROUGH_SORTER_Q19_ADMISSION_UNAVAILABLE",
+        }.get(case["case_id"], case["expected_outcome"]["reason_code"])
+        assert decision.reason_code == expected_reason
+
+
+def test_q19_provider_failure_fixture_stops_before_plugin_handler() -> None:
+    case = next(case for case in _cases() if case["case_id"] == "RS-SD-010")
+
+    assert case["implementation_status"] == "blocked"
+    assert case["expected_processing_result"] == {"success": 0, "failed": 1}
+    assert case["expected_intents"] == []
+    assert case["q19_admission_fact"]["failure_reason_code"] == "WMS_PROVIDER_TIMEOUT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("q19_decision", "expected_outcome", "expected_phase"),
+    [
+        ("ADMIT", "MOVE_FORWARD_PERSISTED", "MOVING_FORWARD"),
+        ("REJECT", "MOVE_TO_NG_PERSISTED", "NG_MOVING"),
+    ],
+)
+async def test_pick_result_consumes_persisted_q19_decision_without_q14_query(
+    q19_decision: str,
+    expected_outcome: str,
+    expected_phase: str,
+) -> None:
+    case = next(case for case in _cases() if case["case_id"] == "RS-SD-004")
+    facts = _facts(case).model_copy(update={"q19_admission_decision": _q19_decision(q19_decision)})
+
+    decision = await decide(
+        _logical_input(case),
+        state=_source_state(case),
+        config=_config(),
+        facts=facts,
+        gateway=_ForbiddenGateway(),
+    )
+
+    assert decision.outcome_code == expected_outcome
+    assert decision.next_state.phase == expected_phase
+    assert decision.next_state.wms_evidence_ref == "query:q19:persisted"
     if case["case_id"] == "RS-SD-003":
         assert decision.outcome_code == "HOLD"
         assert all(intent.action != "MOVE_TO_NG" for intent in decision.intents)
     if case["case_id"] == "RS-SD-009":
         assert decision.reconciliation_request is not None
         assert decision.intents == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("q19_decision", "expected_outcome", "expected_action", "expected_phase"),
+    [
+        ("ADMIT", "PICK_AND_PUT_PERSISTED", "PICK_AND_PUT", "PICK_TO_PIPELINE"),
+        ("REJECT", "MOVE_TO_NG_PERSISTED", "MOVE_TO_NG", "NG_MOVING"),
+        (None, "HOLD", None, "READY"),
+    ],
+)
+async def test_scan_q19_gate_precedes_any_normal_inbound_arm_command(
+    q19_decision: str | None,
+    expected_outcome: str,
+    expected_action: str | None,
+    expected_phase: str,
+) -> None:
+    case = next(case for case in _cases() if case["case_id"] == "RS-SD-001")
+    facts = _facts(case).model_copy(
+        update={
+            "q19_admission_decision": _q19_decision(q19_decision) if q19_decision is not None else None,
+        }
+    )
+
+    decision = await decide(
+        _logical_input(case),
+        state=RoughSorterState(phase="READY"),
+        config=_config(),
+        facts=facts,
+        gateway=_ForbiddenGateway(),
+    )
+
+    assert decision.outcome_code == expected_outcome
+    assert decision.next_state.phase == expected_phase
+    command_actions = [intent.action for intent in decision.intents if intent.action is not None]
+    assert command_actions == ([expected_action] if expected_action is not None else [])
+    if q19_decision is None:
+        assert decision.reason_code == "ROUGH_SORTER_Q19_ADMISSION_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "GRN_NOT_FOUND",
+        "PACKAGE_NOT_FOUND",
+        "PACKAGE_GRN_MISMATCH",
+        "MATERIAL_MISMATCH",
+        "QUANTITY_MISMATCH",
+        "MEASUREMENT_OUT_OF_TOLERANCE",
+        "PACKAGE_NOT_ADMISSIBLE",
+    ],
+)
+async def test_scan_all_q19_reject_reasons_emit_exactly_one_ng_command(reason_code: str) -> None:
+    case = next(case for case in _cases() if case["case_id"] == "RS-SD-001")
+    facts = _facts(case).model_copy(
+        update={
+            "q19_admission_decision": _q19_decision("REJECT", reason_code=reason_code),
+        }
+    )
+
+    decision = await decide(
+        _logical_input(case),
+        state=RoughSorterState(phase="READY"),
+        config=_config(),
+        facts=facts,
+        gateway=_ForbiddenGateway(),
+    )
+
+    commands = [intent for intent in decision.intents if intent.action is not None]
+    assert decision.outcome_code == "MOVE_TO_NG_PERSISTED"
+    assert decision.reason_code == reason_code
+    assert [intent.action for intent in commands] == ["MOVE_TO_NG"]
+    assert all(intent.action != "PICK_AND_PUT" for intent in decision.intents)
     if case["case_id"] == "RS-SD-013":
         assert decision.evidence_only is True
         assert decision.intents == ()
@@ -516,17 +651,16 @@ async def test_result_and_timeout_correlation_mismatch_is_evidence_only(case_id:
 
 
 @pytest.mark.asyncio
-async def test_handler_normalizes_defensive_query_validation_failure_to_stable_hold() -> None:
+async def test_pick_result_without_persisted_q19_fact_holds_without_q14_fallback() -> None:
     case = next(item for item in _cases() if item["case_id"] == "RS-SD-004")
     state = _source_state(case)
-    # 模拟上游绕过 facts schema 的历史快照；正常 dispatcher 会更早拒绝。
-    invalid_facts = _facts(case).model_copy(update={"hhpn": "H" * 121})
+    invalid_facts = _facts(case).model_copy(update={"q19_admission_decision": None})
     gateway = _Gateway(case["trigger"]["decision_discriminator"])
 
     decision = await decide(_logical_input(case), state=state, config=_config(), facts=invalid_facts, gateway=gateway)
 
     assert decision.outcome_code == "HOLD"
-    assert decision.reason_code == "ROUGH_SORTER_QUERY_CONTRACT_INVALID"
+    assert decision.reason_code == "ROUGH_SORTER_Q19_ADMISSION_UNAVAILABLE"
     assert gateway.calls == 0
 
 

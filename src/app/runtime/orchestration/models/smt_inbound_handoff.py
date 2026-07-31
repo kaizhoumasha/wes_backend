@@ -9,7 +9,7 @@ from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
-from sqlalchemy import JSON, Column, Index, Numeric, Text, UniqueConstraint, text
+from sqlalchemy import JSON, CheckConstraint, Column, Index, Numeric, Text, UniqueConstraint, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.expression import ColumnElement
@@ -100,6 +100,21 @@ class SmtInboundHandoffDemandBase(BaseMixin):
     )
     decision_status: str | None = Field(default=None, max_length=50, description="满箱交换决策状态")
     handling_operation_key: str | None = Field(default=None, max_length=200, description="满箱交换 handling 操作键")
+    full_box_exchange_station_code: str | None = Field(
+        default=None,
+        max_length=120,
+        description="E11 满箱交换阶段门冻结站点",
+    )
+    full_box_exchange_rack_face: str | None = Field(
+        default=None,
+        max_length=1,
+        description="E11 满箱交换阶段门冻结货架面",
+    )
+    active_full_box_exchange_intent_id: int | None = Field(
+        default=None,
+        foreign_key="wes_runtime.runtime_intent_logs.id",
+        description="当前 E11 root RuntimeIntentLog；终态成功后清空",
+    )
     sorting_source_demand_key: str | None = Field(default=None, max_length=200, description="分拣 source demand 幂等键")
     status: SmtInboundHandoffDemandStatus = Field(
         default=SmtInboundHandoffDemandStatus.CREATED,
@@ -129,6 +144,14 @@ class SmtInboundHandoffDemand(SmtInboundHandoffDemandBase, DataTableMixin, table
     __table_args__ = (
         UniqueConstraint("demand_key", name="uq_smt_inbound_handoff_demands_demand_key"),
         UniqueConstraint("rack_release_id", name="uq_smt_inbound_handoff_demands_rack_release_id"),
+        CheckConstraint(
+            "full_box_exchange_rack_face IN ('A', 'B')",
+            name="ck_smt_handoff_demands_exchange_rack_face",
+        ),
+        Index(
+            "ix_smt_handoff_demands_exchange_intent",
+            "active_full_box_exchange_intent_id",
+        ),
         Index(
             "ix_smt_inbound_handoff_demands_due_scan",
             "next_attempt_at",

@@ -33,7 +33,7 @@ brainstorming 比较了三种方案：
 - 稳定 identity：capability `wms.inventory.confirm_inbound@v1`；operation/idempotency business key 使用 `inbound_key`；
   dispatch key 不包含瞬时 `request_id`，同一业务对象重放保持不变。
 - 冻结出站：gateway 生成 canonical bytes/hash，并冻结
-  `wms.2026-07-06.material-flow.production`、`WMS_INBOUND_CONFIRM`、HMAC credential reference 与 endpoint snapshot。
+  `wms.2026-07-28.full-factory.production`、`WMS_INBOUND_CONFIRM`、HMAC credential reference 与 endpoint snapshot。
 - 粗分机：runtime plan 改为 typed `SYSTEM_CAPABILITY`，preview 只暴露 stable operation identity；插件 generated
   definition 显式授权该 capability。
 - callback：`ConfirmInboundOperationResult` 只由 adapter 映射为 T8d `COMPLETED/REJECTED` reducer event，不直接改

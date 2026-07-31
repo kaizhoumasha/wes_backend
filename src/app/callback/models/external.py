@@ -19,8 +19,9 @@ class CallbackExternalRequest(BaseModel):
                     "trace_id": "trace-01JQA",
                     "source_event_id": "wms-event-01JQA",
                     "source_system": "WMS",
+                    "occurred_at": "2026-07-30T08:00:00Z",
                     "data": {
-                        "operation_identity": "wms.inventory.confirm_inbound@v1",
+                        "operation_identity": "wms.fulfillment.request_rack_supply@v1",
                         "idempotency_key": "idem-01JQA",
                         "dispatch_key": "dispatch-01JQA",
                     },
@@ -33,7 +34,8 @@ class CallbackExternalRequest(BaseModel):
     trace_id: str | None = Field(default=None, max_length=120, description="端到端追踪 ID")
     event_id: str | None = Field(default=None, max_length=200, description="供应商事件 ID")
     causation_id: str | None = Field(default=None, max_length=200, description="因果事件 ID")
-    source_event_id: str | None = Field(default=None, max_length=200, description="供应商幂等事件 ID")
+    source_event_id: str | None = Field(default=None, max_length=160, description="供应商幂等事件 ID")
+    occurred_at: str | None = Field(default=None, description="外部事件发生时间（offset-aware ISO 8601）")
     dispatch_key: str | None = Field(default=None, max_length=240, description="异步 EFFECT 调度身份")
     data: dict[str, Any] | None = Field(default=None, description="供应商业务载荷；具体字段由 callback_type 决定")
 

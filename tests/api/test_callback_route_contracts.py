@@ -20,7 +20,6 @@ from tests.api.callback_test_support import (
     RequestFactory,
     _get_route,
     callback_ingress_module,
-    create_full_box_exchange_external_payload,
     create_result_payload,
     create_wms_external_payload,
 )
@@ -166,20 +165,13 @@ class TestCallbackEnqueueFallback:
         db_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_external_records_rack_task_callback(self) -> None:
+    async def test_process_external_rejects_rack_task_callback_before_runtime_inbox(self) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
-        calls: list[dict[str, Any]] = []
-
-        class RecordingRackTaskService:
-            async def record_callback_from_external_http(self, **kwargs: Any) -> None:
-                calls.append(kwargs)
-
+        runtime_writer = _runtime_inbox_writer_stub()
         service = CallbackOrchestrationService(
-            rack_task_service=RecordingRackTaskService(),
-            runtime_inbox_writer=_runtime_inbox_writer_stub(),
+            runtime_inbox_writer=runtime_writer,
         )
-        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_wms_external_payload(
             callback_type="WMS_RACK_TASK_RESULT",
@@ -187,95 +179,81 @@ class TestCallbackEnqueueFallback:
             status="SUCCEEDED",
         )
 
-        outcome = await service.process_external(
-            db,  # type: ignore[arg-type]
-            callback_type="WMS_RACK_TASK_RESULT",
-            payload=payload,
-            request_id="req-wms-physical",
-            trace_id="trace-wms-001",
-            enqueue_processing=lambda: None,
-        )
+        with pytest.raises(ValueError, match="callback_type is not allowed"):
+            await service.process_external(
+                db,  # type: ignore[arg-type]
+                callback_type="WMS_RACK_TASK_RESULT",
+                payload=payload,
+                request_id="req-wms-physical",
+                trace_id="trace-wms-001",
+                enqueue_processing=lambda: None,
+            )
 
-        assert outcome.trace_id == "trace-wms-001"
-        assert len(calls) == 1
-        assert calls[0]["db"] is db
-        assert calls[0]["payload_json"]["status"] == "SUCCEEDED"
-        assert calls[0]["trace_id"] == "trace-wms-001"
+        runtime_writer.write_external_callback.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_process_external_records_handling_operation_callback(self) -> None:
+    @pytest.mark.parametrize(
+        "callback_type",
+        ("CTU_BIN_MOVE_PROGRESS", "CTU_BIN_MOVE_COMPLETED", "CTU_BIN_MOVE_FAILED"),
+    )
+    async def test_process_external_rejects_removed_ctu_bin_callback_without_side_effect(
+        self,
+        callback_type: str,
+    ) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
-        calls: list[dict[str, Any]] = []
-
-        class RecordingRackTaskService:
-            async def record_callback_from_external_http(self, **_kwargs: Any) -> None:
-                return None
-
-        class RecordingHandlingOperationService:
-            async def record_callback_from_external_http(self, **kwargs: Any) -> None:
-                calls.append(kwargs)
-
+        runtime_writer = _runtime_inbox_writer_stub()
         service = CallbackOrchestrationService(
-            rack_task_service=RecordingRackTaskService(),
-            handling_operation_service=RecordingHandlingOperationService(),
-            runtime_inbox_writer=_runtime_inbox_writer_stub(),
+            runtime_inbox_writer=runtime_writer,
         )
         service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
-        db = SimpleNamespace()
+        db = SimpleNamespace(commit=AsyncMock())
         payload = create_wms_external_payload(
-            callback_type="CTU_BIN_MOVE_COMPLETED",
+            callback_type=callback_type,
+            source_system="CTU",
             dispatch_key="handling:bin-operation:trace-001:move:1",
             status="SUCCEEDED",
         )
 
-        outcome = await service.process_external(
-            db,  # type: ignore[arg-type]
-            callback_type="CTU_BIN_MOVE_COMPLETED",
-            payload=payload,
-            request_id="req-ctu-bin-completed",
-            trace_id="trace-bin-001",
-            enqueue_processing=lambda: None,
-        )
+        with pytest.raises(ValueError, match="callback_type is not allowed"):
+            await service.process_external(
+                db,  # type: ignore[arg-type]
+                callback_type=callback_type,
+                payload=payload,
+                request_id="req-removed-ctu-bin-callback",
+                trace_id="trace-bin-001",
+                enqueue_processing=lambda: None,
+            )
 
-        assert outcome.trace_id == "trace-bin-001"
-        assert len(calls) == 1
-        assert calls[0]["db"] is db
-        assert calls[0]["payload_json"]["dispatch_key"] == "handling:bin-operation:trace-001:move:1"
-        assert calls[0]["trace_id"] == "trace-bin-001"
+        runtime_writer.write_external_callback.assert_not_awaited()
+        db.commit.assert_not_awaited()
+        service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
-    async def test_process_external_routes_full_box_exchange_result_to_handling_lifecycle(self) -> None:
+    async def test_process_external_does_not_route_removed_full_box_exchange_callback(self) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
-        calls: list[dict[str, Any]] = []
-
-        class RecordingHandlingOperationService:
-            async def record_callback_from_external_http(self, **kwargs: Any) -> None:
-                calls.append(kwargs)
-
+        runtime_writer = _runtime_inbox_writer_stub()
         service = CallbackOrchestrationService(
-            rack_task_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
-            handling_operation_service=RecordingHandlingOperationService(),
-            runtime_inbox_writer=_runtime_inbox_writer_stub(),
+            runtime_inbox_writer=runtime_writer,
         )
-        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
-        payload = create_full_box_exchange_external_payload(dispatch_key="external:smt_full_box_exchange:release-001")
-
-        outcome = await service.process_external(
-            db,  # type: ignore[arg-type]
+        payload = create_wms_external_payload(
             callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
-            payload=payload,
-            request_id="REQ-FULL-BOX-001",
-            trace_id="trace-full-box-001",
-            enqueue_processing=lambda: None,
+            dispatch_key="removed-full-box-exchange:release-001",
         )
 
-        assert outcome.trace_id == "trace-full-box-001"
-        assert len(calls) == 1
-        assert calls[0]["db"] is db
-        assert calls[0]["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
+        with pytest.raises(ValueError, match="callback_type is not allowed"):
+            await service.process_external(
+                db,  # type: ignore[arg-type]
+                callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
+                payload=payload,
+                request_id="REQ-FULL-BOX-001",
+                trace_id="trace-full-box-001",
+                enqueue_processing=lambda: None,
+            )
+
+        runtime_writer.write_external_callback.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_process_external_runtime_duplicate_reports_duplicate_without_recording_handling_callback(
@@ -284,12 +262,8 @@ class TestCallbackEnqueueFallback:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
         runtime_writer = _runtime_inbox_writer_stub(created=False)
-        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
-        handling_operation_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
 
         service = CallbackOrchestrationService(
-            rack_task_service=rack_task_service,
-            handling_operation_service=handling_operation_service,
             runtime_inbox_writer=runtime_writer,
         )
         service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
@@ -297,13 +271,14 @@ class TestCallbackEnqueueFallback:
 
         outcome = await service.process_external(
             db,  # type: ignore[arg-type]
-            callback_type="CTU_BIN_MOVE_COMPLETED",
+            callback_type="AGV_TASK_RESULT",
             payload=create_wms_external_payload(
-                callback_type="CTU_BIN_MOVE_COMPLETED",
-                dispatch_key="handling:bin-operation:trace-001:move:1",
+                callback_type="AGV_TASK_RESULT",
+                source_system="AGV",
+                dispatch_key="agv:transport:trace-001",
             ),
-            request_id="req-duplicate-ctu",
-            trace_id="trace-bin-001",
+            request_id="req-duplicate-agv",
+            trace_id="trace-agv-001",
             enqueue_processing=lambda: None,
         )
 
@@ -311,20 +286,14 @@ class TestCallbackEnqueueFallback:
         runtime_writer.write_external_callback.assert_awaited_once()
         db.commit.assert_not_awaited()
         service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
-        rack_task_service.record_callback_from_external_http.assert_not_awaited()
-        handling_operation_service.record_callback_from_external_http.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_process_external_lifecycle_only_rack_callback_enqueues_runtime_processor_after_commit(self) -> None:
+    async def test_process_external_rejects_rack_callback_without_commit_or_enqueue(self) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
-        class RecordingRackTaskService:
-            async def record_callback_from_external_http(self, **_kwargs: Any) -> None:
-                return None
-
+        runtime_writer = _runtime_inbox_writer_stub()
         service = CallbackOrchestrationService(
-            rack_task_service=RecordingRackTaskService(),
-            runtime_inbox_writer=_runtime_inbox_writer_stub(),
+            runtime_inbox_writer=runtime_writer,
         )
         service._enqueue_runtime_inbox_processing = MagicMock()  # type: ignore[method-assign]
         db = SimpleNamespace(commit=AsyncMock())
@@ -334,10 +303,7 @@ class TestCallbackEnqueueFallback:
             status="SUCCEEDED",
         )
 
-        with patch(
-            "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
-            new=AsyncMock(),
-        ):
+        with pytest.raises(ValueError, match="callback_type is not allowed"):
             await service.process_external(
                 db,  # type: ignore[arg-type]
                 callback_type="WMS_RACK_TASK_RESULT",
@@ -346,17 +312,16 @@ class TestCallbackEnqueueFallback:
                 trace_id="trace-wms-lifecycle-only",
             )
 
-        db.commit.assert_awaited_once()
-        service._enqueue_runtime_inbox_processing.assert_called_once()
+        runtime_writer.write_external_callback.assert_not_awaited()
+        db.commit.assert_not_awaited()
+        service._enqueue_runtime_inbox_processing.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_process_external_broker_failure_does_not_rollback_committed_runtime_inbox(self) -> None:
-        """RuntimeInbox 与 lifecycle 先提交；broker 失败只降级为 warning。"""
+        """RuntimeInbox 先提交；broker 失败只降级为 warning。"""
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
-        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         service = CallbackOrchestrationService(
-            rack_task_service=rack_task_service,
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
         db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
@@ -368,19 +333,19 @@ class TestCallbackEnqueueFallback:
         ):
             outcome = await service.process_external(
                 db,  # type: ignore[arg-type]
-                callback_type="WMS_RACK_TASK_RESULT",
+                callback_type="AGV_TASK_RESULT",
                 payload=create_wms_external_payload(
-                    callback_type="WMS_RACK_TASK_RESULT",
-                    dispatch_key="external:smt:release-001:RACK_OPERATION:broker-fail",
+                    callback_type="AGV_TASK_RESULT",
+                    source_system="AGV",
+                    dispatch_key="agv:transport:broker-fail",
                     status="SUCCEEDED",
                 ),
-                request_id="req-wms-broker-fail",
-                trace_id="trace-wms-broker-fail",
+                request_id="req-agv-broker-fail",
+                trace_id="trace-agv-broker-fail",
                 enqueue_processing=enqueue_processing,
             )
 
         assert outcome.is_duplicate is False
-        rack_task_service.record_callback_from_external_http.assert_awaited_once()
         db.commit.assert_awaited_once()
         enqueue_processing.assert_called_once()
         db.rollback.assert_not_awaited()

@@ -11,7 +11,7 @@ Session 归属解析器
 规则（按 RuntimeInbox.kind）:
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
 - COMMAND_RESULT: 按持久 command_id 或显式 execution correlation 恢复 Session
-- EXTERNAL_HTTP: 优先按 dispatch_key -> rack task operation 恢复 Session，回退 outbox/trace_id
+- EXTERNAL_HTTP: 优先按 dispatch_key -> outbox/session 恢复 Session，回退 trace_id
 - INTERNAL_EVENT: 按 session_id 恢复 Session
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
@@ -26,7 +26,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
-from src.app.rack.repositories import RackTaskRepository, rack_task_repository
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.session_repository import (
@@ -41,7 +40,6 @@ from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repos
 from src.app.workline.domain.run_mode import normalize_run_mode
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import ensure_dict, non_empty_str
-from src.core.logger import logger
 from src.database.dialect import dialect_name
 from src.utils.timezone import timezone
 
@@ -295,9 +293,6 @@ class SessionResolver:
         workline_repo: Any | None = None,
         command_repo: DeviceCommandRepository | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
-        rack_task_repo: RackTaskRepository | None = None,
-        handling_step_repo: Any | None = None,
-        handling_operation_repo: Any | None = None,
         plugin_binding_service: Any | None = None,
         execution_anchor_repo: Any | None = None,
     ) -> None:
@@ -314,7 +309,6 @@ class SessionResolver:
         self.workline_repo = workline_repo
         self.command_repo = command_repo or DeviceCommandRepository()
         self.outbox_repo = outbox_repo or system_outbox_repository
-        self.rack_task_repo = rack_task_repo or rack_task_repository
         if execution_anchor_repo is None:
             from src.app.runtime.orchestration.repositories.session_execution_anchor_repository import (
                 session_execution_anchor_repository,
@@ -327,14 +321,6 @@ class SessionResolver:
 
             plugin_binding_service = workline_plugin_binding_service
         self.plugin_binding_service = plugin_binding_service
-        if handling_step_repo is None or handling_operation_repo is None:
-            from src.app.handling.repositories import handling_operation_repository, handling_step_repository
-
-            self.handling_step_repo = handling_step_repo or handling_step_repository
-            self.handling_operation_repo = handling_operation_repo or handling_operation_repository
-        else:
-            self.handling_step_repo = handling_step_repo
-            self.handling_operation_repo = handling_operation_repo
 
     async def resolve_or_create(
         self,
@@ -811,8 +797,7 @@ class SessionResolver:
     ) -> WorklineSession:
         """处理 EXTERNAL_HTTP 类型的 Session 解析
 
-        优先按 dispatch_key 找到 rack task，并通过 operation_key 找回等待中的物料 Session；
-        找不到等待 Session 时回退 outbox/session_id 与 trace_id。
+        优先按 dispatch_key 找到 outbox/session，找不到时回退 trace_id。
 
         Args:
             db: 数据库会话
@@ -830,18 +815,6 @@ class SessionResolver:
         dispatch_key = non_empty_str(payload_json.get("dispatch_key"))
 
         if dispatch_key is not None:
-            session_by_rack_operation = await self._resolve_rack_task_material_session(db, inbox, dispatch_key)
-            if session_by_rack_operation is not None:
-                return session_by_rack_operation
-
-            session_by_handling_operation = await self._resolve_handling_operation_material_session(
-                db,
-                inbox,
-                dispatch_key,
-            )
-            if session_by_handling_operation is not None:
-                return session_by_handling_operation
-
             outbox = await self.outbox_repo.get_by_dispatch_key(db, dispatch_key)
             session_id = getattr(outbox, "session_id", None) if outbox is not None else None
             if isinstance(session_id, int):
@@ -863,100 +836,6 @@ class SessionResolver:
             raise ValueError(f"Session not found for trace_id: {trace_id}")
 
         inbox.workline_id = getattr(session, "workline_id", None)
-        return session
-
-    async def _resolve_rack_task_material_session(
-        self,
-        db: AsyncSession,
-        inbox: Any,
-        dispatch_key: str,
-    ) -> WorklineSession | None:
-        """通过 rack task operation_key 找回被挂起的物料 session。"""
-
-        rack_task = await self.rack_task_repo.get_by_dispatch_key(db, dispatch_key)
-        if rack_task is None:
-            logger.warning(
-                "Rack task callback fallback to trace/outbox because rack task was not found: "
-                f"dispatch_key={dispatch_key}"
-            )
-            return None
-
-        workline_id = getattr(rack_task, "workline_id", None)
-        if isinstance(workline_id, int):
-            inbox.workline_id = workline_id
-        else:
-            logger.warning(
-                "Rack task callback fallback to trace/outbox because workline_id is missing: "
-                f"dispatch_key={dispatch_key}"
-            )
-            return None
-
-        operation_key = non_empty_str(getattr(rack_task, "operation_key", None))
-        if operation_key is None:
-            logger.warning(
-                "Rack task callback fallback to trace/outbox because operation_key is missing: "
-                f"dispatch_key={dispatch_key}, workline_id={workline_id}"
-            )
-            return None
-
-        session = await self.session_repo.get_open_session_by_waiting_rack_operation_key(
-            db,
-            workline_id=workline_id,
-            operation_key=operation_key,
-        )
-        if session is None:
-            logger.warning(
-                "Rack task callback fallback to trace/outbox because no open session is waiting for operation: "
-                f"dispatch_key={dispatch_key}, workline_id={workline_id}, operation_key={operation_key}"
-            )
-            return None
-
-        inbox.workline_id = getattr(session, "workline_id", inbox.workline_id)
-        return session
-
-    async def _resolve_handling_operation_material_session(
-        self,
-        db: AsyncSession,
-        inbox: Any,
-        dispatch_key: str,
-    ) -> WorklineSession | None:
-        """通过 handling step operation_key 找回被挂起的物料 session。"""
-
-        step = await self.handling_step_repo.get_by_dispatch_key(db, dispatch_key)
-        if step is None:
-            return None
-
-        operation_key = non_empty_str(getattr(step, "operation_key", None))
-        if operation_key is None:
-            logger.warning(
-                "Handling callback fallback to trace/outbox because operation_key is missing: "
-                f"dispatch_key={dispatch_key}"
-            )
-            return None
-
-        operation = await self.handling_operation_repo.get_by_operation_key(db, operation_key)
-        workline_id = getattr(operation, "workline_id", None) if operation is not None else None
-        if not isinstance(workline_id, int):
-            logger.warning(
-                "Handling callback fallback to trace/outbox because workline_id is missing: "
-                f"dispatch_key={dispatch_key}, operation_key={operation_key}"
-            )
-            return None
-
-        inbox.workline_id = workline_id
-        session = await self.session_repo.get_open_session_by_waiting_handling_operation_key(
-            db,
-            workline_id=workline_id,
-            operation_key=operation_key,
-        )
-        if session is None:
-            logger.warning(
-                "Handling callback fallback to trace/outbox because no open session is waiting for operation: "
-                f"dispatch_key={dispatch_key}, workline_id={workline_id}, operation_key={operation_key}"
-            )
-            return None
-
-        inbox.workline_id = getattr(session, "workline_id", inbox.workline_id)
         return session
 
     async def _resolve_by_session_id(

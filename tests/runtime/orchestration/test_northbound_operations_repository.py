@@ -6,8 +6,10 @@ from src.app.runtime.orchestration.repositories.northbound_operations_repository
     NorthboundOperationHealthRow,
     NorthboundOperationsRepository,
 )
+from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
 
-_PRODUCTION_PROFILE = "wms.2026-07-06.material-flow.production"
+_CATALOG = build_provider_catalog()
+_PRODUCTION_PROFILE = _CATALOG.profile_identity
 _QUERY_OPERATION = "wms.inventory.query_inventory@v1"
 
 
@@ -28,7 +30,7 @@ class _EvidenceOnlyDatabase:
 
 
 async def test_platform_snapshot_includes_query_operation_with_evidence_and_no_outbox() -> None:
-    rows = await NorthboundOperationsRepository().load_snapshot(
+    rows = await NorthboundOperationsRepository(provider_catalog=_CATALOG).load_snapshot(
         _EvidenceOnlyDatabase(),
         tenant_id=None,
         workline_id=None,
@@ -44,7 +46,7 @@ async def test_platform_snapshot_includes_query_operation_with_evidence_and_no_o
 async def test_platform_snapshot_has_no_shadow_readiness_query() -> None:
     database = _EvidenceOnlyDatabase()
 
-    await NorthboundOperationsRepository().load_snapshot(
+    await NorthboundOperationsRepository(provider_catalog=_CATALOG).load_snapshot(
         database,
         tenant_id=None,
         workline_id=None,

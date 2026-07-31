@@ -168,6 +168,8 @@ class FairDispatchScheduler:
         now: datetime | None = None,
         operation_domains: tuple[str, ...] | None = None,
         exclude_operation_domains: tuple[str, ...] | None = None,
+        operation_identities: tuple[str, ...] | None = None,
+        exclude_operation_identities: tuple[str, ...] | None = None,
     ) -> DispatchClaimBatch:
         effective_now = now or timezone.now_for_db()
         if limit <= 0:
@@ -177,6 +179,8 @@ class FairDispatchScheduler:
             "now": effective_now,
             "operation_domains": operation_domains,
             "exclude_operation_domains": exclude_operation_domains,
+            "operation_identities": operation_identities,
+            "exclude_operation_identities": exclude_operation_identities,
         }
         recovered_lease_count = int(
             await self._resolve_expired_http_lease_loss_service().fence_expired_leases(

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -25,9 +26,10 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
-from src.app.runtime.system_capabilities.wms.provider_catalog import WMS_MATERIAL_FLOW_CONTRACT_VERSION
 from src.app.runtime.workline_plugins.rough_sorter.domain_contract import resolve_rough_sorter_business_key
 from src.app.sys.models import SystemOutbox
+from src.app.wms_integration.ports.document_operations import ValidateRoughSorterAdmissionRequest
+from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSION
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.plugin_binding_service import (
     WorklinePluginBindingService,
@@ -39,7 +41,7 @@ from tests.support.runtime_inbox_postgresql import run_alembic, temporary_databa
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-PROFILE_IDENTITY = f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.sandbox"
+PROFILE_IDENTITY = f"wms.{WMS_PROVIDER_CONTRACT_VERSION}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,10 +59,10 @@ class SeededScanFlow:
 class RecordingTaskQueueGateway:
     """记录出队唤醒请求，确保 heavy test 不接触真实 Celery broker。"""
 
-    outbox_enqueues: list[tuple[int | None, int]] = field(default_factory=list)
+    outbox_enqueues: list[tuple[object, int]] = field(default_factory=list)
 
-    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
-        self.outbox_enqueues.append((outbox_id, limit))
+    def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
+        self.outbox_enqueues.append((targets, limit))
 
 
 def processor(service: RuntimeInboxService) -> RuntimeInboxProcessorBridge:
@@ -69,7 +71,11 @@ def processor(service: RuntimeInboxService) -> RuntimeInboxProcessorBridge:
     return RuntimeInboxProcessorBridge(inbox_service=service)
 
 
-async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
+async def seed_scan_flow(
+    db: AsyncSession,
+    *,
+    persist_q19_admit: bool = True,
+) -> SeededScanFlow:
     trace_id = "it-runtime-inbox-trace"
     typed_config = {
         "device_roles": {
@@ -151,6 +157,8 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         "event_type": "SCAN_COMPLETED",
         "canonical_event_type": "SCAN_COMPLETED",
         "device_code": scanner.device_code,
+        "reel_diameter_mm": "180",
+        "reel_thickness_mm": "16",
         "data": {
             "HHPN": "MAT-IT-001",
             "MfrPN": "VENDOR-IT-001",
@@ -184,6 +192,39 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
     )
     db.add_all([session, correlation])
     await db.flush()
+    if persist_q19_admit:
+        q19_request = ValidateRoughSorterAdmissionRequest.model_validate(
+            {
+                "raw_code": payload_json["data"]["PkgID"],
+                "six_in_one": payload_json["data"],
+                "reel_diameter_mm": payload_json["reel_diameter_mm"],
+                "reel_thickness_mm": payload_json["reel_thickness_mm"],
+                "station_code": workline.line_code,
+                "workline_id": workline.id,
+                "session_id": session.id,
+                "correlation_id": correlation_id,
+            }
+        )
+        session.context_json = {
+            "wms_admission_decision": {
+                "request_canonical_hash": sha256_digest(q19_request.model_dump(mode="json", exclude_none=True)),
+                "decision": "ADMIT",
+                "reason_code": None,
+                "grn_id": "GRN-IT-001",
+                "po_number": "PO-IT-001",
+                "po_item": "10",
+                "material_code": "MAT-IT-001",
+                "pkg_id": "PKG-IT-001",
+                "measurement_decision": "PASS",
+                "standard_reel_diameter_mm": "180",
+                "reel_diameter_tolerance_mm": "1",
+                "standard_reel_thickness_mm": "16",
+                "reel_thickness_tolerance_mm": "0.5",
+                "rule_version": "rule-q19-heavy-test",
+                "source_version": "source-q19-heavy-test",
+                "evidence_reference": "query:q19:heavy-test-seed",
+            }
+        }
     # 部分 Stage 3 heavy test 会刻意跳过 Stage 1；补入真实持久化 ID，保留其预解析 Inbox 契约。
     payload_json["data"]["session_id"] = session.id
     execution_session = ExecutionSession(

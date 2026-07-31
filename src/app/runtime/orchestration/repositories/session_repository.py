@@ -508,66 +508,6 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return result.scalar_one_or_none()
 
-    async def get_open_session_by_waiting_rack_operation_key(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        operation_key: str,
-    ) -> WorklineSession | None:
-        """按等待中的 rack operation_key 查询未结束物料 session。"""
-
-        columns = cast("Any", WorklineSession).__table__.c
-        open_statuses = [
-            SessionStatus.NEW,
-            SessionStatus.RUNNING,
-            SessionStatus.WAITING_DEVICE_RESULT,
-            SessionStatus.WAITING_EXTERNAL,
-            SessionStatus.MANUAL_HOLD,
-        ]
-        waiting_operation_key = columns.context_json["waiting_rack_operation_key"]
-        result = await db.execute(
-            select(WorklineSession)
-            .where(
-                columns.workline_id == workline_id,
-                columns.status.in_(open_statuses),
-                waiting_operation_key.as_string() == operation_key,
-            )
-            .order_by(columns.id.desc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
-    async def get_open_session_by_waiting_handling_operation_key(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        operation_key: str,
-    ) -> WorklineSession | None:
-        """按等待中的 system handling operation_key 查询未结束物料 session。"""
-
-        columns = cast("Any", WorklineSession).__table__.c
-        open_statuses = [
-            SessionStatus.NEW,
-            SessionStatus.RUNNING,
-            SessionStatus.WAITING_DEVICE_RESULT,
-            SessionStatus.WAITING_EXTERNAL,
-            SessionStatus.MANUAL_HOLD,
-        ]
-        waiting_operation_key = columns.context_json["waiting_handling_operation_key"]
-        result = await db.execute(
-            select(WorklineSession)
-            .where(
-                columns.workline_id == workline_id,
-                columns.status.in_(open_statuses),
-                waiting_operation_key.as_string() == operation_key,
-            )
-            .order_by(columns.id.desc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
     async def get_timed_out_sessions(
         self,
         db: AsyncSession,

@@ -19,11 +19,11 @@ sorter inbound 与 SMT/NG/WMS reconciliation 后续目标是 production-capable 
 
 2026-07-04 追加进展 3：深化 material-flow 本机 MOCK 验收，作为 provider contract 语义基线：WMS mock 增加 `full_box_exchange`、`change_rack_face` 与 `runtime-hold-release-preview` 合同；`tests/mock/material_flow` 覆盖满箱交换有/无需求分流、`CHANGE_RACK_FACE` 独立履约、已满箱对象排除逐件候选，以及 RuntimeHold 只释放声明 scope。
 
-2026-07-04 追加进展 4：补齐 sorter inbound preview 级本机 MOCK 合同：粗分机正常流拆分本地物理事实与 WMS 同步状态；分拣机入库覆盖 SCAN1/2/3、join gate、NG/RuntimeHold 路由、扫码平台预取默认 0 与显式开启 validator；CTU 父子批次视图覆盖父成功但子项缺失、重复 sequence、未 resolve placeholder 和部分失败进入 `RECONCILING`。
+2026-07-04 追加进展 4：补齐 sorter inbound preview 级本机 MOCK 合同：粗分机正常流拆分本地物理事实与 WMS 同步状态；分拣机入库覆盖 SCAN1/2/3、join gate 与 NG/RuntimeHold 路由。
 
 2026-07-04 追加进展 5：新增 `scripts/check_runtime_evidence_readiness_gate.py`，把 material-flow 开发/测试 readiness 固化为可执行门禁：默认 `development-mock` profile 验证 SPEC 状态、material-flow 本机 MOCK 合同与 preview 边界。该 gate 已接入 `./scripts/git-quality-gate.sh --profile quality`。
 
-2026-07-04 追加进展 6：新增 `Phase4SorterInboundPreviewService`，把粗分机正常流、分拣机 join gate、满箱交换前置分流、`CHANGE_RACK_FACE` 独立履约与 CTU 父子批次查询视图从 mock endpoint 语义沉淀为 runtime capability 级纯 preview service；该 service 不访问 DB、不发 WMS/ECS effect、不复用旧 plugin 入口，只用于开发/测试 MOCK 验收，并已纳入 Phase4 runtime readiness gate。
+2026-07-04 追加进展 6：新增 `Phase4SorterInboundPreviewService`，把粗分机正常流、分拣机 join gate、满箱交换前置分流与 `CHANGE_RACK_FACE` 独立履约从 mock endpoint 语义沉淀为 runtime capability 级纯 preview service；该 service 不访问 DB、不发 WMS/ECS effect、不复用旧 plugin 入口，只用于开发/测试 MOCK 验收，并已纳入 Phase4 runtime readiness gate。
 
 2026-07-04 追加进展 7：新增 `SmtNgWmsReconciliationPreviewService`，把 NG evidence、本地物理事实缺失、WMS reject、目标箱回写失败、重复/乱序 callback、source_version drift 与 RuntimeHold scope-only release 从 mock endpoint 语义沉淀为 runtime capability 级纯 preview service；该 service 不访问 DB、不发 WMS/NG/PDA effect、不复用旧 plugin 入口，只用于开发/测试 MOCK 验收，并已纳入 Phase4 runtime readiness gate。
 
@@ -55,10 +55,10 @@ sorter inbound 与 SMT/NG/WMS reconciliation 后续目标是 production-capable 
 - [x] CellReservation evidence/idempotency 收敛：reservation_key 覆盖 object/correlation/target cell/source_event，evidence 保留 trace/correlation/source_event/provider/source_version，并进入 MaterialLocationQuery evidence。
 - [x] sorter inbound 预备合同：sorter characterization-to-target mapping 明确 PKG binding 与库存事务 port 归属。
 - [x] SMT/NG/WMS reconciliation 预备合同：SMT/NG/WMS 对账覆盖 NG evidence、本地事实缺失、WMS 拒绝、目标箱回写失败、重复/乱序 callback、source_version drift、RuntimeHold scope-only release。
-- [x] sorter inbound 本机开发环境 MOCK 验收：用 WMS/ECS mock 验证 PKG binding、库存事务、ECS callback、粗分机正常流 preview、分拣机入库 join gate、扫码平台预取 validator、CTU 父子视图、满箱交换前置分流、换面独立履约和逐件候选排除口径，作为 provider contract 语义基线。
+- [x] sorter inbound 本机开发环境 MOCK 验收：用 WMS/ECS mock 验证 PKG binding、库存事务、ECS callback、粗分机正常流 preview、分拣机入库 join gate、扫码平台预取 validator、CTU 批次 status/terminal 视图、满箱交换前置分流、换面独立履约和逐件候选排除口径，作为 provider contract 语义基线。
 - [x] SMT/NG/WMS reconciliation 本机开发环境 MOCK 验收：用 WMS reconciliation mock 验证冲突/乱序/版本漂移和 RuntimeHold scope-only release 场景，作为 provider contract 语义基线。
 - [x] Runtime evidence readiness gate：`scripts/check_runtime_evidence_readiness_gate.py` 默认开发/测试 profile 通过，`simulator/site/production` profile 只改变 evidence 要求，并接入 quality profile。
-- [x] sorter inbound preview capability：`Phase4SorterInboundPreviewService` 覆盖本机 preview 级粗分机/分拣机/满箱交换/CTU 父子视图语义，并由 readiness gate 检查存在与非生产边界。
+- [x] sorter inbound preview capability：`Phase4SorterInboundPreviewService` 覆盖本机 preview 级粗分机/分拣机/满箱交换语义；CTU 由 E12/E13 批次 status/terminal 合同覆盖，并由 readiness gate 检查存在与非生产边界。
 - [x] SMT/NG/WMS reconciliation preview capability：`SmtNgWmsReconciliationPreviewService` 覆盖本机 preview 级冲突矩阵、重复 callback 幂等合并和 RuntimeHold scope-only release，并由 readiness gate 检查存在与非生产边界。
 - [x] Phase2 兼容投影第一步：引入 `WorkLineRuntimeStatusProjectionService`，迁移 LOW 风险写入点。
 - [x] Phase2 兼容投影收尾：单独处理 HIGH 风险 safety estop / dispatch ACK exhausted 写入点。

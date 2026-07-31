@@ -222,9 +222,6 @@ async def test_existing_session_reuse_does_not_acquire_workline_plugin_pin_lock(
         workline_repo=workline_repository,
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=WorklinePluginBindingService(
             repository=binding_repository,
             plugin_index={("platform-test", "v1"): DEFINITION},
@@ -271,9 +268,6 @@ async def test_existing_platform_session_rejects_execution_anchor_owned_by_anoth
         workline_repo=WorklineRepository(_workline()),
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=object(),
         execution_anchor_repo=MisownedExecutionAnchorRepository(),
     )
@@ -292,9 +286,6 @@ async def test_new_session_acquires_shared_plugin_pin_lock_before_refreshing_cur
         workline_repo=workline_repository,
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=WorklinePluginBindingService(
             repository=BindingRepository(),
             runtime_repository=RuntimeRepository(),
@@ -351,9 +342,6 @@ async def test_new_session_rejects_workline_deactivated_before_shared_lock_reloa
         workline_repo=workline_repository,
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=WorklinePluginBindingService(
             repository=BindingRepository(),
             runtime_repository=RuntimeRepository(),
@@ -395,9 +383,6 @@ async def test_session_resolver_pins_real_models_and_creates_runtime_aggregate_i
         workline_repo=WorklineRepository(workline),
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=binding_service,
     )
     inbox = SimpleNamespace(
@@ -453,9 +438,6 @@ async def test_new_session_locks_candidate_and_plugin_business_keys_in_stable_or
         workline_repo=WorklineRepository(workline),
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=WorklinePluginBindingService(
             repository=BindingRepository(),
             runtime_repository=RuntimeRepository(),
@@ -553,9 +535,6 @@ async def test_unapproved_active_draft_identity_never_changes_new_session_bindin
         workline_repo=WorklineRepository(workline),
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=binding_service,
     )
     inbox = SimpleNamespace(
@@ -615,9 +594,6 @@ async def test_session_resolver_uses_binding_contract_version_for_plugin_busines
         workline_repo=WorklineRepository(workline),
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=binding_service,
     )
     inbox = SimpleNamespace(
@@ -689,9 +665,6 @@ async def test_stale_workline_snapshot_reloads_shared_current_binding_before_ses
         workline_repo=workline_repository,
         command_repo=object(),
         outbox_repo=object(),
-        rack_task_repo=object(),
-        handling_step_repo=object(),
-        handling_operation_repo=object(),
         plugin_binding_service=binding_service,
     )
     inbox = SimpleNamespace(

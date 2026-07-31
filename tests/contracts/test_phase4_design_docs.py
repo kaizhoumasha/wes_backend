@@ -205,8 +205,7 @@ def test_sorter_wms_pkg_binding_uses_fulfillment_port() -> None:
     assert pkg_binding_rows
     assert inventory_transaction_rows
     assert all("wms.fulfillment.notify_pkg_binding@v1" in line for line in pkg_binding_rows)
-    assert all("WmsInventoryTransactionPort" not in line for line in pkg_binding_rows)
-    assert all("WmsInventoryTransactionPort" in line for line in inventory_transaction_rows)
+    assert all("WmsEffectPreparationPort" in line for line in inventory_transaction_rows)
 
 
 def test_sorter_characterization_to_target_mapping_is_explicit() -> None:
@@ -218,7 +217,7 @@ def test_sorter_characterization_to_target_mapping_is_explicit() -> None:
         "BC-06",
         "BC-07",
         "wms.fulfillment.notify_pkg_binding@v1",
-        "WmsInventoryTransactionPort",
+        "WmsEffectPreparationPort",
         "RuntimeLocationEvent",
         "WorklineBinCellReservation",
     ):

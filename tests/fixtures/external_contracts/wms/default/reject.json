@@ -4,20 +4,13 @@
   "contract_version": "2026-06-25",
   "direction": "effect",
   "raw_request": {
-    "transport_request_id": "tr-reject-001",
-    "source_location": "INBOUND_A",
-    "target_location": "BLOCKED_CELL"
-  },
-  "raw_response": {
-    "accepted": false,
-    "reason_code": "TARGET_UNAVAILABLE"
-  },
-  "expected_typed": {
-    "accepted": false,
-    "reason_code": "TARGET_UNAVAILABLE"
+    "dispatch_key": "rack-supply-reject-001",
+    "station_code": "STATION-A",
+    "rack_type": "FIVE_LAYER",
+    "demand_generation": 1
   },
   "expected_error": {
-    "code": "WMS_REJECTED",
+    "code": "NO_RACK_AVAILABLE",
     "retryable": false
   }
 }

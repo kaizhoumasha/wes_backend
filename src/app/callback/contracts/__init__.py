@@ -34,6 +34,11 @@ from .codes import (
     error_domain_for,
 )
 from .event_mapper import canonicalize_event_type
+from .external_callbacks import (
+    WMS_ALLOWED_CALLBACK_TYPES,
+    WMS_ORDINARY_EVENT_TYPES,
+    validate_external_callback_type,
+)
 from .failure_mapper import map_failure_to_diagnostic
 from .models import DiagnosticCard, DiagnosticContext, DiagnosticEvent
 from .registry import (
@@ -56,6 +61,8 @@ from .trace_context import TraceContext
 __all__ = [
     "PLATFORM_CONTROL_EVENTS",
     "RESERVED_RUNTIME_EVENTS",
+    "WMS_ALLOWED_CALLBACK_TYPES",
+    "WMS_ORDINARY_EVENT_TYPES",
     "DiagnosticCard",
     "DiagnosticCodeDefinition",
     "DiagnosticContext",
@@ -81,4 +88,5 @@ __all__ = [
     "list_diagnostic_code_definitions",
     "map_failure_to_diagnostic",
     "timeline_generator",
+    "validate_external_callback_type",
 ]

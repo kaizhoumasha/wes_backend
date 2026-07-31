@@ -10,7 +10,11 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from src.app.callback.contracts import TraceContext, timeline_generator
+from src.app.callback.contracts import (
+    TraceContext,
+    timeline_generator,
+    validate_external_callback_type,
+)
 from src.app.callback.utils import JsonDict, ensure_dict
 from src.app.device.services.device_command_service import DeviceCallbackResultOutcome
 from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import (
@@ -24,7 +28,7 @@ from src.app.runtime.orchestration.models.timeline import (
 )
 from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
-from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -39,25 +43,10 @@ from src.core.logger import logger
 from src.utils.timezone import timezone
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
-_HANDLING_CALLBACK_TYPES = frozenset(
-    {
-        "WMS_FULL_BOX_EXCHANGE_RESULT",
-        "RCS_FULL_BOX_EXCHANGE_RESULT",
-    }
-)
 
 
 def _current_timestamp_ms() -> int:
     return int(timezone.now_utc().timestamp() * 1000)
-
-
-def _is_handling_callback(callback_type: str, payload: JsonDict) -> bool:
-    dispatch_key = payload.get("dispatch_key") or payload.get("exchange_request_code")
-    if isinstance(dispatch_key, str) and dispatch_key.startswith("handling:"):
-        return True
-    if callback_type in _HANDLING_CALLBACK_TYPES:
-        return True
-    return callback_type.startswith(("CTU_BIN_", "WMS_BIN_", "RCS_BIN_"))
 
 
 @dataclass(frozen=True)
@@ -84,15 +73,9 @@ class CallbackOrchestrationService:
     def __init__(
         self,
         *,
-        rack_task_service: Any | None = None,
-        handling_operation_service: Any | None = None,
-        typed_effect_callback_router: Any | None = None,
         runtime_inbox_writer: Any = callback_runtime_inbox_writer,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
-        self._rack_task_service = rack_task_service
-        self._handling_operation_service = handling_operation_service
-        self._typed_effect_callback_router = typed_effect_callback_router
         self._runtime_inbox_writer = runtime_inbox_writer
         self._queue_gateway = queue_gateway
 
@@ -127,7 +110,7 @@ class CallbackOrchestrationService:
 
     def _enqueue_outbox_dispatch(self) -> None:
         try:
-            self._queue_gateway.enqueue_outbox(limit=50)
+            self._queue_gateway.enqueue_outbox(targets=(OutboxDispatchTarget.SYSTEM,), limit=50)
         except Exception as exc:
             logger.warning(f"Callback 后续 Outbox 即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
 
@@ -501,6 +484,11 @@ class CallbackOrchestrationService:
         causation_id: str | None = None,
         enqueue_processing: Callable[[], None] | None = None,
     ) -> ExternalCallbackOutcome:
+        callback_type = validate_external_callback_type(
+            payload,
+            declared_callback_type=callback_type,
+        )
+
         trace = self._build_trace_context(
             request_id=request_id,
             trace_id=trace_id,
@@ -523,25 +511,9 @@ class CallbackOrchestrationService:
         if not runtime_inbox_result.created:
             return ExternalCallbackOutcome(trace_id=trace.trace_id or "", is_duplicate=True)
 
-        # RuntimeInbox record 是 external callback 唯一 evidence/trace inbox。
+        # RuntimeInbox record 是 external callback 唯一 evidence/trace inbox；
+        # 业务提示由 worker 消费，API 事务内不得执行 status 路由。
         trace = trace.with_inbox(runtime_inbox_result.record)
-        typed_effect_handled = await self._resolve_typed_effect_callback_router().route(
-            db,
-            callback_type=callback_type,
-            payload=payload,
-        )
-        if not typed_effect_handled:
-            await self._resolve_rack_task_service().record_callback_from_external_http(
-                db=db,
-                payload_json=payload,
-                trace_id=trace.trace_id,
-            )
-            if _is_handling_callback(callback_type, payload):
-                await self._resolve_handling_operation_service().record_callback_from_external_http(
-                    db=db,
-                    payload_json=payload,
-                    trace_id=trace.trace_id,
-                )
 
         await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
 
@@ -550,28 +522,36 @@ class CallbackOrchestrationService:
             is_duplicate=False,
         )
 
-    def _resolve_rack_task_service(self) -> Any:
-        if self._rack_task_service is None:
-            from src.app.rack.services import rack_task_lifecycle_service
+    async def process_wms_event(
+        self,
+        db: AsyncSession,
+        *,
+        payload: JsonDict,
+        event_type: str,
+        request_id: str | None,
+        trace_id: str | None,
+        event_id: str | None,
+        causation_id: str | None,
+        correlation_id: str | None = None,
+        enqueue_processing: Callable[[], None] | None = None,
+    ) -> EventCallbackOutcome:
+        """普通 WMS event 仅持久化并唤醒 RuntimeInbox worker。"""
 
-            self._rack_task_service = rack_task_lifecycle_service
-        return self._rack_task_service
-
-    def _resolve_typed_effect_callback_router(self) -> Any:
-        if self._typed_effect_callback_router is None:
-            from src.app.runtime.orchestration.services.inbox.wms_typed_effect_callback_router import (
-                wms_typed_effect_callback_router,
-            )
-
-            self._typed_effect_callback_router = wms_typed_effect_callback_router
-        return self._typed_effect_callback_router
-
-    def _resolve_handling_operation_service(self) -> Any:
-        if self._handling_operation_service is None:
-            from src.app.handling.services import handling_operation_lifecycle_service
-
-            self._handling_operation_service = handling_operation_lifecycle_service
-        return self._handling_operation_service
+        resolved_trace_id = trace_id or request_id or f"trace_{uuid.uuid4().hex}"
+        result = await self._runtime_inbox_writer.write_wms_event_callback(
+            db,
+            payload=payload,
+            request_id=request_id,
+            event_type=event_type,
+            trace_id=resolved_trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            correlation_id=correlation_id,
+        )
+        if not result.created:
+            return EventCallbackOutcome(trace_id=resolved_trace_id, is_duplicate=True)
+        await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
+        return EventCallbackOutcome(trace_id=resolved_trace_id, is_duplicate=False)
 
 
 callback_orchestration_service = CallbackOrchestrationService()

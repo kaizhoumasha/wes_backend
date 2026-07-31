@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from tests.support.runtime_binding import binding_pin_fields
 
 
@@ -300,7 +301,7 @@ async def test_writeback_device_fact_version_race_returns_safe_retry_without_wri
         write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=()),
     )
 
-    assert disposition is WriteDisposition.SAFE_RETRY
+    assert disposition.disposition is WriteDisposition.SAFE_RETRY
     assert events == ["authoritative-lock", "topology-shared-lock", "device-fact-reload", "rollback"]
 
 
@@ -1198,7 +1199,7 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
             assert ctx["workline"].id == 8  # type: ignore[union-attr]
             assert intents == ["i1"]
             events.append("effect")
-            return SimpleNamespace()
+            return RuntimeIntentEffectResult.processed()
 
     class InboxService:
         async def mark_processed(self, _db: object, *, inbox_id: int, lease_token: str) -> bool:
@@ -1223,7 +1224,7 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
         write_set=write_set,
     )
 
-    assert disposition is WriteDisposition.COMMITTED
+    assert disposition.disposition is WriteDisposition.COMMITTED
     assert events == [
         "select-for-update",
         "intent-claim",
@@ -1286,7 +1287,7 @@ async def test_matching_intent_claim_skips_duplicate_ledger_but_commits_terminal
     class MatchingEffectApplier:
         async def apply(self, *_args: object, **_kwargs: object) -> object:
             events.append("effect")
-            return SimpleNamespace()
+            return RuntimeIntentEffectResult.processed()
 
     disposition = await RuntimeInboxWriteBackService(
         plugin_attempt_repository=PluginRepository(),
@@ -1305,7 +1306,7 @@ async def test_matching_intent_claim_skips_duplicate_ledger_but_commits_terminal
         write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("i1",)),
     )
 
-    assert disposition is WriteDisposition.COMMITTED
+    assert disposition.disposition is WriteDisposition.COMMITTED
     assert events == ["intent-match", "effect", "evidence-state", "terminal", "commit"]
 
 
@@ -1714,7 +1715,7 @@ async def test_writeback_version_race_writes_nothing_and_rolls_back() -> None:
         write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=()),
     )
 
-    assert disposition is WriteDisposition.SAFE_RETRY
+    assert disposition.disposition is WriteDisposition.SAFE_RETRY
     assert events == ["select-for-update", "rollback"]
 
 
@@ -1779,7 +1780,7 @@ async def test_writeback_material_fact_version_race_writes_nothing_and_rolls_bac
         write_set=AttemptWriteSet(evidence=(), next_state={"phase": "READY"}, intents=()),
     )
 
-    assert disposition is WriteDisposition.SAFE_RETRY
+    assert disposition.disposition is WriteDisposition.SAFE_RETRY
     assert events == ["select-for-update", "rollback"]
 
 
@@ -1842,7 +1843,7 @@ async def test_writeback_plugin_config_drift_writes_nothing_and_rolls_back() -> 
         write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=()),
     )
 
-    assert disposition is WriteDisposition.SAFE_RETRY
+    assert disposition.disposition is WriteDisposition.SAFE_RETRY
     assert events == ["select-for-update", "rollback"]
 
 

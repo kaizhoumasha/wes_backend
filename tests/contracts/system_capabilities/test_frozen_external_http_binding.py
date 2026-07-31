@@ -12,6 +12,7 @@ from src.app.sys.canonical_dispatch import CanonicalPayload
 from src.app.sys.external_http_binding import (
     ExternalHttpBindingDefinition,
     ExternalHttpProviderProfileDefinition,
+    ExternalHttpTargetSnapshot,
     FrozenExternalHttpBinding,
     freeze_external_http_binding,
 )
@@ -28,9 +29,6 @@ from src.app.sys.models import (
     SystemOutboxUpdate,
 )
 from src.app.sys.services.endpoint_registry import EndpointRegistry
-from src.app.wms_integration.services.transport_contract import freeze_legacy_transport_binding
-from src.app.workline.external_http_profile import freeze_plugin_external_http_binding
-from src.core.conf import settings
 
 ROOT = Path(__file__).parents[3]
 
@@ -39,6 +37,7 @@ def _profile(*, credential_reference: str = "secret://wms/effect-hmac@v1") -> Ex
     return ExternalHttpProviderProfileDefinition(
         identity="wms.effect.production",
         environment="production",
+        network_trust_mode="authenticated_network",
         bindings=(
             ExternalHttpBindingDefinition(
                 operation_identity="wms.inventory.confirm_inbound@v1",
@@ -59,6 +58,144 @@ def _frozen_binding() -> FrozenExternalHttpBinding:
         target_code="WMS_CONFIRM_INBOUND",
         endpoint_registry=EndpointRegistry({"WMS_CONFIRM_INBOUND": "https://wms.example/effects/inbound"}),
     )
+
+
+def _none_profile(
+    *,
+    network_trust_mode: str = "isolated_lan",
+    credential_reference: str | None = None,
+) -> ExternalHttpProviderProfileDefinition:
+    return ExternalHttpProviderProfileDefinition(
+        identity="wms.full-factory.production",
+        environment="production",
+        network_trust_mode=network_trust_mode,
+        bindings=(
+            ExternalHttpBindingDefinition(
+                operation_identity="wms.inventory.confirm_inbound@v1",
+                allowed_target_codes=("WMS_CONFIRM_INBOUND",),
+                http_method="POST",
+                timeout_seconds=15,
+                auth_scheme="NONE",
+                credential_reference=credential_reference,
+            ),
+        ),
+    )
+
+
+def test_none_binding_freezes_isolated_lan_without_credential() -> None:
+    frozen = freeze_external_http_binding(
+        profile=_none_profile(),
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        target_code="WMS_CONFIRM_INBOUND",
+        endpoint_registry=EndpointRegistry({"WMS_CONFIRM_INBOUND": "http://factory-wms/effects/inbound"}),
+    )
+
+    assert frozen.auth_scheme == "NONE"
+    assert frozen.network_trust_mode == "isolated_lan"
+    assert frozen.credential_reference is None
+    assert FrozenExternalHttpBinding.from_persisted(**frozen.as_persisted_fields()) == frozen
+
+
+@pytest.mark.parametrize("http_method", ["GET", "POST"])
+def test_external_http_binding_and_target_snapshot_share_get_post_closed_set(http_method: str) -> None:
+    binding = ExternalHttpBindingDefinition(
+        operation_identity="tests.external-http.method@v1",
+        allowed_target_codes=("TEST_HTTP_METHOD",),
+        http_method=http_method,  # type: ignore[arg-type]
+        timeout_seconds=10,
+        auth_scheme="NONE",
+        credential_reference=None,
+    )
+    snapshot = ExternalHttpTargetSnapshot(
+        code="TEST_HTTP_METHOD",
+        url="http://factory-provider.example/resource",
+        http_method=http_method,  # type: ignore[arg-type]
+        timeout_seconds=10,
+    )
+
+    assert binding.http_method == snapshot.http_method == http_method
+    assert ExternalHttpTargetSnapshot.from_json(snapshot.as_json()) == snapshot
+
+
+@pytest.mark.parametrize("contract_type", [ExternalHttpBindingDefinition, ExternalHttpTargetSnapshot])
+def test_external_http_binding_and_target_snapshot_reject_methods_outside_closed_set(contract_type: type) -> None:
+    kwargs = {
+        "http_method": "DELETE",
+        "timeout_seconds": 10,
+    }
+    if contract_type is ExternalHttpBindingDefinition:
+        kwargs.update(
+            {
+                "operation_identity": "tests.external-http.method@v1",
+                "allowed_target_codes": ("TEST_HTTP_METHOD",),
+                "auth_scheme": "NONE",
+                "credential_reference": None,
+            }
+        )
+    else:
+        kwargs.update(
+            {
+                "code": "TEST_HTTP_METHOD",
+                "url": "http://factory-provider.example/resource",
+            }
+        )
+
+    with pytest.raises(ValueError, match="GET or POST"):
+        contract_type(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("network_trust_mode", "credential_reference", "message"),
+    [
+        ("authenticated_network", None, "isolated_lan"),
+        ("isolated_lan", "secret://wms/effect-hmac@v1", "must not carry credential"),
+    ],
+)
+def test_none_binding_rejects_non_isolated_or_credential_bearing_profile(
+    network_trust_mode: str,
+    credential_reference: str | None,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _none_profile(
+            network_trust_mode=network_trust_mode,
+            credential_reference=credential_reference,
+        )
+
+
+def test_frozen_hmac_binding_requires_versioned_credential_reference() -> None:
+    frozen = _frozen_binding()
+    fields = frozen.as_persisted_fields()
+
+    with pytest.raises((TypeError, ValueError), match="versioned credential reference"):
+        FrozenExternalHttpBinding.from_persisted(**{**fields, "credential_reference": None})
+
+
+def test_system_outbox_none_binding_uses_same_combination_invariant() -> None:
+    frozen = freeze_external_http_binding(
+        profile=_none_profile(),
+        operation_identity="wms.inventory.confirm_inbound@v1",
+        target_code="WMS_CONFIRM_INBOUND",
+        endpoint_registry=EndpointRegistry({"WMS_CONFIRM_INBOUND": "http://factory-wms/effects/inbound"}),
+    )
+    canonical = CanonicalPayload.from_projection({"inbound_key": "IN-NONE-001"})
+    common = {
+        **frozen.as_persisted_fields(),
+        "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP,
+        "dispatch_key": "effect:IN-NONE-001",
+        "idempotency_key": "intent:IN-NONE-001",
+        "target_type": SystemOutboxTargetType.HTTP_ENDPOINT,
+        "payload_json": {"inbound_key": "IN-NONE-001"},
+        "canonical_payload_bytes": canonical.body,
+        "payload_hash": canonical.sha256,
+        "operation_domain": "WMS_INVENTORY",
+    }
+
+    assert SystemOutbox(**common).network_trust_mode == "isolated_lan"
+    with pytest.raises(ValueError, match="frozen target and credential binding"):
+        SystemOutbox(**{**common, "network_trust_mode": "authenticated_network"})
+    with pytest.raises(ValueError, match="frozen target and credential binding"):
+        SystemOutbox(**{**common, "credential_reference": "secret://wms/effect-hmac@v1"})
 
 
 def test_target_and_credential_rotation_only_affect_new_frozen_binding() -> None:
@@ -135,48 +272,6 @@ def test_production_profile_rejects_plain_http_target_before_freezing() -> None:
         )
 
 
-def test_runtime_profiles_allow_sandbox_http_and_reject_production_http(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    registry = EndpointRegistry(
-        {
-            "WMS_RCS_RACK_OPERATION": "http://mock-wms.test/rack",
-        }
-    )
-    monkeypatch.setattr(settings, "APP_ENV", "dev")
-
-    plugin_binding = freeze_plugin_external_http_binding(
-        "WMS_RCS_RACK_OPERATION",
-        registry=registry,
-    )
-    legacy_binding = freeze_legacy_transport_binding(
-        operation_identity="wms.transport.rack@v1",
-        target_code="WMS_RCS_RACK_OPERATION",
-        registry=registry,
-    )
-
-    assert plugin_binding.provider_profile_identity == "workline.plugin-runtime.v1.sandbox"
-    assert legacy_binding.provider_profile_identity == "wms.legacy-transport.sandbox"
-    monkeypatch.setattr(settings, "WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1", "plugin-sandbox-secret")
-    monkeypatch.setattr(settings, "WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1", "legacy-sandbox-secret")
-    credential_provider = build_environment_external_http_credential_provider()
-    assert credential_provider.resolve(plugin_binding.credential_reference) == b"plugin-sandbox-secret"
-    assert credential_provider.resolve(legacy_binding.credential_reference) == b"legacy-sandbox-secret"
-
-    monkeypatch.setattr(settings, "APP_ENV", "prod")
-    with pytest.raises(ValueError, match="production EXTERNAL_HTTP endpoint requires HTTPS"):
-        freeze_plugin_external_http_binding(
-            "WMS_RCS_RACK_OPERATION",
-            registry=registry,
-        )
-    with pytest.raises(ValueError, match="production EXTERNAL_HTTP endpoint requires HTTPS"):
-        freeze_legacy_transport_binding(
-            operation_identity="wms.transport.rack@v1",
-            target_code="WMS_RCS_RACK_OPERATION",
-            registry=registry,
-        )
-
-
 def test_secret_provider_resolves_exact_version_and_revocation_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     reference = "secret://wms/effect-hmac@v1"
     provider = EnvironmentVersionedCredentialProvider(
@@ -200,13 +295,13 @@ def test_default_environment_provider_reads_explicit_mapping_and_revocation(
 ) -> None:
     from src.app.sys import external_http_credentials
 
-    reference = "secret://wms/legacy-transport-production-hmac@v1"
-    monkeypatch.delenv("WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1", raising=False)
+    reference = "secret://wms/material-flow-production-hmac@v1"
+    monkeypatch.delenv("WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1", raising=False)
     monkeypatch.setattr(
         external_http_credentials,
         "settings",
         SimpleNamespace(
-            WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
+            WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
             WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES="",
         ),
         raising=False,
@@ -218,7 +313,7 @@ def test_default_environment_provider_reads_explicit_mapping_and_revocation(
         external_http_credentials,
         "settings",
         SimpleNamespace(
-            WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
+            WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1="resolved-secret",
             WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES=reference,
         ),
     )
@@ -304,6 +399,7 @@ def test_external_http_outbox_requires_frozen_fields_and_update_schema_hides_the
         "target_snapshot_json",
         "target_snapshot_hash",
         "auth_scheme",
+        "network_trust_mode",
         "credential_reference",
         "idempotency_key",
     }.isdisjoint(SystemOutboxUpdate.model_fields)

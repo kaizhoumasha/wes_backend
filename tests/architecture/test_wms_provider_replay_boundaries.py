@@ -27,7 +27,8 @@ def test_replay_support_is_an_independent_pure_module() -> None:
         "runtime",
         "runtime_factory",
         "transport",
-        "query_transport",
+        "query_executor",
+        "query_runtime",
         "wms_integration.adapters",
     }
     assert all(not imported_module.startswith("src.app") for imported_module in imported_modules)
@@ -37,8 +38,8 @@ def test_replay_support_is_an_independent_pure_module() -> None:
     assert all(
         token not in source
         for token in (
-            "WmsQueryTransportExecutor",
-            "InventoryQueryOperationAdapter",
+            "WmsRegistryQueryExecutor",
+            "WmsDataLaneQueryRuntime",
             "EnvironmentWmsCredentialProvider",
             "MockTransport",
         )

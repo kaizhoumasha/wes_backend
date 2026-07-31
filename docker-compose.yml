@@ -34,23 +34,17 @@ x-no-localhost-proxy-build-args: &no-localhost-proxy-build-args
 
 x-external-http-credentials: &external-http-credentials
   WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED: ${WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED:-false}
-  WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION: ${WMS_MATERIAL_FLOW_ACTIVE_HMAC_VERSION:-v2}
   WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: ${WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1:-}
   WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1: ${WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1:-}
   WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1: ${WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1:-}
   WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2:-}
   WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2:-}
   WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2:-}
-  WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1: ${WMS_LEGACY_TRANSPORT_SANDBOX_HMAC_SECRET_V1:-}
-  WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1: ${WMS_LEGACY_TRANSPORT_STAGING_HMAC_SECRET_V1:-}
-  WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1: ${WMS_LEGACY_TRANSPORT_PRODUCTION_HMAC_SECRET_V1:-}
-  WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1: ${WORKLINE_PLUGIN_RUNTIME_SANDBOX_HMAC_SECRET_V1:-}
-  WORKLINE_PLUGIN_RUNTIME_STAGING_HMAC_SECRET_V1: ${WORKLINE_PLUGIN_RUNTIME_STAGING_HMAC_SECRET_V1:-}
-  WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1: ${WORKLINE_PLUGIN_RUNTIME_PRODUCTION_HMAC_SECRET_V1:-}
   WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES: ${WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES:-}
 
 x-wms-effect-status-config: &wms-effect-status-config
-  WMS_EFFECT_STATUS_URL: ${CONTAINER_WMS_EFFECT_STATUS_URL:-}
+  WMS_PROVIDER_PROFILE_FILE: ${WMS_PROVIDER_PROFILE_FILE:-}
+  WMS_EFFECT_ADMISSION_ENABLED: ${WMS_EFFECT_ADMISSION_ENABLED:-false}
   WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
   WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
   WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
@@ -59,6 +53,7 @@ x-wms-effect-status-config: &wms-effect-status-config
   WES_EFFECT_NOT_FOUND_GRACE_SECONDS: ${WES_EFFECT_NOT_FOUND_GRACE_SECONDS}
   WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS: ${WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS}
   WES_EFFECT_STATUS_SCAN_BATCH_SIZE: ${WES_EFFECT_STATUS_SCAN_BATCH_SIZE}
+  WES_EFFECT_STATUS_MAX_IN_FLIGHT: ${WES_EFFECT_STATUS_MAX_IN_FLIGHT}
   WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS: ${WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS}
   WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS: ${WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS}
   WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS: ${WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS}
@@ -98,6 +93,7 @@ services:
       DATABASE_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT: 30
       DATABASE_APPLICATION_NAME: ${ENV:-prod}
+      WMS_DEPLOYMENT_ROLE: api
 
       # Redis 配置 ${REDIS_HOST}
       REDIS_HOST: redis
@@ -107,12 +103,6 @@ services:
       # Celery 配置（使用服务名而非变量，确保容器内正确解析）
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
-
-      # WMS 同步接口配置（容器内使用 CONTAINER_*，避免宿主机 .env 的 localhost 覆盖）
-      WMS_SYNC_BASE_URL: ${CONTAINER_WMS_SYNC_BASE_URL:-}
-      WMS_RCS_RACK_OPERATION_URL: ${CONTAINER_WMS_RCS_RACK_OPERATION_URL:-}
-      WMS_RCS_BIN_OPERATION_URL: ${CONTAINER_WMS_RCS_BIN_OPERATION_URL:-}
-      WMS_RCS_FULL_BOX_EXCHANGE_URL: ${CONTAINER_WMS_RCS_FULL_BOX_EXCHANGE_URL:-}
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -159,7 +149,7 @@ services:
   # ============================================
   # Celery Worker - 异步任务处理
   # ============================================
-  celery_worker:
+  celery:
     build:
       context: .
       dockerfile: Dockerfile
@@ -172,7 +162,7 @@ services:
       if [ "${ENV:-prod}" = "dev" ]; then
         exec sh /app/src/celery_app/dev_worker_autoreload.sh;
       else
-        exec celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=default,celery,device;
+        exec celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=$${CELERY_WORKER_CONCURRENCY} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=$${CELERY_WORKER_QUEUES};
       fi
       '
     env_file:
@@ -199,12 +189,10 @@ services:
       # Celery 配置
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
-
-      # WMS 同步接口配置（容器内使用 CONTAINER_*，避免宿主机 .env 的 localhost 覆盖）
-      WMS_SYNC_BASE_URL: ${CONTAINER_WMS_SYNC_BASE_URL:-}
-      WMS_RCS_RACK_OPERATION_URL: ${CONTAINER_WMS_RCS_RACK_OPERATION_URL:-}
-      WMS_RCS_BIN_OPERATION_URL: ${CONTAINER_WMS_RCS_BIN_OPERATION_URL:-}
-      WMS_RCS_FULL_BOX_EXCHANGE_URL: ${CONTAINER_WMS_RCS_FULL_BOX_EXCHANGE_URL:-}
+      CELERY_WORKER_QUEUES: default,celery,device
+      CELERY_WORKER_CONCURRENCY: ${CELERY_CONCURRENCY:-4}
+      WMS_PROVIDER_PROCESS_ROLE: wes
+      WMS_DEPLOYMENT_ROLE: wes-worker
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -250,6 +238,26 @@ services:
       - celery
 
   # ============================================
+  # Celery WMS Fulfillment Worker - 专用实际 lane
+  # ============================================
+  celery-wms-fulfillment:
+    extends:
+      service: celery
+    command: >
+      celery -A src.celery_app.app worker
+      --loglevel=${CELERY_LOG_LEVEL:-INFO}
+      --concurrency=1
+      --max-tasks-per-child=${CELERY_MAX_TASKS:-1000}
+      --queues=wms-fulfillment
+    environment:
+      CELERY_WORKER_QUEUES: wms-fulfillment
+      CELERY_WORKER_CONCURRENCY: "1"
+      WMS_PROVIDER_PROCESS_ROLE: fulfillment
+      WMS_DEPLOYMENT_ROLE: fulfillment-worker
+    deploy:
+      replicas: 1
+
+  # ============================================
   # Celery Beat - 定时任务调度
   # ============================================
   celery_beat:
@@ -276,6 +284,7 @@ services:
       DATABASE_RUNTIME_ROLE: cli
       DATABASE_POOL_SIZE: 1
       DATABASE_MAX_OVERFLOW: 0
+      WMS_DEPLOYMENT_ROLE: beat
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}

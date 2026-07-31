@@ -20,6 +20,9 @@ from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import
     OutboxDispatchService,
     outbox_dispatch_service,
 )
+from src.app.runtime.orchestration.services.inbox.wms_runtime_inbox_handler import (
+    WmsRuntimeInboxHandler,
+)
 from src.app.runtime.orchestration.services.inbox.wms_typed_effect_callback_router import (
     WmsTypedEffectCallbackRouter,
     wms_typed_effect_callback_router,
@@ -30,6 +33,7 @@ __all__ = [
     "NonHttpLeaseExhaustionService",
     "ObjectTransitionEventService",
     "OutboxDispatchService",
+    "WmsRuntimeInboxHandler",
     "WmsTypedEffectCallbackRouter",
     "WorklineDispatchAttemptService",
     "external_http_lease_loss_service",

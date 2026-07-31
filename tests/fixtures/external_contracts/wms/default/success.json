@@ -4,17 +4,21 @@
   "contract_version": "2026-06-25",
   "direction": "effect",
   "raw_request": {
-    "transport_request_id": "tr-success-001",
-    "source_location": "INBOUND_A",
-    "target_location": "SORTER_01"
+    "dispatch_key": "rack-supply-success-001",
+    "station_code": "STATION-A",
+    "rack_type": "FIVE_LAYER",
+    "demand_generation": 1
   },
   "raw_response": {
-    "accepted": true,
-    "external_ref": "wms-task-001"
+    "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+    "idempotency_key": "idem-rack-supply-success-001",
+    "provider_reference": "wms-task-001",
+    "submission_state": "ACCEPTED"
   },
   "expected_typed": {
-    "accepted": true,
-    "external_ref": "wms-task-001",
-    "status": "ACCEPTED"
+    "operation_identity": "wms.fulfillment.request_rack_supply@v1",
+    "idempotency_key": "idem-rack-supply-success-001",
+    "provider_reference": "wms-task-001",
+    "submission_state": "ACCEPTED"
   }
 }

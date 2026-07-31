@@ -62,6 +62,7 @@ def test_first_stage_resource_tables_are_registered_with_required_fields() -> No
     assert RackSlotKind.BIN_SLOT.value == "BIN_SLOT"
     assert RackSlotKind.MATERIAL_SLOT.value == "MATERIAL_SLOT"
     assert RackSlotTemplate.__table__.c.slot_kind is not None
+    assert BinSlotTemplate.__table__.c.bin_slot_index.nullable is False
 
     for model in (RackType, RackSlotTemplate, Rack, BinType, BinSlotTemplate, Bin):
         assert model.__schema__ == "wes_biz"
@@ -78,6 +79,7 @@ async def test_bin_slot_template_reads_database_slot_size_values(db_session: Asy
                 created_at,
                 updated_at,
                 bin_type_code,
+                bin_slot_index,
                 bin_slot_code,
                 slot_size,
                 max_depth_mm,
@@ -88,6 +90,7 @@ async def test_bin_slot_template_reads_database_slot_size_values(db_session: Asy
                 CURRENT_TIMESTAMP,
                 NULL,
                 'SMT_6_CELL_BIN',
+                1,
                 '1',
                 '7INCH',
                 999999,

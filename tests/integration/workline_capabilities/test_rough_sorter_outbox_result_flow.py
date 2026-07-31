@@ -16,6 +16,7 @@ from src.app.callback.models import CallbackLog
 from src.app.callback.services.callback_ingress_service import CallbackIngressService
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_command_service import DeviceCommandService
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
@@ -26,12 +27,13 @@ from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxSer
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
 from src.app.sys.models import SystemOutbox
 from src.app.sys.services import AuditLogService
-from src.app.wms_integration.adapters import InventoryQueryOperationAdapter
-from src.app.wms_integration.ports.query_inventory_operation import (
-    InventoryAuthorityItem,
-    InventoryQueryOperationResult,
+from src.app.wms_integration.ports.document_operations import ValidateRoughSorterAdmissionRequest
+from src.app.wms_integration.ports.inventory_operations import (
+    InventoryRecord,
+    InventorySnapshotQueryResult,
 )
 from src.app.wms_integration.ports.query_outcome import QuerySuccess
+from src.app.workline.models.workline import WorkLine
 from src.utils.timezone import timezone
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
@@ -39,6 +41,17 @@ from tests.support.runtime_inbox_processing_postgresql import (
     seed_scan_flow,
     with_temporary_runtime_database,
 )
+from tests.support.wms_query_runtime import bind_stub_wms_query_runtime
+
+
+@pytest.fixture(autouse=True)
+def _bind_persisted_q19_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """成功路径必须具备 Q19 runtime，但已持久化决策不得再次访问 provider。"""
+
+    async def forbidden_query(*_args):  # type: ignore[no-untyped-def]
+        raise AssertionError("已持久化 Q19 同载荷回放不得再次访问 provider")
+
+    bind_stub_wms_query_runtime(monkeypatch, forbidden_query)
 
 
 def _callback_request(payload: dict[str, object]) -> Request:
@@ -80,29 +93,13 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         provider_calls = 0
-        provider_material_codes: list[str] = []
 
-        async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
+        async def forbidden_query(*_args):  # type: ignore[no-untyped-def]
             nonlocal provider_calls
             provider_calls += 1
-            provider_material_codes.append(request.material_code)
-            return QuerySuccess(
-                InventoryQueryOperationResult(
-                    items=(
-                        InventoryAuthorityItem(
-                            material_code=request.material_code,
-                            warehouse_code=request.warehouse_code or "WH-IT",
-                            owner_code=request.owner_code,
-                            storage_location_code="A-01",
-                            available_quantity=10,
-                            lot_no="LOT-IT-001",
-                        ),
-                    ),
-                    source_version="WMS-IT-1",
-                )
-            )
+            raise AssertionError("粗分 COMMAND_RESULT 必须消费已持久化 Q19，不得回查旧 Q14")
 
-        monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
+        bind_stub_wms_query_runtime(monkeypatch, forbidden_query)
         service = RuntimeInboxService()
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
@@ -195,8 +192,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             assert session.plugin_state_version == 2
             assert session.status == "WAITING_DEVICE_RESULT"
             assert session.current_wait_type == "COMMAND_RESULT"
-            assert provider_calls == 1
-            assert provider_material_codes == ["MAT-IT-001"]
+            assert provider_calls == 0
             material_unit = await db.get(MaterialUnit, session.current_material_unit_id)
             assert material_unit is not None
             assert (
@@ -205,7 +201,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
                     .select_from(WorklineTimeline)
                     .where(WorklineTimeline.related_inbox_id == callback.id)
                 )
-                == 3
+                == 2
             )
 
             conveyor_command = await db.scalar(
@@ -430,25 +426,6 @@ def test_missing_callback_becomes_visible_timeout_without_fake_success() -> None
 def test_followup_device_command_requires_terminal_result(action: str, terminal_result: str, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """后续设备命令的成功、失败、超时都经 RuntimeInbox 推进，不存在假完成。"""
 
-    async def query_inventory(_adapter, request):  # type: ignore[no-untyped-def]
-        return QuerySuccess(
-            InventoryQueryOperationResult(
-                items=(
-                    InventoryAuthorityItem(
-                        material_code=request.material_code,
-                        warehouse_code=request.warehouse_code or "WH-IT",
-                        owner_code=request.owner_code,
-                        storage_location_code="A-01",
-                        available_quantity=10,
-                        lot_no="LOT-IT-001",
-                    ),
-                ),
-                source_version="WMS-IT-1",
-            )
-        )
-
-    monkeypatch.setattr(InventoryQueryOperationAdapter, "execute", query_inventory)
-
     async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
         return None
 
@@ -460,11 +437,39 @@ def test_followup_device_command_requires_terminal_result(action: str, terminal_
             seeded = await seed_scan_flow(db)
             if action == "MOVE_TO_NG":
                 scan = await db.get(RuntimeInbox, seeded.inbox_id)
-                assert scan is not None
+                session = await db.get(WorklineSession, seeded.session_id)
+                workline = await db.get(WorkLine, seeded.workline_id)
+                assert scan is not None and session is not None and workline is not None
                 scan.payload_json = {
                     **scan.payload_json,
                     "data": {**scan.payload_json["data"], "PkgID": "PKG-SIZENG-FOLLOWUP"},
                 }
+                q19_request = ValidateRoughSorterAdmissionRequest.model_validate(
+                    {
+                        "raw_code": scan.payload_json["data"]["PkgID"],
+                        "six_in_one": {
+                            field_name: scan.payload_json["data"][field_name]
+                            for field_name in ("HHPN", "MfrPN", "Qty", "DateCode", "LotCode", "PkgID")
+                        },
+                        "reel_diameter_mm": scan.payload_json["reel_diameter_mm"],
+                        "reel_thickness_mm": scan.payload_json["reel_thickness_mm"],
+                        "station_code": workline.line_code,
+                        "workline_id": workline.id,
+                        "session_id": session.id,
+                        "correlation_id": f"workline-session:{session.session_code}",
+                    }
+                )
+                persisted_decision = dict(session.context_json["wms_admission_decision"])
+                persisted_decision.update(
+                    {
+                        "request_canonical_hash": sha256_digest(q19_request.model_dump(mode="json", exclude_none=True)),
+                        "decision": "REJECT",
+                        "reason_code": "PACKAGE_NOT_ADMISSIBLE",
+                        "pkg_id": "PKG-SIZENG-FOLLOWUP",
+                        "measurement_decision": "REJECT",
+                    }
+                )
+                session.context_json = {"wms_admission_decision": persisted_decision}
                 await db.commit()
             await _process_seeded_scan(db, service, seeded)
 

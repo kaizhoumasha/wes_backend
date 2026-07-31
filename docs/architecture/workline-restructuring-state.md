@@ -85,7 +85,7 @@ evidence，不能因为出站 breaker 处于 `open/half-open` 被标成 `BLOCKED
 | 投影冲突 | 同 object 在 2+ 投影源 | `RECONCILING` + `RuntimeHold` |
 | External callback 与本地 projection 不一致 | callback normalize + drift detector | `RECONCILING` + audit log |
 | device 事件与 handling 业务意图状态不一致 | runtime event monitor | `RECONCILING` + `RuntimeHold` |
-| WMS master-data drift | `WmsReconciliationQueryPort` + `ReconciliationManager` | `RECONCILING` 分类处理（详见 §6.5） |
+| WMS master-data drift | reconciliation QUERY Definition + `WmsQueryExecutionPort` + `ReconciliationManager` | `RECONCILING` 分类处理（详见 §6.5） |
 | `RuntimeHold` 关联的现场异常 | runtime intent effects | 创建 `RECONCILING` evidence |
 | 传感器抖动 | ECS/device event 去抖窗口 | N 秒内同 sensor 同 object 合并 evidence；超阈值 `RuntimeHold` |
 | 通信丢包或 callback 延迟 | deadline + provider query | 超过 TTL 后主动 query WMS/ECS；不可确认时 `RECONCILING` |
@@ -111,11 +111,14 @@ evidence，不能因为出站 breaker 处于 `open/half-open` 被标成 `BLOCKED
 
 **恢复决议**：
 
-`ReconciliationManager` 不直接写入 `WmsFulfillmentRequest`、`HandlingOperation`、`ExecutionSession` 或 active projection 的业务状态。它只产出 `ReconciliationRecord.resolution_decision`、追加 evidence、解除/维持 `RuntimeHold`，再由各状态 owner 按 evidence 自己转移。
+`ReconciliationManager` 不直接写入 operation-specific fulfillment evidence、`HandlingOperation`、
+`ExecutionSession` 或 active projection 的业务状态。它只产出
+`ReconciliationRecord.resolution_decision`、追加 evidence、解除/维持 `RuntimeHold`，再由各状态
+owner 按 evidence 自己转移。
 
 | 路径 | 触发 | 决议输出 |
 | --- | --- | --- |
-| WMS 重发回调 | callback normalize 命中 correlation key | `FULFILLMENT_EVIDENCE_ACCEPTED`，由 `WmsFulfillmentRequest` 决定转回 `RUNNING` 或到 `SUCCEEDED` |
+| WMS status 重查 | operation identity 与 idempotency key 命中 | `FULFILLMENT_EVIDENCE_ACCEPTED`，由 operation-specific reducer 单调应用权威状态 |
 | device 事件恢复 | runtime 检测到一致状态 | `DEVICE_EVIDENCE_ACCEPTED`，由 `DeviceCommand` / `ExecutionSession` owner 决定恢复或继续 hold |
 | 人工 reconcile | 操作员确认后 close | `MANUAL_RESOLUTION_ACCEPTED`，指定允许恢复的 object scope 和下一步 effect 范围 |
 | 超时升级 | `RECONCILING > 5 分钟` 告警；`> 30 分钟` 升级 P1 | `RuntimeHold` 升级 |
@@ -133,14 +136,15 @@ evidence，不能因为出站 breaker 处于 `open/half-open` 被标成 `BLOCKED
 
 | Owner | 允许根据 reconciliation evidence 转移到 | 禁止 |
 | --- | --- | --- |
-| `WmsFulfillmentRequest` | `RUNNING` / `SUCCEEDED` / `FAILED` / `CANCELLED` / `BLOCKED_BY_CB` | 直接由 `ReconciliationManager` 写 `ACCEPTED/REJECTED/TIMEOUT` |
+| operation-specific fulfillment reducer | `ACCEPTED` / `PROCESSING` / `COMPLETED` / `REJECTED` / `FAILED` | 直接由 `ReconciliationManager` 写 effect 状态 |
 | `HandlingOperation` | `IN_PROGRESS` / `COMPLETED` / `FAILED` / `CANCELLED` / `RECONCILING` | 写入外部履约细态 |
 | `ExecutionSession` | `RUNNING` / `HOLD` / `CLOSED` | 绕过 owner 直接改投影 |
 | active projection | 解除冻结后由 projection writer 重放 evidence | 人工猜测式覆盖当前归属 |
 
 ### 6.5 WMS master-data drift 分类
 
-`WmsReconciliationQueryPort.check_*_drift` 定期只读拉取 WMS 权威事实，并由 `ReconciliationManager` 分类处理：
+operation-specific reconciliation QUERY 定期通过 `WmsQueryExecutionPort` 只读拉取 WMS 权威事实，
+并由 `ReconciliationManager` 分类处理：
 
 | drift 类型 | WES 处理 |
 | --- | --- |
@@ -172,8 +176,8 @@ evidence，不能因为出站 breaker 处于 `open/half-open` 被标成 `BLOCKED
 **非料箱冲突扩展（M5 回归）**：
 
 - 货架维度：`RackPlacement.status=IN_TRANSIT` 后，新 placement 写入必须基于 WMS/RCS/ECS evidence；同一 `rack_code` 同时处于 2 个 `work_position_code` 直接进 `RECONCILING`。
-- 命令维度：同一 `correlation_id` 下，不允许同时存在 `DeviceCommand.status=RUNNING` 与 `WmsFulfillmentRequest.status=SUCCEEDED` 且 evidence 时间线无法解释的组合；发现后进入 `RECONCILING`。
+- 命令维度：同一 `correlation_id` 下，不允许同时存在 `DeviceCommand.status=RUNNING` 与 operation-specific
+  terminal result 已完成且 evidence 时间线无法解释的组合；发现后进入 `RECONCILING`。
 - active 归属仲裁不只面向 `bin_code`，还必须支持 `rack_code`、`pkg_code`、`command_code` 四类 object key。
 
 ---
-

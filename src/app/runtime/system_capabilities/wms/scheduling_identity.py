@@ -1,16 +1,10 @@
-"""WMS northbound 调度身份常量，避免 gateway 与 Provider catalog 循环依赖。"""
+"""WMS northbound 调度身份，复用唯一 Provider contract version。"""
 
-from src.utils.value_normalization import runtime_profile_environment
-
-WMS_MATERIAL_FLOW_CONTRACT_VERSION = "2026-07-06.material-flow"
+from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSION, build_wms_provider_identity
 
 
-def wms_runtime_profile_identity(app_env: object) -> str:
-    environment = runtime_profile_environment(app_env)
-    return f"wms.{WMS_MATERIAL_FLOW_CONTRACT_VERSION}.{environment}"
+def wms_runtime_profile_identity() -> str:
+    return build_wms_provider_identity("WMS", WMS_PROVIDER_CONTRACT_VERSION)
 
 
-__all__ = [
-    "WMS_MATERIAL_FLOW_CONTRACT_VERSION",
-    "wms_runtime_profile_identity",
-]
+__all__ = ["wms_runtime_profile_identity"]

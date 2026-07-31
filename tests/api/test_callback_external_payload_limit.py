@@ -55,12 +55,7 @@ async def test_external_payload_too_large_returns_http_413_without_runtime_inbox
             "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
             new=AsyncMock(),
         ) as audit_log,
-        patch(
-            "src.app.callback.services.callback_orchestration_service.callback_orchestration_service."
-            "_resolve_rack_task_service"
-        ) as rack_service_resolver,
     ):
-        rack_service_resolver.return_value.record_callback_from_external_http = AsyncMock()
         from src.app.callback.v1.callback import callback_external
 
         with pytest.raises(HTTPException) as exc_info:
@@ -94,12 +89,7 @@ async def test_external_payload_too_large_stays_413_when_callback_log_fails(
             "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
             new=AsyncMock(),
         ),
-        patch(
-            "src.app.callback.services.callback_orchestration_service.callback_orchestration_service."
-            "_resolve_rack_task_service"
-        ) as rack_service_resolver,
     ):
-        rack_service_resolver.return_value.record_callback_from_external_http = AsyncMock()
         from src.app.callback.v1.callback import callback_external
 
         with pytest.raises(HTTPException) as exc_info:
@@ -294,12 +284,7 @@ async def test_existing_external_identity_still_rejects_oversized_payload_before
             "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
             new=AsyncMock(),
         ) as audit_log,
-        patch(
-            "src.app.callback.services.callback_orchestration_service.callback_orchestration_service."
-            "_resolve_rack_task_service"
-        ) as rack_service_resolver,
     ):
-        rack_service_resolver.return_value.record_callback_from_external_http = AsyncMock()
         from src.app.callback.v1.callback import callback_external
 
         await callback_external(request=_request(accepted_payload), db=db_session)
