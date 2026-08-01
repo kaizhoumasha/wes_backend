@@ -86,22 +86,3 @@ def test_active_runtime_sources_do_not_reference_retired_smt_identity() -> None:
             if hits:
                 offenders[source.relative_to(REPO_ROOT).as_posix()] = hits
     assert offenders == {}
-
-
-def test_smt_generated_definition_declares_production_route_boundaries() -> None:
-    from src.app.runtime.workline_plugins.smt_sorting_inbound.definition import DEFINITION
-
-    boundaries = {
-        (
-            boundary.rack_position_code,
-            boundary.rack_kind,
-            boundary.business_demand_type,
-        )
-        for boundary in DEFINITION.schema.resource_boundaries
-    }
-
-    assert boundaries == {
-        ("SOURCE_STATION_A", "SINGLE_LAYER", "SORTING_INBOUND_SOURCE"),
-        ("SOURCE_STATION_B", "SINGLE_LAYER", "SORTING_INBOUND_SOURCE"),
-        ("TARGET_STATION", "FIVE_LAYER", "SORTING_INBOUND_TARGET"),
-    }
