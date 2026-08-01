@@ -154,3 +154,22 @@
 **Effort:** M (human: ~1 day / CC: ~30 min)
 
 **Priority:** P3
+
+### WES 软件层处理幂等与 CALLBACK fencing
+
+**What:** 在执行内核落地两项 WES 软件层并发安全语义：(1) 处理幂等——同一 `InboundEvidence` 被并发 Handler 重复领取时不得重复创建 `DeviceCommand` 或重复推进投影；(2) CALLBACK fencing——CALLBACK 必须按 `command`/`execution`/`line`/`epoch` 关联键路由，旧 Epoch 的迟到 CALLBACK（人工清线并创建新 Epoch 后到达）只保存为证据，不得写入新对象或新 Epoch 投影。
+
+**Why:** 2026-08-01 plan-eng-review 的 codex outside voice 发现 SPEC 并发/幂等/fencing 语义缺口。物理并发互锁归 ECS/PLC（SPEC §5.2/§8.1），但这两项是 WES 进程内与回调路由的软件层语义，ECS 不参与，写错会导致重复命令、双重状态推进或跨 Epoch 投影污染。用户裁决（D5）：不进 SPEC 冻结（避免过度设计），但作为实现清单，在各执行对象垂直切片落地时不能漏。
+
+**Context:** SPEC §5.1 只定义入站证据幂等（持久化后 ACK），未定义异步 Handler 的领取去重与事务边界；SPEC §5.2/§8.2/§9.3 未定义 CALLBACK 关联键与跨 Epoch fencing。这两项与 plan Task 10（崩溃窗口）/Task 11（并发）测试对应——测试需在实现落地后验证这两项语义。
+
+**Scope:**
+- 处理幂等：Handler 领取 `InboundEvidence` 时按幂等键 + 处理状态去重；同一证据并发领取只产生一个 `DeviceCommand`/一次投影推进
+- CALLBACK fencing：CALLBACK 携带并校验 `command`/`execution`/`line`/`epoch` 关联键；旧 Epoch 迟到 CALLBACK 只持久化为证据，不推进新对象状态
+- 在 plan Task 10 Step 5（`tests/integration/test_evidence_concurrent_processing.py`，处理幂等）与 Task 11 Step 2（`tests/integration/concurrency/test_callback_out_of_order.py`，CALLBACK fencing）测试中验证这两项语义
+
+**Depends on:** 最终 `InboundEvidence`、`DeviceCommand`、`LineRunEpoch` 对象与 Handler 处理路径由独立业务实施工作包交付（决策 14 硬性交接条件）。
+
+**Effort:** M (human: ~1 day / CC: ~30 min)
+
+**Priority:** P1（业务垂直切片硬性交接条件，Task 10/11 入口依赖）
