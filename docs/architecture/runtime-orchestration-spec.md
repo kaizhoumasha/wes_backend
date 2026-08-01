@@ -405,7 +405,7 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 
 ### 7.2 单元测试
 
-- `tests/runtime/orchestration/` — RuntimeInbox、运行态实体与 service contract 测试
+- `tests/runtime/orchestration/` — RuntimeInbox 轻量合同、运行态实体与 service contract 测试
 
 ### 7.3 性能测试
 
@@ -413,8 +413,13 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 - `tests/load/test_plane_snapshot_benchmark.py` — plane snapshot benchmark
 - `tests/load/test_runtime_inbox_claim_benchmark.py` — inbox claim benchmark
 
-### 7.4 PostgreSQL 严格验收
+### 7.4 RuntimeInbox 核心 HEAVY 与 PostgreSQL 严格验收
 
+- `tests/integration/test_runtime_inbox_consumer_service.py` — 数据库幂等接收、唯一冲突重读与人工重放审计
+- `tests/integration/test_runtime_inbox_service_internal_events.py` — 内部/设备事件与命令结果持久化和关联校验
+- `tests/integration/test_runtime_inbox_claim_repository.py` — FIFO claim、lease、fencing 与 SLI snapshot
+- `tests/integration/test_runtime_inbox_repository_consumers.py` — repository 消费者的数据库读取合同
+- `tests/resilience/test_runtime_inbox_failure_state_machine.py` — 重试预算、死信、lease fencing 与故障恢复
 - `tests/integration/test_runtime_inbox_migration_postgresql.py` — Revision A/B 与 audit-only migration matrix
 - `tests/integration/test_runtime_inbox_processing_postgresql.py` — producer 到 fenced terminal 的生产处理链路
 - `tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py` — 两个 crash window

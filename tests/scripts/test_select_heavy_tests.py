@@ -27,7 +27,9 @@ OPTIMISTIC_LOCK_HEAVY_TEST = "tests/integration/test_optimistic_lock.py"
 RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST = "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py"
 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST = "tests/integration/test_external_http_transport_attempt_postgresql.py"
 RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST = "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"
+RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST = "tests/integration/test_runtime_inbox_consumer_service.py"
 RUNTIME_INBOX_PROCESSING_HEAVY_TEST = "tests/integration/test_runtime_inbox_processing_postgresql.py"
+RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST = "tests/integration/test_runtime_inbox_service_internal_events.py"
 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_idempotency.py"
 RUNTIME_REMAINING_ENTITIES_HEAVY_TEST = "tests/integration/test_runtime_remaining_entities.py"
 RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST = "tests/integration/test_runtime_production_closure_contract.py"
@@ -481,15 +483,19 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/core/mixins/optimistic_lock.py", (OPTIMISTIC_LOCK_HEAVY_TEST,)),
         (
             "src/app/runtime/orchestration/services/idempotency_guard.py",
-            (RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,),
+            (RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST, RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST),
         ),
         (
             "src/app/runtime/orchestration/repositories/idempotency_key_repository.py",
-            (RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,),
+            (RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST, RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST),
         ),
         (
             "src/app/runtime/orchestration/idempotency_key.py",
-            (RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST),
+            (
+                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+            ),
         ),
         (
             "src/app/runtime/orchestration/conveyor_queue_membership.py",
@@ -516,6 +522,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (
                 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
                 RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST,
                 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
                 RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
@@ -643,15 +650,19 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
         ("src/core/mixins/optimistic_lock.py", [OPTIMISTIC_LOCK_HEAVY_TEST]),
         (
             "src/app/runtime/orchestration/services/idempotency_guard.py",
-            [RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST],
+            [RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST, RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST],
         ),
         (
             "src/app/runtime/orchestration/repositories/idempotency_key_repository.py",
-            [RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST],
+            [RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST, RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST],
         ),
         (
             "src/app/runtime/orchestration/idempotency_key.py",
-            [RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST],
+            [
+                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+            ],
         ),
         (
             "src/app/runtime/orchestration/conveyor_queue_membership.py",
@@ -678,6 +689,7 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
             [
                 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
                 RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST,
                 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
                 RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
@@ -808,8 +820,10 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/database/sqlite_schema.py",
         "src/app/runtime/orchestration/execution_correlation.py",
         "src/app/runtime/orchestration/execution_session.py",
+        "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
         "src/app/runtime/orchestration/runtime_inbox.py",
         "src/app/runtime/orchestration/runtime_intent_log.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py",
     ],
 )
 def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_closed(changed_path: str) -> None:
