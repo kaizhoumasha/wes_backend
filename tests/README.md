@@ -44,12 +44,28 @@
 | `tests/api_auth/` | API application、开放接口授权与缓存测试 |
 | `tests/deployment/` | docker-compose、nginx、开发 worker/beat 配置测试 |
 | `tests/utils/` | 工具函数、时间、请求解析测试 |
+| `tests/workline/` | WorkLine 静态身份、物理拓扑、配置校验和 `LineRunEpoch` 等通用能力 |
+| `tests/runtime/` | 与具体插件无关的最小执行对象、投影、可靠性和诊断能力 |
 | `tests/architecture/` | 架构、依赖方向、缺席与测试拓扑合同；QUALITY 显式运行 |
 | `tests/scripts/` | 脚本行为合同；QUALITY 显式运行 |
 | `tests/integration/` | 多组件集成测试，默认快速回归不收集 |
 | `tests/e2e/` | 显式运行的端到端测试，默认快速回归不收集 |
 | `tests/resilience/` | 降级、断连、恢复类测试，默认快速回归不收集 |
 | `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
+
+`tests/` 是 WES 核心测试树，不是具体工作线插件的共享测试目录。具体插件采用独立二次开发包：
+
+```text
+workline_plugins/<plugin_key>/
+├── pyproject.toml
+├── src/
+├── tests/
+└── fixtures/
+```
+
+插件包自己的 `tests/` 唯一拥有具体工作线流程、Handler、现场拓扑、厂商 Payload、插件级 E2E/韧性/负载
+场景。插件代码、测试和 fixture 必须同工作包交付；核心 pytest、覆盖率、质量门禁和 HEAVY selector 不发现、
+不映射也不运行插件包测试。
 
 ### 当前治理约束
 
@@ -68,6 +84,9 @@
 - 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径或 `NONE`。
 - 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
 - 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；该边界只由目录位置和 `norecursedirs` 共同保证，不使用 AST 或 import 黑名单扫描。
+- 核心仓库不得存在 `tests/workline_plugins/`；具体插件测试不得改名后寄存在 `tests/contracts/`、`tests/runtime/` 或核心 HEAVY 目录。
+- 核心测试不得导入仓库根目录 `workline_plugins` 二次开发包或具体插件实现；通用 SPI/SDK 只能使用不含真实工作线规则的最小 fake 验证。
+- `tests/workline_runtime/` 中的存量测试必须按语义收敛：通用不变量改写到最终核心对象，具体插件行为移出，旧平台装配测试删除；不得继续把该目录当作长期目标所有者。
 - 新增领域测试默认不要放在 `tests/` 根目录，优先按上方目录归属矩阵归位。
 - 单个测试文件目标低于 `1000` 行；超过 `3000` 行会触发测试拓扑 guardrail。
 - API 测试文件只覆盖 route、permission、response contract 和 API facade 行为。
@@ -88,7 +107,7 @@ uv run pytest --html=reports/report.html --self-contained-html --cov=src --cov-r
 
 ### 运行 QUALITY 与速度预算
 
-QUALITY 由质量门禁显式运行架构测试和一次 FAST 套件。JUnit 使用 `xunit2`，预算为套件 60 秒、单例 1 秒；`tests/unit/` 与 `tests/workline_plugins/` 在每目录 N≥30 时 p95 不超过 100 毫秒。N<30 时静默跳过目录 p95 检查。
+QUALITY 由质量门禁显式运行架构测试和一次 FAST 套件。JUnit 使用 `xunit2`，预算为套件 60 秒、单例 1 秒；`tests/unit/` 在 N≥30 时 p95 不超过 100 毫秒。N<30 时静默跳过目录 p95 检查。插件包拥有自己的预算，不计入核心 FAST。
 
 当前默认 FAST 基线尚待后续测试所有权收敛，质量门禁仅以 `--report-only` 记录实际预算超限，绝不会因 60 秒预算失败；脚本省略该参数时会强制以非零状态退出。CI 达标基线为固定 2 vCPU / 4 GB 配额。
 
@@ -109,6 +128,7 @@ HEAVY 测试影响选择由 `scripts/select_heavy_tests.py` 和机器可读真�
 - 新增、删除或移动 HEAVY 测试时，同步更新引用它的 `heavy_tests`。
 - HEAVY 目录内的 conftest、fixture、support、模拟器和负载场景，以及 `tests/fixtures/**`、共享 conftest、`tests/support/**` 都属于候选资产。
 - 当前没有已验收权威 HEAVY 测试的既有候选路径保持未映射并 fail closed，待独立业务交接后再补 mapping，不得使用 NONE 或旧测试猜测绕过。
+- 具体工作线或插件 HEAVY 场景只存在于对应 `workline_plugins/<plugin_key>/tests/`，不得加入核心 selector 的 `heavy_tests` 映射。
 
 ```bash
 # 本地未暂存改动（默认 scope 也是 unstaged）
@@ -138,9 +158,6 @@ pytest tests/integration/
 pytest tests/load/
 pytest tests/mock/
 
-# Workline 扩展真实 PostgreSQL 性能预算（必须显式配置安全的 integration admin/test URL）
-INTEGRATION_DATABASE_URL='postgresql+asyncpg://.../postgres' \
-  pytest tests/integration/workline_capabilities/test_runtime_extension_performance_budget_postgresql.py -q -s
 ```
 
 ### 推荐使用方式

@@ -23,8 +23,6 @@ Checks:
   security  Run only Bandit security scan.
   runtime-toggle-release
             Run only runtime toggle release gate.
-  runtime-evidence-readiness
-            Run only runtime evidence readiness gate.
   runtime-production-closure
             Run only runtime production closure gate.
   runtime-contract-guardrails
@@ -138,11 +136,6 @@ run_runtime_toggle_release_gate() {
     run_tool python scripts/check_runtime_toggle_release_gate.py
 }
 
-run_runtime_evidence_readiness_gate() {
-    log_step "runtime-evidence-readiness" "check_runtime_evidence_readiness_gate.py"
-    run_tool python scripts/check_runtime_evidence_readiness_gate.py
-}
-
 run_runtime_production_closure_gate() {
     log_step "runtime-production-closure" "check_runtime_production_closure_gate.py"
     run_tool python scripts/check_runtime_production_closure_gate.py
@@ -160,7 +153,6 @@ run_runtime_contract_guardrails() {
         tests/runtime/orchestration/test_runtime_inbox_consumer_service.py
         tests/contracts/test_runtime_ops_contract_docs.py
         tests/contracts/workline
-        tests/characterization/workline_legacy
     )
     log_step "runtime-contract-guardrails" "pytest ${tests[*]} -q"
     run_tool pytest "${tests[@]}" -q
@@ -212,7 +204,6 @@ run_quality_profile() {
     run_lint_check
     run_security_check
     run_runtime_toggle_release_gate
-    run_runtime_evidence_readiness_gate
     run_runtime_production_closure_gate
     run_runtime_contract_guardrails
     run_business_legacy_absence_gate
@@ -249,9 +240,6 @@ if [[ -n "$CHECK" ]]; then
             ;;
         runtime-toggle-release)
             run_runtime_toggle_release_gate
-            ;;
-        runtime-evidence-readiness)
-            run_runtime_evidence_readiness_gate
             ;;
         runtime-production-closure)
             run_runtime_production_closure_gate

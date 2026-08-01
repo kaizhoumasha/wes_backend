@@ -48,7 +48,8 @@ def test_business_legacy_absence_ledger_tracks_current_surface_states() -> None:
 
     assert {"test-only", "already-removed"}.issubset(tracked_states)
     assert "active-source" not in tracked_states
-    assert {"moved", "test-only-migrated", "kept-config-only", "already-removed"}.issubset(dispositions)
+    assert {"moved", "kept-config-only", "already-removed"}.issubset(dispositions)
+    assert "test-only-migrated" not in dispositions
     assert "pending" not in dispositions
     assert all(row["target_capability_status"] == "mapped" for row in rows)
 

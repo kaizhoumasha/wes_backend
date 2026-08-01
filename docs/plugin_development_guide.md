@@ -147,23 +147,30 @@ Handler 只返回以下封闭 Decision：
 ## 3. 目标文件结构
 
 ```text
-src/app/workline/plugins/<plugin_key>/
-  __init__.py
-  contracts.py
-  handlers.py
-  registration.py
-
-src/app/device/adapters/<vendor>/
-  client.py
-  contracts.py
-  mapper.py
-
-tests/workline_plugins/<plugin_key>/
-tests/contracts/device/<vendor>/
-tests/integration/
+workline_plugins/<plugin_key>/
+├── pyproject.toml
+├── src/
+│   └── <plugin_package>/
+│       ├── __init__.py
+│       ├── contracts.py
+│       ├── handlers.py
+│       ├── registration.py
+│       └── adapters/
+│           └── <vendor>/
+├── tests/
+│   ├── unit/
+│   ├── contracts/
+│   ├── integration/
+│   ├── e2e/
+│   └── resilience/
+└── fixtures/
 ```
 
-只有出现真实独立职责时才增加文件。不得预建客户尚未需要的扩展点或业务模板。
+插件包是独立二次开发交付单元：自己声明 WES SDK 版本、厂商依赖、测试配置和构建入口。插件代码、测试和
+fixture 必须在同一工作包加入；不得先在核心 `tests/` 中寄存具体插件测试，也不得创建只有测试没有插件代码的
+空包。
+
+核心仓库不保存具体插件源码。只有出现真实独立职责时才增加文件，不得预建客户尚未需要的扩展点或业务模板。
 
 ## 4. 开发硬规则
 
@@ -187,21 +194,24 @@ tests/integration/
 | --- | --- |
 | 厂家合同 | 真实 Event、Command、ACK、CALLBACK、角色映射、非法 Payload 和关联冲突 |
 | 插件逻辑 | 正常 Decision、设备忙、位置满、模式不匹配、业务 NG、硬件故障、依赖暂停 |
-| 执行闭环 | 入站持久化与幂等、具体执行记录、最终 CALLBACK、投影更新、多对象并发、人工清线 |
+| 执行闭环 | 具体工作线的最终 CALLBACK、投影更新、多对象并发和人工清线 |
 | 架构边界 | Handler 不依赖数据库、Repository、HTTP、Celery、Service Locator 或全局容器 |
 
-测试目录和默认/重测试边界遵循[测试指南][test-guide]。至少运行：
+入站持久化与幂等、通用命令证据、`LineRunEpoch` fencing 等 WES 基础能力由核心测试证明；插件测试只覆盖该
+具体插件新增的业务风险，不复制核心测试。
+
+插件包使用自己的 Pytest 配置、覆盖率和 CI。进入插件包目录后至少运行：
 
 ```bash
-uv run pytest tests/workline_plugins/<plugin_key> -q
-uv run pytest tests/contracts/device/<vendor> -q
-uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
-uv run pytest --collect-only -q -o addopts='' | tail -5
-./scripts/git-quality-gate.sh --profile quality
+uv sync --dev
+uv run pytest tests/unit tests/contracts -q
+uv run pytest tests/integration tests/e2e tests/resilience -q
+uv run ruff format --check .
+uv run ruff check .
 ```
 
-涉及 PostgreSQL、HTTP、CALLBACK、故障或并发时，显式运行受影响的 `tests/integration/`、
-`tests/resilience/` 或 `tests/e2e/` 场景。
+插件包需要真实 PostgreSQL、HTTP、CALLBACK、故障或并发环境时，在自身 CI 显式准备并运行受影响场景。
+WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY selector 都不得发现或运行这些插件测试。
 
 ## 6. 交付检查
 
@@ -213,7 +223,9 @@ uv run pytest --collect-only -q -o addopts='' | tail -5
 - [ ] 插件没有数据库、Repository、HTTP、Celery 或动态依赖查找。
 - [ ] 业务 NG、硬件故障、依赖暂停和人工清线语义明确分离。
 - [ ] 插件版本、配置版本和流程模式固定在 `LineRunEpoch`。
-- [ ] 合同测试、插件测试、受影响重测试和质量门禁全部通过。
+- [ ] 插件代码、测试和 fixture 位于同一个 `workline_plugins/<plugin_key>/` 独立包。
+- [ ] 插件自己的合同测试、单元测试、受影响重测试和质量门禁全部通过。
+- [ ] 核心 `tests/` 未新增任何具体工作线、插件或厂商行为测试。
 
 ## 参考
 

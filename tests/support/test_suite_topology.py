@@ -50,7 +50,6 @@ FINAL_TEST_DIRECTORY_ALLOWLIST = {
     "tests/utils",
     "tests/wms_integration",
     "tests/workline",
-    "tests/workline_plugins",
     "tests/workline_runtime",
 }
 

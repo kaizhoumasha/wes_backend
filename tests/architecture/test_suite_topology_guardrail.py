@@ -106,14 +106,3 @@ def test_readme_does_not_publish_fixed_test_inventory_counts() -> None:
     )
 
     assert not any(re.search(pattern, readme_text) for pattern in stale_patterns)
-
-
-def test_runtime_extension_platform_test_files_stay_below_hard_limit() -> None:
-    paths = (
-        REPO_ROOT / "tests/workline_plugins/conformance.py",
-        REPO_ROOT / "tests/workline_plugins/rough_sorter/test_conformance.py",
-        REPO_ROOT / "tests/architecture/test_runtime_extension_platform_guardrail.py",
-    )
-
-    assert all(path.exists() for path in paths)
-    assert all(len(path.read_text(encoding="utf-8").splitlines()) < 1000 for path in paths)

@@ -110,7 +110,7 @@ def test_business_legacy_inventory_statements_match_current_csvs() -> None:
 
     assert f"### 7.1 workline（{owner_counts['workline']} entries）" in doc_text
     assert f"### 7.2 workline_runtime（{owner_counts['workline_runtime']} entries）" in doc_text
-    assert f"{runtime_tests} 条 runtime / material-flow characterization" in doc_text
+    assert f"{runtime_tests} 条仍在核心测试树中的 runtime 合同" in doc_text
     assert f"### 7.5 guardrail_seed_scope（{guardrail_seeds} entries）" in doc_text
     assert f"WMS_INTEGRATION_BOUNDARY（WMS import，{wms_seeds} 条）" in doc_text
     assert f"EXECUTION_CORRELATION_BOUNDARY（session FK，{correlation_seeds} 条）" in doc_text
@@ -119,9 +119,8 @@ def test_business_legacy_inventory_statements_match_current_csvs() -> None:
     assert f"phase4 业务流程（{len(ledger_rows)} entries）" in doc_text
     assert f"CSV {len(matrix_rows)} 条" in doc_text
     assert (
-        f"{len(ledger_rows)} 条 phase4 carrier 中 "
+        f"{len(ledger_rows)} 条 phase4 carrier："
         f"{disposition_counts['moved']} 行 moved、"
-        f"{disposition_counts['test-only-migrated']} 行 test-only-migrated、"
         f"{disposition_counts['kept-config-only']} 行 kept-config-only、"
         f"{disposition_counts['already-removed']} 行 already-removed，0 pending"
     ) in doc_text

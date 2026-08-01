@@ -10,6 +10,9 @@ migration_strategy: direct_replacement
 historical_reference: ee1f3b670c5ed33cfd5be1fd0370b53570790e73
 supersedes:
   - docs/superpowers/specs/2026-07-15-workline-plugin-system-capability-platform-design.md
+  - docs/superpowers/specs/2026-07-03-phase4-design-with-residuals.md
+  - docs/superpowers/plans/2026-07-04-runtime-evidence-readiness.md
+  - docs/superpowers/plans/2026-07-27-remove-legacy-unbound-runtime.md
   - >-
     docs/architecture/target-state-contract.md 中与本文冲突的 Runtime、Plugin、Hold、Recovery
     与 CellReservation 目标态

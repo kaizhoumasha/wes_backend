@@ -65,6 +65,9 @@
 
 **Context:** 后端以 `WorkLine` 静态身份、标准角色约定和显式配置校验为真源，不使用 WorkLine/Vendor Manifest、动态能力 Catalog 或运行时发现。
 
+具体工作线插件位于仓库根目录 `workline_plugins/<plugin_key>/` 独立二次开发包；核心 `tests/` 不保存
+具体插件 fixture 或业务场景。绑定向导只面向 WES 通用 WorkLine 配置能力，不读取插件包测试资产。
+
 **Scope:**
 - 按工作线模式和标准角色展示待绑定设备、位置容量及拓扑缺口
 - 支持从未绑定设备或当前 WorkLine 设备中选择/调整角色
@@ -159,16 +162,19 @@
 
 **What:** 在执行内核落地两项 WES 软件层并发安全语义：(1) 处理幂等——同一 `InboundEvidence` 被并发 Handler 重复领取时不得重复创建 `DeviceCommand` 或重复推进投影；(2) CALLBACK fencing——CALLBACK 必须按 `command`/`execution`/`line`/`epoch` 关联键路由，旧 Epoch 的迟到 CALLBACK（人工清线并创建新 Epoch 后到达）只保存为证据，不得写入新对象或新 Epoch 投影。
 
-**Why:** 2026-08-01 plan-eng-review 的 codex outside voice 发现 SPEC 并发/幂等/fencing 语义缺口。物理并发互锁归 ECS/PLC（SPEC §5.2/§8.1），但这两项是 WES 进程内与回调路由的软件层语义，ECS 不参与，写错会导致重复命令、双重状态推进或跨 Epoch 投影污染。用户裁决（D5）：不进 SPEC 冻结（避免过度设计），但作为实现清单，在各执行对象垂直切片落地时不能漏。
+**Why:** 物理并发互锁归 ECS/PLC（SPEC §5.2/§8.1），但这两项是 WES 进程内与回调路由的软件层语义，ECS 不参与，写错会导致重复命令、双重状态推进或跨 Epoch 投影污染。
 
-**Context:** SPEC §5.1 只定义入站证据幂等（持久化后 ACK），未定义异步 Handler 的领取去重与事务边界；SPEC §5.2/§8.2/§9.3 未定义 CALLBACK 关联键与跨 Epoch fencing。这两项与 plan Task 10（崩溃窗口）/Task 11（并发）测试对应——测试需在实现落地后验证这两项语义。
+**Context:** SPEC 将幂等、持久化证据和 ACK/CALLBACK 分离列为核心可靠性，并明确具体插件测试必须移出核心
+`tests/`。处理领取幂等和跨 Epoch CALLBACK fencing 是跨插件通用的 WES 基础能力，因此实现和测试均由核心
+执行对象工作包拥有，不随粗分机、自动分拣或其他具体插件包迁移。
 
 **Scope:**
 - 处理幂等：Handler 领取 `InboundEvidence` 时按幂等键 + 处理状态去重；同一证据并发领取只产生一个 `DeviceCommand`/一次投影推进
 - CALLBACK fencing：CALLBACK 携带并校验 `command`/`execution`/`line`/`epoch` 关联键；旧 Epoch 迟到 CALLBACK 只持久化为证据，不推进新对象状态
-- 在 plan Task 10 Step 5（`tests/integration/test_evidence_concurrent_processing.py`，处理幂等）与 Task 11 Step 2（`tests/integration/concurrency/test_callback_out_of_order.py`，CALLBACK fencing）测试中验证这两项语义
+- 在核心执行对象单元测试与核心 integration/concurrency 测试中分别验证处理幂等和 CALLBACK fencing；
+  测试名称和目录按最终对象命名，不使用具体插件、旧 Runtime 或 Manifest fixture
 
-**Depends on:** 最终 `InboundEvidence`、`DeviceCommand`、`LineRunEpoch` 对象与 Handler 处理路径由独立业务实施工作包交付（决策 14 硬性交接条件）。
+**Depends on:** 最终 `InboundEvidence`、`DeviceCommand`、`LineRunEpoch` 对象与核心 Handler 调度路径交付。
 
 **Effort:** M (human: ~1 day / CC: ~30 min)
 

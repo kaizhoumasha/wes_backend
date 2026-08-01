@@ -13,7 +13,7 @@ SUITE_BUDGET_SECONDS = 60.0
 CASE_BUDGET_SECONDS = 1.0
 DIRECTORY_P95_BUDGET_SECONDS = 0.1
 MINIMUM_DIRECTORY_CASE_COUNT = 30
-P95_BUDGET_DIRECTORIES = ("tests/unit/", "tests/workline_plugins/")
+P95_BUDGET_DIRECTORIES = ("tests/unit/",)
 
 
 def parse_arguments() -> argparse.Namespace:

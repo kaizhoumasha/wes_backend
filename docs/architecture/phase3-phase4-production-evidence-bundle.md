@@ -1,6 +1,6 @@
 # Runtime Production Closure + Material-Flow Evidence Bundle
 
-> 本文件保留 2026-07-07 已生成 artifact 的历史路径与哈希，因此部分 `reports/phase3` / `reports/phase4` 路径不改写。当前 active gate、composer 与 readiness 命名使用 runtime production closure、runtime benchmark、material-flow evidence。
+> 本文件仅保留 2026-07-07 已生成 artifact 的历史路径与哈希，因此部分 `reports/phase3` / `reports/phase4` 路径不改写。测试所有权收敛后，material-flow evidence composer/readiness gate 已从核心退役；下列 Phase 4 evidence 只作历史审计，不是当前可执行入口。
 
 ## Status
 
@@ -18,7 +18,7 @@
 | --- | --- | --- | --- |
 | Runtime production E2E | `reports/phase3/phase3-p0-e2e.json` | `0840947996b7e15e5847a57b16156373e174fbafc491350592e097aa9c4a60ed` | `scripts/compose_runtime_production_e2e_artifact.py` |
 | Runtime production benchmark | `reports/phase3/phase3-production-benchmark.json` | `6d039f4210128b337ff10228228d510a45ea0caab01f331f7fdfc592bbcd71b1` | `scripts/compose_runtime_benchmark_artifact.py` |
-| Material-flow runtime evidence | `reports/phase4/runtime-evidence-production.json` | `29b6d3990296efa875b35c90ba90a4fe4ea70b150b376c97f5243706f1cb7fec` | `scripts/compose_runtime_evidence_artifact.py` |
+| Material-flow runtime evidence | `reports/phase4/runtime-evidence-production.json` | `29b6d3990296efa875b35c90ba90a4fe4ea70b150b376c97f5243706f1cb7fec` | 历史工具（已从核心退役） |
 
 ## Evidence Roots
 
@@ -65,12 +65,6 @@ uv run python scripts/compose_runtime_benchmark_artifact.py \
   --scenario-evidence ecs_status_command=reports/phase3/evidence/benchmark/ecs_status_command.json \
   --scenario-evidence plane_snapshot=reports/phase3/evidence/benchmark/plane_snapshot.json
 
-uv run python scripts/compose_runtime_evidence_artifact.py \
-  --output reports/phase4/runtime-evidence-production.json \
-  --profile production \
-  --environment field-production \
-  --generated-at "$SNAPSHOT_GENERATED_AT" \
-  --evidence-dir evidence/phase4-runtime
 ```
 
 ## Validation
@@ -79,11 +73,8 @@ uv run python scripts/compose_runtime_evidence_artifact.py \
 uv run python scripts/check_runtime_production_closure_gate.py --closure-profile production --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json
 Runtime production closure evidence passed
 
-uv run python scripts/check_runtime_evidence_readiness_gate.py --readiness-profile production --runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json
-Runtime evidence readiness gate passed: reason=RUNTIME_EVIDENCE_READY evidence_profile=production
-
 ./scripts/git-quality-gate.sh --profile quality
-quality profile includes runtime production closure, runtime evidence, business legacy absence, process naming, architecture guardrails, and import-linter.
+quality profile includes runtime production closure, business legacy absence, process naming, architecture guardrails, test ownership, and import-linter.
 ```
 
 ## Boundary

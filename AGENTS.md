@@ -272,25 +272,32 @@ Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 
 - 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径，或明确标注 `NONE`。
 - 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
 - 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；重测试边界由目录位置和 `norecursedirs` 共同保证。
+- WES 核心 `tests/` 只验证 SPEC 定义的最小执行内核、通用 WorkLine 能力、共享外部合同和可靠性不变量。
+- 具体工作线、具体插件和具体厂商行为测试必须位于 `workline_plugins/<plugin_key>/tests/`，并与该插件的 `pyproject.toml`、`src/` 和 `fixtures/` 同工作包交付。
+- 核心仓库不得存在 `tests/workline_plugins/`，核心测试不得导入根目录二次开发插件包或具体插件实现。
+- 插件测试不得进入核心默认 pytest、核心覆盖率、核心质量门禁或核心 HEAVY selector。
 
 **STRICTLY FORBIDDEN**:
 - ❌ 在 `tests/` 根目录新增 `test_*.py`
 - ❌ 把 integration / e2e / resilience / load / mock 测试混入默认快速回归集
 - ❌ 为了快速通过门禁删除有业务价值的断言或失败路径覆盖
 - ❌ 把 API facade 测试写成 service / repository / projection / orchestrator 大杂烩
+- ❌ 把具体工作线或插件测试改名后放入 contracts / runtime / integration / e2e 等核心目录
+- ❌ 创建只有测试、没有对应插件代码和 fixture 的二次开发插件包
 - ❌ 新增超过 `3000` 行的测试文件；单文件超过 `1000` 行必须优先拆分或说明原因
 
 **Required placement**:
 - `tests/api/`: route、permission、response model、API facade 行为
-- `tests/workline_runtime/`: runtime service、orchestrator、intent、diagnostic、session resolver 纯逻辑
-- `tests/workline_plugins/`: plugin contract、plugin behavior、template asset
+- `tests/workline/`: WorkLine 静态身份、物理拓扑、配置校验和 `LineRunEpoch` 等通用能力
+- `tests/runtime/`: 与具体插件无关的最小执行对象、投影、可靠性和诊断能力；旧平台测试必须逐步改写或删除
 - `tests/contracts/`: 跨系统/跨模块契约
 - `tests/core/`, `tests/database/`, `tests/sys/`, `tests/api_auth/`, `tests/deployment/`, `tests/utils/`: 对应基础设施或领域边界
 - `tests/integration/`, `tests/e2e/`, `tests/resilience/`, `tests/load/`, `tests/mock/`: 显式运行的重测试目录，默认 pytest 不收集
+- `workline_plugins/<plugin_key>/tests/`: 具体插件独立测试树，不属于核心 `tests/`，由插件包自己的 Pytest 配置和 CI 运行
 
 **Required verification for test changes**:
 ```bash
-uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
+uv run pytest tests/architecture/test_suite_topology_guardrail.py tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
 uv run pytest <changed-test-files-or-domain> -q
 uv run pytest --collect-only -q -o addopts='' | tail -5
 ./scripts/git-quality-gate.sh --profile quality

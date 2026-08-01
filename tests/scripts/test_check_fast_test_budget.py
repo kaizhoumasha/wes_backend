@@ -55,12 +55,12 @@ def test_enforced_mode_exits_nonzero_when_a_budget_is_exceeded(tmp_path: Path) -
 
 def test_p95_budget_silently_skips_directories_with_fewer_than_thirty_cases(tmp_path: Path) -> None:
     report_path = tmp_path / "fast.xml"
-    _write_junit_report(report_path, [("tests.workline_plugins.test_fast", 0.2)] * 29)
+    _write_junit_report(report_path, [("tests.unit.test_fast", 0.2)] * 29)
 
     result = _run_budget_check(report_path)
 
     assert result.returncode == 0
-    assert "tests/workline_plugins/ p95" not in result.stdout
+    assert "tests/unit/ p95" not in result.stdout
 
 
 def test_classname_is_parsed_as_a_test_path_for_directory_budgeting(tmp_path: Path) -> None:
