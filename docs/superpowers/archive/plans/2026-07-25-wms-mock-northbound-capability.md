@@ -93,7 +93,7 @@
 **Files:**
 
 - Modify: `scripts/verify_wms_northbound_feasibility.py`
-- Modify: `tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py`
+- Modify: `tests/integration/test_wms_northbound_feasibility_probe.py`
 - Modify: `tests/contracts/wms_integration/test_task9_release_evidence_assets.py`
 - Modify: `docs/operations/wms-northbound-feasibility-report.md`
 - Modify: `docs/operations/wms-northbound-acceptance-and-cutover.md`
@@ -108,7 +108,7 @@
 - [x] 运行探针测试并确认因实际 Mock 接口/调用形状未适配而 RED。
 - [x] 扩展探针支持三个 operation-specific submit path、合法 Submit/Status HMAC 和 typed payload。
 - [x] 覆盖首次提交、处理中/完成重放、冲突、五态、版本、typed result、故障矩阵、callback hint 和 reset。
-- [x] 运行 `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q` 并确认 GREEN。
+- [x] 运行 `uv run pytest tests/integration/test_wms_northbound_feasibility_probe.py -q` 并确认 GREEN。
 - [x] 更新可行性报告为实际 Mock `GO`，记录 build、承诺参数、测试命令和结果。
 - [x] 更新验收与主计划状态，明确实际 Mock 是当前验收源且 P0 门禁已关闭。
 - [x] 运行相关 Mock、contract、deployment、runtime 测试和 topology guardrail。

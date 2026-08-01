@@ -18,6 +18,7 @@ from scripts.select_heavy_tests import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HEAVY_TEST = "tests/integration/test_authoritative_runtime.py"
+WMS_FEASIBILITY_HEAVY_TEST = "tests/integration/test_wms_northbound_feasibility_probe.py"
 
 
 def _write_mapping(
@@ -410,7 +411,51 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         "README*",
         "LICENSE*",
     )
-    assert mappings == ()
+    assert tuple((mapping.source_glob, mapping.heavy_tests) for mapping in mappings) == (
+        ("scripts/select_heavy_tests.py", ()),
+        (
+            "scripts/verify_wms_northbound_feasibility.py",
+            (WMS_FEASIBILITY_HEAVY_TEST,),
+        ),
+        (
+            "tests/contracts/wms_integration/provider_profile_support.py",
+            (WMS_FEASIBILITY_HEAVY_TEST,),
+        ),
+        (
+            "tests/mock/wms_mock_server.py",
+            (WMS_FEASIBILITY_HEAVY_TEST,),
+        ),
+        (
+            "tests/mock/wms_northbound_contract.py",
+            (WMS_FEASIBILITY_HEAVY_TEST,),
+        ),
+        (
+            "tests/mock/wms_operation_fixtures.py",
+            (WMS_FEASIBILITY_HEAVY_TEST,),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "scripts/verify_wms_northbound_feasibility.py",
+        "tests/contracts/wms_integration/provider_profile_support.py",
+        "tests/mock/wms_mock_server.py",
+        "tests/mock/wms_northbound_contract.py",
+        "tests/mock/wms_operation_fixtures.py",
+    ],
+)
+def test_repository_mapping_selects_wms_feasibility_heavy_test(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == [WMS_FEASIBILITY_HEAVY_TEST]
+
+
+def test_repository_mapping_classifies_selector_implementation_as_quality_only() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["scripts/select_heavy_tests.py"], config) == []
 
 
 def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:

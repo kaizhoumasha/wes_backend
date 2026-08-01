@@ -11,5 +11,31 @@ ignore_globs = [
     "LICENSE*",
 ]
 
-# 当前尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
-# 也不以显式 NONE 掩盖风险。上述候选路径会 fail closed，待业务交接后再补精确 [[mapping]]。
+# selector 实现由 QUALITY 脚本合同承接，不触发运行时 HEAVY 测试。
+[[mapping]]
+source_glob = "scripts/select_heavy_tests.py"
+heavy_tests = []
+
+# WMS 北向可行性探针只承接核心 HTTP/CLI/安全与 deadline 可靠性；具体工作线规则由插件包独立拥有。
+[[mapping]]
+source_glob = "scripts/verify_wms_northbound_feasibility.py"
+heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
+
+[[mapping]]
+source_glob = "tests/contracts/wms_integration/provider_profile_support.py"
+heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
+
+[[mapping]]
+source_glob = "tests/mock/wms_mock_server.py"
+heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
+
+[[mapping]]
+source_glob = "tests/mock/wms_northbound_contract.py"
+heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
+
+[[mapping]]
+source_glob = "tests/mock/wms_operation_fixtures.py"
+heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
+
+# 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
+# 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。

@@ -150,7 +150,7 @@ CLI 48 case 全部 `passed=true`。
 - Create: `docs/contracts/wms-northbound-interaction-contract.md`
 - Create: `docs/architecture/adr/2026-07-24-northbound-interaction-simplification.md`
 - Modify: `docs/superpowers/archive/specs/2026-07-21-northbound-capability-extraction-design.md`
-- Test: `tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py`
+- Test: `tests/integration/test_wms_northbound_feasibility_probe.py`
 
 **Step 1: 锁定绿色基线与后续 guardrail 归属**
 
@@ -228,7 +228,7 @@ ADR 记录：
 **Step 5: 验证文档、探针与绿色基线**
 
 ```bash
-uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q
+uv run pytest tests/integration/test_wms_northbound_feasibility_probe.py -q
 uv run pytest tests/architecture/test_northbound_wms_typed_operation_boundaries.py -q
 uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
 ```
@@ -1094,7 +1094,7 @@ Run with Claude Code or Codex; checkbox as you ship.
 - [x] **T1 (P1, human: ~1–2d + WMS coordination / CC: ~30min)** — WMS contract — 实际 Mock 黑盒探针已取得 feasibility `GO`
   - Surfaced by: Architecture review — WMS 外部可行性原被后置到 Task 9。
   - Files: `docs/contracts/wms-northbound-interaction-contract.md`, `docs/operations/wms-northbound-feasibility-report.md`, `scripts/verify_wms_northbound_feasibility.py`
-  - Verify: `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`
+  - Verify: `uv run pytest tests/integration/test_wms_northbound_feasibility_probe.py -q`
 - [x] **T2 (P1, human: ~2–3d / CC: ~3–5h)** — WMS transport contract — 打通持久化幂等键、受控签名 header、Settings 和 status Port
   - Surfaced by: Outside voice + architecture review — submit 未携带关联键，配置文件和状态合同缺失。
   - Files: `src/app/sys/`, `src/app/wms_integration/`, `src/core/conf.py`, env/Compose profiles, generated Outbox migration

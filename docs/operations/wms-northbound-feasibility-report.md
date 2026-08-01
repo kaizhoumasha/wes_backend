@@ -61,9 +61,9 @@ raw body bytes 计算并校验 `X-WES-Content-SHA256`；验签后显式解析 JS
 
 ## 黑盒探针证据
 
-2026-07-25 先运行快速合同测试，再显式构建并启动实际 Docker Compose 服务：
+2026-07-25 先显式运行核心 HEAVY 合同测试，再构建并启动实际 Docker Compose 服务：
 
-- `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`；
+- `uv run pytest tests/integration/test_wms_northbound_feasibility_probe.py -q`；
 - `docker compose --profile dev build mock_ecs mock_wms`；
 - `uv run pytest tests/integration/test_mock_container_entrypoints.py -q`，结果 `5 passed`，覆盖 ECS/WMS
   双入口、合法浮点合同覆盖，并校验报告保留格式正确的点时镜像 digest；
@@ -78,7 +78,7 @@ raw body bytes 计算并校验 `X-WES-Content-SHA256`；验签后显式解析 JS
   --base-url http://127.0.0.1:18011 --timeout-seconds 0.25
   --submit-timeout-seconds 0.25 --status-timeout-seconds 0.25`，结果 48 个 case 全部 `passed=true`。
 
-快速测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项针对已构建镜像的真实 TCP 黑盒证据。
+核心 HEAVY 测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项针对已构建镜像的真实 TCP 黑盒证据。
 开发用 `docker-compose.yml` 仍保留热更新挂载，但不参与最终镜像验收。探针不读取 Mock 内部状态，
 只经 submit/status/debug 的公开 HTTP 路由断言。并发证据由具名 live case
 `test_compose_mock_wms_concurrent_identical_replay_over_tcp` 与
