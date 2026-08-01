@@ -152,9 +152,9 @@ async def test_sandbox_workline_start_returns_rejection_as_success_data(
             accepted=False,
             http_status=409,
             reason_code="START_ADMISSION_DEVICE_NOT_IDLE",
-            message="START 准入失败: 设备 RS-CONV-01 非空闲",
+            message="START 准入失败: 设备 CONVEYOR-01 非空闲",
             workline_id=45,
-            diagnostic={"device_code": "RS-CONV-01", "status": "RUNNING"},
+            diagnostic={"device_code": "CONVEYOR-01", "status": "RUNNING"},
         )
     )
     monkeypatch.setattr(operation_api, "start_admission_service", service)
@@ -162,7 +162,7 @@ async def test_sandbox_workline_start_returns_rejection_as_success_data(
     response = await operation_api.start_sandbox_workline(
         workline_id=45,
         payload=operation_api.SandboxWorklineStartRequest(
-            device_code="RS-CONV-01",
+            device_code="CONVEYOR-01",
             trace_id="sandbox:start:trace-rejected",
         ),
         db=_DbStub(),  # type: ignore[arg-type]
@@ -173,9 +173,9 @@ async def test_sandbox_workline_start_returns_rejection_as_success_data(
     assert data["ack"] is False
     assert data["reason_code"] == "START_ADMISSION_DEVICE_NOT_IDLE"
     assert data["diagnostic"] == {
-        "device_code": "RS-CONV-01",
+        "device_code": "CONVEYOR-01",
         "status": "RUNNING",
-        "message": "START 准入失败: 设备 RS-CONV-01 非空闲",
+        "message": "START 准入失败: 设备 CONVEYOR-01 非空闲",
         "workline_id": 45,
     }
 
