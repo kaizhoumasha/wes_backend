@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（602 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（598 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -37,7 +37,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **599** |
+| **total_entries** | **598** |
 | phase4_carrier（承载 Phase 4 业务语义） | 71 |
 | pending-review | 0 |
 
@@ -47,7 +47,7 @@ uv run python scripts/generate_legacy_matrix.py
 | --- | ---: |
 | service | 287 |
 | domain_object | 61 |
-| test | 179 |
+| test | 178 |
 | model | 42 |
 | api_route | 23 |
 | repository | 6 |
@@ -57,7 +57,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 335 |
+| rebuild | 334 |
 | keep-contract | 243 |
 | delete | 14 |
 | move | 7 |
@@ -66,7 +66,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | drop_phase | count |
 | --- | ---: |
-| phase2 | 265 |
+| phase2 | 264 |
 | phase5-tech | 257 |
 | phase4 | 71 |
 | phase1 | 6 |
@@ -76,7 +76,7 @@ uv run python scripts/generate_legacy_matrix.py
 | current_owner | count |
 | --- | ---: |
 | workline | 404 |
-| workline_runtime | 180 |
+| workline_runtime | 179 |
 | runtime | 8 |
 | resource | 5 |
 | callback | 1 |
@@ -177,11 +177,11 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | 业务流程模型（`smt_inbound_handoff.py`、`object_transition_event.py`） | rebuild | material-flow 按目标态 capability 重建 |
 | API routes（23 个，`v1/`） | rebuild | runtime 监控/handoff/trace/hold 路由迁 runtime 域；workline 配置 CRUD 路由保留 |
 | Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | `class` / `def` / `async def` 全量登记；执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
-### 7.2 workline_runtime（180 entries）
+### 7.2 workline_runtime（179 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
-| `tests/workline_runtime/` | keep-contract / rebuild | 179 条仍在核心测试树中的 runtime 合同；后续必须继续按 `CORE_REWRITE` 或 `LEGACY_DELETE` 收敛，不得承接具体插件行为 |
+| `tests/workline_runtime/` | keep-contract / rebuild | 178 条仍在核心测试树中的 runtime 合同；后续必须继续按 `CORE_REWRITE` 或 `LEGACY_DELETE` 收敛，不得承接具体插件行为 |
 | `src/workline_runtime/services.py:build_workline_runtime_services` | rebuild | guardrail seed tombstone，用于当前 allowlist 精确反查 |
 
 ### 7.3 workline_plugins（0 entries）
@@ -213,13 +213,13 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | 风险项 | phase | 说明 |
 | --- | --- | --- |
-| 执行状态迁移（235 条执行状态语义；phase2 rebuild 总计 257 条，phase2 全部 265 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
+| 执行状态迁移（234 条执行状态语义；phase2 rebuild 总计 256 条，phase2 全部 264 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
 | phase4 业务流程（71 entries） | phase4 | 具体工作线/插件行为由插件包重建；核心只保留所有权边界和通用 WES 不变量 |
 | device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 599 条，strategy 字段非空）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 598 条，strategy 字段非空）
 2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，71 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）
