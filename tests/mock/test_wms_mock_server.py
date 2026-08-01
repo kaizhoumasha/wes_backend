@@ -6,7 +6,6 @@ import os
 import time
 import tracemalloc
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from time import monotonic
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
@@ -18,10 +17,6 @@ from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from src.app.runtime.orchestration.sandbox_catalog_bridge import (
-    mock_wms_inventory_seed,
-    rough_sorter_scan_completed_payload,
-)
 from src.app.sys.canonical_dispatch import CanonicalPayload, ExternalHttpDispatchRequest
 from src.app.sys.external_http_binding import (
     ExternalHttpBindingDefinition,
@@ -48,8 +43,11 @@ from tests.mock.wms_northbound_contract import (
 )
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
-ASYNC_OPERATION_IDENTITY = "wms.fulfillment.request_rack_supply@v1"
-ASYNC_OPERATION_PATH = "/api/wms/fulfillment/rack-supply"
+ASYNC_OPERATION = next(
+    operation for operation in WMS_OPERATIONS if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
+)
+ASYNC_OPERATION_IDENTITY = ASYNC_OPERATION.identity
+ASYNC_OPERATION_PATH = f"/api/wms{ASYNC_OPERATION.path_template}"
 
 
 def _async_payload() -> dict[str, object]:
@@ -58,21 +56,6 @@ def _async_payload() -> dict[str, object]:
 
 def _async_body() -> bytes:
     return json.dumps(_async_payload(), separators=(",", ":")).encode()
-
-
-def _wire_fixture_case(
-    operation_identity: str,
-    *,
-    remove: str | None = None,
-    update: dict[str, object] | None = None,
-) -> tuple[dict[str, object], dict[str, object]]:
-    """在参数化阶段生成正反 wire fixture，测试体不覆写 operation 参数。"""
-
-    valid_payload = dict(REQUEST_FIXTURES[operation_identity])
-    invalid_payload = {**valid_payload, **(update or {})}
-    if remove is not None:
-        invalid_payload.pop(remove)
-    return valid_payload, invalid_payload
 
 
 @pytest.fixture(autouse=True)
@@ -148,48 +131,19 @@ def _status_headers(
     }
 
 
-def _inventory_query_request(
-    client: TestClient,
-    *,
-    material_code: str,
-    lot_no: str | None = None,
-    warehouse_code: str | None = None,
-    owner_code: str | None = None,
-):
-    params = {
-        key: value
-        for key, value in {
-            "material_code": material_code,
-            "lot_no": lot_no,
-            "warehouse_code": warehouse_code,
-            "owner_code": owner_code,
-        }.items()
-        if value is not None
-    }
-    raw_path = "/api/wms/inventory/query?" + urlencode(tuple(params.items()))
-    return client.get(
-        "/api/wms/inventory/query",
-        params=params,
-        headers=_status_headers(path=raw_path),
-    )
-
-
-def _typed_inventory_record(item: dict[str, object]) -> dict[str, object]:
-    return {
-        "material_code": item["sku"],
-        "available_quantity": str(item["available_qty"]),
-        "total_quantity": str(item["total_qty"]),
-        "reserved_quantity": str(item["reserved_qty"]),
-        "location_code": None,
-        "lot_no": item.get("lot_no"),
-    }
-
-
-def test_wms_mock_loads_shared_catalog_without_importing_runtime_package() -> None:
-    source = Path(wms_mock_server.__file__).read_text()
-
-    assert "from src.workline_runtime.sandbox_catalog import" not in source
-    assert "spec_from_file_location" in source
+def _query_wire(operation) -> tuple[str, bytes]:
+    payload = dict(REQUEST_FIXTURES[operation.identity])
+    path = operation.path_template
+    for field_name in operation.request_model.model_fields:
+        token = f"{{{field_name}}}"
+        if token in path:
+            path = path.replace(token, str(payload.pop(field_name)))
+    raw_path = f"/api/wms{path}"
+    if operation.http_method.value == "GET":
+        if payload:
+            raw_path = f"{raw_path}?{urlencode(tuple(payload.items()))}"
+        return raw_path, b""
+    return raw_path, json.dumps(payload, separators=(",", ":")).encode()
 
 
 def test_wms_mock_registers_exact_static_routes_for_all_frozen_operations() -> None:
@@ -205,39 +159,53 @@ def test_wms_mock_registers_exact_static_routes_for_all_frozen_operations() -> N
     assert all("{operation_path:path}" not in route.path for route in wms_mock_server.app.routes)
 
 
-def test_q19_post_query_requires_valid_hmac_and_rejects_replay() -> None:
-    operation_identity = "wms.document.validate_rough_sorter_admission@v1"
-    path = "/api/wms/documents/rough-sorter-admission/validate"
-    body = json.dumps(REQUEST_FIXTURES[operation_identity], separators=(",", ":")).encode()
-    valid_headers = _status_headers(path=path, body=body, method="POST", nonce="q19-valid-nonce")
-    valid_headers["Content-Type"] = "application/json"
+@pytest.mark.parametrize(
+    "operation",
+    tuple(operation for operation in WMS_OPERATIONS if operation.mode.value == "QUERY"),
+    ids=lambda operation: operation.identity,
+)
+def test_every_typed_query_requires_valid_hmac_and_rejects_replay(operation) -> None:
+    path, body = _query_wire(operation)
+    method = operation.http_method.value
+    valid_headers = _status_headers(path=path, body=body, method=method)
+    if method == "POST":
+        valid_headers["Content-Type"] = "application/json"
 
     with TestClient(wms_mock_server.app) as client:
-        assert client.post(path, content=body).status_code == 401
+        assert client.request(method, path, content=body).status_code == 401
 
         bad_signature = {**valid_headers, "X-WMS-Signature": "0" * 64}
-        assert client.post(path, content=body, headers=bad_signature).status_code == 401
+        assert client.request(method, path, content=body, headers=bad_signature).status_code == 401
 
         stale_headers = _status_headers(
             path=path,
             body=body,
-            method="POST",
+            method=method,
             timestamp=str(int(time.time()) - 600),
-            nonce="q19-stale-nonce",
         )
-        assert client.post(path, content=body, headers=stale_headers).status_code == 401
+        if method == "POST":
+            stale_headers["Content-Type"] = "application/json"
+        assert client.request(method, path, content=body, headers=stale_headers).status_code == 401
 
-        accepted = client.post(path, content=body, headers=valid_headers)
-        replayed = client.post(path, content=body, headers=valid_headers)
+        accepted = client.request(method, path, content=body, headers=valid_headers)
+        replayed = client.request(method, path, content=body, headers=valid_headers)
 
     assert accepted.status_code == 200
+    operation.result_model.model_validate(accepted.json())
     assert replayed.status_code == 401
 
 
-def test_q19_post_query_requires_application_json_before_typed_validation() -> None:
-    operation_identity = "wms.document.validate_rough_sorter_admission@v1"
-    path = "/api/wms/documents/rough-sorter-admission/validate"
-    body = json.dumps(REQUEST_FIXTURES[operation_identity], separators=(",", ":")).encode()
+@pytest.mark.parametrize(
+    "operation",
+    tuple(
+        operation
+        for operation in WMS_OPERATIONS
+        if operation.mode.value == "QUERY" and operation.http_method.value == "POST"
+    ),
+    ids=lambda operation: operation.identity,
+)
+def test_every_typed_post_query_requires_application_json_before_validation(operation) -> None:
+    path, body = _query_wire(operation)
     headers = _status_headers(path=path, body=body, method="POST")
     headers["Content-Type"] = "text/plain"
 
@@ -269,162 +237,10 @@ def test_every_get_query_rejects_unknown_query_before_typed_validation(operation
     assert response.json() == {"code": "UNKNOWN_TYPED_QUERY_PARAMETER"}
 
 
-def test_wms_mock_does_not_expose_deprecated_operation_alias_paths() -> None:
-    registered = {(route.path, method) for route in wms_mock_server.app.routes for method in route.methods or ()}
-
-    assert ("/api/wms/fulfillment/package-binding", "POST") not in registered
-    assert ("/api/wms/inventory/reserve", "POST") not in registered
-    assert ("/api/wms/outbound/confirm", "POST") not in registered
-
-
-def test_wms_mock_does_not_expose_legacy_transport_or_callback_routes() -> None:
-    registered = {(route.path, method) for route in wms_mock_server.app.routes for method in route.methods or ()}
-
-    assert ("/api/wms/rack-operation", "POST") not in registered
-    assert ("/api/wms/transport-request", "POST") not in registered
-    assert ("/api/wms/legacy/full-box-exchange", "POST") not in registered
-
-
-def test_debug_grn_endpoint_returns_direct_po_line_without_nested_items() -> None:
-    with TestClient(wms_mock_server.app) as client:
-        response = client.get("/debug/wms/grn/GRN.0001")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["code"] == 200
-    assert payload["data"] == {
-        "grn_id": "GRN.0001",
-        "po_number": "PO-2025-001",
-        "po_item": "001",
-        "material_code": "CAP001",
-        "planned_quantity": "50000",
-        "received_quantity": "25000",
-        "remaining_quantity": "25000",
-        "batch_no": "LOT-2026-001",
-        "quality_status": "PARTIAL_RECEIVED",
-    }
-    assert "items" not in payload["data"]
-
-
-def test_e02_uses_typed_post_without_legacy_envelope_or_delete_route() -> None:
-    operation_identity = "wms.inventory.release_reservation@v1"
-    path = "/api/wms/inventory/reservations/release"
-    payload = REQUEST_FIXTURES[operation_identity]
-    body = json.dumps(payload, separators=(",", ":")).encode()
-
-    with TestClient(wms_mock_server.app) as client:
-        response = client.post(
-            path,
-            content=body,
-            headers=_submit_headers(
-                body=body,
-                path=path,
-                operation_identity=operation_identity,
-                idempotency_key="idem-e02-typed",
-            ),
-        )
-        deleted = client.delete("/api/wms/inventory/reserve/RES-001")
-
-    assert response.status_code == 200
-    WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(response.json())
-    assert set(response.json()) != {"code", "data"}
-    assert deleted.status_code in {404, 405}
-
-
-def test_q14_static_route_consumes_typed_material_code_contract() -> None:
-    operation_identity = "wms.inventory.query_inventory@v1"
-    payload = REQUEST_FIXTURES[operation_identity]
-    raw_path = "/api/wms/inventory/query?" + urlencode(payload)
-
-    with TestClient(wms_mock_server.app) as client:
-        response = client.get(raw_path, headers=_status_headers(path=raw_path))
-
-    assert response.status_code == 200
-    result = WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(response.json())
-    assert result.source_version == "mock-inventory-v1"
-
-
 def test_standalone_wms_mock_server_disables_query_bearing_access_log() -> None:
     server = wms_mock_server.WmsMockServer()
 
     assert server.config.access_log is False
-
-
-def test_wms_mock_locations_route_passes_ruff_safe_variable_path() -> None:
-    with TestClient(wms_mock_server.app) as client:
-        response = client.get("/debug/wms/locations", params={"zone": "KITTING_AREA"})
-
-    assert response.status_code == 200
-    assert response.json()["data"] == [
-        {
-            "location_code": "KITTING_AREA_LOC_01",
-            "zone_code": "KITTING_AREA",
-            "location_type": "BUFFER",
-            "status": "AVAILABLE",
-        }
-    ]
-
-
-def test_wms_mock_racks_route_returns_stateful_six_and_three_cell_pool() -> None:
-    with TestClient(wms_mock_server.app) as client:
-        response = client.get("/debug/wms/racks", params={"type": "SINGLE_LAYER"})
-
-    assert response.status_code == 200
-    racks = response.json()["data"]
-    six_cell_racks = [rack for rack in racks if rack["layout_code"] == "SIX_CELL"]
-    three_cell_racks = [rack for rack in racks if rack["layout_code"] == "THREE_CELL"]
-    mixed_racks = [rack for rack in racks if rack["layout_code"] == "MIXED"]
-    assert len(six_cell_racks) >= 6
-    assert len(three_cell_racks) >= 4
-    assert "RACK-001" in {rack["rack_id"] for rack in mixed_racks}
-    assert "RACK-3CELL-001" in {rack["rack_id"] for rack in three_cell_racks}
-    for rack in racks:
-        assert {
-            "rack_id",
-            "rack_type",
-            "status",
-            "current_location",
-            "layout_code",
-            "bin_type",
-            "active_position_code",
-            "allocated_operation_key",
-        } <= rack.keys()
-
-
-def test_wms_mock_debug_reset_restores_rack_state_and_clears_fault_injection() -> None:
-    wms_mock_server.mock_wms_state.rack_pool["RACK-001"]["status"] = "ALLOCATED"
-    wms_mock_server.mock_wms_state.rack_pool["RACK-001"]["active_position_code"] = "SINGLE_LAYER_A"
-    wms_mock_server.mock_wms_state.work_positions["SINGLE_LAYER_A"] = "RACK-001"
-    wms_mock_server.mock_wms_state.recent_operations.append({"operation_key": "op-mutated"})
-    wms_mock_server.fault_injection_state["next_status"] = 503
-    wms_mock_server.fault_injection_state["next_delay"] = 1.5
-
-    with TestClient(wms_mock_server.app) as client:
-        response = client.post("/debug/reset")
-
-    assert response.status_code == 200
-    assert response.json()["data"]["reset"] is True
-    rack = wms_mock_server.mock_wms_state.rack_pool["RACK-001"]
-    assert rack["status"] == "AVAILABLE"
-    assert rack["active_position_code"] is None
-    assert rack["allocated_operation_key"] is None
-    assert wms_mock_server.mock_wms_state.work_positions["SINGLE_LAYER_A"] is None
-    assert wms_mock_server.mock_wms_state.recent_operations == []
-    assert wms_mock_server.fault_injection_state == {"next_status": 200, "next_delay": 0.0}
-
-
-def test_wms_mock_debug_reset_bypasses_pending_fault_injection_delay() -> None:
-    wms_mock_server.fault_injection_state["next_status"] = 503
-    wms_mock_server.fault_injection_state["next_delay"] = 1.5
-
-    started_at = monotonic()
-    with TestClient(wms_mock_server.app) as client:
-        response = client.post("/debug/reset")
-    elapsed = monotonic() - started_at
-
-    assert response.status_code == 200
-    assert elapsed < 0.5
-    assert wms_mock_server.fault_injection_state == {"next_status": 200, "next_delay": 0.0}
 
 
 @pytest.mark.parametrize(
@@ -1155,175 +971,6 @@ def test_wms_mock_northbound_visibility_callback_evidence_and_large_body_are_pub
     assert visible_after_reset.json()["state"] == "ACCEPTED"
 
 
-def test_wms_mock_active_bin_rack_builder_does_not_read_or_mutate_state() -> None:
-    removed_rack = wms_mock_server.mock_wms_state.rack_pool.pop("RACK-6CELL-001")
-
-    payload = wms_mock_server.build_active_bin_rack_payload("RACK-6CELL-001")
-
-    assert payload["active_bin_rack"]["rack_code"] == "RACK-6CELL-001"
-    assert {cell["bin_type"] for cell in payload["active_bin_rack"]["cells"]} == {"6格箱"}
-    assert "RACK-6CELL-001" not in wms_mock_server.mock_wms_state.rack_pool
-    wms_mock_server.mock_wms_state.rack_pool["RACK-6CELL-001"] = removed_rack
-
-
-def test_wms_mock_inventory_query_matches_known_sku_and_lot_no() -> None:
-    payload_data = rough_sorter_scan_completed_payload()["data"]
-    inventory = mock_wms_inventory_seed()[("CAP001", "LOT-A")]
-    with TestClient(wms_mock_server.app) as client:
-        response = _inventory_query_request(
-            client,
-            material_code=payload_data["HHPN"],
-            lot_no=payload_data["LotCode"],
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "items": [_typed_inventory_record(inventory)],
-        "next_cursor": None,
-        "source_version": "mock-inventory-v1",
-    }
-
-
-def test_wms_mock_inventory_query_returns_rough_sorter_dimensions_for_canonical_material_id() -> None:
-    inventory = mock_wms_inventory_seed()[("CAP001", "LOT-A")]
-    with TestClient(wms_mock_server.app) as client:
-        response = _inventory_query_request(
-            client,
-            material_code="CAP001",
-            lot_no="LOT-A",
-            warehouse_code="WH-IT",
-            owner_code="OWNER-IT",
-        )
-
-    assert response.status_code == 200
-    assert response.json()["items"] == [_typed_inventory_record(inventory)]
-    assert response.json()["source_version"] == "mock-inventory-v1"
-    assert inventory["warehouse_code"] == "WH-IT"
-    assert inventory["owner_code"] == "OWNER-IT"
-
-
-def test_wms_mock_inventory_seed_limits_rough_sorter_dimensions_to_canonical_product() -> None:
-    inventory = mock_wms_inventory_seed()
-
-    assert inventory[("CAP001", "LOT-A")]["warehouse_code"] == "WH-IT"
-    assert inventory[("CAP001", "LOT-A")]["owner_code"] == "OWNER-IT"
-    assert "warehouse_code" not in inventory[("RES001", "LOT-R")]
-    assert "owner_code" not in inventory[("RES001", "LOT-R")]
-
-
-def test_wms_mock_inventory_query_matches_additional_catalog_products() -> None:
-    inventory = mock_wms_inventory_seed()
-    with TestClient(wms_mock_server.app) as client:
-        resistor_response = _inventory_query_request(
-            client,
-            material_code="RES001",
-            lot_no="LOT-R",
-        )
-        ic_response = _inventory_query_request(
-            client,
-            material_code="IC001",
-            lot_no="LOT-I",
-        )
-
-    assert resistor_response.status_code == 200
-    assert resistor_response.json()["items"] == [_typed_inventory_record(inventory[("RES001", "LOT-R")])]
-    assert ic_response.status_code == 200
-    assert ic_response.json()["items"] == [_typed_inventory_record(inventory[("IC001", "LOT-I")])]
-
-
-def test_wms_mock_inventory_query_returns_empty_items_for_unknown_sku_or_lot_no() -> None:
-    payload_data = rough_sorter_scan_completed_payload()["data"]
-    with TestClient(wms_mock_server.app) as client:
-        unknown_sku_response = _inventory_query_request(
-            client,
-            material_code="UNKNOWN",
-            lot_no=payload_data["LotCode"],
-        )
-        unknown_lot_response = _inventory_query_request(
-            client,
-            material_code=payload_data["HHPN"],
-            lot_no="UNKNOWN",
-        )
-
-    assert unknown_sku_response.status_code == 200
-    assert unknown_sku_response.json()["items"] == []
-    assert unknown_lot_response.status_code == 200
-    assert unknown_lot_response.json()["items"] == []
-
-
-@pytest.mark.parametrize(
-    ("warehouse_code", "owner_code"),
-    [
-        ("WH-WRONG", "OWNER-IT"),
-        ("WH-IT", "OWNER-WRONG"),
-    ],
-)
-def test_wms_mock_inventory_query_filters_all_requested_dimensions(
-    warehouse_code: str,
-    owner_code: str,
-) -> None:
-    with TestClient(wms_mock_server.app) as client:
-        response = _inventory_query_request(
-            client,
-            material_code="CAP001",
-            lot_no="LOT-A",
-            warehouse_code=warehouse_code,
-            owner_code=owner_code,
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "items": [],
-        "next_cursor": None,
-        "source_version": "mock-inventory-v1",
-    }
-
-
-def test_wms_mock_inventory_query_hmac_fails_closed_without_leaking_secret() -> None:
-    params = {
-        "material_code": "CAP001",
-        "lot_no": "LOT-A",
-        "warehouse_code": "WH-IT",
-        "owner_code": "OWNER-IT",
-    }
-    raw_path = "/api/wms/inventory/query?" + urlencode(tuple(params.items()))
-    invalid_headers = _status_headers(path=raw_path)
-    invalid_headers["X-WMS-Signature"] = "0" * 64
-    with TestClient(wms_mock_server.app) as client:
-        unsigned = client.get("/api/wms/inventory/query", params=params)
-        invalid_secret = client.get("/api/wms/inventory/query", params=params, headers=invalid_headers)
-        tampered = client.get(
-            "/api/wms/inventory/query",
-            params={**params, "owner_code": "OWNER-TAMPERED"},
-            headers=_status_headers(path=raw_path),
-        )
-
-    assert unsigned.status_code == 401
-    assert unsigned.json() == {"code": "MISSING_OR_INVALID_AUTH_HEADER"}
-    assert invalid_secret.status_code == 401
-    assert invalid_secret.json() == {"code": "INVALID_HMAC_SIGNATURE"}
-    assert tampered.status_code == 401
-    assert tampered.json() == {"code": "INVALID_HMAC_SIGNATURE"}
-    response_text = f"{unsigned.text}{invalid_secret.text}{tampered.text}"
-    assert os.environ[MATERIAL_FLOW_SANDBOX_HMAC_SECRET_ENV_V2] not in response_text
-
-
-def test_wms_mock_inventory_query_rejects_legacy_post_and_sku_alias() -> None:
-    sku_alias_path = "/api/wms/inventory/query?" + urlencode({"sku": "CAP001", "lot_no": "LOT-A"})
-    with TestClient(wms_mock_server.app) as client:
-        post_response = client.post(
-            "/api/wms/inventory/query",
-            json={"material_id": "CAP001", "lot_no": "LOT-A"},
-        )
-        sku_alias_response = client.get(
-            sku_alias_path,
-            headers=_status_headers(path=sku_alias_path),
-        )
-
-    assert post_response.status_code == 405
-    assert sku_alias_response.status_code == 422
-
-
 def test_wms_mock_typed_effect_first_acceptances_use_unique_callback_event_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1392,7 +1039,7 @@ async def test_wms_mock_callback_sender_uses_authenticated_canonical_body(monkey
     payload = {
         "callback_type": "WMS_EFFECT_STATUS_HINT",
         "data": {
-            "operation_identity": "wms.inventory.confirm_inbound@v1",
+            "operation_identity": ASYNC_OPERATION_IDENTITY,
             "idempotency_key": "idem-001",
             "dispatch_key": "dispatch-001",
         },
@@ -1419,38 +1066,6 @@ async def test_wms_mock_callback_sender_uses_authenticated_canonical_body(monkey
         body_sha256=headers["X-Body-SHA256"],
         app_id=headers["X-App-ID"],
     )
-
-
-def test_wms_mock_full_box_northbound_submit_never_sends_legacy_completion_callback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    mock_post_callback = AsyncMock(return_value={"delivered": True})
-    monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
-    payload = dict(REQUEST_FIXTURES["wms.fulfillment.full_box_exchange@v1"])
-    path = "/api/wms/fulfillment/full-box-exchange"
-    body = json.dumps(payload, separators=(",", ":")).encode()
-
-    with TestClient(wms_mock_server.app) as client:
-        response = client.post(
-            path,
-            content=body,
-            headers=_submit_headers(
-                body=body,
-                path=path,
-                operation_identity="wms.fulfillment.full_box_exchange@v1",
-                idempotency_key="idem-full-box-legacy-001",
-            ),
-        )
-
-    assert response.status_code == 202
-    mock_post_callback.assert_awaited_once()
-    callback_payload = mock_post_callback.await_args.args[1]
-    assert callback_payload["callback_type"] == "WMS_EFFECT_STATUS_HINT"
-    assert callback_payload["data"] == {
-        "operation_identity": "wms.fulfillment.full_box_exchange@v1",
-        "idempotency_key": "idem-full-box-legacy-001",
-        "dispatch_key": payload["dispatch_key"],
-    }
 
 
 def test_real_wes_submit_sender_and_status_signer_interoperate_with_mock_active_v2(
@@ -1519,74 +1134,20 @@ def test_real_wes_submit_sender_and_status_signer_interoperate_with_mock_active_
 
 
 @pytest.mark.parametrize(
-    ("case_id", "path", "operation_identity", "valid_payload", "invalid_payload"),
-    (
-        (
-            "confirm-missing",
-            "/api/wms/inventory/confirm-inbound",
-            "wms.inventory.confirm_inbound@v1",
-            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", remove="quantity"),
-        ),
-        (
-            "confirm-extra",
-            "/api/wms/inventory/confirm-inbound",
-            "wms.inventory.confirm_inbound@v1",
-            *_wire_fixture_case(
-                "wms.inventory.confirm_inbound@v1",
-                update={"trace_id": "forbidden-wire-field"},
-            ),
-        ),
-        (
-            "confirm-blank",
-            "/api/wms/inventory/confirm-inbound",
-            "wms.inventory.confirm_inbound@v1",
-            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", update={"inbound_key": " "}),
-        ),
-        (
-            "confirm-non-string-quantity",
-            "/api/wms/inventory/confirm-inbound",
-            "wms.inventory.confirm_inbound@v1",
-            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", update={"quantity": []}),
-        ),
-        (
-            "confirm-non-finite-quantity",
-            "/api/wms/inventory/confirm-inbound",
-            "wms.inventory.confirm_inbound@v1",
-            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", update={"quantity": "NaN"}),
-        ),
-        (
-            "confirm-non-positive-quantity",
-            "/api/wms/inventory/confirm-inbound",
-            "wms.inventory.confirm_inbound@v1",
-            *_wire_fixture_case("wms.inventory.confirm_inbound@v1", update={"quantity": "0"}),
-        ),
-        (
-            "full-box-extra",
-            "/api/wms/fulfillment/full-box-exchange",
-            "wms.fulfillment.full_box_exchange@v1",
-            *_wire_fixture_case(
-                "wms.fulfillment.full_box_exchange@v1",
-                update={"provider_code": "WMS"},
-            ),
-        ),
-        (
-            "package-binding-missing",
-            "/api/wms/fulfillment/pkg-bindings",
-            "wms.fulfillment.notify_pkg_binding@v1",
-            *_wire_fixture_case("wms.fulfillment.notify_pkg_binding@v1", remove="station_code"),
-        ),
-    ),
+    "operation",
+    tuple(operation for operation in WMS_OPERATIONS if operation.mode.value == "EFFECT"),
+    ids=lambda operation: operation.identity,
 )
 def test_typed_submit_rejects_invalid_wire_body_before_idempotency_write(
     monkeypatch: pytest.MonkeyPatch,
-    case_id: str,
-    path: str,
-    operation_identity: str,
-    valid_payload: dict[str, object],
-    invalid_payload: dict[str, object],
+    operation,
 ) -> None:
     monkeypatch.setattr(wms_mock_server, "_post_callback", AsyncMock(return_value={"delivered": True}))
-    idempotency_key = f"idem-{case_id}"
+    operation_identity = operation.identity
+    path = f"/api/wms{operation.path_template}"
+    valid_payload = dict(REQUEST_FIXTURES[operation_identity])
+    invalid_payload = {**valid_payload, "unexpected_wire_field": "forbidden"}
+    idempotency_key = f"idem-invalid-{operation_identity.replace('.', '-').replace('@', '-')}"
     invalid_body = json.dumps(invalid_payload, separators=(",", ":")).encode()
     valid_body = json.dumps(valid_payload, separators=(",", ":")).encode()
 
@@ -1619,9 +1180,7 @@ def test_typed_submit_rejects_invalid_wire_body_before_idempotency_write(
     assert rejected.status_code == 422
     assert rejected.json() == {"code": "INVALID_TYPED_REQUEST"}
     assert effects_before_valid.json()["effect_count"] == 0
-    expected_status = (
-        202 if WMS_OPERATION_BY_IDENTITY[operation_identity].completion_mode is WmsCompletionMode.ASYNC_TASK else 200
-    )
+    expected_status = 202 if operation.completion_mode is WmsCompletionMode.ASYNC_TASK else 200
     assert accepted.status_code == expected_status
 
 
@@ -1860,11 +1419,11 @@ async def test_concurrent_matching_requests_atomically_claim_one_shot_fault() ->
                 "delay": 0.01,
             },
         )
-        first_status, second_status, health, inventory = await asyncio.gather(
+        first_status, second_status, health, contract = await asyncio.gather(
             client.get(status_path, headers=headers),
             client.get(status_path, headers=headers),
             client.get("/"),
-            client.get("/api/wms/materials/MAT001"),
+            client.get("/northbound/contract"),
         )
 
     assert configured.status_code == 200
@@ -1875,68 +1434,4 @@ async def test_concurrent_matching_requests_atomically_claim_one_shot_fault() ->
         "code": "TEMPORARILY_UNAVAILABLE"
     }
     assert health.status_code == 200
-    assert inventory.status_code in {200, 404}
-
-
-def test_wms_mock_recent_operations_keeps_bounded_history() -> None:
-    for index in range(wms_mock_server.RECENT_OPERATION_LIMIT + 5):
-        wms_mock_server.mock_wms_state._record_operation({"operation_key": f"op-{index}"})
-
-    recent_operations = wms_mock_server.mock_wms_state.recent_operations
-    assert len(recent_operations) == wms_mock_server.RECENT_OPERATION_LIMIT
-    assert recent_operations[0]["operation_key"] == "op-5"
-
-
-def test_wms_mock_debug_rack_status_allows_manual_fault_setup() -> None:
-    with TestClient(wms_mock_server.app) as client:
-        response = client.post(
-            "/debug/racks/RACK-3CELL-001/status",
-            json={"status": "UNAVAILABLE", "current_location": "MAINTENANCE"},
-        )
-
-    assert response.status_code == 200
-    rack = response.json()["data"]
-    assert rack["rack_id"] == "RACK-3CELL-001"
-    assert rack["status"] == "UNAVAILABLE"
-    assert rack["current_location"] == "MAINTENANCE"
-    assert wms_mock_server.mock_wms_state.rack_pool["RACK-3CELL-001"]["status"] == "UNAVAILABLE"
-
-
-def test_wms_mock_rack_query_returns_copy_not_internal_state() -> None:
-    with TestClient(wms_mock_server.app) as client:
-        response = client.get("/debug/wms/racks/RACK-001")
-
-    assert response.status_code == 200
-    rack_payload = response.json()["data"]
-    rack_payload["status"] = "MUTATED_BY_TEST"
-    assert wms_mock_server.mock_wms_state.rack_pool["RACK-001"]["status"] == "AVAILABLE"
-
-
-def test_wms_mock_rack_list_returns_copy_not_internal_state() -> None:
-    with TestClient(wms_mock_server.app) as client:
-        response = client.get("/debug/wms/racks")
-
-    assert response.status_code == 200
-    rack_payload = response.json()["data"][0]
-    rack_payload["status"] = "MUTATED_BY_TEST"
-    assert wms_mock_server.mock_wms_state.rack_pool[rack_payload["rack_id"]]["status"] == "AVAILABLE"
-
-
-def test_wms_mock_large_reel_detection_does_not_match_dimension_substrings() -> None:
-    assert wms_mock_server._has_large_reel_size({"reel_diameter": "13inch"}) is True
-    assert wms_mock_server._has_large_reel_size({"reel_diameter": "330.0"}) is True
-    assert wms_mock_server._has_large_reel_size({"reel_diameter": "113mm"}) is False
-    assert wms_mock_server._has_large_reel_size({"reel_diameter": "150mm"}) is False
-
-
-@pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "0", "-1", "invalid"])
-def test_wms_mock_cell_capacity_env_rejects_invalid_values(monkeypatch, raw: str) -> None:
-    monkeypatch.setenv("MOCK_WMS_CELL_CAPACITY_DEPTH_MM", raw)
-
-    assert wms_mock_server._positive_float_env("MOCK_WMS_CELL_CAPACITY_DEPTH_MM") is None
-
-
-def test_wms_mock_cell_capacity_env_accepts_positive_finite_value(monkeypatch) -> None:
-    monkeypatch.setenv("MOCK_WMS_CELL_CAPACITY_DEPTH_MM", "30.5")
-
-    assert wms_mock_server._positive_float_env("MOCK_WMS_CELL_CAPACITY_DEPTH_MM") == 30.5
+    assert contract.status_code == 200

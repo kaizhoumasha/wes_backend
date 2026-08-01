@@ -14,15 +14,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import importlib.util
 import json
 import logging
 import math
 import os
-import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -70,22 +68,6 @@ if len(_ASYNC_SUBMIT_DEADLINES) != 1:
 _DEFAULT_ASYNC_SUBMIT_DEADLINE = str(next(iter(_ASYNC_SUBMIT_DEADLINES)))
 
 
-def _load_sandbox_catalog() -> Any:
-    """按文件加载共享 catalog，避免导入完整后端运行时包。"""
-
-    catalog_path = project_root / "src" / "app" / "runtime" / "orchestration" / "sandbox_catalog_bridge.py"
-    spec = importlib.util.spec_from_file_location("wes_mock_sandbox_catalog", catalog_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载 WMS mock catalog: {catalog_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_sandbox_catalog = _load_sandbox_catalog()
-mock_wms_inventory_seed = _sandbox_catalog.mock_wms_inventory_seed
-mock_wms_materials_seed = _sandbox_catalog.mock_wms_materials_seed
-
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s - %(message)s",
@@ -95,312 +77,12 @@ logger = logging.getLogger(__name__)
 
 CALLBACK_API_APP_ID = os.getenv("API_APP_ID", "")
 CALLBACK_API_APP_SECRET = os.getenv("API_APP_SECRET", "")
-
-
-def _positive_float_env(name: str) -> float | None:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning("忽略无效的 %s=%r，使用 Mock WMS 默认格位容量", name, raw)
-        return None
-    if not math.isfinite(value):
-        logger.warning("忽略非有限数 %s=%r，使用 Mock WMS 默认格位容量", name, raw)
-        return None
-    if value <= 0:
-        logger.warning("忽略非正数 %s=%r，使用 Mock WMS 默认格位容量", name, raw)
-        return None
-    return value
-
-
-MOCK_WMS_CELL_CAPACITY_DEPTH_MM = _positive_float_env("MOCK_WMS_CELL_CAPACITY_DEPTH_MM")
-
-# ============================================
-# 种子数据 (Seed Data)
-# ============================================
-
-MOCK_MATERIALS = mock_wms_materials_seed()
-
-MOCK_ZONES = [
-    {
-        "zone_code": "KITTING_AREA",
-        "zone_name": "装箱区",
-        "zone_type": "KITTING",
-        "status": "ACTIVE",
-        "allowed_rack_types": ["SINGLE_LAYER"],
-        "max_concurrent_tasks": 10,
-    },
-    {
-        "zone_code": "SMT_STORAGE",
-        "zone_name": "SMT 自动化立库区",
-        "zone_type": "STORAGE",
-        "status": "ACTIVE",
-        "allowed_rack_types": ["FIVE_LAYER"],
-        "max_concurrent_tasks": 50,
-    },
-]
-
-MOCK_LOCATIONS = [
-    {
-        "location_code": "KITTING_AREA_LOC_01",
-        "zone_code": "KITTING_AREA",
-        "location_type": "BUFFER",
-        "status": "AVAILABLE",
-    }
-]
-
-# 兼容遗留静态引用；运行时货架状态真源为 MockWmsState.rack_pool。
-MOCK_RACKS = {
-    "RACK-001": {
-        "rack_id": "RACK-001",
-        "rack_type": "SINGLE_LAYER",
-        "status": "AVAILABLE",
-        "current_location": "KITTING_AREA_LOC_01",
-    },
-    "RACK-3CELL-001": {
-        "rack_id": "RACK-3CELL-001",
-        "rack_type": "SINGLE_LAYER",
-        "status": "AVAILABLE",
-        "current_location": "KITTING_AREA_LOC_01",
-    },
-}
-
-MOCK_INVENTORY = mock_wms_inventory_seed()
 WES_EXTERNAL_CALLBACK_URL = os.getenv(
     "WES_EXTERNAL_CALLBACK_URL",
     "http://localhost:8001/api/v1/callback/external",
 )
-SEVEN_INCH_BIN_CELL_INDEXES = ("1", "2", "3", "4", "5", "6")
-THREE_CELL_BIN_CELL_INDEXES = ("1", "2", "7")
-THREE_CELL_LARGE_BIN_CELL_INDEX = "7"
-RECENT_OPERATION_LIMIT = 100
-RACK_SLOT_CODES = ("A", "B", "C", "D")
-RACK_PHYSICAL_LAYOUTS = {
-    "RACK-001": {
-        "bin_type": "混合料箱",
-        "supported_bin_types": ("6格箱", "3格箱"),
-        "layout_code": "MIXED",
-        "bins": (
-            {
-                "rack_slot_code": "A",
-                "bin_code": "BIN-001",
-                "bin_type": "6格箱",
-                "cell_indexes": SEVEN_INCH_BIN_CELL_INDEXES,
-            },
-            {
-                "rack_slot_code": "B",
-                "bin_code": "BIN-002",
-                "bin_type": "6格箱",
-                "cell_indexes": SEVEN_INCH_BIN_CELL_INDEXES,
-            },
-            {
-                "rack_slot_code": "C",
-                "bin_code": "BIN-003",
-                "bin_type": "3格箱",
-                "cell_indexes": THREE_CELL_BIN_CELL_INDEXES,
-            },
-            {
-                "rack_slot_code": "D",
-                "bin_code": "BIN-004",
-                "bin_type": "3格箱",
-                "cell_indexes": THREE_CELL_BIN_CELL_INDEXES,
-            },
-        ),
-    },
-    "RACK-3CELL-001": {
-        "bin_type": "3格箱",
-        "bin_prefix": "BIN-3CELL-001",
-        "cell_indexes": THREE_CELL_BIN_CELL_INDEXES,
-        "layout_code": "THREE_CELL",
-    },
-}
 
-MOCK_GRNS = {
-    "GRN.0001": {
-        "grn_id": "GRN.0001",
-        "po_number": "PO-2025-001",
-        "po_item": "001",
-        "material_code": "CAP001",
-        "planned_quantity": "50000",
-        "received_quantity": "25000",
-        "remaining_quantity": "25000",
-        "batch_no": "LOT-2026-001",
-        "quality_status": "PARTIAL_RECEIVED",
-    }
-}
-
-# 故障注入状态
-fault_injection_state = {"next_status": 200, "next_delay": 0.0}
-
-
-def _known_rack_layout(rack_id: str) -> dict[str, Any] | None:
-    if rack_id in RACK_PHYSICAL_LAYOUTS:
-        return dict(RACK_PHYSICAL_LAYOUTS[rack_id])
-    if rack_id.startswith(("RACK-6CELL-", "RACK-3CELL-")):
-        return _rack_layout_from_pattern(rack_id)
-    return None
-
-
-def _rack_layout_from_pattern(rack_id: str) -> dict[str, Any]:
-    if rack_id.startswith("RACK-3CELL-"):
-        return {
-            "bin_type": "3格箱",
-            "bin_prefix": rack_id.replace("RACK-", "BIN-"),
-            "cell_indexes": THREE_CELL_BIN_CELL_INDEXES,
-            "layout_code": "THREE_CELL",
-        }
-    return {
-        "bin_type": "6格箱",
-        "bin_prefix": rack_id.replace("RACK-", "BIN-"),
-        "cell_indexes": SEVEN_INCH_BIN_CELL_INDEXES,
-        "layout_code": "SIX_CELL",
-    }
-
-
-def _rack_layout_supports_bin_type(layout: dict[str, Any], required_bin_type: str) -> bool:
-    supported = layout.get("supported_bin_types")
-    if isinstance(supported, (list, tuple, set)):
-        return required_bin_type in {str(item) for item in supported}
-    return str(layout.get("bin_type") or "") == required_bin_type
-
-
-def _rack_layout_supports_auto_allocation(layout: dict[str, Any], required_bin_type: str) -> bool:
-    if required_bin_type == "3格箱":
-        return str(layout.get("bin_type") or "") == required_bin_type
-    return _rack_layout_supports_bin_type(layout, required_bin_type)
-
-
-def _rack_layout_bins(rack_code: str, layout: dict[str, Any]) -> tuple[dict[str, Any], ...]:
-    bins = layout.get("bins")
-    if isinstance(bins, (list, tuple)):
-        return tuple(dict(bin_spec) for bin_spec in bins if isinstance(bin_spec, dict))
-
-    bin_type = str(layout["bin_type"])
-    bin_prefix = str(layout["bin_prefix"])
-    cell_indexes = tuple(layout["cell_indexes"])
-    return tuple(
-        {
-            "rack_slot_code": slot_code,
-            "bin_code": f"{bin_prefix}-{index:03d}",
-            "bin_type": bin_type,
-            "cell_indexes": cell_indexes,
-        }
-        for index, slot_code in enumerate(RACK_SLOT_CODES, start=1)
-    )
-
-
-def _build_rack_state(rack_id: str) -> dict[str, Any]:
-    layout = _known_rack_layout(rack_id)
-    if layout is None:
-        raise ValueError(f"未知 WMS mock rack: {rack_id}")
-    return {
-        "rack_id": rack_id,
-        "rack_type": "SINGLE_LAYER",
-        "status": "AVAILABLE",
-        "current_location": "KITTING_AREA_LOC_01",
-        "layout_code": layout["layout_code"],
-        "bin_type": layout["bin_type"],
-        "active_position_code": None,
-        "allocated_operation_key": None,
-    }
-
-
-def build_initial_rack_pool() -> dict[str, dict[str, Any]]:
-    """构造有限货架池初始状态；物理布局常量仍保留为 builder 输入。"""
-
-    rack_ids = ["RACK-001", *(f"RACK-6CELL-{index:03d}" for index in range(1, 7))]
-    rack_ids.extend(f"RACK-3CELL-{index:03d}" for index in range(1, 5))
-    return {rack_id: _build_rack_state(rack_id) for rack_id in rack_ids}
-
-
-@dataclass
-class MockWmsState:
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    rack_pool: dict[str, dict[str, Any]] = field(default_factory=build_initial_rack_pool)
-    work_positions: dict[str, str | None] = field(default_factory=lambda: {"SINGLE_LAYER_A": None})
-    recent_operations: list[dict[str, Any]] = field(default_factory=list)
-
-    def reset(self) -> None:
-        self.rack_pool = build_initial_rack_pool()
-        self.work_positions = {"SINGLE_LAYER_A": None}
-        self.recent_operations = []
-
-    async def reset_locked(self) -> None:
-        async with self.lock:
-            self.reset()
-
-    async def snapshot(self) -> dict[str, Any]:
-        async with self.lock:
-            return self.snapshot_unlocked()
-
-    def snapshot_unlocked(self) -> dict[str, Any]:
-        return {
-            "racks": {rack_id: dict(rack) for rack_id, rack in self.rack_pool.items()},
-            "work_positions": dict(self.work_positions),
-            "recent_operations": [dict(operation) for operation in self.recent_operations],
-        }
-
-    async def get_rack(self, rack_id: str) -> dict[str, Any] | None:
-        async with self.lock:
-            rack = self.rack_pool.get(rack_id)
-            if rack is None:
-                return None
-            return dict(rack)
-
-    async def list_racks(self, rack_type: str | None = None) -> list[dict[str, Any]]:
-        async with self.lock:
-            racks = [dict(rack) for rack in self.rack_pool.values()]
-        if rack_type:
-            return [rack for rack in racks if rack["rack_type"] == rack_type]
-        return racks
-
-    async def set_rack_status(
-        self,
-        rack_id: str,
-        *,
-        status: str,
-        current_location: str | None = None,
-    ) -> dict[str, Any] | None:
-        async with self.lock:
-            rack = self.rack_pool.get(rack_id)
-            if rack is None:
-                return None
-            rack["status"] = status
-            if current_location is not None:
-                rack["current_location"] = current_location
-            return dict(rack)
-
-    def _record_operation(self, operation: dict[str, Any]) -> None:
-        self.recent_operations.append(operation)
-        if len(self.recent_operations) > RECENT_OPERATION_LIMIT:
-            del self.recent_operations[: len(self.recent_operations) - RECENT_OPERATION_LIMIT]
-
-    def _next_available_rack_code(self, required_bin_type: str, preferred_rack_code: str | None = None) -> str | None:
-        if preferred_rack_code is not None:
-            preferred_rack = self.rack_pool.get(preferred_rack_code)
-            preferred_layout = _known_rack_layout(preferred_rack_code)
-            if (
-                preferred_rack is not None
-                and preferred_rack["status"] == "AVAILABLE"
-                and preferred_layout is not None
-                and _rack_layout_supports_bin_type(preferred_layout, required_bin_type)
-            ):
-                return preferred_rack_code
-            return None
-        for rack_code, rack in self.rack_pool.items():
-            if rack["status"] != "AVAILABLE":
-                continue
-            layout = _known_rack_layout(rack_code)
-            if layout is not None and _rack_layout_supports_auto_allocation(layout, required_bin_type):
-                return rack_code
-        return None
-
-
-mock_wms_state = MockWmsState()
-
-# 北向 contract 记录独立于遗留货架状态，但必须随同 Mock reset 清理。
+# 北向 contract 的时钟、故障与 callback hint 状态必须随 Mock reset 一并清理。
 northbound_clock_state: dict[str, datetime | None] = {"now": None}
 
 
@@ -443,26 +125,19 @@ northbound_hmac_replay_guard = NorthboundHmacReplayGuard()
 
 
 def reset_mock_wms_state() -> None:
-    mock_wms_state.reset()
     northbound_operation_store.reset()
     northbound_hmac_replay_guard.reset()
     northbound_clock_state["now"] = None
     with northbound_fault_lock:
         northbound_fault_state["next"] = None
     northbound_callback_hint_evidence.clear()
-    fault_injection_state["next_status"] = 200
-    fault_injection_state["next_delay"] = 0.0
-
-
-def _mock_wms_debug_snapshot() -> dict[str, Any]:
-    return mock_wms_state.snapshot_unlocked()
 
 
 # ============================================
 # FastAPI 应用
 # ============================================
 
-app = FastAPI(title="WMS Mock Server", description="模拟 WMS 主数据查询及库存操作接口", version="1.0.0")
+app = FastAPI(title="WMS Mock Server", description="模拟 WMS typed operation 合同", version="1.0.0")
 
 
 def _northbound_fault_matches(fault: _NorthboundFault, request: Request) -> bool:
@@ -561,33 +236,10 @@ async def fault_injection_middleware(request: Request, call_next):
         if claimed_fault.status != 200 or claimed_fault.response_body_bytes is not None:
             return _northbound_fault_response(claimed_fault)
 
-    if fault_injection_state["next_delay"] > 0:
-        await asyncio.sleep(fault_injection_state["next_delay"])
-        fault_injection_state["next_delay"] = 0.0
-
-    if fault_injection_state["next_status"] != 200:
-        status = fault_injection_state["next_status"]
-        fault_injection_state["next_status"] = 200
-        return Response(
-            content='{"code": ' + str(status) + ', "message": "Fault Injected"}',
-            status_code=status,
-            media_type="application/json",
-        )
-
     return await call_next(request)
 
 
 # --- Debug/Mock 接口 ---
-
-
-class SimulateFailureRequest(BaseModel):
-    status: int = 500
-    delay: float = 0.0
-
-
-class RackStatusRequest(BaseModel):
-    status: str
-    current_location: str | None = None
 
 
 class NorthboundFaultRequest(BaseModel):
@@ -621,28 +273,14 @@ class NorthboundVisibilityRequest(BaseModel):
     delay_seconds: float = Field(ge=0, allow_inf_nan=False)
 
 
-@app.post("/debug/simulate-failure", summary="注入 HTTP 故障")
-async def simulate_failure(request: SimulateFailureRequest):
-    """
-    配置下一次外部调用（非 /debug）将返回指定的 HTTP 状态码并等待 delay 秒。
-    这适用于触发 WES 端的 Circuit Breaker 和 WmsUnavailableError 测试。
-    """
-    fault_injection_state["next_status"] = request.status
-    fault_injection_state["next_delay"] = request.delay
-    return {"message": f"Next request will return {request.status} after {request.delay}s"}
-
-
 @app.post("/debug/reset", summary="恢复 WMS Mock 初始状态")
 async def debug_reset():
-    await mock_wms_state.reset_locked()
     northbound_operation_store.reset()
     northbound_hmac_replay_guard.reset()
     northbound_clock_state["now"] = None
     with northbound_fault_lock:
         northbound_fault_state["next"] = None
     northbound_callback_hint_evidence.clear()
-    fault_injection_state["next_status"] = 200
-    fault_injection_state["next_delay"] = 0.0
     return {"code": 200, "data": {"reset": True}}
 
 
@@ -794,27 +432,6 @@ async def northbound_operation_status(request: Request, operation_identity: str,
     except ValueError as exc:
         return JSONResponse(status_code=422, content={"code": str(exc)})
     return snapshot.as_dict()
-
-
-@app.get("/debug/racks", summary="查看 WMS Mock 货架状态")
-async def debug_racks():
-    return {"code": 200, "data": await mock_wms_state.snapshot()}
-
-
-@app.post("/debug/racks/{rack_id}/status", summary="设置 WMS Mock 货架状态")
-async def debug_set_rack_status(rack_id: str, request: RackStatusRequest):
-    rack = await mock_wms_state.set_rack_status(
-        rack_id,
-        status=request.status,
-        current_location=request.current_location,
-    )
-    if rack is None:
-        return Response(
-            status_code=404,
-            content='{"code": 404, "message": "Rack Not Found"}',
-            media_type="application/json",
-        )
-    return {"code": 200, "data": rack}
 
 
 def _now_ms() -> int:
@@ -998,306 +615,6 @@ def _northbound_response_data(
     )
 
 
-def build_active_bin_rack_payload(rack_code: str, rack_kind: str = "SINGLE_LAYER") -> dict[str, Any]:
-    layout = _known_rack_layout(rack_code)
-    if layout is None:
-        raise ValueError(f"未知 WMS mock rack: {rack_code}")
-    layout_bins = _rack_layout_bins(rack_code, layout)
-    bin_mounts = [
-        {"rack_code": rack_code, "rack_slot_code": bin_spec["rack_slot_code"], "bin_code": bin_spec["bin_code"]}
-        for bin_spec in layout_bins
-    ]
-    cells = [
-        {
-            "rack_slot_code": bin_spec["rack_slot_code"],
-            "rack_slot_location_code": f"{rack_code}-1{bin_spec['rack_slot_code']}-0",
-            "bin_code": bin_spec["bin_code"],
-            "bin_id": bin_spec["bin_code"],
-            "bin_type": bin_type,
-            "bin_orientation_code": f"{bin_spec['bin_code']}-A",
-            "bin_cell_index": cell_index,
-            "bin_cell_location": f"{bin_spec['bin_code']}-{cell_index}",
-            "capacity_depth_mm": _rack_operation_cell_capacity_depth(bin_type, cell_index),
-            "used_depth_mm": 0.0,
-            "status": "EMPTY",
-        }
-        for bin_spec in layout_bins
-        for bin_type in (str(bin_spec["bin_type"]),)
-        for cell_index in tuple(bin_spec["cell_indexes"])
-    ]
-    return {
-        "active_bin_rack": {
-            "rack_id": rack_code,
-            "rack_code": rack_code,
-            "rack_kind": rack_kind,
-            "rack_type": rack_kind,
-            "cells": cells,
-        },
-        "bin_mounts": bin_mounts,
-    }
-
-
-def _has_large_reel_size(material: dict[str, Any]) -> bool:
-    value = material.get("reel_diameter") or material.get("standard_reel_diameter") or material.get("diameter")
-    if value is None:
-        value = material.get("reel_size") or material.get("standard_dims")
-    if value is None:
-        return False
-
-    text = str(value).strip().lower()
-    inch_match = re.search(r"(?<!\d)(13|15)(?:\.0+)?\s*(?:in|inch|英寸)?(?!\d)", text)
-    if inch_match is not None:
-        return True
-    try:
-        diameter = float(text)
-    except ValueError:
-        return False
-    if 10 <= diameter <= 20:
-        return True
-    return diameter > 220
-
-
-def _rack_operation_cell_capacity_depth(bin_type: str, cell_index: str) -> float:
-    if MOCK_WMS_CELL_CAPACITY_DEPTH_MM is not None:
-        return MOCK_WMS_CELL_CAPACITY_DEPTH_MM
-    if bin_type == "3格箱" and cell_index == THREE_CELL_LARGE_BIN_CELL_INDEX:
-        return 80.0
-    return 20.0
-
-
-# --- 主数据查询接口 (WMS Master Data) ---
-
-
-@app.get("/debug/wms/materials/{material_id}")
-async def get_material(material_id: str):
-    if material_id in MOCK_MATERIALS:
-        return {"code": 200, "data": MOCK_MATERIALS[material_id]}
-    return Response(
-        status_code=404, content='{"code": 404, "message": "Material Not Found"}', media_type="application/json"
-    )
-
-
-@app.get("/debug/wms/materials")
-async def get_materials_batch(ids: str):
-    id_list = ids.split(",")
-    data = [MOCK_MATERIALS[m_id] for m_id in id_list if m_id in MOCK_MATERIALS]
-    return {"code": 200, "data": data}
-
-
-@app.get("/debug/wms/zones")
-async def get_zones():
-    return {"code": 200, "data": MOCK_ZONES}
-
-
-@app.get("/debug/wms/locations")
-async def get_locations(zone: str):
-    locs = [location for location in MOCK_LOCATIONS if location["zone_code"] == zone]
-    return {"code": 200, "data": locs}
-
-
-@app.get("/debug/wms/racks/{rack_id}")
-async def get_rack(rack_id: str):
-    rack = await mock_wms_state.get_rack(rack_id)
-    if rack is not None:
-        return {"code": 200, "data": rack}
-    return Response(
-        status_code=404, content='{"code": 404, "message": "Rack Not Found"}', media_type="application/json"
-    )
-
-
-@app.get("/debug/wms/racks")
-async def get_racks(type: str | None = None):
-    return {"code": 200, "data": await mock_wms_state.list_racks(type)}
-
-
-def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
-    raw_value = payload.get(field_name)
-    if raw_value is None:
-        return []
-    if isinstance(raw_value, str):
-        return [raw_value]
-    if not isinstance(raw_value, list):
-        return []
-    return [str(item) for item in raw_value if str(item)]
-
-
-@app.post("/debug/wms/fulfillment/rough-sorter-inbound-preview", summary="本机 Mock: 粗分机入库预览")
-async def rough_sorter_inbound_preview(payload: dict[str, Any]):
-    """表达粗分机正常流合同，拆分本地物理事实与 WMS 同步状态。"""
-
-    local_physical_completed = bool(payload.get("local_physical_completed"))
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "request_id": payload.get("request_id", ""),
-            "object_key": payload.get("object_key", ""),
-            "target_cell_code": payload.get("target_cell_code", ""),
-            "ordered_steps": [
-                "SCAN_AND_MEASURE",
-                "SOURCE_ARM_TO_CONVEYOR",
-                "ROUGH_SORTER_TO_OUTBOUND",
-                "CELL_RESERVATION",
-                "OUTBOUND_ARM_TO_CELL",
-                "LOCAL_PHYSICAL_FACT",
-                "WMS_SYNC",
-            ],
-            "local_position_state": "LOCAL_PHYSICAL_COMPLETED" if local_physical_completed else "PENDING",
-            "wms_sync_state": "READY_TO_SYNC",
-            "business_completion_state": "LOCAL_PHYSICAL_COMPLETED",
-            "preserve_local_physical_fact": local_physical_completed,
-            "next_object_admission_allowed": True,
-            "legacy_plugin_entry_used": False,
-            "effect_ports": {
-                "pkg_binding": "wms.fulfillment.notify_pkg_binding@v1",
-                "inventory_transaction": "wms.inventory.confirm_inbound@v1",
-            },
-        },
-    }
-
-
-@app.post("/debug/wms/fulfillment/sorter-inbound-preview", summary="本机 Mock: 分拣机入库预览")
-async def sorter_inbound_preview(payload: dict[str, Any]):
-    """表达分拣机入库 join gate 与南向 PICK ACK 因果链。"""
-
-    expected_authorized_bin_ids = set(_string_list(payload, "expected_authorized_bin_ids"))
-    actual_scanned_bin_id = str(payload.get("actual_scanned_bin_id") or "")
-    target_bin_ready = payload.get("target_bin_position_state") == "AT_WORK_POSITION"
-    target_cell_reservable = bool(payload.get("target_cell_reservable"))
-    reservation_ready = payload.get("cell_reservation_state") == "RESERVED"
-    waiting_deadline_declared = bool(payload.get("waiting_deadline_declared"))
-    condition_results = {
-        "AUTHORIZED_BIN_RESOLVED": actual_scanned_bin_id in expected_authorized_bin_ids,
-        "TARGET_BIN_AT_WORK_POSITION": target_bin_ready,
-        "TARGET_CELL_RESERVABLE": target_cell_reservable,
-        "CELL_RESERVATION_RESERVED": reservation_ready,
-        "WAITING_DEADLINE_DECLARED": waiting_deadline_declared,
-    }
-    missing_conditions = [name for name, passed in condition_results.items() if not passed]
-    allowed = not missing_conditions
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "request_id": payload.get("request_id", ""),
-            "legacy_plugin_entry_used": False,
-            "next_northbound_pick_triggered": bool(payload.get("southbound_pick_acknowledged")),
-            "ordered_steps": [
-                "STATION_ADMISSION",
-                "SCAN1_AUTHORIZED_RESOLVE",
-                "SCAN2_ROUTE_DECISION",
-                "SCAN3_RETURN_OR_NG_ROUTE",
-                "SOURCE_ARM_TO_SCANNER_PLATFORM",
-                "CELL_RESERVATION",
-                "SOUTH_ARM_DROP",
-                "LOCAL_PHYSICAL_FACT",
-                "WMS_SYNC",
-            ],
-            "join_gate": {
-                "allowed": allowed,
-                "condition_results": condition_results,
-                "missing_conditions": missing_conditions,
-            },
-            "local_position_state": "LOCAL_PHYSICAL_COMPLETED" if allowed else "PENDING",
-            "wms_sync_state": "READY_TO_SYNC" if allowed else "BLOCKED",
-            "business_completion_state": "READY_TO_DROP" if allowed else "RECONCILING",
-            "ng_route_state": "CLEAR" if allowed else "NG_OR_RUNTIME_HOLD",
-            "runtime_hold_required": not allowed,
-        },
-    }
-
-
-@app.post("/debug/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
-async def reconciliation_snapshot(payload: dict[str, Any]):
-    """模拟 WmsReconciliationQueryPort 快照, 不产生生产写入副作用。"""
-
-    scenario = str(payload.get("scenario") or "OK").upper()
-    conflict_state = "OK"
-    if scenario == "DUPLICATE_CALLBACK":
-        conflict_state = "IDEMPOTENT_DUPLICATE"
-    elif scenario != "OK":
-        conflict_state = "RECONCILING"
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "scenario": scenario,
-            "object_type": payload.get("object_type", ""),
-            "object_key": payload.get("object_key", ""),
-            "source_event_id": payload.get("source_event_id", ""),
-            "source_version": payload.get("source_version", "mock-wms.v1"),
-            "conflict_state": conflict_state,
-            "requires_runtime_hold": conflict_state == "RECONCILING",
-            "allowed_next_effect_scope": "OBJECT_ONLY",
-        },
-    }
-
-
-@app.post("/debug/wms/reconciliation/runtime-hold-release-preview", summary="本机 Mock: RuntimeHold 解除预览")
-async def runtime_hold_release_preview(payload: dict[str, Any]):
-    """表达 RuntimeHold scope-only release 合同，不实际解除任何生产 hold。"""
-
-    allowed_scope = str(payload.get("allowed_next_effect_scope") or "OBJECT_ONLY").upper()
-    requested_scope = str(payload.get("requested_release_scope") or allowed_scope).upper()
-    released_effect_scopes_by_allowed_scope = {
-        "OBJECT_ONLY": ["OBJECT"],
-        "QUEUE_ONLY": ["QUEUE"],
-        "DEVICE_ONLY": ["DEVICE"],
-        "RESOURCE_ONLY": ["RESOURCE"],
-        "WORKLINE": ["WORKLINE"],
-    }
-    released_effect_scopes = released_effect_scopes_by_allowed_scope.get(allowed_scope, ["OBJECT"])
-    all_effect_scopes = ["OBJECT", "WORKLINE", "QUEUE", "DEVICE", "RESOURCE"]
-    blocked_effect_scopes = [scope for scope in all_effect_scopes if scope not in released_effect_scopes]
-    return {
-        "code": 200,
-        "data": {
-            "environment": "LOCAL_MOCK_ONLY",
-            "production_write_path": False,
-            "hold_id": payload.get("hold_id", ""),
-            "scope_type": payload.get("scope_type", ""),
-            "scope_key": payload.get("scope_key", ""),
-            "allowed_next_effect_scope": allowed_scope,
-            "requested_release_scope": requested_scope,
-            "released_effect_scopes": released_effect_scopes,
-            "blocked_effect_scopes": blocked_effect_scopes,
-            "requires_manual_review": requested_scope != allowed_scope,
-        },
-    }
-
-
-@app.get("/debug/wms/grn/{grn_id}")
-async def get_grn(grn_id: str):
-    if grn_id in MOCK_GRNS:
-        return {"code": 200, "data": MOCK_GRNS[grn_id]}
-    return Response(status_code=404, content='{"code": 404, "message": "GRN Not Found"}', media_type="application/json")
-
-
-# --- 交易接口 (Inventory / Reservations) ---
-
-
-def _inventory_items(
-    *,
-    sku: str,
-    lot_no: str | None = None,
-    warehouse_code: str | None = None,
-    owner_code: str | None = None,
-) -> list[dict[str, Any]]:
-    if not sku:
-        return []
-    return [
-        dict(item)
-        for (item_sku, item_lot_no), item in MOCK_INVENTORY.items()
-        if item_sku == sku
-        and (lot_no is None or item_lot_no == lot_no)
-        and (warehouse_code is None or item.get("warehouse_code") == warehouse_code)
-        and (owner_code is None or item.get("owner_code") == owner_code)
-    ]
-
-
 def _static_effect_handler(operation_identity: str):
     async def handler(request: Request, background_tasks: BackgroundTasks):
         return await _submit_northbound_effect(
@@ -1364,35 +681,12 @@ def _static_query_handler(operation_identity: str):
                 return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST"})
         try:
             validated = operation.request_model.model_validate(payload).model_dump(mode="json")
-            if operation_identity == "wms.inventory.query_inventory@v1":
-                inventory_items = _inventory_items(
-                    sku=validated["material_code"],
-                    lot_no=validated.get("lot_no"),
-                    warehouse_code=validated.get("warehouse_code"),
-                    owner_code=validated.get("owner_code"),
-                )
-                result = {
-                    "items": [
-                        {
-                            "material_code": item["sku"],
-                            "available_quantity": str(item["available_qty"]),
-                            "total_quantity": str(item["total_qty"]),
-                            "reserved_quantity": str(item["reserved_qty"]),
-                            "lot_no": item.get("lot_no"),
-                        }
-                        for item in inventory_items
-                    ],
-                    "next_cursor": None,
-                    "source_version": "mock-inventory-v1",
-                }
-                result = operation.result_model.model_validate(result).model_dump(mode="json")
-            else:
-                result = build_typed_result(
-                    operation_identity,
-                    validated,
-                    source_version=0,
-                    completed_at=datetime.now(UTC).isoformat(),
-                )
+            result = build_typed_result(
+                operation_identity,
+                validated,
+                source_version=0,
+                completed_at=datetime.now(UTC).isoformat(),
+            )
         except (TypeError, ValueError):
             return JSONResponse(status_code=422, content={"code": "INVALID_TYPED_REQUEST"})
         return JSONResponse(status_code=200, content=result)
@@ -1438,9 +732,6 @@ class WmsMockServer:
 
     async def start(self) -> None:
         logger.info(f"WMS Mock 服务启动: http://{self.host}:{self.port}")
-        logger.info("  - 模拟物料数: %d", len(MOCK_MATERIALS))
-        logger.info("  - 模拟区域数: %d", len(MOCK_ZONES))
-        logger.info("  - 模拟货架数: %d", len(mock_wms_state.rack_pool))
         server = Server(self.config)
         await server.serve()
 
