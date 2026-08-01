@@ -35,13 +35,7 @@ uv run uvicorn main:app --reload --host 0.0.0.0 --port 8001
 sh src/celery_app/dev_worker_autoreload.sh
 ```
 
-同步粗分机测试工作线和设备：
-
-```bash
-uv run python scripts/data/sync_test_workline_devices.py
-```
-
-脚本会准备这些测试数据：
+粗分机测试工作线和设备属于对应二次开发插件。核心仓库不再提供场景数据同步脚本；联调前应由插件包准备这些测试数据：
 
 - WorkLine：`WL-ROUGH-SORTER-TEST`
 - 入料机械臂：`RS-INPUT-ARM-01`

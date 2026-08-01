@@ -82,13 +82,6 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 - [北向 operation SLO 目录](docs/operations/northbound-operation-slo-catalog.md) 与 [运维 Runbook](docs/runbooks/northbound-operation-observability.md)：说明 QUERY/EFFECT 指标、告警、运维快照和故障处置。
 - [WMS operation identity ADR](docs/architecture/adr/2026-07-21-wms-operation-identity.md)：说明 operation、provider profile、dispatch 和 evidence 的稳定身份约定。
 
-Runtime monitor 浏览器 smoke 数据可在非生产环境写入：
-
-```bash
-uv run python scripts/data/seed_runtime_monitor_smoke.py --dry-run --json
-uv run python scripts/data/seed_runtime_monitor_smoke.py
-```
-
 ## Production Bootstrap
 
 Production should not use `scripts/data/seed_initial_data.py`. That script is for dev/test/demo data and contains default accounts such as `admin/admin123`.
