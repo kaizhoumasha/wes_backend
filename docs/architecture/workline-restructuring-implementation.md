@@ -96,7 +96,6 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run pytest tests/runtime/orchestration/test_runtime_recovery_policies.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py tests/runtime/orchestration/test_runtime_operational_contracts.py -q`：15 passed
 - `uv run pytest tests/runtime/orchestration/test_runtime_operational_contracts.py tests/contracts/test_runtime_ops_contract_docs.py -q`：11 passed
 - `uv run pytest tests/wms_integration/test_circuit_breaker.py tests/wms_integration/test_wms_client.py tests/wms_integration/test_fulfillment_state_machine.py -q`：49 passed
-- `uv run pytest tests/wms_integration/test_fulfillment_state_machine.py tests/wms_integration/test_fulfillment_lifecycle_service.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py -q`：14 passed
 - `uv run pytest tests/wms_integration/test_evidence.py tests/wms_integration/test_typed_evidence_envelope.py -q`：13 passed
 - `uv run pytest tests/wms_integration/test_callback_normalizer.py -q`：33 passed
 - `uv run pytest tests/handling/test_handling_operation_core.py -q`：处理作业核心行为通过

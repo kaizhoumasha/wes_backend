@@ -139,7 +139,7 @@ workline_plugins/<plugin_key>/
 **Verification:**
 
 ```bash
-uv run pytest tests/contracts/wms_integration/test_release_removal_guardrails.py -q
+uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
 git diff --check
 ```
 
