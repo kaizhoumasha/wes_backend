@@ -60,6 +60,11 @@
 
 后续新增或调整测试时遵循以下约束：
 
+- 必须先建立目标对象测试并通过，再删除对应旧测试；不得反向。
+- 同一行为只有一个主要测试所有者。
+- 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径或 `NONE`。
+- 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
+- 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；重测试边界由目录位置和 `norecursedirs` 共同保证。
 - 新增领域测试默认不要放在 `tests/` 根目录，优先按上方目录归属矩阵归位。
 - 单个测试文件目标低于 `1000` 行；超过 `3000` 行会触发测试拓扑 guardrail。
 - API 测试文件只覆盖 route、permission、response contract 和 API facade 行为。

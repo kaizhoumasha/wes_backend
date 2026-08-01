@@ -265,6 +265,14 @@ Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 
 
 所有 Agent 新增、移动、拆分或删除测试时，必须遵守 [`tests/README.md`](tests/README.md) 的目录归属、默认快速回归和重测试边界。
 
+测试治理硬约束：
+
+- 必须先建立目标对象测试并通过，再删除对应旧测试；不得反向。
+- 同一行为只能有一个主要测试所有者。
+- 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径，或明确标注 `NONE`。
+- 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
+- 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；重测试边界由目录位置和 `norecursedirs` 共同保证。
+
 **STRICTLY FORBIDDEN**:
 - ❌ 在 `tests/` 根目录新增 `test_*.py`
 - ❌ 把 integration / e2e / resilience / load / mock 测试混入默认快速回归集
