@@ -61,8 +61,8 @@ async def test_resolve_locks_bound_workline_before_accepting_callback() -> None:
                 return_value=SimpleNamespace(
                     id=10,
                     line_code="WL-ACTIVE",
-                    plugin_key="rough_sorter",
-                    contract_version="rough_sorter.v1",
+                    plugin_key="test_workline_plugin",
+                    contract_version="1.0",
                     is_active=True,
                 )
             )
@@ -104,8 +104,8 @@ async def test_resolve_rejects_device_bound_to_inactive_workline() -> None:
             return SimpleNamespace(
                 id=work_line_id,
                 line_code="WL-INACTIVE",
-                plugin_key="rough_sorter",
-                contract_version="rough_sorter.v1",
+                plugin_key="test_workline_plugin",
+                contract_version="1.0",
                 is_active=False,
             )
 
