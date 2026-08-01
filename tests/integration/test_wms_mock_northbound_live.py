@@ -226,7 +226,7 @@ class _LiveQueryEvidenceWriter:
         from src.app.wms_integration.query_evidence import WmsQueryEvidenceRecord
 
         return WmsQueryEvidenceRecord(
-            evidence_key="evidence:docker-wms:rough-sorter-001",
+            evidence_key="evidence:docker-wms:generic-query-001",
             outcome=kwargs["outcome"],
         )
 
@@ -313,7 +313,7 @@ async def test_compose_mock_wms_inventory_query_matches_production_runtime_over_
         )
 
         assert isinstance(outcome, QuerySuccess), outcome
-        assert outcome.evidence_key == "evidence:docker-wms:rough-sorter-001"
+        assert outcome.evidence_key == "evidence:docker-wms:generic-query-001"
         assert outcome.value.source_version == "mock-inventory-v1"
         assert len(outcome.value.items) == 1
         item = outcome.value.items[0]

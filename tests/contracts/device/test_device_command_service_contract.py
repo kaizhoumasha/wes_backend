@@ -248,7 +248,7 @@ async def test_send_command_body_contains_top_level_device_code_and_uses_device_
     monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
     device = SimpleNamespace(
         id=100,
-        device_code="RS-CONVEYOR-01",
+        device_code="DEVICE-01",
         host="mock_ecs",
         port=8010,
         protocol="HTTP",
@@ -284,7 +284,7 @@ async def test_send_command_body_contains_top_level_device_code_and_uses_device_
         {
             "url": "http://mock_ecs:8010/api/v1/device/command",
             "json": {
-                "device_code": "RS-CONVEYOR-01",
+                "device_code": "DEVICE-01",
                 "command_code": "CMD-ECS-SVC",
                 "task_type": "MOVE_FORWARD",
                 "priority": 5,

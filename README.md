@@ -67,7 +67,6 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 - [WORKLINE 诊断快速开始](docs/workline_diagnostics_quickstart.md)：用 API 定位 Trace、blocking-point、诊断卡、Replay 和人工操作。
 - [粗分机扫码到准入决策窄闭环合同](docs/business/rough_sorter_scan_decision_contract.md)：定义 13 个权威场景的状态所有权、reason code、evidence 与 replay 规则。
 - [粗分机硬件供应商联调操作手册](docs/hardware/粗分机硬件供应商联调操作手册.md)：面向真实设备侧的事件、命令、状态和 Result 联调。
-- [粗分机内部 Mock 与 Sandbox 调试手册](docs/hardware/粗分机内部Mock与Sandbox调试手册.md)：面向 WES 内部的 Mock ECS、Mock WMS、Sandbox 和多物料并发观察。
 - [WorkLine runtime hold quickstart](docs/workline_runtime_hold_quickstart.md)：说明 RuntimeHold 与人工恢复的基础操作。
 - [WorkLine 插件迁移清单与跨环境批准](docs/operations/workline-plugin-migration-inventory.md)：说明单环境 inventory、跨环境 migration matrix、批准证据和 fail-closed preflight 的操作顺序。
 - [Superpowers 计划与规格文档生命周期](docs/superpowers/README.md)：索引当前仍承担执行或机器门禁职责的 SPEC/PLAN，以及历史文档归档规则。

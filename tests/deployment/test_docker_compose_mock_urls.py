@@ -137,13 +137,10 @@ def test_mock_wms_disables_query_bearing_uvicorn_access_log() -> None:
     assert "--no-access-log" in mock_wms_command
 
 
-def test_mock_dockerfile_copies_only_the_current_sandbox_catalog_bridge() -> None:
+def test_mock_dockerfile_does_not_copy_plugin_catalog_bridges() -> None:
     dockerfile_text = (BACKEND_ROOT / "tests/mock/Dockerfile").read_text(encoding="utf-8")
 
-    assert (
-        "COPY src/app/runtime/orchestration/sandbox_catalog_bridge.py "
-        "/app/src/app/runtime/orchestration/sandbox_catalog_bridge.py"
-    ) in dockerfile_text
+    assert "src/app/runtime/orchestration/sandbox_catalog_bridge.py" not in dockerfile_text
     assert "src/workline_runtime/sandbox_catalog.py" not in dockerfile_text
     assert "src/workline_runtime/runtime_events.py" not in dockerfile_text
 

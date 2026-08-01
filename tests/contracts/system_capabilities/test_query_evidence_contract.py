@@ -71,7 +71,7 @@ def test_recorded_replay_decodes_evidence_and_decision_without_handler() -> None
     from src.app.runtime.system_capabilities.replay import RecordedReplayEnvelope, resolve_recorded_replay
 
     envelope = RecordedReplayEnvelope(
-        definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        definition_identity="plugin.test@v1:" + "c" * 64,
         binding_identity="binding:17:3",
         index_digest="d" * 64,
         attempt_anchor={
@@ -107,7 +107,7 @@ def test_recorded_replay_rejects_query_key_or_hash_drift_without_calling_handler
         handler_calls += 1
 
     envelope = RecordedReplayEnvelope(
-        definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        definition_identity="plugin.test@v1:" + "c" * 64,
         binding_identity="binding:17:3",
         index_digest="d" * 64,
         attempt_anchor={
@@ -145,7 +145,7 @@ def test_recorded_replay_missing_or_mismatched_pin_fails_closed_to_hold() -> Non
     )
     resolution = resolve_recorded_replay(
         envelope,
-        expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        expected_definition_identity="plugin.test@v1:" + "c" * 64,
         expected_binding_identity="binding:17:3",
         expected_index_digest="d" * 64,
         expected_source_inbox_id=71,
@@ -170,7 +170,7 @@ async def test_recorded_replay_service_loads_only_timeline_decision_records() ->
         SimpleNamespace(
             payload_json={
                 "record_type": "PLUGIN_DECISION",
-                "definition_identity": "plugin.rough-sorter@v1:" + "c" * 64,
+                "definition_identity": "plugin.test@v1:" + "c" * 64,
                 "binding_identity": "binding:17:3",
                 "index_digest": "d" * 64,
                 "attempt_anchor": {
@@ -193,7 +193,7 @@ async def test_recorded_replay_service_loads_only_timeline_decision_records() ->
     resolution = await TimelineRecordedReplayService(Repository()).load(
         object(),
         source_inbox_id=71,
-        expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        expected_definition_identity="plugin.test@v1:" + "c" * 64,
         expected_binding_identity="binding:17:3",
         expected_index_digest="d" * 64,
     )
@@ -212,7 +212,7 @@ async def test_recorded_replay_service_fails_closed_when_legacy_record_has_no_at
                 SimpleNamespace(
                     payload_json={
                         "record_type": "PLUGIN_DECISION",
-                        "definition_identity": "plugin.rough-sorter@v1:" + "c" * 64,
+                        "definition_identity": "plugin.test@v1:" + "c" * 64,
                         "binding_identity": "binding:17:3",
                         "index_digest": "d" * 64,
                         "evidence_keys": [],
@@ -229,7 +229,7 @@ async def test_recorded_replay_service_fails_closed_when_legacy_record_has_no_at
     resolution = await TimelineRecordedReplayService(Repository()).load(
         object(),
         source_inbox_id=71,
-        expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        expected_definition_identity="plugin.test@v1:" + "c" * 64,
         expected_binding_identity="binding:17:3",
         expected_index_digest="d" * 64,
     )
@@ -250,7 +250,7 @@ async def test_recorded_replay_service_missing_timeline_record_fails_closed() ->
     resolution = await TimelineRecordedReplayService(Repository()).load(
         object(),
         source_inbox_id=71,
-        expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        expected_definition_identity="plugin.test@v1:" + "c" * 64,
         expected_binding_identity="binding:17:3",
         expected_index_digest="d" * 64,
     )

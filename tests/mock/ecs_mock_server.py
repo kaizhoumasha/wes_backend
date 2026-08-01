@@ -30,7 +30,6 @@ if str(DOCKER_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(DOCKER_APP_ROOT))
 
 from src.app.callback.contracts.runtime_events import is_platform_control_event
-from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
 
 logger = logging.getLogger(__name__)
 
@@ -74,30 +73,6 @@ class DeviceCommandAck(BaseModel):
     trace_id: str | None = None
 
 
-ROUGH_SORTER_SCAN_COMPLETED_DATA: dict[str, Any] = rough_sorter_scan_completed_payload()["data"]
-
-ROUGH_SORTER_STORAGE_RETRY_DATA: dict[str, Any] = {
-    "PkgID": "PKG-CAP001-LOT-A-001",
-    "business_key": "PKG-CAP001-LOT-A-001",
-    "rack_operation": {
-        "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
-        "status": "ARRIVED",
-    },
-    "active_bin_rack": {
-        "rack_id": "RACK-CALLBACK",
-        "rack_kind": "SINGLE_LAYER",
-        "cells": [
-            {
-                "bin_code": "BIN-001",
-                "bin_cell_index": "4",
-                "bin_cell_location": "BIN-001-4",
-            }
-        ],
-    },
-    "idempotency_key": "rough-sorter-storage-retry:external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION:321",
-}
-
-
 class MockEventRequest(BaseModel):
     """设备事件真实 callback payload。"""
 
@@ -119,22 +94,13 @@ MockEventRequestBody = Annotated[
     MockEventRequest,
     Body(
         openapi_examples={
-            "rough_sorter_scan_completed": {
-                "summary": "粗分机扫码完成",
-                "description": "触发粗分机入料扫码事件，默认使用 CAP001 / LOT-A / PKG-CAP001-LOT-A-001。",
+            "scan_completed": {
+                "summary": "设备扫码完成",
+                "description": "触发通用设备扫码事件。",
                 "value": {
-                    "device_code": "RS-INPUT-ARM-01",
+                    "device_code": "CAMERA-CONVEYOR-01",
                     "event_type": "SCAN_COMPLETED",
-                    "data": ROUGH_SORTER_SCAN_COMPLETED_DATA,
-                },
-            },
-            "rough_sorter_storage_retry": {
-                "summary": "粗分机货架到位重试",
-                "description": "触发粗分机 WAITING_RACK 阶段后的内部重试事件。",
-                "value": {
-                    "device_code": "RS-INPUT-ARM-01",
-                    "event_type": "ROUGH_SORTER_STORAGE_RETRY",
-                    "data": ROUGH_SORTER_STORAGE_RETRY_DATA,
+                    "data": {"barcode": "PKG-001"},
                 },
             },
         },

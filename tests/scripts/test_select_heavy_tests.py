@@ -143,7 +143,7 @@ def test_direct_heavy_test_selects_itself(tmp_path: Path) -> None:
     "changed_path",
     [
         "tests/integration/conftest.py",
-        "tests/mock/device_simulator.py",
+        "tests/mock/ecs_mock_catalog.py",
         "tests/fixtures/orders.json",
         "tests/conftest.py",
         "tests/runtime/conftest.py",
