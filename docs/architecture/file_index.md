@@ -623,7 +623,8 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | `conftest.py` | Pytest Fixtures（数据库、测试客户端） | 🔧 架构核心 |
 | `README.md` | 测试文档 | 📖 必读文档 |
 | `integration/test_base_repository_crud.py` | BaseRepository 真实数据库 CRUD 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
-| `test_base_repository_hooks.py` | Repository Hook 测试 | 🔧 架构核心 |
+| `database/test_base_repository_hooks.py` | Repository HookManager 与 BaseRepository wiring 轻量测试 | 🔧 架构核心 |
+| `integration/test_base_repository_hooks.py` | BaseRepository create/update/delete Hook 数据库 CRUD 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `test_base_repository_error_handling.py` | Repository 错误处理测试 | 🔧 架构核心 |
 | `integration/test_optimistic_lock.py` | 乐观锁核心 HEAVY / 数据库并发测试（显式运行） | 🔧 架构核心 |
 | `integration/test_system_outbox_repository.py` | SystemOutbox 持久化、事务与 lease 恢复核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
@@ -631,6 +632,8 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | `integration/test_callback_external_payload_limit.py` | Callback 真实 writer 的 RuntimeInbox payload bytes、零落库与 HTTP 413 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `integration/test_wms_event_runtime_inbox_idempotency.py` | 普通 WMS event 的 RuntimeInbox 数据库幂等、跨类型冲突与 correlation 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `integration/test_system_outbox_dispatch_concurrency.py` | SystemOutbox 公平桶、背压、lease fencing 与真实 Repository 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
+| `integration/test_device_runtime_projection_writer_service.py` | DeviceRuntimeProjection writer/repository 持久 upsert、唯一冲突重读与 DeviceService 同事务同步核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
+| `integration/test_command_result_correlation_authority.py` | DeviceCommand 结果服从固定 ExecutionCorrelation 的数据库核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `resilience/test_wms_circuit_breaker.py` | DB-backed WMS breaker 时序与恢复核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `test_soft_delete_feature.py` | 软删除功能测试 | 🔄 常用功能 |
 | `test_document_status.py` | 单据状态测试 | 🔄 常用功能 |

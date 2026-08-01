@@ -18,10 +18,13 @@ from scripts.select_heavy_tests import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HEAVY_TEST = "tests/integration/test_authoritative_runtime.py"
+BASE_REPOSITORY_HOOKS_HEAVY_TEST = "tests/integration/test_base_repository_hooks.py"
 CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST = "tests/integration/test_callback_external_payload_limit.py"
 CELERY_ASYNC_RUNTIME_HEAVY_TEST = "tests/integration/test_celery_async_runtime.py"
 CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST = "tests/integration/test_celery_async_runtime_postgresql.py"
 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_celery_prefork_harness_cleanup.py"
+COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST = "tests/integration/test_command_result_correlation_authority.py"
+DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST = "tests/integration/test_device_runtime_projection_writer_service.py"
 EFFECT_FRESH_IMPORT_HEAVY_TEST = "tests/integration/test_effect_contract_fresh_import.py"
 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py"
 OPTIMISTIC_LOCK_HEAVY_TEST = "tests/integration/test_optimistic_lock.py"
@@ -175,6 +178,18 @@ def test_direct_heavy_test_selects_itself(tmp_path: Path) -> None:
     config = load_config(_write_mapping(tmp_path))
 
     assert select_heavy_tests(["tests/integration/test_foo.py"], config) == ["tests/integration/test_foo.py"]
+
+
+def test_moved_core_heavy_tests_select_themselves() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    changed_tests = [
+        BASE_REPOSITORY_HOOKS_HEAVY_TEST,
+        COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,
+        DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,
+    ]
+
+    assert select_heavy_tests(changed_tests, config) == sorted(changed_tests)
 
 
 @pytest.mark.parametrize(
@@ -503,6 +518,14 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             ),
         ),
         (
+            "src/app/runtime/orchestration/repositories/device_runtime_projection_repository.py",
+            (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/services/device_runtime_projection_writer_service.py",
+            (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,),
+        ),
+        (
             "src/app/sys/dispatch_concurrency.py",
             (
                 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
@@ -552,6 +575,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "tests/support/runtime_binding.py",
             (
+                COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,
                 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
                 RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
                 RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST,
@@ -713,6 +737,14 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
             ],
         ),
         (
+            "src/app/runtime/orchestration/repositories/device_runtime_projection_repository.py",
+            [DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/services/device_runtime_projection_writer_service.py",
+            [DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST],
+        ),
+        (
             "src/app/sys/dispatch_concurrency.py",
             [
                 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
@@ -762,6 +794,7 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
         (
             "tests/support/runtime_binding.py",
             [
+                COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,
                 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
                 RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
                 RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST,
@@ -923,9 +956,12 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/database/redis_client.py",
         "src/database/schema_conf.py",
         "src/database/sqlite_schema.py",
+        "src/app/device/models/device.py",
+        "src/app/device/services/device_service.py",
         "src/app/sys/repositories/outbox_repository.py",
         "src/app/sys/models/outbox.py",
         "src/app/device/models/command.py",
+        "src/app/runtime/orchestration/device_runtime_projection.py",
         "src/app/runtime/orchestration/execution_correlation.py",
         "src/app/runtime/orchestration/execution_session.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",

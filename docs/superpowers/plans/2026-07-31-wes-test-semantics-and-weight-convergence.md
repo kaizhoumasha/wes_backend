@@ -98,6 +98,8 @@ workline_plugins/<plugin_key>/
 - 单例不超过 1 秒；
 - `tests/unit/` 在 N≥30 时 p95 不超过 100 毫秒。
 
+以上三项预算均由质量门禁强制执行，任一超限即阻断。
+
 插件包测试不计入核心 FAST 预算。
 
 ### 4.2 QUALITY
@@ -227,8 +229,8 @@ uv run pytest tests/architecture -q
 - [ ] 同一核心行为只保留最低稳定层的完整断言；高层只验证新增边界。
 - [ ] 将真实数据库、HTTP、Celery、进程、故障和容量测试移到核心 HEAVY。
 - [ ] 删除核心 HEAVY selector 中任何具体插件测试映射。
-- [ ] FAST 在固定 2 vCPU / 4 GB 环境达到 60 秒总预算和单例预算。
-- [ ] 质量门禁由 `--report-only` 切到强制预算模式。
+- [x] FAST 在固定 2 vCPU / 4 GB 环境达到 60 秒总预算和单例预算。
+- [x] 质量门禁强制执行 FAST 总时长、单例和 `tests/unit/` p95 预算。
 
 ### Task 7：最终缺席与交付验收
 

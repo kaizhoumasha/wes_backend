@@ -415,6 +415,8 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 
 ### 7.4 RuntimeInbox 核心 HEAVY 与 PostgreSQL 严格验收
 
+- `tests/integration/test_device_runtime_projection_writer_service.py` — DeviceRuntime 投影持久 upsert、唯一冲突重读与 DeviceService 同事务同步
+- `tests/integration/test_command_result_correlation_authority.py` — 命令结果服从命令创建时固定 ExecutionCorrelation
 - `tests/integration/test_runtime_inbox_consumer_service.py` — 数据库幂等接收、唯一冲突重读与人工重放审计
 - `tests/integration/test_runtime_inbox_service_internal_events.py` — 内部/设备事件与命令结果持久化和关联校验
 - `tests/integration/test_runtime_inbox_claim_repository.py` — FIFO claim、lease、fencing 与 SLI snapshot

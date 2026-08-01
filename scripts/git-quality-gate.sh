@@ -13,7 +13,7 @@ Usage: scripts/git-quality-gate.sh [--profile PROFILE] [--check CHECK] [--bandit
 
 Profiles:
   quality   Run Ruff, Bandit, runtime gates, runtime contract guardrails, legacy absence, process naming,
-            architecture guardrails, explicit architecture/script suites, and the FAST suite with budget reporting.
+            architecture guardrails, explicit architecture/script suites, and the FAST suite with enforced budgets.
   ci-smoke  Run the quality profile plus API signature smoke tests.
   full      Run the quality profile plus the full pytest suite.
 
@@ -194,8 +194,8 @@ run_fast_test_suite() {
     mkdir -p reports
     log_step "fast-tests" "pytest --junitxml=reports/fast-tests.xml"
     run_tool pytest --junitxml=reports/fast-tests.xml
-    log_step "fast-tests" "check_fast_test_budget.py reports/fast-tests.xml --report-only"
-    run_tool python scripts/check_fast_test_budget.py reports/fast-tests.xml --report-only
+    log_step "fast-tests" "check_fast_test_budget.py reports/fast-tests.xml"
+    run_tool python scripts/check_fast_test_budget.py reports/fast-tests.xml
 }
 
 run_quality_profile() {
