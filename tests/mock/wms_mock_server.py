@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
@@ -275,12 +275,7 @@ class NorthboundVisibilityRequest(BaseModel):
 
 @app.post("/debug/reset", summary="恢复 WMS Mock 初始状态")
 async def debug_reset():
-    northbound_operation_store.reset()
-    northbound_hmac_replay_guard.reset()
-    northbound_clock_state["now"] = None
-    with northbound_fault_lock:
-        northbound_fault_state["next"] = None
-    northbound_callback_hint_evidence.clear()
+    reset_mock_wms_state()
     return {"code": 200, "data": {"reset": True}}
 
 
@@ -432,12 +427,6 @@ async def northbound_operation_status(request: Request, operation_identity: str,
     except ValueError as exc:
         return JSONResponse(status_code=422, content={"code": str(exc)})
     return snapshot.as_dict()
-
-
-def _now_ms() -> int:
-    import time
-
-    return int(time.time() * 1000)
 
 
 async def _post_callback(url: str, payload: dict[str, Any]) -> dict[str, Any]:
