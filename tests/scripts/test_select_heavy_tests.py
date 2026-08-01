@@ -18,6 +18,7 @@ from scripts.select_heavy_tests import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HEAVY_TEST = "tests/integration/test_authoritative_runtime.py"
+CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST = "tests/integration/test_callback_external_payload_limit.py"
 CELERY_ASYNC_RUNTIME_HEAVY_TEST = "tests/integration/test_celery_async_runtime.py"
 CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST = "tests/integration/test_celery_async_runtime_postgresql.py"
 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_celery_prefork_harness_cleanup.py"
@@ -39,6 +40,7 @@ RUNTIME_INTEGRATION_LAB_HEAVY_TEST = "tests/resilience/test_runtime_integration_
 RUNTIME_PLANE_SNAPSHOT_BENCHMARK_HEAVY_TEST = "tests/load/test_plane_snapshot_benchmark.py"
 RUNTIME_SCENARIO_REPLAY_HEAVY_TEST = "tests/resilience/test_runtime_scenario_replay.py"
 SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST = "tests/integration/test_system_outbox_canonical_payload_postgresql.py"
+SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST = "tests/integration/test_system_outbox_dispatch_concurrency.py"
 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST = (
     "tests/integration/test_system_outbox_dispatch_concurrency_postgresql.py"
 )
@@ -53,6 +55,7 @@ WMS_NORTHBOUND_CONTRACT_HEAVY_TEST = "tests/mock/test_wms_northbound_contract.py
 WMS_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py"
 WMS_PROVIDER_COLLECTION_HEAVY_TEST = "tests/integration/test_wms_provider_conformance_collection.py"
 WMS_PROVIDER_SIMULATOR_HEAVY_TEST = "tests/mock/test_wms_provider_conformance_simulator.py"
+WMS_EVENT_RUNTIME_INBOX_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_wms_event_runtime_inbox_idempotency.py"
 
 
 def _write_mapping(
@@ -491,6 +494,24 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
             ),
         ),
+        (
+            "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
+            (
+                CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,
+                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
+                WMS_EVENT_RUNTIME_INBOX_IDEMPOTENCY_HEAVY_TEST,
+            ),
+        ),
+        (
+            "src/app/sys/dispatch_concurrency.py",
+            (
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ),
+        ),
         ("src/core/mixins/optimistic_lock.py", (OPTIMISTIC_LOCK_HEAVY_TEST,)),
         (
             "src/app/runtime/orchestration/services/idempotency_guard.py",
@@ -547,10 +568,15 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (
                 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
                 SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST,
                 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
                 SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
                 RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
             ),
+        ),
+        (
+            "tests/api/callback_test_support.py",
+            (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,),
         ),
         (
             "tests/support/sqlmodel_metadata.py",
@@ -678,6 +704,24 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
                 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
             ],
         ),
+        (
+            "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
+            [
+                CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,
+                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
+                WMS_EVENT_RUNTIME_INBOX_IDEMPOTENCY_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/sys/dispatch_concurrency.py",
+            [
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ],
+        ),
         ("src/core/mixins/optimistic_lock.py", [OPTIMISTIC_LOCK_HEAVY_TEST]),
         (
             "src/app/runtime/orchestration/services/idempotency_guard.py",
@@ -734,10 +778,15 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
             [
                 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
                 SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST,
                 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
                 SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
                 RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
             ],
+        ),
+        (
+            "tests/api/callback_test_support.py",
+            [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST],
         ),
         (
             "tests/support/sqlmodel_metadata.py",
@@ -830,6 +879,9 @@ def test_repository_mapping_selects_wms_heavy_asset_consumers(changed_path: str,
 @pytest.mark.parametrize(
     "changed_path",
     [
+        "src/app/callback/services/callback_ingress_service.py",
+        "src/app/callback/services/callback_orchestration_service.py",
+        "src/app/callback/v1/callback.py",
         "src/celery_app/config.py",
         "src/app/runtime/orchestration/services/device_dispatch_policy.py",
         "src/app/runtime/orchestration/services/conveyor_queue_membership_writer_service.py",
@@ -842,6 +894,8 @@ def test_repository_mapping_selects_wms_heavy_asset_consumers(changed_path: str,
         "src/app/workline/models/plane.py",
         "src/utils/timezone.py",
         "src/app/wms_integration/operation_registry.py",
+        "src/app/sys/canonical_dispatch.py",
+        "src/app/sys/services/outbox_engine.py",
     ],
 )
 def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(changed_path: str) -> None:
@@ -861,6 +915,7 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/app/wms_integration/effect_preparation_runtime.py",
         "src/app/wms_integration/query_runtime.py",
         "src/core/exceptions.py",
+        "src/core/conf.py",
         "src/core/mixins/__init__.py",
         "src/database/base_repository.py",
         "src/database/db.py",
@@ -869,6 +924,8 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/database/schema_conf.py",
         "src/database/sqlite_schema.py",
         "src/app/sys/repositories/outbox_repository.py",
+        "src/app/sys/models/outbox.py",
+        "src/app/device/models/command.py",
         "src/app/runtime/orchestration/execution_correlation.py",
         "src/app/runtime/orchestration/execution_session.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",

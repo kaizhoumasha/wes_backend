@@ -628,6 +628,9 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | `integration/test_optimistic_lock.py` | 乐观锁核心 HEAVY / 数据库并发测试（显式运行） | 🔧 架构核心 |
 | `integration/test_system_outbox_repository.py` | SystemOutbox 持久化、事务与 lease 恢复核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `integration/test_runtime_intent_log_effect_repository.py` | RuntimeIntentLog effect ledger 持久化与幂等核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
+| `integration/test_callback_external_payload_limit.py` | Callback 真实 writer 的 RuntimeInbox payload bytes、零落库与 HTTP 413 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
+| `integration/test_wms_event_runtime_inbox_idempotency.py` | 普通 WMS event 的 RuntimeInbox 数据库幂等、跨类型冲突与 correlation 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
+| `integration/test_system_outbox_dispatch_concurrency.py` | SystemOutbox 公平桶、背压、lease fencing 与真实 Repository 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `resilience/test_wms_circuit_breaker.py` | DB-backed WMS breaker 时序与恢复核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `test_soft_delete_feature.py` | 软删除功能测试 | 🔄 常用功能 |
 | `test_document_status.py` | 单据状态测试 | 🔄 常用功能 |
@@ -674,6 +677,8 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 |------|------|------|
 | `integration/test_runtime_inbox_consumer_service.py` | RuntimeInboxService 数据库幂等接收、唯一冲突重读、payload conflict 409 和人工重放审计 HEAVY 测试 | 🔧 架构核心 |
 | `integration/test_runtime_inbox_service_internal_events.py` | 内部事件、设备事件与命令结果的数据库持久化、幂等与关联校验 HEAVY 测试 | 🔧 架构核心 |
+| `integration/test_callback_external_payload_limit.py` | Callback external/result/event 真实 writer 的 payload bytes、HTTP 413、日志降级与零落库 HEAVY 测试 | 🔧 架构核心 |
+| `integration/test_wms_event_runtime_inbox_idempotency.py` | WMS source event 数据库幂等、跨事件类型冲突、correlation 与 ACK 持久化 HEAVY 测试 | 🔧 架构核心 |
 | `integration/test_runtime_inbox_claim_repository.py` | canonical repository FIFO claim、lease、fencing、命名空间与 SLI snapshot HEAVY 测试 | 🔧 架构核心 |
 | `integration/test_runtime_inbox_repository_consumers.py` | query/trace/reconciliation 等消费者读取 RuntimeInbox repository 的数据库合同 HEAVY 测试 | 🔧 架构核心 |
 | `resilience/test_runtime_inbox_failure_state_machine.py` | RuntimeInbox 重试预算、退避、死信、lease fencing 与故障恢复 HEAVY 测试 | 🔧 架构核心 |

@@ -30,6 +30,7 @@ CANDIDATE_GLOBS = (
     "scripts/select_heavy_tests.py",
     "scripts/verify_wms_northbound_feasibility.py",
     "tests/{integration,e2e,resilience,load,mock}/**",
+    "tests/api/callback_test_support.py",
     "tests/contracts/wms_integration/provider_profile_support.py",
     "tests/fixtures/**",
     "tests/conftest.py",
