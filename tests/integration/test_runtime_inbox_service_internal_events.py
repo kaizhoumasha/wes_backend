@@ -1,4 +1,4 @@
-"""Tests for RuntimeInboxService internal event acceptors (Task 7c-a).
+"""RuntimeInbox 内部事件接纳、幂等身份与提交边界合同。
 
 覆盖 accept_device_event / accept_internal_event / accept_command_result 三个统一持久化方法。
 
