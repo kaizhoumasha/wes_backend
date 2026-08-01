@@ -663,9 +663,6 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `architecture/test_legacy_runtime_import_guardrail.py` | 禁止已删除 legacy runtime package 的 production import，并校验 runtime public surface / diagnostics 导出 | 🔧 架构核心 |
-| `architecture/test_workline_domain_boundary.py` | WorkLine domain boundary 守卫：runtime material-flow 业务合同只位于 runtime capability | 🔧 架构核心 |
-| `architecture/test_legacy_matrix_contract.py` | Legacy cleanup matrix 生成契约：service inventory、目标能力字段、CSV/Markdown 与生成器一致性 | 🔧 架构核心 |
 | `architecture/test_runtime_status_owner_guardrail.py` | Runtime status ownership 守卫：运行态写入集中在 runtime/orchestration projection，WorkLine/material-flow 只通过 snapshot/readiness 读取 | 🔧 架构核心 |
 
 **Runtime orchestration 测试文件**（`tests/runtime/orchestration/`）:

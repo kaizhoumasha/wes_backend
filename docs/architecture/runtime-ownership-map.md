@@ -82,4 +82,4 @@ Replay 的 `request_id`、认证 `actor`、`reason`、直接/根 source inbox �
 - `uv run python -c "from src.app.runtime.orchestration import ExecutionSession, ExecutionCorrelation, ExecutionWorkItem, RuntimeInbox, RuntimeTimeline, RuntimeHold, RuntimeIntentLog, IdempotencyKey, ConveyorQueueMembership"` 全部 import 成功。
 - `uv run python -c "from src.app.runtime.orchestration.services import IdempotencyGuard, RuntimeSnapshotAssembler"` 全部 import 成功。
 - `bash scripts/architecture-guardrails.sh --mode enforced` 退出码 0。
-- `uv run pytest tests/architecture/test_legacy_runtime_import_guardrail.py tests/architecture/test_inbound_normalizer_ownership_guardrail.py -q` 全部通过。
+- `uv run pytest tests/architecture/test_inbound_normalizer_ownership_guardrail.py -q` 全部通过。

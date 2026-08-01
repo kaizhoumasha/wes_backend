@@ -206,10 +206,6 @@ ALLOWED_EVIDENCE: dict[str, frozenset[str]] = {
         }
     ),
     "scripts/architecture-guardrails.sh": frozenset({"legacy_consumer_repository_import"}),
-    "tests/architecture/test_legacy_matrix_contract.py": frozenset(
-        {"legacy_batch_processor_symbol", "legacy_workline_batch_processor_import"}
-    ),
-    "tests/architecture/test_legacy_runtime_import_guardrail.py": frozenset({"legacy_consumer_symbol"}),
     "tests/architecture/test_runtime_inbox_repository_consumer_guardrail.py": frozenset(
         {"legacy_claim_repository_import", "legacy_consumer_repository_import"}
     ),

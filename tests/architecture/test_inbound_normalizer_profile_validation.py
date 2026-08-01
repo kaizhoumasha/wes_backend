@@ -113,4 +113,4 @@ def test_external_contract_profile_rejects_undeclared_result_normalizer():
     profile = _profile_with_declared_normalizers()
 
     with pytest.raises(PermissionError, match="未声明 result normalizer"):
-        profile.ensure_inbound_normalizer_declared("WMS_FULL_BOX_EXCHANGE_RESULT", direction="result")
+        profile.ensure_inbound_normalizer_declared("WMS_UNDECLARED_RESULT", direction="result")

@@ -9,9 +9,9 @@
 
 | 指标 | 数量 |
 | --- | ---: |
-| total_entries | 72 |
+| total_entries | 71 |
 | active-source | 0 |
-| test-only | 6 |
+| test-only | 5 |
 | already-removed | 66 |
 | schema-deferred | 0 |
 
@@ -28,7 +28,7 @@
 | disposition | 数量 | 说明 |
 | --- | ---: | --- |
 | moved | 54 | 旧 WorkLine business contracts / services 已迁入 material-flow contracts 或 runtime capability service |
-| kept-config-only | 6 | `tests/workline_runtime` 中仍可作为通用配置证据的测试暂留，后续继续执行 `CORE_REWRITE` / `LEGACY_DELETE` |
+| kept-config-only | 5 | `tests/workline_runtime` 中仍可作为通用配置证据的测试暂留，后续继续执行 `CORE_REWRITE` / `LEGACY_DELETE` |
 | already-removed | 12 | 前序 material-flow 迁移已移除的历史 WorkLine service rows，仅保留审计闭环 |
 
 插件专属测试已从核心移出。原 evidence path 不再指向核心业务合同；仍有通用证据的条目保留现有测试，缺少核心行为证据的条目改以所有权门禁记录，并标记为对核心 `semantics-obsolete`，其行为由未来对应插件包重建。
