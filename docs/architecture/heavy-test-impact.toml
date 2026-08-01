@@ -16,6 +16,90 @@ ignore_globs = [
 source_glob = "scripts/select_heavy_tests.py"
 heavy_tests = []
 
+# 质量门禁只编排 FAST/QUALITY；生产 closure 由 HEAVY selector 独立承接。
+[[mapping]]
+source_glob = "scripts/git-quality-gate.sh"
+heavy_tests = []
+
+# WMS deployment attestation 的 CLI、领域事实与 Beat 路由必须共同验证四角色部署产物。
+[[mapping]]
+source_glob = "scripts/check_wms_deployment_attestation.py"
+heavy_tests = ["tests/integration/test_wms_deployment_attestation.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_integration/deployment_attestation.py"
+heavy_tests = ["tests/integration/test_wms_deployment_attestation.py"]
+
+[[mapping]]
+source_glob = "src/celery_app/config.py"
+heavy_tests = ["tests/integration/test_wms_deployment_attestation.py"]
+
+# Runtime production E2E、benchmark artifact/CLI 与其直接生产对象统一由 closure HEAVY 承接。
+[[mapping]]
+source_glob = "scripts/check_runtime_production_e2e_gate.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "scripts/run_runtime_benchmarks.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "tests/load/runtime_benchmark_scenarios.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "tests/load/fixtures/runtime_benchmark_artifact.json"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/p0_e2e_gate.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/scenario_replay.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/benchmark_gate.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/device_dispatch_policy.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/conveyor_queue_membership_writer_service.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/conveyor_queue_writer.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/reconciliation/manager.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_integration/state_machine.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/app/workline/models/plane.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+[[mapping]]
+source_glob = "src/utils/timezone.py"
+heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
+
+# fresh interpreter import 独立验证 EFFECT 合同模块没有隐藏的进程级导入依赖。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/effect_state_contract.py"
+heavy_tests = ["tests/integration/test_effect_contract_fresh_import.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/effect_bridges.py"
+heavy_tests = ["tests/integration/test_effect_contract_fresh_import.py"]
+
 # WMS 北向可行性探针只承接核心 HTTP/CLI/安全与 deadline 可靠性；具体工作线规则由插件包独立拥有。
 [[mapping]]
 source_glob = "scripts/verify_wms_northbound_feasibility.py"
@@ -23,11 +107,17 @@ heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
 
 [[mapping]]
 source_glob = "tests/support/wms_conformance_runner.py"
-heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
+heavy_tests = [
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/integration/test_wms_provider_conformance_collection.py",
+]
 
 [[mapping]]
 source_glob = "tests/contracts/wms_integration/provider_profile_support.py"
-heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
+heavy_tests = [
+    "tests/integration/test_wms_deployment_attestation.py",
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+]
 
 [[mapping]]
 source_glob = "tests/mock/wms_mock_server.py"
@@ -39,7 +129,18 @@ heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
 
 [[mapping]]
 source_glob = "tests/mock/wms_operation_fixtures.py"
-heavy_tests = ["tests/integration/test_wms_northbound_feasibility_probe.py"]
+heavy_tests = [
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/integration/test_wms_provider_conformance_collection.py",
+]
+
+[[mapping]]
+source_glob = "src/app/wms_integration/operation_registry.py"
+heavy_tests = [
+    "tests/integration/test_wms_deployment_attestation.py",
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/integration/test_wms_provider_conformance_collection.py",
+]
 
 # 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。

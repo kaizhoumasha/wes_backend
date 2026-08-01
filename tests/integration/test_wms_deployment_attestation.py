@@ -340,7 +340,7 @@ def test_cli_verify_rejects_more_than_four_artifact_lines(tmp_path) -> None:
 def test_cli_emits_and_verifies_four_offline_redacted_artifacts(tmp_path) -> None:
     profile_path = write_provider_profile(tmp_path / "provider.yaml")
     # tmp_path 不在仓库内，CLI 路径以当前测试文件反推。
-    script_path = Path(__file__).resolve().parents[3] / "scripts/check_wms_deployment_attestation.py"
+    script_path = Path(__file__).resolve().parents[2] / "scripts/check_wms_deployment_attestation.py"
     environment = os.environ.copy()
     environment.update(
         {
@@ -421,7 +421,7 @@ def test_cli_emits_and_verifies_four_offline_redacted_artifacts(tmp_path) -> Non
 
 
 def test_cli_does_not_expose_public_role_or_image_arguments() -> None:
-    script_path = Path(__file__).resolve().parents[3] / "scripts/check_wms_deployment_attestation.py"
+    script_path = Path(__file__).resolve().parents[2] / "scripts/check_wms_deployment_attestation.py"
     completed = subprocess.run(
         [sys.executable, str(script_path), "emit", "--help"],
         cwd=script_path.parents[1],

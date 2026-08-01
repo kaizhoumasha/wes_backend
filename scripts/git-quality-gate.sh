@@ -143,11 +143,11 @@ run_runtime_production_closure_gate() {
 
 run_runtime_contract_guardrails() {
     # 旧 restructuring readiness gate 退役后，保留其关键 runtime pytest guardrail 覆盖。
+    # 生产 E2E 与 benchmark closure 属于核心 HEAVY，由 selector 显式承接。
     local tests=(
         tests/architecture/test_runtime_status_owner_guardrail.py
         tests/callback/test_callback_runtime_inbox_authority.py
         tests/runtime/orchestration/test_production_closure_evidence_gate.py
-        tests/runtime/orchestration/test_runtime_production_closure_contract.py
         tests/runtime/orchestration/test_runtime_operational_contracts.py
         tests/runtime/orchestration/test_runtime_recovery_policies.py
         tests/runtime/orchestration/test_runtime_inbox_consumer_service.py

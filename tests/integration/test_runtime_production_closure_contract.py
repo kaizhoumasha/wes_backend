@@ -170,7 +170,7 @@ def test_runtime_production_e2e_gate_cli_accepts_production_artifact(tmp_path) -
         json.dumps(_runtime_production_e2e_artifact(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
 
     result = subprocess.run(
         [
@@ -361,7 +361,7 @@ def test_runtime_benchmark_gate_validates_structured_artifact() -> None:
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
 
     validation = RuntimeBenchmarkGate().validate_artifact(artifact)
@@ -376,7 +376,7 @@ def test_runtime_benchmark_gate_rejects_complete_artifact_without_profile_metada
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
     artifact.pop("profile", None)
 
@@ -399,7 +399,7 @@ def test_runtime_benchmark_gate_rejects_production_profile_without_postgres_and_
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
     artifact["profile"] = {
         "kind": "production-scale",
@@ -427,7 +427,7 @@ def test_runtime_benchmark_gate_rejects_non_numeric_required_metric() -> None:
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
     artifact["scenarios"]["runtime_inbox_claim"]["metrics"]["claim_p95_ms"] = "4.0"
 
@@ -444,7 +444,7 @@ def test_runtime_benchmark_gate_rejects_non_numeric_required_threshold() -> None
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
     artifact["scenarios"]["runtime_inbox_claim"]["thresholds"]["claim_p95_ms"] = None
 
@@ -461,7 +461,7 @@ def test_runtime_benchmark_gate_rejects_production_artifact_without_scenario_pro
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
     artifact["profile"] = {
         "kind": "production-scale",
@@ -489,7 +489,7 @@ def test_runtime_benchmark_gate_rejects_production_artifact_without_workload_met
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
     artifact["profile"] = {
         "kind": "production-scale",
@@ -544,7 +544,7 @@ def test_runtime_benchmark_gate_accepts_production_artifact_with_scenario_proven
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
     artifact["profile"] = {
         "kind": "production-scale",
@@ -604,7 +604,7 @@ def test_runtime_benchmark_gate_rejects_unknown_profile_kind() -> None:
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
     artifact["profile"]["kind"] = "sandbox"
 
@@ -644,7 +644,7 @@ def test_runtime_benchmark_cli_writes_gate_valid_artifact(tmp_path) -> None:
 
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     output_path = tmp_path / "runtime-benchmark.json"
 
     subprocess.run(
