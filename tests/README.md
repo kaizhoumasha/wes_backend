@@ -100,6 +100,32 @@ uv run python scripts/check_fast_test_budget.py reports/fast-tests.xml --report-
 
 ### 运行重测试
 
+HEAVY 测试影响选择由 `scripts/select_heavy_tests.py` 和机器可读真源
+`docs/architecture/heavy-test-impact.toml` 共同治理。selector 先识别直接修改的 HEAVY 测试，再处理候选 mapping，最后才处理 ignore；候选路径没有 mapping 或显式 NONE 时会 fail closed。
+
+维护要求：
+
+- 新增可能影响运行时的生产模块、迁移或基础设施配置时，同步补精确 `[[mapping]]`；只有评审确认无 HEAVY 影响时才填写空 `heavy_tests`。
+- 新增、删除或移动 HEAVY 测试时，同步更新引用它的 `heavy_tests`。
+- HEAVY 目录内的 conftest、fixture、support、模拟器和负载场景，以及 `tests/fixtures/**`、共享 conftest、`tests/support/**` 都属于候选资产。
+- 当前没有已验收权威 HEAVY 测试的既有候选路径保持未映射并 fail closed，待独立业务交接后再补 mapping，不得使用 NONE 或旧测试猜测绕过。
+
+```bash
+# 本地未暂存改动（默认 scope 也是 unstaged）
+uv run scripts/select_heavy_tests.py --scope unstaged
+
+# 本地已暂存改动
+uv run scripts/select_heavy_tests.py --scope staged
+
+# PR CI 提交差异；CI 不得使用 scope，因为 CleanBeforeCheckout 后工作区 diff 为空
+uv run scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"
+
+# selector 永久 QUALITY 合同测试
+uv run pytest tests/scripts -q
+```
+
+退出 0 且有输出表示每行一个应运行的 HEAVY 测试；退出 0 且无输出表示改动只命中 ignore 或显式 NONE；非零表示 selector 为避免漏测而 fail closed。Jenkins 当前只运行 `HEAVY Selector Smoke` 合同测试，不启用 HEAVY Required 或 minimum smoke。
+
 ```bash
 # E2E 测试（默认不会被 pytest 自动收集）
 pytest tests/e2e/

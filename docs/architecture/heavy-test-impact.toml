@@ -1,0 +1,15 @@
+# HEAVY selector 的机器可读真源。分类顺序固定为：直接 HEAVY 测试、候选 mapping、ignore。
+ignore_globs = [
+    "docs/**",
+    "*.md",
+    "tests/**",
+    "Jenkinsfile",
+    ".githooks/**",
+    ".github/**",
+    ".gitlab-ci.yml",
+    "README*",
+    "LICENSE*",
+]
+
+# 当前尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
+# 也不以显式 NONE 掩盖风险。上述候选路径会 fail closed，待业务交接后再补精确 [[mapping]]。

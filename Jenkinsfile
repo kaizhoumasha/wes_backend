@@ -291,6 +291,21 @@ pipeline {
                         }
                     }
                 }
+
+                stage('HEAVY Selector Smoke') {
+                    steps {
+                        script {
+                            echo '🧭 验证 HEAVY selector 合同...'
+                            sh '''
+                                set -e
+                                docker run --rm \
+                                    ${CI_IMAGE} \
+                                    sh -c 'uv run pytest tests/scripts -q'
+                            '''
+                            echo '✅ HEAVY selector 合同验证通过'
+                        }
+                    }
+                }
             }
         }
 

@@ -298,6 +298,17 @@ uv run pytest --collect-only -q -o addopts='' | tail -5
 
 If a change intentionally touches integration / e2e / resilience / load / mock behavior, explicitly run the affected heavy-test directory and mention it in the PR. Do not rely on default pytest collection for those suites.
 
+### HEAVY Selector Mapping Governance
+
+[`docs/architecture/heavy-test-impact.toml`](docs/architecture/heavy-test-impact.toml) 是 HEAVY selector 的机器可读映射真源，长期维护要求如下：
+
+- 新增可能影响运行时的生产模块、迁移或基础设施配置时，必须同步增加精确 `[[mapping]]`；经评审确认无 HEAVY 影响时才可使用空 `heavy_tests` 表示显式 NONE，否则 selector 会 fail closed。
+- 新增或移动 HEAVY 测试路径时，必须同步更新所有引用该路径的 `heavy_tests`。
+- HEAVY 支撑资产与共享测试资产同样属于候选范围，不能被 `tests/**` ignore 兜底遮蔽。
+- 当前尚无已验收权威 HEAVY 测试的既有业务、迁移、运行时配置和共享资产候选路径保持未映射；不得以 NONE 或臆造旧测试映射掩盖风险，待独立业务交接后补精确 mapping。
+- 本地使用 `uv run scripts/select_heavy_tests.py --scope unstaged`；暂存区使用 `--scope staged`。CI 必须使用 `--base origin/${CI_TARGET_BRANCH}`，不能用工作区 scope 代替提交差异。
+- selector 合同由 `uv run pytest tests/scripts -q` 验证，并永久纳入 quality profile；真实 HEAVY 测试不进入本地提交门禁。
+
 ## Commit & Pull Request Guidelines
 Recent history follows Conventional Commits with scopes, for example `feat(auth,menu): ...` and `fix(user,tree): ...`. Keep subjects imperative and concise, and mention migrations when schema changes are included. PRs should summarize behavior changes, list local verification steps, link the issue, and call out config, migration, or API contract impacts.
 
