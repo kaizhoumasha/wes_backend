@@ -112,7 +112,13 @@ def _validate_character_class_syntax(pattern: str, *, field: str) -> None:
         closing = pattern.find("]", opening + 1)
         specification = pattern[opening + 1 : closing] if closing != -1 else ""
         content = specification[1:] if specification.startswith("!") else specification
-        if closing == -1 or not content or "[" in specification or "--" in specification:
+        if (
+            closing == -1
+            or not content
+            or specification.startswith("!")
+            or "[" in specification
+            or "--" in specification
+        ):
             raise SelectorError(f"{field} 包含不支持的 glob 字符类: {pattern}")
         for index, character in enumerate(content):
             if character == "-" and 0 < index < len(content) - 1 and content[index - 1] > content[index + 1]:

@@ -321,6 +321,21 @@ def test_caret_character_class_overlap_matches_purepath_semantics(tmp_path: Path
         load_config(mapping_path)
 
 
+def test_negated_character_class_with_unicode_overlap_fails_closed(tmp_path: Path) -> None:
+    assert matches_glob("src/α", "src/[! -~]")
+    assert matches_glob("src/α", "src/?")
+    mapping_path = _write_mapping(
+        tmp_path,
+        [
+            ("src/[! -~]", ["tests/integration/test_non_ascii.py"]),
+            ("src/?", ["tests/integration/test_any_character.py"]),
+        ],
+    )
+
+    with pytest.raises(SelectorError, match="不支持的 glob 字符类"):
+        load_config(mapping_path)
+
+
 def test_unsupported_character_class_schema_fails_closed(tmp_path: Path) -> None:
     mapping_path = _write_mapping(tmp_path, [("src/[]]", [HEAVY_TEST])])
 
