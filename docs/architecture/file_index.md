@@ -664,9 +664,7 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | 文件 | 用途 | 分类 |
 |------|------|------|
 | `architecture/test_legacy_runtime_import_guardrail.py` | 禁止已删除 legacy runtime package 的 production import，并校验 runtime public surface / diagnostics 导出 | 🔧 架构核心 |
-| `architecture/test_plugin_mirrors_mirror.py` | Generated 插件边界自包含与禁止入口校验 | 🔧 架构核心 |
 | `architecture/test_workline_domain_boundary.py` | WorkLine domain boundary 守卫：runtime material-flow 业务合同只位于 runtime capability | 🔧 架构核心 |
-| `architecture/test_workline_plugins_mirror.py` | WorkLine 配置侧插件模式与 generated 插件实现边界校验 | 🔧 架构核心 |
 | `architecture/test_legacy_matrix_contract.py` | Legacy cleanup matrix 生成契约：service inventory、目标能力字段、CSV/Markdown 与生成器一致性 | 🔧 架构核心 |
 | `architecture/test_runtime_status_owner_guardrail.py` | Runtime status ownership 守卫：运行态写入集中在 runtime/orchestration projection，WorkLine/material-flow 只通过 snapshot/readiness 读取 | 🔧 架构核心 |
 
@@ -680,10 +678,8 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | `integration/test_runtime_inbox_migration_postgresql.py` | Revision A/B 与 A→parent→A 毫秒值保留回环 | 🔧 架构核心 |
 | `resilience/test_runtime_inbox_crash_recovery_postgresql.py` | claim 后崩溃、write-back 后终态前崩溃的 lease/fencing/事务恢复 | 🔧 架构核心 |
 | `load/test_runtime_inbox_claim_benchmark.py` | 1000 条混合 backlog、4 worker 真实 PostgreSQL claim 性能门禁 | 📚 参考资料 |
-| `runtime/orchestration/test_conveyor_queue_membership_writer_service.py` | ConveyorQueueMembershipWriter DB-backed 写入、幂等、placeholder resolve、RECONCILING、诊断和 PostgreSQL `FOR UPDATE` 合同测试 | 🔧 架构核心 |
 | `runtime/orchestration/test_idempotency_audit_contract.py` | IdempotencyGuard conflict audit payload 测试 | 🔧 架构核心 |
 | `runtime/orchestration/test_runtime_recovery_policies.py` | RuntimeInbox backpressure 与 DeviceCommand lease 恢复策略测试 | 🔧 架构核心 |
-| `integration/test_conveyor_queue_membership_concurrency.py` | ConveyorQueueMembershipWriter opt-in PostgreSQL partial unique index 并发冲突与 existing 重读测试 | 🔧 架构核心 |
 
 **RuntimeInbox 严格验收与文档门禁**：
 
@@ -750,7 +746,6 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | 文件 | 用途 | 分类 |
 |------|------|------|
 | `e2e/__init__.py` | E2E 测试模块导出 | 🔧 架构核心 |
-| `e2e/test_conveyor_robot_arm.py` | 流水线料盘搬运 E2E 测试（使用 ECS Mock 事件 API） | 🔄 常用功能 |
 
 #### 🎭 Mock 设备服务
 

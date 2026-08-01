@@ -410,7 +410,6 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 ### 7.3 性能测试
 
 - `tests/load/runtime_benchmark_scenarios.py` — benchmark 场景
-- `tests/load/test_conveyor_queue_writer_benchmark.py` — 队列写入 benchmark
 - `tests/load/test_plane_snapshot_benchmark.py` — plane snapshot benchmark
 - `tests/load/test_runtime_inbox_claim_benchmark.py` — inbox claim benchmark
 

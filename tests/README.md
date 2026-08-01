@@ -211,9 +211,8 @@ xdg-open reports/coverage/index.html
 # 只运行某个测试文件
 pytest tests/database/test_relation_metadata.py
 
-# 显式运行集成、E2E 或韧性测试目录
+# 显式运行集成或韧性测试目录
 pytest tests/integration/
-pytest tests/e2e/test_conveyor_robot_arm.py
 pytest tests/resilience/test_redis_degradation.py
 
 # 只运行某个测试类
