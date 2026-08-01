@@ -21,16 +21,10 @@ EXPECTED_ACTIVE_FOUNDATION_PATHS = frozenset(
         "src/app/workline/models/migration_matrix.py",
         "src/app/workline/services/migration_inventory_service.py",
         "src/app/workline/services/migration_matrix_service.py",
-        "tests/workline_runtime/test_workline_migration_inventory_models.py",
-        "tests/workline_runtime/test_workline_migration_inventory_service.py",
-        "tests/workline_runtime/test_workline_migration_matrix_service.py",
     }
 )
 
-EXPECTED_ACTIVE_PLATFORM_PREFIXES = (
-    "tests/workline_runtime/extensions/",
-    "tests/workline_runtime/system_capabilities/",
-)
+EXPECTED_ACTIVE_PLATFORM_PREFIXES = ("tests/workline_runtime/system_capabilities/",)
 
 EXPECTED_ACTIVE_PLATFORM_PATHS = frozenset(
     {

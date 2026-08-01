@@ -9,6 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORE_TESTS_ROOT = REPO_ROOT / "tests"
 CORE_PLUGIN_TEST_ROOT = CORE_TESTS_ROOT / "workline_plugins"
+LEGACY_EXTENSION_TEST_ROOT = CORE_TESTS_ROOT / "workline_runtime" / "extensions"
 
 
 def _secondary_plugin_imports(path: Path) -> set[str]:
@@ -34,6 +35,10 @@ def _secondary_plugin_imports(path: Path) -> set[str]:
 
 def test_core_test_tree_does_not_own_plugin_package_tests() -> None:
     assert not CORE_PLUGIN_TEST_ROOT.exists()
+
+
+def test_core_test_tree_does_not_restore_legacy_extension_platform_tests() -> None:
+    assert not any(LEGACY_EXTENSION_TEST_ROOT.rglob("test_*.py"))
 
 
 def test_core_tests_do_not_import_secondary_development_plugin_packages() -> None:

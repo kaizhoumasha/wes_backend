@@ -415,25 +415,20 @@ SHIM_INTERNAL_SYMBOLS = {
     ("src/app/workline/services/inbox_batch_processor.py", "_load_target_module"),
 }
 
-# Legacy audit 只追踪待迁移或待删除入口。当前迁移清单基础能力是目标态能力，
-# 不得进入 cleanup ledger；使用精确路径避免未来静默扩大排除范围。
+# Legacy audit 只追踪待迁移或待删除入口。当前仍在运行的迁移清单生产实现
+# 暂不进入 cleanup ledger；测试已按新 SPEC 作为旧迁移验收直接退役。
 ACTIVE_FOUNDATION_PATHS = frozenset(
     {
         "src/app/workline/models/migration_inventory.py",
         "src/app/workline/models/migration_matrix.py",
         "src/app/workline/services/migration_inventory_service.py",
         "src/app/workline/services/migration_matrix_service.py",
-        "tests/workline_runtime/test_workline_migration_inventory_models.py",
-        "tests/workline_runtime/test_workline_migration_inventory_service.py",
-        "tests/workline_runtime/test_workline_migration_matrix_service.py",
     }
 )
 
-# 当前仍由扩展平台承载、尚待后续收敛的通用实现与测试，不包含具体插件测试。
-ACTIVE_PLATFORM_PREFIXES = (
-    "tests/workline_runtime/extensions/",
-    "tests/workline_runtime/system_capabilities/",
-)
+# 仍待 CORE_REWRITE 的通用可靠性测试暂由旧 Capability 目录承载；
+# 已退役的 extensions 目录不再享有豁免。
+ACTIVE_PLATFORM_PREFIXES = ("tests/workline_runtime/system_capabilities/",)
 ACTIVE_PLATFORM_PATHS = frozenset(
     {
         "src/app/workline/models/plugin_binding.py",
