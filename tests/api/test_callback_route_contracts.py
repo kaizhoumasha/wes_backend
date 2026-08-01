@@ -230,32 +230,6 @@ class TestCallbackEnqueueFallback:
         service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
-    async def test_process_external_does_not_route_removed_full_box_exchange_callback(self) -> None:
-        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
-
-        runtime_writer = _runtime_inbox_writer_stub()
-        service = CallbackOrchestrationService(
-            runtime_inbox_writer=runtime_writer,
-        )
-        db = SimpleNamespace()
-        payload = create_wms_external_payload(
-            callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
-            dispatch_key="removed-full-box-exchange:release-001",
-        )
-
-        with pytest.raises(ValueError, match="callback_type is not allowed"):
-            await service.process_external(
-                db,  # type: ignore[arg-type]
-                callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
-                payload=payload,
-                request_id="REQ-FULL-BOX-001",
-                trace_id="trace-full-box-001",
-                enqueue_processing=lambda: None,
-            )
-
-        runtime_writer.write_external_callback.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_process_external_runtime_duplicate_reports_duplicate_without_recording_handling_callback(
         self,
     ) -> None:

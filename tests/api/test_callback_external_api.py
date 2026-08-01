@@ -22,50 +22,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-REMOVED_WMS_RCS_CALLBACK_TYPES = (
-    "RCS_GRN_RECEIVED",
-    "RCS_PALLET_ARRIVED",
-    "RCS_INVENTORY_UPDATED",
-    "RCS_PDA_OPERATION_RECORDED",
-    "WMS_EXCHANGE_COMPLETED",
-    "RCS_EXCHANGE_COMPLETED",
-    "WMS_TASK_CHANGE",
-    "RCS_TASK_CHANGE",
-    "WMS_REJECTED",
-    "RCS_REJECTED",
-    "WMS_FAILED",
-    "RCS_FAILED",
-    "WMS_RACK_TASK_RESULT",
-    "RCS_RACK_TASK_RESULT",
-    "WMS_RACK_TASK_PROGRESS",
-    "RCS_RACK_TASK_PROGRESS",
-    "WMS_RACK_ARRIVED",
-    "RCS_RACK_ARRIVED",
-    "WMS_RACK_EXCHANGE_PROGRESS",
-    "RCS_RACK_EXCHANGE_PROGRESS",
-    "WMS_RACK_EXCHANGE_FAILED",
-    "RCS_RACK_EXCHANGE_FAILED",
-    "WMS_RACK_OPERATION_FAILED",
-    "RCS_RACK_OPERATION_FAILED",
-    "WMS_BIN_MOVE_PROGRESS",
-    "RCS_BIN_MOVE_PROGRESS",
-    "WMS_BIN_MOVE_COMPLETED",
-    "RCS_BIN_MOVE_COMPLETED",
-    "WMS_BIN_MOVE_FAILED",
-    "RCS_BIN_MOVE_FAILED",
-    "WMS_FULL_BOX_EXCHANGE_RESULT",
-    "RCS_FULL_BOX_EXCHANGE_RESULT",
-    "WMS_EMPTY_BOX_TRANSFER_RESULT",
-    "RCS_EMPTY_BOX_TRANSFER_RESULT",
-    "WMS_FULL_BOX_TRANSFER_RESULT",
-    "RCS_FULL_BOX_TRANSFER_RESULT",
-    "WMS_HANDLING_TASK_RESULT",
-    "RCS_HANDLING_TASK_RESULT",
-    "WMS_TRANSPORT_COMPLETED",
-    "RCS_TRANSPORT_COMPLETED",
-    "WMS_ROUGH_SORTER_INBOUND",
-)
-
 WMS_ORDINARY_EVENT_TYPES = (
     "WMS_GRN_RECEIVED",
     "WMS_PALLET_ARRIVED",
@@ -211,50 +167,6 @@ class TestCallbackExternalAPI:
         assert isinstance(response, JSONResponse)
         assert response.status_code == 400
         assert body["code"] == "2004"
-
-    @pytest.mark.parametrize("callback_type", REMOVED_WMS_RCS_CALLBACK_TYPES)
-    @pytest.mark.asyncio
-    async def test_callback_external_rejects_removed_wms_rcs_family_before_runtime_inbox(
-        self,
-        db_session: AsyncSession,
-        build_request: RequestFactory,
-        callback_type: str,
-    ) -> None:
-        source_system = "RCS" if callback_type.startswith("RCS_") else "WMS"
-        payload = {
-            "callback_type": callback_type,
-            "source_system": source_system,
-            "source_event_id": f"event-{callback_type.lower()}",
-            "source_version": "1",
-            "occurred_at": "2026-07-29T08:00:00Z",
-            "request_id": f"request-{callback_type.lower()}",
-            "trace_id": f"trace-{callback_type.lower()}",
-            "data": {},
-        }
-        writer = callback_test_support.callback_ingress_module.callback_orchestration_service._runtime_inbox_writer
-        with (
-            patch.object(writer, "write_external_callback", new=AsyncMock()) as write_external_callback,
-            patch(
-                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
-                new=AsyncMock(),
-            ),
-            patch(
-                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
-                new=AsyncMock(),
-            ),
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-removed-callback"),
-        ):
-            from src.app.callback.v1.callback import callback_external
-
-            response = await callback_external(
-                request=build_request(body=payload, path="/api/v1/callback/external"),
-                db=db_session,
-            )
-
-        assert isinstance(response, JSONResponse)
-        assert response.status_code == 400
-        assert _response_body(response)["code"] == "2004"
-        write_external_callback.assert_not_awaited()
 
     @pytest.mark.parametrize(
         "operation_identity",

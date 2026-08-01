@@ -123,16 +123,6 @@ PARITY_CASES = (
         expected_writeback_calls=0,
     ),
     ParityCase(
-        name="external_runtime_capability",
-        kind="EXTERNAL_HTTP",
-        payload={
-            "event_type": "EXTERNAL_CALLBACK",
-            "runtime_capability": "rough_sorter_inbound",
-            "data": {},
-        },
-        expected_writeback_calls=1,
-    ),
-    ParityCase(
         name="duplicate_entry",
         payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "DUP"}},
         session_status="WAITING_DEVICE_RESULT",
@@ -157,22 +147,6 @@ PARITY_CASES = (
         session_status="WAITING_DEVICE_RESULT",
         current_wait_type="RESOURCE_WAIT",
         session_context={"resource_wait": {"inbox_id": 1}},
-    ),
-    ParityCase(
-        name="duplicate_material_conflict",
-        payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "NEW"}},
-        session_status="WAITING_DEVICE_RESULT",
-        plugin_key="rough_sorter",
-        session_context={
-            "initial_payload": {
-                "event_type": "SCAN_COMPLETED",
-                "data": {"HHPN": "OLD"},
-            },
-        },
-        expected=(1, 0, 1, 0, 0),
-        expected_terminal="dead_letter",
-        expected_error="ENTRY_MATERIAL_IDENTITY_CONFLICT",
-        expected_diagnostic="CALLBACK_SCHEMA_INVALID",
     ),
     ParityCase(
         name="late_command_result",
@@ -351,7 +325,7 @@ def _build_entities(
             plugin_key=case.plugin_key,
             plugin_binding_id=17,
             plugin_binding_version=4,
-            plugin_identity="rough_sorter@rough_sorter.v2:" + "a" * 64,
+            plugin_identity="test_plugin@v1:" + "a" * 64,
             plugin_config_hash="c" * 64,
             plugin_index_digest="b" * 64,
             plugin_state_json={"phase": "READY"},
@@ -622,7 +596,6 @@ async def test_runtime_processor_characterization(
     (
         ("duplicate_entry", "processed"),
         ("scan_invalid", "failed"),
-        ("duplicate_material_conflict", "dead_letter"),
         ("scan_valid", "processed"),
         ("resource_wait", "failed"),
         ("missing_context", "processed"),

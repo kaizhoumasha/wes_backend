@@ -24,8 +24,8 @@ async def test_outbox_dispatch_single_emits_runtime_intent_dispatch_observabilit
         id=201,
         dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
         target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
-        target_code="WMS_FULFILLMENT_FULL_BOX_EXCHANGE",
-        dispatch_key="wms-fulfillment:REQ-201",
+        target_code="WMS_TRANSPORT_CONFIRMATION",
+        dispatch_key="wms-transport:REQ-201",
         operation_domain="WORKLINE",
         operation_key="REQ-201",
         session_id=31,
@@ -35,7 +35,7 @@ async def test_outbox_dispatch_single_emits_runtime_intent_dispatch_observabilit
         payload_json={
             "correlation_id": "corr-dispatch-201",
             "provider_code": "WMS",
-            "operation_kind": "fulfillment",
+            "operation_kind": "transport",
         },
     )
     service = OutboxDispatchService()
@@ -65,7 +65,7 @@ async def test_outbox_dispatch_single_emits_runtime_intent_dispatch_observabilit
                 "trace_id": "trace-dispatch-201",
                 "correlation_id": "corr-dispatch-201",
                 "provider_code": "WMS",
-                "operation_kind": "fulfillment",
+                "operation_kind": "transport",
             },
         )
     ]

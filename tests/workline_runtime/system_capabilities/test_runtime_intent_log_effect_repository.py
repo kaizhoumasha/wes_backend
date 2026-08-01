@@ -42,7 +42,7 @@ def _claim() -> dict[str, object]:
         "execution_session_id": 21,
         "execution_work_item_id": 41,
         "correlation_id": "corr-1",
-        "plugin_key": "rough_sorter",
+        "plugin_key": "test_plugin",
         "plugin_contract_version": "v1",
         "capability_key": "runtime.session_hold",
         "capability_contract_version": "v1",
@@ -67,13 +67,13 @@ def _domain_claim() -> dict[str, object]:
         "correlation_id": "corr-domain-1",
         "plugin_key": None,
         "plugin_contract_version": None,
-        "capability_key": "wms.fulfillment.full_box_exchange",
-        "operation_identity": "wms-e11:handoff-17:box-23",
+        "capability_key": "external.transport_confirmation",
+        "operation_identity": "transport-confirmation:task-17",
         "creator_authority": "RUNTIME_DOMAIN_SERVICE",
         "authorization_policy": "DOMAIN_CAPABILITY_ALLOWLIST",
         "binding_snapshot_json": {
-            "producer": "SMT_INBOUND_HANDOFF",
-            "business_owner_key": "handoff-demand:17",
+            "producer": "CORE_TRANSPORT",
+            "business_owner_key": "transport-task:17",
             "workline_id": 13,
             "correlation_id": "corr-domain-1",
         },
@@ -306,16 +306,16 @@ async def test_existing_only_claim_preserves_idempotency_conflict(db_session) ->
         {"correlation_id": "corr-domain-2"},
         {
             "binding_snapshot_json": {
-                "producer": "SMT_INBOUND_HANDOFF",
-                "business_owner_key": "handoff-demand:other",
+                "producer": "CORE_TRANSPORT",
+                "business_owner_key": "transport-task:other",
                 "workline_id": 13,
                 "correlation_id": "corr-domain-1",
             }
         },
         {
             "binding_snapshot_json": {
-                "producer": "SMT_INBOUND_HANDOFF",
-                "business_owner_key": "handoff-demand:17",
+                "producer": "CORE_TRANSPORT",
+                "business_owner_key": "transport-task:17",
                 "workline_id": 99,
                 "correlation_id": "corr-domain-1",
             }
@@ -339,7 +339,7 @@ async def test_production_repository_claim_is_rolled_back_with_outer_transaction
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
     row = await repository.get_claimed_intent(db_session, claim=claim)
     assert row is not None
-    assert row.plugin_key == "rough_sorter"
+    assert row.plugin_key == "test_plugin"
     assert row.plugin_contract_version == "v1"
     assert row.capability_key == "runtime.session_hold"
     assert row.capability_contract_version == "v1"

@@ -2164,7 +2164,7 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
     session.version = 7
     session.plugin_state_json = {"phase": "READY"}
     session.plugin_state_version = 2
-    session.plugin_identity = "rough_sorter@rough_sorter.v2:" + "a" * 64
+    session.plugin_identity = "test_plugin@v1:" + "a" * 64
     session.plugin_binding_id = 17
     session.plugin_binding_version = 4
     session.plugin_config_hash = "c" * 64
