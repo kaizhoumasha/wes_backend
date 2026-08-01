@@ -117,6 +117,22 @@ def test_get_changed_files_uses_expected_git_diff(
     ]
 
 
+def test_git_changed_paths_preserve_noncanonical_input_for_validation(tmp_path: Path) -> None:
+    unsafe_path = "tests/integration/test_x.py\x1f"
+    runner = Mock(
+        side_effect=[
+            subprocess.CompletedProcess(["git", "diff"], 0, stdout=f"{unsafe_path}\n", stderr=""),
+            subprocess.CompletedProcess(["git", "ls-files"], 0, stdout="", stderr=""),
+        ]
+    )
+
+    changed_files = get_changed_files(scope="unstaged", base=None, repo_root=tmp_path, runner=runner)
+
+    assert changed_files == [unsafe_path]
+    with pytest.raises(SelectorError, match=r"changed path.*仓库相对路径"):
+        select_heavy_tests(changed_files, load_config(_write_mapping(tmp_path)))
+
+
 def test_direct_heavy_test_selects_itself(tmp_path: Path) -> None:
     config = load_config(_write_mapping(tmp_path))
 
@@ -170,6 +186,66 @@ def test_unknown_path_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(SelectorError, match="未分类"):
         select_heavy_tests(["tools/release.py"], config)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "./tests/integration/test_x.py",
+        "tests//integration/test_x.py",
+        "tests/integration/./test_x.py",
+        "tests/integration/../e2e/test_x.py",
+        "tests/integration/test_x.py/",
+        "tests/integration/test_\x01.py",
+        "tests\\integration\\test_x.py",
+        "/tests/integration/test_x.py",
+    ],
+)
+def test_changed_path_validation_rejects_noncanonical_or_unsafe_paths(tmp_path: Path, changed_path: str) -> None:
+    config = load_config(_write_mapping(tmp_path))
+
+    with pytest.raises(SelectorError, match=r"changed path.*仓库相对路径"):
+        select_heavy_tests([changed_path], config)
+
+
+@pytest.mark.parametrize(
+    "source_glob",
+    [
+        "./src/**",
+        "src//**",
+        "src/./**",
+        "src/../tests/**",
+        "src/\x01/**",
+        "src\\**",
+        "/src/**",
+    ],
+)
+def test_schema_rejects_noncanonical_source_globs(tmp_path: Path, source_glob: str) -> None:
+    mapping_path = _write_mapping(tmp_path, [(source_glob, [HEAVY_TEST])])
+
+    with pytest.raises(SelectorError, match=r"mapping\.source_glob.*仓库相对路径"):
+        load_config(mapping_path)
+
+
+@pytest.mark.parametrize(
+    "heavy_test",
+    [
+        "./tests/integration/test_x.py",
+        "tests//integration/test_x.py",
+        "tests/integration/./test_x.py",
+        "tests/integration/../e2e/test_x.py",
+        "tests/integration/test_x.py/",
+        "tests/integration/test_\x01.py",
+        "tests\\integration\\test_x.py",
+        "/tests/integration/test_x.py",
+        "tests/integration/test_*.py",
+    ],
+)
+def test_schema_rejects_noncanonical_heavy_test_paths(tmp_path: Path, heavy_test: str) -> None:
+    mapping_path = _write_mapping(tmp_path, [("src/**", [heavy_test])])
+
+    with pytest.raises(SelectorError, match=r"mapping\.heavy_tests.*仓库相对路径"):
+        load_config(mapping_path)
 
 
 def test_mapping_union_and_explicit_none(tmp_path: Path) -> None:
@@ -229,6 +305,27 @@ def test_conflicting_overlapping_mappings_are_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(SelectorError, match="歧义"):
         load_config(wildcard_intersection)
+
+
+def test_caret_character_class_overlap_matches_purepath_semantics(tmp_path: Path) -> None:
+    assert matches_glob("src/a", "src/[^a]")
+    mapping_path = _write_mapping(
+        tmp_path,
+        [
+            ("src/[^a]", ["tests/integration/test_caret_class.py"]),
+            ("src/a", ["tests/integration/test_literal.py"]),
+        ],
+    )
+
+    with pytest.raises(SelectorError, match="歧义"):
+        load_config(mapping_path)
+
+
+def test_unsupported_character_class_schema_fails_closed(tmp_path: Path) -> None:
+    mapping_path = _write_mapping(tmp_path, [("src/[]]", [HEAVY_TEST])])
+
+    with pytest.raises(SelectorError, match="不支持的 glob 字符类"):
+        load_config(mapping_path)
 
 
 def test_git_diff_failure_fails_closed(tmp_path: Path) -> None:

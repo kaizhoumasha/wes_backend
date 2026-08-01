@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -82,6 +83,43 @@ def is_candidate(path: str) -> bool:
     return any(matches_glob(path, pattern) for pattern in CANDIDATE_GLOBS)
 
 
+def _validate_repository_relative(value: str, *, field: str, allow_glob: bool) -> str:
+    """只接受未经归一化、无穿越语义的 POSIX 仓库相对路径。"""
+    if not isinstance(value, str) or not value:
+        raise SelectorError(f"{field} 必须是非空规范仓库相对路径")
+    if "\\" in value or any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value):
+        raise SelectorError(f"{field} 必须是规范仓库相对路径: {value!r}")
+
+    path = PurePosixPath(value)
+    raw_parts = value.split("/")
+    if (
+        path.is_absolute()
+        or any(part in {"", ".", ".."} for part in raw_parts)
+        or path.as_posix() != value
+        or (not allow_glob and any(character in value for character in "*?[]{}"))
+    ):
+        raise SelectorError(f"{field} 必须是规范仓库相对路径: {value!r}")
+    return value
+
+
+def _validate_character_class_syntax(pattern: str, *, field: str) -> None:
+    """限制为交集算法可与 ``PurePath.full_match`` 一致分析的字符类。"""
+    position = 0
+    while position < len(pattern):
+        opening = pattern.find("[", position)
+        if opening == -1:
+            return
+        closing = pattern.find("]", opening + 1)
+        specification = pattern[opening + 1 : closing] if closing != -1 else ""
+        content = specification[1:] if specification.startswith("!") else specification
+        if closing == -1 or not content or "[" in specification or "--" in specification:
+            raise SelectorError(f"{field} 包含不支持的 glob 字符类: {pattern}")
+        for index, character in enumerate(content):
+            if character == "-" and 0 < index < len(content) - 1 and content[index - 1] > content[index + 1]:
+                raise SelectorError(f"{field} 包含不支持的 glob 字符类: {pattern}")
+        position = closing + 1
+
+
 def _sample_paths(pattern: str) -> set[str]:
     """生成保守样例，用于在加载 schema 时识别常见 glob 重叠。"""
     samples: set[str] = set()
@@ -100,7 +138,8 @@ def _sample_paths(pattern: str) -> set[str]:
 
 
 def _class_matches(specification: str, character: str) -> bool:
-    negated = specification.startswith(("!", "^"))
+    # pathlib/fnmatch 仅以 ``!`` 表示否定；``^`` 是字符类中的普通成员。
+    negated = specification.startswith("!")
     content = specification[1:] if negated else specification
     matched = False
     index = 0
@@ -215,15 +254,20 @@ def validate_config(ignore_globs: Iterable[str], mappings: Iterable[MappingEntry
     for pattern in normalized_ignores:
         if not isinstance(pattern, str) or not pattern:
             raise SelectorError("ignore_globs 必须是非空字符串列表")
-        expand_braces(pattern)
+        for expanded in expand_braces(pattern):
+            _validate_repository_relative(expanded, field="ignore_globs", allow_glob=True)
+            _validate_character_class_syntax(expanded, field="ignore_globs")
 
     for mapping in normalized_mappings:
         if not mapping.source_glob:
             raise SelectorError("mapping.source_glob 必须是非空字符串")
-        expand_braces(mapping.source_glob)
+        for expanded in expand_braces(mapping.source_glob):
+            _validate_repository_relative(expanded, field="mapping.source_glob", allow_glob=True)
+            _validate_character_class_syntax(expanded, field="mapping.source_glob")
         if not any(is_candidate(sample) for sample in _sample_paths(mapping.source_glob)):
             raise SelectorError(f"mapping.source_glob 不在候选范围: {mapping.source_glob}")
         for heavy_test in mapping.heavy_tests:
+            _validate_repository_relative(heavy_test, field="mapping.heavy_tests", allow_glob=False)
             if not is_heavy_test(heavy_test):
                 raise SelectorError(f"无效 HEAVY 测试路径: {heavy_test}")
 
@@ -290,7 +334,8 @@ def get_changed_files(
     except subprocess.CalledProcessError as error:
         detail = (error.stderr or "").strip()
         raise SelectorError(f"git diff 失败: {detail or error}") from error
-    return sorted({line.strip() for result in results for line in result.stdout.splitlines() if line.strip()})
+    # 不归一化 Git 返回的路径；异常空白/控制字符必须交给严格路径校验 fail closed。
+    return sorted({line for result in results for line in result.stdout.split("\n") if line})
 
 
 def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> list[str]:
@@ -299,10 +344,7 @@ def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> 
     selected: set[str] = set()
 
     for raw_path in changed_files:
-        path = PurePosixPath(raw_path)
-        if path.is_absolute() or ".." in path.parts or str(path) in ("", "."):
-            raise SelectorError(f"无效改动路径: {raw_path}")
-        normalized_path = path.as_posix()
+        normalized_path = _validate_repository_relative(raw_path, field="changed path", allow_glob=False)
 
         if is_heavy_test(normalized_path):
             selected.add(normalized_path)
@@ -324,6 +366,7 @@ def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> 
         raise SelectorError(f"未分类改动路径: {normalized_path}")
 
     for test_path in selected:
+        _validate_repository_relative(test_path, field="selector output", allow_glob=False)
         if not is_heavy_test(test_path):
             raise SelectorError(f"selector 输出不是 HEAVY 测试路径: {test_path}")
     return sorted(selected)
