@@ -40,6 +40,28 @@ def test_pytest_default_collection_excludes_heavy_test_directories() -> None:
     assert norecursedirs >= DEFAULT_EXCLUDED_TEST_DIRS
 
 
+def test_pytest_default_collection_excludes_quality_only_directories() -> None:
+    pyproject_config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    norecursedirs = set(pyproject_config["tool"]["pytest"]["ini_options"]["norecursedirs"])
+
+    assert {"tests/architecture", "tests/scripts"} <= norecursedirs
+
+
+def test_pytest_fast_defaults_use_xunit2_without_implicit_coverage_noise() -> None:
+    pyproject_config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pytest_options = pyproject_config["tool"]["pytest"]["ini_options"]
+
+    assert pytest_options["junit_family"] == "xunit2"
+    assert pytest_options["addopts"] == ["-v", "--durations=10", "--tb=short"]
+
+
+def test_quality_gate_runs_fast_budget_as_a_report_only_measurement() -> None:
+    gate_text = (REPO_ROOT / "scripts" / "git-quality-gate.sh").read_text(encoding="utf-8")
+
+    assert "pytest --junitxml=reports/fast-tests.xml" in gate_text
+    assert "check_fast_test_budget.py reports/fast-tests.xml --report-only" in gate_text
+
+
 def test_test_files_stay_in_governed_top_level_directories() -> None:
     actual_directories = _relative_paths(top_level_test_directories())
 

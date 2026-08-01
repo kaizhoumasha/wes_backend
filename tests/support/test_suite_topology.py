@@ -7,7 +7,15 @@ TESTS_ROOT = REPO_ROOT / "tests"
 __test__ = False
 
 MAX_TEST_FILE_LINES = 3000
-DEFAULT_EXCLUDED_TEST_DIRS = {"tests/e2e", "tests/integration", "tests/resilience", "tests/load", "tests/mock"}
+DEFAULT_EXCLUDED_TEST_DIRS = {
+    "tests/architecture",
+    "tests/e2e",
+    "tests/integration",
+    "tests/resilience",
+    "tests/load",
+    "tests/mock",
+    "tests/scripts",
+}
 
 # 测试文件必须归属于已治理的一级目录；新增目录需要同步更新目录归属文档与本清单。
 FINAL_TEST_DIRECTORY_ALLOWLIST = {

@@ -12,10 +12,12 @@
 - 避免依赖长时间运行、外部环境、人工交互或高波动性能基线
 - 保持 `pytest` 默认执行成本可控，适合作为日常回归入口
 
-当前默认快速回归集的收集规则：
+当前默认快速回归集（FAST）的收集规则：
 
 - 收集范围：`tests/` 下符合 `test_*.py` 的测试文件
-- 除以下重测试目录外，默认收集所有未被忽略的测试目录：
+- 除以下 QUALITY 或 HEAVY 目录外，默认收集所有未被忽略的测试目录：
+  - `tests/architecture/`（QUALITY：显式架构与治理检查）
+  - `tests/scripts/`（QUALITY：脚本合同检查）
   - `tests/e2e/`
   - `tests/integration/`
   - `tests/resilience/`
@@ -24,8 +26,9 @@
 
 放置新测试时建议遵循：
 
-- 日常回归价值高、执行快、依赖少的测试：放入默认快速回归集
-- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到重测试目录并显式运行
+- 日常回归价值高、执行快、依赖少的测试：放入 FAST 默认快速回归集
+- 架构、文档、脚本与质量门禁合同：放入 QUALITY 目录，由质量门禁显式运行
+- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到 HEAVY 重测试目录并显式运行
 
 ### 目录归属矩阵
 
@@ -34,8 +37,6 @@
 | 目录 | 放置内容 |
 | --- | --- |
 | `tests/api/` | FastAPI route、permission、response model、API facade 测试 |
-| `tests/workline_runtime/` | runtime service、orchestrator、intent、diagnostic、session resolver 纯逻辑测试 |
-| `tests/workline_plugins/` | plugin contract、plugin behavior、template asset 测试 |
 | `tests/contracts/` | 跨系统/跨模块契约测试 |
 | `tests/core/` | 核心框架、异常处理、RBAC、schema loader、BaseAPI/BaseService 测试 |
 | `tests/database/` | Repository、TreeRepository、Redis client、relation metadata 测试 |
@@ -43,6 +44,8 @@
 | `tests/api_auth/` | API application、开放接口授权与缓存测试 |
 | `tests/deployment/` | docker-compose、nginx、开发 worker/beat 配置测试 |
 | `tests/utils/` | 工具函数、时间、请求解析测试 |
+| `tests/architecture/` | 架构、依赖方向、缺席与测试拓扑合同；QUALITY 显式运行 |
+| `tests/scripts/` | 脚本行为合同；QUALITY 显式运行 |
 | `tests/integration/` | 多组件集成测试，默认快速回归不收集 |
 | `tests/e2e/` | 显式运行的端到端测试，默认快速回归不收集 |
 | `tests/resilience/` | 降级、断连、恢复类测试，默认快速回归不收集 |
@@ -64,11 +67,11 @@
 - 同一行为只有一个主要测试所有者。
 - 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径或 `NONE`。
 - 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
-- 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；重测试边界由目录位置和 `norecursedirs` 共同保证。
+- 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；该边界只由目录位置和 `norecursedirs` 共同保证，不使用 AST 或 import 黑名单扫描。
 - 新增领域测试默认不要放在 `tests/` 根目录，优先按上方目录归属矩阵归位。
 - 单个测试文件目标低于 `1000` 行；超过 `3000` 行会触发测试拓扑 guardrail。
 - API 测试文件只覆盖 route、permission、response contract 和 API facade 行为。
-- service、projection、builder、orchestrator、runtime intent 等测试放回对应领域目录。
+- service、projection、builder 等测试放回对应领域目录。
 - 共享 fixture 和 mock builder 优先放到领域内 `conftest.py` 或 `support/`，避免跨文件复制同名 `mock_db`、`mock_session`、`mock_workline`。
 - Active production code and active gates must not introduce numbered phase/wave names, lane labels, or cleanup milestone wording; use stable domain names instead. Historical docs, archived plans, and Alembic revision filenames are allowed.
 - Active guardrail IDs, test filenames, script functions, and production comments must use stable domain names such as `AUTHORITY_METADATA_BOUNDARY`, `DEVICE_COMMAND_BOUNDARY`, `CAPABILITY_IMPLEMENTATION_IMPORT`, `INBOUND_NORMALIZER_OWNERSHIP`, and `LEGACY_RUNTIME_IMPORT`; old restructuring shorthand like `C3`, `C4`, `R-I3c`, `R-WLR`, or `wlr` is only allowed in historical records.
@@ -76,11 +79,23 @@
 ### 运行默认快速回归
 
 ```bash
-# 默认快速回归（不包含 e2e / integration / resilience / mock / load）
-pytest
+# FAST：默认快速回归（不包含 architecture / scripts / e2e / integration / resilience / mock / load）
+uv run pytest
 
 # 默认快速回归 + HTML 报告 + 覆盖率
-pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
+uv run pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
+```
+
+### 运行 QUALITY 与速度预算
+
+QUALITY 由质量门禁显式运行架构测试和一次 FAST 套件。JUnit 使用 `xunit2`，预算为套件 60 秒、单例 1 秒；`tests/unit/` 与 `tests/workline_plugins/` 在每目录 N≥30 时 p95 不超过 100 毫秒。N<30 时静默跳过目录 p95 检查。
+
+当前默认 FAST 基线尚待后续测试所有权收敛，质量门禁仅以 `--report-only` 记录实际预算超限，绝不会因 60 秒预算失败；脚本省略该参数时会强制以非零状态退出。CI 达标基线为固定 2 vCPU / 4 GB 配额。
+
+```bash
+uv run pytest -q --junitxml=reports/fast-tests.xml
+uv run python scripts/check_fast_test_budget.py reports/fast-tests.xml --report-only
+./scripts/git-quality-gate.sh --profile quality
 ```
 
 ### 运行重测试
