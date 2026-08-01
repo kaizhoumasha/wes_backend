@@ -18,8 +18,18 @@ from scripts.select_heavy_tests import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HEAVY_TEST = "tests/integration/test_authoritative_runtime.py"
+CELERY_ASYNC_RUNTIME_HEAVY_TEST = "tests/integration/test_celery_async_runtime.py"
+CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST = "tests/integration/test_celery_async_runtime_postgresql.py"
+CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_celery_prefork_harness_cleanup.py"
 EFFECT_FRESH_IMPORT_HEAVY_TEST = "tests/integration/test_effect_contract_fresh_import.py"
 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py"
+OPTIMISTIC_LOCK_HEAVY_TEST = "tests/integration/test_optimistic_lock.py"
+RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST = "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py"
+RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST = "tests/integration/test_external_http_transport_attempt_postgresql.py"
+RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST = "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"
+RUNTIME_INBOX_PROCESSING_HEAVY_TEST = "tests/integration/test_runtime_inbox_processing_postgresql.py"
+RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_idempotency.py"
+RUNTIME_REMAINING_ENTITIES_HEAVY_TEST = "tests/integration/test_runtime_remaining_entities.py"
 RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST = "tests/integration/test_runtime_production_closure_contract.py"
 RUNTIME_ECS_STATUS_BENCHMARK_HEAVY_TEST = "tests/load/test_ecs_status_command_benchmark.py"
 RUNTIME_INTEGRATION_LAB_HEAVY_TEST = "tests/resilience/test_runtime_integration_lab.py"
@@ -461,6 +471,63 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (EFFECT_FRESH_IMPORT_HEAVY_TEST, EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST),
         ),
         (
+            "src/celery_app/async_runtime.py",
+            (
+                CELERY_ASYNC_RUNTIME_HEAVY_TEST,
+                CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+                CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
+            ),
+        ),
+        ("src/core/mixins/optimistic_lock.py", (OPTIMISTIC_LOCK_HEAVY_TEST,)),
+        (
+            "src/app/runtime/orchestration/services/idempotency_guard.py",
+            (RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/repositories/idempotency_key_repository.py",
+            (RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/idempotency_key.py",
+            (RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST),
+        ),
+        (
+            "src/app/runtime/orchestration/conveyor_queue_membership.py",
+            (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/execution_work_item.py",
+            (
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+                RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+            ),
+        ),
+        ("src/app/runtime/orchestration/runtime_hold.py", (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,)),
+        ("src/app/runtime/orchestration/runtime_timeline.py", (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,)),
+        (
+            "migrations/versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py",
+            (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,),
+        ),
+        (
+            "tests/support/runtime_binding.py",
+            (
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/support/sqlmodel_metadata.py",
+            (OPTIMISTIC_LOCK_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST),
+        ),
+        (
             "scripts/verify_wms_northbound_feasibility.py",
             (WMS_MOCK_LIVE_HEAVY_TEST, WMS_FEASIBILITY_HEAVY_TEST),
         ),
@@ -566,6 +633,77 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
     ("changed_path", "expected"),
     [
         (
+            "src/celery_app/async_runtime.py",
+            [
+                CELERY_ASYNC_RUNTIME_HEAVY_TEST,
+                CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+                CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
+            ],
+        ),
+        ("src/core/mixins/optimistic_lock.py", [OPTIMISTIC_LOCK_HEAVY_TEST]),
+        (
+            "src/app/runtime/orchestration/services/idempotency_guard.py",
+            [RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/repositories/idempotency_key_repository.py",
+            [RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/idempotency_key.py",
+            [RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/conveyor_queue_membership.py",
+            [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/execution_work_item.py",
+            [
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+                RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+            ],
+        ),
+        ("src/app/runtime/orchestration/runtime_hold.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
+        ("src/app/runtime/orchestration/runtime_timeline.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
+        (
+            "migrations/versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py",
+            [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST],
+        ),
+        (
+            "tests/support/runtime_binding.py",
+            [
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/support/sqlmodel_metadata.py",
+            [OPTIMISTIC_LOCK_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST],
+        ),
+    ],
+)
+def test_repository_mapping_selects_database_runtime_heavy_consumers(
+    changed_path: str,
+    expected: list[str],
+) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == expected
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        (
             "scripts/verify_wms_northbound_feasibility.py",
             [WMS_MOCK_LIVE_HEAVY_TEST, WMS_FEASIBILITY_HEAVY_TEST],
         ),
@@ -645,6 +783,36 @@ def test_repository_mapping_selects_wms_heavy_asset_consumers(changed_path: str,
     ],
 )
 def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
+        select_heavy_tests([changed_path], config)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/celery_app/app.py",
+        "src/app/runtime/system_capabilities/wms/provider_catalog.py",
+        "src/app/wms_integration/provider_readiness.py",
+        "src/app/wms_integration/effect_lane_runtime.py",
+        "src/app/wms_integration/effect_preparation_runtime.py",
+        "src/app/wms_integration/query_runtime.py",
+        "src/core/exceptions.py",
+        "src/core/mixins/__init__.py",
+        "src/database/base_repository.py",
+        "src/database/db.py",
+        "src/database/model_factory.py",
+        "src/database/redis_client.py",
+        "src/database/schema_conf.py",
+        "src/database/sqlite_schema.py",
+        "src/app/runtime/orchestration/execution_correlation.py",
+        "src/app/runtime/orchestration/execution_session.py",
+        "src/app/runtime/orchestration/runtime_inbox.py",
+        "src/app/runtime/orchestration/runtime_intent_log.py",
+    ],
+)
+def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_closed(changed_path: str) -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     with pytest.raises(SelectorError, match="未配置 mapping/NONE"):

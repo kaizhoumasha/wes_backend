@@ -82,6 +82,80 @@ heavy_tests = [
     "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
 ]
 
+# Celery 单异步 runtime 的两个直接合同与显式复用 PostgreSQL harness 的清理合同共同承接该源文件。
+[[mapping]]
+source_glob = "src/celery_app/async_runtime.py"
+heavy_tests = [
+    "tests/integration/test_celery_async_runtime.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_celery_prefork_harness_cleanup.py",
+]
+
+# 乐观锁、幂等键与 remaining runtime 实体使用窄 source 映射；共享 DB/metadata/conftest 依赖继续 fail closed。
+[[mapping]]
+source_glob = "src/core/mixins/optimistic_lock.py"
+heavy_tests = ["tests/integration/test_optimistic_lock.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/idempotency_guard.py"
+heavy_tests = ["tests/integration/test_runtime_intent_log_idempotency.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/idempotency_key_repository.py"
+heavy_tests = ["tests/integration/test_runtime_intent_log_idempotency.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/idempotency_key.py"
+heavy_tests = [
+    "tests/integration/test_runtime_intent_log_idempotency.py",
+    "tests/integration/test_runtime_remaining_entities.py",
+]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/conveyor_queue_membership.py"
+heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/execution_work_item.py"
+heavy_tests = [
+    "tests/integration/test_runtime_inbox_processing_postgresql.py",
+    "tests/integration/test_runtime_remaining_entities.py",
+    "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
+    "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py",
+    "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/runtime_hold.py"
+heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/runtime_timeline.py"
+heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py"
+heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
+
+[[mapping]]
+source_glob = "tests/support/runtime_binding.py"
+heavy_tests = [
+    "tests/integration/test_external_http_transport_attempt_postgresql.py",
+    "tests/integration/test_runtime_inbox_processing_postgresql.py",
+    "tests/integration/test_runtime_intent_log_idempotency.py",
+    "tests/integration/test_runtime_remaining_entities.py",
+    "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
+    "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
+    "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "tests/support/sqlmodel_metadata.py"
+heavy_tests = [
+    "tests/integration/test_optimistic_lock.py",
+    "tests/integration/test_runtime_remaining_entities.py",
+]
+
 # WMS 北向可行性探针只承接核心 HTTP/CLI/安全与 deadline 可靠性；具体工作线规则由插件包独立拥有。
 [[mapping]]
 source_glob = "scripts/verify_wms_northbound_feasibility.py"

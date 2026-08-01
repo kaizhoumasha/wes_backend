@@ -1,6 +1,6 @@
 """H5 IdempotencyGuard 行为测试 (主计划 §5.4)。
 
-SPEC §569 文件清单点名: `tests/unit/runtime/orchestration/test_runtime_intent_log_idempotency.py`。
+SPEC §569 文件清单点名: `tests/integration/test_runtime_intent_log_idempotency.py`。
 
 测试 IdempotencyGuard 最小语义:
 - NEW: 首次 claim, 写入 IdempotencyKey 行, 调用方继续 dispatch

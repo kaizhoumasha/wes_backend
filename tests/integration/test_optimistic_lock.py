@@ -23,6 +23,9 @@ from src.core.exceptions import OptimisticLockException
 from src.core.mixins import BaseMixin, OptimisticLockMixin
 from src.database.base_repository import BaseRepository, HookContext, HookType
 from src.database.model_factory import ModelFactory
+from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
+
+register_required_sqlmodel_metadata()
 
 
 class Product(OptimisticLockMixin, table=True):

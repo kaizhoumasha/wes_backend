@@ -26,6 +26,9 @@ from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
 from src.database.schema_conf import get_all_schemas, validate_schema
 from src.database.sqlite_schema import configure_sqlite_schemas
 from tests.support.runtime_binding import binding_pin_fields
+from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
+
+register_required_sqlmodel_metadata()
 
 REMAINING_RUNTIME_MODELS = (
     ExecutionWorkItem,
