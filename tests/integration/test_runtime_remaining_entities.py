@@ -28,6 +28,7 @@ from src.database.sqlite_schema import configure_sqlite_schemas
 from tests.support.runtime_binding import binding_pin_fields
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
+# 为 create_all 显式注册 remaining runtime 模型依赖的跨域外键目标。
 register_required_sqlmodel_metadata()
 
 REMAINING_RUNTIME_MODELS = (
@@ -105,8 +106,8 @@ def test_execution_work_item_correlation_id_is_table_unique_constraint():
     assert constraints["uq_wes_runtime_execution_work_items_correlation_id"] == ["correlation_id"]
 
 
-def test_remaining_runtime_models_can_create_all_after_single_model_import():
-    """单独导入 remaining runtime 模型时也必须带入 FK 目标表元数据。"""
+def test_remaining_runtime_models_can_create_all_after_explicit_cross_domain_metadata_registration():
+    """显式注册跨域 metadata 后，remaining runtime 模型必须能执行 create_all。"""
     engine = create_engine("sqlite:///:memory:")
     configure_sqlite_schemas(engine)
     try:

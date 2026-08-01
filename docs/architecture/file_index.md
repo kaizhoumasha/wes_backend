@@ -625,7 +625,7 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | `test_base_repository_crud.py` | Repository CRUD 测试 | 🔧 架构核心 |
 | `test_base_repository_hooks.py` | Repository Hook 测试 | 🔧 架构核心 |
 | `test_base_repository_error_handling.py` | Repository 错误处理测试 | 🔧 架构核心 |
-| `test_optimistic_lock.py` | 乐观锁测试 | 🔄 常用功能 |
+| `integration/test_optimistic_lock.py` | 乐观锁核心 HEAVY / 数据库并发测试（显式运行） | 🔧 架构核心 |
 | `test_soft_delete_feature.py` | 软删除功能测试 | 🔄 常用功能 |
 | `test_document_status.py` | 单据状态测试 | 🔄 常用功能 |
 | `test_partial_unique_index.py` | 部分唯一索引测试 | 📚 参考资料 |
