@@ -39,8 +39,8 @@
 | `tests/api/` | FastAPI route、permission、response model、API facade 测试 |
 | `tests/contracts/` | 跨系统/跨模块契约测试 |
 | `tests/core/` | 核心框架、异常处理、RBAC、schema loader、BaseAPI/BaseService 测试 |
-| `tests/database/` | Repository、TreeRepository、Redis client、relation metadata 测试 |
-| `tests/sys/` | 系统域服务、审计日志、事件流、outbox 测试 |
+| `tests/database/` | Repository hook/error、TreeRepository、Redis client、relation metadata 等轻量测试 |
+| `tests/sys/` | 系统域服务、审计日志、事件流与 outbox 轻量合同测试 |
 | `tests/api_auth/` | API application、开放接口授权与缓存测试 |
 | `tests/deployment/` | docker-compose、nginx、开发 worker/beat 配置测试 |
 | `tests/utils/` | 工具函数、时间、请求解析测试 |
@@ -48,9 +48,9 @@
 | `tests/runtime/` | 与具体插件无关的最小执行对象、投影、可靠性和诊断能力 |
 | `tests/architecture/` | 架构、依赖方向、缺席与测试拓扑合同；QUALITY 显式运行 |
 | `tests/scripts/` | 脚本行为合同；QUALITY 显式运行 |
-| `tests/integration/` | 多组件集成测试，默认快速回归不收集 |
+| `tests/integration/` | Repository/Outbox 持久化、真实数据库与多组件集成测试，默认快速回归不收集 |
 | `tests/e2e/` | 显式运行的端到端测试，默认快速回归不收集 |
-| `tests/resilience/` | 降级、断连、恢复类测试，默认快速回归不收集 |
+| `tests/resilience/` | breaker 时序、降级、断连与恢复类测试，默认快速回归不收集 |
 | `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
 
 `tests/` 是 WES 核心测试树，不是具体工作线插件的共享测试目录。具体插件采用独立二次开发包：

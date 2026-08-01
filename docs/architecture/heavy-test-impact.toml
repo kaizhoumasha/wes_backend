@@ -79,6 +79,7 @@ heavy_tests = [
 source_glob = "src/app/runtime/orchestration/effect_bridges.py"
 heavy_tests = [
     "tests/integration/test_effect_contract_fresh_import.py",
+    "tests/integration/test_runtime_intent_log_effect_repository.py",
     "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
 ]
 
@@ -91,7 +92,7 @@ heavy_tests = [
     "tests/integration/test_celery_prefork_harness_cleanup.py",
 ]
 
-# 乐观锁、幂等键与 remaining runtime 实体使用窄 source 映射；共享 DB/metadata/conftest 依赖继续 fail closed。
+# Repository/Outbox/Intent 测试只映射可穷尽的窄 source/support；共享 DB/conftest 与广泛 Repository 依赖继续 fail closed。
 [[mapping]]
 source_glob = "src/core/mixins/optimistic_lock.py"
 heavy_tests = ["tests/integration/test_optimistic_lock.py"]
@@ -152,8 +153,19 @@ heavy_tests = [
     "tests/integration/test_runtime_inbox_service_internal_events.py",
     "tests/integration/test_runtime_intent_log_idempotency.py",
     "tests/integration/test_runtime_remaining_entities.py",
+    "tests/integration/test_system_outbox_repository.py",
     "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
+    "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "tests/support/external_http.py"
+heavy_tests = [
+    "tests/integration/test_external_http_transport_attempt_postgresql.py",
+    "tests/integration/test_system_outbox_canonical_payload_postgresql.py",
+    "tests/integration/test_system_outbox_dispatch_concurrency_postgresql.py",
+    "tests/integration/test_system_outbox_repository.py",
     "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py",
 ]
 
@@ -218,12 +230,17 @@ heavy_tests = [
 source_glob = "tests/mock/wms_operation_fixtures.py"
 heavy_tests = [
     "tests/integration/test_mock_container_entrypoints.py",
+    "tests/integration/test_runtime_intent_log_effect_repository.py",
     "tests/integration/test_wms_mock_northbound_live.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
     "tests/mock/test_wms_mock_server.py",
     "tests/mock/test_wms_northbound_contract.py",
 ]
+
+[[mapping]]
+source_glob = "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py"
+heavy_tests = ["tests/resilience/test_wms_circuit_breaker.py"]
 
 # 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。

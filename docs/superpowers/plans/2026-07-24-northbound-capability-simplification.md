@@ -266,7 +266,7 @@ uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
 - Modify: 适用 WMS EFFECT operation 的 `gateway.py`、`effect_adapter.py`、preparation builder
 - Create: Alembic 生成的 SystemOutbox 幂等请求键 migration
 - Test: `tests/contracts/system_capabilities/test_canonical_external_http_dispatch.py`
-- Test: `tests/sys/test_system_outbox_repository.py`
+- Test: `tests/integration/test_system_outbox_repository.py`
 - Test: `tests/integration/test_system_outbox_canonical_payload_postgresql.py`
 - Test: `tests/contracts/wms_integration/test_effect_status_contract.py`
 - Test: `tests/contracts/wms_integration/test_wms_transport_runtime_configuration.py`
@@ -358,7 +358,7 @@ adapter 的 endpoint、timeout 和 credential reference 只来自 Intent 的 fro
 ```bash
 uv run pytest tests/contracts/wms_integration/test_effect_status_contract.py tests/contracts/wms_integration/test_provider_conformance_suite.py -q
 uv run pytest tests/contracts/wms_integration/test_wms_transport_runtime_configuration.py tests/deployment/test_docker_compose_mock_urls.py -q
-uv run pytest tests/contracts/system_capabilities/test_canonical_external_http_dispatch.py tests/sys/test_system_outbox_repository.py -q
+uv run pytest tests/contracts/system_capabilities/test_canonical_external_http_dispatch.py tests/integration/test_system_outbox_repository.py -q
 uv run pytest tests/integration/test_system_outbox_canonical_payload_postgresql.py -q
 uv run ruff check src/app/wms_integration tests/contracts/wms_integration
 ```

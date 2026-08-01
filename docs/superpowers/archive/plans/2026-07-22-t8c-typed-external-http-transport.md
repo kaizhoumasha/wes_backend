@@ -48,7 +48,7 @@
 
 - 修改：`src/app/sys/repositories/outbox_repository.py`
 - 修改：`src/app/sys/services/outbox_engine.py`
-- 测试：`tests/sys/test_system_outbox_repository.py`
+- 测试：`tests/integration/test_system_outbox_repository.py`
 - 测试：`tests/sys/test_system_outbox_engine.py`
 
 **状态映射：**

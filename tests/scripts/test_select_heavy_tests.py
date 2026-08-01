@@ -30,6 +30,7 @@ RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST = "tests/resilience/test_runtime_inbox_c
 RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST = "tests/integration/test_runtime_inbox_consumer_service.py"
 RUNTIME_INBOX_PROCESSING_HEAVY_TEST = "tests/integration/test_runtime_inbox_processing_postgresql.py"
 RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST = "tests/integration/test_runtime_inbox_service_internal_events.py"
+RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_effect_repository.py"
 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_idempotency.py"
 RUNTIME_REMAINING_ENTITIES_HEAVY_TEST = "tests/integration/test_runtime_remaining_entities.py"
 RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST = "tests/integration/test_runtime_production_closure_contract.py"
@@ -37,7 +38,13 @@ RUNTIME_ECS_STATUS_BENCHMARK_HEAVY_TEST = "tests/load/test_ecs_status_command_be
 RUNTIME_INTEGRATION_LAB_HEAVY_TEST = "tests/resilience/test_runtime_integration_lab.py"
 RUNTIME_PLANE_SNAPSHOT_BENCHMARK_HEAVY_TEST = "tests/load/test_plane_snapshot_benchmark.py"
 RUNTIME_SCENARIO_REPLAY_HEAVY_TEST = "tests/resilience/test_runtime_scenario_replay.py"
+SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST = "tests/integration/test_system_outbox_canonical_payload_postgresql.py"
+SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST = (
+    "tests/integration/test_system_outbox_dispatch_concurrency_postgresql.py"
+)
+SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST = "tests/integration/test_system_outbox_repository.py"
 WMS_DEPLOYMENT_HEAVY_TEST = "tests/integration/test_wms_deployment_attestation.py"
+WMS_CIRCUIT_BREAKER_HEAVY_TEST = "tests/resilience/test_wms_circuit_breaker.py"
 WMS_FEASIBILITY_HEAVY_TEST = "tests/integration/test_wms_northbound_feasibility_probe.py"
 WMS_MOCK_CONTAINER_HEAVY_TEST = "tests/integration/test_mock_container_entrypoints.py"
 WMS_MOCK_LIVE_HEAVY_TEST = "tests/integration/test_wms_mock_northbound_live.py"
@@ -470,7 +477,11 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         (
             "src/app/runtime/orchestration/effect_bridges.py",
-            (EFFECT_FRESH_IMPORT_HEAVY_TEST, EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST),
+            (
+                EFFECT_FRESH_IMPORT_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+            ),
         ),
         (
             "src/celery_app/async_runtime.py",
@@ -525,8 +536,19 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST,
                 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
                 RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/support/external_http.py",
+            (
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
                 RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
             ),
         ),
@@ -584,12 +606,17 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "tests/mock/wms_operation_fixtures.py",
             (
                 WMS_MOCK_CONTAINER_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
                 WMS_MOCK_LIVE_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
                 WMS_MOCK_SERVER_HEAVY_TEST,
                 WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
             ),
+        ),
+        (
+            "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py",
+            (WMS_CIRCUIT_BREAKER_HEAVY_TEST,),
         ),
     )
 
@@ -626,7 +653,11 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         (
             "src/app/runtime/orchestration/effect_bridges.py",
-            [EFFECT_FRESH_IMPORT_HEAVY_TEST, EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST],
+            [
+                EFFECT_FRESH_IMPORT_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+            ],
         ),
     ],
 )
@@ -692,8 +723,19 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
                 RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST,
                 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
                 RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/support/external_http.py",
+            [
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
                 RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
             ],
         ),
@@ -765,12 +807,17 @@ def test_repository_mapping_selects_database_runtime_heavy_consumers(
             "tests/mock/wms_operation_fixtures.py",
             [
                 WMS_MOCK_CONTAINER_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
                 WMS_MOCK_LIVE_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
                 WMS_MOCK_SERVER_HEAVY_TEST,
                 WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
             ],
+        ),
+        (
+            "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py",
+            [WMS_CIRCUIT_BREAKER_HEAVY_TEST],
         ),
     ],
 )
@@ -789,6 +836,9 @@ def test_repository_mapping_selects_wms_heavy_asset_consumers(changed_path: str,
         "src/app/runtime/orchestration/services/conveyor_queue_writer.py",
         "src/app/reconciliation/manager.py",
         "src/app/wms_integration/state_machine.py",
+        "src/app/wms_integration/models/circuit_breaker.py",
+        "src/app/wms_integration/repositories/circuit_breaker_repository.py",
+        "src/app/wms_integration/services/circuit_breaker_service.py",
         "src/app/workline/models/plane.py",
         "src/utils/timezone.py",
         "src/app/wms_integration/operation_registry.py",
@@ -818,9 +868,11 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/database/redis_client.py",
         "src/database/schema_conf.py",
         "src/database/sqlite_schema.py",
+        "src/app/sys/repositories/outbox_repository.py",
         "src/app/runtime/orchestration/execution_correlation.py",
         "src/app/runtime/orchestration/execution_session.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
+        "src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py",
         "src/app/runtime/orchestration/runtime_inbox.py",
         "src/app/runtime/orchestration/runtime_intent_log.py",
         "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py",

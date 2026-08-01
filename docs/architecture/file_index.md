@@ -622,10 +622,13 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 |-----------|------|------|
 | `conftest.py` | Pytest Fixtures（数据库、测试客户端） | 🔧 架构核心 |
 | `README.md` | 测试文档 | 📖 必读文档 |
-| `test_base_repository_crud.py` | Repository CRUD 测试 | 🔧 架构核心 |
+| `integration/test_base_repository_crud.py` | BaseRepository 真实数据库 CRUD 核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `test_base_repository_hooks.py` | Repository Hook 测试 | 🔧 架构核心 |
 | `test_base_repository_error_handling.py` | Repository 错误处理测试 | 🔧 架构核心 |
 | `integration/test_optimistic_lock.py` | 乐观锁核心 HEAVY / 数据库并发测试（显式运行） | 🔧 架构核心 |
+| `integration/test_system_outbox_repository.py` | SystemOutbox 持久化、事务与 lease 恢复核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
+| `integration/test_runtime_intent_log_effect_repository.py` | RuntimeIntentLog effect ledger 持久化与幂等核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
+| `resilience/test_wms_circuit_breaker.py` | DB-backed WMS breaker 时序与恢复核心 HEAVY 测试（显式运行） | 🔧 架构核心 |
 | `test_soft_delete_feature.py` | 软删除功能测试 | 🔄 常用功能 |
 | `test_document_status.py` | 单据状态测试 | 🔄 常用功能 |
 | `test_partial_unique_index.py` | 部分唯一索引测试 | 📚 参考资料 |
@@ -646,12 +649,12 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | `active_objects/` | ActiveObject 归属投影和冲突仲裁测试 | 🔧 架构核心 |
 | `reconciliation/` | Reconciliation owner-scoped 决议合同测试 | 🔧 架构核心 |
 | `benchmark/` | 性能基准测试 | 📚 参考资料 |
-| `integration/` | 显式运行的核心集成 HEAVY 测试（数据库领取、幂等冲突、多组件闭环） | 📚 参考资料 |
+| `integration/` | 显式运行的核心集成 HEAVY 测试（Repository/Outbox 持久化、数据库领取、幂等冲突、多组件闭环） | 📚 参考资料 |
 | `load/` | 显式运行的负载/基准测试（Locust + runtime benchmark gate 四场景） | 📚 参考资料 |
-| `resilience/` | 显式运行的弹性/恢复 HEAVY 测试（重试/死信、崩溃恢复、Redis 重连与降级） | 📚参考资料 |
+| `resilience/` | 显式运行的弹性/恢复 HEAVY 测试（breaker 时序、重试/死信、崩溃恢复、Redis 重连与降级） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
 | `workline_runtime/` | Runtime capability、投影、对账与 material-flow 纯逻辑回归 | 🔧 架构核心 |
-| `wms_integration/` | WMS 对接辅助域测试（typed QUERY transport、client、typed effects、evidence、breaker、callback normalizer、caller contract） | 🔧 架构核心 |
+| `wms_integration/` | WMS 对接辅助域轻量测试（typed QUERY transport、client、typed effects、evidence、callback normalizer、caller contract） | 🔧 架构核心 |
 | `architecture/` | 架构守卫测试（import-linter 合同 + runtime public-surface / boundary / prohibited-import guardrail） | 🔧 架构核心 |
 | `runtime/orchestration/` | Runtime orchestration 轻量单元/合同测试（不触发真实数据库领取与故障恢复） | 🔧 架构核心 |
 | `contracts/` | 跨模块合同测试（workline behavior contract + runtime ops contract 文档存在性） | 🔧 架构核心 |
@@ -732,7 +735,7 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 | `wms_integration/test_wms_client.py` | WMS HTTP client typed error、evidence_key 和熔断交互测试 | 🔧 架构核心 |
 | `wms_integration/test_caller_contract.py` | 首个真实 caller 接入前的 RuntimeHold/diagnostic 合同保护测试 | 🔧 架构核心 |
 | `wms_integration/test_evidence.py` | WMS evidence 脱敏、hash、关联 ID 和保存行为测试 | 🔧 架构核心 |
-| `wms_integration/test_circuit_breaker.py` | DB-backed WMS breaker 状态转换测试 | 🔧 架构核心 |
+| `resilience/test_wms_circuit_breaker.py` | DB-backed WMS breaker 状态转换、并发 probe 与恢复时序 HEAVY 测试 | 🔧 架构核心 |
 | `wms_integration/test_cache.py` | WMS read-only 短缓存、坏缓存清理和降级回源测试 | 🔄 常用功能 |
 | `wms_integration/test_callback_normalizer.py` | WMS/RCS 回调包络校验和字段标准化测试 | 🔧 架构核心 |
 | `wms_integration/test_transport_contract.py` | rack/handling WMS/RCS 派发 payload 合同防漂移测试 | 🔧 架构核心 |
