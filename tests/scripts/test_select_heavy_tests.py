@@ -418,6 +418,10 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (WMS_FEASIBILITY_HEAVY_TEST,),
         ),
         (
+            "tests/support/wms_conformance_runner.py",
+            (WMS_FEASIBILITY_HEAVY_TEST,),
+        ),
+        (
             "tests/contracts/wms_integration/provider_profile_support.py",
             (WMS_FEASIBILITY_HEAVY_TEST,),
         ),
@@ -440,6 +444,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
     "changed_path",
     [
         "scripts/verify_wms_northbound_feasibility.py",
+        "tests/support/wms_conformance_runner.py",
         "tests/contracts/wms_integration/provider_profile_support.py",
         "tests/mock/wms_mock_server.py",
         "tests/mock/wms_northbound_contract.py",
