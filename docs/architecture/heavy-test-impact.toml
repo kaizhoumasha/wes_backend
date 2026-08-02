@@ -22,6 +22,11 @@ heavy_tests = []
 source_glob = "scripts/git-quality-gate.sh"
 heavy_tests = []
 
+# pytest 收集、报告和 FAST/QUALITY 拓扑由质量门禁直接承接。
+[[mapping]]
+source_glob = "pyproject.toml"
+heavy_tests = []
+
 # WMS deployment attestation 的 CLI、领域事实与 Beat 路由必须共同验证四角色部署产物。
 [[mapping]]
 source_glob = "scripts/check_wms_deployment_attestation.py"

@@ -437,7 +437,6 @@ def test_repository_mapping_keeps_unaccepted_candidates_unmapped() -> None:
         "migrations/env.py",
         "alembic.ini",
         "docker-compose.yml",
-        "pyproject.toml",
         ".env.test",
         "tests/integration/conftest.py",
         "tests/fixtures/orders.json",
@@ -467,6 +466,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
     assert tuple((mapping.source_glob, mapping.heavy_tests) for mapping in mappings) == (
         ("scripts/select_heavy_tests.py", ()),
         ("scripts/git-quality-gate.sh", ()),
+        ("pyproject.toml", ()),
         ("scripts/check_wms_deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
         ("src/app/wms_integration/deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
         ("scripts/check_runtime_production_e2e_gate.py", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
