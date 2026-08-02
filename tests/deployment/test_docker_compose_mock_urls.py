@@ -127,7 +127,7 @@ def test_mock_wms_submit_deadline_is_independently_configurable() -> None:
     assert mock_wms_env["WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS"] == "${WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS}"
     for env_file in (".env.dev", ".env.test", ".env.prod"):
         env_text = (BACKEND_ROOT / env_file).read_text(encoding="utf-8")
-        assert "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS=30" in env_text
+        assert "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS=10" in env_text
 
 
 def test_mock_wms_disables_query_bearing_uvicorn_access_log() -> None:
