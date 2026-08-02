@@ -466,6 +466,8 @@ def main(
             repo_root=resolved_root,
             runner=runner,
         )
+        # 删除记录仍用于 source/support mapping；只有已不存在、无法执行的直接 HEAVY 测试需要剔除。
+        changed_files = [path for path in changed_files if not is_heavy_test(path) or (resolved_root / path).is_file()]
         selected = select_heavy_tests(changed_files, load_config(resolved_mapping))
     except SelectorError as error:
         print(f"HEAVY selector fail closed: {error}", file=sys.stderr)
