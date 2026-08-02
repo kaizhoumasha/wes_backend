@@ -4,6 +4,7 @@ ignore_globs = [
     "*.md",
     "tests/**",
     "Jenkinsfile",
+    "Jenkinsfile.test-deploy",
     ".githooks/**",
     ".github/**",
     ".gitlab-ci.yml",

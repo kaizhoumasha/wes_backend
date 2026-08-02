@@ -457,6 +457,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         "*.md",
         "tests/**",
         "Jenkinsfile",
+        "Jenkinsfile.test-deploy",
         ".githooks/**",
         ".github/**",
         ".gitlab-ci.yml",
