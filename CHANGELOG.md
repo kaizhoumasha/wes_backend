@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0.0] - 2026-08-03
+
+### Added
+- 建立 WES 核心测试的 FAST、QUALITY、HEAVY 分层治理，新增受影响 HEAVY 测试选择器、显式影响映射、FAST 时间预算以及核心/插件测试所有权门禁。
+- 固化 WES 最小执行架构与测试语义收敛基线，明确核心测试只覆盖 SPEC 定义的通用执行能力，具体工作线、插件和厂商业务测试随独立二次开发包交付。
+
+### Changed
+- 默认 `pytest` 与本地质量门禁收敛为快速回归集；数据库、HTTP、Celery、进程、故障注入、容量与真实部署测试改由受影响 HEAVY 集显式运行。
+- 重写测试目录、CI 入口、架构账本、清理矩阵和开发指南的所有权语义，使通用投影、查询、回调、Outbox 与 Mock 合同保持在核心边界内。
+- Task 5 的最终核心执行对象测试承接延后至执行架构重构，由 P1 TODO 跟踪；HMAC 生产级验收作为 P3 安全加固事项，不阻塞本次收敛。
+
+### Fixed
+- HEAVY 选择器现在正确处理中文及 quoted path、Git 参数边界、无效 glob、已删除 direct 测试和失效 mapping，并在治理配置漂移时 fail-closed。
+- 补齐 WMS conformance、Mock、RuntimeInbox、Repository、callback、Outbox、数据库并发和 benchmark runner 的 HEAVY 归属与生产闭包合同。
+- 删除与 FAST 重复的质量 profile，统一 WMS 提交超时合同，并修复 Mock WMS 镜像导入及测试拓扑分类偏差。
+
+### Removed
+- 从核心 `tests/` 移除旧插件平台、具体工作线/插件场景、迁移验收、legacy characterization、业务 fixture 和相关数据脚本，避免 WES 系统测试继续固化待删除架构。
+- 退役旧 runtime evidence、live suite、测试工作线同步和插件专用 PostgreSQL 场景资产；后续业务测试由对应 `workline_plugins/<plugin_key>/` 包自行承接。
+
+### Documentation
+- 更新测试治理说明、架构文件索引、插件开发指南、业务验收计划和 superpowers 文档索引，记录当前批次完成范围及执行架构重构后的剩余承接事项。
+
 ## [0.20.7.0] - 2026-07-31
 
 ### Added
