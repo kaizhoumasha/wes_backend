@@ -323,6 +323,60 @@ def load_config(path: Path) -> SelectorConfig:
     return validate_config(ignore_globs, mappings)
 
 
+def _decode_git_quoted_path(value: str) -> str:
+    """解码 Git ``core.quotePath`` 产生的 C 风格路径，不放宽后续路径校验。"""
+    if not value.startswith('"') and not value.endswith('"'):
+        return value
+    if len(value) < 2 or not value.startswith('"') or not value.endswith('"'):
+        raise SelectorError(f"git diff 返回不完整的引号路径: {value!r}")
+
+    escapes = {
+        "a": 0x07,
+        "b": 0x08,
+        "t": 0x09,
+        "n": 0x0A,
+        "v": 0x0B,
+        "f": 0x0C,
+        "r": 0x0D,
+        '"': 0x22,
+        "\\": 0x5C,
+    }
+    decoded = bytearray()
+    content = value[1:-1]
+    position = 0
+    while position < len(content):
+        character = content[position]
+        if character != "\\":
+            decoded.extend(character.encode("utf-8"))
+            position += 1
+            continue
+
+        position += 1
+        if position >= len(content):
+            raise SelectorError(f"git diff 返回不完整的路径转义: {value!r}")
+        escape = content[position]
+        if escape in escapes:
+            decoded.append(escapes[escape])
+            position += 1
+            continue
+        if escape in "01234567":
+            end = position + 1
+            while end < min(position + 3, len(content)) and content[end] in "01234567":
+                end += 1
+            octet = int(content[position:end], 8)
+            if octet > 0xFF:
+                raise SelectorError(f"git diff 返回超出字节范围的路径转义: {value!r}")
+            decoded.append(octet)
+            position = end
+            continue
+        raise SelectorError(f"git diff 返回不支持的路径转义: {value!r}")
+
+    try:
+        return decoded.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SelectorError(f"git diff 返回非 UTF-8 路径: {value!r}") from error
+
+
 def get_changed_files(
     *,
     scope: str | None,
@@ -348,8 +402,8 @@ def get_changed_files(
     except subprocess.CalledProcessError as error:
         detail = (error.stderr or "").strip()
         raise SelectorError(f"git diff 失败: {detail or error}") from error
-    # 不归一化 Git 返回的路径；异常空白/控制字符必须交给严格路径校验 fail closed。
-    return sorted({line for result in results for line in result.stdout.split("\n") if line})
+    # 只解码 Git 自身的可逆引号表示；异常空白/控制字符仍交给严格路径校验 fail closed。
+    return sorted({_decode_git_quoted_path(line) for result in results for line in result.stdout.split("\n") if line})
 
 
 def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> list[str]:
