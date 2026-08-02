@@ -15,6 +15,8 @@ ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security
 ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
 
 ENV PIP_INDEX_URL=${PYPI_MIRROR}
+# 固定运行目录为 /app/tests/mock；显式暴露镜像内打包的 src/tests 命名空间。
+ENV PYTHONPATH=/app
 
 # 安装系统依赖
 RUN sed -i \

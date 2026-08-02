@@ -264,6 +264,20 @@ heavy_tests = [
     "tests/mock/test_wms_northbound_contract.py",
 ]
 
+# 纯 fixture matrix 同时服务 conformance runner 与已构建 Mock WMS 镜像。
+[[mapping]]
+source_glob = "tests/mock/wms_fixture_matrix.py"
+heavy_tests = [
+    "tests/integration/test_mock_container_entrypoints.py",
+    "tests/integration/test_runtime_intent_log_effect_repository.py",
+    "tests/integration/test_wms_mock_northbound_live.py",
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/integration/test_wms_provider_conformance_collection.py",
+    "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
+    "tests/mock/test_wms_mock_server.py",
+    "tests/mock/test_wms_northbound_contract.py",
+]
+
 [[mapping]]
 source_glob = "tests/contracts/wms_integration/provider_profile_support.py"
 heavy_tests = [

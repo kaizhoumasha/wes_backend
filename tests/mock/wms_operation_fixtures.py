@@ -4,7 +4,7 @@
 """
 
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
-from tests.support.wms_conformance_runner import build_operation_fixture_matrix
+from tests.mock.wms_fixture_matrix import build_operation_fixture_matrix
 
 REQUEST_FIXTURES = {
     "wms.master_data.get_material@v1": {"material_code": "MAT-001"},

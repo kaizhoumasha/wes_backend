@@ -640,6 +640,19 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             ),
         ),
         (
+            "tests/mock/wms_fixture_matrix.py",
+            (
+                WMS_MOCK_CONTAINER_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
+                WMS_MOCK_LIVE_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_PROVIDER_COLLECTION_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ),
+        ),
+        (
             "tests/contracts/wms_integration/provider_profile_support.py",
             (
                 WMS_DEPLOYMENT_HEAVY_TEST,
