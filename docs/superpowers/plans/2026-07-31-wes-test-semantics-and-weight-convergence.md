@@ -212,9 +212,17 @@ uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
 uv run pytest tests/architecture -q
 ```
 
-### Task 5：把通用 WorkLine 与可靠性语义改写到最终核心对象
+### Task 5（TODO，随执行架构重构启动）：把通用 WorkLine 与可靠性语义改写到最终核心对象
 
 **Entry condition:** 最终 `InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch`、设备/位置投影及其生产路径已经交付。
+
+**Current status:** 延后执行，不属于当前测试收敛批次。截至 2026-08-02，入口条件中的最终对象和生产路径尚未完整交付；本计划不得为完成测试迁移而越权实现生产执行内核。后续启动 SPEC §14.3 工作包 2（最小执行对象、可靠投递记录、通用 WorkLine 能力和核心可靠性测试）时，必须同步执行本 Task，并以 `TODOS.md` 的“最终核心执行对象测试承接”事项跟踪。
+
+Task 5 完成前：
+
+- Task 4 中同时包含插件行为和通用可靠性不变量的混合测试不得直接删除；必须等最终核心对象上的权威测试建立后再处置。
+- Task 4 的“具体插件 import、fixture 和场景名称零命中”以及 Task 7 的最终缺席验收继续保持待办。
+- 当前批次只能声明测试所有权、重量和门禁的阶段性收敛，不能声明本计划整体完成。
 
 - [ ] 保留 WorkLine 静态身份、物理拓扑和配置校验。
 - [ ] 保留 Epoch 版本冻结、人工清线和新 Epoch 恢复。

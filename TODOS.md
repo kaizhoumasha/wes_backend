@@ -139,6 +139,28 @@
 
 ## Reliability
 
+### 最终核心执行对象测试承接
+
+**What:** 启动最小执行架构重构并交付最终生产对象后，执行
+`docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` 的 Task 5，把通用 WorkLine 与可靠性语义改写到最终核心对象测试。
+
+**Why:** 当前测试收敛批次只调整测试所有权、重量和门禁，不负责实现生产执行内核。入口对象未完整交付前直接删除混合测试，会丢失入站幂等、ACK/CALLBACK 分离、迟到证据、人工清线和投影约束等核心不变量；继续沿用旧 Runtime/Manifest 测试又会固化待删除架构。
+
+**Scope:**
+- 在最终 `InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch` 和设备/位置投影上建立权威核心测试
+- 覆盖 WorkLine 静态身份与拓扑、Epoch 版本冻结、人工清线、持久化后 ACK、幂等冲突、ACK/CALLBACK 分离、未知物理结果不自动重放及设备/位置投影
+- 纳入下方独立 TODO 定义的处理幂等与 CALLBACK fencing 验收
+- 权威测试通过后，返回测试收敛计划完成 Task 4 的混合测试处置和 Task 7 的最终缺席验收
+- 不实现具体工作线、插件或厂商业务测试；这些测试随对应 `workline_plugins/<plugin_key>/` 二次开发包交付
+
+**Depends on:** SPEC §14.3 工作包 2 已启动，且最终执行对象、设备/位置投影及其生产路径已经交付。本 TODO 不负责创建这些生产对象。
+
+**Effort:** M-L
+
+**Priority:** P1（执行架构重构配套任务）
+
+---
+
 ### 全仓 Redis fail-open/fail-closed/fallback 审计
 
 **What:** 审计整个仓库所有 Redis 调用点，明确每个调用是 fail-open、fail-closed 还是带 fallback，并补齐缺失的降级或错误处理。
