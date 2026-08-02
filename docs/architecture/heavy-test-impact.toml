@@ -249,14 +249,12 @@ heavy_tests = [
 [[mapping]]
 source_glob = "scripts/verify_wms_northbound_feasibility.py"
 heavy_tests = [
-    "tests/integration/test_wms_mock_northbound_live.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
 ]
 
 [[mapping]]
 source_glob = "tests/support/wms_conformance_runner.py"
 heavy_tests = [
-    "tests/integration/test_wms_mock_northbound_live.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/test_wms_provider_conformance_collection.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
@@ -270,7 +268,6 @@ source_glob = "tests/mock/wms_fixture_matrix.py"
 heavy_tests = [
     "tests/integration/test_mock_container_entrypoints.py",
     "tests/integration/test_runtime_intent_log_effect_repository.py",
-    "tests/integration/test_wms_mock_northbound_live.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/test_wms_provider_conformance_collection.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
@@ -282,7 +279,6 @@ heavy_tests = [
 source_glob = "tests/contracts/wms_integration/provider_profile_support.py"
 heavy_tests = [
     "tests/integration/test_wms_deployment_attestation.py",
-    "tests/integration/test_wms_mock_northbound_live.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
     "tests/mock/test_wms_provider_conformance_simulator.py",
@@ -292,7 +288,6 @@ heavy_tests = [
 source_glob = "tests/mock/wms_mock_server.py"
 heavy_tests = [
     "tests/integration/test_mock_container_entrypoints.py",
-    "tests/integration/test_wms_mock_northbound_live.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/mock/test_wms_mock_server.py",
     "tests/mock/test_wms_northbound_contract.py",
@@ -302,7 +297,6 @@ heavy_tests = [
 source_glob = "tests/mock/wms_northbound_contract.py"
 heavy_tests = [
     "tests/integration/test_mock_container_entrypoints.py",
-    "tests/integration/test_wms_mock_northbound_live.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
     "tests/mock/test_wms_mock_server.py",
@@ -314,7 +308,6 @@ source_glob = "tests/mock/wms_operation_fixtures.py"
 heavy_tests = [
     "tests/integration/test_mock_container_entrypoints.py",
     "tests/integration/test_runtime_intent_log_effect_repository.py",
-    "tests/integration/test_wms_mock_northbound_live.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
     "tests/mock/test_wms_mock_server.py",
