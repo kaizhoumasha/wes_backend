@@ -27,6 +27,8 @@ COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST = "tests/integration/test_comman
 DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST = "tests/integration/test_device_runtime_projection_writer_service.py"
 EFFECT_FRESH_IMPORT_HEAVY_TEST = "tests/integration/test_effect_contract_fresh_import.py"
 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py"
+ECS_MOCK_SERVER_HEAVY_TEST = "tests/mock/test_ecs_mock_server.py"
+MOCK_DOCKERFILE_HEAVY_TEST = "tests/mock/test_mock_dockerfile.py"
 OPTIMISTIC_LOCK_HEAVY_TEST = "tests/integration/test_optimistic_lock.py"
 RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST = "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py"
 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST = "tests/integration/test_external_http_transport_attempt_postgresql.py"
@@ -467,6 +469,10 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("scripts/select_heavy_tests.py", ()),
         ("scripts/git-quality-gate.sh", ()),
         ("pyproject.toml", ()),
+        (
+            "scripts/{check_business_legacy_absence_gate.py,check_fast_test_budget.py,check_runtime_evidence_readiness_gate.py,compose_runtime_evidence_artifact.py,data/seed_runtime_monitor_smoke.py,data/sync_test_workline_devices.py,generate_legacy_matrix.py,generate_northbound_legacy_removal_report.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}",
+            (),
+        ),
         ("scripts/check_wms_deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
         ("src/app/wms_integration/deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
         ("scripts/check_runtime_production_e2e_gate.py", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
@@ -606,6 +612,17 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "tests/support/sqlmodel_metadata.py",
             (OPTIMISTIC_LOCK_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST),
+        ),
+        ("tests/support/test_suite_topology.py", ()),
+        ("tests/fixtures/workline_contract/{rough_sorter,start_admission}/**", ()),
+        (
+            "tests/support/{smt_sorting_inbound_postgresql.py,wms_conveyor_batch_postgresql.py,wms_full_box_exchange_postgresql.py}",
+            (),
+        ),
+        ("tests/mock/device_simulator.py", ()),
+        (
+            "tests/mock/{Dockerfile,ecs_mock_catalog.py,ecs_mock_server.py}",
+            (WMS_MOCK_CONTAINER_HEAVY_TEST, ECS_MOCK_SERVER_HEAVY_TEST, MOCK_DOCKERFILE_HEAVY_TEST),
         ),
         (
             "scripts/verify_wms_northbound_feasibility.py",

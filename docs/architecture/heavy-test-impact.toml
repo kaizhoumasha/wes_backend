@@ -27,6 +27,11 @@ heavy_tests = []
 source_glob = "pyproject.toml"
 heavy_tests = []
 
+# 测试治理、遗留审计与已退役插件数据脚本由 QUALITY/缺席门禁承接。
+[[mapping]]
+source_glob = "scripts/{check_business_legacy_absence_gate.py,check_fast_test_budget.py,check_runtime_evidence_readiness_gate.py,compose_runtime_evidence_artifact.py,data/seed_runtime_monitor_smoke.py,data/sync_test_workline_devices.py,generate_legacy_matrix.py,generate_northbound_legacy_removal_report.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}"
+heavy_tests = []
+
 # WMS deployment attestation 的 CLI、领域事实与 Beat 路由必须共同验证四角色部署产物。
 [[mapping]]
 source_glob = "scripts/check_wms_deployment_attestation.py"
@@ -212,6 +217,32 @@ source_glob = "tests/support/sqlmodel_metadata.py"
 heavy_tests = [
     "tests/integration/test_optimistic_lock.py",
     "tests/integration/test_runtime_remaining_entities.py",
+]
+
+# 核心测试拓扑工具由 architecture/QUALITY 门禁承接；已删除的具体插件 fixture/support 明确为 NONE。
+[[mapping]]
+source_glob = "tests/support/test_suite_topology.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "tests/fixtures/workline_contract/{rough_sorter,start_admission}/**"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "tests/support/{smt_sorting_inbound_postgresql.py,wms_conveyor_batch_postgresql.py,wms_full_box_exchange_postgresql.py}"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "tests/mock/device_simulator.py"
+heavy_tests = []
+
+# 保留的通用 ECS mock 资产由容器入口、Dockerfile 和服务合同 HEAVY 共同承接。
+[[mapping]]
+source_glob = "tests/mock/{Dockerfile,ecs_mock_catalog.py,ecs_mock_server.py}"
+heavy_tests = [
+    "tests/integration/test_mock_container_entrypoints.py",
+    "tests/mock/test_ecs_mock_server.py",
+    "tests/mock/test_mock_dockerfile.py",
 ]
 
 # WMS 北向可行性探针只承接核心 HTTP/CLI/安全与 deadline 可靠性；具体工作线规则由插件包独立拥有。
