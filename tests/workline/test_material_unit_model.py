@@ -16,7 +16,6 @@ from sqlmodel import SQLModel, select
 
 from src.app.runtime.orchestration.models import MaterialUnit, MaterialUnitStatus
 from src.app.runtime.orchestration.models.session import WorklineSession
-from src.app.runtime.workline_plugins.schema import StateMachineTransition
 from src.database.sqlite_schema import configure_sqlite_schemas
 
 
@@ -176,15 +175,3 @@ async def test_material_unit_all_statuses(material_unit_session):
         MaterialUnitStatus.NG,
         MaterialUnitStatus.RECONCILING,
     }
-
-
-def test_material_unit_statuses_match_manifest_state_machine_contract() -> None:
-    """MaterialUnitStatus 新增/调整时必须同步 manifest 状态机合同。"""
-
-    status_values = {status.value for status in MaterialUnitStatus}
-
-    for status_value in status_values:
-        transition = StateMachineTransition(from_state=status_value, to_states=(status_value,))
-        assert transition.from_state == status_value
-
-    assert status_values == {"IN_TRANSIT", "STORED", "COMPLETED", "NG", "RECONCILING"}

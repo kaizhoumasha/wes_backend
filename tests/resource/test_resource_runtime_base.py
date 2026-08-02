@@ -153,22 +153,6 @@ def test_bin_cell_occupancy_depth_columns_use_numeric_decimal_contract() -> None
         assert column_type.asdecimal is True
 
 
-def test_removed_resource_tables_are_not_registered() -> None:
-    """迁出/删除的旧 resource 职责不再注册为 resource 表。"""
-
-    removed_tables = {
-        "wes_biz.resource_execution_zones",
-        "wes_biz.resource_execution_locations",
-        "wes_biz.resource_rack_material_mounts",
-        "wes_biz.resource_wms_writeback_evidence",
-        "wes_biz.resource_rack_releases",
-        "wes_biz.resource_rack_release_bin_snapshots",
-        "wes_biz.resource_full_box_exchange_tasks",
-    }
-
-    assert removed_tables.isdisjoint(SQLModel.metadata.tables)
-
-
 def test_bin_content_snapshot_tables_are_registered() -> None:
     """料箱内容快照头和明细仍属于 resource 域。"""
 

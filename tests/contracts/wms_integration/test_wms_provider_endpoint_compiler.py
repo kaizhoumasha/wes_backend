@@ -157,7 +157,7 @@ def test_compiler_derives_all_endpoint_semantics_from_static_registry() -> None:
 
 def test_profile_cannot_override_static_operation_semantics() -> None:
     payload = deepcopy(build_provider_profile_payload())
-    payload["operations"]["wms.document.validate_rough_sorter_admission@v1"]["http_method"] = "GET"
+    payload["operations"]["wms.master_data.get_material@v1"]["http_method"] = "POST"
 
     with pytest.raises(ValidationError, match="http_method"):
         _compile(payload)

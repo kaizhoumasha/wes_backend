@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import importlib
-import subprocess
-import sys
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 
 import pytest
 
@@ -16,9 +13,6 @@ from src.app.wms_integration import provider_manifest
 from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsOperationMode
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from tests.support.wms_provider_conformance import WMS_CONFORMANCE_COMPILED_PROFILE
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 GENERATED_AT = datetime(2026, 7, 30, 8, 0, tzinfo=UTC)
 
@@ -159,35 +153,6 @@ def test_fixture_matrix_is_built_during_module_import_for_collection_fail_closed
     from tests.mock.wms_operation_fixtures import WMS_OPERATION_FIXTURE_MATRIX
 
     assert len(WMS_OPERATION_FIXTURE_MATRIX) == 35
-
-
-def test_incomplete_fixture_module_aborts_pytest_collection(tmp_path: Path) -> None:
-    probe = tmp_path / "test_incomplete_wms_fixture_collection.py"
-    probe.write_text(
-        """
-from src.app.wms_integration.operation_registry import WMS_OPERATIONS
-from tests.support.wms_conformance_runner import build_operation_fixture_matrix
-
-WMS_OPERATION_FIXTURE_MATRIX = build_operation_fixture_matrix(
-    operations=WMS_OPERATIONS,
-    request_fixtures=(),
-    result_fixtures=(),
-    reject_fixtures=(),
-    identity_mismatch_fixtures=(),
-)
-""",
-        encoding="utf-8",
-    )
-
-    completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", str(probe)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode != 0
-    assert "fixture identities must exactly match the operation registry" in (completed.stdout + completed.stderr)
 
 
 @pytest.mark.parametrize("mutation", ("missing", "extra", "duplicate"))

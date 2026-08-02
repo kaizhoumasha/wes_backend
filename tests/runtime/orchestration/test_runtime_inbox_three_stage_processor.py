@@ -921,7 +921,7 @@ async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_conte
         version=7,
         plugin_state_version=3,
         plugin_state_json={"step": 1},
-        plugin_identity="plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_identity="plugin.test@v1:" + "a" * 64,
         plugin_binding_id=17,
         plugin_binding_version=4,
         plugin_index_digest="b" * 64,
@@ -1016,7 +1016,7 @@ async def test_command_result_guards_dispatcher_before_plugin_writes(
         version=7,
         plugin_state_version=3,
         plugin_state_json={"step": 1},
-        plugin_identity="plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_identity="plugin.test@v1:" + "a" * 64,
         plugin_binding_id=17,
         plugin_binding_version=4,
         plugin_config_hash="c" * 64,
@@ -1128,7 +1128,7 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
         version=7,
         plugin_state_version=3,
         plugin_state_json={},
-        plugin_identity="plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_identity="plugin.test@v1:" + "a" * 64,
         plugin_binding_id=17,
         plugin_binding_version=4,
         plugin_config_hash="c" * 64,
@@ -1604,7 +1604,7 @@ async def test_generated_attempt_wait_anchor_change_safe_retries_then_next_round
         version=7,
         plugin_state_version=3,
         plugin_state_json={},
-        plugin_identity="plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_identity="plugin.test@v1:" + "a" * 64,
         plugin_binding_id=17,
         plugin_binding_version=4,
         plugin_config_hash="c" * 64,
@@ -1749,7 +1749,7 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
         version=7,
         plugin_state_version=3,
         plugin_state_json={"step": 1},
-        plugin_identity=None if replay_case == "missing_pin" else "plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_identity=None if replay_case == "missing_pin" else "plugin.test@v1:" + "a" * 64,
         plugin_binding_id=17,
         plugin_binding_version=4,
         plugin_index_digest="b" * 64,
@@ -1920,7 +1920,7 @@ async def test_platform_recorded_replay_precedes_late_callback_and_timer_routes(
         version=7,
         plugin_state_version=3,
         plugin_state_json={},
-        plugin_identity="plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_identity="plugin.test@v1:" + "a" * 64,
         plugin_binding_id=17,
         plugin_binding_version=4,
         plugin_index_digest="b" * 64,
@@ -2164,7 +2164,7 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
     session.version = 7
     session.plugin_state_json = {"phase": "READY"}
     session.plugin_state_version = 2
-    session.plugin_identity = "rough_sorter@rough_sorter.v2:" + "a" * 64
+    session.plugin_identity = "test_plugin@v1:" + "a" * 64
     session.plugin_binding_id = 17
     session.plugin_binding_version = 4
     session.plugin_config_hash = "c" * 64

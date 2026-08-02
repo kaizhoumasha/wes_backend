@@ -291,6 +291,21 @@ pipeline {
                         }
                     }
                 }
+
+                stage('HEAVY Selector Smoke') {
+                    steps {
+                        script {
+                            echo '🧭 验证 HEAVY selector 合同...'
+                            sh '''
+                                set -e
+                                docker run --rm \
+                                    ${CI_IMAGE} \
+                                    sh -c 'uv run pytest tests/scripts -q'
+                            '''
+                            echo '✅ HEAVY selector 合同验证通过'
+                        }
+                    }
+                }
             }
         }
 
@@ -498,11 +513,6 @@ pipeline {
 
                             echo -e "${GREEN}⏳ 等待容器启动...${NC}"
                             sleep 15
-
-                            if [ "${DEPLOY_NAME}" = "testing" ]; then
-                                echo -e "${GREEN}🌱 同步 testing WorkLine 与 Device 基础数据...${NC}"
-                                $COMPOSE_CMD exec -T api python scripts/data/sync_test_workline_devices.py
-                            fi
 
                             echo -e "${GREEN}🏥 健康检查...${NC}"
                             RETRY_COUNT=0

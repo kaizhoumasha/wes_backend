@@ -1,31 +1,31 @@
 # TODOS
 
-> 2026-07-13 清理说明：WorkLine/plugin 与 RuntimeInbox 目标态重构已成为设计真源。被
-> `docs/architecture/workline-and-plugin-restructuring.md` 吸收的旧 WorkLine、plugin、
-> queue、WMS ACL、reconciliation、monitoring、benchmark 和 DeviceCommand 待办不再在
-> active TODO 中重复维护。RuntimeInbox 数据库、Service/replay、reset、heavy benchmark 与严格 CI
-> 已完成，不重复建项；active TODO 只保留仍需后续排期的运营 UI、告警、Runbook 和其他独立事项。
+> 2026-07-31 清理说明：`docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
+> 是 WES 执行架构唯一目标基线。系统尚未发布，不保留旧版本兼容、旧数据迁移、双路径或旧架构后续事项。
+> active TODO 只记录与最终架构一致、已有真实触发条件且尚未排期的独立工作；已完成事项由 Git 历史记录，
+> 不继续保留在本文件。
 
 ## Infrastructure
 
 ### TimescaleDB audit_logs hypertable 落地
 
-**What:** 将 `wes_sys.audit_logs` 按 `opera_time` 转为 TimescaleDB hypertable，并补齐审计日志的时间分区、索引和保留策略。
+**What:** 在最终数据库模型中将 `wes_sys.audit_logs` 按 `opera_time` 建为 TimescaleDB hypertable，并补齐审计日志的时间分区、索引和保留策略。
 
 **Why:** `audit_logs` 是持续追加的历史审计事实表，主要按时间、用户、操作类型、对象类型和状态检索。当前 TimescaleDB 已启用但没有任何 hypertable，系统承担扩展成本却未使用核心能力；先从低耦合审计日志表试点，风险最低。
 
 **Context:** 2026-06-11 TimescaleDB 审计确认：`wes_db` 中 `timescaledb_information.hypertables = 0`，`audit_logs` 无外键引用，现有索引包括 `opera_time`、`trace_id`、`username`、`(object_type, opera_time)`、`(action, opera_time)`、`(status, opera_time)`。TimescaleDB 要求 hypertable 上的 `PRIMARY KEY` / `UNIQUE` 索引必须包含分区列，因此不能直接对当前 `PRIMARY KEY(id)` 表执行 `create_hypertable`。
 
 **Scope:**
-- 新增 Alembic 迁移，将 `wes_sys.audit_logs` 按 `opera_time` 创建 hypertable，建议初始 `chunk_time_interval = 7 days`
-- 迁移前处理 `pk_audit_logs` 和 `ix_wes_sys_audit_logs_id` 的唯一约束冲突：删除 `PRIMARY KEY(id)` / `UNIQUE(id)`，保留普通 `id` 索引用于现有按 ID 查询
+- 架构收敛完成前实施时直接纳入最终 Alembic 基线；不得为现有开发/测试数据编写转换迁移
+- 将 `wes_sys.audit_logs` 按 `opera_time` 创建 hypertable，建议初始 `chunk_time_interval = 7 days`
+- 建模时避免 `pk_audit_logs` 和 `ix_wes_sys_audit_logs_id` 的唯一约束冲突：不使用 `PRIMARY KEY(id)` / `UNIQUE(id)`，保留普通 `id` 索引用于按 ID 查询
 - 保留现有时间检索索引：`opera_time`、`trace_id`、`username`、`(object_type, opera_time)`、`(action, opera_time)`、`(status, opera_time)`
 - 评估并补充 `username + opera_time DESC` 复合索引，优化审计后台按用户和时间范围检索
 - 明确 `id` 唯一性取舍：数据库不再单独强制 `id` 唯一，依赖现有自增或雪花 ID 生成；如需数据库强唯一，必须重构为包含 `opera_time` 的复合主键
 - 在生产保留周期明确后添加 retention policy，例如 `add_retention_policy('wes_sys.audit_logs', drop_after => INTERVAL '365 days')`
-- 增加验证脚本或迁移测试，确认 `audit_logs` 出现在 `timescaledb_information.hypertables`，并确认原有审计查询仍可用
+- 增加空库建库测试，确认 `audit_logs` 出现在 `timescaledb_information.hypertables`，并确认目标审计查询可用
 
-**Depends on:** TimescaleDB worker 配置已落地；实施前需确认目标环境 Alembic 当前版本可正常升级，并确认生产审计日志 retention 周期。
+**Depends on:** 最终数据库 metadata 和基线生成时点已确定，TimescaleDB worker 配置已落地，并确认生产审计日志 retention 周期。
 
 **Effort:** S-M (human: 0.5-1 day / CC: ~30-60 min)
 
@@ -57,21 +57,24 @@
 
 ## WorkLine
 
-### WorkLine manifest 角色优先设备绑定向导
+### WorkLine 角色与拓扑设备绑定向导
 
-**What:** 为 WorkLine 配置台补充按 manifest 设备角色、required/optional 标记、能力缺口和 SafetyZone 影响范围组织的设备绑定向导。
+**What:** 为 WorkLine 配置台补充按标准设备角色、实际拓扑、现场容量和故障隔离范围组织的设备绑定向导。
 
-**Why:** 目标态后端会把设备角色、能力、共享设备影响范围和启停门禁固化在 manifest/validator 中；前端仍需要一个低噪声入口帮助运维按缺口补齐配置。
+**Why:** 最终架构只配置现场无法推导的设备实例、Endpoint、位置容量、角色绑定和物理拓扑；前端需要一个低噪声入口帮助运维补齐这些真实配置。
 
-**Context:** 后端目标态合同已统一到 manifest、SafetyZone 和 shared-device validator；该事项只承接尚未实现的运营配置入口，不重复定义后端规则。
+**Context:** 后端以 `WorkLine` 静态身份、标准角色约定和显式配置校验为真源，不使用 WorkLine/Vendor Manifest、动态能力 Catalog 或运行时发现。
+
+具体工作线插件位于仓库根目录 `workline_plugins/<plugin_key>/` 独立二次开发包；核心 `tests/` 不保存
+具体插件 fixture 或业务场景。绑定向导只面向 WES 通用 WorkLine 配置能力，不读取插件包测试资产。
 
 **Scope:**
-- 按 manifest required roles 展示待绑定设备、能力要求和 SafetyZone 归属
+- 按工作线模式和标准角色展示待绑定设备、位置容量及拓扑缺口
 - 支持从未绑定设备或当前 WorkLine 设备中选择/调整角色
-- active / DRAINING / VALIDATING WorkLine 只读展示，提示停线或 drain 后调整
-- 复用后端 manifest validator / configuration status 的 blocker、warning 和修复入口
+- 活动 `LineRunEpoch` 存在时只读展示，提示清线并结束当前 Epoch 后调整
+- 复用后端显式配置校验的 blocker、warning 和修复入口，不在前端复制业务规则
 
-**Depends on:** WorkLine manifest schema、SafetyZone/shared-device validator 和配置页基础合同稳定。
+**Depends on:** 最终 WorkLine、设备角色、位置拓扑和配置校验合同稳定。
 
 **Effort:** M
 
@@ -79,53 +82,31 @@
 
 ---
 
-### WorkLine inventory 批量运行引用摘要
-
-**What:** 当任一环境需要盘点超过 100 条 WorkLine 时，实现按 `workline_id` 批量汇总未完成 Session、Command、Outbox、Inbox 和 RuntimeHold 的查询 port。
-
-**Why:** Foundation inventory 复用的单条摘要最坏约 9 SQL/WorkLine；直接调大安全上限会放大 N+1、延长 `REPEATABLE READ` 快照事务，并增加生产数据库连接和 MVCC 清理压力。
-
-**Pros:** 支持大规模环境，同时让停用门禁、inventory 和后续 cutover preflight 继续共享同一套 active/terminal 状态语义。
-
-**Cons:** 需要扩展 `RuntimeInboxQueryPort`、RuntimeHold repository 和 WorkLineRepository，触及 HIGH 风险 RuntimeInbox 查询路径，必须先完成 GitNexus impact analysis。
-
-**Context:** `docs/superpowers/archive/plans/2026-07-15-workline-active-inventory-foundation.md` 将逐条查询策略的安全上限固定为 100，并设置 60 秒总超时。触发后应设计按 WorkLine 分组的 bulk count/sample 查询，让单条与批量 API 共享状态常量和测试矩阵；禁止 inventory repository 直接复制 RuntimeInbox/Outbox 等状态集合，也禁止仅通过配置调大上限。
-
-**Effort:** L (human: ~3-5 days / CC: ~6-10 hours)
-
-**Priority:** P3
-
-**Depends on:** 任一真实环境出现超过 100 条未删除 WorkLine，或性能数据证明逐条策略无法满足 60 秒总超时。
-
----
-
 ## Operations
 
 ### 统一运营看板、告警与 Runbook
 
-**What:** 在目标态 runtime、reconciliation、device 和 wms_integration 指标稳定后，建设统一运营看板、告警阈值和现场 Runbook。
+**What:** 在最终执行对象、设备和 WMS 集成指标稳定后，建设统一运营看板、告警阈值和现场 Runbook。
 
-**Why:** 旧 TODO 中的 SMT Handoff 看板、RuntimeHold 看板、急停看板、WMS breaker 告警和粗分机监控本质上是同一套运营观测能力。按目标态应合并设计，避免每条业务线重复建看板和告警口径。
+**Why:** `InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、硬件故障和依赖暂停需要在同一运营面呈现，避免每条工作线重复建设看板和告警口径。
 
 **Context:** Celery Worker 单异步运行时改造会新增按 role/PID/run-id 结构化的 PostgreSQL `application_name`、连接预算门禁和 pool timeout 配置；这些信号应并入同一运营面，而不是再建一套数据库专用看板。
 
-2026-07-25 边界更新：北向 WMS capability 已交付 operation/profile SLO 目录、目标指标口径与 Runbook，但
-`wms_effect.*` 尚未注册为生产信号，真实采集与告警映射仍由
-`docs/operations/wms-northbound-acceptance-and-cutover.md` 的 Task 9 门禁约束。本 TODO 不重复定义该领域口径，
-只在真实映射稳定后把现成信号聚合到跨 Runtime、Device、Database 的统一运营面。
+北向 WMS 已定义同步调用、breaker、超时和业务拒绝指标口径。本 TODO 不重建领域口径，只在最终信号稳定后
+聚合到跨执行对象、Device、WMS 和 Database 的统一运营面。
 
 **Scope:**
-- RuntimeInbox backlog、dead-letter、RESOURCE_WAIT、Outbox BLOCKED_RESOURCE
-- DeviceCommand ACK age、dispatch deadline、ECS status probe 失败、设备 ERROR/OFFLINE/MAINTENANCE
-- Reconciliation active 数、MTTR、reason、late callback、manual resolve
-- 聚合北向能力已定义的 WMS submit/status、breaker、timeout/5xx、429/Retry-After、UNKNOWN/open
-  reconciliation 与 callback hint 信号；不在本 TODO 重建领域口径或 Runbook
-- Safety incident / ESTOP evidence / shared-device 影响范围
+- InboundEvidence 接收/处理延迟、幂等冲突和失败数
+- DeviceCommand ACK age、CALLBACK age、dispatch deadline、设备 ERROR/OFFLINE/MAINTENANCE
+- TransportTask 成员进度、批次完成延迟和失败数
+- WmsConfirmation 待确认数量、最老年龄、重试次数和依赖恢复时间
+- 硬件故障、依赖暂停、人工清线和迟到 CALLBACK 证据
+- 聚合 WMS 同步调用、breaker、timeout/5xx、429/Retry-After 和业务拒绝信号
 - Database pool checkout wait/timeout、按 `application_name` 的连接预算占用、`idle in transaction` 数量
 - 数据库告警与 Runbook：例如 `idle in transaction > 0` 持续 2 分钟、pool timeout 或预算占用接近上限
-- 现场 Runbook：WMS/RCS 拒绝、Inbox dead-letter、command evidence 缺失、对账 evidence 缺失、设备状态不一致
+- 现场 Runbook：WMS/RCS 拒绝、入站处理失败、command evidence 缺失、WMS 确认积压、设备状态不一致和人工清线
 
-**Depends on:** 目标态 observability 指标、Celery 单异步运行时、连接预算与结构化 `application_name` 落地，并产生真实或接近真实的试运行数据。
+**Depends on:** 最终执行对象的 observability 指标、Celery 单异步运行时、连接预算与结构化 `application_name` 落地，并产生真实或接近真实的试运行数据。
 
 **Effort:** M-L
 
@@ -135,19 +116,20 @@
 
 ### 分拣机/粗分机供应商联调操作手册
 
-**What:** 在目标态 DeviceCommand、callback、RuntimeInbox、WMS fulfillment 和入库能力重建稳定后，编写分拣机/粗分机供应商联调手册。
+**What:** 在最终 DeviceCommand、CALLBACK、InboundEvidence、WMS 同步能力和入库流程稳定后，编写分拣机/粗分机供应商联调手册。
 
 **Why:** 顶层设计只定义 WES/ECS/WMS 边界和业务合同；供应商联调还需要可执行的 payload 样例、回调样例、异常码、测试步骤和恢复流程。
 
-**Context:** 手册应在目标态合同稳定后从真实接口与回调样例生成，避免继续维护已退役 WorkLineInbox 流程的供应商说明。
+**Context:** 手册应在最终合同稳定后从真实接口与回调样例生成，不引用旧 Runtime、WorkLineInbox、自动 replay 或兼容 Payload。
 
 **Scope:**
 - 设备角色、动作 payload、callback result/event 样例
 - 正常入库、NG、满箱/换架、设备失败、WMS/RCS 拒绝五类联调场景
 - command_code / event_id / trace_id / idempotency_key 使用约定
 - ECS 只 ACK Event_Push、WES 通过 Receive Command 下发后续动作的联调步骤
+- 进程重启后的证据核对、人工清线和新 LineRunEpoch 恢复步骤
 
-**Depends on:** 目标态 device command contract、external callback auth、入库能力重建和 WMS fulfillment contract 稳定。
+**Depends on:** 最终 DeviceCommand、external callback auth、WmsCapabilities 和入库业务合同稳定。
 
 **Effort:** M
 
@@ -157,11 +139,33 @@
 
 ## Reliability
 
+### 最终核心执行对象测试承接
+
+**What:** 启动最小执行架构重构并交付最终生产对象后，执行
+`docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` 的 Task 5，把通用 WorkLine 与可靠性语义改写到最终核心对象测试。
+
+**Why:** 当前测试收敛批次只调整测试所有权、重量和门禁，不负责实现生产执行内核。入口对象未完整交付前直接删除混合测试，会丢失入站幂等、ACK/CALLBACK 分离、迟到证据、人工清线和投影约束等核心不变量；继续沿用旧 Runtime/Manifest 测试又会固化待删除架构。
+
+**Scope:**
+- 在最终 `InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch` 和设备/位置投影上建立权威核心测试
+- 覆盖 WorkLine 静态身份与拓扑、Epoch 版本冻结、人工清线、持久化后 ACK、幂等冲突、ACK/CALLBACK 分离、未知物理结果不自动重放及设备/位置投影
+- 纳入下方独立 TODO 定义的处理幂等与 CALLBACK fencing 验收
+- 权威测试通过后，返回测试收敛计划完成 Task 4 的混合测试处置和 Task 7 的最终缺席验收
+- 不实现具体工作线、插件或厂商业务测试；这些测试随对应 `workline_plugins/<plugin_key>/` 二次开发包交付
+
+**Depends on:** SPEC §14.3 工作包 2 已启动，且最终执行对象、设备/位置投影及其生产路径已经交付。本 TODO 不负责创建这些生产对象。
+
+**Effort:** M-L
+
+**Priority:** P1（执行架构重构配套任务）
+
+---
+
 ### 全仓 Redis fail-open/fail-closed/fallback 审计
 
 **What:** 审计整个仓库所有 Redis 调用点，明确每个调用是 fail-open、fail-closed 还是带 fallback，并补齐缺失的降级或错误处理。
 
-**Why:** Celery Worker 单运行时改造只锁定了 Worker 与 RuntimeInbox 的 Redis 降级边界；其余模块（缓存、锁、SSE、IP 定位等）可能仍存在无明确语义的 Redis 失败路径，需要在独立后续项中统一。
+**Why:** Celery Worker 和入站异步处理只覆盖了部分 Redis 降级边界；其余模块（缓存、锁、SSE、IP 定位等）可能仍存在无明确语义的 Redis 失败路径，需要在独立后续项中统一。
 
 **Context:** `src/database/redis_client.py` 已提供原子初始化和降级模式，但尚未覆盖全仓调用点。本 TODO 应输出一份调用点清单与每点的失败语义。
 
@@ -170,99 +174,55 @@
 - 标注 fail-open（继续服务）/ fail-closed（报错拒绝）/ fallback（PostgreSQL advisory lock 等）
 - 对未标注或语义不一致的调用点补齐处理与测试
 
-**Depends on:** Worker 单运行时改造完成，Redis 原子初始化稳定。
+**Depends on:** 最终 Worker 与入站处理路径稳定，Redis 原子初始化稳定。
 
 **Effort:** M (human: ~1 day / CC: ~30 min)
 
 **Priority:** P3
 
-## Completed
+### WES 软件层处理幂等与 CALLBACK fencing
 
-### 修复 test_start_admission_service 预存失败
+**What:** 在执行内核落地两项 WES 软件层并发安全语义：(1) 处理幂等——同一 `InboundEvidence` 被并发 Handler 重复领取时不得重复创建 `DeviceCommand` 或重复推进投影；(2) CALLBACK fencing——CALLBACK 必须按 `command`/`execution`/`line`/`epoch` 关联键路由，旧 Epoch 的迟到 CALLBACK（人工清线并创建新 Epoch 后到达）只保存为证据，不得写入新对象或新 Epoch 投影。
 
-**What:** `tests/workline_runtime/test_start_admission_service.py` 19 个测试在 develop base 即失败（`START_ADMISSION_CONFIGURATION_INVALID` 等断言过时），与料盘根域分支无关。
+**Why:** 物理并发互锁归 ECS/PLC（SPEC §5.2/§8.1），但这两项是 WES 进程内与回调路由的软件层语义，ECS 不参与，写错会导致重复命令、双重状态推进或跨 Epoch 投影污染。
 
-**Why:** /ship 第五轮验收发现，pre-existing 失败需单独排查，避免污染后续 PR 的测试信号。
-
-**Context:** 2026-06-22 在 `feature/material-unit-root-domain` 分支 `/ship` 时确认 develop base `ee1f3b67` 同样失败，非本分支回归。
-
-**Scope:**
-- 排查 `start_admission_service` 启动准入逻辑与测试 fixture 的 contract version / 配置漂移
-- 修复或同步测试断言
-
-**Effort:** S
-
-**Priority:** P0
-
-**Completed:** v0.8.0.0 (2026-06-22) — fixture `rough_sorter.v1` → `v2` (合同版本同步迁移)，随 `df97828` 提交。
-
-### Runtime scene 结构化运行资源证据契约
-
-**What:** 为 Rack、Bin、PKG、Slot、Part SN、Magazine 等现场资源证据提供稳定结构化运行字段。
-
-**Why:** `/runtime/monitor` 现场态势图需要显示执行证据，但 WES 不是 WMS 库存事实源。没有结构化契约时，前端只能从 `context_json`、`payload_json`、`event_payload` 猜测资源含义，容易把插件专用 JSON 推断误展示成库存真相。
-
-**Context:** `docs/superpowers/archive/specs/2026-06-05-runtime-workline-scene-monitor-design.md` 工程评审最初接受为后续项；2026-06-08 前端 eng review 后，用户选择本 PR 直接落地逐项 `RuntimeResourceEvidenceItem[]`，不再推迟到 P3。v1 仍明确禁止前端 raw JSON resource badge inference。
+**Context:** SPEC 将幂等、持久化证据和 ACK/CALLBACK 分离列为核心可靠性，并明确具体插件测试必须移出核心
+`tests/`。处理领取幂等和跨 Epoch CALLBACK fencing 是跨插件通用的 WES 基础能力，因此实现和测试均由核心
+执行对象工作包拥有，不随粗分机、自动分拣或其他具体插件包迁移。
 
 **Scope:**
-- 定义资源证据字段的来源、命名、生命周期和权限边界
-- 区分执行证据、WMS 回调证据和库存授权/库存真相
-- 在 runtime detail 增加稳定资源证据 view
-- 补 contract/schema tests，防止前端回到 raw JSON 推断
+- 处理幂等：Handler 领取 `InboundEvidence` 时按幂等键 + 处理状态去重；同一证据并发领取只产生一个 `DeviceCommand`/一次投影推进
+- CALLBACK fencing：CALLBACK 携带并校验 `command`/`execution`/`line`/`epoch` 关联键；旧 Epoch 迟到 CALLBACK 只持久化为证据，不推进新对象状态
+- 在核心执行对象单元测试与核心 integration/concurrency 测试中分别验证处理幂等和 CALLBACK fencing；
+  测试名称和目录按最终对象命名，不使用具体插件、旧 Runtime 或 Manifest fixture
 
-**Depends on:** 与 `docs/superpowers/archive/plans/2026-06-06-wes-single-layer-rack-orchestration-boundary-plan.md` 的 runtime detail 合同同步实施。
+**Depends on:** 最终 `InboundEvidence`、`DeviceCommand`、`LineRunEpoch` 对象与核心 Handler 调度路径交付。
 
-**Effort:** M (human: ~1-2 days / CC: ~2-3 hours)
+**Effort:** M (human: ~1 day / CC: ~30 min)
 
-**Priority:** P1
-
-**Completed:** v0.4.8.0 (2026-06-08)
+**Priority:** P1（业务垂直切片硬性交接条件，Task 10/11 入口依赖）
 
 ---
 
-### 第一个真实 WMS 同步 caller integration + end-to-end RuntimeHold/diagnostic validation
+### EXTERNAL_HTTP HMAC 认证与生产级验收
 
-**What:** 选择第一个真实 WMS 同步调用方接入 `wms_integration` typed ports，并做端到端 RuntimeHold/diagnostic validation。
+**What:** 在后续安全加固批次中实现并验收 WES `EXTERNAL_HTTP` 出站 HMAC 认证，包括凭据轮换、签名校验、
+时间窗口、nonce 防重放和生产 HTTPS 传输。当前测试收敛与最小执行架构批次暂不实现 HMAC，也不以 HMAC live
+验收作为进入实施或合并的前置条件。
 
-**Why:** 当前 caller contract 通过 fake caller 保护 timeout/5xx/circuit-open 的处理边界；仍需要真实业务调用方验证 evidence_key 传播、RuntimeHold 或诊断创建、用户可见错误和恢复路径。
-
-**Context:** `docs/superpowers/archive/plans/2026-05-26-wms-integration-domain.md` 的 Deferred / TODO Decisions 已接受该后续项，`docs/integration/wms_caller_checklist.md` 是接入检查清单。
-
-**Scope:**
-- 选定首个真实 WMS 同步查询或写入场景
-- 调用方只依赖 typed ports，不直接 import WMS HTTP client
-- timeout/5xx/circuit-open 按 checklist 创建 RuntimeHold 或诊断
-- 验证 evidence_key、trace_id、request_id 在业务错误和运维视图中可追踪
-- 增加端到端或集成测试覆盖成功、WMS business reject、WMS unavailable 和 breaker open
-
-**Depends on:** 首个业务接入场景确认，RuntimeHold/diagnostic 入口可用。
-
-**Effort:** M-L
-
-**Priority:** P1
-
-**Completed:** v0.4.1.0 (2026-05-27)
-
-### Runtime reconciliation 系统级处理
-
-**What:** 按 `docs/superpowers/archive/plans/2026-05-08-workline-timeout-system-handling.md` 实现系统级 runtime reconciliation，移除插件 `on_timeout()` 默认 failure 路径。
-
-**Why:** execution Callback timeout 和 dispatch ACK exhausted 都是物理状态未知/通信接受状态未知，不能由插件默认 failure 处理，也不能自动重发物理命令。
-
-**Context:** 已由 `2026-05-08-workline-timeout-system-handling.md` 取代原“Timeout 默认 failure 独立实现”方向。
+**Why:** HMAC 属于通用外部 HTTP 安全能力，但当前本地 WMS acceptance 只提供 HTTP；直接复用
+`authenticated_network` 生产 Profile 会被既有 HTTPS fail-closed 门禁正确拒绝。为让旧 live 用例通过而放宽
+生产 HTTPS 约束会降低安全边界，也会把具体 WMS 工作线/插件测试重新耦合进核心 `tests/`。
 
 **Scope:**
-- 删除 `@on_timeout()` / `WorklinePlugin.on_timeout()` 兼容路径
-- `WorklineRuntimeReconciliationService`
-- ACK 后激活 execution deadline
-- dispatch ACK exhausted reconciliation
-- `BLOCKED_RESOURCE` parked outbox release
-- focused runtime reconciliation tests
+- 明确 `isolated_lan` 与 `authenticated_network` 的认证、传输和失败语义，生产 Profile 继续强制 HTTPS
+- 实现 HMAC canonical request、凭据引用与轮换、timestamp 窗口、nonce 防重放、签名错误脱敏和审计证据
+- 建设独立 HTTPS acceptance 环境，验证正确签名、错误签名、过期时间戳、nonce 重放和密钥轮换
+- 核心测试只保留协议无关的 WES 安全合同；具体 WMS 操作、路径和 payload 验收随对应插件二次开发包交付
+- 当前分支已从核心 `tests/` 移除原 WMS HMAC live 验收；后续只在本 TODO 或具体插件二次开发包中恢复对应测试
 
-**Depends on:** WorkLine 软件侧急停冻结计划完成或独立排期。
+**Depends on:** `EXTERNAL_HTTP` 基础调用合同稳定，HTTPS acceptance 证书与凭据注入方案明确；具体插件测试完成所有权迁移。
 
-**Effort:** M
+**Effort:** M (human: ~1 day / CC: ~30 min)
 
-**Priority:** P2
-
-**Completed:** v0.4.0.0 (2026-05-12)
+**Priority:** P3

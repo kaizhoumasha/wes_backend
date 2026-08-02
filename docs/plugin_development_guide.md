@@ -1,170 +1,236 @@
-# WORKLINE Generated Plugin 开发指南
+# WORKLINE 业务插件二次开发指南
 
-本文面向当前 WORKLINE 插件开发者。生产插件统一位于
-`src/app/runtime/workline_plugins/`，通过 generated index、immutable Plugin Binding
-和 `WorklinePluginDispatcher` 执行。
+> 本指南只回答一件事：如何根据仓库工作线物理情况、硬件厂家设备指令清单和 WMS 业务合同，
+> 开发一套可部署、可测试的工作线业务插件。
+>
+> 架构原理以[WES 最小执行架构收敛设计][architecture-spec]为准，不在本文重复展开。
 
-当前参考实现：
+## 1. 开发前必须准备
 
-- `rough_sorter/`：多 route、独立 config/input/state 的完整插件。
-- `smt_sorting_inbound/`：source-pick 最小业务切片。
-- `generated_index.py`：生成产物，只能由生成器更新。
+开始编码前取得以下资料：
 
-## 核心边界
+| 输入 | 必须明确的内容 |
+| --- | --- |
+| 工作线物理资料 | 设备、位置、缓存、队列、容量、物理连接、对象流向、故障隔离范围 |
+| 厂家接口资料 | 每台设备的 Event、Command、请求和响应、ACK、最终 CALLBACK、错误码、幂等规则 |
+| WMS 业务合同 | 业务查询、来源和目标授权、人工任务、搬运目标、完成确认、业务拒绝 |
+| 验收场景 | 正常流、等待、业务 NG、设备失败、WMS 不可用、重启清线、并发对象 |
 
-插件负责：
+资料必须能回答：
 
-- 固定 `plugin_key` 与 `contract_version`。
-- 用 typed schema 声明设备角色、命令、route 和 System Capability。
-- 为每个 route 注册 stable handler、facts model 与 facts builder。
-- 以纯函数根据 input、state、config、facts 产生 `PluginDecision`。
-- 只返回 intent，不直接落数据库或发送消息。
+1. 哪个物理信号触发 WES。
+2. 当前对象和目标位置在哪里。
+3. 判定前需要读取哪些投影或 WMS 事实。
+4. 判定后调用厂家清单中的哪条真实命令。
+5. 哪个 CALLBACK 表示物理动作最终完成。
+6. 成功、NG、设备故障和依赖不可用分别如何继续。
 
-插件不负责：
+厂家未提供最终 CALLBACK、命令关联、幂等行为或错误语义时，先补齐合同，不得在插件中猜测。
 
-- 不创建或修改 Session、Execution、RuntimeInbox、DeviceCommand、SystemOutbox、Timeline 或 Hold。
-- 不访问 Repository、SQL、HTTP Client、Celery 或 provider implementation。
-- 不生成或覆盖 `command_code`。
-- 不实现 ACK、重试、timeout、recovery scan、事务或幂等基础设施。
-- 不在 RuntimeInbox bridge、dispatcher 或 callback 中增加插件私有分支。
-- 不提供未绑定执行、备用 delegate、route alias 或运行时 fallback。
+## 2. 按顺序开发
 
-## 推荐目录
+### 2.1 建立 WorkLine 物理模型
 
-最小插件使用四个文件：
+按现场实际划分 WorkLine，并整理：
 
-```text
-src/app/runtime/workline_plugins/<plugin_key>/
-  __init__.py
-  contracts.py
-  handlers.py
-  definition.py
-```
+- 入口、出口、工作位、缓存、队列、NG 去向和容量。
+- 扫码器、输送设备、机械臂、检测设备等实际设备。
+- 每台设备承担的稳定业务角色。
+- 上下游连接、对象流向和 AGV/CTU 交接点。
+- 单设备、当前对象或整线级故障隔离范围。
 
-复杂插件可像 `rough_sorter/` 一样拆分 `config.py`、`inputs.py`、`state.py` 和
-`domain_contract.py`，但只在文件确有独立职责时拆分。
+建议先形成以下清单：
 
-对应测试放在：
+| 清单 | 字段 |
+| --- | --- |
+| 位置 | 编码、角色、所属 WorkLine、容量、允许对象、上游、下游 |
+| 设备 | 厂家编码、设备类型、角色、所属 WorkLine、Endpoint、状态来源 |
+| 连接 | 上游、下游、物理方向、触发事件、执行设备 |
+| 故障 | 厂家错误码、物理含义、影响对象、隔离范围、人工处理 |
 
-```text
-tests/workline_plugins/<plugin_key>/
-```
+设备内部步骤、坐标、机械互锁和安全逻辑属于 ECS/PLC。插件只选择厂家提供的长命令，不拆分其内部动作。
 
-不要在 `tests/` 根目录新增测试。真实 PostgreSQL 闭环放在
-`tests/integration/workline_capabilities/`。
+物理模型完成时，每个场景都必须能从触发输入追踪到当前对象、目标设备和位置、厂家命令、
+最终 CALLBACK、新位置及下一步。
 
-## Definition 与 route registration
+### 2.2 整理厂家设备合同
 
-`definition.py` 是插件静态合同入口，应包含：
+为每台设备建立指令矩阵：
 
-- fixed plugin identity；
-- typed config/state；
-- 设备、命令与资源 schema；
-- allowed System Capabilities；
-- logical route 到 `HandlerRegistration` 的完整映射。
+| 项目 | 记录内容 |
+| --- | --- |
+| Event | 事件名、触发条件、Payload、事件幂等键、WES ACK |
+| Command | 命令名、请求 Payload、同步 ACK、设备忙或拒绝响应 |
+| CALLBACK | 命令关联字段、成功和失败 Payload、最终物理后置条件 |
+| Status | 空闲、运行、故障、离线的字段和取值 |
+| Error | 错误码、物理含义、隔离范围、是否需要人工清线 |
+| Idempotency | 重复命令和重复 CALLBACK 的厂家行为 |
+| Timing | HTTP timeout、预计完成时间、CALLBACK 最长期限 |
 
-每个 `HandlerRegistration` 必须同时提供：
-
-- `handler`：纯业务决策函数；
-- `facts_model`：该 route 接受的 typed facts；
-- `facts_builder`：从通用 `PluginAttemptFactSource` 构建 facts 的顶层稳定函数。
-
-facts builder 的 import identity 会进入 generated index digest。lambda、局部函数、
-重复 registration 和不稳定 callable 会在生成阶段被拒绝。builder 输出还会在 dispatch
-前由 `facts_model` 再校验一次。
-
-## Config、State、Input 与 Facts
-
-- Config 只表达插件业务配置，使用 Pydantic 严格校验。
-- State 只表达插件 decision 的 immutable 下一状态，不直接代表数据库写入。
-- Input 只表达 route 的 canonical 输入，不读取任意 callback payload fallback。
-- Facts 只包含平台已验证的 immutable 事实，不携带 ORM entity、Session 或 Repository。
-- 共享的 `CommandResultInput`、`CapabilityEffectResultInput` 等输入放在平台
-  `contracts.py`，不在各插件复制。
-
-## Command 与 callback authority
-
-插件声明设备动作和业务参数；WES Runtime 统一生成 `command_code` 并持久化
-`DeviceCommand + SystemOutbox`。
-
-`COMMAND_RESULT` 必须携带有效 `RuntimeInbox.command_id`。Runtime 根据该 ID 读取
-权威 `DeviceCommand`，再校验 task type、command code、correlation 和业务 evidence。
-callback payload 不能覆盖这些权威字段。
-
-校验失败必须返回稳定 diagnostic，且 effect write set 为空。
-
-## Binding 与 activation
-
-新执行只能来自 active immutable Plugin Binding。激活时平台校验：
-
-- generated definition 与 contract version；
-- canonical config hash；
-- generated index digest；
-- provider profile identity（插件声明时必填并进入 snapshot）；
-- 环境、撤权、禁用和有效期。
-
-`WorklineSession`、`ExecutionSession` 与 `ExecutionWorkItem` 创建时固定：
+必须区分：
 
 ```text
-plugin_key
-contract/manifest_version
-plugin_binding_id
-plugin_binding_version
-plugin_config_hash
-plugin_index_digest
+HTTP 请求成功
+≠ ECS 已接纳 ACK
+≠ 设备物理动作最终成功 CALLBACK
 ```
 
-这些字段在 ORM 和 PostgreSQL 都是必填；业务代码不得构造缺 pin 的运行态记录。
+只有最终 CALLBACK 可以推进对象和位置。WES 不发明通用厂家命令，也不要求厂家改变其真实
+Event、Command 或 Payload。
 
-## System Capability
+### 2.3 编写厂家 Adapter
 
-插件只能调用 Definition 显式声明的 `(capability_key, version)`。平台 gateway 会拒绝：
+每个厂家合同由三类代码隔离：
 
-- 未声明 capability；
-- version 不匹配；
-- payload 不满足 typed contract；
-- effect evidence 与当前 attempt 不一致。
+- DTO：精确校验厂家实际 Payload。
+- HTTP Adapter：处理 Endpoint、认证、请求、响应和传输错误。
+- Mapper：把厂家设备、Event 和 CALLBACK 映射为工作线角色化输入。
 
-System Capability handler 拥有自己的 Service/Repository 边界；插件只表达调用意图，
-不直接 import 实现。
+Adapter 不包含工作线业务规则，插件不读取厂家原始 JSON。新增厂家时，不应修改最小执行内核。
 
-## 生成与验证
+### 2.4 建立业务场景决策表
 
-修改 Definition、registration、facts builder 或 handler identity 后运行：
+每个真实业务场景先写决策表，再写 Handler：
+
+| 字段 | 内容 |
+| --- | --- |
+| 触发 | 角色化 Event、最终 CALLBACK 或 WMS 业务输入 |
+| 当前事实 | 对象、位置、队列、目标设备状态 |
+| WMS 查询 | 当前步骤需要的授权、来源、目标或业务判定 |
+| 正常 Decision | 等待、设备命令、搬运、WMS 确认、正常路由或完成 |
+| 成功后置条件 | CALLBACK 后更新的对象、位置、队列和设备投影 |
+| 业务 NG | NG 原因、来源证据、物理去向 |
+| 执行异常 | 硬件错误、隔离范围、人工处理 |
+| 依赖异常 | WMS 不可用时的暂停和待确认事实 |
+
+### 2.5 实现 Handler
+
+Handler 只接收：
+
+- 已完成身份校验和角色映射的类型化输入。
+- 当前 `LineRunEpoch` 和对象执行的只读事实。
+- `ProjectionReader` 返回的位置、队列和设备投影。
+- `WmsCapabilities` 返回的同步业务结果。
+- Decision Factory。
+
+Handler 只返回以下封闭 Decision：
+
+- 等待设备或位置。
+- 下发一个厂家 ECS 长命令。
+- 请求一次 AGV/CTU 搬运。
+- 创建一次 WMS 确认义务。
+- 路由到正常下一步或业务 NG。
+- 完成本次对象执行。
+
+后续步骤由最终 CALLBACK 或新的业务输入触发。一个 Handler 不等待整条工作线执行完成。
+
+### 2.6 注册和配置
+
+插件使用稳定 Python 引用显式注册。注册内容只包括：
+
+- 插件身份和版本。
+- 支持的工作线流程模式。
+- Handler 的设备角色、输入类型和适用流程。
+
+每个活动 `LineRunEpoch` 固定插件版本、配置版本和流程模式。切换插件、模式、角色绑定或物理拓扑前，
+必须清线并创建新 Epoch。
+
+配置只保存现场事实：
+
+- 设备实例、Endpoint 和凭据引用。
+- 设备角色、位置角色和实际物理拓扑。
+- 位置、队列容量和故障隔离范围。
+- 无法由约定推导的少量业务参数。
+
+相同类型工作线只创建不同配置实例，不复制插件代码。
+
+## 3. 目标文件结构
+
+```text
+workline_plugins/<plugin_key>/
+├── pyproject.toml
+├── src/
+│   └── <plugin_package>/
+│       ├── __init__.py
+│       ├── contracts.py
+│       ├── handlers.py
+│       ├── registration.py
+│       └── adapters/
+│           └── <vendor>/
+├── tests/
+│   ├── unit/
+│   ├── contracts/
+│   ├── integration/
+│   ├── e2e/
+│   └── resilience/
+└── fixtures/
+```
+
+插件包是独立二次开发交付单元：自己声明 WES SDK 版本、厂商依赖、测试配置和构建入口。插件代码、测试和
+fixture 必须在同一工作包加入；不得先在核心 `tests/` 中寄存具体插件测试，也不得创建只有测试没有插件代码的
+空包。
+
+核心仓库不保存具体插件源码。只有出现真实独立职责时才增加文件，不得预建客户尚未需要的扩展点或业务模板。
+
+## 4. 开发硬规则
+
+- 插件不得访问数据库 Session、ORM、Repository、SQL、HTTP Client 或 Celery。
+- 所有依赖必须显式注入；禁止 Service Locator、全局容器查找和动态 import。
+- 厂家差异只能进入 Adapter、DTO、Mapper 和合同测试。
+- 插件只读取本地投影，通过 `WmsCapabilities` 访问同步 WMS 业务事实。
+- 改变 WMS 状态的结果通过 `WmsConfirmation` 可靠提交，不在插件中直接发送。
+- 设备命令必须先持久化为 `DeviceCommand`；ACK 不得当作最终完成。
+- 设备间机械互锁由 ECS/PLC 负责，插件不得建立工作线级全局锁。
+- 业务 NG 是正常分支，不得伪装为硬件故障。
+- WMS 不可用属于依赖暂停，不得标记为业务 NG。
+- 物理状态不确定时必须人工清线，不得自动重放命令或猜测现场状态。
+- 不使用 Manifest、动态 Catalog、生成索引或通用 Intent/Effect/Capability 平台。
+- 不保留旧字段 alias、兼容 shim、双写、双读或旧路径 fallback。
+- 相似逻辑满足 Rule of Three 后才抽取小型技术库，不建设通用工作流框架。
+
+## 5. 测试与验证
+
+| 测试 | 至少覆盖 |
+| --- | --- |
+| 厂家合同 | 真实 Event、Command、ACK、CALLBACK、角色映射、非法 Payload 和关联冲突 |
+| 插件逻辑 | 正常 Decision、设备忙、位置满、模式不匹配、业务 NG、硬件故障、依赖暂停 |
+| 执行闭环 | 具体工作线的最终 CALLBACK、投影更新、多对象并发和人工清线 |
+| 架构边界 | Handler 不依赖数据库、Repository、HTTP、Celery、Service Locator 或全局容器 |
+
+入站持久化与幂等、通用命令证据、`LineRunEpoch` fencing 等 WES 基础能力由核心测试证明；插件测试只覆盖该
+具体插件新增的业务风险，不复制核心测试。
+
+插件包使用自己的 Pytest 配置、覆盖率和 CI。进入插件包目录后至少运行：
 
 ```bash
-uv run scripts/generate_runtime_extensions.py
-uv run scripts/generate_runtime_extensions.py --check
-uv run pytest tests/workline_plugins/<plugin_key> -q
-uv run pytest tests/workline_runtime/extensions -q
+uv sync --dev
+uv run pytest tests/unit tests/contracts -q
+uv run pytest tests/integration tests/e2e tests/resilience -q
+uv run ruff format --check .
+uv run ruff check .
 ```
 
-生成文件禁止手工编辑。提交前至少验证：
+插件包需要真实 PostgreSQL、HTTP、CALLBACK、故障或并发环境时，在自身 CI 显式准备并运行受影响场景。
+WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY selector 都不得发现或运行这些插件测试。
 
-- identity 与 digest 稳定；
-- config/input/state/facts 成功和失败路径；
-- capability 声明隔离；
-- command/result authority；
-- mismatch/reject 零副作用；
-- 重复 input 的幂等 decision；
-- binding activation 与 digest mismatch fail closed。
+## 6. 交付检查
 
-涉及数据库不变量、命令/Outbox、callback 或 recovery 时，再运行对应的隔离
-PostgreSQL integration suite。
+- [ ] 所有现场设备和位置都有明确角色与配置。
+- [ ] 所有厂家 Event、Command、ACK、CALLBACK 和错误码都有 DTO 与合同测试。
+- [ ] 每个业务场景都有决策表、Handler 和成功/失败测试。
+- [ ] 每个设备命令都来自厂家清单，每个 CALLBACK 都能唯一关联命令。
+- [ ] 插件只处理角色化输入，只返回封闭 Decision。
+- [ ] 插件没有数据库、Repository、HTTP、Celery 或动态依赖查找。
+- [ ] 业务 NG、硬件故障、依赖暂停和人工清线语义明确分离。
+- [ ] 插件版本、配置版本和流程模式固定在 `LineRunEpoch`。
+- [ ] 插件代码、测试和 fixture 位于同一个 `workline_plugins/<plugin_key>/` 独立包。
+- [ ] 插件自己的合同测试、单元测试、受影响重测试和质量门禁全部通过。
+- [ ] 核心 `tests/` 未新增任何具体工作线、插件或厂商行为测试。
 
-## SMT source-pick 参考闭环
+## 参考
 
-```text
-handoff request
-  → bound Session / Execution / WorkItem
-  → RuntimeInbox
-  → generated SMT route
-  → DeviceCommand + SystemOutbox
-  → COMMAND_RESULT(command_id)
-  → authoritative command validation
-  → unique recovery correlation
-  → source item PICKED
-```
+- [WES 最小执行架构收敛设计][architecture-spec]
+- [测试指南][test-guide]
 
-零候选、多候选、evidence mismatch、设备失败、重复 callback 和重复 recovery scan
-都必须 fail closed 或进入受控 Hold，不得猜测关联，也不得重复落 effect。
+[architecture-spec]: superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
+[test-guide]: ../tests/README.md

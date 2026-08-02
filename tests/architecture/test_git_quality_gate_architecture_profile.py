@@ -72,41 +72,6 @@ exit 0
     assert "runtime toggle release gate reached" in result.stderr
 
 
-def test_quality_profile_runs_runtime_evidence_readiness_gate(tmp_path):
-    """quality profile 必须调用 runtime evidence readiness 门禁。"""
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir(parents=True, exist_ok=True)
-    fake_uv = fake_bin / "uv"
-    fake_uv.write_text(
-        """#!/usr/bin/env bash
-if [[ "$*" == *"scripts/check_runtime_evidence_readiness_gate.py"* ]]; then
-  echo "runtime evidence readiness gate reached" >&2
-  exit 24
-fi
-exit 0
-""",
-        encoding="utf-8",
-    )
-    fake_uv.chmod(0o755)
-
-    env = {
-        **os.environ,
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-    }
-    result = subprocess.run(
-        ["/bin/bash", str(QUALITY_GATE), "--profile", "quality"],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 24
-    assert "[runtime-evidence-readiness] check_runtime_evidence_readiness_gate.py" in result.stdout
-    assert "runtime evidence readiness gate reached" in result.stderr
-
-
 def test_quality_gate_no_longer_exposes_workline_restructuring_readiness() -> None:
     """quality gate 不再暴露已退役的 WorkLine restructuring readiness check。"""
     text = QUALITY_GATE.read_text(encoding="utf-8")

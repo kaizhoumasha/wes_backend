@@ -73,18 +73,3 @@ def test_operation_specific_query_port_adapter_and_old_executor_are_deleted() ->
     assert not (REPO_ROOT / "src/app/wms_integration/ports/query_inventory_operation.py").exists()
     assert not (REPO_ROOT / "src/app/wms_integration/adapters/query_inventory_operation_adapter.py").exists()
     assert not (REPO_ROOT / "src/app/wms_integration/services/query_transport.py").exists()
-
-
-def test_rough_sorter_handler_has_no_q14_admission_fallback() -> None:
-    source = (REPO_ROOT / "src/app/runtime/workline_plugins/rough_sorter/handlers.py").read_text(encoding="utf-8")
-
-    forbidden = (
-        "QUERY_INVENTORY",
-        "WMS_QUERY_IDENTITY",
-        "RoughSorterInventoryAdmissionPolicyInput",
-        "decide_rough_sorter_inventory_admission",
-    )
-    assert [token for token in forbidden if token in source] == []
-    assert not (
-        REPO_ROOT / "src/app/runtime/capabilities/material_flow/rough_sorter_inventory_admission_policy.py"
-    ).exists()

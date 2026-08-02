@@ -44,7 +44,7 @@ PostgreSQL 事务级 bucket 锁内核算并发/速率额度，再用 `FOR UPDATE
 
 - 新增 `src/app/sys/dispatch_concurrency.py`
 - 修改 `src/app/sys/repositories/outbox_repository.py`
-- 测试 `tests/sys/test_system_outbox_dispatch_concurrency.py`
+- 测试 `tests/integration/test_system_outbox_dispatch_concurrency.py`（核心 HEAVY，显式运行）
 - 集成测试 `tests/integration/test_system_outbox_dispatch_concurrency_postgresql.py`
 
 **接口与验收：**

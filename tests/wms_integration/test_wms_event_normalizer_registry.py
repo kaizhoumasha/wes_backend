@@ -57,7 +57,7 @@ def _event(event_type: str, data: dict[str, object]) -> dict[str, object]:
             "WMS_PDA_OPERATION_RECORDED",
             {
                 "operation_record_id": "PDA-OP-001",
-                "operation_type": "MANUAL_PUTAWAY",
+                "operation_type": "MANUAL_COUNT",
                 "operator_code": "OP-001",
             },
             WmsPdaOperationRecordedEvent,

@@ -61,16 +61,17 @@ raw body bytes 计算并校验 `X-WES-Content-SHA256`；验签后显式解析 JS
 
 ## 黑盒探针证据
 
-2026-07-25 先运行快速合同测试，再显式构建并启动实际 Docker Compose 服务：
+2026-07-25 先显式运行核心 HEAVY 合同测试，再构建并启动实际 Docker Compose 服务：
 
-- `uv run pytest tests/contracts/wms_integration/test_wms_northbound_feasibility_probe.py -q`；
+- `uv run pytest tests/integration/test_wms_northbound_feasibility_probe.py -q`；
 - `docker compose --profile dev build mock_ecs mock_wms`；
 - `uv run pytest tests/integration/test_mock_container_entrypoints.py -q`，结果 `5 passed`，覆盖 ECS/WMS
   双入口、合法浮点合同覆盖，并校验报告保留格式正确的点时镜像 digest；
 - `docker compose -f docker-compose.wms-acceptance.yml up -d --force-recreate mock_wms_acceptance`，该验收配置
   使用独立 service identity 和默认宿主端口 `18011`，不含 `build`、源码 bind mount 或 `--reload`；
-- `WMS_NORTHBOUND_LIVE_BASE_URL=http://127.0.0.1:18011 WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS=0.25
-  uv run pytest tests/integration/test_wms_mock_northbound_live.py -q`，结果 `6 passed`，并验证容器 `.Image`
+- 历史运行 `WMS_NORTHBOUND_LIVE_BASE_URL=http://127.0.0.1:18011 WMS_NORTHBOUND_LIVE_TIMEOUT_SECONDS=0.25
+  uv run pytest tests/integration/test_wms_mock_northbound_live.py -q`，结果 `6 passed`，并验证容器 `.Image`；
+  该具体 WMS live 验收文件已在测试收敛分支移出核心 `tests/`，不再作为当前可执行命令。历史证据中的容器 `.Image`
   等于本轮 `MOCK_WMS_ACCEPTANCE_IMAGE`（默认 `wes-mock:wms`）在本机解析出的 image ID、
   `/app/tests/mock` 无宿主机挂载，且容器日志不含完整
   `idempotency_key`、`ClientDisconnect` 或 `Exception in ASGI application`；
@@ -78,7 +79,7 @@ raw body bytes 计算并校验 `X-WES-Content-SHA256`；验签后显式解析 JS
   --base-url http://127.0.0.1:18011 --timeout-seconds 0.25
   --submit-timeout-seconds 0.25 --status-timeout-seconds 0.25`，结果 48 个 case 全部 `passed=true`。
 
-快速测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项针对已构建镜像的真实 TCP 黑盒证据。
+核心 HEAVY 测试用 `ASGITransport` 提供诊断速度；最终 `GO` 依据后两项针对已构建镜像的真实 TCP 黑盒证据。
 开发用 `docker-compose.yml` 仍保留热更新挂载，但不参与最终镜像验收。探针不读取 Mock 内部状态，
 只经 submit/status/debug 的公开 HTTP 路由断言。并发证据由具名 live case
 `test_compose_mock_wms_concurrent_identical_replay_over_tcp` 与

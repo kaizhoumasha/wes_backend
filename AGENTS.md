@@ -1,3 +1,4 @@
+DO NOT send optional commentary
 # Repository Guidelines
 
 > 本文件适用于所有 AI Agent（Claude Code、Codex、Cursor、Windsurf 等），确保统一的架构约束和开发规范。
@@ -202,7 +203,7 @@ Use `uv` locally.
 - `sh src/celery_app/dev_worker_autoreload.sh`: run the Celery worker with source watching during active backend development.
 - `./scripts/install-git-hooks.sh`: enable the repo-managed `pre-commit` quality gate for the current worktree.
 - `./scripts/git-quality-gate.sh --profile quality`: run the same local quality gate used by the tracked `pre-commit` hook.
-- `uv run pytest tests/`: run the full test suite.
+- `uv run pytest tests/`: run the default FAST test suite; QUALITY and affected HEAVY use their explicit commands below.
 - `uv run ruff format . && uv run ruff check .`: match the formatter and linter used in CI.
 - `uv run bandit -r src/`: run the same security scan used by Jenkins.
 
@@ -264,30 +265,56 @@ Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 
 
 所有 Agent 新增、移动、拆分或删除测试时，必须遵守 [`tests/README.md`](tests/README.md) 的目录归属、默认快速回归和重测试边界。
 
+测试治理硬约束：
+
+- 必须先建立目标对象测试并通过，再删除对应旧测试；不得反向。
+- 同一行为只能有一个主要测试所有者。
+- 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径，或明确标注 `NONE`。
+- 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
+- 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；重测试边界由目录位置和 `norecursedirs` 共同保证。
+- WES 核心 `tests/` 只验证 SPEC 定义的最小执行内核、通用 WorkLine 能力、共享外部合同和可靠性不变量。
+- 具体工作线、具体插件和具体厂商行为测试必须位于 `workline_plugins/<plugin_key>/tests/`，并与该插件的 `pyproject.toml`、`src/` 和 `fixtures/` 同工作包交付。
+- 核心仓库不得存在 `tests/workline_plugins/`，核心测试不得导入根目录二次开发插件包或具体插件实现。
+- 插件测试不得进入核心默认 pytest、核心覆盖率、核心质量门禁或核心 HEAVY selector。
+
 **STRICTLY FORBIDDEN**:
 - ❌ 在 `tests/` 根目录新增 `test_*.py`
 - ❌ 把 integration / e2e / resilience / load / mock 测试混入默认快速回归集
 - ❌ 为了快速通过门禁删除有业务价值的断言或失败路径覆盖
 - ❌ 把 API facade 测试写成 service / repository / projection / orchestrator 大杂烩
+- ❌ 把具体工作线或插件测试改名后放入 contracts / runtime / integration / e2e 等核心目录
+- ❌ 创建只有测试、没有对应插件代码和 fixture 的二次开发插件包
 - ❌ 新增超过 `3000` 行的测试文件；单文件超过 `1000` 行必须优先拆分或说明原因
 
 **Required placement**:
 - `tests/api/`: route、permission、response model、API facade 行为
-- `tests/workline_runtime/`: runtime service、orchestrator、intent、diagnostic、session resolver 纯逻辑
-- `tests/workline_plugins/`: plugin contract、plugin behavior、template asset
+- `tests/workline/`: WorkLine 静态身份、物理拓扑、配置校验和 `LineRunEpoch` 等通用能力
+- `tests/runtime/`: 与具体插件无关的最小执行对象、投影、可靠性和诊断能力；旧平台测试必须逐步改写或删除
 - `tests/contracts/`: 跨系统/跨模块契约
 - `tests/core/`, `tests/database/`, `tests/sys/`, `tests/api_auth/`, `tests/deployment/`, `tests/utils/`: 对应基础设施或领域边界
 - `tests/integration/`, `tests/e2e/`, `tests/resilience/`, `tests/load/`, `tests/mock/`: 显式运行的重测试目录，默认 pytest 不收集
+- `workline_plugins/<plugin_key>/tests/`: 具体插件独立测试树，不属于核心 `tests/`，由插件包自己的 Pytest 配置和 CI 运行
 
 **Required verification for test changes**:
 ```bash
-uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
+uv run pytest tests/architecture/test_suite_topology_guardrail.py tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
 uv run pytest <changed-test-files-or-domain> -q
 uv run pytest --collect-only -q -o addopts='' | tail -5
 ./scripts/git-quality-gate.sh --profile quality
 ```
 
 If a change intentionally touches integration / e2e / resilience / load / mock behavior, explicitly run the affected heavy-test directory and mention it in the PR. Do not rely on default pytest collection for those suites.
+
+### HEAVY Selector Mapping Governance
+
+[`docs/architecture/heavy-test-impact.toml`](docs/architecture/heavy-test-impact.toml) 是 HEAVY selector 的机器可读映射真源，长期维护要求如下：
+
+- 新增可能影响运行时的生产模块、迁移或基础设施配置时，必须同步增加精确 `[[mapping]]`；经评审确认无 HEAVY 影响时才可使用空 `heavy_tests` 表示显式 NONE，否则 selector 会 fail closed。
+- 新增或移动 HEAVY 测试路径时，必须同步更新所有引用该路径的 `heavy_tests`。
+- HEAVY 支撑资产与共享测试资产同样属于候选范围，不能被 `tests/**` ignore 兜底遮蔽。
+- 当前尚无已验收权威 HEAVY 测试的既有业务、迁移、运行时配置和共享资产候选路径保持未映射；不得以 NONE 或臆造旧测试映射掩盖风险，待独立业务交接后补精确 mapping。
+- 本地使用 `uv run scripts/select_heavy_tests.py --scope unstaged`；暂存区使用 `--scope staged`。CI 必须使用 `--base origin/${CI_TARGET_BRANCH}`，不能用工作区 scope 代替提交差异。
+- selector 合同由 `uv run pytest tests/scripts -q` 验证，并永久纳入 quality profile；真实 HEAVY 测试不进入本地提交门禁。
 
 ## Commit & Pull Request Guidelines
 Recent history follows Conventional Commits with scopes, for example `feat(auth,menu): ...` and `fix(user,tree): ...`. Keep subjects imperative and concise, and mention migrations when schema changes are included. PRs should summarize behavior changes, list local verification steps, link the issue, and call out config, migration, or API contract impacts.

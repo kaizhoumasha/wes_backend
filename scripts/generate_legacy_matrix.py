@@ -33,7 +33,6 @@ SCAN_DIRS = {
     "src/workline_runtime": "workline_runtime",
     "src/workline_plugins": "workline_plugins",
     "tests/workline_runtime": "workline_runtime",
-    "tests/workline_plugins": "workline_plugins",
     "docs/templates/workline_plugin": "workline_runtime",
 }
 
@@ -374,15 +373,6 @@ MIGRATED_DOMAIN_IMPLS = {
     ),
 }
 
-MIGRATED_TEST_IMPLS = {
-    "tests/workline_plugins/test_barcode_decision_service.py": (
-        "tests/contracts/workline/test_barcode_decision_contract.py"
-    ),
-    "tests/workline_plugins/test_rough_sorter_contract.py": (
-        "tests/contracts/workline/test_rough_sorter_inbound_contract.py"
-    ),
-}
-
 # runtime migration F-1/F-2:workline/repositories 运行态 repository 物理迁入
 # runtime/orchestration/repositories。CAPABILITY_IMPLEMENTATION_IMPORT seed
 # 仍按旧入口追踪,映射回 legacy 路径。
@@ -425,35 +415,25 @@ SHIM_INTERNAL_SYMBOLS = {
     ("src/app/workline/services/inbox_batch_processor.py", "_load_target_module"),
 }
 
-# Legacy audit 只追踪待迁移或待删除入口。当前迁移清单基础能力是目标态能力，
-# 不得进入 cleanup ledger；使用精确路径避免未来静默扩大排除范围。
+# Legacy audit 只追踪待迁移或待删除入口。当前仍在运行的迁移清单生产实现
+# 暂不进入 cleanup ledger；测试已按新 SPEC 作为旧迁移验收直接退役。
 ACTIVE_FOUNDATION_PATHS = frozenset(
     {
         "src/app/workline/models/migration_inventory.py",
         "src/app/workline/models/migration_matrix.py",
         "src/app/workline/services/migration_inventory_service.py",
         "src/app/workline/services/migration_matrix_service.py",
-        "tests/workline_runtime/test_workline_migration_inventory_models.py",
-        "tests/workline_runtime/test_workline_migration_inventory_service.py",
-        "tests/workline_runtime/test_workline_migration_matrix_service.py",
     }
 )
 
-# Task 9 起由最终扩展平台直接承载的实现与测试，不是待删除的 legacy 入口。
-ACTIVE_PLATFORM_PREFIXES = (
-    "tests/workline_plugins/rough_sorter/",
-    "tests/workline_plugins/smt_sorting_inbound/",
-    "tests/workline_runtime/extensions/",
-    "tests/workline_runtime/system_capabilities/",
-)
+# 仍待 CORE_REWRITE 的通用可靠性测试暂由旧 Capability 目录承载；
+# 已退役的 extensions 目录不再享有豁免。
+ACTIVE_PLATFORM_PREFIXES = ("tests/workline_runtime/system_capabilities/",)
 ACTIVE_PLATFORM_PATHS = frozenset(
     {
         "src/app/workline/models/plugin_binding.py",
         "src/app/workline/repositories/plugin_binding_repository.py",
         "src/app/workline/services/plugin_binding_service.py",
-        "tests/workline_plugins/test_conformance_contract.py",
-        "tests/workline_plugins/test_generated_facts_contract.py",
-        "tests/workline_runtime/material_flow/test_rough_sorter_q19_admission_service.py",
         "tests/workline_runtime/test_workline_session_repository_versioning.py",
     }
 )
@@ -781,17 +761,15 @@ def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, 
     rules = [
         (
             ("rough_sorter", "粗分机"),
-            "tests/characterization/workline_legacy/test_business_semantics_characterization.py;"
-            "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
+            "tests/architecture/test_core_plugin_test_ownership_guardrail.py",
         ),
         (
             ("full_box", "满箱"),
-            "tests/characterization/workline_legacy/test_business_semantics_characterization.py;"
-            "tests/contracts/workline/test_full_box_exchange_contract.py",
+            "tests/architecture/test_core_plugin_test_ownership_guardrail.py",
         ),
         (
             ("sorter_inbound", "smt_sorting", "分拣机"),
-            "tests/characterization/workline_legacy/test_business_semantics_characterization.py",
+            "tests/architecture/test_core_plugin_test_ownership_guardrail.py",
         ),
         (
             ("执行状态",),
@@ -806,13 +784,12 @@ def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, 
         ),
         (
             ("WorkLine 配置",),
-            "tests/contracts/workline/test_start_admission_contract.py;"
-            "tests/workline_plugins/rough_sorter/test_conformance.py",
+            "tests/contracts/workline/test_start_admission_contract.py",
         ),
-        (("技术残留",), "tests/characterization/workline_legacy/test_business_semantics_characterization.py"),
+        (("技术残留",), "tests/architecture/test_core_plugin_test_ownership_guardrail.py"),
     ]
     default = (
-        "tests/characterization/workline_legacy/test_business_semantics_characterization.py"
+        "tests/architecture/test_core_plugin_test_ownership_guardrail.py"
         if strategy == "delete"
         else "tests/contracts/workline/;tests/architecture/"
     )
@@ -907,22 +884,6 @@ def _defined_symbols_from_python(path: Path) -> list[str]:
     ]
 
 
-def _defined_test_symbols_from_python(path: Path) -> list[str]:
-    try:
-        module = ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError):
-        return []
-
-    return [
-        node.name
-        for node in module.body
-        if (
-            (isinstance(node, ast.ClassDef) and node.name.startswith("Test"))
-            or (isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test_"))
-        )
-    ]
-
-
 def _add_migrated_service_entries(add: Callable[[str, str, str, str], None]) -> None:
     if set(MIGRATED_SERVICE_SYMBOL_PROVENANCE) != set(MIGRATED_SERVICE_IMPLS):
         raise RuntimeError("migrated service symbol provenance must cover every legacy service path")
@@ -935,12 +896,6 @@ def _add_migrated_domain_entries(add: Callable[[str, str, str, str], None]) -> N
     for legacy_path, impl_path in MIGRATED_DOMAIN_IMPLS.items():
         for symbol in _defined_symbols_from_python(REPO_ROOT / impl_path):
             add(legacy_path, symbol, "domain_object", "workline")
-
-
-def _add_migrated_test_entries(add: Callable[[str, str, str, str], None]) -> None:
-    for legacy_path, impl_path in MIGRATED_TEST_IMPLS.items():
-        for symbol in _defined_test_symbols_from_python(REPO_ROOT / impl_path):
-            add(legacy_path, symbol, "test", "workline_plugins")
 
 
 def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths: list[SeedPath]) -> None:
@@ -1093,19 +1048,12 @@ def parse_entries() -> list[Entry]:
             for symbol in _exported_symbols_from_all(path):
                 add(rel, symbol, etype, owner)
 
-    # 7. tests
-    for line in git_grep(
-        r"^class Test|^def test_|^async def test_", ["tests/workline_runtime", "tests/workline_plugins"]
-    ):
+    # 7. 核心仅扫描通用 runtime 测试；具体插件测试由仓库根目录独立包自行治理。
+    for line in git_grep(r"^class Test|^def test_|^async def test_", ["tests/workline_runtime"]):
         m = re.match(r"([^:]+):(\d+):(?:class |def |async def )([A-Za-z_][A-Za-z0-9_]*)", line)
         if m:
             path = m.group(1)
-            owner = "workline_plugins" if "workline_plugins" in path else "workline_runtime"
-            add(path, m.group(3), "test", owner)
-
-    # 7b. 旧 plugin contract tests 迁到 target contracts 后仍按 legacy test path
-    # 记账,避免移动测试导致 cleanup matrix 误删审计行。
-    _add_migrated_test_entries(add)
+            add(path, m.group(3), "test", "workline_runtime")
 
     # 8. doc_templates (文件级)
     for tmpl in (REPO_ROOT / "docs/templates/workline_plugin").glob("*"):

@@ -1077,9 +1077,9 @@ class TestCallbackEventAPI:
             accepted=False,
             http_status=409,
             reason_code="START_ADMISSION_DEVICE_NOT_IDLE",
-            message="START 准入失败: 设备 RS-CONV-01 非空闲",
+            message="START 准入失败: 设备 CONVEYOR-01 非空闲",
             workline_id=1,
-            diagnostic={"device_code": "RS-CONV-01", "status": "RUNNING"},
+            diagnostic={"device_code": "CONVEYOR-01", "status": "RUNNING"},
         )
         with (
             patch(
@@ -1136,11 +1136,11 @@ class TestCallbackEventAPI:
         data = _response_data(response)
         assert data["ack"] is False
         assert data["reason_code"] == "START_ADMISSION_DEVICE_NOT_IDLE"
-        assert data["diagnostic"]["device_code"] == "RS-CONV-01"
+        assert data["diagnostic"]["device_code"] == "CONVEYOR-01"
         response_model_data = _response_model_data(response)
         assert response_model_data["ack"] is False
         assert response_model_data["reason_code"] == "START_ADMISSION_DEVICE_NOT_IDLE"
-        assert response_model_data["diagnostic"]["device_code"] == "RS-CONV-01"
+        assert response_model_data["diagnostic"]["device_code"] == "CONVEYOR-01"
         mock_admit_start.assert_awaited_once()
         mock_enqueue.assert_not_called()
         mock_log_callback.assert_awaited_once()

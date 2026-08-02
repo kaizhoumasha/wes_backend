@@ -215,7 +215,8 @@ operation-specific inventory/fulfillment EFFECT Definition + `WmsEffectPreparati
 | 旧资产 | Phase 0 用途 | 明确禁止 |
 | --- | --- | --- |
 | `src/app/workline/`、`src/workline_runtime/`、`src/workline_plugins/` | legacy inventory、业务事实提取、characterization 输入 | 作为目标态 runtime/plugin 架构基础继续继承 |
-| `tests/workline_runtime/`、`tests/workline_plugins/` | 提取业务语义、生成 contract fixture | 用旧测试覆盖率替代目标态 contract test |
+| `tests/workline_runtime/` | 仅作为待执行 `CORE_REWRITE` / `LEGACY_DELETE` 的旧核心测试输入 | 把旧 Runtime/Plugin 测试当作长期核心合同 |
+| `workline_plugins/<plugin_key>/tests/` | 与插件代码、fixture 同包验证具体工作线行为 | 把具体插件测试放回核心 `tests/` |
 | `src/app/workline/models/inbox.py`（旧 `WorklineInbox`） | 旧 inbox 行为的 characterization 来源 | 反向决定目标态 `RuntimeInbox` 状态命名 |
 
 > 逐入口清理策略见 `legacy-cleanup-matrix.md`（P0-002）。

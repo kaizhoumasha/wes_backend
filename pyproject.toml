@@ -338,12 +338,15 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 pythonpath = ["."]
 norecursedirs = [
+    "tests/architecture",
     "tests/e2e",
     "tests/integration",
     "tests/resilience",
     "tests/load",
     "tests/mock",
+    "tests/scripts",
 ]
+junit_family = "xunit2"
 markers = [
     "live: requires running external services or seeded live environment",
     "e2e: end-to-end multi-service workflow tests",
@@ -360,8 +363,6 @@ addopts = [
     "--durations=10",
     # 简短的错误信息
     "--tb=short",
-    # 自动生成覆盖率报告（如果使用了 --cov 参数）
-    "--cov-report=term-missing",
 ]
 
 [dependency-groups]

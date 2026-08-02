@@ -73,7 +73,7 @@ WMS_EVENT_CASES = (
             **_grn_event(event_type="WMS_PDA_OPERATION_RECORDED", source_event_id="pda-event-001"),
             "data": {
                 "operation_record_id": "PDA-001",
-                "operation_type": "MANUAL_PUTAWAY",
+                "operation_type": "MANUAL_COUNT",
                 "operator_code": "OP-001",
             },
         },

@@ -720,7 +720,7 @@ class FakeWorkLineRepo:
 @pytest.mark.parametrize(
     "topology_data",
     [
-        {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1},
+        {"device_role": "OUTPUT_DEVICE", "version": 1},
         {"device_code": "ARM01-RENAMED", "version": 1},
         {"vendor_type": "OTHER", "version": 1},
     ],
@@ -732,7 +732,7 @@ async def test_plain_update_rejects_topology_changes_when_workline_is_active(
         id=7,
         device_code="ARM01",
         work_line_id=3,
-        device_role="ROUGH_SORTER_INPUT_ARM",
+        device_role="INPUT_DEVICE",
         role_index=1,
         upstream_device_id=None,
         capabilities_json={},
@@ -755,7 +755,7 @@ async def test_plain_update_locks_workline_before_topology_guard() -> None:
         id=7,
         device_code="ARM01",
         work_line_id=3,
-        device_role="ROUGH_SORTER_INPUT_ARM",
+        device_role="INPUT_DEVICE",
         role_index=1,
         upstream_device_id=None,
         capabilities_json={},
@@ -770,7 +770,7 @@ async def test_plain_update_locks_workline_before_topology_guard() -> None:
     db = SimpleNamespace(commit=AsyncMock())
 
     with pytest.raises(BusinessException, match="已启用作业线"):
-        await service.update(cast("Any", db), 7, {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1})
+        await service.update(cast("Any", db), 7, {"device_role": "OUTPUT_DEVICE", "version": 1})
 
     assert workline_repo.exclusive_lock_calls == [3]
     assert workline_repo.get_for_update_calls == [3]
@@ -782,7 +782,7 @@ async def test_plain_delete_rejects_removing_device_from_active_workline() -> No
         id=7,
         device_code="ARM01",
         work_line_id=3,
-        device_role="ROUGH_SORTER_INPUT_ARM",
+        device_role="INPUT_DEVICE",
         capabilities_json={},
         device_status=DeviceStatus.IDLE,
         current_command_id=None,
@@ -806,7 +806,7 @@ async def test_plain_delete_rejects_when_device_moves_after_initial_read() -> No
         id=7,
         device_code="ARM01",
         work_line_id=3,
-        device_role="ROUGH_SORTER_INPUT_ARM",
+        device_role="INPUT_DEVICE",
         capabilities_json={},
         device_status=DeviceStatus.IDLE,
         current_command_id=None,
@@ -837,7 +837,7 @@ async def test_plain_update_allows_topology_changes_after_workline_is_deactivate
         id=7,
         device_code="ARM01",
         work_line_id=3,
-        device_role="ROUGH_SORTER_INPUT_ARM",
+        device_role="INPUT_DEVICE",
         role_index=1,
         upstream_device_id=None,
         capabilities_json={},
@@ -851,7 +851,7 @@ async def test_plain_update_allows_topology_changes_after_workline_is_deactivate
     service.workline_repo = FakeWorkLineRepo(SimpleNamespace(id=3, is_active=False))  # type: ignore[attr-defined]
     db = SimpleNamespace(commit=AsyncMock())
 
-    updated = await service.update(cast("Any", db), 7, {"device_role": "ROUGH_SORTER_CONVEYOR", "version": 1})
+    updated = await service.update(cast("Any", db), 7, {"device_role": "OUTPUT_DEVICE", "version": 1})
 
     assert updated is device
-    assert device.device_role == "ROUGH_SORTER_CONVEYOR"
+    assert device.device_role == "OUTPUT_DEVICE"

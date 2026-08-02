@@ -13,9 +13,8 @@ Usage: scripts/git-quality-gate.sh [--profile PROFILE] [--check CHECK] [--bandit
 
 Profiles:
   quality   Run Ruff, Bandit, runtime gates, runtime contract guardrails, legacy absence, process naming,
-            and architecture guardrails.
+            architecture guardrails, explicit architecture/script suites, and the FAST suite with enforced budgets.
   ci-smoke  Run the quality profile plus API signature smoke tests.
-  full      Run the quality profile plus the full pytest suite.
 
 Checks:
   format    Run only Ruff format check.
@@ -23,8 +22,6 @@ Checks:
   security  Run only Bandit security scan.
   runtime-toggle-release
             Run only runtime toggle release gate.
-  runtime-evidence-readiness
-            Run only runtime evidence readiness gate.
   runtime-production-closure
             Run only runtime production closure gate.
   runtime-contract-guardrails
@@ -138,11 +135,6 @@ run_runtime_toggle_release_gate() {
     run_tool python scripts/check_runtime_toggle_release_gate.py
 }
 
-run_runtime_evidence_readiness_gate() {
-    log_step "runtime-evidence-readiness" "check_runtime_evidence_readiness_gate.py"
-    run_tool python scripts/check_runtime_evidence_readiness_gate.py
-}
-
 run_runtime_production_closure_gate() {
     log_step "runtime-production-closure" "check_runtime_production_closure_gate.py"
     run_tool python scripts/check_runtime_production_closure_gate.py
@@ -150,17 +142,15 @@ run_runtime_production_closure_gate() {
 
 run_runtime_contract_guardrails() {
     # 旧 restructuring readiness gate 退役后，保留其关键 runtime pytest guardrail 覆盖。
+    # 生产 E2E 与 benchmark closure 属于核心 HEAVY，由 selector 显式承接。
     local tests=(
         tests/architecture/test_runtime_status_owner_guardrail.py
         tests/callback/test_callback_runtime_inbox_authority.py
         tests/runtime/orchestration/test_production_closure_evidence_gate.py
-        tests/runtime/orchestration/test_runtime_production_closure_contract.py
         tests/runtime/orchestration/test_runtime_operational_contracts.py
         tests/runtime/orchestration/test_runtime_recovery_policies.py
-        tests/runtime/orchestration/test_runtime_inbox_consumer_service.py
         tests/contracts/test_runtime_ops_contract_docs.py
         tests/contracts/workline
-        tests/characterization/workline_legacy
     )
     log_step "runtime-contract-guardrails" "pytest ${tests[*]} -q"
     run_tool pytest "${tests[@]}" -q
@@ -190,8 +180,21 @@ run_import_linter_check() {
 }
 
 run_test_topology_check() {
-    log_step "tests" "pytest tests/architecture/test_test_suite_topology_guardrail.py -q"
-    run_tool pytest tests/architecture/test_test_suite_topology_guardrail.py -q
+    log_step "tests" "pytest tests/architecture/test_suite_topology_guardrail.py -q"
+    run_tool pytest tests/architecture/test_suite_topology_guardrail.py -q
+}
+
+run_script_contract_tests() {
+    log_step "tests" "pytest tests/scripts -q"
+    run_tool pytest tests/scripts -q
+}
+
+run_fast_test_suite() {
+    mkdir -p reports
+    log_step "fast-tests" "pytest --junitxml=reports/fast-tests.xml"
+    run_tool pytest --junitxml=reports/fast-tests.xml
+    log_step "fast-tests" "check_fast_test_budget.py reports/fast-tests.xml"
+    run_tool python scripts/check_fast_test_budget.py reports/fast-tests.xml
 }
 
 run_quality_profile() {
@@ -199,7 +202,6 @@ run_quality_profile() {
     run_lint_check
     run_security_check
     run_runtime_toggle_release_gate
-    run_runtime_evidence_readiness_gate
     run_runtime_production_closure_gate
     run_runtime_contract_guardrails
     run_business_legacy_absence_gate
@@ -207,18 +209,14 @@ run_quality_profile() {
     run_import_linter_check
     run_architecture_check
     run_test_topology_check
+    run_script_contract_tests
+    run_fast_test_suite
 }
 
 run_ci_smoke_profile() {
     run_quality_profile
     log_step "ci-smoke" "pytest tests/api/test_signature.py --capture=fd -v --tb=short"
     run_tool pytest tests/api/test_signature.py --capture=fd -v --tb=short
-}
-
-run_full_profile() {
-    run_quality_profile
-    log_step "full" "pytest tests/ --capture=fd -v --tb=short"
-    run_tool pytest tests/ --capture=fd -v --tb=short
 }
 
 if [[ -n "$CHECK" ]]; then
@@ -234,9 +232,6 @@ if [[ -n "$CHECK" ]]; then
             ;;
         runtime-toggle-release)
             run_runtime_toggle_release_gate
-            ;;
-        runtime-evidence-readiness)
-            run_runtime_evidence_readiness_gate
             ;;
         runtime-production-closure)
             run_runtime_production_closure_gate
@@ -269,9 +264,6 @@ else
             ;;
         ci-smoke)
             run_ci_smoke_profile
-            ;;
-        full)
-            run_full_profile
             ;;
         *)
             echo "Unsupported profile: $PROFILE" >&2

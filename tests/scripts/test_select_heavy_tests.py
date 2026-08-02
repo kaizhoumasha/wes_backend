@@ -1,0 +1,1036 @@
+import json
+import subprocess
+from pathlib import Path
+from unittest.mock import Mock, call
+
+import pytest
+
+from scripts.select_heavy_tests import (
+    SelectorError,
+    build_parser,
+    expand_braces,
+    get_changed_files,
+    load_config,
+    main,
+    matches_glob,
+    select_heavy_tests,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+HEAVY_TEST = "tests/integration/test_authoritative_runtime.py"
+BASE_REPOSITORY_HOOKS_HEAVY_TEST = "tests/integration/test_base_repository_hooks.py"
+CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST = "tests/integration/test_callback_external_payload_limit.py"
+CELERY_ASYNC_RUNTIME_HEAVY_TEST = "tests/integration/test_celery_async_runtime.py"
+CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST = "tests/integration/test_celery_async_runtime_postgresql.py"
+CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_celery_prefork_harness_cleanup.py"
+COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST = "tests/integration/test_command_result_correlation_authority.py"
+DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST = "tests/integration/test_device_runtime_projection_writer_service.py"
+EFFECT_FRESH_IMPORT_HEAVY_TEST = "tests/integration/test_effect_contract_fresh_import.py"
+EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py"
+ECS_MOCK_SERVER_HEAVY_TEST = "tests/mock/test_ecs_mock_server.py"
+MOCK_DOCKERFILE_HEAVY_TEST = "tests/mock/test_mock_dockerfile.py"
+OPTIMISTIC_LOCK_HEAVY_TEST = "tests/integration/test_optimistic_lock.py"
+RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST = "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py"
+RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST = "tests/integration/test_external_http_transport_attempt_postgresql.py"
+RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST = "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"
+RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST = "tests/integration/test_runtime_inbox_consumer_service.py"
+RUNTIME_INBOX_PROCESSING_HEAVY_TEST = "tests/integration/test_runtime_inbox_processing_postgresql.py"
+RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST = "tests/integration/test_runtime_inbox_service_internal_events.py"
+RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_effect_repository.py"
+RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_idempotency.py"
+RUNTIME_REMAINING_ENTITIES_HEAVY_TEST = "tests/integration/test_runtime_remaining_entities.py"
+RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST = "tests/integration/test_runtime_production_closure_contract.py"
+RUNTIME_ECS_STATUS_BENCHMARK_HEAVY_TEST = "tests/load/test_ecs_status_command_benchmark.py"
+RUNTIME_INTEGRATION_LAB_HEAVY_TEST = "tests/resilience/test_runtime_integration_lab.py"
+RUNTIME_PLANE_SNAPSHOT_BENCHMARK_HEAVY_TEST = "tests/load/test_plane_snapshot_benchmark.py"
+RUNTIME_SCENARIO_REPLAY_HEAVY_TEST = "tests/resilience/test_runtime_scenario_replay.py"
+SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST = "tests/integration/test_system_outbox_canonical_payload_postgresql.py"
+SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST = "tests/integration/test_system_outbox_dispatch_concurrency.py"
+SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST = (
+    "tests/integration/test_system_outbox_dispatch_concurrency_postgresql.py"
+)
+SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST = "tests/integration/test_system_outbox_repository.py"
+WMS_DEPLOYMENT_HEAVY_TEST = "tests/integration/test_wms_deployment_attestation.py"
+WMS_CIRCUIT_BREAKER_HEAVY_TEST = "tests/resilience/test_wms_circuit_breaker.py"
+WMS_FEASIBILITY_HEAVY_TEST = "tests/integration/test_wms_northbound_feasibility_probe.py"
+WMS_MOCK_CONTAINER_HEAVY_TEST = "tests/integration/test_mock_container_entrypoints.py"
+WMS_MOCK_SERVER_HEAVY_TEST = "tests/mock/test_wms_mock_server.py"
+WMS_NORTHBOUND_CONTRACT_HEAVY_TEST = "tests/mock/test_wms_northbound_contract.py"
+WMS_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py"
+WMS_PROVIDER_COLLECTION_HEAVY_TEST = "tests/integration/test_wms_provider_conformance_collection.py"
+WMS_PROVIDER_SIMULATOR_HEAVY_TEST = "tests/mock/test_wms_provider_conformance_simulator.py"
+WMS_EVENT_RUNTIME_INBOX_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_wms_event_runtime_inbox_idempotency.py"
+
+
+def _write_mapping(
+    tmp_path: Path,
+    mappings: list[tuple[str, list[str]]] | None = None,
+    *,
+    ignore_globs: list[str] | None = None,
+) -> Path:
+    lines = [f"ignore_globs = {json.dumps(ignore_globs or ['docs/**', '*.md', 'tests/**', 'Jenkinsfile'])}"]
+    for source_glob, heavy_tests in mappings or []:
+        lines.extend(
+            [
+                "",
+                "[[mapping]]",
+                f"source_glob = {json.dumps(source_glob)}",
+                f"heavy_tests = {json.dumps(heavy_tests)}",
+            ]
+        )
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return mapping_path
+
+
+def test_selector_module_exists() -> None:
+    assert (REPO_ROOT / "scripts/select_heavy_tests.py").is_file()
+
+
+def test_parser_enforces_scope_base_protocol() -> None:
+    parser = build_parser()
+
+    assert parser.parse_args([]).scope == "unstaged"
+    assert parser.parse_args(["--scope", "staged"]).scope == "staged"
+    assert parser.parse_args(["--base", "origin/develop"]).base == "origin/develop"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--scope", "unstaged", "--base", "origin/develop"])
+
+
+@pytest.mark.parametrize(
+    ("scope", "base", "stdouts", "expected_commands", "expected_files"),
+    [
+        (
+            "unstaged",
+            None,
+            ["src/app.py\n", "src/new.py\n"],
+            [
+                ["git", "diff", "--name-only"],
+                ["git", "ls-files", "--others", "--exclude-standard"],
+            ],
+            ["src/app.py", "src/new.py"],
+        ),
+        (
+            "staged",
+            None,
+            ["main.py\nmigrations/env.py\n"],
+            [["git", "diff", "--cached", "--name-only"]],
+            ["main.py", "migrations/env.py"],
+        ),
+        (
+            None,
+            "origin/develop",
+            ["tests/integration/test_foo.py\n"],
+            [["git", "diff", "--name-only", "origin/develop...HEAD"]],
+            ["tests/integration/test_foo.py"],
+        ),
+        (
+            "unstaged",
+            None,
+            ["", ""],
+            [
+                ["git", "diff", "--name-only"],
+                ["git", "ls-files", "--others", "--exclude-standard"],
+            ],
+            [],
+        ),
+    ],
+)
+def test_get_changed_files_uses_expected_git_diff(
+    tmp_path: Path,
+    scope: str | None,
+    base: str | None,
+    stdouts: list[str],
+    expected_commands: list[list[str]],
+    expected_files: list[str],
+) -> None:
+    runner = Mock(
+        side_effect=[
+            subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+            for command, stdout in zip(expected_commands, stdouts, strict=True)
+        ]
+    )
+
+    changed_files = get_changed_files(scope=scope, base=base, repo_root=tmp_path, runner=runner)
+
+    assert changed_files == expected_files
+    assert runner.call_args_list == [
+        call(command, cwd=tmp_path, check=True, capture_output=True, text=True) for command in expected_commands
+    ]
+
+
+def test_git_changed_paths_preserve_noncanonical_input_for_validation(tmp_path: Path) -> None:
+    unsafe_path = "tests/integration/test_x.py\x1f"
+    runner = Mock(
+        side_effect=[
+            subprocess.CompletedProcess(["git", "diff"], 0, stdout=f"{unsafe_path}\n", stderr=""),
+            subprocess.CompletedProcess(["git", "ls-files"], 0, stdout="", stderr=""),
+        ]
+    )
+
+    changed_files = get_changed_files(scope="unstaged", base=None, repo_root=tmp_path, runner=runner)
+
+    assert changed_files == [unsafe_path]
+    with pytest.raises(SelectorError, match=r"changed path.*仓库相对路径"):
+        select_heavy_tests(changed_files, load_config(_write_mapping(tmp_path)))
+
+
+def test_direct_heavy_test_selects_itself(tmp_path: Path) -> None:
+    config = load_config(_write_mapping(tmp_path))
+
+    assert select_heavy_tests(["tests/integration/test_foo.py"], config) == ["tests/integration/test_foo.py"]
+
+
+def test_moved_core_heavy_tests_select_themselves() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    changed_tests = [
+        BASE_REPOSITORY_HOOKS_HEAVY_TEST,
+        COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,
+        DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,
+    ]
+
+    assert select_heavy_tests(changed_tests, config) == sorted(changed_tests)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "tests/integration/conftest.py",
+        "tests/mock/ecs_mock_catalog.py",
+        "tests/fixtures/orders.json",
+        "tests/conftest.py",
+        "tests/runtime/conftest.py",
+        "tests/support/runtime_factory.py",
+        "main.py",
+        "migrations/env.py",
+        "alembic.ini",
+    ],
+)
+def test_candidate_assets_use_mapping(tmp_path: Path, changed_path: str) -> None:
+    config = load_config(_write_mapping(tmp_path, [(changed_path, [HEAVY_TEST])]))
+
+    assert select_heavy_tests([changed_path], config) == [HEAVY_TEST]
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "docs/architecture/selector.md",
+        "Jenkinsfile",
+        ".githooks/pre-commit",
+        "tests/runtime/test_service.py",
+        "tests/contracts/test_contract.py",
+        "tests/api/test_route.py",
+    ],
+)
+def test_ignored_paths_select_nothing(tmp_path: Path, changed_path: str) -> None:
+    config = load_config(
+        _write_mapping(
+            tmp_path,
+            ignore_globs=["docs/**", "*.md", "tests/**", "Jenkinsfile", ".githooks/**"],
+        )
+    )
+
+    assert select_heavy_tests([changed_path], config) == []
+
+
+def test_unknown_path_fails_closed(tmp_path: Path) -> None:
+    config = load_config(_write_mapping(tmp_path))
+
+    with pytest.raises(SelectorError, match="未分类"):
+        select_heavy_tests(["tools/release.py"], config)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "./tests/integration/test_x.py",
+        "tests//integration/test_x.py",
+        "tests/integration/./test_x.py",
+        "tests/integration/../e2e/test_x.py",
+        "tests/integration/test_x.py/",
+        "tests/integration/test_\x01.py",
+        "tests\\integration\\test_x.py",
+        "/tests/integration/test_x.py",
+    ],
+)
+def test_changed_path_validation_rejects_noncanonical_or_unsafe_paths(tmp_path: Path, changed_path: str) -> None:
+    config = load_config(_write_mapping(tmp_path))
+
+    with pytest.raises(SelectorError, match=r"changed path.*仓库相对路径"):
+        select_heavy_tests([changed_path], config)
+
+
+@pytest.mark.parametrize(
+    "source_glob",
+    [
+        "./src/**",
+        "src//**",
+        "src/./**",
+        "src/../tests/**",
+        "src/\x01/**",
+        "src\\**",
+        "/src/**",
+    ],
+)
+def test_schema_rejects_noncanonical_source_globs(tmp_path: Path, source_glob: str) -> None:
+    mapping_path = _write_mapping(tmp_path, [(source_glob, [HEAVY_TEST])])
+
+    with pytest.raises(SelectorError, match=r"mapping\.source_glob.*仓库相对路径"):
+        load_config(mapping_path)
+
+
+@pytest.mark.parametrize(
+    "heavy_test",
+    [
+        "./tests/integration/test_x.py",
+        "tests//integration/test_x.py",
+        "tests/integration/./test_x.py",
+        "tests/integration/../e2e/test_x.py",
+        "tests/integration/test_x.py/",
+        "tests/integration/test_\x01.py",
+        "tests\\integration\\test_x.py",
+        "/tests/integration/test_x.py",
+        "tests/integration/test_*.py",
+    ],
+)
+def test_schema_rejects_noncanonical_heavy_test_paths(tmp_path: Path, heavy_test: str) -> None:
+    mapping_path = _write_mapping(tmp_path, [("src/**", [heavy_test])])
+
+    with pytest.raises(SelectorError, match=r"mapping\.heavy_tests.*仓库相对路径"):
+        load_config(mapping_path)
+
+
+def test_mapping_union_and_explicit_none(tmp_path: Path) -> None:
+    second_heavy_test = "tests/e2e/test_authoritative_runtime.py"
+    duplicate_mapping = load_config(
+        _write_mapping(
+            tmp_path,
+            [
+                ("src/{app,worker}/**", [HEAVY_TEST, second_heavy_test]),
+                ("src/app/**", [second_heavy_test, HEAVY_TEST, HEAVY_TEST]),
+            ],
+        )
+    )
+    none_mapping = load_config(_write_mapping(tmp_path, [("pyproject.toml", [])]))
+
+    assert select_heavy_tests(["src/app/service.py"], duplicate_mapping) == [
+        second_heavy_test,
+        HEAVY_TEST,
+    ]
+    assert select_heavy_tests(["pyproject.toml"], none_mapping) == []
+
+
+def test_invalid_heavy_output_fails_closed(tmp_path: Path) -> None:
+    mapping_path = _write_mapping(tmp_path, [("src/**", ["tests/unit/test_runtime.py"])])
+
+    with pytest.raises(SelectorError, match="HEAVY 测试路径"):
+        load_config(mapping_path)
+
+
+def test_braces_and_double_star_zero_depth() -> None:
+    assert expand_braces("tests/{integration,e2e}/**/test_*.py") == [
+        "tests/integration/**/test_*.py",
+        "tests/e2e/**/test_*.py",
+    ]
+    assert matches_glob("tests/integration/test_foo.py", "tests/{integration,e2e}/**/test_*.py")
+    assert matches_glob("tests/integration/runtime/test_foo.py", "tests/{integration,e2e}/**/test_*.py")
+
+
+def test_conflicting_overlapping_mappings_are_rejected(tmp_path: Path) -> None:
+    mapping_path = _write_mapping(
+        tmp_path,
+        [
+            ("src/**", ["tests/integration/test_all.py"]),
+            ("src/app/**", ["tests/integration/test_app.py"]),
+        ],
+    )
+
+    with pytest.raises(SelectorError, match="歧义"):
+        load_config(mapping_path)
+
+    wildcard_intersection = _write_mapping(
+        tmp_path,
+        [
+            ("src/a*", ["tests/integration/test_prefix.py"]),
+            ("src/*b", ["tests/integration/test_suffix.py"]),
+        ],
+    )
+    with pytest.raises(SelectorError, match="歧义"):
+        load_config(wildcard_intersection)
+
+
+def test_caret_character_class_overlap_matches_purepath_semantics(tmp_path: Path) -> None:
+    assert matches_glob("src/a", "src/[^a]")
+    mapping_path = _write_mapping(
+        tmp_path,
+        [
+            ("src/[^a]", ["tests/integration/test_caret_class.py"]),
+            ("src/a", ["tests/integration/test_literal.py"]),
+        ],
+    )
+
+    with pytest.raises(SelectorError, match="歧义"):
+        load_config(mapping_path)
+
+
+def test_negated_character_class_with_unicode_overlap_fails_closed(tmp_path: Path) -> None:
+    assert matches_glob("src/α", "src/[! -~]")
+    assert matches_glob("src/α", "src/?")
+    mapping_path = _write_mapping(
+        tmp_path,
+        [
+            ("src/[! -~]", ["tests/integration/test_non_ascii.py"]),
+            ("src/?", ["tests/integration/test_any_character.py"]),
+        ],
+    )
+
+    with pytest.raises(SelectorError, match="不支持的 glob 字符类"):
+        load_config(mapping_path)
+
+
+def test_unsupported_character_class_schema_fails_closed(tmp_path: Path) -> None:
+    mapping_path = _write_mapping(tmp_path, [("src/[]]", [HEAVY_TEST])])
+
+    with pytest.raises(SelectorError, match="不支持的 glob 字符类"):
+        load_config(mapping_path)
+
+
+def test_git_diff_failure_fails_closed(tmp_path: Path) -> None:
+    runner = Mock(side_effect=subprocess.CalledProcessError(128, ["git", "diff"], stderr="bad ref"))
+
+    with pytest.raises(SelectorError, match="git diff 失败"):
+        get_changed_files(scope=None, base="origin/missing", repo_root=tmp_path, runner=runner)
+
+
+def test_get_changed_files_rejects_option_like_base_ref(tmp_path: Path) -> None:
+    runner = Mock()
+
+    with pytest.raises(SelectorError, match="base ref"):
+        get_changed_files(scope=None, base="--line-prefix=IGNORED", repo_root=tmp_path, runner=runner)
+
+    runner.assert_not_called()
+
+
+def test_main_prints_one_test_per_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    for relative_path in ("tests/integration/test_z.py", "tests/e2e/test_a.py"):
+        heavy_test_path = tmp_path / relative_path
+        heavy_test_path.parent.mkdir(parents=True, exist_ok=True)
+        heavy_test_path.touch()
+    mapping_path = _write_mapping(
+        tmp_path,
+        [("src/**", ["tests/integration/test_z.py", "tests/e2e/test_a.py"])],
+    )
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            ["git", "diff"],
+            0,
+            stdout="src/runtime.py\n",
+            stderr="",
+        )
+    )
+
+    exit_code = main(
+        ["--scope", "unstaged"],
+        repo_root=tmp_path,
+        mapping_path=mapping_path,
+        runner=runner,
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == "tests/e2e/test_a.py\ntests/integration/test_z.py\n"
+
+
+def test_repository_mapping_keeps_unaccepted_candidates_unmapped() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    for candidate in (
+        "src/app/runtime.py",
+        "main.py",
+        "migrations/env.py",
+        "alembic.ini",
+        "docker-compose.yml",
+        ".env.test",
+        "tests/integration/conftest.py",
+        "tests/fixtures/orders.json",
+        "tests/conftest.py",
+        "tests/runtime/conftest.py",
+        "tests/support/runtime_factory.py",
+    ):
+        with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
+            select_heavy_tests([candidate], config)
+
+
+def test_repository_mapping_declares_required_ignore_globs() -> None:
+    ignore_globs, mappings = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert ignore_globs == (
+        "docs/**",
+        "*.md",
+        "tests/**",
+        "Jenkinsfile",
+        "Jenkinsfile.test-deploy",
+        ".githooks/**",
+        ".github/**",
+        ".gitlab-ci.yml",
+        ".gitignore",
+        "README*",
+        "LICENSE*",
+    )
+    assert tuple((mapping.source_glob, mapping.heavy_tests) for mapping in mappings) == (
+        ("scripts/select_heavy_tests.py", ()),
+        ("scripts/git-quality-gate.sh", ()),
+        ("pyproject.toml", ()),
+        (
+            "scripts/{check_business_legacy_absence_gate.py,check_fast_test_budget.py,check_runtime_evidence_readiness_gate.py,compose_runtime_evidence_artifact.py,data/seed_runtime_monitor_smoke.py,data/sync_test_workline_devices.py,generate_legacy_matrix.py,generate_northbound_legacy_removal_report.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}",
+            (),
+        ),
+        ("scripts/check_wms_deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
+        ("src/app/wms_integration/deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
+        ("scripts/check_runtime_production_e2e_gate.py", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
+        ("scripts/run_runtime_benchmarks.py", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
+        (
+            "tests/load/runtime_benchmark_scenarios.py",
+            (
+                RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,
+                RUNTIME_ECS_STATUS_BENCHMARK_HEAVY_TEST,
+                RUNTIME_PLANE_SNAPSHOT_BENCHMARK_HEAVY_TEST,
+            ),
+        ),
+        ("tests/load/fixtures/runtime_benchmark_artifact.json", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
+        ("src/app/runtime/orchestration/p0_e2e_gate.py", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
+        (
+            "src/app/runtime/orchestration/scenario_replay.py",
+            (
+                RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,
+                RUNTIME_INTEGRATION_LAB_HEAVY_TEST,
+                RUNTIME_SCENARIO_REPLAY_HEAVY_TEST,
+            ),
+        ),
+        ("src/app/runtime/orchestration/benchmark_gate.py", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
+        (
+            "src/app/runtime/orchestration/effect_state_contract.py",
+            (EFFECT_FRESH_IMPORT_HEAVY_TEST, EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST),
+        ),
+        (
+            "src/app/runtime/orchestration/effect_bridges.py",
+            (
+                EFFECT_FRESH_IMPORT_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+            ),
+        ),
+        (
+            "src/celery_app/async_runtime.py",
+            (
+                CELERY_ASYNC_RUNTIME_HEAVY_TEST,
+                CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+                CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
+            ),
+        ),
+        (
+            "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
+            (
+                CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,
+                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
+                WMS_EVENT_RUNTIME_INBOX_IDEMPOTENCY_HEAVY_TEST,
+            ),
+        ),
+        (
+            "src/app/runtime/orchestration/repositories/device_runtime_projection_repository.py",
+            (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/services/device_runtime_projection_writer_service.py",
+            (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,),
+        ),
+        (
+            "src/app/sys/dispatch_concurrency.py",
+            (
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ),
+        ),
+        ("src/core/mixins/optimistic_lock.py", (OPTIMISTIC_LOCK_HEAVY_TEST,)),
+        (
+            "src/app/runtime/orchestration/services/idempotency_guard.py",
+            (RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST, RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST),
+        ),
+        (
+            "src/app/runtime/orchestration/repositories/idempotency_key_repository.py",
+            (RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST, RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST),
+        ),
+        (
+            "src/app/runtime/orchestration/idempotency_key.py",
+            (
+                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+            ),
+        ),
+        (
+            "src/app/runtime/orchestration/conveyor_queue_membership.py",
+            (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/execution_work_item.py",
+            (
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+                RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+            ),
+        ),
+        ("src/app/runtime/orchestration/runtime_hold.py", (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,)),
+        ("src/app/runtime/orchestration/runtime_timeline.py", (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,)),
+        (
+            "migrations/versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py",
+            (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,),
+        ),
+        (
+            "tests/support/runtime_binding.py",
+            (
+                COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/support/external_http.py",
+            (
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/api/callback_test_support.py",
+            (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,),
+        ),
+        (
+            "tests/support/sqlmodel_metadata.py",
+            (OPTIMISTIC_LOCK_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST),
+        ),
+        ("tests/support/test_suite_topology.py", ()),
+        ("tests/fixtures/workline_contract/{rough_sorter,start_admission}/**", ()),
+        (
+            "tests/support/{smt_sorting_inbound_postgresql.py,wms_conveyor_batch_postgresql.py,wms_full_box_exchange_postgresql.py}",
+            (),
+        ),
+        ("tests/mock/device_simulator.py", ()),
+        (
+            "tests/mock/{Dockerfile,ecs_mock_catalog.py,ecs_mock_server.py}",
+            (WMS_MOCK_CONTAINER_HEAVY_TEST, ECS_MOCK_SERVER_HEAVY_TEST, MOCK_DOCKERFILE_HEAVY_TEST),
+        ),
+        (
+            "scripts/verify_wms_northbound_feasibility.py",
+            (WMS_FEASIBILITY_HEAVY_TEST,),
+        ),
+        (
+            "tests/support/wms_conformance_runner.py",
+            (
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_PROVIDER_COLLECTION_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/mock/wms_fixture_matrix.py",
+            (
+                WMS_MOCK_CONTAINER_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_PROVIDER_COLLECTION_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/contracts/wms_integration/provider_profile_support.py",
+            (
+                WMS_DEPLOYMENT_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_PROVIDER_SIMULATOR_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/mock/wms_mock_server.py",
+            (
+                WMS_MOCK_CONTAINER_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/mock/wms_northbound_contract.py",
+            (
+                WMS_MOCK_CONTAINER_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ),
+        ),
+        (
+            "tests/mock/wms_operation_fixtures.py",
+            (
+                WMS_MOCK_CONTAINER_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ),
+        ),
+        (
+            "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py",
+            (WMS_CIRCUIT_BREAKER_HEAVY_TEST,),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        ("scripts/check_wms_deployment_attestation.py", [WMS_DEPLOYMENT_HEAVY_TEST]),
+        ("src/app/wms_integration/deployment_attestation.py", [WMS_DEPLOYMENT_HEAVY_TEST]),
+        ("scripts/check_runtime_production_e2e_gate.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
+        ("scripts/run_runtime_benchmarks.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
+        (
+            "tests/load/runtime_benchmark_scenarios.py",
+            [
+                RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,
+                RUNTIME_ECS_STATUS_BENCHMARK_HEAVY_TEST,
+                RUNTIME_PLANE_SNAPSHOT_BENCHMARK_HEAVY_TEST,
+            ],
+        ),
+        ("tests/load/fixtures/runtime_benchmark_artifact.json", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
+        ("src/app/runtime/orchestration/p0_e2e_gate.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
+        (
+            "src/app/runtime/orchestration/scenario_replay.py",
+            [
+                RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,
+                RUNTIME_INTEGRATION_LAB_HEAVY_TEST,
+                RUNTIME_SCENARIO_REPLAY_HEAVY_TEST,
+            ],
+        ),
+        ("src/app/runtime/orchestration/benchmark_gate.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
+        (
+            "src/app/runtime/orchestration/effect_state_contract.py",
+            [EFFECT_FRESH_IMPORT_HEAVY_TEST, EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/effect_bridges.py",
+            [
+                EFFECT_FRESH_IMPORT_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+            ],
+        ),
+    ],
+)
+def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expected: list[str]) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == expected
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        (
+            "src/celery_app/async_runtime.py",
+            [
+                CELERY_ASYNC_RUNTIME_HEAVY_TEST,
+                CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+                CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
+            [
+                CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,
+                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
+                WMS_EVENT_RUNTIME_INBOX_IDEMPOTENCY_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/runtime/orchestration/repositories/device_runtime_projection_repository.py",
+            [DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/services/device_runtime_projection_writer_service.py",
+            [DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST],
+        ),
+        (
+            "src/app/sys/dispatch_concurrency.py",
+            [
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ],
+        ),
+        ("src/core/mixins/optimistic_lock.py", [OPTIMISTIC_LOCK_HEAVY_TEST]),
+        (
+            "src/app/runtime/orchestration/services/idempotency_guard.py",
+            [RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST, RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/repositories/idempotency_key_repository.py",
+            [RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST, RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/idempotency_key.py",
+            [
+                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/runtime/orchestration/conveyor_queue_membership.py",
+            [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/execution_work_item.py",
+            [
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+                RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+            ],
+        ),
+        ("src/app/runtime/orchestration/runtime_hold.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
+        ("src/app/runtime/orchestration/runtime_timeline.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
+        (
+            "migrations/versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py",
+            [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST],
+        ),
+        (
+            "tests/support/runtime_binding.py",
+            [
+                COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST,
+                RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/support/external_http.py",
+            [
+                RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,
+                SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST,
+                SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST,
+                SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST,
+                RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/api/callback_test_support.py",
+            [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST],
+        ),
+        (
+            "tests/support/sqlmodel_metadata.py",
+            [OPTIMISTIC_LOCK_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST],
+        ),
+    ],
+)
+def test_repository_mapping_selects_database_runtime_heavy_consumers(
+    changed_path: str,
+    expected: list[str],
+) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == expected
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        (
+            "scripts/verify_wms_northbound_feasibility.py",
+            [WMS_FEASIBILITY_HEAVY_TEST],
+        ),
+        (
+            "tests/support/wms_conformance_runner.py",
+            [
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_PROVIDER_COLLECTION_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/contracts/wms_integration/provider_profile_support.py",
+            [
+                WMS_DEPLOYMENT_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_PROVIDER_SIMULATOR_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/mock/wms_mock_server.py",
+            [
+                WMS_MOCK_CONTAINER_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/mock/wms_northbound_contract.py",
+            [
+                WMS_MOCK_CONTAINER_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/mock/wms_operation_fixtures.py",
+            [
+                WMS_MOCK_CONTAINER_HEAVY_TEST,
+                RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
+                WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+            ],
+        ),
+        (
+            "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py",
+            [WMS_CIRCUIT_BREAKER_HEAVY_TEST],
+        ),
+    ],
+)
+def test_repository_mapping_selects_wms_heavy_asset_consumers(changed_path: str, expected: list[str]) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == expected
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/callback/services/callback_ingress_service.py",
+        "src/app/callback/services/callback_orchestration_service.py",
+        "src/app/callback/v1/callback.py",
+        "src/celery_app/config.py",
+        "src/app/runtime/orchestration/services/device_dispatch_policy.py",
+        "src/app/runtime/orchestration/services/conveyor_queue_membership_writer_service.py",
+        "src/app/runtime/orchestration/services/conveyor_queue_writer.py",
+        "src/app/reconciliation/manager.py",
+        "src/app/wms_integration/state_machine.py",
+        "src/app/wms_integration/models/circuit_breaker.py",
+        "src/app/wms_integration/repositories/circuit_breaker_repository.py",
+        "src/app/wms_integration/services/circuit_breaker_service.py",
+        "src/app/workline/models/plane.py",
+        "src/utils/timezone.py",
+        "src/app/wms_integration/operation_registry.py",
+        "src/app/sys/canonical_dispatch.py",
+        "src/app/sys/services/outbox_engine.py",
+    ],
+)
+def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
+        select_heavy_tests([changed_path], config)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/celery_app/app.py",
+        "src/app/runtime/system_capabilities/wms/provider_catalog.py",
+        "src/app/wms_integration/provider_readiness.py",
+        "src/app/wms_integration/effect_lane_runtime.py",
+        "src/app/wms_integration/effect_preparation_runtime.py",
+        "src/app/wms_integration/query_runtime.py",
+        "src/core/exceptions.py",
+        "src/core/conf.py",
+        "src/core/mixins/__init__.py",
+        "src/database/base_repository.py",
+        "src/database/db.py",
+        "src/database/model_factory.py",
+        "src/database/redis_client.py",
+        "src/database/schema_conf.py",
+        "src/database/sqlite_schema.py",
+        "src/app/device/models/device.py",
+        "src/app/device/services/device_service.py",
+        "src/app/sys/repositories/outbox_repository.py",
+        "src/app/sys/models/outbox.py",
+        "src/app/device/models/command.py",
+        "src/app/runtime/orchestration/device_runtime_projection.py",
+        "src/app/runtime/orchestration/execution_correlation.py",
+        "src/app/runtime/orchestration/execution_session.py",
+        "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
+        "src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py",
+        "src/app/runtime/orchestration/runtime_inbox.py",
+        "src/app/runtime/orchestration/runtime_intent_log.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py",
+    ],
+)
+def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_closed(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
+        select_heavy_tests([changed_path], config)
+
+
+def test_repository_mapping_classifies_selector_implementation_as_quality_only() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["scripts/select_heavy_tests.py"], config) == []
+
+
+def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
+    jenkinsfile = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    quality_gate = (REPO_ROOT / "scripts/git-quality-gate.sh").read_text(encoding="utf-8")
+
+    assert "stage('HEAVY Selector Smoke')" in jenkinsfile
+    assert "uv run pytest tests/scripts -q" in jenkinsfile
+    assert "stage('HEAVY Required')" not in jenkinsfile
+    assert "run_script_contract_tests" in quality_gate
+    assert "run_tool pytest tests/scripts -q" in quality_gate
+
+
+def test_quality_gate_does_not_advertise_a_duplicate_full_profile() -> None:
+    quality_gate = (REPO_ROOT / "scripts/git-quality-gate.sh").read_text(encoding="utf-8")
+
+    assert "run_full_profile" not in quality_gate
+    assert "full      Run the quality profile plus the full pytest suite." not in quality_gate
+    assert "full)" not in quality_gate

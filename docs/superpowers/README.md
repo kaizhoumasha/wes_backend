@@ -18,10 +18,10 @@
 
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
-| `plans/2026-07-04-runtime-evidence-readiness.md` | `check_runtime_evidence_readiness_gate.py` 的机器合同输入 | 开发/测试与 evidence gate 已闭合；现场发布仍需 production evidence/canary |
+| `plans/2026-07-04-runtime-evidence-readiness.md` | 历史 material-flow readiness 记录 | 已由 `2026-07-31-wes-minimal-execution-architecture-convergence-design.md` 取代，核心 gate 已退役 |
 | `plans/2026-07-24-northbound-capability-simplification.md` | WMS 北向剩余切换门禁的执行入口 | T1–T8 已落地；T9 真实 WMS 联调与 forward-only 切换未完成 |
-| `specs/2026-07-03-phase4-design-with-residuals.md` | Phase 4 文档合同测试的 umbrella 输入 | 开发/测试闭环已实现；生产现场门禁仍有效 |
-| `specs/2026-07-15-workline-plugin-system-capability-platform-design.md` | 完整平台目标与剩余任务的权威规格 | T1–T7 已交付；其他 Workline、T8、T9 未完成 |
+| `specs/2026-07-03-phase4-design-with-residuals.md` | 历史 Phase 4 umbrella 记录 | 已由 2026-07-31 WES 最小执行架构取代 |
+| `specs/2026-07-15-workline-plugin-system-capability-platform-design.md` | 历史平台化设计记录 | 已由 2026-07-31 WES 最小执行架构取代 |
 
 ### 本轮归档文档
 

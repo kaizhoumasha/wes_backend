@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.20.7.0
+**Version**: 0.21.0.0
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
@@ -67,7 +67,6 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 - [WORKLINE 诊断快速开始](docs/workline_diagnostics_quickstart.md)：用 API 定位 Trace、blocking-point、诊断卡、Replay 和人工操作。
 - [粗分机扫码到准入决策窄闭环合同](docs/business/rough_sorter_scan_decision_contract.md)：定义 13 个权威场景的状态所有权、reason code、evidence 与 replay 规则。
 - [粗分机硬件供应商联调操作手册](docs/hardware/粗分机硬件供应商联调操作手册.md)：面向真实设备侧的事件、命令、状态和 Result 联调。
-- [粗分机内部 Mock 与 Sandbox 调试手册](docs/hardware/粗分机内部Mock与Sandbox调试手册.md)：面向 WES 内部的 Mock ECS、Mock WMS、Sandbox 和多物料并发观察。
 - [WorkLine runtime hold quickstart](docs/workline_runtime_hold_quickstart.md)：说明 RuntimeHold 与人工恢复的基础操作。
 - [WorkLine 插件迁移清单与跨环境批准](docs/operations/workline-plugin-migration-inventory.md)：说明单环境 inventory、跨环境 migration matrix、批准证据和 fail-closed preflight 的操作顺序。
 - [Superpowers 计划与规格文档生命周期](docs/superpowers/README.md)：索引当前仍承担执行或机器门禁职责的 SPEC/PLAN，以及历史文档归档规则。
@@ -81,13 +80,6 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 - [北向能力提取设计（历史设计）](docs/superpowers/archive/specs/2026-07-21-northbound-capability-extraction-design.md)：保留 typed operation、Outbox、canonical payload 和冻结 binding 的设计上下文；多 Provider、shadow/readiness 与 callback 终态权威部分已由收敛 ADR 取代。
 - [北向 operation SLO 目录](docs/operations/northbound-operation-slo-catalog.md) 与 [运维 Runbook](docs/runbooks/northbound-operation-observability.md)：说明 QUERY/EFFECT 指标、告警、运维快照和故障处置。
 - [WMS operation identity ADR](docs/architecture/adr/2026-07-21-wms-operation-identity.md)：说明 operation、provider profile、dispatch 和 evidence 的稳定身份约定。
-
-Runtime monitor 浏览器 smoke 数据可在非生产环境写入：
-
-```bash
-uv run python scripts/data/seed_runtime_monitor_smoke.py --dry-run --json
-uv run python scripts/data/seed_runtime_monitor_smoke.py
-```
 
 ## Production Bootstrap
 

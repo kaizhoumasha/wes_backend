@@ -15,6 +15,8 @@ ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security
 ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
 
 ENV PIP_INDEX_URL=${PYPI_MIRROR}
+# 固定运行目录为 /app/tests/mock；显式暴露镜像内打包的 src/tests 命名空间。
+ENV PYTHONPATH=/app
 
 # 安装系统依赖
 RUN sed -i \
@@ -38,8 +40,6 @@ WORKDIR /app
 COPY tests/mock/ /app/tests/mock/
 # WMS Mock 只读取静态 registry 与 typed models，确保 validator 不维护第二份 operation schema。
 COPY src/app/wms_integration/ /app/src/app/wms_integration/
-# Mock 仅复用沙箱目录的纯数据桥接模块，不引入完整 WES 运行时依赖。
-COPY src/app/runtime/orchestration/sandbox_catalog_bridge.py /app/src/app/runtime/orchestration/sandbox_catalog_bridge.py
 # ECS Mock 仅复用 callback 域无外部依赖的事件分类常量与判定函数。
 COPY src/app/callback/contracts/runtime_events.py /app/src/app/callback/contracts/runtime_events.py
 

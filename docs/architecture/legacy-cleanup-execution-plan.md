@@ -47,9 +47,8 @@ RuntimeInbox
 必须通过：
 
 - `uv run pytest tests/architecture/test_legacy_absence_guardrail.py tests/workline_runtime/test_runtime_capability_dispatcher.py -q`
-- `uv run pytest tests/architecture/test_runtime_capability_context_routing.py tests/workline_runtime/test_sorter_inbound_runtime_service.py -q`
+- `uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py tests/architecture/test_runtime_capability_context_routing.py -q`
 - `uv run python scripts/check_runtime_production_closure_gate.py --closure-profile production --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
-- `uv run python scripts/check_runtime_evidence_readiness_gate.py --readiness-profile production --runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
 - `uv run python scripts/check_business_legacy_absence_gate.py --mode final`
   - `Business legacy absence gate passed: mode=final`
 - `./scripts/git-quality-gate.sh --profile quality`

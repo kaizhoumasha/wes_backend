@@ -12,10 +12,12 @@
 - 避免依赖长时间运行、外部环境、人工交互或高波动性能基线
 - 保持 `pytest` 默认执行成本可控，适合作为日常回归入口
 
-当前默认快速回归集的收集规则：
+当前默认快速回归集（FAST）的收集规则：
 
 - 收集范围：`tests/` 下符合 `test_*.py` 的测试文件
-- 除以下重测试目录外，默认收集所有未被忽略的测试目录：
+- 除以下 QUALITY 或 HEAVY 目录外，默认收集所有未被忽略的测试目录：
+  - `tests/architecture/`（QUALITY：显式架构与治理检查）
+  - `tests/scripts/`（QUALITY：脚本合同检查）
   - `tests/e2e/`
   - `tests/integration/`
   - `tests/resilience/`
@@ -24,8 +26,9 @@
 
 放置新测试时建议遵循：
 
-- 日常回归价值高、执行快、依赖少的测试：放入默认快速回归集
-- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到重测试目录并显式运行
+- 日常回归价值高、执行快、依赖少的测试：放入 FAST 默认快速回归集
+- 架构、文档、脚本与质量门禁合同：放入 QUALITY 目录，由质量门禁显式运行
+- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到 HEAVY 重测试目录并显式运行
 
 ### 目录归属矩阵
 
@@ -34,19 +37,35 @@
 | 目录 | 放置内容 |
 | --- | --- |
 | `tests/api/` | FastAPI route、permission、response model、API facade 测试 |
-| `tests/workline_runtime/` | runtime service、orchestrator、intent、diagnostic、session resolver 纯逻辑测试 |
-| `tests/workline_plugins/` | plugin contract、plugin behavior、template asset 测试 |
 | `tests/contracts/` | 跨系统/跨模块契约测试 |
 | `tests/core/` | 核心框架、异常处理、RBAC、schema loader、BaseAPI/BaseService 测试 |
-| `tests/database/` | Repository、TreeRepository、Redis client、relation metadata 测试 |
-| `tests/sys/` | 系统域服务、审计日志、事件流、outbox 测试 |
+| `tests/database/` | Repository hook/error、TreeRepository、Redis client、relation metadata 等轻量测试 |
+| `tests/sys/` | 系统域服务、审计日志、事件流与 outbox 轻量合同测试 |
 | `tests/api_auth/` | API application、开放接口授权与缓存测试 |
 | `tests/deployment/` | docker-compose、nginx、开发 worker/beat 配置测试 |
 | `tests/utils/` | 工具函数、时间、请求解析测试 |
-| `tests/integration/` | 多组件集成测试，默认快速回归不收集 |
+| `tests/workline/` | WorkLine 静态身份、物理拓扑、配置校验和 `LineRunEpoch` 等通用能力 |
+| `tests/runtime/` | 与具体插件无关的最小执行对象、投影、可靠性和诊断能力 |
+| `tests/architecture/` | 架构、依赖方向、缺席与测试拓扑合同；QUALITY 显式运行 |
+| `tests/scripts/` | 脚本行为合同；QUALITY 显式运行 |
+| `tests/integration/` | Repository/Outbox 持久化、真实数据库与多组件集成测试，默认快速回归不收集 |
 | `tests/e2e/` | 显式运行的端到端测试，默认快速回归不收集 |
-| `tests/resilience/` | 降级、断连、恢复类测试，默认快速回归不收集 |
+| `tests/resilience/` | breaker 时序、降级、断连与恢复类测试，默认快速回归不收集 |
 | `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
+
+`tests/` 是 WES 核心测试树，不是具体工作线插件的共享测试目录。具体插件采用独立二次开发包：
+
+```text
+workline_plugins/<plugin_key>/
+├── pyproject.toml
+├── src/
+├── tests/
+└── fixtures/
+```
+
+插件包自己的 `tests/` 唯一拥有具体工作线流程、Handler、现场拓扑、厂商 Payload、插件级 E2E/韧性/负载
+场景。插件代码、测试和 fixture 必须同工作包交付；核心 pytest、覆盖率、质量门禁和 HEAVY selector 不发现、
+不映射也不运行插件包测试。
 
 ### 当前治理约束
 
@@ -60,10 +79,18 @@
 
 后续新增或调整测试时遵循以下约束：
 
+- 必须先建立目标对象测试并通过，再删除对应旧测试；不得反向。
+- 同一行为只有一个主要测试所有者。
+- 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径或 `NONE`。
+- 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
+- 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；该边界只由目录位置和 `norecursedirs` 共同保证，不使用 AST 或 import 黑名单扫描。
+- 核心仓库不得存在 `tests/workline_plugins/`；具体插件测试不得改名后寄存在 `tests/contracts/`、`tests/runtime/` 或核心 HEAVY 目录。
+- 核心测试不得导入仓库根目录 `workline_plugins` 二次开发包或具体插件实现；通用 SPI/SDK 只能使用不含真实工作线规则的最小 fake 验证。
+- `tests/workline_runtime/` 中的存量测试必须按语义收敛：通用不变量改写到最终核心对象，具体插件行为移出，旧平台装配测试删除；不得继续把该目录当作长期目标所有者。
 - 新增领域测试默认不要放在 `tests/` 根目录，优先按上方目录归属矩阵归位。
 - 单个测试文件目标低于 `1000` 行；超过 `3000` 行会触发测试拓扑 guardrail。
 - API 测试文件只覆盖 route、permission、response contract 和 API facade 行为。
-- service、projection、builder、orchestrator、runtime intent 等测试放回对应领域目录。
+- service、projection、builder 等测试放回对应领域目录。
 - 共享 fixture 和 mock builder 优先放到领域内 `conftest.py` 或 `support/`，避免跨文件复制同名 `mock_db`、`mock_session`、`mock_workline`。
 - Active production code and active gates must not introduce numbered phase/wave names, lane labels, or cleanup milestone wording; use stable domain names instead. Historical docs, archived plans, and Alembic revision filenames are allowed.
 - Active guardrail IDs, test filenames, script functions, and production comments must use stable domain names such as `AUTHORITY_METADATA_BOUNDARY`, `DEVICE_COMMAND_BOUNDARY`, `CAPABILITY_IMPLEMENTATION_IMPORT`, `INBOUND_NORMALIZER_OWNERSHIP`, and `LEGACY_RUNTIME_IMPORT`; old restructuring shorthand like `C3`, `C4`, `R-I3c`, `R-WLR`, or `wlr` is only allowed in historical records.
@@ -71,14 +98,53 @@
 ### 运行默认快速回归
 
 ```bash
-# 默认快速回归（不包含 e2e / integration / resilience / mock / load）
-pytest
+# FAST：默认快速回归（不包含 architecture / scripts / e2e / integration / resilience / mock / load）
+uv run pytest
 
 # 默认快速回归 + HTML 报告 + 覆盖率
-pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
+uv run pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
+```
+
+### 运行 QUALITY 与速度预算
+
+QUALITY 由质量门禁显式运行架构测试和一次 FAST 套件。JUnit 使用 `xunit2`，预算为套件 60 秒、单例 1 秒；`tests/unit/` 在 N≥30 时 p95 不超过 100 毫秒。N<30 时静默跳过目录 p95 检查。插件包拥有自己的预算，不计入核心 FAST。
+
+FAST 的 60 秒总预算、1 秒单例预算与 `tests/unit/` p95 预算均为强制门禁；任一预算超限时质量流程立即以非零状态退出。CI 参考环境固定为 2 vCPU / 4 GB 配额。
+
+```bash
+uv run pytest -q --junitxml=reports/fast-tests.xml
+uv run python scripts/check_fast_test_budget.py reports/fast-tests.xml
+./scripts/git-quality-gate.sh --profile quality
 ```
 
 ### 运行重测试
+
+HEAVY 测试影响选择由 `scripts/select_heavy_tests.py` 和机器可读真源
+`docs/architecture/heavy-test-impact.toml` 共同治理。selector 先识别直接修改的 HEAVY 测试，再处理候选 mapping，最后才处理 ignore；候选路径没有 mapping 或显式 NONE 时会 fail closed。
+
+维护要求：
+
+- 新增可能影响运行时的生产模块、迁移或基础设施配置时，同步补精确 `[[mapping]]`；只有评审确认无 HEAVY 影响时才填写空 `heavy_tests`。
+- 新增、删除或移动 HEAVY 测试时，同步更新引用它的 `heavy_tests`。
+- HEAVY 目录内的 conftest、fixture、support、模拟器和负载场景，以及 `tests/fixtures/**`、共享 conftest、`tests/support/**` 都属于候选资产。
+- 当前没有已验收权威 HEAVY 测试的既有候选路径保持未映射并 fail closed，待独立业务交接后再补 mapping，不得使用 NONE 或旧测试猜测绕过。
+- 具体工作线或插件 HEAVY 场景只存在于对应 `workline_plugins/<plugin_key>/tests/`，不得加入核心 selector 的 `heavy_tests` 映射。
+
+```bash
+# 本地未暂存改动（默认 scope 也是 unstaged）
+uv run scripts/select_heavy_tests.py --scope unstaged
+
+# 本地已暂存改动
+uv run scripts/select_heavy_tests.py --scope staged
+
+# PR CI 提交差异；CI 不得使用 scope，因为 CleanBeforeCheckout 后工作区 diff 为空
+uv run scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"
+
+# selector 永久 QUALITY 合同测试
+uv run pytest tests/scripts -q
+```
+
+退出 0 且有输出表示每行一个应运行的 HEAVY 测试；退出 0 且无输出表示改动只命中 ignore 或显式 NONE；非零表示 selector 为避免漏测而 fail closed。Jenkins 当前只运行 `HEAVY Selector Smoke` 合同测试，不启用 HEAVY Required 或 minimum smoke。
 
 ```bash
 # E2E 测试（默认不会被 pytest 自动收集）
@@ -92,9 +158,6 @@ pytest tests/integration/
 pytest tests/load/
 pytest tests/mock/
 
-# Workline 扩展真实 PostgreSQL 性能预算（必须显式配置安全的 integration admin/test URL）
-INTEGRATION_DATABASE_URL='postgresql+asyncpg://.../postgres' \
-  pytest tests/integration/workline_capabilities/test_runtime_extension_performance_budget_postgresql.py -q -s
 ```
 
 ### 推荐使用方式
@@ -148,9 +211,8 @@ xdg-open reports/coverage/index.html
 # 只运行某个测试文件
 pytest tests/database/test_relation_metadata.py
 
-# 显式运行集成、E2E 或韧性测试目录
+# 显式运行集成或韧性测试目录
 pytest tests/integration/
-pytest tests/e2e/test_conveyor_robot_arm.py
 pytest tests/resilience/test_redis_degradation.py
 
 # 只运行某个测试类

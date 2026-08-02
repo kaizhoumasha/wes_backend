@@ -1,6 +1,6 @@
 """Legacy cleanup matrix audit trace 守护(F-5)。
 
-补充 `test_legacy_matrix_contract.py` 未覆盖的 audit trace 维度:
+验证 cleanup matrix 的 audit trace 维度：
 - 全字段一致性(现有仅比 5 个迁移字段,F-5 比其余 8 个审计字段)
 - entry_id 格式 `legacy:<relative_path>:<symbol>` 与列一致
 - allowlist 的 legacy_entry_id 反向引用必须在 CSV 中存在
