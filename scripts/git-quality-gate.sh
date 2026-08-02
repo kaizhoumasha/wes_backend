@@ -15,7 +15,6 @@ Profiles:
   quality   Run Ruff, Bandit, runtime gates, runtime contract guardrails, legacy absence, process naming,
             architecture guardrails, explicit architecture/script suites, and the FAST suite with enforced budgets.
   ci-smoke  Run the quality profile plus API signature smoke tests.
-  full      Run the quality profile plus the full pytest suite.
 
 Checks:
   format    Run only Ruff format check.
@@ -220,12 +219,6 @@ run_ci_smoke_profile() {
     run_tool pytest tests/api/test_signature.py --capture=fd -v --tb=short
 }
 
-run_full_profile() {
-    run_quality_profile
-    log_step "full" "pytest tests/ --capture=fd -v --tb=short"
-    run_tool pytest tests/ --capture=fd -v --tb=short
-}
-
 if [[ -n "$CHECK" ]]; then
     case "$CHECK" in
         format)
@@ -271,9 +264,6 @@ else
             ;;
         ci-smoke)
             run_ci_smoke_profile
-            ;;
-        full)
-            run_full_profile
             ;;
         *)
             echo "Unsupported profile: $PROFILE" >&2

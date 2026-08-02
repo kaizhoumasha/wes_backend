@@ -336,6 +336,7 @@ def test_runtime_benchmark_gate_lists_all_required_runtime_scenarios() -> None:
     )
     conveyor_queue_writer = next(scenario for scenario in gate.scenarios if scenario.name == "conveyor_queue_writer")
     assert "integrity_conflict_recheck_count" in conveyor_queue_writer.required_metrics
+    assert conveyor_queue_writer.command == "uv run python scripts/run_runtime_benchmarks.py"
 
 
 def test_runtime_benchmark_scenarios_expose_release_gate_blocking_contract() -> None:

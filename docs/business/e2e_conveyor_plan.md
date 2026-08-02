@@ -1,4 +1,7 @@
-# E2E 场景测试实施计划：流水线料盘搬运（当前实现版）
+# E2E 场景测试实施计划：流水线料盘搬运（插件归档参考）
+
+> 该场景属于具体工作线/插件二次开发，不再由 WES 核心 `tests/` 验收。后续只有在对应插件代码、fixture
+> 与独立测试入口同工作包交付时，才按最终合同恢复本场景测试；以下内容仅保留为历史业务参考。
 
 ## 概述
 
@@ -79,7 +82,7 @@ POST /api/v1/callback/result
 
 - `tests/mock/camera_mock_server.py`
 - `tests/mock/robot_arm_mock_server.py`
-- `tests/e2e/test_conveyor_robot_arm.py`
+- 未来插件测试入口：`workline_plugins/conveyor_robot_arm/tests/test_conveyor_robot_arm.py`（尚未交付）
 
 ---
 

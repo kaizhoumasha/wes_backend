@@ -404,7 +404,20 @@ def test_git_diff_failure_fails_closed(tmp_path: Path) -> None:
         get_changed_files(scope=None, base="origin/missing", repo_root=tmp_path, runner=runner)
 
 
+def test_get_changed_files_rejects_option_like_base_ref(tmp_path: Path) -> None:
+    runner = Mock()
+
+    with pytest.raises(SelectorError, match="base ref"):
+        get_changed_files(scope=None, base="--line-prefix=IGNORED", repo_root=tmp_path, runner=runner)
+
+    runner.assert_not_called()
+
+
 def test_main_prints_one_test_per_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    for relative_path in ("tests/integration/test_z.py", "tests/e2e/test_a.py"):
+        heavy_test_path = tmp_path / relative_path
+        heavy_test_path.parent.mkdir(parents=True, exist_ok=True)
+        heavy_test_path.touch()
     mapping_path = _write_mapping(
         tmp_path,
         [("src/**", ["tests/integration/test_z.py", "tests/e2e/test_a.py"])],
@@ -461,6 +474,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ".githooks/**",
         ".github/**",
         ".gitlab-ci.yml",
+        ".gitignore",
         "README*",
         "LICENSE*",
     )
@@ -1012,3 +1026,11 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
     assert "stage('HEAVY Required')" not in jenkinsfile
     assert "run_script_contract_tests" in quality_gate
     assert "run_tool pytest tests/scripts -q" in quality_gate
+
+
+def test_quality_gate_does_not_advertise_a_duplicate_full_profile() -> None:
+    quality_gate = (REPO_ROOT / "scripts/git-quality-gate.sh").read_text(encoding="utf-8")
+
+    assert "run_full_profile" not in quality_gate
+    assert "full      Run the quality profile plus the full pytest suite." not in quality_gate
+    assert "full)" not in quality_gate

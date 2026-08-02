@@ -389,7 +389,7 @@ def default_runtime_benchmark_scenarios() -> list[RuntimeBenchmarkScenario]:
         ),
         RuntimeBenchmarkScenario(
             name="conveyor_queue_writer",
-            command="uv run pytest tests/load/test_conveyor_queue_writer_benchmark.py -q",
+            command="uv run python scripts/run_runtime_benchmarks.py",
             required_metrics=frozenset({"write_p95_ms", "reconciling_count", "integrity_conflict_recheck_count"}),
             production_source_kinds=frozenset({"postgresql"}),
         ),

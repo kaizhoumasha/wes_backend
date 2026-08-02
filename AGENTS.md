@@ -203,7 +203,7 @@ Use `uv` locally.
 - `sh src/celery_app/dev_worker_autoreload.sh`: run the Celery worker with source watching during active backend development.
 - `./scripts/install-git-hooks.sh`: enable the repo-managed `pre-commit` quality gate for the current worktree.
 - `./scripts/git-quality-gate.sh --profile quality`: run the same local quality gate used by the tracked `pre-commit` hook.
-- `uv run pytest tests/`: run the full test suite.
+- `uv run pytest tests/`: run the default FAST test suite; QUALITY and affected HEAVY use their explicit commands below.
 - `uv run ruff format . && uv run ruff check .`: match the formatter and linter used in CI.
 - `uv run bandit -r src/`: run the same security scan used by Jenkins.
 

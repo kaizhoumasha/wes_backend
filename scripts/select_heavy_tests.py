@@ -381,6 +381,14 @@ def get_changed_files(
 ) -> list[str]:
     """按本地 scope 或 CI base 协议读取 Git 改动路径。"""
     if base is not None:
+        # base 会直接作为 Git argv 传入；拒绝 option-like 值，
+        # 避免 Git 把 ref 当成参数并返回空 diff。
+        if (
+            not base
+            or base.startswith("-")
+            or any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in base)
+        ):
+            raise SelectorError(f"base ref 必须是非空且非 option 的 Git revision: {base!r}")
         commands = [["git", "diff", "--name-only", f"{base}...HEAD"]]
     elif scope == "staged":
         commands = [["git", "diff", "--cached", "--name-only"]]
@@ -461,9 +469,20 @@ def main(
             repo_root=resolved_root,
             runner=runner,
         )
+        config = load_config(resolved_mapping)
+        missing_mapped_tests = sorted(
+            {
+                heavy_test
+                for mapping in config[1]
+                for heavy_test in mapping.heavy_tests
+                if not (resolved_root / heavy_test).is_file()
+            }
+        )
+        if missing_mapped_tests:
+            raise SelectorError("mapping 引用不存在的 HEAVY 测试: " + ", ".join(missing_mapped_tests))
         # 删除记录仍用于 source/support mapping；只有已不存在、无法执行的直接 HEAVY 测试需要剔除。
         changed_files = [path for path in changed_files if not is_heavy_test(path) or (resolved_root / path).is_file()]
-        selected = select_heavy_tests(changed_files, load_config(resolved_mapping))
+        selected = select_heavy_tests(changed_files, config)
     except SelectorError as error:
         print(f"HEAVY selector fail closed: {error}", file=sys.stderr)
         return 2
