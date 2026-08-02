@@ -122,7 +122,7 @@ workline_plugins/<plugin_key>/
 
 ## 5. 实施任务
 
-### Task 1：同步所有权文档与长期规则
+### Task 1（已完成）：同步所有权文档与长期规则
 
 **Files:**
 
@@ -132,11 +132,11 @@ workline_plugins/<plugin_key>/
 - Modify: `tests/README.md`
 - Modify: `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md`
 
-- [ ] 把插件目标路径统一为仓库根目录 `workline_plugins/<plugin_key>/` 独立包。
-- [ ] 删除把 `tests/workline_plugins/`、具体插件和旧 orchestrator/platform 作为核心长期测试目录的规则。
-- [ ] 明确插件测试不进入核心 pytest、覆盖率、质量门禁或 HEAVY selector。
-- [ ] 将 TODO 中通用幂等与 CALLBACK fencing 标记为核心可靠性，不绑定具体插件测试路径。
-- [ ] 验证当前态文档无相互冲突的目标路径和测试所有权。
+- [x] 把插件目标路径统一为仓库根目录 `workline_plugins/<plugin_key>/` 独立包。
+- [x] 删除把 `tests/workline_plugins/`、具体插件和旧 orchestrator/platform 作为核心长期测试目录的规则。
+- [x] 明确插件测试不进入核心 pytest、覆盖率、质量门禁或 HEAVY selector。
+- [x] 将 TODO 中通用幂等与 CALLBACK fencing 标记为核心可靠性，不绑定具体插件测试路径。
+- [x] 验证当前态文档无相互冲突的目标路径和测试所有权。
 
 **Verification:**
 
@@ -145,7 +145,7 @@ uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
 git diff --check
 ```
 
-### Task 2：建立核心/插件所有权门禁
+### Task 2（已完成）：建立核心/插件所有权门禁
 
 **Files:**
 
@@ -155,11 +155,11 @@ git diff --check
 - Modify: `scripts/check_fast_test_budget.py`
 - Modify: `tests/scripts/test_check_fast_test_budget.py`
 
-- [ ] topology allowlist 删除 `tests/workline_plugins`。
-- [ ] 门禁要求核心 `tests/workline_plugins/` 不存在。
-- [ ] 第一阶段门禁扫描核心测试的 import，禁止导入根目录 `workline_plugins` 包；允许只含通用 SPI/SDK 的最小 fake。
-- [ ] FAST 预算删除 `tests/workline_plugins/` p95 分组，只保留核心单元测试预算。
-- [ ] selector 合同确认插件包路径不属于核心候选或 mapping。
+- [x] topology allowlist 删除 `tests/workline_plugins`。
+- [x] 门禁要求核心 `tests/workline_plugins/` 不存在。
+- [x] 第一阶段门禁扫描核心测试的 import，禁止导入根目录 `workline_plugins` 包；允许只含通用 SPI/SDK 的最小 fake。
+- [x] FAST 预算删除 `tests/workline_plugins/` p95 分组，只保留核心单元测试预算。
+- [x] selector 合同确认插件包路径不属于核心候选或 mapping。
 
 **Verification:**
 
@@ -169,17 +169,17 @@ uv run pytest tests/architecture/test_suite_topology_guardrail.py \
 uv run pytest tests/scripts/test_check_fast_test_budget.py tests/scripts/test_select_heavy_tests.py -q
 ```
 
-### Task 3：优先移出显式插件测试目录
+### Task 3（已完成）：优先移出显式插件测试目录
 
 **Scope:**
 
 - Delete: `tests/workline_plugins/`
 - Delete: `tests/characterization/workline_legacy/`
 
-- [ ] 将目录内测试逐文件确认标记为 `PLUGIN_OWNED` 或 `LEGACY_DELETE`。
-- [ ] 删除目录；不复制到核心其他目录，不在没有插件代码时创建独立插件包。
-- [ ] 删除所有对上述测试路径的文档、脚本、fixture、收集和预算引用。
-- [ ] 删除提交说明记录：具体插件行为由未来对应插件包重建，核心承接为 `NONE`；通用不变量另走 `CORE_REWRITE`。
+- [x] 将目录内测试逐文件确认标记为 `PLUGIN_OWNED` 或 `LEGACY_DELETE`。
+- [x] 删除目录；不复制到核心其他目录，不在没有插件代码时创建独立插件包。
+- [x] 删除所有对上述测试路径的文档、脚本、fixture、收集和预算引用。
+- [x] 删除提交说明记录：具体插件行为由未来对应插件包重建，核心承接为 `NONE`；通用不变量另走 `CORE_REWRITE`。
 
 **Verification:**
 
@@ -190,7 +190,7 @@ uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
 uv run pytest --collect-only -q -o addopts=''
 ```
 
-### Task 4：清除散落在核心目录的具体插件测试
+### Task 4（部分完成，等待 Task 5）：清除散落在核心目录的具体插件测试
 
 **Scope:**
 
@@ -198,7 +198,15 @@ uv run pytest --collect-only -q -o addopts=''
 - 以具体工作线流程、现场拓扑或插件 fixture 为唯一验收对象的合同、脚本、集成、E2E、mock 和韧性测试；
 - 只证明旧插件平台、generated index、binding、manifest 或 runtime dispatch 的测试。
 
-- [ ] 生成精确候选清单并逐文件阅读，不按名称批量删除。
+**Current status:** 纯 `PLUGIN_OWNED` 与可独立判断的 `LEGACY_DELETE` 测试已清理。以下混合资产仍同时承载具体插件标识和通用 WMS/入站可靠性语义，必须等 Task 5 建立最终核心对象权威测试后再拆分或删除：
+
+- `tests/mock/wms_operation_fixtures.py`
+- `tests/contracts/wms_integration/test_wms_operation_catalog.py`
+- `tests/contracts/wms_integration/test_effect_status_contract.py`
+- `tests/support/runtime_inbox_processing_postgresql.py`
+- `tests/integration/test_runtime_inbox_processing_postgresql.py`
+
+- [x] 生成精确候选清单并逐文件阅读，不按名称批量删除。
 - [ ] `PLUGIN_OWNED`：从核心删除，未来随对应插件包按最终代码重建。
 - [ ] `LEGACY_DELETE`：直接删除，并同步清理生产平台删除计划中的引用。
 - [ ] 混合文件中的通用不变量标记为 `CORE_REWRITE`，先在最终核心对象上建立权威测试，再删除混合文件。
@@ -232,17 +240,17 @@ Task 5 完成前：
 - [ ] 保留处理幂等与 CALLBACK fencing；这些是核心可靠性，不归具体插件。
 - [ ] 删除 RuntimeInbox、Intent/Effect、Capability、Manifest、Hold、Recovery、Reservation 等旧所有者测试。
 
-### Task 6：收敛核心 FAST、QUALITY 和 HEAVY
+### Task 6（已完成）：收敛核心 FAST、QUALITY 和 HEAVY
 
-- [ ] 同一核心行为只保留最低稳定层的完整断言；高层只验证新增边界。
-- [ ] 将真实数据库、HTTP、Celery、进程、故障和容量测试移到核心 HEAVY。
-- [ ] 删除核心 HEAVY selector 中任何具体插件测试映射。
+- [x] 同一核心行为只保留最低稳定层的完整断言；高层只验证新增边界。
+- [x] 将真实数据库、HTTP、Celery、进程、故障和容量测试移到核心 HEAVY。
+- [x] 删除核心 HEAVY selector 中任何具体插件测试映射。
 - [x] FAST 在固定 2 vCPU / 4 GB 环境达到 60 秒总预算和单例预算。
 - [x] 质量门禁强制执行 FAST 总时长、单例和 `tests/unit/` p95 预算。
 
-### Task 7：最终缺席与交付验收
+### Task 7（部分完成，等待 Task 5）：最终缺席与交付验收
 
-- [ ] 核心 `tests/workline_plugins/` 不存在。
+- [x] 核心 `tests/workline_plugins/` 不存在。
 - [ ] 核心测试不导入任何具体工作线插件或根目录二次开发插件包。
 - [ ] 核心测试中不存在粗分机、自动分拣、人工分拣、满箱交换或复杂出库的业务规则断言。
 - [ ] 只验证旧平台、旧兼容、旧迁移和旧 revision chain 的测试归零。
