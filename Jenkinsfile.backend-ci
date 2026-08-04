@@ -30,6 +30,9 @@ pipeline {
                     String gitlabActionType = (env.gitlabActionType ?: env.GITLAB_OBJECT_KIND ?: '').trim().toUpperCase()
                     boolean hasMergeRequestId = ((env.gitlabMergeRequestId ?: '').trim()) as boolean
                     boolean isMergeRequest = gitlabActionType.contains('MERGE') || hasMergeRequestId
+                    if (isMergeRequest && !targetBranch) {
+                        error('Merge request build requires gitlabTargetBranch')
+                    }
 
                     env.CI_SOURCE_BRANCH = sourceBranch
                     env.CI_TARGET_BRANCH = targetBranch
@@ -125,6 +128,8 @@ pipeline {
                     set -e
                     mkdir -p reports
                     docker run --rm \
+                        --cpus=2 \
+                        --memory=4g \
                         --env-file "$WORKSPACE/.env.test" \
                         -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
                         -v "$WORKSPACE/.git:/app/.git:ro" \

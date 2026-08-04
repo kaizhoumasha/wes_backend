@@ -10,6 +10,22 @@ def _stage_body(jenkins_text: str, stage_name: str, next_stage_name: str) -> str
     ]
 
 
+def test_merge_request_without_target_branch_fails_closed() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
+
+    assert "if (isMergeRequest && !targetBranch)" in checkout_body
+    assert "error('Merge request build requires gitlabTargetBranch')" in checkout_body
+
+
+def test_quality_gate_uses_the_fixed_fast_reference_resources() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    quality_body = _stage_body(jenkins_text, "Quality Gate", "Compose Contracts")
+
+    assert "--cpus=2" in quality_body
+    assert "--memory=4g" in quality_body
+
+
 def test_heavy_required_does_not_expose_the_host_docker_daemon_to_pytest() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")

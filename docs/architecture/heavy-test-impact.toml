@@ -40,7 +40,7 @@ heavy_tests = [
     "tests/mock/test_wms_mock_server.py",
     "tests/mock/test_wms_northbound_contract.py",
 ]
-reviewed_content_sha256 = "440e3526575fedf82caf0b4521c0eb4b1b38f0a72f27ba7eb153bd81381e086f"
+reviewed_content_sha256 = "a8219df93139d34446b43a08f9c3a610dd5c4f4a8ecce4f8e41fc48afd720bec"
 
 [[mapping]]
 source_glob = ".env.test"
@@ -49,7 +49,7 @@ heavy_tests = [
     "tests/mock/test_wms_mock_server.py",
     "tests/mock/test_wms_northbound_contract.py",
 ]
-reviewed_content_sha256 = "c86208462486e1d136b8697589edb4cf8537aa1770db47ddaab8015e9f234660"
+reviewed_content_sha256 = "4a56087f0eca0de835b6b97645cfe739acdd434fda401804e705c267eacda49c"
 
 [[mapping]]
 source_glob = ".env.prod"
@@ -58,7 +58,7 @@ heavy_tests = [
     "tests/mock/test_wms_mock_server.py",
     "tests/mock/test_wms_northbound_contract.py",
 ]
-reviewed_content_sha256 = "2e10e7d5e019494ddf98415f6eed1501f9f951cfcf85a3f230d068c0e7ceb74d"
+reviewed_content_sha256 = "8cc9c3c3e615651d732f9ebb821e795759d0c65a761c34725e86e7b34345290a"
 
 # MR HEAVY 专用数据库编排由当前命令结果关联 PostgreSQL 合同承接；Redis 由 Compose healthcheck 验证。
 [[mapping]]

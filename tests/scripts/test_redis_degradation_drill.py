@@ -1,3 +1,11 @@
+import asyncio
+import runpy
+import sys
+from collections.abc import Coroutine
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 
 from scripts.manual import redis_degradation_drill
@@ -21,6 +29,22 @@ class FakeRecoveryCache:
 
     def get_status(self) -> dict[str, str]:
         return {"circuit_breaker_state": self.state}
+
+
+def test_cli_keyboard_interrupt_exits_with_standard_interrupt_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    script_path = Path(redis_degradation_drill.__file__)
+
+    def interrupt(coroutine: Coroutine[Any, Any, Any]) -> None:
+        coroutine.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(asyncio, "run", interrupt)
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(str(script_path), run_name="__main__")
+
+    assert exc_info.value.code == 130
 
 
 @pytest.mark.parametrize(

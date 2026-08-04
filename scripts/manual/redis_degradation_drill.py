@@ -205,3 +205,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\n\n演练已中断")
+        raise SystemExit(130) from None
