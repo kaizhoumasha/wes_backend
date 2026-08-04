@@ -17,8 +17,8 @@ Adapter 使用 `device_adapters/<adapter_key>/`，插件使用 `workline_plugins
 > **总控阶段归属（2026-08-03）：** 本计划是
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
 > 的 Phase 1 权威计划。Task 1、2、3、6 及 Task 4/7 的可独立治理部分已在
-> `origin/develop@cf2f1f91` 合入；Task 5 和混合资产承接归 Phase 4，插件同包验收归
-> Phase 5/6，旧 revision 与最终质量验收归 Phase 8/9。本计划在这些延后义务完成前
+> `develop@28eb99d9` 合入；Task 5 和混合资产承接归 Phase 5，插件同包验收归
+> Phase 6/7，旧 revision 与最终质量验收归 Phase 9/10。本计划在这些延后义务完成前
 > 仍保持未完成状态。
 
 ---
@@ -262,9 +262,9 @@ rtk uv run pytest tests/architecture -q
 **Entry condition:** 最终 `InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch`、设备/位置投影及其生产路径已经交付。
 
 **Current status:** 延后执行，不属于当前测试收敛批次。截至 2026-08-03，入口条件中的最终对象和生产路径
-尚未完整交付；本计划不得为完成测试迁移而越权实现生产执行内核。总控 Phase 3 负责交付最小执行对象、
-可靠投递记录和通用 WorkLine 能力；其退出门禁通过后，Phase 4 必须执行本 Task，并由 Master Plan 的
-Phase 4 任务及退出门禁直接跟踪，不在 `TODOS.md` 维护重复调度项。
+尚未完整交付；本计划不得为完成测试迁移而越权实现生产执行内核。总控 Phase 4 负责交付最小执行对象、
+可靠投递记录和通用 WorkLine 能力；其退出门禁通过后，Phase 5 必须执行本 Task，并由 Master Plan 的
+Phase 5 任务及退出门禁直接跟踪，不在 `TODOS.md` 维护重复调度项。
 
 Task 5 完成前：
 
@@ -325,7 +325,7 @@ rtk ./scripts/git-quality-gate.sh --profile quality
   `workline_plugins/rough_sorter/tests/`；
 - 实际验证命令和结果。
 
-WMS Phase 2 的逐文件处置由
+WMS Phase 3 的逐文件处置由
 `docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md` Task 9 固定；HEAVY 测试移动或删除时，
 同一变更必须更新 `docs/architecture/heavy-test-impact.toml`，不得留下失效路径或用臆造 NONE 掩盖风险。
 
