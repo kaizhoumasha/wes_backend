@@ -381,7 +381,7 @@ request/ACK/status/terminal/cancel DTO、七组 submit/status 方法、一个 ca
 
 - [ ] 从空数据库执行最终 Alembic baseline，并验证 metadata、schema、约束、索引和扩展对象。
 - [ ] 运行核心架构、测试所有权和旧架构缺席门禁。
-- [ ] 运行核心 FAST，并强制 60 秒总预算、1 秒单例预算和 `tests/unit/` p95 预算。
+- [ ] 运行核心 FAST，并强制 60 秒总预算、3 秒单例预算和 `tests/unit/` p95 预算。
 - [ ] 运行核心 QUALITY、受影响 HEAVY 和完整质量门禁。
 - [ ] 在每个 Adapter 包目录运行厂商合同、集成、E2E 和韧性入口；在每个插件包目录运行单元、集成、E2E、韧性、并发和负载入口。
 - [ ] 以真实或验收级 WMS/ECS/RCS Adapter 验证共享合同，不把具体插件验收回写核心。

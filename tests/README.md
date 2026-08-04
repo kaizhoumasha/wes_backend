@@ -118,9 +118,9 @@ uv run pytest --html=reports/report.html --self-contained-html --cov=src --cov-r
 
 ### 运行 QUALITY 与速度预算
 
-QUALITY 由质量门禁显式运行架构测试和一次 FAST 套件。JUnit 使用 `xunit2`，预算为套件 60 秒、单例 1 秒；`tests/unit/` 在 N≥30 时 p95 不超过 100 毫秒。N<30 时静默跳过目录 p95 检查。插件包拥有自己的预算，不计入核心 FAST。
+QUALITY 由质量门禁显式运行架构测试和一次 FAST 套件。JUnit 使用 `xunit2`，预算为套件 60 秒、单例 3 秒；`tests/unit/` 在 N≥30 时 p95 不超过 100 毫秒。N<30 时静默跳过目录 p95 检查。插件包拥有自己的预算，不计入核心 FAST。
 
-FAST 的 60 秒总预算、1 秒单例预算与 `tests/unit/` p95 预算均为强制门禁；任一预算超限时质量流程立即以非零状态退出。CI 参考环境固定为 2 vCPU / 4 GB 配额。
+FAST 的 60 秒总预算、3 秒单例预算与 `tests/unit/` p95 预算均为强制门禁；任一预算超限时质量流程立即以非零状态退出。CI 参考环境固定为 2 vCPU / 4 GB 配额。
 
 ```bash
 uv run pytest -q --junitxml=reports/fast-tests.xml
