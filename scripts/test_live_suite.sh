@@ -31,7 +31,7 @@ run_redis() {
         exit 1
     fi
     echo "==> Running manual Redis degradation drill"
-    RUN_REDIS_DEGRADATION=1 PYTHONPATH=. uv run pytest -m "live and manual" tests/resilience/test_redis_degradation.py -v --tb=short
+    PYTHONPATH=. uv run python scripts/manual/redis_degradation_drill.py
 }
 
 case "${1:-help}" in

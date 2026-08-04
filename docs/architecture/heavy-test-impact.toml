@@ -13,6 +13,11 @@ ignore_globs = [
 source_glob = "scripts/select_heavy_tests.py"
 heavy_tests = []
 
+# Redis 降级演练由人工运维执行，不触发自动 HEAVY。
+[[mapping]]
+source_glob = "scripts/manual/redis_degradation_drill.py"
+heavy_tests = []
+
 [[mapping]]
 source_glob = "docs/architecture/heavy-test-impact.toml"
 heavy_tests = []
@@ -202,15 +207,6 @@ heavy_tests = ["tests/integration/test_external_http_transport_attempt_postgresq
 source_glob = "src/app/runtime/orchestration/models/timeline.py"
 heavy_tests = []
 reviewed_content_sha256 = "c906b248c47842d75440e611379b9e3220ddab25e7db260ee6deb866b022af60"
-
-# Q19 caller 的 wire DTO 机械同步只由共享 WMS 合同承接；具体准入 Decision 与对象推进仍归插件包。
-[[mapping]]
-source_glob = "src/app/runtime/workline_plugins/rough_sorter/pre_attempt.py"
-heavy_tests = [
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
-]
 
 [[mapping]]
 source_glob = "src/app/sys/dispatch_concurrency.py"

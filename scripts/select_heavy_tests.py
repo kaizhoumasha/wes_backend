@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 HEAVY_DIRECT_GLOB = "tests/{integration,e2e,resilience,load,mock}/**/test_*.py"
-MANUAL_ONLY_HEAVY_TESTS = frozenset({"tests/resilience/test_redis_degradation.py"})
 HUMAN_DOCUMENT_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".docx", ".pdf", ".eddx"})
 RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
 RETIRED_REMOVED_PATHS = frozenset({"Jenkinsfile"})
@@ -467,10 +466,6 @@ def select_heavy_tests(
 
     for raw_path in changed_files:
         normalized_path = _validate_repository_relative(raw_path, field="changed path", allow_glob=False)
-
-        # 交互式故障演练不能进入无 TTY runner；直接变更时必须阻止 CI 静默放行。
-        if normalized_path in MANUAL_ONLY_HEAVY_TESTS:
-            raise SelectorError(f"人工 HEAVY 测试变更需要显式人工验证: {normalized_path}")
 
         if is_heavy_test(normalized_path):
             selected.add(normalized_path)

@@ -226,7 +226,10 @@ pytest tests/database/test_relation_metadata.py
 
 # 显式运行集成或韧性测试目录
 pytest tests/integration/
-pytest tests/resilience/test_redis_degradation.py
+pytest tests/resilience/
+
+# 运行 Redis 人工降级演练
+uv run python scripts/manual/redis_degradation_drill.py
 
 # 只运行某个测试类
 pytest tests/database/test_relation_metadata.py::TestRelationMetadata

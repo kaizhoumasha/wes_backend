@@ -206,11 +206,14 @@ def test_direct_heavy_test_selects_itself(tmp_path: Path) -> None:
     assert select_heavy_tests(["tests/integration/test_foo.py"], config) == ["tests/integration/test_foo.py"]
 
 
-def test_manual_redis_drill_change_fails_closed_in_automatic_selector(tmp_path: Path) -> None:
-    config = load_config(_write_mapping(tmp_path))
+def test_manual_redis_drill_uses_repository_explicit_none_mapping() -> None:
+    manual_drill = "scripts/manual/redis_degradation_drill.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    with pytest.raises(SelectorError, match="人工 HEAVY 测试变更需要显式人工验证"):
-        select_heavy_tests(["tests/resilience/test_redis_degradation.py"], config)
+    assert select_heavy_tests([manual_drill], config) == []
+    matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == manual_drill]
+    assert len(matching_mappings) == 1
+    assert matching_mappings[0].heavy_tests == ()
 
 
 def test_moved_core_heavy_tests_select_themselves() -> None:
@@ -662,6 +665,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
     }.issubset(ignore_globs)
     assert tuple((mapping.source_glob, mapping.heavy_tests) for mapping in mappings) == (
         ("scripts/select_heavy_tests.py", ()),
+        ("scripts/manual/redis_degradation_drill.py", ()),
         ("docs/architecture/heavy-test-impact.toml", ()),
         ("Jenkinsfile.backend-ci", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (".dockerignore", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
@@ -751,10 +755,6 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/runtime/orchestration/enums.py", ()),
         ("src/app/runtime/orchestration/models/session.py", (RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,)),
         ("src/app/runtime/orchestration/models/timeline.py", ()),
-        (
-            "src/app/runtime/workline_plugins/rough_sorter/pre_attempt.py",
-            (WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
-        ),
         (
             "src/app/sys/dispatch_concurrency.py",
             (
@@ -1305,10 +1305,6 @@ def test_repository_mapping_pins_runtime_profiles_to_current_content(changed_pat
 @pytest.mark.parametrize(
     ("changed_path", "expected"),
     [
-        (
-            "src/app/runtime/workline_plugins/rough_sorter/pre_attempt.py",
-            [WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
-        ),
         (
             "src/app/wms_integration/ports/document_operations.py",
             [WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],

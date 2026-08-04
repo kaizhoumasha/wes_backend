@@ -85,8 +85,8 @@ curl http://localhost:8001/api/v1/users/1
 ### 完整测试脚本
 
 ```bash
-# 运行交互式测试
-python tests/resilience/test_redis_degradation.py
+# 运行交互式演练
+uv run python scripts/manual/redis_degradation_drill.py
 ```
 
 ## 日志示例
