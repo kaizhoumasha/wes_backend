@@ -5,13 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from scripts.compose_runtime_benchmark_artifact import main as compose_runtime_benchmark_artifact
 from tests.load.runtime_benchmark_scenarios import production_scenario_metadata
 
 
@@ -123,15 +122,15 @@ def test_runtime_benchmark_composer_rejects_non_production_environment(tmp_path,
         )
 
 
-def test_runtime_benchmark_composer_cli_rejects_duplicate_scenario_evidence(tmp_path) -> None:
+def test_runtime_benchmark_composer_cli_rejects_duplicate_scenario_evidence(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     evidence_paths = _write_evidence_files(tmp_path)
     output_path = tmp_path / "runtime-production-benchmark.json"
-    repo_root = Path(__file__).resolve().parents[3]
 
-    result = subprocess.run(
+    result = compose_runtime_benchmark_artifact(
         [
-            sys.executable,
-            "scripts/compose_runtime_benchmark_artifact.py",
             "--output",
             str(output_path),
             "--environment",
@@ -148,28 +147,27 @@ def test_runtime_benchmark_composer_cli_rejects_duplicate_scenario_evidence(tmp_
             f"runtime_inbox_claim={evidence_paths['runtime_inbox_claim']}",
             "--scenario-evidence",
             f"runtime_inbox_claim={evidence_paths['runtime_inbox_claim']}",
-        ],
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
+        ]
     )
 
-    assert result.returncode == 1
-    assert "DUPLICATE_SCENARIO_EVIDENCE" in result.stdout
+    assert result == 1
+    assert "DUPLICATE_SCENARIO_EVIDENCE" in capsys.readouterr().out
 
 
-def test_runtime_benchmark_composer_cli_normalizes_relative_evidence_paths(tmp_path) -> None:
+def test_runtime_benchmark_composer_cli_normalizes_relative_evidence_paths(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
     evidence_paths = _write_evidence_files(tmp_path)
     output_path = tmp_path / "reports" / "runtime" / "runtime-production-benchmark.json"
     repo_root = Path(__file__).resolve().parents[3]
+    monkeypatch.chdir(repo_root)
 
-    result = subprocess.run(
+    result = compose_runtime_benchmark_artifact(
         [
-            sys.executable,
-            "scripts/compose_runtime_benchmark_artifact.py",
             "--output",
             str(output_path),
             "--environment",
@@ -190,15 +188,12 @@ def test_runtime_benchmark_composer_cli_normalizes_relative_evidence_paths(tmp_p
             f"ecs_status_command={os.path.relpath(evidence_paths['ecs_status_command'], repo_root)}",
             "--scenario-evidence",
             f"plane_snapshot={os.path.relpath(evidence_paths['plane_snapshot'], repo_root)}",
-        ],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     artifact = json.loads(output_path.read_text(encoding="utf-8"))
 
-    assert "Runtime production benchmark artifact written" in result.stdout
+    assert result == 0
+    assert "Runtime production benchmark artifact written" in capsys.readouterr().out
     assert RuntimeBenchmarkGate().validate_artifact(artifact).valid is True
     for scenario in artifact["scenarios"].values():
         evidence_path = Path(scenario["source"]["evidence"])
@@ -206,17 +201,17 @@ def test_runtime_benchmark_composer_cli_normalizes_relative_evidence_paths(tmp_p
         assert evidence_path.is_file()
 
 
-def test_runtime_benchmark_composer_cli_writes_gate_valid_production_artifact(tmp_path) -> None:
+def test_runtime_benchmark_composer_cli_writes_gate_valid_production_artifact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
     evidence_paths = _write_evidence_files(tmp_path)
     output_path = tmp_path / "runtime-production-benchmark.json"
-    repo_root = Path(__file__).resolve().parents[3]
 
-    result = subprocess.run(
+    result = compose_runtime_benchmark_artifact(
         [
-            sys.executable,
-            "scripts/compose_runtime_benchmark_artifact.py",
             "--output",
             str(output_path),
             "--environment",
@@ -237,13 +232,10 @@ def test_runtime_benchmark_composer_cli_writes_gate_valid_production_artifact(tm
             f"ecs_status_command={evidence_paths['ecs_status_command']}",
             "--scenario-evidence",
             f"plane_snapshot={evidence_paths['plane_snapshot']}",
-        ],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     artifact = json.loads(output_path.read_text(encoding="utf-8"))
 
-    assert "Runtime production benchmark artifact written" in result.stdout
+    assert result == 0
+    assert "Runtime production benchmark artifact written" in capsys.readouterr().out
     assert RuntimeBenchmarkGate().validate_artifact(artifact).valid is True

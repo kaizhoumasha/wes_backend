@@ -294,7 +294,10 @@ def test_scale_requires_complete_api_and_celery_target_topology(scale: list[str]
         _parse_scale(scale)
 
 
-def test_scale_calculates_complete_api_then_worker_target_without_prior_state() -> None:
+def test_scale_calculates_complete_api_then_worker_target_without_prior_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CELERY_CONCURRENCY", raising=False)
     scales = _parse_scale(["api=3", "celery=10"])
 
     plan = build_capacity_plan(services={"api", "celery"}, scales=scales)

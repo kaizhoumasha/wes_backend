@@ -127,9 +127,10 @@ pipeline {
                     docker run --rm \
                         --env-file "$WORKSPACE/.env.test" \
                         -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
+                        -v "$WORKSPACE/.git:/app/.git:ro" \
                         -v "$WORKSPACE/reports:/app/reports" \
                         "${CI_IMAGE}" \
-                        sh -c './scripts/git-quality-gate.sh --profile quality --bandit-json /app/reports/bandit-report.json --ci'
+                        sh -c 'git config --global --add safe.directory /app && ./scripts/git-quality-gate.sh --profile quality --bandit-json /app/reports/bandit-report.json --ci'
                 '''
             }
             post {
@@ -137,6 +138,27 @@ pipeline {
                     junit testResults: 'reports/fast-tests.xml', allowEmptyResults: true
                     archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
                 }
+            }
+        }
+
+        stage('Compose Contracts') {
+            steps {
+                sh '''
+                    set -eu
+                    export BACKEND_IMAGE="${RUNTIME_IMAGE_LOCAL}"
+                    export WMS_PROVIDER_PROFILE_HOST_FILE="$WORKSPACE/.env.test"
+
+                    docker compose \
+                        --env-file .env.prod \
+                        -f docker-compose.yml \
+                        -f docker-compose.deploy.yml \
+                        --profile prod \
+                        config --no-env-resolution --quiet
+                    docker compose \
+                        --env-file .env.test \
+                        -f docker-compose.test-deploy.yml \
+                        config --no-env-resolution --quiet
+                '''
             }
         }
 

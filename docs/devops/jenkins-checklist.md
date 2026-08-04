@@ -164,8 +164,11 @@ git push gitlab develop
 - [ ] 验证各阶段：
   - [ ] Checkout Source
   - [ ] Build CI Image
-  - [ ] Quality Checks（代码检查）
-  - [ ] Tests（单元测试）
+  - [ ] Quality Gate（格式、Lint、Bandit、架构、脚本合同与 FAST）
+  - [ ] Compose Contracts（主机端渲染生产与 TEST 部署配置）
+  - [ ] RuntimeInbox PostgreSQL Acceptance
+  - [ ] Mock Image Contracts（MR）
+  - [ ] HEAVY Required（MR）
   - [ ] Build Runtime Image
   - [ ] Push Runtime Image（非 MR）
   - [ ] Trigger Test Deploy（仅 develop push）

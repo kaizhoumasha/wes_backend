@@ -175,6 +175,10 @@ run_architecture_check() {
     # 允许 ARCHITECTURE_GUARDRAIL_MODE 环境变量覆盖 (测试/回滚场景)。
     local mode="${ARCHITECTURE_GUARDRAIL_MODE:-enforced}"
     log_step "architecture" "architecture-guardrails.sh --mode $mode"
+    if [[ "$CI_MODE" == "true" ]]; then
+        UV_NO_SYNC=1 bash "$REPO_ROOT/scripts/architecture-guardrails.sh" --mode "$mode"
+        return
+    fi
     bash "$REPO_ROOT/scripts/architecture-guardrails.sh" --mode "$mode"
 }
 

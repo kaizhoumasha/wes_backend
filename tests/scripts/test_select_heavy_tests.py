@@ -1,4 +1,6 @@
+import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock, call
@@ -104,7 +106,7 @@ def test_parser_enforces_scope_base_protocol() -> None:
             None,
             ["src/app.py\n", "src/new.py\n"],
             [
-                ["git", "diff", "--name-only"],
+                ["git", "diff", "--no-renames", "--name-only"],
                 ["git", "ls-files", "--others", "--exclude-standard"],
             ],
             ["src/app.py", "src/new.py"],
@@ -113,14 +115,14 @@ def test_parser_enforces_scope_base_protocol() -> None:
             "staged",
             None,
             ["main.py\nmigrations/env.py\n"],
-            [["git", "diff", "--cached", "--name-only"]],
+            [["git", "diff", "--cached", "--no-renames", "--name-only"]],
             ["main.py", "migrations/env.py"],
         ),
         (
             None,
             "origin/develop",
             ["tests/integration/test_foo.py\n"],
-            [["git", "diff", "--name-only", "origin/develop...HEAD"]],
+            [["git", "diff", "--no-renames", "--name-only", "origin/develop...HEAD"]],
             ["tests/integration/test_foo.py"],
         ),
         (
@@ -128,7 +130,7 @@ def test_parser_enforces_scope_base_protocol() -> None:
             None,
             ["", ""],
             [
-                ["git", "diff", "--name-only"],
+                ["git", "diff", "--no-renames", "--name-only"],
                 ["git", "ls-files", "--others", "--exclude-standard"],
             ],
             [],
@@ -158,6 +160,30 @@ def test_get_changed_files_uses_expected_git_diff(
     ]
 
 
+def test_get_changed_files_reports_both_paths_for_staged_rename(tmp_path: Path) -> None:
+    git = shutil.which("git")
+    assert git is not None
+    subprocess.run([git, "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run([git, "config", "user.email", "selector@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run([git, "config", "user.name", "HEAVY Selector Test"], cwd=tmp_path, check=True)
+
+    source_path = tmp_path / "src" / "runtime.py"
+    source_path.parent.mkdir()
+    source_path.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run([git, "add", "src/runtime.py"], cwd=tmp_path, check=True)
+    subprocess.run([git, "commit", "-qm", "initial"], cwd=tmp_path, check=True)
+
+    destination_path = tmp_path / "docs" / "runtime.md"
+    destination_path.parent.mkdir()
+    source_path.rename(destination_path)
+    subprocess.run([git, "add", "-A"], cwd=tmp_path, check=True)
+
+    assert get_changed_files(scope="staged", base=None, repo_root=tmp_path) == [
+        "docs/runtime.md",
+        "src/runtime.py",
+    ]
+
+
 def test_git_changed_paths_preserve_noncanonical_input_for_validation(tmp_path: Path) -> None:
     unsafe_path = "tests/integration/test_x.py\x1f"
     runner = Mock(
@@ -178,6 +204,13 @@ def test_direct_heavy_test_selects_itself(tmp_path: Path) -> None:
     config = load_config(_write_mapping(tmp_path))
 
     assert select_heavy_tests(["tests/integration/test_foo.py"], config) == ["tests/integration/test_foo.py"]
+
+
+def test_manual_redis_drill_change_fails_closed_in_automatic_selector(tmp_path: Path) -> None:
+    config = load_config(_write_mapping(tmp_path))
+
+    with pytest.raises(SelectorError, match="人工 HEAVY 测试变更需要显式人工验证"):
+        select_heavy_tests(["tests/resilience/test_redis_degradation.py"], config)
 
 
 def test_moved_core_heavy_tests_select_themselves() -> None:
@@ -354,6 +387,109 @@ def test_schema_rejects_noncanonical_heavy_test_paths(tmp_path: Path, heavy_test
         load_config(mapping_path)
 
 
+@pytest.mark.parametrize("source_glob", ["src/*.py", "src/{runtime,worker}.py"])
+def test_reviewed_none_rejects_non_exact_source_glob(tmp_path: Path, source_glob: str) -> None:
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text(
+        "\n".join(
+            [
+                'ignore_globs = ["ignored/**"]',
+                "",
+                "[[mapping]]",
+                f"source_glob = {json.dumps(source_glob)}",
+                "heavy_tests = []",
+                f"reviewed_content_sha256 = {json.dumps('0' * 64)}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SelectorError, match=r"reviewed_content_sha256.*精确"):
+        load_config(mapping_path)
+
+
+def test_reviewed_mapping_selects_heavy_tests_only_while_content_matches(tmp_path: Path) -> None:
+    source_path = tmp_path / "src" / "runtime.py"
+    source_path.parent.mkdir()
+    source_path.write_text("BEHAVIOR = 'reviewed'\n", encoding="utf-8")
+    digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text(
+        "\n".join(
+            [
+                'ignore_globs = ["ignored/**"]',
+                "",
+                "[[mapping]]",
+                'source_glob = "src/runtime.py"',
+                f"heavy_tests = {json.dumps([HEAVY_TEST])}",
+                f"reviewed_content_sha256 = {json.dumps(digest)}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(mapping_path)
+
+    assert select_heavy_tests(["src/runtime.py"], config, repo_root=tmp_path) == [HEAVY_TEST]
+
+    source_path.write_text("BEHAVIOR = 'changed'\n", encoding="utf-8")
+    with pytest.raises(SelectorError, match="reviewed mapping 内容指纹不匹配"):
+        select_heavy_tests(["src/runtime.py"], config, repo_root=tmp_path)
+
+
+@pytest.mark.parametrize("digest", ["0" * 63, "G" * 64, "A" * 64])
+def test_reviewed_none_rejects_invalid_sha256(tmp_path: Path, digest: str) -> None:
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text(
+        "\n".join(
+            [
+                'ignore_globs = ["ignored/**"]',
+                "",
+                "[[mapping]]",
+                'source_glob = "src/runtime.py"',
+                "heavy_tests = []",
+                f"reviewed_content_sha256 = {json.dumps(digest)}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SelectorError, match=r"reviewed_content_sha256.*SHA-256"):
+        load_config(mapping_path)
+
+
+def test_reviewed_none_requires_matching_current_content(tmp_path: Path) -> None:
+    source_path = tmp_path / "src" / "runtime.py"
+    source_path.parent.mkdir()
+    source_path.write_text('"""Reviewed documentation-only change."""\n', encoding="utf-8")
+    digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text(
+        "\n".join(
+            [
+                'ignore_globs = ["ignored/**"]',
+                "",
+                "[[mapping]]",
+                'source_glob = "src/runtime.py"',
+                "heavy_tests = []",
+                f"reviewed_content_sha256 = {json.dumps(digest)}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = load_config(mapping_path)
+
+    assert select_heavy_tests(["src/runtime.py"], config, repo_root=tmp_path) == []
+
+    source_path.write_text("BEHAVIOR = 'changed'\n", encoding="utf-8")
+    with pytest.raises(SelectorError, match="reviewed mapping 内容指纹不匹配"):
+        select_heavy_tests(["src/runtime.py"], config, repo_root=tmp_path)
+
+
 def test_mapping_union_and_explicit_none(tmp_path: Path) -> None:
     second_heavy_test = "tests/e2e/test_authoritative_runtime.py"
     duplicate_mapping = load_config(
@@ -503,7 +639,6 @@ def test_repository_mapping_keeps_unaccepted_candidates_unmapped() -> None:
         "migrations/env.py",
         "alembic.ini",
         "docker-compose.yml",
-        ".env.test",
         "tests/integration/conftest.py",
         "tests/fixtures/orders.json",
         "tests/conftest.py",
@@ -528,7 +663,20 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
     assert tuple((mapping.source_glob, mapping.heavy_tests) for mapping in mappings) == (
         ("scripts/select_heavy_tests.py", ()),
         ("docs/architecture/heavy-test-impact.toml", ()),
-        ("Jenkinsfile.backend-ci", ()),
+        ("Jenkinsfile.backend-ci", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
+        (".dockerignore", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
+        (
+            ".env.dev",
+            (WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
+        ),
+        (
+            ".env.test",
+            (WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
+        ),
+        (
+            ".env.prod",
+            (WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
+        ),
         ("docker-compose.ci-heavy.yml", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         ("scripts/git-quality-gate.sh", ()),
         ("scripts/markdownlint.sh", ()),
@@ -600,10 +748,12 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/contracts/__init__.py", ()),
         ("src/app/device/models/command.py", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         ("src/app/device/models/device.py", (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,)),
-        ("src/app/runtime/orchestration/enums.py", (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,)),
+        ("src/app/runtime/orchestration/enums.py", ()),
+        ("src/app/runtime/orchestration/models/session.py", (RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,)),
+        ("src/app/runtime/orchestration/models/timeline.py", ()),
         (
-            "src/app/runtime/orchestration/models/{session,timeline}.py",
-            (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,),
+            "src/app/runtime/workline_plugins/rough_sorter/pre_attempt.py",
+            (WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
         ),
         (
             "src/app/sys/dispatch_concurrency.py",
@@ -667,6 +817,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST,
             ),
         ),
+        ("tests/support/runtime_inbox_processing_postgresql.py", (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,)),
         (
             "tests/support/external_http.py",
             (
@@ -690,6 +841,10 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "tests/mock/{Dockerfile,ecs_mock_catalog.py,ecs_mock_server.py}",
             (ECS_MOCK_SERVER_HEAVY_TEST, MOCK_DOCKERFILE_HEAVY_TEST),
+        ),
+        (
+            "src/app/wms_integration/ports/document_operations.py",
+            (WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
         ),
         (
             "scripts/verify_wms_northbound_feasibility.py",
@@ -1062,9 +1217,7 @@ def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_close
         ("src/app/contracts/__init__.py", []),
         ("src/app/device/models/command.py", [COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST]),
         ("src/app/device/models/device.py", [DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST]),
-        ("src/app/runtime/orchestration/enums.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
-        ("src/app/runtime/orchestration/models/session.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
-        ("src/app/runtime/orchestration/models/timeline.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
+        ("src/app/runtime/orchestration/models/session.py", [RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST]),
     ],
 )
 def test_repository_mapping_keeps_core_sources_owned_by_core_heavy_tests(
@@ -1103,12 +1256,76 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
     assert "run_tool pytest tests/scripts -q" in quality_gate
 
 
-def test_repository_mapping_classifies_active_backend_ci_as_quality_only() -> None:
+def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests(["Jenkinsfile.backend-ci"], config) == []
+    assert select_heavy_tests(["Jenkinsfile.backend-ci"], config) == [COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST]
     with pytest.raises(SelectorError, match="未分类改动路径"):
         select_heavy_tests(["Jenkinsfile"], config)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/runtime/orchestration/enums.py",
+        "src/app/runtime/orchestration/models/timeline.py",
+    ],
+)
+def test_repository_mapping_pins_reviewed_none_to_current_runtime_source_content(
+    changed_path: str,
+) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    mapping = next(mapping for mapping in config[1] if mapping.source_glob == changed_path)
+
+    assert mapping.heavy_tests == ()
+    assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
+
+
+def test_repository_mapping_selects_minimal_heavy_for_docker_build_context() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([".dockerignore"], config) == [COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST]
+
+
+@pytest.mark.parametrize("changed_path", [".env.dev", ".env.test", ".env.prod"])
+def test_repository_mapping_pins_runtime_profiles_to_current_content(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    mapping = next(mapping for mapping in config[1] if mapping.source_glob == changed_path)
+
+    assert mapping.heavy_tests == (
+        WMS_FEASIBILITY_HEAVY_TEST,
+        WMS_MOCK_SERVER_HEAVY_TEST,
+        WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+    )
+    assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == sorted(mapping.heavy_tests)
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        (
+            "src/app/runtime/workline_plugins/rough_sorter/pre_attempt.py",
+            [WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/ports/document_operations.py",
+            [WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "tests/support/runtime_inbox_processing_postgresql.py",
+            [RUNTIME_INBOX_PROCESSING_HEAVY_TEST],
+        ),
+    ],
+)
+def test_repository_mapping_selects_shared_wms_and_runtime_support_heavy_owners(
+    changed_path: str,
+    expected: list[str],
+) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == expected
 
 
 def test_quality_gate_does_not_advertise_a_duplicate_full_profile() -> None:

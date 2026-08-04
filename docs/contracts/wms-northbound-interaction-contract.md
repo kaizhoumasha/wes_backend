@@ -82,7 +82,8 @@ GRN 是 PO 行级记录，直接包含 `grn_id / po_number / po_item / material_
 状态。一个 GRN 可关联多个实收料盘，Q09 保留。
 
 Q19 request 冻结 raw code、canonical `HHPN / MfrPN / Qty / DateCode / LotCode / PkgID`、卷盘直径/厚度和
-`station_code / workline_id / session_id / correlation_id`。result 冻结 `ADMIT|REJECT`、匹配身份、测量校对、
+`station_code / workline_id / correlation_id`。任何 WES 内部 Session 或具体执行对象数据库主键均不进入 WMS wire；
+admission fact 与内部执行对象的关联由 WES 在边界内完成，不属于本合同。result 冻结 `ADMIT|REJECT`、匹配身份、测量校对、
 标准值/容差、`rule_version` 与 `source_version`。拒绝码闭集：
 
 - `GRN_NOT_FOUND`

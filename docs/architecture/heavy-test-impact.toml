@@ -17,10 +17,43 @@ heavy_tests = []
 source_glob = "docs/architecture/heavy-test-impact.toml"
 heavy_tests = []
 
-# 当前后端 CI 编排由 QUALITY 配置合同承接，不改变生产运行时行为。
+# 后端 CI 编排变更至少运行一项当前数据库合同，证明 HEAVY runner 确实进入执行面。
 [[mapping]]
 source_glob = "Jenkinsfile.backend-ci"
-heavy_tests = []
+heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
+
+# Docker build context 过滤规则影响 HEAVY runner 镜像内容，由最小数据库合同验证镜像可执行。
+[[mapping]]
+source_glob = ".dockerignore"
+heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
+
+# 环境 profile 的当前 WMS deadline 已按冻结合同评审；任意后续内容变化先恢复 fail closed。
+[[mapping]]
+source_glob = ".env.dev"
+heavy_tests = [
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_mock_server.py",
+    "tests/mock/test_wms_northbound_contract.py",
+]
+reviewed_content_sha256 = "440e3526575fedf82caf0b4521c0eb4b1b38f0a72f27ba7eb153bd81381e086f"
+
+[[mapping]]
+source_glob = ".env.test"
+heavy_tests = [
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_mock_server.py",
+    "tests/mock/test_wms_northbound_contract.py",
+]
+reviewed_content_sha256 = "c86208462486e1d136b8697589edb4cf8537aa1770db47ddaab8015e9f234660"
+
+[[mapping]]
+source_glob = ".env.prod"
+heavy_tests = [
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_mock_server.py",
+    "tests/mock/test_wms_northbound_contract.py",
+]
+reviewed_content_sha256 = "2e10e7d5e019494ddf98415f6eed1501f9f951cfcf85a3f230d068c0e7ceb74d"
 
 # MR HEAVY 专用数据库编排由当前命令结果关联 PostgreSQL 合同承接；Redis 由 Compose healthcheck 验证。
 [[mapping]]
@@ -153,14 +186,31 @@ heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
 source_glob = "src/app/device/models/device.py"
 heavy_tests = ["tests/integration/test_device_runtime_projection_writer_service.py"]
 
-# 收敛前 runtime 基础 schema 只由通用实体合同承接；具体业务流程测试不得进入核心 selector。
+# 收敛 baseline 枚举仅变更归档引用说明；内容指纹变化时恢复 fail closed。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/enums.py"
-heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
+heavy_tests = []
+reviewed_content_sha256 = "877085114f511f955b8999affcb37f3fab98575764cb9de935cab09f38baf1ff"
 
+# WorklineSession 由真实 PostgreSQL 持久化与会话租约闭环承接。
 [[mapping]]
-source_glob = "src/app/runtime/orchestration/models/{session,timeline}.py"
-heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
+source_glob = "src/app/runtime/orchestration/models/session.py"
+heavy_tests = ["tests/integration/test_external_http_transport_attempt_postgresql.py"]
+
+# 收敛 baseline 时间线模型仅变更归档引用说明；内容指纹变化时恢复 fail closed。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/timeline.py"
+heavy_tests = []
+reviewed_content_sha256 = "c906b248c47842d75440e611379b9e3220ddab25e7db260ee6deb866b022af60"
+
+# Q19 caller 的 wire DTO 机械同步只由共享 WMS 合同承接；具体准入 Decision 与对象推进仍归插件包。
+[[mapping]]
+source_glob = "src/app/runtime/workline_plugins/rough_sorter/pre_attempt.py"
+heavy_tests = [
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_mock_server.py",
+    "tests/mock/test_wms_northbound_contract.py",
+]
 
 [[mapping]]
 source_glob = "src/app/sys/dispatch_concurrency.py"
@@ -239,6 +289,11 @@ heavy_tests = [
     "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py",
 ]
 
+# RuntimeInbox PostgreSQL 共享夹具只承接核心持久化与可靠性闭环。
+[[mapping]]
+source_glob = "tests/support/runtime_inbox_processing_postgresql.py"
+heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
+
 [[mapping]]
 source_glob = "tests/support/external_http.py"
 heavy_tests = [
@@ -272,6 +327,15 @@ source_glob = "tests/mock/{Dockerfile,ecs_mock_catalog.py,ecs_mock_server.py}"
 heavy_tests = [
     "tests/mock/test_ecs_mock_server.py",
     "tests/mock/test_mock_dockerfile.py",
+]
+
+# WMS document wire DTO 由共享可行性探测与两个 Mock wire 合同共同承接。
+[[mapping]]
+source_glob = "src/app/wms_integration/ports/document_operations.py"
+heavy_tests = [
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_mock_server.py",
+    "tests/mock/test_wms_northbound_contract.py",
 ]
 
 # WMS 北向可行性探针只承接核心 HTTP/CLI/安全与 deadline 可靠性；具体工作线规则由插件包独立拥有。

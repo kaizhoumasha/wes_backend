@@ -660,8 +660,10 @@ HEAVY selector 承接，不得复制到 FAST。
   禁止字符串 operation 参数、中心映射和公共 spec 查询。
 - [ ] 列表查询内部消费 cursor，但必须满足 Task 6 的一次 permit、累计预算、一条 evidence 和一次最终 breaker
   更新；空结果是成功。
-- [ ] 在通用架构门禁中证明 Q19 caller 只依赖 `WmsDocumentCapabilities` 类型化端口；不把粗分机业务
-  Payload、分支或断言写入核心测试。本任务不修改生产 Q19 caller、API/Celery 装配或旧 QUERY 平台。
+- [ ] 在通用架构门禁中证明 Q19 caller 只依赖 `WmsDocumentCapabilities` 类型化端口。核心 WMS 合同测试拥有
+  Q19 method/path、严格 request/result DTO、序列化和共享 outcome 映射；粗分机 admission 分支、Decision、对象推进、
+  业务场景 fixture 和期望结果只由对应插件包测试拥有，不进入核心测试。本任务不修改生产 Q19 caller、
+  API/Celery 装配或旧 QUERY 平台。
 - [ ] Gateway factory 只接受显式 `WmsConnectionSettings`、HTTP transport、evidence recorder 和 breaker；
   不读取全局 settings，也不在 import 时绑定单例。
 
@@ -738,8 +740,9 @@ Expected: 19 项目标查询合同通过；旧 QUERY 平台仍是唯一活动实
 - [ ] Compose/Jenkins 的目标 Gateway 装配只传递新变量；API/Celery 各装配一个 Gateway/AsyncClient，配置缺失
   或错误 fail fast，shutdown 与启动失败均关闭资源。删除旧 QUERY 配置读取，不为目标 loader 保留
   alias/fallback；旧 Effect 链所需冻结配置只在其旧 composition 中保留到 Phase 3，不得被新 Gateway 读取。
-- [ ] 将 Q19 caller 机械改为注入 `WmsDocumentCapabilities`；只调整依赖和调用，不优化粗分机业务结构，
-  Phase 5 才拥有业务优化。
+- [ ] 将 Q19 caller 机械改为注入 `WmsDocumentCapabilities`，并从外部 request DTO 删除内部 `session_id`；当前
+  Session admission fact 查找继续通过 `resolve(..., session_id=...)` 显式内部参数完成，不建立 alias、fallback 或
+  双字段映射。除此之外只调整依赖和调用，不优化粗分机业务结构，Phase 5 才直接替换内部 Session 所有权。
 - [ ] 切换全部 19 项 QUERY caller，包括
   `runtime_inbox_orchestrator_bridge.py` 的静态 `ports.query_execution` importer；删除 query runtime bind/close、
   Runtime Service Locator 和 QUERY System Capability definitions；重新生成/更新全局 index，使其只保留旧

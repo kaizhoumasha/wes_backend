@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from scripts.compose_runtime_production_e2e_artifact import main as compose_runtime_production_e2e_artifact
 
 
 def _production_recording() -> dict[str, Any]:
@@ -227,15 +227,15 @@ def test_runtime_production_e2e_composer_rejects_mismatched_exception_case(tmp_p
         )
 
 
-def test_runtime_production_e2e_composer_cli_rejects_duplicate_exception_evidence(tmp_path) -> None:
+def test_runtime_production_e2e_composer_cli_rejects_duplicate_exception_evidence(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     recording_path, exception_paths = _write_production_e2e_inputs(tmp_path)
     output_path = tmp_path / "runtime-production-e2e.json"
-    repo_root = Path(__file__).resolve().parents[3]
 
-    result = subprocess.run(
+    result = compose_runtime_production_e2e_artifact(
         [
-            sys.executable,
-            "scripts/compose_runtime_production_e2e_artifact.py",
             "--output",
             str(output_path),
             "--environment",
@@ -250,28 +250,27 @@ def test_runtime_production_e2e_composer_cli_rejects_duplicate_exception_evidenc
             f"ecs_timeout={exception_paths['ecs_timeout']}",
             "--exception-evidence",
             f"ecs_timeout={exception_paths['ecs_timeout']}",
-        ],
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
+        ]
     )
 
-    assert result.returncode == 1
-    assert "DUPLICATE_EXCEPTION_EVIDENCE" in result.stdout
+    assert result == 1
+    assert "DUPLICATE_EXCEPTION_EVIDENCE" in capsys.readouterr().out
 
 
-def test_runtime_production_e2e_composer_cli_normalizes_relative_evidence_paths(tmp_path) -> None:
+def test_runtime_production_e2e_composer_cli_normalizes_relative_evidence_paths(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
 
     recording_path, exception_paths = _write_production_e2e_inputs(tmp_path)
     output_path = tmp_path / "reports" / "runtime" / "runtime-production-e2e.json"
     repo_root = Path(__file__).resolve().parents[3]
+    monkeypatch.chdir(repo_root)
 
-    result = subprocess.run(
+    result = compose_runtime_production_e2e_artifact(
         [
-            sys.executable,
-            "scripts/compose_runtime_production_e2e_artifact.py",
             "--output",
             str(output_path),
             "--environment",
@@ -288,32 +287,29 @@ def test_runtime_production_e2e_composer_cli_normalizes_relative_evidence_paths(
             f"ecs_timeout={os.path.relpath(exception_paths['ecs_timeout'], repo_root)}",
             "--exception-evidence",
             f"wms_reject={os.path.relpath(exception_paths['wms_reject'], repo_root)}",
-        ],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     artifact = json.loads(output_path.read_text(encoding="utf-8"))
 
-    assert "Runtime production E2E artifact written" in result.stdout
+    assert result == 0
+    assert "Runtime production E2E artifact written" in capsys.readouterr().out
     assert RuntimeP0E2EGate().validate_artifact(artifact).valid is True
     assert Path(artifact["source"]["evidence"]).is_absolute()
     for exception_path in artifact["exception_paths"].values():
         assert Path(exception_path["evidence"]).is_absolute()
 
 
-def test_runtime_production_e2e_composer_cli_writes_gate_valid_artifact(tmp_path) -> None:
+def test_runtime_production_e2e_composer_cli_writes_gate_valid_artifact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
 
     recording_path, exception_paths = _write_production_e2e_inputs(tmp_path)
     output_path = tmp_path / "runtime-production-e2e.json"
-    repo_root = Path(__file__).resolve().parents[3]
 
-    result = subprocess.run(
+    result = compose_runtime_production_e2e_artifact(
         [
-            sys.executable,
-            "scripts/compose_runtime_production_e2e_artifact.py",
             "--output",
             str(output_path),
             "--environment",
@@ -330,13 +326,10 @@ def test_runtime_production_e2e_composer_cli_writes_gate_valid_artifact(tmp_path
             f"ecs_timeout={exception_paths['ecs_timeout']}",
             "--exception-evidence",
             f"wms_reject={exception_paths['wms_reject']}",
-        ],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
     artifact = json.loads(output_path.read_text(encoding="utf-8"))
 
-    assert "Runtime production E2E artifact written" in result.stdout
+    assert result == 0
+    assert "Runtime production E2E artifact written" in capsys.readouterr().out
     assert RuntimeP0E2EGate().validate_artifact(artifact).valid is True

@@ -112,7 +112,6 @@ class ValidateRoughSorterAdmissionRequest(StrictWmsModel):
     reel_thickness_mm: PositiveDecimal
     station_code: StableText = Field(max_length=120)
     workline_id: int = Field(gt=0)
-    session_id: int = Field(gt=0)
     correlation_id: StableText = Field(max_length=160)
 
 

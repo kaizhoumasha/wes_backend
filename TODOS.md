@@ -5,58 +5,6 @@
 > active TODO 只记录与最终架构一致、已有真实触发条件且尚未排期的独立工作；已完成事项由 Git 历史记录，
 > 不继续保留在本文件。
 
-## Infrastructure
-
-### TimescaleDB audit_logs hypertable 落地
-
-**What:** 在最终数据库模型中将 `wes_sys.audit_logs` 按 `opera_time` 建为 TimescaleDB hypertable，并补齐审计日志的时间分区、索引和保留策略。
-
-**Why:** `audit_logs` 是持续追加的历史审计事实表，主要按时间、用户、操作类型、对象类型和状态检索。当前 TimescaleDB 已启用但没有任何 hypertable，系统承担扩展成本却未使用核心能力；先从低耦合审计日志表试点，风险最低。
-
-**Context:** 2026-06-11 TimescaleDB 审计确认：`wes_db` 中 `timescaledb_information.hypertables = 0`，`audit_logs` 无外键引用，现有索引包括 `opera_time`、`trace_id`、`username`、`(object_type, opera_time)`、`(action, opera_time)`、`(status, opera_time)`。TimescaleDB 要求 hypertable 上的 `PRIMARY KEY` / `UNIQUE` 索引必须包含分区列，因此不能直接对当前 `PRIMARY KEY(id)` 表执行 `create_hypertable`。
-
-**Scope:**
-
-- 架构收敛完成前实施时直接纳入最终 Alembic 基线；不得为现有开发/测试数据编写转换迁移
-- 将 `wes_sys.audit_logs` 按 `opera_time` 创建 hypertable，建议初始 `chunk_time_interval = 7 days`
-- 建模时避免 `pk_audit_logs` 和 `ix_wes_sys_audit_logs_id` 的唯一约束冲突：不使用 `PRIMARY KEY(id)` / `UNIQUE(id)`，保留普通 `id` 索引用于按 ID 查询
-- 保留现有时间检索索引：`opera_time`、`trace_id`、`username`、`(object_type, opera_time)`、`(action, opera_time)`、`(status, opera_time)`
-- 评估并补充 `username + opera_time DESC` 复合索引，优化审计后台按用户和时间范围检索
-- 明确 `id` 唯一性取舍：数据库不再单独强制 `id` 唯一，依赖现有自增或雪花 ID 生成；如需数据库强唯一，必须重构为包含 `opera_time` 的复合主键
-- 在生产保留周期明确后添加 retention policy，例如 `add_retention_policy('wes_sys.audit_logs', drop_after => INTERVAL '365 days')`
-- 增加空库建库测试，确认 `audit_logs` 出现在 `timescaledb_information.hypertables`，并确认目标审计查询可用
-
-**Depends on:** 最终数据库 metadata 和基线生成时点已确定，TimescaleDB worker 配置已落地，并确认生产审计日志 retention 周期。
-
-**Effort:** S-M (human: 0.5-1 day / CC: ~30-60 min)
-
-**Priority:** P1
-
----
-
-### API 容器横向扩容拓扑
-
-**What:** 移除当前 `docker-compose.yml` 中 API 服务的固定 `container_name` 与 host port 绑定，通过 Nginx / service discovery 支持多 API 容器副本。
-
-**Why:** 本轮计划将 `API_REPLICAS` 修正为 1 并锁定单容器 4 Uvicorn worker 拓扑，这是当前真实状态；未来流量增长需要横向扩容，但当前网络命名与端口映射阻碍了多副本。
-
-**Context:** 生产当前为单 API 容器，4 Uvicorn worker；连接预算公式 `1×4×5 + 4×4×1 = 36` 中的 `1` 就是 API 容器副本数。扩容需要同步更新预算、Nginx 上游与 compose service 定义。
-
-**Scope:**
-
-- 移除 API service 的 `container_name` 和 host `ports` 映射
-- 增加 Nginx / Traefik / 内部负载均衡 service
-- 更新连接预算公式，使 `API_REPLICAS` 成为可配置变量
-- 验证多副本启动后 Celery Worker、Beat 和前端仍能正确访问 API
-
-**Depends on:** 当前单容器拓扑稳定，连接预算护栏生效。
-
-**Effort:** M (human: ~1 day / CC: ~30 min)
-
-**Priority:** P3
-
----
-
 ## WorkLine
 
 ### WorkLine 角色与拓扑设备绑定向导

@@ -74,8 +74,15 @@ def test_core_tests_do_not_import_secondary_development_plugin_packages() -> Non
 def test_core_test_entrypoints_do_not_collect_or_map_secondary_plugin_packages() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     pytest_options = pyproject["tool"]["pytest"]["ini_options"]
-    heavy_mapping = (REPO_ROOT / "docs/architecture/heavy-test-impact.toml").read_text(encoding="utf-8")
+    heavy_mapping = tomllib.loads((REPO_ROOT / "docs/architecture/heavy-test-impact.toml").read_text(encoding="utf-8"))
+    mapped_paths = {
+        path for mapping in heavy_mapping["mapping"] for path in (mapping["source_glob"], *mapping["heavy_tests"])
+    }
+    secondary_package_paths = {
+        path
+        for path in mapped_paths
+        if any(path == root or path.startswith(f"{root}/") for root in SECONDARY_PACKAGE_ROOTS)
+    }
 
     assert pytest_options["testpaths"] == ["tests"]
-    assert "device_adapters/" not in heavy_mapping
-    assert "workline_plugins/" not in heavy_mapping
+    assert secondary_package_paths == set()

@@ -5,7 +5,9 @@
 
 # Python 相关
 __pycache__/
+**/__pycache__/
 *.py[cod]
+**/*.pyc
 *$py.class
 *.so
 .Python
@@ -86,8 +88,12 @@ logs/
 # Docker 相关
 Dockerfile*
 docker-compose*.yml
+!Dockerfile
 !docker-compose.yml
 !docker-compose.deploy.yml
+!docker-compose.ci-heavy.yml
+!docker-compose.test-deploy.yml
+!docker-compose.wms-acceptance.yml
 .dockerignore
 .docker/
 
@@ -126,6 +132,8 @@ nginx/*
 !nginx/conf.d/
 !nginx/conf.d/default.conf
 redis/
+!redis/
+!redis/**
 postgresql/
 
 # 开发工具配置

@@ -20,6 +20,46 @@ def test_heavy_required_does_not_expose_the_host_docker_daemon_to_pytest() -> No
     assert "COPY --from=docker_cli" not in dockerfile_text
 
 
+def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs() -> None:
+    required_paths = (
+        "Dockerfile",
+        "docker-compose.ci-heavy.yml",
+        "docker-compose.test-deploy.yml",
+        "docker-compose.wms-acceptance.yml",
+        "redis/redis.conf",
+    )
+    assert all((REPO_ROOT / path).is_file() for path in required_paths)
+
+    dockerignore = REPO_ROOT / ".dockerignore"
+    if dockerignore.exists():
+        dockerignore_lines = dockerignore.read_text(encoding="utf-8").splitlines()
+        assert {
+            "**/__pycache__/",
+            "**/*.pyc",
+            "!Dockerfile",
+            "!docker-compose.ci-heavy.yml",
+            "!docker-compose.test-deploy.yml",
+            "!docker-compose.wms-acceptance.yml",
+            "!redis/",
+            "!redis/**",
+        } <= set(dockerignore_lines)
+
+
+def test_host_compose_contracts_render_production_and_test_deploy_stacks() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    compose_body = _stage_body(jenkins_text, "Compose Contracts", "RuntimeInbox PostgreSQL Acceptance")
+
+    assert 'BACKEND_IMAGE="${RUNTIME_IMAGE_LOCAL}"' in compose_body
+    assert 'WMS_PROVIDER_PROFILE_HOST_FILE="$WORKSPACE/.env.test"' in compose_body
+    assert "--env-file .env.prod" in compose_body
+    assert "-f docker-compose.yml" in compose_body
+    assert "-f docker-compose.deploy.yml" in compose_body
+    assert "--profile prod" in compose_body
+    assert "--env-file .env.test" in compose_body
+    assert "-f docker-compose.test-deploy.yml" in compose_body
+    assert compose_body.count("config --no-env-resolution --quiet") == 2
+
+
 def test_merge_request_mock_image_contracts_run_as_fixed_host_commands() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     mock_body = _stage_body(jenkins_text, "Mock Image Contracts", "HEAVY Required")

@@ -80,6 +80,7 @@ git push gitlab develop
     ├─ Checkout Source
     ├─ Build CI Image
     ├─ Quality Gate（唯一 QUALITY profile）
+    ├─ Compose Contracts（主机端渲染生产与 TEST 部署配置）
     ├─ RuntimeInbox PostgreSQL Acceptance
     ├─ Mock Image Contracts（仅 MR）
     ├─ HEAVY Required（仅 MR，按目标分支差异选择）
@@ -138,8 +139,8 @@ Jenkins → wes_backend-ci → 构建号 → Console Output
 # 查看测试报告
 Jenkins → wes_backend-ci → Test Result
 
-# 查看覆盖率报告
-Jenkins → wes_backend-ci → Coverage Report
+# 查看归档产物（Bandit、FAST JUnit、HEAVY manifest/JUnit）
+Jenkins → wes_backend-ci → Artifacts
 
 # 查看 TEST 部署日志
 Jenkins → wes_test_deploy → 构建号 → Console Output

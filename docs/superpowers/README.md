@@ -125,7 +125,7 @@
 
 ## 当前业务与外部输入
 
-以下资料只作为对应 Adapter 或 WorkLine 插件的业务输入，不是 WES 核心架构真源，也不得进入核心测试：
+以下资料只作为对应 Adapter 或 WorkLine 插件的外部输入，不是 WES 核心架构真源，也不得进入核心测试：
 
 - `docs/business/wms_full_factory_operation_blueprint.md`
 - `docs/hardware/CTU&AGV对接流程（完成80%）.pdf`
@@ -135,9 +135,11 @@
 - `docs/hardware/SMT流水线接口调用说明书20260320-v1.md`
 - `docs/hardware/粗分机硬件供应商联调操作手册.md`
 
-`docs/hardware/` 是硬件厂商原始资料保留区。资料版本较旧或与当前实现存在差异时，也应保持原貌；差异由当前
-架构合同及具体 Adapter 文档说明，不得通过改写或归档厂商原文来消除。具体 Adapter 包拥有厂商实现、合同测试和 fixture；
-具体插件包只拥有业务 Decision、对象推进及其测试和 fixture。基础、Adapter 和业务能力不得互相替代验收。
+`docs/hardware/` 以硬件厂商原始 PDF/资料为保留主体；同目录 Markdown 包含便于检索的人工转写及面向供应商的
+联调说明，属于派生资料，不得覆盖原始文件，也不得被视为当前 Adapter 合同或 WES 架构真源。派生资料中的字段
+归一化、插件名称、Session/Outbox/Inbox/Hold 等当前实现描述只用于偏差识别，不能反向约束最终架构。差异由当前
+架构合同及具体 Adapter 文档说明。具体 Adapter 包拥有厂商实现、合同测试和 fixture；具体插件包只拥有业务
+Decision、对象推进及其测试和 fixture。基础、Adapter 和业务能力不得互相替代验收。
 
 ## 本轮追加归档
 

@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import shutil
-import subprocess
 from pathlib import Path
 
 import yaml
@@ -24,52 +20,17 @@ def test_production_compose_exposes_all_four_attestation_roles() -> None:
     assert all(service in compose["services"] for service, _role in SERVICE_ROLE_PAIRS)
 
 
-def test_production_compose_freezes_roles_and_worker_command_against_host_override(tmp_path: Path) -> None:
-    host_profile = tmp_path / "provider.yaml"
-    host_profile.touch()
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "BACKEND_IMAGE": "example.invalid/wes:test",
-            "WMS_PROVIDER_PROFILE_HOST_FILE": str(host_profile),
-            "CELERY_WORKER_QUEUES": "wms-fulfillment",
-            "CELERY_WORKER_CONCURRENCY": "99",
-            "CELERY_CONCURRENCY": "7",
-        }
-    )
-    docker_executable = shutil.which("docker")
-    assert docker_executable is not None
-    completed = subprocess.run(
-        [
-            docker_executable,
-            "compose",
-            "--env-file",
-            ".env.prod",
-            "-f",
-            "docker-compose.yml",
-            "-f",
-            "docker-compose.deploy.yml",
-            "--profile",
-            "prod",
-            "config",
-            "--format",
-            "json",
-        ],
-        cwd=REPO_ROOT,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    services = json.loads(completed.stdout)["services"]
+def test_production_compose_freezes_roles_and_worker_command_against_host_override() -> None:
+    deploy_text = (REPO_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
+    services = yaml.safe_load(deploy_text.replace("!override", ""))["services"]
 
     assert services["api"]["environment"]["WMS_DEPLOYMENT_ROLE"] == "api"
     assert services["celery"]["environment"]["WMS_DEPLOYMENT_ROLE"] == "wes-worker"
     assert services["celery-wms-fulfillment"]["environment"]["WMS_DEPLOYMENT_ROLE"] == "fulfillment-worker"
     assert services["celery_beat"]["environment"]["WMS_DEPLOYMENT_ROLE"] == "beat"
     assert services["celery"]["environment"]["CELERY_WORKER_QUEUES"] == "default,celery,device"
-    assert services["celery"]["environment"]["CELERY_WORKER_CONCURRENCY"] == "7"
-    rendered_command = " ".join(services["celery"]["command"])
+    assert services["celery"]["environment"]["CELERY_WORKER_CONCURRENCY"] == "${CELERY_CONCURRENCY:-4}"
+    rendered_command = services["celery"]["command"]
     assert "--queues=$${CELERY_WORKER_QUEUES}" in rendered_command
     assert "--concurrency=$${CELERY_WORKER_CONCURRENCY}" in rendered_command
 
