@@ -98,7 +98,6 @@ def test_sandbox_workline_start_imports_start_admission_service_instance() -> No
     # Regression: ISSUE-001 — sandbox START imported the material-flow module,
     # not the service instance.
     # Found by /qa on 2026-07-08
-    # Report: .gstack/qa-reports/qa-report-localhost-2026-07-08.md
     assert hasattr(operation_api.start_admission_service, "admit_start")
 
 

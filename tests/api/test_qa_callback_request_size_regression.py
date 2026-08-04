@@ -12,7 +12,6 @@ from src.core.conf import settings
 
 # Regression: ISSUE-002 — callback 必须在 JSON 解析与日志落库前拒绝超限请求体
 # Found by /qa on 2026-07-24
-# Report: .gstack/qa-reports/qa-report-127-0-0-1-8011-2026-07-24.md
 
 
 def _oversized_request() -> Request:

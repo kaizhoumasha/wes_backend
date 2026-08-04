@@ -15,15 +15,19 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 HEAVY_DIRECT_GLOB = "tests/{integration,e2e,resilience,load,mock}/**/test_*.py"
+HUMAN_DOCUMENT_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".docx", ".pdf", ".eddx"})
+RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
 CANDIDATE_GLOBS = (
     "src/**",
     "main.py",
     "migrations/**",
     "alembic.ini",
     "docker-compose*.yml",
+    "Dockerfile",
     "pyproject.toml",
     ".env*",
     "scripts/**",
+    "docs/**/*.{toml,csv,yaml,yml,json}",
     "tests/{integration,e2e,resilience,load,mock}/**",
     "tests/api/callback_test_support.py",
     "tests/contracts/wms_integration/provider_profile_support.py",
@@ -84,6 +88,19 @@ def is_heavy_test(path: str) -> bool:
 
 def is_candidate(path: str) -> bool:
     return any(matches_glob(path, pattern) for pattern in CANDIDATE_GLOBS)
+
+
+def is_human_document(path: str) -> bool:
+    pure_path = PurePosixPath(path)
+    file_name = pure_path.name.lower()
+    suffix = pure_path.suffix.lower()
+    if suffix in HUMAN_DOCUMENT_SUFFIXES or file_name in {"readme", "license"}:
+        return True
+    if suffix != ".txt":
+        return False
+
+    # 候选执行目录中的 txt 可能是合同、fixture 或脚本输入；依赖清单也不是人类阅读文档。
+    return not is_candidate(path) and not file_name.startswith(("requirements", "constraints"))
 
 
 def _validate_repository_relative(value: str, *, field: str, allow_glob: bool) -> str:
@@ -410,7 +427,7 @@ def get_changed_files(
 
 
 def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> list[str]:
-    """按直接 HEAVY → 候选 mapping → ignore 的顺序进行选择。"""
+    """按直接 HEAVY → 人类文档 → 候选 mapping → ignore 的顺序进行选择。"""
     ignore_globs, mappings = config
     selected: set[str] = set()
 
@@ -419,6 +436,9 @@ def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> 
 
         if is_heavy_test(normalized_path):
             selected.add(normalized_path)
+            continue
+
+        if is_human_document(normalized_path):
             continue
 
         if is_candidate(normalized_path):
@@ -441,6 +461,18 @@ def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> 
         if not is_heavy_test(test_path):
             raise SelectorError(f"selector 输出不是 HEAVY 测试路径: {test_path}")
     return sorted(selected)
+
+
+def filter_deleted_retired_archive_paths(changed_files: Iterable[str], *, repo_root: Path) -> list[str]:
+    """只跳过已从当前树删除的项目内历史归档；重新引入的文件仍 fail closed。"""
+    retained: list[str] = []
+    for raw_path in changed_files:
+        normalized_path = _validate_repository_relative(raw_path, field="changed path", allow_glob=False)
+        is_retired_archive = any(normalized_path.startswith(root) for root in RETIRED_ARCHIVE_ROOTS)
+        if is_retired_archive and not (repo_root / normalized_path).exists():
+            continue
+        retained.append(normalized_path)
+    return retained
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -480,6 +512,7 @@ def main(
         )
         if missing_mapped_tests:
             raise SelectorError("mapping 引用不存在的 HEAVY 测试: " + ", ".join(missing_mapped_tests))
+        changed_files = filter_deleted_retired_archive_paths(changed_files, repo_root=resolved_root)
         # 删除记录仍用于 source/support mapping；只有已不存在、无法执行的直接 HEAVY 测试需要剔除。
         changed_files = [path for path in changed_files if not is_heavy_test(path) or (resolved_root / path).is_file()]
         selected = select_heavy_tests(changed_files, config)

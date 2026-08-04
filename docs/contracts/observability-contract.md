@@ -1,5 +1,7 @@
 # Runtime Observability Contract
 
+> 状态：`implementation_baseline`。本合同只约束当前仍在发射的观测信号；目标执行对象以 2026-07-31 顶层 SPEC 为准。
+
 本文档锁定 runtime / callback / device / WMS 的稳定观测口径。临时 debug log 不能替代本合同中的 span、metric、log event 和 evidence。
 
 ## Stable Signals

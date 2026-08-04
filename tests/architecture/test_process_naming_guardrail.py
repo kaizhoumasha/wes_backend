@@ -16,14 +16,6 @@ SCAN_ROOTS = (
     Path("tests"),
 )
 
-CURRENT_ARCHITECTURE_DOCS = (
-    Path("docs/architecture/process-naming-policy.md"),
-    Path("docs/architecture/architecture-guardrails-spec.md"),
-    Path("docs/architecture/runtime-ownership-map.md"),
-    Path("docs/architecture/workline-and-plugin-restructuring.md"),
-    Path("docs/architecture/file_index.md"),
-)
-
 IGNORED_PARTS = frozenset(
     {
         ".git",
@@ -39,9 +31,9 @@ IGNORED_PARTS = frozenset(
 IGNORED_PREFIXES = (
     Path("src/static"),
     Path("migrations/versions"),
-    Path("docs/archive"),
-    Path("docs/superpowers/archive"),
 )
+
+HUMAN_READABLE_DOC_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".txt", ".docx", ".pdf"})
 
 INTENTIONAL_PROCESS_NAMING_ALLOWLIST: dict[Path, str] = {
     Path(
@@ -55,9 +47,6 @@ INTENTIONAL_PROCESS_NAMING_ALLOWLIST: dict[Path, str] = {
     Path(
         "tests/contracts/test_business_legacy_matrix_closure.py"
     ): "business legacy matrix closure checks historical audit columns",
-    Path(
-        "tests/contracts/test_phase4_design_docs.py"
-    ): "historical design package contract for the original material-flow milestone",
     Path(
         "tests/migrations/test_phase1_device_fk_ring_dissolve.py"
     ): "migration semantic contract for immutable historical migration",
@@ -100,15 +89,6 @@ PROCESS_NAME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("legacy runtime shorthand alias", re.compile(r"(?<![A-Za-z0-9])wlr(?![A-Za-z0-9])", re.IGNORECASE)),
 )
 
-CURRENT_ARCHITECTURE_DOC_PATTERN_LABELS = frozenset(
-    {
-        "guardrail rule id shorthand",
-        "guardrail filename shorthand",
-        "guardrail function shorthand",
-        "legacy runtime shorthand alias",
-    }
-)
-
 
 def _is_ignored(relative_path: Path) -> bool:
     if relative_path in INTENTIONAL_PROCESS_NAMING_ALLOWLIST:
@@ -120,7 +100,7 @@ def _is_ignored(relative_path: Path) -> bool:
 
 def _iter_scan_files() -> list[Path]:
     paths: set[Path] = set()
-    for root in (*SCAN_ROOTS, *CURRENT_ARCHITECTURE_DOCS):
+    for root in SCAN_ROOTS:
         absolute_root = REPO_ROOT / root
         if absolute_root.is_file():
             candidates = [absolute_root]
@@ -130,35 +110,22 @@ def _iter_scan_files() -> list[Path]:
             candidates = []
         for path in candidates:
             relative_path = path.relative_to(REPO_ROOT)
-            if not _is_ignored(relative_path):
+            if path.suffix.lower() not in HUMAN_READABLE_DOC_SUFFIXES and not _is_ignored(relative_path):
                 paths.add(relative_path)
     return sorted(paths)
 
 
 def _is_intentional_historical_line(relative_path: Path, line: str) -> bool:
-    if relative_path == Path("src/app/resource/services/smt_rack_bin_scheduling_service.py"):
-        return line.strip() == 'RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"'
-    if relative_path == Path("docs/architecture/process-naming-policy.md") and "old restructuring shorthand" in line:
-        return True
-    if relative_path == Path("docs/architecture/file_index.md") and line.startswith("| 2026-"):
-        return True
-    if relative_path == Path("docs/architecture/workline-and-plugin-restructuring.md"):
-        if any(token in line for token in ("f0be12e", "81b6491", "9c790d53", "C1-C3 / M1-M10")):
-            return True
-        if re.match(r"\| C[1-3] \|", line):
-            return True
-    return relative_path == Path("tests/README.md") and "old restructuring shorthand" in line
+    return (
+        relative_path == Path("src/app/resource/services/smt_rack_bin_scheduling_service.py")
+        and line.strip() == 'RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"'
+    )
 
 
 def _line_matches(relative_path: Path, line: str) -> list[str]:
     if _is_intentional_historical_line(relative_path, line):
         return []
-    patterns = PROCESS_NAME_PATTERNS
-    if relative_path in CURRENT_ARCHITECTURE_DOCS:
-        patterns = tuple(
-            (label, pattern) for label, pattern in patterns if label in CURRENT_ARCHITECTURE_DOC_PATTERN_LABELS
-        )
-    return [label for label, pattern in patterns if pattern.search(line)]
+    return [label for label, pattern in PROCESS_NAME_PATTERNS if pattern.search(line)]
 
 
 def _line_has_forbidden_process_name(relative_path: Path, line: str) -> bool:
@@ -198,24 +165,6 @@ def test_process_naming_guardrail_scans_default_test_tree_and_ci_file() -> None:
     assert Path(".githooks/pre-commit") in set(_iter_scan_files())
 
 
-def test_process_naming_guardrail_scans_current_architecture_docs_with_narrow_scope() -> None:
-    expected_docs = {
-        Path("docs/architecture/process-naming-policy.md"),
-        Path("docs/architecture/architecture-guardrails-spec.md"),
-        Path("docs/architecture/runtime-ownership-map.md"),
-        Path("docs/architecture/workline-and-plugin-restructuring.md"),
-        Path("docs/architecture/file_index.md"),
-    }
-
-    scanned = set(_iter_scan_files())
-
-    assert set(CURRENT_ARCHITECTURE_DOCS) == expected_docs
-    assert expected_docs <= scanned
-    assert Path("docs/architecture/adr/0001-phase2-runtime-ownership.md") not in scanned
-    assert Path("docs/architecture/reviews/workline-restructuring-v4-review-2026-06-23.md") not in scanned
-    assert not any(path.is_relative_to(Path("docs/superpowers")) for path in scanned)
-
-
 def test_callback_runtime_inbox_tests_do_not_use_cutover_names() -> None:
     active_callback_tests = {path.as_posix() for path in Path("tests/callback").glob("test_*.py")}
     retired_cutover_path = "tests/callback/test_callback_runtime_inbox_" + "cutover.py"
@@ -231,19 +180,6 @@ def test_active_guardrail_allowlist_no_longer_contains_retired_phase_test_paths(
     }
 
     assert retired_paths.isdisjoint(INTENTIONAL_PROCESS_NAMING_ALLOWLIST)
-
-
-def test_process_naming_guardrail_keeps_current_doc_historical_exceptions_narrow() -> None:
-    release_history_line = "| 2026-06-28 | historical | wlr allowlist strict mode |"
-    policy_example_line = "old restructuring shorthand such as `C3`, `C4`, `R-I3c`, `R-WLR`, or `wlr` is forbidden"
-
-    assert _line_has_forbidden_process_name(
-        Path("docs/architecture/runtime-ownership-map.md"), "R-I3c inbound normalizer"
-    )
-    assert not _line_has_forbidden_process_name(Path("docs/architecture/file_index.md"), release_history_line)
-    assert _line_has_forbidden_process_name(Path("docs/architecture/runtime-ownership-map.md"), release_history_line)
-    assert not _line_has_forbidden_process_name(Path("docs/architecture/process-naming-policy.md"), policy_example_line)
-    assert _line_has_forbidden_process_name(Path("docs/architecture/runtime-ownership-map.md"), policy_example_line)
 
 
 def test_process_naming_guardrail_rejects_guardrail_shorthand_examples() -> None:

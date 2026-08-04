@@ -27,12 +27,10 @@ LEGACY_REFERENCE_ROOTS = (
     Path("src"),
     Path("scripts"),
     Path("tests"),
-    Path("docs/architecture"),
 )
 LEGACY_REFERENCE_EXCLUSIONS = {
     Path("tests/architecture/test_notify_pkg_binding_legacy_cutover.py"),
     Path("tests/architecture/test_northbound_wms_operation_inventory.py"),
-    Path("docs/architecture/adr/2026-07-21-wms-operation-identity.md"),
 }
 
 
@@ -48,10 +46,10 @@ def test_notify_pkg_binding_legacy_port_and_target_have_no_active_reference() ->
     findings: list[str] = []
     for root in LEGACY_REFERENCE_ROOTS:
         for path in sorted((REPO_ROOT / root).rglob("*")):
-            if not path.is_file() or path.suffix not in {".csv", ".md", ".py", ".sh"}:
+            if not path.is_file() or path.suffix not in {".csv", ".py", ".sh"}:
                 continue
             relative_path = path.relative_to(REPO_ROOT)
-            if relative_path in LEGACY_REFERENCE_EXCLUSIONS or "archive" in relative_path.parts:
+            if relative_path in LEGACY_REFERENCE_EXCLUSIONS:
                 continue
             content = path.read_text(encoding="utf-8")
             if "WmsFulfillmentPort.notify_pkg_binding" in content:

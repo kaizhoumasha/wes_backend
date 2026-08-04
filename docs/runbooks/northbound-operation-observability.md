@@ -1,5 +1,7 @@
 # 北向 operation 运维 Runbook
 
+> 状态：`implementation_baseline`。本 Runbook 只用于收敛前现有观测信号的运维处置，不是新 Provider/Runtime 设计入口。
+
 适用目录版本：`northbound-operation-slo.v1`。所有动作先确认看板
 `northbound-operation-day1` 的 operation、唯一部署 provider profile、outcome 和 policy version，
 不要用 tenant、业务单号、payload、trace ID 或凭据引用作为指标标签。以下判断只依据 WES 可见的 HTTP

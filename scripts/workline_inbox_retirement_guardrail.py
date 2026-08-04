@@ -166,17 +166,6 @@ LEGACY_SIGNATURES = (
     ),
 )
 
-# 当前事实源使用显式文件清单；archive/superpowers plan/spec 不属于 current docs。
-CURRENT_DOC_FILES = (
-    "docs/architecture/file_index.md",
-    "docs/architecture/runtime-orchestration-spec.md",
-    "docs/architecture/runtime-ownership-map.md",
-    "docs/business/e2e_conveyor_plan.md",
-    "docs/business/workline_business_data_event_flow_spec.md",
-    "docs/business/workline_runtime_workflow_guide.md",
-    "docs/contracts/observability-contract.md",
-    "docs/architecture/adr/2026-05-26-wms-integration-domain.md",
-)
 DEFAULT_SCAN_ROOTS = ("src", "tests", "scripts")
 
 # 精确到“文件 + 签名”的历史/负向证据 allowlist；不跳过整文件。
@@ -211,11 +200,6 @@ ALLOWED_EVIDENCE: dict[str, frozenset[str]] = {
     ),
     "tests/architecture/test_runtime_inbox_processor_ownership.py": frozenset({"legacy_batch_processor_symbol"}),
     "tests/architecture/test_workline_service_shim_contract.py": frozenset({"legacy_batch_processor_symbol"}),
-    "docs/architecture/file_index.md": frozenset(
-        {"legacy_batch_processor_symbol", "legacy_consumer_symbol", "legacy_symbol"}
-    ),
-    "docs/architecture/runtime-ownership-map.md": frozenset({"legacy_consumer_symbol"}),
-    "docs/architecture/runtime-orchestration-spec.md": frozenset({"legacy_symbol", "legacy_table"}),
 }
 
 
@@ -242,16 +226,11 @@ for _signature in LEGACY_SIGNATURES:
         _IMPORT_MODULE_SIGNATURES[_signature.value] = _signature
 
 
-def _is_archived_or_plan(path: str) -> bool:
-    parts = Path(path).parts
-    return "archive" in parts or ("superpowers" in parts and ("plans" in parts or "specs" in parts))
-
-
 def _iter_policy_files(
     repo_root: Path,
     roots: tuple[str, ...],
     *,
-    include_default_files: bool,
+    include_historical_migration: bool,
 ) -> list[Path]:
     files: set[Path] = set()
     for root_name in roots:
@@ -260,12 +239,11 @@ def _iter_policy_files(
             continue
         relative_root = root.resolve().relative_to(repo_root.resolve())
         top_level = relative_root.parts[0] if relative_root.parts else ""
-        suffixes = (".py", ".sh") if top_level == "scripts" else ((".md",) if top_level == "docs" else (".py",))
+        suffixes = (".py", ".sh") if top_level == "scripts" else (".py",)
         files.update(
             path for path in root.rglob("*") if path.is_symlink() or (path.is_file() and path.suffix in suffixes)
         )
-    if include_default_files:
-        files.update(repo_root / relative for relative in CURRENT_DOC_FILES if (repo_root / relative).is_file())
+    if include_historical_migration:
         historical = ("migrations/versions/20260711_1819_ec426c628516_retire_workline_inbox.py",)
         files.update(repo_root / relative for relative in historical if (repo_root / relative).is_file())
     return sorted(files)
@@ -538,21 +516,10 @@ def find_legacy_references(
             findings.add(directory_symlink_error)
             continue
         safe_roots.append(root_name)
-    if strict_policy:
-        for relative in CURRENT_DOC_FILES:
-            if not (repo_root / relative).is_file():
-                findings.add(
-                    LegacyReference(
-                        relative,
-                        1,
-                        "policy_error",
-                        "显式 current doc 不存在，拒绝缩小 legacy 扫描面",
-                    )
-                )
     for path in _iter_policy_files(
         repo_root,
         tuple(safe_roots),
-        include_default_files=strict_policy,
+        include_historical_migration=strict_policy,
     ):
         relative = path.relative_to(repo_root).as_posix()
         boundary_error = _path_boundary_error(path=path, display_path=relative, repo_root=repo_root)
@@ -569,8 +536,6 @@ def find_legacy_references(
             continue
         # pathlib.rglob 默认不递归 directory symlink；上方同时将其作为 policy error 报告。
         if not path.is_file():
-            continue
-        if _is_archived_or_plan(relative):
             continue
         content = path.read_text(encoding="utf-8")
         allowed = ALLOWED_EVIDENCE.get(relative, frozenset())

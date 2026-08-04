@@ -187,7 +187,7 @@ def test_deployment_script_runs_live_guard_before_application_start_and_scale() 
     assert scale_body.index("validate_complete_scale_targets") < scale_body.index("run_capacity_guard")
 
 
-def test_jenkins_and_production_runbook_require_guard_and_migration_before_application_start() -> None:
+def test_jenkins_requires_guard_and_migration_before_application_start() -> None:
     jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
     pipeline_environment = jenkins_text.split("    environment {", maxsplit=1)[1].split("    options {", maxsplit=1)[0]
     deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
@@ -228,7 +228,7 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     infra_index = deploy_body.index("$COMPOSE_CMD up -d --wait db redis")
     application_command = "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}"
     first_guard_index = deploy_body.index("run_capacity_guard", infra_index)
-    quiesce_command = "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat"
+    quiesce_command = "quiesce_compose_application_containers"
     migration_command = (
         "$COMPOSE_CMD run --rm --no-deps "
         "-e DATABASE_RUNTIME_ROLE=cli "
@@ -238,14 +238,14 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     )
     quiesce_index = deploy_body.index(quiesce_command, first_guard_index)
     migration_index = deploy_body.index(migration_command, quiesce_index)
-    migration_applied_index = deploy_body.index("MIGRATION_APPLIED=true", migration_index)
-    first_application_index = deploy_body.index(application_command, migration_applied_index)
+    schema_initialized_index = deploy_body.index("SCHEMA_INITIALIZED=true", migration_index)
+    first_application_index = deploy_body.index(application_command, schema_initialized_index)
     assert (
         infra_index
         < first_guard_index
         < quiesce_index
         < migration_index
-        < migration_applied_index
+        < schema_initialized_index
         < first_application_index
     )
     assert "cleanup_failed_deploy()" in deploy_body
@@ -253,8 +253,8 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     cleanup_body = deploy_body.split("cleanup_failed_deploy()", maxsplit=1)[1].split(
         "trap cleanup_failed_deploy EXIT", maxsplit=1
     )[0]
-    assert 'if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]' in cleanup_body
-    assert "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat || true" in cleanup_body
+    assert 'if [ "$SCHEMA_INITIALIZED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]' in cleanup_body
+    assert "$COMPOSE_CMD stop ${DEPLOY_SERVICES} || true" in cleanup_body
     assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('if [ "$HEALTH_CHECK_PASSED" = false ]')
     assert "for service_name in ${DEPLOY_SERVICES}; do" in deploy_body
     assert 'case "$service_name" in' in deploy_body
@@ -266,63 +266,88 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     assert 'inspect ping -d "celery@$(hostname)"' in deploy_body
     assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('inspect ping -d "celery@$(hostname)"')
 
-    automatic_rollback = deploy_body.split('if [ "$HEALTH_CHECK_PASSED" = false ]', maxsplit=1)[1]
-    assert "数据库迁移已执行，禁止自动切回旧镜像" in automatic_rollback
-    assert 'export BACKEND_IMAGE="$PREVIOUS_IMAGE"' not in automatic_rollback
-    assert application_command not in automatic_rollback
+    failed_deploy = deploy_body.split('if [ "$HEALTH_CHECK_PASSED" = false ]', maxsplit=1)[1]
+    assert "当前 schema 初始化后部署未完成，停止当前应用进程并等待前向修复" in failed_deploy
+    assert 'export BACKEND_IMAGE="$PREVIOUS_IMAGE"' not in failed_deploy
+    assert application_command not in failed_deploy
 
-    runbook_text = (REPO_ROOT / "docs/devops/prod-release-deploy.md").read_text(encoding="utf-8")
-    standard_release = runbook_text.split("### 4.5", maxsplit=1)[1].split("### 4.9", maxsplit=1)[0]
-    rollback = runbook_text.split("## 6. 回滚策略", maxsplit=1)[1].split("## 7.", maxsplit=1)[0]
-    assert "DATABASE_RUNTIME_ROLE=cli" in standard_release
-    assert "DATABASE_POOL_SIZE=1" in standard_release
-    assert "DATABASE_MAX_OVERFLOW=0" in standard_release
-    guard_index = standard_release.index(
-        "python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment"
+
+def test_jenkins_does_not_keep_legacy_worker_or_old_image_compatibility() -> None:
+    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+
+    assert "remove_legacy_celery_worker" not in deploy_body
+    assert "label=com.docker.compose.service=celery_worker" not in deploy_body
+    assert "旧镜像" not in deploy_body
+    assert "破坏性迁移" not in deploy_body
+    quiesce_index = deploy_body.index("\n                            quiesce_compose_application_containers\n")
+    schema_index = deploy_body.index("api alembic upgrade head", quiesce_index)
+    assert quiesce_index < schema_index
+    assert "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}" in deploy_body
+
+
+def test_jenkins_quiesces_all_compose_application_containers_before_schema_initialization() -> None:
+    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+
+    assert "quiesce_compose_application_containers()" in deploy_body
+    function_body = deploy_body.split("quiesce_compose_application_containers()", maxsplit=1)[1].split(
+        "cleanup_failed_deploy()", maxsplit=1
+    )[0]
+    assert "label=com.docker.compose.project=${compose_project_name}" in function_body
+    assert "docker inspect --format '{{ index .Config.Labels \"com.docker.compose.service\" }}'" in function_body
+    assert 'case "$compose_service" in' in function_body
+    assert "db|redis|nginx)" in function_body
+    assert 'docker stop "$container_id"' in function_body
+    assert "celery_worker" not in function_body
+
+    function_definition_index = deploy_body.index("quiesce_compose_application_containers()")
+    function_end_index = deploy_body.index("cleanup_failed_deploy()", function_definition_index)
+    quiesce_index = deploy_body.index(
+        "\n                            quiesce_compose_application_containers\n",
+        function_end_index,
     )
-    quiesce_index = standard_release.index("stop api celery celery-wms-fulfillment celery_beat")
-    migration_index = standard_release.index("api alembic upgrade head")
-    application_index = standard_release.index(
-        "up -d --remove-orphans api celery celery-wms-fulfillment celery_beat flower nginx"
-    )
-    assert guard_index < quiesce_index < migration_index < application_index
-    assert "label=com.docker.compose.service=celery_worker" in standard_release
-    assert 'docker rm -f "$legacy_worker_id"' in standard_release
-    assert "迁移后禁止自动切回旧镜像" in rollback
-    assert "PREVIOUS_IMAGE" not in rollback
-    assert "ROLLBACK_IMAGE" not in rollback
-    assert "基础设施保持在线" in rollback
-    assert "数据修复方案" in rollback
+    schema_index = deploy_body.index("api alembic upgrade head", quiesce_index)
+    remove_orphans_index = deploy_body.index("up -d --remove-orphans", schema_index)
+    assert quiesce_index < schema_index < remove_orphans_index
 
 
-def test_jenkins_removes_legacy_celery_worker_before_destructive_migration() -> None:
+def test_jenkins_keeps_nginx_running_while_schema_consumers_are_quiesced() -> None:
+    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+    function_body = deploy_body.split("quiesce_compose_application_containers()", maxsplit=1)[1].split(
+        "cleanup_failed_deploy()", maxsplit=1
+    )[0]
+
+    assert "db|redis|nginx)" in function_body
+    assert "db|redis)" not in function_body
+
+
+def test_jenkins_production_deployment_manages_nginx_entrypoint() -> None:
+    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+
+    assert "env.DEPLOY_SERVICES = 'api celery celery-wms-fulfillment celery_beat flower nginx'" in jenkins_text
+
+
+def test_jenkins_checks_every_managed_service_is_running() -> None:
+    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+    expected_preflight = """for service_name in ${DEPLOY_SERVICES}; do
+                                service_container_ids=$($COMPOSE_CMD ps -q "$service_name")
+                                if [ -z "$service_container_ids" ]; then"""
+
+    assert expected_preflight in deploy_body
+
+
+def test_jenkins_failed_deploy_stops_every_managed_service() -> None:
     jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
     deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
     cleanup_body = deploy_body.split("cleanup_failed_deploy()", maxsplit=1)[1].split(
         "trap cleanup_failed_deploy EXIT", maxsplit=1
     )[0]
 
-    assert "remove_legacy_celery_worker()" in deploy_body
-    legacy_cleanup = deploy_body.split("remove_legacy_celery_worker()", maxsplit=1)[1].split(
-        "cleanup_failed_deploy()", maxsplit=1
-    )[0]
-    assert "label=com.docker.compose.project=${compose_project_name}" in legacy_cleanup
-    assert "label=com.docker.compose.service=celery_worker" in legacy_cleanup
-    assert 'docker rm -f "$legacy_worker_id"' in legacy_cleanup
-    assert "遗留 celery_worker 容器仍然存在" in legacy_cleanup
-    assert "remove_legacy_celery_worker || true" in cleanup_body
-
-    cleanup_call = (
-        "remove_legacy_celery_worker\n"
-        "                            $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat"
-    )
-    cleanup_call_index = deploy_body.index(cleanup_call)
-    quiesce_index = deploy_body.index(
-        "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat", cleanup_call_index
-    )
-    migration_index = deploy_body.index("api alembic upgrade head", quiesce_index)
-    assert cleanup_call_index < quiesce_index < migration_index
-    assert "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}" in deploy_body
+    assert "$COMPOSE_CMD stop ${DEPLOY_SERVICES} || true" in cleanup_body
+    assert "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat || true" not in cleanup_body
 
 
 def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:

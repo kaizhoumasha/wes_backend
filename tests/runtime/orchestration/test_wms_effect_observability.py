@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 from typing import Any
 
 
@@ -174,19 +173,3 @@ def test_all_wms_effect_signal_shapes_emit_with_low_cardinality_metrics() -> Non
     assert circuit_open is not None
     assert circuit_open.attributes["breaker_state"] == "OPEN"
     assert "breaker_state" not in circuit_open.metric_attributes
-
-
-def test_contract_and_runbook_describe_executable_signals_and_recovery_thresholds() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    contract = (repo_root / "docs/contracts/observability-contract.md").read_text(encoding="utf-8")
-    runbook = (repo_root / "docs/runbooks/northbound-operation-observability.md").read_text(encoding="utf-8")
-
-    assert "`wms_effect.*` 尚未注册" not in contract
-    assert "`wms_effect.*` 尚未注册" not in runbook
-    assert "status_backlog.max_overdue_age_ms" in runbook
-    assert "status_backlog.max_confirmation_age_ms" in runbook
-    assert "WMS EFFECT 可执行采集口径" in contract
-    assert "WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS" in runbook
-    assert "WES_EFFECT_STATUS_SCAN_PERIOD_SECONDS" in runbook
-    assert "恢复判据" in runbook
-    assert "不建设第二套看板" in contract

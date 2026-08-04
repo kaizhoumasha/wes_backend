@@ -9,7 +9,6 @@ from tests.contracts.wms_integration.provider_profile_support import build_provi
 
 # Regression: ISSUE-004 — 平台空账本快照必须显示 SLO catalog 中的同步 QUERY
 # Found by /qa on 2026-07-24
-# Report: .gstack/qa-reports/qa-report-127-0-0-1-8011-2026-07-24.md
 
 _QUERY_OPERATION = "wms.inventory.query_inventory@v1"
 

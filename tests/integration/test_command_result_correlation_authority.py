@@ -48,7 +48,7 @@ async def test_command_result_uses_pinned_command_correlation_when_trace_is_not_
     command = DeviceCommand(
         command_code=f"CMD-CORRELATION-{trace_mode.upper()}",
         device_id=71,
-        task_type="PICK_AND_PUT",
+        task_type="VENDOR_COMMAND",
         correlation_id=authority.correlation_id,
     )
     db_session.add(command)

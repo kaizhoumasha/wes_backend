@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - 默认 `pytest` 与本地质量门禁收敛为快速回归集；数据库、HTTP、Celery、进程、故障注入、容量与真实部署测试改由受影响 HEAVY 集显式运行。
 - 重写测试目录、CI 入口、架构账本、清理矩阵和开发指南的所有权语义，使通用投影、查询、回调、Outbox 与 Mock 合同保持在核心边界内。
-- Task 5 的最终核心执行对象测试承接延后至执行架构重构，由 P1 TODO 跟踪；HMAC 生产级验收作为 P3 安全加固事项，不阻塞本次收敛。
+- Task 5 的最终核心执行对象测试承接延后至执行架构重构，由架构收敛 Master Plan Phase 4 直接跟踪；HMAC 生产级验收作为 P3 安全加固事项，不阻塞本次收敛。
 
 ### Fixed
 - HEAVY 选择器现在正确处理中文及 quoted path、Git 参数边界、无效 glob、已删除 direct 测试和失效 mapping，并在治理配置漂移时 fail-closed。
@@ -344,7 +344,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - 将 inbound normalization、runtime config、result classifier、session resolver 等旧 plugin SDK 能力迁入 `src.app.runtime` / `src.app.workline.domain` 目标态服务与 catalog。
-- 将旧 `src/workline_plugins/*` 和旧 plugin template 迁入 `docs/archive/legacy-workline-plugins/`，仅作为历史样本，不再保留在 `src/` 可 import 路径。
+- 将旧 `src/workline_plugins/*` 和旧 plugin template 移出可 import 路径；其历史样本当前归档于项目外 `../archive_docs/wes_backend/docs/archive/legacy-workline-plugins/`。
 - 同步 cleanup matrix、Phase5 execution plan 与主架构设计，明确 `phase5-tech` 已关闭、`phase5-business` 仍等待 Phase3 production closure artifacts。
 
 ### Fixed
@@ -472,7 +472,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/architecture-guardrails.allowlist` 第 55-56 行 R-I3b path 字段同步到 `src/app/runtime/orchestration/repositories/{session,smt_inbound_handoff}_repository.py` 新路径;`legacy_entry_id` 保留旧版 `legacy:src/app/workline/repositories/...` 以稳定 audit trace 反向查找。
 - `scripts/generate_legacy_matrix.py` 扩展 `MIGRATED_REPOSITORIES` 映射(10 条 legacy → runtime 路径)+ `_append_ri3b_seed_paths` 的 `scan_paths` 增加 `src/app/runtime/orchestration/repositories`,并把扫描到的新路径通过 `MIGRATED_REPOSITORIES_TO_LEGACY` 映射回旧版路径,保证迁移后 R-I3b seed 条目仍以旧版路径记入 CSV(audit trace 稳定性)。
 - `docs/architecture/legacy-cleanup-matrix.csv` 重新生成:668 条(原 831 条减少 165 条已迁文件条目,新增 2 条 R-I3b seed)。
-- `docs/architecture/legacy-cleanup-matrix.md` 统计表同步:total 668 / model 39 / repository 7 / rebuild 412 / phase2 199 / workline 455。
+- 外部归档 `../archive_docs/wes_backend/docs/architecture/legacy-cleanup-matrix.md` 的历史统计表同步：total 668 / model 39 / repository 7 / rebuild 412 / phase2 199 / workline 455；当前机器清单以项目内 CSV 为准。
 - `tests/characterization/workline_legacy/test_business_semantics_characterization.py` 硬编码路径修正:`smt_inbound_handoff.py` 改指 `src/app/runtime/orchestration/models/smt_inbound_handoff.py`。
 
 ### Fixed
@@ -567,7 +567,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `docs/architecture/workline-and-plugin-restructuring.md` 与 `docs/architecture/file_index.md` 同步 Phase 1 Packet D 完成状态、文件索引和验证证据。
+- 历史设计归档 `../archive_docs/wes_backend/docs/architecture/workline-and-plugin-restructuring.md` 与当前
+  `docs/architecture/file_index.md` 曾同步 Phase 1 Packet D 完成状态、文件索引和验证证据；前者不属于当前架构真源。
 
 ### Fixed
 
@@ -577,13 +578,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- WorkLine 重构 **Phase 0：目标态锁定与架构护栏** 全部 7 任务交付完成。Phase 0 是整个 WorkLine + plugin 体系重构（主计划 `docs/architecture/workline-and-plugin-restructuring.md`）的目标态基线，锁定后续 Phase 1-5 实施边界。
-- **P0-001 Target State Contract** (`docs/architecture/target-state-contract.md`)：抽取主计划可执行合同，含 P0 系统能力 10 项、域边界 8 域、状态所有权矩阵 7 类对象、Authority Matrix 11 类事实权威来源、Plane 读模型边界、不做清单 14 条。
-- **P0-002 Legacy Cleanup Matrix** (`docs/architecture/legacy-cleanup-matrix.{md,csv}`，2191 entries / 0 pending-review)：逐入口标记 delete/rebuild/move/keep-contract 策略，含 service module-level def + `__all__` 导出符号穷尽覆盖。生成器 `scripts/generate_legacy_matrix.py` 可复现。
+- WorkLine 重构 **Phase 0：目标态锁定与架构护栏** 全部 7 任务交付完成。该阶段当时使用的主计划现已归档到
+  `../archive_docs/wes_backend/docs/architecture/workline-and-plugin-restructuring.md`，不属于当前架构真源。
+- **P0-001 Target State Contract**（历史归档：`../archive_docs/wes_backend/target-state-contract.md`）：抽取当时主计划的可执行合同，含 P0 系统能力 10 项、域边界 8 域、状态所有权矩阵 7 类对象、Authority Matrix 11 类事实权威来源、Plane 读模型边界、不做清单 14 条。
+- **P0-002 Legacy Cleanup Matrix**（历史 Markdown 当前归档于
+  `../archive_docs/wes_backend/docs/architecture/legacy-cleanup-matrix.md`；机器清单为
+  `docs/architecture/legacy-cleanup-matrix.csv`，2191 entries / 0 pending-review）：逐入口标记
+  delete/rebuild/move/keep-contract 策略，含 service module-level def + `__all__` 导出符号穷尽覆盖。生成器
+  `scripts/generate_legacy_matrix.py` 可复现。
 - **P0-003 Behavior Contract Baseline** (`tests/contracts/workline/`, `tests/characterization/workline_legacy/`, `tests/fixtures/workline_contract/`)：10 BC 全覆盖（强制 5 contract + 1 characterization + 4 strict xfail 壳），覆盖 start admission / runtime snapshot / handoff / resource projection / 粗分机入库 / 满箱交换 / 分拣机入库 / 缺 event_id / WMS authority cache / Event_Push 响应。28 pass + 3 strict xfail。
-- **P0-004 ExecutionCorrelation Migration Matrix** (`docs/architecture/session-correlation-matrix.md`)：逐文件列 39 个跨域 session FK 迁移路径（0 遗漏），按 resource/handling/rack/device/wms_integration/workline-runtime/material/sys 域分组。发现 device `session_id_int` ↔ session `awaiting_command_id` 外键环（HIGH 风险，进入 Phase 1 CEO-010）。ExecutionCorrelation schema 字段对齐主计划 §9.2（trace_id / source_event_id / business_owner_key），idempotency 引用主计划 §5.4 独立 idempotency_keys 表。
-- **P0-005 Device Command Contract** (`docs/architecture/device-command-contract.md`)：以第三方设备白皮书为权威输入，锁定 Command-Ack-Callback 异步闭环、设备 6 态（IDLE/RUNNING/ERROR/OFFLINE/UNKNOWN/MAINTENANCE）、Event_Push 固定 ACK、DeviceCommand 顶层字段白名单 + 禁止字段（PLC/坐标/关节/安全回路）、扫码平台互锁与预取约束。
-- **P0-006 External Contract Profile + IntegrationLab** (`docs/contracts/external-contract-profile.md`, `docs/architecture/integration-lab-and-simulator.md`, `tests/support/external_contract_profile.py`, `tests/fixtures/external_contracts/wms/default/`)：按 `provider_code + contract_version` 描述 WMS/ECS provider 外部合同；Pydantic schema 落 tests/support/（禁止 src/app/ import，Phase 1 CEO-013 升级到生产路径）；WMS fixture 5 个必填 case（success/reject/timeout/duplicate/missing_event_id）。
+- **P0-004 ExecutionCorrelation Migration Matrix**（历史归档：`../archive_docs/wes_backend/session-correlation-matrix.md`）：逐文件列 39 个跨域 session FK 迁移路径（0 遗漏），按 resource/handling/rack/device/wms_integration/workline-runtime/material/sys 域分组。发现 device `session_id_int` ↔ session `awaiting_command_id` 外键环（HIGH 风险，进入 Phase 1 CEO-010）。ExecutionCorrelation schema 字段对齐当时主计划 §9.2（trace_id / source_event_id / business_owner_key），idempotency 引用当时主计划 §5.4 独立 idempotency_keys 表。
+- **P0-005 Device Command Contract** (`docs/architecture/device-command-contract.md`)：当时以第三方设备白皮书为输入；该白皮书现已移至项目外归档，不是当前真源。当前合同锁定 Command-Ack-Callback 异步闭环、设备状态、Event_Push ACK、DeviceCommand 顶层边界和禁止字段（PLC/坐标/关节/安全回路）。
+- **P0-006 External Contract Profile + IntegrationLab**（历史文档归档：`../archive_docs/wes_backend/external-contract-profile.md`、`../archive_docs/wes_backend/integration-lab-and-simulator.md`；当时测试资产：`tests/support/external_contract_profile.py`、`tests/fixtures/external_contracts/wms/default/`）：按 `provider_code + contract_version` 描述 WMS/ECS provider 外部合同；Pydantic schema 落 tests/support/（禁止 src/app/ import，Phase 1 CEO-013 升级到生产路径）；WMS fixture 5 个必填 case（success/reject/timeout/duplicate/missing_event_id）。归档文档不属于当前合同真源。
 - **P0-007 Architecture Guardrails** (`scripts/architecture-guardrails.sh`, `scripts/architecture-guardrails.allowlist`, `tests/architecture/`, `docs/architecture/architecture-guardrails-spec.md`)：将主计划 §7.5 核心 5 条不变量（C1-C5）+ I3 capability 注入（R-I3a/R-I3b）映射为可执行扫描脚本。phase-aware 模式（phase0 warn-only / phase1 enforced / phase2 缩减 allowlist）；seed allowlist 31 条全部关联 `legacy_entry_id`（C1×5 + C2×22 + R-I3b×4 含 device 实现）。删任意 seed 行后 phase1 退出码 1（enforcement 真生效）。
 - `scripts/git-quality-gate.sh --check architecture` 新增。Jenkinsfile `Quality Checks` stage 新增 `Architecture Guardrails` 并行步骤，默认 phase0，可通过 `ARCHITECTURE_PHASE` 环境变量切 phase1。
 - `tests/architecture/` 6 个测试文件（C1-C5 + R-I3a/R-I3b，24 tests）；C5 使用 `tests/support/runtime_inbox_contract.py` 目标态状态机（RECEIVED/PROCESSING/PROCESSED/FAILED/DEAD_LETTER 6 转移），不 import legacy `WorklineInbox`。
@@ -591,7 +597,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- 主计划 `docs/architecture/workline-and-plugin-restructuring.md` §9.7 `wms_integration` API 入口边界收口：履约请求端点从 POST 改为 GET 只读；补充 effect 出口约束（出站 WMS 履约/库存事务/PKG 绑定只能由 runtime/orchestration 经 RuntimeIntentLog + EffectPort 调用，wms_integration 不提供公开创建履约请求的 POST API）。
+- 当时主计划（历史归档：`../archive_docs/wes_backend/docs/architecture/workline-and-plugin-restructuring.md`）§9.7
+  曾将 `wms_integration` 履约请求端点从 POST 收口为 GET 只读，并约束出站 WMS 履约、库存事务和 PKG 绑定
+  只能由当时的 runtime/orchestration 经 RuntimeIntentLog + EffectPort 调用；该记录只说明 0.9.0.0 版本事实，
+  不属于当前架构真源。
 
 ### Notes
 
@@ -1083,7 +1092,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **文档**
 - CLAUDE.md：开发指南和架构规则
 - 软件需求规格说明书 (SRS)
-- P9 WES 第三方设备接入白皮书
+- P9 WES 第三方设备接入白皮书（历史交付，现已移至项目外归档）
 - CI/CD 环境搭建文档
 
 ### Changed

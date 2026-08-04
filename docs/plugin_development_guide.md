@@ -5,6 +5,9 @@
 >
 > 架构原理以[WES 最小执行架构收敛设计][architecture-spec]为准，不在本文重复展开。
 
+一次客户交付可以同时包含厂商 Adapter 和 WorkLine 业务插件，但二者是并列的独立包：Adapter 拥有厂商 wire 合同和
+标准化映射，插件只消费角色化输入并拥有业务 Decision。任一包都不得以自己的测试替代另一包或核心基础能力验收。
+
 ## 1. 开发前必须准备
 
 开始编码前取得以下资料：
@@ -21,7 +24,7 @@
 1. 哪个物理信号触发 WES。
 2. 当前对象和目标位置在哪里。
 3. 判定前需要读取哪些投影或 WMS 事实。
-4. 判定后调用厂家清单中的哪条真实命令。
+4. 判定后请求哪个逻辑设备动作，以及需要哪些业务参数。
 5. 哪个 CALLBACK 表示物理动作最终完成。
 6. 成功、NG、设备故障和依赖不可用分别如何继续。
 
@@ -48,12 +51,13 @@
 | 连接 | 上游、下游、物理方向、触发事件、执行设备 |
 | 故障 | 厂家错误码、物理含义、影响对象、隔离范围、人工处理 |
 
-设备内部步骤、坐标、机械互锁和安全逻辑属于 ECS/PLC。插件只选择厂家提供的长命令，不拆分其内部动作。
+设备内部步骤、坐标、机械互锁和安全逻辑属于 ECS/PLC。插件只选择逻辑设备动作，不拆分设备内部动作；
+对应厂家 Adapter 负责把逻辑动作和业务参数映射为厂家长命令及其 Payload。
 
-物理模型完成时，每个场景都必须能从触发输入追踪到当前对象、目标设备和位置、厂家命令、
+物理模型完成时，每个场景都必须能从触发输入追踪到当前对象、目标设备和位置、逻辑设备动作、
 最终 CALLBACK、新位置及下一步。
 
-### 2.2 整理厂家设备合同
+### 2.2 整理独立厂家 Adapter 合同
 
 为每台设备建立指令矩阵：
 
@@ -78,15 +82,16 @@ HTTP 请求成功
 只有最终 CALLBACK 可以推进对象和位置。WES 不发明通用厂家命令，也不要求厂家改变其真实
 Event、Command 或 Payload。
 
-### 2.3 编写厂家 Adapter
+### 2.3 交付独立厂家 Adapter
 
 每个厂家合同由三类代码隔离：
 
 - DTO：精确校验厂家实际 Payload。
 - HTTP Adapter：处理 Endpoint、认证、请求、响应和传输错误。
-- Mapper：把厂家设备、Event 和 CALLBACK 映射为工作线角色化输入。
+- Mapper：把厂家设备、Event 和 CALLBACK 映射为工作线角色化输入，并把插件请求的逻辑设备动作映射为厂家命令。
 
-Adapter 不包含工作线业务规则，插件不读取厂家原始 JSON。新增厂家时，不应修改最小执行内核。
+Adapter 必须在 `device_adapters/<adapter_key>/` 独立交付代码、测试和 fixture，不嵌入任何插件包。Adapter 不包含工作线业务规则，
+插件不读取厂家原始 JSON，也不声明厂商协议依赖。新增厂家时，不应修改最小执行内核或业务插件规则。
 
 ### 2.4 建立业务场景决策表
 
@@ -116,13 +121,21 @@ Handler 只接收：
 Handler 只返回以下封闭 Decision：
 
 - 等待设备或位置。
-- 下发一个厂家 ECS 长命令。
+- 请求一个逻辑设备动作。
 - 请求一次 AGV/CTU 搬运。
 - 创建一次 WMS 确认义务。
 - 路由到正常下一步或业务 NG。
 - 完成本次对象执行。
 
-后续步骤由最终 CALLBACK 或新的业务输入触发。一个 Handler 不等待整条工作线执行完成。
+后续步骤只由与当前可靠对象匹配的以下输入触发：
+
+- `DeviceCommand` 最终 CALLBACK。
+- `TransportTask` status query 返回的 typed terminal result。
+- `WmsConfirmation` 同步 outcome。
+- 新的业务输入。
+
+WMS callback/hint 只唤醒匹配的 `TransportTask` 查询，不携带或决定终态。一个 Handler 不等待整条工作线执行
+完成。
 
 ### 2.6 注册和配置
 
@@ -137,7 +150,7 @@ Handler 只返回以下封闭 Decision：
 
 配置只保存现场事实：
 
-- 设备实例、Endpoint 和凭据引用。
+- 设备实例与标准角色绑定；Endpoint、凭据引用和厂商连接参数由 Adapter 部署配置拥有。
 - 设备角色、位置角色和实际物理拓扑。
 - 位置、队列容量和故障隔离范围。
 - 无法由约定推导的少量业务参数。
@@ -147,6 +160,21 @@ Handler 只返回以下封闭 Decision：
 ## 3. 目标文件结构
 
 ```text
+device_adapters/<adapter_key>/
+├── pyproject.toml
+├── src/
+│   └── <adapter_package>/
+│       ├── __init__.py
+│       ├── contracts.py
+│       ├── http_adapter.py
+│       └── mapper.py
+├── tests/
+│   ├── contracts/
+│   ├── integration/
+│   ├── e2e/
+│   └── resilience/
+└── fixtures/
+
 workline_plugins/<plugin_key>/
 ├── pyproject.toml
 ├── src/
@@ -154,21 +182,18 @@ workline_plugins/<plugin_key>/
 │       ├── __init__.py
 │       ├── contracts.py
 │       ├── handlers.py
-│       ├── registration.py
-│       └── adapters/
-│           └── <vendor>/
+│       └── registration.py
 ├── tests/
 │   ├── unit/
-│   ├── contracts/
 │   ├── integration/
 │   ├── e2e/
 │   └── resilience/
 └── fixtures/
 ```
 
-插件包是独立二次开发交付单元：自己声明 WES SDK 版本、厂商依赖、测试配置和构建入口。插件代码、测试和
-fixture 必须在同一工作包加入；不得先在核心 `tests/` 中寄存具体插件测试，也不得创建只有测试没有插件代码的
-空包。
+Adapter 包和插件包是两个独立二次开发交付单元。Adapter 声明厂商协议依赖；插件只声明 WES SDK 和业务侧依赖。
+两类包分别维护测试配置和构建入口，代码、测试和 fixture 必须与各自所有者同包加入；不得在核心 `tests/` 或另一类包中
+寄存测试，也不得创建只有测试没有对应实现的空包。
 
 核心仓库不保存具体插件源码。只有出现真实独立职责时才增加文件，不得预建客户尚未需要的扩展点或业务模板。
 
@@ -192,40 +217,40 @@ fixture 必须在同一工作包加入；不得先在核心 `tests/` 中寄存�
 
 | 测试 | 至少覆盖 |
 | --- | --- |
-| 厂家合同 | 真实 Event、Command、ACK、CALLBACK、角色映射、非法 Payload 和关联冲突 |
-| 插件逻辑 | 正常 Decision、设备忙、位置满、模式不匹配、业务 NG、硬件故障、依赖暂停 |
-| 执行闭环 | 具体工作线的最终 CALLBACK、投影更新、多对象并发和人工清线 |
+| Adapter 厂家合同 | 真实 Event、Command、ACK、CALLBACK、标准化映射、非法 Payload 和关联冲突 |
+| 插件逻辑 | 标准化输入下的正常 Decision、设备忙、位置满、模式不匹配、业务 NG、硬件故障、依赖暂停 |
+| 插件执行闭环 | 角色化最终结果、投影更新、多对象并发和人工清线 |
 | 架构边界 | Handler 不依赖数据库、Repository、HTTP、Celery、Service Locator 或全局容器 |
 
-入站持久化与幂等、通用命令证据、`LineRunEpoch` fencing 等 WES 基础能力由核心测试证明；插件测试只覆盖该
-具体插件新增的业务风险，不复制核心测试。
+入站持久化与幂等、通用命令证据、`LineRunEpoch` fencing 等 WES 基础能力由核心测试证明；Adapter 测试只覆盖厂商合同与
+标准化映射；插件测试只覆盖业务 Decision 和对象推进。三类测试不得互相替代或复制。
 
-插件包使用自己的 Pytest 配置、覆盖率和 CI。进入插件包目录后至少运行：
+每个 Adapter/插件包使用自己的 Pytest 配置、覆盖率和 CI。进入对应包目录后至少运行：
 
 ```bash
 uv sync --dev
-uv run pytest tests/unit tests/contracts -q
-uv run pytest tests/integration tests/e2e tests/resilience -q
+uv run pytest tests -q
 uv run ruff format --check .
 uv run ruff check .
 ```
 
-插件包需要真实 PostgreSQL、HTTP、CALLBACK、故障或并发环境时，在自身 CI 显式准备并运行受影响场景。
-WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY selector 都不得发现或运行这些插件测试。
+Adapter/插件包需要真实 PostgreSQL、HTTP、CALLBACK、故障或并发环境时，在自身 CI 显式准备并运行受影响场景。
+WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY selector 都不得发现或运行这些二次开发包测试。
 
 ## 6. 交付检查
 
 - [ ] 所有现场设备和位置都有明确角色与配置。
-- [ ] 所有厂家 Event、Command、ACK、CALLBACK 和错误码都有 DTO 与合同测试。
+- [ ] 所有厂家 Event、Command、ACK、CALLBACK 和错误码都在对应 Adapter 包中拥有 DTO 与合同测试。
 - [ ] 每个业务场景都有决策表、Handler 和成功/失败测试。
-- [ ] 每个设备命令都来自厂家清单，每个 CALLBACK 都能唯一关联命令。
+- [ ] Adapter 保证每个设备命令来自厂家清单，每个 CALLBACK 都能唯一关联命令；插件不读取这些 wire 事实。
 - [ ] 插件只处理角色化输入，只返回封闭 Decision。
 - [ ] 插件没有数据库、Repository、HTTP、Celery 或动态依赖查找。
 - [ ] 业务 NG、硬件故障、依赖暂停和人工清线语义明确分离。
 - [ ] 插件版本、配置版本和流程模式固定在 `LineRunEpoch`。
 - [ ] 插件代码、测试和 fixture 位于同一个 `workline_plugins/<plugin_key>/` 独立包。
-- [ ] 插件自己的合同测试、单元测试、受影响重测试和质量门禁全部通过。
-- [ ] 核心 `tests/` 未新增任何具体工作线、插件或厂商行为测试。
+- [ ] Adapter 代码、测试和 fixture 位于同一个 `device_adapters/<adapter_key>/` 独立包。
+- [ ] Adapter 和插件各自的合同/单元测试、受影响重测试和质量门禁分别全部通过。
+- [ ] 核心 `tests/` 未新增任何具体工作线、插件或厂商行为测试，插件包也未寄存厂商 Adapter 测试。
 
 ## 参考
 

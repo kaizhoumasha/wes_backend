@@ -1,7 +1,5 @@
-# HEAVY selector 的机器可读真源。分类顺序固定为：直接 HEAVY 测试、候选 mapping、ignore。
+# HEAVY selector 的机器可读真源。分类顺序固定为：直接 HEAVY 测试、人类文档、候选 mapping、ignore。
 ignore_globs = [
-    "docs/**",
-    "*.md",
     "tests/**",
     "Jenkinsfile",
     "Jenkinsfile.test-deploy",
@@ -9,8 +7,6 @@ ignore_globs = [
     ".github/**",
     ".gitlab-ci.yml",
     ".gitignore",
-    "README*",
-    "LICENSE*",
 ]
 
 # selector 实现由 QUALITY 脚本合同承接，不触发运行时 HEAVY 测试。
@@ -18,9 +14,23 @@ ignore_globs = [
 source_glob = "scripts/select_heavy_tests.py"
 heavy_tests = []
 
+[[mapping]]
+source_glob = "docs/architecture/heavy-test-impact.toml"
+heavy_tests = []
+
+# MR HEAVY 专用数据库编排由当前命令结果关联 PostgreSQL 合同承接；Redis 由 Compose healthcheck 验证。
+[[mapping]]
+source_glob = "docker-compose.ci-heavy.yml"
+heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
+
 # 质量门禁只编排 FAST/QUALITY；生产 closure 由 HEAVY selector 独立承接。
 [[mapping]]
 source_glob = "scripts/git-quality-gate.sh"
+heavy_tests = []
+
+# Markdown 格式检查只处理人类阅读文档，由 QUALITY 直接承接。
+[[mapping]]
+source_glob = "scripts/markdownlint.sh"
 heavy_tests = []
 
 # pytest 收集、报告和 FAST/QUALITY 拓扑由质量门禁直接承接。
@@ -28,9 +38,9 @@ heavy_tests = []
 source_glob = "pyproject.toml"
 heavy_tests = []
 
-# 测试治理、遗留审计与已退役插件数据脚本由 QUALITY/缺席门禁承接。
+# 当前测试治理、遗留审计与 selected HEAVY runner 由 QUALITY/缺席门禁承接。
 [[mapping]]
-source_glob = "scripts/{check_business_legacy_absence_gate.py,check_fast_test_budget.py,check_runtime_evidence_readiness_gate.py,compose_runtime_evidence_artifact.py,data/seed_runtime_monitor_smoke.py,data/sync_test_workline_devices.py,generate_legacy_matrix.py,generate_northbound_legacy_removal_report.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}"
+source_glob = "scripts/{architecture-guardrails.sh,check_business_legacy_absence_gate.py,check_fast_test_budget.py,generate_legacy_matrix.py,run_selected_heavy_tests.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}"
 heavy_tests = []
 
 # WMS deployment attestation 的 CLI、领域事实与 Beat 路由必须共同验证四角色部署产物。
@@ -106,6 +116,10 @@ heavy_tests = [
 
 # Callback/Repository/Outbox/Intent 测试只映射可穷尽的窄 source/support；共享 DB/conftest 与广泛依赖继续 fail closed。
 [[mapping]]
+source_glob = "src/app/callback/v1/callback.py"
+heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
+
+[[mapping]]
 source_glob = "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py"
 heavy_tests = [
     "tests/integration/test_callback_external_payload_limit.py",
@@ -120,6 +134,29 @@ heavy_tests = ["tests/integration/test_device_runtime_projection_writer_service.
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/device_runtime_projection_writer_service.py"
 heavy_tests = ["tests/integration/test_device_runtime_projection_writer_service.py"]
+
+# 共享 contract 包入口当前只声明依赖边界，不导出运行时对象；QUALITY import guardrail 直接承接。
+[[mapping]]
+source_glob = "src/app/contracts/__init__.py"
+heavy_tests = []
+
+# 设备基础模型只由共享命令关联与设备投影测试承接，不映射具体厂商或工作线业务场景。
+[[mapping]]
+source_glob = "src/app/device/models/command.py"
+heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
+
+[[mapping]]
+source_glob = "src/app/device/models/device.py"
+heavy_tests = ["tests/integration/test_device_runtime_projection_writer_service.py"]
+
+# 收敛前 runtime 基础 schema 只由通用实体合同承接；具体业务流程测试不得进入核心 selector。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/enums.py"
+heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/{session,timeline}.py"
+heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
 
 [[mapping]]
 source_glob = "src/app/sys/dispatch_concurrency.py"
@@ -220,28 +257,15 @@ heavy_tests = [
     "tests/integration/test_runtime_remaining_entities.py",
 ]
 
-# 核心测试拓扑工具由 architecture/QUALITY 门禁承接；已删除的具体插件 fixture/support 明确为 NONE。
+# 核心测试拓扑工具由 architecture/QUALITY 门禁承接。
 [[mapping]]
 source_glob = "tests/support/test_suite_topology.py"
 heavy_tests = []
 
-[[mapping]]
-source_glob = "tests/fixtures/workline_contract/{rough_sorter,start_admission}/**"
-heavy_tests = []
-
-[[mapping]]
-source_glob = "tests/support/{smt_sorting_inbound_postgresql.py,wms_conveyor_batch_postgresql.py,wms_full_box_exchange_postgresql.py}"
-heavy_tests = []
-
-[[mapping]]
-source_glob = "tests/mock/device_simulator.py"
-heavy_tests = []
-
-# 保留的通用 ECS mock 资产由容器入口、Dockerfile 和服务合同 HEAVY 共同承接。
+# 保留的通用 ECS mock 资产由服务合同和 Dockerfile 静态合同承接；镜像入口由 MR 固定构建步骤验证。
 [[mapping]]
 source_glob = "tests/mock/{Dockerfile,ecs_mock_catalog.py,ecs_mock_server.py}"
 heavy_tests = [
-    "tests/integration/test_mock_container_entrypoints.py",
     "tests/mock/test_ecs_mock_server.py",
     "tests/mock/test_mock_dockerfile.py",
 ]
@@ -263,11 +287,10 @@ heavy_tests = [
     "tests/mock/test_wms_northbound_contract.py",
 ]
 
-# 纯 fixture matrix 同时服务 conformance runner 与已构建 Mock WMS 镜像。
+# 纯 fixture matrix 同时服务 conformance runner 与 Mock WMS 服务合同。
 [[mapping]]
 source_glob = "tests/mock/wms_fixture_matrix.py"
 heavy_tests = [
-    "tests/integration/test_mock_container_entrypoints.py",
     "tests/integration/test_runtime_intent_log_effect_repository.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/test_wms_provider_conformance_collection.py",
@@ -288,7 +311,6 @@ heavy_tests = [
 [[mapping]]
 source_glob = "tests/mock/wms_mock_server.py"
 heavy_tests = [
-    "tests/integration/test_mock_container_entrypoints.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/mock/test_wms_mock_server.py",
     "tests/mock/test_wms_northbound_contract.py",
@@ -297,7 +319,6 @@ heavy_tests = [
 [[mapping]]
 source_glob = "tests/mock/wms_northbound_contract.py"
 heavy_tests = [
-    "tests/integration/test_mock_container_entrypoints.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
     "tests/mock/test_wms_mock_server.py",
@@ -307,7 +328,6 @@ heavy_tests = [
 [[mapping]]
 source_glob = "tests/mock/wms_operation_fixtures.py"
 heavy_tests = [
-    "tests/integration/test_mock_container_entrypoints.py",
     "tests/integration/test_runtime_intent_log_effect_repository.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",

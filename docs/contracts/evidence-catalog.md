@@ -1,5 +1,7 @@
 # Runtime Evidence Catalog
 
+> 状态：`implementation_baseline`。本文只锁定收敛前仍在运行的 WMS evidence 表、索引与 drift job；目标架构中的外部输入统一归属 `InboundEvidence`，WMS 查询、确认和搬运证据分别由 `WmsCapabilities`、`WmsConfirmation` 与 `TransportTask` 拥有。旧表和任务退役时本文必须同步重写或归档。
+
 本文档锁定 WMS evidence envelope 的版本、结构化索引和 drift 分类口径。跨域 evidence 字段变更必须先更新本 catalog，再更新 Pydantic 合同、迁移和测试。
 
 ## Schema Versions
@@ -42,4 +44,5 @@ WMS 不维护专用保留周期或清理任务，记录保留服从项目统一�
 - source version 漂移只能追加 evidence 和诊断结果，不能覆盖当前投影。
 - drift job 是只读任务；任何 WMS 写入确认或补偿动作必须走 operation-specific typed EFFECT Definition
   与 `WmsEffectPreparationPort`。
-- 删除或重命名 schema 字段必须提供迁移路径和 replay fixture，不能静默兼容裸 JSON。
+- 本系统尚未发布；删除或重命名 schema 字段时直接更新最终模型并清空开发/测试数据，不提供旧数据迁移、
+  replay fixture 或裸 JSON 兼容路径。本文对应的旧 evidence 实现退役后应整体移出项目归档。

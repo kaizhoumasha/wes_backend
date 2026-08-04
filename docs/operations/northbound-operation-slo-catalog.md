@@ -1,5 +1,7 @@
 # 北向 Operation SLO 与 Day-1 看板
 
+> 状态：`implementation_baseline`。本目录只说明当前仍运行的北向观测实现；WMS 目标合同以顶层 SPEC 和薄接入计划为准。
+
 本文是 `northbound-operation-slo.v1` 的运维视图；可执行真源位于
 `src/app/runtime/orchestration/operation_observability.py`。任何新增 authored operation 必须先登记 SLO，
 否则 provider binding authoring fail-closed。

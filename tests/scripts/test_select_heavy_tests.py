@@ -53,7 +53,6 @@ SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST = "tests/integration/test_system_outbox_repo
 WMS_DEPLOYMENT_HEAVY_TEST = "tests/integration/test_wms_deployment_attestation.py"
 WMS_CIRCUIT_BREAKER_HEAVY_TEST = "tests/resilience/test_wms_circuit_breaker.py"
 WMS_FEASIBILITY_HEAVY_TEST = "tests/integration/test_wms_northbound_feasibility_probe.py"
-WMS_MOCK_CONTAINER_HEAVY_TEST = "tests/integration/test_mock_container_entrypoints.py"
 WMS_MOCK_SERVER_HEAVY_TEST = "tests/mock/test_wms_mock_server.py"
 WMS_NORTHBOUND_CONTRACT_HEAVY_TEST = "tests/mock/test_wms_northbound_contract.py"
 WMS_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py"
@@ -68,7 +67,7 @@ def _write_mapping(
     *,
     ignore_globs: list[str] | None = None,
 ) -> Path:
-    lines = [f"ignore_globs = {json.dumps(ignore_globs or ['docs/**', '*.md', 'tests/**', 'Jenkinsfile'])}"]
+    lines = [f"ignore_globs = {json.dumps(ignore_globs or ['ignored/**', 'tests/**', 'Jenkinsfile'])}"]
     for source_glob, heavy_tests in mappings or []:
         lines.extend(
             [
@@ -216,7 +215,6 @@ def test_candidate_assets_use_mapping(tmp_path: Path, changed_path: str) -> None
 @pytest.mark.parametrize(
     "changed_path",
     [
-        "docs/architecture/selector.md",
         "Jenkinsfile",
         ".githooks/pre-commit",
         "tests/runtime/test_service.py",
@@ -228,11 +226,65 @@ def test_ignored_paths_select_nothing(tmp_path: Path, changed_path: str) -> None
     config = load_config(
         _write_mapping(
             tmp_path,
-            ignore_globs=["docs/**", "*.md", "tests/**", "Jenkinsfile", ".githooks/**"],
+            ignore_globs=["ignored/**", "tests/**", "Jenkinsfile", ".githooks/**"],
         )
     )
 
     assert select_heavy_tests([changed_path], config) == []
+
+
+def test_human_document_candidate_is_excluded_before_heavy_mapping(tmp_path: Path) -> None:
+    config = load_config(_write_mapping(tmp_path, ignore_globs=["**/*.md"]))
+
+    assert select_heavy_tests(["tests/integration/architecture-notes.md"], config) == []
+
+
+def test_human_diagram_is_excluded_from_heavy_selection(tmp_path: Path) -> None:
+    config = load_config(_write_mapping(tmp_path))
+
+    assert select_heavy_tests(["docs/system-architecture.eddx"], config) == []
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        ".claude/skills/wes-module-creator-1.0.0/scripts/requirements.txt",
+        "src/runtime/contract.txt",
+        "scripts/input.txt",
+        "tests/integration/fixture.txt",
+        "docs/runtime/README.toml",
+    ],
+)
+def test_machine_readable_text_and_config_assets_fail_closed(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    with pytest.raises(SelectorError, match=r"未分类|未配置 mapping/NONE"):
+        select_heavy_tests([changed_path], config)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "tests/fixtures/workline_contract/rough_sorter/new.json",
+        "tests/fixtures/workline_contract/start_admission/new.json",
+        "tests/support/smt_sorting_inbound_postgresql.py",
+        "tests/support/wms_conveyor_batch_postgresql.py",
+        "tests/support/wms_full_box_exchange_postgresql.py",
+        "tests/mock/device_simulator.py",
+    ],
+)
+def test_retired_plugin_assets_cannot_reenter_core_as_explicit_none(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    with pytest.raises(SelectorError, match=r"未分类|未配置 mapping/NONE"):
+        select_heavy_tests([changed_path], config)
+
+
+def test_historical_directory_does_not_ignore_future_executable_files() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    with pytest.raises(SelectorError, match="未分类"):
+        select_heavy_tests([".superpowers/sdd/tool.py"], config)
 
 
 def test_unknown_path_fails_closed(tmp_path: Path) -> None:
@@ -465,9 +517,7 @@ def test_repository_mapping_keeps_unaccepted_candidates_unmapped() -> None:
 def test_repository_mapping_declares_required_ignore_globs() -> None:
     ignore_globs, mappings = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert ignore_globs == (
-        "docs/**",
-        "*.md",
+    assert {
         "tests/**",
         "Jenkinsfile",
         "Jenkinsfile.test-deploy",
@@ -475,15 +525,16 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ".github/**",
         ".gitlab-ci.yml",
         ".gitignore",
-        "README*",
-        "LICENSE*",
-    )
+    }.issubset(ignore_globs)
     assert tuple((mapping.source_glob, mapping.heavy_tests) for mapping in mappings) == (
         ("scripts/select_heavy_tests.py", ()),
+        ("docs/architecture/heavy-test-impact.toml", ()),
+        ("docker-compose.ci-heavy.yml", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         ("scripts/git-quality-gate.sh", ()),
+        ("scripts/markdownlint.sh", ()),
         ("pyproject.toml", ()),
         (
-            "scripts/{check_business_legacy_absence_gate.py,check_fast_test_budget.py,check_runtime_evidence_readiness_gate.py,compose_runtime_evidence_artifact.py,data/seed_runtime_monitor_smoke.py,data/sync_test_workline_devices.py,generate_legacy_matrix.py,generate_northbound_legacy_removal_report.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}",
+            "scripts/{architecture-guardrails.sh,check_business_legacy_absence_gate.py,check_fast_test_budget.py,generate_legacy_matrix.py,run_selected_heavy_tests.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}",
             (),
         ),
         ("scripts/check_wms_deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
@@ -529,6 +580,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
             ),
         ),
+        ("src/app/callback/v1/callback.py", (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,)),
         (
             "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
             (
@@ -544,6 +596,14 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "src/app/runtime/orchestration/services/device_runtime_projection_writer_service.py",
             (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,),
+        ),
+        ("src/app/contracts/__init__.py", ()),
+        ("src/app/device/models/command.py", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
+        ("src/app/device/models/device.py", (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,)),
+        ("src/app/runtime/orchestration/enums.py", (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,)),
+        (
+            "src/app/runtime/orchestration/models/{session,timeline}.py",
+            (RUNTIME_REMAINING_ENTITIES_HEAVY_TEST,),
         ),
         (
             "src/app/sys/dispatch_concurrency.py",
@@ -627,15 +687,9 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (OPTIMISTIC_LOCK_HEAVY_TEST, RUNTIME_REMAINING_ENTITIES_HEAVY_TEST),
         ),
         ("tests/support/test_suite_topology.py", ()),
-        ("tests/fixtures/workline_contract/{rough_sorter,start_admission}/**", ()),
-        (
-            "tests/support/{smt_sorting_inbound_postgresql.py,wms_conveyor_batch_postgresql.py,wms_full_box_exchange_postgresql.py}",
-            (),
-        ),
-        ("tests/mock/device_simulator.py", ()),
         (
             "tests/mock/{Dockerfile,ecs_mock_catalog.py,ecs_mock_server.py}",
-            (WMS_MOCK_CONTAINER_HEAVY_TEST, ECS_MOCK_SERVER_HEAVY_TEST, MOCK_DOCKERFILE_HEAVY_TEST),
+            (ECS_MOCK_SERVER_HEAVY_TEST, MOCK_DOCKERFILE_HEAVY_TEST),
         ),
         (
             "scripts/verify_wms_northbound_feasibility.py",
@@ -654,7 +708,6 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "tests/mock/wms_fixture_matrix.py",
             (
-                WMS_MOCK_CONTAINER_HEAVY_TEST,
                 RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_PROVIDER_COLLECTION_HEAVY_TEST,
@@ -675,7 +728,6 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "tests/mock/wms_mock_server.py",
             (
-                WMS_MOCK_CONTAINER_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_MOCK_SERVER_HEAVY_TEST,
                 WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
@@ -684,7 +736,6 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "tests/mock/wms_northbound_contract.py",
             (
-                WMS_MOCK_CONTAINER_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
                 WMS_MOCK_SERVER_HEAVY_TEST,
@@ -694,7 +745,6 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "tests/mock/wms_operation_fixtures.py",
             (
-                WMS_MOCK_CONTAINER_HEAVY_TEST,
                 RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
@@ -903,7 +953,6 @@ def test_repository_mapping_selects_database_runtime_heavy_consumers(
         (
             "tests/mock/wms_mock_server.py",
             [
-                WMS_MOCK_CONTAINER_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_MOCK_SERVER_HEAVY_TEST,
                 WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
@@ -912,7 +961,6 @@ def test_repository_mapping_selects_database_runtime_heavy_consumers(
         (
             "tests/mock/wms_northbound_contract.py",
             [
-                WMS_MOCK_CONTAINER_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
                 WMS_MOCK_SERVER_HEAVY_TEST,
@@ -922,7 +970,6 @@ def test_repository_mapping_selects_database_runtime_heavy_consumers(
         (
             "tests/mock/wms_operation_fixtures.py",
             [
-                WMS_MOCK_CONTAINER_HEAVY_TEST,
                 RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
@@ -947,7 +994,6 @@ def test_repository_mapping_selects_wms_heavy_asset_consumers(changed_path: str,
     [
         "src/app/callback/services/callback_ingress_service.py",
         "src/app/callback/services/callback_orchestration_service.py",
-        "src/app/callback/v1/callback.py",
         "src/celery_app/config.py",
         "src/app/runtime/orchestration/services/device_dispatch_policy.py",
         "src/app/runtime/orchestration/services/conveyor_queue_membership_writer_service.py",
@@ -989,11 +1035,9 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/database/redis_client.py",
         "src/database/schema_conf.py",
         "src/database/sqlite_schema.py",
-        "src/app/device/models/device.py",
         "src/app/device/services/device_service.py",
         "src/app/sys/repositories/outbox_repository.py",
         "src/app/sys/models/outbox.py",
-        "src/app/device/models/command.py",
         "src/app/runtime/orchestration/device_runtime_projection.py",
         "src/app/runtime/orchestration/execution_correlation.py",
         "src/app/runtime/orchestration/execution_session.py",
@@ -1011,10 +1055,38 @@ def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_close
         select_heavy_tests([changed_path], config)
 
 
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        ("src/app/callback/v1/callback.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
+        ("src/app/contracts/__init__.py", []),
+        ("src/app/device/models/command.py", [COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST]),
+        ("src/app/device/models/device.py", [DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST]),
+        ("src/app/runtime/orchestration/enums.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
+        ("src/app/runtime/orchestration/models/session.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
+        ("src/app/runtime/orchestration/models/timeline.py", [RUNTIME_REMAINING_ENTITIES_HEAVY_TEST]),
+    ],
+)
+def test_repository_mapping_keeps_core_sources_owned_by_core_heavy_tests(
+    changed_path: str,
+    expected: list[str],
+) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == expected
+
+
 def test_repository_mapping_classifies_selector_implementation_as_quality_only() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     assert select_heavy_tests(["scripts/select_heavy_tests.py"], config) == []
+
+
+def test_repository_mapping_keeps_top_level_dockerfile_fail_closed() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
+        select_heavy_tests(["Dockerfile"], config)
 
 
 def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
@@ -1022,8 +1094,12 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
     quality_gate = (REPO_ROOT / "scripts/git-quality-gate.sh").read_text(encoding="utf-8")
 
     assert "stage('HEAVY Selector Smoke')" in jenkinsfile
-    assert "uv run pytest tests/scripts -q" in jenkinsfile
-    assert "stage('HEAVY Required')" not in jenkinsfile
+    assert "uv run --no-sync pytest tests/scripts -q" in jenkinsfile
+    assert "stage('HEAVY Required')" in jenkinsfile
+    assert "git config --global --add safe.directory /app" in jenkinsfile
+    assert 'uv run --no-sync scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"' in jenkinsfile
+    assert "reports/heavy-tests.txt" in jenkinsfile
+    assert "uv run --no-sync scripts/run_selected_heavy_tests.py" in jenkinsfile
     assert "run_script_contract_tests" in quality_gate
     assert "run_tool pytest tests/scripts -q" in quality_gate
 

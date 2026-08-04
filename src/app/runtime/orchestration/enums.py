@@ -17,9 +17,9 @@ FailureDomain, TimelineStage, OutboxDispatchType,
 ManualOperationType, DecisionType
 
 参考文档：
-- docs/workline_plugin_architecture_design.md 第 6 章（运行时契约）
-- docs/workline_plugin_architecture_design.md 第 8 章（领域模型）
-- docs/workline_plugin_architecture_design.md 第 12 章（故障归因）
+- docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
+
+本模块属于收敛前 implementation_baseline，不得据此扩展旧 Runtime 枚举体系。
 
 设计原则：
 - DRY: 枚举值统一管理，避免在多处定义

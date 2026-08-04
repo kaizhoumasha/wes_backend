@@ -9,8 +9,6 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from scripts.workline_inbox_retirement_guardrail import CURRENT_DOC_FILES
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAIL = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 
@@ -48,11 +46,6 @@ def _run_guardrails(extra_files: dict[str, str] | None = None) -> subprocess.Com
             tmp_path / "scripts" / "workline_inbox_retirement_guardrail.py",
         )
         (tmp_path / "scripts" / "architecture-guardrails.allowlist").write_text("# empty allowlist for isolated test\n")
-        for relative_path in CURRENT_DOC_FILES:
-            source = REPO_ROOT / relative_path
-            target = tmp_path / relative_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(source, target)
         (tmp_path / "docs" / "architecture").mkdir(parents=True, exist_ok=True)
         (tmp_path / "docs" / "architecture" / "legacy-cleanup-matrix.csv").write_text("entry_id,drop_phase\n")
         for sub in ("src/app/device", "src/app/workline", "src/app/runtime"):

@@ -149,7 +149,6 @@ run_runtime_contract_guardrails() {
         tests/runtime/orchestration/test_production_closure_evidence_gate.py
         tests/runtime/orchestration/test_runtime_operational_contracts.py
         tests/runtime/orchestration/test_runtime_recovery_policies.py
-        tests/contracts/test_runtime_ops_contract_docs.py
         tests/contracts/workline
     )
     log_step "runtime-contract-guardrails" "pytest ${tests[*]} -q"

@@ -1,11 +1,12 @@
 ---
 status: stable architecture guardrails
 created_at: 2026-06-25
-parent: docs/architecture/workline-and-plugin-restructuring.md
-related: docs/architecture/legacy-cleanup-matrix.md
+related: docs/architecture/legacy-cleanup-matrix.csv, scripts/generate_legacy_matrix.py
+spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 note: |
   将当前架构不变量映射到脚本、测试和 review checklist。
   规则 ID 使用稳定架构名称；历史编号只保留在归档材料中。
+  仍指向旧 Runtime/Capability 的规则只守住收敛期间的现有实现，不得作为新增架构入口；删除对应生产路径时同步删除规则。
 ---
 
 # Architecture Guardrails

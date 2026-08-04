@@ -108,7 +108,14 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 把计划文档写成可复制执行的代码脚本
 - 用实现细节替代架构决策和验收标准
 
-允许少量简短伪代码或极短示例，但只用于说明约定。实现细节应在编码阶段通过 TDD、diff、测试和提交体现。
+允许少量简短伪代码或极短示例，但只用于说明约定。非纯文档实现的细节应在编码阶段通过 TDD、diff、测试和提交体现；纯文档变更遵循 `AGENTS.md` 的 Documentation-only Changes 规则，不走 TDD、不编写测试代码。
+
+---
+
+## 6. Documentation Archiving
+
+文档归档规则继承 `AGENTS.md`。Claude 执行归档时必须把文件移到项目根目录同级的
+`../archive_docs/wes_backend/`，并同步清理项目内引用；不得在项目内保留副本、占位文件、软链接或转发文档。
 
 ---
 

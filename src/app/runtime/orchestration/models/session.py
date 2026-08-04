@@ -2,10 +2,12 @@
 作业线会话模型 (Workline Session)
 
 用于跟踪一次完整的业务链路执行过程，管理会话状态和上下文。
-遵循白皮书 8.3 节规范。
 
 相关文档:
-- 白皮书: @docs/workline_plugin_architecture_design.md
+- 目标架构:
+  @docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
+
+本模型属于收敛前 implementation_baseline。
 """
 
 from datetime import datetime
@@ -29,7 +31,7 @@ from src.database.schema_conf import SchemaType
 
 
 class SessionStatus(str, Enum):
-    """会话状态枚举 (白皮书 8.3)"""
+    """收敛前 implementation_baseline 的会话状态枚举。"""
 
     NEW = "NEW"  # 新建
     RUNNING = "RUNNING"  # 运行中

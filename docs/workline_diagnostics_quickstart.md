@@ -1,5 +1,7 @@
 # WORKLINE 诊断快速开始
 
+> 状态：`implementation_baseline`。本指南只用于收敛前现有诊断 API 排障，不得用于设计新 Runtime、replay 或 sandbox 能力。
+
 本指南用于在不查数据库、不 grep 日志的前提下，用 API 完成一条 WORKLINE 诊断链路：
 
 ```text
@@ -210,7 +212,7 @@ Inbox `RESOURCE_WAIT` 与 Outbox `BLOCKED_RESOURCE` 都可以在 UI/Trace 中展
 
 `WORKLINE_ENTRY_ADMISSION_BLOCKED` 不再是新运行过程的正常诊断。看到该诊断时，按历史数据或旧版本残留处理，不作为当前工作线并发容量判断依据。
 
-诊断码来源：`src/workline_runtime/diagnostics/registry.py`。
+诊断码来源：`src/app/runtime/orchestration/diagnostics/registry.py`。
 
 ## 9. 合同规则
 

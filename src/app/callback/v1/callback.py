@@ -3,12 +3,13 @@
 
 提供 WES 回调接口，供设备供应商调用。
 
-接口定义遵循白皮书 3.2 节规范：
+接口定义遵循当前 callback ingress 合同：
 - POST /api/v1/callback/result - 任务结果回传
 - POST /api/v1/callback/event - 设备事件上报
 
-相关文档:
-- 白皮书: @docs/third_party_integration_whitepaper.md
+基础能力边界:
+- @docs/integration/callback_event_validation_principles.md
+- @docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 """
 
 import time
@@ -134,7 +135,7 @@ async def callback_result(
     },
     summary="设备事件上报",
     dependencies=[Depends(_require_callback_event_auth)],
-    description=("设备发生状态变更或传感器触发业务信号时，调用此接口上报事件（白皮书 3.2.2）"),
+    description=("设备发生状态变更或传感器触发业务信号时，通过当前 callback ingress 合同上报事件"),
 )
 async def callback_event(
     request: Request,

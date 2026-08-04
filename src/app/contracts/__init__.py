@@ -1,4 +1,4 @@
-"""src/app/contracts/ 共享 contract 层（ADR-0009）。
+"""src/app/contracts/ 共享 typed contract 层。
 
 承载跨域共享 typed DTO, 避免 capability implementation import boundary 误报和反向 ACL。
 
@@ -10,7 +10,8 @@
 
 导入方向: wms_integration / device / runtime 域 import 本包; 本包不
 import 任何 src/app/{wms_integration,device,runtime}/* 实现, 仅依赖
-pydantic + 主计划 §3.4 Authority Matrix 共享类型。
+pydantic 共享类型；权责边界以 docs/architecture/authority-matrix.md 为准。
 
-详见 docs/architecture/adr/workline-restructuring/0009-shared-contracts-package.md。
+目标边界见:
+docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md。
 """

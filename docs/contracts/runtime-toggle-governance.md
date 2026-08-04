@@ -1,5 +1,7 @@
 # Runtime Toggle Governance
 
+> 状态：`implementation_baseline`。本文仅承担当前 runtime-toggle 发布门禁说明，不构成目标架构中保留旧 Runtime 的理由。
+
 Runtime 只允许 typed runtime toggle。toggle 用于 release / ops 调试、provider version、adapter path 或调度策略切换，不得改变状态机安全语义。
 
 ## Required Fields

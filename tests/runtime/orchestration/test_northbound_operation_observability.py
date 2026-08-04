@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 
@@ -191,14 +189,8 @@ def test_dispatch_health_metric_has_no_bucket_or_business_key_labels() -> None:
     }
 
 
-def test_every_alert_links_to_the_checked_in_runbook() -> None:
+def test_alert_catalog_has_complete_executable_metadata() -> None:
     from src.app.runtime.orchestration.operation_observability import NORTHBOUND_OPERATION_ALERT_CATALOG
-
-    repo_root = Path(__file__).resolve().parents[3]
-    runbook = repo_root / "docs" / "runbooks" / "northbound-operation-observability.md"
-    dashboard_contract = repo_root / "docs" / "operations" / "northbound-operation-slo-catalog.md"
-    text = runbook.read_text(encoding="utf-8")
-    dashboard_text = dashboard_contract.read_text(encoding="utf-8")
 
     required_procedures = {
         "pause-resume",
@@ -207,11 +199,9 @@ def test_every_alert_links_to_the_checked_in_runbook() -> None:
         "lease-fencing",
         "callback-diagnostics",
     }
+
     assert required_procedures <= {alert.runbook_anchor for alert in NORTHBOUND_OPERATION_ALERT_CATALOG.values()}
     for alert in NORTHBOUND_OPERATION_ALERT_CATALOG.values():
-        assert f'<a id="{alert.runbook_anchor}"></a>' in text
         assert alert.owner
         assert alert.dashboard_id
         assert alert.burn_rate > 0
-        assert alert.alert_id in dashboard_text
-        assert alert.dashboard_id in dashboard_text

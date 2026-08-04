@@ -1,5 +1,7 @@
 # WMS Caller Checklist
 
+> 状态：`implementation_baseline`。当前异常类型与调用边界继续生效；RuntimeHold 是当前实现用语，目标停顿语义以顶层 SPEC 为准。
+
 本文档约束业务调用方接入 `src.app.wms_integration` typed ports 时的异常处理边界。WMS typed ports 只负责把 HTTP、熔断、证据留痕结果转换成 typed exception；是否暂停工作线、创建 RuntimeHold、返回用户可见错误，由业务调用方按本 checklist 落地。
 
 ## 调用方必须做的事

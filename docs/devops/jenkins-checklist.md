@@ -140,7 +140,7 @@ docker ps
 
 ```bash
 # 在本地开发机器上
-cd /Users/kaizhou/SynologyDrive/works/wes_backend
+cd /Users/kaizhou/codeDev/wes_backend
 
 # 如有需要，按实际 Node 标签调整 Pipeline 中的 agent label
 vim Jenkinsfile.backend-ci

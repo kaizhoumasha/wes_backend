@@ -1,38 +1,47 @@
-# Workline 插件体系硬件错误码统一规划
+# 设备错误语义与 Adapter 映射边界
+
+> 状态：Implementation Baseline。设备错误语义与供应商原始证据边界继续有效；第 3.1 节只记录 Phase 3/7
+> 收敛前的现有平台诊断实现，不是最终 Runtime 设计或新架构输入。
+> 具体厂商原始码映射不属于核心合同，只能位于对应 Adapter 的实现输入、fixture 与合同测试中。
 
 ## 1. 目标
 
-本文档定义 Workline 插件体系中硬件错误码的统一边界、标准设备错误码使用原则，以及历史供应商数字码向标准语义码的迁移表。
+本文档定义核心设备错误语义、厂商 Adapter 映射职责，以及供应商原始错误码的证据保留边界。
 
 目标只有三个：
 
 1. **平台运行时错误码** 与 **设备执行错误码** 严格分层。
-2. 插件业务逻辑只消费 [`DeviceErrorCode`](/Users/kaizhou/SynologyDrive/works/wes_backend-plugin-prereq-standardization/src/workline_runtime/contracts/device_error_codes.py)，不消费供应商数字码。
-3. 历史供应商数字码仅作为 **历史文档 / 原始日志 / 现场证据** 保留，不再驱动当前插件业务控制逻辑。
+2. 插件业务逻辑只消费规范化类型结果：共享错误使用
+   [`DeviceErrorCode`](../../src/app/workline/domain/contracts/device_error_codes.py)，具体检测结果使用显式的
+   Adapter → 插件类型化合同；两者都不得暴露供应商数字码。
+3. 厂商原始错误码由对应 Adapter 显式映射并作为原始证据保留，不进入核心或插件业务判断。
 
 ## 2. 非目标
 
-本文档**不是**在系统内部引入一层长期存在的 vendor → internal 转义层。
+本文档**不是**建设一个跨厂商的全局错误码 registry、动态转义层或兼容链。
 
 当前目标是：
 
-- 现行硬件协议、Mock、E2E 协议示例直接输出标准语义错误码。
-- 插件内部直接消费标准语义错误码。
-- 如果需要保留 vendor 原始数字码，也只能作为日志证据附带保留，不能作为插件判断条件。
+- 真实设备继续遵循厂商原始协议，不要求厂商改写为 WES 错误码。
+- 每个厂商 Adapter 在自己的 DTO、fixture 和合同测试中显式完成原始码到 `DeviceErrorCode` 的映射。
+- 核心无业务语义 fake 直接产生标准设备语义；具体厂商 Mock/E2E 必须由对应 Adapter 包交付，不能替代核心可靠性测试。插件测试只验证标准语义驱动的业务行为。
 
 ## 3. 三层边界
 
-### 3.1 平台运行时错误码
+### 3.1 收敛前平台诊断实现
 
 定义位置：
-- [`src/workline_runtime/diagnostics/codes.py`](/Users/kaizhou/SynologyDrive/works/wes_backend-plugin-prereq-standardization/src/workline_runtime/diagnostics/codes.py)
 
-用途：
+- [`src/app/runtime/orchestration/diagnostics/codes.py`](../../src/app/runtime/orchestration/diagnostics/codes.py)
+
+当前实现用途：
+
 - callback 入站校验失败
 - session / orchestrator / outbox / inbox / timeout 归因
 - 插件执行异常、状态迁移异常
 
 典型示例：
+
 - `CALLBACK_SCHEMA_INVALID`
 - `SESSION_CONTEXT_MISSING`
 - `SESSION_RESOLVE_FAILED`
@@ -43,19 +52,25 @@
 
 这层回答的是：**平台为什么处理失败**。
 
+最终目标不保留 session/orchestrator/outbox/inbox 作为通用执行所有者。Phase 3/7 必须把仍有价值的诊断分别落到
+`InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、具体执行对象和投影；旧 owner 名称
+随对应实现删除，不建立别名、兼容码或转发层。
+
 ### 3.2 标准设备错误码
 
 定义位置：
-- [`src/workline_runtime/contracts/device_error_codes.py`](/Users/kaizhou/SynologyDrive/works/wes_backend-plugin-prereq-standardization/src/workline_runtime/contracts/device_error_codes.py)
+
+- [`src/app/workline/domain/contracts/device_error_codes.py`](../../src/app/workline/domain/contracts/device_error_codes.py)
 
 用途：
+
 - 设备执行结果语义
 - 插件业务分支判断
-- Mock / E2E / 当前联调协议文档
+- Adapter 规范输出、核心 fake 和插件业务输入
 
 当前标准集合：
+
 - 成功哨兵：`NONE`
-- 检测类：`INSPECTION_SIZE_NG`、`INSPECTION_THICKNESS_NG`
 - 扫码类：`SCAN_CODE_INVALID`、`SCAN_CODE_INCOMPLETE`、`SCAN_FAILED`
 - 搬运类：`PICK_FAILED`、`PLACE_FAILED`、`PICK_AND_PUT_FAILED`、`MOVE_FAILED`
 - 现场 / 资源类：`TARGET_BLOCKED`、`BIN_FULL`
@@ -66,14 +81,16 @@
 ### 3.3 Vendor 原始码
 
 用途：
+
 - 历史协议文档
 - 供应商接口原文
 - 原始回调日志 / 证据保存
 
 约束：
-- 不得直接进入插件业务分支判断。
-- 不得作为新的现行协议继续扩散。
-- 若某个数字码语义不稳定，不允许“猜测映射”，必须先补标准语义码。
+
+- 只能由对应厂商 Adapter 解析和映射，不得直接进入核心或插件业务分支判断。
+- 必须随原始回调证据保存，禁止映射后丢失现场值。
+- 若某个原始码语义不稳定，不允许“猜测映射”；Adapter 必须 fail closed 或输出明确的未知设备错误语义。
 
 这层回答的是：**供应商当时原始上报了什么**。
 
@@ -85,89 +102,67 @@
 
 - 是平台处理失败？→ 运行时错误码
 - 是设备执行结果？→ 标准设备错误码
-- 是供应商历史痕迹？→ vendor 原始码，仅作证据
+- 是供应商原始协议值？→ 由对应 Adapter 映射，同时保留原始证据
 
 ### 原则 2：只有稳定语义才允许标准化
 
-如果某个 vendor 数字码已经具备**明确、稳定、无歧义**的语义，可以直接前推到标准设备错误码。
+如果某个 vendor 数字码已经具备**明确、稳定、无歧义**的语义，对应 Adapter 可以显式映射到标准设备错误码。
 
-如果语义不清晰，就先补新的 `DeviceErrorCode`，而不是硬套到现有错误码。
+只有在至少两个已确认消费者中都成立、且跨厂商稳定的共享设备语义，才允许通过独立 TDD 变更补充
+`DeviceErrorCode`。具体厂商或具体业务线语义不得为了复用而提升到核心；它应保留在 Adapter 输出的类型化扩展结果
+和对应插件合同中。语义不清晰时必须 fail closed，不得硬套现有码或预建兼容枚举。
 
-### 原则 3：插件只看标准语义，不看 vendor 数字
+### 原则 3：插件只看规范化类型语义，不看 vendor 数字
 
 禁止：
+
 - `if error_code == "2002": ...`
 - `if error_code in {"1001", "1002"}: ...`
 
 允许：
+
 - `if error_code == DeviceErrorCode.PICK_AND_PUT_FAILED: ...`
-- `if error_code == DeviceErrorCode.INSPECTION_SIZE_NG: ...`
+- `if error_code == DeviceErrorCode.SCAN_FAILED: ...`
+- Adapter → 插件合同中的类型化“尺寸 NG”结果进入插件 NG 分支（该类型不属于核心枚举）。
 
 ### 原则 4：成功态也统一
 
 设备结果中的成功态统一使用：
+
 - `NONE`
 
-历史成功态如 `0` 只作为历史协议样例保留，不再作为当前标准输出。
+只有当前厂商合同明确声明的成功值，才由对应 Adapter 映射为 `NONE`，并作为原始证据保留。
 
-## 5. 正式迁移表
+## 5. Adapter 映射文档所有权
 
-> 说明：
-> - “立即替换”表示在**当前现行协议 / Mock / E2E / 当前文档**中应直接使用标准语义码。
-> - “历史保留”表示原数字码只保留在历史文档或历史日志中，不再作为当前协议输出。
-> - 下表是**迁移与治理依据**，不是要求插件运行时保留别名兼容。
+具体厂商映射必须满足：
 
-| 来源设备/协议 | 历史码 | 历史含义 | 标准语义码 | 标准层级 | 处置策略 | 备注 |
-| --- | --- | --- | --- | --- | --- | --- |
-| SMT 粗分机机械臂（现行协议治理前） | `0` | 无错误 | `NONE` | 标准设备错误码 | 立即替换 | 成功态统一哨兵值 |
-| SMT 粗分机机械臂 | `INSPECTION_SIZE_NG` | 尺寸检测 NG | `INSPECTION_SIZE_NG` | 标准设备错误码 | 保持不变 | 已经是标准语义码 |
-| SMT 粗分机机械臂 | `INSPECTION_THICKNESS_NG` | 厚度检测 NG | `INSPECTION_THICKNESS_NG` | 标准设备错误码 | 保持不变 | 已经是标准语义码 |
-| SMT 粗分机机械臂（历史数字码） | `2001` | 扫码异常 | `SCAN_FAILED` | 标准设备错误码 | 立即替换 | 表达“扫码执行失败”，而不是码内容非法 |
-| SMT 粗分机机械臂（历史数字码） | `2002` | 搬运失败 | `PICK_AND_PUT_FAILED` | 标准设备错误码 | 立即替换 | 语义是整次搬运失败，不能假装细分为 pick / place |
-| SMT 粗分机机械臂（历史数字码） | `2003` | 料箱已满 | `BIN_FULL` | 标准设备错误码 | 立即替换 | 语义稳定，可直接前推 |
-| SMT 粗分机机械臂（历史数字码） | `9999` | 未知错误 | `DEVICE_UNKNOWN_ERROR` | 标准设备错误码 | 立即替换 | 仅作设备侧未知失败兜底 |
-| SMT 流水线（现行协议治理前） | `1001` | 路径被阻挡 | `TARGET_BLOCKED` | 标准设备错误码 | 立即替换 | 属于现场/目标位阻挡 |
-| SMT 流水线（现行协议治理前） | `1002` | 移动失败 | `MOVE_FAILED` | 标准设备错误码 | 立即替换 | 属于流水线传输/移动执行失败 |
-| SMT 流水线（现行协议治理前） | `1003` | 设备故障 | `DEVICE_FAULT` | 标准设备错误码 | 立即替换 | 属于设备自身故障 |
-| SMT 分拣机 ECS 历史文档（2026-03-18） | `1001` | 目标位置被阻挡 | `TARGET_BLOCKED` | 标准设备错误码 | 历史保留 | 历史文档保留原貌；若重新启用集成，设备应直接输出标准语义码 |
-| SMT 分拣机 ECS 历史文档（2026-03-18） | `1002` | 取料失败 | `PICK_FAILED` | 标准设备错误码 | 历史保留 | 当前现行链路未使用该数字码 |
-| SMT 分拣机 ECS 历史文档（2026-03-18） | `1003` | 放料失败 | `PLACE_FAILED` | 标准设备错误码 | 历史保留 | 当前现行链路未使用该数字码 |
+- 放在对应 Adapter 包内，并引用 `docs/hardware/` 的原始供应商资料。
+- 与该 Adapter 的实现、DTO、fixture 和合同测试同所有者；没有 Adapter 实现时不得维护或发布映射表。
+- 核心与其他 Adapter 不得依赖具体厂商映射；具体厂商映射也不得提升为核心运行时规则。
 
 ## 6. 当前推荐口径
 
-### 6.1 设备和协议发送什么
+### 6.1 设备、Adapter 和测试分别输出什么
 
-现行设备协议、Mock、E2E 示例应直接发送：
-
-- `NONE`
-- `INSPECTION_SIZE_NG`
-- `INSPECTION_THICKNESS_NG`
-- `SCAN_FAILED`
-- `PICK_AND_PUT_FAILED`
-- `MOVE_FAILED`
-- `TARGET_BLOCKED`
-- `BIN_FULL`
-- `DEVICE_FAULT`
-- `DEVICE_UNKNOWN_ERROR`
-
-而不是发送：
-- `0`
-- `2001`
-- `2002`
-- `2003`
-- `9999`
-- `1001`
-- `1002`
-- `1003`
+- **真实设备协议**：发送厂商文档定义的原始错误码和 Payload；`docs/hardware/` 保持原样。
+- **厂商 Adapter**：校验厂商 DTO，输出 `DeviceErrorCode`，并把原始错误码保存在 evidence 中。
+- **核心无业务语义 fake**：直接产生 `DeviceErrorCode`，只验证核心持久化、幂等、传输和可靠性不变量。
+- **具体厂商 Mock/E2E**：复现厂商原始协议并验证 Adapter 映射，只随对应 Adapter 包交付，不进入核心默认测试。
 
 ### 6.2 插件消费什么
 
-插件逻辑只能消费 `DeviceErrorCode`。
+插件逻辑对共享设备失败只能消费 `DeviceErrorCode`；具体检测能力可以消费 Adapter 输出的显式类型化结果，但不得
+读取厂商原始数字码或把具体检测结果伪装成核心枚举。
 
 例如：
-- `INSPECTION_SIZE_NG` / `INSPECTION_THICKNESS_NG` → NG 业务分流
+
 - `SCAN_FAILED` / `PICK_AND_PUT_FAILED` / `BIN_FULL` / `DEVICE_FAULT` → `MANUAL_HOLD` 或其他明确人工介入路径
 - `MOVE_FAILED` → 硬件失败路径
+
+尺寸 NG、厚度 NG 等检测结果属于具体厂商与具体工作线合同：Adapter 负责输出对应类型化结果，插件负责据此进行
+NG 业务分流。除非后续证明它们是跨厂商共享语义并按 TDD 纳入核心，否则不得虚构核心
+`DeviceErrorCode` 成员。
 
 ### 6.3 日志保留什么
 
@@ -184,6 +179,7 @@
 ```
 
 注意：
+
 - `vendor_raw_error_code` 只能是证据字段
 - 插件业务逻辑不能基于它做分支
 
@@ -192,8 +188,8 @@
 | 场景 | 正确归类 | 示例错误码 |
 | --- | --- | --- |
 | `/callback/event` 缺少 `event_type` | 平台运行时错误码 | `CALLBACK_SCHEMA_INVALID` |
-| 能入站，但当前无法定位 Session | 平台运行时错误码 | `SESSION_CONTEXT_MISSING` / `SESSION_RESOLVE_FAILED` |
-| Outbox 派发设备请求失败 | 平台运行时错误码 | `OUTBOX_DISPATCH_FAILED` |
+| 能入站，但当前无法关联目标执行对象 | 平台运行时错误码 | 对象关联失败诊断码 |
+| `DeviceCommand` 发送失败 | 平台运行时错误码 | 命令传输失败诊断码 |
 | 设备长时间无结果 | 平台运行时错误码 | `DEVICE_TIMEOUT` |
 | 设备回调表示“搬运失败” | 标准设备错误码 | `PICK_AND_PUT_FAILED` |
 | 设备回调表示“料箱已满” | 标准设备错误码 | `BIN_FULL` |
@@ -203,36 +199,23 @@
 
 ### 必须做
 
-- 新插件只定义和消费 `DeviceErrorCode`
-- 当前联调文档和 Mock 直接输出标准语义码
-- 历史文档明确标注“历史参考、非当前标准”
-- 新增 vendor 码时，先判断是否需要补新的 `DeviceErrorCode`
+- 新插件只消费共享 `DeviceErrorCode` 或显式 Adapter → 插件类型化结果，不定义核心设备错误码
+- 每个厂商 Adapter 显式拥有 DTO、原始码映射、fixture 和合同测试
+- 核心 fake 与具体厂商 Mock/E2E 严格分开，不能互相替代测试所有权
+- 新增 vendor 码时，先核对厂商原文，再映射到既有共享语义或 Adapter 专属类型化结果；只有满足跨厂商共享条件
+  并完成 TDD 时才补核心 `DeviceErrorCode`
 
 ### 禁止做
 
 - 在插件逻辑中保留 vendor 数字码别名兼容
-- 在 registry / runtime / normalizer 中扩散数字码分支
+- 在核心、通用 normalizer 或业务插件中扩散厂商数字码分支
 - 把平台运行时错误码当作设备错误码使用
 - 把 vendor 原始数字码当作业务逻辑输入
 
 ## 9. 当前结论
 
-基于当前已知协议，以下映射已经满足“语义稳定、可以标准化”的条件：
+当前核心与插件体系只稳定坚持以下分层，不拥有任何具体厂商映射表：
 
-- `0` → `NONE`
-- `2001` → `SCAN_FAILED`
-- `2002` → `PICK_AND_PUT_FAILED`
-- `2003` → `BIN_FULL`
-- `9999` → `DEVICE_UNKNOWN_ERROR`
-- `1001`（流水线）→ `TARGET_BLOCKED`
-- `1002`（流水线）→ `MOVE_FAILED`
-- `1003`（流水线）→ `DEVICE_FAULT`
-- `1001`（历史 ECS）→ `TARGET_BLOCKED`
-- `1002`（历史 ECS）→ `PICK_FAILED`
-- `1003`（历史 ECS）→ `PLACE_FAILED`
-
-因此，当前插件体系可以稳定坚持：
-
-- **平台归因看运行时错误码**
-- **设备语义看 `DeviceErrorCode`**
-- **vendor 数字码只留在历史和证据层**
+- 平台归因：运行时错误码。
+- 共享设备失败语义：`DeviceErrorCode`；具体检测语义：显式 Adapter → 插件类型化合同。
+- vendor 数字码：只由对应 Adapter 解析，并保留在原始证据层。

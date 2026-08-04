@@ -16,6 +16,7 @@
 **Context:** 2026-06-11 TimescaleDB 审计确认：`wes_db` 中 `timescaledb_information.hypertables = 0`，`audit_logs` 无外键引用，现有索引包括 `opera_time`、`trace_id`、`username`、`(object_type, opera_time)`、`(action, opera_time)`、`(status, opera_time)`。TimescaleDB 要求 hypertable 上的 `PRIMARY KEY` / `UNIQUE` 索引必须包含分区列，因此不能直接对当前 `PRIMARY KEY(id)` 表执行 `create_hypertable`。
 
 **Scope:**
+
 - 架构收敛完成前实施时直接纳入最终 Alembic 基线；不得为现有开发/测试数据编写转换迁移
 - 将 `wes_sys.audit_logs` 按 `opera_time` 创建 hypertable，建议初始 `chunk_time_interval = 7 days`
 - 建模时避免 `pk_audit_logs` 和 `ix_wes_sys_audit_logs_id` 的唯一约束冲突：不使用 `PRIMARY KEY(id)` / `UNIQUE(id)`，保留普通 `id` 索引用于按 ID 查询
@@ -42,6 +43,7 @@
 **Context:** 生产当前为单 API 容器，4 Uvicorn worker；连接预算公式 `1×4×5 + 4×4×1 = 36` 中的 `1` 就是 API 容器副本数。扩容需要同步更新预算、Nginx 上游与 compose service 定义。
 
 **Scope:**
+
 - 移除 API service 的 `container_name` 和 host `ports` 映射
 - 增加 Nginx / Traefik / 内部负载均衡 service
 - 更新连接预算公式，使 `API_REPLICAS` 成为可配置变量
@@ -69,6 +71,7 @@
 具体插件 fixture 或业务场景。绑定向导只面向 WES 通用 WorkLine 配置能力，不读取插件包测试资产。
 
 **Scope:**
+
 - 按工作线模式和标准角色展示待绑定设备、位置容量及拓扑缺口
 - 支持从未绑定设备或当前 WorkLine 设备中选择/调整角色
 - 活动 `LineRunEpoch` 存在时只读展示，提示清线并结束当前 Epoch 后调整
@@ -96,9 +99,10 @@
 聚合到跨执行对象、Device、WMS 和 Database 的统一运营面。
 
 **Scope:**
+
 - InboundEvidence 接收/处理延迟、幂等冲突和失败数
 - DeviceCommand ACK age、CALLBACK age、dispatch deadline、设备 ERROR/OFFLINE/MAINTENANCE
-- TransportTask 成员进度、批次完成延迟和失败数
+- TransportTask 批次状态、终态成员最终事实、批次完成延迟和失败数
 - WmsConfirmation 待确认数量、最老年龄、重试次数和依赖恢复时间
 - 硬件故障、依赖暂停、人工清线和迟到 CALLBACK 证据
 - 聚合 WMS 同步调用、breaker、timeout/5xx、429/Retry-After 和业务拒绝信号
@@ -123,10 +127,13 @@
 **Context:** 手册应在最终合同稳定后从真实接口与回调样例生成，不引用旧 Runtime、WorkLineInbox、自动 replay 或兼容 Payload。
 
 **Scope:**
+
 - 设备角色、动作 payload、callback result/event 样例
 - 正常入库、NG、满箱/换架、设备失败、WMS/RCS 拒绝五类联调场景
-- command_code / event_id / trace_id / idempotency_key 使用约定
-- ECS 只 ACK Event_Push、WES 通过 Receive Command 下发后续动作的联调步骤
+- 稳定 `command_id`、厂商事件身份、`trace_id` 与核心关联键的使用约定；不得为厂商协议保留通用
+  `idempotency_key` 别名
+- ECS 同步 ACK 只表示请求接纳；后续动作由 WorkLine 插件产生封闭 Decision，经 `DeviceCommand` 与厂商
+  Adapter 下发，手册使用厂商真实接口名，不定义 WES 通用 `Event_Push` / `Receive Command` 端点
 - 进程重启后的证据核对、人工清线和新 LineRunEpoch 恢复步骤
 
 **Depends on:** 最终 DeviceCommand、external callback auth、WmsCapabilities 和入库业务合同稳定。
@@ -139,28 +146,6 @@
 
 ## Reliability
 
-### 最终核心执行对象测试承接
-
-**What:** 启动最小执行架构重构并交付最终生产对象后，执行
-`docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` 的 Task 5，把通用 WorkLine 与可靠性语义改写到最终核心对象测试。
-
-**Why:** 当前测试收敛批次只调整测试所有权、重量和门禁，不负责实现生产执行内核。入口对象未完整交付前直接删除混合测试，会丢失入站幂等、ACK/CALLBACK 分离、迟到证据、人工清线和投影约束等核心不变量；继续沿用旧 Runtime/Manifest 测试又会固化待删除架构。
-
-**Scope:**
-- 在最终 `InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch` 和设备/位置投影上建立权威核心测试
-- 覆盖 WorkLine 静态身份与拓扑、Epoch 版本冻结、人工清线、持久化后 ACK、幂等冲突、ACK/CALLBACK 分离、未知物理结果不自动重放及设备/位置投影
-- 纳入下方独立 TODO 定义的处理幂等与 CALLBACK fencing 验收
-- 权威测试通过后，返回测试收敛计划完成 Task 4 的混合测试处置和 Task 7 的最终缺席验收
-- 不实现具体工作线、插件或厂商业务测试；这些测试随对应 `workline_plugins/<plugin_key>/` 二次开发包交付
-
-**Depends on:** SPEC §14.3 工作包 2 已启动，且最终执行对象、设备/位置投影及其生产路径已经交付。本 TODO 不负责创建这些生产对象。
-
-**Effort:** M-L
-
-**Priority:** P1（执行架构重构配套任务）
-
----
-
 ### 全仓 Redis fail-open/fail-closed/fallback 审计
 
 **What:** 审计整个仓库所有 Redis 调用点，明确每个调用是 fail-open、fail-closed 还是带 fallback，并补齐缺失的降级或错误处理。
@@ -170,6 +155,7 @@
 **Context:** `src/database/redis_client.py` 已提供原子初始化和降级模式，但尚未覆盖全仓调用点。本 TODO 应输出一份调用点清单与每点的失败语义。
 
 **Scope:**
+
 - 列出所有 `RedisManager` / `redis_client` 调用点
 - 标注 fail-open（继续服务）/ fail-closed（报错拒绝）/ fallback（PostgreSQL advisory lock 等）
 - 对未标注或语义不一致的调用点补齐处理与测试
@@ -179,30 +165,6 @@
 **Effort:** M (human: ~1 day / CC: ~30 min)
 
 **Priority:** P3
-
-### WES 软件层处理幂等与 CALLBACK fencing
-
-**What:** 在执行内核落地两项 WES 软件层并发安全语义：(1) 处理幂等——同一 `InboundEvidence` 被并发 Handler 重复领取时不得重复创建 `DeviceCommand` 或重复推进投影；(2) CALLBACK fencing——CALLBACK 必须按 `command`/`execution`/`line`/`epoch` 关联键路由，旧 Epoch 的迟到 CALLBACK（人工清线并创建新 Epoch 后到达）只保存为证据，不得写入新对象或新 Epoch 投影。
-
-**Why:** 物理并发互锁归 ECS/PLC（SPEC §5.2/§8.1），但这两项是 WES 进程内与回调路由的软件层语义，ECS 不参与，写错会导致重复命令、双重状态推进或跨 Epoch 投影污染。
-
-**Context:** SPEC 将幂等、持久化证据和 ACK/CALLBACK 分离列为核心可靠性，并明确具体插件测试必须移出核心
-`tests/`。处理领取幂等和跨 Epoch CALLBACK fencing 是跨插件通用的 WES 基础能力，因此实现和测试均由核心
-执行对象工作包拥有，不随粗分机、自动分拣或其他具体插件包迁移。
-
-**Scope:**
-- 处理幂等：Handler 领取 `InboundEvidence` 时按幂等键 + 处理状态去重；同一证据并发领取只产生一个 `DeviceCommand`/一次投影推进
-- CALLBACK fencing：CALLBACK 携带并校验 `command`/`execution`/`line`/`epoch` 关联键；旧 Epoch 迟到 CALLBACK 只持久化为证据，不推进新对象状态
-- 在核心执行对象单元测试与核心 integration/concurrency 测试中分别验证处理幂等和 CALLBACK fencing；
-  测试名称和目录按最终对象命名，不使用具体插件、旧 Runtime 或 Manifest fixture
-
-**Depends on:** 最终 `InboundEvidence`、`DeviceCommand`、`LineRunEpoch` 对象与核心 Handler 调度路径交付。
-
-**Effort:** M (human: ~1 day / CC: ~30 min)
-
-**Priority:** P1（业务垂直切片硬性交接条件，Task 10/11 入口依赖）
-
----
 
 ### EXTERNAL_HTTP HMAC 认证与生产级验收
 
@@ -215,6 +177,7 @@
 生产 HTTPS 约束会降低安全边界，也会把具体 WMS 工作线/插件测试重新耦合进核心 `tests/`。
 
 **Scope:**
+
 - 明确 `isolated_lan` 与 `authenticated_network` 的认证、传输和失败语义，生产 Profile 继续强制 HTTPS
 - 实现 HMAC canonical request、凭据引用与轮换、timestamp 窗口、nonce 防重放、签名错误脱敏和审计证据
 - 建设独立 HTTPS acceptance 环境，验证正确签名、错误签名、过期时间戳、nonce 重放和密钥轮换

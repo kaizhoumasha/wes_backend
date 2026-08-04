@@ -16,10 +16,6 @@ OWNER_SENSITIVE_ROOTS = (
     Path("src/app/workline"),
     Path("src/app/runtime/capabilities/material_flow"),
 )
-DOC_PATHS = {
-    Path("docs/architecture/workline-and-plugin-restructuring.md"),
-    Path("docs/architecture/legacy-cleanup-matrix.md"),
-}
 MIGRATIONS_DIR = Path("migrations/versions")
 
 
@@ -28,7 +24,6 @@ def _token(*parts: str) -> str:
 
 
 _HANDLING_QUEUE_MEMBERSHIP_TABLE = _token("bin", "_", "transit", "_", "memberships")
-_WORKLINE_RUNTIME_STATUS_FIELD = _token("WorkLine", ".", "runtime_status")
 
 
 def _source(path: Path) -> str:
@@ -284,24 +279,3 @@ def test_runtime_query_and_trace_only_expose_runtime_status_snapshot() -> None:
         violations.extend(f"{rel_path}:{line}" for line in lines)
 
     assert not violations, "query/trace 应通过 runtime_status_snapshot 暴露兼容字段:\n  " + "\n  ".join(violations)
-
-
-def test_docs_do_not_describe_workline_runtime_status_as_state_owner() -> None:
-    """文档不得把 WorkLine 物理运行态字段描述为运行态事实归属。"""
-    forbidden_phrases = (
-        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 状态 owner",
-        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 运行状态 owner",
-        f"{_WORKLINE_RUNTIME_STATUS_FIELD} owner",
-        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 事实源",
-        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 权威",
-        "runtime_status 状态 owner",
-        "runtime_status 运行状态 owner",
-        "runtime_status owner",
-    )
-    violations: list[str] = []
-    for rel_path in sorted(DOC_PATHS):
-        for lineno, line in enumerate(_source(rel_path).splitlines(), start=1):
-            if any(phrase in line for phrase in forbidden_phrases):
-                violations.append(f"{rel_path}:{lineno}: {line.strip()}")
-
-    assert not violations, "文档必须描述为 runtime/orchestration 原生投影:\n  " + "\n  ".join(violations)

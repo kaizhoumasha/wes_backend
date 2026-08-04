@@ -1,4 +1,4 @@
-"""WES 核心测试与二次开发插件测试所有权门禁。"""
+"""WES 核心测试与二次开发 Adapter/插件测试所有权门禁。"""
 
 from __future__ import annotations
 
@@ -8,12 +8,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORE_TESTS_ROOT = REPO_ROOT / "tests"
+CORE_ADAPTER_TEST_ROOT = CORE_TESTS_ROOT / "device_adapters"
 CORE_PLUGIN_TEST_ROOT = CORE_TESTS_ROOT / "workline_plugins"
 LEGACY_EXTENSION_TEST_ROOT = CORE_TESTS_ROOT / "workline_runtime" / "extensions"
+SECONDARY_PACKAGE_ROOTS = ("device_adapters", "workline_plugins")
 
 
-def _secondary_plugin_imports(path: Path) -> set[str]:
-    """返回测试源码中对仓库根目录二次开发插件包的 import。"""
+def _secondary_package_imports(path: Path) -> set[str]:
+    """返回测试源码中对仓库根目录二次开发 Adapter/插件包的 import。"""
 
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     imports: set[str] = set()
@@ -22,19 +24,37 @@ def _secondary_plugin_imports(path: Path) -> set[str]:
             imports.update(
                 alias.name
                 for alias in node.names
-                if alias.name == "workline_plugins" or alias.name.startswith("workline_plugins.")
+                if any(alias.name == root or alias.name.startswith(f"{root}.") for root in SECONDARY_PACKAGE_ROOTS)
             )
         elif (
             isinstance(node, ast.ImportFrom)
             and node.module
-            and (node.module == "workline_plugins" or node.module.startswith("workline_plugins."))
+            and any(node.module == root or node.module.startswith(f"{root}.") for root in SECONDARY_PACKAGE_ROOTS)
         ):
             imports.add(node.module)
     return imports
 
 
+def test_secondary_package_import_scanner_covers_plugin_and_adapter_roots(tmp_path: Path) -> None:
+    source = tmp_path / "test_secondary_package_imports.py"
+    source.write_text(
+        "import workline_plugins.demo\nimport device_adapters.vendor\nfrom device_adapters.acme import Adapter\n",
+        encoding="utf-8",
+    )
+
+    assert _secondary_package_imports(source) == {
+        "device_adapters.acme",
+        "device_adapters.vendor",
+        "workline_plugins.demo",
+    }
+
+
 def test_core_test_tree_does_not_own_plugin_package_tests() -> None:
     assert not CORE_PLUGIN_TEST_ROOT.exists()
+
+
+def test_core_test_tree_does_not_own_adapter_package_tests() -> None:
+    assert not CORE_ADAPTER_TEST_ROOT.exists()
 
 
 def test_core_test_tree_does_not_restore_legacy_extension_platform_tests() -> None:
@@ -45,7 +65,7 @@ def test_core_tests_do_not_import_secondary_development_plugin_packages() -> Non
     offenders = {
         path.relative_to(REPO_ROOT).as_posix(): sorted(found)
         for path in CORE_TESTS_ROOT.rglob("*.py")
-        if (found := _secondary_plugin_imports(path))
+        if (found := _secondary_package_imports(path))
     }
 
     assert offenders == {}
@@ -57,14 +77,5 @@ def test_core_test_entrypoints_do_not_collect_or_map_secondary_plugin_packages()
     heavy_mapping = (REPO_ROOT / "docs/architecture/heavy-test-impact.toml").read_text(encoding="utf-8")
 
     assert pytest_options["testpaths"] == ["tests"]
+    assert "device_adapters/" not in heavy_mapping
     assert "workline_plugins/" not in heavy_mapping
-
-
-def test_governance_docs_publish_independent_plugin_test_ownership() -> None:
-    agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    test_guide = (CORE_TESTS_ROOT / "README.md").read_text(encoding="utf-8")
-
-    for source in (agents, test_guide):
-        assert "workline_plugins/<plugin_key>/" in source
-        assert "tests/workline_plugins/" in source
-        assert "核心" in source

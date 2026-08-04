@@ -7,7 +7,6 @@ from pathlib import Path
 
 from scripts.workline_inbox_retirement_guardrail import (
     ALLOWED_EVIDENCE,
-    CURRENT_DOC_FILES,
     find_legacy_references,
     main,
 )
@@ -22,31 +21,10 @@ LEGACY_FILES = (
     "src/app/runtime/orchestration/repositories/inbox_repository.py",
     "src/app/runtime/orchestration/services/inbox/inbox_service.py",
 )
-MACHINE_GATE_TEXT_SUFFIXES = frozenset({".py", ".sh", ".toml", ".yaml", ".yml"})
 
 
 def _find_legacy_references(*, repo_root: Path, roots: tuple[str, ...]) -> list[str]:
     return sorted({finding.path for finding in find_legacy_references(repo_root=repo_root, roots=roots)})
-
-
-def _find_runtime_inbox_plan_gate_references(repo_root: Path) -> list[str]:
-    candidates: set[Path] = set()
-    for root in ("scripts", "tests", ".github"):
-        root_path = repo_root / root
-        if root_path.is_dir():
-            candidates.update(
-                path for path in root_path.rglob("*") if path.is_file() and path.suffix in MACHINE_GATE_TEXT_SUFFIXES
-            )
-    candidates.update(path for path in repo_root.glob("Jenkinsfile*") if path.is_file())
-
-    offenders: list[str] = []
-    for path in sorted(candidates):
-        if path.resolve() == Path(__file__).resolve():
-            continue
-        source = path.read_text(encoding="utf-8")
-        if "docs/superpowers/" in source and "runtime-inbox" in source and ("/plans/" in source or "/specs/" in source):
-            offenders.append(str(path.relative_to(repo_root)))
-    return offenders
 
 
 def test_legacy_workline_inbox_surface_is_physically_removed() -> None:
@@ -78,18 +56,25 @@ def test_other_test_file_with_legacy_reference_is_still_rejected(tmp_path: Path)
     assert _find_legacy_references(repo_root=tmp_path, roots=("tests",)) == ["tests/api/test_legacy_reference.py"]
 
 
-def test_scanner_covers_active_python_shell_and_current_markdown(tmp_path: Path) -> None:
+def test_scanner_covers_active_python_and_shell(tmp_path: Path) -> None:
     fixtures = {
         "src/app/offender.py": "from somewhere import WorklineInbox",
         "scripts/offender.sh": "task=src.celery_app.tasks.workline.process_inbox_batch",
-        "docs/current.md": "SELECT * FROM wes_biz.workline_inbox",
     }
     for relative_path, content in fixtures.items():
         path = tmp_path / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-    assert _find_legacy_references(repo_root=tmp_path, roots=("src", "scripts", "docs")) == sorted(fixtures)
+    assert _find_legacy_references(repo_root=tmp_path, roots=("src", "scripts")) == sorted(fixtures)
+
+
+def test_scanner_does_not_treat_archive_named_source_directory_as_external_archive(tmp_path: Path) -> None:
+    offender = tmp_path / "src" / "archive" / "offender.py"
+    offender.parent.mkdir(parents=True)
+    offender.write_text("from somewhere import WorklineInbox", encoding="utf-8")
+
+    assert _find_legacy_references(repo_root=tmp_path, roots=("src",)) == ["src/archive/offender.py"]
 
 
 def test_scanner_rejects_case_path_and_concatenation_evasions(tmp_path: Path) -> None:
@@ -97,14 +82,13 @@ def test_scanner_rejects_case_path_and_concatenation_evasions(tmp_path: Path) ->
         "src/app/WorkLine_InBoX.py": "CURRENT = True",
         "src/app/concat.py": 'LEGACY = "Workline" + "Inbox"',
         "scripts/concat.sh": "legacy='process_'\"inbox_batch\"",
-        "docs/current.md": "`WES_BIZ.` + `WORKLINE_INBOX`",
     }
     for relative_path, content in fixtures.items():
         path = tmp_path / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-    assert _find_legacy_references(repo_root=tmp_path, roots=("src", "scripts", "docs")) == sorted(fixtures)
+    assert _find_legacy_references(repo_root=tmp_path, roots=("src", "scripts")) == sorted(fixtures)
 
 
 def test_scanner_folds_parenthesized_nested_and_static_fstring_references(tmp_path: Path) -> None:
@@ -148,21 +132,6 @@ def test_static_string_folding_does_not_evaluate_dynamic_values(tmp_path: Path) 
     assert find_legacy_references(repo_root=tmp_path, roots=("src",)) == []
 
 
-def test_archive_and_exact_migration_evidence_do_not_hide_neighbor_offender(tmp_path: Path) -> None:
-    archive = tmp_path / "docs/archive/history.md"
-    archive.parent.mkdir(parents=True)
-    archive.write_text("WorklineInbox", encoding="utf-8")
-    migration = tmp_path / "migrations/versions/retire_workline_inbox.py"
-    migration.parent.mkdir(parents=True)
-    migration.write_text('op.drop_table("workline_inbox")', encoding="utf-8")
-    neighbor = tmp_path / "migrations/versions/retire_workline_inbox_copy.py"
-    neighbor.write_text("from somewhere import WorklineInbox", encoding="utf-8")
-
-    assert _find_legacy_references(repo_root=tmp_path, roots=("docs", "migrations")) == [
-        "migrations/versions/retire_workline_inbox_copy.py"
-    ]
-
-
 def test_signature_allowlist_does_not_skip_other_legacy_reference_in_same_file(tmp_path: Path) -> None:
     evidence = tmp_path / "tests/deployment/test_runtime_inbox_celery_cutover.py"
     evidence.parent.mkdir(parents=True)
@@ -176,44 +145,6 @@ def test_signature_allowlist_does_not_skip_other_legacy_reference_in_same_file(t
     assert [(finding.path, finding.signature) for finding in findings] == [
         ("tests/deployment/test_runtime_inbox_celery_cutover.py", "legacy_symbol")
     ]
-
-
-def test_current_docs_are_explicit_files_and_never_archive_or_plan_prefixes() -> None:
-    required_current_docs = {
-        "docs/architecture/file_index.md",
-        "docs/architecture/runtime-ownership-map.md",
-        "docs/business/e2e_conveyor_plan.md",
-        "docs/business/workline_business_data_event_flow_spec.md",
-        "docs/business/workline_runtime_workflow_guide.md",
-        "docs/contracts/observability-contract.md",
-        "docs/architecture/adr/2026-05-26-wms-integration-domain.md",
-    }
-
-    assert required_current_docs <= set(CURRENT_DOC_FILES)
-    assert all(path.endswith(".md") for path in CURRENT_DOC_FILES)
-    assert all(
-        "/archive/" not in path and "/plans/" not in path and "/specs/" not in path for path in CURRENT_DOC_FILES
-    )
-
-
-def test_runtime_inbox_machine_gates_do_not_read_active_superpowers_plans_or_specs() -> None:
-    offenders = _find_runtime_inbox_plan_gate_references(REPO_ROOT)
-    assert not offenders, f"RuntimeInbox 机器门禁仍读取历史 plan/spec: {sorted(offenders)}"
-
-
-def test_runtime_inbox_machine_gate_scanner_covers_shell_and_ci_files(tmp_path: Path) -> None:
-    fixtures = {
-        "scripts/offender.sh": ("plan=docs/superpowers/plans/2026-07-10-runtime-inbox-single-source-of-truth.md"),
-        "Jenkinsfile.backend-ci": (
-            "spec='docs/superpowers/specs/2026-07-12-runtime-inbox-acceptance-closure-design.md'"
-        ),
-    }
-    for relative_path, content in fixtures.items():
-        path = tmp_path / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-
-    assert _find_runtime_inbox_plan_gate_references(tmp_path) == sorted(fixtures)
 
 
 def test_scanner_rejects_legacy_modules_without_workline_inbox_symbol(tmp_path: Path) -> None:
@@ -392,7 +323,6 @@ def test_scanner_accepts_dot_and_nested_parent_normalization_that_never_escape_r
 def test_equivalent_relative_dot_and_absolute_roots_keep_the_same_suffix_policy(tmp_path: Path) -> None:
     fixtures = {
         "scripts": ("offender.sh", "task=process_inbox_batch\n", "legacy_task_short"),
-        "docs": ("current.md", "WorklineInbox\n", "legacy_symbol"),
         "src": ("offender.py", "WorklineInbox\n", "legacy_symbol"),
         "tests": ("offender.py", "WorklineInbox\n", "legacy_symbol"),
     }
@@ -483,10 +413,6 @@ def test_scanner_rejects_broken_symlink_used_as_explicit_root(tmp_path: Path) ->
 
 def test_default_scan_rejects_broken_symlink_root(tmp_path: Path) -> None:
     (tmp_path / "src").symlink_to(tmp_path / "missing", target_is_directory=True)
-    for relative_path in CURRENT_DOC_FILES:
-        path = tmp_path / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# current\n", encoding="utf-8")
 
     findings = find_legacy_references(repo_root=tmp_path)
 
@@ -500,10 +426,6 @@ def test_default_scan_rejects_directory_symlink_root_before_traversal(tmp_path: 
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     (repo_root / "src").symlink_to(outside, target_is_directory=True)
-    for relative_path in CURRENT_DOC_FILES:
-        path = repo_root / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# current\n", encoding="utf-8")
 
     findings = find_legacy_references(repo_root=repo_root)
 
@@ -527,30 +449,7 @@ def test_scanner_reads_internal_file_symlink_but_reports_repository_path(tmp_pat
     assert [(finding.path, finding.signature) for finding in findings] == [("src/linked.py", "legacy_symbol")]
 
 
-def test_default_scan_fails_closed_when_all_current_docs_are_missing(tmp_path: Path) -> None:
-    findings = find_legacy_references(repo_root=tmp_path)
-
-    assert {finding.path for finding in findings} == set(CURRENT_DOC_FILES)
-    assert {finding.signature for finding in findings} == {"policy_error"}
-
-
-def test_default_scan_fails_closed_when_one_current_doc_is_missing(tmp_path: Path) -> None:
-    missing = CURRENT_DOC_FILES[-1]
-    for relative_path in CURRENT_DOC_FILES[:-1]:
-        path = tmp_path / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# current\n", encoding="utf-8")
-
-    findings = find_legacy_references(repo_root=tmp_path)
-
-    assert [(finding.path, finding.signature) for finding in findings] == [(missing, "policy_error")]
-
-
 def test_default_scan_reports_python_syntax_errors_but_explicit_fixture_scan_does_not(tmp_path: Path) -> None:
-    for relative_path in CURRENT_DOC_FILES:
-        path = tmp_path / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# current\n", encoding="utf-8")
     broken = tmp_path / "src/broken.py"
     broken.parent.mkdir(parents=True)
     broken.write_text("not valid python ???", encoding="utf-8")
@@ -563,11 +462,15 @@ def test_default_scan_reports_python_syntax_errors_but_explicit_fixture_scan_doe
 
 
 def test_main_emits_tsv_and_returns_one_for_policy_findings(tmp_path: Path, capsys) -> None:
+    offender = tmp_path / "src/offender.py"
+    offender.parent.mkdir()
+    offender.write_text("from somewhere import WorklineInbox", encoding="utf-8")
+
     status = main(["--format", "tsv"], repo_root=tmp_path)
 
     output = capsys.readouterr().out.splitlines()
     assert status == 1
-    assert len(output) == len(CURRENT_DOC_FILES)
+    assert len(output) == 1
     assert all(len(line.split("\t")) == 3 for line in output)
 
 
@@ -575,6 +478,9 @@ def test_cli_process_exits_one_for_policy_findings(tmp_path: Path) -> None:
     script = tmp_path / "scripts/workline_inbox_retirement_guardrail.py"
     script.parent.mkdir()
     shutil.copy(REPO_ROOT / "scripts/workline_inbox_retirement_guardrail.py", script)
+    offender = tmp_path / "src/offender.py"
+    offender.parent.mkdir()
+    offender.write_text("from somewhere import WorklineInbox", encoding="utf-8")
 
     completed = subprocess.run(
         [sys.executable, str(script), "--format", "tsv"],
@@ -584,21 +490,8 @@ def test_cli_process_exits_one_for_policy_findings(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 1
-    assert len(completed.stdout.splitlines()) == len(CURRENT_DOC_FILES)
+    assert len(completed.stdout.splitlines()) == 1
     assert completed.stderr == ""
-
-
-def test_e2e_current_code_list_assigns_loader_to_runtime_inbox_bridge() -> None:
-    source = (REPO_ROOT / "docs/business/e2e_conveyor_plan.md").read_text(encoding="utf-8")
-
-    assert "RuntimeInboxProcessorBridge.process_claimed" in source
-    assert "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py" in source
-    task_entry, bridge_entry = source.split("src/celery_app/tasks/runtime_inbox.py", maxsplit=1)[1].split(
-        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py",
-        maxsplit=1,
-    )
-    assert "_load_related_entities" not in task_entry
-    assert "_load_related_entities" in bridge_entry
 
 
 def test_scanner_rejects_retired_processor_and_consumer_symbols(tmp_path: Path) -> None:

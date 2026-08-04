@@ -31,7 +31,8 @@ async def test_replay_missing_inbox_returns_not_found_response(monkeypatch: pyte
 
     # Regression: ISSUE-002 — replay invalid id returned code 5000.
     # Found by /qa on 2026-04-27
-    # Report: .gstack/qa-reports/qa-report-localhost-2026-04-27.md
+    # Historical report: project sibling ../archive_docs/wes_backend/local-artifacts/.gstack/
+    # qa-reports/qa-report-localhost-2026-04-27.md
     monkeypatch.setattr(operation_api, "workline_operation_service", _OperationServiceStub())
 
     response = await operation_api.replay_inbox(
@@ -180,7 +181,8 @@ async def test_manual_missing_session_returns_not_found_response(monkeypatch: py
 
     # Regression: ISSUE-002 — manual operation invalid id returned code 5000.
     # Found by /qa on 2026-04-27
-    # Report: .gstack/qa-reports/qa-report-localhost-2026-04-27.md
+    # Historical report: project sibling ../archive_docs/wes_backend/local-artifacts/.gstack/
+    # qa-reports/qa-report-localhost-2026-04-27.md
     monkeypatch.setattr(operation_api, "workline_operation_service", _OperationServiceStub())
 
     response = await operation_api.create_manual_operation(

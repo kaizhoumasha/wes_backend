@@ -6,7 +6,7 @@
 
 ## 架构设计
 
-```
+```text
 BaseRepository[T]
     ↓
 UserRepository(BaseRepository[User])
@@ -29,7 +29,7 @@ user_repo = BaseRepository[User](User)
 
 # CRUD 操作
 user = await user_repo.get_by_id(db, 1)
-users = await user_repo.get_list(db)
+total, users = await user_repo.get_list(db)
 new_user = await user_repo.create(db, {"username": "test", "email": "test@example.com"})
 ```
 
@@ -66,8 +66,7 @@ active_users = await user_repo.get_active_users(db)
 |------|------|------|
 | `get_by_id(db, id)` | 根据 ID 查询 | `await repo.get_by_id(db, 1)` |
 | `get_by_field(db, field_name, value)` | 根据字段查询 | `await repo.get_by_field(db, "username", "admin")` |
-| `get_list(db, limit, offset, filters, sort)` | 获取记录列表 | `await repo.get_list(db, limit=10)` |
-| `get_paginated(db, page, page_size)` | 分页查询 | `await repo.get_paginated(db, page=1, page_size=10)` |
+| `get_list(db, limit, offset, filters, sort)` | 获取总数与记录列表 | `total, items = await repo.get_list(db, limit=10)` |
 | `exists(db, **kwargs)` | 检查是否存在 | `await repo.exists(db, username="admin")` |
 | `count(db, where_clauses)` | 统计数量 | `await repo.count(db, where_clauses=[User.is_active])` |
 
@@ -80,7 +79,10 @@ active_users = await user_repo.get_active_users(db)
 | `delete(db, id)` | 删除记录 | `await repo.delete(db, 1)` |
 | `bulk_create(db, items)` | 批量创建 | `await repo.bulk_create(db, [{"name": "test1"}, {"name": "test2"}])` |
 
-## 实际应用示例
+## 概念示例
+
+以下 `Product`、`Order` 仅用于说明 Repository 扩展方式，不代表当前领域模型或项目内已存在模块。实现时必须替换为
+当前领域对象，并遵循 API → Service → Repository → Database 分层。
 
 ### 示例 1: Product Repository
 

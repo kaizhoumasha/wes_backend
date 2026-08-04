@@ -85,6 +85,10 @@ pipeline {
                     env.SOURCE_BRANCH = sourceBranch
                     env.CI_COMMIT_SHA = fullCommit
                     env.CI_IMAGE = "wes-backend-ci:${env.BUILD_NUMBER}-${shortCommit}"
+                    env.RUNTIME_VALIDATION_IMAGE = "wes-backend-runtime-check:${env.BUILD_NUMBER}-${shortCommit}"
+                    env.MOCK_ECS_IMAGE = "wes-mock:${env.BUILD_NUMBER}-${shortCommit}-ecs"
+                    env.MOCK_WMS_IMAGE = "wes-mock:${env.BUILD_NUMBER}-${shortCommit}-wms"
+                    env.HEAVY_COMPOSE_PROJECT = "wes-backend-heavy-${env.EXECUTOR_NUMBER}-${env.BUILD_NUMBER}-${shortCommit}"
                     env.IMAGE_REPOSITORY = "${env.REGISTRY_HOST}/${env.IMAGE_NAMESPACE}"
                     env.IMMUTABLE_IMAGE_TAG = "${sourceBranch}-${env.BUILD_NUMBER}-${shortCommit}".replaceAll(/[^A-Za-z0-9_.-]/, '-')
                     env.PUBLISH_IMAGE = 'false'
@@ -116,7 +120,7 @@ pipeline {
                                 env.CHANNEL_IMAGE_TAG = 'prod'
                                 env.DEPLOY_NAME = 'production'
                                 env.DEPLOY_ENV_FILE = '.env.prod'
-                                env.DEPLOY_SERVICES = 'api celery celery-wms-fulfillment celery_beat flower'
+                                env.DEPLOY_SERVICES = 'api celery celery-wms-fulfillment celery_beat flower nginx'
                                 env.DEPLOY_CONTAINER_NAME = 'wes_api_prod'
                                 env.DEPLOY_REQUIRED_CONTAINERS = 'wes_postgres_prod wes_redis_prod'
                                 break
@@ -300,7 +304,7 @@ pipeline {
                                 set -e
                                 docker run --rm \
                                     ${CI_IMAGE} \
-                                    sh -c 'uv run pytest tests/scripts -q'
+                                    sh -c 'uv run --no-sync pytest tests/scripts -q'
                             '''
                             echo '✅ HEAVY selector 合同验证通过'
                         }
@@ -309,24 +313,137 @@ pipeline {
             }
         }
 
-        stage('Build Runtime Image') {
+        stage('Mock Image Contracts') {
             when {
                 expression {
-                    env.PUBLISH_IMAGE == 'true'
+                    env.CI_IS_MERGE_REQUEST == 'true'
                 }
             }
             steps {
                 script {
-                    echo "🐳 构建运行时镜像: ${env.RUNTIME_IMAGE}"
+                    echo '🐳 验证 Mock 镜像入口合同...'
                     sh '''
-                        set -e
-                        docker build \
-                            --target ${RUNTIME_BUILD_TARGET} \
-                            -t ${RUNTIME_IMAGE} \
-                            -t ${CHANNEL_IMAGE} \
-                            .
+                        set -eu
+                        docker build -f tests/mock/Dockerfile -t ${MOCK_ECS_IMAGE} -t ${MOCK_WMS_IMAGE} .
+                        docker run --rm ${MOCK_ECS_IMAGE} python -c 'import ecs_mock_server'
+                        docker run --rm ${MOCK_WMS_IMAGE} python -c 'import wms_mock_server'
+                        docker run --rm \
+                            -e WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS=2.5 \
+                            -e WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS=30.5 \
+                            -e WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.5 \
+                            ${MOCK_WMS_IMAGE} \
+                            python -c "import asyncio; import wms_mock_server as module; contract=asyncio.run(module.northbound_contract()); assert contract['status_visibility_sla_seconds'] == 2.5; assert contract['submit_deadline_seconds'] == 30.5; assert contract['status_deadline_seconds'] == 2.5"
                     '''
+                    echo '✅ Mock 镜像入口合同通过'
+                }
+            }
+            post {
+                always {
+                    sh '''
+                        docker image rm -f ${MOCK_ECS_IMAGE} ${MOCK_WMS_IMAGE} >/dev/null 2>&1 || true
+                    '''
+                }
+            }
+        }
+
+        stage('HEAVY Required') {
+            when {
+                expression {
+                    env.CI_IS_MERGE_REQUEST == 'true' && env.CI_TARGET_BRANCH?.trim()
+                }
+            }
+            steps {
+                script {
+                    echo '🧭 选择并执行本次合并请求受影响的核心 HEAVY 测试...'
+                    sh '''
+                        set -eu
+                        mkdir -p reports
+
+                        docker run --rm \
+                            -e CI_TARGET_BRANCH="${CI_TARGET_BRANCH}" \
+                            -v "$WORKSPACE/.git:/app/.git:ro" \
+                            ${CI_IMAGE} \
+                            sh -c 'git config --global --add safe.directory /app && uv run --no-sync scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"' \
+                            > reports/heavy-tests.txt
+
+                        if [ ! -s reports/heavy-tests.txt ]; then
+                            echo '本次差异未选择核心 HEAVY 测试。'
+                            exit 0
+                        fi
+
+                        docker compose \
+                            -f docker-compose.ci-heavy.yml \
+                            --env-file .env.test \
+                            --project-name "${HEAVY_COMPOSE_PROJECT}" \
+                            up -d --wait
+                        docker run --rm \
+                            --env-file "$WORKSPACE/.env.test" \
+                            --network "${HEAVY_COMPOSE_PROJECT}_default" \
+                            -e RUN_WORKLINE_INTEGRATION=1 \
+                            -v "$WORKSPACE/reports/heavy-tests.txt:/artifacts/heavy-tests.txt:ro" \
+                            -v "$WORKSPACE/reports:/reports" \
+                            ${CI_IMAGE} \
+                            sh -c '
+                                set -eu
+                                export INTEGRATION_DATABASE_URL="postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+                                export INTEGRATION_REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/0"
+                                uv run --no-sync alembic upgrade head
+                                uv run --no-sync scripts/run_selected_heavy_tests.py /artifacts/heavy-tests.txt /reports/heavy-required.xml
+                            '
+                    '''
+                    echo '✅ 受影响的核心 HEAVY 测试通过'
+                }
+            }
+            post {
+                always {
+                    junit testResults: 'reports/heavy-required.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'reports/heavy-tests.txt,reports/heavy-required.xml', allowEmptyArchive: true
+                    sh '''
+                        docker compose \
+                            -f docker-compose.ci-heavy.yml \
+                            --env-file .env.test \
+                            --project-name "${HEAVY_COMPOSE_PROJECT}" \
+                            down --volumes --remove-orphans >/dev/null 2>&1 || true
+                    '''
+                }
+            }
+        }
+
+        stage('Build Runtime Image') {
+            steps {
+                script {
+                    if (env.PUBLISH_IMAGE == 'true') {
+                        echo "🐳 构建运行时镜像: ${env.RUNTIME_IMAGE}"
+                        sh '''
+                            set -e
+                            docker build \
+                                --target ${RUNTIME_BUILD_TARGET} \
+                                -t ${RUNTIME_IMAGE} \
+                                -t ${CHANNEL_IMAGE} \
+                                .
+                        '''
+                    } else {
+                        echo "🐳 验证生产镜像构建: ${env.RUNTIME_VALIDATION_IMAGE}"
+                        sh '''
+                            set -e
+                            docker build \
+                                --target ${RUNTIME_BUILD_TARGET} \
+                                -t ${RUNTIME_VALIDATION_IMAGE} \
+                                .
+                        '''
+                    }
                     echo '✅ 运行时镜像构建完成'
+                }
+            }
+            post {
+                always {
+                    script {
+                        if (env.PUBLISH_IMAGE != 'true' && env.RUNTIME_VALIDATION_IMAGE?.trim()) {
+                            sh '''
+                                docker image rm -f ${RUNTIME_VALIDATION_IMAGE} >/dev/null 2>&1 || true
+                            '''
+                        }
+                    }
                 }
             }
         }
@@ -390,9 +507,6 @@ pipeline {
                             cd ${DEPLOY_PATH}
 
                             echo -e "${GREEN}📥 更新部署清单...${NC}"
-                            PREVIOUS_COMMIT=$(git rev-parse HEAD)
-                            echo "📌 当前提交: $PREVIOUS_COMMIT"
-
                             git fetch origin
                             git checkout --detach ${CI_COMMIT_SHA}
                             echo -e "${GREEN}📌 新提交: $(git log -1 --oneline)${NC}"
@@ -415,45 +529,43 @@ pipeline {
                             export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"
                             COMPOSE_CMD="docker compose -f docker-compose.yml -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE}"
                             HEALTH_ENDPOINT='http://127.0.0.1:8001/health'
-                            MIGRATION_APPLIED=false
+                            SCHEMA_INITIALIZED=false
                             DEPLOYMENT_HEALTHY=false
 
-                            # celery_worker 已重命名为 celery。首次升级必须按 Compose 标签清理旧服务容器，
-                            # 避免遗留 Worker 在破坏性迁移期间继续访问数据库或消费默认队列。
-                            remove_legacy_celery_worker() {
+                            # schema 初始化前按 Compose project 静默全部应用容器，仅保留数据库和 Redis。
+                            # 通过 project/service 标签识别可覆盖任意服务重命名或删除，不维护旧服务名兼容清单。
+                            quiesce_compose_application_containers() {
                                 compose_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "${DEPLOY_ENV_FILE}" | tail -n 1)
                                 compose_project_name=${compose_project_name:-$(basename "$PWD")}
-                                legacy_worker_ids=$(docker ps -aq \
-                                    --filter "label=com.docker.compose.project=${compose_project_name}" \
-                                    --filter "label=com.docker.compose.service=celery_worker")
+                                application_container_ids=$(docker ps -q \
+                                    --filter "label=com.docker.compose.project=${compose_project_name}")
 
-                                for legacy_worker_id in $legacy_worker_ids; do
-                                    echo -e "${YELLOW}🧹 清理遗留 celery_worker 容器: ${legacy_worker_id}${NC}"
-                                    docker rm -f "$legacy_worker_id"
+                                for container_id in $application_container_ids; do
+                                    compose_service=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id")
+                                    case "$compose_service" in
+                                    db|redis|nginx)
+                                        ;;
+                                        *)
+                                            echo -e "${YELLOW}⏸️  停止应用容器: ${compose_service} (${container_id})${NC}"
+                                            docker stop "$container_id"
+                                            ;;
+                                    esac
                                 done
-
-                                if docker ps -aq \
-                                    --filter "label=com.docker.compose.project=${compose_project_name}" \
-                                    --filter "label=com.docker.compose.service=celery_worker" | grep -q .; then
-                                    echo -e "${RED}❌ 遗留 celery_worker 容器仍然存在，禁止执行迁移${NC}"
-                                    return 1
-                                fi
                             }
 
-                            # 迁移成功后的任意失败都必须停止新应用，覆盖容器部分启动、testing 数据同步和健康检查失败。
+                            # 当前 schema 初始化后的任意失败都必须停止应用，覆盖容器部分启动、数据同步和健康检查失败。
                             cleanup_failed_deploy() {
                                 exit_code=$?
-                                remove_legacy_celery_worker || true
-                                if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]; then
-                                    echo -e "${YELLOW}⚠️  迁移后部署未完成，停止 API/Worker/Beat；禁止自动切回旧镜像${NC}"
-                                    $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat || true
+                                if [ "$SCHEMA_INITIALIZED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]; then
+                                    echo -e "${YELLOW}⚠️  当前 schema 初始化后部署未完成，停止当前应用进程并等待前向修复${NC}"
+                                    $COMPOSE_CMD stop ${DEPLOY_SERVICES} || true
                                 fi
                                 docker logout ${REGISTRY_HOST} >/dev/null 2>&1 || true
                                 return $exit_code
                             }
                             trap cleanup_failed_deploy EXIT
 
-                            # 始终由目标镜像中的唯一容量脚本读取 live PostgreSQL；失败由 set -e 阻断应用启动或回滚。
+                            # 始终由目标镜像中的唯一容量脚本读取 live PostgreSQL；失败由 set -e 阻断应用启动。
                             run_capacity_guard() {
                                 $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment
                             }
@@ -495,15 +607,13 @@ pipeline {
                                 --compose-file ${DEPLOY_COMPOSE_FILE} \
                                 --env-file ${DEPLOY_ENV_FILE}
 
-                            # 本版本包含 RuntimeInbox 破坏性切换。迁移前必须停止所有可能访问旧表的
-                            # API/Worker/Beat；迁移使用目标镜像的一次性 CLI 容器，不能依赖尚未启动的 API。
-                            echo -e "${GREEN}⏸️  静默应用进程，准备数据库迁移...${NC}"
-                            remove_legacy_celery_worker
-                            $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat
+                            # 只允许目标镜像在静默应用进程后初始化当前 schema；不提供旧 schema 兼容或降级流程。
+                            echo -e "${GREEN}⏸️  静默应用进程，准备初始化当前 schema...${NC}"
+                            quiesce_compose_application_containers
 
-                            echo -e "${GREEN}🗄️  使用目标镜像运行数据库迁移...${NC}"
+                            echo -e "${GREEN}🗄️  使用目标镜像初始化当前 schema...${NC}"
                             $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api alembic upgrade head
-                            MIGRATION_APPLIED=true
+                            SCHEMA_INITIALIZED=true
 
                             echo -e "${GREEN}⚙️  启动新容器...${NC}"
                             $COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES} || {
@@ -534,26 +644,29 @@ pipeline {
                             if [ "$HEALTH_CHECK_PASSED" = false ]; then
                                 echo -e "${RED}❌ 健康检查失败，停止新应用进程...${NC}"
                                 $COMPOSE_CMD logs --tail=100 api
-                                echo -e "${YELLOW}⚠️  数据库迁移已执行，禁止自动切回旧镜像；请按 Runbook 执行前向修复或已核准的数据恢复${NC}"
+                                echo -e "${YELLOW}⚠️  当前 schema 初始化后部署未完成，停止当前应用进程并等待前向修复${NC}"
                                 exit 1
                             fi
 
                             echo -e "${GREEN}🧭 校验 Celery 运行时...${NC}"
                             CELERY_HEALTH_TIMEOUT_SECONDS="${CELERY_HEALTH_TIMEOUT_SECONDS:-120}"
-                            # testing 不部署 Beat；仅校验当前环境实际启动的 Celery 服务。
+                            # 先校验全部受管服务均已运行，再对当前环境实际启动的 Celery 服务执行深度健康检查。
                             for service_name in ${DEPLOY_SERVICES}; do
-                                case "$service_name" in
-                                celery|celery-wms-fulfillment|celery_beat)
-                                    service_container_ids=$($COMPOSE_CMD ps -q "$service_name")
-                                    if [ -z "$service_container_ids" ]; then
-                                        echo -e "${RED}❌ ${service_name} 容器未就绪${NC}"
+                                service_container_ids=$($COMPOSE_CMD ps -q "$service_name")
+                                if [ -z "$service_container_ids" ]; then
+                                    echo -e "${RED}❌ ${service_name} 容器未就绪${NC}"
+                                    exit 1
+                                fi
+                                for container_id in $service_container_ids; do
+                                    if [ "$(docker inspect -f '{{.State.Running}}' "$container_id")" != "true" ]; then
+                                        echo -e "${RED}❌ ${service_name} 容器未就绪: $container_id${NC}"
                                         exit 1
                                     fi
+                                done
+
+                                case "$service_name" in
+                                celery|celery-wms-fulfillment|celery_beat)
                                     for container_id in $service_container_ids; do
-                                        if [ "$(docker inspect -f '{{.State.Running}}' "$container_id")" != "true" ]; then
-                                            echo -e "${RED}❌ ${service_name} 容器未就绪: $container_id${NC}"
-                                            exit 1
-                                        fi
                                         container_health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")
                                         health_deadline=$(( $(date +%s) + CELERY_HEALTH_TIMEOUT_SECONDS ))
                                         while [ "$container_health" != "healthy" ] && [ "$container_health" != "none" ]; do
@@ -638,6 +751,6 @@ pipeline {
 //   4. develop 分支推送 immutable + develop 镜像并自动部署 testing
 //   5. main 分支推送 immutable + prod 镜像并自动部署 production
 //   6. 部署机确保基础设施健康，并对完整 API/Celery 目标拓扑执行 live PostgreSQL 容量门禁
-//   7. 门禁通过后停止旧 API/Worker/Beat，并用目标镜像的一次性 CLI 容器执行迁移
-//   8. 迁移成功后拉起应用，并以 --no-build/--no-deps 方式启动后端应用服务
-//   9. 健康检查失败时停止新应用；破坏性迁移后禁止自动切回旧镜像
+//   7. 门禁通过后停止应用进程，并用目标镜像的一次性 CLI 容器初始化当前 schema
+//   8. schema 初始化成功后以 --no-build/--no-deps 方式启动后端应用服务
+//   9. 健康检查失败时停止当前应用并等待前向修复

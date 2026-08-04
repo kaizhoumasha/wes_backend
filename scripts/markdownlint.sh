@@ -7,7 +7,7 @@ if [[ $# -eq 0 ]]; then
 Usage: scripts/markdownlint.sh PATH [PATH...]
 
 Examples:
-  scripts/markdownlint.sh docs/architecture/workline-and-plugin-restructuring.md
+  scripts/markdownlint.sh docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
   scripts/markdownlint.sh README.md docs/architecture/
 EOF
     exit 2

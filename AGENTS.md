@@ -119,7 +119,39 @@ __all__ = ["XxxService", "xxx_service"]
 - ✅ 简短伪代码或极短示例，用于说明约定
 - ✅ 验证命令、测试场景和通过标准
 
-实现细节应在编码阶段通过 TDD、diff、测试和提交体现，而不是塞进规划文档。
+非纯文档实现的细节应在编码阶段通过 TDD、diff、测试和提交体现，而不是塞进规划文档。
+
+### Documentation-only Changes
+
+纯文档变更指人类阅读文档（包括 `.md`、`.mdx`、`.rst`、`.txt`、`.docx`、`.pdf`）的新增、修改、移动、
+归档或删除，且不改变生产代码、测试工具、机器可读配置或可执行合同。
+
+**STRICTLY FORBIDDEN**:
+
+- ❌ 纯文档变更使用 TDD，或为其新增、修改 pytest/测试代码
+- ❌ 测试或质量门禁读取、解析、断言人类阅读文档的正文、标题、路径清单、链接、状态或措辞
+- ❌ 为保持既有“文档测试”通过而保留兼容字段、转发文档、占位文件或重复真源
+
+纯文档变更只做与文档本身相称的验证，例如格式检查、链接/引用检查、归档目标存在性、项目内原路径缺席和
+`git diff --check`；不得为这些验证编写测试代码。代码与文档混合变更时，仅代码行为部分遵循 TDD 和测试要求。
+
+位于 `docs/` 下但被程序或 CI 读取的 `.toml`、`.csv`、`.yaml`、`.yml`、`.json` 等机器可读文件属于配置或
+可执行合同，不属于纯文档；其解析和行为仍可通过测试约束。
+
+---
+
+## Documentation Archiving
+
+归档文档必须移出项目目录，避免历史设计继续被检索或误认为当前真源。
+
+- 统一归档到项目根目录同级的 `../archive_docs/<project_name>/`；本项目使用
+  `../archive_docs/wes_backend/`。
+- 项目内不得保留归档文件的副本、占位文件、软链接或转发文档；Git 中只保留原文件的删除记录。
+- 归档前必须更新或删除项目内的当前态引用；确需历史追溯时，只记录外部归档位置，并明确其不属于当前架构真源。
+- 移动前必须确认目标路径不存在；保留原文件名和完整内容，不得覆盖已有归档。发生重名时先确定新的唯一归档名。
+- `docs/hardware/` 保存硬件厂商提供的原始协议和联调资料，属于有价值的外部输入，不按历史设计归档。
+  厂商原文应保持原貌；当前架构边界、字段归一化和实现约束必须写入架构合同或 Adapter/插件文档，不能反向改写
+  厂商原始资料。厂商资料不是 WES 核心架构真源，也不得用来替代核心能力测试。
 
 ---
 
@@ -179,6 +211,7 @@ user_api = BaseAPI(
 
 | Document | Path | Content |
 |----------|------|---------|
+| Software Requirements Specification | `docs/architecture/SRS.md` | Product scope, actor responsibilities, functional and non-functional requirements |
 | Project File Index | `docs/architecture/file_index.md` | Code structure, directory docs, quick find, response codes |
 | Architecture Details | `.claude/context/architecture.md` | Layered architecture, Hook/Mixin system, status validation, JWT/RBAC |
 | Development Rules | `.claude/context/rules.md` | Layer rules, Service calls, module export, timezone rules |
@@ -259,7 +292,7 @@ When modifying existing code, **preserve all valuable comments** — they are cr
 ```
 
 ## Testing Guidelines
-Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. Add unit tests near the affected domain and cover both success and failure paths.
+Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 除纯文档变更外，新增或修改行为时应在受影响领域附近补充测试，并覆盖成功和失败路径。
 
 ### Test Suite Governance
 
@@ -267,23 +300,25 @@ Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 
 
 测试治理硬约束：
 
-- 必须先建立目标对象测试并通过，再删除对应旧测试；不得反向。
+- 必须先建立目标对象测试并通过，再删除对应旧测试；不得反向。清理“人类阅读文档内容测试”不需要承接测试，按 `NONE` 删除。
 - 同一行为只能有一个主要测试所有者。
 - 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径，或明确标注 `NONE`。
 - 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
 - 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；重测试边界由目录位置和 `norecursedirs` 共同保证。
 - WES 核心 `tests/` 只验证 SPEC 定义的最小执行内核、通用 WorkLine 能力、共享外部合同和可靠性不变量。
-- 具体工作线、具体插件和具体厂商行为测试必须位于 `workline_plugins/<plugin_key>/tests/`，并与该插件的 `pyproject.toml`、`src/` 和 `fixtures/` 同工作包交付。
-- 核心仓库不得存在 `tests/workline_plugins/`，核心测试不得导入根目录二次开发插件包或具体插件实现。
-- 插件测试不得进入核心默认 pytest、核心覆盖率、核心质量门禁或核心 HEAVY selector。
+- 具体工作线和业务插件测试必须位于 `workline_plugins/<plugin_key>/tests/`，并与该插件的 `pyproject.toml`、`src/` 和 `fixtures/` 同包交付。
+- 具体厂商 DTO、认证差异、wire Payload、原始码映射和合同行为测试必须位于
+  `device_adapters/<adapter_key>/tests/`，并与该 Adapter 的 `pyproject.toml`、`src/` 和 `fixtures/` 同包交付。
+- 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；核心测试不得导入根目录二次开发 Adapter/插件包。
+- Adapter/插件测试不得进入核心默认 pytest、核心覆盖率、核心质量门禁或核心 HEAVY selector。
 
 **STRICTLY FORBIDDEN**:
 - ❌ 在 `tests/` 根目录新增 `test_*.py`
 - ❌ 把 integration / e2e / resilience / load / mock 测试混入默认快速回归集
 - ❌ 为了快速通过门禁删除有业务价值的断言或失败路径覆盖
 - ❌ 把 API facade 测试写成 service / repository / projection / orchestrator 大杂烩
-- ❌ 把具体工作线或插件测试改名后放入 contracts / runtime / integration / e2e 等核心目录
-- ❌ 创建只有测试、没有对应插件代码和 fixture 的二次开发插件包
+- ❌ 把具体工作线、插件或厂商 Adapter 测试改名后放入 contracts / runtime / integration / e2e 等核心目录
+- ❌ 创建只有测试、没有对应 Adapter/插件代码和 fixture 的二次开发包
 - ❌ 新增超过 `3000` 行的测试文件；单文件超过 `1000` 行必须优先拆分或说明原因
 
 **Required placement**:
@@ -294,6 +329,7 @@ Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 
 - `tests/core/`, `tests/database/`, `tests/sys/`, `tests/api_auth/`, `tests/deployment/`, `tests/utils/`: 对应基础设施或领域边界
 - `tests/integration/`, `tests/e2e/`, `tests/resilience/`, `tests/load/`, `tests/mock/`: 显式运行的重测试目录，默认 pytest 不收集
 - `workline_plugins/<plugin_key>/tests/`: 具体插件独立测试树，不属于核心 `tests/`，由插件包自己的 Pytest 配置和 CI 运行
+- `device_adapters/<adapter_key>/tests/`: 具体厂商 Adapter 独立测试树，不属于核心 `tests/`，由 Adapter 包自己的 Pytest 配置和 CI 运行
 
 **Required verification for test changes**:
 ```bash
