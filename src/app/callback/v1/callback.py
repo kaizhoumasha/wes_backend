@@ -18,9 +18,11 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from src.app.callback.models import (
     CallbackEventIngressResponse,
+    CallbackEventRequest,
     CallbackExternalIngressResponse,
     CallbackExternalRequest,
     CallbackHTTPExceptionResponse,
@@ -29,6 +31,7 @@ from src.app.callback.models import (
 from src.app.callback.services import callback_ingress_service
 from src.app.callback.services.callback_ingress_service import _read_request_json
 from src.app.callback.services.wms_inbound_auth import WmsInboundAuthPolicy
+from src.app.device.models import CommandCallbackResult
 from src.core.api_security import RequireAPIPermission, require_api_auth, verify_api_auth
 from src.core.logger import logger
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
@@ -37,6 +40,31 @@ from src.database.dependencies import AsyncSessionDep, CacheDep
 from src.utils.audit import get_request_id
 
 router = APIRouter()
+
+
+def _required_json_request_body(schema_model: type[BaseModel]) -> dict[str, Any]:
+    """为自行读取原始请求体的 callback 路由补齐 OpenAPI JSON 合同。"""
+
+    schema = schema_model.model_json_schema()
+    definitions = schema.pop("$defs", {})
+    for property_schema in schema.get("properties", {}).values():
+        reference = property_schema.pop("$ref", None)
+        if reference is None:
+            continue
+        definition_name = reference.removeprefix("#/$defs/")
+        property_schema.update({**definitions[definition_name], **property_schema})
+
+    return {
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    # OpenAPI 根文档无法解析嵌套 schema 的 #/$defs 引用，因此在此内联直接字段定义。
+                    "schema": schema,
+                }
+            },
+        }
+    }
 
 
 def _enqueue_runtime_inbox_processing() -> None:
@@ -107,6 +135,7 @@ for _conditional_callback_auth_dependency in (_require_callback_event_auth, _req
         Depends(RequireAPIPermission("api:callback:result")),
     ],
     description="设备完成指令后，调用此接口回传执行结果",
+    openapi_extra=_required_json_request_body(CommandCallbackResult),
 )
 async def callback_result(
     request: Request,
@@ -136,6 +165,7 @@ async def callback_result(
     summary="设备事件上报",
     dependencies=[Depends(_require_callback_event_auth)],
     description=("设备发生状态变更或传感器触发业务信号时，通过当前 callback ingress 合同上报事件"),
+    openapi_extra=_required_json_request_body(CallbackEventRequest),
 )
 async def callback_event(
     request: Request,
@@ -165,16 +195,7 @@ async def callback_event(
     summary="外部系统回调",
     dependencies=[Depends(_require_callback_external_auth)],
     description="WMS 状态查询提示、库位分配、AGV 等外部系统异步回调入口",
-    openapi_extra={
-        "requestBody": {
-            "required": True,
-            "content": {
-                "application/json": {
-                    "schema": CallbackExternalRequest.model_json_schema(),
-                }
-            },
-        }
-    },
+    openapi_extra=_required_json_request_body(CallbackExternalRequest),
 )
 async def callback_external(
     request: Request,
