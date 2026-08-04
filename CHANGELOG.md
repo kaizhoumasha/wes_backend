@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1.0] - 2026-08-04
+
+### Added
+- 建立 WES 架构收敛总控计划与 Phase 1 验收基线，明确顶层 SPEC、阶段边界、测试所有权及后续阶段承接关系。
+- 新增 FAST、QUALITY、HEAVY 分层门禁、受影响 HEAVY 选择器及独立 CI 执行链路，使核心快速回归与真实服务测试保持隔离。
+
+### Changed
+- 当前架构文档、SRS、开发入口和 CI 说明统一指向现役真源；历史设计移至项目外归档，硬件厂商原始资料保持原貌。
+- 默认测试治理收紧为核心通用能力验收，具体工作线、业务插件和厂商 Adapter 测试由各自独立包负责。
+- FAST 单例预算放宽为 3 秒，并以机器门禁约束总时长、慢用例和重测试目录边界。
+
+### Fixed
+- 修复 HEAVY 选择器在重命名、删除、内容指纹、测试目标和纯注释 runtime 文件上的 fail-closed 行为，确保所有生产候选都有精确映射或经评审的 NONE 结论。
+- 恢复 WMS Q19 阶段原子边界，并补齐 callback OpenAPI 请求体的必填、自包含 Schema 与公开示例合同。
+- 清理 runtime 过渡模型中的历史真源表述，避免当前代码继续引导到已退役设计。
+
+### Removed
+- 删除项目内的历史规格、计划、报告、失效流水线入口、旧测试平台与业务专属测试资产，不保留兼容占位或转发文档。
+
+### Verification
+- QUALITY：3236 passed、4 skipped；受影响 HEAVY：38 passed；Phase 1 计划门禁 7/7 完成，预发布审查未发现问题。
+
 ## [0.21.0.0] - 2026-08-03
 
 ### Added
