@@ -752,6 +752,9 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/contracts/__init__.py", ()),
         ("src/app/device/models/command.py", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         ("src/app/device/models/device.py", (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,)),
+        ("src/app/runtime/orchestration/__init__.py", ()),
+        ("src/app/runtime/orchestration/execution_correlation.py", ()),
+        ("src/app/runtime/orchestration/execution_session.py", ()),
         ("src/app/runtime/orchestration/enums.py", ()),
         ("src/app/runtime/orchestration/models/session.py", (RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,)),
         ("src/app/runtime/orchestration/models/timeline.py", ()),
@@ -1194,8 +1197,6 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/app/sys/repositories/outbox_repository.py",
         "src/app/sys/models/outbox.py",
         "src/app/runtime/orchestration/device_runtime_projection.py",
-        "src/app/runtime/orchestration/execution_correlation.py",
-        "src/app/runtime/orchestration/execution_session.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
         "src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py",
         "src/app/runtime/orchestration/runtime_inbox.py",
@@ -1267,6 +1268,9 @@ def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> Non
 @pytest.mark.parametrize(
     "changed_path",
     [
+        "src/app/runtime/orchestration/__init__.py",
+        "src/app/runtime/orchestration/execution_correlation.py",
+        "src/app/runtime/orchestration/execution_session.py",
         "src/app/runtime/orchestration/enums.py",
         "src/app/runtime/orchestration/models/timeline.py",
     ],
