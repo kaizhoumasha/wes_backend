@@ -104,6 +104,10 @@ log_step() {
 
 run_tool() {
     if command -v uv >/dev/null 2>&1; then
+        if [[ "$CI_MODE" == "true" ]]; then
+            uv run --no-sync "$@"
+            return
+        fi
         uv run "$@"
         return
     fi

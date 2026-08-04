@@ -59,9 +59,11 @@ def test_heavy_compose_does_not_publish_or_reuse_deployment_resources() -> None:
 
 def test_ci_image_commands_never_resolve_dependencies_at_runtime() -> None:
     jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    quality_gate_text = (REPO_ROOT / "scripts" / "git-quality-gate.sh").read_text(encoding="utf-8")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
 
-    assert "uv run --no-sync pytest tests/scripts -q" in jenkins_text
+    assert 'if [[ "$CI_MODE" == "true" ]]; then' in quality_gate_text
+    assert 'uv run --no-sync "$@"' in quality_gate_text
     assert "uv run --no-sync scripts/select_heavy_tests.py" in heavy_body
     assert "uv run --no-sync alembic upgrade head" in heavy_body
     assert "uv run --no-sync scripts/run_selected_heavy_tests.py" in heavy_body

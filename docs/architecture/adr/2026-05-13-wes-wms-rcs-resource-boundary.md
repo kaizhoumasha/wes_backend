@@ -22,7 +22,9 @@ Accepted - 2026-05-13
 3. 满箱交换 v1 中，WES 不锁定五层货架空箱，不本地判断交换区空位，不交换两个容器库存属性。WES 只提交 `wms.fulfillment.full_box_exchange@v1`，并以 typed ACK、status query 与 typed terminal result 收敛结果。
 4. 生产发料、Pick_Fail、退料和入库确认中，WES 不自动扣减库存。WES 记录设备失败和诊断，将当前具体执行对象标记为硬件故障或依赖停顿，并等待 WMS 确认、拒绝或人工授权。
 5. E08–E14 的提交响应只产生 typed ACK，WES 通过 status query 取得 typed terminal result；可选 `WMS_EFFECT_STATUS_HINT` 只唤醒查询，不携带终态，也不直接推进资源投影。
-6. WMS 四类普通事件与 `WMS_EFFECT_STATUS_HINT` 统一走 `/api/v1/callback/external`。`/api/v1/callback/event` 保留给设备事件；同一个运行时任务不得建立平行终态入口。
+6. WMS 四类普通事件走 `/api/v1/callback/event`，`WMS_EFFECT_STATUS_HINT` 走
+   `/api/v1/callback/external`。两类输入都必须先持久化为 `InboundEvidence` 再 ACK；普通事件不得作为
+   `TransportTask` 终态，状态提示只能唤醒对应查询，不得建立平行终态入口。
 7. `ResourceStateEvent` 是 append-only 事实账本；`RackPlacement`、`RackBinMount`、`RackMaterialMount` 是当前关系投影。冲突、乱序、迟到或缺字段只能追加 evidence，并将具体执行对象进入安全停顿或人工清线，不能静默覆盖。
 
 ## WMS 异步 EFFECT 证据合同
@@ -39,7 +41,8 @@ E08–E14 的终态权威链固定为 typed ACK → status query → typed termi
 ## 目标外部请求规则
 
 1. 插件需要同步 WMS 事实时，只通过注入的 `WmsCapabilities` 发起类型化查询，不暴露 HTTP 或 Provider DTO。
-2. 改变 WMS 业务状态的确认由封闭 Decision 创建 `WmsConfirmation`；其持久化、幂等、重试和证据由确认发送器拥有。
+2. 改变 WMS 业务状态的确认由封闭 Decision 创建 `WmsConfirmation`；确认对象拥有义务持久化、`dispatch_key`、
+   领取、幂等、重试、恢复和生命周期证据，确认发送器只负责一次同步 HTTP 调用及该次调用证据。
 3. AGV/CTU 搬运、交换、旋转或补给需求由 Decision 创建 `TransportTask`；任务自身拥有 `dispatch_key`、业务目标、超时、ACK/status 和终态证据。
 4. ECS 设备动作只通过 `DeviceCommand` 执行，不与 `TransportTask` 或 `WmsConfirmation` 共用通用 Intent/Effect/Outbox 状态机。
 5. 超时、ACK 耗尽、迟到终态或 payload hash 冲突不得绕过具体对象 owner 推进投影；必须保留 evidence 并进入硬件故障、依赖停顿或人工清线。

@@ -73,7 +73,7 @@ HTTP method、path template、请求/结果 model 和稳定拒绝码由北向合
 
 ## 3. 入站普通事件
 
-普通业务事件进入 callback event 入口，持久化为 `InboundEvidence` 后立即 ACK，不能直接完成业务确认或搬运任务：
+普通业务事件进入 `/api/v1/callback/event`，持久化为 `InboundEvidence` 后立即 ACK，不能直接完成业务确认或搬运任务：
 
 - `WMS_GRN_RECEIVED`
 - `WMS_PALLET_ARRIVED`
@@ -85,7 +85,8 @@ HTTP method、path template、请求/结果 model 和稳定拒绝码由北向合
 
 ## 4. 异步状态提示
 
-`WMS_EFFECT_STATUS_HINT` 只适用于 E08–E14。提示只携带 `operation_identity`、`dispatch_key`、
+`WMS_EFFECT_STATUS_HINT` 只通过 `/api/v1/callback/external` 接收并适用于 E08–E14。提示只携带
+`operation_identity`、`dispatch_key`、
 `source_event_id` 和 `occurred_at`。`dispatch_key` 是该操作从 submit、ACK、status、terminal、cancel 到 hint
 全链路唯一 wire 幂等键；合同不定义 `idempotency_key` 别名或双键映射。提示只负责持久化 evidence 并唤醒
 对应 `TransportTask`；不能

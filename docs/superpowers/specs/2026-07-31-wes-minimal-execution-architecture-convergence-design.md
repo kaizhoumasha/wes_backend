@@ -216,6 +216,10 @@ WMS 业务能力由薄封装层提供：
 - 工作线插件只依赖类型化 `WmsCapabilities`，不直接访问 HTTP。
 - WMS 结果是业务事实，不伪装成 ECS ACK/CALLBACK。
 
+WMS 四类普通业务事件通过 `/api/v1/callback/event` 接收，`WMS_EFFECT_STATUS_HINT` 通过
+`/api/v1/callback/external` 接收。两类输入都必须先持久化为 `InboundEvidence` 再 ACK；普通事件只触发对应
+工作线对象判定，状态提示只唤醒匹配的 `TransportTask` 查询，二者都不得直接充当外部任务终态。
+
 每项 WMS 能力采用一个垂直模块，模块内聚 request/result DTO、固定 method/path、稳定拒绝码和
 `WmsCallSpec`。公共 Protocol 与 Gateway 只提供显式窄方法；不得建立公共 generic `call`、生产运行时
 capability registry、动态发现或 WMS codegen。新增、优化或删除能力时，开发者只修改该能力模块、对应端口方法、

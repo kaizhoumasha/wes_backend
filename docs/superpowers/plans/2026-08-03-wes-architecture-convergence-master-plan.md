@@ -49,6 +49,13 @@ Alembic、Celery、Pydantic、Pytest 9、Ruff、Bandit、Import Linter、Jenkins
 - 阶段实施在同一架构收敛集成分支上连续进行；除已于基线前合入的阶段 1 外，不把中间双轨态或未完成收敛态合并回 `develop`。
 - 每个阶段的提交必须保持对应测试和质量门禁为绿色；禁止提交 intentional failing test、长期 `xfail`、测试别名或为暂存旧实现而新增的兼容资产。
 
+### 当前交付范围
+
+本九阶段计划只交付顶层 SPEC §3.1 已确认的粗分机、自动分拣、人工分拣、满箱交换和复杂出库能力。
+SRS §3.5 特殊物料、机构件/SFC 协同及 §3.6 生产退料属于保留的未来产品需求，不进入 Phase 5/6 或 Phase 9
+验收，也不得据此预建空插件、Adapter 或扩展平台。真实工作线、厂商合同和交付批次明确后，先修订顶层 SPEC
+与本文，再新增对应的独立业务插件和厂商 Adapter 计划。
+
 ---
 
 ## 1. 总控模型
@@ -365,7 +372,8 @@ request/ACK/status/terminal/cancel DTO、七组 submit/status 方法、一个 ca
 
 ## 11. Phase 9：最终基线与系统验收
 
-**Objective:** 从干净环境证明核心平台、每个厂商 Adapter、每个业务插件、数据库基线、部署装配和全部缺席门禁共同满足 SPEC。
+**Objective:** 从干净环境证明核心平台、当前 SPEC 范围内的厂商 Adapter 与业务插件、数据库基线、部署装配和
+全部缺席门禁共同满足目标架构。
 
 **Required child plan:** `docs/superpowers/plans/2026-08-03-wes-final-architecture-acceptance.md`
 
@@ -379,7 +387,8 @@ request/ACK/status/terminal/cancel DTO、七组 submit/status 方法、一个 ca
 - [ ] 以真实或验收级 WMS/ECS/RCS Adapter 验证共享合同，不把具体插件验收回写核心。
 - [ ] 验证部署配置只能装配最终平台和明确选择的 Adapter/插件，不存在运行时动态发现或旧 fallback。
 - [ ] 验证 uv workspace 锁定、各 Adapter/插件独立构建产物、客户镜像安装清单和 composition root 绑定完全一致。
-- [ ] 核对 SRS、SPEC、插件开发指南、当前 ADR、TODO 和运维文档的当前态一致性；SRS 继续作为需求基线保留，只有被取代的历史设计移出项目归档。
+- [ ] 核对 SRS、SPEC、插件开发指南、当前 ADR、TODO 和运维文档的当前态一致性；SRS 继续作为产品需求基线
+  保留，但未来需求不得计入当前验收或驱动推测性实现，只有被取代的历史设计移出项目归档。
 
 **Core verification floor:**
 
@@ -396,8 +405,8 @@ rtk uv run alembic upgrade head
 
 插件的准确验证命令由对应插件计划和包内 `pyproject.toml` 固定；核心验收不得代替任何插件验收。
 
-**Exit gate:** SPEC §15 全部验收标准通过；测试收敛计划 Task 7 全部完成；不存在旧架构、
-旧迁移、兼容路径、核心插件测试污染或未验收插件；最终结果可以合并回 `develop`。
+**Exit gate:** SPEC §15 全部验收标准通过；测试收敛计划 Task 7 全部完成；不存在旧架构、旧迁移、兼容路径、
+核心插件测试污染或当前交付范围内的未验收插件；最终结果可以合并回 `develop`。
 
 ## 12. 阶段变更规则
 

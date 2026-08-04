@@ -13,7 +13,13 @@ def test_test_topology_check_runs_core_secondary_package_ownership_guardrails() 
     assert "test-topology)" in quality_gate
 
 
-def test_jenkins_architecture_stage_runs_test_topology_check() -> None:
+def test_jenkins_runs_canonical_quality_profile_without_partial_duplicates() -> None:
     jenkinsfile = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
 
-    assert "./scripts/git-quality-gate.sh --check test-topology --ci" in jenkinsfile
+    assert (
+        "./scripts/git-quality-gate.sh --profile quality --bandit-json /app/reports/bandit-report.json --ci"
+    ) in jenkinsfile
+    assert "./scripts/git-quality-gate.sh --check test-topology --ci" not in jenkinsfile
+    assert "pytest tests/ -v --tb=short" not in jenkinsfile
+    assert "pytest tests/api/test_signature.py" not in jenkinsfile
+    assert "uv run --no-sync pytest tests/scripts -q" not in jenkinsfile

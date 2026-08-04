@@ -155,160 +155,28 @@ pipeline {
             }
         }
 
-        stage('Quality Checks') {
-            parallel {
-                stage('Format Check') {
-                    steps {
-                        script {
-                            echo '🔍 检查代码格式 (Ruff Format)...'
-                            sh '''
-                                set -e
-                                docker run --rm \
-                                    ${CI_IMAGE} \
-                                    sh -c './scripts/git-quality-gate.sh --check format --ci'
-                            '''
-                            echo '✅ 代码格式检查通过'
-                        }
-                    }
-                }
-
-                stage('Lint Check') {
-                    steps {
-                        script {
-                            echo '🔍 检查代码质量 (Ruff Lint)...'
-                            sh '''
-                                set -e
-                                docker run --rm \
-                                    ${CI_IMAGE} \
-                                    sh -c './scripts/git-quality-gate.sh --check lint --ci'
-                            '''
-                            echo '✅ 代码质量检查通过'
-                        }
-                    }
-                }
-
-                stage('Security Check') {
-                    steps {
-                        script {
-                            echo '🔍 安全检查 (Bandit)...'
-                            sh '''
-                                set -e
-                                mkdir -p reports
-                                docker run --rm \
-                                    -v "$WORKSPACE/reports:/artifacts/reports" \
-                                    ${CI_IMAGE} \
-                                    sh -c './scripts/git-quality-gate.sh --check security --bandit-json /artifacts/reports/bandit-report.json --ci'
-                            '''
-                            echo '✅ 安全检查完成'
-                        }
-                    }
-                    post {
-                        always {
-                            archiveArtifacts artifacts: 'reports/bandit-report.json', allowEmptyArchive: true
-                        }
-                    }
-                }
-
-                stage('Architecture Guardrails') {
-                    steps {
-                        script {
-                            echo '🔍 架构护栏检查 (§7.5 不变量)...'
-                            // 默认 enforced；可用 ARCHITECTURE_GUARDRAIL_MODE=warn 临时回退。
-                            sh '''
-                                set -e
-                                docker run --rm \
-                                    -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
-                                    ${CI_IMAGE} \
-                                    sh -c './scripts/git-quality-gate.sh --check architecture --ci && ./scripts/git-quality-gate.sh --check test-topology --ci'
-                            '''
-                            echo '✅ 架构护栏检查完成'
-                        }
-                    }
+        stage('Quality Gate') {
+            steps {
+                script {
+                    echo '🔍 运行唯一 QUALITY 门禁入口...'
+                    // 默认 enforced；可用 ARCHITECTURE_GUARDRAIL_MODE=warn 临时回退。
+                    sh '''
+                        set -e
+                        mkdir -p reports
+                        docker run --rm \
+                            --env-file "$WORKSPACE/.env.test" \
+                            -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
+                            -v "$WORKSPACE/reports:/app/reports" \
+                            ${CI_IMAGE} \
+                            sh -c './scripts/git-quality-gate.sh --profile quality --bandit-json /app/reports/bandit-report.json --ci'
+                    '''
+                    echo '✅ QUALITY 门禁通过'
                 }
             }
-        }
-
-        stage('Tests') {
-            parallel {
-                stage('Unit Tests') {
-                    steps {
-                        script {
-                            echo '🧪 运行单元测试...'
-                            sh '''
-                                set -e
-                                mkdir -p reports/coverage
-                                docker run --rm \
-                                    --env-file "$WORKSPACE/.env.test" \
-                                    -v "$WORKSPACE/reports:/artifacts/reports" \
-                                    ${CI_IMAGE} \
-                                    sh -c '
-                                        mkdir -p /artifacts/reports/coverage && \
-                                        pytest tests/ -v --tb=short \
-                                            --cov=src \
-                                            --cov-report=term-missing \
-                                            --cov-report=html:/artifacts/reports/coverage \
-                                            --cov-report=xml:/artifacts/reports/coverage.xml \
-                                            --junitxml=/artifacts/reports/junit.xml
-                                    '
-                            '''
-                            echo '✅ 单元测试通过'
-                        }
-                    }
-                    post {
-                        always {
-                            junit 'reports/junit.xml'
-                            script {
-                                if (fileExists('reports/coverage/index.html')) {
-                                    try {
-                                        publishHTML([
-                                            allowMissing: false,
-                                            alwaysLinkToLastBuild: true,
-                                            keepAll: true,
-                                            reportDir: 'reports/coverage',
-                                            reportFiles: 'index.html',
-                                            reportName: 'Coverage Report'
-                                        ])
-                                    } catch (Throwable error) {
-                                        echo "⚠️ 跳过 HTML 覆盖率发布: ${error.getMessage()}"
-                                    }
-                                } else {
-                                    echo '⚠️ 未找到 HTML 覆盖率报告，跳过 publishHTML'
-                                }
-                            }
-                            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
-                        }
-                    }
-                }
-
-                stage('API Signature Tests') {
-                    steps {
-                        script {
-                            echo '🔐 测试 API 签名认证...'
-                            sh '''
-                                set -e
-                                docker run --rm \
-                                    --env-file "$WORKSPACE/.env.test" \
-                                    ${CI_IMAGE} \
-                                    sh -c 'pytest tests/api/test_signature.py -v --tb=short'
-                            '''
-                            echo '✅ API 签名测试通过'
-                        }
-                    }
-                }
-
-                stage('HEAVY Selector Smoke') {
-                    steps {
-                        script {
-                            echo '🧭 验证 HEAVY selector 合同...'
-                            sh '''
-                                set -e
-                                docker run --rm \
-                                    ${CI_IMAGE} \
-                                    sh -c 'uv run --no-sync pytest tests/scripts -q'
-                            '''
-                            echo '✅ HEAVY selector 合同验证通过'
-                        }
-                    }
+            post {
+                always {
+                    junit testResults: 'reports/fast-tests.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
                 }
             }
         }

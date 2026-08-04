@@ -1093,8 +1093,7 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
     jenkinsfile = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
     quality_gate = (REPO_ROOT / "scripts/git-quality-gate.sh").read_text(encoding="utf-8")
 
-    assert "stage('HEAVY Selector Smoke')" in jenkinsfile
-    assert "uv run --no-sync pytest tests/scripts -q" in jenkinsfile
+    assert "./scripts/git-quality-gate.sh --profile quality" in jenkinsfile
     assert "stage('HEAVY Required')" in jenkinsfile
     assert "git config --global --add safe.directory /app" in jenkinsfile
     assert 'uv run --no-sync scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"' in jenkinsfile

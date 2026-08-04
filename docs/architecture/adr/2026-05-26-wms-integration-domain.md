@@ -21,10 +21,11 @@ Accepted - 2026-05-26
 7. WMS 连续超时或 5xx 触发熔断。超时、断路器打开和 5xx 映射为封闭 outcome 中的
    `WmsDependencyFailure`，调用方依据显式 `retryable` 和 `retry_after_seconds` 决定当前具体执行对象的依赖停顿/重试并保留诊断证据。
    只有无效本地配置、缺失依赖注入、程序错误或 evidence 基础设施失败抛出明确异常。
-8. WMS/RCS 回调统一通过 `/api/v1/callback/external`，最小包络校验和字段标准化由 `wms_integration` 提供；
-   接收成功后先持久化为有限类型 `InboundEvidence` 并返回 ACK，再交给对应的 `TransportTask` 或工作线对象 owner
-   异步推进；callback API 不直接修改业务状态。`WMS_EFFECT_STATUS_HINT` 只唤醒匹配的 `TransportTask` 查询，
-   返回同步终态的 `WmsConfirmation` 不消费 callback。
+8. WMS 四类普通业务事件通过 `/api/v1/callback/event` 接收，`WMS_EFFECT_STATUS_HINT` 通过
+   `/api/v1/callback/external` 接收；最小包络校验和字段标准化由 `wms_integration` 提供。接收成功后先持久化为
+   有限类型 `InboundEvidence` 并返回 ACK，再交给对应工作线对象或 `TransportTask` owner 异步处理；callback API
+   不直接修改业务状态。状态提示只唤醒匹配的 `TransportTask` 查询，返回同步终态的 `WmsConfirmation` 不消费
+   callback。
 
 ## 后果
 

@@ -57,6 +57,25 @@ def test_selected_heavy_runner_accepts_executed_tests(tmp_path: Path) -> None:
     assert status == 0
 
 
+def test_selected_heavy_runner_rejects_when_any_manifest_file_collects_nothing(tmp_path: Path) -> None:
+    module = _load_runner_module()
+    manifest_path = _write_selected_test(tmp_path, body="def test_selected():\n    assert True\n")
+    empty_test_path = tmp_path / "tests" / "integration" / "test_empty.py"
+    empty_test_path.write_text("VALUE = 1\n", encoding="utf-8")
+    manifest_path.write_text(
+        "tests/integration/test_empty.py\ntests/integration/test_selected.py\n",
+        encoding="utf-8",
+    )
+
+    status = module.run_selected_heavy_tests(
+        manifest_path=manifest_path,
+        junit_path=tmp_path / "selected-tests.xml",
+        repo_root=tmp_path,
+    )
+
+    assert status == 2
+
+
 def test_selected_heavy_runner_ignores_deselecting_pytest_addopts(tmp_path: Path, monkeypatch) -> None:
     manifest_path = _write_selected_test(
         tmp_path,

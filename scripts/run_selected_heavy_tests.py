@@ -50,6 +50,27 @@ def run_selected_heavy_tests(*, manifest_path: Path, junit_path: Path, repo_root
     # 选出的 HEAVY 文件必须完整执行；拒绝继承会通过 -k/-m 缩小收集面的外部 addopts。
     pytest_environment = os.environ.copy()
     pytest_environment.pop("PYTEST_ADDOPTS", None)
+    for selected_test in selected_tests:
+        collect_result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-o",
+                "addopts=",
+                "--",
+                selected_test,
+            ],
+            cwd=repo_root,
+            check=False,
+            env=pytest_environment,
+        )
+        if collect_result.returncode != 0:
+            print(f"selected HEAVY 文件未收集到可执行测试: {selected_test}", file=sys.stderr)
+            return INVALID_RESULT_STATUS
+
     result = subprocess.run(  # noqa: S603
         [
             sys.executable,

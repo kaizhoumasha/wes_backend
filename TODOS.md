@@ -165,27 +165,3 @@
 **Effort:** M (human: ~1 day / CC: ~30 min)
 
 **Priority:** P3
-
-### EXTERNAL_HTTP HMAC 认证与生产级验收
-
-**What:** 在后续安全加固批次中实现并验收 WES `EXTERNAL_HTTP` 出站 HMAC 认证，包括凭据轮换、签名校验、
-时间窗口、nonce 防重放和生产 HTTPS 传输。当前测试收敛与最小执行架构批次暂不实现 HMAC，也不以 HMAC live
-验收作为进入实施或合并的前置条件。
-
-**Why:** HMAC 属于通用外部 HTTP 安全能力，但当前本地 WMS acceptance 只提供 HTTP；直接复用
-`authenticated_network` 生产 Profile 会被既有 HTTPS fail-closed 门禁正确拒绝。为让旧 live 用例通过而放宽
-生产 HTTPS 约束会降低安全边界，也会把具体 WMS 工作线/插件测试重新耦合进核心 `tests/`。
-
-**Scope:**
-
-- 明确 `isolated_lan` 与 `authenticated_network` 的认证、传输和失败语义，生产 Profile 继续强制 HTTPS
-- 实现 HMAC canonical request、凭据引用与轮换、timestamp 窗口、nonce 防重放、签名错误脱敏和审计证据
-- 建设独立 HTTPS acceptance 环境，验证正确签名、错误签名、过期时间戳、nonce 重放和密钥轮换
-- 核心测试只保留协议无关的 WES 安全合同；具体 WMS 操作、路径和 payload 验收随对应插件二次开发包交付
-- 当前分支已从核心 `tests/` 移除原 WMS HMAC live 验收；后续只在本 TODO 或具体插件二次开发包中恢复对应测试
-
-**Depends on:** `EXTERNAL_HTTP` 基础调用合同稳定，HTTPS acceptance 证书与凭据注入方案明确；具体插件测试完成所有权迁移。
-
-**Effort:** M (human: ~1 day / CC: ~30 min)
-
-**Priority:** P3
