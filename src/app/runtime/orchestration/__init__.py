@@ -1,6 +1,6 @@
-"""runtime/orchestration 域核心实体。
+"""当前总控计划 §9 待清理的 runtime/orchestration 过渡实体。
 
-主计划 §9.2 7 个 runtime core 实体:
+现存 7 个 runtime core 实体：
 1. ExecutionSession
 2. ExecutionCorrelation
 3. ExecutionWorkItem
@@ -9,7 +9,7 @@
 6. RuntimeHold
 7. RuntimeIntentLog
 
-设计约束 (主计划 §9.2 + §3.5 + target-state-contract.md §4.6):
+现存过渡模型约束（当前总控计划 §9 清理范围；目标边界见顶层 SPEC §6.1）：
 - execution_session_id 仅在 runtime/orchestration 域内强 FK; 跨域只持
   ExecutionCorrelation.correlation_id (无 session FK 泄漏)
 - 对象级 work item 不被 session 串行锁阻塞 (Session 是聚合根, WorkItem 是

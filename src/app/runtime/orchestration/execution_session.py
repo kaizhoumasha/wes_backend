@@ -1,8 +1,7 @@
-"""ExecutionSession (主计划 §9.2)。
+"""当前总控计划 §9 待清理的 ExecutionSession 过渡模型。
 
-Session 是 runtime/orchestration 域的聚合根, 唯一 session PK 拥有者
-(主计划 §3.2)。Session 不持工作状态 (work item 是 ExecutionWorkItem 的责任),
-Session 只持:
+现存实现中，Session 是 runtime/orchestration 域的聚合根和唯一 session PK 拥有者。
+Session 不持工作状态（work item 是 ExecutionWorkItem 的责任），只持：
 - workline_id: 关联 WorkLine (workline 域配置, session 引用)
 - manifest_version: RUNNING session 固定 manifest_version (CEO-011)
 - state: lifecycle (CREATED / RUNNING / HOLD / CLOSED / RECONCILING)
@@ -23,10 +22,10 @@ RUNTIME_SCHEMA = "wes_runtime"
 
 
 class ExecutionSession(BaseMixin, table=True):
-    """Runtime/orchestration 域会话聚合根 (主计划 §9.2)。
+    """现存过渡模型的 Runtime/orchestration 会话聚合根（当前总控计划 §9 清理范围）。
 
-    唯一 session PK 拥有者 (target-state-contract.md §3 域边界); 跨域只持
-    ExecutionCorrelation.correlation_id, 不持强 session FK。
+    现存实现中由本表持有唯一 session PK；目标模型按顶层 SPEC §6.1 拆分为
+    LineRunEpoch 与对象级执行证据，不保留通用 Session 聚合。
     """
 
     __tablename__ = "execution_sessions"  # pyright: ignore[reportAssignmentType]
