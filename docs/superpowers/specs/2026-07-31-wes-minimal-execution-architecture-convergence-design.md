@@ -93,7 +93,10 @@ WMS 单据或同步业务输入
 WMS 确认义务
 → WmsConfirmation 持久化
 → 同步发送
-→ 成功完成，或按策略重试 / 依赖暂停
+→ Success：确认义务完成
+→ WmsBusinessReject：交由插件按业务对象裁决，不进入依赖重试
+→ WmsDependencyFailure：仅 retryable=true 时复用原 dispatch_key 重试或依赖暂停
+→ WmsContractFailure：记录合同告警并封闭失败，不进入依赖重试
 ```
 
 WMS 同步 HTTP 调用不进入 ECS/RCS 异步 ACK 协议，也不需要“工作线执行引擎”进行实时投影。
@@ -543,13 +546,13 @@ WMS 可以提供：
 
 1. 操作员将完整料盘放入入口。
 2. 入料机械臂感应、扫码和测量，并通过 ECS EVENT 上报。
-3. WES 调用 WMS 完成 GRN 绑定和业务校验，并作出本地测量判定。
+3. WES 通过无副作用 Q19 完成业务准入校验，并作出本地测量判定；此时不创建 GRN/package 绑定或入库确认。
 4. 通过后下发厂商定义的入料机械臂长命令。
 5. 成功 CALLBACK 后，料盘进入粗分机流水线；入料机械臂立即可以处理下一料盘。
 6. 流水线长命令完成后，料盘到达出料侧。
 7. WES 即时计算粗分机出料货架上可用料箱料格。
 8. 无可用货架或料格时，通过 Transport Port 请求 WMS/AGV 补充空箱货架。
-9. 出料机械臂成功投放后更新本地投影，并同步 WMS。
+9. 出料机械臂成功投放后更新本地投影，并创建 `WmsConfirmation` 提交 E07 package binding 和 E03 inbound confirmation。
 
 每个设备独立推进，不等待同一料盘完成整个流程。
 

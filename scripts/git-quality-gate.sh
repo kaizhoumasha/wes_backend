@@ -31,6 +31,7 @@ Checks:
   process-naming
             Run only active process naming guardrail.
   architecture  Run only architecture guardrails.
+  test-topology Run only core test topology and secondary package ownership guardrails.
   import-linter  Run only import-linter capability-isolation contract check.
 
 Examples:
@@ -179,8 +180,12 @@ run_import_linter_check() {
 }
 
 run_test_topology_check() {
-    log_step "tests" "pytest tests/architecture/test_suite_topology_guardrail.py -q"
-    run_tool pytest tests/architecture/test_suite_topology_guardrail.py -q
+    local tests=(
+        tests/architecture/test_suite_topology_guardrail.py
+        tests/architecture/test_core_plugin_test_ownership_guardrail.py
+    )
+    log_step "tests" "pytest ${tests[*]} -q"
+    run_tool pytest "${tests[@]}" -q
 }
 
 run_script_contract_tests() {
@@ -246,6 +251,9 @@ if [[ -n "$CHECK" ]]; then
             ;;
         architecture)
             run_architecture_check
+            ;;
+        test-topology)
+            run_test_topology_check
             ;;
         import-linter)
             run_import_linter_check

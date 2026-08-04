@@ -219,7 +219,7 @@ pipeline {
                                 docker run --rm \
                                     -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
                                     ${CI_IMAGE} \
-                                    sh -c './scripts/git-quality-gate.sh --check architecture --ci'
+                                    sh -c './scripts/git-quality-gate.sh --check architecture --ci && ./scripts/git-quality-gate.sh --check test-topology --ci'
                             '''
                             echo '✅ 架构护栏检查完成'
                         }

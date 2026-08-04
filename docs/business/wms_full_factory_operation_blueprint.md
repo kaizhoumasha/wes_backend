@@ -41,8 +41,9 @@ conformance 平台或 WMS codegen。
 
 ## 南向扫码流水
 
-南向取料 ACK 后立即释放下一北向取料；南向取料 result 后执行扫码；SCAN result 由 WES 做 typed 决策并下发
-投放；PUT result 提交最终位置事实。插件只拥有业务动作和逻辑参数；厂商命令类型、wire DTO 与映射只存在对应
+南向取料 result/CALLBACK 确认共享交接位置已经释放，并完成对应位置投影后，才允许下一北向取料；南向取料
+result 后执行扫码，SCAN result 由 WES 做 typed 决策并下发投放，PUT result 提交最终位置事实。ACK 只表示设备
+接纳命令，不得用于释放物理位置。插件只拥有业务动作和逻辑参数；厂商命令类型、wire DTO 与映射只存在对应
 Adapter 版本，业务、Manifest 和插件配置不保存第二份映射。
 
 ## 可靠性与验收
