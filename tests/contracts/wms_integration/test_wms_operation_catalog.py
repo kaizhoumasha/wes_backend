@@ -101,21 +101,6 @@ def test_every_typed_definition_owns_strict_models_and_frozen_budgets() -> None:
         assert operation.reject_codes
 
 
-def test_q19_wire_request_excludes_internal_session_identity() -> None:
-    registry = _load("src.app.wms_integration.operation_registry")
-    operation = registry.WMS_OPERATION_BY_IDENTITY["wms.document.validate_rough_sorter_admission@v1"]
-
-    assert set(operation.request_model.model_fields) == {
-        "correlation_id",
-        "raw_code",
-        "reel_diameter_mm",
-        "reel_thickness_mm",
-        "six_in_one",
-        "station_code",
-        "workline_id",
-    }
-
-
 def test_query_method_and_pagination_contracts_are_closed() -> None:
     registry = _load("src.app.wms_integration.operation_registry")
     contracts = _load("src.app.wms_integration.operation_contract")

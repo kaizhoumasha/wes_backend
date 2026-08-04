@@ -39,6 +39,7 @@ REQUEST_FIXTURES = {
         "reel_thickness_mm": "12.5",
         "station_code": "ROUGH-IN",
         "workline_id": 1,
+        "session_id": 1,
         "correlation_id": "CORR-001",
     },
     "wms.inventory.reserve_inventory@v1": {

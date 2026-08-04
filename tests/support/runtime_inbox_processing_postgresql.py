@@ -208,6 +208,7 @@ async def seed_scan_flow(
                 "reel_thickness_mm": payload_json["reel_thickness_mm"],
                 "station_code": workline.line_code,
                 "workline_id": workline.id,
+                "session_id": session.id,
                 "correlation_id": correlation_id,
             }
         )

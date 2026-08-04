@@ -67,6 +67,7 @@ async def resolve_pre_attempt_facts(
                 "reel_thickness_mm": reel_thickness,
                 "station_code": station_code,
                 "workline_id": resolve_required_pk(workline, "workline", "id", "workline_id"),
+                "session_id": session_id,
                 "correlation_id": f"workline-session:{session_code}",
             }
         )
