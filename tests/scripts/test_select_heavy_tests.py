@@ -519,7 +519,6 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
 
     assert {
         "tests/**",
-        "Jenkinsfile",
         "Jenkinsfile.test-deploy",
         ".githooks/**",
         ".github/**",
@@ -529,6 +528,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
     assert tuple((mapping.source_glob, mapping.heavy_tests) for mapping in mappings) == (
         ("scripts/select_heavy_tests.py", ()),
         ("docs/architecture/heavy-test-impact.toml", ()),
+        ("Jenkinsfile.backend-ci", ()),
         ("docker-compose.ci-heavy.yml", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         ("scripts/git-quality-gate.sh", ()),
         ("scripts/markdownlint.sh", ()),
@@ -1090,7 +1090,7 @@ def test_repository_mapping_keeps_top_level_dockerfile_fail_closed() -> None:
 
 
 def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
-    jenkinsfile = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
     quality_gate = (REPO_ROOT / "scripts/git-quality-gate.sh").read_text(encoding="utf-8")
 
     assert "./scripts/git-quality-gate.sh --profile quality" in jenkinsfile
@@ -1101,6 +1101,14 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
     assert "uv run --no-sync scripts/run_selected_heavy_tests.py" in jenkinsfile
     assert "run_script_contract_tests" in quality_gate
     assert "run_tool pytest tests/scripts -q" in quality_gate
+
+
+def test_repository_mapping_classifies_active_backend_ci_as_quality_only() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["Jenkinsfile.backend-ci"], config) == []
+    with pytest.raises(SelectorError, match="未分类改动路径"):
+        select_heavy_tests(["Jenkinsfile"], config)
 
 
 def test_quality_gate_does_not_advertise_a_duplicate_full_profile() -> None:

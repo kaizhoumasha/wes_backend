@@ -73,14 +73,16 @@ git push gitlab develop
 
 ## 🎯 Pipeline 流程
 
-```
+```text
 代码推送 → GitLab Webhook → `wes_backend-ci`
     ↓
 在 Node (192.168.0.221) 上执行
     ├─ Checkout Source
     ├─ Build CI Image
-    ├─ Quality Checks（并行）
-    ├─ Tests（并行）
+    ├─ Quality Gate（唯一 QUALITY profile）
+    ├─ RuntimeInbox PostgreSQL Acceptance
+    ├─ Mock Image Contracts（仅 MR）
+    ├─ HEAVY Required（仅 MR，按目标分支差异选择）
     ├─ Build Runtime Image
     ├─ Push Runtime Image（非 MR，推送 immutable + channel tag）
     └─ Trigger Test Deploy（仅 develop push）

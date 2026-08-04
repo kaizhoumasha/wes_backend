@@ -14,7 +14,7 @@ def test_test_topology_check_runs_core_secondary_package_ownership_guardrails() 
 
 
 def test_jenkins_runs_canonical_quality_profile_without_partial_duplicates() -> None:
-    jenkinsfile = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
 
     assert (
         "./scripts/git-quality-gate.sh --profile quality --bandit-json /app/reports/bandit-report.json --ci"
@@ -23,3 +23,7 @@ def test_jenkins_runs_canonical_quality_profile_without_partial_duplicates() -> 
     assert "pytest tests/ -v --tb=short" not in jenkinsfile
     assert "pytest tests/api/test_signature.py" not in jenkinsfile
     assert "uv run --no-sync pytest tests/scripts -q" not in jenkinsfile
+
+
+def test_retired_root_jenkinsfile_is_absent() -> None:
+    assert not (REPO_ROOT / "Jenkinsfile").exists()

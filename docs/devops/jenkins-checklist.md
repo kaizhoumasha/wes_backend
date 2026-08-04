@@ -199,7 +199,7 @@ ssh root@192.168.0.221 \
 
 ### Jenkins Node 标签
 
-在 Jenkinsfile 中修改：
+在 `Jenkinsfile.backend-ci` 或 `Jenkinsfile.test-deploy` 中修改对应 Job 的节点标签：
 
 ```groovy
 agent {
@@ -286,7 +286,7 @@ sudo usermod -aG docker jenkins
 - [ ] Pipeline 项目已创建
 - [ ] GitLab Webhook 已配置并测试通过
 - [ ] 部署服务器已初始化
-- [ ] Jenkinsfile 已提交
+- [ ] `Jenkinsfile.backend-ci` 与 `Jenkinsfile.test-deploy` 已提交
 - [ ] 手动构建测试通过
 - [ ] 所有阶段执行成功
 - [ ] 部署成功并健康检查通过

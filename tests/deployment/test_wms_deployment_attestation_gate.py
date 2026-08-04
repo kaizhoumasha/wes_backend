@@ -114,26 +114,3 @@ def test_local_gate_runs_after_capacity_and_before_application_start() -> None:
     attestation_index = cmd_up_body.index('run_wms_deployment_attestation "$env"')
     application_index = cmd_up_body.rindex("up -d")
     assert capacity_index < attestation_index < application_index
-
-
-def test_jenkins_uses_shared_attestation_runner_before_migration_and_start() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
-    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
-    runner_call = "bash scripts/run_wms_deployment_attestation.sh"
-    assert deploy_body.count(runner_call) == 1
-    assert "--compose-file docker-compose.yml" in deploy_body
-    assert "--compose-file ${DEPLOY_COMPOSE_FILE}" in deploy_body
-    assert "--env-file ${DEPLOY_ENV_FILE}" in deploy_body
-    assert "mktemp" not in deploy_body
-    assert "jq " not in deploy_body
-    assert "--role" not in deploy_body
-    assert "--image-identity" not in deploy_body
-
-    capacity_index = deploy_body.index("run_capacity_guard", deploy_body.index("docker pull"))
-    attestation_index = deploy_body.index(runner_call, capacity_index)
-    migration_index = deploy_body.index("api alembic upgrade head", attestation_index)
-    application_index = deploy_body.index(
-        "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}",
-        migration_index,
-    )
-    assert capacity_index < attestation_index < migration_index < application_index

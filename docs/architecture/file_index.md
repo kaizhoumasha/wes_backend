@@ -62,8 +62,8 @@
 | `README.md` | 项目概述、环境设置、快速开始指南 | 📖 必读文档 |
 | `CLAUDE.md` | Claude Code 开发指南（架构、规范、最佳实践） | 📖 必读文档 |
 | `DOCKER.md` | Docker 使用说明 | 📚 参考资料 |
-| `Jenkinsfile` | Jenkins CI/CD 配置 | 📚参考资料 |
-| `Jenkinsfile.backend-ci` | 后端 CI 主入口；包含隔离 PG17 RuntimeInbox 严格验收、JUnit/evidence/log/diagnostic 归档与清理 | 🔧 架构核心 |
+| `Jenkinsfile.backend-ci` | 后端 CI 主入口；包含唯一 QUALITY 门禁、隔离 PG17 RuntimeInbox 验收、MR Mock/HEAVY 门禁、运行时镜像发布与 TEST 部署触发 | 🔧 架构核心 |
+| `Jenkinsfile.test-deploy` | TEST 环境部署入口 | 🔧 架构核心 |
 | `docs/architecture/SRS.md` | 产品范围、参与方职责以及功能与非功能需求真源 | 📖 必读文档 |
 | `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` | WES/WMS/RCS 运行时资源、库存权责和回调入口 ADR | 📖 必读文档 |
 | `docs/architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR：反腐层边界、证据留痕、熔断和调用方合同 | 📖 必读文档 |
@@ -823,8 +823,8 @@ WMS Gateway 子系统：静态 registry 冻结 19 项 QUERY、9 项同步 EFFECT
 ├───CLAUDE.md                 # Claude Code 开发指南
 ├───docker-compose.yml        # 服务编排
 ├───Dockerfile                # 容器构建文件
-├───Jenkinsfile               # 通用 CI/CD 配置
-├───Jenkinsfile.backend-ci    # 后端 CI 与 RuntimeInbox 隔离 PostgreSQL 验收
+├───Jenkinsfile.backend-ci    # 后端 CI、QUALITY、RuntimeInbox 与 MR HEAVY 验收
+├───Jenkinsfile.test-deploy   # TEST 环境部署
 ├───main.py                   # 应用主入口
 ├───pyproject.toml            # 项目依赖管理
 ├───README.md                 # 项目说明

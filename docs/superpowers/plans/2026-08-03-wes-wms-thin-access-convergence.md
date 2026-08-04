@@ -94,9 +94,8 @@ HTTP 超时、断路器打开、5xx、业务拒绝和远端 Payload 不合约分
 用一个 `WMS_CONFIG_FILE` 取代 Provider Profile。配置只包含：
 
 - 单一 `base_url`；
-- 入站/出站认证和凭据引用；
-- 网络信任模式；
-- 查询、确认和状态查询的有界 HTTP 预算及分页上限。
+- 查询、确认和状态查询的有界 HTTP 预算及分页上限；
+- 仅在已确认 WMS 合同明确要求时提供的可选认证与凭据引用；当前局域网默认不配置认证。
 
 删除 provider identity、contract digest、readiness、deployment attestation、process role、execution lane、
 capability manifest、simulation registry 和运行时 conformance。method/path 不进入部署配置，由各垂直 capability
@@ -138,7 +137,7 @@ Task 10。
 - `operation identity + dispatch_key` 幂等头、Provider reference 和 source version 的透传校验；
   `dispatch_key` 是 submit、ACK、status、terminal、cancel、hint 的唯一 wire 幂等键，不定义
   `idempotency_key` 别名或双键映射；
-- method/path、认证、超时、响应预算、错误分类和脱敏同步调用证据；
+- method/path、超时、响应预算、错误分类、脱敏同步调用证据，以及冻结合同真实要求的可选认证；
 - 无状态 fake，供 Phase 3 在不启动真实 WMS、Celery 或旧 Runtime 的情况下测试 Transport Port。
 - sender/client 的合同与 fake，不进入旧 Effect/status 生产装配。
 
@@ -151,7 +150,7 @@ Task 10。
 - 无状态 Client 到 `WmsConfirmation`/`TransportTask` 的生产装配和原子切换。
 
 **交接不变量：** Phase 2 Client 的每次调用只完成一次 HTTP 交互；不得在 Client 内循环到终态、写
-`TransportTask`、启动定时任务或修改对象/位置投影。Phase 3 不得重新实现 path、认证、DTO、HTTP 错误映射
+`TransportTask`、启动定时任务或修改对象/位置投影。Phase 3 不得重新实现 path、DTO、HTTP 错误映射或合同明确要求的可选认证
 或 WMS evidence，否则视为跨层复制。
 
 ---
@@ -262,7 +261,7 @@ src/app/wms_integration/
 | `services/evidence_service.py` | KEEP | 同步 evidence 目标 owner；旧 async summary 在 Phase 3 删除 |
 | `services/exceptions.py` | MOVE | 正常远端分支迁入 outcome；仅保留明确的本地基础设施错误 |
 | `services/fulfillment_lifecycle.py` | PHASE3_HANDOFF | 与旧 fulfillment lifecycle 原子删除 |
-| `services/http_transport.py` | KEEP | 复用 HMAC、预算、有界响应和 borrowed client primitive |
+| `services/http_transport.py` | KEEP | 复用预算、有界响应和 borrowed client primitive；不预建通用签名框架 |
 | `services/redaction.py` | KEEP | 共享脱敏/hash |
 | `services/wms_event_normalizer.py` | MOVE | 迁入 `inbound/normalizer.py` |
 | `state_machine.py` | PHASE3_HANDOFF | 与旧 Effect/status state machine 删除 |
@@ -580,9 +579,9 @@ Expected: 端口形状、closed union 和类型检查全部通过。
 - Create: `src/app/wms_integration/configuration.py`
 - Create: `tests/contracts/wms_integration/test_wms_connection_settings.py`
 
-- [ ] 写失败测试：配置文件必须绝对、可读、YAML 键唯一、`base_url` 安全、认证/网络信任组合合法且预算为正。
+- [ ] 写失败测试：配置文件必须绝对、可读、YAML 键唯一，`base_url` 必须是合法 HTTP(S) URL，预算与分页上限必须为正；只有真实 WMS 合同明确要求时才验证对应可选认证字段。
   配置不接收 operation path 或能力开关。
-- [ ] 测试缺失、不可读、格式错误和不安全配置均 fail fast；禁止全局 import-time singleton。
+- [ ] 测试缺失、不可读、格式错误和无效配置均 fail fast；不实现内网地址信任矩阵、SSRF 防护层或全局 import-time singleton。
 - [ ] 本任务只完成目标配置模型和 loader 合同，不创建 factory，不接入 `src/core/conf.py`、API、Celery 或旧
   Runtime；旧 Provider 仍是唯一活动配置来源，因此不存在两个活动配置。
 - [ ] 不让新 loader 读取旧 Provider YAML，不增加旧变量 alias、fallback 或双文件读取。
@@ -656,7 +655,7 @@ HEAVY selector 承接，不得复制到 FAST。
 - Create: `tests/contracts/wms_integration/test_http_wms_capabilities.py`
 - Modify: `tests/architecture/test_wms_thin_public_boundary.py`
 
-- [ ] 用 HTTPX `MockTransport` 逐方法验证 19 项 method/path/query/body、认证、分页、DTO 和四分支 outcome。
+- [ ] 用 HTTPX `MockTransport` 逐方法验证 19 项 method/path/query/body、分页、DTO 和四分支 outcome；仅对已冻结合同中真实存在的认证差异增加参数化断言。
 - [ ] `HttpWmsGateway` 每个公共方法直接 import 自身 capability 模块的 `WmsCallSpec` 并调用私有 `_call`；
   禁止字符串 operation 参数、中心映射和公共 spec 查询。
 - [ ] 列表查询内部消费 cursor，但必须满足 Task 6 的一次 permit、累计预算、一条 evidence 和一次最终 breaker
@@ -706,7 +705,7 @@ Expected: 19 项目标查询合同通过；旧 QUERY 平台仍是唯一活动实
 - Modify: `docker-compose.yml`
 - Modify: `docker-compose.deploy.yml`
 - Modify: `docker-compose.test-deploy.yml`
-- Modify: `Jenkinsfile`
+- Modify: `Jenkinsfile.backend-ci`
 - Modify: `Jenkinsfile.test-deploy`
 - Modify: `src/register.py`
 - Modify: `src/celery_app/async_runtime.py`
@@ -982,7 +981,7 @@ Expected: 所有命令退出 0；FAST 预算不退化；PostgreSQL 可靠性测�
 
 | 层级 | 保留的完整断言 | 不进入该层 |
 | --- | --- | --- |
-| Contract FAST | 垂直 DTO/spec、测试态 conformance、认证、四分支 outcome、端口形状 | 具体插件流程、真实 WMS |
+| Contract FAST | 垂直 DTO/spec、测试态 conformance、合同明确要求的可选认证、四分支 outcome、端口形状 | 具体插件流程、真实 WMS |
 | Adapter FAST | 单次 HTTP、分页、预算、错误映射、脱敏证据 | Docker、Celery、真实网络 |
 | Deployment FAST | `WMS_CONFIG_FILE`、API/Celery 单 Gateway/Client、fail-fast、资源关闭 | 真实 WMS、旧配置 fallback |
 | Architecture FAST | import closure、公共 API、QUERY index 收缩、Phase 3 handoff | 业务状态机重复断言 |

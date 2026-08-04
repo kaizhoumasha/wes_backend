@@ -157,7 +157,7 @@ uv run scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"
 uv run pytest tests/scripts -q
 ```
 
-退出 0 且有输出表示每行一个应运行的 HEAVY 测试；退出 0 且无输出表示改动只命中 ignore 或显式 NONE；非零表示 selector 为避免漏测而 fail closed。Jenkins 在所有构建中运行 `HEAVY Selector Smoke` 合同测试，并在合并请求中按目标分支差异执行 `HEAVY Required` 选择结果。
+退出 0 且有输出表示每行一个应运行的 HEAVY 测试；退出 0 且无输出表示改动只命中 ignore 或显式 NONE；非零表示 selector 为避免漏测而 fail closed。`Jenkinsfile.backend-ci` 的唯一 `Quality Gate` 在所有构建中运行 selector 合同测试，并在合并请求中通过 `HEAVY Required` 执行目标分支差异选择结果。
 
 ```bash
 # E2E 测试（默认不会被 pytest 自动收集）

@@ -116,3 +116,50 @@ def test_main_rejects_reintroduced_executable_in_retired_project_archive(tmp_pat
 
     assert exit_code == 2
     assert "未分类改动路径" in capsys.readouterr().err
+
+
+def test_main_skips_deleted_retired_root_jenkinsfile(tmp_path, capsys) -> None:
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text('ignore_globs = [".github/**"]\n', encoding="utf-8")
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            ["git", "diff"],
+            0,
+            stdout="Jenkinsfile\n",
+            stderr="",
+        )
+    )
+
+    exit_code = main(
+        ["--base", "develop"],
+        repo_root=tmp_path,
+        mapping_path=mapping_path,
+        runner=runner,
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_rejects_reintroduced_root_jenkinsfile(tmp_path, capsys) -> None:
+    (tmp_path / "Jenkinsfile").write_text("pipeline {}\n", encoding="utf-8")
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text('ignore_globs = [".github/**"]\n', encoding="utf-8")
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            ["git", "diff"],
+            0,
+            stdout="Jenkinsfile\n",
+            stderr="",
+        )
+    )
+
+    exit_code = main(
+        ["--base", "develop"],
+        repo_root=tmp_path,
+        mapping_path=mapping_path,
+        runner=runner,
+    )
+
+    assert exit_code == 2
+    assert "未分类改动路径" in capsys.readouterr().err

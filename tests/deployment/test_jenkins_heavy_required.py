@@ -1,6 +1,7 @@
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ACTIVE_JENKINSFILE = REPO_ROOT / "Jenkinsfile.backend-ci"
 
 
 def _stage_body(jenkins_text: str, stage_name: str, next_stage_name: str) -> str:
@@ -10,7 +11,7 @@ def _stage_body(jenkins_text: str, stage_name: str, next_stage_name: str) -> str
 
 
 def test_heavy_required_does_not_expose_the_host_docker_daemon_to_pytest() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
@@ -20,7 +21,7 @@ def test_heavy_required_does_not_expose_the_host_docker_daemon_to_pytest() -> No
 
 
 def test_merge_request_mock_image_contracts_run_as_fixed_host_commands() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     mock_body = _stage_body(jenkins_text, "Mock Image Contracts", "HEAVY Required")
 
     assert "env.CI_IS_MERGE_REQUEST == 'true'" in mock_body
@@ -37,7 +38,7 @@ def test_merge_request_mock_image_contracts_run_as_fixed_host_commands() -> None
 
 
 def test_heavy_required_uses_a_build_scoped_compose_project() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
 
     assert "-f docker-compose.ci-heavy.yml" in heavy_body
@@ -58,7 +59,7 @@ def test_heavy_compose_does_not_publish_or_reuse_deployment_resources() -> None:
 
 
 def test_ci_image_commands_never_resolve_dependencies_at_runtime() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     quality_gate_text = (REPO_ROOT / "scripts" / "git-quality-gate.sh").read_text(encoding="utf-8")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
 
@@ -67,11 +68,11 @@ def test_ci_image_commands_never_resolve_dependencies_at_runtime() -> None:
     assert "uv run --no-sync scripts/select_heavy_tests.py" in heavy_body
     assert "uv run --no-sync alembic upgrade head" in heavy_body
     assert "uv run --no-sync scripts/run_selected_heavy_tests.py" in heavy_body
-    assert "sh -c '\n                                set -eu" in heavy_body
+    assert "sh -c '\n                            set -eu" in heavy_body
 
 
 def test_heavy_required_rejects_selected_tests_that_are_skipped() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
 
     assert "uv run --no-sync scripts/run_selected_heavy_tests.py" in heavy_body
@@ -79,7 +80,7 @@ def test_heavy_required_rejects_selected_tests_that_are_skipped() -> None:
 
 
 def test_heavy_required_publishes_the_runner_junit_report() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
 
     assert '-v "$WORKSPACE/reports:/reports"' in heavy_body
@@ -89,11 +90,9 @@ def test_heavy_required_publishes_the_runner_junit_report() -> None:
 
 
 def test_non_publishing_builds_still_validate_the_production_target() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
-    build_body = _stage_body(jenkins_text, "Build Runtime Image", "Publish Runtime Image")
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    build_body = _stage_body(jenkins_text, "Build Runtime Image", "Push Runtime Image")
 
     assert "when {" not in build_body
-    assert "if (env.PUBLISH_IMAGE == 'true')" in build_body
-    assert "--target ${RUNTIME_BUILD_TARGET}" in build_body
-    assert "-t ${RUNTIME_VALIDATION_IMAGE}" in build_body
-    assert "docker image rm -f ${RUNTIME_VALIDATION_IMAGE}" in build_body
+    assert '--target "${RUNTIME_BUILD_TARGET}"' in build_body
+    assert '-t "${RUNTIME_IMAGE_LOCAL}"' in build_body

@@ -8,7 +8,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SCAN_ROOTS = (
-    Path("Jenkinsfile"),
     Path("Jenkinsfile.backend-ci"),
     Path(".githooks"),
     Path("src"),
@@ -160,7 +159,6 @@ def test_active_code_does_not_use_process_phase_names() -> None:
 def test_process_naming_guardrail_scans_default_test_tree_and_ci_file() -> None:
     assert Path("tests") in SCAN_ROOTS
     assert Path(".githooks") in SCAN_ROOTS
-    assert Path("Jenkinsfile") in SCAN_ROOTS
     assert Path("Jenkinsfile.backend-ci") in SCAN_ROOTS
     assert Path(".githooks/pre-commit") in set(_iter_scan_files())
 

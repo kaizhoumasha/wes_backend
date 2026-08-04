@@ -1,7 +1,6 @@
 # HEAVY selector 的机器可读真源。分类顺序固定为：直接 HEAVY 测试、人类文档、候选 mapping、ignore。
 ignore_globs = [
     "tests/**",
-    "Jenkinsfile",
     "Jenkinsfile.test-deploy",
     ".githooks/**",
     ".github/**",
@@ -16,6 +15,11 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "docs/architecture/heavy-test-impact.toml"
+heavy_tests = []
+
+# 当前后端 CI 编排由 QUALITY 配置合同承接，不改变生产运行时行为。
+[[mapping]]
+source_glob = "Jenkinsfile.backend-ci"
 heavy_tests = []
 
 # MR HEAVY 专用数据库编排由当前命令结果关联 PostgreSQL 合同承接；Redis 由 Compose healthcheck 验证。

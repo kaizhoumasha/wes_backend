@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 HEAVY_DIRECT_GLOB = "tests/{integration,e2e,resilience,load,mock}/**/test_*.py"
 HUMAN_DOCUMENT_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".docx", ".pdf", ".eddx"})
 RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
+RETIRED_REMOVED_PATHS = frozenset({"Jenkinsfile"})
 CANDIDATE_GLOBS = (
     "src/**",
     "main.py",
@@ -24,6 +25,7 @@ CANDIDATE_GLOBS = (
     "alembic.ini",
     "docker-compose*.yml",
     "Dockerfile",
+    "Jenkinsfile.backend-ci",
     "pyproject.toml",
     ".env*",
     "scripts/**",
@@ -464,12 +466,14 @@ def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> 
 
 
 def filter_deleted_retired_archive_paths(changed_files: Iterable[str], *, repo_root: Path) -> list[str]:
-    """只跳过已从当前树删除的项目内历史归档；重新引入的文件仍 fail closed。"""
+    """只跳过已从当前树删除的历史路径；重新引入的文件仍 fail closed。"""
     retained: list[str] = []
     for raw_path in changed_files:
         normalized_path = _validate_repository_relative(raw_path, field="changed path", allow_glob=False)
-        is_retired_archive = any(normalized_path.startswith(root) for root in RETIRED_ARCHIVE_ROOTS)
-        if is_retired_archive and not (repo_root / normalized_path).exists():
+        is_retired = normalized_path in RETIRED_REMOVED_PATHS or any(
+            normalized_path.startswith(root) for root in RETIRED_ARCHIVE_ROOTS
+        )
+        if is_retired and not (repo_root / normalized_path).exists():
             continue
         retained.append(normalized_path)
     return retained

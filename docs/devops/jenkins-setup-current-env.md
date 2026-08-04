@@ -440,7 +440,7 @@ docker exec wes_api_test curl -f http://127.0.0.1:8001/health
 - [ ] SSH 连接测试通过
 - [ ] Pipeline 项目已创建
 - [ ] GitLab Webhook 已配置
-- [ ] Jenkinsfile 已提交到 GitLab
+- [ ] `Jenkinsfile.backend-ci` 与 `Jenkinsfile.test-deploy` 已提交到 GitLab
 - [ ] 手动构建测试通过
 - [ ] 所有阶段执行成功
 - [ ] 测试报告正常显示

@@ -146,6 +146,7 @@
 - `../archive_docs/wes_backend/docs/business/inbound_acceptance_steps.md`
 - `../archive_docs/wes_backend/docs/business/rough_sorter_scan_decision_contract.md`
 - `../archive_docs/wes_backend/docs/integration/third_party_integration_whitepaper.md`
+- `../archive_docs/wes_backend/wms_rcs_interface_requirements.pdf`（旧 WMS/RCS 接口汇编，不属于硬件厂商原始资料）
 - `../archive_docs/wes_backend/docs/architecture/legacy-cleanup-matrix.md`（Phase 0 历史分析；机器清单继续保留为 CSV）
 - `../archive_docs/wes_backend/.serena/memories/learnings/code-reviews/` 下五份 2026-03-07/16 历史评审
 - `../archive_docs/wes_backend/.serena/memories/learnings/tdd-refactor-success-2026-03-16.md`
@@ -162,6 +163,9 @@
 忽略规则曾隐藏的本地 Wiki、会话计划、QA/部署报告、备份、旧 PR 正文、`claudedocs/`、每日项目日志、根目录
 `SESSION-STATE.md` / `MEMORY.md`、`memory/.learnings/LEARNINGS.md` 和六份 `.env.backup.*` 已经按原目录层级移至
 `../archive_docs/wes_backend/local-artifacts/`。这些资料只承担历史追溯，不属于当前项目搜索范围。
+
+旧 Understand Anything 生成缓存及其 63 MB trash 已移至
+`../archive_docs/wes_backend/local-artifacts/ua-stale-2026-08-04/`；项目内只保留本地工具配置，不保留引用已归档设计的搜索索引。
 
 本轮同时逐文件比对所有被删除并归档的资产与当前 `HEAD` 原始 blob。规范归档目标均保持原文一致；此前被
 目标架构措辞改写的副本保存在

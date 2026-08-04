@@ -212,7 +212,7 @@ WES 不实现设备间并发互锁。不同设备可以同时处理不同对象�
 WMS 业务能力由薄封装层提供：
 
 - `WmsCapabilities` 查询和 `WmsConfirmation` 提交使用同步 HTTP 请求和同步业务结果。
-- DTO、认证、地址和错误映射封装在 WMS Adapter。
+- DTO、地址和错误映射封装在 WMS Adapter；只有真实 WMS 合同明确要求时才启用对应认证，当前局域网默认不配置。
 - 工作线插件只依赖类型化 `WmsCapabilities`，不直接访问 HTTP。
 - WMS 结果是业务事实，不伪装成 ECS ACK/CALLBACK。
 
@@ -730,7 +730,7 @@ CTU 投箱
 - 入站先持久化再 ACK。
 - 幂等键、Payload Hash 和冲突证据。
 - DeviceCommand 的接纳与最终结果区分。
-- WMS 类型化 DTO、认证、HTTP Adapter 和同步调用证据。
+- WMS 类型化 DTO、HTTP Adapter、同步调用证据，以及真实合同明确要求时的可选认证。
 - RCS/AGV/CTU Transport Port。
 - 位置、队列、货架、料箱和料格活动投影。
 - 可观测性、安全和测试治理规则。
@@ -783,7 +783,7 @@ CTU 投箱
 实施顺序：
 
 1. 总控基线冻结与测试治理确认：接受本文、冻结最新 `develop` 实施基线，并确认测试所有权、重量和延后承接边界。
-2. WMS 薄接入边界收敛：交付类型化同步查询、垂直能力模块、认证、地址、错误映射、确认发送和无状态 WMS 转发搬运 Client；只切换 QUERY 生产路径并删除 QUERY System Capability。旧 Effect/status 链不做临时改写，连同仍被其静态 import 的 Provider/Catalog/fulfillment capability 资产冻结为 Phase 3 原子删除闭包。
+2. WMS 薄接入边界收敛：交付类型化同步查询、垂直能力模块、地址、错误映射、确认发送、无状态 WMS 转发搬运 Client，以及真实合同明确要求时的可选认证；只切换 QUERY 生产路径并删除 QUERY System Capability。旧 Effect/status 链不做临时改写，连同仍被其静态 import 的 Provider/Catalog/fulfillment capability 资产冻结为 Phase 3 原子删除闭包。
 3. WES 最小平台能力建设：交付最终执行对象、三类可靠记录、通用 WorkLine、投影及最小 SPI/SDK；`WmsConfirmation` 与 `TransportTask` 建立生产路径和权威测试后，原子切换并删除旧 WMS Effect/status/Outbox 生命周期。
 4. 核心测试承接与平台基线验收：把通用可靠性改写到最终对象，完成核心/插件测试分界和平台独立验收。
 5. 粗分机参考插件优化：以独立二次开发包交付第一个真实业务插件，验证平台扩展边界。
