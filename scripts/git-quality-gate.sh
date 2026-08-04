@@ -31,6 +31,7 @@ Checks:
   process-naming
             Run only active process naming guardrail.
   architecture  Run only architecture guardrails.
+  test-topology Run only core test topology and secondary package ownership guardrails.
   import-linter  Run only import-linter capability-isolation contract check.
 
 Examples:
@@ -103,6 +104,10 @@ log_step() {
 
 run_tool() {
     if command -v uv >/dev/null 2>&1; then
+        if [[ "$CI_MODE" == "true" ]]; then
+            uv run --no-sync "$@"
+            return
+        fi
         uv run "$@"
         return
     fi
@@ -149,7 +154,6 @@ run_runtime_contract_guardrails() {
         tests/runtime/orchestration/test_production_closure_evidence_gate.py
         tests/runtime/orchestration/test_runtime_operational_contracts.py
         tests/runtime/orchestration/test_runtime_recovery_policies.py
-        tests/contracts/test_runtime_ops_contract_docs.py
         tests/contracts/workline
     )
     log_step "runtime-contract-guardrails" "pytest ${tests[*]} -q"
@@ -171,6 +175,10 @@ run_architecture_check() {
     # 允许 ARCHITECTURE_GUARDRAIL_MODE 环境变量覆盖 (测试/回滚场景)。
     local mode="${ARCHITECTURE_GUARDRAIL_MODE:-enforced}"
     log_step "architecture" "architecture-guardrails.sh --mode $mode"
+    if [[ "$CI_MODE" == "true" ]]; then
+        UV_NO_SYNC=1 bash "$REPO_ROOT/scripts/architecture-guardrails.sh" --mode "$mode"
+        return
+    fi
     bash "$REPO_ROOT/scripts/architecture-guardrails.sh" --mode "$mode"
 }
 
@@ -180,8 +188,12 @@ run_import_linter_check() {
 }
 
 run_test_topology_check() {
-    log_step "tests" "pytest tests/architecture/test_suite_topology_guardrail.py -q"
-    run_tool pytest tests/architecture/test_suite_topology_guardrail.py -q
+    local tests=(
+        tests/architecture/test_suite_topology_guardrail.py
+        tests/architecture/test_core_plugin_test_ownership_guardrail.py
+    )
+    log_step "tests" "pytest ${tests[*]} -q"
+    run_tool pytest "${tests[@]}" -q
 }
 
 run_script_contract_tests() {
@@ -247,6 +259,9 @@ if [[ -n "$CHECK" ]]; then
             ;;
         architecture)
             run_architecture_check
+            ;;
+        test-topology)
+            run_test_topology_check
             ;;
         import-linter)
             run_import_linter_check

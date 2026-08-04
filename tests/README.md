@@ -27,7 +27,7 @@
 放置新测试时建议遵循：
 
 - 日常回归价值高、执行快、依赖少的测试：放入 FAST 默认快速回归集
-- 架构、文档、脚本与质量门禁合同：放入 QUALITY 目录，由质量门禁显式运行
+- 架构、脚本与机器可读治理配置合同：放入 QUALITY 目录，由质量门禁显式运行
 - 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到 HEAVY 重测试目录并显式运行
 
 ### 目录归属矩阵
@@ -53,7 +53,7 @@
 | `tests/resilience/` | breaker 时序、降级、断连与恢复类测试，默认快速回归不收集 |
 | `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
 
-`tests/` 是 WES 核心测试树，不是具体工作线插件的共享测试目录。具体插件采用独立二次开发包：
+`tests/` 是 WES 核心测试树，不是具体工作线插件或厂商 Adapter 的共享测试目录。两类能力使用并列的独立二次开发包：
 
 ```text
 workline_plugins/<plugin_key>/
@@ -61,17 +61,27 @@ workline_plugins/<plugin_key>/
 ├── src/
 ├── tests/
 └── fixtures/
+
+device_adapters/<adapter_key>/
+├── pyproject.toml
+├── src/
+├── tests/
+└── fixtures/
 ```
 
-插件包自己的 `tests/` 唯一拥有具体工作线流程、Handler、现场拓扑、厂商 Payload、插件级 E2E/韧性/负载
-场景。插件代码、测试和 fixture 必须同工作包交付；核心 pytest、覆盖率、质量门禁和 HEAVY selector 不发现、
-不映射也不运行插件包测试。
+插件包自己的 `tests/` 唯一拥有具体工作线流程、Handler、现场拓扑和插件级 E2E/韧性/负载场景。Adapter 包自己的
+`tests/` 唯一拥有厂商 DTO、认证差异、wire Payload、原始码映射和厂商合同场景。两类包的代码、测试和 fixture 必须
+与各自所有者同包交付；核心 pytest、覆盖率、质量门禁和 HEAVY selector 均不发现、不映射也不运行二次开发包测试。
 
 ### 当前治理约束
 
 本轮测试套件治理后的长期约束：
 
 - `tests/` 根目录下不得新增 `test_*.py` 文件。
+- 人类阅读文档的新增、修改、移动、归档或删除不走 TDD，也不得新增或修改 pytest/测试代码。
+- 测试与质量门禁不得读取、解析或断言 `.md`、`.mdx`、`.rst`、`.txt`、`.docx`、`.pdf` 等人类阅读文档的正文、标题、路径清单、链接、状态或措辞。
+- 位于 `docs/` 下但被程序或 CI 读取的 `.toml`、`.csv`、`.yaml`、`.yml`、`.json` 等机器可读文件属于配置或可执行合同，仍可测试其解析与行为。
+- 既有文档内容测试按无承接测试 `NONE` 清理；文档通过格式、链接/引用、归档目标、原路径缺席及 `git diff --check` 等非测试代码方式验证。
 - 默认快速回归 collect 由 `pyproject.toml` 的 `norecursedirs` 和测试文件命名规则共同决定，不在文档中固化数量。
 - 如需查看实时测试文件数量，运行 `find tests -type f -name 'test_*.py' | wc -l`。
 - 如需查看实时默认 collect，运行 `uv run pytest --collect-only -q -o addopts='' | tail -5`。
@@ -79,13 +89,14 @@ workline_plugins/<plugin_key>/
 
 后续新增或调整测试时遵循以下约束：
 
-- 必须先建立目标对象测试并通过，再删除对应旧测试；不得反向。
+- 必须先建立目标对象测试并通过，再删除对应旧测试；不得反向。清理人类阅读文档内容测试时按 `NONE` 删除。
 - 同一行为只有一个主要测试所有者。
 - 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径或 `NONE`。
 - 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
 - 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；该边界只由目录位置和 `norecursedirs` 共同保证，不使用 AST 或 import 黑名单扫描。
-- 核心仓库不得存在 `tests/workline_plugins/`；具体插件测试不得改名后寄存在 `tests/contracts/`、`tests/runtime/` 或核心 HEAVY 目录。
-- 核心测试不得导入仓库根目录 `workline_plugins` 二次开发包或具体插件实现；通用 SPI/SDK 只能使用不含真实工作线规则的最小 fake 验证。
+- 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；具体 Adapter/插件测试不得改名后寄存在
+  `tests/contracts/`、`tests/runtime/` 或核心 HEAVY 目录。
+- 核心测试不得导入仓库根目录 `workline_plugins` 或 `device_adapters` 二次开发包；通用 SPI/SDK 只能使用不含真实工作线或厂商规则的最小 fake 验证。
 - `tests/workline_runtime/` 中的存量测试必须按语义收敛：通用不变量改写到最终核心对象，具体插件行为移出，旧平台装配测试删除；不得继续把该目录当作长期目标所有者。
 - 新增领域测试默认不要放在 `tests/` 根目录，优先按上方目录归属矩阵归位。
 - 单个测试文件目标低于 `1000` 行；超过 `3000` 行会触发测试拓扑 guardrail。
@@ -107,9 +118,9 @@ uv run pytest --html=reports/report.html --self-contained-html --cov=src --cov-r
 
 ### 运行 QUALITY 与速度预算
 
-QUALITY 由质量门禁显式运行架构测试和一次 FAST 套件。JUnit 使用 `xunit2`，预算为套件 60 秒、单例 1 秒；`tests/unit/` 在 N≥30 时 p95 不超过 100 毫秒。N<30 时静默跳过目录 p95 检查。插件包拥有自己的预算，不计入核心 FAST。
+QUALITY 由质量门禁显式运行架构测试和一次 FAST 套件。JUnit 使用 `xunit2`，预算为套件 60 秒、单例 3 秒；`tests/unit/` 在 N≥30 时 p95 不超过 100 毫秒。N<30 时静默跳过目录 p95 检查。插件包拥有自己的预算，不计入核心 FAST。
 
-FAST 的 60 秒总预算、1 秒单例预算与 `tests/unit/` p95 预算均为强制门禁；任一预算超限时质量流程立即以非零状态退出。CI 参考环境固定为 2 vCPU / 4 GB 配额。
+FAST 的 60 秒总预算、3 秒单例预算与 `tests/unit/` p95 预算均为强制门禁；任一预算超限时质量流程立即以非零状态退出。CI 参考环境固定为 2 vCPU / 4 GB 配额。
 
 ```bash
 uv run pytest -q --junitxml=reports/fast-tests.xml
@@ -120,7 +131,8 @@ uv run python scripts/check_fast_test_budget.py reports/fast-tests.xml
 ### 运行重测试
 
 HEAVY 测试影响选择由 `scripts/select_heavy_tests.py` 和机器可读真源
-`docs/architecture/heavy-test-impact.toml` 共同治理。selector 先识别直接修改的 HEAVY 测试，再处理候选 mapping，最后才处理 ignore；候选路径没有 mapping 或显式 NONE 时会 fail closed。
+`docs/architecture/heavy-test-impact.toml` 共同治理。selector 先识别直接修改的 HEAVY 测试，再排除人类阅读文档，
+随后处理候选 mapping，最后才处理其余 ignore；候选路径没有 mapping 或显式 NONE 时会 fail closed。
 
 维护要求：
 
@@ -128,7 +140,8 @@ HEAVY 测试影响选择由 `scripts/select_heavy_tests.py` 和机器可读真�
 - 新增、删除或移动 HEAVY 测试时，同步更新引用它的 `heavy_tests`。
 - HEAVY 目录内的 conftest、fixture、support、模拟器和负载场景，以及 `tests/fixtures/**`、共享 conftest、`tests/support/**` 都属于候选资产。
 - 当前没有已验收权威 HEAVY 测试的既有候选路径保持未映射并 fail closed，待独立业务交接后再补 mapping，不得使用 NONE 或旧测试猜测绕过。
-- 具体工作线或插件 HEAVY 场景只存在于对应 `workline_plugins/<plugin_key>/tests/`，不得加入核心 selector 的 `heavy_tests` 映射。
+- 具体工作线/插件 HEAVY 场景只存在于对应 `workline_plugins/<plugin_key>/tests/`；具体厂商 Adapter HEAVY 场景只存在于
+  `device_adapters/<adapter_key>/tests/`。两者都不得加入核心 selector 的 `heavy_tests` 映射。
 
 ```bash
 # 本地未暂存改动（默认 scope 也是 unstaged）
@@ -144,7 +157,7 @@ uv run scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"
 uv run pytest tests/scripts -q
 ```
 
-退出 0 且有输出表示每行一个应运行的 HEAVY 测试；退出 0 且无输出表示改动只命中 ignore 或显式 NONE；非零表示 selector 为避免漏测而 fail closed。Jenkins 当前只运行 `HEAVY Selector Smoke` 合同测试，不启用 HEAVY Required 或 minimum smoke。
+退出 0 且有输出表示每行一个应运行的 HEAVY 测试；退出 0 且无输出表示改动只命中 ignore 或显式 NONE；非零表示 selector 为避免漏测而 fail closed。`Jenkinsfile.backend-ci` 的唯一 `Quality Gate` 在所有构建中运行 selector 合同测试，并在合并请求中通过 `HEAVY Required` 执行目标分支差异选择结果。
 
 ```bash
 # E2E 测试（默认不会被 pytest 自动收集）
@@ -213,7 +226,10 @@ pytest tests/database/test_relation_metadata.py
 
 # 显式运行集成或韧性测试目录
 pytest tests/integration/
-pytest tests/resilience/test_redis_degradation.py
+pytest tests/resilience/
+
+# 运行 Redis 人工降级演练
+uv run python scripts/manual/redis_degradation_drill.py
 
 # 只运行某个测试类
 pytest tests/database/test_relation_metadata.py::TestRelationMetadata

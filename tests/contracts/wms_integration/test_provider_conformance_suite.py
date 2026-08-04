@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -158,7 +160,16 @@ def test_script_fixture_is_frozen_verifiable_and_has_no_secret_or_header_schema(
 
 
 def test_common_conformance_test_has_no_skip_or_xfail_escape_hatch() -> None:
-    source = inspect.getsource(test_every_target_runs_the_same_core_question_bank_without_override)
+    module_source = Path(__file__).read_text(encoding="utf-8")
+    module = ast.parse(module_source)
+    target = next(
+        node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "test_every_target_runs_the_same_core_question_bank_without_override"
+    )
+    source = ast.get_source_segment(module_source, target)
+    assert source is not None
     assert "pytest.mark.skip" not in source
     assert "pytest.mark.xfail" not in source
     assert "pytest.skip(" not in source

@@ -32,7 +32,6 @@ FINAL_TEST_DIRECTORY_ALLOWLIST = {
     "tests/database",
     "tests/deployment",
     "tests/device",
-    "tests/docs",
     "tests/e2e",
     "tests/integration",
     "tests/load",

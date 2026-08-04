@@ -119,7 +119,6 @@ def test_wms_effect_admission_switch_is_consistent_across_profiles_and_effect_cr
         lambda loader, node: loader.construct_sequence(node, deep=True),
     )
     expected_profiles = {
-        ".env": "true",
         ".env.dev": "true",
         ".env.test": "true",
         ".env.prod": "false",

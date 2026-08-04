@@ -2,10 +2,12 @@
 作业线时间线模型 (Workline Timeline)
 
 用于记录会话执行的详细时间线，是排障主视图。
-遵循白皮书 8.4 节规范。
 
 相关文档:
-- 白皮书: @docs/workline_plugin_architecture_design.md
+- 目标架构:
+  @docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
+
+本模型属于收敛前 implementation_baseline。
 """
 
 from datetime import datetime
@@ -28,7 +30,7 @@ if TYPE_CHECKING:
 
 
 class TimelineStage(str, Enum):
-    """时间线阶段枚举 (白皮书 8.4)"""
+    """收敛前 implementation_baseline 的时间线阶段枚举。"""
 
     INGEST = "INGEST"  # 接收
     ROUTE = "ROUTE"  # 路由

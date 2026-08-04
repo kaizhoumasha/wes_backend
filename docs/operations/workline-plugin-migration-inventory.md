@@ -1,5 +1,7 @@
 # WorkLine 插件迁移清单与跨环境批准
 
+> 状态：`implementation_baseline`。只要当前 inventory/matrix/preflight 脚本仍在库中执行，本操作说明继续保留；脚本退役时必须同步归档。
+
 ## 职责边界
 
 本流程只生成只读 inventory、跨环境 migration matrix 和批准证据门禁，不执行配置冻结、排空、历史

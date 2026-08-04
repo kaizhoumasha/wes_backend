@@ -28,9 +28,6 @@ def test_query_cache_and_legacy_exception_adapter_are_deleted_without_compatibil
     active_sources = (
         REPO_ROOT / "src/app/wms_integration",
         REPO_ROOT / "src/app/contracts",
-        REPO_ROOT / "docs/architecture/authority-matrix.md",
-        REPO_ROOT / "docs/architecture/file_index.md",
-        REPO_ROOT / "docs/contracts/external-contract-profile.md",
     )
     forbidden = ("WmsQueryCacheService", "WMS_QUERY_CACHE_TTL_SECONDS", "cache_ttl_seconds")
     violations: list[str] = []

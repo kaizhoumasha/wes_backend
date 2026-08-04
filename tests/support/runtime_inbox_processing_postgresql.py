@@ -26,6 +26,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
+from src.app.runtime.workline_plugins.pre_attempt import PreAttemptResolution
 from src.app.runtime.workline_plugins.rough_sorter.domain_contract import resolve_rough_sorter_business_key
 from src.app.sys.models import SystemOutbox
 from src.app.wms_integration.ports.document_operations import ValidateRoughSorterAdmissionRequest
@@ -63,6 +64,12 @@ class RecordingTaskQueueGateway:
 
     def enqueue_outbox(self, *, targets: object, limit: int = 50) -> None:
         self.outbox_enqueues.append((targets, limit))
+
+
+async def resolve_core_test_pre_attempt(*_args: object, **_kwargs: object) -> PreAttemptResolution:
+    """核心可靠性场景不执行任何具体工作线的前置业务判定。"""
+
+    return PreAttemptResolution.not_applicable()
 
 
 def processor(service: RuntimeInboxService) -> RuntimeInboxProcessorBridge:
@@ -425,7 +432,14 @@ async def with_temporary_runtime_database(
         session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         queue_gateway = RecordingTaskQueueGateway()
         try:
-            with patch("src.core.task_queue_gateway.task_queue_gateway", queue_gateway):
+            with (
+                patch("src.core.task_queue_gateway.task_queue_gateway", queue_gateway),
+                patch(
+                    "src.app.runtime.orchestration.services.runtime_inbox."
+                    "runtime_inbox_orchestrator_bridge.resolve_plugin_pre_attempt_facts",
+                    new=resolve_core_test_pre_attempt,
+                ),
+            ):
                 await scenario(session_factory, queue_gateway)
         finally:
             await engine.dispose()

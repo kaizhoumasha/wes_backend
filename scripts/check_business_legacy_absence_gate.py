@@ -85,20 +85,14 @@ SCAN_ROOTS = (
     Path("scripts"),
     Path("tests"),
     Path("migrations/versions"),
-    Path("docs/architecture"),
-    Path("docs/contracts"),
-    Path("docs/superpowers/plans"),
     Path("pyproject.toml"),
     Path("alembic.ini"),
 )
 SCAN_EXCLUDED_PARTS = frozenset({".git", ".venv", "__pycache__", ".pytest_cache", "reports"})
-LEDGER_AUDIT_DOCS = frozenset(
+LEDGER_AUDIT_FILES = frozenset(
     {
         MATRIX_PATH,
-        Path("docs/architecture/legacy-cleanup-matrix.md"),
         LEDGER_PATH,
-        Path("docs/architecture/business-legacy-absence-ledger.md"),
-        Path("docs/superpowers/archive/plans/2026-07-07-" + "phase" + "5-business-legacy-destructive-cleanup.md"),
         Path("scripts/generate_legacy_matrix.py"),
         Path("tests/architecture/test_business_legacy_absence_guardrail.py"),
     }
@@ -181,7 +175,7 @@ def _iter_scan_files(repo_root: Path) -> Iterable[Path]:
             relative_parts = path.relative_to(repo_root).parts
             if any(part in SCAN_EXCLUDED_PARTS for part in relative_parts):
                 continue
-            if path.suffix not in {".py", ".md", ".csv", ".yaml", ".yml", ".toml", ".ini", ".sh"}:
+            if path.suffix not in {".py", ".csv", ".yaml", ".yml", ".toml", ".ini", ".sh"}:
                 continue
             yield path
 
@@ -203,7 +197,7 @@ def strict_reference_violations(repo_root: Path, rows: Sequence[dict[str, str]])
     violations: list[str] = []
     for path in _iter_scan_files(repo_root):
         relative = path.relative_to(repo_root)
-        if relative in LEDGER_AUDIT_DOCS:
+        if relative in LEDGER_AUDIT_FILES:
             continue
         text = path.read_text(encoding="utf-8")
         for token, entry_id in token_to_entry.items():

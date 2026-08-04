@@ -2,118 +2,58 @@
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 from pathlib import Path
 
-import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTAINER_PROFILE_PATH = "/run/wes/wms-provider.yaml"
 PRODUCTION_PROFILE_CONSUMERS = ("api", "celery", "celery-wms-fulfillment", "celery_beat")
 TEST_DEPLOY_PROFILE_CONSUMERS = ("api", "celery", "celery-wms-fulfillment")
+REQUIRED_PROFILE_MOUNT = (
+    f"${{WMS_PROVIDER_PROFILE_HOST_FILE:?WMS_PROVIDER_PROFILE_HOST_FILE is required}}:{CONTAINER_PROFILE_PATH}:ro"
+)
 
 
-def _compose_command(*, test_deploy: bool) -> list[str]:
-    command = [
-        "docker",
-        "compose",
-        "--env-file",
-        ".env.test" if test_deploy else ".env.prod",
-        "-f",
-        "docker-compose.test-deploy.yml" if test_deploy else "docker-compose.yml",
-    ]
-    if not test_deploy:
-        command.extend(("-f", "docker-compose.deploy.yml", "--profile", "prod"))
-    command.extend(("config", "--format", "json"))
-    return command
-
-
-def _render_compose(*, test_deploy: bool, host_profile: Path) -> dict[str, object]:
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "BACKEND_IMAGE": "example.invalid/wes-backend:test",
-            "WMS_PROVIDER_PROFILE_HOST_FILE": str(host_profile),
-        }
-    )
-    completed = subprocess.run(
-        _compose_command(test_deploy=test_deploy),
-        cwd=REPO_ROOT,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return json.loads(completed.stdout)
+def _load_compose(filename: str) -> dict[str, object]:
+    compose_text = (REPO_ROOT / filename).read_text(encoding="utf-8")
+    # PyYAML 不认识 Compose 的 sequence override 标签；静态合同只需保留其序列值。
+    return yaml.safe_load(compose_text.replace("!override", ""))
 
 
 def _assert_profile_mount(
     compose: dict[str, object],
     *,
     service_names: tuple[str, ...],
-    host_profile: Path,
 ) -> None:
     services = compose["services"]
     for service_name in service_names:
         service = services[service_name]
-        assert service["environment"]["WMS_PROVIDER_PROFILE_FILE"] == CONTAINER_PROFILE_PATH
-        profile_mounts = [volume for volume in service["volumes"] if volume.get("target") == CONTAINER_PROFILE_PATH]
-        assert profile_mounts == [
-            {
-                "type": "bind",
-                "source": str(host_profile),
-                "target": CONTAINER_PROFILE_PATH,
-                "read_only": True,
-                "bind": {},
-            }
-        ]
+        parent_name = service.get("extends", {}).get("service")
+        parent = services[parent_name] if parent_name else {}
+        environment = {**parent.get("environment", {}), **service.get("environment", {})}
+        volumes = service.get("volumes", parent.get("volumes", []))
+
+        assert environment["WMS_PROVIDER_PROFILE_FILE"] == CONTAINER_PROFILE_PATH
+        assert volumes.count(REQUIRED_PROFILE_MOUNT) == 1
 
 
-def test_production_overlay_keeps_one_read_only_profile_mount_for_all_process_roles(tmp_path: Path) -> None:
-    host_profile = tmp_path / "factory-wms-provider.yaml"
-    host_profile.touch()
-
-    compose = _render_compose(test_deploy=False, host_profile=host_profile)
+def test_production_overlay_keeps_one_read_only_profile_mount_for_all_process_roles() -> None:
+    compose = _load_compose("docker-compose.deploy.yml")
 
     _assert_profile_mount(
         compose,
         service_names=PRODUCTION_PROFILE_CONSUMERS,
-        host_profile=host_profile,
     )
 
 
-def test_test_deploy_keeps_the_same_read_only_profile_mount_for_its_process_roles(tmp_path: Path) -> None:
-    host_profile = tmp_path / "factory-wms-provider.yaml"
-    host_profile.touch()
-
-    compose = _render_compose(test_deploy=True, host_profile=host_profile)
+def test_test_deploy_keeps_the_same_read_only_profile_mount_for_its_process_roles() -> None:
+    compose = _load_compose("docker-compose.test-deploy.yml")
 
     _assert_profile_mount(
         compose,
         service_names=TEST_DEPLOY_PROFILE_CONSUMERS,
-        host_profile=host_profile,
     )
-
-
-@pytest.mark.parametrize("test_deploy", (False, True))
-def test_compose_config_fails_closed_without_the_host_profile_variable(test_deploy: bool) -> None:
-    environment = os.environ.copy()
-    environment["BACKEND_IMAGE"] = "example.invalid/wes-backend:test"
-    environment.pop("WMS_PROVIDER_PROFILE_HOST_FILE", None)
-
-    completed = subprocess.run(
-        _compose_command(test_deploy=test_deploy),
-        cwd=REPO_ROOT,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode != 0
-    assert "WMS_PROVIDER_PROFILE_HOST_FILE is required" in completed.stderr
 
 
 def test_prod_env_exposes_only_the_host_profile_path_and_documents_profile_driven_http_security() -> None:

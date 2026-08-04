@@ -11,8 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from scripts.workline_inbox_retirement_guardrail import CURRENT_DOC_FILES
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAIL = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 OPERATION_API = REPO_ROOT / "src/app/workline/v1/operation.py"
@@ -27,11 +25,6 @@ def _run_guardrail_fixture(tmp_path: Path, operation_line: str) -> subprocess.Co
         REPO_ROOT / "scripts" / "workline_inbox_retirement_guardrail.py",
         scripts_dir / "workline_inbox_retirement_guardrail.py",
     )
-    for relative_path in CURRENT_DOC_FILES:
-        source = REPO_ROOT / relative_path
-        target = tmp_path / relative_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(source, target)
     allowlist = scripts_dir / "architecture-guardrails.allowlist"
     allowlist.write_text("")
     operation = tmp_path / "src/app/workline/v1/operation.py"

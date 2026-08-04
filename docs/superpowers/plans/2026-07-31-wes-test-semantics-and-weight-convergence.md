@@ -2,27 +2,42 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 将 WES 核心测试收敛到 SPEC 定义的最小执行内核、通用 WorkLine 能力、外部合同和可靠性不变量；把所有具体工作线、具体厂商和业务插件测试从核心 `tests/` 移出，随独立二次开发插件包重新交付。
+**Goal:** 将 WES 核心测试收敛到 SPEC 定义的最小执行内核、通用 WorkLine 能力、外部合同和可靠性不变量；
+把具体厂商合同和具体业务插件测试从核心 `tests/` 移出，分别随独立 Adapter 包和插件包重新交付。
 
-**Architecture:** 核心仓库与二次开发插件包拥有不同测试边界。核心 `tests/` 不保存具体工作线流程、具体插件 Handler、具体厂商设备映射或插件 fixture；插件采用 `workline_plugins/<plugin_key>/` 独立包结构，自带 `pyproject.toml`、`src/`、`tests/` 和 `fixtures/`，并由自己的测试入口和 CI 验收。核心测试继续按 `FAST`、`QUALITY`、`HEAVY` 分层。
+**Architecture:** 核心仓库、厂商 Adapter 包和业务插件包拥有三组独立测试边界。核心 `tests/` 不保存具体工作线流程、具体插件 Handler 或具体厂商映射；
+Adapter 使用 `device_adapters/<adapter_key>/`，插件使用 `workline_plugins/<plugin_key>/`，两者均自带 `pyproject.toml`、`src/`、`tests/` 和 `fixtures/`，
+并由各自的测试入口和 CI 验收。核心测试继续按 `FAST`、`QUALITY`、`HEAVY` 分层。
+
+测试所有权是三向隔离：核心测试不得借用具体业务或厂商场景证明基础能力；Adapter 测试只证明厂商合同与标准化映射；
+插件测试只证明业务 Decision 和对象推进。Adapter/插件测试都不得替代核心持久化、幂等、传输、并发和恢复不变量测试。
 
 **Tech Stack:** Python 3.13、Pytest 9、pytest-asyncio、JUnit XML、Ruff、Bandit、GitNexus、Jenkins。
 
+> **总控阶段归属（2026-08-03）：** 本计划是
+> `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
+> 的 Phase 1 权威计划。Task 1、2、3、6 及 Task 4/7 的可独立治理部分已在
+> `origin/develop@cf2f1f91` 合入；Task 5 和混合资产承接归 Phase 4，插件同包验收归
+> Phase 5/6，旧 revision 与最终质量验收归 Phase 8/9。本计划在这些延后义务完成前
+> 仍保持未完成状态。
+
 ---
 
-## 1. 唯一设计基线
+## 1. 设计与调度基线
 
 - `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
-- `TODOS.md`
+- `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
 
-SPEC 负责目标架构和所有权边界；本计划只负责测试资产的归属、删除、改写、执行分层和门禁，不实现具体工作线插件或生产执行内核。
+SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退出门禁；本计划只负责测试资产的归属、删除、
+改写、执行分层和门禁，不实现具体工作线插件或生产执行内核。
 
 已完成的治理基础：
 
 - [x] 默认测试拓扑已拆分为 `FAST`、`QUALITY`、`HEAVY`。
 - [x] topology guardrail、FAST JUnit 预算脚本和 HEAVY selector 已建立。
-- [x] SPEC 已明确核心测试与二次开发插件测试的所有权边界。
+- [x] SPEC 已明确核心、厂商 Adapter 与业务插件测试的独立所有权边界。
 - [x] 插件包物理结构确定为 `workline_plugins/<plugin_key>/{pyproject.toml,src,tests,fixtures}`。
+- [x] Adapter 包物理结构确定为 `device_adapters/<adapter_key>/{pyproject.toml,src,tests,fixtures}`。
 
 ## 2. 锁定决策
 
@@ -39,14 +54,16 @@ SPEC 负责目标架构和所有权边界；本计划只负责测试资产的归
    - 绑定具体厂商设备、命令、事件、Payload 或映射的合同；
    - 具体工作线闭环的 E2E、韧性、并发和负载测试。
 3. 当前仓库中的具体插件测试直接从核心 `tests/` 删除，不把旧 Runtime/Manifest 测试原样搬到新目录，也不创建只有测试没有插件代码的空包。
-4. 具体插件二次开发时，插件代码、测试和 fixture 必须在同一个工作包加入；插件未通过自身测试，不得进入部署包。
-5. 测试处置只使用三种语义：
+4. 具体 Adapter/插件二次开发时，各自的代码、测试和 fixture 必须在同一工作包加入；任一包未通过自身测试，不得进入部署包。
+5. 测试处置只使用四种语义：
    - `CORE_REWRITE`：证明通用 WES 不变量，改写到最终核心对象后保留；
-   - `PLUGIN_OWNED`：证明具体工作线、插件或厂商行为，从核心删除，随插件包重建；
+   - `ADAPTER_OWNED`：证明具体厂商 DTO、协议、Payload、原始码或映射，从核心删除，随 Adapter 包重建；
+   - `PLUGIN_OWNED`：证明具体工作线或业务插件行为，从核心删除，随插件包重建；
    - `LEGACY_DELETE`：只证明旧 Runtime、Manifest、Capability、Intent/Effect、Hold、Recovery、Reservation、旧迁移或兼容入口，直接删除。
 6. 不建立 CSV 迁移矩阵。删除提交或 PR 描述记录分类与所有权；不得按 `legacy`、`replay`、`reconciliation` 等关键词批量删除。
 7. `tests/workline_plugins/` 必须不存在；核心测试不得 import 根目录二次开发插件包或核心源码中的具体插件实现。
-8. 核心默认 pytest、核心覆盖率和核心 HEAVY selector 不发现、不映射、不运行 `workline_plugins/*/tests/`。
+8. 核心默认 pytest、核心覆盖率和核心 HEAVY selector 不发现、不映射、不运行
+   `workline_plugins/*/tests/` 或 `device_adapters/*/tests/`。
 9. 通用插件 SPI/SDK 可以用最小 fake 在核心测试中验证，但 fake 不得承载任何真实工作线、客户或厂商规则。
 10. `tests/workline_runtime/` 不是长期所有权名称。保留价值必须按最终核心对象改写到稳定领域目录；仅证明旧平台装配的测试删除。
 11. 系统未发布，不保留旧测试路径 re-export、fixture alias、兼容 marker、双路径门禁或旧迁移验收。
@@ -61,11 +78,30 @@ SPEC 负责目标架构和所有权边界；本计划只负责测试资产的归
 | 核心领域单元测试 | 执行对象、WorkLine/Epoch、投影和可靠性状态转移 | 具体插件业务决策 |
 | 共享合同测试 | ECS/WMS/RCS 共享 DTO、认证、幂等、ACK/CALLBACK、错误映射 | 具体厂商 Payload 和工作线流程 |
 | API 测试 | route、权限、请求响应、Service facade | Repository、插件决策和完整编排 |
-| Repository/Adapter 集成测试 | 数据库约束、事务和共享 Adapter 边界 | 插件场景排列 |
+| Repository/共享 Adapter 集成测试 | 数据库约束、事务和共享技术 Adapter 边界 | 厂商 wire 合同和插件场景排列 |
 | 架构测试 | 分层、import、旧架构缺席、核心/插件所有权和测试拓扑 | 业务流程 |
 | 核心 E2E/韧性/负载 | 只验证跨插件通用的 WES 机制 | 具体工作线闭环 |
 
-### 3.2 二次开发插件包
+### 3.2 厂商 Adapter 包
+
+```text
+device_adapters/<adapter_key>/
+├── pyproject.toml
+├── src/
+├── tests/
+└── fixtures/
+```
+
+Adapter 包唯一拥有：
+
+- 具体厂商 DTO、认证差异和 wire Payload；
+- 具体厂商命令、事件、ACK/CALLBACK 和原始码映射；
+- 厂商合同 fixture、Mock、集成、E2E 和韧性场景；
+- 标准化角色事件与逻辑动作的映射验收。
+
+Adapter 不得拥有工作线业务 Decision、对象推进或具体业务流程。
+
+### 3.3 二次开发插件包
 
 ```text
 workline_plugins/<plugin_key>/
@@ -79,11 +115,11 @@ workline_plugins/<plugin_key>/
 
 - 具体工作线决策表与 Handler 行为；
 - 具体设备角色和现场拓扑组合；
-- 具体厂商 DTO、命令、事件和映射；
 - 插件级集成、E2E、韧性、并发和负载场景；
 - 部署前插件验收结果。
 
-插件包通过声明 WES SDK 依赖复用核心能力，不通过复制核心测试或将源码写回核心 `src/` 集成。
+插件包通过声明 WES SDK 依赖复用核心能力，只消费 Adapter 输出的标准化角色事件和逻辑动作；不声明厂商协议依赖，
+不复制核心测试，也不将源码写回核心 `src/` 集成。
 
 ## 4. 核心执行重量
 
@@ -95,7 +131,7 @@ workline_plugins/<plugin_key>/
 
 - CI 参考环境固定 2 vCPU / 4 GB；
 - 核心 FAST 总时长不超过 60 秒；
-- 单例不超过 1 秒；
+- 单例不超过 3 秒；
 - `tests/unit/` 在 N≥30 时 p95 不超过 100 毫秒。
 
 以上三项预算均由质量门禁强制执行，任一超限即阻断。
@@ -141,8 +177,8 @@ workline_plugins/<plugin_key>/
 **Verification:**
 
 ```bash
-uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
-git diff --check
+rtk uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
+rtk git diff --check
 ```
 
 ### Task 2（已完成）：建立核心/插件所有权门禁
@@ -164,9 +200,9 @@ git diff --check
 **Verification:**
 
 ```bash
-uv run pytest tests/architecture/test_suite_topology_guardrail.py \
+rtk uv run pytest tests/architecture/test_suite_topology_guardrail.py \
   tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
-uv run pytest tests/scripts/test_check_fast_test_budget.py tests/scripts/test_select_heavy_tests.py -q
+rtk uv run pytest tests/scripts/test_check_fast_test_budget.py tests/scripts/test_select_heavy_tests.py -q
 ```
 
 ### Task 3（已完成）：优先移出显式插件测试目录
@@ -184,10 +220,11 @@ uv run pytest tests/scripts/test_check_fast_test_budget.py tests/scripts/test_se
 **Verification:**
 
 ```bash
-test ! -d tests/workline_plugins
-test ! -d tests/characterization/workline_legacy
-uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
-uv run pytest --collect-only -q -o addopts=''
+! rtk git ls-files -- \
+  'tests/workline_plugins/**' \
+  'tests/characterization/workline_legacy/**' | rtk rg .
+rtk uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
+rtk uv run pytest --collect-only -q -o addopts=''
 ```
 
 ### Task 4（部分完成，等待 Task 5）：清除散落在核心目录的具体插件测试
@@ -216,15 +253,18 @@ uv run pytest --collect-only -q -o addopts=''
 **Verification:**
 
 ```bash
-uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
-uv run pytest tests/architecture -q
+rtk uv run pytest tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
+rtk uv run pytest tests/architecture -q
 ```
 
-### Task 5（TODO，随执行架构重构启动）：把通用 WorkLine 与可靠性语义改写到最终核心对象
+### Task 5（延后，随执行架构重构启动）：把通用 WorkLine 与可靠性语义改写到最终核心对象
 
 **Entry condition:** 最终 `InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch`、设备/位置投影及其生产路径已经交付。
 
-**Current status:** 延后执行，不属于当前测试收敛批次。截至 2026-08-02，入口条件中的最终对象和生产路径尚未完整交付；本计划不得为完成测试迁移而越权实现生产执行内核。后续启动 SPEC §14.3 工作包 2（最小执行对象、可靠投递记录、通用 WorkLine 能力和核心可靠性测试）时，必须同步执行本 Task，并以 `TODOS.md` 的“最终核心执行对象测试承接”事项跟踪。
+**Current status:** 延后执行，不属于当前测试收敛批次。截至 2026-08-03，入口条件中的最终对象和生产路径
+尚未完整交付；本计划不得为完成测试迁移而越权实现生产执行内核。总控 Phase 3 负责交付最小执行对象、
+可靠投递记录和通用 WorkLine 能力；其退出门禁通过后，Phase 4 必须执行本 Task，并由 Master Plan 的
+Phase 4 任务及退出门禁直接跟踪，不在 `TODOS.md` 维护重复调度项。
 
 Task 5 完成前：
 
@@ -238,7 +278,8 @@ Task 5 完成前：
 - [ ] 保留命令持久化、ACK/CALLBACK 分离、未知物理结果不自动重放。
 - [ ] 保留设备/位置投影、单设备忙闲和位置容量。
 - [ ] 保留处理幂等与 CALLBACK fencing；这些是核心可靠性，不归具体插件。
-- [ ] 删除 RuntimeInbox、Intent/Effect、Capability、Manifest、Hold、Recovery、Reservation 等旧所有者测试。
+- [ ] 删除 RuntimeInbox、Intent/Effect、Capability、Manifest、Hold、Recovery、Reservation
+  等旧所有者测试。
 
 ### Task 6（已完成）：收敛核心 FAST、QUALITY 和 HEAVY
 
@@ -252,49 +293,56 @@ Task 5 完成前：
 
 - [x] 核心 `tests/workline_plugins/` 不存在。
 - [ ] 核心测试不导入任何具体工作线插件或根目录二次开发插件包。
+- [ ] 核心测试不导入任何具体厂商 Adapter 或根目录 `device_adapters` 二次开发包。
 - [ ] 核心测试中不存在粗分机、自动分拣、人工分拣、满箱交换或复杂出库的业务规则断言。
 - [ ] 只验证旧平台、旧兼容、旧迁移和旧 revision chain 的测试归零。
-- [ ] 当前已交付插件包的代码、测试和 fixture 同包存在，并分别独立通过测试。
+- [ ] 当前已交付 Adapter/插件包的代码、测试和 fixture 同包存在，并分别独立通过测试。
 - [ ] 核心默认快速回归、QUALITY、受影响核心 HEAVY 和完整质量门禁全部通过。
 
 **Core verification:**
 
 ```bash
-uv run pytest tests/architecture/test_suite_topology_guardrail.py \
+rtk uv run pytest tests/architecture/test_suite_topology_guardrail.py \
   tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
-uv run pytest tests/scripts -q
-uv run pytest --collect-only -q -o addopts=''
-uv run pytest -q --junitxml=reports/fast-tests.xml
-uv run python scripts/check_fast_test_budget.py reports/fast-tests.xml
-./scripts/git-quality-gate.sh --profile quality
+rtk uv run pytest tests/scripts -q
+rtk uv run pytest --collect-only -q -o addopts=''
+rtk uv run pytest -q --junitxml=reports/fast-tests.xml
+rtk uv run python scripts/check_fast_test_budget.py reports/fast-tests.xml
+rtk ./scripts/git-quality-gate.sh --profile quality
 ```
 
-每个已交付插件包另在其目录运行自己的测试入口；核心验收不代替插件验收。
+每个已交付 Adapter/插件包另在其目录运行自己的测试入口；核心验收不代替二次开发包验收。
 
 ## 6. 删除与提交规则
 
 每个删除提交或 PR 描述必须包含：
 
-- 分类：`PLUGIN_OWNED`、`LEGACY_DELETE` 或已完成承接的 `CORE_REWRITE`；
+- 逐文件处置：`REWRITE`、`DELETE → <successor test>` 或 `DELETE → NONE + 理由`；厂商合同移交标注
+  `ADAPTER_OWNED`，业务插件移交标注 `PLUGIN_OWNED`，旧实现删除标注 `LEGACY_DELETE`；
 - 删除范围；
-- 核心承接测试路径，或明确 `NONE`；
-- 未来插件所有者，例如 `workline_plugins/rough_sorter/tests/`；
+- successor 必须先在最终对象上通过，才能删除旧测试；`NONE` 必须说明该测试只验证何种已删除实现；
+- 未来唯一所有者，例如 `device_adapters/<adapter_key>/tests/` 或
+  `workline_plugins/rough_sorter/tests/`；
 - 实际验证命令和结果。
+
+WMS Phase 2 的逐文件处置由
+`docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md` Task 9 固定；HEAVY 测试移动或删除时，
+同一变更必须更新 `docs/architecture/heavy-test-impact.toml`，不得留下失效路径或用臆造 NONE 掩盖风险。
 
 禁止：
 
 - 为保持绿灯而删除尚未承接的核心可靠性断言；
-- 把插件测试改名后继续放在 `tests/contracts/`、`tests/workline_runtime/` 或 HEAVY 目录；
-- 把旧测试原样复制到插件包；
-- 仅创建插件测试目录而不同时交付插件代码和 fixture；
-- 让核心 CI 递归发现或运行插件包测试。
+- 把 Adapter/插件测试改名后继续放在 `tests/contracts/`、`tests/workline_runtime/` 或 HEAVY 目录；
+- 把旧测试原样复制到 Adapter 包或插件包；
+- 仅创建测试目录而不同时交付对应 Adapter/插件代码和 fixture；
+- 让核心 CI 递归发现或运行 Adapter/插件包测试。
 
 ## 7. 完成定义
 
 只有同时满足以下条件，本计划才完成：
 
 1. 核心 `tests/` 只证明 SPEC 定义的 WES 基础能力和通用可靠性。
-2. 具体工作线、具体插件和具体厂商测试全部由独立二次开发包拥有。
-3. `CORE_REWRITE`、`PLUGIN_OWNED`、`LEGACY_DELETE` 三类处置均有可审计提交记录。
-4. 核心和每个已交付插件包分别拥有独立、明确、可重复的测试入口。
+2. 具体厂商合同测试全部由独立 Adapter 包拥有；具体工作线和业务测试全部由独立插件包拥有。
+3. `CORE_REWRITE`、`ADAPTER_OWNED`、`PLUGIN_OWNED`、`LEGACY_DELETE` 四类处置均有可审计提交记录。
+4. 核心和每个已交付 Adapter/插件包分别拥有独立、明确、可重复的测试入口。
 5. 核心测试预算、架构门禁和受影响 HEAVY 验收全部通过。

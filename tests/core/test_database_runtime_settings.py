@@ -75,7 +75,8 @@ def test_database_runtime_role_rejects_illegal_pool_budget(
         )
 
 
-def test_database_runtime_role_is_required() -> None:
+def test_database_runtime_role_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_RUNTIME_ROLE", raising=False)
     values = _valid_settings()
     values.pop("DATABASE_RUNTIME_ROLE")
 

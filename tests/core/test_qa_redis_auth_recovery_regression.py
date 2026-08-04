@@ -10,7 +10,6 @@ from src.core import security_runtime
 
 # Regression: ISSUE-003 — 启动时 Redis 不可用后，认证操作必须按需重连
 # Found by /qa on 2026-07-24
-# Report: .gstack/qa-reports/qa-report-127-0-0-1-8011-2026-07-24.md
 
 
 @pytest.mark.asyncio

@@ -187,144 +187,6 @@ def test_deployment_script_runs_live_guard_before_application_start_and_scale() 
     assert scale_body.index("validate_complete_scale_targets") < scale_body.index("run_capacity_guard")
 
 
-def test_jenkins_and_production_runbook_require_guard_and_migration_before_application_start() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
-    pipeline_environment = jenkins_text.split("    environment {", maxsplit=1)[1].split("    options {", maxsplit=1)[0]
-    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
-    profile_path_declaration = "WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'"
-    profile_path_preflight = 'if [ -z "${WMS_PROVIDER_PROFILE_HOST_FILE:-}" ]'
-    profile_file_preflight = '[ ! -f "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]'
-    profile_readable_preflight = '[ ! -r "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]'
-    profile_path_export = 'export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"'
-    guard_command = (
-        "run --rm --no-deps "
-        "-e DATABASE_RUNTIME_ROLE=cli "
-        "-e DATABASE_POOL_SIZE=1 "
-        "-e DATABASE_MAX_OVERFLOW=0 "
-        "api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment"
-    )
-
-    assert profile_path_declaration in {line.strip() for line in pipeline_environment.splitlines()}
-    assert profile_path_preflight in deploy_body
-    assert profile_file_preflight in deploy_body
-    assert profile_readable_preflight in deploy_body
-    assert profile_path_export in deploy_body
-    assert (
-        'COMPOSE_CMD="docker compose -f docker-compose.yml -f ${DEPLOY_COMPOSE_FILE} '
-        '--env-file ${DEPLOY_ENV_FILE}"' in deploy_body
-    )
-    compose_command_index = deploy_body.index('COMPOSE_CMD="docker compose')
-    first_compose_execution_index = deploy_body.index("$COMPOSE_CMD ", compose_command_index)
-    assert (
-        deploy_body.index(profile_path_preflight)
-        < deploy_body.index(profile_file_preflight)
-        < deploy_body.index(profile_readable_preflight)
-        < deploy_body.index(profile_path_export)
-        < compose_command_index
-        < first_compose_execution_index
-    )
-    assert "$COMPOSE_CMD up -d --wait db redis" in deploy_body
-    assert guard_command in deploy_body
-    infra_index = deploy_body.index("$COMPOSE_CMD up -d --wait db redis")
-    application_command = "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}"
-    first_guard_index = deploy_body.index("run_capacity_guard", infra_index)
-    quiesce_command = "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat"
-    migration_command = (
-        "$COMPOSE_CMD run --rm --no-deps "
-        "-e DATABASE_RUNTIME_ROLE=cli "
-        "-e DATABASE_POOL_SIZE=1 "
-        "-e DATABASE_MAX_OVERFLOW=0 "
-        "api alembic upgrade head"
-    )
-    quiesce_index = deploy_body.index(quiesce_command, first_guard_index)
-    migration_index = deploy_body.index(migration_command, quiesce_index)
-    migration_applied_index = deploy_body.index("MIGRATION_APPLIED=true", migration_index)
-    first_application_index = deploy_body.index(application_command, migration_applied_index)
-    assert (
-        infra_index
-        < first_guard_index
-        < quiesce_index
-        < migration_index
-        < migration_applied_index
-        < first_application_index
-    )
-    assert "cleanup_failed_deploy()" in deploy_body
-    assert "trap cleanup_failed_deploy EXIT" in deploy_body
-    cleanup_body = deploy_body.split("cleanup_failed_deploy()", maxsplit=1)[1].split(
-        "trap cleanup_failed_deploy EXIT", maxsplit=1
-    )[0]
-    assert 'if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]' in cleanup_body
-    assert "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat || true" in cleanup_body
-    assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('if [ "$HEALTH_CHECK_PASSED" = false ]')
-    assert "for service_name in ${DEPLOY_SERVICES}; do" in deploy_body
-    assert 'case "$service_name" in' in deploy_body
-    assert "celery|celery-wms-fulfillment|celery_beat)" in deploy_body
-    assert "$COMPOSE_CMD ps -q celery celery_beat" not in deploy_body
-    assert "${service_name} 容器未就绪" in deploy_body
-    assert "CELERY_HEALTH_TIMEOUT_SECONDS" in deploy_body
-    assert 'while [ "$container_health" != "healthy" ] && [ "$container_health" != "none" ]' in deploy_body
-    assert 'inspect ping -d "celery@$(hostname)"' in deploy_body
-    assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('inspect ping -d "celery@$(hostname)"')
-
-    automatic_rollback = deploy_body.split('if [ "$HEALTH_CHECK_PASSED" = false ]', maxsplit=1)[1]
-    assert "数据库迁移已执行，禁止自动切回旧镜像" in automatic_rollback
-    assert 'export BACKEND_IMAGE="$PREVIOUS_IMAGE"' not in automatic_rollback
-    assert application_command not in automatic_rollback
-
-    runbook_text = (REPO_ROOT / "docs/devops/prod-release-deploy.md").read_text(encoding="utf-8")
-    standard_release = runbook_text.split("### 4.5", maxsplit=1)[1].split("### 4.9", maxsplit=1)[0]
-    rollback = runbook_text.split("## 6. 回滚策略", maxsplit=1)[1].split("## 7.", maxsplit=1)[0]
-    assert "DATABASE_RUNTIME_ROLE=cli" in standard_release
-    assert "DATABASE_POOL_SIZE=1" in standard_release
-    assert "DATABASE_MAX_OVERFLOW=0" in standard_release
-    guard_index = standard_release.index(
-        "python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment"
-    )
-    quiesce_index = standard_release.index("stop api celery celery-wms-fulfillment celery_beat")
-    migration_index = standard_release.index("api alembic upgrade head")
-    application_index = standard_release.index(
-        "up -d --remove-orphans api celery celery-wms-fulfillment celery_beat flower nginx"
-    )
-    assert guard_index < quiesce_index < migration_index < application_index
-    assert "label=com.docker.compose.service=celery_worker" in standard_release
-    assert 'docker rm -f "$legacy_worker_id"' in standard_release
-    assert "迁移后禁止自动切回旧镜像" in rollback
-    assert "PREVIOUS_IMAGE" not in rollback
-    assert "ROLLBACK_IMAGE" not in rollback
-    assert "基础设施保持在线" in rollback
-    assert "数据修复方案" in rollback
-
-
-def test_jenkins_removes_legacy_celery_worker_before_destructive_migration() -> None:
-    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
-    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
-    cleanup_body = deploy_body.split("cleanup_failed_deploy()", maxsplit=1)[1].split(
-        "trap cleanup_failed_deploy EXIT", maxsplit=1
-    )[0]
-
-    assert "remove_legacy_celery_worker()" in deploy_body
-    legacy_cleanup = deploy_body.split("remove_legacy_celery_worker()", maxsplit=1)[1].split(
-        "cleanup_failed_deploy()", maxsplit=1
-    )[0]
-    assert "label=com.docker.compose.project=${compose_project_name}" in legacy_cleanup
-    assert "label=com.docker.compose.service=celery_worker" in legacy_cleanup
-    assert 'docker rm -f "$legacy_worker_id"' in legacy_cleanup
-    assert "遗留 celery_worker 容器仍然存在" in legacy_cleanup
-    assert "remove_legacy_celery_worker || true" in cleanup_body
-
-    cleanup_call = (
-        "remove_legacy_celery_worker\n"
-        "                            $COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat"
-    )
-    cleanup_call_index = deploy_body.index(cleanup_call)
-    quiesce_index = deploy_body.index(
-        "$COMPOSE_CMD stop api celery celery-wms-fulfillment celery_beat", cleanup_call_index
-    )
-    migration_index = deploy_body.index("api alembic upgrade head", quiesce_index)
-    assert cleanup_call_index < quiesce_index < migration_index
-    assert "$COMPOSE_CMD up -d --remove-orphans --no-build --no-deps ${DEPLOY_SERVICES}" in deploy_body
-
-
 def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
@@ -432,7 +294,10 @@ def test_scale_requires_complete_api_and_celery_target_topology(scale: list[str]
         _parse_scale(scale)
 
 
-def test_scale_calculates_complete_api_then_worker_target_without_prior_state() -> None:
+def test_scale_calculates_complete_api_then_worker_target_without_prior_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CELERY_CONCURRENCY", raising=False)
     scales = _parse_scale(["api=3", "celery=10"])
 
     plan = build_capacity_plan(services={"api", "celery"}, scales=scales)

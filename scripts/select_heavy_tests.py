@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import subprocess
 import sys
@@ -15,15 +16,22 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 HEAVY_DIRECT_GLOB = "tests/{integration,e2e,resilience,load,mock}/**/test_*.py"
+HUMAN_DOCUMENT_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".docx", ".pdf", ".eddx"})
+RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
+RETIRED_REMOVED_PATHS = frozenset({"Jenkinsfile"})
 CANDIDATE_GLOBS = (
     "src/**",
     "main.py",
     "migrations/**",
     "alembic.ini",
     "docker-compose*.yml",
+    "Dockerfile",
+    ".dockerignore",
+    "Jenkinsfile.backend-ci",
     "pyproject.toml",
     ".env*",
     "scripts/**",
+    "docs/**/*.{toml,csv,yaml,yml,json}",
     "tests/{integration,e2e,resilience,load,mock}/**",
     "tests/api/callback_test_support.py",
     "tests/contracts/wms_integration/provider_profile_support.py",
@@ -44,6 +52,7 @@ class MappingEntry:
 
     source_glob: str
     heavy_tests: tuple[str, ...]
+    reviewed_content_sha256: str | None = None
 
 
 type SelectorConfig = tuple[tuple[str, ...], tuple[MappingEntry, ...]]
@@ -84,6 +93,19 @@ def is_heavy_test(path: str) -> bool:
 
 def is_candidate(path: str) -> bool:
     return any(matches_glob(path, pattern) for pattern in CANDIDATE_GLOBS)
+
+
+def is_human_document(path: str) -> bool:
+    pure_path = PurePosixPath(path)
+    file_name = pure_path.name.lower()
+    suffix = pure_path.suffix.lower()
+    if suffix in HUMAN_DOCUMENT_SUFFIXES or file_name in {"readme", "license"}:
+        return True
+    if suffix != ".txt":
+        return False
+
+    # 候选执行目录中的 txt 可能是合同、fixture 或脚本输入；依赖清单也不是人类阅读文档。
+    return not is_candidate(path) and not file_name.startswith(("requirements", "constraints"))
 
 
 def _validate_repository_relative(value: str, *, field: str, allow_glob: bool) -> str:
@@ -279,10 +301,23 @@ def validate_config(ignore_globs: Iterable[str], mappings: Iterable[MappingEntry
             _validate_repository_relative(heavy_test, field="mapping.heavy_tests", allow_glob=False)
             if not is_heavy_test(heavy_test):
                 raise SelectorError(f"无效 HEAVY 测试路径: {heavy_test}")
+        if mapping.reviewed_content_sha256 is not None:
+            try:
+                _validate_repository_relative(
+                    mapping.source_glob,
+                    field="reviewed_content_sha256 source_glob",
+                    allow_glob=False,
+                )
+            except SelectorError as error:
+                raise SelectorError("reviewed_content_sha256 只允许搭配精确 source_glob") from error
+            if re.fullmatch(r"[0-9a-f]{64}", mapping.reviewed_content_sha256) is None:
+                raise SelectorError("reviewed_content_sha256 必须是小写十六进制 SHA-256")
 
     for index, left in enumerate(normalized_mappings):
         for right in normalized_mappings[index + 1 :]:
-            if left.heavy_tests != right.heavy_tests and _patterns_overlap(left.source_glob, right.source_glob):
+            left_policy = (left.heavy_tests, left.reviewed_content_sha256)
+            right_policy = (right.heavy_tests, right.reviewed_content_sha256)
+            if left_policy != right_policy and _patterns_overlap(left.source_glob, right.source_glob):
                 raise SelectorError(f"mapping source_glob 歧义: {left.source_glob} 与 {right.source_glob}")
 
     return normalized_ignores, normalized_mappings
@@ -307,13 +342,23 @@ def load_config(path: Path) -> SelectorConfig:
             raise SelectorError("每条 mapping 必须是 TOML table")
         source_glob = raw_mapping.get("source_glob")
         heavy_tests = raw_mapping.get("heavy_tests")
+        reviewed_content_sha256 = raw_mapping.get("reviewed_content_sha256")
         if (
             not isinstance(source_glob, str)
             or not isinstance(heavy_tests, list)
             or not all(isinstance(test_path, str) for test_path in heavy_tests)
+            or (reviewed_content_sha256 is not None and not isinstance(reviewed_content_sha256, str))
         ):
-            raise SelectorError("mapping 要求 source_glob 字符串和 heavy_tests 字符串列表")
-        mappings.append(MappingEntry(source_glob=source_glob, heavy_tests=tuple(sorted(set(heavy_tests)))))
+            raise SelectorError(
+                "mapping 要求 source_glob 字符串、heavy_tests 字符串列表和可选 reviewed_content_sha256 字符串"
+            )
+        mappings.append(
+            MappingEntry(
+                source_glob=source_glob,
+                heavy_tests=tuple(sorted(set(heavy_tests))),
+                reviewed_content_sha256=reviewed_content_sha256,
+            )
+        )
 
     return validate_config(ignore_globs, mappings)
 
@@ -389,12 +434,12 @@ def get_changed_files(
             or any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in base)
         ):
             raise SelectorError(f"base ref 必须是非空且非 option 的 Git revision: {base!r}")
-        commands = [["git", "diff", "--name-only", f"{base}...HEAD"]]
+        commands = [["git", "diff", "--no-renames", "--name-only", f"{base}...HEAD"]]
     elif scope == "staged":
-        commands = [["git", "diff", "--cached", "--name-only"]]
+        commands = [["git", "diff", "--cached", "--no-renames", "--name-only"]]
     elif scope in (None, "unstaged"):
         commands = [
-            ["git", "diff", "--name-only"],
+            ["git", "diff", "--no-renames", "--name-only"],
             ["git", "ls-files", "--others", "--exclude-standard"],
         ]
     else:
@@ -409,8 +454,13 @@ def get_changed_files(
     return sorted({_decode_git_quoted_path(line) for result in results for line in result.stdout.split("\n") if line})
 
 
-def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> list[str]:
-    """按直接 HEAVY → 候选 mapping → ignore 的顺序进行选择。"""
+def select_heavy_tests(
+    changed_files: Iterable[str],
+    config: SelectorConfig,
+    *,
+    repo_root: Path | None = None,
+) -> list[str]:
+    """按直接 HEAVY → 人类文档 → 候选 mapping → ignore 的顺序进行选择。"""
     ignore_globs, mappings = config
     selected: set[str] = set()
 
@@ -421,6 +471,9 @@ def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> 
             selected.add(normalized_path)
             continue
 
+        if is_human_document(normalized_path):
+            continue
+
         if is_candidate(normalized_path):
             matched = [mapping for mapping in mappings if matches_glob(normalized_path, mapping.source_glob)]
             if not matched:
@@ -429,6 +482,17 @@ def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> 
             if len(heavy_sets) > 1:
                 raise SelectorError(f"候选路径命中歧义 mapping: {normalized_path}")
             for mapping in matched:
+                if mapping.reviewed_content_sha256 is not None:
+                    content_path = (repo_root or Path.cwd()) / normalized_path
+                    try:
+                        actual_sha256 = hashlib.sha256(content_path.read_bytes()).hexdigest()
+                    except OSError as error:
+                        raise SelectorError(f"reviewed mapping 无法读取当前内容: {normalized_path}: {error}") from error
+                    if actual_sha256 != mapping.reviewed_content_sha256:
+                        raise SelectorError(
+                            "reviewed mapping 内容指纹不匹配: "
+                            f"{normalized_path} expected={mapping.reviewed_content_sha256} actual={actual_sha256}"
+                        )
                 selected.update(mapping.heavy_tests)
             continue
 
@@ -441,6 +505,20 @@ def select_heavy_tests(changed_files: Iterable[str], config: SelectorConfig) -> 
         if not is_heavy_test(test_path):
             raise SelectorError(f"selector 输出不是 HEAVY 测试路径: {test_path}")
     return sorted(selected)
+
+
+def filter_deleted_retired_archive_paths(changed_files: Iterable[str], *, repo_root: Path) -> list[str]:
+    """只跳过已从当前树删除的历史路径；重新引入的文件仍 fail closed。"""
+    retained: list[str] = []
+    for raw_path in changed_files:
+        normalized_path = _validate_repository_relative(raw_path, field="changed path", allow_glob=False)
+        is_retired = normalized_path in RETIRED_REMOVED_PATHS or any(
+            normalized_path.startswith(root) for root in RETIRED_ARCHIVE_ROOTS
+        )
+        if is_retired and not (repo_root / normalized_path).exists():
+            continue
+        retained.append(normalized_path)
+    return retained
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -480,9 +558,10 @@ def main(
         )
         if missing_mapped_tests:
             raise SelectorError("mapping 引用不存在的 HEAVY 测试: " + ", ".join(missing_mapped_tests))
+        changed_files = filter_deleted_retired_archive_paths(changed_files, repo_root=resolved_root)
         # 删除记录仍用于 source/support mapping；只有已不存在、无法执行的直接 HEAVY 测试需要剔除。
         changed_files = [path for path in changed_files if not is_heavy_test(path) or (resolved_root / path).is_file()]
-        selected = select_heavy_tests(changed_files, config)
+        selected = select_heavy_tests(changed_files, config, repo_root=resolved_root)
     except SelectorError as error:
         print(f"HEAVY selector fail closed: {error}", file=sys.stderr)
         return 2

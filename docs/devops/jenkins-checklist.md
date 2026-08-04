@@ -140,7 +140,7 @@ docker ps
 
 ```bash
 # 在本地开发机器上
-cd /Users/kaizhou/SynologyDrive/works/wes_backend
+cd /Users/kaizhou/codeDev/wes_backend
 
 # 如有需要，按实际 Node 标签调整 Pipeline 中的 agent label
 vim Jenkinsfile.backend-ci
@@ -164,8 +164,11 @@ git push gitlab develop
 - [ ] 验证各阶段：
   - [ ] Checkout Source
   - [ ] Build CI Image
-  - [ ] Quality Checks（代码检查）
-  - [ ] Tests（单元测试）
+  - [ ] Quality Gate（格式、Lint、Bandit、架构、脚本合同与 FAST）
+  - [ ] Compose Contracts（主机端渲染生产与 TEST 部署配置）
+  - [ ] RuntimeInbox PostgreSQL Acceptance
+  - [ ] Mock Image Contracts（MR）
+  - [ ] HEAVY Required（MR）
   - [ ] Build Runtime Image
   - [ ] Push Runtime Image（非 MR）
   - [ ] Trigger Test Deploy（仅 develop push）
@@ -199,7 +202,7 @@ ssh root@192.168.0.221 \
 
 ### Jenkins Node 标签
 
-在 Jenkinsfile 中修改：
+在 `Jenkinsfile.backend-ci` 或 `Jenkinsfile.test-deploy` 中修改对应 Job 的节点标签：
 
 ```groovy
 agent {
@@ -286,7 +289,7 @@ sudo usermod -aG docker jenkins
 - [ ] Pipeline 项目已创建
 - [ ] GitLab Webhook 已配置并测试通过
 - [ ] 部署服务器已初始化
-- [ ] Jenkinsfile 已提交
+- [ ] `Jenkinsfile.backend-ci` 与 `Jenkinsfile.test-deploy` 已提交
 - [ ] 手动构建测试通过
 - [ ] 所有阶段执行成功
 - [ ] 部署成功并健康检查通过

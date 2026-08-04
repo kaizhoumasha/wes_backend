@@ -193,7 +193,7 @@ rule_execution_correlation_boundary() {
         fi
         emit_violation "$RULE_EXECUTION_CORRELATION_BOUNDARY" "$file" "$line" \
             "跨域 session FK 未收敛为 ExecutionCorrelation.correlation_id" \
-            "改为 correlation_id 引用, 详见 session-correlation-matrix.md"
+            "改为 correlation_id 引用；最终边界以 WES 最小执行架构顶层 SPEC 为准"
     done < <(grep -rnE "$pattern" src/app --include='*.py' 2>/dev/null || true)
 }
 

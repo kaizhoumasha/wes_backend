@@ -4,9 +4,9 @@
 用于管理设备的注册、配置和状态监控。
 专注设备本身的信息，不涉及指令执行和事件日志。
 
-相关文档:
-- 白皮书: @docs/third_party_integration_whitepaper.md
-- SRS: @docs/SRS.md (第 3.3.0 节 - 设备层次结构)
+基础能力边界:
+- @docs/architecture/device-command-contract.md
+- @docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 """
 
 from datetime import datetime
@@ -26,7 +26,7 @@ from src.database.schema_conf import SchemaType
 
 
 class DeviceProtocol(str, Enum):
-    """设备通信协议枚举（白皮书 2.1 节）"""
+    """收敛前实现基线；目标架构只保留当前 HTTP 需求，厂商协议由对应 Adapter 独立拥有。"""
 
     HTTP = "HTTP"
     HTTPS = "HTTPS"
@@ -36,7 +36,7 @@ class DeviceProtocol(str, Enum):
 
 
 class DeviceStatus(str, Enum):
-    """设备状态枚举（白皮书 5.2 节）"""
+    """WES 共享设备状态枚举；厂商状态映射由对应 Adapter 拥有。"""
 
     IDLE = "IDLE"  # 空闲，可接收新任务
     RUNNING = "RUNNING"  # 忙碌，正在执行任务
@@ -69,7 +69,7 @@ class DeviceBase(BaseMixin):
     is_active: bool = Field(default=True, description="是否启用")
     sort_order: int = Field(default=0, description="排序顺序")
 
-    # ===== 角色和拓扑（架构 8.2 节）=====
+    # ===== 角色和拓扑（当前设备基础数据）=====
     device_role: str = Field(
         max_length=50,
         description="设备业务角色（SCANNER, ROBOT_ARM, XRAY, CONVEYOR）",
@@ -86,7 +86,7 @@ class DeviceBase(BaseMixin):
         description="上游设备ID（物理路径辅助信息）",
     )
 
-    # ===== 厂商和能力（架构 8.2 节）=====
+    # ===== 厂商和能力（Adapter 边界）=====
     vendor_type: str | None = Field(
         default=None,
         max_length=50,
@@ -98,7 +98,7 @@ class DeviceBase(BaseMixin):
         description="设备能力声明（支持事件、命令、回调等）",
     )
 
-    # ===== 通信配置（白皮书 2.1-2.3 节）=====
+    # ===== 通信配置（Adapter 连接参数）=====
     host: str | None = Field(default=None, max_length=100, description="设备 IP 地址")
     port: int | None = Field(default=None, ge=1, le=65535, description="服务端口")
 
@@ -121,7 +121,7 @@ class DeviceBase(BaseMixin):
     timeout: int = Field(default=10000, ge=1000, le=300000, description="请求超时时间（毫秒，默认 10s）")
     callback_path: str | None = Field(default=None, max_length=255, description="设备侧回调/命令接收路径覆盖")
 
-    # ===== 设备状态（白皮书 3.1.2 节）=====
+    # ===== 设备状态（WES 共享投影）=====
     # 🔥 使用 VARCHAR + CHECK 约束
     device_status: DeviceStatus = Field(
         default=DeviceStatus.IDLE,
@@ -145,7 +145,7 @@ class DeviceBase(BaseMixin):
     # ===== 能力配置（单硬件任务治理）=====
     max_concurrent_tasks: int = Field(default=1, ge=1, le=1, description="固定为 1：单设备同一时间只允许一个硬件任务")
 
-    # ===== 幂等性配置（白皮书 4.1 节）=====
+    # ===== 幂等性配置（设备命令可靠性边界）=====
     idempotency_ttl: int = Field(
         default=3600,
         ge=60,
@@ -178,13 +178,13 @@ class Device(
 
     字段说明:
     - 基本信息: device_code, device_name, work_line_id
-    - 角色和拓扑: device_role, role_index, upstream_device_id（架构 8.2 节）
+    - 角色和拓扑: device_role, role_index, upstream_device_id
     - 厂商与能力: vendor_type, capabilities_json
-    - 通信配置: host, port, protocol, auth_token, timeout, callback_path（白皮书 2.1-2.3 节）
+    - 通信配置: host, port, protocol, auth_token, timeout, callback_path（由 Adapter 使用）
     - 设备状态: device_status, current_command_id, last_heartbeat_at,
-      error_code, maintenance_mode（白皮书 5.2 节）
-    - 能力配置: max_concurrent_tasks（白皮书 5.1 节）
-    - 幂等性配置: idempotency_ttl（白皮书 4.1 节）
+      error_code, maintenance_mode（WES 共享投影）
+    - 能力配置: max_concurrent_tasks（核心单设备并发约束）
+    - 幂等性配置: idempotency_ttl（设备命令可靠性边界）
     - 诊断配置: diagnostic_profile
 
     架构设计参考:

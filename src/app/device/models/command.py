@@ -1,12 +1,12 @@
 """
 设备指令模型 (Device Command)
 
-用于管理与设备交互的指令生命周期，遵循白皮书规范。
+用于管理当前实现中与设备交互的指令生命周期。
 支持 SDAF 控制循环：Sense -> Decide -> Act -> Feedback
 
-相关文档:
-- 白皮书: @docs/third_party_integration_whitepaper.md
-- 现有 Device: device.py
+基础能力边界:
+- @docs/architecture/device-command-contract.md
+- @docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 """
 
 from datetime import datetime
@@ -31,7 +31,7 @@ from src.utils.timezone import timezone
 
 
 class TaskType(str, Enum):
-    """任务类型枚举 (白皮书 5.1)"""
+    """收敛前实现中的设备任务类型；最终厂商命令集由对应 Adapter 拥有。"""
 
     PICK = "PICK"  # 抓取/取货
     PUT = "PUT"  # 放置/卸货

@@ -14,7 +14,8 @@ def test_acceptance_preflight_rejects_missing_commit_without_docker_side_effects
     """CI 元数据缺失时必须在创建隔离资源前失败。"""
     # Regression: ISSUE-001 — 复合命令中的未设置 CI_COMMIT_SHA 被 EXIT trap 改写为成功
     # Found by /qa on 2026-07-14
-    # Report: .gstack/qa-reports/qa-report-wes-backend-docker-2026-07-14.md
+    # Historical report: project sibling ../archive_docs/wes_backend/local-artifacts/.gstack/
+    # qa-reports/qa-report-wes-backend-docker-2026-07-14.md
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker_log = tmp_path / "docker.log"

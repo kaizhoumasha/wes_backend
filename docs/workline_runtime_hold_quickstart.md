@@ -1,5 +1,7 @@
 # WorkLine Runtime Hold Quickstart
 
+> 状态：`implementation_baseline`。本指南只用于操作收敛前现有 RuntimeHold API；最终目标不保留通用 RuntimeHold 生命周期。
+
 Runtime Hold 是运行时异常恢复的唯一操作入口。Session、Command、Outbox、WorkLine 状态都会在 Hold release 时统一收敛。
 
 ## 获取 Token

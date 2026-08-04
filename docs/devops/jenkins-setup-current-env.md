@@ -348,8 +348,11 @@ git push gitlab develop
 
 - ✅ **Checkout Source**：源码检出与分支识别
 - ✅ **Build CI Image**：CI 测试镜像构建
-- ✅ **Quality Checks**：格式检查、代码质量、安全检查
-- ✅ **Tests**：单元测试、API 签名测试
+- ✅ **Quality Gate**：格式、Lint、Bandit、架构门禁、脚本合同和 FAST
+- ✅ **Compose Contracts**：主机端渲染生产与 TEST 部署配置
+- ✅ **RuntimeInbox PostgreSQL Acceptance**：隔离 PostgreSQL 验收
+- ✅ **Mock Image Contracts**：MR 构建并验证 Mock 镜像
+- ✅ **HEAVY Required**：MR 按目标分支差异选择并执行 HEAVY
 - ✅ **Build Runtime Image**：运行时镜像构建
 - ✅ **Push Runtime Image**：非 MR 镜像推送
 - ✅ **Trigger Test Deploy**：develop push 自动触发 TEST 部署
@@ -357,8 +360,8 @@ git push gitlab develop
 #### 10.3 查看报告
 
 - **测试报告**：Jenkins → wes_backend-ci → **Test Result**
-- **覆盖率报告**：Jenkins → wes_backend-ci → **Coverage Report**
-- **安全报告**：Jenkins → wes_backend-ci → **Artifacts** → bandit-report.json
+- **质量与 HEAVY 产物**：Jenkins → wes_backend-ci → **Artifacts**
+- **安全报告**：Artifacts → `bandit-report.json`
 - **TEST 部署日志**：Jenkins → wes_test_deploy → **Console Output**
 
 ### 步骤 11：验证部署
@@ -440,7 +443,7 @@ docker exec wes_api_test curl -f http://127.0.0.1:8001/health
 - [ ] SSH 连接测试通过
 - [ ] Pipeline 项目已创建
 - [ ] GitLab Webhook 已配置
-- [ ] Jenkinsfile 已提交到 GitLab
+- [ ] `Jenkinsfile.backend-ci` 与 `Jenkinsfile.test-deploy` 已提交到 GitLab
 - [ ] 手动构建测试通过
 - [ ] 所有阶段执行成功
 - [ ] 测试报告正常显示

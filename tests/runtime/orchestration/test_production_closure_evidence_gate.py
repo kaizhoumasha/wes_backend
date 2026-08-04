@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
-import sys
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from scripts.check_runtime_production_closure_gate import main as check_runtime_production_closure_gate
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _PLACEHOLDER_EVIDENCE_SHA256 = "0" * 64
 
@@ -404,40 +406,24 @@ def test_production_closure_gate_rejects_non_production_benchmark_environment(tm
     assert validation.invalid_artifacts == ("benchmark:NON_PRODUCTION_BENCHMARK_ENVIRONMENT",)
 
 
-def test_production_closure_gate_cli_validates_artifact_set(tmp_path) -> None:
+def test_production_closure_gate_cli_validates_artifact_set(tmp_path, capsys) -> None:
     p0_e2e_path, benchmark_path = _write_closure_artifacts_with_evidence(tmp_path)
-    repo_root = Path(__file__).resolve().parents[3]
 
-    result = subprocess.run(
+    result = check_runtime_production_closure_gate(
         [
-            sys.executable,
-            "scripts/check_runtime_production_closure_gate.py",
             "--p0-e2e-artifact",
             str(p0_e2e_path),
             "--benchmark-artifact",
             str(benchmark_path),
-        ],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
+        ]
     )
 
-    assert "Runtime production closure evidence passed" in result.stdout
+    assert result == 0
+    assert "Runtime production closure evidence passed" in capsys.readouterr().out
 
 
-def test_production_closure_gate_cli_defaults_to_mock_without_artifacts() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
+def test_production_closure_gate_cli_defaults_to_mock_without_artifacts(capsys) -> None:
+    result = check_runtime_production_closure_gate([])
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/check_runtime_production_closure_gate.py",
-        ],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert "Runtime production closure mock evidence passed" in result.stdout
+    assert result == 0
+    assert "Runtime production closure mock evidence passed" in capsys.readouterr().out
