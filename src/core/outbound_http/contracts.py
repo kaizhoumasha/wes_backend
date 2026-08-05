@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -130,16 +131,22 @@ class OutboundHttpResponseLimits:
     allowed_content_encodings: tuple[str, ...] = ("identity", "gzip", "deflate")
 
     def __post_init__(self) -> None:
-        numeric_limits = (
+        integer_limits = (
             self.max_response_header_count,
             self.max_response_header_wire_bytes,
             self.max_chunk_bytes,
             self.max_wire_bytes,
             self.max_decoded_bytes,
-            self.max_compression_ratio,
         )
-        if any(value <= 0 for value in numeric_limits):
-            raise OutboundHttpRequestError("response limit must be positive")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in integer_limits):
+            raise OutboundHttpRequestError("response limit must be a positive integer")
+        if (
+            isinstance(self.max_compression_ratio, bool)
+            or not isinstance(self.max_compression_ratio, (int, float))
+            or not math.isfinite(self.max_compression_ratio)
+            or self.max_compression_ratio <= 0
+        ):
+            raise OutboundHttpRequestError("response limit compression ratio must be a finite positive number")
         if self.max_response_header_count > _MAX_RESPONSE_HEADER_COUNT:
             raise OutboundHttpRequestError("response limit exceeds header count cap")
         if self.max_response_header_wire_bytes > _MAX_RESPONSE_HEADER_WIRE_BYTES:
@@ -195,10 +202,11 @@ class OutboundHttpRequest:
 
         if not isinstance(self.response_limits, OutboundHttpResponseLimits):
             raise TypeError("response limit must be an OutboundHttpResponseLimits")
+        if not isinstance(self.body, bytes):
+            raise TypeError("body must be bytes")
 
         object.__setattr__(self, "query", query)
         object.__setattr__(self, "headers", _as_string_pairs(self.headers, field_name="header", reject_duplicates=True))
-        object.__setattr__(self, "body", bytes(self.body))
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,10 +228,10 @@ class OutboundHttpResult:
             raise ValueError("result status code is invalid")
         if self.failure_kind is not None and not isinstance(self.failure_kind, OutboundHttpFailureKind):
             raise TypeError("result failure kind is invalid")
+        if self.decoded_body is not None and not isinstance(self.decoded_body, bytes):
+            raise TypeError("result decoded body is invalid")
 
         headers = _as_string_pairs(self.response_headers, field_name="response header", reject_duplicates=False)
-        if self.decoded_body is not None:
-            object.__setattr__(self, "decoded_body", bytes(self.decoded_body))
         object.__setattr__(self, "response_headers", headers)
 
         if self.delivery_state is OutboundHttpDeliveryState.NOT_SENT:

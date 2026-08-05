@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 from typing import TYPE_CHECKING
 
@@ -15,12 +17,12 @@ from src.core.outbound_http.contracts import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
 
 def _capture_client(
     monkeypatch: pytest.MonkeyPatch,
-    handler: Callable[[httpx.Request], httpx.Response] | None = None,
+    handler: Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]] | None = None,
 ) -> tuple[list[dict[str, object]], list[httpx.AsyncClient]]:
     async_client_type = httpx.AsyncClient
     captured_kwargs: list[dict[str, object]] = []
@@ -60,6 +62,92 @@ async def test_builder_creates_a_configured_transport_for_a_stable_system_id(mon
         await transport.aclose()
 
     assert clients[0].is_closed
+
+
+@pytest.mark.asyncio
+async def test_builder_suppresses_httpx_info_request_url_logs(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _capture_client(monkeypatch)
+    httpx_logger = logging.getLogger("httpx")
+    original_level = httpx_logger.level
+    httpx_logger.setLevel(logging.INFO)
+    caplog.set_level(logging.INFO)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    try:
+        await transport.send(
+            OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/health", query=(("token", "query-secret"),))
+        )
+    finally:
+        await transport.aclose()
+        httpx_logger.setLevel(original_level)
+
+    assert "query-secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_builder_does_not_change_the_process_httpx_logger_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    _capture_client(monkeypatch)
+    httpx_logger = logging.getLogger("httpx")
+    original_level = httpx_logger.level
+    httpx_logger.setLevel(logging.INFO)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    try:
+        assert httpx_logger.level == logging.INFO
+    finally:
+        await transport.aclose()
+        httpx_logger.setLevel(original_level)
+
+
+@pytest.mark.asyncio
+async def test_outbound_log_suppression_does_not_hide_concurrent_unrelated_httpx_info(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_entered = asyncio.Event()
+    release_response = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        request_entered.set()
+        await release_response.wait()
+        return httpx.Response(204, request=request)
+
+    _capture_client(monkeypatch, handler)
+    httpx_logger = logging.getLogger("httpx")
+    original_level = httpx_logger.level
+    httpx_logger.setLevel(logging.INFO)
+    caplog.set_level(logging.INFO)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    sending = asyncio.create_task(
+        transport.send(
+            OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/health", query=(("token", "query-secret"),))
+        )
+    )
+    try:
+        await request_entered.wait()
+        httpx_logger.info("unrelated_httpx_fact")
+        release_response.set()
+        await sending
+    finally:
+        release_response.set()
+        await transport.aclose()
+        httpx_logger.setLevel(original_level)
+
+    assert "unrelated_httpx_fact" in caplog.text
+    assert "query-secret" not in caplog.text
 
 
 @pytest.mark.parametrize(

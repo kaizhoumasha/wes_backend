@@ -28,17 +28,13 @@ class _ChunkStream(httpx.AsyncByteStream):
         *,
         read_error: Exception | None = None,
         close_error: Exception | None = None,
-        delay_seconds: float = 0.0,
     ) -> None:
         self._chunks = chunks
         self._read_error = read_error
         self._close_error = close_error
-        self._delay_seconds = delay_seconds
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
         for chunk in self._chunks:
-            if self._delay_seconds:
-                await asyncio.sleep(self._delay_seconds)
             yield chunk
         if self._read_error is not None:
             raise self._read_error
@@ -343,13 +339,18 @@ async def test_send_maps_bounded_response_failures(
 
 @pytest.mark.asyncio
 async def test_send_maps_send_total_timeout_to_unknown_delivery() -> None:
+    entered = asyncio.Event()
+
     async def handler(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(0.01)
+        entered.set()
+        await asyncio.Event().wait()
         return httpx.Response(200, content=b"late", request=request)
 
     transport = _transport(handler, timeout_seconds=0.001)
     try:
-        result = await transport.send(_request())
+        sending = asyncio.create_task(transport.send(_request()))
+        await entered.wait()
+        result = await sending
     finally:
         await transport.aclose()
 
@@ -359,22 +360,50 @@ async def test_send_maps_send_total_timeout_to_unknown_delivery() -> None:
 
 @pytest.mark.asyncio
 async def test_send_maps_response_total_timeout_to_response_received() -> None:
+    stream = _BlockingStream()
+
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            stream=_ChunkStream((b"late",), delay_seconds=0.01),
-            request=request,
-        )
+        return httpx.Response(200, stream=stream, request=request)
 
     transport = _transport(handler, timeout_seconds=0.001)
     try:
-        result = await transport.send(_request())
+        sending = asyncio.create_task(transport.send(_request()))
+        await stream.entered.wait()
+        result = await sending
     finally:
         await transport.aclose()
 
     assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
     assert result.status_code == 200
     assert result.failure_kind is OutboundHttpFailureKind.TOTAL_TIMEOUT
+    assert stream.closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_send_propagates_before_a_response_exists() -> None:
+    send_entered = asyncio.Event()
+    send_cancelled = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        send_entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            send_cancelled.set()
+            raise
+        return httpx.Response(200, request=request)
+
+    transport = _transport(handler)
+    sending = asyncio.create_task(transport.send(_request()))
+    await send_entered.wait()
+    sending.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await sending
+    finally:
+        await transport.aclose()
+
+    assert send_cancelled.is_set()
 
 
 @pytest.mark.asyncio
@@ -395,6 +424,50 @@ async def test_cancellation_during_response_read_closes_response_and_propagates(
         await transport.aclose()
 
     assert stream.closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_cleanup_waits_for_close_and_propagates() -> None:
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+    close_cancelled = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(200, content=b"body", request=request)
+        await response.aread()
+
+        async def blocking_close() -> None:
+            close_started.set()
+            try:
+                await close_release.wait()
+            except asyncio.CancelledError:
+                close_cancelled.set()
+                raise
+            finally:
+                close_finished.set()
+
+        response.aclose = blocking_close  # type: ignore[method-assign]
+        return response
+
+    transport = _transport(handler)
+    sending = asyncio.create_task(transport.send(_request()))
+    await close_started.wait()
+    sending.cancel()
+    cancellation_delivered = asyncio.Event()
+    asyncio.get_running_loop().call_soon(cancellation_delivered.set)
+    await cancellation_delivered.wait()
+    try:
+        assert not sending.done()
+        close_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await sending
+    finally:
+        close_release.set()
+        await close_finished.wait()
+        await transport.aclose()
+
+    assert not close_cancelled.is_set()
 
 
 @pytest.mark.asyncio
@@ -425,6 +498,44 @@ async def test_cleanup_failure_becomes_stable_response_failure(caplog: pytest.Lo
 
 
 @pytest.mark.asyncio
+async def test_cleanup_timeout_cancels_and_joins_response_close_task() -> None:
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+    close_cancelled = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(200, content=b"body", request=request)
+        await response.aread()
+
+        async def blocking_close() -> None:
+            close_started.set()
+            try:
+                await close_release.wait()
+            except asyncio.CancelledError:
+                close_cancelled.set()
+                raise
+            finally:
+                close_finished.set()
+
+        response.aclose = blocking_close  # type: ignore[method-assign]
+        return response
+
+    transport = _transport(handler, timeout_seconds=0.01)
+    try:
+        result = await transport.send(_request())
+
+        assert close_started.is_set()
+        assert close_cancelled.is_set()
+        assert close_finished.is_set()
+        assert result.failure_kind is OutboundHttpFailureKind.RESPONSE_CLEANUP_FAILED
+    finally:
+        close_release.set()
+        await close_finished.wait()
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
 async def test_primary_failure_is_not_replaced_when_cleanup_also_fails(caplog: pytest.LogCaptureFixture) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         response = httpx.Response(
@@ -450,6 +561,29 @@ async def test_primary_failure_is_not_replaced_when_cleanup_also_fails(caplog: p
     assert result.failure_kind is OutboundHttpFailureKind.RESPONSE_HEADER_LIMIT_EXCEEDED
     assert "cleanup_failed=True" in caplog.text
     assert "cleanup secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_send_maps_compression_ratio_budget_failure_after_receiving_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-encoding": "gzip"},
+            stream=_ChunkStream((gzip.compress(b"body" * 256),)),
+            request=request,
+        )
+
+    transport = _transport(handler)
+    limits = OutboundHttpResponseLimits(max_compression_ratio=1.0)
+    try:
+        result = await transport.send(_request(response_limits=limits))
+    finally:
+        await transport.aclose()
+
+    assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
+    assert result.status_code == 200
+    assert result.decoded_body is None
+    assert result.failure_kind is OutboundHttpFailureKind.RESPONSE_COMPRESSION_RATIO_EXCEEDED
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import ContextVar
 
 import httpx
 
@@ -27,6 +28,17 @@ from src.core.outbound_http.contracts import (
 )
 
 logger = logging.getLogger(__name__)
+_httpx_logger = logging.getLogger("httpx")
+_suppress_httpx_info_logs: ContextVar[bool] = ContextVar("suppress_outbound_httpx_info_logs", default=False)
+
+
+def _allow_httpx_log(record: logging.LogRecord) -> bool:
+    """只在当前 Transport 请求上下文内抑制会暴露完整 URL 的 HTTPX INFO 日志。"""
+
+    return record.levelno != logging.INFO or not _suppress_httpx_info_logs.get()
+
+
+_httpx_logger.addFilter(_allow_httpx_log)
 
 
 class _ResponseHeaderLimitExceeded(ValueError):
@@ -66,7 +78,11 @@ class _HttpxOutboundHttpTransport:
                     headers=request.headers,
                     content=request.body,
                 )
-                response = await self._client.send(outbound_request, stream=True)
+                suppression_token = _suppress_httpx_info_logs.set(True)
+                try:
+                    response = await self._client.send(outbound_request, stream=True)
+                finally:
+                    _suppress_httpx_info_logs.reset(suppression_token)
                 status_code = int(response.status_code)
                 response_headers = _bounded_response_headers(response, request=request)
                 raw_body, _ = await read_bounded_wire_body(
@@ -204,19 +220,31 @@ class _HttpxOutboundHttpTransport:
             async with asyncio.timeout(self._cleanup_timeout_seconds):
                 outcomes = await asyncio.shield(cleanup_wait)
         except TimeoutError:
+            await self._cancel_and_join_cleanup_task(cleanup_task=cleanup_task, cleanup_wait=cleanup_wait)
             return True
         except asyncio.CancelledError:
             try:
                 async with asyncio.timeout(self._cleanup_timeout_seconds):
                     await asyncio.shield(cleanup_wait)
             except TimeoutError:
-                pass
+                await self._cancel_and_join_cleanup_task(cleanup_task=cleanup_task, cleanup_wait=cleanup_wait)
             raise
 
         outcome = outcomes[0]
         if isinstance(outcome, asyncio.CancelledError):
             raise outcome
         return isinstance(outcome, BaseException)
+
+    async def _cancel_and_join_cleanup_task(
+        self,
+        *,
+        cleanup_task: asyncio.Task[None],
+        cleanup_wait: asyncio.Future[list[object]],
+    ) -> None:
+        """在清理预算耗尽后终止并等待关闭任务，避免遗留后台任务。"""
+
+        cleanup_task.cancel()
+        await asyncio.shield(cleanup_wait)
 
     def _log_result(
         self,

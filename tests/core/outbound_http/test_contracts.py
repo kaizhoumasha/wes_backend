@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -61,6 +62,15 @@ def test_request_rejects_response_limits_outside_the_contract_type() -> None:
         )
 
 
+def test_request_rejects_body_outside_the_declared_bytes_type() -> None:
+    with pytest.raises(TypeError, match="body"):
+        OutboundHttpRequest(
+            method=OutboundHttpMethod.POST,
+            path="/items",
+            body=5,  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize(
     "headers",
     [
@@ -89,6 +99,23 @@ def test_request_rejects_multiline_or_case_insensitive_duplicate_headers(
     ],
 )
 def test_response_limits_reject_non_positive_or_header_cap_expansion(limits: dict[str, int]) -> None:
+    with pytest.raises(OutboundHttpRequestError, match="response limit"):
+        OutboundHttpResponseLimits(**limits)
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"max_response_header_count": math.nan},
+        {"max_response_header_wire_bytes": math.nan},
+        {"max_chunk_bytes": math.nan},
+        {"max_wire_bytes": math.inf},
+        {"max_decoded_bytes": math.nan},
+        {"max_compression_ratio": math.inf},
+        {"max_compression_ratio": math.nan},
+    ],
+)
+def test_response_limits_reject_non_finite_values(limits: dict[str, float]) -> None:
     with pytest.raises(OutboundHttpRequestError, match="response limit"):
         OutboundHttpResponseLimits(**limits)
 
@@ -176,6 +203,15 @@ def test_result_rejects_delivery_state_outside_the_closed_enum() -> None:
 def test_result_rejects_values_outside_declared_field_types(kwargs: dict[str, object]) -> None:
     with pytest.raises(TypeError, match="result"):
         OutboundHttpResult(**kwargs)  # type: ignore[arg-type]
+
+
+def test_result_rejects_decoded_body_outside_the_declared_bytes_type() -> None:
+    with pytest.raises(TypeError, match="decoded body"):
+        OutboundHttpResult(
+            delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
+            status_code=200,
+            decoded_body=5,  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize(
