@@ -2,9 +2,9 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-03
+updated_at: 2026-08-05
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: origin/develop@cf2f1f91
+implementation_baseline: develop@1a8bfcac
 system_stage: pre_release
 migration_strategy: direct_replacement
 historical_reference: ee1f3b670c5ed33cfd5be1fd0370b53570790e73
@@ -17,6 +17,7 @@ related:
   - docs/integration/callback_event_validation_principles.md
   - docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
+  - docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md
   - docs/contracts/wms-northbound-interaction-contract.md
 ---
 
@@ -212,7 +213,8 @@ WES 不实现设备间并发互锁。不同设备可以同时处理不同对象�
 WMS 业务能力由薄封装层提供：
 
 - `WmsCapabilities` 查询和 `WmsConfirmation` 提交使用同步 HTTP 请求和同步业务结果。
-- DTO、地址和错误映射封装在 WMS Adapter；只有真实 WMS 合同明确要求时才启用对应认证，当前局域网默认不配置。
+- DTO、地址和错误映射封装在 WMS Adapter；当前 WMS outbound 合同无认证，不存在认证配置或预留 seam。将来真实合同
+  明确要求时，必须先修订本文、总控和对应 Adapter 计划，再由最窄所有者实现。
 - 工作线插件只依赖类型化 `WmsCapabilities`，不直接访问 HTTP。
 - WMS 结果是业务事实，不伪装成 ECS ACK/CALLBACK。
 
@@ -239,8 +241,8 @@ WMS 调用证据采用 fail-closed：发送前无法建立证据记录时不得�
 `WmsConfirmation` 或 `TransportTask` 保留原 `dispatch_key` 恢复。所有正常远端 outcome 都必须携带真实、
 非空 `evidence_key`。
 
-API 与每个 Celery worker 进程各自拥有一个进程级 `httpx.AsyncClient` 并在生命周期结束时关闭；所有 WMS
-能力和分页复用该连接池。一个公开分页调用只获取一次 breaker permit，共享累计 deadline、wire/decoded bytes、
+API 与每个 Celery worker 进程分别通过 Phase 2 Transport 为 WMS 持有一个进程级 Client，并在生命周期结束时关闭；
+所有 WMS 能力和分页复用该 Transport。一个公开分页调用只获取一次 breaker permit，共享累计 deadline、wire/decoded bytes、
 页数和行数预算，只写一条有界 evidence，并在调用结束时更新一次 breaker。
 
 只有发生 `WmsDependencyFailure` 时才进入以下依赖暂停：
@@ -385,12 +387,12 @@ device_adapters/<adapter_key>/
 差异，也不得按历史设计移出项目或反向改写。同目录人工转写和供应商联调说明属于可检索派生资料，必须与原始
 PDF 明确区分，也不得作为当前 Adapter 合同或 WES 架构真源。差异必须在当前 Adapter 合同、映射与测试中显式处理。
 
-只验证共享传输协议、认证和基础错误映射的合同测试属于 WES 核心。厂商 DTO、认证差异、事件/命令 Payload、
+只验证共享传输协议和基础传输错误分类的合同测试属于 WES 核心。厂商 DTO、真实合同要求的认证差异、事件/命令 Payload、
 原始码映射和厂商合同测试只能由对应 Adapter 包拥有；插件只消费标准化角色事件与逻辑动作，并在插件包内验证
 工作线业务推进。一次客户交付可以同时包含 Adapter 包和插件包，但不得混淆两者所有权，二者测试均不进入核心
 `tests/`。
 
-运行配置只绑定工厂实际设备 ID、Endpoint、凭据、工作线角色和现场容量。系统不要求厂商维护 WES Manifest，
+运行配置只绑定工厂实际设备 ID、Endpoint、工作线角色和现场容量；当前不存在 outbound 凭据配置。系统不要求厂商维护 WES Manifest，
 也不把厂商命令重新设计成 WES 自有指令集。
 
 ### 7.4 Convention over Configuration
@@ -731,7 +733,7 @@ CTU 投箱
 - 入站先持久化再 ACK。
 - 幂等键、Payload Hash 和冲突证据。
 - DeviceCommand 的接纳与最终结果区分。
-- WMS 类型化 DTO、HTTP Adapter、同步调用证据，以及真实合同明确要求时的可选认证。
+- WMS 类型化 DTO、HTTP Adapter 和同步调用证据；当前不保留 outbound 认证能力或配置 seam。
 - RCS/AGV/CTU Transport Port。
 - 位置、队列、货架、料箱和料格活动投影。
 - 可观测性、安全和测试治理规则。
@@ -784,33 +786,41 @@ CTU 投箱
 实施顺序：
 
 1. 总控基线冻结与测试治理确认：接受本文、冻结最新 `develop` 实施基线，并确认测试所有权、重量和延后承接边界。
-2. WMS 薄接入边界收敛：交付类型化同步查询、垂直能力模块、地址、错误映射、确认发送、无状态 WMS 转发搬运 Client，以及真实合同明确要求时的可选认证；只切换 QUERY 生产路径并删除 QUERY System Capability。旧 Effect/status 链不做临时改写，连同仍被其静态 import 的 Provider/Catalog/fulfillment capability 资产冻结为 Phase 3 原子删除闭包。
-3. WES 最小平台能力建设：交付最终执行对象、三类可靠记录、通用 WorkLine、投影及最小 SPI/SDK；`WmsConfirmation` 与 `TransportTask` 建立生产路径和权威测试后，原子切换并删除旧 WMS Effect/status/Outbox 生命周期。
-4. 核心测试承接与平台基线验收：把通用可靠性改写到最终对象，完成核心/插件测试分界和平台独立验收。
-5. 粗分机参考插件优化：以独立二次开发包交付第一个真实业务插件，验证平台扩展边界。
-6. 分拣业务插件优化：按实际工作线和厂家指令分别交付自动分拣、人工分拣、满箱交换和复杂出库能力。
-7. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
-8. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
-9. 最终基线与系统验收：从空库分别验证核心、插件、质量、部署装配和旧架构缺席门禁。
+2. Outbound HTTP 传输基础能力收敛：全新增量交付框架无关 request/result、每外部系统每进程一个 Client、单次发送、
+   有界响应读取、传输事实分类和显式生命周期；不切换生产消费者，不建设 outbound 认证、重试、业务解释、registry 或 fake。
+3. WMS 薄接入边界收敛：消费 Phase 2 Transport，交付类型化同步查询、垂直能力模块、地址、错误映射、确认发送和无状态
+   WMS 转发搬运 Client；当前 outbound 无认证。原子切换 QUERY 与旧可靠链的传输依赖，同时删除 Provider Profile、QUERY
+   System Capability、旧 WMS Transport 和无真实合同依据的认证配置；旧 Effect/status 链只保留持久化、claim、重试、fencing
+   和终态可靠生命周期，作为 Phase 4 精确删除闭包。
+4. WES 最小平台能力建设：交付最终执行对象、三类可靠记录、通用 WorkLine、投影及最小 SPI/SDK；
+   `WmsConfirmation` 与 `TransportTask` 建立生产路径和权威测试后，原子切换并删除旧 WMS Effect/status/Outbox 生命周期；
+   核心 DeviceCommand/状态/准入网络 owner 改接 typed Device port，不直接依赖 Phase 2。
+5. 核心测试承接与平台基线验收：把通用可靠性改写到最终对象，完成核心/插件测试分界和平台独立验收。
+6. 粗分机参考插件优化：以独立二次开发包交付第一个真实业务插件，验证平台扩展边界。
+7. 分拣业务插件优化：按实际工作线和厂家指令分别交付自动分拣、人工分拣、满箱交换和复杂出库能力。
+8. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
+9. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
+10. 最终基线与系统验收：从空库分别验证核心、Adapter、插件、质量、部署装配和旧架构缺席门禁。
 
 任何可靠性不变量都必须先在最终具体对象上有实现和测试，才能删除旧实现；这只是同一收敛分支内的
 依赖顺序，不允许通过兼容层、双路径或旧数据迁移完成过渡。
 
-测试治理贯穿阶段 1、4、5、6、9；旧生产路径在阶段 2–6 随替代随删除，阶段 7 只做最终闭环；目标数据模型
-在阶段 3 建立，历史 migration 只在阶段 8 一次性重建。九阶段的详细入口、交付物和退出门禁由
+测试治理贯穿阶段 1、2、5、6、7、10；旧生产路径在阶段 3–7 随替代随删除，阶段 8 只做最终闭环；目标数据模型
+在阶段 4 建立，历史 migration 只在阶段 9 一次性重建。十阶段的详细入口、交付物和退出门禁由
 `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 统一控制。
 
 ### 14.3 实施范围分解
 
-本文是全局架构约束，不把多个独立子系统展开成一个巨型实施脚本。九个总控阶段分别形成经批准的详细实施
+本文是全局架构约束，不把多个独立子系统展开成一个巨型实施脚本。十个总控阶段分别形成经批准的详细实施
 计划和测试范围；同一阶段内仍可按最终对象、Adapter 或真实插件拆成可独立审查的任务，但不得改变 §14.2 的
 依赖顺序和退出门禁。
 
 现有
 `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md`
 是阶段 1 的权威计划，
-其中 Task 4 的混合资产处置与 Task 5 的最终对象承接统一在阶段 4 收尾；Task 7 按所有权分段完成：阶段 4
-承接核心平台测试，阶段 5/6 重建具体插件测试，阶段 8/9 完成迁移链和最终收集验收。其余阶段的计划路径、
+其中 Task 4 的混合资产处置与 Task 5 的最终对象承接统一在阶段 5 收尾；Task 7 按所有权分段完成：阶段 5
+承接核心平台测试，阶段 6/7 重建具体插件测试，阶段 9/10 完成迁移链和最终收集验收。Phase 2 的详细入口为
+`docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`；其余阶段的计划路径、
 入口条件、交付物和
 验收归属由
 `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`

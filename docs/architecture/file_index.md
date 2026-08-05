@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-04
+**最后更新**：2026-08-05
 
 ## 1. 真源与入口
 
@@ -29,9 +29,9 @@
 | --- | --- |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
-| `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 九阶段架构收敛总控计划 |
+| `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十阶段架构收敛总控计划 |
+| `docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md` | Phase 2 Outbound HTTP 传输基础能力实施计划 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
-| `docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md` | WMS 薄接入阶段计划 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | WMS 北向 typed operation wire 合同 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand 与 Adapter 边界 |
 | `docs/plugin_development_guide.md` | 插件 SPI、封闭 Decision 与独立包交付指南 |
@@ -53,6 +53,7 @@ API → Service → Repository → Database
 | --- | --- |
 | `src/register.py` | 路由、中间件和异常处理组装 |
 | `src/core/` | 配置、认证、响应、基础 Service/API、运行时开关 |
+| `src/core/outbound_http/` | 框架无关的出站 HTTP 合同、单次发送与共享 Client 生命周期；不包含业务或厂商语义 |
 | `src/database/` | Session、Repository、模型工厂、关系、缓存和 schema 基础设施 |
 | `src/middleware/` | 请求日志、限流和性能中间件 |
 | `src/celery_app/` | Celery 应用、队列路由、任务和进程运行时 |

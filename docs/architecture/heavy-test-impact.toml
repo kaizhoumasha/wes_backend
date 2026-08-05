@@ -419,5 +419,10 @@ heavy_tests = [
 source_glob = "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py"
 heavy_tests = ["tests/resilience/test_wms_circuit_breaker.py"]
 
+# Phase 2 仅交付未接入生产消费者的基础 Transport；行为由 MockTransport 核心测试覆盖。
+[[mapping]]
+source_glob = "src/core/outbound_http/**"
+heavy_tests = []
+
 # 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。

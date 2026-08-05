@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0.0] - 2026-08-05
+
+### Added
+- 新增框架无关的 Outbound HTTP 传输合同、单次发送实现和共享 Client 生命周期，供后续 Adapter 通过唯一构造入口消费。
+- 新增有界响应 Header、Chunk、Wire、解码体和压缩比预算，并以稳定 delivery state 与 failure kind 公开传输事实。
+
+### Changed
+- 出站请求采用严格的路径、Query、Header、Body、Base URL、Timeout 和内容编码输入合同；禁用 Cookie、环境代理和重定向。
+- HTTPX/HTTPCore 日志仅在当前请求上下文内脱敏，基础 Transport 保持与业务、Adapter、插件和运行时编排隔离。
+- 为 Outbound HTTP 生产路径增加架构门禁和 HEAVY selector 显式 NONE 映射，冻结 Phase 2 四文件基础边界。
+
+### Fixed
+- 修复不同发送阶段的失败事实映射、响应清理超时与取消传播、幂等关闭及关闭取消时的资源释放。
+- 修复未知异常被误归类、底层日志可能泄露请求信息，以及字符串输入被误拆成二元 Query/Header pair 的问题。
+
+### Verification
+- QUALITY：3363 passed、4 skipped；Outbound HTTP 基础层与架构门禁：133 passed；分支覆盖率 95%。
+- Phase 2 当前交付和退出门禁全部完成；预落地复审未发现剩余问题。
+
 ## [0.21.1.0] - 2026-08-04
 
 ### Added
