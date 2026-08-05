@@ -74,10 +74,13 @@ Phase 4 切换：最终对象及权威测试通过 → 一次切换 → 删除�
 ### 1.2 Phase 2 输入与 WMS 认证边界
 
 Phase 3 必须消费 Phase 2 已验收的 `OutboundHttpTransport`，不得重新创建或注入裸 `httpx.AsyncClient`。
+Phase 2 的生产交付固定在 `src/core/outbound_http/`，且在该阶段不修改 WMS 旧模块、不激活 WMS Composition Root、
+不切换或删除 WMS 调用路径。Phase 3 是 WMS 的首个接入阶段：由本计划负责装配 WMS 专属 Transport、切换调用者并
+删除 WMS 重复传输/认证 owner；Phase 4 只消费本阶段交付的类型化端口，不直接 import 或装配 Phase 2。
 
 | 所有者 | 拥有 | 不拥有 |
 | --- | --- | --- |
-| Phase 2 | Client 生命周期、连接池、base URL、Timeout、单次发送、受限响应、通用传输异常、安全日志、认证策略接口、凭据解析、HMAC 基础计算、Clock、Nonce | WMS method/path/DTO、业务拒绝、canonical/Header、重试和生命周期 |
+| Phase 2 | 在 `src/core/outbound_http/` 全新增量交付 Client 生命周期、连接池、base URL、Timeout、单次发送、受限响应、通用传输异常、安全日志、认证策略接口、凭据解析、HMAC 基础计算、Clock、Nonce | WMS method/path/DTO、业务拒绝、canonical/Header、重试和生命周期；WMS 旧代码修改与生产装配 |
 | WMS Adapter 包 | 当前 WMS 合同允许的 auth 闭集、无 Secret 的 canonical/Header/签名版本纯合同、method/path、wire DTO、业务结果解释、一次公开调用的 breaker permit/状态更新 | 凭据解析、HMAC 计算、Secret、裸 Client、连接池、通用 transport 异常 |
 | Phase 4 可靠对象 | 根据类型化结果管理持久化、领取、轮询、重试、依赖暂停、终态和恢复 | HTTP、认证、签名协议、breaker permit/状态更新 |
 
@@ -320,7 +323,7 @@ Phase 2 Factory 装配完成的 Transport，不创建 Client。Gateway 的私有
 | `services/evidence_service.py` | KEEP | 同步 evidence 目标 owner；旧 async summary 在 Phase 4 删除 |
 | `services/exceptions.py` | MOVE | 正常远端分支迁入 outcome；仅保留明确的本地基础设施错误 |
 | `services/fulfillment_lifecycle.py` | PHASE4_HANDOFF | 与旧 fulfillment lifecycle 原子删除 |
-| `services/http_transport.py` | MOVE | 通用生命周期/受限读取/异常分类迁入 Phase 2；无 Secret 的 WMS canonical/Header 纯合同迁入 `adapters/auth.py`，调用者切换后删除 |
+| `services/http_transport.py` | DELETE | Phase 2 不移动或修改该旧 helper；Phase 3 将无 Secret 的 WMS canonical/Header 纯合同迁入 `adapters/auth.py`，目标 Gateway 改接 `src/core/outbound_http/` 后由 Task 8 删除整个旧 helper |
 | `services/redaction.py` | KEEP | 共享脱敏/hash |
 | `services/wms_event_normalizer.py` | MOVE | 迁入 `inbound/normalizer.py` |
 | `state_machine.py` | PHASE4_HANDOFF | 与旧 Effect/status state machine 删除 |
@@ -390,8 +393,9 @@ Outbox 或重试；Phase 4 的 `WmsConfirmation` 负责稳定生成并保存它�
 ## 4. 实施任务
 
 **Phase 3 entry gate:** Phase 2 Outbound HTTP 子计划必须已经编写、评审、批准并完成退出门禁；
-`OutboundHttpTransportFactory`、Transport、认证策略接口、凭据解析、HMAC 原语、Fake/MockTransport 和生命周期
-合同均可直接消费。该条件未满足时，本节所有生产代码任务均不得启动。
+`src/core/outbound_http/` 中的 `OutboundHttpTransportFactory`、Transport、认证策略接口、凭据解析、HMAC 原语和
+生命周期合同均可直接消费，测试树已提供 MockTransport/Fake 证明且生产包不导出测试替身。Phase 2 交付差异不得
+包含 WMS 旧生产文件或 WMS Composition Root 修改；该条件未满足时，本节所有生产代码任务均不得启动。
 
 执行分五条 lane：A 负责权威文档和两类处置矩阵；B 负责垂直 capability/ports 与测试态 conformance；C 负责
 配置、HTTP/evidence/breaker 和部署生命周期；D 在 B+C 通过后执行 Gateway、QUERY 切换、索引收缩与旧测试
@@ -744,8 +748,9 @@ HEAVY selector 承接，不得复制到 FAST。
 - Create: `tests/contracts/wms_integration/test_http_wms_capabilities.py`
 - Modify: `tests/architecture/test_wms_thin_public_boundary.py`
 
-- [ ] 用 Phase 2 Fake Transport（底层测试可由 `httpx.MockTransport` 支撑）逐方法验证 19 项
-  method/path/query/body、分页、DTO 和四分支 outcome；不向 WMS Adapter 暴露裸 Client。
+- [ ] 在 WMS 测试树定义实现公开 `OutboundHttpTransport` 合同的最小 local fake，或经公开 Factory seam 注入
+  `httpx.MockTransport`，逐方法验证 19 项 method/path/query/body、分页、DTO 和四分支 outcome；不得 import
+  `tests/core/outbound_http/` 的 Phase 2 测试内部资产，也不向 WMS Adapter 暴露裸 Client。
 - [ ] `HttpWmsGateway` 每个公共方法直接 import 自身 capability 模块的 `WmsCallSpec` 并调用私有 `_call`；
   禁止字符串 operation 参数、中心映射和公共 spec 查询。
 - [ ] 列表查询内部消费 cursor，但必须满足 Task 6 的一次 permit、累计预算、一条 evidence 和一次最终 breaker

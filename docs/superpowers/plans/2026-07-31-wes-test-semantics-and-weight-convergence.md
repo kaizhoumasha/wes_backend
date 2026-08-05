@@ -9,8 +9,9 @@
 Adapter 使用 `device_adapters/<adapter_key>/`，插件使用 `workline_plugins/<plugin_key>/`，两者均自带 `pyproject.toml`、`src/`、`tests/` 和 `fixtures/`，
 并由各自的测试入口和 CI 验收。核心测试继续按 `FAST`、`QUALITY`、`HEAVY` 分层。
 
-测试所有权是三向隔离：核心测试不得借用具体业务或厂商场景证明基础能力；Adapter 测试只证明厂商合同与标准化映射；
-插件测试只证明业务 Decision 和对象推进。Adapter/插件测试都不得替代核心持久化、幂等、传输、并发和恢复不变量测试。
+测试所有权是三向隔离：核心测试不得借用具体业务或厂商场景证明基础能力；其中 Phase 2
+`tests/core/outbound_http/` 只证明公共传输基础层。Adapter 测试只证明厂商合同与标准化映射；插件测试只证明业务
+Decision 和对象推进。Adapter/插件测试都不得替代核心持久化、幂等、传输、并发和恢复不变量测试。
 
 **Tech Stack:** Python 3.13、Pytest 9、pytest-asyncio、JUnit XML、Ruff、Bandit、GitNexus、Jenkins。
 
@@ -46,6 +47,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
    - 通用 WorkLine 身份、拓扑、`LineRunEpoch`；
    - 设备和位置投影；
    - ECS/WMS/RCS 共享合同；
+   - Phase 2 Outbound HTTP Transport 生命周期、受限响应、通用异常分类和认证策略边界；
    - 入站幂等、ACK/CALLBACK 分离、可靠投递、迟到证据、人工清线等通用可靠性；
    - API、Repository、数据库、部署和架构边界。
 2. 下列测试不属于核心 `tests/`：
@@ -76,6 +78,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
 | 测试层 | 唯一职责 | 不得承担 |
 | --- | --- | --- |
 | 核心领域单元测试 | 执行对象、WorkLine/Epoch、投影和可靠性状态转移 | 具体插件业务决策 |
+| Phase 2 Outbound HTTP 单元测试 | `tests/core/outbound_http/` 以 MockTransport/Fake/确定性时钟验证生命周期、请求装配、受限响应、异常分类、凭据不泄露和认证闭集 | 真实外部系统、厂商 DTO/canonical/Header、业务拒绝、重试/终态/恢复和大规模 E2E |
 | 共享合同测试 | ECS/WMS/RCS 共享 DTO、认证、幂等、ACK/CALLBACK、错误映射 | 具体厂商 Payload 和工作线流程 |
 | API 测试 | route、权限、请求响应、Service facade | Repository、插件决策和完整编排 |
 | Repository/共享 Adapter 集成测试 | 数据库约束、事务和共享技术 Adapter 边界 | 厂商 wire 合同和插件场景排列 |
@@ -126,6 +129,10 @@ workline_plugins/<plugin_key>/
 ### 4.1 FAST
 
 默认 `uv run pytest` 只收集核心 `tests/` 中的轻量测试。禁止真实 PostgreSQL、Redis、HTTP、Celery、Docker、多进程、主动等待和容量采样。
+
+Phase 2 测试固定在 `tests/core/outbound_http/`，只使用 `httpx.MockTransport`、Fake Transport、纯单元测试和确定性
+Clock/Nonce；测试替身不从 `src/core/outbound_http/` 生产包导出。WMS/RCS/ECS Adapter 接入测试分别由 Phase 3/6/7
+拥有，Phase 4 核心可靠对象测试只替换类型化端口，不直接构造 Phase 2 Transport。
 
 最终预算：
 
@@ -265,6 +272,38 @@ rtk uv run pytest tests/architecture -q
 尚未完整交付；本计划不得为完成测试迁移而越权实现生产执行内核。总控 Phase 4 负责交付最小执行对象、
 可靠投递记录和通用 WorkLine 能力；其退出门禁通过后，Phase 5 必须执行本 Task，并由 Master Plan 的
 Phase 5 任务及退出门禁直接跟踪，不在 `TODOS.md` 维护重复调度项。
+
+**Phase 4 原子切换的同步测试义务（不属于 Task 5 交付）:**
+
+- [ ] 先在最终 `DeviceCommand` 测试树承接持久化、claim、单设备互斥、resource wait、重试、fencing、
+  ACK/CALLBACK、终态和恢复，再删除旧 `SystemOutboxDispatchType.DEVICE_COMMAND` 测试 owner；不得把旧 SystemOutbox
+  包在 typed Device port 外继续测试。
+- [ ] `tests/sys/test_system_outbox_engine.py`、`tests/sys/test_system_outbox_dispatch_concurrency_contract.py`、
+  `tests/workline_runtime/test_system_outbox_resource_wait_contract.py`、
+  `tests/workline_runtime/test_dispatch_attempt_lease_fencing.py`、
+  `tests/contracts/system_capabilities/test_canonical_external_http_dispatch.py`、`tests/api/test_qa_regression_002.py`、
+  `tests/api/test_workline_runtime_sse.py`、`tests/integration/test_system_outbox_repository.py`、
+  `tests/integration/test_system_outbox_dispatch_concurrency.py` 和 `tests/resilience/test_runtime_scenario_replay.py` 中直接验证
+  DeviceCommand SystemOutbox 的用例，全部在 Phase 4 按 `CORE_REWRITE` 映射到最终 `DeviceCommand` 权威测试后删除；仅验证
+  旧 DispatchEnvelope/schema 且无最终语义的用例标记 `NONE`，其他 dispatch type 的有效断言不得误删。
+- [ ] 同一 Phase 4 矩阵还必须纳入 `tests/sys/test_system_outbox_engine_boundaries.py` 对
+  `_dispatch_device_command` 的直接 import，`tests/workline_runtime/test_runtime_reconciliation_idempotency.py` 和
+  `tests/workline_runtime/test_workline_runtime_status_projection_service.py` 的 ACK-exhausted
+  Reconciliation/SystemOutbox 路径，`tests/workline_runtime/system_capabilities/test_system_capability_effect_service.py` 的
+  `DeviceCommand + SystemOutbox` 双创建断言，以及 `tests/workline_runtime/test_runtime_intent_effect_applier.py` 的
+  `device-command:` Intent/Effect/Outbox 路径；缺席门禁必须按被删除符号、import 和语义扫描，不得只依赖
+  `DEVICE_COMMAND` 字面量。
+- [ ] `tests/workline_runtime/system_capabilities/test_device_command_authoritative_precondition.py` 的
+  `prepare_runtime_effect()` 三对象写入合同、`tests/runtime/orchestration/test_command_result_correlation_authority.py` 对同一
+  旧入口的 stub，以及 `tests/workline_runtime/test_external_http_workline_dispatcher.py` 对
+  `_mark_device_command_failed_if_dispatch_exhausted`、`_dispatch_blocked_resource_heads`、
+  `_repair_orphaned_device_busy_dispatches` 和 `_repair_self_blocked_device_busy_dispatches` 四个旧 DeviceCommand
+  SystemOutbox helper 的直接 patch，也必须在 Phase 4 改接最终 `DeviceCommand` successor 或按 `NONE` 删除旧耦合；
+  Phase 4 缺席门禁同步扫描这些被删除入口。
+- [ ] integration/resilience 处置同步精确更新 `docs/architecture/heavy-test-impact.toml`，并显式运行受影响 HEAVY。
+
+Task 5 入口除最终生产对象外，还要求上述 Phase 4 直接测试 owner 已全部处置且 FAST/受影响 HEAVY 可收集；Task 5 只接收
+不直接引用已删除符号、但仍混合旧架构语义的剩余测试资产。
 
 Task 5 完成前：
 
