@@ -914,6 +914,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py",
             (WMS_CIRCUIT_BREAKER_HEAVY_TEST,),
         ),
+        ("src/core/outbound_http/**", ()),
     )
 
 
