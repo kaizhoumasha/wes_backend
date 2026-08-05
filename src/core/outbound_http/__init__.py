@@ -11,6 +11,7 @@ from .contracts import (
     OutboundHttpResult,
     OutboundHttpTransport,
 )
+from .factory import build_outbound_http_transport
 
 __all__ = [
     "OutboundHttpClosedError",
@@ -22,4 +23,5 @@ __all__ = [
     "OutboundHttpResponseLimits",
     "OutboundHttpResult",
     "OutboundHttpTransport",
+    "build_outbound_http_transport",
 ]
