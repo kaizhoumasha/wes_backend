@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-04
+**最后更新**：2026-08-05
 
 ## 1. 真源与入口
 
@@ -53,6 +53,7 @@ API → Service → Repository → Database
 | --- | --- |
 | `src/register.py` | 路由、中间件和异常处理组装 |
 | `src/core/` | 配置、认证、响应、基础 Service/API、运行时开关 |
+| `src/core/outbound_http/` | 框架无关的出站 HTTP 合同、单次发送与共享 Client 生命周期；不包含业务或厂商语义 |
 | `src/database/` | Session、Repository、模型工厂、关系、缓存和 schema 基础设施 |
 | `src/middleware/` | 请求日志、限流和性能中间件 |
 | `src/celery_app/` | Celery 应用、队列路由、任务和进程运行时 |
