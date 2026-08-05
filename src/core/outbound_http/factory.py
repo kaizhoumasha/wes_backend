@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from urllib.parse import urlsplit
 
 import httpx
@@ -27,6 +28,8 @@ def build_outbound_http_transport(
     _validate_timeout(timeout_seconds)
     client = httpx.AsyncClient(
         base_url=base_url,
+        cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=())),
+        headers={"accept-encoding": "gzip, deflate"},
         timeout=httpx.Timeout(timeout_seconds),
         trust_env=False,
         follow_redirects=False,

@@ -17,7 +17,7 @@ from src.core.outbound_http.contracts import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 
 def _capture_client(
@@ -62,6 +62,114 @@ async def test_builder_creates_a_configured_transport_for_a_stable_system_id(mon
         await transport.aclose()
 
     assert clients[0].is_closed
+
+
+@pytest.mark.asyncio
+async def test_builder_accepts_a_plain_http_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_kwargs, _ = _capture_client(monkeypatch)
+
+    transport = build_outbound_http_transport(
+        system_id="ecs",
+        base_url="http://provider.test:8080/",
+        timeout_seconds=1,
+    )
+    try:
+        assert captured_kwargs[0]["base_url"] == "http://provider.test:8080/"
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_builder_does_not_reuse_response_cookies_for_later_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    received_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received_requests.append(request)
+        headers = {"set-cookie": "session=response-secret"} if len(received_requests) == 1 else {}
+        return httpx.Response(204, headers=headers, request=request)
+
+    _capture_client(monkeypatch, handler)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    try:
+        request = OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/health")
+        await transport.send(request)
+        await transport.send(request)
+    finally:
+        await transport.aclose()
+
+    assert "cookie" not in received_requests[1].headers
+
+
+@pytest.mark.asyncio
+async def test_builder_does_not_inject_response_cookies_into_concurrent_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_response_reading = asyncio.Event()
+    release_first_response = asyncio.Event()
+    received_requests: list[httpx.Request] = []
+
+    class BlockingResponseStream(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            first_response_reading.set()
+            await release_first_response.wait()
+            yield b""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received_requests.append(request)
+        if len(received_requests) == 1:
+            return httpx.Response(
+                200,
+                headers={"set-cookie": "session=response-secret"},
+                stream=BlockingResponseStream(),
+                request=request,
+            )
+        return httpx.Response(204, request=request)
+
+    _capture_client(monkeypatch, handler)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    first_sending = asyncio.create_task(
+        transport.send(OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/health"))
+    )
+    try:
+        await first_response_reading.wait()
+        await transport.send(OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/health"))
+        release_first_response.set()
+        await first_sending
+    finally:
+        release_first_response.set()
+        await transport.aclose()
+
+    assert "cookie" not in received_requests[1].headers
+
+
+@pytest.mark.asyncio
+async def test_builder_advertises_only_supported_response_content_encodings(monkeypatch: pytest.MonkeyPatch) -> None:
+    received_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received_requests.append(request)
+        return httpx.Response(204, request=request)
+
+    _capture_client(monkeypatch, handler)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    try:
+        await transport.send(OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/health"))
+    finally:
+        await transport.aclose()
+
+    assert received_requests[0].headers["accept-encoding"] == "gzip, deflate"
 
 
 @pytest.mark.asyncio
@@ -150,6 +258,44 @@ async def test_outbound_log_suppression_does_not_hide_concurrent_unrelated_httpx
     assert "query-secret" not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_outbound_log_suppression_hides_httpcore_headers_without_hiding_unrelated_logs(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_entered = asyncio.Event()
+    release_response = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        logging.getLogger("httpcore.http11").debug(
+            "receive_response_headers.complete return_value=%r",
+            [(b"set-cookie", b"session=response-secret")],
+        )
+        request_entered.set()
+        await release_response.wait()
+        return httpx.Response(204, request=request)
+
+    _capture_client(monkeypatch, handler)
+    caplog.set_level(logging.DEBUG, logger="httpcore.http11")
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    sending = asyncio.create_task(transport.send(OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/health")))
+    try:
+        await request_entered.wait()
+        logging.getLogger("httpcore.http11").debug("unrelated_httpcore_fact")
+        release_response.set()
+        await sending
+    finally:
+        release_response.set()
+        await transport.aclose()
+
+    assert "response-secret" not in caplog.text
+    assert "unrelated_httpcore_fact" in caplog.text
+
+
 @pytest.mark.parametrize(
     "system_id",
     ["", "WMS", "wms space", "wms\nprimary", "a" * 65],
@@ -173,6 +319,7 @@ def test_builder_rejects_non_stable_system_id(system_id: str) -> None:
         "https://provider.test/?page=1",
         "https://provider.test/#section",
         "https://provider.test/\n",
+        "https://provider.test:not-a-port/",
     ],
 )
 def test_builder_rejects_ambiguous_or_non_http_base_url(base_url: str) -> None:

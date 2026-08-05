@@ -53,6 +53,16 @@ def test_request_rejects_method_outside_the_closed_enum() -> None:
         OutboundHttpRequest(method="PUT", path="/items")  # type: ignore[arg-type]
 
 
+def test_method_enum_contains_only_the_current_contract_methods() -> None:
+    assert {method.value for method in OutboundHttpMethod} == {"GET", "POST"}
+
+
+@pytest.mark.parametrize("query", [(("key\r", "value"),), (("key", "value\n"),), (("key", "value\0"),)])
+def test_request_rejects_query_control_characters(query: tuple[tuple[str, str], ...]) -> None:
+    with pytest.raises(OutboundHttpRequestError, match="query"):
+        OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/items", query=query)
+
+
 def test_request_rejects_response_limits_outside_the_contract_type() -> None:
     with pytest.raises(TypeError, match="response limit"):
         OutboundHttpRequest(
@@ -125,6 +135,29 @@ def test_response_limits_default_header_caps_are_fixed() -> None:
 
     assert limits.max_response_header_count == 64
     assert limits.max_response_header_wire_bytes == 16_384
+
+
+@pytest.mark.parametrize(
+    "encodings",
+    [(), ("gzip",), ("identity", "gzip", "gzip"), ("identity", "br")],
+)
+def test_response_limits_reject_content_encodings_outside_the_closed_policy(encodings: tuple[str, ...]) -> None:
+    with pytest.raises(OutboundHttpRequestError, match="content encoding"):
+        OutboundHttpResponseLimits(allowed_content_encodings=encodings)
+
+
+def test_response_limits_and_result_are_immutable() -> None:
+    limits = OutboundHttpResponseLimits()
+    result = OutboundHttpResult(
+        delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
+        status_code=200,
+        decoded_body=b"body",
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        limits.max_wire_bytes = 1  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        result.status_code = 201  # type: ignore[misc]
 
 
 def test_failure_enum_is_exactly_the_frozen_contract() -> None:
@@ -211,6 +244,16 @@ def test_result_rejects_decoded_body_outside_the_declared_bytes_type() -> None:
             delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
             status_code=200,
             decoded_body=5,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("status_code", [99, 600])
+def test_result_rejects_status_code_outside_http_range(status_code: int) -> None:
+    with pytest.raises(ValueError, match="status code"):
+        OutboundHttpResult(
+            delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
+            status_code=status_code,
+            decoded_body=b"body",
         )
 
 

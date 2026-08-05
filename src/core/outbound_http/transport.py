@@ -28,17 +28,31 @@ from src.core.outbound_http.contracts import (
 )
 
 logger = logging.getLogger(__name__)
-_httpx_logger = logging.getLogger("httpx")
-_suppress_httpx_info_logs: ContextVar[bool] = ContextVar("suppress_outbound_httpx_info_logs", default=False)
+_transport_library_loggers = tuple(
+    logging.getLogger(name)
+    for name in (
+        "httpx",
+        "httpcore.connection",
+        "httpcore.http11",
+        "httpcore.http2",
+        "httpcore.proxy",
+        "httpcore.socks",
+    )
+)
+_suppress_transport_library_logs: ContextVar[bool] = ContextVar(
+    "suppress_outbound_http_transport_library_logs",
+    default=False,
+)
 
 
-def _allow_httpx_log(record: logging.LogRecord) -> bool:
-    """只在当前 Transport 请求上下文内抑制会暴露完整 URL 的 HTTPX INFO 日志。"""
+def _allow_transport_library_log(record: logging.LogRecord) -> bool:
+    """只在当前 Transport 请求上下文内抑制可能携带请求或响应数据的底层日志。"""
 
-    return record.levelno != logging.INFO or not _suppress_httpx_info_logs.get()
+    return not _suppress_transport_library_logs.get()
 
 
-_httpx_logger.addFilter(_allow_httpx_log)
+for _transport_library_logger in _transport_library_loggers:
+    _transport_library_logger.addFilter(_allow_transport_library_log)
 
 
 class _ResponseHeaderLimitExceeded(ValueError):
@@ -68,6 +82,7 @@ class _HttpxOutboundHttpTransport:
         cleanup_failed = False
         started_at = asyncio.get_running_loop().time()
         deadline = started_at + self._timeout_seconds
+        suppression_token = _suppress_transport_library_logs.set(True)
 
         try:
             async with asyncio.timeout_at(deadline):
@@ -78,11 +93,7 @@ class _HttpxOutboundHttpTransport:
                     headers=request.headers,
                     content=request.body,
                 )
-                suppression_token = _suppress_httpx_info_logs.set(True)
-                try:
-                    response = await self._client.send(outbound_request, stream=True)
-                finally:
-                    _suppress_httpx_info_logs.reset(suppression_token)
+                response = await self._client.send(outbound_request, stream=True)
                 status_code = int(response.status_code)
                 response_headers = _bounded_response_headers(response, request=request)
                 raw_body, _ = await read_bounded_wire_body(
@@ -191,14 +202,17 @@ class _HttpxOutboundHttpTransport:
                 failure_kind=OutboundHttpFailureKind.RESPONSE_CONTENT_ENCODING_INVALID,
             )
         finally:
-            if response is not None:
-                cleanup_failed = await self._cleanup_response(response)
-                if cleanup_failed:
-                    result = _apply_cleanup_failure(
-                        result=result,
-                        status_code=status_code,
-                        response_headers=response_headers,
-                    )
+            try:
+                if response is not None:
+                    cleanup_failed = await self._cleanup_response(response)
+                    if cleanup_failed:
+                        result = _apply_cleanup_failure(
+                            result=result,
+                            status_code=status_code,
+                            response_headers=response_headers,
+                        )
+            finally:
+                _suppress_transport_library_logs.reset(suppression_token)
 
         if result is None:
             raise RuntimeError("outbound HTTP transport returned without a result")

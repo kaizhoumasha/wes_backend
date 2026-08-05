@@ -13,8 +13,8 @@ WES 核心只依赖类型化业务端口，可靠性生命周期分别由 `Devic
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Alembic、Celery、
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
-**Status:** Reviewed — 十阶段结构、顶层 SPEC §14.2–14.3 和 Phase 2 详细计划已同步复审；Phase 2 已具备实施条件，
-但生产代码尚未开始。Phase 3–10 仍须逐阶段满足各自入口条件和退出门禁。
+**Status:** In progress — Phase 1–2 已完成；Phase 2 公共 Outbound HTTP 基础层已通过退出门禁。
+Phase 3–10 仍须逐阶段满足各自入口条件和退出门禁。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -107,7 +107,7 @@ Transport/Adapter/核心所有权。
 | 远端文档分支 | `origin/codex/docs-wes-architecture-convergence-master-plan` 与当前 `develop` 树一致 | 无未合入规划增量 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
-阶段状态：Phase 1 已完成；Phase 2 计划已批准、生产实施尚未开始；Phase 3–10 均未开始。
+阶段状态：Phase 1–2 已完成；Phase 3–10 均未开始。
 
 ## 5. 总控依赖模型
 
@@ -645,7 +645,7 @@ Phase 9 固化最终 metadata。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | 每阶段均有 entry/out-of-scope/atomic handoff/exit gate；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 完成，Phase 2 计划已批准但生产实施未开始，Phase 3–10 未开始；未把旧类型或远端分支误报为目标交付 |
+| 当前状态准确性 | 通过 | Phase 1–2 完成，Phase 3–10 未开始；未把旧类型或远端分支误报为目标交付 |
 
 ## 18. 总体完成定义
 

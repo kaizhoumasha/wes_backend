@@ -12,7 +12,7 @@ base URL/Timeout 并构造 Transport。Phase 2 不包含认证、重试、业务
 
 **Tech Stack:** Python 3.13、HTTPX、`asyncio.timeout_at`、Pytest 9、Ruff、Import Linter。
 
-**Status:** Approved — 2026-08-05 工程复审通过；生产实现尚未开始。
+**Status:** Completed — 2026-08-05 生产实现、核心测试、架构门禁和 Phase 2 退出门禁全部完成。
 
 ## Global Constraints
 
@@ -185,14 +185,14 @@ Adapter（Phase 3/6/7）
 
 **Produces:** §1.2 全部框架无关公开类型；后续任务只能消费这些名称，不得另建平行结果模型。
 
-- [ ] 先对 `src/core/bounded_http_response.py` 和拟新增公开符号执行 GitNexus upstream impact analysis；新增符号无影响时记录为 LOW。
-- [ ] 编写失败测试，逐项覆盖不可变性、合法请求/结果、绝对 URL、CR/LF、大小写不敏感重复请求 Header、全部非正预算、
+- [x] 先对 `src/core/bounded_http_response.py` 和拟新增公开符号执行 GitNexus upstream impact analysis；新增符号无影响时记录为 LOW。
+- [x] 编写失败测试，逐项覆盖不可变性、合法请求/结果、绝对 URL、CR/LF、大小写不敏感重复请求 Header、全部非正预算、
   Header 默认值及 64/16,384 硬上限、
   failure enum 完整集合、四种结果状态矩阵、重复响应 Header 保真、decoded body 语义、repr 脱敏，以及 `contracts.py` 不 import httpx。
-- [ ] 运行 `uv run pytest tests/core/outbound_http/test_contracts.py -q`，确认因目标模块或符号不存在而失败。
-- [ ] 只实现使合同测试通过的值对象、枚举、异常和 Protocol；不得加入 factory、网络发送、认证或业务解释。
-- [ ] 重跑同一测试并执行 `uv run ruff check src/core/outbound_http tests/core/outbound_http/test_contracts.py`，预期全部通过。
-- [ ] 提交：`feat(core): 定义 outbound http 传输合同`。
+- [x] 运行 `uv run pytest tests/core/outbound_http/test_contracts.py -q`，确认因目标模块或符号不存在而失败。
+- [x] 只实现使合同测试通过的值对象、枚举、异常和 Protocol；不得加入 factory、网络发送、认证或业务解释。
+- [x] 重跑同一测试并执行 `uv run ruff check src/core/outbound_http tests/core/outbound_http/test_contracts.py`，预期全部通过。
+- [x] 提交：`feat(core): 定义 outbound http 传输合同`。
 
 ### Task 2：实现单次发送与完整传输事实矩阵
 
@@ -205,20 +205,20 @@ Adapter（Phase 3/6/7）
 
 **Produces:** 实现 `OutboundHttpTransport` 的包内 HTTPX Transport；供 Task 3 builder 构造。
 
-- [ ] 修改具体实现符号前运行 GitNexus upstream impact analysis；新符号无调用者时记录为 LOW。
-- [ ] 使用 `httpx.MockTransport` 编写失败测试，覆盖一次请求只发送一次、一个 Client 被并发请求复用、所有 HTTP status 均只返回
+- [x] 修改具体实现符号前运行 GitNexus upstream impact analysis；新符号无调用者时记录为 LOW。
+- [x] 使用 `httpx.MockTransport` 编写失败测试，覆盖一次请求只发送一次、一个 Client 被并发请求复用、所有 HTTP status 均只返回
   response fact、重复响应 Header 顺序保真、raw body 只解码一次且只公开 `decoded_body`、repr 脱敏。
-- [ ] 补齐失败矩阵测试：pool/connect error/timeout → `NOT_SENT`；write/read/remote protocol error/timeout →
+- [x] 补齐失败矩阵测试：pool/connect error/timeout → `NOT_SENT`；write/read/remote protocol error/timeout →
   `DELIVERY_UNKNOWN`；send 内外层 total timeout 保守 unknown；收到 response 后的 total timeout 为 response received。
-- [ ] 补齐响应矩阵测试：Header 数量/bytes、metadata/chunk/wire/decoded/compression/content-encoding 失败 → 已收到响应且
+- [x] 补齐响应矩阵测试：Header 数量/bytes、metadata/chunk/wire/decoded/compression/content-encoding 失败 → 已收到响应且
   `decoded_body` 不可用；成功和失败路径都执行独立有界 cleanup。
-- [ ] 补齐控制流测试：取消发生于 send/read/cleanup 时，cleanup shield 后 `CancelledError` 传播；cleanup 单独失败返回稳定 failure；
+- [x] 补齐控制流测试：取消发生于 send/read/cleanup 时，cleanup shield 后 `CancelledError` 传播；cleanup 单独失败返回稳定 failure；
   主失败叠加 cleanup 失败时保留主 failure 并记录布尔标识；未知异常传播；日志不含 query/header/body/原始异常；实现不 catch
   `Exception`。
-- [ ] 运行 `uv run pytest tests/core/outbound_http/test_transport.py -q`，确认因实现不存在而失败。
-- [ ] 实现最小一次发送流水线；直接复用 `read_bounded_wire_body` 与 `decode_bounded_http_body`，不复制 primitive，不添加重试。
-- [ ] 重跑 Task 1–2 测试及 Ruff，预期全部通过。
-- [ ] 提交：`feat(core): 实现 outbound http 单次发送`。
+- [x] 运行 `uv run pytest tests/core/outbound_http/test_transport.py -q`，确认因实现不存在而失败。
+- [x] 实现最小一次发送流水线；直接复用 `read_bounded_wire_body` 与 `decode_bounded_http_body`，不复制 primitive，不添加重试。
+- [x] 重跑 Task 1–2 测试及 Ruff，预期全部通过。
+- [x] 提交：`feat(core): 实现 outbound http 单次发送`。
 
 ### Task 3：构造与生命周期
 
@@ -232,14 +232,14 @@ Adapter（Phase 3/6/7）
 
 **Produces:** `build_outbound_http_transport`，是后续 Composition Root 唯一公共构造入口。
 
-- [ ] 修改 builder/close 符号前运行 GitNexus upstream impact analysis；记录 direct caller 与风险。
-- [ ] 编写失败测试，覆盖合法 `system_id` 和 http/https base URL、拒绝空/含控制符 system id、userinfo/query/fragment/非正
+- [x] 修改 builder/close 符号前运行 GitNexus upstream impact analysis；记录 direct caller 与风险。
+- [x] 编写失败测试，覆盖合法 `system_id` 和 http/https base URL、拒绝空/含控制符 system id、userinfo/query/fragment/非正
   timeout、`trust_env=False`、redirect 关闭、
   Client 跨 send 复用、幂等 close、close 后 send 失败和 close 异常不被吞掉。
-- [ ] 运行 `uv run pytest tests/core/outbound_http/test_factory.py -q`，确认 builder 不存在而失败。
-- [ ] 实现简单函数 builder 和最小生命周期状态；不得新增 Factory 类、配置对象、registry、singleton、PID/loop guard 或 test seam。
-- [ ] 运行 `uv run pytest tests/core/outbound_http -q` 与 Ruff，预期全部通过。
-- [ ] 提交：`feat(core): 装配 outbound http 生命周期`。
+- [x] 运行 `uv run pytest tests/core/outbound_http/test_factory.py -q`，确认 builder 不存在而失败。
+- [x] 实现简单函数 builder 和最小生命周期状态；不得新增 Factory 类、配置对象、registry、singleton、PID/loop guard 或 test seam。
+- [x] 运行 `uv run pytest tests/core/outbound_http -q` 与 Ruff，预期全部通过。
+- [x] 提交：`feat(core): 装配 outbound http 生命周期`。
 
 ### Task 4：架构门禁与 HEAVY 映射
 
@@ -252,29 +252,29 @@ Adapter（Phase 3/6/7）
 
 **Produces:** Phase 2 职责不可回退的机器门禁，以及 selector 对新增生产路径的显式 NONE 裁决。
 
-- [ ] 编写失败门禁，证明：`contracts.py` 无 httpx；整个新包无 `src.app`/数据库/Celery/Adapter/插件 import；公开导出无
+- [x] 编写失败门禁，证明：`contracts.py` 无 httpx；整个新包无 `src.app`/数据库/Celery/Adapter/插件 import；公开导出无
   httpx 类型、认证、credential、HMAC、Clock、Nonce、registry 或 fake；新包不存在额外生产文件。
-- [ ] 冻结当前 Phase 2 开始前的裸 `httpx.AsyncClient` 创建点 allowlist，并断言本阶段不增加旧路径；不得把最终全局零裸 Client
+- [x] 冻结当前 Phase 2 开始前的裸 `httpx.AsyncClient` 创建点 allowlist，并断言本阶段不增加旧路径；不得把最终全局零裸 Client
   门禁提前伪装为已完成。
-- [ ] 在 `heavy-test-impact.toml` 为 `src/core/outbound_http/**` 增加精确 mapping 和 `heavy_tests = []`；原因固定为本阶段无生产消费者、
+- [x] 在 `heavy-test-impact.toml` 为 `src/core/outbound_http/**` 增加精确 mapping 和 `heavy_tests = []`；原因固定为本阶段无生产消费者、
   全部行为由 MockTransport 核心测试覆盖。
-- [ ] 运行架构门禁与 selector 合同测试，先确认新门禁能识别故意构造的违规样例，再恢复样例并确认通过。
-- [ ] 提交：`test(architecture): 冻结 outbound http 基础边界`。
+- [x] 运行架构门禁与 selector 合同测试，先确认新门禁能识别故意构造的违规样例，再恢复样例并确认通过。
+- [x] 提交：`test(architecture): 冻结 outbound http 基础边界`。
 
 ### Task 5：Phase 2 完整验证与交接
 
 **Files:** 不新增生产或测试文件；只验证 Task 1–4 已冻结路径。
 
-- [ ] 运行 `uv run pytest tests/core/outbound_http tests/architecture/test_outbound_http_boundary_guardrail.py -q`。
-- [ ] 运行 `uv run pytest tests/architecture/test_suite_topology_guardrail.py tests/architecture/test_core_plugin_test_ownership_guardrail.py -q`。
-- [ ] 运行 `uv run pytest tests/scripts -q` 和 `uv run scripts/select_heavy_tests.py --scope unstaged`；预期 selector 接受显式 NONE。
-- [ ] 运行 `uv run pytest --collect-only -q -o addopts='' | tail -5`，确认新增核心测试位于允许目录且未混入 HEAVY。
-- [ ] 运行 `uv run ruff format --check src/core/outbound_http tests/core/outbound_http tests/architecture/test_outbound_http_boundary_guardrail.py`、
+- [x] 运行 `uv run pytest tests/core/outbound_http tests/architecture/test_outbound_http_boundary_guardrail.py -q`。
+- [x] 运行 `uv run pytest tests/architecture/test_suite_topology_guardrail.py tests/architecture/test_core_plugin_test_ownership_guardrail.py -q`。
+- [x] 运行 `uv run pytest tests/scripts -q` 和 `uv run scripts/select_heavy_tests.py --scope unstaged`；预期 selector 接受显式 NONE。
+- [x] 运行 `uv run pytest --collect-only -q -o addopts='' | tail -5`，确认新增核心测试位于允许目录且未混入 HEAVY。
+- [x] 运行 `uv run ruff format --check src/core/outbound_http tests/core/outbound_http tests/architecture/test_outbound_http_boundary_guardrail.py`、
   `uv run ruff check ...` 和 `./scripts/git-quality-gate.sh --profile quality`。
-- [ ] 扫描 Phase 2 边界：新生产包只有四文件；既有 WMS/RCS/ECS/Outbox/DeviceCommand/Composition Root 无修改、无新包 import；
+- [x] 扫描 Phase 2 边界：新生产包只有四文件；既有 WMS/RCS/ECS/Outbox/DeviceCommand/Composition Root 无修改、无新包 import；
   `src/core/bounded_http_response.py` 内容未变；`docs/hardware/` 无修改。
-- [ ] 运行 `gitnexus_detect_changes()`，确认只影响 Phase 2 新符号、核心测试、架构门禁和 HEAVY mapping。
-- [ ] 提交最终验证修正（如有）：`chore(core): 完成 outbound http phase2 门禁`。
+- [x] 运行 `gitnexus_detect_changes()`，确认只影响 Phase 2 新符号、核心测试、架构门禁和 HEAVY mapping。
+- [x] 提交最终验证修正（如有）：`chore(core): 完成 outbound http phase2 门禁`。
 
 ## 4. 测试设计复审
 

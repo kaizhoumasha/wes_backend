@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -231,6 +232,32 @@ async def test_send_preserves_response_received_when_body_read_fails() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_failure"),
+    [
+        (httpx.ReadTimeout("read"), OutboundHttpFailureKind.READ_TIMEOUT),
+        (httpx.RemoteProtocolError("protocol"), OutboundHttpFailureKind.REMOTE_PROTOCOL_ERROR),
+    ],
+)
+async def test_send_preserves_response_received_for_late_read_and_protocol_failures(
+    error: Exception,
+    expected_failure: OutboundHttpFailureKind,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_ChunkStream(read_error=error), request=request)
+
+    transport = _transport(handler)
+    try:
+        result = await transport.send(_request())
+    finally:
+        await transport.aclose()
+
+    assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
+    assert result.status_code == 200
+    assert result.failure_kind is expected_failure
+
+
+@pytest.mark.asyncio
 async def test_send_maps_header_budget_failure_without_exposing_partial_headers() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -249,6 +276,28 @@ async def test_send_maps_header_budget_failure_without_exposing_partial_headers(
 
     assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
     assert result.status_code == 200
+    assert result.response_headers == ()
+    assert result.failure_kind is OutboundHttpFailureKind.RESPONSE_HEADER_LIMIT_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_send_enforces_response_header_wire_byte_budget() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers=[("x", "12345")],
+            stream=_ChunkStream((b"body",)),
+            request=request,
+        )
+
+    transport = _transport(handler)
+    limits = OutboundHttpResponseLimits(max_response_header_wire_bytes=5)
+    try:
+        result = await transport.send(_request(response_limits=limits))
+    finally:
+        await transport.aclose()
+
+    assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
     assert result.response_headers == ()
     assert result.failure_kind is OutboundHttpFailureKind.RESPONSE_HEADER_LIMIT_EXCEEDED
 
@@ -600,6 +649,19 @@ async def test_send_propagates_unknown_programming_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_propagates_local_protocol_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.LocalProtocolError("invalid local request")
+
+    transport = _transport(handler)
+    try:
+        with pytest.raises(httpx.LocalProtocolError, match="invalid local request"):
+            await transport.send(_request())
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
 async def test_send_logs_only_stable_non_sensitive_transport_facts(caplog: pytest.LogCaptureFixture) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"response-secret", request=request)
@@ -626,6 +688,33 @@ async def test_send_logs_only_stable_non_sensitive_transport_facts(caplog: pytes
     assert "response-secret" not in transport_logs
     assert "system_id=wms" in transport_logs
     assert "method=POST" in transport_logs
+
+
+@pytest.mark.asyncio
+async def test_send_suppresses_httpcore_exception_details_during_response_read(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class LoggingFailureStream(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            logging.getLogger("httpcore.http11").debug(
+                "receive_response_body.failed exception=%r",
+                httpx.ReadError("response-secret"),
+            )
+            yield b""
+            raise httpx.ReadError("response-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=LoggingFailureStream(), request=request)
+
+    caplog.set_level(logging.DEBUG, logger="httpcore.http11")
+    transport = _transport(handler)
+    try:
+        result = await transport.send(_request())
+    finally:
+        await transport.aclose()
+
+    assert result.failure_kind is OutboundHttpFailureKind.READ_ERROR
+    assert "response-secret" not in caplog.text
 
 
 def test_transport_implementation_does_not_hide_unknown_errors_with_catch_all() -> None:
