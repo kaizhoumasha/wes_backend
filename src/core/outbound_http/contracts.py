@@ -104,17 +104,32 @@ def _as_string_pairs(
     field_name: str,
     reject_duplicates: bool,
 ) -> tuple[tuple[str, str], ...]:
-    normalized_pairs = tuple(pairs)
+    normalized_pairs = _as_string_pair_tuple(pairs, field_name=field_name)
     names: set[str] = set()
     for name, value in normalized_pairs:
-        if not isinstance(name, str) or not isinstance(value, str):
-            raise OutboundHttpRequestError(f"{field_name} must contain string pairs")
         if not name or _contains_control_character(name) or _contains_control_character(value):
             raise OutboundHttpRequestError(f"{field_name} contains an invalid header")
         normalized_name = name.casefold()
         if reject_duplicates and normalized_name in names:
             raise OutboundHttpRequestError(f"{field_name} contains a duplicate header")
         names.add(normalized_name)
+    return normalized_pairs
+
+
+def _as_string_pair_tuple(
+    pairs: tuple[tuple[str, str], ...],
+    *,
+    field_name: str,
+) -> tuple[tuple[str, str], ...]:
+    normalized_pairs = tuple(pairs)
+    for pair in normalized_pairs:
+        if (
+            not isinstance(pair, tuple)
+            or len(pair) != 2
+            or not isinstance(pair[0], str)
+            or not isinstance(pair[1], str)
+        ):
+            raise OutboundHttpRequestError(f"{field_name} must contain string pairs")
     return normalized_pairs
 
 
@@ -190,7 +205,7 @@ class OutboundHttpRequest:
         ):
             raise OutboundHttpRequestError("path must be an unambiguous relative path")
 
-        query = tuple(self.query)
+        query = _as_string_pair_tuple(self.query, field_name="query")
         for key, value in query:
             if (
                 not isinstance(key, str)

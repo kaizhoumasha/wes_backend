@@ -63,6 +63,25 @@ def test_request_rejects_query_control_characters(query: tuple[tuple[str, str], 
         OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/items", query=query)
 
 
+@pytest.mark.parametrize(
+    ("field_name", "kwargs"),
+    [
+        ("query", {"query": ("id",)}),
+        ("header", {"headers": ("ab",)}),
+    ],
+)
+def test_request_rejects_string_elements_in_pair_collections(
+    field_name: str,
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(OutboundHttpRequestError, match=field_name):
+        OutboundHttpRequest(
+            method=OutboundHttpMethod.GET,
+            path="/items",
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+
 def test_request_rejects_response_limits_outside_the_contract_type() -> None:
     with pytest.raises(TypeError, match="response limit"):
         OutboundHttpRequest(
@@ -244,6 +263,16 @@ def test_result_rejects_decoded_body_outside_the_declared_bytes_type() -> None:
             delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
             status_code=200,
             decoded_body=5,  # type: ignore[arg-type]
+        )
+
+
+def test_result_rejects_string_elements_in_response_header_pairs() -> None:
+    with pytest.raises(OutboundHttpRequestError, match="response header"):
+        OutboundHttpResult(
+            delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
+            status_code=200,
+            response_headers=("ab",),  # type: ignore[arg-type]
+            decoded_body=b"body",
         )
 
 

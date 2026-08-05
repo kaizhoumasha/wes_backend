@@ -360,6 +360,39 @@ async def test_transport_created_by_builder_closes_idempotently_and_rejects_late
 
 
 @pytest.mark.asyncio
+async def test_transport_close_finishes_resource_release_before_propagating_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, clients = _capture_client(monkeypatch)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    close_completed = asyncio.Event()
+
+    async def blocking_close() -> None:
+        close_started.set()
+        await release_close.wait()
+        close_completed.set()
+
+    clients[0].aclose = blocking_close  # type: ignore[method-assign]
+    closing = asyncio.create_task(transport.aclose())
+    await close_started.wait()
+
+    closing.cancel()
+    await asyncio.sleep(0)
+
+    assert not closing.done()
+    release_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert close_completed.is_set()
+
+
+@pytest.mark.asyncio
 async def test_transport_created_by_builder_does_not_swallow_close_error(monkeypatch: pytest.MonkeyPatch) -> None:
     _, clients = _capture_client(monkeypatch)
     transport = build_outbound_http_transport(

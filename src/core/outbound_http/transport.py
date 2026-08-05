@@ -68,6 +68,7 @@ class _HttpxOutboundHttpTransport:
         self._timeout_seconds = timeout_seconds
         self._cleanup_timeout_seconds = min(timeout_seconds, 1.0)
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     async def send(self, request: OutboundHttpRequest) -> OutboundHttpResult:  # noqa: PLR0912 - 冻结异常矩阵逐项映射。
         """发送一次请求，只返回可确认的传输事实。"""
@@ -222,10 +223,14 @@ class _HttpxOutboundHttpTransport:
     async def aclose(self) -> None:
         """关闭持有的 Client；重复关闭不产生额外副作用。"""
 
-        if self._closed:
-            return
-        self._closed = True
-        await self._client.aclose()
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._client.aclose())
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError:
+            await asyncio.shield(asyncio.gather(self._close_task, return_exceptions=True))
+            raise
 
     async def _cleanup_response(self, response: httpx.Response) -> bool:
         cleanup_task = asyncio.create_task(response.aclose())
