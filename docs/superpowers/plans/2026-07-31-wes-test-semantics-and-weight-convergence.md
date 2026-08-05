@@ -364,8 +364,7 @@ rtk ./scripts/git-quality-gate.sh --profile quality
   `workline_plugins/rough_sorter/tests/`；
 - 实际验证命令和结果。
 
-WMS Phase 3 的逐文件处置由
-`docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md` Task 9 固定；HEAVY 测试移动或删除时，
+WMS Phase 3 的逐文件处置由十阶段总控 §8 和 Phase 2 完成后重新批准的 WMS Phase 3 计划共同固定；HEAVY 测试移动或删除时，
 同一变更必须更新 `docs/architecture/heavy-test-impact.toml`，不得留下失效路径或用臆造 NONE 掩盖风险。
 
 禁止：

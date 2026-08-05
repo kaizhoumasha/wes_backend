@@ -30,8 +30,8 @@
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十阶段架构收敛总控计划 |
+| `docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md` | Phase 2 Outbound HTTP 传输基础能力实施计划 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
-| `docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md` | Phase 3 WMS 薄接入阶段计划 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | WMS 北向 typed operation wire 合同 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand 与 Adapter 边界 |
 | `docs/plugin_development_guide.md` | 插件 SPI、封闭 Decision 与独立包交付指南 |

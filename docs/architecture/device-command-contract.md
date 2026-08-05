@@ -1,7 +1,7 @@
 ---
 status: Approved
 created_at: 2026-06-25
-updated_at: 2026-08-03
+updated_at: 2026-08-05
 spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 authority: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 scope: WES 核心设备命令基础能力边界
@@ -17,8 +17,9 @@ scope: WES 核心设备命令基础能力边界
 
 | 层级 | 所有内容 | 不得包含 |
 | --- | --- | --- |
-| WES 核心 | 命令持久化、幂等身份、目标设备、deadline、ACK/CALLBACK 证据、通用状态与诊断 | 厂商 `task_type`、厂商字段、具体工作线规则 |
-| 厂商 Adapter | 厂商 HTTP DTO、认证、命令名、Payload、ACK/Result 映射与厂商合同测试 | 工作线业务判定、数据库写入、通用流程引擎 |
+| WES 核心 | 命令持久化、幂等身份、目标设备、deadline、ACK/CALLBACK 证据、通用状态与诊断 | HTTP、厂商 `task_type`、厂商字段、具体工作线规则 |
+| Outbound HTTP 基础层 | Client 生命周期、Timeout、单次发送、有界响应和传输事实分类 | 厂商 DTO/认证、业务拒绝、重试和命令生命周期 |
+| 厂商 Adapter | 厂商 HTTP DTO、真实合同要求的认证、命令名、Payload、ACK/Result 映射与厂商合同测试 | 连接池、通用传输异常、工作线业务判定、数据库写入、通用流程引擎 |
 | WorkLine 插件 | 何时创建命令、当前业务对象、逻辑目标和下一步 Decision | HTTP、Repository、重试、Outbox、设备安全互锁 |
 
 厂商 Adapter 和 WorkLine 插件属于二次开发交付。核心不得要求供应商适配 WES 自有指令集，也不得把具体业务
@@ -55,7 +56,7 @@ WES 不拆解厂商长命令，不解释 ECS 内部步骤，也不实现设备�
 
 - 命令请求、ACK、CALLBACK DTO；
 - 厂商命令类型和 Payload 校验；
-- 认证、Endpoint、timeout 与基础错误映射；
+- 厂商合同真实要求的认证、method/path 和 wire 错误映射；
 - 命令请求到厂商 wire payload 的显式映射；
 - 厂商合同测试和样例 fixture。
 
@@ -64,6 +65,9 @@ WES 不拆解厂商长命令，不解释 ECS 内部步骤，也不实现设备�
 
 核心只依赖 Adapter 暴露的窄端口，不读取厂商 DTO，也不验证具体命令值。供应商接口变化只能修改对应 Adapter
 及其测试，不能扩张核心 `DeviceCommand`。
+
+Composition Root 把现场 Endpoint/Timeout 交给 Phase 2 builder，并把得到的框架无关 Transport 注入 Adapter；Adapter
+不得接收裸 `httpx.AsyncClient`。当前已确认设备 outbound 合同无认证，不存在公共认证配置或 seam。
 
 ## 5. WorkLine 业务边界
 
@@ -93,8 +97,8 @@ WES 核心、Adapter 和插件都不得建立以下软件控制字段或抽象�
 | 测试范围 | 唯一所有者 |
 | --- | --- |
 | `DeviceCommand` 通用生命周期、幂等、关联、deadline、证据和禁止硬件控制字段 | 核心 `tests/` |
-| HTTP/认证/大小限制等共享传输不变量 | 核心 `tests/` |
-| 具体厂商命令名、DTO、Payload、错误码和样例 | 对应厂商 Adapter 包 |
+| HTTP 单次发送、Client 生命周期、有界响应和基础传输错误分类 | 核心 `tests/` |
+| 具体厂商命令名、DTO、Payload、真实合同认证、错误码和样例 | 对应厂商 Adapter 包 |
 | 具体工作线何时创建命令及 CALLBACK 后业务推进 | 对应 WorkLine 插件包 |
 
 核心测试不得使用具体厂商或工作线场景证明基础能力；Adapter/插件测试也不得替代核心可靠性测试。

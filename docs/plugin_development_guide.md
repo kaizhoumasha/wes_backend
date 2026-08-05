@@ -87,7 +87,8 @@ Event、Command 或 Payload。
 每个厂家合同由三类代码隔离：
 
 - DTO：精确校验厂家实际 Payload。
-- HTTP Adapter：处理 Endpoint、认证、请求、响应和传输错误。
+- HTTP Adapter：消费已装配、框架无关的 `OutboundHttpTransport`，拥有厂家 method/path/wire DTO、真实合同要求的认证和
+  ACK/业务响应解释；不得创建裸 HTTP Client、管理连接池或复制通用传输错误分类。
 - Mapper：把厂家设备、Event 和 CALLBACK 映射为工作线角色化输入，并把插件请求的逻辑设备动作映射为厂家命令。
 
 Adapter 必须在 `device_adapters/<adapter_key>/` 独立交付代码、测试和 fixture，不嵌入任何插件包。Adapter 不包含工作线业务规则，
@@ -150,7 +151,8 @@ WMS callback/hint 只唤醒匹配的 `TransportTask` 查询，不携带或决定
 
 配置只保存现场事实：
 
-- 设备实例与标准角色绑定；Endpoint、凭据引用和厂商连接参数由 Adapter 部署配置拥有。
+- 设备实例与标准角色绑定；Endpoint/Timeout 由 Composition Root 用于装配对应 Transport。当前已确认 outbound 合同无认证，
+  不提供凭据或认证配置；真实合同出现后必须先修订架构与 Adapter 计划。
 - 设备角色、位置角色和实际物理拓扑。
 - 位置、队列容量和故障隔离范围。
 - 无法由约定推导的少量业务参数。
