@@ -125,7 +125,7 @@ PickingTask
 
 ### 5.3 JSON 语义示例
 
-以下示例是可直接复制和解析的严格 JSON，用于帮助开发人员、Agent 和业务评审者统一理解 `PickingTask`。它同时覆盖：
+示例覆盖：
 
 - `BIN_CELL` 与 `RACK_SLOT` 两类来源。
 - 同一料格内两个料盘按顶部到下层排列，并形成合法的目标 A 面到 B 面顺序。
@@ -203,10 +203,7 @@ PickingTask
 }
 ```
 
-标准 JSON 不支持行内注释。为使示例既可直接解析，又能逐字段解释，字段含义统一写在紧邻示例的表格中，不增加
-JSONC 副本或 `_comment` 伪字段：
-
-#### PickingTask 字段注释
+#### PickingTask 字段定义
 
 | 字段 | 含义与约束 |
 | --- | --- |
@@ -235,7 +232,7 @@ JSONC 副本或 `_comment` 伪字段：
 | `task_items[].target_locator.target_face` | 目标生产转运货架面，取值为 `A` 或 `B`。 |
 | `task_items[].target_locator.target_slot_id` | 目标面内的唯一储位标识；一个储位只能对应一个任务项。 |
 
-示例中的 `task_items[]` 顺序不是 WES 的全局设备动作顺序；`top_to_bottom_sequence` 只表达同一料格内不可违反的
+`task_items[]` 数组顺序不是 WES 的全局设备动作顺序；`top_to_bottom_sequence` 只表达同一料格内不可违反的
 物理可达顺序。前两个任务项展示同一料格的合法跨面顺序：顶部料盘进入目标 A 面，下一层料盘进入目标 B 面。
 WES 仍按“目标 A 面完成后再处理目标 B 面”派生来源架和来源面的执行分组。
 
@@ -262,7 +259,7 @@ WES 仍按“目标 A 面完成后再处理目标 B 面”派生来源架和来�
 }
 ```
 
-#### 追加来源字段注释
+#### 追加来源字段定义
 
 | 字段 | 含义与约束 |
 | --- | --- |
@@ -270,11 +267,9 @@ WES 仍按“目标 A 面完成后再处理目标 B 面”派生来源架和来�
 | `base_task_version` | 本次增量所基于的整单版本；最终并发和版本推进规则由 wire 合同冻结。 |
 | `source_additions[]` | 本次追加的替代来源集合。 |
 | `source_additions[].item_id` | 关联原任务中的未完成项，不创建新的任务项。 |
-| `source_additions[].source_locator` | 为该未完成项追加的精确来源；嵌套字段含义与主示例字段表一致，不重复定义。 |
+| `source_additions[].source_locator` | 为该未完成项追加的精确来源；嵌套字段含义与主示例字段表一致。 |
 
-这两个示例冻结业务语义，不冻结最终 wire DTO。method、path、请求信封、字段类型与上限、枚举、幂等键、版本推进方式
-和拒绝码仍由 inbound wire 合同决定。实现和自动化测试不得解析 Markdown；wire 合同冻结后，必须把同一场景保存为
-DTO 所属包内独立的机器可读 JSON fixture，并由正式 DTO/Schema 直接校验。
+method、path、请求信封、字段类型与上限、枚举、幂等键、版本推进方式和拒绝码由 inbound wire 合同定义。
 
 ### 5.4 不变量
 
@@ -514,7 +509,7 @@ Phase 3 operation 清单已依据本文删除旧 Q10–Q13，并补入 NG 报告
 
 ## 15. 测试所有权与验收边界
 
-本文是纯设计文档，不为其正文编写 pytest。后续实现按以下所有权验收：
+自动化验收按以下所有权划分：
 
 - Phase 2 核心测试：只验证 HTTP 传输、资源限制、取消和传输事实。
 - Phase 3 WMS Adapter 测试：只验证 WMS method/path/DTO/拒绝码、单次调用和结果映射。
@@ -525,10 +520,9 @@ Phase 3 operation 清单已依据本文删除旧 Q10–Q13，并补入 NG 报告
 
 任何一层不得用另一层的 happy path 替代自身合同测试。
 
-### 15.1 JSON 示例与 MOCK fixture 边界
+### 15.1 MOCK fixture 合同
 
-第 5.3 节 JSON 是人类与 Agent 的语义基线，不是测试输入真源。inbound wire 合同冻结后，DTO 所属包至少应维护以下
-独立 fixture 场景，MOCK 自动化环境与合同测试共同读取这些 fixture：
+inbound wire 合同冻结后，DTO 所属包至少维护以下 fixture 场景：
 
 | 场景 | 预期 |
 | --- | --- |
@@ -540,8 +534,7 @@ Phase 3 operation 清单已依据本文删除旧 Q10–Q13，并补入 NG 报告
 | 不同料格在当前目标面内调整执行先后 | 允许调整，同时保持各料格内部顺序 |
 | 为原任务未完成项追加精确替代来源 | 接纳增量，保留原来源证据 |
 
-fixture 必须是独立 `.json` 文件并通过正式 DTO/Schema 校验；不得复制一套仅供 MOCK 使用的宽松结构，也不得让测试
-读取或断言本文标题、路径、代码块或正文措辞。这样既保留顶层设计的可读示例，又确保自动化验收只依赖可执行合同。
+MOCK 自动化环境与合同测试共用同一组 `.json` fixture，并通过正式 DTO/Schema 校验。
 
 ## 16. 评审结论
 
