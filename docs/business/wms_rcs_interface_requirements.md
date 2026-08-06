@@ -4,6 +4,8 @@
 > WES 侧所有权与执行架构以
 > `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` 为真源。
 > 35 项业务视图见 [WMS 全量工厂 operation blueprint](./wms_full_factory_operation_blueprint.md)。
+> `docs/hardware/wms_rcs_interface_requirements.md` 是与 WMS 交互约定的初稿，只读保留。Decision A 已采用其覆盖
+> 16 项的 path/业务字段和当前批准 method，E02 为 `POST`；旧 MCS 生命周期、认证、重试、缓存和分页语义不进入目标合同。
 
 ## 1. 边界
 
@@ -16,7 +18,7 @@ transport facade、兼容 operation identity、terminal callback 或按旧路径
 
 ## 2. 35 项 operation blueprint
 
-固定 wire contract 共 35 项：
+目标 operation surface 共 35 项；其中初稿覆盖 16 项已采用 wire 基线，其余 19 项仍待 WMS/业务方批准：
 
 - Q01–Q19：19 项 QUERY，其中 Q19 是无副作用 POST，其余为 GET。
 - E01–E07、E15：8 项同步业务确认，提交响应就是 typed terminal result。
@@ -26,7 +28,7 @@ transport facade、兼容 operation identity、terminal callback 或按旧路径
 QUERY：
 
 1. `wms.master_data.get_material@v1`
-2. `wms.master_data.list_materials@v1`
+2. `wms.master_data.get_materials@v1`
 3. `wms.master_data.list_zones@v1`
 4. `wms.master_data.list_locations@v1`
 5. `wms.master_data.get_rack@v1`
@@ -67,9 +69,11 @@ QUERY：
 6. `wms.fulfillment.move_bins_from_conveyor_exit@v1`
 7. `wms.fulfillment.request_load_unit_transport@v1`
 
-HTTP method、path template、请求/结果 model 和稳定拒绝码由北向合同冻结。WES 实现中每项能力以一个垂直模块
-内聚这些 wire 事实及 `WmsCallSpec`；不存在生产运行时 registry、manifest 或动态发现。预算属于 WES 调用策略，
-不改变 wire contract。
+初稿覆盖 16 项的完整 path 和已明确业务字段已由北向合同冻结；E02 method 已批准改为 `POST`。35 项完整请求/结果字段
+矩阵、其余 19 项，以及 E08–E14 status method/path、状态闭集、`request_id`/`task_id` 关联和幂等承诺仍是 Phase 3
+编码前置门禁。
+WES 实现中每项能力以一个垂直模块内聚这些 wire 事实及 `WmsCallSpec`；不存在生产运行时 registry、manifest 或动态发现。
+单响应资源预算属于 Phase 2 Transport，不改变 wire contract。
 
 ## 3. 入站普通事件
 
@@ -85,19 +89,21 @@ HTTP method、path template、请求/结果 model 和稳定拒绝码由北向合
 
 ## 4. 异步状态提示
 
-`WMS_EFFECT_STATUS_HINT` 只通过 `/api/v1/callback/external` 接收并适用于 E08–E14。提示只携带
-`operation_identity`、`dispatch_key`、
-`source_event_id` 和 `occurred_at`。`dispatch_key` 是该操作从 submit、ACK、status、terminal、cancel 到 hint
-全链路唯一 wire 幂等键；合同不定义 `idempotency_key` 别名或双键映射。提示只负责持久化 evidence 并唤醒
-对应 `TransportTask`；不能
-携带 terminal 结果，也不能直接推进执行对象、资源投影或库存结论。
+`WMS_EFFECT_STATUS_HINT` 只有在 WMS inbound 合同完整批准且 Phase 4 唯一 hint successor 已验收时，才通过
+`/api/v1/callback/external` 接收并适用于 E08–E14。提示只负责持久化 evidence 并唤醒经获批关联字段定位的
+`TransportTask`；不能携带 terminal 结果，也不能直接推进执行对象、资源投影或库存结论。WES 内部 `dispatch_key` 不自动
+成为 hint wire 字段。Decision A 下 E08/E09 submit wire 字段为 `request_id`，但 hint 是否使用 `request_id`、响应
+`task_id` 或其他字段仍必须由 WMS 合同明确，不能从旧实现推断。
 
-不同逻辑提示使用不同 `source_event_id`；同一次网络重试复用同一 ID 和同一 payload。同键异 hash 进入冲突审计。
+hint 的完整 payload、关联字段、事件幂等身份、网络重试复用和同键异 payload/hash 冲突规则均待 WMS inbound 合同批准；
+合同未完整批准或 Phase 4 successor 未验收时，hint successor 为 `NONE`，Phase 5 只删除旧 route、payload、OpenAPI 和测试，
+不得实现、联调或从普通事件包络复制这些语义。
 
 ## 5. 联调验收
 
 - 测试态 capability conformance harness 必须精确识别 35 个垂直能力模块；生产运行时不得为此建立 registry。
 - 8 项同步业务确认分别验证直接 terminal result，E16 单独验证 typed cancel disposition。
-- E08–E14 分别验证 ACK、status 状态序列和 hint。
+- E08–E14 在逐项合同获批后分别验证 ACK 与 status 状态序列；可选 hint 只有在 WMS inbound 合同完整批准且 Phase 4 唯一
+  successor 已验收后才进入联调，否则按 `NONE` 验证旧 hint 资产全部缺席。
 - 普通事件允许集之外的 WMS/RCS callback 返回 4xx，且不得创建 `InboundEvidence` 或调用领域生命周期。
 - 未迁移业务入口在所属领域明确 fail closed，不得回退到兼容 transport facade。

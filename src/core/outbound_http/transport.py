@@ -25,9 +25,14 @@ from src.core.outbound_http.contracts import (
     OutboundHttpFailureKind,
     OutboundHttpRequest,
     OutboundHttpResult,
+    _is_valid_response_header,
 )
 
 logger = logging.getLogger(__name__)
+_SUPPORTED_CONTENT_ENCODINGS = ("identity", "gzip", "deflate")
+_ACCEPT_ENCODING_HEADER_VALUE = ", ".join(
+    encoding for encoding in _SUPPORTED_CONTENT_ENCODINGS if encoding != "identity"
+)
 _transport_library_loggers = tuple(
     logging.getLogger(name)
     for name in (
@@ -106,7 +111,7 @@ class _HttpxOutboundHttpTransport:
                 decoded_body = decode_bounded_http_body(
                     raw_body,
                     content_encoding=response.headers.get("content-encoding", "identity"),
-                    allowed_content_encodings=request.response_limits.allowed_content_encodings,
+                    allowed_content_encodings=_SUPPORTED_CONTENT_ENCODINGS,
                     max_decoded_bytes=request.response_limits.max_decoded_bytes,
                     max_compression_ratio=request.response_limits.max_compression_ratio,
                 )
@@ -229,7 +234,7 @@ class _HttpxOutboundHttpTransport:
         try:
             await asyncio.shield(self._close_task)
         except asyncio.CancelledError:
-            await asyncio.shield(asyncio.gather(self._close_task, return_exceptions=True))
+            _ = await asyncio.shield(asyncio.gather(self._close_task, return_exceptions=True))
             raise
 
     async def _cleanup_response(self, response: httpx.Response) -> bool:
@@ -244,7 +249,7 @@ class _HttpxOutboundHttpTransport:
         except asyncio.CancelledError:
             try:
                 async with asyncio.timeout(self._cleanup_timeout_seconds):
-                    await asyncio.shield(cleanup_wait)
+                    _ = await asyncio.shield(cleanup_wait)
             except TimeoutError:
                 await self._cancel_and_join_cleanup_task(cleanup_task=cleanup_task, cleanup_wait=cleanup_wait)
             raise
@@ -258,12 +263,12 @@ class _HttpxOutboundHttpTransport:
         self,
         *,
         cleanup_task: asyncio.Task[None],
-        cleanup_wait: asyncio.Future[list[object]],
+        cleanup_wait: asyncio.Future[tuple[BaseException | None]],
     ) -> None:
         """在清理预算耗尽后终止并等待关闭任务，避免遗留后台任务。"""
 
-        cleanup_task.cancel()
-        await asyncio.shield(cleanup_wait)
+        _ = cleanup_task.cancel()
+        _ = await asyncio.shield(cleanup_wait)
 
     def _log_result(
         self,
@@ -299,7 +304,10 @@ def _bounded_response_headers(
         > request.response_limits.max_response_header_wire_bytes
     ):
         raise _ResponseHeaderLimitExceeded
-    return tuple((name.decode("latin-1"), value.decode("latin-1")) for name, value in raw_headers)
+    headers = tuple((name.decode("latin-1"), value.decode("latin-1")) for name, value in raw_headers)
+    if any(not _is_valid_response_header(name, value) for name, value in headers):
+        raise HttpResponseContractError("invalid response header")
+    return headers
 
 
 def _not_sent(failure_kind: OutboundHttpFailureKind) -> OutboundHttpResult:

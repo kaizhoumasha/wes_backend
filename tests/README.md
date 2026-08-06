@@ -73,6 +73,10 @@ device_adapters/<adapter_key>/
 `tests/` 唯一拥有厂商 DTO、认证差异、wire Payload、原始码映射和厂商合同场景。两类包的代码、测试和 fixture 必须
 与各自所有者同包交付；核心 pytest、覆盖率、质量门禁和 HEAVY selector 均不发现、不映射也不运行二次开发包测试。
 
+产品内唯一 WMS 北向 Adapter 是 `src/app/wms_adapter/` 下的业务系统 ACL，不是设备厂商二次开发包。它的跨系统 FAST
+合同放在 `tests/contracts/wms_adapter/`，真实持久化与事务场景放在 `tests/integration/wms_adapter/`；两处测试只验证
+WMS Adapter，不得用于证明 `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
+
 ### 当前治理约束
 
 本轮测试套件治理后的长期约束：
@@ -94,7 +98,7 @@ device_adapters/<adapter_key>/
 - 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径或 `NONE`。
 - 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
 - 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；该边界只由目录位置和 `norecursedirs` 共同保证，不使用 AST 或 import 黑名单扫描。
-- 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；具体 Adapter/插件测试不得改名后寄存在
+- 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；具体设备厂商 Adapter/插件测试不得改名后寄存在
   `tests/contracts/`、`tests/runtime/` 或核心 HEAVY 目录。
 - 核心测试不得导入仓库根目录 `workline_plugins` 或 `device_adapters` 二次开发包；通用 SPI/SDK 只能使用不含真实工作线或厂商规则的最小 fake 验证。
 - `tests/workline_runtime/` 中的存量测试必须按语义收敛：通用不变量改写到最终核心对象，具体插件行为移出，旧平台装配测试删除；不得继续把该目录当作长期目标所有者。

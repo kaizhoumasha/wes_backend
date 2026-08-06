@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
@@ -114,6 +114,26 @@ def test_request_rejects_multiline_or_case_insensitive_duplicate_headers(
         OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/items", headers=headers)
 
 
+@pytest.mark.parametrize("header_name", ["bad name", "bad:name", "非ASCII"])
+def test_request_rejects_header_name_outside_http_token_grammar(header_name: str) -> None:
+    with pytest.raises(OutboundHttpRequestError, match="header"):
+        OutboundHttpRequest(
+            method=OutboundHttpMethod.GET,
+            path="/items",
+            headers=((header_name, "value"),),
+        )
+
+
+@pytest.mark.parametrize("header_name", ["Accept-Encoding", "accept-encoding", "ACCEPT-ENCODING"])
+def test_request_rejects_caller_owned_accept_encoding(header_name: str) -> None:
+    with pytest.raises(OutboundHttpRequestError, match="Accept-Encoding"):
+        OutboundHttpRequest(
+            method=OutboundHttpMethod.GET,
+            path="/items",
+            headers=((header_name, "br"),),
+        )
+
+
 @pytest.mark.parametrize(
     "limits",
     [
@@ -156,13 +176,15 @@ def test_response_limits_default_header_caps_are_fixed() -> None:
     assert limits.max_response_header_wire_bytes == 16_384
 
 
-@pytest.mark.parametrize(
-    "encodings",
-    [(), ("gzip",), ("identity", "gzip", "gzip"), ("identity", "br")],
-)
-def test_response_limits_reject_content_encodings_outside_the_closed_policy(encodings: tuple[str, ...]) -> None:
-    with pytest.raises(OutboundHttpRequestError, match="content encoding"):
-        OutboundHttpResponseLimits(allowed_content_encodings=encodings)
+def test_response_limits_only_exposes_tunable_resource_budgets() -> None:
+    assert {item.name for item in fields(OutboundHttpResponseLimits)} == {
+        "max_response_header_count",
+        "max_response_header_wire_bytes",
+        "max_chunk_bytes",
+        "max_wire_bytes",
+        "max_decoded_bytes",
+        "max_compression_ratio",
+    }
 
 
 def test_response_limits_and_result_are_immutable() -> None:

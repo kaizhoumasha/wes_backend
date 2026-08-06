@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from src.core.outbound_http.contracts import OutboundHttpRequestError, OutboundHttpTransport
-from src.core.outbound_http.transport import _HttpxOutboundHttpTransport
+from src.core.outbound_http.transport import _ACCEPT_ENCODING_HEADER_VALUE, _HttpxOutboundHttpTransport
 
 _SYSTEM_ID_PATTERN = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 
@@ -29,7 +29,7 @@ def build_outbound_http_transport(
     client = httpx.AsyncClient(
         base_url=base_url,
         cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=())),
-        headers={"accept-encoding": "gzip, deflate"},
+        headers={"accept-encoding": _ACCEPT_ENCODING_HEADER_VALUE},
         timeout=httpx.Timeout(timeout_seconds),
         trust_env=False,
         follow_redirects=False,

@@ -57,7 +57,7 @@ class OutboundHttpClosedError(RuntimeError):
 
 _MAX_RESPONSE_HEADER_COUNT = 64
 _MAX_RESPONSE_HEADER_WIRE_BYTES = 16_384
-_SUPPORTED_CONTENT_ENCODINGS = frozenset({"identity", "gzip", "deflate"})
+_HTTP_TOKEN_CHARACTERS = frozenset("!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
 _NOT_SENT_FAILURES = frozenset(
     {
         OutboundHttpFailureKind.POOL_TIMEOUT,
@@ -98,6 +98,10 @@ def _contains_control_character(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
+def _is_valid_header_name(name: str) -> bool:
+    return bool(name) and all(character in _HTTP_TOKEN_CHARACTERS for character in name)
+
+
 def _as_string_pairs(
     pairs: tuple[tuple[str, str], ...],
     *,
@@ -107,12 +111,25 @@ def _as_string_pairs(
     normalized_pairs = _as_string_pair_tuple(pairs, field_name=field_name)
     names: set[str] = set()
     for name, value in normalized_pairs:
-        if not name or _contains_control_character(name) or _contains_control_character(value):
+        if not _is_valid_header_name(name) or _contains_control_character(value):
             raise OutboundHttpRequestError(f"{field_name} contains an invalid header")
         normalized_name = name.casefold()
         if reject_duplicates and normalized_name in names:
             raise OutboundHttpRequestError(f"{field_name} contains a duplicate header")
         names.add(normalized_name)
+    return normalized_pairs
+
+
+def _is_valid_response_header(name: str, value: str) -> bool:
+    if not _is_valid_header_name(name):
+        return False
+    return not any((ord(character) < 32 and character != "\t") or ord(character) == 127 for character in value)
+
+
+def _as_response_header_pairs(pairs: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
+    normalized_pairs = _as_string_pair_tuple(pairs, field_name="response header")
+    if any(not _is_valid_response_header(name, value) for name, value in normalized_pairs):
+        raise OutboundHttpRequestError("response header contains an invalid header")
     return normalized_pairs
 
 
@@ -143,7 +160,6 @@ class OutboundHttpResponseLimits:
     max_wire_bytes: int = 2 * 1024 * 1024
     max_decoded_bytes: int = 4 * 1024 * 1024
     max_compression_ratio: float = 100.0
-    allowed_content_encodings: tuple[str, ...] = ("identity", "gzip", "deflate")
 
     def __post_init__(self) -> None:
         integer_limits = (
@@ -166,16 +182,6 @@ class OutboundHttpResponseLimits:
             raise OutboundHttpRequestError("response limit exceeds header count cap")
         if self.max_response_header_wire_bytes > _MAX_RESPONSE_HEADER_WIRE_BYTES:
             raise OutboundHttpRequestError("response limit exceeds header wire cap")
-
-        encodings = tuple(self.allowed_content_encodings)
-        if (
-            not encodings
-            or "identity" not in encodings
-            or len(set(encodings)) != len(encodings)
-            or any(encoding not in _SUPPORTED_CONTENT_ENCODINGS for encoding in encodings)
-        ):
-            raise OutboundHttpRequestError("response limit contains unsupported content encoding")
-        object.__setattr__(self, "allowed_content_encodings", encodings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,8 +226,12 @@ class OutboundHttpRequest:
         if not isinstance(self.body, bytes):
             raise TypeError("body must be bytes")
 
+        headers = _as_string_pairs(self.headers, field_name="header", reject_duplicates=True)
+        if any(name.casefold() == "accept-encoding" for name, _ in headers):
+            raise OutboundHttpRequestError("Accept-Encoding is owned by the transport")
+
         object.__setattr__(self, "query", query)
-        object.__setattr__(self, "headers", _as_string_pairs(self.headers, field_name="header", reject_duplicates=True))
+        object.__setattr__(self, "headers", headers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,7 +256,7 @@ class OutboundHttpResult:
         if self.decoded_body is not None and not isinstance(self.decoded_body, bytes):
             raise TypeError("result decoded body is invalid")
 
-        headers = _as_string_pairs(self.response_headers, field_name="response header", reject_duplicates=False)
+        headers = _as_response_header_pairs(self.response_headers)
         object.__setattr__(self, "response_headers", headers)
 
         if self.delivery_state is OutboundHttpDeliveryState.NOT_SENT:
@@ -282,8 +292,12 @@ class OutboundHttpTransport(Protocol):
     async def send(self, request: OutboundHttpRequest) -> OutboundHttpResult:
         """发送一次请求并返回传输事实。"""
 
+        ...
+
     async def aclose(self) -> None:
         """释放 Transport 持有的 HTTP 资源。"""
+
+        ...
 
 
 __all__ = [

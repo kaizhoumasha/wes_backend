@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1.0] - 2026-08-06
+
+### Added
+- 收录 WMS 厂商原始接口资料，并明确硬件资料、WES 当前合同与业务蓝图之间的真源边界。
+- 建立 Phase 3 WMS Adapter 薄接入实施计划，冻结 35 项能力、共享端口、Evidence、Breaker 和测试所有权。
+
+### Changed
+- 将 Phase 1/2 验收结论同步到最小执行架构 SPEC、总控计划、SRS、ADR、文件索引和测试治理说明。
+- 收紧 Outbound HTTP 请求与响应 Header 合同、工厂入口及响应清理语义，保持基础传输与业务能力隔离。
+- HEAVY selector 将发布版本文件和已清理的 Agent 工作区配置归类为显式无重测试影响，同时继续对生产候选 fail-closed。
+
+### Fixed
+- 修复 Outbound HTTP 对非法请求 Header、非法响应 Header 和调用方控制内容编码的处理偏差。
+- 修复响应清理取消路径可能遗留任务的问题，并补齐对应成功与失败路径回归覆盖。
+
+### Removed
+- 删除项目内 `.codex` 工作区配置及其跟踪入口，避免仓库持有客户端私有配置。
+- 移除已被当前 Phase 3 计划取代的 Phase 2 过程计划，不在项目目录保留历史设计副本。
+
+### Verification
+- QUALITY：3371 passed、4 skipped、1 warning；Ruff、Bandit、架构门禁、测试拓扑和 HEAVY selector 合同均通过。
+- GitNexus 对 `origin/develop..HEAD` 的比较结果为 low risk，未检出受影响执行流；独立复审未发现剩余问题。
+
 ## [0.22.0.0] - 2026-08-05
 
 ### Added

@@ -13,11 +13,18 @@
 
 - Markdown 转写可能压缩示例、补充检索说明或记录当时联调口径，不能覆盖配对的原始 PDF。
 - `粗分机硬件供应商联调操作手册.md` 是面向供应商的 WES implementation baseline，不是厂商原始协议。
+- `wms_rcs_interface_requirements.md` 是 2026-03 与 WMS 交互约定的初稿，保留当时的 MCS 命名、路径、字段样例和架构假设；
+  北向合同采用其覆盖 16 项的 path/业务字段，并以当前 method 矩阵覆盖 E02 初稿 `DELETE`；本文件仍不是实施真源。
+  首次纳入仓库的原始字节 SHA-256 为
+  `a1cb99eb76678f8e06c98eae74c56fb76d8963e244f13c3a07028fb9675dc1c4`；不通过格式化改写来源空白。
 - 派生资料中的字段归一化、插件名称以及 Session、Outbox、Inbox、Timeline、Hold 等实现描述只用于偏差识别，
   不得约束顶层 SPEC、目标 Adapter 或插件设计。
 
 ## 所有权
 
-- 共享传输、认证和基础错误映射由 WES 核心合同验证。
+- 共享传输和基础传输错误由 WES 核心合同验证；厂商认证只在真实合同要求时由对应 Adapter 拥有，当前 WMS outbound
+  固定为 `NONE`。
+- WMS 北向 method/path/DTO/业务拒绝由 `docs/contracts/wms-northbound-interaction-contract.md` 与目标
+  `src/app/wms_adapter/` 拥有。
 - 厂商 DTO、Payload、原始码和事件/命令映射由 `device_adapters/<adapter_key>/` 拥有。
 - 工作线业务 Decision、对象推进和场景测试由 `workline_plugins/<plugin_key>/` 拥有。
