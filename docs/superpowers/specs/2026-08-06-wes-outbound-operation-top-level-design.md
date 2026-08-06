@@ -3,7 +3,7 @@ title: WES 出库操作顶层设计
 status: Reviewed
 created_at: 2026-08-06
 updated_at: 2026-08-06
-scope: SMT 自动出库工作线的 PickingTask 接入、调度、执行、异常、补料与完成边界
+scope: SMT 自动出库 PickingTask 的接入、来源绑定、调度、执行、异常、补料与完成边界
 system_stage: pre_release
 migration_strategy: direct_replacement
 related:
@@ -20,117 +20,75 @@ related:
 
 ## 1. 文档定位
 
-本文定义自动出库场景的目标业务合同，是最小执行架构在该场景下的顶层设计。它回答四个问题：
+本文定义 SMT 自动出库的目标业务合同，回答以下问题：
 
-1. WMS 以什么业务对象驱动 WES。
-2. WES 如何组织双面来源货架和双面目标生产转运货架的执行。
-3. NG、缺料、暂停、恢复、取消和完成如何处理。
-4. Phase 1–3 已有能力与后续最小平台、Adapter、业务插件分别承担什么职责。
+1. WMS 以什么执行对象驱动 WES。
+2. 来源为何在任务开始时才由 WMS 原子绑定。
+3. WES 如何组织双面来源货架和双面目标生产转运货架。
+4. NG、未知结果、缺料、恢复、取消和完成如何闭环。
+5. wire、可靠生命周期、业务插件和 MOCK 数据分别由谁拥有。
 
-文档权威关系如下：
+权威关系：
 
-- `docs/architecture/SRS.md` 定义产品需求和参与方职责。
-- 最小执行架构 SPEC 定义 WES 核心对象、可靠性和扩展边界。
+- `docs/architecture/SRS.md` 记录原始产品需求和参与方职责。
+- 最小执行架构 SPEC 定义核心对象、可靠性和扩展边界。
 - 本文定义自动出库业务对象、状态和执行不变量。
-- WMS 北向合同定义 method、path、wire DTO、错误码和幂等承诺。
-- Master Plan 和 Phase 3 计划定义实现顺序，不得反向改变本文业务决策。
-- `docs/hardware/wms_rcs_interface_requirements.md` 只作为原始业务输入保留，不是当前架构或 wire 真源。
+- WMS 北向合同定义获批的 operation、method、path、wire DTO、错误和幂等语义。
+- Master Plan 与分阶段计划定义实现顺序，不得反向改变本文业务决策。
+- `docs/hardware/wms_rcs_interface_requirements.md` 是硬件厂商原始输入，不是当前架构或 wire 真源。
 
-本系统尚未发布。本设计直接替换“WES 接收工单、查询出库单或波次并自行拆解”的旧目标，不保留旧接口、旧字段、
-别名、fallback、双读、双写或数据迁移。
+系统尚未发布。本设计直接替换旧目标，不保留旧字段、别名、fallback、双读、双写或迁移路径。
 
-## 2. 核心结论
+## 2. 核心裁决
 
-自动出库由 WMS 下发的执行级 `PickingTask` 驱动：
-
-- WES 不接收 SAP 工单，不生成滚动波次，不读取或解释出库单、拣货单和波次单。
-- WMS 负责订单、波次、库存、来源分配、目标储位规划和业务优先级。
-- WES 负责 `PickingTask` 整单校验、排队、工作位选择、设备动作编排、局部执行顺序、证据和异常隔离。
-- 一台目标生产转运货架在任务存续期间始终由一个 `PickingTask` 独占。
-- 目标货架先完成 A 面，再旋转一次完成 B 面；来源货架每次进入工作位时必须 A 面朝向设备。
-- 料箱料格中的料盘按物理可达顺序后进先出。WMS 必须提供精确 `reel_id`，并按顶部到下层排列。
-- 目标货架单储位只放一个完整料盘，不堆叠。
-- WMS 只能为未完成项追加替代来源，不得修改已开始任务的既有目标项。
+- WES 不接收或拆解出库单、拣货单和波次单，只执行 WMS 下发的 `PickingTask`。
+- `PickingTask` 排队时只描述目标项，不绑定来源、物料料盘或具体目标货架。
+- WES 选中任务后进入 `STARTING`，请求 WMS 一次性返回覆盖全部任务项的原子 `SourceBinding`。
+- WMS 负责库存资格、库存锁、料格冻结、跨任务分配和替代来源；WES 不以库存查询结果自行拼装来源方案。
+- 完整来源绑定成功后，才允许并行调度目标空架和第一台来源货架。
+- `PkgID` 是料盘唯一业务身份，不定义其他身份字段或兼容别名。
+- 一台已绑定的目标生产转运货架由一张 `PickingTask` 独占，直至完成或取消处置闭环。
+- 仅执行有任务项的目标面：A 单面不旋转，B 单面跳过 A 执行组后旋转，A/B 双面按 A 后 B。
+- 来源货架进入工作位时由 RCS 保证 A 面朝向设备；WES 在当前目标面内按来源 A 后 B 执行。
+- 只有成功且可关联的 `COMMAND_RESULT` 才能推进物理位置；ACK 不代表物理完成。
+- 每个料盘 PICK+PUT 成功后产生独立位置变化事实；整张任务完成另行通知，二者不得合并或双写。
 
 ## 3. 范围与非目标
 
 ### 3.1 范围
 
-- 自动设备从来源货架取完整料盘并放入生产转运货架。
-- 来源可以是“货架 → 料箱 → 料格 → 堆叠料盘”，也可以是“退料/转运货架 → 储位 → 单料盘”。
-- 目标生产转运货架和来源货架均为双面货架。
-- 一个目标工作位、一个当前来源工作位，以及最多一个下一来源货架在途或等待。
-- 来源 NG、来源暂时不可用、库存不足、目标异常、补料、取消和恢复。
-- WMS 经 RCS 调度货架搬运和旋转，WES 通过可靠搬运目标跟踪任务级事实。
-- WES 经 ECS Adapter 下发厂商已支持的设备长命令，并以 `COMMAND_RESULT` 作为物理推进证据。
+- `PickingTask` 接入、排队、优先级更新和调度选择。
+- `STARTING` 阶段完整来源绑定、无完整来源结果和原子替代来源批次。
+- 来源为 `BIN_CELL` 或 `RACK_SLOT` 的完整料盘搬运。
+- 双面来源货架、双面目标生产转运货架及工作位执行顺序。
+- 逐项位置变化、任务完成、NG、未知结果、暂停、补料、恢复和取消。
+- WMS 经 RCS 调架，WES 经 ECS Adapter 下发设备命令。
 
 ### 3.2 非目标
 
-- WES 订单管理、波次计算、库存优化或替代库存选择。
-- WES 规划 RCS 路径、车辆调度、交通管制或货架旋转机构动作。
-- WES 处理 WMS 的 PDA 页面、人工库存账务或生产交付流程。
-- 自动清线、自动猜测现场状态、通用恢复引擎或跨任务全局路径优化。
-- 为未来货架类型、协议、安全机制或多工厂部署预留扩展框架。
-- 将具体出库业务行为写入 WES 核心测试，或以该业务成功证明 Phase 2 HTTP 基础能力正确。
+- WES 订单管理、波次计算、库存选择、库存锁、料格冻结或跨任务来源仲裁。
+- WES 规划 RCS 路径、车辆交通或货架旋转机构动作。
+- WES 处理 PDA、人工库存账务或生产交付后的 WMS 流程。
+- 跨任务合并、全局来源优化器、通用补偿器或自动猜测未知现场状态。
+- 为旧版本、未来货架类型或未批准协议提供兼容或扩展框架。
 
 ## 4. 权威边界
 
 | 参与方 | 唯一权威 | 不负责 |
 | --- | --- | --- |
-| WMS | 订单/波次、库存、精确来源分配、货架主数据和业务角色、优先级、空架选择与锁定、补料、取消/恢复、生产交付 | 设备内部动作、WES 工作位执行顺序 |
-| WES | `PickingTask` 接入与本地状态、队列选择、工作位和对象投影、动作因果链、NG/暂停证据 | 库存主账、替代来源选择、RCS 路径和生产交付 |
-| RCS | AGV/CTU 路径、运输、到位姿态和旋转执行 | `PickingTask` 业务内容、料盘拣放 |
-| ECS/设备 | 扫码、抓取、放置、滚筒输送、安全互锁和最终物理结果 | 库存、任务优先级、来源替代 |
+| WMS | 订单/波次、库存、SixInOne/PKG、来源分配与替代、库存锁和料格冻结、货架主数据及业务角色、优先级、取消/恢复、生产交付 | 设备内部动作、WES 作业期执行顺序 |
+| WES | `PickingTask` 本地状态、队列选择、工作位执行、动作因果链、作业期投影、异常证据和可靠业务事实义务 | 库存主账、来源选择、跨任务分配、RCS 路径、货架业务角色裁决 |
+| RCS | 货架搬运、排队、路径、旋转和到位结果 | 库存、任务项和拣料顺序 |
+| ECS/设备 | 扫码、抓取、放置、滚筒输送、安全互锁和最终物理结果 | 库存、任务优先级、替代来源 |
 
-WES 保存的货架、储位、料箱、料格和料盘均为作业期投影，不得升级为 WMS 主账。
+WES 可以校验 WMS 返回的来源绑定是否完整、无歧义且物理可执行，但该校验不会使 WES 获得库存权威。
 
-## 5. `PickingTask` 业务合同
+## 5. 两阶段业务合同
 
-### 5.1 为什么使用执行任务而不是单据
+### 5.1 第一阶段：排队 `PickingTask`
 
-订单、波次和库存分配是 WMS 业务决策。WES 若再次读取并拆解这些单据，会形成第二套业务规则和来源选择权。
-`PickingTask` 因此必须是 WMS 已完成业务计算后的执行合同，而不是订单的镜像。
-
-### 5.2 最小结构
-
-```text
-PickingTask
-├── task_id
-├── task_version
-├── priority
-├── issued_at
-├── workline_code
-├── target_requirement
-│   ├── physical_type = DOUBLE_SIDED_REEL_RACK
-│   └── initial_face = A
-└── task_items[]
-    ├── item_id
-    ├── reel_id
-    ├── material_fact
-    ├── source_locator
-    │   ├── rack_id + rack_face
-    │   ├── BIN_CELL: bin_id + cell_id + top_to_bottom_sequence
-    │   └── RACK_SLOT: slot_id
-    └── target_locator
-        └── target_face + target_slot_id
-```
-
-`target_requirement` 在任务排队时不包含具体目标 `rack_id`。WES 选中任务后才请求 WMS 分配并锁定空架。
-
-`task_items[]` 是唯一执行明细。`SourceRacks/Bins/Cells` 是 WES 根据 `source_locator` 派生的调度分组，
-不是另一套可独立修改的任务结构。这样可以用一个合同覆盖两类来源：
-
-- `BIN_CELL`：料箱料格内堆叠料盘。
-- `RACK_SLOT`：退料货架或转运货架单储位单料盘。
-
-### 5.3 JSON 语义示例
-
-示例覆盖：
-
-- `BIN_CELL` 与 `RACK_SLOT` 两类来源。
-- 同一料格内两个料盘按顶部到下层排列，并形成合法的目标 A 面到 B 面顺序。
-- 目标货架 A、B 两面储位。
-- 任务排队时只声明目标货架条件，不提前绑定具体目标 `rack_id`。
+WMS 完成订单、波次和目标储位规划后下发 `PickingTask`。任务只表达“哪些目标项需要完成”，使排队期间的入库、
+库存变化和更高优先级任务不会被过早来源绑定阻塞。
 
 ```json
 {
@@ -139,16 +97,58 @@ PickingTask
   "priority": 50,
   "issued_at": "2026-08-06T09:30:00+08:00",
   "workline_code": "SMT_OUTBOUND_01",
-  "target_requirement": {
-    "physical_type": "DOUBLE_SIDED_REEL_RACK",
-    "initial_face": "A"
-  },
   "task_items": [
     {
       "item_id": "PT-OUT-A001-I01",
-      "reel_id": "REEL-000101",
-      "material_fact": {
-        "material_id": "MAT-0001"
+      "target_locator": {
+        "target_face": "A",
+        "target_slot_id": "A-01"
+      }
+    },
+    {
+      "item_id": "PT-OUT-A001-I02",
+      "target_locator": {
+        "target_face": "B",
+        "target_slot_id": "B-01"
+      }
+    }
+  ]
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `task_id` | WMS 生成的任务稳定标识。 |
+| `task_version` | 同一任务业务内容的版本；幂等和冲突 wire 规则由北向合同冻结。 |
+| `priority` | WMS 给出的业务优先级，数值越大越优先。 |
+| `issued_at` | WMS 下发时间，用于同优先级排序。 |
+| `workline_code` | 目标工作线标识。 |
+| `task_items[]` | 任务必须完成的目标项集合。 |
+| `item_id` | 任务内稳定且唯一的任务项标识。 |
+| `target_locator.target_face` | 目标面，取值 `A` 或 `B`。 |
+| `target_locator.target_slot_id` | 目标面内唯一储位；一个储位只放一个完整料盘。 |
+
+目标货架类型 `DOUBLE_SIDED_REEL_RACK` 和入位初始朝向 A 是 WorkLine 静态合同，不重复进入任务 Payload。
+排队任务不得出现 SixInOne、`PkgID`、来源位置或具体目标 `rack_id`。
+
+### 5.2 第二阶段：`STARTING` 原子 `SourceBinding`
+
+WES 选中任务后请求 WMS 生成完整来源方案。成功结果必须精确覆盖全部任务项；缺项、多项、重复项或部分成功均不生效。
+
+```json
+{
+  "task_id": "PT-OUT-A001",
+  "task_version": 1,
+  "source_bindings": [
+    {
+      "item_id": "PT-OUT-A001-I01",
+      "six_in_one": {
+        "HHPN": "HHPN-001",
+        "MfrPN": "MFR-001",
+        "Qty": 1000,
+        "DateCode": "202632",
+        "LotCode": "LOT-001",
+        "PkgID": "PKG-000101"
       },
       "source_locator": {
         "type": "BIN_CELL",
@@ -157,95 +157,81 @@ PickingTask
         "bin_id": "BIN-010-01",
         "cell_id": "CELL-01",
         "top_to_bottom_sequence": 1
-      },
-      "target_locator": {
-        "target_face": "A",
-        "target_slot_id": "A-01"
       }
     },
     {
       "item_id": "PT-OUT-A001-I02",
-      "reel_id": "REEL-000102",
-      "material_fact": {
-        "material_id": "MAT-0001"
-      },
-      "source_locator": {
-        "type": "BIN_CELL",
-        "rack_id": "SRC-RACK-010",
-        "rack_face": "A",
-        "bin_id": "BIN-010-01",
-        "cell_id": "CELL-01",
-        "top_to_bottom_sequence": 2
-      },
-      "target_locator": {
-        "target_face": "B",
-        "target_slot_id": "B-01"
-      }
-    },
-    {
-      "item_id": "PT-OUT-A001-I03",
-      "reel_id": "REEL-000201",
-      "material_fact": {
-        "material_id": "MAT-0002"
+      "six_in_one": {
+        "HHPN": "HHPN-002",
+        "MfrPN": "MFR-002",
+        "Qty": 500,
+        "DateCode": "202631",
+        "LotCode": "LOT-002",
+        "PkgID": "PKG-000201"
       },
       "source_locator": {
         "type": "RACK_SLOT",
         "rack_id": "RETURN-RACK-003",
         "rack_face": "B",
         "slot_id": "B-03"
-      },
-      "target_locator": {
-        "target_face": "B",
-        "target_slot_id": "B-02"
       }
     }
   ]
 }
 ```
 
-#### PickingTask 字段定义
-
-| 字段 | 含义与约束 |
+| 字段 | 含义 |
 | --- | --- |
-| `task_id` | WMS 分配的 PickingTask 稳定业务标识。 |
-| `task_version` | WMS 下发的整单版本；与 `task_id` 共同参与接入幂等和内容冲突校验。 |
-| `priority` | WMS 给出的业务优先级；数值范围由 wire 合同冻结，WES 按值降序选择任务。 |
-| `issued_at` | WMS 下发时间；相同优先级时按该时间升序排序。 |
-| `workline_code` | 任务指定的自动出库工作线。 |
-| `target_requirement` | 目标生产转运货架必须满足的条件；排队阶段不包含具体目标 `rack_id`。 |
-| `target_requirement.physical_type` | 目标货架物理类型；本场景固定为双面料盘货架。 |
-| `target_requirement.initial_face` | 目标架进入工作位时朝向设备的面；本场景固定为 `A`。 |
-| `task_items[]` | 唯一执行明细集合；数组顺序不代表 WES 的全局设备动作顺序。 |
-| `task_items[].item_id` | 单个任务项在 PickingTask 内的稳定标识，也是追加替代来源时的关联键。 |
-| `task_items[].reel_id` | WMS 指定的精确料盘身份，不允许 WES 按物料或数量自行替代。 |
-| `task_items[].material_fact` | WMS 提供的最小物料核对事实；只用于执行校验和证据关联，不把 WES 变成库存主账。 |
-| `task_items[].material_fact.material_id` | 料盘对应的物料标识。 |
-| `task_items[].source_locator` | WMS 分配的精确来源位置。 |
-| `task_items[].source_locator.type` | 来源类型：`BIN_CELL` 表示料箱料格堆叠料盘，`RACK_SLOT` 表示货架单储位料盘。 |
-| `task_items[].source_locator.rack_id` | 来源货架标识。 |
-| `task_items[].source_locator.rack_face` | 来源位置所在货架面，取值为 `A` 或 `B`。 |
-| `task_items[].source_locator.bin_id` | `BIN_CELL` 来源的料箱标识；`RACK_SLOT` 不提供。 |
-| `task_items[].source_locator.cell_id` | `BIN_CELL` 来源的料格标识；`RACK_SLOT` 不提供。 |
-| `task_items[].source_locator.top_to_bottom_sequence` | 同一料格内从顶部到底部的 1 起始连续序号；较小序号必须先完成。 |
-| `task_items[].source_locator.slot_id` | `RACK_SLOT` 来源的储位标识；`BIN_CELL` 不提供。 |
-| `task_items[].target_locator` | WMS 已规划的精确目标位置。 |
-| `task_items[].target_locator.target_face` | 目标生产转运货架面，取值为 `A` 或 `B`。 |
-| `task_items[].target_locator.target_slot_id` | 目标面内的唯一储位标识；一个储位只能对应一个任务项。 |
+| `source_bindings[]` | 与任务项集合精确相等并原子生效的来源绑定全集。 |
+| `item_id` | 关联原任务项。 |
+| `six_in_one` | 客户/WMS 约定的完整 6 合 1/PKG 物料事实。 |
+| `HHPN` | 客户物料编码。 |
+| `MfrPN` | 制造商物料编码。 |
+| `Qty` | 该完整料盘的物料数量，不是待搬运料盘数。 |
+| `DateCode` | 生产日期码。 |
+| `LotCode` | 批次码。 |
+| `PkgID` | 完整料盘的唯一业务身份。 |
+| `source_locator.type` | `BIN_CELL` 或 `RACK_SLOT`。 |
+| `rack_id` / `rack_face` | 来源货架及来源面。 |
+| `bin_id` / `cell_id` | `BIN_CELL` 的料箱和料格。 |
+| `top_to_bottom_sequence` | 同一料格内从顶部向下的实际可达顺序，从 1 连续递增。 |
+| `slot_id` | `RACK_SLOT` 的单料盘储位。 |
 
-`task_items[]` 数组顺序不是 WES 的全局设备动作顺序；`top_to_bottom_sequence` 只表达同一料格内不可违反的
-物理可达顺序。前两个任务项展示同一料格的合法跨面顺序：顶部料盘进入目标 A 面，下一层料盘进入目标 B 面。
-WES 仍按“目标 A 面完成后再处理目标 B 面”派生来源架和来源面的执行分组。
+`BIN_CELL` 中待拣绑定必须构成当前顶部的连续前缀。不同料格之间没有固定业务顺序；WES 可在当前目标面内按货架、
+来源面和就绪状态调整，但不得改变同一料格内的后进先出顺序。同一料格从顶部向下关联的目标面只能是单面，或
+`A* → B*`；`B → A`、`A → B → A` 等序列与目标架 A 后 B 的固定顺序冲突，整批来源绑定不得生效。
 
-当来源异常且任务已经开始时，WMS 只为未完成项追加替代来源。以下 JSON 表达追加的业务语义；原异常来源仍保留为
-历史证据，不被本次增量覆盖：
+无完整来源方案是合法业务结果：
 
 ```json
 {
   "task_id": "PT-OUT-A001",
-  "base_task_version": 1,
-  "source_additions": [
+  "task_version": 1,
+  "binding_status": "NO_COMPLETE_BINDING"
+}
+```
+
+此结果使任务进入启动前缺料等待：不申请目标架、不调来源架、不占工作位，并释放当前执行机会。
+
+### 5.3 原子替代来源批次
+
+替代来源只适用于满足资格的未完成项。批次中任一项不合格，整批不生效。
+
+```json
+{
+  "task_id": "PT-OUT-A001",
+  "task_version": 1,
+  "replacement_source_bindings": [
     {
       "item_id": "PT-OUT-A001-I02",
+      "six_in_one": {
+        "HHPN": "HHPN-002",
+        "MfrPN": "MFR-002",
+        "Qty": 500,
+        "DateCode": "202633",
+        "LotCode": "LOT-009",
+        "PkgID": "PKG-000909"
+      },
       "source_locator": {
         "type": "BIN_CELL",
         "rack_id": "SRC-RACK-020",
@@ -259,301 +245,230 @@ WES 仍按“目标 A 面完成后再处理目标 B 面”派生来源架和来�
 }
 ```
 
-#### 追加来源字段定义
+替代资格同时要求：任务项未完成；原 `PkgID` 的当前物理位置已知且确认未被成功 PICK/PUT；没有在途 PICK/PUT；
+没有未知物理结果。新绑定必须重新携带完整 SixInOne 和来源位置。旧绑定只保留为不可执行历史证据，不得与新绑定
+并行有效，也不得改变目标项。
 
-| 字段 | 含义与约束 |
-| --- | --- |
-| `task_id` | 定位需要追加来源的原 PickingTask。 |
-| `base_task_version` | 本次增量所基于的整单版本；最终并发和版本推进规则由 wire 合同冻结。 |
-| `source_additions[]` | 本次追加的替代来源集合。 |
-| `source_additions[].item_id` | 关联原任务中的未完成项，不创建新的任务项。 |
-| `source_additions[].source_locator` | 为该未完成项追加的精确来源；嵌套字段含义与主示例字段表一致。 |
+初始或替代来源结果只接受与当前有效请求及当前绑定基线相匹配的响应。取消、恢复或新替代批次产生后，迟到结果不得
+生效；具体请求关联和绑定代际字段由北向 wire 合同冻结。
 
-method、path、请求信封、字段类型与上限、枚举、幂等键、版本推进方式和拒绝码由 inbound wire 合同定义。
+### 5.4 分阶段校验
 
-### 5.4 不变量
+`PickingTask` 接入时整单校验：字段闭集、任务身份、任务项唯一性、目标储位唯一性和目标面合法性。出现来源、物料、
+具体目标架或未知字段时整单拒绝，由 WMS 修正后重发。
 
-接入时必须整单验证：
+`SourceBinding` 返回时整批校验：任务项精确覆盖、SixInOne 完整、`PkgID` 唯一、来源联合类型完整、LIFO 连续前缀和
+物理结构合法。结构或顺序非法属于合同拒绝，不得伪装成无库存；本次绑定不生效，任务保持 `STARTING` 并等待 WMS
+修正或明确取消。
 
-- `task_id + task_version` 唯一，重复同版本且内容相同返回首次接入结果；同版本不同内容整单拒绝。
-- `item_id` 和 `reel_id` 在任务内唯一。
-- 每个目标 `face + slot_id` 只对应一个任务项。
-- 每个任务项都有精确来源和精确目标，不接受“任意可用料盘”或仅数量来源。
-- 同一 `rack_id + rack_face + bin_id + cell_id` 定义一个独立料格执行序列。
-- `BIN_CELL` 中待拣 `reel_id` 必须构成当前顶部的连续可达前缀；`top_to_bottom_sequence` 必须从 `1` 开始、
-  连续且唯一，较小序号完成前不得执行较大序号。
-- 同一料格按 `top_to_bottom_sequence` 观察时，目标面只允许 `A...A → B...B`；`B → A` 或 `A → B → A`
-  会同时违反目标架 A/B 面顺序和料格 LIFO，不引入中间缓存绕过，整单拒绝。
-- `RACK_SLOT` 单储位只能对应一个料盘。
-- 目标 A/B 面、目标储位和任务项身份在任务开始后不可修改。
-- 已完成项不可覆盖、删除或重新分配。
+## 6. 状态与调度
 
-任一结构错误、来源身份缺失、目标冲突、LIFO 前缀不合法或料格顺序与目标面顺序冲突，整张任务拒绝；WMS 修正后
-以新版本重发。
-
-### 5.5 开始后的唯一追加能力
-
-开始后只允许 WMS 为未完成项追加替代 `source_locator`：
-
-- `item_id`、业务需求、目标面和目标储位保持不变。
-- 原异常来源保留为历史证据，不被覆盖。
-- 新来源必须重新通过精确身份和物理可达校验。
-- 追加来源不改变已开始任务优先级，也不创建新的 `PickingTask`。
-
-## 6. 最小状态模型
-
-| 状态 | 含义 | 允许的主要转移 |
+| 状态 | 关键不变量 | 主要迁移 |
 | --- | --- | --- |
-| `QUEUED` | 已整单接纳，未占用工作位 | `STARTING`、`CANCELLED` |
-| `STARTING` | 已被选中，正在分配并调入目标空架 | `EXECUTING`、`PAUSED`、`CANCELLED` |
-| `EXECUTING` | 正在执行 A/B 面任务 | `PAUSED`、`WAITING_STOCK`、`COMPLETED`、`CANCELLED` |
-| `PAUSED` | 身份、目标或物理事实存在歧义，等待明确处理 | `EXECUTING`、`CANCELLED` |
-| `WAITING_STOCK` | 部分完成但 WMS 无替代库存，目标架在缺料缓存区 | `EXECUTING`、`CANCELLED` |
-| `COMPLETED` | WMS 已接受拣货完成，工作位已物理释放 | 终态 |
-| `CANCELLED` | 任务取消且目标架已按规则处置 | 终态 |
+| `QUEUED` | 无来源绑定、无目标架、无工作位 | `STARTING`、`CANCELLING` |
+| `STARTING` | 初次启动请求完整绑定；缺料恢复时校验 WMS 下发的替代批次和保留现场 | `EXECUTING`、`WAITING_STOCK`、`PAUSED`、`CANCELLING` |
+| `EXECUTING` | 有有效来源绑定；调架成功后有独占目标架 | `PAUSED`、`WAITING_STOCK`、`CANCELLING`、`COMPLETING` |
+| `WAITING_STOCK` | 保存缺料原因；可保留目标架绑定，但正常情况下不占工作位 | WMS 明确恢复并再次被选中后进入 `STARTING`，或 `CANCELLING` |
+| `PAUSED` | 整单停止新动作；未知位置保持 `unknown` | WMS 明确恢复并再次被选中后进入 `STARTING`，或 `CANCELLING` |
+| `CANCELLING` | 停止新动作并等待动作、处置和清位闭合 | `CANCELLED` |
+| `COMPLETING` | 等待逐项事实、完成通知和清位闭合 | `COMPLETED` |
+| `CANCELLED` / `COMPLETED` | 终态 | 无 |
 
-整单接入失败是 `REJECTED` 接入结果，不建立活动任务。面向、当前来源架、当前来源面、工作位占用和暂停原因
-属于执行投影，不扩张为更多业务状态。
+`WAITING_STOCK` 有两种原因，不得混淆：
 
-## 7. 排队与任务选择
+- 启动前无完整来源：没有目标架，释放执行机会。
+- 执行中因 NG/来源失效且 WMS 明确返回“无完整替代方案”：无论目标架尚为空或已部分装载，均移入“缺料待补货架缓存区”，保留
+  任务、目标架绑定和已完成目标项，不得交付生产。
 
-WMS 提供 `priority` 和 `issued_at`。WES 只在目标工作位空闲时选择下一任务：
+目标架只有在成功移出工作位后才释放执行机会；缓存不可用、搬运失败或现场未清空时，保持真实占位并阻塞后续任务，
+等待 RCS 重试或人工异常处理。
 
-```text
-priority 降序 → issued_at 升序 → task_id 升序
-```
+WMS 必须明确恢复具体 `PickingTask`。恢复只使任务重新具备候选资格，不抢占当前任务；任务再次被选中后进入
+`STARTING`。启动前缺料任务重新请求完整来源；执行中缺料任务校验 WMS 下发的原子替代批次并调回原目标架。
 
-- WMS 只能在 `QUEUED` 状态调整优先级。
-- 从 `QUEUED` 进入 `STARTING` 后不可抢占；请求目标空架即视为开始占用执行机会。
-- 同一优先级的排序稳定，不使用运行时随机值。
-- `PAUSED` 或 `WAITING_STOCK` 的任务不自动与新任务争抢工作位；恢复必须由 WMS 明确指定任务。
+任务选择固定为：`priority` 降序、`issued_at` 升序、`task_id` 升序。优先级更新只影响尚未开始的任务，不抢占执行中任务。
 
-## 8. 目标架与来源架调度
+## 7. 调架与双面执行
 
-### 8.1 目标空架绑定
+### 7.1 启动顺序
 
-1. WES 选中 `PickingTask`。
-2. WES 请求 WMS 分配目标空架。
-3. WMS 原子选择并锁定具体 `rack_id`，将其业务角色设为生产转运货架，并向 RCS 下发搬运任务。
-4. RCS 保证目标架以 A 面朝向设备到位。
-5. WES 根据到位事件和设备扫描验证 `rack_id`、空架条件和面向。
-6. 验证成功后，`PickingTask` 与目标 `rack_id` 建立独占绑定。
+1. 工作位空闲后，WES 按队列规则选择任务并进入 `STARTING`。
+2. WES 请求 WMS 生成覆盖全部任务项的原子来源绑定。
+3. 无完整方案时进入启动前缺料等待，不请求任何货架。
+4. 绑定成功后，WES 才请求 WMS 分配并锁定目标空架，同时预调第一台来源货架。
+5. 两架到位并完成身份、面向和工作位校验后进入 `EXECUTING`。
 
-WMS 未返回具体空架前，WES 不自行选择或占用货架。
+工作区只要求一个目标工作位、一个当前来源工作位和最多一个下一来源货架在途或等待，不构建额外缓存调度器。
 
-### 8.2 并行预调度与容量
+### 7.2 目标面顺序
 
-目标空架和第一个来源货架允许并行预调度。为避免构建不必要的缓存调度器，工作区只要求：
-
-- 一个目标货架工作位。
-- 一个当前来源货架工作位。
-- 最多一个下一来源货架在途或等待。
-
-库区与工作区距离较近，不预建多货架队列、动态窗口或全局路径优化。
-
-### 8.3 双面执行顺序
-
-目标货架顺序固定为 A 面后 B 面，以减少目标架旋转次数。对于当前目标面：
-
-1. 来源货架以 A 面朝向设备进入工作位。
-2. 执行该来源架 A 面上属于当前目标面的全部可执行项。
-3. 若来源架 B 面仍有当前目标面的需求，旋转来源架并执行 B 面。
-4. 当前来源架对当前目标面无剩余需求后，通常退回库区，再处理下一来源架。
-5. 目标 A 面完成后旋转目标架到 B 面。
-6. 若当前来源架仍有目标 B 面需求，则保留在工作位：先处理当前朝向的一面；必要时再旋转一次处理另一面，然后退回。
-
-来源架暂时不可用时，WES 可以在同一目标面内调整来源架顺序；不得为此提前切换目标面或重新选择库存。
-
-不同料格之间不存在固定的业务执行顺序。WES 可以在当前目标面内按来源架、来源面和就绪状态调整料格顺序，但每个
-料格内部始终受 `top_to_bottom_sequence` 的严格前置关系约束。
-
-## 9. 料盘执行与证据
-
-每个 `task_item` 的标准因果链是：
-
-```mermaid
-flowchart LR
-    A[验证来源架、面、料箱/储位] --> B[扫描顶部 reel_id]
-    B --> C[创建并下发 PICK/PUT DeviceCommand]
-    C --> D[设备 ACK]
-    D --> E[COMMAND_RESULT]
-    E --> F[更新来源与目标投影]
-    F --> G[记录 item 完成证据]
-```
-
-- ACK 只表示设备接纳，不得更新料盘位置。
-- 只有可关联的成功 `COMMAND_RESULT` 才能把料盘从来源位置推进到目标储位。
-- 结果未知时保留原投影并暂停相关执行，不重复猜测物理动作。
-- WES 不把目标储位重新计算成其他位置；目标位置来自 `PickingTask`。
-
-## 10. 异常、NG 与补料
-
-### 10.1 来源料箱 NG
-
-出库以料箱为 NG 隔离单位：
-
-- 一个料箱发生 NG，不影响同一来源货架上其他正常料箱继续执行。
-- 自动滚筒线将 NG 料箱单独送往专用 NG/退料出口。
-- WES 保存 NG 原因、来源架/箱/格、关联任务项和物理出口证据，并通知 WMS。
-- 人工在 WMS/PDA 中确认并移走属于 WMS 流程；WES 只关注出口是否物理释放。
-- WMS 为未完成项追加替代来源；WES 不自行查找替代库存。
-
-### 10.2 顶部料盘身份或 LIFO 冲突
-
-接入阶段发现序号不连续、顶部前缀不完整或同料格目标面顺序冲突时，按第 5.4 节整单拒绝，不建立活动任务。
-任务执行期间若实际顶部 `reel_id` 与已接纳顺序不一致，说明来源库存身份无法可信解释。此时：
-
-- 不跳过顶部料盘，不从下层抽取，不用同物料其他料盘替代。
-- 暂停整张 `PickingTask`，保存扫码和位置冲突证据。
-- 人工或 WMS 修正事实后，由 WMS 明确下达“恢复 `PickingTask`”。
-- WES 重新验证目标架、当前来源和未完成项后继续原任务。
-
-### 10.3 来源货架暂时不可用
-
-- 仅在 WMS/RCS 明确返回可重试的暂时状态时，拥有该搬运义务的可靠对象才可做有界退避重试。
-- WES 可以先执行当前目标面内其他已就绪来源架。
-- NG、身份冲突、合同拒绝和永久不可用不得进入指数重试，必须等待 WMS 重新分配或人工处理。
-- Adapter 每次调用仍只发送一次；重试属于可靠业务对象，不属于 Phase 2 Transport 或 Phase 3 Gateway。
-
-### 10.4 WMS 无替代库存
-
-当目标架缺少部分料盘且 WMS 明确没有可用替代库存时：
-
-1. `PickingTask` 进入 `WAITING_STOCK`。
-2. 目标架移出工作位，进入由 WMS/RCS 管理的“缺料待补货架缓存区”。
-3. 原 `PickingTask`、目标 `rack_id`、已完成项和目标储位绑定保持不变。
-4. 该货架不得进入生产交付区。
-5. 后续任务可以继续使用工作位。
-6. 库存可用后，WMS 指定具体 `PickingTask`、追加来源并明确下达恢复命令；WES 不因库存更新事件自动恢复。
-
-缺料缓存区容量由 WMS/RCS 规划。缓存区满时，当前目标架可能占用工作位并阻塞后续任务；WES 只告警和保持现场事实，
-不发明替代存放位置。
-
-### 10.5 目标架异常
-
-目标储位意外占用、实际料盘与目标不符、PUT 结果无法确定或目标架身份变化时，暂停整张任务。WMS 或人工完成处理后，
-必须由 WMS 明确恢复；WES 重新验证后继续原任务，不创建通用补偿流程。
-
-## 11. 取消与货架角色转换
-
-货架物理类型固定为 `DOUBLE_SIDED_REEL_RACK`，业务角色由 WMS 管理：
-
-```text
-UNASSIGNED ↔ PRODUCTION_TRANSFER ↔ RETURN
-```
-
-取消规则：
-
-- 尚未分配目标架：直接取消任务。
-- 目标架已分配但仍为空：释放锁定并恢复为未分配空架。
-- 已放入任一料盘：取消任务并把目标架业务角色改为退料货架；既有料盘保持原储位。
-
-退料货架后续如何被其他任务优化消化由 WMS 计算。WES 仅在收到新的 `PickingTask` 时，把其储位视为
-`RACK_SLOT` 精确来源；货架清空后是否恢复生产转运角色仍由 WMS 决定。
-
-## 12. 完成与工作位释放
-
-满足以下条件才可报告“拣货完成”：
-
-- 所有任务项都有成功物理完成证据。
-- 目标 A、B 面均完成。
-- 目标 `rack_id`、面和储位投影与任务一致。
-- 没有未决命令、未决 PUT 或未处理身份冲突。
-
-完成流程：
-
-1. WES 可靠通知 WMS `PickingTask` 拣货完成。
-2. WMS 接受后向 RCS 下发搬运，将货架移至“拣货完成”货架区。
-3. WES 只在得到完成接受事实和工作位物理清空证据后，把任务置为 `COMPLETED` 并选择下一任务。
-
-完成区容量、后续生产交付、目标架进入生产时的朝向和人工异常处理均属于 WMS/RCS 范围。完成区满导致目标架无法移出时，
-工作位保持占用并阻塞后续任务；WES 不绕过物理占用事实。
-
-## 13. WMS 语义交互面
-
-### 13.1 WMS → WES
-
-目标业务命令只有：
-
-- 创建 `PickingTask`。
-- 更新 `QUEUED` 任务优先级。
-- 为未完成项追加替代来源。
-- 恢复指定 `PAUSED` 或 `WAITING_STOCK` 任务。
-- 取消指定任务。
-
-这些命令的 method、path、DTO、幂等和拒绝码必须在独立 inbound wire 合同中冻结。不得复用“查询出库单/波次”替代任务下发。
-
-### 13.2 WES → WMS
-
-出库场景最少需要：
-
-- 请求目标空架、来源架搬运和货架换面。
-- 报告来源 NG/身份异常。
-- 通知 `PickingTask` 拣货完成。
-
-Phase 3 WMS Adapter 只拥有这些调用的 DTO、固定 method/path 和单次结果翻译；`TransportTask`、`WmsConfirmation` 和
-`PickingTask` 自身拥有可靠生命周期。旧候选 Q10–Q13（查询拣货单、出库单、波次和任务快照）不再进入目标 surface。
-
-## 14. Phase 1–3 与后续阶段接缝
-
-| 阶段 | 当前事实 | 对本文的支撑 | 明确不代表 |
-| --- | --- | --- | --- |
-| Phase 1 | 测试语义和重量治理已完成 | 约束核心、Adapter、插件分开验收 | 出库业务或最小执行对象已实现 |
-| Phase 2 | `src/core/outbound_http/` 已提供 GET/POST、单次发送、有界响应和传输事实 | 供 WMS/RCS/ECS Adapter 复用 | WMS DTO、重试、任务状态或业务成功 |
-| Phase 3 | 计划暗构建 `src/app/wms_adapter/`，当前仍被合同阻断，生产包尚不存在 | 冻结出库所需 WMS 调用的类型化边界 | `PickingTask`、可靠对象或生产接线 |
-| Phase 4 | 尚未开始 | 最终 `InboundEvidence`、`TransportTask`、`WmsConfirmation`、执行投影 | 具体出库顺序 |
-| Phase 8 | 尚未开始 | 自动出库插件实现本文 Decision 和对象推进 | HTTP、厂商 Payload 或库存算法 |
-
-Phase 3 operation 清单已依据本文删除旧 Q10–Q13，并补入 NG 报告与拣货完成通知。Phase 3 Task 1 仍必须冻结
-33 项完整 wire 字段矩阵和 `PickingTask` inbound 合同；不得为了维持旧数量恢复无消费者能力。
-
-## 15. 测试所有权与验收边界
-
-自动化验收按以下所有权划分：
-
-- Phase 2 核心测试：只验证 HTTP 传输、资源限制、取消和传输事实。
-- Phase 3 WMS Adapter 测试：只验证 WMS method/path/DTO/拒绝码、单次调用和结果映射。
-- Phase 4 核心测试：只验证可靠对象、持久化、幂等、状态推进和投影不变量。
-- 自动出库插件测试：验证任务校验、排序、A/B 面顺序、LIFO、NG、补料、缺料等待、取消和完成。
-- 设备 Adapter 测试：验证厂商扫码、命令、Payload 和 `COMMAND_RESULT` 标准化。
-- 真实 RCS/ECS/WMS 联调：验证到位姿态、工作位释放、NG 出口和搬运终态。
-
-任何一层不得用另一层的 happy path 替代自身合同测试。
-
-### 15.1 MOCK fixture 合同
-
-inbound wire 合同冻结后，DTO 所属包至少维护以下 fixture 场景：
-
-| 场景 | 预期 |
+| 有任务项的目标面 | 执行规则 |
 | --- | --- |
-| 混合 `BIN_CELL` / `RACK_SLOT` 且目标包含 A/B 面 | 整单接纳 |
-| 两个任务项占用同一目标面和目标储位 | 整单拒绝 |
-| 同一料格的待拣料盘不是顶部连续前缀 | 整单拒绝 |
-| 同一料格序号重复、从非 `1` 开始或存在跳号 | 整单拒绝 |
-| 同一料格按顶部到底部出现目标面 `B → A` 或 `A → B → A` | 整单拒绝 |
-| 不同料格在当前目标面内调整执行先后 | 允许调整，同时保持各料格内部顺序 |
-| 为原任务未完成项追加精确替代来源 | 接纳增量，保留原来源证据 |
+| 仅 A | 执行 A，目标架不旋转到 B。 |
+| 仅 B | 不生成 A 面执行组；目标架旋转到 B 后执行。 |
+| A 和 B | 先完成 A，再旋转一次完成 B。 |
 
-MOCK 自动化环境与合同测试共用同一组 `.json` fixture，并通过正式 DTO/Schema 校验。
+### 7.3 来源货架顺序
 
-## 16. 评审结论
+来源货架进入工作位时，RCS 必须保证 A 面朝向设备。对当前目标面：
 
-### 16.1 已通过
+1. 先执行当前来源架 A 面的全部可执行项。
+2. 需要时旋转来源架，执行其 B 面的全部可执行项。
+3. 当前来源架对当前目标面无剩余需求后，通常退回库区，再处理下一来源架。
+4. 目标面切换后，若当前来源架仍有需求则可留在工作位；先处理当前朝向的一面，必要时再旋转处理另一面。
 
-- 权威边界与最小执行架构一致：WMS 管业务和库存，WES 管作业期执行，RCS 管运输，ECS 管物理动作。
-- `PickingTask` 直接驱动消除了订单/波次的重复解释。
-- 扁平任务项与派生调度分组同时满足两类来源，未引入多套任务模型。
-- 状态、异常和恢复均有明确 owner，没有通用 Hold、恢复引擎或自动补偿。
-- A/B 面顺序、工作位容量和预调度规则满足现场约束，未构建全局优化器。
-- 取消后货架角色转换复用同一物理结构，不增加拆料任务模型。
-- SRS、最小执行架构 SPEC、WMS operation 合同、Master Plan 和 Phase 3 计划已同步移除旧单据/波次驱动口径。
+来源架暂不可用时，WES 可在同一目标面内调整来源架顺序并按受控指数退避重试；不得提前切换目标面或自行换库存。
 
-### 16.2 实施前阻断项
+## 8. 料盘执行与事实
 
-- WMS/WES inbound `PickingTask` wire method、path、字段上限、幂等与拒绝码尚未冻结。
-- NG 报告、拣货完成通知和货架换面/搬运的 WMS wire 合同尚未全部冻结。
-- Phase 3 的 33 项完整 method/path/DTO/拒绝码矩阵仍须 WMS/业务方批准。
-- RCS 必须确认来源架和目标架进入工作位时 A 面朝向设备，以及换面任务的可观测终态。
-- 现场必须确认缺料缓存区和拣货完成区容量；容量不足只形成阻塞事实，不改变本文流程。
+单个任务项的物理推进链固定为：校验来源架/面/箱/格或储位 → 扫描并核对 `PkgID` 与 SixInOne → PICK+PUT →
+成功 `COMMAND_RESULT` → 更新作业期投影 → 建立可靠位置变化事实。
 
-这些阻断项只阻止代码实施，不改变本文已确认的业务流程。
+- ACK、queued 或 dispatched 只证明接收/派发，不推进料盘位置。
+- 成功 `COMMAND_RESULT` 是来源到目标位置变化的唯一物理证据。
+- 超时、断连或结果不可判定时，当前位置设为 `unknown`，整张 `PickingTask` 进入 `PAUSED`。
+- 未知结果未人工消歧前，不得重发动作、继续其他项、替换来源、取消终结或推断料盘仍在来源。
+- 位置变化事实的可靠重提不得重放设备命令。
+
+逐项位置变化业务示例：
+
+```json
+{
+  "fact_id": "MOVE-PT-OUT-A001-I01-001",
+  "task_id": "PT-OUT-A001",
+  "task_version": 1,
+  "item_id": "PT-OUT-A001-I01",
+  "PkgID": "PKG-000101",
+  "from_locator": {
+    "type": "BIN_CELL",
+    "rack_id": "SRC-RACK-010",
+    "rack_face": "A",
+    "bin_id": "BIN-010-01",
+    "cell_id": "CELL-01"
+  },
+  "to_locator": {
+    "rack_id": "TARGET-RACK-001",
+    "target_face": "A",
+    "target_slot_id": "A-01"
+  },
+  "command_result_id": "RESULT-001",
+  "occurred_at": "2026-08-06T09:42:00+08:00"
+}
+```
+
+`fact_id` 标识一次已发生的位置变化；其 wire 命名、信封和远端幂等规则由北向合同批准。每个任务项单独产生事实，
+不得用整单完成通知代替。
+
+## 9. 异常、NG 与补料
+
+| 来源异常 | 隔离单位 | 可继续范围 | 后续 |
+| --- | --- | --- | --- |
+| `BIN_CELL` 料箱异常 | 整个 `bin_id` | 同架其他正常 bin | NG 料箱经滚筒线送专用出口，WMS/PDA 人工确认移走；WMS 规划替代来源。 |
+| `RACK_SLOT` 料盘异常 | `slot_id + PkgID` | 同架其他正常 slot | WES 报告事实，WMS 规划替代来源。 |
+| 整架不可用 | `rack_id` | 其他来源架 | 该架全部未执行绑定失效，WES 调整其他来源顺序，WMS 重新规划。 |
+
+NG 事实不自动授权替代。只有满足 §5.3 资格且 WMS 返回原子替代来源批次后，WES 才能继续未完成项。只有 WMS
+针对当前有效替代请求明确返回“无完整替代方案”，才能进入执行中缺料等待；尚未收到响应、消息延迟或处理超时均
+不能被解释为无库存。
+
+目标架或目标储位异常、扫码冲突、LIFO 冲突以及无法确定的 PICK/PUT 结果均停止整张任务的新动作。明确的结构/身份
+冲突报告 WMS 后等待修正；未知物理结果必须人工消歧。恢复原任务只能由 WMS 明确下达。
+
+## 10. 取消
+
+取消不触发通用补偿，也不授权 WES改变目标架业务角色：
+
+1. 接收取消后进入 `CANCELLING`，停止创建新动作。
+2. 已下发动作等待成功/失败 `COMMAND_RESULT`；未知结果先人工消歧。
+3. WES 依据稳定物理事实向 WMS 报告任务、料盘和目标架现状。
+4. WMS 决定目标架继续发料、转为退料货架、转作新任务或退回，并规划 RCS 目的地。
+5. WMS 接受处置且工作位取得物理清空证据后，任务才进入 `CANCELLED`。
+
+尚无目标架且无在途动作的排队或启动前缺料任务，可在 WMS 接受取消后直接终结；已有目标架时不得跳过处置与清位。
+
+## 11. 完成
+
+任务完成条件：
+
+- 所有计划目标项完成，空目标面没有执行义务。
+- 每项 PICK+PUT 均有成功 `COMMAND_RESULT`，不存在在途或 `unknown` 动作。
+- 每项位置变化事实已由 WMS 接受；不得让整单完成通知越过任何未接受的逐项事实。
+- 独立的 PickingTask 完成通知已由 WMS 接受。
+- 目标架已移入“拣货完成”货架区，工作位有物理清空证据。
+
+任务完成业务示例：
+
+```json
+{
+  "fact_id": "COMPLETE-PT-OUT-A001-001",
+  "task_id": "PT-OUT-A001",
+  "task_version": 1,
+  "target_rack_id": "TARGET-RACK-001",
+  "completed_at": "2026-08-06T10:05:00+08:00"
+}
+```
+
+完成通知不携带、不聚合也不替代逐项位置变化事实。生产交付及后续异常属于 WMS 流程，WES 不关注。
+
+## 12. WMS 语义交互面
+
+WMS → WES：创建目标项任务、更新排队优先级、下发原子替代来源批次、恢复指定任务、取消指定任务，以及获批的人工结果。
+
+WES → WMS：请求 STARTING 完整来源绑定、报告来源 NG/身份异常、提交逐项位置变化事实、提交独立任务完成事实、
+报告取消稳定现场并请求货架处置。具体 operation 名、method、path、DTO、同步/异步结果和幂等规则只由北向合同冻结。
+
+来源绑定、逐项位置变化和任务完成是三个不同业务语义，不得复用一个任务快照接口。库存查询、预留或释放不得被 WES
+组合成 PickingTask 来源方案。
+
+## 13. 阶段与所有权
+
+| 所有者 | 本场景职责 |
+| --- | --- |
+| Phase 1/2 | 提供已验收的测试治理与无业务语义 HTTP 传输事实，不以出库行为反向验收基础能力。 |
+| Phase 3 WMS ACL | 经 WMS 批准后拥有来源绑定、逐项位置事实、任务完成、NG、取消/恢复等 wire DTO 与单次调用结果。 |
+| Phase 4 最小平台 | 拥有可靠派发、幂等义务、动作在途/结果、unknown 投影、重提资格和持久化证据。 |
+| Phase 8 自动出库插件 | 拥有本文状态、队列、双面顺序、NG 隔离、替代资格、空面跳过及恢复规则。 |
+| WMS/RCS/ECS Adapter | 只翻译各自获批 wire，不持有上述业务生命周期。 |
+
+Phase 3 当前仍阻断在消费者矩阵和 WMS wire 批准，本文不得被解释为 method/path 已获批或可以进入实施。
+
+## 14. Fixture 与验收所有权
+
+| 资产 | 唯一所有者 | 验证范围 |
+| --- | --- | --- |
+| WMS wire DTO/fixture | WMS ACL 合同测试 | 获批 wire、闭集字段、编码和错误映射。 |
+| 出库业务场景/fixture | 自动出库插件 | 状态、顺序、NG、补料、恢复和取消。 |
+| 厂商命令/结果 fixture | 对应设备 Adapter | 厂商 Payload、ACK、结果和原始码映射。 |
+| MOCK 场景数据 | MOCK 自动化环境 | 跨系统业务验收，不作为 wire、插件或 Adapter 真源。 |
+
+各层可用正式 schema 校验自己的数据，但不得共用同一 fixture 文件作为多层真源。
+
+最低验收场景：
+
+| 场景 | 通过标准 |
+| --- | --- |
+| 排队任务只含目标项 | 接纳；出现来源、SixInOne、具体目标架或未知字段时整单拒绝。 |
+| 来源绑定精确覆盖全部项 | 原子生效后才并行调目标架和首个来源架。 |
+| 来源绑定缺项/重复/字段缺失/PkgID 重复/LIFO 非连续 | 整批不生效；不得部分执行。 |
+| 启动前无完整来源 | 无目标架、无来源架、不占工作位，后续任务可继续。 |
+| WMS 明确返回无完整替代方案 | 执行中的目标架进入待补缓存，不交付生产；成功清位后才释放工作位。 |
+| WMS 恢复等待任务 | 重新竞争下一工作位机会，不抢占当前任务。 |
+| 未知 PICK/PUT 结果 | 当前位置 `unknown`，整单暂停且不重发。 |
+| 每项成功与整单完成 | 逐项位置事实与任务完成事实分别可靠建立。 |
+| 替代项不合格或批内一项非法 | 整批替代不生效。 |
+| BIN_CELL / RACK_SLOT / 整架异常 | 分别按 bin、slot+PkgID、rack 隔离。 |
+| 目标仅 A / 仅 B / A+B | 分别为不旋转、跳过 A 后旋转、A 后 B。 |
+| 取消存在在途或未知动作 | 等待终态/人工消歧；WMS 接受处置且清位后才取消。 |
+| 完成时工作位未清空 | 不得进入 `COMPLETED`。 |
+
+## 15. 评审结论
+
+本轮业务裁决修订已经独立复审，以下一致性检查均已通过：
+
+- `PickingTask` 与 `SourceBinding` 两阶段边界是否无重复来源权威。
+- 启动前缺料与执行中缺料是否正确区分目标架处置。
+- 未知结果、替代来源、取消和完成的终结条件是否闭合。
+- WMS 合同、最小架构 SPEC、Phase 3 计划和 Master Plan 是否同步。
+- 所有 JSON 均可解析，fixture 保持单一所有者。
+
+本文通过的是业务设计评审，不表示 WMS wire 已批准，也不改变 Phase 3 `BLOCKED_AT_TASK_1` 状态。

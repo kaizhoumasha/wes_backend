@@ -220,43 +220,31 @@ WMS 业务能力由薄封装层提供：
 - WMS 结果是业务事实，不伪装成 ECS ACK/CALLBACK。
 
 WMS 四类普通业务事件通过 `/api/v1/callback/event` 接收，必须先持久化为 `InboundEvidence` 再 ACK，并且只触发对应
-工作线对象判定。可选 `WMS_EFFECT_STATUS_HINT` 只有在 WMS inbound 合同完整批准 payload、关联、事件幂等、重试和冲突
-语义，且 Phase 4 唯一 hint successor 已验收后，才允许通过 `/api/v1/callback/external` 接收、持久化为
-`InboundEvidence` 并唤醒匹配的 `TransportTask` 查询；否则 successor 为 `NONE`，Phase 5 只删除旧 route、payload、
-OpenAPI 和测试，不建立新 hint 路径。普通事件和获批 hint 都不得直接充当外部任务终态。
+工作线对象判定。`WMS_EFFECT_STATUS_HINT` 的当前 successor 为 `NONE`；Phase 5 只删除旧 route、payload、OpenAPI 和测试，
+不建立新 hint 路径。普通事件不得直接充当外部任务终态。
 
 每项 WMS 能力采用一个垂直模块，模块内聚 request/result DTO、固定 method/path、稳定拒绝码和
 `WmsCallSpec`。公共 Protocol 与 Gateway 只提供显式窄方法；不得建立公共 generic `call`、生产运行时
 capability registry、动态发现或 WMS codegen。新增、优化或删除能力时，开发者只修改该能力模块、对应端口方法、
 Gateway 绑定和同名测试；测试态 conformance harness 自动检查这些触点，不能被生产装配导入。
 
-Phase 3 代码实施前，WMS 北向合同必须逐项列出真实消费者所需 operation 的 method/path、request/result 字段、必填性、
-类型、枚举/精度/时间格式和业务拒绝码。`docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，作为业务输入
-只读保留；旧 MCS 架构、Bearer、retry/cache 和分页样例不覆盖当前架构决定。出库场景不再查询拣货单、出库单、波次或
-任务快照，改由 WMS 下发执行级 `PickingTask`；不得为了维持旧 operation 数量保留无消费者能力。Phase 2 `base_url`
-只保存 origin，operation path 持有完整 API prefix。完整字段矩阵、出库 NG/完成通知，以及 E08–E14 status method/path、
-状态闭集、关联和幂等承诺任一未通过前，只允许补全合同文档，不得启动新 Adapter 编码。
+Phase 3 只按消费者矩阵重建无状态 WMS 业务 ACL。`docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，
+作为业务输入只读保留；旧 MCS 架构、Bearer、retry/cache、分页样例和接口数量不覆盖当前架构决定。每项能力必须同时具备
+当前业务消费者和 WMS 批准的 method/path/DTO/错误合同；不得为了维持旧 operation 数量保留无消费者能力。当前消费者
+矩阵和未决 wire 以 `docs/contracts/wms-northbound-interaction-contract.md` 为准，门禁未关闭前 Phase 3 不得实施。
 
-当前由 WMS 转发的 AGV/CTU 操作不属于 `WmsCapabilities` 或 `WmsConfirmation`。它们通过 Transport Port
-调用无状态 WMS 转发 Client；HTTP submit/status 可以表达异步搬运任务，但任务持久化、领取、轮询、重试、
-批次状态和终态推进统一由 `TransportTask` 拥有，成员只作为冻结请求事实和终态结果事实存在；WMS 薄接入层
-不得保存第二份生命周期。
+当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3 WMS 业务 ACL。Phase 4 通过 Transport Port 调用 WMS 转发适配器，
+并由 `TransportTask` 统一拥有任务持久化、领取、状态查询、取消、恢复、批次状态和终态推进；成员只作为冻结请求事实和
+终态结果事实存在。网络目标是 WMS 不改变其 Transport 语义所有权。
 
-所有 WMS 写操作和转发搬运在 WES 可靠对象内部统一保留 `dispatch_key`，但 wire 只发送各 operation 经 WMS 批准的一个
-幂等/关联字段，不自动暴露内部字段名。Decision A 下 E08/E09 的 wire 字段为初稿 `request_id`，Adapter 负责从内部
-`dispatch_key` 映射；不得同时发送 `dispatch_key`、`request_id` 或 `idempotency_key` 多套别名。WMS 的原子幂等、回显、
-status/cancel/hint 关联规则必须写入逐项合同，不能由 WES 单方面推定。
+WMS 业务写操作和 Transport 请求都可在各自可靠对象内部保留 `dispatch_key`，但 wire 只发送对应外部合同批准的唯一
+幂等/关联字段，不自动暴露内部字段名。WMS 原子幂等、回显和安全重提规则，以及 Transport submit/status/cancel 关联，
+必须分别写入 Phase 3 WMS 业务合同和 Phase 4 Transport 合同，不能由 WES 单方面推定。
 
-WMS 调用证据采用 fail-closed：发送前无法建立证据记录时不得发出 HTTP；HTTP 已发送但最终证据无法持久化时，
-结果必须标记为“远端结果未知”，不得伪造 `evidence_key` 或按普通依赖失败自动重试。写操作由
-`WmsConfirmation` 或 `TransportTask` 保留原 `dispatch_key` 恢复。所有正常远端 outcome 都必须携带真实、
-非空 `evidence_key`。
-
-API 与每个 Celery worker 进程的 Composition Root 分别调用 WMS Adapter factory，持有其返回的 Gateway 并在生命周期结束时
-关闭；factory 内部通过 Phase 2 Transport 为 WMS 创建一个进程级 Client，所有 WMS 能力复用该 Transport。每个公开 WMS
-方法只执行一次有界请求/响应、一次 breaker permit 和一条 evidence；
-列表 QUERY 只返回本次响应的有界 `items`，不定义 cursor、自动续页、跨页一致性或累计分页预算。未来只有真实 WMS 合同
-明确分页后，才允许同步修订 WMS 合同、Adapter DTO 和基础传输能力，不预留推测性 seam。
+Phase 3 Adapter 行为无状态，只复用 Phase 2 Transport 执行一次有界请求/响应并翻译单次调用结果；不打开数据库事务，
+不持久化调用 evidence，不拥有 breaker、retry 或业务终态。`WmsConfirmation`、`InboundEvidence` 和 `TransportTask`
+在 Phase 4 保存可靠证据并决定暂停、恢复或重提。列表 QUERY 只返回本次响应的有界 `items`，不定义 cursor、自动续页、
+跨页一致性或累计分页预算；未来只有真实 WMS 合同明确分页后才允许修订，不预留推测性 seam。
 
 只有发生 `WmsDependencyFailure` 时才进入以下依赖暂停：
 
@@ -525,18 +513,18 @@ PDF 明确区分，也不得作为当前 Adapter 合同或 WES 架构真源。�
 
 WES 保存当前工作线需要的活动投影；货架、储位、料箱、料格和库存的全局权威仍在 WMS。
 
-### 10.2 数量语义
+### 10.2 料盘与包装数量语义
 
-ECS 每次物理搬运的是完整料盘。来源分配中的数量 `N` 表示料盘数量，不表示元件数量。
-元件、厂商、批次等明细来自料盘六合一码。
-
-一个料盘对应一个 `MaterialExecution`。来源分配数量为 `N` 时，WES 创建或关联 `N` 个料盘级执行。
+ECS 每次物理搬运一个完整料盘。一个来源绑定项对应一个唯一 `PkgID` 和一个料盘级 `MaterialExecution`。
+SixInOne 中的 `Qty` 表示该包装内的物料数量，不用于展开多个料盘执行；物料、厂商和批次等明细均来自该包装的
+完整 6 合 1/PKG。
 
 ### 10.3 出库来源
 
-WMS 必须提供每个待拣完整料盘的精确 `reel_id` 和物理来源位置。五层货架料箱料格中的待拣料盘按顶部到下层的
-LIFO 实际顺序排列，并构成当前可达连续前缀；WES 不根据“位置加数量”自行选择料盘。退货或转运货架以单储位、
-单料盘作为精确来源。
+`PkgID` 是完整料盘的唯一业务身份，不定义其他身份字段或兼容别名。排队任务只保存目标项；任务启动时，WMS 原子
+绑定每个目标项的完整 6 合 1/PKG、`PkgID`、精确物理来源和 LIFO 顺序。五层货架料箱料格中的待拣料盘必须构成
+当前顶部连续可达前缀；退货或转运货架以单储位、单料盘作为精确来源。WES 校验并建立作业期执行，不自行分配或
+重排来源。
 
 ### 10.4 自动线即时目标料格计算
 
@@ -563,13 +551,14 @@ LIFO 实际顺序排列，并构成当前可达连续前缀；WES 不根据“�
 
 1. 操作员将完整料盘放入入口。
 2. 入料机械臂感应、扫码和测量，并通过 ECS EVENT 上报。
-3. WES 通过无副作用 Q15 完成业务准入校验，并作出本地测量判定；此时不创建 GRN/package 绑定或入库确认。
+3. WES 读取当前料盘所需的 WMS 物料、GRN 和 Package 权威事实，完成本地业务准入与测量判定；此时不创建
+   GRN/package 绑定或入库确认，也不把准入 Decision 交给 WMS。
 4. 通过后下发厂商定义的入料机械臂长命令。
 5. 成功 CALLBACK 后，料盘进入粗分机流水线；入料机械臂立即可以处理下一料盘。
 6. 流水线长命令完成后，料盘到达出料侧。
 7. WES 即时计算粗分机出料货架上可用料箱料格。
 8. 无可用货架或料格时，通过 Transport Port 请求 WMS/AGV 补充空箱货架。
-9. 出料机械臂成功投放后更新本地投影，并创建 `WmsConfirmation` 提交 E07 package binding 和 E03 inbound confirmation。
+9. 出料机械臂成功投放后更新本地投影，并创建对应业务义务，提交 package binding 与 inbound confirmation。
 
 每个设备独立推进，不等待同一料盘完成整个流程。
 
@@ -600,13 +589,14 @@ LIFO 实际顺序排列，并构成当前可达连续前缀；WES 不根据“�
 ### 11.3 自动分拣线出库
 
 1. WMS 根据订单、波次、库存和产线需求形成执行级 `PickingTask`；WES 不读取或解释这些业务单据。
-2. `PickingTask` 固定精确 `reel_id`、来源位置和目标生产转运货架面/储位，WES 整单校验后排队。
-3. WES 选中任务后请求 WMS 分配并锁定目标空架；目标架与来源架允许并行预调度。
-4. 目标架先完成 A 面再完成 B 面；来源架进入工作位时 A 面朝向设备，并按当前目标面依次处理来源 A/B 面。
-5. 料箱料格按 WMS 给定的顶部到下层 LIFO 顺序执行；退料/转运货架按单储位单料盘执行。
-6. NG 料箱隔离到专用出口，正常料箱继续；替代来源只由 WMS 为原任务未完成项追加。
-7. 无替代库存时，目标架移至缺料待补缓存，保留原任务绑定并等待 WMS 明确恢复。
-8. 全部任务项物理完成后，WES 通知 WMS“拣货完成”，并等待目标架移出工作位后释放下一任务。
+2. `PickingTask` 排队时只固定目标生产转运货架面/储位，不绑定来源、料盘或具体目标货架。
+3. WES 选中任务后请求 WMS 原子绑定全部目标项的完整 6 合 1/PKG、唯一 `PkgID`、精确来源和 LIFO 顺序；无完整方案时整单等待库存，不创建或占用目标架。
+4. 来源绑定成功后才请求 WMS 分配并锁定目标空架；目标架与第一来源架允许并行预调度。
+5. 目标面只执行非空面：仅 A 不旋转，仅 B 跳过 A 后旋转，A/B 双面按 A 后 B；来源架进入工作位时 A 面朝向设备，并按当前目标面处理来源 A/B 面。
+6. 料箱料格按 WMS 给定的顶部连续 LIFO 顺序执行；退料/转运货架按单储位单料盘执行。
+7. NG 料箱隔离到专用出口，正常料箱继续；替代来源只由 WMS 为符合资格的未完成项原子提供。执行中无替代库存时，目标架移至缺料待补缓存并等待 WMS 明确恢复。
+8. 每个料盘物理完成后立即形成独立位置变化事实并可靠提交 WMS；任一物理结果未知时整张任务暂停。
+9. 取消后的目标架继续发料、转作他用或退回由 WMS 决定；全部目标项完成并闭合逐项事实后，WES 再通知 WMS“拣货完成”，等待目标架移出工作位后释放下一任务。
 
 完整业务合同以 `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 为准。
 
@@ -799,11 +789,13 @@ CTU 投箱
 1. 总控基线冻结与测试治理确认：接受本文、冻结最新 `develop` 实施基线，并确认测试所有权、重量和延后承接边界。
 2. Outbound HTTP 传输基础能力收敛：全新增量交付框架无关 request/result、每外部系统每进程一个 Client、单次发送、
    有界响应读取、传输事实分类和显式生命周期；不切换生产消费者，不建设 outbound 认证、重试、业务解释、registry 或 fake。
-3. WMS Adapter 新能力重建：消费 Phase 2 Transport，在独立应用包 `src/app/wms_adapter/` 中交付类型化同步查询、垂直能力模块、固定地址、错误映射、
-   确认发送和无状态 WMS 转发搬运 Client；当前 outbound 无认证。本阶段不接入生产、不修改旧实现和旧测试。
-4. WES 最小平台能力建设：暗构建最终执行对象、三类可靠记录、通用 WorkLine、投影及最小 SPI/SDK；只消费 Phase 3
-   生产类型化 Protocol/outcome，测试 fake 由 Phase 4 核心测试树自行定义，且不直接消费 Phase 2 Transport；不修改当前生产
-   Composition Root、旧表、旧实现和旧测试。
+3. WMS 业务 ACL 重建：消费 Phase 2 Transport，在独立应用包 `src/app/wms_adapter/` 中只交付消费者驱动的类型化
+   WMS 业务查询、确认、inbound DTO、固定地址和单次结果翻译；当前 outbound 无认证。本阶段无状态，不包含数据库、
+   evidence、breaker、Transport 或可靠生命周期，不接入生产、不修改旧实现和旧测试。
+4. WES 最小平台与 Transport 能力建设：暗构建最终执行对象、三类可靠记录、通用 WorkLine、投影、最小 SPI/SDK、
+   `Transport Port` 及 WMS 转发 RCS Adapter。WMS 业务调用只消费 Phase 3 类型化 Protocol/outcome；Transport Adapter
+   直接消费 Phase 2 Transport。测试 fake 由 Phase 4 核心测试树自行定义；本阶段不修改当前生产 Composition Root、
+   旧表、旧实现和旧测试。
 5. 新旧能力原子切换与旧所有者删除：迁移生产消费者和装配，清理开发/测试数据，原子删除 Provider Profile、QUERY
    System Capability、旧 WMS Transport/认证、Effect/status/Outbox 可靠闭包及被最终对象替代的核心旧 owner；不迁移旧代码或旧数据。
 6. 核心测试承接与平台基线验收：把剩余通用可靠性测试收敛到最终对象，完成核心/插件测试分界和平台独立验收。
@@ -902,9 +894,11 @@ CTU 投箱
 本节与 §15.5 中绑定具体工作线业务的验收项由对应二次开发插件包及其独立测试证明；WES 核心只验证位置
 容量、对象占用、投影更新和 Decision 执行等通用机制，不在核心 `tests/` 重复具体业务场景。
 
-- 料箱料格 LIFO 选择正确。
+- 出库按 WMS 在任务启动时原子绑定的料格顶部连续 LIFO 顺序执行，`PkgID` 无身份别名。
+- 启动时来源绑定必须完整且原子；无完整来源时不得创建或占用目标架。
+- 单面目标不执行空面动作；每个料盘位置事实与整单完成分别提交，未知物理结果暂停整张任务。
 - 退货、转运货架单储位只能有一个完整料盘。
-- 来源数量 `N` 展开为 `N` 个完整料盘执行。
+- 一个来源绑定项只关联一个唯一 `PkgID` 和一个完整料盘执行；`Qty` 只表示包装内物料数量。
 - 自动线目标格在 PUT 前即时计算，失败后重新计算。
 - 人工线目标格始终由 WMS 决定。
 
