@@ -123,7 +123,117 @@ PickingTask
 - `BIN_CELL`：料箱料格内堆叠料盘。
 - `RACK_SLOT`：退料货架或转运货架单储位单料盘。
 
-### 5.3 不变量
+### 5.3 JSON 语义示例
+
+以下示例是可直接复制和解析的严格 JSON，用于帮助开发人员、Agent 和业务评审者统一理解 `PickingTask`。它同时覆盖：
+
+- `BIN_CELL` 与 `RACK_SLOT` 两类来源。
+- 同一料格内两个料盘按顶部到下层排列。
+- 目标货架 A、B 两面储位。
+- 任务排队时只声明目标货架条件，不提前绑定具体目标 `rack_id`。
+
+```json
+{
+  "task_id": "PT-OUT-A001",
+  "task_version": 1,
+  "priority": 50,
+  "issued_at": "2026-08-06T09:30:00+08:00",
+  "workline_code": "SMT_OUTBOUND_01",
+  "target_requirement": {
+    "physical_type": "DOUBLE_SIDED_REEL_RACK",
+    "initial_face": "A"
+  },
+  "task_items": [
+    {
+      "item_id": "PT-OUT-A001-I01",
+      "reel_id": "REEL-000101",
+      "material_fact": {
+        "material_id": "MAT-0001"
+      },
+      "source_locator": {
+        "type": "BIN_CELL",
+        "rack_id": "SRC-RACK-010",
+        "rack_face": "A",
+        "bin_id": "BIN-010-01",
+        "cell_id": "CELL-01",
+        "top_to_bottom_sequence": 1
+      },
+      "target_locator": {
+        "target_face": "A",
+        "target_slot_id": "A-01"
+      }
+    },
+    {
+      "item_id": "PT-OUT-A001-I02",
+      "reel_id": "REEL-000102",
+      "material_fact": {
+        "material_id": "MAT-0001"
+      },
+      "source_locator": {
+        "type": "BIN_CELL",
+        "rack_id": "SRC-RACK-010",
+        "rack_face": "A",
+        "bin_id": "BIN-010-01",
+        "cell_id": "CELL-01",
+        "top_to_bottom_sequence": 2
+      },
+      "target_locator": {
+        "target_face": "A",
+        "target_slot_id": "A-02"
+      }
+    },
+    {
+      "item_id": "PT-OUT-A001-I03",
+      "reel_id": "REEL-000201",
+      "material_fact": {
+        "material_id": "MAT-0002"
+      },
+      "source_locator": {
+        "type": "RACK_SLOT",
+        "rack_id": "RETURN-RACK-003",
+        "rack_face": "B",
+        "slot_id": "B-03"
+      },
+      "target_locator": {
+        "target_face": "B",
+        "target_slot_id": "B-01"
+      }
+    }
+  ]
+}
+```
+
+示例中的 `task_items[]` 顺序不是 WES 的全局设备动作顺序；`top_to_bottom_sequence` 只表达同一料格内不可违反的
+物理可达顺序。WES 仍按“目标 A 面完成后再处理目标 B 面”派生来源架和来源面的执行分组。
+
+当来源异常且任务已经开始时，WMS 只为未完成项追加替代来源。以下 JSON 表达追加的业务语义；原异常来源仍保留为
+历史证据，不被本次增量覆盖：
+
+```json
+{
+  "task_id": "PT-OUT-A001",
+  "base_task_version": 1,
+  "source_additions": [
+    {
+      "item_id": "PT-OUT-A001-I02",
+      "source_locator": {
+        "type": "BIN_CELL",
+        "rack_id": "SRC-RACK-020",
+        "rack_face": "A",
+        "bin_id": "BIN-020-04",
+        "cell_id": "CELL-02",
+        "top_to_bottom_sequence": 1
+      }
+    }
+  ]
+}
+```
+
+这两个示例冻结业务语义，不冻结最终 wire DTO。method、path、请求信封、字段类型与上限、枚举、幂等键、版本推进方式
+和拒绝码仍由 inbound wire 合同决定。实现和自动化测试不得解析 Markdown；wire 合同冻结后，必须把同一场景保存为
+DTO 所属包内独立的机器可读 JSON fixture，并由正式 DTO/Schema 直接校验。
+
+### 5.4 不变量
 
 接入时必须整单验证：
 
@@ -138,7 +248,7 @@ PickingTask
 
 任一结构错误、来源身份缺失、目标冲突或 LIFO 前缀不合法，整张任务拒绝；WMS 修正后以新版本重发。
 
-### 5.4 开始后的唯一追加能力
+### 5.5 开始后的唯一追加能力
 
 开始后只允许 WMS 为未完成项追加替代 `source_locator`：
 
@@ -362,6 +472,21 @@ Phase 3 operation 清单已依据本文删除旧 Q10–Q13，并补入 NG 报告
 - 真实 RCS/ECS/WMS 联调：验证到位姿态、工作位释放、NG 出口和搬运终态。
 
 任何一层不得用另一层的 happy path 替代自身合同测试。
+
+### 15.1 JSON 示例与 MOCK fixture 边界
+
+第 5.3 节 JSON 是人类与 Agent 的语义基线，不是测试输入真源。inbound wire 合同冻结后，DTO 所属包至少应维护以下
+独立 fixture 场景，MOCK 自动化环境与合同测试共同读取这些 fixture：
+
+| 场景 | 预期 |
+| --- | --- |
+| 混合 `BIN_CELL` / `RACK_SLOT` 且目标包含 A/B 面 | 整单接纳 |
+| 两个任务项占用同一目标面和目标储位 | 整单拒绝 |
+| 同一料格的待拣料盘不是顶部连续前缀 | 整单拒绝 |
+| 为原任务未完成项追加精确替代来源 | 接纳增量，保留原来源证据 |
+
+fixture 必须是独立 `.json` 文件并通过正式 DTO/Schema 校验；不得复制一套仅供 MOCK 使用的宽松结构，也不得让测试
+读取或断言本文标题、路径、代码块或正文措辞。这样既保留顶层设计的可读示例，又确保自动化验收只依赖可执行合同。
 
 ## 16. 评审结论
 
