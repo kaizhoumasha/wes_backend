@@ -216,6 +216,8 @@ WMS 业务能力由薄封装层提供：
 - `WmsCapabilities` 查询和 `WmsConfirmation` 提交使用同步 HTTP 请求和同步业务结果。
 - DTO、地址和错误映射封装在 WMS Adapter；当前 WMS outbound 合同无认证，不存在认证配置或预留 seam。将来真实合同
   明确要求时，必须先修订本文、总控和对应 Adapter 计划，再由最窄所有者实现。
+- 当前产品部署在隔离局域网，WMS inbound 固定使用 `NONE`，由 Phase 4 API ingress 拥有原始 body 上限与接线；Phase 3
+  normalizer 不接收认证上下文。目标态不建设 HMAC、nonce、clock、凭据、IP allowlist 或认证扩展 seam。
 - 工作线插件只依赖类型化 `WmsCapabilities`，不直接访问 HTTP。
 - WMS 结果是业务事实，不伪装成 ECS ACK/CALLBACK。
 
@@ -228,6 +230,10 @@ WMS 四类普通业务事件通过 `/api/v1/callback/event` 接收，必须先�
 生产运行时 capability registry、动态发现、配置驱动 API 或 WMS codegen。新增、优化或删除能力时，开发者只修改该
 operation 的 DTO、职责匹配的端口方法、Gateway/Normalizer 私有绑定、WMS 批准的 fixture/schema 和合同测试；只有至少
 三个获批能力出现相同语义和相同约束时才提取共享 helper。
+
+每条 Port 只在首项对应职责的 operation 获批时创建，不预建空 Protocol、空 normalizer 或 package 骨架。每个 operation
+使用一个独立小 PR 交付 DTO、显式方法、wire 映射、获批 fixture/schema、合同测试和公开导出；只有首项 outbound
+operation 同时建立最小 Gateway/factory，inbound operation 不依赖 outbound Gateway。
 
 Phase 3 只按消费者矩阵重建无状态 WMS 业务 ACL。`docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，
 作为业务输入只读保留；旧 MCS 架构、Bearer、retry/cache、分页样例和接口数量不覆盖当前架构决定。每项能力必须同时具备
@@ -247,6 +253,10 @@ Phase 3 Adapter 行为无状态，只复用 Phase 2 Transport 执行一次有界
 不持久化调用 evidence，不拥有 breaker、retry 或业务终态。`WmsConfirmation`、`InboundEvidence` 和 `TransportTask`
 在 Phase 4 保存可靠证据并决定暂停、恢复或重提。列表 QUERY 只返回本次响应的有界 `items`，不定义 cursor、自动续页、
 跨页一致性或累计分页预算；未来只有真实 WMS 合同明确分页后才允许修订，不预留推测性 seam。
+
+批量 outbound request 在 send 前校验最大 items 与编码 body bytes；每个 outbound response 显式使用 operation 获批的
+`OutboundHttpResponseLimits`，完整解码后再次校验最大 items。Inbound 原始 body 上限由 Phase 4 ingress 在 normalizer 前
+执行，Phase 3 只校验闭集 DTO 与最大 items；任何超限均 fail closed，不截断、不返回部分结果。
 
 只有发生 `WmsDependencyFailure` 时才进入以下依赖暂停：
 

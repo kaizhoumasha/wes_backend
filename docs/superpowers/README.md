@@ -12,8 +12,8 @@
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与双面货架执行业务真源 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 2 已完成，Phase 3 Task 1 四项跨能力门禁阻断 |
-| `plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 无状态 WMS 业务 ACL 暗构建 | 单项批准模板已冻结；Task 1 关闭后按 operation 单独批准与实施 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 2 已完成，Phase 3 Task 1 三项跨能力门禁阻断 |
+| `plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 无状态 WMS 业务 ACL 暗构建 | inbound `NONE` 与单项批准模板已冻结；每个获批 operation 使用独立小 PR 实施 |
 
 ## 项目外历史归档
 

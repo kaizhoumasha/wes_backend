@@ -28,7 +28,7 @@
 - WES 向 WMS 请求 `PickingTask` 来源绑定及提交业务事实通知的类型化 DTO。
 - WMS 向 WES 下发业务命令的类型化 DTO 和无状态校验/标准化。
 - 固定 method/path、请求编码、响应解析和单次调用结果翻译。
-- 一个明确配置的 WMS origin 和当前 `NONE` 认证决定。
+- 一个明确配置的 WMS origin 和 outbound `NONE` 认证决定。
 
 ### 2.2 Phase 3 不拥有
 
@@ -41,6 +41,9 @@
 
 Phase 2 只提供单次 HTTP 传输事实。Phase 3 只做 WMS 业务 wire 翻译。可靠对象和 WMS 转发 RCS 的
 Transport Adapter 均由 Phase 4 拥有。
+
+系统部署在隔离局域网，WMS inbound 固定使用 `NONE`。该接线及原始 body 有界读取由 Phase 4 API ingress 拥有；Phase 3
+normalizer 不接收认证 header、principal 或认证策略。目标态不建设 HMAC、nonce、clock、凭据、IP allowlist 或认证扩展 seam。
 
 ## 3. 目标态消费者矩阵
 
@@ -94,7 +97,8 @@ WorkLine；Phase 4 可靠对象保存结果后，由对应业务对象重新裁�
 | 取消指定任务 | 非终态 `PickingTask` | 出库设计 §10 | 保留；不伪造已发出的物理动作终态 |
 | 通知人工作业完成 | 人工分拣线 SCAN2 工作位 | 最小架构 SPEC §12.4 | 保留；WMS 是人工任务和扫码业务 owner |
 
-Phase 3 只定义 DTO 与无状态校验/标准化。先持久化 `InboundEvidence` 再 ACK、幂等、业务对象推进和恢复均由
+Phase 3 只定义 operation 专属 DTO、显式 normalizer 方法与无状态校验/标准化，不提供字符串 selector 或 inbound registry。
+先持久化 `InboundEvidence` 再 ACK、幂等、业务对象推进和恢复均由
 Phase 4 负责；Phase 3 不单独建立可绕过可靠边界的 FastAPI 业务处理器。
 
 “无完整替代方案”只有在与当前有效替代请求和绑定基线匹配时才是库存权威结果；未收到消息、传输未知或 WMS 仍在
@@ -146,6 +150,9 @@ Phase 4 负责；Phase 3 不单独建立可绕过可靠边界的 FastAPI 业务�
 Adapter 不打开数据库事务，不保存调用 evidence，不申请 breaker permit，不自动 retry，不拥有业务终态。传输层已经提供的
 超时、响应上限和交付事实不得在 Phase 3 复制。
 
+每条 Port 只在首项对应职责的 operation 获批时创建；没有获批能力时不得预建空 Protocol、空 normalizer、通用成功容器
+或 package 骨架。
+
 ### 6.1 单项能力批准模板
 
 每项 outbound 或 inbound 能力必须在进入 TDD 前独立补齐以下信息；缺一项时该能力的代码、DTO 和测试保持不存在：
@@ -156,26 +163,38 @@ Adapter 不打开数据库事务，不保存调用 evidence，不申请 breaker 
 | Wire | operation 名、方向、method、relative path、闭集 request/result、必填性、错误码与拒绝语义 |
 | 可靠语义 | 幂等字段及来源、安全重提是否允许；未批准时按不可安全重提处理 |
 | 权威元数据 | version/time/provenance 的真实 wire 来源；WMS 不提供的字段不得由 WES 伪造 |
-| 响应预算 | 最大项数、最大 wire/decoded 字节数、超限语义；必须位于 Phase 2 硬上限内 |
+| 尺寸预算 | request/result 最大项数、最大编码/wire/decoded 字节数和超限语义；outbound response 预算由 Phase 2 primitive 逐请求执行 |
 | 独立真源 | WMS 批准、版本化且机器可读的 fixture/schema；人类 Markdown 与实现方 MockTransport 均不能代替 |
 
 新增 API 使用固定最小流程：登记消费者 → 完成上表批准 → 选择职责匹配的窄端口 → 增加操作专属 DTO 和一个显式
-Gateway/Normalizer 方法 → 以获批 fixture/schema 在 `tests/contracts/wms_adapter/` 做 TDD → 同步矩阵与公开导出。
+Gateway/Normalizer 方法 → 以获批 fixture/schema 在 `tests/contracts/wms_adapter/` 做 TDD → 同步矩阵与公开导出。每个
+operation 使用一个独立小 PR；只有首项 outbound operation 同时建立最小 Gateway/factory，不捆绑其他未获批能力。
 首个获批 operation 只作为结构参考纵切片，不升级为生成器、配置驱动 API、production registry、generic `call`、动态发现
 或公共 `WmsCallSpec`。只有至少三个获批能力出现相同语义和相同约束时才提取共享 helper。
 
 若获批 HTTP method 不在 Phase 2 `OutboundHttpMethod` 中，必须先以独立基础层 TDD 变更扩展 Phase 2；Phase 3 不得直接使用
 HTTPX 或把 method 歪曲为现有值。
 
-## 7. Phase 4 Transport handoff
+### 6.2 尺寸预算执行所有权
 
-以下仅登记 Phase 4 业务需求，不在本文冻结其 wire：
+| 边界 | Owner | 必须执行的限制 |
+| --- | --- | --- |
+| Outbound request | Phase 3 operation DTO/encoder | send 前校验最大 items 和最大编码 body bytes；超限为合同无效且 0 次 send |
+| Outbound response 读取 | Phase 2 Transport，预算由 Phase 3 operation 提供 | 每次请求显式设置获批 `OutboundHttpResponseLimits`；2 MiB wire / 4 MiB decoded 是默认值而非硬上限或业务批准值 |
+| Outbound response 解析 | Phase 3 operation decoder | 完整解码后校验最大 items 与闭集 DTO；超限 fail closed，不返回截断或部分结果 |
+| Inbound raw body | Phase 4 API ingress | normalizer 前执行获批的原始字节上限与隔离局域网 `NONE` 接线 |
+| Inbound DTO | Phase 3 operation normalizer | 通过显式方法校验闭集字段和最大 items；不接收认证或持久化上下文 |
+
+## 7. Phase 4 handoff
+
+以下仅登记 Phase 4 业务需求，不在本文冻结其 Transport wire 或 ingress 实现：
 
 - 空架补给、货架搬运和货架换面。
 - 满箱交换。
 - 五层货架料箱批次投入流水线和从退料口返库。
 - 搬运 submit、status、cancel 及 typed terminal result。
 - `TransportTask` 的持久化、批次成员、轮询、恢复和位置投影。
+- WMS inbound API ingress 的隔离局域网 `NONE` 接线、原始 body 有界读取、显式 operation 路由、证据持久化和 ACK。
 
 即使当前网络请求由 WMS 转发 RCS，这些能力仍按 Transport 语义归 Phase 4，不进入 Phase 3 WMS ACL。
 
@@ -184,15 +203,17 @@ HTTPX 或把 method 歪曲为现有值。
 - 每个候选能力都登记目标阶段、具体组件、调用时机和 SRS/顶层设计依据；条件候选无法定位真实消费者时删除。
 - 每个排除能力都登记 successor 或 `NONE`。
 - 组合多项 WMS 权威事实的消费者已有共同 snapshot/version，或已批准读取顺序、有效窗口和 fail-closed 条件。
-- 列表/批量结果已有最大项数、最大 wire/decoded 字节数和超限语义，并能满足 Phase 2 硬上限。
-- API ingress 的调用方认证合同或明确的局域网 `NONE` 条件已经批准；该决定不进入 Phase 2 outbound Transport。
+- 列表/批量 request/result 已有最大项数、最大编码/wire/decoded 字节数和超限语义；outbound response 预算可由 Phase 2
+  primitive 执行，超过其默认值时已有 WMS/业务批准的数值和理由。
+- WMS inbound 已按隔离局域网部署约束冻结为 API ingress 所有的 `NONE`；该决定不进入 Phase 2 outbound Transport 或
+  Phase 3 normalizer。
 - §6.1 单项批准模板已冻结；全部 operation 的 wire 不要求在 Task 1 同时获批。
 - Phase 3 与 Phase 4 Transport 合同没有重复 method 或生命周期 owner。
 - SRS 只保留用户需求和权威边界，不复制 operation 编号或实现参数。
 - 厂商原始文档保持原貌，项目内不再保留 33 项旧蓝图副本。
 
-当前结论：`BLOCKED`。批准模板已经冻结，但目标态消费者定位、多事实一致性、响应预算和 inbound 认证/局域网 `NONE`
-四项跨能力外部决定尚未关闭，Phase 3 代码实施不得开始。
+当前结论：`BLOCKED`。批准模板和隔离局域网 inbound `NONE` 已经冻结，但目标态消费者定位、多事实一致性与尺寸预算
+三项跨能力外部决定尚未关闭，Phase 3 代码实施不得开始。
 
 Task 1 关闭后，每项 operation 只有完整通过 §6.1 才能独立进入 TDD；未获批 operation 保持不存在，不阻断其他已获批
 operation。Phase 3 最终退出仍要求所有保留 operation 已获批并实施；无法获批或无法定位消费者的候选项直接删除，

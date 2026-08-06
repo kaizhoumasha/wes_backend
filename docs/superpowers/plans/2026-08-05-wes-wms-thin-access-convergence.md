@@ -97,7 +97,8 @@ Phase 3 不再维护固定“33 项 operation”目标。能力清单只来自
 Task 1 退出前只冻结责任、公开边界和禁止依赖，不预先冻结文件树。Task 1 退出后再根据获批 wire 生成最小文件清单，且只允许
 包含以下责任：
 
-- 公开边界：三条 outbound 业务端口、独立 `WmsInboundNormalizer`、最小 outbound 配置、封闭 outcome 和 outbound factory。
+- 公开边界：按获批能力逐步形成三条 outbound 业务端口、独立 `WmsInboundNormalizer`、最小 outbound 配置、封闭 outcome
+  和 outbound factory；没有首项获批能力时不得创建空端口、空 normalizer 或 package 骨架。
 - 私有实现：固定 method/path 的 DTO 编解码、无状态 Gateway，以及仅获批能力需要的值对象。
 - 共享值对象只有在至少三个获批能力出现相同语义和相同约束时才提取；不预建 `_shared.py`、通用请求基类或扩展框架。
 - factory 将 Phase 2 builder 的 `system_id` 固定为 `wms`，不把它变成配置项或调用方参数。
@@ -131,17 +132,20 @@ reconciliation/
 3. 将能力放入职责匹配的既有窄端口；只有职责确实不同才增加新端口，不按接口数量拆端口。
 4. 增加操作专属 request/result/outcome、一个显式 Gateway/Normalizer 方法和一次 `OutboundHttpRequest` 映射；获批 method
    不在 Phase 2 枚举内时，先以独立 TDD 变更扩展 Phase 2。
-5. 在 `tests/contracts/wms_adapter/` 先以获批 fixture/schema 写失败合同测试，再实现至通过；不得用 Phase 2 Transport
+5. 在 `tests/contracts/wms_adapter/` 先以获批 fixture/schema 写失败合同测试，再实现至通过；一个 operation 使用一个
+   独立小 PR，除首次 outbound operation 必需的 Gateway/factory 外，不捆绑其他能力。不得用 Phase 2 Transport
    测试、核心业务测试或人类 Markdown 正文替代 wire 验收。
 6. 同步公开导出、消费者矩阵和实现状态。首个获批能力作为结构参考纵切片；复制其职责结构，不复制业务字段或抽象层次。
 
-正常单项扩展只触及该 operation 的 DTO、一个端口方法、Gateway/Normalizer 私有绑定、获批 fixture 和合同测试。相同语义
+正常单项扩展只触及该 operation 的 DTO、一个端口方法、Gateway/Normalizer 私有绑定、获批 fixture、合同测试和公开导出。
+相同语义
 与约束未在至少三个获批能力中重复前，不提取共享 helper；禁止生成器、配置驱动 API、生产 registry、generic `call`、
 动态发现或公共 `WmsCallSpec`。
 
 ## 5. 公开端口
 
-Phase 3 提供三条职责互斥的 outbound 业务端口：
+Phase 3 的目标公开面包含三条职责互斥的 outbound 业务端口；每条端口只在首项对应职责的 operation 获批并进入 TDD 时创建，
+不得预建空 Protocol：
 
 - `WmsBusinessQueryPort`：读取 WMS 权威事实，不产生副作用。
 - `WmsPickingSourceBindingPort`：只暴露语义 operation `request_picking_source_bindings`，请求 WMS 为 `STARTING`
@@ -161,9 +165,10 @@ Phase 3 提供三条职责互斥的 outbound 业务端口：
 
 Phase 3 只比较本次方法实参和本次同步响应能够证明的关联，不判断该请求在持久化业务对象中是否仍然有效。
 
-WMS inbound 只提供 DTO 和 normalizer，不在 Phase 3 暴露绕过 `InboundEvidence` 的业务处理端口。Phase 4 API/应用层
-负责先持久化证据再 ACK，并调用对应业务对象。Inbound callback 的认证保持 API ingress 独立所有权；outbound
-`NONE` 不能代替入站调用方认证合同。
+WMS inbound 只提供 operation 专属 DTO 和显式 normalizer 方法，不在 Phase 3 暴露字符串 selector、绕过
+`InboundEvidence` 的业务处理端口。Phase 4 API/应用层负责有界读取 body、按获批 operation 显式路由、先持久化证据再
+ACK，并调用对应业务对象。系统部署在隔离局域网，WMS inbound 固定使用 `NONE`；该决定由 Phase 4 API ingress 独立拥有，
+不进入 Phase 2 Transport 或 Phase 3 normalizer，也不建设 HMAC、nonce、clock、凭据、IP allowlist 或认证扩展 seam。
 
 禁止提供：
 
@@ -223,10 +228,11 @@ Outcome 不决定 retry、dependency pause、terminal 或投影变化。Phase 4 
   目标态消费者及原子边界，无法定位者删除候选能力。
 - [ ] 为每个需要组合多项 WMS 事实的消费者冻结一致性合同：优先使用 WMS 提供的共同 snapshot/version；若 WMS 不提供，
   必须明确可接受的读取顺序、有效窗口和 fail-closed 条件。不得以复合 WMS 准入决策接口替代 WES 本地规则。
-- [ ] 为每个列表或批量结果冻结最大项数、最大 wire/decoded 字节数和超限语义，并证明不超过 Phase 2 的硬上限；无法满足
-  且确需分页时，先单独修订基础传输/业务合同，本阶段不预建分页 seam。
-- [ ] 冻结 API ingress 所需的调用方认证合同或明确的局域网 `NONE` 条件；各 inbound operation 的 wire 仍按单项能力
-  批准，不进入此跨能力门禁。认证决定不进入 Phase 2 Transport，也不从 outbound `NONE` 推导。
+- [ ] 为每个列表或批量 request/result 冻结最大项数、最大编码/wire/decoded 字节数和超限语义；outbound response 预算
+  通过 Phase 2 `OutboundHttpResponseLimits` 逐请求执行。Phase 2 的 2 MiB wire / 4 MiB decoded 是默认值而非硬上限；
+  operation 若需更高预算，必须由 WMS/业务方明确批准数值和理由。确需分页时先修订业务合同，本阶段不预建分页 seam。
+- [x] 根据隔离局域网部署约束，冻结 WMS inbound 为 API ingress 所有的 `NONE`；不建设 HMAC、nonce、clock、凭据、
+  IP allowlist 或认证扩展 seam。各 inbound operation 的 wire 仍按单项能力批准，不进入此跨能力门禁。
 - [x] 冻结单项能力批准模板：目标消费者、method/path、闭集 request/result、错误码、幂等语义、权威元数据来源、数量与
   字节预算，以及 WMS 批准的版本化机器可读 fixture/schema。人类阅读文档不得被测试解析为合同真源。
 
@@ -237,7 +243,7 @@ Outcome 不决定 retry、dependency pause、terminal 或投影变化。Phase 4 
 每项能力独立通过以下门禁后才能进入 TDD；一个能力未获批不阻塞其他能力，但它必须保持代码、DTO 和测试均不存在：
 
 - 目标消费者、调用时机和原子边界已经确认。
-- WMS 已批准 method/path、闭集 request/result、错误码、幂等语义以及数量/字节预算。
+- WMS 已批准 method/path、闭集 request/result、错误码、幂等语义以及 request/result 数量与字节预算。
 - 对照 Phase 2 `OutboundHttpMethod` 检查获批 method；若未支持，先以独立 TDD 小变更扩展 Phase 2 通用枚举和传输测试，
   不得在 Gateway 中直用 HTTPX 或歪曲 WMS method。
 - 权威查询的 version/time/provenance 有真实来源并符合 `authority-matrix.md`；WMS 未提供的 `source_version` 或权威时间不得
@@ -253,6 +259,8 @@ Phase 3 最终退出仍要求所有保留能力均已通过门禁并实施；无
 
 - 使用 TDD 建立最小配置、封闭 outcome、concrete Gateway/factory 生命周期骨架，以及第一项获批能力需要的严格 DTO；
   不预建通用 DTO 基类，共享类型只在三个以上获批能力出现相同语义时提取。
+- 只建立首项获批 outbound operation 所属的端口和 operation-specific outcome；不创建另外两条空端口、通用成功容器或
+  未获批 operation 导出。
 - 配置只包含 WMS origin 与 timeout；当前认证固定为 `NONE`。
 - 不接受 Session、Repository、Provider、credential、retry 或 breaker 参数。
 - 先证明 0/1 次 send、三种 delivery state、响应阶段 failure、取消传播和幂等关闭，使 Task 3/4 能在同一 Gateway 上
@@ -262,6 +270,8 @@ Phase 3 最终退出仍要求所有保留能力均已通过门禁并实施；无
 
 - 每项查询先独立通过单项能力批准门禁，再建立语义模块和显式端口方法；不等待其他无关能力获批。
 - 每个查询在 Task 2 Gateway 上完成固定 wire、一次请求和一次有界响应；没有缓存、分页 seam 或自动续页。
+- 批量 request 在编码和 send 前校验最大项数与最大 body bytes；每个 response 显式设置获批的
+  `OutboundHttpResponseLimits`，解码后再校验最大 items，任一超限均 fail closed。
 - 查询不得用于 PickingTask 来源选择、库存锁、料格冻结或跨任务分配。
 - 测试以 WMS 批准的版本化 fixture/schema 证明 DTO/wire，不测试 WorkLine 决策或库存算法。
 
@@ -271,28 +281,31 @@ Phase 3 最终退出仍要求所有保留能力均已通过门禁并实施；无
 - 只翻译完整原子来源绑定或无完整方案，不决定 `WAITING_STOCK`、目标架调度或业务推进。
 - 每项来源绑定或同步业务确认先独立通过单项能力批准门禁；不等待其他无关能力获批。
 - 每个方法在 Task 2 Gateway 上只负责 DTO、固定 wire 和结果翻译。
+- 批量 request/result 采用与 Task 3 相同的编码前、Transport 读取期和解码后分层预算，不把 Phase 2 默认值误当业务批准值。
 - 逐项位置通知与 `confirm_picking_completed` 分别建模；不复用 `transfer_inventory` 双写同一事实。
 - 不持久化来源绑定或确认义务，不自动 retry，不把成功直接解释为 WorkLine 推进。
 
 ### Task 5：实现 WMS inbound DTO 与 normalizer
 
+- **前置：Task 1 全部完成，并且目标 inbound operation 已通过单项能力批准门禁；不依赖 Task 2 outbound Gateway。**
 - 每项 inbound operation 先独立通过单项能力批准门禁，再实现 PickingTask 或人工作业输入 DTO。
-- 只验证封闭 wire 和规范化结果，不创建任务、不访问数据库、不返回业务完成。
+- 每项 operation 使用显式 normalizer 方法，只验证封闭 wire、最大 items 和规范化结果，不创建任务、不访问数据库、
+  不返回业务完成。
 - 将 `WmsInboundNormalizer` 作为 Phase 4 可消费的公开边界导出；不导出 FastAPI handler、registry 或通用 command bus。
 - Normalizer 独立构造，不消费 WMS origin、outbound factory、Transport 或 `aclose()`。
 - Phase 4 负责 `InboundEvidence`、幂等、ACK 和业务对象推进。
 
-### Task 6：收口 outbound Gateway、factory 与公开导出
+### Task 6：逐纵切片收口公开导出与架构门禁
 
-- 收口 Task 2 已建立的 outbound Gateway/factory，不在此时才引入发送或 lifecycle 行为，也不接入 inbound normalizer。
-- Gateway 只依赖 Phase 2 `OutboundHttpTransport`。
-- factory 只消费 Phase 2 builder，不接收 `session_factory`，并固定 `system_id="wms"`。
-- factory 返回的具体 Gateway 拥有 Transport，提供幂等 `aclose()`；关闭错误和取消原样传播。
-- 每个方法固定映射一个获批 method/path 和 request/result 类型。
-- 取消原样传播；不实现 retry、breaker 或持久化 evidence。
+- 每个 operation PR 同步其公开导出、合同矩阵、fixture 和架构缺席断言；不把这些收口推迟到 Phase 3 末尾。
+- 首项 outbound PR 同时证明 Gateway 只依赖 Phase 2 `OutboundHttpTransport`；factory 只消费 Phase 2 builder、固定
+  `system_id="wms"`，不接收 `session_factory`；具体 Gateway 拥有 Transport 并提供幂等 `aclose()`。
+- 后续 outbound PR 只增加显式方法和私有 wire 映射，不重复 factory/lifecycle 测试；inbound PR 不依赖或改动 Gateway。
+- 每个 outbound PR 均证明取消原样传播；所有 PR 均证明零 retry/breaker/evidence、零旧 WMS/httpx import 和零未获批占位。
 
 ### Task 7：边界门禁与退出验证
 
+- **前置：所有保留 operation 已实施，无法获批或无法定位消费者的候选已从矩阵删除。**
 - 新包零数据库模型、Migration、Repository、Service、breaker、transport 和旧 WMS import。
 - Phase 4 暗构建代码可以依赖 Phase 3 的公开端口、DTO/normalizer 和 outcome；Phase 5 原子切换前，旧生产消费者与
   Composition Root 不得 import 或接线新包，也不得建立 feature flag 或双轨。
@@ -310,8 +323,8 @@ Phase 3 最终退出仍要求所有保留能力均已通过门禁并实施；无
 | --- | --- |
 | 最小配置与 factory | 非法 origin/timeout 在创建 Transport 前失败；builder 只接收获批配置并固定 `system_id="wms"`；构造失败原样传播；同一 Gateway 的多次业务调用复用同一 Transport，不按调用创建 Client |
 | WMS 合同与 Gateway | 严格字段闭集、联合 DTO、每个 operation 的成功/业务拒绝/合同无效 outcome；请求编码失败 0 次 send；NOT_SENT/UNKNOWN/响应阶段 failure；取消传播；幂等关闭与关闭失败传播 |
-| 获批 outbound 垂直能力 | 以 WMS 批准的版本化 fixture/schema 验证每项 query、来源绑定和业务确认的固定 method/path/request/result、权威元数据真实来源、合同边界值及数量/字节预算；单次有界结果和 0/1 次 send；来源绑定覆盖精确任务项集合、SixInOne、`PkgID` 唯一以及部分/缺项/重复整批拒绝，不测试 LIFO 或任务状态 |
-| WMS inbound 规范化 | 以 WMS 批准的版本化 fixture/schema 验证 inbound body 字段闭集、联合类型、规范化结果和无业务副作用；normalizer 不接收认证 header、principal、认证策略、origin 或 Transport |
+| 获批 outbound 垂直能力 | 以 WMS 批准的版本化 fixture/schema 验证每项 query、来源绑定和业务确认的固定 method/path/request/result、权威元数据真实来源、合同边界值及 request/result 数量/字节预算；request 编码前超限为 0 次 send，response 使用逐 operation `OutboundHttpResponseLimits` 并在解码后校验 items；来源绑定覆盖精确任务项集合、SixInOne、`PkgID` 唯一以及部分/缺项/重复整批拒绝，不测试 LIFO 或任务状态 |
+| WMS inbound 规范化 | 以 WMS 批准的版本化 fixture/schema 验证 inbound body 字段闭集、联合类型、最大 items、显式方法与规范化结果；Phase 4 ingress 独立验证原始 body 上限和隔离局域网 `NONE`，normalizer 不接收认证 header、principal、认证策略、origin 或 Transport |
 | 架构边界门禁 | 零数据库/旧 WMS/httpx import；Phase 4 只依赖公开合同；旧生产消费者与 Composition Root 在 Phase 5 前不引用或接线；公开 surface 无 generic `call` 或 registry |
 
 以上行为统一落在 `tests/contracts/wms_adapter/`；WMS 批准的机器可读验收输入与测试同包版本化，仅架构边界门禁落在
@@ -332,8 +345,8 @@ Phase 3 最终退出仍要求所有保留能力均已通过门禁并实施；无
 ## 9. NOT in scope
 
 - Phase 2 未支持 HTTP method 的实际代码扩展：只有 Task 1 批准出超集 method 时，才以独立基础层变更执行。
-- Phase 4 的 WMS API ingress 认证（含获批的局域网 `NONE`）、`WmsConfirmation`、`InboundEvidence`、Transport 与可靠
-  生命周期：必须在 Phase 3 端口稳定后实现。
+- Phase 4 的 WMS API ingress 隔离局域网 `NONE` 接线、原始 body 上限、`WmsConfirmation`、`InboundEvidence`、Transport 与可靠
+  生命周期：必须在对应 Phase 3 端口或 normalizer 稳定后实现。
 - Phase 5 的生产 Composition Root 切换和旧 owner 删除：Phase 3 只暗构建，不建立双轨或 feature flag。
 - Phase 8 的自动出库状态、LIFO、双面顺序、NG、补料与恢复：由插件独立实现和测试。
 - 真实 WMS 联调、MOCK 环境、观测看板和 Runbook：等待获批 wire 与后续阶段产生真实信号。
@@ -345,8 +358,7 @@ Task 1 的跨能力门禁仍有以下阻断，因此当前不得启动代码或�
 
 - 库存 query/reserve/release/transfer 的目标阶段、具体消费者、调用时机和原子边界尚未全部确认。
 - 多项 WMS 权威事实的共同 snapshot/version 或 fail-closed 一致性合同尚未冻结。
-- 列表/批量结果的最大项数、wire/decoded 字节预算和超限语义尚未冻结。
-- Inbound callback 的调用方认证合同或局域网 `NONE` 适用条件尚未获 WMS 批准。
+- 列表/批量 request/result 的最大项数、编码/wire/decoded 字节预算和超限语义尚未冻结。
 
 Task 1 关闭后，下列未决事项只阻断各自能力及 Phase 3 最终退出，不阻断其他已获批能力进入 TDD：
 
@@ -364,11 +376,13 @@ Task 1 关闭后，下列未决事项只阻断各自能力及 Phase 3 最终退�
 - 每项能力都有唯一消费者、固定获批 wire、封闭 DTO 和业务拒绝码。
 - 全部获批 HTTP method 均由 Phase 2 支持；Transport 创建、唯一持有者和关闭路径明确。
 - Phase 2 三种 delivery state、响应阶段 failure、业务拒绝与合同无效保持可区分，不丢失传输事实。
-- Inbound callback 认证由 API ingress 独立拥有，未被 outbound 配置或 WMS ACL 混入。
+- Inbound callback 的隔离局域网 `NONE` 与原始 body 上限由 Phase 4 API ingress 独立拥有，未被 outbound 配置或 Phase 3
+  normalizer 混入。
 - Inbound normalizer 独立于 outbound origin、Gateway、Transport 和关闭生命周期。
 - 来源绑定的 wire、可靠状态和插件业务校验各有唯一 owner，测试互不替代。
 - WMS 权威查询的 version/time/provenance 字段有真实来源，不伪造外部版本或时间。
-- 多事实消费者有获批的一致性合同；列表和批量结果有不超过 Phase 2 硬上限的数量/字节预算与超限语义。
+- 多事实消费者有获批的一致性合同；列表和批量 request/result 有分层数量/字节预算与超限语义；outbound response
+  通过 Phase 2 primitive 执行 operation 获批预算，不把基础层默认值误写成业务合同或硬上限。
 - 每项实现均由 WMS 批准的版本化机器可读 fixture/schema 提供独立 wire 真源；MockTransport 只驱动测试。
 - 所有保留能力均已独立获批并实施；未获批或无可定位消费者的候选能力已经删除，不保留占位。
 - SRS 保持用户需求真源，不含阶段实现参数、operation 编号或“已冻结”自证语句。
@@ -376,11 +390,12 @@ Task 1 关闭后，下列未决事项只阻断各自能力及 Phase 3 最终退�
 
 ## 12. 实施顺序与并行策略
 
-本阶段顺序实施，无独立 worktree 并行机会：Task 1 冻结跨能力门禁；首个获批 outbound 能力通过 Task 2 建立最小
-Gateway/outcome 骨架；其余获批 outbound 与 inbound operation 分别在 Task 3–5 内逐项 TDD。虽然能力可以独立批准，
-但共同修改同一 `wms_adapter` 公开 surface 与 fixture 目录，当前规模下串行变更更简单；随后 Task 6/7 收口公开导出和门禁。
+Task 1 纯文档门禁独立提交。关闭后，每个获批 operation 使用一个小 PR 完成 TDD、实现、公开导出和 Task 6 边界门禁；
+首个 outbound PR 通过 Task 2 同时建立最小 Gateway/factory，后续 outbound PR 复用该稳定合同，inbound PR 可直接执行 Task 5，
+不依赖 outbound。修改同一公开端口或 Gateway 的 outbound PR 串行落地；职责独立的 inbound PR 只有在确需并行交付时才使用
+独立 worktree。Task 7 只在所有保留 operation 已实施或删除后执行一次最终退出验证，不制造巨型 Phase 3 PR。
 
-**VERDICT：Phase 3 当前尚不可实施；单项批准模板与开发路径已收敛，只允许继续关闭 Task 1 的四项跨能力外部门禁。**
+**VERDICT：Phase 3 当前尚不可实施；局域网 inbound `NONE` 已冻结，只允许继续关闭 Task 1 的三项跨能力外部门禁。**
 
 ## GSTACK REVIEW REPORT
 
@@ -388,9 +403,9 @@ Gateway/outcome 骨架；其余获批 outbound 与 inbound operation 分别在 T
 | --- | --- | --- | ---: | --- | --- |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | 本轮未要求 |
 | Codex Review | `/codex review` | Independent 2nd opinion | 2 | CLEAR AFTER REPAIR | 本轮 10 项 findings 已全部裁决并回写 |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 3 | ISSUES OPEN (EXTERNAL) | 计划内结构问题已修复；4 项跨能力外部批准未关闭 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 4 | ISSUES OPEN (EXTERNAL) | 单 PR、预算 owner 和空端口风险已修复；3 项跨能力外部批准未关闭 |
 | Serena Review | 仓库真实符号与引用扫描 | Code-shape evidence | 1 | CLEAR | Phase 2 显式 Transport 可复用；旧 registry/provider 包不作新实现模板 |
-| Sequential Review | 假设、反证与门禁复核 | Architecture consistency | 1 | BLOCKED (EXTERNAL) | 方案满足最小设计；4 项跨能力外部决定仍阻断实施 |
+| Sequential Review | 假设、反证与门禁复核 | Architecture consistency | 2 | BLOCKED (EXTERNAL) | 方案满足最小设计；3 项跨能力外部决定仍阻断实施 |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | 非 UI 规划 |
 | DX Review | 架构复评内置检查 | Developer experience gaps | 1 | CLEAR | 新增 API 采用批准模板、显式纵切片和固定六步清单，不建设生成器或 registry |
 
@@ -403,6 +418,5 @@ Gateway/outcome 骨架；其余获批 outbound 与 inbound operation 分别在 T
 
 - 库存 query/reserve/release/transfer 的目标消费者、调用时机与原子边界。
 - 多项 WMS 权威事实的共同 snapshot/version 或获批 fail-closed 一致性合同。
-- 列表/批量结果的最大项数、wire/decoded 字节预算与超限语义。
-- Inbound callback 的认证合同或局域网 `NONE` 适用条件。
+- 列表/批量 request/result 的最大项数、编码/wire/decoded 字节预算与超限语义。
 - 各保留 operation 的完整 wire、幂等语义及 WMS 批准的版本化机器可读 fixture/schema。

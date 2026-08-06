@@ -16,8 +16,8 @@ WES 核心只依赖类型化业务端口，可靠性生命周期分别由 `Devic
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Alembic、Celery、
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
-**Status:** In progress — Phase 1–2 已完成；Phase 3 Task 1 的单项批准模板和最小开发路径已冻结，但目标态消费者定位、
-多事实一致性、响应预算和 inbound 认证/局域网 `NONE` 四项跨能力外部决定尚未关闭，Phase 3 代码实施保持阻断；
+**Status:** In progress — Phase 1–2 已完成；Phase 3 Task 1 的单项批准模板、最小开发路径和隔离局域网 inbound `NONE` 已冻结，
+但目标态消费者定位、多事实一致性和尺寸预算三项跨能力外部决定尚未关闭，Phase 3 代码实施保持阻断；
 Phase 4–11 尚未开始。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
@@ -56,6 +56,8 @@ Phase 4–11 尚未开始。
 - 当前已批准 outbound 合同均未要求认证，Phase 2 不建设认证策略、凭据解析、HMAC、Clock、Nonce 或预留接口。
   将来只有真实厂商 outbound 合同明确要求时，才先修订对应 Adapter 与总控计划，再在最窄所有者中实现。
 - Inbound callback 认证保持独立 API 边界所有权，不得因同为 HTTP 而与 Phase 2 outbound 传输合并。
+- 当前产品部署在隔离局域网，WMS inbound 固定为 Phase 4 API ingress 所有的 `NONE`；不建设 HMAC、nonce、clock、凭据、
+  IP allowlist 或认证扩展 seam。Phase 3 normalizer 不接收认证上下文。
 - 核心、Adapter、插件测试所有权严格隔离：核心验证基础能力与可靠性，Adapter 验证厂商合同与标准化映射，
   插件验证业务 Decision 和对象推进；不得跨层复制或互相替代。
 - 设备厂商 Adapter/业务插件包独立构建、测试和显式装配；客户镜像只安装明确清单，不建设运行时扫描或私有包 registry。
@@ -116,7 +118,7 @@ Transport/Adapter/核心所有权。
 | `src/app/sys/external_http_*` 与 `canonical_dispatch.py` | 已有 typed transport fact、凭据解析、NONE/HMAC、bounded response 的部分能力，但耦合 Provider Profile/SystemOutbox/WMS operation | 仅 transport fact 作为行为证据；认证相关能力无真实 outbound 合同依据，不进入 Phase 2 |
 | 多处 `httpx.AsyncClient()` | DeviceCommand、旧 Outbox、WMS runtime、旧 Gateway 等仍自行创建 Client | Phase 2–4 只暗构建 successor；Phase 5 统一切换 WMS 与核心执行路径，Phase 7/8 接入真实 ECS/RCS Adapter，Phase 9 建立最终缺席门禁 |
 | 目标对象扫描 | 尚无最终 `InboundEvidence`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch` 等完整生产闭环 | Phase 4 未开始；旧 `DeviceCommand`/RuntimeProjection 不能等同于目标平台完成 |
-| 当前规划增量 | Task 1 已拆分为跨能力门禁与单项批准门禁，并同步北向合同、顶层 SPEC、Master 与 Phase 3 详细计划 | 仅文档变更；四项跨能力外部决定未关闭，未进入代码实施 |
+| 当前规划增量 | Task 1 已拆分为跨能力门禁与单项批准门禁，并同步北向合同、顶层 SPEC、Master 与 Phase 3 详细计划 | 仅文档变更；inbound `NONE` 已冻结，三项跨能力外部决定未关闭，未进入代码实施 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
 阶段状态：Phase 1–2 已完成；Phase 3 Task 1 处于阻断态，Phase 3 代码实施及 Phase 4–11 均未开始。
@@ -284,15 +286,17 @@ Adapter/Composition Root，或建设认证/拦截器扩展平台。子计划必�
 **Authoritative inputs:** SRS、顶层 SPEC、出库操作顶层设计、WMS 业务 ACL 合同、Phase 2 公开合同和 Phase 3 详细计划。
 当前 `src/app/wms_integration/` 只用于识别未来删除边界，不是新实现模板或测试 oracle。
 
-**Entry conditions:** Phase 2 基线已通过退出门禁；当前 outbound 认证为 `NONE`；Phase 3 Task 1 已关闭目标态消费者定位、
-多事实一致性、响应预算、inbound 认证/局域网 `NONE` 和阶段边界等跨能力门禁。Task 1 退出后，每项 operation 只有完成
+**Entry conditions:** Phase 2 基线已通过退出门禁；outbound 与隔离局域网 inbound 均冻结为 `NONE`，但分别由 Phase 3
+outbound 配置和 Phase 4 API ingress 拥有；Phase 3 Task 1 已关闭目标态消费者定位、多事实一致性、尺寸预算和阶段边界等
+跨能力门禁。Task 1 退出后，每项 operation 只有完成
 WMS 单项 wire 批准才可独立进入 TDD，未获批 operation 保持不存在；不要求全部 wire 同时获批。厂商初稿只是外部输入，
-不能单独关闭入口门禁。当前四项跨能力外部决定尚未关闭，代码实施保持阻断。
+不能单独关闭入口门禁。当前三项跨能力外部决定尚未关闭，代码实施保持阻断。
 
-**Scope:** 独立 `src/app/wms_adapter/` 包；`WmsBusinessQueryPort`、`WmsPickingSourceBindingPort`、
-`WmsBusinessConfirmationPort` 三条类型化窄端口；WMS inbound DTO/normalizer；无状态 Gateway；只含
+**Scope:** 独立 `src/app/wms_adapter/` 包；按首项获批职责逐步创建 `WmsBusinessQueryPort`、
+`WmsPickingSourceBindingPort`、`WmsBusinessConfirmationPort` 类型化窄端口；WMS inbound operation 专属 DTO 与显式
+normalizer 方法；无状态 Gateway；只含
 base URL/timeout 的配置；消费 Phase 2 builder 的 factory；封闭单次调用结果。每个公开方法恰好一次 Phase 2 send，
-列表查询只返回单次有界结果。
+列表查询只返回单次有界结果。不得创建空端口、空 normalizer 或未获批 package 骨架。
 
 **Explicit out-of-scope:** 搬运、补给、交换、旋转、Transport status/cancel、`Transport Port`、数据库模型、Migration、
 Repository、Service、调用 evidence、Circuit Breaker、可靠生命周期、生产接线、旧 owner 修改、retry、分页、缓存、
@@ -306,14 +310,15 @@ generic `call`、动态 registry、认证扩展 seam 和兼容路径。
 **旧所有者处置:** `NONE`。Phase 3 不迁移、不改写、不删除旧生产 owner 或旧测试；Phase 5 才原子切换并直接删除旧实现。
 
 **测试所有权与重量要求:** FAST 只验证获批 WMS DTO、method/path、来源绑定完整原子/无完整方案、逐项与整单事实独立、
-业务结果映射、一次 send 和 Phase 2 Protocol 消费；
+业务结果映射、分层尺寸预算、一次 send 和 Phase 2 Protocol 消费；Phase 4 独立验证 inbound 原始 body 上限与 `NONE` 接线；
 不新建 WMS Adapter 持久化 HEAVY 测试，不复用旧测试证明新能力。
 
-**与前后阶段的 handoff:** 从 Phase 2 接收 Transport/Builder；向 Phase 4 交付三条 WMS 业务端口、inbound normalizer 和 outcome；
+**与前后阶段的 handoff:** 从 Phase 2 接收 Transport/Builder；向 Phase 4 交付所有保留职责已形成的 WMS 业务端口、
+inbound normalizer 和 outcome；
 向 Phase 5 交付 method/path/DTO/result mapping。Phase 3 不交付 Transport Client 或持久化 owner。
 
-**Exit gate:** 所有保留 operation 均已单独获批并实施，无法获批或无法定位消费者的候选已删除；三条端口和 inbound DTO
-完整；factory 明确消费 Phase 2 builder；新包零数据库、
+**Exit gate:** 所有保留 operation 均已单独获批并实施，无法获批或无法定位消费者的候选已删除；所有保留职责的端口、
+inbound DTO/normalizer 完整且无空接口；存在 outbound operation 时 factory 明确消费 Phase 2 builder；新包零数据库、
 Migration、evidence、breaker、Transport、旧包、认证 seam、generic `call`、分页和生产接线；FAST、Ruff、类型检查、
 Import Linter、架构门禁和 quality profile 通过。
 
@@ -737,16 +742,17 @@ TDD。阶段唯一子计划真源为
 
 | 顺序 | 任务 | Surface area | 主要验证 |
 | --- | --- | --- | --- |
-| 1 | 冻结跨能力门禁与单项批准模板（进行中） | 目标态消费者、一致性、响应预算、inbound 认证、阶段边界 | WMS/业务批准；Markdown、引用与 diff 校验；纯文档不写测试 |
+| 1 | 冻结跨能力门禁与单项批准模板（进行中） | 目标态消费者、一致性、尺寸预算、阶段边界；inbound `NONE` 已冻结 | WMS/业务批准；Markdown、引用与 diff 校验；纯文档不写测试 |
 | 2 | 建立无状态 ACL 公共合同 | 配置、strict DTO、传输事实到业务结果的封闭映射 | FAST 合同测试先红后绿；零持久化、TransportTask、breaker、generic call |
 | 3 | 实现 WMS 权威查询 ACL | 仅消费者矩阵中获批的查询 | method/path/DTO、业务拒绝、单次有界响应 |
 | 4 | 实现 Picking 来源绑定与 WMS 业务确认 ACL | 独立 `WmsPickingSourceBindingPort` 与获批确认 | 完整原子绑定或无完整方案；逐项/整单事实独立；可靠义务由消费者对象拥有 |
-| 5 | 实现 WMS inbound 业务命令 DTO/normalizer | `PickingTask` 变更与人工完成命令 | schema、拒绝语义、零执行编排 |
-| 6 | 消费 Phase 2 builder 并建立暗构建门禁 | 每进程长期 Transport、显式 typed port、无生产接线 | 零裸 Client、旧包、持久化、RCS/AGV/CTU、生产接线 |
+| 5 | 实现 WMS inbound 业务命令 DTO/normalizer | `PickingTask` 变更与人工完成命令；不依赖 outbound Gateway | 显式方法、schema、最大 items、零执行编排 |
+| 6 | 逐纵切片收口公开导出与暗构建门禁 | 每个 operation PR；首次 outbound 同时建立长期 Transport | 零空端口、裸 Client、旧包、持久化、RCS/AGV/CTU、生产接线 |
 | 7 | Phase 3 退出验证 | 新 ACL 与仓库边界 | FAST、Phase 2 回归、Ruff、类型、Import Linter、quality |
 
-Task 1 获批后，已单独获批的 operation 在 Task 2–7 的一个 PR、单泳道中按 TDD 顺序交付；未获批 operation 保持不存在，
-不阻塞其他能力，但会阻断 Phase 3 最终退出。共享 DTO、端口和 factory 不拆成并行兼容路径。
+Task 1 获批后，每个已单独获批的 operation 使用一个小 PR 完成对应 Task 2–5 纵切片及 Task 6 收口；首个 outbound PR
+同时建立最小 Gateway/factory，inbound PR 不依赖 outbound。未获批 operation 保持不存在，不阻塞其他能力，但会阻断
+Phase 3 最终退出。Task 7 只在所有保留 operation 已实施或删除后执行；不建立一个巨型 Phase 3 PR 或并行兼容路径。
 
 ## 21. 工程复审完成摘要
 
@@ -754,7 +760,7 @@ Task 1 获批后，已单独获批的 operation 在 Task 2–7 的一个 PR、�
 - **Architecture：** Phase 3 ACL 直接消费 Phase 2 Transport，只拥有业务 wire、typed DTO 和同步结果翻译；证据、重试、breaker、可靠生命周期均不属于 ACL。
 - **Contract：** 当前只保留可追溯到真实消费者的 WMS 业务能力；固定 method/path/DTO 必须逐项经 WMS 批准，厂商初稿和旧实现都不是批准替代品。
 - **Wire semantics：** `PickingTask` 创建只含目标项；`request_picking_source_bindings` 通过独立窄口请求 WMS 返回完整原子绑定或无完整方案；执行中替代来源裁决为原子替代绑定批次或明确无完整替代方案；逐项位置通知与整单完成独立。搬运、换面、入退线和状态查询全部移交 Phase 4 Transport 合同。
-- **Entry gate：** 单项批准模板已冻结，但目标态消费者定位、多事实一致性、响应预算和 inbound 认证/局域网 `NONE` 四项
+- **Entry gate：** 单项批准模板和隔离局域网 inbound `NONE` 已冻结，但目标态消费者定位、多事实一致性和尺寸预算三项
   跨能力外部决定未关闭；Phase 3 代码实施保持阻断。Task 1 关闭后按 operation 单独批准和实施。
 - **Code Quality：** 按查询、Picking 来源绑定、确认和 inbound normalizer 四类职责组织；新增 API 采用显式纵切片和固定
   六步清单，不按历史 Q/E 编号建模块，不引入公共 `WmsCallSpec`、generic call、生成器或动态 registry。
@@ -762,17 +768,18 @@ Task 1 获批后，已单独获批的 operation 在 Task 2–7 的一个 PR、�
 - **Test Review：** FAST 只证明 WMS ACL 合同；不以 Phase 2 Transport 测试证明业务，也不在 Phase 3 创建 HEAVY 持久化测试。
 - **Performance：** 每次调用一次 send、每进程一个长期 Transport；无 retry、cache、分页聚合或数据库事务。
 - **Existing / ADD-REUSE-HANDOFF：** REUSE Phase 2；ADD 无状态 ACL；HANDOFF 业务消费者到 Phase 5、运输消费者到 Phase 4/5；旧包不迁移。
-- **Parallelization：** 一个 PR、1 条实施泳道、7 个顺序任务、0 个计划内并行 worktree。
+- **Delivery：** Task 1 纯文档独立提交；每个获批 operation 一个小 PR。修改同一 Port/Gateway 的 outbound PR 串行，
+  inbound 只有在确需并行交付时才使用独立 worktree；Task 7 最终收口一次。
 - **TODO：** 不为未来分页、认证、运输或对账新增 seam；真实消费者和合同出现时再修订。
 
 ## GSTACK REVIEW REPORT
 
 | Review | 本轮状态 | 发现 | 未解决 | 说明 |
 | --- | --- | ---: | ---: | --- |
-| ENG REVIEW | BLOCKED | 4 | 4 | 四项跨能力外部决定未关闭；计划内边界、任务和验收结构已收敛 |
+| ENG REVIEW | BLOCKED | 3 | 3 | 三项跨能力外部决定未关闭；单 PR、尺寸预算 owner 和空端口问题已修复 |
 | INDEPENDENT REVIEW | SUPERSEDED | 0 | 0 | 旧“33 项完整面”评审基线已被消费者驱动边界替代，不再作为当前放行证据 |
 | SERENA REVIEW | CLEAR | 0 | 0 | 当前 Phase 2 真实代码足以承载显式纵切片；旧 registry/provider 包仅作删除边界，不作模板 |
-| SEQUENTIAL REVIEW | BLOCKED | 4 | 4 | 方案满足 DRY/KISS/SOLID/YAGNI；四项跨能力外部决定仍阻断实施 |
+| SEQUENTIAL REVIEW | BLOCKED | 3 | 3 | 方案满足 DRY/KISS/SOLID/YAGNI；三项跨能力外部决定仍阻断实施 |
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新增 API 有批准模板、参考纵切片和固定六步清单，不依赖生成器或 registry |
 
