@@ -68,7 +68,9 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "tests/load/test_runtime_inbox_claim_benchmark.py" in runner
     assert "validate_runtime_inbox_benchmark_evidence" in runner
     assert 'source_environment.get("GIT_COMMIT") != expected_commit' in runner
+    assert 'mkdir -p "${WORKSPACE}/logs"' in lifecycle
     assert '-v "${WORKSPACE}:/workspace:ro"' in lifecycle
+    assert '-v "${REPORT_DIR}/logs:/workspace/logs:rw"' in lifecycle
     assert '-v "${WORKSPACE}/reports:/artifacts/reports:rw"' in lifecycle
     assert "--workdir /workspace" in lifecycle
     assert "UV_PROJECT_ENVIRONMENT=/app/.venv" in lifecycle

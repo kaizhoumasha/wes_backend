@@ -28,7 +28,7 @@ fi
 : "${CI_IMAGE:?CI_IMAGE is required}"
 : "${WORKSPACE:?WORKSPACE is required}"
 
-mkdir -p "${REPORT_DIR}/logs" "${REPORT_DIR}/junit"
+mkdir -p "${WORKSPACE}/logs" "${REPORT_DIR}/logs" "${REPORT_DIR}/junit"
 trap cleanup EXIT
 
 POSTGRES_PASSWORD="$(openssl rand -hex 24)"
@@ -89,6 +89,7 @@ docker run --rm --name "${ACCEPTANCE_CONTAINER}" \
     --env-file "${WORKSPACE}/.env.test" \
     --env-file "${ENV_FILE}" \
     -v "${WORKSPACE}:/workspace:ro" \
+    -v "${REPORT_DIR}/logs:/workspace/logs:rw" \
     -v "${WORKSPACE}/reports:/artifacts/reports:rw" \
     --workdir /workspace \
     "${CI_IMAGE}" \
