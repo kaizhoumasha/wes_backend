@@ -1237,6 +1237,18 @@ def test_repository_mapping_classifies_selector_implementation_as_quality_only()
     assert select_heavy_tests(["scripts/select_heavy_tests.py"], config) == []
 
 
+def test_repository_mapping_classifies_release_version_as_no_heavy_impact() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["VERSION"], config) == []
+
+
+def test_repository_mapping_classifies_local_codex_metadata_as_no_heavy_impact() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([".codex/config.toml", ".codex/settings.json"], config) == []
+
+
 def test_repository_mapping_keeps_top_level_dockerfile_fail_closed() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 

@@ -19,7 +19,7 @@
 本文档定义 **休斯顿 P9 智能仓储执行系统 (WES)** 的产品范围、参与方职责以及功能与非功能需求。
 架构机制、内部对象和收敛路径由当前顶层 SPEC 定义，实施计划不得反向修改本文的业务需求。
 
-本项目不再定位为传统的 WMS，而是一个 **独立于现有企业级 WMS/SAP 的控制中台**。它旨在作为一个高可用、低延迟的智能化中间层，向上承接 ERP/WMS 的业务单据，向下协调自动化执行：当前交付只直接接入顶层 SPEC §3.1 已确认工作线所需的 ECS/WCS/视觉类作业设备；AGV/CTU/RCS 类搬运、交换、旋转任务统一提交现有 WMS 转发执行，WES 不直连 RCS。贴标、X-Ray、LCR 及机构件/SFC 协同属于本文保留的未来产品需求，不进入当前十阶段实现与验收。
+本项目不再定位为传统的 WMS，而是一个 **独立于现有企业级 WMS/SAP 的控制中台**。它旨在作为一个高可用、低延迟的智能化中间层，向上承接 ERP/WMS 的业务单据，向下协调自动化执行：当前交付只直接接入顶层 SPEC §3.1 已确认工作线所需的 ECS/WCS/视觉类作业设备；AGV/CTU/RCS 类搬运、交换、旋转任务统一提交现有 WMS 转发执行，WES 不直连 RCS。贴标、X-Ray、LCR 及机构件/SFC 协同属于本文保留的未来产品需求，不进入当前十一阶段实现与验收。
 
 系统具备 **独立部署 (Standalone Deployment)**、**API 驱动 (API-Driven)** 和 **业务插件显式扩展 (Explicit Plugin Extension)** 的特性。外部网络或上层系统波动时，WES 必须保留已接收事实、限制影响范围并进入可诊断的等待或对账状态，不得推测外部结果后自动续行。
 
@@ -75,8 +75,10 @@
    * **网络依赖性**: 系统作业强依赖于上游 WMS 的在线状态。若与 SAP/Legacy WMS 断网，系统将执行以下策略:
      * **立即暂停**: 所有涉及库存变动的业务任务 (收货、发料、装箱等)
      * **外部续行**: 已由 WMS 接收并转发的纯物理搬运任务可由外部系统自行完成；WES 暂停新的搬运/交换需求提交，并等待回调或对账恢复。
-     * **证据驱动恢复**: 网络恢复后先查询未决 `TransportTask`；未决 `WmsConfirmation` 复用原
-       `dispatch_key` 幂等同步重提。取得终态证据后重新执行对象级准入；结果未知或证据冲突时保持暂停并进入人工对账。
+     * **证据驱动恢复**: 网络恢复后先查询未决 `TransportTask`；未决 `WmsConfirmation` 保留内部原
+       `dispatch_key`，仅当逐 operation 合同明确批准安全重提且对象显式 `retryable=true` 时，才映射为该 operation 唯一获批
+       的 wire 幂等/关联字段后重提。取得终态证据后重新执行对象级准入；条件不满足、结果未知或证据冲突时保持暂停并
+       进入人工对账。
 2. **API 驱动架构 (API-Driven)**:
    * **API First**: 所有功能（包括前端 UI）均通过明确版本的 RESTful API 访问。
    * **边界合同**: 上层业务接口由 WMS 合同定义；设备接口由厂商 Adapter 映射。核心不定义要求所有 ERP 或硬件厂商适配的通用任务协议。
@@ -106,7 +108,7 @@
 
 ### 3.1 硬件清单与基础配置 (Hardware & Configuration)
 
-下表是整体产品需求涉及的硬件清单，不等于当前交付清单。当前只实现顶层 SPEC §3.1 与十阶段总控明确批准的工作线；其余硬件在对应工作线获批后再由独立 Adapter 和业务插件承接：
+下表是整体产品需求涉及的硬件清单，不等于当前交付清单。当前只实现顶层 SPEC §3.1 与十一阶段总控明确批准的工作线；其余硬件在对应工作线获批后再由独立 Adapter 和业务插件承接：
 
 | 区域 (Area)        | 关键硬件 (Hardware)      | WES 协调职责 (Coordination Role)                                               |
 | :----------------- | :----------------------- | :----------------------------------------------------------------------------- |
@@ -291,7 +293,9 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 **4. 重试与异常处理 (Retry & Exception Handling)**
 
-*   **安全重试边界**: 只有能够证明请求尚未离开 WES，或厂商合同明确保证该调用可安全重复时，才能按 Adapter 策略重试；次数和退避不得固化为核心业务规则。
+*   **安全重提边界**: 只有逐 operation 厂商合同明确保证该调用可安全重复，且 `DeviceCommand` 等可靠对象显式
+    `retryable=true` 时，可靠对象才可保留原身份重新提交；否则保持暂停并进入人工对账。Adapter 每次调用只执行一次发送，
+    不拥有 retry/backoff 配置。
 *   **未知结果处理**: 请求一旦可能被控制系统接收但未取得确定结果，命令进入 `TIMED_OUT`/远端结果未知状态，保留证据并暂停受影响对象，等待匹配的晚到 CALLBACK；无法闭合时进入人工对账，不自动重发。
 *   **状态监控**: Adapter 根据厂商合同提供心跳或状态证据，核心据此维护通用 `DeviceRuntimeProjection`；不得要求所有厂商实现 WES 命名的健康检查接口。
 
@@ -485,7 +489,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * **场景**: 物理动作完成后 (如: 装箱完成、发料完成)，WES 通知现有 WMS 更新库存。
   * **能力**: 入库、出库分别使用 `wms.inventory.confirm_inbound@v1` 和
     `wms.inventory.confirm_outbound@v1`；由 `WmsConfirmation` 保存可靠提交义务，SRS 不重复定义 wire DTO。
-  * **幂等性保障**: 所有 WMS 写操作使用闭集 operation identity 与 `dispatch_key` 原子去重。
+  * **幂等性保障**: WES 内部以闭集 operation identity 与 `dispatch_key` 唯一标识可靠义务；`dispatch_key` 不自动成为
+    WMS wire 字段。Adapter 只发送逐 operation 获批的一个幂等/关联字段；未获 WMS 批准前不得声称远端原子去重。
 
   **4. 异常处理 (Exception Handling)**
 
@@ -584,7 +589,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 本模块处理 **高值物料 (High-Value)**、**MSD 物料 (Moisture Sensitive)**、**PCB 物料** 和 **机构件 (Mechanical Parts)** 的特殊流程。
 
-> **交付范围：未来需求。** 本节保留产品需求，但不属于当前顶层 SPEC §3.1 和十阶段架构收敛的实现或验收范围。
+> **交付范围：未来需求。** 本节保留产品需求，但不属于当前顶层 SPEC §3.1 和十一阶段架构收敛的实现或验收范围。
 > 当前不得预建空插件、SFC Adapter 或通用特殊物料平台；进入实施前必须基于真实工作线与厂商合同修订顶层
 > SPEC、总控计划，并为对应业务插件和 Adapter 单独批准实施计划。
 
@@ -668,7 +673,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 本模块处理产线退料的 **质量闭环 (Quality Loop)**，确保退料经过清点、测试后重新入库。
 
-> **交付范围：未来需求。** 本节不属于当前十阶段计划的最终验收范围。LCR、X-Ray、贴标和退料工作线的真实
+> **交付范围：未来需求。** 本节不属于当前十一阶段计划的最终验收范围。LCR、X-Ray、贴标和退料工作线的真实
 > 设备合同明确后，必须先修订顶层 SPEC 和总控计划，再由独立业务插件与厂商 Adapter 同包交付代码、fixture
 > 和测试；核心平台不得用本节业务场景证明基础能力。
 
@@ -815,11 +820,13 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   **1. 按发送边界分类 (Classify by Send Boundary)**
 
-  * **确认未发送**: 请求尚未离开 WES 时，可由可靠执行对象按 Adapter/外部合同配置重试；重试复用原命令身份或
-    `dispatch_key`，不得创建新的业务请求身份。
+  * **确认未发送**: 请求尚未离开 WES 时，只有逐 operation 外部合同明确批准安全重提且可靠执行对象显式
+    `retryable=true`，对象才可保留原命令身份或内部 `dispatch_key`，映射到获批的唯一 wire 字段后重新提交；否则保持暂停
+    并进入人工对账。Adapter 每次调用只执行一次发送，不拥有 retry/backoff 配置；不得创建新的业务请求身份。
   * **可能已发送**: 已开始外部调用但未取得确定 ACK/终态时，必须标记为远端结果未知。设备命令进入
-    `TIMED_OUT`。`TransportTask` 保留原 `dispatch_key` 等待 status query；`WmsConfirmation` 保留原
-    `dispatch_key` 幂等同步重提。结果仍未知时进入人工对账，不自动重放物理动作。
+    `TIMED_OUT`。`TransportTask` 保留原 `dispatch_key` 等待获批的 status query；`WmsConfirmation` 保留原
+    `dispatch_key`，仅在逐 operation 合同明确批准安全重提且对象显式 `retryable=true` 时，才映射为唯一获批 wire 字段后
+    重提；否则保持暂停并进入人工对账，不自动重放物理动作。
   * **已取得终态**: `DeviceCommand` 只接受通过合同校验且关联匹配的最终 CALLBACK；
     `TransportTask` 只接受 WMS status 返回的 typed terminal result。重复或晚到结果只幂等追加证据。
 
@@ -838,11 +845,14 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   **4. 上游 WMS 断连处理 (WMS Disconnection Handling)**
 
-  * 熔断阈值、timeout 和退避由 WMS Adapter/合同配置，不在业务需求中固化调用次数。
+  * `timeout_seconds` 由 `WmsAdapterConfig` 配置；当前 breaker 参数由 Phase 3 计划固定为连续失败 3 次、OPEN 60 秒、
+    HALF_OPEN 单 probe，不暴露配置。WMS Adapter 始终单次发送且不提供 retry/backoff 配置；未来真实合同只能在先修订
+    合同、SPEC 和计划后改变可靠对象的安全重提资格，不得把重试所有权下放给 Adapter。
   * 暂停新的库存查询依赖判定、搬运/交换需求和 WMS 确认提交；已被 WMS 接纳的外部任务可以继续执行。WES 始终以
     主动 status query 取得 `TransportTask` 终态，关联 callback 只负责唤醒查询。
-  * WMS 恢复后先查询所有未决 `TransportTask`；未决 `WmsConfirmation` 使用原 `dispatch_key` 幂等同步重提。
-    取得终态证据后逐对象恢复，不得全局自动继续被暂停任务。
+  * WMS 恢复后先按已批准合同查询所有未决 `TransportTask`；未决 `WmsConfirmation` 只有在逐 operation 合同明确批准
+    安全重提且对象显式 `retryable=true` 时，才将内部原 `dispatch_key` 映射到唯一获批 wire 字段后重提。取得终态证据后
+    逐对象恢复；条件不满足或结果仍未知时保持暂停，不得全局自动继续被暂停任务。
 
 #### 3.7.4 优先级调整与急料插队 (Priority Adjustment & Urgent Material)
 
@@ -927,17 +937,21 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 * **幂等性设计 (Idempotency)**:
 
-  * WMS 写操作和搬运提交统一基于 `operation_identity + dispatch_key` 原子去重；同一可靠对象的恢复必须复用原 `dispatch_key`。
-  * **幂等性规则**:
-    * **相同 operation identity、相同 dispatch_key、相同 Payload**: 复用首次 ACK、status 或 terminal result，不重复执行业务写入。
-    * **相同 operation identity、相同 dispatch_key、不同 Payload**: 拒绝并记录幂等冲突证据。
+  * WES 可靠对象内部基于 `operation_identity + dispatch_key` 唯一标识业务义务；同一义务恢复必须保留原
+    `dispatch_key`，但该键不自动进入 wire。Adapter 只映射为逐 operation 获批的一个幂等/关联字段。
+  * **内部幂等规则**:
+    * **相同 operation identity、相同 dispatch_key、相同 Payload**: 复用同一义务及其 evidence，不创建第二个本地义务。
+    * **相同 operation identity、相同 dispatch_key、不同 Payload**: 拒绝并记录本地幂等冲突证据。
     * **不同 dispatch_key**: 仅当它代表新的业务义务时才能创建新请求；不得用新键规避未知结果对账。
+  * **远端幂等规则**: 只有 WMS 逐 operation 合同明确批准 wire 字段、回显、冲突和安全重提语义后才能实现；当前
+    E08–E14 status method/path、状态闭集、`request_id`/`task_id` 关联及幂等承诺仍待批准，不得由内部规则推定。
   * 避免网络重试导致的重复入库/出库。
 * **事务补偿 (Transaction Compensation)**:
 
   * 若 WES 物理动作失败 -> 向 WMS 提交预留释放或异常处置需求 -> 保存 WMS 回执并记录异常日志；预留最终释放事实由 WMS 持有。
-  * 若 WMS 确认请求可证明未发送，可由 `WmsConfirmation` 按合同策略安全重试；请求可能已被接收时仍复用原
-    `dispatch_key` 幂等同步重提以取得 typed terminal result，结果仍未知则进入人工对账，不查询不存在的确认状态端点。
+  * 无论 WMS 确认请求可证明未发送还是可能已被接收，只有逐 operation 合同明确批准安全重提且 `WmsConfirmation`
+    显式 `retryable=true` 时，才将内部原 `dispatch_key` 映射到唯一获批 wire 字段后重提。条件不满足或结果仍未知时进入
+    人工对账，不查询不存在的确认状态端点。
 * **对账机制 (Reconciliation)**:
 
   * 支持按计划和按需对比 WES 执行证据与 WMS 权威库存/任务结果，识别未决、冲突和位置差异。
@@ -963,8 +977,11 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 > `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`、
 > `docs/contracts/wms-northbound-interaction-contract.md` 与
 > `docs/business/wms_rcs_interface_requirements.md` 为准。
-> WES 不锁定五层空箱、不交换库存属性、不自动扣减库存；E08–E14 由 ACK/status/typed terminal result
-> 收敛，可选 `WMS_EFFECT_STATUS_HINT` 只唤醒查询。WES 只保存执行事实、资源投影、回写证据和对账证据。
+> WES 不锁定五层空箱、不交换库存属性、不自动扣减库存；E08–E14 目标上由 ACK/status/typed terminal result 收敛。
+> 可选 `WMS_EFFECT_STATUS_HINT` 只有在 inbound 合同完整批准 payload、关联、事件幂等、重试和冲突语义，且 Phase 4
+> 唯一 hint successor 已验收后才可接入，并且只唤醒查询；否则 successor 为 `NONE`，Phase 5 只删除旧 route、payload、
+> OpenAPI 和测试，不建立新 hint 路径。status method/path、状态闭集、关联和幂等同样仍须由 WMS 合同批准。WES 只保存
+> 执行事实、资源投影、回写证据和对账证据。
 
 ### 4.1 北向接口 (Northbound API - To Existing WMS)
 

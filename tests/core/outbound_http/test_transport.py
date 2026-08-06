@@ -110,6 +110,75 @@ async def test_send_uses_one_request_and_preserves_all_http_statuses_as_transpor
 
 
 @pytest.mark.asyncio
+async def test_send_preserves_horizontal_tab_in_valid_response_header_value() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers=[(b"x-note", b"left\tright")],
+            stream=_ChunkStream((b"body",)),
+            request=request,
+        )
+
+    transport = _transport(handler)
+    try:
+        result = await transport.send(_request())
+    finally:
+        await transport.aclose()
+
+    assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
+    assert result.response_headers == (("x-note", "left\tright"),)
+    assert result.decoded_body == b"body"
+    assert result.failure_kind is None
+
+
+@pytest.mark.asyncio
+async def test_send_maps_invalid_response_header_value_to_metadata_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers=[(b"x-note", b"left\x00right")],
+            stream=_ChunkStream((b"body",)),
+            request=request,
+        )
+
+    transport = _transport(handler)
+    try:
+        result = await transport.send(_request())
+    finally:
+        await transport.aclose()
+
+    assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
+    assert result.status_code == 200
+    assert result.response_headers == ()
+    assert result.decoded_body is None
+    assert result.failure_kind is OutboundHttpFailureKind.RESPONSE_METADATA_INVALID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header_name", [b"bad name", b"bad:name", "非ASCII".encode()])
+async def test_send_maps_invalid_response_header_name_to_metadata_failure(header_name: bytes) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers=[(header_name, b"value")],
+            stream=_ChunkStream((b"body",)),
+            request=request,
+        )
+
+    transport = _transport(handler)
+    try:
+        result = await transport.send(_request())
+    finally:
+        await transport.aclose()
+
+    assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
+    assert result.status_code == 200
+    assert result.response_headers == ()
+    assert result.decoded_body is None
+    assert result.failure_kind is OutboundHttpFailureKind.RESPONSE_METADATA_INVALID
+
+
+@pytest.mark.asyncio
 async def test_concurrent_sends_reuse_the_transport_owned_client() -> None:
     received_requests: list[httpx.Request] = []
 

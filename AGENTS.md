@@ -311,6 +311,9 @@ Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 
   `device_adapters/<adapter_key>/tests/`，并与该 Adapter 的 `pyproject.toml`、`src/` 和 `fixtures/` 同包交付。
 - 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；核心测试不得导入根目录二次开发 Adapter/插件包。
 - Adapter/插件测试不得进入核心默认 pytest、核心覆盖率、核心质量门禁或核心 HEAVY selector。
+- 产品内唯一 WMS 北向 Adapter 是 `src/app/wms_adapter/` 下的业务系统 ACL，不属于设备厂商二次开发包；其跨系统 FAST
+  合同位于 `tests/contracts/wms_adapter/`，真实持久化与事务场景位于 `tests/integration/wms_adapter/`。这些测试只验证
+  WMS Adapter，不得用于证明 `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
 
 **STRICTLY FORBIDDEN**:
 - ❌ 在 `tests/` 根目录新增 `test_*.py`

@@ -6,7 +6,8 @@
 `docs/contracts/wms-northbound-interaction-contract.md` 为准；WES 所有权与执行架构以
 `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` 为准。
 
-`wms_integration` 只拥有类型化 DTO、显式窄端口、认证、地址、错误映射、HTTP 调用证据和无状态 Adapter；
+目标 `wms_adapter` 只拥有类型化 DTO、显式窄端口、固定 method/path、错误映射、HTTP 调用证据和无状态 Adapter；
+当前 WMS outbound 认证固定为 `NONE`，不提供认证 seam；
 不负责 WorkLine 业务编排、可靠任务生命周期、工厂字段映射、RCS 调度或设备防呆。单个 WES 部署只有一个
 明确配置的目标 WMS 连接。
 
@@ -29,9 +30,11 @@ TransportTask → Transport Port → WmsForwardedTransportClient ┘
 `WmsCallSpec`。公共 Protocol/Gateway 只提供显式方法；生产运行时不存在 Provider/Catalog registry、动态发现、
 conformance 平台或 WMS codegen。
 
-## 业务冻结
+## 业务目标
 
-- GRN 就是一条 PO 行到货记录；料盘通过 Q09 查询。
+- Decision A 已采用 WMS 初稿覆盖 16 项的 path/业务字段和当前批准 method，E02 为 `POST`；完整 DTO 字段矩阵、其余
+  19 项，以及 E08–E14 status/状态闭集/关联键/幂等承诺仍是实施前置门禁。
+- Q08 按 Decision A 返回 GRN header 与 PO/物料 `items[]` 明细；已绑定料盘及汇总通过 Q09 查询。
 - Q19 是无副作用粗分准入，首次有效结论先落本地 admission fact。
 - E05 只做库存账务转移，不隐式调度搬运。
 - E08 同工作位需求合并。
@@ -49,8 +52,10 @@ result 后执行扫码，SCAN result 由 WES 做 typed 决策并下发投放，P
 ## 可靠性与验收
 
 WMS 正常 outcome 必须携带真实非空 `evidence_key`。发送前 evidence 失败则不发送；发送后 evidence 失败标记
-远端结果未知，写操作由可靠对象使用原 `dispatch_key` 恢复。一个公开分页调用复用进程级 HTTP Client，只申请
-一次 breaker permit，共享累计预算，只完成一条 evidence 和一次最终 breaker 更新。
+远端结果未知。只有逐 operation 合同明确批准安全重提且对象显式 `retryable=true` 时，可靠对象才保留内部原
+`dispatch_key`，映射为唯一获批 wire 字段后重提；否则保持暂停并进入人工对账。每个公开调用复用进程级 Phase 2
+Transport，只执行一次有界请求/响应、申请一次 breaker permit、完成一条 evidence 和一次最终 breaker 更新；列表能力
+不自动续页。
 
 上线前必须证明：35 个垂直模块无缺失/重复，Q19 无副作用，8 个同步确认、7 个异步搬运与 1 个取消操作的
 所有权精确，测试态 conformance harness/Mock fixture 完整，生产无 registry/动态发现，旧 transport、
