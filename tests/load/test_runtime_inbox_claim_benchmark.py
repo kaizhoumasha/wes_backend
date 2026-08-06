@@ -5,7 +5,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from tests.load.runtime_inbox_postgresql_benchmark import run_runtime_inbox_postgresql_benchmark
+from tests.load.runtime_inbox_postgresql_benchmark import (
+    CLAIM_P95_THRESHOLD_MS,
+    THROUGHPUT_THRESHOLD_PER_SECOND,
+    run_runtime_inbox_postgresql_benchmark,
+)
+
+
+def test_runtime_inbox_claim_benchmark_uses_ci_regression_budget() -> None:
+    assert CLAIM_P95_THRESHOLD_MS == 300.0
+    assert THROUGHPUT_THRESHOLD_PER_SECOND == 400.0
 
 
 def test_runtime_inbox_claim_benchmark() -> None:
