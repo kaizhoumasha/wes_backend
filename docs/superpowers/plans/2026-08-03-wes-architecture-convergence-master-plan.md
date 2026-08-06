@@ -16,7 +16,8 @@ WES 核心只依赖类型化业务端口，可靠性生命周期分别由 `Devic
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–2 已完成；当前合同已批准 E02 使用 `POST`，Phase 2 GET/POST 基线无需扩展。Phase 3 已
-冻结初稿覆盖 16 项的 wire 基线，只允许继续补全 DTO、其余 19 项合同和 E08–E14 异步关联合同；Phase 3–11 仍须逐阶段
+冻结初稿覆盖 16 项的 wire 基线；出库顶层设计删除旧 Q10–Q13 并新增 E17/E18，只允许继续补全 DTO、其余 17 项合同和
+E08–E14 异步关联合同；Phase 3–11 仍须逐阶段
 满足入口和退出门禁。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
@@ -275,19 +276,19 @@ Adapter/Composition Root，或建设认证/拦截器扩展平台。子计划必�
 
 ## 8. Phase 3：WMS Adapter 新能力重建
 
-**Objective:** 在不触碰当前生产路径的前提下，消费 Phase 2 Transport，暗构建 35 项 WMS 类型化能力及其独立测试，
+**Objective:** 在不触碰当前生产路径的前提下，消费 Phase 2 Transport，暗构建 33 项 WMS 类型化能力及其独立测试，
 为 Phase 4 核心对象和 Phase 5 原子切换提供稳定端口。
 
-**Authoritative inputs:** 顶层 SPEC §4.1/§5.3/§6.3、WMS 北向合同、Phase 2 公开合同和经批准的 Phase 3 详细计划。
+**Authoritative inputs:** 顶层 SPEC §4.1/§5.3/§6.3、出库操作顶层设计、WMS 北向合同、Phase 2 公开合同和经批准的 Phase 3 详细计划。
 当前 `src/app/wms_integration/` 只用于识别未来删除边界，不是新实现的代码模板或测试 oracle。
 
 **Entry conditions:** Phase 2 GET/POST 基线已通过退出门禁；当前 WMS outbound 合同确认仅为 `NONE`；
 Phase 3 详细计划已按暗构建边界批准；`docs/hardware/wms_rcs_interface_requirements.md` 初稿覆盖 16 项已按 Decision A
-采用其 path/业务字段及当前批准 method 基线。启动代码实施前还必须冻结完整 35 项 request/result 字段矩阵、完成
-其余 19 项裁决，并批准 E08–E14 status method/path、状态闭集、`request_id`/`task_id` 关联和幂等承诺；三组条件尚未
+采用其 path/业务字段及当前批准 method 基线。启动代码实施前还必须冻结完整 33 项 request/result 字段矩阵、完成
+其余 17 项裁决，并批准 E08–E14 status method/path、状态闭集、`request_id`/`task_id` 关联和幂等承诺；三组条件尚未
 全部满足，因此只允许执行 Phase 3 Task 1 纯文档补全，不得启动 Phase 3 Task 2–12。
 
-**Scope:** 在独立 `src/app/wms_adapter/` 包中建立 Q01–Q19、E01–E16 的语义化垂直模块、三条类型化窄端口、
+**Scope:** 在独立 `src/app/wms_adapter/` 包中建立 Q01–Q15、E01–E18 的语义化垂直模块、三条类型化窄端口、
 无状态 `HttpWmsGateway`、只含 base URL/timeout 的配置对象、消费 Phase 2 builder 的新 factory、封闭结果映射、发送前
 fail-closed call evidence、DB-backed circuit breaker 和测试 local fake。新 evidence/breaker 使用最终语义新表名，
 网络调用期间不持有数据库事务或锁。Q/E 编号只用于合同追踪，不进入源码文件名；每个公开方法恰好一次 Phase 2 send，
@@ -299,7 +300,7 @@ fail-closed call evidence、DB-backed circuit breaker 和测试 local fake。新
 `httpx.AsyncClient`、HMAC、credential、认证 enum/fallback 或未来认证 seam；cursor/page-size/next-cursor、自动续页、
 status 自动轮询、retry 或未来分页 seam。
 
-**Deliverables:** 三条类型化窄端口；35 个语义化能力模块；消费 Phase 2 Transport 的无状态 Gateway/factory；新
+**Deliverables:** 三条类型化窄端口；33 个语义化能力模块；消费 Phase 2 Transport 的无状态 Gateway/factory；新
 `wes_biz.wms_outbound_call_evidence` 与 `wes_biz.wms_outbound_circuit_breaker` 所有者；验证新 Adapter 的 FAST 合同测试、
 真实持久化/事务/并发 breaker 的显式 HEAVY 测试；每个公开调用一次 send 的合同；证明新包未被当前生产 Composition
 Root 或任何其他现有生产 `src/` 模块引用的暗构建门禁；`migrations/env.py` 只允许为 Alembic metadata
@@ -319,7 +320,7 @@ discovery 导入新 model，不构成生产装配。
 核心测试所需的 test-local typed-port fake 由 Phase 4 自行定义；
 向 Phase 5 交付 method/path/DTO/result mapping 以及新 evidence/breaker owner。Phase 3 不执行生产 handoff。
 
-**Exit gate:** 新包 35 项能力和三条端口完整；factory 明确消费 Phase 2 builder；新 evidence/breaker 的 fail-closed、短事务、
+**Exit gate:** 新包 33 项能力和三条端口完整；factory 明确消费 Phase 2 builder；新 evidence/breaker 的 fail-closed、短事务、
 持久化和并发门禁通过；新包零裸 Client、零 Provider/Profile、零 HMAC/credential/auth seam、零 generic `call` 和编号文件；
 新合同零 cursor/自动续页且每个公开方法只执行一次 send；新包之外的全部生产 `src/` 零新包 import；新 Adapter FAST、
 显式 WMS call-control HEAVY、Ruff、类型检查、架构门禁和 quality profile 通过。全仓旧
@@ -470,7 +471,7 @@ Phase 6 只接收最终生产路径和待承接的旧测试资产。
 **Authoritative inputs:** Phase 3 method/path/DTO/result mapping 与暗构建门禁；Phase 4 最终对象、接线图、旧 owner
 闭包和 successor/NONE 清单；当前生产 Composition Root、Settings、Compose/Jenkins/Celery/API callback 实际引用图。
 
-**Entry conditions:** Phase 3–4 退出门禁均通过；35 项 WMS 能力、三条端口及最终可靠对象稳定；所有旧生产 importer、
+**Entry conditions:** Phase 3–4 退出门禁均通过；33 项 WMS 能力、三条端口及最终可靠对象稳定；所有旧生产 importer、
 配置键、任务路由、数据库对象和测试 owner 已逐项归类；新 WMS call evidence 的生产保留边界、清理 owner 和运维验证已冻结；
 可选 WMS hint 已裁决为“完整 inbound 合同批准且 Phase 4 successor 已验收”或 `NONE`，不得带未决语义进入本阶段；不存在
 需要兼容或迁移的发布数据。
@@ -717,7 +718,7 @@ Phase 10 固化最终 metadata。
 
 | 检查项 | 结果 | 说明 |
 | --- | --- | --- |
-| 占位标记 | 阻断 1 项 | 35 项完整字段、其余 19 项与 E08–E14 异步关联合同未批准；Phase 3 Task 2–12 不得启动 |
+| 占位标记 | 阻断 1 项 | 33 项完整字段、其余 17 项与 E08–E14 异步关联合同未批准；Phase 3 Task 2–12 不得启动 |
 | 兼容设计 | 通过 | Phase 2–4 新能力不接生产流量；旧路径只保留为唯一活动 owner 到 Phase 5；Phase 5 原子切换并删除，不存在 shim、alias、re-export、fallback、双写、双读或旧数据兼容 |
 | 重复职责 | 通过 | Transport、WMS Adapter、核心可靠对象、生产切换、插件所有权互斥；Phase 2–5 边界单独列明 |
 | 测试过重 | 通过 | Phase 2/3/4 各自只测试新 owner；旧测试迁移和运行态验收统一归 Phase 5，不以跨层 happy path 替代分层测试 |
@@ -739,27 +740,27 @@ Phase 10 固化最终 metadata。
 
 ## 20. Implementation Tasks
 
-当前只允许执行 Phase 3 Task 1 纯文档合同补全；Phase 3 Task 2–12 必须等待完整字段、其余 19 项和 E08–E14 异步关联
+当前只允许执行 Phase 3 Task 1 纯文档合同补全；Phase 3 Task 2–12 必须等待完整字段、其余 17 项和 E08–E14 异步关联
 三组合同门禁全部关闭。Phase 3 的详细接口、
 失败矩阵、TDD 顺序与文件清单以
 `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md` 为该阶段唯一子计划真源。
 
 | 顺序 | 任务 | Surface area | 主要验证 |
 | --- | --- | --- | --- |
-| 1 | 补全 WMS wire 真源 | 16 项初稿基线的完整字段矩阵、其余 19 项、E08–E14 异步关联、`NONE`、单次有界响应 | 逐项人工批准；Markdown/diff 校验；纯文档不写测试 |
+| 1 | 补全 WMS wire 真源 | 16 项初稿基线的完整字段矩阵、其余 17 项、`PickingTask` inbound、E08–E14 异步关联、`NONE`、单次有界响应 | 逐项人工批准；Markdown/diff 校验；纯文档不写测试 |
 | 2 | 建立共享公共合同 | `base_url`/timeout、strict DTO 基类、outcome、call-control Protocol | FAST 合同测试先红后绿；零 auth/provider/generic call/占位业务 Protocol |
 | 3 | 建立 call evidence 与 DB breaker | 两模型、两 repository、单一 call-control service、迁移与精确 HEAVY mapping | FAST 合同 + HEAVY 持久化/并发/取消；Alembic discovery/check；固定 3/60/1 |
 | 4 | 实现 master_data | Q01–Q07 | 严格 DTO/spec；列表仅定义本次响应有界 `items`；不测试 Gateway send |
-| 5 | 实现 document | Q08–Q13/Q19 | GRN/Package、Q19 封闭拒绝、零内部 Session id |
-| 6 | 实现 inventory | Q14–Q15/E01–E06 | QUERY/JSON、业务拒绝、每 operation 唯一批准 wire 关联字段 |
-| 7 | 实现 reconciliation | Q16–Q18 | 固定 query、严格 drift 结果、单响应 `source_version` |
-| 8 | 实现 fulfillment | E07–E16 与七项 status | E08/E09 `request_id`；批准后的 submit/status/cancel wire；不自动轮询 |
+| 5 | 实现 document | Q08–Q09/Q15 | GRN/Package、Q15 封闭拒绝、零内部 Session id |
+| 6 | 实现 inventory | Q10–Q11/E01–E06 | QUERY/JSON、业务拒绝、每 operation 唯一批准 wire 关联字段 |
+| 7 | 实现 reconciliation | Q12–Q14 | 固定 query、严格 drift 结果、单响应 `source_version` |
+| 8 | 实现 fulfillment | E07–E18 与七项 status | E08/E09 `request_id`；E17/E18 出库报告；批准后的 submit/status/cancel wire；不自动轮询 |
 | 9 | 建立最终三条端口并实现 Gateway 编排 | 最终 typed Protocol；begin → 一次 send → finish | 精确方法签名；完整 outcome/evidence/breaker/取消矩阵 |
 | 10 | 消费 Phase 2 builder | factory 与生命周期 | `system_id="wms"`、一个长期 Transport、幂等关闭 |
 | 11 | 建立暗构建边界门禁 | import、命名和生产接线缺席 | 零裸 Client/旧包/auth/编号/生产接线/分页 seam |
 | 12 | Phase 3 退出验证 | 全部新能力与仓库门禁 | FAST、显式 HEAVY、Phase 2 回归、Ruff、类型、Import Linter、quality |
 
-Phase 3 Task 1 纯文档补全可以继续，Task 2–12 必须等待 Task 1 的完整字段、其余 19 项与 E08–E14 异步关联三组合同门禁
+Phase 3 Task 1 纯文档补全可以继续，Task 2–12 必须等待 Task 1 的完整字段、其余 17 项与 E08–E14 异步关联三组合同门禁
 全部关闭。Phase 3 的 12 个任务固定在一个 PR 中
 单泳道交付；共享端口、Gateway、导出和 conformance 触点不拆 worktree 并行。
 
@@ -771,7 +772,7 @@ Phase 3 Task 1 纯文档补全可以继续，Task 2–12 必须等待 Task 1 的
   `WmsCallSpec` 持有；Decision A 采用初稿覆盖 16 项的 path/业务字段和当前批准 method，E02 为 `POST`；列表为一次有界响应。
 - **Wire semantics：** Q02 为按 `ids` 批量获取；Q08 为 GRN header + `items[]`；E08/E09 只发送初稿 `request_id`
   与业务字段，内部 `dispatch_key` 不直接泄露到 wire。
-- **Entry blocker：** 完整字段矩阵、其余 19 项和 E08–E14 异步关联合同仍待批准；E02 已批准使用 `POST`，Phase 2 无待办修订。
+- **Entry blocker：** 完整字段矩阵、其余 17 项和 E08–E14 异步关联合同仍待批准；E02 已批准使用 `POST`，Phase 2 无待办修订。
 - **Async gap：** 初稿没有 E08/E09 status endpoint、状态闭集、幂等或 `request_id/task_id` 关联承诺，不能提前实现 proposed
   status path，也不能退回 callback 直接终结任务。
 - **Code Quality：** 源码按业务域与语义文件组织，Q/E 只作追踪；call-control 只保留一个 service，避免单用途层级。
@@ -786,7 +787,7 @@ Phase 3 Task 1 纯文档补全可以继续，Task 2–12 必须等待 Task 1 的
 
 | Review | 本轮状态 | 发现 | 未解决 | 说明 |
 | --- | --- | ---: | ---: | --- |
-| ENG REVIEW | BLOCKED | 11 | 1 | 35 项完整字段、异步关联和其余 19 项待批准；E02 已批准使用 `POST` |
+| ENG REVIEW | BLOCKED | 11 | 1 | 33 项完整字段、异步关联和其余 17 项待批准；E02 已批准使用 `POST` |
 | INDEPENDENT REVIEW | CLEAR | 42 | 0 | 累计 42 项均已核验修复；最终独立复审未检出新意见 |
 | SERENA REVIEW | CLEAR | 3 | 0 | 已激活 `wes_backend` 并完成符号/引用复核；3 个可复现类型合同问题已修复，仓库 `uv run basedpyright` 为零错误 |
 | SEQUENTIAL REVIEW | CLEAR | 7 | 0 | Decision A、prefix 所有权、阶段顺序、单次发送、事务和 handoff 已闭合 |
@@ -797,5 +798,5 @@ Phase 3 Task 1 纯文档补全可以继续，Task 2–12 必须等待 Task 1 的
 
 **UNRESOLVED DECISIONS:**
 
-- WMS 合同：补齐 16 项完整字段矩阵，由 WMS/业务方补齐和批准其余 19 项 operation，并冻结 E08–E14 status、状态闭集、
+- WMS 合同：补齐 16 项完整字段矩阵，由 WMS/业务方补齐和批准其余 17 项 operation，并冻结 E08–E14 status、状态闭集、
   `request_id`/`task_id` 关联和幂等承诺。

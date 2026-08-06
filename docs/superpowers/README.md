@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
+| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与双面货架执行业务真源 | Reviewed |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | Reviewed；Phase 2 已完成，Phase 3 字段合同前置待完成 |
 | `plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 WMS Adapter 暗构建 | 16 项 wire 已裁决；Task 2–12 继续阻断 |

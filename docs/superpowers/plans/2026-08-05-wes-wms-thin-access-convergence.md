@@ -4,10 +4,11 @@
 > superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Status:** `ENTRY_BLOCKED_BY_WMS_CONTRACT`。Decision A 已确定初稿覆盖 16 项的 wire 基线，并批准 E02 使用 `POST`；
-> Task 2–12 在完整字段矩阵、其余 19 项裁决，以及 E08–E14 status method/path、状态闭集、关联键和幂等承诺全部批准前
+> 出库顶层设计已删除旧 Q10–Q13，并新增 E17/E18；Task 2–12 在 33 项完整字段矩阵、其余 17 项裁决，以及
+> E08–E14 status method/path、状态闭集、关联键和幂等承诺全部批准前
 > 不得启动。
 
-**Goal:** 消费 Phase 2 `OutboundHttpTransport`，在独立应用包 `src/app/wms_adapter/` 中暗构建 35 项 WMS 类型化能力及其测试；不接入当前生产路径，
+**Goal:** 消费 Phase 2 `OutboundHttpTransport`，在独立应用包 `src/app/wms_adapter/` 中暗构建 33 项 WMS 类型化能力及其测试；不接入当前生产路径，
 不迁移、不改写、不删除旧 WMS 能力。
 
 **Architecture:** 新能力位于 `src/app/wms_adapter/`，按 `master_data`、`document`、`inventory`、
@@ -30,8 +31,8 @@ Import Linter、GitNexus。
 - 纯文档任务只做文档校验；实施阶段的代码行为使用 TDD，并遵守仓库测试所有权和 HEAVY 边界。
 - 每个新增或修改 HEAVY 候选生产路径的 Task 都必须在同一 Task 更新精确 selector mapping；持久化影响路径
   映射到权威 HEAVY，经评审只有 FAST/QUALITY 影响的路径显式标记 NONE，不得用整包宽泛 mapping 代替逐责任边界。
-- 35 项 identity/completion owner 暂按当前 WMS 北向合同保留；初稿覆盖的 16 项采用其 path/业务字段和当前批准 method，
-  其中 E02 为 `POST`；其余 19 项仍待 WMS/业务方补齐。初稿中的 `page/page_size` 只是一份响应样例，不引入分页合同。
+- 33 项 identity/completion owner 暂按当前 WMS 北向合同保留；初稿覆盖的 16 项采用其 path/业务字段和当前批准 method，
+  其中 E02 为 `POST`；其余 17 项仍待 WMS/业务方补齐。初稿中的 `page/page_size` 只是一份响应样例，不引入分页合同。
 - Phase 2 `base_url` 只保存 HTTP origin，operation 模块持有完整 `/api/wms` 或 `/api/MCS` path；不配置公共 prefix。
 
 ---
@@ -41,7 +42,7 @@ Import Linter、GitNexus。
 ### 1.1 Phase 3 只重建新能力
 
 - 新建最终命名的 `src/app/wms_adapter/`，不在旧 `src/app/wms_integration/` 内增量改造。
-- 新建 35 个语义化垂直模块；Q/E 编号只保留在合同追踪表和测试 case id，不进入文件名、类名或公开方法名。
+- 新建 33 个语义化垂直模块；Q/E 编号只保留在合同追踪表和测试 case id，不进入文件名、类名或公开方法名。
 - 新建三条类型化窄端口：`WmsCapabilities`、`WmsConfirmationSender`、`WmsForwardedTransportClient`。
 - 新建行为无状态的 `HttpWmsGateway` 和 `build_wms_adapter(...)`；factory 必须调用 Phase 2
   `build_outbound_http_transport(system_id="wms", ...)`。
@@ -76,12 +77,12 @@ Phase 3 退出时旧实现仍是唯一活动生产路径，新 Adapter 只被自
 - 当前生产 Composition Root 仍只装配旧路径；新 `src/app/wms_adapter/` 尚不存在，也没有实际生产消费者。
 - `OutboundHttpResult` 不提供 wire byte 计数。由于 Phase 3 不实现多页聚合，既不需要也不得为此扩展 Phase 2 合同。
 - `docs/hardware/wms_rcs_interface_requirements.md` 是 2026-03 的 WMS 交互约定初稿，可作为业务输入，但不是当前架构真源。
-  它概念性覆盖 Q01–Q09、Q14 和 E01/E02/E05/E07/E08/E09，仍缺其余 19 项 operation 的完整 wire 定义。
+  它概念性覆盖 Q01–Q10 和 E01/E02/E05/E07/E08/E09，仍缺其余 17 项 operation 的完整 wire 定义。
 - Decision A 已裁决：初稿覆盖 16 项的 path/业务字段与当前批准 method 进入 wire 合同，E02 method 固定为 `POST`；旧
   `MCS`/`WorklineInbox` 架构、Bearer Header、自动重试、缓存和 `page/page_size` 分页语义被剔除。
 - Phase 2 builder 已要求 `base_url` 只含 origin，因此每个 operation path 必须持有完整 API prefix。
 - 当前合同批准 E02 使用 `POST`，Phase 2 既有 `GET`/`POST` method 合同已满足 Phase 3，不新增 `DELETE` 或其他 method。
-- 当前 WMS 北向合同仍没有逐项完整 request/result 字段矩阵；初稿也未覆盖其余 19 项，E08–E14 status、状态闭集、
+- 当前 WMS 北向合同仍没有逐项完整 request/result 字段矩阵；初稿也未覆盖其余 17 项，E08–E14 status、状态闭集、
   `request_id`/`task_id` 关联和幂等承诺同样未冻结。Task 1 必须补齐并取得业务/WMS 批准，不得从旧实现猜测。
 
 ## 3. NOT in scope
@@ -137,10 +138,6 @@ src/app/wms_adapter/
 │   ├── __init__.py
 │   ├── get_grn.py
 │   ├── list_grn_packages.py
-│   ├── get_pick_order.py
-│   ├── get_outbound_order.py
-│   ├── get_wave.py
-│   ├── get_task_snapshot.py
 │   └── validate_rough_sorter_admission.py
 ├── inventory/
 │   ├── __init__.py
@@ -168,7 +165,9 @@ src/app/wms_adapter/
     ├── move_bins_from_conveyor_exit.py
     ├── request_load_unit_transport.py
     ├── publish_manual_task.py
-    └── cancel_request.py
+    ├── cancel_request.py
+    ├── report_picking_source_ng.py
+    └── confirm_picking_completed.py
 
 tests/contracts/wms_adapter/
 ├── __init__.py
@@ -196,7 +195,7 @@ Alembic 生成两个最终语义新表；表名不复用旧表，避免暗构建
 生成干净 baseline。不创建 `mock_adapter/`、`xxx_adapter/`、编号文件、生产 `fakes.py` 或公开 operation registry。外部
 Mock WMS 仍属于现有 HEAVY/E2E 资产，Phase 3 不修改。
 
-## 5. 35 项目标映射与合同成熟度
+## 5. 33 项目标映射与合同成熟度
 
 | 追踪 | Domain | 语义文件 | 公开方法 |
 | --- | --- | --- | --- |
@@ -209,16 +208,12 @@ Mock WMS 仍属于现有 HEAVY/E2E 资产，Phase 3 不修改。
 | Q07 | master_data | `get_bin.py` | `get_bin` |
 | Q08 | document | `get_grn.py` | `get_grn` |
 | Q09 | document | `list_grn_packages.py` | `list_grn_packages` |
-| Q10 | document | `get_pick_order.py` | `get_pick_order` |
-| Q11 | document | `get_outbound_order.py` | `get_outbound_order` |
-| Q12 | document | `get_wave.py` | `get_wave` |
-| Q13 | document | `get_task_snapshot.py` | `get_task_snapshot` |
-| Q14 | inventory | `query_inventory.py` | `query_inventory` |
-| Q15 | inventory | `get_reservation.py` | `get_reservation` |
-| Q16 | reconciliation | `check_bin_drift.py` | `check_bin_drift` |
-| Q17 | reconciliation | `check_rack_drift.py` | `check_rack_drift` |
-| Q18 | reconciliation | `check_full_drift.py` | `check_full_drift` |
-| Q19 | document | `validate_rough_sorter_admission.py` | `validate_rough_sorter_admission` |
+| Q10 | inventory | `query_inventory.py` | `query_inventory` |
+| Q11 | inventory | `get_reservation.py` | `get_reservation` |
+| Q12 | reconciliation | `check_bin_drift.py` | `check_bin_drift` |
+| Q13 | reconciliation | `check_rack_drift.py` | `check_rack_drift` |
+| Q14 | reconciliation | `check_full_drift.py` | `check_full_drift` |
+| Q15 | document | `validate_rough_sorter_admission.py` | `validate_rough_sorter_admission` |
 | E01 | inventory | `reserve_inventory.py` | `reserve_inventory` |
 | E02 | inventory | `release_reservation.py` | `release_reservation` |
 | E03 | inventory | `confirm_inbound.py` | `confirm_inbound` |
@@ -235,10 +230,12 @@ Mock WMS 仍属于现有 HEAVY/E2E 资产，Phase 3 不修改。
 | E14 | fulfillment | `request_load_unit_transport.py` | `request_load_unit_transport` + `get_load_unit_transport_status` |
 | E15 | fulfillment | `publish_manual_task.py` | `publish_manual_task` |
 | E16 | fulfillment | `cancel_request.py` | `cancel_request` |
+| E17 | fulfillment | `report_picking_source_ng.py` | `report_picking_source_ng` |
+| E18 | fulfillment | `confirm_picking_completed.py` | `confirm_picking_completed` |
 
 Q02 固定为按 `ids` 批量获取物料，不是无条件通用 list。E08/E09 submit wire 分别采用初稿业务字段，唯一关联字段名为
 `request_id`；WES 内部 `dispatch_key` 可映射成该值，但不得同时发送多套别名。初稿只返回 `task_id`，没有定义 E08–E14
-status endpoint、状态闭集或关联规则；`GET /api/wms/operations/status` 仍是待批准提案。Q19 不包含内部 Session id
+status endpoint、状态闭集或关联规则；`GET /api/wms/operations/status` 仍是待批准提案。Q15 不包含内部 Session id
 或执行对象数据库主键。
 
 ## 6. 公共合同
@@ -257,8 +254,8 @@ Header、role、lane、simulation 或 retry 参数。合法性由 Phase 2 builde
 
 ### 6.2 三条 Protocol
 
-- `WmsCapabilities`：Q01–Q19 的 19 个显式 async 方法；列表方法只返回单次响应中的有界 `items`。
-- `WmsConfirmationSender`：E01–E07/E15 的 8 个显式 async 方法；每次调用只发送一次。
+- `WmsCapabilities`：Q01–Q15 的 15 个显式 async 方法；列表方法只返回单次响应中的有界 `items`。
+- `WmsConfirmationSender`：E01–E07/E15/E17–E18 的 10 个显式 async 方法；每次调用只发送一次。
 - `WmsForwardedTransportClient`：E08–E14 的 submit/status 与 E16 cancel 共 15 个显式 async 方法；不轮询。
 
 三个 Protocol 不继承彼此，不暴露 `HttpWmsGateway`、`OutboundHttpRequest`、HTTP status、字符串 operation selector、
@@ -419,18 +416,18 @@ HEAVY：真实 repositories + PostgreSQL transaction/concurrency → call-contro
 
 ### 7.5 并行化裁决
 
-Phase 3 Task 1 是纯文档合同补全，可以继续；Task 2–12 必须等待完整字段、其余 19 项与 E08–E14 异步关联三组合同门禁
+Phase 3 Task 1 是纯文档合同补全，可以继续；Task 2–12 必须等待完整字段、其余 17 项与 E08–E14 异步关联三组合同门禁
 全部关闭。Phase 3 的 Task 1–12 在一个 PR 中
 以单泳道顺序交付。Task 4–8 理论上可在 Task 1–3 完成后并行，但它们共享端口导出、Gateway 绑定、合同测试和 conformance
 触点；拆 worktree 的合并成本高于收益。实施时保持 12 个顺序任务，并在每个 Task 内完成 red-green-refactor 与局部验收。
 
 ## 8. Implementation Tasks
 
-当前只剩三组 WMS 合同入口门禁：完整 35 项字段矩阵、其余 19 项 wire 裁决、E08–E14 status/状态闭集/关联键/幂等承诺。
+当前只剩三组 WMS 合同入口门禁：完整 33 项字段矩阵、其余 17 项 wire 裁决、E08–E14 status/状态闭集/关联键/幂等承诺。
 Task 1 可继续补全文档合同；三组门禁全部关闭后，Phase 3 才能启动 Task 2–12 代码实施。
 
-- [ ] **T1 (P1)** — WMS contract — 补齐 35 项字段矩阵、其余 19 项 wire 裁决和 E08–E14 异步关联合同
-  - Surfaced by: Architecture Review — 初稿只覆盖 16 项，没有给出完整 35 项可实施字段矩阵，也未冻结 E08–E14 status、
+- [ ] **T1 (P1)** — WMS contract — 补齐 33 项字段矩阵、其余 17 项 wire 裁决和 E08–E14 异步关联合同
+  - Surfaced by: Architecture Review — 初稿只覆盖 16 项，没有给出完整 33 项可实施字段矩阵，也未冻结 E08–E14 status、
     状态闭集、关联键和幂等承诺。
   - Files: `docs/hardware/wms_rcs_interface_requirements.md`（只读）、`docs/hardware/README.md`、
     `docs/contracts/wms-northbound-interaction-contract.md`
@@ -446,26 +443,28 @@ Task 1 可继续补全文档合同；三组门禁全部关闭后，Phase 3 才�
 - Modify: `docs/contracts/wms-northbound-interaction-contract.md`
 - Modify: `docs/hardware/README.md`
 
-- [x] 将 35 项 Capability module 从 `q01_...`/`e01_...` 改为本计划 §5 的语义文件名。
+- [x] 将 33 项 Capability module 从 `q01_...`/`e01_...` 改为本计划 §5 的语义文件名。
 - [x] 把 conformance 明确为只存在于新 Adapter 测试的静态覆盖检查；保留 evidence fail-closed、breaker 和 Phase 2
   单响应有界资源合同。
 - [x] 删除未经真实厂商合同证明的 cursor/page-size/next-cursor/自动续页语义；列表 QUERY 固定一次请求返回有界 `items`。
 - [x] 明确 outbound auth 为 `NONE`，且合同没有 auth scheme、credential、HMAC、认证 Header 配置/动态注入或扩展点；固定
   协议 Header 由 operation wire 合同拥有。
-- [x] 固定 Q19 无内部 Session id；明确 WES 内部 `dispatch_key` 不自动成为 wire 字段，E08/E09 按初稿只发送
+- [x] 固定 Q15 无内部 Session id；明确 WES 内部 `dispatch_key` 不自动成为 wire 字段，E08/E09 按初稿只发送
   `request_id`，不发送双键或别名。
 - [x] 确认 `docs/hardware/wms_rcs_interface_requirements.md` 为 WMS 交互约定初稿和 Task 1 业务输入；保持原文不修改。
 - [x] Decision A：初稿覆盖 16 项采用其 path/业务字段与当前批准 method，E02 固定为 `POST`；当前架构同时清除认证、
   重试、缓存、分页和旧生命周期语义。
-- [x] 建立初稿覆盖矩阵，明确 16 项已采用的 path、当前 method 及尚缺字段，并登记其余 19 项缺失；旧 ports 只可用于发现
+- [x] 建立初稿覆盖矩阵，明确 16 项已采用的 path、当前 method 及尚缺字段，并登记其余 17 项缺失；旧 ports 只可用于发现
   遗漏，不得覆盖初稿或当前批准合同。
 - [x] 冻结 prefix 所有权：Phase 2 `base_url` 只含 origin，operation path 持有完整 `/api/wms` 或 `/api/MCS` path；
   不做运行时双重兼容拼接。
-- [ ] 在北向合同中补齐 35 项 request/result 的字段、必填性、类型、枚举/精度/时间格式、固定协议 Header 和业务拒绝码闭集。
-- [ ] 由 WMS/业务方补齐并批准其余 19 项 method/path/DTO/拒绝码；proposed path 不能直接作为实现依据。
+- [ ] 在北向合同中补齐 33 项 request/result 的字段、必填性、类型、枚举/精度/时间格式、固定协议 Header 和业务拒绝码闭集。
+- [ ] 由 WMS/业务方补齐并批准其余 17 项 method/path/DTO/拒绝码；proposed path 不能直接作为实现依据。
+- [ ] 按出库顶层设计冻结 WMS → WES `PickingTask` inbound 合同，覆盖创建、排队优先级更新、替代来源追加、指定恢复和取消；
+  不得恢复旧 Q10–Q13 拉取式单据/任务查询。
 - [ ] 由 WMS 批准 E08–E14 status method/path、状态闭集、`request_id`/`task_id` 关联和幂等承诺；未批准前不得实现
   proposed status endpoint，也不得回退到 callback 直接决定终态。
-- [ ] 完整字段矩阵、其余 19 项 wire 裁决和 E08–E14 异步关联合同任一未获批时停止，不启动 Task 2；禁止根据方法名、
+- [ ] 完整字段矩阵、其余 17 项 wire 裁决和 E08–E14 异步关联合同任一未获批时停止，不启动 Task 2；禁止根据方法名、
   旧测试或实现输出猜测 DTO、status endpoint、状态或关联语义。
 - [x] 对可编辑 Markdown 运行格式检查及
   `git diff HEAD --check -- . ':(exclude)docs/hardware/wms_rcs_interface_requirements.md'`；只读初稿不做空白格式化，
@@ -571,24 +570,20 @@ Task 1 可继续补全文档合同；三组门禁全部关闭后，Phase 3 才�
 
 **Commit:** `feat(wms-adapter): 实现主数据能力`
 
-### Task 5：实现 document 七项能力
+### Task 5：实现 document 三项能力
 
 **Files:**
 
 - Create: `src/app/wms_adapter/document/__init__.py`
 - Create: `src/app/wms_adapter/document/get_grn.py`
 - Create: `src/app/wms_adapter/document/list_grn_packages.py`
-- Create: `src/app/wms_adapter/document/get_pick_order.py`
-- Create: `src/app/wms_adapter/document/get_outbound_order.py`
-- Create: `src/app/wms_adapter/document/get_wave.py`
-- Create: `src/app/wms_adapter/document/get_task_snapshot.py`
 - Create: `src/app/wms_adapter/document/validate_rough_sorter_admission.py`
 - Create: `tests/contracts/wms_adapter/test_document.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 - Test: `tests/scripts/test_select_heavy_tests.py`
 
-- [ ] 对 Q08–Q13/Q19 写失败测试，覆盖 Task 1 最终批准的 wire、单次列表响应、GRN/Package 关系和 Q19 封闭拒绝码。
-- [ ] 单独断言 Q19 序列化结果不含 `session_id`、执行对象 id 或数据库主键。
+- [ ] 对 Q08–Q09/Q15 写失败测试，覆盖 Task 1 最终批准的 wire、单次列表响应、GRN/Package 关系和 Q15 封闭拒绝码。
+- [ ] 单独断言 Q15 序列化结果不含 `session_id`、执行对象 id 或数据库主键。
 - [ ] 为 `document/**` 添加精确 selector NONE 并补 selector 合同；该目录只持有 DTO/spec，不访问持久化边界。
 - [ ] 运行新测试确认失败，实现最小 DTO/spec，再运行测试与 Ruff 确认通过。
 
@@ -611,7 +606,7 @@ Task 1 可继续补全文档合同；三组门禁全部关闭后，Phase 3 才�
 - Modify: `docs/architecture/heavy-test-impact.toml`
 - Test: `tests/scripts/test_select_heavy_tests.py`
 
-- [ ] 对 Q14–Q15/E01–E06 写失败测试，覆盖 query/path/json 编码、E02 `POST`、同步 terminal result、业务拒绝和
+- [ ] 对 Q10–Q11/E01–E06 写失败测试，覆盖 query/path/json 编码、E02 `POST`、同步 terminal result、业务拒绝和
   各 operation 最终批准的唯一 wire 关联字段。
 - [ ] 断言全部写操作 DTO 不接受未批准的 `dispatch_key`/`idempotency_key` 别名、Provider identity 或 auth 字段。
 - [ ] 为 `inventory/**` 添加精确 selector NONE 并补 selector 合同；该目录只持有 DTO/spec，不访问持久化边界。
@@ -631,13 +626,13 @@ Task 1 可继续补全文档合同；三组门禁全部关闭后，Phase 3 才�
 - Modify: `docs/architecture/heavy-test-impact.toml`
 - Test: `tests/scripts/test_select_heavy_tests.py`
 
-- [ ] 对 Q16–Q18 写失败测试，覆盖固定 query、严格漂移结果、`source_version` 和未知字段拒绝。
+- [ ] 对 Q12–Q14 写失败测试，覆盖固定 query、严格漂移结果、`source_version` 和未知字段拒绝。
 - [ ] 为 `reconciliation/**` 添加精确 selector NONE 并补 selector 合同；该目录只持有 DTO/spec，不访问持久化边界。
 - [ ] 运行新测试确认失败，实现最小 DTO/spec，再运行测试与 Ruff 确认通过。
 
 **Commit:** `feat(wms-adapter): 实现对账能力`
 
-### Task 8：实现 fulfillment 十项能力及七项状态查询
+### Task 8：实现 fulfillment 十二项能力及七项状态查询
 
 **Files:**
 
@@ -652,11 +647,13 @@ Task 1 可继续补全文档合同；三组门禁全部关闭后，Phase 3 才�
 - Create: `src/app/wms_adapter/fulfillment/request_load_unit_transport.py`
 - Create: `src/app/wms_adapter/fulfillment/publish_manual_task.py`
 - Create: `src/app/wms_adapter/fulfillment/cancel_request.py`
+- Create: `src/app/wms_adapter/fulfillment/report_picking_source_ng.py`
+- Create: `src/app/wms_adapter/fulfillment/confirm_picking_completed.py`
 - Create: `tests/contracts/wms_adapter/test_fulfillment.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 - Test: `tests/scripts/test_select_heavy_tests.py`
 
-- [ ] 对 E07–E16 写失败测试，覆盖同步结果、七项 submit、批准后的 status endpoint 与 cancel；E08/E09 只序列化
+- [ ] 对 E07–E18 写失败测试，覆盖同步结果、七项 submit、批准后的 status endpoint 与 cancel；E08/E09 只序列化
   `request_id`，不泄露内部 `dispatch_key` 或发送双键。
 - [ ] 覆盖 Task 1 最终批准的 E11/E12/E13 精确 wire 字段与封闭 ACK/result，不把当前业务目标提案冒充 WMS 合同，
   不测试 WorkLine PICK/SCAN/PUT 决策。
@@ -677,7 +674,7 @@ Task 1 可继续补全文档合同；三组门禁全部关闭后，Phase 3 才�
 - Modify: `docs/architecture/heavy-test-impact.toml`
 - Test: `tests/scripts/test_select_heavy_tests.py`
 
-- [ ] 在 35 项 DTO/spec 全部存在后写失败测试，冻结三个互不继承的业务 Protocol，方法集合精确匹配 §6.2，且每个方法
+- [ ] 在 33 项 DTO/spec 全部存在后写失败测试，冻结三个互不继承的业务 Protocol，方法集合精确匹配 §6.2，且每个方法
   直接使用对应 operation 的最终 request/result 类型，不允许占位类型、generic payload 或后续补签名。
 - [ ] 写失败测试：每个 allowed 公开调用只申请一个 permit、创建一条 STARTED evidence，并且恰好形成一次 Phase 2 request；
   BLOCKED/begin 失败为零 request；GET/POST/path/query/固定协议 headers/body 精确，JSON body 不得缺失已批准的
@@ -775,7 +772,7 @@ uv run lint-imports
 ```
 
 Phase 3 权威测试只有新 Adapter 测试与暗构建门禁。Phase 2 测试、selector 和 quality profile 是回归/仓库门禁，不能作为
-35 项 WMS 业务能力的替代证明。本阶段不运行旧 WMS HEAVY/E2E 作为新能力验收，也不修改它们。
+33 项 WMS 业务能力的替代证明。本阶段不运行旧 WMS HEAVY/E2E 作为新能力验收，也不修改它们。
 
 ## 10. Phase 5 handoff 清单
 
@@ -810,7 +807,7 @@ Phase 5 必须基于届时真实代码重新运行 Serena/GitNexus 引用分析�
 | 是否过度设计 | 否；五个业务域、三条端口、一个 Gateway、一个 call-control service、一个 factory，无 registry/fake 平台/认证扩展 |
 | Phase 4/5 交接是否明确 | 是；Phase 4 消费新端口暗构建可靠对象，Phase 5 执行唯一原子切换 |
 | 16 项初稿 wire 是否已裁决 | 是；采用初稿 path/业务字段和当前 method；E02 为 `POST`；剔除旧架构机制 |
-| 35 项 DTO 是否可直接实施 | 否；完整字段矩阵、其余 19 项及 E08–E14 异步关联合同未完成，Task 2–12 继续阻断 |
+| 33 项 DTO 是否可直接实施 | 否；完整字段矩阵、其余 17 项及 E08–E14 异步关联合同未完成，Task 2–12 继续阻断 |
 
 ## 12. 工程复审摘要
 
@@ -822,7 +819,7 @@ Phase 5 必须基于届时真实代码重新运行 Serena/GitNexus 引用分析�
   生命周期由当前架构清除。
 - **语义修正：** Q02 改为 `get_materials(ids)`；Q08 采用 GRN header + `items[]`；E08/E09 wire 采用初稿
   `request_id` 和业务字段，不泄露内部 `dispatch_key`。
-- **入口阻断：** 完整字段矩阵、其余 19 项及 E08–E14 status/状态闭集/关联键/幂等承诺仍缺；E02 已批准使用 `POST`，
+- **入口阻断：** 完整字段矩阵、其余 17 项及 E08–E14 status/状态闭集/关联键/幂等承诺仍缺；E02 已批准使用 `POST`，
   不再形成 Phase 2 前置阻断。
 - **异步缺口：** 初稿 E08/E09 只给 submit 与 `task_id`，没有 status method/path、状态闭集、幂等和关联承诺；proposed
   status endpoint 不得提前实现。
@@ -844,7 +841,7 @@ Phase 5 必须基于届时真实代码重新运行 Serena/GitNexus 引用分析�
 
 | Review | 本轮状态 | 发现 | 未解决 | 说明 |
 | --- | --- | ---: | ---: | --- |
-| ENG REVIEW | BLOCKED | 11 | 1 | 其余 19 项、完整字段矩阵与异步关联仍待批准；E02 已批准使用 `POST` |
+| ENG REVIEW | BLOCKED | 11 | 1 | 其余 17 项、完整字段矩阵与异步关联仍待批准；E02 已批准使用 `POST` |
 | INDEPENDENT REVIEW | CLEAR | 42 | 0 | 累计 42 项均已核验修复；最终独立复审未检出新意见；外部合同阻断不计为文档缺陷 |
 | SERENA REVIEW | CLEAR | 3 | 0 | 已激活 `wes_backend` 并完成符号/引用复核；3 个可复现类型合同问题已修复，仓库 `uv run basedpyright` 为零错误 |
 | SEQUENTIAL REVIEW | CLEAR | 7 | 0 | Decision A、prefix 所有权、阶段边界、单次发送、事务与测试所有权已闭合 |
@@ -854,5 +851,5 @@ Phase 5 必须基于届时真实代码重新运行 Serena/GitNexus 引用分析�
 
 **UNRESOLVED DECISIONS:**
 
-- WMS 合同：补齐 16 项完整字段矩阵，由 WMS/业务方补齐和批准其余 19 项 operation，并冻结 E08–E14 status、状态闭集、
+- WMS 合同：补齐 16 项完整字段矩阵，由 WMS/业务方补齐和批准其余 17 项 operation，并冻结 E08–E14 status、状态闭集、
   `request_id`/`task_id` 关联和幂等承诺。

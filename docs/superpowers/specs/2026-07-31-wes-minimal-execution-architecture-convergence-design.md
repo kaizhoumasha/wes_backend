@@ -12,6 +12,7 @@ supersedes:
   - docs/superpowers/README.md 中登记的全部项目外历史设计；这些资料仅供追溯，不是当前合同或实施入口
 related:
   - docs/architecture/SRS.md
+  - docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md
   - docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md
   - docs/architecture/device-command-contract.md
   - docs/integration/callback_event_validation_principles.md
@@ -229,13 +230,12 @@ OpenAPI 和测试，不建立新 hint 路径。普通事件和获批 hint 都不
 capability registry、动态发现或 WMS codegen。新增、优化或删除能力时，开发者只修改该能力模块、对应端口方法、
 Gateway 绑定和同名测试；测试态 conformance harness 自动检查这些触点，不能被生产装配导入。
 
-Phase 3 代码实施前，WMS 北向合同必须逐项列出 35 项 method/path、request/result 字段、必填性、类型、枚举/精度/时间格式
-和业务拒绝码。`docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，作为业务输入只读保留；Decision A
-采用其覆盖 16 项的 path/业务字段和当前批准 method，E02 为 `POST`；旧 MCS 架构、Bearer、retry/cache 和分页样例不覆盖
-当前架构决定，且未覆盖的 19 项不得从旧实现猜测。Phase 2 `base_url` 只保存 origin，operation path 持有完整 API prefix；
-当前合同已批准 E02 使用 `POST` 并保持初稿 path，不需要扩展 Phase 2 method。完整字段矩阵、其余 19 项裁决，以及
-E08–E14 status method/path、状态闭集、`request_id`/`task_id` 关联和幂等承诺任一未通过前，只允许补全合同文档，
-不得启动新 Adapter 编码。
+Phase 3 代码实施前，WMS 北向合同必须逐项列出真实消费者所需 operation 的 method/path、request/result 字段、必填性、
+类型、枚举/精度/时间格式和业务拒绝码。`docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，作为业务输入
+只读保留；旧 MCS 架构、Bearer、retry/cache 和分页样例不覆盖当前架构决定。出库场景不再查询拣货单、出库单、波次或
+任务快照，改由 WMS 下发执行级 `PickingTask`；不得为了维持旧 operation 数量保留无消费者能力。Phase 2 `base_url`
+只保存 origin，operation path 持有完整 API prefix。完整字段矩阵、出库 NG/完成通知，以及 E08–E14 status method/path、
+状态闭集、关联和幂等承诺任一未通过前，只允许补全合同文档，不得启动新 Adapter 编码。
 
 当前由 WMS 转发的 AGV/CTU 操作不属于 `WmsCapabilities` 或 `WmsConfirmation`。它们通过 Transport Port
 调用无状态 WMS 转发 Client；HTTP submit/status 可以表达异步搬运任务，但任务持久化、领取、轮询、重试、
@@ -534,13 +534,9 @@ ECS 每次物理搬运的是完整料盘。来源分配中的数量 `N` 表示�
 
 ### 10.3 出库来源
 
-WMS 可以提供：
-
-- 精确料盘标识集合。
-- 位置加数量。
-
-五层货架料箱料格按 LIFO 选择顶部 `N` 个料盘。若 WMS 指定精确料盘，则指定料盘必须满足顶部可达约束。
-退货或转运货架储位数量只能是 1。
+WMS 必须提供每个待拣完整料盘的精确 `reel_id` 和物理来源位置。五层货架料箱料格中的待拣料盘按顶部到下层的
+LIFO 实际顺序排列，并构成当前可达连续前缀；WES 不根据“位置加数量”自行选择料盘。退货或转运货架以单储位、
+单料盘作为精确来源。
 
 ### 10.4 自动线即时目标料格计算
 
@@ -567,7 +563,7 @@ WMS 可以提供：
 
 1. 操作员将完整料盘放入入口。
 2. 入料机械臂感应、扫码和测量，并通过 ECS EVENT 上报。
-3. WES 通过无副作用 Q19 完成业务准入校验，并作出本地测量判定；此时不创建 GRN/package 绑定或入库确认。
+3. WES 通过无副作用 Q15 完成业务准入校验，并作出本地测量判定；此时不创建 GRN/package 绑定或入库确认。
 4. 通过后下发厂商定义的入料机械臂长命令。
 5. 成功 CALLBACK 后，料盘进入粗分机流水线；入料机械臂立即可以处理下一料盘。
 6. 流水线长命令完成后，料盘到达出料侧。
@@ -603,15 +599,16 @@ WMS 可以提供：
 
 ### 11.3 自动分拣线出库
 
-1. WMS 提供出库单、物料明细和来源分配。
-2. WES 按来源分配展开料盘级执行。
-3. 五层货架料箱料格按 LIFO 校验和选择；退货、转运货架按单储位单料盘校验。
-4. WES 请求 WMS/AGV/CTU 把来源货架或料箱送到对应工作位置。
-5. 自动设备按 WMS 来源事实逐个取出完整料盘。
-6. 若存在工作线内装箱动作，目标格仍在实际 PUT 前即时计算，不提前预留。
-7. 每个物理完成事实即时写投影并同步 WMS。
+1. WMS 根据订单、波次、库存和产线需求形成执行级 `PickingTask`；WES 不读取或解释这些业务单据。
+2. `PickingTask` 固定精确 `reel_id`、来源位置和目标生产转运货架面/储位，WES 整单校验后排队。
+3. WES 选中任务后请求 WMS 分配并锁定目标空架；目标架与来源架允许并行预调度。
+4. 目标架先完成 A 面再完成 B 面；来源架进入工作位时 A 面朝向设备，并按当前目标面依次处理来源 A/B 面。
+5. 料箱料格按 WMS 给定的顶部到下层 LIFO 顺序执行；退料/转运货架按单储位单料盘执行。
+6. NG 料箱隔离到专用出口，正常料箱继续；替代来源只由 WMS 为原任务未完成项追加。
+7. 无替代库存时，目标架移至缺料待补缓存，保留原任务绑定并等待 WMS 明确恢复。
+8. 全部任务项物理完成后，WES 通知 WMS“拣货完成”，并等待目标架移出工作位后释放下一任务。
 
-WES 不重新决定来源库存，也不修改 WMS 来源分配。
+完整业务合同以 `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 为准。
 
 ### 11.4 满箱交换
 

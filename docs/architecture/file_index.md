@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-05
+**最后更新**：2026-08-06
 
 ## 1. 真源与入口
 
@@ -29,10 +29,11 @@
 | --- | --- |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
+| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、双面货架、NG/补料/恢复与完成业务真源 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 WMS Adapter 暗构建计划；16 项 wire 已裁决，完整字段/19 项/E08–E14 异步关联待批准 |
+| `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 WMS Adapter 暗构建计划；16 项 wire 已裁决，完整字段/17 项/E08–E14 异步关联待批准 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
-| `docs/contracts/wms-northbound-interaction-contract.md` | WMS 北向 wire owner；16 项初稿基线已裁决，完整字段/19 项/E08–E14 异步关联待批准 |
+| `docs/contracts/wms-northbound-interaction-contract.md` | WMS 北向 wire owner；16 项初稿基线已裁决，完整字段/17 项/E08–E14 异步关联待批准 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand 与 Adapter 边界 |
 | `docs/plugin_development_guide.md` | 插件 SPI、封闭 Decision 与独立包交付指南 |
