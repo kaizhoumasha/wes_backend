@@ -158,7 +158,30 @@ heavy_tests = [
     "tests/integration/test_celery_prefork_harness_cleanup.py",
 ]
 
-# Callback/Repository/Outbox/Intent 测试只映射可穷尽的窄 source/support；共享 DB/conftest 与广泛依赖继续 fail closed。
+# FAST SQLite 共享 fixture 只影响显式消费 db_engine/db_session 的 HEAVY 测试。
+[[mapping]]
+source_glob = "tests/conftest.py"
+heavy_tests = [
+    "tests/integration/test_base_repository_crud.py",
+    "tests/integration/test_base_repository_hooks.py",
+    "tests/integration/test_callback_external_payload_limit.py",
+    "tests/integration/test_command_result_correlation_authority.py",
+    "tests/integration/test_device_runtime_projection_writer_service.py",
+    "tests/integration/test_optimistic_lock.py",
+    "tests/integration/test_runtime_inbox_claim_repository.py",
+    "tests/integration/test_runtime_inbox_consumer_service.py",
+    "tests/integration/test_runtime_inbox_repository_consumers.py",
+    "tests/integration/test_runtime_inbox_service_internal_events.py",
+    "tests/integration/test_runtime_intent_log_effect_repository.py",
+    "tests/integration/test_runtime_intent_log_idempotency.py",
+    "tests/integration/test_system_outbox_dispatch_concurrency.py",
+    "tests/integration/test_system_outbox_repository.py",
+    "tests/integration/test_wms_event_runtime_inbox_idempotency.py",
+    "tests/resilience/test_runtime_inbox_failure_state_machine.py",
+    "tests/resilience/test_wms_circuit_breaker.py",
+]
+
+# Callback/Repository/Outbox/Intent 测试只映射可穷尽的窄 source/support；其余共享支撑与广泛依赖继续 fail closed。
 [[mapping]]
 source_glob = "src/app/callback/v1/callback.py"
 heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]

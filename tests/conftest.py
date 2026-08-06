@@ -34,9 +34,9 @@ def event_loop():
     loop.close()
 
 
-@pytest_asyncio.fixture(scope="function")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def db_engine():
-    """创建测试数据库引擎"""
+    """创建一次 FAST 测试共享数据库引擎与完整 schema。"""
     engine = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
@@ -51,19 +51,24 @@ async def db_engine():
         await conn.run_sync(SQLModel.metadata.create_all)
 
     yield engine
-
-    # 清理
-    async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.drop_all)
-
     await engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="function")
 async def db_session(db_engine):
-    """创建测试数据库会话"""
-    async_session = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    """在可回滚的外层事务中隔离每个 FAST 数据库用例。"""
+    async with db_engine.connect() as connection:
+        # aiosqlite 会延迟物理 BEGIN；先显式开启事务，避免首个 SAVEPOINT 被释放时提交测试数据。
+        await connection.exec_driver_sql("BEGIN")
+        async_session = async_sessionmaker(
+            connection,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
 
-    async with async_session() as session:
-        yield session
-        await session.rollback()
+        async with async_session() as session:
+            yield session
+
+        if connection.in_transaction():
+            await connection.rollback()

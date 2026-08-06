@@ -61,6 +61,25 @@ WMS_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_ef
 WMS_PROVIDER_COLLECTION_HEAVY_TEST = "tests/integration/test_wms_provider_conformance_collection.py"
 WMS_PROVIDER_SIMULATOR_HEAVY_TEST = "tests/mock/test_wms_provider_conformance_simulator.py"
 WMS_EVENT_RUNTIME_INBOX_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_wms_event_runtime_inbox_idempotency.py"
+SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
+    "tests/integration/test_base_repository_crud.py",
+    "tests/integration/test_base_repository_hooks.py",
+    "tests/integration/test_callback_external_payload_limit.py",
+    "tests/integration/test_command_result_correlation_authority.py",
+    "tests/integration/test_device_runtime_projection_writer_service.py",
+    "tests/integration/test_optimistic_lock.py",
+    "tests/integration/test_runtime_inbox_claim_repository.py",
+    "tests/integration/test_runtime_inbox_consumer_service.py",
+    "tests/integration/test_runtime_inbox_repository_consumers.py",
+    "tests/integration/test_runtime_inbox_service_internal_events.py",
+    "tests/integration/test_runtime_intent_log_effect_repository.py",
+    "tests/integration/test_runtime_intent_log_idempotency.py",
+    "tests/integration/test_system_outbox_dispatch_concurrency.py",
+    "tests/integration/test_system_outbox_repository.py",
+    "tests/integration/test_wms_event_runtime_inbox_idempotency.py",
+    "tests/resilience/test_runtime_inbox_failure_state_machine.py",
+    "tests/resilience/test_wms_circuit_breaker.py",
+)
 
 
 def _write_mapping(
@@ -160,7 +179,13 @@ def test_get_changed_files_uses_expected_git_diff(
     ]
 
 
-def test_get_changed_files_reports_both_paths_for_staged_rename(tmp_path: Path) -> None:
+def test_get_changed_files_reports_both_paths_for_staged_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Git hook 会注入当前仓库位置和索引；临时仓库必须使用自己的 Git 状态。
+    for variable in ("GIT_COMMON_DIR", "GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"):
+        monkeypatch.delenv(variable, raising=False)
     git = shutil.which("git")
     assert git is not None
     subprocess.run([git, "init", "-q"], cwd=tmp_path, check=True)
@@ -644,12 +669,17 @@ def test_repository_mapping_keeps_unaccepted_candidates_unmapped() -> None:
         "docker-compose.yml",
         "tests/integration/conftest.py",
         "tests/fixtures/orders.json",
-        "tests/conftest.py",
         "tests/runtime/conftest.py",
         "tests/support/runtime_factory.py",
     ):
         with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
             select_heavy_tests([candidate], config)
+
+
+def test_repository_mapping_selects_shared_fast_database_fixture_consumers() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["tests/conftest.py"], config) == list(SHARED_FAST_DB_FIXTURE_HEAVY_TESTS)
 
 
 def test_repository_mapping_declares_required_ignore_globs() -> None:
@@ -732,6 +762,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
             ),
         ),
+        ("tests/conftest.py", SHARED_FAST_DB_FIXTURE_HEAVY_TESTS),
         ("src/app/callback/v1/callback.py", (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,)),
         (
             "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
