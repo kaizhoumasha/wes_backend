@@ -10,9 +10,10 @@
 | --- | --- | --- |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
+| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与双面货架执行业务真源 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | Reviewed；Phase 2 已完成，Phase 3 字段合同前置待完成 |
-| `plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 WMS Adapter 暗构建 | 16 项 wire 已裁决；Task 2–12 继续阻断 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 2 已完成，Phase 3 Task 1 阻断 |
+| `plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 无状态 WMS 业务 ACL 暗构建 | PickingTask 业务语义已冻结；Task 1 尚待条件候选消费者与 WMS wire 批准 |
 
 ## 项目外历史归档
 
@@ -21,6 +22,9 @@
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md`
+- `../archive_docs/wes_backend/docs/architecture/adr/2026-05-26-wms-integration-domain.md`
+- `../archive_docs/wes_backend/docs/business/wms_full_factory_operation_blueprint.md`
+- `../archive_docs/wes_backend/docs/business/wms_rcs_interface_requirements.md`
 
 - `../archive_docs/wes_backend/2026-07-03-phase4-design-with-residuals.md`
 - `../archive_docs/wes_backend/2026-07-04-runtime-evidence-readiness.md`
@@ -130,7 +134,7 @@
 
 以下资料只作为对应 Adapter 或 WorkLine 插件的外部输入，不是 WES 核心架构真源，也不得进入核心测试：
 
-- `docs/business/wms_full_factory_operation_blueprint.md`
+- `docs/hardware/wms_rcs_interface_requirements.md`
 - `docs/hardware/CTU&AGV对接流程（完成80%）.pdf`
 - `docs/hardware/SMT分拣机ECS接口调用说明书V1-20260318.md`
 - `docs/hardware/SMT分拣机ECS接口调用说明书V1-20260318.pdf`

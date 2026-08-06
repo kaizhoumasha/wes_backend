@@ -2,69 +2,53 @@
 
 ## 状态
 
-Accepted - 2026-05-13；wire 边界按当前 WMS 合同于 2026-08-06 澄清
+Accepted - 2026-05-13；阶段所有权于 2026-08-06 澄清
 
 ## 背景
 
-当前顶层 SPEC 要求 WES 保留作业期执行事实与资源投影，但不得将本地投影升级为 WMS 主账或全局规划真源。
-
-当前 SRS 的早期版本曾同时存在两个口径：
-
-- WES 采用纯代理模式，不维护库存主账，库存数量、预留、扣减和账务由 WMS 负责。
-- SMT 混合入库章节曾写到 WES 锁定五层空箱、交换两个容器库存属性、Pick_Fail 后自动扣减库存。
-
-这两个口径不能同时进入实现。否则资源模块会变成影子 WMS，满箱交换也会在 WES 与 WMS/RCS 之间形成双真相源。
+WES 需要保存作业期执行事实与资源投影，但不能把本地快照升级为 WMS 库存主账，也不能把经 WMS 转发的
+RCS 动作混入 WMS 业务 ACL。若三类职责混在同一 Adapter，库存权威、运输履约和 WES 本地执行会形成重复所有者。
 
 ## 决策
 
-1. WMS 是库存、预留、扣减、账务、SAP 同步和空箱资源授权的唯一权威。
-2. WES 可以持久化执行事实、过程快照、资源关系投影、回写证据和对账证据，但这些事实不能作为库存可用性、库存属性交换、库存扣减或资源授权的本地主账。
-3. 满箱交换 v1 中，WES 不锁定五层货架空箱，不本地判断交换区空位，不交换两个容器库存属性。WES 只提交
-   `wms.fulfillment.full_box_exchange@v1`，目标上以 typed ACK、status query 与 typed terminal result 收敛结果；精确
-   method/path、状态闭集、关联和幂等语义必须先由当前 WMS 合同批准。
-4. 生产发料、Pick_Fail、退料和入库确认中，WES 不自动扣减库存。WES 记录设备失败和诊断，将当前具体执行对象标记为硬件故障或依赖停顿，并等待 WMS 确认、拒绝或人工授权。
-5. E08–E14 的目标完成链为 typed ACK → status query → typed terminal result；可选 `WMS_EFFECT_STATUS_HINT` 只能唤醒查询，
-   不携带终态，也不直接推进资源投影。status method/path、状态闭集、`request_id`/`task_id` 关联、幂等承诺和 hint payload
-   在 WMS 合同批准前均不得实现或推定。
-6. WMS 四类普通事件走 `/api/v1/callback/event`，必须先持久化为 `InboundEvidence` 再 ACK，且不得作为
-   `TransportTask` 终态。`WMS_EFFECT_STATUS_HINT` 只有在 inbound 合同完整批准且 Phase 4 唯一 successor 已验收时，才可走
-   `/api/v1/callback/external` 并只唤醒对应查询；否则 successor 为 `NONE`，Phase 5 只删除旧 route、payload、OpenAPI 和测试，
-   不建立平行终态入口或新 hint 路径。
-7. `ResourceStateEvent` 是 append-only 事实账本；`RackPlacement`、`RackBinMount`、`RackMaterialMount` 是当前关系投影。冲突、乱序、迟到或缺字段只能追加 evidence，并将具体执行对象进入安全停顿或人工清线，不能静默覆盖。
+1. WMS 是库存、预留、扣减、账务、SAP 同步和业务任务的唯一权威。
+2. WES 可以持久化执行事实、过程快照、资源关系投影与冲突证据；这些事实不能作为库存可用性、库存属性交换、
+   库存扣减或资源授权的本地主账。
+3. Phase 3 只建设无状态、消费者驱动的 WMS 业务 ACL：
+   - 读取真实消费者需要的 WMS 权威业务事实；
+   - 发送真实消费者需要的 WES→WMS 业务确认；
+   - 标准化 WMS→WES 业务命令 DTO；
+   - 每次调用只发送一次并返回封闭结果，不拥有数据库、evidence、重试、breaker 或生命周期。
+4. AGV/CTU 的搬运、交换、旋转、入线、退线及履约状态属于 Phase 4 `Transport Port`。WMS 只是当前 RCS
+   网络转发入口；Phase 4 的 WMS 转发 RCS Adapter 直接消费 Phase 2 HTTP Transport，不经过 Phase 3 WMS 业务 ACL。
+5. `TransportTask` 拥有运输意图、内部关联、超时、结果证据和状态推进。ACK、已受理或已下发都不是完成事实；
+   只有 Phase 4 Transport 合同定义的终态结果才能推进等待中的运输动作。
+6. WMS 普通业务 callback 与运输终态入口分离。普通 callback 不能直接终结 `TransportTask`，也不能绕过具体对象
+   owner 修改执行对象或投影。
+7. 满箱交换、生产发料、Pick_Fail、退料和入库确认都不得由 WES 本地改库存。WES 只记录执行事实并通过对应
+   业务确认或 Transport 意图请求外部权威处理。
 
-## WMS 异步 EFFECT 证据所有权与待批准边界
+## 端口与证据所有权
 
-E08–E14 的目标终态权威链固定为 typed ACK → status query → typed terminal result，但精确 wire 仍以
-`docs/contracts/wms-northbound-interaction-contract.md` 的逐项批准结果为准。CTU 入线、退线目标上使用 E12/E13 批次级结果；
-WMS 未批准 ACK 成员、关联字段、版本和 terminal result 集合语义前，不得编码或从旧实现推定这些字段。
-
-| 证据 | 要求 |
-| --- | --- |
-| typed ACK | 不是完成事实；只接受逐 operation 合同批准的接纳范围和唯一 wire 关联字段。内部 `dispatch_key` 不自动进入 wire。 |
-| status snapshot | 只接受逐 operation 合同批准的关联、状态闭集和版本语义；单调性与 `NOT_FOUND` 语义当前不得推定。 |
-| typed terminal result | 只按获批 wire 关联与原请求/ACK 对应；完成后才允许 owner 校验并更新作业期投影。 |
-| `WMS_EFFECT_STATUS_HINT` | 只可唤醒获批 status query；payload/关联字段待批准，当前不得假定携带内部 `dispatch_key`。 |
-
-## 目标外部请求规则
-
-1. 插件需要同步 WMS 事实时，只通过注入的 `WmsCapabilities` 发起类型化查询，不暴露 HTTP 或 Provider DTO。
-2. 改变 WMS 业务状态的确认由封闭 Decision 创建 `WmsConfirmation`；确认对象拥有义务持久化、内部 `dispatch_key`、
-   领取、恢复和生命周期证据，确认发送器只负责一次同步 HTTP 调用及该次调用证据。Adapter 只把内部键映射为逐 operation
-   获批的一个 wire 幂等/关联字段；未批准时不得声称远端幂等或安全重提。
-3. AGV/CTU 搬运、交换、旋转或补给需求由 Decision 创建 `TransportTask`；任务自身拥有内部 `dispatch_key`、业务目标、
-   超时和目标 ACK/status/终态证据所有权，wire 关联和状态语义仍须逐项批准。
-4. ECS 设备动作只通过 `DeviceCommand` 执行，不与 `TransportTask` 或 `WmsConfirmation` 共用通用 Intent/Effect/Outbox 状态机。
-5. 超时、ACK 耗尽、迟到终态或 payload hash 冲突不得绕过具体对象 owner 推进投影；必须保留 evidence 并进入硬件故障、依赖停顿或人工清线。
+| 交互 | 阶段与 owner | WES 边界 |
+| --- | --- | --- |
+| WMS 权威业务查询 | Phase 3 WMS 业务 ACL | 同步读取一次；不跨请求缓存为主账 |
+| WES→WMS 业务确认 | Phase 3 WMS 业务 ACL + 具体业务义务 owner | ACL 只翻译一次调用；消费者拥有可靠性 |
+| WMS→WES 业务命令 | Phase 3 inbound DTO/normalizer + 具体业务 owner | normalizer 不执行编排或持久化 |
+| AGV/CTU 搬运与状态 | Phase 4 `TransportTask` + `Transport Port` + WMS 转发 RCS Adapter | 不经过 Phase 3，不复制 RCS 实时位置或 SDK 状态 |
+| ECS 设备动作 | `DeviceCommand` + ECS Adapter | 不与 Transport 或 WMS 确认共用通用状态机 |
+| 作业期资源投影 | 对应执行对象 + projection writer | 只由已校验的终态 evidence 推进 |
 
 ## 后果
 
-- 资源模型只覆盖 WES 作业期资源事实；执行链分别落到 `DeviceCommand`、`TransportTask`、`WmsConfirmation`、资源事实账本和当前投影。
-- SRS 已同步明确“WES 不锁空箱、不交换库存属性、不自动扣减库存”，需求与本 ADR 保持一致。
-- 任何实现计划若需要 WES 本地判断库存可用性、空箱授权或库存扣减，必须先提出新的 ADR。
+- `docs/contracts/wms-northbound-interaction-contract.md` 只冻结 Phase 3 WMS 业务交互，不再承载运输协议。
+- Phase 4 必须单独冻结 WMS 转发 RCS 的 Transport 合同；不得从厂商历史编号或旧 WMS integration 实现推定目标 wire。
+- Phase 3 不创建 `TransportTask`、`WmsConfirmation`、数据库模型、迁移、repository、evidence 表或通用熔断器。
+- 任何实现计划若要求 WES 本地判断库存可用性、空箱授权或库存扣减，必须先提出新的 ADR。
 
 ## 验收
 
-- `docs/architecture/SRS.md` 作为当前需求真源保留，并引用顶层 SPEC、当前 WMS 合同与本 ADR 落实架构边界。
-- `docs/business/wms_rcs_interface_requirements.md` 已明确 E08–E14 的 typed ACK/status/terminal result 目标权威链和可选
-  status hint 所有权；精确 wire 仍由北向合同逐项批准。
-- 满箱交换计划和资源模型 spec 引用本 ADR，不再把第零阶段留成未解决门禁。
+- SRS 继续保留原始业务需求，仅在架构说明处明确 WMS、WES 与 RCS 的 owner。
+- Phase 3 合同中的每个 operation 都能追溯到真实消费者，并已由 WMS 批准 method/path/DTO/拒绝语义。
+- Phase 3 生产包中不存在 Transport、AGV、CTU、RCS、状态轮询、持久化或可靠生命周期实现。
+- Phase 4 Transport 测试与 Phase 3 WMS 业务 ACL 测试互不替代。
