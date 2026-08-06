@@ -11,8 +11,10 @@ from sqlalchemy.dialects import postgresql
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from tests.load.runtime_inbox_postgresql_benchmark import (
     BENCHMARK_EVIDENCE_SCHEMA_VERSION,
+    CLAIM_P95_THRESHOLD_MS,
     PRODUCTION_CLAIM_BUILDER,
     PRODUCTION_CLAIM_STATEMENT_KIND,
+    THROUGHPUT_THRESHOLD_PER_SECOND,
     _clear_selective_plan_fixture,
     _validate_selective_query_plan,
     validate_runtime_inbox_benchmark_evidence,
@@ -77,10 +79,10 @@ def _valid_evidence() -> dict[str, object]:
         "sample_count": 1000,
         "metrics": {
             "claim_p50_ms": 80.0,
-            "claim_p95_ms": 149.0,
+            "claim_p95_ms": CLAIM_P95_THRESHOLD_MS - 1,
             "claim_sample_count": 1000,
-            "throughput_per_second": 1000.0,
-            "elapsed_seconds": 1.0,
+            "throughput_per_second": 500.0,
+            "elapsed_seconds": 2.0,
             "duplicate_claim_count": 0,
             "lock_observation_count": 12,
             "waiting_lock_samples": 0,
@@ -88,8 +90,8 @@ def _valid_evidence() -> dict[str, object]:
             "processed_count": 1000,
         },
         "thresholds": {
-            "claim_p95_ms": 150.0,
-            "throughput_per_second": 1000.0,
+            "claim_p95_ms": CLAIM_P95_THRESHOLD_MS,
+            "throughput_per_second": THROUGHPUT_THRESHOLD_PER_SECOND,
             "duplicate_claim_count": 0,
             "lock_observation_count": 1,
             "waiting_lock_samples": 0,
@@ -144,7 +146,10 @@ async def test_selective_fixture_cleanup_deletes_only_owned_rows_without_truncat
         (lambda evidence: evidence["repository"].update(commit_sha="c" * 40), "COMMIT_MISMATCH"),
         (lambda evidence: evidence["repository"].update(dirty=True), "DIRTY_WORKTREE"),
         (lambda evidence: evidence["verdict"].update(passed=False), "FAILED_VERDICT"),
-        (lambda evidence: evidence["metrics"].update(claim_p95_ms=151.0), "FAILED_VERDICT"),
+        (
+            lambda evidence: evidence["metrics"].update(claim_p95_ms=CLAIM_P95_THRESHOLD_MS + 1),
+            "FAILED_VERDICT",
+        ),
         (lambda evidence: evidence["thresholds"].update(claim_p95_ms=999.0), "INVALID_THRESHOLD"),
         (lambda evidence: evidence["config"].update(worker_concurrency=1), "INVALID_CONFIG"),
         (lambda evidence: evidence["query_plan"]["selective"].update(index_names=[]), "FAILED_VERDICT"),
