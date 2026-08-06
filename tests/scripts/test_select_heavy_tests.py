@@ -723,6 +723,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/wms_integration/deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
         ("scripts/check_runtime_production_e2e_gate.py", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
         ("scripts/run_runtime_benchmarks.py", (RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,)),
+        ("scripts/run_runtime_inbox_postgresql_acceptance_ci.sh", (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,)),
         (
             "tests/load/runtime_benchmark_scenarios.py",
             (
@@ -956,6 +957,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/wms_integration/deployment_attestation.py", [WMS_DEPLOYMENT_HEAVY_TEST]),
         ("scripts/check_runtime_production_e2e_gate.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
         ("scripts/run_runtime_benchmarks.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
+        ("scripts/run_runtime_inbox_postgresql_acceptance_ci.sh", [RUNTIME_INBOX_PROCESSING_HEAVY_TEST]),
         (
             "tests/load/runtime_benchmark_scenarios.py",
             [
