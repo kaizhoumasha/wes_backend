@@ -128,7 +128,7 @@ PickingTask
 以下示例是可直接复制和解析的严格 JSON，用于帮助开发人员、Agent 和业务评审者统一理解 `PickingTask`。它同时覆盖：
 
 - `BIN_CELL` 与 `RACK_SLOT` 两类来源。
-- 同一料格内两个料盘按顶部到下层排列。
+- 同一料格内两个料盘按顶部到下层排列，并形成合法的目标 A 面到 B 面顺序。
 - 目标货架 A、B 两面储位。
 - 任务排队时只声明目标货架条件，不提前绑定具体目标 `rack_id`。
 
@@ -178,8 +178,8 @@ PickingTask
         "top_to_bottom_sequence": 2
       },
       "target_locator": {
-        "target_face": "A",
-        "target_slot_id": "A-02"
+        "target_face": "B",
+        "target_slot_id": "B-01"
       }
     },
     {
@@ -196,15 +196,48 @@ PickingTask
       },
       "target_locator": {
         "target_face": "B",
-        "target_slot_id": "B-01"
+        "target_slot_id": "B-02"
       }
     }
   ]
 }
 ```
 
+标准 JSON 不支持行内注释。为使示例既可直接解析，又能逐字段解释，字段含义统一写在紧邻示例的表格中，不增加
+JSONC 副本或 `_comment` 伪字段：
+
+#### PickingTask 字段注释
+
+| 字段 | 含义与约束 |
+| --- | --- |
+| `task_id` | WMS 分配的 PickingTask 稳定业务标识。 |
+| `task_version` | WMS 下发的整单版本；与 `task_id` 共同参与接入幂等和内容冲突校验。 |
+| `priority` | WMS 给出的业务优先级；数值范围由 wire 合同冻结，WES 按值降序选择任务。 |
+| `issued_at` | WMS 下发时间；相同优先级时按该时间升序排序。 |
+| `workline_code` | 任务指定的自动出库工作线。 |
+| `target_requirement` | 目标生产转运货架必须满足的条件；排队阶段不包含具体目标 `rack_id`。 |
+| `target_requirement.physical_type` | 目标货架物理类型；本场景固定为双面料盘货架。 |
+| `target_requirement.initial_face` | 目标架进入工作位时朝向设备的面；本场景固定为 `A`。 |
+| `task_items[]` | 唯一执行明细集合；数组顺序不代表 WES 的全局设备动作顺序。 |
+| `task_items[].item_id` | 单个任务项在 PickingTask 内的稳定标识，也是追加替代来源时的关联键。 |
+| `task_items[].reel_id` | WMS 指定的精确料盘身份，不允许 WES 按物料或数量自行替代。 |
+| `task_items[].material_fact` | WMS 提供的最小物料核对事实；只用于执行校验和证据关联，不把 WES 变成库存主账。 |
+| `task_items[].material_fact.material_id` | 料盘对应的物料标识。 |
+| `task_items[].source_locator` | WMS 分配的精确来源位置。 |
+| `task_items[].source_locator.type` | 来源类型：`BIN_CELL` 表示料箱料格堆叠料盘，`RACK_SLOT` 表示货架单储位料盘。 |
+| `task_items[].source_locator.rack_id` | 来源货架标识。 |
+| `task_items[].source_locator.rack_face` | 来源位置所在货架面，取值为 `A` 或 `B`。 |
+| `task_items[].source_locator.bin_id` | `BIN_CELL` 来源的料箱标识；`RACK_SLOT` 不提供。 |
+| `task_items[].source_locator.cell_id` | `BIN_CELL` 来源的料格标识；`RACK_SLOT` 不提供。 |
+| `task_items[].source_locator.top_to_bottom_sequence` | 同一料格内从顶部到底部的 1 起始连续序号；较小序号必须先完成。 |
+| `task_items[].source_locator.slot_id` | `RACK_SLOT` 来源的储位标识；`BIN_CELL` 不提供。 |
+| `task_items[].target_locator` | WMS 已规划的精确目标位置。 |
+| `task_items[].target_locator.target_face` | 目标生产转运货架面，取值为 `A` 或 `B`。 |
+| `task_items[].target_locator.target_slot_id` | 目标面内的唯一储位标识；一个储位只能对应一个任务项。 |
+
 示例中的 `task_items[]` 顺序不是 WES 的全局设备动作顺序；`top_to_bottom_sequence` 只表达同一料格内不可违反的
-物理可达顺序。WES 仍按“目标 A 面完成后再处理目标 B 面”派生来源架和来源面的执行分组。
+物理可达顺序。前两个任务项展示同一料格的合法跨面顺序：顶部料盘进入目标 A 面，下一层料盘进入目标 B 面。
+WES 仍按“目标 A 面完成后再处理目标 B 面”派生来源架和来源面的执行分组。
 
 当来源异常且任务已经开始时，WMS 只为未完成项追加替代来源。以下 JSON 表达追加的业务语义；原异常来源仍保留为
 历史证据，不被本次增量覆盖：
@@ -229,6 +262,16 @@ PickingTask
 }
 ```
 
+#### 追加来源字段注释
+
+| 字段 | 含义与约束 |
+| --- | --- |
+| `task_id` | 定位需要追加来源的原 PickingTask。 |
+| `base_task_version` | 本次增量所基于的整单版本；最终并发和版本推进规则由 wire 合同冻结。 |
+| `source_additions[]` | 本次追加的替代来源集合。 |
+| `source_additions[].item_id` | 关联原任务中的未完成项，不创建新的任务项。 |
+| `source_additions[].source_locator` | 为该未完成项追加的精确来源；嵌套字段含义与主示例字段表一致，不重复定义。 |
+
 这两个示例冻结业务语义，不冻结最终 wire DTO。method、path、请求信封、字段类型与上限、枚举、幂等键、版本推进方式
 和拒绝码仍由 inbound wire 合同决定。实现和自动化测试不得解析 Markdown；wire 合同冻结后，必须把同一场景保存为
 DTO 所属包内独立的机器可读 JSON fixture，并由正式 DTO/Schema 直接校验。
@@ -241,12 +284,17 @@ DTO 所属包内独立的机器可读 JSON fixture，并由正式 DTO/Schema 直
 - `item_id` 和 `reel_id` 在任务内唯一。
 - 每个目标 `face + slot_id` 只对应一个任务项。
 - 每个任务项都有精确来源和精确目标，不接受“任意可用料盘”或仅数量来源。
-- `BIN_CELL` 中待拣 `reel_id` 必须按顶部到下层的实际顺序排列，且构成当前可达连续前缀。
+- 同一 `rack_id + rack_face + bin_id + cell_id` 定义一个独立料格执行序列。
+- `BIN_CELL` 中待拣 `reel_id` 必须构成当前顶部的连续可达前缀；`top_to_bottom_sequence` 必须从 `1` 开始、
+  连续且唯一，较小序号完成前不得执行较大序号。
+- 同一料格按 `top_to_bottom_sequence` 观察时，目标面只允许 `A...A → B...B`；`B → A` 或 `A → B → A`
+  会同时违反目标架 A/B 面顺序和料格 LIFO，不引入中间缓存绕过，整单拒绝。
 - `RACK_SLOT` 单储位只能对应一个料盘。
 - 目标 A/B 面、目标储位和任务项身份在任务开始后不可修改。
 - 已完成项不可覆盖、删除或重新分配。
 
-任一结构错误、来源身份缺失、目标冲突或 LIFO 前缀不合法，整张任务拒绝；WMS 修正后以新版本重发。
+任一结构错误、来源身份缺失、目标冲突、LIFO 前缀不合法或料格顺序与目标面顺序冲突，整张任务拒绝；WMS 修正后
+以新版本重发。
 
 ### 5.5 开始后的唯一追加能力
 
@@ -321,6 +369,9 @@ WMS 未返回具体空架前，WES 不自行选择或占用货架。
 
 来源架暂时不可用时，WES 可以在同一目标面内调整来源架顺序；不得为此提前切换目标面或重新选择库存。
 
+不同料格之间不存在固定的业务执行顺序。WES 可以在当前目标面内按来源架、来源面和就绪状态调整料格顺序，但每个
+料格内部始终受 `top_to_bottom_sequence` 的严格前置关系约束。
+
 ## 9. 料盘执行与证据
 
 每个 `task_item` 的标准因果链是：
@@ -354,7 +405,8 @@ flowchart LR
 
 ### 10.2 顶部料盘身份或 LIFO 冲突
 
-若实际顶部 `reel_id` 与 WMS 指定顺序不一致，说明来源库存身份无法可信解释。此时：
+接入阶段发现序号不连续、顶部前缀不完整或同料格目标面顺序冲突时，按第 5.4 节整单拒绝，不建立活动任务。
+任务执行期间若实际顶部 `reel_id` 与已接纳顺序不一致，说明来源库存身份无法可信解释。此时：
 
 - 不跳过顶部料盘，不从下层抽取，不用同物料其他料盘替代。
 - 暂停整张 `PickingTask`，保存扫码和位置冲突证据。
@@ -483,6 +535,9 @@ Phase 3 operation 清单已依据本文删除旧 Q10–Q13，并补入 NG 报告
 | 混合 `BIN_CELL` / `RACK_SLOT` 且目标包含 A/B 面 | 整单接纳 |
 | 两个任务项占用同一目标面和目标储位 | 整单拒绝 |
 | 同一料格的待拣料盘不是顶部连续前缀 | 整单拒绝 |
+| 同一料格序号重复、从非 `1` 开始或存在跳号 | 整单拒绝 |
+| 同一料格按顶部到底部出现目标面 `B → A` 或 `A → B → A` | 整单拒绝 |
+| 不同料格在当前目标面内调整执行先后 | 允许调整，同时保持各料格内部顺序 |
 | 为原任务未完成项追加精确替代来源 | 接纳增量，保留原来源证据 |
 
 fixture 必须是独立 `.json` 文件并通过正式 DTO/Schema 校验；不得复制一套仅供 MOCK 使用的宽松结构，也不得让测试
