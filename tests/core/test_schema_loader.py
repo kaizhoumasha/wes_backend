@@ -14,15 +14,12 @@ from typing import Any, cast
 import pytest_asyncio
 from pydantic import Field
 from sqlalchemy import ColumnElement, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models.perm import Permission, PermissionTree
 from src.app.admin.models.role import Role, RoleResponse
 from src.app.admin.models.user import User, UserResponse, UserSimpleResponse
-from src.core.mixins import DataTableMixin
 from src.core.schema_loader import apply_schema_loads, get_all_with_schema, get_with_schema
-from src.database.sqlite_schema import configure_sqlite_schemas
 
 
 def _where_clause(condition: Any) -> ColumnElement[bool]:
@@ -56,39 +53,6 @@ class UserNestedRoleResponse(UserSimpleResponse):
 
 
 # ==================== Fixtures ====================
-
-
-@pytest_asyncio.fixture
-async def db_engine():
-    """创建测试数据库引擎"""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        echo=False,
-        poolclass=StaticPool,
-    )
-
-    configure_sqlite_schemas(engine.sync_engine)
-
-    # 创建所有表
-    async with engine.begin() as conn:
-        await conn.run_sync(DataTableMixin.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
-
-
-@pytest_asyncio.fixture
-async def db_session(db_engine):
-    """创建数据库会话"""
-    async_session = async_sessionmaker(
-        db_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-
-    async with async_session() as session:
-        yield session
 
 
 @pytest_asyncio.fixture
