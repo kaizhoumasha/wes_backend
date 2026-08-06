@@ -121,6 +121,24 @@ reconciliation/
 `HttpWmsGateway` 行为无状态，只持有 Phase 2 Transport。每个公开调用恰好形成一次 `send`；无自动 retry、轮询、
 分页聚合或 callback 等待。
 
+### 4.1 后续新增 WMS API 的最小实施路径
+
+后续业务需要新增 WMS API 时，不扩建通用平台。开发者按同一条显式纵切片完成：
+
+1. 在北向合同登记目标阶段、具体消费者、调用时机、WMS 权威事实或业务义务；无法定位真实消费者时停止。
+2. 使用单项能力批准模板取得 WMS 对 method/path、闭集 DTO、错误码、幂等、权威元数据、数量/字节预算和版本化
+   machine-readable fixture/schema 的批准。
+3. 将能力放入职责匹配的既有窄端口；只有职责确实不同才增加新端口，不按接口数量拆端口。
+4. 增加操作专属 request/result/outcome、一个显式 Gateway/Normalizer 方法和一次 `OutboundHttpRequest` 映射；获批 method
+   不在 Phase 2 枚举内时，先以独立 TDD 变更扩展 Phase 2。
+5. 在 `tests/contracts/wms_adapter/` 先以获批 fixture/schema 写失败合同测试，再实现至通过；不得用 Phase 2 Transport
+   测试、核心业务测试或人类 Markdown 正文替代 wire 验收。
+6. 同步公开导出、消费者矩阵和实现状态。首个获批能力作为结构参考纵切片；复制其职责结构，不复制业务字段或抽象层次。
+
+正常单项扩展只触及该 operation 的 DTO、一个端口方法、Gateway/Normalizer 私有绑定、获批 fixture 和合同测试。相同语义
+与约束未在至少三个获批能力中重复前，不提取共享 helper；禁止生成器、配置驱动 API、生产 registry、generic `call`、
+动态发现或公共 `WmsCallSpec`。
+
 ## 5. 公开端口
 
 Phase 3 提供三条职责互斥的 outbound 业务端口：
@@ -209,7 +227,7 @@ Outcome 不决定 retry、dependency pause、terminal 或投影变化。Phase 4 
   且确需分页时，先单独修订基础传输/业务合同，本阶段不预建分页 seam。
 - [ ] 冻结 API ingress 所需的调用方认证合同或明确的局域网 `NONE` 条件；各 inbound operation 的 wire 仍按单项能力
   批准，不进入此跨能力门禁。认证决定不进入 Phase 2 Transport，也不从 outbound `NONE` 推导。
-- [ ] 冻结单项能力批准模板：目标消费者、method/path、闭集 request/result、错误码、幂等语义、权威元数据来源、数量与
+- [x] 冻结单项能力批准模板：目标消费者、method/path、闭集 request/result、错误码、幂等语义、权威元数据来源、数量与
   字节预算，以及 WMS 批准的版本化机器可读 fixture/schema。人类阅读文档不得被测试解析为合同真源。
 
 **验证：** Markdown 格式、项目内引用闭包、硬件原文 hash、`git diff --check`。不新增或修改测试代码。
@@ -329,7 +347,6 @@ Task 1 的跨能力门禁仍有以下阻断，因此当前不得启动代码或�
 - 多项 WMS 权威事实的共同 snapshot/version 或 fail-closed 一致性合同尚未冻结。
 - 列表/批量结果的最大项数、wire/decoded 字节预算和超限语义尚未冻结。
 - Inbound callback 的调用方认证合同或局域网 `NONE` 适用条件尚未获 WMS 批准。
-- 单项能力批准模板及独立机器可读 fixture/schema 要求尚未同步到 WMS 北向合同。
 
 Task 1 关闭后，下列未决事项只阻断各自能力及 Phase 3 最终退出，不阻断其他已获批能力进入 TDD：
 
@@ -363,7 +380,7 @@ Task 1 关闭后，下列未决事项只阻断各自能力及 Phase 3 最终退�
 Gateway/outcome 骨架；其余获批 outbound 与 inbound operation 分别在 Task 3–5 内逐项 TDD。虽然能力可以独立批准，
 但共同修改同一 `wms_adapter` 公开 surface 与 fixture 目录，当前规模下串行变更更简单；随后 Task 6/7 收口公开导出和门禁。
 
-**VERDICT：Phase 3 尚不可实施；只允许继续完成 Task 1 的业务与 WMS 合同确认。**
+**VERDICT：Phase 3 当前尚不可实施；单项批准模板与开发路径已收敛，只允许继续关闭 Task 1 的四项跨能力外部门禁。**
 
 ## GSTACK REVIEW REPORT
 
@@ -371,13 +388,16 @@ Gateway/outcome 骨架；其余获批 outbound 与 inbound operation 分别在 T
 | --- | --- | --- | ---: | --- | --- |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | 本轮未要求 |
 | Codex Review | `/codex review` | Independent 2nd opinion | 2 | CLEAR AFTER REPAIR | 本轮 10 项 findings 已全部裁决并回写 |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 2 | ISSUES OPEN (PLAN) | 本轮 13 项 findings，0 critical gap；外部批准未关闭 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 3 | ISSUES OPEN (EXTERNAL) | 计划内结构问题已修复；4 项跨能力外部批准未关闭 |
+| Serena Review | 仓库真实符号与引用扫描 | Code-shape evidence | 1 | CLEAR | Phase 2 显式 Transport 可复用；旧 registry/provider 包不作新实现模板 |
+| Sequential Review | 假设、反证与门禁复核 | Architecture consistency | 1 | BLOCKED (EXTERNAL) | 方案满足最小设计；4 项跨能力外部决定仍阻断实施 |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | 非 UI 规划 |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | 本轮未要求 |
+| DX Review | 架构复评内置检查 | Developer experience gaps | 1 | CLEAR | 新增 API 采用批准模板、显式纵切片和固定六步清单，不建设生成器或 registry |
 
 - **CODEX:** 补充并促成 Phase 4 暗构建依赖、逐能力批准、一致性/响应预算、独立 normalizer、独立 wire fixture 和单一任务体系；
   “响应阶段 failure 会直接全局停摆”与“没有当前生产消费者即违反 YAGNI”的严重度被降级为措辞澄清。
-- **VERDICT:** ENG + CODEX REVIEW COMPLETED — 计划结构已收敛，但 Phase 3 仍为 `BLOCKED_AT_TASK_1`，尚不可实施。
+- **VERDICT:** ENG + CODEX + SERENA + SEQUENTIAL REVIEW COMPLETED — 计划结构已收敛，但 Phase 3 仍为
+  `BLOCKED_AT_TASK_1`，尚不可实施。
 
 **UNRESOLVED DECISIONS:**
 

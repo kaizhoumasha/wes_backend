@@ -223,15 +223,17 @@ WMS 四类普通业务事件通过 `/api/v1/callback/event` 接收，必须先�
 工作线对象判定。`WMS_EFFECT_STATUS_HINT` 的当前 successor 为 `NONE`；Phase 5 只删除旧 route、payload、OpenAPI 和测试，
 不建立新 hint 路径。普通事件不得直接充当外部任务终态。
 
-每项 WMS 能力采用一个垂直模块，模块内聚 request/result DTO、固定 method/path、稳定拒绝码和
-`WmsCallSpec`。公共 Protocol 与 Gateway 只提供显式窄方法；不得建立公共 generic `call`、生产运行时
-capability registry、动态发现或 WMS codegen。新增、优化或删除能力时，开发者只修改该能力模块、对应端口方法、
-Gateway 绑定和同名测试；测试态 conformance harness 自动检查这些触点，不能被生产装配导入。
+每项 WMS 能力采用一个显式纵切片，内聚 operation 专属 request/result DTO、固定 method/path、稳定拒绝码和一次
+`OutboundHttpRequest` 映射。公共 Protocol 与 Gateway 只提供显式窄方法；不得建立公共 `WmsCallSpec`、generic `call`、
+生产运行时 capability registry、动态发现、配置驱动 API 或 WMS codegen。新增、优化或删除能力时，开发者只修改该
+operation 的 DTO、职责匹配的端口方法、Gateway/Normalizer 私有绑定、WMS 批准的 fixture/schema 和合同测试；只有至少
+三个获批能力出现相同语义和相同约束时才提取共享 helper。
 
 Phase 3 只按消费者矩阵重建无状态 WMS 业务 ACL。`docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，
 作为业务输入只读保留；旧 MCS 架构、Bearer、retry/cache、分页样例和接口数量不覆盖当前架构决定。每项能力必须同时具备
-当前业务消费者和 WMS 批准的 method/path/DTO/错误合同；不得为了维持旧 operation 数量保留无消费者能力。当前消费者
-矩阵和未决 wire 以 `docs/contracts/wms-northbound-interaction-contract.md` 为准，门禁未关闭前 Phase 3 不得实施。
+目标阶段、具体消费者、调用时机和 WMS 批准的 method/path/DTO/错误合同；不得为了维持旧 operation 数量保留无消费者
+能力。目标态消费者矩阵和未决 wire 以 `docs/contracts/wms-northbound-interaction-contract.md` 为准：Task 1 跨能力门禁
+关闭前 Phase 3 不得实施；关闭后只有单独完成 wire 批准的 operation 可以进入 TDD，未获批 operation 保持不存在。
 
 当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3 WMS 业务 ACL。Phase 4 通过 Transport Port 调用 WMS 转发适配器，
 并由 `TransportTask` 统一拥有任务持久化、领取、状态查询、取消、恢复、批次状态和终态推进；成员只作为冻结请求事实和

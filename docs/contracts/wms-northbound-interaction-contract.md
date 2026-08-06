@@ -1,6 +1,6 @@
 # WMS 业务 ACL 交互合同
 
-> 状态：`DRAFT_CONSUMER_MATRIX`，Phase 3 Task 1 已重新打开，当前不得进入代码实施。
+> 状态：`DRAFT_CONSUMER_MATRIX`，Phase 3 Task 1 的跨能力门禁仍未关闭，当前不得进入代码实施。
 > 需求真源：`docs/architecture/SRS.md`。
 > 架构真源：`docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`。
 > 出库业务真源：`docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md`。
@@ -14,7 +14,7 @@
 一项能力只有同时满足以下条件，才可进入 Phase 3：
 
 1. 能追溯到当前 SRS 范围内的具名业务场景。
-2. 能指出唯一或明确共享的调用消费者。
+2. 能指出目标阶段、具体组件、调用时机以及唯一或明确共享的调用消费者。
 3. 交互对象是 WMS 拥有的业务、库存、单据或主数据事实。
 4. method、path、request/result、必填性、错误码和幂等语义已经由 WMS 确认。
 
@@ -42,11 +42,11 @@
 Phase 2 只提供单次 HTTP 传输事实。Phase 3 只做 WMS 业务 wire 翻译。可靠对象和 WMS 转发 RCS 的
 Transport Adapter 均由 Phase 4 拥有。
 
-## 3. 当前消费者矩阵
+## 3. 目标态消费者矩阵
 
 ### 3.1 WMS 权威事实查询
 
-| 能力候选 | 当前消费者 | 业务依据 | 厂商初稿 | 当前裁决 |
+| 能力候选 | 目标态消费者 | 业务依据 | 厂商初稿 | 当前裁决 |
 | --- | --- | --- | --- | --- |
 | `get_material` | 粗分机准入、装箱算法 | SRS §3.1.1、§3.3.1 | `GET /api/wms/materials/{material_id}` | 保留；完整 DTO/错误码待 WMS 确认 |
 | `get_rack` | 当前作业货架身份与权威位置校验 | SRS §3.1.1、§3.3.1 | `GET /api/wms/racks/{rack_id}` | 保留；只允许点查，不同步全局货架主账 |
@@ -61,7 +61,7 @@ Transport Adapter 均由 Phase 4 拥有。
 
 ### 3.2 WES → WMS 业务请求与事实通知
 
-| 能力候选 | 当前消费者 | 业务依据 | 厂商初稿 | 当前裁决 |
+| 能力候选 | 目标态消费者 | 业务依据 | 厂商初稿 | 当前裁决 |
 | --- | --- | --- | --- | --- |
 | `request_picking_source_bindings` | `STARTING` 的自动出库 `PickingTask` | SRS §3.3.3、出库设计 §5.2、§12 | 初稿未定义 | 保留业务名；method/path/wire 待 WMS 确认 |
 | `reserve_inventory` | SRS 库存预留场景 | SRS §3.4.1 | `POST /api/wms/inventory/reserve` | 条件保留；必须明确非 `PickingTask` 的实际消费者 |
@@ -85,7 +85,7 @@ WorkLine；Phase 4 可靠对象保存结果后，由对应业务对象重新裁�
 
 ### 3.3 WMS → WES 业务输入
 
-| 业务命令 | 当前消费者 | 业务依据 | 当前裁决 |
+| 业务命令 | 目标态消费者 | 业务依据 | 当前裁决 |
 | --- | --- | --- | --- |
 | 创建 `PickingTask` | 自动出库插件 | SRS §3.3.3、出库设计 §5.1 | 保留；只含目标任务项，不含来源、SixInOne、`PkgID` 或具体目标架；wire 待 WMS 确认 |
 | 更新排队任务优先级 | 自动出库队列 | 出库设计 §6 | 保留；只允许 `QUEUED` |
@@ -146,6 +146,27 @@ Phase 4 负责；Phase 3 不单独建立可绕过可靠边界的 FastAPI 业务�
 Adapter 不打开数据库事务，不保存调用 evidence，不申请 breaker permit，不自动 retry，不拥有业务终态。传输层已经提供的
 超时、响应上限和交付事实不得在 Phase 3 复制。
 
+### 6.1 单项能力批准模板
+
+每项 outbound 或 inbound 能力必须在进入 TDD 前独立补齐以下信息；缺一项时该能力的代码、DTO 和测试保持不存在：
+
+| 批准项 | 必填内容 |
+| --- | --- |
+| 业务定位 | 目标阶段、具体消费者、调用时机、原子边界、WMS 权威事实或业务义务 |
+| Wire | operation 名、方向、method、relative path、闭集 request/result、必填性、错误码与拒绝语义 |
+| 可靠语义 | 幂等字段及来源、安全重提是否允许；未批准时按不可安全重提处理 |
+| 权威元数据 | version/time/provenance 的真实 wire 来源；WMS 不提供的字段不得由 WES 伪造 |
+| 响应预算 | 最大项数、最大 wire/decoded 字节数、超限语义；必须位于 Phase 2 硬上限内 |
+| 独立真源 | WMS 批准、版本化且机器可读的 fixture/schema；人类 Markdown 与实现方 MockTransport 均不能代替 |
+
+新增 API 使用固定最小流程：登记消费者 → 完成上表批准 → 选择职责匹配的窄端口 → 增加操作专属 DTO 和一个显式
+Gateway/Normalizer 方法 → 以获批 fixture/schema 在 `tests/contracts/wms_adapter/` 做 TDD → 同步矩阵与公开导出。
+首个获批 operation 只作为结构参考纵切片，不升级为生成器、配置驱动 API、production registry、generic `call`、动态发现
+或公共 `WmsCallSpec`。只有至少三个获批能力出现相同语义和相同约束时才提取共享 helper。
+
+若获批 HTTP method 不在 Phase 2 `OutboundHttpMethod` 中，必须先以独立基础层 TDD 变更扩展 Phase 2；Phase 3 不得直接使用
+HTTPX 或把 method 歪曲为现有值。
+
 ## 7. Phase 4 Transport handoff
 
 以下仅登记 Phase 4 业务需求，不在本文冻结其 wire：
@@ -158,14 +179,21 @@ Adapter 不打开数据库事务，不保存调用 evidence，不申请 breaker 
 
 即使当前网络请求由 WMS 转发 RCS，这些能力仍按 Transport 语义归 Phase 4，不进入 Phase 3 WMS ACL。
 
-## 8. Phase 3 Task 1 退出门禁
+## 8. Phase 3 Task 1 跨能力退出门禁
 
-- 每个保留能力都有具名当前消费者和 SRS/顶层设计依据。
+- 每个候选能力都登记目标阶段、具体组件、调用时机和 SRS/顶层设计依据；条件候选无法定位真实消费者时删除。
 - 每个排除能力都登记 successor 或 `NONE`。
-- WMS 已批准全部保留能力的 method/path/DTO/错误码/幂等语义。
+- 组合多项 WMS 权威事实的消费者已有共同 snapshot/version，或已批准读取顺序、有效窗口和 fail-closed 条件。
+- 列表/批量结果已有最大项数、最大 wire/decoded 字节数和超限语义，并能满足 Phase 2 硬上限。
+- API ingress 的调用方认证合同或明确的局域网 `NONE` 条件已经批准；该决定不进入 Phase 2 outbound Transport。
+- §6.1 单项批准模板已冻结；全部 operation 的 wire 不要求在 Task 1 同时获批。
 - Phase 3 与 Phase 4 Transport 合同没有重复 method 或生命周期 owner。
 - SRS 只保留用户需求和权威边界，不复制 operation 编号或实现参数。
 - 厂商原始文档保持原貌，项目内不再保留 33 项旧蓝图副本。
 
-当前结论：`BLOCKED`。PickingTask 两阶段来源绑定、逐项位置事实和整单完成的业务语义已经冻结，但保留能力的 WMS
-wire 批准及条件候选的消费者确认尚未完成，Phase 3 代码实施不得开始。
+当前结论：`BLOCKED`。批准模板已经冻结，但目标态消费者定位、多事实一致性、响应预算和 inbound 认证/局域网 `NONE`
+四项跨能力外部决定尚未关闭，Phase 3 代码实施不得开始。
+
+Task 1 关闭后，每项 operation 只有完整通过 §6.1 才能独立进入 TDD；未获批 operation 保持不存在，不阻断其他已获批
+operation。Phase 3 最终退出仍要求所有保留 operation 已获批并实施；无法获批或无法定位消费者的候选项直接删除，
+不得保留占位 DTO、兼容接口或未来 seam。
