@@ -3,7 +3,7 @@ status: Approved
 created_at: 2026-06-25
 updated_at: 2026-08-07
 spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
-authority: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
+wire_authority: docs/integration/third_party_integration_whitepaper.md
 scope: WES 核心设备命令基础能力边界
 ---
 
@@ -11,87 +11,101 @@ scope: WES 核心设备命令基础能力边界
 
 ## 1. 文档定位
 
-本文只定义 WES 核心共享的设备命令可靠性边界，不定义任何厂商命令集、具体工作线动作或业务 Payload。
+本文只定义 WES 核心共享的设备命令可靠性边界。供应商接入的固定路径、公共包络（envelope）、身份和
+同步接纳应答/异步回调（ACK/CALLBACK）语义以
+[`third_party_integration_whitepaper.md`](../integration/third_party_integration_whitepaper.md) 为顶层真源。
 
-能力所有权严格分为三层：
+能力所有权严格分为四层：
 
 | 层级 | 所有内容 | 不得包含 |
 | --- | --- | --- |
-| WES 核心 | 命令持久化、幂等身份、目标设备、deadline、ACK/CALLBACK 证据、通用状态与诊断 | HTTP、厂商 `task_type`、厂商字段、具体工作线规则 |
-| Outbound HTTP 基础层 | Client 生命周期、Timeout、单次发送、有界响应和传输事实分类 | 厂商 DTO/认证、业务拒绝、重试和命令生命周期 |
-| 厂商 Adapter | 厂商 HTTP DTO、真实合同要求的认证、命令名、Payload、ACK/Result 映射与厂商合同测试 | 连接池、通用传输异常、工作线业务判定、数据库写入、通用流程引擎 |
-| WorkLine 插件 | 将 WMS 封闭业务结果映射为命令创建时机、当前执行对象、已授权逻辑目标和下一步执行 Decision | 业务来源/目标/路线/优先级/NG 裁决、HTTP、Repository、重试、Outbox、设备安全互锁 |
+| WES 核心 | 命令持久化、幂等身份、目标设备、截止时间（deadline）、ACK/CALLBACK 证据、通用状态与诊断 | 供应商私有路径、字段别名、具体工作线规则 |
+| 出站 HTTP 基础层（Outbound HTTP） | 客户端（Client）生命周期、超时（timeout）、单次发送、有界响应和传输事实分类 | 设备业务参数、自动重试、命令生命周期和工作线判定 |
+| 设备统一接口层（uniform device wire） | 白皮书规定的固定路径、公共数据传输对象（DTO）、身份、ACK/CALLBACK 和错误语义 | 工作线业务、PLC 控制、供应商私有兼容分支 |
+| WorkLine 插件（WorkLine plugin） | 将 WMS 封闭业务结果映射为命令创建时机、具体执行对象、已授权逻辑目标和下一步执行决定（Decision） | HTTP、Repository、重试、设备安全互锁、业务来源/目标/路线裁决 |
 
-厂商 Adapter 和 WorkLine 插件属于二次开发交付。核心不得要求供应商适配 WES 自有指令集，也不得把具体业务
-命令反向固化为核心枚举。
+所有供应商必须适配 WES 的统一接口（wire）。具体设备差异只能写入获批设备合同附录中的 `task_type`、`event_type`、
+`params`、`data` 和错误详情，不能通过 WES 内的供应商私有适配器（Adapter）、兼容字段或动态分派实现。
 
 ## 2. 核心命令闭环
 
 核心只保证以下不变量：
 
-1. 下发前确认目标设备当前可接纳命令。
-2. 在任何外部调用前持久化 `DeviceCommand` 及其幂等、关联和 deadline 事实。
-3. ECS 同步 ACK 只表示接纳，不表示物理动作完成。
-4. 只有匹配当前命令的最终 CALLBACK 才能推进物理位置和具体执行对象。
-5. 重复 CALLBACK 必须复用首次结果；同一幂等身份、不同 Payload 必须拒绝并保留冲突证据。
-6. 未知、乱序或无法关联的结果只保存 evidence 和 diagnostic，不推进当前对象。
+1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；下发前确认目标设备为 `mode=AUTO`、`status=IDLE`、无活动命令，
+   状态观察未超过附录允许年龄，且状态接口返回的合同身份与活动 `LineRunEpoch` 冻结值一致。
+2. 在任何外部调用前持久化 `DeviceCommand` 及其幂等、关联和截止时间事实。
+3. 同步 ACK 只表示设备接纳，不表示物理动作完成。
+4. 只有匹配当前命令及其冻结 `LineRunEpoch` 的最终 CALLBACK 才能推进物理位置和具体执行对象。
+5. `command_code` 最多绑定一个已接纳终态结果；已接纳的重复 CALLBACK 必须复用首次 ACK 且不重复推进，同一命令出现不同
+   结果身份、矛盾终态，或同一幂等身份对应不同载荷时必须拒绝并保留冲突证据。
+6. 未知、乱序或无法关联的结果只保存证据（evidence）和诊断（diagnostic），不推进当前对象。
+7. 稳定身份始终绑定同一规范化语义载荷，包括明确拒绝的尝试。只有请求可证明未离开 WES 或设备明确返回“未接纳”时才能
+   安全重提：载荷不变沿用原身份，合同修正改变载荷摘要时使用新身份。结果可能已送达、已接纳、幂等冲突或 ACK 未知时禁止
+   换身份或自动重放；等待匹配回调，状态查询只补充活动证据，仍无法闭合时进入人工对账。
 
-WES 不拆解厂商长命令，不解释 ECS 内部步骤，也不实现设备间安全互锁。
+WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设备间安全互锁。
 
 ## 3. 内部模型边界
 
 最终 `DeviceCommand` 只保存执行可靠性所需的内部事实：
 
-- 稳定命令身份、目标设备和当前具体执行对象关联；
-- 厂商 Adapter 已验证的命令 Payload 或其不可变快照；
-- payload digest、deadline、下发尝试和最终结果证据；
+- 稳定命令身份、目标设备、冻结 `LineRunEpoch` 和当前具体执行对象关联；
+- 已按统一接口和设备合同附录验证的命令载荷（payload）不可变快照，包含 `contract_key` 和 `contract_version`；
+- 载荷摘要（payload digest）、截止时间、下发尝试和最终结果证据；
 - `PENDING / DISPATCHED / ACKNOWLEDGED / SUCCEEDED / FAILED / TIMED_OUT` 等通用生命周期；
-- correlation、trace 和 diagnostic 信息。
+- 关联（correlation）、追踪（trace）和诊断信息。
 
 具体字段名以最终模型为准；不得为当前旧模型保留别名、转换层或兼容字段。
 
-## 4. 厂商合同边界
+## 4. 统一接口与设备附录边界
 
-每个厂商 Adapter 根据实际接口文档独立提供：
+顶层白皮书统一定义：
 
-- 命令请求、ACK、CALLBACK DTO；
-- 厂商命令类型和 Payload 校验；
-- 厂商合同真实要求的认证、method/path 和 wire 错误映射；
-- 命令请求到厂商 wire payload 的显式映射；
-- 厂商合同测试和样例 fixture。
+- `POST /api/v1/device/command`；
+- `GET /api/v1/device/status?device_code={device_code}`；
+- `POST /api/v1/callback/result`；
+- `POST /api/v1/callback/event`；
+- 公共包络、部署级唯一事件身份、命令/结果/事件/状态的附录版本证明、单设备单活动命令、明确拒绝/安全重提、命令唯一终态、
+  重复/冲突和 ACK/CALLBACK 语义。
 
-`docs/hardware/` 原样保留厂商提供的协议与联调资料。版本差异由 Adapter 合同、映射和测试显式处理，不通过
-改写厂商原文消除，也不能把厂商资料提升为 WES 核心架构真源。
+每个实际设备的获批合同附录只定义：
 
-核心只依赖 Adapter 暴露的窄端口，不读取厂商 DTO，也不验证具体命令值。供应商接口变化只能修改对应 Adapter
-及其测试，不能扩张核心 `DeviceCommand`。
+- 该设备支持的 `task_type`、`event_type`；
+- 对应 `params`、`data` 和 `error_detail` 的字段闭集；
+- 设备能力、完成时限、状态最大观察年龄、时间来源与允许偏差和人工对账窗口；
+- 正常、失败、重复、冲突、乱序和恢复验收场景。
 
-Composition Root 把现场 Endpoint/Timeout 交给 Phase 2 builder，并把得到的框架无关 Transport 注入 Adapter；Adapter
-不得接收裸 `httpx.AsyncClient`。当前已确认设备 outbound 合同无认证，不存在公共认证配置或 seam。
+`docs/hardware/` 原样保留供应商提供的协议与联调资料。供应商或其网关负责把内部协议收敛为 WES 统一接口；WES 不
+反向改写供应商原文，也不把厂商资料提升为核心架构真源。
+
+生产组合根（Composition Root）只装配统一设备服务端点（Endpoint）、超时和共享传输端口（Transport），不按供应商选择协议实现。当前目标协议不要求
+应用层 Token、签名、Nonce 或 HMAC；纯局域网隔离和访问控制由部署边界负责。
 
 ## 5. WorkLine 执行边界
 
 具体工作线插件只决定：
 
-- 当前有效 WMS 业务结果和执行 evidence 是否允许创建命令；
+- 当前有效 WMS 业务结果和执行证据是否允许创建命令；
 - 命令关联哪个 `MaterialExecution`、`BinExecution` 或其他具体对象；
-- 厂商命令需要哪些逻辑业务参数；
-- CALLBACK 后如何按 WMS 结果返回下一条命令、结束、NG 执行或对象级暂停中的封闭执行 Decision。
+- 已批准 `task_type` 需要哪些逻辑业务参数；
+- CALLBACK 后如何按 WMS 结果返回下一条命令、结束、NG 执行或对象级暂停中的封闭执行决定。
 
-来源、目标、优先级、路线、NG/等待/替代、取消、恢复和业务终态均由 WMS 给出。插件发现结果缺失、过期、矛盾或物理
-不可执行时必须 fail closed，不得选择另一个业务方案。
+来源、目标、优先级、业务路线、业务异常分类、替代来源、取消、恢复和业务终态由 WMS 给出；插件根据该结果和设备证据
+决定等待、发送、暂停、物理 NG 隔离或对账。插件发现结果缺失、过期、矛盾或物理不可执行时必须失败关闭，不得选择另一
+个业务方案。
 
 粗分机、自动分拣、人工分拣、满箱交换等流程不得写入核心合同或核心测试。
 
 ## 6. 禁止能力
 
-WES 核心、Adapter 和插件都不得建立以下软件控制字段或抽象：
+WES 核心、统一接口层和插件都不得建立以下软件控制字段或抽象：
 
 - PLC 点位、物理坐标、关节角度、速度曲线；
 - 安全回路、急停复位或运动控制；
-- WES 自有的通用厂商命令枚举；
+- WES 核心全局 `task_type` 或 `event_type` 枚举；
 - 运行时工作流 DSL、动态插件发现或通用命令解释器；
-- 为旧 `task_type`、旧 Payload 或旧回调字段保留的兼容入口。
+- 供应商私有路径、认证、DTO 分支或 Adapter 注册表；
+- 为旧 `task_type`、旧载荷或旧回调字段保留的兼容入口。
 
 这些物理控制和安全事实由 ECS/现场安全系统拥有，WES 只消费其状态、ACK、CALLBACK 和事件证据。
 
@@ -99,9 +113,10 @@ WES 核心、Adapter 和插件都不得建立以下软件控制字段或抽象�
 
 | 测试范围 | 唯一所有者 |
 | --- | --- |
-| `DeviceCommand` 通用生命周期、幂等、关联、deadline、证据和禁止硬件控制字段 | 核心 `tests/` |
+| `DeviceCommand` 通用生命周期、幂等、关联、截止时间、证据和禁止硬件控制字段 | 核心 `tests/` |
 | HTTP 单次发送、Client 生命周期、有界响应和基础传输错误分类 | 核心 `tests/` |
-| 具体厂商命令名、DTO、Payload、真实合同认证、错误码和样例 | 对应厂商 Adapter 包 |
+| 固定路径、公共包络、身份、重复和冲突语义 | 核心统一接口合同测试 |
+| 供应商实现是否符合白皮书与设备合同附录 | 供应商一致性验收，不进入核心业务测试 |
 | 具体工作线何时创建命令及 CALLBACK 后业务推进 | 对应 WorkLine 插件包 |
 
-核心测试不得使用具体厂商或工作线场景证明基础能力；Adapter/插件测试也不得替代核心可靠性测试。
+核心测试不得使用具体供应商或工作线场景证明基础能力；供应商一致性验收和插件测试也不得替代核心可靠性测试。

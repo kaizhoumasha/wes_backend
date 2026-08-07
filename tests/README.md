@@ -53,7 +53,7 @@
 | `tests/resilience/` | breaker 时序、降级、断连与恢复类测试，默认快速回归不收集 |
 | `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
 
-`tests/` 是 WES 核心测试树，不是具体工作线插件或厂商 Adapter 的共享测试目录。两类能力使用并列的独立二次开发包：
+`tests/` 是 WES 核心测试树，不是具体 WorkLine 插件或供应商内部协议的共享测试目录。插件使用独立二次开发包：
 
 ```text
 workline_plugins/<plugin_key>/
@@ -61,22 +61,16 @@ workline_plugins/<plugin_key>/
 ├── src/
 ├── tests/
 └── fixtures/
-
-device_adapters/<adapter_key>/
-├── pyproject.toml
-├── src/
-├── tests/
-└── fixtures/
 ```
 
-插件包自己的 `tests/` 唯一拥有具体工作线流程、Handler、现场拓扑和插件级 E2E/韧性/负载场景。Adapter 包自己的
-`tests/` 唯一拥有厂商 DTO、认证差异、wire Payload、原始码映射和厂商合同场景。两类包的代码、测试和 fixture 必须
-与各自所有者同包交付；核心 pytest、覆盖率、质量门禁和 HEAVY selector 均不发现、不映射也不运行二次开发包测试。
+插件包自己的 `tests/` 唯一拥有具体工作线流程、Handler、现场拓扑和插件级 E2E/韧性/负载场景。所有设备供应商必须
+适配 WES 第三方设备统一接口（wire）；供应商内部 DTO、认证、原始 Payload、原始码转换和真实设备行为由供应商在其
+ECS/网关交付边界执行一致性验收。核心 pytest、覆盖率、质量门禁和 HEAVY selector 均不发现、不映射也不运行插件测试或
+外部供应商验收。
 
-`src/app/wms_adapter/` 当前只承载 Phase 3 WMS HTTP/JSON 薄访问层（thin access layer），不是设备厂商二次开发包，
-也不包含具体业务 API、持久化或事务生命周期。其 FAST 访问合同位于 `tests/contracts/wms_adapter/`；后续具体 WMS
-业务模块的合同与持久化/事务场景由对应业务所有者（business owner）承接。这些测试不得用于证明
-`src/core/outbound_http/` 基础传输或 WES 最小执行内核。
+产品内唯一 WMS 北向 Adapter 是 `src/app/wms_adapter/` 下的业务系统 ACL，不是设备厂商二次开发包。它的跨系统 FAST
+合同放在 `tests/contracts/wms_adapter/`，真实持久化与事务场景放在 `tests/integration/wms_adapter/`；两处测试只验证
+WMS Adapter，不得用于证明 `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
 
 ### 当前治理约束
 
@@ -99,9 +93,9 @@ device_adapters/<adapter_key>/
 - 删除测试的 Commit message 或 PR 描述必须标注承接的目标测试路径或 `NONE`。
 - 不得按 `replay`、`legacy`、`reconciliation` 等关键词批量删除测试。
 - 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；该边界只由目录位置和 `norecursedirs` 共同保证，不使用 AST 或 import 黑名单扫描。
-- 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；具体设备厂商 Adapter/插件测试不得改名后寄存在
+- 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；具体插件或供应商内部协议测试不得改名后寄存在
   `tests/contracts/`、`tests/runtime/` 或核心 HEAVY 目录。
-- 核心测试不得导入仓库根目录 `workline_plugins` 或 `device_adapters` 二次开发包；通用 SPI/SDK 只能使用不含真实工作线或厂商规则的最小 fake 验证。
+- 核心测试不得导入仓库根目录 `workline_plugins` 二次开发包；通用 SPI/SDK 只能使用不含真实工作线或供应商规则的最小 fake 验证。
 - `tests/workline_runtime/` 中的存量测试必须按语义收敛：通用不变量改写到最终核心对象，具体插件行为移出，旧平台装配测试删除；不得继续把该目录当作长期目标所有者。
 - 新增领域测试默认不要放在 `tests/` 根目录，优先按上方目录归属矩阵归位。
 - 单个测试文件目标低于 `1000` 行；超过 `3000` 行会触发测试拓扑 guardrail。
@@ -145,8 +139,8 @@ HEAVY 测试影响选择由 `scripts/select_heavy_tests.py` 和机器可读真�
 - 新增、删除或移动 HEAVY 测试时，同步更新引用它的 `heavy_tests`。
 - HEAVY 目录内的 conftest、fixture、support、模拟器和负载场景，以及 `tests/fixtures/**`、共享 conftest、`tests/support/**` 都属于候选资产。
 - 当前没有已验收权威 HEAVY 测试的既有候选路径保持未映射并 fail closed，待独立业务交接后再补 mapping，不得使用 NONE 或旧测试猜测绕过。
-- 具体工作线/插件 HEAVY 场景只存在于对应 `workline_plugins/<plugin_key>/tests/`；具体厂商 Adapter HEAVY 场景只存在于
-  `device_adapters/<adapter_key>/tests/`。两者都不得加入核心 selector 的 `heavy_tests` 映射。
+- 具体工作线/插件 HEAVY 场景只存在于对应 `workline_plugins/<plugin_key>/tests/`；供应商真实设备异常和恢复场景属于外部
+  一致性验收。两者都不得加入核心 selector 的 `heavy_tests` 映射。
 
 ```bash
 # 本地未暂存改动（默认 scope 也是 unstaged）

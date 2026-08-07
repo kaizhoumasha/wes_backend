@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-06
+**最后更新**：2026-08-07
 
 ## 1. 真源与入口
 
@@ -29,12 +29,15 @@
 | --- | --- |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
-| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 待 WMS 书面复审的自动出库候选方案，不是已批准业务或 wire 真源 |
+| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 已批准的自动出库 PickingTask、Cell 晚绑定、NG 与双面目标架业务设计 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段架构收敛总控计划 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
+| `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、Transport Port、WMS 转发提交 ACK 与异步 TransportResult 评审基线 |
+| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库推荐端点、Payload、返回 JSON、幂等和联调评审基线；正式 Schema 待双方冻结 |
+| `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
-| `docs/architecture/device-command-contract.md` | DeviceCommand 与 Adapter 边界 |
+| `docs/architecture/device-command-contract.md` | DeviceCommand、设备统一接口与 WorkLine 插件边界 |
 | `docs/plugin_development_guide.md` | 执行插件 SPI、WMS 结果到封闭 Decision 的映射与独立包交付指南 |
 | `docs/superpowers/README.md` | 当前文档生命周期与项目外归档索引 |
 
@@ -63,10 +66,9 @@ API → Service → Repository → Database
 | `src/app/*/repositories/` | 数据访问 |
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/runtime/` | 当前 Runtime implementation baseline 与目标最小能力的实施区域 |
-| `src/app/wms_adapter/` | Phase 3 WMS HTTP/JSON 薄访问层标准；不包含具体业务 API、持久化或设备交互 |
-| `src/app/wms_integration/` | Phase 5 切换前仍在运行的旧 WMS 业务 owner；不是新增能力的实现模板 |
+| `src/app/wms_adapter/` | WMS HTTP/JSON 薄访问层和业务系统 ACL；具体业务 API 由对应业务 owner 按获批合同实现 |
+| `src/app/wms_integration/` | Phase 5 切换前的旧 WMS 实现；仅用于识别删除边界，不是目标架构模板 |
 | `workline_plugins/` | 具体工作线插件独立包，不属于核心运行时 |
-| `device_adapters/` | 具体厂商 Adapter 独立包，不属于核心运行时 |
 
 新 Service 必须从所在 `services/__init__.py` 导出。时间处理、Mixin 继承和零代码 CRUD 约束以
 `AGENTS.md` 为准。
@@ -85,9 +87,9 @@ API → Service → Repository → Database
 | `tests/architecture/` / `tests/scripts/` | QUALITY 显式运行，不进入默认 FAST |
 | `tests/integration/` / `tests/e2e/` / `tests/resilience/` / `tests/load/` / `tests/mock/` | 显式 HEAVY 或人工入口，默认不收集 |
 | `workline_plugins/<plugin_key>/tests/` | 具体插件独立测试树 |
-| `device_adapters/<adapter_key>/tests/` | 具体厂商 Adapter 独立测试树 |
+| 供应商一致性验收 | 在供应商 ECS/网关交付边界独立验证白皮书和设备合同附录，不进入核心 pytest |
 
-核心默认测试不得导入具体插件或 Adapter 包。人类阅读文档不作为 pytest 或质量门禁正文输入。
+核心默认测试不得导入具体插件或包含供应商私有协议。人类阅读文档不作为 pytest 或质量门禁正文输入。
 
 ## 5. 运维与质量脚本
 

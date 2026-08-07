@@ -2,7 +2,7 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-05
+updated_at: 2026-08-07
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
 implementation_baseline: develop@1a8bfcac
 system_stage: pre_release
@@ -15,10 +15,12 @@ related:
   - docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md
   - docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md
   - docs/architecture/device-command-contract.md
+  - docs/integration/third_party_integration_whitepaper.md
   - docs/integration/callback_event_validation_principles.md
   - docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
   - docs/contracts/wms-northbound-interaction-contract.md
+  - docs/contracts/transport-fulfillment-contract.md
 ---
 
 # WES 最小执行架构收敛设计
@@ -27,7 +29,7 @@ related:
 
 `docs/architecture/SRS.md` 是产品范围、参与方职责和功能/非功能需求真源；本文在该需求边界内定义 WES
 产品的最终目标架构。产品售卖给不同客户，每个工厂独立部署；各工厂使用相同北向 WMS
-业务边界，差异主要来自南向设备、设备厂商 ECS 合同以及入库、出库工作线流程。
+业务边界，差异主要来自南向设备合同附录以及入库、出库工作线流程；所有供应商共同遵循同一顶层设备接口（wire）。
 
 文档权威顺序为：SRS 定义“需要什么”，本文定义“目标架构如何满足”，Master Plan 定义“按什么顺序实施”。
 如本文与 SRS 的业务范围或权责发生冲突，必须先显式修订其中一方，不得用实施计划静默覆盖需求。
@@ -35,7 +37,7 @@ related:
 本系统尚未发布，不存在必须兼容的生产旧版本或必须迁移的历史业务数据。开发和测试数据可以清空，
 架构收敛采用直接替换：
 
-- 当前经确认的 ECS、WMS、RCS 业务合同继续作为目标合同，不为旧 API、旧字段或旧 Payload 别名保留兼容入口。
+- 当前经确认的设备统一接口、WMS 和 RCS 业务合同继续作为目标合同，不为旧 API、旧字段或旧 Payload 别名保留兼容入口。
 - 幂等、持久化证据、ACK/CALLBACK 分离、设备状态和资源投影作为最终业务正确性保留，不继承旧 Runtime 抽象。
 - 建立最小、具体、面向工作线对象推进的执行内核，用代码插件承载客户和工作线差异。
 - WES 核心仓库的 `tests/` 只验证最小执行内核、通用 WorkLine 能力、外部合同和可靠性不变量；
@@ -44,9 +46,9 @@ related:
 - 最终模型稳定后清空开发/测试数据库，并由 Alembic generator 创建单一干净基线，不实现旧数据转换。
 - 测试以本文为基线：通用 WES 行为改写到核心测试后保留；具体工作线/插件行为从核心 `tests/` 移出，
   随对应二次开发插件重新实现；只验证旧架构、旧迁移和兼容路径的测试直接删除。
-- 基础能力、厂商合同与业务能力必须有独立测试所有者：核心测试不得以具体厂商、工作线或业务成功路径证明
-  基础能力；Adapter 测试只验证厂商合同与标准化映射；WMS Adapter 测试验证业务结果合同；插件测试只验证业务结果到
-  执行 Decision 的映射和对象推进。后三者都不得
+- 基础能力、设备统一接口、供应商一致性与业务能力必须有独立测试所有者：核心测试不得以具体供应商、工作线或业务成功路径证明
+  基础能力；核心统一接口合同测试只验证固定路径和公共包络；供应商一致性验收只验证设备附录与 ECS/网关行为；WMS
+  Adapter 测试验证业务结果合同；插件测试只验证业务结果到执行 Decision 的映射和对象推进。后四者都不得
   替代核心持久化、幂等、传输和可靠性不变量测试。
 
 提交 `ee1f3b670c5ed33cfd5be1fd0370b53570790e73` 只作为平台化前的历史行为参照，不作为代码回退或新分支基线。
@@ -61,7 +63,7 @@ WES 只承担以下职责：
 1. 工作线本地设备调度。
 2. 工作线内对象、位置、队列、设备忙闲的实时投影。
 3. ECS 设备命令、ACK、CALLBACK 的持久化证据和幂等处理。
-4. 通过抽象搬运端口提交 AGV/CTU 业务搬运目标并跟踪任务级进度。
+4. 通过抽象搬运端口提交 AGV/CTU 业务搬运目标并接收任务级终态结果。
 5. 消费 WMS 给出的封闭业务结果，并在其授权范围内决定设备发送、等待、暂停、隔离和对账等本地执行动作。
 6. 向 WMS 同步物理执行结果；WMS 不可用时保存待确认事实并受控暂停。
 
@@ -88,7 +90,9 @@ WMS 单据或同步业务输入
 → TransportTask 持久化
 → Transport Adapter 提交
 → 类型化 ACK
-→ 主动查询状态；外部通知只能唤醒查询
+→ WMS/RCS 执行运输
+→ WMS 可靠异步回传类型化 TransportResult
+→ InboundEvidence 持久化后 ACK
 → 类型化终态
 → 结果判定并继续流程
 ```
@@ -104,7 +108,8 @@ WMS 确认义务
 → WmsContractFailure：记录合同告警并封闭失败，不进入依赖重试
 ```
 
-WMS 同步 HTTP 调用不进入 ECS/RCS 异步 ACK 协议，也不需要“工作线执行引擎”进行实时投影。
+普通 WMS 同步 HTTP 调用不进入设备异步 ACK 协议。Transport 提交采用同步接纳 ACK，最终结果由 WMS 可靠异步回传；
+两者都不需要通用“工作线执行引擎”解释外部内部进度。
 
 ## 3. 范围与非目标
 
@@ -115,7 +120,7 @@ WMS 同步 HTTP 调用不进入 ECS/RCS 异步 ACK 协议，也不需要“工�
 - 不同客户的 ECS 设备、工作线拓扑和出入库执行插件。
 - 粗分机、自动分拣线、人工分拣线、满箱交换及复杂出库来源执行。
 - AGV/CTU 通过 Transport Port 调用；当前适配器由 WMS 转发。
-- ECS、RCS 使用 HTTP/JSON 异步 ACK；WMS 使用同步 HTTP。
+- ECS 命令使用同步接纳 ACK 和异步终态 CALLBACK；WMS 业务决定使用同步 HTTP；Transport 使用同步接纳 ACK 和异步终态结果。
 
 上述具体工作线流程是二次开发插件的执行验收范围，不进入 WES 核心测试套件。WES 核心只为插件提供稳定
 SPI/SDK、封闭 Decision、注入端口和通用执行保障；每个具体插件在自己的独立包内验证 WMS 业务结果到物理执行的映射。
@@ -127,7 +132,7 @@ SPI/SDK、封闭 Decision、注入端口和通用执行保障；每个具体插�
 - AGV/CTU 车辆位置、路径规划、交通管制和设备级调度。
 - WES 软件实现机械安全互锁、防撞或设备间防呆。
 - MQTT、OPC UA、WebSocket 等未确认的南向协议。
-- 由 WES 定义设备厂商必须实现的 `task_type`、`event_type` 或 ECS 内部步骤。
+- 由 WES 核心定义跨所有设备的 `task_type`、`event_type` 全集或 ECS 内部步骤；具体允许值由获批设备合同附录拥有。
 - Vendor Manifest、通用工作流 DSL、低代码流程引擎或运行时动态插件发现。
 - 自动物理恢复、自动清线、推测式回放和自动补偿编排。
 - 为未来客户预建可复用执行插件模板。
@@ -144,7 +149,7 @@ WMS 是以下数据和决策的唯一业务权威：
 - 物料、料盘、料箱、料格、仓库区域、仓位等主数据。
 - 单层货架、五层货架、退货货架、转运货架及其储位主数据和全局位置。
 - 出库来源分配、目标货架或目标储位授权。
-- 全部业务资格、优先级、路线、NG/等待/替代、取消、恢复和业务终态结果。
+- 全部业务资格、优先级、业务路线、业务异常分类、替代来源、取消、恢复和业务终态结果。
 - AGV/CTU 搬运业务目标、货架分配和全局运输业务状态。
 - 人工作业任务、PDA 扫码、人工入库目标格、人工出库来源和人工库存变更。
 - SAP 等上游系统的业务同步。
@@ -157,7 +162,8 @@ WES 只可保存完成工作线执行所需的 WMS 结果引用和作业期投�
 WES 是以下本地执行事实的权威：
 
 - WorkLine、设备角色绑定、位置节点、队列容量和活动流程模式。
-- `LineRunEpoch` 及其固定插件版本、配置版本和工作线模式。
+- `LineRunEpoch`：一条 WorkLine 在固定插件、配置、流程模式、物理拓扑和设备合同下的连续可信运行代际；它不是
+  PickingTask，同一 Epoch 可以依次执行多张任务。
 - 设备是否可以接收下一条命令的忙、闲和故障投影。
 - 物料、料箱在当前工作线位置和队列中的瞬时执行投影。
 - 每一条设备命令、`TransportTask`、WMS 确认义务和对应结果证据。
@@ -168,7 +174,7 @@ WES 是以下本地执行事实的权威：
 
 设备厂商 ECS 负责：
 
-- 给出设备真实支持的事件类型、命令类型和 JSON Payload。
+- 实现第三方设备统一接口的固定路径和公共包络，并在设备合同附录中给出真实支持的事件类型、命令类型和 JSON Payload。
 - 接收 WES 的长命令并同步返回 ACK。
 - 命令执行完成后异步回调最终结果。
 - 设备内部步骤、PLC 顺序、机械安全互锁、防撞和硬件防呆。
@@ -183,36 +189,41 @@ WES 只提交 WMS 已给出的搬运目标并跟踪任务级事实：
 - 搬运对象。
 - 来源和目标业务位置。
 - 提交时冻结的批次成员。
-- 批次级类型化 ACK、状态和终态。
+- 批次级同步接纳 ACK 和异步终态。
 - 批次终态中可携带的成员最终事实。
 
-WES 不关心该请求由 WMS 转发到 RCS，还是未来直接调用 RCS。两者通过同一个 Transport Port 隔离。
-当前产品只实现 WMS 转发适配器。成员事实不是独立生命周期；WES 不要求逐件、逐箱或设备内部子阶段回调，
-外部通知也不能直接成为任务终态权威。
+WES 不关心该请求由 WMS、RCS、MCS 或其他系统最终承接。它们通过同一个 Transport Port 隔离。
+当前产品只实现 WMS 转发适配器。成员事实不是独立生命周期；WES 不要求逐件、逐箱或设备内部子阶段回调。
+只有通过 TransportResult 应用端口校验并持久化的可靠异步终态才能推进任务；普通 WMS 业务事件不能终结任务。
 
 ## 5. 集成协议
 
 ### 5.1 ECS 事件
 
-ECS 事件采用 ACK-before-processing：
+ECS 事件采用持久化后 ACK（ACK-after-persist）：
 
-1. 校验最小传输合同和幂等键。
-2. 持久化原始 Payload、设备身份、事件类型和接收时间。
-3. 同步返回 ACK。
-4. 异步交给对应 WorkLine 插件处理。
+1. 校验最小传输合同、部署级唯一 `source_event_id`、`contract_key`/`contract_version` 和规范化载荷摘要。
+2. 首次观察时，在现有入站幂等记录中原子保存事件身份、摘要和可空的 `line_run_epoch_id`；没有活动 Epoch 时保存 `null`。
+3. 绑定了 Epoch 时，确认合同身份与其冻结值一致；随后持久化原始 Payload、设备身份、事件类型、接收时间和 Epoch 关联。
+4. 同步返回 ACK。
+5. 只有证据绑定的 Epoch 仍然活动时才异步交给对应 WorkLine 插件；`line_run_epoch_id=null` 的事件只作为诊断证据。
 
-重复事件相同 Payload 返回首次 ACK；同一幂等键、不同 Payload 必须拒绝并保存冲突证据。
+重复事件相同 Payload 返回首次接纳结果；同一稳定身份、不同 Payload 必须拒绝并保存冲突证据。`source_event_id` 在整个 WES
+部署范围内跨供应商、设备、结果和事件回调永久不复用。事件首次观察时形成的 Epoch 绑定同样不可变；旧 Epoch 的迟到或重传
+事件只保留为诊断证据，不得重新绑定当前 Epoch。
 
 ### 5.2 ECS 命令
 
 设备命令是厂商定义的长命令：
 
-1. WES 在下发前只检查目标设备是否空闲。
-2. 持久化 `DeviceCommand` 后调用 ECS。
-3. ECS 返回 ACK，只表示接纳，不表示物理完成。
-4. 最终 CALLBACK 才能推进物理位置和对象状态。
+1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；WES 只在可信状态为 `AUTO + IDLE`、无活动命令且状态返回的
+   合同身份与活动 `LineRunEpoch` 冻结值一致时发送。
+2. WES 在 `DeviceCommand` 中冻结 `contract_key`/`contract_version` 和规范化载荷摘要，持久化后调用 ECS。
+3. ECS 原子检查实际加载合同、设备状态和活动命令后返回 ACK；竞争失败返回 `429`，ACK 只表示接纳，不表示物理完成。
+4. 最终 CALLBACK 必须携带原命令合同身份；每个 `command_code` 只接受一个终态结果，只有匹配结果才能推进物理位置和对象状态。
 
-WES 不实现设备间并发互锁。不同设备可以同时处理不同对象；只有目标设备忙或目标位置被占用时等待。
+WES 不实现设备间安全互锁。不同 `device_code` 可以同时处理不同对象；同一 `device_code` 有活动命令、设备不是 `AUTO + IDLE` 或目标位置被占用
+时等待。
 
 ### 5.3 WMS 调用
 
@@ -224,7 +235,7 @@ WMS HTTP 访问由 Phase 3 `WmsClient` 薄封装提供：
 - 工作线插件不直接访问 HTTP；它只消费对应业务模块提供的类型化业务结果。
 - WMS 结果是业务事实，不伪装成 ECS ACK/CALLBACK。
 
-WMS 四类普通业务事件通过 `/api/v1/callback/event` 接收，必须先持久化为 `InboundEvidence` 再 ACK，并且只触发对应
+WMS 普通业务事件通过 `/api/v1/wms/events` 接收，必须先持久化为 `InboundEvidence` 再 ACK，并且只触发对应
 工作线对象判定。`WMS_EFFECT_STATUS_HINT` 的当前 successor 为 `NONE`；Phase 5 只删除旧 route、payload、OpenAPI 和测试，
 不建立新 hint 路径。普通事件不得直接充当外部任务终态。
 
@@ -235,12 +246,12 @@ WMS 四类普通业务事件通过 `/api/v1/callback/event` 接收，必须先�
 `docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，作为业务输入只读保留；具体 API 开发时再逐项确认。
 任何具体业务 wire 未确认只阻断该业务 API，不阻断 Phase 3 共享 Client。
 
-当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3。Phase 4 通过 Transport Port 和复用 `WmsClient` 的业务模块调用 WMS，
-并由 `TransportTask` 统一拥有任务持久化、领取、状态查询、取消、恢复、批次状态和终态推进；成员只作为冻结请求事实和
-终态结果事实存在。网络目标是 WMS 不改变其 Transport 语义所有权。
+当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3。Phase 4 通过 Transport Port 和复用 `WmsClient` 的 WMS 转发 Adapter
+调用 WMS，并由 `TransportTask` 统一拥有任务持久化、提交、同步接纳 ACK、异步终态、超期对账和批次成员最终事实。
+首版不提供状态查询、取消或外部内部进度状态；成员只作为冻结请求事实和终态结果事实存在。
 
 WMS 业务写操作和 Transport 请求都可在各自可靠对象内部保留 `dispatch_key`，但 wire 只发送对应外部合同批准的唯一
-幂等/关联字段，不自动暴露内部字段名。WMS 原子幂等、回显和安全重提规则，以及 Transport submit/status/cancel 关联，
+幂等/关联字段，不自动暴露内部字段名。WMS 原子幂等、回显、安全重提、Transport submit ACK 与异步结果关联规则，
 必须分别写入对应业务合同和 Phase 4 Transport 合同，不能由 WES 单方面推定。
 
 Phase 3 Client 行为无状态，只复用 Phase 2 Transport 执行一次有界请求/响应并完成 JSON 编解码；不打开数据库事务，
@@ -295,7 +306,7 @@ ECS Event / WMS Input / External Result
         │       │       │
         ▼       ▼       ▼
 DeviceCommand  TransportTask  WmsConfirmation
- ACK/Callback   ACK/Query/Terminal   Sync Outcome
+ ACK/Callback   ACK/Async Terminal   Sync Outcome
         └───────┴───────┘
                 │
                 ▼
@@ -307,14 +318,19 @@ DeviceCommand  TransportTask  WmsConfirmation
 
 ### 6.3 Decision 边界
 
-插件只能返回封闭 Decision，例如：
+插件只能返回以下封闭 Decision 类别，具体 SDK 使用可判别类型表达：
 
-- 等待目标设备或位置。
-- 下发一个 ECS 命令。
-- 请求一次 AGV/CTU 搬运。
+- 等待目标设备、位置或新的业务输入。
+- 请求一个逻辑设备动作并创建 `DeviceCommand`。
+- 使用 WMS 已批准的对象、来源、目标和约束请求一个供应商无关的 `TransportTask`。
 - 创建一次需要可靠提交的 WMS 确认义务。
 - 按 WMS 封闭结果将对象执行到指定下一步或 NG 分支。
+- 暂停当前对象或停止新的依赖型准入，并保留可靠对象身份。
+- 按类型化设备故障隔离指定对象、设备或配置范围。
+- 请求进入人工对账或人工清线，冻结不确定对象和位置。
 - 完成本次对象执行。
+
+`TransportTask` 不选择 AGV/CTU、车辆、供应商、路线或调度策略；人工对账或清线 Decision 也不得自行宣告现场已恢复。
 
 当前步骤所需的同步 WMS 业务决策或事实查询通过对应业务模块执行；业务模块内部复用 `WmsClient` 并返回类型化结果，
 插件不接触 HTTP，也不得组合原始事实重算业务结果。
@@ -330,7 +346,7 @@ DeviceCommand  TransportTask  WmsConfirmation
 
 插件职责：
 
-- 解释已经映射到设备角色的厂商事件。
+- 解释已经按统一接口（wire）和设备合同附录验证并映射到设备角色的事件。
 - 读取注入的只读工作线投影，并通过对应业务模块取得 WMS 封闭业务结果。
 - 校验结果的关联、版本、时效和物理可执行性，不改变其业务语义。
 - 将 WMS 业务结果映射为等待、发送、暂停、隔离或对账等封闭执行 Decision。
@@ -340,7 +356,7 @@ DeviceCommand  TransportTask  WmsConfirmation
 - 事务、Repository、幂等、重试和 Outbox。
 - 设备安全互锁。
 - WMS 库存和单据业务。
-- 来源、目标、优先级、路线、NG/等待/替代、取消、恢复或业务终态裁决。
+- 来源、目标、优先级、业务路线、业务异常分类、替代来源、取消、恢复或业务终态裁决。
 - RCS 车辆调度。
 
 具体插件不放入 WES 核心 `src/`。仓库内二次开发插件使用独立包结构：
@@ -353,24 +369,10 @@ workline_plugins/<plugin_key>/
 └── fixtures/
 ```
 
-设备厂商 Adapter 与执行插件使用并列而非嵌套的独立包结构：
-
-```text
-device_adapters/<adapter_key>/
-├── pyproject.toml
-├── src/
-├── tests/
-└── fixtures/
-```
-
-每个插件包只声明 WES SDK 和业务侧依赖；每个 Adapter 包独立声明厂商协议依赖。两类包分别维护测试入口，
-代码、测试和 fixture 必须与各自所有者同包交付；核心 `pyproject.toml` 的默认 `testpaths = ["tests"]` 不收集
-任何二次开发包测试。
-
-根项目使用 uv workspace 管理核心与已交付的 Adapter/插件包，统一锁定共享依赖；每个包仍必须独立构建和运行
-测试。客户镜像在构建期通过显式 package 列表安装所需 Adapter 与插件，并在 composition root 显式绑定；不建设
-运行时动态发现、私有包 registry 或按字符串扫描目录。删除任一包时同时移除 workspace member、镜像安装项、
-装配绑定及该包，核心无需保留 tombstone 或兼容入口。
+每个插件包只声明 WES SDK 和业务侧依赖，独立维护测试入口。根项目使用 uv workspace 管理核心与已交付插件，
+客户镜像在构建期通过显式 package 列表安装所需插件，并在 Composition Root 显式绑定；不建设运行时动态发现、
+私有包 registry 或按字符串扫描目录。删除插件时同时移除 workspace member、镜像安装项、装配绑定及该包，核心无需
+保留 tombstone 或兼容入口。
 
 ### 7.2 装饰器与依赖注入
 
@@ -378,26 +380,22 @@ device_adapters/<adapter_key>/
 - 显式依赖注入提供具体业务能力、`ProjectionReader` 和 Decision Factory；插件不直接注入 `WmsClient`。
 - 禁止 Service Locator、运行时全局容器查找和任意字符串动态 import。
 
-### 7.3 设备厂商合同
+### 7.3 设备统一接口合同
 
-厂商提供接口文档和 Payload 样例。实施团队根据文档编写：
+所有供应商必须适配
+[`docs/integration/third_party_integration_whitepaper.md`](../../integration/third_party_integration_whitepaper.md)
+定义的统一接口（wire）。供应商可以在 ECS 或局域网网关内适配其内部协议，但不得要求 WES 增加私有路径、DTO 别名、
+认证分支或供应商 Adapter。
 
-- HTTP Adapter。
-- 输入输出 DTO。
-- 事件和命令映射。
-- 厂商合同测试。
+`docs/hardware/` 原样保留供应商提供的协议与联调资料；即使资料较旧或与目标接口存在差异，也不得按历史设计移出项目或
+反向改写。同目录人工转写和供应商联调说明属于可检索派生资料，必须与原始 PDF 明确区分，也不得作为当前设备合同或
+WES 架构真源。每种实际设备通过获批合同附录明确允许的 `task_type`、`event_type`、`params`、`data`、错误和时限。
 
-`docs/hardware/` 原样保留厂商提供的协议与联调资料，作为 Adapter 合同实现输入；即使资料较旧或与当前实现存在
-差异，也不得按历史设计移出项目或反向改写。同目录人工转写和供应商联调说明属于可检索派生资料，必须与原始
-PDF 明确区分，也不得作为当前 Adapter 合同或 WES 架构真源。差异必须在当前 Adapter 合同、映射与测试中显式处理。
+共享固定路径、公共包络、身份、重复和冲突语义由 WES 核心合同测试证明；具体供应商实现由一致性验收证明；插件只消费
+类型化角色事件、WMS 业务结果与逻辑动作，并在插件包内验证工作线执行推进。三者不得相互替代验收。
 
-只验证共享传输协议和基础传输错误分类的合同测试属于 WES 核心。厂商 DTO、真实合同要求的认证差异、事件/命令 Payload、
-原始码映射和厂商合同测试只能由对应 Adapter 包拥有；插件只消费标准化角色事件、WMS 业务结果与逻辑动作，并在插件包内
-验证工作线执行推进。一次客户交付可以同时包含 Adapter 包和插件包，但不得混淆两者所有权，二者测试均不进入核心
-`tests/`。
-
-运行配置只绑定工厂实际设备 ID、Endpoint、工作线角色和现场容量；当前不存在 outbound 凭据配置。系统不要求厂商维护 WES Manifest，
-也不把厂商命令重新设计成 WES 自有指令集。
+运行配置只绑定工厂实际设备 ID、统一 Endpoint、工作线角色和现场容量；当前目标协议不存在应用层凭据配置。系统不要求
+供应商维护 WES Manifest，也不把设备合同附录中的命令提升为 WES 核心全局枚举。
 
 ### 7.4 Convention over Configuration
 
@@ -480,8 +478,9 @@ PDF 明确区分，也不得作为当前 Adapter 合同或 WES 架构真源。�
 - 人工扫码或物料校验失败。
 - 来源或目标业务授权不满足。
 
-具体业务模块返回的 WMS 拒绝结果必须携带封闭处置语义；插件只校验关联并映射为执行动作。插件不得根据
-`reason_code` 自行选择 NG、等待、替代路径或人工处理；结果缺失、过期、矛盾或物理不可执行时 fail closed 并暂停当前对象。
+具体业务模块返回的 WMS 拒绝结果必须携带稳定业务异常分类；插件只校验关联，并结合现场证据映射为物理 NG、等待、暂停
+或对账动作。插件不得根据未约定或未知的 `reason_code` 猜测业务分类或替代来源；结果缺失、过期、矛盾或物理不可执行时
+fail closed 并暂停当前对象。
 
 业务 NG 不创建 RuntimeHold，也不冻结无关对象和设备。
 
@@ -516,16 +515,16 @@ WES 保存当前工作线需要的活动投影；货架、储位、料箱、料�
 
 ### 10.2 料盘与包装数量语义
 
-ECS 每次物理搬运一个完整料盘。一个来源绑定项对应一个唯一 `PkgID` 和一个料盘级 `MaterialExecution`。
-SixInOne 中的 `Qty` 表示该包装内的物料数量，不用于展开多个料盘执行；物料、厂商和批次等明细均来自该包装的
-完整 6 合 1/PKG。
+ECS 每次物理搬运一个完整料盘。设备扫码形成一个不可变六合一码证据，其中唯一 `PkgID` 对应一个料盘级
+`MaterialExecution`。SixInOne 中的 `Qty` 表示该包装内的物料数量，不用于展开多个料盘执行；物料、厂商和批次等明细
+均来自本次扫描的完整六合一码。
 
 ### 10.3 出库来源
 
-`PkgID` 是完整料盘的唯一业务身份，不定义其他身份字段或兼容别名。排队任务只保存目标项；任务启动时，WMS 原子
-绑定每个目标项的完整 6 合 1/PKG、`PkgID`、精确物理来源和 LIFO 顺序。五层货架料箱料格中的待拣料盘必须构成
-当前顶部连续可达前缀；退货或转运货架以单储位、单料盘作为精确来源。WES 校验并建立作业期执行，不自行分配或
-重排来源。
+`PkgID` 是完整料盘的唯一业务身份，不定义其他身份字段或兼容别名。排队任务只保存初始来源 Cell；任务启动时，WMS
+原子锁定完整 Cell 集合，但不提前绑定逐盘六合一码或 `PkgID`。设备从当前 Cell 顶部逐盘取料并扫码，WMS 根据扫码证据
+返回业务资格、目标和需求状态。退货或转运货架以单储位、单料盘的 `RACK_SLOT` 作为统一 Cell 执行单元。WES 校验并建立
+作业期执行，不自行分配来源、选择物料或重排料盘。
 
 ### 10.4 自动线即时目标位置执行
 
@@ -538,8 +537,8 @@ SixInOne 中的 `Qty` 表示该包装内的物料数量，不用于展开多个�
 5. ECS 成功 CALLBACK 后更新本地投影并同步确认 WMS。
 6. PUT 失败时保留旧投影，后续目标仍由 WMS 决定。
 
-每条自动工作线同一目标投放段只绑定一台投放设备，由工作线拓扑和设备忙闲保证本地物理执行串行化。
-人工分拣线的目标料箱和料格同样由 WMS 作业指引决定。
+每条自动工作线同一目标投放段只绑定一台投放设备，由工作线拓扑和设备忙闲保证本地物理执行串行化。人工分拣线的目标料箱
+和料格同样由 WMS 作业指引决定。
 
 ## 11. 业务流程
 
@@ -571,7 +570,7 @@ SixInOne 中的 `Qty` 表示该包装内的物料数量，不用于展开多个�
 并行子流程：
 
 1. WMS/AGV 补充单层货架和五层货架。
-2. CTU 按冻结成员的批次把五层货架上的料箱投入本线入口；WES 跟踪批次级类型化 ACK、状态和终态，终态可携带成员最终事实，但不要求逐箱回调。
+2. CTU 按冻结成员的批次把五层货架上的料箱投入本线入口；WES 跟踪批次级同步接纳 ACK 和异步终态，终态可携带成员最终事实，但不要求逐箱回调。
 3. SCAN1 判定料箱是否进入本线工作队列。
 4. SCAN2 到位后启动料盘聚合流程。
 5. 北向机械臂从单层货架指定来源取出完整料盘并放到扫码平台。
@@ -585,14 +584,18 @@ SixInOne 中的 `Qty` 表示该包装内的物料数量，不用于展开多个�
 ### 11.3 自动分拣线出库
 
 1. WMS 根据订单、波次、库存和产线需求形成执行级 `PickingTask`；WES 不读取或解释这些业务单据。
-2. `PickingTask` 排队时只固定目标生产转运货架面/储位，不绑定来源、料盘或具体目标货架。
-3. WES 选中任务后请求 WMS 原子绑定全部目标项的完整 6 合 1/PKG、唯一 `PkgID`、精确来源和 LIFO 顺序；无完整方案时整单等待库存，不创建或占用目标架。
-4. 来源绑定成功后才请求 WMS 分配并锁定目标空架；目标架与第一来源架允许并行预调度。
-5. 目标面只执行非空面：仅 A 不旋转，仅 B 跳过 A 后旋转，A/B 双面按 A 后 B；来源架进入工作位时 A 面朝向设备，并按当前目标面处理来源 A/B 面。
-6. 料箱料格按 WMS 给定的顶部连续 LIFO 顺序执行；退料/转运货架按单储位单料盘执行。
-7. NG 料箱隔离到专用出口，正常料箱继续；替代来源只由 WMS 为符合资格的未完成项原子提供。执行中无替代库存时，目标架移至缺料待补缓存并等待 WMS 明确恢复。
-8. 每个料盘物理完成后立即形成独立位置变化事实并可靠提交 WMS；任一物理结果未知时整张任务暂停。
-9. 取消后的目标架继续发料、转作他用或退回由 WMS 决定；全部目标项完成并闭合逐项事实后，WES 再通知 WMS“拣货完成”，等待目标架移出工作位后释放下一任务。
+2. `PickingTask` 排队时只固定初始来源 Cell 集合，不绑定料盘、`PkgID`、六合一码、目标架或目标储位。
+3. WES 选中任务后请求 WMS 原子锁定完整初始 Cell 集合，并取得目标架容量、目标面窗口和搬运目标；授权前不创建设备动作。
+4. 设备从 Cell 顶部取盘并扫描完整六合一码，WMS 逐盘返回业务资格、稳定异常分类、目标储位和当前 Cell 的需求状态；
+   WES 不提前展开料盘清单，也不自行选料或计算目标。
+5. 目标架、可选退料架和五层货架允许并行调度；AGV 将五层货架送达后，CTU 按冻结成员批次和入料缓存容量持续投箱。
+6. 目标面使用单调窗口：WMS 以递增代际授权换面；当前面最后一盘可靠放置后，目标架换面与下一盘取扫可以并行，
+   下一盘 PUT 必须等待新面可靠到位且目标 locator 与新代际一致。
+7. WES 根据业务异常分类和设备证据决定料盘、Cell 或 Bin 的物理 NG 路由；来源缺口由 WMS 决定不追加来源，或追加并
+   锁定新 Cell。任务内未执行 Cell 继续按原成员关系执行。
+8. 每个料盘物理完成后立即形成独立位置变化事实并可靠提交 WMS；任一物理结果未知时保持相关资源未决并暂停依赖动作。
+9. 全部已接纳 Cell 完成时，WES 报告 PickingTask 本地执行完成；需要来源恢复的 Cell 在恢复决定到达前保持未完成。
+   Rack、Bin、Transport、目标架移出和下一任务准入由各自 owner 独立闭环。
 
 ### 11.4 满箱交换
 
@@ -603,7 +606,7 @@ SixInOne 中的 `Qty` 表示该包装内的物料数量，不用于展开多个�
 3. 旧货架通过 AGV 移至独立满箱交换位置。
 4. WES 根据冻结快照判断达到阈值的料箱。
 5. WMS 授权五层货架目标储位、空箱和 CTU 搬运目标。
-6. CTU 按冻结成员的批次交换满箱和空箱，并以批次级类型化 ACK、状态和终态报告；终态可携带成员最终事实，但不要求逐箱状态回调。
+6. CTU 按冻结成员的批次交换满箱和空箱，并以批次级同步接纳 ACK 和异步终态报告；终态可携带成员最终事实，但不要求逐箱状态回调。
 7. 满箱完成箱级入库并同步 WMS。
 8. 剩余未满箱料箱随单层货架进入自动分拣线 A/B，继续逐料盘聚合。
 
@@ -788,14 +791,14 @@ CTU 投箱
    `request/get/post/aclose`、统一 JSON 编解码、最小 factory 和开发示例；当前 outbound 无认证。本阶段不包含任何具体
    WMS 业务 API、业务 Port、数据库、evidence、breaker 或可靠生命周期，不接入生产、不修改旧实现和旧测试。
 4. WES 最小平台与 Transport 能力建设：暗构建最终执行对象、三类可靠记录、通用 WorkLine、投影、最小 SPI/SDK、
-   `Transport Port` 及 WMS 转发 RCS/AGV/CTU Transport Adapter；该 Adapter 复用 Phase 3 Client。普通 WMS 业务 API
-   由独立业务实施计划按需实现；测试 fake 由 Phase 4 核心测试树自行定义；本阶段不修改当前生产 Composition Root、
-   旧表、旧实现和旧测试。
+   `Transport Port`、WMS 转发 RCS Adapter、typed Device Port 与测试 fake，并由供应商无关的生产统一设备 HTTP Adapter
+   消费 Phase 2 Transport；本阶段不修改当前生产 Composition Root、旧表、旧实现和旧测试。
 5. 新旧能力原子切换与旧所有者删除：迁移生产消费者和装配，清理开发/测试数据，原子删除 Provider Profile、QUERY
-   System Capability、旧 WMS Transport/认证、Effect/status/Outbox 可靠闭包及被最终对象替代的核心旧 owner；不迁移旧代码或旧数据。
+   System Capability、旧 WMS Transport/认证、Effect/status/Outbox 可靠闭包及被最终对象替代的核心旧 owner；先把
+   DeviceCommand/status/admission 消费者接到 Phase 4 生产统一设备 Adapter，再删除旧 sender，生产 Composition Root 不绑定 fake。
 6. 核心测试承接与平台基线验收：把剩余通用可靠性测试收敛到最终对象，完成核心/插件测试分界和平台独立验收。
-7. 粗分机参考插件优化：以独立二次开发包交付第一个真实执行插件，验证平台扩展边界。
-8. 分拣执行插件优化：按实际工作线、WMS 业务结果和厂家指令分别交付自动分拣、人工分拣、满箱交换和复杂出库能力。
+7. 粗分机参考插件优化：交付首个实际设备合同附录、endpoint/device 绑定、供应商一致性验收和独立执行插件，复用唯一生产 Adapter。
+8. 分拣执行插件优化：按实际工作线分别交付设备附录、endpoint/device 绑定、供应商验收和插件；不实现第二个 WES HTTP Adapter。
 9. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
 10. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
 11. 最终基线与系统验收：从空库分别验证核心、Adapter、插件、质量、部署装配和旧架构缺席门禁。
@@ -835,13 +838,12 @@ CTU 投箱
 - 当前测试若直接证明通用 WES 合同、执行对象或可靠性不变量，改写到最终对象后保留在核心 `tests/`。
 - 当前测试若证明粗分机、自动分拣、人工分拣、满箱交换、复杂出库或其他具体插件业务行为，从核心
   `tests/` 移出；不把旧 Runtime/Manifest 测试原样搬入新插件包。对应插件二次开发时，按最终插件代码、
-  业务验收和标准化 Adapter 输入重新建立测试。
-- 当前测试若证明具体厂商 DTO、命令、事件、Payload、原始码或映射，从核心 `tests/` 移出；对应 Adapter
-  二次开发时，按厂商原始合同在 `device_adapters/<adapter_key>/tests/` 重新建立测试，不得寄存在插件包。
+  业务验收和已验证的设备统一接口输入重新建立测试。
+- 当前测试若证明具体供应商内部 DTO、私有路径、原始码或转换逻辑，从核心 `tests/` 删除且标记 `NONE`；目标状态由
+  供应商直接实现统一接口，不在 WES 仓库重建供应商 Adapter 测试。核心只保留统一公共包络和可靠性合同测试。
 - `workline_plugins/<plugin_key>/tests/` 与插件代码、fixture 同步交付，由插件包自己的测试入口和 CI 负责，
   不进入核心默认 pytest、核心 HEAVY selector 或核心覆盖率。
-- `device_adapters/<adapter_key>/tests/` 与 Adapter 代码、fixture 同步交付，由 Adapter 包自己的测试入口和 CI
-  负责，同样不进入核心默认 pytest、核心 HEAVY selector 或核心覆盖率。
+- 供应商一致性验收独立验证其 ECS/网关实现，不进入核心默认 pytest、核心 HEAVY selector、核心覆盖率或插件测试。
 - 只验证旧 Runtime、Manifest、Capability、Intent/Effect、Hold、Recovery、Reservation 或兼容入口的测试删除。
 - 不保留旧行为 characterization、旧 schema upgrade/downgrade、旧 revision chain 或数据回填测试。
 - 新增机器缺席门禁，禁止生产代码、测试和机器可读配置重新引入旧架构 import、配置键、别名和 fallback；
@@ -862,25 +864,27 @@ CTU 投箱
 - API → Service → Repository → Database 分层不变。
 - 插件无 Repository、数据库 Session、HTTP Client 或 Service Locator。
 - 生产热路径中不存在通用 System Capability 和 WorkLine Manifest 依赖。
-- 新厂商接入只增加 Adapter、DTO、映射、插件或配置，不修改最小执行内核。
+- 新供应商接入只增加获批设备合同附录、现场配置和必要的 WorkLine 插件，不修改最小执行内核或统一公共协议代码。
 - 新增、优化或删除 WMS 能力只修改单个垂直能力模块、显式端口/Gateway 方法和同名测试；生产运行时无
   capability registry、动态发现或 codegen。
 - WES 核心 `tests/` 不包含或导入任何具体工作线插件；只保留 SPI/SDK 边界和通用 WorkLine 能力测试。
 - 每个已交付插件位于 `workline_plugins/<plugin_key>/`，代码、测试和 fixture 同包交付且独立通过测试。
-- 每个已交付厂商 Adapter 位于 `device_adapters/<adapter_key>/`，代码、测试和 fixture 同包交付且独立通过测试。
-- uv workspace、客户镜像安装清单和 composition root 对已选择 Adapter/插件保持一致；二者由构建期显式装配。
+- 供应商 ECS/网关独立通过白皮书与设备合同附录的一致性验收，不以插件或核心测试替代。
+- uv workspace、客户镜像安装清单和 Composition Root 对已选择插件保持一致，并由构建期显式装配。
 
 ### 15.2 协议
 
 - ECS EVENT 持久化后 ACK，重复事件幂等。
-- COMMAND ACK 与最终 CALLBACK 明确分离。
+- COMMAND ACK 与最终 CALLBACK 明确分离，每个设备最多一个活动命令，每个命令最多一个已接纳终态结果。
+- 命令、结果、事件和状态携带可校验的 `contract_key`/`contract_version`；回调使用部署级唯一 `source_event_id`。
+- 所有供应商使用白皮书固定路径和公共包络，具体设备差异只存在于获批设备合同附录。
 - WMS 为同步业务能力，不伪装成 ACK/CALLBACK。
 - Transport Port 可在不修改插件的情况下替换 WMS 转发适配器。
 
 ### 15.3 并发
 
 - 同一工作线上至少覆盖多个对象分别位于入口、扫描、输送和出料设备的并行场景。
-- 单设备忙只阻止该设备的新命令。
+- 单设备有活动命令或不是 `AUTO + IDLE` 时只阻止该设备的新命令；原子接纳竞争不得形成供应商内部待执行队列。
 - 目标位置满只阻止相关对象。
 - 不存在 WES 设备间软件互锁或工作线级全局锁。
 
@@ -889,12 +893,13 @@ CTU 投箱
 本节与 §15.5 中绑定具体工作线业务的验收项由对应二次开发插件包及其独立测试证明；WES 核心只验证位置
 容量、对象占用、投影更新和 Decision 执行等通用机制，不在核心 `tests/` 重复具体业务场景。
 
-- 出库按 WMS 在任务启动时原子绑定的料格顶部连续 LIFO 顺序执行，`PkgID` 无身份别名。
-- 启动时来源绑定必须完整且原子；无完整来源时不得创建或占用目标架。
-- 单面目标不执行空面动作；每个料盘位置事实与整单完成分别提交，未知物理结果暂停整张任务。
+- 出库任务只携带初始来源 Cell；WMS 在启动时原子锁定完整 Cell 集合，料盘 `PkgID` 和六合一码在逐盘扫码后绑定。
+- 启动锁、目标架容量、初始目标面窗口和搬运目标必须完整且原子；未授权时不得创建任务执行动作。
+- 单面目标不执行空面动作；双面目标的旋转与下一盘取扫允许在当前面最后一盘可靠 PUT 后并行，下一盘 PUT 在新面到位和
+  locator/代际一致处汇合。每个料盘位置事实与整单完成分别提交，未知物理结果保持相关资源未决。
 - 退货、转运货架单储位只能有一个完整料盘。
-- 一个来源绑定项只关联一个唯一 `PkgID` 和一个完整料盘执行；`Qty` 只表示包装内物料数量。
-- 自动线目标格在 PUT 前即时计算，失败后重新计算。
+- 一个扫码证据只关联一个完整六合一码快照和一个 `MaterialExecution`；`Qty` 只表示包装内物料数量。
+- 自动线目标格由 WMS 在 PUT 前返回；WES 只校验物理可执行性，失败后的目标仍由 WMS 决定。
 - 人工线目标格始终由 WMS 决定。
 
 ### 15.5 四线
@@ -938,7 +943,7 @@ CTU 投箱
 | 先删插件测试后永久失去执行验收依据 | 删除提交标记插件所有权；插件代码、测试、fixture 必须同工作包重新交付，未通过测试不得进入部署包 |
 | WMS 权威与 WES 投影漂移 | 每个物理成功即时写本地证据并提交 WMS 确认义务 |
 | 长命令重试造成重复物理动作 | 命令 ID 幂等、ACK 与 CALLBACK 分离，不自动重放未知物理结果 |
-| 设备厂商 Payload 差异污染核心 | 厂商 Adapter 和合同测试隔离，插件只接收角色化输入 |
+| 供应商 Payload 差异污染核心 | 供应商 ECS/网关适配统一接口；WES 只接受白皮书公共包络和获批设备附录 |
 | 四线串联被过度抽象 | 不建 Corridor；依靠 NG 标识和下一 SCAN1 EVENT 接续 |
 | 正常料箱错误跨线 | 不可变 `owner_workline_id`，SCAN1、SCAN3、CTU 退料三重校验 |
 | 插件复制演变成平台 | Rule of Three 后只抽小型技术库，不建设 DSL 或通用执行引擎 |

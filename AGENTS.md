@@ -34,6 +34,12 @@ DO NOT send optional commentary
 - 日常分支以 `develop` 为 base；仅在确需并行隔离时使用 worktree。
 - 保留有价值注释，代码行为变化时同步更新注释。
 
+### 术语表达
+
+- 中文沟通和文档优先使用清晰、统一的中文名称。
+- 规范文档首次定义容易歧义或项目特有的术语时，可以补充英文名称或缩写；通用术语、日常沟通和 Commit Comment 不强制双语。
+- 代码标识符、路径、字段名、状态值和协议字面量保持原文，不得为了术语表达改写可执行合同。
+
 ## 🚨 Critical Architecture Rules
 
 ### Layered Architecture
@@ -150,7 +156,7 @@ __all__ = ["XxxService", "xxx_service"]
 - 归档前必须更新或删除项目内的当前态引用；确需历史追溯时，只记录外部归档位置，并明确其不属于当前架构真源。
 - 移动前必须确认目标路径不存在；保留原文件名和完整内容，不得覆盖已有归档。发生重名时先确定新的唯一归档名。
 - `docs/hardware/` 保存硬件厂商提供的原始协议和联调资料，属于有价值的外部输入，不按历史设计归档。
-  厂商原文应保持原貌；当前架构边界、字段归一化和实现约束必须写入架构合同或 Adapter/插件文档，不能反向改写
+  厂商原文应保持原貌；当前架构边界、字段归一化和实现约束必须写入架构合同、设备合同附录或插件文档，不能反向改写
   厂商原始资料。厂商资料不是 WES 核心架构真源，也不得用来替代核心能力测试。
 
 ---
@@ -307,22 +313,22 @@ Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 
 - 默认 `pytest` 收集路径下的 `test_*.py` 不得依赖真实数据库、HTTP、Celery、Redis、容器等真实服务；重测试边界由目录位置和 `norecursedirs` 共同保证。
 - WES 核心 `tests/` 只验证 SPEC 定义的最小执行内核、通用 WorkLine 能力、共享外部合同和可靠性不变量。
 - 具体工作线和业务插件测试必须位于 `workline_plugins/<plugin_key>/tests/`，并与该插件的 `pyproject.toml`、`src/` 和 `fixtures/` 同包交付。
-- 具体厂商 DTO、认证差异、wire Payload、原始码映射和合同行为测试必须位于
-  `device_adapters/<adapter_key>/tests/`，并与该 Adapter 的 `pyproject.toml`、`src/` 和 `fixtures/` 同包交付。
-- 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；核心测试不得导入根目录二次开发 Adapter/插件包。
-- Adapter/插件测试不得进入核心默认 pytest、核心覆盖率、核心质量门禁或核心 HEAVY selector。
-- `src/app/wms_adapter/` 当前只承载 Phase 3 WMS HTTP/JSON 薄访问层（thin access layer），不属于设备厂商
-  二次开发包，也不包含具体业务 API、持久化或事务生命周期。其 FAST 访问合同位于 `tests/contracts/wms_adapter/`；
-  后续具体 WMS 业务模块的合同与持久化/事务场景由对应业务所有者（business owner）承接。这些测试不得用于证明
-  `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
+- 所有设备供应商必须适配 `docs/integration/third_party_integration_whitepaper.md` 定义的统一接口（wire）。核心合同测试只
+  验证固定路径、公共包络、身份、幂等和 ACK/CALLBACK；供应商内部 DTO、认证、原始 Payload、原始码转换和设备行为由
+  供应商一致性验收拥有，不在 WES 仓库建立 `device_adapters/` 私有适配包。
+- 核心仓库不得存在 `tests/workline_plugins/` 或 `tests/device_adapters/`；核心测试不得导入根目录二次开发插件包或包含供应商私有协议。
+- 供应商一致性验收和插件测试不得进入核心默认 pytest、核心覆盖率、核心质量门禁或核心 HEAVY selector。
+- 产品内唯一 WMS 北向 Adapter 是 `src/app/wms_adapter/` 下的业务系统 ACL，不属于设备厂商二次开发包；其跨系统 FAST
+  合同位于 `tests/contracts/wms_adapter/`，真实持久化与事务场景位于 `tests/integration/wms_adapter/`。这些测试只验证
+  WMS Adapter，不得用于证明 `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
 
 **STRICTLY FORBIDDEN**:
 - ❌ 在 `tests/` 根目录新增 `test_*.py`
 - ❌ 把 integration / e2e / resilience / load / mock 测试混入默认快速回归集
 - ❌ 为了快速通过门禁删除有业务价值的断言或失败路径覆盖
 - ❌ 把 API facade 测试写成 service / repository / projection / orchestrator 大杂烩
-- ❌ 把具体工作线、插件或厂商 Adapter 测试改名后放入 contracts / runtime / integration / e2e 等核心目录
-- ❌ 创建只有测试、没有对应 Adapter/插件代码和 fixture 的二次开发包
+- ❌ 把具体工作线、插件或供应商内部协议测试改名后放入 contracts / runtime / integration / e2e 等核心目录
+- ❌ 创建只有测试、没有对应插件代码和 fixture 的二次开发包
 - ❌ 新增超过 `3000` 行的测试文件；单文件超过 `1000` 行必须优先拆分或说明原因
 
 **Required placement**:
@@ -333,7 +339,7 @@ Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 
 - `tests/core/`, `tests/database/`, `tests/sys/`, `tests/api_auth/`, `tests/deployment/`, `tests/utils/`: 对应基础设施或领域边界
 - `tests/integration/`, `tests/e2e/`, `tests/resilience/`, `tests/load/`, `tests/mock/`: 显式运行的重测试目录，默认 pytest 不收集
 - `workline_plugins/<plugin_key>/tests/`: 具体插件独立测试树，不属于核心 `tests/`，由插件包自己的 Pytest 配置和 CI 运行
-- `device_adapters/<adapter_key>/tests/`: 具体厂商 Adapter 独立测试树，不属于核心 `tests/`，由 Adapter 包自己的 Pytest 配置和 CI 运行
+- 供应商一致性验收：在供应商 ECS/网关交付边界独立运行，不属于核心 `tests/`
 
 **Required verification for test changes**:
 ```bash
@@ -387,7 +393,7 @@ use Chinese to Write document and Communication and Commit Comment
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wes_backend** (42445 symbols, 74284 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wes_backend** (42604 symbols, 74506 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

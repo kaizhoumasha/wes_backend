@@ -10,7 +10,9 @@
 | --- | --- | --- |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
-| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与双面货架候选方案，不是批准真源 | ReviewRequired |
+| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、Cell 晚绑定、NG 和双面目标架业务设计真源 | Approved |
+| `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、异步 TransportResult 与对账评审基线 | ReviewRequired |
+| `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、Payload、返回 JSON 与幂等评审基线 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 1–3 已完成，Phase 4–11 未开始 |
 
@@ -125,6 +127,7 @@
 - `docs/architecture/architecture-guardrails-spec.md`
 - `docs/architecture/legacy-cleanup-matrix.csv`（机器可读清理清单）
 - `docs/contracts/wms-northbound-interaction-contract.md`
+- `docs/integration/third_party_integration_whitepaper.md`（长期生效的第三方设备统一接口 2.3）
 - `docs/integration/callback_event_validation_principles.md`
 
 核心合同不得定义具体厂商命令、WMS 业务规则、工作线执行映射或客户流程。核心测试只验证共享传输、持久化、幂等、可靠性和
@@ -132,7 +135,7 @@
 
 ## 当前业务与外部输入
 
-以下资料只作为对应 Adapter 或 WorkLine 插件的外部输入，不是 WES 核心架构真源，也不得进入核心测试：
+以下资料只作为设备合同附录或 WorkLine 插件的外部输入，不是 WES 核心架构真源，也不得进入核心测试：
 
 - `docs/hardware/wms_rcs_interface_requirements.md`
 - `docs/hardware/CTU&AGV对接流程（完成80%）.pdf`
@@ -144,9 +147,9 @@
 
 `docs/hardware/` 以硬件厂商原始 PDF/资料为保留主体；同目录 Markdown 包含便于检索的人工转写及面向供应商的
 联调说明，属于派生资料，不得覆盖原始文件，也不得被视为当前 Adapter 合同或 WES 架构真源。派生资料中的字段
-归一化、插件名称、Session/Outbox/Inbox/Hold 等当前实现描述只用于偏差识别，不能反向约束最终架构。差异由当前
-架构合同及具体 Adapter 文档说明。具体 Adapter 包拥有厂商实现、合同测试和 fixture；具体插件包只拥有 WMS 业务结果
-到执行 Decision 的映射、对象推进及其测试和 fixture。基础、Adapter 和业务能力不得互相替代验收。
+归一化、插件名称、Session/Outbox/Inbox/Hold 等当前实现描述只用于偏差识别，不能反向约束最终架构。差异由第三方
+设备统一接口白皮书和获批设备合同附录说明。供应商 ECS/网关负责实现统一接口并独立通过一致性验收；具体插件包只拥有
+业务 Decision、对象推进及其测试和 fixture。基础、供应商一致性和业务能力不得互相替代验收。
 
 ## 本轮追加归档
 
@@ -154,7 +157,7 @@
 
 - `../archive_docs/wes_backend/docs/business/inbound_acceptance_steps.md`
 - `../archive_docs/wes_backend/docs/business/rough_sorter_scan_decision_contract.md`
-- `../archive_docs/wes_backend/docs/integration/third_party_integration_whitepaper.md`
+- `../archive_docs/wes_backend/docs/integration/third_party_integration_whitepaper.md`（历史 1.1 原文；当前 2.3 在项目内长期生效）
 - `../archive_docs/wes_backend/wms_rcs_interface_requirements.pdf`（旧 WMS/RCS 接口汇编，不属于硬件厂商原始资料）
 - `../archive_docs/wes_backend/docs/architecture/legacy-cleanup-matrix.md`（Phase 0 历史分析；机器清单继续保留为 CSV）
 - `../archive_docs/wes_backend/.serena/memories/learnings/code-reviews/` 下五份 2026-03-07/16 历史评审
