@@ -704,7 +704,7 @@ Phase 10 固化最终 metadata。
 
 | 检查项 | 结果 | 说明 |
 | --- | --- | --- |
-| 占位标记 | 阻断 | PickingTask 业务语义已冻结，但条件候选消费者、来源绑定/事实通知和 inbound command wire 的批准尚未关闭 |
+| 占位标记 | 阻断 | PickingTask 业务语义已冻结，但条件候选消费者、Cell 启动锁/逐盘扫码决定/事实通知和 inbound command wire 的批准尚未关闭 |
 | 兼容设计 | 通过 | Phase 2–4 新能力不接生产流量；旧路径只保留为唯一活动 owner 到 Phase 5；Phase 5 原子切换并删除，不存在 shim、alias、re-export、fallback、双写、双读或旧数据兼容 |
 | 重复职责 | 通过 | Transport、WMS Client、具体业务模块、核心可靠对象和生产切换所有权互斥；Phase 2–5 边界单独列明 |
 | 测试过重 | 通过 | Phase 2/3/4 各自只测试新 owner；旧测试迁移和运行态验收统一归 Phase 5，不以跨层 happy path 替代分层测试 |
