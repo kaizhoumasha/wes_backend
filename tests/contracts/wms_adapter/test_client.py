@@ -174,6 +174,30 @@ async def test_caller_cannot_override_content_type(header_name: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("header_name", "header_value"),
+    [
+        ("Host", "other-service.internal"),
+        ("host", "other-service.internal"),
+        ("Content-Length", "0"),
+        ("content-length", "0"),
+        ("Transfer-Encoding", "chunked"),
+        ("transfer-encoding", "chunked"),
+    ],
+)
+async def test_caller_cannot_override_origin_or_body_framing_headers(
+    header_name: str,
+    header_value: str,
+) -> None:
+    transport = _FakeTransport()
+
+    with pytest.raises(OutboundHttpRequestError, match="header is owned by WmsClient"):
+        await WmsClient(transport).post("/tasks", json={}, headers={header_name: header_value})
+
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "invalid_json",
     [
         ("tuple",),

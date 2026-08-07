@@ -283,7 +283,7 @@ Adapter/Composition Root，或建设认证/拦截器扩展平台。子计划必�
 **Objective:** 在不触碰当前生产路径的前提下，消费 Phase 2 Transport，暗构建一个类似前端 Axios 的长期
 `WmsClient`，统一 WMS origin、GET/POST、query、headers、JSON 编解码、传输事实和资源关闭。
 
-**Authoritative inputs:** Phase 2 公开合同、WMS Client 使用合同和 Phase 3 详细计划。前端 `src/api/client.ts` 与
+**Authoritative inputs:** Phase 2 公开合同、当前 WMS Client 使用合同和 `src/app/wms_adapter/` 实现。前端 `src/api/client.ts` 与
 `src/api/contract/client.ts` 只作为职责形态参考。当前 `src/app/wms_integration/` 只用于识别未来删除边界，不是新实现模板。
 
 **Entry conditions:** Phase 2 基线已通过退出门禁，所需 Transport、request/result 和 builder 已存在。具体 WMS 业务 API、
@@ -704,7 +704,7 @@ Phase 10 固化最终 metadata。
 
 | 检查项 | 结果 | 说明 |
 | --- | --- | --- |
-| 占位标记 | 阻断 | PickingTask 业务语义已冻结，但条件候选消费者、Cell 启动锁/逐盘扫码决定/事实通知和 inbound command wire 的批准尚未关闭 |
+| 占位标记 | 阻断 | PickingTask 候选业务语义尚待 WMS 书面冻结，相关消费者、Cell 启动锁/逐盘扫码决定/事实通知和 inbound command wire 的批准均未关闭 |
 | 兼容设计 | 通过 | Phase 2–4 新能力不接生产流量；旧路径只保留为唯一活动 owner 到 Phase 5；Phase 5 原子切换并删除，不存在 shim、alias、re-export、fallback、双写、双读或旧数据兼容 |
 | 重复职责 | 通过 | Transport、WMS Client、具体业务模块、核心可靠对象和生产切换所有权互斥；Phase 2–5 边界单独列明 |
 | 测试过重 | 通过 | Phase 2/3/4 各自只测试新 owner；旧测试迁移和运行态验收统一归 Phase 5，不以跨层 happy path 替代分层测试 |

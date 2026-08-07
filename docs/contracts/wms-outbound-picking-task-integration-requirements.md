@@ -102,11 +102,16 @@ WMS 返回的启动授权至少应包含：
 - 唯一 `scan_evidence_id`、原始扫码字段和扫码时间。
 - 来源 locator、当前工作线/位置上下文和当前目标面窗口。
 
+首次请求不携带前序决定。若上一次结果为 `WAIT` 或身份冲突，WES 业务模块只能在 WMS 给出的恢复条件满足后，使用新的
+`decision_request_id`、同一 `scan_evidence_id` 和 `previous_decision_id` 再次请求；不得复用原请求 ID 期待结果变化，
+也不得由 `WmsClient` 自动轮询。
+
 ### 5.4 逐盘决定响应
 
 所有响应至少应包含：
 
-- 与请求唯一关联的 `decision_request_id` 和稳定 `decision_id`。
+- 与请求唯一关联的 `decision_request_id`、稳定 `decision_id`，以及同一 `scan_evidence_id` 下单调递增的
+  `decision_version`。
 - `ACCEPT | REJECT | WAIT` 之一；不得用空值或 HTTP 状态代替业务决定。
 - 与结果匹配的封闭原因类别和后续处置要求。
 
@@ -116,8 +121,12 @@ WMS 返回的启动授权至少应包含：
 - 当前目标面内唯一且可用的目标货架、目标面、目标储位和 `face_window_generation`。
 - `CONTINUE | CELL_DONE` 之一，表示当前盘物理闭合后是否允许从同一 Cell 创建下一次取盘。
 
-`REJECT` 可在已唯一识别物料时携带身份证据，但不得携带正常目标储位或 Cell 后续动作。`WAIT` 或身份冲突不得伪造 `PkgID`、
-SixInOne、目标储位或 `CONTINUE | CELL_DONE`；WES 保持当前扫码台与资源占用，等待新的可关联决定。
+`REJECT` 可在已唯一识别物料时携带身份证据，但不得携带正常目标储位或 Cell 后续动作。`WAIT` 或身份冲突是非终局决定，
+不得伪造 `PkgID`、SixInOne、目标储位或 `CONTINUE | CELL_DONE`；WES 保持当前扫码台与资源占用，并按上一节的决定链请求
+后续结果。
+
+同一 `scan_evidence_id` 最多只能产生一个有效终局 `ACCEPT` 或 `REJECT`。终局决定形成后不可改写；任何后续请求都必须
+返回同一终局 `decision_id`、`decision_version` 和载荷。并发分支、版本倒退或两个终局结果均视为合同冲突，WES 失败关闭。
 
 WMS 只能以递增的 `face_window_generation` 明确授权目标面从 A 切换到 B。WES 校验代际、面顺序和旧面未决物理动作；
 校验通过后只决定旋转的安全执行时机，不自行决定是否换面。切到 B 后的任何 A 面目标或迟到代际都必须拒绝。
@@ -127,8 +136,10 @@ WMS 只能以递增的 `face_window_generation` 明确授权目标面从 A 切�
 ### 5.5 空取决定
 
 当设备在指定 Cell 给出可靠“无料”终态且没有扫码证据时，WES 必须先持久化 `source_observation_id`、任务/Cell/锁代际、设备命令终态和发生时间，
-再请求 WMS 返回 `CELL_DONE | RETRY | WAIT`。`CELL_DONE` 是唯一可以结束该 Cell 的空取业务决定；`RETRY` 只允许 WES 重新执行同一来源；
-`WAIT` 保持资源与 Cell 未决。设备结果未知或无法关联时不得调用该业务决定来猜测空 Cell。
+再请求 WMS 返回 `CELL_DONE | RETRY | WAIT`。该请求与响应使用独立 `decision_request_id`、稳定 `decision_id` 和同一
+`source_observation_id` 下单调递增的 `decision_version`；`WAIT` 后续请求必须使用新请求 ID、同一来源观察 ID 和
+`previous_decision_id`，并遵守单一不可变终局规则。`CELL_DONE` 是唯一可以结束该 Cell 的空取业务决定；`RETRY` 只允许
+WES 重新执行同一来源；`WAIT` 保持资源与 Cell 未决。设备结果未知或无法关联时不得调用该业务决定来猜测空 Cell。
 
 ### 5.6 逐盘与任务事实
 
@@ -146,7 +157,9 @@ ALL(CellExecution.status == COMPLETED)
 ## 6. 必须冻结的交互规则
 
 - **字段闭集**：正式 DTO 不接受开放字段、兼容别名或未批准扩展。
-- **幂等**：同一请求/事实 ID 与相同载荷重复提交必须返回同一业务结果；同一 ID 不同载荷必须明确冲突。
+- **幂等**：同一请求/事实 ID 与相同载荷重复提交必须返回同一快照；同一 ID 不同载荷必须明确冲突。`WAIT` 或身份冲突
+  的后续求值必须新建请求并关联上一决定，不得改写原请求结果。
+- **决定终局唯一**：同一扫码证据或来源观察最多一个有效终局决定；终局形成后，后续请求只能返回同一终局结果。
 - **代际隔离**：迟到响应必须按任务版本、锁代际和请求 ID 拒绝，不能作用于新任务或新锁。
 - **失败关闭**：WMS 超时、交付结果未知、响应非法或无法关联时，WES 保持当前资源占用，不推断 `REJECT`、`CONTINUE` 或 `CELL_DONE`。
 - **身份唯一**：设备扫码字段必须让 WMS 唯一确定一盘 `PkgID`；不能唯一确定时返回明确冲突/人工处置结果。
@@ -193,6 +206,8 @@ WMS 开发前应与 WES 共同冻结并交付：
 | 同一决定请求重复提交 | 返回相同 `decision_id` 和业务结果 |
 | 同一请求 ID 载荷变化 | 明确冲突，不覆盖原决定 |
 | WMS 超时或响应无法关联 | WES 保持扫码台占用，不推断 NG、继续或完成 |
+| `WAIT` 或身份冲突解除 | 使用新请求 ID、同一证据 ID 和前序决定 ID 请求下一版本；原请求重复提交仍返回原快照 |
+| 同一证据出现两个终局决定 | WES 失败关闭并上报合同冲突，不选择任一结果继续执行 |
 | 返回 `CONTINUE` | 当前盘物理闭合后，WES 才允许同 Cell 下一次取盘 |
 | 返回 `CELL_DONE` | 当前最后一盘物理闭合后，该 Cell 才完成 |
 | 设备可靠返回空取 | WES 提交稳定无料证据；仅 WMS 返回 `CELL_DONE` 才结束 Cell，`RETRY/WAIT` 保持未完成 |

@@ -22,6 +22,7 @@ type _JsonValue = None | bool | int | float | str | list[_JsonValue] | dict[str,
 type _JsonFailure = Literal["INVALID_UTF8", "INVALID_JSON"]
 
 _MISSING = object()
+_CLIENT_OWNED_REQUEST_HEADERS = frozenset({"host", "content-length", "transfer-encoding"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,10 @@ class WmsClient:
         request_headers = _as_pairs(headers, field_name="headers")
         if any(isinstance(name, str) and name.casefold() == "content-type" for name, _ in request_headers):
             raise OutboundHttpRequestError("Content-Type is owned by WmsClient")
+        if any(
+            isinstance(name, str) and name.casefold() in _CLIENT_OWNED_REQUEST_HEADERS for name, _ in request_headers
+        ):
+            raise OutboundHttpRequestError("request header is owned by WmsClient")
 
         if method is OutboundHttpMethod.GET:
             if json is not _MISSING:

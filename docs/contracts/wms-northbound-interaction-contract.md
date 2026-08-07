@@ -59,7 +59,9 @@ Client。Phase 3 不接入生产 Composition Root，真实 FastAPI/Celery owner 
   的 list，以及字符串 key 的 dict；tuple、非字符串 key、`NaN`、正负 `Infinity` 和其他对象在发送前拒绝。
 - POST 使用无 BOM UTF-8 紧凑编码并设置 `Content-Type: application/json`；调用方以任意大小写传入 `Content-Type`
   都会在发送前被拒绝。GET 不自动添加该 header。
-- 调用方可以传入真实 API 所需的其他普通 headers，但不得覆盖 Transport 拥有的 header。
+- 调用方可以传入真实 API 所需的其他普通 headers，但不得以任意大小写覆盖 Client/Transport 拥有的 `Host`、
+  `Content-Length` 或 `Transfer-Encoding`；这些 header 与固定 WMS origin、实际请求体及 HTTP 报文分帧绑定，覆盖请求
+  会在发送前被拒绝。
 - 每次调用最多执行一次 `send`；Client 不自动 retry、轮询或翻页。
 - `query` 与 `headers` 均使用可选 `Mapping[str, str]`，默认 `None`；Client 只转换为 Phase2 string-pair tuple，非法值继续
   由 Phase2 fail closed。真实 API 需要重复 query key 时再独立扩展。
@@ -123,7 +125,8 @@ ExampleWmsApi.query_example(request DTO)
 Phase 3 测试只验证：
 
 - GET query、POST JSON、GET/POST body 约束和 header 映射。
-- relative path、query/header 默认与重复项、Content-Type 所有权、严格 JSON 值域/编解码和一次 send。
+- relative path、query/header 默认与重复项、`Content-Type`/`Host`/HTTP 报文分帧 header 所有权、严格 JSON 值域/编解码
+  和一次 send。
 - status/headers/传输事实保留。
 - 空响应、JSON `null`、响应 Content-Type、非 2xx、无效 UTF-8/JSON 的事实保留、取消和关闭行为。
 - 新包不依赖数据库、旧 WMS 包、RCS/AGV/CTU 或生产注册机制。
