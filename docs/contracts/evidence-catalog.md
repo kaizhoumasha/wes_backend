@@ -1,6 +1,6 @@
 # Runtime Evidence Catalog
 
-> 状态：`implementation_baseline`。本文只锁定收敛前仍在运行的 WMS evidence 表、索引与 drift job；目标架构中的外部输入统一归属 `InboundEvidence`，WMS 查询、确认和搬运证据分别由 `WmsCapabilities`、`WmsConfirmation` 与 `TransportTask` 拥有。旧表和任务退役时本文必须同步重写或归档。
+> 状态：`implementation_baseline`。本文只锁定收敛前仍在运行的 WMS evidence 表、索引与 drift job；目标架构中的外部输入统一归属 `InboundEvidence`，WMS 查询由具体业务模块通过 `WmsClient` 完成，确认和搬运证据分别由 `WmsConfirmation` 与 `TransportTask` 拥有。旧表和任务退役时本文必须同步重写或归档。
 
 本文档锁定 WMS evidence envelope 的版本、结构化索引和 drift 分类口径。跨域 evidence 字段变更必须先更新本 catalog，再更新 Pydantic 合同、迁移和测试。
 

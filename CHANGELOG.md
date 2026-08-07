@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0.0] - 2026-08-07
+
+### Added
+- 新增 Phase 3 WMS 薄访问层，提供统一的 `request`、`get`、`post` 与 `aclose` 入口、不可变访问结果和固定 `system_id="wms"` 的工厂。
+- 新增 WMS Adapter FAST 合同测试及精确 HEAVY NONE 映射，覆盖严格 JSON 值域、请求构造、传输失败事实、响应解码和生命周期语义。
+- 新增任务驱动的 `PickingTask` 对接要求与出库操作设计，明确 WMS 冻结业务结果、WES 映射执行 Decision 的后续实施边界。
+
+### Changed
+- 收敛 Phase 3 为类似 Axios 的 HTTP/JSON 标准封装，不包含具体 WMS 业务 API、持久化、重试、熔断、动态注册或生产接线。
+- 统一 SRS、权威矩阵、WMS 北向合同、插件指南和总控计划中的职责表述：WMS 负责业务决定，WES 负责执行决定，Phase 4 才承接 RCS、AGV、CTU 运输交互。
+- 将已完成的 Phase 3 实施计划移出项目目录归档，项目内仅保留当前架构与开发合同真源；`docs/hardware/` 厂商原始资料继续保留。
+
+### Fixed
+- 收紧请求 Header、严格 JSON 编码与深层响应解析失败合同，完整保留响应已接收、状态码和 Header 等传输事实。
+- 修正文档中的决定重放、幂等、启动拒绝、业务事件与设备事件边界，并将 WorkLine 明确为执行插件而非业务决策插件。
+
+### Verification
+- QUALITY：3439 passed、4 skipped、1 warning；Ruff、Bandit、架构门禁、测试拓扑、FAST 预算和 HEAVY selector 合同均通过。
+- Outbound HTTP、WMS Adapter 与 selector 定向回归：425 passed；受影响 HEAVY 选择为空，预落地复审无剩余问题。
+- Phase 3 归档计划完成度：4/4 DONE；WMS Adapter 综合覆盖率 97%，剩余 4 项为非关键防御路径。
+
 ## [0.22.1.0] - 2026-08-06
 
 ### Added

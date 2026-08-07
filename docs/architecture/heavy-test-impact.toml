@@ -454,5 +454,18 @@ heavy_tests = ["tests/resilience/test_wms_circuit_breaker.py"]
 source_glob = "src/core/outbound_http/**"
 heavy_tests = []
 
+# Phase 3 仅交付以下三个未接入具体 WMS 业务的薄客户端文件；未来新增生产文件继续 fail closed。
+[[mapping]]
+source_glob = "src/app/wms_adapter/__init__.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/client.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/factory.py"
+heavy_tests = []
+
 # 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。

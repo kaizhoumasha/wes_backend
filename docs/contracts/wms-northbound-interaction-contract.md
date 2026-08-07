@@ -1,171 +1,139 @@
-# WMS 业务 ACL 交互合同
+# WMS HTTP Client 使用合同
 
-> 状态：`DRAFT_CONSUMER_MATRIX`，Phase 3 Task 1 已重新打开，当前不得进入代码实施。
-> 需求真源：`docs/architecture/SRS.md`。
-> 架构真源：`docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`。
-> 出库业务真源：`docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md`。
-> 外部输入：`docs/hardware/wms_rcs_interface_requirements.md`，原文只读保留，不自动成为实施合同。
+> 状态：`IMPLEMENTED`（Phase 3 共享 HTTP/JSON Client，2026-08-07）。
+> 本文只定义 Phase 3 WMS HTTP 访问标准，不定义任何具体 WMS 业务 API。
+> 外部输入：`docs/hardware/wms_rcs_interface_requirements.md` 只读保留；具体业务开发时再从中选择并确认真实接口。
 
 ## 1. 目的
 
-本文只定义当前交付业务真实消费者所需的 WMS Anti-Corruption Layer（ACL）边界。Phase 3 的目标是无状态、
-消费者驱动的 WMS 业务接入，不以旧代码、厂商初稿接口数量或历史 operation 编号维持固定 surface。
+Phase 3 提供一个类似前端 Axios/API Client 的 `WmsClient`，统一 WES 调用 WMS 时的 HTTP 和 JSON 处理。
 
-一项能力只有同时满足以下条件，才可进入 Phase 3：
+本文回答：
 
-1. 能追溯到当前 SRS 范围内的具名业务场景。
-2. 能指出唯一或明确共享的调用消费者。
-3. 交互对象是 WMS 拥有的业务、库存、单据或主数据事实。
-4. method、path、request/result、必填性、错误码和幂等语义已经由 WMS 确认。
+- 如何构造和复用 WMS Client。
+- 如何发送 GET/POST JSON 请求。
+- 如何获得标准响应和传输失败事实。
+- 后续业务开发如何增加一个具体 WMS API。
 
-仅仅出现在硬件初稿、旧实现、旧测试或历史文档中的接口，不满足准入条件。
+本文不回答具体业务 API 的 path、字段、错误码、幂等和业务含义。这些内容由后续业务开发依据真实 WMS 合同逐项定义。
 
-## 2. 边界
+## 2. 权限边界
 
-### 2.1 Phase 3 拥有
+- WMS 给出所有业务结果。
+- WES 业务模块校验具体 API 合同并解释 WMS 结果。
+- WES 执行模块只根据有效业务结果和现场物理条件作出等待、发送、暂停、隔离或对账等执行决策。
+- `WmsClient` 不知道库存、来源、目标、优先级、路线、NG、替代、取消、恢复或业务终态。
 
-- WMS 权威业务事实的类型化查询 DTO。
-- WES 向 WMS 请求 `PickingTask` 来源绑定及提交业务事实通知的类型化 DTO。
-- WMS 向 WES 下发业务命令的类型化 DTO 和无状态校验/标准化。
-- 固定 method/path、请求编码、响应解析和单次调用结果翻译。
-- 一个明确配置的 WMS origin 和当前 `NONE` 认证决定。
+因此 Phase 3 不建立业务 Port、业务 Outcome、operation 清单或消费者矩阵。
 
-### 2.2 Phase 3 不拥有
+## 3. WmsClient 负责什么
 
-- 任何 RCS、AGV、CTU 搬运、补给、交换、旋转、状态查询或取消操作。
-- `Transport Port`、`TransportTask`、搬运批次、队列位置、FIFO 窗口或位置投影。
-- `WmsConfirmation`、`InboundEvidence` 的持久化、领取、重试、恢复或终态推进。
-- 数据库表、Migration、Repository、调用 evidence、Circuit Breaker 或清理任务。
-- WorkLine Decision、库存分配算法、库存锁、料格冻结、跨任务来源分配、设备命令和厂商 Payload。
-- 通用 `call`、动态 registry、Provider 切换、兼容 alias、fallback、缓存或自动续页。
+- 持有一个 Phase 2 `OutboundHttpTransport`。
+- 接收 relative path、query、headers 和 JSON body。
+- 将 GET/POST 映射为 `OutboundHttpRequest`。
+- 对标准 JSON 值做一次严格 UTF-8 编码，对完整响应做一次严格 JSON 解码，并区分空响应与 JSON `null`。
+- 通过字段冻结的 `WmsAccessResult` 保留 HTTP status、response headers、`delivery_state`、`failure_kind` 和 JSON 解码事实。
+- 提供显式且幂等的 `aclose()`。
 
-Phase 2 只提供单次 HTTP 传输事实。Phase 3 只做 WMS 业务 wire 翻译。可靠对象和 WMS 转发 RCS 的
-Transport Adapter 均由 Phase 4 拥有。
+每个运行时/事件循环 owner 构造并长期复用自己的 WMS Client，不得跨事件循环共享；单次业务调用不得创建新的 HTTP
+Client。Phase 3 不接入生产 Composition Root，真实 FastAPI/Celery owner 的装配与关闭随对应业务接线实施。
 
-## 3. 当前消费者矩阵
+## 4. WmsClient 不负责什么
 
-### 3.1 WMS 权威事实查询
+- 具体业务 request/response DTO 和字段闭集。
+- 业务成功、拒绝、等待、NG 或终态解释。
+- 数据库、事务、evidence、重试、breaker、缓存、分页或对账。
+- WMS inbound endpoint、路由或 normalizer。
+- RCS、AGV、CTU 和 `TransportTask` 业务语义。
+- 生产动态 registry、Provider、Profile、Service Locator、代码生成或配置驱动 API。
+- 当前隔离局域网不需要的认证、签名、nonce、clock 或 IP allowlist。
 
-| 能力候选 | 当前消费者 | 业务依据 | 厂商初稿 | 当前裁决 |
-| --- | --- | --- | --- | --- |
-| `get_material` | 粗分机准入、装箱算法 | SRS §3.1.1、§3.3.1 | `GET /api/wms/materials/{material_id}` | 保留；完整 DTO/错误码待 WMS 确认 |
-| `get_rack` | 当前作业货架身份与权威位置校验 | SRS §3.1.1、§3.3.1 | `GET /api/wms/racks/{rack_id}` | 保留；只允许点查，不同步全局货架主账 |
-| `get_bin` | 当前料箱、料格和顶部物料校验 | SRS §3.1.1、§3.3.1 | `GET /api/wms/bins/{bin_id}` | 保留；只返回当前执行所需事实 |
-| `get_grn` | 粗分机到货/GRN 归属校验 | SRS §3.2、§3.3.1 | `GET /api/wms/grn/{grn_id}` | 保留；完整 DTO/错误码待确认 |
-| `list_grn_packages` | 当前 GRN 的料盘归属校验 | SRS §3.3.1 | `GET /api/wms/grn/{grn_id}/packages` | 保留；单次有界结果，不预建分页 |
-| `query_inventory` | SRS 库存协同场景 | SRS §3.4.1 | `GET /api/wms/inventory/query` | 条件保留；不得用于 `PickingTask` 来源选择、锁定或重新分配 |
-| `get_reservation` | 预留恢复、释放确认和人工对账 | SRS §3.4.1 | 初稿未定义 | 条件保留；只有 reserve/release wire 获批后才实施 |
+## 5. 统一调用规则
 
-粗分准入由 WES 使用上述 WMS 权威事实作出本地判定，不再建设复合
-`validate_rough_sorter_admission` WMS 决策接口。WMS 提供事实，WES 负责工作线准入规则。
+### 5.1 请求
 
-### 3.2 WES → WMS 业务请求与事实通知
+- `path` 必须是以 `/` 开始的 relative path，不允许调用方覆盖 WMS origin。
+- 当前只支持 Phase 2 已提供的 GET 和 POST；真实 API 需要其他 method 时再独立扩展 Phase 2 和本文。
+- GET 使用 query，不发送 JSON body。
+- POST 的 `json` 参数必传，`None` 表示 JSON `null`。值域只允许 `None`、布尔、整数、有限浮点、字符串、上述值组成
+  的 list，以及字符串 key 的 dict；tuple、非字符串 key、`NaN`、正负 `Infinity` 和其他对象在发送前拒绝。
+- POST 使用无 BOM UTF-8 紧凑编码并设置 `Content-Type: application/json`；调用方以任意大小写传入 `Content-Type`
+  都会在发送前被拒绝。GET 不自动添加该 header。
+- 调用方可以传入真实 API 所需的其他普通 headers，但不得以任意大小写覆盖 Client 拥有的 `Content-Type`、
+  `Content-Encoding`，或 Transport 拥有的 `Host`、`Content-Length`、`Transfer-Encoding`、`Accept-Encoding`。
+  Client 发送未压缩 JSON，因此不得声明请求体压缩；Transport 独占 origin、报文分帧和响应压缩协商。覆盖请求会在
+  发送前被对应层拒绝。
+- 每次调用最多执行一次 `send`；Client 不自动 retry、轮询或翻页。
+- `query` 与 `headers` 均使用可选 `Mapping[str, str]`，默认 `None`；Client 只转换为 Phase2 string-pair tuple，非法值继续
+  由 Phase2 fail closed。真实 API 需要重复 query key 时再独立扩展。
 
-| 能力候选 | 当前消费者 | 业务依据 | 厂商初稿 | 当前裁决 |
-| --- | --- | --- | --- | --- |
-| `request_picking_source_bindings` | `STARTING` 的自动出库 `PickingTask` | SRS §3.3.3、出库设计 §5.2、§12 | 初稿未定义 | 保留业务名；method/path/wire 待 WMS 确认 |
-| `reserve_inventory` | SRS 库存预留场景 | SRS §3.4.1 | `POST /api/wms/inventory/reserve` | 条件保留；必须明确非 `PickingTask` 的实际消费者 |
-| `release_reservation` | 取消、失败和预留恢复 | SRS §3.4.1 | `DELETE /api/wms/inventory/reserve/{id}` | 条件保留；method 与幂等合同待 WMS 确认，不自行改成 POST |
-| `confirm_inbound` | 粗分/自动入库物理完成 | SRS §3.3.1、§3.4.1 | 初稿未定义 | 保留；wire 待 WMS 确认 |
-| `notify_picking_item_location_completed` | 自动出库单个任务项成功 PICK+PUT | SRS §3.3.3、出库设计 §8、§11 | 初稿未定义 | 保留；每个 `PkgID` 独立通知，不得由整单完成替代 |
-| `transfer_inventory` | 自动分拣中已发生的非 PickingTask 库存位置变化 | SRS §3.3.2、§3.4.1 | `POST /api/wms/inventory/transfer` | 条件保留；不得与逐项出库位置事实双写 |
-| `notify_pkg_binding` | 粗分机出料机械臂成功投放 | SRS §3.3.1 | `POST /api/wms/kitting/pkg-binding` | 保留；不得替代入库确认 |
-| `report_picking_source_ng` | 自动出库来源 NG/身份异常 | SRS §3.3.3、出库设计 §9 | 初稿未定义 | 保留；只报告事实，不选择替代来源 |
-| `confirm_picking_completed` | 自动出库任务全部物理完成 | SRS §3.3.3、出库设计 §11 | 初稿未定义 | 保留；独立于逐项位置事实，二者不得合并或双写 |
-| `notify_manual_station_ready` | 人工分拣线 SCAN2 到位 | 最小架构 SPEC §12.4 | 初稿未定义 | 保留业务需求；wire 待 WMS 确认 |
+### 5.2 结果
 
-`request_picking_source_bindings` 只允许返回覆盖全部目标任务项的原子来源绑定，或明确的“无完整方案”结果。后者不申请
-目标架，由业务 owner 进入无目标架的 `WAITING_STOCK`；Phase 3 只翻译结果，不决定状态。完整绑定的
-每一项都必须包含完整 SixInOne 与全局唯一 `PkgID`；部分绑定、缺项、重复项或字段不完整均不生效。
-WMS 独立拥有库存资格、库存锁、料格冻结和跨任务来源分配，WES 不得通过 `query_inventory + reserve_inventory` 自行拼装方案。
+- 收到完整响应时，返回 status、headers、`body_present`、`json_failure` 和解码后的 JSON；非 2xx 不自动变成业务异常。
+- 空响应返回 `body_present=False`、`json_body=None`；JSON `null` 返回 `body_present=True`、`json_body=None`。
+- `json_body` 使用标准 JSON 值（object 为 `dict`，array 为 `list`），业务 DTO 可直接使用严格
+  `model_validate(...)` 校验；业务代码校验后只使用 DTO，不在访问结果上原地修改 WMS 响应。
+- 非空响应只做一次严格 UTF-8/RFC 8259 解码；纯空白 body、非法 UTF-8、非法 JSON 和非标准
+  `NaN`/`Infinity` 分别设置 `json_failure=INVALID_UTF8` 或 `INVALID_JSON`，同时保留 status、headers 和交付事实。
+- 响应 Content-Type 不参与共享 Client 解码；具体 API 若要求严格 media type，由自己的业务合同验证。
+- request 编码失败在发送前抛出；response JSON 解码失败返回访问事实，两者都不得伪装成 WMS 业务拒绝。
+- `NOT_SENT`、`DELIVERY_UNKNOWN` 和响应阶段失败必须原样保留 Phase 2 事实，并返回
+  `body_present=False`、`json_body=None`。
+- `CancelledError`、关闭异常和 Phase 2 的关闭后调用异常原样传播。Client 不复制 Transport 关闭状态；关闭后的合法请求
+  调用一次 `send` 并由 Transport 在产生底层 HTTP 请求前拒绝。请求值域或编码错误发生在 `send` 前，因此调用零次
+  `send`，不会被关闭状态改写。
+- Client 不决定是否重提、暂停或推进状态。
 
-除来源绑定请求外，其他同步通知只表达已经发生的物理事实或明确的 WMS 业务义务。Adapter 的返回值不直接推进
-WorkLine；Phase 4 可靠对象保存结果后，由对应业务对象重新裁决。逐项位置事实与整单完成事实各自拥有独立可靠义务，
-不得复用 `transfer_inventory` 形成双写。
+具体业务模块必须基于自己的响应 DTO 和 WMS 合同解释 status 与 JSON，不得把 HTTP 200 等同于业务成功。
 
-### 3.3 WMS → WES 业务输入
+## 6. 构造与生命周期
 
-| 业务命令 | 当前消费者 | 业务依据 | 当前裁决 |
-| --- | --- | --- | --- |
-| 创建 `PickingTask` | 自动出库插件 | SRS §3.3.3、出库设计 §5.1 | 保留；只含目标任务项，不含来源、SixInOne、`PkgID` 或具体目标架；wire 待 WMS 确认 |
-| 更新排队任务优先级 | 自动出库队列 | 出库设计 §6 | 保留；只允许 `QUEUED` |
-| 替代来源裁决 | 未完成任务项 | 出库设计 §5.3、§6、§9 | 保留；封闭结果为原子替代绑定批次或明确“无完整替代方案”；不得覆盖历史来源 |
-| 恢复指定任务 | `PAUSED` / `WAITING_STOCK` 任务 | 出库设计 §6 | 保留；不得全局恢复 |
-| 取消指定任务 | 非终态 `PickingTask` | 出库设计 §10 | 保留；不伪造已发出的物理动作终态 |
-| 通知人工作业完成 | 人工分拣线 SCAN2 工作位 | 最小架构 SPEC §12.4 | 保留；WMS 是人工任务和扫码业务 owner |
+factory 只接收：
 
-Phase 3 只定义 DTO 与无状态校验/标准化。先持久化 `InboundEvidence` 再 ACK、幂等、业务对象推进和恢复均由
-Phase 4 负责；Phase 3 不单独建立可绕过可靠边界的 FastAPI 业务处理器。
+- `base_url`
+- `timeout_seconds`
 
-“无完整替代方案”只有在与当前有效替代请求和绑定基线匹配时才是库存权威结果；未收到消息、传输未知或 WMS 仍在
-处理不得映射为该结果。原子替代绑定批次还必须满足顶层设计的未完成、位置已知、无在途和无未知结果资格；任一项
-不合格则整批不生效。请求关联、绑定代际、method/path 和 wire DTO 仍须由 WMS 批准。
+factory 调用 Phase 2 builder，并固定 `system_id="wms"`。当前 outbound 认证为 `NONE`，不增加认证配置或扩展接口。
 
-## 4. 明确排除的旧候选
+调用方必须在进程关闭时调用 `WmsClient.aclose()`。关闭失败不得静默吞掉。
 
-| 旧候选 | Successor / 裁决 |
-| --- | --- |
-| `get_materials` | `get_material`；没有真实批量消费者前不为减少往返预建接口 |
-| `list_zones` / `list_locations` / `list_racks` | `NONE`；禁止把 WMS 全局主数据同步为 WES 本地能力 |
-| `check_bin_drift` / `check_rack_drift` / `check_full_drift` | 普通权威点查 + Phase 4 对账；WMS 不接收 WES `workline_code` 做漂移判断 |
-| `validate_rough_sorter_admission` | WMS 权威事实查询 + WES 本地准入 Decision |
-| `confirm_return_putaway` | `NONE`（当前阶段）；SRS §3.6 明确为未来交付 |
-| `publish_manual_task` | `notify_manual_station_ready` + WMS → WES 人工作业完成；WMS 拥有人工任务 |
-| 搬运/补给/换面/交换/料箱移动 | Phase 4 `Transport Port` 和 WMS 转发 RCS Adapter |
-| 搬运取消及全部搬运 status | Phase 4 `Transport Port` |
-| 通用 `request_load_unit_transport` | `NONE`；由 Phase 4 按真实 RCS/WMS 合同定义最小搬运 surface |
+## 7. 新增具体 WMS API 的开发标准
 
-## 5. Wire 成熟度
+具体业务开发按以下步骤增加 API：
 
-厂商初稿只证明其中部分 WMS 业务接口曾被提出，并不证明当前 method、字段、错误码或幂等已经获批。当前存在以下
-实施阻断：
+1. 在真实业务 owner 中定义具名 API 方法。
+2. 定义该 API 自己的 request/response DTO，不使用宽泛 `dict[str, Any]` 作为业务合同。
+3. request DTO 通过 `model_dump(mode="json")` 转成标准 JSON 值，再用固定 relative path 调用 `WmsClient.get()` 或
+   `WmsClient.post()`；Client 不依赖 Pydantic。
+4. 先检查 `failure_kind`，再校验 `status_code` 是否属于该 API 合同允许的 HTTP 状态集合；随后检查 `json_failure` 与
+   `body_present`，最后才由业务 DTO `model_validate(...)` 校验合法 response JSON，并解释 WMS 给出的业务结果。
+5. 使用 WMS 双方确认的 fixture/schema 编写该 API 的合同测试。
+6. 只在真实重复出现后提取业务 helper；不得把业务字段或结果解释放进 `WmsClient`。
 
-- `release_reservation` 的 HTTP method 尚未由当前 WMS 合同确认。
-- `request_picking_source_bindings` 的业务名及完整原子/无完整方案语义已冻结，但 method/path/request/result、错误码和幂等
-  wire 尚未由 WMS 批准。
-- `confirm_inbound`、逐项位置通知、NG 报告、PickingTask 完成和人工工作位交互缺少 WMS 批准的完整 wire。
-- `query_inventory`、reserve/release 的当前非出库消费者需要业务方确认。
-- `PickingTask` 六类 inbound 命令及替代来源两类封闭结果缺少双方批准的 method/path/DTO/幂等和拒绝码。
-
-未关闭的能力不得生成生产 DTO、占位 endpoint 或宽泛 `dict[str, Any]` 接口。已确认能力也只能实现 WMS 明确批准的
-字段闭集；WES 内部数据库 ID、`dispatch_key`、队列位置、投影版本和设备身份不得自动进入 wire。
-
-## 6. Phase 3 实现合同
-
-目标 Adapter 必须保持无状态：
+结构示例：
 
 ```text
-业务消费者
-→ 类型化 WMS Query / Picking Source Binding / Confirmation Port
-→ 无状态 WMS ACL
-→ Phase 2 OutboundHttpTransport（恰好一次 send）
-→ 类型化单次调用结果
-→ Phase 4 可靠对象决定持久化、暂停、恢复或重提
+ExampleWmsApi.query_example(request DTO)
+  → request DTO.model_dump(mode="json")
+  → WmsClient.post("/example/query", json=标准 JSON 值)
+  → 检查 result.failure_kind / status_code / json_failure / body_present
+  → response DTO.model_validate(result.json_body)
+  → 返回 WMS 给出的业务结果
 ```
 
-Adapter 不打开数据库事务，不保存调用 evidence，不申请 breaker permit，不自动 retry，不拥有业务终态。传输层已经提供的
-超时、响应上限和交付事实不得在 Phase 3 复制。
+该示例只指导目录职责和调用方向；`/example/query` 不是生产 API，不得据此生成占位实现、公共基类或 registry。
 
-## 7. Phase 4 Transport handoff
+## 8. Phase 3 验收边界
 
-以下仅登记 Phase 4 业务需求，不在本文冻结其 wire：
+Phase 3 测试只验证：
 
-- 空架补给、货架搬运和货架换面。
-- 满箱交换。
-- 五层货架料箱批次投入流水线和从退料口返库。
-- 搬运 submit、status、cancel 及 typed terminal result。
-- `TransportTask` 的持久化、批次成员、轮询、恢复和位置投影。
+- GET query、POST JSON、GET/POST body 约束和 header 映射。
+- relative path、query/header 默认与重复项、`Content-Type`/`Content-Encoding`/`Host`/HTTP 报文分帧与压缩协商 header
+  所有权、严格 JSON 值域/编解码和一次 send。
+- status/headers/传输事实保留。
+- 空响应、JSON `null`、响应 Content-Type、非 2xx、无效 UTF-8/JSON 的事实保留、取消和关闭行为。
+- 新包不依赖数据库、旧 WMS 包、RCS/AGV/CTU 或生产注册机制。
 
-即使当前网络请求由 WMS 转发 RCS，这些能力仍按 Transport 语义归 Phase 4，不进入 Phase 3 WMS ACL。
+Phase 3 测试不得验证任何库存、PickingTask、NG、业务拒绝或 WorkLine 执行能力。具体业务合同测试由未来业务 API 自己拥有。
 
-## 8. Phase 3 Task 1 退出门禁
-
-- 每个保留能力都有具名当前消费者和 SRS/顶层设计依据。
-- 每个排除能力都登记 successor 或 `NONE`。
-- WMS 已批准全部保留能力的 method/path/DTO/错误码/幂等语义。
-- Phase 3 与 Phase 4 Transport 合同没有重复 method 或生命周期 owner。
-- SRS 只保留用户需求和权威边界，不复制 operation 编号或实现参数。
-- 厂商原始文档保持原貌，项目内不再保留 33 项旧蓝图副本。
-
-当前结论：`BLOCKED`。PickingTask 两阶段来源绑定、逐项位置事实和整单完成的业务语义已经冻结，但保留能力的 WMS
-wire 批准及条件候选的消费者确认尚未完成，Phase 3 代码实施不得开始。
+Phase 3 不再等待任何具体 WMS API wire 批准；具体 wire 只阻断对应业务 API，不阻断共享 Client 实施和验收。

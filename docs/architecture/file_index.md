@@ -29,14 +29,13 @@
 | --- | --- |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
-| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、双面货架、NG/补料/恢复与完成业务真源 |
+| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 待 WMS 书面复审的自动出库候选方案，不是已批准业务或 wire 真源 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 无状态 WMS 业务 ACL 暗构建计划；PickingTask 业务语义已冻结，Task 1 尚待条件候选消费者与 WMS wire 批准 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
-| `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS 业务 ACL 合同；消费者矩阵、范围排除项与阻断清单真源 |
+| `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand 与 Adapter 边界 |
-| `docs/plugin_development_guide.md` | 插件 SPI、封闭 Decision 与独立包交付指南 |
+| `docs/plugin_development_guide.md` | 执行插件 SPI、WMS 结果到封闭 Decision 的映射与独立包交付指南 |
 | `docs/superpowers/README.md` | 当前文档生命周期与项目外归档索引 |
 
 ADR 位于 `docs/architecture/adr/`。业务输入、外部合同、运维和联调资料分别位于
@@ -64,7 +63,8 @@ API → Service → Repository → Database
 | `src/app/*/repositories/` | 数据访问 |
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/runtime/` | 当前 Runtime implementation baseline 与目标最小能力的实施区域 |
-| `src/app/wms_integration/` | WMS typed port、Gateway、transport 与证据边界 |
+| `src/app/wms_adapter/` | Phase 3 WMS HTTP/JSON 薄访问层标准；不包含具体业务 API、持久化或设备交互 |
+| `src/app/wms_integration/` | Phase 5 切换前仍在运行的旧 WMS 业务 owner；不是新增能力的实现模板 |
 | `workline_plugins/` | 具体工作线插件独立包，不属于核心运行时 |
 | `device_adapters/` | 具体厂商 Adapter 独立包，不属于核心运行时 |
 

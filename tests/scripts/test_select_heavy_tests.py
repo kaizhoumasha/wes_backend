@@ -671,6 +671,7 @@ def test_repository_mapping_keeps_unaccepted_candidates_unmapped() -> None:
         "tests/fixtures/orders.json",
         "tests/runtime/conftest.py",
         "tests/support/runtime_factory.py",
+        "src/app/wms_adapter/future_business_api.py",
     ):
         with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
             select_heavy_tests([candidate], config)
@@ -947,6 +948,9 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (WMS_CIRCUIT_BREAKER_HEAVY_TEST,),
         ),
         ("src/core/outbound_http/**", ()),
+        ("src/app/wms_adapter/__init__.py", ()),
+        ("src/app/wms_adapter/client.py", ()),
+        ("src/app/wms_adapter/factory.py", ()),
     )
 
 

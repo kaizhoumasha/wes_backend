@@ -10,10 +10,9 @@
 | --- | --- | --- |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
-| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与双面货架执行业务真源 | ReviewRequired |
+| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与双面货架候选方案，不是批准真源 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 2 已完成，Phase 3 Task 1 阻断 |
-| `plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 无状态 WMS 业务 ACL 暗构建 | PickingTask 业务语义已冻结；Task 1 尚待条件候选消费者与 WMS wire 批准 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 1–3 已完成，Phase 4–11 未开始 |
 
 ## 项目外历史归档
 
@@ -21,6 +20,7 @@
 历史内容：
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md`
 - `../archive_docs/wes_backend/docs/architecture/adr/2026-05-26-wms-integration-domain.md`
 - `../archive_docs/wes_backend/docs/business/wms_full_factory_operation_blueprint.md`
@@ -127,7 +127,7 @@
 - `docs/contracts/wms-northbound-interaction-contract.md`
 - `docs/integration/callback_event_validation_principles.md`
 
-核心合同不得定义具体厂商命令、工作线业务规则或客户流程。核心测试只验证共享传输、持久化、幂等、可靠性和
+核心合同不得定义具体厂商命令、WMS 业务规则、工作线执行映射或客户流程。核心测试只验证共享传输、持久化、幂等、可靠性和
 最小执行对象，不得以具体业务流程作为基础能力验收。
 
 ## 当前业务与外部输入
@@ -145,8 +145,8 @@
 `docs/hardware/` 以硬件厂商原始 PDF/资料为保留主体；同目录 Markdown 包含便于检索的人工转写及面向供应商的
 联调说明，属于派生资料，不得覆盖原始文件，也不得被视为当前 Adapter 合同或 WES 架构真源。派生资料中的字段
 归一化、插件名称、Session/Outbox/Inbox/Hold 等当前实现描述只用于偏差识别，不能反向约束最终架构。差异由当前
-架构合同及具体 Adapter 文档说明。具体 Adapter 包拥有厂商实现、合同测试和 fixture；具体插件包只拥有业务
-Decision、对象推进及其测试和 fixture。基础、Adapter 和业务能力不得互相替代验收。
+架构合同及具体 Adapter 文档说明。具体 Adapter 包拥有厂商实现、合同测试和 fixture；具体插件包只拥有 WMS 业务结果
+到执行 Decision 的映射、对象推进及其测试和 fixture。基础、Adapter 和业务能力不得互相替代验收。
 
 ## 本轮追加归档
 
