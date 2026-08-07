@@ -63,7 +63,8 @@ API → Service → Repository → Database
 | `src/app/*/repositories/` | 数据访问 |
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/runtime/` | 当前 Runtime implementation baseline 与目标最小能力的实施区域 |
-| `src/app/wms_integration/` | WMS typed port、Gateway、transport 与证据边界 |
+| `src/app/wms_adapter/` | Phase 3 WMS HTTP/JSON 薄访问层标准；不包含具体业务 API、持久化或设备交互 |
+| `src/app/wms_integration/` | Phase 5 切换前仍在运行的旧 WMS 业务 owner；不是新增能力的实现模板 |
 | `workline_plugins/` | 具体工作线插件独立包，不属于核心运行时 |
 | `device_adapters/` | 具体厂商 Adapter 独立包，不属于核心运行时 |
 

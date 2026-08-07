@@ -77,8 +77,9 @@ flowchart LR
 `operation` 同时表达业务动作和合同版本。例如 `outbound.picking_task.issued@v1` 唯一映射到
 `PickingTaskIssuedV1` DTO 和 `PickingTaskIssuedHandler`。入口使用代码中显式声明的封闭映射，不根据 Payload 反射调用方法。
 
-WMS Business Event 使用 `operation + request_id + data.event_id` 建立业务身份；真实设备事件继续使用
-`device_code + event_id + event_type` 和设备回调入口。`workline_code` 表达工作线路由，不承担设备身份职责。
+WMS Business Event 使用 `operation + data.event_id` 建立 operation 专属业务身份，
+并与信封 `request_id` 一对一绑定；真实设备事件继续使用 `device_code + event_id + event_type`
+和设备回调入口。`workline_code` 表达工作线路由，不承担设备身份职责。
 
 ## 3. 推荐 API 端点
 
@@ -129,8 +130,7 @@ WMS Business Event 使用 `operation + request_id + data.event_id` 建立业务�
 | `429 Too Many Requests` | 接收队列瞬时背压 | `BUSY`，同时返回 `Retry-After` |
 | `503 Service Unavailable` | 接收方暂时无法可靠处理 | `UNAVAILABLE` |
 
-业务否决属于有效业务决定。例如 `START_REJECTED` 或物料 `REJECT` 使用 `200 OK`，调用方读取响应信封中的 `code` 和
-`data` 执行后续动作。
+业务否决属于有效业务决定。例如物料 `REJECT` 使用 `200 OK`，调用方读取响应信封中的 `code` 和 `data` 执行后续动作。
 
 ### 3.4 请求结果查询
 
@@ -181,7 +181,7 @@ GET /api/v1/wms/requests/REQ-PICK-000001
 
 | 字段 | 规则 |
 | --- | --- |
-| `request_id` | 一次逻辑请求的稳定幂等 ID；重试继续使用原值 |
+| `request_id` | 信封级请求查询 ID；首次接纳后与 operation 专属幂等 ID 一对一绑定，重试继续使用原值 |
 | `operation` | 接收方已声明支持的 operation 名和版本 |
 | `timestamp` | UTC Unix 毫秒 |
 | `data` | operation 专属闭集 DTO；所有业务字段均放在该对象内 |
@@ -201,11 +201,14 @@ Payload 字段。
 }
 ```
 
-调用方同时读取 HTTP 状态与 `code`：HTTP 状态表达传输和协议处理结果，`code` 表达接收或业务决定。Event/Fact 首次接纳
-返回 `202 / RECEIVED`；相同 ID 和相同 Payload 重放返回 `200 / DUPLICATE`，且不重复产生副作用。同步决定请求以对应
-operation 的决定请求 ID 幂等；同 ID 和相同 Payload 重放时必须返回首次产生的完整决定响应（包括原 `code`、`data` 和
-决定版本），不得降级为通用 `DUPLICATE` ACK。任一类型的同 ID 与不同 Payload 均返回 `409 / CONFLICT`。瞬时背压返回
-`429 / BUSY`，调用方稍后使用原身份重试。
+调用方同时读取 HTTP 状态与 `code`：HTTP 状态表达传输和协议处理结果，`code` 表达接收或业务决定。Event/Fact 使用
+operation 专属事件/事实 ID 幂等；同步决定使用 `start_request_id` 或 `decision_request_id` 幂等。接收方首次接纳时必须将
+`request_id` 与该 operation 专属幂等 ID 一对一绑定；相同二元组和相同 Payload 才是重放，复用任一 ID 但改变另一 ID 或
+Payload 均返回 `409 / CONFLICT`。`GET /requests/{request_id}` 只按已绑定的信封 ID 返回原不可变响应。
+
+Event/Fact 首次接纳返回 `202 / RECEIVED`；重放返回 `200 / DUPLICATE`，且不重复产生副作用。同步决定重放必须返回首次产生的
+完整决定响应（包括原 `code`、`data` 和决定版本），不得降级为通用 `DUPLICATE` ACK。瞬时背压返回 `429 / BUSY`，调用方
+稍后使用原二元组重试。
 
 ### 4.3 Event/Fact 通用接收 ACK
 
@@ -486,8 +489,11 @@ WES 只有收到 `START_GRANTED` 后才进入 `EXECUTING`，并创建任务专�
 }
 ```
 
-不可启动时返回 `START_REJECTED` 和封闭 `reason_code`。同一 `start_request_id` 重复提交返回同一锁代际和同一决定；
-`START_WAIT` 需要重新求值时使用新的 `start_request_id` 并通过 `previous_decision_id` 关联上一决定，原响应保持不可变。
+当前草案只允许 `START_GRANTED` 和 `START_WAIT`，不定义没有状态承接的 `START_REJECTED`。暂时不可启动返回
+`START_WAIT / HOLD_QUEUE`；若 WMS 决定任务不再执行，必须由后续单独评审并冻结的任务取消合同表达，WES 不得从启动响应
+自行推导业务终态。同一 `start_request_id` 重复提交返回同一锁代际和同一决定；
+`START_WAIT` 需要重新求值时使用新的 `request_id` 与 `start_request_id`，并通过
+`previous_decision_id` 关联上一决定，原响应保持不可变。
 
 收到 `START_WAIT` 后，WES 将任务从 `STARTING` 返回 `QUEUED`，持久化 `decision_id`、`queue_action` 和
 `retry_after_ms`，且不创建任务专属物理动作。`HOLD_QUEUE` 保持该任务为队首候选；`TRY_NEXT` 只授权本次尝试总序中的
