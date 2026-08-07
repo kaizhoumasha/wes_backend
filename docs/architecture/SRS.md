@@ -103,7 +103,7 @@
 
 > **本阶段集成边界 (Phase Boundary)**
 >
-> - **RCS/AGV/CTU 调度**: 本版本仍由现有 WMS 统一调度。WES 只生成搬运、交换、旋转等业务需求并提交给 WMS，由 WMS 转发给 RCS/AGV/CTU；这类交互由 Phase 4 `Transport Port` 及其 WMS 转发适配器承接，不属于 Phase 3 WMS 业务 ACL。WES 不直接调用 RCS，不直接下发 AGV/CTU 任务。
+> - **RCS/AGV/CTU 调度**: 本版本仍由现有 WMS 统一调度。WES 只生成搬运、交换、旋转等业务需求并提交给 WMS，由 WMS 转发给 RCS/AGV/CTU；这类交互由 Phase 4 `Transport Port` 及其 WMS 转发适配器承接，Phase 3 Client 只提供 HTTP 访问。WES 不直接调用 RCS，不直接下发 AGV/CTU 任务。
 > - **PDA 交互**: PDA 仅对接 WMS 应用；若 WES 需要感知 PDA 结果/事件，由 WMS 推送/同步给 WES。
 > - **自动化设备**: 当前只交付顶层 SPEC §3.1 已确认工作线所需的 ECS/WCS/视觉类直连接入。贴标、X-Ray、LCR 和自动打印仍是未来需求；对应工作线获批后仍遵循“作业设备经 WES Adapter 接入、WMS 不直连设备”的边界。
 > - **标签打印**: 当前只保留合同边界。进入交付批次后，WES 生成打印模板/ZPL；自动打印设备由 WES 下发，人工/非自动打印由 WMS 获取模板并回执结果。
@@ -272,7 +272,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 为支撑后续章节中的 SMT 智能装箱 (3.3.1)、混合入库 (3.3.2) 和生产发料 (3.3.3)，WES 必须提供共享的设备命令可靠性基础能力。核心、厂商 Adapter 与 WorkLine 插件的所有权以
 `docs/architecture/device-command-contract.md` 为准：核心只负责持久化、幂等、ACK/CALLBACK 证据和通用诊断；
-具体厂商命令与 Payload 由 Adapter 拥有，WMS 业务结果由 Phase 3 合同拥有，工作线执行映射由插件拥有；不得互相替代测试。
+具体厂商命令与 Payload 由 Adapter 拥有，WMS 业务结果由对应业务合同拥有，Phase 3 只提供 WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 **1. 控制系统集成 (Control System Integration)**
 
@@ -508,7 +508,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 * **唯一业务 owner**: WMS 负责装箱资格与目标料格、来源、优先级、路线、冷热区、A/B 面、交换/零散入库模式、
   NG/等待/替代和业务终态。规则阈值与算法不在 WES 代码、配置或插件中复制。
-* **显式合同**: 每个真实消费者通过 Phase 3 operation-specific 方法提交当前对象身份、已发生物理事实和必要执行证据，
+* **显式合同**: 每个真实消费者通过对应业务模块的具名方法提交当前对象身份、已发生物理事实和必要执行证据；业务模块复用 Phase 3 `WmsClient`，
   WMS 返回封闭业务结果、稳定原因码、关联身份和版本/时效元数据；不得建设 generic `decide`、规则 DSL 或动态 registry。
 * **WES 执行边界**:
   * 校验 WMS 结果的合同、关联、版本、时效和当前物理可执行性。
@@ -773,7 +773,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   **4. 上游 WMS 断连处理 (WMS Disconnection Handling)**
 
-  * WMS 业务 ACL 和 WMS 转发 Transport Adapter 都只执行单次发送，不拥有 retry/backoff、可靠义务或业务终态。
+  * WMS Client 和 WMS 转发 Transport Adapter 都只执行单次发送，不拥有 retry/backoff、可靠义务或业务终态。
     超时预算、远端幂等和安全重提资格必须由对应外部合同与可靠对象共同约束，不能由 Adapter 自行扩张。
   * 暂停新的库存查询依赖判定、搬运/交换需求和 WMS 确认提交；已被 WMS 接纳的外部任务可以继续执行。WES 始终以
     主动 status query 取得 `TransportTask` 终态，关联 callback 只负责唤醒查询。
@@ -826,7 +826,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * **查询驱动 (Query-Driven)**: WES 需要库存数据时，实时查询现有 WMS。
   * **确认驱动 (Confirmation-Driven)**: WES 完成物理动作后，通知现有 WMS 更新库存。
   * **预留机制 (Reservation)**: WES 通过预留接口请求 WMS 锁定库存，避免超发；锁定事实和释放规则仍由 WMS 拥有。
-  * **RCS 通道 (Phase Boundary)**: 本阶段 RCS/AGV/CTU 仍由现有 WMS 统一调度。WES 只通过 Phase 4 `Transport Port` 提交搬运、交换和旋转需求；Phase 3 WMS 业务 ACL 不拥有这些动作及其状态、取消或终态合同。
+  * **RCS 通道 (Phase Boundary)**: 本阶段 RCS/AGV/CTU 仍由现有 WMS 统一调度。WES 只通过 Phase 4 `Transport Port` 提交搬运、交换和旋转需求；Phase 3 Client 只提供 HTTP 访问，不拥有这些动作及其状态、取消或终态合同。
   * **PDA 通道**: PDA 仅与 WMS 交互；WES 如需感知 PDA 作业结果，由 WMS 推送/同步。
 
 #### 3.8.2 集成接口规范 (Integration Interface Specification)
@@ -895,7 +895,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 ## 4. 接口需求 (Interface Requirements)
 
-> **需求与合同边界：** WMS 业务查询、operation-specific 业务决策、确认和业务输入由 Phase 3 WMS 业务 ACL 承接；WMS 转发的搬运、交换、
+> **需求与合同边界：** Phase 3 只提供共享 WMS HTTP Client；具体业务查询、决策、确认和业务输入随对应业务逐项实现。WMS 转发的搬运、交换、
 > 旋转及其状态/取消由 Phase 4 `Transport Port` 承接。WES 不锁定五层空箱、不交换库存属性、不自动扣减库存，
 > 只保存执行事实、资源投影、回写证据和对账证据。精确 wire 必须由对应合同批准，不能从本 SRS 或旧实现推定。
 

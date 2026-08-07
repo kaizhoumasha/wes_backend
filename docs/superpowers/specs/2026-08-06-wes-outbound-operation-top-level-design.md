@@ -428,12 +428,14 @@ WES → WMS：请求 STARTING 完整来源绑定、报告来源 NG/身份异常�
 | 所有者 | 本场景职责 |
 | --- | --- |
 | Phase 1/2 | 提供已验收的测试治理与无业务语义 HTTP 传输事实，不以出库行为反向验收基础能力。 |
-| Phase 3 WMS ACL | 经 WMS 批准后拥有来源绑定、逐项位置事实、任务完成、NG、取消/恢复等 wire DTO 与单次调用结果。 |
+| Phase 3 WMS Client | 只提供 HTTP/JSON 访问；不拥有任何出库 wire DTO 或业务结果。 |
+| 后续出库业务模块 | 经 WMS 批准后拥有来源绑定、逐项位置事实、任务完成、NG、取消/恢复等 wire DTO 与业务结果解释。 |
 | Phase 4 最小平台 | 拥有可靠派发、幂等义务、动作在途/结果、unknown 投影、重提资格和持久化证据。 |
 | Phase 8 自动出库插件 | 拥有本文状态、队列、双面顺序、NG 隔离、替代资格、空面跳过及恢复规则。 |
 | WMS/RCS/ECS Adapter | 只翻译各自获批 wire，不持有上述业务生命周期。 |
 
-Phase 3 当前仍阻断在消费者矩阵和 WMS wire 批准，本文不得被解释为 method/path 已获批或可以进入实施。
+Phase 3 共享 `WmsClient` 可独立进入实施；本文中的出库 method/path/DTO 仍须在后续出库业务开发时取得 WMS 批准，
+不得被解释为 wire 已获批。
 
 ## 14. Fixture 与验收所有权
 
@@ -474,4 +476,4 @@ Phase 3 当前仍阻断在消费者矩阵和 WMS wire 批准，本文不得被�
 - WMS 合同、最小架构 SPEC、Phase 3 计划和 Master Plan 是否同步。
 - 所有 JSON 均可解析，fixture 保持单一所有者。
 
-本文通过的是业务设计评审，不表示 WMS wire 已批准，也不改变 Phase 3 `BLOCKED_AT_TASK_1` 状态。
+本文通过的是业务设计评审，不表示出库 WMS wire 已批准；该未决事项只阻断出库业务 API，不阻断 Phase 3 共享 Client。

@@ -69,7 +69,7 @@ Adapter 不写数据库、不调用 Repository、不决定工作线下一步，�
 | --- | --- |
 | HTTP、认证、大小限制、ACK-before-persist、幂等与 evidence 可靠性 | WES 核心测试 |
 | 厂商请求 DTO、事件名称、字段、签名和错误码 | 厂商 Adapter 测试 |
-| WMS 业务 OK/NG/目标结果 | Phase 3 WMS Adapter 合同测试 |
+| WMS 业务 OK/NG/目标结果 | 对应 WMS 业务模块合同测试；Phase 3 Client 测试不得替代 |
 | 结果关联、物理执行校验和后续命令映射 | WorkLine 插件测试 |
 
 核心测试不得构造具体工作线成功路径来证明 ingress；插件测试不得替代核心持久化、幂等和传输可靠性测试。

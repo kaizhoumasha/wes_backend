@@ -46,27 +46,27 @@ NG/等待/替代、取消、恢复和业务终态均由 WMS 给出封闭结果�
 
 | 数据需求 | 读哪里 | 不该读哪里 |
 | --- | --- | --- |
-| 库存可用量 | Phase 3 `WmsBusinessQueryPort` 对应显式方法（每次执行读取一次） | WES active projection 或跨请求缓存冒充全局库存 |
-| GRN/入库单详情 | Phase 3 `WmsBusinessQueryPort` 对应显式方法 | 复制为 WES 单据主档 |
-| 物料主数据 | Phase 3 `WmsBusinessQueryPort` 对应显式方法 | WES 自建物料主数据 |
-| 货架/料箱/库位状态 | Phase 3 WMS 权威查询（主数据）+ WES active projection（作业期占用） | 把作业期投影当主数据写回 |
+| 库存可用量 | 对应业务模块通过 Phase 3 `WmsClient` 调用 WMS（每次执行读取一次） | WES active projection 或跨请求缓存冒充全局库存 |
+| GRN/入库单详情 | 对应业务模块通过 `WmsClient` 调用 WMS | 复制为 WES 单据主档 |
+| 物料主数据 | 对应业务模块通过 `WmsClient` 调用 WMS | WES 自建物料主数据 |
+| 货架/料箱/库位状态 | WMS 业务 API（主数据）+ WES active projection（作业期占用） | 把作业期投影当主数据写回 |
 | 设备到位/状态 | `device` 域 callback（ECS 推送） | WES 轮询 PLC 点位 |
 | WES 料盘位置 | `PositionProjection`（事实 11） | 绕过证据直接写位置摘要 |
-| 对账 drift | 仅在出现真实消费者并修订 Phase 3 合同后通过显式查询读取 | 预建无消费者的通用 reconciliation 能力 |
+| 对账 drift | 仅在出现真实消费者并定义对应业务 API 后查询 | 预建无消费者的通用 reconciliation 能力 |
 
 需要多项 WMS 事实才能得出业务结论时，由 WMS 在 operation 内部完成组合并返回一个封闭业务结果，WES 不得通过多次查询
 自行拼装业务决策。只有纯执行校验确实需要组合多项权威事实时，才允许使用 WMS 提供的共同 snapshot/version；若 WMS
-不提供，先批准读取顺序、有效窗口和 fail-closed 条件。Phase 3 只返回 wire 可证明的结果与元数据，不伪造外部版本，
-也不把多次读取包装成 WMS 原子决策。
+不提供，先批准读取顺序、有效窗口和 fail-closed 条件。具体业务模块只返回 wire 可证明的结果与元数据，不伪造外部版本，
+也不把多次读取包装成 WMS 原子决策；Phase 3 Client 不解释这些业务事实。
 
 ### 3.2 数据写入：该写哪里？
 
 | 写入需求 | 写哪里 | 不该写哪里 |
 | --- | --- | --- |
-| 库存预留/释放/转移确认 | 具体业务义务 owner → Phase 3 `WmsBusinessConfirmationPort` | ACL 持久化生命周期，或直接改 active projection 假装库存已变 |
-| 履约请求（搬运/补给/换面/满箱交换） | Phase 4 `TransportTask` → `Transport Port` → WMS 转发 RCS Adapter | 经过 Phase 3 WMS 业务 ACL，或由 WES 内部域直连 RCS/AGV/CTU SDK |
+| 库存预留/释放/转移确认 | 具体业务义务 owner → 具体 WMS 业务模块 → `WmsClient` | Client 持久化生命周期，或直接改 active projection 假装库存已变 |
+| 履约请求（搬运/补给/换面/满箱交换） | Phase 4 `TransportTask` → `Transport Port` → WMS 转发 RCS Adapter | 把业务语义放入 Phase 3 Client，或由 WES 内部域直连 RCS/AGV/CTU SDK |
 | 设备命令下发 | `DeviceCommandPort`（只面向 ECS API） | 下发 PLC/坐标/关节/安全回路指令 |
-| WMS 业务决策/命令入站 | Phase 3 DTO/normalizer → 具体执行消费者 | normalizer 直接执行编排，或消费者重算/改写 WMS 业务结果 |
+| WMS 业务决策/命令入站 | 对应业务 ingress → 具体执行消费者 | 访问层直接执行编排，或消费者重算/改写 WMS 业务结果 |
 | 位置投影更新 | 终态 evidence → projection writer | API 层直接改投影表 |
 | 冲突登记 | 对应执行对象写 conflict evidence，等待人工裁决 | 通用管理器直接写跨域 owner 状态 |
 
@@ -77,8 +77,8 @@ WES 内部域（workline / runtime / handling / resource / material / device）*
 - PLC/RCS/AGV-CTU SDK
 - WMS HTTP client
 
-设备事实经 `device` 域；搬运事实经 Phase 4 `Transport Port` 和 WMS 转发 RCS Adapter。Phase 3 WMS 业务 ACL 不暴露
-Transport 能力。RCS/AGV/CTU 直连不属于当前目标，不预留 SDK 依赖或配置骨架；真实需求出现时必须另立 SPEC。
+设备事实经 `device` 域；搬运事实经 Phase 4 `Transport Port` 和 WMS 转发 RCS Adapter。Phase 3 `WmsClient` 只提供
+HTTP/JSON 访问，不拥有 Transport 业务语义。RCS/AGV/CTU 直连不属于当前目标，不预留 SDK 依赖或配置骨架。
 
 ## 4. 通用示例与反例
 
@@ -87,11 +87,11 @@ Transport 能力。RCS/AGV/CTU 直连不属于当前目标，不预留 SDK 依�
 | 步骤 | 事实类型 | 权威 | WES 动作 |
 | --- | --- | --- | --- |
 | 设备输入到达 | 事实 3（设备到位或扫描信号） | ECS/device | Adapter 转换厂商 DTO，核心持久化 `InboundEvidence` |
-| 取得业务结果 | 事实 1/2/8/9 | WMS | 通过 Phase 3 显式方法取得 operation-specific 封闭业务结果 |
+| 取得业务结果 | 事实 1/2/8/9 | WMS | 对应业务模块复用 `WmsClient`，取得 WMS 封闭业务结果 |
 | 建立作业期对象 | 事实 11（WES 作业期执行对象） | WES | 插件校验结果关联并映射为封闭执行 Decision，核心建立具体执行对象 |
 | 创建设备动作 | 事实 11（WES 作业期目标） | WES | 持久化逻辑 `DeviceCommand`；成功终态前不更新 `PositionProjection` |
 | 设备完成动作 | 事实 4（设备命令结果） | ECS/device runtime | Adapter 输出规范终态，核心持久化 evidence 后更新 `PositionProjection` |
-| 提交外部义务 | 事实 2/7 | WMS 或 RCS | 业务确认走 Phase 3 ACL；运输意图走 Phase 4 `TransportTask`/`Transport Port`，由各自 owner 保存结果证据 |
+| 提交外部义务 | 事实 2/7 | WMS 或 RCS | 业务确认走对应业务模块并复用 `WmsClient`；运输意图走 Phase 4 `TransportTask`/`Transport Port`，由各自 owner 保存结果证据 |
 
 ### 4.2 反例 1：影子 WMS（事实 1 违规）
 
@@ -110,7 +110,7 @@ Transport 能力。RCS/AGV/CTU 直连不属于当前目标，不预留 SDK 依�
 ✅ **正确**：
 
 - AGV/CTU 履约状态只能从 Phase 4 Transport 合同定义的终态结果获取；ACK、已受理或已下发不表示完成
-- WES 只通过 `Transport Port` 提交具名履约意图，不调度车辆，也不经过 Phase 3 WMS 业务 ACL
+- WES 只通过 `Transport Port` 提交具名履约意图，不调度车辆；Phase 3 Client 只作为 HTTP 访问基础
 - 当前目标禁止直连 RCS/AGV/CTU；真实需求出现时另立 SPEC，不预留代码骨架
 
 ### 4.4 反例 3：API 层直接改投影（事实 10/11 违规）
@@ -129,8 +129,8 @@ Transport 能力。RCS/AGV/CTU 直连不属于当前目标，不预留 SDK 依�
 
 ✅ **正确**：
 
-- Phase 3 只做 schema normalize 和封闭拒绝，随后把 typed command 交给明确的业务消费者
-- 是否持久化、幂等和推进由对应执行 owner 定义，不由 ACL 预建通用生命周期；执行 owner 不得改变 WMS 业务语义
+- 对应业务 ingress 只做 schema normalize 和封闭拒绝，随后把 typed command 交给明确的业务消费者
+- 是否持久化、幂等和推进由对应执行 owner 定义，不由访问层预建通用生命周期；执行 owner 不得改变 WMS 业务语义
 
 ### 4.6 反例 5：WES 根据 WMS 原始事实重算业务结果（事实 9 违规）
 
@@ -138,10 +138,10 @@ Transport 能力。RCS/AGV/CTU 直连不属于当前目标，不预留 SDK 依�
 
 ✅ **正确**：
 
-- WMS 通过 operation-specific 合同返回封闭业务结果及版本/关联元数据
-- Phase 3 只翻译结果；插件只校验关联、时效和物理可执行性，并映射为设备等待、发送、暂停、隔离或对账等执行 Decision
+- WMS 通过具体业务合同返回封闭业务结果及版本/关联元数据
+- 对应业务模块翻译结果；插件只校验关联、时效和物理可执行性，并映射为设备等待、发送、暂停、隔离或对账等执行 Decision
 - WMS 结果缺失、过期、矛盾或物理不可执行时 fail closed；WES 不选择另一个业务方案
-- normalizer 不直接改执行对象、projection 或 device runtime
+- ingress 不直接改执行对象、projection 或 device runtime
 
 ## 5. 与权威元数据合同的关系
 

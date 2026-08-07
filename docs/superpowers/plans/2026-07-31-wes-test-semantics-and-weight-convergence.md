@@ -10,8 +10,8 @@ Adapter 使用 `device_adapters/<adapter_key>/`，插件使用 `workline_plugins
 并由各自的测试入口和 CI 验收。核心测试继续按 `FAST`、`QUALITY`、`HEAVY` 分层。
 
 测试所有权是三向隔离：核心测试不得借用具体业务或厂商场景证明基础能力；其中 Phase 2
-`tests/core/outbound_http/` 只证明公共传输基础层。Adapter 测试只证明厂商合同与标准化映射；Phase 3 WMS Adapter 测试证明
-WMS 业务结果合同；插件测试只证明业务结果到执行 Decision 的映射和对象推进。这些测试都不得替代核心持久化、幂等、
+`tests/core/outbound_http/` 只证明公共传输基础层。Adapter 测试只证明厂商合同与标准化映射；Phase 3 WMS Client 测试只证明
+HTTP/JSON 访问合同，具体 WMS 业务 API 测试由对应业务模块拥有；插件测试只证明业务结果到执行 Decision 的映射和对象推进。这些测试都不得替代核心持久化、幂等、
 传输、并发和恢复不变量测试。
 
 **Tech Stack:** Python 3.13、Pytest 9、pytest-asyncio、JUnit XML、Ruff、Bandit、GitNexus、Jenkins。
@@ -132,7 +132,7 @@ workline_plugins/<plugin_key>/
 默认 `uv run pytest` 只收集核心 `tests/` 中的轻量测试。禁止真实 PostgreSQL、Redis、HTTP、Celery、Docker、多进程、主动等待和容量采样。
 
 Phase 2 测试固定在 `tests/core/outbound_http/`，只使用 `httpx.MockTransport`、测试内 local fake 和纯单元测试；测试替身
-不从 `src/core/outbound_http/` 生产包导出。WMS Adapter 接入测试由 Phase 3 拥有；RCS/ECS Adapter 接入测试由
+不从 `src/core/outbound_http/` 生产包导出。WMS Client 访问测试由 Phase 3 拥有；具体 WMS/RCS/ECS 业务或 Adapter 测试由
 Phase 7/8 按真实交付包分别拥有。Phase 4 核心可靠对象测试只替换类型化端口，不直接构造 Phase 2 Transport。
 
 最终预算：
@@ -365,7 +365,7 @@ rtk ./scripts/git-quality-gate.sh --profile quality
   `workline_plugins/rough_sorter/tests/`；
 - 实际验证命令和结果。
 
-WMS Phase 3 只新增 `wms_adapter` 权威测试，不处置旧 WMS 测试；旧 WMS 测试逐文件 successor/NONE 由十一阶段总控 Phase 5
+WMS Phase 3 只新增 `wms_adapter` Client 访问测试，不处置旧 WMS 测试；旧 WMS 测试逐文件 successor/NONE 由十一阶段总控 Phase 5
 和该阶段切换计划固定。HEAVY 测试移动或删除时，
 同一变更必须更新 `docs/architecture/heavy-test-impact.toml`，不得留下失效路径或用臆造 NONE 掩盖风险。
 

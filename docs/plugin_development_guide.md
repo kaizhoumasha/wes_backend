@@ -118,7 +118,7 @@ Handler 只接收：
 - 已完成身份校验和角色映射的类型化输入。
 - 当前 `LineRunEpoch` 和对象执行的只读事实。
 - `ProjectionReader` 返回的位置、队列和设备投影。
-- `WmsCapabilities` 返回的同步、封闭 WMS 业务结果。
+- 对应业务模块返回的同步、封闭 WMS 业务结果；业务模块内部可复用 Phase 3 `WmsClient`。
 - Decision Factory。
 
 Handler 只返回以下封闭 Decision：
@@ -206,7 +206,7 @@ Adapter 包和插件包是两个独立二次开发交付单元。Adapter 声明�
 - 插件不得访问数据库 Session、ORM、Repository、SQL、HTTP Client 或 Celery。
 - 所有依赖必须显式注入；禁止 Service Locator、全局容器查找和动态 import。
 - 厂家差异只能进入 Adapter、DTO、Mapper 和合同测试。
-- 插件只读取本地执行投影，通过 `WmsCapabilities` 取得同步 WMS 业务结果；不得组合事实重算来源、目标、优先级、
+- 插件只读取本地执行投影，通过对应业务模块取得同步 WMS 业务结果；不得直接使用 `WmsClient`，也不得组合事实重算来源、目标、优先级、
   路线、NG/等待/替代、取消、恢复或业务终态。
 - 改变 WMS 状态的结果通过 `WmsConfirmation` 可靠提交，不在插件中直接发送。
 - 设备命令必须先持久化为 `DeviceCommand`；ACK 不得当作最终完成。

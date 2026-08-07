@@ -31,9 +31,9 @@
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、双面货架、NG/补料/恢复与完成业务真源 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 无状态 WMS 业务 ACL 暗构建计划；inbound `NONE` 已冻结，Task 1 三项跨能力外部门禁未关闭，关闭后每个 operation 使用独立小 PR 实施 |
+| `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 Axios 式 WMS HTTP Client 实施计划；只交付共享访问层和开发示例，可进入实施 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
-| `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS 业务 ACL 合同；目标态消费者矩阵、单项批准模板、范围排除项与阻断清单真源 |
+| `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand 与 Adapter 边界 |
 | `docs/plugin_development_guide.md` | 执行插件 SPI、WMS 结果到封闭 Decision 的映射与独立包交付指南 |

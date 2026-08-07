@@ -216,52 +216,35 @@ WES 不实现设备间并发互锁。不同设备可以同时处理不同对象�
 
 ### 5.3 WMS 调用
 
-WMS 业务能力由薄封装层提供：
+WMS HTTP 访问由 Phase 3 `WmsClient` 薄封装提供：
 
-- `WmsCapabilities` 查询和 `WmsConfirmation` 提交使用同步 HTTP 请求和同步业务结果。
-- DTO、地址和错误映射封装在 WMS Adapter；当前 WMS outbound 合同无认证，不存在认证配置或预留 seam。将来真实合同
-  明确要求时，必须先修订本文、总控和对应 Adapter 计划，再由最窄所有者实现。
-- 当前产品部署在隔离局域网，WMS inbound 固定使用 `NONE`，由 Phase 4 API ingress 拥有原始 body 上限与接线；Phase 3
-  normalizer 不接收认证上下文。目标态不建设 HMAC、nonce、clock、凭据、IP allowlist 或认证扩展 seam。
-- 工作线插件只依赖类型化 `WmsCapabilities`，不直接访问 HTTP。
+- Client 只统一 WMS origin、GET/POST、query、headers、JSON 编解码、传输事实和资源关闭。
+- 具体业务模块在真实需求出现时定义自己的 method/path、request/response DTO 和结果解释。
+- 当前 WMS outbound 合同无认证，不存在认证配置或预留 seam；真实合同明确要求时再由最窄 owner 实现。
+- 工作线插件不直接访问 HTTP；它只消费对应业务模块提供的类型化业务结果。
 - WMS 结果是业务事实，不伪装成 ECS ACK/CALLBACK。
 
 WMS 四类普通业务事件通过 `/api/v1/callback/event` 接收，必须先持久化为 `InboundEvidence` 再 ACK，并且只触发对应
 工作线对象判定。`WMS_EFFECT_STATUS_HINT` 的当前 successor 为 `NONE`；Phase 5 只删除旧 route、payload、OpenAPI 和测试，
 不建立新 hint 路径。普通事件不得直接充当外部任务终态。
 
-每项 WMS 能力采用一个显式纵切片，内聚 operation 专属 request/result DTO、固定 method/path、稳定拒绝码和一次
-`OutboundHttpRequest` 映射。公共 Protocol 与 Gateway 只提供显式窄方法；不得建立公共 `WmsCallSpec`、generic `call`、
-生产运行时 capability registry、动态发现、配置驱动 API 或 WMS codegen。新增、优化或删除能力时，开发者只修改该
-operation 的 DTO、职责匹配的端口方法、Gateway/Normalizer 私有绑定、WMS 批准的 fixture/schema 和合同测试；只有至少
-三个获批能力出现相同语义和相同约束时才提取共享 helper。
+每项具体 WMS 业务 API 在对应业务开发中采用一个显式纵切片：业务 owner 定义具名方法、固定 path、request/response DTO、
+业务结果解释和合同测试，并复用 `WmsClient.get/post`。Phase 3 不预建业务 Port、Gateway、normalizer、operation registry、
+动态发现、配置驱动 API 或 WMS codegen。只有真实重复出现后才提取业务 helper。
 
-每条 Port 只在首项对应职责的 operation 获批时创建，不预建空 Protocol、空 normalizer 或 package 骨架。每个 operation
-使用一个独立小 PR 交付 DTO、显式方法、wire 映射、获批 fixture/schema、合同测试和公开导出；只有首项 outbound
-operation 同时建立最小 Gateway/factory，inbound operation 不依赖 outbound Gateway。
+`docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，作为业务输入只读保留；具体 API 开发时再逐项确认。
+任何具体业务 wire 未确认只阻断该业务 API，不阻断 Phase 3 共享 Client。
 
-Phase 3 只按消费者矩阵重建无状态 WMS 业务 ACL。`docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，
-作为业务输入只读保留；旧 MCS 架构、Bearer、retry/cache、分页样例和接口数量不覆盖当前架构决定。每项能力必须同时具备
-目标阶段、具体消费者、调用时机和 WMS 批准的 method/path/DTO/错误合同；不得为了维持旧 operation 数量保留无消费者
-能力。目标态消费者矩阵和未决 wire 以 `docs/contracts/wms-northbound-interaction-contract.md` 为准：Task 1 跨能力门禁
-关闭前 Phase 3 不得实施；关闭后只有单独完成 wire 批准的 operation 可以进入 TDD，未获批 operation 保持不存在。
-
-当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3 WMS 业务 ACL。Phase 4 通过 Transport Port 调用 WMS 转发适配器，
+当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3。Phase 4 通过 Transport Port 和复用 `WmsClient` 的业务模块调用 WMS，
 并由 `TransportTask` 统一拥有任务持久化、领取、状态查询、取消、恢复、批次状态和终态推进；成员只作为冻结请求事实和
 终态结果事实存在。网络目标是 WMS 不改变其 Transport 语义所有权。
 
 WMS 业务写操作和 Transport 请求都可在各自可靠对象内部保留 `dispatch_key`，但 wire 只发送对应外部合同批准的唯一
 幂等/关联字段，不自动暴露内部字段名。WMS 原子幂等、回显和安全重提规则，以及 Transport submit/status/cancel 关联，
-必须分别写入 Phase 3 WMS 业务合同和 Phase 4 Transport 合同，不能由 WES 单方面推定。
+必须分别写入对应业务合同和 Phase 4 Transport 合同，不能由 WES 单方面推定。
 
-Phase 3 Adapter 行为无状态，只复用 Phase 2 Transport 执行一次有界请求/响应并翻译单次调用结果；不打开数据库事务，
-不持久化调用 evidence，不拥有 breaker、retry 或业务终态。`WmsConfirmation`、`InboundEvidence` 和 `TransportTask`
-在 Phase 4 保存可靠证据并决定暂停、恢复或重提。列表 QUERY 只返回本次响应的有界 `items`，不定义 cursor、自动续页、
-跨页一致性或累计分页预算；未来只有真实 WMS 合同明确分页后才允许修订，不预留推测性 seam。
-
-批量 outbound request 在 send 前校验最大 items 与编码 body bytes；每个 outbound response 显式使用 operation 获批的
-`OutboundHttpResponseLimits`，完整解码后再次校验最大 items。Inbound 原始 body 上限由 Phase 4 ingress 在 normalizer 前
-执行，Phase 3 只校验闭集 DTO 与最大 items；任何超限均 fail closed，不截断、不返回部分结果。
+Phase 3 Client 行为无状态，只复用 Phase 2 Transport 执行一次有界请求/响应并完成 JSON 编解码；不打开数据库事务，
+不持久化 evidence，不拥有 breaker、retry、分页或业务终态。具体 API 的字段、items 和尺寸约束由该业务合同负责。
 
 只有发生 `WmsDependencyFailure` 时才进入以下依赖暂停：
 
@@ -333,8 +316,8 @@ DeviceCommand  TransportTask  WmsConfirmation
 - 按 WMS 封闭结果将对象执行到指定下一步或 NG 分支。
 - 完成本次对象执行。
 
-当前步骤所需的同步 WMS 业务决策或事实查询通过注入的 `WmsCapabilities` 执行；它返回 operation-specific 类型化结果，
-不暴露 HTTP。插件不得组合原始事实重算业务结果。
+当前步骤所需的同步 WMS 业务决策或事实查询通过对应业务模块执行；业务模块内部复用 `WmsClient` 并返回类型化结果，
+插件不接触 HTTP，也不得组合原始事实重算业务结果。
 会改变 WMS 业务状态的确认不在插件内直接发送，而是由 Decision 创建 `WmsConfirmation`，以便持久化和重试。
 
 插件不能直接写数据库、发 HTTP、调用 Repository 或自行启动后台任务。
@@ -348,7 +331,7 @@ DeviceCommand  TransportTask  WmsConfirmation
 插件职责：
 
 - 解释已经映射到设备角色的厂商事件。
-- 读取注入的只读工作线投影，并通过 `WmsCapabilities` 取得 WMS 封闭业务结果。
+- 读取注入的只读工作线投影，并通过对应业务模块取得 WMS 封闭业务结果。
 - 校验结果的关联、版本、时效和物理可执行性，不改变其业务语义。
 - 将 WMS 业务结果映射为等待、发送、暂停、隔离或对账等封闭执行 Decision。
 
@@ -392,7 +375,7 @@ device_adapters/<adapter_key>/
 ### 7.2 装饰器与依赖注入
 
 - 装饰器只表达静态 Handler 元数据，例如事件角色、事件类型和适用流程。
-- 显式依赖注入提供 `WmsCapabilities`、`ProjectionReader` 和 Decision Factory。
+- 显式依赖注入提供具体业务能力、`ProjectionReader` 和 Decision Factory；插件不直接注入 `WmsClient`。
 - 禁止 Service Locator、运行时全局容器查找和任意字符串动态 import。
 
 ### 7.3 设备厂商合同
@@ -497,7 +480,7 @@ PDF 明确区分，也不得作为当前 Adapter 合同或 WES 架构真源。�
 - 人工扫码或物料校验失败。
 - 来源或目标业务授权不满足。
 
-`WmsBusinessReject` 必须携带封闭处置语义；Phase 3 只翻译，插件只校验关联并映射为执行动作。插件不得根据
+具体业务模块返回的 WMS 拒绝结果必须携带封闭处置语义；插件只校验关联并映射为执行动作。插件不得根据
 `reason_code` 自行选择 NG、等待、替代路径或人工处理；结果缺失、过期、矛盾或物理不可执行时 fail closed 并暂停当前对象。
 
 业务 NG 不创建 RuntimeHold，也不冻结无关对象和设备。
@@ -807,12 +790,12 @@ CTU 投箱
 1. 总控基线冻结与测试治理确认：接受本文、冻结最新 `develop` 实施基线，并确认测试所有权、重量和延后承接边界。
 2. Outbound HTTP 传输基础能力收敛：全新增量交付框架无关 request/result、每外部系统每进程一个 Client、单次发送、
    有界响应读取、传输事实分类和显式生命周期；不切换生产消费者，不建设 outbound 认证、重试、业务解释、registry 或 fake。
-3. WMS 业务 ACL 重建：消费 Phase 2 Transport，在独立应用包 `src/app/wms_adapter/` 中只交付消费者驱动的类型化
-   WMS 业务查询、确认、inbound DTO、固定地址和单次结果翻译；当前 outbound 无认证。本阶段无状态，不包含数据库、
-   evidence、breaker、Transport 或可靠生命周期，不接入生产、不修改旧实现和旧测试。
+3. WMS HTTP Client 薄封装：消费 Phase 2 Transport，在独立应用包 `src/app/wms_adapter/` 中只交付
+   `request/get/post/aclose`、统一 JSON 编解码、最小 factory 和开发示例；当前 outbound 无认证。本阶段不包含任何具体
+   WMS 业务 API、业务 Port、数据库、evidence、breaker 或可靠生命周期，不接入生产、不修改旧实现和旧测试。
 4. WES 最小平台与 Transport 能力建设：暗构建最终执行对象、三类可靠记录、通用 WorkLine、投影、最小 SPI/SDK、
-   `Transport Port` 及 WMS 转发 RCS Adapter。WMS 业务调用只消费 Phase 3 类型化 Protocol/outcome；Transport Adapter
-   直接消费 Phase 2 Transport。测试 fake 由 Phase 4 核心测试树自行定义；本阶段不修改当前生产 Composition Root、
+   `Transport Port` 及 WMS 转发 RCS Adapter。具体 WMS/RCS/AGV/CTU 业务模块复用 Phase 3 Client；测试 fake 由
+   Phase 4 核心测试树自行定义；本阶段不修改当前生产 Composition Root、
    旧表、旧实现和旧测试。
 5. 新旧能力原子切换与旧所有者删除：迁移生产消费者和装配，清理开发/测试数据，原子删除 Provider Profile、QUERY
    System Capability、旧 WMS Transport/认证、Effect/status/Outbox 可靠闭包及被最终对象替代的核心旧 owner；不迁移旧代码或旧数据。
