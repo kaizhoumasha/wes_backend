@@ -385,6 +385,10 @@ AND 不存在未决 NG / 来源恢复决定
 
 ## 12. WMS 语义交互面
 
+WMS Business Event 与 Device Event 是两类合同。PickingTask Event 必须进入独立 WMS 业务 ingress，禁止携带
+`device_code`、复用 `/api/v1/callback/event`、查询 `DeviceContext`，或为 WMS 创建虚拟设备。`workline_code` 只用于业务
+路由和工作线队列准入，不是设备身份。WMS Event 被接纳后，插件才可为真实设备创建独立 `DeviceCommand`。
+
 WMS → WES：
 
 - 以 Event 发布包含 `pick_cells[]` 的 PickingTask，并用独立事件更新未开始任务的队列参数。
@@ -442,6 +446,7 @@ Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `doc
 | 场景 | 通过标准 |
 | --- | --- |
 | PickingTask 含多个 `BIN_CELL` | Cell 集合原子接纳；无 `PkgID`、SixInOne、目标 rack/slot 或运输状态 |
+| WMS Event 携带设备身份或投向设备 Event 入口 | 拒绝接纳；不查询设备上下文，不创建虚拟设备或 PickingTask |
 | WMS 提前下发同线多任务 | 全部可靠排队，同线只启动一张；不同线任务可并行 |
 | 任务尚未到 `not_before` | 不参与启动候选，也不阻塞已具备资格的后续任务 |
 | 可选 `RACK_SLOT` 来源 | 作为单盘 `CellExecution` 参与任务聚合，不把退料货架生命周期写入 PickingTask |

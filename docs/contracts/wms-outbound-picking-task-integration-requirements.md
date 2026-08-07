@@ -42,6 +42,28 @@ related_device_wire: docs/integration/third_party_integration_whitepaper.md
 本文不复用设备协议中的 `device_code`、`command_code`、`task_type`、`params`、设备重试次数或设备命令生命周期。WMS
 业务交互不是 ECS 设备命令，不能为了表面一致而混用两套语义。
 
+### 2.1 WMS Event 与 Device Event 的硬边界
+
+`Event` 只表示“发布事实并由接收方同步确认接收”的交互模式，不代表发送方一定是设备。双方必须按来源和合同分开建模：
+
+| 事件类别 | 权威来源 | 身份字段 | 入站边界 | 是否解析设备上下文 |
+| --- | --- | --- | --- | --- |
+| Device Event | ECS/真实设备 | `device_code + event_id + event_type` | 设备统一接口 `/api/v1/callback/event` | 是 |
+| WMS Business Event | WMS | `operation + request_id + data.event_id` | 独立 WMS 业务 ingress | 否 |
+
+以下规则是硬约束：
+
+- 禁止为 WMS 创建 `WMS_DEVICE`、`WMS_01` 等虚拟设备记录，也禁止把 WMS 绑定到设备、设备能力或设备健康状态。
+- WMS Business Event 顶层和 `data` 均禁止出现 `device_code`、`command_code`、`task_type` 或其他设备身份/命令字段。
+- PickingTask Event 禁止发送到 `/api/v1/callback/event`，也不得复用设备 Event DTO、设备 normalizer 或
+  `DeviceContextService`。
+- WMS 身份由专用 ingress、部署 provider 配置及批准的认证边界确定，不能信任 Payload 自报的虚拟设备身份。
+- `workline_code` 只是 PickingTask 的业务路由和本地队列准入条件，不是设备身份，也不能替代 `device_code`。
+- WMS Event 被接纳后，WorkLine 插件才可根据业务决定创建真实 `DeviceCommand`；业务 Event 本身不得伪装成设备动作。
+
+违反上述字段边界时，WMS ingress 返回 `REJECTED` 和 `reason_code=WMS_EVENT_DEVICE_FIELD_FORBIDDEN`，且不得创建设备记录、
+设备上下文、PickingTask 或执行动作。误投设备回调入口的 PickingTask 不构成 WMS Event 已接收。
+
 ## 3. 系统边界
 
 | 系统 | 权威事实 | 本合同中的职责 |
@@ -72,6 +94,9 @@ WES 不接收出库单或波次单，不在本地重新分配库存，也不根�
 | `operation` | 闭集 operation 名和版本；接收方不接受未知版本 |
 | `timestamp` | UTC Unix 毫秒 |
 | `data` | operation 专属闭集 DTO；业务字段不得拍平到顶层 |
+
+请求 Payload 是闭集，顶层只允许上述四个字段。WMS provider 身份属于服务端接入上下文，不作为可由调用方任意声明的
+Payload 字段。
 
 ### 4.2 响应信封
 
@@ -112,7 +137,8 @@ WES 不接收出库单或波次单，不在本地重新分配库存，也不根�
 | `outbound.material.movement_report@v1` | WES → WMS | 可靠事实 + 同步 ACK | 报告逐盘确定位置变化或 NG 落点 |
 | `outbound.picking_task.completion_report@v1` | WES → WMS | 可靠事实 + 同步 ACK | 报告全部已接纳 Cell 已闭合 |
 
-所有 operation 使用 POST。正式 relative path 由双方在部署 wire 中批准；不得仅依据本文名称生成生产路由。
+所有 operation 使用 POST。WMS → WES Event 必须使用独立 WMS 业务 ingress，禁止复用设备统一接口
+`/api/v1/callback/event`。正式 relative path 由双方在部署 wire 中批准；不得仅依据本文名称生成生产路由。
 
 ## 6. PickingTaskIssued Event
 
@@ -191,6 +217,9 @@ WES 不接收出库单或波次单，不在本地重新分配库存，也不根�
 
 WES 同步只校验信封、字段闭集、版本、身份唯一性、locator 结构、幂等冲突和本地工作线/队列是否可接纳。WES 不重新
 校验 WMS 库存或来源业务资格，也不再异步发送 AdmissionReport。
+
+接入校验必须先拒绝设备字段，再按 `operation` 选择 PickingTask DTO；整个接入过程不查询设备表、不解析设备能力，也不
+创建虚拟设备上下文。
 
 工作线队列已满时返回 `BUSY`、`reason_code=WORKLINE_QUEUE_FULL`、`retryable=true` 和 `retry_after_ms`；该事件未被接纳，
 WMS 可使用相同请求/事件 ID 和相同 Payload 重试。`BUSY` 不能被缓存成永久幂等结果。
@@ -711,6 +740,9 @@ WMS 对完成事实只返回通用接收 ACK，不在 ACK 中下发后续任务�
 | 任务尚未到 `not_before` | 不参与启动候选，也不阻塞已具备资格的任务 |
 | 同一 Event 重复提交 | 返回 `DUPLICATE`，不重复建任务 |
 | 同一 ID 不同 Payload | 返回 `CONFLICT` |
+| WMS Event 携带 `device_code` 或设备命令字段 | 返回 `REJECTED / WMS_EVENT_DEVICE_FIELD_FORBIDDEN`，不创建设备或任务 |
+| PickingTask 误投 `/api/v1/callback/event` | 不按 WMS Event 接纳，不通过虚拟设备绕过合同 |
+| 正常 WMS Event 接入 | 只建立 WMS provider、operation 和业务事件上下文，不查询 DeviceContext |
 | 工作线接收队列瞬时已满 | 返回可重试 `BUSY`，不把事件标记为已接纳 |
 | 启动前 Cell 可锁定 | 返回 `START_GRANTED` 后 WES 才创建任务专属物理动作 |
 | 启动暂时等待且 `HOLD_QUEUE` | 不越过当前候选 |
@@ -726,12 +758,14 @@ WMS 对完成事实只返回通用接收 ACK，不在 ACK 中下发后续任务�
 
 ## 17. 正式实施前仍需批准
 
-- 每项 operation 的 relative path、HTTP 状态集合和响应 media type。
+- 独立 WMS 业务 ingress 的 relative path，以及每项 operation 的 HTTP 状态集合和响应 media type。
 - 认证方式；若当前隔离网络不需要认证，应明确为 `NONE`。
 - DTO 正式 JSON Schema、字符串长度、数组上限、Payload 上限和枚举闭集。
 - 超时、可重试性、最大重试窗口和交付未知后的查询/对账方式。
 - 业务 `reason_code` 字典、人工处置流程和 SLA。
 - 暂停、恢复、取消的控制命令、结果报告和不可取消窗口。
 - 双方共享的成功、WAIT、NG、冲突、迟到消息和来源补充 fixture。
+- WMS ingress 合同测试必须证明：设备字段被拒绝、不会查询 DeviceContext、不会创建虚拟设备，并且设备 Event 入口不接纳
+  PickingTask。
 
 上述内容未批准前，不得创建占位 API、宽泛 `dict` DTO、兼容别名、动态 registry 或业务状态机。
