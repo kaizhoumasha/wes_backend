@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from collections.abc import Mapping
 from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING
 
@@ -182,6 +183,8 @@ async def test_caller_cannot_override_content_type(header_name: str) -> None:
         ("content-length", "0"),
         ("Transfer-Encoding", "chunked"),
         ("transfer-encoding", "chunked"),
+        ("Content-Encoding", "gzip"),
+        ("content-encoding", "gzip"),
     ],
 )
 async def test_caller_cannot_override_origin_or_body_framing_headers(
@@ -426,3 +429,16 @@ def test_access_result_is_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         result.status_code = 201  # type: ignore[misc]
+
+
+@pytest.mark.asyncio
+async def test_access_result_json_body_is_deeply_immutable() -> None:
+    result = await WmsClient(_FakeTransport(_response(body=b'{"items":[{"status":"READY"}]}'))).get("/decision")
+
+    assert isinstance(result.json_body, Mapping)
+    items = result.json_body["items"]
+    assert isinstance(items, tuple)
+    item = items[0]
+    assert isinstance(item, Mapping)
+    with pytest.raises(TypeError):
+        item["status"] = "DONE"  # type: ignore[index]
