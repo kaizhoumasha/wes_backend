@@ -583,8 +583,8 @@ PUT、CTU 批次和 WMS 来源权威。
 **旧所有者删除或交接清单:** 每个 Adapter 交付时删除对应裸 Client、重复连接池/HMAC/协议映射；每个插件交付时删除旧业务代码、
 配置和测试；删除包时同步移除 workspace、镜像和 composition root 绑定。
 
-**测试所有权与重量要求:** Adapter 独立拥有厂商合同/集成/E2E/韧性；插件独立拥有业务单元/集成/E2E/韧性/并发/负载；
-核心只验证通用机制，Phase 2 只验证 transport。
+**测试所有权与重量要求:** Adapter 独立拥有厂商合同/集成/E2E/韧性；插件独立拥有 WMS 业务结果到执行 Decision 的映射、
+对象推进及其单元/集成/E2E/韧性/并发/负载测试；核心只验证通用机制，Phase 2 只验证 transport。
 
 **与前后阶段的 atomic handoff:** 消费已稳定的 Phase 2 Transport 和 Phase 4 SDK；全部实际交付包完成后向 Phase 9 提交零散旧所有者清单。
 

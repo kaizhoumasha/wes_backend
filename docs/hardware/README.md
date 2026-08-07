@@ -28,6 +28,6 @@
   固定为 `NONE`。
 - Phase 3 WMS 薄访问标准由 `docs/contracts/wms-northbound-interaction-contract.md` 与 `src/app/wms_adapter/` 拥有；
   具体 WMS method/path/DTO/业务结果由后续业务模块及其批准合同拥有。
-- WMS 转发 RCS 的运输 wire 由 Phase 4 Transport 合同与对应 Adapter 拥有，不属于 Phase 3 WMS 业务 ACL。
+- WMS 转发 RCS 的运输 wire 由 Phase 4 Transport 合同与对应 Adapter 拥有，不属于 Phase 3 WMS 薄访问标准。
 - 厂商 DTO、Payload、原始码和事件/命令映射由 `device_adapters/<adapter_key>/` 拥有。
-- 工作线业务 Decision、对象推进和场景测试由 `workline_plugins/<plugin_key>/` 拥有。
+- WMS 业务结果到执行 Decision 的映射、对象推进和场景测试由 `workline_plugins/<plugin_key>/` 拥有。

@@ -145,8 +145,8 @@
 `docs/hardware/` 以硬件厂商原始 PDF/资料为保留主体；同目录 Markdown 包含便于检索的人工转写及面向供应商的
 联调说明，属于派生资料，不得覆盖原始文件，也不得被视为当前 Adapter 合同或 WES 架构真源。派生资料中的字段
 归一化、插件名称、Session/Outbox/Inbox/Hold 等当前实现描述只用于偏差识别，不能反向约束最终架构。差异由当前
-架构合同及具体 Adapter 文档说明。具体 Adapter 包拥有厂商实现、合同测试和 fixture；具体插件包只拥有业务
-Decision、对象推进及其测试和 fixture。基础、Adapter 和业务能力不得互相替代验收。
+架构合同及具体 Adapter 文档说明。具体 Adapter 包拥有厂商实现、合同测试和 fixture；具体插件包只拥有 WMS 业务结果
+到执行 Decision 的映射、对象推进及其测试和 fixture。基础、Adapter 和业务能力不得互相替代验收。
 
 ## 本轮追加归档
 
