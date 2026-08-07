@@ -388,9 +388,19 @@ AND 不存在未决 NG / 来源恢复决定
 
 ## 12. WMS 语义交互面
 
-WMS Business Event 与 Device Event 是两类合同。PickingTask Event 必须进入独立 WMS 业务 ingress，禁止携带
-`device_code`、复用 `/api/v1/callback/event`、查询 `DeviceContext`，或为 WMS 创建虚拟设备。`workline_code` 只用于业务
-路由和工作线队列准入，不是设备身份。WMS Event 被接纳后，插件才可为真实设备创建独立 `DeviceCommand`。
+WMS Business Event 与 Device Event 使用独立合同。WMS 将 PickingTask Event 发送到 WES 提供的
+`POST /api/v1/wms/events`；WES 通过 WMS provider、`operation` 和业务 DTO 建立入站上下文。`workline_code` 用于业务路由
+和工作线队列准入。事件可靠接纳后，插件再为参与执行的真实设备创建独立 `DeviceCommand`。
+
+推荐 API 按交互性质分组：
+
+| 发起方 | 接收方 | 方法与路径 | 用途 |
+| --- | --- | --- | --- |
+| WMS | WES | `POST /api/v1/wms/events` | 发布 PickingTask、队列更新和来源恢复决定 |
+| WMS | WES | `GET /api/v1/wms/requests/{request_id}` | 查询原 WMS 请求的不可变响应 |
+| WES | WMS | `POST /api/v1/wes/decisions` | 请求启动、扫码和空取决定 |
+| WES | WMS | `POST /api/v1/wes/facts` | 报告 Bin NG、逐盘位置和任务本地执行完成事实 |
+| WES | WMS | `GET /api/v1/wes/requests/{request_id}` | 查询原 WES 请求的不可变响应 |
 
 WMS → WES：
 
@@ -412,8 +422,8 @@ WES → WMS：
 - 提交 PickingTask 本地执行完成事实或 WMS 已决定的取消事实。
 - 报告身份冲突、设备未知结果、目标容量不足和稳定现场证据。
 
-AGV/CTU/RCS 搬运不进入上述 PickingTask 业务 API；它们由 Phase 4 Transport 合同拥有，并通过 WMS 转发 Adapter 调用。
-具体 operation 名、method、path、DTO、同步/异步结果、幂等键、SLA 和错误码必须由对应北向合同批准。
+AGV/CTU/RCS 搬运继续由 Phase 4 Transport 合同和 WMS 转发 Adapter 承载。双方在对应北向合同中批准 operation、DTO、
+同步/异步结果、幂等键、SLA 和错误码，并将上表推荐路径固化为正式 wire。
 
 面向 WMS 开发团队的最小能力、字段语义和批准清单见
 `docs/contracts/wms-outbound-picking-task-integration-requirements.md`；该要求文档同样不替代正式获批 wire。
@@ -449,9 +459,9 @@ Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `doc
 | 场景 | 通过标准 |
 | --- | --- |
 | PickingTask 含多个 `BIN_CELL` | Cell 集合原子接纳；无 `PkgID`、SixInOne、目标 rack/slot 或运输状态 |
-| WMS Event 携带设备身份或投向设备 Event 入口 | 拒绝接纳；不查询设备上下文，不创建虚拟设备或 PickingTask |
+| WMS Event 正常接入与错误入口 | 正常请求通过 `/api/v1/wms/events` 建立 WMS 业务上下文；设备字段或设备入口返回合同拒绝 |
 | WMS 提前下发同线多任务 | 全部可靠排队，同线只启动一张；不同线任务可并行 |
-| 同线队首任务尚未到 `not_before` | 保持等待；没有 WMS 显式 `TRY_NEXT` 授权时不得跳选后续任务 |
+| 同线队首任务尚未到 `not_before` | 保持当前总序；收到 WMS 显式 `TRY_NEXT` 授权后尝试下一任务 |
 | 可选 `RACK_SLOT` 来源 | 作为单盘 `CellExecution` 参与任务聚合，不把退料货架生命周期写入 PickingTask |
 | Cell 集合缺项、重复或 locator 非法 | 整单拒绝，不部分接纳 |
 | 启动锁代际不匹配 | 不创建执行动作或运输义务，等待 WMS 修正 |
