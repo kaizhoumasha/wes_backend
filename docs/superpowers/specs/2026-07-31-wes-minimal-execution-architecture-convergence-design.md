@@ -788,8 +788,8 @@ CTU 投箱
    `request/get/post/aclose`、统一 JSON 编解码、最小 factory 和开发示例；当前 outbound 无认证。本阶段不包含任何具体
    WMS 业务 API、业务 Port、数据库、evidence、breaker 或可靠生命周期，不接入生产、不修改旧实现和旧测试。
 4. WES 最小平台与 Transport 能力建设：暗构建最终执行对象、三类可靠记录、通用 WorkLine、投影、最小 SPI/SDK、
-   `Transport Port` 及 WMS 转发 RCS Adapter。具体 WMS/RCS/AGV/CTU 业务模块复用 Phase 3 Client；测试 fake 由
-   Phase 4 核心测试树自行定义；本阶段不修改当前生产 Composition Root、
+   `Transport Port` 及 WMS 转发 RCS/AGV/CTU Transport Adapter；该 Adapter 复用 Phase 3 Client。普通 WMS 业务 API
+   由独立业务实施计划按需实现；测试 fake 由 Phase 4 核心测试树自行定义；本阶段不修改当前生产 Composition Root、
    旧表、旧实现和旧测试。
 5. 新旧能力原子切换与旧所有者删除：迁移生产消费者和装配，清理开发/测试数据，原子删除 Provider Profile、QUERY
    System Capability、旧 WMS Transport/认证、Effect/status/Outbox 可靠闭包及被最终对象替代的核心旧 owner；不迁移旧代码或旧数据。
