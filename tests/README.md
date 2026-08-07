@@ -73,9 +73,10 @@ device_adapters/<adapter_key>/
 `tests/` 唯一拥有厂商 DTO、认证差异、wire Payload、原始码映射和厂商合同场景。两类包的代码、测试和 fixture 必须
 与各自所有者同包交付；核心 pytest、覆盖率、质量门禁和 HEAVY selector 均不发现、不映射也不运行二次开发包测试。
 
-产品内唯一 WMS 北向 Adapter 是 `src/app/wms_adapter/` 下的业务系统 ACL，不是设备厂商二次开发包。它的跨系统 FAST
-合同放在 `tests/contracts/wms_adapter/`，真实持久化与事务场景放在 `tests/integration/wms_adapter/`；两处测试只验证
-WMS Adapter，不得用于证明 `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
+`src/app/wms_adapter/` 当前只承载 Phase 3 WMS HTTP/JSON 薄访问层（thin access layer），不是设备厂商二次开发包，
+也不包含具体业务 API、持久化或事务生命周期。其 FAST 访问合同位于 `tests/contracts/wms_adapter/`；后续具体 WMS
+业务模块的合同与持久化/事务场景由对应业务所有者（business owner）承接。这些测试不得用于证明
+`src/core/outbound_http/` 基础传输或 WES 最小执行内核。
 
 ### 当前治理约束
 
