@@ -10,7 +10,6 @@ related:
   - docs/contracts/wms-northbound-interaction-contract.md
   - docs/architecture/authority-matrix.md
   - docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md
-related_device_wire: docs/integration/third_party_integration_whitepaper.md
 ---
 
 # WMS / WES 自动出库 PickingTask 交互草案
@@ -31,7 +30,7 @@ related_device_wire: docs/integration/third_party_integration_whitepaper.md
 
 ## 2. 共同交互原则
 
-本文参考当前第三方设备统一接口白皮书中跨系统 HTTP/JSON 的共同交互习惯，但不继承设备业务字段：
+本文独立定义 WMS 业务交互草案，不依赖已归档的设备协议文档。跨系统 HTTP/JSON 只采用以下最小共同约定：
 
 - 使用 `POST + application/json + UTF-8`。
 - 顶层只放协议控制字段，业务字段统一放入 `data`。
@@ -110,8 +109,9 @@ Payload 字段。
 }
 ```
 
-`code` 是业务/接收结果，不得由 HTTP 200 推断。消息一旦被接纳，相同 `request_id` 和相同 Payload 必须返回相同结果；
-相同 `request_id` 与不同 Payload 必须返回 `CONFLICT`。尚未接纳的瞬时背压不写入业务幂等结果。
+`code` 是业务/接收结果，不得由 HTTP 200 推断。消息首次接纳返回 `RECEIVED`；相同 `request_id` 和相同 Payload 重放
+返回 `DUPLICATE` 且不得重复产生副作用；相同 `request_id` 与不同 Payload 返回 `CONFLICT`。尚未接纳的瞬时背压不写入
+业务幂等结果。
 
 ### 4.3 通用接收 ACK
 
@@ -135,7 +135,7 @@ Payload 字段。
 | `outbound.bin.ng_report@v1` | WES → WMS | 可靠事实 + 同步 ACK | 报告整箱不可执行及受影响 Cell |
 | `outbound.picking_task.source_recovery_decided@v1` | WMS → WES | Event + 同步 ACK | 引用现有 Cell 或追加并锁定新的补充 Cell |
 | `outbound.material.movement_report@v1` | WES → WMS | 可靠事实 + 同步 ACK | 报告逐盘确定位置变化或 NG 落点 |
-| `outbound.picking_task.completion_report@v1` | WES → WMS | 可靠事实 + 同步 ACK | 报告全部已接纳 Cell 已闭合 |
+| `outbound.picking_task.completion_report@v1` | WES → WMS | 可靠事实 + 同步 ACK | 报告全部已接纳 Cell 的本地执行已闭合 |
 
 所有 operation 使用 POST。WMS → WES Event 必须使用独立 WMS 业务 ingress，禁止复用设备统一接口
 `/api/v1/callback/event`。正式 relative path 由双方在部署 wire 中批准；不得仅依据本文名称生成生产路由。
@@ -153,7 +153,6 @@ Payload 字段。
     "event_id": "EVT-PICK-000001",
     "task_id": "PICK-20260807-001",
     "task_version": 1,
-    "priority": 50,
     "dispatch_sequence": 1024,
     "issued_at": 1786060799000,
     "not_before": 1786064400000,
@@ -196,8 +195,8 @@ Payload 字段。
 任务中禁止出现 `PkgID`、SixInOne、预估盘数、顶部顺序、目标储位、AGV/CTU 任务或缓存状态。任务发布时不锁 Cell，
 因此也不携带 `cell_lock_generation`。
 
-`not_before` 可省略。存在时只表示最早允许尝试启动，不是准点执行承诺。尚未到达 `not_before` 的任务不阻塞同一工作线
-中已经具备启动资格的后续任务。
+`dispatch_sequence` 是 WMS 给出的同一工作线无歧义总序，WES 不再叠加本地优先级。`not_before` 可省略；存在时只表示
+最早允许尝试启动，不是准点执行承诺。队首任务尚未到达 `not_before` 时保持等待，除非 WMS 后续显式授权尝试下一任务。
 
 ### 6.2 WES 接收 ACK
 
@@ -229,14 +228,14 @@ WMS 可使用相同请求/事件 ID 和相同 Payload 重试。`BUSY` 不能被�
 - WMS 可以提前向 WES 下发多张 PickingTask。
 - 不同工作线可以并行执行不同任务。
 - 同一工作线可以有多张 `QUEUED` 任务，但同一时刻只允许一张任务处于 `STARTING | EXECUTING`。
-- WES 只在已经达到 `not_before` 的任务中按 `priority DESC, dispatch_sequence ASC` 选择启动候选。
-- `dispatch_sequence` 必须在同一工作线形成无歧义顺序；WES 不按任务内容重新计算业务优先级。
+- `dispatch_sequence` 必须在同一工作线形成无歧义总序；WES 只处理总序中的首个未开始任务，不自行排序或跳选。
+- 队首任务未到 `not_before` 时阻塞同线后续任务；只有 WMS 显式授权时才可尝试下一任务。
 - 任务启动前不锁 Cell，不创建该任务的机械臂动作或 CTU 投箱动作。
 - 下一任务仍需通过设备、缓存、目标架和活动运输对象的本地准入检查。
 
-未开始任务的 `priority`、`dispatch_sequence` 或 `not_before` 只通过
+未开始任务的 `dispatch_sequence` 或 `not_before` 只通过
 `outbound.picking_task.queue_changed@v1` 更新，并携带稳定 `event_id + queue_revision`。任务载荷本身保持不可变；执行中的
-任务不接受队列参数更新，也不被更高优先级任务抢占。
+任务不接受队列参数更新，也不被后续任务抢占。
 
 ```json
 {
@@ -248,7 +247,6 @@ WMS 可使用相同请求/事件 ID 和相同 Payload 重试。`BUSY` 不能被�
     "task_id": "PICK-20260807-001",
     "task_version": 1,
     "queue_revision": 2,
-    "priority": 80,
     "dispatch_sequence": 900,
     "not_before": 1786062600000,
     "changed_at": 1786060999900
@@ -320,7 +318,7 @@ WES 只有收到 `START_GRANTED` 后才进入 `EXECUTING`，并创建任务专�
 暂时无法锁定时返回 `START_WAIT`，其中 `queue_action` 只能是：
 
 - `HOLD_QUEUE`：保持该任务为当前候选，不得越过。
-- `TRY_NEXT`：允许 WES 尝试同一工作线的下一张具备启动资格的任务。
+- `TRY_NEXT`：WMS 显式授权 WES 尝试同一工作线总序中的下一张任务。
 
 ```json
 {
@@ -614,7 +612,7 @@ WMS 通过 `outbound.picking_task.source_recovery_decided@v1` 对 MATERIAL/CELL/
 - 若 WES 返回 `REJECTED` 或 `CONFLICT`，WMS 必须解除本次未生效的新增锁；只有 `RECEIVED | DUPLICATE` 表示补充集合已被 WES 接纳。
 - 每个 CellExecution 永久使用自己所属的锁代际；新代际不能使旧 Cell 的在途响应失效。
 - 已存在于任务中的 Cell 只能通过 `USE_EXISTING_CELLS` 引用，不能重复追加。
-- 新货架或新 Bin 尚未到位时，WES 创建独立 TransportTask；运输状态不进入 PickingTask 完成条件。
+- 新货架或新 Bin 尚未到位时，WES 创建独立 TransportTask；运输状态不进入 PickingTask 本地执行完成条件。
 - 受影响 Cell 只有在物理 NG 去向确定且 WMS 恢复决定已到达后，才以 NG outcome 闭合。
 
 ## 13. 逐盘位置事实
@@ -656,7 +654,7 @@ WES 每完成一盘的正常 PUT 或 NG 放置，就可靠发送 `outbound.mater
 未唯一识别的 NG 料盘不得伪造 `pkg_id`，应通过执行 ID、扫码证据和 NG 落点关联。WMS 只返回通用接收 ACK；ACK 不修改
 已经由设备终态建立的 WES 本地位置事实。
 
-## 14. PickingTask 完成
+## 14. PickingTask 本地执行完成
 
 PickingTask 的成员集合为：
 
@@ -678,8 +676,8 @@ ALL(已接纳 CellExecution.status == COMPLETED)
 AND 不存在未决 NG / 来源恢复决定
 ```
 
-完成条件仍然不读取 Rack、Bin、AGV、CTU、工作位或清场状态。任务完成后，这些对象继续由各自 owner 闭环，不得反向
-改写已完成 PickingTask。
+完成条件仍然不读取 Rack、Bin、AGV、CTU、工作位或清场状态。条件满足后，WES 只把任务执行投影置为
+`EXECUTION_COMPLETED`；这不是 WMS 业务终态。这些对象继续由各自 owner 闭环，不得反向改写已完成的本地执行投影。
 
 逐盘位置事实必须先被 WMS 接收，WES 才可靠发送 `outbound.picking_task.completion_report@v1`：
 
@@ -694,7 +692,7 @@ AND 不存在未决 NG / 来源恢复决定
     "task_version": 1,
     "execution_id": "EXEC-PICK-000001",
     "final_cell_set_revision": 2,
-    "completed_at": 1786065999900,
+    "execution_completed_at": 1786065999900,
     "cell_results": [
       {
         "cell_execution_id": "CELL-EXEC-001",
@@ -717,11 +715,12 @@ AND 不存在未决 NG / 来源恢复决定
 }
 ```
 
-WMS 对完成事实只返回通用接收 ACK，不在 ACK 中下发后续任务或运输指令。
+WMS 对本地执行完成事实只返回通用接收 ACK，不在 ACK 中下发后续任务或运输指令；WMS 自身的业务终态仍由 WMS 管理，
+不得从该 ACK 反向推断。
 
 ## 15. 幂等、版本与失败关闭
 
-- 同一请求/事件/事实 ID 和相同 Payload 重发，必须返回原结果且不重复产生副作用。
+- 同一请求/事件/事实 ID 和相同 Payload 重发，必须返回 `DUPLICATE` 且不重复产生副作用。
 - `BUSY` 表示尚未接纳，不固化为业务幂等结果；重试最终转为 `RECEIVED` 后才建立稳定接收结果。
 - 同一 ID 与不同 Payload 必须 `CONFLICT`。
 - PickingTask 同一 `task_version` 的原始 Payload 不可变化；队列参数更新使用独立控制版本。
@@ -737,7 +736,7 @@ WMS 对完成事实只返回通用接收 ACK，不在 ACK 中下发后续任务�
 | --- | --- |
 | WMS 连续下发同线多任务 | WES 全部可靠排队，同线只启动一个任务 |
 | WMS 下发不同工作线任务 | 不同工作线可并行启动 |
-| 任务尚未到 `not_before` | 不参与启动候选，也不阻塞已具备资格的任务 |
+| 同线队首任务尚未到 `not_before` | 保持等待；无 WMS 显式授权时不得跳选后续任务 |
 | 同一 Event 重复提交 | 返回 `DUPLICATE`，不重复建任务 |
 | 同一 ID 不同 Payload | 返回 `CONFLICT` |
 | WMS Event 携带 `device_code` 或设备命令字段 | 返回 `REJECTED / WMS_EVENT_DEVICE_FIELD_FORBIDDEN`，不创建设备或任务 |
@@ -746,14 +745,14 @@ WMS 对完成事实只返回通用接收 ACK，不在 ACK 中下发后续任务�
 | 工作线接收队列瞬时已满 | 返回可重试 `BUSY`，不把事件标记为已接纳 |
 | 启动前 Cell 可锁定 | 返回 `START_GRANTED` 后 WES 才创建任务专属物理动作 |
 | 启动暂时等待且 `HOLD_QUEUE` | 不越过当前候选 |
-| 启动暂时等待且 `TRY_NEXT` | 可尝试下一张具备启动资格的任务 |
+| 启动暂时等待且 `TRY_NEXT` | 按 WMS 显式授权尝试总序中的下一张任务 |
 | 料盘 NG 且 Cell 可继续 | 当前盘进入 NG 区后继续当前 Cell |
 | Cell NG | 当前 Cell 关闭；同 Bin 其他 Cell 继续；Bin 最终进入 NG 出口 |
 | Bin NG | 整箱所有 Cell 停止执行并进入 NG 出口 |
 | 补充来源已在任务内 | 只引用现有 Cell，不重复追加 |
 | 补充来源不在任务内 | 追加新成员代际和独立锁代际 |
 | WMS 决定超时或无法关联 | 不推断 NG、继续、Cell 完成或替代来源 |
-| 全部已接纳 Cell 闭合 | PickingTask 完成，不聚合 Rack/Bin/Transport/清场状态 |
+| 全部已接纳 Cell 闭合 | 进入 `EXECUTION_COMPLETED` 本地执行投影，不聚合 Rack/Bin/Transport/清场状态 |
 | 逐盘事实尚未被 WMS 接收 | 完成报告保持等待，不越过逐盘事实 |
 
 ## 17. 正式实施前仍需批准

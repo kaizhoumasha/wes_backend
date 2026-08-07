@@ -13,7 +13,7 @@ note: |
 # Authority Matrix（事实权威来源矩阵）
 
 > 父设计：`docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` §4
-> WMS wire：`docs/contracts/wms-northbound-interaction-contract.md`
+> WMS Client 访问标准：`docs/contracts/wms-northbound-interaction-contract.md`
 > ADR：`docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md`
 
 ## 1. 编写目的

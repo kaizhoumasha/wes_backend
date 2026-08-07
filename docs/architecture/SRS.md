@@ -908,8 +908,9 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * 自动出库由 WMS 下发 `PickingTask`；创建、优先级更新、替代来源追加、恢复和取消的 method/path/DTO
     以独立 inbound wire 合同为准，WES 不接收生产工单生成波次。
   * `POST /api/v1/master-data`: 接收物料主数据同步 (由现有 WMS 转发 SAP 主数据)。
-  * WES 调用现有 WMS 的业务决策、库存查询、预留/释放和入库/出库确认能力；operation identity 与 wire 合同以
-    `docs/contracts/wms-northbound-interaction-contract.md` 为唯一真源。
+  * WES 调用现有 WMS 的业务决策、库存查询、预留/释放和入库/出库确认能力；
+    `docs/contracts/wms-northbound-interaction-contract.md` 只定义 Phase 3 HTTP/JSON Client 使用标准。具体 operation identity、
+    path、DTO 和业务错误必须由对应逐项业务合同批准；合同未批准时不得实现该业务 API。
 
 ### 4.2 南向接口 (Southbound API - To ECS)
 
