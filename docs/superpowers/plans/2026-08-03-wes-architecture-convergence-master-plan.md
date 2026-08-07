@@ -310,8 +310,8 @@ Phase 4 可以复用该 Client 实现 WMS 转发的 RCS/AGV/CTU API，但 Phase 
 **Exit gate:** 三个目标生产文件和访问层测试完整；新包只依赖 Phase 2，无业务 API、业务 Port、数据库、旧包、认证、
 retry、registry 或生产接线；FAST、Ruff、类型检查、Import Linter、架构门禁和 quality profile 通过。
 
-**需要单独编写的子计划:** 使用
-`docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`。
+**当前实施真源:** 使用 `docs/contracts/wms-northbound-interaction-contract.md`与 `src/app/wms_adapter/`。
+Phase 3 子计划已完成并移至项目外 `../archive_docs/wes_backend/docs/superpowers/plans/`。
 
 **风险及防止阶段越权的约束:** 最大风险是把未来业务 API、业务模型或通用集成平台提前塞入 Client。任何业务字段、
 path 和结果解释都必须留到真实业务开发。
@@ -726,8 +726,8 @@ Phase 10 固化最终 metadata。
 
 ## 20. Implementation Tasks
 
-Phase 3 已按 TDD 完成不含业务 API 的 WMS HTTP Client。阶段实施与验收记录真源为
-`docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`。
+Phase 3 已按 TDD 完成不含业务 API 的 WMS HTTP Client。当前行为真源为
+`docs/contracts/wms-northbound-interaction-contract.md`、`src/app/wms_adapter/` 与 `tests/contracts/wms_adapter/`；完成计划只在项目外归档保留历史。
 
 | 顺序 | 任务 | Surface area | 主要验证 |
 | --- | --- | --- | --- |

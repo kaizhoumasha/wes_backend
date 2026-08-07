@@ -10,10 +10,9 @@
 | --- | --- | --- |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
-| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与双面货架执行业务真源 | ReviewRequired |
+| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与双面货架候选方案，不是批准真源 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 1–3 已完成，Phase 4–11 未开始 |
-| `plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 Axios 式 WMS HTTP Client | 已完成共享访问层和开发示例，不包含具体业务 API |
 
 ## 项目外历史归档
 
@@ -21,6 +20,7 @@
 历史内容：
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md`
 - `../archive_docs/wes_backend/docs/architecture/adr/2026-05-26-wms-integration-domain.md`
 - `../archive_docs/wes_backend/docs/business/wms_full_factory_operation_blueprint.md`
