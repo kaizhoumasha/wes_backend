@@ -947,6 +947,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (WMS_CIRCUIT_BREAKER_HEAVY_TEST,),
         ),
         ("src/core/outbound_http/**", ()),
+        ("src/app/wms_adapter/**", ()),
     )
 
 
