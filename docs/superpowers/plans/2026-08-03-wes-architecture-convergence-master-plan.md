@@ -16,7 +16,7 @@ WES 核心只依赖类型化业务端口，可靠性生命周期分别由 `Devic
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Alembic、Celery、
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
-**Status:** In progress — Phase 1–2 已完成；Phase 3 已收敛为 Axios 式 WMS HTTP Client，依赖已满足，可以进入实施；
+**Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；
 Phase 4–11 尚未开始。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
@@ -118,10 +118,10 @@ Transport/Adapter/核心所有权。
 | `src/app/sys/external_http_*` 与 `canonical_dispatch.py` | 已有 typed transport fact、凭据解析、NONE/HMAC、bounded response 的部分能力，但耦合 Provider Profile/SystemOutbox/WMS operation | 仅 transport fact 作为行为证据；认证相关能力无真实 outbound 合同依据，不进入 Phase 2 |
 | 多处 `httpx.AsyncClient()` | DeviceCommand、旧 Outbox、WMS runtime、旧 Gateway 等仍自行创建 Client | Phase 2–4 只暗构建 successor；Phase 5 统一切换 WMS 与核心执行路径，Phase 7/8 接入真实 ECS/RCS Adapter，Phase 9 建立最终缺席门禁 |
 | 目标对象扫描 | 尚无最终 `InboundEvidence`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch` 等完整生产闭环 | Phase 4 未开始；旧 `DeviceCommand`/RuntimeProjection 不能等同于目标平台完成 |
-| 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | 仅文档变更；Phase 3 已可进入实施 |
+| 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | Phase 3 已完成实施与验收 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
-阶段状态：Phase 1–2 已完成；Phase 3 可进入实施，Phase 4–11 均未开始。
+阶段状态：Phase 1–3 已完成，Phase 4–11 均未开始。
 
 ## 5. 总控依赖模型
 
@@ -287,7 +287,7 @@ Adapter/Composition Root，或建设认证/拦截器扩展平台。子计划必�
 `src/api/contract/client.ts` 只作为职责形态参考。当前 `src/app/wms_integration/` 只用于识别未来删除边界，不是新实现模板。
 
 **Entry conditions:** Phase 2 基线已通过退出门禁，所需 Transport、request/result 和 builder 已存在。具体 WMS 业务 API、
-消费者、wire、DTO 和业务尺寸预算不属于 Phase 3 入口条件，因此当前可以进入实施。
+消费者、wire、DTO 和业务尺寸预算不属于 Phase 3 入口条件；Phase 3 已完成实施。
 
 **Scope:** 独立 `src/app/wms_adapter/` 包，只包含 `client.py`、`factory.py` 和 `__init__.py`；公开
 `request/get/post/aclose`，每次调用最多一次 Phase 2 send。访问层只处理 HTTP/JSON，不知道 operation 或业务含义。
@@ -711,7 +711,7 @@ Phase 10 固化最终 metadata。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 3/4 明确禁止接线和旧 owner 处置；Phase 5 单独承担原子切换；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1–2 已完成；Phase 3 可进入实施，Phase 4–11 未开始 |
+| 当前状态准确性 | 通过 | Phase 1–3 已完成，Phase 4–11 未开始 |
 
 ## 19. 总体完成定义
 
@@ -726,7 +726,7 @@ Phase 10 固化最终 metadata。
 
 ## 20. Implementation Tasks
 
-Phase 3 已收敛为不含业务 API 的 WMS HTTP Client。Phase 2 依赖已满足，可以直接按 TDD 实施。阶段唯一子计划真源为
+Phase 3 已按 TDD 完成不含业务 API 的 WMS HTTP Client。阶段实施与验收记录真源为
 `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`。
 
 | 顺序 | 任务 | Surface area | 主要验证 |
@@ -744,7 +744,7 @@ Phase 3 已收敛为不含业务 API 的 WMS HTTP Client。Phase 2 依赖已满�
 - **Scope：** Phase 3 只暗构建 Axios 式 WMS Client；Phase 4 暗构建新核心、Transport Port 和 WMS 转发 RCS Adapter；Phase 5 原子接线并删除旧 owner。
 - **Architecture：** Phase 3 Client 直接消费 Phase 2 Transport，只统一 HTTP/JSON；证据、业务 DTO、业务结果解释和可靠生命周期均不属于 Client。
 - **Contract：** 所有业务结果由 WMS 给出；具体 method/path/DTO 随后续业务逐项批准和实现，不阻断 Phase 3。
-- **Entry gate：** Phase 2 已完成，Phase 3 当前可进入实施。
+- **Entry gate：** Phase 2 已完成，Phase 3 已实施并通过退出门禁。
 - **Code Quality：** 只包含三个生产文件；不引入业务 Port、Gateway 层、生成器或动态 registry。
 - **Failure modes：** Client 每次调用只发送一次并保留 Phase 2 传输事实；业务模块决定如何解释响应。
 - **Test Review：** FAST 只证明 WMS Client 访问合同，不验证任何业务能力，也不创建 HEAVY 持久化测试。
@@ -757,11 +757,11 @@ Phase 3 已收敛为不含业务 API 的 WMS HTTP Client。Phase 2 依赖已满�
 
 | Review | 本轮状态 | 发现 | 未解决 | 说明 |
 | --- | --- | ---: | ---: | --- |
-| ENG REVIEW | READY | 0 | 0 | 业务 API 已全部移出 Phase 3；Phase 2 依赖满足 |
+| ENG REVIEW | COMPLETE | 0 | 0 | 业务 API 已全部移出 Phase 3；共享 Client 已实施并通过退出门禁 |
 | INDEPENDENT REVIEW | SUPERSEDED | 0 | 0 | 旧“33 项完整面”评审基线已被消费者驱动边界替代，不再作为当前放行证据 |
 | SERENA REVIEW | CLEAR | 0 | 0 | 参考前端 API Client 和 Phase 2 Transport 后，目标边界已收敛为单一薄封装 |
-| SEQUENTIAL REVIEW | READY | 0 | 0 | 具体业务合同不再作为共享 Client 的入口门禁 |
+| SEQUENTIAL REVIEW | CLEAR | 0 | 0 | 具体业务合同不再作为共享 Client 的入口门禁 |
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新增 API 使用固定六步标准并复用 Client，不修改共享核心 |
 
-**VERDICT：Phase 1–2 已完成；Phase 3 已收敛为 Axios 式 WMS HTTP Client，可以进入代码实施。**
+**VERDICT：Phase 1–3 已完成；Phase 3 Axios 式 WMS HTTP Client 已实施并通过退出门禁。**

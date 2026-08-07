@@ -116,6 +116,15 @@ async def test_post_encodes_compact_utf8_json_and_owns_content_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_encodes_finite_float_json_values() -> None:
+    transport = _FakeTransport()
+
+    await WmsClient(transport).post("/tasks", json={"quantity": 1.25})
+
+    assert transport.requests[0].body == b'{"quantity":1.25}'
+
+
+@pytest.mark.asyncio
 async def test_post_none_means_a_json_null_body() -> None:
     transport = _FakeTransport()
 
@@ -291,6 +300,14 @@ async def test_valid_json_is_decoded_for_any_http_status_and_content_type() -> N
     assert result.status_code == 409
     assert result.response_headers == (("Content-Type", "text/plain"), ("X-WMS", "primary"))
     assert result.json_body == {"code": "BUSINESS_RESULT"}
+    assert result.json_failure is None
+
+
+@pytest.mark.asyncio
+async def test_finite_float_json_response_is_decoded() -> None:
+    result = await WmsClient(_FakeTransport(_response(body=b'{"quantity":1.25}'))).get("/inventory")
+
+    assert result.json_body == {"quantity": 1.25}
     assert result.json_failure is None
 
 

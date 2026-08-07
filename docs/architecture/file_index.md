@@ -31,7 +31,7 @@
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、双面货架、NG/补料/恢复与完成业务真源 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 Axios 式 WMS HTTP Client 实施计划；只交付共享访问层和开发示例，可进入实施 |
+| `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md` | Phase 3 Axios 式 WMS HTTP Client 已实施；只交付共享访问层和开发示例 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |

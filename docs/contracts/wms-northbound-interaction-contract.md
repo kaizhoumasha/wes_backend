@@ -1,6 +1,6 @@
 # WMS HTTP Client 使用合同
 
-> 状态：`READY_FOR_IMPLEMENTATION`。
+> 状态：`IMPLEMENTED`（Phase 3 共享 HTTP/JSON Client，2026-08-07）。
 > 本文只定义 Phase 3 WMS HTTP 访问标准，不定义任何具体 WMS 业务 API。
 > 外部输入：`docs/hardware/wms_rcs_interface_requirements.md` 只读保留；具体业务开发时再从中选择并确认真实接口。
 

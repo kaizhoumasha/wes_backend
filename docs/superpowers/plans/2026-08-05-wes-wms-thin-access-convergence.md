@@ -1,6 +1,6 @@
 # WES Phase 3 WMS HTTP Client 薄封装实施计划
 
-> **Status:** `READY_FOR_IMPLEMENTATION`。
+> **Status:** `IMPLEMENTED`（2026-08-07）。
 > Phase 3 只建设类似前端 Axios 的 WMS HTTP 访问封装，不实现任何具体 WMS 业务 API。
 
 **Goal:** 在 Phase 2 `OutboundHttpTransport` 之上提供一个长期持有、统一配置、统一 JSON 请求/响应处理的
@@ -143,25 +143,25 @@ ExampleWmsApi.query_example(request DTO)
 
 ## 7. Implementation Tasks
 
-- [ ] **T1（P1，human: ~2h / Codex: ~20min）— 访问合同测试**
+- [x] **T1（P1，human: ~2h / Codex: ~20min）— 访问合同测试**
   - 来源：测试评审——必须覆盖第 9 节的每条分支，不能用基础 Transport 或具体业务测试替代。
   - 文件：`tests/contracts/wms_adapter/test_client.py`、`tests/contracts/wms_adapter/test_factory.py`。
   - 动作：按 TDD 先建立 GET/POST body 约束、query/header 默认值与重复项、Content-Type 所有权、严格 JSON 值域/编码、
     循环输入、0/1 次 send、空响应与 JSON `null`、响应 Content-Type、非 2xx、解码失败事实、所有 Phase2 失败事实、
     取消和关闭测试；不含业务断言。
   - 验证：新增 FAST 测试先红；实施后执行 `uv run pytest tests/contracts/wms_adapter -q`。
-- [ ] **T2（P1，human: ~3h / Codex: ~30min）— 实现两类型薄 Client**
+- [x] **T2（P1，human: ~3h / Codex: ~30min）— 实现两类型薄 Client**
   - 来源：架构与代码质量评审——统一 JSON 访问但不得复制 Phase2 或引入业务抽象。
   - 文件：`src/app/wms_adapter/client.py`。
   - 动作：实现 `WmsClient` 与一个不可变最小访问结果，直接消费 Phase2 公共合同，不导入 `httpx`、不访问数据库、
     不保存调用证据、不增加 Gateway/异常体系。
   - 验证：T1 全绿；每条有效调用最多一次 `send`，编码失败零次，关闭后合法请求一次并由 Transport 拒绝。
-- [ ] **T3（P2，human: ~1h / Codex: ~10min）— 实现 factory 与公开导出**
+- [x] **T3（P2，human: ~1h / Codex: ~10min）— 实现 factory 与公开导出**
   - 来源：架构评审——长期 Client 生命周期与固定 WMS 身份必须只有一个构造入口。
   - 文件：`src/app/wms_adapter/factory.py`、`src/app/wms_adapter/__init__.py`。
   - 动作：factory 只接收 `base_url`、`timeout_seconds` 并固定 `system_id="wms"`；只导出两个公开类型和 factory。
   - 验证：factory FAST 测试证明每次构造一个长期 Client、零裸 `httpx`、配置原样交给 Phase2 builder。
-- [ ] **T4（P2，human: ~1h / Codex: ~10min）— 完成边界与质量验证**
+- [x] **T4（P2，human: ~1h / Codex: ~10min）— 完成边界与质量验证**
   - 来源：工程退出评审——基础、Adapter 与业务能力必须分别证明。
   - 文件：上述生产文件与测试、`docs/architecture/heavy-test-impact.toml`、`tests/scripts/`；不新增演示业务生产模块。
   - 动作：核对零业务 API、零数据库、零旧 WMS 包、零 RCS/AGV/CTU、零认证、零动态机制；执行 Phase2 回归、
@@ -184,28 +184,28 @@ ExampleWmsApi.query_example(request DTO)
 
 ## 9. 测试覆盖图与失败模式
 
-实现不存在，因此下图表示 TDD 必须建立的计划覆盖，不声称测试已经通过；所有路径都是单模块 FAST 测试，不需要 E2E。
+实现与合同测试已经完成；下图记录当前单模块 FAST 覆盖，Phase 3 不需要 E2E。
 
 ```text
 CODE PATHS                                              DEVELOPER FLOW
 [+] WmsClient.request/get/post                          [+] 新增具名 WMS API
-  ├─ [PLANNED ★★★] GET 无 body / POST 必须有 json         ├─ [PLANNED ★★★] DTO model_dump(mode="json")
-  ├─ [PLANNED ★★★] relative path/query/header 默认与重复   ├─ [PLANNED ★★★] 固定 path 调用 get/post
-  ├─ [PLANNED ★★★] Content-Type 冲突在发送前拒绝           ├─ [PLANNED ★★★] status + JSON 交给业务解释
-  ├─ [PLANNED ★★★] JSON 递归值域合法                       └─ [PLANNED ★★★] response DTO model_validate
-  ├─ [PLANNED ★★★] tuple/非字符串 key/非有限数/对象/循环拒绝
-  ├─ [PLANNED ★★★] UTF-8 紧凑编码 → 一次 send
-  ├─ [PLANNED ★★★] Phase2 failure → body_present=False
-  ├─ [PLANNED ★★★] 空 body → False/None
-  ├─ [PLANNED ★★★] JSON null → True/None
-  ├─ [PLANNED ★★★] 合法 JSON（含非 2xx，忽略 Content-Type）→ True/value
-  ├─ [PLANNED ★★★] 空白/非法 UTF-8/非法 JSON/非标准数值 → json_failure + 保留 HTTP 事实
-  └─ [PLANNED ★★★] 取消/关闭异常/关闭后调用原样传播
+  ├─ [TESTED ★★★] GET 无 body / POST 必须有 json         ├─ [DOCUMENTED ★★★] DTO model_dump(mode="json")
+  ├─ [TESTED ★★★] relative path/query/header 默认与重复   ├─ [DOCUMENTED ★★★] 固定 path 调用 get/post
+  ├─ [TESTED ★★★] Content-Type 冲突在发送前拒绝           ├─ [DOCUMENTED ★★★] status + JSON 交给业务解释
+  ├─ [TESTED ★★★] JSON 递归值域合法                       └─ [DOCUMENTED ★★★] response DTO model_validate
+  ├─ [TESTED ★★★] tuple/非字符串 key/非有限数/对象/循环拒绝
+  ├─ [TESTED ★★★] UTF-8 紧凑编码 → 一次 send
+  ├─ [TESTED ★★★] Phase2 failure → body_present=False
+  ├─ [TESTED ★★★] 空 body → False/None
+  ├─ [TESTED ★★★] JSON null → True/None
+  ├─ [TESTED ★★★] 合法 JSON（含非 2xx，忽略 Content-Type）→ True/value
+  ├─ [TESTED ★★★] 空白/非法 UTF-8/非法 JSON/非标准数值 → json_failure + 保留 HTTP 事实
+  └─ [TESTED ★★★] 取消/关闭异常/关闭后调用原样传播
 [+] build_wms_client / aclose
-  ├─ [PLANNED ★★★] 固定 system_id="wms" 并透传配置
-  └─ [PLANNED ★★★] 长期持有、重复关闭幂等、关闭失败传播
+  ├─ [TESTED ★★★] 固定 system_id="wms" 并透传配置
+  └─ [TESTED ★★★] 长期持有、重复关闭幂等、关闭失败传播
 
-PLAN COVERAGE: 上述所有访问层分支均列入 TDD | E2E: 0 | EVAL: 0
+CURRENT COVERAGE: 上述访问层合同均已通过 FAST 测试 | E2E: 0 | EVAL: 0
 ```
 
 | 生产失败方式 | 测试 | 处理合同 | 调用方可见性 |
@@ -228,7 +228,7 @@ Sequential implementation, no parallelization opportunity。T1–T4 都围绕同
 Phase 2 已交付 `OutboundHttpTransport`、`OutboundHttpRequest`、`OutboundHttpResult` 和 builder，Phase 3 所需依赖已满足。
 具体 WMS 业务 API、消费者矩阵、PickingTask wire 或业务尺寸预算都不属于 Phase 3 入口条件。
 
-因此 Phase 3 当前可以进入实施。
+因此 Phase 3 已完成实施并满足退出标准。
 
 退出标准：
 
@@ -260,7 +260,7 @@ Phase 2 已交付 `OutboundHttpTransport`、`OutboundHttpRequest`、`OutboundHtt
 - **Prior learning applied：** `outbound-http-fact-boundary`（10/10）——基础 Transport 与 WMS Client 只表达技术事实，业务
   结果解释留在未来具体业务 owner。
 
-**VERDICT：Phase 3 范围已收敛为 Axios 式 WMS HTTP Client，可进入实施；具体业务 API 随后续业务逐项开发。**
+**VERDICT：Phase 3 Axios 式 WMS HTTP Client 已完成实施；具体业务 API 随后续业务逐项开发。**
 
 ## GSTACK REVIEW REPORT
 
@@ -277,6 +277,6 @@ Phase 2 已交付 `OutboundHttpTransport`、`OutboundHttpRequest`、`OutboundHtt
 **CROSS-MODEL:** 独立设计评审与 Codex 均确认两类型/三生产文件边界可行；Codex 额外发现 JSON 解码事实和 HEAVY
 selector 缺口，均已关闭。
 
-**VERDICT:** ENG CLEARED — Phase3 ready to implement。
+**VERDICT:** SHIP READY — Phase3 implemented and verified。
 
 NO UNRESOLVED DECISIONS
