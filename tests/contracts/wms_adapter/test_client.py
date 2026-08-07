@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-from collections.abc import Mapping
 from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from src.app.wms_adapter import WmsAccessResult, WmsClient
 from src.core.outbound_http import (
@@ -362,19 +362,6 @@ async def test_invalid_json_preserves_http_facts_and_reports_json_failure(body: 
 
 
 @pytest.mark.asyncio
-async def test_deep_json_freeze_failure_preserves_http_facts() -> None:
-    body = b"[" * 500 + b"0" + b"]" * 500
-
-    result = await WmsClient(_FakeTransport(_response(body=body, status_code=502))).get("/decision")
-
-    assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
-    assert result.status_code == 502
-    assert result.body_present is True
-    assert result.json_body is None
-    assert result.json_failure == "INVALID_JSON"
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("body", [b"1e400", b'{"nested":[1e400]}'])
 async def test_exponent_overflow_reports_invalid_json_without_losing_http_facts(body: bytes) -> None:
     result = await WmsClient(
@@ -429,7 +416,7 @@ async def test_repeated_aclose_remains_idempotent_through_the_transport() -> Non
     assert transport.close_calls == 2
 
 
-def test_access_result_is_immutable() -> None:
+def test_access_result_fields_are_immutable() -> None:
     result = WmsAccessResult(
         delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
         failure_kind=None,
@@ -445,13 +432,14 @@ def test_access_result_is_immutable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_access_result_json_body_is_deeply_immutable() -> None:
+async def test_access_result_json_body_supports_direct_strict_dto_validation() -> None:
+    class DecisionResponse(BaseModel):
+        model_config = ConfigDict(strict=True)
+
+        items: list[dict[str, str]]
+
     result = await WmsClient(_FakeTransport(_response(body=b'{"items":[{"status":"READY"}]}'))).get("/decision")
 
-    assert isinstance(result.json_body, Mapping)
-    items = result.json_body["items"]
-    assert isinstance(items, tuple)
-    item = items[0]
-    assert isinstance(item, Mapping)
-    with pytest.raises(TypeError):
-        item["status"] = "DONE"  # type: ignore[index]
+    response = DecisionResponse.model_validate(result.json_body)
+
+    assert response.items == [{"status": "READY"}]

@@ -473,15 +473,15 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **1. 库存查询 (Inventory Query)**
 
   * **场景**: 经业务合同确认的非 `PickingTask` 消费者需要核对 WMS 权威库存事实。
-  * **能力**: 使用 `wms.inventory.query_inventory@v1` 获取类型化 authority snapshot；具体 Method、Path、DTO
-    和预算以 `docs/contracts/wms-northbound-interaction-contract.md` 为唯一 wire 真源。
+  * **能力**: 通过对应业务迭代批准的 operation 和类型化 DTO 获取 authority snapshot；Method、Path、DTO、预算和业务错误
+    由该 operation 的业务合同冻结。合同未批准前不得实现具体 API。
   * **缓存策略**: 不做跨请求缓存；同一 execution 仅复用该次查询返回的 authority snapshot。
 
   **2. 库存预留 (Inventory Reservation)**
 
   * **场景**: 经业务合同确认的非 `PickingTask` 消费者需要由 WMS 锁定库存。
-  * **能力**: 使用 `wms.inventory.reserve_inventory@v1` 申请预留，使用
-    `wms.inventory.release_reservation@v1` 释放；SRS 不重复定义 Path 或 DTO。
+  * **能力**: 通过对应业务迭代批准的预留/释放 operation 申请或释放；SRS 不预设 operation identity、Path 或 DTO，
+    合同未批准前不得实现具体 API。
   * **响应**: 现有 WMS 返回 `ReservationID`，并在 WMS 侧锁定库存；WES 只保存预留引用和执行证据。
   * **释放机制**:
     * **释放请求**: 任务完成或取消时，WES 向 WMS 提交预留释放需求并保存释放引用、回执和执行证据；预留锁定与最终释放事实由 WMS 持有。
@@ -835,14 +835,14 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   | 需求能力 | Operation identity | 需求边界 |
   | --- | --- | --- |
-  | 库存查询 | `wms.inventory.query_inventory@v1` | 返回可追溯的库存 authority snapshot |
-  | 库存预留/释放 | `wms.inventory.reserve_inventory@v1` / `wms.inventory.release_reservation@v1` | 锁定、释放和过期事实由 WMS 持有 |
-  | 入库确认 | `wms.inventory.confirm_inbound@v1` | 接收已发生物理事实对应的可靠确认义务 |
-  | 出库逐项位置与整单完成 | 由北向合同冻结 | 分别接收逐料盘位置变化事实与独立任务完成事实，不得合并或双写 |
+  | 库存查询 | 由对应业务合同冻结；未冻结不实施 | 返回可追溯的库存 authority snapshot |
+  | 库存预留/释放 | 由对应业务合同冻结；未冻结不实施 | 锁定、释放和过期事实由 WMS 持有 |
+  | 入库确认 | 由对应业务合同冻结；未冻结不实施 | 接收已发生物理事实对应的可靠确认义务 |
+  | 出库逐项位置与整单完成 | 由对应业务合同冻结；未冻结不实施 | 分别接收逐料盘位置变化事实与独立任务完成事实，不得合并或双写 |
 
-  WMS 业务查询、确认和业务输入的 Method、Path、请求/响应 DTO 与错误合同只在
-  `docs/contracts/wms-northbound-interaction-contract.md` 定义；WMS 转发的 RCS/AGV/CTU wire 由 Phase 4 Transport 合同拥有。
-  SRS 不维护第二份 wire 合同。
+  `docs/contracts/wms-northbound-interaction-contract.md` 只定义 Phase 3 共享 HTTP/JSON Client 标准，不定义任何具体业务
+  wire。WMS 业务查询、确认和业务输入的 operation、Method、Path、请求/响应 DTO 与错误合同由对应业务合同拥有；WMS
+  转发的 RCS/AGV/CTU wire 由 Phase 4 Transport 合同拥有。SRS 不维护第二份 wire 合同。
 * **P9 WES 提供的接口能力 (API Capabilities Provided by P9 WES)**:
 
   **1. 执行状态查询 (Execution State Query)**

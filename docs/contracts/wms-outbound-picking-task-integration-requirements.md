@@ -120,7 +120,7 @@ WMS Business Event 使用 `operation + request_id + data.event_id` 建立业务�
 
 | HTTP 状态 | 使用场景 | 响应信封中的典型 `code` |
 | --- | --- | --- |
-| `200 OK` | 同步决定、重复请求、GET 结果查询 | `START_GRANTED`、`DECIDED`、`DUPLICATE`、`FOUND` |
+| `200 OK` | 同步决定、Event/Fact 重复请求、GET 结果查询 | `START_GRANTED`、`DECIDED`、`DUPLICATE`、`FOUND` |
 | `202 Accepted` | Event 或 Fact 首次可靠接纳 | `RECEIVED` |
 | `400 Bad Request` | JSON 或统一 Envelope 无法解析 | `REJECTED` |
 | `404 Not Found` | GET 查询的 `request_id` 不存在 | `NOT_FOUND` |
@@ -201,16 +201,18 @@ Payload 字段。
 }
 ```
 
-调用方同时读取 HTTP 状态与 `code`：HTTP 状态表达传输和协议处理结果，`code` 表达接收或业务决定。消息首次接纳返回
-`202 / RECEIVED`；相同 `request_id` 和相同 Payload 重放返回 `200 / DUPLICATE`，接收方复用原处理结果；相同
-`request_id` 与不同 Payload 返回 `409 / CONFLICT`。瞬时背压返回 `429 / BUSY`，调用方稍后使用原身份重试。
+调用方同时读取 HTTP 状态与 `code`：HTTP 状态表达传输和协议处理结果，`code` 表达接收或业务决定。Event/Fact 首次接纳
+返回 `202 / RECEIVED`；相同 ID 和相同 Payload 重放返回 `200 / DUPLICATE`，且不重复产生副作用。同步决定请求以对应
+operation 的决定请求 ID 幂等；同 ID 和相同 Payload 重放时必须返回首次产生的完整决定响应（包括原 `code`、`data` 和
+决定版本），不得降级为通用 `DUPLICATE` ACK。任一类型的同 ID 与不同 Payload 均返回 `409 / CONFLICT`。瞬时背压返回
+`429 / BUSY`，调用方稍后使用原身份重试。
 
-### 4.3 通用接收 ACK
+### 4.3 Event/Fact 通用接收 ACK
 
 | `code` | 含义 |
 | --- | --- |
 | `RECEIVED` | 首次可靠接收并持久化 |
-| `DUPLICATE` | 相同业务 ID 和相同 Payload 已接收，复用原处理结果 |
+| `DUPLICATE` | 相同业务 ID 和相同 Payload 已接收，不重复产生副作用 |
 | `REJECTED` | envelope、operation 或 DTO 校验失败，本次消息未形成有效业务输入 |
 | `CONFLICT` | 相同业务 ID 对应不同 Payload |
 | `BUSY` | 瞬时背压，消息尚未接纳；返回 `retryable=true`、`retry_after_ms` 和 HTTP `Retry-After` |
@@ -486,6 +488,10 @@ WES 只有收到 `START_GRANTED` 后才进入 `EXECUTING`，并创建任务专�
 
 不可启动时返回 `START_REJECTED` 和封闭 `reason_code`。同一 `start_request_id` 重复提交返回同一锁代际和同一决定；
 `START_WAIT` 需要重新求值时使用新的 `start_request_id` 并通过 `previous_decision_id` 关联上一决定，原响应保持不可变。
+
+收到 `START_WAIT` 后，WES 将任务从 `STARTING` 返回 `QUEUED`，持久化 `decision_id`、`queue_action` 和
+`retry_after_ms`，且不创建任务专属物理动作。`HOLD_QUEUE` 保持该任务为队首候选；`TRY_NEXT` 只授权本次尝试总序中的
+下一张任务，被跳过的原任务仍保持 `QUEUED`，后续重新求值必须取得新的决定。
 
 ## 10. 逐盘扫码决定
 
@@ -881,7 +887,8 @@ WMS 对本地执行完成事实返回通用接收 ACK。后续任务和运输指
 
 ## 16. 幂等、版本与失败恢复
 
-- 同一请求/事件/事实 ID 和相同 Payload 重发时，接收方返回 `DUPLICATE` 并复用原处理结果。
+- 同一 Event/Fact ID 和相同 Payload 重发时，接收方返回 `DUPLICATE` 且不重复产生副作用。
+- 同一同步决定请求 ID 和相同 Payload 重发时，接收方返回首次产生的完整决定响应，不得用通用 ACK 丢失决定内容。
 - `BUSY` 表示消息仍在调用方一侧待提交；调用方按 `retry_after_ms` 使用原身份重试，直到获得稳定接收结果。
 - 同一 ID 对应不同 Payload 时，接收方返回 `409 / CONFLICT` 并保留最初接纳的内容。
 - PickingTask 同一 `task_version` 保持原始 Payload 不变；队列参数更新使用独立 `queue_revision`。
@@ -913,14 +920,15 @@ WMS 对本地执行完成事实返回通用接收 ACK。后续任务和运输指
 | WMS 下发不同工作线任务 | 不同工作线可并行启动 |
 | 同线队首任务尚未到 `not_before` | 保持当前总序；收到 WMS `TRY_NEXT` 后尝试下一任务 |
 | 同一 Event 重复提交 | 返回 `DUPLICATE`，任务数量保持不变 |
+| 同一同步决定请求重复提交 | 返回首次产生的完整决定响应，决定内容和版本不变 |
 | 同一 ID 不同 Payload | 返回 `CONFLICT` |
 | WMS Event 携带设备身份字段 | 返回 `422 / WMS_EVENT_DEVICE_FIELD_FORBIDDEN`，由 WMS 修正 Payload 后重提 |
 | PickingTask 误投 `/api/v1/callback/event` | 设备入口返回 `4xx`，WMS 改投 `/api/v1/wms/events` |
 | 正常 WMS Event 接入 | 准入 Handler 建立 WMS 业务上下文并原子持久化 PickingTask，运行时随后异步推进执行 |
 | 工作线接收队列瞬时已满 | 返回 `429 / BUSY` 和 `Retry-After`，WMS 使用原身份重试 |
 | 启动前 Cell 可锁定 | 返回 `START_GRANTED` 后 WES 才创建任务专属物理动作 |
-| 启动暂时等待且 `HOLD_QUEUE` | 保持当前候选，后续任务继续等待 |
-| 启动暂时等待且 `TRY_NEXT` | 按 WMS 显式授权尝试总序中的下一张任务 |
+| 启动暂时等待且 `HOLD_QUEUE` | 当前任务回到 `QUEUED` 并保持队首，不创建任务专属物理动作 |
+| 启动暂时等待且 `TRY_NEXT` | 当前任务回到 `QUEUED`；仅本次尝试总序下一任务，原任务不丢失 |
 | 料盘 NG 且 Cell 可继续 | 当前盘进入 NG 区后继续当前 Cell |
 | Cell NG | 当前 Cell 关闭；同 Bin 其他 Cell 继续；Bin 最终进入 NG 出口 |
 | Bin NG | 整箱所有 Cell 停止执行并进入 NG 出口 |

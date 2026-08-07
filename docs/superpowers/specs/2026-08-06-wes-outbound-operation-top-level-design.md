@@ -314,7 +314,7 @@ CTU 投箱必须同时满足：
 | 状态 | 关键不变量 | 主要迁移 |
 | --- | --- | --- |
 | `QUEUED` | 任务已接纳，尚未取得有效启动锁 | `STARTING`、`CANCELLING` |
-| `STARTING` | 请求 WMS 原子锁定初始 Cell；授权前不创建任务专属物理动作 | `EXECUTING`、`PAUSED`、`CANCELLING` |
+| `STARTING` | 请求 WMS 原子锁定初始 Cell；授权前不创建任务专属物理动作 | `QUEUED`、`EXECUTING`、`PAUSED`、`CANCELLING` |
 | `EXECUTING` | 原始载荷不可变；成员只可由 WMS 补充事件追加；只聚合 Cell 状态 | `PAUSED`、`CANCELLING`、`EXECUTION_COMPLETED` |
 | `PAUSED` | 保留已完成 Cell 和稳定事实；不猜测未知结果 | WMS 明确恢复后回到 `EXECUTING`，或 `CANCELLING` |
 | `CANCELLING` | 停止创建新 Cell/料盘动作；等待任务取消业务决定闭合 | `CANCELLED` |
@@ -324,6 +324,10 @@ CTU 投箱必须同时满足：
 队列参数变更通过独立带版本事件表达，不改写 PickingTask 原始载荷。同一工作线只执行一张任务，WES 只处理 WMS
 `dispatch_sequence` 总序中的首个未开始任务；不同工作线可以并行。队首任务尚未达到 `not_before` 时保持等待，不得越过；
 只有 WMS 返回显式 `TRY_NEXT` 授权时，WES 才可尝试总序中的下一任务。
+
+WMS 返回 `START_WAIT` 时，当前任务从 `STARTING` 回到 `QUEUED`，并持久化该决定的 `decision_id`、`queue_action` 和
+`retry_after_ms`。`HOLD_QUEUE` 保持当前任务为队首候选；`TRY_NEXT` 仅授权本次尝试下一张任务，被跳过的任务仍留在队列中，
+不得创建任何任务专属物理动作。
 
 ### 10.2 本地执行完成条件
 
@@ -359,7 +363,7 @@ AND 不存在未决 NG / 来源恢复决定
 - 三段缓存具备下一任务准入所需容量，且不存在位置冲突。
 - 未闭合的运输/清场义务不会与下一任务争用相同物理资源。
 
-`PickingTask COMPLETED` 与下一任务准入可以异步发生。任务完成不能绕过工作线资源门直接启动下一任务，也不得为此
+`PickingTask EXECUTION_COMPLETED` 与下一任务准入可以异步发生。本地执行完成不能绕过工作线资源门直接启动下一任务，也不得为此
 新建承载全部动态状态的通用 Session。
 
 ## 11. 异常、暂停与取消
@@ -462,6 +466,8 @@ Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `doc
 | WMS Event 正常接入与错误入口 | 正常请求通过 `/api/v1/wms/events` 建立 WMS 业务上下文；设备字段或设备入口返回合同拒绝 |
 | WMS 提前下发同线多任务 | 全部可靠排队，同线只启动一张；不同线任务可并行 |
 | 同线队首任务尚未到 `not_before` | 保持当前总序；收到 WMS 显式 `TRY_NEXT` 授权后尝试下一任务 |
+| WMS 返回 `START_WAIT / HOLD_QUEUE` | 当前任务回到 `QUEUED` 并保持队首；不创建任务专属物理动作 |
+| WMS 返回 `START_WAIT / TRY_NEXT` | 当前任务回到 `QUEUED`；仅本次可尝试总序下一任务，原任务不丢失 |
 | 可选 `RACK_SLOT` 来源 | 作为单盘 `CellExecution` 参与任务聚合，不把退料货架生命周期写入 PickingTask |
 | Cell 集合缺项、重复或 locator 非法 | 整单拒绝，不部分接纳 |
 | 启动锁代际不匹配 | 不创建执行动作或运输义务，等待 WMS 修正 |
@@ -483,10 +489,10 @@ Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `doc
 | 同一证据出现多个终局决定 | 失败关闭并上报合同冲突，不选择任一结果推进 |
 | WMS 超时或结果无法关联 | 当前扫码台保持占用，不解释为 NG、继续或 Cell 完成 |
 | WMS 授权目标面从 A 切到 B | 目标面代际递增且旧面无未决动作后执行旋转；切换后拒绝 A 面目标和旧代际 |
-| 全部初始与补充 Cell 完成且无未决恢复 | PickingTask 进入 `COMPLETED`，不读取 Rack/Bin/Transport/WorkLine 状态 |
-| 逐盘事实尚未被 WMS 接受 | 任务完成通知义务保持依赖等待，不越过逐盘确认 |
-| PickingTask 已完成但 CTU 尚在退箱 | PickingTask 不回退；当前 Epoch 下的设备/位置投影和活动对象独立决定下一任务准入 |
-| Transport 或清场失败 | 产生对应对象异常，不篡改已完成 PickingTask |
+| 全部初始与补充 Cell 完成且无未决恢复 | PickingTask 进入 `EXECUTION_COMPLETED` 本地执行投影，不读取 Rack/Bin/Transport/WorkLine 状态 |
+| 逐盘事实尚未被 WMS 接受 | 本地执行完成通知义务保持依赖等待，不越过逐盘确认 |
+| PickingTask 本地执行已完成但 CTU 尚在退箱 | PickingTask 执行投影不回退；当前 Epoch 下的设备/位置投影和活动对象独立决定下一任务准入 |
+| Transport 或清场失败 | 产生对应对象异常，不篡改已完成的 PickingTask 本地执行投影 |
 
 ## 15. 当前评审状态
 

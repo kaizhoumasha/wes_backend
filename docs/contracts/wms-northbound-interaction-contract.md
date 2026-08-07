@@ -32,7 +32,7 @@ Phase 3 提供一个类似前端 Axios/API Client 的 `WmsClient`，统一 WES �
 - 接收 relative path、query、headers 和 JSON body。
 - 将 GET/POST 映射为 `OutboundHttpRequest`。
 - 对标准 JSON 值做一次严格 UTF-8 编码，对完整响应做一次严格 JSON 解码，并区分空响应与 JSON `null`。
-- 通过不可变 `WmsAccessResult` 保留 HTTP status、response headers、`delivery_state`、`failure_kind` 和 JSON 解码事实。
+- 通过字段冻结的 `WmsAccessResult` 保留 HTTP status、response headers、`delivery_state`、`failure_kind` 和 JSON 解码事实。
 - 提供显式且幂等的 `aclose()`。
 
 每个运行时/事件循环 owner 构造并长期复用自己的 WMS Client，不得跨事件循环共享；单次业务调用不得创建新的 HTTP
@@ -71,8 +71,8 @@ Client。Phase 3 不接入生产 Composition Root，真实 FastAPI/Celery owner 
 
 - 收到完整响应时，返回 status、headers、`body_present`、`json_failure` 和解码后的 JSON；非 2xx 不自动变成业务异常。
 - 空响应返回 `body_present=False`、`json_body=None`；JSON `null` 返回 `body_present=True`、`json_body=None`。
-- `json_body` 递归只读：JSON object 表达为只读 Mapping，JSON array 表达为 tuple；业务 DTO 可直接使用
-  `model_validate(...)` 校验，不得在访问结果上原地修改 WMS 响应。
+- `json_body` 使用标准 JSON 值（object 为 `dict`，array 为 `list`），业务 DTO 可直接使用严格
+  `model_validate(...)` 校验；业务代码校验后只使用 DTO，不在访问结果上原地修改 WMS 响应。
 - 非空响应只做一次严格 UTF-8/RFC 8259 解码；纯空白 body、非法 UTF-8、非法 JSON 和非标准
   `NaN`/`Infinity` 分别设置 `json_failure=INVALID_UTF8` 或 `INVALID_JSON`，同时保留 status、headers 和交付事实。
 - 响应 Content-Type 不参与共享 Client 解码；具体 API 若要求严格 media type，由自己的业务合同验证。

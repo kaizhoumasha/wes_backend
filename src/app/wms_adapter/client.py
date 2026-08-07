@@ -6,7 +6,6 @@ import json as json_module
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Literal
 
 from src.core.outbound_http import (
@@ -19,8 +18,7 @@ from src.core.outbound_http import (
     OutboundHttpTransport,
 )
 
-type _JsonInputValue = None | bool | int | float | str | list[_JsonInputValue] | dict[str, _JsonInputValue]
-type _JsonValue = None | bool | int | float | str | tuple[_JsonValue, ...] | Mapping[str, _JsonValue]
+type _JsonValue = None | bool | int | float | str | list[_JsonValue] | dict[str, _JsonValue]
 type _JsonFailure = Literal["INVALID_UTF8", "INVALID_JSON"]
 
 _MISSING = object()
@@ -103,7 +101,7 @@ class WmsClient:
         self,
         path: str,
         *,
-        json: _JsonInputValue,
+        json: _JsonValue,
         query: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> WmsAccessResult:
@@ -188,20 +186,9 @@ def _decode_result(result: OutboundHttpResult) -> WmsAccessResult:
             parse_float=_parse_finite_json_float,
             parse_constant=_reject_nonstandard_json_constant,
         )
-        frozen_json_body = _freeze_json(json_body)
     except (json_module.JSONDecodeError, ValueError, RecursionError):
         return _as_access_result(result, body_present=True, json_body=None, json_failure="INVALID_JSON")
-    return _as_access_result(result, body_present=True, json_body=frozen_json_body, json_failure=None)
-
-
-def _freeze_json(value: object) -> _JsonValue:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, list):
-        return tuple(_freeze_json(item) for item in value)
-    if isinstance(value, dict):
-        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
-    raise TypeError("decoded JSON contains an unsupported value")
+    return _as_access_result(result, body_present=True, json_body=json_body, json_failure=None)
 
 
 def _reject_nonstandard_json_constant(value: str) -> None:
