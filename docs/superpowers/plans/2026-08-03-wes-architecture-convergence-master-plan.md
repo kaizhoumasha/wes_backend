@@ -157,16 +157,19 @@ Phase 11 最终基线与系统验收
 | --- | --- | --- | --- | --- |
 | 生产装配与调用切换 | 不接入真实 Adapter | 不修改旧 Composition Root | 不修改旧 Composition Root | 原子切换全部目标消费者并删除旧 owner |
 | Client 生命周期、连接池、Timeout、base URL | 唯一拥有 Transport | 通过 factory 构造并公开长期 `WmsClient` | 复用 Client | 装配并管理 Client 生命周期；Transport 不外露 |
-| HTTP method primitive | 拥有当前最小集合，不解释业务 | 提供 request/get/post 薄方法 | 为真实业务选择固定 method | 不改变 method 合同 |
-| WMS 业务 method/path、wire DTO、拒绝码 | 不拥有 | 不拥有 | 由具体业务模块拥有 | 只接线，不改变合同 |
+| HTTP method primitive | 拥有当前最小集合，不解释业务 | 提供 request/get/post 薄方法 | 复用薄方法，不新增业务方法 | 不改变 method 合同 |
+| WMS 业务 method/path、wire DTO、拒绝码 | 不拥有 | 不拥有 | 不拥有；由后续具体业务按已批准合同逐项实现 | 仅切换届时已验收的真实消费者 |
 | WMS 转发 RCS method/path、wire DTO、状态/取消 | 不拥有 | 不拥有 | Transport Adapter 唯一目标 owner | 只接线，不改变合同 |
 | WMS outbound 认证 | 不拥有、不预留 | 当前仅 `NONE`，不提供认证字段或 seam | 不可见 | 删除旧 HMAC/Profile/fallback 配置 |
 | 外部调用 evidence 与 breaker | 不拥有 | 不拥有；ACL 无状态 | 由可靠对象按实际需要持有证据；不预建通用 breaker | 删除旧 evidence/breaker 及其表 |
-| WMS 查询、业务决策、确认调用 | 不拥有 | 只提供 Client，不提供业务方法 | 随具体业务逐项实现 | 切换真实消费者到新业务模块 |
+| WMS 查询、业务决策、确认调用 | 不拥有 | 只提供 Client，不提供业务方法 | 不实现；由后续具体业务逐项实现并验收 | 切换已验收的真实消费者到对应业务模块 |
 | WMS 转发搬运调用 | 不拥有 | 不拥有 | `Transport Port` + WMS 转发 RCS Adapter | 切换真实消费者到新 Transport Port |
 | `TransportTask`/`WmsConfirmation` 生命周期 | 不拥有 | 不拥有 | 新最终对象唯一目标 owner | 接管生产流量并删除旧可靠闭包 |
 | callback ingress | 不拥有 | 不修改旧入口 | 新建最终 `InboundEvidence` 与 application port | 原子切换入口并删除旧 WMS RuntimeInbox 路径 |
 | 旧实现和旧测试 | 不修改 | 不修改、不作为新测试 oracle | 不修改，只登记 successor | 按 successor/NONE 处置并删除 |
+
+WMS 业务 API 不属于 Phase 2–4 的交付物。后续业务确有需求时，由对应的独立业务实施计划逐项拥有并验收
+method/path、wire DTO、拒绝码和业务测试；Phase 5 只切换届时已验收且确实存在的消费者，不为未发生的业务预建空接口。
 
 ### Outbound HTTP 认证裁决
 
@@ -450,16 +453,18 @@ Phase 6 只接收最终生产路径和待承接的旧测试资产。
 **Objective:** 在 Phase 3 WMS Client 与 Phase 4 最小平台/Transport Adapter 都已独立验收后，一次性迁移生产消费者和 Composition Root，
 清理开发/测试数据，并删除被替代的旧实现、旧配置和旧测试，使生产运行态只剩目标路径。
 
-**Authoritative inputs:** Phase 3 WMS Client 合同与暗构建门禁；Phase 4 具体业务 method/path/DTO/result、最终对象、接线图、旧 owner
-闭包和 successor/NONE 清单；当前生产 Composition Root、Settings、Compose/Jenkins/Celery/API callback 实际引用图。
+**Authoritative inputs:** Phase 3 WMS Client 合同与暗构建门禁；Phase 4 最终对象、Transport Adapter、接线图、旧 owner
+闭包和 successor/NONE 清单；届时已经独立业务实施计划验收的 WMS 业务消费者及其合同；当前生产
+Composition Root、Settings、Compose/Jenkins/Celery/API callback 实际引用图。
 
 **Entry conditions:** Phase 3–4 退出门禁均通过；WMS Client、Transport Port、WMS 转发 RCS Adapter 与最终
-可靠对象均稳定；所有旧生产 importer、配置键、任务路由、数据库对象和测试 owner 已逐项归类；WMS 普通 callback 的
+可靠对象均稳定；本次切换清单中的 WMS 业务消费者均已由独立业务计划实现并验收；所有旧生产 importer、
+配置键、任务路由、数据库对象和测试 owner 已逐项归类；WMS 普通 callback 的
 successor/NONE 裁决已完成，不得带未决语义进入本阶段；不存在
 需要兼容或迁移的发布数据。
 
-**Scope:** 生产 Composition Root 装配 Phase 3 WMS Client 与 Phase 4 WMS 转发 RCS Adapter；后续具体 WMS 业务模块统一
-复用该 Client。所有 WMS 业务查询、业务决策、业务确认、WMS inbound 业务命令、
+**Scope:** 生产 Composition Root 装配 Phase 3 WMS Client 与 Phase 4 WMS 转发 RCS Adapter；已验收的具体 WMS 业务模块统一
+复用该 Client。仅切换清单内已验收的 WMS 业务查询、业务决策、业务确认和 WMS inbound 业务命令消费者；
 Transport Port 消费者、普通 event callback 及核心可靠对象消费者原子切换；按 successor/NONE 清单删除旧分支；删除旧
 `src/app/wms_integration/`、Provider/Profile/Registry、旧裸 HTTP/HMAC/
 credential/fallback、WMS System Capability 和旧可靠分支；切换 Settings/Compose/Jenkins/Celery/Runbook；按 successor/NONE
