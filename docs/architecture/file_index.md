@@ -36,7 +36,7 @@
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS 业务 ACL 合同；目标态消费者矩阵、单项批准模板、范围排除项与阻断清单真源 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand 与 Adapter 边界 |
-| `docs/plugin_development_guide.md` | 插件 SPI、封闭 Decision 与独立包交付指南 |
+| `docs/plugin_development_guide.md` | 执行插件 SPI、WMS 结果到封闭 Decision 的映射与独立包交付指南 |
 | `docs/superpowers/README.md` | 当前文档生命周期与项目外归档索引 |
 
 ADR 位于 `docs/architecture/adr/`。业务输入、外部合同、运维和联调资料分别位于

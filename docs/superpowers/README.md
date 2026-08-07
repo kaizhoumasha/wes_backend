@@ -127,7 +127,7 @@
 - `docs/contracts/wms-northbound-interaction-contract.md`
 - `docs/integration/callback_event_validation_principles.md`
 
-核心合同不得定义具体厂商命令、工作线业务规则或客户流程。核心测试只验证共享传输、持久化、幂等、可靠性和
+核心合同不得定义具体厂商命令、WMS 业务规则、工作线执行映射或客户流程。核心测试只验证共享传输、持久化、幂等、可靠性和
 最小执行对象，不得以具体业务流程作为基础能力验收。
 
 ## 当前业务与外部输入

@@ -4,8 +4,8 @@
 
 ## 1. 文档定位
 
-本文只定义 WES 核心 callback ingress 的共享基础能力。厂商 Payload 由对应 Adapter 验证，具体工作线业务由插件
-验证，三者不得相互代测或越权解释。
+本文只定义 WES 核心 callback ingress 的共享基础能力。厂商 Payload 由对应 Adapter 验证，WMS 拥有业务结果，工作线插件
+只验证结果关联并映射执行，四者不得相互代测或越权解释。
 
 ## 2. 分层职责
 
@@ -36,12 +36,12 @@ Adapter 不写数据库、不调用 Repository、不决定工作线下一步，�
 
 插件只处理已由 Adapter 映射并由核心持久化的 evidence：
 
-- 校验当前工作线需要的业务字段；
-- 读取注入的只读投影和 WMS 类型化能力；
-- 执行具体业务规则；
-- 返回封闭 Decision。
+- 校验当前工作线输入和 WMS 结果的关联、版本、时效与物理可执行性；
+- 读取注入的只读投影和 WMS 类型化业务结果；
+- 将 WMS 结果映射为等待、发送、暂停、隔离或对账等封闭执行 Decision。
 
-扫码字段、料盘身份、目标料格、NG 规则和下一条设备命令都属于插件业务，不属于 callback ingress。
+扫码原始字段属于 Adapter；料盘业务身份、目标料格和 NG/等待/替代语义属于 WMS；下一条逻辑设备动作属于插件执行映射。
+这些职责都不属于 callback ingress。
 
 ## 3. ACK-before-processing
 
@@ -69,6 +69,7 @@ Adapter 不写数据库、不调用 Repository、不决定工作线下一步，�
 | --- | --- |
 | HTTP、认证、大小限制、ACK-before-persist、幂等与 evidence 可靠性 | WES 核心测试 |
 | 厂商请求 DTO、事件名称、字段、签名和错误码 | 厂商 Adapter 测试 |
-| 扫码完整性、业务 OK/NG、目标选择和后续命令 | WorkLine 插件测试 |
+| WMS 业务 OK/NG/目标结果 | Phase 3 WMS Adapter 合同测试 |
+| 结果关联、物理执行校验和后续命令映射 | WorkLine 插件测试 |
 
 核心测试不得构造具体工作线成功路径来证明 ingress；插件测试不得替代核心持久化、幂等和传输可靠性测试。

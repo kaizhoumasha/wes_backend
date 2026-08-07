@@ -3,15 +3,16 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 将 WES 核心测试收敛到 SPEC 定义的最小执行内核、通用 WorkLine 能力、外部合同和可靠性不变量；
-把具体厂商合同和具体业务插件测试从核心 `tests/` 移出，分别随独立 Adapter 包和插件包重新交付。
+把具体厂商合同和具体执行插件测试从核心 `tests/` 移出，分别随独立 Adapter 包和插件包重新交付。
 
-**Architecture:** 核心仓库、厂商 Adapter 包和业务插件包拥有三组独立测试边界。核心 `tests/` 不保存具体工作线流程、具体插件 Handler 或具体厂商映射；
+**Architecture:** 核心仓库、厂商 Adapter 包和执行插件包拥有三组独立测试边界。核心 `tests/` 不保存具体工作线流程、具体插件 Handler 或具体厂商映射；
 Adapter 使用 `device_adapters/<adapter_key>/`，插件使用 `workline_plugins/<plugin_key>/`，两者均自带 `pyproject.toml`、`src/`、`tests/` 和 `fixtures/`，
 并由各自的测试入口和 CI 验收。核心测试继续按 `FAST`、`QUALITY`、`HEAVY` 分层。
 
 测试所有权是三向隔离：核心测试不得借用具体业务或厂商场景证明基础能力；其中 Phase 2
-`tests/core/outbound_http/` 只证明公共传输基础层。Adapter 测试只证明厂商合同与标准化映射；插件测试只证明业务
-Decision 和对象推进。Adapter/插件测试都不得替代核心持久化、幂等、传输、并发和恢复不变量测试。
+`tests/core/outbound_http/` 只证明公共传输基础层。Adapter 测试只证明厂商合同与标准化映射；Phase 3 WMS Adapter 测试证明
+WMS 业务结果合同；插件测试只证明业务结果到执行 Decision 的映射和对象推进。这些测试都不得替代核心持久化、幂等、
+传输、并发和恢复不变量测试。
 
 **Tech Stack:** Python 3.13、Pytest 9、pytest-asyncio、JUnit XML、Ruff、Bandit、GitNexus、Jenkins。
 
@@ -36,7 +37,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
 
 - [x] 默认测试拓扑已拆分为 `FAST`、`QUALITY`、`HEAVY`。
 - [x] topology guardrail、FAST JUnit 预算脚本和 HEAVY selector 已建立。
-- [x] SPEC 已明确核心、厂商 Adapter 与业务插件测试的独立所有权边界。
+- [x] SPEC 已明确核心、WMS/厂商 Adapter 与执行插件测试的独立所有权边界。
 - [x] 插件包物理结构确定为 `workline_plugins/<plugin_key>/{pyproject.toml,src,tests,fixtures}`。
 - [x] Adapter 包物理结构确定为 `device_adapters/<adapter_key>/{pyproject.toml,src,tests,fixtures}`。
 
@@ -60,7 +61,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
 5. 测试处置只使用四种语义：
    - `CORE_REWRITE`：证明通用 WES 不变量，改写到最终核心对象后保留；
    - `ADAPTER_OWNED`：证明具体厂商 DTO、协议、Payload、原始码或映射，从核心删除，随 Adapter 包重建；
-   - `PLUGIN_OWNED`：证明具体工作线或业务插件行为，从核心删除，随插件包重建；
+   - `PLUGIN_OWNED`：证明具体工作线执行映射或执行插件行为，从核心删除，随插件包重建；
    - `LEGACY_DELETE`：只证明旧 Runtime、Manifest、Capability、Intent/Effect、Hold、Recovery、Reservation、旧迁移或兼容入口，直接删除。
 6. 不建立 CSV 迁移矩阵。删除提交或 PR 描述记录分类与所有权；不得按 `legacy`、`replay`、`reconciliation` 等关键词批量删除。
 7. `tests/workline_plugins/` 必须不存在；核心测试不得 import 根目录二次开发插件包或核心源码中的具体插件实现。
@@ -77,7 +78,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
 
 | 测试层 | 唯一职责 | 不得承担 |
 | --- | --- | --- |
-| 核心领域单元测试 | 执行对象、WorkLine/Epoch、投影和可靠性状态转移 | 具体插件业务决策 |
+| 核心领域单元测试 | 执行对象、WorkLine/Epoch、投影和可靠性状态转移 | WMS 业务决策或具体插件执行映射 |
 | Phase 2 Outbound HTTP 单元测试 | `tests/core/outbound_http/` 以 `httpx.MockTransport` 和测试内 local fake 验证生命周期、请求装配、受限响应、传输事实分类和脱敏日志 | 真实外部系统、厂商 DTO/canonical/Header/认证、业务拒绝、重试/终态/恢复和大规模 E2E |
 | 共享合同测试 | ECS/WMS/RCS 共享 DTO、认证、幂等、ACK/CALLBACK、错误映射 | 具体厂商 Payload 和工作线流程 |
 | API 测试 | route、权限、请求响应、Service facade | Repository、插件决策和完整编排 |
@@ -102,7 +103,7 @@ Adapter 包唯一拥有：
 - 厂商合同 fixture、Mock、集成、E2E 和韧性场景；
 - 标准化角色事件与逻辑动作的映射验收。
 
-Adapter 不得拥有工作线业务 Decision、对象推进或具体业务流程。
+厂商 Adapter 不得拥有 WMS 业务 Decision、工作线执行映射、对象推进或具体业务流程。
 
 ### 3.3 二次开发插件包
 
@@ -333,7 +334,7 @@ Task 5 完成前：
 - [x] 核心 `tests/workline_plugins/` 不存在。
 - [ ] 核心测试不导入任何具体工作线插件或根目录二次开发插件包。
 - [ ] 核心测试不导入任何具体厂商 Adapter 或根目录 `device_adapters` 二次开发包。
-- [ ] 核心测试中不存在粗分机、自动分拣、人工分拣、满箱交换或复杂出库的业务规则断言。
+- [ ] 核心测试中不存在粗分机、自动分拣、人工分拣、满箱交换或复杂出库的 WMS 业务规则或插件执行映射断言。
 - [ ] 只验证旧平台、旧兼容、旧迁移和旧 revision chain 的测试归零。
 - [ ] 当前已交付 Adapter/插件包的代码、测试和 fixture 同包存在，并分别独立通过测试。
 - [ ] 核心默认快速回归、QUALITY、受影响核心 HEAVY 和完整质量门禁全部通过。
@@ -357,7 +358,7 @@ rtk ./scripts/git-quality-gate.sh --profile quality
 每个删除提交或 PR 描述必须包含：
 
 - 逐文件处置：`REWRITE`、`DELETE → <successor test>` 或 `DELETE → NONE + 理由`；厂商合同移交标注
-  `ADAPTER_OWNED`，业务插件移交标注 `PLUGIN_OWNED`，旧实现删除标注 `LEGACY_DELETE`；
+  `ADAPTER_OWNED`，执行插件移交标注 `PLUGIN_OWNED`，旧实现删除标注 `LEGACY_DELETE`；
 - 删除范围；
 - successor 必须先在最终对象上通过，才能删除旧测试；`NONE` 必须说明该测试只验证何种已删除实现；
 - 未来唯一所有者，例如 `device_adapters/<adapter_key>/tests/` 或

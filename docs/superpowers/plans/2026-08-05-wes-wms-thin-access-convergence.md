@@ -20,6 +20,7 @@ Anti-Corruption Layer；不实现或承载 WMS 转发的 RCS/AGV/CTU Transport �
 Phase 3 只暗构建 WMS 业务 ACL：
 
 - WMS 权威业务事实查询。
+- WES 请求、WMS 返回的 operation-specific 封闭业务决策结果。
 - WES → WMS `PickingTask` 来源绑定请求与业务事实通知。
 - WMS → WES 业务命令的 DTO 与无状态校验/标准化。
 - 固定 method/path、严格 DTO、请求编码、响应解析和单次结果翻译。
@@ -27,6 +28,10 @@ Phase 3 只暗构建 WMS 业务 ACL：
 
 每项公开能力必须有已批准的目标态消费者；“消费者”不要求已接入当前生产源码，但必须能定位到目标阶段、组件和调用时机。
 厂商初稿有接口但目标态业务无消费者时，不实施。
+
+权限不变量只有一条：WMS 给出全部业务结果，WES 只做执行决策。执行决策仅包括合同/关联/时效/物理可执行性校验，
+以及基于设备状态、并发、deadline、安全和终态 evidence 决定等待、发送、暂停、隔离或对账；不得改变 WMS 给出的来源、
+目标、优先级、路线、NG/等待/替代、取消、恢复或业务终态。结果缺失、过期、矛盾或不可执行时 fail closed。
 
 ### 1.2 Phase 3 不是什么
 
@@ -37,7 +42,7 @@ Phase 3 不包含：
 - `WmsConfirmation`、`InboundEvidence` 的持久化和业务生命周期。
 - 数据库表、Repository、Service、Alembic Migration、调用 evidence 或 Circuit Breaker。
 - retry、scanner、claim、fencing、reconciliation 生命周期或投影推进。
-- WorkLine Decision、设备命令、厂商 Payload 或生产 Composition Root 接线。
+- WES 本地业务规则或业务 Decision、设备命令、厂商 Payload 或生产 Composition Root 接线。
 - 旧 Provider/Profile/Registry、兼容 alias、fallback、双读、双写或 shadow request。
 
 即使搬运 HTTP 最终发给 WMS，只要语义是 WMS 转发 RCS，仍属于 Phase 4 Transport，而不是 Phase 3 WMS ACL。
@@ -47,7 +52,7 @@ Phase 3 不包含：
 | 阶段 | 向 Phase 3 提供 / 从 Phase 3 接收 |
 | --- | --- |
 | Phase 2 | 提供单次发送、长期 Client、有界响应和传输事实；不提供 WMS 业务解释 |
-| Phase 3 | 提供类型化 WMS Query、Picking Source Binding、Confirmation Port、inbound DTO/normalizer 和封闭单次调用结果 |
+| Phase 3 | 提供类型化 WMS Query、operation-specific Business Decision、Confirmation Port、inbound DTO/normalizer 和封闭单次调用结果 |
 | Phase 4 | 直接消费 Phase 2 构建 WMS 转发 RCS Adapter；消费 Phase 3 三条业务端口构建 `WmsConfirmation` 与 `InboundEvidence` 可靠 owner |
 | Phase 5 | 原子切换生产消费者和 Composition Root，删除旧 WMS/Transport owner；不保留双轨 |
 
@@ -61,7 +66,7 @@ Composition Root
   ├─ Phase 3 outbound factory（每个进程构造一次，system_id 固定为 "wms"）
   │    └─ HttpWmsGateway（拥有并私有持有 Transport）
   │         ├─ WmsBusinessQueryPort
-  │         ├─ WmsPickingSourceBindingPort
+  │         ├─ WmsBusinessDecisionPort
   │         ├─ WmsBusinessConfirmationPort
   │         └─ aclose() → OutboundHttpTransport.aclose()
   └─ WmsInboundNormalizer（独立纯解析对象；无 origin、Transport 或 aclose）
@@ -78,15 +83,18 @@ Phase 3 不再维护固定“33 项 operation”目标。能力清单只来自
 
 1. 一项能力对应至少一个目标态业务消费者，并登记目标阶段、具体组件和调用时机；只写“SRS 场景”不算消费者。
 2. 同一业务事实只允许一个主要 wire owner。
-3. 查询只返回 WMS 权威事实，不用于为 `PickingTask` 拼装、锁定或重新分配来源，也不建立本地主数据同步。
-4. `request_picking_source_bindings` 只请求 WMS 原子生成完整来源绑定；WMS 拥有库存资格、库存锁、料格冻结和跨任务分配。
+3. 查询只返回 WMS 权威事实，并且只能服务于展示、追溯或纯执行校验；不得由 WES 组合为来源、目标、优先级、路线、
+   NG/等待/替代或业务终态。
+4. 所有业务决策使用显式 operation-specific 方法请求 WMS 返回封闭结果；`request_picking_source_bindings` 只是其中一个，
+   WMS 拥有库存资格、库存锁、料格冻结和跨任务分配。
 5. 确认只提交已发生物理事实或明确业务义务，不隐式触发 Transport；逐项位置事实与整单完成事实不得合并或双写。
 6. 未获 WMS 批准的 wire 保持缺席，不用占位 DTO、generic payload 或旧实现补全。
 
 当前保留候选分为四类：
 
-- 权威事实查询：物料、货架、料箱、GRN/Package、库存和预留。
-- 来源绑定请求：`STARTING` 的 PickingTask 请求 WMS 返回完整原子来源绑定或明确无完整方案。
+- 权威事实查询：仅供展示、追溯或纯执行校验的物料、货架、料箱、GRN/Package、库存和预留。
+- 业务决策请求：粗分准入、粗分目标料格，以及 `STARTING` PickingTask 完整原子来源绑定或明确无完整方案；Task 1
+  继续盘点并替换当前态文档中残留的其他 WES 本地业务判定。
 - 业务确认：预留/释放、入库、非 PickingTask 库存转移、PKG 绑定、来源 NG、逐项位置完成、PickingTask 完成、人工工作位就绪。
 - 业务输入：PickingTask 目标项创建/更新、原子替代来源批次或明确无完整替代方案、恢复/取消，以及人工作业完成。
 
@@ -148,8 +156,8 @@ Phase 3 的目标公开面包含三条职责互斥的 outbound 业务端口；�
 不得预建空 Protocol：
 
 - `WmsBusinessQueryPort`：读取 WMS 权威事实，不产生副作用。
-- `WmsPickingSourceBindingPort`：只暴露语义 operation `request_picking_source_bindings`，请求 WMS 为 `STARTING`
-  PickingTask 原子生成完整来源绑定。
+- `WmsBusinessDecisionPort`：通过 operation-specific 显式方法请求 WMS 给出封闭业务结果；包含
+  `request_picking_source_bindings`，但不提供 generic `decide` 或通用 payload。
 - `WmsBusinessConfirmationPort`：提交同步业务确认，不拥有可靠义务生命周期。
 
 `request_picking_source_bindings` 的成功结果必须精确覆盖全部目标任务项，每项携带完整 SixInOne 和唯一 `PkgID`；
@@ -189,8 +197,8 @@ Phase 3 的 outcome 只表达本次调用事实，并完整保留 Phase 2 `deliv
 - 已收到响应但响应阶段读取、协议、大小或清理失败。
 - 已完整收到响应，但状态码、正文或 DTO 不符合获批合同。
 
-Outcome 不决定 retry、dependency pause、terminal 或投影变化。Phase 4 可靠对象根据 Phase 2 交付事实、Phase 3
-业务结果和自身持久化状态作出裁决。
+Outcome 不决定 retry、dependency pause 或投影变化。Phase 4 可靠对象根据 Phase 2 交付事实和自身持久化状态作出执行裁决；
+对于已收到且合同有效的 WMS 业务结果，只能校验关联、时效和物理可执行性后严格执行，不得重算或替换业务语义。
 
 单次调用分支必须保持封闭：
 
@@ -221,13 +229,17 @@ Outcome 不决定 retry、dependency pause、terminal 或投影变化。Phase 4 
 
 - [x] 撤销“33 项固定 surface”和 Phase 3 READY 结论。
 - [x] 将 WMS 转发 RCS 的 submit/status/cancel 全部移交 Phase 4。
-- [x] 删除 reconciliation、通用 load-unit transport、复合粗分 admission 和错误方向的 manual task 候选。
+- [x] 删除 reconciliation、通用 load-unit transport、旧复合粗分 admission wire 和错误方向的 manual task 候选；粗分业务
+  决策按真实消费者重新批准，不兼容旧 operation。
 - [x] 为保留、条件保留和排除能力登记候选消费者及 successor/`NONE`。
 - [x] 冻结 PickingTask 只含目标项、STARTING 原子来源绑定、WMS 库存权威、逐项位置事实与整单完成独立、替代批次原子语义。
-- [ ] 将每个候选消费者补全为目标阶段、具体组件和调用时机；由业务方确认库存查询、reserve/release、transfer 的真实
-  目标态消费者及原子边界，无法定位者删除候选能力。
-- [ ] 为每个需要组合多项 WMS 事实的消费者冻结一致性合同：优先使用 WMS 提供的共同 snapshot/version；若 WMS 不提供，
-  必须明确可接受的读取顺序、有效窗口和 fail-closed 条件。不得以复合 WMS 准入决策接口替代 WES 本地规则。
+- [x] 冻结最高权限不变量：所有业务决策由 WMS 返回封闭结果，WES 只作执行决策；禁止本地规则、兼容模式或通用决策引擎。
+- [x] 盘点当前态权威文档并清除 WES/插件拥有来源、目标、优先级、路线、NG/等待/替代或业务终态的旧表述；真实代码
+  中的本地业务判定只登记为 Phase 5/7 直接替换边界，本阶段不修改生产实现。
+- [ ] 为每项 WMS 业务决策补全目标阶段、具体组件、调用时机和封闭 result；同时确认 inventory
+  query/reserve/release/transfer 的真实消费者及原子边界，无法定位者删除候选能力。
+- [ ] 业务结论需要多项 WMS 事实时，改为一个 WMS operation-specific 决策结果；只有纯执行校验确需组合多项事实时，
+  才冻结共同 snapshot/version，或获批读取顺序、有效窗口和 fail-closed 条件。
 - [ ] 为每个列表或批量 request/result 冻结最大项数、最大编码/wire/decoded 字节数和超限语义；outbound response 预算
   通过 Phase 2 `OutboundHttpResponseLimits` 逐请求执行。Phase 2 的 2 MiB wire / 4 MiB decoded 是默认值而非硬上限；
   operation 若需更高预算，必须由 WMS/业务方明确批准数值和理由。确需分页时先修订业务合同，本阶段不预建分页 seam。
@@ -275,11 +287,12 @@ Phase 3 最终退出仍要求所有保留能力均已通过门禁并实施；无
 - 查询不得用于 PickingTask 来源选择、库存锁、料格冻结或跨任务分配。
 - 测试以 WMS 批准的版本化 fixture/schema 证明 DTO/wire，不测试 WorkLine 决策或库存算法。
 
-### Task 4：实现获批来源绑定与业务确认
+### Task 4：实现获批业务决策与业务确认
 
-- 以独立 `WmsPickingSourceBindingPort` 实现 `request_picking_source_bindings`；不并入 Query 或 Confirmation Port。
-- 只翻译完整原子来源绑定或无完整方案，不决定 `WAITING_STOCK`、目标架调度或业务推进。
-- 每项来源绑定或同步业务确认先独立通过单项能力批准门禁；不等待其他无关能力获批。
+- 以 `WmsBusinessDecisionPort` 的 operation-specific 显式方法实现粗分准入、粗分目标料格和
+  `request_picking_source_bindings` 等已获批决策；不并入 Query 或 Confirmation Port，也不暴露 generic `decide`。
+- 只翻译 WMS 封闭结果；不在 Phase 3 决定 `WAITING_STOCK`、目标架调度或业务推进。
+- 每项业务决策或同步业务确认先独立通过单项能力批准门禁；不等待其他无关能力获批。
 - 每个方法在 Task 2 Gateway 上只负责 DTO、固定 wire 和结果翻译。
 - 批量 request/result 采用与 Task 3 相同的编码前、Transport 读取期和解码后分层预算，不把 Phase 2 默认值误当业务批准值。
 - 逐项位置通知与 `confirm_picking_completed` 分别建模；不复用 `transfer_inventory` 双写同一事实。
@@ -341,6 +354,10 @@ Phase 3 最终退出仍要求所有保留能力均已通过门禁并实施；无
   它不是旧 wire 的兼容要求。
 - 当前 `src/app/wms_integration/` 的 Provider/Registry/evidence/breaker/生命周期只用于 Phase 5 删除闭包分析，不复用源码、
   类型、fixture 或测试作为新 ACL 模板。
+- 当前 `BarcodeDecisionService.evaluate` 与 `runtime/workline_plugins/rough_sorter/handlers.py::decide` 仍包含本地业务判定，
+  与目标权限不变量冲突，只作为 Phase 5/7 直接替换清单，不得迁移到新插件或 Phase 3 ACL。
+- 当前 `DeviceDispatchPolicy.evaluate` 只根据设备状态、并发、deadline 和执行会话状态返回发送/等待/暂停结果，可作为
+  “执行决策不改变业务结果”的代码形态证据；它不构成 Phase 3 依赖，也不自动获得目标实现保留资格。
 
 ## 9. NOT in scope
 
@@ -356,8 +373,9 @@ Phase 3 最终退出仍要求所有保留能力均已通过门禁并实施；无
 
 Task 1 的跨能力门禁仍有以下阻断，因此当前不得启动代码或测试：
 
-- 库存 query/reserve/release/transfer 的目标阶段、具体消费者、调用时机和原子边界尚未全部确认。
-- 多项 WMS 权威事实的共同 snapshot/version 或 fail-closed 一致性合同尚未冻结。
+- 当前态业务场景中的 WMS 决策 operation 尚未全部盘点，库存 query/reserve/release/transfer 的具体消费者、调用时机和
+  原子边界也未全部确认。
+- 纯执行校验所需多项 WMS 权威事实的共同 snapshot/version 或 fail-closed 一致性合同尚未冻结；业务判定不得使用该路径。
 - 列表/批量 request/result 的最大项数、编码/wire/decoded 字节预算和超限语义尚未冻结。
 
 Task 1 关闭后，下列未决事项只阻断各自能力及 Phase 3 最终退出，不阻断其他已获批能力进入 TDD：
@@ -379,9 +397,10 @@ Task 1 关闭后，下列未决事项只阻断各自能力及 Phase 3 最终退�
 - Inbound callback 的隔离局域网 `NONE` 与原始 body 上限由 Phase 4 API ingress 独立拥有，未被 outbound 配置或 Phase 3
   normalizer 混入。
 - Inbound normalizer 独立于 outbound origin、Gateway、Transport 和关闭生命周期。
-- 来源绑定的 wire、可靠状态和插件业务校验各有唯一 owner，测试互不替代。
+- WMS 决策 wire、可靠状态和插件执行校验各有唯一 owner，测试互不替代。
 - WMS 权威查询的 version/time/provenance 字段有真实来源，不伪造外部版本或时间。
-- 多事实消费者有获批的一致性合同；列表和批量 request/result 有分层数量/字节预算与超限语义；outbound response
+- 纯执行多事实校验有获批的一致性合同；业务结果由单个 WMS operation 返回；列表和批量 request/result 有分层数量/字节
+  预算与超限语义；outbound response
   通过 Phase 2 primitive 执行 operation 获批预算，不把基础层默认值误写成业务合同或硬上限。
 - 每项实现均由 WMS 批准的版本化机器可读 fixture/schema 提供独立 wire 真源；MockTransport 只驱动测试。
 - 所有保留能力均已独立获批并实施；未获批或无可定位消费者的候选能力已经删除，不保留占位。
@@ -404,19 +423,19 @@ Task 1 纯文档门禁独立提交。关闭后，每个获批 operation 使用�
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | 本轮未要求 |
 | Codex Review | `/codex review` | Independent 2nd opinion | 2 | CLEAR AFTER REPAIR | 本轮 10 项 findings 已全部裁决并回写 |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 4 | ISSUES OPEN (EXTERNAL) | 单 PR、预算 owner 和空端口风险已修复；3 项跨能力外部批准未关闭 |
-| Serena Review | 仓库真实符号与引用扫描 | Code-shape evidence | 1 | CLEAR | Phase 2 显式 Transport 可复用；旧 registry/provider 包不作新实现模板 |
-| Sequential Review | 假设、反证与门禁复核 | Architecture consistency | 2 | BLOCKED (EXTERNAL) | 方案满足最小设计；3 项跨能力外部决定仍阻断实施 |
+| Serena Review | 仓库真实符号与引用扫描 | Code-shape evidence | 2 | FINDING REPAIRED | 现有本地业务判定与目标权限冲突已写入替换边界；`DeviceDispatchPolicy` 证明执行决策可独立建模 |
+| Sequential Review | 假设、反证与门禁复核 | Architecture consistency | 3 | BLOCKED (EXTERNAL) | WMS 业务决策/WES 执行决策已无歧义；3 项跨能力外部决定仍阻断实施 |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | 非 UI 规划 |
 | DX Review | 架构复评内置检查 | Developer experience gaps | 1 | CLEAR | 新增 API 采用批准模板、显式纵切片和固定六步清单，不建设生成器或 registry |
 
-- **CODEX:** 补充并促成 Phase 4 暗构建依赖、逐能力批准、一致性/响应预算、独立 normalizer、独立 wire fixture 和单一任务体系；
-  “响应阶段 failure 会直接全局停摆”与“没有当前生产消费者即违反 YAGNI”的严重度被降级为措辞澄清。
+- **CODEX:** 直接撤销“WMS 给原始事实、WES/插件重算业务结果”的旧边界，冻结 WMS 全业务决策与 WES 纯执行决策；
+  Phase 3 增加 operation-specific `WmsBusinessDecisionPort`，不建设 generic 决策平台。
 - **VERDICT:** ENG + CODEX + SERENA + SEQUENTIAL REVIEW COMPLETED — 计划结构已收敛，但 Phase 3 仍为
   `BLOCKED_AT_TASK_1`，尚不可实施。
 
 **UNRESOLVED DECISIONS:**
 
-- 库存 query/reserve/release/transfer 的目标消费者、调用时机与原子边界。
-- 多项 WMS 权威事实的共同 snapshot/version 或获批 fail-closed 一致性合同。
+- 当前态全部 WMS 业务决策 operation，以及库存 query/reserve/release/transfer 的目标消费者、调用时机与原子边界。
+- 纯执行多事实校验的共同 snapshot/version 或获批 fail-closed 一致性合同；业务判定必须改为单个 WMS 封闭结果。
 - 列表/批量 request/result 的最大项数、编码/wire/decoded 字节预算与超限语义。
 - 各保留 operation 的完整 wire、幂等语义及 WMS 批准的版本化机器可读 fixture/schema。

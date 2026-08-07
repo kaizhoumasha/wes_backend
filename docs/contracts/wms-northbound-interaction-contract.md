@@ -15,16 +15,20 @@
 
 1. 能追溯到当前 SRS 范围内的具名业务场景。
 2. 能指出目标阶段、具体组件、调用时机以及唯一或明确共享的调用消费者。
-3. 交互对象是 WMS 拥有的业务、库存、单据或主数据事实。
+3. 交互对象是 WMS 拥有的业务决策结果、库存、单据、主数据事实或 WES 提交的物理执行事实。
 4. method、path、request/result、必填性、错误码和幂等语义已经由 WMS 确认。
 
 仅仅出现在硬件初稿、旧实现、旧测试或历史文档中的接口，不满足准入条件。
+
+WMS 是全部业务决策 owner。WES 只校验合同、关联、版本、时效和物理可执行性，并把有效结果映射为等待、发送、暂停、
+隔离或对账等执行动作；不得重算或替换来源、目标、优先级、路线、NG/等待/替代、取消、恢复或业务终态。
 
 ## 2. 边界
 
 ### 2.1 Phase 3 拥有
 
 - WMS 权威业务事实的类型化查询 DTO。
+- WES 请求、WMS 返回的 operation-specific 封闭业务决策 DTO。
 - WES 向 WMS 请求 `PickingTask` 来源绑定及提交业务事实通知的类型化 DTO。
 - WMS 向 WES 下发业务命令的类型化 DTO 和无状态校验/标准化。
 - 固定 method/path、请求编码、响应解析和单次调用结果翻译。
@@ -36,7 +40,8 @@
 - `Transport Port`、`TransportTask`、搬运批次、队列位置、FIFO 窗口或位置投影。
 - `WmsConfirmation`、`InboundEvidence` 的持久化、领取、重试、恢复或终态推进。
 - 数据库表、Migration、Repository、调用 evidence、Circuit Breaker 或清理任务。
-- WorkLine Decision、库存分配算法、库存锁、料格冻结、跨任务来源分配、设备命令和厂商 Payload。
+- WES 本地业务规则或业务 Decision、库存分配算法、来源/目标/优先级/路线/NG/等待/替代裁决、库存锁、料格冻结、
+  跨任务来源分配、设备命令和厂商 Payload。
 - 通用 `call`、动态 registry、Provider 切换、兼容 alias、fallback、缓存或自动续页。
 
 Phase 2 只提供单次 HTTP 传输事实。Phase 3 只做 WMS 业务 wire 翻译。可靠对象和 WMS 转发 RCS 的
@@ -59,13 +64,16 @@ normalizer 不接收认证 header、principal 或认证策略。目标态不建�
 | `query_inventory` | SRS 库存协同场景 | SRS §3.4.1 | `GET /api/wms/inventory/query` | 条件保留；不得用于 `PickingTask` 来源选择、锁定或重新分配 |
 | `get_reservation` | 预留恢复、释放确认和人工对账 | SRS §3.4.1 | 初稿未定义 | 条件保留；只有 reserve/release wire 获批后才实施 |
 
-粗分准入由 WES 使用上述 WMS 权威事实作出本地判定，不再建设复合
-`validate_rough_sorter_admission` WMS 决策接口。WMS 提供事实，WES 负责工作线准入规则。
+上述查询只允许服务于展示、追溯或纯执行校验，不能由 WES 组合成业务结论。粗分准入必须由 WMS 返回一个封闭业务结果；
+Phase 3 Task 1 需按真实消费者冻结 operation-specific 语义、request/result 和 wire，不复用旧
+`validate_rough_sorter_admission` 名称、旧字段或旧实现作为合同。
 
-### 3.2 WES → WMS 业务请求与事实通知
+### 3.2 WES → WMS 业务决策请求与事实通知
 
 | 能力候选 | 目标态消费者 | 业务依据 | 厂商初稿 | 当前裁决 |
 | --- | --- | --- | --- | --- |
+| 粗分准入决策（业务名待合同冻结） | 粗分机当前料盘 | SRS §3.3.1 | 旧初稿曾提出复合校验 | 保留语义；WMS 返回允许/拒绝及业务处置，禁止 WES 组合原始事实自行判定 |
+| 粗分目标料格决策（业务名待合同冻结） | 粗分机出料投放 | SRS §3.3.1、§3.4.2 | 初稿未定义 | 保留语义；WMS 返回唯一目标或等待/拒绝，WES 只校验物理可执行性 |
 | `request_picking_source_bindings` | `STARTING` 的自动出库 `PickingTask` | SRS §3.3.3、出库设计 §5.2、§12 | 初稿未定义 | 保留业务名；method/path/wire 待 WMS 确认 |
 | `reserve_inventory` | SRS 库存预留场景 | SRS §3.4.1 | `POST /api/wms/inventory/reserve` | 条件保留；必须明确非 `PickingTask` 的实际消费者 |
 | `release_reservation` | 取消、失败和预留恢复 | SRS §3.4.1 | `DELETE /api/wms/inventory/reserve/{id}` | 条件保留；method 与幂等合同待 WMS 确认，不自行改成 POST |
@@ -82,9 +90,9 @@ normalizer 不接收认证 header、principal 或认证策略。目标态不建�
 每一项都必须包含完整 SixInOne 与全局唯一 `PkgID`；部分绑定、缺项、重复项或字段不完整均不生效。
 WMS 独立拥有库存资格、库存锁、料格冻结和跨任务来源分配，WES 不得通过 `query_inventory + reserve_inventory` 自行拼装方案。
 
-除来源绑定请求外，其他同步通知只表达已经发生的物理事实或明确的 WMS 业务义务。Adapter 的返回值不直接推进
-WorkLine；Phase 4 可靠对象保存结果后，由对应业务对象重新裁决。逐项位置事实与整单完成事实各自拥有独立可靠义务，
-不得复用 `transfer_inventory` 形成双写。
+除显式业务决策请求外，其他同步通知只表达已经发生的物理事实或明确的 WMS 业务义务。Adapter 的返回值不直接推进
+WorkLine；Phase 4 可靠对象保存结果后，由对应执行对象校验关联并严格执行 WMS 结果，不得重新裁决其业务语义。逐项位置
+事实与整单完成事实各自拥有独立可靠义务，不得复用 `transfer_inventory` 形成双写。
 
 ### 3.3 WMS → WES 业务输入
 
@@ -112,7 +120,7 @@ Phase 4 负责；Phase 3 不单独建立可绕过可靠边界的 FastAPI 业务�
 | `get_materials` | `get_material`；没有真实批量消费者前不为减少往返预建接口 |
 | `list_zones` / `list_locations` / `list_racks` | `NONE`；禁止把 WMS 全局主数据同步为 WES 本地能力 |
 | `check_bin_drift` / `check_rack_drift` / `check_full_drift` | 普通权威点查 + Phase 4 对账；WMS 不接收 WES `workline_code` 做漂移判断 |
-| `validate_rough_sorter_admission` | WMS 权威事实查询 + WES 本地准入 Decision |
+| 旧 `validate_rough_sorter_admission` wire | `NONE`；按 §3.2 重新批准 operation-specific 粗分业务决策，不兼容旧名称或字段 |
 | `confirm_return_putaway` | `NONE`（当前阶段）；SRS §3.6 明确为未来交付 |
 | `publish_manual_task` | `notify_manual_station_ready` + WMS → WES 人工作业完成；WMS 拥有人工任务 |
 | 搬运/补给/换面/交换/料箱移动 | Phase 4 `Transport Port` 和 WMS 转发 RCS Adapter |
@@ -140,11 +148,11 @@ Phase 4 负责；Phase 3 不单独建立可绕过可靠边界的 FastAPI 业务�
 
 ```text
 业务消费者
-→ 类型化 WMS Query / Picking Source Binding / Confirmation Port
+→ 类型化 WMS Query / Business Decision / Confirmation Port
 → 无状态 WMS ACL
 → Phase 2 OutboundHttpTransport（恰好一次 send）
 → 类型化单次调用结果
-→ Phase 4 可靠对象决定持久化、暂停、恢复或重提
+→ Phase 4 可靠对象决定持久化、发送、暂停、隔离或重提；不改变 WMS 业务语义
 ```
 
 Adapter 不打开数据库事务，不保存调用 evidence，不申请 breaker permit，不自动 retry，不拥有业务终态。传输层已经提供的
@@ -200,9 +208,11 @@ HTTPX 或把 method 歪曲为现有值。
 
 ## 8. Phase 3 Task 1 跨能力退出门禁
 
-- 每个候选能力都登记目标阶段、具体组件、调用时机和 SRS/顶层设计依据；条件候选无法定位真实消费者时删除。
+- 当前态全部业务判定都已映射为 WMS operation-specific 封闭结果，并登记目标阶段、具体组件、调用时机和 SRS/顶层设计
+  依据；条件候选无法定位真实消费者时删除。
 - 每个排除能力都登记 successor 或 `NONE`。
-- 组合多项 WMS 权威事实的消费者已有共同 snapshot/version，或已批准读取顺序、有效窗口和 fail-closed 条件。
+- 业务判定不组合多项 WMS 原始事实；纯执行校验确需组合时，已有共同 snapshot/version，或已批准读取顺序、有效窗口和
+  fail-closed 条件。
 - 列表/批量 request/result 已有最大项数、最大编码/wire/decoded 字节数和超限语义；outbound response 预算可由 Phase 2
   primitive 执行，超过其默认值时已有 WMS/业务批准的数值和理由。
 - WMS inbound 已按隔离局域网部署约束冻结为 API ingress 所有的 `NONE`；该决定不进入 Phase 2 outbound Transport 或
@@ -212,8 +222,8 @@ HTTPX 或把 method 歪曲为现有值。
 - SRS 只保留用户需求和权威边界，不复制 operation 编号或实现参数。
 - 厂商原始文档保持原貌，项目内不再保留 33 项旧蓝图副本。
 
-当前结论：`BLOCKED`。批准模板和隔离局域网 inbound `NONE` 已经冻结，但目标态消费者定位、多事实一致性与尺寸预算
-三项跨能力外部决定尚未关闭，Phase 3 代码实施不得开始。
+当前结论：`BLOCKED`。WMS 全业务决策/WES 纯执行决策、批准模板和隔离局域网 inbound `NONE` 已经冻结，但完整业务决策
+operation/消费者盘点、纯执行多事实一致性与尺寸预算三项跨能力外部决定尚未关闭，Phase 3 代码实施不得开始。
 
 Task 1 关闭后，每项 operation 只有完整通过 §6.1 才能独立进入 TDD；未获批 operation 保持不存在，不阻断其他已获批
 operation。Phase 3 最终退出仍要求所有保留 operation 已获批并实施；无法获批或无法定位消费者的候选项直接删除，

@@ -3,7 +3,7 @@
 > **For agentic workers:** 本文只控制阶段顺序、职责边界、原子交接和退出门禁。每个阶段开始前必须另有经批准的详细实施计划；不得直接把本文当作代码实施脚本，也不得在阶段门禁未通过时启动下一阶段。
 
 **Goal:** 按十一个单向依赖阶段，将当前 WES 直接收敛到 SPEC 定义的最小执行架构；先分别暗构建 WMS 业务 ACL
-与最小平台能力，再通过独立原子切换阶段替换生产路径并删除旧能力，最后以独立 Adapter/业务插件、单一数据库基线和
+与最小平台能力，再通过独立原子切换阶段替换生产路径并删除旧能力，最后以独立 Adapter/执行插件、单一数据库基线和
 完整系统验收结束收敛。
 
 **Architecture:** Phase 3 WMS 业务 ACL factory 通过 Phase 2 builder 装配一个进程内明确生命周期的
@@ -17,7 +17,7 @@ WES 核心只依赖类型化业务端口，可靠性生命周期分别由 `Devic
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–2 已完成；Phase 3 Task 1 的单项批准模板、最小开发路径和隔离局域网 inbound `NONE` 已冻结，
-但目标态消费者定位、多事实一致性和尺寸预算三项跨能力外部决定尚未关闭，Phase 3 代码实施保持阻断；
+但完整业务决策 operation/消费者盘点、纯执行多事实一致性和尺寸预算三项跨能力外部决定尚未关闭，Phase 3 代码实施保持阻断；
 Phase 4–11 尚未开始。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
@@ -59,8 +59,8 @@ Phase 4–11 尚未开始。
 - 当前产品部署在隔离局域网，WMS inbound 固定为 Phase 4 API ingress 所有的 `NONE`；不建设 HMAC、nonce、clock、凭据、
   IP allowlist 或认证扩展 seam。Phase 3 normalizer 不接收认证上下文。
 - 核心、Adapter、插件测试所有权严格隔离：核心验证基础能力与可靠性，Adapter 验证厂商合同与标准化映射，
-  插件验证业务 Decision 和对象推进；不得跨层复制或互相替代。
-- 设备厂商 Adapter/业务插件包独立构建、测试和显式装配；客户镜像只安装明确清单，不建设运行时扫描或私有包 registry。
+  WMS Adapter 验证业务结果合同，插件验证执行 Decision 和对象推进；不得跨层复制或互相替代。
+- 设备厂商 Adapter/执行插件包独立构建、测试和显式装配；客户镜像只安装明确清单，不建设运行时扫描或私有包 registry。
   产品内唯一 WMS 北向 Adapter 是 `src/app/wms_adapter/` 下的应用 ACL，不属于客户可选的设备厂商二次开发包。
 - Phase 3–4 可以合并“新能力已完成但尚未接线”的稳定暗构建态；任何生产双轨态、未完成 Phase 5 原子交接或未通过
   当前阶段退出门禁的状态不得合并回 `develop`。
@@ -83,7 +83,7 @@ SRS §3.5 特殊物料、机构件/SFC 协同及 §3.6 生产退料属于未来�
 | 无 | 无 | Phase 5 | 新旧能力原子切换与旧所有者删除 | 新增；统一迁移消费者和生产装配，不迁移旧实现或旧数据 |
 | Phase 4 | 核心测试承接与平台基线验收 | Phase 6 | 核心测试承接与平台基线验收 | 承接对象改为 Phase 4 最终对象 |
 | Phase 5 | 粗分机参考插件优化 | Phase 7 | 粗分机参考插件优化 | ECS Adapter 消费 Phase 2 传输能力 |
-| Phase 6 | 分拣业务插件组优化 | Phase 8 | 分拣业务插件组优化 | ECS/RCS Adapter 消费 Phase 2 传输能力 |
+| Phase 6 | 分拣执行插件组优化 | Phase 8 | 分拣执行插件组优化 | ECS/RCS Adapter 消费 Phase 2 传输能力 |
 | Phase 7 | 旧平台代码最终闭环清理 | Phase 9 | 旧平台代码最终闭环清理 | 增加裸 httpx、重复传输和无依据认证缺席门禁 |
 | Phase 8 | 旧数据模型与迁移链清理 | Phase 10 | 旧数据模型与迁移链清理 | 依赖 Phase 9 零旧路径 |
 | Phase 9 | 最终基线与系统验收 | Phase 11 | 最终基线与系统验收 | 验收新增 Phase 2 基础层及职责所有权 |
@@ -140,7 +140,7 @@ Phase 6  核心测试承接与平台基线
    ↓
 Phase 7  粗分机参考插件
    ↓
-Phase 8  分拣业务插件组
+Phase 8  分拣执行插件组
    ↓
 Phase 9  旧平台代码最终闭环
    ↓
@@ -162,7 +162,7 @@ Phase 11 最终基线与系统验收
 | WMS 转发 RCS method/path、wire DTO、状态/取消 | 不拥有 | 不拥有 | Transport Adapter 唯一目标 owner | 只接线，不改变合同 |
 | WMS outbound 认证 | 不拥有、不预留 | 当前仅 `NONE`，不提供认证字段或 seam | 不可见 | 删除旧 HMAC/Profile/fallback 配置 |
 | 外部调用 evidence 与 breaker | 不拥有 | 不拥有；ACL 无状态 | 由可靠对象按实际需要持有证据；不预建通用 breaker | 删除旧 evidence/breaker 及其表 |
-| WMS 查询、Picking 来源绑定、确认调用 | 不拥有 | 三条无状态类型化窄端口 | 只依赖端口；测试 fake 由 Phase 4 自有 | 切换真实消费者到新端口 |
+| WMS 查询、业务决策、确认调用 | 不拥有 | 三条无状态类型化窄端口 | 只依赖端口；测试 fake 由 Phase 4 自有 | 切换真实消费者到新端口 |
 | WMS 转发搬运调用 | 不拥有 | 不拥有 | `Transport Port` + WMS 转发 RCS Adapter | 切换真实消费者到新 Transport Port |
 | `TransportTask`/`WmsConfirmation` 生命周期 | 不拥有 | 不拥有 | 新最终对象唯一目标 owner | 接管生产流量并删除旧可靠闭包 |
 | callback ingress | 不拥有 | 不修改旧入口 | 新建最终 `InboundEvidence` 与 application port | 原子切换入口并删除旧 WMS RuntimeInbox 路径 |
@@ -178,7 +178,7 @@ Phase 11 最终基线与系统验收
 | ECS/RCS Adapter（Phase 7/8） | 只实现厂商原始资料已明确要求的认证；首次需求必须先修订计划 | 提前预建 BASIC/HMAC、从插件读取凭据、通用认证平台 |
 | 部署配置 | 当前不提供 outbound 认证键 | 原始 Secret、任意 Header/签名表达式、未获合同支持的认证选项 |
 | WES 核心可靠对象 | 只观察类型化端口结果并管理可靠性生命周期 | httpx、认证方案、签名 Header、credential reference |
-| 业务插件 | 无认证职责 | HTTP Client、认证配置、凭据、厂商原始协议 |
+| 执行插件 | 无认证职责 | HTTP Client、认证配置、凭据、厂商原始协议、WMS 业务裁决 |
 
 ## 6. Phase 1：测试治理基线
 
@@ -191,7 +191,7 @@ Phase 11 最终基线与系统验收
 
 **Scope:** 已完成测试拓扑、预算、核心/插件所有权门禁和显式旧插件测试清理；冻结 Task 4/5/7 的延后承接义务。
 
-**Explicit out-of-scope:** 不实现 Outbound HTTP、WMS 薄边界、最终执行对象、真实 Adapter 或业务插件。
+**Explicit out-of-scope:** 不实现 Outbound HTTP、WMS 薄边界、最终执行对象、真实 Adapter 或执行插件。
 
 **Deliverables:** PR #100 / `28eb99d9`；核心 FAST/QUALITY/HEAVY 治理；测试处置四分类；延后义务清单。
 
@@ -246,8 +246,8 @@ QUERY/Provider/Transport owner 由 Phase 5 切换并删除；WMS Effect/status/O
 `src/app/runtime/orchestration/services/inbox/outbox_dispatch_service.py`、
 `src/app/runtime/capabilities/material_flow/start_admission_service.py` 和
 `src/app/runtime/capabilities/material_flow/smt_inbound_handoff_route_service.py` 的核心 DeviceCommand HTTP 发送、实时状态及
-准入探测分支由 Phase 4 建立 typed Device command/status/admission port successor，Phase 5 改接并删除裸 Client；SMT handoff 业务规则可在无网络
-职责的前提下保留至 Phase 7 插件替代，但不得继续 import gateway 私有 helper。真实 ECS/RCS Adapter 由 Phase 7/8 首次
+准入探测分支由 Phase 4 建立 typed Device command/status/admission port successor，Phase 5 改接并删除裸 Client；SMT handoff
+的本地业务判定不得保留为目标规则，Phase 7 插件只消费 WMS 业务结果并映射执行，且不得继续 import gateway 私有 helper。真实 ECS/RCS Adapter 由 Phase 7/8 首次
 接入 Phase 2 Transport，同时删除对应厂商重复 Client/传输实现。Phase 5 还必须删除旧
 `SystemOutboxDispatchType.DEVICE_COMMAND` 可靠性 owner：`src/app/sys/models/outbox.py`、
 `src/app/sys/repositories/outbox_repository.py`、`src/app/sys/services/outbox_engine.py`、
@@ -281,19 +281,20 @@ Adapter/Composition Root，或建设认证/拦截器扩展平台。子计划必�
 ## 8. Phase 3：无状态 WMS 业务 ACL 重建
 
 **Objective:** 在不触碰当前生产路径的前提下，消费 Phase 2 Transport，只暗构建当前 SRS 真实消费者所需的 WMS
-业务查询、Picking 来源绑定、业务确认和 inbound DTO/normalizer，为 Phase 4 可靠对象和 Phase 5 原子切换提供稳定业务端口。
+业务查询、operation-specific WMS 业务决策、业务确认和 inbound DTO/normalizer，为 Phase 4 可靠对象和 Phase 5 原子切换
+提供稳定业务端口。
 
 **Authoritative inputs:** SRS、顶层 SPEC、出库操作顶层设计、WMS 业务 ACL 合同、Phase 2 公开合同和 Phase 3 详细计划。
 当前 `src/app/wms_integration/` 只用于识别未来删除边界，不是新实现模板或测试 oracle。
 
 **Entry conditions:** Phase 2 基线已通过退出门禁；outbound 与隔离局域网 inbound 均冻结为 `NONE`，但分别由 Phase 3
-outbound 配置和 Phase 4 API ingress 拥有；Phase 3 Task 1 已关闭目标态消费者定位、多事实一致性、尺寸预算和阶段边界等
+outbound 配置和 Phase 4 API ingress 拥有；Phase 3 Task 1 已关闭业务决策消费者定位、纯执行多事实一致性、尺寸预算和阶段边界等
 跨能力门禁。Task 1 退出后，每项 operation 只有完成
 WMS 单项 wire 批准才可独立进入 TDD，未获批 operation 保持不存在；不要求全部 wire 同时获批。厂商初稿只是外部输入，
 不能单独关闭入口门禁。当前三项跨能力外部决定尚未关闭，代码实施保持阻断。
 
 **Scope:** 独立 `src/app/wms_adapter/` 包；按首项获批职责逐步创建 `WmsBusinessQueryPort`、
-`WmsPickingSourceBindingPort`、`WmsBusinessConfirmationPort` 类型化窄端口；WMS inbound operation 专属 DTO 与显式
+`WmsBusinessDecisionPort`、`WmsBusinessConfirmationPort` 类型化窄端口；WMS inbound operation 专属 DTO 与显式
 normalizer 方法；无状态 Gateway；只含
 base URL/timeout 的配置；消费 Phase 2 builder 的 factory；封闭单次调用结果。每个公开方法恰好一次 Phase 2 send，
 列表查询只返回单次有界结果。不得创建空端口、空 normalizer 或未获批 package 骨架。
@@ -302,7 +303,7 @@ base URL/timeout 的配置；消费 Phase 2 builder 的 factory；封闭单次�
 Repository、Service、调用 evidence、Circuit Breaker、可靠生命周期、生产接线、旧 owner 修改、retry、分页、缓存、
 generic `call`、动态 registry、认证扩展 seam 和兼容路径。
 
-**Deliverables:** 只为获批消费者建立语义化查询、Picking 来源绑定、确认模块和 inbound DTO；一个无状态 Gateway/factory；
+**Deliverables:** 只为获批消费者建立语义化查询、operation-specific WMS 业务决策、确认模块和 inbound DTO；一个无状态 Gateway/factory；
 以 WMS 批准的版本化 fixture/schema 为独立真源的 FAST WMS 业务合同测试；证明新包零 Transport、零持久化、零旧包 import
 且未被现有生产 `src/` 引用的暗构建门禁。首个获批 operation 作为显式纵切片参考，不建设生成器、registry 或公共
 `WmsCallSpec`。
@@ -343,10 +344,10 @@ submit/status/cancel wire 已单独获批；Phase 5 旧可靠链删除闭包和 
 `DeviceCommand`、`TransportTask`、`WmsConfirmation`、封闭 Decision、显式依赖注入、可靠领取/轮询/重试/终态/恢复、
 `Transport Port`、WMS 转发 RCS Adapter、Phase 4 测试树内最小 typed-port fake 和 uv workspace 显式装配边界。
 
-**Explicit out-of-scope:** 裸 httpx、WMS 业务 method/path/DTO、具体 ECS 厂商命令、真实工作线业务规则、动态插件发现、
+**Explicit out-of-scope:** 裸 httpx、WMS 业务 method/path/DTO、具体 ECS 厂商命令、WES 本地业务规则、动态插件发现、
 Manifest、Service Locator 和自动物理恢复。WMS 转发 RCS wire 只存在 Phase 4 Transport Adapter，不进入核心对象或插件。
 
-**Deliverables:** Fake 插件可运行的独立最小闭环；三类可靠对象及新持久化约束；类型化 WMS/Device/Transport 端口；
+**Deliverables:** Fake 执行插件可运行的独立最小闭环；插件只把 WMS 封闭业务结果映射为执行 Decision；三类可靠对象及新持久化约束；类型化 WMS/Device/Transport 端口；
 WMS 转发 RCS Adapter；投影与人工清线语义；供 Phase 5 接线的目标路径。当前生产 Composition Root、旧表、旧实现和旧测试保持不变。
 
 **Phase 5 旧所有者切换清单（Phase 4 只登记 successor，不修改旧 owner）:** `TransportTask`/`WmsConfirmation` 权威测试通过后，Phase 5 原子删除旧 WMS
@@ -471,14 +472,14 @@ successor/NONE 裁决已完成，不得带未决语义进入本阶段；不存�
 需要兼容或迁移的发布数据。
 
 **Scope:** 生产 Composition Root 分别装配 Phase 3 无状态 WMS 业务 ACL 与 Phase 4 WMS 转发 RCS Adapter；两者各自消费
-Phase 2 builder 交付的长期 Transport，但不共享业务接口或生命周期。所有 WMS 业务查询、Picking 来源绑定、业务确认、WMS inbound 业务命令、
+Phase 2 builder 交付的长期 Transport，但不共享业务接口或生命周期。所有 WMS 业务查询、operation-specific 业务决策、业务确认、WMS inbound 业务命令、
 Transport Port 消费者、普通 event callback 及核心可靠对象消费者原子切换；按 successor/NONE 清单删除旧分支；删除旧
 `src/app/wms_integration/`、Provider/Profile/Registry、旧裸 HTTP/HMAC/
 credential/fallback、WMS System Capability 和旧可靠分支；切换 Settings/Compose/Jenkins/Celery/Runbook；按 successor/NONE
 处置旧测试及 HEAVY mapping；清空开发/测试旧表数据并删除被替代 schema。
 
 **Explicit out-of-scope:** 搬运或包装旧实现、兼容 shim、双写/双读、按 WorkLine 灰度、旧数据转换、重新定义 Phase 3
-wire 合同、重新实现 Phase 4 生命周期、真实 ECS/RCS Adapter 和业务插件优化。
+wire 合同、重新实现 Phase 4 生命周期、真实 ECS/RCS Adapter 和执行插件优化。
 
 **Deliverables:** 唯一生产 WMS 业务 ACL、唯一 WMS 转发 RCS Adapter/Transport Port；唯一
 `TransportTask`/`WmsConfirmation`/`DeviceCommand` 生命周期；独立
@@ -518,7 +519,7 @@ successor/NONE；FAST、QUALITY、精确 HEAVY、Ruff、Bandit、Import Linter�
 **Scope:** 完成五个混合资产及其他不直接阻塞 Phase 4 测试收集的剩余旧测试处置；审计 Phase 4 已建立的最终核心唯一测试；
 扩展核心/Adapter/插件所有权门禁；运行 FAST/QUALITY/受影响 HEAVY。
 
-**Explicit out-of-scope:** 具体工作线业务闭环、厂商 canonical/Header/DTO 和业务插件验收。
+**Explicit out-of-scope:** 具体工作线执行闭环、厂商 canonical/Header/DTO 和执行插件验收。
 
 **Deliverables:** 平台核心基线、最终对象测试矩阵、旧测试 successor/NONE 审计、核心测试缺席门禁。
 
@@ -542,13 +543,14 @@ SystemOutbox 测试 owner，必须已随 Phase 5 原子切换完成 successor/NO
 
 ## 12. Phase 7：粗分机参考插件优化
 
-**Objective:** 以粗分机交付首个真实业务插件和现场所需 ECS Adapter，验证 Phase 2/4 平台边界足以支持真实闭环。
+**Objective:** 以粗分机交付首个真实执行插件和现场所需 ECS Adapter，验证 Phase 2/4 平台边界足以支持真实闭环。
 
 **Authoritative inputs:** 顶层 SPEC §11.1、粗分机真实拓扑、厂家合同、WMS 操作清单、Phase 2 Transport、Phase 4 SDK。
 
 **Entry conditions:** Phase 6 平台核心基线通过；粗分机厂商资料完整；Adapter 允许的认证闭集有真实合同依据。
 
-**Scope:** 独立 Adapter/插件包；事件/命令标准化；粗分业务 Decision；设备长命令、NG、WMS 查询/确认和搬运端口消费。
+**Scope:** 独立 Adapter/插件包；事件/命令标准化；粗分 WMS 业务结果到执行 Decision 的映射；设备长命令、NG 执行、
+WMS 决策/查询/确认和搬运端口消费。
 
 **Explicit out-of-scope:** 其他分拣线、公共 HTTP Client、凭据、通用认证配置、WMS wire 合同重定义、通用插件模板。
 
@@ -557,7 +559,8 @@ SystemOutbox 测试 owner，必须已随 Phase 5 原子切换完成 successor/NO
 **旧所有者删除或交接清单:** Adapter 交付时删除核心/插件中的对应厂商 DTO、HTTP Client、HMAC 工具和映射副本；
 插件交付时删除旧粗分业务代码、配置和测试，不保留 alias/fallback。
 
-**测试所有权与重量要求:** Adapter 包拥有厂商 canonical/Header/DTO/错误映射/合同；插件包拥有业务 Decision 和对象推进；
+**测试所有权与重量要求:** Adapter 包拥有厂商 canonical/Header/DTO/错误映射/合同；WMS Adapter 包拥有业务结果合同；
+插件包拥有执行 Decision 和对象推进；
 Phase 2/核心测试不得复制这些场景，两个包测试均不进入核心默认 pytest。
 
 **与前后阶段的 atomic handoff:** 消费 Phase 2 Transport 与 Phase 4 SDK；发现公共能力缺口时只有两个以上已确认消费者成立
@@ -570,7 +573,7 @@ Phase 2/核心测试不得复制这些场景，两个包测试均不进入核心
 
 **风险及防止阶段越权的约束:** 禁止插件访问 Transport/HTTP/认证/凭据；禁止首次真实 BASIC 需求未经计划修订直接实现。
 
-## 13. Phase 8：分拣业务插件组优化
+## 13. Phase 8：分拣执行插件组优化
 
 **Objective:** 按真实工作线和厂家合同分别交付自动分拣、人工分拣、满箱交换和复杂出库，不建设通用分拣工作流。
 
@@ -578,7 +581,8 @@ Phase 2/核心测试不得复制这些场景，两个包测试均不进入核心
 
 **Entry conditions:** Phase 7 退出门禁通过；每个实际插件/Adapter 的范围、厂家合同和部署组合明确；各详细计划获批。
 
-**Scope:** 自动/人工/满箱交换/复杂出库业务插件；所需 ECS/RCS Adapter；同线进出、NG 透传、即时 PUT、CTU 批次和 WMS 来源权威。
+**Scope:** 自动/人工/满箱交换/复杂出库执行插件；所需 ECS/RCS Adapter；WMS 业务结果映射、同线进出、NG 执行、即时
+PUT、CTU 批次和 WMS 来源权威。
 
 **Explicit out-of-scope:** `SorterCorridor`、库存权威、动态发现、统一厂商认证三选一、公共 HTTP Client、预建 BASIC、通用工作流 DSL。
 
@@ -726,26 +730,26 @@ Phase 10 固化最终 metadata。
 
 只有同时满足以下条件，本计划才完成：
 
-1. Phase 2 公共传输、WMS/ECS/RCS Adapter、WES 核心和业务插件分别拥有单一职责与独立验收。
+1. Phase 2 公共传输、WMS/ECS/RCS Adapter、WES 核心和执行插件分别拥有单一职责与独立验收。
 2. 只有 Phase 2 基础层直接依赖 httpx；Adapter 只消费已装配 Transport，核心和插件不可见 httpx/认证/凭据/wire 协议。
-3. 核心可靠性不变量全部由最终对象测试证明，厂商合同和业务规则只由各自包测试证明。
+3. 核心可靠性不变量全部由最终对象测试证明，厂商合同、WMS 业务结果合同和执行映射只由各自包测试证明。
 4. 旧生产架构、旧 HTTP owner、无依据认证、旧测试所有者、旧配置、兼容路径和旧 migration chain 全部归零。
 5. 最终数据库可以从空库一次建立，不需要旧数据、旧 revision 或转换脚本。
 6. 当前态文档、active TODO、代码、测试、schema、部署配置和 composition root 共同指向同一个最终架构。
 
 ## 20. Implementation Tasks
 
-Phase 3 Task 1 已重新打开。目标态消费者矩阵和 PickingTask 业务裁决只回答“真实消费者需要什么”；Task 1 的四项
-跨能力外部决定关闭后，每项 operation 仍须独立取得 WMS 对 method/path/DTO/拒绝语义和 fixture/schema 的批准，才可进入
+Phase 3 Task 1 保持打开。WMS 全业务决策/WES 纯执行决策已经冻结；Task 1 的三项跨能力外部决定关闭后，每项 operation
+仍须独立取得 WMS 对 method/path/DTO/拒绝语义和 fixture/schema 的批准，才可进入
 TDD。阶段唯一子计划真源为
 `docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`。
 
 | 顺序 | 任务 | Surface area | 主要验证 |
 | --- | --- | --- | --- |
-| 1 | 冻结跨能力门禁与单项批准模板（进行中） | 目标态消费者、一致性、尺寸预算、阶段边界；inbound `NONE` 已冻结 | WMS/业务批准；Markdown、引用与 diff 校验；纯文档不写测试 |
+| 1 | 冻结跨能力门禁与单项批准模板（进行中） | 业务决策 operation/消费者、纯执行一致性、尺寸预算、阶段边界；inbound `NONE` 已冻结 | WMS/业务批准；Markdown、引用与 diff 校验；纯文档不写测试 |
 | 2 | 建立无状态 ACL 公共合同 | 配置、strict DTO、传输事实到业务结果的封闭映射 | FAST 合同测试先红后绿；零持久化、TransportTask、breaker、generic call |
 | 3 | 实现 WMS 权威查询 ACL | 仅消费者矩阵中获批的查询 | method/path/DTO、业务拒绝、单次有界响应 |
-| 4 | 实现 Picking 来源绑定与 WMS 业务确认 ACL | 独立 `WmsPickingSourceBindingPort` 与获批确认 | 完整原子绑定或无完整方案；逐项/整单事实独立；可靠义务由消费者对象拥有 |
+| 4 | 实现 WMS 业务决策与业务确认 ACL | `WmsBusinessDecisionPort` 的 operation-specific 方法与获批确认 | WMS 封闭结果；无 generic decide；逐项/整单事实独立；可靠义务由消费者对象拥有 |
 | 5 | 实现 WMS inbound 业务命令 DTO/normalizer | `PickingTask` 变更与人工完成命令；不依赖 outbound Gateway | 显式方法、schema、最大 items、零执行编排 |
 | 6 | 逐纵切片收口公开导出与暗构建门禁 | 每个 operation PR；首次 outbound 同时建立长期 Transport | 零空端口、裸 Client、旧包、持久化、RCS/AGV/CTU、生产接线 |
 | 7 | Phase 3 退出验证 | 新 ACL 与仓库边界 | FAST、Phase 2 回归、Ruff、类型、Import Linter、quality |
@@ -758,11 +762,11 @@ Phase 3 最终退出。Task 7 只在所有保留 operation 已实施或删除后
 
 - **Scope：** Phase 3 只暗构建无状态 WMS 业务 ACL；Phase 4 暗构建新核心、Transport Port 和 WMS 转发 RCS Adapter；Phase 5 原子接线并删除旧 owner。
 - **Architecture：** Phase 3 ACL 直接消费 Phase 2 Transport，只拥有业务 wire、typed DTO 和同步结果翻译；证据、重试、breaker、可靠生命周期均不属于 ACL。
-- **Contract：** 当前只保留可追溯到真实消费者的 WMS 业务能力；固定 method/path/DTO 必须逐项经 WMS 批准，厂商初稿和旧实现都不是批准替代品。
-- **Wire semantics：** `PickingTask` 创建只含目标项；`request_picking_source_bindings` 通过独立窄口请求 WMS 返回完整原子绑定或无完整方案；执行中替代来源裁决为原子替代绑定批次或明确无完整替代方案；逐项位置通知与整单完成独立。搬运、换面、入退线和状态查询全部移交 Phase 4 Transport 合同。
-- **Entry gate：** 单项批准模板和隔离局域网 inbound `NONE` 已冻结，但目标态消费者定位、多事实一致性和尺寸预算三项
+- **Contract：** 所有业务结果由 WMS 给出；当前只保留可追溯到真实消费者的 operation-specific 能力。固定 method/path/DTO 必须逐项经 WMS 批准，厂商初稿和旧实现都不是批准替代品。
+- **Wire semantics：** WMS 决策通过 `WmsBusinessDecisionPort` 的显式方法返回封闭结果；`PickingTask` 创建只含目标项，来源绑定返回完整原子绑定或无完整方案，执行中替代来源为原子批次或明确无完整替代方案；逐项位置通知与整单完成独立。搬运、换面、入退线和状态查询全部移交 Phase 4 Transport 合同。
+- **Entry gate：** 单项批准模板和隔离局域网 inbound `NONE` 已冻结，但业务决策 operation/消费者盘点、纯执行多事实一致性和尺寸预算三项
   跨能力外部决定未关闭；Phase 3 代码实施保持阻断。Task 1 关闭后按 operation 单独批准和实施。
-- **Code Quality：** 按查询、Picking 来源绑定、确认和 inbound normalizer 四类职责组织；新增 API 采用显式纵切片和固定
+- **Code Quality：** 按查询、业务决策、确认和 inbound normalizer 四类职责组织；新增 API 采用显式纵切片和固定
   六步清单，不按历史 Q/E 编号建模块，不引入公共 `WmsCallSpec`、generic call、生成器或动态 registry。
 - **Failure modes：** ACL 每次调用只发送一次并返回封闭结果；可靠对象如何持久化、重提或停顿由 Phase 4/业务 owner 决定。
 - **Test Review：** FAST 只证明 WMS ACL 合同；不以 Phase 2 Transport 测试证明业务，也不在 Phase 3 创建 HEAVY 持久化测试。
@@ -778,8 +782,8 @@ Phase 3 最终退出。Task 7 只在所有保留 operation 已实施或删除后
 | --- | --- | ---: | ---: | --- |
 | ENG REVIEW | BLOCKED | 3 | 3 | 三项跨能力外部决定未关闭；单 PR、尺寸预算 owner 和空端口问题已修复 |
 | INDEPENDENT REVIEW | SUPERSEDED | 0 | 0 | 旧“33 项完整面”评审基线已被消费者驱动边界替代，不再作为当前放行证据 |
-| SERENA REVIEW | CLEAR | 0 | 0 | 当前 Phase 2 真实代码足以承载显式纵切片；旧 registry/provider 包仅作删除边界，不作模板 |
-| SEQUENTIAL REVIEW | BLOCKED | 3 | 3 | 方案满足 DRY/KISS/SOLID/YAGNI；三项跨能力外部决定仍阻断实施 |
+| SERENA REVIEW | FINDING REPAIRED | 1 | 0 | 真实代码仍有本地业务判定；文档已将其列为后续直接替换边界，执行策略保持独立 |
+| SEQUENTIAL REVIEW | BLOCKED | 3 | 3 | WMS 业务决策/WES 执行决策已收敛；三项跨能力外部决定仍阻断实施 |
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新增 API 有批准模板、参考纵切片和固定六步清单，不依赖生成器或 registry |
 

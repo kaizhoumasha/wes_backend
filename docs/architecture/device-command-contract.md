@@ -1,7 +1,7 @@
 ---
 status: Approved
 created_at: 2026-06-25
-updated_at: 2026-08-05
+updated_at: 2026-08-07
 spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 authority: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 scope: WES 核心设备命令基础能力边界
@@ -20,7 +20,7 @@ scope: WES 核心设备命令基础能力边界
 | WES 核心 | 命令持久化、幂等身份、目标设备、deadline、ACK/CALLBACK 证据、通用状态与诊断 | HTTP、厂商 `task_type`、厂商字段、具体工作线规则 |
 | Outbound HTTP 基础层 | Client 生命周期、Timeout、单次发送、有界响应和传输事实分类 | 厂商 DTO/认证、业务拒绝、重试和命令生命周期 |
 | 厂商 Adapter | 厂商 HTTP DTO、真实合同要求的认证、命令名、Payload、ACK/Result 映射与厂商合同测试 | 连接池、通用传输异常、工作线业务判定、数据库写入、通用流程引擎 |
-| WorkLine 插件 | 何时创建命令、当前业务对象、逻辑目标和下一步 Decision | HTTP、Repository、重试、Outbox、设备安全互锁 |
+| WorkLine 插件 | 将 WMS 封闭业务结果映射为命令创建时机、当前执行对象、已授权逻辑目标和下一步执行 Decision | 业务来源/目标/路线/优先级/NG 裁决、HTTP、Repository、重试、Outbox、设备安全互锁 |
 
 厂商 Adapter 和 WorkLine 插件属于二次开发交付。核心不得要求供应商适配 WES 自有指令集，也不得把具体业务
 命令反向固化为核心枚举。
@@ -69,14 +69,17 @@ WES 不拆解厂商长命令，不解释 ECS 内部步骤，也不实现设备�
 Composition Root 把现场 Endpoint/Timeout 交给 Phase 2 builder，并把得到的框架无关 Transport 注入 Adapter；Adapter
 不得接收裸 `httpx.AsyncClient`。当前已确认设备 outbound 合同无认证，不存在公共认证配置或 seam。
 
-## 5. WorkLine 业务边界
+## 5. WorkLine 执行边界
 
-具体工作线插件决定：
+具体工作线插件只决定：
 
-- 哪个业务事件允许创建命令；
+- 当前有效 WMS 业务结果和执行 evidence 是否允许创建命令；
 - 命令关联哪个 `MaterialExecution`、`BinExecution` 或其他具体对象；
 - 厂商命令需要哪些逻辑业务参数；
-- CALLBACK 后返回下一条命令、结束、NG 或对象级暂停中的哪一个封闭 Decision。
+- CALLBACK 后如何按 WMS 结果返回下一条命令、结束、NG 执行或对象级暂停中的封闭执行 Decision。
+
+来源、目标、优先级、路线、NG/等待/替代、取消、恢复和业务终态均由 WMS 给出。插件发现结果缺失、过期、矛盾或物理
+不可执行时必须 fail closed，不得选择另一个业务方案。
 
 粗分机、自动分拣、人工分拣、满箱交换等流程不得写入核心合同或核心测试。
 
