@@ -12,6 +12,7 @@ related:
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
   - docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md
   - docs/contracts/wms-northbound-interaction-contract.md
+  - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/architecture/authority-matrix.md
   - docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md
   - docs/hardware/wms_rcs_interface_requirements.md
@@ -379,6 +380,9 @@ WES → WMS：
 
 AGV/CTU/RCS 搬运不进入上述 PickingTask 业务 API；它们由 Phase 4 Transport 合同拥有，并通过 WMS 转发 Adapter 调用。
 具体 operation 名、method、path、DTO、同步/异步结果、幂等键、SLA 和错误码必须由对应北向合同批准。
+
+面向 WMS 开发团队的最小能力、字段语义和批准清单见
+`docs/contracts/wms-outbound-picking-task-integration-requirements.md`；该要求文档同样不替代正式获批 wire。
 
 ## 13. 阶段与所有权
 
