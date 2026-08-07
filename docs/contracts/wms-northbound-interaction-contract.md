@@ -31,11 +31,12 @@ Phase 3 提供一个类似前端 Axios/API Client 的 `WmsClient`，统一 WES �
 - 持有一个 Phase 2 `OutboundHttpTransport`。
 - 接收 relative path、query、headers 和 JSON body。
 - 将 GET/POST 映射为 `OutboundHttpRequest`。
-- 对 JSON body 做一次 UTF-8 编码，对完整响应做一次 JSON 解码。
-- 保留 HTTP status、response headers、`delivery_state` 和 `failure_kind`。
+- 对标准 JSON 值做一次严格 UTF-8 编码，对完整响应做一次严格 JSON 解码，并区分空响应与 JSON `null`。
+- 通过不可变 `WmsAccessResult` 保留 HTTP status、response headers、`delivery_state`、`failure_kind` 和 JSON 解码事实。
 - 提供显式且幂等的 `aclose()`。
 
-每个进程通过 Composition Root 构造并复用一个 WMS Client；单次业务调用不得创建新的 HTTP Client。
+每个运行时/事件循环 owner 构造并长期复用自己的 WMS Client，不得跨事件循环共享；单次业务调用不得创建新的 HTTP
+Client。Phase 3 不接入生产 Composition Root，真实 FastAPI/Celery owner 的装配与关闭随对应业务接线实施。
 
 ## 4. WmsClient 不负责什么
 
@@ -54,16 +55,28 @@ Phase 3 提供一个类似前端 Axios/API Client 的 `WmsClient`，统一 WES �
 - `path` 必须是以 `/` 开始的 relative path，不允许调用方覆盖 WMS origin。
 - 当前只支持 Phase 2 已提供的 GET 和 POST；真实 API 需要其他 method 时再独立扩展 Phase 2 和本文。
 - GET 使用 query，不发送 JSON body。
-- POST 的 JSON 使用 UTF-8 紧凑编码，并设置 `Content-Type: application/json`。
-- 调用方可以传入真实 API 所需的普通 headers，但不得覆盖 Transport 拥有的 header。
+- POST 的 `json` 参数必传，`None` 表示 JSON `null`。值域只允许 `None`、布尔、整数、有限浮点、字符串、上述值组成
+  的 list，以及字符串 key 的 dict；tuple、非字符串 key、`NaN`、正负 `Infinity` 和其他对象在发送前拒绝。
+- POST 使用无 BOM UTF-8 紧凑编码并设置 `Content-Type: application/json`；调用方以任意大小写传入 `Content-Type`
+  都会在发送前被拒绝。GET 不自动添加该 header。
+- 调用方可以传入真实 API 所需的其他普通 headers，但不得覆盖 Transport 拥有的 header。
 - 每次调用最多执行一次 `send`；Client 不自动 retry、轮询或翻页。
+- `query` 与 `headers` 均使用可选 `Mapping[str, str]`，默认 `None`；Client 只转换为 Phase2 string-pair tuple，非法值继续
+  由 Phase2 fail closed。真实 API 需要重复 query key 时再独立扩展。
 
 ### 5.2 结果
 
-- 收到完整响应时，返回 status、headers 和解码后的 JSON；非 2xx 不自动变成业务异常。
-- request 编码或 response JSON 解码失败属于访问合同错误，不伪装成 WMS 业务拒绝。
-- `NOT_SENT`、`DELIVERY_UNKNOWN` 和响应阶段失败必须原样保留 Phase 2 事实。
-- `CancelledError` 原样传播。
+- 收到完整响应时，返回 status、headers、`body_present`、`json_failure` 和解码后的 JSON；非 2xx 不自动变成业务异常。
+- 空响应返回 `body_present=False`、`json_body=None`；JSON `null` 返回 `body_present=True`、`json_body=None`。
+- 非空响应只做一次严格 UTF-8/RFC 8259 解码；纯空白 body、非法 UTF-8、非法 JSON 和非标准
+  `NaN`/`Infinity` 分别设置 `json_failure=INVALID_UTF8` 或 `INVALID_JSON`，同时保留 status、headers 和交付事实。
+- 响应 Content-Type 不参与共享 Client 解码；具体 API 若要求严格 media type，由自己的业务合同验证。
+- request 编码失败在发送前抛出；response JSON 解码失败返回访问事实，两者都不得伪装成 WMS 业务拒绝。
+- `NOT_SENT`、`DELIVERY_UNKNOWN` 和响应阶段失败必须原样保留 Phase 2 事实，并返回
+  `body_present=False`、`json_body=None`。
+- `CancelledError`、关闭异常和 Phase 2 的关闭后调用异常原样传播。Client 不复制 Transport 关闭状态；关闭后的合法请求
+  调用一次 `send` 并由 Transport 在产生底层 HTTP 请求前拒绝。请求值域或编码错误发生在 `send` 前，因此调用零次
+  `send`，不会被关闭状态改写。
 - Client 不决定是否重提、暂停或推进状态。
 
 具体业务模块必须基于自己的响应 DTO 和 WMS 合同解释 status 与 JSON，不得把 HTTP 200 等同于业务成功。
@@ -85,8 +98,10 @@ factory 调用 Phase 2 builder，并固定 `system_id="wms"`。当前 outbound �
 
 1. 在真实业务 owner 中定义具名 API 方法。
 2. 定义该 API 自己的 request/response DTO，不使用宽泛 `dict[str, Any]` 作为业务合同。
-3. 用固定 relative path 调用 `WmsClient.get()` 或 `WmsClient.post()`。
-4. 在业务模块内校验 DTO，并解释 WMS 给出的业务结果。
+3. request DTO 通过 `model_dump(mode="json")` 转成标准 JSON 值，再用固定 relative path 调用 `WmsClient.get()` 或
+   `WmsClient.post()`；Client 不依赖 Pydantic。
+4. 检查 `failure_kind`、`json_failure` 与 `body_present` 后，再由业务 DTO `model_validate(...)` 校验合法 response JSON，
+   并解释 WMS 给出的业务结果。
 5. 使用 WMS 双方确认的 fixture/schema 编写该 API 的合同测试。
 6. 只在真实重复出现后提取业务 helper；不得把业务字段或结果解释放进 `WmsClient`。
 
@@ -94,8 +109,10 @@ factory 调用 Phase 2 builder，并固定 `system_id="wms"`。当前 outbound �
 
 ```text
 ExampleWmsApi.query_example(request DTO)
-  → WmsClient.post("/example/query", json=request DTO)
-  → 校验 response DTO
+  → request DTO.model_dump(mode="json")
+  → WmsClient.post("/example/query", json=标准 JSON 值)
+  → 检查 result.failure_kind / json_failure / body_present
+  → response DTO.model_validate(result.json_body)
   → 返回 WMS 给出的业务结果
 ```
 
@@ -105,10 +122,10 @@ ExampleWmsApi.query_example(request DTO)
 
 Phase 3 测试只验证：
 
-- GET query、POST JSON 和 header 映射。
-- relative path、JSON 编解码和一次 send。
+- GET query、POST JSON、GET/POST body 约束和 header 映射。
+- relative path、query/header 默认与重复项、Content-Type 所有权、严格 JSON 值域/编解码和一次 send。
 - status/headers/传输事实保留。
-- 非 2xx、无效 JSON、取消和关闭行为。
+- 空响应、JSON `null`、响应 Content-Type、非 2xx、无效 UTF-8/JSON 的事实保留、取消和关闭行为。
 - 新包不依赖数据库、旧 WMS 包、RCS/AGV/CTU 或生产注册机制。
 
 Phase 3 测试不得验证任何库存、PickingTask、NG、业务拒绝或 WorkLine 执行能力。具体业务合同测试由未来业务 API 自己拥有。

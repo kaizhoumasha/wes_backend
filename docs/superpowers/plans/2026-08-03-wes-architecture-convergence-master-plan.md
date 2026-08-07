@@ -6,7 +6,7 @@
 与最小平台能力，再通过独立原子切换阶段替换生产路径并删除旧能力，最后以独立 Adapter/执行插件、单一数据库基线和
 完整系统验收结束收敛。
 
-**Architecture:** Phase 3 `WmsClient` factory 通过 Phase 2 builder 装配一个进程内明确生命周期的
+**Architecture:** Phase 3 `WmsClient` factory 通过 Phase 2 builder，为各运行时/事件循环 owner 装配一个明确生命周期的
 `OutboundHttpTransport`；Phase 4 的 WMS 转发 RCS/AGV/CTU 业务模块复用该 Client，并通过 `Transport Port` 与核心隔离。
 ECS 等真实设备 Adapter 的 Transport 构造所有权由 Phase 7/8 各自合同冻结。各 Adapter 拥有其
 外部系统的 method/path、wire DTO、真实合同要求的认证协议和结果解释；
@@ -49,7 +49,8 @@ Phase 4–11 尚未开始。
 - WMS/ECS/RCS Adapter 每次调用都只发送一次，不拥有 retry/backoff 配置；只有逐 operation 外部合同明确批准安全重提且
   对象显式 `retryable=true` 时，`WmsConfirmation`、`TransportTask`、`DeviceCommand` 等可靠对象才可保留原 identity/内部
   `dispatch_key`，映射为唯一获批 wire 字段后重新提交；否则保持暂停并进入人工对账。
-- 每个外部系统在每个进程内只有一个明确生命周期的 Client；禁止每次请求创建 Client，也禁止全局万能 Client。
+- 每个外部系统由各运行时/事件循环 owner 持有一个明确生命周期的 Client；禁止跨事件循环共享、每次请求创建 Client，
+  也禁止全局万能 Client。
 - builder 只完成 base URL、Timeout、连接池和 Transport 生命周期装配；业务 Adapter 只接收该 Transport，
   不接收裸 `httpx.AsyncClient`，也不管理连接池或通用传输异常。
 - 当前已批准 outbound 合同均未要求认证，Phase 2 不建设认证策略、凭据解析、HMAC、Clock、Nonce 或预留接口。
@@ -731,9 +732,9 @@ Phase 3 已收敛为不含业务 API 的 WMS HTTP Client。Phase 2 依赖已满�
 | 顺序 | 任务 | Surface area | 主要验证 |
 | --- | --- | --- | --- |
 | 1 | 建立 WMS Client 访问合同测试 | GET/POST、JSON、传输事实和关闭 | FAST 测试先红后绿；不含业务断言 |
-| 2 | 实现 `WmsClient` | `contracts.py`、`client.py` | relative path、一次 send、JSON 编解码、非 2xx 和失败事实 |
+| 2 | 实现 `WmsClient` | `client.py` | relative path、一次 send、严格 JSON 编解码、空响应/JSON `null`、非 2xx 和失败事实 |
 | 3 | 实现 factory 与公开导出 | `factory.py`、`__init__.py` | 固定 `system_id="wms"`、长期 Client、零裸 httpx |
-| 4 | Phase 3 退出验证 | 新 Client 与架构边界 | Phase 2 回归、FAST、Ruff、类型、Import Linter、quality |
+| 4 | Phase 3 退出验证 | 新 Client、HEAVY selector 显式 NONE 与架构边界 | Phase 2 回归、FAST、selector、Ruff、类型、Import Linter、quality |
 
 具体 WMS 业务 API 不进入本任务表。它们在后续真实业务开发中各自定义 DTO、path、结果解释和合同测试，并复用稳定的
 `WmsClient`。

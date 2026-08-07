@@ -788,7 +788,8 @@ CTU 投箱
 实施顺序：
 
 1. 总控基线冻结与测试治理确认：接受本文、冻结最新 `develop` 实施基线，并确认测试所有权、重量和延后承接边界。
-2. Outbound HTTP 传输基础能力收敛：全新增量交付框架无关 request/result、每外部系统每进程一个 Client、单次发送、
+2. Outbound HTTP 传输基础能力收敛：全新增量交付框架无关 request/result、每外部系统由各运行时/事件循环 owner 持有
+   一个 Client、单次发送、
    有界响应读取、传输事实分类和显式生命周期；不切换生产消费者，不建设 outbound 认证、重试、业务解释、registry 或 fake。
 3. WMS HTTP Client 薄封装：消费 Phase 2 Transport，在独立应用包 `src/app/wms_adapter/` 中只交付
    `request/get/post/aclose`、统一 JSON 编解码、最小 factory 和开发示例；当前 outbound 无认证。本阶段不包含任何具体
