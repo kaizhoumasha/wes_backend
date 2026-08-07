@@ -188,9 +188,10 @@ def _decode_result(result: OutboundHttpResult) -> WmsAccessResult:
             parse_float=_parse_finite_json_float,
             parse_constant=_reject_nonstandard_json_constant,
         )
+        frozen_json_body = _freeze_json(json_body)
     except (json_module.JSONDecodeError, ValueError, RecursionError):
         return _as_access_result(result, body_present=True, json_body=None, json_failure="INVALID_JSON")
-    return _as_access_result(result, body_present=True, json_body=_freeze_json(json_body), json_failure=None)
+    return _as_access_result(result, body_present=True, json_body=frozen_json_body, json_failure=None)
 
 
 def _freeze_json(value: object) -> _JsonValue:

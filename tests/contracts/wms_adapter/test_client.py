@@ -362,6 +362,19 @@ async def test_invalid_json_preserves_http_facts_and_reports_json_failure(body: 
 
 
 @pytest.mark.asyncio
+async def test_deep_json_freeze_failure_preserves_http_facts() -> None:
+    body = b"[" * 500 + b"0" + b"]" * 500
+
+    result = await WmsClient(_FakeTransport(_response(body=body, status_code=502))).get("/decision")
+
+    assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
+    assert result.status_code == 502
+    assert result.body_present is True
+    assert result.json_body is None
+    assert result.json_failure == "INVALID_JSON"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("body", [b"1e400", b'{"nested":[1e400]}'])
 async def test_exponent_overflow_reports_invalid_json_without_losing_http_facts(body: bytes) -> None:
     result = await WmsClient(
