@@ -45,6 +45,8 @@ Phase 3 `WmsClient` 只提供 HTTP/JSON 访问，不拥有 Transport 生命周�
    业务事件不能终结 `TransportTask`。
 7. 结果超过合同截止时间仍未到达时进入 `RECONCILING`。WES 不自动判失败、不换幂等身份重提，也不重放物理动作。
 8. 首版没有已批准的取消 wire，因此不提供 `cancel()`、`CANCEL_REQUESTED` 或 `CANCELLED`。真实合同获批后另行扩展。
+9. 首版同一 Rack 或 Bin 不允许存在重叠的非终态 TransportTask。WMS 不授权重叠搬运，WES 使用数据库唯一活动绑定
+   失败关闭；该约束避免晚到旧结果覆盖新任务位置。
 
 ## 3. 权威与边界
 
@@ -55,7 +57,7 @@ Phase 3 `WmsClient` 只提供 HTTP/JSON 访问，不拥有 Transport 生命周�
 | 车辆、路径、排队、交通和设备内部步骤 | RCS/AGV/CTU | WES 不读取、不调度、不复制实时状态 |
 | HTTP/JSON 单次访问 | Phase 3 `WmsClient` | 不持久化、不重试、不解释业务结果 |
 | WMS 转发 wire 翻译 | WMS 转发 RCS Adapter | 固定 operation、DTO 和错误映射，不拥有任务生命周期 |
-| 运输结果接收与推进 | `InboundEvidence` + TransportResult 应用端口 + `TransportTask` owner | ACK 前可靠持久化；校验后由唯一 owner 推进 |
+| 运输结果接收与推进 | `TransportResultEvidence` + `TransportResultService` + `TransportTask` owner | ACK 前可靠持久化；校验后由唯一 owner 推进 |
 | 位置与对象投影 | 对应 projection writer | 只按匹配终态中已确认的最终位置更新；位置未知时显式标记 unknown |
 
 架构基础能力与业务能力必须分开：出站 HTTP、入站持久化和幂等是基础能力；货架补给、料箱投放/回收、换面和具体
@@ -129,8 +131,9 @@ WMS 执行完成后，通过现有 WMS Event 入口发送结果：
 | --- | --- | --- | --- |
 | WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.resulted@v1` | 可靠 Event + 同步 ACK |
 
-这不是普通 PickingTask 事件。WMS ingress 只负责统一信封、DTO、幂等和持久化后应答，然后把类型化
-`TransportResult` 交给独立应用端口；只有 `TransportTask` owner 可以推进任务状态和相关投影。
+这不是普通 PickingTask 事件。唯一 WMS event route 只负责统一信封和按固定 operation 静态分发；Transport 专用
+`TransportEventHandler` 负责 DTO 转换并调用 `TransportResultService` 完成幂等和持久化后应答。Phase 4 不注册第二条
+同 method/path route；只有 `TransportTask` owner 可以推进任务状态和相关投影。
 
 ### 5.2 最小结果事实
 
@@ -162,7 +165,7 @@ WMS 执行完成后，通过现有 WMS Event 入口发送结果：
 固定处理顺序：
 
 1. 校验统一信封、operation、`event_id` 和闭集 DTO；
-2. 原子保存幂等身份、规范化摘要和原始 `InboundEvidence`；
+2. 原子保存幂等身份、规范化摘要和原始 `TransportResultEvidence`；
 3. 持久化成功后返回 `202 / RECEIVED`；相同身份与相同 Payload 返回 `200 / DUPLICATE`；
 4. 异步把类型化结果交给 TransportResult 应用端口；
 5. `TransportTask` owner 校验任务身份、请求版本、对象和冻结成员；
@@ -183,7 +186,7 @@ WMS/RCS 核验后重新签发的结果，仍必须作为匹配的 `TransportResu
 | `REJECTED` | 不可变提交已被 `400|422 / REJECTED` 明确拒绝，确认未接纳 | 无 |
 | `SUCCEEDED` | 匹配的成功结果已接受 | 无 |
 | `FAILED` | 接纳后匹配的权威失败 `TransportResult` 已接受 | 无 |
-| `RECONCILING` | 提交结果未知、回调超期或证据冲突，需要消歧 | 仅提交交付未知可由相同身份/Payload 的确定 ACK 进入 `ACCEPTED` 或 `REJECTED`；回调超期、结果冲突或物理结果不确定仅可由匹配的迟到或重新签发 `TransportResult` 进入 `SUCCEEDED` 或 `FAILED`；人工核验不直接迁移状态 |
+| `RECONCILING` | 提交结果未知、回调超期或证据冲突，需要消歧；必须记录闭集 `reconciliation_cause` | 仅 `SUBMIT_DELIVERY_UNKNOWN` 可由相同身份/Payload 的确定 ACK 进入 `ACCEPTED` 或 `REJECTED`；`RESULT_DEADLINE_EXCEEDED`、`RESULT_CONFLICT`、`POSITION_UNKNOWN` 仅可由匹配的迟到或重新签发 `TransportResult` 进入 `SUCCEEDED` 或 `FAILED`；人工核验不直接迁移状态 |
 
 首版没有 `ACTIVE`：WES 不消费外部内部进度。也没有 `CANCEL_REQUESTED`、`CANCELLED` 或查询中间态。
 `SUCCEEDED` 和 `FAILED` 仅由匹配的权威 `TransportResult` 推进；准入拒绝不得解释为执行失败。
@@ -194,6 +197,9 @@ WMS/RCS 核验后重新签发的结果，仍必须作为匹配的 `TransportResu
   未接纳且合同批准安全重提时，可用原身份、原版本、原 Payload 受控重提；仅因提交交付未知进入 `RECONCILING` 时也用
   同一不可变提交重提，但只用于取得确定 ACK。`400|422 / REJECTED` 已关闭准入，原 Payload 不得重提。
 - 已取得 `RECEIVED/DUPLICATE` 后只等待异步结果，不主动查询、不重复提交。
+- Transport submit claim 只选择 `PENDING` 的安全 due 项及 `RECONCILING + SUBMIT_DELIVERY_UNKNOWN`；其他对账原因永不进入
+  submit claim。内部 claim lease 必须严格大于 WMS Client 最大总耗时与结果写回事务预算之和，不能把普通 lease 到期解释为
+  外部未接纳。
 - 超过结果 deadline 时进入 `RECONCILING` 并告警；沉默不能解释为成功、失败、取消或未执行。
 - 人工核验只能识别现场物理真相，并促使 WMS/RCS 形成或更正匹配的权威 `TransportResult`，再由 WMS 经固定入口补发；
   人工核验结果本身不直接迁移 `TransportTask`。对账不读取旧 Effect 状态、不猜测现场、不自动创建替代任务。

@@ -52,7 +52,8 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
    - 设备和位置投影；
    - ECS/WMS/RCS 共享合同；
    - Phase 2 Outbound HTTP Transport 生命周期、受限响应、通用异常分类、无认证边界和脱敏日志；
-   - Phase 4 WMS 转发 RCS Transport Adapter 与生产统一设备 HTTP Adapter 的已批准公共 wire 合同；
+   - Phase 4 WMS 转发 RCS/AGV/CTU Transport Adapter 的已批准公共 wire 合同；
+   - 独立 Device/ECS 基础能力计划后续交付的统一设备 HTTP Adapter 公共 wire 合同；
    - 入站幂等、ACK/CALLBACK 分离、可靠投递、迟到证据、人工清线等通用可靠性；
    - API、Repository、数据库、部署和架构边界。
 2. 下列测试不属于核心 `tests/`：
@@ -84,7 +85,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
 | --- | --- | --- |
 | 核心领域单元测试 | 执行对象、WorkLine/Epoch、投影和可靠性状态转移 | WMS 业务决策或具体插件执行映射 |
 | Phase 2 Outbound HTTP 单元测试 | `tests/core/outbound_http/` 以 `httpx.MockTransport` 和测试内 local fake 验证生命周期、请求装配、受限响应、传输事实分类和脱敏日志 | 真实外部系统、厂商 DTO/canonical/Header/认证、业务拒绝、重试/终态/恢复和大规模 E2E |
-| 共享合同测试 | Phase 4 WMS 转发 RCS Transport Adapter 与生产统一设备 HTTP Adapter 的固定 method/path、公共信封/DTO 校验、错误映射和一次有界发送；ECS/WMS/RCS 共享幂等与 ACK/CALLBACK；核心可靠对象另用本地 typed-port fake | 具体 WMS 业务 method/DTO/result、设备合同附录、endpoint/device 绑定、供应商内部 Payload 和工作线流程 |
+| 共享合同测试 | Phase 4 WMS Transport Adapter 固定 method/path、信封/DTO、错误映射和一次有界发送；独立 Device/ECS 计划拥有统一设备公共 wire；两者分别验证自己的幂等与 ACK/结果边界 | 具体 WMS 业务 method/DTO/result、设备合同附录、endpoint/device 绑定、供应商内部 Payload 和工作线流程 |
 | API 测试 | route、权限、请求响应、Service facade | Repository、插件决策和完整编排 |
 | Repository/共享 Adapter 集成测试 | 数据库约束、事务和共享技术 Adapter 边界 | 供应商内部协议和插件场景排列 |
 | 架构测试 | 分层、import、旧架构缺席、核心/插件所有权和测试拓扑 | 业务流程 |

@@ -790,15 +790,14 @@ CTU 投箱
 3. WMS HTTP Client 薄封装：消费 Phase 2 Transport，在独立应用包 `src/app/wms_adapter/` 中只交付
    `request/get/post/aclose`、统一 JSON 编解码、最小 factory 和开发示例；当前 outbound 无认证。本阶段不包含任何具体
    WMS 业务 API、业务 Port、数据库、evidence、breaker 或可靠生命周期，不接入生产、不修改旧实现和旧测试。
-4. WES 最小平台与 Transport 能力建设：暗构建最终执行对象、三类可靠记录、通用 WorkLine、投影、最小 SPI/SDK、
-   `Transport Port`、WMS 转发 RCS Adapter、typed Device Port 与测试 fake，并由供应商无关的生产统一设备 HTTP Adapter
-   消费 Phase 2 Transport；本阶段不修改当前生产 Composition Root、旧表、旧实现和旧测试。
-5. 新旧能力原子切换与旧所有者删除：迁移生产消费者和装配，清理开发/测试数据，原子删除 Provider Profile、QUERY
-   System Capability、旧 WMS Transport/认证、Effect/status/Outbox 可靠闭包及被最终对象替代的核心旧 owner；先把
-   DeviceCommand/status/admission 消费者接到 Phase 4 生产统一设备 Adapter，再删除旧 sender，生产 Composition Root 不绑定 fake。
-6. 核心测试承接与平台基线验收：把剩余通用可靠性测试收敛到最终对象，完成核心/插件测试分界和平台独立验收。
-7. 粗分机参考插件优化：交付首个实际设备合同附录、endpoint/device 绑定、供应商一致性验收和独立执行插件，复用唯一生产 Adapter。
-8. 分拣执行插件优化：按实际工作线分别交付设备附录、endpoint/device 绑定、供应商验收和插件；不实现第二个 WES HTTP Adapter。
+4. AGV/CTU Transport 基础能力建设：只暗构建 `TransportTask`、TransportResult evidence、位置投影、
+   `Transport Port` 和 WMS 转发 RCS/AGV/CTU Adapter；不建设 DeviceCommand、统一设备 Adapter、ECS、WorkLine/Epoch、
+   通用执行对象或插件 SDK，不修改当前生产 Composition Root、旧表、旧实现和旧测试。
+5. Transport 原子切换与旧所有者删除：只迁移 Transport 消费者、结果入口和装配，原子删除 Transport 专属
+   Effect/status/Outbox/callback hint/result callback；Device/ECS 不进入本阶段。
+6. Transport 测试承接与基线验收：完成 Transport 最终对象、WMS Adapter、结果 evidence 和 PostgreSQL 可靠性测试所有权。
+7. 粗分机参考插件优化：独立 Device/ECS 基础能力计划未批准并验收前保持阻塞；之后交付设备附录、绑定、供应商验收和插件。
+8. 分拣执行插件优化：消费独立 Device/ECS 基础能力和 Phase 4/5 Transport，按实际工作线交付插件。
 9. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
 10. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
 11. 最终基线与系统验收：从空库分别验证核心、Adapter、插件、质量、部署装配和旧架构缺席门禁。

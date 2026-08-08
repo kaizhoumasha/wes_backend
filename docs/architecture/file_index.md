@@ -31,6 +31,7 @@
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 已批准的自动出库 PickingTask、Cell 晚绑定、NG 与双面目标架业务设计 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段架构收敛总控计划 |
+| `docs/superpowers/plans/2026-08-08-wes-minimal-platform-capabilities.md` | Phase 4 AGV/CTU Transport、WMS 转发 Adapter、结果证据与暗装配详细计划 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、Transport Port、WMS 转发提交 ACK 与异步 TransportResult 评审基线 |

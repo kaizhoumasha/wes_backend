@@ -15,6 +15,7 @@
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、Payload、返回 JSON 与幂等评审基线 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 1–3 已完成，Phase 4–11 未开始 |
+| `plans/2026-08-08-wes-minimal-platform-capabilities.md` | Phase 4 AGV/CTU Transport 基础能力详细实施计划 | BLOCKED_AT_TASK_0；工程评审已完成 |
 
 ## 项目外历史归档
 
