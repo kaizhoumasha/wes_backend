@@ -48,15 +48,16 @@ related:
 | --- | --- | --- |
 | WMS | PickingTask、来源 Cell、来源锁、库存、六合一码业务资格、稳定异常分类、目标储位和需求状态 | 发布任务事件；响应启动、扫码和空取决定；接收执行事实 |
 | WES | 工作线队列、执行对象、设备/位置证据、NG 作用域、资源仲裁和可靠外部义务 | 接收任务；请求业务决定；生成并执行跨设备逻辑动作链（cross-device logical action chain）；报告稳定事实 |
-| RCS/AGV/CTU | 运输调度和运输终态 | 通过独立 Transport 合同与 WES 协作 |
+| RCS/AGV/CTU | AGV 负责完整货架搬运；CTU 负责货架内料箱搬运；RCS 负责相应运输调度和终态 | 通过独立 Transport 合同与 WES 协作 |
 | ECS/PLC/设备 | 扫码、抓取、放置、输送、安全互锁和设备终态 | 向 WES 提供现场证据，由 WES 转换为 WMS 业务请求或事实 |
 
 WMS 向 WES 交付可执行的 PickingTask 和来源 Cell；WES 依据这些权威事实驱动物理执行。出库单、波次单和库存重新分配
 继续留在 WMS 内部。
 
-Transport 请求不属于本文的 PickingTask operation。它由 Transport 合同定义提交入口和 DTO；异步终态复用
-`POST {{WES_BASE_URL}}/api/v1/wms/events` 的持久化后应答能力，并通过静态 `transport.task.resulted@v1` 分发到独立
-TransportResult 应用端口。普通 PickingTask Event 不得终结 `TransportTask`。
+Transport 请求不属于本文的 PickingTask operation。它由 Transport 合同定义提交入口和 DTO；CTU 成员位置事实与异步终态
+复用 `POST {{WES_BASE_URL}}/api/v1/wms/events` 的持久化后应答能力，并分别通过静态
+`transport.task.member_position_changed@v1`、`transport.task.resulted@v1` 分发到独立 Transport evidence 应用端口。
+普通 PickingTask Event 不得修改 Transport 位置或终结 `TransportTask`。
 
 ### 2.2 WMS Business Event 的处理模型
 

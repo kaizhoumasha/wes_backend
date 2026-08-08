@@ -36,7 +36,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 4 | 设备业务命令结果（机械臂取放、滚筒线动作） | ECS/device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 | `authority=ECS` |
 | 5 | 硬件防呆、安全回路、急停、复位、物理坐标/关节控制 | ECS/现场安全系统 | **只感知，不控制** | 只写 event/evidence/hold，不下发安全控制或坐标级指令 | `authority=ECS, scope=SAFETY` |
 | 6 | 设备事件/任务结果回调 | ECS/device callback | 公共包络与设备附录校验 + dispatch | `InboundEvidence` + device projection | `authority=ECS` |
-| 7 | AGV/CTU 履约状态与位置 evidence | RCS；当前网络入口由 WMS 转发 | Phase 4 `TransportTask` 提交需求，并通过 TransportResult 应用端口校验可靠异步终态 | owner 校验权威结果后更新活动投影，不复制实时位置或 SDK 状态 | `authority=RCS, transport_via=WMS` |
+| 7 | AGV/CTU 履约状态与位置 evidence | RCS；当前网络入口由 WMS 转发 | Phase 4 `TransportTask` 提交需求，并通过 Transport evidence 应用端口校验标准化成员位置事实和可靠异步终态 | owner 只按 `SOURCE_PICKED`、`TARGET_PLACED` 及终态更新活动投影，不复制 RCS 实时轨迹或 SDK 状态 | `authority=RCS, transport_via=WMS` |
 | 8 | 货架/料箱/库位主数据 | WMS | 引用 + 作业期投影 | 不复制主数据，只维护 active projection | `authority=WMS, source_version=必填` |
 | 9 | WMS 业务决策、业务命令与普通事件 | WMS | 决策/命令 DTO normalize 后交给具体执行消费者；普通事件按批准合同 dispatch | 保存 WMS 业务资格、异常分类、来源/目标和终态结果；不得在本地重算、替换或扩大业务结果 | `authority=WMS` |
 | 10 | 执行冲突、NG 隔离与人工清线 | WES | 冲突证据 + 作业期执行处置 | 暂停、隔离、物理 NG 路由、清线 evidence；涉及业务资格、来源、目标、库存或业务终态的处置仍须 WMS 决定 | `authority=WES, scope=EXECUTION_LOCAL` |
@@ -93,7 +93,7 @@ HTTP/JSON 访问，不拥有 Transport 业务语义。RCS/AGV/CTU 直连不属�
 | 建立作业期对象 | 事实 11（WES 作业期执行对象） | WES | 插件校验结果关联并映射为封闭执行 Decision，核心建立具体执行对象 |
 | 创建设备动作 | 事实 11（WES 作业期目标） | WES | 持久化逻辑 `DeviceCommand`；成功终态前不更新 `PositionProjection` |
 | 设备完成动作 | 事实 4（设备命令结果） | ECS/device runtime | ECS 按统一接口上报终态，核心持久化 evidence 后更新 `PositionProjection` |
-| 提交外部义务 | 事实 2/7 | WMS 或 RCS | 业务确认走对应业务模块并复用 `WmsClient`；运输意图走 Phase 4 `TransportTask`/`Transport Port`，由各自 owner 保存结果证据 |
+| 提交外部义务 | 事实 2/7 | WMS 或 RCS | 业务确认走对应业务模块并复用 `WmsClient`；运输意图走 Phase 4 `TransportTask`/`Transport Port`，由 Transport owner 保存成员位置/终态证据 |
 
 ### 4.2 反例 1：影子 WMS（事实 1 违规）
 
