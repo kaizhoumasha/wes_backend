@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.1.0] - 2026-08-08
+
+### Added
+- 新增 WMS/WES 自动出库交互合同，给出统一端点、JSON 信封、PickingTask 下发、启动锁定、逐盘决定、NG、来源恢复、位置事实和完成报告的联调基线。
+- 新增 Transport 履约合同，冻结搬运请求、同步接纳 ACK、异步 `TransportResult`、六态生命周期和结果对账边界。
+- 新增第三方设备统一接口白皮书，统一命令、状态、结果回调、设备事件、幂等、合同版本和 `LineRunEpoch` 约定。
+
+### Changed
+- 自动出库改为任务驱动：`PickingTask` 只聚合已接纳的 `CellExecution`，逐盘扫码后由 WMS 判断业务资格和目标，WES 独立决定设备动作与 NG 执行链。
+- 明确同线多任务排队、不同线并行、CTU 批次运输、三段滚筒线缓存、目标架换面及清场运输的独立生命周期和背压规则。
+- 统一 SRS、权威矩阵、设备命令合同、插件指南、测试所有权和十一阶段总控计划，不再把供应商私有 Adapter 或旧运行时可靠链作为目标实现路径。
+
+### Verification
+- 纯文档变更检查通过：`git diff --check`、核心 Markdown 格式、代码围栏、项目内链接和项目外归档边界均无错误。
+- 覆盖率审计确认生产代码、可执行配置和测试路径变更均为零；预落地复审无剩余问题。
+
 ## [0.23.0.0] - 2026-08-07
 
 ### Added

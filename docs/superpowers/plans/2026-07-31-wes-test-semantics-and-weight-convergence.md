@@ -3,15 +3,18 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 将 WES 核心测试收敛到 SPEC 定义的最小执行内核、通用 WorkLine 能力、外部合同和可靠性不变量；
-把具体厂商合同和具体执行插件测试从核心 `tests/` 移出，分别随独立 Adapter 包和插件包重新交付。
+把供应商内部协议测试和具体执行插件测试从核心 `tests/` 移出；前者由供应商一致性验收拥有，后者随独立插件包重新交付。
 
-**Architecture:** 核心仓库、厂商 Adapter 包和执行插件包拥有三组独立测试边界。核心 `tests/` 不保存具体工作线流程、具体插件 Handler 或具体厂商映射；
-Adapter 使用 `device_adapters/<adapter_key>/`，插件使用 `workline_plugins/<plugin_key>/`，两者均自带 `pyproject.toml`、`src/`、`tests/` 和 `fixtures/`，
-并由各自的测试入口和 CI 验收。核心测试继续按 `FAST`、`QUALITY`、`HEAVY` 分层。
+**Architecture:** 核心/公共 Adapter 合同、WMS 业务实现计划、供应商一致性验收和执行插件包拥有相互独立的测试边界。核心 `tests/` 不保存具体工作线流程、
+具体插件 Handler 或供应商内部映射；Phase 4 公共 Adapter 合同测试验证 WMS 转发 RCS Transport Adapter 和供应商无关的
+生产统一设备 HTTP Adapter，核心可靠对象测试仍以本地 typed-port fake 验证平台行为，两者不得互相替代。插件使用
+`workline_plugins/<plugin_key>/` 并自带 `pyproject.toml`、`src/`、`tests/` 和 `fixtures/`；供应商在其 ECS/网关交付边界执行
+白皮书与设备合同附录的一致性验收。核心测试继续按 `FAST`、`QUALITY`、`HEAVY` 分层。
 
-测试所有权是三向隔离：核心测试不得借用具体业务或厂商场景证明基础能力；其中 Phase 2
-`tests/core/outbound_http/` 只证明公共传输基础层。Adapter 测试只证明厂商合同与标准化映射；Phase 3 WMS Client 测试只证明
-HTTP/JSON 访问合同，具体 WMS 业务 API 测试由对应业务模块拥有；插件测试只证明业务结果到执行 Decision 的映射和对象推进。这些测试都不得替代核心持久化、幂等、
+测试所有权按上述边界隔离：核心测试不得借用具体业务或供应商场景证明基础能力；其中 Phase 2
+`tests/core/outbound_http/` 只证明公共传输基础层。供应商一致性验收只证明其 ECS/网关符合白皮书与获批设备附录；Phase 3 WMS Client 测试只证明
+HTTP/JSON 访问合同；Phase 4 公共 Adapter 合同测试只证明已批准 wire 的固定 method/path、公共信封/DTO 校验、错误映射和
+一次有界发送，具体 WMS 业务 method/DTO/result 测试由对应获批业务实施计划拥有；插件测试只证明业务结果到执行 Decision 的映射和对象推进。这些测试都不得替代核心持久化、幂等、
 传输、并发和恢复不变量测试。
 
 **Tech Stack:** Python 3.13、Pytest 9、pytest-asyncio、JUnit XML、Ruff、Bandit、GitNexus、Jenkins。
@@ -37,9 +40,9 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
 
 - [x] 默认测试拓扑已拆分为 `FAST`、`QUALITY`、`HEAVY`。
 - [x] topology guardrail、FAST JUnit 预算脚本和 HEAVY selector 已建立。
-- [x] SPEC 已明确核心、WMS/厂商 Adapter 与执行插件测试的独立所有权边界。
+- [x] SPEC 已明确核心、供应商一致性、WMS Adapter 与执行插件测试的独立所有权边界。
 - [x] 插件包物理结构确定为 `workline_plugins/<plugin_key>/{pyproject.toml,src,tests,fixtures}`。
-- [x] Adapter 包物理结构确定为 `device_adapters/<adapter_key>/{pyproject.toml,src,tests,fixtures}`。
+- [x] 设备供应商直接适配统一接口，不在 WES 仓库建立供应商私有 Adapter 包。
 
 ## 2. 锁定决策
 
@@ -49,6 +52,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
    - 设备和位置投影；
    - ECS/WMS/RCS 共享合同；
    - Phase 2 Outbound HTTP Transport 生命周期、受限响应、通用异常分类、无认证边界和脱敏日志；
+   - Phase 4 WMS 转发 RCS Transport Adapter 与生产统一设备 HTTP Adapter 的已批准公共 wire 合同；
    - 入站幂等、ACK/CALLBACK 分离、可靠投递、迟到证据、人工清线等通用可靠性；
    - API、Repository、数据库、部署和架构边界。
 2. 下列测试不属于核心 `tests/`：
@@ -57,16 +61,16 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
    - 绑定具体厂商设备、命令、事件、Payload 或映射的合同；
    - 具体工作线闭环的 E2E、韧性、并发和负载测试。
 3. 当前仓库中的具体插件测试直接从核心 `tests/` 删除，不把旧 Runtime/Manifest 测试原样搬到新目录，也不创建只有测试没有插件代码的空包。
-4. 具体 Adapter/插件二次开发时，各自的代码、测试和 fixture 必须在同一工作包加入；任一包未通过自身测试，不得进入部署包。
+4. 具体插件二次开发时，其代码、测试和 fixture 必须在同一工作包加入；供应商 ECS/网关未通过一致性验收，或插件包未通过
+   自身测试时，均不得进入部署。
 5. 测试处置只使用四种语义：
    - `CORE_REWRITE`：证明通用 WES 不变量，改写到最终核心对象后保留；
-   - `ADAPTER_OWNED`：证明具体厂商 DTO、协议、Payload、原始码或映射，从核心删除，随 Adapter 包重建；
+   - `SUPPLIER_OWNED`：证明供应商内部 DTO、协议、Payload、原始码或映射，从核心删除，由供应商一致性验收承接；
    - `PLUGIN_OWNED`：证明具体工作线执行映射或执行插件行为，从核心删除，随插件包重建；
    - `LEGACY_DELETE`：只证明旧 Runtime、Manifest、Capability、Intent/Effect、Hold、Recovery、Reservation、旧迁移或兼容入口，直接删除。
 6. 不建立 CSV 迁移矩阵。删除提交或 PR 描述记录分类与所有权；不得按 `legacy`、`replay`、`reconciliation` 等关键词批量删除。
 7. `tests/workline_plugins/` 必须不存在；核心测试不得 import 根目录二次开发插件包或核心源码中的具体插件实现。
-8. 核心默认 pytest、核心覆盖率和核心 HEAVY selector 不发现、不映射、不运行
-   `workline_plugins/*/tests/` 或 `device_adapters/*/tests/`。
+8. 核心默认 pytest、核心覆盖率和核心 HEAVY selector 不发现、不映射、不运行 `workline_plugins/*/tests/` 或外部供应商验收。
 9. 通用插件 SPI/SDK 可以用最小 fake 在核心测试中验证，但 fake 不得承载任何真实工作线、客户或厂商规则。
 10. `tests/workline_runtime/` 不是长期所有权名称。保留价值必须按最终核心对象改写到稳定领域目录；仅证明旧平台装配的测试删除。
 11. 系统未发布，不保留旧测试路径 re-export、fixture alias、兼容 marker、双路径门禁或旧迁移验收。
@@ -80,30 +84,22 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
 | --- | --- | --- |
 | 核心领域单元测试 | 执行对象、WorkLine/Epoch、投影和可靠性状态转移 | WMS 业务决策或具体插件执行映射 |
 | Phase 2 Outbound HTTP 单元测试 | `tests/core/outbound_http/` 以 `httpx.MockTransport` 和测试内 local fake 验证生命周期、请求装配、受限响应、传输事实分类和脱敏日志 | 真实外部系统、厂商 DTO/canonical/Header/认证、业务拒绝、重试/终态/恢复和大规模 E2E |
-| 共享合同测试 | ECS/WMS/RCS 共享 DTO、认证、幂等、ACK/CALLBACK、错误映射 | 具体厂商 Payload 和工作线流程 |
+| 共享合同测试 | Phase 4 WMS 转发 RCS Transport Adapter 与生产统一设备 HTTP Adapter 的固定 method/path、公共信封/DTO 校验、错误映射和一次有界发送；ECS/WMS/RCS 共享幂等与 ACK/CALLBACK；核心可靠对象另用本地 typed-port fake | 具体 WMS 业务 method/DTO/result、设备合同附录、endpoint/device 绑定、供应商内部 Payload 和工作线流程 |
 | API 测试 | route、权限、请求响应、Service facade | Repository、插件决策和完整编排 |
-| Repository/共享 Adapter 集成测试 | 数据库约束、事务和共享技术 Adapter 边界 | 厂商 wire 合同和插件场景排列 |
+| Repository/共享 Adapter 集成测试 | 数据库约束、事务和共享技术 Adapter 边界 | 供应商内部协议和插件场景排列 |
 | 架构测试 | 分层、import、旧架构缺席、核心/插件所有权和测试拓扑 | 业务流程 |
 | 核心 E2E/韧性/负载 | 只验证跨插件通用的 WES 机制 | 具体工作线闭环 |
 
-### 3.2 厂商 Adapter 包
+### 3.2 供应商一致性验收
 
-```text
-device_adapters/<adapter_key>/
-├── pyproject.toml
-├── src/
-├── tests/
-└── fixtures/
-```
+供应商或其 ECS/网关唯一拥有：
 
-Adapter 包唯一拥有：
+- 内部 DTO、现场协议、认证和原始 Payload；
+- 内部命令、事件和错误到 WES 统一接口的转换；
+- 白皮书固定路径、公共包络和获批设备合同附录的一致性验收；
+- 真实设备的集成、异常、恢复和安全场景。
 
-- 具体厂商 DTO、认证差异和 wire Payload；
-- 具体厂商命令、事件、ACK/CALLBACK 和原始码映射；
-- 厂商合同 fixture、Mock、集成、E2E 和韧性场景；
-- 标准化角色事件与逻辑动作的映射验收。
-
-厂商 Adapter 不得拥有 WMS 业务 Decision、工作线执行映射、对象推进或具体业务流程。
+这些验收不进入 WES 核心 pytest，也不得拥有 WMS 业务 Decision、WorkLine 执行映射、对象推进或具体业务流程。
 
 ### 3.3 二次开发插件包
 
@@ -122,7 +118,7 @@ workline_plugins/<plugin_key>/
 - 插件级集成、E2E、韧性、并发和负载场景；
 - 部署前插件验收结果。
 
-插件包通过声明 WES SDK 依赖复用核心能力，只消费 Adapter 输出的标准化角色事件和逻辑动作；不声明厂商协议依赖，
+插件包通过声明 WES SDK 依赖复用核心能力，只消费已按统一接口和设备合同附录验证的类型化事件和逻辑动作；不声明供应商协议依赖，
 不复制核心测试，也不将源码写回核心 `src/` 集成。
 
 ## 4. 核心执行重量
@@ -132,8 +128,11 @@ workline_plugins/<plugin_key>/
 默认 `uv run pytest` 只收集核心 `tests/` 中的轻量测试。禁止真实 PostgreSQL、Redis、HTTP、Celery、Docker、多进程、主动等待和容量采样。
 
 Phase 2 测试固定在 `tests/core/outbound_http/`，只使用 `httpx.MockTransport`、测试内 local fake 和纯单元测试；测试替身
-不从 `src/core/outbound_http/` 生产包导出。WMS Client 访问测试由 Phase 3 拥有；具体 WMS/RCS/ECS 业务或 Adapter 测试由
-Phase 7/8 按真实交付包分别拥有。Phase 4 核心可靠对象测试只替换类型化端口，不直接构造 Phase 2 Transport。
+不从 `src/core/outbound_http/` 生产包导出。WMS Client 访问测试由 Phase 3 拥有。Phase 4 拥有 WMS 转发 RCS Transport Adapter
+和生产统一设备 HTTP Adapter 的公共合同测试，验证固定 method/path、公共信封/DTO 校验、错误映射和一次有界发送；Phase 4
+核心可靠对象测试仍只使用本地 typed-port fake，不直接构造 Phase 2 Transport，Adapter 合同测试不得替代核心测试。具体 WMS
+业务 method/DTO/result 测试由对应获批业务实施计划拥有；Phase 7/8 只拥有实际设备合同附录、endpoint/device 绑定、供应商
+一致性验收和插件业务测试，不复制 Phase 4 公共 Adapter 合同测试。
 
 最终预算：
 
@@ -333,10 +332,10 @@ Task 5 完成前：
 
 - [x] 核心 `tests/workline_plugins/` 不存在。
 - [ ] 核心测试不导入任何具体工作线插件或根目录二次开发插件包。
-- [ ] 核心测试不导入任何具体厂商 Adapter 或根目录 `device_adapters` 二次开发包。
+- [ ] 核心测试不包含任何供应商私有 DTO、路径、认证、原始码或映射行为。
 - [ ] 核心测试中不存在粗分机、自动分拣、人工分拣、满箱交换或复杂出库的 WMS 业务规则或插件执行映射断言。
 - [ ] 只验证旧平台、旧兼容、旧迁移和旧 revision chain 的测试归零。
-- [ ] 当前已交付 Adapter/插件包的代码、测试和 fixture 同包存在，并分别独立通过测试。
+- [ ] 当前设备供应商一致性验收与插件包测试分别独立通过，插件代码、测试和 fixture 同包存在。
 - [ ] 核心默认快速回归、QUALITY、受影响核心 HEAVY 和完整质量门禁全部通过。
 
 **Core verification:**
@@ -351,18 +350,17 @@ rtk uv run python scripts/check_fast_test_budget.py reports/fast-tests.xml
 rtk ./scripts/git-quality-gate.sh --profile quality
 ```
 
-每个已交付 Adapter/插件包另在其目录运行自己的测试入口；核心验收不代替二次开发包验收。
+每个已交付插件包在其目录运行自己的测试入口；供应商另行执行设备一致性验收。核心验收不替代两者。
 
 ## 6. 删除与提交规则
 
 每个删除提交或 PR 描述必须包含：
 
-- 逐文件处置：`REWRITE`、`DELETE → <successor test>` 或 `DELETE → NONE + 理由`；厂商合同移交标注
-  `ADAPTER_OWNED`，执行插件移交标注 `PLUGIN_OWNED`，旧实现删除标注 `LEGACY_DELETE`；
+- 逐文件处置：`REWRITE`、`DELETE → <successor test>` 或 `DELETE → NONE + 理由`；供应商内部协议移交标注
+  `SUPPLIER_OWNED`，执行插件移交标注 `PLUGIN_OWNED`，旧实现删除标注 `LEGACY_DELETE`；
 - 删除范围；
 - successor 必须先在最终对象上通过，才能删除旧测试；`NONE` 必须说明该测试只验证何种已删除实现；
-- 未来唯一所有者，例如 `device_adapters/<adapter_key>/tests/` 或
-  `workline_plugins/rough_sorter/tests/`；
+- 未来唯一所有者，例如“供应商一致性验收”或 `workline_plugins/rough_sorter/tests/`；
 - 实际验证命令和结果。
 
 WMS Phase 3 只新增 `wms_adapter` Client 访问测试，不处置旧 WMS 测试；旧 WMS 测试逐文件 successor/NONE 由十一阶段总控 Phase 5
@@ -372,17 +370,18 @@ WMS Phase 3 只新增 `wms_adapter` Client 访问测试，不处置旧 WMS 测�
 禁止：
 
 - 为保持绿灯而删除尚未承接的核心可靠性断言；
-- 把 Adapter/插件测试改名后继续放在 `tests/contracts/`、`tests/workline_runtime/` 或 HEAVY 目录；
-- 把旧测试原样复制到 Adapter 包或插件包；
-- 仅创建测试目录而不同时交付对应 Adapter/插件代码和 fixture；
-- 让核心 CI 递归发现或运行 Adapter/插件包测试。
+- 把供应商内部协议或插件测试改名后继续放在 `tests/contracts/`、`tests/workline_runtime/` 或 HEAVY 目录；
+- 把旧测试原样复制到供应商验收或插件包；
+- 仅创建测试目录而不同时交付对应插件代码和 fixture；
+- 让核心 CI 递归发现或运行插件包测试或外部供应商验收。
 
 ## 7. 完成定义
 
 只有同时满足以下条件，本计划才完成：
 
-1. 核心 `tests/` 只证明 SPEC 定义的 WES 基础能力和通用可靠性。
-2. 具体厂商合同测试全部由独立 Adapter 包拥有；具体工作线和业务测试全部由独立插件包拥有。
-3. `CORE_REWRITE`、`ADAPTER_OWNED`、`PLUGIN_OWNED`、`LEGACY_DELETE` 四类处置均有可审计提交记录。
-4. 核心和每个已交付 Adapter/插件包分别拥有独立、明确、可重复的测试入口。
+1. 核心 `tests/` 只证明 SPEC 定义的 WES 基础能力、通用可靠性和 Phase 4 公共 Adapter 合同。
+2. 具体 WMS method/DTO/result 合同测试由对应获批 WMS 业务实施计划拥有；工作线执行映射和对象推进测试由独立插件包拥有；
+   供应商内部协议由供应商一致性验收拥有。
+3. `CORE_REWRITE`、`SUPPLIER_OWNED`、`PLUGIN_OWNED`、`LEGACY_DELETE` 四类处置均有可审计提交记录。
+4. 核心/公共 Adapter、各获批 WMS 业务实施计划、供应商一致性验收和每个已交付插件包分别拥有独立、明确、可重复的测试入口。
 5. 核心测试预算、架构门禁和受影响 HEAVY 验收全部通过。

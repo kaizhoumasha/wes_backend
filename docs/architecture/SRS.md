@@ -3,13 +3,14 @@
 > **项目名称**: 休斯顿P9 智能仓储执行系统 (Houston P9 Intelligent Warehouse Execution System - WES)
 > **系统定位**: 独立部署的集成化控制中台 (Independent Integration & Control Middleware)
 > **文档版本**: 3.0 (Architecture Convergence)
-> **日期**: 2026-08-03
+> **日期**: 2026-08-07
 > **状态**: Current Requirements Baseline
 >
 > **文档层级**: 本文是产品范围、参与方职责和功能/非功能需求真源；
 > `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
 > 负责把这些需求收敛为当前目标架构；
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 只负责实施顺序。
+> `docs/integration/third_party_integration_whitepaper.md` 是所有固定式设备供应商长期遵循的顶层统一接口（wire）真源。
 > SRS 不规定旧 Runtime、旧插件框架或兼容迁移路径；出现实现机制冲突时，以当前顶层 SPEC 为准，并同步修订本文需求表述。
 
 ## 1. 引言 (Introduction)
@@ -29,11 +30,13 @@
 
 * **业务解耦**: 将自动化执行策略、设备作业逻辑从企业级 SAP/WMS 中剥离，由本中台统一协调；库存、货架资源与 RCS 调度权仍由现有 WMS 持有。
 * **多设备协同**: 当前直接协调已确认工作线所需的 ECS/WCS/视觉类作业设备；AGV/CTU/RCS 任务由 WES 生成业务需求并提交 WMS，由 WMS 转发执行。贴标、X-Ray、LCR 等设备仅保留需求边界，待对应工作线与厂商合同获批后交付。
-* **边界化接口**: 提供版本化 RESTful API 供上层系统调用，通过厂商专属 Protocol Adapter 对接 WES 直连设备；搬运/交换/旋转类任务通过 WMS 接口转发。
+* **边界化接口**: 提供版本化 RESTful API 供上层系统调用；所有固定式设备供应商适配 WES 统一接口（wire），搬运/交换/
+  旋转类任务通过 WMS 接口转发。
 * **核心域**:
   * **入库执行**: 码头收货、IQC 路由、上架策略执行。
   * **库存代理**: 采用 **按需动态查询 (On-Demand Query)** 模式，实时调用 WMS 接口获取库存数据，不维护本地库存副本。
-  * **出库协同**: 接收 WMS 下发的目标项任务；库存与来源由 WMS 在任务启动时确定，WES 只协调作业期执行，不计算波次或选择库存来源。
+  * **出库协同**: 接收 WMS 下发的 `PickingTask` 来源 Cell 集合；WMS 在启动时锁定 Cell，逐盘身份在设备扫码后晚绑定。
+    WES 只协调作业期执行，不计算波次或选择库存来源。
 
 ### 1.3 定义、首字母缩写和缩写 (Definitions)
 
@@ -76,13 +79,15 @@
    * **网络依赖性**: 系统作业强依赖于上游 WMS 的在线状态。若与 SAP/Legacy WMS 断网，系统将执行以下策略:
      * **立即暂停**: 所有涉及库存变动的业务任务 (收货、发料、装箱等)
      * **外部续行**: 已由 WMS 接收并转发的纯物理搬运任务可由外部系统自行完成；WES 暂停新的搬运/交换需求提交，并等待回调或对账恢复。
-     * **证据驱动恢复**: 网络恢复后先查询未决 `TransportTask`；未决 `WmsConfirmation` 保留内部原
+     * **证据驱动恢复**: 网络恢复后继续可靠接收未决 `TransportTask` 的异步终态；已超过结果截止时间或提交结果未知的任务
+       保留原身份进入人工对账。未决 `WmsConfirmation` 保留内部原
        `dispatch_key`，仅当逐 operation 合同明确批准安全重提且对象显式 `retryable=true` 时，才映射为该 operation 唯一获批
        的 wire 幂等/关联字段后重提。取得终态证据后重新执行对象级准入；条件不满足、结果未知或证据冲突时保持暂停并
        进入人工对账。
 2. **API 驱动架构 (API-Driven)**:
    * **API First**: 所有功能（包括前端 UI）均通过明确版本的 RESTful API 访问。
-   * **边界合同**: 上层业务接口由 WMS 合同定义；设备接口由厂商 Adapter 映射。核心不定义要求所有 ERP 或硬件厂商适配的通用任务协议。
+   * **边界合同**: 上层业务接口由 WMS 合同定义；所有设备供应商必须适配 WES 第三方设备统一接口（wire）。具体设备
+     `task_type`、`event_type` 和 Payload 由获批设备合同附录拥有，不提升为核心全局枚举。
 3. **显式执行扩展 (Explicit Execution Extension)**:
    * 不同工作线通过独立代码插件实现 WMS 业务结果到设备执行动作的映射并静态注册；不提供本地业务规则引擎、
      Python/Lua 动态脚本、声明式工作流 DSL、低代码规则引擎或运行时插件发现。
@@ -105,12 +110,14 @@
 >
 > - **RCS/AGV/CTU 调度**: 本版本仍由现有 WMS 统一调度。WES 只生成搬运、交换、旋转等业务需求并提交给 WMS，由 WMS 转发给 RCS/AGV/CTU；这类交互由 Phase 4 `Transport Port` 及其 WMS 转发适配器承接，Phase 3 Client 只提供 HTTP 访问。WES 不直接调用 RCS，不直接下发 AGV/CTU 任务。
 > - **PDA 交互**: PDA 仅对接 WMS 应用；若 WES 需要感知 PDA 结果/事件，由 WMS 推送/同步给 WES。
-> - **自动化设备**: 当前只交付顶层 SPEC §3.1 已确认工作线所需的 ECS/WCS/视觉类直连接入。贴标、X-Ray、LCR 和自动打印仍是未来需求；对应工作线获批后仍遵循“作业设备经 WES Adapter 接入、WMS 不直连设备”的边界。
+> - **自动化设备**: 当前只交付顶层 SPEC §3.1 已确认工作线所需的 ECS/WCS/视觉类直连接入。贴标、X-Ray、LCR 和自动打印仍是未来需求；对应工作线获批后通过 WES 第三方设备统一接口及获批设备合同附录接入，WMS 不直连设备。
 > - **标签打印**: 当前只保留合同边界。进入交付批次后，WES 生成打印模板/ZPL；自动打印设备由 WES 下发，人工/非自动打印由 WMS 获取模板并回执结果。
 
 ### 3.1 硬件清单与基础配置 (Hardware & Configuration)
 
-下表是整体产品需求涉及的硬件清单，不等于当前交付清单。当前只实现顶层 SPEC §3.1 与十一阶段总控明确批准的工作线；其余硬件在对应工作线获批后再由独立 Adapter 和执行插件承接：
+下表是整体产品需求涉及的硬件清单，不等于当前交付清单。当前只实现顶层 SPEC §3.1 与十一阶段总控明确批准的工作线；
+其余硬件只有在对应工作线获批后，才通过 WES 第三方设备统一接口、获批设备合同附录、明确的 endpoint/device 绑定和
+供应商一致性验收接入；仅在需要业务执行映射时交付工作线插件：
 
 | 区域 (Area)        | 关键硬件 (Hardware)      | WES 协调职责 (Coordination Role)                                               |
 | :----------------- | :----------------------- | :----------------------------------------------------------------------------- |
@@ -176,7 +183,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * 生产发料: 料箱 -> 人工拆箱 -> 料盘放至生产货架 -> 产线上料。
   * 生产退料: 产线下料 -> 料盘放至退货货架 -> 拆飞达 -> 装入料箱 -> 退库。
 * **管理特点**：
-  * **料盘级执行证据**: WES 保存检测、贴标、人工确认，以及 WMS ACK/status/typed terminal result 形成的 PKG、Rack_ID、Side、Slot_ID 执行投影或证据；真实储位归属、库存可用性和 A/B 面资源授权以 WMS 为准。
+  * **料盘级执行证据**: WES 保存检测、贴标、人工确认，以及 WMS 提交 ACK 与类型化终态结果形成的 PKG、Rack_ID、Side、Slot_ID 执行投影或证据；真实储位归属、库存可用性和 A/B 面资源授权以 WMS 为准。
   * **A/B 面证据投影**: WES 可展示不同产线或工单的执行证据分布，但不作为生产货架或退货货架 A/B 面真实占用主账。
 
 ---
@@ -270,36 +277,47 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 #### 3.3.0 WES 核心基础平台 (WES Core Foundation Platform)
 
-为支撑后续章节中的 SMT 智能装箱 (3.3.1)、混合入库 (3.3.2) 和生产发料 (3.3.3)，WES 必须提供共享的设备命令可靠性基础能力。核心、厂商 Adapter 与 WorkLine 插件的所有权以
-`docs/architecture/device-command-contract.md` 为准：核心只负责持久化、幂等、ACK/CALLBACK 证据和通用诊断；
-具体厂商命令与 Payload 由 Adapter 拥有，WMS 业务结果由对应业务合同拥有，Phase 3 只提供 WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
+为支撑后续章节中的 SMT 智能装箱 (3.3.1)、混合入库 (3.3.2) 和生产发料 (3.3.3)，WES 必须提供共享的设备命令可靠性基础能力。核心、
+设备统一接口与 WorkLine 插件的所有权以 `docs/architecture/device-command-contract.md` 为准：核心只负责持久化、幂等、
+ACK/CALLBACK 证据和通用诊断；供应商 ECS/网关直接实现统一接口，WMS 业务结果由对应业务合同拥有，Phase 3 只提供
+WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 **1. 控制系统集成 (Control System Integration)**
 
 *   **架构约束**: WES 不直接控制底层 PLC、传感器或电机。所有物理设备的控制由硬件供应商提供的控制系统 (如装箱流水线控制系统、机构件流水线控制系统) 负责封装。
-*   **通信协议**: 采用 HTTP/HTTPS 接口进行消息交互；具体认证、DTO 和 wire contract 以厂商原始文档及对应 Adapter 合同为准。
+*   **通信协议**: 采用 `docs/integration/third_party_integration_whitepaper.md` 定义的 HTTP/JSON 统一接口（wire）；
+    纯局域网目标协议不增加供应商私有认证分支。供应商原始文档只作为设备合同附录输入。
 *   **逻辑位置映射**: WES 仅下发逻辑位置ID (如 `STATION_A`, `RACK_01`)，由控制系统负责解析为物理坐标，实现业务逻辑与物理参数的解耦。
 
 **2. 异步消息交互 (Async Message Interaction)**
 
 *   **交互模式**: 采用 **"下发(Command) -> 应答(Ack) -> 回调(Callback)"** 的三段式机制。
     *   **WES**: 在外部调用前持久化命令身份、目标设备、deadline 和关联对象；同步 ACK 只表示厂商控制系统已接纳请求。
-    *   **控制系统**: 物理动作完成后按厂商合同返回最终结果；Adapter 将 ACK、结果和事件映射为核心可识别的证据。
-*   **业务动作需求**: 系统需要支持抓取、放置、扫码、加工/贴标等业务动作；具体厂商命令名和 Payload 不固化为 WES 核心枚举，由对应 Adapter 显式映射。
+    *   **控制系统**: 物理动作完成后按统一接口和获批设备合同附录返回最终结果。
+*   **业务动作需求**: 系统需要支持抓取、放置、扫码、加工/贴标等业务动作；具体设备 `task_type` 和 Payload 不固化为
+    WES 核心枚举，由对应设备合同附录显式定义。
 
 **3. 逻辑端口要求 (Logical Port Requirements)**
 
-*   **下行能力**: Adapter 根据实际厂商合同提供命令提交；核心不规定 Endpoint、方法名或 DTO。本版本不要求设备命令状态查询或取消能力。
-*   **上行能力**: Adapter 接收厂商 ACK、最终结果和设备事件并映射为规范证据；厂商结果值不直接进入核心状态枚举。
-*   **幂等性保障**: 核心为每条 `DeviceCommand` 保持稳定身份并阻止重复调度；Adapter 显式声明厂商侧幂等能力。命令可能已到达设备但结果未知时，不得仅凭相同命令身份自动重放物理动作。
+*   **下行能力**: 统一提供 `POST /api/v1/device/command` 与
+    `GET /api/v1/device/status?device_code={device_code}`；顶层协议不提供通用取消接口。
+*   **上行能力**: 统一提供 `POST /api/v1/callback/result` 与 `POST /api/v1/callback/event`；供应商结果值不直接扩张核心状态枚举。
+*   **幂等性保障**: 核心为每条 `DeviceCommand` 保持稳定身份并阻止重复调度；供应商必须按 `command_code` 保证重复请求不
+    重复执行物理动作。同一稳定身份始终绑定同一规范化语义载荷，即使首次请求被明确拒绝也不得改载荷复用。命令可能已到达
+    设备但结果未知时，不得仅凭相同命令身份自动重放。
 
 **4. 重试与异常处理 (Retry & Exception Handling)**
 
-*   **安全重提边界**: 只有逐 operation 厂商合同明确保证该调用可安全重复，且 `DeviceCommand` 等可靠对象显式
-    `retryable=true` 时，可靠对象才可保留原身份重新提交；否则保持暂停并进入人工对账。Adapter 每次调用只执行一次发送，
-    不拥有 retry/backoff 配置。
+*   **安全重提边界**: 能够证明请求尚未离开 WES，或设备明确返回统一接口定义的“未接纳”响应时，可靠对象才可保留原
+    `command_code` 和原载荷重新提交；合同错误修正后载荷摘要不变才沿用原身份，摘要改变则在明确未接纳前提下创建新身份。
+    请求可能已送达、已 ACK、返回幂等冲突或结果未知时保持暂停并查询、等待回调或人工对账，禁止换身份绕过。设备命令出站
+    HTTP 基础层每次调用只执行一次发送，不拥有自动重试配置。
 *   **未知结果处理**: 请求一旦可能被控制系统接收但未取得确定结果，命令进入 `TIMED_OUT`/远端结果未知状态，保留证据并暂停受影响对象，等待匹配的晚到 CALLBACK；无法闭合时进入人工对账，不自动重发。
-*   **状态监控**: Adapter 根据厂商合同提供心跳或状态证据，核心据此维护通用 `DeviceRuntimeProjection`；不得要求所有厂商实现 WES 命名的健康检查接口。
+*   **状态监控**: 所有供应商实现按 `device_code` 寻址的统一设备状态查询，并把运行模式映射为共享 `mode`、运行状态映射为
+    共享 `status`；维护态属于 `mode=MAINTENANCE`，不得混入 `status`。状态响应同时返回实际运行的 `contract_key` 和
+    `contract_version`，并禁止缓存；状态观察过期或与活动 `LineRunEpoch` 不匹配时新命令准入失败关闭。命令及两类回调也携带
+    对应合同身份，用于识别延迟旧版本消息。核心据此维护通用 `DeviceRuntimeProjection`；状态查询只用于准入、诊断和对账，
+    不替代最终 CALLBACK。
 
 **5. 设备层次结构与基础数据 (Device Hierarchy & Master Data)**
 
@@ -323,10 +341,10 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 **6. 执行对象与设备命令管理 (Execution and Device Command Management)**
 
 *   **所有权分离 (Ownership Separation)**:
-    *   WMS 决定业务执行对象的优先级、来源、目标、路线、NG/等待/替代和业务终态；WorkLine 插件只将该封闭结果
-        映射为下一步执行 Decision。核心不得用某条工作线的业务状态证明通用设备可靠性。
+    *   WMS 决定业务执行对象的优先级、来源、目标、业务路线、业务异常分类、替代来源和业务终态；WorkLine 插件校验
+        封闭结果并决定设备等待、发送、暂停、NG 隔离或对账等执行 Decision。核心不得用某条工作线的业务状态证明通用设备可靠性。
     *   核心负责 `DeviceCommand` 的持久化、设备准入、幂等、关联、deadline、ACK/CALLBACK 证据和通用诊断。
-    *   Adapter 只负责厂商协议映射和合同校验，不解释业务优先级或推进业务对象。
+    *   供应商 ECS/网关负责把内部协议收敛为统一接口；WES 统一接口层只校验公共包络和设备附录，不解释业务优先级或推进业务对象。
 
 *   **设备命令生命周期 (Device Command Lifecycle)**:
     *   核心通用生命周期为 `PENDING / DISPATCHED / ACKNOWLEDGED / SUCCEEDED / FAILED / TIMED_OUT`。
@@ -340,9 +358,10 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     *   晚到结果必须幂等追加为证据；只有满足当前对象关联和安全准入条件时才能推进业务状态。
 
 *   **并发控制 (Concurrency Control)**:
-    *   核心根据设备运行投影和配置限制单设备可接纳的命令数，防止设备过载。
-    *   未通过设备准入的 Decision 保持等待，不直接发送；重新调度前必须再次读取当前投影。
-    *   业务对象的总序或下一任务启动授权由 WMS 给出；设备空闲只触发执行准入，不代表核心或插件选择其他业务任务。
+    *   每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；只有 `mode=AUTO`、`status=IDLE` 且无活动命令时才能发送。
+    *   ECS 以原子方式接纳命令；同一 `device_code` 竞争失败返回 `429 CAPACITY_EXCEEDED`。不同 `device_code` 可以并行执行。
+    *   未通过设备准入的 Decision 保持等待，不直接发送；重新调度前必须再次读取当前投影并重新校验状态新鲜度。
+    *   业务对象的总序及队列参数更新由 WMS 给出；设备空闲只触发执行准入，不代表核心或插件选择其他业务任务。
 
 #### 3.3.1 SMT 智能装箱协调 (Smart Kitting Coordination)
 
@@ -358,18 +377,18 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * **执行**: WMS 结果要求补给时，WES 创建对应搬运需求并提交 WMS，由 WMS 转发 RCS 执行；WES 不自行选择货架。
   * **ECS 握手**:
     * ECS 机械臂扫描空架所有箱号。
-    * ECS Adapter 将厂商扫描事件转换为包含料箱身份列表的入站证据；厂商事件名和 DTO 由对应 Adapter 合同定义。
+    * ECS 按设备合同附录上报包含料箱身份列表的统一事件；供应商内部事件名和 DTO 不进入 WES。
     * WES 基于 ECS 证据确认当前执行快照无误后，允许本次装箱作业启动；该确认不代表 WES 接管全局空架库存或物理库位权威。
 
   **Step 2: 视觉识别与分箱校验 (Vision & Binning Validation)**
 
   * **动作**: 料盘沿流水线输送 -> 到位触发视觉系统扫描。
   * **交互**:
-    * ECS Adapter 将厂商扫描事件转换为包含 PKG、尺寸和厚度的入站证据；核心不识别厂商事件名。
+    * ECS 按设备合同附录上报包含 PKG、尺寸和厚度的统一事件；核心不识别供应商内部事件名。
   * **WMS 业务结果**: WES 提交 PKG、GRN、尺寸、厚度、扫描证据和当前作业期投影；WMS 返回允许/拒绝/等待、唯一目标料箱
     料格和必要业务参数。WES 不在本地执行归属、混料、尺寸业务资格或料格分配算法。
   * **逻辑动作**: WES 校验 WMS 结果的关联、时效和物理可执行性后，创建包含唯一目标料箱、目标货格和预期堆叠高度的
-    `DeviceCommand`，由 ECS Adapter 映射为厂商命令和 Payload。
+    `DeviceCommand`，按设备合同附录的 `task_type` 和 `params` 通过统一接口下发。
     * `SlotID` 在 SMT 粗分机场景必须拆分为两级位置:
       * **料架货位**: `rack_id + rack_slot_code(A/B/C/D) + rack_slot_location_code`
       * **料箱货格**: `bin_id + bin_cell_location`
@@ -378,7 +397,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 **Step 3: 异常与满架 (Exception & Full)**
 
-* **装不进**: 若 ECS Adapter 返回“物理无法放入”的规范终态证据，WES 隔离当前执行并报告 WMS，等待 WMS 返回新的业务处置；
+* **装不进**: 若 ECS 按统一接口返回“物理无法放入”的规范终态证据，WES 隔离当前执行并报告 WMS，等待 WMS 返回新的业务处置；
   插件不得重新分配。
 * **初次无货架**: SMT 粗分机开工或当前物料执行恢复时，WMS 返回“等待货架/补给”结果后，核心只暂停当前
   `MaterialExecution`，并通过 `TransportTask` 提交 WMS 指定的补给需求。
@@ -389,7 +408,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   `release_reason_code=NO_COMPATIBLE_OR_EMPTY_CELL`、`bin_snapshots`。
 * 为当前 `MaterialExecution` 请求新货架补给；核心据此创建 `TransportTask`，保存稳定 `dispatch_key`、
   `reason_code`、`pkg_id` 和恢复判定所需的工作线/位置关联。
-* **新货架到位恢复**: 只有 WMS ACK/status/typed terminal result、对应 InboundEvidence 和 PositionProjection
+* **新货架到位恢复**: 只有匹配的 WMS 类型化终态结果、对应 InboundEvidence 和 PositionProjection
   共同确认新货架已到达目标位置，并取得 WMS 新的封闭业务结果后，插件才能继续当前 `MaterialExecution`；旧货架处置完成
   不得替代新货架到位证据。
   只有出料机械臂成功把当前料盘放入料格后，当前物料执行才完成。
@@ -409,7 +428,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
      * WMS 负责判断五层货架空箱资源、交换区空位、排队和 CTU/AGV 动作闭环；WES 不本地锁定 `Empty_Bin`。
      * WES 根据源单层货架和释放快照创建满箱交换 `TransportTask` 并提交给 WMS，由 WMS 转发 RCS/CTU 执行原子动作；具体 WMS operation 名称由北向合同定义。
-     * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、权威 status、资源投影和回写证据。
+     * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、权威终态、资源投影和回写证据。
      * **职责边界**: 旧货架处置只决定该货架的后续搬运或交换需求，不恢复 SMT 粗分机当前物料执行，也不替代新货架补充。
        当前 `MaterialExecution` 的恢复必须由其关联 `TransportTask` 的权威终态与位置投影共同驱动。
   3. **流水线零散入库 (Pipeline Picking Execution)**:
@@ -417,7 +436,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
      * **调度**: WES 按 WMS 结果为指定 Target Bin 创建到流水线的搬运需求，由 WMS 转发 RCS 执行。
      * **拣选动作**:
        * ECS 扫描流水线上的 Target Bin。
-       * WES 创建包含来源货架、目标料箱和数量的逻辑 `DeviceCommand`，由 ECS Adapter 映射为厂商 Payload。
+       * WES 创建包含来源货架、目标料箱和数量的逻辑 `DeviceCommand`，按设备合同附录通过统一接口下发。
      * **执行**: ECS 机械臂执行抓取放入。
 
 #### 3.3.3 SMT 生产发料协调 (SMT Production Issue)
@@ -425,16 +444,24 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 * **场景**: SAP 工单 -> 自动/人工线发料。
 * **任务驱动**:
 
-  1. **业务拆解**: WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成目标项 `PickingTask`；排队时不提前绑定来源或目标货架，WES 不读取或解释业务单据，也不生成波次。
-  2. **来源确定**: WES 选中任务准备启动时，由 WMS 一次性确定每个目标项的完整 6 合 1/PKG、唯一 `PkgID`、精确物理来源和 LIFO 顺序；任一项不完整时任务等待库存且不申请目标货架。WES 不自行选料、补齐或重排来源。
-  3. **任务调度**: WMS 提供无歧义总序或明确的下一任务启动授权；WES 在工作位空闲且授权任务通过本地执行准入后启动，
-     不自行排序、跳选或抢占。
-  4. **自动线执行**: 完整来源确定后才申请目标货架；一台目标生产转运货架由一个任务独占，双面目标按约定顺序执行，单面目标只处理指定面，不执行空转；来源货架以 A 面进入工作位。
-  5. **异常与补料**: WES 隔离 NG 料箱并通知 WMS；替代来源、取消及取消后的货架用途由 WMS 决定。执行中无替代库存时，目标架进入缺料待补缓存并等待 WMS 明确恢复；任一执行结果未知时暂停整张任务，但不连带其他任务或工作线。
-  6. **完成**: 每个料盘形成物理完成事实后立即回传 WMS；全部目标项完成后再通知 WMS“拣货完成”，并等待目标架移出工作位的物理证据。
+  1. **业务拆解**: WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成 `PickingTask`；任务只列出初始来源
+     `pick_cells[]`，不携带 `PkgID`、六合一码、目标架或目标储位。WES 不读取或解释业务单据，也不生成波次。
+  2. **启动锁定**: WES 选中任务准备启动时，请求 WMS 原子锁定完整初始 Cell 集合。WMS 同步返回锁代际、目标架容量、
+     初始目标面窗口和搬运目标；未取得 `START_GRANTED` 前，WES 不创建设备或搬运动作。
+  3. **任务调度**: WMS 提供无歧义总序，并通过队列更新调整未开始任务；WES 在工作位空闲且队首任务通过本地执行准入后
+     启动，不自行排序、跳选或抢占。
+  4. **逐盘晚绑定**: 设备从 Cell 顶部取盘并扫描完整六合一码；WES 把不可变扫码证据提交 WMS。WMS 返回
+     `ACCEPT | REJECT | WAIT`、稳定业务异常分类，以及接受时的目标储位和 `demand_state`；WES 据此决定物理动作。
+  5. **并行执行**: 目标架、可选退料架和五层货架可并行搬运；五层货架到位后 CTU 按冻结批次投箱，滚筒线按三段缓存
+     背压推进，机械臂按共享资源串行执行逐盘动作。
+  6. **异常与补料**: WES 形成料盘、Cell 或 Bin NG 的稳定执行证据并完成安全物理隔离；存在来源缺口时，WMS 决定
+     不追加来源，或追加并锁定新 Cell。任务内未执行 Cell 继续按原成员关系执行。
+  7. **完成**: 每个料盘形成物理位置事实后可靠回传 WMS；全部已接纳 Cell 完成时，WES 报告
+     PickingTask 本地执行完成。Rack、Bin、Transport 和工作线清场保持独立生命周期，不参与 PickingTask 完成聚合。
 
-多 Cell 晚绑定候选方案见 `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md`。该文档仍为
-`Draft`，未完成 WMS 书面复审前不构成已批准业务或 wire 需求，不得据此实施具体 API 或插件。
+自动出库的对象、不变量和验收场景以
+`docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 为业务设计真源；具体 HTTP Payload 和返回 JSON
+以 `docs/contracts/wms-outbound-picking-task-integration-requirements.md` 的评审基线为准。
 
 ---
 
@@ -473,15 +500,14 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **1. 库存查询 (Inventory Query)**
 
   * **场景**: 经业务合同确认的非 `PickingTask` 消费者需要核对 WMS 权威库存事实。
-  * **能力**: 通过对应业务迭代批准的 operation 和类型化 DTO 获取 authority snapshot；Method、Path、DTO、预算和业务错误
-    由该 operation 的业务合同冻结。合同未批准前不得实现具体 API。
+  * **能力**: 使用对应业务合同批准的库存查询 operation 获取类型化 authority snapshot；具体 Method、Path、DTO 和预算
+    由该业务合同定义，`docs/contracts/wms-northbound-interaction-contract.md` 只定义共享 Client 使用标准。
   * **缓存策略**: 不做跨请求缓存；同一 execution 仅复用该次查询返回的 authority snapshot。
 
   **2. 库存预留 (Inventory Reservation)**
 
   * **场景**: 经业务合同确认的非 `PickingTask` 消费者需要由 WMS 锁定库存。
-  * **能力**: 通过对应业务迭代批准的预留/释放 operation 申请或释放；SRS 不预设 operation identity、Path 或 DTO，
-    合同未批准前不得实现具体 API。
+  * **能力**: 使用对应业务合同批准的 operation 申请和释放预留；SRS 不重复定义 operation identity、Path 或 DTO。
   * **响应**: 现有 WMS 返回 `ReservationID`，并在 WMS 侧锁定库存；WES 只保存预留引用和执行证据。
   * **释放机制**:
     * **释放请求**: 任务完成或取消时，WES 向 WMS 提交预留释放需求并保存释放引用、回执和执行证据；预留锁定与最终释放事实由 WMS 持有。
@@ -506,13 +532,14 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 #### 3.4.2 WMS 业务决策与 WES 执行映射 (Business Decision and Execution Mapping)
 
-* **唯一业务 owner**: WMS 负责装箱资格与目标料格、来源、优先级、路线、冷热区、A/B 面、交换/零散入库模式、
-  NG/等待/替代和业务终态。规则阈值与算法不在 WES 代码、配置或插件中复制。
+* **唯一业务 owner**: WMS 负责装箱资格与目标料格、来源、优先级、业务路线、冷热区、A/B 面、交换/零散入库模式、
+  业务异常分类、替代来源和业务终态。规则阈值与算法不在 WES 代码、配置或插件中复制；物理等待、NG 路由、暂停和对账
+  由 WES 根据业务结果与执行证据决定。
 * **显式合同**: 每个真实消费者通过对应业务模块的具名方法提交当前对象身份、已发生物理事实和必要执行证据；业务模块复用 Phase 3 `WmsClient`，
   WMS 返回封闭业务结果、稳定原因码、关联身份和版本/时效元数据；不得建设 generic `decide`、规则 DSL 或动态 registry。
 * **WES 执行边界**:
   * 校验 WMS 结果的合同、关联、版本、时效和当前物理可执行性。
-  * 按结果创建 `DeviceCommand`、`TransportTask` 或 `WmsConfirmation`，并根据设备忙闲、并发、deadline、安全和终态证据
+  * 按结果创建 `DeviceCommand`、`TransportTask` 或 `WmsConfirmation`，并根据单设备单活动命令准入、deadline、安全和终态证据
     决定等待、发送、暂停、隔离或对账。
   * 维护 `rack_slot_code`、`bin_cell_location`、`Used_Depth`、`Remaining_Capacity` 等作业期投影，供执行校验和 evidence
     回传；这些投影不能产生或改写业务结果。
@@ -525,8 +552,9 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 * **职责**: 上游 WMS 结果是业务权威；具体 WorkLine 插件校验其关联和物理可执行性后映射为封闭执行 Decision，核心分别推进 `MaterialExecution`、`BinExecution`、`DeviceCommand`、`TransportTask` 和 `WmsConfirmation`。
 * **生命周期所有权**: 不建立统一 Task 状态机。每类执行对象只拥有自身状态、幂等键、终态证据和恢复规则，禁止用一个通用状态覆盖设备命令、搬运履约和 WMS 确认。
 * **依赖表达**: 依赖通过明确的对象关联、权威终态证据和投影准入条件表达，不建设可配置 DAG、通用步骤表或跨工作线任务引擎。
-* **并发边界**: 核心只执行对象级和设备级准入；业务优先级、节拍、队列总序和路线由 WMS 决定，真实区域容量、AGV
-  拥堵、运输并发、路径规划和避让由 WMS/RCS 判断。插件不得因设备空闲跳选另一业务对象。
+* **并发边界**: 核心执行对象级准入，并强制每个独立命令资源 `device_code` 最多一个活动命令；不同 `device_code` 之间允许对象级流水并行。业务
+  优先级、节拍、队列总序和路线由 WMS 决定，真实区域容量、AGV 拥堵、运输并发、路径规划和避让由 WMS/RCS 判断。插件不得
+  因设备空闲跳选另一业务对象。
 * **通信恢复**: 未发生 WES 进程重启时，未决可靠对象取得权威终态证据、WMS 返回新的有效业务结果并重新通过对象级
   执行准入后，插件可以继续映射执行；不保存通用 Step checkpoint，也不从步骤号继续执行。
 * **重启恢复**: WES 进程重启后只读取持久化证据用于诊断和人工清线，不在原 `LineRunEpoch` 重新判定或恢复
@@ -539,8 +567,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 本模块处理 **高值物料 (High-Value)**、**MSD 物料 (Moisture Sensitive)**、**PCB 物料** 和 **机构件 (Mechanical Parts)** 的特殊流程。
 
 > **交付范围：未来需求。** 本节保留产品需求，但不属于当前顶层 SPEC §3.1 和十一阶段架构收敛的实现或验收范围。
-> 当前不得预建空插件、SFC Adapter 或通用特殊物料平台；进入实施前必须基于真实工作线与厂商合同修订顶层
-> SPEC、总控计划，并为对应执行插件和 Adapter 单独批准实施计划。
+> 当前不得预建空插件、SFC Adapter 或通用特殊物料平台；进入实施前必须基于真实工作线和供应商资料修订顶层
+> SPEC、总控计划，批准设备合同附录，并为对应执行插件单独批准实施计划。
 
 #### 3.5.1 高值物料入库协调 (High-Value Material Inbound)
 
@@ -594,16 +622,16 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     * WES 创建送往拆膜区的 `TransportTask` 并提交 WMS。
     * 人工拆围膜后，WMS PDA 记录作业结果；WES 再创建送往拆包线的 `TransportTask`，由 WMS 转发 RCS 执行。
   * **箱级校验**:
-    * ECS Adapter 将包含 PKG 与箱条码的扫描结果转换为入站证据，厂商事件名由 Adapter 合同定义。
+    * ECS 按设备合同附录上报包含 PKG 与箱条码的统一扫描事件。
     * WES 校验: `PKG.Material == WorkOrder.Material`。
   * **件级追溯**:
-    * ECS 扫描机构件条码后，Adapter 将 PKG 与部件序列号关联转换为入站证据。
+    * ECS 扫描机构件条码后，按设备合同附录上报 PKG 与部件序列号关联证据。
     * WES 保存包含工单、PKG、部件序列号和时间戳的追溯证据。
     * WES 推送追溯数据至 SFC (Shop Floor Control)。
 
   **3. Magazine 调度与产线上料 (Magazine Dispatch)**
 
-  * **装满触发**: ECS Adapter 上报料架已满的规范证据后，WES 创建送往生产 Buffer 的 `TransportTask` 并提交 WMS。
+  * **装满触发**: ECS 按统一接口上报料架已满的规范证据后，WES 创建送往生产 Buffer 的 `TransportTask` 并提交 WMS。
   * **空 Magazine 回流**: RCS/WMS 自主调度空 Magazine 回自动线 (WES 不干预)。
   * **产线需求驱动**: WES 接收 SFC 的类型化料架需求后，创建 Buffer 到产线的搬运需求并提交 WMS。
 
@@ -611,9 +639,9 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   * **触发条件**: ECS 扫描栈板，确认 `IsEmpty = True`。
   * **回收流程**:
-    * ECS Adapter 将包含栈板身份的空栈板事实转换为入站证据。
+    * ECS 按统一接口上报包含栈板身份的空栈板事实。
     * WES 创建送往空栈板区的 `TransportTask` 并提交 WMS。
-    * WES 记录空栈板回收执行投影与 WMS ACK/status/typed terminal result evidence；真实位置和占用以 WMS/RCS 为准。
+    * WES 记录空栈板回收执行投影与 WMS 提交 ACK、类型化终态结果证据；真实位置和占用以 WMS/RCS 为准。
   * **统一边界**: 转运、补给、空架回流和空栈板回收均表达为 WMS 搬运需求；AGV/CTU/RCS 任务由 WMS 转发并闭环。
 
 ---
@@ -623,8 +651,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 本模块处理产线退料的 **质量闭环 (Quality Loop)**，确保退料经过清点、测试后重新入库。
 
 > **交付范围：未来需求。** 本节不属于当前十一阶段计划的最终验收范围。LCR、X-Ray、贴标和退料工作线的真实
-> 设备合同明确后，必须先修订顶层 SPEC 和总控计划，再由独立执行插件与厂商 Adapter 同包交付代码、fixture
-> 和测试；核心平台不得用本节业务场景证明基础能力。
+> 设备合同明确后，必须先修订顶层 SPEC 和总控计划，再批准设备合同附录并由独立执行插件交付代码、fixture 和测试；
+> 供应商 ECS/网关独立通过统一接口一致性验收，核心平台不得用本节业务场景证明基础能力。
 
 #### 3.6.1 退料接收与分类 (Return Receiving & Classification)
 
@@ -644,7 +672,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   WES 不复制阈值或判断规则。
 * **测试流程**:
   1. **PDA 扫描**: 作业员在 WMS PDA 扫描 PKG -> 调用 WMS 获取 `LCR_Required(True/False)` 并回显。
-  2. **测试执行**: 若需测试，连接 LCR 测试仪；对应 Adapter 将厂商结果转换为通过/失败的规范检测证据。
+  2. **测试执行**: 若需测试，连接 LCR 测试仪；供应商 ECS/网关按设备合同附录上报通过/失败的规范检测证据。
   3. **结果处理**:
      * WES 将 LCR 物理检测 evidence 提交 WMS，按 WMS 返回的下一步路线或 NG 处置执行。
      * WES 不根据 Pass/Fail 自行产生业务状态或选择物理去向。
@@ -661,15 +689,15 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **Step 2: X-Ray 清点执行 (X-Ray Execution)**
 
   * **流程**: ECS 扫描 PKG -> 流入 X-Ray 设备 -> 清点。
-  * **数据流**: X-Ray Adapter 将原 PKG 与实际清点数量转换为规范检测证据，厂商消息名和 DTO 不进入核心合同。
+  * **数据流**: X-Ray 设备按设备合同附录上报原 PKG 与实际清点数量，供应商内部消息名和 DTO 不进入核心合同。
 
   **Step 3: 新标签执行 (New Label Execution)**
 
   * **WMS 标签结果**: WES 提交 X-Ray 清点 evidence，WMS 生成新的 PKG 业务身份和完整标签数据；WES 不生成序列号、批次、
     数量或业务日期。
   * **贴标校验**:
-    * WES 创建包含 ZPL 数据的逻辑打印 `DeviceCommand`，由打印 Adapter 映射为厂商请求。
-    * ECS 打印并贴标后扫描新标签，Adapter 将新 PKG 转换为规范入站证据。
+    * WES 创建包含 ZPL 数据的逻辑打印 `DeviceCommand`，按设备合同附录通过统一接口下发。
+    * ECS 打印并贴标后扫描新标签，按统一接口上报新 PKG 证据。
     * WES 只校验扫描到的新 PKG 与 WMS 指定标签身份一致；物料和批次业务资格由 WMS 保证。
     * **贴标要求**: 新标签覆盖旧标签，但保留旧料号可见。
 
@@ -680,7 +708,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     * WES 只执行指定路线，不根据 MSD 属性或其他本地规则改判。
   * **退料货架管理** (基于 3.1.2 定义的退货货架规格):
     * WES 维护退料执行投影或证据视图，例如 `Return_Rack_Execution_View(RackID, Side, SlotID, PKG, Qty, WMS_Confirmation)`；退料库存主账由 WMS 持有。
-    * **料盘级执行证据**: 每个 WMS 授权储位可对应单个料盘，WES 只保存检测、贴标、人工确认，以及 WMS ACK/status/typed terminal result evidence；真实储位归属、库存可用性和 Side/Slot 授权以 WMS 为准。
+    * **料盘级执行证据**: 每个 WMS 授权储位可对应单个料盘，WES 只保存检测、贴标、人工确认，以及 WMS 提交 ACK 与类型化终态结果证据；真实储位归属、库存可用性和 Side/Slot 授权以 WMS 为准。
     * **A 面装满**: WES 根据执行证据提示现场或向 WMS 请求转向货架；是否可转向、目标面和目标货架由 WMS 授权。
     * **全部装满**: WES 提交退料货架转运或补空架需求给 WMS；是否搬运、目标区域和空架补给由 WMS 授权并转发执行。
     * **A/B 面隔离**: 不同产线或工单的退料隔离策略由 WES 提交建议或需求，WMS 返回授权、拒绝或实际执行结果。
@@ -689,7 +717,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 * **WES 数据处理**:
   1. **库存更新**: WES 提交退料检测、贴标和执行证据，由 WMS 完成库存调整并回传确认；库存增加在 WMS 确认后生效。
-  2. **追溯记录**: `Return_Log(Original_PKG, New_PKG, Actual_Count, Return_Date)`。
+  2. **追溯记录**: 原/新 PkgID 谱系与数量清点追溯由 WMS 持有；WES 只保留不可变的当前六合一扫码快照、
+     X-Ray/贴标/执行 evidence，以及执行所需的 WMS 确认。
   3. **SAP 同步**: 由 WMS 负责向 SAP 推送退料数据（WES 不越级上报）。
 
 ---
@@ -751,16 +780,17 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     `retryable=true`，对象才可保留原命令身份或内部 `dispatch_key`，映射到获批的唯一 wire 字段后重新提交；否则保持暂停
     并进入人工对账。Adapter 每次调用只执行一次发送，不拥有 retry/backoff 配置；不得创建新的业务请求身份。
   * **可能已发送**: 已开始外部调用但未取得确定 ACK/终态时，必须标记为远端结果未知。设备命令进入
-    `TIMED_OUT`。`TransportTask` 保留原 `dispatch_key` 等待获批的 status query；`WmsConfirmation` 保留原
+    `TIMED_OUT`。`TransportTask` 保留原身份等待可靠异步终态；提交结果未知或回调超期时进入人工对账。`WmsConfirmation` 保留原
     `dispatch_key`，仅在逐 operation 合同明确批准安全重提且对象显式 `retryable=true` 时，才映射为唯一获批 wire 字段后
     重提；否则保持暂停并进入人工对账，不自动重放物理动作。
   * **已取得终态**: `DeviceCommand` 只接受通过合同校验且关联匹配的最终 CALLBACK；
-    `TransportTask` 只接受 WMS status 返回的 typed terminal result。重复或晚到结果只幂等追加证据。
+    `TransportTask` 只接受 WMS 可靠异步回传、且通过 TransportResult 应用端口校验的类型化终态。重复或晚到结果只幂等追加证据。
 
   **2. 对象级暂停与告警 (Object-Scoped Hold and Alert)**
 
   * 通信异常只暂停与未决命令、搬运任务或确认义务关联的 `MaterialExecution`/`BinExecution`，不得无依据暂停整条工作线。
-  * 自动出库任务中任一物理结果未知时，暂停该任务全部未闭合项；不得连带其他任务或工作线。
+  * 自动出库任务中任一物理结果未知时，只阻止依赖该结果的对象、设备和位置继续执行；PickingTask 保持执行中，
+    不连带无资源依赖的对象、其他任务或工作线。
   * 设备离线、故障或未知状态写入 `DeviceRuntimeProjection`，并保存来源、时间和关联命令；不得由一次业务失败直接推断设备永久离线。
   * 超过对应合同的 deadline 后触发可操作告警，告警必须指向未决对象、证据和对账入口。
 
@@ -768,26 +798,27 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   * 心跳或网络恢复只说明通信重新可用，不证明先前物理动作未执行、已完成或可安全重放。
   * ECS 命令必须等待匹配的晚到 CALLBACK 闭合命令终态；人工对账只处理无法闭合的现场事实，不伪造命令 CALLBACK。
-    RCS/AGV/CTU 任务必须以 WMS status 和 typed terminal result 为权威证据。
+    RCS/AGV/CTU 任务必须以 WMS 可靠异步回传、且经合同校验的类型化终态结果为权威证据。
   * 证据闭合后重新执行当前对象和设备的准入检查；存在冲突、结果未知或位置不一致时继续保持对象级暂停。
 
   **4. 上游 WMS 断连处理 (WMS Disconnection Handling)**
 
   * WMS Client 和 WMS 转发 Transport Adapter 都只执行单次发送，不拥有 retry/backoff、可靠义务或业务终态。
     超时预算、远端幂等和安全重提资格必须由对应外部合同与可靠对象共同约束，不能由 Adapter 自行扩张。
-  * 暂停新的库存查询依赖判定、搬运/交换需求和 WMS 确认提交；已被 WMS 接纳的外部任务可以继续执行。WES 始终以
-    主动 status query 取得 `TransportTask` 终态，关联 callback 只负责唤醒查询。
-  * WMS 恢复后先按已批准合同查询所有未决 `TransportTask`；未决 `WmsConfirmation` 只有在逐 operation 合同明确批准
+  * 暂停新的库存查询依赖判定、搬运/交换需求和 WMS 确认提交；已被 WMS 接纳的外部任务可以继续执行。WES 继续可靠接收
+    WMS 回传的 TransportResult；普通 WMS 业务事件不能终结 `TransportTask`。
+  * WMS 恢复后继续以相同事件身份重传未获成功 ACK 的 TransportResult；WES 对回调超期或提交结果未知的任务保持人工对账。
+    未决 `WmsConfirmation` 只有在逐 operation 合同明确批准
     安全重提且对象显式 `retryable=true` 时，才将内部原 `dispatch_key` 映射到唯一获批 wire 字段后重提。取得终态证据后
     逐对象恢复；条件不满足或结果仍未知时保持暂停，不得全局自动继续被暂停任务。
 
 #### 3.7.4 优先级调整与急料插队 (Priority Adjustment & Urgent Material)
 
-* **场景**: 产线急需某物料，需打断当前作业。
+* **场景**: 产线急需某物料，需要调整尚未开始任务的执行顺序。
 * **WMS 决策、WES 执行**:
-  1. 优先级调整和急料插队只能在 WMS 发起或确认；WMS 返回新的无歧义总序、指定任务启动/暂停/恢复结果及业务版本。
-  2. WES 校验当前设备和对象能否安全执行该结果；不可执行时保持现状、保存冲突 evidence 并反馈 WMS，不跳选其他任务。
-  3. 已经发出的物理动作不得因优先级变化伪造取消或回滚；后续动作等待权威终态后按 WMS 新结果继续。
+  1. 优先级调整和急料插队只能由 WMS 通过新的无歧义总序发起，首版只调整尚未开始的任务。
+  2. 当前正在执行的 PickingTask 继续完成；WES 不自行抢占、跳选或暂停任务。
+  3. 已经发出的物理动作不得因优先级变化伪造取消或回滚；下一任务按 WMS 更新后的总序启动。
 
 #### 3.7.5 数据校验与防错机制 (Data Validation & Error Proofing)
 
@@ -826,7 +857,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * **查询驱动 (Query-Driven)**: WES 需要库存数据时，实时查询现有 WMS。
   * **确认驱动 (Confirmation-Driven)**: WES 完成物理动作后，通知现有 WMS 更新库存。
   * **预留机制 (Reservation)**: WES 通过预留接口请求 WMS 锁定库存，避免超发；锁定事实和释放规则仍由 WMS 拥有。
-  * **RCS 通道 (Phase Boundary)**: 本阶段 RCS/AGV/CTU 仍由现有 WMS 统一调度。WES 只通过 Phase 4 `Transport Port` 提交搬运、交换和旋转需求；Phase 3 Client 只提供 HTTP 访问，不拥有这些动作及其状态、取消或终态合同。
+  * **RCS 通道 (Phase Boundary)**: 本阶段 RCS/AGV/CTU 仍由现有 WMS 统一调度。WES 只通过 Phase 4 `Transport Port` 提交搬运、交换和旋转需求；Phase 3 Client 只提供 HTTP 访问，不拥有这些动作的提交、异步终态或对账合同。
   * **PDA 通道**: PDA 仅与 WMS 交互；WES 如需感知 PDA 作业结果，由 WMS 推送/同步。
 
 #### 3.8.2 集成接口规范 (Integration Interface Specification)
@@ -835,14 +866,14 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   | 需求能力 | Operation identity | 需求边界 |
   | --- | --- | --- |
-  | 库存查询 | 由对应业务合同冻结；未冻结不实施 | 返回可追溯的库存 authority snapshot |
-  | 库存预留/释放 | 由对应业务合同冻结；未冻结不实施 | 锁定、释放和过期事实由 WMS 持有 |
-  | 入库确认 | 由对应业务合同冻结；未冻结不实施 | 接收已发生物理事实对应的可靠确认义务 |
-  | 出库逐项位置与整单完成 | 由对应业务合同冻结；未冻结不实施 | 分别接收逐料盘位置变化事实与独立任务完成事实，不得合并或双写 |
+  | 库存查询 | 由对应业务合同冻结 | 返回可追溯的库存 authority snapshot |
+  | 库存预留/释放 | 由对应业务合同冻结 | 锁定、释放和过期事实由 WMS 持有 |
+  | 入库确认 | 由对应业务合同冻结 | 接收已发生物理事实对应的可靠确认义务 |
+  | 出库逐项位置与整单完成 | 由自动出库北向合同冻结 | 分别接收逐料盘位置变化事实与独立任务完成事实，不得合并或双写 |
 
-  `docs/contracts/wms-northbound-interaction-contract.md` 只定义 Phase 3 共享 HTTP/JSON Client 标准，不定义任何具体业务
-  wire。WMS 业务查询、确认和业务输入的 operation、Method、Path、请求/响应 DTO 与错误合同由对应业务合同拥有；WMS
-  转发的 RCS/AGV/CTU wire 由 Phase 4 Transport 合同拥有。SRS 不维护第二份 wire 合同。
+  `docs/contracts/wms-northbound-interaction-contract.md` 只定义共享 WMS Client 使用标准。每项业务查询、确认和业务输入的
+  operation、Method、Path、请求/响应 DTO 与错误合同由对应业务合同定义；WMS 转发的 RCS/AGV/CTU wire 由 Phase 4
+  Transport 合同拥有。SRS 不维护第二份 wire 合同。
 * **P9 WES 提供的接口能力 (API Capabilities Provided by P9 WES)**:
 
   **1. 执行状态查询 (Execution State Query)**
@@ -853,8 +884,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   **2. 业务输入接口 (Business Input)**
 
   * WMS 通过已确认的类型化业务输入或事件合同触发对应 WorkLine 处理；WES 不提供可接受任意 `task_type` 的通用任务下发接口。
-  * WorkLine 插件只能根据 WMS 封闭业务结果，通过执行 Decision 产生逻辑设备动作和已授权业务参数；核心据此持久化 `DeviceCommand`，Adapter
-    再映射为厂商命令和 wire Payload。上层调用方不得绕过核心可靠性边界或直接构造厂商设备命令。
+  * WorkLine 插件只能根据 WMS 封闭业务结果，通过执行 Decision 产生设备合同附录批准的逻辑动作和业务参数；核心据此
+    持久化 `DeviceCommand` 并按统一接口下发。上层调用方不得绕过核心可靠性边界或直接构造设备命令。
 
 #### 3.8.3 数据一致性保障 (Data Consistency Guarantee)
 
@@ -896,30 +927,28 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 ## 4. 接口需求 (Interface Requirements)
 
 > **需求与合同边界：** Phase 3 只提供共享 WMS HTTP Client；具体业务查询、决策、确认和业务输入随对应业务逐项实现。WMS 转发的搬运、交换、
-> 旋转及其状态/取消由 Phase 4 `Transport Port` 承接。WES 不锁定五层空箱、不交换库存属性、不自动扣减库存，
+> 旋转提交及异步终态由 Phase 4 `Transport Port` 承接；首版不提供状态查询或取消。WES 不锁定五层空箱、不交换库存属性、不自动扣减库存，
 > 只保存执行事实、资源投影、回写证据和对账证据。精确 wire 必须由对应合同批准，不能从本 SRS 或旧实现推定。
 
 ### 4.1 北向接口 (Northbound API - To Existing WMS)
 
 * **定位**: 标准化的业务接入层，接收上游 SAP 通过现有 WMS 转发的单据和主数据。本阶段 WES 不直接调用 SAP。
-* **协议**: RESTful API (HTTPS).
+* **协议**: 局域网 HTTP/JSON；具体 Base URL 由部署配置提供。
 * **核心接口**:
-  * `POST /api/v1/orders/inbound`: 接收收货通知 (由现有 WMS 转发 SAP 单据)。
-  * 自动出库由 WMS 下发 `PickingTask`；创建、优先级更新、替代来源追加、恢复和取消的 method/path/DTO
+  * 收货通知和物料主数据如需由现有 WMS 转发，必须先由各自业务合同批准 method、path 和 DTO；SRS 不预设通用端点。
+  * 自动出库由 WMS 下发 `PickingTask`；创建、优先级更新和替代来源追加的 method/path/DTO
     以独立 inbound wire 合同为准，WES 不接收生产工单生成波次。
-  * `POST /api/v1/master-data`: 接收物料主数据同步 (由现有 WMS 转发 SAP 主数据)。
   * WES 调用现有 WMS 的业务决策、库存查询、预留/释放和入库/出库确认能力；
     `docs/contracts/wms-northbound-interaction-contract.md` 只定义 Phase 3 HTTP/JSON Client 使用标准。具体 operation identity、
     path、DTO 和业务错误必须由对应逐项业务合同批准；合同未批准时不得实现该业务 API。
 
 ### 4.2 南向接口 (Southbound API - To ECS)
 
-* **定位**: 适配 WES 直连作业设备的插件层 (Adapter Layer)，包括 ECS、视觉、贴标、X-Ray、LCR、打印机等。
-* **协议**: 当前产品只确认 HTTP/JSON 异步 ACK/CALLBACK；MQTT、OPC UA、WebSocket、Modbus 等未确认协议
-  不进入本版本，真实新增需求必须先更新 SPEC，再由对应 Adapter 独立封装。
-* **架构模式**: **插件化 (Plugin-Based)**。针对不同品牌的机械臂、视觉、检测、贴标等设备开发独立
-  Adapter，将厂商命令、ACK、结果和事件映射到 `DeviceCommand` 逻辑端口与规范证据；WES 不定义跨厂商的
-  通用动作枚举或标准化设备指令集。
+* **定位**: WES 直连 ECS、视觉、贴标、X-Ray、LCR、打印机等固定式作业设备的统一接口层（uniform wire layer）。
+* **协议**: 所有供应商必须实现 `docs/integration/third_party_integration_whitepaper.md` 定义的 HTTP/JSON 固定路径、公共包络、
+  身份和异步 ACK/CALLBACK 语义。MQTT、OPC UA、WebSocket、Modbus 等现场协议只能存在于供应商 ECS/网关内部。
+* **架构模式**: WES 核心零供应商私有代码。具体设备的 `task_type`、`event_type`、`params`、`data`、错误和时限由获批设备
+  合同附录拥有；新供应商接入不得增加 Adapter、DTO 别名、私有路径或动态协议分支。
 * **阶段边界**: 本版本 WES 不提供直连 RCS/AGV/CTU 的 Driver Plugin。所有搬运、交换、旋转需求通过 Phase 4
   `Transport Port` 的 WMS 转发适配器提交；`TransportTask` 只接受对应 Transport 合同批准的任务级或批次级结果，
   不接收 CTU 设备内部子阶段事件。

@@ -1,6 +1,6 @@
 ---
 title: WES 出库操作顶层设计
-status: Draft
+status: Approved
 created_at: 2026-08-06
 updated_at: 2026-08-07
 scope: SMT 自动出库 PickingTask、多任务队列、多 Cell 晚绑定、分域 NG、追加来源、三段缓存与并行搬运
@@ -11,6 +11,7 @@ related:
   - docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
   - docs/contracts/wms-northbound-interaction-contract.md
+  - docs/contracts/transport-fulfillment-contract.md
   - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/architecture/authority-matrix.md
   - docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md
@@ -24,11 +25,11 @@ related:
 本文定义 SMT 自动出库的目标业务合同，回答以下问题：
 
 1. WMS 以什么执行对象驱动 WES，以及任务为何只聚合 Cell 执行。
-2. 料盘为何在设备扫码后才绑定 `PkgID`、物料事实和目标储位。
+2. 料盘为何在设备扫码后才绑定完整六合一码快照，以及 WMS 与 WES 如何分工完成业务判定和物理执行。
 3. AGV、CTU、滚筒线、机械臂和三段缓存如何并行推进并形成背压。
 4. `PickingTask`、`CellExecution`、`MaterialExecution`、`BinExecution` 和 `TransportTask` 如何保持独立生命周期，
    以及工作线准入如何复用 `LineRunEpoch` 与设备/位置投影。
-5. NG、未知结果、暂停、取消、完成、清场和可靠回写如何闭环。
+5. NG、未知结果、完成、清场和可靠回写如何闭环。
 
 权威关系：
 
@@ -45,15 +46,17 @@ related:
 ## 2. 核心裁决
 
 - WES 不接收或拆解出库单、拣货单和波次单，只执行 WMS 下发的 `PickingTask`。
-- `PickingTaskIssued` 冻结初始来源 Cell 集合，不预绑定 `PkgID`、SixInOne、料盘顺序、目标转运货架、目标储位或锁代际。
-- WMS 在任务启动授权中原子锁定初始 Cell 集合；任务启动后不得静默修改成员，NG 恢复只允许引用现有未执行 Cell，或通过
-  独立补充事件追加已锁定的新 Cell。
-- `PickingTask` 只聚合已接纳的 `CellExecution`。全部初始与补充 Cell 完成且不存在未决 NG/来源恢复时，只形成 WES
+- `PickingTaskIssued` 冻结初始来源 Cell 集合，不预绑定 `PkgID`、六合一码、料盘顺序、目标转运货架、目标储位或锁代际。
+- WMS 在任务启动授权中原子锁定初始 Cell 集合；任务启动后不得静默修改成员。NG 恢复时，WMS 只需决定是否通过独立
+  补充事件追加已锁定的新 Cell；任务内未执行 Cell 继续按原成员关系执行。
+- `PickingTask` 只聚合已接纳的 `CellExecution`。全部初始与补充 Cell 完成时，只形成 WES
   本地执行完成事实，不代表 WMS 业务终态；该条件不读取 Rack、Bin、AGV、CTU 或工作位状态。
 - WMS 可以提前下发多张任务，并为同一工作线提供无歧义总序；WES 同线单任务执行、不同线并行执行，不自行排序或跳选。
-- 设备从 Cell 顶部取盘并扫码后，WES 持久化扫码证据并请求 WMS 返回该盘的业务决定。
-- WMS 是 `PkgID`、SixInOne、物料资格、目标储位、是否继续当前 Cell 及 Cell 完成的唯一权威。
-- WES 不根据扫码内容自行判断物料是否正确，不自行选择目标储位或决定是否继续取下一盘。
+- 设备从 Cell 顶部取盘并扫码后，向 WES 上报完整六合一码：`HHPN`、`MfrPN`、`Qty`、`DateCode`、`LotCode`、
+  `PkgID`；WES 将其作为不可变扫码证据请求 WMS 业务决定。
+- WMS 是物料业务资格、稳定业务异常分类、目标储位和当前 Cell 需求状态的唯一权威。
+- WES 不自行判断物料业务资格或选择目标储位；WES 根据 WMS 的业务结果与本地设备证据，决定 NG 作用域、跨设备逻辑动作、
+  Cell/Bin 执行状态和是否创建下一盘动作。
 - AGV 送架、CTU 批次投箱/退箱、目标架与可选退料架搬运分别由独立 `TransportTask` 承担。
 - AGV 将指定五层货架送达 CTU 作业位并形成可靠到位证据后，对应 CTU 投箱批次才具备执行资格。
 - 滚筒线划分入料缓存区、工作位缓存区和退料缓存区；工作位缓存容量包含机械臂实际工作位。
@@ -70,7 +73,7 @@ related:
 
 - `PickingTask` 事件接入、WMS 总序驱动的同线队列、启动授权、Cell 成员代际、最早启动时间和本地执行完成。
 - 来源为五层货架料箱 Cell，以及可选退料货架单料盘储位的自动取料。
-- 扫码后 `PkgID` 晚绑定、WMS 逐盘决定、目标储位分配和 Cell 继续/完成判断。
+- 扫码后完整六合一码晚绑定、WMS 逐盘业务决定与目标储位分配，以及 WES 执行动作映射和 Cell 闭合。
 - AGV 五层货架到位、CTU 冻结成员批次、滚筒线三段缓存和容量背压。
 - 双面目标生产转运货架的目标面窗口与单调储位分配。
 - 逐盘位置变化、料盘/Cell/Bin 三类 NG、追加式来源恢复、未知结果、设备资源仲裁和可靠 WMS 回写。
@@ -91,8 +94,8 @@ related:
 
 | 参与方 | 唯一权威 | WES 不得替代 |
 | --- | --- | --- |
-| WMS | 订单/波次、库存、Cell 锁、PKG/SixInOne、物料资格、逐盘去向、目标储位、继续/完成、任务优先级和业务取消 | 本地选料、目标分配、Cell 完成推断或库存账务 |
-| WES | 任务与 Cell 本地执行、设备资源仲裁、命令发送/等待、作业期投影、异常证据和可靠义务 | WMS 业务决定、RCS 路径或设备内部控制 |
+| WMS | 订单/波次、库存、Cell 锁、六合一码业务资格、稳定业务异常分类、目标储位、需求状态、来源恢复和任务优先级 | 本地重算业务资格、来源/目标分配、需求状态、来源恢复或库存账务 |
+| WES | 任务与 Cell 本地执行、NG 作用域、跨设备逻辑动作链（cross-device logical action chain）、设备资源仲裁、作业期投影、异常证据和可靠义务 | WMS 业务资格、目标分配、来源分配、RCS 路径或设备内部控制 |
 | RCS/AGV/CTU | 货架/料箱运输、路径、排队、旋转和终态物理结果 | 库存、PKG 资格、Cell 业务完成或目标储位业务分配 |
 | ECS/PLC/设备 | 扫码、到位/离位、抓取、放置、滚筒输送、安全互锁和最终设备结果 | 库存、任务优先级、目标业务选择或任务终态 |
 
@@ -102,9 +105,9 @@ related:
 | --- | --- | --- |
 | `PickingTask` | 聚合初始与显式追加的 `CellExecution` 成员及其完成状态 | Rack/Bin/Transport/设备/清场状态聚合 |
 | `CellExecution` | 管理一个来源取料单元的逐盘循环和最终完成 | 料箱运输、目标架运输或全线清场 |
-| `MaterialExecution` | 扫码后绑定一个 `PkgID`，跟踪该盘动作与位置事实 | Cell 是否继续、Bin 流转或任务聚合 |
+| `MaterialExecution` | 扫码后绑定完整且不可变的六合一码快照，跟踪该盘动作与位置事实 | Cell 需求判断、Bin 流转或任务聚合 |
 | `BinExecution` | 跟踪一个料箱在三段缓存、SCAN1/2/3 和 NG 路径中的位置证据 | PickingTask 完成聚合或 CTU 批次终态 |
-| `TransportTask` | 跟踪 AGV/CTU 搬运目标、冻结批次成员、ACK、状态和终态 | PickingTask、Cell 或设备命令状态 |
+| `TransportTask` | 跟踪 AGV/CTU 搬运目标、冻结批次成员、同步接纳 ACK、异步终态和对账 | PickingTask、Cell 或设备命令状态 |
 | `DeviceCommand` | 跟踪一次 ECS 命令的发送、ACK、结果、deadline 和幂等事实 | WMS 业务结果或任务状态 |
 | `WmsConfirmation` | 可靠提交逐盘位置变化与任务完成事实 | 重放设备动作或修改执行状态 |
 | `PositionProjection` | 表达具体位置的占用、预留、已知在途和未知状态 | 库存主账或运输路线规划 |
@@ -133,7 +136,7 @@ related:
 
 | 类型 | 必填定位 | 执行语义 |
 | --- | --- | --- |
-| `BIN_CELL` | `rack_id + rack_face + bin_id + cell_id` | 可连续产生多盘，WMS 逐盘返回 `CONTINUE` 或 `CELL_DONE` |
+| `BIN_CELL` | `rack_id + rack_face + bin_id + cell_id` | 可连续产生多盘；WMS 逐盘返回业务结果和需求状态，WES 在当前盘物理闭合后决定是否创建下一盘动作 |
 | `RACK_SLOT` | `rack_id + rack_face + slot_id` | 可选退料货架来源；按单储位单料盘执行，仍以一个 `CellExecution` 参与任务聚合 |
 
 这里的 `CellExecution` 是 PickingTask 的统一取料执行单元；`BIN_CELL` 与 `RACK_SLOT` 的物理差异只体现在 locator 和
@@ -141,7 +144,7 @@ related:
 
 任务中禁止出现：
 
-- `PkgID` 或 SixInOne。
+- `PkgID` 或六合一码任一字段。
 - 料盘数量、顶部顺序或提前展开的逐盘 item。
 - 具体目标转运货架 `rack_id`、目标面或目标储位。
 - AGV/CTU 任务、设备命令或缓存状态。
@@ -160,10 +163,9 @@ Cell 结构非法时整单拒绝，不得部分接纳；WES 不重新校验 WMS 
 - WMS 已授权目标转运货架容量和目标面业务顺序。
 - 所需五层货架、可选退料货架和目标空架的搬运目标已经明确。
 
-任务启动后，WMS 不得静默增加、删除或替换 Cell。NG 恢复需要其他来源时，WMS 只能通过幂等补充事件：
-
-- 引用当前任务内尚未执行的 Cell，不改变成员集合；或
-- 追加已原子锁定的新 Cell，并为补充集合分配递增成员代际和独立锁代际。
+任务启动后，WMS 不得静默增加、删除或替换 Cell。当前任务内尚未执行的 Cell 继续按原成员关系执行，不需要来源恢复事件
+再次引用。NG 后无需新增成员时，WMS 返回“不追加来源”；确需其他来源时，通过幂等补充事件追加已原子锁定的新 Cell，并为
+补充集合分配递增成员代际和独立锁代际。
 
 既有 Cell 永不被改写或删除；每个 CellExecution 永久使用自己所属的锁代际。
 
@@ -178,9 +180,32 @@ Cell 结构非法时整单拒绝，不得部分接纳；WES 不重新校验 WMS 
 5. CTU 按冻结成员批次把所需料箱投入本线入料口；只要入料缓存存在可用准入位置即可继续，不等待当前料箱完成。
 6. 当前五层货架批次执行期间，是否预调下一货架只由已批准的物理等待位和 WMS/RCS 调度合同决定；本文不假设额外缓存位。
 
+### 6.1 “创建运输与取料动作”的展开边界
+
+“创建运输与取料动作”不是一个原子动作，也不是一条可以直接下发给设备的通用命令。WES 在取得 `START_GRANTED` 后，
+激活已锁定 Cell 的本地执行编排，并分别建立运输、批次、位置流转和逐盘作业对象。各对象只由自己的可靠终态推进：
+
+| 业务阶段 | WES 建立或激活的对象 | 允许推进的可靠证据 |
+| --- | --- | --- |
+| PickingTask 开始执行 | 已接纳 `CellExecution` 集合及任务聚合投影 | WMS 返回包含完整锁定集合和锁代际的 `START_GRANTED` |
+| 货架并行搬运 | 目标空架、可选退料架、五层货架各自的运输需求 | 对应运输权威终态、货架身份和批准位置一致 |
+| CTU 批量投箱 | 对应五层货架的冻结成员批次 | 五层货架已到位，并且具体 `INGRESS_BUFFER` 位置已预留 |
+| Bin 进入工作段 | Bin 位置流转动作 | SCAN1 身份验证通过，且工作段目标位置允许接纳 |
+| Cell 逐盘取料与扫码 | 当前 Cell 的单次取盘和扫码动作 | Bin 已到机械臂工作位，且不存在未决取放或扫码动作 |
+| 料盘分流与落位 | 扫码后绑定 `PkgID` 的 `MaterialExecution`、单次放置命令及位置变化事实 | WMS 逐盘决定与机械臂可靠放置终态一致 |
+| Cell 或 Bin 后续动作 | Cell 聚合迁移或 Bin 移出动作 | WMS 业务决定、当前 Bin 剩余成员和已确认位置事实一致；具体执行动作由 WES 决定 |
+
+`START_GRANTED.transport_authorizations.rack_moves` 以闭集 `purpose=STARTUP|CLEARANCE` 同时冻结进场搬运和目标转运架未来清场；
+WES 在全部 CellExecution 完成且全部所需物料移动（逐盘位置）事实已被 WMS 接收后，才以原启动 `decision_id` 创建 `CLEARANCE` TransportTask。
+PickingTask 完成不等待离场，WMS 仍只在该 TransportResult 确认物理离场和最终位置后释放目标架业务占用。
+
+设备实际提供 Bin 扫码、料盘扫码、位置和动作结果证据。待执行 Cell 由 WES 根据已识别 Bin、PickingTask 已接纳成员和本地
+执行状态选择，不把“Cell 扫码”建模成设备前置条件。AGV/CTU 运输、滚筒线流转和机械臂逐盘动作可以在满足各自资源约束时
+并行，但任一对象的 ACK、已受理或已派发都不能代替其权威物理终态。
+
 AGV/CTU 请求的 ACK、已受理或已派发均不构成货架/料箱到位。只有批准的运输终态和位置证据才能推进依赖它的执行。
 
-CTU 批次拥有冻结成员、批次级 ACK/状态/终态和终态中的成员最终事实。WES 不要求 CTU 上报设备内部子阶段，也不把
+CTU 批次拥有冻结成员、批次级同步接纳 ACK、异步终态和终态中的成员最终事实。WES 不要求 CTU 上报设备内部子阶段，也不把
 单箱 `BinExecution` 状态写入批次状态机。
 
 ## 7. 三段缓存与容量背压
@@ -250,15 +275,18 @@ CTU 投箱必须同时满足：
 1. 机械臂从当前 Cell 顶部取出完整料盘，放入料盘扫码台。
 2. 设备若可靠返回“无料”终态，WES 先持久化来源观察证据并请求 WMS 返回 `CELL_DONE | RETRY | WAIT`；不得自行推断
    Cell 已空或已完成。设备结果未知或无法关联时保持 Cell 未决，不调用空取业务决定。
-3. 成功取盘后，扫码设备向 WES 上报可让 WMS 唯一确定 `PkgID` 的原始字段。
+3. 成功取盘后，扫码设备向 WES 上报完整六合一码：`HHPN`、`MfrPN`、`Qty`、`DateCode`、`LotCode`、`PkgID`。
 4. WES 先持久化扫码证据并快速完成设备侧接收，不让设备回调同步等待 WMS 业务处理。
 5. WES 以任务、Cell、锁代际、扫码证据和请求幂等键调用 WMS 逐盘决定。
-6. WMS 返回接受/拒绝/等待判别结果；仅接受结果携带实际 `PkgID`、完整 SixInOne、目标储位、目标面代际和 Cell 继续结果。
-7. WES 校验响应与当前请求、Cell 锁代际和当前目标面窗口匹配；不得改写 WMS 业务含义。
-8. 接受时创建 `MaterialExecution` 并下发 PUT；拒绝时按批准的 NG/异常去向执行；等待或结果未知时保持扫码台占用并暂停
-   依赖该资源的新动作。
+6. WMS 返回 `ACCEPT | REJECT | WAIT`：`ACCEPT` 携带目标储位、目标面代际和 `demand_state=REMAINS | SATISFIED`；
+   `REJECT` 携带稳定 `business_exception_code`；`WAIT` 表示非终局快照。
+7. WES 校验响应与当前请求、Cell 锁代际和当前目标面窗口匹配，并把业务结果映射为本地执行动作，不改写 WMS 业务含义。
+8. `ACCEPT` 时，WES 将请求中的不可变六合一码绑定到 `MaterialExecution` 并下发 PUT；`REJECT` 时，WES 根据异常分类
+   派生料盘或 Cell NG 并生成后续逻辑设备动作；`WAIT` 或结果未知时保持扫码台占用并暂停依赖该资源的新动作。
 9. PUT 成功后更新位置投影并可靠建立逐盘位置变化事实。
-10. WMS 返回 `CONTINUE` 时，当前盘闭合后才允许同一 Cell 取下一盘；返回 `CELL_DONE` 时停止创建下一盘动作。
+10. 当前盘物理闭合后，`demand_state=REMAINS` 才允许同一 Cell 创建下一盘动作；`demand_state=SATISFIED` 时闭合当前
+    Cell。料盘 NG 可靠落入 NG 区后继续当前 Cell；Cell NG 的当前盘可靠落入 NG 区后停止当前 Cell 新动作并形成来源缺口，
+    来源恢复决定到达后再闭合该 Cell。
 
 设备扫码事实与 WMS 决定必须分开持久化。WMS 超时、网络中断或响应无法关联时，不得解释为物料错误、Cell 完成或
 允许继续。
@@ -268,17 +296,25 @@ CTU 投箱必须同时满足：
 同一扫码证据和前序决定 ID 请求下一版本。一个扫码证据最多只能有一个不可变终局 `ACCEPT` 或 `REJECT`，并发分支、
 版本倒退或多个终局结果一律失败关闭。空取 `WAIT` 对 `source_observation_id` 使用同一规则，`WmsClient` 不自动轮询。
 
+若拆封退料经过 X-Ray 点数并重新生成六合一码，新的 `Qty` 和 WMS 新生成的不同 `PkgID` 共同形成新的不可变包装快照。
+WES 按本次扫码值执行，不维护新旧 `PkgID` 的沿袭关系，也不推导编码规则；拆封、点数和追溯由 WMS 管理。
+
 ### 8.3 Cell 完成
 
-`CELL_DONE` 只表示“不再从该 Cell 产生下一盘”，不表示当前已扫码料盘已经完成物理放置。
+正常扫码接受结果使用 `demand_state` 表达当前 Cell 是否仍有需求；空取决定中的 `CELL_DONE` 只表示“不再从该 Cell
+产生下一盘”。两者都不能替代当前在途料盘的物理闭合事实。
+
+若此前料盘拒绝后仍存在需求缺口，WMS 必须先返回 `WAIT` 并完成来源恢复决定，不能用 `CELL_DONE` 抢先关闭当前 Cell。
 
 `CellExecution` 进入 `COMPLETED` 必须满足：
 
-- WMS 针对当前锁代际明确返回 `CELL_DONE`，或 `RACK_SLOT` 的单盘闭环已得到等价完成决定。
+- 已取得一种明确完成依据：最后一盘接受决定为 `demand_state=SATISFIED`；WMS 针对当前锁代际的空取证据返回
+  `CELL_DONE`；`RACK_SLOT` 单盘闭环得到等价完成决定；或 `SOURCE_CELL_MISMATCH`/Bin NG 的物理 NG 去向确定且来源恢复
+  决定已被接纳。
 - 当前 Cell 没有尚未生成的下一盘动作。
 - 空取结束 Cell 时，已有可关联的设备“无料”终态和来源观察证据，且没有未决的在途物料动作。
 - 最后一盘若被接受，其 PUT 已有确定成功结果并已建立可靠位置变化事实。
-- 最后一盘若被拒绝，其 NG/异常位置已有确定物理结果。
+- 料盘若被拒绝，其 NG/异常位置已有确定物理结果；`MATERIAL_REJECTED` 本身不能关闭仍可继续执行的 Cell。
 - 当前 Cell 不存在 `unknown` 或无法关联的扫码、设备命令和物料位置。
 
 逐盘位置事实是否已经被远端接受由独立 `WmsConfirmation` 管理，不回填到 Cell 状态机；任务完成通知通过因果依赖保证
@@ -296,11 +332,14 @@ CTU 投箱必须同时满足：
 同一时刻只有一个 `MaterialExecution` 可以持有同一设备或位置资源。并行的是运输、准备和等待，不是同一设备上的物理
 动作。
 
-`PkgID` 可以逐盘晚绑定，但目标架必须保持单调面窗口：
+完整六合一码可以逐盘晚绑定，但目标架必须保持单调面窗口；其中 `PkgID` 是本次不可变身份快照的技术引用：
 
 - WMS 在任务启动时冻结目标架容量、面顺序、初始开放面和 `face_window_generation`。
 - WMS 每盘只能返回当前开放目标面和代际内的唯一空储位。
-- WMS 只能通过递增的 `face_window_generation` 授权 A 面切换到 B 面；WES 校验旧面不存在未决物理动作后，只决定安全旋转时机。
+- WMS 在当前面最后一个 `ACCEPT` 中通过 `next_face_window` 和递增的 `face_window_generation` 预先授权 A 面切换到 B 面；
+  该字段只表达业务窗口，不是旋转设备命令。
+- 当前面最后一盘可靠 PUT 并在本地形成位置事实后，WES 可以并行启动目标架旋转和下一盘 PICK/SCAN，不等待远端事实 ACK。
+  下一盘决定请求携带活动面代际；扫码台最多缓存一盘，PUT 必须等待新面可靠到位且目标 locator 与已到位窗口一致。
 - 切到 B 后不得再接受 A 面储位、旧代际或迟到决定。
 - 目标储位没有可靠释放/占用事实时不得重复分配。
 
@@ -313,21 +352,18 @@ CTU 投箱必须同时满足：
 
 | 状态 | 关键不变量 | 主要迁移 |
 | --- | --- | --- |
-| `QUEUED` | 任务已接纳，尚未取得有效启动锁 | `STARTING`、`CANCELLING` |
-| `STARTING` | 请求 WMS 原子锁定初始 Cell；授权前不创建任务专属物理动作 | `QUEUED`、`EXECUTING`、`PAUSED`、`CANCELLING` |
-| `EXECUTING` | 原始载荷不可变；成员只可由 WMS 补充事件追加；只聚合 Cell 状态 | `PAUSED`、`CANCELLING`、`EXECUTION_COMPLETED` |
-| `PAUSED` | 保留已完成 Cell 和稳定事实；不猜测未知结果 | WMS 明确恢复后回到 `EXECUTING`，或 `CANCELLING` |
-| `CANCELLING` | 停止创建新 Cell/料盘动作；等待任务取消业务决定闭合 | `CANCELLED` |
+| `QUEUED` | 任务已接纳，尚未取得有效启动锁 | `STARTING` |
+| `STARTING` | 请求 WMS 原子锁定初始 Cell；授权前不创建设备命令 | `QUEUED`、`EXECUTING` |
+| `EXECUTING` | 原始载荷不可变；成员只可由 WMS 补充事件追加；只聚合 Cell 状态 | `EXECUTION_COMPLETED` |
 | `EXECUTION_COMPLETED` | WES 本地执行终态；只表达已授权物理执行全部闭合，不复制 WMS 业务终态 | 无 |
-| `CANCELLED` | WMS 已给出取消业务决定，WES 已安全停止执行 | 无 |
+
+WMS 返回 `START_WAIT` 时，任务从 `STARTING` 回到 `QUEUED` 并保持队首。执行中的异常或未知结果由受影响的
+`CellExecution`、`MaterialExecution`、`BinExecution` 或 `DeviceCommand` 保持未完成表达，PickingTask 保持
+`EXECUTING`，不为首版尚未批准的控制接口增加任务暂停或取消状态。
 
 队列参数变更通过独立带版本事件表达，不改写 PickingTask 原始载荷。同一工作线只执行一张任务，WES 只处理 WMS
-`dispatch_sequence` 总序中的首个未开始任务；不同工作线可以并行。队首任务尚未达到 `not_before` 时保持等待，不得越过；
-只有 WMS 返回显式 `TRY_NEXT` 授权时，WES 才可尝试总序中的下一任务。
-
-WMS 返回 `START_WAIT` 时，当前任务从 `STARTING` 回到 `QUEUED`，并持久化该决定的 `decision_id`、`queue_action` 和
-`retry_after_ms`。`HOLD_QUEUE` 保持当前任务为队首候选；`TRY_NEXT` 仅授权本次尝试下一张任务，被跳过的任务仍留在队列中，
-不得创建任何任务专属物理动作。
+`dispatch_sequence` 总序中的首个未开始任务；不同工作线可以并行。队首任务尚未达到 `not_before` 或暂时无法启动时保持等待，
+不得越过。WMS 需要调整执行顺序时，通过队列更新事件修改未开始任务的总序。
 
 ### 10.2 本地执行完成条件
 
@@ -335,11 +371,12 @@ WMS 返回 `START_WAIT` 时，当前任务从 `STARTING` 回到 `QUEUED`，并�
 
 ```text
 ALL(已接纳 CellExecution.status == COMPLETED)
-AND 不存在未决 NG / 来源恢复决定
 ```
 
 “已接纳 Cell”包括启动时锁定的初始成员和后续补充事件追加的成员。NG Cell 仍以 `COMPLETED + outcome` 闭合，不能通过
-删除成员绕过任务完成条件。
+删除成员绕过任务完成条件。`SOURCE_CELL_MISMATCH` 或 Bin NG 的受影响 Cell 在来源恢复决定到达前保持未完成，恢复决定与
+这些 Cell 的闭合原子接纳；`MATERIAL_REJECTED` 不关闭当前仍可执行的 Cell，新增来源只追加成员。因此任务无需再聚合独立
+的 NG 或来源恢复状态。
 
 满足后，WES 将任务执行投影置为 `EXECUTION_COMPLETED` 并建立独立执行完成事实；该状态不代表 WMS 业务终态。
 执行完成义务依赖全部逐盘位置确认义务先被 WMS 接受；可靠派发层负责因果排序，不把远端接受状态重新塞回
@@ -354,7 +391,19 @@ AND 不存在未决 NG / 来源恢复决定
 
 上述资源仍由各自 owner 继续闭环。失败只产生对应 Transport/Bin/WorkLine 异常，不得反向修改已完成的本地执行投影。
 
-### 10.3 工作线释放
+### 10.3 业务锁释放
+
+WMS 拥有来源 Cell 和目标架的业务锁；WES 只报告不可变执行事实，不发送通用解锁命令。锁释放遵循以下边界：
+
+- 活动 PickingTask 的来源 Cell 锁不按超时自动释放。WMS 根据自己给出的终局决定和已接收执行事实逐 Cell 判断释放：
+  `SATISFIED` 的最后一盘位置事实已接收、空取返回 `CELL_DONE`，或 `SOURCE_CELL_MISMATCH`/Bin NG 的物理事实已接收且来源
+  恢复事件已被 WES 接纳。`MATERIAL_REJECTED` 不单独释放当前 Cell 锁。
+- 任务完成事实用于释放仍未逐 Cell 释放的剩余来源锁；WES 不发送解锁列表。
+- 目标架业务占用与 PickingTask 完成分离。WMS 在目标架离开工作位且对应 Transport/位置终态已确认后释放目标架业务占用，
+  不以 Cell 聚合完成代替物理离位事实。
+- WES 重启或响应未知时，使用原任务、事实 ID 和锁代际恢复提交；双方不得根据沉默时长猜测锁已释放。
+
+### 10.4 工作线释放
 
 自动出库插件在当前 `LineRunEpoch` 上下文中，根据独立设备/位置投影和活动执行对象判断下一任务准入，至少考虑：
 
@@ -363,14 +412,14 @@ AND 不存在未决 NG / 来源恢复决定
 - 三段缓存具备下一任务准入所需容量，且不存在位置冲突。
 - 未闭合的运输/清场义务不会与下一任务争用相同物理资源。
 
-`PickingTask EXECUTION_COMPLETED` 与下一任务准入可以异步发生。本地执行完成不能绕过工作线资源门直接启动下一任务，也不得为此
+`PickingTask EXECUTION_COMPLETED` 与下一任务准入可以异步发生。任务完成不能绕过工作线资源门直接启动下一任务，也不得为此
 新建承载全部动态状态的通用 Session。
 
-## 11. 异常、暂停与取消
+## 11. 异常与等待
 
 | 异常 | 隔离与处理 |
 | --- | --- |
-| 扫码无法唯一确定 `PkgID` | 当前料盘保持扫码台占用，关联 Cell 暂停并上报 WMS，不猜测身份 |
+| 扫码缺少六合一码字段或字段格式非法 | 当前料盘保持扫码台占用并进入扫码设备异常处置；不调用 WMS 业务决定，也不解释为业务 NG |
 | WMS 决定超时或无法关联 | 保留扫码证据和未决请求；阻止依赖扫码台的动作，不解释为 NG 或 `CELL_DONE` |
 | 设备可靠返回空取 | 持久化来源观察证据并请求 WMS 决定；仅 `CELL_DONE` 结束 Cell，`RETRY/WAIT` 保持未完成 |
 | 空取结果未知或无法关联 | 保持 Cell 和来源资源未决，不把未知结果解释为 Cell 已空 |
@@ -379,51 +428,46 @@ AND 不存在未决 NG / 来源恢复决定
 | 工作位缓存满 | SCAN1 正常箱等待，不转 NG |
 | 退料缓存满 | 正常完成箱等待；CTU 退箱批次并行释放容量 |
 | AGV 五层货架未到位 | 对应 CTU 批次保持不可执行；不影响无资源冲突的其他运输或设备动作 |
-| CTU 批次部分失败 | 由 TransportTask 保存成员最终事实并对账；不得伪造 Bin 或 Cell 终态 |
+| CTU 批次部分失败 | TransportTask 保存每个成员最终位置；位置全部明确时批次失败闭合，任一位置未知时进入 `RECONCILING`；不得伪造 Bin 或 Cell 终态 |
 | 目标容量不足 | 当前 Cell 等待 WMS 处置；WES 不自行换架或提前完成 |
-
-取消不触发通用补偿：
-
-1. `PickingTask` 进入 `CANCELLING`，停止创建新的 Cell/料盘动作。
-2. 已在途或 unknown 的物料动作由对应 `MaterialExecution` 和 `DeviceCommand` 继续闭环或人工消歧。
-3. WES 向 WMS 报告稳定的 Cell、料盘和任务事实；WMS 决定业务取消是否接受。
-4. WMS 接受任务取消后，`PickingTask` 可进入 `CANCELLED`。
-5. Rack、Bin、Transport 和 WorkLine 清场继续由各自 owner 执行，不成为 PickingTask 取消终态条件。
 
 ## 12. WMS 语义交互面
 
 WMS Business Event 与 Device Event 使用独立合同。WMS 将 PickingTask Event 发送到 WES 提供的
-`POST /api/v1/wms/events`；WES 通过 WMS provider、`operation` 和业务 DTO 建立入站上下文。`workline_code` 用于业务路由
-和工作线队列准入。事件可靠接纳后，插件再为参与执行的真实设备创建独立 `DeviceCommand`。
+`POST {{WES_BASE_URL}}/api/v1/wms/events`；WES 通过 WMS provider、`operation` 和业务 DTO 建立入站上下文。
+`workline_code` 用于业务路由和工作线队列准入。事件可靠接纳后，插件再为参与执行的真实设备创建独立 `DeviceCommand`。
+
+`{{WES_BASE_URL}}` 和 `{{WMS_BASE_URL}}` 分别表示当前环境中 WES、WMS 的服务 Origin，末尾不带 `/`。它们只用于文档、
+联调配置和部署 profile；应用实际注册的仍是 `/api/v1/...` 相对路由。
 
 推荐 API 按交互性质分组：
 
 | 发起方 | 接收方 | 方法与路径 | 用途 |
 | --- | --- | --- | --- |
-| WMS | WES | `POST /api/v1/wms/events` | 发布 PickingTask、队列更新和来源恢复决定 |
-| WMS | WES | `GET /api/v1/wms/requests/{request_id}` | 查询原 WMS 请求的不可变响应 |
-| WES | WMS | `POST /api/v1/wes/decisions` | 请求启动、扫码和空取决定 |
-| WES | WMS | `POST /api/v1/wes/facts` | 报告 Bin NG、逐盘位置和任务本地执行完成事实 |
-| WES | WMS | `GET /api/v1/wes/requests/{request_id}` | 查询原 WES 请求的不可变响应 |
+| WMS | WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | 发布 PickingTask、队列更新和来源恢复决定 |
+| WES | WMS | `POST {{WMS_BASE_URL}}/api/v1/wes/decisions` | 请求启动、扫码和空取决定 |
+| WES | WMS | `POST {{WMS_BASE_URL}}/api/v1/wes/facts` | 报告 Bin NG、逐盘位置和任务本地执行完成事实 |
 
 WMS → WES：
 
 - 以 Event 发布包含 `pick_cells[]` 的 PickingTask，并用独立事件更新未开始任务的队列参数。
 - 在 WES 请求启动时原子锁定初始 Cell，并同步返回锁代际、初始目标面、目标面代际和任务启动授权。
-- 对 NG 来源恢复发布决定事件：引用现有未执行 Cell、追加已锁定的新 Cell，或不补充而关闭缺口。
-- 对每次扫码返回业务接受/拒绝/等待判别结果；仅接受结果携带 `PkgID`、SixInOne、目标储位、目标面代际和
-  `CONTINUE | CELL_DONE`。
-- 对可靠空取证据返回 `CELL_DONE | RETRY | WAIT`，并以递增目标面代际明确授权换面。
+- 对 NG 来源恢复发布决定事件：不追加来源，或追加已锁定的新 Cell。
+- 对每次完整六合一码扫码证据返回业务接受/拒绝/等待结果；接受结果携带目标储位、目标面代际和
+  `demand_state=REMAINS | SATISFIED`；当前面最后一个接受结果可携带递增代际的 `next_face_window`，拒绝结果携带稳定
+  `business_exception_code`。
+- 对可靠空取证据返回 `CELL_DONE | RETRY | WAIT`。
 - 提供批准的人工消歧或异常处置结果。
 
 WES → WMS：
 
 - 请求/确认任务启动与 Cell 锁。
 - 提交逐盘扫码证据并请求业务决定。
+- 根据 WMS 业务结果和稳定异常分类决定物理 NG 路由、Cell/Bin 执行状态及下一盘动作。
 - 提交可靠空取证据并请求 Cell 后续决定。
 - 报告 Bin NG 和受影响 Cell。
 - 提交逐盘位置变化事实。
-- 提交 PickingTask 本地执行完成事实或 WMS 已决定的取消事实。
+- 提交 PickingTask 本地执行完成事实。
 - 报告身份冲突、设备未知结果、目标容量不足和稳定现场证据。
 
 AGV/CTU/RCS 搬运继续由 Phase 4 Transport 合同和 WMS 转发 Adapter 承载。双方在对应北向合同中批准 operation、DTO、
@@ -438,13 +482,15 @@ AGV/CTU/RCS 搬运继续由 Phase 4 Transport 合同和 WMS 转发 Adapter 承�
 | --- | --- |
 | Phase 1/2 | 提供已验收的测试治理与无业务语义 HTTP 传输事实，不以出库行为反向验收基础能力 |
 | Phase 3 `WmsClient` | 只提供 HTTP/JSON 访问；不拥有 PickingTask、扫码决定、运输或缓存业务语义 |
-| Phase 4 最小平台 | 拥有 `TransportTask`、可靠义务、幂等、设备动作、unknown、位置投影和持久化证据 |
+| Phase 4 最小平台 | 拥有 `TransportTask`、TransportResult 应用端口、可靠义务、幂等、设备动作、unknown、位置投影和持久化证据 |
 | 后续 WMS 出库业务模块 | 拥有任务启动、逐盘扫码决定、位置变化和任务完成的获批 wire DTO 与结果解释 |
 | 自动出库插件 | 拥有 `CellExecution`、三段缓存执行、资源仲裁、目标面窗口和本文业务流程 |
-| WMS/RCS/ECS Adapter | 只翻译各自批准 wire，不持有 PickingTask、Cell 或 WorkLine 生命周期 |
+| WMS/RCS Adapter | 只翻译各自批准 wire，不持有 PickingTask、Cell 或 WorkLine 生命周期 |
+| ECS 统一接口层 | 只发送/接收白皮书公共包络和获批设备附录字段，不持有 PickingTask、Cell 或 WorkLine 生命周期 |
 
 Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `docs/contracts/wms-northbound-interaction-contract.md`，完成计划已移出项目归档。
-本文的 PickingTask、逐盘决定和完成 API 仍须取得 WMS 正式批准，不得因本 Draft 存在而解释为业务或 wire 已批准。
+本文业务设计已经评审确认；PickingTask、逐盘决定和完成 API 的正式 JSON Schema、枚举闭集、超时和联调 fixture 仍须由
+WMS/WES 双方批准后实施，不得把业务设计批准解释为 wire 已冻结。
 
 ## 14. Fixture 与验收所有权
 
@@ -452,9 +498,10 @@ Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `doc
 | --- | --- | --- |
 | WMS wire DTO/fixture | WMS ACL 合同测试 | 获批字段闭集、编码、幂等和错误映射 |
 | 出库业务场景/fixture | 自动出库插件 | Cell 循环、晚绑定、三段缓存、仲裁、任务完成与清场分离 |
-| AGV/CTU 批次 fixture | Transport 合同/Adapter | 冻结成员、批次 ACK/状态/终态和成员最终事实 |
-| 厂商命令/结果 fixture | 对应 ECS Adapter | 扫码、到位、命令、ACK、结果和厂商原始码 |
-| MOCK 场景数据 | MOCK 自动化环境 | 跨系统验收，不作为 wire、插件或 Adapter 真源 |
+| AGV/CTU 批次 fixture | Transport 合同/Adapter | 冻结成员、同步接纳 ACK、异步终态和成员最终事实 |
+| 设备统一接口 fixture | 核心合同测试 | 固定路径、公共包络、命令/事件身份、ACK、结果、重复和冲突 |
+| 供应商设备场景 | 供应商一致性验收 | 扫码、到位、具体命令/结果、原始码和真实设备行为 |
+| MOCK 场景数据 | MOCK 自动化环境 | 跨系统验收，不作为 wire、插件或供应商合同真源 |
 
 各层可使用正式 schema 校验自己的数据，但不得共用同一 fixture 文件作为多层真源。
 
@@ -462,12 +509,10 @@ Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `doc
 
 | 场景 | 通过标准 |
 | --- | --- |
-| PickingTask 含多个 `BIN_CELL` | Cell 集合原子接纳；无 `PkgID`、SixInOne、目标 rack/slot 或运输状态 |
-| WMS Event 正常接入与错误入口 | 正常请求通过 `/api/v1/wms/events` 建立 WMS 业务上下文；设备字段或设备入口返回合同拒绝 |
+| PickingTask 含多个 `BIN_CELL` | Cell 集合原子接纳；无 `PkgID`、六合一码、目标 rack/slot 或运输状态 |
+| WMS Event 正常接入与错误入口 | 正常请求通过 `{{WES_BASE_URL}}/api/v1/wms/events` 建立 WMS 业务上下文；设备字段或设备入口返回合同拒绝 |
 | WMS 提前下发同线多任务 | 全部可靠排队，同线只启动一张；不同线任务可并行 |
-| 同线队首任务尚未到 `not_before` | 保持当前总序；收到 WMS 显式 `TRY_NEXT` 授权后尝试下一任务 |
-| WMS 返回 `START_WAIT / HOLD_QUEUE` | 当前任务回到 `QUEUED` 并保持队首；不创建任务专属物理动作 |
-| WMS 返回 `START_WAIT / TRY_NEXT` | 当前任务回到 `QUEUED`；仅本次可尝试总序下一任务，原任务不丢失 |
+| 同线队首任务尚未到 `not_before` | 保持当前总序；WMS 如需调整顺序则发布队列更新事件 |
 | 可选 `RACK_SLOT` 来源 | 作为单盘 `CellExecution` 参与任务聚合，不把退料货架生命周期写入 PickingTask |
 | Cell 集合缺项、重复或 locator 非法 | 整单拒绝，不部分接纳 |
 | 启动锁代际不匹配 | 不创建执行动作或运输义务，等待 WMS 修正 |
@@ -476,25 +521,26 @@ Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `doc
 | 三段任一区域满载 | 只向直接上游背压，不把正常箱改为 NG |
 | 跨段位置变化 | 同一事实原子迁移源/目标位置；聚合容量不漂移 |
 | 退料架流与 Bin/Cell 流同时就绪 | 可并行准备；共享机械臂/扫码台同一时刻只执行一个 MaterialExecution |
-| 扫码结果可唯一确定 `PkgID` | WMS 返回实际 PKG、目标储位与继续结果后才允许 PUT |
-| WMS 返回 `CONTINUE` | 当前盘闭合后才能从同一 Cell 取下一盘 |
-| WMS 返回 `CELL_DONE` | 当前最后一盘闭合后 Cell 才进入 `COMPLETED` |
-| 料盘 NG | 当前盘进入 NG 区；WMS 决定当前 Cell 继续、结束或等待 |
-| Cell NG | 当前 Cell 闭合；同 Bin 其他 Cell 继续；Bin 最终进入 NG 出口 |
+| 扫码器上报完整六合一码 | WES 原样持久化不可变扫码证据并请求 WMS；请求不复制第二套物料身份字段 |
+| WMS 返回 `ACCEPT + REMAINS` | 目标储位明确；当前盘物理闭合后才能从同一 Cell 取下一盘 |
+| WMS 返回 `ACCEPT + SATISFIED` | 目标储位明确；当前最后一盘物理闭合后 Cell 才进入 `COMPLETED` |
+| WMS 返回 `MATERIAL_REJECTED` | WES 将业务结果映射为当前盘进入 NG 区的逻辑设备动作；可靠落位后继续当前 Cell，不等待 WMS 下发设备命令 |
+| WMS 返回 `SOURCE_CELL_MISMATCH` | 当前 Cell 停止新动作并等待来源恢复决定；同 Bin 其他 Cell 继续；Bin 最终进入 NG 出口 |
 | Bin NG | 全箱 Cell 停止执行并进入 NG 出口；WES 报告全部受影响 Cell |
-| NG 使用任务内未执行 Cell | 只引用既有成员，不重复追加 |
+| X-Ray 点数后生成新六合一码 | WES 把新 `Qty` 和新 `PkgID` 作为本次不可变身份快照，不维护新旧身份沿袭 |
+| NG 后任务内未执行 Cell 可满足后续需求 | WMS 返回不追加来源；既有成员继续按原计划执行 |
 | NG 需要新来源 | 追加新 Cell 成员代际和独立锁代际，不改写旧 Cell |
 | 设备可靠返回空取 | 提交稳定来源观察证据；仅 WMS 返回 `CELL_DONE` 才结束 Cell，`RETRY/WAIT` 保持未完成 |
 | `WAIT`（包括身份冲突）解除 | 新请求关联同一证据和前序决定并取得下一版本；原请求结果不被改写 |
 | 同一证据出现多个终局决定 | 失败关闭并上报合同冲突，不选择任一结果推进 |
 | WMS 超时或结果无法关联 | 当前扫码台保持占用，不解释为 NG、继续或 Cell 完成 |
-| WMS 授权目标面从 A 切到 B | 目标面代际递增且旧面无未决动作后执行旋转；切换后拒绝 A 面目标和旧代际 |
-| 全部初始与补充 Cell 完成且无未决恢复 | PickingTask 进入 `EXECUTION_COMPLETED` 本地执行投影，不读取 Rack/Bin/Transport/WorkLine 状态 |
-| 逐盘事实尚未被 WMS 接受 | 本地执行完成通知义务保持依赖等待，不越过逐盘确认 |
-| PickingTask 本地执行已完成但 CTU 尚在退箱 | PickingTask 执行投影不回退；当前 Epoch 下的设备/位置投影和活动对象独立决定下一任务准入 |
-| Transport 或清场失败 | 产生对应对象异常，不篡改已完成的 PickingTask 本地执行投影 |
+| 当前面最后一个 `ACCEPT` 授权 A 切 B | 最后一盘可靠 PUT 后，目标架旋转与下一盘 PICK/SCAN 并行；下一盘 PUT 等待 B 面可靠到位及 locator/代际一致；扫码台最多缓存一盘 |
+| 全部初始与补充 Cell 完成 | PickingTask 进入 `EXECUTION_COMPLETED`，不读取 NG 恢复、Rack/Bin/Transport/WorkLine 状态 |
+| 逐盘事实尚未被 WMS 接受 | 任务完成通知义务保持依赖等待，不越过逐盘确认 |
+| PickingTask 已完成但 CTU 尚在退箱 | PickingTask 不回退；当前 Epoch 下的设备/位置投影和活动对象独立决定下一任务准入 |
+| Transport 或清场失败 | 产生对应对象异常，不篡改已完成 PickingTask |
 
-## 15. 当前评审状态
+## 15. 当前批准状态
 
 本次修订已经完成架构讨论并收敛以下裁决：
 
@@ -505,7 +551,12 @@ Phase 3 共享 `WmsClient` 已独立实施并验收；当前实施合同为 `doc
 - 共享设备动作串行仲裁，目标架采用单调目标面窗口。
 - Cell、任务、可靠回写和现场清场保持独立生命周期。
 - 多任务按 WMS 给出的同线无歧义总序排队，同线单任务执行、不同线并行；WES 不自行排序或跳选。
-- NG 按料盘、Cell、Bin 分域处置，恢复来源采用“引用既有 Cell 或追加新 Cell”的显式事件。
+- 扫码器上报完整六合一码；WES 保存不可变证据，WMS 返回业务资格、稳定异常分类、目标储位和需求状态。
+- WMS 不下发设备动作；WES 根据业务结果和设备事实决定 NG 作用域、Cell/Bin 执行状态与跨设备逻辑动作链；ECS/PLC 拥有
+  单台设备内部的原子物理动作和安全互锁。
+- X-Ray 点数后的新 `Qty` 与新 `PkgID` 形成新的物料身份快照；新旧包装追溯留在 WMS 内部。
+- NG 按料盘、Cell、Bin 分域处置；WMS 明确决定不追加来源或追加并锁定新 Cell。
 
-本文仍为待书面复审草案，不表示任何 PickingTask、逐盘决定或 Transport wire 已获 WMS/RCS 批准。书面复审通过后再更新
-状态并进入实施计划；在此之前不得据此开始业务 API 或插件编码。
+上述业务对象、完成边界、NG 权限、业务锁和换面并行方式已确认为当前目标设计。具体 PickingTask、逐盘决定、事实报告和
+Transport wire 仍以双方批准的 JSON Schema、枚举、错误码、超时和 fixture 为实施入口；wire 未冻结前不开始对应业务 API
+或插件编码。

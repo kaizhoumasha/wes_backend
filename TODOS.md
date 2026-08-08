@@ -72,19 +72,19 @@
 
 **Why:** 顶层设计只定义 WES/ECS/WMS 边界和业务合同；供应商联调还需要可执行的 payload 样例、回调样例、异常码、测试步骤和恢复流程。
 
-**Context:** 手册应在最终合同稳定后从真实接口与回调样例生成，不引用旧 Runtime、WorkLineInbox、自动 replay 或兼容 Payload。
+**Context:** 手册应在第三方设备统一接口和该设备合同附录稳定后，从真实接口与回调样例生成，不引用旧 Runtime、
+WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 
 **Scope:**
 
-- 设备角色、动作 payload、callback result/event 样例
+- 设备角色、统一命令 payload、callback result/event 样例
 - 正常入库、NG、满箱/换架、设备失败、WMS/RCS 拒绝五类联调场景
-- 稳定 `command_id`、厂商事件身份、`trace_id` 与核心关联键的使用约定；不得为厂商协议保留通用
-  `idempotency_key` 别名
-- ECS 同步 ACK 只表示请求接纳；后续动作由 WorkLine 插件产生封闭 Decision，经 `DeviceCommand` 与厂商
-  Adapter 下发，手册使用厂商真实接口名，不定义 WES 通用 `Event_Push` / `Receive Command` 端点
+- 稳定 `command_code`、部署级唯一 `source_event_id`、`trace_id` 与核心关联键的使用约定
+- ECS 同步 ACK 只表示请求接纳；后续动作由 WorkLine 插件产生封闭 Decision，经 `DeviceCommand` 和统一设备接口下发；
+  供应商内部协议由 ECS/网关收敛，不进入 WES 私有 Adapter
 - 进程重启后的证据核对、人工清线和新 LineRunEpoch 恢复步骤
 
-**Depends on:** 最终 DeviceCommand、external callback auth、WmsCapabilities 和入库业务合同稳定。
+**Depends on:** 最终 DeviceCommand、第三方设备统一接口、粗分机设备合同附录和入库业务合同稳定。
 
 **Effort:** M
 
