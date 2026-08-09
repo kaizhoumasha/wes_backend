@@ -1,116 +1,264 @@
-# WES Phase 4 AGV/CTU Transport 基础能力实施计划
+# WES Phase 4 AGV/CTU 通用搬运能力实施计划
 
-> **For agentic workers:** 实施时使用 `superpowers:subagent-driven-development` 或
-> `superpowers:executing-plans`，按 Task 顺序执行；代码行为遵循 TDD。
+> **供智能代理实施：** 使用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans`，按任务顺序实施；
+> 代码行为遵循测试驱动开发（TDD）。
 
-**Goal:** 在不接入当前生产路径的前提下，暗构建 AGV 整架搬运与 CTU 架内料箱搬运的最小可靠履约闭环：持久化
-不可变搬运请求、经 WMS 转发提交 RCS、可靠接收 CTU 逐箱位置事实和异步终态，并更新本地位置投影。
+**目标：** 为后续工作线插件提供简单、稳定的 AGV/CTU 搬运方法，支持搬货架、货架原地换面、批量搬料箱和协调交换料箱；
+业务插件只说明“搬什么、从哪里搬到哪里、谁发起”，不接触 WMS/RCS 协议和内部可靠性机制。
 
-**Architecture:** 新增窄领域包 `src/app/transport/`，只拥有 `TransportTask`、冻结成员、Transport evidence、
-本地位置投影和两个窄服务。外部访问复用 Phase 3 `WmsClient`，WMS wire 翻译继续位于 `src/app/wms_adapter/`。
-Phase 4 不建设通用执行内核、DeviceCommand、统一设备 Adapter、设备状态、设备 CALLBACK、插件 SDK、Decision 引擎或
-WorkLine 运行期能力。Phase 4 只暗装配，Phase 5 才接入生产 Composition Root 并删除 Transport 旧 owner。
+**架构：** `TransportService` 对插件暴露四个明确方法，内部以一个 Transport 聚合完成任务、成员、证据、位置投影和可靠结果发布，
+经 WMS 转发 RCS。当前只显式装配一个 WMS Transport Adapter，不建立动态 Provider、通用命令平台或设备运行时。
 
-**Tech Stack:** Python 3.13、FastAPI、Pydantic 2、SQLModel/SQLAlchemy 2、PostgreSQL 17、Alembic、Phase 3
-`WmsClient`、Pytest 9、Ruff、Bandit、GitNexus。
+**状态：** `IMPLEMENTED_DARK`（2026-08-09）。四类请求、异步证据收敛、统一结果和 `exchange_bins()` 协调交换已完成暗构建与验收；
+未注册生产 route、Celery task、beat、worker hook 或工作线消费者。Phase 4 只依赖
+自身与已完成的 Phase 3，不受后续 Phase 5 是否完成影响。
 
-**Status:** `BLOCKED_AT_TASK_0`。Transport submit/member-position/result wire 仍为 `ReviewRequired`；合同批准前不得开始代码实施。
+## 0. 名词与边界
 
-## 1. 全局约束
+| 中文名称 | 英文/代码名称 | 本计划含义 |
+| --- | --- | --- |
+| 基础设施能力（Foundation） | HTTP、数据库、事务、幂等、并发控制 | 跨领域技术底座；Phase 4 只复用，不新建通用平台 |
+| 设备接入能力（Device） | 设备命令、状态、回调和供应商适配 | 具体设备协议接入；不属于 Phase 4 |
+| 搬运能力（Transport） | `TransportService`、`TransportTask` | 搬运已确定的货架或料箱；是 Phase 4 唯一建设范围 |
+| 调用方（caller） | `TransportCaller` | 发起搬运的工作线和可选工作站信息，只用于追踪与结果路由 |
+| 搬运句柄（handle） | `TransportHandle` | 调用成功创建可靠任务后立即返回的任务标识 |
+| 搬运结果（outcome） | `TransportOutcome` | Phase 4 异步通知插件的统一成功、失败、拒绝或未知结果 |
+| 适配器（Adapter） | `WmsTransportAdapter` | 把内部搬运请求转换为 WMS 线上接口并执行单次 HTTP 调用 |
+| 权威证据（evidence） | WMS/RCS 位置事实和最终结果 | 可改变任务状态或位置投影的可靠外部事实 |
 
-- 系统未发布；不保留旧 API、旧表、旧字段、旧数据、alias、shim、双写、双读或迁移兼容逻辑。
-- Phase 4 只建设 AGV/CTU Transport 基础能力，不建设任何 ECS 相关能力。
-- AGV 只搬运完整货架，CTU 只搬运货架内料箱；一张 `TransportTask` 不得混合 Rack 与 Bin。
-- WMS 拥有搬运对象、来源、目标、优先级和业务授权；WES 只执行冻结事实并维护本地履约状态与位置投影。
-- WES 不选择车辆、路径、交通策略、RCS Endpoint 或设备内部动作，不直连 AGV、CTU 或 ECS。
-- 同步 ACK 只表示 WMS 接纳请求；CTU 成员位置事实只单调更新投影，只有匹配的权威 `TransportResult` 可以推进任务终态。
-- `TransportTask`、Transport evidence 和位置投影的写入 owner 必须唯一；Repository 只执行 SQL/flush，不自行 commit。
-- 外部 HTTP 永远不进入数据库事务；发送事实必须在 HTTP 返回后使用新事务保存。
-- Phase 4 不注册新 API、Celery task、beat、worker hook 或 Adapter 到当前生产 Composition Root。
-- 核心 Transport、WMS Adapter、业务插件和 WMS/RCS 联调测试各自拥有唯一范围，不得相互代测。
-- 代码行为按 TDD 实施；本计划是纯文档变更，不新增或修改测试代码，只做文档一致性检查。
-- 修改已有函数、类或方法前运行 GitNexus upstream impact；HIGH/CRITICAL 必须暂停并取得用户确认。提交前运行
-  GitNexus detect changes。
+代码标识符、状态值和协议字面量保持原文；其他专业名词优先使用中文，必要时括注英文。
 
-### 1.1 能力归属
+## 1. 核心裁决
 
-| 层级 | Phase 4 是否建设 | 内容 | 验收 owner |
-| --- | --- | --- | --- |
-| Transport 核心 | 是 | `TransportTask`、冻结成员、claim/fencing、提交事实、逐箱位置事实、异步终态、对账状态 | Transport FAST/PostgreSQL integration |
-| WMS Transport Adapter | 是 | submit/member-position/result 固定 wire、DTO、ACK/错误映射、单次发送 | WMS Adapter contract tests |
-| Transport evidence | 是 | `event_id` 幂等、摘要冲突、ACK-after-persist、处理终态 | WMS ingress/Transport integration |
-| 本地位置投影 | 是 | 货架最终位置；料箱 `AT_SOURCE / ON_CARRIER / AT_TARGET / UNKNOWN`；最后权威 evidence | Transport integration |
-| 通用执行平台 | 否 | Epoch、Material/Bin Execution、插件 SDK、Decision、通用 EvidenceProcessor | 独立后续计划 |
-| ECS/Device | 否 | DeviceCommand、设备状态、统一设备 Adapter、CALLBACK、供应商合同 | 独立 Device/ECS 计划 |
-| PickingTask/WorkLine 业务 | 否 | 准入、来源/目标决定、Cell/NG、完成顺序、业务 Fact | 业务计划和插件包 |
-| RCS/AGV/CTU 内部实现 | 否 | 车辆、路径、交通、充电、设备动作和供应商协议 | WMS/RCS/供应商验收 |
+1. Phase 4 只提供四个公共方法：`move_rack()`、`rotate_rack()`、`move_bins()`、`exchange_bins()`。
+2. 工作线插件或 WMS 负责选择空货架、空料箱、可用储位和本批次成员；Phase 4 只接收已确定的对象、来源和目标。
+3. `workline_id`、可选 `station_id` 和 `correlation_id` 只标识调用来源，不参与资源选择和 RCS 调度。
+4. 方法创建可靠任务后立即返回 `transport_task_id`，不阻塞等待物理搬运，不要求插件轮询。
+5. 最终结果异步通知原调用方；只有 `SUCCEEDED` 可以推进依赖该搬运的下一业务步骤。
+6. `exchange_bins()` 是一个协调物理动作：一次调用只生成一个任务和一个 WMS/RCS 请求，不拆成多个普通搬运请求。
+7. 当前经 WMS 转发 RCS；WES 不直连 AGV、CTU 或 ECS，不选择车辆、路径、交通策略和设备内部动作顺序。
+8. 插件不接触 `TransportTask` Repository、领取、租约、令牌、证据表或 WMS 线上接口。
+9. 系统未发布，不保留旧 API、旧表、别名、兼容层、双写、双读或旧数据迁移。
 
-判定红线：若一个对象必须依赖 PickingTask operation、ECS 设备合同、WorkLine 插件或具体业务完成顺序才能解释，
-它就不属于 Phase 4。不得通过“通用事件”“通用命令”“通用执行对象”等名称把未来能力重新包装进本阶段。
+## 2. 面向工作线插件的公共能力
 
-## 2. Task 0 实施入口门禁
+### 2.1 公共数据
 
-### Task 0: 冻结 Transport 合同与交接范围
+`TransportCaller`：
 
-**Review:**
+- `workline_id`：必填，发起搬运的工作线；
+- `station_id`：可选，用于区分同一工作线下的 `STATION_A / STATION_B` 等工作站；
+- `correlation_id`：可选，用于关联一次工作线流程中的多个搬运任务。
 
-- `docs/contracts/transport-fulfillment-contract.md`
-- `docs/contracts/wms-northbound-interaction-contract.md`
-- `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
-- `src/app/wms_adapter/client.py`
-- Phase 5 Transport 旧 owner、result callback 和生产装配 owner
+每次调用还必须携带唯一的调用幂等号 `client_request_id`。它与 WMS HTTP 信封中的 `request_id` 不是同一字段：
 
-**Produces:** 批准后的 submit/member-position/result wire、入站身份矩阵、Payload 上限、实施基线 SHA，以及仅限 Transport 的
-consumer/successor/NONE 清单。
+- 相同 `client_request_id`、相同参数重复调用，返回原 `transport_task_id`；
+- 相同 `client_request_id`、不同参数，返回幂等冲突；
+- 同一次开工流程中的多个搬运任务共享 `correlation_id`，但各自使用不同的 `client_request_id`。
 
-- [ ] WMS/WES 双方批准固定 path、operation、请求联合类型、六态、ACK、CTU 成员位置事实、异步终态、错误闭集、幂等和 deadline。
-- [ ] 冻结请求类型映射：`RackTransportRequest` 只表示 AGV 整架搬运，`BinBatchTransportRequest` 只表示 CTU
-  货架内料箱搬运；禁止 Rack/Bin 混装，不增加重复的 `device_type` 或 `vehicle_type` 字段。
-- [ ] 确认当前产品只经 WMS 转发 AGV 整架和 CTU 料箱运输需求；Phase 4 不直连 AGV、CTU、RCS 或 ECS。
-- [ ] 确认 `ROTATE` 是否真实获批；未批准则从首版合同、枚举和测试计划全部删除。业务所谓满箱交换在 Transport 中只是
-  两个或多个成员至少一对具有相反来源/目标的普通 CTU `MOVE` 批次；核心不接收满箱/空箱分类，不增加 `EXCHANGE` action。
-- [ ] 冻结 Transport locator 联合类型：Rack 只能使用 `RACK_POSITION`；CTU 成员只能使用 `RACK_BIN_SLOT` 或
-  `HANDOFF_POSITION`，且至少一端是货架储位。禁止字符串拼接 locator 或由 WES 反推储位。
-- [ ] 冻结 `transport.task.member_position_changed@v1`：只接收 `SOURCE_PICKED / TARGET_PLACED` 两个改变料箱位置的
-  标准里程碑和 `CONFIRMED / POSITION_UNKNOWN` 闭集结果；确认放到目标必须携带等于冻结目标的 locator，CTU 其他内部阶段
-  不进入 WES Transport wire。
-- [ ] 冻结结果身份：`data.event_id` 在单次部署范围唯一，`request_id` 只做 HTTP 关联。
-- [ ] 冻结 submit/member-position/result Payload 和批次成员上限，不在实现阶段凭经验猜测。
-- [ ] 冻结运输资源禁止重叠非终态 Transport 的双方责任、WES 唯一活动绑定和冲突返回：RackTask 绑定 `rack_id`，
-  BinBatch 绑定全部 `bin_id` 及 source/target `RACK_BIN_SLOT.rack_id`；资源键必须携带类型、先去重再稳定排序。若 WMS
-  不接受该约束，必须先提供可比较的对象级权威序号，不能用 `request_version` 猜测结果新旧。
-- [ ] 冻结权威位置/终态 evidence 先于 submit ACK 到达的收敛规则，以及新任务由 WMS 冻结来源建立任务级 `AT_SOURCE`
-  基线的 authority 规则。
-- [ ] 冻结 submit claim lease、`WmsClient` 最大总耗时和写回事务预算的硬关系；不以 lease 到期推断外部未接纳。
-- [ ] 确认 `/api/v1/wms/events` 唯一路由 owner 和静态 operation 分发表；Phase 4 只交付 Transport handler。
-- [ ] 使用 GitNexus query/context 和直接源码检查定位 Transport 旧 Effect/Outbox、result callback 和 Composition Root owner。
-- [ ] 为每个旧 owner/旧测试记录 Phase 5 successor 或 `NONE`；Device/ECS 和 PickingTask owner 不进入本清单。
-- [ ] 保存 `git status --short`、分支、HEAD、`origin/develop` 和合同批准证据。
+`TransportHandle` 只包含 `transport_task_id` 和 `client_request_id`，不暴露内部状态机。
 
-**Exit:** Transport 合同状态变为 `Approved`，所有字段、边界和 successor/NONE 无未决项。
+### 2.2 四个公共方法
 
-## 3. 目标结构
+```text
+TransportService.move_rack(
+    client_request_id, caller, rack_id, source, target
+) -> TransportHandle
 
-### 3.1 生产代码
+TransportService.rotate_rack(
+    client_request_id, caller, rack_id, position, target_face
+) -> TransportHandle
+
+TransportService.move_bins(
+    client_request_id, caller, moves
+) -> TransportHandle
+
+TransportService.exchange_bins(
+    client_request_id, caller, exchange_pairs
+) -> TransportHandle
+```
+
+#### `move_rack()`
+
+搬运一个已确定货架到已确定目标位置。单层货架、五层货架、空架和目标架只属于业务属性，不增加专用方法。
+
+#### `rotate_rack()`
+
+把一个已确定货架在当前位置切换到已确定工作面。首版工作面是闭集 `A | B`；当前位置或当前面未知时失败关闭。
+
+#### `move_bins()`
+
+一次搬运 1～4 个已确定料箱。每个成员包含 `bin_id + source + target`；调用方必须在提交前按
+`min(CTU 背篓容量 4, 目标位当前可承接容量, 可搬运料箱数量)` 完成批次选择。Phase 4 不查询、计算或预占目标位容量。
+
+#### `exchange_bins()`
+
+一次提交 1～2 个交换对，即最多 2 个待换出料箱与 2 个待换入料箱。每个交换对固定包含两个不同 `bin_id` 和两个不同位置，
+结果是两个料箱互换位置。合同不传递“满箱/空箱”分类，不选择对象，也不规定 CTU 内部取放顺序。
+
+同一料箱或位置不得在一次交换请求中重复。WMS/RCS 必须原生支持一次请求内的协调交换；不支持时返回 `REJECTED`，WES
+不得拆成多个 `move_bins()` 模拟。
+
+### 2.3 最小结构校验
+
+Phase 4 只校验搬运合同自身，不判断空箱、满箱、容量、业务资格、工作站占用或业务顺序：
+
+| 方法 | 失败关闭条件 |
+| --- | --- |
+| 全部方法 | 标识为空、位置类型或必填字段不符合闭集 |
+| `move_rack()` | 来源与目标相同，或来源/目标不是 `RACK_POSITION` |
+| `rotate_rack()` | 目标面不在 `A/B`、当前面未知，或目标面等于当前面 |
+| `move_bins()` | 成员数不在 `1..4`、重复 `bin_id`、单成员来源与目标相同、重复使用 `RACK_BIN_SLOT` |
+| `exchange_bins()` | 交换对数量不是 1～2、料箱或储位重复、位置不是 `RACK_BIN_SLOT` |
+
+多个成员可以使用同一个 `HANDOFF_POSITION`；该位置可能代表允许排队的滚筒线入口或出口，其容量由 WMS/工作线插件确定。
+
+### 2.4 位置类型
+
+首版只使用三个可判别位置类型：
+
+| 位置类型 | 必填字段 | 用途 |
+| --- | --- | --- |
+| `RACK_POSITION` | `location_code` | 货架来源、目标和原地换面位置 |
+| `RACK_BIN_SLOT` | `rack_id + slot_id` | 料箱所在的货架储位 |
+| `HANDOFF_POSITION` | `location_code` | 滚筒线入料口、出料口等 CTU 交接位置 |
+
+不得使用拼接字符串表达位置，也不得由 Phase 4 根据 `bin_id` 反推货架或储位。
+
+### 2.5 异步结果
+
+插件只需要理解一个 `TransportOutcome` 和四种状态：
+
+| 状态 | 中文含义 | 插件处理 |
+| --- | --- | --- |
+| `SUCCEEDED` | 搬运成功且最终位置明确 | 可以执行下一业务步骤 |
+| `FAILED` | 已执行失败，但相关对象最终位置明确 | 按业务规则终止、重新分配或人工处理 |
+| `REJECTED` | WMS/RCS 未接纳，没有开始搬运 | 修正请求或重新分配资源 |
+| `UNKNOWN` | 是否执行或最终位置不确定 | 停止依赖该资源的后续动作并人工核验 |
+
+结果必须携带 `transport_task_id`、`client_request_id`、单调递增的 `outcome_version`、原 `TransportCaller`、稳定结果码和已确认
+最终位置。内部 `RECONCILING` 映射为插件可理解的 `UNKNOWN`；后续权威结果完成消歧时，可以用更高版本再发布同任务的确定结果，
+插件按 `transport_task_id + outcome_version` 幂等处理，并允许版本号跳跃。
+
+批量任务只按成员事实聚合：全部成员成功且位置明确才是 `SUCCEEDED`；至少一个成员失败、但全部成员位置明确时是 `FAILED`；
+任一成员位置未知时是 `UNKNOWN`。不按“满箱/空箱”等业务分类改变聚合规则。
+
+所有位置明确的货架类成功/失败结果还必须携带到达面 `arrival_face: A | B`；只有位置未知时可以缺少。它是 WMS/RCS
+回传的当前工作面权威事实，WES 只保存和投影，不从目标面、旧数据或业务流程推断。
+
+Phase 4 通过一个显式注入的 `TransportOutcomePublisher` 发布结果，不建立动态订阅注册表。Phase 5 才把它接到生产工作线消费者。
+
+## 3. 最小内部结构
+
+```text
+工作线插件
+    │ 四个公共方法
+    ▼
+TransportService
+    │ 同一套校验、幂等和可靠任务创建
+    ▼
+Transport 聚合
+（Task + Member + Evidence + PositionProjection）
+    │ 后台领取，事务外单次发送
+    ▼
+TransportProviderPort
+    ▼
+WmsTransportAdapter → WMS → RCS → AGV/CTU
+                                      │
+WMS Event → TransportService.record_evidence() ─┘
+    │ 持久化后 ACK；后台批次再更新任务和位置投影
+    ▼
+待发布 outcome_version
+    │ 有界领取，事务外发布
+    ▼
+TransportOutcomePublisher → 工作线插件
+```
+
+### 3.1 唯一职责
+
+| 组件 | 负责 | 不负责 |
+| --- | --- | --- |
+| `TransportService` | 四个公共方法，以及四个内部批处理入口、ACK/证据收敛、超时收敛和可靠结果发布 | HTTP、WMS DTO、车辆和路径 |
+| `TransportRepository` | Task/Member/Evidence/Projection、活动资源和待发布结果的 SQL/flush | 业务决策和自行 commit |
+| `TransportProviderPort` | 单次提交类型化搬运请求 | 持久化、重试和状态查询 |
+| `WmsTransportAdapter` | 固定 WMS path/operation/DTO/ACK 映射 | 任务生命周期和数据库 |
+| `TransportOutcomePublisher` | 发布统一搬运结果 | 动态发现插件和修改任务状态 |
+
+### 3.2 内部可靠性
+
+Phase 4 在同一个 `TransportService` 中交付四个可测试、但尚未注册生产调度的内部批处理入口：
+`submit_pending_tasks(limit)`、`process_pending_evidence(limit)`、`reconcile_overdue_tasks(limit)`、
+`publish_pending_outcomes(limit)`。它们不是四个 Service，也不是四个动态 worker；如何接入未来生产调度由后续任务决定，
+不影响 Phase 4 实施或验收。
+
+内部 `TransportTask` 保留 `PENDING / ACCEPTED / REJECTED / SUCCEEDED / FAILED / RECONCILING` 六态，处理：
+
+- 先持久化任务，再发送外部请求；
+- 同一资源最多属于一个非终态任务；
+- PostgreSQL 小批量领取、租约和令牌隔离并发 worker；
+- HTTP 不进入数据库事务；
+- `submit_attempt_count` 创建时为 `0`；实际调用 HTTP 前在独立短事务中原子加一并写入 `send_started_at`，达到 `3` 后禁止
+  再次发送；只有尚无 `send_started_at` 的过期领取可以重新领取；
+- 已有 `send_started_at` 后 worker 崩溃或租约过期一律收敛为 `RECONCILING/UNKNOWN`，不得假设未送达后重提；
+- 相同身份和 Payload 安全收敛，交付结果未知时不换身份重提；
+- 单次 HTTP 硬超时 10 秒；每个任务最多实际发送 3 次，次数只以持久化的 `submit_attempt_count` 为准；
+- 只有 `NOT_SENT`、明确未接纳的 `429/503` 可以使用原身份重提；`NOT_SENT/503` 固定等待 2 秒，`429` 只使用 ACK
+  的正整数 `data.retry_after_ms`，缺失或不是正整数时固定等待 2 秒；Transport 合同不使用 HTTP `Retry-After`；
+- 只有保存上述明确未送达/未接纳结果时，才在同一事务清除本次 `send_started_at` 并安排下一次固定重提；
+- `DELIVERY_UNKNOWN` 永不自动重提；预算耗尽时发布 `REJECTED / TRANSPORT_SUBMIT_RETRY_EXHAUSTED`；
+- WMS/RCS 位置事实和最终结果持久化后应答；
+- `record_evidence()` 只保存原始 evidence，不在 WMS 回调请求内更新任务、投影或发布结果；
+- 原始 evidence 以 `PENDING | APPLIED | CONFLICT` 记录处理状态；待处理项使用领取令牌和短租约有界领取，崩溃后可重领；
+- 位置或结果未知时进入对账，不猜测成功、失败或原位置；
+- 首次进入 `ACCEPTED` 时冻结 `result_deadline_at = 当前时间 + 10 分钟`；ACK 或先到的位置证据均可首次设置，后续重复 ACK、
+  位置事实和其他更新不得刷新；超时发布 `UNKNOWN / TRANSPORT_RESULT_TIMEOUT` 并保持资源绑定；
+- `reconcile_overdue_tasks(limit)` 按稳定顺序有界领取超期 `ACCEPTED` 任务，在事务内转为 `RECONCILING`、递增
+  `outcome_version` 并形成待发布结果，不查询 WMS/RCS、不释放资源；
+- 只有权威最终结果推进物理终态；
+- 形成 `UNKNOWN` 或确定结果的事务同时递增 `outcome_version`；
+- `publish_pending_outcomes()` 有界领取最新未发布结果快照，使用领取令牌和租约隔离 worker，在事务外发布；
+- `TransportOutcomePublisher.publish()` 正常返回才记账，异常或取消均保留待发布；
+- 尚未发布的低版本允许被更高版本合并；保证最新权威结果最终送达，不建设逐版本结果历史；
+- 发布成功后、记录前崩溃只会造成重复通知，不会丢失最新结果。
+
+这些机制全部是 `TransportService` 内部实现，不出现在工作线插件接口中。首版不增加状态查询、取消、暂停、恢复、车辆改派、
+动态 Provider、通用命令、通用工作流或独立提交尝试子系统。
+
+## 4. Task 0：合同入口门禁
+
+WMS/WES 已共同冻结：
+
+- [x] 四个公共方法及其请求类型、必填字段、错误闭集和示例；
+- [x] `client_request_id` 的 WES 本地幂等语义，以及 WMS 不可变请求以 `transport_task_id` 为幂等身份；
+- [x] `move_bins()` 单次成员上限为 4，调用方按目标位可承接容量缩小批次；
+- [x] `exchange_bins()` 一次 1～2 个交换对、单任务、单次 WMS/RCS 请求和协调执行保证；
+- [x] `RACK_POSITION / RACK_BIN_SLOT / HANDOFF_POSITION` 三种位置结构；
+- [x] WMS submit、成员位置事实和最终结果的固定 path、operation、闭集 DTO 与 `256 KiB` Payload 上限；其中 WMS → WES
+  位置与结果回调复用 `docs/contracts/wms-async-callback-envelope-contract.md`，同步 Transport 提交/ACK 继续由 Transport
+  合同独立定义，不抽取全局 WMS 交互信封；
+- [x] 所有位置明确的货架类成功/失败结果必须回传 `arrival_face: A | B`，只有位置未知时可以缺少，WES 不推断当前工作面；
+- [x] WMS/RCS 不支持协调交换时返回 `422 / REJECTED / COORDINATED_BIN_EXCHANGE_UNSUPPORTED`；
+- [x] 同步 ACK 只代表接纳，最终结果必须异步回调；
+- [x] 单次 HTTP 超时 10 秒、最多发送 3 次，以及 `NOT_SENT/429/503` 的固定重提规则和预算耗尽结果；
+- [x] `DELIVERY_UNKNOWN` 禁止自动重提并进入 `UNKNOWN/RECONCILING`；
+- [x] `ACCEPTED` 后等待结果 10 分钟，超时发布 `UNKNOWN`，后续确定结果使用更高版本修正；
+- [x] `outcome_version` 的单调版本与插件幂等消费规则；
+- [x] 允许未发布低版本被更高版本合并、插件允许版本跳跃，以及 Publisher 正常返回才代表成功；
+- [x] 业务货架/料箱分配接口不属于 Phase 4，不得在本阶段补建。
+
+**退出条件：** `docs/contracts/transport-fulfillment-contract.md` 为 `Approved`，以上 15 项均已批准。Phase 5 生产接线和旧 owner
+处置是后续任务，不是 Phase 4 的入口或退出条件。
+
+## 5. 目标文件结构
 
 ```text
 src/app/transport/
 ├── __init__.py
-├── contracts.py
-├── composition.py
-├── models/
-│   ├── __init__.py
-│   ├── transport_task.py
-│   ├── transport_evidence.py
-│   └── position_projection.py
-├── repositories/
-│   ├── __init__.py
-│   ├── transport_task_repository.py
-│   └── transport_evidence_repository.py
-└── services/
-    ├── __init__.py
-    ├── transport_task_service.py
-    └── transport_evidence_service.py
+├── contracts.py                  # caller、四类请求、handle、outcome、两个窄 Port
+├── composition.py                # 暗装配，不注册生产消费者
+├── models.py                     # Task、Member、Evidence、Projection 和活动资源绑定
+├── repository.py                 # 一个 Transport 聚合 Repository
+└── service.py                    # 四个公共方法及内部提交、证据、超时收敛和结果发布
 
 src/app/wms_adapter/
 ├── transport_wire.py
@@ -118,509 +266,282 @@ src/app/wms_adapter/
 └── transport_event_handler.py
 ```
 
-`TransportTaskRepository` 拥有任务、冻结成员和位置投影的聚合写入；`TransportEvidenceRepository` 只拥有 Transport evidence 的
-幂等绑定、领取和处理终态。首版不为只有一个调用方的 SQL 再增加 generic repository、UnitOfWork 或 query service。
+首版不增加通用 Repository、UnitOfWork、Service Locator、Provider Registry 或插件 SDK。
 
-### 3.2 测试所有权
+### 5.1 已有能力（What already exists）
 
-```text
-tests/runtime/transport/                 # 生命周期、reducer、位置投影、可靠性
-tests/contracts/wms_adapter/             # Transport submit/member-position/result wire 与 Adapter
-tests/integration/transport/             # PostgreSQL claim、唯一约束、事务和暗闭环
-tests/integration/wms_adapter/            # Transport evidence ingress 持久化后 ACK
-```
+| 已有能力 | Phase 4 处理 |
+| --- | --- |
+| `src/core/outbound_http/` 的 `OutboundHttpTransport` | 仅由 `WmsClient` 在内部继续复用单次有界 HTTP 发送、交付状态和失败事实；Phase 4 核心与 Adapter 不直接依赖 Phase 2 |
+| `src/app/wms_adapter/WmsClient` | Phase 4 唯一外发入口；复用 JSON 编解码和访问结果，只按首个真实消费者需要扩展逐请求请求体/响应预算，不加入搬运语义 |
+| PostgreSQL + SQLAlchemy 的部分唯一索引、`FOR UPDATE SKIP LOCKED` | 复用数据库原生能力实现活动资源约束和有界领取，不引入 Redis 锁或新队列 |
+| `BaseRepository` / 现有事务约定 | 复用数据库会话和 flush 约定，但只建立一个 Transport 聚合 Repository |
+| 旧 `SystemOutbox`、Runtime Effect 和 `src/app/wms_integration/` | 只作为删除范围与事故经验参考，不复用其通用平台结构，也不作为 Phase 4 测试真源 |
 
-不得加入 PickingTask、五层货架补给、目标架换面流程、料箱投放/回收等业务 happy path。测试可以使用无业务含义的
-Rack/Bin fixture 验证公共合同，但不得用真实工作线流程证明 Transport 核心。
+首版新增的是 Transport 领域事实，不是新的 Foundation。任务、成员、证据和位置投影不能用旧 Outbox JSON 代替，否则会重新
+耦合待删除平台；领取、锁和 HTTP 传输则必须复用现有基础设施模式。
 
-### 3.3 最小处理流水线
+## 6. 实施任务（Implementation Tasks）
 
-```text
-已批准的业务事实（Phase 4 外）
-        │
-        ▼
-TransportTaskService.create() ── COMMIT
-        │
-        ▼ claim_due(limit, lease)
-TransportTaskService.begin_submit() ── COMMIT
-        │
-        ▼
-WmsTransportAdapter.submit() ── 单次 HTTP，事务外
-        │
-        ▼
-TransportTaskService.record_submit_result() ── 新事务
-        ▲
-        └── evidence 可先到；后到 ACK 只补留痕，不回退状态
+### Task 1：建立公共合同和持久化模型
 
-WMS Transport evidence ingress
-        │ parse stable identity + normalize within contract limit
-        ▼
-TransportEventHandler.handle()
-        │ static operation owner，非 FastAPI route
-        ▼
-TransportEvidenceService.bind() ── COMMIT ──► ACK / DUPLICATE / CONFLICT
-        │
-        ▼ claim_pending(limit, lease)
-TransportEvidenceService.apply()
-        └── ONE DB TRANSACTION
-            ├── 校验 task/version/action/object/frozen members
-            ├── member position: 单调更新 ON_CARRIER / AT_TARGET / UNKNOWN
-            ├── task result: 推进 TransportTask 终态或 RECONCILING
-            ├── bulk 更新最终位置/工作面/unknown
-            └── 标记 evidence PROCESSED / REJECTED
-```
-
-首版 Transport evidence 只有 `MEMBER_POSITION_CHANGED` 和 `TASK_RESULT` 两种闭集 kind，不定义 `DEVICE_EVENT`、
-`DEVICE_RESULT`、普通 WMS Event kind 或动态 operation registry。Phase 4 只交付接收
-`transport.task.member_position_changed@v1` 与 `transport.task.resulted@v1` 的 operation-scoped `TransportEventHandler`，不拥有或注册共享
-`POST /api/v1/wms/events` FastAPI route。Phase 5 由唯一 WMS event route 使用静态 `match` 分发到该 Handler。
-
-## 4. 实施任务
-
-### Task 1: 建立 Transport 模型与数据库约束
-
-**Files:**
-
-- Create: `src/app/transport/models/transport_task.py`
-- Create: `src/app/transport/models/transport_evidence.py`
-- Create: `src/app/transport/models/position_projection.py`
-- Create: `src/app/transport/models/__init__.py`
-- Create: `src/app/transport/__init__.py`
-- Modify: `migrations/env.py`
-- Create via Alembic generator: one revision with message `add transport fulfillment core`
-- Test: `tests/runtime/transport/test_model_contracts.py`
-- Test: `tests/integration/transport/test_transport_schema.py`
-
-**Produces:**
-
-- `TransportTask` 六态：`PENDING / ACCEPTED / REJECTED / SUCCEEDED / FAILED / RECONCILING`。
-- `reconciliation_cause` 闭集：`SUBMIT_DELIVERY_UNKNOWN / RESULT_DEADLINE_EXCEEDED / EVIDENCE_CONFLICT /
-  POSITION_UNKNOWN`；只允许 `SUBMIT_DELIVERY_UNKNOWN` 重新进入 submit claim。
-- `TransportTaskMember`：保存 Bin 批次冻结成员、WMS 授权的任务级不可变 `AT_SOURCE` 基线和最终成员事实，不建立成员级
-  第二套生命周期。
-- `TransportEvidence`：闭集 kind、部署级唯一 `event_id`、规范化摘要、原始 Payload、首次 ACK、处理状态、claim/fencing。
-- `TransportPositionProjection`：对象类型、对象 ID、`AT_SOURCE / ON_CARRIER / AT_TARGET / UNKNOWN`、闭集 locator、工作面和最后权威 evidence。
-- 不可变提交快照：请求类型、请求版本、WMS `authority_refs`、action、闭集 source/target locator、对象/成员和 Payload 摘要。
-
-- [ ] 先写失败测试锁定枚举、非空字段、唯一约束、外键方向、不可变身份和禁止字段。
-- [ ] 明确断言不存在 Epoch、Material/Bin Execution、DeviceCommand、设备投影、插件/Decision 字段。
-- [ ] 覆盖 `(transport_task_id, request_version)` 唯一、`event_id` 部署级唯一、同身份同摘要可重提、异摘要冲突。
-- [ ] 覆盖 Rack → AGV、BinBatch → CTU 的闭集映射、Rack/Bin 禁止混装、locator 联合约束、冻结成员无重复、空成员拒绝和批准后的成员上限。
-- [ ] Rack 任务绑定 `rack_id`；BinBatch 构造带资源类型的唯一键集合，对全部成员 `bin_id` 和 source/target
-  `RACK_BIN_SLOT.rack_id` 去重后稳定排序并原子绑定，所有绑定在终态事务内释放。
-- [ ] PostgreSQL 并发测试覆盖 RackTask 与 BinBatch 竞争同一 rack 时仅一方创建成功；禁止 AGV 搬架与 CTU 操作架内料箱并发。
-- [ ] 覆盖同一批次多个 Bin 共享同一 rack 时只建立一条 rack binding，不因重复资源键与自身冲突。
-- [ ] 为真实查询建立最小索引，不加入未来状态、设备、WorkLine 或供应商字段。
-- [ ] 先运行 `uv run alembic check`，再用 Alembic generator 生成 revision；不得手写 revision ID。
-- [ ] 在隔离 PostgreSQL 空库执行 upgrade，验证 schema、约束和索引。
-- [ ] 提交：`feat(transport): 建立运输履约模型`
-
-### Task 2: 实现 TransportTask Repository、claim 与可靠提交
-
-**Files:**
+**文件：**
 
 - Create: `src/app/transport/contracts.py`
-- Create: `src/app/transport/repositories/transport_task_repository.py`
-- Create: `src/app/transport/repositories/__init__.py`
-- Create: `src/app/transport/services/transport_task_service.py`
-- Create: `src/app/transport/services/__init__.py`
-- Test: `tests/runtime/transport/test_transport_task_lifecycle.py`
-- Test: `tests/integration/transport/test_transport_task_claiming.py`
+- Create: `src/app/transport/models.py`
+- Create: `src/app/transport/__init__.py`
+- Modify: `migrations/env.py`
+- Create via Alembic generator: one Transport revision
+- Test: `tests/runtime/transport/test_transport_contracts.py`
+- Test: `tests/integration/transport/test_transport_schema.py`
+
+**产出：** `TransportCaller`、`TransportHandle`、带 `outcome_version` 的 `TransportOutcome`、四类请求、两个窄 Port、
+含 `submit_attempt_count` 和 `result_deadline_at` 的任务及成员/证据/投影模型。
+
+- [ ] 先写失败测试锁定四个方法所需 DTO、最小结构校验、位置闭集和结果闭集。
+- [ ] 覆盖 `exchange_pairs` 为 0、1、2、3，对内料箱/位置重复，以及合法的 1～2 个交换对。
+- [ ] 覆盖 `client_request_id` 唯一、同请求同摘要幂等、同请求异摘要冲突。
+- [ ] 建立最小活动资源唯一约束：货架任务绑定该货架；料箱任务绑定每个料箱，以及来源/目标储位引用的全部不同货架。
+- [ ] 建立活动资源部分唯一索引、待提交/重提领取索引、`event_id` 唯一索引、待处理 evidence 索引和待发布结果领取索引；不增加缓存。
+- [ ] 使用 Alembic generator 生成迁移；不手写 revision ID，不迁移旧数据。
+- [ ] 在隔离 PostgreSQL 空库验证 upgrade、约束和索引。
+
+### Task 2：实现简单的 `TransportService`
+
+**文件：**
+
+- Create: `src/app/transport/repository.py`
+- Create: `src/app/transport/service.py`
+- Test: `tests/runtime/transport/test_transport_service.py`
+- Test: `tests/integration/transport/test_transport_repository.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 
-**Interfaces:**
+**产出：** 四个公共方法、一个聚合 Repository、可靠任务创建，以及 `submit_pending_tasks(limit)`、
+`process_pending_evidence(limit)`、`reconcile_overdue_tasks(limit)`、`publish_pending_outcomes(limit)` 四个内部批处理入口。
 
-```text
-TransportPort.submit(RackTransportRequest | BinBatchTransportRequest) -> TransportSubmitResult
-TransportTaskService.create(request) -> TransportTask
-TransportTaskService.claim_due(owner, limit, lease_seconds, now) -> Sequence[TransportTask]
-TransportTaskService.begin_submit(task_id, claim_token) -> ImmutableTransportRequest
-TransportTaskService.record_submit_result(task_id, claim_token, result) -> TransportTask
-TransportTaskService.mark_result_deadline_exceeded(task_id, observed_at) -> TransportTask
-```
+- [ ] 每个公共方法先写成功、边界和失败测试，再实现最小行为。
+- [ ] 四个方法复用同一个私有任务创建路径，不复制幂等、资源绑定和持久化逻辑。
+- [ ] `move_rack()` 每次只处理一个货架；调用方需要 1～2 个货架时分别调用，可并行等待结果。
+- [ ] `exchange_bins()` 生成一个 `EXCHANGE` 请求，不拆分、不在 WES 排序 CTU 内部动作。
+- [ ] 创建成功立即返回 `TransportHandle`；不得等待 WMS ACK 或物理结果。
+- [ ] PostgreSQL 并发测试覆盖重复调用、资源冲突、领取租约回收和两个 worker 不重复领取。
+- [ ] 资源冲突测试覆盖料箱来源货架、目标货架和同批次去重；任一相关货架存在非终态 AGV/CTU 任务时创建失败关闭。
+- [ ] 覆盖只有 `REJECTED / SUCCEEDED / FAILED` 的确定终态释放活动资源；`RECONCILING/UNKNOWN`、结果超时和交付未知均
+  保持绑定，直到权威确定结果完成消歧。
+- [ ] 外部 HTTP 始终在事务外；使用硬超时，不引入 heartbeat。
+- [ ] 四个批处理入口均按显式 `limit` 有界领取，并使用稳定 `ORDER BY + 主键`；不得无界扫描或依赖数据库偶然返回顺序。
+- [ ] 覆盖领取后、`send_started_at` 写入前崩溃可重领，以及写入后、ACK 写回前崩溃只收敛为 `UNKNOWN` 且禁止重提。
+- [ ] 覆盖 `submit_attempt_count` 创建为 `0`，每次发送开始事务原子递增，并在达到 `3` 后零次调用 Adapter；重启后不得
+  重新获得发送预算。
+- [ ] 覆盖只有 `NOT_SENT`、`429/503` 的确定性结果事务可以清除本次 `send_started_at`，并在单任务最多发送 3 次的
+  预算内重提。
+- [ ] 覆盖 10 秒 HTTP 超时、最多发送 3 次、2 秒固定间隔、合法/非法 `data.retry_after_ms`、`DELIVERY_UNKNOWN` 禁止重提和
+  `TRANSPORT_SUBMIT_RETRY_EXHAUSTED`。
+- [ ] 覆盖首次 ACK 或先到的位置证据进入 `ACCEPTED` 时设置同一个 `result_deadline_at`，重复 ACK/位置事实不得刷新；最终结果
+  先到时无须设置。
+- [ ] 覆盖 `reconcile_overdue_tasks(limit)` 只按 `result_deadline_at` 领取超过结果截止时间的 `ACCEPTED` 任务，形成
+  `TRANSPORT_RESULT_TIMEOUT`，保持资源绑定；未超时任务不变，迟到确定结果使用更高版本修正。
 
-- [ ] 写失败测试覆盖创建、不可变版本、ACK 映射、拒绝、冲突、delivery unknown、deadline 和六态迁移。
-- [ ] 覆盖四种 `reconciliation_cause`；`claim_due()` 只选择安全的 `PENDING` 和
-  `RECONCILING + SUBMIT_DELIVERY_UNKNOWN`，deadline/conflict/position-unknown 永不重新 submit。
-- [ ] 覆盖 `limit <= 0`、`limit > 100`、稳定顺序、空队列、lease 回收、旧 token 写回拒绝和并发 worker 不重复领取。
-- [ ] 使用 PostgreSQL `FOR UPDATE SKIP LOCKED` 实现小批量 claim；不自研队列、不创建通用 claim service。
-- [ ] `begin_submit()` 在发送前提交 claim/attempt 事实；HTTP 在事务外执行；结果使用新事务保存。
-- [ ] Task 0 冻结 `lease_seconds > WmsClient 最大总耗时 + 结果写回事务预算`；活动 attempt 未结束前不得仅因 lease 到期并发重发。
-- [ ] 增加阻塞 HTTP 超过旧 lease 阈值的 PostgreSQL 并发测试；使用硬超时上限解决，不引入 heartbeat。
-- [ ] 已取得 `RECEIVED/DUPLICATE` 后不得再次提交；只允许合同批准的同身份、同版本、同 Payload 收敛。
-- [ ] `RECONCILING` 不自动变成失败，不换身份重提，不猜测现场状态。
-- [ ] Transport Port 不持久化、不重试、不读取 WMS/RCS 内部状态。
-- [ ] 若保留 `ROTATE`，`create()` 必须在同一事务锁定当前 Rack 位置投影，当前面缺失/unknown 或等于 `target_face` 时拒绝；
-  若合同不批准该准入 owner，则从首版删除 `ROTATE`。
-- [ ] `create()` 取得全部活动绑定时，把每个 Bin 成员的 WMS 冻结来源保存为任务级不可变 `AT_SOURCE` 基线和 authority
-  evidence；`SOURCE_PICKED` 不依赖旧 Transport 全局投影，WorkLine/Device 也不得写该投影。
-- [ ] 为新增生产路径补精确 HEAVY mapping，不用空列表掩盖 PostgreSQL 并发影响。
-- [ ] 提交：`feat(transport): 实现可靠运输提交`
+### Task 3：实现 WMS Adapter、证据和统一结果
 
-### Task 3: 实现 WMS Transport Adapter
-
-**Files:**
+**文件：**
 
 - Create: `src/app/wms_adapter/transport_wire.py`
 - Create: `src/app/wms_adapter/transport_adapter.py`
-- Modify: `src/app/wms_adapter/__init__.py`
-- Test: `tests/contracts/wms_adapter/test_transport_adapter.py`
-
-**Produces:** `WmsTransportAdapter(WmsClient)`，固定 `POST /api/v1/wes/transport-requests`、
-`transport.task.submit@v1`、闭集 DTO 和 `TransportSubmitResult` 映射。
-
-- [ ] 写失败测试覆盖 Rack/AGV 与 BinBatch/CTU 联合 DTO、错误搬运对象拒绝、公共信封、ACK、重复、拒绝、冲突、
-  BUSY/UNAVAILABLE 和 delivery unknown。
-- [ ] 锁定 `ROTATE` 合同门禁；未批准时相关枚举、字段和测试全部缺席。BinBatch 首版只有 `MOVE`。
-- [ ] 实现一次 `WmsClient.post()` 调用和严格 Pydantic 解码；不得访问数据库或解释 `TransportTask` 状态。
-- [ ] 验证 Adapter 无 status query、cancel、retry/backoff、动态 registry、直接 RCS/AGV/CTU/ECS Client。
-- [ ] 运行 WMS Adapter 合同测试、Phase 3 Client 回归、Ruff 和 Import Linter。
-- [ ] 提交：`feat(wms-adapter): 实现 Transport 提交合同`
-
-### Task 4: 实现 Transport evidence 入站、唯一 reducer 与位置投影
-
-**Files:**
-
-- Create: `src/app/transport/repositories/transport_evidence_repository.py`
-- Create: `src/app/transport/services/transport_evidence_service.py`
-- Modify: `src/app/transport/repositories/__init__.py`
-- Modify: `src/app/transport/services/__init__.py`
 - Create: `src/app/wms_adapter/transport_event_handler.py`
+- Modify: `src/app/wms_adapter/client.py`
 - Modify: `src/app/wms_adapter/__init__.py`
+- Modify: `src/app/transport/service.py`
+- Modify: `src/app/transport/repository.py`
+- Modify: `docs/contracts/wms-northbound-interaction-contract.md`
+- Test: `tests/contracts/wms_adapter/test_client.py`
+- Test: `tests/contracts/wms_adapter/test_transport_adapter.py`
 - Test: `tests/contracts/wms_adapter/test_transport_event_handler.py`
-- Test: `tests/runtime/transport/test_transport_evidence_service.py`
+- Test: `tests/runtime/transport/test_transport_outcome.py`
 - Test: `tests/integration/transport/test_transport_evidence_transaction.py`
-- Test: `tests/integration/wms_adapter/test_transport_event_handler.py`
 
-**Interfaces:**
+**产出：** `WmsClient` 逐请求字节预算、四类请求到固定 WMS wire 的转换、原始回调 Body 限制、持久化后应答、
+位置/终态收敛和 `TransportOutcome` 发布。
 
-```text
-TransportEventHandler.handle(operation=transport.task.member_position_changed@v1|transport.task.resulted@v1, envelope)
-TransportEvidenceService.bind(input) -> TransportEvidenceAck
-TransportEvidenceService.claim_pending(owner, limit, lease_seconds, now) -> Sequence[TransportEvidence]
-TransportEvidenceService.apply(evidence_id, claim_token) -> TransportEvidenceOutcome
-```
+- [ ] 先扩展 `WmsClient`：`request/post` 接收可选正整数 `max_request_body_bytes` 和 `max_response_body_bytes`；JSON 编码后、
+  发送前执行请求体上限，并在 Client 内部把响应上限映射为 Phase 2 `OutboundHttpResponseLimits`；Adapter 不导入 Phase 2
+  类型，默认行为保持现有共享 Client 合同，不增加第二套编码或 Transport。
+- [ ] 覆盖请求体恰好等于/超过 `256 KiB` 时一次发送/零发送，以及响应 wire/decoded body 超限时保留 Phase 2 失败事实。
+- [ ] `TransportEventHandler.handle(raw_body: bytes)` 在 JSON 解码前执行 `256 KiB` 上限；覆盖恰好等于、超过上限、非法
+  UTF-8、非法 JSON、未知字段和合法闭集 DTO。
+- [ ] 覆盖固定 path/operation、Transport 提交自有信封、WMS 异步回调统一信封、四类闭集 DTO、ACK、拒绝、冲突和
+  交付结果未知。
+- [ ] 覆盖 `BIN_MOVE` 成员数 1、4、5，以及调用方缩小批次后 Phase 4 只验证冻结成员、不查询目标容量。
+- [ ] 覆盖 `EXCHANGE` 的 1～2 个交换对在一个 Payload 中提交，禁止拆成多个 HTTP 请求。
+- [ ] 覆盖逐箱取出、放置、最终结果、重复、倒序、未知位置和矛盾结果。
+- [ ] 覆盖批量成员全成功、部分失败但位置完整、任一位置未知三种聚合结果。
+- [ ] 覆盖 `final_position` 与字面量 `position_unknown=true` 严格二选一，以及 `SUCCEEDED` 必须位置明确、`FAILED` 必须携带
+  `failure_code`；拒绝两者同时存在、同时缺少和 `position_unknown=false`。
+- [ ] 覆盖 `RACK_MOVE`、`RACK_ROTATE` 成功结果、位置明确的失败结果、位置未知结果对 `arrival_face` 的要求，以及面向投影单调更新。
+- [ ] evidence 按稳定顺序小批量领取；覆盖保存后崩溃、租约过期重领、并发 worker 和旧领取令牌拒绝写回。
+- [ ] `record_evidence()` 的合同测试证明回调事务只保存 `PENDING` evidence 并应答，不在请求内应用任务/投影或发布结果。
+- [ ] 证据应用在一个事务内锁定任务，更新任务/成员/投影并标记证据；任一步失败整体回滚。
+- [ ] 覆盖证据早于/晚于 ACK、晚到 ACK 不回退状态，以及 `UNKNOWN` 后确定结果使用更高版本修正。
+- [ ] `SUCCEEDED / FAILED / REJECTED / UNKNOWN` 统一携带 caller、调用幂等号和 `outcome_version`。
+- [ ] 终态事务形成待发布版本；覆盖发布失败、崩溃恢复、重复发布和发布版本记账。
+- [ ] 覆盖未发布低版本被更高版本合并、版本跳跃，以及旧领取令牌不得覆盖新版本记账。
+- [ ] 使用假的 `TransportOutcomePublisher` 验证发布；不建立动态消费者注册表或独立 Outbox 表。
 
-- [ ] 写失败测试覆盖两个固定 operation/DTO、`event_id` 唯一、ACK-after-persist、重复、冲突、绑定失败不 ACK 和 Payload 上限。
-- [ ] 覆盖未知任务、版本/action/对象/成员不匹配、缺少成员、矛盾终态、迟到结果和终态后重复结果。
-- [ ] 覆盖 `SOURCE_PICKED + CONFIRMED → ON_CARRIER`、`TARGET_PLACED + CONFIRMED + locator → AT_TARGET`、重复、倒序、
-  终态先到、终态后迟到和 `POSITION_UNKNOWN`；目标 locator 必须等于冻结目标，任何旧 evidence 不得让位置投影回退。
-- [ ] 覆盖终态与已接受 `TARGET_PLACED` 的位置矛盾；必须进入 `EVIDENCE_CONFLICT`，不得让终态静默覆盖已确认位置。
-- [ ] 覆盖 Rack 最终位置/工作面、Bin 全量成员、部分失败、position unknown、批准后的 ROTATE，以及至少一对成员具有
-  相反 source/target 的普通 `MOVE` 批次的完整成功、明确部分失败和未知位置；核心测试不出现满箱/空箱业务分类。
-- [ ] 覆盖 member-before-ACK、result-before-ACK、terminal-before-record_submit_result；匹配 evidence 先收敛接纳再应用，
-  后到 ACK 只补留痕，不得回退位置或终态。
-- [ ] 覆盖“入口投箱完成 → 外部 owner 移动 → 以退料位置创建反向 CTU 任务 → `SOURCE_PICKED`”，验证新任务只依赖其
-  WMS 授权的 `AT_SOURCE` 基线。
-- [ ] Handler 只解析固定 operation/DTO 并调用 service；不得拥有 FastAPI route、直接访问数据库、执行 reducer 或建立 registry。
-- [ ] `apply()` 首先 `SELECT ... FOR UPDATE` 锁定 TransportTask 并在锁内重检终态；随后按稳定顺序锁定成员/投影，
-  在一个事务内推进任务、bulk 更新投影并标记 evidence；任一步失败整体回滚。
-- [ ] 增加两个不同 `event_id` 并发提交相同/矛盾成员位置或终态的 PostgreSQL 测试；后到者只能幂等留痕或进入冲突对账，
-  不得覆盖已接受终态。
-- [ ] 批次一次 bulk 读取冻结成员并批量写入最终事实，禁止循环内逐成员查询或 commit。
-- [ ] 只有匹配的权威结果可以推进终态；ACK、callback hint、普通 WMS Event 和人工口述均不能终结任务。
-- [ ] 提交：`feat(transport): 接收并应用运输事实`
+### Task 4：暗装配与最终验收
 
-### Task 5: 暗 Composition、Phase 5 交接与最终验收
-
-**Files:**
+**文件：**
 
 - Create: `src/app/transport/composition.py`
-- Modify: `src/app/transport/__init__.py`
 - Modify: `docs/architecture/file_index.md`
 - Modify: `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
 - Test: `tests/architecture/test_transport_boundaries.py`
 - Test: `tests/integration/transport/test_dark_transport_loop.py`
 
-**Produces:** 一个只能显式构造、不会自动注册的 Transport 装配函数，以及 Phase 5 Transport consumer/successor/NONE 清单。
+**产出：** 可显式构造但不注册生产路径的 Phase 4 搬运能力。
 
-- [ ] 写失败架构测试：Transport 核心零 `httpx`、零旧 Runtime/Intent/Effect/SystemOutbox、零 Device/ECS import；
-  WMS Adapter 不依赖 Repository；ingress 不直接执行 SQL。
-- [ ] 写失败暗装配测试：构造服务不会注册 route、Celery task、beat、全局 singleton 或生产 observer。
-- [ ] 实现显式构造函数，只接收已创建的 `WmsClient`、repositories 和 session factory；不读取全局容器。
-- [ ] 使用真实 PostgreSQL 完成暗闭环：Task → claim → fake TransportPort ACK → member position bind/apply → result bind/apply → projection。
-- [ ] 冻结 Phase 5 对 Transport 旧 Effect/Outbox、result callback 和 Composition Root 的唯一 successor/NONE。
-- [ ] Phase 5 清单必须精确到文件/符号冻结三个生产 owner：submit dispatcher、transport evidence processor、
-  result-deadline sweeper；Phase 4 只交付可调用的窄入口和暗测试，不注册调度任务。
-- [ ] Phase 5 唯一 WMS event route 必须静态分发两个 Transport operation 到 `TransportEventHandler`；
-  不新增同 method/path 的第二条 FastAPI route，也不截断普通 WMS event。
-- [ ] 明确 DeviceCommand、统一设备 Adapter、设备 CALLBACK 和 ECS 旧 owner 不属于本阶段及本清单。
-- [ ] 运行 GitNexus detect changes，确认新代码未进入旧生产执行流。
-- [ ] 提交：`feat(transport): 完成 Phase 4 暗装配与交接`
+- [ ] 显式装配 `TransportService`、唯一 WMS Adapter、一个 Transport Repository 和结果 Publisher；不读取全局容器。
+- [ ] 暗调用四个内部批处理入口，证明未来生产接线无需理解 Repository、领取令牌或 Adapter 细节。
+- [ ] 暗闭环验证四个公共方法中至少各一个请求，其中交换覆盖两个交换对。
+- [ ] 架构测试证明 Transport 核心不依赖 httpx、ECS、DeviceCommand、PickingTask 或工作线插件；Transport 核心和
+  `WmsTransportAdapter` 均不得直接导入 `src.core.outbound_http`，只能经 `WmsClient` 使用 Phase 2 能力。
+- [ ] 确认新 API、Celery task、beat、worker hook 和生产消费者均未注册。
+- [ ] 确认四个内部批处理入口均可由测试显式调用，且当前验收不依赖任何 Phase 5 生产调度或 successor/NONE 清单。
+- [ ] Commit 前运行 GitNexus detect changes，确认没有意外生产调用链。
 
-## 5. Phase 5 Transport successor/NONE 矩阵
+## 7. 测试所有权
 
-Phase 4 不修改下列旧资产，Task 0/5 只重新验证并冻结处置：
-
-| 旧资产 | Phase 5 successor | Phase 4 目标测试 |
+| 测试层 | 只验证 | 不得验证 |
 | --- | --- | --- |
-| WMS Transport Effect/status/Outbox 分支 | `TransportTaskService` + `TransportPort` | `tests/runtime/transport/test_transport_task_lifecycle.py` |
-| Transport callback hint/status 分支 | `NONE` | 无承接测试；Phase 5 删除对应 route/payload/OpenAPI/tests |
-| Transport callback | 共享 WMS event route → `TransportEventHandler` + `TransportEvidenceService` | handler contract + evidence transaction |
-| Transport 位置写回旧分支 | `TransportTaskRepository` 聚合投影写入 | `tests/integration/transport/test_transport_evidence_transaction.py` |
-| Transport 生产 Composition Root | `transport/composition.py` 显式目标装配 | `tests/integration/transport/test_dark_transport_loop.py` |
-| Transport submit dispatcher | Phase 5 静态调度 owner → `TransportTaskService` | lifecycle + claiming integration |
-| Transport evidence processor | Phase 5 静态调度 owner → `TransportEvidenceService.claim_pending/apply` | evidence concurrency integration |
-| Transport deadline sweeper | Phase 5 静态调度 owner → `mark_result_deadline_exceeded` | deadline lifecycle test |
+| `tests/runtime/transport/` | 四个方法、任务状态、幂等、统一结果 | 分拣机开工或 WMS 资源分配业务 |
+| `tests/integration/transport/` | PostgreSQL 约束、领取、事务、位置和暗闭环 | 供应商设备行为 |
+| `tests/contracts/wms_adapter/` | 固定 WMS wire、DTO、ACK 和回调转换 | Transport 数据库生命周期 |
+| 工作线插件测试 | 业务顺序、并行、容量和资源选择 | Phase 4 内部领取与持久化 |
+| WMS/RCS 联调验收 | 真实 AGV/CTU、协调交换和回调可靠性 | WES 核心单元行为 |
 
-旧测试删除必须遵守“先建立 successor，再删除旧 owner”。只证明旧 Effect、旧 schema、旧 callback hint 或旧 Outbox 枚举且
-没有最终 Transport 语义的测试标记 `NONE`，不得为了保留测试而增加兼容层。
+纯文档变更不运行或编写 pytest。后续代码实施按任务运行目标测试、架构护栏、Ruff、HEAVY selector 和质量门禁。
 
-## 6. 验证命令与通过标准
+### 7.1 代码路径与测试覆盖图
 
-### 6.1 每个任务
+```text
+四个公共方法
+├─ 结构校验失败 → FAST 合同/服务测试
+├─ 新建 / 同幂等返回 / 异摘要冲突 / 并发重复 → FAST + PostgreSQL
+└─ 立即返回 TransportHandle → FAST
 
-| Task | FAST | PostgreSQL integration |
-| --- | --- | --- |
-| 1 | `uv run pytest tests/runtime/transport/test_model_contracts.py -q` | `uv run pytest tests/integration/transport/test_transport_schema.py -q` |
-| 2 | `uv run pytest tests/runtime/transport/test_transport_task_lifecycle.py -q` | `uv run pytest tests/integration/transport/test_transport_task_claiming.py -q` |
-| 3 | `uv run pytest tests/contracts/wms_adapter/test_transport_adapter.py tests/contracts/wms_adapter/test_client.py -q` | selector 显式结果 |
-| 4 | `uv run pytest tests/contracts/wms_adapter/test_transport_event_handler.py tests/runtime/transport/test_transport_evidence_service.py -q` | `uv run pytest tests/integration/transport/test_transport_evidence_transaction.py tests/integration/wms_adapter/test_transport_event_handler.py -q` |
-| 5 | `uv run pytest tests/architecture/test_transport_boundaries.py -q` | `uv run pytest tests/integration/transport/test_dark_transport_loop.py -q` |
+后台提交
+├─ RECEIVED / DUPLICATE / REJECTED → WMS Adapter 合同 + Service
+├─ NOT_SENT / 429 / 503 → 最多发送 3 次、固定等待/ACK retry_after_ms + PostgreSQL
+└─ DELIVERY_UNKNOWN → 禁止重提，形成 UNKNOWN
 
-每个任务追加：
+位置与最终结果
+├─ 重复 / 倒序 / 冲突 / 早于 ACK / 晚于 ACK → Service + PostgreSQL
+├─ 持久化后崩溃 / 并发领取 / 租约过期 / 旧令牌写回 → PostgreSQL
+├─ 货架成功/失败/位置未知结果的 arrival_face、面向投影更新 → WMS Adapter + PostgreSQL
+├─ 完整成员 / 缺少成员 / 增加成员 / 位置未知 → Service + PostgreSQL
+├─ 全部成功 / 部分失败且位置完整 / 任一位置未知 → Service + PostgreSQL
+└─ BIN_EXCHANGE 部分完成 → 核心只验证结果收敛；真实动作由 WMS/RCS 联调
 
-```bash
-uv run ruff format --check .
-uv run ruff check .
-git diff --check
+结果等待截止
+├─ 未超过截止时间 → 保持 ACCEPTED
+└─ 超过截止时间 → reconcile_overdue_tasks 形成 UNKNOWN，保持资源绑定
+
+可靠结果发布
+├─ 终态事务同时生成 outcome_version → PostgreSQL
+├─ 未发布低版本被更高版本合并 → 最新状态最终送达，插件允许版本跳跃
+├─ 发布失败或发布前崩溃 → 可重新领取
+├─ 发布后记账前崩溃 → 重复通知，插件幂等
+└─ UNKNOWN 后收到确定结果 → 更高版本修正
 ```
 
-修改测试拓扑或生产候选路径时追加：
+计划内测试要求覆盖以上全部分支；“分拣机开工、容量计算、空箱/满箱选择”只进入插件或 WMS/RCS 验收，不进入核心覆盖率。
 
-```bash
-uv run pytest tests/architecture/test_suite_topology_guardrail.py tests/architecture/test_core_plugin_test_ownership_guardrail.py -q
-uv run pytest tests/scripts -q
-uv run scripts/select_heavy_tests.py --scope unstaged
-```
+实现阶段只在两个复杂位置保留内联 ASCII 图：`models.py` 标注六态及 `RECONCILING` 修正关系，`service.py` 标注
+“领取 → 事务外发送/发布 → 带令牌写回”以及“evidence 领取 → 任务/投影收敛”流水线。`contracts.py`、`repository.py` 和 Adapter
+职责直接，不增加装饰性图示。
 
-纯文档评审阶段不运行 pytest；以上命令只约束后续代码实施。
+### 7.2 现实失败模式
 
-### 6.2 Phase 4 退出
-
-1. Transport submit/member-position/result 合同已批准，path、DTO、错误、幂等、deadline 和 fixture 无未决项。
-2. 空 PostgreSQL 完整 migration upgrade 成功。
-3. `TransportTask` 只有 submit + 两个 CTU 成员位置里程碑 + async result；零 status query、cancel、callback hint 和动态 registry。
-4. `(transport_task_id, request_version)`、结果 `event_id` 唯一、claim/fencing 和单事务结果应用通过 PostgreSQL 并发测试。
-5. Rack 请求绑定 rack；BinBatch 同时绑定成员 bin 和涉及的 rack；同一运输资源最多属于一个非终态 TransportTask，
-   AGV 搬架与 CTU 操作该架料箱不能并发，晚到旧任务结果不能覆盖新任务位置。
-6. `RackTransportRequest` 只能产生 Rack 投影并进入 AGV 搬运链；`BinBatchTransportRequest` 只能产生 Bin 投影并进入 CTU
-   搬运链；任何跨类型或混装请求失败关闭。
-7. Rack/Bin source/target 使用闭集 locator；CTU 成员位置使用可判别的 milestone/outcome DTO，确认目标 locator 必须等于
-   冻结目标；`SOURCE_PICKED < TARGET_PLACED` 单调应用，倒序或迟到 evidence 不得回退投影。
-8. WMS Adapter 每次调用最多执行一次 `WmsClient.post()`，不持久化、不重试、不解释任务状态。
-9. Transport evidence 必须 ACK-after-persist；并发 evidence 锁定任务，只有匹配权威事实可以推进任务与位置投影；
-   evidence 先于 submit ACK 到达时先收敛接纳，后到 ACK 不得回退终态。
-10. 批次成员有界并使用 bulk I/O，无逐成员 N+1 查询或循环 commit。
-11. Transport 核心零 `httpx`、ECS、DeviceCommand、设备合同、PickingTask 和旧 Runtime/Effect import。
-12. 新 route、Celery task、Adapter 和 worker 未注册到当前生产 Composition Root。
-13. Phase 5 三个后台 owner、共享 WMS route 静态分发和 successor/NONE 清单无未决项。
-14. GitNexus detect changes 无意外生产调用链。
-
-## 7. 停止条件
-
-出现以下任一情况立即停止：
-
-- Transport submit/member-position/result wire 未批准或字段仍可能变化；
-- 需要直连 RCS、AGV、CTU 或 ECS 才能证明能力；
-- 需要 DeviceCommand、设备状态、统一设备 Adapter 或设备 CALLBACK；
-- 需要从 PickingTask、WorkLine 插件或旧 Runtime/Effect 测试推断 Transport 业务语义；
-- 新代码必须接入生产 Composition Root 才能验收；
-- Transport 核心需要读取供应商私有 Payload、车辆、路径或设备内部状态；
-- Alembic autogenerate 包含未授权旧表修改；
-- GitNexus impact 为 HIGH/CRITICAL，或 detect changes 显示意外生产调用链；
-- HEAVY selector fail closed 且没有获批映射。
-
-## 8. What already exists
-
-| 现有能力 | 本计划如何处理 | 边界 |
-| --- | --- | --- |
-| Phase 2 `src/core/outbound_http/` | 由 `WmsClient` 间接复用 | 不拥有 Transport 状态、业务重试或投影 |
-| Phase 3 `src/app/wms_adapter/WmsClient` | 直接复用 HTTP/JSON 薄封装 | 不拥有 Transport 生命周期 |
-| `docs/contracts/transport-fulfillment-contract.md` | 作为 submit/member-position/result 唯一 wire 评审基线 | `Approved` 前阻塞实施 |
-| 现有 WMS Transport Effect/Outbox | 只作为 Phase 5 删除范围证据 | 不复用模型、service、状态或测试 oracle |
-| 现有 RuntimeInbox/SystemOutbox | 只作为旧 owner 搜索证据 | 新实现不 import、不写入、不兼容 |
-| SQLModel、AsyncSession、BaseRepository 基础设施 | 按项目分层复用 | 不再包 generic UnitOfWork/Service Locator |
-| `tests/README.md` 与 HEAVY selector | 直接复用测试治理 | Transport、Adapter、业务和联调继续隔离 |
-
-## 9. NOT in scope
-
-- 所有 ECS/Device 能力：DeviceCommand、设备状态、统一设备 Adapter、设备 Event/CALLBACK、供应商合同和设备准入。
-- 通用执行平台：LineRunEpoch、Material/Bin Execution、插件 SDK、Decision、EvidenceProcessor、通用 workflow/queue。
-- PickingTask Event/Decision/Fact、任务完成顺序、NG、Cell、货架换面策略、料箱投放/回收规则等业务能力。
-- WES 直连 RCS/AGV/CTU，以及车辆、路径、交通、充电、设备内部动作和供应商私有协议。
-- Transport status query、进度订阅、轮询、任意 CTU 内部阶段镜像、取消、暂停、恢复、改派、换车或自动补偿。
-- Phase 5 生产切换、旧 owner/旧表/旧字段/旧测试删除。
-- UI、运营看板、供应商 Runbook、设备联调和 Redis 审计。
-- 旧数据迁移、兼容 schema、alias、shim、fallback 或双轨。
-- `docs/hardware/` 厂商原始资料；保留且不作为核心架构真源。
-- 公网级零信任、复杂签名和凭据平台；系统运行于纯局域网。
-
-## 10. 分拣机入库验算矩阵
-
-以下流程只用于验证 Transport 基础能力，不进入 Phase 4 实施范围。结论中的“阶段外”不是缺能力，而是明确由业务、
-WorkLine 或 Device/ECS owner 承接。
-
-| 入库流程步骤 | Phase 4 需要提供的基础能力 | 验算结论 | 阶段外 owner |
+| 失败模式 | 处理 | 测试所有者 | 是否静默 |
 | --- | --- | --- | --- |
-| AGV 向 `STATION_A / STATION_B` 补单层货架 | `RackTransportRequest` + `RACK_POSITION` + ACK + Rack 终态/位置 | 覆盖 | 检测开工、选择货架和目标位由业务/WMS 决定 |
-| AGV 向 `FIVE_STATION` 补五层货架 | 同一 Rack 能力，不增加五层货架专用方法 | 覆盖 | 可用料箱/料格和货架分配由业务/WMS 决定 |
-| 计算 CTU 投箱批次 `min(入口空位, 背篓容量, 可用料箱)` | 接收已冻结且有上限的 BinBatch，不计算 `min(...)` | 覆盖且边界正确 | WorkLine 位置/容量投影、CTU 配置和 WMS 授权 |
-| CTU 从五层货架逐个取箱 | `SOURCE_PICKED` → `ON_CARRIER`，按成员幂等应用 | 本轮补齐 | WMS/RCS 把 CTU 原始回调归一化 |
-| CTU 导航到滚筒线入口 | 不改变料箱相对位置，仍为 `ON_CARRIER` | 不进入 Transport wire | RCS/CTU 内部阶段 |
-| CTU 逐个投入入口 | `TARGET_PLACED` → 冻结 `HANDOFF_POSITION` | 本轮补齐 | 入口具体空位准入与 PLC 安全互锁 |
-| CTU 批次完成 | `TransportResult` 覆盖全部冻结成员；部分失败/unknown 失败关闭 | 覆盖 | 后续是否触发退箱由业务消费者决定 |
-| CTU 从退料线批量退箱到五层货架 | 新建反向 `BinBatchTransportRequest`，复用相同 pick/place/result 闭环 | 覆盖 | 退料队列、空储位与背篓容量计算 |
-| 满箱与空箱交换 | 一个普通 `MOVE` 批次冻结至少一对相反来源/目标；Transport 不接收满/空分类 | 覆盖，不增加 `EXCHANGE` 状态机 | 满/空资格、是否启用交换及成员选择由业务/WMS 决定 |
-| SCAN1/2/3、NG、滚筒线分流 | 无 Transport 建设 | 正确排除 | Device/ECS 基础能力 + 分拣插件 |
-| 北/南机械臂、扫码平台、物料上架 | 无 Transport 建设 | 正确排除 | Device/ECS 基础能力 + 分拣插件 + WMS 业务决定 |
+| 参数或位置结构非法 | 创建前稳定拒绝 | FAST Transport | 否，调用方立即得到错误 |
+| 并发重复或活动资源冲突 | 数据库唯一约束 + 幂等收敛 | PostgreSQL Transport | 否，返回原任务或冲突 |
+| WMS 明确未送达或暂时未接纳 | 原身份重提，单任务最多发送 3 次，耗尽后 `REJECTED` | Transport + WMS Adapter | 否，发布稳定结果 |
+| 请求可能已送达 | 不重提，进入 `UNKNOWN` | Transport + WMS Adapter | 否，暂停依赖资源 |
+| WMS 已接纳但 10 分钟无最终结果 | 发布 `TRANSPORT_RESULT_TIMEOUT`，保持资源绑定 | PostgreSQL Transport | 否，插件收到 `UNKNOWN` |
+| 已记录发送开始、但 worker 在 ACK 写回前退出 | 租约到期后进入 `UNKNOWN`，禁止自动重提 | PostgreSQL Transport | 否，发布并等待核验 |
+| 证据重复、倒序或冲突 | 幂等、单调推进或进入对账 | PostgreSQL Transport | 否，冲突证据可诊断 |
+| evidence 已应答后进程崩溃 | 待处理状态、领取租约和令牌支持安全重领 | PostgreSQL Transport | 否，恢复后继续处理 |
+| 交换只完成部分动作 | 按逐箱最终位置收敛；任一未知则 `UNKNOWN` | 核心结果合同 + WMS/RCS 联调 | 否 |
+| 终态提交后进程崩溃 | 待发布版本由后续 worker 重新领取 | PostgreSQL Transport | 否，可能延迟但不丢失 |
+| 发布后记账前进程崩溃 | 允许重复发布，插件按任务和版本幂等 | Transport + 插件合同 | 否，不重复推进业务 |
 
-```text
-业务/WorkLine（计算容量、选择对象、冻结来源/目标）
-        │
-        ▼
-TransportTask ──submit──► WMS/RCS ──► AGV/CTU
-        ▲                              │
-        │                              ├── SOURCE_PICKED ──► Bin = ON_CARRIER
-        │                              ├── TARGET_PLACED ──► Bin = AT_TARGET
-        │                              └── TransportResult ─► 批次终态
-        │
-        └── 只暴露可靠 Transport 事实；不执行 SCAN/NG/机械臂/容量决策
-```
+无“既无测试、又无错误处理、且对调用方静默”的已知失败路径。
 
-位置 ownership handoff：CTU 把料箱可靠放到 `HANDOFF_POSITION` 后，Phase 4 只保留最后 Transport 权威事实；滚筒线把料箱
-从入口推进到 SCAN1/2/3、工作位、NG 或退料线时，由 WorkLine/Device 位置 owner 更新其运行期投影，但不写
-`TransportPositionProjection`。新的 CTU 退箱任务以 WMS 授权的退料位置建立新的任务级 `AT_SOURCE` 基线。Transport 不猜测
-滚筒线内部位置，也不要求新来源等于旧 Transport 投影。
+### 7.3 实施顺序
 
-## 11. 测试覆盖图
+顺序实施，无值得使用多工作树（worktree）的并行机会（Sequential implementation, no parallelization opportunity）。合同和聚合模型是后续
+Repository、Service、WMS Adapter、事件处理和暗闭环的共同依赖；强行并行只会增加同模块冲突。可以在 Task 1 合并后由不同人员
+分别准备 WMS DTO fixture 与 PostgreSQL fixture，但不应拆成并行代码分支。
 
-此图表达后续实施必须具备的测试，不声称尚未实现的代码已经通过。
+## 8. 分拣机开工验算
 
-```text
-CODE PATHS                                             SYSTEM FLOWS
-[+] TransportTask                                      [+] 提交搬运请求
-  ├── [PLANNED ★★★] 不可变请求与版本                    ├── [PLANNED ★★★] 先持久化再发送
-  ├── [PLANNED ★★★] 六态合法迁移                        ├── [PLANNED ★★★] ACK/拒绝/冲突
-  ├── [PLANNED ★★★] 四种 reconciliation cause          ├── [PLANNED ★★★] 只有 delivery unknown 可重提
-  ├── [PLANNED ★★★] bin + rack 资源活动绑定             ├── [PLANNED ★★★] AGV/CTU 同架并发失败关闭
-  ├── [PLANNED ★★★] claim/lease/fencing                └── [PLANNED ★★★] delivery unknown → RECONCILING
-  └── [PLANNED ★★★] deadline 不伪造终态
+以下流程只验证公共能力是否够用，不进入 Phase 4 核心测试：
 
-[+] WMS Transport Adapter                              [+] 经 WMS 转发 RCS/AGV/CTU
-  ├── [PLANNED ★★★] 固定 path/operation/DTO             ├── [PLANNED ★★★] 单次 HTTP
-  ├── [PLANNED ★★★] Rack/Bin + locator 联合请求         └── [PLANNED ★★★] 无直连设备系统
-  └── [PLANNED ★★★] 严格 ACK/错误映射
+1. 分拣机插件请求 WMS 分配 1～2 个粗分完成的单层货架，并得到确定 `rack_id`、来源和 `STATION_A / STATION_B`。
+2. 插件分别调用 `move_rack()`；两个单层货架是独立任务，可以并行。
+3. 插件同时请求 WMS 分配具有可用料箱/料格的五层货架，并调用 `move_rack()` 送到 `FIVE_STATION`。
+4. WMS/RCS 回调先由 Phase 4 收敛为 `TransportOutcome`；只有五层货架 `SUCCEEDED` 才允许进入下一步。
+5. 插件请求 WMS 返回本批次确定的 `bin_id`、来源储位和滚筒线入料位置，再调用 `move_bins()`。
+6. 退箱时，WMS 返回确定料箱和五层货架目标空储位，插件反向调用 `move_bins()`。
+7. 满箱换空箱时，WMS 返回 1～2 个确定交换对，插件调用一次 `exchange_bins()`。
+8. 货架需要原地换面时，插件调用 `rotate_rack()`；换面成功后才继续依赖目标面的业务动作。
 
-[+] TransportEventHandler                              [+] WMS Transport evidence
-  ├── [PLANNED ★★★] 共享 route 静态 operation 分发      ├── [PLANNED ★★★] 不注册第二条同路径 route
-  ├── [PLANNED ★★★] event_id + digest                  ├── [PLANNED ★★★] 持久化后 ACK
-  ├── [PLANNED ★★★] duplicate/conflict                 ├── [PLANNED ★★★] 同身份重提收敛
-  └── [PLANNED ★★★] Payload 上限                        └── [PLANNED ★★★] 冲突进入对账
+每次位置明确的货架搬运或换面结果均由 WMS 回传 `arrival_face`，WES 据此维护当前工作面；位置未知或没有该权威事实时不得发起换面。
 
-[+] TransportEvidenceService                           [+] 应用位置事实/权威终态 [→INTEGRATION]
-  ├── [PLANNED ★★★] 锁 task 后重检投影/终态             ├── [PLANNED ★★★] 并发 evidence 不覆盖
-  ├── [PLANNED ★★★] task/version/action/object 校验     ├── [PLANNED ★★★] Task + projection + evidence 单事务
-  ├── [PLANNED ★★★] milestone/outcome + locator         ├── [PLANNED ★★★] evidence 先于 submit ACK
-  ├── [PLANNED ★★★] pick/place 单调且倒序不回退         ├── [PLANNED ★★★] 终态先到/迟到 position
-  ├── [PLANNED ★★★] 完整冻结成员校验                    ├── [PLANNED ★★★] 部分失败/unknown
-  ├── [PLANNED ★★★] bulk 位置更新                       └── [PLANNED ★★★] 崩溃回滚后幂等重领
-  └── [PLANNED ★★★] 重复/矛盾/迟到结果
+这里没有 `request_empty_rack()`、`feed_sorter_bins()` 等业务方法。Phase 4 不理解“粗分完成”“有空料格”“满箱”“空箱”或
+“分拣机开工”，只执行工作线插件和 WMS 已冻结的搬运事实。
 
-COVERAGE TARGET: 计划内分支 100%
-QUALITY TARGET: 全部 ★★★（成功 + 边界 + 错误）
-INTEGRATION: PostgreSQL claim、唯一约束、ACK-after-persist、位置单调性、终态应用事务、暗闭环
-EVAL / 浏览器 E2E: 不适用
-```
+## 9. 退出标准
 
-## 12. 生产失败模式
+1. 工作线插件只需理解四个公共方法、`TransportHandle` 和 `TransportOutcome`。
+2. 1～2 个单层货架、一个五层货架可以作为独立任务并行提交，`station_id` 可区分 STATION A/B。
+3. 五层货架只有 `SUCCEEDED` 后才能触发 CTU 料箱搬运。
+4. `move_bins()` 支持 1～4 个确定料箱，调用方在提交前根据目标位可承接容量缩小批次。
+5. `exchange_bins()` 支持 1～2 个交换对，一次只生成一个任务和一个 WMS/RCS 请求。
+6. 相同 `client_request_id` 和相同参数返回原任务；异参数失败关闭。
+7. 插件不接触内部状态机、数据库、领取租约、WMS wire 或设备回调。
+8. Phase 4 不选择货架、料箱、储位、车辆、路径和设备动作顺序。
+9. 核心、WMS Adapter、工作线插件和供应商联调测试互不代测。
+10. Phase 4 保持暗装配，不进入当前生产路径。
+11. 所有位置明确的货架类成功/失败结果都携带 `arrival_face`；只有位置未知时可以缺少，WES 不自行推断当前工作面。
 
-| 路径 | 真实失败 | 测试 | 处理与可见性 |
-| --- | --- | --- | --- |
-| Transport claim | 两个 worker 领取同一任务 | PostgreSQL concurrency | `SKIP LOCKED` + token；旧 owner 写回被拒绝并记录 |
-| submit | 请求可能送达但响应丢失 | lifecycle/adapter | 同身份同 Payload 收敛；进入 `RECONCILING`，不换身份 |
-| submit | WMS 明确拒绝或冲突 | lifecycle/adapter | `REJECTED` 或 `RECONCILING`，保留稳定错误事实 |
-| submit/evidence | 位置或终态先于 submit ACK/结果写回 | lifecycle/evidence integration | evidence 先证明已接纳并应用；后到 ACK 只留痕不回退 |
-| evidence handler | bind commit 后进程崩溃 | handler integration | WMS 重提得到原 ACK；不生成第二条 evidence |
-| evidence handler | 同 `event_id` 不同 Payload | contract/integration | 返回冲突并告警，不覆盖首次事实 |
-| member position | `TARGET_PLACED` 先于 `SOURCE_PICKED` 到达 | evidence integration | 应用目标后把迟到 pick 标记为 stale，不回退到 `ON_CARRIER` |
-| member position | 终态先于逐箱位置事实到达 | evidence integration | 终态投影保持权威；迟到位置事实只留 evidence |
-| member position | WMS/RCS 报告未知位置 | evidence service | 标记 `UNKNOWN` 并进入 `POSITION_UNKNOWN` 对账 |
-| member position | `TARGET_PLACED` 携带非冻结目标 locator | evidence service | 进入 `EVIDENCE_CONFLICT`，不得更新为 `AT_TARGET` |
-| evidence order | 终态否定已接受的 `TARGET_PLACED` | evidence integration | 进入 `EVIDENCE_CONFLICT`，保留双方证据且不覆盖位置 |
-| result reducer | 两个不同 event 并发终结同一任务 | PostgreSQL concurrency | 锁任务并重检终态；后到者不得覆盖 |
-| resource order | AGV 搬架与 CTU 操作同架料箱并发创建 | PostgreSQL concurrency | bin + rack 活动绑定使仅一方成功 |
-| object order | 旧任务结果晚于新任务 | overlap/evidence integration | 运输资源活动绑定阻止重叠；投影不倒退 |
-| reducer | 结果成员缺失或多出 | evidence service | 失败关闭并进入对账，不部分终结任务 |
-| reducer | 投影写入后 evidence 标记失败 | transaction test | 整体回滚，重领后只产生同一结果 |
-| projection | 外部报告位置未知 | evidence service | 显式 `UNKNOWN`，不猜测仍在来源位置 |
-| batch | 大批次形成 N+1 | query-shape integration | 合同上限 + bulk I/O，超限发送前拒绝 |
+## 10. 明确不在范围内（NOT in scope）
 
-无“没有测试、没有错误处理且静默失败”的已知路径。
-
-## 13. 并行实施策略
-
-| Step | Modules touched | Depends on |
-| --- | --- | --- |
-| Task 0 合同门禁 | `docs/contracts/`, `docs/superpowers/` | — |
-| Task 1 模型与 schema | `src/app/transport/models/`, `migrations/` | Task 0 |
-| Task 2 生命周期 | `src/app/transport/repositories/`, `services/` | Task 1 |
-| Task 3 WMS Adapter | `src/app/wms_adapter/` | Task 0 |
-| Task 4 evidence 闭环 | `src/app/transport/`, `src/app/wms_adapter/` | Task 2 + Task 3 |
-| Task 5 暗装配 | `src/app/transport/`, `docs/architecture/` | Task 4 |
-
-```text
-Task 0
-  ├── Lane A: Task 1 → Task 2
-  └── Lane B: Task 3
-            │
-            ▼
-          Task 4 → Task 5
-```
-
-Task 0 关闭后，Lane A 与 Lane B 可以并行 worktree 实施；Task 4 等待两条 lane 合并。Lane A/B 不共享生产目录，
-但都可能修改测试治理配置时必须指定唯一 owner，避免 `heavy-test-impact.toml` 冲突。
-
-## 14. Implementation Tasks
-
-- [ ] **T1 (P1, human: ~6h / CC: ~45min)** — Transport contract — 关闭 submit/member-position/result wire 门禁
-  - Surfaced by: Scope Challenge — Phase 4 只保留 AGV/CTU Transport，必须先冻结唯一外部合同
-  - Files: `docs/contracts/transport-fulfillment-contract.md`
-  - Verify: 合同状态 `Approved`，path/DTO/错误/幂等/deadline/fixture 无未决项
-- [ ] **T2 (P1, human: ~1d / CC: ~2h)** — Transport persistence — 建立任务、Transport evidence 和位置投影
-  - Surfaced by: Architecture Review — Transport 闭环只保留三个持久化 owner
-  - Files: `src/app/transport/models/`, `migrations/versions/`
-  - Verify: model FAST + PostgreSQL schema integration
-- [ ] **T3 (P1, human: ~2d / CC: ~4h)** — Transport lifecycle — 实现可靠提交与六态 reducer
-  - Surfaced by: Architecture/Performance Review — claim、delivery unknown、deadline 和 bulk I/O
-  - Files: `src/app/transport/repositories/`, `src/app/transport/services/`
-  - Verify: lifecycle FAST + PostgreSQL concurrency
-- [ ] **T4 (P1, human: ~1d / CC: ~2h)** — WMS Adapter — 实现固定 Transport submit wire
-  - Surfaced by: Architecture Review — 复用 WmsClient，禁止直连 RCS/AGV/CTU/ECS
-  - Files: `src/app/wms_adapter/transport_wire.py`, `transport_adapter.py`
-  - Verify: WMS Adapter contract + Phase 3 regression
-- [ ] **T5 (P1, human: ~2.5d / CC: ~5h)** — Transport evidence — 实现逐箱位置单调更新、ACK-after-persist 与原子终态应用
-  - Surfaced by: 分拣机入库验算 — CTU 逐箱 pick/place 必须实时更新位置且不能被倒序回调回退
-  - Files: `src/app/transport/`, `src/app/wms_adapter/transport_event_handler.py`
-  - Verify: member-position/result contract + PostgreSQL transaction integration
-- [ ] **T6 (P2, human: ~4h / CC: ~45min)** — Dark composition — 完成交接与边界验收
-  - Surfaced by: Code Quality Review — Phase 4 不得注册到生产路径
-  - Files: `src/app/transport/composition.py`, `docs/architecture/file_index.md`
-  - Verify: architecture guardrail + dark loop + GitNexus detect changes
+- WMS 业务资源分配接口及“空货架、空料箱、可用储位”选择；
+- 分拣机、粗分机、滚筒线、机械臂、扫码和 NG 的业务编排；
+- ECS/DeviceCommand、设备状态、供应商私有协议和设备回调；
+- WES 直连 RCS/AGV/CTU；
+- 车辆、路径、交通、充电和 CTU 内部交换顺序；
+- 通用 Runtime/Effect、动态 Provider、Service Locator、插件 SDK 或工作流引擎；
+- 状态轮询、取消、暂停、恢复、改派和自动补偿；
+- Phase 5 生产切换及旧 owner/旧表/旧测试删除；
+- 旧数据迁移、兼容 schema、alias、shim、fallback 或双轨；
+- `docs/hardware/` 厂商原始资料。
 
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
-| Codex Review | `/codex review` | Independent 2nd opinion | 3 | CLEAR | 外部复核追加发现的 unknown 状态歧义和 rack 资源键去重已写回，无残留 P1/P2 |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 4 | CLEAR | 本轮共 20 项验算缺口全部写回；AGV/CTU Transport 最小闭环已闭合 |
+| Codex Review | `/codex review` | Independent 2nd opinion | 6 | RESOLVED | 本轮外部复核发现均已收敛 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 10 | CLEAN | 本轮 10 项问题已修复，0 critical gaps，15 个 Task 0 项已批准 |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | 后端基础能力，不适用 |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
-**VERDICT:** ENG CLEARED — Phase 4 已覆盖 AGV/CTU Transport 最小闭环，但不承担分拣机业务编排或 ECS/Device 建设；
-Task 0 三类 wire 经 WMS/WES 批准后方可实施。
+**CROSS-MODEL:** 共同确认 Phase 4 只经 `WmsClient` 使用 Phase 2、发送次数和结果截止时间必须持久化、记录
+`send_started_at` 后的崩溃必须收敛为 `UNKNOWN`、WMS 异步回调只共享统一信封，且 evidence 处理、超时收敛与结果发布
+分别由明确批处理入口负责；修订均保持在单一 Transport 聚合内。
 
-**CODEX:** Rack/Bin 封闭定位、逐箱位置单调性、同架互斥、ACK/evidence 倒序、反向退箱来源基线和普通成对 `MOVE` 已闭合。
+**VERDICT:** CLEARED — Phase 4 自身合同与已完成前序依赖均已冻结，可以按 Task 1～4 开始代码实施；后续 Phase 5 不构成阻塞。
 
 NO UNRESOLVED DECISIONS

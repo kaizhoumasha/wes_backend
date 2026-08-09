@@ -50,6 +50,13 @@ Client。Phase 3 不接入生产 Composition Root，真实 FastAPI/Celery owner 
 
 ## 5. 统一调用规则
 
+对于已批准且需要更小 Payload 预算的具体 operation，`WmsClient.request()/post()` 允许调用方传入正整数
+`max_request_body_bytes` 和 `max_response_body_bytes`。Client 必须在统一 JSON 编码后、发送前校验请求体字节数，并把响应预算同时
+映射为基础传输的 wire/decoded 上限；具体 Adapter 不得复制 JSON 编码或直接导入 `src.core.outbound_http`。
+
+Phase 4 Transport 是首个使用该逐请求预算的消费者，请求和响应均固定为 `256 KiB`。该能力只属于 HTTP 资源预算，不把
+Transport path、状态或重试语义下沉到 WMS Client。
+
 ### 5.1 请求
 
 - `path` 必须是以 `/` 开始的 relative path，不允许调用方覆盖 WMS origin。

@@ -7,7 +7,7 @@ AGV/CTU Transport 基础能力，再通过独立原子切换阶段替换对应�
 不得借 Phase 4/5 越权建设。
 
 **Architecture:** Phase 3 `WmsClient` factory 通过 Phase 2 builder，为各运行时/事件循环 owner 装配一个明确生命周期的
-`OutboundHttpTransport`。Phase 4 只复用该 Client 暗构建 `TransportTask`、WMS 转发 RCS/AGV/CTU Adapter、
+`OutboundHttpTransport`。Phase 4 只复用该 Client 暗构建四个工作线搬运方法、`TransportTask`、WMS 转发 RCS/AGV/CTU Adapter、
 Transport member-position/result evidence 和位置投影；Phase 5 只原子切换 Transport 消费者并删除 Transport 旧 owner。
 DeviceCommand、统一设备 Adapter、设备状态、设备 CALLBACK、ECS 和插件 SDK 不属于 Phase 4/5，必须在 Phase 7/8 前由
 独立 Device/ECS 基础能力计划冻结并验收，否则插件阶段保持阻塞。
@@ -15,8 +15,8 @@ DeviceCommand、统一设备 Adapter、设备状态、设备 CALLBACK、ECS 和�
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Alembic、Celery、
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
-**Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；
-Phase 4–11 尚未开始。
+**Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 合同与详细计划已通过最终
+工程评审，可以实施；Phase 5–11 尚未开始。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -75,7 +75,7 @@ SRS §3.5 特殊物料、机构件/SFC 协同及 §3.6 生产退料属于未来�
 | Phase 1 | 测试治理基线 | Phase 1 | 测试治理基线 | 保持，已完成 |
 | 无 | 无 | Phase 2 | 外部 Outbound HTTP 传输基础能力收敛 | 新增独立基础阶段 |
 | Phase 2 | WMS 薄接入边界收敛 | Phase 3 | WMS HTTP Client 薄封装 | 消费 Phase 2，只统一 WMS HTTP/JSON 访问标准 |
-| Phase 3 | WES 最小平台能力建设 | Phase 4 | AGV/CTU Transport 基础能力建设 | 只暗构建 TransportTask、WMS 转发 Adapter、成员位置/终态证据和位置投影 |
+| Phase 3 | WES 最小平台能力建设 | Phase 4 | AGV/CTU Transport 基础能力建设 | 只暗构建四个搬运方法、TransportTask、WMS 转发 Adapter、成员位置/终态证据和位置投影 |
 | 无 | 无 | Phase 5 | Transport 原子切换与旧所有者删除 | 只迁移 Transport 消费者和生产装配，不涉及 Device/ECS |
 | Phase 4 | 核心测试承接与平台基线验收 | Phase 6 | Transport 测试承接与基线验收 | 只承接 Phase 4 Transport 最终对象 |
 | Phase 5 | 粗分机参考插件优化 | Phase 7 | 粗分机参考插件优化 | Device/ECS 独立计划未批准前阻塞，不消费 Phase 4 设备能力 |
@@ -118,7 +118,7 @@ Transport/Adapter/核心所有权。
 | 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | Phase 3 已完成实施与验收 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
-阶段状态：Phase 1–3 已完成，Phase 4–11 均未开始。
+阶段状态：Phase 1–3 已完成，Phase 4 已具备实施条件但尚未开始，Phase 5–11 均未开始。
 
 ## 5. 总控依赖模型
 
@@ -164,7 +164,7 @@ Phase 11 最终基线与系统验收
 | Device/ECS 命令、状态与回调 | 只提供通用单次发送 primitive | 不拥有 | 不拥有 | 不切换；等待独立 Device/ECS 计划 |
 | `TransportTask` 生命周期 | 不拥有 | 不拥有 | 唯一目标 owner | 接管 Transport 生产流量并删除旧可靠闭包 |
 | Transport evidence ingress | 不拥有 | 不修改旧入口 | 固定 member-position/result evidence 与应用端口 | 原子切换 Transport 事实入口 |
-| 旧实现和旧测试 | 不修改 | 不修改、不作为新测试 oracle | 不修改，只登记 successor | 按 successor/NONE 处置并删除 |
+| 旧实现和旧测试 | 不修改 | 不修改、不作为新测试 oracle | 不修改、不登记后续处置 | Phase 5 自行建立 successor/NONE 后处置并删除 |
 
 ### Outbound HTTP 认证裁决
 
@@ -238,7 +238,7 @@ request/response 传输事实、每系统每进程 Client 生命周期、连接�
 
 **旧所有者删除或交接清单:** Phase 2 不修改或删除 `sys/external_http_*`、WMS Transport、旧 Outbox sender、
 DeviceCommand Client 及其生产调用者，只登记当前 owner。Transport 专属 Effect/status/Outbox 可靠生命周期由 Phase 4
-建立 successor、Phase 5 原子切换并删除。DeviceCommand、设备状态、统一设备 Adapter 和 ECS 旧 owner 不进入 Phase 4/5，
+建立目标能力，Phase 5 自行建立 successor/NONE 后原子切换并删除。DeviceCommand、设备状态、统一设备 Adapter 和 ECS 旧 owner 不进入 Phase 4/5，
 必须由独立 Device/ECS 计划重新扫描、建立 successor 并切换；Phase 9 只验证无遗漏，不作为默认归宿。
 
 **测试所有权与重量要求:** 只用 `httpx.MockTransport`、测试内 local fake 和纯单元测试；不访问真实外部系统，
@@ -305,40 +305,48 @@ path 和结果解释都必须留到真实业务开发。
 **Objective:** 在不触碰当前生产路径的前提下，暗构建 AGV 整架搬运与 CTU 架内料箱搬运的最小可靠履约闭环：持久化
 不可变搬运请求、经 WMS 转发提交 RCS、可靠接收 CTU 逐箱位置事实和异步终态，并更新本地位置投影。
 
-**Authoritative inputs:** Phase 3 `WmsClient`、`docs/contracts/transport-fulfillment-contract.md`、WMS 北向合同和入站验证原则。
+**Authoritative inputs:** Phase 3 `WmsClient`、`docs/contracts/transport-fulfillment-contract.md`、
+`docs/contracts/wms-async-callback-envelope-contract.md`、WMS 北向合同和入站验证原则。
 第三方设备统一接口白皮书和设备命令合同不属于 Phase 4 输入。
 
-**Entry conditions:** Phase 3 退出门禁通过；Transport submit ACK、CTU member-position 与异步 TransportResult wire 已由 WMS/WES 双方批准；
-Phase 5 Transport 旧可靠链 consumer/successor/NONE 清单已冻结，但本阶段不执行生产切换。
+**Entry conditions:** Phase 3 退出门禁通过；四类搬运请求、Transport submit ACK、CTU member-position 与异步 TransportResult wire
+已由 WMS/WES 双方批准，其中 `move_bins()` 单次最多 4 个成员，`exchange_bins()` 明确支持一次 1～2 个交换对的单任务协调执行。
+Phase 4 只依赖自身和已完成的 Phase 3；Phase 5 的生产接线、consumer 与 successor/NONE 不构成本阶段前置条件。
 
-**Scope:** `TransportTask`、冻结成员、Transport evidence、位置投影、bin/rack 运输资源活动绑定、Transport claim/fencing、
-六态与闭集对账原因、`Transport Port`、WMS 转发 RCS Adapter、operation-scoped Transport evidence handler 和未注册的暗 Composition。
+**Scope:** 面向工作线插件的 `move_rack()`、`rotate_rack()`、`move_bins()`、`exchange_bins()`；按首个真实消费者需要为
+Phase 3 `WmsClient` 增加逐请求请求体上限和响应预算透传，但不加入 Transport 业务语义；内部 `TransportTask`、
+冻结成员、Transport evidence、位置投影、bin/rack 运输资源活动绑定、Transport claim/fencing、六态与闭集对账原因、
+`Transport Port`、WMS 转发 RCS Adapter、operation-scoped Transport evidence handler、统一 `TransportOutcome` 和未注册的暗 Composition。
 
 **Explicit out-of-scope:** DeviceCommand、设备状态、统一设备 Adapter、设备 CALLBACK、ECS、WorkLine/LineRunEpoch、
 Material/Bin Execution、插件 SDK、Decision/EvidenceProcessor、WmsConfirmation、PickingTask 业务、WES 直连 RCS/AGV/CTU、
 车辆/路径/交通策略、动态 registry、Service Locator、Transport 查询/取消/轮询和自动物理恢复。
 
-**Deliverables:** TransportTask 六态与闭集对账原因；AGV 专用 Rack 请求、CTU 专用 BinBatch 请求、闭集 locator 及禁止混装约束；
-WMS Transport Adapter；ACK-after-persist 的 member-position/result evidence；逐箱 pick/place 单调位置更新；锁任务后应用的唯一 reducer；
-bin/rack 运输资源活动绑定；
-bulk 位置投影；PostgreSQL claim/唯一约束/事务测试；供 Phase 5 接线的暗 Composition、三个后台 owner 和 Transport
-successor/NONE 清单。
+**Deliverables:** `WmsClient` 最小逐请求字节预算扩展；四个简单公共方法、`TransportHandle`、统一 `TransportOutcome`；
+TransportTask 六态与闭集对账原因；
+AGV Rack Move/Rotate、CTU Bin Move/Exchange 四类请求、闭集 locator 及禁止混装约束；`exchange_bins()` 一次 1～2 个交换对且
+不拆成普通 MOVE；WMS Transport Adapter；ACK-after-persist 的 member-position/result evidence；逐箱 pick/place 单调位置更新；
+锁任务后应用的唯一 reducer；bin/rack 运输资源活动绑定；
+bulk 位置投影；PostgreSQL claim/唯一约束/事务测试；未注册生产路径的暗 Composition 和四个内部后台批处理入口。
 
-**Phase 5 旧所有者切换清单（Phase 4 只登记）:** Phase 5 原子删除旧 WMS Transport Effect/status/Outbox、
-fulfillment/operation-registry、callback hint/status 分支和旧 Transport result callback；callback hint successor 为 `NONE`。
-Device/ECS 旧 owner 不进入 Phase 4 或本 Transport 清单，由独立 Device/ECS 计划处理。
+**Phase 5 后续责任（不属于 Phase 4 交付物）:** Phase 5 启动时重新扫描当前 Transport 生产引用图，自行建立并批准
+successor/NONE 清单后再执行原子切换和旧所有者删除。Phase 4 不预登记、不维护该清单。Device/ECS 旧 owner 由独立
+Device/ECS 计划处理。
 
-**测试所有权与重量要求:** Phase 4 只新增 Transport 核心、WMS Transport Adapter、Transport evidence ingress 和
+**测试所有权与重量要求:** Phase 4 只新增四个公共搬运方法、Transport 核心、WMS Transport Adapter、Transport evidence ingress 和
 PostgreSQL integration 测试。测试不得导入 PickingTask、工作线插件、设备 DTO、供应商协议或真实业务 happy path；
 WMS/RCS/AGV/CTU 真实行为继续由外部联调验收拥有。
 
-**与前后阶段的 handoff:** 接收 Phase 3 `WmsClient`；向 Phase 5 交付 TransportTask、WMS Transport Adapter、
-Transport evidence ingress、暗 Composition 和精确 successor/NONE 清单。Phase 4 不执行生产切换。
+**与前后阶段的 handoff:** 接收 Phase 3 `WmsClient`；交付 TransportTask、WMS Transport Adapter、Transport evidence handler、
+暗 Composition 和四个内部批处理入口。Phase 4 不执行生产切换，也不等待 Phase 5 规划完成。
 
-**Exit gate:** Transport submit/member-position/result 合同已批准；同一对象无重叠非终态任务；Task → submit ACK →
+**Exit gate:** 四个公共方法及 Transport submit/member-position/result 合同已批准；同一对象无重叠非终态任务；Task → submit ACK →
 member position → TransportResult → task/projection 的暗闭环通过；倒序逐箱事实不能回退位置，并发结果不能覆盖已接受终态；
 核心无 `httpx`、ECS、DeviceCommand、PickingTask 或旧 Runtime/Effect import；新 route/task/Adapter 未注册到生产入口；
-Phase 5 Transport consumer/successor/NONE 清单完整。
+四个内部批处理入口可由测试显式调用，且不存在 Phase 5 反向依赖。
+
+**实施状态:** Phase 4 已按详细计划完成暗构建；尚未注册生产 route、Celery task、beat、worker hook 或工作线消费者。
+当前验收与后续生产切换仍分别以详细计划和 Phase 5 独立任务为准。
 
 **当前实施真源:** `docs/superpowers/plans/2026-08-08-wes-minimal-platform-capabilities.md`。
 
@@ -351,7 +359,7 @@ Phase 5 Transport consumer/successor/NONE 清单完整。
 Transport 旧实现、旧配置和旧测试，使生产运行态只剩唯一 Transport 路径。
 
 **Authoritative inputs:** Phase 3 `WmsClient`；Phase 4 `TransportTask`、Transport Port、WMS Transport Adapter、
-Transport evidence ingress、暗装配和 successor/NONE 清单；当前 Transport 生产引用图。
+Transport evidence handler、暗装配和四个内部批处理入口；Phase 5 启动时重新扫描的当前 Transport 生产引用图。
 
 **Entry conditions:** Phase 4 退出门禁通过；所有 Transport producer、consumer、callback、配置、任务路由、数据库对象和
 测试 owner 已逐项映射到唯一 successor 或 `NONE`；不存在需要迁移的发布数据。
@@ -624,14 +632,14 @@ Adapter、设备统一接口和明确插件。
 
 | 检查项 | 结果 | 说明 |
 | --- | --- | --- |
-| 占位标记 | 阻断 | PickingTask 的 Cell 晚绑定、NG 权限、锁释放和换面并行业务设计已批准；相关消费者矩阵、正式 JSON Schema、枚举闭集、Cell 启动锁/逐盘决定/事实通知 wire 与 fixture 仍未由双方冻结 |
+| 占位标记 | 分阶段阻断 | PickingTask 的正式 JSON Schema、枚举闭集及业务 fixture 仍未冻结，只阻断其所属后续业务阶段；Phase 4 的四类 Transport wire、WMS 异步回调统一信封和 Task 0 已批准，不受其影响 |
 | 兼容设计 | 通过 | Phase 2–4 新能力不接生产流量；旧路径只保留为唯一活动 owner 到 Phase 5；Phase 5 原子切换并删除，不存在 shim、alias、re-export、fallback、双写、双读或旧数据兼容 |
 | 重复职责 | 通过 | Phase 4/5 只拥有 Transport；Device/ECS、具体业务和插件均有独立边界 |
 | 测试过重 | 通过 | Phase 2/3/4 各自只测试新 owner；旧测试迁移和运行态验收统一归 Phase 5，不以跨层 happy path 替代分层测试 |
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 3/4 明确禁止接线和旧 owner 处置；Phase 5 单独承担原子切换；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1–3 已完成，Phase 4–11 未开始 |
+| 当前状态准确性 | 通过 | Phase 1–3 已完成；Phase 4 已具备实施条件但尚未开始；Phase 5–11 未开始 |
 
 ## 19. 总体完成定义
 
@@ -683,10 +691,10 @@ Phase 3 已按 TDD 完成不含业务 API 的 WMS HTTP Client。当前行为真�
 | INDEPENDENT REVIEW | SUPERSEDED | 0 | 0 | 旧“33 项完整面”评审基线已被消费者驱动边界替代，不再作为当前放行证据 |
 | SERENA REVIEW | CLEAR | 0 | 0 | 参考前端 API Client 和 Phase 2 Transport 后，目标边界已收敛为单一薄封装 |
 | SEQUENTIAL REVIEW | CLEAR | 0 | 0 | 具体业务合同不再作为共享 Client 的入口门禁 |
-| PHASE 4 SCOPE REVIEW | CLEAR | 1 | 0 | Phase 4/5 已收敛为 AGV/CTU Transport；Device/ECS 移交独立计划 |
+| PHASE 4 SCOPE REVIEW | CLEAR | 1 | 0 | Phase 4 已收敛为 AGV/CTU Transport 并通过最终评审；Device/ECS 移交独立计划 |
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新增 API 使用固定六步标准并复用 Client，不修改共享核心 |
 
-**VERDICT：Phase 1–3 已完成；Phase 4 只建设 AGV/CTU Transport，合同批准前保持阻塞。**
+**VERDICT：Phase 1–3 已完成；Phase 4 只建设 AGV/CTU Transport，合同和详细计划已批准，可以开始实施。**
 
 NO UNRESOLVED DECISIONS

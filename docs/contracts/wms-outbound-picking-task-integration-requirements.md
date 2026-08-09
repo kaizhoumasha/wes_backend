@@ -2,12 +2,13 @@
 title: WMS / WES 自动出库 PickingTask 交互要求
 status: ReviewRequired
 created_at: 2026-08-07
-updated_at: 2026-08-07
+updated_at: 2026-08-09
 audience: WMS 系统开发人员、WES 出库业务开发人员、联调与测试人员
 scope: WMS/WES API 端点、PickingTask 事件、工作线队列、启动锁、逐盘决定、NG、补充来源、执行事实确认
 related:
   - docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md
   - docs/contracts/wms-northbound-interaction-contract.md
+  - docs/contracts/wms-async-callback-envelope-contract.md
   - docs/contracts/transport-fulfillment-contract.md
   - docs/architecture/authority-matrix.md
   - docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md
@@ -23,7 +24,7 @@ related:
 本文初步冻结：
 
 - 调用方、接收方、HTTP 方法和推荐路径。
-- 统一 JSON 信封、HTTP 状态和幂等规则。
+- WMS → WES 异步事件复用的统一回调信封，以及其他方向由本文定义的信封、HTTP 状态和幂等规则。
 - PickingTask、启动锁、逐盘决定、NG、补充来源和执行事实的上下文 Payload。
 - 正常流程、NG 恢复、结果未知和联调验收方式。
 
@@ -54,8 +55,9 @@ related:
 WMS 向 WES 交付可执行的 PickingTask 和来源 Cell；WES 依据这些权威事实驱动物理执行。出库单、波次单和库存重新分配
 继续留在 WMS 内部。
 
-Transport 请求不属于本文的 PickingTask operation。它由 Transport 合同定义提交入口和 DTO；CTU 成员位置事实与异步终态
-复用 `POST {{WES_BASE_URL}}/api/v1/wms/events` 的持久化后应答能力，并分别通过静态
+Transport 请求不属于本文的 PickingTask operation。它由 Transport 合同定义提交入口和 DTO；CTU 成员位置事实、异步终态和
+PickingTask Event 只共同复用 `docs/contracts/wms-async-callback-envelope-contract.md` 定义的 WMS 异步回调信封与
+`POST {{WES_BASE_URL}}/api/v1/wms/events` 入口，并分别通过静态
 `transport.task.member_position_changed@v1`、`transport.task.resulted@v1` 分发到独立 Transport evidence 应用端口。
 普通 PickingTask Event 不得修改 Transport 位置或终结 `TransportTask`。
 
@@ -68,7 +70,7 @@ WMS 将业务事件发送到 `POST {{WES_BASE_URL}}/api/v1/wms/events`。该入�
 ```mermaid
 flowchart LR
     A["WMS POST {{WES_BASE_URL}}/api/v1/wms/events"] --> B["识别 WMS 调用方"]
-    B --> C["校验统一 Envelope"]
+    B --> C["校验 WMS 异步回调统一信封"]
     C --> D["按 operation 选择固定 DTO"]
     D --> E["调用固定准入 Handler"]
     E --> F{"幂等身份"}
@@ -130,14 +132,17 @@ WMS 业务事件（business event）使用 `operation + data.event_id` 建立业
 
 ### 3.3 HTTP 状态与业务结果
 
+WMS → WES 异步 Event 的 HTTP 状态和接收应答以
+`docs/contracts/wms-async-callback-envelope-contract.md` 为唯一真源。下表只定义 WES → WMS 的同步决定和可靠事实：
+
 | HTTP 状态 | 使用场景 | 响应信封中的典型 `code` |
 | --- | --- | --- |
-| `200 OK` | 同步决定、Event/Fact 重复请求 | `START_GRANTED`、`DECIDED`、`DUPLICATE` |
-| `202 Accepted` | Event 或 Fact 首次可靠接纳 | `RECEIVED` |
-| `400 Bad Request` | JSON 或统一 Envelope 无法解析 | `REJECTED` |
+| `200 OK` | 同步决定、Fact 重复请求 | `START_GRANTED`、`DECIDED`、`DUPLICATE` |
+| `202 Accepted` | Fact 首次可靠接纳 | `RECEIVED` |
+| `400 Bad Request` | JSON 或本文信封无法解析 | `REJECTED` |
 | `409 Conflict` | 同一幂等 ID 对应不同 Payload，或请求违反业务唯一性/当前状态约束 | `CONFLICT` |
 | `422 Unprocessable Entity` | operation、版本或专属 DTO 校验失败 | `REJECTED` |
-| `429 Too Many Requests` | 接收队列瞬时背压 | `BUSY`，同时返回 `Retry-After` |
+| `429 Too Many Requests` | 接收队列瞬时背压 | `BUSY`，`data.retry_after_ms` 给出重试延迟 |
 | `503 Service Unavailable` | 接收方暂时无法可靠处理 | `UNAVAILABLE` |
 
 业务否决属于有效业务决定。例如物料 `REJECT` 使用 `200 OK`，调用方读取响应信封中的 `code` 和 `data` 执行后续动作。
@@ -153,14 +158,18 @@ POST 响应未知时，调用方使用相同 `request_id`、相同 operation 专
 
 运行状态查询不属于首版交互面；需要人工恢复时，双方使用业务对账流程，不把诊断查询混入执行合同。
 
-## 4. 统一 JSON 信封
+## 4. PickingTask 其他方向的 JSON 信封
+
+WMS → WES 异步 Event 不在本节重复定义，统一遵循
+`docs/contracts/wms-async-callback-envelope-contract.md`。本节只定义 WES → WMS 的同步决定和可靠事实信封，不能据此改变
+Transport 提交合同或 WMS 异步回调统一信封。
 
 ### 4.1 请求信封
 
 ```json
 {
-  "request_id": "REQ-20260807-000001",
-  "operation": "outbound.picking_task.issued@v1",
+  "request_id": "REQ-START-000001",
+  "operation": "outbound.picking_task.start@v1",
   "timestamp": 1786060800000,
   "data": {}
 }
@@ -173,32 +182,31 @@ POST 响应未知时，调用方使用相同 `request_id`、相同 operation 专
 | `timestamp` | UTC Unix 毫秒 |
 | `data` | operation 专属闭集 DTO；所有业务字段均放在该对象内 |
 
-请求 Payload 是闭集，顶层只允许上述四个字段。WMS provider 身份属于服务端接入上下文，不作为可由调用方任意声明的
-Payload 字段。
+请求 Payload 是闭集，顶层只允许上述四个字段。
 
 ### 4.2 响应信封
 
 ```json
 {
-  "request_id": "REQ-20260807-000001",
-  "code": "RECEIVED",
-  "message": "Event persisted",
+  "request_id": "REQ-START-000001",
+  "code": "START_GRANTED",
+  "message": "Picking task start granted",
   "timestamp": 1786060800123,
   "data": {}
 }
 ```
 
-调用方同时读取 HTTP 状态与 `code`：HTTP 状态表达传输和协议处理结果，`code` 表达接收或业务决定。Event/Fact 首次接纳
-返回 `202 / RECEIVED`；相同 ID 和相同 Payload 重放返回 `200 / DUPLICATE`，且不重复产生副作用。同步决定请求以对应
+调用方同时读取 HTTP 状态与 `code`：HTTP 状态表达传输和协议处理结果，`code` 表达接收或业务决定。Fact 首次接纳返回
+`202 / RECEIVED`；相同 ID 和相同 Payload 重放返回 `200 / DUPLICATE`，且不重复产生副作用。同步决定请求以对应
 operation 的决定请求 ID 幂等；同 ID 和相同 Payload 重放时必须返回首次产生的完整决定响应（包括原 `code`、`data` 和
 决定版本），不得降级为通用 `DUPLICATE` ACK。任一类型的同 ID 与不同 Payload 均返回 `409 / CONFLICT`。瞬时背压返回
 `429 / BUSY`，调用方稍后使用原身份重试。
 
-业务幂等身份由 `operation` 与 operation 专属 ID 组成：Event 使用 `event_id`，Decision 使用
-`start_request_id | decision_request_id`，Fact 使用 `report_id | fact_id | completion_report_id`。`request_id` 只用于 HTTP
+业务幂等身份由 `operation` 与 operation 专属 ID 组成：Decision 使用 `start_request_id | decision_request_id`，Fact 使用
+`report_id | fact_id | completion_report_id`。`request_id` 只用于 HTTP
 关联，不能绕过或替代业务幂等身份。
 
-### 4.3 Event/Fact 通用接收 ACK
+### 4.3 Fact 接收 ACK
 
 | `code` | 含义 |
 | --- | --- |
@@ -206,7 +214,7 @@ operation 的决定请求 ID 幂等；同 ID 和相同 Payload 重放时必须�
 | `DUPLICATE` | 相同业务 ID 和相同 Payload 已接收，不重复产生副作用 |
 | `REJECTED` | envelope、operation 或 DTO 校验失败，本次消息未形成有效业务输入 |
 | `CONFLICT` | 相同业务 ID 对应不同 Payload，或请求违反业务唯一性/当前状态约束 |
-| `BUSY` | 瞬时背压，消息尚未接纳；返回 `retryable=true`、`retry_after_ms` 和 HTTP `Retry-After` |
+| `BUSY` | 瞬时背压，消息尚未接纳；返回 `retryable=true` 和 `retry_after_ms`，不使用 HTTP `Retry-After` |
 
 ## 5. Operation 总览
 
@@ -423,8 +431,8 @@ WMS 已完成的校验结果，接收 ACK 即为该事件的准入结果。
 接入网关识别 WMS provider 后按 `operation` 选择 PickingTask DTO，全程使用 WMS 业务上下文。真实设备上下文只在后续
 创建并执行 `DeviceCommand` 时解析。
 
-工作线队列已满时返回 `429 / BUSY`、`reason_code=WORKLINE_QUEUE_FULL`、`retryable=true`、`retry_after_ms` 和
-`Retry-After`；该事件保持待提交，WMS 使用相同请求/事件 ID 和相同 Payload 重试。接收方只在事件转为 `RECEIVED` 后
+工作线队列已满时返回 `429 / BUSY`、`reason_code=WORKLINE_QUEUE_FULL`、`retryable=true` 和 `retry_after_ms`，不使用
+HTTP `Retry-After`；该事件保持待提交，WMS 使用相同请求/事件 ID 和相同 Payload 重试。接收方只在事件转为 `RECEIVED` 后
 建立稳定幂等结果。
 
 ## 8. 多任务队列与任务控制
@@ -1127,7 +1135,7 @@ WMS 对本地执行完成事实返回通用接收 ACK。后续任务和运输指
 | 同一幂等 ID 对应不同 Payload | `409 / CONFLICT` | 保留原请求和原响应快照 |
 | 非重复事件的 `ADD_SOURCE_CELLS.cell_set_revision` 不是 `current_cell_set_revision + 1` | `409 / CONFLICT` | 旧代际或跳号代际均不修改成员集合；相同冲突事件重提仍返回相同冲突 |
 | PickingTask 发送到设备 `{{WES_BASE_URL}}/api/v1/callback/event` | 设备入口按自身合同返回 `4xx` | WMS 使用 `{{WES_BASE_URL}}/api/v1/wms/events` 重新提交 |
-| 接收队列达到容量上限 | `429 / BUSY` | 返回 `Retry-After`，调用方使用原身份重试 |
+| 接收队列达到容量上限 | `429 / BUSY` | 返回 `data.retry_after_ms`，调用方使用原身份重试 |
 | POST 响应未知 | 无法确认 | 调用方使用相同 `request_id`、业务 ID 和 Payload 重提原 POST；接收方按幂等规则返回原结果或首次处理 |
 
 ## 17. 联调验收清单
@@ -1143,7 +1151,7 @@ WMS 对本地执行完成事实返回通用接收 ACK。后续任务和运输指
 | WMS Event 携带设备身份字段 | 返回 `422 / WMS_EVENT_DEVICE_FIELD_FORBIDDEN`；WMS 修正 Payload 后使用新的请求和事件 ID 提交 |
 | PickingTask 误投 `{{WES_BASE_URL}}/api/v1/callback/event` | 设备入口返回 `4xx`，WMS 改投 `{{WES_BASE_URL}}/api/v1/wms/events` |
 | 正常 WMS Event 接入 | 准入 Handler 建立 WMS 业务上下文并原子持久化 PickingTask，运行时随后异步推进执行 |
-| 工作线接收队列瞬时已满 | 返回 `429 / BUSY` 和 `Retry-After`，WMS 使用原身份重试 |
+| 工作线接收队列瞬时已满 | 返回 `429 / BUSY` 和 `data.retry_after_ms`，WMS 使用原身份重试 |
 | 启动前 Cell 可锁定 | 返回 `START_GRANTED` 后 WES 才创建设备命令 |
 | 启动授权冻结目标架清场 | `transport_authorizations.rack_moves` 同时包含 `purpose=CLEARANCE` 的目标架、来源工作位和 WMS 授权目标位置 |
 | 启动暂时等待 | 当前任务回到 `QUEUED` 并保持队首，不创建设备命令；重排使用队列更新事件 |

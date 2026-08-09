@@ -14,6 +14,7 @@ from src.core.outbound_http import (
     OutboundHttpMethod,
     OutboundHttpRequest,
     OutboundHttpRequestError,
+    OutboundHttpResponseLimits,
     OutboundHttpResult,
     OutboundHttpTransport,
 )
@@ -52,6 +53,8 @@ class WmsClient:
         query: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
         json: object = _MISSING,
+        max_request_body_bytes: int | None = None,
+        max_response_body_bytes: int | None = None,
     ) -> WmsAccessResult:
         """发送一次 GET/POST 请求，不解释任何 WMS 业务语义。"""
 
@@ -75,6 +78,19 @@ class WmsClient:
         else:
             raise TypeError("method must be an OutboundHttpMethod")
 
+        _validate_optional_byte_limit(max_request_body_bytes, "max_request_body_bytes")
+        _validate_optional_byte_limit(max_response_body_bytes, "max_response_body_bytes")
+        if max_request_body_bytes is not None and len(body) > max_request_body_bytes:
+            raise OutboundHttpRequestError("request body limit exceeded")
+        response_limits = (
+            OutboundHttpResponseLimits(
+                max_wire_bytes=max_response_body_bytes,
+                max_decoded_bytes=max_response_body_bytes,
+            )
+            if max_response_body_bytes is not None
+            else OutboundHttpResponseLimits()
+        )
+
         result = await self._transport.send(
             OutboundHttpRequest(
                 method=method,
@@ -82,6 +98,7 @@ class WmsClient:
                 query=_as_pairs(query, field_name="query"),
                 headers=request_headers,
                 body=body,
+                response_limits=response_limits,
             )
         )
         return _decode_result(result)
@@ -92,10 +109,17 @@ class WmsClient:
         *,
         query: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
+        max_response_body_bytes: int | None = None,
     ) -> WmsAccessResult:
         """发送一次无 JSON 请求体的 GET。"""
 
-        return await self.request(method=OutboundHttpMethod.GET, path=path, query=query, headers=headers)
+        return await self.request(
+            method=OutboundHttpMethod.GET,
+            path=path,
+            query=query,
+            headers=headers,
+            max_response_body_bytes=max_response_body_bytes,
+        )
 
     async def post(
         self,
@@ -104,6 +128,8 @@ class WmsClient:
         json: _JsonValue,
         query: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
+        max_request_body_bytes: int | None = None,
+        max_response_body_bytes: int | None = None,
     ) -> WmsAccessResult:
         """发送一次由 Client 统一编码 JSON 的 POST。"""
 
@@ -113,6 +139,8 @@ class WmsClient:
             query=query,
             headers=headers,
             json=json,
+            max_request_body_bytes=max_request_body_bytes,
+            max_response_body_bytes=max_response_body_bytes,
         )
 
     async def aclose(self) -> None:
@@ -127,6 +155,11 @@ def _as_pairs(values: Mapping[str, str] | None, *, field_name: str) -> tuple[tup
     if not isinstance(values, Mapping):
         raise TypeError(f"{field_name} must be a mapping")
     return tuple(values.items())
+
+
+def _validate_optional_byte_limit(value: int | None, field_name: str) -> None:
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
+        raise OutboundHttpRequestError(f"{field_name} must be a positive integer")
 
 
 def _encode_json(value: object) -> bytes:
