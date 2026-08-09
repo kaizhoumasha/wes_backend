@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -67,6 +68,18 @@ class RecordingPublisher:
             self.fail_once = False
             raise RuntimeError("publisher unavailable")
         self.outcomes.append(outcome)
+
+
+class TimeoutOncePublisher(RecordingPublisher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    async def publish(self, outcome: TransportOutcome) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            await asyncio.Event().wait()
+        await super().publish(outcome)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -304,6 +317,36 @@ async def test_failed_publish_is_reclaimed_after_lease_expiry(db_engine: object)
     task = await _load_task(db_engine, handle.transport_task_id)
     assert task.published_outcome_version == task.outcome_version == 1
     assert [outcome.outcome_version for outcome in publisher.outcomes] == [1]
+
+
+@pytest.mark.asyncio
+async def test_timed_out_publish_does_not_block_later_outcomes_or_mark_success(
+    db_engine: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publisher = TimeoutOncePublisher()
+    service = _service(db_engine, publisher=publisher)
+    handles = []
+    for ordinal in range(2):
+        handles.append(
+            await service.move_rack(
+                f"publish-timeout-{ordinal}",
+                _caller(),
+                f"rack-publish-timeout-{ordinal}",
+                RackPosition("A"),
+                RackPosition("B"),
+            )
+        )
+    service.provider.code = TransportSubmitCode.REJECTED
+    assert await service.submit_pending_tasks(2) == 2
+    monkeypatch.setattr("src.app.transport.service._PUBLISH_TIMEOUT_SECONDS", 0.01, raising=False)
+
+    assert await asyncio.wait_for(service.publish_pending_outcomes(2), timeout=0.2) == 1
+    tasks = [await _load_task(db_engine, handle.transport_task_id) for handle in handles]
+
+    assert publisher.calls == 2
+    assert len(publisher.outcomes) == 1
+    assert sorted(task.published_outcome_version for task in tasks) == [0, 1]
 
 
 @pytest.mark.asyncio

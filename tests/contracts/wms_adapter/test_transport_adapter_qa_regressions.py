@@ -120,6 +120,21 @@ async def test_ack_status_and_code_are_a_closed_pair(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 422])
+async def test_rejected_ack_preserves_a_persistable_reason_code(status_code: int) -> None:
+    access = _ack(
+        status_code,
+        "REJECTED",
+        {"transport_task_id": "transport-1", "reason_code": "COORDINATED_BIN_EXCHANGE_UNSUPPORTED"},
+    )
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.REJECTED
+    assert result.reason_code == "COORDINATED_BIN_EXCHANGE_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
 async def test_ack_for_another_task_is_a_conflict() -> None:
     access = _ack(202, "RECEIVED", {"transport_task_id": "transport-other"})
 

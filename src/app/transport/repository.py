@@ -100,7 +100,11 @@ class TransportRepository:
                 or_(TransportTask.next_submit_at.is_(None), TransportTask.next_submit_at <= now),
                 or_(TransportTask.submit_claim_until.is_(None), TransportTask.submit_claim_until < now),
             )
-            .order_by(TransportTask.next_submit_at.asc().nullsfirst(), TransportTask.id.asc())
+            .order_by(
+                TransportTask.next_submit_at.is_not(None).asc(),
+                TransportTask.next_submit_at.asc(),
+                TransportTask.id.asc(),
+            )
             .limit(limit)
             .with_for_update(skip_locked=True)
         )

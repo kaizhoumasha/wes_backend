@@ -109,6 +109,8 @@ async def test_transport_schema_contains_required_claim_indexes(integration_db_s
         "ix_transport_tasks_outcome_claim",
         "ux_transport_resource_bindings_active",
     } <= definitions.keys()
+    assert "(next_submit_at IS NOT NULL)" in definitions["ix_transport_tasks_submit_claim"]
+    assert "next_submit_at, id)" in definitions["ix_transport_tasks_submit_claim"]
     assert "(submit_claim_until, id)" in definitions["ix_transport_tasks_ambiguous_claim"]
     assert "(updated_at, id)" in definitions["ix_transport_tasks_outcome_claim"]
 

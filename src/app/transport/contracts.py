@@ -47,12 +47,6 @@ class TransportOutcomeStatus(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
-class TransportEvidenceStatus(StrEnum):
-    PENDING = "PENDING"
-    APPLIED = "APPLIED"
-    CONFLICT = "CONFLICT"
-
-
 class TransportSubmitCode(StrEnum):
     RECEIVED = "RECEIVED"
     DUPLICATE = "DUPLICATE"
@@ -62,12 +56,6 @@ class TransportSubmitCode(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
     NOT_SENT = "NOT_SENT"
     DELIVERY_UNKNOWN = "DELIVERY_UNKNOWN"
-
-
-class PositionMilestone(StrEnum):
-    SOURCE_PICKED = "SOURCE_PICKED"
-    TARGET_PLACED = "TARGET_PLACED"
-    POSITION_UNKNOWN = "POSITION_UNKNOWN"
 
 
 MAX_SUBMIT_ATTEMPTS = 3
@@ -338,14 +326,12 @@ __all__ = [
     "HandoffPosition",
     "MoveBinsRequest",
     "MoveRackRequest",
-    "PositionMilestone",
     "RackBinSlot",
     "RackFace",
     "RackPosition",
     "RotateRackRequest",
     "TransportCaller",
     "TransportContractError",
-    "TransportEvidenceStatus",
     "TransportHandle",
     "TransportIdempotencyConflict",
     "TransportMemberOutcome",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import asdict
 from datetime import timedelta
@@ -56,8 +57,11 @@ if TYPE_CHECKING:
 
 _CLAIM_SECONDS = 30
 _SUBMIT_TIMEOUT_SECONDS = 10
+_PUBLISH_TIMEOUT_SECONDS = 10
 _RESULT_TIMEOUT = timedelta(minutes=10)
 _RETRY_DELAY = timedelta(seconds=2)
+
+logger = logging.getLogger(__name__)
 
 
 class TransportService:
@@ -193,6 +197,20 @@ class TransportService:
                         raise TransportContractError("unsupported evidence operation")
                 except TransportContractError:
                     _mark_evidence_conflict(evidence, "TRANSPORT_EVIDENCE_CONFLICT", timezone.now_for_db())
+                    if task.status not in {
+                        TransportTaskStatus.REJECTED.value,
+                        TransportTaskStatus.SUCCEEDED.value,
+                        TransportTaskStatus.FAILED.value,
+                    } and not (
+                        task.status == TransportTaskStatus.RECONCILING.value
+                        and task.reason_code == "TRANSPORT_EVIDENCE_CONFLICT"
+                    ):
+                        self._set_outcome(
+                            task,
+                            TransportTaskStatus.RECONCILING,
+                            "TRANSPORT_EVIDENCE_CONFLICT",
+                            timezone.now_for_db(),
+                        )
                 else:
                     evidence.status = "APPLIED"
                     evidence.processed_at = timezone.now_for_db()
@@ -218,7 +236,7 @@ class TransportService:
             async with self._sessions.begin() as db:
                 existing = await self._repository.get_evidence_by_event_id(db, event_id, for_update=True)
                 if existing is not None:
-                    return _resolve_evidence_identity(existing, digest, operation, now)
+                    return _resolve_evidence_identity(existing, digest, operation)
                 await self._repository.add_evidence(
                     db,
                     TransportEvidence(
@@ -236,7 +254,7 @@ class TransportService:
                 existing = await self._repository.get_evidence_by_event_id(db, event_id, for_update=True)
                 if existing is None:
                     raise
-                return _resolve_evidence_identity(existing, digest, operation, now)
+                return _resolve_evidence_identity(existing, digest, operation)
         return "RECEIVED"
 
     async def reconcile_overdue_tasks(self, limit: int) -> int:
@@ -270,7 +288,12 @@ class TransportService:
         for task_id, version, payload in snapshots:
             if payload is None:
                 continue
-            await self._outcome_publisher.publish(_outcome_from_json(payload))
+            try:
+                async with asyncio.timeout(_PUBLISH_TIMEOUT_SECONDS):
+                    await self._outcome_publisher.publish(_outcome_from_json(payload))
+            except TimeoutError:
+                logger.warning("搬运结果发布超时: transport_task_id=%s, outcome_version=%s", task_id, version)
+                continue
             async with self._sessions.begin() as db:
                 task = await self._repository.get_task(db, task_id, for_update=True)
                 if task is None or task.outcome_claim_token != token or task.outcome_version != version:
@@ -819,13 +842,12 @@ def _resolve_evidence_identity(
     evidence: TransportEvidence,
     payload_digest: str,
     operation: str,
-    now: Any,
 ) -> str:
     if evidence.payload_digest == payload_digest and evidence.operation == operation:
         return "DUPLICATE"
-    # 已经应用的权威首份证据不能被晚到的身份冲突反向改写。
+    # 身份冲突只记录诊断；首份权威 evidence 仍必须保持可处理或已应用状态。
     if evidence.status == "PENDING":
-        _mark_evidence_conflict(evidence, "EVENT_PAYLOAD_CONFLICT", now)
+        evidence.conflict_code = "EVENT_PAYLOAD_CONFLICT"
     return "CONFLICT"
 
 

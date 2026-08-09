@@ -100,7 +100,10 @@ async def test_record_evidence_only_persists_then_batch_applies_and_publishes(
 
 
 @pytest.mark.asyncio
-async def test_same_event_is_idempotent_and_changed_payload_conflicts(outcome_service: TransportService) -> None:
+async def test_same_event_is_idempotent_and_changed_payload_conflicts(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
     handle = await outcome_service.move_bins(
         "request-2",
         TransportCaller("SORTER"),
@@ -134,6 +137,18 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(outcome_se
     )
 
     assert (first, duplicate, changed) == ("RECEIVED", "DUPLICATE", "CONFLICT")
+    assert await outcome_service.process_pending_evidence(1) == 1
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == "event-2"))
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+
+    assert evidence is not None
+    assert evidence.status == "APPLIED"
+    assert evidence.conflict_code == "EVENT_PAYLOAD_CONFLICT"
+    assert task is not None
+    assert (task.status, task.reason_code, task.outcome_version) == ("RECONCILING", "TRANSPORT_POSITION_UNKNOWN", 1)
 
 
 @pytest.mark.asyncio
@@ -157,15 +172,19 @@ async def test_record_evidence_rejects_identifiers_larger_than_persistence_colum
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("accepted_before_conflict", [False, True], ids=["pending", "accepted"])
 async def test_conflicting_batch_result_does_not_partially_update_members(
     outcome_service: TransportService,
     db_engine: object,
+    accepted_before_conflict: bool,
 ) -> None:
     moves = (
         BinMove("bin-atomic-1", RackBinSlot("rack-atomic", "1"), HandoffPosition("ROLLER_IN")),
         BinMove("bin-atomic-2", RackBinSlot("rack-atomic", "2"), HandoffPosition("ROLLER_OUT")),
     )
     handle = await outcome_service.move_bins("request-atomic", TransportCaller("SORTER"), moves)
+    if accepted_before_conflict:
+        assert await outcome_service.submit_pending_tasks(1) == 1
     payload = {
         "event_id": "event-atomic-conflict",
         "transport_task_id": handle.transport_task_id,
@@ -216,7 +235,10 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
     assert evidence is not None
     assert task is not None
     assert evidence.status == "CONFLICT"
-    assert (task.status, task.outcome_version, task.outcome_json, task.reason_code) == ("PENDING", 0, None, None)
+    assert task.status == "RECONCILING"
+    assert task.outcome_version == 1
+    assert task.reason_code == "TRANSPORT_EVIDENCE_CONFLICT"
+    assert task.outcome_json is not None
     assert [(member.status, member.final_position_json, member.position_unknown) for member in members] == [
         ("PENDING", None, False),
         ("PENDING", None, False),
@@ -450,7 +472,11 @@ async def test_rotate_success_requires_the_frozen_target_face(
     assert member is not None
     assert evidence is not None
     assert evidence.status == "CONFLICT"
-    assert task.status == "PENDING"
+    assert (task.status, task.reason_code, task.outcome_version) == (
+        "RECONCILING",
+        "TRANSPORT_EVIDENCE_CONFLICT",
+        1,
+    )
     assert member.status == "PENDING"
 
 

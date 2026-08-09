@@ -62,7 +62,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_transport_tasks_submit_claim",
         "transport_tasks",
-        ["status", "next_submit_at", "id"],
+        [sa.text("(next_submit_at IS NOT NULL) ASC"), "next_submit_at", "id"],
         schema="wes_runtime",
         postgresql_where=sa.text("status = 'PENDING'"),
     )

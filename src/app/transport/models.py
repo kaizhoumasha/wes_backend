@@ -32,7 +32,7 @@ class TransportTask(BaseMixin, table=True):
         UniqueConstraint("client_request_id", name="ux_transport_tasks_client_request_id"),
         Index(
             "ix_transport_tasks_submit_claim",
-            "status",
+            text("(next_submit_at IS NOT NULL) ASC"),
             "next_submit_at",
             "id",
             postgresql_where=text("status = 'PENDING'"),
