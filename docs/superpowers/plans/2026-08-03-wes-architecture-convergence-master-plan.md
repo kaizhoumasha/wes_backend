@@ -15,8 +15,8 @@ DeviceCommand、统一设备 Adapter、设备状态、设备 CALLBACK、ECS 和�
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Alembic、Celery、
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
-**Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 合同与详细计划已通过最终
-工程评审，可以实施；Phase 5–11 尚未开始。
+**Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
+Phase 5–11 尚未开始。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -109,16 +109,16 @@ Transport/Adapter/核心所有权。
 
 | 证据 | 当前事实 | 裁决 |
 | --- | --- | --- |
-| `git status` | 当前 `develop` 工作树执行 Phase 3 纯文档复评；生产代码未修改 | 只继承当前合同与计划，不继承生产实施 |
+| `git status` | 当前 Phase 4 实施分支已完成 Transport 暗构建和后端 QA | 尚未合入 `develop`，也未接入生产路径 |
 | `28eb99d9` / PR #100 | Phase 1 架构与测试治理已合入 | Phase 1 完成，但测试计划延后义务未整体完成 |
 | `src/app/wms_integration/` | 仍为 54 个生产文件，Provider/Profile、Registry、QUERY、Effect/status/evidence 混合存在 | Phase 3 不复用其设计；旧包只是待替代的临时所有者 |
 | `src/app/sys/external_http_*` 与 `canonical_dispatch.py` | 已有 typed transport fact、凭据解析、NONE/HMAC、bounded response 的部分能力，但耦合 Provider Profile/SystemOutbox/WMS operation | 仅 transport fact 作为行为证据；认证相关能力无真实 outbound 合同依据，不进入 Phase 2 |
 | 多处 `httpx.AsyncClient()` | DeviceCommand、旧 Outbox、WMS runtime、旧 Gateway 等仍自行创建 Client | Phase 5 只切换 WMS/Transport；Device/ECS 裸 Client 由独立计划处理，不借 Phase 4/5 顺带清理 |
-| 目标对象扫描 | 尚无最终 `TransportTask`、Transport member-position/result evidence 和 Transport 位置投影 | Phase 4 未开始；旧 Effect/Outbox 不能等同于目标 Transport 完成 |
+| 目标对象扫描 | 已有 `TransportTask`、Transport member-position/result evidence 和 Transport 位置投影 | Phase 4 暗构建完成；旧 Effect/Outbox 仍由 Phase 5 原子切换处置 |
 | 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | Phase 3 已完成实施与验收 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
-阶段状态：Phase 1–3 已完成，Phase 4 已具备实施条件但尚未开始，Phase 5–11 均未开始。
+阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA，Phase 5–11 均未开始。
 
 ## 5. 总控依赖模型
 
@@ -639,7 +639,7 @@ Adapter、设备统一接口和明确插件。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 3/4 明确禁止接线和旧 owner 处置；Phase 5 单独承担原子切换；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1–3 已完成；Phase 4 已具备实施条件但尚未开始；Phase 5–11 未开始 |
+| 当前状态准确性 | 通过 | Phase 1–3 已完成；Phase 4 已完成暗构建和后端 QA；Phase 5–11 未开始 |
 
 ## 19. 总体完成定义
 
@@ -695,6 +695,6 @@ Phase 3 已按 TDD 完成不含业务 API 的 WMS HTTP Client。当前行为真�
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新增 API 使用固定六步标准并复用 Client，不修改共享核心 |
 
-**VERDICT：Phase 1–3 已完成；Phase 4 只建设 AGV/CTU Transport，合同和详细计划已批准，可以开始实施。**
+**VERDICT：Phase 1–3 已完成；Phase 4 AGV/CTU Transport 已通过暗构建后端 QA；Phase 5 生产接线尚未开始。**
 
 NO UNRESOLVED DECISIONS

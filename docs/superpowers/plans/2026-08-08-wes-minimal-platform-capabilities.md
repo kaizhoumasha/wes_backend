@@ -9,7 +9,7 @@
 **架构：** `TransportService` 对插件暴露四个明确方法，内部以一个 Transport 聚合完成任务、成员、证据、位置投影和可靠结果发布，
 经 WMS 转发 RCS。当前只显式装配一个 WMS Transport Adapter，不建立动态 Provider、通用命令平台或设备运行时。
 
-**状态：** `IMPLEMENTED_DARK`（2026-08-09）。四类请求、异步证据收敛、统一结果和 `exchange_bins()` 协调交换已完成暗构建与验收；
+**状态：** `IMPLEMENTED_DARK`（2026-08-10 后端 QA 验收通过）。四类请求、异步证据收敛、统一结果和 `exchange_bins()` 协调交换已完成暗构建与验收；
 未注册生产 route、Celery task、beat、worker hook 或工作线消费者。Phase 4 只依赖
 自身与已完成的 Phase 3，不受后续 Phase 5 是否完成影响。
 
@@ -298,13 +298,13 @@ src/app/wms_adapter/
 **产出：** `TransportCaller`、`TransportHandle`、带 `outcome_version` 的 `TransportOutcome`、四类请求、两个窄 Port、
 含 `submit_attempt_count` 和 `result_deadline_at` 的任务及成员/证据/投影模型。
 
-- [ ] 先写失败测试锁定四个方法所需 DTO、最小结构校验、位置闭集和结果闭集。
-- [ ] 覆盖 `exchange_pairs` 为 0、1、2、3，对内料箱/位置重复，以及合法的 1～2 个交换对。
-- [ ] 覆盖 `client_request_id` 唯一、同请求同摘要幂等、同请求异摘要冲突。
-- [ ] 建立最小活动资源唯一约束：货架任务绑定该货架；料箱任务绑定每个料箱，以及来源/目标储位引用的全部不同货架。
-- [ ] 建立活动资源部分唯一索引、待提交/重提领取索引、`event_id` 唯一索引、待处理 evidence 索引和待发布结果领取索引；不增加缓存。
-- [ ] 使用 Alembic generator 生成迁移；不手写 revision ID，不迁移旧数据。
-- [ ] 在隔离 PostgreSQL 空库验证 upgrade、约束和索引。
+- [x] 先写失败测试锁定四个方法所需 DTO、最小结构校验、位置闭集和结果闭集。
+- [x] 覆盖 `exchange_pairs` 为 0、1、2、3，对内料箱/位置重复，以及合法的 1～2 个交换对。
+- [x] 覆盖 `client_request_id` 唯一、同请求同摘要幂等、同请求异摘要冲突。
+- [x] 建立最小活动资源唯一约束：货架任务绑定该货架；料箱任务绑定每个料箱，以及来源/目标储位引用的全部不同货架。
+- [x] 建立活动资源部分唯一索引、待提交/重提领取索引、`event_id` 唯一索引、待处理 evidence 索引和待发布结果领取索引；不增加缓存。
+- [x] 使用 Alembic generator 生成迁移；不手写 revision ID，不迁移旧数据。
+- [x] 在隔离 PostgreSQL 空库验证 upgrade、约束和索引。
 
 ### Task 2：实现简单的 `TransportService`
 
@@ -319,27 +319,27 @@ src/app/wms_adapter/
 **产出：** 四个公共方法、一个聚合 Repository、可靠任务创建，以及 `submit_pending_tasks(limit)`、
 `process_pending_evidence(limit)`、`reconcile_overdue_tasks(limit)`、`publish_pending_outcomes(limit)` 四个内部批处理入口。
 
-- [ ] 每个公共方法先写成功、边界和失败测试，再实现最小行为。
-- [ ] 四个方法复用同一个私有任务创建路径，不复制幂等、资源绑定和持久化逻辑。
-- [ ] `move_rack()` 每次只处理一个货架；调用方需要 1～2 个货架时分别调用，可并行等待结果。
-- [ ] `exchange_bins()` 生成一个 `EXCHANGE` 请求，不拆分、不在 WES 排序 CTU 内部动作。
-- [ ] 创建成功立即返回 `TransportHandle`；不得等待 WMS ACK 或物理结果。
-- [ ] PostgreSQL 并发测试覆盖重复调用、资源冲突、领取租约回收和两个 worker 不重复领取。
-- [ ] 资源冲突测试覆盖料箱来源货架、目标货架和同批次去重；任一相关货架存在非终态 AGV/CTU 任务时创建失败关闭。
-- [ ] 覆盖只有 `REJECTED / SUCCEEDED / FAILED` 的确定终态释放活动资源；`RECONCILING/UNKNOWN`、结果超时和交付未知均
+- [x] 每个公共方法先写成功、边界和失败测试，再实现最小行为。
+- [x] 四个方法复用同一个私有任务创建路径，不复制幂等、资源绑定和持久化逻辑。
+- [x] `move_rack()` 每次只处理一个货架；调用方需要 1～2 个货架时分别调用，可并行等待结果。
+- [x] `exchange_bins()` 生成一个 `EXCHANGE` 请求，不拆分、不在 WES 排序 CTU 内部动作。
+- [x] 创建成功立即返回 `TransportHandle`；不得等待 WMS ACK 或物理结果。
+- [x] PostgreSQL 并发测试覆盖重复调用、资源冲突、领取租约回收和两个 worker 不重复领取。
+- [x] 资源冲突测试覆盖料箱来源货架、目标货架和同批次去重；任一相关货架存在非终态 AGV/CTU 任务时创建失败关闭。
+- [x] 覆盖只有 `REJECTED / SUCCEEDED / FAILED` 的确定终态释放活动资源；`RECONCILING/UNKNOWN`、结果超时和交付未知均
   保持绑定，直到权威确定结果完成消歧。
-- [ ] 外部 HTTP 始终在事务外；使用硬超时，不引入 heartbeat。
-- [ ] 四个批处理入口均按显式 `limit` 有界领取，并使用稳定 `ORDER BY + 主键`；不得无界扫描或依赖数据库偶然返回顺序。
-- [ ] 覆盖领取后、`send_started_at` 写入前崩溃可重领，以及写入后、ACK 写回前崩溃只收敛为 `UNKNOWN` 且禁止重提。
-- [ ] 覆盖 `submit_attempt_count` 创建为 `0`，每次发送开始事务原子递增，并在达到 `3` 后零次调用 Adapter；重启后不得
+- [x] 外部 HTTP 始终在事务外；使用硬超时，不引入 heartbeat。
+- [x] 四个批处理入口均按显式 `limit` 有界领取，并使用稳定 `ORDER BY + 主键`；不得无界扫描或依赖数据库偶然返回顺序。
+- [x] 覆盖领取后、`send_started_at` 写入前崩溃可重领，以及写入后、ACK 写回前崩溃只收敛为 `UNKNOWN` 且禁止重提。
+- [x] 覆盖 `submit_attempt_count` 创建为 `0`，每次发送开始事务原子递增，并在达到 `3` 后零次调用 Adapter；重启后不得
   重新获得发送预算。
-- [ ] 覆盖只有 `NOT_SENT`、`429/503` 的确定性结果事务可以清除本次 `send_started_at`，并在单任务最多发送 3 次的
+- [x] 覆盖只有 `NOT_SENT`、`429/503` 的确定性结果事务可以清除本次 `send_started_at`，并在单任务最多发送 3 次的
   预算内重提。
-- [ ] 覆盖 10 秒 HTTP 超时、最多发送 3 次、2 秒固定间隔、合法/非法 `data.retry_after_ms`、`DELIVERY_UNKNOWN` 禁止重提和
+- [x] 覆盖 10 秒 HTTP 超时、最多发送 3 次、2 秒固定间隔、合法/非法 `data.retry_after_ms`、`DELIVERY_UNKNOWN` 禁止重提和
   `TRANSPORT_SUBMIT_RETRY_EXHAUSTED`。
-- [ ] 覆盖首次 ACK 或先到的位置证据进入 `ACCEPTED` 时设置同一个 `result_deadline_at`，重复 ACK/位置事实不得刷新；最终结果
+- [x] 覆盖首次 ACK 或先到的位置证据进入 `ACCEPTED` 时设置同一个 `result_deadline_at`，重复 ACK/位置事实不得刷新；最终结果
   先到时无须设置。
-- [ ] 覆盖 `reconcile_overdue_tasks(limit)` 只按 `result_deadline_at` 领取超过结果截止时间的 `ACCEPTED` 任务，形成
+- [x] 覆盖 `reconcile_overdue_tasks(limit)` 只按 `result_deadline_at` 领取超过结果截止时间的 `ACCEPTED` 任务，形成
   `TRANSPORT_RESULT_TIMEOUT`，保持资源绑定；未超时任务不变，迟到确定结果使用更高版本修正。
 
 ### Task 3：实现 WMS Adapter、证据和统一结果
@@ -363,29 +363,29 @@ src/app/wms_adapter/
 **产出：** `WmsClient` 逐请求字节预算、四类请求到固定 WMS wire 的转换、原始回调 Body 限制、持久化后应答、
 位置/终态收敛和 `TransportOutcome` 发布。
 
-- [ ] 先扩展 `WmsClient`：`request/post` 接收可选正整数 `max_request_body_bytes` 和 `max_response_body_bytes`；JSON 编码后、
+- [x] 先扩展 `WmsClient`：`request/post` 接收可选正整数 `max_request_body_bytes` 和 `max_response_body_bytes`；JSON 编码后、
   发送前执行请求体上限，并在 Client 内部把响应上限映射为 Phase 2 `OutboundHttpResponseLimits`；Adapter 不导入 Phase 2
   类型，默认行为保持现有共享 Client 合同，不增加第二套编码或 Transport。
-- [ ] 覆盖请求体恰好等于/超过 `256 KiB` 时一次发送/零发送，以及响应 wire/decoded body 超限时保留 Phase 2 失败事实。
-- [ ] `TransportEventHandler.handle(raw_body: bytes)` 在 JSON 解码前执行 `256 KiB` 上限；覆盖恰好等于、超过上限、非法
+- [x] 覆盖请求体恰好等于/超过 `256 KiB` 时一次发送/零发送，以及响应 wire/decoded body 超限时保留 Phase 2 失败事实。
+- [x] `TransportEventHandler.handle(raw_body: bytes)` 在 JSON 解码前执行 `256 KiB` 上限；覆盖恰好等于、超过上限、非法
   UTF-8、非法 JSON、未知字段和合法闭集 DTO。
-- [ ] 覆盖固定 path/operation、Transport 提交自有信封、WMS 异步回调统一信封、四类闭集 DTO、ACK、拒绝、冲突和
+- [x] 覆盖固定 path/operation、Transport 提交自有信封、WMS 异步回调统一信封、四类闭集 DTO、ACK、拒绝、冲突和
   交付结果未知。
-- [ ] 覆盖 `BIN_MOVE` 成员数 1、4、5，以及调用方缩小批次后 Phase 4 只验证冻结成员、不查询目标容量。
-- [ ] 覆盖 `EXCHANGE` 的 1～2 个交换对在一个 Payload 中提交，禁止拆成多个 HTTP 请求。
-- [ ] 覆盖逐箱取出、放置、最终结果、重复、倒序、未知位置和矛盾结果。
-- [ ] 覆盖批量成员全成功、部分失败但位置完整、任一位置未知三种聚合结果。
-- [ ] 覆盖 `final_position` 与字面量 `position_unknown=true` 严格二选一，以及 `SUCCEEDED` 必须位置明确、`FAILED` 必须携带
+- [x] 覆盖 `BIN_MOVE` 成员数 1、4、5，以及调用方缩小批次后 Phase 4 只验证冻结成员、不查询目标容量。
+- [x] 覆盖 `EXCHANGE` 的 1～2 个交换对在一个 Payload 中提交，禁止拆成多个 HTTP 请求。
+- [x] 覆盖逐箱取出、放置、最终结果、重复、倒序、未知位置和矛盾结果。
+- [x] 覆盖批量成员全成功、部分失败但位置完整、任一位置未知三种聚合结果。
+- [x] 覆盖 `final_position` 与字面量 `position_unknown=true` 严格二选一，以及 `SUCCEEDED` 必须位置明确、`FAILED` 必须携带
   `failure_code`；拒绝两者同时存在、同时缺少和 `position_unknown=false`。
-- [ ] 覆盖 `RACK_MOVE`、`RACK_ROTATE` 成功结果、位置明确的失败结果、位置未知结果对 `arrival_face` 的要求，以及面向投影单调更新。
-- [ ] evidence 按稳定顺序小批量领取；覆盖保存后崩溃、租约过期重领、并发 worker 和旧领取令牌拒绝写回。
-- [ ] `record_evidence()` 的合同测试证明回调事务只保存 `PENDING` evidence 并应答，不在请求内应用任务/投影或发布结果。
-- [ ] 证据应用在一个事务内锁定任务，更新任务/成员/投影并标记证据；任一步失败整体回滚。
-- [ ] 覆盖证据早于/晚于 ACK、晚到 ACK 不回退状态，以及 `UNKNOWN` 后确定结果使用更高版本修正。
-- [ ] `SUCCEEDED / FAILED / REJECTED / UNKNOWN` 统一携带 caller、调用幂等号和 `outcome_version`。
-- [ ] 终态事务形成待发布版本；覆盖发布失败、崩溃恢复、重复发布和发布版本记账。
-- [ ] 覆盖未发布低版本被更高版本合并、版本跳跃，以及旧领取令牌不得覆盖新版本记账。
-- [ ] 使用假的 `TransportOutcomePublisher` 验证发布；不建立动态消费者注册表或独立 Outbox 表。
+- [x] 覆盖 `RACK_MOVE`、`RACK_ROTATE` 成功结果、位置明确的失败结果、位置未知结果对 `arrival_face` 的要求，以及面向投影单调更新。
+- [x] evidence 按稳定顺序小批量领取；覆盖保存后崩溃、租约过期重领、并发 worker 和旧领取令牌拒绝写回。
+- [x] `record_evidence()` 的合同测试证明回调事务只保存 `PENDING` evidence 并应答，不在请求内应用任务/投影或发布结果。
+- [x] 证据应用在一个事务内锁定任务，更新任务/成员/投影并标记证据；任一步失败整体回滚。
+- [x] 覆盖证据早于/晚于 ACK、晚到 ACK 不回退状态，以及 `UNKNOWN` 后确定结果使用更高版本修正。
+- [x] `SUCCEEDED / FAILED / REJECTED / UNKNOWN` 统一携带 caller、调用幂等号和 `outcome_version`。
+- [x] 终态事务形成待发布版本；覆盖发布失败、崩溃恢复、重复发布和发布版本记账。
+- [x] 覆盖未发布低版本被更高版本合并、版本跳跃，以及旧领取令牌不得覆盖新版本记账。
+- [x] 使用假的 `TransportOutcomePublisher` 验证发布；不建立动态消费者注册表或独立 Outbox 表。
 
 ### Task 4：暗装配与最终验收
 
@@ -399,14 +399,14 @@ src/app/wms_adapter/
 
 **产出：** 可显式构造但不注册生产路径的 Phase 4 搬运能力。
 
-- [ ] 显式装配 `TransportService`、唯一 WMS Adapter、一个 Transport Repository 和结果 Publisher；不读取全局容器。
-- [ ] 暗调用四个内部批处理入口，证明未来生产接线无需理解 Repository、领取令牌或 Adapter 细节。
-- [ ] 暗闭环验证四个公共方法中至少各一个请求，其中交换覆盖两个交换对。
-- [ ] 架构测试证明 Transport 核心不依赖 httpx、ECS、DeviceCommand、PickingTask 或工作线插件；Transport 核心和
+- [x] 显式装配 `TransportService`、唯一 WMS Adapter、一个 Transport Repository 和结果 Publisher；不读取全局容器。
+- [x] 暗调用四个内部批处理入口，证明未来生产接线无需理解 Repository、领取令牌或 Adapter 细节。
+- [x] 暗闭环验证四个公共方法中至少各一个请求，其中交换覆盖两个交换对。
+- [x] 架构测试证明 Transport 核心不依赖 httpx、ECS、DeviceCommand、PickingTask 或工作线插件；Transport 核心和
   `WmsTransportAdapter` 均不得直接导入 `src.core.outbound_http`，只能经 `WmsClient` 使用 Phase 2 能力。
-- [ ] 确认新 API、Celery task、beat、worker hook 和生产消费者均未注册。
-- [ ] 确认四个内部批处理入口均可由测试显式调用，且当前验收不依赖任何 Phase 5 生产调度或 successor/NONE 清单。
-- [ ] Commit 前运行 GitNexus detect changes，确认没有意外生产调用链。
+- [x] 确认新 API、Celery task、beat、worker hook 和生产消费者均未注册。
+- [x] 确认四个内部批处理入口均可由测试显式调用，且当前验收不依赖任何 Phase 5 生产调度或 successor/NONE 清单。
+- [x] Commit 前运行 GitNexus detect changes，确认没有意外生产调用链。
 
 ## 7. 测试所有权
 
@@ -542,6 +542,7 @@ Repository、Service、WMS Adapter、事件处理和暗闭环的共同依赖；�
 `send_started_at` 后的崩溃必须收敛为 `UNKNOWN`、WMS 异步回调只共享统一信封，且 evidence 处理、超时收敛与结果发布
 分别由明确批处理入口负责；修订均保持在单一 Transport 聚合内。
 
-**VERDICT:** CLEARED — Phase 4 自身合同与已完成前序依赖均已冻结，可以按 Task 1～4 开始代码实施；后续 Phase 5 不构成阻塞。
+**VERDICT:** ACCEPTED_DARK — Phase 4 已完成 Task 1～4 后端 QA 验收；当前仅可作为未接生产流量的暗能力，Phase 5 生产接线、
+真实 WMS/RCS 联调和现场上线仍须分别验收。
 
 NO UNRESOLVED DECISIONS
