@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from src.core.outbound_http import (
+    OutboundHttpClosedError,
     OutboundHttpDeliveryState,
     OutboundHttpFailureKind,
     OutboundHttpMethod,
@@ -257,4 +258,4 @@ def _as_access_result(
     )
 
 
-__all__ = ["WmsAccessResult", "WmsClient", "WmsRequestBodyTooLargeError"]
+__all__ = ["OutboundHttpClosedError", "WmsAccessResult", "WmsClient", "WmsRequestBodyTooLargeError"]

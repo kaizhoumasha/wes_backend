@@ -6,9 +6,8 @@ import uuid
 from typing import TYPE_CHECKING
 
 from src.app.transport.contracts import TransportSubmitCode, TransportSubmitResult
-from src.app.wms_adapter.client import WmsRequestBodyTooLargeError
+from src.app.wms_adapter.client import OutboundHttpClosedError, WmsRequestBodyTooLargeError
 from src.app.wms_adapter.transport_wire import SUBMIT_OPERATION, TRANSPORT_PATH, build_submit_data
-from src.core.outbound_http import OutboundHttpClosedError
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
