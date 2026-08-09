@@ -5,8 +5,6 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.app.device.models import Device, DeviceCommand
-from src.app.sys.models import SystemOutbox
 from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
@@ -28,8 +26,10 @@ from src.app.transport.models import (
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
-from src.app.workline.models import WorkLine
 from src.utils.timezone import timezone
+from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
+
+register_required_sqlmodel_metadata()
 
 
 class FakeProvider:
