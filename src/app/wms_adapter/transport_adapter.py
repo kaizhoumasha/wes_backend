@@ -6,6 +6,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from src.app.transport.contracts import TransportSubmitCode, TransportSubmitResult
+from src.app.wms_adapter.client import WmsRequestBodyTooLargeError
 from src.app.wms_adapter.transport_wire import SUBMIT_OPERATION, TRANSPORT_PATH, build_submit_data
 from src.utils.timezone import timezone
 
@@ -30,12 +31,15 @@ class WmsTransportAdapter:
             "timestamp": int(timezone.now_utc().timestamp() * 1000),
             "data": build_submit_data(request, transport_task_id),
         }
-        access = await self._client.post(
-            TRANSPORT_PATH,
-            json=envelope,
-            max_request_body_bytes=_BODY_LIMIT,
-            max_response_body_bytes=_BODY_LIMIT,
-        )
+        try:
+            access = await self._client.post(
+                TRANSPORT_PATH,
+                json=envelope,
+                max_request_body_bytes=_BODY_LIMIT,
+                max_response_body_bytes=_BODY_LIMIT,
+            )
+        except WmsRequestBodyTooLargeError:
+            return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)
         delivery_state = getattr(access.delivery_state, "value", access.delivery_state)
         if delivery_state == "NOT_SENT":
             return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)

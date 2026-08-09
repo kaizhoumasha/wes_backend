@@ -11,6 +11,8 @@ from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
     RackBinSlot,
+    RackFace,
+    RackPosition,
     TransportCaller,
     TransportOutcome,
     TransportSubmitCode,
@@ -27,6 +29,7 @@ from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.app.workline.models import WorkLine
+from src.utils.timezone import timezone
 
 
 class FakeProvider:
@@ -132,6 +135,136 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(outcome_se
 
 
 @pytest.mark.asyncio
+async def test_conflicting_batch_result_does_not_partially_update_members(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    moves = (
+        BinMove("bin-atomic-1", RackBinSlot("rack-atomic", "1"), HandoffPosition("ROLLER_IN")),
+        BinMove("bin-atomic-2", RackBinSlot("rack-atomic", "2"), HandoffPosition("ROLLER_OUT")),
+    )
+    handle = await outcome_service.move_bins("request-atomic", TransportCaller("SORTER"), moves)
+    payload = {
+        "event_id": "event-atomic-conflict",
+        "transport_task_id": handle.transport_task_id,
+        "kind": "BIN_MOVE",
+        "results": [
+            {
+                "object_id": "bin-atomic-1",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
+            },
+            {
+                "object_id": "bin-atomic-2",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "WRONG_TARGET"},
+            },
+        ],
+    }
+
+    await outcome_service.record_evidence(
+        event_id=payload["event_id"],
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        payload=payload,
+    )
+    await outcome_service.process_pending_evidence(1)
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        members = list(
+            await db.scalars(
+                select(TransportMember)
+                .where(TransportMember.transport_task_id == handle.transport_task_id)
+                .order_by(TransportMember.ordinal)
+            )
+        )
+        projections = list(
+            await db.scalars(
+                select(TransportPositionProjection).where(
+                    TransportPositionProjection.object_id.in_({"bin-atomic-1", "bin-atomic-2"})
+                )
+            )
+        )
+        evidence = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.event_id == "event-atomic-conflict")
+        )
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+
+    assert evidence is not None
+    assert task is not None
+    assert evidence.status == "CONFLICT"
+    assert (task.status, task.outcome_version, task.outcome_json, task.reason_code) == ("PENDING", 0, None, None)
+    assert [(member.status, member.final_position_json, member.position_unknown) for member in members] == [
+        ("PENDING", None, False),
+        ("PENDING", None, False),
+    ]
+    assert projections == []
+
+
+@pytest.mark.asyncio
+async def test_rotate_success_requires_the_frozen_target_face(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add(
+            TransportPositionProjection(
+                object_type="RACK",
+                object_id="rack-face",
+                position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
+                position_unknown=False,
+                arrival_face="A",
+                source_event_id="initial-face",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+    handle = await outcome_service.rotate_rack(
+        "request-face",
+        TransportCaller("SORTER"),
+        "rack-face",
+        RackPosition("ROTATE_POINT"),
+        RackFace.B,
+    )
+    payload = {
+        "event_id": "event-wrong-face",
+        "transport_task_id": handle.transport_task_id,
+        "kind": "RACK_ROTATE",
+        "results": [
+            {
+                "object_id": "rack-face",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
+                "arrival_face": "A",
+            }
+        ],
+    }
+
+    await outcome_service.record_evidence(
+        event_id=payload["event_id"],
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        payload=payload,
+    )
+    await outcome_service.process_pending_evidence(1)
+
+    async with sessions() as db:
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+        )
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == "event-wrong-face"))
+
+    assert task is not None
+    assert member is not None
+    assert evidence is not None
+    assert evidence.status == "CONFLICT"
+    assert task.status == "PENDING"
+    assert member.status == "PENDING"
+
+
+@pytest.mark.asyncio
 async def test_late_source_picked_does_not_regress_confirmed_target_position(
     outcome_service: TransportService,
     db_engine: object,
@@ -176,6 +309,55 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
         )
     assert projection is not None
     assert projection.position_json == target["final_position"]
+
+
+@pytest.mark.asyncio
+async def test_late_source_picked_does_not_overwrite_unknown_position(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    handle = await outcome_service.move_bins(
+        "request-unknown-order",
+        TransportCaller("SORTER"),
+        (BinMove("bin-unknown-order", RackBinSlot("rack-unknown-order", "1"), HandoffPosition("ROLLER_IN")),),
+    )
+    for event_id, milestone in (
+        ("event-position-lost", "POSITION_UNKNOWN"),
+        ("event-picked-too-late", "SOURCE_PICKED"),
+    ):
+        await outcome_service.record_evidence(
+            event_id=event_id,
+            transport_task_id=handle.transport_task_id,
+            operation="transport.task.member_position_changed@v1",
+            payload={
+                "event_id": event_id,
+                "transport_task_id": handle.transport_task_id,
+                "bin_id": "bin-unknown-order",
+                "milestone": milestone,
+            },
+        )
+        await outcome_service.process_pending_evidence(1)
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+        )
+        projection = await db.scalar(
+            select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-unknown-order")
+        )
+        evidence = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.event_id == "event-picked-too-late")
+        )
+
+    assert member is not None
+    assert projection is not None
+    assert evidence is not None
+    assert evidence.status == "CONFLICT"
+    assert member.position_unknown is True
+    assert member.final_position_json is None
+    assert projection.position_unknown is True
+    assert projection.position_json is None
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ from src.app.transport.contracts import (
     TransportRequest,
     TransportResourceConflict,
     TransportSubmitCode,
+    TransportTaskKind,
     TransportTaskStatus,
 )
 from src.app.transport.models import (
@@ -412,6 +413,8 @@ class TransportService:
             await self._upsert_projection(db, member, None, True, None, evidence.event_id, now)
             self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_POSITION_UNKNOWN", now)
         elif milestone == "SOURCE_PICKED":
+            if member.position_unknown:
+                raise TransportContractError("source picked cannot overwrite unknown position")
             if member.final_position_json is not None:
                 return
             await self._upsert_projection(db, member, {"kind": "ON_CARRIER"}, False, None, evidence.event_id, now)
@@ -456,7 +459,7 @@ class TransportService:
             raise TransportContractError("result evidence contradicts definite terminal fact")
 
         now = timezone.now_for_db()
-        outcomes: list[TransportMemberOutcome] = []
+        validated_results: list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome]] = []
         any_unknown = False
         any_failed = False
         for member in members:
@@ -474,10 +477,33 @@ class TransportService:
             arrival_face = result.get("arrival_face")
             if member.object_type == "RACK" and has_position and arrival_face not in {"A", "B"}:
                 raise TransportContractError("known rack result requires arrival_face")
+            if (
+                task.kind == TransportTaskKind.RACK_ROTATE.value
+                and status == "SUCCEEDED"
+                and arrival_face != task.request_json["target_face"]
+            ):
+                raise TransportContractError("successful arrival face differs from frozen target")
             final_position = result.get("final_position") if has_position else None
             if status == "SUCCEEDED" and final_position != member.target_json:
                 raise TransportContractError("successful final position differs from frozen target")
+            outcome = TransportMemberOutcome(
+                object_id=member.object_id,
+                final_position=_contract_position(final_position) if final_position is not None else None,
+                position_unknown=position_unknown,
+                failure_code=failure_code,
+                arrival_face=RackFace(arrival_face) if arrival_face is not None else None,
+            )
+            validated_results.append((member, result, outcome))
+            any_unknown |= position_unknown
+            any_failed |= status == "FAILED"
 
+        outcomes: list[TransportMemberOutcome] = []
+        for member, result, outcome in validated_results:
+            status = result["status"]
+            final_position = result.get("final_position")
+            position_unknown = result.get("position_unknown") is True
+            failure_code = result.get("failure_code")
+            arrival_face = result.get("arrival_face")
             member.status = status
             member.final_position_json = final_position
             member.position_unknown = position_unknown
@@ -494,17 +520,7 @@ class TransportService:
                 evidence.event_id,
                 now,
             )
-            any_unknown |= position_unknown
-            any_failed |= status == "FAILED"
-            outcomes.append(
-                TransportMemberOutcome(
-                    object_id=member.object_id,
-                    final_position=_contract_position(final_position) if final_position is not None else None,
-                    position_unknown=position_unknown,
-                    failure_code=failure_code,
-                    arrival_face=RackFace(arrival_face) if arrival_face is not None else None,
-                )
-            )
+            outcomes.append(outcome)
 
         if any_unknown:
             task_status = TransportTaskStatus.RECONCILING

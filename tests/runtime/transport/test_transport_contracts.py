@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 import pytest
 
 from src.app.transport.contracts import (
@@ -20,9 +23,27 @@ from src.app.transport.contracts import (
     TransportOutcomeStatus,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 
 def _caller() -> TransportCaller:
     return TransportCaller(workline_id="SORTER", station_id="STATION_A", correlation_id="run-1")
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRackPosition(RackPosition):
+    vendor_code: str = "VENDOR"
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRackBinSlot(RackBinSlot):
+    vendor_code: str = "VENDOR"
+
+
+@dataclass(frozen=True, slots=True)
+class VendorHandoffPosition(HandoffPosition):
+    vendor_code: str = "VENDOR"
 
 
 def test_four_request_contracts_accept_minimal_valid_data() -> None:
@@ -51,6 +72,82 @@ def test_four_request_contracts_accept_minimal_valid_data() -> None:
         )
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: MoveRackRequest(
+            "req-rack-type",
+            _caller(),
+            "rack-1",
+            HandoffPosition("ROLLER_IN"),
+            RackPosition("STATION_A"),
+        ),
+        lambda: RotateRackRequest(
+            "req-rotate-type",
+            _caller(),
+            "rack-1",
+            HandoffPosition("ROLLER_IN"),
+            RackFace.B,
+        ),
+        lambda: BinMove("bin-type", RackPosition("STATION_A"), RackBinSlot("rack-1", "1")),
+        lambda: BinExchangePair(
+            "bin-left",
+            HandoffPosition("ROLLER_IN"),
+            "bin-right",
+            RackBinSlot("rack-2", "1"),
+        ),
+    ],
+)
+def test_requests_reject_positions_outside_their_closed_types(factory: Callable[[], object]) -> None:
+    with pytest.raises(TransportContractError):
+        factory()
+
+
+@pytest.mark.parametrize(
+    ("position_type", "args"),
+    [
+        (RackPosition, ("STATION_A",)),
+        (RackBinSlot, ("rack-1", "1")),
+        (HandoffPosition, ("ROLLER_IN",)),
+    ],
+)
+def test_position_discriminator_cannot_be_overridden(position_type: object, args: tuple[str, ...]) -> None:
+    with pytest.raises(TypeError):
+        position_type(*args, kind="VENDOR_POSITION")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: MoveRackRequest(
+            "req-vendor-rack",
+            _caller(),
+            "rack-1",
+            VendorRackPosition("STATION_A"),
+            RackPosition("STATION_B"),
+        ),
+        lambda: RotateRackRequest(
+            "req-vendor-rotate",
+            _caller(),
+            "rack-1",
+            VendorRackPosition("ROTATE_POINT"),
+            RackFace.B,
+        ),
+        lambda: BinMove("bin-vendor-slot", VendorRackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),
+        lambda: BinMove("bin-vendor-handoff", RackBinSlot("rack-1", "1"), VendorHandoffPosition("ROLLER_IN")),
+        lambda: BinExchangePair(
+            "bin-left",
+            VendorRackBinSlot("rack-1", "1"),
+            "bin-right",
+            RackBinSlot("rack-2", "1"),
+        ),
+    ],
+)
+def test_requests_reject_position_subclasses_with_extra_wire_fields(factory: Callable[[], object]) -> None:
+    with pytest.raises(TransportContractError):
+        factory()
 
 
 @pytest.mark.parametrize("count", [0, 3])

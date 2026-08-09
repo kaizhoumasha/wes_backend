@@ -6,11 +6,15 @@ import pytest
 
 from src.app.transport.contracts import (
     BinExchangePair,
+    BinMove,
     ExchangeBinsRequest,
+    HandoffPosition,
+    MoveBinsRequest,
     RackBinSlot,
     TransportCaller,
     TransportSubmitCode,
 )
+from src.app.wms_adapter.client import WmsClient
 from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
 
 
@@ -37,6 +41,18 @@ class FakeClient:
         if isinstance(self.result.json_body, dict) and self.result.json_body.get("request_id") == "ignored-by-mapping":
             self.result.json_body["request_id"] = json["request_id"]
         return self.result
+
+
+class NoSendTransport:
+    def __init__(self) -> None:
+        self.send_count = 0
+
+    async def send(self, request: object) -> object:
+        self.send_count += 1
+        raise AssertionError("oversized request must be rejected before send")
+
+    async def aclose(self) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -90,3 +106,27 @@ async def test_delivery_unknown_is_not_interpreted_as_rejection() -> None:
     result = await WmsTransportAdapter(client).submit(request, transport_task_id="transport-1")
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_oversized_request_is_a_deterministic_not_sent_result() -> None:
+    transport = NoSendTransport()
+    request = MoveBinsRequest(
+        "client-oversized",
+        TransportCaller("SORTER"),
+        (
+            BinMove(
+                "bin-oversized",
+                RackBinSlot("rack-1", "1"),
+                HandoffPosition("x" * (256 * 1024)),
+            ),
+        ),
+    )
+
+    result = await WmsTransportAdapter(WmsClient(transport)).submit(
+        request,
+        transport_task_id="transport-oversized",
+    )
+
+    assert result.code is TransportSubmitCode.NOT_SENT
+    assert transport.send_count == 0

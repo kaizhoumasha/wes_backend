@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
@@ -93,7 +93,7 @@ class TransportCaller:
 @dataclass(frozen=True, slots=True)
 class RackPosition:
     location_code: str
-    kind: str = "RACK_POSITION"
+    kind: str = field(default="RACK_POSITION", init=False)
 
     def __post_init__(self) -> None:
         _required(self.location_code, "location_code")
@@ -103,7 +103,7 @@ class RackPosition:
 class RackBinSlot:
     rack_id: str
     slot_id: str
-    kind: str = "RACK_BIN_SLOT"
+    kind: str = field(default="RACK_BIN_SLOT", init=False)
 
     def __post_init__(self) -> None:
         _required(self.rack_id, "rack_id")
@@ -113,7 +113,7 @@ class RackBinSlot:
 @dataclass(frozen=True, slots=True)
 class HandoffPosition:
     location_code: str
-    kind: str = "HANDOFF_POSITION"
+    kind: str = field(default="HANDOFF_POSITION", init=False)
 
     def __post_init__(self) -> None:
         _required(self.location_code, "location_code")
@@ -130,6 +130,11 @@ class BinMove:
 
     def __post_init__(self) -> None:
         _required(self.bin_id, "bin_id")
+        if type(self.source) not in {RackBinSlot, HandoffPosition} or type(self.target) not in {
+            RackBinSlot,
+            HandoffPosition,
+        }:
+            raise TransportContractError("bin source and target must be rack bin slots or handoff positions")
         if self.source == self.target:
             raise TransportContractError("bin source and target must differ")
         if not isinstance(self.source, RackBinSlot) and not isinstance(self.target, RackBinSlot):
@@ -146,6 +151,8 @@ class BinExchangePair:
     def __post_init__(self) -> None:
         _required(self.left_bin_id, "left_bin_id")
         _required(self.right_bin_id, "right_bin_id")
+        if type(self.left_location) is not RackBinSlot or type(self.right_location) is not RackBinSlot:
+            raise TransportContractError("exchange positions must be rack bin slots")
         if self.left_bin_id == self.right_bin_id:
             raise TransportContractError("exchange bins must differ")
         if self.left_location == self.right_location:
@@ -164,6 +171,8 @@ class MoveRackRequest:
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id)
         _required(self.rack_id, "rack_id")
+        if type(self.source) is not RackPosition or type(self.target) is not RackPosition:
+            raise TransportContractError("rack source and target must be rack positions")
         if self.source == self.target:
             raise TransportContractError("rack source and target must differ")
 
@@ -180,6 +189,8 @@ class RotateRackRequest:
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id)
         _required(self.rack_id, "rack_id")
+        if type(self.position) is not RackPosition:
+            raise TransportContractError("rack rotation position must be a rack position")
         if not isinstance(self.target_face, RackFace):
             raise TransportContractError("target_face must be A or B")
 

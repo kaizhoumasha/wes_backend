@@ -26,6 +26,10 @@ _MISSING = object()
 _CLIENT_OWNED_REQUEST_HEADERS = frozenset({"host", "content-length", "transfer-encoding", "content-encoding"})
 
 
+class WmsRequestBodyTooLargeError(OutboundHttpRequestError):
+    """WMS 请求在发送前因编码后请求体超限被拒绝。"""
+
+
 @dataclass(frozen=True, slots=True)
 class WmsAccessResult:
     """保留传输事实并提供最小 JSON 解码结果。"""
@@ -81,7 +85,7 @@ class WmsClient:
         _validate_optional_byte_limit(max_request_body_bytes, "max_request_body_bytes")
         _validate_optional_byte_limit(max_response_body_bytes, "max_response_body_bytes")
         if max_request_body_bytes is not None and len(body) > max_request_body_bytes:
-            raise OutboundHttpRequestError("request body limit exceeded")
+            raise WmsRequestBodyTooLargeError("request body limit exceeded")
         response_limits = (
             OutboundHttpResponseLimits(
                 max_wire_bytes=max_response_body_bytes,
@@ -253,4 +257,4 @@ def _as_access_result(
     )
 
 
-__all__ = ["WmsAccessResult", "WmsClient"]
+__all__ = ["WmsAccessResult", "WmsClient", "WmsRequestBodyTooLargeError"]
