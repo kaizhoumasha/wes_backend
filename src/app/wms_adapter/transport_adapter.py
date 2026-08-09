@@ -54,11 +54,19 @@ class WmsTransportAdapter:
         data = body.get("data") if isinstance(body.get("data"), dict) else {}
         if data.get("transport_task_id") != transport_task_id:
             return TransportSubmitResult(TransportSubmitCode.CONFLICT, transport_task_id)
+        retry_after_ms = data.get("retry_after_ms")
+        if (
+            code is not TransportSubmitCode.BUSY
+            or not isinstance(retry_after_ms, int)
+            or isinstance(retry_after_ms, bool)
+            or retry_after_ms <= 0
+        ):
+            retry_after_ms = None
         return TransportSubmitResult(
             code,
             transport_task_id,
             reason_code=data.get("reason_code") if isinstance(data.get("reason_code"), str) else None,
-            retry_after_ms=data.get("retry_after_ms") if isinstance(data.get("retry_after_ms"), int) else None,
+            retry_after_ms=retry_after_ms,
         )
 
 

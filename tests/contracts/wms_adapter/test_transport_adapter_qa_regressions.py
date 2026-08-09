@@ -1,0 +1,143 @@
+"""后端 QA 发现的 WMS Transport ACK 映射回归。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pytest
+
+from src.app.transport.contracts import MoveRackRequest, RackPosition, TransportCaller, TransportSubmitCode
+from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
+
+
+@dataclass
+class FakeAccessResult:
+    delivery_state: str
+    status_code: int | None
+    json_body: object
+    json_failure: str | None = None
+
+
+class FakeClient:
+    def __init__(self, result: FakeAccessResult) -> None:
+        self.result = result
+
+    async def post(self, path: str, *, json: dict[str, object], **kwargs: object) -> FakeAccessResult:
+        if isinstance(self.result.json_body, dict) and self.result.json_body.get("request_id") == "CURRENT":
+            self.result.json_body["request_id"] = json["request_id"]
+        return self.result
+
+
+def _request() -> MoveRackRequest:
+    return MoveRackRequest(
+        "client-request",
+        TransportCaller("SORTER"),
+        "rack-1",
+        RackPosition("A"),
+        RackPosition("B"),
+    )
+
+
+def _ack(status: int, code: str, data: dict[str, object]) -> FakeAccessResult:
+    return FakeAccessResult(
+        "RESPONSE_RECEIVED",
+        status,
+        {
+            "request_id": "CURRENT",
+            "code": code,
+            "message": "ack",
+            "timestamp": 1,
+            "data": data,
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_retry_after", [True, 0, -1, "1000"])
+async def test_busy_ack_discards_non_positive_integer_retry_delay(invalid_retry_after: object) -> None:
+    access = _ack(
+        429,
+        "BUSY",
+        {"transport_task_id": "transport-1", "retry_after_ms": invalid_retry_after},
+    )
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.BUSY
+    assert result.retry_after_ms is None
+
+
+@pytest.mark.asyncio
+async def test_busy_ack_preserves_positive_integer_retry_delay() -> None:
+    access = _ack(429, "BUSY", {"transport_task_id": "transport-1", "retry_after_ms": 1500})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.BUSY
+    assert result.retry_after_ms == 1500
+
+
+@pytest.mark.asyncio
+async def test_non_busy_ack_discards_retry_delay() -> None:
+    access = _ack(503, "UNAVAILABLE", {"transport_task_id": "transport-1", "retry_after_ms": 1500})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.UNAVAILABLE
+    assert result.retry_after_ms is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "code", "expected"),
+    [
+        (202, "RECEIVED", TransportSubmitCode.RECEIVED),
+        (200, "DUPLICATE", TransportSubmitCode.DUPLICATE),
+        (400, "REJECTED", TransportSubmitCode.REJECTED),
+        (422, "REJECTED", TransportSubmitCode.REJECTED),
+        (409, "CONFLICT", TransportSubmitCode.CONFLICT),
+        (503, "UNAVAILABLE", TransportSubmitCode.UNAVAILABLE),
+        (500, "RECEIVED", TransportSubmitCode.DELIVERY_UNKNOWN),
+    ],
+)
+async def test_ack_status_and_code_are_a_closed_pair(
+    status: int,
+    code: str,
+    expected: TransportSubmitCode,
+) -> None:
+    access = _ack(status, code, {"transport_task_id": "transport-1"})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is expected
+
+
+@pytest.mark.asyncio
+async def test_ack_for_another_task_is_a_conflict() -> None:
+    access = _ack(202, "RECEIVED", {"transport_task_id": "transport-other"})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.CONFLICT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "access",
+    [
+        FakeAccessResult("NOT_SENT", None, None),
+        FakeAccessResult("DELIVERY_UNKNOWN", None, None),
+        FakeAccessResult("RESPONSE_RECEIVED", 202, None),
+        FakeAccessResult("RESPONSE_RECEIVED", 202, {}, "INVALID_JSON"),
+        FakeAccessResult("RESPONSE_RECEIVED", 202, {"unexpected": "shape"}),
+    ],
+)
+async def test_transport_and_malformed_ack_failures_preserve_delivery_certainty(
+    access: FakeAccessResult,
+) -> None:
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    expected = (
+        TransportSubmitCode.NOT_SENT if access.delivery_state == "NOT_SENT" else TransportSubmitCode.DELIVERY_UNKNOWN
+    )
+    assert result.code is expected
