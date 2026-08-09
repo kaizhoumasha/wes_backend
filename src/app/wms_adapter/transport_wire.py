@@ -146,11 +146,8 @@ def _strict_dict(
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
         raise TransportContractError(f"{field_name} must be an object")
     allowed = required | (optional or set())
-    if (
-        set(value) != required | (set(value) & (optional or set()))
-        or not required <= set(value)
-        or not set(value) <= allowed
-    ):
+    keys = set(value)
+    if not required <= keys or not keys <= allowed:
         raise TransportContractError(f"{field_name} fields do not match the closed contract")
     return dict(value)
 
@@ -160,6 +157,10 @@ def _nonblank(value: object, field_name: str, *, max_length: int | None = None) 
         raise TransportContractError(f"{field_name} must not be blank")
     if max_length is not None and len(value) > max_length:
         raise TransportContractError(f"{field_name} exceeds {max_length} characters")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise TransportContractError(f"{field_name} must be valid UTF-8") from error
     return value
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -73,6 +73,32 @@ def test_four_request_contracts_accept_minimal_valid_data() -> None:
         )
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda caller: MoveRackRequest(
+            "req-rack-caller", caller, "rack-1", RackPosition("SOURCE"), RackPosition("TARGET")
+        ),
+        lambda caller: RotateRackRequest("req-rotate-caller", caller, "rack-1", RackPosition("ROTATE"), RackFace.B),
+        lambda caller: MoveBinsRequest(
+            "req-bin-caller",
+            caller,
+            (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),),
+        ),
+        lambda caller: ExchangeBinsRequest(
+            "req-exchange-caller",
+            caller,
+            (BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1")),),
+        ),
+    ],
+)
+def test_requests_reject_untyped_caller(factory: Callable[[TransportCaller], object]) -> None:
+    invalid_caller = cast("TransportCaller", {"workline_id": "SORTER"})
+
+    with pytest.raises(TransportContractError, match="caller must be a TransportCaller"):
+        factory(invalid_caller)
 
 
 @pytest.mark.parametrize(

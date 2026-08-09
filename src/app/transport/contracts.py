@@ -175,7 +175,7 @@ class MoveRackRequest:
     kind: TransportTaskKind = field(default=TransportTaskKind.RACK_MOVE, init=False)
 
     def __post_init__(self) -> None:
-        _validate_request_identity(self.client_request_id)
+        _validate_request_identity(self.client_request_id, self.caller)
         _required(self.rack_id, "rack_id", max_length=100)
         if type(self.source) is not RackPosition or type(self.target) is not RackPosition:
             raise TransportContractError("rack source and target must be rack positions")
@@ -193,7 +193,7 @@ class RotateRackRequest:
     kind: TransportTaskKind = field(default=TransportTaskKind.RACK_ROTATE, init=False)
 
     def __post_init__(self) -> None:
-        _validate_request_identity(self.client_request_id)
+        _validate_request_identity(self.client_request_id, self.caller)
         _required(self.rack_id, "rack_id", max_length=100)
         if type(self.position) is not RackPosition:
             raise TransportContractError("rack rotation position must be a rack position")
@@ -209,7 +209,7 @@ class MoveBinsRequest:
     kind: TransportTaskKind = field(default=TransportTaskKind.BIN_MOVE, init=False)
 
     def __post_init__(self) -> None:
-        _validate_request_identity(self.client_request_id)
+        _validate_request_identity(self.client_request_id, self.caller)
         if not 1 <= len(self.moves) <= 4:
             raise TransportContractError("moves must contain 1..4 members")
         _reject_duplicates((move.bin_id for move in self.moves), "bin_id")
@@ -230,7 +230,7 @@ class ExchangeBinsRequest:
     kind: TransportTaskKind = field(default=TransportTaskKind.BIN_EXCHANGE, init=False)
 
     def __post_init__(self) -> None:
-        _validate_request_identity(self.client_request_id)
+        _validate_request_identity(self.client_request_id, self.caller)
         if not 1 <= len(self.exchange_pairs) <= 2:
             raise TransportContractError("exchange_pairs must contain 1..2 pairs")
         _reject_duplicates(
@@ -313,8 +313,10 @@ def request_as_dict(request: TransportRequest) -> dict[str, object]:
     return asdict(request)
 
 
-def _validate_request_identity(client_request_id: str) -> None:
+def _validate_request_identity(client_request_id: str, caller: TransportCaller) -> None:
     _required(client_request_id, "client_request_id", max_length=120)
+    if type(caller) is not TransportCaller:
+        raise TransportContractError("caller must be a TransportCaller")
 
 
 def _position_key(position: RackBinSlot) -> tuple[str, str]:

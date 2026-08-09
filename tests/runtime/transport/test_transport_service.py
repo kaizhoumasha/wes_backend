@@ -42,16 +42,18 @@ class FakeProvider:
         code: TransportSubmitCode = TransportSubmitCode.RECEIVED,
         *,
         retry_after_ms: int | None = None,
+        transport_task_id_override: str | None = None,
     ) -> None:
         self.code = code
         self.retry_after_ms = retry_after_ms
+        self.transport_task_id_override = transport_task_id_override
         self.calls: list[str] = []
 
     async def submit(self, request: object, *, transport_task_id: str) -> TransportSubmitResult:
         self.calls.append(transport_task_id)
         return TransportSubmitResult(
             code=self.code,
-            transport_task_id=transport_task_id,
+            transport_task_id=self.transport_task_id_override or transport_task_id,
             retry_after_ms=self.retry_after_ms,
         )
 
@@ -248,6 +250,35 @@ async def test_delivery_unknown_enters_reconciling_and_keeps_resource(
     assert snapshot.outcome_version == 1
     with pytest.raises(TransportResourceConflict):
         await service.move_rack("blocked", _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"))
+
+
+@pytest.mark.asyncio
+async def test_submit_result_with_foreign_task_id_fails_closed_and_keeps_resource(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    service.provider.code = TransportSubmitCode.REJECTED
+    service.provider.transport_task_id_override = "transport-foreign"
+    handle = await service.move_rack(
+        "foreign-ack",
+        _caller(),
+        "rack-foreign-ack",
+        RackPosition("A"),
+        RackPosition("B"),
+    )
+
+    assert await service.submit_pending_tasks(1) == 1
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert snapshot.status == "RECONCILING"
+    assert snapshot.reason_code == "TRANSPORT_SUBMIT_CONFLICT"
+    with pytest.raises(TransportResourceConflict):
+        await service.move_rack(
+            "foreign-ack-replacement",
+            _caller(),
+            "rack-foreign-ack",
+            RackPosition("B"),
+            RackPosition("C"),
+        )
 
 
 @pytest.mark.asyncio

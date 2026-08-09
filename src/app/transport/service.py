@@ -142,7 +142,7 @@ class TransportService:
                 result_code = TransportSubmitCode.DELIVERY_UNKNOWN
                 result = None
             else:
-                result_code = result.code
+                result_code = result.code if result.transport_task_id == task_id else TransportSubmitCode.CONFLICT
 
             async with self._sessions.begin() as db:
                 current = await self._repository.get_task(db, task_id, for_update=True)
