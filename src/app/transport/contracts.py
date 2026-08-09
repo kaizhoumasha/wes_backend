@@ -73,6 +73,10 @@ class PositionMilestone(StrEnum):
 def _required(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TransportContractError(f"{field_name} must not be blank")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise TransportContractError(f"{field_name} must be valid UTF-8") from error
     return value
 
 
