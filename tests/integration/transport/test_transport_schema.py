@@ -96,15 +96,21 @@ async def test_transport_schema_enforces_one_active_binding_per_resource(
 
 async def test_transport_schema_contains_required_claim_indexes(integration_db_session: AsyncSession) -> None:
     result = await integration_db_session.execute(
-        text("SELECT indexname FROM pg_indexes WHERE schemaname = 'wes_runtime' AND tablename LIKE 'transport_%'")
+        text(
+            "SELECT indexname, indexdef FROM pg_indexes "
+            "WHERE schemaname = 'wes_runtime' AND tablename LIKE 'transport_%'"
+        )
     )
-    names = {row[0] for row in result}
+    definitions = {row[0]: row[1] for row in result}
     assert {
         "ix_transport_tasks_submit_claim",
+        "ix_transport_tasks_ambiguous_claim",
         "ix_transport_evidence_pending_claim",
         "ix_transport_tasks_outcome_claim",
         "ux_transport_resource_bindings_active",
-    } <= names
+    } <= definitions.keys()
+    assert "(submit_claim_until, id)" in definitions["ix_transport_tasks_ambiguous_claim"]
+    assert "(updated_at, id)" in definitions["ix_transport_tasks_outcome_claim"]
 
 
 async def test_transport_evidence_event_id_is_unique(integration_db_session: AsyncSession) -> None:

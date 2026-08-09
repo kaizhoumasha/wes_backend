@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pytest
 
 from src.app.transport.contracts import MoveRackRequest, RackPosition, TransportCaller, TransportSubmitCode
 from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
+from src.core.outbound_http import OutboundHttpClosedError
 
 
 @dataclass
@@ -26,6 +28,11 @@ class FakeClient:
         if isinstance(self.result.json_body, dict) and self.result.json_body.get("request_id") == "CURRENT":
             self.result.json_body["request_id"] = json["request_id"]
         return self.result
+
+
+class ClosedClient:
+    async def post(self, path: str, *, json: dict[str, object], **kwargs: object) -> FakeAccessResult:
+        raise OutboundHttpClosedError("closed")
 
 
 def _request() -> MoveRackRequest:
@@ -149,6 +156,24 @@ async def test_rejected_ack_discards_reason_code_that_cannot_be_persisted() -> N
 
     assert result.code is TransportSubmitCode.REJECTED
     assert result.reason_code is None
+
+
+@pytest.mark.asyncio
+async def test_rejected_ack_discards_unencodable_reason_code() -> None:
+    reason_code = json.loads(r'"\ud800"')
+    access = _ack(400, "REJECTED", {"transport_task_id": "transport-1", "reason_code": reason_code})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.REJECTED
+    assert result.reason_code is None
+
+
+@pytest.mark.asyncio
+async def test_closed_transport_is_a_deterministic_not_sent_result() -> None:
+    result = await WmsTransportAdapter(ClosedClient()).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.NOT_SENT
 
 
 @pytest.mark.asyncio

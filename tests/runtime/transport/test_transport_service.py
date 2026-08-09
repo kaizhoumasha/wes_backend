@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -92,6 +93,17 @@ class ResultBeforeAckProvider:
         )
         await self.service.process_pending_evidence(1)
         return TransportSubmitResult(TransportSubmitCode.RECEIVED, transport_task_id)
+
+
+class DelayedNotSentProvider:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def submit(self, request: object, *, transport_task_id: str) -> TransportSubmitResult:
+        self.started.set()
+        await self.release.wait()
+        return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)
 
 
 @pytest.fixture
@@ -299,6 +311,39 @@ async def test_expired_claim_after_send_started_reconciles_without_resend(
     assert await service.reconcile_overdue_tasks(1) == 1
     assert service.provider.calls == []
     assert (await _load_task(db_engine, handle.transport_task_id)).status == "RECONCILING"
+
+
+@pytest.mark.asyncio
+async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: object) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    provider = DelayedNotSentProvider()
+    service = TransportService(sessions, TransportRepository(), provider, FakePublisher())
+    handle = await service.move_rack(
+        "late-not-sent",
+        _caller(),
+        "rack-late-not-sent",
+        RackPosition("A"),
+        RackPosition("B"),
+    )
+    submit = asyncio.create_task(service.submit_pending_tasks(1))
+    await provider.started.wait()
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == handle.transport_task_id)
+            .values(submit_claim_until=timezone.now_for_db() - timedelta(seconds=1))
+        )
+
+    assert await service.reconcile_overdue_tasks(1) == 1
+    provider.release.set()
+    assert await submit == 1
+
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert snapshot.status == "PENDING"
+    assert snapshot.reason_code is None
+    assert snapshot.send_started_at is None
+    assert snapshot.next_submit_at is not None
+    assert snapshot.outcome_json is None
 
 
 @pytest.mark.asyncio

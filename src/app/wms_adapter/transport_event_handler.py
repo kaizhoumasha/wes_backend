@@ -40,7 +40,7 @@ class TransportEventHandler:
         try:
             decoded = raw_body.decode("utf-8")
             raw_envelope = json.loads(decoded)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             return _response(400, None, "REJECTED", "invalid UTF-8 JSON")
         try:
             envelope = validate_callback_envelope(raw_envelope)

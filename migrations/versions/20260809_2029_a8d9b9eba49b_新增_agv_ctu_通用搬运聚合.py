@@ -74,9 +74,16 @@ def upgrade() -> None:
         postgresql_where=sa.text("status = 'ACCEPTED' AND result_deadline_at IS NOT NULL"),
     )
     op.create_index(
+        "ix_transport_tasks_ambiguous_claim",
+        "transport_tasks",
+        ["submit_claim_until", "id"],
+        schema="wes_runtime",
+        postgresql_where=sa.text("status = 'PENDING' AND send_started_at IS NOT NULL"),
+    )
+    op.create_index(
         "ix_transport_tasks_outcome_claim",
         "transport_tasks",
-        ["outcome_version", "published_outcome_version", "id"],
+        ["updated_at", "id"],
         schema="wes_runtime",
         postgresql_where=sa.text("outcome_version > published_outcome_version"),
     )
@@ -217,6 +224,7 @@ def downgrade() -> None:
     )
     op.drop_table("transport_members", schema="wes_runtime")
     op.drop_index("ix_transport_tasks_outcome_claim", table_name="transport_tasks", schema="wes_runtime")
+    op.drop_index("ix_transport_tasks_ambiguous_claim", table_name="transport_tasks", schema="wes_runtime")
     op.drop_index("ix_transport_tasks_result_deadline", table_name="transport_tasks", schema="wes_runtime")
     op.drop_index("ix_transport_tasks_submit_claim", table_name="transport_tasks", schema="wes_runtime")
     op.drop_table("transport_tasks", schema="wes_runtime")

@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.exc import IntegrityError
 
 from src.app.transport.contracts import (
+    MAX_SUBMIT_ATTEMPTS,
+    TRANSPORT_POSITION_OPERATION,
+    TRANSPORT_RESULT_OPERATION,
     BinExchangePair,
     BinMove,
     ExchangeBinsRequest,
@@ -52,6 +55,7 @@ if TYPE_CHECKING:
     from src.app.transport.repository import TransportRepository
 
 _CLAIM_SECONDS = 30
+_SUBMIT_TIMEOUT_SECONDS = 10
 _RESULT_TIMEOUT = timedelta(minutes=10)
 _RETRY_DELAY = timedelta(seconds=2)
 
@@ -136,7 +140,7 @@ class TransportService:
                 request = _request_from_json(task.request_json)
 
             try:
-                async with asyncio.timeout(10):
+                async with asyncio.timeout(_SUBMIT_TIMEOUT_SECONDS):
                     result = await self.provider.submit(request, transport_task_id=task_id)
             except TimeoutError:
                 result_code = TransportSubmitCode.DELIVERY_UNKNOWN
@@ -181,9 +185,9 @@ class TransportService:
                     processed += 1
                     continue
                 try:
-                    if evidence.operation == "transport.task.member_position_changed@v1":
+                    if evidence.operation == TRANSPORT_POSITION_OPERATION:
                         await self._apply_position_evidence(db, task, evidence)
-                    elif evidence.operation == "transport.task.resulted@v1":
+                    elif evidence.operation == TRANSPORT_RESULT_OPERATION:
                         await self._apply_result_evidence(db, task, evidence)
                     else:
                         raise TransportContractError("unsupported evidence operation")
@@ -339,16 +343,27 @@ class TransportService:
         task.submit_claim_token = None
         task.submit_claim_until = None
         task.updated_at = now
-        # 位置或最终结果可能在同步 ACK 写回前到达；ACK 只能补充接纳事实，不能回退已收敛状态。
-        if task.status != TransportTaskStatus.PENDING.value:
+        # 位置或最终结果可能先到；只有交付未知允许匹配身份的确定 ACK 继续收敛，
+        # 其他权威事实不得回退。
+        can_converge_late_ack = (
+            task.status == TransportTaskStatus.RECONCILING.value and task.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+        )
+        if task.status != TransportTaskStatus.PENDING.value and not can_converge_late_ack:
             return
         if code in {TransportSubmitCode.RECEIVED, TransportSubmitCode.DUPLICATE}:
+            if can_converge_late_ack:
+                _discard_stale_delivery_unknown(task)
             task.status = "ACCEPTED"
+            task.reason_code = None
             task.result_deadline_at = task.result_deadline_at or now + _RESULT_TIMEOUT
             return
         if code in {TransportSubmitCode.NOT_SENT, TransportSubmitCode.BUSY, TransportSubmitCode.UNAVAILABLE}:
+            if can_converge_late_ack:
+                _discard_stale_delivery_unknown(task)
+            task.status = "PENDING"
+            task.reason_code = None
             task.send_started_at = None
-            if task.submit_attempt_count >= 3:
+            if task.submit_attempt_count >= MAX_SUBMIT_ATTEMPTS:
                 self._set_outcome(task, TransportTaskStatus.REJECTED, "TRANSPORT_SUBMIT_RETRY_EXHAUSTED", now)
                 return
             retry_after_ms = getattr(result, "retry_after_ms", None)
@@ -366,6 +381,8 @@ class TransportService:
             self._set_outcome(
                 task, TransportTaskStatus.REJECTED, getattr(result, "reason_code", None) or "TRANSPORT_REJECTED", now
             )
+            return
+        if can_converge_late_ack and code is TransportSubmitCode.DELIVERY_UNKNOWN:
             return
         reason = "TRANSPORT_SUBMIT_CONFLICT" if code is TransportSubmitCode.CONFLICT else "TRANSPORT_DELIVERY_UNKNOWN"
         self._set_outcome(task, TransportTaskStatus.RECONCILING, reason, now)
@@ -417,6 +434,8 @@ class TransportService:
             raise TransportContractError("position evidence contradicts definite terminal fact")
         now = timezone.now_for_db()
         if milestone == "POSITION_UNKNOWN":
+            if member.final_position_json is not None:
+                raise TransportContractError("position unknown cannot overwrite confirmed member position")
             member.position_unknown = True
             member.final_position_json = None
             await self._upsert_projection(db, member, None, True, None, evidence.event_id, now)
@@ -788,6 +807,12 @@ def _mark_evidence_conflict(evidence: TransportEvidence, code: str, now: Any) ->
     evidence.processed_at = now
     evidence.claim_token = None
     evidence.claim_until = None
+
+
+def _discard_stale_delivery_unknown(task: TransportTask) -> None:
+    task.outcome_json = None
+    task.outcome_claim_token = None
+    task.outcome_claim_until = None
 
 
 def _resolve_evidence_identity(

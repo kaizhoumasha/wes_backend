@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import JSON, CheckConstraint, Index, UniqueConstraint, text
 from sqlmodel import Field
 
+from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.core.mixins.base import BaseMixin
 from src.database.schema_conf import SchemaType
 
@@ -23,7 +24,10 @@ class TransportTask(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         CheckConstraint(_TASK_STATUS_CHECK, name="transport_task_status_valid"),
-        CheckConstraint("submit_attempt_count BETWEEN 0 AND 3", name="transport_submit_attempt_count_valid"),
+        CheckConstraint(
+            f"submit_attempt_count BETWEEN 0 AND {MAX_SUBMIT_ATTEMPTS}",
+            name="transport_submit_attempt_count_valid",
+        ),
         UniqueConstraint("transport_task_id", name="ux_transport_tasks_task_id"),
         UniqueConstraint("client_request_id", name="ux_transport_tasks_client_request_id"),
         Index(
@@ -42,9 +46,15 @@ class TransportTask(BaseMixin, table=True):
             sqlite_where=text("status = 'ACCEPTED' AND result_deadline_at IS NOT NULL"),
         ),
         Index(
+            "ix_transport_tasks_ambiguous_claim",
+            "submit_claim_until",
+            "id",
+            postgresql_where=text("status = 'PENDING' AND send_started_at IS NOT NULL"),
+            sqlite_where=text("status = 'PENDING' AND send_started_at IS NOT NULL"),
+        ),
+        Index(
             "ix_transport_tasks_outcome_claim",
-            "outcome_version",
-            "published_outcome_version",
+            "updated_at",
             "id",
             postgresql_where=text("outcome_version > published_outcome_version"),
             sqlite_where=text("outcome_version > published_outcome_version"),

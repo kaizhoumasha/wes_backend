@@ -19,6 +19,7 @@ from src.app.transport.contracts import (
     TransportCaller,
     TransportContractError,
     TransportHandle,
+    TransportMemberOutcome,
     TransportOutcome,
     TransportOutcomeStatus,
     TransportTaskKind,
@@ -231,6 +232,64 @@ def test_exchange_rejects_reused_bin_or_slot_across_pairs() -> None:
         ExchangeBinsRequest("req-bin", _caller(), (first, reused_bin))
     with pytest.raises(TransportContractError):
         ExchangeBinsRequest("req-slot", _caller(), (first, reused_slot))
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: MoveRackRequest(
+            "same-rack-position",
+            _caller(),
+            "rack-1",
+            RackPosition("SAME"),
+            RackPosition("SAME"),
+        ),
+        lambda: BinMove("bin-1", RackBinSlot("rack-1", "1"), RackBinSlot("rack-1", "1")),
+        lambda: BinMove("bin-1", HandoffPosition("IN"), HandoffPosition("OUT")),
+        lambda: BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-1", RackBinSlot("rack-2", "1")),
+        lambda: BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-1", "1")),
+    ],
+)
+def test_requests_reject_degenerate_moves_and_exchanges(factory: Callable[[], object]) -> None:
+    with pytest.raises(TransportContractError):
+        factory()
+
+
+def test_rotation_rejects_target_face_outside_closed_enum() -> None:
+    with pytest.raises(TransportContractError, match="target_face must be A or B"):
+        RotateRackRequest(
+            "invalid-face",
+            _caller(),
+            "rack-1",
+            RackPosition("ROTATE"),
+            cast("RackFace", "C"),
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"final_position": RackPosition("A"), "position_unknown": True},
+    ],
+)
+def test_member_outcome_requires_exactly_one_position_fact(kwargs: dict[str, object]) -> None:
+    with pytest.raises(TransportContractError, match="xor"):
+        TransportMemberOutcome("rack-1", **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("outcome_version", [0, -1])
+def test_outcome_version_must_be_positive(outcome_version: int) -> None:
+    with pytest.raises(TransportContractError, match="outcome_version must be positive"):
+        TransportOutcome(
+            transport_task_id="transport-1",
+            client_request_id="request-1",
+            outcome_version=outcome_version,
+            caller=_caller(),
+            status=TransportOutcomeStatus.UNKNOWN,
+            reason_code="UNKNOWN",
+            members=(),
+        )
 
 
 def test_move_bins_accepts_four_members_and_rejects_five() -> None:

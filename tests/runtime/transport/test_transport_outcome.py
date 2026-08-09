@@ -502,6 +502,54 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
 
 
 @pytest.mark.asyncio
+async def test_late_position_unknown_does_not_regress_confirmed_target_position(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    handle = await outcome_service.move_bins(
+        "request-late-unknown",
+        TransportCaller("SORTER"),
+        (BinMove("bin-late-unknown", RackBinSlot("rack-late-unknown", "1"), HandoffPosition("ROLLER_IN")),),
+    )
+    target = {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"}
+    for event_id, milestone, final_position in (
+        ("event-late-unknown-target", "TARGET_PLACED", target),
+        ("event-late-unknown", "POSITION_UNKNOWN", None),
+    ):
+        payload = {
+            "event_id": event_id,
+            "transport_task_id": handle.transport_task_id,
+            "bin_id": "bin-late-unknown",
+            "milestone": milestone,
+        }
+        if final_position is not None:
+            payload["final_position"] = final_position
+        await outcome_service.record_evidence(
+            event_id=event_id,
+            transport_task_id=handle.transport_task_id,
+            operation="transport.task.member_position_changed@v1",
+            payload=payload,
+        )
+        await outcome_service.process_pending_evidence(1)
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == "event-late-unknown"))
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+        )
+        projection = await db.scalar(
+            select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-late-unknown")
+        )
+
+    assert evidence is not None and evidence.status == "CONFLICT"
+    assert member is not None and member.final_position_json == target
+    assert member.position_unknown is False
+    assert projection is not None and projection.position_json == target
+    assert projection.position_unknown is False
+
+
+@pytest.mark.asyncio
 async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_position(
     outcome_service: TransportService,
     db_engine: object,

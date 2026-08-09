@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import or_, select, update
 
+from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.app.transport.models import (
     TransportEvidence,
     TransportMember,
@@ -94,7 +95,7 @@ class TransportRepository:
             select(TransportTask)
             .where(
                 TransportTask.status == "PENDING",
-                TransportTask.submit_attempt_count < 3,
+                TransportTask.submit_attempt_count < MAX_SUBMIT_ATTEMPTS,
                 TransportTask.send_started_at.is_(None),
                 or_(TransportTask.next_submit_at.is_(None), TransportTask.next_submit_at <= now),
                 or_(TransportTask.submit_claim_until.is_(None), TransportTask.submit_claim_until < now),
@@ -124,7 +125,7 @@ class TransportRepository:
             or task.status != "PENDING"
             or task.submit_claim_token != token
             or task.send_started_at is not None
-            or task.submit_attempt_count >= 3
+            or task.submit_attempt_count >= MAX_SUBMIT_ATTEMPTS
         ):
             return None
         task.submit_attempt_count += 1

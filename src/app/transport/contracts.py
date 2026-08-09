@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
@@ -68,6 +68,11 @@ class PositionMilestone(StrEnum):
     SOURCE_PICKED = "SOURCE_PICKED"
     TARGET_PLACED = "TARGET_PLACED"
     POSITION_UNKNOWN = "POSITION_UNKNOWN"
+
+
+MAX_SUBMIT_ATTEMPTS = 3
+TRANSPORT_POSITION_OPERATION = "transport.task.member_position_changed@v1"
+TRANSPORT_RESULT_OPERATION = "transport.task.resulted@v1"
 
 
 def _required(value: str, field_name: str, *, max_length: int | None = None) -> str:
@@ -307,12 +312,6 @@ class TransportOutcomePublisher(Protocol):
     async def publish(self, outcome: TransportOutcome) -> None: ...
 
 
-def request_as_dict(request: TransportRequest) -> dict[str, object]:
-    """把封闭请求转换为可规范编码的纯 JSON 数据。"""
-
-    return asdict(request)
-
-
 def _validate_request_identity(client_request_id: str, caller: TransportCaller) -> None:
     _required(client_request_id, "client_request_id", max_length=120)
     if type(caller) is not TransportCaller:
@@ -330,6 +329,9 @@ def _reject_duplicates(values: object, field_name: str) -> None:
 
 
 __all__ = [
+    "MAX_SUBMIT_ATTEMPTS",
+    "TRANSPORT_POSITION_OPERATION",
+    "TRANSPORT_RESULT_OPERATION",
     "BinExchangePair",
     "BinMove",
     "ExchangeBinsRequest",
@@ -358,5 +360,4 @@ __all__ = [
     "TransportSubmitResult",
     "TransportTaskKind",
     "TransportTaskStatus",
-    "request_as_dict",
 ]

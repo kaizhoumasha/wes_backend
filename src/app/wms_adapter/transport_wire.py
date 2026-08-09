@@ -6,10 +6,15 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from src.app.transport.contracts import TransportContractError, TransportRequest
+from src.app.transport.contracts import (
+    TRANSPORT_POSITION_OPERATION,
+    TRANSPORT_RESULT_OPERATION,
+    TransportContractError,
+    TransportRequest,
+)
 
-POSITION_OPERATION = "transport.task.member_position_changed@v1"
-RESULT_OPERATION = "transport.task.resulted@v1"
+POSITION_OPERATION = TRANSPORT_POSITION_OPERATION
+RESULT_OPERATION = TRANSPORT_RESULT_OPERATION
 SUBMIT_OPERATION = "transport.task.submit@v1"
 TRANSPORT_PATH = "/api/v1/wes/transport-requests"
 EVENT_PATH = "/api/v1/wms/events"

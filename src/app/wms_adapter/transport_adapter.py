@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from src.app.transport.contracts import TransportSubmitCode, TransportSubmitResult
 from src.app.wms_adapter.client import WmsRequestBodyTooLargeError
 from src.app.wms_adapter.transport_wire import SUBMIT_OPERATION, TRANSPORT_PATH, build_submit_data
+from src.core.outbound_http import OutboundHttpClosedError
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -38,7 +39,7 @@ class WmsTransportAdapter:
                 max_request_body_bytes=_BODY_LIMIT,
                 max_response_body_bytes=_BODY_LIMIT,
             )
-        except WmsRequestBodyTooLargeError:
+        except (WmsRequestBodyTooLargeError, OutboundHttpClosedError):
             return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)
         delivery_state = getattr(access.delivery_state, "value", access.delivery_state)
         if delivery_state == "NOT_SENT":
@@ -96,7 +97,13 @@ def _valid_ack_envelope(body: dict[str, object], request_id: str) -> bool:
 
 
 def _persistable_reason_code(value: object) -> str | None:
-    return value if isinstance(value, str) and value.strip() and len(value) <= 120 else None
+    if not isinstance(value, str) or not value.strip() or len(value) > 120:
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return value
 
 
 __all__ = ["WmsTransportAdapter"]
