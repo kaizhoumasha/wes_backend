@@ -89,16 +89,7 @@ class TransportService:
         position: RackPosition,
         target_face: RackFace,
     ) -> TransportHandle:
-        request = RotateRackRequest(client_request_id, caller, rack_id, position, target_face)
-        async with self._sessions() as db:
-            projection = await self._repository.get_projection(db, "RACK", rack_id)
-        if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
-            raise TransportContractError("rack current face is unknown")
-        if projection.position_json != _json_value(position):
-            raise TransportContractError("rack current position is not confirmed")
-        if projection.arrival_face == target_face.value:
-            raise TransportContractError("target face equals current face")
-        return await self._create_task(request)
+        return await self._create_task(RotateRackRequest(client_request_id, caller, rack_id, position, target_face))
 
     async def move_bins(
         self,
@@ -214,12 +205,14 @@ class TransportService:
         operation: str,
         payload: dict[str, Any],
     ) -> str:
+        _validate_persisted_text(event_id, "event_id", 120)
+        _validate_persisted_text(transport_task_id, "transport_task_id", 80)
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(encoded).hexdigest()
         now = timezone.now_for_db()
         try:
             async with self._sessions.begin() as db:
-                existing = await self._repository.get_evidence_by_event_id(db, event_id)
+                existing = await self._repository.get_evidence_by_event_id(db, event_id, for_update=True)
                 if existing is not None:
                     return _resolve_evidence_identity(existing, digest, operation, now)
                 await self._repository.add_evidence(
@@ -236,7 +229,7 @@ class TransportService:
         except IntegrityError:
             # 并发重复回调可能同时通过首次查询；唯一约束裁决后重新读取首个已提交事实。
             async with self._sessions.begin() as db:
-                existing = await self._repository.get_evidence_by_event_id(db, event_id)
+                existing = await self._repository.get_evidence_by_event_id(db, event_id, for_update=True)
                 if existing is None:
                     raise
                 return _resolve_evidence_identity(existing, digest, operation, now)
@@ -315,6 +308,19 @@ class TransportService:
                 if existing is not None:
                     return _idempotent_handle(existing, payload_digest)
                 await self._repository.add_aggregate(db, task, members, bindings)
+                if isinstance(request, RotateRackRequest):
+                    projection = await self._repository.get_projection(
+                        db,
+                        "RACK",
+                        request.rack_id,
+                        for_update=True,
+                    )
+                    if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
+                        raise TransportContractError("rack current face is unknown")
+                    if projection.position_json != _json_value(request.position):
+                        raise TransportContractError("rack current position is not confirmed")
+                    if projection.arrival_face == request.target_face.value:
+                        raise TransportContractError("target face equals current face")
         except IntegrityError as error:
             async with self._sessions() as db:
                 existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
@@ -346,12 +352,15 @@ class TransportService:
                 self._set_outcome(task, TransportTaskStatus.REJECTED, "TRANSPORT_SUBMIT_RETRY_EXHAUSTED", now)
                 return
             retry_after_ms = getattr(result, "retry_after_ms", None)
-            delay = (
-                timedelta(milliseconds=retry_after_ms)
-                if code is TransportSubmitCode.BUSY and _positive(retry_after_ms)
-                else _RETRY_DELAY
-            )
-            task.next_submit_at = now + delay
+            try:
+                delay = (
+                    timedelta(milliseconds=retry_after_ms)
+                    if code is TransportSubmitCode.BUSY and _positive(retry_after_ms)
+                    else _RETRY_DELAY
+                )
+                task.next_submit_at = now + delay
+            except OverflowError:
+                task.next_submit_at = now + _RETRY_DELAY
             return
         if code is TransportSubmitCode.REJECTED:
             self._set_outcome(
@@ -477,15 +486,21 @@ class TransportService:
             arrival_face = result.get("arrival_face")
             if member.object_type == "RACK" and has_position and arrival_face not in {"A", "B"}:
                 raise TransportContractError("known rack result requires arrival_face")
+            final_position = result.get("final_position") if has_position else None
+            if has_position and not _position_matches_member_type(member, final_position):
+                raise TransportContractError("result position type differs from frozen member")
             if (
                 task.kind == TransportTaskKind.RACK_ROTATE.value
                 and status == "SUCCEEDED"
                 and arrival_face != task.request_json["target_face"]
             ):
                 raise TransportContractError("successful arrival face differs from frozen target")
-            final_position = result.get("final_position") if has_position else None
             if status == "SUCCEEDED" and final_position != member.target_json:
                 raise TransportContractError("successful final position differs from frozen target")
+            if member.final_position_json is not None and (
+                position_unknown or final_position != member.final_position_json
+            ):
+                raise TransportContractError("result position contradicts confirmed member position")
             outcome = TransportMemberOutcome(
                 object_id=member.object_id,
                 final_position=_contract_position(final_position) if final_position is not None else None,
@@ -740,6 +755,21 @@ def _validate_limit(limit: int) -> None:
 
 def _positive(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _validate_persisted_text(value: object, field_name: str, max_length: int) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise TransportContractError(f"{field_name} must not be blank")
+    if len(value) > max_length:
+        raise TransportContractError(f"{field_name} exceeds {max_length} characters")
+
+
+def _position_matches_member_type(member: TransportMember, position: object) -> bool:
+    if not isinstance(position, dict):
+        return False
+    if member.object_type == "RACK":
+        return position.get("kind") == "RACK_POSITION"
+    return position.get("kind") in {"RACK_BIN_SLOT", "HANDOFF_POSITION"}
 
 
 def _matches_definite_member_result(member: TransportMember, result: dict[str, Any]) -> bool:

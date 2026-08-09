@@ -21,6 +21,7 @@ from src.app.transport.contracts import (
     TransportHandle,
     TransportOutcome,
     TransportOutcomeStatus,
+    TransportTaskKind,
 )
 
 if TYPE_CHECKING:
@@ -116,6 +117,44 @@ def test_requests_reject_positions_outside_their_closed_types(factory: Callable[
 def test_position_discriminator_cannot_be_overridden(position_type: object, args: tuple[str, ...]) -> None:
     with pytest.raises(TypeError):
         position_type(*args, kind="VENDOR_POSITION")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: MoveRackRequest(
+            "req-kind-rack",
+            _caller(),
+            "rack-1",
+            RackPosition("A"),
+            RackPosition("B"),
+            kind=TransportTaskKind.BIN_MOVE,
+        ),
+        lambda: RotateRackRequest(
+            "req-kind-rotate",
+            _caller(),
+            "rack-1",
+            RackPosition("ROTATE"),
+            RackFace.B,
+            kind=TransportTaskKind.BIN_EXCHANGE,
+        ),
+        lambda: MoveBinsRequest(
+            "req-kind-bins",
+            _caller(),
+            (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("IN")),),
+            kind=TransportTaskKind.RACK_MOVE,
+        ),
+        lambda: ExchangeBinsRequest(
+            "req-kind-exchange",
+            _caller(),
+            (BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1")),),
+            kind=TransportTaskKind.RACK_ROTATE,
+        ),
+    ],
+)
+def test_request_kind_is_fixed_by_request_type(factory: Callable[[], object]) -> None:
+    with pytest.raises(TypeError):
+        factory()
 
 
 @pytest.mark.parametrize(
@@ -223,3 +262,32 @@ def test_identifiers_fail_closed(value: str) -> None:
         TransportCaller(workline_id=value)
     with pytest.raises(TransportContractError):
         RackPosition(value)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: MoveRackRequest(
+            "r" * 121,
+            _caller(),
+            "rack-1",
+            RackPosition("SOURCE"),
+            RackPosition("TARGET"),
+        ),
+        lambda: MoveRackRequest(
+            "request-long-rack",
+            _caller(),
+            "r" * 101,
+            RackPosition("SOURCE"),
+            RackPosition("TARGET"),
+        ),
+        lambda: BinMove("b" * 101, RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),
+        lambda: RackBinSlot("r" * 101, "1"),
+    ],
+    ids=["client-request-id", "rack-id", "bin-id", "slot-rack-id"],
+)
+def test_persisted_request_identifiers_reject_values_larger_than_database_columns(
+    factory: Callable[[], object],
+) -> None:
+    with pytest.raises(TransportContractError):
+        factory()

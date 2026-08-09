@@ -123,6 +123,36 @@ async def test_ack_for_another_task_is_a_conflict() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("request_id", "another-request"),
+        ("message", 123),
+        ("timestamp", True),
+        ("timestamp", "1"),
+    ],
+)
+async def test_ack_identity_and_scalar_types_fail_closed(field: str, value: object) -> None:
+    access = _ack(202, "RECEIVED", {"transport_task_id": "transport-1"})
+    assert isinstance(access.json_body, dict)
+    access.json_body[field] = value
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_rejected_ack_discards_reason_code_that_cannot_be_persisted() -> None:
+    access = _ack(400, "REJECTED", {"transport_task_id": "transport-1", "reason_code": "R" * 121})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.REJECTED
+    assert result.reason_code is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "access",
     [
         FakeAccessResult("NOT_SENT", None, None),

@@ -218,8 +218,17 @@ class TransportRepository:
         db.add(evidence)
         await db.flush()
 
-    async def get_evidence_by_event_id(self, db: AsyncSession, event_id: str) -> TransportEvidence | None:
-        return await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == event_id))
+    async def get_evidence_by_event_id(
+        self,
+        db: AsyncSession,
+        event_id: str,
+        *,
+        for_update: bool = False,
+    ) -> TransportEvidence | None:
+        statement = select(TransportEvidence).where(TransportEvidence.event_id == event_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return await db.scalar(statement)
 
     async def get_evidence(
         self,

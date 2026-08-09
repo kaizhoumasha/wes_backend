@@ -70,9 +70,11 @@ class PositionMilestone(StrEnum):
     POSITION_UNKNOWN = "POSITION_UNKNOWN"
 
 
-def _required(value: str, field_name: str) -> str:
+def _required(value: str, field_name: str, *, max_length: int | None = None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TransportContractError(f"{field_name} must not be blank")
+    if max_length is not None and len(value) > max_length:
+        raise TransportContractError(f"{field_name} exceeds {max_length} characters")
     try:
         value.encode("utf-8")
     except UnicodeEncodeError as error:
@@ -110,7 +112,7 @@ class RackBinSlot:
     kind: str = field(default="RACK_BIN_SLOT", init=False)
 
     def __post_init__(self) -> None:
-        _required(self.rack_id, "rack_id")
+        _required(self.rack_id, "rack_id", max_length=100)
         _required(self.slot_id, "slot_id")
 
 
@@ -133,7 +135,7 @@ class BinMove:
     target: RackBinSlot | HandoffPosition
 
     def __post_init__(self) -> None:
-        _required(self.bin_id, "bin_id")
+        _required(self.bin_id, "bin_id", max_length=100)
         if type(self.source) not in {RackBinSlot, HandoffPosition} or type(self.target) not in {
             RackBinSlot,
             HandoffPosition,
@@ -153,8 +155,8 @@ class BinExchangePair:
     right_location: RackBinSlot
 
     def __post_init__(self) -> None:
-        _required(self.left_bin_id, "left_bin_id")
-        _required(self.right_bin_id, "right_bin_id")
+        _required(self.left_bin_id, "left_bin_id", max_length=100)
+        _required(self.right_bin_id, "right_bin_id", max_length=100)
         if type(self.left_location) is not RackBinSlot or type(self.right_location) is not RackBinSlot:
             raise TransportContractError("exchange positions must be rack bin slots")
         if self.left_bin_id == self.right_bin_id:
@@ -170,11 +172,11 @@ class MoveRackRequest:
     rack_id: str
     source: RackPosition
     target: RackPosition
-    kind: TransportTaskKind = TransportTaskKind.RACK_MOVE
+    kind: TransportTaskKind = field(default=TransportTaskKind.RACK_MOVE, init=False)
 
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id)
-        _required(self.rack_id, "rack_id")
+        _required(self.rack_id, "rack_id", max_length=100)
         if type(self.source) is not RackPosition or type(self.target) is not RackPosition:
             raise TransportContractError("rack source and target must be rack positions")
         if self.source == self.target:
@@ -188,11 +190,11 @@ class RotateRackRequest:
     rack_id: str
     position: RackPosition
     target_face: RackFace
-    kind: TransportTaskKind = TransportTaskKind.RACK_ROTATE
+    kind: TransportTaskKind = field(default=TransportTaskKind.RACK_ROTATE, init=False)
 
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id)
-        _required(self.rack_id, "rack_id")
+        _required(self.rack_id, "rack_id", max_length=100)
         if type(self.position) is not RackPosition:
             raise TransportContractError("rack rotation position must be a rack position")
         if not isinstance(self.target_face, RackFace):
@@ -204,7 +206,7 @@ class MoveBinsRequest:
     client_request_id: str
     caller: TransportCaller
     moves: tuple[BinMove, ...]
-    kind: TransportTaskKind = TransportTaskKind.BIN_MOVE
+    kind: TransportTaskKind = field(default=TransportTaskKind.BIN_MOVE, init=False)
 
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id)
@@ -225,7 +227,7 @@ class ExchangeBinsRequest:
     client_request_id: str
     caller: TransportCaller
     exchange_pairs: tuple[BinExchangePair, ...]
-    kind: TransportTaskKind = TransportTaskKind.BIN_EXCHANGE
+    kind: TransportTaskKind = field(default=TransportTaskKind.BIN_EXCHANGE, init=False)
 
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id)
@@ -312,7 +314,7 @@ def request_as_dict(request: TransportRequest) -> dict[str, object]:
 
 
 def _validate_request_identity(client_request_id: str) -> None:
-    _required(client_request_id, "client_request_id")
+    _required(client_request_id, "client_request_id", max_length=120)
 
 
 def _position_key(position: RackBinSlot) -> tuple[str, str]:

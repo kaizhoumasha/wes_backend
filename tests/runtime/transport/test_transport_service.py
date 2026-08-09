@@ -164,6 +164,48 @@ async def test_same_client_request_is_idempotent_but_changed_payload_conflicts(s
 
 
 @pytest.mark.asyncio
+async def test_rotate_retry_returns_original_handle_after_projection_reaches_target_face(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add(
+            TransportPositionProjection(
+                object_type="RACK",
+                object_id="rack-rotate-idempotent",
+                position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
+                arrival_face="A",
+                source_event_id="seed",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+    first = await service.rotate_rack(
+        "rotate-idempotent",
+        _caller(),
+        "rack-rotate-idempotent",
+        RackPosition("ROTATE"),
+        RackFace.B,
+    )
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportPositionProjection)
+            .where(TransportPositionProjection.object_id == "rack-rotate-idempotent")
+            .values(arrival_face="B")
+        )
+
+    duplicate = await service.rotate_rack(
+        "rotate-idempotent",
+        _caller(),
+        "rack-rotate-idempotent",
+        RackPosition("ROTATE"),
+        RackFace.B,
+    )
+
+    assert duplicate == first
+
+
+@pytest.mark.asyncio
 async def test_active_resource_binding_rejects_overlapping_task(service: TransportService) -> None:
     await service.move_rack("first", _caller(), "rack-resource", RackPosition("A"), RackPosition("B"))
 
@@ -314,6 +356,28 @@ async def test_busy_uses_positive_retry_after_from_ack(service: TransportService
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert snapshot.next_submit_at is not None
     assert snapshot.updated_at + timedelta(milliseconds=1500) == snapshot.next_submit_at
+
+
+@pytest.mark.asyncio
+async def test_busy_with_unrepresentable_retry_after_falls_back_without_stranding_task(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    service.provider.code = TransportSubmitCode.BUSY
+    service.provider.retry_after_ms = 10**20
+    handle = await service.move_rack(
+        "busy-overflow",
+        _caller(),
+        "rack-busy-overflow",
+        RackPosition("A"),
+        RackPosition("B"),
+    )
+
+    assert await service.submit_pending_tasks(1) == 1
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert snapshot.status == "PENDING"
+    assert snapshot.send_started_at is None
+    assert snapshot.next_submit_at == snapshot.updated_at + timedelta(seconds=2)
 
 
 @pytest.mark.asyncio

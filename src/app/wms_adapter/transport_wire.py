@@ -50,8 +50,9 @@ def _validate_position_data(value: object) -> dict[str, Any]:
         "position data",
         optional={"final_position"},
     )
-    for field in ("event_id", "transport_task_id", "bin_id"):
-        _nonblank(data[field], field)
+    _nonblank(data["event_id"], "event_id", max_length=120)
+    _nonblank(data["transport_task_id"], "transport_task_id", max_length=80)
+    _nonblank(data["bin_id"], "bin_id", max_length=100)
     milestone = data["milestone"]
     if milestone not in {"SOURCE_PICKED", "TARGET_PLACED", "POSITION_UNKNOWN"}:
         raise TransportContractError("invalid position milestone")
@@ -66,8 +67,8 @@ def _validate_position_data(value: object) -> dict[str, Any]:
 
 def _validate_result_data(value: object) -> dict[str, Any]:
     data = _strict_dict(value, {"event_id", "transport_task_id", "kind", "results"}, "result data")
-    for field in ("event_id", "transport_task_id"):
-        _nonblank(data[field], field)
+    _nonblank(data["event_id"], "event_id", max_length=120)
+    _nonblank(data["transport_task_id"], "transport_task_id", max_length=80)
     if data["kind"] not in {"RACK_MOVE", "RACK_ROTATE", "BIN_MOVE", "BIN_EXCHANGE"}:
         raise TransportContractError("invalid transport kind")
     results = data["results"]
@@ -82,7 +83,7 @@ def _validate_result_data(value: object) -> dict[str, Any]:
             "member result",
             optional={"final_position", "position_unknown", "failure_code", "arrival_face"},
         )
-        object_id = _nonblank(result["object_id"], "object_id")
+        object_id = _nonblank(result["object_id"], "object_id", max_length=100)
         if object_id in object_ids:
             raise TransportContractError("duplicate result object_id")
         object_ids.add(object_id)
@@ -91,17 +92,21 @@ def _validate_result_data(value: object) -> dict[str, Any]:
             raise TransportContractError("invalid member result status")
         has_position = "final_position" in result
         is_unknown = result.get("position_unknown") is True
+        rack_kind = data["kind"] in {"RACK_MOVE", "RACK_ROTATE"}
         if has_position == is_unknown:
             raise TransportContractError("final_position xor position_unknown=true is required")
         if "position_unknown" in result and result["position_unknown"] is not True:
             raise TransportContractError("position_unknown must be literal true")
         if has_position:
-            _validate_position(result["final_position"])
+            final_position = _validate_position(result["final_position"])
+            if rack_kind and final_position["kind"] != "RACK_POSITION":
+                raise TransportContractError("rack result position must be RACK_POSITION")
+            if not rack_kind and final_position["kind"] not in {"RACK_BIN_SLOT", "HANDOFF_POSITION"}:
+                raise TransportContractError("bin result position must be a rack bin slot or handoff position")
         if status == "SUCCEEDED" and (not has_position or "failure_code" in result):
             raise TransportContractError("SUCCEEDED requires known position and no failure_code")
         if status == "FAILED":
-            _nonblank(result.get("failure_code"), "failure_code")
-        rack_kind = data["kind"] in {"RACK_MOVE", "RACK_ROTATE"}
+            _nonblank(result.get("failure_code"), "failure_code", max_length=120)
         if rack_kind and has_position and result.get("arrival_face") not in {"A", "B"}:
             raise TransportContractError("known rack result requires arrival_face")
         if (not rack_kind or is_unknown) and "arrival_face" in result:
@@ -150,9 +155,11 @@ def _strict_dict(
     return dict(value)
 
 
-def _nonblank(value: object, field_name: str) -> str:
+def _nonblank(value: object, field_name: str, *, max_length: int | None = None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TransportContractError(f"{field_name} must not be blank")
+    if max_length is not None and len(value) > max_length:
+        raise TransportContractError(f"{field_name} exceeds {max_length} characters")
     return value
 
 

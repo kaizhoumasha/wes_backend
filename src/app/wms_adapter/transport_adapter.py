@@ -65,7 +65,7 @@ class WmsTransportAdapter:
         return TransportSubmitResult(
             code,
             transport_task_id,
-            reason_code=data.get("reason_code") if isinstance(data.get("reason_code"), str) else None,
+            reason_code=_persistable_reason_code(data.get("reason_code")),
             retry_after_ms=retry_after_ms,
         )
 
@@ -93,6 +93,10 @@ def _valid_ack_envelope(body: dict[str, object], request_id: str) -> bool:
         return False
     data = body.get("data")
     return isinstance(data, dict) and set(data) <= {"transport_task_id", "reason_code", "retry_after_ms"}
+
+
+def _persistable_reason_code(value: object) -> str | None:
+    return value if isinstance(value, str) and value.strip() and len(value) <= 120 else None
 
 
 __all__ = ["WmsTransportAdapter"]

@@ -8,10 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
+    MoveRackRequest,
     RackBinSlot,
     RackFace,
     RackPosition,
     TransportCaller,
+    TransportContractError,
     TransportOutcome,
     TransportSubmitCode,
     TransportSubmitResult,
@@ -135,6 +137,26 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(outcome_se
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_id", "transport_task_id"),
+    [("e" * 121, "transport-1"), ("event-1", "t" * 81)],
+    ids=["event-id", "transport-task-id"],
+)
+async def test_record_evidence_rejects_identifiers_larger_than_persistence_columns(
+    outcome_service: TransportService,
+    event_id: str,
+    transport_task_id: str,
+) -> None:
+    with pytest.raises(TransportContractError):
+        await outcome_service.record_evidence(
+            event_id=event_id,
+            transport_task_id=transport_task_id,
+            operation=RESULT_OPERATION,
+            payload={},
+        )
+
+
+@pytest.mark.asyncio
 async def test_conflicting_batch_result_does_not_partially_update_members(
     outcome_service: TransportService,
     db_engine: object,
@@ -200,6 +222,174 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
         ("PENDING", None, False),
     ]
     assert projections == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "results",
+    [
+        [
+            {
+                "object_id": "bin-member-1",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "FAILED",
+            }
+        ],
+        [
+            {
+                "object_id": "bin-member-1",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "FAILED",
+            },
+            {
+                "object_id": "bin-member-2",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "FAILED",
+            },
+            {
+                "object_id": "bin-member-extra",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "FAILED",
+            },
+        ],
+        [
+            {
+                "object_id": "bin-member-1",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "FAILED",
+            },
+            {
+                "object_id": "bin-member-1",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "FAILED",
+            },
+        ],
+    ],
+    ids=["missing", "extra", "duplicate"],
+)
+async def test_result_members_must_exactly_match_the_frozen_batch(
+    outcome_service: TransportService,
+    db_engine: object,
+    results: list[dict[str, object]],
+) -> None:
+    handle = await outcome_service.move_bins(
+        f"request-members-{len(results)}-{results[-1]['object_id']}",
+        TransportCaller("SORTER"),
+        (
+            BinMove("bin-member-1", RackBinSlot("rack-members", "1"), HandoffPosition("ROLLER_IN")),
+            BinMove("bin-member-2", RackBinSlot("rack-members", "2"), HandoffPosition("ROLLER_OUT")),
+        ),
+    )
+    event_id = f"event-members-{len(results)}-{results[-1]['object_id']}"
+    await outcome_service.record_evidence(
+        event_id=event_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        payload={
+            "event_id": event_id,
+            "transport_task_id": handle.transport_task_id,
+            "kind": "BIN_MOVE",
+            "results": results,
+        },
+    )
+
+    await outcome_service.process_pending_evidence(1)
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == event_id))
+        members = list(
+            await db.scalars(
+                select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+            )
+        )
+    assert evidence is not None and evidence.status == "CONFLICT"
+    assert all(member.status == "PENDING" and member.final_position_json is None for member in members)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rack_request", "result"),
+    [
+        (
+            MoveRackRequest(
+                "request-rack-position-type",
+                TransportCaller("SORTER"),
+                "rack-position-type",
+                RackPosition("SOURCE"),
+                RackPosition("TARGET"),
+            ),
+            {
+                "object_id": "rack-position-type",
+                "status": "FAILED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
+                "failure_code": "FAILED",
+                "arrival_face": "A",
+            },
+        ),
+        (
+            None,
+            {
+                "object_id": "bin-position-type",
+                "status": "FAILED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+                "failure_code": "FAILED",
+            },
+        ),
+    ],
+    ids=["rack", "bin"],
+)
+async def test_result_position_type_must_match_the_frozen_member_type(
+    outcome_service: TransportService,
+    db_engine: object,
+    rack_request: MoveRackRequest | None,
+    result: dict[str, object],
+) -> None:
+    if rack_request is None:
+        handle = await outcome_service.move_bins(
+            "request-bin-position-type",
+            TransportCaller("SORTER"),
+            (BinMove("bin-position-type", RackBinSlot("rack-position-type", "1"), HandoffPosition("ROLLER_IN")),),
+        )
+        kind = "BIN_MOVE"
+    else:
+        handle = await outcome_service.move_rack(
+            rack_request.client_request_id,
+            rack_request.caller,
+            rack_request.rack_id,
+            rack_request.source,
+            rack_request.target,
+        )
+        kind = "RACK_MOVE"
+    event_id = f"event-position-type-{kind}"
+    await outcome_service.record_evidence(
+        event_id=event_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        payload={
+            "event_id": event_id,
+            "transport_task_id": handle.transport_task_id,
+            "kind": kind,
+            "results": [result],
+        },
+    )
+
+    await outcome_service.process_pending_evidence(1)
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == event_id))
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+        )
+    assert evidence is not None and evidence.status == "CONFLICT"
+    assert member is not None and member.status == "PENDING" and member.final_position_json is None
 
 
 @pytest.mark.asyncio
@@ -309,6 +499,67 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
         )
     assert projection is not None
     assert projection.position_json == target["final_position"]
+
+
+@pytest.mark.asyncio
+async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_position(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    handle = await outcome_service.move_bins(
+        "request-confirmed-target",
+        TransportCaller("SORTER"),
+        (BinMove("bin-confirmed-target", RackBinSlot("rack-confirmed", "1"), HandoffPosition("ROLLER_IN")),),
+    )
+    target = {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"}
+    await outcome_service.record_evidence(
+        event_id="event-confirmed-target",
+        transport_task_id=handle.transport_task_id,
+        operation="transport.task.member_position_changed@v1",
+        payload={
+            "event_id": "event-confirmed-target",
+            "transport_task_id": handle.transport_task_id,
+            "bin_id": "bin-confirmed-target",
+            "milestone": "TARGET_PLACED",
+            "final_position": target,
+        },
+    )
+    await outcome_service.process_pending_evidence(1)
+    await outcome_service.record_evidence(
+        event_id="event-conflicting-final-position",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        payload={
+            "event_id": "event-conflicting-final-position",
+            "transport_task_id": handle.transport_task_id,
+            "kind": "BIN_MOVE",
+            "results": [
+                {
+                    "object_id": "bin-confirmed-target",
+                    "status": "FAILED",
+                    "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_OUT"},
+                    "failure_code": "LATE_FAILURE",
+                }
+            ],
+        },
+    )
+
+    await outcome_service.process_pending_evidence(1)
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.event_id == "event-conflicting-final-position")
+        )
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+        )
+        projection = await db.scalar(
+            select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-confirmed-target")
+        )
+    assert evidence is not None and evidence.status == "CONFLICT"
+    assert member is not None and member.final_position_json == target
+    assert projection is not None and projection.position_json == target
 
 
 @pytest.mark.asyncio

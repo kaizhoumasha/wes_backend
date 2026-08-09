@@ -110,6 +110,28 @@ def test_position_callback_rejects_blank_identifiers(field: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("operation", "data", "field", "limit"),
+    [
+        (POSITION_OPERATION, _position_data(), "event_id", 120),
+        (POSITION_OPERATION, _position_data(), "transport_task_id", 80),
+        (POSITION_OPERATION, _position_data(), "bin_id", 100),
+        (RESULT_OPERATION, _result_data(), "event_id", 120),
+        (RESULT_OPERATION, _result_data(), "transport_task_id", 80),
+    ],
+)
+def test_callback_rejects_identifiers_longer_than_persistence_contract(
+    operation: str,
+    data: dict[str, object],
+    field: str,
+    limit: int,
+) -> None:
+    data[field] = "x" * (limit + 1)
+
+    with pytest.raises(TransportContractError, match=f"{field} exceeds {limit} characters"):
+        validate_callback_envelope(_envelope(operation, data))
+
+
+@pytest.mark.parametrize(
     ("data", "message"),
     [
         (_position_data(milestone="UNKNOWN"), "invalid position milestone"),
@@ -224,6 +246,47 @@ def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
                 ]
             ),
             "arrival_face is not valid for this result",
+        ),
+        (
+            _result_data(
+                kind="RACK_MOVE",
+                results=[
+                    {
+                        "object_id": "rack-1",
+                        "status": "FAILED",
+                        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
+                        "failure_code": "FAILED",
+                        "arrival_face": "A",
+                    }
+                ],
+            ),
+            "rack result position must be RACK_POSITION",
+        ),
+        (
+            _result_data(
+                results=[
+                    {
+                        "object_id": "bin-1",
+                        "status": "FAILED",
+                        "final_position": {"kind": "RACK_POSITION", "location_code": "STATION_A"},
+                        "failure_code": "FAILED",
+                    }
+                ]
+            ),
+            "bin result position must be a rack bin slot or handoff position",
+        ),
+        (
+            _result_data(
+                results=[
+                    {
+                        "object_id": "bin-1",
+                        "status": "FAILED",
+                        "position_unknown": True,
+                        "failure_code": "F" * 121,
+                    }
+                ]
+            ),
+            "failure_code exceeds 120 characters",
         ),
     ],
 )
