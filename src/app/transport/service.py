@@ -477,6 +477,10 @@ class TransportService:
             final_position = payload.get("final_position")
             if final_position != member.target_json:
                 raise TransportContractError("placed position differs from frozen target")
+            if member.final_position_json is not None:
+                if final_position == member.final_position_json:
+                    return
+                raise TransportContractError("placed position contradicts confirmed member position")
             member.final_position_json = final_position
             member.position_unknown = False
             await self._upsert_projection(db, member, final_position, False, None, evidence.event_id, now)
@@ -539,9 +543,15 @@ class TransportService:
             if status == "SUCCEEDED" and final_position != member.target_json:
                 raise TransportContractError("successful final position differs from frozen target")
             if member.final_position_json is not None and (
-                position_unknown or final_position != member.final_position_json
+                position_unknown
+                or final_position != member.final_position_json
+                or (
+                    member.status in {"SUCCEEDED", "FAILED"}
+                    and not member.position_unknown
+                    and not _matches_definite_member_result(member, result)
+                )
             ):
-                raise TransportContractError("result position contradicts confirmed member position")
+                raise TransportContractError("result contradicts confirmed member fact")
             outcome = TransportMemberOutcome(
                 object_id=member.object_id,
                 final_position=_contract_position(final_position) if final_position is not None else None,
