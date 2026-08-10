@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0.0] - 2026-08-10
+
+### Added
+- 新增 AGV/CTU 通用 Transport 暗闭环，支持货架搬运、货架换面、1 至 4 个料箱搬运和 1 至 2 对料箱交换，并以持久化任务句柄承接异步结果。
+- 新增 WMS Transport 固定统一接口（wire）、同步接纳 ACK、异步位置与结果回调、256 KiB 请求响应预算，以及明确的 `arrival_face` 权威事实。
+- 新增 Transport 聚合、成员、位置投影、资源绑定和 Evidence 表及 PostgreSQL 约束、领取索引与并发验收测试。
+
+### Changed
+- 将 Phase 4 收敛为基础搬运能力：只管理搬运身份、资源互斥、可靠下发、位置事实、最终结果和最新权威 outcome 发布，不承接业务分配、设备命令或工作线插件编排。
+- 统一 SRS、权威矩阵、WMS 合同、插件指南、测试所有权和架构计划中的 Transport 边界；当前实现保持暗构建，不注册生产 API、Celery 任务或消费者。
+- Transport 结果采用单调版本和最新状态合并；未发布的低版本可被更高权威版本取代，未知位置允许由后续确定事实纠正。
+
+### Fixed
+- 修复多成员结果冲突时可能部分写入成员与位置投影、换面成功未命中冻结目标面，以及迟到取货里程碑覆盖未知位置的问题。
+- 修复 WMS ACK 身份与字段校验、发送前确定失败、超限请求、重试预算、交付未知和迟到 ACK 的收敛边界。
+- 修复协调中已确认的确定位置、成员状态和失败码可能被冲突 Evidence 改写的问题，同时保留未知结果的高版本纠正能力。
+
+### Verification
+- FAST：3647 passed、4 skipped；QUALITY 全门禁通过，Ruff、Bandit、架构约束、测试拓扑和 FAST 预算均无新增问题。
+- 受影响 Transport HEAVY：空库迁移至 `a8d9b9eba49b` 后 15 passed；覆盖率业务路径 98%，剩余缺口仅为上游闭集失效后的防御分支。
+- Phase 4 计划审计：60 DONE、0 PARTIAL、0 NOT DONE；3 项历史 TDD/GitNexus 顺序事实已人工确认但无法从最终树反推。
+
 ## [0.23.1.0] - 2026-08-08
 
 ### Added
