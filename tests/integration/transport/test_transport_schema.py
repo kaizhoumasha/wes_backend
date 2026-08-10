@@ -115,7 +115,7 @@ async def test_transport_schema_contains_required_claim_indexes(integration_db_s
     assert "(updated_at, id)" in definitions["ix_transport_tasks_outcome_claim"]
 
 
-async def test_transport_evidence_event_id_is_unique(integration_db_session: AsyncSession) -> None:
+async def test_transport_evidence_identity_is_operation_and_event_id(integration_db_session: AsyncSession) -> None:
     suffix = uuid.uuid4().hex
     now = timezone.now_for_db()
     task = TransportTask(
@@ -130,19 +130,28 @@ async def test_transport_evidence_event_id_is_unique(integration_db_session: Asy
     )
     integration_db_session.add(task)
     await integration_db_session.flush()
-    for _ in range(2):
+    for operation in ("transport.task.resulted@v1", "transport.task.member_position_changed@v1"):
         integration_db_session.add(
             TransportEvidence(
                 event_id=f"event-{suffix}",
                 transport_task_id=task.transport_task_id,
-                operation="transport.task.result@v1",
+                operation=operation,
                 payload_digest="d" * 64,
                 payload_json={"status": "SUCCEEDED"},
                 received_at=now,
             )
         )
-        if _ == 0:
-            await integration_db_session.flush()
+        await integration_db_session.flush()
+    integration_db_session.add(
+        TransportEvidence(
+            event_id=f"event-{suffix}",
+            transport_task_id=task.transport_task_id,
+            operation="transport.task.resulted@v1",
+            payload_digest="e" * 64,
+            payload_json={"status": "FAILED"},
+            received_at=now,
+        )
+    )
     with pytest.raises(IntegrityError):
         await integration_db_session.flush()
     await integration_db_session.rollback()

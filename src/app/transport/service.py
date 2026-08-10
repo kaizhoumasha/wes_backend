@@ -234,7 +234,7 @@ class TransportService:
         now = timezone.now_for_db()
         try:
             async with self._sessions.begin() as db:
-                existing = await self._repository.get_evidence_by_event_id(db, event_id, for_update=True)
+                existing = await self._repository.get_evidence_by_event_id(db, operation, event_id, for_update=True)
                 if existing is not None:
                     return _resolve_evidence_identity(existing, digest, operation)
                 await self._repository.add_evidence(
@@ -251,7 +251,7 @@ class TransportService:
         except IntegrityError:
             # 并发重复回调可能同时通过首次查询；唯一约束裁决后重新读取首个已提交事实。
             async with self._sessions.begin() as db:
-                existing = await self._repository.get_evidence_by_event_id(db, event_id, for_update=True)
+                existing = await self._repository.get_evidence_by_event_id(db, operation, event_id, for_update=True)
                 if existing is None:
                     raise
                 return _resolve_evidence_identity(existing, digest, operation)
@@ -293,6 +293,9 @@ class TransportService:
                     await self._outcome_publisher.publish(_outcome_from_json(payload))
             except TimeoutError:
                 logger.warning("搬运结果发布超时: transport_task_id=%s, outcome_version=%s", task_id, version)
+                continue
+            except Exception:
+                logger.exception("搬运结果发布失败: transport_task_id=%s, outcome_version=%s", task_id, version)
                 continue
             async with self._sessions.begin() as db:
                 task = await self._repository.get_task(db, task_id, for_update=True)
@@ -469,9 +472,7 @@ class TransportService:
             if member.final_position_json is not None:
                 return
             await self._upsert_projection(db, member, {"kind": "ON_CARRIER"}, False, None, evidence.event_id, now)
-            if task.status == "PENDING":
-                task.status = "ACCEPTED"
-                task.result_deadline_at = task.result_deadline_at or now + _RESULT_TIMEOUT
+            _accept_position_fact(task, now)
         elif milestone == "TARGET_PLACED":
             final_position = payload.get("final_position")
             if final_position != member.target_json:
@@ -479,9 +480,7 @@ class TransportService:
             member.final_position_json = final_position
             member.position_unknown = False
             await self._upsert_projection(db, member, final_position, False, None, evidence.event_id, now)
-            if task.status == "PENDING":
-                task.status = "ACCEPTED"
-                task.result_deadline_at = task.result_deadline_at or now + _RESULT_TIMEOUT
+            _accept_position_fact(task, now)
         member.last_event_id = evidence.event_id
         member.updated_at = now
         task.updated_at = now
@@ -836,6 +835,19 @@ def _discard_stale_delivery_unknown(task: TransportTask) -> None:
     task.outcome_json = None
     task.outcome_claim_token = None
     task.outcome_claim_until = None
+
+
+def _accept_position_fact(task: TransportTask, now: Any) -> None:
+    can_converge_delivery_unknown = (
+        task.status == TransportTaskStatus.RECONCILING.value and task.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+    )
+    if task.status != TransportTaskStatus.PENDING.value and not can_converge_delivery_unknown:
+        return
+    if can_converge_delivery_unknown:
+        _discard_stale_delivery_unknown(task)
+    task.status = TransportTaskStatus.ACCEPTED.value
+    task.reason_code = None
+    task.result_deadline_at = task.result_deadline_at or now + _RESULT_TIMEOUT
 
 
 def _resolve_evidence_identity(

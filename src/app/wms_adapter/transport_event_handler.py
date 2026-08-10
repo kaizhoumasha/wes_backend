@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -11,6 +12,8 @@ from src.app.wms_adapter.transport_wire import validate_callback_envelope
 from src.utils.timezone import timezone
 
 MAX_TRANSPORT_EVENT_BODY_BYTES = 256 * 1024
+
+logger = logging.getLogger(__name__)
 
 
 class _EvidenceRecorder(Protocol):
@@ -48,12 +51,16 @@ class TransportEventHandler:
             request_id = raw_envelope.get("request_id") if isinstance(raw_envelope, dict) else None
             return _response(422, request_id if isinstance(request_id, str) else None, "REJECTED", str(error))
         data = envelope["data"]
-        code = await self._recorder.record_evidence(
-            event_id=data["event_id"],
-            transport_task_id=data["transport_task_id"],
-            operation=envelope["operation"],
-            payload=data,
-        )
+        try:
+            code = await self._recorder.record_evidence(
+                event_id=data["event_id"],
+                transport_task_id=data["transport_task_id"],
+                operation=envelope["operation"],
+                payload=data,
+            )
+        except Exception:
+            logger.exception("Transport evidence 持久化失败: operation=%s", envelope["operation"])
+            return _response(503, envelope["request_id"], "UNAVAILABLE", "unavailable")
         status = {"RECEIVED": 202, "DUPLICATE": 200, "CONFLICT": 409}[code]
         return _response(status, envelope["request_id"], code, code.lower())
 

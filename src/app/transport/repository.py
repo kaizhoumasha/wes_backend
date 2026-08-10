@@ -226,11 +226,15 @@ class TransportRepository:
     async def get_evidence_by_event_id(
         self,
         db: AsyncSession,
+        operation: str,
         event_id: str,
         *,
         for_update: bool = False,
     ) -> TransportEvidence | None:
-        statement = select(TransportEvidence).where(TransportEvidence.event_id == event_id)
+        statement = select(TransportEvidence).where(
+            TransportEvidence.operation == operation,
+            TransportEvidence.event_id == event_id,
+        )
         if for_update:
             statement = statement.with_for_update()
         return await db.scalar(statement)

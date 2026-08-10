@@ -137,7 +137,7 @@ def upgrade() -> None:
         sa.Column("conflict_code", sa.String(length=120), nullable=True),
         sa.CheckConstraint("status IN ('PENDING', 'APPLIED', 'CONFLICT')", name="transport_evidence_status_valid"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_transport_evidence")),
-        sa.UniqueConstraint("event_id", name="ux_transport_evidence_event_id"),
+        sa.UniqueConstraint("operation", "event_id", name="ux_transport_evidence_operation_event_id"),
         schema="wes_runtime",
     )
     op.create_index(

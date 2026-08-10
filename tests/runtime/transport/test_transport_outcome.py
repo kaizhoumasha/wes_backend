@@ -27,7 +27,7 @@ from src.app.transport.models import (
 )
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
-from src.app.wms_adapter.transport_wire import RESULT_OPERATION
+from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
@@ -149,6 +149,55 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
     assert evidence.conflict_code == "EVENT_PAYLOAD_CONFLICT"
     assert task is not None
     assert (task.status, task.reason_code, task.outcome_version) == ("RECONCILING", "TRANSPORT_POSITION_UNKNOWN", 1)
+
+
+@pytest.mark.asyncio
+async def test_same_event_id_is_independent_between_callback_operations(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    handle = await outcome_service.move_bins(
+        "request-operation-scoped-event",
+        TransportCaller("SORTER"),
+        (BinMove("bin-operation-scoped", RackBinSlot("rack-operation-scoped", "1"), HandoffPosition("OUT")),),
+    )
+    event_id = "shared-event-id"
+
+    position_code = await outcome_service.record_evidence(
+        event_id=event_id,
+        transport_task_id=handle.transport_task_id,
+        operation=POSITION_OPERATION,
+        payload={
+            "event_id": event_id,
+            "transport_task_id": handle.transport_task_id,
+            "bin_id": "bin-operation-scoped",
+            "milestone": "SOURCE_PICKED",
+        },
+    )
+    result_code = await outcome_service.record_evidence(
+        event_id=event_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        payload={
+            "event_id": event_id,
+            "transport_task_id": handle.transport_task_id,
+            "kind": "BIN_MOVE",
+            "results": [
+                {
+                    "object_id": "bin-operation-scoped",
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
+                }
+            ],
+        },
+    )
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = list(await db.scalars(select(TransportEvidence).where(TransportEvidence.event_id == event_id)))
+
+    assert (position_code, result_code) == ("RECEIVED", "RECEIVED")
+    assert {item.operation for item in evidence} == {POSITION_OPERATION, RESULT_OPERATION}
 
 
 @pytest.mark.asyncio

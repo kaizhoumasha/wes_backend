@@ -302,8 +302,7 @@ async def test_failed_publish_is_reclaimed_after_lease_expiry(db_engine: object)
     service.provider.code = TransportSubmitCode.REJECTED
     await service.submit_pending_tasks(1)
 
-    with pytest.raises(RuntimeError, match="publisher unavailable"):
-        await service.publish_pending_outcomes(1)
+    assert await service.publish_pending_outcomes(1) == 0
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
@@ -317,6 +316,25 @@ async def test_failed_publish_is_reclaimed_after_lease_expiry(db_engine: object)
     task = await _load_task(db_engine, handle.transport_task_id)
     assert task.published_outcome_version == task.outcome_version == 1
     assert [outcome.outcome_version for outcome in publisher.outcomes] == [1]
+
+
+@pytest.mark.asyncio
+async def test_failed_publish_does_not_starve_later_outcomes(db_engine: object) -> None:
+    publisher = RecordingPublisher(fail_once=True)
+    service = _service(db_engine, publisher=publisher)
+    for ordinal in range(2):
+        await service.move_rack(
+            f"publish-error-{ordinal}",
+            _caller(),
+            f"rack-publish-error-{ordinal}",
+            RackPosition("A"),
+            RackPosition("B"),
+        )
+    service.provider.code = TransportSubmitCode.REJECTED
+    assert await service.submit_pending_tasks(2) == 2
+
+    assert await service.publish_pending_outcomes(2) == 1
+    assert len(publisher.outcomes) == 1
 
 
 @pytest.mark.asyncio

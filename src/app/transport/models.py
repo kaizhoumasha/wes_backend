@@ -123,7 +123,7 @@ class TransportEvidence(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         CheckConstraint(_EVIDENCE_STATUS_CHECK, name="transport_evidence_status_valid"),
-        UniqueConstraint("event_id", name="ux_transport_evidence_event_id"),
+        UniqueConstraint("operation", "event_id", name="ux_transport_evidence_operation_event_id"),
         Index(
             "ix_transport_evidence_pending_claim",
             "status",

@@ -498,6 +498,45 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
     assert reconciled.outcome_version == 1
 
 
+@pytest.mark.asyncio
+async def test_position_fact_converges_delivery_unknown_to_accepted(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    service.provider.code = TransportSubmitCode.DELIVERY_UNKNOWN
+    handle = await service.move_bins(
+        "position-after-delivery-unknown",
+        _caller(),
+        (BinMove("bin-late-position", RackBinSlot("rack-late-position", "1"), HandoffPosition("OUT")),),
+    )
+    assert await service.submit_pending_tasks(1) == 1
+    unknown = await _load_task(db_engine, handle.transport_task_id)
+    assert (unknown.status, unknown.reason_code, unknown.result_deadline_at) == (
+        "RECONCILING",
+        "TRANSPORT_DELIVERY_UNKNOWN",
+        None,
+    )
+
+    await service.record_evidence(
+        event_id="position-after-delivery-unknown",
+        transport_task_id=handle.transport_task_id,
+        operation="transport.task.member_position_changed@v1",
+        payload={
+            "event_id": "position-after-delivery-unknown",
+            "transport_task_id": handle.transport_task_id,
+            "bin_id": "bin-late-position",
+            "milestone": "SOURCE_PICKED",
+        },
+    )
+    assert await service.process_pending_evidence(1) == 1
+
+    accepted = await _load_task(db_engine, handle.transport_task_id)
+    assert accepted.status == "ACCEPTED"
+    assert accepted.reason_code is None
+    assert accepted.result_deadline_at is not None
+    assert accepted.outcome_json is None
+
+
 async def _load_task(db_engine: object, transport_task_id: str) -> TransportTask:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:

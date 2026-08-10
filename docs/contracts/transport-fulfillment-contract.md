@@ -310,13 +310,13 @@ WMS 不回传可由 `results[]` 推导的任务总状态，避免总状态和逐
 ### 5.4 持久化后应答
 
 1. 校验信封、operation、`event_id`、Payload 上限和闭集 DTO；
-2. 原子保存 `event_id`、规范化摘要和原始 Transport evidence；
+2. 原子保存 `operation + event_id`、规范化摘要和原始 Transport evidence；
 3. 保存成功后返回 `202 / RECEIVED`，同身份同 Payload 返回 `200 / DUPLICATE`；
 4. 异步锁定 `TransportTask`，校验不可变任务身份、对象和冻结成员；
 5. 在同一事务更新任务、成员、位置投影、evidence 处理状态和待发布 `outcome_version`；
 6. 后台有界领取未发布版本，在事务外交给 `TransportOutcomePublisher`，成功后记录已发布版本。
 
-同一 `event_id` 不同 Payload、未知任务、对象/冻结成员不匹配和矛盾终态必须失败关闭并保留冲突证据。
+同一 `operation + event_id` 不同 Payload、未知任务、对象/冻结成员不匹配和矛盾终态必须失败关闭并保留冲突证据。
 
 原始 evidence 使用最小处理状态 `PENDING | APPLIED | CONFLICT`。`TransportRepository` 按稳定顺序小批量领取
 `PENDING` evidence，并记录领取令牌和租约截止时间；租约过期后允许重新领取，旧令牌不得写回。应用成功标记 `APPLIED`，

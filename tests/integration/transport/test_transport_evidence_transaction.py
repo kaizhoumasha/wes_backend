@@ -70,14 +70,15 @@ class _BarrierRepository(TransportRepository):
     async def get_evidence_by_event_id(
         self,
         db: AsyncSession,
+        operation: str,
         event_id: str,
         *,
         for_update: bool = False,
     ) -> TransportEvidence | None:
         evidence = (
-            await super().get_evidence_by_event_id(db, event_id, for_update=True)
+            await super().get_evidence_by_event_id(db, operation, event_id, for_update=True)
             if for_update
-            else await super().get_evidence_by_event_id(db, event_id)
+            else await super().get_evidence_by_event_id(db, operation, event_id)
         )
         if self._first_lookup:
             self._first_lookup = False
@@ -92,14 +93,15 @@ class _EvidenceReadRepository(TransportRepository):
     async def get_evidence_by_event_id(
         self,
         db: AsyncSession,
+        operation: str,
         event_id: str,
         *,
         for_update: bool = False,
     ) -> TransportEvidence | None:
         evidence = (
-            await super().get_evidence_by_event_id(db, event_id, for_update=True)
+            await super().get_evidence_by_event_id(db, operation, event_id, for_update=True)
             if for_update
-            else await super().get_evidence_by_event_id(db, event_id)
+            else await super().get_evidence_by_event_id(db, operation, event_id)
         )
         self.read.set()
         return evidence

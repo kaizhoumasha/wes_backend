@@ -51,7 +51,9 @@ class WmsTransportAdapter:
         if not _valid_ack_envelope(body, request_id):
             return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
         code = _map_response_code(access.status_code, body.get("code"))
-        data = body.get("data") if isinstance(body.get("data"), dict) else {}
+        data = body.get("data")
+        if not isinstance(data, dict) or not _valid_ack_data(data, code):
+            return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
         if data.get("transport_task_id") != transport_task_id:
             return TransportSubmitResult(TransportSubmitCode.CONFLICT, transport_task_id)
         retry_after_ms = data.get("retry_after_ms")
@@ -86,13 +88,31 @@ def _map_response_code(status_code: int | None, code: object) -> TransportSubmit
 def _valid_ack_envelope(body: dict[str, object], request_id: str) -> bool:
     if set(body) != {"request_id", "code", "message", "timestamp", "data"}:
         return False
-    if body.get("request_id") != request_id or not isinstance(body.get("message"), str):
+    if (
+        body.get("request_id") != request_id
+        or not isinstance(body.get("code"), str)
+        or not isinstance(body.get("message"), str)
+    ):
         return False
     timestamp = body.get("timestamp")
     if not isinstance(timestamp, int) or isinstance(timestamp, bool):
         return False
     data = body.get("data")
     return isinstance(data, dict) and set(data) <= {"transport_task_id", "reason_code", "retry_after_ms"}
+
+
+def _valid_ack_data(data: dict[str, object], code: TransportSubmitCode) -> bool:
+    task_id = data.get("transport_task_id")
+    if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 80:
+        return False
+    if code is TransportSubmitCode.REJECTED:
+        return (
+            set(data) == {"transport_task_id", "reason_code"}
+            and _persistable_reason_code(data.get("reason_code")) is not None
+        )
+    if code is TransportSubmitCode.BUSY:
+        return set(data) <= {"transport_task_id", "retry_after_ms"}
+    return set(data) == {"transport_task_id"}
 
 
 def _persistable_reason_code(value: object) -> str | None:

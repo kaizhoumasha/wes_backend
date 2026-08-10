@@ -90,7 +90,7 @@ async def test_non_busy_ack_discards_retry_delay() -> None:
 
     result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
 
-    assert result.code is TransportSubmitCode.UNAVAILABLE
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
     assert result.retry_after_ms is None
 
 
@@ -112,7 +112,10 @@ async def test_ack_status_and_code_are_a_closed_pair(
     code: str,
     expected: TransportSubmitCode,
 ) -> None:
-    access = _ack(status, code, {"transport_task_id": "transport-1"})
+    data: dict[str, object] = {"transport_task_id": "transport-1"}
+    if code == "REJECTED":
+        data["reason_code"] = "REJECTED_BY_WMS"
+    access = _ack(status, code, data)
 
     result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
 
@@ -151,6 +154,8 @@ async def test_ack_for_another_task_is_a_conflict() -> None:
         ("message", 123),
         ("timestamp", True),
         ("timestamp", "1"),
+        ("code", []),
+        ("code", {}),
     ],
 )
 async def test_ack_identity_and_scalar_types_fail_closed(field: str, value: object) -> None:
@@ -169,7 +174,7 @@ async def test_rejected_ack_discards_reason_code_that_cannot_be_persisted() -> N
 
     result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
 
-    assert result.code is TransportSubmitCode.REJECTED
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
     assert result.reason_code is None
 
 
@@ -180,8 +185,35 @@ async def test_rejected_ack_discards_unencodable_reason_code() -> None:
 
     result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
 
-    assert result.code is TransportSubmitCode.REJECTED
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
     assert result.reason_code is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "code", "data"),
+    [
+        (202, "RECEIVED", {}),
+        (400, "REJECTED", {"transport_task_id": "transport-1"}),
+        (202, "RECEIVED", {"transport_task_id": "transport-1", "reason_code": "UNEXPECTED"}),
+        (503, "UNAVAILABLE", {"transport_task_id": "transport-1", "retry_after_ms": 1000}),
+        (
+            400,
+            "REJECTED",
+            {"transport_task_id": "transport-1", "reason_code": "REJECTED_BY_WMS", "retry_after_ms": 1000},
+        ),
+    ],
+)
+async def test_ack_data_must_match_the_code_specific_closed_contract(
+    status: int,
+    code: str,
+    data: dict[str, object],
+) -> None:
+    result = await WmsTransportAdapter(FakeClient(_ack(status, code, data))).submit(
+        _request(), transport_task_id="transport-1"
+    )
+
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
 
 @pytest.mark.asyncio

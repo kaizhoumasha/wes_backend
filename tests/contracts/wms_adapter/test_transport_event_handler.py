@@ -17,6 +17,11 @@ class FakeRecorder:
         return self.code
 
 
+class UnavailableRecorder:
+    async def record_evidence(self, **kwargs: object) -> str:
+        raise RuntimeError("database unavailable")
+
+
 def _body(operation: str, data: dict[str, object]) -> bytes:
     return json.dumps(
         {"request_id": "callback-1", "operation": operation, "timestamp": 1, "data": data},
@@ -44,6 +49,24 @@ async def test_valid_position_callback_is_persisted_before_received_ack() -> Non
     assert response.http_status == 202
     assert response.body["code"] == "RECEIVED"
     assert recorder.calls[0]["event_id"] == "event-1"
+
+
+@pytest.mark.asyncio
+async def test_persistence_failure_returns_unavailable_ack() -> None:
+    response = await TransportEventHandler(UnavailableRecorder()).handle(
+        _body(
+            "transport.task.member_position_changed@v1",
+            {
+                "event_id": "event-unavailable",
+                "transport_task_id": "transport-1",
+                "bin_id": "bin-1",
+                "milestone": "SOURCE_PICKED",
+            },
+        )
+    )
+
+    assert response.http_status == 503
+    assert response.body["code"] == "UNAVAILABLE"
 
 
 @pytest.mark.asyncio
