@@ -200,7 +200,7 @@ ACK 使用 Transport 自有的 `request_id + code + message + timestamp + data` 
 ```text
 transport_task_id
 reason_code?       # REJECTED 时必填
-retry_after_ms?    # BUSY 时必填
+retry_after_ms?    # BUSY 时可选；缺失或非正整数时固定等待 2 秒
 ```
 
 `BIN_EXCHANGE` 只有在 WMS 确认 RCS 能将 1～2 个交换对作为一个协调任务整体接纳时才返回 `RECEIVED`。不支持时固定返回

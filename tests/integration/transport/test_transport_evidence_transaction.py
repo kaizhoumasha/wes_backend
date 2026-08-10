@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,6 +16,7 @@ from src.app.transport.contracts import (
     RackPosition,
     TransportCaller,
     TransportContractError,
+    TransportResourceConflict,
 )
 from src.app.transport.models import (
     TransportEvidence,
@@ -130,6 +133,182 @@ class _RotationReadRepository(TransportRepository):
             self.read.set()
             await self.release.wait()
         return projection
+
+
+class _BlockedEvidenceReadRepository(TransportRepository):
+    def __init__(self) -> None:
+        self.before_read = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_evidence(
+        self,
+        db: AsyncSession,
+        evidence_id: int,
+        *,
+        for_update: bool = False,
+    ) -> TransportEvidence | None:
+        self.before_read.set()
+        await self.release.wait()
+        return await super().get_evidence(db, evidence_id, for_update=for_update)
+
+
+async def test_concurrent_duplicate_public_calls_share_one_postgresql_aggregate(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid.uuid4().hex
+    services = [
+        TransportService(
+            integration_session_factory,
+            TransportRepository(),
+            _UnusedProvider(),
+            _UnusedPublisher(),
+        )
+        for _ in range(2)
+    ]
+
+    handles = await asyncio.gather(
+        *(
+            service.move_rack(
+                f"integration-duplicate-{suffix}",
+                TransportCaller("INTEGRATION"),
+                f"rack-duplicate-{suffix}",
+                RackPosition("SOURCE"),
+                RackPosition("TARGET"),
+            )
+            for service in services
+        )
+    )
+
+    try:
+        assert handles[0] == handles[1]
+        async with integration_session_factory() as db:
+            tasks = list(
+                await db.scalars(
+                    select(TransportTask).where(TransportTask.client_request_id == f"integration-duplicate-{suffix}")
+                )
+            )
+        assert len(tasks) == 1
+    finally:
+        task_id = handles[0].transport_task_id
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id == task_id)
+            )
+            await db.execute(delete(TransportMember).where(TransportMember.transport_task_id == task_id))
+            await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == task_id))
+
+
+async def test_concurrent_resource_conflict_has_one_postgresql_winner(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid.uuid4().hex
+    services = [
+        TransportService(
+            integration_session_factory,
+            TransportRepository(),
+            _UnusedProvider(),
+            _UnusedPublisher(),
+        )
+        for _ in range(2)
+    ]
+    results = await asyncio.gather(
+        *(
+            service.move_rack(
+                f"integration-conflict-{index}-{suffix}",
+                TransportCaller("INTEGRATION"),
+                f"rack-conflict-{suffix}",
+                RackPosition("SOURCE"),
+                RackPosition("TARGET"),
+            )
+            for index, service in enumerate(services)
+        ),
+        return_exceptions=True,
+    )
+
+    try:
+        winners = [result for result in results if not isinstance(result, BaseException)]
+        conflicts = [result for result in results if isinstance(result, TransportResourceConflict)]
+        assert len(winners) == 1
+        assert len(conflicts) == 1
+    finally:
+        async with integration_session_factory.begin() as db:
+            task_ids = list(
+                await db.scalars(
+                    select(TransportTask.transport_task_id).where(
+                        TransportTask.client_request_id.in_(
+                            [f"integration-conflict-{index}-{suffix}" for index in range(2)]
+                        )
+                    )
+                )
+            )
+            if task_ids:
+                await db.execute(
+                    delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
+                )
+                await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
+                await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
+
+
+async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid.uuid4().hex
+    event_id = f"integration-stale-evidence-{suffix}"
+    setup_service = TransportService(
+        integration_session_factory,
+        TransportRepository(),
+        _UnusedProvider(),
+        _UnusedPublisher(),
+    )
+    await setup_service.record_evidence(
+        event_id=event_id,
+        transport_task_id=f"missing-{suffix}",
+        operation=RESULT_OPERATION,
+        payload={
+            "event_id": event_id,
+            "transport_task_id": f"missing-{suffix}",
+            "kind": "RACK_MOVE",
+            "results": [],
+        },
+    )
+    blocked_repository = _BlockedEvidenceReadRepository()
+    stale_service = TransportService(
+        integration_session_factory,
+        blocked_repository,
+        _UnusedProvider(),
+        _UnusedPublisher(),
+    )
+    winner_service = TransportService(
+        integration_session_factory,
+        TransportRepository(),
+        _UnusedProvider(),
+        _UnusedPublisher(),
+    )
+    stale_task = asyncio.create_task(stale_service.process_pending_evidence(1))
+    await blocked_repository.before_read.wait()
+
+    try:
+        async with integration_session_factory.begin() as db:
+            evidence = await db.scalar(
+                select(TransportEvidence).where(TransportEvidence.event_id == event_id).with_for_update()
+            )
+            assert evidence is not None
+            evidence.claim_until = timezone.now_for_db() - timedelta(seconds=1)
+
+        assert await winner_service.process_pending_evidence(1) == 1
+        blocked_repository.release.set()
+        assert await stale_task == 0
+
+        async with integration_session_factory() as db:
+            evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == event_id))
+        assert evidence is not None
+        assert evidence.status == "CONFLICT"
+        assert evidence.conflict_code == "TRANSPORT_TASK_NOT_FOUND"
+    finally:
+        blocked_repository.release.set()
+        await asyncio.gather(stale_task, return_exceptions=True)
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(TransportEvidence).where(TransportEvidence.event_id == event_id))
 
 
 async def test_evidence_application_rolls_back_task_member_and_evidence_together(

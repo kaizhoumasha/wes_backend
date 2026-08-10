@@ -302,7 +302,7 @@ src/app/wms_adapter/
 - [x] 覆盖 `exchange_pairs` 为 0、1、2、3，对内料箱/位置重复，以及合法的 1～2 个交换对。
 - [x] 覆盖 `client_request_id` 唯一、同请求同摘要幂等、同请求异摘要冲突。
 - [x] 建立最小活动资源唯一约束：货架任务绑定该货架；料箱任务绑定每个料箱，以及来源/目标储位引用的全部不同货架。
-- [x] 建立活动资源部分唯一索引、待提交/重提领取索引、`event_id` 唯一索引、待处理 evidence 索引和待发布结果领取索引；不增加缓存。
+- [x] 建立活动资源部分唯一索引、待提交/重提领取索引、`operation + event_id` 复合唯一索引、待处理 evidence 索引和待发布结果领取索引；不增加缓存。
 - [x] 使用 Alembic generator 生成迁移；不手写 revision ID，不迁移旧数据。
 - [x] 在隔离 PostgreSQL 空库验证 upgrade、约束和索引。
 

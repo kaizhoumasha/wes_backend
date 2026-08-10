@@ -49,7 +49,14 @@ class TransportEventHandler:
             envelope = validate_callback_envelope(raw_envelope)
         except TransportContractError as error:
             request_id = raw_envelope.get("request_id") if isinstance(raw_envelope, dict) else None
-            return _response(422, request_id if isinstance(request_id, str) else None, "REJECTED", str(error))
+            if isinstance(request_id, str):
+                try:
+                    request_id.encode("utf-8")
+                except UnicodeEncodeError:
+                    request_id = None
+            else:
+                request_id = None
+            return _response(422, request_id, "REJECTED", str(error))
         data = envelope["data"]
         try:
             code = await self._recorder.record_evidence(

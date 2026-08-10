@@ -109,7 +109,7 @@ async def test_delivery_unknown_is_not_interpreted_as_rejection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_request_is_a_deterministic_not_sent_result() -> None:
+async def test_oversized_request_is_a_deterministic_payload_rejection() -> None:
     transport = NoSendTransport()
     request = MoveBinsRequest(
         "client-oversized",
@@ -128,5 +128,6 @@ async def test_oversized_request_is_a_deterministic_not_sent_result() -> None:
         transport_task_id="transport-oversized",
     )
 
-    assert result.code is TransportSubmitCode.NOT_SENT
+    assert result.code is TransportSubmitCode.REJECTED
+    assert result.reason_code == "PAYLOAD_TOO_LARGE"
     assert transport.send_count == 0

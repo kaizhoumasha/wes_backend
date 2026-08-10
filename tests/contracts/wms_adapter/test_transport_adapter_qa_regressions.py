@@ -60,6 +60,16 @@ def _ack(status: int, code: str, data: dict[str, object]) -> FakeAccessResult:
 
 
 @pytest.mark.asyncio
+async def test_busy_ack_without_retry_delay_uses_service_fallback() -> None:
+    access = _ack(429, "BUSY", {"transport_task_id": "transport-1"})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(_request(), transport_task_id="transport-1")
+
+    assert result.code is TransportSubmitCode.BUSY
+    assert result.retry_after_ms is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_retry_after", [True, 0, -1, "1000"])
 async def test_busy_ack_discards_non_positive_integer_retry_delay(invalid_retry_after: object) -> None:
     access = _ack(

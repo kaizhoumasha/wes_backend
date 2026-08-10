@@ -38,8 +38,13 @@ class WmsTransportAdapter:
                 max_request_body_bytes=_BODY_LIMIT,
                 max_response_body_bytes=_BODY_LIMIT,
             )
-        except (WmsRequestBodyTooLargeError, OutboundHttpClosedError):
-            return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)
+        except (WmsRequestBodyTooLargeError, OutboundHttpClosedError) as error:
+            request_too_large = isinstance(error, WmsRequestBodyTooLargeError)
+            return TransportSubmitResult(
+                TransportSubmitCode.REJECTED if request_too_large else TransportSubmitCode.NOT_SENT,
+                transport_task_id,
+                reason_code="PAYLOAD_TOO_LARGE" if request_too_large else None,
+            )
         delivery_state = getattr(access.delivery_state, "value", access.delivery_state)
         if delivery_state == "NOT_SENT":
             return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)

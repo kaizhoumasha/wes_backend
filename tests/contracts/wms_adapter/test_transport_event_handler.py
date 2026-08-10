@@ -152,6 +152,21 @@ async def test_handler_rejects_unencodable_json_string_without_persisting() -> N
 
 
 @pytest.mark.asyncio
+async def test_handler_does_not_echo_an_unencodable_request_id() -> None:
+    recorder = FakeRecorder()
+    raw_body = (
+        b'{"request_id":"\\ud800","operation":"transport.task.member_position_changed@v1","timestamp":1,"data":{}}'
+    )
+
+    response = await TransportEventHandler(recorder).handle(raw_body)
+
+    assert response.http_status == 422
+    assert response.body["request_id"] is None
+    json.dumps(response.body, ensure_ascii=False).encode("utf-8")
+    assert recorder.calls == []
+
+
+@pytest.mark.asyncio
 async def test_result_requires_position_xor_unknown_and_failure_code() -> None:
     handler = TransportEventHandler(FakeRecorder())
     invalid = _body(

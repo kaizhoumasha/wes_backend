@@ -82,6 +82,43 @@ class TimeoutOncePublisher(RecordingPublisher):
         await super().publish(outcome)
 
 
+class FailOnceOutcomeBookkeepingRepository(TransportRepository):
+    def __init__(self) -> None:
+        self.fail_bookkeeping = False
+
+    async def get_task(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+        *,
+        for_update: bool = False,
+    ) -> TransportTask | None:
+        if self.fail_bookkeeping:
+            self.fail_bookkeeping = False
+            raise RuntimeError("simulated crash before outcome bookkeeping")
+        return await super().get_task(db, transport_task_id, for_update=for_update)
+
+
+class BlockedOutcomeBookkeepingRepository(TransportRepository):
+    def __init__(self) -> None:
+        self.block_bookkeeping = False
+        self.before_bookkeeping = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_task(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+        *,
+        for_update: bool = False,
+    ) -> TransportTask | None:
+        if self.block_bookkeeping:
+            self.block_bookkeeping = False
+            self.before_bookkeeping.set()
+            await self.release.wait()
+        return await super().get_task(db, transport_task_id, for_update=for_update)
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_transport_tables(db_engine: object) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -316,6 +353,97 @@ async def test_failed_publish_is_reclaimed_after_lease_expiry(db_engine: object)
     task = await _load_task(db_engine, handle.transport_task_id)
     assert task.published_outcome_version == task.outcome_version == 1
     assert [outcome.outcome_version for outcome in publisher.outcomes] == [1]
+
+
+@pytest.mark.asyncio
+async def test_publish_success_before_bookkeeping_crash_is_retried_with_same_version(db_engine: object) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    repository = FailOnceOutcomeBookkeepingRepository()
+    publisher = RecordingPublisher()
+    provider = ConfigurableProvider(TransportSubmitCode.REJECTED)
+    service = TransportService(sessions, repository, provider, publisher)
+    handle = await service.move_rack(
+        "publish-bookkeeping-crash",
+        _caller(),
+        "rack-publish-bookkeeping-crash",
+        RackPosition("A"),
+        RackPosition("B"),
+    )
+    await service.submit_pending_tasks(1)
+    repository.fail_bookkeeping = True
+
+    with pytest.raises(RuntimeError, match="before outcome bookkeeping"):
+        await service.publish_pending_outcomes(1)
+
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == handle.transport_task_id)
+            .values(outcome_claim_until=timezone.now_for_db() - timedelta(seconds=1))
+        )
+    assert await service.publish_pending_outcomes(1) == 1
+    task = await _load_task(db_engine, handle.transport_task_id)
+    assert task.published_outcome_version == task.outcome_version == 1
+    assert [outcome.outcome_version for outcome in publisher.outcomes] == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version(db_engine: object) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    blocked_repository = BlockedOutcomeBookkeepingRepository()
+    publisher = RecordingPublisher()
+    provider = ConfigurableProvider(TransportSubmitCode.CONFLICT)
+    stale_service = TransportService(sessions, blocked_repository, provider, publisher)
+    winner_service = TransportService(sessions, TransportRepository(), provider, publisher)
+    handle = await stale_service.move_rack(
+        "publish-stale-token",
+        _caller(),
+        "rack-publish-stale-token",
+        RackPosition("A"),
+        RackPosition("B"),
+    )
+    await stale_service.submit_pending_tasks(1)
+    blocked_repository.block_bookkeeping = True
+    stale_publish = asyncio.create_task(stale_service.publish_pending_outcomes(1))
+    await blocked_repository.before_bookkeeping.wait()
+    result = {
+        "event_id": "publish-stale-token-result",
+        "transport_task_id": handle.transport_task_id,
+        "kind": "RACK_MOVE",
+        "results": [
+            {
+                "object_id": "rack-publish-stale-token",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "B"},
+                "arrival_face": "B",
+            }
+        ],
+    }
+
+    try:
+        await winner_service.record_evidence(
+            event_id=result["event_id"],
+            transport_task_id=handle.transport_task_id,
+            operation=RESULT_OPERATION,
+            payload=result,
+        )
+        assert await winner_service.process_pending_evidence(1) == 1
+        async with sessions.begin() as db:
+            await db.execute(
+                update(TransportTask)
+                .where(TransportTask.transport_task_id == handle.transport_task_id)
+                .values(outcome_claim_until=timezone.now_for_db() - timedelta(seconds=1))
+            )
+        assert await winner_service.publish_pending_outcomes(1) == 1
+        blocked_repository.release.set()
+        assert await stale_publish == 0
+    finally:
+        blocked_repository.release.set()
+        await asyncio.gather(stale_publish, return_exceptions=True)
+
+    task = await _load_task(db_engine, handle.transport_task_id)
+    assert task.published_outcome_version == task.outcome_version == 2
+    assert [outcome.outcome_version for outcome in publisher.outcomes] == [1, 2]
 
 
 @pytest.mark.asyncio
