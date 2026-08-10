@@ -14,8 +14,9 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from src.app.device.models.command import DeviceCommand
-from src.app.device.models.device import Device
+from src.app.device.models.device import Device, DeviceStatus
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.timeline import (
@@ -64,6 +65,73 @@ if TYPE_CHECKING:
 def _canonical_payload_hash(payload: dict[str, object]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode()
     return sha256(encoded).hexdigest()
+
+
+def test_unbound_workline_device_event_persists_idempotently_without_execution_objects() -> None:
+    """通用 ingress 不得要求插件 binding，也不得在领取前创建业务执行对象。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        service = RuntimeInboxService()
+        async with session_factory() as db:
+            workline = WorkLine(
+                line_code="IT-RUNTIME-INBOX-GENERIC",
+                line_name="RuntimeInbox Generic Ingress",
+                line_type=LineType.AUTO,
+                is_active=True,
+            )
+            db.add(workline)
+            await db.flush()
+            scanner = Device(
+                device_code="IT-GENERIC-SCANNER-01",
+                device_name="Generic Ingress Scanner",
+                work_line_id=workline.id,
+                device_role="SCANNER",
+                device_status=DeviceStatus.IDLE,
+                version=1,
+            )
+            db.add(scanner)
+            await db.flush()
+
+            payload = {
+                "event_type": "SCAN_COMPLETED",
+                "device_code": scanner.device_code,
+                "data": {"scan_code": "GENERIC-INGRESS-001"},
+            }
+            accepted = await service.accept_device_event(
+                db,
+                device_code=scanner.device_code,
+                event_type="SCAN_COMPLETED",
+                payload_json=payload,
+                trace_id="trace-generic-ingress",
+                event_id="event-generic-ingress",
+                workline_id=workline.id,
+                device_id=scanner.id,
+            )
+            duplicate = await service.accept_device_event(
+                db,
+                device_code=scanner.device_code,
+                event_type="SCAN_COMPLETED",
+                payload_json=payload,
+                trace_id="trace-generic-ingress",
+                event_id="event-generic-ingress",
+                workline_id=workline.id,
+                device_id=scanner.id,
+            )
+            await db.commit()
+
+            assert accepted.created is True
+            assert duplicate.created is False
+            assert duplicate.record.id == accepted.record.id
+            assert accepted.record.workline_session_id is None
+            assert accepted.record.execution_session_id is None
+            assert accepted.record.correlation_id is None
+            assert await db.scalar(select(func.count()).select_from(WorklineSession)) == 0
+            assert await db.scalar(select(func.count()).select_from(ExecutionSession)) == 0
+            assert await db.scalar(select(func.count()).select_from(ExecutionWorkItem)) == 0
+
+    asyncio.run(with_temporary_runtime_database(scenario))
 
 
 def test_device_event_persists_claims_and_applies_production_effects_once() -> None:
