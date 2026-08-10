@@ -197,7 +197,7 @@ async def test_process_claimed_rejects_tampered_replay_before_context_or_effect(
     assert context_calls == []
     assert inbox_service.mark_failed_kwargs is not None
     assert inbox_service.mark_failed_kwargs["error_code"] == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
-    assert inbox_service.mark_failed_kwargs["error_message"] == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
+    assert inbox_service.mark_failed_kwargs["error_message"].startswith("REPLAY_SOURCE_INTEGRITY_VIOLATION")
     assert inbox_service.mark_failed_kwargs["retryable"] is False
     assert logged_exceptions == []
     assert logged_warnings

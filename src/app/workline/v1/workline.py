@@ -1,9 +1,8 @@
 """WorkLine API 路由"""
 
 from typing import Annotated, cast
-from urllib.parse import unquote
 
-from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
+from fastapi import APIRouter, Body, Depends, Path, Request, status
 
 from src.app.workline.models import (
     PlaneSceneView,
@@ -12,8 +11,6 @@ from src.app.workline.models import (
     WorkLineActivationRequest,
     WorkLineConfigurationStatus,
     WorkLineCreate,
-    WorkLinePluginManifestSummary,
-    WorkLinePluginOption,
     WorkLineResponse,
     WorkLineStateTransitionRequest,
     WorkLineUpdate,
@@ -24,7 +21,6 @@ from src.core.base_api import BaseAPI
 from src.core.rbac import RequirePermission
 from src.core.response import (
     BusinessErrorCode,
-    ClientErrorCode,
     ResourceErrorCode,
     ResponseSchemaModel,
     response_builder,
@@ -49,65 +45,6 @@ def _plane_read_principal(
     return PlaneReadPrincipal(
         user_id=user_id,
         is_superuser=bool(getattr(request.state, "is_superuser", False)),
-    )
-
-
-@router.get(
-    "/plugins/options",
-    summary="[biz:workline:list] 获取作业线插件选项",
-    response_model=ResponseSchemaModel[list[WorkLinePluginOption]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:list"))],
-)
-async def list_workline_plugin_options() -> ResponseSchemaModel[list[WorkLinePluginOption]]:
-    """从插件注册表导出作业线插件与契约版本下拉选项。"""
-
-    return cast(
-        "ResponseSchemaModel[list[WorkLinePluginOption]]",
-        response_builder.success(data=workline_service.list_plugin_options()),
-    )
-
-
-@router.get(
-    "/plugins/{plugin_key:path}/manifest",
-    summary="[biz:workline:list] 获取单个作业线插件 manifest 摘要",
-    response_model=ResponseSchemaModel[WorkLinePluginManifestSummary],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:list"))],
-)
-async def get_workline_plugin_definition(
-    plugin_key: str = Path(...),
-    contract_version: str | None = Query(default=None),
-) -> ResponseSchemaModel[WorkLinePluginManifestSummary]:
-    """从插件注册表导出单个作业线插件 manifest 摘要。"""
-
-    plugin_key = unquote(plugin_key)
-    try:
-        summary = workline_service.get_plugin_definition_summary(
-            plugin_key,
-            contract_version=contract_version,
-        )
-    except (TypeError, ValueError) as exc:
-        return cast(
-            "ResponseSchemaModel[WorkLinePluginManifestSummary]",
-            response_builder.fail(
-                code=ClientErrorCode.VALIDATION_ERROR,
-                message=f"工作线插件 manifest 无效: {plugin_key}: {exc}",
-            ),
-        )
-
-    if summary is None:
-        return cast(
-            "ResponseSchemaModel[WorkLinePluginManifestSummary]",
-            response_builder.fail(
-                code=ResourceErrorCode.NOT_FOUND,
-                message=f"工作线插件不存在: {plugin_key}",
-            ),
-        )
-
-    return cast(
-        "ResponseSchemaModel[WorkLinePluginManifestSummary]",
-        response_builder.success(data=summary),
     )
 
 
@@ -157,8 +94,6 @@ async def activate_workline(
             id,
             version=payload.version,
             cache=cache,
-            actor=str(current_user_id),
-            reason=payload.reason or f"人工启用作业线（用户 {current_user_id}）",
         )
     except ValueError as exc:
         return cast("ResponseSchemaModel[WorkLineResponse]", _workline_value_error_response(exc))

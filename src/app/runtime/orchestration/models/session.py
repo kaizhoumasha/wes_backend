@@ -100,12 +100,6 @@ class WorklineSessionBase(BaseMixin):
         description="作业线 ID（关联 WorkLine.id）",
     )
 
-    plugin_key: str = Field(
-        max_length=100,
-        index=True,
-        description="插件标识（如 packing_zone, smt）",
-    )
-
     # 🔥 使用 VARCHAR + CHECK 约束
     run_mode: RunMode = Field(
         default=RunMode.AUTO,
@@ -162,24 +156,6 @@ class WorklineSessionBase(BaseMixin):
         max_length=50,
         description="上下文 Schema 版本（插件管理）",
     )
-    contract_version: str = Field(
-        max_length=50,
-        description="执行时绑定的协议版本",
-    )
-    plugin_binding_id: int = Field(
-        foreign_key="wes_biz.workline_plugin_bindings.id",
-        index=True,
-        description="执行时固定的插件 binding ID",
-    )
-    plugin_binding_version: int = Field(ge=1, description="执行时固定的 binding 版本")
-    plugin_config_hash: str = Field(max_length=64, description="执行时固定的 typed config 摘要")
-    plugin_index_digest: str = Field(max_length=64, description="执行时固定的生成索引摘要")
-    plugin_state_json: dict[str, object] = Field(
-        default_factory=dict,
-        sa_column=Column(JSON),
-        description="插件 typed state JSON 快照；禁止恢复历史字符串状态",
-    )
-    plugin_state_version: int = Field(default=0, ge=0, description="插件 state 乐观版本")
     started_at: datetime | None = Field(
         default=None,
         index=True,

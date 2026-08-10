@@ -6,8 +6,7 @@
 
 """工作线运行时服务容器。
 
-插件只能通过这个容器访问明确允许的内部领域能力，避免直接依赖 HTTP、
-Repository 或 SQL。未注入的能力必须由插件自身使用确定性领域 fallback。
+运行时基础能力通过这个容器显式装配，避免业务规则直接依赖 HTTP、Repository 或 SQL。
 """
 
 from __future__ import annotations
@@ -19,28 +18,9 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
     from src.app.resource.models import RackKind
-    from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
     from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition
     from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
     from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
-
-
-@runtime_checkable
-class BinAllocator(Protocol):
-    """料箱分配领域服务接口。"""
-
-    def allocate(self, barcode: str) -> Mapping[str, Any] | None:
-        """按条码分配料箱。"""
-        ...
-
-    def plan_allocation(
-        self,
-        barcode: str,
-        *,
-        context: Mapping[str, Any] | None = None,
-    ) -> SmtRackBinSchedulingDecision | None:
-        """按条码和运行时上下文规划料箱调度。"""
-        ...
 
 
 @runtime_checkable
@@ -100,9 +80,8 @@ class BoundStationLeaseStatusProvider:
 
 @dataclass(frozen=True, slots=True)
 class WorklineRuntimeServices:
-    """插件运行时可访问的领域服务集合。"""
+    """核心运行时可访问的基础能力集合。"""
 
-    bin_allocator: BinAllocator | None = None
     active_rack_snapshot_provider: ActiveRackSnapshotProvider | None = None
     station_lease_status_provider: StationLeaseStatusProvider | None = None
     wms_query_execution_port: WmsQueryExecutionPort | None = None
@@ -121,8 +100,6 @@ def build_workline_runtime_services(
     """构建当前 worker 使用的运行时服务集合。"""
 
     del session
-    from src.app.resource.services.smt_rack_bin_scheduling_service import smt_rack_bin_scheduling_service
-
     active_rack_snapshot_provider = None
     station_lease_status_provider = None
     if db is not None and workline is not None:
@@ -149,7 +126,6 @@ def build_workline_runtime_services(
         raise RuntimeError("bound WMS EFFECT preparation port requires callable allow_new_claim policy")
 
     return WorklineRuntimeServices(
-        bin_allocator=smt_rack_bin_scheduling_service,
         active_rack_snapshot_provider=active_rack_snapshot_provider,
         station_lease_status_provider=station_lease_status_provider,
         wms_query_execution_port=wms_query_execution_port,
@@ -160,7 +136,6 @@ def build_workline_runtime_services(
 
 __all__ = [
     "ActiveRackSnapshotProvider",
-    "BinAllocator",
     "BoundStationLeaseStatusProvider",
     "StationLeaseStatusProvider",
     "WorklineRuntimeServices",

@@ -19,10 +19,9 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
-from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
-from src.app.workline.services.workline_service import WorkLineService, workline_service
+from src.app.workline.services.workline_service import workline_service
 from src.core.logger import logger
 from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
@@ -34,6 +33,7 @@ _SUCCESS = "SUCCESS"
 _FAILED = "FAILED"
 _READY = WorkLineRuntimeStatus.READY
 _STOPPED = WorkLineRuntimeStatus.STOPPED
+_DEFAULT_DEVICE_STATUS_PATH = "/status"
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,14 +317,17 @@ class WorkLineStartAdmissionService:
         return None
 
     def _resolve_command_target_devices(self, workline: Any, devices: list[Any]) -> list[Any]:
-        definition = get_workline_capability_definition(
-            getattr(workline, "plugin_key", None),
-            getattr(workline, "contract_version", None),
+        """START 只依赖 WorkLine 物理拓扑，不从业务插件推导目标设备。"""
+
+        del workline
+        return sorted(
+            (
+                device
+                for device in devices
+                if isinstance(getattr(device, "id", None), int) and bool(getattr(device, "is_active", True))
+            ),
+            key=lambda device: (str(getattr(device, "device_code", "")), int(getattr(device, "id", 0))),
         )
-        if definition is None:
-            return []
-        target_map = WorkLineService._command_target_device_map(definition.schema, devices)
-        return [target_map[device_id][0] for device_id in sorted(target_map)]
 
     def _build_status_targets(self, devices: list[Any]) -> list[StartAdmissionStatusTarget]:
         groups: dict[tuple[str, str, int, str], set[str]] = {}
@@ -332,12 +335,12 @@ class WorkLineStartAdmissionService:
             device_code = getattr(device, "device_code", None)
             host = getattr(device, "host", None)
             port = getattr(device, "port", None)
-            status_path = WorkLineService._resolve_device_status_path(device)
+            status_path = self._resolve_device_status_path(device)
             if not isinstance(device_code, str) or not device_code or not isinstance(host, str) or not status_path:
                 continue
             if not isinstance(port, int):
                 continue
-            key = (WorkLineService._resolve_device_scheme(device), host, port, status_path)
+            key = (self._resolve_device_scheme(device), host, port, status_path)
             groups.setdefault(key, set()).add(device_code)
         return [
             StartAdmissionStatusTarget(
@@ -349,6 +352,23 @@ class WorkLineStartAdmissionService:
             )
             for (scheme, host, port, status_path), device_codes in sorted(groups.items())
         ]
+
+    @staticmethod
+    def _resolve_device_scheme(device: Any) -> str:
+        protocol = getattr(device, "protocol", "HTTP")
+        value = str(getattr(protocol, "value", protocol) or "HTTP").lower()
+        return value if value in {"http", "https"} else "http"
+
+    @staticmethod
+    def _resolve_device_status_path(device: Any) -> str:
+        capabilities = getattr(device, "capabilities_json", None)
+        if isinstance(capabilities, dict):
+            for key in ("status_path", "device_status_path"):
+                value = capabilities.get(key)
+                if isinstance(value, str) and value.strip():
+                    path = value.strip()
+                    return path if path.startswith("/") else f"/{path}"
+        return _DEFAULT_DEVICE_STATUS_PATH
 
     async def _probe_targets(
         self,

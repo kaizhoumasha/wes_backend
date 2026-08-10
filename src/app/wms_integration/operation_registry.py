@@ -1,4 +1,4 @@
-"""WMS 35 项 operation 的唯一静态注册表。"""
+"""WMS 32 项 operation 的唯一静态注册表。"""
 
 from __future__ import annotations
 
@@ -29,10 +29,10 @@ ASYNC_EFFECT_OPERATIONS = tuple(operation for operation in EFFECT_OPERATIONS if 
 ASYNC_EFFECT_OPERATION_IDENTITIES = frozenset(operation.identity for operation in ASYNC_EFFECT_OPERATIONS)
 
 _identities = tuple(operation.identity for operation in WMS_OPERATIONS)
-if len(_identities) != 35 or len(_identities) != len(set(_identities)):
-    raise RuntimeError("WMS operation registry must contain exactly 35 unique identities")
-if len(ASYNC_EFFECT_OPERATIONS) != 7:
-    raise RuntimeError("WMS operation registry must contain exactly 7 async EFFECT operations")
+if len(_identities) != 32 or len(_identities) != len(set(_identities)):
+    raise RuntimeError("WMS operation registry must contain exactly 32 unique identities")
+if len(ASYNC_EFFECT_OPERATIONS) != 4:
+    raise RuntimeError("WMS operation registry must contain exactly 4 async EFFECT operations")
 
 WMS_OPERATION_BY_IDENTITY = MappingProxyType({operation.identity: operation for operation in WMS_OPERATIONS})
 

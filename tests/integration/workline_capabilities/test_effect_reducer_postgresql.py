@@ -17,7 +17,7 @@ from src.app.runtime.orchestration.execution_correlation import ExecutionCorrela
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase, ReconciliationCaseStatus
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
-from tests.support.runtime_binding import seed_runtime_binding
+from src.app.workline.models.workline import LineType, WorkLine
 from tests.support.runtime_inbox_processing_postgresql import with_temporary_runtime_database
 
 
@@ -58,18 +58,16 @@ def test_effect_reducer_and_reconciliation_constraints_on_postgresql() -> None:
                 "pk_reconciliation_cases",
             }
 
-            workline, binding = await seed_runtime_binding(
-                db,
+            workline = WorkLine(
                 line_code="EFFECT-REDUCER-POSTGRESQL",
+                line_name="Effect reducer PostgreSQL",
+                line_type=LineType.AUTO,
+                is_active=True,
             )
+            db.add(workline)
+            await db.flush()
             execution_session = ExecutionSession(
                 workline_id=workline.id,
-                plugin_key=binding.plugin_key,
-                manifest_version=binding.contract_version,
-                plugin_binding_id=binding.id,
-                plugin_binding_version=binding.binding_version,
-                plugin_config_hash=binding.typed_config_hash,
-                plugin_index_digest=binding.generated_index_digest,
                 state="RUNNING",
             )
             db.add(execution_session)

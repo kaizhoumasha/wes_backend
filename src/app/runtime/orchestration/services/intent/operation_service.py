@@ -6,7 +6,6 @@ import hashlib
 import json
 import uuid
 from contextlib import suppress
-from copy import deepcopy
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -21,8 +20,6 @@ from src.app.device.repositories import (
 from src.app.runtime.orchestration.effect_state_contract import transition_system_outbox
 from src.app.runtime.orchestration.models.operation import (
     ResolveRuntimeReconciliationRequest,
-    SandboxEventTemplate,
-    SandboxResultTemplate,
     SandboxTemplatesResponse,
 )
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
@@ -37,7 +34,6 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import R
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository  # noqa: TC001
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
 from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query, workline_repository
-from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
 from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxAuditPersistenceFailed,
     RuntimeInboxConflict,
@@ -45,7 +41,6 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxService,
 )
-from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.workline import WorkLineRunMode
@@ -80,33 +75,6 @@ _TERMINAL_COMMAND_STATUSES = {
 }
 
 _MANUAL_OPERATIONS = frozenset({"HOLD", "RESUME", "CANCEL"})
-
-_SANDBOX_OPERATOR_VISIBLE_EVENT_CATEGORIES = frozenset({"ENTRY_DEVICE", "OPERATOR", "SAFETY"})
-
-
-# 常用 Event 类型的默认 Payload 模板（不含 device_code/event_type/timestamp，由运行时填充）
-_DEFAULT_EVENT_PAYLOAD_TEMPLATES: dict[str, dict[str, Any]] = {
-    "ESTOP_PRESSED": {
-        "data": None,
-    },
-    "TOTE_ARRIVED": {
-        "data": {"tote_id": "TOTE001", "location": "INBOUND"},
-    },
-    "MOVE_FORWARD": {
-        "data": {},
-    },
-    "PICK_AND_PUT": {
-        "data": {
-            "PkgID": "SVYU00125TP4LCR02_2",
-            "from_location": "INPUT",
-            "to_location": "PIPELINE-IN-01",
-            "reel_diameter": "7.0",
-            "reel_thickness": "2.5",
-            "measurement_result": "OK",
-            "result": "SUCCESS",
-        },
-    },
-}
 
 
 class WorklineOperationService(BaseService[Any, Any]):
@@ -1113,8 +1081,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             await self._commit_mutation(db)
         return inbox_result.record
 
-    DEFAULT_EVENT_PAYLOAD_TEMPLATES = _DEFAULT_EVENT_PAYLOAD_TEMPLATES
-
     def _require_simulation_workline(self, workline: Any) -> None:
         if workline.run_mode != WorkLineRunMode.SIMULATION:
             raise ValueError(
@@ -1189,55 +1155,6 @@ class WorklineOperationService(BaseService[Any, Any]):
                 f"outbox_session_id={outbox.session_id}, command_session_id={session.id}"
             )
 
-    def _get_default_payload_template(self, event_type: str, device_code: str | None = None) -> dict[str, Any]:
-        """获取事件类型的默认 Payload 模板，动态填充 device_code/event_type/timestamp。"""
-
-        if event_type == "SCAN_COMPLETED":
-            template = rough_sorter_scan_completed_payload()
-        else:
-            template = deepcopy(self.DEFAULT_EVENT_PAYLOAD_TEMPLATES.get(event_type, {}))
-        template["event_type"] = event_type
-        template["timestamp"] = int(timezone.now_utc().timestamp() * 1000)
-        template["device_code"] = device_code or "DEVICE_CODE"
-        return template
-
-    def _generate_event_templates_from_manifest_events(
-        self, manifest: Any, device_role: str | None = None, device_code: str | None = None
-    ) -> list[SandboxEventTemplate]:
-        """从 manifest.events 自动生成操作员可见 Event 模板，可按设备角色过滤。"""
-        event_types: list[str] = []
-        for binding in getattr(manifest, "events", None) or ():
-            category = getattr(getattr(binding, "category", None), "value", getattr(binding, "category", None))
-            if category not in _SANDBOX_OPERATOR_VISIBLE_EVENT_CATEGORIES:
-                continue
-            if device_role and not self._event_allows_device_role(
-                getattr(binding, "source_device_roles", None),
-                device_role,
-            ):
-                continue
-            event_type = getattr(binding, "event", None)
-            if isinstance(event_type, str) and event_type:
-                event_types.append(event_type)
-
-        return [
-            SandboxEventTemplate(
-                event_type=event_type,
-                label=event_type.replace("_", " ").title(),
-                payload_template=self._get_default_payload_template(event_type, device_code),
-            )
-            for event_type in event_types
-        ]
-
-    @staticmethod
-    def _event_allows_device_role(roles: Any, device_role: str) -> bool:
-        if roles is None:
-            return True
-        if isinstance(roles, str):
-            return roles == device_role
-        if isinstance(roles, (tuple, list, set)):
-            return device_role in roles
-        return False
-
     async def get_sandbox_templates(
         self,
         db: Any,
@@ -1245,45 +1162,14 @@ class WorklineOperationService(BaseService[Any, Any]):
         workline_id: int,
         device_id: int | None = None,
     ) -> SandboxTemplatesResponse:
-        """获取工作线插件定义的沙箱模板。
-
-        Event 模板和 Result 模板从插件 manifest 读取，
-        可按设备角色过滤。
-        """
+        """当前核心不安装业务插件，因此不存在可执行的业务沙箱模板。"""
 
         workline = await self.workline_repo.get_by_id(db, workline_id)
         if workline is None:
             raise ValueError(f"工作线不存在: {workline_id}")
 
-        # 获取设备角色和代码，用于按角色过滤 Event 和填充模板
-        device_role = None
-        device_code = None
-        if device_id:
-            device = await self.device_repo.get_by_id(db, device_id)
-            if device:
-                device_role = device.device_role
-                device_code = device.device_code
-
-        plugin_key = workline.plugin_key
-        if not plugin_key:
-            return SandboxTemplatesResponse()
-
-        plugin_def = get_workline_capability_definition(plugin_key, getattr(workline, "contract_version", None))
-        if plugin_def is None:
-            return SandboxTemplatesResponse()
-
-        schema = getattr(plugin_def, "schema", None)
-        if schema is None:
-            return SandboxTemplatesResponse()
-
-        # 自动从 manifest.events 生成 Event 模板（可按设备角色过滤）
-        event_templates = self._generate_event_templates_from_manifest_events(schema, device_role, device_code)
-        result_templates: list[SandboxResultTemplate] = []
-
-        return SandboxTemplatesResponse(
-            event_templates=event_templates,
-            result_templates=result_templates,
-        )
+        del device_id
+        return SandboxTemplatesResponse()
 
 
 def _transition_sandbox_outbox_to_sent(outbox: Any) -> None:

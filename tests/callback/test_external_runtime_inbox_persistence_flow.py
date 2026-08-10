@@ -16,7 +16,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
     RuntimeInboxProcessorBridge,
 )
 from src.app.workline.models import LineType, WorkLine
-from tests.support.runtime_binding import binding_pin_fields
 
 
 @pytest.mark.asyncio
@@ -37,7 +36,6 @@ async def test_wms_event_persists_claims_and_processes_without_device_flow(db_se
         workline_id=workline.id,
         plugin_key="default",
         contract_version="1.0",
-        **binding_pin_fields(),
         status=SessionStatus.RUNNING,
         trace_id="trace-runtime-inbox-ext",
     )

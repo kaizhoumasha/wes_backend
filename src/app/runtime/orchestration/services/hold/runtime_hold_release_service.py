@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
@@ -34,10 +33,6 @@ from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
-from src.app.runtime.workline_plugins.registry import (
-    list_workline_ng_reasons,
-    resolve_workline_material_identity,
-)
 from src.app.sys.repositories import system_outbox_repository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str, optional_int
@@ -52,30 +47,6 @@ if TYPE_CHECKING:
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
     from src.app.sys.repositories import SystemOutboxRepository
     from src.app.workline.repositories.workline_repository import WorkLineRepository
-
-
-def _is_valid_runtime_measurement_payload(payload: dict[str, Any]) -> bool:
-    try:
-        reel_diameter = Decimal(str(payload.get("reel_diameter")))
-        reel_thickness = Decimal(str(payload.get("reel_thickness")))
-    except (InvalidOperation, TypeError, ValueError):
-        return False
-    return reel_diameter.is_finite() and reel_thickness.is_finite() and reel_diameter > 0 and reel_thickness > 0
-
-
-def _requires_runtime_measurement_continue_payload(command: DeviceCommand) -> bool:
-    return enum_str(command.plugin_key) == "rough_sorter" and enum_str(command.task_type) == "PICK_AND_PUT"
-
-
-def _validate_runtime_measurement_continue_payload(payload: dict[str, Any], command: DeviceCommand) -> None:
-    if not _requires_runtime_measurement_continue_payload(command):
-        return
-    if _is_valid_runtime_measurement_payload(payload):
-        return
-    raise RuntimeHoldReleaseError(
-        "INVALID_CONTINUE_RESULT_PAYLOAD",
-        "PICK_AND_PUT 继续需要补录有效 reel_diameter/reel_thickness",
-    )
 
 
 def _latest_matching_late_callback_data(session: Any | None, command: DeviceCommand) -> dict[str, Any]:
@@ -107,14 +78,10 @@ def _runtime_continue_result_payload(
 ) -> dict[str, Any]:
     payload = as_dict(request.result_payload)
     if payload:
-        _validate_runtime_measurement_continue_payload(payload, command)
         return payload
     payload = _latest_matching_late_callback_data(session, command)
     if payload:
-        _validate_runtime_measurement_continue_payload(payload, command)
         return payload
-    if _requires_runtime_measurement_continue_payload(command):
-        _validate_runtime_measurement_continue_payload({}, command)
     return as_dict(command.params)
 
 
@@ -481,8 +448,8 @@ class RuntimeHoldReleaseService:
     def _resolve_ng_reason(self, hold: RuntimeHold, ng_reason: Any) -> NgReasonDefinition:
         from src.app.runtime.capabilities.material_flow.contracts.ng_reason import build_ng_reason_catalog
 
-        plugin_reasons = list_workline_ng_reasons(hold.plugin_key, contract_version=hold.contract_version)
-        catalog = build_ng_reason_catalog(plugin_reasons)
+        del hold
+        catalog = build_ng_reason_catalog()
         reason = catalog.by_code.get(ng_reason.code)
         if reason is None or reason.source.value != ng_reason.source:
             raise RuntimeHoldReleaseError(
@@ -584,28 +551,28 @@ class RuntimeHoldReleaseService:
     def _resolve_material_identity(
         self, hold: RuntimeHold, *, request: ResolveRuntimeHoldRequest, session: Any | None
     ) -> Any:
-        from src.app.runtime.capabilities.material_flow.contracts.material_identity import MaterialIdentityInput
+        from src.app.runtime.capabilities.material_flow.contracts.material_identity import (
+            MaterialIdentity,
+            MaterialIdentityResolutionStatus,
+            hash_material_evidence,
+        )
 
         evidence = cast("Any", request.physical_handoff_evidence)
         material_scan_payload = evidence.material_scan_payload
         if not isinstance(material_scan_payload, dict):
             material_scan_payload = {"scan": material_scan_payload}
 
-        input_value = MaterialIdentityInput(
-            session_context=as_dict(getattr(session, "context_json", None)),
-            source_payload=self._material_source_payload(hold),
-            command_payload={},
-            material_scan_payload=material_scan_payload,
-            plugin_context={
-                "plugin_key": hold.plugin_key,
-                "contract_version": hold.contract_version,
-                "hold_id": hold.id,
-            },
-        )
-        return resolve_workline_material_identity(
-            hold.plugin_key,
-            input_value,
-            contract_version=hold.contract_version,
+        evidence = {
+            "session_context": as_dict(getattr(session, "context_json", None)),
+            "source_payload": self._material_source_payload(hold),
+            "material_scan_payload": material_scan_payload,
+            "hold_id": hold.id,
+        }
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.RESOLVED,
+            idempotency_key=hash_material_evidence(evidence),
+            display=material_scan_payload,
+            raw_evidence_hash=hash_material_evidence(evidence),
         )
 
     def _write_release_facts(

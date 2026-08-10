@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
@@ -27,8 +26,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxService,
 )
-from src.app.workline.models import WorkLine, WorklinePluginBinding
-from src.app.workline.models.workline import LineType
+from src.app.workline.models.workline import LineType, WorkLine
 
 NOW_MS = 1_700_000_000_000
 
@@ -60,17 +58,8 @@ async def _accept_received(service: Any, db: Any, **kwargs: Any) -> Any:
 async def _seed_execution_correlation(db_session, *, correlation_id: str = "corr-device-event-001"):
     """建立 ExecutionSession + ExecutionCorrelation，满足 IdempotencyKey FK 前置。"""
 
-    workline, binding = await _ensure_runtime_binding(db_session)
-    session = ExecutionSession(
-        workline_id=workline.id,
-        plugin_key=binding.plugin_key,
-        manifest_version=binding.contract_version,
-        plugin_binding_id=binding.id,
-        plugin_binding_version=binding.binding_version,
-        plugin_config_hash=binding.typed_config_hash,
-        plugin_index_digest=binding.generated_index_digest,
-        state="RUNNING",
-    )
+    workline = await _ensure_workline(db_session)
+    session = ExecutionSession(workline_id=workline.id, state="RUNNING")
     db_session.add(session)
     await db_session.flush()
     correlation = ExecutionCorrelation(
@@ -83,11 +72,11 @@ async def _seed_execution_correlation(db_session, *, correlation_id: str = "corr
     return correlation
 
 
-async def _ensure_runtime_binding(
+async def _ensure_workline(
     db_session,
     workline: WorkLine | None = None,
-) -> tuple[WorkLine, WorklinePluginBinding]:
-    """建立测试专用 binding，使所有持久化 runtime fixture 从创建时就携带完整 pins。"""
+) -> WorkLine:
+    """建立无插件的 WorkLine，作为 RuntimeInbox 持久化归属。"""
 
     if workline is None:
         workline = (await db_session.execute(select(WorkLine).limit(1))).scalar_one_or_none()
@@ -96,38 +85,10 @@ async def _ensure_runtime_binding(
             line_code="TEST-RUNTIME-INBOX-CORRELATION",
             line_name="Runtime Inbox Correlation",
             line_type=LineType.AUTO,
-            plugin_key="runtime-inbox-test",
-            contract_version="v1",
         )
         db_session.add(workline)
         await db_session.flush()
-    binding = (
-        await db_session.execute(
-            select(WorklinePluginBinding)
-            .where(WorklinePluginBinding.workline_id == workline.id)
-            .order_by(WorklinePluginBinding.binding_version.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if binding is None:
-        binding = WorklinePluginBinding(
-            workline_id=workline.id,
-            plugin_key="runtime-inbox-test",
-            contract_version="v1",
-            binding_version=1,
-            typed_config_json={},
-            typed_config_hash="a" * 64,
-            provider_profile_snapshot_json=[],
-            device_snapshot_json=[],
-            generated_index_digest="b" * 64,
-            environment="test",
-            activated_at=datetime(2026, 7, 27, 12),
-            activated_by="test",
-            activated_reason="runtime-inbox-correlation",
-        )
-        db_session.add(binding)
-        await db_session.flush()
-    return workline, binding
+    return workline
 
 
 class _AuditServiceStub:
@@ -1795,22 +1756,13 @@ async def test_workline_operation_replay_derives_workline_with_real_repositories
         line_code="REPLAY-DERIVED-WORKLINE",
         line_name="Replay Derived Workline",
         line_type=LineType.AUTO,
-        plugin_key="runtime-inbox-test",
-        contract_version="v1",
         is_active=True,
     )
     db_session.add(workline)
     await db_session.flush()
-    _, binding = await _ensure_runtime_binding(db_session, workline)
     session = WorklineSession(
         session_code="REPLAY-DERIVED-SESSION",
         workline_id=workline.id,
-        plugin_key=binding.plugin_key,
-        contract_version=binding.contract_version,
-        plugin_binding_id=binding.id,
-        plugin_binding_version=binding.binding_version,
-        plugin_config_hash=binding.typed_config_hash,
-        plugin_index_digest=binding.generated_index_digest,
         status="RUNNING",
     )
     db_session.add(session)

@@ -5,14 +5,11 @@ workline_repository + safety_incident_repository。运行态 repository 已物�
 runtime/orchestration/repositories/。
 """
 
-from .plugin_binding_repository import WorklinePluginBindingRepository, workline_plugin_binding_repository
 from .safety_incident_repository import WorklineSafetyIncidentRepository, workline_safety_incident_repository
 from .workline_repository import WorkLineRepository
 
 __all__ = [
     "WorkLineRepository",
-    "WorklinePluginBindingRepository",
     "WorklineSafetyIncidentRepository",
-    "workline_plugin_binding_repository",
     "workline_safety_incident_repository",
 ]

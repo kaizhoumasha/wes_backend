@@ -43,7 +43,7 @@ class _AuditService:
 
 
 def test_claim_crash_recovers_with_new_owner_and_rejects_old_fence() -> None:
-    """claim 提交后崩溃：新 owner 收敛，旧 token 不得写终态或重复 effect。"""
+    """claim 提交后崩溃：新 owner 收敛，旧 token 不得写终态。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession], queue_gateway: RecordingTaskQueueGateway
@@ -69,15 +69,14 @@ def test_claim_crash_recovers_with_new_owner_and_rejects_old_fence() -> None:
                 result = await processor(service).process_claimed(db, claim=refreshed_claim)
             assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
             await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
-            await assert_effects(db, seeded, expected_count=1)
-            # OUTBOX_ASYNC 只在本事务持久化 durable acceptance；远端派发由独立 dispatcher 消费。
+            await assert_effects(db, seeded, expected_count=0)
             assert queue_gateway.outbox_enqueues == []
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
-def test_writeback_crash_rolls_back_effects_before_reprocessing_once() -> None:
-    """effects 后、终态前崩溃必须整事务回滚；恢复重跑后只落一次副作用。"""
+def test_writeback_crash_recovers_terminal_processing_once() -> None:
+    """终态写入前崩溃必须回滚；恢复后由新租约持有者完成处理。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession], queue_gateway: RecordingTaskQueueGateway
@@ -106,14 +105,14 @@ def test_writeback_crash_rolls_back_effects_before_reprocessing_once() -> None:
             result = await processor(real_service).process_claimed(db, claim=new_claim)
             assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
             await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
-            await assert_effects(db, seeded, expected_count=1)
+            await assert_effects(db, seeded, expected_count=0)
             assert queue_gateway.outbox_enqueues == []
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
-def test_replay_request_recovery_rejects_old_fence_and_applies_effect_once() -> None:
-    """REPLAY_REQUEST 解包后仍复用原 claim fencing 与 effect-once 事务边界。"""
+def test_replay_request_recovery_rejects_old_fence_and_processes_once() -> None:
+    """REPLAY_REQUEST 解包后仍复用原 claim fencing 与终态事务边界。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession], queue_gateway: RecordingTaskQueueGateway
@@ -130,7 +129,7 @@ def test_replay_request_recovery_rejects_old_fence_and_applies_effect_once() -> 
                 "skipped": 0,
                 "resource_wait": 0,
             }
-            await assert_effects(db, seeded, expected_count=1)
+            await assert_effects(db, seeded, expected_count=0)
             await db.execute(
                 update(RuntimeInbox)
                 .where(RuntimeInbox.id == seeded.inbox_id)
@@ -161,7 +160,7 @@ def test_replay_request_recovery_rejects_old_fence_and_applies_effect_once() -> 
             result = await processor(service).process_claimed(db, claim=new_claim)
             assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
             await assert_processed_terminal(db, inbox_id=replay_seeded.inbox_id)
-            await assert_effects(db, replay_seeded, expected_count=1)
+            await assert_effects(db, replay_seeded, expected_count=0)
             source = await db.get(RuntimeInbox, seeded.inbox_id)
             assert source is not None and source.status == "DEAD_LETTER"
             assert queue_gateway.outbox_enqueues == []

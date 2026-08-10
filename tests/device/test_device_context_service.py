@@ -17,8 +17,6 @@ async def test_resolve_uses_device_code_lookup() -> None:
                 id=1,
                 device_code=device_code,
                 work_line_id=None,
-                plugin_key="test_workline_plugin",
-                contract_version="1.0",
             )
 
     class _WorklineRepo:
@@ -36,8 +34,6 @@ async def test_resolve_uses_device_code_lookup() -> None:
     assert error is None
     assert result is not None
     assert result.device.device_code == "ARM_01"
-    assert result.plugin_key == "test_workline_plugin"
-    assert result.contract_version == "1.0"
 
 
 @pytest.mark.asyncio
@@ -51,8 +47,6 @@ async def test_resolve_locks_bound_workline_before_accepting_callback() -> None:
                 id=1,
                 device_code=device_code,
                 work_line_id=10,
-                plugin_key=None,
-                contract_version=None,
             )
 
     class _WorklineRepo:
@@ -61,8 +55,6 @@ async def test_resolve_locks_bound_workline_before_accepting_callback() -> None:
                 return_value=SimpleNamespace(
                     id=10,
                     line_code="WL-ACTIVE",
-                    plugin_key="test_workline_plugin",
-                    contract_version="1.0",
                     is_active=True,
                 )
             )
@@ -94,8 +86,6 @@ async def test_resolve_rejects_device_bound_to_inactive_workline() -> None:
                 id=1,
                 device_code=device_code,
                 work_line_id=10,
-                plugin_key=None,
-                contract_version=None,
             )
 
     class _WorklineRepo:
@@ -104,8 +94,6 @@ async def test_resolve_rejects_device_bound_to_inactive_workline() -> None:
             return SimpleNamespace(
                 id=work_line_id,
                 line_code="WL-INACTIVE",
-                plugin_key="test_workline_plugin",
-                contract_version="1.0",
                 is_active=False,
             )
 

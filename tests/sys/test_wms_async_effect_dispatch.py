@@ -1,4 +1,4 @@
-"""7 项 ASYNC_TASK submit ACK 与 status-only terminal 的 RED 合同。"""
+"""4 项 ASYNC_TASK submit ACK 与 status-only terminal 的 RED 合同。"""
 
 from __future__ import annotations
 
@@ -26,11 +26,7 @@ from src.app.sys.services.outbox_engine import _send_external_http
 from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
-from src.app.wms_integration.ports.fulfillment_operations import (
-    WmsAcceptedScope,
-    WmsEffectAck,
-    accepted_scope_digest,
-)
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from tests.mock.wms_northbound_contract import build_typed_ack
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 from tests.support.external_http import signed_external_http_request
@@ -51,8 +47,6 @@ ASYNC_REJECT_CASES = tuple(
     (operation, reason_code) for operation in ASYNC_OPERATIONS for reason_code in operation.reject_codes
 )
 RESERVED_IDEMPOTENCY_CODES = frozenset({"IDEMPOTENCY_REQUEST_IN_PROGRESS", "IDEMPOTENCY_CONFLICT"})
-E12 = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
-E13 = "wms.fulfillment.move_bins_from_conveyor_exit@v1"
 TERMINAL_EVENTS = frozenset(
     {
         EffectReducerEventType.SYNC_COMPLETED,
@@ -99,33 +93,6 @@ def _resolve(
         idempotency_key="intent-key",
         payload_hash=CanonicalPayload.from_projection(request_payload).sha256,
     )
-
-
-def _multi_member_payload(operation_identity: str) -> dict[str, object]:
-    payload = deepcopy(REQUEST_FIXTURES[operation_identity])
-    field_name = "items" if operation_identity == E12 else "candidate_items"
-    first = payload[field_name][0]
-    second = {
-        **first,
-        "sequence_no": 2,
-        "route_instance_id": "ROUTE-002",
-        "bin_id": "BIN-002",
-    }
-    if operation_identity == E12:
-        second["source_slot_id"] = "SLOT-002"
-        second["reserved_queue_position"] = 2
-    else:
-        second["scan3_enqueued_at"] = "2026-07-29T00:00:01+00:00"
-        second["queue_position"] = 2
-    payload[field_name] = [first, second]
-    if operation_identity == E13:
-        # request model 会先校验候选窗口 digest；复用现有 canonical 算法。
-        from tests.contracts.wms_integration.test_wms_batch_ack_contract import (
-            _candidate_digest,
-        )
-
-        payload["candidate_digest"] = _candidate_digest(payload)
-    return payload
 
 
 def test_async_bridge_contract_requires_the_frozen_idempotency_key() -> None:
@@ -504,41 +471,6 @@ def test_async_conflict_unknown_and_identity_mismatch_fail_closed_without_ack(
     assert expected_event in {event.event_type for event in resolution.events}
     assert all("wms_effect_ack" not in event.evidence_json for event in resolution.events)
     assert TERMINAL_EVENTS.isdisjoint(event.event_type for event in resolution.events)
-
-
-@pytest.mark.parametrize(
-    ("operation_identity", "accepted_keys"),
-    (
-        (E12, ("BIN-001",)),
-        (E13, ("BIN-001", "BIN-003")),
-    ),
-)
-def test_batch_async_ack_enforces_e12_exact_and_e13_ordered_prefix(
-    operation_identity,
-    accepted_keys,
-) -> None:
-    operation = next(operation for operation in ASYNC_OPERATIONS if operation.identity == operation_identity)
-    request_payload = _multi_member_payload(operation_identity)
-    ack = WmsEffectAck(
-        operation_identity=operation_identity,
-        idempotency_key="intent-key",
-        provider_reference="provider-batch-1",
-        submission_state="ACCEPTED",
-        accepted_scope=WmsAcceptedScope(
-            object_keys=accepted_keys,
-            scope_digest=accepted_scope_digest(accepted_keys),
-        ),
-    ).model_dump(mode="json")
-
-    resolution = _resolve(
-        operation,
-        request_payload,
-        _transport_result(202, ack),
-    )
-
-    assert [event.event_type for event in resolution.events][-1] is EffectReducerEventType.RECONCILIATION_OPENED
-    assert resolution.events[-1].reason_code is not None
-    assert all("wms_effect_ack" not in event.evidence_json for event in resolution.events)
 
 
 def test_ack_replay_drift_is_detected_from_append_only_transport_evidence() -> None:

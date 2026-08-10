@@ -30,15 +30,7 @@ from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256 
 from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE  # noqa: E402
 from src.app.wms_integration.operation_contract import WmsCompletionMode  # noqa: E402
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS  # noqa: E402
-from src.app.wms_integration.ports.fulfillment_operations import (  # noqa: E402
-    BATCH_FULFILLMENT_OPERATION_IDENTITIES,
-    MoveBinsFromConveyorExitRequest,
-    MoveBinsToConveyorEntryRequest,
-    WmsAcceptedScope,
-    WmsEffectAck,
-    accepted_scope_digest,
-    validate_fulfillment_ack,
-)
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck  # noqa: E402
 from src.core.conf import settings  # noqa: E402
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES  # noqa: E402
 
@@ -196,15 +188,12 @@ def _is_snapshot(  # noqa: PLR0911
     operation_identity: str,
     payload: dict[str, Any],
     frozen_ack: WmsEffectAck | None = None,
-    status_first_request: MoveBinsToConveyorEntryRequest | MoveBinsFromConveyorExitRequest | None = None,
-    idempotency_key: str | None = None,
 ) -> bool:
     """严格验证五态快照及对应 operation 的 typed completed result。"""
 
     if not isinstance(snapshot, dict) or set(snapshot) != {
         "state",
         "provider_reference",
-        "accepted_scope",
         "reason_code",
         "updated_at",
         "source_version",
@@ -219,51 +208,15 @@ def _is_snapshot(  # noqa: PLR0911
             snapshot[field] is None
             for field in (
                 "provider_reference",
-                "accepted_scope",
                 "reason_code",
                 "updated_at",
                 "source_version",
                 "result_payload",
             )
         )
-    accepted_scope_payload = snapshot["accepted_scope"]
-    accepted_scope: WmsAcceptedScope | None = None
-    if operation_identity in BATCH_FULFILLMENT_OPERATION_IDENTITIES:
-        try:
-            accepted_scope = WmsAcceptedScope.model_validate(accepted_scope_payload)
-        except ValueError:
-            return False
-        if accepted_scope.scope_digest != accepted_scope_digest(accepted_scope.object_keys):
-            return False
-        if frozen_ack is None:
-            if (
-                not isinstance(
-                    status_first_request,
-                    (MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest),
-                )
-                or idempotency_key is None
-            ):
-                return False
-            recovered_ack = _validated_ack(
-                {
-                    "operation_identity": operation_identity,
-                    "idempotency_key": idempotency_key,
-                    "provider_reference": snapshot["provider_reference"],
-                    "submission_state": "REPLAY",
-                    "accepted_scope": accepted_scope_payload,
-                },
-                operation_identity=operation_identity,
-                idempotency_key=idempotency_key,
-                request=status_first_request,
-            )
-            if recovered_ack is None:
-                return False
-    elif accepted_scope_payload is not None:
-        return False
     if frozen_ack is not None and (
         frozen_ack.operation_identity != operation_identity
         or snapshot["provider_reference"] != frozen_ack.provider_reference
-        or accepted_scope != frozen_ack.accepted_scope
     ):
         return False
     source_version = snapshot["source_version"]
@@ -308,7 +261,7 @@ def _is_ack(
     idempotency_key: str,
     request: object,
 ) -> bool:
-    """验证 E08–E14 共享 ACK，并把批次接纳范围绑定到原始 typed request。"""
+    """验证异步 EFFECT 的公共 ACK 关联身份。"""
 
     return (
         _validated_ack(
@@ -334,23 +287,13 @@ def _validated_ack(
         return None
     if ack.operation_identity != operation_identity or ack.idempotency_key != idempotency_key:
         return None
-    if isinstance(request, (MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest)):
-        try:
-            validate_fulfillment_ack(request, ack)
-        except ValueError:
-            return None
     return ack
 
 
 def _same_ack_binding(first: WmsEffectAck | None, replay: WmsEffectAck | None) -> bool:
-    """跨 submit replay/status 冻结 provider reference 与接纳范围。"""
+    """跨 submit replay/status 冻结 provider reference。"""
 
-    return (
-        first is not None
-        and replay is not None
-        and replay.provider_reference == first.provider_reference
-        and replay.accepted_scope == first.accepted_scope
-    )
+    return first is not None and replay is not None and replay.provider_reference == first.provider_reference
 
 
 def _retry_after_is_valid(value: str | None) -> bool:

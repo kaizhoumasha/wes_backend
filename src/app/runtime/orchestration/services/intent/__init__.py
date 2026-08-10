@@ -8,15 +8,6 @@ from src.app.runtime.orchestration.services.intent.operation_service import (
     WorklineOperationService,
     workline_operation_service,
 )
-from src.app.runtime.orchestration.services.intent.runtime_domain_capability_authority_resolver import (
-    ResolvedRuntimeDomainCapabilityAuthority,
-    RuntimeDomainCapabilityAuthorityResolver,
-    runtime_domain_capability_authority_resolver,
-)
-from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
-    SmtInboundHandoffService,
-    smt_inbound_handoff_service,
-)
 from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
     SystemCapabilityEffectResult,
     SystemCapabilityEffectService,
@@ -31,16 +22,11 @@ from src.app.runtime.orchestration.services.intent.system_capability_intent_serv
 
 __all__ = [
     "PreparedSystemCapabilityIntent",
-    "ResolvedRuntimeDomainCapabilityAuthority",
-    "RuntimeDomainCapabilityAuthorityResolver",
-    "SmtInboundHandoffService",
     "SystemCapabilityEffectResult",
     "SystemCapabilityEffectService",
     "SystemCapabilityExecution",
     "SystemCapabilityIntentService",
     "WorklineOperationService",
-    "runtime_domain_capability_authority_resolver",
-    "smt_inbound_handoff_service",
     "system_capability_effect_service",
     "system_capability_intent_service",
     "workline_operation_service",

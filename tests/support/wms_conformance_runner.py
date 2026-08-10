@@ -18,8 +18,6 @@ from src.app.runtime.system_capabilities.wms.provider_conformance import (
     OperationConformanceObservation,
 )
 from src.app.wms_integration.ports.effect_status import (
-    BATCH_EFFECT_OPERATION_IDENTITIES,
-    WmsBatchEffectStatusRequest,
     WmsEffectStatus,
     WmsEffectStatusRequest,
     parse_wms_effect_status_snapshot,
@@ -42,7 +40,7 @@ if TYPE_CHECKING:
 
 
 class GenericConformanceRunner:
-    """共享 mode-family 题库 runner；35 项 operation 不生成专用 runner。"""
+    """共享 mode-family 题库 runner；32 项 operation 不生成专用 runner。"""
 
     def __init__(self, fixtures: tuple[OperationFixture, ...]) -> None:
         self._fixtures = {item.operation.identity: item for item in fixtures}
@@ -138,7 +136,7 @@ class RealTcpScenario(BaseModel):
 
 
 class RealTcpScenarioAsset(BaseModel):
-    """外部提供的完整 217-case scenario asset，导入时校验自身摘要。"""
+    """外部提供的完整 199-case scenario asset，导入时校验自身摘要。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -276,12 +274,7 @@ class RealTcpConformanceRunner:
             if case.outcome_kind == "SUCCESS" and scenario.wire_kind == "OPERATION" and validates_result:
                 endpoint.result_model.model_validate(json.loads(response.body))
             if scenario.wire_kind == "STATUS_QUERY":
-                request_type = (
-                    WmsBatchEffectStatusRequest
-                    if case.operation_identity in BATCH_EFFECT_OPERATION_IDENTITIES
-                    else WmsEffectStatusRequest
-                )
-                status_request = request_type(
+                status_request = WmsEffectStatusRequest(
                     operation_identity=case.operation_identity,
                     idempotency_key=scenario.idempotency_key,
                     request_payload=scenario.request_payload,

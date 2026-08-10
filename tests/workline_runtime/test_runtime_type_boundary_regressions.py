@@ -44,33 +44,6 @@ async def test_material_unit_fact_snapshot_ignores_unpersisted_identity(
     assert snapshot is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("session_id", "inbox_id", "field_name"),
-    [(None, 91, "session.id"), (41, None, "inbox.id")],
-)
-async def test_plugin_attempt_persistence_rejects_unpersisted_authoritative_rows(
-    session_id: object, inbox_id: object, field_name: str
-) -> None:
-    from src.app.runtime.orchestration.repositories.plugin_attempt_repository import (
-        AuthoritativePluginAttempt,
-        PluginAttemptRepository,
-    )
-    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
-
-    with pytest.raises(TypeError, match=field_name):
-        await PluginAttemptRepository().persist_locked_attempt(
-            object(),  # type: ignore[arg-type]
-            locked=AuthoritativePluginAttempt(
-                inbox=SimpleNamespace(id=inbox_id), session=SimpleNamespace(id=session_id)
-            ),
-            workline_id=8,
-            trace_id="trace-type-boundary",
-            snapshot=AttemptSnapshot(processor_token="lease-1", session_version=1, plugin_state_version=1),
-            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=()),
-        )
-
-
 @pytest.mark.parametrize("raw_id", [None, "101"])
 def test_material_unit_write_rejects_unpersisted_mutation_result(raw_id: object) -> None:
     from src.app.runtime.system_capabilities.material_flow.material_unit_write.handler import (

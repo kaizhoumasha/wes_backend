@@ -28,7 +28,6 @@ from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 from tests.support.external_http import frozen_outbox_namespace
-from tests.support.runtime_binding import bind_runtime_workline, seed_runtime_binding
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -286,21 +285,9 @@ async def test_session_cancel_closes_dispatching_lease_shape_on_postgresql(
     workline = WorkLine(line_code=f"T8E-SESSION-{suffix}", line_name="T8e session lease shape", line_type=LineType.AUTO)
     integration_db_session.add(workline)
     await integration_db_session.flush()
-    binding = await bind_runtime_workline(
-        integration_db_session,
-        workline,
-        plugin_key="t8e-lease-shape",
-        contract_version="v1",
-    )
     session = WorklineSession(
         session_code=f"T8E-SESSION-{suffix}",
         workline_id=workline.id,
-        plugin_key=binding.plugin_key,
-        contract_version=binding.contract_version,
-        plugin_binding_id=binding.id,
-        plugin_binding_version=binding.binding_version,
-        plugin_config_hash=binding.typed_config_hash,
-        plugin_index_digest=binding.generated_index_digest,
         run_mode=RunMode.AUTO,
         status=SessionStatus.RUNNING,
     )
@@ -338,18 +325,16 @@ async def _seed_bound_expired_lease(
 ) -> tuple[SystemOutbox, WorklineDispatchAttempt, RuntimeIntentLog]:
     now = timezone.now_for_db()
     dispatch_key = f"bound-expired-lease:{suffix}"
-    workline, binding = await seed_runtime_binding(
-        db,
+    workline = WorkLine(
         line_code=f"T8E-BOUND-EXPIRED-{suffix}",
+        line_name="T8e bound expired lease",
+        line_type=LineType.AUTO,
+        is_active=True,
     )
+    db.add(workline)
+    await db.flush()
     execution_session = ExecutionSession(
         workline_id=workline.id,
-        plugin_key=binding.plugin_key,
-        manifest_version=binding.contract_version,
-        plugin_binding_id=binding.id,
-        plugin_binding_version=binding.binding_version,
-        plugin_config_hash=binding.typed_config_hash,
-        plugin_index_digest=binding.generated_index_digest,
         state="RUNNING",
     )
     db.add(execution_session)

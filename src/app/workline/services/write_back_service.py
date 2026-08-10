@@ -1,14 +1,12 @@
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from hashlib import sha256
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from src.app.runtime.orchestration.services.device_command_gateway import (
     _DeviceCommandGovernanceError,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
     _enforce_device_command_governance,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
 )
-from src.app.runtime.workline_plugins.registry import get_workline_contract_version
 from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.trace_context import TraceContext
@@ -29,24 +27,6 @@ def _session_context(session: Any) -> dict[str, Any]:
 
 def _set_session_context(session: Any, context: dict[str, Any]) -> None:
     session.context_json = context
-
-
-def _resolve_runtime_contract_version(*, workline: Any, plugin_key: str | None) -> str | None:
-    """统一解析运行时 contract_version：优先 workline，缺失时回退 registry。"""
-    workline_contract_version = getattr(workline, "contract_version", None)
-    if isinstance(workline_contract_version, str) and workline_contract_version:
-        return workline_contract_version
-    contract_version = get_workline_contract_version(plugin_key)
-    return contract_version if isinstance(contract_version, str) and contract_version else None
-
-
-def _sync_session_contract_snapshot(session: Any, *, workline: Any) -> None:
-    plugin_key = getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None)
-    if isinstance(plugin_key, str) and plugin_key:
-        session.plugin_key = plugin_key
-    resolved_contract_version = _resolve_runtime_contract_version(workline=workline, plugin_key=plugin_key)
-    if resolved_contract_version and getattr(session, "contract_version", None) != resolved_contract_version:
-        session.contract_version = resolved_contract_version
 
 
 def _clear_session_wait(session: Any) -> None:
@@ -239,19 +219,16 @@ async def _emit_timeline(ctx: EffectApplyContext, **kwargs: Any) -> None:
 def _apply_context_patch(ctx: EffectApplyContext) -> None:
     """先应用 context patch，再执行后续 effect。"""
     session = ctx["session"]
-    workline = ctx["workline"]
     session_ctx = ctx["session_ctx"]
     context_patch = ctx["effect_state"].context_patch
     if context_patch:
         session_ctx.update(context_patch)
         _set_session_context(session, session_ctx)
-        _sync_session_contract_snapshot(session, workline=workline)
         if "barcode" in context_patch:
             barcode_value = context_patch["barcode"]
             if barcode_value:
                 session.barcode = barcode_value
         return
-    _sync_session_contract_snapshot(session, workline=workline)
 
 
 def _sync_effect_trace_fields(ctx: EffectApplyContext) -> None:
@@ -337,13 +314,12 @@ def _build_command_create_payload(
     target_device_id: int,
     resolved_command_code: str,
 ) -> dict[str, Any]:
-    """将 plugin command intent 转成 DeviceCommand 创建载荷。"""
+    """将通用 command intent 转成 DeviceCommand 创建载荷。"""
     vendor_task_type = string_value(vendor_payload.get("task_type"), action)
     priority_value = vendor_payload.get("priority")
     timeout_value = vendor_payload.get("timeout")
     business_params = payload_dict(vendor_payload.get("params"))
     session = ctx["session"]
-    workline = ctx["workline"]
     return {
         "command_code": resolved_command_code,
         "device_id": target_device_id,
@@ -356,8 +332,6 @@ def _build_command_create_payload(
         "causation_id": ctx["trace"].causation_id,
         "correlation_id": _resolve_command_correlation_id(ctx),
         "workline_id": session.workline_id,
-        "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
-        "contract_version": getattr(session, "contract_version", None),
     }
 
 
@@ -444,79 +418,12 @@ async def _emit_completion_timeline(ctx: EffectApplyContext) -> None:
 
 
 async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.runtime.capabilities.material_flow.ng_return_item_service import (
-        NgMaterialConflictError,
-        ng_return_item_service,
-    )
     from src.app.runtime.orchestration.models.session import SessionStatus
-    from src.app.runtime.orchestration.models.timeline import (
-        TimelineActionType,
-        TimelineActorType,
-        TimelineStage,
-        TimelineStatus,
-    )
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
-    from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import runtime_hold_creation_service
     from src.utils.value_normalization import resolve_required_pk
 
     session = ctx["session"]
     session_already_completed = string_value(getattr(session, "status", None)) == SessionStatus.COMPLETED.value
-    try:
-        _ = await ng_return_item_service.record_completed_ng_flow(
-            ctx["db"],
-            session=session,
-            workline=ctx["workline"],
-            inbox=ctx["inbox"],
-            transition=None,
-            occurred_at=ctx["now"],
-        )
-    except NgMaterialConflictError as exc:
-        if session_already_completed:
-            await _emit_completion_timeline(ctx)
-            return True
-        evidence = dict(exc.evidence)
-        source_event_id = _ng_material_conflict_source_event_id(
-            exc=exc,
-            evidence=evidence,
-            session=session,
-            inbox=ctx["inbox"],
-        )
-        hold = await runtime_hold_creation_service.create_for_resource_reconciliation(
-            ctx["db"],
-            workline_id=resolve_required_pk(ctx["workline"], "workline"),
-            session_id=resolve_required_pk(session, "session"),
-            trace_id=ctx.get("trace_id")
-            or getattr(ctx["inbox"], "trace_id", None)
-            or getattr(session, "trace_id", None),
-            plugin_key=getattr(session, "plugin_key", None) or getattr(ctx["workline"], "plugin_key", None),
-            contract_version=getattr(session, "contract_version", None)
-            or getattr(ctx["workline"], "contract_version", None),
-            source_reason=exc.reason_code,
-            source_event_id=source_event_id,
-            evidence=evidence,
-        )
-        session_context = _session_context(session)
-        session_context["ng_material_conflict"] = {
-            "reason_code": exc.reason_code,
-            "material_identity_key": exc.material_identity_key,
-            "runtime_hold_id": getattr(hold, "id", None),
-            "evidence": evidence,
-        }
-        _set_session_context(session, session_context)
-        workline_session_lifecycle_service.manual_hold(session, occurred_at=ctx["now"])
-        await _emit_timeline(
-            ctx,
-            stage=TimelineStage.MANUAL,
-            action_type=TimelineActionType.MANUAL_HOLD,
-            payload=session_context["ng_material_conflict"],
-            from_status=ctx["current_status"],
-            to_status=session.status,
-            actor_type=TimelineActorType.ORCHESTRATOR,
-            related_inbox_id=_timeline_inbox_id(ctx),
-            status=TimelineStatus.PENDING,
-            message="NG 物料已存在不同来源回流项，进入人工处理",
-        )
-        return True
     if session_already_completed:
         await _emit_completion_timeline(ctx)
         return True
@@ -529,23 +436,3 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
     )
     await _emit_completion_timeline(ctx)
     return True
-
-
-def _ng_material_conflict_source_event_id(
-    *,
-    exc: Any,
-    evidence: dict[str, Any],
-    session: Any,
-    inbox: Any,
-) -> str:
-    source_event_id = string_value(evidence.get("new_source_event_id"))
-    if source_event_id:
-        return source_event_id
-    command_or_inbox_id = (
-        evidence.get("new_source_command_id")
-        or getattr(session, "awaiting_device_command_code", None)
-        or getattr(inbox, "id", None)
-        or "unknown"
-    )
-    identity_hash = sha256(string_value(exc.material_identity_key).encode("utf-8")).hexdigest()[:16]
-    return f"ng-material-conflict:{getattr(session, 'id', 'unknown')}:{command_or_inbox_id}:{identity_hash}"

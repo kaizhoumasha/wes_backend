@@ -21,7 +21,6 @@ from src.app.wms_integration.adapters.effect_status_query_adapter import (
 from src.app.wms_integration.operation_registry import ASYNC_EFFECT_OPERATIONS
 from src.app.wms_integration.ports.effect_status import (
     FrozenWmsEffectStatusBinding,
-    WmsBatchEffectStatusRequest,
     WmsEffectStatus,
     WmsEffectStatusRequest,
     WmsEffectStatusSnapshot,
@@ -43,10 +42,6 @@ from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
 RACK_SUPPLY = "wms.fulfillment.request_rack_supply@v1"
 RACK_TRANSPORT = "wms.fulfillment.request_rack_transport@v1"
-_BATCH_OPERATIONS = {
-    "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-    "wms.fulfillment.move_bins_from_conveyor_exit@v1",
-}
 
 
 def _binding(*, timeout_seconds: float = 2.0) -> FrozenWmsEffectStatusBinding:
@@ -87,8 +82,7 @@ def _rack_supply_request(*, attempt_count: int = 1) -> WmsEffectStatusRequest:
 
 def _status_request(operation_identity: str) -> WmsEffectStatusRequest:
     request_payload = REQUEST_FIXTURES[operation_identity]
-    request_type = WmsBatchEffectStatusRequest if operation_identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
-    return request_type(
+    return WmsEffectStatusRequest(
         operation_identity=operation_identity,
         idempotency_key="intent-key",
         request_payload=request_payload,
@@ -159,9 +153,7 @@ def test_status_request_accepts_only_authored_effect_identity_and_stable_key() -
 
 @pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
 def test_every_async_status_request_allows_status_first_without_frozen_ack(operation) -> None:
-    request_type = WmsBatchEffectStatusRequest if operation.identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
-
-    request = request_type(
+    request = WmsEffectStatusRequest(
         operation_identity=operation.identity,
         idempotency_key="intent-key",
         request_payload=REQUEST_FIXTURES[operation.identity],
@@ -170,7 +162,7 @@ def test_every_async_status_request_allows_status_first_without_frozen_ack(opera
     assert request.frozen_ack is None
 
 
-def test_pre_ack_visible_single_status_recovers_typed_ack_and_forbids_scope() -> None:
+def test_pre_ack_visible_status_recovers_typed_ack_and_rejects_removed_scope() -> None:
     request = WmsEffectStatusRequest(
         operation_identity=RACK_SUPPLY,
         idempotency_key="intent-idempotency-001",
@@ -179,7 +171,6 @@ def test_pre_ack_visible_single_status_recovers_typed_ack_and_forbids_scope() ->
     wire = {
         "state": "PROCESSING",
         "provider_reference": "wms-status-first-001",
-        "accepted_scope": None,
         "reason_code": None,
         "updated_at": "2026-07-24T00:00:00+00:00",
         "source_version": 1,
@@ -190,8 +181,6 @@ def test_pre_ack_visible_single_status_recovers_typed_ack_and_forbids_scope() ->
 
     assert snapshot.recovered_ack is not None
     assert snapshot.recovered_ack.provider_reference == "wms-status-first-001"
-    assert snapshot.recovered_ack.accepted_scope is None
-
     wire["accepted_scope"] = {
         "object_keys": ["BIN-001"],
         "scope_digest": "0" * 64,
@@ -200,29 +189,8 @@ def test_pre_ack_visible_single_status_recovers_typed_ack_and_forbids_scope() ->
         parse_wms_effect_status_snapshot(request=request, raw_response=wire)
 
 
-def test_visible_status_rejects_scope_drift_from_existing_ack() -> None:
-    operation_identity = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
-    request = _status_request(operation_identity)
-    wire = {
-        "state": "PROCESSING",
-        "provider_reference": request.frozen_ack.provider_reference,
-        "accepted_scope": {
-            "object_keys": ["FORGED-BIN"],
-            "scope_digest": "0" * 64,
-        },
-        "reason_code": None,
-        "updated_at": "2026-07-24T00:00:00+00:00",
-        "source_version": 1,
-        "result_payload": None,
-    }
-
-    with pytest.raises(ValueError, match="accepted_scope does not match ACK"):
-        parse_wms_effect_status_snapshot(request=request, raw_response=wire)
-
-
 @pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
 def test_every_async_status_request_rejects_ack_idempotency_drift(operation) -> None:
-    request_type = WmsBatchEffectStatusRequest if operation.identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
     request_payload = REQUEST_FIXTURES[operation.identity]
     frozen_ack = build_typed_ack(
         operation.identity,
@@ -232,7 +200,7 @@ def test_every_async_status_request_rejects_ack_idempotency_drift(operation) -> 
     )
 
     with pytest.raises(ValidationError, match="ACK idempotency_key"):
-        request_type(
+        WmsEffectStatusRequest(
             operation_identity=operation.identity,
             idempotency_key="intent-key",
             request_payload=request_payload,
@@ -252,22 +220,6 @@ def test_every_async_status_request_rejects_ack_idempotency_drift(operation) -> 
             "wms.fulfillment.request_rack_supply@v1",
         ),
         (
-            "wms.fulfillment.change_rack_face@v1",
-            "wms.fulfillment.full_box_exchange@v1",
-        ),
-        (
-            "wms.fulfillment.full_box_exchange@v1",
-            "wms.fulfillment.change_rack_face@v1",
-        ),
-        (
-            "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-            "wms.fulfillment.move_bins_from_conveyor_exit@v1",
-        ),
-        (
-            "wms.fulfillment.move_bins_from_conveyor_exit@v1",
-            "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-        ),
-        (
             "wms.fulfillment.request_load_unit_transport@v1",
             "wms.fulfillment.request_rack_supply@v1",
         ),
@@ -277,7 +229,6 @@ def test_every_async_status_request_rejects_ack_operation_drift(
     operation_identity: str,
     other_operation_identity: str,
 ) -> None:
-    request_type = WmsBatchEffectStatusRequest if operation_identity in _BATCH_OPERATIONS else WmsEffectStatusRequest
     frozen_ack = build_typed_ack(
         other_operation_identity,
         "intent-key",
@@ -286,7 +237,7 @@ def test_every_async_status_request_rejects_ack_operation_drift(
     )
 
     with pytest.raises(ValidationError, match="ACK operation_identity"):
-        request_type(
+        WmsEffectStatusRequest(
             operation_identity=operation_identity,
             idempotency_key="intent-key",
             request_payload=REQUEST_FIXTURES[operation_identity],

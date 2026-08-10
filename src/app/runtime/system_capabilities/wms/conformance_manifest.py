@@ -43,7 +43,7 @@ class WmsConformanceManifest(BaseModel):
         if len(identities) != len(set(identities)):
             raise ValueError("conformance manifest contains duplicate operation identity")
         if identities != tuple(operation.identity for operation in WMS_OPERATIONS):
-            raise ValueError("conformance manifest must cover the exact 35-operation registry")
+            raise ValueError("conformance manifest must cover the exact 32-operation registry")
         if any(item.required_cases != conformance_cases_for_operation(item.operation) for item in self.operations):
             raise ValueError("conformance manifest operation question bank differs from its mode family")
         return self

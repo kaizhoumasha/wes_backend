@@ -11,7 +11,6 @@ from src.app.runtime.orchestration.models.session import SessionStatus, Workline
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 from src.core.exceptions import OptimisticLockException
 from src.utils.timezone import timezone
-from tests.support.runtime_binding import binding_pin_fields
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -37,7 +36,6 @@ async def _create_session(db: AsyncSession, *, code: str) -> WorklineSession:
         workline_id=8,
         plugin_key="plugin.version-test",
         contract_version="v1",
-        **binding_pin_fields(),
     )
     db.add(session)
     await db.commit()

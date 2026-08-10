@@ -12,7 +12,6 @@ from scripts.workline_inbox_retirement_guardrail import (
 )
 from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
-from src.app.runtime.orchestration.models.smt_inbound_handoff import SmtInboundHandoffSourceItem
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -522,7 +521,6 @@ def test_runtime_inbox_and_dependent_models_point_to_current_authorities() -> No
     )
     runtime_target = "wes_runtime.runtime_inbox.id"
     for model, column_name in (
-        (SmtInboundHandoffSourceItem, "source_pick_inbox_id"),
         (RuntimeHold, "source_inbox_id"),
         (WorklineDiagnostic, "inbox_id"),
     ):

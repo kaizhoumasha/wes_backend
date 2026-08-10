@@ -119,8 +119,8 @@ class RuntimeIntent(BaseModel):
     message: str | None = None
     suggested_action: str | None = None
     context_patch: dict[str, Any] = Field(default_factory=dict)
-    # SYSTEM_CAPABILITY 是插件可创建的唯一通用副作用包络；这些字段在创建时固定，
-    # 后续执行不得重新选择 capability、binding、provider 或授权策略。
+    # SYSTEM_CAPABILITY 是核心运行时创建的通用副作用包络；这些字段在创建时固定，
+    # 后续执行不得重新选择 capability、provider 或授权策略。
     capability_key: str | None = None
     contract_version: str | None = None
     operation_key: str | None = Field(
@@ -150,12 +150,14 @@ class RuntimeIntent(BaseModel):
         timeout_seconds: int,
         creator_authority: str,
         authorization_policy: str,
-        binding_snapshot: BaseModel | dict[str, Any],
+        binding_snapshot: BaseModel | dict[str, Any] | None = None,
         provider_snapshot: BaseModel | dict[str, Any],
     ) -> RuntimeIntent:
         """创建不可变语义的 typed EFFECT intent。"""
 
-        def dump(value: BaseModel | dict[str, Any]) -> dict[str, Any]:
+        def dump(value: BaseModel | dict[str, Any] | None) -> dict[str, Any]:
+            if value is None:
+                return {}
             return value.model_dump(mode="json") if isinstance(value, BaseModel) else deepcopy(value)
 
         payload_json = dump(payload)
@@ -562,8 +564,8 @@ class RuntimeIntent(BaseModel):
             raise ValueError("SYSTEM_CAPABILITY intent requires fact_version")
         if self.timeout_seconds is None or self.timeout_seconds <= 0:
             raise ValueError("SYSTEM_CAPABILITY intent requires timeout_seconds")
-        if not self.binding_snapshot or not self.provider_snapshot:
-            raise ValueError("SYSTEM_CAPABILITY intent requires binding/provider snapshot")
+        if not self.provider_snapshot:
+            raise ValueError("SYSTEM_CAPABILITY intent requires provider snapshot")
         legacy_fields = {
             "device_role": self.device_role,
             "target_device_id": self.target_device_id,

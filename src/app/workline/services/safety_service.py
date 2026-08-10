@@ -173,9 +173,6 @@ class WorkLineSafetyService:
     async def assert_accepting_work(self, db: AsyncSession, *, workline_id: int) -> None:
         """校验 WorkLine 当前可接收新事件/新任务。"""
 
-        # 与 activation/deactivation 统一 advisory → row lock 顺序，避免新 Session
-        # 与停用并发时形成 WorkLine 行锁和 plugin-pin advisory 的循环等待。
-        await self.workline_repository.acquire_plugin_pin_shared(db, workline_id)
         workline = await self.workline_repository.get_for_update(db, workline_id, populate_existing=True)
         if workline is None:
             raise WorkLineSafetyBlocked(f"WORKLINE_NOT_FOUND: workline_id={workline_id}")

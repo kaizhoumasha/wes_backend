@@ -31,7 +31,6 @@ from src.app.sys.models.outbox import (
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository
 from src.utils.timezone import timezone
 from tests.support.external_http import frozen_external_http_binding
-from tests.support.runtime_binding import binding_pin_fields
 
 
 def test_system_outbox_declares_nullable_idempotency_request_metadata() -> None:
@@ -708,7 +707,6 @@ async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_worklin
         workline_id=901,
         plugin_key="test",
         contract_version="v1",
-        **binding_pin_fields(),
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.COMPLETED,
     )

@@ -701,6 +701,12 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("scripts/select_heavy_tests.py", ()),
         ("scripts/manual/redis_degradation_drill.py", ()),
         ("docs/architecture/heavy-test-impact.toml", ()),
+        ("docs/architecture/business-legacy-absence-ledger.csv", ()),
+        ("docs/architecture/legacy-cleanup-matrix.csv", ()),
+        (
+            "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py",
+            ("tests/integration/test_workline_plugin_schema_retirement.py",),
+        ),
         ("Jenkinsfile.backend-ci", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (".dockerignore", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (
@@ -720,8 +726,20 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("scripts/markdownlint.sh", ()),
         ("pyproject.toml", ()),
         (
-            "scripts/{architecture-guardrails.sh,check_business_legacy_absence_gate.py,check_fast_test_budget.py,generate_legacy_matrix.py,run_selected_heavy_tests.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}",
+            "scripts/{architecture-guardrails.allowlist,architecture-guardrails.sh,check_business_legacy_absence_gate.py,check_fast_test_budget.py,generate_legacy_matrix.py,run_selected_heavy_tests.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}",
             (),
+        ),
+        (
+            "scripts/{data/repair_runtime_holds.py,workline_migration_inventory.py,workline_migration_matrix.py}",
+            (),
+        ),
+        (
+            "scripts/generate_runtime_extensions.py",
+            (WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
+        ),
+        (
+            "src/app/runtime/system_capabilities/generated_index.py",
+            (WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
         ),
         ("scripts/check_wms_deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
         ("src/app/wms_integration/deployment_attestation.py", (WMS_DEPLOYMENT_HEAVY_TEST,)),
@@ -790,7 +808,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/device/models/device.py", (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,)),
         ("src/app/runtime/orchestration/__init__.py", ()),
         ("src/app/runtime/orchestration/execution_correlation.py", ()),
-        ("src/app/runtime/orchestration/execution_session.py", ()),
+        ("src/app/runtime/orchestration/execution_session.py", (RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,)),
         ("src/app/runtime/orchestration/enums.py", ()),
         ("src/app/runtime/orchestration/models/session.py", (RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,)),
         ("src/app/runtime/orchestration/models/timeline.py", ()),
@@ -969,6 +987,73 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (TRANSPORT_SCHEMA_HEAVY_TEST,),
         ),
         ("migrations/env.py", (TRANSPORT_SCHEMA_HEAVY_TEST,)),
+        ("src/app/runtime/workline_plugins/**", ()),
+        (
+            "src/app/device/services/{device_context_service.py,device_service.py}",
+            (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,),
+        ),
+        ("src/app/resource/services/**", ()),
+        ("src/app/runtime/capabilities/material_flow/**", ()),
+        ("src/app/runtime/system_capabilities/material_flow/smt_source_pick_*/**", ()),
+        ("src/app/runtime/normalization/normalizers/input_normalizer.py", (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,)),
+        (
+            "src/app/runtime/orchestration/services/runtime_inbox/**",
+            (RUNTIME_INBOX_PROCESSING_HEAVY_TEST, "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"),
+        ),
+        (
+            "src/app/runtime/orchestration/models/{__init__.py,smt_inbound_handoff.py}",
+            ("tests/integration/test_workline_plugin_schema_retirement.py",),
+        ),
+        (
+            "src/app/runtime/orchestration/repositories/{__init__.py,full_box_exchange_repository.py,plugin_attempt_repository.py,rough_sorter_q19_admission_repository.py,runtime_domain_capability_authority_repository.py,runtime_intent_log_repository.py,session_execution_anchor_repository.py,smt_inbound_handoff_repository.py,wms_conveyor_batch_repository.py,wms_conveyor_return_batch_repository.py}",
+            (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/{operation_observability.py,repository_wiring.py,runtime_intent.py,runtime_intent_effects.py,sandbox_catalog_bridge.py,topology_bridge.py,wms_conveyor_batch_member.py}",
+            (RUNTIME_INBOX_PROCESSING_HEAVY_TEST, EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST),
+        ),
+        (
+            "src/app/runtime/orchestration/services/{__init__.py,full_box_exchange_service.py,hold/**,intent/**,query/**,session/**,wms_conveyor_batch_service.py,wms_conveyor_return_batch_service.py,wms_effect_status_service.py,wms_fulfillment_domain_projector.py}",
+            (
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+            ),
+        ),
+        (
+            "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}",
+            (WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
+        ),
+        (
+            "src/app/wms_integration/{effect_preparation_runtime.py,effect_runtime.py,endpoint_compiler.py,operation_contract.py,operation_registry.py,provider_manifest.py,provider_profile.py,ports/effect_preparation.py,ports/effect_status.py,ports/fulfillment_operations.py}",
+            (WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
+        ),
+        (
+            "src/app/workline/domain/{__init__.py,services/__init__.py,services/smt_rack_bin_scheduling_service.py}",
+            (),
+        ),
+        (
+            "src/app/workline/models/{__init__.py,migration_inventory.py,migration_matrix.py,plugin_binding.py,workline.py}",
+            ("tests/integration/test_workline_plugin_schema_retirement.py",),
+        ),
+        (
+            "src/app/workline/repositories/{__init__.py,plugin_binding_repository.py,workline_repository.py}",
+            (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,),
+        ),
+        ("src/app/workline/runtime_services.py", (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,)),
+        (
+            "src/app/workline/services/{__init__.py,manifest_validator.py,migration_inventory_service.py,migration_matrix_service.py,plugin_binding_service.py}",
+            (),
+        ),
+        (
+            "src/app/workline/services/{safety_service.py,workline_service.py,write_back_service.py}",
+            (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,),
+        ),
+        ("src/app/workline/v1/workline.py", ()),
+        (
+            "tests/support/wms_conformance_coverage.py",
+            (WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
+        ),
     )
 
 
@@ -1219,7 +1304,6 @@ def test_repository_mapping_selects_wms_heavy_asset_consumers(changed_path: str,
         "src/app/wms_integration/services/circuit_breaker_service.py",
         "src/app/workline/models/plane.py",
         "src/utils/timezone.py",
-        "src/app/wms_integration/operation_registry.py",
         "src/app/sys/canonical_dispatch.py",
         "src/app/sys/services/outbox_engine.py",
     ],
@@ -1238,7 +1322,6 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/app/runtime/system_capabilities/wms/provider_catalog.py",
         "src/app/wms_integration/provider_readiness.py",
         "src/app/wms_integration/effect_lane_runtime.py",
-        "src/app/wms_integration/effect_preparation_runtime.py",
         "src/app/wms_integration/query_runtime.py",
         "src/core/exceptions.py",
         "src/core/conf.py",
@@ -1249,15 +1332,12 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/database/redis_client.py",
         "src/database/schema_conf.py",
         "src/database/sqlite_schema.py",
-        "src/app/device/services/device_service.py",
         "src/app/sys/repositories/outbox_repository.py",
         "src/app/sys/models/outbox.py",
         "src/app/runtime/orchestration/device_runtime_projection.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
-        "src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py",
         "src/app/runtime/orchestration/runtime_inbox.py",
         "src/app/runtime/orchestration/runtime_intent_log.py",
-        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py",
     ],
 )
 def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_closed(changed_path: str) -> None:
@@ -1265,6 +1345,37 @@ def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_close
 
     with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
         select_heavy_tests([changed_path], config)
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        (
+            "src/app/wms_integration/operation_registry.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/effect_preparation_runtime.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        ("src/app/device/services/device_service.py", [RUNTIME_INBOX_PROCESSING_HEAVY_TEST]),
+        (
+            "src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py",
+            [RUNTIME_INBOX_PROCESSING_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py",
+            [RUNTIME_INBOX_PROCESSING_HEAVY_TEST, RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST],
+        ),
+    ],
+)
+def test_repository_mapping_selects_audited_runtime_owners(
+    changed_path: str,
+    expected: list[str],
+) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == expected
 
 
 @pytest.mark.parametrize(
@@ -1338,7 +1449,6 @@ def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> Non
     [
         "src/app/runtime/orchestration/__init__.py",
         "src/app/runtime/orchestration/execution_correlation.py",
-        "src/app/runtime/orchestration/execution_session.py",
         "src/app/runtime/orchestration/enums.py",
         "src/app/runtime/orchestration/models/timeline.py",
     ],
@@ -1352,6 +1462,26 @@ def test_repository_mapping_pins_reviewed_none_to_current_runtime_source_content
     assert mapping.heavy_tests == ()
     assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
     assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
+
+
+def test_business_legacy_absence_ledger_is_a_reviewed_quality_only_asset() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    for changed_path in (
+        "docs/architecture/business-legacy-absence-ledger.csv",
+        "docs/architecture/legacy-cleanup-matrix.csv",
+    ):
+        mapping = next(mapping for mapping in config[1] if mapping.source_glob == changed_path)
+        assert mapping.heavy_tests == ()
+        assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+        assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
+
+
+def test_repository_mapping_selects_shared_transport_heavy_for_execution_session() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["src/app/runtime/orchestration/execution_session.py"], config, repo_root=REPO_ROOT) == [
+        RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST
+    ]
 
 
 def test_repository_mapping_selects_minimal_heavy_for_docker_build_context() -> None:

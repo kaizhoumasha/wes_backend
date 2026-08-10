@@ -1,8 +1,6 @@
 """通用 WorkLine 配置服务与运行状态投影合同。"""
 
-import importlib
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -32,15 +30,9 @@ class _WorkLineRepositoryStub:
             id=workline_id,
             is_active=False,
             version=7,
-            plugin_key=None,
-            contract_version=None,
             runtime_config_json=None,
             run_mode=WorkLineRunMode.AUTO,
             config={"draft": 1},
-            active_plugin_binding_id=None,
-            active_plugin_binding_version=None,
-            active_plugin_config_hash=None,
-            active_plugin_index_digest=None,
         )
 
     async def create(self, _db: object, data: dict[str, object]) -> object:
@@ -63,10 +55,6 @@ class _WorkLineRepositoryStub:
         self.lock_events.append("get_for_update")
         self.current.id = workline_id
         return self.current
-
-    async def acquire_plugin_pin_exclusive(self, _db: object, workline_id: int) -> None:
-        self.lock_events.append("exclusive")
-        self.current.id = workline_id
 
     async def get_by_id(self, _db: object, workline_id: int) -> object:
         self.current.id = workline_id
@@ -111,21 +99,10 @@ class _RuntimeStatusProjectionSpy:
 
 
 def _prepare_activation(
-    monkeypatch: pytest.MonkeyPatch,
     repository: _WorkLineRepositoryStub,
     projection: _RuntimeStatusProjectionSpy,
 ) -> WorkLineService:
-    service = WorkLineService(repository=repository, runtime_status_projection_service=projection)
-    workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
-    monkeypatch.setattr(
-        workline_service_module,
-        "device_repository",
-        SimpleNamespace(get_by_work_line_id=AsyncMock(return_value=[])),
-    )
-    monkeypatch.setattr(service, "_list_rack_positions", AsyncMock(return_value=[]))
-    monkeypatch.setattr(service, "_build_configuration_checks", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(service, "_can_activate", lambda _checks: True)
-    return service
+    return WorkLineService(repository=repository, runtime_status_projection_service=projection)
 
 
 @pytest.mark.asyncio
@@ -174,13 +151,11 @@ async def test_workline_can_update_non_runtime_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_activate_seeds_default_runtime_status_projection_before_state_update(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_activate_seeds_default_runtime_status_projection_before_state_update() -> None:
     db = _Db()
     repository = _WorkLineRepositoryStub()
     projection = _RuntimeStatusProjectionSpy()
-    service = _prepare_activation(monkeypatch, repository, projection)
+    service = _prepare_activation(repository, projection)
 
     workline = await service.activate(db, repository.current.id, version=7)
 
@@ -192,14 +167,12 @@ async def test_activate_seeds_default_runtime_status_projection_before_state_upd
 
 
 @pytest.mark.asyncio
-async def test_activate_already_active_with_existing_projection_does_not_update_or_commit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_activate_already_active_with_existing_projection_does_not_update_or_commit() -> None:
     db = _Db()
     repository = _WorkLineRepositoryStub()
     repository.current.is_active = True
     projection = _RuntimeStatusProjectionSpy(missing=False)
-    service = _prepare_activation(monkeypatch, repository, projection)
+    service = _prepare_activation(repository, projection)
 
     workline = await service.activate(db, repository.current.id, version=7)
 
@@ -211,14 +184,12 @@ async def test_activate_already_active_with_existing_projection_does_not_update_
 
 
 @pytest.mark.asyncio
-async def test_activate_already_active_conflict_existing_projection_does_not_commit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_activate_already_active_conflict_existing_projection_does_not_commit() -> None:
     db = _Db()
     repository = _WorkLineRepositoryStub()
     repository.current.is_active = True
     projection = _RuntimeStatusProjectionSpy(missing=True, ensure_created=False)
-    service = _prepare_activation(monkeypatch, repository, projection)
+    service = _prepare_activation(repository, projection)
 
     workline = await service.activate(db, repository.current.id, version=7)
 

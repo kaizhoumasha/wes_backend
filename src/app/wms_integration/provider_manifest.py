@@ -139,18 +139,8 @@ WMS_BUSINESS_SCENARIO_MANIFEST = (
                 "wms.fulfillment.request_rack_supply@v1",
                 "wms.fulfillment.request_rack_transport@v1",
                 "wms.fulfillment.change_rack_face@v1",
-                "wms.fulfillment.full_box_exchange@v1",
                 "wms.fulfillment.request_load_unit_transport@v1",
                 "wms.fulfillment.cancel_request@v1",
-            }
-        ),
-    ),
-    WmsBusinessScenario(
-        "CTU_BATCH_FULFILLMENT",
-        frozenset(
-            {
-                "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-                "wms.fulfillment.move_bins_from_conveyor_exit@v1",
             }
         ),
     ),
@@ -178,7 +168,7 @@ def require_full_factory_registry(operation_identities: tuple[str, ...]) -> None
 
     expected = tuple(operation.identity for operation in WMS_OPERATIONS)
     if operation_identities != expected:
-        raise ValueError("active WMS profile does not match the frozen 35-operation registry")
+        raise ValueError("active WMS profile does not match the frozen 32-operation registry")
 
 
 __all__ = [

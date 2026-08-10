@@ -26,7 +26,6 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
-from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_str, optional_int, resolve_required_pk, string_value
 
@@ -56,7 +55,6 @@ _TERMINAL_INTENT_KINDS = {
     RuntimeIntentKind.RESOURCE_WAIT,
 }
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
-_RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID = "RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID"
 
 
 def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
@@ -122,13 +120,7 @@ def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
 
 def _runtime_route_roles(ctx: Any) -> dict[str, str]:
     workline = ctx["workline"]
-    binding = ctx.get("plugin_binding")
-    approved_plugin_config = getattr(binding, "typed_config_json", None) if binding is not None else None
-    config_sources = (
-        (approved_plugin_config,)
-        if binding is not None
-        else (getattr(workline, "runtime_config_json", None), getattr(workline, "config", None))
-    )
+    config_sources = (getattr(workline, "runtime_config_json", None), getattr(workline, "config", None))
     route_roles: dict[str, str] = {}
     for source in config_sources:
         if not isinstance(source, Mapping):
@@ -138,13 +130,9 @@ def _runtime_route_roles(ctx: Any) -> dict[str, str]:
         if not isinstance(raw_routes, Mapping):
             continue
         route_map = cast("Mapping[Any, Any]", raw_routes)
-        route_roles.update(
-            {
-                key: value
-                for key, value in route_map.items()
-                if isinstance(key, str) and isinstance(value, str) and value
-            }
-        )
+        for key, value in route_map.items():
+            if isinstance(key, str) and isinstance(value, str) and value:
+                route_roles.setdefault(key, value)
     return route_roles
 
 
@@ -594,8 +582,8 @@ class RuntimeIntentEffectApplier:
                 "evidence": dict(intent.payload_json),
                 "business_key": None,
             },
-            actor_type=TimelineActorType.PLUGIN,
-            actor_code=getattr(ctx["workline"], "plugin_key", None),
+            actor_type=TimelineActorType.ORCHESTRATOR,
+            actor_code=None,
             message=intent.message,
             related_inbox_id=workline_effects._timeline_inbox_id(ctx),
             status=TimelineStatus.SUCCESS,
@@ -853,42 +841,6 @@ class RuntimeIntentEffectApplier:
         subject_type = str(payload_json["subject_type"])
         subject_key = str(payload_json["subject_key"])
         projection_type = str(payload_json["projection_type"])
-        plugin_key = (
-            coerce_optional_str(getattr(workline, "plugin_key", None))
-            or coerce_optional_str(getattr(session, "plugin_key", None))
-            or coerce_optional_str(payload_json.get("plugin_key"))
-        )
-        contract_version = (
-            coerce_optional_str(getattr(session, "contract_version", None))
-            or coerce_optional_str(getattr(workline, "contract_version", None))
-            or coerce_optional_str(payload_json.get("contract_version"))
-        )
-        plugin_definition = get_workline_capability_definition(plugin_key, contract_version)
-        if plugin_definition is None:
-            return await self._reject_resource_wait_subject_contract(
-                ctx,
-                intent,
-                subject_type=subject_type,
-                subject_key=subject_key,
-                projection_type=projection_type,
-                plugin_key=plugin_key,
-                contract_error="RESOURCE_WAIT schema is missing or unknown",
-            )
-        try:
-            plugin_definition.schema.validate_resource_wait_subject(
-                subject_type=subject_type,
-                projection_type=projection_type,
-            )
-        except ValueError as exc:
-            return await self._reject_resource_wait_subject_contract(
-                ctx,
-                intent,
-                subject_type=subject_type,
-                subject_key=subject_key,
-                projection_type=projection_type,
-                plugin_key=plugin_key,
-                contract_error=str(exc),
-            )
         context_json = dict(getattr(session, "context_json", None) or {})
         existing_wait = context_json.get("resource_wait")
         existing_wait_evidence = (
@@ -970,83 +922,6 @@ class RuntimeIntentEffectApplier:
             status=TimelineStatus.PENDING,
         )
         return RuntimeIntentEffectResult.resource_retry()
-
-    async def _reject_resource_wait_subject_contract(
-        self,
-        ctx: Any,
-        intent: RuntimeIntent,
-        *,
-        subject_type: str,
-        subject_key: str,
-        projection_type: str,
-        plugin_key: str | None,
-        contract_error: str,
-    ) -> RuntimeIntentEffectResult:
-        from src.app.runtime.orchestration.diagnostics import (
-            ErrorCode,
-            build_diagnostic_context,
-            build_diagnostic_event,
-        )
-        from src.app.workline.services.diagnostic_service import workline_diagnostic_service
-
-        session = ctx["session"]
-        inbox = ctx["inbox"]
-        workline = ctx["workline"]
-        payload_json = dict(intent.payload_json)
-        details = {
-            key: value
-            for key, value in payload_json.items()
-            if key not in {"subject_type", "subject_key", "projection_type"}
-        }
-        details.update(
-            {
-                "contract_error": contract_error,
-                "plugin_key": plugin_key,
-                "original_reason_code": intent.reason_code,
-                "original_message": intent.message,
-                "suggested_action": intent.suggested_action,
-            }
-        )
-        evidence = ResourceWaitEvidence.build(
-            inbox_id=resolve_required_pk(inbox, "inbox"),
-            subject_type=subject_type,
-            subject_key=subject_key,
-            projection_type=projection_type,
-            reason_code=_RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID,
-            message=f"RESOURCE_WAIT subject contract invalid: {contract_error}",
-            occurred_at=ctx["now"],
-            session_id=optional_int(getattr(session, "id", None)),
-            workline_id=optional_int(getattr(workline, "id", None))
-            or optional_int(getattr(session, "workline_id", None)),
-            trace_id=coerce_optional_str(_ctx_trace_id(cast("Mapping[str, Any]", ctx))),
-            details=details,
-        )
-        context = build_diagnostic_context(
-            trace_id=evidence.trace_id,
-            session=session,
-            inbox=inbox,
-            workline=workline,
-            extra={
-                "subject_type": subject_type,
-                "subject_key": subject_key,
-                "projection_type": projection_type,
-                "reason_code": evidence.reason_code,
-            },
-        )
-        event = build_diagnostic_event(
-            error_code=ErrorCode.RESOURCE_WAIT,
-            context=context,
-            message=evidence.message,
-            operator_action="检查 RESOURCE_WAIT subject/projection 是否成对声明在插件 schema 中",
-        )
-        _ = await workline_diagnostic_service.record_event(
-            ctx["db"],
-            event=event,
-            evidence=evidence.to_diagnostic_evidence(),
-            diagnostic_key_override=f"{evidence.diagnostic_key}:SUBJECT_CONTRACT",
-            auto_commit=False,
-        )
-        return RuntimeIntentEffectResult.processed()
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.runtime.orchestration.models.timeline import (

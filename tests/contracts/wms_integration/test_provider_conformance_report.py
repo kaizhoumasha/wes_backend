@@ -68,7 +68,7 @@ def test_manifest_uses_the_reviewed_mode_family_question_banks() -> None:
 
     assert tuple(item.operation for item in manifest.operations) == WMS_OPERATIONS
     assert all(item.required_cases == conformance_cases_for_operation(item.operation) for item in manifest.operations)
-    assert sum(len(item.required_cases) for item in manifest.operations) == 217
+    assert sum(len(item.required_cases) for item in manifest.operations) == 199
 
 
 def test_report_is_bound_to_active_profile_and_deterministically_verifiable() -> None:

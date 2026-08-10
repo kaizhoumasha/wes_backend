@@ -487,10 +487,6 @@ async def test_safety_assert_accepting_work_delegates_runtime_projection_service
     workline = SimpleNamespace(id=45, runtime_status=WorkLineRuntimeStatus.READY)
 
     class Repository:
-        async def acquire_plugin_pin_shared(self, _db, workline_id: int):
-            assert workline_id == 45
-            lock_order.append("shared")
-
         async def get_for_update(self, _db, workline_id: int, *, populate_existing: bool = False):
             assert workline_id == 45
             assert populate_existing is True
@@ -526,7 +522,7 @@ async def test_safety_assert_accepting_work_delegates_runtime_projection_service
     assert projection.accepting_calls[0][0] == 45
     assert projection.accepting_calls[0][1].__name__ == "WorkLineSafetyBlocked"
     assert projection.accepting_calls[0][2] is True
-    assert lock_order == ["shared", "row", "projection"]
+    assert lock_order == ["row", "projection"]
 
 
 @pytest.mark.asyncio

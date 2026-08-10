@@ -234,7 +234,10 @@ def test_workline_service_config_only_after_runtime_split():
         assert "db" in sig.parameters, (
             f"WorkLine device gateway 收口:WorkLineService.{name} 签名必须保留 db: AsyncSession 入参"
         )
-        return_annotation = sig.return_annotation
+        return_annotation = typing.get_type_hints(
+            method,
+            globalns={**vars(workline_service_module), "AsyncSession": object},
+        ).get("return", sig.return_annotation)
         assert return_annotation is not inspect.Parameter.empty, (
             f"WorkLine device gateway 收口:WorkLineService.{name} 必须声明返回类型注解"
         )
@@ -250,7 +253,7 @@ def test_workline_service_config_only_after_runtime_split():
             )
 
 
-# WorkLine service facade 收口:workline.services.__init__ 仅保留当前 19 个真实
+# WorkLine service facade 收口:workline.services.__init__ 仅保留当前真实
 # module export。已物理删除的运行态 service 不得继续作为包级导出或延迟加载入口。
 #
 # 来源:workline 配置域 facade 的实际模块导出,按 service 模块分组维护。
@@ -259,9 +262,6 @@ _WORKLINE_SERVICE_REAL_EXPORTS = frozenset(
         # diagnostic_service
         "WorklineDiagnosticService",
         "workline_diagnostic_service",
-        # manifest_validator
-        "WorkLineManifestActivationValidator",
-        "workline_manifest_activation_validator",
         # plane_service
         "WorkLinePlaneService",
         "workline_plane_service",
@@ -272,16 +272,6 @@ _WORKLINE_SERVICE_REAL_EXPORTS = frozenset(
         # workline_service
         "WorkLineService",
         "workline_service",
-        # migration_inventory_service
-        "WorklineMigrationInventoryService",
-        "WorklineMigrationInventoryInvariantError",
-        "WorklineMigrationInventoryLimitExceeded",
-        "workline_migration_inventory_service",
-        # migration_matrix_service
-        "WorklineMigrationMatrixService",
-        "WorklineMigrationMatrixInvariantError",
-        "WorklineMigrationMatrixPreflightError",
-        "workline_migration_matrix_service",
     }
 )
 

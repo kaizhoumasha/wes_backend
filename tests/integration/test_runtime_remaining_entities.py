@@ -25,7 +25,6 @@ from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
 from src.database.schema_conf import get_all_schemas, validate_schema
 from src.database.sqlite_schema import configure_sqlite_schemas
-from tests.support.runtime_binding import binding_pin_fields
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
 # 为 create_all 显式注册 remaining runtime 模型依赖的跨域外键目标。
@@ -262,7 +261,6 @@ def test_execution_work_item_required_fields():
         correlation_id="corr-wi-001",
         plugin_key="test-plugin",
         manifest_version="manifest-v1",
-        **binding_pin_fields(),
         object_type="bin",
         object_key="BIN-01",
         current_step="SCAN_BARCODE",
@@ -281,7 +279,6 @@ def test_execution_work_item_step_status_5_states():
             correlation_id="c",
             plugin_key="test-plugin",
             manifest_version="manifest-v1",
-            **binding_pin_fields(),
             object_type="material",
             object_key="M001",
             current_step="step",

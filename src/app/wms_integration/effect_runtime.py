@@ -23,7 +23,6 @@ from src.app.wms_integration.ports.fulfillment_operations import (
     WmsAsyncSubmitReject,
     WmsEffectAck,
     validate_effect_ack,
-    validate_fulfillment_ack,
 )
 from src.app.wms_integration.ports.operation_common import validate_json_payload
 
@@ -81,7 +80,7 @@ def interpret_async_effect_ack_response(
     try:
         if CanonicalPayload.from_projection(request_payload).sha256 != payload_hash:
             raise ValueError("payload fingerprint differs from the frozen request")
-        request = validate_json_payload(operation.request_model, request_payload)
+        validate_json_payload(operation.request_model, request_payload)
     except (TypeError, ValueError, ValidationError):
         return ContractViolation(
             error_code="WMS_ASYNC_FROZEN_REQUEST_INVALID",
@@ -150,8 +149,6 @@ def interpret_async_effect_ack_response(
         )
         if ack.submission_state != expected_submission_state:
             raise ValueError("ACK submission_state differs from the authored HTTP matrix")
-        if ack.accepted_scope is not None:
-            validate_fulfillment_ack(request, ack)  # type: ignore[arg-type]
     except (TypeError, ValueError, ValidationError):
         return ContractViolation(
             error_code="WMS_ASYNC_ACK_IDENTITY_INVALID",

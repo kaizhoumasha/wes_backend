@@ -37,7 +37,6 @@ from src.app.runtime.orchestration.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
-from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember
 from src.app.runtime.orchestration.wms_rack_demand import WmsRackDemand
 from src.app.runtime.orchestration.workline_runtime_status_projection import (
     WorkLineRuntimeStatus,
@@ -60,7 +59,6 @@ __all__ = [
     "RuntimeIntentLog",
     "RuntimeIntentStatus",
     "RuntimeTimeline",
-    "WmsConveyorBatchMember",
     "WmsRackDemand",
     "WorkLineRuntimeStatus",
     "WorklineRuntimeStatusProjection",

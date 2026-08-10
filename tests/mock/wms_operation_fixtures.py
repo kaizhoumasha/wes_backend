@@ -1,4 +1,4 @@
-"""35 项 WMS operation 的最小 typed fixture。
+"""32 项 WMS operation 的最小 typed fixture。
 
 本文件是 Mock WMS 的独立测试资产；覆盖测试会按静态 registry fail closed 校验键集合与模型。
 """
@@ -109,58 +109,6 @@ REQUEST_FIXTURES = {
         "rack_id": "RACK-001",
         "station_code": "STATION-A",
         "requested_face": "B",
-    },
-    "wms.fulfillment.full_box_exchange@v1": {
-        "dispatch_key": "dispatch-exchange-001",
-        "exchange_request_key": "EXCHANGE-001",
-        "station_code": "FULL-BOX-EXCHANGE",
-        "rack_id": "RACK-001",
-        "rack_face": "A",
-        "full_box_id": "FULL-001",
-        "source_slot_id": "SLOT-001",
-        "occupancies": [
-            {
-                "occupancy_id": "OCC-001",
-                "pkg_id": "PKG-001",
-                "material_code": "MAT-001",
-                "quantity": "10",
-            }
-        ],
-    },
-    "wms.fulfillment.move_bins_to_conveyor_entry@v1": {
-        "dispatch_key": "dispatch-ctu-entry-001",
-        "batch_id": "BATCH-ENTRY-001",
-        "direction": "TO_CONVEYOR_ENTRY",
-        "source_station_code": "FIVE-STATION",
-        "destination_station_code": "CONVEYOR-ENTRY",
-        "capacity_snapshot_version": "CAP-1",
-        "items": [
-            {
-                "sequence_no": 1,
-                "route_instance_id": "ROUTE-001",
-                "bin_id": "BIN-001",
-                "source_rack_id": "RACK-001",
-                "source_slot_id": "SLOT-001",
-                "reserved_queue_position": 1,
-            }
-        ],
-    },
-    "wms.fulfillment.move_bins_from_conveyor_exit@v1": {
-        "dispatch_key": "dispatch-ctu-exit-001",
-        "batch_id": "BATCH-EXIT-001",
-        "direction": "FROM_CONVEYOR_EXIT",
-        "workline_id": 1,
-        "queue_code": "RETURN-QUEUE",
-        "candidate_digest": "fdaac886d933503b3c3b545d2d3bbc9ab0e7610e8c8aa01cbb4b98795a435360",
-        "candidate_items": [
-            {
-                "sequence_no": 1,
-                "route_instance_id": "ROUTE-001",
-                "bin_id": "BIN-001",
-                "scan3_enqueued_at": "2026-07-29T00:00:00+00:00",
-                "queue_position": 1,
-            }
-        ],
     },
     "wms.fulfillment.request_load_unit_transport@v1": {
         "dispatch_key": "dispatch-load-unit-001",
@@ -364,58 +312,6 @@ RESULT_FIXTURES = {
         "rack_id": "RACK-001",
         "authorized_face": "B",
         "final_face": "B",
-        "task_outcome": "SUCCESS",
-    },
-    "wms.fulfillment.full_box_exchange@v1": {
-        "dispatch_key": "dispatch-exchange-001",
-        "provider_reference": "provider-exchange-001",
-        "source_version": "2",
-        "exchange_request_key": "EXCHANGE-001",
-        "full_box_id": "FULL-001",
-        "selected_empty_box_id": "EMPTY-001",
-        "full_box_destination": {"rack_id": "RACK-005", "bin_id": "FULL-001", "slot_id": "SLOT-F"},
-        "empty_box_destination": {"rack_id": "RACK-001", "bin_id": "EMPTY-001", "slot_id": "SLOT-001"},
-        "final_relations": [
-            {"rack_id": "RACK-005", "bin_id": "FULL-001", "slot_id": "SLOT-F"},
-            {"rack_id": "RACK-001", "bin_id": "EMPTY-001", "slot_id": "SLOT-001"},
-        ],
-        "task_outcome": "SUCCESS",
-        "inventory_source_version": "2",
-    },
-    "wms.fulfillment.move_bins_to_conveyor_entry@v1": {
-        "dispatch_key": "dispatch-ctu-entry-001",
-        "provider_reference": "provider-entry-001",
-        "source_version": "2",
-        "batch_id": "BATCH-ENTRY-001",
-        "accepted_object_keys": ["BIN-001"],
-        "items": [
-            {
-                "sequence_no": 1,
-                "route_instance_id": "ROUTE-001",
-                "bin_id": "BIN-001",
-                "item_outcome": "SUCCESS",
-                "final_queue_position": 1,
-            }
-        ],
-        "task_outcome": "SUCCESS",
-    },
-    "wms.fulfillment.move_bins_from_conveyor_exit@v1": {
-        "dispatch_key": "dispatch-ctu-exit-001",
-        "provider_reference": "provider-exit-001",
-        "source_version": "2",
-        "batch_id": "BATCH-EXIT-001",
-        "accepted_object_keys": ["BIN-001"],
-        "candidate_digest": "fdaac886d933503b3c3b545d2d3bbc9ab0e7610e8c8aa01cbb4b98795a435360",
-        "items": [
-            {
-                "sequence_no": 1,
-                "route_instance_id": "ROUTE-001",
-                "bin_id": "BIN-001",
-                "item_outcome": "SUCCESS",
-                "final_rack_id": "RACK-005",
-                "final_slot_id": "SLOT-005",
-            }
-        ],
         "task_outcome": "SUCCESS",
     },
     "wms.fulfillment.request_load_unit_transport@v1": {

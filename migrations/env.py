@@ -68,7 +68,6 @@ from src.app.runtime.orchestration.runtime_hold import RuntimeHold as Orchestrat
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox  # noqa: F401
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog  # noqa: F401
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline  # noqa: F401
-from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember  # noqa: F401
 from src.app.runtime.orchestration.wms_rack_demand import WmsRackDemand  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 from src.app.transport.models import (  # noqa: F401

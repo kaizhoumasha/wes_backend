@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -21,7 +20,6 @@ from src.app.callback.models import CallbackLog
 from src.app.callback.repositories.callback_log_repository import callback_log_repository
 from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
-from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
 from src.app.runtime.capabilities.material_flow.station_lease_service import station_lease_service
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.runtime.orchestration.models import (
@@ -80,7 +78,6 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,
 )
-from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.app.sys.models import (
     SystemOutbox,
     is_system_outbox_resource_wait,
@@ -1449,8 +1446,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
             line_name=workline.line_name,
             line_type=_status_str(workline.line_type),
             zone_name=workline.zone_name,
-            plugin_key=workline.plugin_key,
-            contract_version=workline.contract_version,
+            plugin_key=None,
+            contract_version=None,
             is_active=workline.is_active,
             device_count=len(devices),
             active_session_count=active_count,
@@ -1487,18 +1484,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
         single_layer_rack_snapshot = RuntimeSingleLayerRackSnapshot.UNKNOWN
         resource_evidence_kind = RuntimeResourceEvidenceKind.UNKNOWN
         active_snapshots: list[tuple[str, dict[str, Any]]] = []
-        position_codes = self._single_layer_boundary_positions(workline)
-
-        if position_codes:
-            station_lease = await self._load_runtime_station_lease(db, workline, position_codes)
-            single_layer_rack_snapshot, active_snapshots = await self._load_single_layer_rack_snapshot_projection(
-                db,
-                workline,
-                position_codes,
-            )
-            if single_layer_rack_snapshot == RuntimeSingleLayerRackSnapshot.ACTIVE:
-                resource_evidence_kind = RuntimeResourceEvidenceKind.WES_ACTIVE_SNAPSHOT
-
         rack_operation_wait = self._runtime_rack_operation_wait(sessions)
         if full_resource_evidence:
             resource_evidence_projection = await self._load_runtime_resource_evidence_projection_for_workline(
@@ -1706,46 +1691,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
             return RuntimeWorklineReadiness.NOT_READY
         return RuntimeWorklineReadiness.UNKNOWN
 
-    @staticmethod
-    def _single_layer_boundary_positions(workline: WorkLine) -> list[str]:
-        definition = get_workline_capability_definition(
-            getattr(workline, "plugin_key", None),
-            getattr(workline, "contract_version", None),
-        )
-        if definition is None:
-            return []
-        position_codes: list[str] = []
-        for boundary in definition.schema.resource_boundaries:
-            if getattr(boundary, "rack_kind", None) == "SINGLE_LAYER":
-                position_code = str(getattr(boundary, "rack_position_code", "") or "").strip()
-                if position_code and position_code not in position_codes:
-                    position_codes.append(position_code)
-        return position_codes
-
-    @staticmethod
-    def _manifest_position_metadata_by_code(workline: WorkLine) -> dict[str, dict[str, str]]:
-        definition = get_workline_capability_definition(
-            getattr(workline, "plugin_key", None),
-            getattr(workline, "contract_version", None),
-        )
-        if definition is None:
-            return {}
-
-        metadata_by_code: dict[str, dict[str, str]] = {}
-        for position in definition.schema.rack_positions:
-            position_code = str(getattr(position, "code", "") or "").strip()
-            if not position_code:
-                continue
-            metadata: dict[str, str] = {"position_code": position_code}
-            station_code = str(getattr(position, "station_code", "") or "").strip()
-            if station_code:
-                metadata["station_code"] = station_code
-            station_role = str(getattr(position, "role", "") or "").strip()
-            if station_role:
-                metadata["station_role"] = station_role
-            metadata_by_code[position_code] = metadata
-        return metadata_by_code
-
     async def _load_runtime_station_lease(
         self,
         db: Any,
@@ -1787,56 +1732,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 RuntimeStationLease.IDLE,
             ],
             RuntimeStationLease.UNKNOWN,
-        )
-
-    async def _load_single_layer_rack_snapshot_state(
-        self,
-        db: Any,
-        workline: WorkLine,
-        position_codes: list[str],
-    ) -> RuntimeSingleLayerRackSnapshot:
-        state, _ = await self._load_single_layer_rack_snapshot_projection(db, workline, position_codes)
-        return state
-
-    async def _load_single_layer_rack_snapshot_projection(
-        self,
-        db: Any,
-        workline: WorkLine,
-        position_codes: list[str],
-    ) -> tuple[RuntimeSingleLayerRackSnapshot, list[tuple[str, dict[str, Any]]]]:
-        states: list[RuntimeSingleLayerRackSnapshot] = []
-        active_snapshots: list[tuple[str, dict[str, Any]]] = []
-        position_metadata_by_code = self._manifest_position_metadata_by_code(workline)
-        for position_code in position_codes:
-            try:
-                snapshot = await smt_active_rack_snapshot_service.get_active_bin_rack(
-                    db,
-                    workline=workline,
-                    context={"station": {"position_code": position_code}},
-                )
-            except ValueError:
-                states.append(RuntimeSingleLayerRackSnapshot.INVALID)
-                continue
-            if snapshot and isinstance(snapshot, Mapping):
-                snapshot_payload = _runtime_payload_with_metadata_defaults(
-                    dict(snapshot),
-                    position_metadata_by_code.get(position_code, {"position_code": position_code}),
-                )
-                active_snapshots.append((position_code, snapshot_payload))
-            states.append(RuntimeSingleLayerRackSnapshot.ACTIVE if snapshot else RuntimeSingleLayerRackSnapshot.MISSING)
-        return (
-            _highest_priority_state(
-                states,
-                [
-                    RuntimeSingleLayerRackSnapshot.ACTIVE,
-                    RuntimeSingleLayerRackSnapshot.INVALID,
-                    RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE,
-                    RuntimeSingleLayerRackSnapshot.MISSING,
-                    RuntimeSingleLayerRackSnapshot.UNKNOWN,
-                ],
-                RuntimeSingleLayerRackSnapshot.UNKNOWN,
-            ),
-            active_snapshots,
         )
 
     @staticmethod

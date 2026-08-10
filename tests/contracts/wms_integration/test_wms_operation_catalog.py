@@ -44,15 +44,12 @@ EXPECTED_EFFECT_IDENTITIES = (
     "wms.fulfillment.request_rack_supply@v1",
     "wms.fulfillment.request_rack_transport@v1",
     "wms.fulfillment.change_rack_face@v1",
-    "wms.fulfillment.full_box_exchange@v1",
-    "wms.fulfillment.move_bins_to_conveyor_entry@v1",
-    "wms.fulfillment.move_bins_from_conveyor_exit@v1",
     "wms.fulfillment.request_load_unit_transport@v1",
     "wms.fulfillment.publish_manual_task@v1",
     "wms.fulfillment.cancel_request@v1",
 )
-EXPECTED_SYNC_EFFECTS = frozenset((*EXPECTED_EFFECT_IDENTITIES[:7], *EXPECTED_EFFECT_IDENTITIES[14:]))
-EXPECTED_ASYNC_EFFECTS = frozenset(EXPECTED_EFFECT_IDENTITIES[7:14])
+EXPECTED_SYNC_EFFECTS = frozenset((*EXPECTED_EFFECT_IDENTITIES[:7], *EXPECTED_EFFECT_IDENTITIES[11:]))
+EXPECTED_ASYNC_EFFECTS = frozenset(EXPECTED_EFFECT_IDENTITIES[7:11])
 LIST_QUERY_IDENTITIES = frozenset(
     {
         "wms.master_data.list_materials@v1",
@@ -73,7 +70,7 @@ def _load(module_name: str):
     return importlib.import_module(module_name)
 
 
-def test_static_registry_freezes_exactly_35_unique_operation_identities() -> None:
+def test_static_registry_freezes_exactly_32_unique_operation_identities() -> None:
     registry = _load("src.app.wms_integration.operation_registry")
 
     assert tuple(item.identity for item in registry.QUERY_OPERATIONS) == EXPECTED_QUERY_IDENTITIES
@@ -82,9 +79,9 @@ def test_static_registry_freezes_exactly_35_unique_operation_identities() -> Non
         *EXPECTED_QUERY_IDENTITIES,
         *EXPECTED_EFFECT_IDENTITIES,
     )
-    assert len(registry.WMS_OPERATION_BY_IDENTITY) == len(registry.WMS_OPERATIONS) == 35
-    assert len({item.request_model for item in registry.WMS_OPERATIONS}) == 35
-    assert len({item.result_model for item in registry.WMS_OPERATIONS}) == 35
+    assert len(registry.WMS_OPERATION_BY_IDENTITY) == len(registry.WMS_OPERATIONS) == 32
+    assert len({item.request_model for item in registry.WMS_OPERATIONS}) == 32
+    assert len({item.result_model for item in registry.WMS_OPERATIONS}) == 32
 
 
 def test_every_typed_definition_owns_strict_models_and_frozen_budgets() -> None:
@@ -239,16 +236,11 @@ def test_async_effect_runtime_classification_is_exact_registry_derivative() -> N
     assert WMS_EFFECT_OPERATION_IDENTITIES == WMS_ASYNC_EFFECT_OPERATION_IDENTITIES == expected
 
 
-def test_ack_and_batch_closed_sets_are_registry_derivatives() -> None:
+def test_async_ack_closed_set_is_a_registry_derivative() -> None:
     from src.app.wms_integration.operation_registry import ASYNC_EFFECT_OPERATION_IDENTITIES
-    from src.app.wms_integration.ports.effect_status import BATCH_EFFECT_OPERATION_IDENTITIES
-    from src.app.wms_integration.ports.fulfillment_operations import (
-        ASYNC_FULFILLMENT_OPERATION_IDENTITIES,
-        BATCH_FULFILLMENT_OPERATION_IDENTITIES,
-    )
+    from src.app.wms_integration.ports.fulfillment_operations import ASYNC_FULFILLMENT_OPERATION_IDENTITIES
 
     assert ASYNC_FULFILLMENT_OPERATION_IDENTITIES == ASYNC_EFFECT_OPERATION_IDENTITIES
-    assert BATCH_EFFECT_OPERATION_IDENTITIES == BATCH_FULFILLMENT_OPERATION_IDENTITIES
 
 
 def test_all_wire_models_use_true_strict_validation() -> None:

@@ -40,7 +40,7 @@ def test_all_7_async_effects_freeze_get_status_binding_from_compiled_profile(ope
         operation_identity=operation.identity,
     )
 
-    assert len(ASYNC_EFFECT_OPERATIONS) == 7
+    assert len(ASYNC_EFFECT_OPERATIONS) == 4
     assert compiled_endpoint.status_endpoint is not None
     assert frozen.operation_identity == operation.identity
     assert frozen.target_snapshot.code == operation.target_code

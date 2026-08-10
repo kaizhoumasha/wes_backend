@@ -24,7 +24,6 @@ from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.app.wms_integration.ports.effect_status import (
     WMS_EFFECT_OPERATION_IDENTITIES,
-    WmsBatchEffectStatusRequest,
     WmsEffectStatus,
     WmsEffectStatusRequest,
     WmsEffectStatusSnapshot,
@@ -118,7 +117,6 @@ def _claim(*, status: RuntimeIntentStatus = RuntimeIntentStatus.PROPOSED) -> Any
         "idempotency_key": "idem-001",
         "provider_reference": "wms-effect-001",
         "submission_state": "ACCEPTED",
-        "accepted_scope": None,
     }
     ack_hash = typed_wms_effect_ack_hash(WmsEffectAck.model_validate(frozen_ack))
     intent = SimpleNamespace(
@@ -282,7 +280,6 @@ async def test_status_first_visible_snapshot_freezes_ack_before_status_evidence(
         raw_response={
             "state": "PROCESSING",
             "provider_reference": "provider-status-first",
-            "accepted_scope": None,
             "reason_code": None,
             "updated_at": "2026-07-24T12:00:00+00:00",
             "source_version": 1,
@@ -354,46 +351,6 @@ def test_visible_snapshot_rejects_recovered_ack_drift_from_existing_authority() 
                 recovered_ack=recovered_ack,
             ),
         )
-
-
-@pytest.mark.parametrize("state", [WmsEffectStatus.PROCESSING, WmsEffectStatus.COMPLETED])
-def test_batch_snapshot_validation_reuses_frozen_scope_for_nonterminal_and_terminal(state: WmsEffectStatus) -> None:
-    operation_identity = "wms.fulfillment.move_bins_to_conveyor_entry@v1"
-    request_payload = REQUEST_FIXTURES[operation_identity]
-    ack = WmsEffectAck.model_validate(
-        build_typed_ack(operation_identity, "idem-batch", request_payload, submission_state="ACCEPTED")
-    )
-    request = WmsBatchEffectStatusRequest(
-        operation_identity=operation_identity,
-        idempotency_key="idem-batch",
-        request_payload=request_payload,
-        frozen_ack=ack,
-    )
-    snapshot_kwargs: dict[str, Any] = {}
-    if state is WmsEffectStatus.COMPLETED:
-        snapshot_kwargs["result"] = WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(
-            build_typed_result(
-                operation_identity,
-                request_payload,
-                source_version=3,
-                completed_at="2026-07-24T12:00:00+00:00",
-                provider_reference=ack.provider_reference,
-            )
-        )
-    snapshot = WmsEffectStatusSnapshot(
-        operation_identity=operation_identity,
-        idempotency_key="idem-batch",
-        state=state,
-        provider_reference=ack.provider_reference,
-        updated_at=NOW.replace(tzinfo=UTC),
-        source_version=3,
-        **snapshot_kwargs,
-    )
-
-    with patch.object(WmsEffectStatusService, "_build_request", return_value=request):
-        validated = WmsEffectStatusService._validate_snapshot_matches_claim(_claim(), snapshot)
-
-    assert validated is request
 
 
 @pytest.mark.parametrize("cross_wire", ("idempotency-key", "payload-fingerprint", "provider-reference"))

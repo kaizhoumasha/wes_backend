@@ -173,7 +173,7 @@ class CompiledWmsOperationEndpoint:
 
 @dataclass(frozen=True, slots=True)
 class CompiledWmsProviderProfile:
-    """启动后共享的冻结 profile 与 35 项 endpoint。"""
+    """启动后共享的冻结 profile 与 32 项 endpoint。"""
 
     profile: WmsProviderProfileSettings
     profile_revision: str

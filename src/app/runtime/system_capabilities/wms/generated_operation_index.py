@@ -1,4 +1,4 @@
-"""WMS runtime 对静态 35 项 registry 的只读索引视图。"""
+"""WMS runtime 对静态 32 项 registry 的只读索引视图。"""
 
 from __future__ import annotations
 

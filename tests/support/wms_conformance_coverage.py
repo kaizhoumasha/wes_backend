@@ -13,7 +13,6 @@ T8_COVERAGE_TARGETS = (
     "src.app.runtime.system_capabilities.wms.conformance_manifest",
     "src.app.runtime.system_capabilities.wms.provider_conformance",
     "src.app.runtime.system_capabilities.wms.conformance_matrix",
-    "src.app.workline.models.migration_inventory",
     "tests.support.wms_conformance_runner",
     "scripts.run_wms_conformance",
 )
