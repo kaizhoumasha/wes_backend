@@ -65,7 +65,14 @@ def _response(
 def test_wms_adapter_exposes_only_the_public_surface() -> None:
     module = importlib.import_module("src.app.wms_adapter")
 
-    assert module.__all__ == ["WmsAccessResult", "WmsClient", "build_wms_client"]
+    assert module.__all__ == [
+        "TransportEventHandler",
+        "TransportEventResponse",
+        "WmsAccessResult",
+        "WmsClient",
+        "WmsTransportAdapter",
+        "build_wms_client",
+    ]
 
 
 @pytest.mark.asyncio
@@ -114,6 +121,75 @@ async def test_post_encodes_compact_utf8_json_and_owns_content_type() -> None:
     assert request.method is OutboundHttpMethod.POST
     assert request.headers == (("X-Request-Id", "request-2"), ("Content-Type", "application/json"))
     assert request.body == b'{"message":"\xe4\xb8\xad\xe6\x96\x87","items":[1,true,null]}'
+
+
+@pytest.mark.asyncio
+async def test_per_request_body_budgets_are_applied_after_json_encoding() -> None:
+    transport = _FakeTransport()
+    client = WmsClient(transport)
+    payload = {"value": "中文"}
+    encoded_size = len(b'{"value":"\xe4\xb8\xad\xe6\x96\x87"}')
+
+    await client.post(
+        "/tasks",
+        json=payload,
+        max_request_body_bytes=encoded_size,
+        max_response_body_bytes=256 * 1024,
+    )
+
+    assert len(transport.requests) == 1
+    assert transport.requests[0].response_limits.max_wire_bytes == 256 * 1024
+    assert transport.requests[0].response_limits.max_decoded_bytes == 256 * 1024
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field_name", ["max_request_body_bytes", "max_response_body_bytes"])
+@pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5])
+async def test_per_request_body_budgets_reject_non_positive_integers_before_send(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    transport = _FakeTransport()
+
+    with pytest.raises(OutboundHttpRequestError, match=f"{field_name} must be a positive integer"):
+        await WmsClient(transport).post(
+            "/tasks",
+            json={"value": "ok"},
+            **{field_name: invalid_value},  # type: ignore[arg-type]
+        )
+
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_request_body_over_budget_is_rejected_before_send() -> None:
+    transport = _FakeTransport()
+
+    with pytest.raises(OutboundHttpRequestError, match="request body limit"):
+        await WmsClient(transport).post("/tasks", json={"value": "中文"}, max_request_body_bytes=1)
+
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_request_body_budget_accepts_exactly_256_kib_and_rejects_one_more_byte() -> None:
+    limit = 256 * 1024
+    exact_transport = _FakeTransport()
+    exact_payload = {"v": "x" * (limit - len(b'{"v":""}'))}
+
+    await WmsClient(exact_transport).post("/tasks", json=exact_payload, max_request_body_bytes=limit)
+
+    assert len(exact_transport.requests) == 1
+    assert len(exact_transport.requests[0].body) == limit
+
+    oversized_transport = _FakeTransport()
+    with pytest.raises(OutboundHttpRequestError, match="request body limit"):
+        await WmsClient(oversized_transport).post(
+            "/tasks",
+            json={"v": exact_payload["v"] + "x"},
+            max_request_body_bytes=limit,
+        )
+    assert oversized_transport.requests == []
 
 
 @pytest.mark.asyncio

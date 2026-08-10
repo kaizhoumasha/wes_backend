@@ -63,7 +63,7 @@ WES 只承担以下职责：
 1. 工作线本地设备调度。
 2. 工作线内对象、位置、队列、设备忙闲的实时投影。
 3. ECS 设备命令、ACK、CALLBACK 的持久化证据和幂等处理。
-4. 通过抽象搬运端口提交 AGV/CTU 业务搬运目标并接收任务级终态结果。
+4. 通过抽象搬运端口提交 AGV/CTU 业务搬运目标，接收 CTU 逐箱位置事实和任务级终态结果。
 5. 消费 WMS 给出的封闭业务结果，并在其授权范围内决定设备发送、等待、暂停、隔离和对账等本地执行动作。
 6. 向 WMS 同步物理执行结果；WMS 不可用时保存待确认事实并受控暂停。
 
@@ -190,11 +190,13 @@ WES 只提交 WMS 已给出的搬运目标并跟踪任务级事实：
 - 来源和目标业务位置。
 - 提交时冻结的批次成员。
 - 批次级同步接纳 ACK 和异步终态。
+- 会改变成员位置投影的标准化 `SOURCE_PICKED`、`TARGET_PLACED` 事实。
 - 批次终态中可携带的成员最终事实。
 
 WES 不关心该请求由 WMS、RCS、MCS 或其他系统最终承接。它们通过同一个 Transport Port 隔离。
-当前产品只实现 WMS 转发适配器。成员事实不是独立生命周期；WES 不要求逐件、逐箱或设备内部子阶段回调。
-只有通过 TransportResult 应用端口校验并持久化的可靠异步终态才能推进任务；普通 WMS 业务事件不能终结任务。
+当前产品只实现 WMS 转发适配器。成员事实不是独立生命周期；WES 只要求逐箱取离来源和放到目标两个位置里程碑，不要求
+导航、举升、靠近等设备内部子阶段回调。成员位置事实只更新位置投影；只有通过 Transport evidence 应用端口校验并持久化的
+可靠异步终态才能终结任务，普通 WMS 业务事件不能终结任务。
 
 ## 5. 集成协议
 
@@ -247,8 +249,9 @@ WMS 普通业务事件通过 `/api/v1/wms/events` 接收，必须先持久化为
 任何具体业务 wire 未确认只阻断该业务 API，不阻断 Phase 3 共享 Client。
 
 当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3。Phase 4 通过 Transport Port 和复用 `WmsClient` 的 WMS 转发 Adapter
-调用 WMS，并由 `TransportTask` 统一拥有任务持久化、提交、同步接纳 ACK、异步终态、超期对账和批次成员最终事实。
-首版不提供状态查询、取消或外部内部进度状态；成员只作为冻结请求事实和终态结果事实存在。
+调用 WMS，并由 `TransportTask` 统一拥有任务持久化、提交、同步接纳 ACK、CTU 逐箱位置事实、异步终态、超期对账和
+批次成员最终事实。首版不提供状态查询、取消或任意外部内部进度；只接收 `SOURCE_PICKED / TARGET_PLACED` 两个会改变
+料箱位置的标准里程碑，任务仍不增加 `ACTIVE` 或成员级第二套生命周期。
 
 WMS 业务写操作和 Transport 请求都可在各自可靠对象内部保留 `dispatch_key`，但 wire 只发送对应外部合同批准的唯一
 幂等/关联字段，不自动暴露内部字段名。WMS 原子幂等、回显、安全重提、Transport submit ACK 与异步结果关联规则，
@@ -570,7 +573,8 @@ ECS 每次物理搬运一个完整料盘。设备扫码形成一个不可变六�
 并行子流程：
 
 1. WMS/AGV 补充单层货架和五层货架。
-2. CTU 按冻结成员的批次把五层货架上的料箱投入本线入口；WES 跟踪批次级同步接纳 ACK 和异步终态，终态可携带成员最终事实，但不要求逐箱回调。
+2. CTU 按冻结成员的批次把五层货架上的料箱投入本线入口；WES 跟踪批次级同步接纳 ACK、逐箱
+   `SOURCE_PICKED / TARGET_PLACED` 位置事实和异步终态，不镜像 CTU 内部导航或机械阶段。
 3. SCAN1 判定料箱是否进入本线工作队列。
 4. SCAN2 到位后启动料盘聚合流程。
 5. 北向机械臂从单层货架指定来源取出完整料盘并放到扫码平台。
@@ -606,7 +610,9 @@ ECS 每次物理搬运一个完整料盘。设备扫码形成一个不可变六�
 3. 旧货架通过 AGV 移至独立满箱交换位置。
 4. WES 根据冻结快照判断达到阈值的料箱。
 5. WMS 授权五层货架目标储位、空箱和 CTU 搬运目标。
-6. CTU 按冻结成员的批次交换满箱和空箱，并以批次级同步接纳 ACK 和异步终态报告；终态可携带成员最终事实，但不要求逐箱状态回调。
+6. 粗分机插件按 WMS 已确定的料箱和储位调用 Phase 4 `exchange_bins()`；一次任务包含 1～2 个交换对，由 WMS/RCS 作为
+   一个 CTU 协调任务执行，超过两个交换对时拆为多个独立交换任务。每个料箱只在 `SOURCE_PICKED`、`TARGET_PLACED`
+   两个位置改变点形成标准事实，不镜像 CTU 内部导航和机械阶段。
 7. 满箱完成箱级入库并同步 WMS。
 8. 剩余未满箱料箱随单层货架进入自动分拣线 A/B，继续逐料盘聚合。
 
@@ -790,15 +796,15 @@ CTU 投箱
 3. WMS HTTP Client 薄封装：消费 Phase 2 Transport，在独立应用包 `src/app/wms_adapter/` 中只交付
    `request/get/post/aclose`、统一 JSON 编解码、最小 factory 和开发示例；当前 outbound 无认证。本阶段不包含任何具体
    WMS 业务 API、业务 Port、数据库、evidence、breaker 或可靠生命周期，不接入生产、不修改旧实现和旧测试。
-4. WES 最小平台与 Transport 能力建设：暗构建最终执行对象、三类可靠记录、通用 WorkLine、投影、最小 SPI/SDK、
-   `Transport Port`、WMS 转发 RCS Adapter、typed Device Port 与测试 fake，并由供应商无关的生产统一设备 HTTP Adapter
-   消费 Phase 2 Transport；本阶段不修改当前生产 Composition Root、旧表、旧实现和旧测试。
-5. 新旧能力原子切换与旧所有者删除：迁移生产消费者和装配，清理开发/测试数据，原子删除 Provider Profile、QUERY
-   System Capability、旧 WMS Transport/认证、Effect/status/Outbox 可靠闭包及被最终对象替代的核心旧 owner；先把
-   DeviceCommand/status/admission 消费者接到 Phase 4 生产统一设备 Adapter，再删除旧 sender，生产 Composition Root 不绑定 fake。
-6. 核心测试承接与平台基线验收：把剩余通用可靠性测试收敛到最终对象，完成核心/插件测试分界和平台独立验收。
-7. 粗分机参考插件优化：交付首个实际设备合同附录、endpoint/device 绑定、供应商一致性验收和独立执行插件，复用唯一生产 Adapter。
-8. 分拣执行插件优化：按实际工作线分别交付设备附录、endpoint/device 绑定、供应商验收和插件；不实现第二个 WES HTTP Adapter。
+4. AGV/CTU Transport 基础能力建设：只暗构建 `TransportTask`、member-position/result evidence、位置投影、
+   `Transport Port` 和 WMS 转发 RCS/AGV/CTU Adapter；不建设 DeviceCommand、统一设备 Adapter、ECS、WorkLine/Epoch、
+   通用执行对象或插件 SDK，不修改当前生产 Composition Root、旧表、旧实现和旧测试。
+5. Transport 原子切换与旧所有者删除：只迁移 Transport 消费者、结果入口和装配，原子删除 Transport 专属
+   Effect/status/Outbox/callback hint/result callback；Device/ECS 不进入本阶段。
+6. Transport 测试承接与基线验收：完成 Transport 最终对象、WMS Adapter、member-position/result evidence 和
+   PostgreSQL 可靠性测试所有权。
+7. 粗分机参考插件优化：独立 Device/ECS 基础能力计划未批准并验收前保持阻塞；之后交付设备附录、绑定、供应商验收和插件。
+8. 分拣执行插件优化：消费独立 Device/ECS 基础能力和 Phase 4/5 Transport，按实际工作线交付插件。
 9. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
 10. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
 11. 最终基线与系统验收：从空库分别验证核心、Adapter、插件、质量、部署装配和旧架构缺席门禁。

@@ -61,6 +61,10 @@ WMS_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_ef
 WMS_PROVIDER_COLLECTION_HEAVY_TEST = "tests/integration/test_wms_provider_conformance_collection.py"
 WMS_PROVIDER_SIMULATOR_HEAVY_TEST = "tests/mock/test_wms_provider_conformance_simulator.py"
 WMS_EVENT_RUNTIME_INBOX_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_wms_event_runtime_inbox_idempotency.py"
+TRANSPORT_DARK_LOOP_HEAVY_TEST = "tests/integration/transport/test_dark_transport_loop.py"
+TRANSPORT_EVIDENCE_HEAVY_TEST = "tests/integration/transport/test_transport_evidence_transaction.py"
+TRANSPORT_REPOSITORY_HEAVY_TEST = "tests/integration/transport/test_transport_repository.py"
+TRANSPORT_SCHEMA_HEAVY_TEST = "tests/integration/transport/test_transport_schema.py"
 SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
     "tests/integration/test_base_repository_crud.py",
     "tests/integration/test_base_repository_hooks.py",
@@ -664,7 +668,6 @@ def test_repository_mapping_keeps_unaccepted_candidates_unmapped() -> None:
     for candidate in (
         "src/app/runtime.py",
         "main.py",
-        "migrations/env.py",
         "alembic.ini",
         "docker-compose.yml",
         "tests/integration/conftest.py",
@@ -951,6 +954,21 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/wms_adapter/__init__.py", ()),
         ("src/app/wms_adapter/client.py", ()),
         ("src/app/wms_adapter/factory.py", ()),
+        (
+            "src/app/transport/**",
+            (
+                TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_EVIDENCE_HEAVY_TEST,
+                TRANSPORT_REPOSITORY_HEAVY_TEST,
+                TRANSPORT_SCHEMA_HEAVY_TEST,
+            ),
+        ),
+        ("src/app/wms_adapter/transport_*.py", (TRANSPORT_DARK_LOOP_HEAVY_TEST,)),
+        (
+            "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py",
+            (TRANSPORT_SCHEMA_HEAVY_TEST,),
+        ),
+        ("migrations/env.py", (TRANSPORT_SCHEMA_HEAVY_TEST,)),
     )
 
 

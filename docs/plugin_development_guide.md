@@ -137,11 +137,12 @@ Handler 只返回以下封闭 Decision 类别；具体 SDK 使用可判别类型
 后续步骤只由与当前可靠对象匹配的输入触发：
 
 - `DeviceCommand` 最终 CALLBACK；
-- TransportResult 应用端口接受的类型化异步终态结果；
+- Transport evidence 应用端口接受的标准化成员位置事实或类型化异步终态结果；
 - `WmsConfirmation` 同步结果（outcome）；
 - 新的业务输入。
 
-普通 WMS 业务事件不能终结 `TransportTask`；只有通过 TransportResult 应用端口校验并持久化的异步终态才能推进任务。
+普通 WMS 业务事件不能终结 `TransportTask`；成员位置事实只更新位置投影，只有通过 Transport evidence 应用端口校验并
+持久化的异步终态才能终结任务。
 一个 Handler 不等待整条工作线执行完成。
 
 ### 2.5 注册和配置

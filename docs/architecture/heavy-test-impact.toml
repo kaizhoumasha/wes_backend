@@ -467,5 +467,27 @@ heavy_tests = []
 source_glob = "src/app/wms_adapter/factory.py"
 heavy_tests = []
 
+# Phase 4 Transport 聚合的数据库约束、领取和暗装配由隔离 PostgreSQL 验收。
+[[mapping]]
+source_glob = "src/app/transport/**"
+heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+]
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/transport_*.py"
+heavy_tests = ["tests/integration/transport/test_dark_transport_loop.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py"
+heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/env.py"
+heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
+
 # 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。

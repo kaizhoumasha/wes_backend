@@ -71,6 +71,13 @@ from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline  # no
 from src.app.runtime.orchestration.wms_conveyor_batch_member import WmsConveyorBatchMember  # noqa: F401
 from src.app.runtime.orchestration.wms_rack_demand import WmsRackDemand  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
+from src.app.transport.models import (  # noqa: F401
+    TransportEvidence,
+    TransportMember,
+    TransportPositionProjection,
+    TransportResourceBinding,
+    TransportTask,
+)
 from src.app.wms_integration.models import WmsCallEvidence, WmsCircuitBreakerState  # noqa: F401
 from src.app.workline.models import WorkLine  # noqa: F401
 

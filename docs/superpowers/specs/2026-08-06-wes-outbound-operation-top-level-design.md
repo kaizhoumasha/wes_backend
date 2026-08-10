@@ -96,7 +96,7 @@ related:
 | --- | --- | --- |
 | WMS | 订单/波次、库存、Cell 锁、六合一码业务资格、稳定业务异常分类、目标储位、需求状态、来源恢复和任务优先级 | 本地重算业务资格、来源/目标分配、需求状态、来源恢复或库存账务 |
 | WES | 任务与 Cell 本地执行、NG 作用域、跨设备逻辑动作链（cross-device logical action chain）、设备资源仲裁、作业期投影、异常证据和可靠义务 | WMS 业务资格、目标分配、来源分配、RCS 路径或设备内部控制 |
-| RCS/AGV/CTU | 货架/料箱运输、路径、排队、旋转和终态物理结果 | 库存、PKG 资格、Cell 业务完成或目标储位业务分配 |
+| RCS/AGV/CTU | AGV 完整货架搬运；CTU 货架内料箱搬运；RCS 路径、排队、旋转和终态物理结果 | 库存、PKG 资格、Cell 业务完成或目标储位业务分配 |
 | ECS/PLC/设备 | 扫码、到位/离位、抓取、放置、滚筒输送、安全互锁和最终设备结果 | 库存、任务优先级、目标业务选择或任务终态 |
 
 ### 4.2 独立执行对象
@@ -205,8 +205,9 @@ PickingTask 完成不等待离场，WMS 仍只在该 TransportResult 确认物�
 
 AGV/CTU 请求的 ACK、已受理或已派发均不构成货架/料箱到位。只有批准的运输终态和位置证据才能推进依赖它的执行。
 
-CTU 批次拥有冻结成员、批次级同步接纳 ACK、异步终态和终态中的成员最终事实。WES 不要求 CTU 上报设备内部子阶段，也不把
-单箱 `BinExecution` 状态写入批次状态机。
+CTU 批次拥有冻结成员、批次级同步接纳 ACK、标准化成员位置事实、异步终态和终态中的成员最终事实。WES 只接收会改变位置
+投影的 `SOURCE_PICKED`、`TARGET_PLACED`，不要求 CTU 上报导航、举升、靠近等设备内部子阶段，也不把单箱
+`BinExecution` 状态写入批次状态机。
 
 ## 7. 三段缓存与容量背压
 
@@ -482,7 +483,7 @@ AGV/CTU/RCS 搬运继续由 Phase 4 Transport 合同和 WMS 转发 Adapter 承�
 | --- | --- |
 | Phase 1/2 | 提供已验收的测试治理与无业务语义 HTTP 传输事实，不以出库行为反向验收基础能力 |
 | Phase 3 `WmsClient` | 只提供 HTTP/JSON 访问；不拥有 PickingTask、扫码决定、运输或缓存业务语义 |
-| Phase 4 最小平台 | 拥有 `TransportTask`、TransportResult 应用端口、可靠义务、幂等、设备动作、unknown、位置投影和持久化证据 |
+| Phase 4 AGV/CTU Transport | 只拥有 `TransportTask`、CTU 逐箱 pick/place 位置事实、TransportResult、可靠义务、幂等、unknown、位置投影和持久化证据；不拥有设备动作或 ECS |
 | 后续 WMS 出库业务模块 | 拥有任务启动、逐盘扫码决定、位置变化和任务完成的获批 wire DTO 与结果解释 |
 | 自动出库插件 | 拥有 `CellExecution`、三段缓存执行、资源仲裁、目标面窗口和本文业务流程 |
 | WMS/RCS Adapter | 只翻译各自批准 wire，不持有 PickingTask、Cell 或 WorkLine 生命周期 |

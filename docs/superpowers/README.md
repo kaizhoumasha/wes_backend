@@ -11,10 +11,12 @@
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、Cell 晚绑定、NG 和双面目标架业务设计真源 | Approved |
-| `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、异步 TransportResult 与对账评审基线 | ReviewRequired |
+| `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
+| `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、Payload、返回 JSON 与幂等评审基线 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 1–3 已完成，Phase 4–11 未开始 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十一阶段收敛总控 | In progress；Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA，Phase 5–11 未开始 |
+| `plans/2026-08-08-wes-minimal-platform-capabilities.md` | Phase 4 AGV/CTU Transport 基础能力详细实施计划 | IMPLEMENTED_DARK；后端 QA 验收通过，未接生产路径 |
 
 ## 项目外历史归档
 

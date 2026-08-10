@@ -162,7 +162,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * 具有 **A 面 / B 面 (Side A / Side B)** 区分，CTU (Container Transfer Unit) 可从两侧操作。
 * **业务用途**：
   * **高密度存储 (High-Density Storage)**: SMT 存储区的主要存储设备。
-  * **满箱交换**: 支持 CTU 执行原子化的料箱交换操作 (Exchange)。
+  * **满箱交换**: 支持业务按 WMS 决定，通过一次 CTU 协调交换请求互换 1～2 对已确定料箱；一次请求对应一个
+    `TransportTask`，不得拆成多个普通搬运请求。
 * **典型场景**：
   * 单层货架满箱 -> CTU 交换至五层货架空箱位。
   * 生产发料: CTU 从五层货架取料箱 -> 放至单层货架 -> AGV 运至产线。
@@ -427,7 +428,9 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   2. **满箱交换执行 (Full Exchange Execution)**:
 
      * WMS 负责判断五层货架空箱资源、交换区空位、排队和 CTU/AGV 动作闭环；WES 不本地锁定 `Empty_Bin`。
-     * WES 根据源单层货架和释放快照创建满箱交换 `TransportTask` 并提交给 WMS，由 WMS 转发 RCS/CTU 执行原子动作；具体 WMS operation 名称由北向合同定义。
+     * WMS 返回 1～2 个已确定交换对，每对包含两个料箱和两个货架储位；WES 调用 `exchange_bins()` 创建一个
+       `BIN_EXCHANGE` 类型的 `TransportTask` 并提交给 WMS。Transport 不接收满箱/空箱分类，不拆分请求，也不安排 CTU
+       内部取放顺序；WMS 负责转发 RCS/CTU 协调执行。
      * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、权威终态、资源投影和回写证据。
      * **职责边界**: 旧货架处置只决定该货架的后续搬运或交换需求，不恢复 SMT 粗分机当前物料执行，也不替代新货架补充。
        当前 `MaterialExecution` 的恢复必须由其关联 `TransportTask` 的权威终态与位置投影共同驱动。
@@ -784,7 +787,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     `dispatch_key`，仅在逐 operation 合同明确批准安全重提且对象显式 `retryable=true` 时，才映射为唯一获批 wire 字段后
     重提；否则保持暂停并进入人工对账，不自动重放物理动作。
   * **已取得终态**: `DeviceCommand` 只接受通过合同校验且关联匹配的最终 CALLBACK；
-    `TransportTask` 只接受 WMS 可靠异步回传、且通过 TransportResult 应用端口校验的类型化终态。重复或晚到结果只幂等追加证据。
+    `TransportTask` 只接受 WMS 可靠异步回传、且通过 Transport evidence 应用端口校验的类型化终态。标准化成员位置事实可在
+    终态前更新位置投影，但不终结任务；重复、倒序或晚到事实只幂等追加证据，不得回退已确认位置。
 
   **2. 对象级暂停与告警 (Object-Scoped Hold and Alert)**
 
