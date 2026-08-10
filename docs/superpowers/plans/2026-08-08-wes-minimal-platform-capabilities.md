@@ -146,7 +146,8 @@ Phase 4 只校验搬运合同自身，不判断空箱、满箱、容量、业务
 所有位置明确的货架类成功/失败结果还必须携带到达面 `arrival_face: A | B`；只有位置未知时可以缺少。它是 WMS/RCS
 回传的当前工作面权威事实，WES 只保存和投影，不从目标面、旧数据或业务流程推断。
 
-Phase 4 通过一个显式注入的 `TransportOutcomePublisher` 发布结果，不建立动态订阅注册表。Phase 5 才把它接到生产工作线消费者。
+Phase 4 通过一个显式注入的 `TransportOutcomePublisher` 发布结果，不建立动态订阅注册表。Phase 5 不把它接到旧插件；
+Phase 6 只冻结可安装装配，零插件时保持未绑定；Phase 8 首个真实插件才提供生产 outcome consumer。
 
 ## 3. 最小内部结构
 
@@ -246,7 +247,7 @@ WMS/WES 已共同冻结：
 - [x] 允许未发布低版本被更高版本合并、插件允许版本跳跃，以及 Publisher 正常返回才代表成功；
 - [x] 业务货架/料箱分配接口不属于 Phase 4，不得在本阶段补建。
 
-**退出条件：** `docs/contracts/transport-fulfillment-contract.md` 为 `Approved`，以上 15 项均已批准。Phase 5 生产接线和旧 owner
+**退出条件：** `docs/contracts/transport-fulfillment-contract.md` 为 `Approved`，以上 15 项均已批准。Phase 6 Transport 基线和旧 owner
 处置是后续任务，不是 Phase 4 的入口或退出条件。
 
 ## 5. 目标文件结构
@@ -524,7 +525,7 @@ Repository、Service、WMS Adapter、事件处理和暗闭环的共同依赖；�
 - 车辆、路径、交通、充电和 CTU 内部交换顺序；
 - 通用 Runtime/Effect、动态 Provider、Service Locator、插件 SDK 或工作流引擎；
 - 状态轮询、取消、暂停、恢复、改派和自动补偿；
-- Phase 5 生产切换及旧 owner/旧表/旧测试删除；
+- Phase 5 旧插件执行闭包退役、Phase 6 Transport 正式基线及旧 owner/旧表/旧测试删除；
 - 旧数据迁移、兼容 schema、alias、shim、fallback 或双轨；
 - `docs/hardware/` 厂商原始资料。
 
@@ -542,7 +543,8 @@ Repository、Service、WMS Adapter、事件处理和暗闭环的共同依赖；�
 `send_started_at` 后的崩溃必须收敛为 `UNKNOWN`、WMS 异步回调只共享统一信封，且 evidence 处理、超时收敛与结果发布
 分别由明确批处理入口负责；修订均保持在单一 Transport 聚合内。
 
-**VERDICT:** ACCEPTED_DARK — Phase 4 已完成 Task 1～4 后端 QA 验收；当前仅可作为未接生产流量的暗能力，Phase 5 生产接线、
+**VERDICT:** ACCEPTED_DARK — Phase 4 已完成 Task 1～4 后端 QA 验收；当前仅可作为未接生产流量的暗能力，Phase 5 先退役
+旧插件执行闭包，Phase 6 再收敛 Transport 正式基线，Phase 8 首个真实插件才完成业务接线；
 真实 WMS/RCS 联调和现场上线仍须分别验收。
 
 NO UNRESOLVED DECISIONS

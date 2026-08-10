@@ -33,38 +33,6 @@
 
 ---
 
-## Device / ECS
-
-### Device/ECS 基础能力独立规划与实施
-
-**What:** 独立规划 DeviceCommand、设备状态、统一设备 HTTP Adapter、设备 Event/CALLBACK 和生产切换，不归入
-Phase 4 AGV/CTU Transport，也不与具体工作线插件混建。
-
-**Why:** Phase 4 已明确只负责 AGV/CTU Transport。若不单独承接 Device/ECS，Phase 7/8 的粗分机和分拣插件将缺少统一、
-可靠且唯一的设备执行入口；若把它塞进插件阶段，又会重新混淆基础能力与业务能力。
-
-**Context:** 第三方设备统一接口白皮书继续定义公共 wire；供应商 ECS/网关拥有私有 DTO、认证、原始码转换和设备内部动作。
-独立计划必须先扫描当前 DeviceCommand、Gateway、SystemOutbox、设备状态探测和 callback 的真实生产消费者，再冻结最终 owner、
-可靠生命周期、暗构建、原子切换和 successor/NONE。不得复用 Phase 4 TransportTask 证明设备能力，也不得回填 Phase 4/5。
-
-**Scope:**
-
-- DeviceCommand 身份、持久化、单设备互斥、提交、ACK/CALLBACK、终态、delivery unknown 和人工对账
-- Device command/status/admission 类型化端口与唯一生产统一设备 Adapter
-- 固定公共 path、信封、DTO、错误映射和 Transport 单次发送
-- 设备 Event/CALLBACK 的幂等、冲突、持久化后 ACK 和权威结果关联
-- 当前生产消费者、Composition Root、旧 owner/旧测试 successor/NONE 与原子切换
-- 核心合同、Device Adapter、供应商一致性和工作线插件测试所有权隔离
-
-**Depends on:** 第三方设备统一接口公共 wire 保持 Approved；真实 Device/ECS 消费者矩阵完成；至少一个真实设备合同附录可用于
-验证公共边界但不污染核心。该项必须在 Phase 7/8 插件实施前完成。
-
-**Effort:** L
-
-**Priority:** P1
-
----
-
 ## Operations
 
 ### 统一运营看板、告警与 Runbook

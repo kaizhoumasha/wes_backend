@@ -6,8 +6,9 @@
 把供应商内部协议测试和具体执行插件测试从核心 `tests/` 移出；前者由供应商一致性验收拥有，后者随独立插件包重新交付。
 
 **Architecture:** 核心/公共 Adapter 合同、WMS 业务实现计划、供应商一致性验收和执行插件包拥有相互独立的测试边界。核心 `tests/` 不保存具体工作线流程、
-具体插件 Handler 或供应商内部映射；Phase 4 公共 Adapter 合同测试验证 WMS 转发 RCS Transport Adapter 和供应商无关的
-生产统一设备 HTTP Adapter，核心可靠对象测试仍以本地 typed-port fake 验证平台行为，两者不得互相替代。插件使用
+具体插件 Handler 或供应商内部映射；Phase 4 公共 Adapter 合同测试只验证 WMS 转发 RCS Transport Adapter，Phase 7
+独立验证供应商无关的统一设备接口和 DeviceCommand 可靠性，核心可靠对象测试仍以本地 typed-port fake 验证平台行为，
+各层不得互相替代。插件使用
 `workline_plugins/<plugin_key>/` 并自带 `pyproject.toml`、`src/`、`tests/` 和 `fixtures/`；供应商在其 ECS/网关交付边界执行
 白皮书与设备合同附录的一致性验收。核心测试继续按 `FAST`、`QUALITY`、`HEAVY` 分层。
 
@@ -22,8 +23,8 @@ HTTP/JSON 访问合同；Phase 4 公共 Adapter 合同测试只证明已批准 w
 > **总控阶段归属（2026-08-03）：** 本计划是
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
 > 的 Phase 1 权威计划。Task 1、2、3、6 及 Task 4/7 的可独立治理部分已在
-> `develop@28eb99d9` 合入；Task 5 和混合资产承接归 Phase 6，插件同包验收归
-> Phase 7/8，旧 revision 与最终质量验收归 Phase 10/11。本计划在这些延后义务完成前
+> `develop@28eb99d9` 合入；Task 5 按 owner 分段由 Phase 5 插件退役、Phase 6 Transport 和 Phase 7 Device/ECS 承接；
+> 插件同包验收归 Phase 8/9，旧 revision 与最终质量验收归 Phase 11/12。本计划在这些延后义务完成前
 > 仍保持未完成状态。
 
 ---
@@ -53,7 +54,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
    - ECS/WMS/RCS 共享合同；
    - Phase 2 Outbound HTTP Transport 生命周期、受限响应、通用异常分类、无认证边界和脱敏日志；
    - Phase 4 WMS 转发 RCS/AGV/CTU Transport Adapter 的已批准公共 wire 合同；
-   - 独立 Device/ECS 基础能力计划后续交付的统一设备 HTTP Adapter 公共 wire 合同；
+   - Phase 7 Device/ECS 计划交付的统一设备接口公共 wire 合同；
    - 入站幂等、ACK/CALLBACK 分离、可靠投递、迟到证据、人工清线等通用可靠性；
    - API、Repository、数据库、部署和架构边界。
 2. 下列测试不属于核心 `tests/`：
@@ -85,7 +86,7 @@ SPEC 负责目标架构和所有权边界；Master Plan 负责阶段调度和退
 | --- | --- | --- |
 | 核心领域单元测试 | 执行对象、WorkLine/Epoch、投影和可靠性状态转移 | WMS 业务决策或具体插件执行映射 |
 | Phase 2 Outbound HTTP 单元测试 | `tests/core/outbound_http/` 以 `httpx.MockTransport` 和测试内 local fake 验证生命周期、请求装配、受限响应、传输事实分类和脱敏日志 | 真实外部系统、厂商 DTO/canonical/Header/认证、业务拒绝、重试/终态/恢复和大规模 E2E |
-| 共享合同测试 | Phase 4 WMS Transport Adapter 固定 method/path、信封/DTO、错误映射和一次有界发送；独立 Device/ECS 计划拥有统一设备公共 wire；两者分别验证自己的幂等与 ACK/结果边界 | 具体 WMS 业务 method/DTO/result、设备合同附录、endpoint/device 绑定、供应商内部 Payload 和工作线流程 |
+| 共享合同测试 | Phase 4 WMS Transport Adapter 固定 method/path、信封/DTO、错误映射和一次有界发送；Phase 7 拥有统一设备公共 wire；两者分别验证自己的幂等与 ACK/结果边界 | 具体 WMS 业务 method/DTO/result、设备合同附录、endpoint/device 绑定、供应商内部 Payload 和工作线流程 |
 | API 测试 | route、权限、请求响应、Service facade | Repository、插件决策和完整编排 |
 | Repository/共享 Adapter 集成测试 | 数据库约束、事务和共享技术 Adapter 边界 | 供应商内部协议和插件场景排列 |
 | 架构测试 | 分层、import、旧架构缺席、核心/插件所有权和测试拓扑 | 业务流程 |
@@ -130,10 +131,10 @@ workline_plugins/<plugin_key>/
 
 Phase 2 测试固定在 `tests/core/outbound_http/`，只使用 `httpx.MockTransport`、测试内 local fake 和纯单元测试；测试替身
 不从 `src/core/outbound_http/` 生产包导出。WMS Client 访问测试由 Phase 3 拥有。Phase 4 拥有 WMS 转发 RCS Transport Adapter
-和生产统一设备 HTTP Adapter 的公共合同测试，验证固定 method/path、公共信封/DTO 校验、错误映射和一次有界发送；Phase 4
-核心可靠对象测试仍只使用本地 typed-port fake，不直接构造 Phase 2 Transport，Adapter 合同测试不得替代核心测试。具体 WMS
-业务 method/DTO/result 测试由对应获批业务实施计划拥有；Phase 7/8 只拥有实际设备合同附录、endpoint/device 绑定、供应商
-一致性验收和插件业务测试，不复制 Phase 4 公共 Adapter 合同测试。
+的公共合同测试，验证固定 method/path、公共信封/DTO 校验、错误映射和一次有界发送；Phase 4 核心可靠对象测试仍只使用
+本地 typed-port fake，不直接构造 Phase 2 Transport，Adapter 合同测试不得替代核心测试。具体 WMS 业务 method/DTO/result
+测试由对应获批业务实施计划拥有；Phase 7 核心测试拥有统一设备固定路径、公共包络、身份、幂等、ACK/CALLBACK 和可靠性；
+Phase 8/9 只拥有实际设备合同附录、endpoint/device 绑定、供应商一致性验收和插件业务测试，不复制 Phase 7 核心合同测试。
 
 最终预算：
 
@@ -254,7 +255,8 @@ rtk uv run pytest --collect-only -q -o addopts=''
 - [x] 生成精确候选清单并逐文件阅读，不按名称批量删除。
 - [ ] `PLUGIN_OWNED`：从核心删除，未来随对应插件包按最终代码重建。
 - [ ] `LEGACY_DELETE`：直接删除，并同步清理生产平台删除计划中的引用。
-- [ ] 混合文件中的通用不变量标记为 `CORE_REWRITE`，先在最终核心对象上建立权威测试，再删除混合文件。
+- [ ] 混合文件中的通用不变量标记为 `CORE_REWRITE`；Phase 5 先按获批详细计划移除具体插件 fixture/用例并保留无插件的
+  RuntimeInbox 阶段 owner，待最终对象交付后再迁移通用断言和删除旧 owner。
 - [ ] 第二阶段扩展所有权门禁，禁止核心测试导入核心源码中的任何具体插件实现。
 - [ ] 核心测试树对具体插件 import、fixture 和场景名称零命中。
 
@@ -270,12 +272,17 @@ rtk uv run pytest tests/architecture -q
 **Entry condition:** 最终 `InboundEvidence`、`DeviceCommand`、`TransportTask`、`WmsConfirmation`、`LineRunEpoch`、设备/位置投影及其生产路径已经交付。
 
 **Current status:** 延后执行，不属于当前测试收敛批次。截至 2026-08-03，入口条件中的最终对象和生产路径
-尚未完整交付；本计划不得为完成测试迁移而越权实现生产执行内核。总控 Phase 4 负责交付最小执行对象和通用 WorkLine
-新能力；Phase 5 负责生产切换和直接旧 owner 测试处置；其退出门禁通过后，Phase 6 必须执行本 Task 的剩余混合资产承接，
-并由 Master Plan 的 Phase 6 任务及退出门禁直接跟踪，不在 `TODOS.md` 维护重复调度项。
+尚未完整交付；本计划不得为完成测试迁移而越权实现生产执行内核。Phase 5 先处置具体插件和旧插件平台测试；Phase 6
+承接 Transport 最终 owner；Phase 7 承接 DeviceCommand/ECS 与剩余通用可靠性。Task 5 只有在 Phase 7 退出门禁通过后才可
+整体关闭，并由 Master Plan 的对应阶段直接跟踪，不在 `TODOS.md` 维护重复调度项。
 
-**Phase 5 原子切换的同步测试义务（不属于 Task 5 交付）:**
+**Phase 5–7 原子交接的同步测试义务（不属于当前 Task 5 批次交付）:**
 
+- [ ] Phase 5 先删除只证明 `rough_sorter`、`smt_sorting_inbound`、generated plugin index、registry、dispatcher 和旧插件
+  Intent/Effect 的测试；`test_runtime_inbox_three_stage_processor.py`、`test_runtime_inbox_processing_postgresql.py` 及其共享
+  fixture 按获批 Phase 5 计划改成无插件的阶段 owner，通用断言不得随具体插件一起删除。
+- [ ] Phase 6 将 Transport submit/evidence/outcome/claim/事务不变量改接最终 `TransportTask`、WMS Adapter 和 PostgreSQL
+  owner，再删除 Transport 专属旧 Effect/status/Outbox/callback 测试。
 - [ ] 先在最终 `DeviceCommand` 测试树承接持久化、claim、单设备互斥、resource wait、重试、fencing、
   ACK/CALLBACK、终态和恢复，再删除旧 `SystemOutboxDispatchType.DEVICE_COMMAND` 测试 owner；不得把旧 SystemOutbox
   包在 typed Device port 外继续测试。
@@ -285,9 +292,9 @@ rtk uv run pytest tests/architecture -q
   `tests/contracts/system_capabilities/test_canonical_external_http_dispatch.py`、`tests/api/test_qa_regression_002.py`、
   `tests/api/test_workline_runtime_sse.py`、`tests/integration/test_system_outbox_repository.py`、
   `tests/integration/test_system_outbox_dispatch_concurrency.py` 和 `tests/resilience/test_runtime_scenario_replay.py` 中直接验证
-  DeviceCommand SystemOutbox 的用例，全部在 Phase 5 按 `CORE_REWRITE` 映射到最终 `DeviceCommand` 权威测试后删除；仅验证
+  DeviceCommand SystemOutbox 的用例，全部在 Phase 7 按 `CORE_REWRITE` 映射到最终 `DeviceCommand` 权威测试后删除；仅验证
   旧 DispatchEnvelope/schema 且无最终语义的用例标记 `NONE`，其他 dispatch type 的有效断言不得误删。
-- [ ] 同一 Phase 5 矩阵还必须纳入 `tests/sys/test_system_outbox_engine_boundaries.py` 对
+- [ ] 同一 Phase 7 矩阵还必须纳入 `tests/sys/test_system_outbox_engine_boundaries.py` 对
   `_dispatch_device_command` 的直接 import，`tests/workline_runtime/test_runtime_reconciliation_idempotency.py` 和
   `tests/workline_runtime/test_workline_runtime_status_projection_service.py` 的 ACK-exhausted
   Reconciliation/SystemOutbox 路径，`tests/workline_runtime/system_capabilities/test_system_capability_effect_service.py` 的
@@ -299,16 +306,17 @@ rtk uv run pytest tests/architecture -q
   旧入口的 stub，以及 `tests/workline_runtime/test_external_http_workline_dispatcher.py` 对
   `_mark_device_command_failed_if_dispatch_exhausted`、`_dispatch_blocked_resource_heads`、
   `_repair_orphaned_device_busy_dispatches` 和 `_repair_self_blocked_device_busy_dispatches` 四个旧 DeviceCommand
-  SystemOutbox helper 的直接 patch，也必须在 Phase 5 改接最终 `DeviceCommand` successor 或按 `NONE` 删除旧耦合；
-  Phase 5 缺席门禁同步扫描这些被删除入口。
+  SystemOutbox helper 的直接 patch，也必须在 Phase 7 改接最终 `DeviceCommand` successor 或按 `NONE` 删除旧耦合；
+  Phase 7 缺席门禁同步扫描这些被删除入口。
 - [ ] integration/resilience 处置同步精确更新 `docs/architecture/heavy-test-impact.toml`，并显式运行受影响 HEAVY。
 
-Task 5 入口除最终生产对象外，还要求上述 Phase 5 直接测试 owner 已全部处置且 FAST/受影响 HEAVY 可收集；Task 5 只接收
+Task 5 入口除最终生产对象外，还要求上述 Phase 5–7 直接测试 owner 已全部处置且 FAST/受影响 HEAVY 可收集；Task 5 只接收
 不直接引用已删除符号、但仍混合旧架构语义的剩余测试资产。
 
 Task 5 完成前：
 
-- Task 4 中同时包含插件行为和通用可靠性不变量的混合测试不得直接删除；必须等最终核心对象上的权威测试建立后再处置。
+- Task 4 中同时包含插件行为和通用可靠性不变量的混合测试不得整文件直接删除；Phase 5 可以删除其中的插件部分，但必须
+  在原路径保留无插件通用断言，直到最终核心对象上的权威测试建立后再完成旧 owner 处置。
 - Task 4 的“具体插件 import、fixture 和场景名称零命中”以及 Task 7 的最终缺席验收继续保持待办。
 - 当前批次只能声明测试所有权、重量和门禁的阶段性收敛，不能声明本计划整体完成。
 
@@ -364,8 +372,9 @@ rtk ./scripts/git-quality-gate.sh --profile quality
 - 未来唯一所有者，例如“供应商一致性验收”或 `workline_plugins/rough_sorter/tests/`；
 - 实际验证命令和结果。
 
-WMS Phase 3 只新增 `wms_adapter` Client 访问测试，不处置旧 WMS 测试；旧 WMS 测试逐文件 successor/NONE 由十一阶段总控 Phase 5
-和该阶段切换计划固定。HEAVY 测试移动或删除时，
+WMS Phase 3 只新增 `wms_adapter` Client 访问测试，不处置旧 WMS 测试；旧 WMS 测试逐文件 successor/`NONE` 必须按 owner
+分别进入十二阶段总控的 Phase 5 插件退役、Phase 6 Transport 或对应真实 WMS 业务纵切片，禁止继续由一个“大 Phase 5”兜底。
+HEAVY 测试移动或删除时，
 同一变更必须更新 `docs/architecture/heavy-test-impact.toml`，不得留下失效路径或用臆造 NONE 掩盖风险。
 
 禁止：
@@ -380,7 +389,7 @@ WMS Phase 3 只新增 `wms_adapter` Client 访问测试，不处置旧 WMS 测�
 
 只有同时满足以下条件，本计划才完成：
 
-1. 核心 `tests/` 只证明 SPEC 定义的 WES 基础能力、通用可靠性和 Phase 4 公共 Adapter 合同。
+1. 核心 `tests/` 只证明 SPEC 定义的 WES 基础能力、通用可靠性、Phase 4 Transport Adapter 和 Phase 7 统一设备公共 wire。
 2. 具体 WMS method/DTO/result 合同测试由对应获批 WMS 业务实施计划拥有；工作线执行映射和对象推进测试由独立插件包拥有；
    供应商内部协议由供应商一致性验收拥有。
 3. `CORE_REWRITE`、`SUPPLIER_OWNED`、`PLUGIN_OWNED`、`LEGACY_DELETE` 四类处置均有可审计提交记录。

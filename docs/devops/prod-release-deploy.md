@@ -3,7 +3,7 @@
 > 状态：`implementation_baseline`
 >
 > 系统尚未发布。本 Runbook 只适用于新的空数据库和当前仓库模型，不提供旧镜像、旧 schema、旧数据或旧
-> Runtime 的升级、降级与兼容流程。本文服务于收敛期间仍在执行的 Jenkins/Compose 部署路径，不是 Phase 8
+> Runtime 的升级、降级与兼容流程。本文服务于收敛期间仍在执行的 Jenkins/Compose 部署路径，不是 Phase 11
 > 最终 Alembic 单一基线的设计真源；部署路径或 WMS 配置完成替换时必须同步更新。
 
 ## 1. 发布边界

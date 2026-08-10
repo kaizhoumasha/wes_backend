@@ -2,9 +2,9 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-07
+updated_at: 2026-08-10
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: develop@1a8bfcac
+implementation_baseline: develop@da8c1073
 system_stage: pre_release
 migration_strategy: direct_replacement
 historical_reference: ee1f3b670c5ed33cfd5be1fd0370b53570790e73
@@ -19,6 +19,8 @@ related:
   - docs/integration/callback_event_validation_principles.md
   - docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
+  - docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md
+  - docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md
   - docs/contracts/wms-northbound-interaction-contract.md
   - docs/contracts/transport-fulfillment-contract.md
 ---
@@ -785,6 +787,10 @@ CTU 投箱
 - 为现有开发/测试数据编写转换、回填、桥接表或旧 schema downgrade。
 - 为通过测试而保留旧类、旧字段、旧状态、旧配置、旧 fixture 或旧迁移断言。
 
+收敛过程允许出现“核心与已交付基础能力全部通过，但没有安装任何业务插件”的稳定中间态。此时系统不得接纳插件业务事件、
+创建业务执行对象或用空插件/no-op consumer 伪造执行闭环；后续真实插件必须按当前合同完整重写并通过显式 Composition Root
+安装。该中间态是删除旧业务能力后的受控停靠点，不是最终产品验收态。
+
 ### 14.2 依赖顺序
 
 实施顺序：
@@ -799,35 +805,40 @@ CTU 投箱
 4. AGV/CTU Transport 基础能力建设：只暗构建 `TransportTask`、member-position/result evidence、位置投影、
    `Transport Port` 和 WMS 转发 RCS/AGV/CTU Adapter；不建设 DeviceCommand、统一设备 Adapter、ECS、WorkLine/Epoch、
    通用执行对象或插件 SDK，不修改当前生产 Composition Root、旧表、旧实现和旧测试。
-5. Transport 原子切换与旧所有者删除：只迁移 Transport 消费者、结果入口和装配，原子删除 Transport 专属
-   Effect/status/Outbox/callback hint/result callback；Device/ECS 不进入本阶段。
-6. Transport 测试承接与基线验收：完成 Transport 最终对象、WMS Adapter、member-position/result evidence 和
-   PostgreSQL 可靠性测试所有权。
-7. 粗分机参考插件优化：独立 Device/ECS 基础能力计划未批准并验收前保持阻塞；之后交付设备附录、绑定、供应商验收和插件。
-8. 分拣执行插件优化：消费独立 Device/ECS 基础能力和 Phase 4/5 Transport，按实际工作线交付插件。
-9. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
-10. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
-11. 最终基线与系统验收：从空库分别验证核心、Adapter、插件、质量、部署装配和旧架构缺席门禁。
+5. 旧工作线插件执行闭包退役：删除嵌入核心的具体插件、generated index、registry、dispatcher 及其专属
+   Runtime/Intent/Effect/SystemCapability/SystemOutbox 调用闭包；允许核心全绿但业务插件安装清单为空，不把 Phase 4
+   Transport 接到旧插件，也不提供空插件、默认插件或 no-op consumer。
+6. Transport 正式基础基线与旧 owner 收敛：完成 Transport 最终对象、WMS Adapter、member-position/result evidence、
+   PostgreSQL 可靠性测试所有权和直接旧 owner 删除；零插件时保持可安装但未绑定业务 consumer 的状态。
+7. DeviceCommand/ECS 通用能力生产收敛：独立交付命令可靠生命周期、设备状态/事件/结果证据、固定统一接口、
+   ACK/CALLBACK、`LineRunEpoch` fencing、唯一生产装配和旧 Device owner 删除；不包含供应商私有 DTO 或插件业务。
+8. 粗分机参考插件优化：消费 Phase 6/7 基础能力，从真实业务合同重新实现首个独立插件，并由真实使用冻结最小 SPI；
+   不搬运 Phase 5 已删除的旧插件源码。
+9. 分拣执行插件优化：消费 Phase 6/7 基础能力和 Phase 8 已验收最小 SPI，按实际工作线交付插件。
+10. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
+11. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
+12. 最终基线与系统验收：从空库分别验证核心、Adapter、供应商一致性、插件、质量、部署装配和旧架构缺席门禁。
 
 任何可靠性不变量都必须先在最终具体对象上有实现和测试，才能删除旧实现；这只是同一收敛分支内的
 依赖顺序，不允许通过兼容层、双路径或旧数据迁移完成过渡。
 
-测试治理贯穿阶段 1–8 和 11；阶段 3/4 只建立新测试 owner，生产消费者迁移和直接旧 owner 删除统一在阶段 5，阶段 9
-只做跨阶段残留闭环；目标数据模型在阶段 4 建立，历史 migration 只在阶段 10 一次性重建。十一阶段的详细入口、交付物和退出门禁由
+测试治理贯穿阶段 1–9 和 12；阶段 3/4 只建立新测试 owner，阶段 5 处置旧插件执行闭包，阶段 6/7 分别承接
+Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 只做跨阶段残留闭环；目标数据模型按最终对象建立，
+历史 migration 只在阶段 11 一次性重建。十二阶段的详细入口、交付物和退出门禁由
 `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 统一控制。
 
 ### 14.3 实施范围分解
 
-本文是全局架构约束，不把多个独立子系统展开成一个巨型实施脚本。十一个总控阶段分别形成经批准的详细实施
+本文是全局架构约束，不把多个独立子系统展开成一个巨型实施脚本。十二个总控阶段分别形成经批准的详细实施
 计划和测试范围；同一阶段内仍可按最终对象、Adapter 或真实插件拆成可独立审查的任务，但不得改变 §14.2 的
 依赖顺序和退出门禁。
 
 现有
 `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md`
 是阶段 1 的权威计划，
-其中直接绑定旧生产 owner 的测试随阶段 5 原子切换完成 successor/NONE，Task 4 的混合资产与 Task 5 的剩余最终对象承接
-在阶段 6 收尾；Task 7 按所有权分段完成：阶段 6 承接核心平台测试，阶段 7/8 重建具体插件测试，阶段 10/11 完成迁移链和
-最终收集验收。Phase 2 已完成，详细实施计划已归档到项目外
+其中直接绑定旧插件平台的测试在阶段 5 完成 successor/`NONE`，Transport 测试在阶段 6 收尾，DeviceCommand 及设备统一
+接口测试在阶段 7 收尾；Task 7 按所有权分段完成：阶段 6/7 承接核心基础能力测试，阶段 8/9 重建具体插件测试，阶段 11/12
+完成迁移链和最终收集验收。Phase 2 已完成，详细实施计划已归档到项目外
 `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`，不再是当前实施入口；其余阶段的计划路径、
 入口条件、交付物和
 验收归属由
