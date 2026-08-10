@@ -107,6 +107,8 @@ def _valid_ack_envelope(body: dict[str, object], request_id: str) -> bool:
 
 
 def _valid_ack_data(data: dict[str, object], code: TransportSubmitCode) -> bool:
+    if code is TransportSubmitCode.DELIVERY_UNKNOWN:
+        return False
     task_id = data.get("transport_task_id")
     if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 80:
         return False
