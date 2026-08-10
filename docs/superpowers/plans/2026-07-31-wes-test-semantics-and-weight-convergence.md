@@ -255,7 +255,7 @@ rtk uv run pytest --collect-only -q -o addopts=''
 - [x] 生成精确候选清单并逐文件阅读，不按名称批量删除。
 - [ ] `PLUGIN_OWNED`：从核心删除，未来随对应插件包按最终代码重建。
 - [ ] `LEGACY_DELETE`：直接删除，并同步清理生产平台删除计划中的引用。
-- [ ] 混合文件中的通用不变量标记为 `CORE_REWRITE`；Phase 5 先按获批详细计划移除具体插件 fixture/用例并保留无插件的
+- [x] 混合文件中的通用不变量标记为 `CORE_REWRITE`；Phase 5 已按获批详细计划移除具体插件 fixture/用例并保留无插件的
   RuntimeInbox 阶段 owner，待最终对象交付后再迁移通用断言和删除旧 owner。
 - [ ] 第二阶段扩展所有权门禁，禁止核心测试导入核心源码中的任何具体插件实现。
 - [ ] 核心测试树对具体插件 import、fixture 和场景名称零命中。
@@ -278,7 +278,7 @@ rtk uv run pytest tests/architecture -q
 
 **Phase 5–7 原子交接的同步测试义务（不属于当前 Task 5 批次交付）:**
 
-- [ ] Phase 5 先删除只证明 `rough_sorter`、`smt_sorting_inbound`、generated plugin index、registry、dispatcher 和旧插件
+- [x] Phase 5 已删除只证明 `rough_sorter`、`smt_sorting_inbound`、generated plugin index、registry、dispatcher 和旧插件
   Intent/Effect 的测试；`test_runtime_inbox_three_stage_processor.py`、`test_runtime_inbox_processing_postgresql.py` 及其共享
   fixture 按获批 Phase 5 计划改成无插件的阶段 owner，通用断言不得随具体插件一起删除。
 - [ ] Phase 6 将 Transport submit/evidence/outcome/claim/事务不变量改接最终 `TransportTask`、WMS Adapter 和 PostgreSQL

@@ -110,7 +110,6 @@
 
 - `docs/workline_diagnostics_quickstart.md`
 - `docs/workline_runtime_hold_quickstart.md`
-- `docs/operations/workline-plugin-migration-inventory.md`
 - `docs/contracts/observability-contract.md`
 - `docs/contracts/runtime-toggle-governance.md`
 - `docs/integration/wms_caller_checklist.md`

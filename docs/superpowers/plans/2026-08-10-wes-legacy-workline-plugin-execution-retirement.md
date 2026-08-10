@@ -1,6 +1,6 @@
 # WES Phase 5 旧工作线插件执行闭包退役计划
 
-> **状态：Approved**
+> **状态：Completed**
 > **冻结源码基线：** `develop@da8c107385fb64da86c02fddda10429e5d260299`
 > **适用条件：** 实施分支相对该基线只能先包含本计划及同批架构文档；若生产代码、测试、迁移或机器可读配置已经变化，
 > 本批准自动失效，必须重新生成引用闭包和逐文件矩阵后再评审。
@@ -28,6 +28,10 @@ Runtime/Intent/Effect/SystemCapability 调用闭包，交付“核心全绿、�
 ---
 
 ## 1. 核心裁决
+
+**执行证据（2026-08-11）：** Commit 1 `3199af5d` 承接零插件通用可靠性不变量；Commit 2
+`34837439` 原子退役旧工作线插件执行闭包。QUALITY 通过（3355 passed，4 skipped），staged HEAVY
+通过（372 passed，15 skipped）。未接入 Phase 4 Transport，未提前实施 Phase 7 Device/ECS。
 
 Phase 5 删除的是**旧插件活动执行闭包**，不是某一个目录，也不是所有带 `runtime`、`intent`、`effect` 字样的对象。
 

@@ -17,7 +17,7 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
-Phase 5 详细计划已批准，代码实施尚未开始；Phase 6–12 尚未开始。
+Phase 5 已完成零插件基线；Phase 6–12 尚未开始。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -122,7 +122,7 @@ Transport/Adapter/核心所有权。
 | 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | Phase 3 已完成实施与验收 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
-阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 详细计划已批准、代码未开始；
+阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
 Phase 6–12 均未开始。
 
 ## 5. 总控依赖模型
