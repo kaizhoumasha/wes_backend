@@ -3,8 +3,8 @@
 现存实现中，Session 是 runtime/orchestration 域的聚合根和唯一 session PK 拥有者。
 Session 不持工作状态（work item 是 ExecutionWorkItem 的责任），只持：
 - workline_id: 关联 WorkLine (workline 域配置, session 引用)
-- manifest_version: RUNNING session 固定 manifest_version (CEO-011)
 - state: lifecycle (CREATED / RUNNING / HOLD / CLOSED / RECONCILING)
+- created_at / updated_at: 会话生命周期审计时间
 """
 
 from __future__ import annotations

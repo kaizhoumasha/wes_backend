@@ -20,7 +20,6 @@ from .safety import (
 from .workline import (
     LineType,
     WorkLine,
-    WorkLineActivationRequest,
     WorkLineBase,
     WorkLineConfigurationCheck,
     WorkLineConfigurationStatus,
@@ -41,7 +40,6 @@ __all__ = [
     "PlaneSceneView",
     "PlaneSnapshot",
     "WorkLine",
-    "WorkLineActivationRequest",
     "WorkLineBase",
     "WorkLineConfigurationCheck",
     "WorkLineConfigurationStatus",

@@ -1416,7 +1416,7 @@ async def _resolve_result_callback_context(
     # 安全保证：上面已检查 ctx_error 并提前返回
     device = ctx_result.device  # type: ignore[union-attr]
     workline = ctx_result.workline  # type: ignore[union-attr]
-    resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
+    resolved_contract_version = getattr(existing_command, "contract_version", None)
     if not _command_matches_callback_device(existing_command, device):
         message = (
             f"结果回调设备与指令归属不匹配: "
@@ -1481,9 +1481,6 @@ async def _resolve_result_callback_context(
             causation_id=_resolve_callback_causation_id(callback_data),
         )
 
-    command_contract_version = getattr(existing_command, "contract_version", None)
-    if isinstance(command_contract_version, str) and command_contract_version:
-        resolved_contract_version = command_contract_version
     return (
         _ResultCallbackContext(
             envelope=envelope,

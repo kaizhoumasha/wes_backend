@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
 
 class GenericConformanceRunner:
-    """共享 mode-family 题库 runner；32 项 operation 不生成专用 runner。"""
+    """共享 mode-family 题库 runner；31 项 operation 不生成专用 runner。"""
 
     def __init__(self, fixtures: tuple[OperationFixture, ...]) -> None:
         self._fixtures = {item.operation.identity: item for item in fixtures}
@@ -136,7 +136,7 @@ class RealTcpScenario(BaseModel):
 
 
 class RealTcpScenarioAsset(BaseModel):
-    """外部提供的完整 199-case scenario asset，导入时校验自身摘要。"""
+    """外部提供的完整 193-case scenario asset，导入时校验自身摘要。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

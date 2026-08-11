@@ -19,7 +19,11 @@ from src.utils.timezone import timezone
 
 
 class _RuntimeHoldRepository:
+    def __init__(self):
+        self.calls = []
+
     async def create_open_hold(self, *_args, **_kwargs):
+        self.calls.append(_kwargs)
         return SimpleNamespace(id=101)
 
 
@@ -373,8 +377,9 @@ async def test_resource_reconciliation_uses_compat_projection_service():
         stopped_reason=None,
     )
     projection = _ProjectionSpy()
+    hold_repository = _RuntimeHoldRepository()
     service = RuntimeHoldCreationService(
-        repository=_RuntimeHoldRepository(),
+        repository=hold_repository,
         workline_repository=_WorklineRepository(workline),
         workline_status_projection_service=projection,
     )
@@ -391,6 +396,49 @@ async def test_resource_reconciliation_uses_compat_projection_service():
     assert len(projection.calls) == 1
     assert projection.calls[0][0] == 7
     assert projection.calls[0][2] == "RESOURCE_CONFLICT"
+    assert {"plugin_key", "contract_version"}.isdisjoint(hold_repository.calls[0])
+
+
+@pytest.mark.asyncio
+async def test_callback_timeout_hold_ignores_retired_session_plugin_identity():
+    repository = _RuntimeHoldRepository()
+    service = RuntimeHoldCreationService(repository=repository)
+
+    await service.create_for_callback_deadline_expired(
+        object(),
+        session=SimpleNamespace(
+            id=11,
+            workline_id=7,
+            trace_id="trace-11",
+            plugin_key="poison-plugin",
+            contract_version="poison-contract",
+        ),
+        inbox=SimpleNamespace(id=21, payload_json={}),
+        source_inbox_id=21,
+    )
+
+    assert {"plugin_key", "contract_version"}.isdisjoint(repository.calls[0])
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ack_exhausted_hold_ignores_retired_session_plugin_identity():
+    repository = _RuntimeHoldRepository()
+    service = RuntimeHoldCreationService(repository=repository)
+
+    await service.create_for_dispatch_ack_exhausted(
+        object(),
+        session=SimpleNamespace(
+            id=11,
+            workline_id=7,
+            trace_id="trace-11",
+            plugin_key="poison-plugin",
+            contract_version="poison-contract",
+        ),
+        outbox=SimpleNamespace(id=31, dispatch_key="dispatch-31", payload_json={}),
+        command=None,
+    )
+
+    assert {"plugin_key", "contract_version"}.isdisjoint(repository.calls[0])
 
 
 @pytest.mark.asyncio

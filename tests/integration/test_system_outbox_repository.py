@@ -705,8 +705,6 @@ async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_worklin
     session = WorklineSession(
         session_code="sandbox-runtime-inbox-1",
         workline_id=901,
-        plugin_key="test",
-        contract_version="v1",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.COMPLETED,
     )

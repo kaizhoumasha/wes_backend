@@ -212,8 +212,6 @@ async def test_record_rack_arrived_conflict_does_not_overwrite_active_placement(
         trace_id="trace-001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="test_workline_plugin",
-        contract_version="1.0",
     )
 
     assert result.status == ResourceProjectionStatus.RECONCILING
@@ -223,6 +221,8 @@ async def test_record_rack_arrived_conflict_does_not_overwrite_active_placement(
     assert state_events.created[0]["resource_code"] == "RACK-001"
     assert runtime_holds.created[0]["source_reason"] == "RACK_PLACEMENT_CONFLICT"
     assert runtime_holds.created[0]["source_event_id"] == "wms-event-002"
+    assert "plugin_key" not in runtime_holds.created[0]
+    assert "contract_version" not in runtime_holds.created[0]
     assert runtime_holds.created[0]["evidence"]["active_location_code"] == "LOC-OLD"
     assert runtime_holds.created[0]["evidence"]["incoming_location_code"] == "LOC-NEW"
     assert placements.created == []
@@ -304,8 +304,6 @@ async def test_record_empty_rack_verified_conflict_creates_runtime_hold() -> Non
         trace_id="trace-ecs-001",
         workline_id=1001,
         workline_session_id=2001,
-        plugin_key="test_workline_plugin",
-        contract_version="1.0",
     )
 
     assert result.status == ResourceProjectionStatus.RECONCILING
@@ -315,6 +313,8 @@ async def test_record_empty_rack_verified_conflict_creates_runtime_hold() -> Non
     assert state_events.created[0]["resource_code"] == "RACK-ECS-001"
     assert runtime_holds.created[0]["source_reason"] == "RACK_BIN_SLOT_CONFLICT"
     assert runtime_holds.created[0]["source_event_id"] == "ecs-empty-verified-conflict"
+    assert "plugin_key" not in runtime_holds.created[0]
+    assert "contract_version" not in runtime_holds.created[0]
     assert runtime_holds.created[0]["evidence"]["operation"] == "EMPTY_RACK_VERIFIED"
     assert runtime_holds.created[0]["evidence"]["rack_code"] == "RACK-ECS-001"
     assert runtime_holds.created[0]["evidence"]["rack_slot_code"] == "A01"

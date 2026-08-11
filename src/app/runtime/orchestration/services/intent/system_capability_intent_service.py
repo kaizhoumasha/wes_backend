@@ -36,6 +36,9 @@ if TYPE_CHECKING:
     from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 
 
+_RUNTIME_OWNED_AUTHORITY = ("RUNTIME_DOMAIN_SERVICE", "DOMAIN_CAPABILITY_ALLOWLIST")
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedSystemCapabilityIntent:
     definition: SystemCapabilityDefinition
@@ -281,18 +284,22 @@ class SystemCapabilityIntentService:
     def _validate_execution_identity(
         self, ctx: Mapping[str, Any], intent: RuntimeIntent, *, definition: SystemCapabilityDefinition
     ) -> dict[str, Any]:
-        _ = definition
-        if intent.creator_authority == "WORKLINE_PLUGIN" or intent.authorization_policy == "PLUGIN_DECLARED_CAPABILITY":
-            raise PermissionError("embedded workline plugins are retired")
+        authority = (intent.creator_authority, intent.authorization_policy)
+        if authority != _RUNTIME_OWNED_AUTHORITY:
+            raise PermissionError("system capability runtime authority contract mismatch")
         if intent.binding_snapshot:
             raise PermissionError("system capability cannot carry a retired plugin binding snapshot")
         expected_provider = {"provider_code": "RUNTIME", "profile": definition.admission}
         if intent.provider_snapshot != expected_provider:
             raise PermissionError("system capability runtime provider snapshot mismatch")
+        session = ctx.get("session")
         inbox = ctx.get("inbox")
         work_item = ctx.get("work_item")
+        session_id = getattr(session, "id", None)
         execution_session_id = getattr(inbox, "execution_session_id", None)
         execution_work_item_id = getattr(work_item, "id", None)
+        if not all(isinstance(value, int) for value in (session_id, execution_session_id, execution_work_item_id)):
+            raise TypeError("system capability requires session and execution session/work-item identity")
         return {
             "execution_session_id": execution_session_id,
             "execution_work_item_id": execution_work_item_id,

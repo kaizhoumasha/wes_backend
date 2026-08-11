@@ -333,7 +333,7 @@ async def test_executor_uses_atomic_evidence_record_outcome_without_prevalidatio
 
 
 @pytest.mark.asyncio
-async def test_data_lane_runtime_owns_one_client_for_all_19_query_operations() -> None:
+async def test_data_lane_runtime_owns_one_client_for_all_query_operations() -> None:
     compiled_profile = build_compiled_provider_profile()
     catalog = build_wms_provider_catalog(compiled_profile)
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
@@ -400,9 +400,9 @@ async def test_data_lane_runtime_rejects_mismatched_snapshot_and_unknown_lookups
                 evidence_writer=EvidenceWriter(),
             )
 
-        duplicate = (QUERY_OPERATIONS[0],) * 19
+        duplicate = (QUERY_OPERATIONS[0],) * len(QUERY_OPERATIONS)
         monkeypatch.setattr(module, "QUERY_OPERATIONS", duplicate)
-        with pytest.raises(RuntimeError, match="19 unique"):
+        with pytest.raises(RuntimeError, match="unique identities"):
             module.WmsDataLaneQueryRuntime(
                 compiled_profile=compiled_profile,
                 catalog=build_wms_provider_catalog(compiled_profile),
@@ -517,7 +517,9 @@ async def test_build_data_lane_runtime_assembles_production_dependencies(monkeyp
 
     runtime = runtime_module.build_wms_data_lane_query_runtime(startup, settings_source=object())
     try:
-        assert len(runtime.operation_identities) == 19
+        assert set(runtime.operation_identities) == {
+            operation.identity for operation in runtime_module.QUERY_OPERATIONS
+        }
         assert set(captured) == {"session_factory", "evidence_service", "breaker_service"}
     finally:
         await runtime.aclose()

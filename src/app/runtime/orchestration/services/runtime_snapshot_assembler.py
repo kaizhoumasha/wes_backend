@@ -27,7 +27,6 @@ class RuntimeSnapshotAssembler:
             "state": {
                 "execution_session_id": getattr(session, "id", None),
                 "workline_id": getattr(session, "workline_id", None),
-                "manifest_version": getattr(session, "manifest_version", None),
                 "state": getattr(session, "state", None),
                 "created_at": getattr(session, "created_at", None),
                 "updated_at": getattr(session, "updated_at", None),

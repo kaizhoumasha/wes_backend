@@ -16,8 +16,6 @@ async def _seed_correlation(
 ) -> ExecutionCorrelation:
     session = ExecutionSession(
         workline_id=1,
-        plugin_key="test-plugin",
-        manifest_version="v1",
         state="RUNNING",
     )
     db_session.add(session)

@@ -257,8 +257,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             trace_id=trace_id,
             correlation_id=execution_correlation_id,
             workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
-            plugin_key=getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
-            contract_version=getattr(session, "contract_version", None),
             status=CommandStatus.PENDING,
         )
         outbox = SystemOutbox(

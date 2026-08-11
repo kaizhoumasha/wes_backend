@@ -1,4 +1,4 @@
-"""32 项 WMS operation 的最小 typed fixture。
+"""31 项 WMS operation 的最小 typed fixture。
 
 本文件是 Mock WMS 的独立测试资产；覆盖测试会按静态 registry fail closed 校验键集合与模型。
 """
@@ -25,23 +25,6 @@ REQUEST_FIXTURES = {
     "wms.reconciliation.check_bin_drift@v1": {"warehouse_code": "WH-A", "page_size": 100},
     "wms.reconciliation.check_rack_drift@v1": {"warehouse_code": "WH-A", "page_size": 100},
     "wms.reconciliation.check_full_drift@v1": {"warehouse_code": "WH-A", "page_size": 100},
-    "wms.document.validate_rough_sorter_admission@v1": {
-        "raw_code": "RAW-SIX-IN-ONE",
-        "six_in_one": {
-            "HHPN": "HHPN-001",
-            "MfrPN": "MFR-001",
-            "Qty": "10",
-            "DateCode": "2629",
-            "LotCode": "LOT-001",
-            "PkgID": "PKG-001",
-        },
-        "reel_diameter_mm": "330.0",
-        "reel_thickness_mm": "12.5",
-        "station_code": "ROUGH-IN",
-        "workline_id": 1,
-        "session_id": 1,
-        "correlation_id": "CORR-001",
-    },
     "wms.inventory.reserve_inventory@v1": {
         "dispatch_key": "dispatch-reserve-001",
         "material_code": "MAT-001",
@@ -210,22 +193,6 @@ RESULT_FIXTURES = {
     "wms.reconciliation.check_bin_drift@v1": {"items": [], "next_cursor": None, "source_version": "1"},
     "wms.reconciliation.check_rack_drift@v1": {"items": [], "next_cursor": None, "source_version": "1"},
     "wms.reconciliation.check_full_drift@v1": {"items": [], "next_cursor": None, "source_version": "1"},
-    "wms.document.validate_rough_sorter_admission@v1": {
-        "decision": "ADMIT",
-        "reason_code": None,
-        "grn_id": "GRN-001",
-        "po_number": "PO-001",
-        "po_item": "10",
-        "material_code": "MAT-001",
-        "pkg_id": "PKG-001",
-        "measurement_decision": "PASS",
-        "standard_reel_diameter_mm": "330",
-        "reel_diameter_tolerance_mm": "5",
-        "standard_reel_thickness_mm": "12.5",
-        "reel_thickness_tolerance_mm": "0.5",
-        "rule_version": "RULE-1",
-        "source_version": "1",
-    },
     "wms.inventory.reserve_inventory@v1": {
         "dispatch_key": "dispatch-reserve-001",
         "provider_reference": "provider-reserve-001",

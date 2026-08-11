@@ -50,7 +50,6 @@ class TestCallbackResultAPI:
         context = SimpleNamespace(
             device=SimpleNamespace(id=7, capabilities_json={"supports_result_callback": True}),
             workline=SimpleNamespace(is_active=True),
-            contract_version="1.0",
         )
 
         with (
@@ -123,8 +122,6 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="test_workline_plugin",
-                        contract_version="1.0",
                     )
                 ),
             ),
@@ -139,12 +136,8 @@ class TestCallbackResultAPI:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -258,12 +251,8 @@ class TestCallbackResultAPI:
                     ),
                     workline=SimpleNamespace(
                         id=1,
-                        plugin_key="test_workline_plugin",
-                        contract_version="1.0",
                         is_active=True,
                     ),
-                    plugin_key="test_workline_plugin",
-                    contract_version="1.0",
                     work_line_id=1,
                     is_workline_bound=True,
                 ),
@@ -408,12 +397,8 @@ class TestCallbackResultAPI:
                             ),
                             workline=SimpleNamespace(
                                 id=1,
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -479,8 +464,6 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="test_workline_plugin",
-                        contract_version="1.0",
                     )
                 ),
             ),
@@ -495,12 +478,8 @@ class TestCallbackResultAPI:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -622,8 +601,6 @@ class TestCallbackResultAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="test_workline_plugin",
-                        contract_version="1.0",
                     )
                 ),
             ),
@@ -638,12 +615,8 @@ class TestCallbackResultAPI:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -750,12 +723,8 @@ class TestCallbackResultAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(id=7, device_code="ARM_01", capabilities_json=[]),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -839,12 +808,8 @@ class TestCallbackResultAPI:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -921,12 +886,8 @@ class TestCallbackResultAPI:
                                 capabilities_json={"supports_result_callback": True},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),

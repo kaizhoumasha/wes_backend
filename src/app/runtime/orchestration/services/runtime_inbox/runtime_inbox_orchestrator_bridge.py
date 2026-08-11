@@ -22,15 +22,12 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service 
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
-    _entry_event_types_for_workline,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
-    _record_duplicate_entry_archive_timeline,
     _record_late_command_result_archive_timeline,
     _require_fenced_update,
-    _session_status_value,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
 from src.app.workline.constants import INBOX_PROCESS_TIMEOUT_SECONDS, WORKLINE_INBOX_PROCESSING_STALE_SECONDS
@@ -307,7 +304,11 @@ class RuntimeInboxProcessorBridge:
     async def _mark_failure(
         self, db: Any, *, inbox: Any, inbox_id: int | None, token: str, error_code: str, message: str, retryable: bool
     ) -> ProcessResult:
-        await _record_diagnostic(db, inbox=inbox, error_code=ErrorCode.UNKNOWN, message=message)
+        try:
+            diagnostic_error_code = ErrorCode(error_code)
+        except ValueError:
+            diagnostic_error_code = ErrorCode.UNKNOWN
+        await _record_diagnostic(db, inbox=inbox, error_code=diagnostic_error_code, message=message)
         if inbox_id is not None:
             _require_fenced_update(
                 await self.inbox_service.mark_failed(
@@ -347,11 +348,8 @@ class RuntimeInboxProcessorBridge:
             )
             await db.commit()
             return _success_result()
-        session, workline, device, command, _devices, _services, _safety_checked = await _load_related_entities(
-            db, inbox, resolved_event_type=event_type
-        )
         outcome = await self._validation_service.pre_gate(
-            db, inbox=inbox, resolved_event_type=event_type, workline=workline
+            db, inbox=inbox, resolved_event_type=event_type, workline=None
         )
         if not outcome.proceed_to_orchestrator:
             return await self._mark_failure(
@@ -365,6 +363,19 @@ class RuntimeInboxProcessorBridge:
             )
         routed = self._validation_service.classify_estop_or_timer(
             resolved_event_type=event_type, inbox_kind=_kind_value(inbox)
+        )
+        if _kind_value(inbox) == "DEVICE_EVENT" and not routed.estop_event:
+            return await self._mark_failure(
+                db,
+                inbox=inbox,
+                inbox_id=inbox_id,
+                token=token,
+                error_code=ErrorCode.CONTRACT_MISMATCH.value,
+                message=f"RuntimeInbox event has no active owner: {event_type}",
+                retryable=False,
+            )
+        session, workline, device, command, _devices, _services, _safety_checked = await _load_related_entities(
+            db, inbox, resolved_event_type=event_type
         )
         if routed.estop_event:
             ok = await _handle_estop(
@@ -405,31 +416,6 @@ class RuntimeInboxProcessorBridge:
                 message="Inbox processing missing session/workline context",
                 retryable=False,
             )
-        if _kind_value(inbox) == "DEVICE_EVENT" and event_type in _entry_event_types_for_workline(workline):
-            status = _session_status_value(session)
-            if status in {
-                "COMPLETED",
-                "FAILED",
-                "CANCELLED",
-                "WAITING_DEVICE_RESULT",
-                "WAITING_EXTERNAL",
-                "MANUAL_HOLD",
-            }:
-                await _record_duplicate_entry_archive_timeline(
-                    db,
-                    session=session,
-                    workline=workline,
-                    inbox=inbox,
-                    payload=payload,
-                    reason="SESSION_ALREADY_IN_PROGRESS_OR_TERMINAL",
-                )
-                _require_fenced_update(
-                    await self.inbox_service.mark_processed(db, inbox_id=inbox_id, lease_token=token),
-                    action="mark_processed",
-                    inbox_id=inbox_id,
-                )
-                await db.commit()
-                return _success_result()
         if _is_late_or_duplicate_command_result_for_session(
             inbox=inbox, payload=payload, session=session, command=command
         ):
@@ -442,13 +428,22 @@ class RuntimeInboxProcessorBridge:
                 payload=payload,
                 reason="COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT",
             )
-        _require_fenced_update(
-            await self.inbox_service.mark_processed(db, inbox_id=inbox_id, lease_token=token),
-            action="mark_processed",
+            _require_fenced_update(
+                await self.inbox_service.mark_processed(db, inbox_id=inbox_id, lease_token=token),
+                action="mark_processed",
+                inbox_id=inbox_id,
+            )
+            await db.commit()
+            return _success_result()
+        return await self._mark_failure(
+            db,
+            inbox=inbox,
             inbox_id=inbox_id,
+            token=token,
+            error_code=ErrorCode.CONTRACT_MISMATCH.value,
+            message=f"RuntimeInbox event has no active owner: {event_type}",
+            retryable=False,
         )
-        await db.commit()
-        return _success_result()
 
     async def process_claimed(self, db: AsyncSession, *, claim: dict[str, Any] | Any) -> ProcessResult:
         inbox_id = claim["id"] if isinstance(claim, dict) else claim.id

@@ -82,6 +82,7 @@ def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation()
     )
 
     assert set(snapshot) == {"state", "timeline", "inbox", "hold", "pending_intent", "correlation"}
+    assert "manifest_version" not in snapshot["state"]
     assert snapshot["state"]["state"] == "RUNNING"
     assert snapshot["timeline"][0]["event_type"] == "INBOX_RECEIVED"
     assert snapshot["inbox"][0]["status"] == "RECEIVED"

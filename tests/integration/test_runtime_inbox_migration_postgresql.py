@@ -45,7 +45,6 @@ RUNTIME_INBOX_REVISION_C_INDEXES = RUNTIME_INBOX_HOT_INDEXES | {
 DEPENDENT_COLUMNS = {
     "workline_diagnostics": "inbox_id",
     "runtime_holds": "source_inbox_id",
-    "smt_inbound_handoff_source_items": "source_pick_inbox_id",
 }
 
 
@@ -62,54 +61,42 @@ async def _insert_legacy_references(connection: asyncpg.Connection) -> int:
         RETURNING id
         """
     )
+    workline_id = await connection.fetchval(
+        """
+        INSERT INTO wes_biz.work_lines (
+            created_at, line_code, line_name, line_type, is_active
+        ) VALUES (
+            CURRENT_TIMESTAMP, 'PG-ROUNDTRIP', 'PostgreSQL migration roundtrip', 'AUTO', FALSE
+        )
+        RETURNING id
+        """
+    )
 
-    # 三张依赖表的其他 FK 不属于本迁移验收范围。该临时库 fixture 仍需禁用 FK
-    # trigger；先显式检查权限，避免普通 CI 账号只得到晦涩的 PostgreSQL 错误。
-    is_superuser = await connection.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
-    if not is_superuser:
-        raise RuntimeError(
-            "RuntimeInbox migration FK fixture requires PostgreSQL superuser "
-            "for session_replication_role=replica; replace with legal parent fixtures in T6"
+    await connection.execute(
+        """
+        INSERT INTO wes_biz.workline_diagnostics (
+            diagnostic_key, inbox_id, diagnostic_code, error_domain, severity,
+            recoverability, problem_class, owner, status, message
+        ) VALUES (
+            'pg-roundtrip-diagnostic', $1, 'TEST', 'RUNTIME', 'INFO',
+            'AUTO', 'SOFTWARE', 'TEST', 'ACTIVE', 'migration roundtrip'
         )
-    await connection.execute("SET session_replication_role = replica")
-    try:
-        await connection.execute(
-            """
-            INSERT INTO wes_biz.workline_diagnostics (
-                diagnostic_key, inbox_id, diagnostic_code, error_domain, severity,
-                recoverability, problem_class, owner, status, message
-            ) VALUES (
-                'pg-roundtrip-diagnostic', $1, 'TEST', 'RUNTIME', 'INFO',
-                'AUTO', 'SOFTWARE', 'TEST', 'ACTIVE', 'migration roundtrip'
-            )
-            """,
-            legacy_inbox_id,
+        """,
+        legacy_inbox_id,
+    )
+    await connection.execute(
+        """
+        INSERT INTO wes_biz.runtime_holds (
+            created_at, hold_type, status, blocking, workline_id, source_kind,
+            source_reason, source_idempotency_key, source_inbox_id
+        ) VALUES (
+            CURRENT_TIMESTAMP, 'MANUAL_HOLD', 'OPEN', TRUE, $2,
+            'INTERNAL_EVENT', 'migration roundtrip', 'pg-roundtrip-hold', $1
         )
-        await connection.execute(
-            """
-            INSERT INTO wes_biz.runtime_holds (
-                created_at, hold_type, status, blocking, workline_id, source_kind,
-                source_reason, source_idempotency_key, source_inbox_id
-            ) VALUES (
-                CURRENT_TIMESTAMP, 'MANUAL_HOLD', 'OPEN', TRUE, 987654321,
-                'INTERNAL_EVENT', 'migration roundtrip', 'pg-roundtrip-hold', $1
-            )
-            """,
-            legacy_inbox_id,
-        )
-        await connection.execute(
-            """
-            INSERT INTO wes_biz.smt_inbound_handoff_source_items (
-                created_at, handoff_demand_id, item_key, status, claim_attempt_no,
-                source_pick_inbox_id
-            ) VALUES (
-                CURRENT_TIMESTAMP, 987654321, 'pg-roundtrip-item', 'READY', 0, $1
-            )
-            """,
-            legacy_inbox_id,
-        )
-    finally:
-        await connection.execute("SET session_replication_role = origin")
+        """,
+        legacy_inbox_id,
+        workline_id,
+    )
     return legacy_inbox_id
 
 

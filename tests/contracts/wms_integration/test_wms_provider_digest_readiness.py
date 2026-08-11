@@ -75,8 +75,8 @@ def test_wes_and_fulfillment_assembly_share_digest_with_exact_lane_readiness() -
     )
     assert wes.operation_identities == expected_data
     assert fulfillment.operation_identities == expected_fulfillment
-    assert len(wes.operation_identities) == 27
-    assert len(wes.endpoint_keys) == 27
+    assert len(wes.operation_identities) == 26
+    assert len(wes.endpoint_keys) == 26
     assert len(fulfillment.operation_identities) == 5
     assert len(fulfillment.endpoint_keys) == 9
 

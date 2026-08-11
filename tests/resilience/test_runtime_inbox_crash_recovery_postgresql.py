@@ -14,8 +14,8 @@ from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from tests.support.runtime_inbox_processing_postgresql import (
     RecordingTaskQueueGateway,
+    assert_dead_letter_terminal,
     assert_effects,
-    assert_processed_terminal,
     claim,
     expire_and_recover,
     processor,
@@ -32,8 +32,18 @@ class _SimulatedWorkerCrash(BaseException):
 
 
 class _CrashBeforeTerminalService(RuntimeInboxService):
-    async def mark_processed(self, db: AsyncSession, *, inbox_id: int, lease_token: str) -> bool:
-        _ = db, inbox_id, lease_token
+    async def mark_failed(
+        self,
+        db: AsyncSession,
+        *,
+        inbox_id: int,
+        lease_token: str,
+        error_code: str,
+        error_message: str,
+        retryable: bool,
+        consume_attempt: bool = True,
+    ) -> bool:
+        _ = db, inbox_id, lease_token, error_code, error_message, retryable, consume_attempt
         raise _SimulatedWorkerCrash
 
 
@@ -67,8 +77,8 @@ def test_claim_crash_recovers_with_new_owner_and_rejects_old_fence() -> None:
                 await db.commit()
                 refreshed_claim = await claim(db, service, token="it-crash-a-refreshed-owner")
                 result = await processor(service).process_claimed(db, claim=refreshed_claim)
-            assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-            await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
+            assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+            await assert_dead_letter_terminal(db, inbox_id=seeded.inbox_id, error_code="CONTRACT_MISMATCH")
             await assert_effects(db, seeded, expected_count=0)
             assert queue_gateway.outbox_enqueues == []
 
@@ -103,8 +113,8 @@ def test_writeback_crash_recovers_terminal_processing_once() -> None:
             assert not await real_service.mark_processed(db, inbox_id=seeded.inbox_id, lease_token=old_token)
             await db.rollback()
             result = await processor(real_service).process_claimed(db, claim=new_claim)
-            assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-            await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
+            assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+            await assert_dead_letter_terminal(db, inbox_id=seeded.inbox_id, error_code="CONTRACT_MISMATCH")
             await assert_effects(db, seeded, expected_count=0)
             assert queue_gateway.outbox_enqueues == []
 
@@ -124,18 +134,12 @@ def test_replay_request_recovery_rejects_old_fence_and_processes_once() -> None:
             source_result = await processor(service).process_claimed(db, claim=source_claim)
             assert source_result == {
                 "processed": 1,
-                "success": 1,
-                "failed": 0,
+                "success": 0,
+                "failed": 1,
                 "skipped": 0,
                 "resource_wait": 0,
             }
             await assert_effects(db, seeded, expected_count=0)
-            await db.execute(
-                update(RuntimeInbox)
-                .where(RuntimeInbox.id == seeded.inbox_id)
-                .values(status="DEAD_LETTER", failed_at=1_700_000_000_001)
-            )
-            await db.commit()
             replay = await service.replay_from_dead_letter(
                 db,
                 source_inbox_id=seeded.inbox_id,
@@ -158,8 +162,8 @@ def test_replay_request_recovery_rejects_old_fence_and_processes_once() -> None:
             new_claim = await claim(db, service, token="it-replay-new-owner")
             assert new_claim["processor_token"] != old_token
             result = await processor(service).process_claimed(db, claim=new_claim)
-            assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-            await assert_processed_terminal(db, inbox_id=replay_seeded.inbox_id)
+            assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+            await assert_dead_letter_terminal(db, inbox_id=replay_seeded.inbox_id, error_code="CONTRACT_MISMATCH")
             await assert_effects(db, replay_seeded, expected_count=0)
             source = await db.get(RuntimeInbox, seeded.inbox_id)
             assert source is not None and source.status == "DEAD_LETTER"

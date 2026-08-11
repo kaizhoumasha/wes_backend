@@ -1,8 +1,4 @@
-# 旧 runtime 镜像实现:src.workline_runtime.services 的平级副本
-# 旧 runtime 入口删除后,本模块承载正式实现。
-# 自引用 src.workline_runtime.{run_mode, sandbox_catalog} 已重定向到
-# src.app.workline.domain.run_mode (stable run-mode mirror)
-# + src.app.runtime.orchestration.sandbox_catalog_bridge。
+# WorkLine 运行时基础服务的正式装配入口。
 
 """工作线运行时服务容器。
 

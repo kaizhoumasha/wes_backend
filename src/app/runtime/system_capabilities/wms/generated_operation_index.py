@@ -1,4 +1,4 @@
-"""WMS runtime 对静态 32 项 registry 的只读索引视图。"""
+"""WMS runtime 对静态 31 项 registry 的只读索引视图。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ def _operation_index_digest(operations: tuple[WmsOperationDefinition, ...]) -> s
             "execution_lane": operation.execution_lane.value,
             "http_method": operation.http_method.value,
             "identity": operation.identity,
-            "max_candidate_count": operation.max_candidate_count,
             "mode": operation.mode.value,
             "pagination": operation.pagination.model_dump(mode="json") if operation.pagination is not None else None,
             "path_template": operation.path_template,

@@ -37,8 +37,6 @@ async def _seed_correlation(db_session, *, correlation_id: str = "corr-h5-001") 
     """建立 ExecutionSession + ExecutionCorrelation, 满足 IdempotencyKey FK 前置。"""
     session = ExecutionSession(
         workline_id=1,
-        plugin_key="test-plugin",
-        manifest_version="v1",
         state="RUNNING",
     )
     db_session.add(session)

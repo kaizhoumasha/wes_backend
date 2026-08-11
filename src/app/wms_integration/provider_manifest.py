@@ -97,12 +97,11 @@ WMS_BUSINESS_SCENARIO_MANIFEST = (
         ),
     ),
     WmsBusinessScenario(
-        "RECEIVING_AND_ROUGH_SORTER",
+        "RECEIVING",
         frozenset(
             {
                 "wms.document.get_grn@v1",
                 "wms.document.list_grn_packages@v1",
-                "wms.document.validate_rough_sorter_admission@v1",
                 "wms.inventory.confirm_inbound@v1",
                 "wms.fulfillment.notify_pkg_binding@v1",
             }
@@ -168,7 +167,7 @@ def require_full_factory_registry(operation_identities: tuple[str, ...]) -> None
 
     expected = tuple(operation.identity for operation in WMS_OPERATIONS)
     if operation_identities != expected:
-        raise ValueError("active WMS profile does not match the frozen 32-operation registry")
+        raise ValueError("active WMS profile does not match the frozen 31-operation registry")
 
 
 __all__ = [

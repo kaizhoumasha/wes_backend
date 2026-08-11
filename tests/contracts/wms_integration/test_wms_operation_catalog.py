@@ -31,7 +31,6 @@ EXPECTED_QUERY_IDENTITIES = (
     "wms.reconciliation.check_bin_drift@v1",
     "wms.reconciliation.check_rack_drift@v1",
     "wms.reconciliation.check_full_drift@v1",
-    "wms.document.validate_rough_sorter_admission@v1",
 )
 EXPECTED_EFFECT_IDENTITIES = (
     "wms.inventory.reserve_inventory@v1",
@@ -70,7 +69,7 @@ def _load(module_name: str):
     return importlib.import_module(module_name)
 
 
-def test_static_registry_freezes_exactly_32_unique_operation_identities() -> None:
+def test_static_registry_freezes_exactly_31_unique_operation_identities() -> None:
     registry = _load("src.app.wms_integration.operation_registry")
 
     assert tuple(item.identity for item in registry.QUERY_OPERATIONS) == EXPECTED_QUERY_IDENTITIES
@@ -79,9 +78,9 @@ def test_static_registry_freezes_exactly_32_unique_operation_identities() -> Non
         *EXPECTED_QUERY_IDENTITIES,
         *EXPECTED_EFFECT_IDENTITIES,
     )
-    assert len(registry.WMS_OPERATION_BY_IDENTITY) == len(registry.WMS_OPERATIONS) == 32
-    assert len({item.request_model for item in registry.WMS_OPERATIONS}) == 32
-    assert len({item.result_model for item in registry.WMS_OPERATIONS}) == 32
+    assert len(registry.WMS_OPERATION_BY_IDENTITY) == len(registry.WMS_OPERATIONS) == 31
+    assert len({item.request_model for item in registry.WMS_OPERATIONS}) == 31
+    assert len({item.result_model for item in registry.WMS_OPERATIONS}) == 31
 
 
 def test_every_typed_definition_owns_strict_models_and_frozen_budgets() -> None:
@@ -96,6 +95,14 @@ def test_every_typed_definition_owns_strict_models_and_frozen_budgets() -> None:
         assert operation.budget.max_attempts == 3
         assert operation.error_codes
         assert operation.reject_codes
+
+
+def test_operation_contract_does_not_expose_retired_candidate_window() -> None:
+    contracts = _load("src.app.wms_integration.operation_contract")
+    provider_contracts = _load("src.app.runtime.system_capabilities.wms.contracts")
+
+    assert "max_candidate_count" not in contracts.WmsOperationDefinition.model_fields
+    assert "max_candidate_count" not in provider_contracts.WmsProviderOperationBinding.model_computed_fields
 
 
 def test_query_method_and_pagination_contracts_are_closed() -> None:

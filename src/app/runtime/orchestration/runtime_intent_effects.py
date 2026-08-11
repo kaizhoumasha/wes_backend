@@ -207,14 +207,7 @@ async def _reject_reuse_when_owned_by_active_session(
     *,
     current_session_id: int,
 ) -> None:
-    """create 路径所有权检查：白名单语义（仅当 owner 明确非终态才拒绝）。
-
-    与 SMT handoff claim 路径（smt_inbound_handoff_service._link_claim_session_material_unit）
-    的黑名单语义有意区分：
-    - 本函数处理"扫码新建/补建"场景。owner_session 不存在（已硬删）= 孤儿料盘，放行回收，
-      避免历史数据让 SCAN_COMPLETED 永远卡死。
-    - claim 路径处理"跨线 handoff 接管"场景，owner 未知时风险更高（接管错的料盘）→ 保守拒绝。
-    """
+    """扫码 create 路径仅在料盘明确归属非终态 Session 时拒绝复用。"""
     owner_session_id = optional_int(getattr(material_unit, "current_session_id", None))
     if owner_session_id is None or owner_session_id == current_session_id:
         return

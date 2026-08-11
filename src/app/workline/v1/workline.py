@@ -8,7 +8,6 @@ from src.app.workline.models import (
     PlaneSceneView,
     PlaneSnapshot,
     WorkLine,
-    WorkLineActivationRequest,
     WorkLineConfigurationStatus,
     WorkLineCreate,
     WorkLineResponse,
@@ -82,9 +81,8 @@ async def get_workline_configuration_status(
 async def activate_workline(
     db: AsyncSessionDep,
     cache: CacheDep,
-    current_user_id: Annotated[int, Depends(require_auth)],
     id: int = Path(...),
-    payload: WorkLineActivationRequest = Body(...),
+    payload: WorkLineStateTransitionRequest = Body(...),
 ) -> ResponseSchemaModel[WorkLineResponse]:
     """通过配置预检后启用 WorkLine。"""
 

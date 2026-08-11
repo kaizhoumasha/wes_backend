@@ -76,6 +76,21 @@ def test_runtime_targets_use_explicit_schema_identity_and_retire_workline_inbox(
     assert identities.isdisjoint({(target.schema, target.table) for target in reset_module.MASTER_DATA_TABLES})
 
 
+def test_runtime_targets_do_not_own_retired_execution_tables() -> None:
+    identities = {target.identity for target in reset_module.RUNTIME_TABLES}
+
+    retired_tables = {
+        "wes_biz.handling_operation_moves",
+        "wes_biz.handling_operation_steps",
+        "wes_biz.handling_operations",
+        "wes_biz.rack_operations",
+        "wes_biz.rack_tasks",
+        "wes_biz.smt_inbound_handoff_demands",
+        "wes_biz.smt_inbound_handoff_source_items",
+    }
+    assert identities.isdisjoint(retired_tables)
+
+
 def test_validate_table_sets_rejects_master_data_target() -> None:
     master_target = next(iter(reset_module.MASTER_DATA_TABLES))
 

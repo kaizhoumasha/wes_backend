@@ -89,8 +89,6 @@ class ResourceRelationService:
         trace_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> ResourceProjectionResult:
         """记录货架到达事实，并在无冲突时创建 active placement 投影。"""
 
@@ -136,8 +134,6 @@ class ResourceRelationService:
                 trace_id=trace_id,
                 workline_id=workline_id,
                 workline_session_id=workline_session_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
             )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
@@ -190,8 +186,6 @@ class ResourceRelationService:
         trace_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> ResourceProjectionResult:
         """记录 ECS 验空事实，并投影空架上的 4 个 active 料箱挂载关系。"""
 
@@ -247,8 +241,6 @@ class ResourceRelationService:
                 trace_id=trace_id,
                 workline_id=workline_id,
                 workline_session_id=workline_session_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
             )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
@@ -347,8 +339,6 @@ class ResourceRelationService:
         trace_id: str | None,
         workline_id: int | None,
         workline_session_id: int | None,
-        plugin_key: str | None,
-        contract_version: str | None,
     ) -> Any | None:
         """有 WorkLine 上下文时，为料箱挂载投影冲突创建 RuntimeHold。"""
 
@@ -381,8 +371,6 @@ class ResourceRelationService:
             workline_id=workline_id,
             session_id=workline_session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_reason=str(conflict["reason_code"]),
             source_event_id=source_event_id,
             evidence=evidence,
@@ -400,8 +388,6 @@ class ResourceRelationService:
         trace_id: str | None,
         workline_id: int | None,
         workline_session_id: int | None,
-        plugin_key: str | None,
-        contract_version: str | None,
     ) -> Any | None:
         """有 WorkLine 上下文时，为货架位置冲突创建 RuntimeHold。"""
 
@@ -413,8 +399,6 @@ class ResourceRelationService:
             workline_id=workline_id,
             session_id=workline_session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_reason="RACK_PLACEMENT_CONFLICT",
             source_event_id=source_event_id,
             evidence={

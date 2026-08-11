@@ -7,6 +7,7 @@ from src.utils.value_normalization import optional_int_attr, optional_str, optio
 
 from .codes import ErrorCode, ErrorDomain, ProblemClass, Recoverability, Severity, error_domain_for
 from .models import DiagnosticCard, DiagnosticContext, DiagnosticEvent
+from .registry import get_diagnostic_code_definition
 
 
 def _resolve_diagnostic_device_code(
@@ -19,19 +20,6 @@ def _resolve_diagnostic_device_code(
         resolved_trace.device_code
         or optional_str_attr(device, "device_code")
         or optional_str_attr(outbox, "target_code")
-    )
-
-
-def _resolve_diagnostic_plugin_key(
-    resolved_trace: TraceContext,
-    *,
-    session: Any | None,
-    workline: Any | None,
-) -> str | None:
-    return (
-        resolved_trace.plugin_key
-        or optional_str_attr(session, "plugin_key")
-        or optional_str_attr(workline, "plugin_key")
     )
 
 
@@ -82,8 +70,8 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         Severity.ERROR,
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.HARDWARE,
-        "设备/作业线配置版本与插件契约不一致。",
-        ["检查 workline.contract_version", "检查插件 contract_version 与配置是否一致"],
+        "事件身份、设备或指令归属、协议字段与 WES 权威记录不一致。",
+        ["核对 event_id、device_code、command_code 与 correlation_id", "核对事件 owner、指令归属和设备 profile"],
     ),
     ErrorCode.DEVICE_UNREACHABLE: (
         Severity.ERROR,
@@ -199,7 +187,7 @@ def build_diagnostic_context(
         device_code=_resolve_diagnostic_device_code(resolved_trace, device=device, outbox=outbox),
         workline_id=resolved_trace.workline_id or optional_int_attr(session, "workline_id"),
         workline_code=optional_str_attr(workline, "line_code"),
-        plugin_key=_resolve_diagnostic_plugin_key(resolved_trace, session=session, workline=workline),
+        plugin_key=resolved_trace.plugin_key,
         canonical_event_type=resolved_trace.canonical_event_type,
         transition=resolved_trace.transition,
         extra=extra or {},
@@ -235,7 +223,7 @@ def build_diagnostic_event(
         message=message,
         technical_summary=technical_summary or message,
         user_message=user_message or default_user_message,
-        operator_action=operator_action,
+        operator_action=operator_action or get_diagnostic_code_definition(error_code).operator_action,
         next_steps=next_steps or list(default_steps),
         context=context,
     )

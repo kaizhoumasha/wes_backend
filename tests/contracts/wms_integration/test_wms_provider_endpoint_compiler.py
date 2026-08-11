@@ -119,16 +119,16 @@ def test_compiler_derives_all_endpoint_semantics_from_static_registry() -> None:
     compiled = _compile()
 
     assert tuple(compiled.operations) == tuple(operation.identity for operation in WMS_OPERATIONS)
-    assert len(compiled.operations) == 32
+    assert len(compiled.operations) == 31
     query_bindings = tuple(
         endpoint for endpoint in compiled.operations.values() if endpoint.mode is WmsOperationMode.QUERY
     )
     effect_bindings = tuple(
         endpoint for endpoint in compiled.operations.values() if endpoint.mode is WmsOperationMode.EFFECT
     )
-    assert len(query_bindings) == 19
+    assert len(query_bindings) == 18
     assert sum(endpoint.http_method is WmsHttpMethod.GET for endpoint in query_bindings) == 18
-    assert sum(endpoint.http_method is WmsHttpMethod.POST for endpoint in query_bindings) == 1
+    assert sum(endpoint.http_method is WmsHttpMethod.POST for endpoint in query_bindings) == 0
     assert len(effect_bindings) == 13
 
     synchronous = tuple(

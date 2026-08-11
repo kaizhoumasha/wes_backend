@@ -101,6 +101,7 @@ def _build_timer_timeout_objects() -> tuple[Any, Any, Any, Any]:
         workline_id=45,
         device_id=7,
         correlation_id="corr-runtime-reconciliation-timer",
+        task_type="PICK_AND_PUT",
         status=CommandStatus.ACK_RECEIVED,
         ack_received_at=ack_received_at,
     )
@@ -218,6 +219,7 @@ async def test_timer_timeout_registers_reconciliation_idempotency_with_command_c
     manager = _RecordingReconciliationManager(claim_result=ClaimResult.MATCH)
     service = _build_service(session=session, workline=workline, reconciliation_manager=manager)
     db = _ReconciliationDb(command=command)
+    timeline_writer = AsyncMock()
 
     class _CommandRepo:
         async def get_by_command_code(self, _db: Any, _command_code: str) -> Any:
@@ -230,7 +232,7 @@ async def test_timer_timeout_registers_reconciliation_idempotency_with_command_c
         ),
         patch(
             "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
-            new=AsyncMock(),
+            new=timeline_writer,
         ),
         patch(
             "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_diagnostic_service.record_event",
@@ -255,6 +257,8 @@ async def test_timer_timeout_registers_reconciliation_idempotency_with_command_c
     assert call["execution_correlation_id"] == "corr-runtime-reconciliation-timer"
     assert call["conflict"].conflict_kind == "CALLBACK_DEADLINE_EXPIRED"
     assert call["conflict"].evidence_refs == ["inbox:901", "command:991"]
+    timeline = timeline_writer.await_args.args[1]
+    assert timeline.payload_json["reason"] == "CALLBACK_DEADLINE_EXPIRED"
 
     audit = session.context_json["runtime_reconciliation_registration"]
     assert audit["claim_result"] == "MATCH"

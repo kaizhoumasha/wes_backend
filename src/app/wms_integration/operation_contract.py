@@ -125,7 +125,6 @@ class WmsOperationDefinition(BaseModel):
     side_effect_free: bool
     budget: WmsOperationBudget
     pagination: WmsPaginationConstraint | None
-    max_candidate_count: int | None = Field(default=None, gt=0)
     error_codes: tuple[StableCode, ...] = Field(min_length=1)
     reject_codes: tuple[StableCode, ...] = Field(min_length=1)
     terminal_identity_validator: TerminalIdentityValidator | None = Field(default=None, exclude=True)
@@ -137,7 +136,7 @@ class WmsOperationDefinition(BaseModel):
         return self.completion_mode is WmsCompletionMode.ASYNC_TASK
 
     @model_validator(mode="after")
-    def validate_static_semantics(self) -> WmsOperationDefinition:  # noqa: PLR0912 - 静态合同集中闭合
+    def validate_static_semantics(self) -> WmsOperationDefinition:  # 静态合同集中闭合
         if self.request_model is self.result_model:
             raise ValueError("request_model and result_model must be operation-specific")
         for model in (self.request_model, self.result_model):
@@ -154,8 +153,6 @@ class WmsOperationDefinition(BaseModel):
                 raise ValueError("QUERY must not declare domain_projection_kind")
             if self.terminal_identity_validator is not None:
                 raise ValueError("QUERY must not declare terminal_identity_validator")
-            if self.max_candidate_count is not None:
-                raise ValueError("QUERY must not declare max_candidate_count")
             if self.completion_mode is not None or self.execution_lane is not WmsExecutionLane.WMS_DATA:
                 raise ValueError("QUERY must use wms-data without completion_mode")
             if not self.side_effect_free:
@@ -186,8 +183,6 @@ class WmsOperationDefinition(BaseModel):
         }.get(self.identity)
         if self.domain_projection_kind is not expected_domain_projection:
             raise ValueError("domain_projection_kind is only valid for its authored fulfillment operation")
-        if self.max_candidate_count is not None:
-            raise ValueError("max_candidate_count is not supported by the retained operations")
         return self
 
 
@@ -270,7 +265,6 @@ def effect_operation(
     reject_codes: tuple[str, ...],
     completion_mode: WmsCompletionMode,
     execution_lane: WmsExecutionLane,
-    max_candidate_count: int | None = None,
     terminal_identity_validator: TerminalIdentityValidator | None = None,
     domain_projection_kind: WmsDomainProjectionKind | None = None,
 ) -> WmsOperationDefinition:
@@ -289,7 +283,6 @@ def effect_operation(
         side_effect_free=False,
         budget=EFFECT_BUDGET,
         pagination=None,
-        max_candidate_count=max_candidate_count,
         error_codes=EFFECT_ERROR_CODES,
         reject_codes=reject_codes,
         terminal_identity_validator=terminal_identity_validator,

@@ -22,6 +22,7 @@ from src.app.callback.contracts.trace_context import (
     TraceContext as TraceContextDirect,
 )
 from src.app.callback.utils import non_empty_str
+from src.app.workline.trace_context import TraceContext as WorkLineTraceContext
 
 
 class _StubSession:
@@ -79,14 +80,26 @@ def test_tracecontext_from_request_populates_minimal_fields() -> None:
     assert t.inbox_id is None
 
 
-def test_tracecontext_with_session_fills_runtime_fields() -> None:
-    t = TraceContext.from_request(request_id="req-x").with_session(_StubSession())
+@pytest.mark.parametrize("context_type", [TraceContext, WorkLineTraceContext])
+def test_tracecontext_with_session_ignores_retired_plugin_fields(context_type: type[TraceContext]) -> None:
+    t = context_type.from_request(request_id="req-x").with_session(_StubSession())
     assert t.session_id == 99
     assert t.workline_id == 7
     assert t.trace_id == "sess-trace"
     assert t.request_id == "req-1"
-    assert t.plugin_key == "plug-a"
-    assert t.contract_version == "v1"
+    assert t.plugin_key is None
+    assert t.contract_version is None
+
+
+@pytest.mark.parametrize("context_type", [TraceContext, WorkLineTraceContext])
+def test_tracecontext_with_workline_ignores_retired_plugin_fields(context_type: type[TraceContext]) -> None:
+    workline = SimpleNamespace(id=7, plugin_key="plug-a", contract_version="v1")
+
+    t = context_type.from_request(request_id="req-x").with_workline(workline)
+
+    assert t.workline_id == 7
+    assert t.plugin_key is None
+    assert t.contract_version is None
 
 
 def test_tracecontext_with_command_fills_command_fields() -> None:
@@ -96,6 +109,8 @@ def test_tracecontext_with_command_fills_command_fields() -> None:
     assert t.trace_id == "cmd-trace"
     assert t.device_id == 42
     assert t.workline_id == 7
+    assert t.plugin_key == "plug-c"
+    assert t.contract_version == "v1"
 
 
 def test_tracecontext_with_inbox_extracts_payload_event_type_fallback() -> None:

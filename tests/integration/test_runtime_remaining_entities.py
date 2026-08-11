@@ -259,8 +259,6 @@ def test_execution_work_item_required_fields():
     item = ExecutionWorkItem(
         execution_session_id=1,
         correlation_id="corr-wi-001",
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
         object_type="bin",
         object_key="BIN-01",
         current_step="SCAN_BARCODE",
@@ -277,8 +275,6 @@ def test_execution_work_item_step_status_5_states():
         item = ExecutionWorkItem(
             execution_session_id=1,
             correlation_id="c",
-            plugin_key="test-plugin",
-            manifest_version="manifest-v1",
             object_type="material",
             object_key="M001",
             current_step="step",

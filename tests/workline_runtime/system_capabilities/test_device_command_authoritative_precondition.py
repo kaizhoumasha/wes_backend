@@ -229,6 +229,8 @@ async def test_locked_authoritative_match_writes_command_and_outbox_once_after_l
     assert written_outbox is outbox
     assert intent_log.dispatch_key == outbox.dispatch_key
     assert command.device_id == 71
+    assert command.plugin_key is None
+    assert command.contract_version is None
     assert outbox.target_code == "ROBOT-71"
 
 

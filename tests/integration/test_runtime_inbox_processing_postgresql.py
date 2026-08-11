@@ -7,9 +7,12 @@ import json
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.app.device.models.device import Device, DeviceStatus
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
+from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxConflict, RuntimeInboxService
 from src.app.sys.models.audit_log import AuditLog, OperaStatus
@@ -17,8 +20,8 @@ from src.app.sys.services import AuditLogService
 from src.app.workline.models.workline import LineType, WorkLine
 from tests.support.runtime_inbox_processing_postgresql import (
     RecordingTaskQueueGateway,
+    assert_dead_letter_terminal,
     assert_effects,
-    assert_processed_terminal,
     claim,
     processor,
     seed_scan_flow,
@@ -63,7 +66,7 @@ def test_unbound_workline_device_event_persists_idempotently_without_execution_o
             payload = {
                 "event_type": "SCAN_COMPLETED",
                 "device_code": scanner.device_code,
-                "data": {"scan_code": "UNBOUND-001"},
+                "data": {"barcode": "UNBOUND-001"},
             }
             accepted = await service.accept_device_event(
                 db,
@@ -90,11 +93,23 @@ def test_unbound_workline_device_event_persists_idempotently_without_execution_o
             assert accepted.record.execution_session_id is None
             assert accepted.record.workline_session_id is None
 
+            claimed = await claim(db, service, token="it-runtime-inbox-unbound")
+            result = await processor(service).process_claimed(db, claim=claimed)
+
+            assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+            await assert_dead_letter_terminal(db, inbox_id=int(accepted.record.id), error_code="CONTRACT_MISMATCH")
+            assert await db.scalar(select(func.count()).select_from(WorklineSession)) == 0
+            assert await db.scalar(select(func.count()).select_from(ExecutionSession)) == 0
+            diagnostic_code = await db.scalar(
+                select(WorklineDiagnostic.diagnostic_code).where(WorklineDiagnostic.inbox_id == accepted.record.id)
+            )
+            assert diagnostic_code == "CONTRACT_MISMATCH"
+
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
-def test_device_event_claims_and_processes_without_plugin_side_effects() -> None:
-    """无插件 RuntimeInbox 仍完成领取、围栏终态和零业务副作用闭环。"""
+def test_unowned_device_event_fails_closed_without_plugin_side_effects() -> None:
+    """无业务 owner 的设备事件必须失败闭环，不能被 no-op consumer 确认为成功。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
@@ -104,8 +119,8 @@ def test_device_event_claims_and_processes_without_plugin_side_effects() -> None
             seeded = await seed_scan_flow(db)
             claimed = await claim(db, service, token="it-runtime-inbox-owner")
             result = await processor(service).process_claimed(db, claim=claimed)
-            assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-            await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
+            assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+            await assert_dead_letter_terminal(db, inbox_id=seeded.inbox_id, error_code="CONTRACT_MISMATCH")
             await assert_effects(db, seeded, expected_count=0)
 
     asyncio.run(with_temporary_runtime_database(scenario))
@@ -135,8 +150,8 @@ def test_claim_is_fenced_to_one_worker_before_terminal_processing() -> None:
             )
             await db.rollback()
             result = await processor(service).process_claimed(db, claim=first)
-            assert result["success"] == 1
-            await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
+            assert result["failed"] == 1
+            await assert_dead_letter_terminal(db, inbox_id=seeded.inbox_id, error_code="CONTRACT_MISMATCH")
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

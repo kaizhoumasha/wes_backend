@@ -69,9 +69,9 @@ _REGISTRY: dict[ErrorCode, DiagnosticCodeDefinition] = {
     ErrorCode.CONTRACT_MISMATCH: DiagnosticCodeDefinition(
         code=ErrorCode.CONTRACT_MISMATCH,
         owner="integration",
-        cause="设备、工作线或插件契约版本不一致。",
-        operator_action="系统与设备版本不兼容，该工位暂停使用。立即通知技术人员，不要在此工位继续操作。",
-        fix="对齐设备 profile、workline.contract_version 和插件 manifest。",
+        cause="事件身份、设备或指令归属、协议字段与 WES 权威记录不一致。",
+        operator_action="系统无法确认事件归属或合同一致性，该工位暂停使用。立即通知技术人员，不要继续操作。",
+        fix="核对 event_id、device_code、command_code、correlation_id、事件 owner 和设备 profile。",
         recoverability=Recoverability.MANUAL_INTERVENTION_REQUIRED,
         docs_anchor="CONTRACT_MISMATCH",
     ),

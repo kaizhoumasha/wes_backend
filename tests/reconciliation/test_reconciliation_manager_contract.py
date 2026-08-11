@@ -20,8 +20,6 @@ async def _seed_execution_correlation(db_session, *, correlation_id: str = "corr
 
     session = ExecutionSession(
         workline_id=1,
-        plugin_key="test-plugin",
-        manifest_version="v1",
         state="RUNNING",
     )
     db_session.add(session)

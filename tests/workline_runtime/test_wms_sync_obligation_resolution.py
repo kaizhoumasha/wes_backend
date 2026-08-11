@@ -24,6 +24,10 @@ from src.app.runtime.orchestration.services.effect_reducer_service import (
     InvalidReconciliationEvent,
     ReconciliationResolutionConflict,
 )
+from src.app.runtime.orchestration.services.hold.wms_putaway_sync_barrier_service import (
+    WmsPutawaySyncBarrierGroup,
+    WmsPutawaySyncBarrierService,
+)
 
 E03 = "wms.inventory.confirm_inbound@v1"
 E07 = "wms.fulfillment.notify_pkg_binding@v1"
@@ -56,6 +60,15 @@ class _Db:
     def __init__(self) -> None:
         self.flush = AsyncMock()
         self.commit = AsyncMock()
+
+
+class _RuntimeHoldRepository:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def create_open_hold(self, _db: Any, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        return SimpleNamespace(id=101)
 
 
 class _Repository:
@@ -119,6 +132,26 @@ def _typed_event(resolution: dict[str, str]) -> EffectReducerEvent:
         reason_code="MANUAL_EFFECT_RECONCILIATION_RESOLUTION",
         evidence_json={"operator_id": 88, "operator_note": "已核验 WMS 权威记录"},
     )
+
+
+@pytest.mark.asyncio
+async def test_putaway_sync_hold_does_not_write_retired_plugin_identity() -> None:
+    hold_repository = _RuntimeHoldRepository()
+    service = WmsPutawaySyncBarrierService(runtime_hold_repository=hold_repository)  # type: ignore[arg-type]
+
+    await service.create_hold(
+        object(),
+        group=WmsPutawaySyncBarrierGroup(
+            execution_work_item_id=17,
+            correlation_id="corr-17",
+            fact_version="material-fact:v3",
+        ),
+        workline_id=7,
+        session_id=11,
+        trace_id="trace-11",
+    )
+
+    assert {"plugin_key", "contract_version"}.isdisjoint(hold_repository.calls[0])
 
 
 def test_effect_resolution_request_accepts_only_complete_typed_obligation_resolution() -> None:

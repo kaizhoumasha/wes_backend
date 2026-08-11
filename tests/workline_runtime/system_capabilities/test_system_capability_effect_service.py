@@ -1101,7 +1101,6 @@ async def test_handler_database_error_propagates_without_recording_outcome() -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_retired_binding_snapshot_is_rejected_before_claim() -> None:
     repository = _EffectRepository(ClaimResult.NEW)
     intent = _intent().model_copy(update={"binding_snapshot": {"binding_id": 99, "binding_version": 1}})
@@ -1114,15 +1113,25 @@ async def test_retired_binding_snapshot_is_rejected_before_claim() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("creator_authority", "authorization_policy"),
     [
-        ("creator_authority", "WORKLINE_PLUGIN"),
-        ("authorization_policy", "PLUGIN_DECLARED_CAPABILITY"),
+        ("WORKLINE_PLUGIN", "DOMAIN_CAPABILITY_ALLOWLIST"),
+        ("RUNTIME_DOMAIN_SERVICE", "PLUGIN_DECLARED_CAPABILITY"),
+        ("UNTRUSTED", "ALLOW_ANY"),
+        ("RUNTIME_DOMAIN_SERVICE", "ALLOW_ANY"),
     ],
 )
-async def test_creator_and_policy_must_match_runtime_owned_identity(field: str, value: str) -> None:
+async def test_creator_and_policy_must_match_runtime_owned_identity(
+    creator_authority: str,
+    authorization_policy: str,
+) -> None:
     repository = _EffectRepository(ClaimResult.NEW)
-    intent = _intent().model_copy(update={field: value})
+    intent = _intent().model_copy(
+        update={
+            "creator_authority": creator_authority,
+            "authorization_policy": authorization_policy,
+        }
+    )
 
     result = await _service(_definition(), repository).apply(_ctx(), intent)
 
@@ -1131,6 +1140,18 @@ async def test_creator_and_policy_must_match_runtime_owned_identity(field: str, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("missing_context", ["session", "work_item", "inbox"])
+async def test_runtime_owned_effect_requires_complete_execution_identity(missing_context: str) -> None:
+    repository = _EffectRepository(ClaimResult.NEW)
+    ctx = _ctx()
+    ctx[missing_context] = None
+
+    result = await _service(_definition(), repository).apply(ctx, _intent())
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert repository.calls == []
+
+
 @pytest.mark.asyncio
 async def test_runtime_cannot_switch_provider_identity_to_evade_payload_conflict() -> None:
     repository = _StatefulEffectRepository()

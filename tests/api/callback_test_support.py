@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.callback.models import CallbackEventIngressResponse
 from src.app.callback.v1 import callback as callback_module
+from src.app.device.services.device_context_service import DeviceContextResult
 
 JsonDict = dict[str, object]
 RequestFactory = Callable[..., Request]
@@ -75,22 +76,17 @@ def mock_fast_fail_check():
             def ctx_resolve_side_effect(db: object, device_code: str):
                 # 模拟成功返回：返回 (DeviceContextResult, None)
                 return (
-                    SimpleNamespace(
+                    DeviceContextResult(
                         device=SimpleNamespace(
                             id=1,
                             code=device_code,
                             work_line_id=1,
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             device_status="ONLINE",
                         ),
                         workline=SimpleNamespace(
                             id=1,
                             is_active=True,
-                            plugin_key="test_workline_plugin",
                         ),
-                        plugin_key="test_workline_plugin",
-                        contract_version="1.0",
                         work_line_id=1,
                         is_workline_bound=True,
                     ),

@@ -49,9 +49,6 @@ MIGRATED_SERVICE_IMPLS = {
         "src/app/runtime/orchestration/services/device_command_gateway.py"
     ),
     "src/app/workline/services/inbox_service.py": "src/app/runtime/orchestration/services/inbox/inbox_service.py",
-    "src/app/workline/services/ng_return_item_service.py": (
-        "src/app/runtime/capabilities/material_flow/ng_return_item_service.py"
-    ),
     "src/app/workline/services/object_transition_event_service.py": (
         "src/app/runtime/orchestration/services/inbox/object_transition_event_service.py"
     ),
@@ -73,9 +70,6 @@ MIGRATED_SERVICE_IMPLS = {
     ),
     "src/app/workline/services/runtime_reconciliation_service.py": (
         "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
-    ),
-    "src/app/workline/services/smt_inbound_handoff_service.py": (
-        "src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py"
     ),
     "src/app/workline/services/start_admission_service.py": (
         "src/app/runtime/capabilities/material_flow/start_admission_service.py"
@@ -141,12 +135,6 @@ MIGRATED_SERVICE_SYMBOL_PROVENANCE: dict[str, tuple[str, ...]] = {
         "_SupportsIsoformat",
         "_format_deadline",
         "_validate_internal_handoff_correlation",
-    ),
-    "src/app/workline/services/ng_return_item_service.py": (
-        "NgMaterialConflictError",
-        "NgReturnItemService",
-        "_as_dict",
-        "_as_non_empty_str",
     ),
     "src/app/workline/services/object_transition_event_service.py": (
         "ObjectTransitionEventService",
@@ -280,7 +268,6 @@ MIGRATED_SERVICE_SYMBOL_PROVENANCE: dict[str, tuple[str, ...]] = {
         "_payload_str",
         "_resolve_id",
     ),
-    "src/app/workline/services/smt_inbound_handoff_service.py": ("SmtInboundHandoffService",),
     "src/app/workline/services/start_admission_service.py": (
         "StartAdmissionResult",
         "StartAdmissionStatusFetchResult",
@@ -352,25 +339,9 @@ MIGRATED_SERVICE_SYMBOL_PROVENANCE: dict[str, tuple[str, ...]] = {
 # runtime/capabilities/material_flow/contracts。matrix 必须继续按 legacy entry_id 记账,
 # 否则文件删除后 audit trace 会误以为业务承载项已经消失。
 MIGRATED_DOMAIN_IMPLS = {
-    "src/app/workline/domain/contexts/rough_sorter.py": (
-        "src/app/runtime/capabilities/material_flow/contracts/rough_sorter_context.py"
-    ),
-    "src/app/workline/domain/contexts/smt_sorting_inbound.py": (
-        "src/app/runtime/capabilities/material_flow/contracts/sorting_inbound_context.py"
-    ),
-    "src/app/workline/domain/contracts/rough_sorter.py": "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py",
     "src/app/workline/domain/contracts/six_in_one.py": "src/app/runtime/capabilities/material_flow/contracts/six_in_one.py",
     "src/app/workline/domain/material_identity.py": "src/app/runtime/capabilities/material_flow/contracts/material_identity.py",
     "src/app/workline/domain/ng_reason.py": "src/app/runtime/capabilities/material_flow/contracts/ng_reason.py",
-    "src/app/workline/domain/services/smt_inbound_handoff_reason.py": (
-        "src/app/runtime/capabilities/material_flow/contracts/smt_inbound_handoff_reason.py"
-    ),
-    "src/app/workline/domain/services/smt_inbound_handoff_route_service.py": (
-        "src/app/runtime/capabilities/material_flow/smt_inbound_handoff_route_service.py"
-    ),
-    "src/app/workline/domain/services/smt_usage_policy.py": (
-        "src/app/runtime/capabilities/material_flow/contracts/smt_usage_policy.py"
-    ),
 }
 
 # runtime migration F-1/F-2:workline/repositories 运行态 repository 物理迁入
@@ -404,9 +375,6 @@ MIGRATED_REPOSITORIES = {
     "src/app/workline/repositories/session_repository.py": (
         "src/app/runtime/orchestration/repositories/session_repository.py"
     ),
-    "src/app/workline/repositories/smt_inbound_handoff_repository.py": (
-        "src/app/runtime/orchestration/repositories/smt_inbound_handoff_repository.py"
-    ),
 }
 MIGRATED_REPOSITORIES_TO_LEGACY = {impl: legacy for legacy, impl in MIGRATED_REPOSITORIES.items()}
 
@@ -431,9 +399,6 @@ ACTIVE_FOUNDATION_PATHS = frozenset(
 ACTIVE_PLATFORM_PREFIXES = ("tests/workline_runtime/system_capabilities/",)
 ACTIVE_PLATFORM_PATHS = frozenset(
     {
-        "src/app/workline/models/plugin_binding.py",
-        "src/app/workline/repositories/plugin_binding_repository.py",
-        "src/app/workline/services/plugin_binding_service.py",
         "tests/workline_runtime/test_workline_session_repository_versioning.py",
     }
 )
@@ -748,9 +713,13 @@ def resolve_migration_target(
         return "src/app/runtime/orchestration/ports/device_command.py", "DeviceCommandPort.dispatch"
     if "执行状态" in business_semantics:
         return _target_runtime_capability(entry_type, path, text)
-    if "[phase4]" in business_semantics:
-        return _target_phase4_capability(text)
-    return _target_runtime_path(entry_type, path), "RuntimeOrchestrationService.execute"
+    if path == "src/app/workline/domain/ng_reason.py":
+        target = (MIGRATED_DOMAIN_IMPLS[path], symbol)
+    elif "[phase4]" in business_semantics:
+        target = _target_phase4_capability(text)
+    else:
+        target = (_target_runtime_path(entry_type, path), "RuntimeOrchestrationService.execute")
+    return target
 
 
 def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, strategy: str) -> str:

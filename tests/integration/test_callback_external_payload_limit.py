@@ -110,7 +110,6 @@ async def test_result_payload_too_large_uses_real_writer_and_stays_413_when_call
     context = SimpleNamespace(
         device=SimpleNamespace(id=7, capabilities_json={"supports_result_callback": True}),
         workline=SimpleNamespace(is_active=True),
-        contract_version="1.0",
     )
 
     with (
@@ -161,7 +160,6 @@ async def test_result_unknown_command_correlation_returns_retryable_503_when_cal
     context = SimpleNamespace(
         device=SimpleNamespace(id=7, capabilities_json={"supports_result_callback": True}),
         workline=SimpleNamespace(is_active=True),
-        contract_version="1.0",
     )
 
     with (
@@ -212,12 +210,8 @@ async def test_event_payload_too_large_uses_real_writer_and_stays_413_when_callb
     context = SimpleNamespace(
         device=None,
         workline=SimpleNamespace(
-            plugin_key="test_workline_plugin",
-            contract_version="1.0",
             is_active=True,
         ),
-        plugin_key="test_workline_plugin",
-        contract_version="1.0",
         work_line_id=1,
         is_workline_bound=True,
     )

@@ -84,8 +84,6 @@ async def test_accept_device_event_with_all_optional_args(db_session) -> None:
 
     session = ExecutionSession(
         workline_id=11,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
         state="RUNNING",
     )
     db_session.add(session)
@@ -331,8 +329,6 @@ async def test_accept_internal_event_with_all_optional_args(db_session) -> None:
 
     session = ExecutionSession(
         workline_id=21,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
         state="RUNNING",
     )
     db_session.add(session)
@@ -424,13 +420,13 @@ async def test_accept_internal_event_orphan_trace_does_not_synthesize_correlatio
 
     result = await service.accept_internal_event(
         db_session,
-        event_type="SMT_SOURCE_PICK_REQUESTED",
-        payload_json={"source_item_id": 101},
-        trace_id="evt-smt-source-pick-101",
-        event_id="evt-smt-source-pick-101",
+        event_type="INTERNAL_HEARTBEAT",
+        payload_json={},
+        trace_id="evt-orphan-heartbeat-101",
+        event_id="evt-orphan-heartbeat-101",
     )
 
-    assert result.record.trace_id == "evt-smt-source-pick-101"
+    assert result.record.trace_id == "evt-orphan-heartbeat-101"
     assert result.record.correlation_id is None
 
 
@@ -672,8 +668,6 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
     service = RuntimeInboxService()
     session = ExecutionSession(
         workline_id=31,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
         state="RUNNING",
     )
     db_session.add(session)
@@ -865,8 +859,6 @@ async def test_accept_timer_timeout_keeps_legacy_and_execution_session_identitie
 
     execution_session = ExecutionSession(
         workline_id=41,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
         state="RUNNING",
     )
     db_session.add(execution_session)

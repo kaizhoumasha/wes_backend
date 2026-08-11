@@ -77,7 +77,7 @@ class WmsProviderOperationPathSettings(BaseModel):
 
 
 class WmsProviderProfileSettings(BaseModel):
-    """32 项 operation 的严格、不可变部署 profile。"""
+    """31 项 operation 的严格、不可变部署 profile。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

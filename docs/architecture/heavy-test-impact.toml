@@ -28,12 +28,12 @@ heavy_tests = []
 [[mapping]]
 source_glob = "docs/architecture/business-legacy-absence-ledger.csv"
 heavy_tests = []
-reviewed_content_sha256 = "dad99c9c6bcfa1bf21060cf3fb4f4526128b63dcae9a239bf71ac5f3cfc452c4"
+reviewed_content_sha256 = "313c2f0d0576f9c11db2345c0b3c0ca8f8a77b77121da697241d28276573ee6c"
 
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-reviewed_content_sha256 = "3544088de655d68aee5e084b2e8b960f9207c282498d07eaebc562cd6495e3a8"
+reviewed_content_sha256 = "6392144cc0eec5fe7aff4707ea5bb5155c10897b70ba26c6c5e253e44a802e46"
 
 [[mapping]]
 source_glob = "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py"
@@ -198,6 +198,16 @@ heavy_tests = [
     "tests/integration/test_celery_prefork_harness_cleanup.py",
 ]
 
+# Celery 静态任务与 Beat 装配由真实 PostgreSQL worker smoke 承接。
+[[mapping]]
+source_glob = "src/celery_app/{config.py,tasks/workline.py}"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+# WMS QUERY runtime 与共享执行 Port 由真实 prefork worker 启动与任务执行闭环承接。
+[[mapping]]
+source_glob = "src/app/wms_integration/{query_runtime.py,ports/query_execution.py}"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
 # FAST SQLite 共享 fixture 只影响显式消费 db_engine/db_session 的 HEAVY 测试。
 [[mapping]]
 source_glob = "tests/conftest.py"
@@ -227,6 +237,27 @@ source_glob = "src/app/callback/v1/callback.py"
 heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
 
 [[mapping]]
+source_glob = "src/app/callback/services/callback_ingress_service.py"
+heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
+
+# Callback 诊断构建仅收敛展示与退役身份来源，由邻近 FAST 合同承接；指纹变化后恢复 fail closed。
+[[mapping]]
+source_glob = "src/app/callback/contracts/builder.py"
+heavy_tests = []
+reviewed_content_sha256 = "2b0a1cf12737be9c03e339c35186e778be5c19111b3cba6c857b3ae5a7fad190"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/registry.py"
+heavy_tests = []
+reviewed_content_sha256 = "8af76c173e1e1327805f674edb9bae9ba5faefb8e0afc98baad9c51372f21f2d"
+
+# TraceContext 只规范化进程内诊断字段；本次删除退役来源由 FAST mirror 合同承接。
+[[mapping]]
+source_glob = "src/app/callback/contracts/trace_context.py"
+heavy_tests = []
+reviewed_content_sha256 = "20f13643de34553b4276db30817c27d2bc8dd848dc8e64de6172301c44307e0e"
+
+[[mapping]]
 source_glob = "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py"
 heavy_tests = [
     "tests/integration/test_callback_external_payload_limit.py",
@@ -250,6 +281,14 @@ heavy_tests = []
 # 设备基础模型只由共享命令关联与设备投影测试承接，不映射具体厂商或工作线业务场景。
 [[mapping]]
 source_glob = "src/app/device/models/command.py"
+heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
+
+[[mapping]]
+source_glob = "src/app/device/repositories/command_repository.py"
+heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
+
+[[mapping]]
+source_glob = "src/app/device/services/device_command_service.py"
 heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
 
 [[mapping]]
@@ -288,6 +327,39 @@ heavy_tests = ["tests/integration/test_external_http_transport_attempt_postgresq
 source_glob = "src/app/runtime/orchestration/models/timeline.py"
 heavy_tests = []
 reviewed_content_sha256 = "c906b248c47842d75440e611379b9e3220ddab25e7db260ee6deb866b022af60"
+
+# Trace session 响应仅删除已退役的 plugin_key 字段，由邻近 FAST 构造测试承接；指纹变化后恢复 fail closed。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/runtime.py"
+heavy_tests = []
+reviewed_content_sha256 = "3f427ae605c4b2e73da50086a0dd7158b2b181bab2a851f8c885b660a7fdca0a"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/trace/trace_response_builder.py"
+heavy_tests = []
+reviewed_content_sha256 = "164b0ac57cc0d9e20b9d1fb1eef9b45b95db86b0b439be350859119bc44df692"
+
+# Runtime 诊断镜像与 snapshot 输出只收敛退役字段，由 FAST 合同承接；指纹变化后恢复 fail closed。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/diagnostics/builder.py"
+heavy_tests = []
+reviewed_content_sha256 = "b7a6226114deea2d8a28bc8ac73b48a9d8b8456fb2e8250f88ba1116f1480ca2"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/diagnostics/registry.py"
+heavy_tests = []
+reviewed_content_sha256 = "fb970bf932dd1aa83a1598c53826963b0d04bc59c172b90742c63c102b3be277"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/runtime_snapshot_assembler.py"
+heavy_tests = []
+reviewed_content_sha256 = "ad8acec9e60294a1c91a29f002aa399033349bfd8125ac365c286375732efabc"
+
+# 删除无消费者的插件事实读取方法不改变存活 Repository 行为；指纹变化后恢复 fail closed。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/material_unit_repository.py"
+heavy_tests = []
+reviewed_content_sha256 = "b7e49e4b1318deb3b7c9f0b2332eaea0caeafe5755823f7f669b147a0589550e"
 
 [[mapping]]
 source_glob = "src/app/sys/dispatch_concurrency.py"
@@ -534,12 +606,33 @@ source_glob = "src/app/device/services/{device_context_service.py,device_service
 heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 
 [[mapping]]
-source_glob = "src/app/resource/services/**"
+source_glob = "src/app/resource/services/{__init__.py,smt_bin_cell_allocation_policy.py,smt_rack_bin_scheduling_service.py}"
+heavy_tests = []
+
+# 资源投影仅移除退役插件审计来源；现有 FAST 投影合同承接，当前无已验收的资源数据库 HEAVY。
+[[mapping]]
+source_glob = "src/app/resource/services/projection_service.py"
+heavy_tests = []
+reviewed_content_sha256 = "e1500d23be29c32a57916715644ef33a2a406f7bc57992c1997aad3e5cd8705a"
+
+[[mapping]]
+source_glob = "src/app/resource/services/relation_service.py"
+heavy_tests = []
+reviewed_content_sha256 = "b77be39f140bed037d8edce18703ca97b337e5a35f0ce6d1de508808e1aa92d5"
+
+# Phase 5 只将已删除的业务能力标记为 NONE，不覆盖同目录存活的基础能力。
+[[mapping]]
+source_glob = "src/app/runtime/capabilities/material_flow/{__init__.py,ng_return_item_service.py,rough_sorter_q19_admission_service.py,smt_inbound_handoff_route_service.py,smt_ng_wms_reconciliation_policy.py,smt_ng_wms_reconciliation_preview_service.py,smt_ng_wms_reconciliation_runtime_service.py,sorter_inbound_preview_service.py,sorter_inbound_runtime_service.py}"
 heavy_tests = []
 
 [[mapping]]
-source_glob = "src/app/runtime/capabilities/material_flow/**"
+source_glob = "src/app/runtime/capabilities/material_flow/contracts/{__init__.py,rough_sorter.py,rough_sorter_context.py,rough_sorter_inventory_admission.py,smt_inbound_handoff_reason.py,smt_sorting_inbound.py,smt_usage_policy.py,sorting_inbound_context.py}"
 heavy_tests = []
+
+# 存活的 START 准入由真实 PostgreSQL、HTTP status wire 与 READY 写回闭环承接。
+[[mapping]]
+source_glob = "src/app/runtime/capabilities/material_flow/start_admission_service.py"
+heavy_tests = ["tests/integration/test_start_admission_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/material_flow/smt_source_pick_*/**"
@@ -549,12 +642,23 @@ heavy_tests = []
 source_glob = "src/app/runtime/normalization/normalizers/input_normalizer.py"
 heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 
+# 通用配置快照只做 Pydantic 规范化，不接触数据库或外部系统。
+[[mapping]]
+source_glob = "src/app/runtime/normalization/contracts/runtime_config.py"
+heavy_tests = []
+reviewed_content_sha256 = "f52738ed18ab76c62de7f566ec0690d213e9faa08be90d2d2055b1440013f618"
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/runtime_inbox/**"
 heavy_tests = [
     "tests/integration/test_runtime_inbox_processing_postgresql.py",
     "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py",
 ]
+
+# TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
+heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/{__init__.py,smt_inbound_handoff.py}"
@@ -580,7 +684,7 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}"
+source_glob = "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,contracts.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}"
 heavy_tests = [
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
     "tests/mock/test_wms_northbound_contract.py",
@@ -618,8 +722,20 @@ source_glob = "src/app/workline/services/{safety_service.py,workline_service.py,
 heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 
 [[mapping]]
+source_glob = "src/app/workline/services/diagnostic_service.py"
+heavy_tests = [
+    "tests/integration/test_callback_external_payload_limit.py",
+    "tests/integration/test_runtime_inbox_processing_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "src/app/workline/v1/workline.py"
 heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/workline/trace_context.py"
+heavy_tests = []
+reviewed_content_sha256 = "80117d33a82cc7995bd9f9489d260464e1c5cd4be502713fc9d6b207637383f4"
 
 [[mapping]]
 source_glob = "tests/support/wms_conformance_coverage.py"
@@ -627,6 +743,16 @@ heavy_tests = [
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
     "tests/mock/test_wms_northbound_contract.py",
 ]
+
+# 生产初始化仅收敛退役业务 seed 与菜单路由，由部署 FAST 合同验证；内容变化后恢复 fail closed。
+[[mapping]]
+source_glob = "scripts/data/init_production_base_data.sql"
+heavy_tests = []
+reviewed_content_sha256 = "8094c5f2364db50b1ccc16b27129c9e08a849d8d4b36f1b32cf8d9aa2f7a61d4"
+
+[[mapping]]
+source_glob = "scripts/data/reset_runtime_data.py"
+heavy_tests = ["tests/integration/test_reset_runtime_data_postgresql.py"]
 
 # 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。

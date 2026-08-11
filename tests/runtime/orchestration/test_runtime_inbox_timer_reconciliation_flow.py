@@ -42,8 +42,6 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         id=1001,
         session_code="session-runtime-timer-001",
         workline_id=45,
-        plugin_key="test_workline_plugin",
-        contract_version="v1",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
@@ -51,16 +49,12 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         id=9001,
         session_code="session-runtime-timer-wrong-id-sentinel",
         workline_id=45,
-        plugin_key="test_workline_plugin",
-        contract_version="v1",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
     execution_session = ExecutionSession(
         id=9001,
         workline_id=45,
-        plugin_key="test-plugin",
-        manifest_version="test-manifest-v1",
         state="RUNNING",
     )
     db_session.add_all([runtime_session, wrong_id_sentinel, execution_session])

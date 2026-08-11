@@ -143,7 +143,7 @@ def _digest(payload: object) -> str:
 
 
 def conformance_endpoint_digest(compiled_profile: CompiledWmsProviderProfile) -> str:
-    """绑定 32 项编译 endpoint，而不是只绑定 server origin。"""
+    """绑定 31 项编译 endpoint，而不是只绑定 server origin。"""
 
     return _digest(
         tuple((identity, endpoint.endpoint_digest) for identity, endpoint in compiled_profile.operations.items())

@@ -240,8 +240,6 @@ class ResourceProjectionService:
         trace_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
         released_rack_codes: Sequence[str] | None = None,
     ) -> ResourceProjectionResult:
         """记录货架到达工作线停靠位事实，并更新 active placement。"""
@@ -312,8 +310,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
                 evidence={"validation_error": str(exc)},
             )
             await self._record_resource_transition(
@@ -482,8 +478,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=resolved_workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
                 evidence={"capacity": capacity, "active_count": active_count},
             )
             await self._record_resource_transition(
@@ -595,8 +589,6 @@ class ResourceProjectionService:
         trace_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> ResourceProjectionResult:
         """记录货架槽位挂载料箱事实，并创建 active RackBinMount。"""
 
@@ -659,8 +651,6 @@ class ResourceProjectionService:
                     trace_id=trace_id,
                     session_id=workline_session_id,
                     workline_id=workline_id,
-                    plugin_key=plugin_key,
-                    contract_version=contract_version,
                 )
                 await self._record_resource_transition(
                     db,
@@ -806,8 +796,6 @@ class ResourceProjectionService:
         trace_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> ResourceProjectionResult:
         """记录 OUTPUT_ARM 成功后的物料实际占格事实。"""
 
@@ -899,8 +887,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
             )
             await self._record_resource_transition(
                 db,
@@ -1046,8 +1032,6 @@ class ResourceProjectionService:
         trace_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
         reel_thickness: str | None = None,
     ) -> ResourceProjectionResult:
         """记录物料从源料格出账事实，并关闭 top active mount。"""
@@ -1129,8 +1113,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
                 evidence=conflict.get("evidence"),
             )
             await self._record_resource_transition(
@@ -1314,8 +1296,6 @@ class ResourceProjectionService:
         source_version: str | None = None,
         trace_id: str | None = None,
         workline_session_id: int | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> ResourceProjectionResult:
         """记录料箱到达非货架位置事实，并创建 active BinPlacement。"""
 
@@ -1375,8 +1355,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
             )
             await self._record_resource_transition(
                 db,
@@ -1429,8 +1407,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
             )
             await self._record_resource_transition(
                 db,
@@ -1496,8 +1472,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
                 evidence={"integrity_error": str(getattr(exc, "orig", exc))},
             )
             await self._record_resource_transition(
@@ -1572,8 +1546,6 @@ class ResourceProjectionService:
         trace_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> ResourceProjectionResult:
         """记录料箱离开非货架位置事实，并关闭 active BinPlacement。"""
 
@@ -1663,8 +1635,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
             )
             await record_departure_transition(
                 from_state=None,
@@ -1696,8 +1666,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
             )
             await record_departure_transition(
                 from_state=enum_str(getattr(active_placement, "placement_status", None)),
@@ -1730,8 +1698,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 session_id=workline_session_id,
                 workline_id=workline_id,
-                plugin_key=plugin_key,
-                contract_version=contract_version,
                 evidence={"incoming_source_version": source_version},
             )
             await record_departure_transition(
@@ -1821,8 +1787,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
-                plugin_key=getattr(workline, "plugin_key", None),
-                contract_version=getattr(workline, "contract_version", None),
             )
 
         if fact_type == ResourceStateEventType.BIN_ARRIVED.value:
@@ -1842,8 +1806,6 @@ class ResourceProjectionService:
                 source_version=payload_json.get("source_version"),
                 trace_id=trace_id,
                 workline_session_id=getattr(session, "id", None),
-                plugin_key=getattr(workline, "plugin_key", None),
-                contract_version=getattr(workline, "contract_version", None),
             )
 
         if fact_type == ResourceStateEventType.BIN_DEPARTED.value:
@@ -1862,8 +1824,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
-                plugin_key=getattr(workline, "plugin_key", None),
-                contract_version=getattr(workline, "contract_version", None),
             )
 
         if fact_type == ResourceStateEventType.BIN_MOUNTED.value:
@@ -1879,8 +1839,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
-                plugin_key=getattr(workline, "plugin_key", None),
-                contract_version=getattr(workline, "contract_version", None),
             )
 
         if fact_type == ResourceStateEventType.MATERIAL_MOUNTED.value:
@@ -1909,8 +1867,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
-                plugin_key=getattr(workline, "plugin_key", None),
-                contract_version=getattr(workline, "contract_version", None),
             )
 
         if fact_type == ResourceStateEventType.MATERIAL_UNMOUNTED.value:
@@ -1932,8 +1888,6 @@ class ResourceProjectionService:
                 trace_id=trace_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
-                plugin_key=getattr(workline, "plugin_key", None),
-                contract_version=getattr(workline, "contract_version", None),
             )
 
         raise ValueError(f"unsupported resource fact type: {fact_type}")
@@ -2280,8 +2234,6 @@ class ResourceProjectionService:
         trace_id: str | None,
         session_id: int | None,
         workline_id: int | None,
-        plugin_key: str | None,
-        contract_version: str | None,
         evidence: dict[str, Any] | None = None,
     ) -> Any | None:
         if workline_id is None:
@@ -2311,8 +2263,6 @@ class ResourceProjectionService:
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_reason=reason_code,
             source_event_id=source_event_id,
             evidence=hold_evidence,
@@ -2330,8 +2280,6 @@ class ResourceProjectionService:
         trace_id: str | None,
         session_id: int | None,
         workline_id: int | None,
-        plugin_key: str | None,
-        contract_version: str | None,
     ) -> Any | None:
         if workline_id is None:
             return None
@@ -2340,8 +2288,6 @@ class ResourceProjectionService:
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_reason=reason_code,
             source_event_id=source_event_id,
             evidence={
@@ -2366,8 +2312,6 @@ class ResourceProjectionService:
         trace_id: str | None,
         session_id: int | None,
         workline_id: int | None,
-        plugin_key: str | None,
-        contract_version: str | None,
         evidence: dict[str, Any] | None = None,
     ) -> Any | None:
         if workline_id is None:
@@ -2386,8 +2330,6 @@ class ResourceProjectionService:
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_reason=reason_code,
             source_event_id=source_event_id,
             evidence=hold_evidence,
@@ -2406,8 +2348,6 @@ class ResourceProjectionService:
         trace_id: str | None,
         session_id: int | None,
         workline_id: int | None,
-        plugin_key: str | None,
-        contract_version: str | None,
     ) -> Any | None:
         if workline_id is None:
             return None
@@ -2430,8 +2370,6 @@ class ResourceProjectionService:
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_reason=conflict["reason_code"],
             source_event_id=source_event_id,
             evidence=evidence,
@@ -2455,8 +2393,6 @@ class ResourceProjectionService:
         trace_id: str | None,
         session_id: int | None,
         workline_id: int | None,
-        plugin_key: str | None,
-        contract_version: str | None,
         evidence: dict[str, Any] | None = None,
     ) -> Any | None:
         if workline_id is None:
@@ -2501,8 +2437,6 @@ class ResourceProjectionService:
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_reason=reason_code,
             source_event_id=source_event_id,
             evidence=hold_evidence,
@@ -2521,8 +2455,6 @@ class ResourceProjectionService:
         trace_id: str | None,
         session_id: int | None,
         workline_id: int | None,
-        plugin_key: str | None,
-        contract_version: str | None,
     ) -> Any | None:
         if workline_id is None:
             return None
@@ -2531,8 +2463,6 @@ class ResourceProjectionService:
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_reason="RACK_BIN_MOUNT_CONFLICT",
             source_event_id=source_event_id,
             evidence={

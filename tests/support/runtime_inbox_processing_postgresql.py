@@ -182,6 +182,16 @@ async def assert_processed_terminal(db: AsyncSession, *, inbox_id: int) -> None:
     assert inbox.lease_until is None
 
 
+async def assert_dead_letter_terminal(db: AsyncSession, *, inbox_id: int, error_code: str) -> None:
+    db.expire_all()
+    inbox = await db.get(RuntimeInbox, inbox_id)
+    assert inbox is not None
+    assert inbox.status == "DEAD_LETTER"
+    assert inbox.last_error_code == error_code
+    assert inbox.processor_token is None
+    assert inbox.lease_until is None
+
+
 async def with_temporary_runtime_database(
     scenario: Callable[[async_sessionmaker[AsyncSession], RecordingTaskQueueGateway], Awaitable[None]],
 ) -> None:

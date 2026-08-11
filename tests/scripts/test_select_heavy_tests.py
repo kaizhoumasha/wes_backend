@@ -46,6 +46,7 @@ RUNTIME_ECS_STATUS_BENCHMARK_HEAVY_TEST = "tests/load/test_ecs_status_command_be
 RUNTIME_INTEGRATION_LAB_HEAVY_TEST = "tests/resilience/test_runtime_integration_lab.py"
 RUNTIME_PLANE_SNAPSHOT_BENCHMARK_HEAVY_TEST = "tests/load/test_plane_snapshot_benchmark.py"
 RUNTIME_SCENARIO_REPLAY_HEAVY_TEST = "tests/resilience/test_runtime_scenario_replay.py"
+START_ADMISSION_POSTGRESQL_HEAVY_TEST = "tests/integration/test_start_admission_postgresql.py"
 SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST = "tests/integration/test_system_outbox_canonical_payload_postgresql.py"
 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST = "tests/integration/test_system_outbox_dispatch_concurrency.py"
 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST = (
@@ -785,8 +786,23 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
             ),
         ),
+        (
+            "src/celery_app/{config.py,tasks/workline.py}",
+            (CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,),
+        ),
+        (
+            "src/app/wms_integration/{query_runtime.py,ports/query_execution.py}",
+            (CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,),
+        ),
         ("tests/conftest.py", SHARED_FAST_DB_FIXTURE_HEAVY_TESTS),
         ("src/app/callback/v1/callback.py", (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,)),
+        (
+            "src/app/callback/services/callback_ingress_service.py",
+            (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,),
+        ),
+        ("src/app/callback/contracts/builder.py", ()),
+        ("src/app/callback/contracts/registry.py", ()),
+        ("src/app/callback/contracts/trace_context.py", ()),
         (
             "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
             (
@@ -805,6 +821,14 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         ("src/app/contracts/__init__.py", ()),
         ("src/app/device/models/command.py", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
+        (
+            "src/app/device/repositories/command_repository.py",
+            (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,),
+        ),
+        (
+            "src/app/device/services/device_command_service.py",
+            (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,),
+        ),
         ("src/app/device/models/device.py", (DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST,)),
         ("src/app/runtime/orchestration/__init__.py", ()),
         ("src/app/runtime/orchestration/execution_correlation.py", ()),
@@ -812,6 +836,12 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/runtime/orchestration/enums.py", ()),
         ("src/app/runtime/orchestration/models/session.py", (RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST,)),
         ("src/app/runtime/orchestration/models/timeline.py", ()),
+        ("src/app/runtime/orchestration/models/runtime.py", ()),
+        ("src/app/runtime/orchestration/services/trace/trace_response_builder.py", ()),
+        ("src/app/runtime/orchestration/diagnostics/builder.py", ()),
+        ("src/app/runtime/orchestration/diagnostics/registry.py", ()),
+        ("src/app/runtime/orchestration/services/runtime_snapshot_assembler.py", ()),
+        ("src/app/runtime/orchestration/repositories/material_unit_repository.py", ()),
         (
             "src/app/sys/dispatch_concurrency.py",
             (
@@ -992,13 +1022,34 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/app/device/services/{device_context_service.py,device_service.py}",
             (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,),
         ),
-        ("src/app/resource/services/**", ()),
-        ("src/app/runtime/capabilities/material_flow/**", ()),
+        (
+            "src/app/resource/services/{__init__.py,smt_bin_cell_allocation_policy.py,smt_rack_bin_scheduling_service.py}",
+            (),
+        ),
+        ("src/app/resource/services/projection_service.py", ()),
+        ("src/app/resource/services/relation_service.py", ()),
+        (
+            "src/app/runtime/capabilities/material_flow/{__init__.py,ng_return_item_service.py,rough_sorter_q19_admission_service.py,smt_inbound_handoff_route_service.py,smt_ng_wms_reconciliation_policy.py,smt_ng_wms_reconciliation_preview_service.py,smt_ng_wms_reconciliation_runtime_service.py,sorter_inbound_preview_service.py,sorter_inbound_runtime_service.py}",
+            (),
+        ),
+        (
+            "src/app/runtime/capabilities/material_flow/contracts/{__init__.py,rough_sorter.py,rough_sorter_context.py,rough_sorter_inventory_admission.py,smt_inbound_handoff_reason.py,smt_sorting_inbound.py,smt_usage_policy.py,sorting_inbound_context.py}",
+            (),
+        ),
+        (
+            "src/app/runtime/capabilities/material_flow/start_admission_service.py",
+            (START_ADMISSION_POSTGRESQL_HEAVY_TEST,),
+        ),
         ("src/app/runtime/system_capabilities/material_flow/smt_source_pick_*/**", ()),
         ("src/app/runtime/normalization/normalizers/input_normalizer.py", (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,)),
+        ("src/app/runtime/normalization/contracts/runtime_config.py", ()),
         (
             "src/app/runtime/orchestration/services/runtime_inbox/**",
             (RUNTIME_INBOX_PROCESSING_HEAVY_TEST, "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"),
+        ),
+        (
+            "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py",
+            (),
         ),
         (
             "src/app/runtime/orchestration/models/{__init__.py,smt_inbound_handoff.py}",
@@ -1021,7 +1072,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             ),
         ),
         (
-            "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}",
+            "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,contracts.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}",
             (WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
         ),
         (
@@ -1049,11 +1100,18 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/app/workline/services/{safety_service.py,workline_service.py,write_back_service.py}",
             (RUNTIME_INBOX_PROCESSING_HEAVY_TEST,),
         ),
+        (
+            "src/app/workline/services/diagnostic_service.py",
+            (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST, RUNTIME_INBOX_PROCESSING_HEAVY_TEST),
+        ),
         ("src/app/workline/v1/workline.py", ()),
+        ("src/app/workline/trace_context.py", ()),
         (
             "tests/support/wms_conformance_coverage.py",
             (WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
         ),
+        ("scripts/data/init_production_base_data.sql", ()),
+        ("scripts/data/reset_runtime_data.py", ("tests/integration/test_reset_runtime_data_postgresql.py",)),
     )
 
 
@@ -1096,6 +1154,15 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
             ],
         ),
+        (
+            "src/app/runtime/capabilities/material_flow/start_admission_service.py",
+            [START_ADMISSION_POSTGRESQL_HEAVY_TEST],
+        ),
+        ("src/app/callback/contracts/trace_context.py", []),
+        ("src/app/resource/services/projection_service.py", []),
+        ("src/app/resource/services/relation_service.py", []),
+        ("src/app/runtime/normalization/contracts/runtime_config.py", []),
+        ("src/app/workline/trace_context.py", []),
     ],
 )
 def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expected: list[str]) -> None:
@@ -1114,6 +1181,22 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
                 CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
                 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
             ],
+        ),
+        (
+            "src/celery_app/config.py",
+            [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST],
+        ),
+        (
+            "src/celery_app/tasks/workline.py",
+            [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/query_runtime.py",
+            [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/ports/query_execution.py",
+            [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
@@ -1291,9 +1374,7 @@ def test_repository_mapping_selects_wms_heavy_asset_consumers(changed_path: str,
 @pytest.mark.parametrize(
     "changed_path",
     [
-        "src/app/callback/services/callback_ingress_service.py",
         "src/app/callback/services/callback_orchestration_service.py",
-        "src/celery_app/config.py",
         "src/app/runtime/orchestration/services/device_dispatch_policy.py",
         "src/app/runtime/orchestration/services/conveyor_queue_membership_writer_service.py",
         "src/app/runtime/orchestration/services/conveyor_queue_writer.py",
@@ -1322,7 +1403,6 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/app/runtime/system_capabilities/wms/provider_catalog.py",
         "src/app/wms_integration/provider_readiness.py",
         "src/app/wms_integration/effect_lane_runtime.py",
-        "src/app/wms_integration/query_runtime.py",
         "src/core/exceptions.py",
         "src/core/conf.py",
         "src/core/mixins/__init__.py",
@@ -1382,9 +1462,17 @@ def test_repository_mapping_selects_audited_runtime_owners(
     ("changed_path", "expected"),
     [
         ("src/app/callback/v1/callback.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
+        (
+            "src/app/callback/services/callback_ingress_service.py",
+            [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST],
+        ),
         ("src/app/contracts/__init__.py", []),
         ("src/app/device/models/command.py", [COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST]),
         ("src/app/device/models/device.py", [DEVICE_RUNTIME_PROJECTION_WRITER_HEAVY_TEST]),
+        (
+            "src/app/device/services/device_command_service.py",
+            [COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST],
+        ),
         ("src/app/runtime/orchestration/models/session.py", [RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST]),
     ],
 )

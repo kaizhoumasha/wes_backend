@@ -1,10 +1,10 @@
-"""WMS 32 项 operation 的唯一静态注册表。"""
+"""WMS 31 项 operation 的唯一静态注册表。"""
 
 from __future__ import annotations
 
 from types import MappingProxyType
 
-from src.app.wms_integration.ports.document_operations import ADMISSION_OPERATION, STANDARD_OPERATIONS
+from src.app.wms_integration.ports.document_operations import OPERATIONS as DOCUMENT_OPERATIONS
 from src.app.wms_integration.ports.fulfillment_operations import OPERATIONS as FULFILLMENT_OPERATIONS
 from src.app.wms_integration.ports.inventory_operations import (
     EFFECT_OPERATIONS as INVENTORY_EFFECT_OPERATIONS,
@@ -17,10 +17,9 @@ from src.app.wms_integration.ports.reconciliation_operations import OPERATIONS a
 
 QUERY_OPERATIONS = (
     *MASTER_DATA_OPERATIONS,
-    *STANDARD_OPERATIONS,
+    *DOCUMENT_OPERATIONS,
     *INVENTORY_QUERY_OPERATIONS,
     *RECONCILIATION_OPERATIONS,
-    ADMISSION_OPERATION,
 )
 EFFECT_OPERATIONS = (*INVENTORY_EFFECT_OPERATIONS, *FULFILLMENT_OPERATIONS)
 WMS_OPERATIONS = (*QUERY_OPERATIONS, *EFFECT_OPERATIONS)
@@ -29,8 +28,8 @@ ASYNC_EFFECT_OPERATIONS = tuple(operation for operation in EFFECT_OPERATIONS if 
 ASYNC_EFFECT_OPERATION_IDENTITIES = frozenset(operation.identity for operation in ASYNC_EFFECT_OPERATIONS)
 
 _identities = tuple(operation.identity for operation in WMS_OPERATIONS)
-if len(_identities) != 32 or len(_identities) != len(set(_identities)):
-    raise RuntimeError("WMS operation registry must contain exactly 32 unique identities")
+if len(_identities) != 31 or len(_identities) != len(set(_identities)):
+    raise RuntimeError("WMS operation registry must contain exactly 31 unique identities")
 if len(ASYNC_EFFECT_OPERATIONS) != 4:
     raise RuntimeError("WMS operation registry must contain exactly 4 async EFFECT operations")
 

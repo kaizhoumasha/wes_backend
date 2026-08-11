@@ -1,12 +1,10 @@
+from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.workline.models import (
-    WorkLineActivationRequest,
-    WorkLineStateTransitionRequest,
-)
+from src.app.workline.models import WorkLineStateTransitionRequest
 from src.app.workline.v1 import workline as workline_api
 from src.core.response import ResourceErrorCode
 
@@ -115,9 +113,8 @@ async def test_activate_route_converts_missing_workline_to_not_found(monkeypatch
     response = await workline_api.activate_workline(
         db,
         cache,
-        current_user_id=7,
         id=404,
-        payload=WorkLineActivationRequest(version=0),
+        payload=WorkLineStateTransitionRequest(version=0),
     )
 
     assert response["code"] == ResourceErrorCode.NOT_FOUND.code
@@ -131,18 +128,21 @@ async def test_activate_route_converts_missing_workline_to_not_found(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_activate_route_uses_generic_activation_contract(monkeypatch) -> None:
+async def test_activate_route_uses_shared_state_transition_contract(monkeypatch) -> None:
     service = SimpleNamespace(activate=AsyncMock(side_effect=ValueError("WorkLine 不存在: 404")))
     monkeypatch.setattr(workline_api, "workline_service", service)
     db = object()
     cache = object()
 
+    parameters = signature(workline_api.activate_workline).parameters
+    assert parameters["payload"].annotation is WorkLineStateTransitionRequest
+    assert "current_user_id" not in parameters
+
     await workline_api.activate_workline(
         db,
         cache,
-        current_user_id=99,
         id=404,
-        payload=WorkLineActivationRequest(version=7, reason="  change-window-42  "),
+        payload=WorkLineStateTransitionRequest(version=7),
     )
 
     service.activate.assert_awaited_once_with(

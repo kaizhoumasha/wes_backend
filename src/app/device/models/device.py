@@ -188,10 +188,10 @@ class Device(
     - 诊断配置: diagnostic_profile
 
     架构设计参考:
-    - device_role: 业务角色（SCANNER, ROBOT_ARM, XRAY），用于插件按角色选设备
+    - device_role: 通用设备角色（SCANNER, ROBOT_ARM, XRAY），供运行时路由与诊断使用
     - role_index: 同角色多设备序号（如 ROBOT_ARM_1, ROBOT_ARM_2）
-    - upstream_device_id: 物理路径辅助信息；插件配置事实以角色和能力为准
-    - plugin_key/contract_version 的唯一来源是 WorkLine，而非 Device
+    - upstream_device_id: 作业线内的物理路径辅助信息
+    - 角色与拓扑属于设备基础配置，不由业务插件定义或持有
 
     注意:
     - WES 回调端点固定在路由中: /api/v1/callback/result, /api/v1/callback/event

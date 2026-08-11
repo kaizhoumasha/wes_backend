@@ -1,5 +1,6 @@
 """Callback event API 测试。"""
 
+from dataclasses import fields
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -7,6 +8,7 @@ import pytest
 from fastapi import HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.device.services.device_context_service import DeviceContextResult
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxPayloadTooLarge
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusSnapshot,
@@ -21,6 +23,12 @@ from tests.api.callback_test_support import (
     callback_ingress_module,
     create_event_payload,
 )
+
+
+def test_device_context_result_excludes_retired_plugin_identity() -> None:
+    field_names = {field.name for field in fields(DeviceContextResult)}
+
+    assert {"plugin_key", "contract_version"}.isdisjoint(field_names)
 
 
 def _runtime_snapshot(runtime_status: str | None = "READY") -> WorkLineRuntimeStatusSnapshot:
@@ -65,12 +73,8 @@ class TestCallbackEventAPI:
         context = SimpleNamespace(
             device=None,
             workline=SimpleNamespace(
-                plugin_key="test_workline_plugin",
-                contract_version="1.0",
                 is_active=True,
             ),
-            plugin_key="test_workline_plugin",
-            contract_version="1.0",
             work_line_id=1,
             is_workline_bound=True,
         )
@@ -121,8 +125,6 @@ class TestCallbackEventAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="test_workline_plugin",
-                        contract_version="1.0",
                     )
                 ),
             ),
@@ -133,12 +135,8 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -212,12 +210,8 @@ class TestCallbackEventAPI:
             device=SimpleNamespace(capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]}),
             workline=SimpleNamespace(
                 id=1,
-                plugin_key="test_workline_plugin",
-                contract_version="1.0",
                 is_active=True,
             ),
-            plugin_key="test_workline_plugin",
-            contract_version="1.0",
             work_line_id=1,
             is_workline_bound=True,
         )
@@ -445,8 +439,6 @@ class TestCallbackEventAPI:
                 new=AsyncMock(
                     return_value=SimpleNamespace(
                         work_line_id=1,
-                        plugin_key="test_workline_plugin",  # 使用有效的插件
-                        contract_version="1.0",
                     )
                 ),
             ),
@@ -457,12 +449,8 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=None,
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -518,13 +506,9 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]}),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                                 runtime_config_json={"event_type_mapping": {"SCAN_FINISH": "SCAN_COMPLETED"}},
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -584,13 +568,9 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]}),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                                 runtime_config_json={"event_type_mapping": {"UNDECLARED_SCAN_ALIAS": "SCAN_COMPLETED"}},
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -649,14 +629,10 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]}),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                                 runtime_status="STOPPED",
                                 runtime_config_json={"event_type_mapping": {"SCAN_FINISH": reserved_target}},
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -714,12 +690,8 @@ class TestCallbackEventAPI:
                         SimpleNamespace(
                             device=SimpleNamespace(capabilities_json=[]),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -784,13 +756,9 @@ class TestCallbackEventAPI:
                                 capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                                 runtime_status=runtime_status,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -851,14 +819,10 @@ class TestCallbackEventAPI:
                                 capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                                 runtime_status="ESTOPPED",
                                 runtime_config_json={"event_type_mapping": {"ESTOP_PRESSED": "SCAN_COMPLETED"}},
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -929,16 +893,12 @@ class TestCallbackEventAPI:
                                 capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                                 runtime_status="STOPPED",
                                 runtime_config_json={
                                     "event_type_mapping": {"WORKLINE_START_REQUESTED": "SCAN_COMPLETED"}
                                 },
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -1021,13 +981,9 @@ class TestCallbackEventAPI:
                                 capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                                 runtime_status="STOPPED",
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -1091,13 +1047,9 @@ class TestCallbackEventAPI:
                                 capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                                 runtime_status="STOPPED",
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -1165,12 +1117,8 @@ class TestCallbackEventAPI:
                                 capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -1228,12 +1176,8 @@ class TestCallbackEventAPI:
                                 capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
                             ),
                             workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin",
-                                contract_version="1.0",
                                 is_active=True,
                             ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
                             work_line_id=1,
                             is_workline_bound=True,
                         ),

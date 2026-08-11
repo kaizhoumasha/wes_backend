@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, get_args, get_origin
@@ -24,6 +25,7 @@ from src.app.resource.models import (
     ResourceStateEventType,
 )
 from src.app.resource.services.projection_service import ResourceProjectionService
+from src.app.resource.services.relation_service import ResourceRelationService
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 
 RESOURCE_SESSION_BASES = (
@@ -59,6 +61,24 @@ def test_resource_session_contract_uses_int_workline_session_id_only() -> None:
         assert "session_id" not in model.model_fields
         field = model.model_fields["workline_session_id"]
         assert _field_allows_int_none(field.annotation)
+
+
+def test_resource_projection_write_surfaces_do_not_accept_retired_plugin_identity() -> None:
+    methods = (
+        ResourceRelationService.record_rack_arrived,
+        ResourceRelationService.record_empty_rack_verified,
+        ResourceProjectionService.record_rack_arrived_at_workline_position,
+        ResourceProjectionService.record_bin_mounted_to_rack,
+        ResourceProjectionService.record_material_mounted_to_bin_cell,
+        ResourceProjectionService.record_material_unmounted_from_bin_cell,
+        ResourceProjectionService.record_bin_arrived_at_position,
+        ResourceProjectionService.record_bin_departed_from_position,
+    )
+
+    for method in methods:
+        parameters = signature(method).parameters
+        assert "plugin_key" not in parameters
+        assert "contract_version" not in parameters
 
 
 def test_resource_projection_models_have_required_foreign_keys() -> None:
@@ -134,6 +154,8 @@ async def test_record_resource_fact_passes_only_workline_session_id_to_new_write
 
     assert "session_id" not in captured
     assert captured["workline_session_id"] == 2001
+    assert "plugin_key" not in captured
+    assert "contract_version" not in captured
 
 
 @dataclass(slots=True)

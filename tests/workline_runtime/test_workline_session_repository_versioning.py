@@ -34,8 +34,6 @@ async def _create_session(db: AsyncSession, *, code: str) -> WorklineSession:
     session = WorklineSession(
         session_code=code,
         workline_id=8,
-        plugin_key="plugin.version-test",
-        contract_version="v1",
     )
     db.add(session)
     await db.commit()

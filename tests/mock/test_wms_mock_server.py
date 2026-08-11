@@ -193,27 +193,6 @@ def test_every_typed_query_requires_valid_hmac_and_rejects_replay(operation) -> 
 
 @pytest.mark.parametrize(
     "operation",
-    tuple(
-        operation
-        for operation in WMS_OPERATIONS
-        if operation.mode.value == "QUERY" and operation.http_method.value == "POST"
-    ),
-    ids=lambda operation: operation.identity,
-)
-def test_every_typed_post_query_requires_application_json_before_validation(operation) -> None:
-    path, body = _query_wire(operation)
-    headers = _status_headers(path=path, body=body, method="POST")
-    headers["Content-Type"] = "text/plain"
-
-    with TestClient(wms_mock_server.app) as client:
-        response = client.post(path, content=body, headers=headers)
-
-    assert response.status_code == 422
-    assert response.json() == {"code": "INVALID_TYPED_REQUEST_CONTENT_TYPE"}
-
-
-@pytest.mark.parametrize(
-    "operation",
     tuple(operation for operation in WMS_OPERATIONS if operation.http_method.value == "GET"),
     ids=lambda operation: operation.identity,
 )

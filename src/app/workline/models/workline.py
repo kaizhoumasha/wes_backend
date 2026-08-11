@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 from sqlalchemy import JSON, Column, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
@@ -17,17 +17,17 @@ from src.database.schema_conf import SchemaType
 class LineType(str, Enum):
     """作业线类型枚举。"""
 
-    AUTO = "AUTO"
-    MANUAL = "MANUAL"
-    HYBRID = "HYBRID"
+    AUTO = "AUTO"  # 自动线
+    MANUAL = "MANUAL"  # 人工线
+    HYBRID = "HYBRID"  # 混合线
 
 
 class WorkLineRunMode(str, Enum):
     """作业线运行模式枚举。"""
 
-    AUTO = "AUTO"
-    MANUAL = "MANUAL"
-    SIMULATION = "SIMULATION"
+    AUTO = "AUTO"  # 自动运行，允许真实设备和外部副作用
+    MANUAL = "MANUAL"  # 人工确认/人工介入
+    SIMULATION = "SIMULATION"  # 沙箱模拟，派发到沙箱通道
 
 
 class WorkLineBase(BaseMixin):
@@ -137,19 +137,3 @@ class WorkLineStateTransitionRequest(BaseModel):
     """作业线启停请求。"""
 
     version: int = Field(description="WorkLine 乐观锁版本号")
-
-
-class WorkLineActivationRequest(WorkLineStateTransitionRequest):
-    """作业线激活请求。"""
-
-    reason: str | None = Field(default=None, min_length=1, max_length=500, description="人工状态切换原因")
-
-    @field_validator("reason")
-    @classmethod
-    def normalize_reason(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("状态切换原因不能为空")
-        return normalized
