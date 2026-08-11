@@ -1884,7 +1884,7 @@ async def _admit_event_callback(
 
     try:
         # event 是统一硬件事件入口：这里只做最小包络校验，
-        # 不提前判断插件私有 payload 是否“业务成立”。
+        # 不提前判断具体事件 payload 是否“业务成立”。
         _validate_top_level_fields(event_data, _EVENT_CALLBACK_TOP_LEVEL_FIELDS, "event")
         normalized_event_request = CallbackEventRequest.model_validate(event_data)
     except (ValidationError, ValueError) as exc:
