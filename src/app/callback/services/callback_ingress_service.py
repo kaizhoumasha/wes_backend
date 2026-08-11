@@ -486,6 +486,7 @@ async def _record_callback_audit_log(
     args: JsonDict,
     cost_time: float,
     success: bool,
+    response_status: int,
     message: str | None = None,
 ) -> None:
     try:
@@ -496,7 +497,7 @@ async def _record_callback_audit_log(
             path=str(request.url.path),
             args=args,
             status=OperaStatus.SUCCESS if success else OperaStatus.FAIL,
-            code="200" if success else "500",
+            code=str(response_status),
             msg=message,
             cost_time=cost_time,
         )
@@ -856,6 +857,7 @@ async def _log_callback_outcome(
             args=sanitized_request_body,
             cost_time=response_time_ms / 1000,
             success=True,
+            response_status=response_status,
         )
         return
     await _record_callback_audit_log(
@@ -865,6 +867,7 @@ async def _log_callback_outcome(
         args=sanitized_request_body,
         cost_time=response_time_ms / 1000,
         success=False,
+        response_status=response_status,
         message=error_message,
     )
 
