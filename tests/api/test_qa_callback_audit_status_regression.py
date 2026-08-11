@@ -10,8 +10,9 @@ from fastapi.testclient import TestClient
 from src.app.callback.v1 import callback as callback_module
 from src.app.sys.models.audit_log import OperaStatus
 from src.core.conf import settings
+from src.core.response.response_code import ResourceErrorCode
 from src.database.db import get_db
-from src.database.redis_cache import get_cache
+from src.database.dependencies import _get_cache_service
 from tests.api import callback_test_support
 
 CallbackHTTPClient = tuple[TestClient, AsyncMock, AsyncMock]
@@ -29,7 +30,7 @@ def callback_http_client(monkeypatch: pytest.MonkeyPatch) -> Generator[CallbackH
         yield db_session
 
     app.dependency_overrides[get_db] = _db_override
-    app.dependency_overrides[get_cache] = lambda: object()
+    app.dependency_overrides[_get_cache_service] = lambda: object()
     with (
         patch(
             "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
@@ -97,11 +98,14 @@ def test_result_command_not_found_audit_records_actual_http_status(callback_http
     with patch(
         "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
         new=AsyncMock(return_value=None),
-    ):
+    ) as get_command:
         response = client.post("/api/v1/callback/result", json=callback_test_support.create_result_payload())
 
     assert response.status_code == 200
+    assert response.json()["code"] == ResourceErrorCode.NOT_FOUND.code
+    get_command.assert_awaited_once()
     _assert_logged_http_status(callback_log, audit_log, expected_status=200)
+    assert callback_test_support._await_kwargs(callback_log)["failure_stage"] == "COMMAND_LOOKUP"
 
 
 def test_wms_event_validation_audit_records_actual_http_status(callback_http_client: CallbackHTTPClient) -> None:
