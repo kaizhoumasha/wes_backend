@@ -10,7 +10,7 @@ from tests.contracts.wms_integration.provider_profile_support import build_provi
 
 
 @pytest.mark.parametrize("operation", QUERY_OPERATIONS, ids=lambda operation: operation.identity)
-def test_all_19_queries_freeze_only_from_compiled_profile(operation) -> None:
+def test_all_18_queries_freeze_only_from_compiled_profile(operation) -> None:
     catalog = build_provider_catalog()
     compiled_endpoint = catalog.compiled_profile.operations[operation.identity]
 
@@ -19,7 +19,7 @@ def test_all_19_queries_freeze_only_from_compiled_profile(operation) -> None:
         operation_identity=operation.identity,
     )
 
-    assert len(QUERY_OPERATIONS) == 19
+    assert len(QUERY_OPERATIONS) == 18
     assert frozen.operation_identity == operation.identity
     assert frozen.target_snapshot.code == operation.target_code
     assert frozen.target_snapshot.url == compiled_endpoint.endpoint_template
@@ -40,7 +40,7 @@ def test_all_7_async_effects_freeze_get_status_binding_from_compiled_profile(ope
         operation_identity=operation.identity,
     )
 
-    assert len(ASYNC_EFFECT_OPERATIONS) == 7
+    assert len(ASYNC_EFFECT_OPERATIONS) == 4
     assert compiled_endpoint.status_endpoint is not None
     assert frozen.operation_identity == operation.identity
     assert frozen.target_snapshot.code == operation.target_code

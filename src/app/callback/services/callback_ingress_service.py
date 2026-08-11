@@ -486,6 +486,7 @@ async def _record_callback_audit_log(
     args: JsonDict,
     cost_time: float,
     success: bool,
+    response_status: int,
     message: str | None = None,
 ) -> None:
     try:
@@ -496,7 +497,7 @@ async def _record_callback_audit_log(
             path=str(request.url.path),
             args=args,
             status=OperaStatus.SUCCESS if success else OperaStatus.FAIL,
-            code="200" if success else "500",
+            code=str(response_status),
             msg=message,
             cost_time=cost_time,
         )
@@ -856,6 +857,7 @@ async def _log_callback_outcome(
             args=sanitized_request_body,
             cost_time=response_time_ms / 1000,
             success=True,
+            response_status=response_status,
         )
         return
     await _record_callback_audit_log(
@@ -865,6 +867,7 @@ async def _log_callback_outcome(
         args=sanitized_request_body,
         cost_time=response_time_ms / 1000,
         success=False,
+        response_status=response_status,
         message=error_message,
     )
 
@@ -966,6 +969,7 @@ async def _handle_validation_failure(
     request_id: str | None,
     request_body: JsonDict,
     message: str,
+    response_status: int,
     response_time_ms: int = 0,
     failure_stage: str,
     trace_id: str | None = None,
@@ -984,7 +988,7 @@ async def _handle_validation_failure(
         trace_id=trace_id or _resolve_callback_trace_id(request_body),
         event_id=event_id or _resolve_callback_event_id(request_body),
         causation_id=causation_id or _resolve_callback_causation_id(request_body),
-        response_status=400,
+        response_status=response_status,
         response_time_ms=response_time_ms,
         success=False,
         record_audit=True,
@@ -1020,6 +1024,7 @@ async def _handle_result_validation_failure(
             request_id=request_id,
             request_body=callback_data,
             message=message,
+            response_status=200,
             response_time_ms=response_time_ms,
             failure_stage=failure_stage,
             trace_id=trace_id,
@@ -1038,6 +1043,7 @@ async def _handle_event_validation_failure(
     request_id: str | None,
     event_data: JsonDict,
     message: str,
+    response_status: int = 200,
     response_time_ms: int = 0,
     failure_stage: str,
     reason_code: str | None = None,
@@ -1052,6 +1058,7 @@ async def _handle_event_validation_failure(
             request_id=request_id,
             request_body=event_data,
             message=message,
+            response_status=response_status,
             response_time_ms=response_time_ms,
             failure_stage=failure_stage,
             reason_code=reason_code,
@@ -1189,6 +1196,7 @@ async def _handle_external_validation_failure(
             request_id=request_id,
             request_body=callback_data,
             message=message,
+            response_status=400,
             response_time_ms=response_time_ms,
             failure_stage=failure_stage,
             reason_code=reason_code,
@@ -1206,6 +1214,7 @@ async def _handle_device_context_failure(
     request_body: JsonDict,
     request_id: str | None,
     response_time_ms: int,
+    response_status: int,
     error: JsonDict,
     audit_title: str,
     trace_id: str | None = None,
@@ -1213,8 +1222,8 @@ async def _handle_device_context_failure(
     causation_id: str | None = None,
 ) -> CallbackResultIngressResponse | CallbackEventIngressResponse:
     message = str(error.get("message") or "设备上下文解析失败")
-    response_status = _resolve_ctx_error_response_status(error)
-    response_code = _resolve_ctx_error_response_code(response_status)
+    error_response_status = _resolve_ctx_error_response_status(error)
+    response_code = _resolve_ctx_error_response_code(error_response_status)
     await _log_callback_outcome(
         db,
         request,
@@ -1373,7 +1382,7 @@ async def _resolve_result_callback_context(
             trace_id=_resolve_callback_trace_id(callback_data),
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
-            response_status=404,
+            response_status=200,
             response_time_ms=_response_time_ms(start_time),
             success=False,
             record_audit=True,
@@ -1404,6 +1413,7 @@ async def _resolve_result_callback_context(
                 request_body=callback_data,
                 request_id=request_id,
                 response_time_ms=_response_time_ms(start_time),
+                response_status=200,
                 error=ctx_error,
                 audit_title="设备回调结果",
                 trace_id=resolved_trace_id,
@@ -1416,7 +1426,7 @@ async def _resolve_result_callback_context(
     # 安全保证：上面已检查 ctx_error 并提前返回
     device = ctx_result.device  # type: ignore[union-attr]
     workline = ctx_result.workline  # type: ignore[union-attr]
-    resolved_contract_version = ctx_result.contract_version  # type: ignore[union-attr]
+    resolved_contract_version = getattr(existing_command, "contract_version", None)
     if not _command_matches_callback_device(existing_command, device):
         message = (
             f"结果回调设备与指令归属不匹配: "
@@ -1481,9 +1491,6 @@ async def _resolve_result_callback_context(
             causation_id=_resolve_callback_causation_id(callback_data),
         )
 
-    command_contract_version = getattr(existing_command, "contract_version", None)
-    if isinstance(command_contract_version, str) and command_contract_version:
-        resolved_contract_version = command_contract_version
     return (
         _ResultCallbackContext(
             envelope=envelope,
@@ -1879,6 +1886,7 @@ async def _admit_event_callback(
                     request_id=request_id,
                     event_data=event_data,
                     message=f"WMS 事件包络校验失败: {detail}",
+                    response_status=400,
                     response_time_ms=_response_time_ms(start_time),
                     failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
                 ),
@@ -1887,7 +1895,7 @@ async def _admit_event_callback(
 
     try:
         # event 是统一硬件事件入口：这里只做最小包络校验，
-        # 不提前判断插件私有 payload 是否“业务成立”。
+        # 不提前判断具体事件 payload 是否“业务成立”。
         _validate_top_level_fields(event_data, _EVENT_CALLBACK_TOP_LEVEL_FIELDS, "event")
         normalized_event_request = CallbackEventRequest.model_validate(event_data)
     except (ValidationError, ValueError) as exc:
@@ -1956,6 +1964,7 @@ async def _admit_event_callback(
     # 设备/工作线上下文和能力校验属于“是否可路由入站”的入口职责。
     ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
     if ctx_error:
+        response_status = _resolve_ctx_error_response_status(ctx_error)
         return None, CallbackEventIngressDecision(
             body=cast(
                 "CallbackEventIngressResponse",
@@ -1967,11 +1976,12 @@ async def _admit_event_callback(
                     request_body=event_data,
                     request_id=request_id,
                     response_time_ms=_response_time_ms(start_time),
+                    response_status=response_status,
                     error=ctx_error,
                     audit_title="设备事件上报",
                 ),
             ),
-            http_status=_resolve_ctx_error_response_status(ctx_error),
+            http_status=response_status,
         )
     # ctx_error 为 None 时，ctx_result 必有值（类型检查器无法理解 tuple 解包后的关联）
     device = ctx_result.device  # type: ignore[union-attr]

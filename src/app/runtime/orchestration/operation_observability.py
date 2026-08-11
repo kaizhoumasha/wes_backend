@@ -314,32 +314,6 @@ def emit_notify_pkg_binding_observation(
     )
 
 
-def emit_full_box_exchange_observation(
-    *,
-    provider_profile_identity: str,
-    outcome: NorthboundOutcome,
-    latency_ms: float,
-    trace_id: str,
-    correlation_id: str,
-    evidence_ref: str,
-    stage: NorthboundTraceStage,
-    registry: RuntimeObservabilityRegistry = runtime_observability_registry,
-) -> RuntimeObservabilityEvent:
-    """`full_box_exchange` 的静态 metric identity 入口。"""
-
-    return _observability_emit(
-        operation_identity="wms.fulfillment.full_box_exchange@v1",
-        provider_profile_identity=provider_profile_identity,
-        outcome=outcome,
-        latency_ms=latency_ms,
-        trace_id=trace_id,
-        correlation_id=correlation_id,
-        evidence_ref=evidence_ref,
-        stage=stage,
-        registry=registry,
-    )
-
-
 def emit_dispatch_health_observation(
     metrics: DispatchClaimMetrics,
     *,
@@ -392,7 +366,6 @@ __all__ = [
     "emit_confirm_inbound_observation",
     "emit_credential_resolution_observation",
     "emit_dispatch_health_observation",
-    "emit_full_box_exchange_observation",
     "emit_northbound_operation_observation",
     "emit_notify_pkg_binding_observation",
     "emit_query_inventory_observation",

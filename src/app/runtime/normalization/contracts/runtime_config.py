@@ -1,5 +1,4 @@
-# 旧 plugin runtime 镜像实现:src.workline_runtime.plugin_sdk.contracts.runtime_config 的平级副本
-# 旧 runtime 入口删除后,本模块承载对应正式实现。
+# 运行时配置规范化的正式实现。
 # 自引用 src.workline_runtime.run_mode 已重定向到 stable workline run_mode mirror。
 
 """运行时解析后的 Device / Workline 配置模型。"""
@@ -15,7 +14,7 @@ from src.utils.value_normalization import as_dict, enum_value
 
 
 class ResolvedDeviceRuntimeConfig(BaseModel):
-    """插件和诊断链路使用的设备运行时快照。"""
+    """运行时与诊断链路使用的设备配置快照。"""
 
     device_id: int | None = None
     device_code: str | None = None
@@ -24,8 +23,6 @@ class ResolvedDeviceRuntimeConfig(BaseModel):
     role_index: int | None = None
     upstream_device_id: int | None = None
     workline_id: int | None = None
-    plugin_key: str | None = None
-    contract_version: str | None = None
     protocol: str | None = None
     host: str | None = None
     port: int | None = None
@@ -47,22 +44,20 @@ class ResolvedDeviceRuntimeConfig(BaseModel):
 
 
 class ResolvedWorklineRuntimeConfig(BaseModel):
-    """插件和诊断链路使用的工作线运行时快照。"""
+    """运行时与诊断链路使用的工作线配置快照。"""
 
     workline_id: int | None = None
     line_code: str | None = None
     line_name: str | None = None
     line_type: str | None = None
     run_mode: str = "AUTO"
-    plugin_key: str | None = None
-    contract_version: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     runtime_config: dict[str, Any] = Field(default_factory=dict)
     diagnostic_profile: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResolvedExecutionContext(BaseModel):
-    """传递给插件和诊断构建器的统一运行时上下文。"""
+    """传递给运行时与诊断构建器的统一上下文。"""
 
     workline: ResolvedWorklineRuntimeConfig | None = None
     devices_by_role: dict[str, list[ResolvedDeviceRuntimeConfig]] = Field(default_factory=dict)
@@ -79,8 +74,6 @@ def resolve_device_runtime_config(device: Any, *, workline: Any | None = None) -
         role_index=getattr(device, "role_index", None),
         upstream_device_id=getattr(device, "upstream_device_id", None),
         workline_id=getattr(device, "work_line_id", None) or getattr(workline, "id", None),
-        plugin_key=getattr(workline, "plugin_key", None),
-        contract_version=getattr(workline, "contract_version", None),
         protocol=enum_value(getattr(device, "protocol", None)),
         host=getattr(device, "host", None),
         port=getattr(device, "port", None),
@@ -104,8 +97,6 @@ def resolve_workline_runtime_config(workline: Any | None) -> ResolvedWorklineRun
         line_name=getattr(workline, "line_name", None),
         line_type=enum_value(getattr(workline, "line_type", None)),
         run_mode=normalize_run_mode(getattr(workline, "run_mode", None)),
-        plugin_key=getattr(workline, "plugin_key", None),
-        contract_version=getattr(workline, "contract_version", None),
         config=as_dict(getattr(workline, "config", None)),
         runtime_config=as_dict(getattr(workline, "runtime_config_json", None)),
         diagnostic_profile=as_dict(getattr(workline, "diagnostic_profile", None)),

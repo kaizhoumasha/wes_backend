@@ -1,118 +1,40 @@
-"""RuntimeInbox generated-only processor composition（Task 5 三阶段拆分）。
-
-组合 Validation → Orchestration → Write-back 三阶段.
-提供 RuntimeInbox 唯一生产入口 `process_claimed(db, claim)`，由 Celery task 调用。
-
-行为对齐:
-- claim 阶段: 由唯一 RuntimeInboxRepository.claim_received_with_token 持有
-  (调用方负责).
-- validation 阶段: RuntimeInboxValidationService.
-- orchestration 阶段: generated plugin runner 只返回 immutable write set.
-- write-back 阶段: RuntimeInboxWriteBackService.
-- ESTOP / TIMER_TIMEOUT / duplicate entry / late command / missing context
-  均由 RuntimeInbox-owned 三阶段服务承载。
-- 写终态: mark_processed / mark_failed / mark_dead_letter 走
-  RuntimeInboxService (processor_token 作为 lease_token fencing, 作用于
-  RuntimeInbox 表，不存在跨表 fallback)。
-- 失败重试与超时不直接 raise, 全部转换成 ProcessResult 统计.
-"""
+"""RuntimeInbox 通用处理入口。"""
 
 from __future__ import annotations
 
 import uuid
 from contextlib import suppress
-from copy import deepcopy
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Annotated, Any, Self, TypedDict
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, model_validator
 
-from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
-from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.orchestration.diagnostics import (
-    ErrorCode,
-    ErrorDomain,
-)
-from src.app.runtime.orchestration.repositories.material_unit_repository import (
-    MaterialUnitRepository,
-)
-from src.app.runtime.orchestration.repositories.material_unit_repository import (
-    material_unit_repository as default_material_unit_repository,
-)
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
-from src.app.runtime.orchestration.repositories.timeline_recorded_replay_repository import (
-    timeline_recorded_replay_repository,
-)
-from src.app.runtime.orchestration.runtime_intent import (
-    RuntimeIntent,
-    RuntimeIntentKind,
-)
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
-    _canonical_workline_session_id,
-)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxReplayNotAllowed,
-    RuntimeInboxReplaySourceValidation,
     RuntimeInboxReplaySourceValidator,
     RuntimeInboxService,
     runtime_inbox_service,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
-    _entry_event_types_for_workline,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
-    RuntimeInboxWriteBackService,
-    _build_runtime_session_updated_event_payload,
     _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
-    _record_duplicate_entry_archive_timeline,
     _record_late_command_result_archive_timeline,
     _require_fenced_update,
-    _session_status_value,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
-from src.app.runtime.system_capabilities.gateway import AttemptCloseReport, SystemCapabilityGateway
-from src.app.runtime.system_capabilities.outcomes import ContractViolation
-from src.app.runtime.system_capabilities.replay import (
-    RecordedReplayResolution,
-    TimelineRecordedReplayService,
-)
-from src.app.runtime.workline_plugins.attempt_coordinator import (
-    AttemptSnapshot,
-    AttemptWriteSet,
-    PluginAttemptContext,
-    PluginWriteSetLimits,
-    WriteDisposition,
-    bound_attempt_write_set,
-)
-from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS, PluginDecision
-from src.app.runtime.workline_plugins.dispatcher import (
-    PinnedPluginSnapshot,
-    PluginAttemptFactSource,
-    PluginDispatchRequest,
-    WorklinePluginDispatcher,
-)
-from src.app.runtime.workline_plugins.pre_attempt import (
-    PreAttemptStatus,
-    resolve_plugin_pre_attempt_facts,
-)
-from src.app.runtime.workline_plugins.registry import parse_workline_six_in_one
-from src.app.workline.constants import (
-    INBOX_PROCESS_TIMEOUT_SECONDS,
-    WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
-)
+from src.app.workline.constants import INBOX_PROCESS_TIMEOUT_SECONDS, WORKLINE_INBOX_PROCESSING_STALE_SECONDS
 from src.app.workline.diagnostic_support import _record_diagnostic
-from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
-from src.app.workline.utils import payload_dict
-from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
+from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.value_normalization import (
-    optional_enum_str,
     optional_int,
     optional_str,
     resolve_entity_id,
@@ -121,16 +43,10 @@ from src.utils.value_normalization import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-
     from sqlalchemy.ext.asyncio import AsyncSession
-
-    from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition
 
 
 class ProcessResult(TypedDict):
-    """RuntimeInbox 处理结果统计。"""
-
     processed: int
     success: int
     failed: int
@@ -138,2121 +54,43 @@ class ProcessResult(TypedDict):
     resource_wait: int
 
 
-class GeneratedPluginAttemptRunner:
-    """把 Stage 1 固定请求交给 generated dispatcher，禁止回落 legacy。"""
-
-    def __init__(self, *, dispatcher: Any | None = None) -> None:
-        self._dispatcher = dispatcher or WorklinePluginDispatcher()
-
-    async def run(self, context: PluginAttemptContext) -> AttemptWriteSet:
-        if context.dispatch_request is None:
-            return _plugin_hold_write_set(context, "PLUGIN_DISPATCH_REQUEST_MISSING")
-        gateway = _EvidenceCollectingGateway(context.runtime.gateway)
-        result = await self._dispatcher.dispatch(
-            request=context.dispatch_request,
-            gateway=gateway,
-        )
-        if isinstance(result, ContractViolation):
-            return _plugin_hold_write_set(context, result.error_code)
-        if not isinstance(result, PluginDecision):
-            return _plugin_hold_write_set(context, "PLUGIN_DECISION_INVALID")
-        try:
-            intents = _system_capability_intents(context, tuple(result.intents))
-        except (TypeError, ValueError):
-            return _plugin_hold_write_set(context, "PLUGIN_EFFECT_CONVERSION_INVALID")
-        return AttemptWriteSet(
-            evidence=tuple(gateway.evidence),
-            next_state=_bind_command_correlation(result.next_state, intents),
-            intents=intents,
-            outcome_code=result.outcome_code,
-        )
-
-
-class _EvidenceCollectingGateway:
-    """只收集本次 dispatcher 实际读取的 QUERY evidence。"""
-
-    def __init__(self, gateway: Any) -> None:
-        self._gateway = gateway
-        self.evidence: list[Any] = []
-
-    async def execute(self, capability_key: str, contract_version: str, input_data: Any) -> Any:
-        result = await self._gateway.execute(capability_key, contract_version, input_data)
-        if result.evidence is not None and result.evidence not in self.evidence:
-            self.evidence.append(result.evidence)
-        return result
-
-
-@dataclass(frozen=True, slots=True)
-class _PluginIntentConversion:
-    """单个插件 intent 转换所需的只读上下文。"""
-
-    context: PluginAttemptContext
-    intent: RuntimeIntent
-    index: int
-    mark_ng: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _SystemCapabilitySpec:
-    """领域 intent 映射到统一 SYSTEM_CAPABILITY 包络前的差异字段。"""
-
-    capability_key: str
-    payload: dict[str, Any]
-    precondition: dict[str, Any]
-    fact_version: str | int
-    dispatch_key: str | None = None
-
-
-def _mark_ng_capability_spec(conversion: _PluginIntentConversion) -> _SystemCapabilitySpec:
-    snapshot = conversion.context.snapshot
-    if snapshot.material_unit_id is None or snapshot.material_unit_version is None:
-        raise ValueError("MARK_NG requires pinned material unit facts")
-    return _SystemCapabilitySpec(
-        capability_key="material_flow.material_unit_write",
-        payload={
-            "operation": "MARK_NG",
-            "material_unit_id": snapshot.material_unit_id,
-            "status": "NG",
-        },
-        precondition={"expected_absent": None},
-        fact_version=snapshot.material_unit_version,
-    )
-
-
-def _command_capability_spec(conversion: _PluginIntentConversion) -> _SystemCapabilitySpec:
-    context = conversion.context
-    intent = conversion.intent
-    target_device_id, target_device_version = _pinned_command_target(context.snapshot, intent)
-    operation_identity = f"inbox:{context.inbox_id}:{conversion.index}:command"
-    command_digest = sha256_digest(
-        {
-            "binding": context.snapshot.binding_identity,
-            "operation": operation_identity,
-        }
-    )
-    command_code = f"SC-{command_digest[:32]}"
-    return _SystemCapabilitySpec(
-        capability_key="device.device_command_write",
-        dispatch_key=f"device-command:{command_code}",
-        payload={
-            "device_role": None,
-            "target_device_id": target_device_id,
-            "action": intent.action,
-            "payload": deepcopy(intent.payload_json),
-            "timeout_ms": (intent.timeout_seconds or 30) * 1000,
-            "command_code": command_code,
-            "result_policy": intent.result_policy,
-        },
-        precondition={"expected_available": True},
-        fact_version=f"device:v{target_device_version}",
-    )
-
-
-def _create_material_capability_spec(conversion: _PluginIntentConversion) -> _SystemCapabilitySpec:
-    payload = {"operation": "CREATE", **deepcopy(conversion.intent.payload_json)}
-    if conversion.mark_ng:
-        payload["status"] = "NG"
-    return _SystemCapabilitySpec(
-        capability_key="material_flow.material_unit_write",
-        payload=payload,
-        precondition={"expected_absent": True},
-        fact_version=0,
-    )
-
-
-def _update_material_status_capability_spec(conversion: _PluginIntentConversion) -> _SystemCapabilitySpec:
-    snapshot = conversion.context.snapshot
-    target_material_unit_id = conversion.intent.payload_json.get("material_unit_id")
-    if (
-        snapshot.material_unit_id is None
-        or snapshot.material_unit_version is None
-        or target_material_unit_id != snapshot.material_unit_id
-    ):
-        raise ValueError("UPDATE_MATERIAL_UNIT_STATUS requires pinned material unit facts")
-    return _SystemCapabilitySpec(
-        capability_key="material_flow.material_unit_write",
-        payload={"operation": "UPDATE_STATUS", **deepcopy(conversion.intent.payload_json)},
-        precondition={"expected_absent": None},
-        fact_version=snapshot.material_unit_version,
-    )
-
-
-def _block_capability_spec(conversion: _PluginIntentConversion) -> _SystemCapabilitySpec:
-    snapshot = conversion.context.snapshot
-    intent = conversion.intent
-    if snapshot.session_status is None:
-        raise ValueError("BLOCK requires pinned session status")
-    return _SystemCapabilitySpec(
-        capability_key="runtime.session_hold",
-        payload={
-            "failure_domain": intent.block_scope.value if intent.block_scope is not None else "PLUGIN",
-            "reason_code": intent.reason_code or "PLUGIN_HOLD",
-            "message": intent.message or "Workline Plugin requested Hold",
-        },
-        precondition={"expected_status": snapshot.session_status},
-        fact_version=f"session:{snapshot.session_version}",
-    )
-
-
-_CAPABILITY_SPEC_BUILDERS: dict[
-    RuntimeIntentKind,
-    Callable[[_PluginIntentConversion], _SystemCapabilitySpec],
-] = {
-    RuntimeIntentKind.MARK_NG: _mark_ng_capability_spec,
-    RuntimeIntentKind.COMMAND: _command_capability_spec,
-    RuntimeIntentKind.CREATE_MATERIAL_UNIT: _create_material_capability_spec,
-    RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS: _update_material_status_capability_spec,
-    RuntimeIntentKind.BLOCK: _block_capability_spec,
-}
-
-
-def _convert_plugin_intent(
-    conversion: _PluginIntentConversion,
-    *,
-    binding_id: int,
-    binding_version: int,
-    creates_material: bool,
-) -> RuntimeIntent | None:
-    intent = conversion.intent
-    if intent.kind in {RuntimeIntentKind.SYSTEM_CAPABILITY, RuntimeIntentKind.CONTINUE_NEXT}:
-        return intent
-    if intent.kind is RuntimeIntentKind.UPDATE_CONTEXT:
-        # PluginState 由 next_state 原子写入；同决策 MARK_NG 合并进 MaterialUnit CREATE。
-        return None
-    if intent.kind is RuntimeIntentKind.MARK_NG and creates_material:
-        return None
-
-    builder = _CAPABILITY_SPEC_BUILDERS.get(intent.kind)
-    if builder is None:
-        raise ValueError(f"unsupported plugin effect intent: {intent.kind.value}")
-    spec = builder(conversion)
-    operation_key = f"inbox:{conversion.context.inbox_id}:{conversion.index}:{intent.kind.value.lower()}"
-    dispatch_key = spec.dispatch_key or f"system-capability:{spec.capability_key}:{operation_key}"
-    return RuntimeIntent.system_capability(
-        capability_key=spec.capability_key,
-        contract_version="v1",
-        operation_key=operation_key,
-        dispatch_key=_required_dispatch_key(dispatch_key),
-        payload=spec.payload,
-        precondition=spec.precondition,
-        fact_version=spec.fact_version,
-        timeout_seconds=5,
-        creator_authority="WORKLINE_PLUGIN",
-        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
-        binding_snapshot={"binding_id": binding_id, "binding_version": binding_version},
-        provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
-    )
-
-
-def _system_capability_intents(
-    context: PluginAttemptContext,
-    intents: tuple[RuntimeIntent, ...],
-) -> tuple[RuntimeIntent, ...]:
-    """把插件领域意图收敛为 generated EFFECT 的唯一通用包络。"""
-
-    validated_intents: list[RuntimeIntent] = []
-    for intent in intents:
-        if not isinstance(intent, RuntimeIntent):
-            raise TypeError("plugin effect intent must be RuntimeIntent")
-        # PluginDecision / RuntimeIntent 的 model_copy(update=...) 均可绕过 validator；
-        # 必须在 binding 判断、skip 与 conversion 前重建 typed contract。
-        validated_intents.append(RuntimeIntent.model_validate(intent.model_dump(mode="python")))
-    intents = tuple(validated_intents)
-    binding_id = context.snapshot.binding_id
-    binding_version = context.snapshot.binding_version
-    if binding_id is None or binding_version is None:
-        if intents:
-            raise ValueError("effect conversion requires binding snapshot")
-        return ()
-    mark_ng = any(intent.kind is RuntimeIntentKind.MARK_NG for intent in intents)
-    creates_material = any(intent.kind is RuntimeIntentKind.CREATE_MATERIAL_UNIT for intent in intents)
-    converted: list[RuntimeIntent] = []
-    for index, intent in enumerate(intents):
-        converted_intent = _convert_plugin_intent(
-            _PluginIntentConversion(
-                context=context,
-                intent=intent,
-                index=index,
-                mark_ng=mark_ng,
-            ),
-            binding_id=binding_id,
-            binding_version=binding_version,
-            creates_material=creates_material,
-        )
-        if converted_intent is not None:
-            converted.append(converted_intent)
-    return tuple(converted)
-
-
-def _required_dispatch_key(value: str | None) -> str:
-    """收窄分支组装后的 dispatch key，并对未来新增 intent 分支保持 fail-closed。"""
-
-    if value is None:
-        raise RuntimeError("effect conversion did not resolve dispatch key")
-    return value
-
-
-def _pinned_command_target(snapshot: AttemptSnapshot, intent: RuntimeIntent) -> tuple[int, int]:
-    """从 Stage 1 固定的设备事实中解析本次命令的唯一目标。"""
-
-    facts = snapshot.device_fact_versions
-    if intent.target_device_id is not None:
-        match = next((fact for fact in facts if fact[1] == intent.target_device_id), None)
-    else:
-        match = next((fact for fact in facts if fact[0] == intent.device_role), None)
-    if match is None:
-        raise ValueError("COMMAND requires pinned target device facts")
-    _, device_id, device_version = match
-    return device_id, device_version
-
-
-def _bind_command_correlation(next_state: Any, intents: tuple[RuntimeIntent, ...]) -> Any:
-    """把本 attempt 的稳定 command code 写入声明该字段的 PluginState。"""
-
-    command_codes = [
-        intent.payload_json.get("command_code")
-        for intent in intents
-        if intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY
-        and intent.payload_json.get("result_policy") == "COMMAND_RESULT"
-        and isinstance(intent.payload_json.get("command_code"), str)
-    ]
-    if len(command_codes) != 1 or getattr(next_state, "current_correlation", None) is not None:
-        return next_state
-    model_copy = getattr(next_state, "model_copy", None)
-    if callable(model_copy):
-        return model_copy(update={"current_correlation": command_codes[0]})
-    if isinstance(next_state, dict) and "current_correlation" in next_state:
-        return {**next_state, "current_correlation": command_codes[0]}
-    return next_state
-
-
-def _plugin_hold_write_set(context: PluginAttemptContext, reason: str) -> AttemptWriteSet:
-    return AttemptWriteSet(
-        evidence=(),
-        next_state=context.plugin_state,
-        intents=(),
-        outcome_code="HOLD",
-        hold_reason=reason,
-    )
-
-
-def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
-    """把 transport kind 收敛为 Definition 声明的 logical route/input。"""
-
-    payload = deepcopy(_payload_for_inbox(inbox))
-    kind = string_value(getattr(inbox, "kind", None))
-    event_type = string_value(getattr(inbox, "event_type", None))
-    declared_route = optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
-    callback_route = declared_route or event_type
-    if kind == "COMMAND_RESULT":
-        command_code = optional_str(payload.get("command_code"))
-        if command_code is None:
-            raise ValueError("command correlation is required")
-        return "COMMAND_RESULT", {
-            "route": "COMMAND_RESULT",
-            "command_code": command_code,
-            "result": string_value(payload.get("result") or "ERROR").upper(),
-            "data": payload_dict(payload.get("data")),
-            "error_detail": payload_dict(payload.get("error_detail")),
-        }
-    if kind == "REPLAY_REQUEST" or (kind == "INTERNAL_EVENT" and callback_route == "REPLAY_REQUEST"):
-        return "REPLAY_REQUEST", {
-            "route": "REPLAY_REQUEST",
-            "idempotency_key": string_value(payload.get("idempotency_key")),
-            "payload_digest": string_value(payload.get("payload_digest")),
-        }
-    route = callback_route
-    if route == "SYSTEM_CAPABILITY_RESULT":
-        raise ValueError("raw SYSTEM_CAPABILITY_RESULT is not a plugin route")
-    if not route:
-        raise ValueError("plugin logical route is required")
-    declared_input = payload_dict(payload.get("input"))
-    return route, declared_input or payload
-
-
 @dataclass(frozen=True, slots=True)
 class _InboxDiagnosticSnapshot:
-    """Inbox 诊断快照, 避免 rollback 后访问已过期 ORM 字段."""
-
     id: int | None
-    kind: Any | None
-    trace_id: str | None
-    event_id: str | None
-    causation_id: str | None
     workline_id: int | None
-    session_id: int | None
+    workline_session_id: int | None
     device_id: int | None
     command_id: int | None
-    attempt_count: int
     payload_json: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
 class _ClaimedInboxContext:
-    """已完成 Stage 1 加载、供终态路由复用的 claim 上下文。"""
-
     inbox: Any
     inbox_pk: int
     payload: dict[str, Any]
     resolved_event_type: str
-    session: Any
-    workline: Any
-    device: Any
-    command: Any
+    session: Any | None
+    workline: Any | None
+    device: Any | None
+    command: Any | None
     processor_token: str
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeInboxAttemptRuntime:
-    """仅在单次 claim 内有效的 Port、Context、Gateway 容器。"""
-
-    attempt_id: str
-    port_registry: CapabilityPortRegistry
-    context: RuntimeCapabilityContext
-    gateway: SystemCapabilityGateway
-    _closed: bool = field(default=False, init=False, compare=False, repr=False)
-    _close_report: AttemptCloseReport | None = field(default=None, init=False, compare=False, repr=False)
-
-    async def replace_with(self, replacement: RuntimeInboxAttemptRuntime) -> None:
-        """Stage 2 前换入 pinned profile runtime，同时保持 claim 级 owner 不变。"""
-
-        if self._closed or replacement._closed:
-            raise RuntimeError("closed attempt runtime cannot be replaced")
-        if replacement.attempt_id != self.attempt_id:
-            raise ValueError("replacement attempt id mismatch")
-        close_report = await self.gateway.aclose()
-        if close_report.unterminated:
-            _ = await replacement.aclose()
-            raise RuntimeError("attempt runtime replacement left unterminated queries")
-        object.__setattr__(self, "port_registry", replacement.port_registry)
-        object.__setattr__(self, "context", replacement.context)
-        object.__setattr__(self, "gateway", replacement.gateway)
-
-    async def aclose(self) -> AttemptCloseReport | None:
-        """幂等释放 attempt-scoped gateway；waiter 取消不等于 owner 关闭。"""
-
-        if self._closed:
-            return self._close_report
-        object.__setattr__(self, "_closed", True)
-        report = await self.gateway.aclose()
-        object.__setattr__(self, "_close_report", report)
-        return report
-
-
-class _ReplayProjectedInbox:
-    """仅覆盖 replay 路由字段，其余 claim/终态证据委托原 RuntimeInbox。"""
-
-    def __init__(self, source: Any, envelope: dict[str, Any]) -> None:
-        self._source = source
-        self._replay_immediate_source_inbox_id = envelope["immediate_source_inbox_id"]
-        self._replay_root_source_inbox_id = envelope["root_source_inbox_id"]
-        self.kind = envelope["original_kind"]
-        self.payload_json = deepcopy(envelope["original_payload"])
-        self.provider_code = envelope["original_provider_code"]
-        self.event_type = envelope["original_event_type"]
-        self.source_event_id = envelope["original_source_event_id"]
-        self.payload_hash = envelope["original_payload_hash"]
-        self.workline_id = envelope["original_workline_id"]
-        self.device_id = envelope["original_device_id"]
-        self.command_id = envelope["original_command_id"]
-        self.workline_session_id = envelope["original_workline_session_id"]
-        self.execution_session_id = envelope["original_execution_session_id"]
-        self.correlation_id = envelope["original_correlation_id"]
-        self.trace_id = envelope["original_trace_id"]
-        self.event_id = envelope["original_event_id"]
-        self.causation_id = envelope["original_causation_id"]
-
-    @property
-    def is_manual_replay(self) -> bool:
-        """标记该投影来自 canonical REPLAY_REQUEST，不写入原业务 payload。"""
-
-        return True
-
-    @property
-    def replay_immediate_source_inbox_id(self) -> int:
-        """返回已校验的直接 replay 来源 Inbox 主键。"""
-
-        return self._replay_immediate_source_inbox_id
-
-    @property
-    def replay_root_source_inbox_id(self) -> int:
-        """返回已校验的 replay 根来源 Inbox 主键。"""
-
-        return self._replay_root_source_inbox_id
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._source, name)
-
-
-def _project_replay_request(
-    inbox: Any,
-    *,
-    validated_source: RuntimeInboxReplaySourceValidation | None = None,
-) -> Any:
-    """将 REPLAY_REQUEST 单层投影为原业务语义，不修改持久化行。"""
-
-    if _kind_value(inbox) != "REPLAY_REQUEST":
-        return inbox
-    if validated_source is None:
-        raise RuntimeError("UNVERIFIED_REPLAY_SOURCE")
-    return _ReplayProjectedInbox(inbox, validated_source.envelope)
-
-
-def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
-    """在事务回滚前提取诊断需要的 Inbox 字段."""
-    return _InboxDiagnosticSnapshot(
-        id=resolve_entity_id(inbox),
-        kind=getattr(inbox, "kind", None),
-        trace_id=getattr(inbox, "trace_id", None),
-        event_id=getattr(inbox, "event_id", None),
-        causation_id=getattr(inbox, "causation_id", None),
-        workline_id=optional_int(getattr(inbox, "workline_id", None)),
-        session_id=_canonical_workline_session_id(inbox),
-        device_id=optional_int(getattr(inbox, "device_id", None)),
-        command_id=optional_int(getattr(inbox, "command_id", None)),
-        attempt_count=int(getattr(inbox, "attempt_count", 0)),
-        payload_json=dict(_payload_for_inbox(inbox)),
-    )
-
-
 def _empty_result() -> ProcessResult:
-    return {
-        "processed": 0,
-        "success": 0,
-        "failed": 0,
-        "skipped": 0,
-        "resource_wait": 0,
-    }
+    return {"processed": 0, "success": 0, "failed": 0, "skipped": 0, "resource_wait": 0}
 
 
-async def _rollback_and_discard_deferred_sse_events(db: AsyncSession) -> None:
-    """回滚数据库事务，并同步清理不受事务管理的延迟 SSE 队列。"""
-
-    from src.app.sys.services.event_stream_service import discard_deferred_sse_events
-
-    try:
-        await db.rollback()
-    finally:
-        discard_deferred_sse_events(db)
-
-
-def _is_lifecycle_only_external_callback(inbox: Any, payload: dict[str, Any]) -> bool:
-    """识别已在 ingress 完成副作用、无需运行时能力编排的外部回调。"""
-    if _kind_value(inbox) != "EXTERNAL_HTTP":
-        return False
-    attributes = payload_dict(payload.get("attributes"))
-    return (
-        optional_str(payload.get("runtime_capability")) is None
-        and optional_str(attributes.get("runtime_capability")) is None
-    )
-
-
-def _is_recorded_replay_for_bound_session(inbox: Any, session: Any, workline: Any) -> bool:
-    """识别可直接复用持久化 decision/evidence 的绑定 Session replay。"""
-    return all(
-        (
-            bool(getattr(inbox, "is_manual_replay", False)),
-            session is not None,
-            workline is not None,
-            isinstance(getattr(session, "plugin_binding_id", None), int),
-        )
-    )
+def _success_result() -> ProcessResult:
+    result = _empty_result()
+    result["processed"] = 1
+    result["success"] = 1
+    return result
 
 
 def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
-    target["processed"] += source.get("processed", 0)
-    target["success"] += source.get("success", 0)
-    target["failed"] += source.get("failed", 0)
-    target["skipped"] += source.get("skipped", 0)
-    target["resource_wait"] += source.get("resource_wait", 0)
-
-
-def _runtime_profile_from_pinned_binding(binding: Any, *, expected_identity: str) -> Any:
-    """从 immutable binding snapshot 重建本 attempt 的最小 provider profile。"""
-
-    from src.app.contracts.external_contract_profile import parse_external_contract_profile
-
-    raw_config = getattr(binding, "typed_config_json", None)
-    configured_identity = optional_str(raw_config.get("provider_profile")) if isinstance(raw_config, dict) else None
-    if configured_identity != expected_identity:
-        raise ValueError("binding provider profile identity mismatch")
-
-    raw_snapshots = getattr(binding, "provider_profile_snapshot_json", None)
-    if not isinstance(raw_snapshots, list):
-        raise TypeError("binding provider profile snapshot is invalid")
-    try:
-        matched_profiles = [
-            profile
-            for raw_profile in raw_snapshots
-            if (profile := parse_external_contract_profile(raw_profile)).identity == expected_identity
-        ]
-    except ValidationError as exc:
-        raise ValueError("binding provider profile snapshot is invalid") from exc
-    if len(matched_profiles) != 1:
-        raise ValueError("binding provider profile snapshot must match exactly once")
-
-    return matched_profiles[0]
-
-
-class RuntimeInboxProcessorBridge:
-    """RuntimeInbox 三阶段 processor composition.
-
-    内部按 validation → orchestration → write-back 三阶段拆分，
-    process_runtime_inbox_batch Celery task 只通过本类调用。
-    """
-
-    def __init__(
-        self,
-        *,
-        validation_service: RuntimeInboxValidationService | None = None,
-        writeback_service: RuntimeInboxWriteBackService | None = None,
-        inbox_service: RuntimeInboxService | None = None,
-        inbox_repository: RuntimeInboxRepository | None = None,
-        replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
-        plugin_dispatcher: WorklinePluginDispatcher | None = None,
-        recorded_replay_service: TimelineRecordedReplayService | None = None,
-        plugin_write_set_limits: PluginWriteSetLimits | None = None,
-        material_unit_repository: MaterialUnitRepository | None = None,
-        queue_gateway: TaskQueueGateway = task_queue_gateway,
-        wms_inbound_handler: Any | None = None,
-    ) -> None:
-        self._validation_service = validation_service or RuntimeInboxValidationService()
-        self._inbox_service = inbox_service or runtime_inbox_service
-        self._writeback_service = writeback_service or RuntimeInboxWriteBackService(inbox_service=self._inbox_service)
-        self._inbox_repository = inbox_repository or runtime_inbox_repository
-        self._replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(
-            self._inbox_repository
-        )
-        # 平台 binding 只进入 generated dispatcher；destructive switch 后禁止 legacy fallback。
-        self._generated_attempt_runner = GeneratedPluginAttemptRunner(dispatcher=plugin_dispatcher)
-        self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
-        self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
-        self._material_unit_repository = material_unit_repository or default_material_unit_repository
-        self._queue_gateway = queue_gateway
-        self._wms_inbound_handler = wms_inbound_handler
-
-    def _resolve_wms_inbound_handler(self) -> Any:
-        if self._wms_inbound_handler is None:
-            from src.app.runtime.orchestration.services.inbox.wms_runtime_inbox_handler import (
-                WmsRuntimeInboxHandler,
-            )
-
-            self._wms_inbound_handler = WmsRuntimeInboxHandler()
-        return self._wms_inbound_handler
-
-    async def _process_wms_inbound(
-        self,
-        db: AsyncSession,
-        *,
-        inbox: Any,
-        inbox_pk: int,
-        processor_token: str,
-        payload: dict[str, Any],
-        event_type: str,
-    ) -> ProcessResult | None:
-        """消费普通 WMS event 或 status hint，不进入设备/工作线编排。"""
-
-        handled = await self._resolve_wms_inbound_handler().handle(
-            db,
-            provider_code=optional_str(getattr(inbox, "provider_code", None)),
-            event_type=event_type,
-            payload=payload,
-        )
-        if not handled:
-            return None
-
-        _require_fenced_update(
-            await self.inbox_service.mark_processed(
-                db,
-                inbox_id=inbox_pk,
-                lease_token=processor_token,
-            ),
-            action="mark_processed",
-            inbox_id=inbox_pk,
-        )
-        await db.commit()
-        result = _empty_result()
-        result["success"] += 1
-        result["processed"] += 1
-        return result
-
-    def _enqueue_outbox_dispatch(self, targets: frozenset[OutboxDispatchTarget]) -> None:
-        """提交后的即时触发失败不撤销业务事务，Beat 继续承担兜底。"""
-
-        try:
-            self._queue_gateway.enqueue_outbox(targets=targets, limit=50)
-        except Exception as exc:
-            logger.warning(f"插件 attempt 已提交，但 Outbox 即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
-
-    @property
-    def inbox_service(self) -> RuntimeInboxService:
-        """RuntimeInboxService 实例。
-
-        终态写回（mark_processed / mark_failed / mark_dead_letter）一律走
-        RuntimeInboxService，作用于 RuntimeInbox 表的 processor_token fencing。
-        处理状态始终写回 RuntimeInboxService。
-        """
-        return self._inbox_service
-
-    @property
-    def inbox_repository(self) -> RuntimeInboxRepository:
-        """RuntimeInboxRepository 实例。
-
-        加载 RuntimeInbox ORM（get_by_id）走 RuntimeInboxRepository，
-        claim 与上下文加载始终使用 RuntimeInboxRepository。
-        """
-        return self._inbox_repository
-
-    def create_attempt_runtime(
-        self,
-        processor_token: str,
-        *,
-        base_registry: CapabilityPortRegistry | None = None,
-        definitions: Mapping[tuple[str, str], SystemCapabilityDefinition] | None = None,
-        allowed_capabilities: frozenset[tuple[str, str]] | None = None,
-        admission_profile: str | None = None,
-        provider_profile: Any | None = None,
-    ) -> RuntimeInboxAttemptRuntime:
-        """新建 attempt-scoped runtime；绝不复用 Port 实例或 QUERY cache。"""
-
-        registry = base_registry.fork_attempt() if base_registry is not None else CapabilityPortRegistry()
-        context = RuntimeCapabilityContext(registry)
-        if definitions is None:
-            from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
-
-            definitions = SYSTEM_CAPABILITY_INDEX
-        resolved_definitions: dict[tuple[str, str], SystemCapabilityDefinition] = dict(definitions)
-        pinned_profile_identity = optional_str(getattr(provider_profile, "identity", None))
-        if (
-            admission_profile is not None
-            and pinned_profile_identity is not None
-            and admission_profile != pinned_profile_identity
-        ):
-            raise ValueError("admission_profile 与 pinned provider profile identity 不一致")
-        if admission_profile is None and pinned_profile_identity is not None:
-            admission_profile = pinned_profile_identity
-        elif admission_profile is None:
-            from src.app.wms_integration.provider_profile import WMS_PROVIDER_CONTRACT_VERSION
-            from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
-            from src.core.conf import settings
-
-            environment = WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV)
-            admission_profile = f"wms.{WMS_PROVIDER_CONTRACT_VERSION}.{environment}"
-        gateway = SystemCapabilityGateway(
-            attempt_id=processor_token,
-            definitions=resolved_definitions,
-            allowed_capabilities=(
-                frozenset(resolved_definitions) if allowed_capabilities is None else allowed_capabilities
-            ),
-            context=context,
-            admission_profile=admission_profile,
-        )
-        return RuntimeInboxAttemptRuntime(
-            attempt_id=processor_token,
-            port_registry=registry,
-            context=context,
-            gateway=gateway,
-        )
-
-    async def _pin_attempt_runtime_to_dispatch_snapshot(
-        self,
-        db: Any,
-        *,
-        runtime: RuntimeInboxAttemptRuntime,
-        snapshot: PinnedPluginSnapshot,
-    ) -> Any:
-        """用 immutable binding 的 profile/Port snapshot 收窄本次 attempt。"""
-
-        from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
-
-        binding = await workline_plugin_binding_service.get_pinned(db, binding_id=snapshot.binding_id)
-        expected_binding_identity = (
-            snapshot.binding_id,
-            snapshot.binding_version,
-            snapshot.config_hash,
-            snapshot.index_digest,
-        )
-        actual_binding_identity = (
-            getattr(binding, "id", None),
-            getattr(binding, "binding_version", None),
-            getattr(binding, "typed_config_hash", None),
-            getattr(binding, "generated_index_digest", None),
-        )
-        if actual_binding_identity != expected_binding_identity:
-            raise ValueError("pinned binding identity changed before attempt runtime creation")
-        provider_profile = _runtime_profile_from_pinned_binding(
-            binding,
-            expected_identity=snapshot.profile_identity,
-        )
-        replacement = self.create_attempt_runtime(
-            runtime.attempt_id,
-            base_registry=runtime.port_registry,
-            provider_profile=provider_profile,
-        )
-        await runtime.replace_with(replacement)
-        return provider_profile
-
-    async def _build_generated_dispatch_request(
-        self,
-        db: Any,
-        *,
-        inbox: Any,
-        session: Any,
-        workline: Any,
-        snapshot: AttemptSnapshot,
-    ) -> PluginDispatchRequest:
-        """构造 generated dispatcher 的不可变请求；生产路径不允许跳过。"""
-
-        return await _build_plugin_dispatch_request(
-            db,
-            inbox=inbox,
-            session=session,
-            workline=workline,
-            snapshot=snapshot,
-        )
-
-    async def claim_and_process_batch(
-        self,
-        db: AsyncSession,
-        *,
-        limit: int,
-        processor_token_prefix: str = "runtime-inbox-worker",  # noqa: S107
-    ) -> ProcessResult:
-        """顺序 claim 并处理 RuntimeInbox。
-
-        单个 worker 每轮 claim 1 条; 跨 worker 并发由数据库 token claim 和
-        claim_bucket_key 队首围栏承载.
-        """
-        if limit <= 0:
-            return _empty_result()
-
-        result: ProcessResult = _empty_result()
-        remaining = limit
-        while remaining > 0:
-            processor_token = f"{processor_token_prefix}-{uuid.uuid4()}"
-            claim = await self._claim_one(db, processor_token=processor_token)
-            if claim is None:
-                break
-            message_result = await self.process_claimed(db, claim=claim)
-            _merge_result(result, message_result)
-            remaining -= 1
-            if remaining <= 0:
-                break
-        return result
-
-    async def _claim_one(
-        self,
-        db: AsyncSession,
-        *,
-        processor_token: str,
-    ) -> dict[str, Any] | None:
-        """claim 1 条 RuntimeInbox 行.
-
-        使用唯一 RuntimeInboxRepository.claim_received_with_token。
-        """
-        claims = await self.inbox_repository.claim_received_with_token(
-            db,
-            limit=1,
-            processor_token=processor_token,
-            stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
-        )
-        return claims[0] if claims else None
-
-    async def _record_processing_failure(
-        self,
-        db: AsyncSession,
-        *,
-        diagnostic_inbox: _InboxDiagnosticSnapshot,
-        inbox_pk: int | None,
-        processor_token: str,
-        diagnostic_error_code: ErrorCode,
-        failure_error_code: str,
-        diagnostic_message: str,
-        failure_message: str,
-        retryable: bool,
-        mark_failure_log: str,
-        error_domain: ErrorDomain | None = None,
-        fallback_to_diagnostic_id: bool = False,
-    ) -> None:
-        """回滚当前处理并尽力持久化诊断与 fenced 失败状态。"""
-        with suppress(Exception):
-            await _rollback_and_discard_deferred_sse_events(db)
-        await _record_diagnostic(
-            db,
-            inbox=diagnostic_inbox,
-            error_code=diagnostic_error_code,
-            error_domain=error_domain,
-            message=diagnostic_message,
-        )
-        try:
-            pk_to_mark = inbox_pk
-            if pk_to_mark is None and fallback_to_diagnostic_id:
-                pk_to_mark = diagnostic_inbox.id
-            if pk_to_mark is None:
-                return
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
-                    inbox_id=pk_to_mark,
-                    lease_token=processor_token,
-                    error_code=failure_error_code,
-                    error_message=failure_message,
-                    retryable=retryable,
-                ),
-                action="mark_failed",
-                inbox_id=pk_to_mark,
-            )
-            await db.commit()
-        except Exception as mark_error:
-            with suppress(Exception):
-                await _rollback_and_discard_deferred_sse_events(db)
-            logger.warning(f"{mark_failure_log}: {mark_error}")
-
-    @staticmethod
-    async def _finalize_attempt(db: AsyncSession, attempt_runtime: RuntimeInboxAttemptRuntime) -> None:
-        """关闭 attempt，并仅在事务已结束时发布延迟 SSE。"""
-        # Attempt owner 始终负责排空共享 QUERY；关闭失败不得覆盖原处理结果或异常。
-        try:
-            close_report = await attempt_runtime.aclose()
-        except Exception:
-            logger.warning("Plugin attempt cleanup failed: code=ATTEMPT_CLOSE_FAILED")
-        else:
-            if close_report is not None and close_report.unterminated:
-                logger.warning(
-                    "Plugin attempt cleanup incomplete: "
-                    f"code={close_report.error_code}, unterminated={close_report.unterminated}"
-                )
-
-        # process_claimed 存在多个已提交后的早退分支；发布必须位于 finally 内，
-        # 否则 Python return 只执行 finally 而不会继续执行其后的统一发布点。
-        from src.app.sys.services.event_stream_service import (
-            discard_deferred_sse_events,
-            publish_deferred_sse_events,
-        )
-
-        in_transaction = getattr(db, "in_transaction", None)
-        try:
-            transaction_is_open = bool(in_transaction()) if callable(in_transaction) else False
-        except Exception:
-            # 无法确认提交完成时 fail closed，不能把可能回滚的事实广播给订阅方。
-            transaction_is_open = True
-        if transaction_is_open:
-            discard_deferred_sse_events(db)
-        else:
-            await publish_deferred_sse_events(db)
-
-    async def _process_control_event(
-        self,
-        db: AsyncSession,
-        *,
-        context: _ClaimedInboxContext,
-    ) -> ProcessResult | None:
-        """处理 ESTOP / TIMER 专用路由；非控制事件返回 None。"""
-        routing_outcome = self._validation_service.classify_estop_or_timer(
-            resolved_event_type=context.resolved_event_type,
-            inbox_kind=_kind_value(context.inbox),
-        )
-        result = _empty_result()
-        if routing_outcome.estop_event:
-            estop_processed = await _handle_estop(
-                db,
-                inbox=context.inbox,
-                inbox_pk=context.inbox_pk,
-                payload=context.payload,
-                session=context.session,
-                workline=context.workline,
-                device=context.device,
-                command=context.command,
-                processor_token=context.processor_token,
-                inbox_service=self.inbox_service,
-            )
-            await db.commit()
-            result["success" if estop_processed else "failed"] += 1
-            result["processed"] += 1
-            return result
-        if not routing_outcome.timer_timeout_event:
-            return None
-        _ = await _handle_timer_timeout(
-            db,
-            inbox=context.inbox,
-            inbox_pk=context.inbox_pk,
-            payload=context.payload,
-            processor_token=context.processor_token,
-            inbox_service=self.inbox_service,
-        )
-        await db.commit()
-        result["success"] += 1
-        result["processed"] += 1
-        return result
-
-    async def _process_duplicate_or_late_event(
-        self,
-        db: AsyncSession,
-        *,
-        context: _ClaimedInboxContext,
-    ) -> ProcessResult | None:
-        """收束重复入站和晚到命令结果；普通事件返回 None。"""
-        is_duplicate_entry = await _is_duplicate_entry_event(
-            db,
-            inbox=context.inbox,
-            payload=context.payload,
-            resolved_event_type=context.resolved_event_type,
-            session=context.session,
-            workline=context.workline,
-            validation_service=self._validation_service,
-        )
-        if is_duplicate_entry and not _is_resource_wait_retry_for_same_inbox(context.session, context.inbox_pk):
-            result = _empty_result()
-            material_conflict = _duplicate_entry_material_conflict(
-                session=context.session,
-                workline=context.workline,
-                payload=context.payload,
-            )
-            if material_conflict is not None:
-                conflict_message, conflict_details = material_conflict
-                await _record_diagnostic(
-                    db,
-                    inbox=context.inbox,
-                    error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
-                    message=conflict_message,
-                    session=context.session,
-                    workline=context.workline,
-                    device=context.device,
-                    command=context.command,
-                    extra=conflict_details,
-                )
-                _require_fenced_update(
-                    await self.inbox_service.mark_dead_letter(
-                        db,
-                        inbox_id=context.inbox_pk,
-                        lease_token=context.processor_token,
-                        error_code=ErrorCode.CALLBACK_SCHEMA_INVALID.value,
-                        error_message=conflict_message,
-                    ),
-                    action="mark_dead_letter",
-                    inbox_id=context.inbox_pk,
-                )
-                await db.commit()
-                result["failed"] += 1
-                result["processed"] += 1
-                logger.warning(
-                    f"Inbox {context.inbox_pk} rejected conflicting duplicate entry event: "
-                    f"session_id={resolve_entity_id(context.session)}, conflicts={conflict_details['conflicts']}"
-                )
-                return result
-
-            await _record_duplicate_entry_archive_timeline(
-                db,
-                session=context.session,
-                workline=context.workline,
-                inbox=context.inbox,
-                payload=context.payload,
-                reason="SESSION_ALREADY_IN_PROGRESS_OR_TERMINAL",
-            )
-            _require_fenced_update(
-                await self.inbox_service.mark_processed(
-                    db,
-                    inbox_id=context.inbox_pk,
-                    lease_token=context.processor_token,
-                ),
-                action="mark_processed",
-                inbox_id=context.inbox_pk,
-            )
-            await db.commit()
-            result["success"] += 1
-            result["processed"] += 1
-            return result
-
-        if not _is_late_or_duplicate_command_result_for_session(
-            inbox=context.inbox,
-            payload=context.payload,
-            session=context.session,
-            command=context.command,
-        ):
-            return None
-
-        callback_command_code = context.payload.get("command_code")
-        awaiting_command_code = getattr(context.session, "awaiting_device_command_code", None)
-        archive_reason = (
-            "COMMAND_RESULT_CORRELATION_MISMATCH"
-            if isinstance(callback_command_code, str)
-            and isinstance(awaiting_command_code, str)
-            and callback_command_code != awaiting_command_code
-            else "COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT"
-        )
-        await _record_late_command_result_archive_timeline(
-            db,
-            session=context.session,
-            workline=context.workline,
-            inbox=context.inbox,
-            command=context.command,
-            payload=context.payload,
-            reason=archive_reason,
-        )
-        _require_fenced_update(
-            await self.inbox_service.mark_processed(
-                db,
-                inbox_id=context.inbox_pk,
-                lease_token=context.processor_token,
-            ),
-            action="mark_processed",
-            inbox_id=context.inbox_pk,
-        )
-        await db.commit()
-        result = _empty_result()
-        result["success"] += 1
-        result["processed"] += 1
-        return result
-
-    @staticmethod
-    async def _ensure_safety_checked(
-        db: AsyncSession,
-        *,
-        workline: Any,
-        already_checked: bool,
-    ) -> None:
-        """仅在上下文加载器尚未检查时执行工作线安全门禁。"""
-        if already_checked:
-            return
-        from src.app.workline.services.safety_service import workline_safety_service
-
-        _ = await workline_safety_service.assert_accepting_work(
-            db,
-            workline_id=resolve_required_pk(workline, "workline", "id", "workline_id"),
-        )
-
-    async def _process_claimed_core(
-        self,
-        db: AsyncSession,
-        *,
-        inbox: Any,
-        inbox_pk: int,
-        processor_token: str,
-        attempt_runtime: RuntimeInboxAttemptRuntime,
-    ) -> ProcessResult:
-        """执行单条 claim 的验证、路由与写回主流程。"""
-        validated_replay_source = None
-        if _kind_value(inbox) == "REPLAY_REQUEST":
-            validated_replay_source = await self._replay_source_validator.validate_for_consumption(db, source=inbox)
-        inbox = _project_replay_request(inbox, validated_source=validated_replay_source)
-        payload = _payload_for_inbox(inbox)
-        resolved_event_type = optional_str(getattr(inbox, "event_type", None))
-        if resolved_event_type is None:
-            raise ValueError("RuntimeInbox event_type is required")
-
-        result = _empty_result()
-        wms_result = await self._process_wms_inbound(
-            db,
-            inbox=inbox,
-            inbox_pk=inbox_pk,
-            processor_token=processor_token,
-            payload=payload,
-            event_type=resolved_event_type,
-        )
-        if wms_result is not None:
-            return wms_result
-        if _is_lifecycle_only_external_callback(inbox, payload):
-            # ingress 已在同一事务完成 lifecycle 副作用；processor 只负责
-            # 以 lease fencing 收束 RuntimeInbox 终态，不重复加载会话或执行安全门禁。
-            _require_fenced_update(
-                await self.inbox_service.mark_processed(
-                    db,
-                    inbox_id=inbox_pk,
-                    lease_token=processor_token,
-                ),
-                action="mark_processed",
-                inbox_id=inbox_pk,
-            )
-            await db.commit()
-            result["success"] += 1
-            result["processed"] += 1
-            return result
-
-        # ========== Stage 1: Validation (SCAN gate) ==========
-        (
-            session,
-            workline,
-            device,
-            command,
-            devices_by_role,
-            services,
-            safety_checked,
-        ) = await _load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
-
-        validation_outcome = await self._validation_service.pre_gate(
-            db,
-            inbox=inbox,
-            resolved_event_type=resolved_event_type,
-            workline=workline,
-        )
-        if not validation_outcome.proceed_to_orchestrator:
-            # SCAN gate 失败 -> 终态 FAILED.
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
-                    inbox_id=inbox_pk,
-                    lease_token=processor_token,
-                    error_code=(validation_outcome.error_code or ErrorCode.UNKNOWN).value,
-                    error_message=validation_outcome.error_message or "validation failed",
-                    retryable=False,
-                ),
-                action="mark_failed",
-                inbox_id=inbox_pk,
-            )
-            await db.commit()
-            result["failed"] += 1
-            result["processed"] += 1
-            return result
-
-        context = _ClaimedInboxContext(
-            inbox=inbox,
-            inbox_pk=inbox_pk,
-            payload=payload,
-            resolved_event_type=resolved_event_type,
-            session=session,
-            workline=workline,
-            device=device,
-            command=command,
-            processor_token=processor_token,
-        )
-        if _is_recorded_replay_for_bound_session(inbox, session, workline):
-            # Recorded replay 复用已持久化 decision/evidence；必须先于源事件的
-            # TIMER/late callback 路由，避免重放再次触发 provider 或新 EFFECT。
-            return await self._process_platform_plugin_attempt(
-                db,
-                inbox=inbox,
-                session=session,
-                workline=workline,
-                resolved_event_type=resolved_event_type,
-                processor_token=processor_token,
-                attempt_runtime=attempt_runtime,
-                services=services,
-                devices_by_role=devices_by_role,
-            )
-
-        # ========== Stage 1b: ESTOP / TIMER 专用路由 ==========
-        control_result = await self._process_control_event(db, context=context)
-        if control_result is not None:
-            return control_result
-
-        if session is None or workline is None:
-            error_msg = "Inbox processing missing session/workline context"
-            await _record_diagnostic(
-                db,
-                inbox=inbox,
-                error_code=ErrorCode.SESSION_CONTEXT_MISSING,
-                message=error_msg,
-                session=session,
-                workline=workline,
-                device=device,
-                command=command,
-            )
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
-                    inbox_id=inbox_pk,
-                    lease_token=processor_token,
-                    error_code=ErrorCode.SESSION_CONTEXT_MISSING.value,
-                    error_message=error_msg,
-                    retryable=False,
-                ),
-                action="mark_failed",
-                inbox_id=inbox_pk,
-            )
-            await db.commit()
-            result["failed"] += 1
-            result["processed"] += 1
-            return result
-
-        await self._ensure_safety_checked(
-            db,
-            workline=workline,
-            already_checked=safety_checked,
-        )
-
-        # ========== Stage 1c: duplicate / late detection ==========
-        terminal_result = await self._process_duplicate_or_late_event(db, context=context)
-        if terminal_result is not None:
-            return terminal_result
-
-        # ========== Stage 2/3: generated plugin attempt ==========
-        # Context loader 已强制校验 immutable binding；处理链不再保留未绑定分支。
-        return await self._process_platform_plugin_attempt(
-            db,
-            inbox=inbox,
-            session=session,
-            workline=workline,
-            resolved_event_type=resolved_event_type,
-            processor_token=processor_token,
-            attempt_runtime=attempt_runtime,
-            services=services,
-            devices_by_role=devices_by_role,
-        )
-
-    async def process_claimed(
-        self,
-        db: AsyncSession,
-        *,
-        claim: dict[str, Any] | Any,
-    ) -> ProcessResult:
-        """处理已被当前 worker claim 的单条 RuntimeInbox 消息.
-
-        内部委托 Validation / Processor / Write-back 三阶段。
-        """
-        result: ProcessResult = _empty_result()
-        inbox = await self.inbox_repository.get_by_id(db, claim["id"] if isinstance(claim, dict) else claim.id)
-        if inbox is None:
-            result["skipped"] += 1
-            return result
-
-        processor_token = (
-            claim.get("processor_token") if isinstance(claim, dict) else getattr(claim, "processor_token", None)
-        )
-        if not processor_token:
-            processor_token = f"runtime-inbox-worker-{uuid.uuid4()}"
-
-        # 每次 claim 都建立全新的 Port/Context/Gateway；即使 replay 验真失败，
-        # 也不允许复用上一个 attempt 的 handler 或 evidence cache。
-        attempt_runtime = self.create_attempt_runtime(processor_token)
-
-        diagnostic_inbox = _snapshot_inbox_for_diagnostic(inbox)
-        inbox_pk_text = str(diagnostic_inbox.id or getattr(inbox, "id", "unknown"))
-        inbox_pk: int | None = None
-        try:
-            inbox_pk = resolve_required_pk(inbox, "inbox", "id", "inbox_id")
-            if isinstance(claim, dict) and claim.get("id") and claim["id"] != inbox_pk:
-                result["skipped"] += 1
-                return result
-            return await self._process_claimed_core(
-                db,
-                inbox=inbox,
-                inbox_pk=inbox_pk,
-                processor_token=processor_token,
-                attempt_runtime=attempt_runtime,
-            )
-
-        except PluginBindingAdmissionError as e:
-            diagnostic_error_code = e.error_code or ErrorCode.UNKNOWN
-            retryable = e.error_code is None
-            logger.warning(
-                f"Inbox {inbox_pk_text} plugin binding admission failed: "
-                f"code={diagnostic_error_code.value}, message={e}"
-            )
-            await self._record_processing_failure(
-                db,
-                diagnostic_inbox=diagnostic_inbox,
-                inbox_pk=inbox_pk,
-                processor_token=processor_token,
-                diagnostic_error_code=diagnostic_error_code,
-                failure_error_code=diagnostic_error_code.value,
-                diagnostic_message=str(e),
-                failure_message=str(e),
-                retryable=retryable,
-                mark_failure_log=f"Inbox {inbox_pk_text} plugin binding admission 失败补记失败",
-            )
-            result["failed"] += 1
-            result["processed"] += 1
-
-        except SessionResolveError as e:
-            logger.warning(f"Inbox {inbox_pk_text} session resolve failed: {e}")
-            await self._record_processing_failure(
-                db,
-                diagnostic_inbox=diagnostic_inbox,
-                inbox_pk=inbox_pk,
-                processor_token=processor_token,
-                diagnostic_error_code=ErrorCode.SESSION_RESOLVE_FAILED,
-                failure_error_code=ErrorCode.SESSION_RESOLVE_FAILED.value,
-                diagnostic_message=str(e),
-                failure_message=str(e),
-                retryable=False,
-                mark_failure_log=f"Inbox {inbox_pk_text} session resolve 失败补记失败",
-            )
-            result["failed"] += 1
-            result["processed"] += 1
-
-        except WorkLineSafetyBlocked as e:
-            logger.warning(f"Inbox {inbox_pk_text} blocked by WorkLine safety state: {e}")
-            await self._record_processing_failure(
-                db,
-                diagnostic_inbox=diagnostic_inbox,
-                inbox_pk=inbox_pk,
-                processor_token=processor_token,
-                diagnostic_error_code=ErrorCode.UNKNOWN,
-                failure_error_code=ErrorCode.UNKNOWN.value,
-                diagnostic_message=str(e),
-                failure_message=str(e),
-                retryable=True,
-                mark_failure_log=f"Inbox {inbox_pk_text} safety blocked 补记失败",
-                error_domain=ErrorDomain.WORKFLOW,
-            )
-            result["failed"] += 1
-            result["processed"] += 1
-
-        except TimeoutError:
-            logger.error(f"Inbox {inbox_pk} 处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)")
-            await self._record_processing_failure(
-                db,
-                diagnostic_inbox=diagnostic_inbox,
-                inbox_pk=inbox_pk,
-                processor_token=processor_token,
-                diagnostic_error_code=ErrorCode.INBOX_PROCESSING_TIMEOUT,
-                failure_error_code=ErrorCode.INBOX_PROCESSING_TIMEOUT.value,
-                diagnostic_message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
-                failure_message=f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
-                retryable=False,
-                mark_failure_log="Inbox 超时标记失败",
-                fallback_to_diagnostic_id=True,
-            )
-            result["failed"] += 1
-            result["processed"] += 1
-
-        except Exception as e:
-            if isinstance(e, RuntimeInboxReplayNotAllowed):
-                # replay 合同拒绝不可重试，只持久化稳定原因码，避免 traceback locals 泄露 payload。
-                failure_error_code = e.reason_code
-                failure_message = e.reason_code
-                retryable = False
-                logger.warning(f"Inbox {inbox_pk_text} replay 验真拒绝: reason={e.reason_code}")
-            else:
-                failure_error_code = ErrorCode.UNKNOWN.value
-                failure_message = str(e)
-                retryable = True
-                logger.exception(f"Inbox {inbox_pk_text} 处理异常")
-            await self._record_processing_failure(
-                db,
-                diagnostic_inbox=diagnostic_inbox,
-                inbox_pk=inbox_pk,
-                processor_token=processor_token,
-                diagnostic_error_code=ErrorCode.UNKNOWN,
-                failure_error_code=failure_error_code,
-                diagnostic_message=failure_message,
-                failure_message=failure_message,
-                retryable=retryable,
-                mark_failure_log=f"Inbox {inbox_pk_text} 异常补记失败",
-                fallback_to_diagnostic_id=True,
-            )
-            result["failed"] += 1
-            result["processed"] += 1
-
-        finally:
-            await self._finalize_attempt(db, attempt_runtime)
-        return result
-
-    async def _process_platform_plugin_attempt(
-        self,
-        db: AsyncSession,
-        *,
-        inbox: Any,
-        session: Any,
-        workline: Any,
-        resolved_event_type: str,
-        processor_token: str,
-        attempt_runtime: RuntimeInboxAttemptRuntime,
-        services: Any = None,
-        devices_by_role: dict[str, list[Any]] | None = None,
-    ) -> ProcessResult:
-        """平台插件三阶段：固定快照 → 无 DB 决策 → 锁后原子写回。"""
-
-        inbox_id = resolve_required_pk(inbox, "inbox", "id", "inbox_id")
-        session_id = resolve_required_pk(session, "session", "id", "session_id")
-        workline_id = resolve_required_pk(workline, "workline", "id", "workline_id")
-        # SessionResolver 可能已应用本次 ingress metadata；先 flush 让乐观版本成为
-        # Stage 1 权威事实，再固定 snapshot，避免随后的 commit 令本 attempt 自我过期。
-        await db.flush()
-        material_fact_version = None
-        material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
-        if material_unit_id is not None:
-            material_snapshot = await self._material_unit_repository.get_fact_snapshot(db, material_unit_id)
-            if material_snapshot is not None:
-                material_fact_version = material_snapshot.fact_version
-        snapshot = _plugin_attempt_snapshot(
-            session,
-            processor_token=processor_token,
-            material_unit_version=material_fact_version,
-            devices_by_role=devices_by_role,
-        )
-        dispatch_request = await self._build_generated_dispatch_request(
-            db,
-            inbox=inbox,
-            session=session,
-            workline=workline,
-            snapshot=snapshot,
-        )
-        pre_attempt_resolution = await resolve_plugin_pre_attempt_facts(
-            db,
-            session=session,
-            workline=workline,
-            dispatch_request=dispatch_request,
-            services=services,
-        )
-        if pre_attempt_resolution.status is PreAttemptStatus.FACTS_CHANGED:
-            # 插件前置事实可能在同一 Stage 1 事务推进 Session 乐观版本；
-            # 必须重新冻结完整 snapshot 与 facts，避免 Stage 3 把本 attempt
-            # 自己刚完成的事实变更误判为并发漂移。
-            await db.flush()
-            snapshot = _plugin_attempt_snapshot(
-                session,
-                processor_token=processor_token,
-                material_unit_version=material_fact_version,
-                devices_by_role=devices_by_role,
-            )
-            dispatch_request = await self._build_generated_dispatch_request(
-                db,
-                inbox=inbox,
-                session=session,
-                workline=workline,
-                snapshot=snapshot,
-            )
-        await self._pin_attempt_runtime_to_dispatch_snapshot(
-            db,
-            runtime=attempt_runtime,
-            snapshot=dispatch_request.snapshot,
-        )
-        _configure_attempt_runtime_ports(
-            attempt_runtime,
-            services=services,
-        )
-        context = PluginAttemptContext(
-            attempt_id=processor_token,
-            inbox_id=inbox_id,
-            session_id=session_id,
-            workline_id=workline_id,
-            event_type=resolved_event_type,
-            payload=deepcopy(_payload_for_inbox(inbox)),
-            plugin_state=deepcopy(dict(getattr(session, "plugin_state_json", {}) or {})),
-            snapshot=snapshot,
-            runtime=attempt_runtime,
-            dispatch_request=dispatch_request,
-        )
-
-        replay_resolution: RecordedReplayResolution | None = None
-        if bool(getattr(inbox, "is_manual_replay", False)):
-            replay_resolution = await self._load_recorded_replay(db, inbox=inbox, snapshot=snapshot)
-
-        # Stage 1 显式提交，释放事务、连接占用和可能持有的行锁。
-        await db.commit()
-
-        # Stage 2 不接收 db/session/repository。Recorded replay 直接解码，
-        # 因此不会调用 runner 或 Gateway handler。
-        pre_attempt_blocked = pre_attempt_resolution.status is PreAttemptStatus.BLOCKED
-        if pre_attempt_blocked:
-            write_set = AttemptWriteSet(
-                evidence=(),
-                next_state=context.plugin_state,
-                intents=(),
-                outcome_code="HOLD",
-                hold_reason=pre_attempt_resolution.reason_code,
-                preserve_plugin_state=True,
-            )
-        elif replay_resolution is None:
-            write_set = await self._generated_attempt_runner.run(context)
-        else:
-            write_set = _write_set_from_recorded_replay(replay_resolution, fallback_state=context.plugin_state)
-        write_set = _bounded_plugin_write_set(
-            write_set,
-            limits=self._plugin_write_set_limits,
-            fallback_state=context.plugin_state,
-            allow_state_preservation=replay_resolution is not None or pre_attempt_blocked,
-        )
-
-        # Stage 3 在新短事务内锁权威行、重校验并原子写回。
-        writeback_result = await self._writeback_service.commit_plugin_attempt(
-            db,
-            expected_snapshot=snapshot,
-            inbox_id=inbox_id,
-            session_id=session_id,
-            workline_id=workline_id,
-            trace_id=getattr(inbox, "trace_id", None) or "",
-            write_set=write_set,
-            workline=workline,
-            devices_by_role=devices_by_role,
-            trusted_state_preservation=True,
-            effect_port_resolver=attempt_runtime.context.get_effect_port,
-            allow_new_claim=getattr(services, "allow_new_system_capability_claim", None),
-        )
-        disposition = writeback_result.disposition
-        if disposition in {WriteDisposition.COMMITTED, WriteDisposition.TERMINAL_FAILURE}:
-            from src.app.sys.services.event_stream_service import (
-                WORKLINE_RUNTIME_CHANGED_EVENT,
-                defer_sse_event,
-            )
-
-            # Stage 3 已提交，登记到外层统一发布队列，避免 SSE 早于数据库事实可见。
-            defer_sse_event(
-                db,
-                WORKLINE_RUNTIME_CHANGED_EVENT,
-                _build_runtime_session_updated_event_payload(
-                    workline_id=workline_id,
-                    session_id=session_id,
-                ),
-            )
-        result = _empty_result()
-        result["processed"] = 1
-        if disposition is WriteDisposition.SAFE_RETRY:
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
-                    inbox_id=inbox_id,
-                    lease_token=processor_token,
-                    error_code="PLUGIN_SNAPSHOT_STALE",
-                    error_message="PLUGIN_SNAPSHOT_STALE",
-                    retryable=True,
-                    consume_attempt=False,
-                ),
-                action="mark_failed",
-                inbox_id=inbox_id,
-            )
-            await db.commit()
-            result["resource_wait"] = 1
-        elif disposition is WriteDisposition.TERMINAL_FAILURE or write_set.hold_reason is not None:
-            result["failed"] = 1
-        else:
-            result["success"] = 1
-            if writeback_result.outbox_dispatch_targets:
-                self._enqueue_outbox_dispatch(writeback_result.outbox_dispatch_targets)
-        return result
-
-    async def _load_recorded_replay(
-        self,
-        db: AsyncSession,
-        *,
-        inbox: Any,
-        snapshot: AttemptSnapshot,
-    ) -> RecordedReplayResolution:
-        if snapshot.definition_identity is None or snapshot.binding_identity is None or snapshot.index_digest is None:
-            return RecordedReplayResolution(hold_reason="RECORDED_REPLAY_PIN_MISSING")
-        return await self._recorded_replay_service.load(
-            db,
-            source_inbox_id=int(inbox.replay_root_source_inbox_id),
-            expected_definition_identity=snapshot.definition_identity,
-            expected_binding_identity=snapshot.binding_identity,
-            expected_index_digest=snapshot.index_digest,
-        )
-
-
-async def _build_plugin_dispatch_request(
-    db: Any,
-    *,
-    inbox: Any,
-    session: Any,
-    workline: Any,
-    snapshot: AttemptSnapshot,
-) -> PluginDispatchRequest:
-    """在 Stage 1 固定 binding/config/facts，Stage 2 只消费 immutable request。"""
-
-    _ = workline
-    from src.app.workline.services.plugin_binding_service import (
-        WorklinePluginBindingService,
-        workline_plugin_binding_service,
-    )
-    from src.core.conf import settings
-    from src.utils.timezone import timezone
-
-    binding_id = snapshot.binding_id
-    if (
-        binding_id is None
-        or snapshot.binding_version is None
-        or snapshot.plugin_config_hash is None
-        or snapshot.index_digest is None
-    ):
-        raise ValueError("plugin binding snapshot is incomplete")
-    binding = await workline_plugin_binding_service.get_pinned(db, binding_id=binding_id)
-    # Context loader 的检查与这里的重读之间存在撤权窗口；构建任何 Stage 2
-    # dispatch request 前再次 fail closed，Stage 3 仍负责锁内并发重校验。
-    workline_plugin_binding_service.assert_execution_admitted(
-        binding,
-        environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
-        now=timezone.now_utc(),
-    )
-    raw_config = deepcopy(dict(getattr(binding, "typed_config_json", {}) or {}))
-    config_hash = sha256_digest(raw_config)
-    binding_config_hash = optional_str(getattr(binding, "typed_config_hash", None))
-    if config_hash != snapshot.plugin_config_hash or binding_config_hash != snapshot.plugin_config_hash:
-        raise ValueError("plugin config snapshot mismatch")
-    profile_identity = optional_str(raw_config.get("provider_profile"))
-    if profile_identity is None:
-        raise ValueError("plugin provider profile is required")
-    plugin_key = optional_str(getattr(binding, "plugin_key", None))
-    contract_version = optional_str(getattr(binding, "contract_version", None))
-    if plugin_key is None or contract_version is None:
-        raise ValueError("plugin identity is required")
-    route, raw_input = _canonical_plugin_input(inbox)
-    command_id = optional_int(getattr(inbox, "command_id", None))
-    route_diagnostic: str | None = None
-    if route == "COMMAND_RESULT" and command_id is None:
-        route_diagnostic = "COMMAND_ID_MISSING"
-    elif route == "COMMAND_RESULT":
-        from src.app.device.repositories import device_command_repository
-
-        command = await device_command_repository.get_by_id(db, command_id)
-        command_type = optional_str(getattr(command, "task_type", None)) if command is not None else None
-        if command is None:
-            route_diagnostic = "COMMAND_NOT_FOUND"
-        elif command_type is None:
-            route_diagnostic = "COMMAND_TASK_TYPE_MISSING"
-        else:
-            command_status = optional_enum_str(getattr(command, "status", None))
-            command_result = optional_enum_str(getattr(command, "result", None))
-            # 外部 callback 只负责关联 command_id；动作类型和执行结果都来自已持久化命令。
-            # 对非法终态仍提供可解析的 ERROR 输入，但 route diagnostic 会保证插件零副作用。
-            raw_input = {
-                **raw_input,
-                "command_type": command_type,
-                "result": command_result if command_result in {"SUCCESS", "FAILED"} else "ERROR",
-                "data": deepcopy(payload_dict(getattr(command, "result_data", None))),
-                "error_detail": deepcopy(payload_dict(getattr(command, "error_detail", None))),
-            }
-            authority_matches = _command_result_authority_matches(
-                inbox=inbox,
-                session=session,
-                workline=workline,
-                binding=binding,
-                command=command,
-                payload_command_code=optional_str(raw_input.get("command_code")),
-            )
-            if not authority_matches:
-                route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
-            elif (command_status, command_result) not in {
-                ("COMPLETED", "SUCCESS"),
-                ("FAILED", "FAILED"),
-            }:
-                route_diagnostic = "COMMAND_RESULT_EVIDENCE_INVALID"
-    replay_digest_matches = await _replay_digest_matches_source(
-        db,
-        inbox=inbox,
-        route=route,
-        raw_input=raw_input,
-    )
-    state = deepcopy(dict(getattr(session, "plugin_state_json", {}) or {}))
-    session_context = payload_dict(getattr(session, "context_json", None))
-    material_fact: dict[str, Any] = {}
-    material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
-    if material_unit_id is not None:
-        material_fact = await default_material_unit_repository.get_plugin_fact_payload(db, material_unit_id) or {}
-    command_code = optional_str(raw_input.get("command_code"))
-    awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
-    correlation_matches = command_code is None or (awaiting_code is not None and command_code == awaiting_code)
-    if route == "COMMAND_RESULT" and route_diagnostic is None and not correlation_matches:
-        route_diagnostic = "COMMAND_RESULT_CORRELATION_MISMATCH"
-    pinned_snapshot = PinnedPluginSnapshot(
-        plugin_key=plugin_key,
-        contract_version=contract_version,
-        binding_identity=f"binding:{binding_id}:{snapshot.binding_version}",
-        binding_id=binding_id,
-        binding_version=snapshot.binding_version,
-        config_hash=snapshot.plugin_config_hash,
-        index_digest=snapshot.index_digest,
-        profile_identity=profile_identity,
-    )
-    return PluginDispatchRequest(
-        plugin_key=plugin_key,
-        contract_version=contract_version,
-        logical_route=route,
-        raw_config=raw_config,
-        raw_state=state,
-        context_state=state,
-        raw_input=raw_input,
-        fact_source=PluginAttemptFactSource(
-            snapshot=pinned_snapshot,
-            raw_input=raw_input,
-            session_context=session_context,
-            material_fact=material_fact,
-            device_fact_versions=snapshot.device_fact_versions,
-            correlation_matches=correlation_matches,
-            replay_digest_matches=replay_digest_matches,
-            route_diagnostic=route_diagnostic,
-        ),
-        snapshot=pinned_snapshot,
-    )
-
-
-def _command_result_authority_matches(
-    *,
-    inbox: Any,
-    session: Any,
-    workline: Any,
-    binding: Any,
-    command: Any,
-    payload_command_code: str | None,
-) -> bool:
-    """校验 callback、持久命令、Session wait 与 binding 的同一执行归属。"""
-
-    command_code = optional_str(getattr(command, "command_code", None))
-    awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
-    command_correlation = optional_str(getattr(command, "correlation_id", None))
-    inbox_correlation = optional_str(getattr(inbox, "correlation_id", None))
-    session_code = optional_str(getattr(session, "session_code", None))
-    session_correlation = f"workline-session:{session_code}" if session_code is not None else None
-    workline_id = optional_int(getattr(workline, "id", None))
-    command_workline_id = optional_int(getattr(command, "workline_id", None))
-    inbox_workline_id = optional_int(getattr(inbox, "workline_id", None))
-    session_workline_id = optional_int(getattr(session, "workline_id", None))
-    session_id = optional_int(getattr(session, "id", None))
-    inbox_session_id = optional_int(getattr(inbox, "workline_session_id", None))
-    binding_plugin_key = optional_str(getattr(binding, "plugin_key", None))
-    binding_contract_version = optional_str(getattr(binding, "contract_version", None))
-    identity_pairs = (
-        (optional_str(getattr(command, "plugin_key", None)), binding_plugin_key),
-        (optional_str(getattr(command, "contract_version", None)), binding_contract_version),
-        (optional_str(getattr(session, "plugin_key", None)), binding_plugin_key),
-        (optional_str(getattr(session, "contract_version", None)), binding_contract_version),
-    )
-    return (
-        command_code is not None
-        and command_code == payload_command_code == awaiting_code
-        and command_correlation is not None
-        and command_correlation == inbox_correlation == session_correlation
-        and workline_id is not None
-        and workline_id == command_workline_id == inbox_workline_id == session_workline_id
-        and session_id is not None
-        and session_id == inbox_session_id
-        and optional_int(getattr(session, "plugin_binding_id", None)) == optional_int(getattr(binding, "id", None))
-        and all(actual is not None and actual == expected for actual, expected in identity_pairs)
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _ReplaySourceIdentity:
-    """logical replay 请求声明的 source identity。"""
-
-    inbox_id: int
-    idempotency_key: str
-    payload_digest: str
-
-
-def _resolve_replay_source_identity(inbox: Any, raw_input: dict[str, Any]) -> _ReplaySourceIdentity | None:
-    """解析 replay source identity；任何缺失或自引用都 fail closed。"""
-    causation_id = optional_str(getattr(inbox, "causation_id", None))
-    supplied_key = optional_str(raw_input.get("idempotency_key"))
-    supplied_digest = optional_str(raw_input.get("payload_digest"))
-    if causation_id is None or supplied_key is None or supplied_digest is None or not causation_id.startswith("inbox:"):
-        return None
-    try:
-        source_inbox_id = int(causation_id.removeprefix("inbox:"))
-    except ValueError:
-        return None
-    if source_inbox_id <= 0 or source_inbox_id == optional_int(getattr(inbox, "id", None)):
-        return None
-    return _ReplaySourceIdentity(
-        inbox_id=source_inbox_id,
-        idempotency_key=supplied_key,
-        payload_digest=supplied_digest,
-    )
-
-
-def _recorded_replay_logical_key(recorded_rows: list[Any]) -> str | None:
-    """仅接受唯一 PLUGIN_DECISION 中固定的 logical idempotency key。"""
-    decision_payloads = [
-        payload_json
-        for row in recorded_rows
-        if isinstance((payload_json := getattr(row, "payload_json", None)), dict)
-        and payload_json.get("record_type") == "PLUGIN_DECISION"
-    ]
-    if len(decision_payloads) != 1:
-        return None
-    attempt_anchor = decision_payloads[0].get("attempt_anchor")
-    return optional_str(attempt_anchor.get("logical_idempotency_key")) if isinstance(attempt_anchor, dict) else None
-
-
-def _runtime_replay_anchors_match(source: Any, replay: Any) -> bool:
-    """要求 source 与 replay 的全部运行时锚点存在且相等。"""
-    anchor_fields = ("workline_id", "workline_session_id", "execution_session_id", "correlation_id")
-    return all(
-        (source_anchor := getattr(source, anchor_field, None)) is not None
-        and (replay_anchor := getattr(replay, anchor_field, None)) is not None
-        and source_anchor == replay_anchor
-        for anchor_field in anchor_fields
-    )
-
-
-def _replay_payload_digest_matches(source: Any, supplied_digest: str) -> bool:
-    """比较去除可选算法前缀后的 canonical payload digest。"""
-    recorded_digest = optional_str(getattr(source, "payload_hash", None))
-    if recorded_digest is None:
-        return False
-    return supplied_digest.removeprefix("sha256:") == recorded_digest.removeprefix("sha256:")
-
-
-async def _replay_digest_matches_source(
-    db: Any,
-    *,
-    inbox: Any,
-    route: str,
-    raw_input: dict[str, Any],
-) -> bool | None:
-    """用 causal source Inbox 的 canonical hash 验证 logical replay digest。"""
-
-    if route != "REPLAY_REQUEST":
-        return None
-    identity = _resolve_replay_source_identity(inbox, raw_input)
-    if identity is None:
-        return False
-    source = await runtime_inbox_repository.get_by_id(db, identity.inbox_id)
-    if source is None:
-        return False
-    recorded_rows = await timeline_recorded_replay_repository.list_recorded_decisions(
-        db,
-        source_inbox_id=identity.inbox_id,
-    )
-    source_key = _recorded_replay_logical_key(recorded_rows)
-    if identity.idempotency_key != source_key:
-        return False
-    if not _runtime_replay_anchors_match(source, inbox):
-        return False
-    return _replay_payload_digest_matches(source, identity.payload_digest)
-
-
-def _first_plugin_fact(*sources: dict[str, Any], names: tuple[str, ...]) -> str | None:
-    for source in sources:
-        for name in names:
-            value = optional_str(source.get(name))
-            if value is not None:
-                return value
-    return None
-
-
-def _configure_attempt_runtime_ports(
-    attempt_runtime: RuntimeInboxAttemptRuntime,
-    *,
-    services: Any,
-) -> None:
-    """把当前 Inbox 的 typed QUERY 与 EFFECT Port 注册为 attempt-scoped runtime。"""
-
-    query_port = getattr(services, "wms_query_execution_port", None)
-    if query_port is not None:
-        from src.app.wms_integration.ports.query_execution import WmsQueryExecutionPort
-
-        attempt_runtime.port_registry.register(
-            WmsQueryExecutionPort,
-            lambda: query_port,
-            cache_instance=True,
-        )
-
-    effect_port = getattr(services, "wms_effect_preparation_port", None)
-    if effect_port is not None:
-        from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparationPort
-
-        attempt_runtime.port_registry.register(
-            WmsEffectPreparationPort,
-            lambda: effect_port,
-            cache_instance=True,
-        )
-
-
-def _plugin_attempt_snapshot(
-    session: Any,
-    *,
-    processor_token: str,
-    material_unit_version: int | None = None,
-    devices_by_role: dict[str, list[Any]] | None = None,
-) -> AttemptSnapshot:
-    definition_identity = getattr(session, "plugin_identity", None)
-    if definition_identity is None:
-        plugin_key = getattr(session, "plugin_key", None)
-        contract_version = getattr(session, "contract_version", None)
-        if isinstance(plugin_key, str) and plugin_key and isinstance(contract_version, str) and contract_version:
-            from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX
-
-            definition = WORKLINE_PLUGIN_INDEX.get((plugin_key, contract_version))
-            definition_identity = definition.identity if definition is not None else f"{plugin_key}@{contract_version}"
-    return AttemptSnapshot(
-        processor_token=processor_token,
-        session_version=int(getattr(session, "version", 0)),
-        plugin_state_version=int(getattr(session, "plugin_state_version", 0)),
-        session_status=string_value(getattr(session, "status", None)),
-        material_unit_id=optional_int(getattr(session, "current_material_unit_id", None)),
-        material_unit_version=material_unit_version,
-        device_fact_versions=_device_fact_versions(devices_by_role),
-        definition_identity=definition_identity,
-        binding_id=optional_int(getattr(session, "plugin_binding_id", None)),
-        binding_version=optional_int(getattr(session, "plugin_binding_version", None)),
-        plugin_config_hash=optional_str(getattr(session, "plugin_config_hash", None)),
-        index_digest=optional_str(getattr(session, "plugin_index_digest", None)),
-        wait_anchor=(
-            optional_str(getattr(session, "current_wait_type", None)),
-            optional_str(getattr(session, "awaiting_device_command_code", None)),
-        ),
-    )
-
-
-def _device_fact_versions(devices_by_role: dict[str, list[Any]] | None) -> tuple[tuple[str, int, int], ...]:
-    """把 Stage 1 设备候选顺序及乐观版本冻结为 immutable primitives。"""
-
-    facts: list[tuple[str, int, int]] = []
-    for role in sorted(devices_by_role or {}):
-        for device in (devices_by_role or {})[role]:
-            device_id = getattr(device, "id", None)
-            version = getattr(device, "version", None)
-            if (
-                isinstance(device_id, int)
-                and not isinstance(device_id, bool)
-                and isinstance(version, int)
-                and not isinstance(version, bool)
-                and version >= 0
-            ):
-                facts.append((role, device_id, version))
-    return tuple(facts)
-
-
-def _write_set_from_recorded_replay(
-    resolution: RecordedReplayResolution,
-    *,
-    fallback_state: dict[str, Any],
-) -> AttemptWriteSet:
-    if resolution.hold_reason is not None or resolution.decision is None:
-        return AttemptWriteSet(
-            evidence=(),
-            next_state={},
-            intents=(),
-            outcome_code="HOLD",
-            hold_reason=resolution.hold_reason or "RECORDED_REPLAY_RECORD_MISSING",
-            preserve_plugin_state=True,
-        )
-    try:
-        decision = TypeAdapter(_RecordedPluginDecision).validate_python(resolution.decision)
-    except (TypeError, ValidationError, ValueError):
-        return _invalid_recorded_write_set(fallback_state)
-    if (
-        decision.outcome_code == "HOLD"
-        and decision.hold_reason is None
-        and not _recorded_live_hold_intent_is_valid(
-            resolution.decision.get("intents"),
-            binding_identity=resolution.binding_identity,
-            attempt_anchor=resolution.attempt_anchor,
-        )
-    ):
-        return _invalid_recorded_write_set(fallback_state)
-    return AttemptWriteSet(
-        # Recorded replay 保留历史 evidence 的审计值，但不得重新执行 QUERY 或 effect。
-        evidence=resolution.evidence,
-        # Recorded replay 复用已审计的 decision/evidence，但不把历史状态
-        # 覆盖到可能已经继续推进的当前 Session。
-        next_state={},
-        # Recorded replay 只恢复已审计 decision/evidence；原 intent 的
-        # EFFECT 已在源 attempt 执行，不得再次产生物理副作用。
-        intents=(),
-        outcome_code=decision.outcome_code,
-        hold_reason=decision.hold_reason,
-        recorded_attempt_anchor=resolution.attempt_anchor,
-        recorded_decision=resolution.decision,
-        preserve_plugin_state=True,
-    )
-
-
-class _RecordedPluginDecision(BaseModel):
-    """Timeline recorded decision 的完整、封闭解码合同。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    outcome_code: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-    hold_reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
-    next_state: dict[str, Any]
-    intents: tuple[RuntimeIntent, ...] = Field(max_length=MAX_PLUGIN_DECISION_INTENTS)
-
-    @model_validator(mode="after")
-    def validate_hold_combination(self) -> Self:
-        if self.outcome_code == "HOLD":
-            fail_closed_hold = self.hold_reason is not None and not self.intents
-            live_business_hold = self.hold_reason is None and len(self.intents) == 1
-            if not (fail_closed_hold or live_business_hold):
-                raise ValueError("recorded HOLD must be fail-closed or one live business hold intent")
-        elif self.hold_reason is not None:
-            raise ValueError("recorded non-HOLD decision cannot carry hold_reason")
-        return self
-
-
-def _recorded_live_hold_intent_is_valid(
-    raw_intents: Any,
-    *,
-    binding_identity: str | None,
-    attempt_anchor: Any,
-) -> bool:
-    """只接受 live runner 生成并与 recorded binding 一致的 session_hold。"""
-
-    if (
-        attempt_anchor is None
-        or not isinstance(raw_intents, list | tuple)
-        or len(raw_intents) != 1
-        or not isinstance(raw_intents[0], dict)
-    ):
-        return False
-    raw_intent = raw_intents[0]
-    try:
-        intent = RuntimeIntent.model_validate(raw_intent)
-        operation_parts = (intent.operation_key or "").split(":")
-        payload = intent.payload_json
-        precondition = intent.precondition_json
-        binding = intent.binding_snapshot
-        provider = intent.provider_snapshot
-        if (
-            operation_parts[:1] != ["inbox"]
-            or len(operation_parts) != 4
-            or not operation_parts[1].isdigit()
-            or operation_parts[2:] != ["0", "block"]
-            or intent.operation_key != f"inbox:{attempt_anchor.source_inbox_id}:0:block"
-            or set(payload) != {"failure_domain", "reason_code", "message"}
-            or not all(isinstance(payload[key], str) and payload[key] for key in payload)
-            or set(precondition) != {"expected_status"}
-            or not isinstance(precondition["expected_status"], str)
-            or not precondition["expected_status"]
-            or precondition != {"expected_status": attempt_anchor.session_status}
-            or not isinstance(intent.fact_version, str)
-            or not intent.fact_version.startswith("session:")
-            or not intent.fact_version.removeprefix("session:").isdigit()
-            or intent.fact_version != f"session:{attempt_anchor.session_version}"
-            or set(binding) != {"binding_id", "binding_version"}
-            or not isinstance(binding["binding_id"], int)
-            or not isinstance(binding["binding_version"], int)
-            or binding_identity != f"binding:{binding['binding_id']}:{binding['binding_version']}"
-            or provider != {"provider_code": "RUNTIME", "profile": "runtime"}
-        ):
-            return False
-        expected = RuntimeIntent.system_capability(
-            capability_key="runtime.session_hold",
-            contract_version="v1",
-            operation_key=intent.operation_key or "",
-            dispatch_key=intent.dispatch_key or "",
-            payload=payload,
-            precondition=precondition,
-            fact_version=intent.fact_version,
-            timeout_seconds=5,
-            creator_authority="WORKLINE_PLUGIN",
-            authorization_policy="PLUGIN_DECLARED_CAPABILITY",
-            binding_snapshot=binding,
-            provider_snapshot=provider,
-        )
-    except (KeyError, TypeError, ValidationError, ValueError):
-        return False
-    return raw_intent == expected.model_dump(mode="json")
-
-
-def _invalid_recorded_write_set(fallback_state: dict[str, Any]) -> AttemptWriteSet:
-    _ = fallback_state
-    return AttemptWriteSet(
-        evidence=(),
-        next_state={},
-        intents=(),
-        outcome_code="HOLD",
-        hold_reason="RECORDED_REPLAY_RECORD_INVALID",
-        preserve_plugin_state=True,
-    )
-
-
-def _bounded_plugin_write_set(
-    write_set: AttemptWriteSet,
-    *,
-    limits: Any,
-    fallback_state: dict[str, Any] | None = None,
-    allow_state_preservation: bool = False,
-) -> AttemptWriteSet:
-    """保留 processor 内部 seam，并委托 write-set 合同 owner。"""
-
-    return bound_attempt_write_set(
-        write_set,
-        limits=limits,
-        fallback_state=fallback_state or {},
-        allow_state_preservation=allow_state_preservation,
-    )
+    for key in target:
+        target[key] += source[key]
 
 
 def _kind_value(entity: Any) -> str | None:
@@ -2260,117 +98,45 @@ def _kind_value(entity: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-async def _is_duplicate_entry_event(
-    db: Any,
-    *,
-    inbox: Any,
-    payload: dict[str, Any],
-    resolved_event_type: str,
-    session: Any,
-    workline: Any,
-    validation_service: RuntimeInboxValidationService,
-) -> bool:
-    """识别已进入忙碌或终态会话的重复入口事件。"""
-    if _kind_value(inbox) != "DEVICE_EVENT":
-        return False
-    if resolved_event_type not in _entry_event_types_for_workline(workline):
-        return False
-    if await validation_service.is_payload_invalid_entry_replay(db, inbox=inbox, session=session):
-        return False
-    terminal_statuses = {"COMPLETED", "FAILED", "CANCELLED"}
-    busy_statuses = {"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"}
-    status = _session_status_value(session)
-    if status in terminal_statuses or status in busy_statuses:
-        return True
-    if getattr(session, "awaiting_device_command_code", None) is not None:
-        return True
-    current_wait_type = getattr(session, "current_wait_type", None)
-    return bool(current_wait_type)
-
-
-def _is_resource_wait_retry_for_same_inbox(session: Any, inbox_id: int) -> bool:
-    """识别同一 inbox 从 RESOURCE_WAIT 唤醒后的重试。"""
-    if getattr(session, "current_wait_type", None) != "RESOURCE_WAIT":
-        return False
-    resource_wait = payload_dict(payload_dict(getattr(session, "context_json", None)).get("resource_wait"))
-    return optional_int(resource_wait.get("inbox_id")) == inbox_id
-
-
-def _session_context(session: Any) -> dict[str, Any]:
-    raw_context = getattr(session, "context_json", None)
-    return dict(raw_context) if isinstance(raw_context, dict) else {}
-
-
-def _normalized_entry_material_evidence(
-    *,
-    plugin_key: str | None,
-    contract_version: str | None = None,
-    payload: dict[str, Any],
-) -> dict[str, str]:
-    """提取 capability 拥有的入口物料证据。"""
-    try:
-        six_in_one = parse_workline_six_in_one(plugin_key, payload, contract_version=contract_version)
-    except (TypeError, ValueError):
-        return {}
-    if six_in_one is None:
-        return {}
-    evidence: dict[str, str] = {}
-    for field_name, raw_value in six_in_one.iter_business_fields():
-        if not isinstance(field_name, str) or not field_name:
-            continue
-        if isinstance(raw_value, str):
-            value = raw_value.strip()
-            if value:
-                evidence[field_name] = value
-    return evidence
-
-
-def _duplicate_entry_material_conflict(
-    *,
-    session: Any,
-    workline: Any,
-    payload: dict[str, Any],
-) -> tuple[str, dict[str, Any]] | None:
-    """判断重复入口是否与 session 初始物料证据冲突。"""
-    plugin_key = string_value(getattr(session, "plugin_key", None)) or string_value(
-        getattr(workline, "plugin_key", None)
+def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
+    payload = getattr(inbox, "payload_json", None)
+    return _InboxDiagnosticSnapshot(
+        id=optional_int(getattr(inbox, "id", None)),
+        workline_id=optional_int(getattr(inbox, "workline_id", None)),
+        workline_session_id=optional_int(getattr(inbox, "workline_session_id", None)),
+        device_id=optional_int(getattr(inbox, "device_id", None)),
+        command_id=optional_int(getattr(inbox, "command_id", None)),
+        payload_json=dict(payload) if isinstance(payload, dict) else {},
     )
-    if not plugin_key:
-        return None
-    contract_version = string_value(getattr(session, "contract_version", None)) or string_value(
-        getattr(workline, "contract_version", None)
-    )
-    session_context = _session_context(session)
-    initial_payload = payload_dict(session_context.get("initial_payload") or session_context.get("source_payload"))
-    if not initial_payload:
-        return None
-    expected = _normalized_entry_material_evidence(
-        plugin_key=plugin_key,
-        contract_version=contract_version,
-        payload=initial_payload,
-    )
-    actual = _normalized_entry_material_evidence(
-        plugin_key=plugin_key,
-        contract_version=contract_version,
-        payload=payload,
-    )
-    if not expected or not actual:
-        return None
-    conflicts = {
-        field_name: {"expected": expected[field_name], "actual": actual[field_name]}
-        for field_name in sorted(expected.keys() & actual.keys())
-        if expected[field_name] != actual[field_name]
-    }
-    if not conflicts:
-        return None
-    details = {
-        "reason": "ENTRY_MATERIAL_IDENTITY_CONFLICT",
-        "conflicts": conflicts,
-        "expected": expected,
-        "actual": actual,
-    }
-    message = "ENTRY_MATERIAL_IDENTITY_CONFLICT: duplicate entry event conflicts with session initial material evidence"
-    return message, details
+
+
+def _project_replay_request(inbox: Any, *, validated_source: Any | None) -> Any:
+    if validated_source is None:
+        return inbox
+    envelope = validated_source.envelope
+    return type(
+        "ReplayInbox",
+        (),
+        {
+            "id": getattr(inbox, "id", None),
+            "kind": envelope["original_kind"],
+            "payload_json": dict(envelope["original_payload"]),
+            "provider_code": envelope["original_provider_code"],
+            "event_type": envelope["original_event_type"],
+            "source_event_id": envelope["original_source_event_id"],
+            "payload_hash": envelope["original_payload_hash"],
+            "workline_id": envelope["original_workline_id"],
+            "device_id": envelope["original_device_id"],
+            "command_id": envelope["original_command_id"],
+            "workline_session_id": envelope["original_workline_session_id"],
+            "execution_session_id": envelope["original_execution_session_id"],
+            "correlation_id": envelope["original_correlation_id"],
+            "trace_id": envelope["original_trace_id"],
+            "event_id": envelope["original_event_id"],
+            "causation_id": envelope["original_causation_id"],
+            "is_manual_replay": True,
+        },
+    )()
 
 
 async def _load_related_entities(
@@ -2378,19 +144,8 @@ async def _load_related_entities(
     inbox: Any,
     *,
     resolved_event_type: str | None = None,
-) -> tuple[
-    Any | None,
-    Any | None,
-    Any | None,
-    Any | None,
-    dict[str, list[Any]],
-    Any,
-    bool,
-]:
-    """加载关联实体并固定 tuple 中 device/command 的位置。"""
-    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
-        load_related_entities,
-    )
+) -> tuple[Any | None, Any | None, Any | None, Any | None, dict[str, list[Any]], Any, bool]:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import load_related_entities
 
     loaded = await load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
     return (
@@ -2417,17 +172,14 @@ async def _handle_estop(
     processor_token: str,
     inbox_service: RuntimeInboxService,
 ) -> bool:
-    """处理 ESTOP_PRESSED 急停并在安全 effect 后执行 fenced 终态。"""
-    from src.utils.value_normalization import resolve_entity_id
-
     workline_pk = resolve_entity_id(workline)
     if workline_pk is None:
-        error_msg = "ESTOP_PRESSED missing workline context"
+        message = "ESTOP_PRESSED missing workline context"
         await _record_diagnostic(
             db,
             inbox=inbox,
             error_code=ErrorCode.SESSION_CONTEXT_MISSING,
-            message=error_msg,
+            message=message,
             session=session,
             workline=workline,
             device=device,
@@ -2439,18 +191,15 @@ async def _handle_estop(
                 inbox_id=inbox_pk,
                 lease_token=processor_token,
                 error_code=ErrorCode.SESSION_CONTEXT_MISSING.value,
-                error_message=error_msg,
+                error_message=message,
                 retryable=False,
             ),
             action="mark_failed",
             inbox_id=inbox_pk,
         )
         return False
-
     from src.app.workline.services.safety_service import workline_safety_service
 
-    # Fail-safe fencing 特例：handle_estop 内部立即提交安全冻结/排空；
-    # RuntimeInbox 终态 fencing 必须后置，绝不能把两者重构为同一可回滚事务。
     _ = await workline_safety_service.handle_estop(
         db,
         workline_id=workline_pk,
@@ -2460,11 +209,7 @@ async def _handle_estop(
         trigger_payload=payload,
     )
     _require_fenced_update(
-        await inbox_service.mark_processed(
-            db,
-            inbox_id=inbox_pk,
-            lease_token=processor_token,
-        ),
+        await inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token),
         action="mark_processed",
         inbox_id=inbox_pk,
     )
@@ -2480,19 +225,14 @@ async def _handle_timer_timeout(
     processor_token: str,
     inbox_service: RuntimeInboxService,
 ) -> None:
-    """将 TIMER_TIMEOUT 路由到 reconciliation service。"""
     from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
         workline_runtime_reconciliation_service,
     )
 
-    raw_data = payload.get("data")
-    payload_data = raw_data if isinstance(raw_data, dict) else payload
-    # WorklineSession 与 ExecutionSession 分属不同 ID 空间；
-    # 业务路由只认 canonical legacy session_id。
-    session_id = optional_int(payload_data.get("session_id"))
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     _ = await workline_runtime_reconciliation_service.handle_timer_timeout(
         db,
-        session_id=session_id,
+        session_id=optional_int(data.get("session_id")),
         inbox_id=inbox_pk,
         payload=payload,
         source_inbox_id=inbox_pk,
@@ -2500,17 +240,264 @@ async def _handle_timer_timeout(
         trace_id=string_value(getattr(inbox, "trace_id", None)) or None,
     )
     _require_fenced_update(
-        await inbox_service.mark_processed(
-            db,
-            inbox_id=inbox_pk,
-            lease_token=processor_token,
-        ),
+        await inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token),
         action="mark_processed",
         inbox_id=inbox_pk,
     )
 
 
-__all__ = [
-    "ProcessResult",
-    "RuntimeInboxProcessorBridge",
-]
+class RuntimeInboxProcessorBridge:
+    """处理 RuntimeInbox 的通用 WMS、控制、诊断与终态路径。"""
+
+    def __init__(
+        self,
+        *,
+        validation_service: RuntimeInboxValidationService | None = None,
+        inbox_service: RuntimeInboxService | None = None,
+        inbox_repository: RuntimeInboxRepository | None = None,
+        replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
+        queue_gateway: TaskQueueGateway = task_queue_gateway,
+        wms_inbound_handler: Any | None = None,
+    ) -> None:
+        self._validation_service = validation_service or RuntimeInboxValidationService()
+        self._inbox_service = inbox_service or runtime_inbox_service
+        self._inbox_repository = inbox_repository or runtime_inbox_repository
+        self._replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(
+            self._inbox_repository
+        )
+        self._queue_gateway = queue_gateway
+        self._wms_inbound_handler = wms_inbound_handler
+
+    @property
+    def inbox_service(self) -> RuntimeInboxService:
+        return self._inbox_service
+
+    @property
+    def inbox_repository(self) -> RuntimeInboxRepository:
+        return self._inbox_repository
+
+    def _resolve_wms_inbound_handler(self) -> Any:
+        if self._wms_inbound_handler is None:
+            from src.app.runtime.orchestration.services.inbox.wms_runtime_inbox_handler import WmsRuntimeInboxHandler
+
+            self._wms_inbound_handler = WmsRuntimeInboxHandler()
+        return self._wms_inbound_handler
+
+    async def claim_and_process_batch(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        processor_token_prefix: str = "runtime-inbox-worker",  # noqa: S107
+    ) -> ProcessResult:
+        result = _empty_result()
+        for _ in range(max(limit, 0)):
+            token = f"{processor_token_prefix}-{uuid.uuid4()}"
+            claims = await self.inbox_repository.claim_received_with_token(
+                db, limit=1, processor_token=token, stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS
+            )
+            if not claims:
+                break
+            _merge_result(result, await self.process_claimed(db, claim=claims[0]))
+        return result
+
+    async def _mark_failure(
+        self, db: Any, *, inbox: Any, inbox_id: int | None, token: str, error_code: str, message: str, retryable: bool
+    ) -> ProcessResult:
+        try:
+            diagnostic_error_code = ErrorCode(error_code)
+        except ValueError:
+            diagnostic_error_code = ErrorCode.UNKNOWN
+        await _record_diagnostic(db, inbox=inbox, error_code=diagnostic_error_code, message=message)
+        if inbox_id is not None:
+            _require_fenced_update(
+                await self.inbox_service.mark_failed(
+                    db,
+                    inbox_id=inbox_id,
+                    lease_token=token,
+                    error_code=error_code,
+                    error_message=message,
+                    retryable=retryable,
+                ),
+                action="mark_failed",
+                inbox_id=inbox_id,
+            )
+            await db.commit()
+        result = _empty_result()
+        result["failed"] = result["processed"] = 1
+        return result
+
+    async def _process_claimed_core(self, db: Any, *, inbox: Any, inbox_id: int, token: str) -> ProcessResult:
+        if _kind_value(inbox) == "REPLAY_REQUEST":
+            source = await self._replay_source_validator.validate_for_consumption(db, source=inbox)
+            inbox = _project_replay_request(inbox, validated_source=source)
+        payload = _payload_for_inbox(inbox)
+        event_type = optional_str(getattr(inbox, "event_type", None))
+        if event_type is None:
+            raise ValueError("RuntimeInbox event_type is required")
+        if await self._resolve_wms_inbound_handler().handle(
+            db,
+            provider_code=optional_str(getattr(inbox, "provider_code", None)),
+            event_type=event_type,
+            payload=payload,
+        ):
+            _require_fenced_update(
+                await self.inbox_service.mark_processed(db, inbox_id=inbox_id, lease_token=token),
+                action="mark_processed",
+                inbox_id=inbox_id,
+            )
+            await db.commit()
+            return _success_result()
+        outcome = await self._validation_service.pre_gate(
+            db, inbox=inbox, resolved_event_type=event_type, workline=None
+        )
+        if not outcome.proceed_to_orchestrator:
+            return await self._mark_failure(
+                db,
+                inbox=inbox,
+                inbox_id=inbox_id,
+                token=token,
+                error_code=(outcome.error_code or ErrorCode.UNKNOWN).value,
+                message=outcome.error_message or "validation failed",
+                retryable=False,
+            )
+        routed = self._validation_service.classify_estop_or_timer(
+            resolved_event_type=event_type, inbox_kind=_kind_value(inbox)
+        )
+        if _kind_value(inbox) == "DEVICE_EVENT" and not routed.estop_event:
+            return await self._mark_failure(
+                db,
+                inbox=inbox,
+                inbox_id=inbox_id,
+                token=token,
+                error_code=ErrorCode.CONTRACT_MISMATCH.value,
+                message=f"RuntimeInbox event has no active owner: {event_type}",
+                retryable=False,
+            )
+        session, workline, device, command, _devices, _services, _safety_checked = await _load_related_entities(
+            db, inbox, resolved_event_type=event_type
+        )
+        if routed.estop_event:
+            ok = await _handle_estop(
+                db,
+                inbox=inbox,
+                inbox_pk=inbox_id,
+                payload=payload,
+                session=session,
+                workline=workline,
+                device=device,
+                command=command,
+                processor_token=token,
+                inbox_service=self.inbox_service,
+            )
+            await db.commit()
+            result = _empty_result()
+            result["processed"] = 1
+            result["success" if ok else "failed"] = 1
+            return result
+        if routed.timer_timeout_event:
+            await _handle_timer_timeout(
+                db,
+                inbox=inbox,
+                inbox_pk=inbox_id,
+                payload=payload,
+                processor_token=token,
+                inbox_service=self.inbox_service,
+            )
+            await db.commit()
+            return _success_result()
+        if session is None or workline is None:
+            return await self._mark_failure(
+                db,
+                inbox=inbox,
+                inbox_id=inbox_id,
+                token=token,
+                error_code=ErrorCode.SESSION_CONTEXT_MISSING.value,
+                message="Inbox processing missing session/workline context",
+                retryable=False,
+            )
+        if _is_late_or_duplicate_command_result_for_session(
+            inbox=inbox, payload=payload, session=session, command=command
+        ):
+            await _record_late_command_result_archive_timeline(
+                db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                command=command,
+                payload=payload,
+                reason="COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT",
+            )
+            _require_fenced_update(
+                await self.inbox_service.mark_processed(db, inbox_id=inbox_id, lease_token=token),
+                action="mark_processed",
+                inbox_id=inbox_id,
+            )
+            await db.commit()
+            return _success_result()
+        return await self._mark_failure(
+            db,
+            inbox=inbox,
+            inbox_id=inbox_id,
+            token=token,
+            error_code=ErrorCode.CONTRACT_MISMATCH.value,
+            message=f"RuntimeInbox event has no active owner: {event_type}",
+            retryable=False,
+        )
+
+    async def process_claimed(self, db: AsyncSession, *, claim: dict[str, Any] | Any) -> ProcessResult:
+        inbox_id = claim["id"] if isinstance(claim, dict) else claim.id
+        inbox = await self.inbox_repository.get_by_id(db, inbox_id)
+        if inbox is None:
+            result = _empty_result()
+            result["skipped"] = 1
+            return result
+        token = claim.get("processor_token") if isinstance(claim, dict) else getattr(claim, "processor_token", None)
+        token = token or f"runtime-inbox-worker-{uuid.uuid4()}"
+        diagnostic = _snapshot_inbox_for_diagnostic(inbox)
+        try:
+            return await self._process_claimed_core(
+                db, inbox=inbox, inbox_id=resolve_required_pk(inbox, "inbox", "id", "inbox_id"), token=token
+            )
+        except (SessionResolveError, WorkLineSafetyBlocked) as exc:
+            return await self._mark_failure(
+                db,
+                inbox=inbox,
+                inbox_id=diagnostic.id,
+                token=token,
+                error_code=ErrorCode.SESSION_RESOLVE_FAILED.value,
+                message=str(exc),
+                retryable=False,
+            )
+        except TimeoutError:
+            return await self._mark_failure(
+                db,
+                inbox=inbox,
+                inbox_id=diagnostic.id,
+                token=token,
+                error_code=ErrorCode.INBOX_PROCESSING_TIMEOUT.value,
+                message=f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+                retryable=False,
+            )
+        except Exception as exc:
+            is_replay_violation = isinstance(exc, RuntimeInboxReplayNotAllowed)
+            reason = exc.reason_code if is_replay_violation else ErrorCode.UNKNOWN.value
+            retryable = not is_replay_violation
+            if is_replay_violation:
+                logger.warning(f"Inbox {diagnostic.id} 重放证据校验失败")
+            else:
+                logger.exception(f"Inbox {diagnostic.id} 处理异常")
+            with suppress(Exception):
+                await db.rollback()
+            return await self._mark_failure(
+                db,
+                inbox=diagnostic,
+                inbox_id=diagnostic.id,
+                token=token,
+                error_code=reason,
+                message=str(exc),
+                retryable=retryable,
+            )
+
+
+__all__ = ["ProcessResult", "RuntimeInboxProcessorBridge"]

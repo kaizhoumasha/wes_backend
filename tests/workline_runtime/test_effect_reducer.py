@@ -1448,8 +1448,6 @@ async def test_local_transactional_outcome_also_uses_the_unique_reducer(
     reducer = _RecordingReducer()
     service = SystemCapabilityIntentService(
         definitions={},
-        plugin_definitions={},
-        plugin_index_digest="d" * 64,
         effect_repository=object(),
         effect_reducer=reducer,
     )
@@ -1480,8 +1478,6 @@ async def test_local_effect_generated_source_event_id_is_bounded_for_max_dispatc
     reducer = _RecordingReducer()
     service = SystemCapabilityIntentService(
         definitions={},
-        plugin_definitions={},
-        plugin_index_digest="d" * 64,
         effect_repository=object(),
         effect_reducer=reducer,
     )

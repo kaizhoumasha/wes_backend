@@ -24,7 +24,6 @@ from sqlalchemy.exc import IntegrityError
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from tests.support.runtime_binding import binding_pin_fields
 
 NOW_MS = 1_700_000_000_000
 
@@ -85,9 +84,6 @@ async def test_accept_device_event_with_all_optional_args(db_session) -> None:
 
     session = ExecutionSession(
         workline_id=11,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         state="RUNNING",
     )
     db_session.add(session)
@@ -333,9 +329,6 @@ async def test_accept_internal_event_with_all_optional_args(db_session) -> None:
 
     session = ExecutionSession(
         workline_id=21,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         state="RUNNING",
     )
     db_session.add(session)
@@ -427,13 +420,13 @@ async def test_accept_internal_event_orphan_trace_does_not_synthesize_correlatio
 
     result = await service.accept_internal_event(
         db_session,
-        event_type="SMT_SOURCE_PICK_REQUESTED",
-        payload_json={"source_item_id": 101},
-        trace_id="evt-smt-source-pick-101",
-        event_id="evt-smt-source-pick-101",
+        event_type="INTERNAL_HEARTBEAT",
+        payload_json={},
+        trace_id="evt-orphan-heartbeat-101",
+        event_id="evt-orphan-heartbeat-101",
     )
 
-    assert result.record.trace_id == "evt-smt-source-pick-101"
+    assert result.record.trace_id == "evt-orphan-heartbeat-101"
     assert result.record.correlation_id is None
 
 
@@ -675,9 +668,6 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
     service = RuntimeInboxService()
     session = ExecutionSession(
         workline_id=31,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         state="RUNNING",
     )
     db_session.add(session)
@@ -869,9 +859,6 @@ async def test_accept_timer_timeout_keeps_legacy_and_execution_session_identitie
 
     execution_session = ExecutionSession(
         workline_id=41,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         state="RUNNING",
     )
     db_session.add(execution_session)
@@ -891,64 +878,3 @@ async def test_accept_timer_timeout_keeps_legacy_and_execution_session_identitie
     assert result.record.claim_bucket_key == f"workline-session:{legacy_session_id}"
     assert result.record.source_event_id.startswith(f"timeout:{legacy_session_id}:")
     assert result.record.payload_json["data"]["session_id"] == legacy_session_id
-
-
-@pytest.mark.asyncio
-async def test_smt_source_pick_producer_emits_canonical_workline_session_identity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SMT INTERNAL_EVENT 必须把 WorklineSession ID 写入 canonical payload。"""
-    service_module = importlib.import_module(
-        "src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service"
-    )
-    service_package = importlib.import_module("src.app.runtime.orchestration.services.runtime_inbox")
-    captured: dict[str, Any] = {}
-
-    class _RuntimeInboxService:
-        async def accept_internal_event(self, db: object, **kwargs: Any) -> SimpleNamespace:
-            _ = db
-            captured.update(kwargs)
-            return SimpleNamespace(record=SimpleNamespace(id=501))
-
-    monkeypatch.setattr(service_package, "runtime_inbox_service", _RuntimeInboxService())
-    producer = service_module.SmtInboundHandoffService()
-
-    record = await producer._create_source_pick_request_inbox(
-        SimpleNamespace(),
-        demand=SimpleNamespace(
-            id=11,
-            trace_id="trace-smt",
-            rack_release_id="release-1",
-            single_layer_rack_code="RACK-1",
-        ),
-        item=SimpleNamespace(
-            id=22,
-            claim_attempt_no=3,
-            bin_code="BIN-1",
-            bin_cell_index=1,
-            bin_cell_code="CELL-1",
-            material_identity_key="MAT-1",
-            pkg_code="PKG-1",
-            reel_thickness_mm=None,
-        ),
-        session=SimpleNamespace(id=33),
-        workline_id=44,
-        execution_session_id=71,
-        correlation_id="workline-session:smt-source-pick-33",
-        trace_id=None,
-        route_evidence={},
-    )
-
-    assert record.id == 501
-    assert captured["payload_json"] == {
-        "logical_route": "SOURCE_PICK_REQUESTED",
-        "input": {
-            "route": "SOURCE_PICK_REQUESTED",
-            "handoff_demand_id": 11,
-            "handoff_source_item_id": 22,
-            "claim_attempt_no": 3,
-            "source_pick_request_event_id": "smt-inbound-handoff-source-item:22:claim:3",
-        },
-    }
-    assert captured["execution_session_id"] == 71
-    assert captured["correlation_id"] == "workline-session:smt-source-pick-33"

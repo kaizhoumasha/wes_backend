@@ -3,12 +3,10 @@
 import inspect
 from pathlib import Path
 
-from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import SmtInboundHandoffRepository
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 MIGRATED_FILES = (
-    "src/app/runtime/orchestration/repositories/smt_inbound_handoff_repository.py",
     "src/app/workline/repositories/workline_repository.py",
     "src/app/workline/unit_of_work.py",
     "src/app/runtime/orchestration/services/query/runtime_query_service.py",
@@ -43,15 +41,11 @@ def test_runtime_inbox_has_one_repository_owner() -> None:
 
 def test_business_repositories_require_query_port_without_concrete_persistence_import() -> None:
     concrete_module = "src.app.runtime.orchestration.repositories.runtime_inbox_repository"
-    for relative_path in MIGRATED_FILES[:2]:
+    for relative_path in MIGRATED_FILES[:1]:
         source = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
         assert concrete_module not in source, f"{relative_path} 直接依赖 RuntimeInbox persistence implementation"
 
     assert inspect.signature(WorkLineRepository).parameters["runtime_inbox_query"].default is inspect.Parameter.empty
-    assert (
-        inspect.signature(SmtInboundHandoffRepository).parameters["runtime_inbox_query"].default
-        is inspect.Parameter.empty
-    )
 
 
 def test_runtime_repository_wiring_is_the_only_business_repository_composition_root() -> None:
@@ -59,4 +53,3 @@ def test_runtime_repository_wiring_is_the_only_business_repository_composition_r
     assert wiring.is_file(), "缺 RuntimeInbox query port 的 composition root"
     source = wiring.read_text(encoding="utf-8")
     assert "WorkLineRepository(runtime_inbox_query=runtime_inbox_repository)" in source
-    assert "SmtInboundHandoffRepository(runtime_inbox_query=runtime_inbox_repository)" in source

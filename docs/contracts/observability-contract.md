@@ -26,7 +26,7 @@
 | `northbound.operation.query_inventory` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
 | `northbound.operation.confirm_inbound` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
 | `northbound.operation.notify_pkg_binding` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
-| `northbound.operation.full_box_exchange` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
+| `northbound.operation.request_rack_supply` | span + metric + log event | provider profile、outcome、latency、trace/correlation/evidence、stage |
 | `wms_effect.submit` | span + metric + log event | operation、submit outcome、latency、retry count、dispatch key hash |
 | `wms_effect.status_query` | span + metric + log event | operation、五态、latency、retry count、age、dispatch key hash |
 | `wms_effect.status_backlog` | metric + log event | backlog、max age、claimed count、batch duration |
@@ -82,7 +82,7 @@ callback hint 边界真实发射。沿用既有 `RuntimeOpenTelemetryBridge` 和
 
 ## 北向 Operation SLO 与 Trace
 
-- 可执行目录版本为 `northbound-operation-slo.v1`，覆盖静态 registry 的全部 35 项 WMS operation。Provider binding authoring 时缺少目录条目必须阻塞。
+- 可执行目录版本为 `northbound-operation-slo.v1`，覆盖静态 registry 的全部 31 项 WMS operation。Provider binding authoring 时缺少目录条目必须阻塞。
 - 统一窗口为 30 天，可用性目标为 99.5%，UNKNOWN 比例上限为 0.1%，open reconciliation age 上限为 900 秒；各 operation 的 p95 延迟目标、burn rate 与告警责任人见
   [`northbound-operation-slo-catalog.md`](../operations/northbound-operation-slo-catalog.md)。
 - 当前可执行 Trace stage 闭集为：

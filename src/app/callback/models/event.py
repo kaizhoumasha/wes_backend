@@ -14,16 +14,16 @@ class CallbackEventRequest(BaseModel):
     - `timestamp`
     - `data`
 
-    它不承担插件私有 payload 语义校验，例如：
-    - `SCAN_COMPLETED` 是否带齐业务字段
+    它不承担具体事件 payload 语义校验，例如：
+    - `SCAN_COMPLETED` 是否带齐事件字段
     - `SixInOne` 是否可解析
-    - 插件字段别名是否映射成功
+    - 供应商事件别名是否完成归一化
     """
 
     model_config = ConfigDict(extra="forbid")
 
     device_code: str = Field(description="设备编码（device_code，设备标识）")
-    event_type: str = Field(description="事件类型（具体合法值由 plugin contract 决定）")
+    event_type: str = Field(description="事件类型（具体合法值由统一回调事件合同决定）")
     timestamp: int | None = Field(
         default=None,
         description="事件时间戳（Unix 时间戳，毫秒）。设备无时钟可不传，服务器将使用接收时间",

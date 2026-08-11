@@ -28,10 +28,10 @@ from src.app.sys.external_http_transport import ExternalHttpProtocolResult, Exte
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
+from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 from tests.support.external_http import StaticTestCredentialProvider, frozen_outbox_namespace
-from tests.support.runtime_binding import seed_runtime_binding
 from tests.support.runtime_inbox_processing_postgresql import with_temporary_runtime_database
 
 if TYPE_CHECKING:
@@ -136,18 +136,16 @@ def _engine(
 
 async def _seed_effect(db: AsyncSession, *, suffix: str) -> _SeededEffect:
     dispatch_key = f"effect-resilience-crash:{suffix}"
-    workline, binding = await seed_runtime_binding(
-        db,
+    workline = WorkLine(
         line_code=f"EFFECT-RES-{suffix[-20:]}",
+        line_name="Effect resilience PostgreSQL",
+        line_type=LineType.AUTO,
+        is_active=True,
     )
+    db.add(workline)
+    await db.flush()
     execution_session = ExecutionSession(
         workline_id=workline.id,
-        plugin_key=binding.plugin_key,
-        manifest_version=binding.contract_version,
-        plugin_binding_id=binding.id,
-        plugin_binding_version=binding.binding_version,
-        plugin_config_hash=binding.typed_config_hash,
-        plugin_index_digest=binding.generated_index_digest,
         state="RUNNING",
     )
     db.add(execution_session)

@@ -149,7 +149,6 @@ class TraceSessionItem(BaseModel):
     id: int
     session_code: str
     workline_id: int
-    plugin_key: str
     run_mode: str
     business_key: str | None = None
     barcode: str | None = None

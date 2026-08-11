@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import JSON, Column, UniqueConstraint
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
@@ -39,22 +39,6 @@ class ExecutionWorkItem(BaseMixin, table=True):
         foreign_key=f"{RUNTIME_SCHEMA}.execution_correlations.correlation_id",
         max_length=120,
     )
-    plugin_key: str = Field(max_length=100, index=True)
-    manifest_version: str = Field(
-        min_length=1,
-        max_length=60,
-        description="WorkItem 固定的 plugin manifest 版本，必须与 ExecutionSession 一致",
-    )
-    plugin_binding_id: int = Field(
-        foreign_key="wes_biz.workline_plugin_bindings.id",
-        index=True,
-    )
-    plugin_binding_version: int = Field(ge=1)
-    plugin_config_hash: str = Field(max_length=64)
-    plugin_index_digest: str = Field(max_length=64)
-    plugin_state_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
-    plugin_state_version: int = Field(default=0, ge=0)
-
     # 对象身份
     object_type: str = Field(max_length=60, description="bin / material / pkg / rack")
     object_key: str = Field(max_length=160, index=True)

@@ -15,8 +15,6 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from sqlalchemy.ext.asyncio import AsyncSession
-
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
 from src.celery_app.app import celery_app
@@ -26,7 +24,6 @@ from src.celery_app.constants import (
 )
 from src.core.conf import settings
 from src.core.logger import logger
-from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.database.db import get_db_context
 from src.utils.value_normalization import (
     enum_value,
@@ -53,17 +50,6 @@ class DeviceHeartbeatScanResult(TypedDict):
     marked_offline: int
 
 
-class SmtInboundHandoffRecoveryResult(TypedDict):
-    """SMT 入库 handoff 恢复扫描结果。"""
-
-    scanned: int
-    claimed: int
-    advanced: int
-    retry_scheduled: int
-    manual_hold: int
-    recovery_errors: int
-
-
 class DispatchResult(TypedDict):
     """派发结果"""
 
@@ -82,96 +68,6 @@ def _ensure_non_empty_retry_result(task_name: str, result: Mapping[str, object],
     raise RuntimeError(
         f"{task_name} returned an empty result after {retries} retries; refusing to mark it as succeeded"
     )
-
-
-def _empty_smt_inbound_handoff_recovery_result() -> SmtInboundHandoffRecoveryResult:
-    return {
-        "scanned": 0,
-        "claimed": 0,
-        "advanced": 0,
-        "retry_scheduled": 0,
-        "manual_hold": 0,
-        "recovery_errors": 0,
-    }
-
-
-async def _scan_smt_inbound_handoff_demands_in_transaction(
-    db: AsyncSession,
-    *,
-    service: Any,
-    scan_limit: int,
-    recovery_limit: int,
-    claim_limit: int,
-    stale_after_seconds: int,
-    legacy_limit: int | None,
-    queue_gateway: TaskQueueGateway = task_queue_gateway,
-) -> SmtInboundHandoffRecoveryResult:
-    """先逐项提交 E11 root，再执行既有 source-pick recovery 批次。"""
-
-    from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
-        SmtInboundHandoffE11EvaluationError,
-    )
-
-    summary = _empty_smt_inbound_handoff_recovery_result()
-    excluded_demand_ids: set[int] = set()
-    for _ in range(max(scan_limit, 0)):
-        try:
-            e11_result = await service.evaluate_next_due_e11_demand(
-                db,
-                excluded_demand_ids=frozenset(excluded_demand_ids),
-            )
-            if not e11_result.scanned:
-                break
-            if not isinstance(e11_result.demand_id, int):
-                raise TypeError("SMT E11 scanned demand is missing its durable identifier")
-            expected_targets = frozenset({OutboxDispatchTarget.WMS_FULFILLMENT})
-            if e11_result.outbox_dispatch_targets not in {frozenset(), expected_targets}:
-                raise RuntimeError("SMT E11 returned an invalid outbox dispatch target")
-            summary["scanned"] += 1
-            if e11_result.advanced:
-                summary["advanced"] += 1
-            # 每个 E11 root 独立提交；提交成功后才公开唤醒唯一 fulfillment target。
-            await db.commit()
-            # 已完成本轮评价但未创建 root 的 demand 仍是 due；必须排除，防止它占满
-            # scan_limit 而饿死后续健康 demand。下一轮扫描仍会重新审视该 demand。
-            excluded_demand_ids.add(e11_result.demand_id)
-        except SmtInboundHandoffE11EvaluationError as exc:
-            await db.rollback()
-            summary["recovery_errors"] += 1
-            excluded_demand_ids.add(exc.demand_id)
-            continue
-        except Exception:
-            await db.rollback()
-            summary["recovery_errors"] += 1
-            break
-        targets = e11_result.outbox_dispatch_targets
-        if targets:
-            try:
-                queue_gateway.enqueue_outbox(targets=targets)
-            except Exception:
-                # durable Outbox 已提交；由 Beat 对 fulfillment scope 兜底，不能回滚。
-                logger.exception("SMT E11 fulfillment outbox enqueue failed after commit")
-
-    if legacy_limit is not None:
-        recovery_result = await service.scan_smt_inbound_handoff_demands_batch(
-            db,
-            stale_after_seconds=stale_after_seconds,
-            scan_limit=0,
-            recovery_limit=legacy_limit,
-            claim_limit=0,
-        )
-    else:
-        recovery_result = await service.scan_smt_inbound_handoff_demands_batch(
-            db,
-            stale_after_seconds=stale_after_seconds,
-            scan_limit=0,
-            recovery_limit=recovery_limit,
-            claim_limit=claim_limit,
-        )
-    await db.commit()
-    for key, value in recovery_result.items():
-        summary[key] += value
-    return summary
 
 
 class TimeoutScanner:
@@ -427,68 +323,6 @@ def scan_device_heartbeats_batch(
 
 
 @celery_app.task(
-    name="src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch",
-    base=celery_app.Task,
-    bind=True,
-    max_retries=3,
-    default_retry_delay=60,
-)
-def scan_smt_inbound_handoff_demands_batch(
-    self: Any,
-    scan_limit: int = 100,
-    recovery_limit: int = 100,
-    claim_limit: int = 10,
-    stale_after_seconds: int = 300,
-    limit: int | None = None,
-) -> SmtInboundHandoffRecoveryResult:
-    """扫描 SMT 入库 handoff 到期 demand、卡住 source item 和 READY claim 兜底。"""
-
-    legacy_limit = limit
-    if legacy_limit is not None:
-        scan_limit = legacy_limit
-        recovery_limit = legacy_limit
-        claim_limit = 0
-    logger.info(
-        "开始扫描 SMT 入库 handoff 恢复项, "
-        f"scan_limit={scan_limit}, recovery_limit={recovery_limit}, "
-        f"claim_limit={claim_limit}, stale_after_seconds={stale_after_seconds}"
-    )
-
-    async def _scan() -> SmtInboundHandoffRecoveryResult:
-        async with get_db_context() as db:
-            from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
-                smt_inbound_handoff_service,
-            )
-
-            return await _scan_smt_inbound_handoff_demands_in_transaction(
-                db,
-                service=smt_inbound_handoff_service,
-                scan_limit=scan_limit,
-                recovery_limit=recovery_limit,
-                claim_limit=claim_limit,
-                stale_after_seconds=stale_after_seconds,
-                legacy_limit=legacy_limit,
-            )
-
-    try:
-        result = run_async(_scan)
-        _ensure_non_empty_retry_result(
-            "scan_smt_inbound_handoff_demands_batch",
-            result,
-            int(getattr(self.request, "retries", 0) or 0),
-        )
-        if result != _empty_smt_inbound_handoff_recovery_result():
-            logger.info(f"SMT 入库 handoff 恢复扫描完成: {result}")
-        else:
-            logger.debug(f"SMT 入库 handoff 恢复扫描完成: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"SMT 入库 handoff 恢复扫描失败: {e}")
-        countdown = 60 * (2**self.request.retries)
-        raise self.retry(exc=e, countdown=countdown) from None
-
-
-@celery_app.task(
     name="src.celery_app.tasks.workline.check_wms_effect_status",
     base=celery_app.Task,
 )
@@ -533,11 +367,9 @@ def scan_wms_effect_status_batch() -> list[dict[str, object]]:
 # ============================================
 __all__ = [
     # Celery 任务入口（公共 API）
-    "_empty_smt_inbound_handoff_recovery_result",
     "check_wms_effect_status",
     "process_signal",
     "scan_device_heartbeats_batch",
-    "scan_smt_inbound_handoff_demands_batch",
     "scan_timeouts_batch",
     "scan_wms_effect_status_batch",
 ]

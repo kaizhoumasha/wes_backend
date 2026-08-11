@@ -1,4 +1,4 @@
-"""WMS 19 项 QUERY 的统一 executor、outcome 与预算矩阵。"""
+"""WMS QUERY 的统一 executor、outcome 与预算矩阵。"""
 
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def _executor(operation, handler, *, evidence_writer=None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", QUERY_OPERATIONS, ids=lambda operation: operation.identity)
-async def test_all_19_queries_parse_strict_typed_success(operation) -> None:
+async def test_all_queries_parse_strict_typed_success(operation) -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=RESULT_FIXTURES[operation.identity])
 
@@ -125,7 +125,7 @@ async def test_all_19_queries_parse_strict_typed_success(operation) -> None:
     ],
 )
 @pytest.mark.parametrize("operation", QUERY_OPERATIONS, ids=lambda operation: operation.identity)
-async def test_shared_failure_matrix_for_all_19_queries(
+async def test_shared_failure_matrix_for_all_queries(
     operation,
     scenario: str,
     expected_type: type,

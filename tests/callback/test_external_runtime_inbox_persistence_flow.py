@@ -16,7 +16,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
     RuntimeInboxProcessorBridge,
 )
 from src.app.workline.models import LineType, WorkLine
-from tests.support.runtime_binding import binding_pin_fields
 
 
 @pytest.mark.asyncio
@@ -26,8 +25,6 @@ async def test_wms_event_persists_claims_and_processes_without_device_flow(db_se
         line_code="LINE-RUNTIME-INBOX-EXT",
         line_name="Runtime Inbox External Integration",
         line_type=LineType.AUTO,
-        plugin_key="default",
-        contract_version="1.0",
         is_active=True,
     )
     db_session.add(workline)
@@ -35,9 +32,6 @@ async def test_wms_event_persists_claims_and_processes_without_device_flow(db_se
     session = WorklineSession(
         session_code="SESSION-RUNTIME-INBOX-EXT",
         workline_id=workline.id,
-        plugin_key="default",
-        contract_version="1.0",
-        **binding_pin_fields(),
         status=SessionStatus.RUNNING,
         trace_id="trace-runtime-inbox-ext",
     )
@@ -101,6 +95,7 @@ async def test_wms_event_persists_claims_and_processes_without_device_flow(db_se
     assert result["failed"] == 0
     persisted = await db_session.scalar(select(RuntimeInbox).where(RuntimeInbox.id == claims[0]["id"]))
     assert persisted is not None
+    assert {"plugin_key", "contract_version"}.isdisjoint(WorklineSession.model_fields)
     assert not hasattr(persisted, "session_id")
     assert persisted.status == "PROCESSED"
     assert persisted.last_error_message is None

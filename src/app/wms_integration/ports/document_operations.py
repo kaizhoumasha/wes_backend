@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from pydantic import Field
 
-from pydantic import Field, model_validator
-
-from src.app.wms_integration.operation_contract import WmsHttpMethod, query_operation
+from src.app.wms_integration.operation_contract import query_operation
 from src.app.wms_integration.ports.operation_common import (
     CursorRequest,
     NonNegativeDecimal,
@@ -94,67 +92,6 @@ class GetTaskSnapshotResult(StrictWmsModel):
     source_version: StableText = Field(max_length=160)
 
 
-class SixInOneCode(StrictWmsModel):
-    """Q19 canonical 六合一码；字段名与 WMS wire contract 一致。"""
-
-    HHPN: StableText = Field(max_length=160)
-    MfrPN: StableText = Field(max_length=160)
-    Qty: PositiveDecimal
-    DateCode: StableText = Field(max_length=80)
-    LotCode: StableText = Field(max_length=120)
-    PkgID: StableText = Field(max_length=160)
-
-
-class ValidateRoughSorterAdmissionRequest(StrictWmsModel):
-    raw_code: StableText = Field(max_length=2_000)
-    six_in_one: SixInOneCode
-    reel_diameter_mm: PositiveDecimal
-    reel_thickness_mm: PositiveDecimal
-    station_code: StableText = Field(max_length=120)
-    workline_id: int = Field(gt=0)
-    session_id: int = Field(gt=0)
-    correlation_id: StableText = Field(max_length=160)
-
-
-type RoughSorterAdmissionRejectReason = Literal[
-    "GRN_NOT_FOUND",
-    "PACKAGE_NOT_FOUND",
-    "PACKAGE_GRN_MISMATCH",
-    "MATERIAL_MISMATCH",
-    "QUANTITY_MISMATCH",
-    "MEASUREMENT_OUT_OF_TOLERANCE",
-    "PACKAGE_NOT_ADMISSIBLE",
-]
-
-
-class ValidateRoughSorterAdmissionResult(StrictWmsModel):
-    decision: Literal["ADMIT", "REJECT"]
-    reason_code: RoughSorterAdmissionRejectReason | None = None
-    grn_id: StableText | None = Field(default=None, max_length=120)
-    po_number: StableText | None = Field(default=None, max_length=120)
-    po_item: StableText | None = Field(default=None, max_length=120)
-    material_code: StableText | None = Field(default=None, max_length=120)
-    pkg_id: StableText | None = Field(default=None, max_length=160)
-    measurement_decision: Literal["PASS", "REJECT"]
-    standard_reel_diameter_mm: PositiveDecimal
-    reel_diameter_tolerance_mm: NonNegativeDecimal
-    standard_reel_thickness_mm: PositiveDecimal
-    reel_thickness_tolerance_mm: NonNegativeDecimal
-    rule_version: StableText = Field(max_length=160)
-    source_version: StableText = Field(max_length=160)
-
-    @model_validator(mode="after")
-    def validate_decision(self) -> ValidateRoughSorterAdmissionResult:
-        if self.decision == "ADMIT" and (self.reason_code is not None or self.measurement_decision != "PASS"):
-            raise ValueError("ADMIT must have PASS measurement without reason_code")
-        matched_identity = (self.grn_id, self.po_number, self.po_item, self.material_code, self.pkg_id)
-        if self.decision == "ADMIT" and any(identity is None for identity in matched_identity):
-            raise ValueError("ADMIT requires complete matched identity")
-        if self.decision == "REJECT" and self.reason_code is None:
-            raise ValueError("REJECT requires a stable reason_code")
-        return self
-
-
 GET_GRN = query_operation(
     identity="wms.document.get_grn@v1",
     request_model=GetGrnRequest,
@@ -204,24 +141,6 @@ GET_TASK_SNAPSHOT = query_operation(
     target_code="WMS_DOCUMENT_GET_TASK_SNAPSHOT",
     reject_codes=("TASK_NOT_FOUND",),
 )
-VALIDATE_ROUGH_SORTER_ADMISSION = query_operation(
-    identity="wms.document.validate_rough_sorter_admission@v1",
-    request_model=ValidateRoughSorterAdmissionRequest,
-    result_model=ValidateRoughSorterAdmissionResult,
-    path_template="/documents/rough-sorter-admission/validate",
-    target_code="WMS_DOCUMENT_VALIDATE_ROUGH_SORTER_ADMISSION",
-    reject_codes=(
-        "GRN_NOT_FOUND",
-        "PACKAGE_NOT_FOUND",
-        "PACKAGE_GRN_MISMATCH",
-        "MATERIAL_MISMATCH",
-        "QUANTITY_MISMATCH",
-        "MEASUREMENT_OUT_OF_TOLERANCE",
-        "PACKAGE_NOT_ADMISSIBLE",
-    ),
-    http_method=WmsHttpMethod.POST,
-)
-
 OPERATIONS = (
     GET_GRN,
     LIST_GRN_PACKAGES,
@@ -229,16 +148,6 @@ OPERATIONS = (
     GET_OUTBOUND_ORDER,
     GET_WAVE,
     GET_TASK_SNAPSHOT,
-    VALIDATE_ROUGH_SORTER_ADMISSION,
 )
-STANDARD_OPERATIONS = OPERATIONS[:-1]
-ADMISSION_OPERATION = VALIDATE_ROUGH_SORTER_ADMISSION
 
-__all__ = [
-    "ADMISSION_OPERATION",
-    "OPERATIONS",
-    "STANDARD_OPERATIONS",
-    "SixInOneCode",
-    "ValidateRoughSorterAdmissionRequest",
-    "ValidateRoughSorterAdmissionResult",
-]
+__all__ = ["OPERATIONS"]

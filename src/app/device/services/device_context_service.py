@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.device.models import Device
 from src.app.device.repositories import DeviceRepository
 from src.app.runtime.orchestration.repository_wiring import workline_repository
-from src.app.runtime.workline_plugins.registry import get_workline_contract_version
 from src.app.workline.models import WorkLine
 from src.core.logger import logger
 
@@ -23,8 +22,6 @@ class DeviceContextResult:
 
     device: Device
     workline: WorkLine | None
-    plugin_key: str | None
-    contract_version: str | None
     work_line_id: int | None
     is_workline_bound: bool
 
@@ -35,24 +32,6 @@ class DeviceContextService:
     def __init__(self) -> None:
         self._device_repo = DeviceRepository()
         self._workline_repo = workline_repository
-
-    def _resolve_plugin_key(self, device: Device, workline: WorkLine | None) -> str | None:
-        candidate = getattr(workline, "plugin_key", None) if workline else getattr(device, "plugin_key", None)
-        return candidate if isinstance(candidate, str) and candidate else None
-
-    def _resolve_contract_version(
-        self,
-        device: Device,
-        workline: WorkLine | None,
-        plugin_key: str | None,
-    ) -> str | None:
-        contract_candidate = (
-            getattr(workline, "contract_version", None) if workline else getattr(device, "contract_version", None)
-        )
-        contract_version = contract_candidate if isinstance(contract_candidate, str) and contract_candidate else None
-        if contract_version:
-            return contract_version
-        return get_workline_contract_version(plugin_key)
 
     async def resolve(
         self,
@@ -93,18 +72,9 @@ class DeviceContextService:
                 logger.warning(f"工作线 {inactive_workline_id} 未启用")
                 return None, self._build_inactive(inactive_workline_id)
 
-        # 4. 解析 plugin_key（唯一来源：WorkLine）
-        plugin_key = self._resolve_plugin_key(device, workline)
-
-        # 5. 解析 contract_version
-        # WorkLine 优先，未绑定时兼容 device 快照，再回退 Plugin Registry
-        contract_version = self._resolve_contract_version(device, workline, plugin_key)
-
         result = DeviceContextResult(
             device=device,
             workline=workline,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             work_line_id=work_line_id,
             is_workline_bound=is_workline_bound,
         )

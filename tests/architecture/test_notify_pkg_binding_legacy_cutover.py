@@ -10,13 +10,6 @@ CONTRACT_IDENTITY = "wms.fulfillment.notify_pkg_binding@v1"
 
 LEGACY_SOURCE_MARKERS = {
     Path("src/app/contracts/external_contract_profile_catalog.py"): ("WmsFulfillmentPort.notify_pkg_binding",),
-    Path("src/app/runtime/capabilities/material_flow/sorter_inbound_runtime_service.py"): (
-        "WmsFulfillmentPort.notify_pkg_binding",
-        'target_code="WMS_FULFILLMENT"',
-    ),
-    Path("src/app/runtime/capabilities/material_flow/sorter_inbound_preview_service.py"): (
-        "WmsFulfillmentPort.notify_pkg_binding",
-    ),
     Path("src/app/sys/services/endpoint_registry.py"): (
         '"WMS_FULFILLMENT":',
         "WMS_FULFILLMENT_URL",

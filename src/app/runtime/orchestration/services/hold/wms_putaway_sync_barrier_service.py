@@ -85,8 +85,6 @@ class WmsPutawaySyncBarrierService:
         workline_id: int,
         session_id: int | None,
         trace_id: str | None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> RuntimeHold:
         """幂等创建只阻断当前投格对象下游资格的同步 Hold。"""
 
@@ -96,8 +94,6 @@ class WmsPutawaySyncBarrierService:
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_kind="WMS_SYNC_OBLIGATION",
             source_reason="WMS_PUTAWAY_SYNC_PENDING",
             source_idempotency_key=self._source_idempotency_key(group),

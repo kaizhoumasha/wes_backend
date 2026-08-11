@@ -619,13 +619,7 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         if isinstance(new_workline_id, int):
             affected_workline_ids.add(new_workline_id)
 
-        # 与 RuntimeInbox Stage 3 使用同一 workline advisory lock；先取 advisory、
-        # 再取 WorkLine 行锁，既覆盖并发插入，也保持 activation/deactivation 锁顺序一致。
-        for workline_id in sorted(affected_workline_ids):
-            await self.workline_repo.acquire_plugin_pin_exclusive(db, workline_id)
-
-        # 初读只用于确定 advisory lock；所有设备拓扑写都会先取得旧/新 WorkLine 锁，
-        # 因而锁后重新读取若已漂移，说明本次锁集不完整，必须安全重试而不能继续变更。
+        # 所有设备拓扑写都先锁定旧/新 WorkLine，避免启停与拓扑变更并发。
         current_id = getattr(current, "id", None)
         if isinstance(current_id, int):
             expected_identity = (old_workline_id, bool(getattr(current, "is_deleted", False)))

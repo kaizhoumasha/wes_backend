@@ -36,11 +36,7 @@ if TYPE_CHECKING:
     from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 
 
-_RUNTIME_DOMAIN_AUTHORITY = ("RUNTIME_DOMAIN_SERVICE", "DOMAIN_CAPABILITY_ALLOWLIST")
-_RUNTIME_DOMAIN_AUTHORITY_MARKERS = frozenset(_RUNTIME_DOMAIN_AUTHORITY)
-_RUNTIME_DOMAIN_CAPABILITY_ALLOWLIST = {
-    "SMT_INBOUND_HANDOFF": frozenset({("wms.fulfillment.full_box_exchange", "v1")}),
-}
+_RUNTIME_OWNED_AUTHORITY = ("RUNTIME_DOMAIN_SERVICE", "DOMAIN_CAPABILITY_ALLOWLIST")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,12 +59,9 @@ class SystemCapabilityIntentService:
         self,
         *,
         definitions: Mapping[tuple[str, str], SystemCapabilityDefinition] | None = None,
-        plugin_definitions: Mapping[tuple[str, str], Any] | None = None,
-        plugin_index_digest: str | None = None,
         effect_repository: Any | None = None,
         effect_reducer: Any | None = None,
         effect_reconciliation_bridge: Any | None = None,
-        domain_authority_resolver: Any | None = None,
         allow_new_claim: Callable[[SystemCapabilityDefinition], bool] | None = None,
     ) -> None:
         if definitions is None:
@@ -76,14 +69,6 @@ class SystemCapabilityIntentService:
 
             definitions = SYSTEM_CAPABILITY_INDEX
         self._definitions = dict(definitions)
-        if plugin_definitions is None or plugin_index_digest is None:
-            from src.app.runtime.workline_plugins.generated_index import (
-                WORKLINE_PLUGIN_INDEX,
-                WORKLINE_PLUGIN_INDEX_DIGEST,
-            )
-
-            plugin_definitions = WORKLINE_PLUGIN_INDEX if plugin_definitions is None else plugin_definitions
-            plugin_index_digest = WORKLINE_PLUGIN_INDEX_DIGEST if plugin_index_digest is None else plugin_index_digest
         if effect_repository is None:
             from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import (
                 runtime_intent_log_repository,
@@ -99,15 +84,6 @@ class SystemCapabilityIntentService:
             from src.app.runtime.orchestration.effect_bridges import effect_reconciliation_bridge
 
         self._effect_reconciliation_bridge = effect_reconciliation_bridge
-        if domain_authority_resolver is None:
-            from src.app.runtime.orchestration.services.intent.runtime_domain_capability_authority_resolver import (
-                runtime_domain_capability_authority_resolver,
-            )
-
-            domain_authority_resolver = runtime_domain_capability_authority_resolver
-        self._domain_authority_resolver = domain_authority_resolver
-        self._plugin_definitions = dict(plugin_definitions)
-        self._plugin_index_digest = plugin_index_digest
         if allow_new_claim is not None and not callable(allow_new_claim):
             raise TypeError("allow_new_claim must be callable")
         self._allow_new_claim = allow_new_claim if allow_new_claim is not None else (lambda _definition: True)
@@ -309,77 +285,29 @@ class SystemCapabilityIntentService:
         self, ctx: Mapping[str, Any], intent: RuntimeIntent, *, definition: SystemCapabilityDefinition
     ) -> dict[str, Any]:
         authority = (intent.creator_authority, intent.authorization_policy)
-        if authority == _RUNTIME_DOMAIN_AUTHORITY:
-            raise RuntimeError("runtime domain system capability requires async authority resolution")
-        if any(marker in _RUNTIME_DOMAIN_AUTHORITY_MARKERS for marker in authority):
-            raise PermissionError("runtime domain system capability authority contract mismatch")
-
-        session = ctx.get("session")
-        work_item = ctx.get("work_item")
-        inbox = ctx.get("inbox")
-        binding = ctx.get("plugin_binding")
-        if session is None or work_item is None or inbox is None or binding is None:
-            raise PermissionError("system capability requires locked session/work-item/binding identity")
-        plugin_key = getattr(session, "plugin_key", None)
-        plugin_contract_version = getattr(session, "contract_version", None)
-        binding_id = getattr(session, "plugin_binding_id", None)
-        binding_version = getattr(session, "plugin_binding_version", None)
-        session_digest = getattr(session, "plugin_index_digest", None)
-        if (
-            not isinstance(plugin_key, str)
-            or not isinstance(plugin_contract_version, str)
-            or not isinstance(binding_id, int)
-            or not isinstance(binding_version, int)
-            or not isinstance(session_digest, str)
-        ):
-            raise PermissionError("system capability locked plugin pin is incomplete")
-        expected_pin = (plugin_key, binding_id, binding_version, session_digest)
-        work_item_pin = (
-            getattr(work_item, "plugin_key", None),
-            getattr(work_item, "plugin_binding_id", None),
-            getattr(work_item, "plugin_binding_version", None),
-            getattr(work_item, "plugin_index_digest", None),
-        )
-        if expected_pin != work_item_pin or session_digest != self._plugin_index_digest:
-            raise PermissionError("system capability locked plugin pin mismatch")
-        binding_pin = (
-            getattr(binding, "plugin_key", None),
-            getattr(binding, "contract_version", None),
-            getattr(binding, "id", None),
-            getattr(binding, "binding_version", None),
-            getattr(binding, "generated_index_digest", None),
-        )
-        if binding_pin != (plugin_key, plugin_contract_version, binding_id, binding_version, session_digest):
-            raise PermissionError("system capability immutable binding row mismatch")
-        if getattr(binding, "is_enabled", True) is not True or getattr(binding, "is_revoked", False) is True:
-            raise PermissionError("system capability binding is disabled or revoked")
-        plugin_definition = self._plugin_definitions.get((plugin_key, plugin_contract_version))
-        if plugin_definition is None:
-            raise PermissionError("system capability plugin identity is not generated")
-        if (str(intent.capability_key), str(intent.contract_version)) not in plugin_definition.allowed_capabilities:
-            raise PermissionError("system capability is not declared by plugin")
-        if intent.binding_snapshot != {"binding_id": binding_id, "binding_version": binding_version}:
-            raise PermissionError("system capability binding snapshot mismatch")
-        if intent.creator_authority != "WORKLINE_PLUGIN":
-            raise PermissionError("system capability creator authority mismatch")
-        if intent.authorization_policy != "PLUGIN_DECLARED_CAPABILITY":
-            raise PermissionError("system capability authorization policy mismatch")
+        if authority != _RUNTIME_OWNED_AUTHORITY:
+            raise PermissionError("system capability runtime authority contract mismatch")
+        if intent.binding_snapshot:
+            raise PermissionError("system capability cannot carry a retired plugin binding snapshot")
         expected_provider = {"provider_code": "RUNTIME", "profile": definition.admission}
         if intent.provider_snapshot != expected_provider:
             raise PermissionError("system capability runtime provider snapshot mismatch")
+        session = ctx.get("session")
+        inbox = ctx.get("inbox")
+        work_item = ctx.get("work_item")
+        session_id = getattr(session, "id", None)
         execution_session_id = getattr(inbox, "execution_session_id", None)
         execution_work_item_id = getattr(work_item, "id", None)
-        if not isinstance(execution_session_id, int):
-            execution_session_id = getattr(session, "execution_session_id", None)
-        if not isinstance(execution_session_id, int) or not isinstance(execution_work_item_id, int):
-            raise TypeError("system capability requires execution session/work-item identity")
+        if not all(isinstance(value, int) for value in (session_id, execution_session_id, execution_work_item_id)):
+            raise TypeError("system capability requires session and execution session/work-item identity")
         return {
             "execution_session_id": execution_session_id,
             "execution_work_item_id": execution_work_item_id,
-            "plugin_key": str(plugin_key),
-            "plugin_contract_version": str(plugin_contract_version),
-            "binding_id": binding_id,
-            "binding_version": binding_version,
+            "plugin_key": None,
+            "plugin_contract_version": None,
+            "binding_id": None,
+            "binding_version": None,
+            "correlation_id": self._correlation_id(ctx),
         }
 
     async def _resolve_execution_identity(
@@ -389,38 +317,7 @@ class SystemCapabilityIntentService:
         *,
         definition: SystemCapabilityDefinition,
     ) -> dict[str, Any]:
-        authority = (intent.creator_authority, intent.authorization_policy)
-        if authority != _RUNTIME_DOMAIN_AUTHORITY:
-            return self._validate_execution_identity(ctx, intent, definition=definition)
-        if any(ctx.get(key) is not None for key in ("session", "work_item", "inbox", "plugin_binding")):
-            raise PermissionError("runtime domain system capability cannot carry plugin execution identity")
-        correlation_id = ctx.get("correlation_id")
-        if not isinstance(correlation_id, str) or not correlation_id:
-            raise ValueError("runtime domain system capability requires correlation_id")
-        resolved = await self._domain_authority_resolver.resolve(
-            ctx["db"],
-            correlation_id=correlation_id,
-        )
-        producer = resolved.producer
-        identity = (str(intent.capability_key), str(intent.contract_version))
-        if identity not in _RUNTIME_DOMAIN_CAPABILITY_ALLOWLIST.get(producer, frozenset()):
-            raise PermissionError("runtime domain system capability is not allowlisted for producer")
-        if dict(intent.binding_snapshot) != resolved.binding_snapshot:
-            raise PermissionError("runtime domain system capability binding snapshot mismatch")
-        expected_provider = {"provider_code": "RUNTIME", "profile": definition.admission}
-        if intent.provider_snapshot != expected_provider:
-            raise PermissionError("runtime domain system capability provider snapshot mismatch")
-        return {
-            "execution_session_id": None,
-            "execution_work_item_id": None,
-            "plugin_key": None,
-            "plugin_contract_version": None,
-            "binding_id": None,
-            "binding_version": None,
-            "correlation_id": resolved.correlation_id,
-            "producer": producer,
-            "binding_snapshot": resolved.binding_snapshot,
-        }
+        return self._validate_execution_identity(ctx, intent, definition=definition)
 
     @staticmethod
     def _final_idempotency_key(
@@ -429,21 +326,14 @@ class SystemCapabilityIntentService:
         *,
         domain_producer: Any = None,
     ) -> str:
-        if (intent.creator_authority, intent.authorization_policy) == _RUNTIME_DOMAIN_AUTHORITY:
-            if not isinstance(domain_producer, str) or not domain_producer:
-                raise PermissionError("runtime domain system capability producer is unresolved")
-            raw = (
-                f"system-capability:{intent.capability_key}@{intent.contract_version}:"
-                f"domain:{domain_producer}:{intent.operation_key}"
-            )
-        else:
-            session_id = getattr(ctx.get("session"), "id", None)
-            work_item = ctx.get("work_item")
-            work_item_id = getattr(work_item, "id", None)
-            raw = (
-                f"system-capability:{intent.capability_key}@{intent.contract_version}:"
-                f"session:{session_id}:work-item:{work_item_id}:{intent.operation_key}"
-            )
+        _ = domain_producer
+        session_id = getattr(ctx.get("session"), "id", None)
+        work_item = ctx.get("work_item")
+        work_item_id = getattr(work_item, "id", None)
+        raw = (
+            f"system-capability:{intent.capability_key}@{intent.contract_version}:"
+            f"session:{session_id}:work-item:{work_item_id}:{intent.operation_key}"
+        )
         if len(raw) <= 160:
             return raw
         digest = sha256(raw.encode("utf-8")).hexdigest()[:20]

@@ -13,7 +13,10 @@
 | `wms.inventory.query_inventory@v1` | 99.5% | 1.5s | 0.1% | 15min | runtime-platform |
 | `wms.inventory.confirm_inbound@v1` | 99.5% | 2.0s | 0.1% | 15min | runtime-platform |
 | `wms.fulfillment.notify_pkg_binding@v1` | 99.5% | 2.0s | 0.1% | 15min | runtime-platform |
-| `wms.fulfillment.full_box_exchange@v1` | 99.5% | 3.0s | 0.1% | 15min | runtime-platform |
+| `wms.fulfillment.request_rack_supply@v1` | 99.5% | 3.0s | 0.1% | 15min | runtime-platform |
+
+上表展示查询、同步 EFFECT 与异步 EFFECT 的代表性条目；可执行目录按当前 31 项静态 WMS registry 全量生成，
+不得用本文示例行替代机器可读目录。
 
 可用性成功样本为 `SUCCESS`；`BUSINESS_REJECT` 单独展示，不吞入技术错误。
 技术/合同失败和 UNKNOWN 消耗错误预算，UNKNOWN 同时受独立比例与 reconciliation age 门禁。
@@ -23,7 +26,7 @@
 
 ## 当前可执行观测面
 
-当前 `operation_observability.py` 只登记四个 `northbound.operation.*` authored signal、六类 outcome、延迟、
+当前 `operation_observability.py` 按 31 项静态 WMS registry 登记 `northbound.operation.*` authored signal、六类 outcome、延迟、
 sample/UNKNOWN，以及下文五个静态告警。只读 API 当前只返回
 `NorthboundOperationHealth` 的 provider/operation/mode、backlog、active lease、UNKNOWN、oldest queue age、
 rate-limited、lease loss 和 open reconciliation 聚合。

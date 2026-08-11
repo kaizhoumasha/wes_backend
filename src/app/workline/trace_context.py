@@ -137,8 +137,6 @@ class TraceContext:
     def with_workline(self, workline: Any) -> TraceContext:
         return self._bind(
             workline_id=_attr_int(workline, "id") or self.workline_id,
-            plugin_key=_attr_str(workline, "plugin_key") or self.plugin_key,
-            contract_version=_attr_str(workline, "contract_version") or self.contract_version,
         )
 
     def with_session(self, session: Any) -> TraceContext:
@@ -147,8 +145,6 @@ class TraceContext:
             trace_id=_attr_str(session, "trace_id") or self.trace_id,
             workline_id=_attr_int(session, "workline_id") or self.workline_id,
             session_id=_attr_int(session, "id") or self.session_id,
-            plugin_key=_attr_str(session, "plugin_key") or self.plugin_key,
-            contract_version=_attr_str(session, "contract_version") or self.contract_version,
         )
 
     def with_inbox(self, inbox: Any) -> TraceContext:

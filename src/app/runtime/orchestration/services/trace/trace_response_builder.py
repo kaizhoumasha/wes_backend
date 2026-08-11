@@ -103,7 +103,6 @@ def build_trace_session_item(session: Any, *, include_context_json: bool = True)
         id=session.id,
         session_code=session.session_code,
         workline_id=session.workline_id,
-        plugin_key=session.plugin_key,
         run_mode=_status_str(session.run_mode),
         business_key=session.business_key,
         barcode=session.barcode,

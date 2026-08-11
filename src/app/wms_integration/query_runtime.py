@@ -1,4 +1,4 @@
-"""WES 进程 `wms-data` lane 的 19 项 QUERY 运行时。"""
+"""WES 进程 `wms-data` lane 的 QUERY 运行时。"""
 
 from __future__ import annotations
 
@@ -55,8 +55,11 @@ class WmsDataLaneQueryRuntime:
             for operation in QUERY_OPERATIONS
         }
         request_identities = {operation.request_model: operation.identity for operation in QUERY_OPERATIONS}
-        if len(executors) != 19 or len(request_identities) != 19:
-            raise RuntimeError("wms-data QUERY runtime requires 19 unique identities and request models")
+        expected_count = len(QUERY_OPERATIONS)
+        if len(executors) != expected_count or len(request_identities) != expected_count:
+            raise RuntimeError(
+                "wms-data QUERY runtime requires unique identities and request models for every operation"
+            )
         self._client = client
         self._owns_client = owns_client
         self._executors = MappingProxyType(executors)

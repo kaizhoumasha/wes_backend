@@ -702,10 +702,6 @@ class FakeWorkLineRepo:
         self.worklines = {workline.id: workline for workline in worklines}
         self.get_by_id_calls: list[int] = []
         self.get_for_update_calls: list[int] = []
-        self.exclusive_lock_calls: list[int] = []
-
-    async def acquire_plugin_pin_exclusive(self, _db: object, workline_id: int) -> None:
-        self.exclusive_lock_calls.append(workline_id)
 
     async def get_by_id(self, _db: object, workline_id: int) -> SimpleNamespace | None:
         self.get_by_id_calls.append(workline_id)
@@ -772,7 +768,6 @@ async def test_plain_update_locks_workline_before_topology_guard() -> None:
     with pytest.raises(BusinessException, match="已启用作业线"):
         await service.update(cast("Any", db), 7, {"device_role": "OUTPUT_DEVICE", "version": 1})
 
-    assert workline_repo.exclusive_lock_calls == [3]
     assert workline_repo.get_for_update_calls == [3]
 
 
@@ -796,8 +791,6 @@ async def test_plain_delete_rejects_removing_device_from_active_workline() -> No
 
     with pytest.raises(BusinessException, match="已启用作业线"):
         await service.delete(cast("Any", db), 7)
-
-    assert workline_repo.exclusive_lock_calls == [3]
 
 
 @pytest.mark.asyncio
@@ -827,7 +820,6 @@ async def test_plain_delete_rejects_when_device_moves_after_initial_read() -> No
     with pytest.raises(BusinessException, match="拓扑已并发变更"):
         await service.delete(cast("Any", db), 7)
 
-    assert workline_repo.exclusive_lock_calls == [3]
     assert device_repo.delete_calls == []
 
 

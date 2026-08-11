@@ -153,11 +153,7 @@ class TestCallbackResultIdempotency:
                                 device_code="ARM_01",
                                 capabilities_json={"supports_result_callback": True},
                             ),
-                            workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin", contract_version="1.0", is_active=True
-                            ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
+                            workline=SimpleNamespace(is_active=True),
                             work_line_id=1,
                             is_workline_bound=True,
                         ),
@@ -235,11 +231,7 @@ class TestCallbackEventIdempotency:
                                 device_code="ARM_01",
                                 capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
                             ),
-                            workline=SimpleNamespace(
-                                plugin_key="test_workline_plugin", contract_version="1.0", is_active=True
-                            ),
-                            plugin_key="test_workline_plugin",
-                            contract_version="1.0",
+                            workline=SimpleNamespace(is_active=True),
                             work_line_id=1,
                             is_workline_bound=True,
                         ),

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import csv
+import importlib
 from collections import Counter
 from pathlib import Path
+
+from scripts import generate_legacy_matrix
+from scripts.generate_legacy_matrix import parse_entries
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_CLEANUP_MATRIX_CSV = REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.csv"
@@ -25,6 +29,46 @@ def test_business_legacy_matrix_has_no_dedicated_drop_items() -> None:
     rows = _matrix_rows()
 
     assert Counter(row["drop_phase"] for row in rows)["phase5-business"] == 0
+
+
+def test_retired_phase5_business_carriers_are_absent_from_generator_and_ledgers() -> None:
+    retired_paths = {
+        "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py",
+        "src/app/runtime/capabilities/material_flow/contracts/rough_sorter_context.py",
+        "src/app/runtime/capabilities/material_flow/contracts/smt_inbound_handoff_reason.py",
+        "src/app/runtime/capabilities/material_flow/contracts/smt_usage_policy.py",
+        "src/app/runtime/capabilities/material_flow/contracts/sorting_inbound_context.py",
+        "src/app/runtime/capabilities/material_flow/smt_inbound_handoff_route_service.py",
+        "src/app/runtime/orchestration/repositories/smt_inbound_handoff_repository.py",
+        "src/app/workline/domain/contexts/rough_sorter.py",
+        "src/app/workline/domain/contexts/smt_sorting_inbound.py",
+        "src/app/workline/domain/contracts/rough_sorter.py",
+        "src/app/workline/domain/services/smt_inbound_handoff_reason.py",
+        "src/app/workline/domain/services/smt_inbound_handoff_route_service.py",
+        "src/app/workline/domain/services/smt_usage_policy.py",
+        "src/app/workline/models/plugin_binding.py",
+        "src/app/workline/repositories/plugin_binding_repository.py",
+        "src/app/workline/repositories/smt_inbound_handoff_repository.py",
+        "src/app/workline/services/ng_return_item_service.py",
+        "src/app/workline/services/plugin_binding_service.py",
+        "src/app/workline/services/smt_inbound_handoff_service.py",
+    }
+
+    migration_paths = {
+        *generate_legacy_matrix.MIGRATED_DOMAIN_IMPLS,
+        *generate_legacy_matrix.MIGRATED_DOMAIN_IMPLS.values(),
+        *generate_legacy_matrix.MIGRATED_REPOSITORIES,
+        *generate_legacy_matrix.MIGRATED_REPOSITORIES.values(),
+    }
+    generated_paths = {entry.relative_path for entry in parse_entries()}
+    matrix_paths = {row["relative_path"] for row in _matrix_rows()}
+    ledger_paths = {row["relative_path"] for row in _ledger_rows()}
+
+    assert migration_paths.isdisjoint(retired_paths)
+    assert generate_legacy_matrix.ACTIVE_PLATFORM_PATHS.isdisjoint(retired_paths)
+    assert generated_paths.isdisjoint(retired_paths)
+    assert matrix_paths.isdisjoint(retired_paths)
+    assert ledger_paths.isdisjoint(retired_paths)
 
 
 def test_business_carrier_rows_remain_auditable_before_business_cleanup() -> None:
@@ -50,18 +94,15 @@ def test_business_carrier_rows_remain_auditable_before_business_cleanup() -> Non
         for entry_id, ledger_row in ledger_by_entry_id.items()
     )
 
-    allowed_targets_by_semantics = {
-        "[phase4] NG 退货/处理业务流程": {
-            "material-flow:ng_return_item_service.NgReturnItemService",
-        },
-        "[phase4] Bin Cell 预约业务流程": {
-            "material-flow:bin_cell_reservation_service.WorklineBinCellReservationService",
-        },
-    }
-    mismatched_targets = [
-        row["entry_id"]
-        for row in ledger_rows
-        if (allowed_targets := allowed_targets_by_semantics.get(row["business_semantics"]))
-        and row["target_capability"] not in allowed_targets
-    ]
-    assert mismatched_targets == []
+    unresolved_targets: list[str] = []
+    for row in ledger_rows:
+        namespace, _, identifier = row["target_capability"].partition(":")
+        if namespace != "material-flow" or "." not in identifier:
+            unresolved_targets.append(row["entry_id"])
+            continue
+        module_name, symbol = identifier.rsplit(".", 1)
+        module = importlib.import_module(f"src.app.runtime.capabilities.material_flow.{module_name}")
+        if not hasattr(module, symbol):
+            unresolved_targets.append(row["entry_id"])
+
+    assert unresolved_targets == []

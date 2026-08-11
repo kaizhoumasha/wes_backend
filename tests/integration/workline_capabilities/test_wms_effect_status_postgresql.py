@@ -24,13 +24,13 @@ from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.app.wms_integration.ports.effect_status import (
     build_wms_effect_status_binding,
 )
+from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
 from tests.contracts.wms_integration.provider_profile_support import (
     build_hmac_provider_profile_payload,
     build_provider_catalog,
 )
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
-from tests.support.runtime_binding import seed_runtime_binding
 from tests.workline_runtime.system_capabilities.test_wms_effect_status_service import _settings
 
 if TYPE_CHECKING:
@@ -59,15 +59,16 @@ async def _seed_effect(
     status_check_after: Any,
     status_check_started_at: Any = None,
 ) -> str:
-    workline, binding = await seed_runtime_binding(db, line_code=f"WMS-STATUS-PG-{suffix}")
+    workline = WorkLine(
+        line_code=f"WMS-STATUS-PG-{suffix}",
+        line_name="WMS effect status PostgreSQL",
+        line_type=LineType.AUTO,
+        is_active=True,
+    )
+    db.add(workline)
+    await db.flush()
     execution_session = ExecutionSession(
         workline_id=workline.id,
-        plugin_key=binding.plugin_key,
-        manifest_version=binding.contract_version,
-        plugin_binding_id=binding.id,
-        plugin_binding_version=binding.binding_version,
-        plugin_config_hash=binding.typed_config_hash,
-        plugin_index_digest=binding.generated_index_digest,
         state="RUNNING",
     )
     db.add(execution_session)

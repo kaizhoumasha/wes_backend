@@ -71,6 +71,18 @@ def test_core_tests_do_not_import_secondary_development_plugin_packages() -> Non
     assert offenders == {}
 
 
+def test_core_production_package_does_not_embed_or_import_workline_plugins() -> None:
+    embedded_root = REPO_ROOT / "src/app/runtime/workline_plugins"
+    assert list(embedded_root.rglob("*.py")) == []
+
+    offenders = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "src").rglob("*.py")
+        if "src.app.runtime.workline_plugins" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
 def test_core_test_entrypoints_do_not_collect_or_map_secondary_plugin_packages() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     pytest_options = pyproject["tool"]["pytest"]["ini_options"]

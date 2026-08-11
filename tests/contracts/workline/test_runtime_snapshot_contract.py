@@ -15,7 +15,6 @@ from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
     RuntimeSnapshotInput,
     runtime_snapshot_assembler,
 )
-from tests.support.runtime_binding import binding_pin_fields
 
 
 def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation():
@@ -23,9 +22,6 @@ def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation()
     session = ExecutionSession(
         id=101,
         workline_id=7,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         state="RUNNING",
     )
     correlation = ExecutionCorrelation(
@@ -86,8 +82,8 @@ def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation()
     )
 
     assert set(snapshot) == {"state", "timeline", "inbox", "hold", "pending_intent", "correlation"}
+    assert "manifest_version" not in snapshot["state"]
     assert snapshot["state"]["state"] == "RUNNING"
-    assert snapshot["state"]["manifest_version"] == "manifest-v1"
     assert snapshot["timeline"][0]["event_type"] == "INBOX_RECEIVED"
     assert snapshot["inbox"][0]["status"] == "RECEIVED"
     assert snapshot["hold"][0]["scope_key"] == "wi-001"

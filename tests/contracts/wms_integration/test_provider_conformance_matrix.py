@@ -17,16 +17,16 @@ from tests.support.wms_provider_conformance import WMS_CONFORMANCE_COMPILED_PROF
 GENERATED_AT = datetime(2026, 7, 30, 8, 0, tzinfo=UTC)
 
 
-def test_manifest_is_exact_registry_driven_35_operation_mode_family_matrix() -> None:
+def test_manifest_is_exact_registry_driven_31_operation_mode_family_matrix() -> None:
     manifest = build_wms_conformance_manifest(WMS_CONFORMANCE_COMPILED_PROFILE)
 
     assert tuple(item.operation for item in manifest.operations) == WMS_OPERATIONS
-    assert len(manifest.operations) == 35
-    assert sum(item.operation.mode is WmsOperationMode.QUERY for item in manifest.operations) == 19
-    assert sum(item.operation.mode is WmsOperationMode.EFFECT for item in manifest.operations) == 16
+    assert len(manifest.operations) == 31
+    assert sum(item.operation.mode is WmsOperationMode.QUERY for item in manifest.operations) == 18
+    assert sum(item.operation.mode is WmsOperationMode.EFFECT for item in manifest.operations) == 13
     assert sum(item.operation.completion_mode is WmsCompletionMode.SYNC_RESULT for item in manifest.operations) == 9
-    assert sum(item.operation.completion_mode is WmsCompletionMode.ASYNC_TASK for item in manifest.operations) == 7
-    assert sum(len(item.required_cases) for item in manifest.operations) == 217
+    assert sum(item.operation.completion_mode is WmsCompletionMode.ASYNC_TASK for item in manifest.operations) == 4
+    assert sum(len(item.required_cases) for item in manifest.operations) == 193
     for item in manifest.operations:
         if item.operation.identity == "wms.inventory.query_inventory@v1":
             expected = provider_manifest._INVENTORY_QUERY_CASES
@@ -50,7 +50,7 @@ def test_conformance_manifest_rejects_identity_or_mode_family_drift(mutation: st
         error = "duplicate"
     elif mutation == "missing":
         operations.pop()
-        error = "exact 35"
+        error = "exact 31"
     else:
         operations[0] = operations[0].model_copy(update={"required_cases": ("success",)})
         error = "mode family"
@@ -63,7 +63,7 @@ def test_conformance_manifest_rejects_identity_or_mode_family_drift(mutation: st
         )
 
 
-def test_generic_case_bank_covers_all_217_mode_family_cases_exactly_once() -> None:
+def test_generic_case_bank_covers_all_193_mode_family_cases_exactly_once() -> None:
     cases = provider_conformance.WMS_PROVIDER_CONFORMANCE_CASES
     expected = {
         (requirement.operation.identity, case_id)
@@ -72,7 +72,7 @@ def test_generic_case_bank_covers_all_217_mode_family_cases_exactly_once() -> No
     }
 
     actual = {(case.operation_identity, case.case_id) for case in cases}
-    assert len(cases) == len(expected) == 217
+    assert len(cases) == len(expected) == 193
     assert actual == expected
 
 
@@ -82,7 +82,7 @@ def test_effect_idempotency_and_progress_cases_preserve_frozen_semantics() -> No
     in_progress = tuple(case for case in cases if case.case_id == "in_progress")
     partial_failures = tuple(case for case in cases if case.case_id == "partial_failure")
 
-    assert len(conflicts) == 16
+    assert len(conflicts) == 13
     assert all(
         case.outcome_kind == "CONTRACT_FAILURE"
         and case.reason_code == "IDEMPOTENCY_CONFLICT"
@@ -96,7 +96,7 @@ def test_effect_idempotency_and_progress_cases_preserve_frozen_semantics() -> No
         and case.retryable is True
         for case in in_progress
     )
-    assert len(partial_failures) == 7
+    assert len(partial_failures) == 4
     assert all(
         case.outcome_kind == "PARTIAL_FAILURE" and case.semantic_marker == "PARTIAL_FAILURE" and case.retryable is False
         for case in partial_failures
@@ -108,7 +108,7 @@ def test_provider_manifest_guards_business_coverage_and_full_registry(monkeypatc
 
     expected = tuple(operation.identity for operation in WMS_OPERATIONS)
     provider_manifest.require_full_factory_registry(expected)
-    with pytest.raises(ValueError, match="35-operation"):
+    with pytest.raises(ValueError, match="31-operation"):
         provider_manifest.require_full_factory_registry(expected[:-1])
 
     monkeypatch.setattr(
@@ -152,7 +152,7 @@ def test_fixture_matrix_reuses_typed_happy_fixtures_and_is_fail_closed() -> None
 def test_fixture_matrix_is_built_during_module_import_for_collection_fail_closed() -> None:
     from tests.mock.wms_operation_fixtures import WMS_OPERATION_FIXTURE_MATRIX
 
-    assert len(WMS_OPERATION_FIXTURE_MATRIX) == 35
+    assert len(WMS_OPERATION_FIXTURE_MATRIX) == 31
 
 
 @pytest.mark.parametrize("mutation", ("missing", "extra", "duplicate"))
@@ -306,7 +306,6 @@ def test_t8_coverage_target_manifest_is_exact_and_forbids_omit_or_pragma() -> No
         "src.app.runtime.system_capabilities.wms.conformance_manifest",
         "src.app.runtime.system_capabilities.wms.provider_conformance",
         "src.app.runtime.system_capabilities.wms.conformance_matrix",
-        "src.app.workline.models.migration_inventory",
         "tests.support.wms_conformance_runner",
         "scripts.run_wms_conformance",
     )

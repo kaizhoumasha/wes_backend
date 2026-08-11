@@ -98,7 +98,6 @@ def _response_scenario(case, *, wire_kind=None, idempotency_key=None):
         response_payload = {
             "state": "PROCESSING",
             "provider_reference": response_payload["provider_reference"],
-            "accepted_scope": None,
             "reason_code": None,
             "updated_at": "2026-07-30T00:00:00+00:00",
             "source_version": 2,
@@ -114,7 +113,6 @@ def _response_scenario(case, *, wire_kind=None, idempotency_key=None):
         response_payload = {
             "state": "COMPLETED",
             "provider_reference": response_payload["provider_reference"],
-            "accepted_scope": None,
             "reason_code": None,
             "updated_at": "2026-07-30T00:00:00+00:00",
             "source_version": int(response_payload["source_version"]),

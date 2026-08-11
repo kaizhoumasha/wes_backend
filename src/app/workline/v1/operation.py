@@ -13,16 +13,12 @@ from src.app.callback.models.ingress_response import (
     build_callback_rejected_response,
 )
 from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
-from src.app.runtime.orchestration.models.operation import (
-    ManualOperationRequest,
+from src.app.runtime.orchestration.models.operation import (  # noqa: TC001 - FastAPI needs runtime annotations
     ReplayInboxRequest,
     ResolveEffectReconciliationRequest,
     ResolveRuntimeReconciliationRequest,
     SandboxAckRequest,
-    SandboxEventRequest,
     SandboxExternalCallbackRequest,
-    SandboxResultRequest,
-    SandboxTemplatesResponse,
     SandboxWorklineStartRequest,
 )
 from src.app.runtime.orchestration.services.effect_reconciliation_resolution_service import (
@@ -271,7 +267,7 @@ async def replay_inbox(
 
 @router.post(
     "/reconciliations/sessions/{session_id}/resolve",
-    summary="[biz:workline:resolve-reconciliation] 解除 runtime reconciliation 隔离，不重发设备命令、不调用 timeout 插件处理、释放安全停靠队列",
+    summary="[biz:workline:resolve-reconciliation] 解除 runtime reconciliation 隔离，不重发设备命令、不重复执行超时处理、释放安全停靠队列",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:resolve-reconciliation"))],
@@ -337,32 +333,6 @@ async def resolve_effect_reconciliation(
         response.status_code = BusinessErrorCode.INVALID_STATE.http_status
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=result))
-
-
-@router.post(
-    "/manual/sessions/{session_id}",
-    summary="[biz:workline:update] 创建人工操作",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
-)
-async def create_manual_operation(
-    session_id: int,
-    payload: ManualOperationRequest,
-    db: AsyncSessionDep,
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        inbox = await workline_operation_service.create_manual_operation(
-            db,
-            session_id=session_id,
-            operation=payload.operation,
-            operator_id=payload.operator_id,
-            reason=payload.reason,
-        )
-    except (ValueError, WorkLineSafetyBlocked) as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_runtime_inbox_processing()
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
 @router.post(
@@ -467,34 +437,6 @@ async def clear_workline_estop(
 
 
 @router.post(
-    "/sandbox/events",
-    summary="[biz:workline:update] 沙箱发送 Event",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
-)
-async def submit_sandbox_event(
-    payload: SandboxEventRequest,
-    db: AsyncSessionDep,
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        inbox = await workline_operation_service.submit_sandbox_event(
-            db,
-            workline_id=payload.workline_id,
-            device_id=payload.device_id,
-            event_type=payload.event_type,
-            trace_id=payload.trace_id,
-            session_id=payload.session_id,
-            payload=payload.payload,
-            timestamp=payload.timestamp,
-        )
-    except ValueError as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_runtime_inbox_processing()
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
-
-
-@router.post(
     "/sandbox/ack",
     summary="[biz:workline:update] 沙箱模拟 Command ACK",
     response_model=ResponseSchemaModel[dict[str, Any]],
@@ -545,58 +487,6 @@ async def submit_sandbox_external_callback(
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
-
-
-@router.post(
-    "/results",
-    summary="[biz:workline:update] 沙箱模拟 Command Result",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
-)
-async def submit_sandbox_result(
-    payload: SandboxResultRequest,
-    db: AsyncSessionDep,
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        inbox = await workline_operation_service.submit_sandbox_result(
-            db,
-            command_code=payload.command_code,
-            device_code=payload.device_code,
-            result=payload.result,
-            payload=payload.payload,
-            error_detail=payload.error_detail,
-            timestamp=payload.timestamp,
-        )
-    except ValueError as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    await publish_deferred_sse_events(db)
-    _enqueue_runtime_inbox_processing()
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
-
-
-@router.get(
-    "/sandbox/templates",
-    summary="[biz:workline:list] 获取沙箱模板",
-    response_model=ResponseSchemaModel[SandboxTemplatesResponse],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:list"))],
-)
-async def get_sandbox_templates(
-    db: AsyncSessionDep,
-    workline_id: int,
-    device_id: int | None = None,
-) -> ResponseSchemaModel[SandboxTemplatesResponse]:
-    try:
-        templates = await workline_operation_service.get_sandbox_templates(
-            db, workline_id=workline_id, device_id=device_id
-        )
-    except ValueError as exc:
-        return cast(
-            "ResponseSchemaModel[SandboxTemplatesResponse]",
-            response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
-        )
-    return cast("ResponseSchemaModel[SandboxTemplatesResponse]", response_builder.success(data=templates))
 
 
 __all__ = ["router"]

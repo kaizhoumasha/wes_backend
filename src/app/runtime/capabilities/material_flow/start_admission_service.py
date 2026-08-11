@@ -6,9 +6,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlencode
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.app.device.repositories import device_repository
 from src.app.device.services.device_context_service import device_context_service
@@ -19,10 +21,9 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
-from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
-from src.app.workline.services.workline_service import WorkLineService, workline_service
+from src.app.workline.services.workline_service import workline_service
 from src.core.logger import logger
 from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
@@ -34,21 +35,23 @@ _SUCCESS = "SUCCESS"
 _FAILED = "FAILED"
 _READY = WorkLineRuntimeStatus.READY
 _STOPPED = WorkLineRuntimeStatus.STOPPED
+_DEFAULT_DEVICE_STATUS_PATH = "/api/v1/device/status"
 
 
 @dataclass(frozen=True, slots=True)
 class StartAdmissionStatusTarget:
-    """单个 ECS status 批量探测目标。"""
+    """单个设备的 ECS status 探测目标。"""
 
     scheme: str
     host: str
     port: int
     status_path: str
-    device_codes: tuple[str, ...]
+    device_code: str
 
     @property
     def url(self) -> str:
-        return f"{self.scheme}://{self.host}:{self.port}{self.status_path}"
+        query = urlencode({"device_code": self.device_code})
+        return f"{self.scheme}://{self.host}:{self.port}{self.status_path}?{query}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +72,21 @@ class StartAdmissionResult:
     message: str
     workline_id: int | None
     diagnostic: dict[str, Any]
+
+
+class _UniformDeviceStatusWire(BaseModel):
+    """第三方设备统一状态响应的必填包络。"""
+
+    model_config = ConfigDict(strict=True)
+
+    device_code: str = Field(min_length=1)
+    contract_key: str = Field(min_length=1)
+    contract_version: str = Field(min_length=1)
+    mode: Literal["AUTO", "MANUAL", "MAINTENANCE", "UNKNOWN"]
+    status: Literal["IDLE", "RUNNING", "ERROR", "OFFLINE", "UNKNOWN"]
+    current_command_code: str | None
+    error_detail: dict[str, Any] | None
+    timestamp: int
 
 
 type StatusFetcher = Callable[[StartAdmissionStatusTarget, float], Awaitable[StartAdmissionStatusFetchResult]]
@@ -258,9 +276,8 @@ class WorkLineStartAdmissionService:
                 {"workline_id": workline_id, "runtime_status": runtime_status},
             )
 
-        devices = await device_repository.get_by_work_line_id(db, workline_id)
-        rack_positions = await workline_service._list_rack_positions(db, workline)
-        checks = workline_service._build_configuration_checks(workline, devices, rack_positions)
+        configuration_status = await workline_service.configuration_status(db, workline_id)
+        checks = configuration_status.checks
         blockers = [check for check in checks if check.status == "FAIL" and check.severity == "BLOCKER"]
         if blockers:
             diagnostic = {
@@ -282,6 +299,7 @@ class WorkLineStartAdmissionService:
                 diagnostic,
             )
 
+        devices = await device_repository.get_by_work_line_id(db, workline_id)
         target_devices = self._resolve_command_target_devices(workline, devices)
         if not target_devices:
             return self._rejected(
@@ -317,38 +335,56 @@ class WorkLineStartAdmissionService:
         return None
 
     def _resolve_command_target_devices(self, workline: Any, devices: list[Any]) -> list[Any]:
-        definition = get_workline_capability_definition(
-            getattr(workline, "plugin_key", None),
-            getattr(workline, "contract_version", None),
+        """START 只依赖 WorkLine 物理拓扑，不从业务插件推导目标设备。"""
+
+        del workline
+        return sorted(
+            (
+                device
+                for device in devices
+                if isinstance(getattr(device, "id", None), int) and bool(getattr(device, "is_active", True))
+            ),
+            key=lambda device: (str(getattr(device, "device_code", "")), int(getattr(device, "id", 0))),
         )
-        if definition is None:
-            return []
-        target_map = WorkLineService._command_target_device_map(definition.schema, devices)
-        return [target_map[device_id][0] for device_id in sorted(target_map)]
 
     def _build_status_targets(self, devices: list[Any]) -> list[StartAdmissionStatusTarget]:
-        groups: dict[tuple[str, str, int, str], set[str]] = {}
+        targets: list[StartAdmissionStatusTarget] = []
         for device in devices:
             device_code = getattr(device, "device_code", None)
             host = getattr(device, "host", None)
             port = getattr(device, "port", None)
-            status_path = WorkLineService._resolve_device_status_path(device)
+            status_path = self._resolve_device_status_path(device)
             if not isinstance(device_code, str) or not device_code or not isinstance(host, str) or not status_path:
                 continue
             if not isinstance(port, int):
                 continue
-            key = (WorkLineService._resolve_device_scheme(device), host, port, status_path)
-            groups.setdefault(key, set()).add(device_code)
-        return [
-            StartAdmissionStatusTarget(
-                scheme=scheme,
-                host=host,
-                port=port,
-                status_path=status_path,
-                device_codes=tuple(sorted(device_codes)),
+            targets.append(
+                StartAdmissionStatusTarget(
+                    scheme=self._resolve_device_scheme(device),
+                    host=host,
+                    port=port,
+                    status_path=status_path,
+                    device_code=device_code,
+                )
             )
-            for (scheme, host, port, status_path), device_codes in sorted(groups.items())
-        ]
+        return targets
+
+    @staticmethod
+    def _resolve_device_scheme(device: Any) -> str:
+        protocol = getattr(device, "protocol", "HTTP")
+        value = str(getattr(protocol, "value", protocol) or "HTTP").lower()
+        return value if value in {"http", "https"} else "http"
+
+    @staticmethod
+    def _resolve_device_status_path(device: Any) -> str:
+        capabilities = getattr(device, "capabilities_json", None)
+        if isinstance(capabilities, dict):
+            for key in ("status_path", "device_status_path"):
+                value = capabilities.get(key)
+                if isinstance(value, str) and value.strip():
+                    path = value.strip()
+                    return path if path.startswith("/") else f"/{path}"
+        return _DEFAULT_DEVICE_STATUS_PATH
 
     async def _probe_targets(
         self,
@@ -402,12 +438,18 @@ class WorkLineStartAdmissionService:
                     )
                 for record in records:
                     device_code = self._record_device_code(record)
-                    if device_code is None:
+                    if device_code != target.device_code:
+                        if device_code is None:
+                            message = "START 准入失败: ECS status 响应缺少 device_code"
+                            diagnostic = {"record": record}
+                        else:
+                            message = "START 准入失败: ECS status 响应设备与查询目标不匹配"
+                            diagnostic = {"response_device_code": device_code}
                         return self._rejected(
                             None,
                             "START_ADMISSION_ECS_BAD_JSON",
-                            "START 准入失败: ECS status 响应缺少 device_code",
-                            self._target_failure_diagnostic(target, {"record": record}),
+                            message,
+                            self._target_failure_diagnostic(target, diagnostic),
                         )
                     if device_code in status_by_device_code:
                         return self._rejected(
@@ -424,17 +466,16 @@ class WorkLineStartAdmissionService:
         if failure is not None:
             return failure, status_by_device_code
         for target in targets:
-            for device_code in target.device_codes:
-                if device_code not in status_by_device_code:
-                    return (
-                        self._rejected(
-                            None,
-                            "START_ADMISSION_DEVICE_STATUS_MISSING",
-                            f"START 准入失败: ECS status 未返回设备 {device_code}",
-                            self._target_failure_diagnostic(target, {"device_code": device_code}),
-                        ),
-                        status_by_device_code,
-                    )
+            if target.device_code not in status_by_device_code:
+                return (
+                    self._rejected(
+                        None,
+                        "START_ADMISSION_DEVICE_STATUS_MISSING",
+                        f"START 准入失败: ECS status 未返回设备 {target.device_code}",
+                        self._target_failure_diagnostic(target),
+                    ),
+                    status_by_device_code,
+                )
         return None, status_by_device_code
 
     @staticmethod
@@ -502,7 +543,7 @@ class WorkLineStartAdmissionService:
         targets: list[StartAdmissionStatusTarget],
         status_by_device_code: dict[str, dict[str, Any]],
     ) -> StartAdmissionResult | None:
-        target_urls = {device_code: target.url for target in targets for device_code in target.device_codes}
+        target_urls = {target.device_code: target.url for target in targets}
         for device in sorted(devices, key=lambda item: str(getattr(item, "device_code", ""))):
             device_code = getattr(device, "device_code", None)
             if not isinstance(device_code, str):
@@ -518,12 +559,10 @@ class WorkLineStartAdmissionService:
                         "target_url": target_urls.get(device_code),
                     },
                 )
-            state = record.get("state")
-            state_dict = state if isinstance(state, dict) else {}
-            mode = state_dict.get("mode", record.get("mode"))
-            status = state_dict.get("status", state_dict.get("device_status", record.get("status")))
-            current_command_id = state_dict.get("current_command_id", record.get("current_command_id"))
-            if mode != "AUTO" or status != "IDLE" or current_command_id is not None:
+            mode = record.get("mode")
+            status = record.get("status")
+            current_command_code = record.get("current_command_code")
+            if mode != "AUTO" or status != "IDLE" or current_command_code is not None:
                 return self._rejected(
                     getattr(device, "work_line_id", None),
                     "START_ADMISSION_DEVICE_NOT_IDLE",
@@ -532,7 +571,7 @@ class WorkLineStartAdmissionService:
                         "device_code": device_code,
                         "mode": mode,
                         "status": status,
-                        "current_command_id": current_command_id,
+                        "current_command_code": current_command_code,
                         "target_url": target_urls.get(device_code),
                     },
                 )
@@ -587,26 +626,11 @@ class WorkLineStartAdmissionService:
 
     @staticmethod
     def _extract_status_records(payload: Any) -> list[dict[str, Any]] | None:
-        records: Any
-        if isinstance(payload, list):
-            records = payload
-        elif isinstance(payload, dict):
-            data = payload.get("data")
-            if isinstance(payload.get("devices"), list):
-                records = payload["devices"]
-            elif isinstance(data, list):
-                records = data
-            elif isinstance(data, dict) and isinstance(data.get("devices"), list):
-                records = data["devices"]
-            elif isinstance(payload.get("device_code"), str):
-                records = [payload]
-            else:
-                return None
-        else:
+        try:
+            record = _UniformDeviceStatusWire.model_validate(payload)
+        except ValidationError:
             return None
-        if not all(isinstance(item, dict) for item in records):
-            return None
-        return list(records)
+        return [record.model_dump(mode="python")]
 
     @staticmethod
     def _first_check_device_code(checks: list[Any]) -> str | None:
@@ -657,13 +681,10 @@ class WorkLineStartAdmissionService:
     ) -> dict[str, Any]:
         diagnostic: dict[str, Any] = {
             "target_url": target.url,
-            "device_codes": target.device_codes,
-            "device_code": target.device_codes[0] if target.device_codes else None,
+            "device_code": target.device_code,
         }
         if extra:
             diagnostic.update(extra)
-            if "device_code" not in extra and target.device_codes:
-                diagnostic["device_code"] = target.device_codes[0]
         return diagnostic
 
     async def _runtime_status(self, db: AsyncSession, workline_id: int) -> str | None:

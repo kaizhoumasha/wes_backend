@@ -1,4 +1,4 @@
-"""19 项 WMS QUERY 共用的泛型执行 Port。"""
+"""WMS QUERY 共用的泛型执行 Port。"""
 
 from __future__ import annotations
 

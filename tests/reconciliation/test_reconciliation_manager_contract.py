@@ -11,7 +11,6 @@ from src.app.runtime.orchestration.execution_correlation import ExecutionCorrela
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.utils.timezone import timezone
-from tests.support.runtime_binding import binding_pin_fields
 
 NOW_MS = 1_700_000_000_000
 
@@ -21,9 +20,6 @@ async def _seed_execution_correlation(db_session, *, correlation_id: str = "corr
 
     session = ExecutionSession(
         workline_id=1,
-        plugin_key="test-plugin",
-        manifest_version="v1",
-        **binding_pin_fields(),
         state="RUNNING",
     )
     db_session.add(session)

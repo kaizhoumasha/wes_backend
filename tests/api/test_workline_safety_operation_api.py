@@ -249,6 +249,7 @@ def test_resolve_runtime_reconciliation_route_uses_dedicated_permission() -> Non
 
     assert "biz:workline:resolve-reconciliation" in permissions
     assert "biz:workline:update" not in permissions
+    assert "插件" not in route.summary
 
 
 def test_resolve_effect_reconciliation_route_uses_dedicated_permission() -> None:

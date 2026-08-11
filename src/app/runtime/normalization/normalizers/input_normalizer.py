@@ -14,14 +14,12 @@ from src.app.runtime.capabilities.material_flow.contracts.six_in_one import SixI
 from src.app.runtime.normalization.classifiers.result_classifier import (
     classify_result,
     classify_result_category,
-    normalize_result_classification,
 )
 from src.app.runtime.normalization.contracts import (
     NormalizedCommandResult,
     NormalizedDeviceEvent,
     NormalizedExternalCallback,
 )
-from src.app.runtime.workline_plugins.registry import classify_workline_result, resolve_workline_business_key
 from src.app.workline.utils import non_empty_str, payload_dict
 
 _ERROR_CODE_FIELDS = ("error_code", "code")
@@ -88,21 +86,7 @@ def _resolve_trace_id(inbox: Any, payload: dict[str, Any], *, trace_id: str = ""
 def _resolve_device_event_business_key(
     payload: dict[str, Any],
     data: dict[str, Any],
-    *,
-    plugin_key: str | None = None,
-    contract_version: str | None = None,
 ) -> str | None:
-    try:
-        plugin_business_key = resolve_workline_business_key(
-            plugin_key,
-            payload,
-            contract_version=contract_version,
-        )
-    except (TypeError, ValueError):
-        plugin_business_key = None
-    if plugin_business_key:
-        return plugin_business_key
-
     canonical_six_in_one = SixInOne.model_validate(data)
     if canonical_six_in_one.business_key:
         return canonical_six_in_one.business_key
@@ -132,8 +116,6 @@ def _normalize_internal_event(
     payload: dict[str, Any],
     *,
     trace_id: str,
-    plugin_key: str | None,
-    contract_version: str | None,
 ) -> Any:
     source_event_type = non_empty_str(payload.get("event_type"))
     canonical_event_type = _require_canonical_event_type(inbox)
@@ -165,11 +147,6 @@ def _normalize_internal_event(
         }
     )
     data = payload_dict(data_value)
-    for field_name in ("handoff_demand_id", "handoff_source_item_id", "claim_attempt_no"):
-        value = data.get(field_name)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"INTERNAL_EVENT payload data missing valid {field_name}")
-
     return NormalizedDeviceEvent(
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,
@@ -177,8 +154,6 @@ def _normalize_internal_event(
         business_key=_resolve_device_event_business_key(
             payload,
             data,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
         ),
         trace_id=resolved_trace_id,
         event_time=payload.get("timestamp"),
@@ -192,8 +167,6 @@ def normalize_inbox_input(
     inbox: Any,
     *,
     trace_id: str = "",
-    plugin_key: str | None = None,
-    contract_version: str | None = None,
 ) -> Any:
     """按 inbox 类型构建标准化输入模型。"""
 
@@ -204,22 +177,12 @@ def normalize_inbox_input(
             inbox,
             payload,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
         )
 
     if kind == "COMMAND_RESULT":
         source_result = str(payload.get("result") or "UNKNOWN")
         error_detail = _normalized_error_detail(payload)
-        plugin_classification = classify_workline_result(
-            plugin_key,
-            payload,
-            contract_version=contract_version,
-        )
-        result_classification = normalize_result_classification(plugin_classification) or classify_result_category(
-            source_result,
-            error_detail=error_detail,
-        )
+        result_classification = classify_result_category(source_result, error_detail=error_detail)
         return NormalizedCommandResult(
             command_code=str(payload.get("command_code") or ""),
             source_result=source_result,
@@ -256,8 +219,6 @@ def normalize_inbox_input(
         business_key=_resolve_device_event_business_key(
             payload,
             data,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
         ),
         trace_id=_resolve_trace_id(inbox, payload, trace_id=trace_id),
         event_time=payload.get("timestamp"),

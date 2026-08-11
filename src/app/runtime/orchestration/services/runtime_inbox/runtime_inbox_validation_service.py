@@ -23,9 +23,6 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
-from src.app.runtime.workline_plugins.registry import (
-    get_workline_capability_definition,
-)
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import string_value
@@ -58,20 +55,10 @@ def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
 
 
 def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
-    """从插件 manifest.events 提取 ENTRY_DEVICE 入口事件类型, 缺省时保留 SMT 入口."""
-    plugin_key = string_value(getattr(workline, "plugin_key", None)) if workline is not None else ""
-    contract_version = string_value(getattr(workline, "contract_version", None)) if workline is not None else ""
-    definition = get_workline_capability_definition(plugin_key, contract_version)
-    if definition is None:
-        return frozenset({"SCAN_COMPLETED"})
-    events = definition.schema.events
-    return frozenset(
-        event_type
-        for event in events
-        if getattr(getattr(event, "category", None), "value", getattr(event, "category", None)) == "ENTRY_DEVICE"
-        for event_type in (getattr(event, "event", None),)
-        if isinstance(event_type, str) and event_type
-    )
+    """核心只识别通用扫码入口；具体业务入口由外部插件包拥有。"""
+
+    _ = workline
+    return frozenset({"SCAN_COMPLETED"})
 
 
 @dataclass(frozen=True, slots=True)

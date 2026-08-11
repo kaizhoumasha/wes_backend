@@ -258,16 +258,6 @@ class WorklineRuntimeReconciliationService:
             return TimerTimeoutReconciliationResult(disposition="EVIDENCE_STALE", session=session)
 
         timeout_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value
-        command_type = (
-            _payload_str(payload_data, "command_type")
-            or _payload_str(payload_data, "task_type")
-            or enum_str(getattr(command, "task_type", None))
-        )
-        if command_type == "PICK_AND_PUT":
-            # 粗分机 PICK_AND_PUT 业务超时仍由 TIMER reconciliation 唯一持有，
-            # 但业务证据使用插件合同的稳定原因码，且不创建 RuntimeIntent。
-            timeout_reason = "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
-
         now = timezone.now_for_db()
         claim_deadline_at = self._timer_timeout_deadline(session=session, payload=payload_data)
         claim_ack_received_at = getattr(command, "ack_received_at", None) or timezone.to_db_datetime(

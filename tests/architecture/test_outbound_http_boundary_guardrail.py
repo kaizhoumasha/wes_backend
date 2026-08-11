@@ -23,7 +23,6 @@ FORBIDDEN_PUBLIC_TERMS = ("httpx", "auth", "credential", "hmac", "clock", "nonce
 LEGACY_ASYNC_CLIENT_CREATORS = frozenset(
     {
         "app/device/services/device_command_service.py",
-        "app/runtime/capabilities/material_flow/smt_inbound_handoff_route_service.py",
         "app/runtime/capabilities/material_flow/start_admission_service.py",
         "app/runtime/orchestration/services/device_command_gateway.py",
         "app/runtime/orchestration/services/inbox/outbox_dispatch_service.py",

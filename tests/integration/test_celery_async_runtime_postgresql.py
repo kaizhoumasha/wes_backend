@@ -41,6 +41,7 @@ from src.celery_app.async_runtime import celery_async_runtime, run_async
 from src.core.logger import logger
 from src.database.db import get_db_context
 from src.database.redis_client import is_redis_available
+from tests.contracts.wms_integration.provider_profile_support import write_provider_profile
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
 if TYPE_CHECKING:
@@ -270,7 +271,7 @@ def _component_environment(database_url: str, redis_url: str, *, run_id: str) ->
 
 
 @pytest.fixture(scope="module")
-def prefork_services() -> Iterator[dict[str, str]]:
+def prefork_services(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
     """为模块创建一个迁移到 head 的隔离数据库。"""
 
     admin_database_url, redis_url = _required_integration_urls()
@@ -279,6 +280,7 @@ def prefork_services() -> Iterator[dict[str, str]]:
         environ={**os.environ, "INTEGRATION_DATABASE_URL": admin_database_url},
         required_free_slots=8,
     )
+    provider_profile = write_provider_profile(tmp_path_factory.mktemp("wms-provider") / "provider.yaml")
     database, sqlalchemy_url = runner.run(database_context.__aenter__())
     try:
         run_alembic("upgrade", "head", database_url=sqlalchemy_url)
@@ -299,6 +301,7 @@ def prefork_services() -> Iterator[dict[str, str]]:
             "database": database,
             "database_url": sqlalchemy_url,
             "redis_url": redis_url,
+            "wms_provider_profile_file": str(provider_profile),
         }
     finally:
         runner.run(database_context.__aexit__(None, None, None))
@@ -433,6 +436,7 @@ class PreforkWorker:
         environment.update(
             _component_environment(self.services["database_url"], self.services["redis_url"], run_id=self.run_id)
         )
+        environment["WMS_PROVIDER_PROFILE_FILE"] = self.services["wms_provider_profile_file"]
         if self.application_redis_url is not None:
             app_redis = make_url(self.application_redis_url)
             environment.update(

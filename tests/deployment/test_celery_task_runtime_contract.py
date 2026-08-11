@@ -24,7 +24,6 @@ ASYNC_TASKS = {
     "workline": (
         "scan_timeouts_batch",
         "scan_device_heartbeats_batch",
-        "scan_smt_inbound_handoff_demands_batch",
     ),
 }
 DB_TASKS = {
@@ -158,7 +157,6 @@ def test_database_task_async_body_uses_task_local_get_db_context(module_name: st
         ("sys", "dispatch_system_outbox_batch", 10),
         ("workline", "scan_timeouts_batch", 60),
         ("workline", "scan_device_heartbeats_batch", 60),
-        ("workline", "scan_smt_inbound_handoff_demands_batch", 60),
     ],
 )
 def test_retry_countdown_keeps_exponential_backoff_contract(
@@ -204,7 +202,6 @@ TASK_CONTRACTS: dict[str, tuple[str, int, int, str]] = {
     "src.celery_app.tasks.sys.process_signal": ("celery", 3, 10, "sys"),
     "src.celery_app.tasks.workline.scan_timeouts_batch": ("celery", 3, 60, "workline"),
     "src.celery_app.tasks.workline.scan_device_heartbeats_batch": ("celery", 3, 60, "workline"),
-    "src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch": ("celery", 3, 60, "workline"),
     "src.celery_app.tasks.workline.process_signal": ("celery", 3, 10, "workline"),
 }
 
@@ -229,6 +226,21 @@ def test_task_names_routes_retry_ack_and_time_limit_contracts_are_preserved() ->
         assert task.default_retry_delay == retry_delay
         assert task.time_limit is None
         assert task.soft_time_limit is None
+
+
+def test_retired_smt_handoff_task_is_not_registered_or_scheduled() -> None:
+    """零插件基线不得继续装配 SMT handoff 定时任务。"""
+
+    from src.celery_app.app import celery_app
+    from src.celery_app.config import beat_schedule
+    from src.celery_app.tasks import workline
+
+    task_name = "src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch"
+    celery_app.loader.import_default_modules()
+
+    assert task_name not in celery_app.tasks
+    assert all(item.get("task") != task_name for item in beat_schedule.values())
+    assert not hasattr(workline, "scan_smt_inbound_handoff_demands_batch")
 
 
 def test_wms_effect_status_scanner_has_a_budgeted_soft_and_hard_time_limit() -> None:

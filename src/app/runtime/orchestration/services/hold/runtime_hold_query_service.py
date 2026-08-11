@@ -29,7 +29,6 @@ from src.app.runtime.orchestration.services.hold.runtime_hold_release_service im
     RuntimeHoldReleaseService,
     runtime_hold_release_service,
 )
-from src.app.runtime.workline_plugins.registry import list_workline_ng_reasons
 from src.utils.value_normalization import as_dict, optional_enum_str
 
 if TYPE_CHECKING:
@@ -116,17 +115,12 @@ class RuntimeHoldQueryService:
 
     def list_ng_reasons(
         self,
-        *,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> list[NgReasonOption]:
-        """返回插件 NG reasons + 系统 fallback。"""
+        """返回系统 NG reasons。"""
 
         from src.app.runtime.capabilities.material_flow.contracts.ng_reason import BUILTIN_NG_REASONS
 
-        reasons: list[NgReasonDefinition] = []
-        reasons.extend(list_workline_ng_reasons(plugin_key, contract_version=contract_version))
-        reasons.extend(BUILTIN_NG_REASONS)
+        reasons: list[NgReasonDefinition] = list(BUILTIN_NG_REASONS)
         return [self._reason_option(item) for item in reasons]
 
     async def list_ng_return_items(

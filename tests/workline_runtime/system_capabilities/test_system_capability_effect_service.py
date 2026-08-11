@@ -271,33 +271,18 @@ def _intent(value: str = "A") -> RuntimeIntent:
         precondition={"expected": 3},
         fact_version="fact:3",
         timeout_seconds=1,
-        creator_authority="WORKLINE_PLUGIN",
-        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
-        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        creator_authority="RUNTIME_DOMAIN_SERVICE",
+        authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
+        binding_snapshot={},
         provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
     )
 
 
 def _ctx(db: _Db | None = None) -> dict[str, object]:
-    pin = {
-        "plugin_key": "test_plugin",
-        "plugin_binding_id": 9,
-        "plugin_binding_version": 1,
-        "plugin_index_digest": "d" * 64,
-    }
     return {
         "db": db or _Db(),
-        "session": SimpleNamespace(id=31, workline_id=3, contract_version="v1", **pin),
-        "work_item": SimpleNamespace(id=41, **pin),
-        "plugin_binding": SimpleNamespace(
-            id=9,
-            binding_version=1,
-            plugin_key="test_plugin",
-            contract_version="v1",
-            generated_index_digest="d" * 64,
-            is_enabled=True,
-            is_revoked=False,
-        ),
+        "session": SimpleNamespace(id=31, workline_id=3),
+        "work_item": SimpleNamespace(id=41),
         "inbox": SimpleNamespace(correlation_id="corr-1", execution_session_id=21),
         "trace_id": "trace-1",
     }
@@ -310,15 +295,8 @@ def _service(
     reconciliation_bridge: _ReconciliationBridge | None = None,
     allow_new_claim: Any | None = None,
 ) -> SystemCapabilityEffectService:
-    plugin_definition = SimpleNamespace(
-        plugin_key="test_plugin",
-        contract_version="v1",
-        allowed_capabilities=((definition.capability_key, definition.contract_version),),
-    )
     intent_service = SystemCapabilityIntentService(
         definitions={(definition.capability_key, definition.contract_version): definition},
-        plugin_definitions={("test_plugin", "v1"): plugin_definition},
-        plugin_index_digest="d" * 64,
         effect_repository=repository,
         effect_reducer=_EffectReducer(repository),
         effect_reconciliation_bridge=reconciliation_bridge or _ReconciliationBridge(),
@@ -354,21 +332,6 @@ async def test_local_transactional_effect_accepts_synchronous_flush() -> None:
 
     assert isinstance(result.outcome, Success)
     assert db.flush_count == 1
-
-
-@pytest.mark.parametrize(
-    "field_name",
-    ["plugin_key", "contract_version", "plugin_binding_id", "plugin_binding_version", "plugin_index_digest"],
-)
-def test_effect_intent_rejects_incomplete_locked_plugin_pin(field_name: str) -> None:
-    definition = _definition()
-    ctx = _ctx()
-    setattr(ctx["session"], field_name, None)
-
-    with pytest.raises(PermissionError, match="locked plugin pin is incomplete"):
-        _service(definition, _EffectRepository(ClaimResult.NEW))._intent_service._validate_execution_identity(
-            ctx, _intent(), definition=definition
-        )
 
 
 @pytest.mark.asyncio
@@ -609,9 +572,9 @@ async def test_match_replays_persisted_typed_success_for_real_effect_definitions
         precondition=precondition,
         fact_version=fact_version,
         timeout_seconds=definition.timeout_seconds,
-        creator_authority="WORKLINE_PLUGIN",
-        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
-        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        creator_authority="RUNTIME_DOMAIN_SERVICE",
+        authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
+        binding_snapshot={},
         provider_snapshot={"provider_code": "RUNTIME", "profile": definition.admission},
     )
     repository = _EffectRepository(
@@ -680,9 +643,9 @@ def _material_intent(*, precondition: dict[str, object], fact_version: object) -
         precondition=precondition,
         fact_version=fact_version,  # type: ignore[arg-type]
         timeout_seconds=5,
-        creator_authority="WORKLINE_PLUGIN",
-        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
-        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        creator_authority="RUNTIME_DOMAIN_SERVICE",
+        authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
+        binding_snapshot={},
         provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
     )
 
@@ -788,9 +751,9 @@ def _session_hold_intent(*, expected_status: object, fact_version: object) -> Ru
         precondition={"expected_status": expected_status},
         fact_version=fact_version,  # type: ignore[arg-type]
         timeout_seconds=5,
-        creator_authority="WORKLINE_PLUGIN",
-        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
-        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        creator_authority="RUNTIME_DOMAIN_SERVICE",
+        authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
+        binding_snapshot={},
         provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
     )
 
@@ -879,9 +842,9 @@ def _device_intent(*, expected_available: object, fact_version: object) -> Runti
         precondition={"expected_available": expected_available},
         fact_version=fact_version,  # type: ignore[arg-type]
         timeout_seconds=5,
-        creator_authority="WORKLINE_PLUGIN",
-        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
-        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        creator_authority="RUNTIME_DOMAIN_SERVICE",
+        authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
+        binding_snapshot={},
         provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
     )
 
@@ -1138,31 +1101,7 @@ async def test_handler_database_error_propagates_without_recording_outcome() -> 
 
 
 @pytest.mark.asyncio
-async def test_undeclared_effect_capability_is_rejected_before_claim_or_handler() -> None:
-    repository = _EffectRepository(ClaimResult.NEW)
-    definition = _definition()
-    plugin_definition = SimpleNamespace(
-        plugin_key="test_plugin",
-        contract_version="v1",
-        allowed_capabilities=(),
-    )
-    service = SystemCapabilityEffectService(
-        intent_service=SystemCapabilityIntentService(
-            definitions={(definition.capability_key, definition.contract_version): definition},
-            plugin_definitions={("test_plugin", "v1"): plugin_definition},
-            plugin_index_digest="d" * 64,
-            effect_repository=repository,
-        )
-    )
-
-    result = await service.apply(_ctx(), _intent())
-
-    assert isinstance(result.outcome, ContractViolation)
-    assert repository.calls == []
-
-
-@pytest.mark.asyncio
-async def test_binding_mismatch_is_rejected_before_claim() -> None:
+async def test_retired_binding_snapshot_is_rejected_before_claim() -> None:
     repository = _EffectRepository(ClaimResult.NEW)
     intent = _intent().model_copy(update={"binding_snapshot": {"binding_id": 99, "binding_version": 1}})
 
@@ -1174,15 +1113,25 @@ async def test_binding_mismatch_is_rejected_before_claim() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("creator_authority", "authorization_policy"),
     [
-        ("creator_authority", "PLUGIN_SELF_ASSERTED"),
-        ("authorization_policy", "PLUGIN_SELECTED_POLICY"),
+        ("WORKLINE_PLUGIN", "DOMAIN_CAPABILITY_ALLOWLIST"),
+        ("RUNTIME_DOMAIN_SERVICE", "PLUGIN_DECLARED_CAPABILITY"),
+        ("UNTRUSTED", "ALLOW_ANY"),
+        ("RUNTIME_DOMAIN_SERVICE", "ALLOW_ANY"),
     ],
 )
-async def test_creator_and_policy_must_match_runtime_owned_identity(field: str, value: str) -> None:
+async def test_creator_and_policy_must_match_runtime_owned_identity(
+    creator_authority: str,
+    authorization_policy: str,
+) -> None:
     repository = _EffectRepository(ClaimResult.NEW)
-    intent = _intent().model_copy(update={field: value})
+    intent = _intent().model_copy(
+        update={
+            "creator_authority": creator_authority,
+            "authorization_policy": authorization_policy,
+        }
+    )
 
     result = await _service(_definition(), repository).apply(_ctx(), intent)
 
@@ -1191,18 +1140,11 @@ async def test_creator_and_policy_must_match_runtime_owned_identity(field: str, 
 
 
 @pytest.mark.asyncio
-async def test_locked_binding_row_mismatch_is_rejected_before_claim() -> None:
+@pytest.mark.parametrize("missing_context", ["session", "work_item", "inbox"])
+async def test_runtime_owned_effect_requires_complete_execution_identity(missing_context: str) -> None:
     repository = _EffectRepository(ClaimResult.NEW)
     ctx = _ctx()
-    ctx["plugin_binding"] = SimpleNamespace(
-        id=9,
-        binding_version=2,
-        plugin_key="test_plugin",
-        contract_version="v1",
-        generated_index_digest="d" * 64,
-        is_enabled=True,
-        is_revoked=False,
-    )
+    ctx[missing_context] = None
 
     result = await _service(_definition(), repository).apply(ctx, _intent())
 
@@ -1211,7 +1153,7 @@ async def test_locked_binding_row_mismatch_is_rejected_before_claim() -> None:
 
 
 @pytest.mark.asyncio
-async def test_plugin_cannot_switch_provider_identity_to_evade_payload_conflict() -> None:
+async def test_runtime_cannot_switch_provider_identity_to_evade_payload_conflict() -> None:
     repository = _StatefulEffectRepository()
     service = _service(_definition(), repository)
     first = await service.apply(_ctx(), _intent("A"))

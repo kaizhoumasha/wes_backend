@@ -34,10 +34,7 @@ def test_all_workline_inbox_callers_use_runtime_enqueue_helper(monkeypatch: pyte
     gateway.enqueue_runtime_inbox.assert_called_once_with(limit=10)
     callers = (
         operation.replay_inbox,
-        operation.create_manual_operation,
-        operation.submit_sandbox_event,
         operation.submit_sandbox_external_callback,
-        operation.submit_sandbox_result,
     )
     for caller in callers:
         source = inspect.getsource(caller)

@@ -114,16 +114,7 @@ def _iter_scan_files() -> list[Path]:
     return sorted(paths)
 
 
-def _is_intentional_historical_line(relative_path: Path, line: str) -> bool:
-    return (
-        relative_path == Path("src/app/resource/services/smt_rack_bin_scheduling_service.py")
-        and line.strip() == 'RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"'
-    )
-
-
 def _line_matches(relative_path: Path, line: str) -> list[str]:
-    if _is_intentional_historical_line(relative_path, line):
-        return []
     return [label for label, pattern in PROCESS_NAME_PATTERNS if pattern.search(line)]
 
 
@@ -194,21 +185,6 @@ def test_process_naming_guardrail_rejects_guardrail_shorthand_examples() -> None
 
     for example in examples:
         assert any(pattern.search(example) for _, pattern in PROCESS_NAME_PATTERNS), example
-
-
-def test_process_naming_guardrail_allows_narrow_business_slot_code_alias() -> None:
-    line = '    RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"'
-
-    assert not _line_has_forbidden_process_name(
-        Path("src/app/resource/services/smt_rack_bin_scheduling_service.py"), line
-    )
-
-
-def test_process_naming_guardrail_keeps_business_slot_code_exception_exact() -> None:
-    path = Path("src/app/resource/services/smt_rack_bin_scheduling_service.py")
-
-    assert _line_has_forbidden_process_name(path, '    RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"  # R-I3c')
-    assert _line_has_forbidden_process_name(path, '# RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"')
 
 
 def test_process_naming_guardrail_rejects_stale_script_and_option_tokens() -> None:

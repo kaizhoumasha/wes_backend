@@ -95,8 +95,10 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
         if existing is not None:
             return existing
 
-        card = build_diagnostic_card(event)
         definition = get_diagnostic_code_definition(event.error_code)
+        if event.operator_action is None:
+            event = event.model_copy(update={"operator_action": definition.operator_action})
+        card = build_diagnostic_card(event)
         context = event.context
         card_json = card.model_dump(mode="json", exclude_none=True)
         data: dict[str, Any] = {
@@ -119,7 +121,7 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
             "problem_class": event.problem_class.value,
             "owner": definition.owner,
             "message": event.message,
-            "operator_action": event.operator_action or definition.fix,
+            "operator_action": event.operator_action,
             "technical_summary": event.technical_summary,
             "docs_anchor": definition.docs_anchor,
             "next_steps_json": list(event.next_steps),

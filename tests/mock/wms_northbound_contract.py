@@ -21,14 +21,7 @@ from pydantic import ValidationError
 
 from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsOperationMode
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
-from src.app.wms_integration.ports.fulfillment_operations import (
-    MoveBinsFromConveyorExitRequest,
-    MoveBinsToConveyorEntryRequest,
-    WmsAcceptedScope,
-    WmsEffectAck,
-    accepted_scope_digest,
-    validate_fulfillment_ack,
-)
+from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.ports.operation_common import validate_json_payload
 from tests.mock.wms_operation_fixtures import RESULT_FIXTURES
 
@@ -293,7 +286,6 @@ class NorthboundStatusSnapshot:
 
     state: str
     provider_reference: str | None
-    accepted_scope: WmsAcceptedScope | None
     reason_code: str | None
     updated_at: str | None
     source_version: int | None
@@ -303,9 +295,6 @@ class NorthboundStatusSnapshot:
         return {
             "state": self.state,
             "provider_reference": self.provider_reference,
-            "accepted_scope": (
-                self.accepted_scope.model_dump(mode="json") if self.accepted_scope is not None else None
-            ),
             "reason_code": self.reason_code,
             "updated_at": self.updated_at,
             "source_version": self.source_version,
@@ -327,7 +316,6 @@ class _OperationRecord:
     fingerprint: str
     payload: dict[str, Any]
     provider_reference: str
-    accepted_scope: WmsAcceptedScope | None
     accepted_at: datetime
     visible_at: datetime
     expires_at: datetime
@@ -377,9 +365,8 @@ class NorthboundOperationStore:
                 visibility_delay = self._pending_visibility_delays.pop(key, 0)
                 effect_count = self._effect_counts.get(key, 0) + 1
                 self._effect_counts[key] = effect_count
-                accepted_scope = None
                 if operation_identity in _ASYNC_OPERATION_IDENTITIES:
-                    ack = WmsEffectAck.model_validate(
+                    WmsEffectAck.model_validate(
                         build_typed_ack(
                             operation_identity,
                             idempotency_key,
@@ -387,12 +374,10 @@ class NorthboundOperationStore:
                             submission_state="ACCEPTED",
                         )
                     )
-                    accepted_scope = ack.accepted_scope
                 record = _OperationRecord(
                     fingerprint=fingerprint,
                     payload=dict(payload),
                     provider_reference=self._provider_reference(operation_identity, idempotency_key),
-                    accepted_scope=accepted_scope,
                     accepted_at=current,
                     visible_at=current + timedelta(seconds=visibility_delay),
                     expires_at=current + timedelta(seconds=self._retention_seconds),
@@ -524,7 +509,6 @@ class NorthboundOperationStore:
         return NorthboundStatusSnapshot(
             state=record.state,
             provider_reference=record.provider_reference,
-            accepted_scope=record.accepted_scope,
             reason_code=record.reason_code,
             updated_at=record.updated_at,
             source_version=record.source_version,
@@ -571,7 +555,7 @@ def build_typed_result(
     completed_at: str,
     provider_reference: str | None = None,
 ) -> dict[str, Any]:
-    """从 35 项 fixture 清单构造与请求关联的 typed terminal result。"""
+    """从 31 项 fixture 清单构造与请求关联的 typed terminal result。"""
 
     try:
         result = deepcopy(RESULT_FIXTURES[operation_identity])
@@ -579,32 +563,6 @@ def build_typed_result(
     except KeyError as exc:
         raise ValueError("unsupported operation_identity") from exc
     del completed_at
-    if operation_identity == "wms.fulfillment.move_bins_to_conveyor_entry@v1":
-        result["accepted_object_keys"] = tuple(item["bin_id"] for item in payload["items"])
-        result["items"] = [
-            {
-                "sequence_no": item["sequence_no"],
-                "route_instance_id": item["route_instance_id"],
-                "bin_id": item["bin_id"],
-                "item_outcome": "SUCCESS",
-                "final_queue_position": item["reserved_queue_position"],
-            }
-            for item in payload["items"]
-        ]
-    elif operation_identity == "wms.fulfillment.move_bins_from_conveyor_exit@v1":
-        result["accepted_object_keys"] = tuple(item["bin_id"] for item in payload["candidate_items"])
-        result["candidate_digest"] = payload["candidate_digest"]
-        result["items"] = [
-            {
-                "sequence_no": item["sequence_no"],
-                "route_instance_id": item["route_instance_id"],
-                "bin_id": item["bin_id"],
-                "item_outcome": "SUCCESS",
-                "final_rack_id": f"MOCK-RACK-{item['sequence_no']}",
-                "final_slot_id": f"MOCK-SLOT-{item['sequence_no']}",
-            }
-            for item in payload["candidate_items"]
-        ]
     for field_name in operation.result_model.model_fields:
         if field_name in payload and not isinstance(payload[field_name], (dict, list)):
             result[field_name] = payload[field_name]
@@ -622,7 +580,7 @@ def build_typed_ack(
     *,
     submission_state: Literal["ACCEPTED", "IN_PROGRESS_REPLAY", "REPLAY"],
 ) -> dict[str, Any]:
-    """从 frozen async request 构造共用 ACK；批次成员由 accepted_scope 显式冻结。"""
+    """从 frozen async request 构造共用 ACK。"""
 
     try:
         operation = WMS_OPERATION_BY_IDENTITY[operation_identity]
@@ -630,30 +588,14 @@ def build_typed_ack(
         raise ValueError("unsupported operation_identity") from exc
     if operation.completion_mode is not WmsCompletionMode.ASYNC_TASK:
         raise ValueError("typed ACK only accepts ASYNC_TASK operation")
-    request = validate_json_payload(operation.request_model, payload)
-    accepted_scope = None
-    if isinstance(request, MoveBinsToConveyorEntryRequest):
-        object_keys = tuple(item.bin_id for item in request.items)
-        accepted_scope = WmsAcceptedScope(
-            object_keys=object_keys,
-            scope_digest=accepted_scope_digest(object_keys),
-        )
-    elif isinstance(request, MoveBinsFromConveyorExitRequest):
-        object_keys = tuple(item.bin_id for item in request.candidate_items)
-        accepted_scope = WmsAcceptedScope(
-            object_keys=object_keys,
-            scope_digest=accepted_scope_digest(object_keys),
-        )
+    validate_json_payload(operation.request_model, payload)
     provider_digest = hashlib.sha256(f"{operation_identity}\n{idempotency_key}".encode()).hexdigest()[:16]
     ack = WmsEffectAck(
         operation_identity=operation_identity,
         idempotency_key=idempotency_key,
         provider_reference=f"mock-wms:{provider_digest}",
         submission_state=submission_state,
-        accepted_scope=accepted_scope,
     )
-    if isinstance(request, (MoveBinsToConveyorEntryRequest, MoveBinsFromConveyorExitRequest)):
-        validate_fulfillment_ack(request, ack)
     return ack.model_dump(mode="json")
 
 
@@ -661,7 +603,6 @@ def _not_found_snapshot() -> NorthboundStatusSnapshot:
     return NorthboundStatusSnapshot(
         state="NOT_FOUND",
         provider_reference=None,
-        accepted_scope=None,
         reason_code=None,
         updated_at=None,
         source_version=None,

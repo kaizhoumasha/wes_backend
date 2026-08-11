@@ -3,8 +3,8 @@
 现存实现中，Session 是 runtime/orchestration 域的聚合根和唯一 session PK 拥有者。
 Session 不持工作状态（work item 是 ExecutionWorkItem 的责任），只持：
 - workline_id: 关联 WorkLine (workline 域配置, session 引用)
-- manifest_version: RUNNING session 固定 manifest_version (CEO-011)
 - state: lifecycle (CREATED / RUNNING / HOLD / CLOSED / RECONCILING)
+- created_at / updated_at: 会话生命周期审计时间
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 - SQLModel table fields need the runtime class at import time.
 from typing import ClassVar
 
-from sqlalchemy import JSON, Column
 from sqlmodel import Field
 from sqlmodel._compat import SQLModelConfig
 
@@ -40,23 +39,6 @@ class ExecutionSession(BaseMixin, table=True):
         index=True,
         description="关联 WorkLine 配置 (保留 workline_id 引用)",
     )
-    plugin_key: str = Field(max_length=100, index=True)
-
-    # manifest version pin (RUNNING session 固定版本)
-    manifest_version: str = Field(
-        min_length=1,
-        max_length=60,
-        description="RUNNING session 固定 manifest_version, 新 manifest 只影响新 session",
-    )
-    plugin_binding_id: int = Field(
-        foreign_key="wes_biz.workline_plugin_bindings.id",
-        index=True,
-    )
-    plugin_binding_version: int = Field(ge=1)
-    plugin_config_hash: str = Field(max_length=64)
-    plugin_index_digest: str = Field(max_length=64)
-    plugin_state_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
-    plugin_state_version: int = Field(default=0, ge=0)
 
     # Lifecycle state
     state: str = Field(

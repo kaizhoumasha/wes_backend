@@ -22,7 +22,7 @@ def test_profile_accepts_exact_static_registry_and_rejects_unknown_fields() -> N
 
     profile = WmsProviderProfileSettings.model_validate(build_provider_profile_payload())
     assert tuple(profile.operations) == tuple(operation.identity for operation in WMS_OPERATIONS)
-    assert len(profile.operations) == 35
+    assert len(profile.operations) == 31
     assert profile.profile.identity == "wms.2026-07-28.full-factory"
 
     invalid = changed_profile_payload(legacy_endpoint="/forbidden")

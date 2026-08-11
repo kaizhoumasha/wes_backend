@@ -21,9 +21,6 @@ class _OperationServiceStub:
         self.replay_kwargs = _kwargs
         raise RuntimeInboxNotFound(inbox_id=999999999)
 
-    async def create_manual_operation(self, *_args: Any, **_kwargs: Any) -> object:
-        raise ValueError("会话不存在: 999999999")
-
 
 @pytest.mark.asyncio
 async def test_replay_missing_inbox_returns_not_found_response(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,30 +170,6 @@ def test_replay_openapi_declares_failure_statuses() -> None:
     responses = app.openapi()["paths"]["/api/v1/workline/operations/replay/inboxes/{inbox_id}"]["post"]["responses"]
 
     assert {"200", "400", "404", "409", "503"} <= responses.keys()
-
-
-@pytest.mark.asyncio
-async def test_manual_missing_session_returns_not_found_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    """人工操作不存在的 session 应返回资源不存在响应，而不是全局 500。"""
-
-    # Regression: ISSUE-002 — manual operation invalid id returned code 5000.
-    # Found by /qa on 2026-04-27
-    # Historical report: project sibling ../archive_docs/wes_backend/local-artifacts/.gstack/
-    # qa-reports/qa-report-localhost-2026-04-27.md
-    monkeypatch.setattr(operation_api, "workline_operation_service", _OperationServiceStub())
-
-    response = await operation_api.create_manual_operation(
-        session_id=999999999,
-        payload=operation_api.ManualOperationRequest(
-            operation="HOLD",
-            operator_id="qa",
-            reason="QA invalid id",
-        ),
-        db=object(),  # type: ignore[arg-type]
-    )
-
-    assert response["code"] == "3000"
-    assert response["message"] == "会话不存在: 999999999"
 
 
 def test_pending_outbox_response_does_not_treat_target_device_as_source() -> None:

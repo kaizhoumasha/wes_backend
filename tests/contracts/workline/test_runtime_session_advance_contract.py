@@ -11,18 +11,14 @@ from __future__ import annotations
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
-from tests.support.runtime_binding import binding_pin_fields
 
 
 def test_session_does_not_carry_work_item_state():
-    """状态分离: Session 只持 lifecycle (state + manifest_version),
+    """状态分离: Session 只持 lifecycle state，
     不持 work item step_status (主计划 §9.2 对象级流水并发契约)。"""
     session = ExecutionSession(
         id=101,
         workline_id=7,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         state="RUNNING",
     )
 
@@ -36,9 +32,6 @@ def test_work_item_step_status_progression():
         id=301,
         execution_session_id=101,
         correlation_id="corr-001",
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         object_type="bin",
         object_key="bin-A",
         current_step="PICK_FROM_INBOUND",
@@ -60,9 +53,6 @@ def test_work_item_failed_state_is_explicit():
         id=301,
         execution_session_id=101,
         correlation_id="corr-001",
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         object_type="material",
         object_key="mat-001",
         current_step="SCAN_BARCODE",
@@ -79,9 +69,6 @@ def test_work_item_can_have_parent_correlation_for_batch():
         id=401,
         execution_session_id=101,
         correlation_id="corr-parent",
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         object_type="rack",
         object_key="rack-001",
         current_step="BATCH_START",
@@ -92,9 +79,6 @@ def test_work_item_can_have_parent_correlation_for_batch():
         id=402,
         execution_session_id=101,
         correlation_id="corr-child-001",
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         object_type="bin",
         object_key="bin-A",
         current_step="PICK_FROM_INBOUND",
@@ -119,9 +103,6 @@ def test_correlation_links_session_and_work_item():
     session = ExecutionSession(
         id=101,
         workline_id=7,
-        plugin_key="test-plugin",
-        manifest_version="manifest-v1",
-        **binding_pin_fields(),
         state="RUNNING",
     )
 
@@ -130,9 +111,6 @@ def test_correlation_links_session_and_work_item():
             id=501 + i,
             execution_session_id=session.id,
             correlation_id=correlation.correlation_id,
-            plugin_key="test-plugin",
-            manifest_version="manifest-v1",
-            **binding_pin_fields(),
             object_type="bin",
             object_key=f"bin-{i}",
             current_step="PICK_FROM_INBOUND",
@@ -144,6 +122,7 @@ def test_correlation_links_session_and_work_item():
     assert all(wi.correlation_id == correlation.correlation_id for wi in work_items)
     assert all(wi.execution_session_id == session.id for wi in work_items)
     assert len({wi.object_key for wi in work_items}) == 3
+    assert {"plugin_key", "manifest_version"}.isdisjoint(ExecutionWorkItem.model_fields)
 
 
 def test_session_state_reconciles_distinct_from_running():
@@ -152,9 +131,6 @@ def test_session_state_reconciles_distinct_from_running():
         session = ExecutionSession(
             id=102,
             workline_id=8,
-            plugin_key="test-plugin",
-            manifest_version="manifest-v1",
-            **binding_pin_fields(),
             state=state,
         )
         assert session.state == state

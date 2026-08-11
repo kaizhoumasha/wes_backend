@@ -72,8 +72,6 @@ class RuntimeHoldCreationService:
             workline_id=required_int_attr(session, "workline_id"),
             session_id=session_id,
             trace_id=optional_str_attr(session, "trace_id"),
-            plugin_key=optional_str_attr(session, "plugin_key"),
-            contract_version=optional_str_attr(session, "contract_version"),
             source_kind="TIMER_TIMEOUT",
             source_reason=source_reason,
             source_idempotency_key=source_idempotency_key,
@@ -116,8 +114,6 @@ class RuntimeHoldCreationService:
             workline_id=required_int_attr(session, "workline_id"),
             session_id=session_id,
             trace_id=optional_str_attr(session, "trace_id"),
-            plugin_key=optional_str_attr(session, "plugin_key"),
-            contract_version=optional_str_attr(session, "contract_version"),
             source_kind="DISPATCH_ACK_EXHAUSTED",
             source_reason=source_reason,
             source_idempotency_key=f"dispatch-ack-exhausted:{outbox_id}:{command_key}",
@@ -169,8 +165,6 @@ class RuntimeHoldCreationService:
         evidence: Mapping[str, Any],
         session_id: int | None = None,
         trace_id: str | None = None,
-        plugin_key: str | None = None,
-        contract_version: str | None = None,
     ) -> RuntimeHold:
         """资源投影冲突时幂等创建 RuntimeHold。"""
 
@@ -180,8 +174,6 @@ class RuntimeHoldCreationService:
             workline_id=workline_id,
             session_id=session_id,
             trace_id=trace_id,
-            plugin_key=plugin_key,
-            contract_version=contract_version,
             source_kind="RESOURCE_RECONCILIATION",
             source_reason=source_reason,
             source_idempotency_key=f"resource-reconciliation:{source_reason}:{source_event_id}",

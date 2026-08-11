@@ -1,11 +1,12 @@
 # WORKLINE 诊断快速开始
 
-> 状态：`implementation_baseline`。本指南只用于收敛前现有诊断 API 排障，不得用于设计新 Runtime、replay 或 sandbox 能力。
+> 状态：`implementation_baseline`。本指南只用于 Phase 5 零插件基线仍保留的诊断、replay 和 sandbox 查询 API 排障，
+> 不得用于设计新 Runtime 或业务插件执行能力。
 
 本指南用于在不查数据库、不 grep 日志的前提下，用 API 完成一条 WORKLINE 诊断链路：
 
 ```text
-callback fixture -> trace_id / event_id -> blocking-point -> diagnostic card -> replay/manual/sandbox 操作
+callback fixture -> trace_id / event_id -> blocking-point -> diagnostic card -> replay/sandbox 查询
 ```
 
 ## 前置条件
@@ -17,7 +18,8 @@ callback fixture -> trace_id / event_id -> blocking-point -> diagnostic card -> 
    - `api:callback:result`
    - `biz:workline:list`
    - `biz:workline:update`
-4. 已有可路由的设备、WorkLine、插件和能力配置。快速验证建议使用 `run_mode=SIMULATION` 的工作线。
+4. 已有可校验的设备和 WorkLine 配置。Phase 5 当前没有业务插件，本指南只验证入站、诊断和 replay 等通用能力；
+   不把事件最终进入业务动作当作验收结果。sandbox 查询仅适用于数据库中已有的历史或测试 Outbox。
 
 示例命令默认：
 
@@ -173,31 +175,14 @@ curl -sS -X POST "$WES_API/workline/operations/replay/inboxes/<inbox_id>" \
   }'
 ```
 
-## 7. 人工操作 Session
-
-人工操作只允许在开放状态会话上执行，支持 `HOLD`、`RESUME`、`CANCEL`：
-
-```bash
-curl -sS -X POST "$WES_API/workline/operations/manual/sessions/<session_id>" \
-  -H "Authorization: Bearer $WES_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "operation": "HOLD",
-    "operator_id": "ops-user",
-    "reason": "等待现场确认设备状态"
-  }'
-```
-
-## 8. 标准诊断码
+## 7. 标准诊断码
 
 | 诊断码 | 默认 owner | 默认恢复动作 |
 | --- | --- | --- |
 | `CALLBACK_SCHEMA_INVALID` | `integration` | 按 callback 协议修正顶层字段和 `data` 结构后重发。 |
-| `SESSION_CONTEXT_MISSING` | `workflow` | 检查 inbox 与 session 归属字段，必要时人工创建或恢复会话。 |
+| `SESSION_CONTEXT_MISSING` | `workflow` | 检查 inbox 与 session 归属字段；没有权威 owner 时停止重放并修复上游事件。 |
 | `SESSION_RESOLVE_FAILED` | `workflow` | 检查 `business_key`、`trace_id`、设备绑定和 SessionResolver 规则。 |
-| `PLUGIN_EXECUTION_FAILED` | `plugin` | 回放该 inbox 并检查插件日志、输入归一化和状态迁移。 |
-| `PLUGIN_TRANSITION_INVALID` | `plugin` | 核对 session 当前状态和插件 transition 定义。 |
-| `CONTRACT_MISMATCH` | `integration` | 对齐设备 profile、`workline.contract_version` 和插件 manifest。 |
+| `CONTRACT_MISMATCH` | `integration` | 核对事件身份、设备或指令归属、协议字段与 WES 权威记录。 |
 | `DEVICE_UNREACHABLE` | `device` | 检查设备电源、网络、host/port 和 `callback_path` 配置。 |
 | `DEVICE_TIMEOUT` | `device` | 检查设备执行状态，必要时人工完成或重试命令。 |
 | `OUTBOX_DISPATCH_FAILED` | `integration` | 检查目标配置、最近一次 attempt 错误和外部服务可用性后重试。 |
@@ -214,7 +199,7 @@ Inbox `RESOURCE_WAIT` 与 Outbox `BLOCKED_RESOURCE` 都可以在 UI/Trace 中展
 
 诊断码来源：`src/app/runtime/orchestration/diagnostics/registry.py`。
 
-## 9. 合同规则
+## 8. 合同规则
 
 - 所有入口、表字段、运行时上下文和 API 响应统一使用 `trace_id`。
 - `command_code` 是设备结果恢复的硬锚点，不依赖供应商回传 trace。
