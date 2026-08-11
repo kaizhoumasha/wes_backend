@@ -10,12 +10,13 @@
 | --- | --- | --- |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
-| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、Cell 晚绑定、NG 和双面目标架业务设计真源 | Approved |
+| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、异步启动、Bin/Cell 晚绑定、退料优先和目标架业务设计真源 | Approved |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、Payload、返回 JSON 与幂等评审基线 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 3 已完成，Phase 4 已验收，Phase 5 已完成零插件基线；下一阶段为 Phase 6 |
+| `plans/2026-08-11-wes-transport-production-baseline.md` | Phase 6 Transport 正式基础基线、生产装配、旧 owner 和测试承接真源 | Approved；纳入批准合同基线后可开始实施 |
 | `plans/2026-08-10-wes-device-ecs-production-convergence.md` | Phase 7 DeviceCommand/ECS 通用能力生产收敛计划 | ReviewRequired；最终引用图、模型和 worker 清单获批前不得实施 |
 
 ## 项目外历史归档
