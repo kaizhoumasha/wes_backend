@@ -708,8 +708,9 @@ class TestCallbackResultAPI:
         assert log_kwargs["ingress_outcome"] == "REJECTED"
         assert log_kwargs["failure_stage"] == "DEVICE_CONTEXT_RESOLVE"
         assert log_kwargs["trace_id"] == "trace-ctx-001"
-        assert log_kwargs["response_status"] == 404
+        assert log_kwargs["response_status"] == 200
         mock_audit.assert_awaited_once()
+        assert _await_kwargs(mock_audit)["code"] == "200"
 
     @pytest.mark.asyncio
     async def test_callback_result_rejects_invalid_capability_config(
