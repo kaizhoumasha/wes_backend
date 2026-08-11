@@ -33,11 +33,17 @@ reviewed_content_sha256 = "313c2f0d0576f9c11db2345c0b3c0ca8f8a77b77121da697241d2
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-reviewed_content_sha256 = "6392144cc0eec5fe7aff4707ea5bb5155c10897b70ba26c6c5e253e44a802e46"
+reviewed_content_sha256 = "260b75cc8399d7b0b2a1ab812cc5fc50ccdf1e278580b8137680fa11d79e8f6d"
 
 [[mapping]]
 source_glob = "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py"
 heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+
+# 仅删除随无 owner facade 退役的请求/响应 Schema；公开缺席由 FAST OpenAPI 合同验证。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/operation.py"
+heavy_tests = []
+reviewed_content_sha256 = "6d553a934a027d3d3ddfa0dc2fcacdfecad73224e8a658b079758411562b5c59"
 
 # 后端 CI 编排变更至少运行一项当前数据库合同，证明 HEAVY runner 确实进入执行面。
 [[mapping]]
@@ -734,11 +740,11 @@ heavy_tests = [
     "tests/integration/test_runtime_inbox_processing_postgresql.py",
 ]
 
-# reconciliation 路由仅更新公开说明，不改变权限、状态或持久化行为；内容变化后恢复 fail closed。
+# 仅删除无 runtime owner 的 facade；公开缺席由 FAST OpenAPI 合同验证，持久化实现另由 intent/** 映射承接。
 [[mapping]]
 source_glob = "src/app/workline/v1/operation.py"
 heavy_tests = []
-reviewed_content_sha256 = "0658c81a49852d3e72b5c2ba08c969fc46ac351bd2128cfe2ac1dc3d0fa71e77"
+reviewed_content_sha256 = "8fc61273bb44e8c9fd1ec301d740fa23348ddb1c0ba8aad8fa306fbefe289e12"
 
 [[mapping]]
 source_glob = "src/app/workline/v1/workline.py"

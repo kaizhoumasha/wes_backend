@@ -52,7 +52,14 @@ def upgrade() -> None:
         "plugin_key",
     ):
         drop_column("wes_biz", "work_lines", column)
-    op.execute('DROP TABLE "wes_biz"."workline_plugin_bindings"')
+
+    for schema, table in (
+        ("wes_runtime", "wms_conveyor_batch_members"),
+        ("wes_biz", "smt_inbound_handoff_source_items"),
+        ("wes_biz", "smt_inbound_handoff_demands"),
+        ("wes_biz", "workline_plugin_bindings"),
+    ):
+        op.execute(f'DROP TABLE "{schema}"."{table}" CASCADE')
 
 
 def downgrade() -> None:

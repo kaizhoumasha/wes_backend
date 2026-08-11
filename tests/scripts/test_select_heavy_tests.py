@@ -708,6 +708,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py",
             ("tests/integration/test_workline_plugin_schema_retirement.py",),
         ),
+        ("src/app/runtime/orchestration/models/operation.py", ()),
         ("Jenkinsfile.backend-ci", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (".dockerignore", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (

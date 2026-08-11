@@ -68,6 +68,15 @@ _RETIRED_COLUMNS: dict[tuple[str, str], frozenset[str]] = {
     ),
 }
 
+_RETIRED_TABLES = frozenset(
+    {
+        ("wes_biz", "smt_inbound_handoff_demands"),
+        ("wes_biz", "smt_inbound_handoff_source_items"),
+        ("wes_biz", "workline_plugin_bindings"),
+        ("wes_runtime", "wms_conveyor_batch_members"),
+    }
+)
+
 _RETIRED_FOREIGN_KEYS = frozenset(
     {
         "fk_work_lines_active_plugin_binding",
@@ -145,17 +154,16 @@ def test_upgrade_head_retires_workline_plugin_execution_schema() -> None:
             run_alembic("upgrade", "head", database_url=database_url)
             connection = await connect(database)
             try:
-                binding_table_exists = await connection.fetchval(
+                retired_tables = await connection.fetch(
                     """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM information_schema.tables
-                        WHERE table_schema = 'wes_biz'
-                          AND table_name = 'workline_plugin_bindings'
-                    )
-                    """
+                    SELECT table_schema, table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = ANY($1::text[])
+                    """,
+                    ["wes_biz", "wes_runtime"],
                 )
-                assert not binding_table_exists
+                table_identities = {(str(row["table_schema"]), str(row["table_name"])) for row in retired_tables}
+                assert _RETIRED_TABLES.isdisjoint(table_identities)
 
                 for table_identity, retired_columns in _RETIRED_COLUMNS.items():
                     schema, table = table_identity

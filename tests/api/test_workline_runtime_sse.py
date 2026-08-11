@@ -339,17 +339,6 @@ class _SandboxSingleRepoStub:
         self.get_by_command_code = AsyncMock(return_value=item)
 
 
-class _SandboxInboxRepoStub:
-    def __init__(self) -> None:
-        self.created: dict[str, Any] | None = None
-        self.get_by_source_event_identity = AsyncMock(return_value=None)
-        self.add_received = AsyncMock(side_effect=self._create)
-
-    async def _create(self, _db: Any, data: dict[str, Any]) -> Any:
-        self.created = dict(data)
-        return SimpleNamespace(id=88, **self.created)
-
-
 @pytest.mark.asyncio
 async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
     """sandbox ACK 路径必须经由 helper defer command.status.changed。"""
@@ -424,71 +413,6 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
     assert kwargs["action"] == "acked"
     assert kwargs["workline_id"] == 45
     assert kwargs["device_id"] == 101
-    assert kwargs["session_id"] == 530
-
-
-@pytest.mark.asyncio
-async def test_sandbox_result_path_defers_command_status_changed_event() -> None:
-    """sandbox result 路径必须经由 helper defer command.status.changed。"""
-
-    from src.app.runtime.orchestration.models.session import SessionStatus
-    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
-    from src.app.workline.models.workline import WorkLineRunMode
-
-    device = SimpleNamespace(id=7, device_code="ARM01")
-    command = SimpleNamespace(
-        id=9,
-        command_code="CMD-001",
-        task_type="PICK_AND_PUT",
-        params={"business_key": "PKG-001"},
-        workline_id=45,
-        correlation_id="trace-001",
-        device_id=7,
-        trace_id="trace-001",
-    )
-    session = SimpleNamespace(
-        id=530,
-        status=SessionStatus.WAITING_DEVICE_RESULT,
-        awaiting_device_command_code="CMD-001",
-    )
-    workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
-
-    service = WorklineOperationService(
-        inbox_repo=cast("Any", _SandboxInboxRepoStub()),
-        outbox_repo=cast("Any", _SandboxOutboxRepoStub(None)),
-        session_repo=cast("Any", _SandboxSessionRepoStub(session)),
-        device_repo=cast("Any", _SandboxSingleRepoStub(device)),
-        command_repo=cast("Any", _SandboxSingleRepoStub(command)),
-        workline_repo=cast("Any", _SandboxSingleRepoStub(workline)),
-    )
-
-    fake_device_service = SimpleNamespace(
-        mark_command_finished=AsyncMock(return_value=SimpleNamespace(device_status="IDLE", current_command_id=None))
-    )
-    nested_transaction = AsyncMock()
-    db = SimpleNamespace(begin_nested=lambda: nested_transaction)
-    helper_spy = MagicMock()
-
-    with (
-        patch("src.app.device.services.device_service", fake_device_service),
-        patch(_HELPER_PATCH_TARGET, new=helper_spy),
-    ):
-        _ = await service.submit_sandbox_result(
-            db,
-            command_code="CMD-001",
-            device_code="ARM01",
-            result="SUCCESS",
-            payload={"item_id": "ITEM-001"},
-            timestamp=datetime(2026, 5, 29, 8, 0, 1),
-            auto_commit=False,
-        )
-
-    helper_spy.assert_called_once()
-    kwargs = helper_spy.call_args.kwargs
-    assert kwargs["command"] is command
-    assert kwargs["action"] == "updated"
-    assert kwargs["workline_id"] == 45
-    assert kwargs["device_id"] == 7
     assert kwargs["session_id"] == 530
 
 

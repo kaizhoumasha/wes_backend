@@ -12,18 +12,6 @@ from src.app.runtime.orchestration.wms_sync_obligation import (  # noqa: TC001 -
 )
 
 
-class SandboxEventRequest(BaseModel):
-    """沙箱 Event 发送请求。"""
-
-    workline_id: int = Field(description="工作线 ID")
-    device_id: int = Field(description="目标设备 ID")
-    event_type: str = Field(min_length=1, max_length=100, description="事件类型")
-    trace_id: str | None = Field(default=None, max_length=200, description="Trace ID（可选，自动生成）")
-    session_id: int | None = Field(default=None, description="Session ID（可选）")
-    payload: dict[str, Any] = Field(default_factory=dict, description="事件 Payload")
-    timestamp: datetime | None = Field(default=None, description="事件时间戳（默认当前时间）")
-
-
 class SandboxWorklineStartRequest(BaseModel):
     """沙箱 WorkLine START 请求。"""
 
@@ -72,14 +60,6 @@ class ReplayInboxRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
-class ManualOperationRequest(BaseModel):
-    """人工操作请求。"""
-
-    operation: str = Field(pattern="^(HOLD|RESUME|CANCEL)$")
-    operator_id: str = Field(min_length=1, max_length=100)
-    reason: str = Field(min_length=1, max_length=500)
-
-
 class ResolveRuntimeReconciliationRequest(BaseModel):
     """人工运行时对账解除请求。"""
 
@@ -126,53 +106,11 @@ class ResolveEffectReconciliationRequest(BaseModel):
         return self
 
 
-class SandboxResultRequest(BaseModel):
-    """沙箱 Command Result 模拟请求。"""
-
-    command_code: str = Field(min_length=1, max_length=100, description="Command Code")
-    device_code: str = Field(min_length=1, max_length=100, description="设备 Code")
-    result: str = Field(pattern="^(SUCCESS|FAILED)$", description="结果状态")
-    payload: dict[str, Any] = Field(default_factory=dict, description="Result Payload")
-    error_detail: str | None = Field(default=None, max_length=500, description="错误详情（FAILED 时）")
-    timestamp: datetime | None = Field(default=None, description="结果时间戳（默认当前时间）")
-
-
-class SandboxEventTemplate(BaseModel):
-    """沙箱 Event 模板。"""
-
-    event_type: str = Field(description="事件类型标识")
-    label: str = Field(description="事件类型显示名称")
-    payload_template: dict[str, Any] = Field(default_factory=dict, description="Payload 模板")
-
-
-class SandboxResultTemplate(BaseModel):
-    """沙箱 Result 模板。"""
-
-    command_type: str = Field(description="Command 类型标识")
-    label: str = Field(description="Command 类型显示名称")
-    success_payload_template: dict[str, Any] = Field(default_factory=dict, description="成功 Payload 模板")
-    failed_payload_template: dict[str, Any] = Field(default_factory=dict, description="失败 Payload 模板")
-    error_template: str | None = Field(default=None, description="错误信息模板")
-
-
-class SandboxTemplatesResponse(BaseModel):
-    """沙箱模板响应。"""
-
-    event_templates: list[SandboxEventTemplate] = Field(default_factory=list, description="Event 模板列表")
-    result_templates: list[SandboxResultTemplate] = Field(default_factory=list, description="Result 模板列表")
-
-
 __all__ = [
-    "ManualOperationRequest",
     "ReplayInboxRequest",
     "ResolveEffectReconciliationRequest",
     "ResolveRuntimeReconciliationRequest",
     "SandboxAckRequest",
-    "SandboxEventRequest",
-    "SandboxEventTemplate",
     "SandboxExternalCallbackRequest",
-    "SandboxResultRequest",
-    "SandboxResultTemplate",
-    "SandboxTemplatesResponse",
     "SandboxWorklineStartRequest",
 ]
