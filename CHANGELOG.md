@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1.0] - 2026-08-11
+
+### Changed
+- 将 WorkLine 收敛为静态身份、物理拓扑、通用配置与启停入口，RuntimeInbox 仅保留通用 ingress、claim、replay 和 terminal 可靠性能力。
+- WMS 北向合同收敛为 31 项现役 operation，并同步诊断、可观测性、legacy 台账与 HEAVY selector 的当前真源。
+
+### Fixed
+- 修复退役迁移未删除 SMT 入站交接需求、来源明细和 WMS 输送批次成员表的问题，并以空库升级合同验证目标 schema。
+- 修复无业务 owner 的人工操作、沙箱事件、沙箱结果入口仍接纳请求并最终进入合同不匹配或死信的问题。
+
+### Removed
+- 删除嵌入式工作线插件、插件 binding/dispatcher/attempt 执行闭包，以及已无 owner 的人工操作和沙箱调试公共合同。
+- 删除粗分、SMT 入站交接等旧业务 carrier、孤儿依赖注入和已退役插件身份的生产写入及测试假对象。
+
+### Verification
+- QUALITY：3385 passed、4 skipped；Ruff、Bandit、架构门禁、测试拓扑、FAST 预算和 HEAVY selector 合同均通过。
+- 受影响 HEAVY：隔离 PostgreSQL 与 Redis 下 10 passed；独立复审无剩余意见。覆盖审计为 73%，8 个防御分支缺口按发布决策接受。
+
 ## [0.24.0.0] - 2026-08-10
 
 ### Added
