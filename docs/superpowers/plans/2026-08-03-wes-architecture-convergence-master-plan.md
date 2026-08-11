@@ -23,7 +23,7 @@ Phase 5 已完成零插件基线；Phase 6–12 尚未开始。
 
 **Design baseline:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
 
-**Implementation baseline:** `v0.24.0.0` / `develop@da8c1073`（Phase 4 Transport 暗构建已合入，尚未接入生产路径）
+**Implementation baseline:** `v0.24.1.0` / `8eceacea`（Phase 5 零插件基线；Phase 4 Transport 仍保持暗构建，尚未接入生产路径）
 
 ---
 
@@ -92,7 +92,7 @@ SRS §3.5 特殊物料、机构件/SFC 协同及 §3.6 生产退料属于未来�
 | 文档或引用 | 影响 | 本轮处理 |
 | --- | --- | --- |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 总控由十一阶段调整为十二阶段 | 本轮同步 Phase 5–12 |
-| `docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md` | 新增 Phase 5 详细退役计划 | 已冻结逐文件矩阵、验证命令和提交边界，状态 `Approved` |
+| `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md` | Phase 5 详细退役计划 | Phase 5 完成后保留完整历史执行证据，不再作为当前实施入口 |
 | 旧 `2026-08-03-wes-wms-thin-access-convergence.md` | Phase 2 顺延为 Phase 3；旧稿含无合同依据的认证设计 | 完整移至项目外归档；Phase 3 在 Phase 2 完成后重新编写当前计划 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 旧插件与 DeviceCommand 测试处置仍归旧 Phase 5 | 同步为 Phase 5 插件退役与 Phase 7 Device/ECS 双 owner |
 | `docs/superpowers/README.md` | 当前文档索引仍称九阶段、WMS Phase 2 | 同步索引名称和状态 |
@@ -118,7 +118,7 @@ Transport/Adapter/核心所有权。
 | `src/app/sys/external_http_*` 与 `canonical_dispatch.py` | 已有 typed transport fact、凭据解析、NONE/HMAC、bounded response 的部分能力，但耦合 Provider Profile/SystemOutbox/WMS operation | 仅 transport fact 作为行为证据；认证相关能力无真实 outbound 合同依据，不进入 Phase 2 |
 | 多处 `httpx.AsyncClient()` | DeviceCommand、旧 Outbox、WMS runtime、旧 Gateway 等仍自行创建 Client | Phase 5 只解除旧插件闭包；Device/ECS 裸 Client 由 Phase 7 处理 |
 | 目标对象扫描 | 已有 `TransportTask`、Transport member-position/result evidence 和 Transport 位置投影 | Phase 4 暗构建完成；Phase 6 只收敛 Transport 直接旧 owner |
-| `src/app/runtime/workline_plugins/` | 23 个已跟踪文件，目录外仍有 WorkLine、Runtime、API 和测试直接引用 | Phase 5 必须按完整执行闭包退役，不能只删除目录 |
+| `34837439` / `src/app/runtime/workline_plugins/` 缺席 | 旧工作线插件、binding、dispatcher、attempt 及目录外活动 owner 已原子退役 | Phase 5 零插件基线完成；后续插件按 Phase 8/9 目标合同重新实现 |
 | 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | Phase 3 已完成实施与验收 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
@@ -354,9 +354,11 @@ member position → TransportResult → task/projection 的暗闭环通过；倒
 四个内部批处理入口可由测试显式调用，且不存在 Phase 5/6 反向依赖。
 
 **实施状态:** Phase 4 已按详细计划完成暗构建；尚未注册生产 route、Celery task、beat、worker hook 或工作线消费者。
-当前验收与后续旧插件退役、Transport 正式基线仍分别以 Phase 5/6 详细计划为准。
+当前验收以 Transport 合同和已通过测试为准；Phase 5 退役计划已经完成并归档，Transport 正式基线仍须由 Phase 6
+独立详细计划冻结后实施。
 
-**当前实施真源:** `docs/superpowers/plans/2026-08-08-wes-minimal-platform-capabilities.md`。
+**当前合同真源:** `docs/contracts/transport-fulfillment-contract.md`。完成的 Phase 4 过程计划归档于
+`../archive_docs/wes_backend/docs/superpowers/plans/2026-08-08-wes-minimal-platform-capabilities.md`，不再作为当前实施入口。
 
 **风险及防止阶段越权的约束:** 禁止把 ECS/Device 或通用执行平台重新包装进 Transport；禁止直连 RCS/AGV/CTU；
 禁止在 Phase 4 接线、改写旧实现、删除旧测试或增加兼容桥。
@@ -397,10 +399,10 @@ ORM 与空库 `alembic upgrade head` 形成同一零插件 schema；当前态文
 index 和旧 registry 零依赖；空库升级后的 PostgreSQL 与 ORM 同时缺少 binding 表、plugin identity/manifest/pin/state
 列和相关约束；不存在空插件、no-op consumer、alias、fallback 或双路径；Phase 4 Transport 未接旧插件。
 
-**需要单独编写的子计划:** 已编写
-`docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md`；该计划已基于
-`develop@da8c1073` 冻结逐文件矩阵、准确删除和归档清单、successor 测试路径、精确验证命令及提交边界并获批。
-实施基线若出现生产代码、测试、迁移或机器可读配置漂移，批准自动失效，必须重新评审后才能删除。
+**完成证据:** 详细计划已归档于
+`../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md`。
+`3199af5d` 承接零插件通用可靠性不变量，`34837439` 原子退役旧插件执行闭包；`8eceacea` 记录
+`v0.24.1.0` 变更日志与验证结果。该归档只用于追溯，不再作为当前实施入口。
 
 **风险及防止阶段越权的约束:** 只删除旧业务插件及其专属执行闭包。通用 WorkLine、证据、幂等和 fencing 必须按 owner
 逐项判断；Device/ECS 最终能力留给 Phase 7，Transport 最终基线留给 Phase 6。
@@ -697,7 +699,7 @@ Adapter、设备统一接口和明确插件。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 3 已完成；Phase 4 已完成暗构建和后端 QA；Phase 5 详细计划已批准、代码未开始；Phase 6 至 12 未开始 |
+| 当前状态准确性 | 通过 | Phase 1 至 3 已完成；Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；Phase 6 至 12 未开始 |
 
 ## 20. 总体完成定义
 
@@ -713,17 +715,18 @@ Adapter、设备统一接口和明确插件。
 
 ## 21. Implementation Tasks
 
-当前下一实施阶段是 Phase 5，详细计划已经批准。总控只保留阶段级任务，不替代逐文件计划：
+当前下一实施阶段是 Phase 6。开始代码实施前，必须基于最新 `develop` 冻结引用图、successor/`NONE` 矩阵、
+测试所有权、精确验证命令和唯一生产装配，并通过独立详细计划评审。总控只保留阶段级任务，不替代逐文件计划：
 
 | 顺序 | 任务 | Surface area | 主要验收 |
 | --- | --- | --- | --- |
-| 1 | 冻结旧插件执行闭包 successor/`NONE` 矩阵 | 插件、Runtime、WorkLine、API、Celery、配置、数据、测试 | 每个活动 owner 恰有一个处置，`NONE` 有理由 |
-| 2 | 承接通用可靠性不变量和缺席门禁 | WorkLine、入站证据、幂等、fencing、架构测试 | 基础能力不依赖具体插件名称、fixture 或业务流程 |
-| 3 | 退役具体插件与专属平台 | `runtime/workline_plugins` 及目录外直接 owner | 零插件核心可启动，无 registry/generated index/facade |
-| 4 | 同步模型、配置、测试、部署和当前态文档 | metadata、Celery、镜像、测试树、文档索引 | 无旧入口；过期文档移出项目；硬件原始资料保留 |
-| 5 | Phase 5 完整验收 | 核心、适用 HEAVY、运行态 smoke、缺席扫描 | 核心全绿且业务插件安装清单为空 |
+| 1 | 冻结 Transport 当前引用图和 successor/`NONE` 矩阵 | producer、consumer、callback、配置、任务路由、schema、测试 | 每个 Transport 直接旧 owner 恰有一个处置 |
+| 2 | 冻结唯一 Transport 安装装配与生命周期 | `WmsClient`、Transport bundle、四个批处理入口 | 无业务 consumer 时保持未绑定，不创建 no-op publisher |
+| 3 | 承接 Transport 最终测试所有权 | 核心、WMS Adapter、PostgreSQL、HEAVY selector | 目标测试先通过，且不借用具体插件场景 |
+| 4 | 原子删除 Transport 直接旧 owner | 旧 Effect/status/Outbox/callback hint、配置、路由、schema | 无 alias、fallback、shadow write 或历史表读取 |
+| 5 | Phase 6 完整验收 | FAST、QUALITY、精确 HEAVY、运行态 smoke、缺席扫描 | Transport 可安装但无业务接线，Phase 7 未提前实施 |
 
-代码实施必须遵循 TDD；本轮仅编写和评审文档，不运行 pytest、不修改代码、不提交 Git。
+代码实施必须遵循 TDD；Phase 6 详细计划获批前不得直接按上表修改代码。
 
 ## 22. 工程复审完成摘要
 
@@ -733,8 +736,8 @@ Adapter、设备统一接口和明确插件。
 - **Test Review：** 核心、WMS Adapter、供应商一致性和插件测试所有权严格分离；通用不变量先有 successor，旧业务测试后删除。
 - **Performance：** 本轮阶段调整不引入新轮询、缓存、registry 或运行时扫描；后续 worker 必须有界。
 - **Failure modes：** 已覆盖只删目录、短命 Transport 接线、空插件、旧 DeviceCommand 升格、批量误删测试和历史文档残留。
-- **Parallelization：** Phase 5 的 owner 矩阵必须先完成；随后测试承接与文档/部署清理可并行审查，代码删除仍按依赖串行。
-- **NOT in scope：** 本轮不实现代码、不运行 pytest、不提交 Git，也不删除 `docs/hardware/`。
+- **Parallelization：** Phase 5 owner 矩阵和原子退役已经完成；Phase 6 仍须先冻结自己的 owner 矩阵，随后测试承接与文档/部署清理可并行审查，代码删除仍按依赖串行。
+- **NOT in scope：** Phase 6 详细计划获批前不实现 Transport 生产切换；任何阶段都不得删除 `docs/hardware/`。
 
 ## GSTACK REVIEW REPORT
 
@@ -747,6 +750,6 @@ Adapter、设备统一接口和明确插件。
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新阶段使用显式 owner、静态装配和独立包，避免动态平台和 Service Locator |
 
-**VERDICT：十二阶段顺序已冻结；Phase 1 至 3 已完成，Phase 4 Transport 已通过暗构建后端 QA；Phase 5 详细计划已批准，代码尚未开始。**
+**VERDICT：十二阶段顺序已冻结；Phase 1 至 3 已完成，Phase 4 Transport 已通过暗构建后端 QA，Phase 5 已完成零插件基线；下一阶段为 Phase 6，须先完成独立详细计划评审。**
 
 NO UNRESOLVED DECISIONS

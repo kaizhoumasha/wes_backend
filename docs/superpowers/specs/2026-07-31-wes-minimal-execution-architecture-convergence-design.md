@@ -2,9 +2,9 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-10
+updated_at: 2026-08-11
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: develop@da8c1073
+implementation_baseline: v0.24.1.0@8eceacea
 system_stage: pre_release
 migration_strategy: direct_replacement
 historical_reference: ee1f3b670c5ed33cfd5be1fd0370b53570790e73
@@ -19,7 +19,7 @@ related:
   - docs/integration/callback_event_validation_principles.md
   - docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
-  - docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md
+  - ../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md
   - docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md
   - docs/contracts/wms-northbound-interaction-contract.md
   - docs/contracts/transport-fulfillment-contract.md

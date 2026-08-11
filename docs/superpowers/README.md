@@ -15,9 +15,7 @@
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、Payload、返回 JSON 与幂等评审基线 | ReviewRequired |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 3 已完成，Phase 4 已验收；Phase 5 详细计划已批准、代码未开始 |
-| `plans/2026-08-08-wes-minimal-platform-capabilities.md` | Phase 4 AGV/CTU Transport 基础能力详细实施计划 | IMPLEMENTED_DARK；后端 QA 验收通过，未接生产路径 |
-| `plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md` | Phase 5 旧工作线插件执行闭包退役计划 | Approved；已冻结逐文件矩阵、验证命令和提交边界 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 3 已完成，Phase 4 已验收，Phase 5 已完成零插件基线；下一阶段为 Phase 6 |
 | `plans/2026-08-10-wes-device-ecs-production-convergence.md` | Phase 7 DeviceCommand/ECS 通用能力生产收敛计划 | ReviewRequired；最终引用图、模型和 worker 清单获批前不得实施 |
 
 ## 项目外历史归档
@@ -28,6 +26,10 @@
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-03-wes-wms-thin-access-convergence.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-08-wes-minimal-platform-capabilities.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md`
+- `../archive_docs/wes_backend/docs/operations/workline-plugin-migration-inventory.md`
+- `../archive_docs/wes_backend/docs/workline_runtime_hold_quickstart.md`
 - `../archive_docs/wes_backend/docs/architecture/adr/2026-05-26-wms-integration-domain.md`
 - `../archive_docs/wes_backend/docs/business/wms_full_factory_operation_blueprint.md`
 - `../archive_docs/wes_backend/docs/business/wms_rcs_interface_requirements.md`
@@ -109,7 +111,6 @@
 以下文档即使包含旧 Runtime 名称，也暂不归档，因为它们仍直接承担现有实现的排障、发布、观测或机器门禁职责：
 
 - `docs/workline_diagnostics_quickstart.md`
-- `docs/workline_runtime_hold_quickstart.md`
 - `docs/contracts/observability-contract.md`
 - `docs/contracts/runtime-toggle-governance.md`
 - `docs/integration/wms_caller_checklist.md`

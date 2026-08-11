@@ -1,11 +1,12 @@
 # WORKLINE 诊断快速开始
 
-> 状态：`implementation_baseline`。本指南只用于收敛前现有诊断 API 排障，不得用于设计新 Runtime、replay 或 sandbox 能力。
+> 状态：`implementation_baseline`。本指南只用于 Phase 5 零插件基线仍保留的诊断、replay 和 sandbox 查询 API 排障，
+> 不得用于设计新 Runtime 或业务插件执行能力。
 
 本指南用于在不查数据库、不 grep 日志的前提下，用 API 完成一条 WORKLINE 诊断链路：
 
 ```text
-callback fixture -> trace_id / event_id -> blocking-point -> diagnostic card -> replay/manual/sandbox 操作
+callback fixture -> trace_id / event_id -> blocking-point -> diagnostic card -> replay/sandbox 查询
 ```
 
 ## 前置条件
@@ -17,7 +18,8 @@ callback fixture -> trace_id / event_id -> blocking-point -> diagnostic card -> 
    - `api:callback:result`
    - `biz:workline:list`
    - `biz:workline:update`
-4. 已有可路由的设备、WorkLine、插件和能力配置。快速验证建议使用 `run_mode=SIMULATION` 的工作线。
+4. 已有可校验的设备和 WorkLine 配置。Phase 5 当前没有业务插件，本指南只验证入站、诊断和 replay 等通用能力；
+   不把事件最终进入业务动作当作验收结果。sandbox 查询仅适用于数据库中已有的历史或测试 Outbox。
 
 示例命令默认：
 

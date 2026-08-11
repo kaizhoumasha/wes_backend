@@ -241,7 +241,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.20.3.0] - 2026-07-26
 
 ### Added
-- WorkLine 插件迁移现在可聚合多个环境的 inventory 与批准证据，生成带稳定摘要的 migration matrix，并在缺少环境、批准过期、索引漂移或报告超时时 fail-closed；操作顺序见[迁移清单与跨环境批准指南](docs/operations/workline-plugin-migration-inventory.md)。
+- WorkLine 插件迁移现在可聚合多个环境的 inventory 与批准证据，生成带稳定摘要的 migration matrix，并在缺少环境、批准过期、索引漂移或报告超时时 fail-closed；当时的操作顺序现归档于 `../archive_docs/wes_backend/docs/operations/workline-plugin-migration-inventory.md`。
 - 单环境 inventory 现在包含 WorkItem/Intent 固定引用、逐 WorkLine binding、Provider admission、System Capability 和 Port 要求，为后续 cutover preflight 提供机器可验收输入。
 - 新增本机 Docker、WMS Mock 与 ECS Mock 的系统设计文档，明确后续开发环境和验收能力的推进边界。
 

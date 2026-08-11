@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-10
+**最后更新**：2026-08-11
 
 ## 1. 真源与入口
 
@@ -31,8 +31,6 @@
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 已批准的自动出库 PickingTask、Cell 晚绑定、NG 与双面目标架业务设计 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-08-wes-minimal-platform-capabilities.md` | Phase 4 AGV/CTU Transport、WMS 转发 Adapter、成员位置/终态证据与暗装配详细计划 |
-| `docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md` | Phase 5 旧工作线插件执行闭包退役详细计划；允许零业务插件中间态 |
 | `docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md` | Phase 7 DeviceCommand/ECS、统一接口、ACK/CALLBACK、Epoch fencing 和旧 owner 删除详细计划 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
@@ -69,10 +67,10 @@ API → Service → Repository → Database
 | `src/app/*/services/` | 业务协调和事务边界 |
 | `src/app/*/repositories/` | 数据访问 |
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
-| `src/app/runtime/` | 当前待退役 Runtime implementation baseline；Phase 5 按 owner 保留通用不变量并删除旧插件执行闭包 |
+| `src/app/runtime/` | Phase 5 后的零插件 implementation baseline；保留通用入站、投影、可靠性和诊断能力，具体业务插件执行闭包已退役 |
 | `src/app/transport/` | Phase 4 AGV/CTU 通用搬运合同、可靠聚合、位置投影与未接入生产的暗装配 |
 | `src/app/wms_adapter/` | WMS HTTP/JSON 薄访问层和业务系统 ACL；具体业务 API 由对应业务 owner 按获批合同实现 |
-| `src/app/wms_integration/` | 待按 Phase 5 插件、Phase 6 Transport 和后续真实 WMS 业务 owner 分段处置的旧实现；不是目标架构模板 |
+| `src/app/wms_integration/` | Phase 5 已删除插件专属分支；剩余旧实现待由 Phase 6 Transport 和后续真实 WMS 业务 owner 分段处置，不是目标架构模板 |
 | `workline_plugins/` | 具体工作线插件独立包，不属于核心运行时 |
 
 新 Service 必须从所在 `services/__init__.py` 导出。时间处理、Mixin 继承和零代码 CRUD 约束以
