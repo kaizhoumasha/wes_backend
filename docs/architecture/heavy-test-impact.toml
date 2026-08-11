@@ -240,16 +240,22 @@ heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
 source_glob = "src/app/callback/services/callback_ingress_service.py"
 heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
 
+# Callback 事件请求模型仅更新退役术语说明，wire 与校验行为不变；内容变化后恢复 fail closed。
+[[mapping]]
+source_glob = "src/app/callback/models/event.py"
+heavy_tests = []
+reviewed_content_sha256 = "772584b0492cde96acdd6b06b2091a6a5c8216d3103259568a2692264a320ded"
+
 # Callback 诊断构建仅收敛展示与退役身份来源，由邻近 FAST 合同承接；指纹变化后恢复 fail closed。
 [[mapping]]
 source_glob = "src/app/callback/contracts/builder.py"
 heavy_tests = []
-reviewed_content_sha256 = "2b0a1cf12737be9c03e339c35186e778be5c19111b3cba6c857b3ae5a7fad190"
+reviewed_content_sha256 = "3d77f7275676a0db61b74c21c6afd92fea7cff459d864fbb45a40166e6c6d133"
 
 [[mapping]]
 source_glob = "src/app/callback/contracts/registry.py"
 heavy_tests = []
-reviewed_content_sha256 = "8af76c173e1e1327805f674edb9bae9ba5faefb8e0afc98baad9c51372f21f2d"
+reviewed_content_sha256 = "ae04ce438de7fb14eb289fa56b07d5bfa0b821a4c414bff407349cb93024c169"
 
 # TraceContext 只规范化进程内诊断字段；本次删除退役来源由 FAST mirror 合同承接。
 [[mapping]]
@@ -343,12 +349,12 @@ reviewed_content_sha256 = "164b0ac57cc0d9e20b9d1fb1eef9b45b95db86b0b439be3508591
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/diagnostics/builder.py"
 heavy_tests = []
-reviewed_content_sha256 = "b7a6226114deea2d8a28bc8ac73b48a9d8b8456fb2e8250f88ba1116f1480ca2"
+reviewed_content_sha256 = "015e164e26ab671ee750810ddf0c6a1c642f8c87e3634ee24f9d588a3bc15e34"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/diagnostics/registry.py"
 heavy_tests = []
-reviewed_content_sha256 = "fb970bf932dd1aa83a1598c53826963b0d04bc59c172b90742c63c102b3be277"
+reviewed_content_sha256 = "1cfe32cfe0b708333762dc27ed753589bf4b90a68f443c8eecff4331bc029d81"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/runtime_snapshot_assembler.py"
@@ -727,6 +733,12 @@ heavy_tests = [
     "tests/integration/test_callback_external_payload_limit.py",
     "tests/integration/test_runtime_inbox_processing_postgresql.py",
 ]
+
+# reconciliation 路由仅更新公开说明，不改变权限、状态或持久化行为；内容变化后恢复 fail closed。
+[[mapping]]
+source_glob = "src/app/workline/v1/operation.py"
+heavy_tests = []
+reviewed_content_sha256 = "0658c81a49852d3e72b5c2ba08c969fc46ac351bd2128cfe2ac1dc3d0fa71e77"
 
 [[mapping]]
 source_glob = "src/app/workline/v1/workline.py"

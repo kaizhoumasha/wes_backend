@@ -134,7 +134,7 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
         ProblemClass.HARDWARE,
         "配置不完整或不合法，请先修正配置再继续。",
-        ["检查 Device / Workline 主数据配置", "校验插件绑定与通信配置"],
+        ["检查 Device / Workline 主数据配置", "校验设备通信与 WorkLine 物理拓扑"],
     ),
     ErrorCode.UNKNOWN: (
         Severity.ERROR,

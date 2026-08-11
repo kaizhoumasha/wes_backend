@@ -194,6 +194,14 @@ def test_provider_conformance_scenarios_and_mock_fixtures_derive_from_registry()
     assert set().union(*(scenario.operation_identities for scenario in manifest.WMS_BUSINESS_SCENARIO_MANIFEST)) == set(
         expected
     )
+    assert {scenario.scenario_code for scenario in manifest.WMS_BUSINESS_SCENARIO_MANIFEST} == {
+        "MASTER_DATA_AND_ROUTING",
+        "RECEIVING",
+        "OUTBOUND_AND_RESERVATION",
+        "INVENTORY_ACCOUNTING",
+        "RACK_FULFILLMENT",
+        "RECOVERY_AND_RECONCILIATION",
+    }
 
 
 def test_external_http_effect_bindings_accept_only_registry_target_codes() -> None:

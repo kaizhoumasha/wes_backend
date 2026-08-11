@@ -132,7 +132,7 @@ WMS_BUSINESS_SCENARIO_MANIFEST = (
         ),
     ),
     WmsBusinessScenario(
-        "RACK_AND_FULL_BOX_FULFILLMENT",
+        "RACK_FULFILLMENT",
         frozenset(
             {
                 "wms.fulfillment.request_rack_supply@v1",

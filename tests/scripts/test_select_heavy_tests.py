@@ -800,6 +800,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/app/callback/services/callback_ingress_service.py",
             (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,),
         ),
+        ("src/app/callback/models/event.py", ()),
         ("src/app/callback/contracts/builder.py", ()),
         ("src/app/callback/contracts/registry.py", ()),
         ("src/app/callback/contracts/trace_context.py", ()),
@@ -1104,6 +1105,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/app/workline/services/diagnostic_service.py",
             (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST, RUNTIME_INBOX_PROCESSING_HEAVY_TEST),
         ),
+        ("src/app/workline/v1/operation.py", ()),
         ("src/app/workline/v1/workline.py", ()),
         ("src/app/workline/trace_context.py", ()),
         (
@@ -1535,10 +1537,12 @@ def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> Non
 @pytest.mark.parametrize(
     "changed_path",
     [
+        "src/app/callback/models/event.py",
         "src/app/runtime/orchestration/__init__.py",
         "src/app/runtime/orchestration/execution_correlation.py",
         "src/app/runtime/orchestration/enums.py",
         "src/app/runtime/orchestration/models/timeline.py",
+        "src/app/workline/v1/operation.py",
     ],
 )
 def test_repository_mapping_pins_reviewed_none_to_current_runtime_source_content(

@@ -98,3 +98,44 @@ async def test_contract_mismatch_persistence_keeps_operator_action_in_row_and_ca
 
     assert stored.operator_action == expected
     assert stored.card_json["operator_action"] == expected
+
+
+@pytest.mark.parametrize(
+    ("builder", "context_factory", "definition_getter", "error_code"),
+    [
+        (
+            build_callback_event,
+            CallbackDiagnosticContext,
+            get_callback_definition,
+            CallbackErrorCode.INBOX_PROCESSING_TIMEOUT,
+        ),
+        (build_callback_event, CallbackDiagnosticContext, get_callback_definition, CallbackErrorCode.CONFIG_INVALID),
+        (
+            build_runtime_event,
+            RuntimeDiagnosticContext,
+            get_runtime_definition,
+            RuntimeErrorCode.INBOX_PROCESSING_TIMEOUT,
+        ),
+        (build_runtime_event, RuntimeDiagnosticContext, get_runtime_definition, RuntimeErrorCode.CONFIG_INVALID),
+    ],
+)
+def test_active_diagnostics_do_not_direct_operators_to_retired_plugin_runtime(
+    builder,
+    context_factory,
+    definition_getter,
+    error_code,
+) -> None:
+    event = builder(error_code=error_code, context=context_factory(), message="运行失败")
+    definition = definition_getter(error_code)
+    diagnostic_text = " ".join(
+        [
+            event.user_message or "",
+            *event.next_steps,
+            definition.cause,
+            definition.operator_action,
+            definition.fix,
+        ]
+    )
+
+    assert "插件" not in diagnostic_text
+    assert "plugin" not in diagnostic_text.lower()

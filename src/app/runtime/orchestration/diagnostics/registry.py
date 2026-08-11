@@ -142,7 +142,7 @@ _REGISTRY: dict[ErrorCode, DiagnosticCodeDefinition] = {
         owner="runtime",
         cause="Inbox worker 在保护时间内没有完成本次消息处理。",
         operator_action="保持当前物料状态，联系技术人员检查 worker 日志。",
-        fix="排查 worker 超时、锁等待或插件执行耗时，修复后重试或 replay。",
+        fix="排查 worker 超时、锁等待或当前编排事务耗时，修复后重试或 replay。",
         recoverability=Recoverability.MANUAL_RETRYABLE,
         docs_anchor="INBOX_PROCESSING_TIMEOUT",
     ),
@@ -176,7 +176,7 @@ _REGISTRY: dict[ErrorCode, DiagnosticCodeDefinition] = {
     ErrorCode.CONFIG_INVALID: DiagnosticCodeDefinition(
         code=ErrorCode.CONFIG_INVALID,
         owner="configuration",
-        cause="运行所需设备、工作线或插件配置不完整。",
+        cause="运行所需设备或工作线配置不完整。",
         operator_action="该工位配置不完整，无法正常运行。联系运维人员修复配置后方可继续使用。",
         fix="修正主数据配置并重新触发事件。",
         recoverability=Recoverability.MANUAL_INTERVENTION_REQUIRED,

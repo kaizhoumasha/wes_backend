@@ -271,7 +271,7 @@ async def replay_inbox(
 
 @router.post(
     "/reconciliations/sessions/{session_id}/resolve",
-    summary="[biz:workline:resolve-reconciliation] 解除 runtime reconciliation 隔离，不重发设备命令、不调用 timeout 插件处理、释放安全停靠队列",
+    summary="[biz:workline:resolve-reconciliation] 解除 runtime reconciliation 隔离，不重发设备命令、不重复执行超时处理、释放安全停靠队列",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:resolve-reconciliation"))],
