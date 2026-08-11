@@ -136,9 +136,7 @@ WMS_BUSINESS_SCENARIO_MANIFEST = (
         frozenset(
             {
                 "wms.fulfillment.request_rack_supply@v1",
-                "wms.fulfillment.request_rack_transport@v1",
                 "wms.fulfillment.change_rack_face@v1",
-                "wms.fulfillment.request_load_unit_transport@v1",
                 "wms.fulfillment.cancel_request@v1",
             }
         ),
@@ -163,11 +161,11 @@ if _scenario_coverage != set(WMS_OPERATION_BY_IDENTITY):
 
 
 def require_full_factory_registry(operation_identities: tuple[str, ...]) -> None:
-    """在 T2/T5 接线前 fail closed，禁止旧四项 profile 冒充全工厂合同。"""
+    """fail closed，禁止不完整 profile 冒充全工厂合同。"""
 
     expected = tuple(operation.identity for operation in WMS_OPERATIONS)
     if operation_identities != expected:
-        raise ValueError("active WMS profile does not match the frozen 31-operation registry")
+        raise ValueError("active WMS profile does not match the frozen 29-operation registry")
 
 
 __all__ = [

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from datetime import timedelta
 
 import pytest
@@ -49,9 +51,27 @@ class FakeProvider:
         self.retry_after_ms = retry_after_ms
         self.transport_task_id_override = transport_task_id_override
         self.calls: list[str] = []
+        self.snapshots: list[dict[str, object]] = []
 
-    async def submit(self, request: object, *, transport_task_id: str) -> TransportSubmitResult:
+    async def submit(
+        self,
+        *,
+        operation_id: str,
+        timestamp: int,
+        payload: dict[str, object],
+        payload_digest: str,
+    ) -> TransportSubmitResult:
+        transport_task_id = str(payload["transport_task_id"])
         self.calls.append(transport_task_id)
+        self.snapshots.append(
+            {
+                "operation_id": operation_id,
+                "timestamp": timestamp,
+                "transport_task_id": transport_task_id,
+                "payload": payload,
+                "payload_digest": payload_digest,
+            }
+        )
         return TransportSubmitResult(
             code=self.code,
             transport_task_id=self.transport_task_id_override or transport_task_id,
@@ -59,26 +79,25 @@ class FakeProvider:
         )
 
 
-class FakePublisher:
-    def __init__(self) -> None:
-        self.outcomes: list[TransportOutcome] = []
-
-    async def publish(self, outcome: TransportOutcome) -> None:
-        self.outcomes.append(outcome)
-
-
 class ResultBeforeAckProvider:
     def __init__(self) -> None:
         self.service: TransportService | None = None
 
-    async def submit(self, request: object, *, transport_task_id: str) -> TransportSubmitResult:
+    async def submit(
+        self,
+        *,
+        operation_id: str,
+        timestamp: int,
+        payload: dict[str, object],
+        payload_digest: str,
+    ) -> TransportSubmitResult:
+        transport_task_id = str(payload["transport_task_id"])
         assert self.service is not None
         await self.service.record_evidence(
-            event_id="result-before-ack",
+            operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
             transport_task_id=transport_task_id,
             operation="transport.task.resulted@v1",
             payload={
-                "event_id": "result-before-ack",
                 "transport_task_id": transport_task_id,
                 "kind": "RACK_MOVE",
                 "results": [
@@ -100,7 +119,15 @@ class DelayedNotSentProvider:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def submit(self, request: object, *, transport_task_id: str) -> TransportSubmitResult:
+    async def submit(
+        self,
+        *,
+        operation_id: str,
+        timestamp: int,
+        payload: dict[str, object],
+        payload_digest: str,
+    ) -> TransportSubmitResult:
+        transport_task_id = str(payload["transport_task_id"])
         self.started.set()
         await self.release.wait()
         return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)
@@ -109,7 +136,7 @@ class DelayedNotSentProvider:
 @pytest.fixture
 def service(db_engine: object) -> TransportService:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    return TransportService(sessions, TransportRepository(), FakeProvider(), FakePublisher())
+    return TransportService(sessions, TransportRepository(), FakeProvider())
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -127,7 +154,7 @@ async def _clean_transport_tables(db_engine: object) -> None:
 
 
 def _caller() -> TransportCaller:
-    return TransportCaller("SORTER", "STATION_A", "run-1")
+    return TransportCaller("SORTER", "STATION_A")
 
 
 @pytest.mark.asyncio
@@ -156,7 +183,7 @@ async def test_four_public_methods_create_one_reliable_task_each(
                 object_id="rack-5",
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
                 arrival_face="A",
-                source_event_id="seed",
+                source_operation_id="seed",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -166,13 +193,24 @@ async def test_four_public_methods_create_one_reliable_task_each(
 
 
 @pytest.mark.asyncio
-async def test_same_client_request_is_idempotent_but_changed_payload_conflicts(service: TransportService) -> None:
+async def test_same_client_request_is_idempotent_but_changed_payload_conflicts(
+    service: TransportService,
+    db_engine: object,
+) -> None:
     first = await service.move_rack("same-request", _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B"))
     duplicate = await service.move_rack(
         "same-request", _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B")
     )
 
     assert duplicate == first
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        task_ids = list(
+            await db.scalars(
+                select(TransportTask.transport_task_id).where(TransportTask.client_request_id == "same-request")
+            )
+        )
+    assert task_ids == [first.transport_task_id]
     with pytest.raises(TransportIdempotencyConflict):
         await service.move_rack("same-request", _caller(), "rack-idempotent", RackPosition("A"), RackPosition("C"))
 
@@ -190,7 +228,7 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
                 object_id="rack-rotate-idempotent",
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
                 arrival_face="A",
-                source_event_id="seed",
+                source_operation_id="seed",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -317,7 +355,7 @@ async def test_expired_claim_after_send_started_reconciles_without_resend(
 async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: object) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     provider = DelayedNotSentProvider()
-    service = TransportService(sessions, TransportRepository(), provider, FakePublisher())
+    service = TransportService(sessions, TransportRepository(), provider)
     handle = await service.move_rack(
         "late-not-sent",
         _caller(),
@@ -339,18 +377,18 @@ async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: ob
     assert await submit == 1
 
     snapshot = await _load_task(db_engine, handle.transport_task_id)
-    assert snapshot.status == "PENDING"
-    assert snapshot.reason_code is None
-    assert snapshot.send_started_at is None
-    assert snapshot.next_submit_at is not None
-    assert snapshot.outcome_json is None
+    assert snapshot.status == "RECONCILING"
+    assert snapshot.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
+    assert snapshot.send_started_at is not None
+    assert snapshot.next_submit_at is None
+    assert snapshot.outcome_json is not None
 
 
 @pytest.mark.asyncio
 async def test_result_arriving_during_submit_is_not_regressed_by_late_ack(db_engine: object) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     provider = ResultBeforeAckProvider()
-    service = TransportService(sessions, TransportRepository(), provider, FakePublisher())
+    service = TransportService(sessions, TransportRepository(), provider)
     provider.service = service
     handle = await service.move_rack(
         "result-before-ack-request",
@@ -470,11 +508,10 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
     accepted = await _load_task(db_engine, handle.transport_task_id)
     assert accepted.result_deadline_at is not None
     await service.record_evidence(
-        event_id="deadline-position",
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
         payload={
-            "event_id": "deadline-position",
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-deadline",
             "milestone": "SOURCE_PICKED",
@@ -518,11 +555,10 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
     )
 
     await service.record_evidence(
-        event_id="position-after-delivery-unknown",
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4474",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
         payload={
-            "event_id": "position-after-delivery-unknown",
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-late-position",
             "milestone": "SOURCE_PICKED",
@@ -537,9 +573,110 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
     assert accepted.outcome_json is None
 
 
+@pytest.mark.asyncio
+async def test_local_client_identity_freezes_a_distinct_submit_snapshot_before_retry(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    service.provider.code = TransportSubmitCode.NOT_SENT
+    handle = await service.move_rack(
+        "019f12d0-58d7-7b4d-a23a-1b90aa5d4471",
+        TransportCaller("SORTER", "STATION_A"),
+        "rack-submit-snapshot",
+        RackPosition("A"),
+        RackPosition("B"),
+    )
+    first = await _load_task(db_engine, handle.transport_task_id)
+    expected_payload = {
+        "transport_task_id": handle.transport_task_id,
+        "kind": "RACK_MOVE",
+        "rack_id": "rack-submit-snapshot",
+        "source": {"kind": "RACK_POSITION", "location_code": "A"},
+        "target": {"kind": "RACK_POSITION", "location_code": "B"},
+    }
+
+    assert first.client_request_id == "019f12d0-58d7-7b4d-a23a-1b90aa5d4471"
+    assert _is_uuid7(getattr(first, "submit_operation_id", None))
+    assert getattr(first, "submit_operation_id", None) != first.client_request_id
+    assert isinstance(getattr(first, "submit_timestamp_ms", None), int)
+    assert getattr(first, "submit_payload_json", None) == expected_payload
+    assert getattr(first, "submit_payload_digest", None) == _submit_payload_digest(
+        first.submit_operation_id,
+        first.submit_timestamp_ms,
+        expected_payload,
+    )
+
+    assert await service.submit_pending_tasks(1) == 1
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == handle.transport_task_id)
+            .values(next_submit_at=timezone.now_for_db() - timedelta(seconds=1))
+        )
+    assert await service.submit_pending_tasks(1) == 1
+
+    retry = await _load_task(db_engine, handle.transport_task_id)
+    assert (
+        retry.submit_operation_id,
+        retry.submit_timestamp_ms,
+        retry.submit_payload_json,
+        retry.submit_payload_digest,
+    ) == (
+        first.submit_operation_id,
+        first.submit_timestamp_ms,
+        first.submit_payload_json,
+        first.submit_payload_digest,
+    )
+    provider = service.provider
+    assert provider.snapshots == [
+        {
+            "operation_id": first.submit_operation_id,
+            "timestamp": first.submit_timestamp_ms,
+            "transport_task_id": handle.transport_task_id,
+            "payload": first.submit_payload_json,
+            "payload_digest": first.submit_payload_digest,
+        },
+        {
+            "operation_id": first.submit_operation_id,
+            "timestamp": first.submit_timestamp_ms,
+            "transport_task_id": handle.transport_task_id,
+            "payload": first.submit_payload_json,
+            "payload_digest": first.submit_payload_digest,
+        },
+    ]
+
+
 async def _load_task(db_engine: object, transport_task_id: str) -> TransportTask:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == transport_task_id))
         assert task is not None
         return task
+
+
+def _is_uuid7(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        from uuid import UUID
+
+        candidate = UUID(value)
+    except ValueError:
+        return False
+    return candidate.version == 7 and candidate.variant == "specified in RFC 4122"
+
+
+def _submit_payload_digest(operation_id: str, timestamp: int, payload: dict[str, object]) -> str:
+    normalized = json.dumps(
+        {
+            "operation_id": operation_id,
+            "operation": "transport.task.submit@v1",
+            "timestamp": timestamp,
+            "data": payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(normalized).hexdigest()

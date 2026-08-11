@@ -49,6 +49,7 @@ class CeleryAsyncRuntime:
         self._runner_generation: str | None = None
         self._owner_pid: int | None = None
         self._effect_preparation_runtime: Any | None = None
+        self._transport_runtime: Any | None = None
         self._state_lock = threading.RLock()
         # 生命周期与消息执行统一按 run_lock -> state_lock 取锁，禁止交叉顺序。
         self._run_lock = threading.RLock()
@@ -69,6 +70,16 @@ class CeleryAsyncRuntime:
         with self._state_lock:
             return self._runner_generation
 
+    @property
+    def transport_runtime(self) -> Any | None:
+        """返回当前 child 已发布的 Transport runtime。"""
+
+        with self._state_lock:
+            self._assert_owner_pid()
+            if self._state is not RuntimeState.READY:
+                return None
+            return self._transport_runtime
+
     @staticmethod
     def _assert_sync_entrypoint() -> None:
         try:
@@ -83,6 +94,20 @@ class CeleryAsyncRuntime:
                 f"CeleryAsyncRuntime owner PID mismatch (owner={self._owner_pid}, current={os.getpid()}); "
                 "refusing fork-inherited runtime access"
             )
+
+    def _reset_fork_inherited_state(self) -> None:
+        """丢弃 fork 继承的 loop/client 引用，交由当前 child 重新构造。"""
+
+        if self._owner_pid is None or self._owner_pid == os.getpid():
+            return
+        if self._runner is not None:
+            self._abandoned_runners.append(self._runner)
+        self._runner = None
+        self._runner_generation = None
+        self._owner_pid = None
+        self._effect_preparation_runtime = None
+        self._transport_runtime = None
+        self._state = RuntimeState.NEW
 
     @staticmethod
     async def _wait_for_without_cancel_wait(
@@ -132,11 +157,25 @@ class CeleryAsyncRuntime:
         progress: dict[str, Any],
         process_role: WmsProviderProcessRole,
     ) -> None:
+        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+        from src.app.transport.composition import build_transport_runtime, validate_transport_runtime_profile
+        from src.core.conf import settings
+        from src.database import db as db_module
+
+        startup = validate_wms_transport_configuration(settings_source=settings)
+        validate_transport_runtime_profile(startup)
+
         database_budget = max(deadline - time.monotonic(), 0.0)
         await CeleryAsyncRuntime._wait_task_without_cancel_wait(init_db(), database_budget)
         progress["database"] = True
+        if db_module.AsyncSessionLocal is None:
+            raise RuntimeError("Database session factory is unavailable after initialization")
+        transport_runtime = await build_transport_runtime(
+            startup=startup,
+            session_factory=db_module.AsyncSessionLocal,
+        )
+        progress["transport_runtime"] = transport_runtime
 
-        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
         from src.app.wms_integration.effect_lane_runtime import (
             bind_wms_effect_lane_runtime,
             build_wms_effect_lane_runtime,
@@ -149,9 +188,7 @@ class CeleryAsyncRuntime:
             bind_wms_data_lane_query_runtime,
             build_wms_data_lane_query_runtime,
         )
-        from src.core.conf import settings
 
-        startup = validate_wms_transport_configuration(settings_source=settings)
         effect_runtime = build_wms_effect_lane_runtime(
             startup,
             process_role=process_role,
@@ -240,8 +277,12 @@ class CeleryAsyncRuntime:
         return True
 
     @staticmethod
-    async def _rollback_failed_initialization(deadline: float, *, effect_preparation_runtime: Any | None) -> None:
-        """按 Redis → WMS data → preparation → effect → DB 顺序回滚已发布的本次候选资源。"""
+    async def _rollback_failed_initialization(
+        *,
+        effect_preparation_runtime: Any | None,
+        transport_runtime: Any | None,
+    ) -> None:
+        """使用独立阶段预算，按 Redis → WMS data → Transport → preparation → effect → DB 回滚。"""
         from src.app.wms_integration.effect_lane_runtime import close_bound_wms_effect_lane_runtime
         from src.app.wms_integration.effect_preparation_runtime import close_wms_effect_preparation_runtime
         from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
@@ -260,10 +301,11 @@ class CeleryAsyncRuntime:
                     lambda: close_wms_effect_preparation_runtime(effect_preparation_runtime),
                 ),
             )
+        if transport_runtime is not None:
+            cleanup_stages.insert(2, ("transport", transport_runtime.aclose))
         for name, factory in cleanup_stages:
-            remaining = max(deadline - time.monotonic(), 0.0)
             try:
-                await CeleryAsyncRuntime._wait_for_without_cancel_wait(factory(), remaining)
+                await CeleryAsyncRuntime._wait_for_without_cancel_wait(factory(), SHUTDOWN_STAGE_TIMEOUT_SECONDS)
             except BaseException as exc:
                 logger.warning(
                     f"Celery runtime 初始化失败后的 {name} 回滚未完成: type={type(exc).__name__}, error={exc!r}"
@@ -278,6 +320,7 @@ class CeleryAsyncRuntime:
     def _initialize_locked(self) -> None:
         """在持有 run lock 时初始化，避免 shutdown 与候选 Runner 发布竞态。"""
         with self._state_lock:
+            self._reset_fork_inherited_state()
             self._assert_owner_pid()
             if self._state is RuntimeState.READY:
                 return
@@ -296,6 +339,7 @@ class CeleryAsyncRuntime:
             "wms_data_query_lane": False,
             "wms_effect_lane": False,
             "wms_effect_preparation": None,
+            "transport_runtime": None,
         }
         try:
             runner = asyncio.Runner()
@@ -311,8 +355,8 @@ class CeleryAsyncRuntime:
                     try:
                         runner.run(
                             self._rollback_failed_initialization(
-                                deadline,
                                 effect_preparation_runtime=progress["wms_effect_preparation"],
+                                transport_runtime=progress["transport_runtime"],
                             ),
                             context=contextvars.Context(),
                         )
@@ -326,6 +370,7 @@ class CeleryAsyncRuntime:
                 self._runner_generation = None
                 self._owner_pid = None
                 self._effect_preparation_runtime = None
+                self._transport_runtime = None
                 self._state = RuntimeState.NEW if reusable else RuntimeState.CLOSED
             raise
 
@@ -334,6 +379,7 @@ class CeleryAsyncRuntime:
             self._runner_generation = candidate_runner_generation
             self._owner_pid = os.getpid()
             self._effect_preparation_runtime = progress["wms_effect_preparation"]
+            self._transport_runtime = progress["transport_runtime"]
             self._state = RuntimeState.READY
 
     def run_async(self, factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
@@ -341,6 +387,7 @@ class CeleryAsyncRuntime:
         self._assert_sync_entrypoint()
         with self._run_lock:
             with self._state_lock:
+                self._reset_fork_inherited_state()
                 self._assert_owner_pid()
                 state = self._state
             if state is RuntimeState.NEW:
@@ -462,6 +509,13 @@ class CeleryAsyncRuntime:
                     "wms-effect-preparation cleanup",
                     failure_result=None,
                 )
+            if self._transport_runtime is not None:
+                self._run_runner_stage(
+                    runner,
+                    self._run_shutdown_stage(self._transport_runtime.aclose, "transport"),
+                    "transport cleanup",
+                    failure_result=None,
+                )
             from src.app.wms_integration.effect_lane_runtime import close_bound_wms_effect_lane_runtime
 
             self._run_runner_stage(
@@ -501,6 +555,7 @@ class CeleryAsyncRuntime:
                 self._runner_generation = None
                 self._owner_pid = None
                 self._effect_preparation_runtime = None
+                self._transport_runtime = None
                 self._state = RuntimeState.CLOSED
 
 

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import delete
 
-from src.app.transport.composition import build_transport_service
+from src.app.transport import composition as transport_composition
 from src.app.transport.contracts import (
     BinExchangePair,
     BinMove,
@@ -25,7 +26,9 @@ from src.app.transport.models import (
     TransportTask,
 )
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
+from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
+from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -58,13 +61,15 @@ class _AcceptedClient:
             delivery_state=_DeliveryState(),
             status_code=202,
             json_body={
-                "request_id": json["request_id"],
+                "operation_id": json["operation_id"],
                 "code": "RECEIVED",
-                "message": "accepted",
                 "timestamp": 1,
                 "data": {"transport_task_id": data["transport_task_id"]},
             },
         )
+
+    async def aclose(self) -> None:
+        return None
 
 
 class _Publisher:
@@ -80,16 +85,20 @@ pytestmark = pytest.mark.asyncio
 
 async def test_dark_composition_runs_four_methods_through_the_explicit_closed_loop(
     integration_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from src.app.wms_adapter import factory
+
     suffix = uuid.uuid4().hex
     client = _AcceptedClient()
     publisher = _Publisher()
-    service = build_transport_service(
+    monkeypatch.setattr(factory, "build_wms_client", lambda **_kwargs: client)
+    runtime = await transport_composition.build_transport_runtime(
+        startup=SimpleNamespace(compiled_profile=build_compiled_provider_profile()),
         session_factory=integration_session_factory,
-        wms_client=client,
-        outcome_publisher=publisher,
     )
-    caller = TransportCaller("DARK_LINE", "STATION_A", suffix)
+    service = runtime.service
+    caller = TransportCaller("DARK_LINE", "STATION_A")
     rotate_rack_id = f"rack-rotate-{suffix}"
     task_ids: list[str] = []
 
@@ -100,7 +109,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                 object_id=rotate_rack_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
                 arrival_face="A",
-                source_event_id=f"seed-{suffix}",
+                source_operation_id=new_uuid7(),
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -224,14 +233,13 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                 ],
             ),
         ]
-        for index, (handle, kind, results) in enumerate(result_payloads):
-            event_id = f"dark-result-{index}-{suffix}"
+        for handle, kind, results in result_payloads:
+            operation_id = new_uuid7()
             await service.record_evidence(
-                event_id=event_id,
+                operation_id=operation_id,
                 transport_task_id=handle.transport_task_id,
                 operation=RESULT_OPERATION,
                 payload={
-                    "event_id": event_id,
                     "transport_task_id": handle.transport_task_id,
                     "kind": kind,
                     "results": results,
@@ -240,11 +248,12 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
 
         assert await service.process_pending_evidence(10) == 4
         assert await service.reconcile_overdue_tasks(10) == 0
-        assert await service.publish_pending_outcomes(10) == 4
+        assert await service.publish_pending_outcomes(10, publisher) == 4
         assert len(client.calls) == 4
         assert len(publisher.outcomes) == 4
         assert {outcome.status.value for outcome in publisher.outcomes} == {"SUCCEEDED"}
     finally:
+        await runtime.aclose()
         async with integration_session_factory.begin() as db:
             if task_ids:
                 await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))

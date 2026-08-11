@@ -36,6 +36,30 @@ def test_celery_routes_and_beat_directly_isolate_three_dispatch_tasks() -> None:
     assert sum(entry["task"] == FULFILLMENT_TASK for entry in beat_schedule.values()) == 1
 
 
+def test_fulfillment_beat_messages_are_replaceable_database_scan_wakeups() -> None:
+    from src.celery_app.config import beat_schedule, task_routes
+
+    expected_periods = {
+        "src.celery_app.tasks.transport.submit_transport_tasks_batch": (30.0, {"limit": 100}),
+        "src.celery_app.tasks.transport.process_transport_evidence_batch": (10.0, {"limit": 100}),
+        "src.celery_app.tasks.transport.reconcile_transport_tasks_batch": (30.0, {"limit": 100}),
+        FULFILLMENT_TASK: (10.0, None),
+        "src.celery_app.tasks.workline.scan_wms_effect_status_batch": (10.0, None),
+    }
+    fulfillment_schedules = {
+        entry["task"]: entry
+        for entry in beat_schedule.values()
+        if task_routes.get(str(entry["task"]), {}).get("queue") == "wms-fulfillment"
+    }
+
+    assert set(fulfillment_schedules) == set(expected_periods)
+    for task_name, (period, expected_kwargs) in expected_periods.items():
+        entry = fulfillment_schedules[task_name]
+        assert entry["schedule"] == period
+        assert entry.get("kwargs") == expected_kwargs
+        assert 0 < entry["options"]["expires"] <= period
+
+
 def test_fulfillment_worker_deployment_consumes_only_the_public_fulfillment_queue() -> None:
     import yaml
 

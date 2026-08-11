@@ -58,3 +58,12 @@ def test_gateway_empty_explicit_target_set_is_a_noop() -> None:
     gateway.enqueue_outbox(targets=(), limit=50)
 
     assert gateway.sent == []
+
+
+def test_gateway_enqueues_transport_evidence_with_its_fixed_batch_limit() -> None:
+    gateway = _CapturingGateway()
+
+    assert tuple(inspect.signature(gateway_module.TaskQueueGateway.enqueue_transport_evidence).parameters) == ("self",)
+    gateway.enqueue_transport_evidence()
+
+    assert gateway.sent == [("src.celery_app.tasks.transport.process_transport_evidence_batch", {"limit": 100})]

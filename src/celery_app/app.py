@@ -36,6 +36,7 @@ celery_app = Celery(
         "src.celery_app.tasks.handling",  # 系统级 Handling 任务
         "src.celery_app.tasks.runtime_inbox",  # RuntimeInbox 主链路任务 (Plan Task 6)
         "src.celery_app.tasks.sys",  # 系统级统一任务
+        "src.celery_app.tasks.transport",  # Transport 可靠对象后台驱动
         "src.celery_app.tasks.workline",  # 作业线编排任务
     ],
 )

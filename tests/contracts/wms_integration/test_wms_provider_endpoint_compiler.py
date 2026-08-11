@@ -119,7 +119,7 @@ def test_compiler_derives_all_endpoint_semantics_from_static_registry() -> None:
     compiled = _compile()
 
     assert tuple(compiled.operations) == tuple(operation.identity for operation in WMS_OPERATIONS)
-    assert len(compiled.operations) == 31
+    assert len(compiled.operations) == 29
     query_bindings = tuple(
         endpoint for endpoint in compiled.operations.values() if endpoint.mode is WmsOperationMode.QUERY
     )
@@ -129,7 +129,7 @@ def test_compiler_derives_all_endpoint_semantics_from_static_registry() -> None:
     assert len(query_bindings) == 18
     assert sum(endpoint.http_method is WmsHttpMethod.GET for endpoint in query_bindings) == 18
     assert sum(endpoint.http_method is WmsHttpMethod.POST for endpoint in query_bindings) == 0
-    assert len(effect_bindings) == 13
+    assert len(effect_bindings) == 11
 
     synchronous = tuple(
         endpoint for endpoint in effect_bindings if endpoint.completion_mode is WmsCompletionMode.SYNC_RESULT
@@ -139,7 +139,7 @@ def test_compiler_derives_all_endpoint_semantics_from_static_registry() -> None:
     )
     assert len(synchronous) == 9
     assert all(endpoint.status_endpoint is None for endpoint in synchronous)
-    assert len(asynchronous) == 4
+    assert len(asynchronous) == 2
     assert {endpoint.status_endpoint for endpoint in asynchronous} == {
         "http://factory-wms.example:8080/api/wms/operations/status"
     }

@@ -51,10 +51,18 @@ class ConfigurableProvider:
         self.error = error
         self.calls = 0
 
-    async def submit(self, request: object, *, transport_task_id: str) -> TransportSubmitResult:
+    async def submit(
+        self,
+        *,
+        operation_id: str,
+        timestamp: int,
+        payload: dict[str, object],
+        payload_digest: str,
+    ) -> TransportSubmitResult:
         self.calls += 1
         if self.error is not None:
             raise self.error
+        transport_task_id = str(payload["transport_task_id"])
         return TransportSubmitResult(self.code, transport_task_id, retry_after_ms=self.retry_after_ms)
 
 
@@ -137,19 +145,17 @@ def _service(
     db_engine: object,
     *,
     provider: ConfigurableProvider | None = None,
-    publisher: RecordingPublisher | None = None,
 ) -> TransportService:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     return TransportService(
         sessions,
         TransportRepository(),
         provider or ConfigurableProvider(),
-        publisher or RecordingPublisher(),
     )
 
 
 def _caller() -> TransportCaller:
-    return TransportCaller("SORTER", "STATION_A", "run-acceptance")
+    return TransportCaller("SORTER", "STATION_A")
 
 
 async def _load_task(db_engine: object, transport_task_id: str) -> TransportTask:
@@ -167,9 +173,10 @@ async def _load_task(db_engine: object, transport_task_id: str) -> TransportTask
 )
 async def test_internal_batch_entries_require_a_positive_bounded_limit(db_engine: object, entry_name: str) -> None:
     service = _service(db_engine)
+    args = (0, RecordingPublisher()) if entry_name == "publish_pending_outcomes" else (0,)
 
     with pytest.raises(ValueError, match="positive integer"):
-        await getattr(service, entry_name)(0)
+        await getattr(service, entry_name)(*args)
 
 
 @pytest.mark.asyncio
@@ -187,7 +194,7 @@ async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db
                 object_id="rack-rotate",
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
                 arrival_face="A",
-                source_event_id="seed",
+                source_operation_id="seed",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -311,7 +318,7 @@ async def test_unmatched_or_unsupported_evidence_is_retained_as_conflict(
             )
         ).transport_task_id
     await service.record_evidence(
-        event_id=f"event-{operation}",
+        operation_id=f"event-{operation}",
         transport_task_id=task_id,
         operation=operation,
         payload={"kind": "RACK_MOVE", "results": []},
@@ -328,7 +335,7 @@ async def test_unmatched_or_unsupported_evidence_is_retained_as_conflict(
 @pytest.mark.asyncio
 async def test_failed_publish_is_reclaimed_after_lease_expiry(db_engine: object) -> None:
     publisher = RecordingPublisher(fail_once=True)
-    service = _service(db_engine, publisher=publisher)
+    service = _service(db_engine)
     handle = await service.move_rack(
         "publish-request",
         _caller(),
@@ -339,7 +346,7 @@ async def test_failed_publish_is_reclaimed_after_lease_expiry(db_engine: object)
     service.provider.code = TransportSubmitCode.REJECTED
     await service.submit_pending_tasks(1)
 
-    assert await service.publish_pending_outcomes(1) == 0
+    assert await service.publish_pending_outcomes(1, publisher) == 0
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
@@ -349,7 +356,7 @@ async def test_failed_publish_is_reclaimed_after_lease_expiry(db_engine: object)
             .values(outcome_claim_until=timezone.now_for_db() - timedelta(seconds=1))
         )
 
-    assert await service.publish_pending_outcomes(1) == 1
+    assert await service.publish_pending_outcomes(1, publisher) == 1
     task = await _load_task(db_engine, handle.transport_task_id)
     assert task.published_outcome_version == task.outcome_version == 1
     assert [outcome.outcome_version for outcome in publisher.outcomes] == [1]
@@ -361,7 +368,7 @@ async def test_publish_success_before_bookkeeping_crash_is_retried_with_same_ver
     repository = FailOnceOutcomeBookkeepingRepository()
     publisher = RecordingPublisher()
     provider = ConfigurableProvider(TransportSubmitCode.REJECTED)
-    service = TransportService(sessions, repository, provider, publisher)
+    service = TransportService(sessions, repository, provider)
     handle = await service.move_rack(
         "publish-bookkeeping-crash",
         _caller(),
@@ -373,7 +380,7 @@ async def test_publish_success_before_bookkeeping_crash_is_retried_with_same_ver
     repository.fail_bookkeeping = True
 
     with pytest.raises(RuntimeError, match="before outcome bookkeeping"):
-        await service.publish_pending_outcomes(1)
+        await service.publish_pending_outcomes(1, publisher)
 
     async with sessions.begin() as db:
         await db.execute(
@@ -381,7 +388,7 @@ async def test_publish_success_before_bookkeeping_crash_is_retried_with_same_ver
             .where(TransportTask.transport_task_id == handle.transport_task_id)
             .values(outcome_claim_until=timezone.now_for_db() - timedelta(seconds=1))
         )
-    assert await service.publish_pending_outcomes(1) == 1
+    assert await service.publish_pending_outcomes(1, publisher) == 1
     task = await _load_task(db_engine, handle.transport_task_id)
     assert task.published_outcome_version == task.outcome_version == 1
     assert [outcome.outcome_version for outcome in publisher.outcomes] == [1, 1]
@@ -393,8 +400,8 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
     blocked_repository = BlockedOutcomeBookkeepingRepository()
     publisher = RecordingPublisher()
     provider = ConfigurableProvider(TransportSubmitCode.CONFLICT)
-    stale_service = TransportService(sessions, blocked_repository, provider, publisher)
-    winner_service = TransportService(sessions, TransportRepository(), provider, publisher)
+    stale_service = TransportService(sessions, blocked_repository, provider)
+    winner_service = TransportService(sessions, TransportRepository(), provider)
     handle = await stale_service.move_rack(
         "publish-stale-token",
         _caller(),
@@ -404,10 +411,10 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
     )
     await stale_service.submit_pending_tasks(1)
     blocked_repository.block_bookkeeping = True
-    stale_publish = asyncio.create_task(stale_service.publish_pending_outcomes(1))
+    stale_publish = asyncio.create_task(stale_service.publish_pending_outcomes(1, publisher))
     await blocked_repository.before_bookkeeping.wait()
+    operation_id = "operation-publish-stale-token-result"
     result = {
-        "event_id": "publish-stale-token-result",
         "transport_task_id": handle.transport_task_id,
         "kind": "RACK_MOVE",
         "results": [
@@ -422,7 +429,7 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
 
     try:
         await winner_service.record_evidence(
-            event_id=result["event_id"],
+            operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
             payload=result,
@@ -434,7 +441,7 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
                 .where(TransportTask.transport_task_id == handle.transport_task_id)
                 .values(outcome_claim_until=timezone.now_for_db() - timedelta(seconds=1))
             )
-        assert await winner_service.publish_pending_outcomes(1) == 1
+        assert await winner_service.publish_pending_outcomes(1, publisher) == 1
         blocked_repository.release.set()
         assert await stale_publish == 0
     finally:
@@ -449,7 +456,7 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
 @pytest.mark.asyncio
 async def test_failed_publish_does_not_starve_later_outcomes(db_engine: object) -> None:
     publisher = RecordingPublisher(fail_once=True)
-    service = _service(db_engine, publisher=publisher)
+    service = _service(db_engine)
     for ordinal in range(2):
         await service.move_rack(
             f"publish-error-{ordinal}",
@@ -461,7 +468,7 @@ async def test_failed_publish_does_not_starve_later_outcomes(db_engine: object) 
     service.provider.code = TransportSubmitCode.REJECTED
     assert await service.submit_pending_tasks(2) == 2
 
-    assert await service.publish_pending_outcomes(2) == 1
+    assert await service.publish_pending_outcomes(2, publisher) == 1
     assert len(publisher.outcomes) == 1
 
 
@@ -471,7 +478,7 @@ async def test_timed_out_publish_does_not_block_later_outcomes_or_mark_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     publisher = TimeoutOncePublisher()
-    service = _service(db_engine, publisher=publisher)
+    service = _service(db_engine)
     handles = []
     for ordinal in range(2):
         handles.append(
@@ -487,7 +494,7 @@ async def test_timed_out_publish_does_not_block_later_outcomes_or_mark_success(
     assert await service.submit_pending_tasks(2) == 2
     monkeypatch.setattr("src.app.transport.service._PUBLISH_TIMEOUT_SECONDS", 0.01, raising=False)
 
-    assert await asyncio.wait_for(service.publish_pending_outcomes(2), timeout=0.2) == 1
+    assert await asyncio.wait_for(service.publish_pending_outcomes(2, publisher), timeout=0.2) == 1
     tasks = [await _load_task(db_engine, handle.transport_task_id) for handle in handles]
 
     assert publisher.calls == 2
@@ -498,7 +505,7 @@ async def test_timed_out_publish_does_not_block_later_outcomes_or_mark_success(
 @pytest.mark.asyncio
 async def test_known_partial_failure_forms_failed_outcome_and_releases_resources(db_engine: object) -> None:
     publisher = RecordingPublisher()
-    service = _service(db_engine, publisher=publisher)
+    service = _service(db_engine)
     handle = await service.move_bins(
         "partial-failure",
         _caller(),
@@ -524,14 +531,14 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
         ],
     }
     await service.record_evidence(
-        event_id="partial-failure-result",
+        operation_id="partial-failure-result",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload=payload,
     )
 
     assert await service.process_pending_evidence(1) == 1
-    assert await service.publish_pending_outcomes(1) == 1
+    assert await service.publish_pending_outcomes(1, publisher) == 1
     task = await _load_task(db_engine, handle.transport_task_id)
     assert (task.status, task.reason_code) == ("FAILED", "CTU_PICK_FAILED")
     assert publisher.outcomes[0].status.value == "FAILED"

@@ -1,4 +1,4 @@
-"""E08/E09 履约投影必须挂在现有 Intent/Outbox/reducer 事务边界。"""
+"""rack supply 履约投影必须挂在现有 Intent/Outbox/reducer 事务边界。"""
 
 from __future__ import annotations
 

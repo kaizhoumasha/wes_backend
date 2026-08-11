@@ -65,7 +65,7 @@ def test_projection_hashes_dispatch_key_for_event_but_excludes_it_from_metric() 
 
     event = emit_wms_effect_observation(
         "wms_effect.submit",
-        operation_identity="wms.fulfillment.request_rack_transport@v1",
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
         dispatch_key=dispatch_key,
         attributes={
             "outcome": "ACCEPTED",
@@ -81,7 +81,7 @@ def test_projection_hashes_dispatch_key_for_event_but_excludes_it_from_metric() 
     assert "dispatch_key_hash" not in event.metric_attributes
     assert dict(event.metric_attributes) == {
         "capability_identity": "wms_effect.submit@v1",
-        "operation_identity": "wms.fulfillment.request_rack_transport@v1",
+        "operation_identity": "wms.fulfillment.request_rack_supply@v1",
         "outcome": "ACCEPTED",
         "policy_version": "northbound-observability.v1",
         "latency_ms": 12.5,
@@ -100,7 +100,7 @@ def test_projection_is_best_effort_and_does_not_leak_dispatch_key_on_failure(cap
     dispatch_key = "sensitive-business-dispatch-key"
     event = emit_wms_effect_observation(
         "wms_effect.submit",
-        operation_identity="wms.fulfillment.request_rack_transport@v1",
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
         dispatch_key=dispatch_key,
         attributes={
             "outcome": "ACCEPTED",
@@ -118,7 +118,7 @@ def test_all_wms_effect_signal_shapes_emit_with_low_cardinality_metrics() -> Non
     from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
     from src.app.runtime.orchestration.wms_effect_observability import emit_wms_effect_observation
 
-    operation_identity = "wms.fulfillment.request_rack_transport@v1"
+    operation_identity = "wms.fulfillment.request_rack_supply@v1"
     cases = {
         "wms_effect.submit": {"outcome": "AMBIGUOUS", "latency_ms": 3, "retry_count": 1},
         "wms_effect.status_query": {

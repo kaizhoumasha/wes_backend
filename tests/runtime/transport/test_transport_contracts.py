@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -30,7 +31,13 @@ if TYPE_CHECKING:
 
 
 def _caller() -> TransportCaller:
-    return TransportCaller(workline_id="SORTER", station_id="STATION_A", correlation_id="run-1")
+    return TransportCaller(workline_id="SORTER", station_id="STATION_A")
+
+
+def test_transport_service_does_not_depend_on_wms_adapter() -> None:
+    service_source = (Path(__file__).resolve().parents[3] / "src/app/transport/service.py").read_text(encoding="utf-8")
+
+    assert "src.app.wms_adapter" not in service_source
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,3 +383,13 @@ def test_persisted_request_identifiers_reject_values_larger_than_database_column
 ) -> None:
     with pytest.raises(TransportContractError):
         factory()
+
+
+def test_transport_caller_keeps_only_local_routing_fields() -> None:
+    caller = TransportCaller("SORTER", "STATION_A")
+
+    assert (caller.workline_id, caller.station_id) == ("SORTER", "STATION_A")
+    with pytest.raises(TypeError):
+        TransportCaller("SORTER", "STATION_A", "legacy-correlation")
+    with pytest.raises(TypeError):
+        TransportCaller("SORTER", "STATION_A", correlation_id="legacy-correlation")

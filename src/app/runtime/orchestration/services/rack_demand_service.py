@@ -1,4 +1,4 @@
-"""E08/E09 root Intent claim 前的 demand mutex 服务。"""
+"""rack supply root Intent claim 前的 demand mutex 服务。"""
 
 from __future__ import annotations
 
@@ -11,9 +11,7 @@ from src.app.runtime.orchestration.repositories.wms_fulfillment_domain_repositor
 )
 from src.app.wms_integration.ports.fulfillment_operations import (
     REQUEST_RACK_SUPPLY,
-    REQUEST_RACK_TRANSPORT,
     RequestRackSupplyRequest,
-    RequestRackTransportRequest,
 )
 from src.utils.timezone import timezone
 
@@ -68,21 +66,16 @@ class RackDemandService:
         rack_type: str,
         demand_generation: int,
         dispatch_key: str,
-        required_rack_code: str | None,
-        source_location_code: str | None,
-        destination_station_code: str | None,
     ) -> WmsRackDemandReservation:
         """先占 PREPARING mutex；调用方随后用同一 ctx claim RuntimeIntent。"""
 
         db, workline_id = self._validate_execution_context(ctx)
-        operation, request = self._select_root(
+        operation = REQUEST_RACK_SUPPLY
+        request = RequestRackSupplyRequest(
+            dispatch_key=dispatch_key,
             station_code=station_code,
             rack_type=rack_type,
             demand_generation=demand_generation,
-            dispatch_key=dispatch_key,
-            required_rack_code=required_rack_code,
-            source_location_code=source_location_code,
-            destination_station_code=destination_station_code,
         )
         demand, created = await self._repository.reserve_preparing_demand(
             db,
@@ -90,8 +83,6 @@ class RackDemandService:
             station_code=station_code,
             rack_type=rack_type,
             demand_generation=demand_generation,
-            required_rack_code=required_rack_code,
-            root_operation_identity=operation.identity,
             opened_at_ms=self._now_ms(),
         )
         claim = self._claim(demand)
@@ -123,43 +114,6 @@ class RackDemandService:
         if not isinstance(workline_id, int) or workline_id <= 0:
             raise ValueError("rack demand requires an existing workline execution context")
         return db, workline_id
-
-    @staticmethod
-    def _select_root(
-        *,
-        station_code: str,
-        rack_type: str,
-        demand_generation: int,
-        dispatch_key: str,
-        required_rack_code: str | None,
-        source_location_code: str | None,
-        destination_station_code: str | None,
-    ) -> tuple[WmsOperationDefinition, BaseModel]:
-        if required_rack_code is None:
-            if source_location_code is not None or destination_station_code is not None:
-                raise ValueError("unknown rack demand must not carry source or destination")
-            return (
-                REQUEST_RACK_SUPPLY,
-                RequestRackSupplyRequest(
-                    dispatch_key=dispatch_key,
-                    station_code=station_code,
-                    rack_type=rack_type,
-                    demand_generation=demand_generation,
-                ),
-            )
-        if not source_location_code or not destination_station_code:
-            raise ValueError("known rack demand requires source and destination")
-        if destination_station_code != station_code:
-            raise ValueError("known rack demand destination must equal station")
-        return (
-            REQUEST_RACK_TRANSPORT,
-            RequestRackTransportRequest(
-                dispatch_key=dispatch_key,
-                rack_id=required_rack_code,
-                source_location_code=source_location_code,
-                destination_station_code=destination_station_code,
-            ),
-        )
 
     @staticmethod
     def _claim(demand: WmsRackDemand) -> WmsRackDemandClaim:

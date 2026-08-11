@@ -138,6 +138,8 @@ def runtime_probe(label: str) -> dict[str, object]:
         import src.database.db as db_module
         from src.core.conf import settings
 
+        transport_runtime = celery_async_runtime.transport_runtime
+        assert transport_runtime is not None
         async with get_db_context() as db:
             row = (
                 await db.execute(
@@ -153,6 +155,7 @@ def runtime_probe(label: str) -> dict[str, object]:
             "runner_id": celery_async_runtime.runner_generation,
             "engine_id": db_module._engine_generation,
             "session_factory_id": db_module._session_factory_generation,
+            "transport_client_id": id(transport_runtime.client),
             "backend_pid": int(row[0]),
             "database": str(row[1]),
             "application_name": str(row[2]),
@@ -774,6 +777,7 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         assert all(len({str(row["runner_id"]) for row in rows}) == 1 for rows in by_pid.values())
         assert all(len({str(row["engine_id"]) for row in rows}) == 1 for rows in by_pid.values())
         assert all(len({str(row["session_factory_id"]) for row in rows}) == 1 for rows in by_pid.values())
+        assert all(len({int(row["transport_client_id"]) for row in rows}) == 1 for rows in by_pid.values())
         assert {str(row["database"]) for row in probe_rows} == {prefork_services["database"]}
         assert {str(row["role"]) for row in probe_rows} == {"integration"}
         application_names = {str(row["application_name"]) for row in probe_rows}

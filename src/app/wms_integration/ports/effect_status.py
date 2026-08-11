@@ -27,12 +27,8 @@ from src.app.wms_integration.operation_registry import (
 from src.app.wms_integration.ports.fulfillment_operations import (
     ChangeRackFaceRequest,
     ChangeRackFaceResult,
-    RequestLoadUnitTransportRequest,
-    RequestLoadUnitTransportResult,
     RequestRackSupplyRequest,
     RequestRackSupplyResult,
-    RequestRackTransportRequest,
-    RequestRackTransportResult,
     WmsEffectAck,
     validate_effect_ack,
     validate_effect_provider_reference,
@@ -264,13 +260,6 @@ def _validate_result_identity(
     ):
         raise ValueError("successful rack supply final station differs from request")
     if (
-        isinstance(typed_request, RequestRackTransportRequest)
-        and isinstance(result, RequestRackTransportResult)
-        and result.task_outcome == "SUCCESS"
-        and result.final_location_code != typed_request.destination_station_code
-    ):
-        raise ValueError("successful rack transport final location differs from request")
-    if (
         isinstance(typed_request, ChangeRackFaceRequest)
         and isinstance(result, ChangeRackFaceResult)
         and result.task_outcome == "SUCCESS"
@@ -279,13 +268,6 @@ def _validate_result_identity(
         )
     ):
         raise ValueError("successful rack face authorized/final face differs from request")
-    if (
-        isinstance(typed_request, RequestLoadUnitTransportRequest)
-        and isinstance(result, RequestLoadUnitTransportResult)
-        and result.task_outcome == "SUCCESS"
-        and result.final_location_code != typed_request.destination_location_code
-    ):
-        raise ValueError("successful load unit final location differs from request")
 
 
 def _parse_completed_result(

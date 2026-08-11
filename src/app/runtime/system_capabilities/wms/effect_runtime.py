@@ -57,7 +57,7 @@ class WmsEffectPreparationResult:
 
 
 class WmsRegistryEffectCapabilityHandler:
-    """把 13 项 typed request 委托给同一个事务内 preparation Port。"""
+    """把 11 项 typed request 委托给同一个事务内 preparation Port。"""
 
     def __init__(self, preparation_port: WmsEffectPreparationPort) -> None:
         self._preparation_port = preparation_port
@@ -89,7 +89,7 @@ def build_wms_effect_capability_definition(
         admission=f"wms.{WMS_PROVIDER_CONTRACT_VERSION}",
         timeout_seconds=operation.budget.deadline_seconds,
         # SYNC_RESULT 描述 WMS 单次 submit 的完成语义；WES 调用方仍统一先写 Outbox，
-        # 因而 13 项在 System Capability 层均使用现有 OUTBOX_ASYNC 事务边界。
+        # 因而 11 项在 System Capability 层均使用现有 OUTBOX_ASYNC 事务边界。
         completion_mode=EffectCompletionMode.OUTBOX_ASYNC,
         audit_policy="metadata",
     )

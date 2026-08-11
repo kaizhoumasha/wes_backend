@@ -1,5 +1,6 @@
 """AGV/CTU 通用搬运能力。"""
 
+from src.app.transport.composition import TransportRuntime, build_transport_runtime
 from src.app.transport.contracts import (
     BinExchangePair,
     BinMove,
@@ -14,8 +15,8 @@ from src.app.transport.contracts import (
     TransportCaller,
     TransportHandle,
     TransportOutcome,
+    TransportPort,
 )
-from src.app.transport.service import TransportService
 
 __all__ = [
     "BinExchangePair",
@@ -31,5 +32,7 @@ __all__ = [
     "TransportCaller",
     "TransportHandle",
     "TransportOutcome",
-    "TransportService",
+    "TransportPort",
+    "TransportRuntime",
+    "build_transport_runtime",
 ]

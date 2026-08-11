@@ -86,24 +86,11 @@ def upgrade() -> None:
         sa.Column("station_code", sa.String(length=100), nullable=False),
         sa.Column("rack_type", sa.String(length=80), nullable=False),
         sa.Column("demand_generation", sa.Integer(), nullable=False),
-        sa.Column("required_rack_code", sa.String(length=100), nullable=True),
-        sa.Column("root_operation_identity", sa.String(length=160), nullable=False),
         sa.Column("root_intent_id", sa.Integer(), nullable=True),
-        sa.Column("handoff_from_owner_id", sa.Integer(), nullable=True),
         sa.Column("lifecycle_state", sa.String(length=20), nullable=False),
         sa.Column("opened_at_ms", sa.BigInteger(), nullable=False),
         sa.Column("closed_at_ms", sa.BigInteger(), nullable=True),
         sa.Column("reconciliation_case_id", sa.Integer(), nullable=True),
-        sa.CheckConstraint(
-            "("
-            "root_operation_identity = 'wms.fulfillment.request_rack_supply@v1' "
-            "AND required_rack_code IS NULL"
-            ") OR ("
-            "root_operation_identity = 'wms.fulfillment.request_rack_transport@v1' "
-            "AND required_rack_code IS NOT NULL"
-            ")",
-            name=op.f("ck_wms_rack_demands_root_shape"),
-        ),
         sa.CheckConstraint(
             "demand_generation > 0",
             name=op.f("ck_wms_rack_demands_generation"),
@@ -182,7 +169,7 @@ def upgrade() -> None:
             name=op.f("ck_material_flow_owners_object_type"),
         ),
         sa.CheckConstraint(
-            "owner_type IN ('FULL_BOX_EXCHANGE', 'STATION_TRANSPORT', 'PIECE_SORTING')",
+            "owner_type IN ('FULL_BOX_EXCHANGE', 'PIECE_SORTING')",
             name=op.f("ck_material_flow_owners_owner_type"),
         ),
         sa.CheckConstraint(
@@ -226,16 +213,6 @@ def upgrade() -> None:
         schema=SCHEMA,
         postgresql_where=sa.text("lifecycle_state IN ('ACTIVE', 'RECONCILING')"),
     )
-    op.create_foreign_key(
-        "fk_wms_rack_demands_handoff_owner",
-        "wms_rack_demands",
-        "material_flow_owners",
-        ["handoff_from_owner_id"],
-        ["id"],
-        source_schema=SCHEMA,
-        referent_schema=SCHEMA,
-    )
-
     op.create_table(
         "bin_route_instances",
         sa.Column("route_instance_id", sa.String(length=160), nullable=False),

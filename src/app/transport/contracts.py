@@ -79,14 +79,11 @@ def _required(value: str, field_name: str, *, max_length: int | None = None) -> 
 class TransportCaller:
     workline_id: str
     station_id: str | None = None
-    correlation_id: str | None = None
 
     def __post_init__(self) -> None:
         _required(self.workline_id, "workline_id")
         if self.station_id is not None:
             _required(self.station_id, "station_id")
-        if self.correlation_id is not None:
-            _required(self.correlation_id, "correlation_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +250,40 @@ class TransportHandle:
         _required(self.client_request_id, "client_request_id")
 
 
+class TransportPort(Protocol):
+    async def move_rack(
+        self,
+        client_request_id: str,
+        caller: TransportCaller,
+        rack_id: str,
+        source: RackPosition,
+        target: RackPosition,
+    ) -> TransportHandle: ...
+
+    async def rotate_rack(
+        self,
+        client_request_id: str,
+        caller: TransportCaller,
+        rack_id: str,
+        position: RackPosition,
+        target_face: RackFace,
+    ) -> TransportHandle: ...
+
+    async def move_bins(
+        self,
+        client_request_id: str,
+        caller: TransportCaller,
+        moves: tuple[BinMove, ...],
+    ) -> TransportHandle: ...
+
+    async def exchange_bins(
+        self,
+        client_request_id: str,
+        caller: TransportCaller,
+        exchange_pairs: tuple[BinExchangePair, ...],
+    ) -> TransportHandle: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TransportMemberOutcome:
     object_id: str
@@ -293,7 +324,14 @@ class TransportSubmitResult:
 
 
 class TransportProviderPort(Protocol):
-    async def submit(self, request: TransportRequest, *, transport_task_id: str) -> TransportSubmitResult: ...
+    async def submit(
+        self,
+        *,
+        operation_id: str,
+        timestamp: int,
+        payload: dict[str, object],
+        payload_digest: str,
+    ) -> TransportSubmitResult: ...
 
 
 class TransportOutcomePublisher(Protocol):
@@ -338,6 +376,7 @@ __all__ = [
     "TransportOutcome",
     "TransportOutcomePublisher",
     "TransportOutcomeStatus",
+    "TransportPort",
     "TransportPosition",
     "TransportProviderPort",
     "TransportRequest",

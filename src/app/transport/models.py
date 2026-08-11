@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 - SQLModel resolves this annotation at runtime
 from typing import Any
 
-from sqlalchemy import JSON, CheckConstraint, Index, UniqueConstraint, text
+from sqlalchemy import JSON, BigInteger, CheckConstraint, Index, UniqueConstraint, text
 from sqlmodel import Field
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
@@ -14,7 +14,8 @@ from src.database.schema_conf import SchemaType
 
 RUNTIME_SCHEMA = SchemaType.RUNTIME.value
 
-# 六态只描述可靠搬运事实；RECONCILING 可被晚到的权威结果修正为确定终态。
+# 六态只描述可靠搬运事实：PENDING 经权威 ACK 进入 ACCEPTED，经结果 evidence 进入确定终态；
+# DELIVERY_UNKNOWN/冲突/超时进入 RECONCILING，匹配不可变身份的迟到权威事实仍可单调收敛。
 _TASK_STATUS_CHECK = "status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'SUCCEEDED', 'FAILED', 'RECONCILING')"
 _EVIDENCE_STATUS_CHECK = "status IN ('PENDING', 'APPLIED', 'CONFLICT')"
 
@@ -69,6 +70,10 @@ class TransportTask(BaseMixin, table=True):
     kind: str = Field(max_length=30)
     caller_json: dict[str, Any] = Field(sa_type=JSON)
     request_json: dict[str, Any] = Field(sa_type=JSON)
+    submit_operation_id: str = Field(max_length=36)
+    submit_timestamp_ms: int = Field(sa_type=BigInteger)
+    submit_payload_json: dict[str, Any] = Field(sa_type=JSON)
+    submit_payload_digest: str = Field(max_length=64)
     status: str = Field(default="PENDING", max_length=20)
     reason_code: str | None = Field(default=None, max_length=120)
 
@@ -114,7 +119,7 @@ class TransportMember(BaseMixin, table=True):
     position_unknown: bool = Field(default=False)
     failure_code: str | None = Field(default=None, max_length=120)
     arrival_face: str | None = Field(default=None, max_length=1)
-    last_event_id: str | None = Field(default=None, max_length=120)
+    last_operation_id: str | None = Field(default=None, max_length=36)
     updated_at: datetime
 
 
@@ -123,7 +128,7 @@ class TransportEvidence(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         CheckConstraint(_EVIDENCE_STATUS_CHECK, name="transport_evidence_status_valid"),
-        UniqueConstraint("operation", "event_id", name="ux_transport_evidence_operation_event_id"),
+        UniqueConstraint("operation", "operation_id", name="ux_transport_evidence_operation_operation_id"),
         Index(
             "ix_transport_evidence_pending_claim",
             "status",
@@ -136,11 +141,13 @@ class TransportEvidence(BaseMixin, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    event_id: str = Field(max_length=120)
+    operation_id: str = Field(max_length=36)
     transport_task_id: str = Field(max_length=80, index=True)
     operation: str = Field(max_length=80)
     payload_digest: str = Field(max_length=64)
     payload_json: dict[str, Any] = Field(sa_type=JSON)
+    ack_timestamp_ms: int = Field(sa_type=BigInteger)
+    ack_data_json: dict[str, Any] = Field(sa_type=JSON)
     status: str = Field(default="PENDING", max_length=20)
     claim_token: str | None = Field(default=None, max_length=80)
     claim_until: datetime | None = Field(default=None)
@@ -163,7 +170,7 @@ class TransportPositionProjection(BaseMixin, table=True):
     position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
     arrival_face: str | None = Field(default=None, max_length=1)
-    source_event_id: str = Field(max_length=120)
+    source_operation_id: str = Field(max_length=36)
     updated_at: datetime
 
 

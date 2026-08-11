@@ -1,4 +1,4 @@
-"""E08/E09 货架需求根互斥投影。"""
+"""rack supply 货架需求根互斥投影。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from src.core.mixins.base import BaseMixin
 
 
 class WmsRackDemand(BaseMixin, table=True):
-    """同一工作线站点与货架类型只保留一个未关闭的 E08/E09 需求根。"""
+    """同一工作线站点与货架类型只保留一个未关闭的 rack supply 需求根。"""
 
     __tablename__ = "wms_rack_demands"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
@@ -27,11 +27,6 @@ class WmsRackDemand(BaseMixin, table=True):
             [f"{RUNTIME_SCHEMA}.reconciliation_cases.id"],
             name="fk_wms_rack_demands_reconciliation_case",
         ),
-        ForeignKeyConstraint(
-            ["handoff_from_owner_id"],
-            [f"{RUNTIME_SCHEMA}.material_flow_owners.id"],
-            name="fk_wms_rack_demands_handoff_owner",
-        ),
         UniqueConstraint("root_intent_id", name="uq_wms_rack_demands_root_intent"),
         UniqueConstraint(
             "workline_id",
@@ -39,16 +34,6 @@ class WmsRackDemand(BaseMixin, table=True):
             "rack_type",
             "demand_generation",
             name="uq_wms_rack_demands_generation",
-        ),
-        CheckConstraint(
-            "("
-            "root_operation_identity = 'wms.fulfillment.request_rack_supply@v1' "
-            "AND required_rack_code IS NULL"
-            ") OR ("
-            "root_operation_identity = 'wms.fulfillment.request_rack_transport@v1' "
-            "AND required_rack_code IS NOT NULL"
-            ")",
-            name="root_shape",
         ),
         CheckConstraint("demand_generation > 0", name="generation"),
         CheckConstraint(
@@ -85,12 +70,8 @@ class WmsRackDemand(BaseMixin, table=True):
     station_code: str = Field(min_length=1, max_length=100)
     rack_type: str = Field(min_length=1, max_length=80)
     demand_generation: int = Field(ge=1)
-    required_rack_code: str | None = Field(default=None, max_length=100)
-    root_operation_identity: str = Field(min_length=1, max_length=160)
     # PREPARING 先占 demand mutex；同事务 claim RuntimeIntent 后再绑定 root 并转 ACTIVE。
     root_intent_id: int | None = None
-    # 出站 E09 冻结原 PIECE_SORTING owner，reject 只能按该稳定身份恢复。
-    handoff_from_owner_id: int | None = None
     lifecycle_state: str = Field(default="ACTIVE", min_length=1, max_length=20)
     opened_at_ms: int = Field(sa_type=BigInteger)
     closed_at_ms: int | None = Field(default=None, sa_type=BigInteger)

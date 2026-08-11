@@ -12,21 +12,25 @@ from src.app.transport.contracts import (
     TransportCaller,
     TransportContractError,
 )
+from src.app.transport.submit_snapshot import build_submit_data
 from src.app.wms_adapter.transport_wire import (
     POSITION_OPERATION,
     RESULT_OPERATION,
-    build_submit_data,
     validate_callback_envelope,
 )
 
 
 def _envelope(operation: str, data: object) -> dict[str, object]:
-    return {"request_id": "callback-1", "operation": operation, "timestamp": 1, "data": data}
+    return {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        "operation": operation,
+        "timestamp": 1,
+        "data": data,
+    }
 
 
 def _position_data(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
-        "event_id": "event-1",
         "transport_task_id": "transport-1",
         "bin_id": "bin-1",
         "milestone": "SOURCE_PICKED",
@@ -37,7 +41,6 @@ def _position_data(**overrides: object) -> dict[str, object]:
 
 def _result_data(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
-        "event_id": "event-1",
         "transport_task_id": "transport-1",
         "kind": "BIN_MOVE",
         "results": [
@@ -55,7 +58,7 @@ def _result_data(**overrides: object) -> dict[str, object]:
 def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> None:
     request = MoveBinsRequest(
         "client-1",
-        TransportCaller("SORTER", "STATION_A", "run-1"),
+        TransportCaller("SORTER", "STATION_A"),
         (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),),
     )
 
@@ -64,7 +67,6 @@ def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> N
     assert data == {
         "transport_task_id": "transport-1",
         "kind": "BIN_MOVE",
-        "caller": {"workline_id": "SORTER", "station_id": "STATION_A", "correlation_id": "run-1"},
         "moves": [
             {
                 "bin_id": "bin-1",
@@ -81,11 +83,16 @@ def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> N
         ([], "callback envelope must be an object"),
         ({1: "value"}, "callback envelope must be an object"),
         (
-            {"request_id": "callback-1", "operation": POSITION_OPERATION, "timestamp": 1},
+            {"operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472", "operation": POSITION_OPERATION, "timestamp": 1},
             "callback envelope fields do not match the closed contract",
         ),
         (
-            {"request_id": "callback-1", "operation": POSITION_OPERATION, "timestamp": True, "data": {}},
+            {
+                "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+                "operation": POSITION_OPERATION,
+                "timestamp": True,
+                "data": {},
+            },
             "timestamp must be an integer",
         ),
         (_envelope("transport.task.unknown@v1", {}), "unsupported transport callback operation"),
@@ -96,10 +103,10 @@ def test_callback_envelope_rejects_non_closed_or_unsupported_values(value: objec
         validate_callback_envelope(value)
 
 
-@pytest.mark.parametrize("field", ["request_id", "event_id", "transport_task_id", "bin_id"])
+@pytest.mark.parametrize("field", ["operation_id", "transport_task_id", "bin_id"])
 def test_position_callback_rejects_blank_identifiers(field: str) -> None:
     envelope = _envelope(POSITION_OPERATION, _position_data())
-    if field == "request_id":
+    if field == "operation_id":
         envelope[field] = " "
     else:
         assert isinstance(envelope["data"], dict)
@@ -112,10 +119,8 @@ def test_position_callback_rejects_blank_identifiers(field: str) -> None:
 @pytest.mark.parametrize(
     ("operation", "data", "field", "limit"),
     [
-        (POSITION_OPERATION, _position_data(), "event_id", 120),
         (POSITION_OPERATION, _position_data(), "transport_task_id", 80),
         (POSITION_OPERATION, _position_data(), "bin_id", 100),
-        (RESULT_OPERATION, _result_data(), "event_id", 120),
         (RESULT_OPERATION, _result_data(), "transport_task_id", 80),
     ],
 )
@@ -342,3 +347,21 @@ def test_result_callback_accepts_known_rack_and_unknown_failed_member() -> None:
 
     assert validate_callback_envelope(_envelope(RESULT_OPERATION, known))["data"] == known
     assert validate_callback_envelope(_envelope(RESULT_OPERATION, unknown))["data"] == unknown
+
+
+def test_callback_wire_uses_its_own_uuid7_operation_id_without_legacy_business_ids() -> None:
+    operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
+    envelope = {
+        "operation_id": operation_id,
+        "operation": POSITION_OPERATION,
+        "timestamp": 1,
+        "data": {
+            "transport_task_id": "transport-1",
+            "bin_id": "bin-1",
+            "milestone": "SOURCE_PICKED",
+        },
+    }
+
+    assert validate_callback_envelope(envelope) == envelope
+    with pytest.raises(TransportContractError):
+        validate_callback_envelope({**envelope, "operation_id": "019f12d0-58d7-4b4d-a23a-1b90aa5d4472"})

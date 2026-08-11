@@ -2,40 +2,26 @@
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict
 from typing import Any
 
 from src.app.transport.contracts import (
     TRANSPORT_POSITION_OPERATION,
     TRANSPORT_RESULT_OPERATION,
     TransportContractError,
-    TransportRequest,
 )
+from src.core.uuid7 import is_uuid7
 
 POSITION_OPERATION = TRANSPORT_POSITION_OPERATION
 RESULT_OPERATION = TRANSPORT_RESULT_OPERATION
-SUBMIT_OPERATION = "transport.task.submit@v1"
 TRANSPORT_PATH = "/api/v1/wes/transport-requests"
 EVENT_PATH = "/api/v1/wms/events"
 
 
-def build_submit_data(request: TransportRequest, transport_task_id: str) -> dict[str, Any]:
-    payload = _json_value(request)
-    payload.pop("client_request_id")
-    kind = payload.pop("kind")
-    caller = payload.pop("caller")
-    return {
-        "transport_task_id": transport_task_id,
-        "kind": kind,
-        "caller": caller,
-        **payload,
-    }
-
-
 def validate_callback_envelope(value: object) -> dict[str, Any]:
-    envelope = _strict_dict(value, {"request_id", "operation", "timestamp", "data"}, "callback envelope")
-    _nonblank(envelope["request_id"], "request_id")
+    envelope = _strict_dict(value, {"operation_id", "operation", "timestamp", "data"}, "callback envelope")
+    operation_id = _nonblank(envelope["operation_id"], "operation_id")
+    if not is_uuid7(operation_id):
+        raise TransportContractError("operation_id must be UUIDv7")
     if not isinstance(envelope["timestamp"], int) or isinstance(envelope["timestamp"], bool):
         raise TransportContractError("timestamp must be an integer")
     operation = envelope["operation"]
@@ -51,11 +37,10 @@ def validate_callback_envelope(value: object) -> dict[str, Any]:
 def _validate_position_data(value: object) -> dict[str, Any]:
     data = _strict_dict(
         value,
-        {"event_id", "transport_task_id", "bin_id", "milestone"},
+        {"transport_task_id", "bin_id", "milestone"},
         "position data",
         optional={"final_position"},
     )
-    _nonblank(data["event_id"], "event_id", max_length=120)
     _nonblank(data["transport_task_id"], "transport_task_id", max_length=80)
     _nonblank(data["bin_id"], "bin_id", max_length=100)
     milestone = data["milestone"]
@@ -71,8 +56,7 @@ def _validate_position_data(value: object) -> dict[str, Any]:
 
 
 def _validate_result_data(value: object) -> dict[str, Any]:
-    data = _strict_dict(value, {"event_id", "transport_task_id", "kind", "results"}, "result data")
-    _nonblank(data["event_id"], "event_id", max_length=120)
+    data = _strict_dict(value, {"transport_task_id", "kind", "results"}, "result data")
     _nonblank(data["transport_task_id"], "transport_task_id", max_length=80)
     if data["kind"] not in {"RACK_MOVE", "RACK_ROTATE", "BIN_MOVE", "BIN_EXCHANGE"}:
         raise TransportContractError("invalid transport kind")
@@ -169,16 +153,10 @@ def _nonblank(value: object, field_name: str, *, max_length: int | None = None) 
     return value
 
 
-def _json_value(value: object) -> dict[str, Any]:
-    return json.loads(json.dumps(asdict(value), ensure_ascii=False, separators=(",", ":")))
-
-
 __all__ = [
     "EVENT_PATH",
     "POSITION_OPERATION",
     "RESULT_OPERATION",
-    "SUBMIT_OPERATION",
     "TRANSPORT_PATH",
-    "build_submit_data",
     "validate_callback_envelope",
 ]

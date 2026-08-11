@@ -1,4 +1,4 @@
-"""WMS callback 入站认证的启动时冻结策略。"""
+"""WMS 入站认证的启动时冻结策略。"""
 
 from __future__ import annotations
 
@@ -59,6 +59,4 @@ class WmsInboundAuthPolicy:
         )
 
 
-__all__ = [
-    "WmsInboundAuthPolicy",
-]
+__all__ = ["WmsInboundAuthPolicy"]

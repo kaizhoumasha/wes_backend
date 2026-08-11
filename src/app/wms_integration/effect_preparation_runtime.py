@@ -25,7 +25,7 @@ _active_loop: asyncio.AbstractEventLoop | None = None
 def freeze_wms_effect_admission_policy(
     admission_enabled: bool,
 ) -> Callable[[SystemCapabilityDefinition], bool]:
-    """冻结仅控制 13 项 WMS EFFECT 的新 claim policy。"""
+    """冻结仅控制 11 项 WMS EFFECT 的新 claim policy。"""
 
     enabled = bool(admission_enabled)
 

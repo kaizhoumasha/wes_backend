@@ -1,4 +1,4 @@
-"""E08/E09 在既有 Intent/Outbox/reducer 事务中的唯一履约投影。"""
+"""rack supply 在既有 Intent/Outbox/reducer 事务中的唯一履约投影。"""
 
 from __future__ import annotations
 
@@ -22,8 +22,6 @@ from src.app.wms_integration.operation_contract import (
 from src.app.wms_integration.ports.fulfillment_operations import (
     RequestRackSupplyRequest,
     RequestRackSupplyResult,
-    RequestRackTransportRequest,
-    RequestRackTransportResult,
 )
 from src.app.wms_integration.ports.operation_common import validate_json_payload
 from src.utils.timezone import timezone
@@ -39,7 +37,7 @@ if TYPE_CHECKING:
 
 
 class WmsFulfillmentDomainProjector:
-    """集中解释 E08/E09 kind 与 reducer event；不 commit，不创建第二状态机。"""
+    """集中解释 rack supply kind 与 reducer event；不 commit，不创建第二状态机。"""
 
     def __init__(
         self,
@@ -48,13 +46,11 @@ class WmsFulfillmentDomainProjector:
         resource_projection_service: ResourceProjectionService = resource_projection_service,
         station_role_resolver: Callable[..., Any] | None = None,
         workline_code_resolver: Callable[..., Any] | None = None,
-        now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._repository = repository
         self._resource_projection_service = resource_projection_service
         self._station_role_resolver = station_role_resolver or self._default_station_role
         self._workline_code_resolver = workline_code_resolver or self._default_workline_code
-        self._now_ms = now_ms or (lambda: int(timezone.now_utc().timestamp() * 1000))
 
     async def prepare_effect(
         self,
@@ -64,7 +60,7 @@ class WmsFulfillmentDomainProjector:
         request: BaseModel,
         execution: Any,
     ) -> None:
-        """锁定 E08/E09 的 PREPARING demand，并在 Outbox 前绑定 ACTIVE root。"""
+        """锁定 rack supply 的 PREPARING demand，并在 Outbox 前绑定 ACTIVE root。"""
 
         claim = self._require_claim(execution)
         demand = await self._repository.get_demand_for_update(db, claim.demand_id)
@@ -74,40 +70,6 @@ class WmsFulfillmentDomainProjector:
         intent_id = getattr(getattr(execution, "intent_log", None), "id", None)
         if not isinstance(intent_id, int) or intent_id <= 0:
             raise RuntimeError("WMS rack demand preparation requires claimed intent id")
-        if operation.domain_projection_kind is WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND:
-            transport = request
-            if not isinstance(transport, RequestRackTransportRequest):
-                raise TypeError("rack transport demand requires its typed request")
-            await self._repository.require_source_rack_placement_for_update(
-                db,
-                rack_code=transport.rack_id,
-                workline_id=demand.workline_id,
-                source_location_code=transport.source_location_code,
-            )
-            source_event_id = f"wms-demand-prepare:{demand.id}:{intent_id}"
-            occurred_at_ms = self._now_ms()
-            if await self._is_piece_sorting_station(
-                db,
-                workline_id=demand.workline_id,
-                station_code=transport.source_location_code,
-            ):
-                await self._repository.handoff_piece_sorting_to_transport(
-                    db,
-                    demand=demand,
-                    rack_code=transport.rack_id,
-                    intent_id=intent_id,
-                    source_event_id=source_event_id,
-                    occurred_at_ms=occurred_at_ms,
-                )
-            else:
-                await self._repository.acquire_transport_owner(
-                    db,
-                    demand=demand,
-                    rack_code=transport.rack_id,
-                    intent_id=intent_id,
-                    source_event_id=source_event_id,
-                    occurred_at_ms=occurred_at_ms,
-                )
         demand.root_intent_id = intent_id
         demand.lifecycle_state = "ACTIVE"
         await db.flush()
@@ -122,15 +84,12 @@ class WmsFulfillmentDomainProjector:
         reduction: Any,
         frozen_ack: Any = None,
     ) -> None:
-        """在唯一 reducer 后投影 E08/E09 domain facts。"""
+        """在唯一 reducer 后投影 rack supply domain facts。"""
 
         del frozen_ack
         if operation.domain_projection_kind is None:
             return
-        if operation.domain_projection_kind not in {
-            WmsDomainProjectionKind.RACK_SUPPLY_DEMAND,
-            WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND,
-        }:
+        if operation.domain_projection_kind is not WmsDomainProjectionKind.RACK_SUPPLY_DEMAND:
             raise RuntimeError("WMS fulfillment domain projection kind is unbound")
         if not bool(getattr(reduction, "state_changed", False)) or bool(getattr(reduction, "contradiction", False)):
             return
@@ -142,10 +101,7 @@ class WmsFulfillmentDomainProjector:
             EffectReducerEventType.STATUS_REJECTED,
         }:
             await self._project_reject(
-                db,
                 demand=demand,
-                operation=operation,
-                request_payload=request_payload,
                 event=event,
             )
             await db.flush()
@@ -156,16 +112,9 @@ class WmsFulfillmentDomainProjector:
         if getattr(result, "task_outcome", None) != "SUCCESS":
             return
         request = validate_json_payload(operation.request_model, request_payload)
-        if operation.domain_projection_kind is WmsDomainProjectionKind.RACK_SUPPLY_DEMAND:
-            if not isinstance(request, RequestRackSupplyRequest) or not isinstance(result, RequestRackSupplyResult):
-                raise TypeError("E08 fulfillment projection requires typed request/result")
-            await self._project_e08_success(db, demand=demand, request=request, result=result, event=event)
-        elif operation.domain_projection_kind is WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND:
-            if not isinstance(request, RequestRackTransportRequest) or not isinstance(
-                result, RequestRackTransportResult
-            ):
-                raise TypeError("E09 fulfillment projection requires typed request/result")
-            await self._project_e09_success(db, demand=demand, request=request, result=result, event=event)
+        if not isinstance(request, RequestRackSupplyRequest) or not isinstance(result, RequestRackSupplyResult):
+            raise TypeError("rack supply fulfillment projection requires typed request/result")
+        await self._project_e08_success(db, demand=demand, request=request, result=result, event=event)
         await db.flush()
 
     @staticmethod
@@ -197,54 +146,24 @@ class WmsFulfillmentDomainProjector:
             raise ValueError("WMS rack demand preparing root drifted")
         if demand.demand_generation != claim.demand_generation:
             raise ValueError("WMS rack demand generation drifted")
-        if demand.root_operation_identity != operation.identity:
-            raise ValueError("WMS rack demand root operation drifted")
         if operation.domain_projection_kind is WmsDomainProjectionKind.RACK_SUPPLY_DEMAND:
             if not isinstance(request, RequestRackSupplyRequest):
                 raise TypeError("rack supply demand requires its typed request")
             if (
-                demand.required_rack_code is not None
-                or request.station_code != demand.station_code
+                request.station_code != demand.station_code
                 or request.rack_type != demand.rack_type
                 or request.demand_generation != demand.demand_generation
             ):
                 raise ValueError("WMS rack supply root request drifted from demand generation")
             return
-        if operation.domain_projection_kind is WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND:
-            if not isinstance(request, RequestRackTransportRequest):
-                raise TypeError("rack transport demand requires its typed request")
-            if demand.required_rack_code != request.rack_id or demand.station_code != request.destination_station_code:
-                raise ValueError("WMS rack transport root request drifted from demand")
-            return
         raise RuntimeError("WMS fulfillment domain projection kind is unbound")
 
     async def _project_reject(
         self,
-        db: AsyncSession,
         *,
         demand: WmsRackDemand,
-        operation: WmsOperationDefinition,
-        request_payload: dict[str, Any],
         event: EffectReducerEvent,
     ) -> None:
-        if operation.domain_projection_kind is WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND:
-            request = validate_json_payload(RequestRackTransportRequest, request_payload)
-            if demand.handoff_from_owner_id is not None:
-                await self._repository.restore_piece_sorting_handoff_after_reject(
-                    db,
-                    demand=demand,
-                    rack_code=request.rack_id,
-                    source_event_id=event.source_event_id,
-                    occurred_at_ms=event.occurred_at_ms,
-                )
-            else:
-                await self._repository.release_transport_owner(
-                    db,
-                    demand=demand,
-                    rack_code=request.rack_id,
-                    source_event_id=event.source_event_id,
-                    occurred_at_ms=event.occurred_at_ms,
-                )
         self._close_demand(demand, occurred_at_ms=event.occurred_at_ms)
 
     async def _project_e08_success(
@@ -318,53 +237,6 @@ class WmsFulfillmentDomainProjector:
         status = getattr(getattr(projection, "status", None), "value", getattr(projection, "status", None))
         if status not in {None, "PROJECTED", "DUPLICATE"}:
             raise RuntimeError("WMS rack arrival projection did not converge")
-
-    async def _project_e09_success(
-        self,
-        db: AsyncSession,
-        *,
-        demand: WmsRackDemand,
-        request: RequestRackTransportRequest,
-        result: RequestRackTransportResult,
-        event: EffectReducerEvent,
-    ) -> None:
-        await self._project_arrival(
-            db,
-            demand=demand,
-            rack_code=result.rack_id,
-            position_code=result.final_location_code,
-            source_version=result.source_version,
-            source_task_id=result.provider_reference,
-            event=event,
-        )
-        if demand.handoff_from_owner_id is not None:
-            await self._repository.release_transport_owner(
-                db,
-                demand=demand,
-                rack_code=result.rack_id,
-                source_event_id=event.source_event_id,
-                occurred_at_ms=event.occurred_at_ms,
-            )
-        elif await self._is_piece_sorting_station(
-            db,
-            workline_id=demand.workline_id,
-            station_code=request.destination_station_code,
-        ):
-            await self._repository.transfer_transport_to_piece_sorting(
-                db,
-                demand=demand,
-                rack_code=result.rack_id,
-                source_event_id=event.source_event_id,
-            )
-        else:
-            await self._repository.release_transport_owner(
-                db,
-                demand=demand,
-                rack_code=result.rack_id,
-                source_event_id=event.source_event_id,
-                occurred_at_ms=event.occurred_at_ms,
-            )
-        self._close_demand(demand, occurred_at_ms=event.occurred_at_ms)
 
     async def _is_piece_sorting_station(
         self,

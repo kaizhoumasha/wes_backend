@@ -1,0 +1,232 @@
+"""WMS Transport evidence 唯一生产入口的 ASGI 合同。"""
+
+from __future__ import annotations
+
+import importlib
+import logging
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from src.app.wms_adapter.transport_event_handler import (
+    MAX_TRANSPORT_EVENT_BODY_BYTES,
+    TransportEventResponse,
+)
+from src.app.wms_integration.provider_profile import WmsProviderAuthScheme
+
+
+def _events_module() -> Any:
+    try:
+        return importlib.import_module("src.app.wms_adapter.v1.events")
+    except ModuleNotFoundError:
+        pytest.fail("WMS Transport events route 尚未实现", pytrace=False)
+
+
+def _none_policy(module: Any) -> Any:
+    return module.WmsInboundAuthPolicy(
+        profile_digest="1" * 64,
+        network_trust_mode="isolated_lan",
+        inbound_auth_scheme=WmsProviderAuthScheme.NONE,
+    )
+
+
+def _route_app(module: Any, handler: AsyncMock, policy: object | None) -> FastAPI:
+    app = FastAPI()
+    app.state.transport_runtime = SimpleNamespace(handler=SimpleNamespace(handle=handler))
+    app.state.wms_inbound_auth_policy = policy
+    app.include_router(module.router, prefix="/api/v1/wms")
+    return app
+
+
+@pytest.mark.asyncio
+async def test_oversized_stream_stops_at_the_boundary_before_auth_json_or_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _events_module()
+    policy = _none_policy(module)
+
+    def _auth_must_not_run(_policy: object) -> bool:
+        raise AssertionError("oversized body must be rejected before authentication")
+
+    monkeypatch.setattr(module, "_permits_transport_endpoint", _auth_must_not_run)
+    handler = AsyncMock()
+    app = _route_app(module, handler, policy)
+    messages = [
+        {"type": "http.request", "body": b"x" * MAX_TRANSPORT_EVENT_BODY_BYTES, "more_body": True},
+        {"type": "http.request", "body": b"y", "more_body": True},
+        {"type": "http.request", "body": b"trailing-must-not-be-read", "more_body": False},
+    ]
+    received = 0
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal received
+        received += 1
+        return messages.pop(0)
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/v1/wms/events",
+            "raw_path": b"/api/v1/wms/events",
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "root_path": "",
+        },
+        receive,
+        send,
+    )
+
+    start = next(message for message in sent if message["type"] == "http.response.start")
+    body = b"".join(message.get("body", b"") for message in sent if message["type"] == "http.response.body")
+    assert start["status"] == 413
+    assert body == b""
+    assert received == 2
+    handler.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("ack_code", "http_status"),
+    (("RECEIVED", 202), ("DUPLICATE", 200)),
+)
+def test_none_profile_forwards_exact_bytes_and_wakes_evidence_worker_after_persisted_ack(
+    monkeypatch: pytest.MonkeyPatch,
+    ack_code: str,
+    http_status: int,
+) -> None:
+    module = _events_module()
+    raw_body = b'{"operation_id":"01988ef1-4d2a-7000-8000-000000000001"}'
+    response_body = {
+        "operation_id": "01988ef1-4d2a-7000-8000-000000000001",
+        "code": ack_code,
+        "timestamp": 1786435200000,
+        "data": {"transport_task_id": "transport-1"},
+    }
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=http_status, body=response_body))
+    enqueue = MagicMock()
+    monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", enqueue)
+    app = _route_app(module, handler, _none_policy(module))
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == http_status
+    assert response.json() == response_body
+    handler.assert_awaited_once_with(raw_body)
+    enqueue.assert_called_once_with()
+
+
+def test_non_persisted_ack_does_not_wake_evidence_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _events_module()
+    handler = AsyncMock(
+        return_value=TransportEventResponse(
+            http_status=409,
+            body={
+                "operation_id": "01988ef1-4d2a-7000-8000-000000000001",
+                "code": "CONFLICT",
+                "timestamp": 1786435200000,
+                "data": {"reason_code": "EVIDENCE_IDENTITY_CONFLICT"},
+            },
+        )
+    )
+    enqueue = MagicMock()
+    monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", enqueue)
+    app = _route_app(module, handler, _none_policy(module))
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=b"{}")
+
+    assert response.status_code == 409
+    enqueue.assert_not_called()
+
+
+def test_enqueue_failure_keeps_persisted_ack_and_emits_stable_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    module = _events_module()
+    response_body = {
+        "operation_id": "01988ef1-4d2a-7000-8000-000000000001",
+        "code": "RECEIVED",
+        "timestamp": 1786435200000,
+        "data": {"transport_task_id": "transport-1"},
+    }
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=202, body=response_body))
+    monkeypatch.setattr(
+        module.task_queue_gateway,
+        "enqueue_transport_evidence",
+        MagicMock(side_effect=ConnectionError("broker unavailable")),
+    )
+    app = _route_app(module, handler, _none_policy(module))
+
+    with caplog.at_level(logging.WARNING, logger=module.__name__), TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=b"{}")
+
+    assert response.status_code == 202
+    assert response.json() == response_body
+    assert [getattr(record, "event", None) for record in caplog.records] == ["transport.evidence.enqueue_failed"]
+
+
+@pytest.mark.parametrize(
+    "policy",
+    (
+        None,
+        SimpleNamespace(
+            profile_digest="2" * 64,
+            network_trust_mode="public_network",
+            inbound_auth_scheme=WmsProviderAuthScheme.NONE,
+        ),
+        SimpleNamespace(
+            profile_digest="3" * 64,
+            network_trust_mode="isolated_lan",
+            inbound_auth_scheme=WmsProviderAuthScheme.HMAC_SHA256,
+        ),
+    ),
+)
+def test_missing_or_unsupported_frozen_policy_fails_closed_before_handler(policy: object | None) -> None:
+    module = _events_module()
+    handler = AsyncMock()
+    app = _route_app(module, handler, policy)
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=b"{}")
+
+    assert response.status_code == 401
+    assert response.content == b""
+    handler.assert_not_awaited()
+
+
+def test_handler_empty_error_body_remains_empty() -> None:
+    module = _events_module()
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=400, body={}))
+    app = _route_app(module, handler, _none_policy(module))
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=b"not-json")
+
+    assert response.status_code == 400
+    assert response.content == b""
+
+
+def test_application_registers_exactly_one_wms_transport_events_route() -> None:
+    from src import register
+
+    app = FastAPI()
+    register.register_routers(app)
+
+    matches = [route for route in app.routes if getattr(route, "path", None) == "/api/v1/wms/events"]
+    assert len(matches) == 1
+    assert matches[0].methods == {"POST"}

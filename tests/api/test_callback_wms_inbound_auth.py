@@ -18,8 +18,8 @@ from src.app.callback.models import (
     build_callback_external_accepted_response,
 )
 from src.app.callback.services.callback_ingress_service import CallbackEventIngressDecision
-from src.app.callback.services.wms_inbound_auth import WmsInboundAuthPolicy
 from src.app.callback.v1 import callback as callback_module
+from src.app.wms_adapter import WmsInboundAuthPolicy
 from src.app.wms_integration.provider_profile import WmsProviderAuthScheme
 from src.core.api_security import calculate_body_hmac_signature
 from src.core.conf import settings
@@ -32,6 +32,7 @@ from src.utils.permission_scanner import scan_routes_for_permissions
 from tests.contracts.wms_integration.provider_profile_support import (
     build_compiled_provider_profile,
     build_hmac_provider_profile_payload,
+    build_provider_profile_payload,
 )
 
 if TYPE_CHECKING:
@@ -224,10 +225,12 @@ def test_none_policy_is_derived_from_the_compiled_profile() -> None:
     assert policy.profile_digest == compiled_profile.profile_digest
 
 
-def test_wms_inbound_auth_policy_is_exported_by_callback_services() -> None:
-    from src.app.callback.services import WmsInboundAuthPolicy as ExportedWmsInboundAuthPolicy
+def test_wms_inbound_auth_policy_has_no_callback_services_compatibility_export() -> None:
+    from src.app import wms_adapter
+    from src.app.callback import services
 
-    assert ExportedWmsInboundAuthPolicy is WmsInboundAuthPolicy
+    assert getattr(wms_adapter, "WmsInboundAuthPolicy", None) is WmsInboundAuthPolicy
+    assert not hasattr(services, "WmsInboundAuthPolicy")
 
 
 def test_callback_routes_keep_api_permission_scanner_metadata() -> None:
@@ -280,6 +283,8 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_compiled_wms_policy
 
     compiled_profile = build_compiled_provider_profile()
     startup = SimpleNamespace(compiled_profile=compiled_profile, catalog=SimpleNamespace())
+    transport_runtime = SimpleNamespace(aclose=AsyncMock())
+    build_transport_runtime = AsyncMock(return_value=transport_runtime)
     app = FastAPI()
     with (
         patch(
@@ -292,8 +297,10 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_compiled_wms_policy
         ),
         patch("src.database.db.init_db", new=AsyncMock()),
         patch("src.database.db.close_db", new=AsyncMock()),
+        patch("src.database.db.AsyncSessionLocal", new=MagicMock()),
         patch("src.database.redis_client.init_redis", new=AsyncMock()),
         patch("src.database.redis_client.close_redis", new=AsyncMock()),
+        patch("src.app.transport.composition.build_transport_runtime", new=build_transport_runtime),
         patch(
             "src.app.wms_integration.query_runtime.build_wms_data_lane_query_runtime",
             return_value=SimpleNamespace(),
@@ -317,8 +324,45 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_compiled_wms_policy
             policy = app.state.wms_inbound_auth_policy
             assert policy.profile_digest == compiled_profile.profile_digest
             assert policy.inbound_auth_scheme is WmsProviderAuthScheme.NONE
+            assert app.state.transport_runtime is transport_runtime
 
     assert app.state.wms_inbound_auth_policy is None
+    assert app.state.transport_runtime is None
+    transport_runtime.aclose.assert_awaited_once()
+    build_transport_runtime.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_transport_profile_rejection_precedes_database_and_transport_resource_creation() -> None:
+    from src import register
+
+    payload = build_provider_profile_payload()
+    payload["inbound_auth"] = {
+        "scheme": "HMAC_SHA256",
+        "credential_reference": "secret://wms/inbound@v1",
+    }
+    startup = SimpleNamespace(
+        compiled_profile=build_compiled_provider_profile(payload),
+        catalog=SimpleNamespace(),
+    )
+    init_db = AsyncMock()
+    build_transport_runtime = AsyncMock()
+    app = FastAPI()
+
+    with (
+        patch(
+            "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
+            return_value=startup,
+        ),
+        patch("src.database.db.init_db", new=init_db),
+        patch("src.app.transport.composition.build_transport_runtime", new=build_transport_runtime),
+    ):
+        with pytest.raises(ValueError, match=r"inbound_auth\.scheme=NONE"):
+            async with register.register_init(app):
+                pytest.fail("unsupported Transport profile must not enter the application lifespan")
+
+    init_db.assert_not_awaited()
+    build_transport_runtime.assert_not_awaited()
 
 
 @pytest.mark.asyncio

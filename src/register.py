@@ -26,26 +26,42 @@ def register_logger() -> None:
 @asynccontextmanager
 async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     """注册初始化"""
+    from src.database import db as db_module
     from src.database.db import close_db, init_db
     from src.database.redis_client import close_redis, init_redis
 
+    transport_runtime = None
     wms_data_lane_runtime = None
     wms_effect_preparation_runtime = None
+    primary_error: BaseException | None = None
     try:
         logger.info("Initializing application resources...")
-        from src.app.callback.services.wms_inbound_auth import WmsInboundAuthPolicy
         from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
             northbound_operations_repository,
         )
         from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+        from src.app.transport.composition import validate_transport_runtime_profile
+        from src.app.wms_adapter import WmsInboundAuthPolicy
 
         # 先清空前一轮 lifecycle 可能遗留的策略；profile 编译失败时必须 fail closed。
         _app.state.wms_inbound_auth_policy = None
+        _app.state.transport_runtime = None
         startup = validate_wms_transport_configuration(settings_source=settings)
+        validate_transport_runtime_profile(startup)
         wms_inbound_auth_policy = WmsInboundAuthPolicy.from_compiled_profile(startup.compiled_profile)
         _app.state.wms_inbound_auth_policy = wms_inbound_auth_policy
         northbound_operations_repository.bind_provider_catalog(startup.catalog)
         await init_db()
+        if db_module.AsyncSessionLocal is None:
+            raise RuntimeError("Database session factory is unavailable after initialization")
+
+        from src.app.transport.composition import build_transport_runtime
+
+        transport_runtime = await build_transport_runtime(
+            startup=startup,
+            session_factory=db_module.AsyncSessionLocal,
+        )
+        _app.state.transport_runtime = transport_runtime
         await init_redis()
 
         from src.app.wms_integration.effect_preparation_runtime import (
@@ -82,29 +98,63 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
         logger.info(f"Swagger DOCS: http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
         yield
-    except Exception as e:
-        # exc_info=True 捕获完整堆栈跟踪
-        # 开发模式下 loguru 会自动显示详细变量值（diagnose=True）
-        logger.error(
-            f"FastAPI 初始化失败: {e}",
-        )
+    except BaseException as exc:
+        primary_error = exc
+        if isinstance(exc, Exception):
+            # exc_info=True 捕获完整堆栈跟踪
+            # 开发模式下 loguru 会自动显示详细变量值（diagnose=True）
+            logger.error(
+                f"FastAPI 初始化失败: {exc}",
+            )
         raise
     finally:
         from src.app.runtime.orchestration.observability import runtime_observability_registry
 
         _app.state.wms_inbound_auth_policy = None
-        await asyncio.to_thread(runtime_observability_registry.close)
+        _app.state.transport_runtime = None
+        cleanup_errors: list[BaseException] = []
+        try:
+            await asyncio.to_thread(runtime_observability_registry.close)
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+            logger.warning(f"FastAPI observability 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
         if wms_data_lane_runtime is not None:
             from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
 
-            await close_bound_wms_data_lane_query_runtime()
+            try:
+                await close_bound_wms_data_lane_query_runtime()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+                logger.warning(f"FastAPI WMS data lane 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
         if wms_effect_preparation_runtime is not None:
             from src.app.wms_integration.effect_preparation_runtime import close_wms_effect_preparation_runtime
 
-            await close_wms_effect_preparation_runtime(wms_effect_preparation_runtime)
-        await close_db()
-        await close_redis()
+            try:
+                await close_wms_effect_preparation_runtime(wms_effect_preparation_runtime)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+                logger.warning(
+                    f"FastAPI WMS effect preparation 清理失败（继续）: type={type(exc).__name__}, error={exc!r}"
+                )
+        if transport_runtime is not None:
+            try:
+                await transport_runtime.aclose()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+                logger.warning(f"FastAPI Transport 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
+        try:
+            await close_db()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+            logger.warning(f"FastAPI database 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
+        try:
+            await close_redis()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+            logger.warning(f"FastAPI Redis 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
         logger.info("FastAPI 应用关闭")
+        if primary_error is None and cleanup_errors:
+            raise cleanup_errors[0]
 
 
 def register_middleware(app: FastAPI) -> None:
@@ -157,6 +207,7 @@ def register_routers(app: FastAPI) -> None:
     from src.app.material import router_v1 as material_router
     from src.app.resource import router_v1 as resource_router
     from src.app.sys import router_v1 as sys_router
+    from src.app.wms_adapter import router_v1 as wms_adapter_router
     from src.app.workline import router_v1 as workline_router
 
     app.include_router(auth_router, prefix=settings.API_PATH)
@@ -168,6 +219,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(material_router, prefix=settings.API_PATH)
     app.include_router(api_auth_router, prefix=settings.API_PATH)
     app.include_router(callback_router, prefix=settings.API_PATH)
+    app.include_router(wms_adapter_router, prefix=settings.API_PATH)
 
 
 def register_exception(app: FastAPI) -> None:

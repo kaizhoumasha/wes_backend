@@ -181,10 +181,10 @@ async def test_hint_lock_advances_only_intent_schedule_without_transport_write(o
         (None, "NOT_FOUND"),
         (_hint_row(status=RuntimeIntentStatus.COMPLETED), "TERMINAL"),
         (_hint_row(status_check_after=None), "ALREADY_DUE"),
-        (_hint_row(capability_key="wms.fulfillment.request_rack_transport"), "CORRELATION_MISMATCH"),
+        (_hint_row(capability_key="wms.fulfillment.change_rack_face"), "CORRELATION_MISMATCH"),
         (_hint_row(capability_contract_version="v2"), "CORRELATION_MISMATCH"),
         (
-            _hint_row(outbox_operation_identity="wms.fulfillment.request_rack_transport@v1"),
+            _hint_row(outbox_operation_identity="wms.fulfillment.change_rack_face@v1"),
             "CORRELATION_MISMATCH",
         ),
         (_hint_row(idempotency_key="other-idem"), "CORRELATION_MISMATCH"),

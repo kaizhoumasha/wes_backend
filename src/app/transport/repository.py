@@ -82,15 +82,14 @@ class TransportRepository:
         db.add_all(bindings)
         await db.flush()
 
-    async def claim_pending_tasks(
+    async def claim_next_pending_task(
         self,
         db: AsyncSession,
         *,
-        limit: int,
         token: str,
         now: datetime,
         claim_until: datetime,
-    ) -> list[TransportTask]:
+    ) -> TransportTask | None:
         statement = (
             select(TransportTask)
             .where(
@@ -105,33 +104,14 @@ class TransportRepository:
                 TransportTask.next_submit_at.asc(),
                 TransportTask.id.asc(),
             )
-            .limit(limit)
+            .limit(1)
             .with_for_update(skip_locked=True)
         )
-        tasks = list(await db.scalars(statement))
-        for task in tasks:
-            task.submit_claim_token = token
-            task.submit_claim_until = claim_until
-        await db.flush()
-        return tasks
-
-    async def mark_send_started(
-        self,
-        db: AsyncSession,
-        *,
-        transport_task_id: str,
-        token: str,
-        now: datetime,
-    ) -> TransportTask | None:
-        task = await self.get_task(db, transport_task_id, for_update=True)
-        if (
-            task is None
-            or task.status != "PENDING"
-            or task.submit_claim_token != token
-            or task.send_started_at is not None
-            or task.submit_attempt_count >= MAX_SUBMIT_ATTEMPTS
-        ):
+        task = await db.scalar(statement)
+        if task is None:
             return None
+        task.submit_claim_token = token
+        task.submit_claim_until = claim_until
         task.submit_attempt_count += 1
         task.send_started_at = now
         task.updated_at = now
@@ -223,21 +203,27 @@ class TransportRepository:
         db.add(evidence)
         await db.flush()
 
-    async def get_evidence_by_event_id(
+    async def get_evidence_by_operation_id(
         self,
         db: AsyncSession,
         operation: str,
-        event_id: str,
+        operation_id: str,
         *,
         for_update: bool = False,
     ) -> TransportEvidence | None:
         statement = select(TransportEvidence).where(
             TransportEvidence.operation == operation,
-            TransportEvidence.event_id == event_id,
+            TransportEvidence.operation_id == operation_id,
         )
         if for_update:
             statement = statement.with_for_update()
         return await db.scalar(statement)
+
+    async def has_evidence(self, db: AsyncSession, transport_task_id: str) -> bool:
+        evidence_id = await db.scalar(
+            select(TransportEvidence.id).where(TransportEvidence.transport_task_id == transport_task_id).limit(1)
+        )
+        return evidence_id is not None
 
     async def get_evidence(
         self,

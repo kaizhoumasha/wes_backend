@@ -92,6 +92,7 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.app.runtime.orchestration import observability
+    from src.app.transport import composition as transport_composition
     from src.app.wms_integration import effect_preparation_runtime, query_runtime
     from src.database import db as database
     from src.database import redis_client
@@ -102,6 +103,7 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     build_preparation = MagicMock(return_value=preparation_runtime)
     bind_preparation = MagicMock()
     close_preparation = AsyncMock()
+    transport_runtime = SimpleNamespace(aclose=AsyncMock())
     monkeypatch.setattr(
         provider_catalog,
         "validate_wms_transport_configuration",
@@ -109,6 +111,12 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     )
     monkeypatch.setattr(database, "init_db", AsyncMock())
     monkeypatch.setattr(database, "close_db", AsyncMock())
+    monkeypatch.setattr(database, "AsyncSessionLocal", MagicMock())
+    monkeypatch.setattr(
+        transport_composition,
+        "build_transport_runtime",
+        AsyncMock(return_value=transport_runtime),
+    )
     monkeypatch.setattr(redis_client, "init_redis", AsyncMock())
     monkeypatch.setattr(redis_client, "close_redis", AsyncMock())
     monkeypatch.setattr(query_runtime, "build_wms_data_lane_query_runtime", MagicMock(return_value=data_runtime))
@@ -130,6 +138,7 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     )
     bind_preparation.assert_called_once_with(preparation_runtime)
     close_preparation.assert_awaited_once_with(preparation_runtime)
+    transport_runtime.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -137,12 +146,14 @@ async def test_fastapi_preparation_bind_failure_does_not_close_existing_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.app.runtime.orchestration import observability
+    from src.app.transport import composition as transport_composition
     from src.app.wms_integration import effect_preparation_runtime, query_runtime
     from src.database import db as database
     from src.database import redis_client
 
     candidate = object()
     unbind_candidate = AsyncMock()
+    transport_runtime = SimpleNamespace(aclose=AsyncMock())
     monkeypatch.setattr(
         provider_catalog,
         "validate_wms_transport_configuration",
@@ -155,6 +166,12 @@ async def test_fastapi_preparation_bind_failure_does_not_close_existing_owner(
     )
     monkeypatch.setattr(database, "init_db", AsyncMock())
     monkeypatch.setattr(database, "close_db", AsyncMock())
+    monkeypatch.setattr(database, "AsyncSessionLocal", MagicMock())
+    monkeypatch.setattr(
+        transport_composition,
+        "build_transport_runtime",
+        AsyncMock(return_value=transport_runtime),
+    )
     monkeypatch.setattr(redis_client, "init_redis", AsyncMock())
     monkeypatch.setattr(redis_client, "close_redis", AsyncMock())
     monkeypatch.setattr(query_runtime, "build_wms_data_lane_query_runtime", MagicMock(return_value=object()))
@@ -176,6 +193,66 @@ async def test_fastapi_preparation_bind_failure_does_not_close_existing_owner(
             pytest.fail("绑定失败不得进入 serving 状态")
 
     unbind_candidate.assert_not_awaited()
+    transport_runtime.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body_fails", [False, True])
+async def test_fastapi_cleanup_contains_each_failure_and_preserves_primary_error(
+    monkeypatch: pytest.MonkeyPatch,
+    body_fails: bool,
+) -> None:
+    from src.app.runtime.orchestration import observability
+    from src.app.transport import composition as transport_composition
+    from src.app.wms_integration import effect_preparation_runtime, query_runtime
+    from src.database import db as database
+    from src.database import redis_client
+
+    startup = SimpleNamespace(catalog=object(), compiled_profile=build_compiled_provider_profile())
+    transport_runtime = SimpleNamespace(aclose=AsyncMock())
+    close_data = AsyncMock(side_effect=RuntimeError("data cleanup failed"))
+    close_preparation = AsyncMock(side_effect=RuntimeError("preparation cleanup failed"))
+    close_db = AsyncMock(side_effect=RuntimeError("database cleanup failed"))
+    close_redis = AsyncMock(side_effect=RuntimeError("redis cleanup failed"))
+    close_observability = MagicMock(side_effect=RuntimeError("observability cleanup failed"))
+    monkeypatch.setattr(
+        provider_catalog,
+        "validate_wms_transport_configuration",
+        MagicMock(return_value=startup),
+    )
+    monkeypatch.setattr(database, "init_db", AsyncMock())
+    monkeypatch.setattr(database, "close_db", close_db)
+    monkeypatch.setattr(database, "AsyncSessionLocal", MagicMock())
+    monkeypatch.setattr(
+        transport_composition,
+        "build_transport_runtime",
+        AsyncMock(return_value=transport_runtime),
+    )
+    monkeypatch.setattr(redis_client, "init_redis", AsyncMock())
+    monkeypatch.setattr(redis_client, "close_redis", close_redis)
+    monkeypatch.setattr(query_runtime, "build_wms_data_lane_query_runtime", MagicMock(return_value=object()))
+    monkeypatch.setattr(query_runtime, "bind_wms_data_lane_query_runtime", MagicMock())
+    monkeypatch.setattr(query_runtime, "close_bound_wms_data_lane_query_runtime", close_data)
+    monkeypatch.setattr(
+        effect_preparation_runtime, "build_wms_effect_preparation_runtime", MagicMock(return_value=object())
+    )
+    monkeypatch.setattr(effect_preparation_runtime, "bind_wms_effect_preparation_runtime", MagicMock())
+    monkeypatch.setattr(effect_preparation_runtime, "close_wms_effect_preparation_runtime", close_preparation)
+    monkeypatch.setattr(observability, "configure_runtime_open_telemetry_backend", MagicMock(return_value=False))
+    monkeypatch.setattr(observability.runtime_observability_registry, "close", close_observability)
+
+    expected_error = "serving failed" if body_fails else "observability cleanup failed"
+    with pytest.raises(RuntimeError, match=expected_error):
+        async with register_init(SimpleNamespace(state=SimpleNamespace())):
+            if body_fails:
+                raise RuntimeError("serving failed")
+
+    close_observability.assert_called_once_with()
+    close_data.assert_awaited_once_with()
+    close_preparation.assert_awaited_once()
+    transport_runtime.aclose.assert_awaited_once_with()
+    close_db.assert_awaited_once_with()
+    close_redis.assert_awaited_once_with()
 
 
 def test_celery_startup_rejects_production_in_process_simulation_before_logger(

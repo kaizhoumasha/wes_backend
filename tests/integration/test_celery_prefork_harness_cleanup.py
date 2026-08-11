@@ -22,6 +22,7 @@ SERVICES = {
     "database": "test_prefork",
     "database_url": "postgresql+asyncpg://user:password@127.0.0.1:5432/test_prefork",
     "redis_url": "redis://127.0.0.1:6379/15",
+    "wms_provider_profile_file": "test-wms-provider.yaml",
 }
 
 

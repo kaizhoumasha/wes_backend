@@ -41,7 +41,7 @@ from tests.mock.wms_northbound_contract import build_typed_ack
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
 RACK_SUPPLY = "wms.fulfillment.request_rack_supply@v1"
-RACK_TRANSPORT = "wms.fulfillment.request_rack_transport@v1"
+CHANGE_RACK_FACE = "wms.fulfillment.change_rack_face@v1"
 
 
 def _binding(*, timeout_seconds: float = 2.0) -> FrozenWmsEffectStatusBinding:
@@ -213,14 +213,10 @@ def test_every_async_status_request_rejects_ack_idempotency_drift(operation) -> 
     (
         (
             "wms.fulfillment.request_rack_supply@v1",
-            "wms.fulfillment.request_rack_transport@v1",
+            "wms.fulfillment.change_rack_face@v1",
         ),
         (
-            "wms.fulfillment.request_rack_transport@v1",
-            "wms.fulfillment.request_rack_supply@v1",
-        ),
-        (
-            "wms.fulfillment.request_load_unit_transport@v1",
+            "wms.fulfillment.change_rack_face@v1",
             "wms.fulfillment.request_rack_supply@v1",
         ),
     ),
@@ -437,7 +433,7 @@ def test_snapshot_direct_construction_rejects_result_for_wrong_state_or_operatio
         )
     with pytest.raises(ValidationError, match="operation"):
         WmsEffectStatusSnapshot(
-            operation_identity=RACK_TRANSPORT,
+            operation_identity=CHANGE_RACK_FACE,
             idempotency_key="intent-idempotency-001",
             state=WmsEffectStatus.COMPLETED,
             result=completed.result,
@@ -548,10 +544,8 @@ def test_status_progression_rejects_terminal_to_non_terminal_regression() -> Non
     ("operation_identity", "field_name", "drifted_value"),
     [
         ("wms.fulfillment.request_rack_supply@v1", "final_station_code", "OTHER-STATION"),
-        ("wms.fulfillment.request_rack_transport@v1", "final_location_code", "OTHER-STATION"),
         ("wms.fulfillment.change_rack_face@v1", "authorized_face", "A"),
         ("wms.fulfillment.change_rack_face@v1", "final_face", "A"),
-        ("wms.fulfillment.request_load_unit_transport@v1", "final_location_code", "OTHER-LOCATION"),
     ],
 )
 def test_success_terminal_requires_request_aware_final_facts(

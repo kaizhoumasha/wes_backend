@@ -8,12 +8,32 @@ import pytest
 
 from src.app.transport.models import TransportEvidence, TransportTask
 from src.app.transport.repository import TransportRepository
+from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 pytestmark = pytest.mark.asyncio
+
+
+def _task(task_id: str, request_id: str, digest: str, now: object) -> TransportTask:
+    operation_id = new_uuid7(timestamp_ms=1_723_456_789_012)
+    payload = {"transport_task_id": task_id, "kind": "RACK_MOVE"}
+    return TransportTask(
+        transport_task_id=task_id,
+        client_request_id=request_id,
+        payload_digest=digest,
+        kind="RACK_MOVE",
+        caller_json={"workline_id": "line"},
+        request_json={"rack_id": "rack"},
+        submit_operation_id=operation_id,
+        submit_timestamp_ms=1_723_456_789_012,
+        submit_payload_json=payload,
+        submit_payload_digest=digest,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 async def test_two_workers_do_not_claim_same_pending_task(
@@ -23,40 +43,27 @@ async def test_two_workers_do_not_claim_same_pending_task(
     now = timezone.now_for_db()
     task_id = f"transport-{suffix}"
     async with integration_session_factory.begin() as setup_db:
-        setup_db.add(
-            TransportTask(
-                transport_task_id=task_id,
-                client_request_id=f"request-{suffix}",
-                payload_digest="a" * 64,
-                kind="RACK_MOVE",
-                caller_json={"workline_id": "line"},
-                request_json={"rack_id": "rack"},
-                created_at=now,
-                updated_at=now,
-            )
-        )
+        setup_db.add(_task(task_id, f"request-{suffix}", "a" * 64, now))
     repository = TransportRepository()
 
     try:
         async with integration_session_factory.begin() as first_db:
-            first = await repository.claim_pending_tasks(
+            first = await repository.claim_next_pending_task(
                 first_db,
-                limit=1,
                 token="worker-1",
                 now=now,
                 claim_until=now + timedelta(seconds=30),
             )
             async with integration_session_factory.begin() as second_db:
-                second = await repository.claim_pending_tasks(
+                second = await repository.claim_next_pending_task(
                     second_db,
-                    limit=1,
                     token="worker-2",
                     now=now,
                     claim_until=now + timedelta(seconds=30),
                 )
 
-        assert [task.transport_task_id for task in first] == [task_id]
-        assert second == []
+        assert first is not None and first.transport_task_id == task_id
+        assert second is None
     finally:
         async with integration_session_factory.begin() as cleanup_db:
             task = await repository.get_task(cleanup_db, task_id, for_update=True)
@@ -72,40 +79,23 @@ async def test_expired_pending_task_claim_is_recovered_by_a_new_worker(
     task_id = f"transport-expired-{suffix}"
     repository = TransportRepository()
     async with integration_session_factory.begin() as setup_db:
-        setup_db.add(
-            TransportTask(
-                transport_task_id=task_id,
-                client_request_id=f"request-expired-{suffix}",
-                payload_digest="b" * 64,
-                kind="RACK_MOVE",
-                caller_json={"workline_id": "line"},
-                request_json={"rack_id": "rack"},
-                created_at=now,
-                updated_at=now,
-            )
-        )
+        task = _task(task_id, f"request-expired-{suffix}", "b" * 64, now)
+        task.submit_claim_token = "expired-worker"
+        task.submit_claim_until = now - timedelta(seconds=1)
+        setup_db.add(task)
 
     try:
-        async with integration_session_factory.begin() as first_db:
-            first = await repository.claim_pending_tasks(
-                first_db,
-                limit=1,
-                token="expired-worker",
+        async with integration_session_factory.begin() as second_db:
+            second = await repository.claim_next_pending_task(
+                second_db,
+                token="replacement-worker",
                 now=now,
                 claim_until=now + timedelta(seconds=30),
             )
-        async with integration_session_factory.begin() as second_db:
-            second = await repository.claim_pending_tasks(
-                second_db,
-                limit=1,
-                token="replacement-worker",
-                now=now + timedelta(seconds=31),
-                claim_until=now + timedelta(seconds=61),
-            )
 
-        assert [task.transport_task_id for task in first] == [task_id]
-        assert [task.transport_task_id for task in second] == [task_id]
-        assert second[0].submit_claim_token == "replacement-worker"
+        assert second is not None and second.transport_task_id == task_id
+        assert second.submit_claim_token == "replacement-worker"
+        assert second.send_started_at == now
     finally:
         async with integration_session_factory.begin() as cleanup_db:
             task = await repository.get_task(cleanup_db, task_id, for_update=True)
@@ -119,14 +109,17 @@ async def test_two_evidence_workers_are_fenced_and_expired_claim_is_recovered(
     suffix = uuid.uuid4().hex
     now = timezone.now_for_db()
     repository = TransportRepository()
+    operation_id = new_uuid7()
     async with integration_session_factory.begin() as setup_db:
         setup_db.add(
             TransportEvidence(
-                event_id=f"event-{suffix}",
+                operation_id=operation_id,
                 transport_task_id=f"missing-{suffix}",
                 operation="transport.task.resulted@v1",
                 payload_digest="c" * 64,
-                payload_json={"event_id": f"event-{suffix}"},
+                payload_json={"transport_task_id": f"missing-{suffix}"},
+                ack_timestamp_ms=1_723_456_789_012,
+                ack_data_json={"transport_task_id": f"missing-{suffix}"},
                 received_at=now,
             )
         )
@@ -157,16 +150,16 @@ async def test_two_evidence_workers_are_fenced_and_expired_claim_is_recovered(
                 claim_until=now + timedelta(seconds=61),
             )
 
-        assert [item.event_id for item in first] == [f"event-{suffix}"]
+        assert [item.operation_id for item in first] == [operation_id]
         assert concurrent == []
-        assert [item.event_id for item in recovered] == [f"event-{suffix}"]
+        assert [item.operation_id for item in recovered] == [operation_id]
         assert recovered[0].claim_token == "evidence-worker-3"
     finally:
         async with integration_session_factory.begin() as cleanup_db:
-            evidence = await repository.get_evidence_by_event_id(
+            evidence = await repository.get_evidence_by_operation_id(
                 cleanup_db,
                 "transport.task.resulted@v1",
-                f"event-{suffix}",
+                operation_id,
                 for_update=True,
             )
             if evidence is not None:

@@ -6,13 +6,14 @@ import ast
 import asyncio
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TASK_MODULES = ("core", "handling", "runtime_inbox", "sys", "workline")
+TASK_MODULES = ("core", "handling", "runtime_inbox", "sys", "transport", "workline")
 ASYNC_TASKS = {
     "core": ("health_check", "clear_cache", "send_notification"),
     "runtime_inbox": ("process_runtime_inbox_batch",),
@@ -20,6 +21,11 @@ ASYNC_TASKS = {
         "dispatch_system_outbox_batch",
         "dispatch_wms_data_outbox_batch",
         "dispatch_wms_fulfillment_outbox_batch",
+    ),
+    "transport": (
+        "submit_transport_tasks_batch",
+        "process_transport_evidence_batch",
+        "reconcile_transport_tasks_batch",
     ),
     "workline": (
         "scan_timeouts_batch",
@@ -252,3 +258,131 @@ def test_wms_effect_status_scanner_has_a_budgeted_soft_and_hard_time_limit() -> 
 
     assert task.soft_time_limit == settings.WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS
     assert task.time_limit == settings.WES_EFFECT_STATUS_TASK_HARD_TIME_LIMIT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("task_name", "service_method"),
+    (
+        ("submit_transport_tasks_batch", "submit_pending_tasks"),
+        ("process_transport_evidence_batch", "process_pending_evidence"),
+        ("reconcile_transport_tasks_batch", "reconcile_overdue_tasks"),
+    ),
+)
+def test_transport_tasks_use_the_current_child_runtime_service_with_fixed_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    task_name: str,
+    service_method: str,
+) -> None:
+    module = importlib.import_module("src.celery_app.tasks.transport")
+    service = SimpleNamespace(
+        submit_pending_tasks=AsyncMock(return_value=11),
+        process_pending_evidence=AsyncMock(return_value=12),
+        reconcile_overdue_tasks=AsyncMock(return_value=13),
+    )
+    runtime = SimpleNamespace(service=service)
+    monkeypatch.setattr(module, "celery_async_runtime", SimpleNamespace(transport_runtime=runtime))
+    monkeypatch.setattr(module, "run_async", lambda factory: asyncio.run(factory()))
+
+    result = getattr(module, task_name).run(limit=100)
+
+    assert result in {11, 12, 13}
+    getattr(service, service_method).assert_awaited_once_with(100)
+    for other_method in {
+        "submit_pending_tasks",
+        "process_pending_evidence",
+        "reconcile_overdue_tasks",
+    } - {service_method}:
+        getattr(service, other_method).assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("task_name", "service_method", "invalid_limit"),
+    [
+        (task_name, service_method, invalid_limit)
+        for task_name, service_method in (
+            ("submit_transport_tasks_batch", "submit_pending_tasks"),
+            ("process_transport_evidence_batch", "process_pending_evidence"),
+            ("reconcile_transport_tasks_batch", "reconcile_overdue_tasks"),
+        )
+        for invalid_limit in (99, 101)
+    ],
+)
+def test_transport_tasks_reject_non_fixed_batch_before_calling_service(
+    monkeypatch: pytest.MonkeyPatch,
+    task_name: str,
+    service_method: str,
+    invalid_limit: int,
+) -> None:
+    module = importlib.import_module("src.celery_app.tasks.transport")
+    service = SimpleNamespace(
+        submit_pending_tasks=AsyncMock(return_value=11),
+        process_pending_evidence=AsyncMock(return_value=12),
+        reconcile_overdue_tasks=AsyncMock(return_value=13),
+    )
+    runtime = SimpleNamespace(service=service)
+    monkeypatch.setattr(module, "celery_async_runtime", SimpleNamespace(transport_runtime=runtime))
+    monkeypatch.setattr(module, "run_async", lambda factory: asyncio.run(factory()))
+
+    with pytest.raises(ValueError, match="Transport batch limit must be 100"):
+        getattr(module, task_name).run(limit=invalid_limit)
+
+    getattr(service, service_method).assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("task_name", "invalid_limit"),
+    [
+        (task_name, invalid_limit)
+        for task_name in (
+            "src.celery_app.tasks.transport.submit_transport_tasks_batch",
+            "src.celery_app.tasks.transport.process_transport_evidence_batch",
+            "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
+        )
+        for invalid_limit in (99, 101)
+    ],
+)
+def test_registered_transport_celery_tasks_reject_non_fixed_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    task_name: str,
+    invalid_limit: int,
+) -> None:
+    from src.celery_app.app import celery_app
+    from src.celery_app.tasks import transport
+
+    service = SimpleNamespace(
+        submit_pending_tasks=AsyncMock(return_value=11),
+        process_pending_evidence=AsyncMock(return_value=12),
+        reconcile_overdue_tasks=AsyncMock(return_value=13),
+    )
+    monkeypatch.setattr(
+        transport,
+        "celery_async_runtime",
+        SimpleNamespace(transport_runtime=SimpleNamespace(service=service)),
+    )
+    monkeypatch.setattr(transport, "run_async", lambda factory: asyncio.run(factory()))
+    celery_app.loader.import_default_modules()
+
+    with pytest.raises(ValueError, match="Transport batch limit must be 100"):
+        result = celery_app.tasks[task_name].apply(kwargs={"limit": invalid_limit})
+        result.get(propagate=True)
+    for method in (
+        service.submit_pending_tasks,
+        service.process_pending_evidence,
+        service.reconcile_overdue_tasks,
+    ):
+        method.assert_not_awaited()
+
+
+def test_transport_tasks_are_registered_and_statically_routed_to_the_single_fulfillment_queue() -> None:
+    from src.celery_app.app import celery_app
+    from src.celery_app.config import task_routes
+
+    task_names = {
+        "src.celery_app.tasks.transport.submit_transport_tasks_batch",
+        "src.celery_app.tasks.transport.process_transport_evidence_batch",
+        "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
+    }
+    celery_app.loader.import_default_modules()
+
+    assert task_names <= set(celery_app.tasks)
+    assert {task_routes[name]["queue"] for name in task_names} == {"wms-fulfillment"}

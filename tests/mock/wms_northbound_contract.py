@@ -555,7 +555,7 @@ def build_typed_result(
     completed_at: str,
     provider_reference: str | None = None,
 ) -> dict[str, Any]:
-    """从 31 项 fixture 清单构造与请求关联的 typed terminal result。"""
+    """从 29 项 fixture 清单构造与请求关联的 typed terminal result。"""
 
     try:
         result = deepcopy(RESULT_FIXTURES[operation_identity])

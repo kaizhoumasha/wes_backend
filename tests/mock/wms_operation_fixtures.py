@@ -1,4 +1,4 @@
-"""31 项 WMS operation 的最小 typed fixture。
+"""29 项 WMS operation 的最小 typed fixture。
 
 本文件是 Mock WMS 的独立测试资产；覆盖测试会按静态 registry fail closed 校验键集合与模型。
 """
@@ -81,24 +81,11 @@ REQUEST_FIXTURES = {
         "rack_type": "FIVE_LAYER",
         "demand_generation": 1,
     },
-    "wms.fulfillment.request_rack_transport@v1": {
-        "dispatch_key": "dispatch-rack-transport-001",
-        "rack_id": "RACK-001",
-        "source_location_code": "LOC-A",
-        "destination_station_code": "STATION-A",
-    },
     "wms.fulfillment.change_rack_face@v1": {
         "dispatch_key": "dispatch-face-001",
         "rack_id": "RACK-001",
         "station_code": "STATION-A",
         "requested_face": "B",
-    },
-    "wms.fulfillment.request_load_unit_transport@v1": {
-        "dispatch_key": "dispatch-load-unit-001",
-        "load_unit_id": "PALLET-001",
-        "load_unit_type": "PALLET",
-        "source_location_code": "LOC-A",
-        "destination_location_code": "LOC-B",
     },
     "wms.fulfillment.publish_manual_task@v1": {
         "dispatch_key": "dispatch-manual-001",
@@ -110,9 +97,9 @@ REQUEST_FIXTURES = {
     },
     "wms.fulfillment.cancel_request@v1": {
         "dispatch_key": "dispatch-cancel-001",
-        "target_operation_identity": "wms.fulfillment.request_rack_transport@v1",
-        "target_idempotency_key": "idem-rack-001",
-        "target_provider_reference": "provider-rack-001",
+        "target_operation_identity": "wms.fulfillment.request_rack_supply@v1",
+        "target_idempotency_key": "idem-supply-001",
+        "target_provider_reference": "provider-supply-001",
         "cancellation_reason": "FLOW_CANCELLED",
     },
 }
@@ -262,16 +249,6 @@ RESULT_FIXTURES = {
         "arrival_relation": "AT_STATION",
         "task_outcome": "SUCCESS",
     },
-    "wms.fulfillment.request_rack_transport@v1": {
-        "dispatch_key": "dispatch-rack-transport-001",
-        "provider_reference": "provider-rack-001",
-        "source_version": "2",
-        "rack_id": "RACK-001",
-        "source_location_code": "LOC-A",
-        "destination_station_code": "STATION-A",
-        "final_location_code": "STATION-A",
-        "task_outcome": "SUCCESS",
-    },
     "wms.fulfillment.change_rack_face@v1": {
         "dispatch_key": "dispatch-face-001",
         "provider_reference": "provider-face-001",
@@ -279,15 +256,6 @@ RESULT_FIXTURES = {
         "rack_id": "RACK-001",
         "authorized_face": "B",
         "final_face": "B",
-        "task_outcome": "SUCCESS",
-    },
-    "wms.fulfillment.request_load_unit_transport@v1": {
-        "dispatch_key": "dispatch-load-unit-001",
-        "provider_reference": "provider-load-unit-001",
-        "source_version": "2",
-        "load_unit_id": "PALLET-001",
-        "load_unit_type": "PALLET",
-        "final_location_code": "LOC-B",
         "task_outcome": "SUCCESS",
     },
     "wms.fulfillment.publish_manual_task@v1": {
@@ -302,9 +270,9 @@ RESULT_FIXTURES = {
         "dispatch_key": "dispatch-cancel-001",
         "provider_reference": "provider-cancel-001",
         "source_version": "2",
-        "target_operation_identity": "wms.fulfillment.request_rack_transport@v1",
-        "target_idempotency_key": "idem-rack-001",
-        "target_provider_reference": "provider-rack-001",
+        "target_operation_identity": "wms.fulfillment.request_rack_supply@v1",
+        "target_idempotency_key": "idem-supply-001",
+        "target_provider_reference": "provider-supply-001",
         "disposition": "CANCELLED",
     },
 }

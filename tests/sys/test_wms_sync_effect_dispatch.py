@@ -49,7 +49,7 @@ SYNC_IDENTITY_MUTATIONS = (
     (
         "wms.fulfillment.cancel_request@v1",
         "target_operation_identity",
-        "wms.fulfillment.request_rack_supply@v1",
+        "wms.fulfillment.change_rack_face@v1",
     ),
     ("wms.fulfillment.cancel_request@v1", "target_idempotency_key", "idem-drift"),
     ("wms.fulfillment.cancel_request@v1", "target_provider_reference", "provider-drift"),

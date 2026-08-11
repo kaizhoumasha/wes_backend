@@ -204,10 +204,18 @@ heavy_tests = [
     "tests/integration/test_celery_prefork_harness_cleanup.py",
 ]
 
-# Celery 静态任务与 Beat 装配由真实 PostgreSQL worker smoke 承接。
+# Celery WorkLine 静态任务由真实 PostgreSQL worker smoke 承接。
 [[mapping]]
-source_glob = "src/celery_app/{config.py,tasks/workline.py}"
+source_glob = "src/celery_app/tasks/workline.py"
 heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+# Celery Beat schedule、route 与 expires 同时由 worker smoke 和部署 attestation 承接。
+[[mapping]]
+source_glob = "src/celery_app/config.py"
+heavy_tests = [
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_wms_deployment_attestation.py",
+]
 
 # WMS QUERY runtime 与共享执行 Port 由真实 prefork worker 启动与任务执行闭环承接。
 [[mapping]]
@@ -573,10 +581,10 @@ heavy_tests = ["tests/resilience/test_wms_circuit_breaker.py"]
 source_glob = "src/core/outbound_http/**"
 heavy_tests = []
 
-# Phase 3 仅交付以下三个未接入具体 WMS 业务的薄客户端文件；未来新增生产文件继续 fail closed。
+# WMS Adapter 公共导出已承载唯一 Transport router，由真实生产路由 E2E 承接。
 [[mapping]]
 source_glob = "src/app/wms_adapter/__init__.py"
-heavy_tests = []
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/client.py"
@@ -586,9 +594,14 @@ heavy_tests = []
 source_glob = "src/app/wms_adapter/factory.py"
 heavy_tests = []
 
-# Phase 4 Transport 聚合的数据库约束、领取和暗装配由隔离 PostgreSQL 验收。
+# Transport 公共入口和唯一生产组合根由真实 broker/worker/HTTP/PostgreSQL E2E 验收。
 [[mapping]]
-source_glob = "src/app/transport/**"
+source_glob = "src/app/transport/{__init__.py,composition.py}"
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+
+# Transport 领域合同、持久化约束、领取和收敛由隔离 PostgreSQL 验收。
+[[mapping]]
+source_glob = "src/app/transport/{contracts.py,models.py,repository.py,service.py}"
 heavy_tests = [
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
@@ -596,9 +609,25 @@ heavy_tests = [
     "tests/integration/transport/test_dark_transport_loop.py",
 ]
 
+# submit snapshot 同时经过持久化闭环与真实 worker/HTTP 生产接线。
 [[mapping]]
-source_glob = "src/app/wms_adapter/transport_*.py"
+source_glob = "src/app/transport/submit_snapshot.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+]
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/transport_adapter.py"
 heavy_tests = ["tests/integration/transport/test_dark_transport_loop.py"]
+
+# 入站 handler/wire 必须由真实 route E2E 承接，同时保留暗闭环覆盖。
+[[mapping]]
+source_glob = "src/app/wms_adapter/{transport_event_handler.py,transport_wire.py}"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+]
 
 [[mapping]]
 source_glob = "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py"
@@ -771,6 +800,82 @@ reviewed_content_sha256 = "8094c5f2364db50b1ccc16b27129c9e08a849d8d4b36f1b32cf8d
 [[mapping]]
 source_glob = "scripts/data/reset_runtime_data.py"
 heavy_tests = ["tests/integration/test_reset_runtime_data_postgresql.py"]
+
+# Phase 6 直接改写原 WMS 履约 revision；最终 rack supply schema 由独立 PostgreSQL owner 验证。
+[[mapping]]
+source_glob = "migrations/versions/20260730_0340_f9ffbef8992a_新增_wms_履约领域关系.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"]
+
+# WMS 入站认证 owner 移出 callback 后，保留 callback 的真实 payload 边界验收。
+[[mapping]]
+source_glob = "src/app/callback/services/{__init__.py,wms_inbound_auth.py}"
+heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
+
+# E09 schema 退出由空库最终 schema 验收；不以 NONE 掩盖模型和约束变更。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/{material_flow_owner.py,wms_rack_demand.py}"
+heavy_tests = ["tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"]
+
+# 保留的 rack supply Repository/Service 由其唯一 PostgreSQL 行为/schema owner 承接。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/{repositories/wms_fulfillment_domain_repository.py,services/rack_demand_service.py}"
+heavy_tests = ["tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"]
+
+# 两项旧 capability 删除同时影响 PostgreSQL WMS EFFECT 与北向 operation 闭集。
+[[mapping]]
+source_glob = "src/app/runtime/system_capabilities/wms/fulfillment/{request_load_unit_transport/definition.py,request_rack_transport/definition.py}"
+heavy_tests = [
+    "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
+    "tests/mock/test_wms_northbound_contract.py",
+]
+
+# 共享认证 owner 同时由 callback payload 边界和 Transport 生产接线 E2E 承接。
+[[mapping]]
+source_glob = "src/app/wms_adapter/inbound_auth.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/test_callback_external_payload_limit.py",
+]
+
+# 唯一 Transport evidence route 由真实 broker、HTTP、route 与 PostgreSQL E2E 承接。
+[[mapping]]
+source_glob = "src/app/wms_adapter/v1/**"
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+
+# Celery task 注册与三个薄 worker 由共享 fulfillment 队列竞争和生产接线 E2E 承接。
+[[mapping]]
+source_glob = "src/celery_app/{app.py,tasks/transport.py}"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/test_transport_fulfillment_queue.py",
+]
+
+# evidence 即时唤醒必须真实经过生产接线 E2E。
+[[mapping]]
+source_glob = "src/core/task_queue_gateway.py"
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+
+# UUIDv7 同时参与 submit 快照和 evidence 身份，由两个 PostgreSQL Transport 闭环承接。
+[[mapping]]
+source_glob = "src/core/uuid7.py"
+heavy_tests = [
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+]
+
+# API 唯一生产装配入口由不依赖业务插件的 Transport 生产接线 E2E 承接。
+[[mapping]]
+source_glob = "src/register.py"
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+
+# Transport broker harness 同时服务 teardown、共享队列竞争和生产接线 E2E。
+[[mapping]]
+source_glob = "tests/support/transport_broker.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/test_transport_broker_harness_cleanup.py",
+    "tests/integration/test_transport_fulfillment_queue.py",
+]
 
 # 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。

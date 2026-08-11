@@ -35,7 +35,15 @@ register_required_sqlmodel_metadata()
 
 
 class FakeProvider:
-    async def submit(self, request: object, *, transport_task_id: str) -> TransportSubmitResult:
+    async def submit(
+        self,
+        *,
+        operation_id: str,
+        timestamp: int,
+        payload: dict[str, object],
+        payload_digest: str,
+    ) -> TransportSubmitResult:
+        transport_task_id = str(payload["transport_task_id"])
         return TransportSubmitResult(TransportSubmitCode.RECEIVED, transport_task_id)
 
 
@@ -59,12 +67,18 @@ async def outcome_service(db_engine: object) -> TransportService:
             TransportTask,
         ):
             await db.execute(delete(model))
-    return TransportService(sessions, TransportRepository(), FakeProvider(), FakePublisher())
+    return TransportService(sessions, TransportRepository(), FakeProvider())
+
+
+@pytest.fixture
+def outcome_publisher() -> FakePublisher:
+    return FakePublisher()
 
 
 @pytest.mark.asyncio
 async def test_record_evidence_only_persists_then_batch_applies_and_publishes(
     outcome_service: TransportService,
+    outcome_publisher: FakePublisher,
 ) -> None:
     handle = await outcome_service.move_bins(
         "request-1",
@@ -72,7 +86,6 @@ async def test_record_evidence_only_persists_then_batch_applies_and_publishes(
         (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),),
     )
     payload = {
-        "event_id": "event-1",
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
         "results": [
@@ -84,19 +97,17 @@ async def test_record_evidence_only_persists_then_batch_applies_and_publishes(
         ],
     }
 
-    assert (
-        await outcome_service.record_evidence(
-            event_id="event-1",
-            transport_task_id=handle.transport_task_id,
-            operation=RESULT_OPERATION,
-            payload=payload,
-        )
-        == "RECEIVED"
+    ack = await outcome_service.record_evidence(
+        operation_id="event-1",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        payload=payload,
     )
-    assert outcome_service._outcome_publisher.outcomes == []
+    assert ack["code"] == "RECEIVED"
+    assert outcome_publisher.outcomes == []
     assert await outcome_service.process_pending_evidence(10) == 1
-    assert await outcome_service.publish_pending_outcomes(10) == 1
-    assert outcome_service._outcome_publisher.outcomes[0].status.value == "SUCCEEDED"
+    assert await outcome_service.publish_pending_outcomes(10, outcome_publisher) == 1
+    assert outcome_publisher.outcomes[0].status.value == "SUCCEEDED"
 
 
 @pytest.mark.asyncio
@@ -110,7 +121,6 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
         (BinMove("bin-2", RackBinSlot("rack-2", "1"), HandoffPosition("ROLLER_IN")),),
     )
     payload = {
-        "event_id": "event-2",
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
         "results": [
@@ -124,35 +134,35 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
     }
 
     first = await outcome_service.record_evidence(
-        event_id="event-2", transport_task_id=handle.transport_task_id, operation=RESULT_OPERATION, payload=payload
+        operation_id="event-2", transport_task_id=handle.transport_task_id, operation=RESULT_OPERATION, payload=payload
     )
     duplicate = await outcome_service.record_evidence(
-        event_id="event-2", transport_task_id=handle.transport_task_id, operation=RESULT_OPERATION, payload=payload
+        operation_id="event-2", transport_task_id=handle.transport_task_id, operation=RESULT_OPERATION, payload=payload
     )
     changed = await outcome_service.record_evidence(
-        event_id="event-2",
+        operation_id="event-2",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload={**payload, "kind": "BIN_EXCHANGE"},
     )
 
-    assert (first, duplicate, changed) == ("RECEIVED", "DUPLICATE", "CONFLICT")
+    assert (first["code"], duplicate["code"], changed["code"]) == ("RECEIVED", "DUPLICATE", "CONFLICT")
     assert await outcome_service.process_pending_evidence(1) == 1
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
-        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == "event-2"))
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == "event-2"))
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
 
     assert evidence is not None
     assert evidence.status == "APPLIED"
-    assert evidence.conflict_code == "EVENT_PAYLOAD_CONFLICT"
+    assert evidence.conflict_code == "OPERATION_PAYLOAD_CONFLICT"
     assert task is not None
     assert (task.status, task.reason_code, task.outcome_version) == ("RECONCILING", "TRANSPORT_POSITION_UNKNOWN", 1)
 
 
 @pytest.mark.asyncio
-async def test_same_event_id_is_independent_between_callback_operations(
+async def test_same_operation_id_is_independent_between_callback_operations(
     outcome_service: TransportService,
     db_engine: object,
 ) -> None:
@@ -161,25 +171,23 @@ async def test_same_event_id_is_independent_between_callback_operations(
         TransportCaller("SORTER"),
         (BinMove("bin-operation-scoped", RackBinSlot("rack-operation-scoped", "1"), HandoffPosition("OUT")),),
     )
-    event_id = "shared-event-id"
+    operation_id = "shared-operation-id"
 
     position_code = await outcome_service.record_evidence(
-        event_id=event_id,
+        operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=POSITION_OPERATION,
         payload={
-            "event_id": event_id,
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-operation-scoped",
             "milestone": "SOURCE_PICKED",
         },
     )
     result_code = await outcome_service.record_evidence(
-        event_id=event_id,
+        operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload={
-            "event_id": event_id,
             "transport_task_id": handle.transport_task_id,
             "kind": "BIN_MOVE",
             "results": [
@@ -194,26 +202,28 @@ async def test_same_event_id_is_independent_between_callback_operations(
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
-        evidence = list(await db.scalars(select(TransportEvidence).where(TransportEvidence.event_id == event_id)))
+        evidence = list(
+            await db.scalars(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+        )
 
-    assert (position_code, result_code) == ("RECEIVED", "RECEIVED")
+    assert (position_code["code"], result_code["code"]) == ("RECEIVED", "RECEIVED")
     assert {item.operation for item in evidence} == {POSITION_OPERATION, RESULT_OPERATION}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("event_id", "transport_task_id"),
+    ("operation_id", "transport_task_id"),
     [("e" * 121, "transport-1"), ("event-1", "t" * 81)],
-    ids=["event-id", "transport-task-id"],
+    ids=["operation-id", "transport-task-id"],
 )
 async def test_record_evidence_rejects_identifiers_larger_than_persistence_columns(
     outcome_service: TransportService,
-    event_id: str,
+    operation_id: str,
     transport_task_id: str,
 ) -> None:
     with pytest.raises(TransportContractError):
         await outcome_service.record_evidence(
-            event_id=event_id,
+            operation_id=operation_id,
             transport_task_id=transport_task_id,
             operation=RESULT_OPERATION,
             payload={},
@@ -234,8 +244,8 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
     handle = await outcome_service.move_bins("request-atomic", TransportCaller("SORTER"), moves)
     if accepted_before_conflict:
         assert await outcome_service.submit_pending_tasks(1) == 1
+    operation_id = "operation-atomic-conflict"
     payload = {
-        "event_id": "event-atomic-conflict",
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
         "results": [
@@ -253,7 +263,7 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
     }
 
     await outcome_service.record_evidence(
-        event_id=payload["event_id"],
+        operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload=payload,
@@ -276,9 +286,7 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
                 )
             )
         )
-        evidence = await db.scalar(
-            select(TransportEvidence).where(TransportEvidence.event_id == "event-atomic-conflict")
-        )
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
 
     assert evidence is not None
@@ -357,13 +365,12 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
             BinMove("bin-member-2", RackBinSlot("rack-members", "2"), HandoffPosition("ROLLER_OUT")),
         ),
     )
-    event_id = f"event-members-{len(results)}-{results[-1]['object_id']}"
+    operation_id = f"operation-members-{len(results)}-{results[-1]['object_id']}"
     await outcome_service.record_evidence(
-        event_id=event_id,
+        operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload={
-            "event_id": event_id,
             "transport_task_id": handle.transport_task_id,
             "kind": "BIN_MOVE",
             "results": results,
@@ -374,7 +381,7 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
-        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == event_id))
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
         members = list(
             await db.scalars(
                 select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
@@ -438,13 +445,12 @@ async def test_result_position_type_must_match_the_frozen_member_type(
             rack_request.target,
         )
         kind = "RACK_MOVE"
-    event_id = f"event-position-type-{kind}"
+    operation_id = f"operation-position-type-{kind}"
     await outcome_service.record_evidence(
-        event_id=event_id,
+        operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload={
-            "event_id": event_id,
             "transport_task_id": handle.transport_task_id,
             "kind": kind,
             "results": [result],
@@ -455,7 +461,7 @@ async def test_result_position_type_must_match_the_frozen_member_type(
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
-        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == event_id))
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
         member = await db.scalar(
             select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
         )
@@ -477,7 +483,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
                 position_unknown=False,
                 arrival_face="A",
-                source_event_id="initial-face",
+                source_operation_id="initial-face",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -488,8 +494,8 @@ async def test_rotate_success_requires_the_frozen_target_face(
         RackPosition("ROTATE_POINT"),
         RackFace.B,
     )
+    operation_id = "operation-wrong-face"
     payload = {
-        "event_id": "event-wrong-face",
         "transport_task_id": handle.transport_task_id,
         "kind": "RACK_ROTATE",
         "results": [
@@ -503,7 +509,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
     }
 
     await outcome_service.record_evidence(
-        event_id=payload["event_id"],
+        operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload=payload,
@@ -515,7 +521,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
         member = await db.scalar(
             select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
         )
-        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == "event-wrong-face"))
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
 
     assert task is not None
     assert member is not None
@@ -540,27 +546,25 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
         (BinMove("bin-order", RackBinSlot("rack-order", "1"), HandoffPosition("ROLLER_IN")),),
     )
     target = {
-        "event_id": "event-target",
         "transport_task_id": handle.transport_task_id,
         "bin_id": "bin-order",
         "milestone": "TARGET_PLACED",
         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
     }
     picked = {
-        "event_id": "event-picked",
         "transport_task_id": handle.transport_task_id,
         "bin_id": "bin-order",
         "milestone": "SOURCE_PICKED",
     }
     await outcome_service.record_evidence(
-        event_id="event-target",
+        operation_id="event-target",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
         payload=target,
     )
     await outcome_service.process_pending_evidence(1)
     await outcome_service.record_evidence(
-        event_id="event-picked",
+        operation_id="event-picked",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
         payload=picked,
@@ -587,12 +591,11 @@ async def test_late_position_unknown_does_not_regress_confirmed_target_position(
         (BinMove("bin-late-unknown", RackBinSlot("rack-late-unknown", "1"), HandoffPosition("ROLLER_IN")),),
     )
     target = {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"}
-    for event_id, milestone, final_position in (
-        ("event-late-unknown-target", "TARGET_PLACED", target),
-        ("event-late-unknown", "POSITION_UNKNOWN", None),
+    for operation_id, milestone, final_position in (
+        ("operation-late-unknown-target", "TARGET_PLACED", target),
+        ("operation-late-unknown", "POSITION_UNKNOWN", None),
     ):
         payload = {
-            "event_id": event_id,
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-late-unknown",
             "milestone": milestone,
@@ -600,7 +603,7 @@ async def test_late_position_unknown_does_not_regress_confirmed_target_position(
         if final_position is not None:
             payload["final_position"] = final_position
         await outcome_service.record_evidence(
-            event_id=event_id,
+            operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation="transport.task.member_position_changed@v1",
             payload=payload,
@@ -609,7 +612,9 @@ async def test_late_position_unknown_does_not_regress_confirmed_target_position(
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
-        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == "event-late-unknown"))
+        evidence = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.operation_id == "operation-late-unknown")
+        )
         member = await db.scalar(
             select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
         )
@@ -636,11 +641,10 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
     )
     target = {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"}
     await outcome_service.record_evidence(
-        event_id="event-confirmed-target",
+        operation_id="event-confirmed-target",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
         payload={
-            "event_id": "event-confirmed-target",
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-confirmed-target",
             "milestone": "TARGET_PLACED",
@@ -649,11 +653,10 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
     )
     await outcome_service.process_pending_evidence(1)
     await outcome_service.record_evidence(
-        event_id="event-conflicting-final-position",
+        operation_id="event-conflicting-final-position",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload={
-            "event_id": "event-conflicting-final-position",
             "transport_task_id": handle.transport_task_id,
             "kind": "BIN_MOVE",
             "results": [
@@ -672,7 +675,7 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         evidence = await db.scalar(
-            select(TransportEvidence).where(TransportEvidence.event_id == "event-conflicting-final-position")
+            select(TransportEvidence).where(TransportEvidence.operation_id == "event-conflicting-final-position")
         )
         member = await db.scalar(
             select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
@@ -695,16 +698,15 @@ async def test_late_source_picked_does_not_overwrite_unknown_position(
         TransportCaller("SORTER"),
         (BinMove("bin-unknown-order", RackBinSlot("rack-unknown-order", "1"), HandoffPosition("ROLLER_IN")),),
     )
-    for event_id, milestone in (
-        ("event-position-lost", "POSITION_UNKNOWN"),
-        ("event-picked-too-late", "SOURCE_PICKED"),
+    for operation_id, milestone in (
+        ("operation-position-lost", "POSITION_UNKNOWN"),
+        ("operation-picked-too-late", "SOURCE_PICKED"),
     ):
         await outcome_service.record_evidence(
-            event_id=event_id,
+            operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation="transport.task.member_position_changed@v1",
             payload={
-                "event_id": event_id,
                 "transport_task_id": handle.transport_task_id,
                 "bin_id": "bin-unknown-order",
                 "milestone": milestone,
@@ -721,7 +723,7 @@ async def test_late_source_picked_does_not_overwrite_unknown_position(
             select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-unknown-order")
         )
         evidence = await db.scalar(
-            select(TransportEvidence).where(TransportEvidence.event_id == "event-picked-too-late")
+            select(TransportEvidence).where(TransportEvidence.operation_id == "operation-picked-too-late")
         )
 
     assert member is not None
@@ -745,7 +747,6 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
         (BinMove("bin-terminal", RackBinSlot("rack-terminal", "1"), HandoffPosition("ROLLER_IN")),),
     )
     success = {
-        "event_id": "event-success",
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
         "results": [
@@ -757,7 +758,6 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
         ],
     }
     conflicting = {
-        "event_id": "event-conflict",
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
         "results": [
@@ -769,9 +769,9 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
             }
         ],
     }
-    for payload in (success, conflicting):
+    for operation_id, payload in (("operation-success", success), ("operation-conflict", conflicting)):
         await outcome_service.record_evidence(
-            event_id=payload["event_id"],
+            operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
             payload=payload,
@@ -781,7 +781,9 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
-        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.event_id == "event-conflict"))
+        evidence = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.operation_id == "operation-conflict")
+        )
     assert task is not None
     assert evidence is not None
     assert task.status == "SUCCEEDED"
@@ -800,7 +802,6 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
         (BinMove("bin-position", RackBinSlot("rack-position", "1"), HandoffPosition("ROLLER_IN")),),
     )
     success = {
-        "event_id": "event-position-success",
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
         "results": [
@@ -812,18 +813,17 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
         ],
     }
     await outcome_service.record_evidence(
-        event_id=success["event_id"],
+        operation_id="operation-position-success",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         payload=success,
     )
     await outcome_service.process_pending_evidence(1)
     await outcome_service.record_evidence(
-        event_id="event-position-unknown",
+        operation_id="operation-position-unknown",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
         payload={
-            "event_id": "event-position-unknown",
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-position",
             "milestone": "POSITION_UNKNOWN",
@@ -835,7 +835,7 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
     async with sessions() as db:
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
         evidence = await db.scalar(
-            select(TransportEvidence).where(TransportEvidence.event_id == "event-position-unknown")
+            select(TransportEvidence).where(TransportEvidence.operation_id == "operation-position-unknown")
         )
     assert task is not None
     assert evidence is not None
@@ -846,6 +846,7 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
 @pytest.mark.asyncio
 async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpublished_outcome_is_sent(
     outcome_service: TransportService,
+    outcome_publisher: FakePublisher,
     db_engine: object,
 ) -> None:
     moves = (
@@ -854,7 +855,6 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
     )
     handle = await outcome_service.move_bins("request-version", TransportCaller("SORTER"), moves)
     unknown = {
-        "event_id": "event-version-1",
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
         "results": [
@@ -872,7 +872,6 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
         ],
     }
     corrected = {
-        "event_id": "event-version-2",
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
         "results": [
@@ -884,19 +883,17 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
             for move in moves
         ],
     }
-    for payload in (unknown, corrected):
+    for operation_id, payload in (("operation-version-1", unknown), ("operation-version-2", corrected)):
         await outcome_service.record_evidence(
-            event_id=payload["event_id"],
+            operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
             payload=payload,
         )
         await outcome_service.process_pending_evidence(1)
 
-    assert await outcome_service.publish_pending_outcomes(1) == 1
-    assert [(item.outcome_version, item.status.value) for item in outcome_service._outcome_publisher.outcomes] == [
-        (2, "SUCCEEDED")
-    ]
+    assert await outcome_service.publish_pending_outcomes(1, outcome_publisher) == 1
+    assert [(item.outcome_version, item.status.value) for item in outcome_publisher.outcomes] == [(2, "SUCCEEDED")]
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         bindings = list(

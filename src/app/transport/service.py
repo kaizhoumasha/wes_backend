@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import uuid
 from dataclasses import asdict
 from datetime import timedelta
@@ -47,6 +48,8 @@ from src.app.transport.models import (
     TransportResourceBinding,
     TransportTask,
 )
+from src.app.transport.submit_snapshot import build_submit_data, submit_payload_digest
+from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -60,6 +63,7 @@ _SUBMIT_TIMEOUT_SECONDS = 10
 _PUBLISH_TIMEOUT_SECONDS = 10
 _RESULT_TIMEOUT = timedelta(minutes=10)
 _RETRY_DELAY = timedelta(seconds=2)
+_SUBMIT_CONTINUE_BUDGET_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +76,10 @@ class TransportService:
         session_factory: async_sessionmaker[AsyncSession],
         repository: TransportRepository,
         provider: TransportProviderPort,
-        outcome_publisher: TransportOutcomePublisher,
     ) -> None:
         self._sessions = session_factory
         self._repository = repository
         self.provider = provider
-        self._outcome_publisher = outcome_publisher
 
     async def move_rack(
         self,
@@ -117,35 +119,35 @@ class TransportService:
 
     async def submit_pending_tasks(self, limit: int) -> int:
         _validate_limit(limit)
-        now = timezone.now_for_db()
-        token = uuid.uuid4().hex
-        # 领取 -> 独立短事务记录发送开始 -> 事务外发送 -> 带身份写回。
-        async with self._sessions.begin() as db:
-            claimed = await self._repository.claim_pending_tasks(
-                db,
-                limit=limit,
-                token=token,
-                now=now,
-                claim_until=now + timedelta(seconds=_CLAIM_SECONDS),
-            )
-            task_ids = [task.transport_task_id for task in claimed]
-
+        started = time.monotonic()
         processed = 0
-        for task_id in task_ids:
+        # 单条领取并标记 -> 事务外 HTTP -> fenced 写回；完成后才按 monotonic 预算领取下一条。
+        while processed < limit:
+            token = uuid.uuid4().hex
+            now = timezone.now_for_db()
             async with self._sessions.begin() as db:
-                task = await self._repository.mark_send_started(
+                task = await self._repository.claim_next_pending_task(
                     db,
-                    transport_task_id=task_id,
                     token=token,
-                    now=timezone.now_for_db(),
+                    now=now,
+                    claim_until=now + timedelta(seconds=_CLAIM_SECONDS),
                 )
                 if task is None:
-                    continue
-                request = _request_from_json(task.request_json)
+                    break
+                task_id = task.transport_task_id
+                operation_id = task.submit_operation_id
+                timestamp_ms = task.submit_timestamp_ms
+                payload = _json_value(task.submit_payload_json)
+                payload_digest = task.submit_payload_digest
 
             try:
                 async with asyncio.timeout(_SUBMIT_TIMEOUT_SECONDS):
-                    result = await self.provider.submit(request, transport_task_id=task_id)
+                    result = await self.provider.submit(
+                        operation_id=operation_id,
+                        timestamp=timestamp_ms,
+                        payload=payload,
+                        payload_digest=payload_digest,
+                    )
             except TimeoutError:
                 result_code = TransportSubmitCode.DELIVERY_UNKNOWN
                 result = None
@@ -154,19 +156,62 @@ class TransportService:
 
             async with self._sessions.begin() as db:
                 current = await self._repository.get_task(db, task_id, for_update=True)
-                if current is None or current.payload_digest != _payload_digest(request):
+                writeback_now = timezone.now_for_db()
+                if current is None or not _matches_submit_snapshot(
+                    current,
+                    operation_id=operation_id,
+                    transport_task_id=task_id,
+                    payload=payload,
+                    payload_digest=payload_digest,
+                ):
+                    logger.warning(
+                        "transport.submit.late_writeback",
+                        extra={
+                            "event": "transport.submit.late_writeback",
+                            "transport_task_id": task_id,
+                            "operation_id": operation_id,
+                            "reason": "IDENTITY_OR_DIGEST_MISMATCH",
+                        },
+                    )
+                    processed += 1
+                    if time.monotonic() - started >= _SUBMIT_CONTINUE_BUDGET_SECONDS:
+                        break
                     continue
-                self._apply_submit_result(current, result_code, result, timezone.now_for_db())
+                lease_matches = (
+                    current.submit_claim_token == token
+                    and current.submit_claim_until is not None
+                    and current.submit_claim_until >= writeback_now
+                )
+                has_evidence = await self._repository.has_evidence(db, task_id)
+                self._apply_submit_result(
+                    current,
+                    result_code,
+                    result,
+                    writeback_now,
+                    lease_matches=lease_matches,
+                    has_evidence=has_evidence,
+                    operation_id=operation_id,
+                )
                 if current.status in {"REJECTED", "SUCCEEDED", "FAILED"}:
-                    await self._repository.release_bindings(db, task_id, now=timezone.now_for_db())
+                    await self._repository.release_bindings(db, task_id, now=writeback_now)
             processed += 1
+            if time.monotonic() - started >= _SUBMIT_CONTINUE_BUDGET_SECONDS:
+                break
+        logger.info(
+            "transport.submit.batch_completed",
+            extra={
+                "event": "transport.submit.batch_completed",
+                "processed_count": processed,
+                "requested_limit": limit,
+            },
+        )
         return processed
 
     async def process_pending_evidence(self, limit: int) -> int:
         _validate_limit(limit)
         now = timezone.now_for_db()
         token = uuid.uuid4().hex
-        # evidence 领取 -> 锁定任务/投影并收敛 -> evidence 记账，同一事务完成。
+        # evidence 领取 -> 读取任务身份 -> task/evidence/投影依序锁定并收敛 -> evidence 记账。
         async with self._sessions.begin() as db:
             claimed = await self._repository.claim_pending_evidence(
                 db,
@@ -180,10 +225,13 @@ class TransportService:
         processed = 0
         for evidence_id in evidence_ids:
             async with self._sessions.begin() as db:
+                candidate = await self._repository.get_evidence(db, evidence_id)
+                if candidate is None or candidate.status != "PENDING" or candidate.claim_token != token:
+                    continue
+                task = await self._repository.get_task(db, candidate.transport_task_id, for_update=True)
                 evidence = await self._repository.get_evidence(db, evidence_id, for_update=True)
                 if evidence is None or evidence.status != "PENDING" or evidence.claim_token != token:
                     continue
-                task = await self._repository.get_task(db, evidence.transport_task_id, for_update=True)
                 if task is None:
                     _mark_evidence_conflict(evidence, "TRANSPORT_TASK_NOT_FOUND", timezone.now_for_db())
                     processed += 1
@@ -222,40 +270,50 @@ class TransportService:
     async def record_evidence(
         self,
         *,
-        event_id: str,
+        operation_id: str,
         transport_task_id: str,
         operation: str,
         payload: dict[str, Any],
-    ) -> str:
-        _validate_persisted_text(event_id, "event_id", 120)
+    ) -> dict[str, Any]:
+        _validate_persisted_text(operation_id, "operation_id", 36)
         _validate_persisted_text(transport_task_id, "transport_task_id", 80)
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(encoded).hexdigest()
         now = timezone.now_for_db()
+        ack_timestamp_ms = int(timezone.now_utc().timestamp() * 1000)
+        ack_data = {"transport_task_id": transport_task_id}
         try:
             async with self._sessions.begin() as db:
-                existing = await self._repository.get_evidence_by_event_id(db, operation, event_id, for_update=True)
+                # 与 submit 写回锁同一任务行，使未提交 evidence 在确定性拒绝判断前可见。
+                await self._repository.get_task(db, transport_task_id, for_update=True)
+                existing = await self._repository.get_evidence_by_operation_id(
+                    db, operation, operation_id, for_update=True
+                )
                 if existing is not None:
                     return _resolve_evidence_identity(existing, digest, operation)
                 await self._repository.add_evidence(
                     db,
                     TransportEvidence(
-                        event_id=event_id,
+                        operation_id=operation_id,
                         transport_task_id=transport_task_id,
                         operation=operation,
                         payload_digest=digest,
                         payload_json=payload,
+                        ack_timestamp_ms=ack_timestamp_ms,
+                        ack_data_json=ack_data,
                         received_at=now,
                     ),
                 )
         except IntegrityError:
             # 并发重复回调可能同时通过首次查询；唯一约束裁决后重新读取首个已提交事实。
             async with self._sessions.begin() as db:
-                existing = await self._repository.get_evidence_by_event_id(db, operation, event_id, for_update=True)
+                existing = await self._repository.get_evidence_by_operation_id(
+                    db, operation, operation_id, for_update=True
+                )
                 if existing is None:
                     raise
                 return _resolve_evidence_identity(existing, digest, operation)
-        return "RECEIVED"
+        return {"code": "RECEIVED", "timestamp": ack_timestamp_ms, "data": ack_data}
 
     async def reconcile_overdue_tasks(self, limit: int) -> int:
         _validate_limit(limit)
@@ -270,7 +328,7 @@ class TransportService:
                 self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_RESULT_TIMEOUT", now)
         return len(ambiguous) + len(overdue)
 
-    async def publish_pending_outcomes(self, limit: int) -> int:
+    async def publish_pending_outcomes(self, limit: int, publisher: TransportOutcomePublisher) -> int:
         _validate_limit(limit)
         now = timezone.now_for_db()
         token = uuid.uuid4().hex
@@ -290,12 +348,28 @@ class TransportService:
                 continue
             try:
                 async with asyncio.timeout(_PUBLISH_TIMEOUT_SECONDS):
-                    await self._outcome_publisher.publish(_outcome_from_json(payload))
+                    await publisher.publish(_outcome_from_json(payload))
             except TimeoutError:
-                logger.warning("搬运结果发布超时: transport_task_id=%s, outcome_version=%s", task_id, version)
+                logger.warning(
+                    "transport.outcome.publish_failed",
+                    extra={
+                        "event": "transport.outcome.publish_failed",
+                        "transport_task_id": task_id,
+                        "outcome_version": version,
+                        "reason": "TIMEOUT",
+                    },
+                )
                 continue
             except Exception:
-                logger.exception("搬运结果发布失败: transport_task_id=%s, outcome_version=%s", task_id, version)
+                logger.exception(
+                    "transport.outcome.publish_failed",
+                    extra={
+                        "event": "transport.outcome.publish_failed",
+                        "transport_task_id": task_id,
+                        "outcome_version": version,
+                        "reason": "PUBLISH_ERROR",
+                    },
+                )
                 continue
             async with self._sessions.begin() as db:
                 task = await self._repository.get_task(db, task_id, for_update=True)
@@ -312,6 +386,14 @@ class TransportService:
         payload_digest = _payload_digest(request)
         task_id = f"transport-{uuid.uuid4()}"
         now = timezone.now_for_db()
+        submit_operation_id = new_uuid7()
+        submit_timestamp_ms = int(timezone.now_utc().timestamp() * 1000)
+        submit_payload = build_submit_data(request, task_id)
+        frozen_submit_digest = submit_payload_digest(
+            submit_operation_id,
+            submit_timestamp_ms,
+            submit_payload,
+        )
         task = TransportTask(
             transport_task_id=task_id,
             client_request_id=request.client_request_id,
@@ -319,6 +401,10 @@ class TransportService:
             kind=request.kind.value,
             caller_json=_json_value(request.caller),
             request_json=_json_value(request),
+            submit_operation_id=submit_operation_id,
+            submit_timestamp_ms=submit_timestamp_ms,
+            submit_payload_json=submit_payload,
+            submit_payload_digest=frozen_submit_digest,
             created_at=now,
             updated_at=now,
         )
@@ -365,27 +451,86 @@ class TransportService:
         code: TransportSubmitCode,
         result: object,
         now: Any,
+        *,
+        lease_matches: bool,
+        has_evidence: bool,
+        operation_id: str,
     ) -> None:
-        task.submit_claim_token = None
-        task.submit_claim_until = None
-        task.updated_at = now
-        # 位置或最终结果可能先到；只有交付未知允许匹配身份的确定 ACK 继续收敛，
-        # 其他权威事实不得回退。
+        # 权威 ACK 可以跨 lease 单调收敛；本地重试事实只能由当前 lease 写回。
         can_converge_late_ack = (
             task.status == TransportTaskStatus.RECONCILING.value and task.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
         )
-        if task.status != TransportTaskStatus.PENDING.value and not can_converge_late_ack:
-            return
         if code in {TransportSubmitCode.RECEIVED, TransportSubmitCode.DUPLICATE}:
+            if task.status != TransportTaskStatus.PENDING.value and not can_converge_late_ack:
+                return
             if can_converge_late_ack:
                 _discard_stale_delivery_unknown(task)
             task.status = "ACCEPTED"
             task.reason_code = None
             task.result_deadline_at = task.result_deadline_at or now + _RESULT_TIMEOUT
+            if lease_matches:
+                _clear_submit_claim(task)
+            task.updated_at = now
+            if not lease_matches:
+                logger.info(
+                    "transport.submit.late_writeback",
+                    extra={
+                        "event": "transport.submit.late_writeback",
+                        "transport_task_id": task.transport_task_id,
+                        "operation_id": operation_id,
+                        "reason": code.value,
+                    },
+                )
             return
+        if code in {TransportSubmitCode.REJECTED, TransportSubmitCode.CONFLICT}:
+            if task.status != TransportTaskStatus.PENDING.value or has_evidence:
+                logger.info(
+                    "transport.submit.late_writeback",
+                    extra={
+                        "event": "transport.submit.late_writeback",
+                        "transport_task_id": task.transport_task_id,
+                        "operation_id": operation_id,
+                        "reason": f"IGNORED_{code.value}",
+                    },
+                )
+                return
+            if not lease_matches:
+                logger.info(
+                    "transport.submit.late_writeback",
+                    extra={
+                        "event": "transport.submit.late_writeback",
+                        "transport_task_id": task.transport_task_id,
+                        "operation_id": operation_id,
+                        "reason": code.value,
+                    },
+                )
+            if lease_matches:
+                _clear_submit_claim(task)
+            task.updated_at = now
+            if code is TransportSubmitCode.REJECTED:
+                self._set_outcome(
+                    task,
+                    TransportTaskStatus.REJECTED,
+                    getattr(result, "reason_code", None) or "TRANSPORT_REJECTED",
+                    now,
+                )
+            else:
+                self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_SUBMIT_CONFLICT", now)
+            return
+        if not lease_matches or task.status != TransportTaskStatus.PENDING.value:
+            logger.info(
+                "transport.submit.lease_replaced",
+                extra={
+                    "event": "transport.submit.lease_replaced",
+                    "transport_task_id": task.transport_task_id,
+                    "operation_id": operation_id,
+                    "reason": code.value,
+                },
+            )
+            return
+        _clear_submit_claim(task)
+        task.updated_at = now
         if code in {TransportSubmitCode.NOT_SENT, TransportSubmitCode.BUSY, TransportSubmitCode.UNAVAILABLE}:
-            if can_converge_late_ack:
-                _discard_stale_delivery_unknown(task)
             task.status = "PENDING"
             task.reason_code = None
             task.send_started_at = None
@@ -403,15 +548,7 @@ class TransportService:
             except OverflowError:
                 task.next_submit_at = now + _RETRY_DELAY
             return
-        if code is TransportSubmitCode.REJECTED:
-            self._set_outcome(
-                task, TransportTaskStatus.REJECTED, getattr(result, "reason_code", None) or "TRANSPORT_REJECTED", now
-            )
-            return
-        if can_converge_late_ack and code is TransportSubmitCode.DELIVERY_UNKNOWN:
-            return
-        reason = "TRANSPORT_SUBMIT_CONFLICT" if code is TransportSubmitCode.CONFLICT else "TRANSPORT_DELIVERY_UNKNOWN"
-        self._set_outcome(task, TransportTaskStatus.RECONCILING, reason, now)
+        self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_DELIVERY_UNKNOWN", now)
 
     def _set_outcome(self, task: TransportTask, status: TransportTaskStatus, reason_code: str, now: Any) -> None:
         task.status = status.value
@@ -434,6 +571,16 @@ class TransportService:
         )
         task.outcome_json = _json_value(outcome)
         task.updated_at = now
+        if status is TransportTaskStatus.RECONCILING:
+            logger.warning(
+                "transport.task.reconciling",
+                extra={
+                    "event": "transport.task.reconciling",
+                    "transport_task_id": task.transport_task_id,
+                    "operation_id": task.submit_operation_id,
+                    "reason": reason_code,
+                },
+            )
 
     async def _apply_position_evidence(
         self,
@@ -464,14 +611,14 @@ class TransportService:
                 raise TransportContractError("position unknown cannot overwrite confirmed member position")
             member.position_unknown = True
             member.final_position_json = None
-            await self._upsert_projection(db, member, None, True, None, evidence.event_id, now)
+            await self._upsert_projection(db, member, None, True, None, evidence.operation_id, now)
             self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_POSITION_UNKNOWN", now)
         elif milestone == "SOURCE_PICKED":
             if member.position_unknown:
                 raise TransportContractError("source picked cannot overwrite unknown position")
             if member.final_position_json is not None:
                 return
-            await self._upsert_projection(db, member, {"kind": "ON_CARRIER"}, False, None, evidence.event_id, now)
+            await self._upsert_projection(db, member, {"kind": "ON_CARRIER"}, False, None, evidence.operation_id, now)
             _accept_position_fact(task, now)
         elif milestone == "TARGET_PLACED":
             final_position = payload.get("final_position")
@@ -483,9 +630,9 @@ class TransportService:
                 raise TransportContractError("placed position contradicts confirmed member position")
             member.final_position_json = final_position
             member.position_unknown = False
-            await self._upsert_projection(db, member, final_position, False, None, evidence.event_id, now)
+            await self._upsert_projection(db, member, final_position, False, None, evidence.operation_id, now)
             _accept_position_fact(task, now)
-        member.last_event_id = evidence.event_id
+        member.last_operation_id = evidence.operation_id
         member.updated_at = now
         task.updated_at = now
 
@@ -575,7 +722,7 @@ class TransportService:
             member.position_unknown = position_unknown
             member.failure_code = failure_code
             member.arrival_face = arrival_face
-            member.last_event_id = evidence.event_id
+            member.last_operation_id = evidence.operation_id
             member.updated_at = now
             await self._upsert_projection(
                 db,
@@ -583,7 +730,7 @@ class TransportService:
                 final_position,
                 position_unknown,
                 arrival_face,
-                evidence.event_id,
+                evidence.operation_id,
                 now,
             )
             outcomes.append(outcome)
@@ -625,7 +772,7 @@ class TransportService:
         position: dict[str, Any] | None,
         position_unknown: bool,
         arrival_face: str | None,
-        event_id: str,
+        operation_id: str,
         now: Any,
     ) -> None:
         projection = await self._repository.get_projection(db, member.object_type, member.object_id, for_update=True)
@@ -633,14 +780,14 @@ class TransportService:
             projection = TransportPositionProjection(
                 object_type=member.object_type,
                 object_id=member.object_id,
-                source_event_id=event_id,
+                source_operation_id=operation_id,
                 updated_at=now,
             )
             db.add(projection)
         projection.position_json = position
         projection.position_unknown = position_unknown
         projection.arrival_face = arrival_face
-        projection.source_event_id = event_id
+        projection.source_operation_id = operation_id
         projection.updated_at = now
 
 
@@ -703,58 +850,27 @@ def _payload_digest(request: TransportRequest) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _json_value(value: object) -> Any:
-    raw = asdict(value) if hasattr(value, "__dataclass_fields__") else value
-    return json.loads(json.dumps(raw, ensure_ascii=False, separators=(",", ":")))
-
-
-def _request_from_json(payload: dict[str, Any]) -> TransportRequest:
-    caller = TransportCaller(**payload["caller"])
-    kind = payload["kind"]
-    if kind == "RACK_MOVE":
-        return MoveRackRequest(
-            payload["client_request_id"],
-            caller,
-            payload["rack_id"],
-            RackPosition(payload["source"]["location_code"]),
-            RackPosition(payload["target"]["location_code"]),
-        )
-    if kind == "RACK_ROTATE":
-        return RotateRackRequest(
-            payload["client_request_id"],
-            caller,
-            payload["rack_id"],
-            RackPosition(payload["position"]["location_code"]),
-            RackFace(payload["target_face"]),
-        )
-    if kind == "BIN_MOVE":
-        return MoveBinsRequest(
-            payload["client_request_id"],
-            caller,
-            tuple(
-                BinMove(move["bin_id"], _position_from_json(move["source"]), _position_from_json(move["target"]))
-                for move in payload["moves"]
-            ),
-        )
-    return ExchangeBinsRequest(
-        payload["client_request_id"],
-        caller,
-        tuple(
-            BinExchangePair(
-                pair["left_bin_id"],
-                RackBinSlot(pair["left_location"]["rack_id"], pair["left_location"]["slot_id"]),
-                pair["right_bin_id"],
-                RackBinSlot(pair["right_location"]["rack_id"], pair["right_location"]["slot_id"]),
-            )
-            for pair in payload["exchange_pairs"]
-        ),
+def _matches_submit_snapshot(
+    task: TransportTask,
+    *,
+    operation_id: str,
+    transport_task_id: str,
+    payload: dict[str, Any],
+    payload_digest: str,
+) -> bool:
+    return (
+        task.transport_task_id == transport_task_id
+        and task.submit_operation_id == operation_id
+        and task.submit_payload_json == payload
+        and task.submit_payload_digest == payload_digest
+        and payload.get("transport_task_id") == transport_task_id
+        and submit_payload_digest(operation_id, task.submit_timestamp_ms, payload) == payload_digest
     )
 
 
-def _position_from_json(payload: dict[str, Any]) -> RackBinSlot | HandoffPosition:
-    if payload["kind"] == "RACK_BIN_SLOT":
-        return RackBinSlot(payload["rack_id"], payload["slot_id"])
-    return HandoffPosition(payload["location_code"])
+def _json_value(value: object) -> Any:
+    raw = asdict(value) if hasattr(value, "__dataclass_fields__") else value
+    return json.loads(json.dumps(raw, ensure_ascii=False, separators=(",", ":")))
 
 
 def _contract_position(payload: dict[str, Any]) -> RackPosition | RackBinSlot | HandoffPosition:
@@ -847,6 +963,11 @@ def _discard_stale_delivery_unknown(task: TransportTask) -> None:
     task.outcome_claim_until = None
 
 
+def _clear_submit_claim(task: TransportTask) -> None:
+    task.submit_claim_token = None
+    task.submit_claim_until = None
+
+
 def _accept_position_fact(task: TransportTask, now: Any) -> None:
     can_converge_delivery_unknown = (
         task.status == TransportTaskStatus.RECONCILING.value and task.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
@@ -864,13 +985,21 @@ def _resolve_evidence_identity(
     evidence: TransportEvidence,
     payload_digest: str,
     operation: str,
-) -> str:
+) -> dict[str, Any]:
     if evidence.payload_digest == payload_digest and evidence.operation == operation:
-        return "DUPLICATE"
+        return {
+            "code": "DUPLICATE",
+            "timestamp": evidence.ack_timestamp_ms,
+            "data": evidence.ack_data_json,
+        }
     # 身份冲突只记录诊断；首份权威 evidence 仍必须保持可处理或已应用状态。
     if evidence.status == "PENDING":
-        evidence.conflict_code = "EVENT_PAYLOAD_CONFLICT"
-    return "CONFLICT"
+        evidence.conflict_code = "OPERATION_PAYLOAD_CONFLICT"
+    return {
+        "code": "CONFLICT",
+        "timestamp": evidence.ack_timestamp_ms,
+        "data": evidence.ack_data_json,
+    }
 
 
 __all__ = ["TransportService"]

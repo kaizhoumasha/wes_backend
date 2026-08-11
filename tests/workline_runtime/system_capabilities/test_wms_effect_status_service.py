@@ -1269,6 +1269,7 @@ def test_wms_effect_status_immediate_and_fallback_tasks_are_registered() -> None
     assert beat_schedule["scan-wms-effect-status-batch"] == {
         "task": "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
         "schedule": 10.0,
+        "options": {"expires": 10.0},
     }
 
 
