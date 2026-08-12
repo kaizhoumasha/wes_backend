@@ -73,7 +73,6 @@ _CONFIRMATION_BUDGET_EXHAUSTED = "WMS_STATUS_CONFIRMATION_BUDGET_EXHAUSTED"
 _FULFILLMENT_DOMAIN_OPERATIONS = frozenset(
     {
         "wms.fulfillment.request_rack_supply@v1",
-        "wms.fulfillment.request_rack_transport@v1",
     }
 )
 _FULFILLMENT_TERMINAL_NON_SUCCESS = "WMS_FULFILLMENT_TERMINAL_NON_SUCCESS"

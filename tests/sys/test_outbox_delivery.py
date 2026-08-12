@@ -88,7 +88,7 @@ async def test_dispatch_external_http_does_not_emit_submit_before_evidence_commi
     outbox = frozen_outbox_namespace(
         {"k": "v"},
         target_code="WMS_TEST",
-        operation_identity="wms.fulfillment.request_rack_transport@v1",
+        operation_identity="wms.fulfillment.request_rack_supply@v1",
         dispatch_key="dispatch-business-key",
         idempotency_key="idempotency-key",
         attempt_count=2,

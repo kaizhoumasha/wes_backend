@@ -138,6 +138,8 @@ def runtime_probe(label: str) -> dict[str, object]:
         import src.database.db as db_module
         from src.core.conf import settings
 
+        transport_runtime = celery_async_runtime.transport_runtime
+        assert transport_runtime is not None
         async with get_db_context() as db:
             row = (
                 await db.execute(
@@ -153,6 +155,7 @@ def runtime_probe(label: str) -> dict[str, object]:
             "runner_id": celery_async_runtime.runner_generation,
             "engine_id": db_module._engine_generation,
             "session_factory_id": db_module._session_factory_generation,
+            "transport_client_id": id(transport_runtime.client),
             "backend_pid": int(row[0]),
             "database": str(row[1]),
             "application_name": str(row[2]),
@@ -473,6 +476,8 @@ class PreforkWorker:
                 mode="w+", prefix=f"wes-prefork-{self.run_id}-", suffix=".log", delete=False
             )
             self.log_path = Path(self._log_file.name)
+            self._log_file.close()
+            self._log_file = self.log_path.open("a+")
             self.project_log_dir = Path(tempfile.mkdtemp(prefix=f"wes-prefork-project-{self.run_id}-"))
             environment["PREFORK_PROBE_LOG"] = str(self.log_path)
             environment["LOG_DIR"] = str(self.project_log_dir)
@@ -774,6 +779,7 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         assert all(len({str(row["runner_id"]) for row in rows}) == 1 for rows in by_pid.values())
         assert all(len({str(row["engine_id"]) for row in rows}) == 1 for rows in by_pid.values())
         assert all(len({str(row["session_factory_id"]) for row in rows}) == 1 for rows in by_pid.values())
+        assert all(len({int(row["transport_client_id"]) for row in rows}) == 1 for rows in by_pid.values())
         assert {str(row["database"]) for row in probe_rows} == {prefork_services["database"]}
         assert {str(row["role"]) for row in probe_rows} == {"integration"}
         application_names = {str(row["application_name"]) for row in probe_rows}
@@ -876,7 +882,7 @@ def test_term_warm_shutdown_finishes_transaction_and_releases_connections(prefor
         worker.stop(success=success)
 
 
-def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork_services: dict[str, str]) -> None:
+def test_quit_countdown_retry_is_recovered_with_idempotent_final_state(prefork_services: dict[str, str]) -> None:
     first = PreforkWorker(prefork_services, concurrency=1).start()
     operation_key = f"quit-{first.run_id}"
     first_log_path = first.log_path
@@ -904,27 +910,33 @@ def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork
         replacement = PreforkWorker(first.services, concurrency=1, run_id=first.run_id)
         quit_state["replacement"] = replacement
         replacement.start()
-        redelivery_marker = _wait_until(
+        redelivery_wait_budget = min(
+            TASK_TIMEOUT,
+            max(0.0, retry_countdown - (time.monotonic() - first_attempt_seen)),
+        )
+        handoff_marker = _wait_until(
             lambda: next(
                 (
                     marker
                     for marker in _probe_markers(replacement.log_text(), "task_received")
-                    if marker["task_id"] == result.id and marker["redelivered"] is True
+                    if marker["task_id"] == result.id
                 ),
                 None,
             ),
-            VISIBILITY_TIMEOUT + 8,
-            "replacement Worker visibility redelivery",
+            redelivery_wait_budget,
+            "replacement Worker countdown retry handoff",
         )
-        redelivery_received_elapsed = time.monotonic() - first_attempt_seen
+        handoff_received_elapsed = time.monotonic() - first_attempt_seen
         final = cast("dict[str, object]", replacement.result(result, timeout=TASK_TIMEOUT + VISIBILITY_TIMEOUT))
         row = _acceptance_row(prefork_services["database_url"], operation_key)
         assert final["completed"] is True
-        assert final["redelivered"] is True
+        # 首 Worker 可能已预取 retry 后恢复，也可能在预取前退出；两条 broker 路径的
+        # redelivered 标记不同，但替代 Worker 必须接管同一 task id 并保持幂等终态。
+        assert final["redelivered"] is handoff_marker["redelivered"]
         assert row is not None and row["completed"] is True
         assert int(row["attempts"]) >= 2
-        assert redelivery_marker["task_name"] == IDEMPOTENT_RETRY_TASK
-        assert VISIBILITY_TIMEOUT <= redelivery_received_elapsed < retry_countdown
+        assert handoff_marker["task_name"] == IDEMPOTENT_RETRY_TASK
+        assert VISIBILITY_TIMEOUT <= handoff_received_elapsed < retry_countdown
         quit_state["success"] = True
     first_log_path.unlink(missing_ok=True)
     if first.project_log_dir is not None:

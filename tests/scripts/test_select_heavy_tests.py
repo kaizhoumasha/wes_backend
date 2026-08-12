@@ -66,6 +66,11 @@ TRANSPORT_DARK_LOOP_HEAVY_TEST = "tests/integration/transport/test_dark_transpor
 TRANSPORT_EVIDENCE_HEAVY_TEST = "tests/integration/transport/test_transport_evidence_transaction.py"
 TRANSPORT_REPOSITORY_HEAVY_TEST = "tests/integration/transport/test_transport_repository.py"
 TRANSPORT_SCHEMA_HEAVY_TEST = "tests/integration/transport/test_transport_schema.py"
+TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
+TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastapi_lifespan.py"
+TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
+TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST = "tests/integration/test_transport_fulfillment_queue.py"
+WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"
 SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
     "tests/integration/test_base_repository_crud.py",
     "tests/integration/test_base_repository_hooks.py",
@@ -712,6 +717,14 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("Jenkinsfile.backend-ci", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (".dockerignore", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (
+            "Dockerfile",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_DEPLOYMENT_HEAVY_TEST),
+        ),
+        (
+            "docker-compose.deploy.yml",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_DEPLOYMENT_HEAVY_TEST),
+        ),
+        (
             ".env.dev",
             (WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
         ),
@@ -788,8 +801,12 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             ),
         ),
         (
-            "src/celery_app/{config.py,tasks/workline.py}",
+            "src/celery_app/tasks/workline.py",
             (CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,),
+        ),
+        (
+            "src/celery_app/config.py",
+            (CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST, WMS_DEPLOYMENT_HEAVY_TEST),
         ),
         (
             "src/app/wms_integration/{query_runtime.py,ports/query_execution.py}",
@@ -1001,11 +1018,15 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             (WMS_CIRCUIT_BREAKER_HEAVY_TEST,),
         ),
         ("src/core/outbound_http/**", ()),
-        ("src/app/wms_adapter/__init__.py", ()),
+        ("src/app/wms_adapter/__init__.py", (TRANSPORT_PRODUCTION_WIRING_E2E_TEST,)),
         ("src/app/wms_adapter/client.py", ()),
         ("src/app/wms_adapter/factory.py", ()),
         (
-            "src/app/transport/**",
+            "src/app/transport/{__init__.py,composition.py}",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST,),
+        ),
+        (
+            "src/app/transport/{contracts.py,models.py,repository.py,service.py}",
             (
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
@@ -1013,7 +1034,15 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_SCHEMA_HEAVY_TEST,
             ),
         ),
-        ("src/app/wms_adapter/transport_*.py", (TRANSPORT_DARK_LOOP_HEAVY_TEST,)),
+        (
+            "src/app/transport/submit_snapshot.py",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST),
+        ),
+        ("src/app/wms_adapter/transport_adapter.py", (TRANSPORT_DARK_LOOP_HEAVY_TEST,)),
+        (
+            "src/app/wms_adapter/{transport_event_handler.py,transport_wire.py}",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST),
+        ),
         (
             "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py",
             (TRANSPORT_SCHEMA_HEAVY_TEST,),
@@ -1115,7 +1144,267 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         ("scripts/data/init_production_base_data.sql", ()),
         ("scripts/data/reset_runtime_data.py", ("tests/integration/test_reset_runtime_data_postgresql.py",)),
+        (
+            "migrations/versions/20260730_0340_f9ffbef8992a_新增_wms_履约领域关系.py",
+            (WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST,),
+        ),
+        (
+            "src/app/callback/services/{__init__.py,wms_inbound_auth.py}",
+            (CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/{material_flow_owner.py,wms_rack_demand.py}",
+            (WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/orchestration/{repositories/wms_fulfillment_domain_repository.py,services/rack_demand_service.py}",
+            (WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST,),
+        ),
+        (
+            "src/app/runtime/system_capabilities/wms/fulfillment/{request_load_unit_transport/definition.py,request_rack_transport/definition.py}",
+            (WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
+        ),
+        (
+            "src/app/wms_adapter/inbound_auth.py",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST),
+        ),
+        ("src/app/wms_adapter/v1/**", (TRANSPORT_PRODUCTION_WIRING_E2E_TEST,)),
+        (
+            "src/celery_app/{app.py,tasks/transport.py}",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST),
+        ),
+        ("src/core/task_queue_gateway.py", (TRANSPORT_PRODUCTION_WIRING_E2E_TEST,)),
+        (
+            "src/core/uuid7.py",
+            (TRANSPORT_DARK_LOOP_HEAVY_TEST, TRANSPORT_EVIDENCE_HEAVY_TEST),
+        ),
+        ("src/register.py", (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST)),
+        (
+            "tests/support/transport_broker.py",
+            (
+                TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+                TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST,
+                TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST,
+            ),
+        ),
     )
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    [
+        (
+            "migrations/versions/20260730_0340_f9ffbef8992a_新增_wms_履约领域关系.py",
+            [WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST],
+        ),
+        (
+            "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py",
+            [TRANSPORT_SCHEMA_HEAVY_TEST],
+        ),
+        ("src/app/callback/services/__init__.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
+        ("src/app/callback/services/wms_inbound_auth.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
+        ("src/app/callback/v1/callback.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
+        (
+            "src/app/runtime/orchestration/material_flow_owner.py",
+            [WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST],
+        ),
+        ("src/app/runtime/orchestration/wms_rack_demand.py", [WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST]),
+        (
+            "src/app/runtime/orchestration/services/rack_demand_service.py",
+            [WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/repositories/wms_fulfillment_domain_repository.py",
+            [WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/orchestration/services/wms_effect_status_service.py",
+            [
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/runtime/orchestration/services/wms_fulfillment_domain_projector.py",
+            [
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/runtime/system_capabilities/generated_index.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/system_capabilities/wms/conformance_manifest.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/system_capabilities/wms/conformance_matrix.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/system_capabilities/wms/effect_runtime.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/system_capabilities/wms/fulfillment/request_load_unit_transport/definition.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/system_capabilities/wms/fulfillment/request_rack_transport/definition.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/runtime/system_capabilities/wms/generated_operation_index.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/transport/__init__.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST],
+        ),
+        (
+            "src/app/transport/composition.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST],
+        ),
+        (
+            "src/app/transport/contracts.py",
+            [
+                TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_EVIDENCE_HEAVY_TEST,
+                TRANSPORT_REPOSITORY_HEAVY_TEST,
+                TRANSPORT_SCHEMA_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/transport/models.py",
+            [
+                TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_EVIDENCE_HEAVY_TEST,
+                TRANSPORT_REPOSITORY_HEAVY_TEST,
+                TRANSPORT_SCHEMA_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/transport/repository.py",
+            [
+                TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_EVIDENCE_HEAVY_TEST,
+                TRANSPORT_REPOSITORY_HEAVY_TEST,
+                TRANSPORT_SCHEMA_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/transport/service.py",
+            [
+                TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_EVIDENCE_HEAVY_TEST,
+                TRANSPORT_REPOSITORY_HEAVY_TEST,
+                TRANSPORT_SCHEMA_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/wms_adapter/inbound_auth.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST],
+        ),
+        ("src/app/wms_adapter/__init__.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
+        (
+            "src/app/wms_adapter/transport_event_handler.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_adapter/transport_wire.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST],
+        ),
+        ("src/app/wms_adapter/transport_adapter.py", [TRANSPORT_DARK_LOOP_HEAVY_TEST]),
+        ("src/app/wms_adapter/v1/__init__.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
+        ("src/app/wms_adapter/v1/events.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
+        (
+            "src/app/transport/submit_snapshot.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST],
+        ),
+        (
+            "src/celery_app/config.py",
+            [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST, WMS_DEPLOYMENT_HEAVY_TEST],
+        ),
+        (
+            "src/celery_app/async_runtime.py",
+            [
+                CELERY_ASYNC_RUNTIME_HEAVY_TEST,
+                CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+                CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/celery_app/tasks/transport.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST],
+        ),
+        (
+            "src/celery_app/app.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST],
+        ),
+        ("src/core/task_queue_gateway.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
+        (
+            "src/core/uuid7.py",
+            [TRANSPORT_DARK_LOOP_HEAVY_TEST, TRANSPORT_EVIDENCE_HEAVY_TEST],
+        ),
+        ("src/register.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST]),
+        ("src/app/wms_integration/deployment_attestation.py", [WMS_DEPLOYMENT_HEAVY_TEST]),
+        (
+            "src/app/wms_integration/effect_preparation_runtime.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/endpoint_compiler.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/operation_contract.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/operation_registry.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/ports/effect_preparation.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/ports/effect_status.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/ports/fulfillment_operations.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/provider_manifest.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_integration/provider_profile.py",
+            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+        ),
+        (
+            "tests/support/transport_broker.py",
+            [
+                TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+                TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST,
+                TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST,
+            ],
+        ),
+    ],
+)
+def test_repository_mapping_selects_transport_production_heavy_owners(
+    changed_path: str,
+    expected: list[str],
+) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == expected
 
 
 @pytest.mark.parametrize(
@@ -1187,7 +1476,7 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
         ),
         (
             "src/celery_app/config.py",
-            [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST],
+            [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST, WMS_DEPLOYMENT_HEAVY_TEST],
         ),
         (
             "src/celery_app/tasks/workline.py",
@@ -1402,7 +1691,6 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
 @pytest.mark.parametrize(
     "changed_path",
     [
-        "src/celery_app/app.py",
         "src/app/runtime/system_capabilities/wms/provider_catalog.py",
         "src/app/wms_integration/provider_readiness.py",
         "src/app/wms_integration/effect_lane_runtime.py",
@@ -1506,11 +1794,22 @@ def test_repository_mapping_classifies_local_codex_metadata_as_no_heavy_impact()
     assert select_heavy_tests([".codex/config.toml", ".codex/settings.json"], config) == []
 
 
-def test_repository_mapping_keeps_top_level_dockerfile_fail_closed() -> None:
+def test_repository_mapping_selects_deployment_owner_for_top_level_dockerfile() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
-        select_heavy_tests(["Dockerfile"], config)
+    assert select_heavy_tests(["Dockerfile"], config) == [
+        "tests/e2e/transport/test_transport_production_wiring.py",
+        "tests/integration/test_wms_deployment_attestation.py",
+    ]
+
+
+def test_repository_mapping_selects_deployment_owners_for_production_compose() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["docker-compose.deploy.yml"], config) == [
+        "tests/e2e/transport/test_transport_production_wiring.py",
+        "tests/integration/test_wms_deployment_attestation.py",
+    ]
 
 
 def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:

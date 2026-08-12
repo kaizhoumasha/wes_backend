@@ -22,6 +22,7 @@ SERVICES = {
     "database": "test_prefork",
     "database_url": "postgresql+asyncpg://user:password@127.0.0.1:5432/test_prefork",
     "redis_url": "redis://127.0.0.1:6379/15",
+    "wms_provider_profile_file": "test-wms-provider.yaml",
 }
 
 
@@ -65,6 +66,38 @@ def test_worker_popen_failure_closes_and_removes_unowned_temporary_resources(
     assert worker._log_file is not None and worker._log_file.closed
     assert worker.log_path is not None and not worker.log_path.exists()
     assert worker.project_log_dir is not None and not worker.project_log_dir.exists()
+
+
+def test_worker_log_preserves_probe_markers_across_subprocess_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = harness.PreforkWorker(SERVICES)
+    fake_process = type("FakeProcess", (), {"pid": 43210})()
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake_process)
+    monkeypatch.setattr(
+        harness,
+        "_wait_until",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("injected readiness failure")),
+    )
+    monkeypatch.setattr(worker, "stop", lambda **kwargs: None)
+
+    with pytest.raises(AssertionError, match="injected readiness failure"):
+        worker.start()
+
+    assert worker.log_path is not None
+    monkeypatch.setenv("PREFORK_PROBE_LOG", str(worker.log_path))
+    worker._log_file.write("worker-before\n")
+    worker._log_file.flush()
+    harness._write_probe_marker("probe-between-worker-lines")
+    worker._log_file.write("worker-after\n")
+    worker._log_file.flush()
+
+    log_text = worker.log_path.read_text(encoding="utf-8")
+    assert "worker-before\n" in log_text
+    assert 'PREFORK_MARKER {"kind": "probe-between-worker-lines"' in log_text
+    assert "worker-after\n" in log_text
+    worker._log_file.close()
+    worker.log_path.unlink(missing_ok=True)
+    if worker.project_log_dir is not None:
+        worker.project_log_dir.rmdir()
 
 
 def test_worker_stop_kills_surviving_process_group_and_aggregates_cleanup_errors(

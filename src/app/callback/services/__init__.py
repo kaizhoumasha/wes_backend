@@ -14,14 +14,12 @@ from src.app.callback.services.callback_orchestration_service import (
     CallbackOrchestrationService,
     callback_orchestration_service,
 )
-from src.app.callback.services.wms_inbound_auth import WmsInboundAuthPolicy
 
 __all__ = [
     "CallbackIngressService",
     "CallbackLogService",
     "CallbackOrchestrationService",
     "CallbackProviderProfileAdmissionService",
-    "WmsInboundAuthPolicy",
     "callback_ingress_service",
     "callback_log_service",
     "callback_orchestration_service",

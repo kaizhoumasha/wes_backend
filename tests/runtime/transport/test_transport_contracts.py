@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -28,9 +29,17 @@ from src.app.transport.contracts import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+_REQUEST_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4471"
+
 
 def _caller() -> TransportCaller:
-    return TransportCaller(workline_id="SORTER", station_id="STATION_A", correlation_id="run-1")
+    return TransportCaller(workline_id="SORTER", station_id="STATION_A")
+
+
+def test_transport_service_does_not_depend_on_wms_adapter() -> None:
+    service_source = (Path(__file__).resolve().parents[3] / "src/app/transport/service.py").read_text(encoding="utf-8")
+
+    assert "src.app.wms_adapter" not in service_source
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,12 +61,12 @@ def test_four_request_contracts_accept_minimal_valid_data() -> None:
     source = RackPosition("ROUGH_SORTER")
     target = RackPosition("STATION_A")
 
-    assert MoveRackRequest("req-rack", _caller(), "rack-1", source, target).rack_id == "rack-1"
-    assert RotateRackRequest("req-rotate", _caller(), "rack-1", target, RackFace.B).target_face is RackFace.B
+    assert MoveRackRequest(_REQUEST_ID, _caller(), "rack-1", source, target).rack_id == "rack-1"
+    assert RotateRackRequest(_REQUEST_ID, _caller(), "rack-1", target, RackFace.B).target_face is RackFace.B
     assert (
         len(
             MoveBinsRequest(
-                "req-bins",
+                _REQUEST_ID,
                 _caller(),
                 (BinMove("bin-1", RackBinSlot("rack-1", "1-1"), HandoffPosition("ROLLER_IN")),),
             ).moves
@@ -67,7 +76,7 @@ def test_four_request_contracts_accept_minimal_valid_data() -> None:
     assert (
         len(
             ExchangeBinsRequest(
-                "req-exchange",
+                _REQUEST_ID,
                 _caller(),
                 (BinExchangePair("full-1", RackBinSlot("rack-1", "1-1"), "empty-1", RackBinSlot("rack-2", "1-1")),),
             ).exchange_pairs
@@ -76,20 +85,30 @@ def test_four_request_contracts_accept_minimal_valid_data() -> None:
     )
 
 
+@pytest.mark.parametrize("client_request_id", ["request-1", "019f12d0-58d7-4b4d-a23a-1b90aa5d4471"])
+def test_request_contracts_require_uuid7_client_request_id(client_request_id: str) -> None:
+    with pytest.raises(TransportContractError, match="client_request_id must be a UUIDv7"):
+        MoveRackRequest(
+            client_request_id,
+            _caller(),
+            "rack-1",
+            RackPosition("SOURCE"),
+            RackPosition("TARGET"),
+        )
+
+
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda caller: MoveRackRequest(
-            "req-rack-caller", caller, "rack-1", RackPosition("SOURCE"), RackPosition("TARGET")
-        ),
-        lambda caller: RotateRackRequest("req-rotate-caller", caller, "rack-1", RackPosition("ROTATE"), RackFace.B),
+        lambda caller: MoveRackRequest(_REQUEST_ID, caller, "rack-1", RackPosition("SOURCE"), RackPosition("TARGET")),
+        lambda caller: RotateRackRequest(_REQUEST_ID, caller, "rack-1", RackPosition("ROTATE"), RackFace.B),
         lambda caller: MoveBinsRequest(
-            "req-bin-caller",
+            _REQUEST_ID,
             caller,
             (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),),
         ),
         lambda caller: ExchangeBinsRequest(
-            "req-exchange-caller",
+            _REQUEST_ID,
             caller,
             (BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1")),),
         ),
@@ -106,14 +125,14 @@ def test_requests_reject_untyped_caller(factory: Callable[[TransportCaller], obj
     "factory",
     [
         lambda: MoveRackRequest(
-            "req-rack-type",
+            _REQUEST_ID,
             _caller(),
             "rack-1",
             HandoffPosition("ROLLER_IN"),
             RackPosition("STATION_A"),
         ),
         lambda: RotateRackRequest(
-            "req-rotate-type",
+            _REQUEST_ID,
             _caller(),
             "rack-1",
             HandoffPosition("ROLLER_IN"),
@@ -150,7 +169,7 @@ def test_position_discriminator_cannot_be_overridden(position_type: object, args
     "factory",
     [
         lambda: MoveRackRequest(
-            "req-kind-rack",
+            _REQUEST_ID,
             _caller(),
             "rack-1",
             RackPosition("A"),
@@ -158,7 +177,7 @@ def test_position_discriminator_cannot_be_overridden(position_type: object, args
             kind=TransportTaskKind.BIN_MOVE,
         ),
         lambda: RotateRackRequest(
-            "req-kind-rotate",
+            _REQUEST_ID,
             _caller(),
             "rack-1",
             RackPosition("ROTATE"),
@@ -166,13 +185,13 @@ def test_position_discriminator_cannot_be_overridden(position_type: object, args
             kind=TransportTaskKind.BIN_EXCHANGE,
         ),
         lambda: MoveBinsRequest(
-            "req-kind-bins",
+            _REQUEST_ID,
             _caller(),
             (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("IN")),),
             kind=TransportTaskKind.RACK_MOVE,
         ),
         lambda: ExchangeBinsRequest(
-            "req-kind-exchange",
+            _REQUEST_ID,
             _caller(),
             (BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1")),),
             kind=TransportTaskKind.RACK_ROTATE,
@@ -188,14 +207,14 @@ def test_request_kind_is_fixed_by_request_type(factory: Callable[[], object]) ->
     "factory",
     [
         lambda: MoveRackRequest(
-            "req-vendor-rack",
+            _REQUEST_ID,
             _caller(),
             "rack-1",
             VendorRackPosition("STATION_A"),
             RackPosition("STATION_B"),
         ),
         lambda: RotateRackRequest(
-            "req-vendor-rotate",
+            _REQUEST_ID,
             _caller(),
             "rack-1",
             VendorRackPosition("ROTATE_POINT"),
@@ -220,7 +239,7 @@ def test_requests_reject_position_subclasses_with_extra_wire_fields(factory: Cal
 def test_exchange_rejects_pair_count_outside_one_to_two(count: int) -> None:
     pair = BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1"))
     with pytest.raises(TransportContractError):
-        ExchangeBinsRequest("req", _caller(), tuple(pair for _ in range(count)))
+        ExchangeBinsRequest(_REQUEST_ID, _caller(), tuple(pair for _ in range(count)))
 
 
 def test_exchange_rejects_reused_bin_or_slot_across_pairs() -> None:
@@ -229,16 +248,16 @@ def test_exchange_rejects_reused_bin_or_slot_across_pairs() -> None:
     reused_slot = BinExchangePair("bin-3", RackBinSlot("rack-1", "1"), "bin-4", RackBinSlot("rack-4", "1"))
 
     with pytest.raises(TransportContractError):
-        ExchangeBinsRequest("req-bin", _caller(), (first, reused_bin))
+        ExchangeBinsRequest(_REQUEST_ID, _caller(), (first, reused_bin))
     with pytest.raises(TransportContractError):
-        ExchangeBinsRequest("req-slot", _caller(), (first, reused_slot))
+        ExchangeBinsRequest(_REQUEST_ID, _caller(), (first, reused_slot))
 
 
 @pytest.mark.parametrize(
     "factory",
     [
         lambda: MoveRackRequest(
-            "same-rack-position",
+            _REQUEST_ID,
             _caller(),
             "rack-1",
             RackPosition("SAME"),
@@ -258,7 +277,7 @@ def test_requests_reject_degenerate_moves_and_exchanges(factory: Callable[[], ob
 def test_rotation_rejects_target_face_outside_closed_enum() -> None:
     with pytest.raises(TransportContractError, match="target_face must be A or B"):
         RotateRackRequest(
-            "invalid-face",
+            _REQUEST_ID,
             _caller(),
             "rack-1",
             RackPosition("ROTATE"),
@@ -297,15 +316,15 @@ def test_move_bins_accepts_four_members_and_rejects_five() -> None:
         BinMove(f"bin-{index}", RackBinSlot("rack", str(index)), HandoffPosition("ROLLER_IN")) for index in range(5)
     )
 
-    assert len(MoveBinsRequest("req-4", _caller(), moves[:4]).moves) == 4
+    assert len(MoveBinsRequest(_REQUEST_ID, _caller(), moves[:4]).moves) == 4
     with pytest.raises(TransportContractError):
-        MoveBinsRequest("req-5", _caller(), moves)
+        MoveBinsRequest(_REQUEST_ID, _caller(), moves)
 
 
 def test_move_bins_allows_shared_handoff_but_not_shared_rack_slot() -> None:
     shared_handoff = HandoffPosition("ROLLER_IN")
     request = MoveBinsRequest(
-        "req-ok",
+        _REQUEST_ID,
         _caller(),
         (
             BinMove("bin-1", RackBinSlot("rack", "1"), shared_handoff),
@@ -316,7 +335,7 @@ def test_move_bins_allows_shared_handoff_but_not_shared_rack_slot() -> None:
 
     with pytest.raises(TransportContractError):
         MoveBinsRequest(
-            "req-bad",
+            _REQUEST_ID,
             _caller(),
             (
                 BinMove("bin-1", RackBinSlot("rack", "1"), shared_handoff),
@@ -360,7 +379,7 @@ def test_identifiers_fail_closed(value: str) -> None:
             RackPosition("TARGET"),
         ),
         lambda: MoveRackRequest(
-            "request-long-rack",
+            _REQUEST_ID,
             _caller(),
             "r" * 101,
             RackPosition("SOURCE"),
@@ -376,3 +395,13 @@ def test_persisted_request_identifiers_reject_values_larger_than_database_column
 ) -> None:
     with pytest.raises(TransportContractError):
         factory()
+
+
+def test_transport_caller_keeps_only_local_routing_fields() -> None:
+    caller = TransportCaller("SORTER", "STATION_A")
+
+    assert (caller.workline_id, caller.station_id) == ("SORTER", "STATION_A")
+    with pytest.raises(TypeError):
+        TransportCaller("SORTER", "STATION_A", "legacy-correlation")
+    with pytest.raises(TypeError):
+        TransportCaller("SORTER", "STATION_A", correlation_id="legacy-correlation")

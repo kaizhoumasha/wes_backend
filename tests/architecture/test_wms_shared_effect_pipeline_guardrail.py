@@ -18,7 +18,7 @@ def test_each_effect_definition_is_only_a_thin_builder_composition() -> None:
         domain, action = capability_key.removeprefix("wms.").split(".", maxsplit=1)
         definition_paths.append(CAPABILITY_ROOT / domain / action / "definition.py")
 
-    assert len(definition_paths) == 13
+    assert len(definition_paths) == 11
     assert all(path.is_file() for path in definition_paths)
     for path in definition_paths:
         source = path.read_text(encoding="utf-8")

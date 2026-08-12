@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """创建 Phase 4 Transport 聚合表和领取索引。"""
+    """创建 Phase 6 最终 Transport 聚合表、可靠领取与收敛索引。"""
 
     op.create_table(
         "transport_tasks",
@@ -31,6 +31,10 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(length=30), nullable=False),
         sa.Column("caller_json", sa.JSON(), nullable=False),
         sa.Column("request_json", sa.JSON(), nullable=False),
+        sa.Column("submit_operation_id", sa.String(length=36), nullable=False),
+        sa.Column("submit_timestamp_ms", sa.BigInteger(), nullable=False),
+        sa.Column("submit_payload_json", sa.JSON(), nullable=False),
+        sa.Column("submit_payload_digest", sa.String(length=64), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
         sa.Column("reason_code", sa.String(length=120), nullable=True),
         sa.Column("submit_attempt_count", sa.Integer(), nullable=False),
@@ -102,7 +106,7 @@ def upgrade() -> None:
         sa.Column("position_unknown", sa.Boolean(), nullable=False),
         sa.Column("failure_code", sa.String(length=120), nullable=True),
         sa.Column("arrival_face", sa.String(length=1), nullable=True),
-        sa.Column("last_event_id", sa.String(length=120), nullable=True),
+        sa.Column("last_operation_id", sa.String(length=36), nullable=True),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(
             ["transport_task_id"],
@@ -124,11 +128,14 @@ def upgrade() -> None:
     op.create_table(
         "transport_evidence",
         sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("event_id", sa.String(length=120), nullable=False),
+        sa.Column("operation_id", sa.String(length=36), nullable=False),
         sa.Column("transport_task_id", sa.String(length=80), nullable=False),
         sa.Column("operation", sa.String(length=80), nullable=False),
+        sa.Column("event_timestamp_ms", sa.BigInteger(), nullable=False),
         sa.Column("payload_digest", sa.String(length=64), nullable=False),
         sa.Column("payload_json", sa.JSON(), nullable=False),
+        sa.Column("ack_timestamp_ms", sa.BigInteger(), nullable=False),
+        sa.Column("ack_data_json", sa.JSON(), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
         sa.Column("claim_token", sa.String(length=80), nullable=True),
         sa.Column("claim_until", sa.DateTime(), nullable=True),
@@ -137,7 +144,9 @@ def upgrade() -> None:
         sa.Column("conflict_code", sa.String(length=120), nullable=True),
         sa.CheckConstraint("status IN ('PENDING', 'APPLIED', 'CONFLICT')", name="transport_evidence_status_valid"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_transport_evidence")),
-        sa.UniqueConstraint("operation", "event_id", name="ux_transport_evidence_operation_event_id"),
+        sa.UniqueConstraint(
+            "operation", "operation_id", name="ux_transport_evidence_operation_operation_id"
+        ),
         schema="wes_runtime",
     )
     op.create_index(
@@ -162,7 +171,7 @@ def upgrade() -> None:
         sa.Column("position_json", sa.JSON(), nullable=True),
         sa.Column("position_unknown", sa.Boolean(), nullable=False),
         sa.Column("arrival_face", sa.String(length=1), nullable=True),
-        sa.Column("source_event_id", sa.String(length=120), nullable=False),
+        sa.Column("source_operation_id", sa.String(length=36), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_transport_position_projections")),
         sa.UniqueConstraint("object_type", "object_id", name="ux_transport_position_projection_object"),
@@ -202,7 +211,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """移除 Phase 4 Transport 聚合表。"""
+    """移除 Phase 6 最终 Transport 聚合表与相关索引。"""
 
     op.drop_index(
         "ux_transport_resource_bindings_active", table_name="transport_resource_bindings", schema="wes_runtime"

@@ -1,4 +1,0 @@
-from src.app.runtime.system_capabilities.wms.effect_runtime import build_wms_effect_capability_definition
-from src.app.wms_integration.ports.fulfillment_operations import REQUEST_RACK_TRANSPORT
-
-DEFINITION = build_wms_effect_capability_definition(REQUEST_RACK_TRANSPORT)

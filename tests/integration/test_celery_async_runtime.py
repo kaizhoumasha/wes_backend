@@ -110,6 +110,7 @@ def _runtime_module() -> ModuleType:
 
 def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> SimpleNamespace:
     from src.app.runtime.system_capabilities.wms import provider_catalog
+    from src.app.transport import composition as transport_composition
     from src.app.wms_integration import effect_lane_runtime, effect_preparation_runtime, query_runtime
     from src.database import db as db_module
     from src.database import redis_client as redis_module
@@ -133,8 +134,18 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         build_wms_data_lane_query_runtime=MagicMock(return_value=SimpleNamespace()),
         bind_wms_data_lane_query_runtime=MagicMock(),
         close_bound_wms_data_lane_query_runtime=AsyncMock(),
+        validate_transport_runtime_profile=MagicMock(),
+        transport_runtimes=[],
+        build_transport_runtime=AsyncMock(),
     )
+
+    def build_transport_runtime(**_: object) -> SimpleNamespace:
+        runtime = SimpleNamespace(aclose=AsyncMock())
+        infra.transport_runtimes.append(runtime)
+        return runtime
+
     infra.validate_wms_transport_configuration.return_value = infra.startup
+    infra.build_transport_runtime.side_effect = build_transport_runtime
     infra.build_wms_effect_lane_runtime.return_value = infra.effect_runtime
     infra.build_wms_effect_preparation_runtime.return_value = infra.effect_preparation_runtime
     redis_manager = SimpleNamespace(
@@ -144,6 +155,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     )
     monkeypatch.setattr(db_module, "init_db", infra.init_db)
     monkeypatch.setattr(db_module, "close_db", infra.close_db)
+    monkeypatch.setattr(db_module, "AsyncSessionLocal", MagicMock())
     monkeypatch.setattr(redis_module, "redis_manager", redis_manager)
     monkeypatch.setattr(module, "init_db", infra.init_db, raising=False)
     monkeypatch.setattr(module, "close_db", infra.close_db, raising=False)
@@ -152,6 +164,16 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         provider_catalog,
         "validate_wms_transport_configuration",
         infra.validate_wms_transport_configuration,
+    )
+    monkeypatch.setattr(
+        transport_composition,
+        "validate_transport_runtime_profile",
+        infra.validate_transport_runtime_profile,
+    )
+    monkeypatch.setattr(
+        transport_composition,
+        "build_transport_runtime",
+        infra.build_transport_runtime,
     )
     monkeypatch.setattr(
         effect_lane_runtime,
@@ -219,13 +241,17 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     assert first_runtime.runner_generation is None
 
     first_runtime.initialize()
+    first_transport_runtime = first_runtime.transport_runtime
     assert infra.build_wms_data_lane_query_runtime.call_args.kwargs["client"] is infra.effect_runtime.client
     assert infra.build_wms_effect_preparation_runtime.call_args.kwargs["catalog"] is infra.startup.catalog
     first_generation = first_runtime.runner_generation
     assert isinstance(first_generation, str) and first_generation
     first_runtime.initialize()
     assert first_runtime.runner_generation == first_generation
+    assert first_runtime.transport_runtime is first_transport_runtime
+    assert infra.build_transport_runtime.await_count == 1
     first_runtime.shutdown()
+    first_transport_runtime.aclose.assert_awaited_once()
     infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
     infra.close_wms_effect_preparation_runtime.assert_awaited_once_with(infra.effect_preparation_runtime)
     assert first_runtime.runner_generation is None
@@ -233,6 +259,7 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     second_runtime = module.CeleryAsyncRuntime(process_role=WmsProviderProcessRole.WES)
     second_runtime.initialize()
     assert second_runtime.runner_generation != first_generation
+    assert second_runtime.transport_runtime is not first_transport_runtime
     second_runtime.shutdown()
 
 
@@ -275,6 +302,7 @@ def test_runner_generation_failure_rolls_back_all_candidates(monkeypatch: pytest
     assert runtime._runner is None
     assert runtime.runner_generation is None
     assert runtime._owner_pid is None
+    infra.transport_runtimes[0].aclose.assert_awaited_once()
     infra.close_redis.assert_awaited_once()
     infra.close_db.assert_awaited_once()
 
@@ -627,16 +655,61 @@ def test_worker_process_signal_initializes_child_before_first_message(monkeypatc
     runtime.shutdown()
 
 
-def test_runtime_rejects_fork_inherited_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_rebuilds_fork_inherited_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
-    _patch_infrastructure(monkeypatch, module)
+    infra = _patch_infrastructure(monkeypatch, module)
     runtime = _install_runtime(monkeypatch, module)
     runtime.initialize()
+    inherited_runner = runtime._runner
+    inherited_generation = runtime.runner_generation
+    inherited_transport_runtime = runtime.transport_runtime
     owner_pid = os.getpid()
     monkeypatch.setattr(os, "getpid", lambda: owner_pid + 1)
 
-    with pytest.raises(RuntimeError, match=r"(?i)(owner|pid|fork)"):
-        runtime.run_async(lambda: asyncio.sleep(0))
+    try:
+        assert runtime.run_async(lambda: asyncio.sleep(0, result="rebuilt")) == "rebuilt"
+        assert runtime.runner_generation != inherited_generation
+        assert runtime.transport_runtime is not inherited_transport_runtime
+        assert infra.init_db.await_count == 2
+        assert infra.build_transport_runtime.await_count == 2
+    finally:
+        runtime.shutdown()
+        if inherited_runner is not None:
+            inherited_runner.close()
+
+
+def test_transport_profile_rejection_precedes_worker_database_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    infra.validate_transport_runtime_profile.side_effect = ValueError(
+        "Transport runtime requires inbound_auth.scheme=NONE"
+    )
+
+    with pytest.raises(ValueError, match=r"inbound_auth\.scheme=NONE"):
+        runtime.initialize()
+
+    infra.init_db.assert_not_awaited()
+    infra.build_transport_runtime.assert_not_awaited()
+    assert runtime.state is module.RuntimeState.NEW
+
+
+def test_transport_runtime_build_failure_rolls_back_database_without_publishing_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    infra.build_transport_runtime.side_effect = RuntimeError("transport runtime build failed")
+
+    with pytest.raises(RuntimeError, match="transport runtime build failed"):
+        runtime.initialize()
+
+    infra.close_db.assert_awaited_once()
+    assert runtime.transport_runtime is None
+    assert runtime.state is module.RuntimeState.NEW
 
 
 def test_each_message_runs_with_a_fresh_context(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1174,6 +1247,70 @@ def test_failed_init_after_database_publish_rolls_back_in_order_and_retries(
     runtime.shutdown()
 
 
+def test_failed_init_rollback_gives_every_cleanup_stage_its_own_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    events: list[str] = []
+
+    async def record(name: str) -> None:
+        await asyncio.sleep(0.01)
+        events.append(name)
+
+    async def close_redis() -> None:
+        await record("redis")
+
+    async def close_data() -> None:
+        await record("wms-data")
+
+    async def close_preparation(_runtime: object) -> None:
+        await record("preparation")
+
+    async def close_effect() -> None:
+        await record("effect")
+
+    async def close_database() -> None:
+        await record("database")
+
+    transport_runtime = SimpleNamespace(aclose=lambda: record("transport"))
+    preparation_runtime = object()
+    infra.close_redis.side_effect = close_redis
+    infra.close_bound_wms_data_lane_query_runtime.side_effect = close_data
+    infra.close_wms_effect_preparation_runtime.side_effect = close_preparation
+    infra.close_bound_wms_effect_lane_runtime.side_effect = close_effect
+    infra.close_db.side_effect = close_database
+    monkeypatch.setattr(module, "SHUTDOWN_STAGE_TIMEOUT_SECONDS", 0.05)
+
+    asyncio.run(
+        module.CeleryAsyncRuntime._rollback_failed_initialization(
+            effect_preparation_runtime=preparation_runtime,
+            transport_runtime=transport_runtime,
+        )
+    )
+
+    assert events == ["redis", "wms-data", "transport", "preparation", "effect", "database"]
+
+
+def test_normal_shutdown_permanently_rejects_initialize_and_run_async(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    factory = MagicMock()
+
+    runtime.initialize()
+    runtime.shutdown()
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="CLOSED"):
+            runtime.initialize()
+        with pytest.raises(RuntimeError, match="CLOSED"):
+            runtime.run_async(factory)
+    factory.assert_not_called()
+
+
 class _PendingInitRunnerProbe:
     def __init__(self) -> None:
         self._runner = _REAL_ASYNCIO_RUNNER()
@@ -1261,7 +1398,7 @@ class _ShutdownFaultRunnerProbe(_RunnerProbe):
         return super().run(coroutine, context=context)
 
 
-@pytest.mark.parametrize("failure_call", [1, 2, 3, 4, 5, 6, 7])
+@pytest.mark.parametrize("failure_call", [1, 2, 3, 4, 5, 6, 7, 8])
 def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     failure_call: int,
@@ -1278,7 +1415,7 @@ def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     with _sync_watchdog(0.50, f"shutdown runner.run failure {failure_call}"):
         runtime.shutdown()
 
-    assert probe.shutdown_run_calls == 7
+    assert probe.shutdown_run_calls == 8
     if failure_call != 2:
         infra.close_redis.assert_awaited_once()
     if failure_call != 3:
@@ -1286,12 +1423,14 @@ def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     if failure_call != 4:
         infra.close_wms_effect_preparation_runtime.assert_awaited_once_with(infra.effect_preparation_runtime)
     if failure_call != 5:
-        infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
+        infra.transport_runtimes[0].aclose.assert_awaited_once()
     if failure_call != 6:
+        infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
+    if failure_call != 7:
         infra.close_db.assert_awaited_once()
     assert runtime.state is module.RuntimeState.CLOSED
     assert runtime._runner is None
     assert runtime._owner_pid is None
 
     runtime.shutdown()
-    assert probe.shutdown_run_calls == 7
+    assert probe.shutdown_run_calls == 8

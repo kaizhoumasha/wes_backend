@@ -41,14 +41,12 @@ EXPECTED_EFFECT_IDENTITIES = (
     "wms.inventory.confirm_return_putaway@v1",
     "wms.fulfillment.notify_pkg_binding@v1",
     "wms.fulfillment.request_rack_supply@v1",
-    "wms.fulfillment.request_rack_transport@v1",
     "wms.fulfillment.change_rack_face@v1",
-    "wms.fulfillment.request_load_unit_transport@v1",
     "wms.fulfillment.publish_manual_task@v1",
     "wms.fulfillment.cancel_request@v1",
 )
-EXPECTED_SYNC_EFFECTS = frozenset((*EXPECTED_EFFECT_IDENTITIES[:7], *EXPECTED_EFFECT_IDENTITIES[11:]))
-EXPECTED_ASYNC_EFFECTS = frozenset(EXPECTED_EFFECT_IDENTITIES[7:11])
+EXPECTED_SYNC_EFFECTS = frozenset((*EXPECTED_EFFECT_IDENTITIES[:7], *EXPECTED_EFFECT_IDENTITIES[9:]))
+EXPECTED_ASYNC_EFFECTS = frozenset(EXPECTED_EFFECT_IDENTITIES[7:9])
 LIST_QUERY_IDENTITIES = frozenset(
     {
         "wms.master_data.list_materials@v1",
@@ -69,7 +67,7 @@ def _load(module_name: str):
     return importlib.import_module(module_name)
 
 
-def test_static_registry_freezes_exactly_31_unique_operation_identities() -> None:
+def test_static_registry_freezes_exactly_29_unique_operation_identities() -> None:
     registry = _load("src.app.wms_integration.operation_registry")
 
     assert tuple(item.identity for item in registry.QUERY_OPERATIONS) == EXPECTED_QUERY_IDENTITIES
@@ -78,9 +76,17 @@ def test_static_registry_freezes_exactly_31_unique_operation_identities() -> Non
         *EXPECTED_QUERY_IDENTITIES,
         *EXPECTED_EFFECT_IDENTITIES,
     )
-    assert len(registry.WMS_OPERATION_BY_IDENTITY) == len(registry.WMS_OPERATIONS) == 31
-    assert len({item.request_model for item in registry.WMS_OPERATIONS}) == 31
-    assert len({item.result_model for item in registry.WMS_OPERATIONS}) == 31
+    assert len(registry.WMS_OPERATION_BY_IDENTITY) == len(registry.WMS_OPERATIONS) == 29
+    assert len({item.request_model for item in registry.WMS_OPERATIONS}) == 29
+    assert len({item.result_model for item in registry.WMS_OPERATIONS}) == 29
+
+
+def test_legacy_wms_transport_effect_owners_are_absent_while_rack_supply_remains() -> None:
+    registry = _load("src.app.wms_integration.operation_registry")
+
+    assert "wms.fulfillment.request_rack_supply@v1" in registry.WMS_OPERATION_BY_IDENTITY
+    assert "wms.fulfillment.request_rack_transport@v1" not in registry.WMS_OPERATION_BY_IDENTITY
+    assert "wms.fulfillment.request_load_unit_transport@v1" not in registry.WMS_OPERATION_BY_IDENTITY
 
 
 def test_every_typed_definition_owns_strict_models_and_frozen_budgets() -> None:

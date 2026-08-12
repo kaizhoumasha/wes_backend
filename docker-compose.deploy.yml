@@ -3,7 +3,7 @@ services:
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
     container_name: wes_api_${ENV:-prod}
     restart: ${RESTART_POLICY:-unless-stopped}
-    ports:
+    ports: !override
       - "${APP_HOST_PORT:-8001}:8001"
     env_file:
       - ${BACKEND_ENV_FILE:-.env}
@@ -219,7 +219,7 @@ services:
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
     container_name: wes_flower_${ENV:-prod}
     restart: ${RESTART_POLICY:-unless-stopped}
-    ports:
+    ports: !override
       - "${FLOWER_PORT:-5555}:5555"
     command: >
       celery -A src.celery_app.app flower

@@ -31,7 +31,7 @@ def test_all_18_queries_freeze_only_from_compiled_profile(operation) -> None:
 
 
 @pytest.mark.parametrize("operation", ASYNC_EFFECT_OPERATIONS, ids=lambda operation: operation.identity)
-def test_all_7_async_effects_freeze_get_status_binding_from_compiled_profile(operation) -> None:
+def test_all_async_effects_freeze_get_status_binding_from_compiled_profile(operation) -> None:
     catalog = build_provider_catalog()
     compiled_endpoint = catalog.compiled_profile.operations[operation.identity]
 
@@ -40,7 +40,7 @@ def test_all_7_async_effects_freeze_get_status_binding_from_compiled_profile(ope
         operation_identity=operation.identity,
     )
 
-    assert len(ASYNC_EFFECT_OPERATIONS) == 4
+    assert len(ASYNC_EFFECT_OPERATIONS) == 2
     assert compiled_endpoint.status_endpoint is not None
     assert frozen.operation_identity == operation.identity
     assert frozen.target_snapshot.code == operation.target_code

@@ -58,20 +58,6 @@ class RequestRackSupplyResult(EffectResult):
     task_outcome: Literal["SUCCESS", "FAILED_AFTER_EXECUTION"]
 
 
-class RequestRackTransportRequest(EffectRequest):
-    rack_id: StableText = Field(max_length=120)
-    source_location_code: StableText = Field(max_length=120)
-    destination_station_code: StableText = Field(max_length=120)
-
-
-class RequestRackTransportResult(EffectResult):
-    rack_id: StableText = Field(max_length=120)
-    source_location_code: StableText = Field(max_length=120)
-    destination_station_code: StableText = Field(max_length=120)
-    final_location_code: StableText = Field(max_length=120)
-    task_outcome: Literal["SUCCESS", "FAILED_AFTER_EXECUTION"]
-
-
 class ChangeRackFaceRequest(EffectRequest):
     rack_id: StableText = Field(max_length=120)
     station_code: StableText = Field(max_length=120)
@@ -139,20 +125,6 @@ def validate_effect_provider_reference(
 
     if provider_reference != ack.provider_reference:
         raise ValueError(f"{evidence_kind} provider_reference does not match ACK")
-
-
-class RequestLoadUnitTransportRequest(EffectRequest):
-    load_unit_id: StableText = Field(max_length=160)
-    load_unit_type: Literal["PALLET", "MAGAZINE", "OTHER"]
-    source_location_code: StableText = Field(max_length=120)
-    destination_location_code: StableText = Field(max_length=120)
-
-
-class RequestLoadUnitTransportResult(EffectResult):
-    load_unit_id: StableText = Field(max_length=160)
-    load_unit_type: Literal["PALLET", "MAGAZINE", "OTHER"]
-    final_location_code: StableText = Field(max_length=120)
-    task_outcome: Literal["SUCCESS", "FAILED_AFTER_EXECUTION"]
 
 
 class PublishManualTaskRequest(EffectRequest):
@@ -231,17 +203,6 @@ REQUEST_RACK_SUPPLY = effect_operation(
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
     domain_projection_kind=WmsDomainProjectionKind.RACK_SUPPLY_DEMAND,
 )
-REQUEST_RACK_TRANSPORT = effect_operation(
-    identity="wms.fulfillment.request_rack_transport@v1",
-    request_model=RequestRackTransportRequest,
-    result_model=RequestRackTransportResult,
-    path_template="/fulfillment/rack-transport",
-    target_code="WMS_FULFILLMENT_REQUEST_RACK_TRANSPORT",
-    reject_codes=("RACK_NOT_FOUND", "RACK_LOCKED", "DESTINATION_BLOCKED"),
-    completion_mode=WmsCompletionMode.ASYNC_TASK,
-    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
-    domain_projection_kind=WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND,
-)
 CHANGE_RACK_FACE = effect_operation(
     identity="wms.fulfillment.change_rack_face@v1",
     request_model=ChangeRackFaceRequest,
@@ -249,16 +210,6 @@ CHANGE_RACK_FACE = effect_operation(
     path_template="/fulfillment/rack-face-change",
     target_code="WMS_FULFILLMENT_CHANGE_RACK_FACE",
     reject_codes=("RACK_NOT_FOUND", "RACK_NOT_AT_STATION", "FACE_CHANGE_BLOCKED"),
-    completion_mode=WmsCompletionMode.ASYNC_TASK,
-    execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
-)
-REQUEST_LOAD_UNIT_TRANSPORT = effect_operation(
-    identity="wms.fulfillment.request_load_unit_transport@v1",
-    request_model=RequestLoadUnitTransportRequest,
-    result_model=RequestLoadUnitTransportResult,
-    path_template="/fulfillment/load-unit-transport",
-    target_code="WMS_FULFILLMENT_REQUEST_LOAD_UNIT_TRANSPORT",
-    reject_codes=("LOAD_UNIT_NOT_FOUND", "LOAD_UNIT_LOCKED", "DESTINATION_BLOCKED"),
     completion_mode=WmsCompletionMode.ASYNC_TASK,
     execution_lane=WmsExecutionLane.WMS_FULFILLMENT,
 )
@@ -288,9 +239,7 @@ CANCEL_REQUEST = effect_operation(
 OPERATIONS = (
     NOTIFY_PKG_BINDING,
     REQUEST_RACK_SUPPLY,
-    REQUEST_RACK_TRANSPORT,
     CHANGE_RACK_FACE,
-    REQUEST_LOAD_UNIT_TRANSPORT,
     PUBLISH_MANUAL_TASK,
     CANCEL_REQUEST,
 )

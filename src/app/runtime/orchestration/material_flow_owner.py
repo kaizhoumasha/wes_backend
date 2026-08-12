@@ -32,7 +32,7 @@ class MaterialFlowOwner(BaseMixin, table=True):
             name="object_type",
         ),
         CheckConstraint(
-            "owner_type IN ('FULL_BOX_EXCHANGE', 'STATION_TRANSPORT', 'PIECE_SORTING')",
+            "owner_type IN ('FULL_BOX_EXCHANGE', 'PIECE_SORTING')",
             name="owner_type",
         ),
         CheckConstraint(

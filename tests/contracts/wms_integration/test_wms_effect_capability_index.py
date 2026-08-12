@@ -1,4 +1,4 @@
-"""13 项 WMS EFFECT 的 System Capability 静态索引合同。"""
+"""11 项 WMS EFFECT 的 System Capability 静态索引合同。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from src.app.wms_integration.ports.effect_preparation import WmsEffectPreparatio
 
 
 def test_all_effect_operations_are_thin_shared_capability_compositions() -> None:
-    assert len(EFFECT_OPERATIONS) == 13
+    assert len(EFFECT_OPERATIONS) == 11
 
     for operation in EFFECT_OPERATIONS:
         capability_key, contract_version = operation.identity.rsplit("@", maxsplit=1)
@@ -32,7 +32,7 @@ def test_all_effect_operations_are_thin_shared_capability_compositions() -> None
         assert definition.timeout_seconds == operation.budget.deadline_seconds
 
 
-def test_effect_mode_and_lane_are_the_exact_static_nine_four_matrix() -> None:
+def test_effect_mode_and_lane_are_the_exact_static_nine_two_matrix() -> None:
     sync_identities = {
         operation.identity
         for operation in EFFECT_OPERATIONS
@@ -53,9 +53,9 @@ def test_effect_mode_and_lane_are_the_exact_static_nine_four_matrix() -> None:
     }
 
     assert len(sync_identities) == 9
-    assert len(async_identities) == 4
+    assert len(async_identities) == 2
     assert len(data_identities) == 8
-    assert len(fulfillment_identities) == 5
+    assert len(fulfillment_identities) == 3
     assert "wms.fulfillment.publish_manual_task@v1" in sync_identities & data_identities
     assert "wms.fulfillment.cancel_request@v1" in sync_identities & fulfillment_identities
     assert async_identities <= fulfillment_identities

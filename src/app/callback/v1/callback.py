@@ -30,8 +30,8 @@ from src.app.callback.models import (
 )
 from src.app.callback.services import callback_ingress_service
 from src.app.callback.services.callback_ingress_service import _read_request_json
-from src.app.callback.services.wms_inbound_auth import WmsInboundAuthPolicy
 from src.app.device.models import CommandCallbackResult
+from src.app.wms_adapter import WmsInboundAuthPolicy
 from src.core.api_security import RequireAPIPermission, require_api_auth, verify_api_auth
 from src.core.logger import logger
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode

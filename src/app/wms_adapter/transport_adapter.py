@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from src.app.transport.contracts import TransportSubmitCode, TransportSubmitResult
+from src.app.transport.submit_snapshot import build_submit_envelope, submit_payload_digest
 from src.app.wms_adapter.client import OutboundHttpClosedError, WmsRequestBodyTooLargeError
-from src.app.wms_adapter.transport_wire import SUBMIT_OPERATION, TRANSPORT_PATH, build_submit_data
-from src.utils.timezone import timezone
+from src.app.wms_adapter.transport_wire import TRANSPORT_PATH
+from src.core.uuid7 import is_uuid7
 
 if TYPE_CHECKING:
-    from src.app.transport.contracts import TransportRequest
     from src.app.wms_adapter.client import WmsClient
 
 _BODY_LIMIT = 256 * 1024
@@ -23,14 +22,29 @@ class WmsTransportAdapter:
     def __init__(self, client: WmsClient) -> None:
         self._client = client
 
-    async def submit(self, request: TransportRequest, *, transport_task_id: str) -> TransportSubmitResult:
-        request_id = str(uuid.uuid4())
-        envelope = {
-            "request_id": request_id,
-            "operation": SUBMIT_OPERATION,
-            "timestamp": int(timezone.now_utc().timestamp() * 1000),
-            "data": build_submit_data(request, transport_task_id),
-        }
+    async def submit(
+        self,
+        *,
+        operation_id: str,
+        timestamp: int,
+        payload: dict[str, object],
+        payload_digest: str,
+    ) -> TransportSubmitResult:
+        envelope = build_submit_envelope(operation_id, timestamp, payload)
+        transport_task_id = payload.get("transport_task_id")
+        if (
+            not is_uuid7(operation_id)
+            or not isinstance(timestamp, int)
+            or isinstance(timestamp, bool)
+            or not isinstance(transport_task_id, str)
+            or not transport_task_id.strip()
+            or submit_payload_digest(operation_id, timestamp, payload) != payload_digest
+        ):
+            return TransportSubmitResult(
+                TransportSubmitCode.REJECTED,
+                transport_task_id if isinstance(transport_task_id, str) else "",
+                reason_code="PAYLOAD_DIGEST_MISMATCH",
+            )
         try:
             access = await self._client.post(
                 TRANSPORT_PATH,
@@ -46,14 +60,19 @@ class WmsTransportAdapter:
                 reason_code="PAYLOAD_TOO_LARGE" if request_too_large else None,
             )
         delivery_state = getattr(access.delivery_state, "value", access.delivery_state)
-        if delivery_state == "NOT_SENT":
-            return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)
         if delivery_state != "RESPONSE_RECEIVED":
-            return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
+            code = (
+                TransportSubmitCode.NOT_SENT if delivery_state == "NOT_SENT" else TransportSubmitCode.DELIVERY_UNKNOWN
+            )
+            return TransportSubmitResult(code, transport_task_id)
+        if access.status_code in {400, 413} and access.body_present is False:
+            return TransportSubmitResult(
+                TransportSubmitCode.REJECTED,
+                transport_task_id,
+                reason_code="PAYLOAD_TOO_LARGE" if access.status_code == 413 else "INVALID_REQUEST",
+            )
         body = access.json_body
-        if access.json_failure is not None or not isinstance(body, dict):
-            return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
-        if not _valid_ack_envelope(body, request_id):
+        if access.json_failure is not None or not isinstance(body, dict) or not _valid_ack_envelope(body, operation_id):
             return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
         code = _map_response_code(access.status_code, body.get("code"))
         data = body.get("data")
@@ -82,7 +101,6 @@ def _map_response_code(status_code: int | None, code: object) -> TransportSubmit
         (202, "RECEIVED"): TransportSubmitCode.RECEIVED,
         (200, "DUPLICATE"): TransportSubmitCode.DUPLICATE,
         (409, "CONFLICT"): TransportSubmitCode.CONFLICT,
-        (400, "REJECTED"): TransportSubmitCode.REJECTED,
         (422, "REJECTED"): TransportSubmitCode.REJECTED,
         (429, "BUSY"): TransportSubmitCode.BUSY,
         (503, "UNAVAILABLE"): TransportSubmitCode.UNAVAILABLE,
@@ -90,14 +108,10 @@ def _map_response_code(status_code: int | None, code: object) -> TransportSubmit
     return mapping.get((status_code, code), TransportSubmitCode.DELIVERY_UNKNOWN)
 
 
-def _valid_ack_envelope(body: dict[str, object], request_id: str) -> bool:
-    if set(body) != {"request_id", "code", "message", "timestamp", "data"}:
+def _valid_ack_envelope(body: dict[str, object], operation_id: str) -> bool:
+    if set(body) != {"operation_id", "code", "timestamp", "data"}:
         return False
-    if (
-        body.get("request_id") != request_id
-        or not isinstance(body.get("code"), str)
-        or not isinstance(body.get("message"), str)
-    ):
+    if body.get("operation_id") != operation_id or not isinstance(body.get("code"), str):
         return False
     timestamp = body.get("timestamp")
     if not isinstance(timestamp, int) or isinstance(timestamp, bool):

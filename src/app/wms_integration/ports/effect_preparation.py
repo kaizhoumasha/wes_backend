@@ -1,4 +1,4 @@
-"""13 项 WMS EFFECT 共用的事务内 preparation Port。"""
+"""11 项 WMS EFFECT 共用的事务内 preparation Port。"""
 
 from __future__ import annotations
 

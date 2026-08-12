@@ -31,7 +31,7 @@ from tests.mock.wms_northbound_contract import (
 from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 
 ASYNC_RACK_SUPPLY = "wms.fulfillment.request_rack_supply@v1"
-ASYNC_RACK_TRANSPORT = "wms.fulfillment.request_rack_transport@v1"
+ASYNC_CHANGE_RACK_FACE = "wms.fulfillment.change_rack_face@v1"
 
 
 def _operation_payload(operation_identity: str) -> dict[str, object]:
@@ -232,11 +232,11 @@ def test_status_hmac_rejects_non_empty_body_even_when_hash_and_signature_match(
 def test_store_scopes_idempotency_by_operation_identity_and_replays_completed_typed_result() -> None:
     store = NorthboundOperationStore(clock=lambda: datetime(2026, 7, 25, tzinfo=UTC))
     payload = _operation_payload(ASYNC_RACK_SUPPLY)
-    other_payload = _operation_payload(ASYNC_RACK_TRANSPORT)
+    other_payload = _operation_payload(ASYNC_CHANGE_RACK_FACE)
     fingerprint = content_sha256(b'{"dispatch_key":"dispatch-001"}')
 
     first = store.submit(ASYNC_RACK_SUPPLY, "idem-001", fingerprint, payload)
-    other_operation = store.submit(ASYNC_RACK_TRANSPORT, "idem-001", fingerprint, other_payload)
+    other_operation = store.submit(ASYNC_CHANGE_RACK_FACE, "idem-001", fingerprint, other_payload)
     accepted = store.query(ASYNC_RACK_SUPPLY, "idem-001")
     processing = store.query(ASYNC_RACK_SUPPLY, "idem-001")
     completed = store.query(ASYNC_RACK_SUPPLY, "idem-001")
@@ -313,8 +313,7 @@ def test_completed_result_builder_matches_every_frozen_effect_schema(operation: 
     ("operation_identity", "reason_code"),
     (
         (ASYNC_RACK_SUPPLY, "NO_RACK_AVAILABLE"),
-        (ASYNC_RACK_TRANSPORT, "RACK_NOT_FOUND"),
-        ("wms.fulfillment.change_rack_face@v1", "FACE_CHANGE_BLOCKED"),
+        (ASYNC_CHANGE_RACK_FACE, "FACE_CHANGE_BLOCKED"),
     ),
 )
 def test_store_reject_accepts_only_reason_code_frozen_for_each_operation(
@@ -333,8 +332,7 @@ def test_store_reject_accepts_only_reason_code_frozen_for_each_operation(
     ("operation_identity", "reason_code"),
     (
         (ASYNC_RACK_SUPPLY, "RACK_NOT_FOUND"),
-        (ASYNC_RACK_TRANSPORT, "NO_RACK_AVAILABLE"),
-        ("wms.fulfillment.change_rack_face@v1", "NO_RACK_AVAILABLE"),
+        (ASYNC_CHANGE_RACK_FACE, "NO_RACK_AVAILABLE"),
     ),
 )
 def test_store_reject_rejects_reason_code_frozen_for_another_operation(

@@ -77,8 +77,8 @@ def test_wes_and_fulfillment_assembly_share_digest_with_exact_lane_readiness() -
     assert fulfillment.operation_identities == expected_fulfillment
     assert len(wes.operation_identities) == 26
     assert len(wes.endpoint_keys) == 26
-    assert len(fulfillment.operation_identities) == 5
-    assert len(fulfillment.endpoint_keys) == 9
+    assert len(fulfillment.operation_identities) == 3
+    assert len(fulfillment.endpoint_keys) == 5
 
     async_fulfillment = {
         operation.identity

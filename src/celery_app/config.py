@@ -4,6 +4,7 @@
 # 用途: Beat 调度器配置和任务路由
 # ============================================
 
+from typing import Any
 
 # ============================================
 # 定时任务配置 (Beat Schedule)
@@ -12,7 +13,7 @@
 #       Beat 仅作兜底轮询，无需高频调度。
 # ============================================
 
-beat_schedule: dict[str, dict[str, str | float]] = {
+beat_schedule: dict[str, dict[str, Any]] = {
     # 健康检查任务
     "health-check": {
         "task": "src.celery_app.tasks.core.health_check",
@@ -39,11 +40,32 @@ beat_schedule: dict[str, dict[str, str | float]] = {
     "dispatch-wms-fulfillment-outbox-batch": {
         "task": "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
         "schedule": 10.0,
+        "options": {"expires": 10.0},
     },
     # WMS EFFECT 状态确认 - 即时任务由 dispatch key 触发，Beat 仅扫描遗漏/到期项。
     "scan-wms-effect-status-batch": {
         "task": "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
         "schedule": 10.0,
+        "options": {"expires": 10.0},
+    },
+    # Transport task/evidence/reconcile 均只唤醒数据库扫描，过期消息由下一周期替代。
+    "submit-transport-tasks-batch": {
+        "task": "src.celery_app.tasks.transport.submit_transport_tasks_batch",
+        "schedule": 30.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 30.0},
+    },
+    "process-transport-evidence-batch": {
+        "task": "src.celery_app.tasks.transport.process_transport_evidence_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    },
+    "reconcile-transport-tasks-batch": {
+        "task": "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
+        "schedule": 30.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 30.0},
     },
     # 超时 Session 扫描任务
     "scan-timeouts-batch": {
@@ -69,6 +91,9 @@ task_routes = {
     # WMS async EFFECT 状态查询复用 fulfillment worker 的 actual lane client。
     "src.celery_app.tasks.workline.check_wms_effect_status": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.workline.scan_wms_effect_status_batch": {"queue": "wms-fulfillment"},
+    "src.celery_app.tasks.transport.submit_transport_tasks_batch": {"queue": "wms-fulfillment"},
+    "src.celery_app.tasks.transport.process_transport_evidence_batch": {"queue": "wms-fulfillment"},
+    "src.celery_app.tasks.transport.reconcile_transport_tasks_batch": {"queue": "wms-fulfillment"},
     # 核心任务 -> default 队列
     "src.celery_app.tasks.core.*": {"queue": "default"},
     # RuntimeInbox 主链路任务 -> celery 队列

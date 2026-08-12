@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-11
+**最后更新**：2026-08-13
 
 ## 1. 真源与入口
 
@@ -68,9 +68,9 @@ API → Service → Repository → Database
 | `src/app/*/repositories/` | 数据访问 |
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/runtime/` | Phase 5 后的零插件 implementation baseline；保留通用入站、投影、可靠性和诊断能力，具体业务插件执行闭包已退役 |
-| `src/app/transport/` | Phase 4 AGV/CTU 通用搬运合同、可靠聚合、位置投影与未接入生产的暗装配 |
+| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合、位置投影与 Phase 6 生产运行时；不包含业务 producer |
 | `src/app/wms_adapter/` | WMS HTTP/JSON 薄访问层和业务系统 ACL；具体业务 API 由对应业务 owner 按获批合同实现 |
-| `src/app/wms_integration/` | Phase 5 已删除插件专属分支；剩余旧实现待由 Phase 6 Transport 和后续真实 WMS 业务 owner 分段处置，不是目标架构模板 |
+| `src/app/wms_integration/` | Phase 5 已删除插件专属分支，Phase 6 已退出旧 Transport Effect owner；保留共享 WMS 能力和后续真实 WMS 业务 owner，不是业务插件模板 |
 | `workline_plugins/` | 具体工作线插件独立包，不属于核心运行时 |
 
 新 Service 必须从所在 `services/__init__.py` 导出。时间处理、Mixin 继承和零代码 CRUD 约束以
@@ -105,6 +105,7 @@ API → Service → Repository → Database
 | `scripts/select_heavy_tests.py` | 根据 Git 差异和机器可读映射选择 HEAVY |
 | `scripts/run_selected_heavy_tests.py` | 执行选中 HEAVY 并拒绝零执行/跳过 |
 | `docs/architecture/heavy-test-impact.toml` | HEAVY selector 机器可读映射真源 |
+| `docs/runbooks/transport-operations.md` | Transport 结构化日志与 PostgreSQL 事实的只读诊断入口 |
 | `scripts/check_business_legacy_absence_gate.py` | 旧业务平台缺席门禁 |
 | `scripts/workline_inbox_retirement_guardrail.py` | 退役 WorkLineInbox 缺席门禁 |
 | `scripts/install-git-hooks.sh` | 安装仓库管理的提交门禁 |

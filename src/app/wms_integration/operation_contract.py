@@ -49,7 +49,6 @@ class WmsDomainProjectionKind(str, Enum):
     """需要本地履约投影的 WMS operation 类型。"""
 
     RACK_SUPPLY_DEMAND = "RACK_SUPPLY_DEMAND"
-    RACK_TRANSPORT_DEMAND = "RACK_TRANSPORT_DEMAND"
 
 
 class WmsOperationBudget(BaseModel):
@@ -179,7 +178,6 @@ class WmsOperationDefinition(BaseModel):
             raise ValueError("ASYNC_TASK EFFECT must not declare terminal_identity_validator")
         expected_domain_projection = {
             "wms.fulfillment.request_rack_supply@v1": WmsDomainProjectionKind.RACK_SUPPLY_DEMAND,
-            "wms.fulfillment.request_rack_transport@v1": WmsDomainProjectionKind.RACK_TRANSPORT_DEMAND,
         }.get(self.identity)
         if self.domain_projection_kind is not expected_domain_projection:
             raise ValueError("domain_projection_kind is only valid for its authored fulfillment operation")

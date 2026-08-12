@@ -187,7 +187,7 @@ def test_every_effect_conformance_requirement_uses_its_mode_family_case_bank() -
         if requirement.operation.completion_mode is WmsCompletionMode.SYNC_RESULT
     )
 
-    assert len(async_requirements) == 4
+    assert len(async_requirements) == 2
     assert len(sync_requirements) == 9
     assert all(requirement.required_cases == _ASYNC_EFFECT_CASES for requirement in async_requirements)
     assert all(requirement.required_cases == _SYNC_EFFECT_CASES for requirement in sync_requirements)

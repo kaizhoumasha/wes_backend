@@ -100,7 +100,7 @@ def test_four_role_attestations_from_one_configuration_verify(tmp_path) -> None:
         "fulfillment-worker",
         "beat",
     )
-    assert {artifact.common.operation_count for artifact in verified} == {35}
+    assert {artifact.common.operation_count for artifact in verified} == {29}
 
 
 def test_builder_uses_exactly_one_transport_compilation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -260,7 +260,7 @@ def test_schema_rejects_unknown_role(tmp_path) -> None:
 @pytest.mark.parametrize(
     ("field_name", "drifted_value"),
     [
-        ("operation_count", 34),
+        ("operation_count", 28),
         ("operation_order_digest", "8" * 64),
     ],
 )
@@ -325,6 +325,27 @@ def test_beat_rejects_missing_required_schedule_or_route(tmp_path) -> None:
             settings_source=settings_source,
             beat_schedule_source=config.beat_schedule,
             task_routes_source=missing_route,
+        )
+
+
+def test_beat_rejects_fulfillment_schedule_without_bounded_expiry(tmp_path) -> None:
+    module = _attestation_module()
+    from src.celery_app import config
+
+    settings_source = _settings(write_provider_profile(tmp_path / "provider.yaml"))
+    invalid_schedule = {name: dict(value) for name, value in config.beat_schedule.items()}
+    invalid_schedule["process-transport-evidence-batch"] = {
+        **invalid_schedule["process-transport-evidence-batch"],
+        "options": {"expires": 11.0},
+    }
+
+    with pytest.raises(ValueError, match="expires"):
+        module.build_wms_deployment_attestation(
+            role="beat",
+            image_identity=_image_identity(),
+            settings_source=settings_source,
+            beat_schedule_source=invalid_schedule,
+            task_routes_source=config.task_routes,
         )
 
 
@@ -409,7 +430,7 @@ def test_cli_emits_and_verifies_four_offline_redacted_artifacts(tmp_path) -> Non
     summary = json.loads(completed.stdout)
     assert summary["schema_version"] == "wms-deployment-attestation-summary.v1"
     assert summary["roles"] == ["api", "wes-worker", "fulfillment-worker", "beat"]
-    assert summary["common"]["operation_count"] == 35
+    assert summary["common"]["operation_count"] == 29
     assert set(summary["role_fact_digests"]) == {
         "api",
         "wes-worker",

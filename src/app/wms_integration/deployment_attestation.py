@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
@@ -19,7 +20,7 @@ from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from src.app.wms_integration.provider_readiness import WmsProviderProcessRole, WmsProviderReadiness
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable
 
 WMS_DEPLOYMENT_ATTESTATION_SCHEMA_VERSION = "wms-deployment-attestation.v1"
 WmsDeploymentRole = Literal["api", "wes-worker", "fulfillment-worker", "beat"]
@@ -59,11 +60,20 @@ _REQUIRED_BEAT_SCHEDULES = (
         "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
     ),
     ("scan-wms-effect-status-batch", "src.celery_app.tasks.workline.scan_wms_effect_status_batch"),
+    ("submit-transport-tasks-batch", "src.celery_app.tasks.transport.submit_transport_tasks_batch"),
+    (
+        "process-transport-evidence-batch",
+        "src.celery_app.tasks.transport.process_transport_evidence_batch",
+    ),
+    ("reconcile-transport-tasks-batch", "src.celery_app.tasks.transport.reconcile_transport_tasks_batch"),
 )
 _REQUIRED_FULFILLMENT_ROUTES = (
     "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
     "src.celery_app.tasks.workline.check_wms_effect_status",
     "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
+    "src.celery_app.tasks.transport.submit_transport_tasks_batch",
+    "src.celery_app.tasks.transport.process_transport_evidence_batch",
+    "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
 )
 
 
@@ -211,12 +221,31 @@ def _beat_role_facts(
     beat_schedule_source: Mapping[str, Mapping[str, object]],
     task_routes_source: Mapping[str, Mapping[str, object]],
 ) -> BeatDeploymentFacts:
-    schedules: list[tuple[str, str, object]] = []
+    schedules: list[tuple[str, str, object, object]] = []
     for schedule_name, expected_task in _REQUIRED_BEAT_SCHEDULES:
         schedule = beat_schedule_source.get(schedule_name)
         if schedule is None or schedule.get("task") != expected_task or "schedule" not in schedule:
             raise ValueError(f"Beat required schedule is missing or invalid: {schedule_name}")
-        schedules.append((schedule_name, expected_task, schedule["schedule"]))
+        schedules.append((schedule_name, expected_task, schedule["schedule"], schedule.get("options")))
+
+    for schedule_name, schedule in beat_schedule_source.items():
+        task_name = schedule.get("task")
+        if not isinstance(task_name, str) or task_routes_source.get(task_name, {}).get("queue") != "wms-fulfillment":
+            continue
+        period = schedule.get("schedule")
+        options = schedule.get("options")
+        expires = options.get("expires") if isinstance(options, Mapping) else None
+        if (
+            not isinstance(period, (int, float))
+            or isinstance(period, bool)
+            or not isinstance(expires, (int, float))
+            or isinstance(expires, bool)
+            or expires <= 0
+            or expires > period
+        ):
+            raise ValueError(
+                f"Beat fulfillment task expires must be positive and no greater than schedule: {schedule_name}"
+            )
 
     routes: list[tuple[str, str]] = []
     for task_name in _REQUIRED_FULFILLMENT_ROUTES:
