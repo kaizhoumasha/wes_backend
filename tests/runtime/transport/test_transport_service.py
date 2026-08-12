@@ -117,7 +117,8 @@ class ResultBeforeAckProvider:
 
 
 class DelayedNotSentProvider:
-    def __init__(self) -> None:
+    def __init__(self, code: TransportSubmitCode = TransportSubmitCode.NOT_SENT) -> None:
+        self.code = code
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
@@ -132,7 +133,7 @@ class DelayedNotSentProvider:
         transport_task_id = str(payload["transport_task_id"])
         self.started.set()
         await self.release.wait()
-        return TransportSubmitResult(TransportSubmitCode.NOT_SENT, transport_task_id)
+        return TransportSubmitResult(self.code, transport_task_id)
 
 
 @pytest.fixture
@@ -384,6 +385,54 @@ async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: ob
     assert snapshot.send_started_at is not None
     assert snapshot.next_submit_at is None
     assert snapshot.outcome_json is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "expected_status", "expected_reason", "resource_released"),
+    (
+        (TransportSubmitCode.REJECTED, "REJECTED", "TRANSPORT_REJECTED", True),
+        (TransportSubmitCode.CONFLICT, "RECONCILING", "TRANSPORT_SUBMIT_CONFLICT", False),
+    ),
+)
+async def test_late_deterministic_negative_ack_converges_after_delivery_unknown(
+    db_engine: object,
+    code: TransportSubmitCode,
+    expected_status: str,
+    expected_reason: str,
+    resource_released: bool,
+) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    provider = DelayedNotSentProvider(code)
+    service = TransportService(sessions, TransportRepository(), provider)
+    rack_id = f"rack-late-{code.value.lower()}"
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        rack_id,
+        RackPosition("A"),
+        RackPosition("B"),
+    )
+    submit = asyncio.create_task(service.submit_pending_tasks(1))
+    await provider.started.wait()
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == handle.transport_task_id)
+            .values(submit_claim_until=timezone.now_for_db() - timedelta(seconds=1))
+        )
+
+    assert await service.reconcile_overdue_tasks(1) == 1
+    provider.release.set()
+    assert await submit == 1
+
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert (snapshot.status, snapshot.reason_code) == (expected_status, expected_reason)
+    if resource_released:
+        await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"))
+    else:
+        with pytest.raises(TransportResourceConflict):
+            await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"))
 
 
 @pytest.mark.asyncio

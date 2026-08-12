@@ -878,10 +878,13 @@ heavy_tests = [
     "tests/integration/transport/test_transport_evidence_transaction.py",
 ]
 
-# API 唯一生产装配入口由不依赖业务插件的 Transport 生产接线 E2E 承接。
+# API 路由由生产接线 E2E 承接；完整 lifespan 由真实 PostgreSQL/Redis owner 承接。
 [[mapping]]
 source_glob = "src/register.py"
-heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+heavy_tests = [
+    "tests/integration/test_transport_fastapi_lifespan.py",
+    "tests/e2e/transport/test_transport_production_wiring.py",
+]
 
 # Transport broker harness 同时服务 teardown、共享队列竞争和生产接线 E2E。
 [[mapping]]

@@ -491,7 +491,7 @@ class TransportService:
                 )
             return
         if code in {TransportSubmitCode.REJECTED, TransportSubmitCode.CONFLICT}:
-            if task.status != TransportTaskStatus.PENDING.value or has_evidence:
+            if has_evidence or (task.status != TransportTaskStatus.PENDING.value and not can_converge_late_ack):
                 logger.info(
                     "transport.submit.late_writeback",
                     extra={
@@ -502,6 +502,8 @@ class TransportService:
                     },
                 )
                 return
+            if can_converge_late_ack:
+                _discard_stale_delivery_unknown(task)
             if not lease_matches:
                 logger.info(
                     "transport.submit.late_writeback",

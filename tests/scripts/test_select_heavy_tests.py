@@ -67,6 +67,7 @@ TRANSPORT_EVIDENCE_HEAVY_TEST = "tests/integration/transport/test_transport_evid
 TRANSPORT_REPOSITORY_HEAVY_TEST = "tests/integration/transport/test_transport_repository.py"
 TRANSPORT_SCHEMA_HEAVY_TEST = "tests/integration/transport/test_transport_schema.py"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
+TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastapi_lifespan.py"
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
 TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST = "tests/integration/test_transport_fulfillment_queue.py"
 WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"
@@ -1177,7 +1178,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/core/uuid7.py",
             (TRANSPORT_DARK_LOOP_HEAVY_TEST, TRANSPORT_EVIDENCE_HEAVY_TEST),
         ),
-        ("src/register.py", (TRANSPORT_PRODUCTION_WIRING_E2E_TEST,)),
+        ("src/register.py", (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST)),
         (
             "tests/support/transport_broker.py",
             (
@@ -1349,7 +1350,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/core/uuid7.py",
             [TRANSPORT_DARK_LOOP_HEAVY_TEST, TRANSPORT_EVIDENCE_HEAVY_TEST],
         ),
-        ("src/register.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
+        ("src/register.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST]),
         ("src/app/wms_integration/deployment_attestation.py", [WMS_DEPLOYMENT_HEAVY_TEST]),
         (
             "src/app/wms_integration/effect_preparation_runtime.py",

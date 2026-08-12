@@ -23,30 +23,190 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_TRANSPORT_EVENT_REQUEST_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["operation_id", "operation", "timestamp", "data"],
-    "properties": {
-        "operation_id": {"type": "string", "description": "WMS 生成的 UUIDv7 幂等号"},
-        "operation": {"type": "string", "enum": [POSITION_OPERATION, RESULT_OPERATION]},
-        "timestamp": {"type": "integer", "format": "int64", "description": "Unix 毫秒时间戳"},
-        "data": {"type": "object", "description": "由 operation 决定的封闭 evidence data 合同"},
-    },
+
+def _closed_object(required: list[str], properties: dict[str, object]) -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required,
+        "properties": properties,
+    }
+
+
+_UUIDV7_SCHEMA = {
+    "type": "string",
+    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+    "description": "WMS 生成的 UUIDv7 幂等号",
 }
-_TRANSPORT_EVENT_ACK_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["operation_id", "code", "timestamp", "data"],
-    "properties": {
-        "operation_id": {"type": "string"},
-        "code": {
-            "type": "string",
-            "enum": ["RECEIVED", "DUPLICATE", "CONFLICT", "REJECTED", "UNAVAILABLE"],
-        },
-        "timestamp": {"type": "integer", "format": "int64"},
-        "data": {"type": "object"},
+_TIMESTAMP_SCHEMA = {"type": "integer", "format": "int64", "description": "Unix 毫秒时间戳"}
+_TRANSPORT_TASK_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 80}
+_OBJECT_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 100}
+_RACK_POSITION_SCHEMA = _closed_object(
+    ["kind", "location_code"],
+    {
+        "kind": {"type": "string", "const": "RACK_POSITION"},
+        "location_code": {"type": "string", "minLength": 1},
     },
+)
+_BIN_POSITION_SCHEMA = {
+    "oneOf": [
+        _closed_object(
+            ["kind", "rack_id", "slot_id"],
+            {
+                "kind": {"type": "string", "const": "RACK_BIN_SLOT"},
+                "rack_id": {"type": "string", "minLength": 1},
+                "slot_id": {"type": "string", "minLength": 1},
+            },
+        ),
+        _closed_object(
+            ["kind", "location_code"],
+            {
+                "kind": {"type": "string", "const": "HANDOFF_POSITION"},
+                "location_code": {"type": "string", "minLength": 1},
+            },
+        ),
+    ]
+}
+_ANY_POSITION_SCHEMA = {"oneOf": [_RACK_POSITION_SCHEMA, *_BIN_POSITION_SCHEMA["oneOf"]]}
+
+_POSITION_DATA_SCHEMA = {
+    "oneOf": [
+        _closed_object(
+            ["transport_task_id", "bin_id", "milestone"],
+            {
+                "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
+                "bin_id": _OBJECT_ID_SCHEMA,
+                "milestone": {"type": "string", "const": milestone},
+            },
+        )
+        for milestone in ("SOURCE_PICKED", "POSITION_UNKNOWN")
+    ]
+    + [
+        _closed_object(
+            ["transport_task_id", "bin_id", "milestone", "final_position"],
+            {
+                "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
+                "bin_id": _OBJECT_ID_SCHEMA,
+                "milestone": {"type": "string", "const": "TARGET_PLACED"},
+                "final_position": _ANY_POSITION_SCHEMA,
+            },
+        )
+    ]
+}
+
+
+def _member_result_schema(*, final_position: dict[str, object], arrival_face: bool) -> dict[str, object]:
+    success_properties: dict[str, object] = {
+        "object_id": _OBJECT_ID_SCHEMA,
+        "status": {"type": "string", "const": "SUCCEEDED"},
+        "final_position": final_position,
+    }
+    failed_properties: dict[str, object] = {
+        "object_id": _OBJECT_ID_SCHEMA,
+        "status": {"type": "string", "const": "FAILED"},
+        "final_position": final_position,
+        "failure_code": {"type": "string", "minLength": 1, "maxLength": 120},
+    }
+    success_required = ["object_id", "status", "final_position"]
+    failed_required = ["object_id", "status", "final_position", "failure_code"]
+    if arrival_face:
+        arrival_schema = {"type": "string", "enum": ["A", "B"]}
+        success_properties["arrival_face"] = arrival_schema
+        failed_properties["arrival_face"] = arrival_schema
+        success_required.append("arrival_face")
+        failed_required.append("arrival_face")
+    return {
+        "oneOf": [
+            _closed_object(success_required, success_properties),
+            _closed_object(failed_required, failed_properties),
+            _closed_object(
+                ["object_id", "status", "position_unknown", "failure_code"],
+                {
+                    "object_id": _OBJECT_ID_SCHEMA,
+                    "status": {"type": "string", "const": "FAILED"},
+                    "position_unknown": {"type": "boolean", "const": True},
+                    "failure_code": {"type": "string", "minLength": 1, "maxLength": 120},
+                },
+            ),
+        ]
+    }
+
+
+_RESULT_DATA_SCHEMA = {
+    "oneOf": [
+        _closed_object(
+            ["transport_task_id", "kind", "results"],
+            {
+                "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
+                "kind": {"type": "string", "enum": ["RACK_MOVE", "RACK_ROTATE"]},
+                "results": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _member_result_schema(final_position=_RACK_POSITION_SCHEMA, arrival_face=True),
+                },
+            },
+        ),
+        _closed_object(
+            ["transport_task_id", "kind", "results"],
+            {
+                "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
+                "kind": {"type": "string", "enum": ["BIN_MOVE", "BIN_EXCHANGE"]},
+                "results": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _member_result_schema(final_position=_BIN_POSITION_SCHEMA, arrival_face=False),
+                },
+            },
+        ),
+    ]
+}
+
+
+def _event_envelope_schema(operation: str, data_schema: dict[str, object]) -> dict[str, object]:
+    return _closed_object(
+        ["operation_id", "operation", "timestamp", "data"],
+        {
+            "operation_id": _UUIDV7_SCHEMA,
+            "operation": {"type": "string", "const": operation},
+            "timestamp": _TIMESTAMP_SCHEMA,
+            "data": data_schema,
+        },
+    )
+
+
+_TRANSPORT_EVENT_REQUEST_SCHEMA = {
+    "oneOf": [
+        _event_envelope_schema(POSITION_OPERATION, _POSITION_DATA_SCHEMA),
+        _event_envelope_schema(RESULT_OPERATION, _RESULT_DATA_SCHEMA),
+    ]
+}
+
+
+def _ack_schema(code: str, data_schema: dict[str, object]) -> dict[str, object]:
+    return _closed_object(
+        ["operation_id", "code", "timestamp", "data"],
+        {
+            "operation_id": _UUIDV7_SCHEMA,
+            "code": {"type": "string", "const": code},
+            "timestamp": _TIMESTAMP_SCHEMA,
+            "data": data_schema,
+        },
+    )
+
+
+_ACK_TASK_DATA_SCHEMA = _closed_object(["transport_task_id"], {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA})
+_TRANSPORT_EVENT_ACK_SCHEMA = {
+    "oneOf": [
+        *(_ack_schema(code, _ACK_TASK_DATA_SCHEMA) for code in ("RECEIVED", "DUPLICATE", "CONFLICT")),
+        _ack_schema(
+            "REJECTED",
+            _closed_object(
+                ["reason_code"],
+                {"reason_code": {"type": "string", "minLength": 1, "maxLength": 120}},
+            ),
+        ),
+        _ack_schema("UNAVAILABLE", _closed_object([], {})),
+    ]
 }
 
 
