@@ -221,6 +221,81 @@ def test_handler_empty_error_body_remains_empty() -> None:
     assert response.content == b""
 
 
+def test_missing_transport_runtime_returns_unavailable_ack_for_associated_request() -> None:
+    module = _events_module()
+    app = FastAPI()
+    app.state.transport_runtime = None
+    app.state.wms_inbound_auth_policy = _none_policy(module)
+    app.include_router(module.router, prefix="/api/v1/wms")
+    operation_id = "01988ef1-4d2a-7000-8000-000000000001"
+    raw_body = (
+        b'{"operation_id":"'
+        + operation_id.encode()
+        + b'","operation":"transport.task.member_position_changed@v1","timestamp":1,'
+        b'"data":{"transport_task_id":"transport-1","bin_id":"bin-1","milestone":"SOURCE_PICKED"}}'
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=raw_body)
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "operation_id": operation_id,
+        "code": "UNAVAILABLE",
+        "timestamp": response.json()["timestamp"],
+        "data": {},
+    }
+    assert isinstance(response.json()["timestamp"], int)
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    (
+        {
+            "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
+            "timestamp": 1,
+            "data": {},
+        },
+        {
+            "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
+            "operation": "transport.task.unknown@v1",
+            "timestamp": 1,
+            "data": {},
+        },
+        {
+            "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
+            "operation": "transport.task.member_position_changed@v1",
+            "timestamp": True,
+            "data": {},
+        },
+        {
+            "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
+            "operation": "transport.task.member_position_changed@v1",
+            "timestamp": 1,
+            "data": {"transport_task_id": "transport-1"},
+        },
+    ),
+)
+def test_missing_transport_runtime_still_rejects_invalid_associated_envelope(envelope: dict[str, Any]) -> None:
+    module = _events_module()
+    app = FastAPI()
+    app.state.transport_runtime = None
+    app.state.wms_inbound_auth_policy = _none_policy(module)
+    app.include_router(module.router, prefix="/api/v1/wms")
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", json=envelope)
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "operation_id": envelope["operation_id"],
+        "code": "REJECTED",
+        "timestamp": response.json()["timestamp"],
+        "data": {"reason_code": "INVALID_EVIDENCE"},
+    }
+    assert isinstance(response.json()["timestamp"], int)
+
+
 def test_application_registers_exactly_one_wms_transport_events_route() -> None:
     from src import register
 

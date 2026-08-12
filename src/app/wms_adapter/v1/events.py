@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from src.app.transport.contracts import TransportContractError
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.transport_event_handler import MAX_TRANSPORT_EVENT_BODY_BYTES
-from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
+from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION, validate_callback_envelope
 from src.core.task_queue_gateway import task_queue_gateway
+from src.core.uuid7 import is_uuid7
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from src.app.transport.composition import TransportRuntime
@@ -61,6 +65,37 @@ def _permits_transport_endpoint(policy: object) -> bool:
     return isinstance(policy, WmsInboundAuthPolicy) and policy.allows_unsigned_wms_callbacks
 
 
+def _unavailable_ack(raw_body: bytes) -> JSONResponse | Response:
+    try:
+        raw_envelope = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return Response(status_code=400)
+    operation_id = raw_envelope.get("operation_id") if isinstance(raw_envelope, dict) else None
+    if not is_uuid7(operation_id):
+        return Response(status_code=400)
+    try:
+        validate_callback_envelope(raw_envelope)
+    except TransportContractError:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "operation_id": operation_id,
+                "code": "REJECTED",
+                "timestamp": int(timezone.now_utc().timestamp() * 1000),
+                "data": {"reason_code": "INVALID_EVIDENCE"},
+            },
+        )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "operation_id": operation_id,
+            "code": "UNAVAILABLE",
+            "timestamp": int(timezone.now_utc().timestamp() * 1000),
+            "data": {},
+        },
+    )
+
+
 @router.post(
     "/events",
     responses={
@@ -106,7 +141,7 @@ async def receive_transport_event(request: Request) -> Response:
 
     runtime: TransportRuntime | None = getattr(request.app.state, "transport_runtime", None)
     if runtime is None:
-        return Response(status_code=503)
+        return _unavailable_ack(raw_body)
     result = await runtime.handler.handle(raw_body)
     if result.body:
         response: Response = JSONResponse(status_code=result.http_status, content=result.body)

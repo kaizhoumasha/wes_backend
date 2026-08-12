@@ -122,18 +122,18 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
     exchange_bin_ids = [f"bin-exchange-{index}-{suffix}" for index in range(4)]
     try:
         rack_handle = await service.move_rack(
-            f"dark-rack-{suffix}", caller, rack_id, RackPosition("RACK_WAIT"), RackPosition("RACK_WORK")
+            new_uuid7(), caller, rack_id, RackPosition("RACK_WAIT"), RackPosition("RACK_WORK")
         )
         rotate_handle = await service.rotate_rack(
-            f"dark-rotate-{suffix}", caller, rotate_rack_id, RackPosition("ROTATE_POINT"), RackFace.B
+            new_uuid7(), caller, rotate_rack_id, RackPosition("ROTATE_POINT"), RackFace.B
         )
         bin_handle = await service.move_bins(
-            f"dark-bin-{suffix}",
+            new_uuid7(),
             caller,
             (BinMove(moved_bin_id, RackBinSlot(move_source_rack, "1"), HandoffPosition("ROLLER_IN")),),
         )
         exchange_handle = await service.exchange_bins(
-            f"dark-exchange-{suffix}",
+            new_uuid7(),
             caller,
             (
                 BinExchangePair(
@@ -239,6 +239,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                 operation_id=operation_id,
                 transport_task_id=handle.transport_task_id,
                 operation=RESULT_OPERATION,
+                timestamp=1,
                 payload={
                     "transport_task_id": handle.transport_task_id,
                     "kind": kind,

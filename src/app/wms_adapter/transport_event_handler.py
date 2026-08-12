@@ -24,6 +24,7 @@ class _EvidenceRecorder(Protocol):
         operation_id: str,
         transport_task_id: str,
         operation: str,
+        timestamp: int,
         payload: dict[str, Any],
     ) -> dict[str, Any]: ...
 
@@ -59,6 +60,7 @@ class TransportEventHandler:
                 operation_id=operation_id,
                 transport_task_id=data["transport_task_id"],
                 operation=envelope["operation"],
+                timestamp=envelope["timestamp"],
                 payload=data,
             )
         except Exception:

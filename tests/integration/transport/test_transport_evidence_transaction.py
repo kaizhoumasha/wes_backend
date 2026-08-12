@@ -207,11 +207,12 @@ async def test_concurrent_duplicate_public_calls_share_one_postgresql_aggregate(
         )
         for _ in range(2)
     ]
+    client_request_id = new_uuid7()
 
     handles = await asyncio.gather(
         *(
             service.move_rack(
-                f"integration-duplicate-{suffix}",
+                client_request_id,
                 TransportCaller("INTEGRATION"),
                 f"rack-duplicate-{suffix}",
                 RackPosition("SOURCE"),
@@ -225,9 +226,7 @@ async def test_concurrent_duplicate_public_calls_share_one_postgresql_aggregate(
         assert handles[0] == handles[1]
         async with integration_session_factory() as db:
             tasks = list(
-                await db.scalars(
-                    select(TransportTask).where(TransportTask.client_request_id == f"integration-duplicate-{suffix}")
-                )
+                await db.scalars(select(TransportTask).where(TransportTask.client_request_id == client_request_id))
             )
         assert len(tasks) == 1
     finally:
@@ -252,10 +251,11 @@ async def test_concurrent_resource_conflict_has_one_postgresql_winner(
         )
         for _ in range(2)
     ]
+    client_request_ids = [new_uuid7(), new_uuid7()]
     results = await asyncio.gather(
         *(
             service.move_rack(
-                f"integration-conflict-{index}-{suffix}",
+                client_request_ids[index],
                 TransportCaller("INTEGRATION"),
                 f"rack-conflict-{suffix}",
                 RackPosition("SOURCE"),
@@ -276,9 +276,7 @@ async def test_concurrent_resource_conflict_has_one_postgresql_winner(
             task_ids = list(
                 await db.scalars(
                     select(TransportTask.transport_task_id).where(
-                        TransportTask.client_request_id.in_(
-                            [f"integration-conflict-{index}-{suffix}" for index in range(2)]
-                        )
+                        TransportTask.client_request_id.in_(client_request_ids)
                     )
                 )
             )
@@ -304,6 +302,7 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
         operation_id=operation_id,
         transport_task_id=f"missing-{suffix}",
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload={
             "transport_task_id": f"missing-{suffix}",
             "kind": "RACK_MOVE",
@@ -357,7 +356,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         _UnusedProvider(),
     )
     handle = await service.move_bins(
-        "integration-evidence-rollback",
+        new_uuid7(),
         TransportCaller("INTEGRATION"),
         (BinMove("bin-rollback", RackBinSlot("rack-rollback", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -377,6 +376,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload=payload,
     )
     failing_service = TransportService(
@@ -425,7 +425,7 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
         _UnusedProvider(),
     )
     handle = await setup_service.move_bins(
-        "integration-concurrent-evidence",
+        new_uuid7(),
         TransportCaller("INTEGRATION"),
         (BinMove("bin-concurrent", RackBinSlot("rack-concurrent", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -457,6 +457,7 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
                     operation_id=operation_id,
                     transport_task_id=handle.transport_task_id,
                     operation=RESULT_OPERATION,
+                    timestamp=1,
                     payload=payload,
                 )
                 for service in services
@@ -490,7 +491,7 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
         _UnusedProvider(),
     )
     handle = await setup_service.move_bins(
-        "integration-evidence-lock-order",
+        new_uuid7(),
         TransportCaller("INTEGRATION"),
         (BinMove("bin-lock-order", RackBinSlot("rack-lock-order", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -510,6 +511,7 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload=payload,
     )
     worker_repository = _EvidenceThenTaskBarrierRepository()
@@ -531,6 +533,7 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
+            timestamp=1,
             payload=payload,
         )
     )
@@ -575,7 +578,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         _UnusedProvider(),
     )
     handle = await setup_service.move_rack(
-        "integration-callback-before-reject",
+        new_uuid7(),
         TransportCaller("INTEGRATION"),
         "rack-callback-before-reject",
         RackPosition("SOURCE"),
@@ -598,6 +601,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
+            timestamp=1,
             payload={
                 "transport_task_id": handle.transport_task_id,
                 "kind": "RACK_MOVE",
@@ -675,7 +679,7 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
         _UnusedProvider(),
     )
     handle = await setup_service.move_bins(
-        "integration-evidence-apply-race",
+        new_uuid7(),
         TransportCaller("INTEGRATION"),
         (BinMove("bin-apply-race", RackBinSlot("rack-apply-race", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -695,6 +699,7 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload=original_payload,
     )
     applied = asyncio.Event()
@@ -723,6 +728,7 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
+            timestamp=1,
             payload={**original_payload, "kind": "BIN_EXCHANGE"},
         )
     )
@@ -767,7 +773,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         TransportRepository(),
         _UnusedProvider(),
     )
-    rack_id = "rack-rotate-race"
+    rack_id = f"rack-rotate-race-{uuid.uuid4().hex}"
     async with integration_session_factory.begin() as db:
         db.add(
             TransportPositionProjection(
@@ -781,7 +787,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
             )
         )
     move_handle = await service.move_rack(
-        "integration-move-before-rotate",
+        new_uuid7(),
         TransportCaller("INTEGRATION"),
         rack_id,
         RackPosition("SOURCE"),
@@ -795,7 +801,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
     )
     rotate_task = asyncio.create_task(
         rotate_service.rotate_rack(
-            "integration-stale-rotate",
+            new_uuid7(),
             TransportCaller("INTEGRATION"),
             rack_id,
             RackPosition("SOURCE"),
@@ -824,6 +830,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
             operation_id=move_operation_id,
             transport_task_id=move_handle.transport_task_id,
             operation=RESULT_OPERATION,
+            timestamp=1,
             payload=move_payload,
         )
         await service.process_pending_evidence(1)

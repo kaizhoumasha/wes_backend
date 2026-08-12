@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from src.core.uuid7 import is_uuid7
+
 
 class TransportContractError(ValueError):
     """搬运请求不满足封闭合同。"""
@@ -340,6 +342,8 @@ class TransportOutcomePublisher(Protocol):
 
 def _validate_request_identity(client_request_id: str, caller: TransportCaller) -> None:
     _required(client_request_id, "client_request_id", max_length=120)
+    if not is_uuid7(client_request_id):
+        raise TransportContractError("client_request_id must be a UUIDv7")
     if type(caller) is not TransportCaller:
         raise TransportContractError("caller must be a TransportCaller")
 

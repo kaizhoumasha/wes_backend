@@ -25,6 +25,7 @@ from src.app.transport.models import (
 )
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
+from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
@@ -97,7 +98,7 @@ def _service(
 
 async def _create_task(service: TransportService, request_id: str, rack_id: str) -> str:
     handle = await service.move_rack(
-        request_id,
+        new_uuid7(),
         TransportCaller("SORTER", "STATION_A"),
         rack_id,
         RackPosition("SOURCE"),

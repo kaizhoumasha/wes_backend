@@ -18,6 +18,7 @@ from src.app.wms_adapter.transport_wire import (
     RESULT_OPERATION,
     validate_callback_envelope,
 )
+from src.core.uuid7 import new_uuid7
 
 
 def _envelope(operation: str, data: object) -> dict[str, object]:
@@ -57,7 +58,7 @@ def _result_data(**overrides: object) -> dict[str, object]:
 
 def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> None:
     request = MoveBinsRequest(
-        "client-1",
+        new_uuid7(),
         TransportCaller("SORTER", "STATION_A"),
         (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),),
     )

@@ -28,6 +28,7 @@ from src.app.transport.models import (
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
 from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
+from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
@@ -81,7 +82,7 @@ async def test_record_evidence_only_persists_then_batch_applies_and_publishes(
     outcome_publisher: FakePublisher,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-1",
+        new_uuid7(),
         TransportCaller("SORTER", "STATION_A"),
         (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -101,6 +102,7 @@ async def test_record_evidence_only_persists_then_batch_applies_and_publishes(
         operation_id="event-1",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload=payload,
     )
     assert ack["code"] == "RECEIVED"
@@ -116,7 +118,7 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
     db_engine: object,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-2",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (BinMove("bin-2", RackBinSlot("rack-2", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -134,15 +136,24 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
     }
 
     first = await outcome_service.record_evidence(
-        operation_id="event-2", transport_task_id=handle.transport_task_id, operation=RESULT_OPERATION, payload=payload
+        operation_id="event-2",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=payload,
     )
     duplicate = await outcome_service.record_evidence(
-        operation_id="event-2", transport_task_id=handle.transport_task_id, operation=RESULT_OPERATION, payload=payload
+        operation_id="event-2",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=payload,
     )
     changed = await outcome_service.record_evidence(
         operation_id="event-2",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload={**payload, "kind": "BIN_EXCHANGE"},
     )
 
@@ -162,12 +173,62 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
 
 
 @pytest.mark.asyncio
+async def test_same_evidence_identity_with_changed_event_timestamp_conflicts(
+    outcome_service: TransportService,
+    db_engine,
+) -> None:
+    request_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4471"
+    handle = await outcome_service.move_bins(
+        request_id,
+        TransportCaller("SORTER"),
+        (BinMove("bin-timestamp", RackBinSlot("rack-timestamp", "1"), HandoffPosition("OUT")),),
+    )
+    payload = {
+        "transport_task_id": handle.transport_task_id,
+        "kind": "BIN_MOVE",
+        "results": [
+            {
+                "object_id": "bin-timestamp",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "CTU_ERROR",
+            }
+        ],
+    }
+
+    first = await outcome_service.record_evidence(
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=payload,
+    )
+    changed = await outcome_service.record_evidence(
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=2,
+        payload=payload,
+    )
+
+    assert (first["code"], changed["code"]) == ("RECEIVED", "CONFLICT")
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.operation_id == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472")
+        )
+    assert evidence is not None
+    assert evidence.event_timestamp_ms == 1
+
+
+@pytest.mark.asyncio
 async def test_same_operation_id_is_independent_between_callback_operations(
     outcome_service: TransportService,
     db_engine: object,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-operation-scoped-event",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (BinMove("bin-operation-scoped", RackBinSlot("rack-operation-scoped", "1"), HandoffPosition("OUT")),),
     )
@@ -177,6 +238,7 @@ async def test_same_operation_id_is_independent_between_callback_operations(
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=POSITION_OPERATION,
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-operation-scoped",
@@ -187,6 +249,7 @@ async def test_same_operation_id_is_independent_between_callback_operations(
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "kind": "BIN_MOVE",
@@ -226,6 +289,7 @@ async def test_record_evidence_rejects_identifiers_larger_than_persistence_colum
             operation_id=operation_id,
             transport_task_id=transport_task_id,
             operation=RESULT_OPERATION,
+            timestamp=1,
             payload={},
         )
 
@@ -241,7 +305,7 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
         BinMove("bin-atomic-1", RackBinSlot("rack-atomic", "1"), HandoffPosition("ROLLER_IN")),
         BinMove("bin-atomic-2", RackBinSlot("rack-atomic", "2"), HandoffPosition("ROLLER_OUT")),
     )
-    handle = await outcome_service.move_bins("request-atomic", TransportCaller("SORTER"), moves)
+    handle = await outcome_service.move_bins(new_uuid7(), TransportCaller("SORTER"), moves)
     if accepted_before_conflict:
         assert await outcome_service.submit_pending_tasks(1) == 1
     operation_id = "operation-atomic-conflict"
@@ -266,6 +330,7 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload=payload,
     )
     await outcome_service.process_pending_evidence(1)
@@ -358,7 +423,7 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
     results: list[dict[str, object]],
 ) -> None:
     handle = await outcome_service.move_bins(
-        f"request-members-{len(results)}-{results[-1]['object_id']}",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (
             BinMove("bin-member-1", RackBinSlot("rack-members", "1"), HandoffPosition("ROLLER_IN")),
@@ -370,6 +435,7 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "kind": "BIN_MOVE",
@@ -397,7 +463,7 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
     [
         (
             MoveRackRequest(
-                "request-rack-position-type",
+                new_uuid7(),
                 TransportCaller("SORTER"),
                 "rack-position-type",
                 RackPosition("SOURCE"),
@@ -431,7 +497,7 @@ async def test_result_position_type_must_match_the_frozen_member_type(
 ) -> None:
     if rack_request is None:
         handle = await outcome_service.move_bins(
-            "request-bin-position-type",
+            new_uuid7(),
             TransportCaller("SORTER"),
             (BinMove("bin-position-type", RackBinSlot("rack-position-type", "1"), HandoffPosition("ROLLER_IN")),),
         )
@@ -450,6 +516,7 @@ async def test_result_position_type_must_match_the_frozen_member_type(
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "kind": kind,
@@ -488,7 +555,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
             )
         )
     handle = await outcome_service.rotate_rack(
-        "request-face",
+        new_uuid7(),
         TransportCaller("SORTER"),
         "rack-face",
         RackPosition("ROTATE_POINT"),
@@ -512,6 +579,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload=payload,
     )
     await outcome_service.process_pending_evidence(1)
@@ -541,7 +609,7 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
     db_engine: object,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-order",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (BinMove("bin-order", RackBinSlot("rack-order", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -560,6 +628,7 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
         operation_id="event-target",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
+        timestamp=1,
         payload=target,
     )
     await outcome_service.process_pending_evidence(1)
@@ -567,6 +636,7 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
         operation_id="event-picked",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
+        timestamp=1,
         payload=picked,
     )
     await outcome_service.process_pending_evidence(1)
@@ -586,7 +656,7 @@ async def test_late_position_unknown_does_not_regress_confirmed_target_position(
     db_engine: object,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-late-unknown",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (BinMove("bin-late-unknown", RackBinSlot("rack-late-unknown", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -606,6 +676,7 @@ async def test_late_position_unknown_does_not_regress_confirmed_target_position(
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation="transport.task.member_position_changed@v1",
+            timestamp=1,
             payload=payload,
         )
         await outcome_service.process_pending_evidence(1)
@@ -635,7 +706,7 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
     db_engine: object,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-confirmed-target",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (BinMove("bin-confirmed-target", RackBinSlot("rack-confirmed", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -644,6 +715,7 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
         operation_id="event-confirmed-target",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-confirmed-target",
@@ -656,6 +728,7 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
         operation_id="event-conflicting-final-position",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "kind": "BIN_MOVE",
@@ -694,7 +767,7 @@ async def test_late_source_picked_does_not_overwrite_unknown_position(
     db_engine: object,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-unknown-order",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (BinMove("bin-unknown-order", RackBinSlot("rack-unknown-order", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -706,6 +779,7 @@ async def test_late_source_picked_does_not_overwrite_unknown_position(
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation="transport.task.member_position_changed@v1",
+            timestamp=1,
             payload={
                 "transport_task_id": handle.transport_task_id,
                 "bin_id": "bin-unknown-order",
@@ -742,7 +816,7 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
     db_engine: object,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-terminal",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (BinMove("bin-terminal", RackBinSlot("rack-terminal", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -774,6 +848,7 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
+            timestamp=1,
             payload=payload,
         )
         await outcome_service.process_pending_evidence(1)
@@ -797,7 +872,7 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
     db_engine: object,
 ) -> None:
     handle = await outcome_service.move_bins(
-        "request-terminal-position",
+        new_uuid7(),
         TransportCaller("SORTER"),
         (BinMove("bin-position", RackBinSlot("rack-position", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -816,6 +891,7 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
         operation_id="operation-position-success",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
+        timestamp=1,
         payload=success,
     )
     await outcome_service.process_pending_evidence(1)
@@ -823,6 +899,7 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
         operation_id="operation-position-unknown",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-position",
@@ -853,7 +930,7 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
         BinMove("bin-version-1", RackBinSlot("rack-version", "1"), HandoffPosition("ROLLER_IN")),
         BinMove("bin-version-2", RackBinSlot("rack-version", "2"), HandoffPosition("ROLLER_IN")),
     )
-    handle = await outcome_service.move_bins("request-version", TransportCaller("SORTER"), moves)
+    handle = await outcome_service.move_bins(new_uuid7(), TransportCaller("SORTER"), moves)
     unknown = {
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
@@ -888,6 +965,7 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
+            timestamp=1,
             payload=payload,
         )
         await outcome_service.process_pending_evidence(1)

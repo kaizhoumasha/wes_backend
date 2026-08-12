@@ -144,6 +144,7 @@ class TransportEvidence(BaseMixin, table=True):
     operation_id: str = Field(max_length=36)
     transport_task_id: str = Field(max_length=80, index=True)
     operation: str = Field(max_length=80)
+    event_timestamp_ms: int = Field(sa_type=BigInteger)
     payload_digest: str = Field(max_length=64)
     payload_json: dict[str, Any] = Field(sa_type=JSON)
     ack_timestamp_ms: int = Field(sa_type=BigInteger)

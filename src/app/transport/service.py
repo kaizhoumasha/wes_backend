@@ -273,11 +273,18 @@ class TransportService:
         operation_id: str,
         transport_task_id: str,
         operation: str,
+        timestamp: int,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         _validate_persisted_text(operation_id, "operation_id", 36)
         _validate_persisted_text(transport_task_id, "transport_task_id", 80)
-        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        envelope = {
+            "operation_id": operation_id,
+            "operation": operation,
+            "timestamp": timestamp,
+            "data": payload,
+        }
+        encoded = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(encoded).hexdigest()
         now = timezone.now_for_db()
         ack_timestamp_ms = int(timezone.now_utc().timestamp() * 1000)
@@ -297,6 +304,7 @@ class TransportService:
                         operation_id=operation_id,
                         transport_task_id=transport_task_id,
                         operation=operation,
+                        event_timestamp_ms=timestamp,
                         payload_digest=digest,
                         payload_json=payload,
                         ack_timestamp_ms=ack_timestamp_ms,

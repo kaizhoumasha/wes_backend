@@ -106,7 +106,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         suffix = uuid.uuid4().hex
         object_id = f"bin-{suffix}"
         handle = await runtime.port.move_bins(
-            f"production-wiring-{suffix}",
+            new_uuid7(),
             TransportCaller("TRANSPORT_E2E"),
             (
                 BinMove(

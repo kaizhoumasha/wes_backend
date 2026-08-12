@@ -209,7 +209,7 @@ async def test_fastapi_cleanup_contains_each_failure_and_preserves_primary_error
     from src.database import redis_client
 
     startup = SimpleNamespace(catalog=object(), compiled_profile=build_compiled_provider_profile())
-    transport_runtime = SimpleNamespace(aclose=AsyncMock())
+    transport_runtime = SimpleNamespace(aclose=AsyncMock(side_effect=RuntimeError("transport cleanup failed")))
     close_data = AsyncMock(side_effect=RuntimeError("data cleanup failed"))
     close_preparation = AsyncMock(side_effect=RuntimeError("preparation cleanup failed"))
     close_db = AsyncMock(side_effect=RuntimeError("database cleanup failed"))

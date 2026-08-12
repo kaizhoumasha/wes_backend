@@ -33,6 +33,7 @@ from src.app.transport.models import (
 )
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
+from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
@@ -97,6 +98,7 @@ class ResultBeforeAckProvider:
             operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
             transport_task_id=transport_task_id,
             operation="transport.task.resulted@v1",
+            timestamp=1,
             payload={
                 "transport_task_id": transport_task_id,
                 "kind": "RACK_MOVE",
@@ -163,14 +165,14 @@ async def test_four_public_methods_create_one_reliable_task_each(
     db_engine: object,
 ) -> None:
     handles = [
-        await service.move_rack("req-rack", _caller(), "rack-1", RackPosition("A"), RackPosition("B")),
+        await service.move_rack(new_uuid7(), _caller(), "rack-1", RackPosition("A"), RackPosition("B")),
         await service.move_bins(
-            "req-bin",
+            new_uuid7(),
             _caller(),
             (BinMove("bin-1", RackBinSlot("rack-2", "1"), HandoffPosition("IN")),),
         ),
         await service.exchange_bins(
-            "req-exchange",
+            new_uuid7(),
             _caller(),
             (BinExchangePair("bin-2", RackBinSlot("rack-3", "1"), "bin-3", RackBinSlot("rack-4", "1")),),
         ),
@@ -187,7 +189,7 @@ async def test_four_public_methods_create_one_reliable_task_each(
                 updated_at=timezone.now_for_db(),
             )
         )
-    handles.append(await service.rotate_rack("req-rotate", _caller(), "rack-5", RackPosition("ROTATE"), RackFace.B))
+    handles.append(await service.rotate_rack(new_uuid7(), _caller(), "rack-5", RackPosition("ROTATE"), RackFace.B))
 
     assert len({handle.transport_task_id for handle in handles}) == 4
 
@@ -197,22 +199,21 @@ async def test_same_client_request_is_idempotent_but_changed_payload_conflicts(
     service: TransportService,
     db_engine: object,
 ) -> None:
-    first = await service.move_rack("same-request", _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B"))
-    duplicate = await service.move_rack(
-        "same-request", _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B")
-    )
+    request_id = new_uuid7()
+    first = await service.move_rack(request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B"))
+    duplicate = await service.move_rack(request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B"))
 
     assert duplicate == first
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         task_ids = list(
             await db.scalars(
-                select(TransportTask.transport_task_id).where(TransportTask.client_request_id == "same-request")
+                select(TransportTask.transport_task_id).where(TransportTask.client_request_id == request_id)
             )
         )
     assert task_ids == [first.transport_task_id]
     with pytest.raises(TransportIdempotencyConflict):
-        await service.move_rack("same-request", _caller(), "rack-idempotent", RackPosition("A"), RackPosition("C"))
+        await service.move_rack(request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("C"))
 
 
 @pytest.mark.asyncio
@@ -220,6 +221,7 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
     service: TransportService,
     db_engine: object,
 ) -> None:
+    request_id = new_uuid7()
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
         db.add(
@@ -233,7 +235,7 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
             )
         )
     first = await service.rotate_rack(
-        "rotate-idempotent",
+        request_id,
         _caller(),
         "rack-rotate-idempotent",
         RackPosition("ROTATE"),
@@ -247,7 +249,7 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
         )
 
     duplicate = await service.rotate_rack(
-        "rotate-idempotent",
+        request_id,
         _caller(),
         "rack-rotate-idempotent",
         RackPosition("ROTATE"),
@@ -259,11 +261,11 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
 
 @pytest.mark.asyncio
 async def test_active_resource_binding_rejects_overlapping_task(service: TransportService) -> None:
-    await service.move_rack("first", _caller(), "rack-resource", RackPosition("A"), RackPosition("B"))
+    await service.move_rack(new_uuid7(), _caller(), "rack-resource", RackPosition("A"), RackPosition("B"))
 
     with pytest.raises(TransportResourceConflict):
         await service.move_bins(
-            "second",
+            new_uuid7(),
             _caller(),
             (BinMove("bin-resource", RackBinSlot("rack-resource", "1"), HandoffPosition("IN")),),
         )
@@ -275,7 +277,7 @@ async def test_submit_received_sets_acceptance_and_does_not_resend(
     db_engine: object,
 ) -> None:
     provider = service.provider
-    handle = await service.move_rack("submit", _caller(), "rack-submit", RackPosition("A"), RackPosition("B"))
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-submit", RackPosition("A"), RackPosition("B"))
 
     assert await service.submit_pending_tasks(10) == 1
     assert await service.submit_pending_tasks(10) == 0
@@ -292,14 +294,14 @@ async def test_delivery_unknown_enters_reconciling_and_keeps_resource(
     db_engine: object,
 ) -> None:
     service.provider.code = TransportSubmitCode.DELIVERY_UNKNOWN
-    handle = await service.move_rack("unknown", _caller(), "rack-unknown", RackPosition("A"), RackPosition("B"))
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("A"), RackPosition("B"))
 
     assert await service.submit_pending_tasks(1) == 1
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert snapshot.status == "RECONCILING"
     assert snapshot.outcome_version == 1
     with pytest.raises(TransportResourceConflict):
-        await service.move_rack("blocked", _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"))
+        await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"))
 
 
 @pytest.mark.asyncio
@@ -310,7 +312,7 @@ async def test_submit_result_with_foreign_task_id_fails_closed_and_keeps_resourc
     service.provider.code = TransportSubmitCode.REJECTED
     service.provider.transport_task_id_override = "transport-foreign"
     handle = await service.move_rack(
-        "foreign-ack",
+        new_uuid7(),
         _caller(),
         "rack-foreign-ack",
         RackPosition("A"),
@@ -323,7 +325,7 @@ async def test_submit_result_with_foreign_task_id_fails_closed_and_keeps_resourc
     assert snapshot.reason_code == "TRANSPORT_SUBMIT_CONFLICT"
     with pytest.raises(TransportResourceConflict):
         await service.move_rack(
-            "foreign-ack-replacement",
+            new_uuid7(),
             _caller(),
             "rack-foreign-ack",
             RackPosition("B"),
@@ -336,7 +338,7 @@ async def test_expired_claim_after_send_started_reconciles_without_resend(
     service: TransportService,
     db_engine: object,
 ) -> None:
-    handle = await service.move_rack("crash", _caller(), "rack-crash", RackPosition("A"), RackPosition("B"))
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-crash", RackPosition("A"), RackPosition("B"))
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     expired = timezone.now_for_db()
     async with sessions.begin() as db:
@@ -357,7 +359,7 @@ async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: ob
     provider = DelayedNotSentProvider()
     service = TransportService(sessions, TransportRepository(), provider)
     handle = await service.move_rack(
-        "late-not-sent",
+        new_uuid7(),
         _caller(),
         "rack-late-not-sent",
         RackPosition("A"),
@@ -391,7 +393,7 @@ async def test_result_arriving_during_submit_is_not_regressed_by_late_ack(db_eng
     service = TransportService(sessions, TransportRepository(), provider)
     provider.service = service
     handle = await service.move_rack(
-        "result-before-ack-request",
+        new_uuid7(),
         _caller(),
         "rack-before-ack",
         RackPosition("A"),
@@ -406,7 +408,7 @@ async def test_result_arriving_during_submit_is_not_regressed_by_late_ack(db_eng
 
 @pytest.mark.asyncio
 async def test_expired_claim_without_send_start_is_reclaimed(service: TransportService, db_engine: object) -> None:
-    handle = await service.move_rack("reclaim", _caller(), "rack-reclaim", RackPosition("A"), RackPosition("B"))
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-reclaim", RackPosition("A"), RackPosition("B"))
     expired = timezone.now_for_db() - timedelta(seconds=1)
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
@@ -427,7 +429,7 @@ async def test_confirmed_not_sent_stops_after_three_attempts_and_releases_resour
 ) -> None:
     service.provider.code = TransportSubmitCode.NOT_SENT
     handle = await service.move_rack(
-        "retry-budget",
+        new_uuid7(),
         _caller(),
         "rack-retry-budget",
         RackPosition("A"),
@@ -451,7 +453,7 @@ async def test_confirmed_not_sent_stops_after_three_attempts_and_releases_resour
     assert len(service.provider.calls) == 3
     assert await service.submit_pending_tasks(1) == 0
     replacement = await service.move_rack(
-        "retry-budget-replacement",
+        new_uuid7(),
         _caller(),
         "rack-retry-budget",
         RackPosition("A"),
@@ -464,7 +466,7 @@ async def test_confirmed_not_sent_stops_after_three_attempts_and_releases_resour
 async def test_busy_uses_positive_retry_after_from_ack(service: TransportService, db_engine: object) -> None:
     service.provider.code = TransportSubmitCode.BUSY
     service.provider.retry_after_ms = 1500
-    handle = await service.move_rack("busy", _caller(), "rack-busy", RackPosition("A"), RackPosition("B"))
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-busy", RackPosition("A"), RackPosition("B"))
 
     assert await service.submit_pending_tasks(1) == 1
     snapshot = await _load_task(db_engine, handle.transport_task_id)
@@ -480,7 +482,7 @@ async def test_busy_with_unrepresentable_retry_after_falls_back_without_strandin
     service.provider.code = TransportSubmitCode.BUSY
     service.provider.retry_after_ms = 10**20
     handle = await service.move_rack(
-        "busy-overflow",
+        new_uuid7(),
         _caller(),
         "rack-busy-overflow",
         RackPosition("A"),
@@ -500,7 +502,7 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
     db_engine: object,
 ) -> None:
     handle = await service.move_bins(
-        "deadline",
+        new_uuid7(),
         _caller(),
         (BinMove("bin-deadline", RackBinSlot("rack-deadline", "1"), HandoffPosition("ROLLER_IN")),),
     )
@@ -511,6 +513,7 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
         operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-deadline",
@@ -542,7 +545,7 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
 ) -> None:
     service.provider.code = TransportSubmitCode.DELIVERY_UNKNOWN
     handle = await service.move_bins(
-        "position-after-delivery-unknown",
+        new_uuid7(),
         _caller(),
         (BinMove("bin-late-position", RackBinSlot("rack-late-position", "1"), HandoffPosition("OUT")),),
     )
@@ -558,6 +561,7 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
         operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4474",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
+        timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
             "bin_id": "bin-late-position",

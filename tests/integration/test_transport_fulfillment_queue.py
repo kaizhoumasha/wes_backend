@@ -71,7 +71,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
         suffix = uuid.uuid4().hex
         for index in range(2):
             handle = await runtime.service.move_bins(
-                f"queue-submit-{index}-{suffix}",
+                new_uuid7(),
                 TransportCaller("TRANSPORT_QUEUE_TEST"),
                 (
                     BinMove(
@@ -84,7 +84,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             task_ids.append(handle.transport_task_id)
 
         evidence_handle = await runtime.service.move_bins(
-            f"queue-evidence-{suffix}",
+            new_uuid7(),
             TransportCaller("TRANSPORT_QUEUE_TEST"),
             (
                 BinMove(
@@ -100,6 +100,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             operation_id=evidence_operation_id,
             transport_task_id=evidence_handle.transport_task_id,
             operation=RESULT_OPERATION,
+            timestamp=1,
             payload={
                 "transport_task_id": evidence_handle.transport_task_id,
                 "kind": "BIN_MOVE",

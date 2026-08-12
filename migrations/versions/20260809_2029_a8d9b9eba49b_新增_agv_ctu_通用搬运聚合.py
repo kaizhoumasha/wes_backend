@@ -131,6 +131,7 @@ def upgrade() -> None:
         sa.Column("operation_id", sa.String(length=36), nullable=False),
         sa.Column("transport_task_id", sa.String(length=80), nullable=False),
         sa.Column("operation", sa.String(length=80), nullable=False),
+        sa.Column("event_timestamp_ms", sa.BigInteger(), nullable=False),
         sa.Column("payload_digest", sa.String(length=64), nullable=False),
         sa.Column("payload_json", sa.JSON(), nullable=False),
         sa.Column("ack_timestamp_ms", sa.BigInteger(), nullable=False),

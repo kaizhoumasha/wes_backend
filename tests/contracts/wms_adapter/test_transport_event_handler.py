@@ -66,6 +66,7 @@ async def test_valid_position_callback_is_persisted_before_received_ack() -> Non
     assert response.http_status == 202
     assert response.body["code"] == "RECEIVED"
     assert recorder.calls[0]["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
+    assert recorder.calls[0]["timestamp"] == 1
 
 
 @pytest.mark.asyncio
@@ -240,6 +241,7 @@ async def test_rejected_evidence_keeps_its_operation_id_out_of_idempotency_and_c
             "operation_id": corrected_id,
             "transport_task_id": "transport-1",
             "operation": "transport.task.member_position_changed@v1",
+            "timestamp": 1,
             "payload": {"transport_task_id": "transport-1", "bin_id": "bin-1", "milestone": "SOURCE_PICKED"},
         }
     ]
