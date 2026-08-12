@@ -55,6 +55,21 @@ heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
 source_glob = ".dockerignore"
 heavy_tests = ["tests/integration/test_command_result_correlation_authority.py"]
 
+# 生产镜像入口变更触发最终接线 E2E 与四角色部署证明；参数静态合同由 FAST 承接，发布前仍需最终镜像 smoke。
+[[mapping]]
+source_glob = "Dockerfile"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/test_wms_deployment_attestation.py",
+]
+
+[[mapping]]
+source_glob = "docker-compose.deploy.yml"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/test_wms_deployment_attestation.py",
+]
+
 # 环境 profile 的当前 WMS deadline 已按冻结合同评审；任意后续内容变化先恢复 fail closed。
 [[mapping]]
 source_glob = ".env.dev"

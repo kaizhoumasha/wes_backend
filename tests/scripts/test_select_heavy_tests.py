@@ -716,6 +716,14 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("Jenkinsfile.backend-ci", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (".dockerignore", (COMMAND_RESULT_CORRELATION_AUTHORITY_HEAVY_TEST,)),
         (
+            "Dockerfile",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_DEPLOYMENT_HEAVY_TEST),
+        ),
+        (
+            "docker-compose.deploy.yml",
+            (TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_DEPLOYMENT_HEAVY_TEST),
+        ),
+        (
             ".env.dev",
             (WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST),
         ),
@@ -1785,11 +1793,22 @@ def test_repository_mapping_classifies_local_codex_metadata_as_no_heavy_impact()
     assert select_heavy_tests([".codex/config.toml", ".codex/settings.json"], config) == []
 
 
-def test_repository_mapping_keeps_top_level_dockerfile_fail_closed() -> None:
+def test_repository_mapping_selects_deployment_owner_for_top_level_dockerfile() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    with pytest.raises(SelectorError, match="未配置 mapping/NONE"):
-        select_heavy_tests(["Dockerfile"], config)
+    assert select_heavy_tests(["Dockerfile"], config) == [
+        "tests/e2e/transport/test_transport_production_wiring.py",
+        "tests/integration/test_wms_deployment_attestation.py",
+    ]
+
+
+def test_repository_mapping_selects_deployment_owners_for_production_compose() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["docker-compose.deploy.yml"], config) == [
+        "tests/e2e/transport/test_transport_production_wiring.py",
+        "tests/integration/test_wms_deployment_attestation.py",
+    ]
 
 
 def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
