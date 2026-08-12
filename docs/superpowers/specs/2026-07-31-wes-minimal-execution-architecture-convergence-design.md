@@ -2,9 +2,9 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-11
+updated_at: 2026-08-13
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: v0.24.1.0@b1a8fda9
+implementation_baseline: v0.24.2.0@d65463cf
 system_stage: pre_release
 migration_strategy: direct_replacement
 historical_reference: ee1f3b670c5ed33cfd5be1fd0370b53570790e73
@@ -22,6 +22,7 @@ related:
   - ../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md
   - docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md
   - docs/contracts/wms-northbound-interaction-contract.md
+  - docs/contracts/wms-inbound-putaway-integration-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
 ---
 
@@ -409,7 +410,7 @@ WES 架构真源。每种实际设备通过获批合同附录明确允许的 `ta
 
 按约定提供默认角色和行为：
 
-- 标准位置角色：入口、缓存、SCAN1、SCAN2、SCAN3、退料缓存和 NG。
+- 标准位置角色：入口、缓存、SCAN1、SCAN2、SCAN3、SCAN4、退料缓存和 NG。
 - 标准设备角色：扫码设备、滚筒线、来源机械臂、目标机械臂、扫码平台。
 - 标准流程模式：入库、出库。
 - 标准设备忙闲判定和命令证据字段。
@@ -550,20 +551,21 @@ SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或 `PkgID`。
 
 ## 11. 业务流程
 
+自动入库与上架的 operation、严格 DTO、幂等、物理门禁和失败边界由
+`docs/contracts/wms-inbound-putaway-integration-requirements.md` 集中定义；该合同当前为 `ReviewRequired`。
+本节只保留顶层流程和基础对象边界，不构成 Phase 8/9 代码实施授权。
+
 ### 11.1 粗分机
 
 1. 操作员将完整料盘放入入口。
-2. 入料机械臂感应、扫码和测量，并通过 ECS EVENT 上报。
-3. WES 向 WMS 提交当前料盘身份、扫码和测量证据，由 WMS 返回封闭准入结果；WES 只校验关联、时效与物理可执行性，
-   不根据物料、GRN、Package 或本地规则重算准入。
-4. 通过后下发厂商定义的入料机械臂长命令。
-5. 成功 CALLBACK 后，料盘进入粗分机流水线；入料机械臂立即可以处理下一料盘。
-6. 流水线长命令完成后，料盘到达出料侧。
-7. WES 向 WMS 请求当前料盘的唯一目标料箱料格或等待/拒绝结果，不在本地计算或选择目标。
-8. 无可用货架或料格时，通过 Transport Port 请求 WMS/AGV 补充空箱货架。
-9. 出料机械臂成功投放后更新本地投影，并创建对应业务义务，提交 package binding 与 inbound confirmation。
+2. ECS 上报完整身份与测量证据；WES 先保存不可变 `InboundEvidence`，再请求 WMS 业务准入。
+3. WMS 原子完成 GRN 绑定和目标预留，返回稳定料盘身份及唯一目标，或者返回拒绝/等待；WES 不重算业务资格、容量或目标。
+4. WES 只在目标与当前拓扑、位置投影和设备状态一致时创建 `DeviceCommand`；PUT 不可逆点后禁止改址或重发等价动作。
+5. ECS 可靠 PUT 后，WES 保存位置证据并向 WMS 报告；只有 WMS 原子记录最终位置后，该盘才完成入库。
+6. WMS 的货架释放决定先围栏新准入；WES 必须等待已接受料盘和所有已发出准入请求取得确定结果，才能冻结释放快照。
+7. 迟到业务结果与释放状态冲突、设备结果未知或现场身份不符时，冻结最小安全范围并进入人工对账。
 
-每个设备独立推进，不等待同一料盘完成整个流程。
+粗分入库不建立顶层 `InboundTask`。设备可以并行推进，但同一料盘必须以 `MaterialExecution` 和不可变证据串起完整闭环。
 
 ### 11.2 自动分拣线入库
 
@@ -572,21 +574,20 @@ SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或 `PkgID`。
 - 单层货架位置 A、B。
 - 五层货架位置。
 - CTU 入料口、退料口和各自缓存段。
-- 滚筒线及 SCAN1、SCAN2、SCAN3。
+- 滚筒线及 SCAN1、SCAN2、SCAN3、SCAN4。
 - 北向机械臂、物料扫码平台、南向机械臂。
 
 并行子流程：
 
-1. WMS/AGV 补充单层货架和五层货架。
-2. CTU 按冻结成员的批次把五层货架上的料箱投入本线入口；WES 跟踪批次级同步接纳 ACK、逐箱
-   `SOURCE_PICKED / TARGET_PLACED` 位置事实和异步终态，不镜像 CTU 内部导航或机械阶段。
-3. SCAN1 判定料箱是否进入本线工作队列。
-4. SCAN2 到位后启动料盘聚合流程。
-5. 北向机械臂从单层货架指定来源取出完整料盘并放到扫码平台。
-6. 扫码完成后，WMS 返回当前工作料箱的唯一目标料格，WES 校验并执行。
-7. 南向机械臂把完整料盘投入目标料格。
-8. 成功 CALLBACK 后更新料盘、料箱、料格投影并同步 WMS。
-9. SCAN3 把正常完成料箱送入本线退料缓存；CTU 分批取走并放回 WMS 授权的五层货架储位。
+1. WMS 根据粗分释放快照形成完整上架计划；WES 不按本地阈值增加、删除或改判计划成员。
+2. WES 只选择处于人工 `INBOUND` 模式且无活动上架执行的 WorkLine；同一 WorkLine 同时只运行一个上架执行。
+3. CTU 供给受投料缓存实际空位和背篓容量约束；WMS 只返回库存主账中可分配的精确 Bin。
+4. 实际 Bin 到位并扫码确认后进入 SCAN1；SCAN1 承接 WMS 业务路由，SCAN2 只确认当前 Bin 是否可服务。
+5. 北向机械臂按计划来源取盘并在平台复扫；WMS 根据当前可用 Bin 晚绑定唯一目标 Cell，身份不符时冻结对账。
+6. 南向机械臂可靠 PUT 后形成位置 Fact；WMS 原子迁移料盘位置，不再次执行 GRN 入库确认。
+7. SCAN3 按已持久化 NG 处置分流；正常 Bin 经当前 WorkLine 的 SCAN4 进入退料缓存，NG Bin 沿获批物理路径进入 NG 出口。
+8. CTU 退回受退料缓存实际 Bin、背篓容量和 WMS 可用五层货架储位约束；退料缓存满时停止新供给。
+9. 业务计划完成与物理清线分别闭合；仍有目标 Bin、NG Bin、来源货架或外部义务时，WorkLine 不得释放。
 
 北向机械臂的厂商 ECS 命令是一个长命令。WES 不要求 ECS 上报命令内部的抓取、移动和放置步骤。
 
@@ -618,13 +619,11 @@ SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或 `PkgID`。
 1. 粗分机释放整台单层货架并冻结该时点快照。
 2. 新空货架补入粗分机，与旧货架的后处理相互独立。
 3. 旧货架通过 AGV 移至独立满箱交换位置。
-4. WES 根据冻结快照判断达到阈值的料箱。
-5. WMS 授权五层货架目标储位、空箱和 CTU 搬运目标。
-6. 粗分机插件按 WMS 已确定的料箱和储位调用 Phase 4 `exchange_bins()`；一次任务包含 1～2 个交换对，由 WMS/RCS 作为
-   一个 CTU 协调任务执行，超过两个交换对时拆为多个独立交换任务。每个料箱只在 `SOURCE_PICKED`、`TARGET_PLACED`
-   两个位置改变点形成标准事实，不镜像 CTU 内部导航和机械阶段。
-7. 满箱完成箱级入库并同步 WMS。
-8. 剩余未满箱料箱随单层货架进入自动分拣线 A/B，继续逐料盘聚合。
+4. WMS 根据冻结快照独占判断满箱资格、空箱资格和交换成员，并把决定纳入完整上架计划。
+5. WES 只在来源单层货架和 WMS 指定五层货架均可靠到位后，通过 Transport Port 执行已批准成员。
+6. TransportTask 拥有搬运中间事实；业务层只在实际身份和最终位置确定后向 WMS 报告库存位置事实，避免双写。
+7. 全部交换成员最终位置均可靠闭合后，交换批次才成功；任一成员失败或 UNKNOWN 即停线等待人工恢复，不自动补偿。
+8. 剩余逐盘来源成员进入获选自动 WorkLine，继续位置迁移，不再次执行入库确认。
 
 满箱交换不在粗分机持续装料期间并发判断，也不与自动分拣线货架位混用。
 
@@ -643,10 +642,11 @@ SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或 `PkgID`。
 
 - CTU 入料口和入料缓存。
 - CTU 退料口和退料缓存。
-- SCAN1、SCAN2、SCAN3 扫码设备。
+- SCAN1、SCAN2、SCAN3、SCAN4 扫码设备。
 - 工作分支段。
 
-SCAN1 决定料箱是否进入本线工作队列；SCAN3 决定料箱进入本线退料缓存还是继续直行。
+SCAN1 承接 WMS 业务路由；SCAN2 只确认当前 Bin 是否可服务；SCAN3 按已持久化处置选择 NG 路径或正常分支；
+SCAN4 把正常 Bin 送入当前 WorkLine 的退料缓存。
 
 不建立 `SorterCorridor`。物理串联、滚筒线输送方向和段间互锁由 ECS/PLC 完成。WES 通过下一台
 SCAN1 的 EVENT 自然接续料箱位置，不配置跨线执行引擎、父子 Session 或 `next_workline_id`。
@@ -664,12 +664,12 @@ SCAN1 的 EVENT 自然接续料箱位置，不配置跨线执行引擎、父子 
 下游 SCAN1 首先检查 NG：
 
 - 已带 NG 标识：直行，不进入 SCAN2，不重新绑定 WorkLine。
-- 非 NG：执行本线准入规则；本线忙时等待。
+- 非 NG：请求 WMS 返回进入生产、无生产任务、标记 NG 或等待；WES 不得自行改判业务 NG。
 
 下游 SCAN3 同样检查 NG：
 
 - 已带 NG 标识：继续直行。
-- 非 NG 且本线作业完成：进入本线退料缓存。
+- 非 NG 且本线不进入生产或作业完成：进入本线 SCAN4，再进入退料缓存。
 - 本线退料缓存满：等待，不改为 NG。
 
 硬件故障不得把料箱标记为 NG。
@@ -689,7 +689,7 @@ SCAN1 事件以原子方式绑定。本次执行期间不得修改。
 校验点：
 
 1. SCAN1：非 NG 的 `owner_workline_id` 必须等于当前 WorkLine。
-2. SCAN3：非 NG 只允许进入当前 WorkLine 的退料缓存。
+2. SCAN3/SCAN4：非 NG 只允许通过当前 WorkLine 的 SCAN4 进入退料缓存。
 3. CTU 退料：实际退料口所属 WorkLine 必须等于 `owner_workline_id`。
 
 正常料箱即使本线设备或退料缓存忙，也只能等待，不能借用其他工作线出口。
@@ -708,7 +708,7 @@ SCAN1 事件以原子方式绑定。本次执行期间不得修改。
 
 WES 负责：
 
-- 料箱在 SCAN1、SCAN2、SCAN3 和缓存中的位置。
+- 料箱在 SCAN1、SCAN2、SCAN3、SCAN4 和缓存中的位置。
 - 滚筒线 ECS 命令和结果。
 - SCAN2 人工工作位占用。
 - WMS 人工作业关联和完成接纳。
@@ -731,6 +731,7 @@ CTU 投箱
 → 操作员通过 WMS 扫码并放入目标料箱/料格
 → WMS 同步通知 WES 人工作业完成
 → SCAN3
+→ SCAN4
 → 本线退料缓存
 ```
 
@@ -935,7 +936,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 
 - 两条自动线使用同一自动插件的两个配置实例。
 - 两条人工线使用同一人工插件的两个配置实例。
-- NG 料箱在后续 SCAN1/SCAN3 只直行并最终到达统一 NG 区。
+- NG 料箱在后续 SCAN1/SCAN3 只直行、不进入 SCAN4，并最终到达统一 NG 区。
 - 非 NG 料箱只能从其 `owner_workline_id` 对应退料口离开。
 - 本线忙或退料缓存满时正常料箱等待，不转投其他线。
 - 非 NG 错线时禁止重新绑定和错误出料，并保存冲突证据。

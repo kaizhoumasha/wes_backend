@@ -3,7 +3,7 @@
 > **项目名称**: 休斯顿P9 智能仓储执行系统 (Houston P9 Intelligent Warehouse Execution System - WES)
 > **系统定位**: 独立部署的集成化控制中台 (Independent Integration & Control Middleware)
 > **文档版本**: 3.0 (Architecture Convergence)
-> **日期**: 2026-08-11
+> **日期**: 2026-08-13
 > **状态**: Current Requirements Baseline
 >
 > **文档层级**: 本文是产品范围、参与方职责和功能/非功能需求真源；
@@ -11,6 +11,8 @@
 > 负责把这些需求收敛为当前目标架构；
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 只负责实施顺序。
 > `docs/integration/third_party_integration_whitepaper.md` 是所有固定式设备供应商长期遵循的顶层统一接口（wire）真源。
+> `docs/contracts/wms-inbound-putaway-integration-requirements.md` 是粗分逐盘入库、满箱交换和自动上架的业务合同评审真源；
+> 当前状态为 `ReviewRequired`，不构成代码实施授权。
 > SRS 不规定旧 Runtime、旧插件框架或兼容迁移路径；出现实现机制冲突时，以当前顶层 SPEC 为准，并同步修订本文需求表述。
 
 ## 1. 引言 (Introduction)
@@ -368,81 +370,35 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 #### 3.3.1 SMT 智能装箱协调 (Smart Kitting Coordination)
 
-* **场景**: 从 **收货验收区 (流向 A)** -> 粗分机拆箱 -> 放入 **单层货架 (Single-Layer Rack)** (详见 3.1.2)。
-* **货架规格**: 单层货架可承载 **4 个料箱**，用于中转缓存，适合高频装卸操作。
-* **参与者**: WES (大脑), ECS (机械臂/视觉), WMS 转发的 RCS/AGV 搬运能力, 人工 (拆箱)。
-* **WES 执行逻辑**:
+粗分逐盘入库、满箱交换和自动上架的 operation、严格 DTO、幂等、物理门禁与失败边界由
+`docs/contracts/wms-inbound-putaway-integration-requirements.md` 集中定义。本节与 §3.3.2 只保留产品级场景和职责边界，
+不得复制或覆盖该合同；合同获批前不得据此开始 Phase 8/9 业务实现。
 
-  **Step 1: 空架补给 (Empty Rack Supply)**
-
-  * **监控**: WES 保存单层货架 active 执行快照和 typed status evidence，并向 WMS 提交当前工作位证据；空架可用性、
-    资源授权和业务处置由 WMS 返回封闭结果。
-  * **执行**: WMS 结果要求补给时，WES 创建对应搬运需求并提交 WMS，由 WMS 转发 RCS 执行；WES 不自行选择货架。
-  * **ECS 握手**:
-    * ECS 机械臂扫描空架所有箱号。
-    * ECS 按设备合同附录上报包含料箱身份列表的统一事件；供应商内部事件名和 DTO 不进入 WES。
-    * WES 基于 ECS 证据确认当前执行快照无误后，允许本次装箱作业启动；该确认不代表 WES 接管全局空架库存或物理库位权威。
-
-  **Step 2: 视觉识别与分箱校验 (Vision & Binning Validation)**
-
-  * **动作**: 料盘沿流水线输送 -> 到位触发视觉系统扫描。
-  * **交互**:
-    * ECS 按设备合同附录上报包含 PKG、尺寸和厚度的统一事件；核心不识别供应商内部事件名。
-  * **WMS 业务结果**: WES 提交 PKG、GRN、尺寸、厚度、扫描证据和当前作业期投影；WMS 返回允许/拒绝/等待、唯一目标料箱
-    料格和必要业务参数。WES 不在本地执行归属、混料、尺寸业务资格或料格分配算法。
-  * **逻辑动作**: WES 校验 WMS 结果的关联、时效和物理可执行性后，创建包含唯一目标料箱、目标货格和预期堆叠高度的
-    `DeviceCommand`，按设备合同附录的 `task_type` 和 `params` 通过统一接口下发。
-    * SMT 粗分机场景不得用一个未分层的储位字段同时表达料架货位和料箱货格，位置必须按对象类型表达:
-      * **料架货位**: `rack_id + rack_slot_code(A/B/C/D) + rack_slot_location_code`
-      * **料箱货格**: `bin_id + bin_cell_location`
-    * 机械手执行放盘时以上位给出的“箱位 + 储位信息”为准。
-  * **执行**: ECS 接收指令后，驱动机械臂从流水线抓取料盘并执行放入动作。
-
-**Step 3: 异常与满架 (Exception & Full)**
-
-* **装不进**: 若 ECS 按统一接口返回“物理无法放入”的规范终态证据，WES 隔离当前执行并报告 WMS，等待 WMS 返回新的业务处置；
-  插件不得重新分配。
-* **初次无货架**: SMT 粗分机开工或当前物料执行恢复时，WMS 返回“等待货架/补给”结果后，核心只暂停当前
-  `MaterialExecution`，并通过 `TransportTask` 提交 WMS 指定的补给需求。
-* **当前目标不可执行**: WES 发现 WMS 指定料格与当前物理证据冲突时 fail closed，提交冲突证据并等待 WMS 返回两项
-  相互独立、可追踪的业务结果：
-* 为旧货架保存释放快照并请求后续处置；核心据此创建对应外部义务，释放证据至少携带
-  `rack_release_id`、`single_layer_rack_id`、`source_classifier_line_code`、`source_task_batch_id`、
-  `release_reason_code=NO_COMPATIBLE_OR_EMPTY_CELL`、`bin_snapshots`。
-* 为当前 `MaterialExecution` 请求新货架补给；核心据此创建 `TransportTask`，保存稳定 `dispatch_key`、
-  `reason_code`、`PkgID` 和恢复判定所需的工作线/位置关联。
-* **新货架到位恢复**: 只有匹配的 WMS 类型化终态结果、对应 InboundEvidence 和 PositionProjection
-  共同确认新货架已到达目标位置，并取得 WMS 新的封闭业务结果后，插件才能继续当前 `MaterialExecution`；旧货架处置完成
-  不得替代新货架到位证据。
-  只有出料机械臂成功把当前料盘放入料格后，当前物料执行才完成。
+* **场景**: 工人把标准整盘物料放入粗分机入口，设备自动输送、扫码、测量并放入单层货架目标 Bin/Cell。
+* **入库完成点**: WES 校验 ECS 身份与测量证据后请求 WMS 准入；WMS 原子绑定 GRN，返回稳定料盘身份及唯一目标。
+  只有机械臂可靠 PUT 且 WMS 原子记录最终位置事实后，该盘才完成入库。
+* **权威边界**: WMS 决定业务准入、GRN、料盘身份、目标 Cell、容量、兼容性和 NG；WES 只拥有本地执行、物理证据、
+  位置投影以及 `DeviceCommand` / `TransportTask` 编排。粗分入库不建立顶层 `InboundTask`，WES 不在本地选择替代料格。
+* **目标恢复**: PUT 不可逆点前发现目标不可执行时，WES 携带原始失败证据请求 WMS 返回新目标、NG 或等待；进入不可逆
+  PUT 后只能停机对账，不能改址或重发等价物理动作。
+* **货架释放**: 仅 WMS 可以作出释放决定。WES 接纳决定后停止新目标，但必须等待已接受料盘、所有已发出准入请求、
+  设备命令、位置和外部 Fact 全部取得确定结果，才能冻结货架释放快照；顺序不明或迟到结果与释放冲突时必须停机对账。
+* **NG**: 料盘可靠进入粗分 NG 交接区并由 WMS 记录业务专属 NG Fact 后，本盘执行结束；后续人工处置由 WMS 负责。
 
 #### 3.3.2 混合入库策略 (Hybrid Inbound Strategy)
 
-* **场景**: 单层货架 (装满料) -> SMT 存储区 (**五层货架 (Five-Layer Rack)**, 详见 3.1.2)。
-* **货架规格**: 五层货架每层可承载 **4 个料箱**，总容量 **20 个料箱**，具有 **A/B 面** 区分，支持 CTU 双侧操作。
-* **WMS 决策、WES 执行逻辑**:
-
-  1. **模式结果 (Mode Result)**:
-
-     * WES 向 WMS 提交已发生的物理事实和当前执行证据；WMS 返回满箱交换、优先交换、零散入库、混合模式、等待或拒绝等
-       封闭结果及其顺序。
-     * `Usage` 阈值、空箱资格、降级和模式选择均属于 WMS 业务规则，WES 不在本地计算或改判。
-  2. **满箱交换执行 (Full Exchange Execution)**:
-
-     * WMS 负责判断五层货架空箱资源、交换区空位、排队和 CTU/AGV 动作闭环；WES 不本地锁定 `Empty_Bin`。
-     * WMS 返回 1～2 个已确定交换对，每对包含两个料箱和两个货架储位；WES 调用 `exchange_bins()` 创建一个
-       `BIN_EXCHANGE` 类型的 `TransportTask` 并提交给 WMS。Transport 不接收满箱/空箱分类，不拆分请求，也不安排 CTU
-       内部取放顺序；WMS 负责转发 RCS/CTU 协调执行。
-     * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、权威终态、资源投影和回写证据。
-     * **职责边界**: 旧货架处置只决定该货架的后续搬运或交换需求，不恢复 SMT 粗分机当前物料执行，也不替代新货架补充。
-       当前 `MaterialExecution` 的恢复必须由其关联 `TransportTask` 的权威终态与位置投影共同驱动。
-  3. **流水线零散入库 (Pipeline Picking Execution)**:
-
-     * **调度**: WES 按 WMS 结果为指定 Target Bin 创建到流水线的搬运需求，由 WMS 转发 RCS 执行。
-     * **拣选动作**:
-       * ECS 扫描流水线上的 Target Bin。
-       * WES 创建包含来源货架、目标料箱和数量的逻辑 `DeviceCommand`，按设备合同附录通过统一接口下发。
-     * **执行**: ECS 机械臂执行抓取放入。
+* **场景**: 已完成粗分入库的单层货架，先执行获批的满箱交换，再把剩余料盘迁移到五层货架目标 Bin/Cell。该阶段只
+  迁移权威位置，不重复 GRN 绑定或入库确认。
+* **计划边界**: WMS 根据冻结货架快照形成完整上架计划并决定满箱资格、交换成员、目标 Bin/Cell 和处理顺序；WES 不按
+  本地 `Usage`、空格数或等待时长改判。计划的精确 DTO、幂等与废止规则必须在入库合同获批后实施。
+* **满箱交换**: WMS 决定交换成员和最终储位，WES 只通过 Transport Port 执行已批准成员；任一成员失败或结果未知时停止
+  后续动作并等待人工恢复，不自动补偿或反向搬回。
+* **目标 Bin 供退**: WMS 只供给库存主账中存在可分配 Cell 的 Bin，并为实际退料候选分配五层货架储位；WES 只按现场
+  缓存和 CTU 物理容量限流，不推断库存可用性。
+* **扫描与逐盘上架**: SCAN1 承接 WMS 业务路由，SCAN2 只确认当前 Bin 是否可服务，SCAN3 按已持久化 NG 处置分流，
+  SCAN4 把正常 Bin 送入本线退料缓存。来源盘复扫后由 WMS 晚绑定精确目标 Cell，身份不符或位置未知时冻结对账。
+* **完成边界**: WMS 根据计划和已记录事实裁决业务完成；目标 Bin 退回、NG Bin 人工取走和来源货架搬离属于独立物理清理
+  义务。全部物理义务闭合前，WorkLine 不得释放或切换模式。
 
 #### 3.3.3 SMT 生产发料协调 (SMT Production Issue)
 

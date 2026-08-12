@@ -23,7 +23,9 @@ Phase 5 已完成零插件基线；Phase 6 已完成 Transport 正式基础基�
 
 **Design baseline:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
 
-**Implementation baseline:** `v0.24.1.0` / `b1a8fda9`（当前 `develop` 的 Phase 5 零插件基线；Phase 4 Transport 仍保持暗构建，尚未接入生产路径）
+**Inbound/putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`；不构成 Phase 8/9 实施授权）
+
+**Implementation baseline:** `v0.24.2.0` / `d65463cf`（当前 `develop` 的 Phase 6 Transport 正式基础基线；尚无业务 producer）
 
 ---
 
@@ -505,20 +507,21 @@ Transport；`LineRunEpoch` 只拥有设备合同/拓扑/配置的连续可信运
 **Objective:** 在独立 Device/ECS 基础能力已批准、实施并切换为唯一生产路径后，以粗分机交付首个真实执行插件、
 设备合同附录、endpoint/device 绑定和供应商一致性验收。
 
-**Authoritative inputs:** 顶层 SPEC §7/§11.1、第三方设备统一接口白皮书、Phase 7 Device/ECS 验收证据、
-粗分机真实拓扑、供应商原始资料、WMS 操作清单和 Phase 6 Transport 基线。
+**Authoritative inputs:** 顶层 SPEC §7/§11.1、`docs/contracts/wms-inbound-putaway-integration-requirements.md` §7—§8、
+第三方设备统一接口白皮书、Phase 7 Device/ECS 验收证据、粗分机真实拓扑、供应商原始资料和 Phase 6 Transport 基线。
 
-**Entry conditions:** Phase 7 Device/ECS 退出门禁通过；粗分机供应商资料
+**Entry conditions:** Phase 7 Device/ECS 退出门禁通过；入库合同已由 WMS、WES、RCS 和 ECS 联合批准；粗分机供应商资料
 完整；设备 `task_type`、`event_type`、字段闭集、错误和时限已形成可批准附录。
 
-**Scope:** 粗分机设备合同附录、endpoint/device 绑定、供应商一致性验收、独立插件包；粗分 WMS 业务结果到插件执行动作的
-映射；设备长命令、NG 执行、WMS 决策/查询/确认和 Phase 6 Transport Port 消费；以第一个真实插件为依据冻结最小、静态、
-显式注入的插件 SPI。设备 HTTP 只复用 Phase 7 唯一生产 Adapter。
+**Scope:** 粗分机设备合同附录、endpoint/device 绑定、供应商一致性验收和独立插件包；身份与测量证据、WMS 原子 GRN
+绑定和目标、目标恢复、placement/NG Fact、单层货架释放围栏与快照、人工对账，以及 Phase 6 Transport Port 消费；以第一
+个真实插件为依据冻结最小、静态、显式注入的插件 SPI。设备 HTTP 只复用 Phase 7 唯一生产 Adapter。
 
 **Explicit out-of-scope:** 其他分拣线、第二个 WES 设备 HTTP Adapter、公共 HTTP Client、凭据、通用认证配置、WMS wire 合同重定义、通用插件模板。
 
-**Deliverables:** 获批粗分机设备合同附录、endpoint/device 绑定、通过一致性验收的供应商 ECS/网关、可独立构建/测试的
-粗分机插件、由真实使用驱动的最小 SPI、显式插件 Composition Root 绑定和真实业务验收结果；不新增 WES HTTP Adapter。
+**Deliverables:** 获批入库合同 §7—§8和粗分机设备合同附录、endpoint/device 绑定、通过一致性验收的供应商 ECS/网关、
+可独立构建/测试的粗分机插件、由真实使用驱动的最小 SPI、显式插件 Composition Root 绑定和真实业务验收结果；不新增
+顶层 `InboundTask`、兼容 operation 或 WES HTTP Adapter。
 
 **旧所有者删除或交接清单:** 旧粗分业务代码和测试已在 Phase 5 删除，本阶段只按当前合同重新实现，不从 Git 历史搬运；
 设备旧 sender 已由 Phase 7 删除。本阶段不得恢复供应商私有 DTO、HTTP Client、HMAC 工具、路径或映射副本。
@@ -548,20 +551,22 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 
 **Objective:** 按真实工作线和获批设备合同附录分别交付自动分拣、人工分拣、满箱交换和复杂出库，不建设通用分拣工作流。
 
-**Authoritative inputs:** 顶层 SPEC §11.2–§12、第三方设备统一接口白皮书、每条线真实拓扑与供应商原始资料、Phase 8
-复审结果、Phase 7 Device/ECS 和 Phase 6 Transport。
+**Authoritative inputs:** 顶层 SPEC §11.2–§12、`docs/contracts/wms-inbound-putaway-integration-requirements.md` §9—§20、
+自动出库交互合同、第三方设备统一接口白皮书、每条线真实拓扑与供应商原始资料、Phase 8 复审结果、Phase 7 Device/ECS
+和 Phase 6 Transport。
 
-**Entry conditions:** Phase 8 退出门禁通过；每个实际插件、设备合同附录和部署组合明确；各详细计划获批。
+**Entry conditions:** Phase 8 退出门禁通过；入库上架合同已联合批准；每个实际插件、设备合同附录和部署组合明确；各详细计划获批。
 
-**Scope:** 自动/人工/满箱交换/复杂出库执行插件；所需设备合同附录、endpoint/device 绑定和供应商一致性验收；复用既有
-Phase 7 生产 Adapter 与 Phase 6 Transport Port；WMS 业务结果映射、同线进出、NG 执行、即时 PUT、
-CTU 批次和 WMS 来源权威。
+**Scope:** 自动上架、人工分拣、满箱交换和复杂出库执行插件；所需设备合同附录、endpoint/device 绑定和供应商一致性验收；
+复用既有 Phase 7 生产 Adapter 与 Phase 6 Transport Port；完整上架计划、获批交换成员、目标 Bin 供退、SCAN1—SCAN4、
+逐盘晚绑定 PUT、业务专属 NG、同线进出和 WMS 库存权威。
 
 **Explicit out-of-scope:** `SorterCorridor`、库存权威、动态发现、统一厂商认证三选一、第二个 WES 设备 HTTP Adapter、
 公共 HTTP Client、预建 BASIC、通用工作流 DSL。
 
-**Deliverables:** 每个真实设备的获批合同附录、endpoint/device 绑定和供应商一致性验收；每个插件独立包、fixture、测试、
-构建产物和显式装配；客户镜像清单；不新增 WES HTTP Adapter。
+**Deliverables:** 获批入库上架和出库业务合同、每个真实设备的获批合同附录、endpoint/device 绑定和供应商一致性验收；
+每个插件独立包、fixture、测试、构建产物和显式装配；目标 Bin 供退、四扫描点、NG 出口和人工恢复的现场验收；客户镜像
+清单；不新增 WES HTTP Adapter。
 
 **旧所有者删除或交接清单:** 旧业务代码和测试已由 Phase 5 删除；设备旧 sender 已由 Phase 7 删除。本阶段不得新增供应商
 私有裸 Client、重复连接池/HMAC/路径或协议映射；插件包下线时同步移除 workspace、镜像和 Composition Root 绑定。
@@ -581,7 +586,8 @@ CTU 批次和 WMS 来源权威。
 `docs/superpowers/plans/2026-08-03-manual-sorter-plugin-convergence.md`、
 `docs/superpowers/plans/2026-08-03-full-bin-exchange-plugin-convergence.md`、
 `docs/superpowers/plans/2026-08-03-complex-outbound-plugin-convergence.md`。若真实现场证明应合并为同一部署插件，
-先修订本阶段清单，不预建空包。
+先修订本阶段清单，不预建空包。自动分拣插件计划必须覆盖人工切换的 `INBOUND` / `OUTBOUND` 两种模式，不为自动上架
+另建重复插件或第二套基础能力。
 
 **风险及防止阶段越权的约束:** 禁止从粗分计划复制改名；禁止把供应商私有认证或协议差异引入 WES，现场差异必须由
 供应商 ECS/网关在统一接口边界内消化。

@@ -1,10 +1,12 @@
 ---
 status: Approved
 created_at: 2026-06-25
-updated_at: 2026-08-07
+updated_at: 2026-08-13
 spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 wire_authority: docs/integration/third_party_integration_whitepaper.md
 scope: WES 核心设备命令基础能力边界
+related:
+  - docs/contracts/wms-inbound-putaway-integration-requirements.md
 ---
 
 # DeviceCommand 核心边界合同

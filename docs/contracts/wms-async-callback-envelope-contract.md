@@ -2,10 +2,13 @@
 title: WMS 异步回调统一信封合同
 status: Approved
 created_at: 2026-08-09
-updated_at: 2026-08-11
+updated_at: 2026-08-13
 scope: WMS 到 WES 的异步业务事件回调及同步接收应答
 system_stage: pre_release
 migration_strategy: direct_replacement
+related:
+  - docs/contracts/transport-fulfillment-contract.md
+  - docs/contracts/wms-inbound-putaway-integration-requirements.md
 ---
 
 # WMS 异步回调统一信封合同

@@ -2,7 +2,7 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-08-11
+updated_at: 2026-08-13
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -12,6 +12,7 @@ related:
   - docs/architecture/authority-matrix.md
   - docs/contracts/wms-northbound-interaction-contract.md
   - docs/contracts/wms-async-callback-envelope-contract.md
+  - docs/contracts/wms-inbound-putaway-integration-requirements.md
   - ../archive_docs/wes_backend/docs/superpowers/plans/2026-08-08-wes-minimal-platform-capabilities.md
 ---
 
