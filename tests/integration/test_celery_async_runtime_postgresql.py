@@ -476,6 +476,8 @@ class PreforkWorker:
                 mode="w+", prefix=f"wes-prefork-{self.run_id}-", suffix=".log", delete=False
             )
             self.log_path = Path(self._log_file.name)
+            self._log_file.close()
+            self._log_file = self.log_path.open("a+")
             self.project_log_dir = Path(tempfile.mkdtemp(prefix=f"wes-prefork-project-{self.run_id}-"))
             environment["PREFORK_PROBE_LOG"] = str(self.log_path)
             environment["LOG_DIR"] = str(self.project_log_dir)
@@ -908,6 +910,10 @@ def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork
         replacement = PreforkWorker(first.services, concurrency=1, run_id=first.run_id)
         quit_state["replacement"] = replacement
         replacement.start()
+        redelivery_wait_budget = min(
+            TASK_TIMEOUT,
+            max(0.0, retry_countdown - (time.monotonic() - first_attempt_seen)),
+        )
         redelivery_marker = _wait_until(
             lambda: next(
                 (
@@ -917,7 +923,7 @@ def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork
                 ),
                 None,
             ),
-            VISIBILITY_TIMEOUT + 8,
+            redelivery_wait_budget,
             "replacement Worker visibility redelivery",
         )
         redelivery_received_elapsed = time.monotonic() - first_attempt_seen

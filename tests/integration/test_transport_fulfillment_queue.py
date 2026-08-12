@@ -160,6 +160,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
 
 async def test_real_worker_rejects_non_fixed_transport_batches_before_database_scan(
     tmp_path,
+    integration_guard: None,
 ) -> None:
     redis_url = os.environ["INTEGRATION_REDIS_URL"]
     database_url = os.environ["INTEGRATION_DATABASE_URL"]
