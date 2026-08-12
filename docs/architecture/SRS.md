@@ -37,8 +37,9 @@
 * **核心域**:
   * **入库执行**: 码头收货、IQC 路由、上架策略执行。
   * **库存代理**: 采用 **按需动态查询 (On-Demand Query)** 模式，实时调用 WMS 接口获取库存数据，不维护本地库存副本。
-  * **出库协同**: 接收 WMS 下发的 `PickingTask` 排队信息；WMS 在异步启动阶段分配并锁定直接取料来源和候选 Bin，Cell
-    在实际 Bin 到达 SCAN2 后创建，逐盘身份在设备扫码后晚绑定。WES 只协调作业期执行，不计算波次或选择库存来源。
+  * **出库协同**: 接收 WMS 下发的 `PickingTask` 排队信息；WMS 接纳准备请求后按连续版本分批回调已分配并锁定的直接取料
+    来源和候选 Bin，WES 接纳首批完整成员后即可执行。Cell 在实际 Bin 到达 SCAN2 后创建，逐盘身份在设备扫码后晚绑定。
+    WES 只协调作业期执行，不计算波次或选择库存来源。
 
 ### 1.3 定义、首字母缩写和缩写 (Definitions)
 
@@ -402,49 +403,44 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 #### 3.3.3 SMT 生产发料协调 (SMT Production Issue)
 
-* **场景**: SAP 工单 -> 自动/人工线发料。
-* **任务驱动**:
+场景：SAP 工单进入自动或人工发料线。
 
-  1. **任务发布**: WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成 `PickingTask`。任务发布只携带身份和排队信息，
-     不分配来源货架、Bin、Cell、退料 SLOT 或目标储位。WES 不读取业务单据，也不生成波次。
-  2. **异步启动**: WES 从自动出库任务池选择当前最高优先级的可执行任务和一条就绪分拣机工作线，再请求 WMS 分配资源。
-     WMS 先返回 `START_ACCEPTED`，再根据启动请求中的实际 WorkLine 及其关联 STATION，异步完成五层货架、候选 Bin、退料货架
-     SLOT、目标转运货架和目标窗口计算及锁定。`START_GRANTED` 不包含货架动作、清场去向或 CTU 入站/退箱批次；WES 只在接纳并
-     持久化完整启动结果后冻结任务与 WorkLine 绑定，再依据可靠位置投影和 WorkLine 固定工作位创建当前可执行货架搬运。完整
-     结果至少包含一个已预留容量的初始目标窗口；后续
-     决定只能因实际 Cell 计划、来源恢复或扫码结果增加替代、扩展窗口。
-  3. **任务调度**: WMS 提供自动出库任务池业务优先序，并通过队列更新表达人工调整；任务发布不指定具体 WorkLine。多条同构
-     分拣机工作线由 WES 根据本地设备、工作位、缓存、活动 Transport 和空闲时长选择。暂不可执行的前序任务不阻塞后续
-     可执行任务，不同工作线可以并行执行；同一工作线不提前启动后继任务，WES 也不提供人工启动入口。WES 在已准入成员内按
-     退料优先规则、工作位、共享设备、Transport 终态和目标面安排现场节拍及实际机械顺序；RCS 独立负责车辆路径、拥堵、
-     避让和调度。
-  4. **CTU 批次晚绑定**: 五层货架可靠到达后，WES 按实际货架面预留具体入料缓存位置，WMS 再从权威位置仍等于冻结来源、
-     且尚未被入站决定消费的候选 Bin 中，结合 CTU 背篓可用量和预留位置形成原子入站批次。正常 Bin 可靠到达
-     `RETURN_BUFFER` 后，WES 按实际候选请求退箱；WMS 从当前工作货架面的权威空储位中分配目标，不要求退回原货架或原储位。
-     当前面没有足够空储位时，WMS 返回等待决定，或给出当前架去向、新架和目标面；额外引入的五层货架由 WMS 维护任务级退箱承接
-     占用，WES 不自行寻找其他目标。
-  5. **Bin 与 Cell 晚绑定**: CTU 可以乱序投箱。实际 Bin 到达 SCAN2 后，WES 请求 WMS 返回该 Bin 的 Cell 工作计划。
-     WMS 返回当前可执行业务成员，WES 根据现场资源安排机械执行顺序；首版不下发 Cell 优先级或依赖图。
-  6. **逐盘执行**: 设备取盘并扫描完整六合一码；WMS 返回 `ACCEPT | REJECT | WAIT`、稳定业务异常分类和接受时的精确
-     目标 SLOT。需要换面或换架时，同一 `ACCEPT` 返回当前架业务去向、新目标货架和目标面；新架来源由 WES 从可靠位置投影读取，
-     进场目标使用 WorkLine 固定工作位。物料资格或目标暂不能确定时
-     可以返回带稳定原因和重试间隔的 `WAIT`。相关位置或设备事实闭合后立即重新求值；WES 本地技术超时只暂停、告警并进入
-     对账，不能替 WMS 生成业务拒绝。WES 保持当前盘占用扫码台，Transport 到位后直接 PUT。转运货架容量、规格兼容、换面和
-     换架决定均由 WMS 维护。NG 只允许三种物理作用域：来源绑定正确但当前盘不满足任务资格、需求或质量要求时形成
-     MATERIAL NG；物料身份与权威 Cell 绑定冲突时形成 CELL NG；Bin 在读码重试结束后仍无法识别、不属于候选集合、
-     SCAN1/SCAN2 身份冲突或可靠方向错误时形成 BIN NG。空取、单次扫码不完整、设备失败、业务等待和结果未知都不是 NG。
-     CELL NG 后 Bin 完成其他可执行 Cell 并进入 `NG_EXIT` 时，只补充 Bin 最终位置，不能扩大为 BIN NG；BIN NG 才允许影响整个
-     BinWorkExecution。
-  7. **并行与恢复**: 目标架、退料架和五层货架可并行搬运。货架离场去向不在启动或来源恢复阶段预生成；WES 只在真实清场门禁
-     成立后请求 WMS 决定非固定业务去向，再创建清场 TransportTask。退料直接取料优先，但不阻塞没有资源冲突的 CTU 和 Bin 流。
-     来源缺口由 WMS 决定不追加来源，或追加新的直接取料成员
-     和候选 Bin。只有 `UNKNOWN/RECONCILING` Transport 可以通过同一任务新的、位置完整的 `SUCCEEDED | FAILED` 权威 evidence
-     形成更高内部结果版本；确定终态的人工对账只保持业务步骤，不回退旧 TransportTask 或恢复已释放的核心资源绑定。
-  8. **完成**: 每盘位置事实可靠回传 WMS。全部 `DirectPickExecution` 和 `BinWorkExecution` 完成时，WES 报告 PickingTask
-     本地执行完成。物理 Bin、Rack、Transport 和工作线清场保持独立生命周期。
+1. WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成 `PickingTask`。任务发布只携带身份和排队信息，不分配来源或目标
+   资源。WES 不读取业务单据，也不生成波次。
+2. WES 选择可执行任务和就绪工作线后请求 WMS 准备。WMS 返回 `PREPARE_ACCEPTED`，再按实际 WorkLine 及其 STATION，以连续
+   `plan_revision` 分批发布已锁定的五层货架候选 Bin、退料货架 SLOT 和目标转运货架窗口。`plan_revision=1` 必须且只能定义一个
+   初始目标窗口，可以同时新增来源成员；后续目标窗口只由逐盘 `ACCEPT` 创建。
+   计划增量可以追加来源或取消 Bin，但不能改写已接纳成员，也不携带货架动作、清场去向、CTU 批次或 WMS 计算进度。WES
+   持久化并 ACK 局部完整的增量后即可冻结 WorkLine 并开始相关搬运。
+3. WMS 提供任务池优先序，人工调整通过队列更新完成。WES 根据设备、工作位、缓存、活动 Transport 和空闲时长选择 WorkLine。
+   暂不可执行的前序任务不阻塞后续任务；同一工作线不提前启动后继任务，WES 不提供人工启动入口。WES 按退料优先、设备忙闲、
+   Transport 终态和目标面安排节拍，RCS 负责车辆路径、拥堵和避让。
+4. 五层货架到位后，WES 按实际货架面预留入料位置。WMS 从仍位于冻结来源且尚未消费入站资格的候选 Bin 中形成原子入站批次。
+   Bin 到达 `RETURN_BUFFER` 后，WMS 从当前货架面的权威空储位中分配退箱目标，不要求原架原位。当前面容量不足时，WMS 返回
+   等待或换面、换架方案；额外货架由 WMS 维护任务级退箱承接占用，WES 不自行选择其他目标。
+5. CTU 可以乱序投箱。Bin 到达 SCAN2 后，WES 请求 Cell 工作计划。WMS 返回当前可执行成员，不下发 Cell 优先级或依赖图。
+   WES 根据现场资源安排执行顺序。
+6. 设备取盘并扫描完整六合一码。WMS 返回 `ACCEPT | REJECT | WAIT`；`ACCEPT` 包含精确 SLOT 和需要的换面或换架方案，`WAIT`
+   包含原因和重试间隔。WES 从可靠位置投影取得新架来源，使用 WorkLine 固定工作位，并在相关事实变化后重新求值；本地技术
+   超时只暂停、告警并进入对账，不得生成业务拒绝。当前盘在扫码台等待 Transport 到位。目标机械臂成功 PUT 后，WES 提交
+   逐盘位置事实，由 WMS 更新物料位置、库存和目标占用。转运货架容量、规格兼容和目标决定属于 WMS。
+   两个机械臂按不同 `device_code` 推进；ECS/PLC 硬件锁负责扫码台交接、防撞和动作互锁。没有安全暂存位时，硬件锁必须在
+   下一盘离开来源前确认扫码台交接路径可用；WES 不建立扫码台事件或软件锁。
+   NG 作用域固定为 MATERIAL、CELL 和 BIN：物料资格或质量不符是 MATERIAL NG，物料与权威 Cell 绑定冲突是 CELL NG，Bin
+   无法识别、不是候选、身份冲突或方向错误是 BIN NG。空取、扫码不完整、设备失败、业务等待和未知结果不属于 NG。CELL NG
+   当前盘位置事实确认后关闭当前 Cell，Bin 到达 NG 出口时只补充最终位置；只有 BIN NG 影响整个 BinWorkExecution。未匹配物理
+   Bin 必须引用预期计划成员，但不能据此确认实际 Bin 身份或直接关闭原成员。
+7. 目标架、退料架和五层货架可以并行搬运，退料优先但不阻塞无资源冲突的 CTU 和 Bin 流。货架去向不在准备或计划阶段预生成；
+   WES 在清场门禁成立后请求 WMS 决定，再创建清场 TransportTask。WMS 可用更高 revision 追加或取消
+   `BinWorkExecution`。料盘离开来源后不可放回；取消命中已接纳取盘命令时，必须先将当前盘闭合到目标或 NG。只有
+   `UNKNOWN/RECONCILING` Transport 可以通过同一任务新的、位置完整的权威结果证据形成更高结果版本；确定终态的人工对账只保持
+   业务步骤，不回退旧 TransportTask，也不恢复已释放的核心资源绑定。
+8. 每盘位置事实可靠回传 WMS。本地业务义务、逐盘事实和取消动作闭合后，WES 携带 `last_applied_plan_revision` 请求 WMS 确认
+   状态。尚无计划时 revision 为 `0`。WMS 返回 `COMPLETED | NOT_COMPLETED`，不接收成员结果全集；版本落后时补发增量，业务
+   进行中时返回强制重试间隔。Bin、Rack、Transport 和工作线清场保持独立生命周期。
 
 自动出库的对象、不变量和验收场景以
-`docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 为业务设计真源；具体 HTTP Payload 和返回 JSON
+`docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 为业务设计真源；具体 HTTP 请求和响应 JSON
 以 `docs/contracts/wms-outbound-picking-task-integration-requirements.md` 的评审基线为准。
 
 ---
@@ -929,8 +925,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 * **协议**: 局域网 HTTP/JSON；具体 Base URL 由部署配置提供。
 * **核心接口**:
   * 收货通知和物料主数据如需由现有 WMS 转发，必须先由各自业务合同批准 method、path 和 DTO；SRS 不预设通用端点。
-  * 自动出库由 WMS 下发 `PickingTask`；创建、优先级更新和替代来源追加的 method/path/DTO
-    以独立 inbound wire 合同为准，WES 不接收生产工单生成波次。
+  * 自动出库由 WMS 下发 `PickingTask`；任务发布、队列更新、准备请求、计划增量和状态确认的 method/path/DTO
+    以独立自动出库合同为准，WES 不接收生产工单生成波次。
   * WES 调用现有 WMS 的业务决策、库存查询、预留/释放和入库/出库确认能力；
     `docs/contracts/wms-northbound-interaction-contract.md` 只定义 Phase 3 HTTP/JSON Client 使用标准。具体 operation identity、
     path、DTO 和业务错误必须由对应逐项业务合同批准；合同未批准时不得实现该业务 API。

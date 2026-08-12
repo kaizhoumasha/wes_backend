@@ -29,7 +29,7 @@
 | --- | --- |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
-| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 已批准的自动出库 PickingTask、Cell 晚绑定、NG 与双面目标架业务设计 |
+| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 分批计划、Cell 晚绑定、不可逆执行、安全取消、NG 与双面目标架业务设计 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段架构收敛总控计划 |
 | `docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md` | Phase 7 DeviceCommand/ECS、统一接口、ACK/CALLBACK、Epoch fencing 和旧 owner 删除详细计划 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |

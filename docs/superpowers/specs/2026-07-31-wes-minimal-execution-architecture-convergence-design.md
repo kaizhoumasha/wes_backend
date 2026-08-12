@@ -22,6 +22,7 @@ related:
   - ../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md
   - docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md
   - docs/contracts/wms-northbound-interaction-contract.md
+  - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/contracts/wms-inbound-putaway-integration-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
 ---
@@ -530,10 +531,11 @@ ECS 每次物理搬运一个完整料盘。设备扫码形成一个不可变六�
 
 ### 10.3 出库来源
 
-`PkgID` 是完整料盘的唯一业务身份，不定义其他身份字段或兼容别名。排队任务只保存任务身份和排队信息；WMS 在异步启动阶段
-锁定直接取料 SLOT 和候选 Bin，`START_GRANTED` 建立 `DirectPickExecution` 与 `BinWorkExecution`。Cell 在实际 Bin 到达
-SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或 `PkgID`。退料货架来源以单储位、单料盘的 `RACK_SLOT` 表达，WES
-校验并建立作业期执行，不自行分配来源、选择物料或重排料盘。
+`PkgID` 是完整料盘的唯一业务身份，不定义其他身份字段或兼容别名。排队任务只保存任务身份和排队信息；WMS 在异步准备阶段
+按连续 `plan_revision` 分批发布不可变计划增量，增量中的直接取料 SLOT 和候选 Bin 分别建立 `DirectPickExecution` 与
+`BinWorkExecution`。WES 持久化首批满足执行前提的增量后即可开始相关运输和取料，不等待 WMS 完成整单资源运算。Cell 在实际
+Bin 到达 SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或 `PkgID`。退料货架来源以单储位、单料盘的 `RACK_SLOT`
+表达，WES 校验并建立作业期执行，不自行分配来源、选择物料或重排料盘。
 
 ### 10.4 自动线即时目标位置执行
 
@@ -595,22 +597,29 @@ SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或 `PkgID`。
 
 1. WMS 根据订单、波次、库存和产线需求形成执行级 `PickingTask`；任务发布只负责进入自动出库任务池，不指定具体 WorkLine，
    也不分配来源和目标资源。
-2. WES 从多条同构分拣机工作线中选择一条就绪线，并以任务池当前最高优先级的可执行任务请求 WMS 启动。WMS 先返回接收
-   ACK，再根据启动请求中的实际 WorkLine 及其关联 STATION 异步锁定五层货架、候选 Bin、退料货架 SLOT 和目标窗口；
-   `START_GRANTED` 前不冻结正式 WorkLine 绑定，也不创建设备或运输动作；接纳后由 WES 根据可靠位置投影和固定工作位组织货架
-   进场。`START_WAIT` 释放候选线，交付未知保持候选线。
-3. `PickingTask` 的初始业务成员是 `DirectPickExecution` 和 `BinWorkExecution`。Cell 在实际 Bin 到达 SCAN2 后由 WMS
+2. WES 从多条同构分拣机工作线中选择一条就绪线，并以任务池当前最高优先级的可执行任务请求 WMS 准备执行。WMS 先返回
+   接收 ACK，再根据实际 WorkLine 及其关联 STATION 执行耗时资源运算，并按连续 `plan_revision` 分批回调直接取料、候选 Bin
+   等不可变计划增量；首批必须且只能定义一个初始目标窗口，后续新窗口只由逐盘终局 `ACCEPT` 创建。WES 必须先持久化增量再
+   ACK；首批满足局部执行前提的增量即可冻结 WorkLine 并驱动相关货架进场。后续增量继续追加，不等待整单计算完成。
+3. `PickingTask` 的业务成员是 `DirectPickExecution` 和 `BinWorkExecution`。WMS 可以在任务执行中通过更高
+   `plan_revision` 追加新成员或取消指定 `BinWorkExecution`；已接纳成员不得原地改写。Cell 在实际 Bin 到达 SCAN2 后由 WMS
    工作计划创建，CTU 投箱顺序不构成业务顺序。
 4. 设备取盘并扫描完整六合一码后，WMS 返回业务资格、稳定异常分类和精确目标 SLOT；目标需要换面或换架时，同一终局
    `ACCEPT` 还返回完整目标准备方案。WES 不选料、不计算转运货架容量，也不自行决定换面或换架。
 5. 目标架、退料架和五层货架允许并行调度。退料直接取料优先，但不阻塞没有资源冲突的 CTU 和 Bin 流。
-6. WMS 为可执行来源分配目标货架、货架面和代际。目标窗口已接纳且扫码台为空时，WES 可以有界预取并扫码一盘；精确 SLOT
-   仍在逐盘决定中返回，PUT 必须等待目标货架、货架面和代际可靠到位。
-7. WES 根据业务异常分类和设备证据决定料盘、Cell 或 Bin 的物理 NG 路由；来源缺口由 WMS 决定不追加来源，或追加新的
-   直接取料成员和候选 Bin。
+6. WMS 为可执行来源分配目标货架、货架面和代际。精确 SLOT 仍在逐盘扫码决定中返回；实际尺寸只能在扫码后确认时，当前盘
+   可以在扫码台等待换面或换架完成。达到本地技术超时后，WES 只暂停、告警并进入对账。两个机械臂按不同 `device_code`
+   独立推进，扫码台交接、防撞和动作互锁由 ECS/PLC 硬件锁负责。没有安全暂存位时，硬件锁必须在下一盘离开来源前确认扫码台
+   交接路径可用；WES 不增加扫码台中间事件、资源锁或跨机械臂软件互锁，也不要求当前 PUT 完成后才允许另一机械臂接纳下一条
+   命令。
+7. WES 根据业务异常分类和设备证据决定料盘、Cell 或 Bin 的物理 NG 路由。CELL NG 当前盘位置事实确认后关闭当前 Cell；来源
+   缺口由 WMS 决定不追加来源，或追加新的直接取料成员和候选 Bin。未匹配物理 Bin 的 NG 事实必须引用把它送入工作线的预期
+   Bin 工作成员，但该引用不能证明实际 Bin 身份，也不能自动关闭原成员。
 8. 每盘物理完成后形成独立位置变化事实并可靠提交 WMS；任一物理结果未知时保持相关资源未决并暂停依赖动作。
-9. 全部 DirectPickExecution 和 BinWorkExecution 完成时，WES 报告 PickingTask 本地执行完成。物理 Rack、Bin、Transport、
-   目标架移出和下一任务准入由各自 owner 独立闭环。
+9. WES 当前没有未闭合的任务业务义务、逐盘事实或取消动作时，携带 `last_applied_plan_revision` 请求 WMS 确认 PickingTask
+   权威状态。尚无首批计划时 `last_applied_plan_revision=0`。WMS 根据既有逐盘确认返回 `COMPLETED | NOT_COMPLETED`，不接收
+   成员完成全集；版本落后时补发增量，业务仍在进行时返回强制重试间隔，状态完成后不再发布该任务的计划变更。物理 Rack、
+   Bin、Transport、目标架移出和下一任务准入由各自负责模块独立闭环。
 
 ### 11.4 满箱交换
 
@@ -920,13 +929,22 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 本节与 §15.5 中绑定具体工作线业务的验收项由对应二次开发插件包及其独立测试证明；WES 核心只验证位置
 容量、对象占用、投影更新和 Decision 执行等通用机制，不在核心 `tests/` 重复具体业务场景。
 
-- 出库任务发布只携带任务身份和排队信息；`START_GRANTED` 原子建立直接取料来源、候选 Bin、目标窗口和业务锁，不携带货架动作，
-  Cell 在实际 Bin 到达 SCAN2 后创建，料盘 `PkgID` 和六合一码在逐盘扫码后绑定。
-- 启动锁、目标架容量预留和目标窗口必须完整；`START_GRANTED` 前不得创建任务执行或 Transport 动作，WES 接纳后才依据可靠
-  位置投影和 WorkLine 固定工作位组织初始货架进场。
+- 出库任务发布只携带身份和排队信息。WMS 同步 ACK 准备请求，再按连续 `plan_revision` 异步发布计划增量。`plan_revision=1`
+  必须且只能定义一个初始目标窗口，可以同时新增来源成员；后续增量可以追加直接取料来源、候选 Bin 或取消 Bin，但不能新增
+  目标窗口或携带货架动作。新窗口只由
+  逐盘 `ACCEPT` 创建，Cell 在 Bin 到达 SCAN2 后创建，`PkgID` 和六合一码在逐盘扫码后绑定。WMS 计算进度不进入 WES 计划增量。
+- WES 持久化局部完整的计划增量后，即可根据可靠位置投影和 WorkLine 固定工作位组织货架进场。版本跳号、同版本不同内容或
+  缺少目标窗口引用必须失败关闭。
 - 单面目标不执行空面动作；只有目标面确实变化时才创建旋转任务，窗口代际变化本身不代表物理动作。目标准备和扫码台单盘
-  预取可以并行，PUT 在目标货架、货架面、代际和精确 SLOT 全部可靠一致处汇合。每盘位置事实与整单完成分别提交，未知
-  物理结果保持相关资源未决。
+  预取可以并行，PUT 在目标货架、货架面、代际和精确 SLOT 全部可靠一致处汇合。每盘位置事实独立提交；最终只请求 WMS
+  确认任务状态，不重复提交完成项。未知物理结果保持相关资源未决。
+- 料盘从原储位或料格取出后不可放回。取消命中尚未开始的 Bin 成员时立即关闭；Bin 已在运输或 FIFO 且尚未接纳取盘命令时
+  停止后续取料并让 Bin 正常退回；取盘命令已接纳或料盘已离开来源时，必须先把当前盘闭合到目标或 NG，再取消剩余工作。
+- 两个机械臂通过 ECS/PLC 硬件锁防撞和完成扫码台交接。没有安全暂存位时，硬件锁必须在料盘离开来源前取得扫码台交接许可。
+  WES 只维持每个 `device_code` 至多一条已接纳未终态命令，不建立扫码台释放事件、扫码台资源锁或跨设备软件互锁。
+- PickingTask 最终交互是状态确认。WES 没有未闭合的任务业务义务、逐盘事实或取消动作时携带
+  `last_applied_plan_revision` 请求 WMS；WMS 根据既有逐盘交互返回 `COMPLETED | NOT_COMPLETED`。请求不携带成员结果、完成数量
+  或本地完成时间，版本字段只承担增量围栏。
 - 退货、转运货架单储位只能有一个完整料盘。
 - 一个扫码证据只关联一个完整六合一码快照和一个 `MaterialExecution`；`Qty` 只表示包装内物料数量。
 - 自动线目标格由 WMS 在 PUT 前返回；WES 只校验物理可执行性，失败后的目标仍由 WMS 决定。

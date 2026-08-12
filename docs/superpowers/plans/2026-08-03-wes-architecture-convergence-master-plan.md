@@ -552,10 +552,11 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 **Objective:** 按真实工作线和获批设备合同附录分别交付自动分拣、人工分拣、满箱交换和复杂出库，不建设通用分拣工作流。
 
 **Authoritative inputs:** 顶层 SPEC §11.2–§12、`docs/contracts/wms-inbound-putaway-integration-requirements.md` §9—§20、
-自动出库交互合同、第三方设备统一接口白皮书、每条线真实拓扑与供应商原始资料、Phase 8 复审结果、Phase 7 Device/ECS
-和 Phase 6 Transport。
+`docs/contracts/wms-outbound-picking-task-integration-requirements.md`、第三方设备统一接口白皮书、每条线真实拓扑与供应商原始资料、
+Phase 8 复审结果、Phase 7 Device/ECS 和 Phase 6 Transport。
 
-**Entry conditions:** Phase 8 退出门禁通过；入库上架合同已联合批准；每个实际插件、设备合同附录和部署组合明确；各详细计划获批。
+**Entry conditions:** Phase 8 退出门禁通过；入库上架与自动出库合同均已联合批准；每个实际插件、设备合同附录和部署组合明确；
+各详细计划获批。
 
 **Scope:** 自动上架、人工分拣、满箱交换和复杂出库执行插件；所需设备合同附录、endpoint/device 绑定和供应商一致性验收；
 复用既有 Phase 7 生产 Adapter 与 Phase 6 Transport Port；完整上架计划、获批交换成员、目标 Bin 供退、SCAN1—SCAN4、

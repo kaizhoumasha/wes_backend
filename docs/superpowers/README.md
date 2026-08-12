@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
-| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、异步启动、Bin/Cell 晚绑定、退料优先和目标架业务设计真源 | Approved |
+| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、分批计划、Bin/Cell 晚绑定、不可逆执行、安全取消和目标架业务设计真源 | ReviewRequired |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、Payload、返回 JSON 与幂等评审基线 | ReviewRequired |

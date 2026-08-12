@@ -12,6 +12,7 @@ related:
   - docs/architecture/authority-matrix.md
   - docs/contracts/wms-northbound-interaction-contract.md
   - docs/contracts/wms-async-callback-envelope-contract.md
+  - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/contracts/wms-inbound-putaway-integration-requirements.md
   - ../archive_docs/wes_backend/docs/superpowers/plans/2026-08-08-wes-minimal-platform-capabilities.md
 ---
