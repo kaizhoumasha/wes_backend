@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.transport_event_handler import MAX_TRANSPORT_EVENT_BODY_BYTES
+from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
 from src.core.task_queue_gateway import task_queue_gateway
 
 if TYPE_CHECKING:
@@ -17,6 +18,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_TRANSPORT_EVENT_REQUEST_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["operation_id", "operation", "timestamp", "data"],
+    "properties": {
+        "operation_id": {"type": "string", "description": "WMS 生成的 UUIDv7 幂等号"},
+        "operation": {"type": "string", "enum": [POSITION_OPERATION, RESULT_OPERATION]},
+        "timestamp": {"type": "integer", "format": "int64", "description": "Unix 毫秒时间戳"},
+        "data": {"type": "object", "description": "由 operation 决定的封闭 evidence data 合同"},
+    },
+}
+_TRANSPORT_EVENT_ACK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["operation_id", "code", "timestamp", "data"],
+    "properties": {
+        "operation_id": {"type": "string"},
+        "code": {"type": "string", "enum": ["RECEIVED", "DUPLICATE", "CONFLICT"]},
+        "timestamp": {"type": "integer", "format": "int64"},
+        "data": {"type": "object"},
+    },
+}
 
 
 async def _read_bounded_body(request: Request) -> bytes | None:
@@ -34,7 +58,33 @@ def _permits_transport_endpoint(policy: object) -> bool:
     return isinstance(policy, WmsInboundAuthPolicy) and policy.allows_unsigned_wms_callbacks
 
 
-@router.post("/events")
+@router.post(
+    "/events",
+    responses={
+        200: {
+            "description": "重复 evidence 已确认",
+            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+        },
+        202: {
+            "description": "evidence 已持久化",
+            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+        },
+        400: {"description": "evidence envelope 不满足封闭合同"},
+        401: {"description": "当前冻结 profile 不允许无签名 WMS Transport callback"},
+        409: {
+            "description": "operation_id 对应的 payload 冲突",
+            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+        },
+        413: {"description": "请求体超过固定上限"},
+        503: {"description": "Transport runtime 尚未就绪"},
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": _TRANSPORT_EVENT_REQUEST_SCHEMA}},
+        }
+    },
+)
 async def receive_transport_event(request: Request) -> Response:
     raw_body = await _read_bounded_body(request)
     if raw_body is None:
