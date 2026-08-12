@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-11
+**最后更新**：2026-08-13
 
 ## 1. 真源与入口
 
@@ -105,6 +105,7 @@ API → Service → Repository → Database
 | `scripts/select_heavy_tests.py` | 根据 Git 差异和机器可读映射选择 HEAVY |
 | `scripts/run_selected_heavy_tests.py` | 执行选中 HEAVY 并拒绝零执行/跳过 |
 | `docs/architecture/heavy-test-impact.toml` | HEAVY selector 机器可读映射真源 |
+| `docs/runbooks/transport-operations.md` | Transport 结构化日志与 PostgreSQL 事实的只读诊断入口 |
 | `scripts/check_business_legacy_absence_gate.py` | 旧业务平台缺席门禁 |
 | `scripts/workline_inbox_retirement_guardrail.py` | 退役 WorkLineInbox 缺席门禁 |
 | `scripts/install-git-hooks.sh` | 安装仓库管理的提交门禁 |
