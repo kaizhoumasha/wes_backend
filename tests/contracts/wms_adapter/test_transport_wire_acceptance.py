@@ -96,12 +96,28 @@ def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> N
             },
             "timestamp must be an integer",
         ),
+        (
+            _envelope(POSITION_OPERATION, _position_data()) | {"timestamp": -(2**63) - 1},
+            "timestamp must fit signed 64-bit integer",
+        ),
+        (
+            _envelope(POSITION_OPERATION, _position_data()) | {"timestamp": 2**63},
+            "timestamp must fit signed 64-bit integer",
+        ),
         (_envelope("transport.task.unknown@v1", {}), "unsupported transport callback operation"),
     ],
 )
 def test_callback_envelope_rejects_non_closed_or_unsupported_values(value: object, message: str) -> None:
     with pytest.raises(TransportContractError, match=message):
         validate_callback_envelope(value)
+
+
+@pytest.mark.parametrize("timestamp", [-(2**63), 2**63 - 1])
+def test_callback_envelope_accepts_signed_64_bit_timestamp_boundaries(timestamp: int) -> None:
+    envelope = _envelope(POSITION_OPERATION, _position_data())
+    envelope["timestamp"] = timestamp
+
+    assert validate_callback_envelope(envelope)["timestamp"] == timestamp
 
 
 @pytest.mark.parametrize("field", ["operation_id", "transport_task_id", "bin_id"])

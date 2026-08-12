@@ -12,7 +12,13 @@ from fastapi.responses import JSONResponse
 from src.app.transport.contracts import TransportContractError
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.transport_event_handler import MAX_TRANSPORT_EVENT_BODY_BYTES
-from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION, validate_callback_envelope
+from src.app.wms_adapter.transport_wire import (
+    POSITION_OPERATION,
+    RESULT_OPERATION,
+    SIGNED_INT64_MAX,
+    SIGNED_INT64_MIN,
+    validate_callback_envelope,
+)
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.uuid7 import is_uuid7
 from src.utils.timezone import timezone
@@ -38,7 +44,13 @@ _UUIDV7_SCHEMA = {
     "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
     "description": "WMS 生成的 UUIDv7 幂等号",
 }
-_TIMESTAMP_SCHEMA = {"type": "integer", "format": "int64", "description": "Unix 毫秒时间戳"}
+_TIMESTAMP_SCHEMA = {
+    "type": "integer",
+    "format": "int64",
+    "minimum": SIGNED_INT64_MIN,
+    "exclusiveMaximum": SIGNED_INT64_MAX + 1,
+    "description": "Unix 毫秒时间戳",
+}
 _NONBLANK_PATTERN = r".*\S.*"
 _TRANSPORT_TASK_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 80, "pattern": _NONBLANK_PATTERN}
 _OBJECT_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 100, "pattern": _NONBLANK_PATTERN}

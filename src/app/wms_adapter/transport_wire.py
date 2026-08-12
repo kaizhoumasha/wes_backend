@@ -15,6 +15,8 @@ POSITION_OPERATION = TRANSPORT_POSITION_OPERATION
 RESULT_OPERATION = TRANSPORT_RESULT_OPERATION
 TRANSPORT_PATH = "/api/v1/wes/transport-requests"
 EVENT_PATH = "/api/v1/wms/events"
+SIGNED_INT64_MIN = -(2**63)
+SIGNED_INT64_MAX = 2**63 - 1
 
 
 def validate_callback_envelope(value: object) -> dict[str, Any]:
@@ -24,6 +26,8 @@ def validate_callback_envelope(value: object) -> dict[str, Any]:
         raise TransportContractError("operation_id must be UUIDv7")
     if not isinstance(envelope["timestamp"], int) or isinstance(envelope["timestamp"], bool):
         raise TransportContractError("timestamp must be an integer")
+    if not SIGNED_INT64_MIN <= envelope["timestamp"] <= SIGNED_INT64_MAX:
+        raise TransportContractError("timestamp must fit signed 64-bit integer")
     operation = envelope["operation"]
     if operation == POSITION_OPERATION:
         envelope["data"] = _validate_position_data(envelope["data"])

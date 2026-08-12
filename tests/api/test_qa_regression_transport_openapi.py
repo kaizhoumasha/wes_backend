@@ -30,6 +30,17 @@ def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -
         "transport.task.member_position_changed@v1",
         "transport.task.resulted@v1",
     ]
+    assert all(
+        variant["properties"]["timestamp"]
+        == {
+            "type": "integer",
+            "format": "int64",
+            "minimum": -(2**63),
+            "exclusiveMaximum": 2**63,
+            "description": "Unix 毫秒时间戳",
+        }
+        for variant in request_variants
+    )
     position_data = request_variants[0]["properties"]["data"]
     assert {variant["properties"]["milestone"]["const"] for variant in position_data["oneOf"]} == {
         "SOURCE_PICKED",
