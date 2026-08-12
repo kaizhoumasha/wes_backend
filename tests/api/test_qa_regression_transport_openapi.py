@@ -24,9 +24,19 @@ def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -
         "transport.task.member_position_changed@v1",
         "transport.task.resulted@v1",
     ]
-    assert set(operation["responses"]) == {"200", "202", "400", "401", "409", "413", "503"}
+    assert set(operation["responses"]) == {"200", "202", "400", "401", "409", "413", "422", "503"}
     assert operation["responses"]["200"]["description"] == "重复 evidence 已确认"
     assert operation["responses"]["202"]["description"] == "evidence 已持久化"
     assert operation["responses"]["409"]["description"] == "operation_id 对应的 payload 冲突"
-    for status_code in ("400", "401", "413", "503"):
+    assert operation["responses"]["422"]["description"] == "evidence data 不满足对应 operation 的封闭合同"
+    ack_schema = operation["responses"]["422"]["content"]["application/json"]["schema"]
+    assert ack_schema["properties"]["code"]["enum"] == [
+        "RECEIVED",
+        "DUPLICATE",
+        "CONFLICT",
+        "REJECTED",
+        "UNAVAILABLE",
+    ]
+    assert operation["responses"]["503"]["content"]["application/json"]["schema"] == ack_schema
+    for status_code in ("400", "401", "413"):
         assert "content" not in operation["responses"][status_code]

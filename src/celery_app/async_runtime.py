@@ -451,7 +451,7 @@ class CeleryAsyncRuntime:
 
     def shutdown(self) -> None:
         """
-        按 pending → Redis → WMS data → EFFECT preparation → WMS effect → DB
+        按 pending → Redis → WMS data → EFFECT preparation → Transport → WMS effect → DB
         → final pending → Runner 顺序有界清理。
         """
         self._assert_sync_entrypoint()

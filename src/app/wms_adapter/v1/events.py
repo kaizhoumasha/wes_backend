@@ -36,7 +36,10 @@ _TRANSPORT_EVENT_ACK_SCHEMA = {
     "required": ["operation_id", "code", "timestamp", "data"],
     "properties": {
         "operation_id": {"type": "string"},
-        "code": {"type": "string", "enum": ["RECEIVED", "DUPLICATE", "CONFLICT"]},
+        "code": {
+            "type": "string",
+            "enum": ["RECEIVED", "DUPLICATE", "CONFLICT", "REJECTED", "UNAVAILABLE"],
+        },
         "timestamp": {"type": "integer", "format": "int64"},
         "data": {"type": "object"},
     },
@@ -76,7 +79,14 @@ def _permits_transport_endpoint(policy: object) -> bool:
             "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
         },
         413: {"description": "请求体超过固定上限"},
-        503: {"description": "Transport runtime 尚未就绪"},
+        422: {
+            "description": "evidence data 不满足对应 operation 的封闭合同",
+            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+        },
+        503: {
+            "description": "Transport runtime 尚未就绪或当前无法可靠持久化",
+            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+        },
     },
     openapi_extra={
         "requestBody": {

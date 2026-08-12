@@ -284,8 +284,8 @@ WMS 必须原子保存 `operation + operation_id`、`transport_task_id`、首次
 两类回调均复用 `docs/contracts/wms-async-callback-envelope-contract.md` 定义的 WMS 异步回调统一信封；本 Transport
 operation 另外固定 `256 KiB` Body 上限。
 `TransportEventHandler.handle(raw_body: bytes)` 在 JSON 解码和 DTO 校验前检查原始请求体长度；超限返回
-空响应体 `413`，不得保存部分 evidence 或猜测 `operation_id`。Phase 4 只交付 Handler，不注册第二条同路径 FastAPI route；未来唯一
-WMS Event route 只把原始 bytes 交给 Handler，生产路由接线不属于本阶段，也不构成 Phase 4 的入口或退出条件。
+空响应体 `413`，不得保存部分 evidence 或猜测 `operation_id`。Phase 6 已注册唯一 WMS Event 生产 route；route 只负责有界读取、
+冻结认证策略检查，并把原始 bytes 交给 Handler，不保留第二入口或旁路持久化。
 
 两类 operation 只允许公共信封中的 `202 / RECEIVED`、`200 / DUPLICATE`、`400` 空响应体、`413` 空响应体、
 `422 / REJECTED`、`409 / CONFLICT`、`429 / BUSY` 和 `503 / UNAVAILABLE`。专属分类如下：
