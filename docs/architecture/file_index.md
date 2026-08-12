@@ -68,9 +68,9 @@ API → Service → Repository → Database
 | `src/app/*/repositories/` | 数据访问 |
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/runtime/` | Phase 5 后的零插件 implementation baseline；保留通用入站、投影、可靠性和诊断能力，具体业务插件执行闭包已退役 |
-| `src/app/transport/` | Phase 4 AGV/CTU 通用搬运合同、可靠聚合、位置投影与未接入生产的暗装配 |
+| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合、位置投影与 Phase 6 生产运行时；不包含业务 producer |
 | `src/app/wms_adapter/` | WMS HTTP/JSON 薄访问层和业务系统 ACL；具体业务 API 由对应业务 owner 按获批合同实现 |
-| `src/app/wms_integration/` | Phase 5 已删除插件专属分支；剩余旧实现待由 Phase 6 Transport 和后续真实 WMS 业务 owner 分段处置，不是目标架构模板 |
+| `src/app/wms_integration/` | Phase 5 已删除插件专属分支，Phase 6 已退出旧 Transport Effect owner；保留共享 WMS 能力和后续真实 WMS 业务 owner，不是业务插件模板 |
 | `workline_plugins/` | 具体工作线插件独立包，不属于核心运行时 |
 
 新 Service 必须从所在 `services/__init__.py` 导出。时间处理、Mixin 继承和零代码 CRUD 约束以

@@ -19,6 +19,7 @@ class FakeAccessResult:
     status_code: int | None
     json_body: object
     json_failure: str | None = None
+    body_present: bool = True
 
 
 class FakeClient:
@@ -122,7 +123,6 @@ async def test_non_busy_ack_discards_retry_delay() -> None:
     [
         (202, "RECEIVED", TransportSubmitCode.RECEIVED),
         (200, "DUPLICATE", TransportSubmitCode.DUPLICATE),
-        (400, "REJECTED", TransportSubmitCode.REJECTED),
         (422, "REJECTED", TransportSubmitCode.REJECTED),
         (409, "CONFLICT", TransportSubmitCode.CONFLICT),
         (503, "UNAVAILABLE", TransportSubmitCode.UNAVAILABLE),
@@ -142,6 +142,35 @@ async def test_ack_status_and_code_are_a_closed_pair(
     result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 413])
+async def test_nonempty_preassociation_error_is_not_promoted_to_authoritative_rejection(status_code: int) -> None:
+    access = _ack(
+        status_code,
+        "REJECTED",
+        {"transport_task_id": "transport-1", "reason_code": "PROXY_GENERATED_ERROR"},
+    )
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 413])
+async def test_empty_preassociation_error_confirms_request_was_not_accepted(status_code: int) -> None:
+    access = FakeAccessResult(
+        delivery_state="RESPONSE_RECEIVED",
+        status_code=status_code,
+        json_body=None,
+        body_present=False,
+    )
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+
+    assert result.code is TransportSubmitCode.REJECTED
 
 
 @pytest.mark.asyncio

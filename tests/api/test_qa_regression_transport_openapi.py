@@ -1,5 +1,7 @@
 """WMS Transport 生产入口的 OpenAPI 回归合同。"""
 
+import re
+
 from fastapi import FastAPI
 
 from src.register import register_routers
@@ -46,17 +48,37 @@ def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -
     assert operation["responses"]["202"]["description"] == "evidence 已持久化"
     assert operation["responses"]["409"]["description"] == "operation_id 对应的 payload 冲突"
     assert operation["responses"]["422"]["description"] == "evidence data 不满足对应 operation 的封闭合同"
-    ack_schema = operation["responses"]["422"]["content"]["application/json"]["schema"]
-    ack_variants = ack_schema["oneOf"]
-    assert {variant["properties"]["code"]["const"] for variant in ack_variants} == {
-        "RECEIVED",
-        "DUPLICATE",
-        "CONFLICT",
-        "REJECTED",
-        "UNAVAILABLE",
-    }
-    assert all(variant["additionalProperties"] is False for variant in ack_variants)
-    assert all(variant["properties"]["data"]["additionalProperties"] is False for variant in ack_variants)
-    assert operation["responses"]["503"]["content"]["application/json"]["schema"] == ack_schema
+    for status_code, expected_code in {
+        "200": "DUPLICATE",
+        "202": "RECEIVED",
+        "409": "CONFLICT",
+        "422": "REJECTED",
+        "503": "UNAVAILABLE",
+    }.items():
+        ack_schema = operation["responses"][status_code]["content"]["application/json"]["schema"]
+        assert ack_schema.get("properties", {}).get("code", {}).get("const") == expected_code
+        assert ack_schema["additionalProperties"] is False
+        assert ack_schema["properties"]["data"]["additionalProperties"] is False
     for status_code in ("400", "401", "413"):
         assert "content" not in operation["responses"][status_code]
+
+    constrained_strings = [
+        schema
+        for schema in _walk_schemas(request_schema)
+        if schema.get("type") == "string" and schema.get("minLength") == 1
+    ]
+    assert constrained_strings
+    for schema in constrained_strings:
+        assert "pattern" in schema
+        assert re.search(schema["pattern"], "   ") is None
+        assert re.search(schema["pattern"], "value") is not None
+
+
+def _walk_schemas(schema: object):
+    if isinstance(schema, dict):
+        yield schema
+        for value in schema.values():
+            yield from _walk_schemas(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            yield from _walk_schemas(value)

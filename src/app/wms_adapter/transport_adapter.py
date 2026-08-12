@@ -65,7 +65,7 @@ class WmsTransportAdapter:
                 TransportSubmitCode.NOT_SENT if delivery_state == "NOT_SENT" else TransportSubmitCode.DELIVERY_UNKNOWN
             )
             return TransportSubmitResult(code, transport_task_id)
-        if access.status_code in {400, 413}:
+        if access.status_code in {400, 413} and access.body_present is False:
             return TransportSubmitResult(
                 TransportSubmitCode.REJECTED,
                 transport_task_id,
@@ -101,7 +101,6 @@ def _map_response_code(status_code: int | None, code: object) -> TransportSubmit
         (202, "RECEIVED"): TransportSubmitCode.RECEIVED,
         (200, "DUPLICATE"): TransportSubmitCode.DUPLICATE,
         (409, "CONFLICT"): TransportSubmitCode.CONFLICT,
-        (400, "REJECTED"): TransportSubmitCode.REJECTED,
         (422, "REJECTED"): TransportSubmitCode.REJECTED,
         (429, "BUSY"): TransportSubmitCode.BUSY,
         (503, "UNAVAILABLE"): TransportSubmitCode.UNAVAILABLE,

@@ -39,13 +39,14 @@ _UUIDV7_SCHEMA = {
     "description": "WMS 生成的 UUIDv7 幂等号",
 }
 _TIMESTAMP_SCHEMA = {"type": "integer", "format": "int64", "description": "Unix 毫秒时间戳"}
-_TRANSPORT_TASK_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 80}
-_OBJECT_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 100}
+_NONBLANK_PATTERN = r".*\S.*"
+_TRANSPORT_TASK_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 80, "pattern": _NONBLANK_PATTERN}
+_OBJECT_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 100, "pattern": _NONBLANK_PATTERN}
 _RACK_POSITION_SCHEMA = _closed_object(
     ["kind", "location_code"],
     {
         "kind": {"type": "string", "const": "RACK_POSITION"},
-        "location_code": {"type": "string", "minLength": 1},
+        "location_code": {"type": "string", "minLength": 1, "pattern": _NONBLANK_PATTERN},
     },
 )
 _BIN_POSITION_SCHEMA = {
@@ -54,15 +55,15 @@ _BIN_POSITION_SCHEMA = {
             ["kind", "rack_id", "slot_id"],
             {
                 "kind": {"type": "string", "const": "RACK_BIN_SLOT"},
-                "rack_id": {"type": "string", "minLength": 1},
-                "slot_id": {"type": "string", "minLength": 1},
+                "rack_id": {"type": "string", "minLength": 1, "pattern": _NONBLANK_PATTERN},
+                "slot_id": {"type": "string", "minLength": 1, "pattern": _NONBLANK_PATTERN},
             },
         ),
         _closed_object(
             ["kind", "location_code"],
             {
                 "kind": {"type": "string", "const": "HANDOFF_POSITION"},
-                "location_code": {"type": "string", "minLength": 1},
+                "location_code": {"type": "string", "minLength": 1, "pattern": _NONBLANK_PATTERN},
             },
         ),
     ]
@@ -105,7 +106,7 @@ def _member_result_schema(*, final_position: dict[str, object], arrival_face: bo
         "object_id": _OBJECT_ID_SCHEMA,
         "status": {"type": "string", "const": "FAILED"},
         "final_position": final_position,
-        "failure_code": {"type": "string", "minLength": 1, "maxLength": 120},
+        "failure_code": {"type": "string", "minLength": 1, "maxLength": 120, "pattern": _NONBLANK_PATTERN},
     }
     success_required = ["object_id", "status", "final_position"]
     failed_required = ["object_id", "status", "final_position", "failure_code"]
@@ -125,7 +126,12 @@ def _member_result_schema(*, final_position: dict[str, object], arrival_face: bo
                     "object_id": _OBJECT_ID_SCHEMA,
                     "status": {"type": "string", "const": "FAILED"},
                     "position_unknown": {"type": "boolean", "const": True},
-                    "failure_code": {"type": "string", "minLength": 1, "maxLength": 120},
+                    "failure_code": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120,
+                        "pattern": _NONBLANK_PATTERN,
+                    },
                 },
             ),
         ]
@@ -195,19 +201,24 @@ def _ack_schema(code: str, data_schema: dict[str, object]) -> dict[str, object]:
 
 
 _ACK_TASK_DATA_SCHEMA = _closed_object(["transport_task_id"], {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA})
-_TRANSPORT_EVENT_ACK_SCHEMA = {
-    "oneOf": [
-        *(_ack_schema(code, _ACK_TASK_DATA_SCHEMA) for code in ("RECEIVED", "DUPLICATE", "CONFLICT")),
-        _ack_schema(
-            "REJECTED",
-            _closed_object(
-                ["reason_code"],
-                {"reason_code": {"type": "string", "minLength": 1, "maxLength": 120}},
-            ),
-        ),
-        _ack_schema("UNAVAILABLE", _closed_object([], {})),
-    ]
-}
+_RECEIVED_ACK_SCHEMA = _ack_schema("RECEIVED", _ACK_TASK_DATA_SCHEMA)
+_DUPLICATE_ACK_SCHEMA = _ack_schema("DUPLICATE", _ACK_TASK_DATA_SCHEMA)
+_CONFLICT_ACK_SCHEMA = _ack_schema("CONFLICT", _ACK_TASK_DATA_SCHEMA)
+_REJECTED_ACK_SCHEMA = _ack_schema(
+    "REJECTED",
+    _closed_object(
+        ["reason_code"],
+        {
+            "reason_code": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "pattern": _NONBLANK_PATTERN,
+            }
+        },
+    ),
+)
+_UNAVAILABLE_ACK_SCHEMA = _ack_schema("UNAVAILABLE", _closed_object([], {}))
 
 
 async def _read_bounded_body(request: Request) -> bytes | None:
@@ -261,26 +272,26 @@ def _unavailable_ack(raw_body: bytes) -> JSONResponse | Response:
     responses={
         200: {
             "description": "重复 evidence 已确认",
-            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+            "content": {"application/json": {"schema": _DUPLICATE_ACK_SCHEMA}},
         },
         202: {
             "description": "evidence 已持久化",
-            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+            "content": {"application/json": {"schema": _RECEIVED_ACK_SCHEMA}},
         },
         400: {"description": "evidence envelope 不满足封闭合同"},
         401: {"description": "当前冻结 profile 不允许无签名 WMS Transport callback"},
         409: {
             "description": "operation_id 对应的 payload 冲突",
-            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+            "content": {"application/json": {"schema": _CONFLICT_ACK_SCHEMA}},
         },
         413: {"description": "请求体超过固定上限"},
         422: {
             "description": "evidence data 不满足对应 operation 的封闭合同",
-            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+            "content": {"application/json": {"schema": _REJECTED_ACK_SCHEMA}},
         },
         503: {
             "description": "Transport runtime 尚未就绪或当前无法可靠持久化",
-            "content": {"application/json": {"schema": _TRANSPORT_EVENT_ACK_SCHEMA}},
+            "content": {"application/json": {"schema": _UNAVAILABLE_ACK_SCHEMA}},
         },
     },
     openapi_extra={

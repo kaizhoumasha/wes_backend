@@ -24,7 +24,7 @@ HTTP/JSON 访问合同；Phase 4 公共 Adapter 合同测试只证明已批准 w
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
 > 的 Phase 1 权威计划。Task 1、2、3、6 及 Task 4/7 的可独立治理部分已在
 > `develop@28eb99d9` 合入；Task 5 按 owner 分段由 Phase 5 插件退役、Phase 6 Transport 和 Phase 7 Device/ECS 承接；
-> 插件同包验收归 Phase 8/9，旧 revision 与最终质量验收归 Phase 11/12。本计划在这些延后义务完成前
+> Phase 6 Transport 测试 owner 已完成交接；插件同包验收归 Phase 8/9，旧 revision 与最终质量验收归 Phase 11/12。本计划在这些延后义务完成前
 > 仍保持未完成状态。
 
 ---
@@ -281,7 +281,7 @@ rtk uv run pytest tests/architecture -q
 - [x] Phase 5 已删除只证明 `rough_sorter`、`smt_sorting_inbound`、generated plugin index、registry、dispatcher 和旧插件
   Intent/Effect 的测试；`test_runtime_inbox_three_stage_processor.py`、`test_runtime_inbox_processing_postgresql.py` 及其共享
   fixture 按获批 Phase 5 计划改成无插件的阶段 owner，通用断言不得随具体插件一起删除。
-- [ ] Phase 6 将 Transport submit/evidence/outcome/claim/事务不变量改接最终 `TransportTask`、WMS Adapter 和 PostgreSQL
+- [x] Phase 6 已将 Transport submit/evidence/outcome/claim/事务不变量改接最终 `TransportTask`、WMS Adapter 和 PostgreSQL
   owner，再删除 Transport 专属旧 Effect/status/Outbox/callback 测试。
 - [ ] 先在最终 `DeviceCommand` 测试树承接持久化、claim、单设备互斥、resource wait、重试、fencing、
   ACK/CALLBACK、终态和恢复，再删除旧 `SystemOutboxDispatchType.DEVICE_COMMAND` 测试 owner；不得把旧 SystemOutbox
