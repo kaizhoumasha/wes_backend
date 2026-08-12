@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.2.0] - 2026-08-13
+
+### Added
+- 将通用 Transport 从暗构建推进为可运行的生产基线，提供统一公共 Port、WMS 搬运事件入口、Celery 提交/证据/对账任务和持久化提交快照。
+- 新增 Transport 运维 Runbook、真实 Redis broker、prefork Worker、PostgreSQL 与 HTTP 闭环验收，覆盖无业务插件时的最小生产接线和故障恢复。
+- 新增 UUIDv7 生成与校验能力，并将搬运请求、回调和持久化 Evidence 的关联身份统一到部署级唯一标识。
+
+### Changed
+- API 与 Celery 生命周期改为共同使用唯一 Transport composition root，公开入口只暴露 Transport Port、Runtime、合同 DTO 和构建函数。
+- WMS callback 收敛为以 `operation_id` 和 `timestamp` 为核心的封闭信封；ACK、OpenAPI、原始事件时间和完整请求摘要保持同一合同。
+- 搬运批处理固定为 100 条，并以单并发 Worker 的领取时间预算保证提交、Evidence 和对账任务之间的公平性。
+- 货架供给需求改由现役 rack-supply 领域模型和 PostgreSQL 唯一约束承接，不再借用旧 Transport 业务 operation。
+
+### Fixed
+- 修复 submit 与 callback 并发时的锁序死锁、迟到确定性拒绝无法收敛、旧 attempt 回写覆盖新 claim，以及资源绑定提前释放的问题。
+- 修复 WMS runtime 未就绪时错误响应、operation 专属 OpenAPI data 过宽、非法时间戳和 `client_request_id` 未严格校验的问题。
+- 修复 FastAPI/Celery 初始化失败时清理阶段互相短路、子进程和 Redis/数据库测试资源残留，以及 Docker/Uvicorn 生产启动参数不可用的问题。
+- 修正 Celery QUIT 接管测试对 broker `redelivered` 内部标记的单一路径假设，同时继续验证同一 task id、接管时限和数据库幂等终态。
+
+### Removed
+- 删除已无业务 owner 的 WMS 货架搬运和料箱搬运 Effect 身份、专属端口与 capability definition，不保留兼容入口。
+- 删除 `WmsRackDemand` 的旧目标货架、根 operation 和 owner 交接字段/约束，以及 `STATION_TRANSPORT` 旧 owner 类型。
+
+### Verification
+- QUALITY 全门禁通过：Ruff、Bandit、运行时/架构/拓扑、HEAVY selector 合同均通过；FAST 为 3403 passed、4 个既有条件 skip。
+- 受影响 HEAVY 在隔离 PostgreSQL 与 Redis 下 288 passed、0 skipped；独立落地前复审为 0 P0、0 P1、0 P2、0 ASK。
+
 ## [0.24.1.0] - 2026-08-11
 
 ### Changed
