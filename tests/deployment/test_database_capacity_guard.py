@@ -172,6 +172,10 @@ def test_production_compose_uses_image_source_without_host_override() -> None:
         targets = {volume["target"] for volume in merged["services"][service_name].get("volumes", [])}
         assert "/app/src" not in targets
 
+    for service_name in ("api", "flower"):
+        published_ports = merged["services"][service_name]["ports"]
+        assert len(published_ports) == 1
+
 
 def test_deployment_script_runs_live_guard_before_application_start_and_scale() -> None:
     script_text = (REPO_ROOT / "scripts/docker-deploy-simple.sh").read_text(encoding="utf-8")
@@ -191,6 +195,7 @@ def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert f'"--workers", "{API_UVICORN_WORKERS}"' in dockerfile_text
+    assert '"--log-config", "null"' not in dockerfile_text
     assert "1 x 4 x 5" in dockerfile_text
 
 
