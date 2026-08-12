@@ -196,6 +196,7 @@ def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
 
     assert f'"--workers", "{API_UVICORN_WORKERS}"' in dockerfile_text
     assert '"--log-config", "null"' not in dockerfile_text
+    assert '"--loop", "uvloop"' not in dockerfile_text
     assert "1 x 4 x 5" in dockerfile_text
 
 
